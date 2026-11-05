@@ -1,0 +1,121 @@
+{
+  "_id": "lajstrom",
+  "_rev": "2-0d9edadb8d205dcb3be65f6b0acea2b5",
+  "name": "lajstrom",
+  "dist-tags": {
+    "latest": "0.0.1"
+  },
+  "versions": {
+    "0.0.0-stage": {
+      "name": "lajstrom",
+      "version": "0.0.0-stage",
+      "_id": "lajstrom@0.0.0-stage",
+      "stub": true,
+      "maintainers": [
+        {
+          "name": "gecube",
+          "email": "[redacted]"
+        }
+      ],
+      "dist": {
+        "shasum": "32c104c8eddd029d51562187fcb12d8479fa238a",
+        "tarball": "https://registry.npmjs.org/lajstrom/-/lajstrom-0.0.0-stage.tgz",
+        "fileCount": 2,
+        "integrity": "sha512-eylXjm5rhkXTYPd5r7bN0oC9vANHETefWEHj9IxwEhK+2IJ7maFUOg+py56klDfem9aujeuFnhIhzbkHEgtuag==",
+        "signatures": [
+          {
+            "sig": "MEUCIEGHRiJ+tR57qTv/kgv0se6WzolWhPZjpgpwd+YrzVKwAiEA84lnmhWgGZohXuPtW+/Ig7toa98O3hFaVWbE7VcK+Gc=",
+            "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+          }
+        ],
+        "unpackedSize": 330
+      },
+      "_npmUser": {
+        "name": "gecube",
+        "email": "[redacted]"
+      },
+      "description": "Temporary package placeholder for staged publishing",
+      "directories": {}
+    },
+    "0.0.1": {
+      "_id": "lajstrom@0.0.1",
+      "bin": {
+        "lajstrom": "bin/lajstrom.js"
+      },
+      "bugs": {
+        "url": "https://github.com/lajstrom/lajstrom/issues"
+      },
+      "dist": {
+        "shasum": "e7c29f082500d042add0235737b465afda5369f2",
+        "tarball": "https://registry.npmjs.org/lajstrom/-/lajstrom-0.0.1.tgz",
+        "fileCount": 3,
+        "integrity": "sha512-6ctq+2R4OnZiBkkvW/V+9XRGHJHn6ePehWtv6fAOdGGUXV5B+R5HY4yLY2MPankZZhKGuU2bwTBC4tQuYt4PIg==",
+        "signatures": [
+          {
+            "sig": "MEUCIQCYiaUu73BLMQDvPSj1lAgYvy+In6s7vDefUGlN9U8i4wIgTfZAAxwF0QisbWl7Vhap/gfysfN1qowBeS8RjoZufrE=",
+            "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+          },
+          {
+            "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
+            "sig": "MEUCIQCpWcBCCKz54eWRpd4PXmaxV1r7rdaHFcoFv7opJhi6CgIgaHsBMuk5w0rM9AiA1TmxP9T/i+5xnqOKTBgjwVK4ny8="
+          }
+        ],
+        "unpackedSize": 813
+      },
+      "name": "lajstrom",
+      "engines": {
+        "node": ">=18"
+      },
+      "license": "Apache-2.0",
+      "version": "0.0.1",
+      "_npmUser": {
+        "name": "gecube",
+        "email": "[redacted]"
+      },
+      "homepage": "https://lajstrom.dev",
+      "repository": {
+        "url": "git+https://github.com/lajstrom/lajstrom.git",
+        "type": "git"
+      },
+      "_npmVersion": "11.20.0",
+      "description": "Lajstrom: artifact registry (apt, rpm, maven, pypi, npm, terraform) on top of any OCI registry. Name reserved, work in progress.",
+      "directories": {},
+      "maintainers": [
+        {
+          "name": "gecube",
+          "email": "[redacted]"
+        }
+      ],
+      "_nodeVersion": "26.12.1",
+      "_hasShrinkwrap": false,
+      "_npmOperationalInternal": {
+        "host": "s3://npm-registry-packages-npm-production",
+        "tmp": "tmp/lajstrom_0.0.1_1793907285017_0.4056093396837551"
+      }
+    }
+  },
+  "time": {
+    "created": "2026-11-05T19:33:28.940Z",
+    "modified": "2026-11-05T19:34:45.272Z",
+    "0.0.0-stage": "2026-11-05T19:33:28.940Z",
+    "0.0.1": "2026-11-05T19:34:45.105Z"
+  },
+  "description": "Lajstrom: artifact registry (apt, rpm, maven, pypi, npm, terraform) on top of any OCI registry. Name reserved, work in progress.",
+  "maintainers": [
+    {
+      "name": "gecube",
+      "email": "[redacted]"
+    }
+  ],
+  "readme": "# Lajstrom\n\nArtifact registry (apt, rpm, maven, pypi, npm, terraform modules, raw) on top of any OCI registry:\nECR, Harbor, Zot, GHCR, docker distribution. Owns no bytes, only the index.\n\nThis package reserves the name. Work in progress. See https://lajstrom.dev\n",
+  "readmeFilename": "README.md",
+  "homepage": "https://lajstrom.dev",
+  "repository": {
+    "url": "git+https://github.com/lajstrom/lajstrom.git",
+    "type": "git"
+  },
+  "bugs": {
+    "url": "https://github.com/lajstrom/lajstrom/issues"
+  },
+  "license": "Apache-2.0"
+}

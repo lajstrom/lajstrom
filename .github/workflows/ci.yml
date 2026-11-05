@@ -1,0 +1,151 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Dependency licenses allowed without a maintainer decision (see CONTRIBUTING.md).
+  ALLOWED_LICENSES: Apache-2.0,MIT,BSD-2-Clause,BSD-3-Clause,ISC,MPL-2.0,Unlicense,CC0-1.0,0BSD
+
+jobs:
+  build-test:
+    name: build-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
+
+  vulncheck:
+    name: vulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: govulncheck
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        with:
+          repo-checkout: false
+          go-version-input: stable
+          go-package: ./...
+
+  licenses:
+    name: licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - name: Install go-licenses
+        run: go install github.com/google/go-licenses@v1.6.0
+      - name: Check dependency licenses
+        # With no third-party dependencies yet, this checks the module's own LICENSE (Apache-2.0).
+        run: go-licenses check ./... --allowed_licenses="${ALLOWED_LICENSES}"
+
+  snippet-scan:
+    name: snippet-scan
+    runs-on: ubuntu-latest
+    env:
+      SCANOSS_VERSION: 1.54.3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Install ScanOSS client
+        run: python -m pip install --disable-pip-version-check "scanoss==${SCANOSS_VERSION}"
+      - name: Scan the repository against OSSKB
+        # Uses the free public OSSKB API (no key). Only file fingerprints are sent, not source code.
+        run: scanoss-py scan --output "${RUNNER_TEMP}/scanoss-results.json" .
+      - name: Fail on undeclared third-party matches
+        # Exit code 2 means at least one file or snippet matched third-party code that is not
+        # declared in scanoss.json. Explain the match in the pull request; see CONTRIBUTING.md.
+        run: |
+          scanoss-py inspect undeclared \
+            --input "${RUNNER_TEMP}/scanoss-results.json" \
+            --format md \
+            --output "${RUNNER_TEMP}/scanoss-undeclared.md" \
+            --status "${RUNNER_TEMP}/scanoss-status.md"
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Snippet scan (ScanOSS ${SCANOSS_VERSION})"
+            cat "${RUNNER_TEMP}/scanoss-status.md" 2>/dev/null || echo "No status report."
+            echo
+            cat "${RUNNER_TEMP}/scanoss-undeclared.md" 2>/dev/null || true
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  dco:
+    name: dco
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check Signed-off-by on every commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # One line per commit: sha, parent count, signed-off (true/false), subject.
+          gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/commits" \
+            --jq '.[] | [.sha[0:12], (.parents | length), (.commit.message | split("\n") | any(test("^Signed-off-by: .+ <.+>\\s*$"))), (.commit.message | split("\n")[0])] | @tsv' \
+            > commits.tsv
+          missing=0
+          while IFS=$'\t' read -r sha parents signed subject; do
+            if [ "${parents}" -gt 1 ]; then
+              echo "skip  ${sha} (merge commit) ${subject}"
+            elif [ "${signed}" = "true" ]; then
+              echo "ok    ${sha} ${subject}"
+            else
+              echo "::error::Commit ${sha} has no Signed-off-by line: ${subject}"
+              missing=$((missing + 1))
+            fi
+          done < commits.tsv
+          if [ "${missing}" -gt 0 ]; then
+            echo "${missing} commit(s) are not signed off. Use 'git commit -s'; to fix existing commits run 'git rebase --signoff main' and push again. See CONTRIBUTING.md."
+            exit 1
+          fi

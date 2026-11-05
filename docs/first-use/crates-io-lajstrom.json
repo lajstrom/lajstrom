@@ -1,0 +1,108 @@
+{
+  "crate": {
+    "id": "lajstrom",
+    "name": "lajstrom",
+    "updated_at": "2026-11-05T19:28:07.160969Z",
+    "versions": [
+      3723134
+    ],
+    "keywords": [],
+    "categories": [],
+    "badges": [],
+    "created_at": "2026-11-05T19:28:07.160969Z",
+    "downloads": 0,
+    "recent_downloads": null,
+    "default_version": "0.0.1",
+    "num_versions": 1,
+    "yanked": false,
+    "max_version": "0.0.1",
+    "newest_version": "0.0.1",
+    "max_stable_version": "0.0.1",
+    "description": "Lajstrom: artifact registry (apt, rpm, maven, pypi, npm, terraform) on top of any OCI registry. Name reserved, work in progress.",
+    "homepage": "https://lajstrom.dev",
+    "documentation": null,
+    "repository": "https://github.com/lajstrom/lajstrom",
+    "links": {
+      "version_downloads": "/api/v1/crates/lajstrom/downloads",
+      "versions": null,
+      "owners": "/api/v1/crates/lajstrom/owners",
+      "owner_team": "/api/v1/crates/lajstrom/owner_team",
+      "owner_user": "/api/v1/crates/lajstrom/owner_user",
+      "reverse_dependencies": "/api/v1/crates/lajstrom/reverse_dependencies"
+    },
+    "exact_match": false,
+    "trustpub_only": false
+  },
+  "versions": [
+    {
+      "id": 3723134,
+      "crate": "lajstrom",
+      "num": "0.0.1",
+      "dl_path": "/api/v1/crates/lajstrom/0.0.1/download",
+      "readme_path": "/api/v1/crates/lajstrom/0.0.1/readme",
+      "updated_at": "2026-11-05T19:28:07.160969Z",
+      "created_at": "2026-11-05T19:28:07.160969Z",
+      "downloads": 0,
+      "features": {},
+      "yanked": false,
+      "yank_message": null,
+      "lib_links": null,
+      "license": "Apache-2.0",
+      "links": {
+        "dependencies": "/api/v1/crates/lajstrom/0.0.1/dependencies",
+        "version_downloads": "/api/v1/crates/lajstrom/0.0.1/downloads",
+        "authors": "/api/v1/crates/lajstrom/0.0.1/authors"
+      },
+      "crate_size": 1002,
+      "published_by": {
+        "id": 447183,
+        "login": "gecube",
+        "name": "[redacted]",
+        "avatar": "https://avatars.githubusercontent.com/u/2912732?v=4",
+        "url": "https://github.com/gecube",
+        "github_username_matches": true,
+        "created_at": "2026-11-05T19:25:50.730341Z"
+      },
+      "audit_actions": [
+        {
+          "action": "publish",
+          "user": {
+            "id": 447183,
+            "login": "gecube",
+            "name": "[redacted]",
+            "avatar": "https://avatars.githubusercontent.com/u/2912732?v=4",
+            "url": "https://github.com/gecube",
+            "github_username_matches": true,
+            "created_at": "2026-11-05T19:25:50.730341Z"
+          },
+          "time": "2026-11-05T19:28:07.160969Z"
+        }
+      ],
+      "checksum": "3aec5596a5ec940b9f4e166c0c7db66da6026761862b64340654bb19b6ec3141",
+      "rust_version": null,
+      "has_lib": false,
+      "bin_names": [
+        "lajstrom"
+      ],
+      "edition": "2021",
+      "description": "Lajstrom: artifact registry (apt, rpm, maven, pypi, npm, terraform) on top of any OCI registry. Name reserved, work in progress.",
+      "homepage": "https://lajstrom.dev",
+      "documentation": null,
+      "repository": "https://github.com/lajstrom/lajstrom",
+      "trustpub_data": null,
+      "linecounts": {
+        "languages": {
+          "Rust": {
+            "code_lines": 3,
+            "comment_lines": 0,
+            "files": 1
+          }
+        },
+        "total_code_lines": 3,
+        "total_comment_lines": 0
+      }
+    }
+  ],
+  "keywords": [],
+  "categories": []
+}

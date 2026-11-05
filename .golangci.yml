@@ -1,0 +1,15 @@
+# golangci-lint v2 configuration. Keep it small; add linters deliberately, with a reason.
+version: "2"
+
+linters:
+  # errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - gosec
+    - misspell
+    - revive
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

@@ -1,0 +1,10 @@
+{
+  "Version": "v0.0.1",
+  "Time": "2026-11-05T19:11:07Z",
+  "Origin": {
+    "VCS": "git",
+    "URL": "https://github.com/lajstrom/lajstrom",
+    "Hash": "e26e19d63e5be22e0581b46cb5d72cfe723f6f71",
+    "Ref": "refs/tags/v0.0.1"
+  }
+}
