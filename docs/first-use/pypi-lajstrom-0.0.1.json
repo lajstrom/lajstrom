@@ -1,0 +1,102 @@
+{
+  "info": {
+    "author": null,
+    "author_email": null,
+    "bugtrack_url": null,
+    "classifiers": [
+      "Development Status :: 1 - Planning"
+    ],
+    "description": "# Lajstrom\n\nArtifact registry (apt, rpm, maven, pypi, npm, terraform modules, raw) on top of any OCI registry:\nECR, Harbor, Zot, GHCR, docker distribution. Owns no bytes, only the index.\n\nThis package reserves the name. Work in progress. See https://lajstrom.dev\n",
+    "description_content_type": "text/markdown",
+    "docs_url": null,
+    "download_url": null,
+    "downloads": {
+      "last_day": -1,
+      "last_month": -1,
+      "last_week": -1
+    },
+    "dynamic": null,
+    "home_page": null,
+    "keywords": null,
+    "license": null,
+    "license_expression": "Apache-2.0",
+    "license_files": null,
+    "maintainer": null,
+    "maintainer_email": null,
+    "name": "lajstrom",
+    "package_url": "https://pypi.org/project/lajstrom/",
+    "platform": null,
+    "project_url": "https://pypi.org/project/lajstrom/",
+    "project_urls": {
+      "Homepage": "https://lajstrom.dev",
+      "Repository": "https://github.com/lajstrom/lajstrom"
+    },
+    "provides_extra": null,
+    "release_url": "https://pypi.org/project/lajstrom/0.0.1/",
+    "requires_dist": null,
+    "requires_python": ">=3.9",
+    "summary": "Lajstrom: artifact registry (apt, rpm, maven, pypi, npm, terraform) on top of any OCI registry. Name reserved, work in progress.",
+    "version": "0.0.1",
+    "yanked": false,
+    "yanked_reason": null
+  },
+  "last_serial": 43259220,
+  "ownership": {
+    "organization": null,
+    "roles": [
+      {
+        "role": "Owner",
+        "user": "gecube"
+      }
+    ]
+  },
+  "urls": [
+    {
+      "comment_text": null,
+      "core-metadata": {
+        "sha256": "163cc8569bc356576e26dae4ca118dabf8c78d40a748964ee84dd34a92e6b2f2"
+      },
+      "digests": {
+        "blake2b_256": "e078580d9cb99ed404640e2898bcb8d39de83d0bb30ba419fd75dd3d3e5deff9",
+        "md5": "d6ddd68f1d7ccbdb4e223239e9fc9157",
+        "sha256": "ff5577e777874defa03aa8dced92195e4e245a251e77be131a15288d3f6e4ec7"
+      },
+      "downloads": -1,
+      "filename": "lajstrom-0.0.1-py3-none-any.whl",
+      "has_sig": false,
+      "md5_digest": "d6ddd68f1d7ccbdb4e223239e9fc9157",
+      "packagetype": "bdist_wheel",
+      "python_version": "py3",
+      "requires_python": ">=3.9",
+      "size": 1636,
+      "upload_time": "2026-11-05T19:23:50",
+      "upload_time_iso_8601": "2026-11-05T19:23:50.706883Z",
+      "url": "https://files.pythonhosted.org/packages/e0/78/580d9cb99ed404640e2898bcb8d39de83d0bb30ba419fd75dd3d3e5deff9/lajstrom-0.0.1-py3-none-any.whl",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    {
+      "comment_text": null,
+      "core-metadata": false,
+      "digests": {
+        "blake2b_256": "1c5fdae6a83c895c6249349d87a784a8c3f55de83c9a237e55c05b7930a8b283",
+        "md5": "8c2263fc087c35f8f55d31316252c450",
+        "sha256": "5ed87fc69c03735b0d353d2eb396cb8ccad858965e39f440d2f84484574b1208"
+      },
+      "downloads": -1,
+      "filename": "lajstrom-0.0.1.tar.gz",
+      "has_sig": false,
+      "md5_digest": "8c2263fc087c35f8f55d31316252c450",
+      "packagetype": "sdist",
+      "python_version": "source",
+      "requires_python": ">=3.9",
+      "size": 845,
+      "upload_time": "2026-11-05T19:23:51",
+      "upload_time_iso_8601": "2026-11-05T19:23:51.972305Z",
+      "url": "https://files.pythonhosted.org/packages/1c/5f/dae6a83c895c6249349d87a784a8c3f55de83c9a237e55c05b7930a8b283/lajstrom-0.0.1.tar.gz",
+      "yanked": false,
+      "yanked_reason": null
+    }
+  ],
+  "vulnerabilities": []
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    "schedule:weekly"
+  ],
+  "timezone": "Etc/UTC",
+  "labels": ["dependencies"],
+  "postUpdateOptions": ["gomodTidy"],
+  "packageRules": [
+    {
+      "description": "Group all minor and patch updates into one weekly pull request",
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "all minor and patch updates",
+      "groupSlug": "minor-patch"
+    }
+  ]
+}

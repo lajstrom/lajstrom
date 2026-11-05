@@ -12,3 +12,20 @@ rebuilt from the registry.
 ## Status
 
 Design phase. Nothing to run yet. https://lajstrom.dev
+
+## Contributing
+
+Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Every commit needs a DCO
+sign-off (`git commit -s`), and contributors sign the [CLA](CLA.md) once before their first merge.
+AI-assisted contributions are allowed under the
+[AI policy](CONTRIBUTING.md#ai-assisted-contributions): a human author is responsible for the
+change and discloses the tools used. Design decisions are recorded in [docs/adr](docs/adr/).
+
+## Security
+
+Please report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
+
+## License
+
+Lajstrom is licensed under the [Apache License 2.0](LICENSE).
+Copyright 2026 The Lajstrom Authors.
