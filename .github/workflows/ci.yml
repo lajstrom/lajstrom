@@ -84,19 +84,72 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SCANOSS_VERSION: 1.54.3
+      # Optional: a SCANOSS API key (repository secret) switches the scan from the shared,
+      # rate-limited OSSKB endpoint to the keyed API. Forks never see the secret and fall back.
+      SCANOSS_API_KEY: ${{ secrets.SCANOSS_API_KEY }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - name: Install ScanOSS client
         run: python -m pip install --disable-pip-version-check "scanoss==${SCANOSS_VERSION}"
-      - name: Scan the repository against OSSKB
-        # Uses the free public OSSKB API (no key). Only file fingerprints are sent, not source code.
-        run: scanoss-py scan --output "${RUNNER_TEMP}/scanoss-results.json" .
+      - name: Select files to scan
+        # Pull requests: only files added or changed in the PR. Pushes to main: the whole tree.
+        # The selection is copied into a scratch directory so the scanner sees nothing else.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          target="${RUNNER_TEMP}/scan-input"
+          mkdir -p "${target}"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            git diff --name-only --diff-filter=ACMR "${BASE_SHA}...HEAD" > "${RUNNER_TEMP}/changed.txt"
+          else
+            git ls-files > "${RUNNER_TEMP}/changed.txt"
+          fi
+          count=0
+          while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            mkdir -p "${target}/$(dirname "$f")"
+            cp "$f" "${target}/$f"
+            count=$((count + 1))
+          done < "${RUNNER_TEMP}/changed.txt"
+          echo "files selected: ${count}"
+          echo "SCAN_FILE_COUNT=${count}" >> "${GITHUB_ENV}"
+      - name: Scan against the SCANOSS knowledge base
+        # Only file fingerprints are sent, never source code. The free OSSKB endpoint is shared
+        # by every GitHub runner and gets rate-limited; when the service is unavailable the
+        # scan is reported as skipped instead of failing the build. A real match still fails.
+        run: |
+          set -uo pipefail
+          if [ "${SCAN_FILE_COUNT:-0}" = "0" ]; then
+            echo "SCAN_STATE=skipped-no-files" >> "${GITHUB_ENV}"
+            echo "::notice::snippet-scan: no files to scan"
+            exit 0
+          fi
+          args=(--retry 1 --output "${RUNNER_TEMP}/scanoss-results.json")
+          if [ -n "${SCANOSS_API_KEY}" ]; then
+            args+=(--apiurl https://api.scanoss.com/scan/direct --key "${SCANOSS_API_KEY}")
+          fi
+          scanoss-py scan "${args[@]}" "${RUNNER_TEMP}/scan-input" 2>&1 | tee "${RUNNER_TEMP}/scanoss.log"
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -eq 0 ] && [ -s "${RUNNER_TEMP}/scanoss-results.json" ]; then
+            echo "SCAN_STATE=scanned" >> "${GITHUB_ENV}"
+            exit 0
+          fi
+          if grep -qiE "rate limit|503|unavailable|ConnectionError|timed out" "${RUNNER_TEMP}/scanoss.log"; then
+            echo "SCAN_STATE=skipped-api-unavailable" >> "${GITHUB_ENV}"
+            echo "::warning::snippet-scan: SCANOSS API unavailable (rate limit or outage); scan skipped for this run"
+            exit 0
+          fi
+          echo "::error::snippet-scan: scanner failed for a reason other than API availability"
+          exit "$rc"
       - name: Fail on undeclared third-party matches
+        if: env.SCAN_STATE == 'scanned'
         # Exit code 2 means at least one file or snippet matched third-party code that is not
         # declared in scanoss.json. Explain the match in the pull request; see CONTRIBUTING.md.
         run: |
@@ -110,8 +163,10 @@ jobs:
         run: |
           {
             echo "## Snippet scan (ScanOSS ${SCANOSS_VERSION})"
-            cat "${RUNNER_TEMP}/scanoss-status.md" 2>/dev/null || echo "No status report."
             echo
+            echo "State: \`${SCAN_STATE:-unknown}\`, files selected: ${SCAN_FILE_COUNT:-0}"
+            echo
+            cat "${RUNNER_TEMP}/scanoss-status.md" 2>/dev/null || true
             cat "${RUNNER_TEMP}/scanoss-undeclared.md" 2>/dev/null || true
           } >> "${GITHUB_STEP_SUMMARY}"
 
