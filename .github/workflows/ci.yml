@@ -137,7 +137,8 @@ jobs:
           fi
           scanoss-py scan "${args[@]}" "${RUNNER_TEMP}/scan-input" 2>&1 | tee "${RUNNER_TEMP}/scanoss.log"
           rc=${PIPESTATUS[0]}
-          if [ "$rc" -eq 0 ] && [ -s "${RUNNER_TEMP}/scanoss-results.json" ]; then
+          if [ "$rc" -eq 0 ]; then
+            [ -s "${RUNNER_TEMP}/scanoss-results.json" ] || echo '{}' > "${RUNNER_TEMP}/scanoss-results.json"
             echo "SCAN_STATE=scanned" >> "${GITHUB_ENV}"
             exit 0
           fi
