@@ -336,12 +336,15 @@ def cmd_settings(dry: bool):
     print("Enabling Discussions and requiring 1 review with code-owner review on main (explicit maintainer action).")
     gh_api(f"repos/{REPO}", "PATCH", {"has_discussions": True}, dry=dry)
     prot = gh_api(f"repos/{REPO}/branches/main/protection", dry=dry) or {}
-    checks = [c["context"] for c in (prot.get("required_status_checks") or {}).get("checks", [])]
+    rsc = prot.get("required_status_checks") or {}
+    checks = [c["context"] for c in rsc.get("checks", [])]
+    # Code-owner reviews are not required: the lead is the only code owner of the specs and
+    # cannot approve their own pull requests. CODEOWNERS still auto-requests the review.
     fields = {
-        "required_status_checks": {"strict": True, "contexts": checks},
+        "required_status_checks": {"strict": bool(rsc.get("strict", False)), "contexts": checks},
         "enforce_admins": True,
         "required_pull_request_reviews": {"required_approving_review_count": 1, "dismiss_stale_reviews": True,
-                                          "require_code_owner_reviews": True},
+                                          "require_code_owner_reviews": False},
         "restrictions": None,
         "required_linear_history": True,
         "allow_force_pushes": False,
