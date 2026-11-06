@@ -9,12 +9,22 @@
 | Thing | Place |
 | --- | --- |
 | Tasks, status, assignment | GitHub Issues with milestones M0–M3 and the labels below. Nothing is "in progress" unless an issue says so. |
-| Board | GitHub Project "Lajstrom MVP" (Backlog → Ready → In progress → In review → Done), auto-synced from issues and pull requests |
+| Board | GitHub Project "Lajstrom MVP" (https://github.com/orgs/lajstrom/projects/1), columns below, auto-synced from issues and pull requests |
 | Design truth | `docs/architecture.md`, `docs/spec/*.md`, `docs/adr/*.md` |
 | Plan | `docs/roadmap.md` (narrative), milestones (dates), `docs/plan/` (issue sources) |
 | Decisions | ADRs for architecture; the roadmap's decision log for scope; issue comments for everything local |
 | Async discussion | GitHub Discussions: *Weekly* (plans and demos), *Design*, *Q&A*, *Announcements* |
 | Quick chat | one channel the lead names in the Announcements discussion; anything that matters is copied back to an issue the same day |
+
+Board columns (the `Status` field of the project):
+
+| Column | Meaning | Who moves it |
+| --- | --- | --- |
+| Backlog | filed; a dependency is still open, or it is not this week's work | automation on creation |
+| Ready for Development | every `Depends on` item is merged; can be picked up now | the lead, on Monday |
+| In Progress | someone assigned themselves and is working on it | the person who took it |
+| In review | a pull request is open and waiting for approval | the person who took it |
+| Done | the pull request is merged and the issue closed | automation on merge |
 
 ## 2. Labels
 
@@ -29,7 +39,7 @@
 
 ## 3. The loop for one issue
 
-1. **Pick** an issue from the current milestone, in your lane, `Ready` on the board. Newcomers:
+1. **Pick** an issue from the current milestone, in your lane, `Ready for Development` on the board. Newcomers:
    `good first issue`. Do not start an issue that is `blocked` or whose `Depends on` list has
    open items.
 2. **Claim** it: assign yourself and move it to *In progress*. One person per issue; at most two
