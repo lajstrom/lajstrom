@@ -19,10 +19,26 @@ an nginx container behind the same edge as Lajstrom (`ui` stays a reserved first
 `docs/spec/http-routing.md` §1, so that the edge can route `/ui/` to it), or object storage
 behind a CDN (S3). The Go server never serves `/ui/`.
 
-What cross-origin use needs on the API side, all part of this issue: a CORS allowlist
-(`server.corsOrigins`); bearer-only auth for browsers (no cookies, hence no CSRF); a runtime
-`config.json` next to the bundle with the API base URL; the UI reads `/-/version` and warns on a
-version skew against the `/api/v1` contract it was built for.
+**Acceptance criteria** (fixed 2026-11-06, before scheduling)
+
+- [ ] One static bundle per release, built with relative asset paths, published as a tar.gz and as
+      an nginx image; the same bundle works at the root of an object-storage origin (S3 behind a
+      CDN) and under `/ui/` behind the edge of Lajstrom.
+- [ ] Runtime configuration from `config.json` next to the bundle, versioned schema
+      (`"schema": 1`): `apiBaseUrl` (empty means the same origin), `branding` (white label: title,
+      logo, colours, support link; the Lajstrom version stays in the about dialog for support),
+      later `oidc`. The nginx image generates the file from environment variables or takes a
+      mounted one; `config.json` is served with `Cache-Control: no-cache`, hashed assets are
+      immutable.
+- [ ] Start-up never shows a blank page: a missing `config.json` means defaults; a malformed one or
+      an unknown schema renders an error page that names the problem; an unreachable
+      `GET {apiBaseUrl}/-/version` renders an error page with the URL and the status; a version
+      skew against the `/api/v1` contract the bundle was built for shows a warning and goes on.
+- [ ] Server side (lajstrom/lajstrom): CORS allowlist `server.corsOrigins` on `/-/version` and
+      `/api/v1`; browsers use bearer tokens only, never cookies; short-lived login tokens from
+      `/api/v1/login` rather than pasted PATs.
+- [ ] Read-only screens: repos, packages, versions, files, referrers, audit; search; per-format
+      usage snippets.
 
 **Status**
 
