@@ -328,12 +328,12 @@ def cmd_project(dry: bool):
         if gi:
             sh(["gh", "project", "item-add", str(number), "--owner", owner, "--url",
                 f"https://github.com/{REPO}/issues/{gi['number']}"], dry=dry, check=False)
-    print("Set up the board columns by hand: Backlog, Ready, In progress, In review, Done; "
+    print("Set up the board columns by hand: Backlog, Ready for Development, In Progress, In review, Done; "
           "enable the built-in workflows (item added -> Backlog, PR merged -> Done).")
 
 
 def cmd_settings(dry: bool):
-    print("Enabling Discussions and requiring 1 review with code-owner review on main (explicit maintainer action).")
+    print("Enabling Discussions and requiring 1 review on main (explicit maintainer action).")
     gh_api(f"repos/{REPO}", "PATCH", {"has_discussions": True}, dry=dry)
     prot = gh_api(f"repos/{REPO}/branches/main/protection", dry=dry) or {}
     rsc = prot.get("required_status_checks") or {}
