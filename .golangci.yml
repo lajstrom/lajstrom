@@ -5,13 +5,80 @@ linters:
   # errcheck, govet, ineffassign, staticcheck, unused
   default: standard
   enable:
-    - gocyclo   # cyclomatic complexity: a function above 15 is split, not annotated
+    - bodyclose     # every HTTP response body is closed; the facade and the providers are HTTP clients
+    - depguard      # the package boundaries of CLAUDE.md as code (rules below)
+    - errorlint     # errors.Is/As and %w, so the sentinel errors of each package keep working
+    - exhaustive    # switch over auth.Kind, auth.Action and the like names every value
+    - forbidigo     # slog only: no fmt.Print* and no std log outside cmd/
+    - gocyclo       # cyclomatic complexity: a function above 15 is split, not annotated
     - gosec
+    - importas      # one alias for the OCI image-spec package
     - misspell
+    - noctx         # context.Context on every I/O call: HTTP requests, dialing, listening
+    - nolintlint    # a //nolint names the linter and says why
     - revive
+    - rowserrcheck  # rows.Err() is checked (internal/index)
+    - sqlclosecheck # rows and statements are closed (internal/index)
   settings:
+    depguard:
+      rules:
+        registry-client:
+          # Only internal/provider talks to the backend registry (CLAUDE.md, invariants).
+          list-mode: lax
+          files:
+            - "!**/internal/provider/**"
+            - "!**/internal/testutil/**"
+            - "!**/*_test.go"
+          deny:
+            - pkg: oras.land/oras-go/v2/registry/remote
+              desc: only internal/provider talks to the registry (CLAUDE.md invariants)
+        database:
+          # Only internal/index talks to the database (CLAUDE.md, invariants).
+          list-mode: lax
+          files:
+            - "!**/internal/index/**"
+          deny:
+            - pkg: database/sql
+              desc: only internal/index talks to the database (CLAUDE.md invariants)
+            - pkg: modernc.org/sqlite
+              desc: only internal/index talks to the database (CLAUDE.md invariants)
+            - pkg: github.com/jackc/pgx
+              desc: only internal/index talks to the database (CLAUDE.md invariants)
+        not-approved:
+          # docs/spec/layout.md §3: no web framework, no ORM.
+          list-mode: lax
+          deny:
+            - pkg: github.com/go-chi/chi
+              desc: no web framework (docs/spec/layout.md §3)
+            - pkg: github.com/gin-gonic/gin
+              desc: no web framework (docs/spec/layout.md §3)
+            - pkg: github.com/labstack/echo
+              desc: no web framework (docs/spec/layout.md §3)
+            - pkg: github.com/gorilla/mux
+              desc: no web framework (docs/spec/layout.md §3)
+            - pkg: gorm.io
+              desc: no ORM (docs/spec/layout.md §3)
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: ^fmt\.Print.*$
+          msg: use log/slog, or cmd.OutOrStdout() in cmd/lajstrom
+        - pattern: ^log\.(Print|Fatal|Panic).*$
+          msg: use log/slog
     gocyclo:
       min-complexity: 15
+    importas:
+      alias:
+        - pkg: github.com/opencontainers/image-spec/specs-go/v1
+          alias: ocispec
+  exclusions:
+    rules:
+      # The CLI prints to the terminal.
+      - path: ^cmd/
+        linters: [forbidigo]
+      # Tests build requests with httptest.NewRequest and dial without a context.
+      - path: _test\.go$
+        linters: [noctx, forbidigo]
 
 formatters:
   enable:
