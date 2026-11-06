@@ -21,9 +21,9 @@ Board columns (the `Status` field of the project):
 | Column | Meaning | Who moves it |
 | --- | --- | --- |
 | Backlog | filed; a dependency is still open, or it is not this week's work | automation on creation |
-| Ready for Development | every `Depends on` item is merged; can be picked up now | the lead, on Monday |
-| In Progress | someone assigned themselves and is working on it | the person who took it |
-| In review | a pull request is open and waiting for approval | the person who took it |
+| Ready for Development | every `Depends on` item is merged; unassigned, pick it up | the lead, on Monday |
+| In Progress | someone is assigned and working on it; a draft PR is expected within a day | the person who took it |
+| In Review | a pull request is open with green CI, waiting for one approval | the person who took it |
 | Done | the pull request is merged and the issue closed | automation on merge |
 
 ## 2. Labels
