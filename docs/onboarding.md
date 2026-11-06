@@ -28,12 +28,9 @@ oras version          # https://oras.land, for pushing test artifacts
 gh --version          # GitHub CLI, for issues and pull requests
 
 git clone git@github.com:lajstrom/lajstrom.git && cd lajstrom
-make dev-up           # Zot, distribution and Postgres in containers (after M0-09 lands)
+make dev-up           # Zot, distribution and Postgres in containers (after #15 lands)
 make check            # build, vet, test, lint, vulncheck, licenses: what CI runs
 ```
-
-Until the skeleton (M0-01) and the compose stack (M0-09) are merged, run the Go commands from
-CONTRIBUTING.md §Building and testing locally directly.
 
 Set the commit trailers once so you never forget them:
 

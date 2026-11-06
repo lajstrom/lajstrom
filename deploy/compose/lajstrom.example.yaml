@@ -1,0 +1,40 @@
+# Lajstrom configuration for local development: SQLite and the Zot registry of the dev stack.
+# Every key is listed; docs/configuration.md describes them. Environment variables
+# LAJSTROM_SERVER_LISTEN, LAJSTROM_SERVER_EXTERNAL_URL, LAJSTROM_LOG_LEVEL, LAJSTROM_LOG_FORMAT,
+# LAJSTROM_DATABASE_DRIVER and LAJSTROM_DATABASE_DSN override the scalar keys of the same name.
+# Secrets never go into this file: name the environment variable that holds them (*Env keys).
+
+server:
+  listen: ":8080"                     # host:port to listen on
+  externalURL: "http://localhost:8080" # base of every absolute URL Lajstrom renders
+  shutdownTimeout: 30s                # how long in-flight requests get on SIGTERM
+
+log:
+  level: info                         # debug | info | warn | error
+  format: text                        # text | json
+
+database:
+  driver: sqlite                      # sqlite | postgres
+  dsn: "file:lajstrom.db"             # SQLite file, or postgres://user@host/db?sslmode=disable
+
+registries:
+  - name: local                       # referred to by repos[].registry
+    type: generic                     # generic (distribution, Zot, Harbor, GHCR) | ecr
+    url: "http://localhost:5000"      # Zot from the dev stack (make dev-up)
+    prefix: ""                        # instance prefix of every OCI repository, e.g. "art/"; empty for none
+    auth:
+      username: ""                    # empty: the dev Zot allows anonymous push and pull
+      passwordEnv: ""                 # name of the environment variable that holds the password
+
+auth:
+  anonymousRead: false                # server-wide switch for anonymous read (RBAC, issue #45)
+  tokenSigningKeyFile: ""             # PEM key that signs OCI bearer tokens (issue #26)
+
+keys:
+  masterKeyEnv: LAJSTROM_MASTER_KEY   # environment variable with the key that encrypts signing keys (issue #41)
+
+repos:                                # created at startup when missing (issue #14)
+  - name: scratch                     # repo name, unique within its format
+    format: raw                       # raw | pypi | apt | maven
+    registry: local                   # one of registries[].name
+    anonymousRead: false              # readable without credentials when auth.anonymousRead allows it

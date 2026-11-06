@@ -44,7 +44,7 @@ internal/oci/profile    media types, annotations, Escape/EscapeComponent, manife
 internal/ingest         pipeline + publication sessions
 internal/provider       Provider interface; generic (oras-go), ecr
 internal/index          Store interface, models, migrations; sqlite, postgres
-internal/auth, api, keys, audit, config, testutil
+internal/auth, api, keys, audit, config, testutil, version
 deploy/compose          dev stack (zot, distribution, postgres)
 docs/                   architecture, spec, adr, plan, registries
 ```
@@ -61,8 +61,6 @@ make test-integration # needs dev-up; real registry and Postgres
 make e2e              # real clients (oras, pip, apt-get, mvn) against the stack
 ```
 
-Until the Makefile exists (issue M0-01), use the commands in CONTRIBUTING.md §Building.
-
 ## Code rules
 
 - Go stable; standard library first. New dependencies only from the approved list in
@@ -70,7 +68,9 @@ Until the Makefile exists (issue M0-01), use the commands in CONTRIBUTING.md §B
   no web framework.
 - Wrap errors with `%w`; sentinel errors per package (`ErrNotFound`, `ErrConflict`,
   `ErrUnsupported`); map to HTTP status in one place per package.
-- `context.Context` on every I/O call. Stream blobs, never buffer them in memory or on disk.
+- `context.Context` on every I/O call. Stream blobs when serving and when pushing to the
+  registry; an upload may be spooled to a temporary file for the duration of one request (never
+  kept, never served from). Artifact bytes live only in the registry.
 - `log/slog` for logs; never log secrets, tokens, passwords or Authorization headers.
 - Tests: table tests; fixtures built in-process with `internal/testutil` (make a `.deb`, a
   `.whl`, a `.jar` in memory). Do not vendor binary packages from distributions.

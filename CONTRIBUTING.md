@@ -132,6 +132,14 @@ open an issue and ask.
 You need Go (the current stable release is what CI uses) and Git.
 
 ```sh
+make check   # the CI job list below: build-test, lint, vulncheck, licenses (plus gofmt)
+make         # lists every target
+```
+
+`make check` runs the same commands as CI, with the same tool versions. The raw commands, if you
+want to run one step on its own:
+
+```sh
 go build ./...
 go vet ./...
 go test -race ./...
