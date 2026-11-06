@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Design question
+    url: https://github.com/lajstrom/lajstrom/discussions/categories/design
+    about: Ask about the architecture or propose a change before opening an issue
+  - name: Security vulnerability
+    url: https://github.com/lajstrom/lajstrom/security/advisories/new
+    about: Report privately; never in a public issue

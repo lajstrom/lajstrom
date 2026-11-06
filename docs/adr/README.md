@@ -44,3 +44,7 @@ to `superseded by NNNN`. Typos and broken links may be fixed in place.
 | [0001](0001-oci-registry-as-sole-storage.md) | The OCI registry is the only storage | accepted |
 | [0002](0002-server-side-protocol-emulation.md) | Server-side protocol emulation, no client plugins | accepted |
 | [0003](0003-license-and-contribution-terms.md) | License and contribution terms | accepted |
+| [0004](0004-path-first-addressing.md) | Path-first addressing: one host, `/<format>/<repo>/` | proposed |
+| [0005](0005-manifest-profile-and-immutable-tags.md) | Manifest profile: OCI 1.1 artifacts with one immutable tag per variant | proposed |
+| [0006](0006-derived-index-and-control-plane.md) | Derived index plus a small control plane; SQLite and Postgres | proposed |
+| [0007](0007-rbac-model.md) | Authentication and RBAC model | proposed |

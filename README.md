@@ -16,7 +16,20 @@ rebuilt from the registry.
 
 ## Status
 
-Design phase. Nothing to run yet. https://lajstrom.dev
+Building the MVP (November 2026): raw, pypi, apt and maven hosted repositories, OCI facade,
+reindex, local users and RBAC, v0.1.0 planned for 2026-12-04. See the [roadmap](docs/roadmap.md).
+https://lajstrom.dev
+
+## Documentation
+
+| | |
+| --- | --- |
+| [Start here](docs/onboarding.md) | one hour from zero to a claimed issue |
+| [Architecture](docs/architecture.md) | components, storage model, the five flows |
+| [Specs](docs/spec/) | manifest profile, layout and interfaces, HTTP routing, index schema, RBAC |
+| [ADRs](docs/adr/) | decisions and why |
+| [Roadmap](docs/roadmap.md) | milestones, lanes, week by week |
+| [Process](docs/process.md) | issues, pull requests, reviews, working with AI assistants |
 
 ## Contributing
 
