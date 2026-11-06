@@ -252,9 +252,9 @@ from memory, must be verified by a spike, not assumed. Results go to [`registrie
 | Registry | Repo created on push | Referrers API | Repo listing | Delete manifest | Immutable tags | Blob redirect | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | ECR | only via a creation template with `CREATE_ON_PUSH`, otherwise `CreateRepository` from the adapter | yes, OCI 1.1 since 2024-06; pushing referrers with oras returned 405, issue aws/containers-roadmap#2783 | `DescribeRepositories`, no `_catalog` | yes | per-repo option, must be respected | 307 to S3 | image count limit per repo, 12-hour token |
-| distribution | yes | *v3: verify* | `_catalog`, no proper pagination | only with `storage.delete.enabled` | no | redirect with the S3 driver | GC offline, separate command |
+| distribution | yes | no (3.1.2: the route does not exist; the `sha256-<digest>` tag schema works) | `_catalog` with `n`/`last` pagination | only with `storage.delete.enabled` (the `registry:3` image enables it) | no | redirect with the S3 driver; none on filesystem (3.1.2) | GC offline, separate command |
 | Harbor | inside an existing project | *2.10+: verify* | projects API | yes | immutability rules | redirect with S3 | quotas, scanning for free |
-| Zot | yes | yes | yes | yes | no | *verify* | candidate for tests and local development |
+| Zot | yes | yes (2.1.23) | yes | yes | no | none on filesystem (2.1.23); S3 not tested | primary dev registry (deploy/compose) |
 | GHCR | yes | *verify* | no `_catalog`, packages REST API | REST API | no | yes | rate limits, auth via PAT |
 
 Fallback for registries without a referrers API: the `sha256-<digest>` tag schema, as cosign does.

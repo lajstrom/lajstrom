@@ -110,6 +110,12 @@ func (r Registry) validate(p *problems, key string) {
 	if r.Prefix != "" && (strings.HasPrefix(r.Prefix, "/") || !strings.HasSuffix(r.Prefix, "/")) {
 		p.add(key+".prefix", `must not start with "/" and must end with "/" when set`)
 	}
+	if r.Timeout < 0 {
+		p.add(key+".timeout", "must not be negative")
+	}
+	if r.Capabilities.MaxBlobSize < 0 {
+		p.add(key+".capabilities.maxBlobSize", "must not be negative")
+	}
 	a := r.Auth
 	if (a.Username == "") != (a.PasswordEnv == "") {
 		p.add(key+".auth", "username and passwordEnv must be set together")

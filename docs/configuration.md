@@ -49,8 +49,12 @@ server:
   listen: ":8080"
 ```
 
-Until issues #9 and #10 land, `serve` does not open the database or contact the registries: it
-validates their configuration and serves the system endpoints (`/-/healthz`, `/-/readyz`, `/-/version`).
+Until issue #10 lands, `serve` does not open the database: it validates its configuration and
+serves the system endpoints (`/-/healthz`, `/-/readyz`, `/-/version`). It does contact the
+registries: at startup it asks each one what it supports (see
+[capabilities](#registry-capabilities)) and logs the answer at info. A registry that does not
+answer within 10 s is logged at error and `serve` starts anyway, so that one backend down does not
+keep a replica from starting.
 
 ## Reference
 
@@ -92,6 +96,27 @@ A list; each entry is one backend OCI registry. Repos refer to it by name.
 | `registries[].prefix` | string | empty | none | Instance prefix of every OCI repository Lajstrom creates, e.g. `art/` gives `art/raw/scratch/…`. Must not start with `/` and must end with `/`. Clients never see it. |
 | `registries[].auth.username` | string | empty | none | User for the registry. Set together with `passwordEnv`; leave both empty for anonymous access. |
 | `registries[].auth.passwordEnv` | environment variable name | empty | none | Variable that holds the password. Startup fails when it is set here but the variable is unset or empty. Example: `ZOT_PASSWORD`. |
+| `registries[].timeout` | duration (`30s`, `1m`) | `30s` | none | Bounds one request to the registry up to its response headers: connecting and the TLS handshake (each at most 10 s) and the wait for the headers. A blob upload or download streams for as long as it takes. Must not be negative; `0` means the default. |
+| `registries[].retries` | integer | `3` | none | Retries of a failed request: 408, 429, 5xx, timeouts and connection resets, with exponential backoff from 250 ms (or the `Retry-After` of a 429), at most 3 s. Only requests whose body can be sent again are retried; a streamed blob upload is sent once. `0` means the default; a negative value disables retries. |
+| `registries[].capabilities.createOnPush` | bool | probed | none | Pushing to a new repository creates it. |
+| `registries[].capabilities.referrers` | bool | probed | none | The registry serves the OCI referrers API. `false` makes Lajstrom use the `sha256-<digest>` tag schema without asking. |
+| `registries[].capabilities.catalog` | bool | probed | none | The registry lists repositories (`/v2/_catalog`). `false` turns repository listing off without asking, for registries whose catalog is missing, slow or wrong; Lajstrom then uses its own list of repositories. |
+| `registries[].capabilities.deleteManifest` | bool | probed | none | Manifests can be deleted. |
+| `registries[].capabilities.immutableTags` | bool | probed | none | The registry itself refuses to re-point a tag. |
+| `registries[].capabilities.blobRedirect` | bool | probed | none | Blob downloads may be redirected to the registry's storage. `false` makes Lajstrom stream every blob through itself without asking the registry for a redirect. |
+| `registries[].capabilities.maxBlobSize` | bytes | `0` | none | Largest blob the registry accepts; `0` means unknown. Must not be negative. |
+
+#### Registry capabilities
+
+At startup Lajstrom asks each registry what it supports, once, and keeps the answer: `GET /v2/`
+(the registry answers, and accepts the credentials), `GET /v2/_catalog?n=1` (a catalog: 200 yes;
+401, 403, 404, 405 no) and the referrers of a digest no manifest has in the repository
+`<prefix>lajstrom-probe` (an OCI image index: the referrers API; a 404: the tag schema). The
+`generic` type assumes create-on-push, manifest deletes and blob redirects, and no immutable
+tags; a registry that answers a manifest delete with 405 turns `deleteManifest` off from then on.
+Each key under `capabilities` replaces what was found, for registries that answer wrongly; a
+key that is set is not probed. There is no `catalog` key outside `capabilities`. What was tested
+against which registry is in [registries/](registries/README.md).
 
 ### auth
 

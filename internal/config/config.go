@@ -57,6 +57,39 @@ type Registry struct {
 	Prefix string `yaml:"prefix"`
 	// Auth holds Lajstrom's own credentials for the registry.
 	Auth RegistryAuth `yaml:"auth"`
+	// Timeout bounds one request up to the response headers: dial, TLS handshake and the wait
+	// for the headers. It does not bound streaming a body. Load sets DefaultRegistryTimeout
+	// when it is zero; negative is invalid.
+	Timeout time.Duration `yaml:"timeout"`
+	// Retries is the maximum number of retries of a failed request (429, 5xx, network errors);
+	// only requests whose body can be replayed are retried. Load sets DefaultRegistryRetries
+	// when it is zero; negative disables retries.
+	Retries int `yaml:"retries"`
+	// Capabilities overrides what probing finds, for backends that lie or cannot be probed.
+	Capabilities CapabilityOverrides `yaml:"capabilities"`
+}
+
+// CapabilityOverrides are the capabilities a registry configuration sets by hand. A set value
+// replaces what the provider found by probing; an unset one (nil, or 0 for MaxBlobSize) leaves
+// it. The fields are those of provider.Capabilities.
+type CapabilityOverrides struct {
+	// CreateOnPush: pushing to a new repository creates it.
+	CreateOnPush *bool `yaml:"createOnPush"`
+	// Referrers: the backend serves the OCI referrers API; false makes the provider use the
+	// sha256-<digest> tag schema without asking.
+	Referrers *bool `yaml:"referrers"`
+	// Catalog: the backend lists repositories; false makes ListRepositories unsupported
+	// without probing, for backends whose _catalog is missing or useless.
+	Catalog *bool `yaml:"catalog"`
+	// DeleteManifest: manifests can be deleted.
+	DeleteManifest *bool `yaml:"deleteManifest"`
+	// ImmutableTags: the backend itself refuses to re-point a tag.
+	ImmutableTags *bool `yaml:"immutableTags"`
+	// BlobRedirect: blob downloads may redirect; false makes BlobRedirectURL answer "no"
+	// without a request.
+	BlobRedirect *bool `yaml:"blobRedirect"`
+	// MaxBlobSize is the largest blob the backend accepts, in bytes; 0 leaves it unset.
+	MaxBlobSize int64 `yaml:"maxBlobSize"`
 }
 
 // RegistryAuth holds the credentials Lajstrom uses towards a registry. The password never
@@ -118,6 +151,8 @@ const (
 	DefaultDatabaseDriver  = "sqlite"
 	DefaultDatabaseDSN     = "file:lajstrom.db"
 	DefaultRegistryType    = "generic"
+	DefaultRegistryTimeout = 30 * time.Second
+	DefaultRegistryRetries = 3
 )
 
 // Default returns the configuration before the file is read. server.listen has no default.
