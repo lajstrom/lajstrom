@@ -71,7 +71,7 @@ func New(o Options) (*Server, error) {
 		return nil, err
 	}
 	if len(o.Plugins) > 0 && o.Deps.Index == nil {
-		return nil, errors.New("server: format plugins need Deps.Index; the serve command wires the store with issue #10")
+		return nil, errors.New("server: format plugins need Deps.Index")
 	}
 	if o.ShutdownTimeout <= 0 {
 		o.ShutdownTimeout = DefaultShutdownTimeout

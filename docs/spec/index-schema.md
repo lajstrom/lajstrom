@@ -13,7 +13,8 @@ files (`internal/index/migrations/{sqlite,postgres}/NNNN_*.sql`).
 
 Types below: `id` = integer primary key (SQLite) / `bigserial` (Postgres); `ts` = UTC timestamp
 stored as RFC 3339 text in SQLite, `timestamptz` in Postgres; `json` = `text` in SQLite,
-`jsonb` in Postgres.
+`jsonb` in Postgres. Every `json` column is nullable: NULL is "absent or empty" (`policy`,
+`scopes`, `files`, `details`, `attrs`, `metadata`), and the store reads it back as nil.
 
 ## Control plane
 
@@ -38,6 +39,17 @@ stored as RFC 3339 text in SQLite, `timestamptz` in Postgres; `json` = `text` in
 | `index_cache` | `id`, `repo_id`, `scope` text (`jammy/main/amd64`, `simple/requests`, `com.example/lib-core`), `kind` text (`Packages`, `Release`, `InRelease`, `simple`, `maven-metadata`), `content` blob, `sha256` text, `rendered_at` ts, `signed_at` ts null | invalidated by ingest, delete and reindex; rebuilt lazily on GET |
 | `oci_repos` | `id`, `repo_id`, `path` text (full OCI path incl. prefix), `seen_at` ts | repository list for backends without a catalog; reconcile source |
 | `proxy_meta` (later) | upstream metadata cache with TTL | after the MVP |
+
+## Migrations
+
+The migrations are `internal/index/migrations/{sqlite,postgres}/NNNN_<name>.sql`, embedded in
+the binary; both directories have the same versions (a test asserts it), `0001_init.sql` creates
+every table above. The runner, `index.ApplyMigrations`, applies each pending file in a
+transaction of its own that also records the version in `schema_migrations` (created when
+missing). The transaction first takes the migration lock, `pg_advisory_xact_lock` on Postgres
+and `BEGIN IMMEDIATE` on SQLite, and reads `schema_migrations` under it, so replicas that start
+at once apply each version exactly once. `lajstrom migrate` and `lajstrom serve` (on start) run
+it.
 
 ## Invariants and rules
 

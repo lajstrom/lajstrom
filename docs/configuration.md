@@ -49,12 +49,12 @@ server:
   listen: ":8080"
 ```
 
-Until issue #10 lands, `serve` does not open the database: it validates its configuration and
-serves the system endpoints (`/-/healthz`, `/-/readyz`, `/-/version`). It does contact the
-registries: at startup it asks each one what it supports (see
-[capabilities](#registry-capabilities)) and logs the answer at info. A registry that does not
-answer within 10 s is logged at error and `serve` starts anyway, so that one backend down does not
-keep a replica from starting.
+`serve` opens the index database (`database`, by default the SQLite file `lajstrom.db` in the
+current directory) and applies its pending migrations before it listens; `/-/readyz` answers
+503 while the database does not. It also contacts the registries: at startup it asks each one
+what it supports (see [capabilities](#registry-capabilities)) and logs the answer at info. A
+registry that does not answer within 10 s is logged at error and `serve` starts anyway, so that
+one backend down does not keep a replica from starting.
 
 ## Reference
 
@@ -82,7 +82,25 @@ status, bytes, duration, request id and remote address.
 | Key | Type | Default | Env | Description |
 | --- | --- | --- | --- | --- |
 | `database.driver` | `sqlite`, `postgres` | `sqlite` | `LAJSTROM_DATABASE_DRIVER` | Engine of the index database ([index-schema.md](spec/index-schema.md)). |
-| `database.dsn` | string | `file:lajstrom.db` | `LAJSTROM_DATABASE_DSN` | Data source name. SQLite: `file:/var/lib/lajstrom/lajstrom.db`. Postgres: `postgres://lajstrom@db:5432/lajstrom?sslmode=require`. A DSN with a password belongs in `LAJSTROM_DATABASE_DSN`, not in the file. |
+| `database.dsn` | string | `file:lajstrom.db` | `LAJSTROM_DATABASE_DSN` | Data source name. SQLite: `file:/var/lib/lajstrom/lajstrom.db`. Postgres: `postgres://lajstrom@db:5432/lajstrom?sslmode=require`. A DSN with a password belongs in `LAJSTROM_DATABASE_DSN`, not in the file. The forms are below. |
+
+**SQLite DSN.** A file name or a `file:` URI, e.g. `file:/var/lib/lajstrom/lajstrom.db`. Lajstrom
+adds the connection parameters of `modernc.org/sqlite` itself: `_busy_timeout=5000` (a writer
+waits up to 5 s for the lock), `_journal_mode=WAL` and `_synchronous=NORMAL` unless the DSN sets
+them, and always `_foreign_keys=1` and `_txlock=immediate` (deletes cascade; a transaction takes
+the write lock when it begins). Tests use an in-memory database,
+`file:<name>?mode=memory&cache=shared`; it lives in one connection and is gone when the process
+ends.
+
+**Postgres DSN.** A URL, `postgres://user:password@host:5432/db?sslmode=require`, or a
+keyword/value string, `host=db user=lajstrom dbname=lajstrom sslmode=require`, as pgx reads it
+(it also honours the `PG*` environment variables). `pool_max_conns=N` sizes the connection
+pool; the default is the number of CPUs, at least 4. Text columns use the `C` collation, so the
+database's own collation does not matter.
+
+`lajstrom migrate` applies the migrations the database does not have yet and prints them, and
+`lajstrom serve` does the same on start; both take a lock, so replicas starting together are
+safe. Lajstrom logs `database.driver`, never the DSN, and keeps the password out of its errors.
 
 ### registries
 

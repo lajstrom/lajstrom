@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -22,41 +23,58 @@ import (
 const registryProbeTimeout = 10 * time.Second
 
 // newServeCmd returns serve: load and validate the configuration (in the root's
-// PersistentPreRunE), build a provider for every registry and probe its capabilities, build
-// the server and run it until SIGINT or SIGTERM.
+// PersistentPreRunE), open the index database and apply its pending migrations, build a
+// provider for every registry and probe its capabilities, build the server and run it until
+// SIGINT or SIGTERM, then close the database.
 //
-// serve does not open the index database yet: issue #10 wires the index (and readiness).
-// Until then only the system endpoints answer.
+// Migrating on start takes the same lock as lajstrom migrate, so replicas that start together
+// apply each migration once. The index is Deps.Index of the format plugins and /-/readyz pings
+// it; the registries are Deps.Providers.
 func newServeCmd(a *app) *cobra.Command {
 	return &cobra.Command{
 		Use:         "serve",
 		Short:       "Run the HTTP server",
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) (err error) {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
 			c, v := a.cfg, version.Get()
-			a.log.Info("starting lajstrom; the index database is not wired yet (issue #10)",
+			a.log.Info("starting lajstrom",
 				"version", v.Version,
 				"commit", v.Commit,
 				"config", a.configPath,
+				"database.driver", c.Database.Driver,
 				"registries", len(c.Registries),
 				"repos", len(c.Repos),
 			)
+			st, err := openStore(ctx, c.Database)
+			if err != nil {
+				return err
+			}
+			defer func() { err = errors.Join(err, st.Close()) }()
+			applied, err := st.ApplyMigrations(ctx)
+			if err != nil {
+				return err
+			}
+			a.log.Info("index migrations applied under the migration lock",
+				"database.driver", c.Database.Driver, "applied", applied)
+
 			providers, err := provider.NewSet(c.Registries, a.log)
 			if err != nil {
 				return err
 			}
 			probeRegistries(ctx, providers, a.log)
+
 			srv, err := server.New(server.Options{
 				Listen:          c.Server.Listen,
 				ExternalURL:     c.Server.ExternalURL,
 				ShutdownTimeout: c.Server.ShutdownTimeout,
 				Log:             a.log,
 				Plugins:         format.All(),
-				Deps:            format.Deps{Providers: providers},
+				Deps:            format.Deps{Index: st, Providers: providers},
+				Ready:           ready(a.log, c.Database.Driver, st),
 			})
 			if err != nil {
 				return err
@@ -82,4 +100,17 @@ func probeRegistries(ctx context.Context, providers provider.Map, log *slog.Logg
 		})
 	}
 	wg.Wait()
+}
+
+// ready is the readiness check of serve: the index database answers. A failure is logged with
+// its cause and answered without it: /-/readyz is public, and a driver error can name hosts
+// and users.
+func ready(log *slog.Logger, driver string, st store) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if err := st.Ping(ctx); err != nil {
+			log.WarnContext(ctx, "index database ping failed", "database.driver", driver, "error", err.Error())
+			return errors.New("index database is unreachable")
+		}
+		return nil
+	}
 }
