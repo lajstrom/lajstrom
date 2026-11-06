@@ -105,6 +105,14 @@ The `licenses` CI job enforces the allowlist with
 [go-licenses](https://github.com/google/go-licenses). Prefer the standard library and few,
 well-maintained dependencies.
 
+When go-licenses cannot classify a license text that is on the allowlist, the module goes on the
+`--ignore` list of the Makefile (`LICENSE_IGNORES`) and of `ci.yml`, with the verification
+recorded here. The list is for unreadable texts of allowed licenses, never for denied ones.
+
+| Module | License | Verified |
+| --- | --- | --- |
+| `modernc.org/mathutil` | BSD-3-Clause (the third clause says "the names of the authors" instead of "the name of the copyright holder", which the classifier scores below its threshold) | 2026-11-07, `LICENSE` in the module read by hand |
+
 ## Architecture decision records (ADRs)
 
 Architectural changes need an ADR in [`docs/adr/`](docs/adr/), submitted in the same pull request as
@@ -156,7 +164,8 @@ go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 # dependency licenses against the allowlist
 go run github.com/google/go-licenses@v1.6.0 check ./... \
-  --allowed_licenses=Apache-2.0,MIT,BSD-2-Clause,BSD-3-Clause,ISC,MPL-2.0,Unlicense,CC0-1.0,0BSD
+  --allowed_licenses=Apache-2.0,MIT,BSD-2-Clause,BSD-3-Clause,ISC,MPL-2.0,Unlicense,CC0-1.0,0BSD \
+  --ignore modernc.org/mathutil
 ```
 
 The snippet scan needs Python 3 and the ScanOSS client (it sends file fingerprints, not source code,

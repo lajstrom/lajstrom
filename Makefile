@@ -11,6 +11,9 @@ PKG     := github.com/lajstrom/lajstrom
 GOLANGCI_LINT_VERSION ?= v2.15.0
 GO_LICENSES_VERSION   ?= v1.6.0
 ALLOWED_LICENSES      := Apache-2.0,MIT,BSD-2-Clause,BSD-3-Clause,ISC,MPL-2.0,Unlicense,CC0-1.0,0BSD
+# Modules whose license was verified by hand because go-licenses cannot classify the text
+# (CONTRIBUTING.md, dependency license policy): modernc.org/mathutil is BSD-3-Clause.
+LICENSE_IGNORES       := modernc.org/mathutil
 
 # Build information for internal/version; override on the command line, e.g. make build VERSION=v0.1.0.
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -52,7 +55,7 @@ vulncheck: ## Known vulnerabilities in dependencies and the standard library
 	$(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 licenses: ## Dependency licenses against the allowlist of CONTRIBUTING.md
-	$(GO) run github.com/google/go-licenses@$(GO_LICENSES_VERSION) check ./... --allowed_licenses=$(ALLOWED_LICENSES)
+	$(GO) run github.com/google/go-licenses@$(GO_LICENSES_VERSION) check ./... --allowed_licenses=$(ALLOWED_LICENSES) $(foreach m,$(LICENSE_IGNORES),--ignore $(m))
 
 fmt-check: ## Fail when gofmt would change a file
 	@files="$$(gofmt -l .)"; if [ -n "$$files" ]; then echo "gofmt -l reports:" >&2; echo "$$files" >&2; exit 1; fi

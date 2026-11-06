@@ -76,8 +76,10 @@ jobs:
       - name: Install go-licenses
         run: go install github.com/google/go-licenses@v1.6.0
       - name: Check dependency licenses
-        # With no third-party dependencies yet, this checks the module's own LICENSE (Apache-2.0).
-        run: go-licenses check ./... --allowed_licenses="${ALLOWED_LICENSES}"
+        # --ignore lists modules whose license was verified by hand because the classifier
+        # cannot read the text (CONTRIBUTING.md, dependency license policy). Keep it in step
+        # with LICENSE_IGNORES in the Makefile.
+        run: go-licenses check ./... --allowed_licenses="${ALLOWED_LICENSES}" --ignore modernc.org/mathutil
 
   snippet-scan:
     name: snippet-scan
