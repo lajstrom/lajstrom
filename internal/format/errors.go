@@ -12,10 +12,12 @@ var (
 	// format that is only published with oras push.
 	ErrUnsupported = errors.New("format: unsupported")
 
-	// ErrUnauthenticated means the request has no principal and the action needs one: Authorize
-	// denied the anonymous principal. Frontends answer 401 with a Basic challenge.
+	// ErrUnauthenticated means the request has no principal and needs one: Authorize denied the
+	// anonymous principal, or the repo middleware found no repo for it. Frontends answer 401 with
+	// a Basic challenge.
 	ErrUnauthenticated = errors.New("format: authentication required")
 
-	// ErrForbidden means Authorize denied an authenticated principal. Frontends answer 403.
+	// ErrForbidden means Authorize denied a principal that can read the repo. Frontends answer
+	// 403; a principal without any access gets index.ErrNotFound (docs/spec/rbac.md §3).
 	ErrForbidden = errors.New("format: forbidden")
 )

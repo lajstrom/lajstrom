@@ -1,12 +1,14 @@
 package format
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 
+	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
@@ -14,8 +16,10 @@ import (
 // Patterns are ServeMux patterns relative to /<name>/ ("GET /{repo}/simple/{project}/"); they
 // are registered on mux as "GET /<name>/{repo}/simple/{project}/". A pattern that has a {repo}
 // wildcard gets the repo middleware: one deps.Index.GetRepo(ctx, name, {repo}) per request,
-// 404 when the repo does not exist or has another format, 500 (logged through deps.Log) when
-// the lookup fails, and the repo in the context (RepoFrom) otherwise.
+// 404 when the repo does not exist or has another format (401 with a Basic challenge to the
+// anonymous principal when deps.Auth is set, so that the answer does not tell whether the repo
+// exists: docs/spec/rbac.md §3), 500 (logged through deps.Log) when the lookup fails, and the
+// repo in the context (RepoFrom) otherwise.
 //
 // deps.Log is expected to carry the format attribute, as the logger the server passes does; nil
 // means slog.Default() with it. NewRouter panics on a nil mux, a nil deps.Index or a name that
@@ -103,7 +107,7 @@ func (r *router) withRepo(next http.Handler) http.Handler {
 		}
 		switch {
 		case errors.Is(err, index.ErrNotFound):
-			WriteError(w, fmt.Errorf("%w: repository %s/%s", index.ErrNotFound, r.name, name))
+			WriteError(w, r.notFound(ctx, name))
 			return
 		case err != nil:
 			r.deps.Log.ErrorContext(ctx, "repo lookup failed", "repo", name, "error", err.Error())
@@ -112,4 +116,14 @@ func (r *router) withRepo(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, req.WithContext(WithRepo(ctx, *repo)))
 	})
+}
+
+// notFound is the error for a repo that does not exist or has another format: index.ErrNotFound,
+// or ErrUnauthenticated for the anonymous principal when deps.Auth is set, which is what
+// Authorize answers on a repo it may not read (docs/spec/rbac.md §3).
+func (r *router) notFound(ctx context.Context, name string) error {
+	if r.deps.Auth != nil && auth.PrincipalFrom(ctx).Kind == auth.KindAnonymous {
+		return fmt.Errorf("%w: repository %s/%s", ErrUnauthenticated, r.name, name)
+	}
+	return fmt.Errorf("%w: repository %s/%s", index.ErrNotFound, r.name, name)
 }

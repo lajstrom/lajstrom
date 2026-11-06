@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/format/formattest"
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -148,5 +149,45 @@ func TestRepoContext(t *testing.T) {
 	got, ok := format.RepoFrom(format.WithRepo(context.Background(), want))
 	if !ok || got.ID != want.ID || got.Format != want.Format || got.Name != want.Name {
 		t.Errorf("RepoFrom(WithRepo(%v)) = %v, %v", want, got, ok)
+	}
+}
+
+// A missing repo, or one of another format, answers the anonymous principal 401 when Deps.Auth
+// is set and 404 otherwise: the answers Authorize gives on a repo the caller may not read, so
+// that the response does not tell whether the repo exists (docs/spec/rbac.md §3).
+func TestRepoMiddlewareMissingRepoByPrincipal(t *testing.T) {
+	alice := auth.Principal{Kind: auth.KindUser, Name: "alice"}
+	tests := []struct {
+		name      string
+		auth      bool // Deps.Auth is set
+		principal *auth.Principal
+		status    int
+		body      string
+		challenge string
+	}{
+		{name: "no Auth, anonymous", status: 404, body: "index: not found: repository fake/missing\n"},
+		{name: "no Auth, user", principal: &alice, status: 404, body: "index: not found: repository fake/missing\n"},
+		{name: "Auth, anonymous", auth: true, status: 401, body: "format: authentication required: repository fake/missing\n", challenge: `Basic realm="lajstrom"`},
+		{name: "Auth, user", auth: true, principal: &alice, status: 404, body: "index: not found: repository fake/missing\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps := format.Deps{Index: &formattest.Index{Repos: testRepos()}}
+			if tt.auth {
+				deps.Auth = &authorizer{}
+			}
+			req := httptest.NewRequest(http.MethodGet, "/fake/missing/twice", nil)
+			if tt.principal != nil {
+				req = req.WithContext(auth.WithPrincipal(req.Context(), *tt.principal))
+			}
+			rr := httptest.NewRecorder()
+			newMux(t, deps).ServeHTTP(rr, req)
+			if rr.Code != tt.status || rr.Body.String() != tt.body {
+				t.Errorf("response = %d %q, want %d %q", rr.Code, rr.Body, tt.status, tt.body)
+			}
+			if got := rr.Header().Get("WWW-Authenticate"); got != tt.challenge {
+				t.Errorf("WWW-Authenticate = %q, want %q", got, tt.challenge)
+			}
+		})
 	}
 }

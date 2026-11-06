@@ -55,8 +55,14 @@ Evaluation of `allowed(principal, action, format/repo)`:
    `anonymous` principal).
 6. Deny.
 
-Repos that do not exist produce the same `404` for callers without any binding on the mask, and
-`404` for everyone (no `403` leak of names).
+A denial on `<format>/<repo>` must not reveal whether the repo exists:
+
+- the `anonymous` principal gets `401` with a Basic challenge, on a repo it may not read and on
+  a repo that does not exist alike, so that clients send credentials;
+- an authenticated principal with no access to the repo at all (not even `read`) gets `404`,
+  the same answer as for a repo that does not exist;
+- `403` is only for a principal that can read the repo but lacks the action (`write`, `delete`,
+  `manage`): it already knows that the repo exists.
 
 ## 4. OCI bearer tokens
 

@@ -151,16 +151,18 @@ func IsReserved(segment string) bool
 func CheckName(name string) error           // empty, reserved, or not the grammar; names the name
 
 // NewRouter is the Router of plugin name: "GET /{repo}/x" is mounted as "GET /<name>/{repo}/x".
-// A pattern with {repo} gets the repo middleware: one deps.Index.GetRepo per request, 404 when
-// the repo is missing or of another format, 500 (logged) when the lookup fails, else the repo
-// in the context. Panics on a nil mux or Index, a bad name or pattern, a nil handler.
+// A pattern with {repo} gets the repo middleware: one deps.Index.GetRepo per request; a missing
+// repo or one of another format answers 404 (401 to the anonymous principal when deps.Auth is
+// set, rbac.md §3), a failed lookup 500 (logged), else the repo is in the context. Panics on a
+// nil mux or Index, a bad name or pattern, a nil handler.
 func NewRouter(mux *http.ServeMux, name string, deps Deps) Router
 func WithRepo(ctx context.Context, repo index.Repo) context.Context
 func RepoFrom(ctx context.Context) (index.Repo, bool)
 
-// Authorize asks deps.Auth whether auth.PrincipalFrom(ctx) may do a on repo: nil,
-// ErrUnauthenticated (denied, anonymous), ErrForbidden (denied, authenticated), or the
-// authorizer's error unchanged. A nil deps.Auth allows everything (until RBAC, #45).
+// Authorize asks deps.Auth whether auth.PrincipalFrom(ctx) may do a on repo: nil when allowed;
+// denied: ErrUnauthenticated for anonymous, ErrForbidden for a principal that can read the
+// repo, index.ErrNotFound for one that cannot (rbac.md §3); the authorizer's error unchanged.
+// A nil deps.Auth allows everything (until RBAC, #45).
 func Authorize(ctx context.Context, deps Deps, a auth.Action, repo index.Repo) error
 
 // WriteError answers StatusOf(err) as text/plain (nosniff): err.Error() for 4xx, the status
@@ -423,6 +425,10 @@ Where the merged shapes differ from the first sketch of this section, and why:
   authentication middleware stores one with `auth.WithPrincipal` (#43 Basic, #26 bearer), every
   request is anonymous: parsing Basic credentials without verifying them would be a hole. A nil
   `Deps.Auth` allows everything, which is the dev stack before RBAC (#45).
+- **A denial does not reveal whether the repo exists** (rbac.md §3). `Authorize` answers 401
+  to anonymous, 404 to a principal that cannot read the repo, and 403 only to one that can read
+  it but lacks the action; the repo middleware answers a missing repo with the same 401 to
+  anonymous when `Deps.Auth` is set.
 - **One error table per package.** `format.StatusOf` maps the sentinels of `format`, `index`
   and `provider` for every frontend; a plugin wraps them and never picks a status itself.
 
