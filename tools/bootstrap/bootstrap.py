@@ -328,7 +328,7 @@ def cmd_project(dry: bool):
         if gi:
             sh(["gh", "project", "item-add", str(number), "--owner", owner, "--url",
                 f"https://github.com/{REPO}/issues/{gi['number']}"], dry=dry, check=False)
-    print("Set up the board columns by hand: Backlog, Ready for Development, In Progress, In review, Done; "
+    print("Set up the board columns by hand: Backlog, Ready for Development, In Progress, In Review, Done; "
           "enable the built-in workflows (item added -> Backlog, PR merged -> Done).")
 
 
