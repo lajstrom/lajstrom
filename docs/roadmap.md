@@ -109,8 +109,11 @@ stays in v0.1.0 or becomes the first post-MVP milestone.
 - Zot is the primary development registry; distribution is the second one in CI; ECR by spike.
 - The team is two people (@gecube, @megative) and there is no chat for now: issues and
   Discussions are the only channels; a chat is added when the team grows.
-- The web UI lives in its own repository, [lajstrom-ui](https://github.com/lajstrom/lajstrom-ui);
-  the server embeds the built bundle and serves it under `/ui/` (post-MVP, #70).
+- The web UI is a separate deliverable: its own repository,
+  [lajstrom-ui](https://github.com/lajstrom/lajstrom-ui), built as a static bundle that runs from
+  any origin: an nginx container behind the same edge as Lajstrom, or object storage behind a CDN
+  (S3). The Go server never serves `/ui/` and never uses cookies; cross-origin use needs the API's
+  CORS allowlist and bearer auth, which #70 adds. Post-MVP.
 
 ## After v0.1.0 (preview, not committed)
 

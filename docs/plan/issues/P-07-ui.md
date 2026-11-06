@@ -12,10 +12,17 @@ depends: []
 
 SPA served at `/ui`, backed by `/api/v1`; search; per-format usage snippets; later: management screens.
 
-The code lives in its own repository, [lajstrom/lajstrom-ui](https://github.com/lajstrom/lajstrom-ui)
-(scaffold only so far: Apache-2.0, DCO and CLA checks, pull request template). The server embeds
-the built bundle at release time and serves it under `/ui/`; `ui` is a reserved first URL segment
-(`docs/spec/http-routing.md` §1).
+The UI is a separate deliverable: its own repository,
+[lajstrom/lajstrom-ui](https://github.com/lajstrom/lajstrom-ui) (scaffold only so far: Apache-2.0,
+DCO and CLA checks, pull request template), built as a static bundle that runs from any origin:
+an nginx container behind the same edge as Lajstrom (`ui` stays a reserved first URL segment,
+`docs/spec/http-routing.md` §1, so that the edge can route `/ui/` to it), or object storage
+behind a CDN (S3). The Go server never serves `/ui/`.
+
+What cross-origin use needs on the API side, all part of this issue: a CORS allowlist
+(`server.corsOrigins`); bearer-only auth for browsers (no cookies, hence no CSRF); a runtime
+`config.json` next to the bundle with the API base URL; the UI reads `/-/version` and warns on a
+version skew against the `/api/v1` contract it was built for.
 
 **Status**
 
