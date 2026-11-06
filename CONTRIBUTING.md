@@ -1,8 +1,9 @@
 # Contributing to Lajstrom
 
-Thank you for your interest in Lajstrom. The project is in the design phase, so the most useful
-contributions right now are discussion of the design, review of the architecture decision records
-in [`docs/adr/`](docs/adr/), and small, focused pull requests.
+Thank you for your interest in Lajstrom. New here? Read [docs/onboarding.md](docs/onboarding.md)
+(one hour from zero to a claimed issue) and [docs/process.md](docs/process.md) (how an issue
+becomes a merged pull request). This page holds the legal and mechanical rules every pull
+request must satisfy.
 
 Everyone taking part is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 Security issues are never reported in public issues; see [SECURITY.md](SECURITY.md).

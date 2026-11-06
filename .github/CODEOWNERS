@@ -1,0 +1,11 @@
+# Contracts and project policy need the lead's review (docs/process.md §5).
+/docs/spec/          @gecube
+/docs/adr/           @gecube
+/CLAUDE.md           @gecube
+/.github/            @gecube
+/CLA.md              @gecube
+/CONTRIBUTING.md     @gecube
+/internal/format/plugin.go    @gecube
+/internal/provider/provider.go @gecube
+/internal/index/store.go      @gecube
+/internal/ingest/pipeline.go  @gecube

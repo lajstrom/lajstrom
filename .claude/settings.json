@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Bash(go vet:*)",
+      "Bash(go mod tidy:*)",
+      "Bash(go run:*)",
+      "Bash(go generate:*)",
+      "Bash(gofmt:*)",
+      "Bash(golangci-lint:*)",
+      "Bash(make build:*)",
+      "Bash(make test:*)",
+      "Bash(make lint:*)",
+      "Bash(make check:*)",
+      "Bash(make test-integration:*)",
+      "Bash(make e2e:*)",
+      "Bash(make dev-up:*)",
+      "Bash(make dev-down:*)",
+      "Bash(docker compose:*)",
+      "Bash(oras:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git branch:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr checks:*)"
+    ],
+    "deny": [
+      "Bash(git push:*)",
+      "Bash(git push --force:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(gh repo edit:*)",
+      "Bash(gh api -X PUT:*)",
+      "Bash(gh api -X PATCH:*)",
+      "Bash(gh api -X DELETE:*)",
+      "Read(./.env)",
+      "Read(./deploy/**/*.secret*)"
+    ]
+  }
+}
