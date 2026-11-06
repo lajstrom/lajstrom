@@ -166,7 +166,7 @@ type OCIRepo struct {
 }
 
 // AuditFilter selects audit events for Reader.ListAudit. Empty strings and zero times do not
-// filter; Limit 0 means 100.
+// filter; Since is inclusive and Until exclusive; Limit 0 means 100.
 type AuditFilter struct {
 	Principal string
 	Repo      string

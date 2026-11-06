@@ -26,9 +26,12 @@ internal/ingest/              pipeline (validate → parse → push → index), 
 internal/provider/            Provider interface, Capabilities, errors
 internal/provider/generic/    oras-go based provider for distribution, Zot, Harbor, GHCR (+ small adapters)
 internal/provider/ecr/        ECR adapter: auth token, CreateRepository, DescribeRepositories
-internal/index/               Store interface, models, migrations (embedded SQL), reindex worker
+internal/index/               Store interface, models, migrations (embedded SQL) and their runner, reindex worker
+internal/index/migrations/    <dialect>/NNNN_<name>.sql for sqlite and postgres, embedded; the same versions in both
+internal/index/internal/sqlstore/ the SQL both engines share: index.Store over database/sql and a Dialect
 internal/index/sqlite/        modernc.org/sqlite implementation
 internal/index/postgres/      pgx implementation
+internal/index/storetest/     conformance suite of index.Store, run by both engines; imported only by tests
 internal/auth/                principals, password hashing, PAT/deploy tokens, RBAC evaluation, bearer JWT
 internal/api/                 /api/v1 management REST (repos, users, tokens, bindings), JSON
 internal/keys/                server signing key, per-repo GPG keys (apt), encryption at rest
@@ -319,6 +322,18 @@ type TagConflictError struct {              // errors.Is(err, ErrConflict) is tr
     Tag      string
     Existing digest.Digest
 }
+
+// Migrations: migrations/<dialect>/NNNN_<name>.sql, embedded (index-schema.md, Migrations).
+const DialectSQLite, DialectPostgres = "sqlite", "postgres"
+func MigrationVersions(dialect string) ([]int, error)                 // embedded, ascending
+// ApplyMigrations applies the pending migrations, each in a transaction under the migration
+// lock that records it in schema_migrations, and returns those it applied (empty: current).
+func ApplyMigrations(ctx context.Context, db *sql.DB, dialect string) (applied []int, err error)
+func AppliedMigrations(ctx context.Context, db *sql.DB) ([]int, error) // from schema_migrations
+
+// Drivers (internal/index/sqlite, internal/index/postgres): *Store implements index.Store and
+// adds Ping(ctx) error, ApplyMigrations(ctx) ([]int, error), AppliedMigrations(ctx) ([]int, error).
+func Open(ctx context.Context, dsn string) (*Store, error)            // does not migrate
 ```
 
 Both engines (SQLite, Postgres) pass the same conformance test suite in `internal/index/storetest`.
@@ -434,6 +449,17 @@ Where the merged shapes differ from the first sketch of this section, and why:
   anonymous when `Deps.Auth` is set.
 - **One error table per package.** `format.StatusOf` maps the sentinels of `format`, `index`
   and `provider` for every frontend; a plugin wraps them and never picks a status itself.
+- **One SQL implementation for both engines.** `internal/index/internal/sqlstore` implements
+  `index.Store` over `database/sql`; the drivers only open the database and name a dialect:
+  placeholders (`?` or `$n`), time encoding (SQLite: UTC RFC 3339 text with six fractional
+  digits, so text order is time order; Postgres: `timestamptz`), the driver's constraint
+  errors, and the DDL of the migration files. Timestamps are truncated to microseconds and
+  stored in UTC, so both engines return exactly what was written. Postgres text columns are
+  `COLLATE "C"`, so order and comparison are SQLite's byte order. Unique violations wrap
+  `ErrConflict`; a row that refers to a missing row wraps `ErrNotFound`. `UpsertVersion`
+  resolves a race on a tag with `INSERT … ON CONFLICT DO NOTHING` and a second read, so the
+  loser gets the `TagConflictError`. `serve` migrates on start under the same lock as
+  `lajstrom migrate`.
 
 ## 3. Approved dependencies
 

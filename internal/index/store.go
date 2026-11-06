@@ -9,7 +9,7 @@ import (
 
 // Store is the index database behind one interface: the control plane and the derived tables
 // of docs/spec/index-schema.md. internal/index/sqlite and internal/index/postgres implement it.
-// Both engines pass the conformance suite in internal/index/storetest (issue #10 creates it).
+// Both engines pass the conformance suite in internal/index/storetest.
 //
 // Each method of Store is a transaction of its own; Tx groups several writes into one.
 type Store interface {

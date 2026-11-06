@@ -1,0 +1,352 @@
+package storetest
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+	"sync"
+	"testing"
+
+	"github.com/lajstrom/lajstrom/internal/index"
+)
+
+func testPackages(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "raw", "a")
+	other := newRepo(t, s, "raw", "b")
+	names := []string{"lib-core", "lib-util", "app", "Lib-upper", "lib_x", "l%b", "ünicode", "ü-dash"}
+	pkgs := map[string]index.Package{}
+	for i, name := range names {
+		p := index.Package{RepoID: repo.ID, Name: name, NameOCI: "oci/" + name, CreatedAt: at(i)}
+		must(t, s.UpsertPackage(ctx, &p))
+		pkgs[name] = p
+	}
+	elsewhere := newPackage(t, s, other.ID, "lib-core")
+
+	again := index.Package{RepoID: repo.ID, Name: "lib-core", NameOCI: "different", CreatedAt: at(99)}
+	must(t, s.UpsertPackage(ctx, &again))
+	same(t, "UpsertPackage of an existing package fills it from the row", pkgs["lib-core"], again)
+	got, err := s.GetPackage(ctx, repo.ID, "lib-core")
+	must(t, err)
+	same(t, "GetPackage", pkgs["lib-core"], *got)
+	got, err = s.GetPackage(ctx, other.ID, "lib-core")
+	must(t, err)
+	same(t, "GetPackage in the other repo", elsewhere, *got)
+
+	for _, tt := range []struct {
+		prefix string
+		want   []string // byte order
+	}{
+		{"", []string{"Lib-upper", "app", "l%b", "lib-core", "lib-util", "lib_x", "ü-dash", "ünicode"}},
+		{"lib", []string{"lib-core", "lib-util", "lib_x"}},
+		{"lib_", []string{"lib_x"}},
+		{"l%", []string{"l%b"}},
+		{"ü", []string{"ü-dash", "ünicode"}},
+		{"lib-core", []string{"lib-core"}},
+		{"zzz", []string{}},
+	} {
+		list, err := s.ListPackages(ctx, repo.ID, tt.prefix)
+		must(t, err)
+		want := []index.Package{}
+		for _, name := range tt.want {
+			want = append(want, pkgs[name])
+		}
+		same(t, fmt.Sprintf("ListPackages(%q)", tt.prefix), want, list)
+	}
+
+	must(t, s.DeletePackage(ctx, pkgs["app"].ID))
+	for _, tt := range []struct {
+		name string
+		err  error
+		want error
+	}{
+		{"GetPackage deleted", second(s.GetPackage(ctx, repo.ID, "app")), index.ErrNotFound},
+		{"GetPackage other repo", second(s.GetPackage(ctx, other.ID, "lib-util")), index.ErrNotFound},
+		{"DeletePackage deleted", s.DeletePackage(ctx, pkgs["app"].ID), index.ErrNotFound},
+	} {
+		wantErr(t, tt.name, tt.err, tt.want)
+	}
+}
+
+func testVersions(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "raw", "a")
+	other := newRepo(t, s, "raw", "b")
+	pkg := newPackage(t, s, repo.ID, "tool")
+	const artifactType = "application/vnd.lajstrom.raw.v1"
+	versions := []index.Version{
+		{PackageID: pkg.ID, Version: "1.0.0", Tag: "1.0.0", Digest: dg("a"), ArtifactType: artifactType,
+			Attrs: map[string]string{"lajstrom.raw.path": "tool"}, Metadata: json.RawMessage(`{"k": ["v"]}`),
+			CreatedAt: at(10), IndexedAt: at(11)},
+		{PackageID: pkg.ID, Version: "1.0.0", Variant: "linux-amd64", Tag: "1.0.0-linux-amd64", Digest: dg("b"),
+			ArtifactType: artifactType, Attrs: map[string]string{}, CreatedAt: at(5)},
+		{PackageID: pkg.ID, Version: "2.0.0", Tag: "2.0.0", Digest: dg("c"), ArtifactType: artifactType, CreatedAt: at(5)},
+	}
+	for i := range versions {
+		must(t, s.UpsertVersion(ctx, &versions[i]))
+		if versions[i].ID == 0 || versions[i].IndexedAt.IsZero() {
+			t.Fatalf("UpsertVersion did not fill ID and IndexedAt: %+v", versions[i])
+		}
+	}
+	one := func(v *index.Version, err error) index.Version {
+		t.Helper()
+		must(t, err)
+		return *v
+	}
+	same(t, "GetVersion", versions[0], one(s.GetVersion(ctx, pkg.ID, "1.0.0", "")))
+	same(t, "GetVersion with variant", versions[1], one(s.GetVersion(ctx, pkg.ID, "1.0.0", "linux-amd64")))
+	same(t, "GetVersionByTag", versions[2], one(s.GetVersionByTag(ctx, pkg.ID, "2.0.0")))
+	same(t, "GetVersionByDigest", versions[1], one(s.GetVersionByDigest(ctx, repo.ID, dg("b"))))
+	list, err := s.ListVersions(ctx, pkg.ID)
+	must(t, err)
+	same(t, "ListVersions by CreatedAt, then ID", []index.Version{versions[1], versions[2], versions[0]}, list)
+
+	again := versions[0]
+	again.ID, again.Attrs, again.Metadata, again.IndexedAt = 0, map[string]string{"lajstrom.raw.path": "tool2"}, nil, at(20)
+	must(t, s.UpsertVersion(ctx, &again))
+	if again.ID != versions[0].ID {
+		t.Errorf("re-upsert of the same digest: ID %d, want %d", again.ID, versions[0].ID)
+	}
+	same(t, "version after re-upsert", again, one(s.GetVersionByTag(ctx, pkg.ID, "1.0.0")))
+
+	moved := versions[0]
+	moved.ID, moved.Digest = 0, dg("z")
+	err = s.UpsertVersion(ctx, &moved)
+	var tc *index.TagConflictError
+	if !errors.As(err, &tc) || tc.Tag != "1.0.0" || tc.Existing != dg("a") || !errors.Is(err, index.ErrConflict) {
+		t.Errorf("UpsertVersion of a tag with another digest: %v, want a TagConflictError naming %s", err, dg("a"))
+	}
+	same(t, "version after the tag conflict", again, one(s.GetVersionByTag(ctx, pkg.ID, "1.0.0")))
+
+	retagged := index.Version{PackageID: pkg.ID, Version: "2.0.0", Tag: "2.0.0-other", Digest: dg("d"), ArtifactType: artifactType}
+	err = s.UpsertVersion(ctx, &retagged)
+	if !errors.Is(err, index.ErrConflict) || errors.As(err, &tc) {
+		t.Errorf("UpsertVersion of a version under another tag: %v, want ErrConflict and no TagConflictError", err)
+	}
+
+	must(t, s.DeleteVersion(ctx, versions[2].ID))
+	for _, tt := range []struct {
+		name string
+		err  error
+		want error
+	}{
+		{"GetVersion missing", second(s.GetVersion(ctx, pkg.ID, "9.9.9", "")), index.ErrNotFound},
+		{"GetVersion deleted", second(s.GetVersion(ctx, pkg.ID, "2.0.0", "")), index.ErrNotFound},
+		{"GetVersionByTag missing", second(s.GetVersionByTag(ctx, pkg.ID, "nope")), index.ErrNotFound},
+		{"GetVersionByDigest missing", second(s.GetVersionByDigest(ctx, repo.ID, dg("nope"))), index.ErrNotFound},
+		{"GetVersionByDigest other repo", second(s.GetVersionByDigest(ctx, other.ID, dg("a"))), index.ErrNotFound},
+		{"DeleteVersion deleted", s.DeleteVersion(ctx, versions[2].ID), index.ErrNotFound},
+	} {
+		wantErr(t, tt.name, tt.err, tt.want)
+	}
+}
+
+// testVersionTagRace runs writers that upsert one tag at once: with different digests exactly
+// one wins and the others get the TagConflictError; with the same digest all succeed on one
+// row.
+func testVersionTagRace(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "raw", "race")
+	pkg := newPackage(t, s, repo.ID, "tool")
+	const writers = 8
+	for _, tt := range []struct {
+		tag        string
+		digest     func(i int) string
+		wantWinner int // writers that get nil
+	}{
+		{"1.0.0", strconv.Itoa, 1},
+		{"2.0.0", func(int) string { return "same" }, writers},
+	} {
+		errs := make([]error, writers)
+		rowIDs := make([]int64, writers)
+		var wg sync.WaitGroup
+		for i := range writers {
+			wg.Go(func() {
+				v := index.Version{PackageID: pkg.ID, Version: tt.tag, Tag: tt.tag, Digest: dg(tt.digest(i)),
+					ArtifactType: "application/vnd.lajstrom.raw.v1"}
+				errs[i] = s.UpsertVersion(ctx, &v)
+				rowIDs[i] = v.ID
+			})
+		}
+		wg.Wait()
+		stored, err := s.GetVersionByTag(ctx, pkg.ID, tt.tag)
+		must(t, err)
+		winners := 0
+		for i, err := range errs {
+			var tc *index.TagConflictError
+			switch {
+			case err == nil:
+				winners++
+				if rowIDs[i] != stored.ID {
+					t.Errorf("tag %s, writer %d: ID %d, want the stored row %d", tt.tag, i, rowIDs[i], stored.ID)
+				}
+			case !errors.As(err, &tc) || tc.Existing != stored.Digest:
+				t.Errorf("tag %s, writer %d: %v, want a TagConflictError naming %s", tt.tag, i, err, stored.Digest)
+			}
+		}
+		if winners != tt.wantWinner {
+			t.Errorf("tag %s: %d writers succeeded, want %d", tt.tag, winners, tt.wantWinner)
+		}
+	}
+}
+
+func testFiles(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "apt", "main")
+	other := newRepo(t, s, "apt", "other")
+	pkgA, pkgB := newPackage(t, s, repo.ID, "a"), newPackage(t, s, repo.ID, "b")
+	verA, verB := newVersion(t, s, pkgA.ID, "1.0"), newVersion(t, s, pkgB.ID, "2.0")
+	filesA := []index.File{
+		{Name: "z.deb", MediaType: "application/vnd.debian.binary-package", Digest: dg("z"), Size: 30,
+			Attrs: map[string]string{"org.opencontainers.image.title": "z.deb"}},
+		{Name: "common.txt", MediaType: "text/plain", Digest: dg("ca"), Size: 4},
+	}
+	filesB := []index.File{{Name: "common.txt", MediaType: "text/plain", Digest: dg("cb"), Size: 5, Attrs: map[string]string{}}}
+	must(t, s.ReplaceFiles(ctx, verA.ID, filesA))
+	must(t, s.ReplaceFiles(ctx, verB.ID, filesB))
+	for _, f := range append(filesA, filesB...) {
+		if f.ID == 0 || f.VersionID == 0 {
+			t.Fatalf("ReplaceFiles did not fill ID and VersionID: %+v", f)
+		}
+	}
+	listed, err := s.ListFiles(ctx, verA.ID)
+	must(t, err)
+	same(t, "ListFiles in manifest order", filesA, listed)
+
+	found, err := s.FindFiles(ctx, repo.ID, "common.txt")
+	must(t, err)
+	same(t, "FindFiles across packages", []index.FileMatch{
+		{File: filesA[1], Version: verA, Package: pkgA},
+		{File: filesB[0], Version: verB, Package: pkgB},
+	}, found)
+	found, err = s.FindFiles(ctx, other.ID, "common.txt")
+	must(t, err)
+	same(t, "FindFiles in another repo", []index.FileMatch{}, found)
+
+	replaced := []index.File{{Name: "new.deb", MediaType: "application/vnd.debian.binary-package", Digest: dg("n"), Size: 1}}
+	must(t, s.ReplaceFiles(ctx, verA.ID, replaced))
+	listed, err = s.ListFiles(ctx, verA.ID)
+	must(t, err)
+	same(t, "ListFiles after ReplaceFiles", replaced, listed)
+	found, err = s.FindFiles(ctx, repo.ID, "common.txt")
+	must(t, err)
+	same(t, "FindFiles after ReplaceFiles", []index.FileMatch{{File: filesB[0], Version: verB, Package: pkgB}}, found)
+
+	must(t, s.ReplaceFiles(ctx, verA.ID, nil))
+	listed, err = s.ListFiles(ctx, verA.ID)
+	must(t, err)
+	same(t, "ListFiles after ReplaceFiles(nil)", []index.File{}, listed)
+	wantErr(t, "ReplaceFiles of a missing version", s.ReplaceFiles(ctx, 999999, replaced), index.ErrNotFound)
+}
+
+func testIndexCache(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "apt", "main")
+	other := newRepo(t, s, "pypi", "main")
+	docs := []index.Cache{
+		{RepoID: repo.ID, Scope: "jammy/main/amd64", Kind: "Packages", Content: []byte("Package: a\n"), SHA256: "s1", RenderedAt: at(1)},
+		{RepoID: repo.ID, Scope: "jammy/main/amd64", Kind: "InRelease", Content: []byte("signed"), SHA256: "s2",
+			RenderedAt: at(2), SignedAt: ptr(at(3))},
+		{RepoID: repo.ID, Scope: "jammy", Kind: "Release", Content: []byte("Suite: jammy\n"), SHA256: "s3"},
+		{RepoID: other.ID, Scope: "jammy/main/amd64", Kind: "Packages", Content: []byte("other"), SHA256: "s4", RenderedAt: at(4)},
+	}
+	for i := range docs {
+		must(t, s.PutIndexCache(ctx, &docs[i]))
+	}
+	get := func(c index.Cache) (index.Cache, error) {
+		got, err := s.GetIndexCache(ctx, c.RepoID, c.Scope, c.Kind)
+		if err != nil {
+			return index.Cache{}, err
+		}
+		return *got, nil
+	}
+	for _, want := range docs {
+		got, err := get(want)
+		must(t, err)
+		same(t, "GetIndexCache "+want.Kind, want, got)
+	}
+
+	replaced := docs[0]
+	replaced.ID, replaced.Content, replaced.SHA256, replaced.RenderedAt = 0, []byte("Package: b\n"), "s5", at(5)
+	must(t, s.PutIndexCache(ctx, &replaced))
+	if replaced.ID != docs[0].ID {
+		t.Errorf("PutIndexCache of an existing key: ID %d, want %d", replaced.ID, docs[0].ID)
+	}
+	got, err := get(docs[0])
+	must(t, err)
+	same(t, "document after PutIndexCache replaced it", replaced, got)
+
+	present := func(want ...bool) []bool { return want }
+	check := func(what string, want []bool) {
+		t.Helper()
+		var have []bool
+		for _, d := range docs {
+			_, err := get(d)
+			if err != nil && !errors.Is(err, index.ErrNotFound) {
+				t.Fatal(err)
+			}
+			have = append(have, err == nil)
+		}
+		same(t, what, want, have)
+	}
+	must(t, s.InvalidateIndexCache(ctx, repo.ID, "jammy/main/amd64"))
+	check("after invalidating a scope", present(false, false, true, true))
+	must(t, s.InvalidateIndexCache(ctx, repo.ID, ""))
+	check("after invalidating the repo", present(false, false, false, true))
+}
+
+func testOCIRepos(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "raw", "a")
+	other := newRepo(t, s, "raw", "b")
+	oci := []index.OCIRepo{
+		{RepoID: repo.ID, Path: "raw/a/z", SeenAt: at(1)},
+		{RepoID: repo.ID, Path: "raw/a/b", SeenAt: at(2)},
+		{RepoID: repo.ID, Path: "raw/a/m", SeenAt: at(3)},
+		{RepoID: other.ID, Path: "raw/b/x", SeenAt: at(1)},
+	}
+	for i := range oci {
+		must(t, s.UpsertOCIRepo(ctx, &oci[i]))
+	}
+	seen := index.OCIRepo{RepoID: repo.ID, Path: "raw/a/z", SeenAt: at(10)}
+	must(t, s.UpsertOCIRepo(ctx, &seen))
+	if seen.ID != oci[0].ID {
+		t.Errorf("UpsertOCIRepo of an existing path: ID %d, want %d", seen.ID, oci[0].ID)
+	}
+	list, err := s.ListOCIRepos(ctx, repo.ID)
+	must(t, err)
+	same(t, "ListOCIRepos by path", []index.OCIRepo{oci[1], oci[2], seen}, list)
+
+	n, err := s.PruneOCIRepos(ctx, repo.ID, at(3))
+	must(t, err)
+	if n != 1 {
+		t.Errorf("PruneOCIRepos = %d, want 1", n)
+	}
+	list, err = s.ListOCIRepos(ctx, repo.ID)
+	must(t, err)
+	same(t, "ListOCIRepos after PruneOCIRepos", []index.OCIRepo{oci[2], seen}, list)
+	list, err = s.ListOCIRepos(ctx, other.ID)
+	must(t, err)
+	same(t, "ListOCIRepos of the other repo", []index.OCIRepo{oci[3]}, list)
+}
+
+// testMissingParent checks that a row referring to a missing row is index.ErrNotFound.
+func testMissingParent(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	const missing = int64(999999)
+	for _, tt := range []struct {
+		name string
+		err  error
+	}{
+		{"UpsertPackage", s.UpsertPackage(ctx, &index.Package{RepoID: missing, Name: "p"})},
+		{"UpsertVersion", s.UpsertVersion(ctx, &index.Version{PackageID: missing, Version: "1", Tag: "1", Digest: dg("1")})},
+		{"CreateToken", s.CreateToken(ctx, &index.Token{Kind: "pat", UserID: ptr(missing), Hash: "h"})},
+		{"CreateKey", s.CreateKey(ctx, &index.Key{RepoID: ptr(missing), Kind: "gpg"})},
+		{"UpsertSession", s.UpsertSession(ctx, &index.Session{RepoID: missing, Key: "k", State: "open"})},
+		{"PutIndexCache", s.PutIndexCache(ctx, &index.Cache{RepoID: missing, Scope: "s", Kind: "k"})},
+		{"UpsertOCIRepo", s.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: missing, Path: "p"})},
+	} {
+		wantErr(t, tt.name, tt.err, index.ErrNotFound)
+	}
+}
