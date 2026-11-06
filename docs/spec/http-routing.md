@@ -17,6 +17,8 @@ https://<host>/ui/...                   (after the MVP)
 ```
 
 Reserved first segments: `v2`, `api`, `ui`, `-`, `.well-known`, and every registered format name.
+A format name is lowercase ASCII letters and digits with single hyphens between them
+(`^[a-z0-9]+(-[a-z0-9]+)*$`) and never one of the other reserved segments.
 A repo name is unique within its format; the pair `<format>/<repo>` is the resource for RBAC.
 The optional FQDN mode (`<repo>.<host>`) is after the MVP and rewrites to the path form at the
 edge; nothing else changes.

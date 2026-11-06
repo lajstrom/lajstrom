@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/version"
 )
 
@@ -17,13 +18,19 @@ func (s *Server) routes() {
 	s.mountFormats()
 }
 
-// mountFormats is the extension point of issue #11: there each plugin's Routes is mounted below
-// /<name>/ through the format.Router implementation, with the repo middleware and one
-// format.Deps. Until then the plugins are only validated (New) and logged, and their paths
-// answer 404.
+// mountFormats mounts each plugin's Routes below /<name>/ through format.NewRouter, which
+// resolves {repo} once per request. Every plugin gets Options.Deps with a logger that carries
+// format=<name>: Deps.Log, or the server's when it is nil.
 func (s *Server) mountFormats() {
 	for _, p := range s.opts.Plugins {
-		s.log.Info("format registered", "format", p.Name(), "artifactType", p.ArtifactType())
+		name := p.Name()
+		deps := s.opts.Deps
+		if deps.Log == nil {
+			deps.Log = s.log
+		}
+		deps.Log = deps.Log.With("format", name)
+		p.Routes(format.NewRouter(s.mux, name, deps), deps)
+		s.log.Info("format mounted", "format", name, "artifactType", p.ArtifactType())
 	}
 }
 

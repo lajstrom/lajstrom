@@ -14,15 +14,16 @@ var registry = struct {
 }{plugins: map[string]Plugin{}}
 
 // Register adds p to the plugins the server mounts. Call it from an init function or from main
-// before the server starts. It panics when p is nil, its name is empty, or a plugin with the
-// same name is already registered. The server rejects names that are reserved URL segments.
+// before the server starts. It panics when p is nil, when CheckName rejects its name (empty,
+// reserved, or not lowercase letters, digits and inner hyphens), or when a plugin with the same
+// name is already registered.
 func Register(p Plugin) {
 	if p == nil {
 		panic("format: Register called with a nil plugin")
 	}
 	name := p.Name()
-	if name == "" {
-		panic("format: Register called with a plugin that has an empty name")
+	if err := CheckName(name); err != nil {
+		panic("format: Register: " + err.Error())
 	}
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
