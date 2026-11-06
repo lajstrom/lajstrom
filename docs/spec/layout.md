@@ -1,9 +1,9 @@
 # Spec: repository layout, package contracts, approved dependencies
 
-- Status: normative for the MVP (2026-11-06). The Go interfaces below are sketches; the skeleton
-  pull request (M0-01) fixes their final shape, after which they are contracts: changing an
-  exported interface in `internal/{format,provider,index,ingest}` needs an issue labelled
-  `contract` and a maintainer's approval.
+- Status: normative for the MVP (2026-11-06). The Go interfaces in §2 are the shapes merged with
+  the skeleton (issue #7, M0-01) and are contracts: changing an exported interface in
+  `internal/{format,provider,index,ingest}` needs an issue labelled `contract` and a
+  maintainer's approval.
 - Why this exists: three people work in parallel with AI assistants. Agreed package boundaries
   and interfaces are what keeps their pull requests from colliding.
 
@@ -33,6 +33,7 @@ internal/api/                 /api/v1 management REST (repos, users, tokens, bin
 internal/keys/                server signing key, per-repo GPG keys (apt), encryption at rest
 internal/audit/               audit log writer
 internal/testutil/            registry/DB fixtures, fixture builders (make a .deb / .whl / .jar in-process)
+internal/version/             build information (version, commit, date), set with -ldflags; /-/version
 deploy/compose/               dev stack: zot, distribution, postgres; lajstrom.example.yaml
 docs/                         architecture, specs, ADRs, plan, registries (spike results), quickstarts
 tools/                        bootstrap scripts, dev helpers
@@ -50,74 +51,138 @@ Conventions:
 - Context everywhere; no global state except the plugin registry.
 - Logging with `log/slog`; metrics with Prometheus client; no other observability deps in the MVP.
 
-## 2. Contracts (sketches)
+## 2. Contracts
+
+The exported shapes as merged with issue #7 (M0-01), grouped by package. Signatures are exact;
+comments are shortened. The doc comments in the code are the full contract
+(`go doc -all ./internal/<package>`).
 
 ### Format plugin (`internal/format`)
 
 ```go
 // Plugin is one package format. Implementations are stateless; dependencies come in via Deps.
 type Plugin interface {
-    // Name is the URL segment and the value of lajstrom.format: "raw", "pypi", "apt", "maven".
-    Name() string
-    // ArtifactType is application/vnd.lajstrom.<type>.v1 ("deb" for the apt plugin).
-    ArtifactType() string
-    // EscapeName maps a package name to the OCI repository path below <format>/<repo>/.
-    EscapeName(name string) (string, error)
-    // Validate inspects a manifest that is about to be stored (oras push or Build output),
-    // reads what it needs through fetch, and returns the index entry. It must detect
-    // disagreement between bytes, metadata layer and annotations.
+    Name() string                           // first URL segment and lajstrom.format: raw, pypi, apt, maven
+    ArtifactType() string                   // application/vnd.lajstrom.<type>.v1 ("deb" for apt)
+    EscapeName(name string) (string, error) // package name → package path below <format>/<repo>/
+    // Validate inspects a manifest about to be stored, reads blobs through fetch, returns the
+    // index entry; disagreement between bytes, metadata layer and annotations wraps ErrInvalid.
     Validate(ctx context.Context, repo index.Repo, m ocispec.Manifest, fetch BlobFetcher) (*Entry, error)
-    // Build assembles a manifest (and the blobs to upload) from files received by the
-    // protocol frontend (twine upload, curl -T, mvn deploy session).
+    // Build assembles manifest and blobs from frontend uploads; it pushes nothing.
     Build(ctx context.Context, repo index.Repo, in Upload) (*Built, error)
-    // Routes mounts the protocol frontend under /<format>/{repo}/.
-    Routes(r Router, deps Deps)
-    // RenderIndex produces the protocol's index documents for a repo scope
-    // (apt: suite/component/arch; pypi: project; maven: g/a) from the index DB.
+    Routes(r Router, deps Deps)             // mounted below /<format>/ (issue #11)
     RenderIndex(ctx context.Context, repo index.Repo, scope IndexScope, st index.Reader) ([]Document, error)
 }
 
-type Entry struct {
-    Name, Version, Variant string
-    Attrs    map[string]string   // format-specific annotations (lajstrom.<format>.*)
-    Files    []FileEntry         // one per file layer
-    Metadata json.RawMessage     // content of the metadata layer
+// Router takes ServeMux patterns relative to /<format>/, e.g. "GET /{repo}/simple/{project}/".
+type Router interface {                     // implementation: issue #11
+    Handle(pattern string, h http.Handler)
+    HandleFunc(pattern string, h http.HandlerFunc)
 }
-type FileEntry struct{ Name, MediaType string; Digest digest.Digest; Size int64; Attrs map[string]string }
-type Upload struct{ Files []UploadedFile; Params map[string]string; Principal string }
-type Built struct{ Manifest ocispec.Manifest; Blobs []BlobSource; Entry Entry; Tag string; RepoPath string }
+
+// Publisher is the write path as plugins see it; *ingest.Pipeline implements it.
+type Publisher interface {
+    Upload(ctx context.Context, repo index.Repo, up Upload, principal auth.Principal) (*Published, error)
+}
+
+type Deps struct {                          // Keys is added by issue #41
+    Index     index.Store
+    Ingest    Publisher
+    Providers provider.Set
+    Auth      auth.Authorizer
+    Audit     audit.Writer
+    Log       *slog.Logger
+}
+
+type Entry struct {
+    Name, Version, Variant string           // lajstrom.name, lajstrom.version, lajstrom.variant
+    Attrs    map[string]string              // lajstrom.<format>.* annotations
+    Files    []FileEntry                    // one per file layer, in manifest order
+    Metadata json.RawMessage                // metadata layer; nil when none
+}
+type FileEntry struct {
+    Name, MediaType string
+    Digest          digest.Digest
+    Size            int64
+    Attrs           map[string]string       // layer annotations
+}
+type Upload struct {                        // the principal is a parameter of Publisher.Upload
+    Files  []UploadedFile
+    Params map[string]string                // protocol parameters: twine fields, suite, raw path
+}
+type UploadedFile struct {
+    Name        string
+    Size        int64                       // -1 when unknown
+    ContentType string
+    Open        func() (io.ReadCloser, error) // re-openable: Build reads it, ingest pushes it
+}
+type Built struct {
+    Manifest ocispec.Manifest
+    Blobs    []BlobSource                   // config, file layers, metadata layer
+    Entry    Entry
+    Tag      string
+    RepoPath string                         // <format>/<repo>/<package path>, no instance prefix
+}
+type BlobSource struct {
+    Descriptor ocispec.Descriptor
+    Open       func(ctx context.Context) (io.ReadCloser, error)
+}
 type BlobFetcher func(ctx context.Context, d digest.Digest) (io.ReadCloser, error)
-type Deps struct{ Index index.Store; Ingest *ingest.Pipeline; Provider provider.Provider; Auth auth.Authorizer; Keys keys.Service; Log *slog.Logger }
+type IndexScope string                      // jammy/main/amd64, simple/requests, com.example/lib-core
+type Document struct {
+    Kind, Path, ContentType string          // Path relative to /<format>/<repo>/
+    Content                 []byte
+}
+type Published struct {
+    Digest   digest.Digest
+    Tag      string
+    RepoPath string
+    Entry    Entry
+}
+
+func Register(p Plugin)                     // panics on nil, empty or duplicate name
+func All() []Plugin                         // sorted by name
+func Lookup(name string) (Plugin, bool)
+
+var ErrInvalid, ErrUnsupported error
 ```
 
 ### Registry provider (`internal/provider`)
 
 ```go
+// Names are <format>/<repo>/<package path>; the provider prepends registries[].prefix and
+// strips it from listings.
 type Provider interface {
-    Name() string
+    Name() string                           // registries[].name
     Capabilities(ctx context.Context) (Capabilities, error)
-    // Repository returns an oras-go compatible target for one OCI repository (full path incl. prefix).
     Repository(ctx context.Context, name string) (Repository, error)
     EnsureRepository(ctx context.Context, name string) error      // no-op where create-on-push works
     ListRepositories(ctx context.Context, prefix string) ([]string, error)
     DeleteRepository(ctx context.Context, name string) error
-    // BlobRedirectURL returns a URL a client may be redirected to (307) for a blob, if supported.
     BlobRedirectURL(ctx context.Context, name string, d digest.Digest) (string, bool, error)
 }
 
-// Repository is the data path; the generic implementation wraps oras-go's remote.Repository.
+// Repository is the data path; the generic provider returns oras-go's remote.Repository.
 type Repository interface {
-    content.Storage                     // Fetch, Push, Exists (blobs and manifests)
-    content.TagResolver                 // Tag, Resolve
-    registry.TagLister                  // Tags
-    registry.ReferrerLister             // Referrers (falls back to the tag schema when unsupported)
-    Delete(ctx context.Context, d ocispec.Descriptor) error
+    content.Storage                         // Fetch, Exists, Push (blobs and manifests)
+    content.Deleter                         // Delete
+    content.TagResolver                     // Tag, Resolve
+    registry.ReferencePusher                // PushReference: manifest and tag in one PUT
+    registry.TagLister                      // Tags
+    registry.ReferrerLister                 // Referrers (tag-schema fallback without the API)
 }
+
+type Set interface {
+    Provider(name string) (Provider, bool)
+}
+type Map map[string]Provider                // implements Set
 
 type Capabilities struct {
     CreateOnPush, Referrers, Catalog, DeleteManifest, ImmutableTags, BlobRedirect bool
-    MaxBlobSize int64 // 0 = unknown
+    MaxBlobSize int64                       // 0 = unknown
 }
+
+var ErrNotFound, ErrConflict, ErrUnsupported, ErrUnauthorized error
 ```
 
 ### Index store (`internal/index`)
@@ -130,9 +195,79 @@ type Store interface {
     Tx(ctx context.Context, fn func(Writer) error) error
     Close() error
 }
-// Reader is what frontends use. Writer is what ingest, reindex and the API use.
-// Models (see index-schema.md): Repo, Package, Version, File, IndexCache, Session,
-// User, Token, Binding, Key, AuditEvent.
+
+// Get* return an error wrapping ErrNotFound; List*/Find* return an empty result.
+type Reader interface {
+    // control plane
+    GetRepo(ctx context.Context, format, name string) (*Repo, error)
+    GetRepoByID(ctx context.Context, id int64) (*Repo, error)
+    ListRepos(ctx context.Context, format string) ([]Repo, error)
+    GetUser(ctx context.Context, name string) (*User, error)
+    ListUsers(ctx context.Context) ([]User, error)
+    GetTokenByHash(ctx context.Context, hash string) (*Token, error)
+    ListTokens(ctx context.Context, userID, repoID *int64) ([]Token, error)
+    ListBindings(ctx context.Context, principal string) ([]Binding, error)
+    GetKey(ctx context.Context, repoID *int64, kind string) (*Key, error)
+    ListKeys(ctx context.Context, repoID *int64) ([]Key, error)
+    GetSession(ctx context.Context, repoID int64, key string) (*Session, error)
+    GetSessionByID(ctx context.Context, id int64) (*Session, error)
+    ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error)
+    // derived
+    GetPackage(ctx context.Context, repoID int64, name string) (*Package, error)
+    ListPackages(ctx context.Context, repoID int64, prefix string) ([]Package, error)
+    GetVersion(ctx context.Context, packageID int64, version, variant string) (*Version, error)
+    GetVersionByTag(ctx context.Context, packageID int64, tag string) (*Version, error)
+    GetVersionByDigest(ctx context.Context, repoID int64, d digest.Digest) (*Version, error)
+    ListVersions(ctx context.Context, packageID int64) ([]Version, error)
+    ListFiles(ctx context.Context, versionID int64) ([]File, error)
+    FindFiles(ctx context.Context, repoID int64, name string) ([]FileMatch, error)
+    GetIndexCache(ctx context.Context, repoID int64, scope, kind string) (*Cache, error)
+    ListOCIRepos(ctx context.Context, repoID int64) ([]OCIRepo, error)
+}
+
+// Unique violations wrap ErrConflict; updates and deletes of a missing id wrap ErrNotFound.
+type Writer interface {
+    Reader
+    // control plane
+    CreateRepo(ctx context.Context, r *Repo) error
+    UpdateRepo(ctx context.Context, r *Repo) error
+    DeleteRepo(ctx context.Context, id int64) error
+    CreateUser(ctx context.Context, u *User) error
+    UpdateUser(ctx context.Context, u *User) error
+    CreateToken(ctx context.Context, t *Token) error
+    RevokeToken(ctx context.Context, id int64, at time.Time) error
+    TouchToken(ctx context.Context, id int64, lastUsed time.Time) error
+    CreateBinding(ctx context.Context, b *Binding) error
+    DeleteBinding(ctx context.Context, id int64) error
+    CreateKey(ctx context.Context, k *Key) error
+    RetireKey(ctx context.Context, id int64, at time.Time) error
+    UpsertSession(ctx context.Context, s *Session) error
+    DeleteSession(ctx context.Context, id int64) error
+    ExpireSessions(ctx context.Context, before time.Time) (int, error)
+    AppendAudit(ctx context.Context, ev *AuditEvent) error
+    // derived (written only by ingest, reindex and delete)
+    UpsertPackage(ctx context.Context, p *Package) error
+    UpsertVersion(ctx context.Context, v *Version) error           // *TagConflictError on a tag with another digest
+    ReplaceFiles(ctx context.Context, versionID int64, files []File) error
+    DeleteVersion(ctx context.Context, id int64) error
+    DeletePackage(ctx context.Context, id int64) error
+    PutIndexCache(ctx context.Context, c *Cache) error
+    InvalidateIndexCache(ctx context.Context, repoID int64, scope string) error
+    UpsertOCIRepo(ctx context.Context, r *OCIRepo) error
+    PruneOCIRepos(ctx context.Context, repoID int64, seenBefore time.Time) (int, error)
+    ResetDerived(ctx context.Context, repoID int64) error
+}
+
+// Models, one struct per table of index-schema.md (fields in internal/index/models.go):
+// control plane Repo, User, Token, Binding, Key, Session, AuditEvent; derived Package, Version,
+// File, Cache (index_cache), OCIRepo; query types FileMatch (file + version + package) and
+// AuditFilter. Ids are int64, timestamps UTC, nullable columns are pointers.
+
+var ErrNotFound, ErrConflict error
+type TagConflictError struct {              // errors.Is(err, ErrConflict) is true
+    Tag      string
+    Existing digest.Digest
+}
 ```
 
 Both engines (SQLite, Postgres) pass the same conformance test suite in `internal/index/storetest`.
@@ -140,15 +275,93 @@ Both engines (SQLite, Postgres) pass the same conformance test suite in `interna
 ### Ingest (`internal/ingest`)
 
 ```go
-type Pipeline struct{ /* provider, index, plugins, audit, clock */ }
-// Ingest stores a manifest that already exists as bytes (facade hook path): validate, check blobs
-// exist, PUT manifest+tag, upsert index, invalidate caches. Returns ErrConflict on tag collision.
-func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, m ocispec.Manifest, raw []byte, tag string, principal auth.Principal) (*Result, error)
-// Upload is the frontend path: plugin.Build → push blobs → Ingest.
-func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload, principal auth.Principal) (*Result, error)
-// Sessions accumulate files for formats whose upload protocol is multi-request (maven).
-type Sessions interface{ Open, Add, Commit, Abort, Expire }
+type Options struct {
+    Providers provider.Set
+    Index     index.Store
+    Plugins   func(name string) (format.Plugin, bool) // nil: format.Lookup
+    Audit     audit.Writer
+    Now       func() time.Time                         // nil: time.Now
+    Log       *slog.Logger                             // nil: slog.Default()
+}
+func New(o Options) *Pipeline
+
+// Ingest stores a manifest the facade received for <format>/<repo>/<pkgPath>:<tag>; raw defines
+// the digest. Errors wrap ErrInvalid (profile, plugin, missing blobs) or ErrConflict (tag).
+func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, principal auth.Principal) (*Result, error)
+// Upload is the frontend path: Plugin.Build → push missing blobs → store as Ingest does.
+func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload, principal auth.Principal) (*format.Published, error)
+
+type Result struct {
+    Digest   digest.Digest
+    Tag      string
+    RepoPath string
+    Entry    format.Entry
+    Existed  bool                           // idempotent repeat: nothing was written
+}
+
+// Sessions accumulate the files of one version over several requests (maven); issue #53.
+type Sessions interface {
+    Open(ctx context.Context, repo index.Repo, key string, principal auth.Principal) (*index.Session, error)
+    Add(ctx context.Context, sessionID int64, name string, r io.Reader, size int64) (ocispec.Descriptor, error)
+    Commit(ctx context.Context, sessionID int64) (*Result, error)
+    Abort(ctx context.Context, sessionID int64) error
+    Expire(ctx context.Context, now time.Time) (int, error)
+}
+
+var ErrInvalid = format.ErrInvalid
+var ErrConflict = index.ErrConflict
+var ErrNotImplemented error                 // until issue #12
 ```
+
+### Auth and audit (`internal/auth`, `internal/audit`)
+
+```go
+type Kind string                            // KindUser, KindToken, KindGroup, KindAnonymous
+type Principal struct {
+    Kind Kind
+    Name string                             // user or group name, deploy-token id; empty for anonymous
+}
+func (p Principal) String() string          // user:<name>, token:<id>, group:<name>, anonymous
+func ParsePrincipal(s string) (Principal, error) // errors wrap ErrInvalidPrincipal
+var Anonymous Principal
+var ErrInvalidPrincipal error
+
+type Action string                          // ActionRead, ActionWrite, ActionDelete, ActionManage
+type Authorizer interface {
+    Allowed(ctx context.Context, p Principal, a Action, format, repo string) (bool, error)
+}
+
+// package audit
+type Writer interface {
+    Write(ctx context.Context, ev index.AuditEvent) error // zero ev.At means now
+}
+```
+
+### Decisions
+
+Where the merged shapes differ from the first sketch of this section, and why:
+
+- **Publisher breaks the format/ingest cycle.** `Deps.Ingest` is the `format.Publisher`
+  interface, implemented by `*ingest.Pipeline`, so `format` does not import `ingest`. Its
+  `Upload` returns `*format.Published`, and the principal is a parameter, not a field of
+  `Upload`.
+- **Providers is a `provider.Set` keyed by registry name** (`Deps.Providers`,
+  `ingest.Options.Providers`): a repo chooses its registry with `repos[].registry`.
+- **Provider names carry no instance prefix.** Callers pass `<format>/<repo>/<package path>`;
+  the provider adds `registries[].prefix` and strips it from listings
+  ([http-routing.md](http-routing.md) §2).
+- **Ingest takes the pushed package path and tag**, so it can reject a manifest pushed to a
+  path or tag that does not follow from its annotations.
+- **Repository embeds `registry.ReferencePusher`**: ingest puts manifest and tag in one PUT.
+  `Delete` comes from `content.Deleter`.
+- **UploadedFile is re-openable via a request spool**: Build reads the file to parse and digest
+  it, ingest reads it again to push it. The spool lives for one request and is never served
+  from; artifact bytes live only in the registry.
+- **Scopes and Attrs are typed** (`Token.Scopes []string`, `Version.Attrs` and `File.Attrs`
+  `map[string]string`); the store marshals them. **`Cache`, not `IndexCache`**, because
+  `index.IndexCache` stutters.
+- **`ListAudit(AuditFilter)`** is on the Reader for `GET /api/v1/audit`, and `FindFiles`
+  returns `FileMatch` (file with its version and package) for lookups by file name.
 
 ## 3. Approved dependencies
 
@@ -187,25 +400,38 @@ service containers), any GPL/LGPL/AGPL/SSPL/BSL dependency, cgo.
 Integration and e2e tests must be runnable locally with `make dev-up` first. Flaky tests are
 disabled with an issue, not retried.
 
-## 5. Make targets (M0-01 creates the Makefile)
+## 5. Make targets
+
+`make` alone lists the targets (`make help`).
 
 | Target | Does |
 | --- | --- |
-| `make build` | `go build -o bin/lajstrom ./cmd/lajstrom` |
+| `make build` | `go build ./...`, then `go build -ldflags "-X …/internal/version.{Version,Commit,Date}=…" -o bin/lajstrom ./cmd/lajstrom` (from `git describe`, `git rev-parse`, `date -u`) |
 | `make test` | `go test -race ./...` |
-| `make lint` | golangci-lint (pinned version from CI) |
-| `make check` | build + vet + test + lint + govulncheck + go-licenses, exactly what CI runs; run before every pull request |
-| `make dev-up` / `make dev-down` | compose stack in `deploy/compose` |
-| `make test-integration` | integration tests against the dev stack |
-| `make e2e` | end-to-end suite against the dev stack |
-| `make run` | `lajstrom serve --config deploy/compose/lajstrom.yaml` against the dev stack |
+| `make vet` | `go vet ./...` |
+| `make lint` | golangci-lint at the version CI pins (`GOLANGCI_LINT_VERSION`, v2.15.0) |
+| `make vulncheck` | govulncheck |
+| `make licenses` | go-licenses v1.6.0 against the allowlist of CONTRIBUTING.md |
+| `make fmt-check` | fails when `gofmt -l .` lists a file |
+| `make check` | fmt-check, build, vet, test, lint, vulncheck, licenses: exactly what CI runs; run before every pull request |
+| `make dev-up` / `make dev-down` / `make dev-logs` | compose stack in `deploy/compose/compose.yaml` (issue #15) |
+| `make test-integration` | `go test -race -tags integration ./...` against the dev stack; needs `LAJSTROM_TEST_REGISTRY` |
+| `make e2e` | `test/e2e/run.sh`, the end-to-end suite against the dev stack (issue #34) |
+| `make run` | build, then `lajstrom serve --config deploy/compose/lajstrom.yaml` (the example file when that does not exist) |
+| `make clean` | removes `bin/` |
 
-## 6. Configuration (shape; details in `docs/configuration.md` once M0-01 lands)
+Targets whose files a later issue creates (`dev-*`, `e2e`) print which issue and fail.
+
+## 6. Configuration (shape; every key in [docs/configuration.md](../configuration.md))
 
 ```yaml
 server:
   listen: ":8080"
   externalURL: "https://art.example.com"   # used in tokens, redirects, rendered indexes
+  shutdownTimeout: 30s                      # graceful shutdown bound
+log:
+  level: info                               # debug | info | warn | error
+  format: text                              # text | json
 database:
   driver: sqlite                            # sqlite | postgres
   dsn: "file:lajstrom.db"
@@ -214,12 +440,15 @@ registries:
     type: generic                           # generic | ecr
     url: "http://zot:5000"
     prefix: "art/"
-    auth: { username: "...", passwordEnv: "ZOT_PASSWORD" }
+    auth: { username: "lajstrom", passwordEnv: "ZOT_PASSWORD" }
 auth:
   anonymousRead: false
   tokenSigningKeyFile: /etc/lajstrom/jwt.key
 keys:
   masterKeyEnv: LAJSTROM_MASTER_KEY         # encrypts GPG keys at rest
 repos:                                      # optional declarative bootstrap, merged into the control plane
-  - { name: ubuntu-internal, format: apt, registry: local }
+  - { name: ubuntu-internal, format: apt, registry: local, anonymousRead: false }
 ```
+
+Precedence: defaults < file < `LAJSTROM_*` environment variables (scalar keys only). Secrets
+never go into the file: `passwordEnv` and `masterKeyEnv` name environment variables.

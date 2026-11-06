@@ -1,5 +1,5 @@
-// Package config loads the Lajstrom configuration: a YAML file with LAJSTROM_* environment
-// overrides, validated at startup. See docs/spec/layout.md §6.
-//
-// Filled in by issue #7 (second pull request); the example file lives in deploy/compose.
+// Package config loads the Lajstrom configuration: defaults, then a YAML file, then LAJSTROM_*
+// environment overrides for scalar keys, then secrets named by *Env keys, then validation.
+// The keys are documented in docs/configuration.md; the shape is docs/spec/layout.md §6 and an
+// example lives in deploy/compose/lajstrom.example.yaml.
 package config

@@ -1,7 +1,9 @@
 // Package server owns the HTTP server: net/http ServeMux routing with the reserved first
-// segments, the middleware chain (request id, access log, metrics, auth, panic recovery) and
-// graceful shutdown. It mounts the format plugins, the OCI facade and the management API.
-// See docs/spec/http-routing.md §1.
+// segments, the middleware chain and graceful shutdown. See docs/spec/http-routing.md §1 and §5.
 //
-// Filled in by issue #7 (second pull request); observability by #23, hardening by #50.
+// The middleware chain, outermost first: panic recovery, request id, access log. The system
+// endpoints are /-/healthz, /-/readyz and /-/version; /-/metrics comes with issue #23.
+// Format plugins are validated here and mounted by issue #11; the OCI facade (/v2) and the
+// management API (/api/v1) are mounted by their issues. Hardening (request limits, shutdown
+// drain of long transfers) is issue #50.
 package server
