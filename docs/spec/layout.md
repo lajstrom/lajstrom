@@ -210,7 +210,7 @@ type Provider interface {
     BlobRedirectURL(ctx context.Context, name string, d digest.Digest) (string, bool, error)
 }
 
-// Repository is the data path; the generic provider returns oras-go's remote.Repository.
+// Repository is the data path; the generic provider wraps oras-go's remote.Repository (error translation).
 type Repository interface {
     content.Storage                         // Fetch, Exists, Push (blobs and manifests)
     content.Deleter                         // Delete

@@ -2,6 +2,8 @@
 // Repository interfaces, Capabilities and sentinel errors. Only provider implementations talk
 // to the registry. See docs/spec/layout.md §2 and docs/registries/.
 //
-// Implementations: internal/provider/generic (issue #9) and internal/provider/ecr (issue #36);
-// fallbacks for missing capabilities in issue #37.
+// New and NewSet build Providers by registries[].type from the constructors that the
+// implementations Register from init: internal/provider/generic (issue #9) and
+// internal/provider/ecr (issue #36); cmd/lajstrom imports them. Fallbacks for missing
+// capabilities come with issue #37.
 package provider

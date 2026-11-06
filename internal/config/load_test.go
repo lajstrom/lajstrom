@@ -118,6 +118,22 @@ func TestLoadErrors(t *testing.T) {
 		{name: "duration without unit", file: minimal[:len(minimal)-1] + "\n  shutdownTimeout: 30\n", want: []string{"line 3", "into time.Duration"}},
 		{name: "env override is validated", file: minimal, env: map[string]string{"LAJSTROM_DATABASE_DRIVER": "mysql"}, want: []string{`database.driver: "mysql" is not sqlite or postgres`}},
 		{
+			name: "registry limits",
+			file: minimal + "registries:\n  - {name: local, url: \"http://zot:5000\", timeout: -1s, capabilities: {maxBlobSize: -1}}\n",
+			want: []string{"registries[0].timeout: must not be negative", "registries[0].capabilities.maxBlobSize: must not be negative"},
+		},
+		{
+			name: "unknown capability",
+			file: minimal + "registries:\n  - {name: local, url: \"http://zot:5000\", capabilities: {deletes: false}}\n",
+			want: []string{"field deletes not found"},
+		},
+		{
+			// catalog is set under capabilities only; there is no short form.
+			name: "catalog outside capabilities",
+			file: minimal + "registries:\n  - {name: local, url: \"http://zot:5000\", catalog: false}\n",
+			want: []string{"field catalog not found"},
+		},
+		{
 			name: "every problem is reported",
 			file: `
 server: {listen: "", externalURL: "file:///x", shutdownTimeout: 0s}
@@ -174,6 +190,33 @@ repos:
 				t.Errorf("error contains a password:\n%s", msg)
 			}
 		})
+	}
+}
+
+func TestLoadRegistryKeys(t *testing.T) {
+	file := minimal + `
+registries:
+  - {name: defaults, url: "http://zot:5000"}
+  - name: tuned
+    url: https://registry.example
+    timeout: 5s
+    retries: -1
+    capabilities: {referrers: false, catalog: false, deleteManifest: true, maxBlobSize: 1073741824}
+`
+	c, err := Load(writeConfig(t, file), nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	f, tr := false, true
+	want := []Registry{
+		{Name: "defaults", Type: "generic", URL: "http://zot:5000", Timeout: 30 * time.Second, Retries: 3},
+		{
+			Name: "tuned", Type: "generic", URL: "https://registry.example", Timeout: 5 * time.Second, Retries: -1,
+			Capabilities: CapabilityOverrides{Referrers: &f, Catalog: &f, DeleteManifest: &tr, MaxBlobSize: 1 << 30},
+		},
+	}
+	if !reflect.DeepEqual(c.Registries, want) {
+		t.Errorf("registries =\n%+v\nwant\n%+v", c.Registries, want)
 	}
 }
 

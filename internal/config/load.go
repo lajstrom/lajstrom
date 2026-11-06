@@ -12,7 +12,8 @@ import (
 // Load reads the configuration in this order, later steps winning:
 //
 //  1. the defaults of Default;
-//  2. the YAML file at path; unknown keys are an error;
+//  2. the YAML file at path; unknown keys are an error; registries[] get the defaults of the
+//     keys they leave empty (type, timeout, retries);
 //  3. the environment overrides LAJSTROM_SERVER_LISTEN, LAJSTROM_SERVER_EXTERNAL_URL,
 //     LAJSTROM_LOG_LEVEL, LAJSTROM_LOG_FORMAT, LAJSTROM_DATABASE_DRIVER and
 //     LAJSTROM_DATABASE_DSN; an empty variable counts as unset, and lists (registries, repos)
@@ -31,9 +32,7 @@ func Load(path string, lookupEnv func(string) (string, bool)) (*Config, error) {
 		return nil, err
 	}
 	for i := range c.Registries {
-		if c.Registries[i].Type == "" {
-			c.Registries[i].Type = DefaultRegistryType
-		}
+		c.Registries[i].applyDefaults()
 	}
 	applyEnv(c, lookupEnv)
 	resolveSecrets(c, lookupEnv)
@@ -56,6 +55,19 @@ func decodeFile(path string, c *Config) error {
 		return fmt.Errorf("config: %s: %w", path, err)
 	}
 	return nil
+}
+
+// applyDefaults fills the keys of r that the file left at their zero value.
+func (r *Registry) applyDefaults() {
+	if r.Type == "" {
+		r.Type = DefaultRegistryType
+	}
+	if r.Timeout == 0 {
+		r.Timeout = DefaultRegistryTimeout
+	}
+	if r.Retries == 0 {
+		r.Retries = DefaultRegistryRetries
+	}
 }
 
 // envOverrides are the environment variables Load reads and the keys they override.

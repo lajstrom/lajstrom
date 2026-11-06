@@ -25,6 +25,9 @@ registries:
     auth:
       username: ""                    # empty: the dev Zot allows anonymous push and pull
       passwordEnv: ""                 # name of the environment variable that holds the password
+    timeout: 30s                      # one request up to its response headers; a blob streams as long as it takes
+    retries: 3                        # retries of a failed request (429, 5xx, timeouts); negative: none
+    capabilities: {}                  # override what probing finds, e.g. {catalog: false, deleteManifest: false}
 
 auth:
   anonymousRead: false                # server-wide switch for anonymous read (RBAC, issue #45)
