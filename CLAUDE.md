@@ -26,6 +26,7 @@ a single blob. Go, single binary, SQLite or Postgres as a derived index.
 - Tags are immutable and append-only: never re-point a tag; collision with another digest is 409.
 - No client plugins: protocols are emulated on the server.
 - Only `internal/index/*` talks to the database. Only `internal/provider/*` talks to the registry.
+  `make lint` enforces both (depguard) and rejects `fmt.Print*` and the std `log` outside `cmd/`.
 
 ## Contracts: do not change without an issue labelled `contract`
 
