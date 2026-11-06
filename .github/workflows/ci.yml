@@ -125,7 +125,9 @@ jobs:
         # by every GitHub runner and gets rate-limited; when the service is unavailable the
         # scan is reported as skipped instead of failing the build. A real match still fails.
         run: |
-          set -uo pipefail
+          # The default shell runs with -e; the scanner pipeline below is allowed to fail so
+          # that the API-availability check after it can decide. Keep -u and pipefail.
+          set +e -uo pipefail
           if [ "${SCAN_FILE_COUNT:-0}" = "0" ]; then
             echo "SCAN_STATE=skipped-no-files" >> "${GITHUB_ENV}"
             echo "::notice::snippet-scan: no files to scan"
