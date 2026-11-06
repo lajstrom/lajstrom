@@ -5,9 +5,13 @@ linters:
   # errcheck, govet, ineffassign, staticcheck, unused
   default: standard
   enable:
+    - gocyclo   # cyclomatic complexity: a function above 15 is split, not annotated
     - gosec
     - misspell
     - revive
+  settings:
+    gocyclo:
+      min-complexity: 15
 
 formatters:
   enable:
