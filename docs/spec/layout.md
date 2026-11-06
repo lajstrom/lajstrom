@@ -4,7 +4,7 @@
   the skeleton (issue #7, M0-01) and are contracts: changing an exported interface in
   `internal/{format,provider,index,ingest}` needs an issue labelled `contract` and a
   maintainer's approval.
-- Why this exists: three people work in parallel with AI assistants. Agreed package boundaries
+- Why this exists: two people work in parallel with AI assistants. Agreed package boundaries
   and interfaces are what keeps their pull requests from colliding.
 
 ## 1. Layout

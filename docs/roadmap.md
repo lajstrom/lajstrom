@@ -31,14 +31,15 @@ first if the week runs out; `p2` are opportunistic.
 
 ## Lanes
 
-Three lanes so three people do not touch the same packages in the same week. A person claims
-from one lane as a rule; crossing lanes is fine when the lane is empty.
+Three lanes so that two people do not touch the same packages in the same week: the lead takes
+core and platform, the second contributor takes formats. A person claims from one lane as a
+rule; crossing lanes is fine when the lane is empty.
 
 | Lane | Packages | Week 1 | Week 2 | Week 3 | Week 4 |
 | --- | --- | --- | --- | --- | --- |
 | **core** (lead) | `cmd`, `config`, `server`, `provider`, `index`, `ingest`, `facade`, `auth`, `api`, `keys` | M0-01 skeleton, M0-03 provider, M0-04 index, M0-06 ingest, M0-08 repo API | M1-01..05 facade, M1-06 reindex, M1-13 ECR | M2-03 keys/GPG, M2-05..09 auth, API | M3-02 sessions, M3-10, M3-12 |
 | **formats** | `oci/profile`, `format/*`, `testutil` fixtures | M0-02 profile, M0-05 plugin iface, M0-16 fixtures, M0-07 raw | M1-08..10 pypi | M2-01 deb parse, M2-02 apt index, M2-04 pool/upload | M3-01 maven, M3-03 deploy, M3-04 resolve |
-| **platform** | `deploy/`, CI, e2e, `docs/`, release, spikes | M0-09 compose, M0-10 CI, M0-11..15 spikes, M0-17 observability | M1-11 e2e harness, M1-12 matrix, M1-15 docs | M2-10 apt e2e, M2-11 docs, M2-12 hardening | M3-05 mvn e2e, M3-06 goreleaser, M3-07 docs, M3-08 release |
+| **platform** (lead) | `deploy/`, CI, e2e, `docs/`, release, spikes | M0-09 compose, M0-10 CI, M0-11..15 spikes, M0-17 observability | M1-11 e2e harness, M1-12 matrix, M1-15 docs | M2-10 apt e2e, M2-11 docs, M2-12 hardening | M3-05 mvn e2e, M3-06 goreleaser, M3-07 docs, M3-08 release |
 
 ## Week by week
 
@@ -65,13 +66,15 @@ docs in platform. Thursday: feature freeze, release candidate from `main`. Frida
 ## Capacity assumption and cut line
 
 The generated effort table in [`plan/backlog.md`](plan/backlog.md) puts the `p0` set at roughly
-17–23 person-days per milestone on the size scale (S = 0.5, M = 1.5, L = 4 days). Three people
-near full time with AI assistance cover that; three people at 10–15 hours a week cover about a
-third of it. So the plan is honest only with one of two readings:
+17–23 person-days per milestone on the size scale (S = 0.5, M = 1.5, L = 4 days). The team is
+two people (decision of 2026-11-06, below): the lead on core and platform, the second
+contributor on formats, both with AI assistance. Two people near full time cover that; at 10–15
+hours a week they cover about a quarter of it. So the plan is honest only with one of two
+readings:
 
 - **Full-time reading.** Each week ships its milestone as written. Review the actual burn on
   Friday of week 1: if M0's p0 set closed, keep the dates.
-- **Part-time reading (the fallback).** The formats lane slips by one milestone: pypi lands in
+- **Part-time reading (the baseline).** The formats lane slips by one milestone: pypi lands in
   week 3, apt in week 4, maven after the MVP; v0.1.0 on 2026-12-04 then contains raw, pypi and
   apt with auth and reindex. Core and platform lanes keep their order, because facade, reindex,
   auth and release engineering are what make the thing shippable at all.
@@ -80,8 +83,8 @@ Inside a milestone the cut order is: `p2`, then `p1`, then the format of the wee
 next milestone. Facade, reindex, auth and the e2e harness are never cut, only re-dated. The lead
 decides on Friday and records the change in this page's decision log.
 
-If only two people are available, the formats lane is shared by the lead and platform, and the
-part-time reading applies from day one.
+The Friday review of week 1 (2026-11-13) decides which reading applies and whether M3 maven
+stays in v0.1.0 or becomes the first post-MVP milestone.
 
 ## Risks and what we do about them
 
@@ -90,7 +93,7 @@ part-time reading applies from day one.
 | ECR referrers push returns 405 (aws/containers-roadmap#2783) | M0-13 spike first; tag-schema fallback (M1-14) is the plan B; ECR adapter is p1 |
 | apt signing details (InRelease, by-hash, `Acquire-By-Hash`) eat the week | M2-02/03 use a fixture repo checked with real `apt-get` in a container from day one (M2-10 harness is ready in week 2) |
 | maven session semantics (checksum PUTs, partial uploads, retries) | M3-02 sessions are designed in week 3 (issue has the state machine), implemented week 4; `seal` vs `abort` policy is explicit |
-| three people and three AI assistants rewrite the same package | contracts in `docs/spec/`, lanes, small PRs, draft PRs on day one, `contract` label and lead approval for interface changes |
+| two people and their AI assistants rewrite the same package | contracts in `docs/spec/`, lanes, small PRs, draft PRs on day one, `contract` label and lead approval for interface changes |
 | CI flakiness with registries in containers | pinned images, health checks, one retry at the job level only, flaky tests disabled with an issue |
 | dependency licenses (GPL debian parsers) | parse `.deb` with the standard library; allowlist enforced by CI |
 | scope creep from the ecosystem table | anything not in this page is a `post-mvp` issue, discussed on Fridays, not implemented |
@@ -104,8 +107,13 @@ part-time reading applies from day one.
 - Maven SNAPSHOT versions are post-MVP; releases only.
 - Static users from config are allowed in M1 only, replaced by the control plane in M2.
 - Zot is the primary development registry; distribution is the second one in CI; ECR by spike.
+- The team is two people (@gecube, @megative) and there is no chat for now: issues and
+  Discussions are the only channels; a chat is added when the team grows.
+- The web UI lives in its own repository, [lajstrom-ui](https://github.com/lajstrom/lajstrom-ui);
+  the server embeds the built bundle and serves it under `/ui/` (post-MVP, #70).
 
 ## After v0.1.0 (preview, not committed)
 
 Month 2 candidates in rough order: docker passthrough with RBAC, proxy repos (pypi, maven
-first), rpm, npm, OIDC, retention, UI read-only, Harbor adapter, apt-transport-oci export.
+first), rpm, npm, OIDC, retention, UI read-only ([lajstrom-ui](https://github.com/lajstrom/lajstrom-ui)),
+Harbor adapter, apt-transport-oci export.
