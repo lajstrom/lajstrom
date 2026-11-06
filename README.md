@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-wordmark-dark.svg">
+  <img alt="Lajstrom" src="docs/assets/logo-wordmark.svg" width="308" height="64">
+</picture>
+
 # Lajstrom
 
 Artifact registry on top of any OCI registry.
