@@ -1,8 +1,8 @@
 # How we work
 
 - Status: in force from 2026-11-09. Changes by pull request; the lead decides on objections.
-- Who: a small team (two or three people) plus anyone who shows up, all working with AI coding
-  assistants. This page is what keeps that from turning into three diverging code bases.
+- Who: a team of two plus anyone who shows up, all working with AI coding
+  assistants. This page is what keeps that from turning into diverging code bases.
 
 ## 1. Where things are
 
@@ -14,7 +14,7 @@
 | Plan | `docs/roadmap.md` (narrative), milestones (dates), `docs/plan/` (issue sources) |
 | Decisions | ADRs for architecture; the roadmap's decision log for scope; issue comments for everything local |
 | Async discussion | GitHub Discussions: *Weekly* (plans and demos), *Design*, *Q&A*, *Announcements* |
-| Quick chat | one channel the lead names in the Announcements discussion; anything that matters is copied back to an issue the same day |
+| Quick questions | no chat for now: a comment on the issue, or the *Q&A* discussion. A chat is added when the team grows; anything that matters is copied back to an issue the same day. |
 
 Board columns (the `Status` field of the project):
 
@@ -94,7 +94,7 @@ A pull request that silently changes a contract is sent back, however good the c
 | When | What |
 | --- | --- |
 | Monday, async | each person posts in the milestone's *Weekly* thread: the issues they take this week, blockers |
-| Daily, optional | one line in the chat: what moved, what is stuck |
+| Daily, optional | one line in the milestone's *Weekly* thread: what moved, what is stuck |
 | Friday, async | demos (transcripts) in the *Weekly* thread; the lead posts milestone status and the cut list for the next week |
 | Friday 30 min, optional call | only if a decision is blocked in writing |
 | Milestone end | the lead closes the milestone, moves leftovers, updates `docs/roadmap.md` if a date changes |

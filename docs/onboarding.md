@@ -69,4 +69,5 @@ the loop is fast. It never approves `git push`; you push.
 
 - A question about the design: the *Design* discussion, or a comment on the issue.
 - Something is broken in `main`: open a `kind/bug` issue with the command and output.
-- You are stuck for more than an hour: say so in the chat or the issue; someone will pair.
+- You are stuck for more than an hour: say so in the issue or the *Q&A* discussion; someone
+  will pair.
