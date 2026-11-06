@@ -23,6 +23,12 @@ A repo name is unique within its format; the pair `<format>/<repo>` is the resou
 The optional FQDN mode (`<repo>.<host>`) is after the MVP and rewrites to the path form at the
 edge; nothing else changes.
 
+Lajstrom owns the whole host: nothing lives under a path prefix. OCI clients address a registry
+as `host[:port]/<name>` and always request `https://<host>/v2/…`, and Terraform discovery reads
+`/.well-known/terraform.json` at the host root, so a prefix cannot work for them, and the server
+has one tree. `server.externalURL` is `scheme://host[:port]` without a path, and a reverse proxy
+in front of Lajstrom must not rewrite paths.
+
 `server.externalURL` is the base for every absolute URL Lajstrom renders (simple index links,
 `WWW-Authenticate` realm, apt `Release` is path-relative and needs none).
 
