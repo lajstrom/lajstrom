@@ -38,9 +38,21 @@ rows elsewhere are deferred as a block. Nothing else moves.
 ### 1.2 Explicitly not in the PoC
 
 Proxy and group repos, OIDC and groups, the web UI (its own repository, #70), docker image
-passthrough and multi-arch stitching, retention, rpm, npm, terraform, FQDN mode, Harbor and GHCR
-adapters beyond the spikes, maven SNAPSHOT, apt source packages, pypi yank. A check that needs
-one of these is not in this page.
+passthrough and multi-arch stitching, vulnerability scanning, scheduled cleanup (retention, #72),
+webhooks (#77), rpm, npm, terraform, FQDN mode, Harbor and GHCR adapters beyond the spikes, maven
+SNAPSHOT, apt source packages, pypi yank. A check that needs one of these is not in this page.
+
+Scanning and cleanup are external jobs in the PoC, not server features: a cron container with
+`oras`, `crane` or `curl` against the public interfaces. The PoC keeps what such a job needs,
+and the rows below prove it: enumeration through `GET /v2/_catalog` and `tags/list` (O-08,
+O-09); referrers pushed with `subject` = the version's manifest and listed back on every backend
+(O-07), so a scan report or an SBOM is content-addressed, idempotent to re-push and survives a
+`reindex` (I-01); `DELETE /v2/<name>/manifests/<digest>` with index removal (R-07, E-09); a
+deploy token with `write` for the scanner (S-04) and, because deploy tokens never carry `delete`
+(rbac.md §2), a service user with a maintainer binding and a PAT for the cleanup job (S-03,
+S-06); the audit log with `since` as a polling cursor (S-09). Both jobs are reconciliation
+loops: every run recomputes "versions without a fresh report" or "versions past the policy" from
+the registry and acts idempotently, so a missed run or a crashed job loses nothing.
 
 ## 2. Reference environment
 
