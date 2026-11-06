@@ -49,7 +49,10 @@ Conventions:
 - Only `provider/*` talks to the backend registry. Only `index/*` talks to the database.
 - Errors: wrap with `%w`, sentinel errors per package (`ErrNotFound`, `ErrConflict`,
   `ErrUnsupported`). HTTP handlers map sentinel errors to status codes in one place per package.
-- Context everywhere; no global state except the plugin registry.
+- Context everywhere; no global state except the plugin registry, and no state in process
+  memory that outlives one request: several replicas serve the same registry and the same
+  database, so anything that must be coordinated across requests (tag claims, upload sessions,
+  background jobs) goes through the database, never through memory or local files.
 - Logging with `log/slog`; metrics with Prometheus client; no other observability deps in the MVP.
 
 ## 2. Contracts

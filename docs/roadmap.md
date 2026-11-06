@@ -10,7 +10,9 @@
 formats (raw, pypi, apt, maven) on top of an OCI registry (Zot and docker distribution verified;
 ECR adapter if the spike allows), with local users, tokens and RBAC, a reindex command that is
 proven to rebuild the index from the registry, an OCI facade that `oras` and `cosign` can use,
-end-to-end tests with the real clients, a container image and installation docs.
+end-to-end tests with the real clients, a container image and installation docs. It runs as
+two replicas behind one edge with Postgres (SQLite is for a single node) and the e2e suite
+proves it: concurrent pushes to different replicas, a replica killed mid-upload.
 
 Not this month (post-MVP, tracked as `post-mvp` issues): rpm, npm, terraform, proxy and group
 repos, OIDC, UI, docker passthrough and multi-arch stitching, retention, Harbor and GHCR
@@ -109,6 +111,10 @@ stays in v0.1.0 or becomes the first post-MVP milestone.
 - Zot is the primary development registry; distribution is the second one in CI; ECR by spike.
 - The team is two people (@gecube, @megative) and there is no chat for now: issues and
   Discussions are the only channels; a chat is added when the team grows.
+- Multi-replica from day one: the server keeps no state in memory across requests; what must be
+  coordinated (tag claims, upload sessions, background jobs) goes through the database. HA is N
+  replicas behind one edge with Postgres. Prometheus metrics live on a separate listener
+  (`server.metricsListen`), never on the public host.
 - The web UI is a separate deliverable: its own repository,
   [lajstrom-ui](https://github.com/lajstrom/lajstrom-ui), built as a static bundle that runs from
   any origin: an nginx container behind the same edge as Lajstrom, or object storage behind a CDN
