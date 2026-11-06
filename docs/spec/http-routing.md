@@ -11,7 +11,8 @@ https://<host>/<format>/<repo>/...      protocol frontends (plugin routes)
 https://<host>/v2/...                   OCI facade (distribution API)
 https://<host>/v2/token                 token endpoint (docker bearer flow)
 https://<host>/api/v1/...               management REST
-https://<host>/-/healthz  /-/readyz  /-/metrics  /-/version
+https://<host>/-/healthz  /-/readyz  /-/version
+http://<metricsListen>/metrics        Prometheus, a separate listener, never on the public host
 https://<host>/.well-known/terraform.json   (after the MVP)
 https://<host>/ui/...                   (after the MVP)
 ```
@@ -153,4 +154,9 @@ Errors: `{"error": {"code": "NOT_FOUND|CONFLICT|FORBIDDEN|INVALID|UNAVAILABLE", 
 ## 5. System endpoints
 
 `/-/healthz` (process up), `/-/readyz` (DB reachable, every configured registry answered `/v2/`
-within the last minute), `/-/metrics` (Prometheus), `/-/version` (JSON: version, commit, date).
+within the last minute), `/-/version` (JSON: version, commit, date).
+
+Prometheus metrics are not on the public host: `server.metricsListen` (default
+`127.0.0.1:9464`, the OpenTelemetry Prometheus exporter convention) serves `GET /metrics`, and
+`/debug/pprof/` when `server.pprof` is on. The edge never routes to it; Prometheus scrapes it
+inside the network. Issue #23.
