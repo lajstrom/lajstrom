@@ -188,7 +188,7 @@ Columns: id, what to do, what must happen, issue. Priority is P0 unless the id c
 | Id | Steps | Expected | Issue |
 | --- | --- | --- | --- |
 | I-01 | after every format has content: dump `packages`, `versions`, `files`, `oci_repos`; `lajstrom reindex`; dump again | identical rows (ids may differ, natural keys and every other column equal); `index_cache` is empty and the next `GET` of an index rebuilds it | #29 |
-| I-02 | `oras push` a manifest without `lajstrom.schema` straight to the backend under `raw/assets/foreign`; `lajstrom reindex --report` | the row is in `oci_repos`, not in `versions`; the report names it | #29 |
+| I-02 | `oras push` a manifest without `lajstrom.schema` straight to the backend under `raw/assets/foreign`; `lajstrom reindex --report` | the row is in `oci_repos`, not in `versions`; the report names it; the cosign signature of O-07 is not in the report (a manifest with `subject` is a referrer, not a foreign manifest, #89) | #29 |
 | I-03 | push a profile manifest straight to the backend (bypassing Lajstrom); wait one reconcile interval | the version appears in the index; the audit log has a `reconcile` event | #30 |
 | I-04 | re-point a tag straight in the backend to another digest; wait one interval | the index keeps the first digest, the report lists the drift, nothing is re-pointed by us | #30, #12 |
 | I-05 | delete a manifest straight in the backend; wait one interval | its rows are gone | #30 |
@@ -302,7 +302,7 @@ signed. `test/e2e/security.sh` automates the ones with a command; the rest are r
 | E-01 | the idempotent pairs: R-02, P-06, A-06, M-04, O-04 | same bytes always succeed with the same digest; other bytes under the same tag are always 409 with the existing digest; never a silent re-point | #12 |
 | E-02 | two `PUT` of the same file to the same replica at the same moment | both 201 (one `Existed`), one version | #12 |
 | E-03 | I-04, I-05: changes made straight in the backend | reported, not re-pointed; deleted manifests disappear from the index; the registry stays the truth | #30 |
-| E-04 | I-02: a foreign manifest under a managed path | `oci_repos` only, listed by `--report`, never indexed, never served by a frontend | #29 |
+| E-04 | I-02: a foreign manifest under a managed path | `oci_repos` only, listed by `--report`, never indexed, never served by a frontend; a manifest with `subject` (O-07) is a referrer and stays out of the report | #29, #89 |
 | E-05 | pypi `Foo_Bar`, `foo-bar`, `foo.bar` uploads | one project `foo-bar`; `GET …/simple/Foo_Bar/` is 301 | #31 |
 | E-06 | a wheel and an sdist of the same version | two manifests with different variants under one package; `pip` picks the wheel; `--no-binary` picks the sdist | #31 |
 | E-07 | apt: the same package name in `jammy` and `noble`; the same `.deb` in two components | separate `Packages` files; the pool path is shared and the blob is one | #40, #42 |
