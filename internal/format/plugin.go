@@ -18,7 +18,9 @@ import (
 // See docs/spec/layout.md §2 and docs/spec/manifest-profile.md.
 type Plugin interface {
 	// Name is the first URL segment and the value of the lajstrom.format annotation: "raw",
-	// "pypi", "apt", "maven". It must not be a reserved segment (docs/spec/http-routing.md §1).
+	// "pypi", "apt", "maven". It is lowercase ASCII letters and digits with single hyphens
+	// between them, ^[a-z0-9]+(-[a-z0-9]+)*$, and not one of Reserved
+	// (docs/spec/http-routing.md §1); CheckName tests both.
 	Name() string
 
 	// ArtifactType is the manifest artifactType, application/vnd.lajstrom.<type>.v1; the apt
@@ -52,8 +54,8 @@ type Plugin interface {
 }
 
 // Router is what a plugin mounts its handlers on. Patterns are net/http ServeMux patterns
-// relative to /<format>/, for example "GET /{repo}/simple/{project}/"; the implementation
-// (issue #11) prefixes them with the plugin name and resolves {repo}.
+// relative to /<format>/, for example "GET /{repo}/simple/{project}/"; the implementation,
+// NewRouter, prefixes them with the plugin name and resolves {repo}.
 type Router interface {
 	// Handle registers h for pattern.
 	Handle(pattern string, h http.Handler)

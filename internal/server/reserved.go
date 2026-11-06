@@ -3,22 +3,13 @@ package server
 import (
 	"errors"
 	"fmt"
-	"slices"
-	"strings"
 
 	"github.com/lajstrom/lajstrom/internal/format"
 )
 
-// Reserved lists the first URL segments that belong to the server itself
-// (docs/spec/http-routing.md §1): the OCI facade, the management API, the UI, the system
-// endpoints and .well-known. No format plugin may be named after one. Treat it as read-only.
-var Reserved = []string{"-", ".well-known", "api", "ui", "v2"}
-
-// IsReserved reports whether segment is one of Reserved. The comparison is exact, as URL
-// paths are case-sensitive.
-func IsReserved(segment string) bool { return slices.Contains(Reserved, segment) }
-
-// checkPlugins returns one error per plugin whose name cannot be a first URL segment.
+// checkPlugins returns one error per plugin that is nil, has a name format.CheckName rejects
+// (empty, reserved, or not a plain lowercase URL segment), or has the name of an earlier one.
+// format.Register checks the same; New checks again for plugins passed without Register.
 func checkPlugins(plugins []format.Plugin) error {
 	var errs []error
 	seen := map[string]bool{}
@@ -28,13 +19,9 @@ func checkPlugins(plugins []format.Plugin) error {
 			continue
 		}
 		name := p.Name()
-		switch {
-		case name == "":
-			errs = append(errs, fmt.Errorf("server: format plugin %d (%T) has an empty name", i, p))
-		case IsReserved(name):
-			errs = append(errs, fmt.Errorf("server: format plugin %q: the name is a reserved URL segment (%s)", name, strings.Join(Reserved, " ")))
-		case strings.Contains(name, "/"):
-			errs = append(errs, fmt.Errorf(`server: format plugin %q: the name must be one URL segment, without "/"`, name))
+		switch err := format.CheckName(name); {
+		case err != nil:
+			errs = append(errs, fmt.Errorf("server: format plugin %d (%T): %w", i, p, err))
 		case seen[name]:
 			errs = append(errs, fmt.Errorf("server: format plugin %q is registered twice", name))
 		}

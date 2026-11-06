@@ -34,9 +34,13 @@ type Options struct {
 	ShutdownTimeout time.Duration
 	// Log receives the access log and the server's own events; nil means slog.Default().
 	Log *slog.Logger
-	// Plugins are the format plugins to serve, normally format.All(). Their names must be
-	// single URL segments that are not reserved (see Reserved).
+	// Plugins are the format plugins to serve, normally format.All(). Their names must pass
+	// format.CheckName and be distinct.
 	Plugins []format.Plugin
+	// Deps are the services the format plugins get. Deps.Index is required when Plugins is not
+	// empty. Each plugin gets Deps.Log, or the server's Log when it is nil, with the attribute
+	// format=<name>.
+	Deps format.Deps
 	// Ready reports whether the server can take traffic: the index database is reachable and
 	// the registries answer (docs/spec/http-routing.md §5). nil means always ready.
 	Ready func(ctx context.Context) error
@@ -57,14 +61,17 @@ type Server struct {
 }
 
 // New validates o, builds the routes and the middleware chain, and returns a Server that is not
-// listening yet. It returns an error when a plugin's name is reserved or not a single URL
-// segment, naming the plugin.
+// listening yet. It returns an error naming the plugin when a plugin is nil, its name fails
+// format.CheckName or is taken twice, and an error when there are plugins but no Deps.Index.
 func New(o Options) (*Server, error) {
 	if o.Listen == "" {
 		return nil, errors.New("server: Listen must not be empty")
 	}
 	if err := checkPlugins(o.Plugins); err != nil {
 		return nil, err
+	}
+	if len(o.Plugins) > 0 && o.Deps.Index == nil {
+		return nil, errors.New("server: format plugins need Deps.Index; the serve command wires the store with issue #10")
 	}
 	if o.ShutdownTimeout <= 0 {
 		o.ShutdownTimeout = DefaultShutdownTimeout

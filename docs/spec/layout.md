@@ -20,6 +20,7 @@ internal/format/raw/          raw plugin: parse, routes, index
 internal/format/pypi/         pypi plugin: wheel/sdist metadata, simple index, upload API
 internal/format/deb/          deb/apt plugin: control parsing, Packages/Release rendering, GPG, pool routes
 internal/format/maven/        maven plugin: coordinates, POM, sessions, maven-metadata.xml, checksums
+internal/format/formattest/   test doubles: Fake plugin, partial index.Store; imported only by tests
 internal/oci/profile/         media types, annotations, Escape/EscapeComponent, manifest build+validate (pure)
 internal/ingest/              pipeline (validate → parse → push → index), publication sessions
 internal/provider/            Provider interface, Capabilities, errors
@@ -53,9 +54,9 @@ Conventions:
 
 ## 2. Contracts
 
-The exported shapes as merged with issue #7 (M0-01), grouped by package. Signatures are exact;
-comments are shortened. The doc comments in the code are the full contract
-(`go doc -all ./internal/<package>`).
+The exported shapes as merged with issue #7 (M0-01) and, for the format helpers, issue #11,
+grouped by package. Signatures are exact; comments are shortened. The doc comments in the code
+are the full contract (`go doc -all ./internal/<package>`).
 
 ### Format plugin (`internal/format`)
 
@@ -70,12 +71,12 @@ type Plugin interface {
     Validate(ctx context.Context, repo index.Repo, m ocispec.Manifest, fetch BlobFetcher) (*Entry, error)
     // Build assembles manifest and blobs from frontend uploads; it pushes nothing.
     Build(ctx context.Context, repo index.Repo, in Upload) (*Built, error)
-    Routes(r Router, deps Deps)             // mounted below /<format>/ (issue #11)
+    Routes(r Router, deps Deps)             // mounted below /<format>/ through NewRouter
     RenderIndex(ctx context.Context, repo index.Repo, scope IndexScope, st index.Reader) ([]Document, error)
 }
 
 // Router takes ServeMux patterns relative to /<format>/, e.g. "GET /{repo}/simple/{project}/".
-type Router interface {                     // implementation: issue #11
+type Router interface {                     // implementation: NewRouter
     Handle(pattern string, h http.Handler)
     HandleFunc(pattern string, h http.HandlerFunc)
 }
@@ -140,12 +141,57 @@ type Published struct {
     Entry    Entry
 }
 
-func Register(p Plugin)                     // panics on nil, empty or duplicate name
+func Register(p Plugin)                     // panics on nil, a name CheckName rejects, a duplicate
 func All() []Plugin                         // sorted by name
 func Lookup(name string) (Plugin, bool)
 
-var ErrInvalid, ErrUnsupported error
+// Plugin names: ^[a-z0-9]+(-[a-z0-9]+)*$ and not reserved (http-routing.md §1).
+var Reserved = []string{"-", ".well-known", "api", "ui", "v2"} // read-only
+func IsReserved(segment string) bool
+func CheckName(name string) error           // empty, reserved, or not the grammar; names the name
+
+// NewRouter is the Router of plugin name: "GET /{repo}/x" is mounted as "GET /<name>/{repo}/x".
+// A pattern with {repo} gets the repo middleware: one deps.Index.GetRepo per request, 404 when
+// the repo is missing or of another format, 500 (logged) when the lookup fails, else the repo
+// in the context. Panics on a nil mux or Index, a bad name or pattern, a nil handler.
+func NewRouter(mux *http.ServeMux, name string, deps Deps) Router
+func WithRepo(ctx context.Context, repo index.Repo) context.Context
+func RepoFrom(ctx context.Context) (index.Repo, bool)
+
+// Authorize asks deps.Auth whether auth.PrincipalFrom(ctx) may do a on repo: nil,
+// ErrUnauthenticated (denied, anonymous), ErrForbidden (denied, authenticated), or the
+// authorizer's error unchanged. A nil deps.Auth allows everything (until RBAC, #45).
+func Authorize(ctx context.Context, deps Deps, a auth.Action, repo index.Repo) error
+
+// WriteError answers StatusOf(err) as text/plain (nosniff): err.Error() for 4xx, the status
+// text for 5xx; a 401 carries WWW-Authenticate: Basic realm="lajstrom".
+func WriteError(w http.ResponseWriter, err error) int
+func StatusOf(err error) int
+
+// CachedDocument returns the index_cache row of (repo, scope, kind), or renders the scope with
+// p.RenderIndex, stores every document (SHA256, RenderedAt) and returns the one of kind; lookup,
+// render and store run in one st.Tx. index.ErrNotFound when no document of kind is rendered.
+func CachedDocument(ctx context.Context, st index.Store, p Plugin, repo index.Repo, scope IndexScope, kind string) (*index.Cache, error)
+// ServeDocument: http.ServeContent with ETag "<sha256>" and Last-Modified RenderedAt.
+func ServeDocument(w http.ResponseWriter, r *http.Request, c *index.Cache, contentType string)
+
+var ErrInvalid, ErrUnsupported, ErrUnauthenticated, ErrForbidden error
 ```
+
+`StatusOf` is the one error table of the frontends; plugins wrap these sentinels with `%w`.
+They are checked in this order:
+
+| Error (`errors.Is`, `errors.As`) | Status |
+| --- | --- |
+| `format.ErrInvalid` | 400 |
+| `format.ErrUnauthenticated` | 401, `WWW-Authenticate: Basic realm="lajstrom"` |
+| `format.ErrForbidden` | 403 |
+| `index.ErrNotFound`, `provider.ErrNotFound` | 404 |
+| `index.ErrConflict`, `provider.ErrConflict` | 409 |
+| `*http.MaxBytesError` | 413 |
+| `format.ErrUnsupported`, `provider.ErrUnsupported` | 501 |
+| `provider.ErrUnauthorized` (the backend rejected Lajstrom's own credentials) | 502 |
+| anything else, `nil` included | 500 |
 
 ### Registry provider (`internal/provider`)
 
@@ -326,6 +372,10 @@ func ParsePrincipal(s string) (Principal, error) // errors wrap ErrInvalidPrinci
 var Anonymous Principal
 var ErrInvalidPrincipal error
 
+// The request's principal; the authentication middleware (#43 Basic, #26 bearer) stores it.
+func WithPrincipal(ctx context.Context, p Principal) context.Context
+func PrincipalFrom(ctx context.Context) Principal // Anonymous when nothing was stored
+
 type Action string                          // ActionRead, ActionWrite, ActionDelete, ActionManage
 type Authorizer interface {
     Allowed(ctx context.Context, p Principal, a Action, format, repo string) (bool, error)
@@ -362,6 +412,19 @@ Where the merged shapes differ from the first sketch of this section, and why:
   `index.IndexCache` stutters.
 - **`ListAudit(AuditFilter)`** is on the Reader for `GET /api/v1/audit`, and `FindFiles`
   returns `FileMatch` (file with its version and package) for lookups by file name.
+- **Plugin names are checked in `format`.** The grammar `^[a-z0-9]+(-[a-z0-9]+)*$` and the
+  reserved first segments (`Reserved`, moved from `server`) live in `format`; `Register` panics
+  on a name `CheckName` rejects, and `server.New` runs the same check for plugins passed
+  without `Register`.
+- **The Router resolves `{repo}` once per request and does not cache.** One `GetRepo` per
+  request is the cost of a primary-key lookup; a cache across requests would keep serving a
+  deleted repo.
+- **The principal comes from the context, not from a header parser.** Until the
+  authentication middleware stores one with `auth.WithPrincipal` (#43 Basic, #26 bearer), every
+  request is anonymous: parsing Basic credentials without verifying them would be a hole. A nil
+  `Deps.Auth` allows everything, which is the dev stack before RBAC (#45).
+- **One error table per package.** `format.StatusOf` maps the sentinels of `format`, `index`
+  and `provider` for every frontend; a plugin wraps them and never picks a status itself.
 
 ## 3. Approved dependencies
 
