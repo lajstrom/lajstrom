@@ -58,7 +58,7 @@ Rules:
 | `mediaType` | always `application/vnd.oci.image.manifest.v1+json`. Image indexes are never used for a package version (they are mutable). |
 | `artifactType` | `application/vnd.lajstrom.<format>.v1`. `<format>` is the plugin name: `raw`, `pypi`, `deb`, `maven` in the MVP; `rpm`, `npm`, `nuget`, `cargo`, `go` later. It selects the plugin and filters referrers. Note: the apt *protocol* stores `deb` *packages*; the artifactType is `deb`, the annotation `lajstrom.format` is `apt` (the repo format). |
 | `config` | always the OCI empty descriptor (`application/vnd.oci.empty.v1+json`, the 2-byte blob `{}`). No logic in config. |
-| `layers` | one or more file layers plus at most one metadata layer. Order: file layers first, metadata layer last. Every layer carries `org.opencontainers.image.title` with the exact file name (no directories, except for `raw`, see below). |
+| `layers` | one or more file layers plus at most one metadata layer. Order: file layers first, metadata layer last. Every layer carries `org.opencontainers.image.title` with the exact file name (no directories, except for `raw`, whose title is the original `/`-separated path, section 4.1). |
 | `subject` | not set by Lajstrom. Referrers (signatures, SBOMs) set `subject` to our manifest. |
 | `annotations` | the search keys listed in section 3. Anything large goes to the metadata layer. |
 
@@ -161,8 +161,10 @@ tag = Escape(version) [ "__" Escape(variant) ]
 - The separator between version and variant is `__` (two underscores). `Escape` never produces
   `__`, so the split is unambiguous.
 - If the resulting tag is longer than 128 characters it is replaced by
-  `_h` + first 40 hex characters of `sha256(version + "\x00" + variant)`. `Escape` output never
-  starts with `_h`, so hashed tags cannot collide with escaped ones. The index stores the tag; the
+  `_h` + first 40 hex characters of the `sha256` of the unhashed tag string
+  (`Escape(version)[__Escape(variant)]`, injective in the pair because `Escape` is prefix-free and
+  never produces `__`). `Escape` output never starts with `_h`, so hashed tags cannot collide
+  with escaped ones. The index stores the tag; the
   truth is in annotations, so nothing needs to decode a hashed tag.
 
 Examples:
@@ -198,7 +200,8 @@ ambiguous (`a_` + `_b` vs `a` + `__b`). See ADR 0005.
 2. apply `Escape`;
 3. if the result does not match the OCI path-component grammar
    `^[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*$` (for example because it starts with `_` or
-   contains `.-`), replace it with `h0_` + first 32 hex characters of `sha256(s)`.
+   contains `.-`), replace it with `h0__` + first 32 hex characters of `sha256(s)`. `Escape`
+   never produces `__`, so a hashed component cannot collide with an escaped one.
 
 Package names of the MVP formats are ASCII-restricted by their own specs, so step 3 is a safety
 net, not a normal path.
@@ -218,7 +221,9 @@ The ingest pipeline rejects a manifest with `400` (facade: `MANIFEST_INVALID`) w
 - the repository path computed from the annotations (section 4.1) differs from the path pushed to;
 - the tag computed from the annotations (section 4.2) differs from the tag pushed to;
 - a layer media type is not one of the format's roles, or a layer has no
-  `org.opencontainers.image.title`;
+  `org.opencontainers.image.title` (or a title with a directory, except for `raw`);
+- a layer descriptor is malformed: the digest is not `<algorithm>:<encoded>` of a known
+  algorithm, or the size is negative;
 - the plugin's `Validate` finds the bytes and the annotations disagree (deb control vs
   annotations, wheel file name vs version/variant, POM coordinates vs path);
 - a layer referenced by the manifest has not been uploaded (the facade checks blob existence in

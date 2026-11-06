@@ -39,7 +39,8 @@ One OCI image manifest (image-spec 1.1) per (package, version, variant), with:
 - tag `Escape(version)[__Escape(variant)]`, **immutable and append-only**; `Escape` maps every
   byte outside `[A-Za-z0-9.-]` to `_` + two hex digits (`_` itself → `_5f`), so `__` never occurs
   inside an escaped value and the separator is unambiguous. Tags longer than 128 characters are
-  replaced by a hash form (`_h` + 40 hex) that no escaped value can produce.
+  replaced by a hash form (`_h` + 40 hex of the unhashed tag) that no escaped value can produce;
+  path components that fail the OCI grammar become `h0__` + 32 hex for the same reason.
 
 A tag collision with a different digest is a `409`, never an overwrite. Existing conventions
 (Helm, OpenTofu, Flux, conda, …) are passed through repos of type `oci` and not re-encoded.
