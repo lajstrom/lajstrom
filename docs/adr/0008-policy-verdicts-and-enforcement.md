@@ -1,6 +1,6 @@
 # 0008. Policy verdicts: deny lists, quarantine, and where enforcement lives
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-07
 - Deciders: gecube
 

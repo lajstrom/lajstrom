@@ -44,11 +44,11 @@ to `superseded by NNNN`. Typos and broken links may be fixed in place.
 | [0001](0001-oci-registry-as-sole-storage.md) | The OCI registry is the only storage | accepted |
 | [0002](0002-server-side-protocol-emulation.md) | Server-side protocol emulation, no client plugins | accepted |
 | [0003](0003-license-and-contribution-terms.md) | License and contribution terms | accepted |
-| [0004](0004-path-first-addressing.md) | Path-first addressing: one host, `/<format>/<repo>/` | proposed |
-| [0005](0005-manifest-profile-and-immutable-tags.md) | Manifest profile: OCI 1.1 artifacts with one immutable tag per variant | proposed |
-| [0006](0006-derived-index-and-control-plane.md) | Derived index plus a small control plane; SQLite and Postgres | proposed |
-| [0007](0007-rbac-model.md) | Authentication and RBAC model | proposed |
-| [0008](0008-policy-verdicts-and-enforcement.md) | Policy verdicts: deny lists, quarantine, and where enforcement lives | proposed |
-| [0009](0009-encryption-at-rest-in-the-registry.md) | Encryption at rest in the registry: OCI encrypted layers, keys held by Lajstrom | proposed |
-| [0010](0010-bearer-token-signing-key.md) | Where the bearer-token signing key lives: the database, under the master key | proposed |
+| [0004](0004-path-first-addressing.md) | Path-first addressing: one host, `/<format>/<repo>/` | accepted |
+| [0005](0005-manifest-profile-and-immutable-tags.md) | Manifest profile: OCI 1.1 artifacts with one immutable tag per variant | accepted |
+| [0006](0006-derived-index-and-control-plane.md) | Derived index plus a small control plane; SQLite and Postgres | accepted |
+| [0007](0007-rbac-model.md) | Authentication and RBAC model | accepted |
+| [0008](0008-policy-verdicts-and-enforcement.md) | Policy verdicts: deny lists, quarantine, and where enforcement lives | accepted |
+| [0009](0009-encryption-at-rest-in-the-registry.md) | Encryption at rest in the registry: OCI encrypted layers, keys held by Lajstrom | accepted |
+| [0010](0010-bearer-token-signing-key.md) | Where the bearer-token signing key lives: the database, under the master key | accepted |
 | [0011](0011-client-address-behind-a-proxy.md) | The client address behind a reverse proxy: a list of trusted proxies, nothing else | accepted |

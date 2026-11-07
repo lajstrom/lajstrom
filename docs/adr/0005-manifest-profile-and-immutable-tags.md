@@ -1,6 +1,6 @@
 # 0005. Manifest profile: OCI 1.1 artifacts with one immutable tag per variant
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-06
 - Deciders: gecube
 

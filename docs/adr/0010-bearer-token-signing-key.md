@@ -1,6 +1,6 @@
 # 0010. Where the bearer-token signing key lives: the database, under the master key
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-07
 - Deciders: gecube
 

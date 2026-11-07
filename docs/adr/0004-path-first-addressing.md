@@ -1,6 +1,6 @@
 # 0004. Path-first addressing: one host, `/<format>/<repo>/`
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-06
 - Deciders: gecube
 
