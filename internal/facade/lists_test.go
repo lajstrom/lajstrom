@@ -137,7 +137,7 @@ func TestCatalog(t *testing.T) {
 	}
 	all := []string{"oci/images/app", "oci/images/base/tools", "raw/assets/docs/readme.md", "raw/assets/hello"}
 
-	open := New(Options{Index: e.st, Providers: provider.Map{"local": e.prov}}) // no Authorizer
+	open := New(Options{Index: e.st, Providers: provider.Map{"local": e.prov}, Tokens: e.tokens}) // no Authorizer
 	if pages := e.listing(open, "/v2/_catalog", "repositories"); !equalPages(pages, [][]string{all}) {
 		t.Errorf("catalog without an Authorizer: %q", pages)
 	}

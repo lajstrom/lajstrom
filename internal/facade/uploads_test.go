@@ -305,7 +305,7 @@ func (failingStore) UpsertSession(context.Context, *index.Session) error {
 // so that no backend session is orphaned, and the answer is a 500 without the cause.
 func TestUploadRowNotWritten(t *testing.T) {
 	e := newEnv(t, envOptions{})
-	h := New(Options{Index: failingStore{e.st}, Providers: provider.Map{"local": e.prov}, Log: slog.New(slog.NewTextHandler(e.logs, nil)),
+	h := New(Options{Index: failingStore{e.st}, Providers: provider.Map{"local": e.prov}, Tokens: e.tokens, Log: slog.New(slog.NewTextHandler(e.logs, nil)),
 		Now: e.clock.Now})
 	rr := e.do(h, http.MethodPost, uploads, nil)
 	if msg := wantError(t, "POST", rr, http.StatusInternalServerError, codeUnknown); strings.Contains(msg, "locked") {

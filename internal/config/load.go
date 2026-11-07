@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -42,19 +43,36 @@ func Load(path string, lookupEnv func(string) (string, bool)) (*Config, error) {
 	return c, nil
 }
 
-// decodeFile decodes the YAML file at path into c. An empty file leaves c unchanged.
+// decodeFile decodes the YAML file at path into c. An empty file leaves c unchanged. A file
+// that still sets auth.tokenSigningKeyFile is refused with a message of its own, so that nobody
+// keeps a key file believing it is read: the bearer-token key lives in the database (ADR 0010).
 func decodeFile(path string, c *Config) error {
-	f, err := os.Open(path) // #nosec G304 -- the operator chooses the configuration file
+	b, err := os.ReadFile(path) // #nosec G304 -- the operator chooses the configuration file
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
-	defer func() { _ = f.Close() }()
-	dec := yaml.NewDecoder(f)
+	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
 	if err := dec.Decode(c); err != nil && !errors.Is(err, io.EOF) {
+		if setsTokenKeyFile(b) {
+			return fmt.Errorf("config: %s: auth.tokenSigningKeyFile is gone: the key lives in the database, ADR 0010", path)
+		}
 		return fmt.Errorf("config: %s: %w", path, err)
 	}
 	return nil
+}
+
+// setsTokenKeyFile reports whether the YAML document b has the key auth.tokenSigningKeyFile,
+// whatever its value.
+func setsTokenKeyFile(b []byte) bool {
+	var doc struct {
+		Auth map[string]yaml.Node `yaml:"auth"`
+	}
+	if yaml.Unmarshal(b, &doc) != nil {
+		return false
+	}
+	_, ok := doc.Auth["tokenSigningKeyFile"]
+	return ok
 }
 
 // applyDefaults fills the keys of r that the file left at their zero value.

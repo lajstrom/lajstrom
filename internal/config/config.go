@@ -134,16 +134,17 @@ type Auth struct {
 	// AnonymousRead is the server-wide switch for anonymous read: when false, no repo is
 	// readable without credentials, whatever its own anonymousRead (RBAC, issue #45).
 	AnonymousRead bool `yaml:"anonymousRead"`
-	// TokenSigningKeyFile is the PEM file with the key that signs OCI bearer tokens (issue #26).
-	TokenSigningKeyFile string `yaml:"tokenSigningKeyFile"`
 }
 
-// Keys configures signing keys (issue #41, internal/keys).
+// Keys configures signing keys (issue #41, internal/keys): the apt keys of the repos and the
+// key that signs the bearer tokens of /v2 (issue #26, ADR 0010).
 type Keys struct {
 	// MasterKeyEnv names the environment variable that holds the master key, which encrypts
-	// signing keys at rest: 64 hexadecimal characters (32 bytes). The value is read by serve
-	// and admin key (keys.LoadMaster), never by Load, so it is not part of Config. Empty, or a
-	// variable that is not set while the index holds no signing key: signing is off.
+	// signing keys at rest: 64 hexadecimal characters (32 bytes). It has two readers: the apt
+	// signing keys and the bearer-token signing key. The value is read by serve and admin key
+	// (keys.LoadMaster), never by Load, so it is not part of Config. Empty, or a variable that
+	// is not set while the index holds no apt signing key: apt signing is off, and bearer
+	// tokens are signed with an ephemeral key.
 	MasterKeyEnv string `yaml:"masterKeyEnv"`
 	// Algorithm is the algorithm of the repo keys made from now on: ed25519 (apt 2.0 and later)
 	// or rsa4096 (older apt). Keys made before keep theirs.
@@ -152,12 +153,21 @@ type Keys struct {
 	// the new one, after a rotation; DefaultKeysRetireGrace when the file leaves it out. Zero
 	// drops a retired key at once (a compromised key). Must not be negative.
 	RetireGrace time.Duration `yaml:"retireGrace"`
+	// TokenAlgorithm is the algorithm of the bearer-token signing keys made from now on: ES256
+	// (ECDSA P-256) or EdDSA (Ed25519). A key made before keeps its own; a rotation changes it.
+	TokenAlgorithm string `yaml:"tokenAlgorithm"`
 }
 
 // The algorithms of keys.algorithm.
 const (
 	KeysAlgorithmEd25519 = "ed25519"
 	KeysAlgorithmRSA4096 = "rsa4096"
+)
+
+// The algorithms of keys.tokenAlgorithm.
+const (
+	KeysTokenES256 = "ES256"
+	KeysTokenEdDSA = "EdDSA"
 )
 
 // Repo declares a repo to create at startup (the config bootstrap of issue #14).
@@ -174,18 +184,19 @@ type Repo struct {
 
 // Defaults that Load applies before reading the file.
 const (
-	DefaultShutdownTimeout = 30 * time.Second
-	DefaultMaxManifestSize = 4 << 20 // the least the distribution spec asks a registry to take
-	DefaultLogLevel        = "info"
-	DefaultLogFormat       = "text"
-	DefaultDatabaseDriver  = "sqlite"
-	DefaultDatabaseDSN     = "file:lajstrom.db"
-	DefaultRegistryType    = "generic"
-	DefaultRegistryTimeout = 30 * time.Second
-	DefaultRegistryRetries = 3
-	DefaultIngestClaimTTL  = 10 * time.Minute
-	DefaultKeysAlgorithm   = KeysAlgorithmEd25519
-	DefaultKeysRetireGrace = 720 * time.Hour
+	DefaultShutdownTimeout    = 30 * time.Second
+	DefaultMaxManifestSize    = 4 << 20 // the least the distribution spec asks a registry to take
+	DefaultLogLevel           = "info"
+	DefaultLogFormat          = "text"
+	DefaultDatabaseDriver     = "sqlite"
+	DefaultDatabaseDSN        = "file:lajstrom.db"
+	DefaultRegistryType       = "generic"
+	DefaultRegistryTimeout    = 30 * time.Second
+	DefaultRegistryRetries    = 3
+	DefaultIngestClaimTTL     = 10 * time.Minute
+	DefaultKeysAlgorithm      = KeysAlgorithmEd25519
+	DefaultKeysRetireGrace    = 720 * time.Hour
+	DefaultKeysTokenAlgorithm = KeysTokenES256
 )
 
 // Default returns the configuration before the file is read. server.listen has no default.
@@ -195,6 +206,6 @@ func Default() *Config {
 		Log:      Log{Level: DefaultLogLevel, Format: DefaultLogFormat},
 		Database: Database{Driver: DefaultDatabaseDriver, DSN: DefaultDatabaseDSN},
 		Ingest:   Ingest{ClaimTTL: DefaultIngestClaimTTL},
-		Keys:     Keys{Algorithm: DefaultKeysAlgorithm, RetireGrace: DefaultKeysRetireGrace},
+		Keys:     Keys{Algorithm: DefaultKeysAlgorithm, RetireGrace: DefaultKeysRetireGrace, TokenAlgorithm: DefaultKeysTokenAlgorithm},
 	}
 }

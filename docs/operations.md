@@ -47,8 +47,9 @@ list` shows who is disabled.
 
 Every apt repo is signed with a key of its own: `InRelease` is the `Release` clearsigned,
 `Release.gpg` its detached signature, and `GET /apt/<repo>/key.asc` serves the public key that
-clients pin with `signed-by=` ([http-routing.md](spec/http-routing.md) §3). The keys are made
-and kept by Lajstrom, encrypted with one master key that only the operator holds.
+clients pin with `signed-by=` ([http-routing.md](spec/http-routing.md) §3). One more key signs
+the bearer tokens of `/v2` ([below](#the-bearer-token-key)). The keys are made and kept by
+Lajstrom, encrypted with one master key that only the operator holds.
 
 ### The master key
 
@@ -64,9 +65,11 @@ and `lajstrom admin key` read it when they start. A variable that is set but emp
 hexadecimal characters, stops them with an error that names the variable and the format, never
 the value. Without a master key (`keys.masterKeyEnv` empty, or the variable not set) signing is
 off: `serve` logs a warning for every apt repo, `InRelease`, `Release.gpg` and `key.asc` are
-`404`, and clients have to mark the source `[trusted=yes]`. Once the index holds signing keys,
-`serve` refuses to start without the master key: those keys are useless without it, and the
-clients that pinned them would see the repos turn unsigned.
+`404`, and clients have to mark the source `[trusted=yes]`; bearer tokens are signed with an
+ephemeral key ([below](#the-bearer-token-key)). Once the index holds apt signing keys, `serve`
+refuses to start without the master key: those keys are useless without it, and the clients
+that pinned them would see the repos turn unsigned. The token key does not count: no client
+pins it.
 
 In Kubernetes the master key is a Secret, passed to the container as the variable:
 
@@ -92,7 +95,9 @@ private keys only as ciphertext (`keys.private_enc`, AES-256-GCM), and the maste
 holds nothing. **Losing the master key loses every repo key**: no signature can be made with
 them any more. Recover with a new master key and a rotation of every apt repo (below), then
 distribute the new `key.asc` to every client at once: the retired keys cannot sign beside the
-new ones, so clients that pinned only the old key fail until they have the new one.
+new ones, so clients that pinned only the old key fail until they have the new one. The token
+key is lost with it too: `serve` refuses to start with a token key it cannot decrypt, and
+`lajstrom admin key drop --token` under the new master key lets the next start make a new one.
 
 ### Repo keys
 
@@ -158,3 +163,60 @@ Rotate when the algorithm changes (`keys.algorithm` applies to keys made from th
 new master key replaces a lost one, and when a key may have leaked. For a leaked key, set
 `keys.retireGrace: 0s` first, so that the retired key stops signing and leaves `key.asc` at
 once, and accept that clients fail until they have the new `key.asc`.
+
+### The bearer-token key
+
+The bearer tokens of `/v2` ([auth.md](auth.md#bearer-tokens-on-v2)) are signed with one server
+key ([ADR 0010](adr/0010-bearer-token-signing-key.md)): a row of `keys` with the kind `jwt` and
+no repo, its private key encrypted with the master key as the repo keys are, the lowercase
+hexadecimal sha256 of its public key as its fingerprint and as the `kid` of every token. It is
+the same on every replica because it lives in the database: a token one replica issues verifies
+on the others, and nothing is mounted, generated per node or restarted to rotate it.
+
+- **Made at startup**: `serve` loads it before it listens, or makes it when there is none (two
+  replicas that start at once end up with one, as for a repo key), and logs its fingerprint and
+  algorithm at info. `keys.tokenAlgorithm` (`ES256`, the default, or `EdDSA`) is the algorithm
+  of the keys made from then on; a key keeps its own, so a change of algorithm is a rotation.
+- **Without a master key**: `serve` signs with an ephemeral key in memory and warns that tokens
+  do not survive a restart and are not shared between replicas. That is fine for one process;
+  set `keys.masterKeyEnv` for anything with replicas or restarts that clients should not notice.
+- **A key that does not decrypt** (a database restored under another master key) stops `serve`
+  with an error that names it. Start with the right master key, or retire it with
+  `lajstrom admin key drop --token` and start again: a new key is made.
+- **Rotation**: `lajstrom admin key rotate --token` makes a new key, which signs from then on on
+  every replica, and retires the old one, which still verifies for 21 minutes, the token
+  lifetime and the clock skew, so that no token issued before the rotation is refused before it
+  expires. Retired rows stay in the table, ignored once retired longer than that ago. The
+  replicas reload the keys at most once a second, so for that second a replica may refuse a
+  token of the new key once; the client asks for another. A rotation is an audit row
+  `key.rotate` without a repo, the new fingerprint as its subject, the retired one in its
+  details. Rotate with the master key's rotation, when the algorithm changes, or at will:
+  nothing else needs to happen.
+- **Drop**: `lajstrom admin key rotate --token --drop` is the same with no grace: the old key
+  stops verifying within a second on every replica and every outstanding token dies, for a key
+  that may have leaked or when every token must go now (a user who must lose access to `/v2`
+  before their token expires). Clients get new tokens with their credentials at their next
+  request. Its audit row says `"dropped": true`.
+- **Export**: `lajstrom admin key export --token` prints the public key as PEM, for a verifier
+  that is not Lajstrom, should one ever be needed.
+
+The keys of the server can be listed with
+`sqlite3 lajstrom.db "SELECT id, fingerprint, created_at, retired_at FROM keys WHERE kind = 'jwt'"`
+(or the same query on Postgres).
+
+### `lajstrom admin key`
+
+Every subcommand needs the configuration, the master key in the variable `keys.masterKeyEnv`
+names, and a migrated database; none goes through HTTP.
+
+| Command | What it does |
+| --- | --- |
+| `admin key export --repo apt/<repo>` | prints the repo's armored keyring, what `key.asc` serves; makes the key when there is none |
+| `admin key rotate --repo apt/<repo>` | gives the repo a new key, retires the old one for `keys.retireGrace`, drops the repo's cached indexes; prints the new fingerprint |
+| `admin key export --token` | prints the public bearer-token key as PEM; makes the key when there is none |
+| `admin key rotate --token` | a new bearer-token key; the old one verifies for 21 minutes; prints the new fingerprint |
+| `admin key rotate --token --drop` | the same, and the old key verifies nothing from then on |
+| `admin key drop --token` | retires the bearer-token key without a successor, whether it decrypts or not (the next token a replica issues, or the next start of `serve`, makes one); prints its fingerprint |
+
+`--repo` and `--token` exclude each other, and one of them is required. Without the master key
+the token commands fail and say that `serve` signs with an ephemeral key then.

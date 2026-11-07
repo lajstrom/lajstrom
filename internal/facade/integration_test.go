@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/sqlite"
 	"github.com/lajstrom/lajstrom/internal/ingest"
+	"github.com/lajstrom/lajstrom/internal/keys"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/provider/generic"
@@ -31,7 +33,8 @@ import (
 
 // replicas is two facades over one SQLite database and the registry of
 // LAJSTROM_TEST_REGISTRY, each with a provider of its own (its own connections and token
-// cache), as two replicas of the server have; they share nothing else.
+// cache) and token keys of its own over the database with one master key, as two replicas of
+// the server have; they share nothing else but the external URL, the service of their tokens.
 type replicas struct {
 	st    *sqlite.Store
 	a, b  *httptest.Server
@@ -56,10 +59,15 @@ func newReplicas(t *testing.T) *replicas {
 	cfg := config.Registry{Name: "it", Type: generic.Type, URL: "http://" + addr, Prefix: os.Getenv("LAJSTROM_TEST_REGISTRY_PREFIX"),
 		Auth: config.RegistryAuth{Username: os.Getenv("LAJSTROM_TEST_REGISTRY_USERNAME"), Password: os.Getenv("LAJSTROM_TEST_REGISTRY_PASSWORD")}}
 	r := &replicas{st: st, logs: &logBuffer{}, name: "oci/images/it-" + randomHex(t)}
+	master, err := keys.ParseMaster(strings.Repeat("0123456789abcdef", 4))
+	must(t, err)
 	server := func() *httptest.Server {
 		p, err := generic.New(cfg, slog.New(slog.NewTextHandler(r.logs, nil)))
 		must(t, err)
-		srv := httptest.NewServer(New(Options{Index: st, Providers: provider.Map{"it": p}, Log: slog.New(slog.NewTextHandler(r.logs, nil))}))
+		tokens, err := keys.NewTokens(keys.TokenOptions{Index: st, Master: master, Log: slog.New(slog.NewTextHandler(r.logs, nil))})
+		must(t, err)
+		srv := httptest.NewServer(New(Options{Index: st, Providers: provider.Map{"it": p}, Tokens: tokens,
+			ExternalURL: "https://art.test", Log: slog.New(slog.NewTextHandler(r.logs, nil))}))
 		t.Cleanup(srv.Close)
 		return srv
 	}
@@ -233,6 +241,48 @@ func TestIntegrationPassThrough(t *testing.T) {
 	}
 }
 
+// TestIntegrationTokenAcrossReplicas is H-12 against a real registry: a token from replica A
+// (GET /v2/token) is accepted by replica B, which shares only the database and the master key:
+// the blob and the manifest pushed to B with it, the tags read back from A; the same requests
+// with the token changed by one byte are 401 on both.
+func TestIntegrationTokenAcrossReplicas(t *testing.T) {
+	r := newReplicas(t)
+	resp, body := request(t, http.MethodGet, r.a.URL+"/v2/token?scope=repository:"+r.name+":pull,push", nil, 0)
+	var tok struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &tok); resp.StatusCode != http.StatusOK || err != nil || tok.Token == "" {
+		t.Fatalf("token from A: %d, %v", resp.StatusCode, err)
+	}
+	bearer := "Bearer " + tok.Token
+	layer := []byte("layer " + randomHex(t))
+	for _, b := range [][]byte{layer, ocispec.DescriptorEmptyJSON.Data} {
+		resp, body := request(t, http.MethodPost, r.b.URL+"/v2/"+r.name+"/blobs/uploads/?digest="+digest.FromBytes(b).String(),
+			bytes.NewReader(b), int64(len(b)), "Authorization", bearer)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("blob on B with A's token: %d %s", resp.StatusCode, body)
+		}
+	}
+	m, _ := manifest(t, layer, "h-12")
+	resp, body = request(t, http.MethodPut, r.b.URL+"/v2/"+r.name+"/manifests/v1", bytes.NewReader(m), int64(len(m)),
+		"Content-Type", ocispecManifest, "Authorization", bearer)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("manifest on B with A's token: %d %s", resp.StatusCode, body)
+	}
+	resp, body = request(t, http.MethodGet, r.a.URL+"/v2/"+r.name+"/tags/list", nil, 0, "Authorization", bearer)
+	if want := `{"name":"` + r.name + `","tags":["v1"]}` + "\n"; resp.StatusCode != http.StatusOK || string(body) != want {
+		t.Errorf("tags/list on A: %d %s, want %s", resp.StatusCode, body, want)
+	}
+	changed := []byte(tok.Token)
+	changed[len(changed)-2] ^= 1
+	for _, url := range []string{r.a.URL, r.b.URL} {
+		resp, _ := request(t, http.MethodGet, url+"/v2/"+r.name+"/tags/list", nil, 0, "Authorization", "Bearer "+string(changed))
+		if resp.StatusCode != http.StatusUnauthorized || !strings.HasPrefix(resp.Header.Get("WWW-Authenticate"), "Bearer realm=") {
+			t.Errorf("a changed token: %d %q", resp.StatusCode, resp.Header.Get("WWW-Authenticate"))
+		}
+	}
+}
+
 // TestIntegrationRawPush is the first criterion of #25 against a real registry: a raw file
 // pushed as oras pushes it, the blob and then the manifest through the facade, is indexed by the
 // pipeline and served by the raw route; another manifest under the tag is 409 with the digest
@@ -255,7 +305,7 @@ func TestIntegrationRawPush(t *testing.T) {
 	providers := provider.Map{"it": p}
 	logs := &logBuffer{}
 	log := slog.New(slog.NewTextHandler(logs, nil))
-	srv := httptest.NewServer(New(Options{Index: st, Providers: providers, Log: log,
+	srv := httptest.NewServer(New(Options{Index: st, Providers: providers, Log: log, Tokens: keys.NewEphemeralTokens(),
 		Ingest: ingest.New(ingest.Options{Providers: providers, Index: st, Log: log})}))
 	t.Cleanup(srv.Close)
 
@@ -367,7 +417,7 @@ func TestIntegrationS3Redirect(t *testing.T) {
 	providers := provider.Map{"s3": p}
 	logs := &logBuffer{}
 	log := slog.New(slog.NewTextHandler(logs, nil))
-	srv := httptest.NewServer(New(Options{Index: st, Providers: providers, Log: log,
+	srv := httptest.NewServer(New(Options{Index: st, Providers: providers, Log: log, Tokens: keys.NewEphemeralTokens(),
 		Ingest: ingest.New(ingest.Options{Providers: providers, Index: st, Log: log})}))
 	t.Cleanup(srv.Close)
 	raw := httptest.NewServer(rawRoutes(t, st, providers))

@@ -61,7 +61,7 @@ func (h *handler) getManifest(w http.ResponseWriter, r *http.Request, t *target,
 	} else if err != nil {
 		return err
 	}
-	if err := h.authorize(ctx, auth.ActionRead, t.repo); err != nil {
+	if err := h.authorize(ctx, auth.ActionRead, t); err != nil {
 		return err
 	}
 	rr, err := h.backend(ctx, t)
@@ -114,7 +114,7 @@ func (h *handler) putManifest(w http.ResponseWriter, r *http.Request, t *target,
 	if err != nil {
 		return err
 	}
-	if err := h.authorize(ctx, auth.ActionWrite, t.repo); err != nil {
+	if err := h.authorize(ctx, auth.ActionWrite, t); err != nil {
 		return err
 	}
 	desc, body, err := readManifest(r, refDigest, h.o.MaxManifestSize)
@@ -195,7 +195,7 @@ func readManifest(r *http.Request, refDigest digest.Digest, limit int64) (ocispe
 
 // deleteManifest answers DELETE …/manifests/<ref>: 405 until #61.
 func (h *handler) deleteManifest(_ http.ResponseWriter, r *http.Request, t *target, _ string) error {
-	if err := h.authorize(r.Context(), auth.ActionDelete, t.repo); err != nil {
+	if err := h.authorize(r.Context(), auth.ActionDelete, t); err != nil {
 		return err
 	}
 	return &apiError{status: http.StatusMethodNotAllowed, code: codeUnsupported, msg: "deleting manifests comes with #61"}

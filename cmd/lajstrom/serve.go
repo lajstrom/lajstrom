@@ -36,11 +36,14 @@ const registryProbeTimeout = 10 * time.Second
 // apply each migration once. The index is Deps.Index of the format plugins and /-/readyz pings
 // it; the registries are Deps.Providers; the ingest pipeline over both, with ingest.claimTTL,
 // is Deps.Ingest; the signing keys over the index and the master key (newSigner) are
-// Deps.Signer. The repo service over the index (api.Repos) runs the config bootstrap
-// before the server listens, and serves /api/v1. The OCI facade over the index and the
-// registries serves /v2/, and hands the manifests of managed repos to the same pipeline;
-// server.maxManifestSize bounds them. The authenticator over the index's users reads the HTTP
-// Basic credentials of every request.
+// Deps.Signer. The bearer-token key is loaded or made right after (newTokenKeys), before the
+// server listens, so that a server that cannot load it fails at start (ADR 0010). The repo
+// service over the index (api.Repos) runs the config bootstrap before the server listens, and
+// serves /api/v1. The OCI facade over the index and the registries serves /v2/, issues and
+// verifies the bearer tokens with that key, and hands the manifests of managed repos to the
+// same pipeline; server.maxManifestSize bounds them. The authenticator over the index's users
+// reads the HTTP Basic credentials of every request. There is no Authorizer before RBAC
+// (#45), and serve says so at warn (warnOpen).
 func newServeCmd(a *app) *cobra.Command {
 	return &cobra.Command{
 		Use:         "serve",
@@ -81,6 +84,10 @@ func newServeCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			tokens, err := newTokenKeys(ctx, c, a.lookupEnv, st, a.log)
+			if err != nil {
+				return err
+			}
 
 			providers, err := provider.NewSet(c.Registries, a.log)
 			if err != nil {
@@ -88,8 +95,10 @@ func newServeCmd(a *app) *cobra.Command {
 			}
 			probeRegistries(ctx, providers, a.log)
 			pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL})
-			v2 := facade.New(facade.Options{Index: st, Providers: providers, Ingest: pipe,
-				MaxManifestSize: c.Server.MaxManifestSize, Log: a.log})
+			var authz auth.Authorizer // RBAC, #45
+			warnOpen(a.log, authz)
+			v2 := facade.New(facade.Options{Index: st, Providers: providers, Auth: authz, Ingest: pipe,
+				Tokens: tokens, ExternalURL: c.Server.ExternalURL, MaxManifestSize: c.Server.MaxManifestSize, Log: a.log})
 			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log})
 
 			srv, err := server.New(server.Options{
@@ -98,7 +107,7 @@ func newServeCmd(a *app) *cobra.Command {
 				ShutdownTimeout: c.Server.ShutdownTimeout,
 				Log:             a.log,
 				Plugins:         format.All(),
-				Deps:            format.Deps{Index: st, Providers: providers, Ingest: pipe, Signer: signer},
+				Deps:            format.Deps{Index: st, Providers: providers, Auth: authz, Ingest: pipe, Signer: signer},
 				Ready:           ready(a.log, c.Database.Driver, st),
 				API:             api.New(api.Options{Repos: repos, Log: a.log}),
 				Facade:          v2,
@@ -109,6 +118,15 @@ func newServeCmd(a *app) *cobra.Command {
 			}
 			return srv.Run(ctx)
 		},
+	}
+}
+
+// warnOpen logs at warn, when there is no Authorizer, that nothing is denied: every principal
+// may do everything, and the token endpoint grants every scope it is asked for.
+func warnOpen(log *slog.Logger, authz auth.Authorizer) {
+	if authz == nil {
+		log.Warn("authorization is not enforced until RBAC (#45): every principal, anonymous included, may do " +
+			"everything on /v2 and the frontends, and /v2/token therefore grants every requested scope")
 	}
 }
 

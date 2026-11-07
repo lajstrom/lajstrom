@@ -26,7 +26,7 @@ func (h *handler) getBlob(w http.ResponseWriter, r *http.Request, t *target, arg
 	if err != nil {
 		return err
 	}
-	if err := h.authorize(ctx, auth.ActionRead, t.repo); err != nil {
+	if err := h.authorize(ctx, auth.ActionRead, t); err != nil {
 		return err
 	}
 	p, err := h.registry(t)
@@ -56,7 +56,7 @@ func blobError(err error) error {
 
 // deleteBlob answers DELETE …/blobs/<digest>: 405 until #61.
 func (h *handler) deleteBlob(_ http.ResponseWriter, r *http.Request, t *target, _ string) error {
-	if err := h.authorize(r.Context(), auth.ActionDelete, t.repo); err != nil {
+	if err := h.authorize(r.Context(), auth.ActionDelete, t); err != nil {
 		return err
 	}
 	return &apiError{status: http.StatusMethodNotAllowed, code: codeUnsupported, msg: "deleting blobs comes with #61"}

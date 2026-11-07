@@ -395,7 +395,7 @@ func TestManifestHookErrors(t *testing.T) {
 	wantError(t, "the blob check fails", e.put(f, f.tag(), body), http.StatusInternalServerError, codeUnknown)
 	e.prov.FailExists = nil
 
-	h := New(Options{Index: e.st, Providers: provider.Map{"local": e.reg}, Log: slog.New(slog.NewTextHandler(e.logs, nil))})
+	h := New(Options{Index: e.st, Providers: provider.Map{"local": e.reg}, Tokens: e.tokens, Log: slog.New(slog.NewTextHandler(e.logs, nil))})
 	rr := e.do(h, http.MethodPut, "/v2/raw/assets/docs/e.txt/manifests/"+f.tag(), bytes.NewReader(body), "Content-Type", ocispecManifest)
 	wantError(t, "no ingest pipeline", rr, http.StatusInternalServerError, codeUnknown)
 	if !strings.Contains(e.logs.String(), "Options.Ingest is nil") {

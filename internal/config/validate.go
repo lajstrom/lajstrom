@@ -112,6 +112,9 @@ func (k Keys) validate(p *problems) {
 	if k.RetireGrace < 0 {
 		p.add("keys.retireGrace", "must not be negative")
 	}
+	if k.TokenAlgorithm != KeysTokenES256 && k.TokenAlgorithm != KeysTokenEdDSA {
+		p.add("keys.tokenAlgorithm", "%q is not %s or %s", k.TokenAlgorithm, KeysTokenES256, KeysTokenEdDSA)
+	}
 }
 
 func (r Registry) validate(p *problems, key string) {

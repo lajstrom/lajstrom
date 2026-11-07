@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/auth/token"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/provider"
@@ -72,7 +73,7 @@ type tagList struct {
 // here with n and a Link.
 func (h *handler) tags(w http.ResponseWriter, r *http.Request, t *target, _ string) error {
 	ctx := r.Context()
-	if err := h.authorize(ctx, auth.ActionRead, t.repo); err != nil {
+	if err := h.authorize(ctx, auth.ActionRead, t); err != nil {
 		return err
 	}
 	p, err := parsePage(r.URL.Query())
@@ -173,7 +174,10 @@ type catalogList struct {
 
 // catalog answers GET /v2/_catalog?n=&last=: the OCI repositories that oci_repos records for
 // every repo the principal may read, as <format>/<repo>/<path>, sorted and paginated with n
-// and a Link. oci repos are there too: their manifest PUT records the repository.
+// and a Link. oci repos are there too: their manifest PUT records the repository. With a
+// bearer that grants registry:catalog:*, the scope catalog clients ask for, the repos are those
+// the token's principal may read; with any other bearer, the token's view: the repositories it
+// grants pull on.
 func (h *handler) catalog(w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return methodNotAllowed(r)
@@ -187,22 +191,25 @@ func (h *handler) catalog(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return fmt.Errorf("facade: catalog: %w", err)
 	}
+	g, bearer := grantFrom(ctx)
+	tokenView := bearer && !g.Catalog()
 	names := []string{}
 	for _, repo := range repos {
-		switch err := format.Authorize(ctx, h.deps, auth.ActionRead, repo); {
-		case denied(err):
-			continue
-		case err != nil:
-			return fmt.Errorf("facade: catalog: %w", err)
+		if !tokenView {
+			switch err := format.Authorize(ctx, h.deps, auth.ActionRead, repo); {
+			case denied(err):
+				continue
+			case err != nil:
+				return fmt.Errorf("facade: catalog: %w", err)
+			}
 		}
-		ocis, err := h.o.Index.ListOCIRepos(ctx, repo.ID)
+		ocis, err := h.ociNames(ctx, repo)
 		if err != nil {
-			return fmt.Errorf("facade: catalog: %w", err)
+			return err
 		}
-		base := repoBase(repo) + "/"
-		for _, o := range ocis {
-			if path, ok := strings.CutPrefix(o.Path, base); ok && path != "" {
-				names = append(names, repo.Format+"/"+repo.Name+"/"+path)
+		for _, name := range ocis {
+			if !tokenView || g.Allows(name, token.ActionPull) {
+				names = append(names, name)
 			}
 		}
 	}
@@ -213,6 +220,23 @@ func (h *handler) catalog(w http.ResponseWriter, r *http.Request) error {
 	}
 	writeJSON(w, http.StatusOK, catalogList{Repositories: names})
 	return nil
+}
+
+// ociNames returns the names, <format>/<repo>/<path>, of the OCI repositories that oci_repos
+// records for repo.
+func (h *handler) ociNames(ctx context.Context, repo index.Repo) ([]string, error) {
+	ocis, err := h.o.Index.ListOCIRepos(ctx, repo.ID)
+	if err != nil {
+		return nil, fmt.Errorf("facade: catalog: %w", err)
+	}
+	base := repoBase(repo) + "/"
+	var names []string
+	for _, o := range ocis {
+		if path, ok := strings.CutPrefix(o.Path, base); ok && path != "" {
+			names = append(names, repo.Format+"/"+repo.Name+"/"+path)
+		}
+	}
+	return names, nil
 }
 
 // denied reports whether err is a denial of format.Authorize rather than a failure to decide.
