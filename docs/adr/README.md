@@ -51,4 +51,4 @@ to `superseded by NNNN`. Typos and broken links may be fixed in place.
 | [0008](0008-policy-verdicts-and-enforcement.md) | Policy verdicts: deny lists, quarantine, and where enforcement lives | proposed |
 | [0009](0009-encryption-at-rest-in-the-registry.md) | Encryption at rest in the registry: OCI encrypted layers, keys held by Lajstrom | proposed |
 | [0010](0010-bearer-token-signing-key.md) | Where the bearer-token signing key lives: the database, under the master key | proposed |
-| [0011](0011-client-address-behind-a-proxy.md) | The client address behind a reverse proxy: a list of trusted proxies, nothing else | proposed |
+| [0011](0011-client-address-behind-a-proxy.md) | The client address behind a reverse proxy: a list of trusted proxies, nothing else | accepted |
