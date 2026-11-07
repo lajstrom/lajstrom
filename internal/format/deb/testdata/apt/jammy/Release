@@ -1,0 +1,48 @@
+Origin: Lajstrom
+Label: ubuntu
+Suite: jammy
+Codename: jammy
+Date: Sun, 08 Nov 2026 09:30:00 UTC
+Architectures: amd64 arm64
+Components: main universe
+Description: apt/ubuntu jammy
+Acquire-By-Hash: yes
+MD5Sum:
+ 19995398807fcff124db6bf1e4c92b7c 1022 main/binary-amd64/Packages
+ <MD5Sum> <size> main/binary-amd64/Packages.gz
+ <MD5Sum> <size> main/binary-amd64/Packages.xz
+ 054ed374931b0f9f634e8f3486837f06 1567 main/binary-arm64/Packages
+ <MD5Sum> <size> main/binary-arm64/Packages.gz
+ <MD5Sum> <size> main/binary-arm64/Packages.xz
+ 3503d29615dee8c2ec2d9cb7cfe4c96a 610 universe/binary-amd64/Packages
+ <MD5Sum> <size> universe/binary-amd64/Packages.gz
+ <MD5Sum> <size> universe/binary-amd64/Packages.xz
+ d41d8cd98f00b204e9800998ecf8427e 0 universe/binary-arm64/Packages
+ <MD5Sum> <size> universe/binary-arm64/Packages.gz
+ <MD5Sum> <size> universe/binary-arm64/Packages.xz
+SHA1:
+ 6f126fcaafa372447e80ffa8ec2c2cc960e82a4b 1022 main/binary-amd64/Packages
+ <SHA1> <size> main/binary-amd64/Packages.gz
+ <SHA1> <size> main/binary-amd64/Packages.xz
+ 863cf1eaf6e7fa1f8e3493dc48e3974c8a8cf968 1567 main/binary-arm64/Packages
+ <SHA1> <size> main/binary-arm64/Packages.gz
+ <SHA1> <size> main/binary-arm64/Packages.xz
+ 65889be813f67bd02d5eec471a4a2c4906aeb73e 610 universe/binary-amd64/Packages
+ <SHA1> <size> universe/binary-amd64/Packages.gz
+ <SHA1> <size> universe/binary-amd64/Packages.xz
+ da39a3ee5e6b4b0d3255bfef95601890afd80709 0 universe/binary-arm64/Packages
+ <SHA1> <size> universe/binary-arm64/Packages.gz
+ <SHA1> <size> universe/binary-arm64/Packages.xz
+SHA256:
+ 64e40765661111459db10ad51dcafa001a7732ab40bcc46f30b23e28479a7061 1022 main/binary-amd64/Packages
+ <SHA256> <size> main/binary-amd64/Packages.gz
+ <SHA256> <size> main/binary-amd64/Packages.xz
+ c271695c08950b6546de16a8c11adff2c327c4c6dd54ec571650081be1fdb3a2 1567 main/binary-arm64/Packages
+ <SHA256> <size> main/binary-arm64/Packages.gz
+ <SHA256> <size> main/binary-arm64/Packages.xz
+ 8957f59119b2e3805ef80d2b95bdea2f2695a2638a280fd7abbe27c65fbca977 610 universe/binary-amd64/Packages
+ <SHA256> <size> universe/binary-amd64/Packages.gz
+ <SHA256> <size> universe/binary-amd64/Packages.xz
+ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 0 universe/binary-arm64/Packages
+ <SHA256> <size> universe/binary-arm64/Packages.gz
+ <SHA256> <size> universe/binary-arm64/Packages.xz

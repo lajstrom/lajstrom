@@ -1,0 +1,52 @@
+Package: bonjour
+Version: 0.1-1
+Architecture: arm64
+Maintainer: Lajstrom Tests <tests@lajstrom.dev>
+Installed-Size: 2
+Depends: libc6 (>= 2.34)
+Section: misc
+Priority: optional
+Description: greets the tests of the deb format
+ A package built in process by internal/testutil.
+ .
+ Nothing in it comes from a distribution.
+Filename: pool/main/b/bonjour/bonjour_0.1-1_arm64.deb
+Size: 940
+MD5sum: c7544a66f7eb9487098a0551bd9b343a
+SHA1: 2e17931e34a1cffa088c3480c62dca4199c83f09
+SHA256: cea180e4cd95c12e7e8604f499d7a70199b9304d7bb8f073a9032c453b6d086d
+
+Package: hello
+Version: 1.0.0-1
+Architecture: arm64
+Maintainer: Lajstrom Tests <tests@lajstrom.dev>
+Installed-Size: 2
+Depends: libc6 (>= 2.34)
+Section: misc
+Priority: optional
+Description: greets the tests of the deb format
+ A package built in process by internal/testutil.
+ .
+ Nothing in it comes from a distribution.
+Filename: pool/main/h/hello/hello_1.0.0-1_arm64.deb
+Size: 950
+MD5sum: 424515d9eb203b788585e6a1e3e8998a
+SHA1: 594d1bdb8c55842ea1ed002017400739150a807c
+SHA256: 5ef84f08da71e1f698d4a78c73893445a7c085a52d3624b4394ab5cabad4e92d
+
+Package: hello-data
+Version: 1:2.0-1
+Architecture: all
+Maintainer: Lajstrom Tests <tests@lajstrom.dev>
+Installed-Size: 2
+Depends: hello (>= 1.0.0)
+Section: misc
+Priority: optional
+Description: the greetings of hello
+ Every architecture shares them.
+Filename: pool/main/h/hello-data/hello-data_2.0-1_all.deb
+Size: 902
+MD5sum: 69e02ea2e5e24f8c1534b1ac71987515
+SHA1: c9835151f8de8e891cf6e1ab0876ee87d4c06414
+SHA256: d9f34f1a4c70a403f49eb212e1245af773e99e5f14cbb3c6f6dd72bbd2bbcd05
+

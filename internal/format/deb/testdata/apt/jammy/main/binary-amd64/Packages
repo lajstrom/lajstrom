@@ -1,0 +1,34 @@
+Package: hello
+Version: 1.0.0-1
+Architecture: amd64
+Maintainer: Lajstrom Tests <tests@lajstrom.dev>
+Installed-Size: 2
+Depends: libc6 (>= 2.34)
+Section: misc
+Priority: optional
+Description: greets the tests of the deb format
+ A package built in process by internal/testutil.
+ .
+ Nothing in it comes from a distribution.
+Filename: pool/main/h/hello/hello_1.0.0-1_amd64.deb
+Size: 950
+MD5sum: 2abcdda25aea531252dad6bd55300a4e
+SHA1: 320588eedd9d7c56be0a8bf581e6fb532d5d2715
+SHA256: 46b00a18cb20ec8bc89b0217161ee50840972a892d4d6e1f04a2436230125854
+
+Package: hello-data
+Version: 1:2.0-1
+Architecture: all
+Maintainer: Lajstrom Tests <tests@lajstrom.dev>
+Installed-Size: 2
+Depends: hello (>= 1.0.0)
+Section: misc
+Priority: optional
+Description: the greetings of hello
+ Every architecture shares them.
+Filename: pool/main/h/hello-data/hello-data_2.0-1_all.deb
+Size: 902
+MD5sum: 69e02ea2e5e24f8c1534b1ac71987515
+SHA1: c9835151f8de8e891cf6e1ab0876ee87d4c06414
+SHA256: d9f34f1a4c70a403f49eb212e1245af773e99e5f14cbb3c6f6dd72bbd2bbcd05
+

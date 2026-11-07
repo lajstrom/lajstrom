@@ -1,12 +1,11 @@
 package deb
 
 import (
-	"context"
-	"fmt"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/format"
-	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
+	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
 const (
@@ -30,9 +29,30 @@ const (
 	ParamUploadedBy = "uploaded-by"
 )
 
-// Plugin is the apt format plugin. It is stateless; its routes get their services through
-// format.Deps.
-type Plugin struct{}
+// Plugin is the apt format plugin. The value format.Register holds has no services: Build,
+// Validate and EscapeName need none. Routes makes the value its handlers render with, which
+// keeps the providers of format.Deps, so that RenderIndex can read from the registry a metadata
+// layer the index left out (versions.metadata is nil). A Plugin is comparable; it holds a
+// pointer, not the services themselves.
+type Plugin struct {
+	svc *services
+}
+
+// services are what RenderIndex needs beyond the index.
+type services struct {
+	// providers resolves repo.Registry, for the metadata layers the index does not hold.
+	providers provider.Set
+	// now is the clock of the Date of a Release; nil is time.Now.
+	now func() time.Time
+}
+
+// clock returns the time for the Date of a Release.
+func (p Plugin) clock() time.Time {
+	if p.svc != nil && p.svc.now != nil {
+		return p.svc.now()
+	}
+	return time.Now()
+}
 
 var _ format.Plugin = Plugin{}
 
@@ -52,14 +72,4 @@ func (Plugin) EscapeName(name string) (string, error) {
 		return "", err
 	}
 	return profile.EscapeComponent(name), nil
-}
-
-// Routes mounts nothing yet: the dists/ routes come with the index rendering (#40), the pool/
-// and upload routes with #42. Until then a package reaches an apt repo by oras push through the
-// facade (#25), whose hook runs Validate.
-func (Plugin) Routes(format.Router, format.Deps) {}
-
-// RenderIndex renders nothing yet: Packages and Release are #40.
-func (Plugin) RenderIndex(_ context.Context, _ index.Repo, scope format.IndexScope, _ index.Reader) ([]format.Document, error) {
-	return nil, fmt.Errorf("%w: apt index %q: Packages and Release come with #40", format.ErrUnsupported, scope)
 }

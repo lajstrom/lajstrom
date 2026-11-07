@@ -50,9 +50,15 @@ func newPipeline(t *testing.T) *pipeline {
 // upload uploads deb to suite/main as alice.
 func (p *pipeline) upload(t *testing.T, deb []byte, suite string) *format.Published {
 	t.Helper()
-	pub, err := p.pipe.Upload(t.Context(), p.repo, upload([]format.UploadedFile{debFile(deb)}, ParamSuite, suite), alice)
+	return p.uploadTo(t, deb, suite, "main")
+}
+
+// uploadTo uploads deb to suite/component as alice.
+func (p *pipeline) uploadTo(t *testing.T, deb []byte, suite, component string) *format.Published {
+	t.Helper()
+	pub, err := p.pipe.Upload(t.Context(), p.repo, upload([]format.UploadedFile{debFile(deb)}, ParamSuite, suite, ParamComponent, component), alice)
 	if err != nil {
-		t.Fatalf("upload to %s: %v", suite, err)
+		t.Fatalf("upload to %s/%s: %v", suite, component, err)
 	}
 	return pub
 }
