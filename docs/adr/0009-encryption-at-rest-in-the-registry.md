@@ -1,6 +1,6 @@
 # 0009. Encryption at rest in the registry: OCI encrypted layers, keys held by Lajstrom
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-08
 - Deciders: gecube
 

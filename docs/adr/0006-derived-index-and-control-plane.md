@@ -1,6 +1,6 @@
 # 0006. Derived index plus a small control plane; SQLite and Postgres
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-06
 - Deciders: gecube
 
