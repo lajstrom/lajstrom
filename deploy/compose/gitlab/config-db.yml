@@ -1,0 +1,29 @@
+# The GitLab container registry of the gitlab profile, variant B: the metadata database, as
+# GitLab.com runs it; the online garbage collector lives there (deploy/compose/compose.yaml,
+# docs/registries/gitlab.md). Blobs stay on the filesystem. For development only: no
+# authentication, and the database password is "registry".
+version: 0.1
+log:
+  level: info
+  formatter: text
+storage:
+  filesystem:
+    rootdirectory: /home/git/registry # see config.yml
+  delete:
+    enabled: true
+http:
+  addr: :5000
+database:
+  enabled: true # a fresh install: nothing to import from the filesystem
+  host: gitlab-postgres
+  port: 5432
+  user: registry
+  password: registry
+  dbname: registry
+  sslmode: disable
+# Online garbage collection, at the registry's defaults but for reviewafter, which compose sets
+# from LAJSTROM_GITLAB_GC_REVIEWAFTER (REGISTRY_GC_REVIEWAFTER, default 24h, the registry's own):
+# a manifest pushed without a tag, a tag deleted or moved, and a blob no manifest refers to are
+# reviewed that long after the event, and deleted then when nothing refers to them.
+gc:
+  disabled: false

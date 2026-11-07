@@ -76,6 +76,32 @@ A Lajstrom registry for it in `deploy/compose/lajstrom.yaml`:
     url: "http://localhost:5002"     # distribution on MinIO: blob GETs are 307 to localhost:9000
 ```
 
+## The gitlab profile
+
+`make dev-up PROFILES=gitlab` starts the GitLab container registry, the fork of distribution that
+GitLab.com runs, in its two variants (#117; the measurements, the garbage collector and what the
+provider must do differently are in [registries/gitlab.md](registries/gitlab.md)):
+
+| Service | Image | Port | Used as |
+| --- | --- | --- | --- |
+| `gitlab` | `registry.gitlab.com/gitlab-org/build/cng/gitlab-container-registry:v4.43.0-gitlab` | `localhost:5003` | variant A, metadata on the filesystem; filesystem storage, deletes enabled, no auth |
+| `gitlab-db` | the same | `localhost:5004` | variant B, the metadata database, as GitLab.com runs it, with the online garbage collector; the container applies the schema migrations and starts |
+| `gitlab-postgres` | `postgres:17.11-alpine` | not published | the database of variant B: user, password and database `registry` |
+
+With its defaults, variant B refuses every manifest Lajstrom writes (its `artifactType` is not in
+the registry's table of known media types): `LAJSTROM_GITLAB_DYNAMIC_MEDIA_TYPES=true` lets it add
+unknown types on push, and `LAJSTROM_GITLAB_GC_REVIEWAFTER=-1` makes its garbage collector review
+at once instead of 24 h after an event; both in the shell of `make dev-up` or in `.env`.
+`PROFILES=s3,gitlab` starts both profiles.
+
+```sh
+make dev-up PROFILES=gitlab
+LAJSTROM_TEST_REGISTRY=localhost:5003 make test-integration   # variant A
+LAJSTROM_GITLAB_DYNAMIC_MEDIA_TYPES=true make dev-up PROFILES=gitlab
+LAJSTROM_TEST_REGISTRY=localhost:5004 make test-integration   # variant B
+make dev-down RESET=1
+```
+
 ## Commands
 
 ```sh
@@ -85,6 +111,7 @@ make dev-logs          # follow the logs (Ctrl-C stops following, not the stack)
 make dev-down          # stop and remove the containers, of every profile; the volumes stay
 make dev-down RESET=1  # the same, and remove the volumes
 make dev-up PROFILES=s3  # the three, and distribution on MinIO (below)
+make dev-up PROFILES=gitlab  # the three, and the GitLab container registry (below)
 ```
 
 `make dev-up` returns when the health checks pass (`docker compose up -d --wait`): in 2 to 3 s
@@ -113,8 +140,9 @@ migrates. Only `RESET=1` removes the volumes; `make dev-down` alone never does.
 
 Copy [deploy/compose/.env.example](../deploy/compose/.env.example) to `deploy/compose/.env`
 (not committed) to change a host port (`LAJSTROM_ZOT_PORT`, `LAJSTROM_DISTRIBUTION_PORT`,
-`LAJSTROM_PG_PORT`, and for the s3 profile `LAJSTROM_DISTRIBUTION_S3_PORT` and
-`LAJSTROM_MINIO_PORT`) or the Postgres credentials (`LAJSTROM_PG_DB`, `LAJSTROM_PG_USER`,
+`LAJSTROM_PG_PORT`, for the s3 profile `LAJSTROM_DISTRIBUTION_S3_PORT` and
+`LAJSTROM_MINIO_PORT`, and for the gitlab profile `LAJSTROM_GITLAB_PORT` and
+`LAJSTROM_GITLAB_DB_PORT`) or the Postgres credentials (`LAJSTROM_PG_DB`, `LAJSTROM_PG_USER`,
 `LAJSTROM_PG_PASSWORD`). A variable set in the shell wins over the file. When you change a port,
 change what points at it too: the registry URL in your `deploy/compose/lajstrom.yaml`,
 `LAJSTROM_TEST_REGISTRY`, the DSN. New Postgres credentials take effect on a fresh volume
@@ -195,7 +223,8 @@ of their own, so they can run again and side by side without a reset.
 CI runs the same three images, on the same ports, as service containers of the `integration`
 job ([CONTRIBUTING.md](../CONTRIBUTING.md#ci-overview)); Zot there runs on the configuration built
 into its image, since a service container cannot mount `config.json` from the checkout. CI does
-not run the s3 profile: the tests that need it skip without `LAJSTROM_TEST_REGISTRY_S3`.
+not run the s3 profile (the tests that need it skip without `LAJSTROM_TEST_REGISTRY_S3`) nor the
+gitlab profile.
 
 ## Docker on macOS and Linux
 
