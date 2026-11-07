@@ -92,13 +92,22 @@ type Publisher interface {
     Upload(ctx context.Context, repo index.Repo, up Upload, principal auth.Principal) (*Published, error)
 }
 
-type Deps struct {                          // Keys is added by issue #41
+// Signer signs a repo's index documents with the repo's own key and serves the public keys
+// clients pin (apt's signed-by); internal/keys implements it, format does not import keys (#41).
+type Signer interface {
+    ClearSign(ctx context.Context, repo index.Repo, data []byte) ([]byte, error)  // InRelease
+    DetachSign(ctx context.Context, repo index.Repo, data []byte) ([]byte, error) // Release.gpg, armored
+    PublicKeys(ctx context.Context, repo index.Repo) ([]byte, error)              // key.asc: an armored keyring
+}
+
+type Deps struct {
     Index     index.Store
     Ingest    Publisher
     Providers provider.Set
     Auth      auth.Authorizer
     Audit     audit.Writer
     Log       *slog.Logger
+    Signer    Signer                        // nil: signing is off (no keys.masterKeyEnv)
 }
 
 type Entry struct {
@@ -499,6 +508,14 @@ Where the merged shapes differ from the first sketch of this section, and why:
   repeat (manifest-profile.md §4.2): two builds of the same files differ only by `created`, so
   a retried upload must not be a 409; the check runs before the blobs are pushed and again under
   the claim. `Ingest`, the facade path, keeps the OCI meaning: another manifest is the 409.
+- **Signing is `Deps.Signer`, an interface of `format`** (#41). `internal/keys` implements it
+  over the index and the master key; `format` and the plugins do not import `keys`. The apt
+  routes sign the bytes of the `Release` in `index_cache` and store `InRelease` and
+  `Release.gpg` beside it, with its `rendered_at` and a `signed_at`, in a transaction that
+  first checks that this `Release` is still the cached one; the `Signer` runs outside the
+  transaction of `CachedDocument`, because it reads the repo's keys and inserts the first one,
+  which inside that transaction would wait for the connection or the write lock it holds
+  (SQLite).
 
 ## 3. Approved dependencies
 
@@ -583,6 +600,8 @@ auth:
   tokenSigningKeyFile: /etc/lajstrom/jwt.key
 keys:
   masterKeyEnv: LAJSTROM_MASTER_KEY         # encrypts GPG keys at rest
+  algorithm: ed25519                        # ed25519 | rsa4096 (apt before 2.0)
+  retireGrace: 720h                         # a retired key still signs and stays in key.asc this long
 repos:                                      # optional declarative bootstrap, merged into the control plane
   - { name: ubuntu-internal, format: apt, registry: local, anonymousRead: false }
 ```

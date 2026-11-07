@@ -91,6 +91,21 @@ line away:
 LAJSTROM_DATABASE_DRIVER=postgres LAJSTROM_DATABASE_DSN='postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable' make run
 ```
 
+apt repos are signed when `serve` has a master key. The example names the variable
+`LAJSTROM_MASTER_KEY` (`keys.masterKeyEnv`); export it before `make run`, and keep the value for
+the next runs, since the keys made under it only decrypt with it:
+
+```sh
+export LAJSTROM_MASTER_KEY=$(openssl rand -hex 32)
+make run
+```
+
+Without it apt repos are unsigned: `InRelease`, `Release.gpg` and `key.asc` are `404`, and an
+apt client needs `deb [trusted=yes] …`. Once a key was made, `serve` does not start without the
+master key; `make dev-down RESET=1` does not help there, since the keys are in `lajstrom.db`:
+delete that file for a fresh start. [operations.md](operations.md#keys-and-apt-signing) has the
+rest: the client line, `key.asc`, rotation.
+
 A repo on distribution: `bin/lajstrom admin repo create raw/second --registry second --config deploy/compose/lajstrom.example.yaml`,
 then `test/e2e/raw.sh http://localhost:8080 second`.
 

@@ -25,7 +25,7 @@ stored as RFC 3339 text in SQLite, `timestamptz` in Postgres; `json` = `text` in
 | `users` | `id`, `name` text unique, `password_hash` text null, `kind` text (`local`; `oidc` later), `disabled` bool, `created_at` ts | the first user is created by `lajstrom admin user create` |
 | `tokens` | `id`, `kind` text (`pat`, `deploy`), `user_id` → users null, `repo_id` → repos null, `name` text, `hash` text (sha256 of the secret), `scopes` json (`["read","write"]`), `expires_at` ts null, `last_used_at` ts null, `created_at` ts, `revoked_at` ts null | a PAT acts as its user; a deploy token is a principal of its own bound to one repo |
 | `bindings` | `id`, `principal` text (`user:<name>`, `group:<name>`, `token:<id>`, `anonymous`), `role` text (`reader`, `writer`, `maintainer`, `admin`), `repo_mask` text (`apt/*`, `*/payments`, `maven/releases`), `created_at` ts | rbac.md |
-| `keys` | `id`, `repo_id` → repos null (null = server key), `kind` text (`gpg`, `jwt`), `public` blob, `private_enc` blob (encrypted with the master key), `fingerprint` text, `created_at` ts, `retired_at` ts null | apt signing keys; JWT signing key |
+| `keys` | `id`, `repo_id` → repos null (null = server key), `kind` text (`gpg`, `jwt`), `public` blob, `private_enc` blob (encrypted with the master key), `fingerprint` text, `created_at` ts, `retired_at` ts null | apt signing keys; JWT signing key. Unique `keys_active` on `(kind, COALESCE(repo_id, 0)) WHERE retired_at IS NULL`: one key that is not retired per kind and owner, so two replicas that make a repo's first key at once leave one (the second insert is a conflict, and that replica reads the first one's key). A `gpg` row: `public` the OpenPGP public key packets, `private_enc` nonce ‖ AES-256-GCM(private key packets) with the fingerprint (uppercase hex) as additional data |
 | `sessions` | `id`, `repo_id`, `key` text (`g:a:v`), `principal` text, `state` text (`open`, `committed`, `aborted`, `expired`), `files` json (uploaded descriptors), `created_at` ts, `updated_at` ts, `expires_at` ts | publication sessions (maven; later docker stitching) |
 | `audit` | `id`, `at` ts, `principal` text, `action` text (`push`, `delete`, `repo.create`, `token.create`, …), `repo` text, `subject` text (package/version or user), `digest` text null, `ip` text, `details` json | append-only; retention by age later |
 | `schema_migrations` | `version` int, `applied_at` ts | |
@@ -54,7 +54,7 @@ with another digest is a `409`. `ResetDerived` does not touch claims.
 | `packages` | `id`, `repo_id` → repos, `name` text (format spelling), `name_oci` text (escaped path), `created_at` ts | unique `(repo_id, name)`; unique `(repo_id, name_oci)`: one spelling per OCI repository |
 | `versions` | `id`, `package_id` → packages, `version` text, `variant` text (`''` when none), `tag` text, `digest` text (manifest digest), `artifact_type` text, `attrs` json (`lajstrom.<format>.*`), `metadata` json null (metadata layer, may be omitted for size), `created_at` ts (from `org.opencontainers.image.created`), `indexed_at` ts | unique `(package_id, version, variant)`; unique `(package_id, tag)` |
 | `files` | `id`, `version_id` → versions, `name` text, `media_type` text, `digest` text (layer), `size` int, `attrs` json (layer annotations) | index `(version_id, name)`; apt pool and maven lookups go by `(repo, name)` → add index on `name` |
-| `index_cache` | `id`, `repo_id`, `scope` text (`jammy/main/amd64`, `simple/requests`, `com.example/lib-core`), `kind` text (`Packages`, `Release`, `InRelease`, `simple`, `maven-metadata`), `content` blob, `sha256` text, `rendered_at` ts, `signed_at` ts null | invalidated by ingest, delete and reindex; rebuilt lazily on GET |
+| `index_cache` | `id`, `repo_id`, `scope` text (`jammy/main/amd64`, `simple/requests`, `com.example/lib-core`), `kind` text (`Packages`, `Release`, `InRelease`, `simple`, `maven-metadata`), `content` blob, `sha256` text, `rendered_at` ts, `signed_at` ts null | invalidated by ingest, delete, reindex and a key rotation; rebuilt lazily on GET. A signed document (apt `InRelease`, `Release.gpg`) has the `rendered_at` of the document it signs and its own `signed_at` |
 | `oci_repos` | `id`, `repo_id`, `path` text (full OCI path incl. prefix), `seen_at` ts | repository list for backends without a catalog; reconcile source |
 | `proxy_meta` (later) | upstream metadata cache with TTL | after the MVP |
 
@@ -63,7 +63,9 @@ with another digest is a `409`. `ResetDerived` does not touch claims.
 The migrations are `internal/index/migrations/{sqlite,postgres}/NNNN_<name>.sql`, embedded in
 the binary; both directories have the same versions (a test asserts it), `0001_init.sql` creates
 the control-plane and derived tables, `0002_tag_claims.sql` the coordination table,
-`0003_packages_name_oci.sql` the unique index on `packages (repo_id, name_oci)`. The runner,
+`0003_packages_name_oci.sql` the unique index on `packages (repo_id, name_oci)`,
+`0004_keys_active.sql` the unique index `keys_active` (one key not retired per kind and owner).
+The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the
 migration lock, `pg_advisory_xact_lock` on Postgres and `BEGIN IMMEDIATE` on SQLite, and reads

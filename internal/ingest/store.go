@@ -223,7 +223,8 @@ func (p *Pipeline) confirm(ctx context.Context, pub *publish) (existed bool, err
 		// meanwhile) must not turn a half-done publish into a 404.
 		return false, fmt.Errorf("ingest: index %s:%s after the registry accepted %s: %s", pub.name, pub.tag, pub.digest, err.Error())
 	}
-	// Post-ingest hooks (apt signing, #41) go here, after the commit.
+	// Post-ingest hooks go here, after the commit. apt signing needs none: the transaction
+	// dropped the repo's documents, signed ones included, and the next GET signs again (#41).
 	if !existed && p.audit != nil {
 		if err := p.audit.Write(ctx, ev); err != nil {
 			p.log.ErrorContext(ctx, "ingest: audit event of a publish not written", "repo", ev.Repo, "subject", ev.Subject,

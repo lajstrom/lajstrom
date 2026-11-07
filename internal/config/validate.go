@@ -28,6 +28,7 @@ func (c *Config) Validate() error {
 	if c.Ingest.ClaimTTL < 0 {
 		p.add("ingest.claimTTL", "must not be negative")
 	}
+	c.Keys.validate(&p)
 	registries := map[string]int{}
 	for i, r := range c.Registries {
 		key := fmt.Sprintf("registries[%d]", i)
@@ -99,6 +100,17 @@ func (d Database) validate(p *problems) {
 	}
 	if d.DSN == "" {
 		p.add("database.dsn", "must not be empty")
+	}
+}
+
+// validate checks the keys section. The master key itself is not read here: serve and admin
+// key read the variable keys.masterKeyEnv names (keys.LoadMaster).
+func (k Keys) validate(p *problems) {
+	if k.Algorithm != KeysAlgorithmEd25519 && k.Algorithm != KeysAlgorithmRSA4096 {
+		p.add("keys.algorithm", "%q is not %s or %s", k.Algorithm, KeysAlgorithmEd25519, KeysAlgorithmRSA4096)
+	}
+	if k.RetireGrace < 0 {
+		p.add("keys.retireGrace", "must not be negative")
 	}
 }
 

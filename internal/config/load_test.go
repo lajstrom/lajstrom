@@ -39,7 +39,7 @@ func TestLoadDefaults(t *testing.T) {
 		file string
 	}{
 		{name: "only server.listen", file: minimal},
-		{name: "explicit null sections", file: minimal + "log:\ndatabase:\nregistries:\ningest:\nrepos:\n"},
+		{name: "explicit null sections", file: minimal + "log:\ndatabase:\nregistries:\ningest:\nkeys:\nrepos:\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -52,6 +52,7 @@ func TestLoadDefaults(t *testing.T) {
 				Log:      Log{Level: "info", Format: "text"},
 				Database: Database{Driver: "sqlite", DSN: "file:lajstrom.db"},
 				Ingest:   Ingest{ClaimTTL: 10 * time.Minute},
+				Keys:     Keys{Algorithm: "ed25519", RetireGrace: 720 * time.Hour},
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("Load =\n%+v\nwant\n%+v", got, want)
@@ -119,6 +120,10 @@ func TestLoadErrors(t *testing.T) {
 		{name: "duration without unit", file: minimal[:len(minimal)-1] + "\n  shutdownTimeout: 30\n", want: []string{"line 3", "into time.Duration"}},
 		{name: "negative claim TTL", file: minimal + "ingest: {claimTTL: -1m}\n", want: []string{"ingest.claimTTL: must not be negative"}},
 		{name: "negative manifest size", file: minimal + "  maxManifestSize: -1\n", want: []string{"server.maxManifestSize: must not be negative"}},
+		{name: "keys", file: minimal + "keys: {algorithm: dsa, retireGrace: -1h}\n",
+			want: []string{`keys.algorithm: "dsa" is not ed25519 or rsa4096`, "keys.retireGrace: must not be negative"}},
+		{name: "empty keys.algorithm", file: minimal + "keys: {algorithm: \"\"}\n", want: []string{`keys.algorithm: "" is not ed25519 or rsa4096`}},
+		{name: "master key in the file", file: minimal + "keys: {masterKey: abc}\n", want: []string{"field masterKey not found"}},
 		{name: "env override is validated", file: minimal, env: map[string]string{"LAJSTROM_DATABASE_DRIVER": "mysql"}, want: []string{`database.driver: "mysql" is not sqlite or postgres`}},
 		{
 			name: "registry limits",
@@ -261,6 +266,20 @@ registries:
 				t.Errorf("Load error = %v, want it to contain %q", err, want)
 			}
 		})
+	}
+}
+
+// TestLoadKeys reads the keys section. Load does not read the variable masterKeyEnv names:
+// serve and admin key do (keys.LoadMaster), so a configuration that names an unset variable
+// loads, as the example does for make run.
+func TestLoadKeys(t *testing.T) {
+	c, err := Load(writeConfig(t, minimal+"keys: {masterKeyEnv: LAJSTROM_MASTER_KEY, algorithm: rsa4096, retireGrace: 48h}\n"), nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := Keys{MasterKeyEnv: "LAJSTROM_MASTER_KEY", Algorithm: "rsa4096", RetireGrace: 48 * time.Hour}
+	if c.Keys != want {
+		t.Errorf("keys = %+v, want %+v", c.Keys, want)
 	}
 }
 

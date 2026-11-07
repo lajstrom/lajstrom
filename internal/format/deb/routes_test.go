@@ -71,7 +71,8 @@ type aptEnv struct {
 // envOptions change what newAptEnv builds.
 type envOptions struct {
 	authz     auth.Authorizer
-	providers provider.Set // nil means the fake of the pipeline as "local"
+	providers provider.Set                    // nil means the fake of the pipeline as "local"
+	signer    func(index.Store) format.Signer // the Signer over the store of the pipeline; nil: none
 }
 
 func newAptEnv(t *testing.T, o envOptions) *aptEnv {
@@ -83,6 +84,9 @@ func newAptEnv(t *testing.T, o envOptions) *aptEnv {
 	}
 	deps := format.Deps{Index: countingStore{Store: p.st, reads: e.reads}, Ingest: p.pipe, Providers: o.providers, Auth: o.authz,
 		Log: slog.New(slog.DiscardHandler)}
+	if o.signer != nil {
+		deps.Signer = o.signer(p.st)
+	}
 	mux := http.NewServeMux()
 	Plugin{}.Routes(format.NewRouter(mux, Name, deps), deps)
 	e.h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -193,17 +197,19 @@ func checkHeaders(t *testing.T, rr *httptest.ResponseRecorder, contentType strin
 }
 
 // TestRoutesNotFound checks the 404s: unknown suites, components, architectures and files, the
-// signed forms of the Release until #41, a hash the Release does not list in that directory,
-// the routes of #41 and #42, and a repo that does not exist.
+// signed forms of the Release and the keyring on a server that does not sign, a hash the
+// Release does not list in that directory, the routes of #42, and a repo that does not exist.
 func TestRoutesNotFound(t *testing.T) {
 	e := newAptEnv(t, envOptions{})
 	fixtureSet(t, e.pipeline)
 	universe := listed(e.get("dists/jammy/Release").Body.Bytes())["universe/binary-amd64/Packages"]
+	const unsigned = "this server does not sign, keys.masterKeyEnv is not set; use deb [trusted=yes]"
 	for _, c := range []struct{ method, path, body string }{
 		{http.MethodGet, "dists/focal/Release", "no package in the suite focal"},
 		{http.MethodGet, "dists/Jammy/Release", `"Jammy" is not a suite`},
-		{http.MethodGet, "dists/jammy/InRelease", "not signed until #41"},
-		{http.MethodGet, "dists/jammy/Release.gpg", "not signed until #41"},
+		{http.MethodGet, "dists/jammy/InRelease", "apt/ubuntu/dists/jammy/InRelease: " + unsigned},
+		{http.MethodGet, "dists/jammy/Release.gpg", "apt/ubuntu/dists/jammy/Release.gpg: " + unsigned},
+		{http.MethodGet, "key.asc", "apt/ubuntu/key.asc: " + unsigned},
 		{http.MethodGet, "dists/jammy/Contents-amd64", "no dists/jammy/Contents-amd64"},
 		{http.MethodGet, "dists/jammy/multiverse/binary-amd64/Packages", "no dists/jammy/multiverse/binary-amd64/Packages"},
 		{http.MethodGet, "dists/jammy/main/binary-i386/Packages.xz", "no dists/jammy/main/binary-i386/Packages.xz"},
@@ -217,7 +223,6 @@ func TestRoutesNotFound(t *testing.T) {
 		{http.MethodGet, "dists/jammy/universe/by-hash/SHA256/" + universe, ""},
 		{http.MethodGet, "dists/focal/main/binary-amd64/by-hash/SHA256/" + universe, "no package in the suite focal"},
 		{http.MethodGet, "pool/main/h/hello/hello_1.0.0-1_amd64.deb", ""},
-		{http.MethodGet, "key.asc", ""},
 		{http.MethodPut, "upload?suite=jammy&component=main", ""},
 	} {
 		rr := e.do(c.method, c.path)
@@ -340,7 +345,7 @@ func TestRoutesRenderFails(t *testing.T) {
 // resolve: 500, a programming error.
 func TestHandlersWithoutRepo(t *testing.T) {
 	h := &handlers{deps: format.Deps{Log: slog.New(slog.DiscardHandler)}}
-	for _, serve := range []http.HandlerFunc{h.release, h.packages, h.byHash} {
+	for _, serve := range []http.HandlerFunc{h.release, h.packages, h.byHash, h.publicKeys} {
 		rr := httptest.NewRecorder()
 		serve(rr, httptest.NewRequest(http.MethodGet, "/apt/ubuntu/dists/jammy/Release", nil))
 		if rr.Code != http.StatusInternalServerError {

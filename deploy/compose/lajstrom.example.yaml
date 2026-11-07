@@ -56,7 +56,9 @@ auth:
   tokenSigningKeyFile: ""             # PEM key that signs OCI bearer tokens (issue #26)
 
 keys:
-  masterKeyEnv: LAJSTROM_MASTER_KEY   # environment variable with the key that encrypts signing keys (issue #41)
+  masterKeyEnv: LAJSTROM_MASTER_KEY   # environment variable with the key that encrypts signing keys; unset: apt repos are unsigned
+  algorithm: ed25519                  # ed25519 | rsa4096 (apt before 2.0); for keys made from now on
+  retireGrace: 720h                   # a key retired by a rotation still signs and stays in key.asc this long
 
 repos:                                # created at startup when missing (issue #14)
   - name: scratch                     # repo name, unique within its format

@@ -27,14 +27,15 @@ const registryProbeTimeout = 10 * time.Second
 
 // newServeCmd returns serve: load and validate the configuration (in the root's
 // PersistentPreRunE), open the index database and apply its pending migrations, create the
-// repos of the configuration that the control plane does not have, build a provider for every
-// registry and probe its capabilities, build the server and run it until SIGINT or SIGTERM,
-// then close the database.
+// repos of the configuration that the control plane does not have, load the master key, build
+// a provider for every registry and probe its capabilities, build the server and run it until
+// SIGINT or SIGTERM, then close the database.
 //
 // Migrating on start takes the same lock as lajstrom migrate, so replicas that start together
 // apply each migration once. The index is Deps.Index of the format plugins and /-/readyz pings
 // it; the registries are Deps.Providers; the ingest pipeline over both, with ingest.claimTTL,
-// is Deps.Ingest. The repo service over the index (api.Repos) runs the config bootstrap
+// is Deps.Ingest; the signing keys over the index and the master key (newSigner) are
+// Deps.Signer. The repo service over the index (api.Repos) runs the config bootstrap
 // before the server listens, and serves /api/v1. The OCI facade over the index and the
 // registries serves /v2/, and hands the manifests of managed repos to the same pipeline;
 // server.maxManifestSize bounds them.
@@ -74,6 +75,10 @@ func newServeCmd(a *app) *cobra.Command {
 				return err
 			}
 			a.log.Info("repos of the configuration bootstrapped", "configured", len(c.Repos), "created", created)
+			signer, err := newSigner(ctx, c, a.lookupEnv, st, a.log)
+			if err != nil {
+				return err
+			}
 
 			providers, err := provider.NewSet(c.Registries, a.log)
 			if err != nil {
@@ -90,7 +95,7 @@ func newServeCmd(a *app) *cobra.Command {
 				ShutdownTimeout: c.Server.ShutdownTimeout,
 				Log:             a.log,
 				Plugins:         format.All(),
-				Deps:            format.Deps{Index: st, Providers: providers, Ingest: pipe},
+				Deps:            format.Deps{Index: st, Providers: providers, Ingest: pipe, Signer: signer},
 				Ready:           ready(a.log, c.Database.Driver, st),
 				API:             api.New(api.Options{Repos: repos, Log: a.log}),
 				Facade:          v2,

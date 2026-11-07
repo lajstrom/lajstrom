@@ -138,12 +138,27 @@ type Auth struct {
 	TokenSigningKeyFile string `yaml:"tokenSigningKeyFile"`
 }
 
-// Keys configures signing keys (issue #41).
+// Keys configures signing keys (issue #41, internal/keys).
 type Keys struct {
 	// MasterKeyEnv names the environment variable that holds the master key, which encrypts
-	// signing keys at rest.
+	// signing keys at rest: 64 hexadecimal characters (32 bytes). The value is read by serve
+	// and admin key (keys.LoadMaster), never by Load, so it is not part of Config. Empty, or a
+	// variable that is not set while the index holds no signing key: signing is off.
 	MasterKeyEnv string `yaml:"masterKeyEnv"`
+	// Algorithm is the algorithm of the repo keys made from now on: ed25519 (apt 2.0 and later)
+	// or rsa4096 (older apt). Keys made before keep theirs.
+	Algorithm string `yaml:"algorithm"`
+	// RetireGrace is how long a retired key stays in a repo's key.asc and keeps signing beside
+	// the new one, after a rotation; DefaultKeysRetireGrace when the file leaves it out. Zero
+	// drops a retired key at once (a compromised key). Must not be negative.
+	RetireGrace time.Duration `yaml:"retireGrace"`
 }
+
+// The algorithms of keys.algorithm.
+const (
+	KeysAlgorithmEd25519 = "ed25519"
+	KeysAlgorithmRSA4096 = "rsa4096"
+)
 
 // Repo declares a repo to create at startup (the config bootstrap of issue #14).
 type Repo struct {
@@ -169,6 +184,8 @@ const (
 	DefaultRegistryTimeout = 30 * time.Second
 	DefaultRegistryRetries = 3
 	DefaultIngestClaimTTL  = 10 * time.Minute
+	DefaultKeysAlgorithm   = KeysAlgorithmEd25519
+	DefaultKeysRetireGrace = 720 * time.Hour
 )
 
 // Default returns the configuration before the file is read. server.listen has no default.
@@ -178,5 +195,6 @@ func Default() *Config {
 		Log:      Log{Level: DefaultLogLevel, Format: DefaultLogFormat},
 		Database: Database{Driver: DefaultDatabaseDriver, DSN: DefaultDatabaseDSN},
 		Ingest:   Ingest{ClaimTTL: DefaultIngestClaimTTL},
+		Keys:     Keys{Algorithm: DefaultKeysAlgorithm, RetireGrace: DefaultKeysRetireGrace},
 	}
 }
