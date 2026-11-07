@@ -116,7 +116,7 @@ A list; each entry is one backend OCI registry. Repos refer to it by name.
 | Key | Type | Default | Env | Description |
 | --- | --- | --- | --- | --- |
 | `registries[].name` | name | none, required | none | Unique; lowercase letters and digits separated by single `.`, `_` or `-`, at most 64 characters. Example: `local`, `ecr-prod`. |
-| `registries[].type` | `generic`, `ecr` | `generic` | none | `generic` covers distribution, Zot, Harbor and GHCR; `ecr` is Amazon ECR (issue #36). |
+| `registries[].type` | `generic`, `ecr` | `generic` | none | `generic` covers distribution, Zot, the GitLab container registry, Harbor and GHCR ([registries/](registries/README.md)); `ecr` is Amazon ECR (issue #36). |
 | `registries[].url` | absolute `http(s)` URL | none, required | none | Base URL of the registry, e.g. `http://localhost:5000`. Must not contain credentials. |
 | `registries[].prefix` | string | empty | none | Instance prefix of every OCI repository Lajstrom creates, e.g. `art/` gives `art/raw/scratch/…`. Must not start with `/` and must end with `/`. Clients never see it. |
 | `registries[].auth.username` | string | empty | none | User for the registry. Set together with `passwordEnv`; leave both empty for anonymous access. |
@@ -141,9 +141,24 @@ At startup Lajstrom asks each registry what it supports, once, and keeps the ans
 tags; a registry that answers a manifest delete with 405 turns `deleteManifest` off from then on.
 Blob redirects need no probe: a download is one `GET` whose first answer is used as it is, a
 redirect or the bytes, so a registry on filesystem storage costs nothing for the assumption.
-Each key under `capabilities` replaces what was found, for registries that answer wrongly; a
-key that is set is not probed. There is no `catalog` key outside `capabilities`. What was tested
-against which registry is in [registries/](registries/README.md).
+
+What a probe cannot measure comes from a table of vendors, which Lajstrom tells apart by what a
+registry says about itself: a `Gitlab-Container-Registry-Version` header on `GET /v2/` is the
+GitLab container registry, the host `ghcr.io` is GHCR, and a Bearer challenge with
+`service="harbor-registry"` on `GET /v2/` is Harbor. GHCR gets `catalog: false` (its
+`_catalog` answers 200 with every repository of GHCR, which the probe cannot tell from a usable
+one) and `deleteManifest: false` (every delete through `/v2` is 405), without asking; GitLab and
+Harbor need nothing, the probe is right for them. A GitLab registry that answers
+`Gitlab-Container-Registry-Database-Enabled: true` gets a warning at startup: with its database
+it refuses a manifest whose `artifactType` it does not know, every one Lajstrom writes, unless
+`REGISTRY_FF_DYNAMIC_MEDIA_TYPES` is on ([gitlab.md](registries/gitlab.md#media-types)). The
+startup line names the vendor, `vendor=gitlab`, `ghcr`, `harbor` or `unknown`, beside the
+capabilities. A registry the table does not know gets the probe alone.
+
+Each key under `capabilities` replaces what was found and what the vendor table sets, for
+registries that answer wrongly; a key that is set is not probed. There is no `catalog` key
+outside `capabilities`. What was tested against which registry, and the configuration each one
+needs, is in [registries/](registries/README.md).
 
 ### ingest
 

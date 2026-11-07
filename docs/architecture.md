@@ -245,22 +245,30 @@ sequenceDiagram
 | Index DB | derived: packages, versions, files, index_cache, proxy metadata. Control plane: repos, users, tokens, bindings, sessions, audit | The derived part can be lost and rebuilt. The control plane is small, backed up, optionally snapshotted into the registry. |
 | Clients | apt, dnf, mvn, pip, npm, terraform, curl without plugins; helm, oras, tofu, cosign, flux through the facade | Nothing to install on clients. One `user:token` pair works across all protocols. |
 
-## 5. Registry capability matrix (filled in by the phase-0 spikes)
+## 5. Registry capabilities
 
-The data path is shared; differences sit in lifecycle and in OCI 1.1 support. *Italic* = taken
-from memory, must be verified by a spike, not assumed. Results go to [`registries/`](registries/).
+The data path is shared; registries differ in lifecycle and in OCI 1.1 support. What each
+registry does is measured, not remembered, and kept in one place:
+[registries/README.md](registries/README.md), the matrix. It holds the versions tested and their
+support tier (`CI`, `manual`, `hosted`, `untested`), one row per capability and one column per
+registry, the object stores behind distribution, the places where a registry deviates from the
+distribution and image specs (the list for upstream), and the configuration each registry
+needs. The provider's probe and its vendor table
+([configuration.md](configuration.md#registry-capabilities)) are checked against it, and an
+operator reads it to know whether a backend is supported and how. Whoever changes a pinned
+registry version re-measures and updates it; the rule is on that page.
 
-| Registry | Repo created on push | Referrers API | Repo listing | Delete manifest | Immutable tags | Blob redirect | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| ECR | only via a creation template with `CREATE_ON_PUSH`, otherwise `CreateRepository` from the adapter | yes, OCI 1.1 since 2024-06; pushing referrers with oras returned 405, issue aws/containers-roadmap#2783 | `DescribeRepositories`, no `_catalog` | yes | per-repo option, must be respected | 307 to S3 | image count limit per repo, 12-hour token |
-| distribution | yes | no (3.1.2: the route does not exist; the `sha256-<digest>` tag schema works) | `_catalog` with `n`/`last` pagination | only with `storage.delete.enabled` (the `registry:3` image enables it) | no | redirect with the S3 driver; none on filesystem (3.1.2) | GC offline, separate command |
-| Harbor | inside an existing project | *2.10+: verify* | projects API | yes | immutability rules | redirect with S3 | quotas, scanning for free |
-| Zot | yes | yes (2.1.23) | yes | yes | no | none on filesystem (2.1.23); S3 not tested | primary dev registry (deploy/compose) |
-| GHCR | yes | *verify* | no `_catalog`, packages REST API | REST API | no | yes | rate limits, auth via PAT |
+Two rules keep a registry without an optional API usable:
 
-Fallback for registries without a referrers API: the `sha256-<digest>` tag schema, as cosign does.
-Fallback for registries without a catalog: keep the list of repos in the DB and reconcile through
-the adapter.
+- Without a referrers API: the `sha256-<digest>` tag schema, as cosign does (distribution
+  3.1.2, the GitLab container registry, GHCR).
+- Without a catalog: keep the list of repos in the DB and reconcile through the adapter (Harbor
+  for a project robot; GHCR, whose catalog is all of GHCR).
+
+The phase-0 table this section carried is resolved there. Its two *verify* cells are measured:
+Harbor v2.15.4 serves the OCI 1.1 referrers API, and GHCR has none (404 `MANIFEST_UNKNOWN`). Its
+ECR row was written from memory and is in the matrix's `untested` tier as it was, marked so:
+the spike (#19) needs an AWS account and has not run.
 
 ## 6. Manifest types: what the ecosystem already has, and our profile
 

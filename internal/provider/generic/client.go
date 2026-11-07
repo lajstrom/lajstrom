@@ -66,11 +66,11 @@ func newClients(cfg config.Registry, host string, log *slog.Logger) clients {
 		MaxRetry:  retries,
 	}
 	// The retry transport resends a request only when its body can be replayed (GetBody); a
-	// streamed blob upload is sent once.
-	rt := &retry.Transport{
+	// streamed blob upload is sent once. Above it, the probe's ping sees the challenges.
+	rt := &challengeTransport{next: &retry.Transport{
 		Base:   &logTransport{next: newTransport(timeout), log: log},
 		Policy: func() retry.Policy { return policy },
-	}
+	}}
 	var cred auth.CredentialFunc
 	if cfg.Auth.Username != "" {
 		cred = auth.StaticCredential(host, auth.Credential{Username: cfg.Auth.Username, Password: cfg.Auth.Password})
@@ -116,6 +116,27 @@ func newTransport(timeout time.Duration) *http.Transport {
 	t.ResponseHeaderTimeout = timeout
 	t.MaxIdleConnsPerHost = maxIdleConnsPerHost
 	return t
+}
+
+// challengeKey is the context key under which a request asks challengeTransport for the
+// challenge of a 401: a *string, which the first one fills.
+type challengeKey struct{}
+
+// challengeTransport keeps the WWW-Authenticate header of the first 401 of a request whose
+// context asks for it (the probe's ping). The auth client answers a challenge itself, and the
+// answer it returns in the end does not show the challenge.
+type challengeTransport struct{ next http.RoundTripper }
+
+// RoundTrip implements http.RoundTripper.
+func (t *challengeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.next.RoundTrip(req)
+	if err != nil || resp.StatusCode != http.StatusUnauthorized {
+		return resp, err
+	}
+	if dst, ok := req.Context().Value(challengeKey{}).(*string); ok && *dst == "" {
+		*dst = resp.Header.Get("WWW-Authenticate")
+	}
+	return resp, nil
 }
 
 // logTransport logs every attempt of a request to the registry at debug level: method, path,

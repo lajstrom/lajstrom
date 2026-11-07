@@ -44,6 +44,10 @@ registries:
       maxBlobSize: 10000000000   # documented: 10 GB per layer; measured up to 100 MiB
 ```
 
+Since #35 the provider's vendor table sets `catalog: false` and `deleteManifest: false` for the
+host `ghcr.io` without asking (the catalog is not probed), and the line says `vendor=ghcr`; the
+two keys may stay in the configuration.
+
 ## Measurements
 
 The commands use two shell helpers. The token request is the one place the PAT travels, and
