@@ -23,6 +23,8 @@ import (
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/sqlite"
+	"github.com/lajstrom/lajstrom/internal/ingest"
+	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/provider/generic"
 )
@@ -228,6 +230,66 @@ func TestIntegrationPassThrough(t *testing.T) {
 	resp, body = request(t, http.MethodGet, r.a.URL+"/v2/_catalog", nil, 0)
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"`+r.name+`"`) {
 		t.Errorf("_catalog: %d %s", resp.StatusCode, body)
+	}
+}
+
+// TestIntegrationRawPush is the first criterion of #25 against a real registry: a raw file
+// pushed as oras pushes it, the blob and then the manifest through the facade, is indexed by the
+// pipeline and served by the raw route; another manifest under the tag is 409 with the digest
+// the tag holds, a manifest without an annotation 400 naming it.
+func TestIntegrationRawPush(t *testing.T) {
+	addr := os.Getenv("LAJSTROM_TEST_REGISTRY")
+	if addr == "" {
+		t.Skip("set LAJSTROM_TEST_REGISTRY=host:port to run against a registry")
+	}
+	ctx := t.Context()
+	st, err := sqlite.Open(ctx, fmt.Sprintf("file:facade-it-%d?mode=memory&cache=shared", memoryDBs.Add(1)))
+	must(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	must(t, st.Migrate(ctx))
+	repo := index.Repo{Format: "raw", Name: "assets", Registry: "it", Prefix: "raw/assets", Kind: "hosted"}
+	must(t, st.CreateRepo(ctx, &repo))
+	p, err := generic.New(config.Registry{Name: "it", Type: generic.Type, URL: "http://" + addr, Prefix: os.Getenv("LAJSTROM_TEST_REGISTRY_PREFIX"),
+		Auth: config.RegistryAuth{Username: os.Getenv("LAJSTROM_TEST_REGISTRY_USERNAME"), Password: os.Getenv("LAJSTROM_TEST_REGISTRY_PASSWORD")}}, nil)
+	must(t, err)
+	providers := provider.Map{"it": p}
+	logs := &logBuffer{}
+	log := slog.New(slog.NewTextHandler(logs, nil))
+	srv := httptest.NewServer(New(Options{Index: st, Providers: providers, Log: log,
+		Ingest: ingest.New(ingest.Options{Providers: providers, Index: st, Log: log})}))
+	t.Cleanup(srv.Close)
+
+	f := rawFileOf("it-"+randomHex(t)+"/hello.txt", "hello lajstrom "+randomHex(t)+"\n")
+	name := srv.URL + "/v2/raw/assets/" + f.path
+	resp, body := request(t, http.MethodPost, name+"/blobs/uploads/?digest="+f.digest.String(), bytes.NewReader(f.content), int64(len(f.content)))
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("blob: %d %s", resp.StatusCode, body)
+	}
+	m, d := f.body(t)
+	resp, body = request(t, http.MethodPut, name+"/manifests/"+f.tag(), bytes.NewReader(m), int64(len(m)), "Content-Type", ocispecManifest)
+	if resp.StatusCode != http.StatusCreated || resp.Header.Get("Docker-Content-Digest") != d.String() {
+		t.Fatalf("manifest: %d %s\n%s", resp.StatusCode, body, logs)
+	}
+	rr := httptest.NewRecorder()
+	rawRoutes(t, st, providers).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/raw/assets/"+f.path, nil))
+	switch {
+	case rr.Code == http.StatusTemporaryRedirect:
+		t.Logf("the registry redirects blob downloads: %s", rr.Header().Get("Location"))
+	case rr.Code != http.StatusOK || !bytes.Equal(rr.Body.Bytes(), f.content):
+		t.Errorf("GET /raw/assets/%s: %d %q", f.path, rr.Code, rr.Body)
+	}
+
+	f.m.Annotations[ocispec.AnnotationCreated] = "2026-11-07T10:00:01Z"
+	m, _ = f.body(t)
+	resp, body = request(t, http.MethodPut, name+"/manifests/"+f.tag(), bytes.NewReader(m), int64(len(m)), "Content-Type", ocispecManifest)
+	if resp.StatusCode != http.StatusConflict || !strings.Contains(string(body), `"existing":"`+d.String()+`"`) {
+		t.Errorf("another manifest under the tag: %d %s", resp.StatusCode, body)
+	}
+	delete(f.m.Annotations, profile.AnnotationRepo)
+	m, _ = f.body(t)
+	resp, body = request(t, http.MethodPut, name+"/manifests/"+f.tag(), bytes.NewReader(m), int64(len(m)), "Content-Type", ocispecManifest)
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "lajstrom.repo is missing") {
+		t.Errorf("a missing annotation: %d %s", resp.StatusCode, body)
 	}
 }
 

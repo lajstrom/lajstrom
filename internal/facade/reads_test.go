@@ -135,7 +135,7 @@ func TestManifestPassThrough(t *testing.T) {
 	wantError(t, "not JSON", put("v2", []byte("{oops")), http.StatusBadRequest, codeManifestInvalid)
 	wantError(t, "mediaType against Content-Type", put("v2", body, "Content-Type", ocispec.MediaTypeImageIndex), http.StatusBadRequest, codeManifestInvalid)
 	wantError(t, "no Content-Length", put("v2", body, "Content-Length", "-1"), http.StatusLengthRequired, codeManifestInvalid)
-	wantError(t, "too large", put("v2", body, "Content-Length", fmt.Sprint(maxManifestSize+1)), http.StatusRequestEntityTooLarge, codeManifestInvalid)
+	wantError(t, "too large", put("v2", body, "Content-Length", fmt.Sprint(defaultMaxManifestSize+1)), http.StatusRequestEntityTooLarge, codeManifestInvalid)
 	wantError(t, "body shorter than Content-Length", put("v2", body, "Content-Length", fmt.Sprint(len(body)+5)), http.StatusBadRequest, codeManifestInvalid)
 
 	e.prov.FailPushReference = fmt.Errorf("the tag is immutable: %w", provider.ErrConflict)

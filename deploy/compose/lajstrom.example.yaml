@@ -16,6 +16,7 @@ server:
   listen: ":8080"                     # host:port to listen on
   externalURL: "http://localhost:8080" # base of every absolute URL Lajstrom renders
   shutdownTimeout: 30s                # how long in-flight requests get on SIGTERM
+  maxManifestSize: 4194304            # bytes; the largest manifest a PUT to /v2 may carry
 
 log:
   level: info                         # debug | info | warn | error

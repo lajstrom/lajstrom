@@ -72,28 +72,98 @@ Tags of an `oci` repo come from the backend; `_catalog` lists the repositories o
 you may read, from the index (`oci_repos`), so a manifest pushed to an `oci` repo records its
 repository there.
 
-## 3. A `raw` repo: blobs yes, the manifest after #25
+## 3. A file in a `raw` repo, through ingest
+
+A manifest pushed to a repo Lajstrom manages goes through the manifest hook: the facade checks
+that it is an OCI image manifest whose layers the backend has, and hands it to ingest, the
+pipeline behind `curl -T` on the raw frontend too ([raw.md](raw.md)): the manifest profile, the
+raw plugin, the claim on the tag, the push, the index. The client sets what the frontend would
+set itself ([manifest-profile.md](../spec/manifest-profile.md) §1, §3, §4):
+
+- `--artifact-type application/vnd.lajstrom.raw.v1`, and the media type of the file layer,
+  `application/vnd.lajstrom.raw.file.v1`, after the file name;
+- `lajstrom.schema=1`, `lajstrom.format=raw`, `lajstrom.repo=<repo>`;
+- `lajstrom.name` and `lajstrom.raw.path`: the path of the file in the repo, which is also the
+  repository below `raw/<repo>/` (lower case, escaped) and the title of the layer;
+- `lajstrom.version`: the first 16 hex digits of the file's sha256, which is also the tag;
+- `org.opencontainers.image.created`: oras sets it to the time of the push when the flag is
+  left out.
+
+oras titles a layer with the path as the command line gives it, so push from a directory
+layout: `docs/hello.txt` is titled `docs/hello.txt`, the path, where a bare `hello.txt` would be
+titled `hello.txt` and refused.
 
 ```sh
-oras push --plain-http localhost:8080/raw/assets/hello:1 file.txt
+mkdir -p docs && printf 'hello lajstrom\n' > docs/hello.txt
+v=$(sha256sum docs/hello.txt | cut -c1-16)    # ec5ba820a095a4d6; shasum -a 256 where sha256sum is missing
+oras push --plain-http --artifact-type application/vnd.lajstrom.raw.v1 \
+  --annotation lajstrom.schema=1 --annotation lajstrom.format=raw --annotation lajstrom.repo=assets \
+  --annotation lajstrom.name=docs/hello.txt --annotation lajstrom.version=$v \
+  --annotation lajstrom.raw.path=docs/hello.txt \
+  --annotation org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  localhost:8080/raw/assets/docs/hello.txt:$v docs/hello.txt:application/vnd.lajstrom.raw.file.v1
 ```
 
 ```text
+Preparing docs/hello.txt
+Uploading ec5ba820a095 docs/hello.txt
+Uploading 44136fa355b3 application/vnd.oci.empty.v1+json
+Uploaded  ec5ba820a095 docs/hello.txt
 Uploaded  44136fa355b3 application/vnd.oci.empty.v1+json
-Uploaded  7f4b67b5c68d file.txt
-Uploading 397da82632a3 application/vnd.oci.image.manifest.v1+json
-Error response from registry: unsupported: pushing a manifest to a raw repo: the manifest hook comes with #25
+Uploading 6ce3072bb497 application/vnd.oci.image.manifest.v1+json
+Uploaded  6ce3072bb497 application/vnd.oci.image.manifest.v1+json
+Pushed [registry] localhost:8080/raw/assets/docs/hello.txt:ec5ba820a095a4d6
+ArtifactType: application/vnd.lajstrom.raw.v1
+Digest: sha256:6ce3072bb497dcc8dd9094dfd89e6b6dcb184f1c215914aded55e63cd0adc872
 ```
 
-The blobs are uploaded; the manifest `PUT` of a managed repo is `501 UNSUPPORTED` until the
-manifest hook of #25 validates it against the manifest profile and hands it to ingest. Until
-then a raw file goes in through its own frontend, and the facade reads it:
+The manifest digest changes with the `created` time. The file is indexed now, the raw frontend
+serves it, and its tags come from the index:
 
 ```sh
-curl -T file.txt http://localhost:8080/raw/assets/docs/file.txt     # {"path":"docs/file.txt","version":"7f4b67b5c68dd2f5",…}
-oras repo tags --plain-http localhost:8080/raw/assets/docs/file.txt # 7f4b67b5c68dd2f5
-oras pull --plain-http -o out localhost:8080/raw/assets/docs/file.txt:7f4b67b5c68dd2f5
+curl http://localhost:8080/raw/assets/docs/hello.txt                       # hello lajstrom
+oras repo tags --plain-http localhost:8080/raw/assets/docs/hello.txt       # ec5ba820a095a4d6
+oras pull --plain-http -o out localhost:8080/raw/assets/docs/hello.txt:$v  # writes out/docs/hello.txt
 ```
+
+Tags are immutable. Pushing the same manifest again is the idempotent `201`, but the same
+command run again builds another manifest, if only by its `created` time, and through the facade
+another manifest under a tag is a `409` naming the one the tag holds (manifest-profile.md §4.2;
+the raw frontend's `PUT` takes the same file as the repeat instead):
+
+```text
+Preparing docs/hello.txt
+Exists    ec5ba820a095 docs/hello.txt
+Exists    44136fa355b3 application/vnd.oci.empty.v1+json
+Uploading 5c493b2b3cc6 application/vnd.oci.image.manifest.v1+json
+Error response from registry: tag invalid: tag ec5ba820a095a4d6 of raw/assets/docs/hello.txt is taken by sha256:6ce3072bb497dcc8dd9094dfd89e6b6dcb184f1c215914aded55e63cd0adc872: tags are immutable: map[existing:sha256:6ce3072bb497dcc8dd9094dfd89e6b6dcb184f1c215914aded55e63cd0adc872]
+```
+
+Other bytes are another version under a tag of their own: compute `v` again and push. Under the
+old tag they are refused, since the version is not theirs:
+
+```text
+Error response from registry: manifest invalid: the manifest is not a valid raw artifact for raw/assets/docs/hello.txt: ingest: raw plugin: lajstrom.version "ec5ba820a095a4d6" is not the first 16 hex digits of the file's sha256 d9a4c6676a62cb3b8ca0b8459ab341837cdba8543316c8574b454ccc24d4c690
+```
+
+A missing annotation is a `400` that names it, here the push without
+`--annotation lajstrom.repo=assets`:
+
+```text
+Error response from registry: manifest invalid: the manifest is not a valid raw artifact for raw/assets/docs/hello.txt: profile: invalid annotation: lajstrom.repo is missing
+```
+
+Without `--artifact-type` oras sends its default, `application/vnd.unknown.artifact.v1`, and the
+answer says what to pass:
+
+```text
+Error response from registry: manifest invalid: the manifest is not a valid raw artifact for raw/assets/docs/hello.txt; pass --artifact-type application/vnd.lajstrom.raw.v1: profile: invalid artifactType: "application/vnd.unknown.artifact.v1" is not application/vnd.lajstrom.<type>.v1; profile: invalid layer title: layer 0: "docs/hello.txt" is not a file name
+```
+
+A push without a tag (`localhost:8080/raw/assets/docs/hello.txt`, no `:$v`) goes by digest: the
+hook takes the tag from `lajstrom.version` (and `lajstrom.variant` in the formats that have one),
+and the version is indexed all the same; without `lajstrom.version` it is a `400` that asks for a
+tag. A layer the backend does not have is `400 MANIFEST_BLOB_UNKNOWN` with its digest.
 
 Tags of a managed repo come from the index, not from the backend: the versions of the package
 whose escaped path is the name below the repo.
@@ -108,7 +178,8 @@ single `POST ?digest=` with the whole blob works too, and so does a mount
 (`?mount=<digest>&from=<name>`) from a repo you may read.
 
 Not yet: a `Range` and the `307` to the backend's object storage on a blob `GET` (#27, the blob
-is streamed whole), the referrers API (#28, `501`), deletes (#61, `405`).
+is streamed whole), the referrers API (#28, `501`; a signature pushed to a managed repo is
+refused as an invalid artifact until then), deletes (#61, `405`).
 
 ## 5. Clean up
 

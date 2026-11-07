@@ -69,6 +69,7 @@ one backend down does not keep a replica from starting.
 | `server.listen` | string, `host:port` | none, required | `LAJSTROM_SERVER_LISTEN` | TCP address to listen on. `":8080"` listens on every interface, `"127.0.0.1:8080"` on loopback only. |
 | `server.externalURL` | `https://<host>[:port]` | empty | `LAJSTROM_SERVER_EXTERNAL_URL` | Base of every absolute URL Lajstrom renders: token realm, redirects, simple index links ([http-routing.md](spec/http-routing.md) §1). No path, query or fragment: Lajstrom owns the whole host. `http://` only for the dev stack on loopback (the `server.insecureHTTP` switch and TLS keys come with #50). Example: `https://art.example.com`. |
 | `server.shutdownTimeout` | duration (`30s`, `2m`) | `30s` | none | How long in-flight requests get to finish after SIGINT or SIGTERM before their connections are closed. Must be positive. |
+| `server.maxManifestSize` | bytes | `4194304` (4 MiB) | none | Largest manifest a `PUT /v2/<name>/manifests/<ref>` may carry, on every repo; a larger one is `413` ([http-routing.md](spec/http-routing.md) §2). The OCI facade reads a manifest into memory before it checks it, so this bounds the memory of one push; the distribution spec asks a registry to take at least 4 MiB. Must not be negative; `0` means the default. |
 
 ### log
 

@@ -48,7 +48,7 @@ func TestLoadDefaults(t *testing.T) {
 				t.Fatalf("Load: %v", err)
 			}
 			want := &Config{
-				Server:   Server{Listen: ":8080", ShutdownTimeout: 30 * time.Second},
+				Server:   Server{Listen: ":8080", ShutdownTimeout: 30 * time.Second, MaxManifestSize: 4 << 20},
 				Log:      Log{Level: "info", Format: "text"},
 				Database: Database{Driver: "sqlite", DSN: "file:lajstrom.db"},
 				Ingest:   Ingest{ClaimTTL: 10 * time.Minute},
@@ -118,6 +118,7 @@ func TestLoadErrors(t *testing.T) {
 		},
 		{name: "duration without unit", file: minimal[:len(minimal)-1] + "\n  shutdownTimeout: 30\n", want: []string{"line 3", "into time.Duration"}},
 		{name: "negative claim TTL", file: minimal + "ingest: {claimTTL: -1m}\n", want: []string{"ingest.claimTTL: must not be negative"}},
+		{name: "negative manifest size", file: minimal + "  maxManifestSize: -1\n", want: []string{"server.maxManifestSize: must not be negative"}},
 		{name: "env override is validated", file: minimal, env: map[string]string{"LAJSTROM_DATABASE_DRIVER": "mysql"}, want: []string{`database.driver: "mysql" is not sqlite or postgres`}},
 		{
 			name: "registry limits",

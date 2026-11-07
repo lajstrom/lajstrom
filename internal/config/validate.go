@@ -77,6 +77,9 @@ func (s Server) validate(p *problems) {
 	if s.ShutdownTimeout <= 0 {
 		p.add("server.shutdownTimeout", "must be positive")
 	}
+	if s.MaxManifestSize < 0 {
+		p.add("server.maxManifestSize", "must not be negative")
+	}
 }
 
 func (l Log) validate(p *problems) {

@@ -13,20 +13,21 @@ import (
 // The error codes of the distribution spec ("Error Codes") that the facade answers with, and
 // TAG_INVALID, distribution's code for a tag that cannot be written, which clients know.
 const (
-	codeBlobUnknown       = "BLOB_UNKNOWN"
-	codeBlobUploadInvalid = "BLOB_UPLOAD_INVALID"
-	codeBlobUploadUnknown = "BLOB_UPLOAD_UNKNOWN"
-	codeDigestInvalid     = "DIGEST_INVALID"
-	codeManifestInvalid   = "MANIFEST_INVALID"
-	codeManifestUnknown   = "MANIFEST_UNKNOWN"
-	codeNameInvalid       = "NAME_INVALID"
-	codeNameUnknown       = "NAME_UNKNOWN"
-	codeSizeInvalid       = "SIZE_INVALID"
-	codeUnauthorized      = "UNAUTHORIZED"
-	codeDenied            = "DENIED"
-	codeUnsupported       = "UNSUPPORTED"
-	codeTooManyRequests   = "TOOMANYREQUESTS"
-	codeTagInvalid        = "TAG_INVALID"
+	codeBlobUnknown         = "BLOB_UNKNOWN"
+	codeBlobUploadInvalid   = "BLOB_UPLOAD_INVALID"
+	codeBlobUploadUnknown   = "BLOB_UPLOAD_UNKNOWN"
+	codeDigestInvalid       = "DIGEST_INVALID"
+	codeManifestBlobUnknown = "MANIFEST_BLOB_UNKNOWN"
+	codeManifestInvalid     = "MANIFEST_INVALID"
+	codeManifestUnknown     = "MANIFEST_UNKNOWN"
+	codeNameInvalid         = "NAME_INVALID"
+	codeNameUnknown         = "NAME_UNKNOWN"
+	codeSizeInvalid         = "SIZE_INVALID"
+	codeUnauthorized        = "UNAUTHORIZED"
+	codeDenied              = "DENIED"
+	codeUnsupported         = "UNSUPPORTED"
+	codeTooManyRequests     = "TOOMANYREQUESTS"
+	codeTagInvalid          = "TAG_INVALID"
 	// codeUnknown is distribution's code of a 5xx; the spec defines codes for 4xx answers only.
 	codeUnknown = "UNKNOWN"
 )
@@ -38,11 +39,13 @@ const basicChallenge = `Basic realm="lajstrom"`
 // apiError is an error the facade answers in the distribution format: the code that the
 // handler chose for what it was doing, the status (zero: format.StatusOf of the cause, the one
 // error table of the frontends, so that index and provider errors map as everywhere), the
-// message for the client (empty: the cause's), and the cause, for the status and the log.
+// message for the client (empty: the cause's), the detail of the error entry (nil: none), and
+// the cause, for the status and the log.
 type apiError struct {
 	status int
 	code   string
 	msg    string
+	detail any
 	err    error
 }
 
@@ -78,8 +81,8 @@ type errorEntry struct {
 // fail answers err as the distribution spec's error document. The status is the apiError's,
 // or format.StatusOf of the cause; the code follows the status where the status decides it
 // (401 UNAUTHORIZED with the challenge, 403 DENIED, 429 TOOMANYREQUESTS, 501 UNSUPPORTED, 5xx
-// UNKNOWN) and is the handler's otherwise. A 5xx says only its status text, and its cause is
-// logged with the request id: a backend error must not reach the client.
+// UNKNOWN) and is the handler's otherwise. A 5xx says only its status text, without a detail,
+// and its cause is logged with the request id: a backend error must not reach the client.
 func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var ae *apiError
 	if !errors.As(err, &ae) {
@@ -89,13 +92,13 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if status == 0 {
 		status = format.StatusOf(ae.err)
 	}
-	code, msg := ae.code, ae.msg
+	code, msg, detail := ae.code, ae.msg, ae.detail
 	if msg == "" && ae.err != nil {
 		msg = ae.err.Error()
 	}
 	switch {
 	case status >= http.StatusInternalServerError && status != http.StatusNotImplemented:
-		code, msg = codeUnknown, http.StatusText(status)
+		code, msg, detail = codeUnknown, http.StatusText(status), nil
 		h.o.Log.ErrorContext(r.Context(), "facade: request failed", "method", r.Method, "path", r.URL.Path,
 			"status", status, "error", err.Error(), "requestId", server.RequestID(r.Context()))
 	case status == http.StatusUnauthorized:
@@ -110,7 +113,7 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	case code == "":
 		code = codeOfStatus(status)
 	}
-	writeJSON(w, status, errorBody{Errors: []errorEntry{{Code: code, Message: msg}}})
+	writeJSON(w, status, errorBody{Errors: []errorEntry{{Code: code, Message: msg, Detail: detail}}})
 }
 
 // codeOfStatus is the code of an error whose handler named none.

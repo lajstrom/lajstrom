@@ -27,6 +27,10 @@ type Server struct {
 	ExternalURL string `yaml:"externalURL"`
 	// ShutdownTimeout bounds the graceful shutdown: in-flight requests get this long to finish.
 	ShutdownTimeout time.Duration `yaml:"shutdownTimeout"`
+	// MaxManifestSize is the largest manifest a PUT to /v2 may carry, in bytes; the facade reads
+	// a manifest into memory. Load sets DefaultMaxManifestSize; zero means the default too,
+	// negative is invalid.
+	MaxManifestSize int64 `yaml:"maxManifestSize"`
 }
 
 // Log configures the process logger. The --log-level and --log-format flags override it.
@@ -156,6 +160,7 @@ type Repo struct {
 // Defaults that Load applies before reading the file.
 const (
 	DefaultShutdownTimeout = 30 * time.Second
+	DefaultMaxManifestSize = 4 << 20 // the least the distribution spec asks a registry to take
 	DefaultLogLevel        = "info"
 	DefaultLogFormat       = "text"
 	DefaultDatabaseDriver  = "sqlite"
@@ -169,7 +174,7 @@ const (
 // Default returns the configuration before the file is read. server.listen has no default.
 func Default() *Config {
 	return &Config{
-		Server:   Server{ShutdownTimeout: DefaultShutdownTimeout},
+		Server:   Server{ShutdownTimeout: DefaultShutdownTimeout, MaxManifestSize: DefaultMaxManifestSize},
 		Log:      Log{Level: DefaultLogLevel, Format: DefaultLogFormat},
 		Database: Database{Driver: DefaultDatabaseDriver, DSN: DefaultDatabaseDSN},
 		Ingest:   Ingest{ClaimTTL: DefaultIngestClaimTTL},
