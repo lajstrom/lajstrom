@@ -16,7 +16,16 @@
 //
 // Parse reads a .deb in one pass for Build; ParseControl reads only up to the end of the
 // control member, for Validate. Issue #39 is the parser, Build and Validate; #40 renders the
-// indexes and #42 serves the pool and the upload route. The plugin registers itself with
+// indexes and #42 serves the pool and the upload route.
+//
+// The indexes of a suite are one render, so that the Release a client gets lists the hashes of
+// the Packages files it gets: RenderIndex with the suite as the scope returns the Release and,
+// for every component and architecture of the suite, Packages, Packages.gz and Packages.xz,
+// which format.CachedDocument keeps together in index_cache under the suite, each by its path
+// below dists/<suite>/. Suites, components and architectures are those of the versions
+// (lajstrom.deb.suite, .component, .arch); packages of architecture all are in the index of
+// every architecture. The routes serve dists/ from the cache, by name and by hash; ingest and
+// delete invalidate it. The Release is unsigned until #41. The plugin registers itself with
 // format.Register when the package is imported; the binary imports it in
 // cmd/lajstrom/formats.go.
 package deb

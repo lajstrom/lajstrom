@@ -1,0 +1,21 @@
+Origin: Lajstrom
+Label: ubuntu
+Suite: jammy-updates
+Codename: jammy-updates
+Date: Sun, 08 Nov 2026 09:30:00 UTC
+Architectures: amd64
+Components: main
+Description: apt/ubuntu jammy-updates
+Acquire-By-Hash: yes
+MD5Sum:
+ 69a774c0397125e7ab250731ca198e49 1086 main/binary-amd64/Packages
+ <MD5Sum> <size> main/binary-amd64/Packages.gz
+ <MD5Sum> <size> main/binary-amd64/Packages.xz
+SHA1:
+ 3d426700636c7d46705bef30e27251686782581b 1086 main/binary-amd64/Packages
+ <SHA1> <size> main/binary-amd64/Packages.gz
+ <SHA1> <size> main/binary-amd64/Packages.xz
+SHA256:
+ aa5fb7ea9ab9b386d76e8f8f63736af064c81c197f9ce812ed78549b7651fddb 1086 main/binary-amd64/Packages
+ <SHA256> <size> main/binary-amd64/Packages.gz
+ <SHA256> <size> main/binary-amd64/Packages.xz

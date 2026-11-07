@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -502,8 +500,7 @@ func TestValidateFetchFailures(t *testing.T) {
 	}
 }
 
-// TestPlugin checks the plugin's identity, its registration, EscapeName, and the parts that
-// come with later issues.
+// TestPlugin checks the plugin's identity, its registration and EscapeName.
 func TestPlugin(t *testing.T) {
 	if p, ok := format.Lookup("apt"); !ok || p != (Plugin{}) {
 		t.Errorf("format.Lookup(apt) = %v, %v", p, ok)
@@ -520,16 +517,5 @@ func TestPlugin(t *testing.T) {
 		if got, err := (Plugin{}).EscapeName(name); !errors.Is(err, format.ErrInvalid) {
 			t.Errorf("EscapeName(%q) = %q, %v; want ErrInvalid", name, got, err)
 		}
-	}
-	if _, err := (Plugin{}).RenderIndex(t.Context(), ubuntu, "jammy/main/amd64", nil); !errors.Is(err, format.ErrUnsupported) {
-		t.Errorf("RenderIndex = %v, want ErrUnsupported", err)
-	}
-	mux := http.NewServeMux()
-	deps := format.Deps{Index: struct{ index.Store }{}}
-	Plugin{}.Routes(format.NewRouter(mux, Name, deps), deps)
-	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/apt/ubuntu/dists/jammy/Release", nil))
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("GET /apt/ubuntu/dists/jammy/Release = %d, want 404 until #40", rr.Code)
 	}
 }
