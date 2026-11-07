@@ -183,7 +183,7 @@ func emptyRepo(t *testing.T, prov provider.Provider) (*sqlite.Store, index.Repo,
 // download went through the pool route: a 200 stream from the registry of testRegistry (the
 // fake, or Zot or distribution with LAJSTROM_TEST_REGISTRY), and with
 // LAJSTROM_TEST_REGISTRY_S3=localhost:5002, distribution on S3 (make dev-up PROFILES=s3), a
-// 307 of ServeBlob that apt follows to MinIO.
+// 307 of ServeBlob that apt follows to SeaweedFS.
 func TestAptGetInstall(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker is not on the PATH; this test runs apt-get in a container")
