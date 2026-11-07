@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -118,38 +119,44 @@ func parseHash(hash string) (argonParams, []byte, []byte, error) {
 }
 
 // parseParams parses m=<KiB>,t=<passes>,p=<threads>, in this order: memory and passes at
-// least 1, threads 1 to 255.
+// least 1 and at most 2^32-1, threads 1 to 255. The bounds are checked here, next to the
+// conversions, where the linters see them.
 func parseParams(s string) (argonParams, error) {
 	var p argonParams
 	parts := strings.Split(s, ",")
 	if len(parts) != 3 {
 		return p, fmt.Errorf("%w: the parameters are not m=…,t=…,p=…", ErrMalformedHash)
 	}
-	memory, err := parseParam(parts[0], "m", 32)
+	memory, err := parseParam(parts[0], "m")
 	if err != nil {
 		return p, err
 	}
-	passes, err := parseParam(parts[1], "t", 32)
+	passes, err := parseParam(parts[1], "t")
 	if err != nil {
 		return p, err
 	}
-	threads, err := parseParam(parts[2], "p", 8)
+	threads, err := parseParam(parts[2], "p")
 	if err != nil {
 		return p, err
 	}
-	// Each value fits its field: ParseUint refused anything above bits.
+	if memory > math.MaxUint32 {
+		return p, fmt.Errorf("%w: parameter m is more than %d", ErrMalformedHash, uint64(math.MaxUint32))
+	}
+	if passes > math.MaxUint32 {
+		return p, fmt.Errorf("%w: parameter t is more than %d", ErrMalformedHash, uint64(math.MaxUint32))
+	}
+	if threads > math.MaxUint8 {
+		return p, fmt.Errorf("%w: parameter p is more than %d", ErrMalformedHash, math.MaxUint8)
+	}
 	return argonParams{memory: uint32(memory), time: uint32(passes), threads: uint8(threads)}, nil
 }
 
-// parseParam parses part as <name>=<n>, n a positive integer of at most bits bits.
-func parseParam(part, name string, bits int) (uint64, error) {
+// parseParam parses part as <name>=<n>, n a positive integer.
+func parseParam(part, name string) (uint64, error) {
 	v, ok := strings.CutPrefix(part, name+"=")
-	n, err := strconv.ParseUint(v, 10, bits)
-	switch {
-	case !ok, errors.Is(err, strconv.ErrSyntax), err == nil && n == 0:
+	n, err := strconv.ParseUint(v, 10, 64)
+	if !ok || err != nil || n == 0 {
 		return 0, fmt.Errorf("%w: parameter %s is not a positive integer", ErrMalformedHash, name)
-	case err != nil: // strconv.ErrRange
-		return 0, fmt.Errorf("%w: parameter %s is more than %d", ErrMalformedHash, name, uint64(1)<<bits-1)
 	}
 	return n, nil
 }
