@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -73,6 +74,7 @@ type envOptions struct {
 	authz     auth.Authorizer
 	providers provider.Set                    // nil means the fake of the pipeline as "local"
 	signer    func(index.Store) format.Signer // the Signer over the store of the pipeline; nil: none
+	log       *slog.Logger                    // nil discards
 }
 
 func newAptEnv(t *testing.T, o envOptions) *aptEnv {
@@ -82,8 +84,11 @@ func newAptEnv(t *testing.T, o envOptions) *aptEnv {
 	if o.providers == nil {
 		o.providers = provider.Map{"local": p.prov}
 	}
+	if o.log == nil {
+		o.log = slog.New(slog.DiscardHandler)
+	}
 	deps := format.Deps{Index: countingStore{Store: p.st, reads: e.reads}, Ingest: p.pipe, Providers: o.providers, Auth: o.authz,
-		Log: slog.New(slog.DiscardHandler)}
+		Log: o.log}
 	if o.signer != nil {
 		deps.Signer = o.signer(p.st)
 	}
@@ -101,7 +106,14 @@ func newAptEnv(t *testing.T, o envOptions) *aptEnv {
 // do sends a request to /apt/ubuntu/<path>; hdr are header name and value pairs.
 func (e *aptEnv) do(method, path string, hdr ...string) *httptest.ResponseRecorder {
 	e.t.Helper()
-	req := httptest.NewRequest(method, "/apt/ubuntu/"+path, nil)
+	return e.send(method, path, nil, hdr...)
+}
+
+// send sends a request with body, which may be nil, to /apt/ubuntu/<path>; hdr are header name
+// and value pairs.
+func (e *aptEnv) send(method, path string, body io.Reader, hdr ...string) *httptest.ResponseRecorder {
+	e.t.Helper()
+	req := httptest.NewRequest(method, "/apt/ubuntu/"+path, body)
 	for i := 0; i+1 < len(hdr); i += 2 {
 		req.Header.Set(hdr[i], hdr[i+1])
 	}
@@ -198,7 +210,8 @@ func checkHeaders(t *testing.T, rr *httptest.ResponseRecorder, contentType strin
 
 // TestRoutesNotFound checks the 404s: unknown suites, components, architectures and files, the
 // signed forms of the Release and the keyring on a server that does not sign, a hash the
-// Release does not list in that directory, the routes of #42, and a repo that does not exist.
+// Release does not list in that directory, pool files that are not there (TestPool has the
+// rest), and a repo that does not exist.
 func TestRoutesNotFound(t *testing.T) {
 	e := newAptEnv(t, envOptions{})
 	fixtureSet(t, e.pipeline)
@@ -222,8 +235,9 @@ func TestRoutesNotFound(t *testing.T) {
 		{http.MethodGet, "dists/jammy/main/binary-amd64/by-hash/SHA256/" + universe, "no index with the SHA256"},
 		{http.MethodGet, "dists/jammy/universe/by-hash/SHA256/" + universe, ""},
 		{http.MethodGet, "dists/focal/main/binary-amd64/by-hash/SHA256/" + universe, "no package in the suite focal"},
-		{http.MethodGet, "pool/main/h/hello/hello_1.0.0-1_amd64.deb", ""},
-		{http.MethodPut, "upload?suite=jammy&component=main", ""},
+		{http.MethodGet, "pool/main/h/hello/hello_9.9-1_amd64.deb", "apt/ubuntu has no pool/main/h/hello/hello_9.9-1_amd64.deb"},
+		{http.MethodGet, "pool/universe/h/hello/hello_1.0.0-1_amd64.deb", "apt/ubuntu has no pool/universe/h/hello/hello_1.0.0-1_amd64.deb"},
+		{http.MethodGet, "pool/universe/libf/libfoo2/libfoo2_2.1-3_amd64.deb", "has no pool/universe/libf/libfoo2/libfoo2_2.1-3_amd64.deb"},
 	} {
 		rr := e.do(c.method, c.path)
 		if rr.Code != http.StatusNotFound || !strings.Contains(rr.Body.String(), c.body) {
@@ -345,7 +359,7 @@ func TestRoutesRenderFails(t *testing.T) {
 // resolve: 500, a programming error.
 func TestHandlersWithoutRepo(t *testing.T) {
 	h := &handlers{deps: format.Deps{Log: slog.New(slog.DiscardHandler)}}
-	for _, serve := range []http.HandlerFunc{h.release, h.packages, h.byHash, h.publicKeys} {
+	for _, serve := range []http.HandlerFunc{h.release, h.packages, h.byHash, h.publicKeys, h.pool, h.upload} {
 		rr := httptest.NewRecorder()
 		serve(rr, httptest.NewRequest(http.MethodGet, "/apt/ubuntu/dists/jammy/Release", nil))
 		if rr.Code != http.StatusInternalServerError {

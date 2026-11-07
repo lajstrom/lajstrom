@@ -79,7 +79,7 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 		return nil, fmt.Errorf("%w: package %q makes the OCI repository name %d bytes long, at most %d",
 			format.ErrInvalid, pkg.Name, len(name), maxRepositoryLen)
 	}
-	md, err := metadataOf(pkg)
+	md, err := pkg.Metadata()
 	if err != nil {
 		return nil, err
 	}
@@ -159,9 +159,12 @@ func parseFile(f format.UploadedFile) (*Package, error) {
 	return pkg, nil
 }
 
-// metadataOf returns the metadata layer of pkg, compact JSON with its keys sorted. One larger
-// than maxMetadata wraps format.ErrInvalid: Validate would not read it.
-func metadataOf(pkg *Package) ([]byte, error) {
+// Metadata returns the metadata layer of a package that Parse read, as Build writes it
+// (docs/spec/manifest-profile.md §2): compact JSON with its keys sorted, the control fields as
+// written, md5sums ({} when the package has none), filename, size, md5, sha1 and sha256 of the
+// whole file. One larger than 4 MiB wraps format.ErrInvalid: Validate would not read it.
+// lajstrom admin deb metadata prints it, for the metadata layer of an oras push.
+func (pkg *Package) Metadata() ([]byte, error) {
 	sums := pkg.MD5Sums
 	if sums == nil {
 		sums = map[string]string{}

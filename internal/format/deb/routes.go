@@ -31,20 +31,24 @@ const (
 )
 
 // Routes mounts the routes of the apt frontend below /apt/ (docs/spec/http-routing.md §3,
-// apt), each a GET (and so a HEAD) that needs read on the repo:
+// apt): a GET (and so a HEAD) that needs read on the repo, or the PUT of an upload, which
+// needs write:
 //
-//	/{repo}/dists/{suite}/Release                                    the Release of the suite
-//	/{repo}/dists/{suite}/InRelease, Release.gpg                     the Release signed with the repo's keys
-//	/{repo}/dists/{suite}/{component}/binary-{arch}/Packages         and Packages.gz, Packages.xz
-//	/{repo}/dists/{suite}/{component}/binary-{arch}/by-hash/SHA256/{hash}
-//	/{repo}/key.asc                                                  the keyring of the repo, for signed-by=
+//	GET /{repo}/dists/{suite}/Release                                the Release of the suite
+//	GET /{repo}/dists/{suite}/InRelease, Release.gpg                 the Release signed with the repo's keys
+//	GET /{repo}/dists/{suite}/{component}/binary-{arch}/Packages     and Packages.gz, Packages.xz
+//	GET /{repo}/dists/{suite}/{component}/binary-{arch}/by-hash/SHA256/{hash}
+//	GET /{repo}/pool/{component}/{p}/{source}/{filename}             a .deb, through format.ServeBlob
+//	GET /{repo}/key.asc                                              the keyring of the repo, for signed-by=
+//	PUT /{repo}/upload?suite=&component=[&arch=]                     one .deb, published through deps.Ingest
 //
 // The documents come from index_cache through format.CachedDocument and are served with
 // format.ServeDocument (ETag, Last-Modified, If-None-Match, Range). deps.Signer signs; when it
 // is nil (the server has no master key) InRelease, Release.gpg and key.asc are 404 and clients
-// take the unsigned Release from a source marked [trusted=yes]. pool/ and the upload route
-// are #42; until then those paths are 404, and a package reaches an apt repo by oras push
-// through the facade, whose hook runs Validate. The handlers render with a Plugin that keeps
+// take the unsigned Release from a source marked [trusted=yes]. A package reaches an apt repo
+// through the upload route or by oras push through the facade, whose hook runs Validate; ingest
+// invalidates the repo's documents either way, and the next GET renders and signs the suite
+// again, so nothing here runs after a publish. The handlers render with a Plugin that keeps
 // the providers of deps (RenderIndex reads a metadata layer the index left out) and the clock
 // of p.
 func (p Plugin) Routes(r format.Router, deps format.Deps) {
@@ -59,7 +63,9 @@ func (p Plugin) Routes(r format.Router, deps format.Deps) {
 	r.HandleFunc("GET /{repo}/dists/{suite}/{file}", h.release)
 	r.HandleFunc("GET /{repo}/dists/{suite}/{component}/{dir}/{file}", h.packages)
 	r.HandleFunc("GET /{repo}/dists/{suite}/{component}/{dir}/by-hash/SHA256/{hash}", h.byHash)
+	r.HandleFunc("GET /{repo}/pool/{component}/{p}/{source}/{filename}", h.pool)
 	r.HandleFunc("GET /{repo}/key.asc", h.publicKeys)
+	r.HandleFunc("PUT /{repo}/upload", h.upload)
 }
 
 // handlers are the apt routes over one format.Deps.
@@ -71,12 +77,18 @@ type handlers struct {
 // start returns the repo of the request once the principal may read it; otherwise it answers
 // the error and ok is false.
 func (h *handlers) start(w http.ResponseWriter, r *http.Request) (repo index.Repo, ok bool) {
+	return h.startAs(w, r, auth.ActionRead)
+}
+
+// startAs returns the repo of the request once the principal may perform a on it; otherwise it
+// answers the error and ok is false.
+func (h *handlers) startAs(w http.ResponseWriter, r *http.Request, a auth.Action) (repo index.Repo, ok bool) {
 	repo, ok = format.RepoFrom(r.Context())
 	if !ok {
 		h.fail(w, r, errors.New("deb: the route has no repo"))
 		return index.Repo{}, false
 	}
-	if err := format.Authorize(r.Context(), h.deps, auth.ActionRead, repo); err != nil {
+	if err := format.Authorize(r.Context(), h.deps, a, repo); err != nil {
 		h.fail(w, r, err)
 		return index.Repo{}, false
 	}

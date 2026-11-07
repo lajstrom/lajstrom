@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -78,8 +77,8 @@ type putResponse struct {
 }
 
 // put uploads the request body as the file at the path: the body, bounded by the repo policy's
-// maxFileSize (413 above it), is spooled to a temporary file for the request and published
-// through deps.Ingest, and the answer is 201 with Location (the request path),
+// maxFileSize (format.LimitBody, 413 above it), is spooled to a temporary file for the request
+// and published through deps.Ingest, and the answer is 201 with Location (the request path),
 // Docker-Content-Digest (the manifest digest) and a JSON body. The same bytes again are the
 // idempotent repeat of ingest, answered alike with the digest of the manifest stored first. The
 // spool is removed when the handler returns, whatever the outcome. A path that another spelling
@@ -97,14 +96,14 @@ func (h *handlers) put(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, errors.New("raw: no publisher in format.Deps"))
 		return
 	}
-	body, err := limitBody(w, r, repo)
+	body, err := format.LimitBody(w, r, repo)
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
 	sp, err := format.Spool(body, p, r.Header.Get("Content-Type"), r.ContentLength)
 	if err != nil {
-		h.fail(w, r, tooLarge(repo, err))
+		h.fail(w, r, err)
 		return
 	}
 	defer func() {
@@ -162,52 +161,6 @@ func checkSpelling(ctx context.Context, st index.Reader, repo index.Repo, p stri
 		return fmt.Errorf("%w: path %q exists as %q; a raw path is unique without regard to case", index.ErrConflict, p, pkg.Name)
 	}
 	return nil
-}
-
-// limitBody returns the request body bounded by the repo policy's maxFileSize with
-// http.MaxBytesReader, or as it is when the policy sets none. A declared Content-Length above
-// the limit is refused before anything is read.
-func limitBody(w http.ResponseWriter, r *http.Request, repo index.Repo) (io.Reader, error) {
-	limit, err := maxFileSize(repo)
-	if err != nil || limit < 0 {
-		return r.Body, err
-	}
-	if r.ContentLength > limit {
-		return nil, tooLarge(repo, &http.MaxBytesError{Limit: limit})
-	}
-	return http.MaxBytesReader(w, r.Body, limit), nil
-}
-
-// tooLarge names the repo's limit in an error that wraps an *http.MaxBytesError, and returns any
-// other error unchanged.
-func tooLarge(repo index.Repo, err error) error {
-	var mbe *http.MaxBytesError
-	if !errors.As(err, &mbe) {
-		return err
-	}
-	return fmt.Errorf("raw: the file is larger than the maxFileSize of %s/%s, %d bytes: %w", repo.Format, repo.Name, mbe.Limit, err)
-}
-
-// maxFileSize returns the maxFileSize of the repo policy, an integer number of bytes, or -1 when
-// the policy sets none. A value that is not a non-negative integer is an error (500, logged):
-// an upload is not let through a limit that cannot be read.
-func maxFileSize(repo index.Repo) (int64, error) {
-	if len(repo.Policy) == 0 {
-		return -1, nil
-	}
-	var p struct {
-		MaxFileSize *int64 `json:"maxFileSize"`
-	}
-	err := json.Unmarshal(repo.Policy, &p)
-	switch {
-	case err != nil:
-		return 0, fmt.Errorf("raw: repo %s/%s: policy maxFileSize: %w", repo.Format, repo.Name, err)
-	case p.MaxFileSize == nil:
-		return -1, nil
-	case *p.MaxFileSize < 0:
-		return 0, fmt.Errorf("raw: repo %s/%s: policy maxFileSize %d is negative", repo.Format, repo.Name, *p.MaxFileSize)
-	}
-	return *p.MaxFileSize, nil
 }
 
 // get serves the file at the path, or the listing when the path is empty or ends with "/".

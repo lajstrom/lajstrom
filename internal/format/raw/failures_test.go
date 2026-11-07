@@ -224,9 +224,6 @@ func TestHandlerEdges(t *testing.T) {
 	if got := ociName(repo, "a"); got != "raw/scratch/a" {
 		t.Errorf("ociName = %q", got)
 	}
-	if err := tooLarge(repo, errBoom); !errors.Is(err, errBoom) || err.Error() != "boom" {
-		t.Errorf("tooLarge of another error = %v", err)
-	}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "@"
 	if got := clientIP(req); got != "@" {

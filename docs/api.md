@@ -82,7 +82,7 @@ The keys of `policy` that the server reads:
 
 | Key | Values | Read by |
 | --- | --- | --- |
-| `maxFileSize` | the largest file an upload may carry, in bytes; a larger one is `413`. No limit when absent | raw `PUT` |
+| `maxFileSize` | the largest file an upload may carry, in bytes; a larger one is `413`. No limit when absent | raw `PUT`, apt `PUT …/upload` |
 | `blobRedirect` | `"auto"` (also when absent): a blob download, the facade's blob `GET` and a frontend's file `GET`, is a `307` to the registry's storage when the registry redirects it there (a presigned URL of its object store), so the bytes bypass Lajstrom. `"never"`: Lajstrom follows the registry's redirects and streams every blob of the repo itself, for clients that cannot follow a redirect to another host. The registry's `capabilities.blobRedirect: false` ([configuration.md](configuration.md)) does the same for all its repos | every blob read ([http-routing.md](spec/http-routing.md) §2, §3) |
 
 The server does not check the keys yet: a `maxFileSize` that is not a non-negative integer makes an upload `500`, and a `blobRedirect` that is not `"never"` is read as `"auto"`.

@@ -4,6 +4,6 @@ package main
 // imported, serve mounts format.All(), and the repo service accepts only these formats. A new
 // format is one more import here.
 import (
-	_ "github.com/lajstrom/lajstrom/internal/format/deb" // apt: .deb packages; parse, Build and Validate (#39)
+	_ "github.com/lajstrom/lajstrom/internal/format/deb" // apt: .deb packages; Build and Validate, indexes, signing, pool and upload (#39, #40, #41, #42)
 	_ "github.com/lajstrom/lajstrom/internal/format/raw" // raw: any file under a path (#13)
 )

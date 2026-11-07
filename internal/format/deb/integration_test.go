@@ -3,6 +3,7 @@
 package deb
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -138,7 +139,23 @@ func TestAptGet(t *testing.T) {
 func integrationRepo(t *testing.T) (*sqlite.Store, index.Repo, *ingest.Pipeline, provider.Map) {
 	t.Helper()
 	ctx := t.Context()
-	prov := testRegistry(t)
+	st, repo, pipe, providers := emptyRepo(t, testRegistry(t))
+	hello, _ := testutil.Deb(testutil.DebOptions{})
+	data, _ := testutil.Deb(testutil.DebOptions{Name: "hello-data", Version: "1:2.0-1", Arch: "all"})
+	for _, deb := range [][]byte{hello, data} {
+		if _, err := pipe.Upload(ctx, repo, upload([]format.UploadedFile{debFile(deb)}), alice); err != nil {
+			t.Fatalf("upload: %v", err)
+		}
+	}
+	return st, repo, pipe, providers
+}
+
+// emptyRepo creates an apt repo over SQLite in memory and the registry prov, "local", named
+// it-<random hex> so that runs do not collide in a registry that keeps what they pushed, and
+// the real ingest pipeline over both.
+func emptyRepo(t *testing.T, prov provider.Provider) (*sqlite.Store, index.Repo, *ingest.Pipeline, provider.Map) {
+	t.Helper()
+	ctx := t.Context()
 	run := make([]byte, 4)
 	_, _ = rand.Read(run)
 	name := "it-" + hex.EncodeToString(run)
@@ -152,14 +169,129 @@ func integrationRepo(t *testing.T) (*sqlite.Store, index.Repo, *ingest.Pipeline,
 	providers := provider.Map{"local": prov}
 	pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: slog.New(slog.DiscardHandler),
 		Plugins: func(n string) (format.Plugin, bool) { return Plugin{}, n == Name }})
-	hello, _ := testutil.Deb(testutil.DebOptions{})
-	data, _ := testutil.Deb(testutil.DebOptions{Name: "hello-data", Version: "1:2.0-1", Arch: "all"})
+	return st, repo, pipe, providers
+}
+
+// TestAptGetInstall is the criterion of #42: apt-get install of two packages uploaded through
+// PUT /apt/<repo>/upload, from a signed repo. An httptest server serves the routes over the real
+// pipeline and the keys service; hello 1.0.0-1 for amd64 and hello-data 1:2.0-1 for all, which
+// depends on it, are uploaded to jammy/main through the upload route; ubuntu:24.04 for amd64
+// (--platform linux/amd64, emulated on an arm64 host, so that hello's libc6 is the image's)
+// fetches key.asc with apt-helper, has only the source deb [signed-by=…] of the repo,
+// and runs apt-get update, apt-get install of both, and apt-get download of both. The installed
+// files have their content, the downloaded files the sha256 of the uploads, and every pool
+// download went through the pool route: a 200 stream from the registry of testRegistry (the
+// fake, or Zot or distribution with LAJSTROM_TEST_REGISTRY), and with
+// LAJSTROM_TEST_REGISTRY_S3=localhost:5002, distribution on S3 (make dev-up PROFILES=s3), a
+// 307 of ServeBlob that apt follows to MinIO.
+func TestAptGetInstall(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not on the PATH; this test runs apt-get in a container")
+	}
+	t.Run("registry", func(t *testing.T) { aptGetInstall(t, testRegistry(t), http.StatusOK) })
+	t.Run("s3", func(t *testing.T) {
+		addr := os.Getenv("LAJSTROM_TEST_REGISTRY_S3")
+		if addr == "" {
+			t.Skip("set LAJSTROM_TEST_REGISTRY_S3=host:port (the s3 profile of the dev stack: localhost:5002) for the 307 of a pool download")
+		}
+		prov, err := generic.New(config.Registry{Name: "local", Type: generic.Type, URL: "http://" + addr, Prefix: "lajstrom-it/"},
+			slog.New(slog.DiscardHandler))
+		must(t, err)
+		aptGetInstall(t, prov, http.StatusTemporaryRedirect)
+	})
+}
+
+// aptGetInstall runs TestAptGetInstall against the registry prov; poolStatus is the status of
+// every pool download, 200 or 307.
+func aptGetInstall(t *testing.T, prov provider.Provider, poolStatus int) {
+	ctx := t.Context()
+	st, repo, pipe, providers := emptyRepo(t, prov)
+	secret := make([]byte, 32)
+	_, _ = rand.Read(secret)
+	m, err := keys.ParseMaster(hex.EncodeToString(secret))
+	must(t, err)
+	svc, err := keys.New(keys.Options{Index: st, Master: m, RetireGrace: 720 * time.Hour, Log: slog.New(slog.DiscardHandler)})
+	must(t, err)
+	deps := format.Deps{Index: st, Ingest: pipe, Providers: providers, Signer: svc, Log: slog.New(slog.DiscardHandler)}
+	mux := http.NewServeMux()
+	Plugin{}.Routes(format.NewRouter(mux, Name, deps), deps)
+	var mu sync.Mutex
+	var requests []string // "<status> <method> <path below the repo>"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		mux.ServeHTTP(sw, r)
+		mu.Lock()
+		defer mu.Unlock()
+		requests = append(requests, fmt.Sprintf("%d %s %s", sw.status, r.Method, strings.TrimPrefix(r.URL.Path, "/apt/"+repo.Name+"/")))
+	}))
+	t.Cleanup(srv.Close)
+	u, err := url.Parse(srv.URL)
+	must(t, err)
+
+	hello, helloInfo := testutil.Deb(testutil.DebOptions{})
+	data, dataInfo := testutil.Deb(testutil.DebOptions{Name: "hello-data", Version: "1:2.0-1", Arch: "all", Depends: "hello (>= 1.0.0)",
+		Files: map[string]string{"usr/share/hello-data/greetings": "hello\nbonjour\n"}})
 	for _, deb := range [][]byte{hello, data} {
-		if _, err := pipe.Upload(ctx, repo, upload([]format.UploadedFile{debFile(deb)}), alice); err != nil {
-			t.Fatalf("upload: %v", err)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, srv.URL+"/apt/"+repo.Name+"/upload?suite=jammy&component=main",
+			bytes.NewReader(deb))
+		must(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		must(t, err)
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("PUT upload: %d %s", resp.StatusCode, body)
+		}
+		t.Logf("PUT upload: %d %s", resp.StatusCode, body)
+	}
+
+	base := "http://localhost:" + u.Port() + "/apt/" + repo.Name
+	script := strings.Join([]string{
+		"set -e",
+		"rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*", // nothing from the internet
+		"mkdir -p /etc/apt/keyrings",
+		"/usr/lib/apt/apt-helper -o APT::Sandbox::User=root download-file " + base + "/key.asc /etc/apt/keyrings/t.asc",
+		"echo 'deb [signed-by=/etc/apt/keyrings/t.asc] " + base + " jammy main' > /etc/apt/sources.list.d/t.list",
+		"apt-get update",
+		"apt-get install -y --no-install-recommends hello hello-data",
+		"echo \"=== greeting: $(cat /usr/share/hello/greeting)\"",
+		"echo \"=== greetings: $(cat /usr/share/hello-data/greetings | tr '\\n' ' ')\"",
+		"cd /var/tmp && apt-get -o APT::Sandbox::User=root download hello hello-data && sha256sum *.deb | sed 's/^/=== sha256 /'",
+	}, "\n")
+	runCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	out, err := exec.CommandContext(runCtx, "docker", "run", "--rm", "--network", "host", "--platform", "linux/amd64", //nolint:gosec // the test's own script
+		"ubuntu:24.04", "bash", "-c", script).CombinedOutput()
+	t.Logf("docker run output:\n%s", out)
+	mu.Lock()
+	t.Logf("requests:\n%s", strings.Join(requests, "\n"))
+	reqs := slices.Clone(requests)
+	mu.Unlock()
+	if err != nil {
+		t.Fatalf("docker run: %v", err)
+	}
+	for _, want := range []string{
+		"=== greeting: hello, world\n",
+		"=== greetings: hello bonjour \n",
+		"=== sha256 " + helloInfo.SHA256 + "  hello_1.0.0-1_amd64.deb\n",
+		"=== sha256 " + dataInfo.SHA256 + "  hello-data_1%3a2.0-1_all.deb\n",
+	} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("the output has no %q", want)
 		}
 	}
-	return st, repo, pipe, providers
+	if regexp.MustCompile(`(?m)^E: |NO_PUBKEY|Hash Sum mismatch`).Match(out) {
+		t.Error("apt reported an error")
+	}
+	for _, f := range []string{helloInfo.Filename, dataInfo.Filename} {
+		want := fmt.Sprintf("%d GET pool/main/h/%s/%s", poolStatus, strings.SplitN(f, "_", 2)[0], f)
+		if n := len(slices.DeleteFunc(slices.Clone(reqs), func(r string) bool { return r != want })); n != 2 { // install and download
+			t.Errorf("%d requests %q, want 2", n, want)
+		}
+	}
+	if slices.ContainsFunc(reqs, func(r string) bool { return strings.HasPrefix(r, "404 ") || strings.HasPrefix(r, "5") }) {
+		t.Error("a request failed")
+	}
 }
 
 // TestAptGetSigned is TestAptGet with signing, in ubuntu:22.04, ubuntu:24.04 and debian:12. The
