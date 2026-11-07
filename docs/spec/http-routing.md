@@ -17,7 +17,10 @@ https://<host>/.well-known/terraform.json   (after the MVP)
 https://<host>/ui/...                   (after the MVP)
 ```
 
-Reserved first segments: `v2`, `api`, `ui`, `-`, `.well-known`, and every registered format name.
+Reserved first segments: `v2`, `api`, `ui`, `-`, `.well-known`, `oci`, and every registered format
+name. `oci` is the format of the pass-through repos: a repo `oci/<repo>` holds arbitrary OCI
+artifacts that pass through `/v2` unchanged, indexes nothing and has no frontend, so no plugin
+may take the name and the management API creates such a repo without one.
 A format name is lowercase ASCII letters and digits with single hyphens between them
 (`^[a-z0-9]+(-[a-z0-9]+)*$`) and never one of the other reserved segments.
 A repo name is unique within its format; the pair `<format>/<repo>` is the resource for RBAC.
@@ -50,24 +53,27 @@ never visible to clients).
 
 | Method and path | Behaviour |
 | --- | --- |
-| `GET /v2/` | `200` if authenticated, else `401` with `WWW-Authenticate: Bearer realm="<externalURL>/v2/token",service="<host>"` |
+| `GET /v2/` | `200` if authenticated, else `401` with `WWW-Authenticate: Bearer realm="<externalURL>/v2/token",service="<host>"`. Until the token flow (#26) the facade has no authorizer and answers `200 {}` to everyone, with `Docker-Distribution-API-Version: registry/2.0` (on every `/v2` answer). |
 | `GET /v2/token?service=&scope=repository:<format>/<repo>/<pkg>:pull,push` | Basic auth (user:password, user:PAT, or deploy token) → JWT bearer with the scopes the caller is allowed (rbac.md §4). Anonymous: scopes limited to `pull` on repos with anonymous read. |
-| `HEAD/GET /v2/<name>/manifests/<ref>` | proxied to the backend. `Accept` passed through. |
-| `PUT /v2/<name>/manifests/<ref>` | **hook**: body is parsed; for a non-`oci` repo it must satisfy the manifest profile and is passed to `ingest.Ingest`; on success the manifest is stored and indexed, `201` with `Docker-Content-Digest`. Errors: `400 MANIFEST_INVALID`, `409 TAG_INVALID` (tag exists with another digest), `404 NAME_UNKNOWN` (repo not configured). |
-| `DELETE /v2/<name>/manifests/<ref>` | requires `delete`; deletes in the backend (if `Capabilities.DeleteManifest`) and removes index rows. After the MVP: retention. |
-| `POST /v2/<name>/blobs/uploads/`, `PATCH`, `PUT …?digest=` | proxied upload session (monolithic and chunked). Lajstrom streams; it never buffers a blob on disk. |
+| `HEAD/GET /v2/<name>/manifests/<ref>` | proxied to the backend, which is asked with the manifest media types of oras-go (OCI and Docker manifests and indexes); the answer has the manifest's own `Content-Type`, `Docker-Content-Digest` and `Content-Length`. The client's `Accept` converts nothing: a manifest of a type it did not list is returned all the same. `404 MANIFEST_UNKNOWN`. |
+| `PUT /v2/<name>/manifests/<ref>` | **hook**: body is parsed; for a non-`oci` repo it must satisfy the manifest profile and is passed to `ingest.Ingest`; on success the manifest is stored and indexed, `201` with `Docker-Content-Digest`. Errors: `400 MANIFEST_INVALID`, `409 TAG_INVALID` (tag exists with another digest), `404 NAME_UNKNOWN` (repo not configured). Until the hook (#25) a non-`oci` repo answers `501 UNSUPPORTED`. On an `oci` repo the manifest passes through unchanged (`Content-Length` required, at most 4 MiB, an OCI or Docker manifest or index media type that the body's `mediaType` does not contradict), by tag or by digest, and `oci_repos` records the repository. |
+| `DELETE /v2/<name>/manifests/<ref>` | requires `delete`; deletes in the backend (if `Capabilities.DeleteManifest`) and removes index rows. After the MVP: retention. `405 UNSUPPORTED` until #61, and so is `DELETE …/blobs/<digest>`. |
+| `POST /v2/<name>/blobs/uploads/`, `PATCH`, `PUT …?digest=`, `GET`, `DELETE` | proxied upload session (monolithic and chunked, a single `POST ?digest=` too): Lajstrom drives the backend's own session and streams; it never buffers a blob on disk or in memory. The upload id in the `Location` Lajstrom answers is opaque and does not depend on the replica: it is the key of a `sessions` row (kind `blob-upload`, one hour after the last request) that holds the backend's session, so any replica continues it; the backend's location never reaches the client. `Range` is what the backend holds. `?mount=&from=` is passed to the backend when `from` is in the same repo, or in another repo of the same registry that the principal may read; otherwise, and without `from`, the answer is a plain session. Errors: `404 BLOB_UPLOAD_UNKNOWN` (unknown, expired, another repo's or principal's id), `416 BLOB_UPLOAD_INVALID` (a `Content-Range` that does not start at the offset), `400 DIGEST_INVALID` (the backend refuses the digest: the session ends). |
 | `HEAD /v2/<name>/blobs/<digest>` | proxied |
-| `GET /v2/<name>/blobs/<digest>` | `307` to `Provider.BlobRedirectURL` when available, otherwise streamed from the backend |
-| `GET /v2/<name>/tags/list` | from the index for Lajstrom-managed repos (fast, consistent), from the backend for `oci` repos |
-| `GET /v2/<name>/referrers/<digest>` | provider referrers or tag-schema fallback |
-| `GET /v2/_catalog` | from the control plane, filtered by RBAC |
+| `GET /v2/<name>/blobs/<digest>` | `307` to `Provider.BlobRedirectURL` when available, otherwise streamed from the backend. Until #27: always streamed, and a `Range` gets the whole blob with `200`. |
+| `GET /v2/<name>/tags/list` | from the index for Lajstrom-managed repos (fast, consistent): the versions of the package whose `name_oci` is the path, an empty list for a repository only `oci_repos` knows; from the backend for `oci` repos. `n`, `last` and a `Link` header (`rel="next"`) paginate both. |
+| `GET /v2/<name>/referrers/<digest>` | provider referrers or tag-schema fallback. `501 UNSUPPORTED` until #28. |
+| `GET /v2/_catalog` | from the control plane, filtered by RBAC: the `oci_repos` of every repo the principal may read, as `<format>/<repo>/<path>`, with `n`, `last` and `Link` |
 
 Mount of a package under a repo: the name after `/v2/` is split as `<format>/<repo>/<rest>`; the
 repo must exist in the control plane, else `404 NAME_UNKNOWN`. Auto-creation of repos on push is
 not supported (an explicit `POST /api/v1/repos` is one call).
 
-Docker image passthrough (`oci` repos) is after the MVP; in the MVP only the paths above are
-exercised, with `oras`, `cosign` and `helm` as the OCI-native clients tested.
+An `oci` repo takes any manifest and blob as they come and indexes nothing beyond its
+repository (the OCI distribution-spec conformance suite runs against one, `test/conformance/`).
+Docker image passthrough with what it needs beyond that (recognising images for the UI,
+multi-arch stitching) is after the MVP; in the MVP only the paths above are exercised, with
+`oras`, `cosign` and `helm` as the OCI-native clients tested.
 
 ## 3. Protocol frontends (MVP formats)
 

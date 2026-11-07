@@ -91,6 +91,10 @@ const (
 // kindHosted is the only repo kind of this version.
 const kindHosted = "hosted"
 
+// formatOCI is the format of the pass-through repos: the OCI facade stores what it gets and
+// indexes nothing, so no plugin is needed (format.Reserved has it).
+const formatOCI = "oci"
+
 // Repos manages the repos of the control plane (docs/spec/index-schema.md, repos). The handlers
 // of /api/v1/repos, lajstrom admin repo and the config bootstrap all go through it, so that the
 // validation and the audit events exist once. Every change is one audit event
@@ -116,7 +120,7 @@ type Repos struct {
 
 // Create validates req and creates the repo with one repo.create audit event, whose details are
 // the resource and the origin. Each validation error wraps format.ErrInvalid and names the
-// field: format a compiled-in plugin, name the grammar of docs/spec/manifest-profile.md §4.1
+// field: format a compiled-in plugin or oci, name the grammar of docs/spec/manifest-profile.md §4.1
 // (at most 64 bytes), registry a configured one, kind empty or hosted, policy a JSON object or
 // null. A repo that exists already is an error wrapping index.ErrConflict.
 func (s *Repos) Create(ctx context.Context, req CreateRequest, o Origin) (*Repo, error) {
@@ -359,7 +363,7 @@ func (s *Repos) newRow(req CreateRequest) (index.Repo, error) {
 	}, nil
 }
 
-// checkFormat checks that a format plugin of that name is compiled in.
+// checkFormat checks that a format plugin of that name is compiled in, or that it is oci.
 func (s *Repos) checkFormat(name string) error {
 	registered := s.Formats
 	if registered == nil {
@@ -368,6 +372,8 @@ func (s *Repos) checkFormat(name string) error {
 	switch {
 	case name == "":
 		return invalid("format: must not be empty")
+	case name == formatOCI:
+		return nil
 	case !registered(name):
 		return invalid("format: %q is not a format this server has", name)
 	}

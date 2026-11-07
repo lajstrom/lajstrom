@@ -35,6 +35,11 @@ type clients struct {
 	follow *auth.Client
 	// noFollow returns a redirect as the response, for BlobRedirectURL.
 	noFollow *auth.Client
+	// cache is the token cache of both; the upload sessions look into it (repository.prime).
+	cache auth.Cache
+	// credentials is true when the registry's challenges are answered with a username and
+	// password.
+	credentials bool
 }
 
 // newClients builds the clients for the registry at host (host:port, as in the URL) from cfg.
@@ -89,6 +94,8 @@ func newClients(cfg config.Registry, host string, log *slog.Logger) clients {
 			Credential: cred,
 			Cache:      cache,
 		},
+		cache:       cache,
+		credentials: cred != nil,
 	}
 }
 

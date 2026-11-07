@@ -9,14 +9,17 @@ import (
 	"github.com/lajstrom/lajstrom/internal/version"
 )
 
-// routes registers the system endpoints, the management API and the format plugins on the
-// mux. Any other path is answered 404 by the ServeMux.
+// routes registers the system endpoints, the management API, the OCI facade and the format
+// plugins on the mux. Any other path is answered 404 by the ServeMux.
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /-/healthz", s.healthz)
 	s.mux.HandleFunc("GET /-/readyz", s.readyz)
 	s.mux.HandleFunc("GET /-/version", s.buildInfo)
 	if s.opts.API != nil {
 		s.mux.Handle("/api/", s.opts.API)
+	}
+	if s.opts.Facade != nil {
+		s.mux.Handle("/v2/", s.opts.Facade)
 	}
 	s.mountFormats()
 }

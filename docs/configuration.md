@@ -174,7 +174,7 @@ index database:
   checks and one `repo.create` audit row whose details say `"source": "config"`. The
   configuration was validated already, so the one check that can still fail is the format: a
   repo whose format plugin is not compiled into the binary stops `serve` with an error naming
-  the entry.
+  the entry (`oci`, the pass-through format of the OCI facade, needs no plugin).
 - **Present:** it is left as it is. When its `registry` or `anonymousRead` differ from the
   database, a warning names the repo and the field: the database wins, and a change goes
   through the API or `lajstrom admin repo`.

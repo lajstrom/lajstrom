@@ -32,36 +32,14 @@ import (
 // LAJSTROM_TEST_REGISTRY_PREFIX when they are set. Every run works in repositories with a
 // random name, so runs do not collide; it deletes only what the backend can delete.
 func TestIntegration(t *testing.T) {
-	addr := os.Getenv("LAJSTROM_TEST_REGISTRY")
-	if addr == "" {
-		t.Skip("set LAJSTROM_TEST_REGISTRY=host:port to run against a registry")
-	}
-	scheme := "http"
-	if os.Getenv("LAJSTROM_TEST_REGISTRY_TLS") == "1" {
-		scheme = "https"
-	}
-	cfg := config.Registry{
-		Name:   "integration",
-		Type:   Type,
-		URL:    scheme + "://" + addr,
-		Prefix: os.Getenv("LAJSTROM_TEST_REGISTRY_PREFIX"),
-		Auth: config.RegistryAuth{
-			Username: os.Getenv("LAJSTROM_TEST_REGISTRY_USERNAME"),
-			Password: os.Getenv("LAJSTROM_TEST_REGISTRY_PASSWORD"),
-		},
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	log := slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	p, err := New(cfg, log)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p, cfg := integrationProvider(ctx, t)
 	caps, err := p.Capabilities(ctx)
 	if err != nil {
 		t.Fatalf("Capabilities: %v", err)
 	}
-	t.Logf("capabilities of %s: %+v", addr, caps)
+	t.Logf("capabilities of %s: %+v", cfg.URL, caps)
 
 	run := randomHex(t)
 	base := "raw/it-" + run
@@ -212,6 +190,36 @@ func TestIntegration(t *testing.T) {
 			t.Errorf("Capabilities after a successful delete = %+v, %v", c, err)
 		}
 	})
+}
+
+// integrationProvider returns a Provider for the registry of LAJSTROM_TEST_REGISTRY, and its
+// configuration; it skips the test when the variable is not set.
+func integrationProvider(_ context.Context, t *testing.T) (*Provider, config.Registry) {
+	t.Helper()
+	addr := os.Getenv("LAJSTROM_TEST_REGISTRY")
+	if addr == "" {
+		t.Skip("set LAJSTROM_TEST_REGISTRY=host:port to run against a registry")
+	}
+	scheme := "http"
+	if os.Getenv("LAJSTROM_TEST_REGISTRY_TLS") == "1" {
+		scheme = "https"
+	}
+	cfg := config.Registry{
+		Name:   "integration",
+		Type:   Type,
+		URL:    scheme + "://" + addr,
+		Prefix: os.Getenv("LAJSTROM_TEST_REGISTRY_PREFIX"),
+		Auth: config.RegistryAuth{
+			Username: os.Getenv("LAJSTROM_TEST_REGISTRY_USERNAME"),
+			Password: os.Getenv("LAJSTROM_TEST_REGISTRY_PASSWORD"),
+		},
+	}
+	log := slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	p, err := New(cfg, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p, cfg
 }
 
 // step runs fn as a subtest and stops the test when it fails: later steps build on earlier

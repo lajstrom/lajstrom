@@ -82,5 +82,7 @@ migration lock, `pg_advisory_xact_lock` on Postgres and `BEGIN IMMEDIATE` on SQL
   `(package_id, tag)` with a different digest is a `409`.
 - A foreign manifest (no `lajstrom.schema` annotation) under a managed path is recorded in
   `oci_repos` only and reported by `reindex --report`, never indexed.
+- A repo of format `oci` (pass-through, http-routing.md §1) has rows in `oci_repos` only: the
+  facade records the repository of every manifest pushed to it, and nothing else is indexed.
 - The control plane can be exported with `lajstrom admin export` (JSON) and, after the MVP,
   snapshotted into the registry as `<prefix>_meta/config`.

@@ -152,7 +152,7 @@ func All() []Plugin                         // sorted by name
 func Lookup(name string) (Plugin, bool)
 
 // Plugin names: ^[a-z0-9]+(-[a-z0-9]+)*$ and not reserved (http-routing.md §1).
-var Reserved = []string{"-", ".well-known", "api", "ui", "v2"} // read-only
+var Reserved = []string{"-", ".well-known", "api", "oci", "ui", "v2"} // read-only; oci: pass-through repos (#24)
 func IsReserved(segment string) bool
 func CheckName(name string) error           // empty, reserved, or not the grammar; names the name
 
@@ -224,6 +224,24 @@ type Repository interface {
     registry.ReferencePusher                // PushReference: manifest and tag in one PUT
     registry.TagLister                      // Tags
     registry.ReferrerLister                 // Referrers (tag-schema fallback without the API)
+    BlobUploader                            // the backend's upload session, for the facade (#24)
+}
+
+// BlobUploader drives the backend's blob upload session chunk by chunk; an Upload is opaque and
+// serialisable, so a replica that did not start it continues it. A digest the backend refuses
+// wraps content.ErrMismatchedDigest.
+type BlobUploader interface {
+    StartBlobUpload(ctx context.Context) (Upload, error)                                                // POST …/blobs/uploads/
+    MountBlob(ctx context.Context, d digest.Digest, from string) (mounted bool, u Upload, err error)     // POST …?mount=&from=
+    AppendBlobChunk(ctx context.Context, u Upload, r io.Reader, size int64) (Upload, error)             // PATCH; size -1 unknown
+    FinishBlobUpload(ctx context.Context, u Upload, d digest.Digest, r io.Reader, size int64) (ocispec.Descriptor, error) // PUT …?digest=
+    BlobUploadStatus(ctx context.Context, u Upload) (Upload, error)                                      // GET
+    CancelBlobUpload(ctx context.Context, u Upload) error                                                // DELETE
+}
+type Upload struct {                        // location as the backend answered it, backend id, bytes held
+    Location string
+    ID       string
+    Offset   int64
 }
 
 type Set interface {

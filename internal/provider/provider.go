@@ -2,8 +2,10 @@ package provider
 
 import (
 	"context"
+	"io"
 
 	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content"
 	"oras.land/oras-go/v2/registry"
 )
@@ -49,8 +51,8 @@ type Provider interface {
 }
 
 // Repository is the data path to one OCI repository. The generic provider returns oras-go's
-// remote.Repository, possibly wrapped. Fetch, Exists, Push and Delete work on blobs and
-// manifests alike, selected by the descriptor's media type.
+// remote.Repository, wrapped. Fetch, Exists, Push and Delete work on blobs and manifests
+// alike, selected by the descriptor's media type.
 type Repository interface {
 	content.Storage          // Fetch, Exists, Push
 	content.Deleter          // Delete; manifests only where Capabilities.DeleteManifest
@@ -58,6 +60,43 @@ type Repository interface {
 	registry.ReferencePusher // PushReference: manifest and tag in one PUT (ingest uses this, not Push+Tag)
 	registry.TagLister       // Tags
 	registry.ReferrerLister  // Referrers; falls back to the tag schema without Capabilities.Referrers
+	BlobUploader             // the backend's blob upload session, for the facade (#24)
+}
+
+// BlobUploader drives the backend's blob upload session (distribution spec: POST, PATCH,
+// PUT, GET, DELETE on blobs/uploads). An Upload is opaque to callers and serialisable: a
+// replica that did not start it continues it, so the facade keeps it in the index between
+// requests and never in memory (docs/spec/layout.md §1, conventions).
+//
+// Errors wrap the sentinels of this package as the other methods do: a session the backend
+// no longer knows is ErrNotFound. FinishBlobUpload reports a digest the backend refuses with
+// an error that wraps oras-go's content.ErrMismatchedDigest. No error message carries the
+// backend's URL or the instance prefix.
+type BlobUploader interface {
+	// StartBlobUpload opens a session: POST …/blobs/uploads/.
+	StartBlobUpload(ctx context.Context) (Upload, error)
+	// MountBlob asks the backend to mount the blob d from the repository from (a Lajstrom
+	// name; "" lets the backend look for it anywhere): POST …/blobs/uploads/?mount=&from=.
+	// mounted is false when the backend opened a session instead, which u is.
+	MountBlob(ctx context.Context, d digest.Digest, from string) (mounted bool, u Upload, err error)
+	// AppendBlobChunk streams r, size bytes (-1 when unknown), to the end of the session:
+	// PATCH. It returns the session with the backend's new location and offset.
+	AppendBlobChunk(ctx context.Context, u Upload, r io.Reader, size int64) (Upload, error)
+	// FinishBlobUpload closes the session with the digest of the whole blob, after the last
+	// chunk r of size bytes (-1 when unknown; size 0 and a nil r for none): PUT …?digest=.
+	FinishBlobUpload(ctx context.Context, u Upload, d digest.Digest, r io.Reader, size int64) (ocispec.Descriptor, error)
+	// BlobUploadStatus returns the session with the backend's offset: GET.
+	BlobUploadStatus(ctx context.Context, u Upload) (Upload, error)
+	// CancelBlobUpload ends the session and drops what it holds: DELETE.
+	CancelBlobUpload(ctx context.Context, u Upload) error
+}
+
+// Upload is one backend upload session: its location (absolute URL or path, as the backend
+// answered), its backend id, and the bytes the backend holds so far.
+type Upload struct {
+	Location string
+	ID       string
+	Offset   int64
 }
 
 // Set is the configured backend registries by name (registries[].name in the configuration).
