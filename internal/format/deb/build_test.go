@@ -2,6 +2,8 @@ package deb
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -62,24 +64,42 @@ func blobsOf(t *testing.T, b *format.Built) map[digest.Digest][]byte {
 	return m
 }
 
-// TestBuild checks every part of a Build for one package per control compression: the
-// manifest passes the profile with the deb annotations, the layers, the exact metadata JSON
-// (compact, keys sorted), the tag with the architecture as the variant, the repository path,
-// and that Validate accepts the manifest and returns the same entry.
+// hashedTag is the hashed form of a tag longer than 128 characters (manifest-profile §4.2):
+// "_h" and the first 40 hex digits of the sha256 of the unhashed tag.
+func hashedTag(unhashed string) string {
+	sum := sha256.Sum256([]byte(unhashed))
+	return "_h" + hex.EncodeToString(sum[:20])
+}
+
+// TestBuild checks every part of a Build for one package per control compression, suite and
+// tag form: the manifest passes the profile with the deb annotations, the variant
+// <suite>/<component>/<arch>, the layers, the exact metadata JSON (compact, keys sorted), the
+// tag of version and variant, hashed past 128 characters, the repository path, and that
+// Validate accepts the manifest and returns the same entry.
 func TestBuild(t *testing.T) {
+	long := "1:2.0+git20261107.0123456789abcdef0123456789abcdef01234567~ubuntu22.04.1-0ubuntu1~ppa3"
 	for _, tc := range []struct {
 		name     string
 		opts     testutil.DebOptions
 		params   []string
+		variant  string
 		tag      string
 		repoPath string
 	}{
-		{name: "gz", tag: "1.0.0-1__amd64", repoPath: "apt/ubuntu/hello"},
+		{name: "gz", variant: "jammy/main/amd64", tag: "1.0.0-1__jammy_2fmain_2famd64", repoPath: "apt/ubuntu/hello"},
 		{name: "epoch, xz", opts: testutil.DebOptions{Name: "nginx", Version: "1:1.18.0-6ubuntu14.4", ControlCompression: "xz"},
-			params: []string{ParamArch, "amd64"}, tag: "1_3a1.18.0-6ubuntu14.4__amd64", repoPath: "apt/ubuntu/nginx"},
+			params: []string{ParamArch, "amd64"}, variant: "jammy/main/amd64", tag: "1_3a1.18.0-6ubuntu14.4__jammy_2fmain_2famd64",
+			repoPath: "apt/ubuntu/nginx"},
 		{name: "all, zst", opts: testutil.DebOptions{Name: "libstdc++6", Version: "14.2.0-4ubuntu2", Arch: "all", ControlCompression: "zst"},
-			tag: "14.2.0-4ubuntu2__all", repoPath: "apt/ubuntu/libstdc_2b_2b6"},
-		{name: "uncompressed control", opts: testutil.DebOptions{ControlCompression: "none"}, tag: "1.0.0-1__amd64", repoPath: "apt/ubuntu/hello"},
+			variant: "jammy/main/all", tag: "14.2.0-4ubuntu2__jammy_2fmain_2fall", repoPath: "apt/ubuntu/libstdc_2b_2b6"},
+		{name: "uncompressed control", opts: testutil.DebOptions{ControlCompression: "none"}, variant: "jammy/main/amd64",
+			tag: "1.0.0-1__jammy_2fmain_2famd64", repoPath: "apt/ubuntu/hello"},
+		{name: "another suite", params: []string{ParamSuite, "jammy-updates"}, variant: "jammy-updates/main/amd64",
+			tag: "1.0.0-1__jammy-updates_2fmain_2famd64", repoPath: "apt/ubuntu/hello"},
+		{name: "hashed tag", opts: testutil.DebOptions{Version: long, Arch: "arm64"},
+			params: []string{ParamSuite, "jammy-backports", ParamComponent, "universe"}, variant: "jammy-backports/universe/arm64",
+			tag:      hashedTag("1_3a2.0_2bgit20261107.0123456789abcdef0123456789abcdef01234567_7eubuntu22.04.1-0ubuntu1_7eppa3__jammy-backports_2funiverse_2farm64"),
+			repoPath: "apt/ubuntu/hello"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			deb, info := testutil.Deb(tc.opts)
@@ -96,10 +116,11 @@ func TestBuild(t *testing.T) {
 			if a.Created.Before(before) || a.Created.After(time.Now()) {
 				t.Errorf("created = %v, want now", a.Created)
 			}
-			attrs := map[string]string{profile.AnnotationDebArch: info.Architecture, profile.AnnotationDebSuite: "jammy",
-				profile.AnnotationDebComponent: "main"}
+			dist := strings.Split(tc.variant, "/")
+			attrs := map[string]string{profile.AnnotationDebArch: info.Architecture, profile.AnnotationDebSuite: dist[0],
+				profile.AnnotationDebComponent: dist[1]}
 			wantA := profile.Annotations{Format: "apt", Repo: "ubuntu", Name: info.Package, Version: info.Version,
-				Variant: info.Architecture, Created: a.Created, UploadedBy: "user:alice", Attrs: attrs}
+				Variant: tc.variant, Created: a.Created, UploadedBy: "user:alice", Attrs: attrs}
 			if d := cmp.Diff(wantA, a); d != "" {
 				t.Errorf("annotations (-want +got):\n%s", d)
 			}
@@ -111,14 +132,15 @@ func TestBuild(t *testing.T) {
 			if b.Tag != tc.tag || b.RepoPath != tc.repoPath {
 				t.Errorf("tag %q, repo path %q; want %q, %q", b.Tag, b.RepoPath, tc.tag, tc.repoPath)
 			}
-			checkBlobsAndEntry(t, b, deb, info, parsed.Metadata.Digest, attrs)
+			checkBlobsAndEntry(t, b, deb, info, parsed.Metadata.Digest, wantA)
 		})
 	}
 }
 
 // checkBlobsAndEntry checks the blobs of the Build b of the package deb, the exact metadata JSON
-// (compact, keys sorted) of the layer md, the entry, and that Validate returns the same entry.
-func checkBlobsAndEntry(t *testing.T, b *format.Built, deb []byte, info testutil.DebInfo, md digest.Digest, attrs map[string]string) {
+// (compact, keys sorted) of the layer md, the entry with the variant and attributes of a, and
+// that Validate returns the same entry.
+func checkBlobsAndEntry(t *testing.T, b *format.Built, deb []byte, info testutil.DebInfo, md digest.Digest, a profile.Annotations) {
 	t.Helper()
 	fileDigest := digest.Digest("sha256:" + info.SHA256)
 	blobs := blobsOf(t, b)
@@ -132,7 +154,7 @@ func checkBlobsAndEntry(t *testing.T, b *format.Built, deb []byte, info testutil
 	if got := blobs[md]; !bytes.Equal(got, wantMD) {
 		t.Errorf("metadata\n got %s\nwant %s", got, wantMD)
 	}
-	wantEntry := format.Entry{Name: info.Package, Version: info.Version, Variant: info.Architecture, Attrs: attrs, Metadata: wantMD,
+	wantEntry := format.Entry{Name: info.Package, Version: info.Version, Variant: a.Variant, Attrs: a.Attrs, Metadata: wantMD,
 		Files: []format.FileEntry{{Name: info.Filename, MediaType: profile.MediaTypeDebPackage, Digest: fileDigest, Size: info.Size}}}
 	if d := cmp.Diff(wantEntry, b.Entry); d != "" {
 		t.Errorf("entry (-want +got):\n%s", d)
@@ -153,7 +175,7 @@ func TestBuildHandWritten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.Tag != "2.0-1_2bb1__arm64" || b.RepoPath != "apt/ubuntu/hello-bin" || b.Entry.Files[0].Name != "hello-bin_2.0-1+b1_arm64.deb" {
+	if b.Tag != "2.0-1_2bb1__jammy_2fmain_2farm64" || b.RepoPath != "apt/ubuntu/hello-bin" || b.Entry.Files[0].Name != "hello-bin_2.0-1+b1_arm64.deb" {
 		t.Errorf("tag %q, repo path %q, file %q", b.Tag, b.RepoPath, b.Entry.Files[0].Name)
 	}
 	if !bytes.Contains(b.Entry.Metadata, []byte(`"architecture":"arm64"`)) || !bytes.Contains(b.Entry.Metadata, []byte(`"md5sums":{}`)) {
@@ -251,6 +273,18 @@ func (f *fixture) clone() *fixture {
 	return &fixture{m: m, blobs: maps.Clone(f.blobs)}
 }
 
+// withAnnotation returns a copy of the fixture with the manifest annotation key set to value,
+// or removed when value is empty.
+func (f *fixture) withAnnotation(key, value string) *fixture {
+	c := f.clone()
+	if value == "" {
+		delete(c.m.Annotations, key)
+	} else {
+		c.m.Annotations[key] = value
+	}
+	return c
+}
+
 // withMetadata replaces the metadata layer with change applied to its decoded object.
 func (f *fixture) withMetadata(t *testing.T, change func(md map[string]any)) *fixture {
 	t.Helper()
@@ -302,24 +336,39 @@ func TestValidateRefuses(t *testing.T) {
 			return c
 		}, `the file layer is titled "hello_1.0.0-2_amd64.deb", not "hello_1.0.0-1_amd64.deb"`},
 		{"no variant", func(_ *testing.T, f *fixture) *fixture {
-			c := f.clone()
-			delete(c.m.Annotations, profile.AnnotationVariant)
-			return c
-		}, "a deb manifest has lajstrom.variant, the architecture"},
+			return f.withAnnotation(profile.AnnotationVariant, "")
+		}, `a deb manifest has lajstrom.variant, <suite>/<component>/<arch>: "jammy/main/amd64"`},
+		{"variant: the architecture alone, as in #39", func(_ *testing.T, f *fixture) *fixture {
+			return f.withAnnotation(profile.AnnotationVariant, "amd64")
+		}, `lajstrom.variant "amd64" is the architecture alone; the variant of a deb manifest is lajstrom.deb.suite, ` +
+			`lajstrom.deb.component and lajstrom.deb.arch joined with "/": "jammy/main/amd64", and its tag 1.0.0-1__jammy_2fmain_2famd64`},
+		{"variant: two parts", func(_ *testing.T, f *fixture) *fixture {
+			return f.withAnnotation(profile.AnnotationVariant, "jammy/amd64")
+		}, `lajstrom.variant "jammy/amd64" is not <suite>/<component>/<arch>; lajstrom.deb.suite, lajstrom.deb.component ` +
+			`and lajstrom.deb.arch make it "jammy/main/amd64"`},
+		{"variant: four parts", func(_ *testing.T, f *fixture) *fixture {
+			return f.withAnnotation(profile.AnnotationVariant, "jammy/main/amd64/x")
+		}, `lajstrom.variant "jammy/main/amd64/x" is not <suite>/<component>/<arch>`},
+		{"variant: suite", func(_ *testing.T, f *fixture) *fixture {
+			return f.withAnnotation(profile.AnnotationVariant, "jammy-updates/main/amd64")
+		}, `lajstrom.variant "jammy-updates/main/amd64" names the suite "jammy-updates", lajstrom.deb.suite is "jammy"`},
+		{"variant: component", func(_ *testing.T, f *fixture) *fixture {
+			return f.withAnnotation(profile.AnnotationVariant, "jammy/universe/amd64")
+		}, `lajstrom.variant "jammy/universe/amd64" names the component "universe", lajstrom.deb.component is "main"`},
+		{"variant: architecture", func(_ *testing.T, f *fixture) *fixture {
+			return f.withAnnotation(profile.AnnotationVariant, "jammy/main/arm64")
+		}, `lajstrom.variant "jammy/main/arm64" names the architecture "arm64", lajstrom.deb.arch is "amd64"`},
 		{"arch annotation", func(_ *testing.T, f *fixture) *fixture {
-			c := f.clone()
-			c.m.Annotations[profile.AnnotationDebArch] = "arm64"
-			return c
-		}, `lajstrom.deb.arch "arm64" is not lajstrom.variant "amd64"`},
+			return f.withAnnotation(profile.AnnotationDebArch, "arm64")
+		}, `lajstrom.variant "jammy/main/amd64" names the architecture "amd64", lajstrom.deb.arch is "arm64"`},
+		{"no arch annotation", func(_ *testing.T, f *fixture) *fixture {
+			return f.withAnnotation(profile.AnnotationDebArch, "")
+		}, `lajstrom.deb.arch "" is not an architecture name`},
 		{"no suite", func(_ *testing.T, f *fixture) *fixture {
-			c := f.clone()
-			delete(c.m.Annotations, profile.AnnotationDebSuite)
-			return c
+			return f.withAnnotation(profile.AnnotationDebSuite, "")
 		}, "lajstrom.deb.suite is missing"},
 		{"bad component", func(_ *testing.T, f *fixture) *fixture {
-			c := f.clone()
-			c.m.Annotations[profile.AnnotationDebComponent] = "Main"
-			return c
+			return f.withAnnotation(profile.AnnotationDebComponent, "Main")
 		}, `lajstrom.deb.component "Main" is not lowercase letters`},
 		{"missing metadata layer", func(_ *testing.T, f *fixture) *fixture {
 			c := f.clone()
@@ -370,13 +419,13 @@ func TestValidateRefuses(t *testing.T) {
 		}, "the metadata control has no field Package"},
 		{"architecture: annotations and metadata", func(t *testing.T, f *fixture) *fixture {
 			return f.withMetadata(t, func(md map[string]any) { control(md)["Architecture"] = "arm64" })
-		}, `the metadata control field Architecture is "arm64", lajstrom.variant is "amd64"`},
+		}, `the metadata control field Architecture is "arm64", lajstrom.deb.arch is "amd64"`},
 		{"architecture: package and the rest", func(t *testing.T, f *fixture) *fixture {
 			c := f.withMetadata(t, func(md map[string]any) {
 				control(md)["Architecture"] = "arm64"
 				md["filename"] = "hello_1.0.0-1_arm64.deb"
 			})
-			c.m.Annotations[profile.AnnotationVariant] = "arm64"
+			c.m.Annotations[profile.AnnotationVariant] = "jammy/main/arm64"
 			c.m.Annotations[profile.AnnotationDebArch] = "arm64"
 			c.m.Layers[0].Annotations[ocispec.AnnotationTitle] = "hello_1.0.0-1_arm64.deb"
 			return c
@@ -428,7 +477,7 @@ func TestValidateOnlyReadsTheControlMember(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Validate without md5 and sha1 = %v", err)
 	}
-	if strings.Contains(string(entry.Metadata), "md5\"") || len(entry.Files) != 1 || entry.Variant != "amd64" {
+	if strings.Contains(string(entry.Metadata), "md5\"") || len(entry.Files) != 1 || entry.Variant != "jammy/main/amd64" {
 		t.Errorf("Validate = %+v", entry)
 	}
 }

@@ -51,7 +51,8 @@ const (
 	AnnotationName = "lajstrom.name"
 	// AnnotationVersion is the version exactly as the format spells it. Required.
 	AnnotationVersion = "lajstrom.version"
-	// AnnotationVariant is the platform discriminator: deb arch, pypi wheel tag or sdist.
+	// AnnotationVariant is the platform discriminator: deb suite/component/arch, pypi wheel tag
+	// or sdist.
 	AnnotationVariant = "lajstrom.variant"
 	// AnnotationUploadedBy is the principal that performed the ingest (informational).
 	AnnotationUploadedBy = "lajstrom.uploaded-by"

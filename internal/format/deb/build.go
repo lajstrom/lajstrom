@@ -48,9 +48,15 @@ type metadata struct {
 // ParamComponent (distName each) and may have ParamArch, which must then be the Architecture of
 // the control file, and ParamUploadedBy. The manifest has the file layer titled with the pool
 // file name, the metadata layer, and the annotations name = Package, version = Version,
-// variant = Architecture and lajstrom.deb.arch, .suite and .component; the tag is
-// profile.Tag(Version, Architecture). created is now, in whole seconds, as for raw. Errors wrap
-// format.ErrInvalid, except a failure to read the file.
+// variant = <suite>/<component>/<Architecture> and lajstrom.deb.arch, .suite and .component;
+// the tag is profile.Tag(Version, variant), 1_3a1.18.0-6ubuntu14.4__jammy_2fmain_2famd64.
+// created is now, in whole seconds, as for raw. Errors wrap format.ErrInvalid, except a failure
+// to read the file.
+//
+// The file name does not depend on the suite: the same .deb uploaded to jammy and to
+// jammy-updates is two manifests, two tags and two versions over one layer digest and one file
+// name, as a Debian pool file is referenced from several suites. The pool lookup by file name
+// (#42) finds both and serves the one blob.
 func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*format.Built, error) {
 	suite, component, err := distParams(in.Params)
 	if err != nil {
@@ -78,12 +84,13 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 		return nil, err
 	}
 	d := digest.NewDigestFromEncoded(digest.SHA256, pkg.SHA256)
+	variant := variantOf(suite, component, pkg.Architecture)
 	attrs := map[string]string{
 		profile.AnnotationDebArch: pkg.Architecture, profile.AnnotationDebSuite: suite, profile.AnnotationDebComponent: component,
 	}
 	file := profile.Layer{MediaType: profile.MediaTypeDebPackage, Digest: d, Size: pkg.Size, Title: pkg.Filename}
 	m, err := profile.Build(profile.Annotations{
-		Format: Name, Repo: repo.Name, Name: pkg.Name, Version: pkg.Version, Variant: pkg.Architecture,
+		Format: Name, Repo: repo.Name, Name: pkg.Name, Version: pkg.Version, Variant: variant,
 		Created: time.Now().UTC().Truncate(time.Second), UploadedBy: in.Params[ParamUploadedBy], Attrs: attrs,
 	}, []profile.Layer{file}, &profile.Layer{Digest: digest.FromBytes(md), Size: int64(len(md))})
 	if err != nil {
@@ -96,11 +103,18 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 			{Descriptor: m.Layers[0], Open: func(context.Context) (io.ReadCloser, error) { return f.Open() }},
 			bytesBlob(m.Layers[1], md),
 		},
-		Entry: format.Entry{Name: pkg.Name, Version: pkg.Version, Variant: pkg.Architecture, Attrs: attrs, Metadata: md,
+		Entry: format.Entry{Name: pkg.Name, Version: pkg.Version, Variant: variant, Attrs: attrs, Metadata: md,
 			Files: []format.FileEntry{{Name: pkg.Filename, MediaType: file.MediaType, Digest: d, Size: pkg.Size}}},
-		Tag:      profile.Tag(pkg.Version, pkg.Architecture),
+		Tag:      profile.Tag(pkg.Version, variant),
 		RepoPath: name,
 	}, nil
+}
+
+// variantOf returns the lajstrom.variant of a deb manifest, <suite>/<component>/<arch>
+// (docs/spec/manifest-profile.md §3): jammy/main/amd64. None of the three contains "/", so the
+// variant splits back into them.
+func variantOf(suite, component, arch string) string {
+	return suite + "/" + component + "/" + arch
 }
 
 // distParams returns the suite and the component of an upload, both required and distName.

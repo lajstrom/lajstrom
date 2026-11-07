@@ -20,8 +20,8 @@ const (
 		`"layers":[{"mediaType":"application/vnd.lajstrom.deb.package.v1","digest":"sha256:770531e3e6e6a2fb35ea7c4f53a204820fa14ceeb0f86dc899ffb86dda090e38","size":1258496,"annotations":{"org.opencontainers.image.title":"nginx_1.18.0-6ubuntu14.4_amd64.deb"}}` +
 		`,{"mediaType":"application/vnd.lajstrom.deb.metadata.v1+json","digest":"sha256:2410a10264cdb9cd9fe8d44770c9493a0bea9147a728b7ff5c569d01d3588ef1","size":1830,"annotations":{"org.opencontainers.image.title":"metadata.json"}}],` +
 		`"annotations":{"lajstrom.deb.arch":"amd64","lajstrom.deb.component":"main","lajstrom.deb.suite":"jammy","lajstrom.format":"apt","lajstrom.name":"nginx","lajstrom.repo":"ubuntu-internal",` +
-		`"lajstrom.schema":"1","lajstrom.uploaded-by":"user:ci","lajstrom.variant":"amd64","lajstrom.version":"1:1.18.0-6ubuntu14.4","org.opencontainers.image.created":"2026-11-06T10:00:00Z","org.opencontainers.image.source":"https://example.com/nginx.git"}}`
-	debManifestDigest = digest.Digest("sha256:5053a6a6e59c94bb87e3280907f044ea01da9c4165f5d6b75885953d50cc9e67")
+		`"lajstrom.schema":"1","lajstrom.uploaded-by":"user:ci","lajstrom.variant":"jammy/main/amd64","lajstrom.version":"1:1.18.0-6ubuntu14.4","org.opencontainers.image.created":"2026-11-06T10:00:00Z","org.opencontainers.image.source":"https://example.com/nginx.git"}}`
+	debManifestDigest = digest.Digest("sha256:348b5a95297f4a1f4a49fa7c911bf1586f222b56a16de1c87b3ba75bf18192ae")
 )
 
 // The layers of the §1 example; the digests stand in for the real blobs.

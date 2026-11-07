@@ -144,14 +144,14 @@ Columns: id, what to do, what must happen, issue. Priority is P0 unless the id c
 
 | Id | Steps | Expected | Issue |
 | --- | --- | --- | --- |
-| A-01 | `curl -u alice -T hello_1.0-1_amd64.deb "https://art.test/apt/ubuntu-internal/upload?suite=jammy&component=main"` | 201; manifest tagged `1.0-1__amd64` with `lajstrom.deb.*` annotations from `control`; `GET …/dists/jammy/main/binary-amd64/Packages` lists it with `Filename: pool/main/h/hello/hello_1.0-1_amd64.deb`, `SHA256`, `Size` | #42, #39, #40 |
-| A-02 | `oras push art.test/apt/ubuntu-internal/hello:1.0-1__amd64 …` with the deb profile (flow A of architecture.md) | 201 and the same index rows as A-01 | #25, #12 |
+| A-01 | `curl -u alice -T hello_1.0-1_amd64.deb "https://art.test/apt/ubuntu-internal/upload?suite=jammy&component=main"` | 201; manifest tagged `1.0-1__jammy_2fmain_2famd64`, `lajstrom.variant: jammy/main/amd64`, with `lajstrom.deb.*` annotations from `control` and the query; `GET …/dists/jammy/main/binary-amd64/Packages` lists it with `Filename: pool/main/h/hello/hello_1.0-1_amd64.deb`, `SHA256`, `Size` | #42, #39, #110, #40 |
+| A-02 | `oras push art.test/apt/ubuntu-internal/hello:1.0-1__jammy_2fmain_2famd64 …` with the deb profile (flow A of architecture.md) | 201 and the same index rows as A-01 | #25, #12 |
 | A-03 | `GET …/dists/jammy/InRelease` | clearsigned with the repo key; `gpg --verify` against `GET …/key.asc` succeeds; `Release` + `Release.gpg` verify too; `Acquire-By-Hash: yes` and `by-hash/SHA256/<hash>` resolve | #41, #40 |
 | A-04 | in `ubuntu:24.04` and `debian:12`: `curl key.asc > /etc/apt/keyrings/…`, `deb [signed-by=…] https://art.test/apt/ubuntu-internal jammy main`, `apt-get update && apt-get install hello` | both succeed; `hello` runs; no `NO_PUBKEY`, no `Hash Sum mismatch` | #48 |
 | A-05 | upload a second `.deb` for `all` arch, then fetch `binary-amd64/Packages` and `binary-arm64/Packages` | the `all` package is in both | #40 |
-| A-06 | upload the same `.deb` again; upload a different `.deb` with the same name, version and arch | 201 idempotent; 409 | #12 |
+| A-06 | upload the same `.deb` again; upload a different `.deb` with the same name, version and arch to the same suite and component | 201 idempotent; 409 | #12 |
 | A-07 | `GET pool/main/h/hello/hello_1.0-1_amd64.deb` on both stacks | 307 or stream as in R-05 | #42 |
-| A-08 | a package with epoch `1:2.0-1` | tag `1_3a2.0-1__amd64`; `Packages` shows `Version: 1:2.0-1` | #8, #39 |
+| A-08 | a package with epoch `1:2.0-1` | tag `1_3a2.0-1__jammy_2fmain_2famd64`; `Packages` shows `Version: 1:2.0-1` | #8, #39, #110 |
 | A-09 (P1) | upload, then immediately `apt-get update` through the other replica | the new package is visible: `index_cache` was invalidated in the database | #40 |
 
 ### 3.5 OCI facade
