@@ -125,20 +125,33 @@ func parseParams(s string) (argonParams, error) {
 	if len(parts) != 3 {
 		return p, fmt.Errorf("%w: the parameters are not m=…,t=…,p=…", ErrMalformedHash)
 	}
-	vals := make([]uint64, 3)
-	for i, name := range []string{"m", "t", "p"} {
-		v, ok := strings.CutPrefix(parts[i], name+"=")
-		n, err := strconv.ParseUint(v, 10, 32)
-		if !ok || err != nil || n == 0 {
-			return p, fmt.Errorf("%w: parameter %s is not a positive integer", ErrMalformedHash, name)
-		}
-		vals[i] = n
+	memory, err := parseParam(parts[0], "m", 32)
+	if err != nil {
+		return p, err
 	}
-	if vals[2] > 255 {
-		return p, fmt.Errorf("%w: parameter p is more than 255", ErrMalformedHash)
+	passes, err := parseParam(parts[1], "t", 32)
+	if err != nil {
+		return p, err
 	}
-	p.memory, p.time, p.threads = uint32(vals[0]), uint32(vals[1]), uint8(vals[2]) //nolint:gosec // each is checked against its bound above
-	return p, nil
+	threads, err := parseParam(parts[2], "p", 8)
+	if err != nil {
+		return p, err
+	}
+	// Each value fits its field: ParseUint refused anything above bits.
+	return argonParams{memory: uint32(memory), time: uint32(passes), threads: uint8(threads)}, nil
+}
+
+// parseParam parses part as <name>=<n>, n a positive integer of at most bits bits.
+func parseParam(part, name string, bits int) (uint64, error) {
+	v, ok := strings.CutPrefix(part, name+"=")
+	n, err := strconv.ParseUint(v, 10, bits)
+	switch {
+	case !ok, errors.Is(err, strconv.ErrSyntax), err == nil && n == 0:
+		return 0, fmt.Errorf("%w: parameter %s is not a positive integer", ErrMalformedHash, name)
+	case err != nil: // strconv.ErrRange
+		return 0, fmt.Errorf("%w: parameter %s is more than %d", ErrMalformedHash, name, uint64(1)<<bits-1)
+	}
+	return n, nil
 }
 
 // CheckPassword checks that password is UTF-8 of MinPasswordLen to MaxPasswordLen bytes. Any
