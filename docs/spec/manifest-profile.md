@@ -157,7 +157,11 @@ tag = Escape(version) [ "__" Escape(variant) ]
 
 - Tags are **immutable and append-only**. A new architecture or a new wheel is a new tag. A tag
   is never re-pointed. Ingest of a tag that exists with a different digest is a `409 Conflict`;
-  with the same digest it is idempotent (`201`).
+  with the same digest it is idempotent (`201`). A frontend upload of the same files under a tag
+  that holds them is the idempotent repeat as well, whatever `org.opencontainers.image.created`
+  the new build carries: two builds of one file differ in nothing but that, so the file layers
+  decide, and the manifest in the registry stays the first. Through the OCI facade another
+  manifest under the tag is always the `409`.
 - The separator between version and variant is `__` (two underscores). `Escape` never produces
   `__`, so the split is unambiguous.
 - If the resulting tag is longer than 128 characters it is replaced by

@@ -95,8 +95,9 @@ type Result struct {
 	RepoPath string
 	// Entry is the index entry the plugin returned.
 	Entry format.Entry
-	// Existed is true when the tag already pointed at this digest: the call was an idempotent
-	// repeat and nothing was written.
+	// Existed is true when the tag already held this manifest, or, for Upload, a manifest with
+	// the same file layers: the call was an idempotent repeat, nothing was written, and Digest
+	// is the manifest the tag holds.
 	Existed bool
 }
 
@@ -141,6 +142,11 @@ func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag str
 // (Plugin.Build), the pipeline pushes the blobs the backend does not have yet, streaming each
 // from its source and checking it against its descriptor on the way, and then stores the
 // manifest as Ingest does. It implements format.Publisher.
+//
+// An upload of the same files under a tag that holds them already is the idempotent repeat,
+// whatever org.opencontainers.image.created the new build carries: nothing is written, the
+// manifest in the registry stays the first, and Published.Digest is its digest. Other files
+// under the tag are ErrConflict.
 func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload, principal auth.Principal) (*format.Published, error) {
 	plugin, prov, err := p.lookup(repo)
 	if err != nil {
@@ -153,6 +159,13 @@ func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload
 	pkgPath, ok := strings.CutPrefix(built.RepoPath, repoBase(repo)+"/")
 	if !ok || pkgPath == "" {
 		return nil, fmt.Errorf("ingest: the %s plugin built %q, which is not a package path below %s", repo.Format, built.RepoPath, repoBase(repo))
+	}
+	if v, err := p.repeat(ctx, repo, built); err != nil {
+		return nil, err
+	} else if v != nil {
+		p.log.InfoContext(ctx, "ingest: the tag already holds these files; nothing written", "repo", repo.Format+"/"+repo.Name,
+			"package", built.Entry.Name, "tag", built.Tag, "digest", v.Digest.String(), "principal", principal.String())
+		return &format.Published{Digest: v.Digest, Tag: built.Tag, RepoPath: built.RepoPath, Entry: built.Entry}, nil
 	}
 	raw, _, err := profile.Encode(built.Manifest)
 	if err != nil {
@@ -168,7 +181,7 @@ func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload
 	if err := t.pushBlobs(ctx, built); err != nil {
 		return nil, err
 	}
-	res, err := p.ingest(ctx, &publish{target: t, tag: built.Tag, manifest: built.Manifest, raw: raw, principal: principal})
+	res, err := p.ingest(ctx, &publish{target: t, tag: built.Tag, manifest: built.Manifest, raw: raw, principal: principal, repeatOnFiles: true})
 	if err != nil {
 		return nil, err
 	}
@@ -207,6 +220,9 @@ type publish struct {
 	entry    *format.Entry   // Plugin.Validate of manifest
 	metadata json.RawMessage // for versions.metadata; nil when absent or too large
 	claim    index.TagClaim
+
+	repeatOnFiles bool          // Upload: the same file layers under the tag are the idempotent repeat
+	existing      digest.Digest // the manifest the tag holds, when the publish is a repeat of it
 }
 
 // lookup returns the plugin of repo's format and the provider of its registry.
@@ -257,11 +273,14 @@ func (p *Pipeline) ingest(ctx context.Context, pub *publish) (*Result, error) {
 			return nil, err
 		}
 	}
-	msg := "ingest: published"
+	msg, d := "ingest: published", pub.digest
 	if existed {
 		msg = "ingest: the tag already holds this manifest; nothing written"
 	}
+	if pub.existing != "" {
+		msg, d = "ingest: the tag already holds these files; nothing written", pub.existing
+	}
 	p.log.InfoContext(ctx, msg, "repo", pub.repo.Format+"/"+pub.repo.Name, "package", pub.parsed.Annotations.Name,
-		"tag", pub.tag, "digest", pub.digest.String(), "principal", pub.principal.String())
-	return &Result{Digest: pub.digest, Tag: pub.tag, RepoPath: pub.name, Entry: *pub.entry, Existed: existed}, nil
+		"tag", pub.tag, "digest", d.String(), "principal", pub.principal.String())
+	return &Result{Digest: d, Tag: pub.tag, RepoPath: pub.name, Entry: *pub.entry, Existed: existed}, nil
 }

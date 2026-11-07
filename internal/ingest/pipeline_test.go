@@ -538,6 +538,91 @@ func TestUpload(t *testing.T) {
 	if n := len(e.rows(t).Audit); n != 1 {
 		t.Errorf("%d audit events, want 1", n)
 	}
+
+}
+
+// TestUploadRepeat checks the idempotent repeat of an upload: a build of the same files an
+// hour later differs by created only and writes nothing, the registry keeps the first
+// manifest; other files, and the same manifest through Ingest, are the conflict.
+func TestUploadRepeat(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t)
+	up := upload("tool", "1.0.0", file{"tool-linux", "linux binary"}, file{"tool-darwin", "darwin binary"})
+	pub, err := e.pipe.Upload(ctx, e.repo, up, alice)
+	must(t, err)
+
+	// A build of the same files an hour later differs by created only: the upload is the
+	// idempotent repeat, the registry is not touched, the manifest there stays the first.
+	e.plugin.BuildFunc = buildRawAt(created.Add(time.Hour))
+	pushes, refs := len(e.prov.Pushes()), len(e.pushRefs("1.0.0"))
+	again, err := e.pipe.Upload(ctx, e.repo, up, alice)
+	must(t, err)
+	if again.Digest != pub.Digest || again.Tag != pub.Tag || again.RepoPath != pub.RepoPath ||
+		again.Entry.Name != pub.Entry.Name || again.Entry.Version != pub.Entry.Version || len(again.Entry.Files) != 2 {
+		t.Errorf("repeat: %+v, want the first publish %+v", again, pub)
+	}
+	if n := len(e.prov.Pushes()); n != pushes {
+		t.Errorf("the repeat pushed %d blobs", n-pushes)
+	}
+	if n := len(e.pushRefs("1.0.0")); n != refs {
+		t.Errorf("the repeat pushed %d manifests", n-refs)
+	}
+	if r := e.rows(t); len(r.Versions) != 1 || r.Versions[0].Digest != pub.Digest || len(r.Audit) != 1 {
+		t.Errorf("rows after the repeat: %+v", r)
+	}
+	// Same files, other order: still the repeat. Other files: still the conflict.
+	if again, err := e.pipe.Upload(ctx, e.repo, upload("tool", "1.0.0", file{"tool-darwin", "darwin binary"}, file{"tool-linux", "linux binary"}), alice); err != nil || again.Digest != pub.Digest {
+		t.Errorf("repeat in another order: %+v, %v", again, err)
+	}
+	_, err = e.pipe.Upload(ctx, e.repo, upload("tool", "1.0.0", file{"tool-linux", "linux binary"}), alice)
+	wantTagConflict(t, err, pub.Digest)
+
+	// The facade path keeps the OCI meaning: another manifest under the tag is the conflict,
+	// the same layers or not.
+	later, err := e.plugin.Build(ctx, e.repo, up)
+	must(t, err)
+	rawLater, _, err := profile.Encode(later.Manifest)
+	must(t, err)
+	_, err = e.pipe.Ingest(ctx, e.repo, "tool", "1.0.0", later.Manifest, rawLater, alice)
+	wantTagConflict(t, err, pub.Digest)
+	e.noClaim(t, "tool", "1.0.0")
+}
+
+// TestUploadRepeatRace checks the repeat rule under the claim: the version appears after the
+// check before the blobs (here: while the plugin validates), and the claim transaction finds
+// it with the same files, so the second publish is the repeat of the first and the registry
+// holds one manifest.
+func TestUploadRepeatRace(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t)
+	up := upload("tool", "1.0.0", file{"tool-linux", "linux binary"})
+	o := e.options(e.prov)
+	o.Plugins = func(name string) (format.Plugin, bool) { return newRawPlugin(), name == "raw" }
+	other := ingest.New(o)
+	var once sync.Once
+	e.plugin.BuildFunc = buildRawAt(created.Add(time.Hour))
+	e.plugin.ValidateFunc = func(ctx context.Context, repo index.Repo, m ocispec.Manifest, fetch format.BlobFetcher) (*format.Entry, error) {
+		once.Do(func() {
+			if _, err := other.Upload(ctx, e.repo, up, alice); err != nil {
+				t.Errorf("the other replica's Upload: %v", err)
+			}
+		})
+		return validateRaw(ctx, repo, m, fetch)
+	}
+
+	pub, err := e.pipe.Upload(ctx, e.repo, up, alice)
+	must(t, err)
+	first := e.tagged(t, "raw/scratch/tool", "1.0.0")
+	if pub.Digest != first {
+		t.Errorf("Published.Digest = %s, want the manifest the other replica stored, %s", pub.Digest, first)
+	}
+	if n := len(e.pushRefs("1.0.0")); n != 1 {
+		t.Errorf("%d manifests pushed, want 1", n)
+	}
+	if r := e.rows(t); len(r.Versions) != 1 || r.Versions[0].Digest != first || len(r.Audit) != 1 {
+		t.Errorf("rows: %+v", r)
+	}
+	e.noClaim(t, "tool", "1.0.0")
 }
 
 // TestUploadErrors checks that a Build error is ErrInvalid unless the plugin does not build

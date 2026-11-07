@@ -477,7 +477,10 @@ Where the merged shapes differ from the first sketch of this section, and why:
   A claim older than `Options.ClaimTTL` is taken over. The claim is not a `versions` row with a
   null `indexed_at`: derived rows stay rebuildable from manifests, readers of `versions` need no
   extra condition, `ResetDerived` cannot drop a claim mid-publish, and the claim has its own
-  timestamp for the TTL.
+  timestamp for the TTL. `Upload` treats the same file layers under the tag as the idempotent
+  repeat (manifest-profile.md §4.2): two builds of the same files differ only by `created`, so
+  a retried upload must not be a 409; the check runs before the blobs are pushed and again under
+  the claim. `Ingest`, the facade path, keeps the OCI meaning: another manifest is the 409.
 
 ## 3. Approved dependencies
 
