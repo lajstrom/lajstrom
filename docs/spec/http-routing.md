@@ -79,7 +79,7 @@ Writes require `write` on `<format>/<repo>`.
 
 | Method and path | Behaviour |
 | --- | --- |
-| `GET /raw/<repo>/<path…>` | newest version of the file at `<path>`; `307` to the blob when the provider supports redirect, else stream. `?digest=sha256:…` pins a version. `Content-Type` from the metadata layer or sniffed. |
+| `GET /raw/<repo>/<path…>` | newest version of the file at `<path>` (the most recently created); `307` to the blob when the provider supports redirect, else stream. `?digest=sha256:…` pins a version. `Content-Type` from the metadata layer or sniffed. A `PUT` of bytes an older version already holds is the idempotent repeat of that version and does not make it the newest: to roll back, `DELETE` the newer version or pin `?digest=`. |
 | `HEAD` | same, no body |
 | `PUT /raw/<repo>/<path…>` | upload one file (body). Idempotent for identical bytes. Creates a new version (tag) for different bytes; the path now resolves to it. `201` with `Location` and `Docker-Content-Digest`. |
 | `DELETE /raw/<repo>/<path…>` | requires `delete`; removes all versions of the path (after the MVP: one version) |

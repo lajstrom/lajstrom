@@ -81,8 +81,10 @@ curl $base/docs/file.txt                                   # hello again
 curl "$base/docs/file.txt?digest=sha256:9c1e…"             # hello raw: ?digest= pins a version
 ```
 
-A path resolves to its newest version. Every version stays in the registry under its own tag;
-tags are never moved.
+A path resolves to its newest version, the most recently created one. Every version stays in
+the registry under its own tag; tags are never moved. Uploading bytes that an older version
+already holds is the idempotent repeat of that version, not a new one, so it does not become
+the newest: to roll back, delete the newer version (section 7) or pin `?digest=`.
 
 ## 5. List (R-04)
 
