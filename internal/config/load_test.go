@@ -52,7 +52,7 @@ func TestLoadDefaults(t *testing.T) {
 				Log:      Log{Level: "info", Format: "text"},
 				Database: Database{Driver: "sqlite", DSN: "file:lajstrom.db"},
 				Ingest:   Ingest{ClaimTTL: 10 * time.Minute},
-				Keys:     Keys{Algorithm: "ed25519", RetireGrace: 720 * time.Hour},
+				Keys:     Keys{Algorithm: "ed25519", RetireGrace: 720 * time.Hour, TokenAlgorithm: "ES256"},
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("Load =\n%+v\nwant\n%+v", got, want)
@@ -123,6 +123,7 @@ func TestLoadErrors(t *testing.T) {
 		{name: "keys", file: minimal + "keys: {algorithm: dsa, retireGrace: -1h}\n",
 			want: []string{`keys.algorithm: "dsa" is not ed25519 or rsa4096`, "keys.retireGrace: must not be negative"}},
 		{name: "empty keys.algorithm", file: minimal + "keys: {algorithm: \"\"}\n", want: []string{`keys.algorithm: "" is not ed25519 or rsa4096`}},
+		{name: "keys.tokenAlgorithm", file: minimal + "keys: {tokenAlgorithm: HS256}\n", want: []string{`keys.tokenAlgorithm: "HS256" is not ES256 or EdDSA`}},
 		{name: "master key in the file", file: minimal + "keys: {masterKey: abc}\n", want: []string{"field masterKey not found"}},
 		{name: "env override is validated", file: minimal, env: map[string]string{"LAJSTROM_DATABASE_DRIVER": "mysql"}, want: []string{`database.driver: "mysql" is not sqlite or postgres`}},
 		{
@@ -273,13 +274,32 @@ registries:
 // serve and admin key do (keys.LoadMaster), so a configuration that names an unset variable
 // loads, as the example does for make run.
 func TestLoadKeys(t *testing.T) {
-	c, err := Load(writeConfig(t, minimal+"keys: {masterKeyEnv: LAJSTROM_MASTER_KEY, algorithm: rsa4096, retireGrace: 48h}\n"), nil)
+	c, err := Load(writeConfig(t, minimal+"keys: {masterKeyEnv: LAJSTROM_MASTER_KEY, algorithm: rsa4096, retireGrace: 48h, tokenAlgorithm: EdDSA}\n"), nil)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	want := Keys{MasterKeyEnv: "LAJSTROM_MASTER_KEY", Algorithm: "rsa4096", RetireGrace: 48 * time.Hour}
+	want := Keys{MasterKeyEnv: "LAJSTROM_MASTER_KEY", Algorithm: "rsa4096", RetireGrace: 48 * time.Hour, TokenAlgorithm: "EdDSA"}
 	if c.Keys != want {
 		t.Errorf("keys = %+v, want %+v", c.Keys, want)
+	}
+}
+
+// TestLoadTokenSigningKeyFile checks that a file that still sets auth.tokenSigningKeyFile, to
+// any value, is refused with a message that says where the key went, so that nobody keeps a
+// key file believing it is read; other unknown keys of auth are refused as before.
+func TestLoadTokenSigningKeyFile(t *testing.T) {
+	const want = "auth.tokenSigningKeyFile is gone: the key lives in the database, ADR 0010"
+	for _, file := range []string{
+		minimal + "auth:\n  tokenSigningKeyFile: /etc/lajstrom/jwt.key\n",
+		minimal + "auth: {anonymousRead: true, tokenSigningKeyFile: \"\"}\n",
+	} {
+		if _, err := Load(writeConfig(t, file), nil); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("Load of %q: %v, want %q", file, err, want)
+		}
+	}
+	_, err := Load(writeConfig(t, minimal+"auth: {tokenKey: x}\n"), nil)
+	if err == nil || !strings.Contains(err.Error(), "field tokenKey not found") {
+		t.Errorf("Load with another unknown auth key: %v", err)
 	}
 }
 

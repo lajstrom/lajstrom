@@ -13,6 +13,7 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/auth/token"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/ingest"
@@ -25,9 +26,17 @@ type Options struct {
 	Index index.Store
 	// Providers are the backend registries by name; a repo's registry selects one.
 	Providers provider.Set
-	// Auth decides what the request's principal may do on a repo. nil allows everything: the
-	// facade is open until the bearer tokens of #26 and RBAC (#45) set it.
+	// Auth decides what the request's principal may do on a repo, for a request without a
+	// bearer, and which scopes /v2/token grants. nil allows everything, every requested scope
+	// included: the facade is open until RBAC (#45) sets it.
 	Auth auth.Authorizer
+	// Tokens are the keys of the bearer tokens of /v2 (ADR 0010): keys.Tokens over the index, or
+	// keys.EphemeralTokens without a master key; required.
+	Tokens token.Keys
+	// ExternalURL is server.externalURL: the realm of the bearer challenge is
+	// <ExternalURL>/v2/token and the service its host. Empty: the request's Host over http://,
+	// the dev stack (token.Realm).
+	ExternalURL string
 	// Ingest stores a manifest pushed to a repo Lajstrom manages (every format but oci): the
 	// ingest pipeline. Required when such a repo is served; without it their manifest PUT is a
 	// 500.
@@ -38,7 +47,7 @@ type Options struct {
 	// Log receives the causes of the 5xx answers, with the request id; nil means
 	// slog.Default().
 	Log *slog.Logger
-	// Now is the clock of the upload sessions; nil means time.Now.
+	// Now is the clock of the upload sessions and of the tokens; nil means time.Now.
 	Now func() time.Time
 }
 
@@ -66,7 +75,8 @@ const apiVersionHeader = "Docker-Distribution-API-Version"
 // New returns the handler of the OCI distribution API, which the server mounts at /v2/
 // (server.Options.Facade). Its endpoints (docs/spec/http-routing.md §2):
 //
-//	GET  /v2/                                   200 {} (the challenge of rbac.md §4 comes with #26)
+//	GET  /v2/                                   200 {} when authenticated, else 401 with the bearer challenge
+//	GET  /v2/token?service=&scope=              a bearer token for the principal (rbac.md §4)
 //	GET  /v2/_catalog?n=&last=                  OCI names of the repos the principal may read
 //	HEAD|GET /v2/<name>/manifests/<ref>         proxied to the backend
 //	PUT  /v2/<name>/manifests/<ref>             pass-through on an oci repo; the hook into ingest elsewhere
@@ -78,12 +88,18 @@ const apiVersionHeader = "Docker-Distribution-API-Version"
 //	DELETE manifests and blobs                  405 until #61
 //
 // <name> is <format>/<repo>/<path>: the repo must exist (NAME_UNKNOWN), and the backend gets
-// the OCI name <repo prefix>/<path>. Errors are the JSON of the distribution spec. The handler
-// keeps no state between requests: an upload session is a row of the index, so any replica
-// continues it. New panics when o.Index is nil.
+// the OCI name <repo prefix>/<path>. Errors are the JSON of the distribution spec; a 401 has
+// the bearer challenge. Every route but /v2/token verifies the bearer a request carries, and
+// decides a request with one by its access claims. The handler keeps no state between
+// requests but the verification keys, reloaded from Tokens: an upload session is a row of the
+// index, so any replica continues it, and a token of one replica verifies on another. New
+// panics when o.Index or o.Tokens is nil.
 func New(o Options) http.Handler {
 	if o.Index == nil {
 		panic("facade: New: nil Options.Index")
+	}
+	if o.Tokens == nil {
+		panic("facade: New: nil Options.Tokens")
 	}
 	if o.Providers == nil {
 		o.Providers = provider.Map{}
@@ -97,7 +113,9 @@ func New(o Options) http.Handler {
 	if o.MaxManifestSize <= 0 {
 		o.MaxManifestSize = defaultMaxManifestSize
 	}
-	h := &handler{o: o, deps: format.Deps{Auth: o.Auth}}
+	h := &handler{o: o, deps: format.Deps{Auth: o.Auth},
+		issuer:   token.NewIssuer(token.Options{Keys: o.Tokens, Now: o.Now, Log: o.Log}),
+		verifier: token.NewVerifier(token.Options{Keys: o.Tokens, Now: o.Now, Log: o.Log})}
 	h.endpoints = map[routeKind]map[string]endpoint{
 		routeManifest: {
 			http.MethodGet: h.getManifest, http.MethodHead: h.getManifest,
@@ -122,35 +140,51 @@ type handler struct {
 	o         Options
 	deps      format.Deps // Auth only, for format.Authorize
 	endpoints map[routeKind]map[string]endpoint
+	issuer    *token.Issuer
+	verifier  *token.Verifier
 }
 
 // endpoint serves one method of a route on the repository t; arg is the reference, the digest
 // or the upload id of the path. An error is answered by fail.
 type endpoint func(w http.ResponseWriter, r *http.Request, t *target, arg string) error
 
-// ServeHTTP dispatches /v2/, /v2/_catalog and the routes below /v2/<name>/.
+// ServeHTTP dispatches /v2/token, and, after the bearer of the request is verified, /v2/,
+// /v2/_catalog and the routes below /v2/<name>/.
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(apiVersionHeader, "registry/2.0")
 	rest, _ := strings.CutPrefix(r.URL.Path, "/v2/")
-	var err error
-	switch rest {
-	case "", "/v2":
-		err = h.base(w, r)
-	case "_catalog":
-		err = h.catalog(w, r)
-	default:
-		err = h.repository(w, r, rest)
+	if rest == "token" {
+		if err := h.issueToken(w, r); err != nil {
+			h.fail(w, r, err)
+		}
+		return
+	}
+	r, err := h.bearer(r)
+	if err == nil {
+		switch rest {
+		case "", "/v2":
+			err = h.base(w, r)
+		case "_catalog":
+			err = h.catalog(w, r)
+		default:
+			err = h.repository(w, r, rest)
+		}
 	}
 	if err != nil {
 		h.fail(w, r, err)
 	}
 }
 
-// base answers GET /v2/: 200 with {}. TODO(#26): 401 with the bearer challenge of rbac.md §4
-// to a request without a token, once the token endpoint exists.
+// base answers GET /v2/: 200 with {} to an authenticated request, by Basic credentials or a
+// bearer (an anonymous token included: its client has done the flow), and 401 with the bearer
+// challenge to the anonymous principal, which docker and oras answer with GET /v2/token. Even
+// while the facade is open: the anonymous client then gets a token with what it asks for.
 func (h *handler) base(w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return methodNotAllowed(r)
+	}
+	if _, bearer := grantFrom(r.Context()); !bearer && auth.PrincipalFrom(r.Context()).Kind == auth.KindAnonymous {
+		return &apiError{status: http.StatusUnauthorized, msg: "authentication required: get a token from the realm of the challenge"}
 	}
 	writeJSON(w, http.StatusOK, struct{}{})
 	return nil
@@ -229,10 +263,16 @@ func repoBase(repo index.Repo) string {
 
 func ociName(repo index.Repo, pkgPath string) string { return repoBase(repo) + "/" + pkgPath }
 
-// authorize asks the Authorizer whether the request's principal may do a on the repo
-// (format.Authorize): a principal that may not read it gets NAME_UNKNOWN, as for a repo that
-// does not exist.
-func (h *handler) authorize(ctx context.Context, a auth.Action, repo index.Repo) error {
+// authorize decides whether the request may do a on the repository t. A request with a bearer
+// is decided by the token's access claims and not by the Authorizer (allowedByToken: 401 with
+// insufficient_scope when the token lacks the repository, 403 when it lacks the action).
+// Without one the Authorizer decides for the request's principal (format.Authorize): a
+// principal that may not read the repo gets NAME_UNKNOWN, as for a repo that does not exist.
+func (h *handler) authorize(ctx context.Context, a auth.Action, t *target) error {
+	if g, ok := grantFrom(ctx); ok {
+		return allowedByToken(g, a, t.name)
+	}
+	repo := t.repo
 	err := format.Authorize(ctx, h.deps, a, repo)
 	if errors.Is(err, index.ErrNotFound) {
 		return &apiError{code: codeNameUnknown, msg: fmt.Sprintf("repository %s/%s not known to registry", repo.Format, repo.Name), err: err}
@@ -267,7 +307,7 @@ func (h *handler) backend(ctx context.Context, t *target) (provider.Repository, 
 
 // referrers answers GET …/referrers/<digest>: 501 until #28.
 func (h *handler) referrers(_ http.ResponseWriter, r *http.Request, t *target, _ string) error {
-	if err := h.authorize(r.Context(), auth.ActionRead, t.repo); err != nil {
+	if err := h.authorize(r.Context(), auth.ActionRead, t); err != nil {
 		return err
 	}
 	return &apiError{status: http.StatusNotImplemented, code: codeUnsupported, msg: "the referrers API comes with #28"}

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -90,6 +91,7 @@ func TestAuthenticate(t *testing.T) {
 		principal     auth.Principal // in the handler's context and the access log, when it is called
 		body          string         // exact body of a 401
 		ctype         string
+		challenge     string // WWW-Authenticate of a 401; "" is the Basic challenge
 	}{
 		{name: "no credentials", path: "/test/x", status: 204, principal: auth.Anonymous},
 		{name: "basic", path: "/test/x", authorization: basic("alice", alicePassword), status: 204, principal: alice},
@@ -105,9 +107,14 @@ func TestAuthenticate(t *testing.T) {
 		{name: "wrong password, healthz", path: "/-/healthz", authorization: basic("alice", "wrong-password"), status: 401,
 			body: textBody, ctype: "text/plain; charset=utf-8"},
 		{name: "wrong password, /v2/", path: "/v2/raw/scratch/x/tags/list", authorization: basic("alice", "wrong-password"), status: 401,
-			body: `{"errors":[{"code":"UNAUTHORIZED","message":"credentials are needed: the ones sent were refused"}]}` + "\n", ctype: "application/json"},
+			body: `{"errors":[{"code":"UNAUTHORIZED","message":"credentials are needed: the ones sent were refused"}]}` + "\n", ctype: "application/json",
+			challenge: v2Challenge},
 		{name: "wrong password, /v2", path: "/v2", authorization: basic("alice", "wrong-password"), status: 401,
+			body: `{"errors":[{"code":"UNAUTHORIZED","message":"credentials are needed: the ones sent were refused"}]}` + "\n", ctype: "application/json",
+			challenge: v2Challenge},
+		{name: "wrong password, /v2/token", path: "/v2/token", authorization: basic("alice", "wrong-password"), status: 401,
 			body: `{"errors":[{"code":"UNAUTHORIZED","message":"credentials are needed: the ones sent were refused"}]}` + "\n", ctype: "application/json"},
+		{name: "basic on /v2/token", path: "/v2/token", authorization: basic("alice", alicePassword), status: 204, principal: alice},
 		{name: "wrong password, API", path: "/api/v1/repos", authorization: basic("alice", "wrong-password"), status: 401,
 			body: `{"error":{"code":"FORBIDDEN","message":"credentials are needed: the ones sent were refused"}}` + "\n", ctype: "application/json"},
 		{name: "not base64", path: "/test/x", authorization: "Basic !!!not-base64", status: 401, body: textBody, ctype: "text/plain; charset=utf-8"},
@@ -132,7 +139,7 @@ func TestAuthenticate(t *testing.T) {
 			}
 			l := findLog(t, logs, "request")
 			if tt.status == http.StatusUnauthorized {
-				wantRefusal(t, rr, sw, l, tt.body, tt.ctype)
+				wantRefusal(t, rr, sw, l, tt.body, tt.ctype, cmp.Or(tt.challenge, basicChallenge))
 			} else {
 				wantPassed(t, sw, l, tt.principal, tt.authorization)
 			}
@@ -145,15 +152,19 @@ func TestAuthenticate(t *testing.T) {
 	}
 }
 
+// v2Challenge is the challenge of a refusal under /v2/ of a server without an external URL,
+// for a request to httptest's host.
+const v2Challenge = `Bearer realm="http://example.com/v2/token",service="example.com"`
+
 // wantRefusal checks a 401 of the middleware: the handler was not called, the answer has the
 // challenge, body and ctype, and the access log line l has the anonymous principal.
-func wantRefusal(t *testing.T, rr *httptest.ResponseRecorder, sw *seen, l map[string]any, body, ctype string) {
+func wantRefusal(t *testing.T, rr *httptest.ResponseRecorder, sw *seen, l map[string]any, body, ctype, challenge string) {
 	t.Helper()
 	if sw.called {
 		t.Error("the handler was called after a refusal")
 	}
-	if got := rr.Header().Get("WWW-Authenticate"); got != `Basic realm="lajstrom"` {
-		t.Errorf("WWW-Authenticate = %q", got)
+	if got := rr.Header().Get("WWW-Authenticate"); got != challenge {
+		t.Errorf("WWW-Authenticate = %q, want %q", got, challenge)
 	}
 	if rr.Body.String() != body || rr.Header().Get("Content-Type") != ctype {
 		t.Errorf("answer %q (%s), want %q (%s)", rr.Body, rr.Header().Get("Content-Type"), body, ctype)
@@ -176,6 +187,45 @@ func wantPassed(t *testing.T, sw *seen, l map[string]any, p auth.Principal, auth
 	if l["principal"] != p.String() {
 		t.Errorf("access log principal = %v, want %s", l["principal"], p)
 	}
+}
+
+// TestRefusalChallenge checks the challenge of a refused Basic under /v2/ with an external URL:
+// the realm is the token endpoint of the external URL and the service its host and port,
+// whatever the request's Host; /v2/token and the other routes keep the Basic challenge.
+func TestRefusalChallenge(t *testing.T) {
+	s, _ := newTestServer(t, Options{ExternalURL: "https://art.example.com:8443",
+		Authenticator: auth.NewAuthenticator(auth.Options{Index: usersReader{}})})
+	for path, want := range map[string]string{
+		"/v2/raw/scratch/x/manifests/v1": `Bearer realm="https://art.example.com:8443/v2/token",service="art.example.com:8443"`,
+		"/v2/":                           `Bearer realm="https://art.example.com:8443/v2/token",service="art.example.com:8443"`,
+		"/v2/token":                      basicChallenge,
+		"/api/v1/repos":                  basicChallenge,
+		"/raw/scratch/x":                 basicChallenge,
+	} {
+		r := httptest.NewRequest(http.MethodGet, "http://10.0.0.7:8080"+path, nil)
+		r.Header.Set("Authorization", basic("alice", "wrong-password"))
+		rr := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rr, r)
+		if got := rr.Header().Get("WWW-Authenticate"); rr.Code != http.StatusUnauthorized || got != want {
+			t.Errorf("%s: %d %q, want 401 %q", path, rr.Code, got, want)
+		}
+	}
+}
+
+// TestHoldPrincipal checks that the principal HoldPrincipal records is the access log's, as the
+// facade records the principal of a bearer, and that it does nothing without the holder.
+func TestHoldPrincipal(t *testing.T) {
+	bob := auth.Principal{Kind: auth.KindUser, Name: "bob"}
+	s, logs := newTestServer(t, Options{})
+	s.mux.HandleFunc("/hold", func(w http.ResponseWriter, r *http.Request) {
+		HoldPrincipal(r.Context(), bob)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	s.Handler().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/hold", nil))
+	if l := findLog(t, logs, "request"); l["principal"] != "user:bob" {
+		t.Errorf("access log principal = %v, want user:bob", l["principal"])
+	}
+	HoldPrincipal(context.Background(), bob) // no holder: nothing to record, and no panic
 }
 
 // TestAuthenticateNil checks that a nil Authenticator authenticates nobody: Basic credentials,

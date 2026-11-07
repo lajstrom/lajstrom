@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/lajstrom/lajstrom/internal/auth/token"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/server"
 )
@@ -32,21 +33,19 @@ const (
 	codeUnknown = "UNKNOWN"
 )
 
-// basicChallenge is the WWW-Authenticate of a 401 until #26 answers with the bearer challenge
-// of rbac.md §4; it is the frontends' (format.WriteError).
-const basicChallenge = `Basic realm="lajstrom"`
-
 // apiError is an error the facade answers in the distribution format: the code that the
 // handler chose for what it was doing, the status (zero: format.StatusOf of the cause, the one
 // error table of the frontends, so that index and provider errors map as everywhere), the
 // message for the client (empty: the cause's), the detail of the error entry (nil: none), and
-// the cause, for the status and the log.
+// the cause, for the status and the log. insufficient marks the 401 of a valid bearer that
+// lacks the repository: its challenge says error="insufficient_scope".
 type apiError struct {
-	status int
-	code   string
-	msg    string
-	detail any
-	err    error
+	status       int
+	code         string
+	msg          string
+	detail       any
+	err          error
+	insufficient bool
 }
 
 func (e *apiError) Error() string {
@@ -81,8 +80,11 @@ type errorEntry struct {
 // fail answers err as the distribution spec's error document. The status is the apiError's,
 // or format.StatusOf of the cause; the code follows the status where the status decides it
 // (401 UNAUTHORIZED with the challenge, 403 DENIED, 429 TOOMANYREQUESTS, 501 UNSUPPORTED, 5xx
-// UNKNOWN) and is the handler's otherwise. A 5xx says only its status text, without a detail,
-// and its cause is logged with the request id: a backend error must not reach the client.
+// UNKNOWN) and is the handler's otherwise. The challenge of a 401 is the bearer challenge of
+// the token flow (docs/spec/rbac.md §4) with the scope of the request (requestScope), and
+// error="insufficient_scope" when a valid bearer lacked it. A 5xx says only its status text,
+// without a detail, and its cause is logged with the request id: a backend error must not
+// reach the client.
 func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var ae *apiError
 	if !errors.As(err, &ae) {
@@ -103,7 +105,8 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 			"status", status, "error", err.Error(), "requestId", server.RequestID(r.Context()))
 	case status == http.StatusUnauthorized:
 		code = codeUnauthorized
-		w.Header().Set("WWW-Authenticate", basicChallenge)
+		realm, service := token.Realm(h.o.ExternalURL, r)
+		w.Header().Set("WWW-Authenticate", token.Challenge(realm, service, requestScope(r), ae.insufficient))
 	case status == http.StatusForbidden:
 		code = codeDenied
 	case status == http.StatusTooManyRequests:

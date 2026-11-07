@@ -7,8 +7,8 @@ type principalKey struct{}
 
 // WithPrincipal returns a copy of ctx that carries p, the principal of the request. The
 // authentication middleware of internal/server stores it from HTTP Basic credentials on every
-// route (issue #43); the facade will from the bearer on /v2 (issue #26). A request without
-// credentials carries none and is anonymous.
+// route (issue #43); the facade stores it from the bearer token on /v2 (issue #26). A request
+// without credentials carries none and is anonymous.
 func WithPrincipal(ctx context.Context, p Principal) context.Context {
 	return context.WithValue(ctx, principalKey{}, p)
 }

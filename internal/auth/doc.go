@@ -6,5 +6,6 @@
 // the context (WithPrincipal, PrincipalFrom) with #11. Issue #43 brings local users: argon2id
 // passwords (HashPassword, VerifyPassword), the Authenticator that turns HTTP Basic credentials
 // into a principal, with its verification cache, and the Users service of lajstrom admin user
-// (docs/auth.md). Tokens come with #44, RBAC with #45, bearer tokens with #26.
+// (docs/auth.md). Issue #26 brings the bearer tokens of /v2 (auth/token, keys.Tokens). Tokens
+// come with #44, RBAC with #45.
 package auth

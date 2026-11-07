@@ -158,29 +158,38 @@ The `ingest` section is an addition to the shape in [layout.md](spec/layout.md) 
 | Key | Type | Default | Env | Description |
 | --- | --- | --- | --- | --- |
 | `auth.anonymousRead` | bool | `false` | none | Server-wide switch for anonymous read. When `false`, no repo is readable without credentials, whatever `repos[].anonymousRead` says. Enforced by RBAC (issue #45, [rbac.md](spec/rbac.md)). |
-| `auth.tokenSigningKeyFile` | path | empty | none | PEM file with the key that signs OCI bearer tokens (issue #26). Example: `/etc/lajstrom/jwt.key`. |
+
+There is no key file for the bearer tokens of `/v2`: their signing key lives in the database,
+encrypted with the master key ([ADR 0010](adr/0010-bearer-token-signing-key.md),
+[keys](#keys)). A file that still sets `auth.tokenSigningKeyFile` is refused:
+`auth.tokenSigningKeyFile is gone: the key lives in the database, ADR 0010`.
 
 ### keys
 
 | Key | Type | Default | Env | Description |
 | --- | --- | --- | --- | --- |
-| `keys.masterKeyEnv` | environment variable name | empty | none | Variable that holds the master key, which encrypts the signing keys at rest: 64 hexadecimal characters (32 bytes), e.g. from `openssl rand -hex 32`. Example: `LAJSTROM_MASTER_KEY`. See below for what happens without it. |
+| `keys.masterKeyEnv` | environment variable name | empty | none | Variable that holds the master key, which encrypts the signing keys at rest: 64 hexadecimal characters (32 bytes), e.g. from `openssl rand -hex 32`. It has two readers: the apt signing keys of the repos and the key that signs the bearer tokens of `/v2`. Example: `LAJSTROM_MASTER_KEY`. See below for what happens without it. |
 | `keys.algorithm` | `ed25519` or `rsa4096` | `ed25519` | none | Algorithm of the signing keys made from now on (each apt repo gets one on its first signed request, or with `lajstrom admin key`). `ed25519` is an OpenPGP EdDSA key, which apt verifies since 2.0 (Debian 11, Ubuntu 20.04); `rsa4096` is for older clients. Keys made before keep their algorithm; rotate a repo's key to change it. |
-| `keys.retireGrace` | duration (`720h`, `168h`) | `720h` | none | How long a key retired by a rotation keeps signing `InRelease` and `Release.gpg` beside the new key and stays in the repo's `key.asc`. Clients that pinned the old `key.asc` keep verifying until it ends; fetch `key.asc` again on every client before then ([operations.md](operations.md#rotation)). `0` drops a retired key at once, for a key that must not be trusted any more. Must not be negative. |
+| `keys.retireGrace` | duration (`720h`, `168h`) | `720h` | none | How long a key retired by a rotation keeps signing `InRelease` and `Release.gpg` beside the new key and stays in the repo's `key.asc`. Clients that pinned the old `key.asc` keep verifying until it ends; fetch `key.asc` again on every client before then ([operations.md](operations.md#rotation)). `0` drops a retired key at once, for a key that must not be trusted any more. Must not be negative. It does not apply to the bearer-token key, whose retired key verifies for the token lifetime and the clock skew, 21 minutes. |
+| `keys.tokenAlgorithm` | `ES256` or `EdDSA` | `ES256` | none | Algorithm of the bearer-token signing keys made from now on: `ES256` is ECDSA on P-256, `EdDSA` is Ed25519. A key keeps its algorithm; `lajstrom admin key rotate --token` makes a key of the new one ([operations.md](operations.md#the-bearer-token-key)). The token lifetime (20 minutes) and the clock skew tolerated between replicas (60 seconds) are fixed ([rbac.md](spec/rbac.md) §4). |
 
 The master key is read once, when `serve` or `admin key` starts:
 
 - **Set and valid**: apt repos are signed (`InRelease`, `Release.gpg`, `key.asc`), each with its
-  own key, made on first use and stored encrypted with the master key.
+  own key, made on first use and stored encrypted with the master key; the bearer tokens of
+  `/v2` are signed with the token key of the database, made at the first start, the same on
+  every replica.
 - **Set but empty, or not 64 hexadecimal characters**: `serve` and `admin key` stop with an
   error that names the variable and the format, never the value.
 - **`keys.masterKeyEnv` empty, or the variable not set**: signing is off. `serve` logs a warning
   for every apt repo, whose `InRelease`, `Release.gpg` and `key.asc` are `404`; clients use
-  `[trusted=yes]`. When the index already holds signing keys, `serve` stops instead: only the
-  master key decrypts them, and their clients pinned them. `admin key` always needs it.
+  `[trusted=yes]`. When the index already holds apt signing keys, `serve` stops instead: only
+  the master key decrypts them, and their clients pinned them. Bearer tokens are signed with an
+  ephemeral key in memory, with a warning: they do not survive a restart and are not shared
+  between replicas. `admin key` always needs it.
 
 [operations.md](operations.md#keys-and-apt-signing) has the procedures: generating and storing
-the master key, distributing `key.asc`, rotating a key.
+the master key, distributing `key.asc`, rotating a key, the bearer-token key.
 
 ### repos
 

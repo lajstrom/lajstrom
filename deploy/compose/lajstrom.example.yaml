@@ -53,12 +53,12 @@ ingest:
 
 auth:
   anonymousRead: false                # server-wide switch for anonymous read (RBAC, issue #45)
-  tokenSigningKeyFile: ""             # PEM key that signs OCI bearer tokens (issue #26)
 
 keys:
-  masterKeyEnv: LAJSTROM_MASTER_KEY   # environment variable with the key that encrypts signing keys; unset: apt repos are unsigned
+  masterKeyEnv: LAJSTROM_MASTER_KEY   # environment variable with the key that encrypts the apt keys and the bearer-token key; unset: apt repos are unsigned, tokens use an ephemeral key
   algorithm: ed25519                  # ed25519 | rsa4096 (apt before 2.0); for keys made from now on
   retireGrace: 720h                   # a key retired by a rotation still signs and stays in key.asc this long
+  tokenAlgorithm: ES256               # ES256 | EdDSA; for bearer-token keys made from now on (the key lives in the database, ADR 0010)
 
 repos:                                # created at startup when missing (issue #14)
   - name: scratch                     # repo name, unique within its format

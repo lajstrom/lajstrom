@@ -8,11 +8,16 @@ import (
 	"strings"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/auth/token"
 )
 
-// basicChallenge is the WWW-Authenticate header of a 401: clients answer it with HTTP Basic
-// credentials (docs/spec/rbac.md §1 and §3), the challenge of format.WriteError.
+// basicChallenge is the WWW-Authenticate header of a 401 outside /v2/, and on /v2/token: clients
+// answer it with HTTP Basic credentials (docs/spec/rbac.md §1 and §3), the challenge of
+// format.WriteError.
 const basicChallenge = `Basic realm="lajstrom"`
+
+// tokenPath is the token endpoint of the facade, the one path under /v2/ that takes Basic.
+const tokenPath = "/v2/token"
 
 // Messages of the answers of the authentication middleware.
 const (
@@ -32,8 +37,11 @@ func withPrincipalHolder(ctx context.Context) (context.Context, *principalHolder
 	return context.WithValue(ctx, principalHolderKey{}, h), h
 }
 
-// holdPrincipal records p in the holder of ctx, when there is one.
-func holdPrincipal(ctx context.Context, p auth.Principal) {
+// HoldPrincipal records p as the principal of the request of ctx for its access log line, when
+// ctx has the holder of the access log. The authentication middleware records the principal of
+// HTTP Basic credentials; HoldPrincipal exists for the OCI facade, which verifies the bearer
+// tokens of /v2 itself (issue #26) and records their principal through it.
+func HoldPrincipal(ctx context.Context, p auth.Principal) {
 	if h, ok := ctx.Value(principalHolderKey{}).(*principalHolder); ok {
 		h.p = p
 	}
@@ -50,7 +58,7 @@ func holdPrincipal(ctx context.Context, p auth.Principal) {
 //     that do not decode, are answered at once with 401 and the Basic challenge, whatever the
 //     route, in the error format of the route's family (writeRefusal).
 //   - Bearer and any other scheme: the request goes on as anonymous with the header untouched.
-//     The OCI facade reads the bearer of /v2 (#26).
+//     The OCI facade verifies the bearer of /v2 and records its principal (HoldPrincipal).
 //
 // A nil Options.Authenticator authenticates nobody: every request is anonymous, as in the unit
 // tests of other packages.
@@ -68,38 +76,47 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		if !ok {
 			s.log.DebugContext(r.Context(), "authentication refused", "reason", "credentials that do not decode",
 				"requestId", RequestID(r.Context()))
-			writeRefusal(w, r, http.StatusUnauthorized, msgBadCredentials)
+			s.writeRefusal(w, r, http.StatusUnauthorized, msgBadCredentials)
 			return
 		}
 		p, err := s.opts.Authenticator.Authenticate(r.Context(), user, secret)
 		switch {
 		case errors.Is(err, auth.ErrBadCredentials):
-			writeRefusal(w, r, http.StatusUnauthorized, msgBadCredentials)
+			s.writeRefusal(w, r, http.StatusUnauthorized, msgBadCredentials)
 			return
 		case err != nil:
 			s.log.ErrorContext(r.Context(), "authentication failed", "user", user, "error", err.Error(),
 				"requestId", RequestID(r.Context()))
-			writeRefusal(w, r, http.StatusInternalServerError, msgAuthFailed)
+			s.writeRefusal(w, r, http.StatusInternalServerError, msgAuthFailed)
 			return
 		}
-		holdPrincipal(r.Context(), p)
+		HoldPrincipal(r.Context(), p)
 		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), p)))
 	})
 }
 
-// writeRefusal answers a request that the middleware refuses, 401 with the Basic challenge
-// or 500, in the error format of the route's family: the error document of the distribution
-// spec under /v2/ (internal/facade), the envelope of the management API under /api/
-// (internal/api; 401 is FORBIDDEN there, told apart by the status and the challenge), plain
-// text elsewhere (format.WriteError). The challenge of /v2 stays Basic, as the facade's, until
-// #26 turns both into the bearer challenge of docs/spec/rbac.md §4.
-func writeRefusal(w http.ResponseWriter, r *http.Request, status int, msg string) {
+// writeRefusal answers a request that the middleware refuses, 401 with a challenge or 500, in
+// the error format of the route's family: the error document of the distribution spec under
+// /v2/ (internal/facade), the envelope of the management API under /api/ (internal/api; 401
+// is FORBIDDEN there, told apart by the status and the challenge), plain text elsewhere
+// (format.WriteError). The challenge of a 401 under /v2/ is the bearer challenge of the token
+// flow (docs/spec/rbac.md §4) without a scope, as the facade answers: the client goes to the
+// realm with the credentials that were refused, and learns there that they are wrong. On
+// /v2/token itself, the one endpoint of /v2 that takes Basic, and everywhere else, it is Basic.
+func (s *Server) writeRefusal(w http.ResponseWriter, r *http.Request, status int, msg string) {
+	path := r.URL.Path
+	v2 := path == "/v2" || strings.HasPrefix(path, "/v2/")
 	if status == http.StatusUnauthorized {
-		w.Header().Set("WWW-Authenticate", basicChallenge)
+		challenge := basicChallenge
+		if v2 && path != tokenPath {
+			realm, service := token.Realm(s.opts.ExternalURL, r)
+			challenge = token.Challenge(realm, service, "", false)
+		}
+		w.Header().Set("WWW-Authenticate", challenge)
 	}
 	var body any
-	switch path := r.URL.Path; {
-	case path == "/v2" || strings.HasPrefix(path, "/v2/"):
+	switch {
+	case v2:
 		code := "UNAUTHORIZED"
 		if status != http.StatusUnauthorized {
 			code = "UNKNOWN"

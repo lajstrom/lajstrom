@@ -17,6 +17,7 @@ import (
 	"oras.land/oras-go/v2/content"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/auth/token"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
@@ -59,7 +60,7 @@ func (s uploadState) upload() provider.Upload {
 // whose time is up, which nothing else does before the reconcile loop of #30.
 func (h *handler) startUpload(w http.ResponseWriter, r *http.Request, t *target, _ string) error {
 	ctx := r.Context()
-	if err := h.authorize(ctx, auth.ActionWrite, t.repo); err != nil {
+	if err := h.authorize(ctx, auth.ActionWrite, t); err != nil {
 		return err
 	}
 	if n, err := h.o.Index.ExpireSessions(ctx, h.o.Now()); err != nil {
@@ -112,14 +113,20 @@ func (h *handler) monolithic(w http.ResponseWriter, r *http.Request, t *target, 
 // that repo and the repo is on the same registry. A source that is not allowed, and a
 // request without from, get a plain session, which is what the spec asks of a registry that
 // cannot mount: passing a mount without from to the backend would let it take the blob from a
-// repo the principal may not read.
+// repo the principal may not read. With a bearer, a source the token does not name is 401 with
+// both repositories in the challenge and insufficient_scope, so that the client gets a token
+// that names it, as docker does for a mount from another repository.
 func (h *handler) mount(w http.ResponseWriter, r *http.Request, t *target, rr provider.Repository, raw, from string) error {
 	ctx := r.Context()
 	d, err := parseDigest(raw)
 	if err != nil {
 		return err
 	}
-	if src, ok := h.mountSource(ctx, t, from); ok {
+	src, ok, err := h.mountSource(ctx, t, from)
+	if err != nil {
+		return err
+	}
+	if ok {
 		mounted, u, err := rr.MountBlob(ctx, d, src)
 		switch {
 		case err != nil:
@@ -138,19 +145,31 @@ func (h *handler) mount(w http.ResponseWriter, r *http.Request, t *target, rr pr
 }
 
 // mountSource returns the OCI name of the mount source from, and false when there is none to
-// mount from: from is empty, not a name, not a repo, on another registry, or not readable.
-func (h *handler) mountSource(ctx context.Context, t *target, from string) (string, bool) {
+// mount from: from is empty, not a name, not a repo, on another registry, or not readable:
+// in another repo the principal may not read, or, with a bearer, another repository the token
+// names without pull. A bearer that does not name another repository at all is the error of
+// allowedByToken, 401 with insufficient_scope.
+func (h *handler) mountSource(ctx context.Context, t *target, from string) (string, bool, error) {
 	if from == "" {
-		return "", false
+		return "", false, nil
 	}
 	src, err := h.resolve(ctx, from)
 	if err != nil || src.repo.Registry != t.repo.Registry {
-		return "", false
+		return "", false, nil
 	}
-	if src.repo.ID != t.repo.ID && h.authorize(ctx, auth.ActionRead, src.repo) != nil {
-		return "", false
+	if g, bearer := grantFrom(ctx); bearer {
+		if src.name == t.name {
+			return src.oci, true, nil
+		}
+		if _, named := g.Repository(src.name); !named {
+			return "", false, allowedByToken(g, auth.ActionRead, src.name)
+		}
+		return src.oci, g.Allows(src.name, token.ActionPull), nil
 	}
-	return src.oci, true
+	if src.repo.ID != t.repo.ID && h.authorize(ctx, auth.ActionRead, src) != nil {
+		return "", false, nil
+	}
+	return src.oci, true, nil
 }
 
 // openSession writes the row of a new backend session u and answers 202 with its Location. A
@@ -276,7 +295,7 @@ var errUploadUnknown = &apiError{status: http.StatusNotFound, code: codeBlobUplo
 func (h *handler) continueSession(r *http.Request, t *target, id string) (*index.Session, uploadState, provider.Repository, error) {
 	ctx := r.Context()
 	var st uploadState
-	if err := h.authorize(ctx, auth.ActionWrite, t.repo); err != nil {
+	if err := h.authorize(ctx, auth.ActionWrite, t); err != nil {
 		return nil, st, nil, err
 	}
 	if !validUploadID(id) {

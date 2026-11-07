@@ -637,9 +637,9 @@ registries:
     auth: { username: "lajstrom", passwordEnv: "ZOT_PASSWORD" }
 auth:
   anonymousRead: false
-  tokenSigningKeyFile: /etc/lajstrom/jwt.key
 keys:
-  masterKeyEnv: LAJSTROM_MASTER_KEY         # encrypts GPG keys at rest
+  masterKeyEnv: LAJSTROM_MASTER_KEY         # encrypts the apt keys and the bearer-token key at rest
+  tokenAlgorithm: ES256                     # ES256 | EdDSA; the bearer-token key (ADR 0010)
   algorithm: ed25519                        # ed25519 | rsa4096 (apt before 2.0)
   retireGrace: 720h                         # a retired key still signs and stays in key.asc this long
 repos:                                      # optional declarative bootstrap, merged into the control plane

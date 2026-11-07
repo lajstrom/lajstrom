@@ -39,16 +39,26 @@ func TestParseRoute(t *testing.T) {
 	}
 }
 
+// TestBase checks GET /v2/: 401 with the bearer challenge, without a scope, to the anonymous
+// principal, with or without an Authorizer, and 200 {} to an authenticated one.
 func TestBase(t *testing.T) {
-	e := newEnv(t, envOptions{authz: authorizer{}})
-	rr := e.do(e.h, http.MethodGet, "/v2/", nil)
-	wantStatus(t, "GET /v2/", rr, http.StatusOK)
-	wantHeader(t, "GET /v2/", rr, "Docker-Distribution-API-Version", "registry/2.0")
-	if body := strings.TrimSpace(rr.Body.String()); body != "{}" {
-		t.Errorf("GET /v2/ body %q", body)
+	for _, z := range []auth.Authorizer{nil, authorizer{}} {
+		e := newEnv(t, envOptions{authz: z})
+		rr := e.do(e.h, http.MethodGet, "/v2/", nil)
+		wantError(t, "anonymous GET /v2/", rr, http.StatusUnauthorized, codeUnauthorized)
+		wantHeader(t, "anonymous GET /v2/", rr, "WWW-Authenticate", `Bearer realm="http://example.com/v2/token",service="example.com"`)
+		wantHeader(t, "anonymous GET /v2/", rr, "Docker-Distribution-API-Version", "registry/2.0")
+		wantStatus(t, "anonymous HEAD /v2/", e.do(e.h, http.MethodHead, "/v2/", nil), http.StatusUnauthorized)
+
+		rr = e.do(e.h, http.MethodGet, "/v2/", nil, principalHeader, "alice")
+		wantStatus(t, "GET /v2/ as alice", rr, http.StatusOK)
+		wantHeader(t, "GET /v2/ as alice", rr, "Docker-Distribution-API-Version", "registry/2.0")
+		if body := strings.TrimSpace(rr.Body.String()); body != "{}" {
+			t.Errorf("GET /v2/ body %q", body)
+		}
+		wantStatus(t, "HEAD /v2/ as alice", e.do(e.h, http.MethodHead, "/v2/", nil, principalHeader, "alice"), http.StatusOK)
+		wantError(t, "POST /v2/", e.do(e.h, http.MethodPost, "/v2/", nil, principalHeader, "alice"), http.StatusMethodNotAllowed, codeUnsupported)
 	}
-	wantStatus(t, "HEAD /v2/", e.do(e.h, http.MethodHead, "/v2/", nil), http.StatusOK)
-	wantError(t, "POST /v2/", e.do(e.h, http.MethodPost, "/v2/", nil), http.StatusMethodNotAllowed, codeUnsupported)
 }
 
 // TestRouteErrors covers the error codes of the routing table: names, references, methods,
@@ -123,9 +133,9 @@ func TestServerErrors(t *testing.T) {
 	}
 }
 
-// TestAuthorization checks the answers of the facade with an Authorizer: anonymous 401 with a
-// challenge, a reader that writes 403, a stranger 404 as for a repo that does not exist, and
-// the catalog filtered.
+// TestAuthorization checks the answers of the facade with an Authorizer to requests without a
+// bearer: anonymous 401 with the bearer challenge naming the scope of the request, a reader
+// that writes 403, a stranger 404 as for a repo that does not exist, and the catalog filtered.
 func TestAuthorization(t *testing.T) {
 	z := authorizer{
 		"reader": {"oci/images": {auth.ActionRead}},
@@ -133,35 +143,42 @@ func TestAuthorization(t *testing.T) {
 	}
 	e := newEnv(t, envOptions{authz: z})
 	body, _ := manifest(t, []byte("layer"), "authz")
+	const realm = `Bearer realm="http://example.com/v2/token",service="example.com"`
 	tests := []struct {
 		name, user, method, target string
 		status                     int
 		code                       string
+		challenge                  string // of a 401
 	}{
-		{"anonymous read", "", http.MethodGet, "/v2/oci/images/x/tags/list", http.StatusUnauthorized, codeUnauthorized},
-		{"anonymous on a repo that does not exist", "", http.MethodGet, "/v2/oci/none/x/tags/list", http.StatusUnauthorized, codeUnauthorized},
-		{"reader writes", "reader", http.MethodPost, "/v2/oci/images/x/blobs/uploads/", http.StatusForbidden, codeDenied},
-		{"reader pushes a manifest", "reader", http.MethodPut, "/v2/oci/images/x/manifests/v1", http.StatusForbidden, codeDenied},
-		{"reader deletes", "reader", http.MethodDelete, "/v2/oci/images/x/manifests/v1", http.StatusForbidden, codeDenied},
-		{"anonymous pushes to a managed repo", "", http.MethodPut, "/v2/raw/assets/x/manifests/v1", http.StatusUnauthorized, codeUnauthorized},
-		{"reader pushes to a managed repo", "writer", http.MethodPut, "/v2/raw/assets/x/manifests/v1", http.StatusForbidden, codeDenied},
-		{"stranger pushes to a managed repo", "reader", http.MethodPut, "/v2/raw/assets/x/manifests/v1", http.StatusNotFound, codeNameUnknown},
-		{"stranger reads", "reader", http.MethodGet, "/v2/raw/assets/x/tags/list", http.StatusNotFound, codeNameUnknown},
-		{"stranger reads a blob", "reader", http.MethodGet, "/v2/raw/assets/x/blobs/" + string(zeroDigest), http.StatusNotFound, codeNameUnknown},
-		{"writer's upload status of an unknown id", "writer", http.MethodGet, "/v2/oci/images/x/blobs/uploads/" + strings.Repeat("0", 32), http.StatusNotFound, codeBlobUploadUnknown},
+		{"anonymous read", "", http.MethodGet, "/v2/oci/images/x/tags/list", http.StatusUnauthorized, codeUnauthorized,
+			realm + `,scope="repository:oci/images/x:pull"`},
+		{"anonymous on a repo that does not exist", "", http.MethodGet, "/v2/oci/none/x/tags/list", http.StatusUnauthorized, codeUnauthorized,
+			realm + `,scope="repository:oci/none/x:pull"`},
+		{"reader writes", "reader", http.MethodPost, "/v2/oci/images/x/blobs/uploads/", http.StatusForbidden, codeDenied, ""},
+		{"reader pushes a manifest", "reader", http.MethodPut, "/v2/oci/images/x/manifests/v1", http.StatusForbidden, codeDenied, ""},
+		{"reader deletes", "reader", http.MethodDelete, "/v2/oci/images/x/manifests/v1", http.StatusForbidden, codeDenied, ""},
+		{"anonymous pushes to a managed repo", "", http.MethodPut, "/v2/raw/assets/x/manifests/v1", http.StatusUnauthorized, codeUnauthorized,
+			realm + `,scope="repository:raw/assets/x:pull,push"`},
+		{"anonymous deletes", "", http.MethodDelete, "/v2/oci/images/x/manifests/v1", http.StatusUnauthorized, codeUnauthorized,
+			realm + `,scope="repository:oci/images/x:delete"`},
+		{"anonymous mounts", "", http.MethodPost, "/v2/oci/images/x/blobs/uploads/?mount=" + string(zeroDigest) + "&from=raw/assets/y",
+			http.StatusUnauthorized, codeUnauthorized, realm + `,scope="repository:oci/images/x:pull,push repository:raw/assets/y:pull"`},
+		{"reader pushes to a managed repo", "writer", http.MethodPut, "/v2/raw/assets/x/manifests/v1", http.StatusForbidden, codeDenied, ""},
+		{"stranger pushes to a managed repo", "reader", http.MethodPut, "/v2/raw/assets/x/manifests/v1", http.StatusNotFound, codeNameUnknown, ""},
+		{"stranger reads", "reader", http.MethodGet, "/v2/raw/assets/x/tags/list", http.StatusNotFound, codeNameUnknown, ""},
+		{"stranger reads a blob", "reader", http.MethodGet, "/v2/raw/assets/x/blobs/" + string(zeroDigest), http.StatusNotFound, codeNameUnknown, ""},
+		{"writer's upload status of an unknown id", "writer", http.MethodGet, "/v2/oci/images/x/blobs/uploads/" + strings.Repeat("0", 32), http.StatusNotFound, codeBlobUploadUnknown, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rr := e.do(e.h, tt.method, tt.target, strings.NewReader(string(body)), principalHeader, tt.user,
 				"Content-Type", "application/vnd.oci.image.manifest.v1+json")
 			wantError(t, tt.name, rr, tt.status, tt.code)
-			if tt.status == http.StatusUnauthorized {
-				wantHeader(t, tt.name, rr, "WWW-Authenticate", basicChallenge)
-			}
+			wantHeader(t, tt.name, rr, "WWW-Authenticate", tt.challenge)
 		})
 	}
 	rr := e.do(e.h, http.MethodPut, "/v2/oci/images/x/manifests/v1", strings.NewReader(string(body)), principalHeader, "writer",
 		"Content-Type", ocispecManifest)
 	wantStatus(t, "writer pushes a manifest", rr, http.StatusCreated)
-	wantStatus(t, "anonymous GET /v2/", e.do(e.h, http.MethodGet, "/v2/", nil), http.StatusOK)
+	wantStatus(t, "anonymous GET /v2/", e.do(e.h, http.MethodGet, "/v2/", nil), http.StatusUnauthorized)
 }

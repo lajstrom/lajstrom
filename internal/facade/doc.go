@@ -4,6 +4,7 @@
 //
 // The proxy is #24: names, blob uploads driven in the backend's own session from any replica
 // (uploads.go), blob and manifest reads, the manifest pass-through of oci repos, tags/list and
-// _catalog. The manifest hook of managed repos (hook.go) is #25. Still to come: #26 (token),
-// #27 (blob redirect and ranges), #28 (referrers) and #61 (delete).
+// _catalog. The manifest hook of managed repos (hook.go) is #25; the token endpoint and the
+// bearer on every other route (tokens.go) are #26. Still to come: #27 (blob redirect and
+// ranges), #28 (referrers) and #61 (delete).
 package facade
