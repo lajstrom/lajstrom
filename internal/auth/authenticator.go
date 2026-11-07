@@ -1,0 +1,226 @@
+package auth
+
+import (
+	"container/list"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/lajstrom/lajstrom/internal/index"
+)
+
+// ErrBadCredentials means the credentials of a request were refused: an unknown user, a
+// disabled one, one without a password, or a wrong secret. It does not say which: the caller
+// answers 401 with a Basic challenge.
+var ErrBadCredentials = errors.New("auth: bad credentials")
+
+// Defaults of the verification cache.
+const (
+	// DefaultCacheTTL is how long a verified password is remembered.
+	DefaultCacheTTL = 5 * time.Minute
+	// DefaultCacheSize bounds the number of remembered verifications.
+	DefaultCacheSize = 10000
+)
+
+// Options configures an Authenticator.
+type Options struct {
+	// Index is where the users are read; required.
+	Index index.Reader
+	// Log receives the refusals, at debug level, with the user name and the reason; nil means
+	// slog.Default().
+	Log *slog.Logger
+	// Now is the clock of the cache; nil means time.Now.
+	Now func() time.Time
+	// CacheTTL is how long a verified password is remembered; zero means DefaultCacheTTL.
+	CacheTTL time.Duration
+	// CacheSize bounds the remembered verifications, the oldest evicted first; zero means
+	// DefaultCacheSize.
+	CacheSize int
+}
+
+// Authenticator turns the credentials of a request into a principal (docs/spec/rbac.md §1).
+// Create it with NewAuthenticator; its methods may be called concurrently.
+//
+// It reads the user from the index on every call, so that a user disabled on one replica is
+// refused at once on every replica. The cost of argon2id stays off most requests through a
+// verification cache: a user name and secret verified against a password hash are remembered
+// for CacheTTL, by a sha256 of the pair (never the secret), and count only while the user's
+// current hash is the one they were verified against. A new password, or a hash made with new
+// parameters, is verified again at the next request.
+type Authenticator struct {
+	index index.Reader
+	log   *slog.Logger
+	now   func() time.Time
+	ttl   time.Duration
+	size  int
+
+	// verify is VerifyPassword; the tests count the calls.
+	verify func(hash, password string) (bool, error)
+
+	mu      sync.Mutex
+	entries map[cacheKey]*list.Element // of *cacheEntry
+	order   *list.List                 // oldest first
+}
+
+// cacheKey is sha256(username ‖ 0x00 ‖ secret).
+type cacheKey [sha256.Size]byte
+
+// cacheEntry is a verification: the password hash the secret matched and when that stops
+// counting.
+type cacheEntry struct {
+	key     cacheKey
+	hash    string
+	expires time.Time
+}
+
+// NewAuthenticator returns an Authenticator over o.Index. The first call of the process makes
+// the dummy hash, one argon2id hash. It panics when o.Index is nil.
+func NewAuthenticator(o Options) *Authenticator {
+	if o.Index == nil {
+		panic("auth: NewAuthenticator: nil Options.Index")
+	}
+	a := &Authenticator{
+		index: o.Index, log: o.Log, now: o.Now, ttl: o.CacheTTL, size: o.CacheSize,
+		verify:  VerifyPassword,
+		entries: map[cacheKey]*list.Element{},
+		order:   list.New(),
+	}
+	if a.log == nil {
+		a.log = slog.Default()
+	}
+	if a.now == nil {
+		a.now = time.Now
+	}
+	if a.ttl <= 0 {
+		a.ttl = DefaultCacheTTL
+	}
+	if a.size <= 0 {
+		a.size = DefaultCacheSize
+	}
+	dummyHash() // now, so that the first unknown user does not pay for it
+	return a
+}
+
+// dummyHash is the hash an unknown user's secret is verified against, so that "no such user"
+// takes as long as "wrong password". It has the parameters of new hashes, and is made once per
+// process, by the first NewAuthenticator.
+var dummyHash = sync.OnceValue(func() string {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b) // crypto/rand.Read does not return errors; it crashes the program instead
+	return hashWith(hashParams, string(b))
+})
+
+// Authenticate returns the principal user:<username> when secret is that user's password. An
+// unknown user, a disabled one, one without a password, and a wrong secret are each an error
+// wrapping ErrBadCredentials, after the same argon2id work; the reason is logged at debug level
+// with the user name, never anything about the secret. Any other error is a failure to decide
+// (the index is down, or the stored hash is malformed), which the caller answers 500.
+//
+// The secret of a personal access token (user:<PAT>) and of a deploy token (deploy:<token>)
+// is #44's; until then a secret that is not the user's password is ErrBadCredentials.
+func (a *Authenticator) Authenticate(ctx context.Context, username, secret string) (Principal, error) {
+	if CheckName(username) != nil {
+		// No user has such a name: nothing about a user is told by refusing it at once. It is
+		// not logged, in case it is a password typed into the wrong field.
+		return Principal{}, a.refuse(ctx, "", "malformed user name")
+	}
+	if secret == "" || len(secret) > MaxPasswordLen {
+		return Principal{}, a.refuse(ctx, username, "malformed password")
+	}
+	u, err := a.index.GetUser(ctx, username)
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		a.dummyVerify(secret)
+		return Principal{}, a.refuse(ctx, username, "unknown user")
+	case err != nil:
+		return Principal{}, fmt.Errorf("auth: authenticate %s: %w", username, err)
+	case u.Disabled:
+		a.dummyVerify(secret)
+		return Principal{}, a.refuse(ctx, username, "disabled")
+	case u.PasswordHash == "":
+		a.dummyVerify(secret)
+		return Principal{}, a.refuse(ctx, username, "no password")
+	}
+	key := keyOf(username, secret)
+	if a.cached(key, u.PasswordHash) {
+		return Principal{Kind: KindUser, Name: username}, nil
+	}
+	ok, err := a.verify(u.PasswordHash, secret)
+	switch {
+	case err != nil:
+		return Principal{}, fmt.Errorf("auth: authenticate %s: the stored password hash: %w", username, err)
+	case !ok:
+		return Principal{}, a.refuse(ctx, username, "wrong password")
+	}
+	a.remember(key, u.PasswordHash)
+	return Principal{Kind: KindUser, Name: username}, nil
+}
+
+// refuse logs a refusal at debug level, with the user name unless it is empty, and returns
+// ErrBadCredentials.
+func (a *Authenticator) refuse(ctx context.Context, username, reason string) error {
+	if username == "" {
+		a.log.DebugContext(ctx, "authentication refused", "reason", reason)
+	} else {
+		a.log.DebugContext(ctx, "authentication refused", "user", username, "reason", reason)
+	}
+	return ErrBadCredentials
+}
+
+// dummyVerify spends the time of one verification on a hash that no secret matches.
+func (a *Authenticator) dummyVerify(secret string) {
+	_, _ = a.verify(dummyHash(), secret)
+}
+
+// keyOf returns the cache key of a user name and a secret.
+func keyOf(username, secret string) cacheKey {
+	b := make([]byte, 0, len(username)+1+len(secret))
+	b = append(append(append(b, username...), 0), secret...)
+	return sha256.Sum256(b)
+}
+
+// cached reports whether key was verified against hash and has not expired. An entry that has
+// expired or was verified against another hash is dropped.
+func (a *Authenticator) cached(key cacheKey, hash string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	el, ok := a.entries[key]
+	if !ok {
+		return false
+	}
+	e := el.Value.(*cacheEntry)
+	if e.hash != hash || !a.now().Before(e.expires) {
+		a.order.Remove(el)
+		delete(a.entries, key)
+		return false
+	}
+	return true
+}
+
+// remember records that key was verified against hash, evicting the oldest entries beyond
+// the size bound.
+func (a *Authenticator) remember(key cacheKey, hash string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if el, ok := a.entries[key]; ok {
+		a.order.Remove(el)
+	}
+	a.entries[key] = a.order.PushBack(&cacheEntry{key: key, hash: hash, expires: a.now().Add(a.ttl)})
+	for a.order.Len() > a.size {
+		oldest := a.order.Front()
+		a.order.Remove(oldest)
+		delete(a.entries, oldest.Value.(*cacheEntry).key)
+	}
+}
+
+// cacheLen returns the number of remembered verifications.
+func (a *Authenticator) cacheLen() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.order.Len()
+}

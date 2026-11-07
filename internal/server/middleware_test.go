@@ -171,6 +171,7 @@ func TestAccessLog(t *testing.T) {
 		"bytes":      float64(len("ok\n")),
 		"requestId":  "req-log",
 		"remoteAddr": "192.0.2.7:51234",
+		"principal":  "anonymous",
 	}
 	for k, v := range want {
 		if l[k] != v {

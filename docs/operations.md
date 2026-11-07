@@ -3,6 +3,46 @@
 What running Lajstrom asks of an operator beyond the [configuration](configuration.md). The
 dev stack is in [dev-stack.md](dev-stack.md).
 
+## Users
+
+Users live in the index database, not in the configuration file; [auth.md](auth.md) has the
+details. Every `lajstrom admin user` command works on the database of the configuration,
+without HTTP, and is audited with the source `cli`.
+
+### The first admin
+
+After `lajstrom migrate` (or the first start of `serve`), on one replica:
+
+```sh
+LAJSTROM_ADMIN_PASSWORD='…' lajstrom admin user create --name admin --admin
+```
+
+The user gets the `admin` binding on `*/*`. In Kubernetes, run it as a Job (or
+`kubectl exec` into a replica) with the variable from a Secret, as for the master key below;
+without the variable the password comes from standard input with `--password-stdin`, or from a
+prompt on a terminal. Check it with `curl -u admin https://art.example.com/api/v1/whoami`.
+
+### A lost password
+
+```sh
+lajstrom admin user set-password alice      # LAJSTROM_ADMIN_PASSWORD, --password-stdin, or the prompt
+```
+
+The old password fails at the next request on every replica. A lost admin password is recovered
+the same way: the command needs the database, not a password.
+
+### Disabling a user
+
+```sh
+lajstrom admin user disable alice
+lajstrom admin user enable alice
+```
+
+A disabled user's credentials are refused with `401` from the next request on, on every
+replica: the user is read from the database on every request, and the cache of verified
+passwords never outlives a change. Users are not deleted in this version; `lajstrom admin user
+list` shows who is disabled.
+
 ## Keys and apt signing
 
 Every apt repo is signed with a key of its own: `InRelease` is the `Release` clearsigned,

@@ -320,7 +320,7 @@ func TestNotInThisVersion(t *testing.T) {
 		{http.MethodPost, "/api/v1/users/alice/password"},
 		{http.MethodGet, "/api/v1/bindings"},
 		{http.MethodGet, "/api/v1/audit?repo=raw/scratch"},
-		{http.MethodGet, "/api/v1/whoami"},
+		{http.MethodPost, "/api/v1/whoami"},
 		{http.MethodGet, "/api/v1/repos/raw/scratch/deploy-tokens"},
 		{http.MethodPut, "/api/v1/repos"},
 		{http.MethodGet, "/api/v1/repos/"},

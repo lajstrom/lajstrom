@@ -199,7 +199,7 @@ Columns: id, what to do, what must happen, issue. Priority is P0 unless the id c
 
 | Id | Steps | Expected | Issue |
 | --- | --- | --- | --- |
-| S-01 | `lajstrom admin user create --name admin --admin` with `LAJSTROM_ADMIN_PASSWORD`; then `POST /api/v1/users` and `/bindings` for alice, bob, a maintainer | 201s; `GET /api/v1/whoami` as each returns the principal | #43, #47 |
+| S-01 | `lajstrom admin user create --name admin --admin` with `LAJSTROM_ADMIN_PASSWORD` (#43); then `POST /api/v1/users` and `/bindings` for alice, bob, a maintainer (#47) | 201s; `GET /api/v1/whoami` as each returns the principal (#43) | #43, #47 |
 | S-02 | the matrix below, on the raw frontend and on `/v2` (push, pull, delete) | exactly the table | #45 |
 | S-03 | `POST /api/v1/users/alice/tokens` (PAT, scopes `read`), use it to push | 403; with scopes unset it inherits alice's bindings | #44 |
 | S-04 | a deploy token with `write` on `raw/assets`: push to `raw/assets`, push to `pypi/internal`, `DELETE` on `raw/assets` | 201, 404 (no access at all on that repo, rbac.md §3), 403 (it can read `raw/assets`, so the denial is visible) | #44, #45 |
