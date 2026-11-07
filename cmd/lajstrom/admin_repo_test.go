@@ -65,12 +65,12 @@ func TestAdminRepo(t *testing.T) {
 			wantOut: `"anonymousRead":true,"policy":{"maxFileSize":1}`},
 		{args: []string{"admin", "repo", "create", "raw/bad", "--registry", "zot"}, wantErr: `registry: "zot" is not a configured registry`},
 		{args: []string{"admin", "repo", "create", "raw/bad", "--registry", "local", "--policy", "[]"}, wantErr: "policy: must be a JSON object"},
-		{args: []string{"admin", "repo", "create", "apt/bad", "--registry", "local"}, wantErr: `format: "apt" is not a format this server has`},
+		{args: []string{"admin", "repo", "create", "nope/bad", "--registry", "local"}, wantErr: `format: "nope" is not a format this server has`},
 		{args: []string{"admin", "repo", "create", "raw/bad"}, wantErr: `required flag(s) "registry" not set`},
 		{args: []string{"admin", "repo", "create", "scratch", "--registry", "local"}, wantErr: "want <format>/<name>"},
 		{args: []string{"admin", "repo", "list"}, wantOut: "FORMAT  NAME     REGISTRY  ANONYMOUS-READ  CREATED\nraw     docs     local     true            "},
 		{args: []string{"admin", "repo", "list", "--format", "raw"}, wantOut: "\nraw     scratch  local     false           "},
-		{args: []string{"admin", "repo", "list", "--format", "apt"}, wantErr: `format: "apt"`},
+		{args: []string{"admin", "repo", "list", "--format", "nope"}, wantErr: `format: "nope"`},
 	})
 
 	addCLIVersion(t, dsn, "raw", "scratch")
@@ -87,6 +87,16 @@ func TestAdminRepo(t *testing.T) {
 	}
 	wantCLIAudit(t, dsn, "repo.delete", 2)
 	wantCLIAudit(t, dsn, "repo.create", 2)
+}
+
+// TestAdminRepoApt creates an apt repo: the binary imports the deb plugin (#39).
+func TestAdminRepoApt(t *testing.T) {
+	cfg, _ := writeRepoConfig(t, t.TempDir())
+	runSteps(t, cfg, []step{
+		{args: []string{"migrate"}, wantOut: "applied 0001"},
+		{args: []string{"admin", "repo", "create", "apt/ubuntu", "--registry", "local"}, wantOut: `{"format":"apt","name":"ubuntu","registry":"local"`},
+		{args: []string{"admin", "repo", "list", "--format", "apt"}, wantOut: "\napt     ubuntu  local"},
+	})
 }
 
 // addCLIVersion adds a package with one version to a repo of the database at dsn.

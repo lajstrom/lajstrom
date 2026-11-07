@@ -53,13 +53,24 @@ type member struct {
 // isDir reports whether the member is a directory.
 func (m member) isDir() bool { return strings.HasSuffix(m.name, "/") }
 
-// tarGz returns the members in order as a gzip-compressed ustar archive: owned by root, mode
-// 0755 for a directory and 0644 for a file, modified at fixtureTime. The gzip header carries no
-// name and no time.
-func tarGz(members []member) []byte {
+// tarGz returns the members in order as a gzip-compressed ustar archive, gzipOf(tarOf(members)).
+func tarGz(members []member) []byte { return gzipOf(tarOf(members)) }
+
+// gzipOf returns b compressed with gzip; the gzip header carries no name and no time.
+func gzipOf(b []byte) []byte {
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(zw)
+	_, err := zw.Write(b)
+	must(err)
+	must(zw.Close())
+	return buf.Bytes()
+}
+
+// tarOf returns the members in order as a ustar archive: owned by root, mode 0755 for a
+// directory and 0644 for a file, modified at fixtureTime.
+func tarOf(members []member) []byte {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
 	for _, m := range members {
 		h := &tar.Header{
 			Name:    m.name,
@@ -78,7 +89,6 @@ func tarGz(members []member) []byte {
 		must(err)
 	}
 	must(tw.Close())
-	must(zw.Close())
 	return buf.Bytes()
 }
 

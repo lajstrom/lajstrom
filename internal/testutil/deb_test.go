@@ -42,6 +42,42 @@
 //	usr/share/doc/hello/README: OK
 //	usr/share/hello/greeting: OK
 //	dpkg --verify hello: ok
+//
+// ControlCompression "xz" and "zst" were checked the same way on 2026-11-07 (#39), dpkg-deb
+// 1.22.6, the container deb-39 removed after:
+//
+//	docker run --rm --name deb-39 -v "$LAJSTROM_FIXTURES_OUT:/fixtures:ro" ubuntu:24.04 sh -ec '
+//	  for c in xz zst; do
+//	    d=/fixtures/deb/$c/hello_1.0.0-1_amd64.deb
+//	    echo "== $c"
+//	    dpkg-deb --info $d | head -4
+//	    dpkg-deb --ctrl-tarfile $d | tar -t
+//	    mkdir /x-$c && dpkg-deb -e $d /x-$c/DEBIAN && dpkg-deb -x $d /x-$c
+//	    (cd /x-$c && md5sum -c DEBIAN/md5sums)
+//	  done'
+//
+// Output of docker run (dpkg-deb --info prints the control file after these lines, as above):
+//
+//	== xz
+//	 new Debian package, version 2.0.
+//	 size 1020 bytes: control archive=540 bytes.
+//	     319 bytes,    12 lines      control
+//	     120 bytes,     2 lines      md5sums
+//	./
+//	./control
+//	./md5sums
+//	usr/share/doc/hello/README: OK
+//	usr/share/hello/greeting: OK
+//	== zst
+//	 new Debian package, version 2.0.
+//	 size 942 bytes: control archive=462 bytes.
+//	     319 bytes,    12 lines      control
+//	     120 bytes,     2 lines      md5sums
+//	./
+//	./control
+//	./md5sums
+//	usr/share/doc/hello/README: OK
+//	usr/share/hello/greeting: OK
 
 package testutil
 
@@ -57,7 +93,14 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
+	"github.com/ulikunitz/xz"
 )
+
+// defaultDescription is the Description of DebOptions{} as control has it.
+const defaultDescription = "greets the tests of the deb format\n" +
+	" A package built in process by internal/testutil.\n .\n Nothing in it comes from a distribution."
 
 func TestDeb(t *testing.T) {
 	for _, tc := range []struct {
@@ -68,10 +111,9 @@ func TestDeb(t *testing.T) {
 		installedKiB string
 	}{
 		{
-			name:     "defaults",
-			filename: "hello_1.0.0-1_amd64.deb",
-			description: "greets the tests of the deb format\n" +
-				" A package built in process by internal/testutil.\n .\n Nothing in it comes from a distribution.",
+			name:         "defaults",
+			filename:     "hello_1.0.0-1_amd64.deb",
+			description:  defaultDescription,
 			installedKiB: "2",
 		},
 		{
@@ -93,10 +135,31 @@ func TestDeb(t *testing.T) {
 			description:  "the foo library\n line one\n .\n .\n line four",
 			installedKiB: "5",
 		},
+		{
+			name:         "xz control",
+			opts:         DebOptions{ControlCompression: "xz"},
+			filename:     "hello_1.0.0-1_amd64.deb",
+			description:  defaultDescription,
+			installedKiB: "2",
+		},
+		{
+			name:         "zst control",
+			opts:         DebOptions{ControlCompression: "zst"},
+			filename:     "hello_1.0.0-1_amd64.deb",
+			description:  defaultDescription,
+			installedKiB: "2",
+		},
+		{
+			name:         "uncompressed control",
+			opts:         DebOptions{ControlCompression: "none"},
+			filename:     "hello_1.0.0-1_amd64.deb",
+			description:  defaultDescription,
+			installedKiB: "2",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b, want := Deb(tc.opts)
-			members := readAr(t, b)
+			members := readAr(t, b, want.ControlMember)
 			if got := string(members["debian-binary"]); got != "2.0\n" {
 				t.Errorf("debian-binary = %q, want %q", got, "2.0\n")
 			}
@@ -109,20 +172,20 @@ func TestDeb(t *testing.T) {
 			if want.InstalledSize != tc.installedKiB {
 				t.Errorf("InstalledSize = %q, want %q", want.InstalledSize, tc.installedKiB)
 			}
-			checkDebControl(t, members["control.tar.gz"], want)
+			checkDebControl(t, members[want.ControlMember], want)
 			checkDebData(t, members["data.tar.gz"], want)
 			checkWhole(t, b, want.Size, want.Checksums)
 		})
 	}
 }
 
-// checkDebControl checks control.tar.gz: its members, control against the fields of want, and
-// md5sums against want.Files and want.MD5Sums.
+// checkDebControl checks the control member: its members, control against the fields of want,
+// and md5sums against want.Files and want.MD5Sums.
 func checkDebControl(t *testing.T, b []byte, want DebInfo) {
 	t.Helper()
-	files := readTarGz(t, b)
+	files := readTar(t, decompress(t, want.ControlMember, b))
 	if got := tarNames(files); !slices.Equal(got, []string{"./", "./control", "./md5sums"}) {
-		t.Errorf("control.tar.gz members %q, want ./, ./control, ./md5sums", got)
+		t.Errorf("%s members %q, want ./, ./control, ./md5sums", want.ControlMember, got)
 	}
 	control := files[1].body
 	if !bytes.Equal(control, want.ControlFile) {
@@ -192,16 +255,28 @@ func checkDebData(t *testing.T, b []byte, want DebInfo) {
 }
 
 func TestDebDeterministic(t *testing.T) {
-	opts := DebOptions{Files: map[string]string{"usr/bin/a": "a", "usr/bin/b": "b", "usr/lib/c": "c"}}
-	b1, want1 := Deb(opts)
-	b2, want2 := Deb(opts)
-	if !bytes.Equal(b1, b2) || want1.SHA256 != want2.SHA256 {
-		t.Fatal("two calls with the same options give different bytes")
+	for _, c := range []string{"gz", "xz", "zst", "none"} {
+		opts := DebOptions{Files: map[string]string{"usr/bin/a": "a", "usr/bin/b": "b", "usr/lib/c": "c"}, ControlCompression: c}
+		b1, want1 := Deb(opts)
+		b2, want2 := Deb(opts)
+		if !bytes.Equal(b1, b2) || want1.SHA256 != want2.SHA256 {
+			t.Fatalf("%s: two calls with the same options give different bytes", c)
+		}
 	}
 	b3, _ := Deb(DebOptions{})
 	if b4, _ := Deb(DebOptions{Version: "1.0.0-2"}); bytes.Equal(b3, b4) {
 		t.Error("another version gives the same bytes")
 	}
+}
+
+func TestDebPanicsOnAnUnknownCompression(t *testing.T) {
+	defer func() {
+		if r, _ := recover().(string); !strings.HasPrefix(r, `testutil: unknown control compression "bz2"`) {
+			t.Errorf("recovered %q, want the unknown compression panic", r)
+		}
+	}()
+	Deb(DebOptions{ControlCompression: "bz2"})
+	t.Error("Deb did not panic")
 }
 
 func TestDebPanicsOnAPathUstarCannotHold(t *testing.T) {
@@ -215,10 +290,10 @@ func TestDebPanicsOnAPathUstarCannotHold(t *testing.T) {
 }
 
 // readAr reads an ar archive and returns its members by name. It fails the test unless the
-// archive starts with the global header, the members are debian-binary, control.tar.gz and
-// data.tar.gz in that order, every header is well formed, and every member starts on an even
-// offset.
-func readAr(t *testing.T, b []byte) map[string][]byte {
+// archive starts with the global header, the members are debian-binary, the control member
+// control and data.tar.gz in that order, every header is well formed, and every member starts
+// on an even offset.
+func readAr(t *testing.T, b []byte, control string) map[string][]byte {
 	t.Helper()
 	rest, ok := bytes.CutPrefix(b, []byte("!<arch>\n"))
 	if !ok {
@@ -252,8 +327,8 @@ func readAr(t *testing.T, b []byte) map[string][]byte {
 			rest = rest[1:]
 		}
 	}
-	if !slices.Equal(names, []string{"debian-binary", "control.tar.gz", "data.tar.gz"}) {
-		t.Fatalf("members %q, want debian-binary, control.tar.gz, data.tar.gz", names)
+	if !slices.Equal(names, []string{"debian-binary", control, "data.tar.gz"}) {
+		t.Fatalf("members %q, want debian-binary, %s, data.tar.gz", names, control)
 	}
 	return members
 }
@@ -265,16 +340,52 @@ type tarFile struct {
 	body []byte
 }
 
-// readTarGz reads a gzip-compressed tar archive and checks that every member is owned by root
-// and dated fixtureTime.
+// readTarGz reads a gzip-compressed tar archive (readTar).
 func readTarGz(t *testing.T, b []byte) []tarFile {
 	t.Helper()
-	zr, err := gzip.NewReader(bytes.NewReader(b))
-	if err != nil {
-		t.Fatalf("gzip: %v", err)
+	return readTar(t, decompress(t, "x.tar.gz", b))
+}
+
+// decompress returns the bytes of the archive member name, decompressed as its extension
+// says: .gz, .xz, .zst, or none for .tar.
+func decompress(t *testing.T, name string, b []byte) []byte {
+	t.Helper()
+	var (
+		r   io.Reader
+		err error
+	)
+	switch {
+	case strings.HasSuffix(name, ".gz"):
+		r, err = gzip.NewReader(bytes.NewReader(b))
+	case strings.HasSuffix(name, ".xz"):
+		r, err = xz.NewReader(bytes.NewReader(b))
+	case strings.HasSuffix(name, ".zst"):
+		var d *zstd.Decoder
+		if d, err = zstd.NewReader(bytes.NewReader(b)); err == nil {
+			defer d.Close()
+			r = d
+		}
+	case strings.HasSuffix(name, ".tar"):
+		return b
+	default:
+		t.Fatalf("%s: unknown compression", name)
 	}
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	return out
+}
+
+// readTar reads a tar archive and checks that every member is owned by root and dated
+// fixtureTime.
+func readTar(t *testing.T, b []byte) []tarFile {
+	t.Helper()
 	var files []tarFile
-	tr := tar.NewReader(zr)
+	tr := tar.NewReader(bytes.NewReader(b))
 	for {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {

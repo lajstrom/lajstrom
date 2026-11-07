@@ -5,9 +5,11 @@ go 1.27
 require (
 	github.com/google/go-cmp v0.7.0
 	github.com/jackc/pgx/v5 v5.12.0
+	github.com/klauspost/compress v1.20.3
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/spf13/cobra v1.10.2
+	github.com/ulikunitz/xz v0.5.17
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.61.1
 	oras.land/oras-go/v2 v2.7.0

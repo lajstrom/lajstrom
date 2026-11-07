@@ -7,6 +7,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/klauspost/compress/zstd"
+	"github.com/ulikunitz/xz"
 )
 
 // DebOptions are the options of Deb. Every empty field takes its default, so DebOptions{} is a
@@ -28,6 +31,10 @@ type DebOptions struct {
 	// Files are the data files, path relative to / (usr/share/hello/greeting) to content;
 	// default two files under usr/share. A leading "./" or "/" is dropped.
 	Files map[string]string
+	// ControlCompression is the compression of the control member, one of the four dpkg-deb
+	// reads: "gz" (default, control.tar.gz), "xz" (control.tar.xz), "zst" (control.tar.zst)
+	// or "none" (control.tar). Deb panics on any other value.
+	ControlCompression string
 }
 
 // DebFile is a data file of a package as md5sums lists it.
@@ -56,8 +63,11 @@ type DebInfo struct {
 	Description   string
 	// Control holds the same fields by name (Installed-Size, …).
 	Control map[string]string
-	// ControlFile is the control file in control.tar.gz.
+	// ControlFile is the control file in the control member.
 	ControlFile []byte
+	// ControlMember is the name of the control member Deb wrote: control.tar.gz,
+	// control.tar.xz, control.tar.zst or control.tar.
+	ControlMember string
 	// Files are the data files sorted by path, the order of md5sums.
 	Files []DebFile
 	// MD5Sums is md5sums as path to md5, the shape of the metadata layer
@@ -72,14 +82,15 @@ type DebInfo struct {
 	Checksums
 }
 
-// Deb returns a binary package: an ar archive with the members debian-binary ("2.0\n"),
-// control.tar.gz (./control and ./md5sums) and data.tar.gz (the files under ./, with their
-// directories), and the facts a parser finds in it. The same options give the same bytes: every
-// member and file is dated 2026-01-01 00:00 UTC and owned by root.
+// Deb returns a binary package: an ar archive with the members debian-binary ("2.0\n"), the
+// control member (./control and ./md5sums; control.tar.gz unless ControlCompression says
+// otherwise) and data.tar.gz (the files under ./, with their directories), and the facts a
+// parser finds in it. The same options give the same bytes: every member and file is dated
+// 2026-01-01 00:00 UTC and owned by root.
 //
-// The control archive is gzip only: the standard library writes neither xz nor zstd, and the
-// readers of control.tar.xz and control.tar.zst are tested by the deb plugin (#39) against
-// packages built once with dpkg-deb. Deb panics on a file path that a ustar header cannot hold.
+// xz and zstd are written with github.com/ulikunitz/xz and github.com/klauspost/compress/zstd,
+// the libraries the deb plugin reads them with (#39); dpkg-deb read all four once (the comment
+// at the top of deb_test.go). Deb panics on a file path that a ustar header cannot hold.
 func Deb(opts DebOptions) ([]byte, DebInfo) {
 	o := opts.withDefaults()
 	files := debFiles(o.Files)
@@ -124,11 +135,13 @@ func Deb(opts DebOptions) ([]byte, DebInfo) {
 	var ar bytes.Buffer
 	ar.WriteString("!<arch>\n")
 	arMember(&ar, "debian-binary", []byte("2.0\n"))
-	arMember(&ar, "control.tar.gz", tarGz([]member{
+	var compressed []byte
+	info.ControlMember, compressed = controlMember(o.ControlCompression, tarOf([]member{
 		{name: "./"},
 		{name: "./control", body: info.ControlFile},
 		{name: "./md5sums", body: []byte(md5sums.String())},
 	}))
+	arMember(&ar, info.ControlMember, compressed)
 	arMember(&ar, "data.tar.gz", tarGz(data))
 
 	b := ar.Bytes()
@@ -153,6 +166,9 @@ func (o DebOptions) withDefaults() DebOptions {
 	if o.Arch == "" {
 		o.Arch = "amd64"
 	}
+	if o.ControlCompression == "" {
+		o.ControlCompression = "gz"
+	}
 	if o.Depends == "" {
 		o.Depends = "libc6 (>= 2.34)"
 	}
@@ -174,6 +190,32 @@ func (o DebOptions) withDefaults() DebOptions {
 	}
 	o.Files = files
 	return o
+}
+
+// controlMember returns the name and the bytes of the control member: the control tar
+// compressed as compression says. The xz stream has the writer's defaults (an 8 MiB dictionary,
+// CRC64), the zstd frame the encoder's default level, encoded on one goroutine so that the
+// bytes do not depend on scheduling.
+func controlMember(compression string, tar []byte) (string, []byte) {
+	switch compression {
+	case "gz":
+		return "control.tar.gz", gzipOf(tar)
+	case "xz":
+		var buf bytes.Buffer
+		xw, err := xz.NewWriter(&buf)
+		must(err)
+		_, err = xw.Write(tar)
+		must(err)
+		must(xw.Close())
+		return "control.tar.xz", buf.Bytes()
+	case "zst":
+		enc, err := zstd.NewWriter(nil, zstd.WithEncoderConcurrency(1))
+		must(err)
+		return "control.tar.zst", enc.EncodeAll(tar, nil)
+	case "none":
+		return "control.tar", tar
+	}
+	panic(fmt.Sprintf("testutil: unknown control compression %q, want gz, xz, zst or none", compression))
 }
 
 // debFiles returns the data files sorted by path, with size and md5.
