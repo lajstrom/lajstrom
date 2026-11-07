@@ -237,8 +237,8 @@ func TestMetadataTooLarge(t *testing.T) {
 		sums[fmt.Sprintf("usr/share/%s/%d", strings.Repeat("<", 100), i)] = strings.Repeat("0", 32)
 	}
 	pkg := &Package{Filename: "big_1_all.deb", MD5Sums: sums}
-	if _, err := metadataOf(pkg); !errors.Is(err, format.ErrInvalid) || !strings.Contains(err.Error(), "the metadata of big_1_all.deb has") {
-		t.Errorf("metadataOf = %v, want ErrInvalid", err)
+	if _, err := pkg.Metadata(); !errors.Is(err, format.ErrInvalid) || !strings.Contains(err.Error(), "the metadata of big_1_all.deb has") {
+		t.Errorf("Metadata = %v, want ErrInvalid", err)
 	}
 }
 

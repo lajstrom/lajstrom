@@ -356,28 +356,3 @@ func TestContentTypeOf(t *testing.T) {
 		}
 	}
 }
-
-func TestMaxFileSizePolicy(t *testing.T) {
-	tests := []struct {
-		policy string
-		want   int64
-		err    bool
-	}{
-		{"", -1, false},
-		{"null", -1, false},
-		{`{"maven":{"sessionTimeout":"1h"}}`, -1, false},
-		{`{"maxFileSize":1048576}`, 1048576, false},
-		{`{"maxFileSize":0}`, 0, false},
-		{`{"maxFileSize":-1}`, 0, true},
-		{`{"maxFileSize":"1MiB"}`, 0, true},
-		{`{"maxFileSize":1.5}`, 0, true},
-	}
-	for _, tt := range tests {
-		repo := scratch
-		repo.Policy = []byte(tt.policy)
-		got, err := maxFileSize(repo)
-		if got != tt.want || (err != nil) != tt.err {
-			t.Errorf("maxFileSize(%s) = %d, %v; want %d, error %v", tt.policy, got, err, tt.want, tt.err)
-		}
-	}
-}

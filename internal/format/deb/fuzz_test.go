@@ -64,7 +64,7 @@ func checkParsed(t *testing.T, b []byte, pkg *Package) {
 	if err != nil || !maps.Equal(head.Control.Map(), pkg.Control.Map()) || !maps.Equal(head.MD5Sums, pkg.MD5Sums) {
 		t.Fatalf("ParseControl = %v; it disagrees with Parse", err)
 	}
-	md, err := metadataOf(pkg)
+	md, err := pkg.Metadata()
 	if err != nil {
 		t.Fatal(err)
 	}

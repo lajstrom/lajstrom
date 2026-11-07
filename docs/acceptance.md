@@ -145,12 +145,12 @@ Columns: id, what to do, what must happen, issue. Priority is P0 unless the id c
 | Id | Steps | Expected | Issue |
 | --- | --- | --- | --- |
 | A-01 | `curl -u alice -T hello_1.0-1_amd64.deb "https://art.test/apt/ubuntu-internal/upload?suite=jammy&component=main"` | 201; manifest tagged `1.0-1__jammy_2fmain_2famd64`, `lajstrom.variant: jammy/main/amd64`, with `lajstrom.deb.*` annotations from `control` and the query; `GET …/dists/jammy/main/binary-amd64/Packages` lists it with `Filename: pool/main/h/hello/hello_1.0-1_amd64.deb`, `SHA256`, `Size` | #42, #39, #110, #40 |
-| A-02 | `oras push art.test/apt/ubuntu-internal/hello:1.0-1__jammy_2fmain_2famd64 …` with the deb profile (flow A of architecture.md) | 201 and the same index rows as A-01 | #25, #12 |
+| A-02 | `oras push art.test/apt/ubuntu-internal/hello:1.0-1__jammy_2fmain_2famd64 …` with the deb profile (flow A of architecture.md) | 201 and the same index rows as A-01 | #25, #12, #42 |
 | A-03 | `GET …/dists/jammy/InRelease` | clearsigned with the repo key; `gpg --verify` against `GET …/key.asc` succeeds; `Release` + `Release.gpg` verify too; `Acquire-By-Hash: yes` and `by-hash/SHA256/<hash>` resolve | #41, #40 |
-| A-04 | in `ubuntu:24.04` and `debian:12`: `curl key.asc > /etc/apt/keyrings/…`, `deb [signed-by=…] https://art.test/apt/ubuntu-internal jammy main`, `apt-get update && apt-get install hello` | both succeed; `hello` runs; no `NO_PUBKEY`, no `Hash Sum mismatch` | #48 |
+| A-04 | in `ubuntu:24.04` and `debian:12`: `curl key.asc > /etc/apt/keyrings/…`, `deb [signed-by=…] https://art.test/apt/ubuntu-internal jammy main`, `apt-get update && apt-get install hello` | both succeed; `hello` runs; no `NO_PUBKEY`, no `Hash Sum mismatch` | #42, #48 |
 | A-05 | upload a `.deb` for `arm64` and one for `all` arch to the suite of A-01, then fetch `binary-amd64/Packages` and `binary-arm64/Packages` | the `all` package is in both (the architectures of a suite are those of its packages) | #40 |
-| A-06 | upload the same `.deb` again; upload a different `.deb` with the same name, version and arch to the same suite and component | 201 idempotent; 409 | #12 |
-| A-07 | `GET pool/main/h/hello/hello_1.0-1_amd64.deb` on both stacks | 307 or stream as in R-05 | #42 |
+| A-06 | upload the same `.deb` again; upload a different `.deb` with the same name, version and arch to the same suite and component | 201 idempotent; 409; in another suite 409 as well (E-07) | #12, #42 |
+| A-07 | `GET pool/main/h/hello/hello_1.0-1_amd64.deb` on both stacks | 307 or stream as in R-05; one blob for the suites that hold the file (E-07) | #42 |
 | A-08 | a package with epoch `1:2.0-1` | tag `1_3a2.0-1__jammy_2fmain_2famd64`; `Packages` shows `Version: 1:2.0-1` | #8, #39, #110, #40 |
 | A-09 (P1) | upload, then immediately `apt-get update` through the other replica | the new package is visible: `index_cache` was invalidated in the database | #40 |
 
@@ -305,7 +305,7 @@ signed. `test/e2e/security.sh` automates the ones with a command; the rest are r
 | E-04 | I-02: a foreign manifest under a managed path | `oci_repos` only, listed by `--report`, never indexed, never served by a frontend; a manifest with `subject` (O-07) is a referrer and stays out of the report | #29, #89 |
 | E-05 | pypi `Foo_Bar`, `foo-bar`, `foo.bar` uploads | one project `foo-bar`; `GET …/simple/Foo_Bar/` is 301 | #31 |
 | E-06 | a wheel and an sdist of the same version | two manifests with different variants under one package; `pip` picks the wheel; `--no-binary` picks the sdist | #31 |
-| E-07 | apt: the same package name in `jammy` and `noble`; the same `.deb` in two components | separate `Packages` files; the pool path is shared by the suites of a component (`pool/<component>/…`, one per component) and the blob is one | #40, #42 |
+| E-07 | apt: the same package name in `jammy` and `noble`; the same `.deb` in two suites and in two components; another `.deb` under the pool file name of the first in `noble` | separate `Packages` files; per component one pool URL that the suites share (`pool/<component>/…`), so the two components are two URLs for one blob; the other `.deb` is 409 naming the version that holds the name (a pool holds one content per file name) | #40, #42 |
 | E-08 | maven classifier `sources`, extension `pom` only (no jar), a version `1.0.0-rc.1` | all deploy and resolve; `maven-metadata.xml` lists `1.0.0-rc.1` and `release` is the newest non-prerelease | #52, #55 |
 | E-09 | a backend without the referrers API, without `_catalog`, without delete, without blob redirect (per the capability matrix) | tag-schema fallback (O-07), `oci_repos` listing, `DELETE` 501 with the index unchanged, streaming with `Range` | #37, #61, #27 |
 | E-10 | `org.opencontainers.image.created` 10 years ahead, 1970, with a `+03:00` offset | accepted, normalised to UTC in the index; `Last-Modified` follows it; the listing sorts by it | #8, #13 |

@@ -39,6 +39,11 @@ import (
 // fails its hash check. Only their form is checked. Validate returns the entry with the
 // metadata bytes as they are in the registry. Errors wrap format.ErrInvalid, except a failure
 // to fetch or read a blob.
+//
+// Validate has no index, so an oras push does not meet the pool file name rule of the upload
+// route (checkPoolName): a manifest whose file layer has a pool file name that another version
+// of the repo holds with another blob is accepted. The pool route answers 500 for that name,
+// logged, and reindex (#29) reports it.
 func (Plugin) Validate(ctx context.Context, _ index.Repo, m ocispec.Manifest, fetch format.BlobFetcher) (*format.Entry, error) {
 	parsed, err := profile.Validate(m)
 	if err != nil {
