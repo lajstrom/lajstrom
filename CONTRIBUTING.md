@@ -168,6 +168,16 @@ go run github.com/google/go-licenses@v1.6.0 check ./... \
   --ignore modernc.org/mathutil
 ```
 
+The integration tests are not part of `make check`: they need the dev stack
+([docs/dev-stack.md](docs/dev-stack.md)), and CI runs them against both registries:
+
+```sh
+make dev-up
+export LAJSTROM_TEST_POSTGRES_DSN='postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable'
+LAJSTROM_TEST_REGISTRY=localhost:5000 make test-integration   # integration (zot)
+LAJSTROM_TEST_REGISTRY=localhost:5001 make test-integration   # integration (distribution)
+```
+
 The snippet scan needs Python 3 and the ScanOSS client (it sends file fingerprints, not source code,
 to the public OSSKB service):
 
@@ -182,6 +192,9 @@ scanoss-py inspect undeclared --input /tmp/scanoss-results.json
 | Job | What it checks |
 | --- | --- |
 | `build-test` | `go build`, `go vet`, `go test -race ./...` |
+| `changes` | whether the pull request changes a path that the integration tests depend on (below) |
+| `integration (zot)`, `integration (distribution)` | `go test -race -tags integration ./...` against Zot or distribution, the store suite on SQLite and Postgres; the dev stack's images as service containers |
+| `integration-result` | both integration cells passed, or nothing needed them; the required check for the integration tests |
 | `lint` | golangci-lint |
 | `vulncheck` | govulncheck |
 | `licenses` | dependency licenses against the allowlist |
@@ -189,6 +202,15 @@ scanoss-py inspect undeclared --input /tmp/scanoss-results.json
 | `dco` | `Signed-off-by:` on every commit of the pull request |
 | `codeql` | CodeQL static analysis (separate workflow) |
 | `CLAAssistant` | CLA signature (separate workflow) |
+
+The integration cells run on every push to `main` and on a pull request that changes Go code
+(`*.go`), `go.mod` or `go.sum`, `deploy/`, `.github/workflows/`, the `Makefile`,
+`internal/index/migrations/` or `test/`. On any other pull request, a doc-only one for example,
+they are skipped and CI takes as long as the other jobs. A job skipped by its condition counts
+as passed for branch protection, but a skipped matrix job reports one check under its unexpanded
+name instead of one per registry, so required cells would keep a doc-only pull request waiting.
+Branch protection therefore requires `integration-result`, which passes when the cells passed or
+were skipped because nothing needed them, and fails otherwise.
 
 ## License
 
