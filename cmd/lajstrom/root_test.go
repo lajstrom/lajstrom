@@ -60,7 +60,7 @@ func TestCommands(t *testing.T) {
 		{name: "invalid config", env: map[string]string{"LAJSTROM_DATABASE_DRIVER": "mysql"}, args: []string{"migrate", "--config", cfg}, wantErr: `database.driver: "mysql"`},
 		{name: "serve missing config", args: []string{"serve", "--config", missing}, wantErr: "no such file"},
 		{name: "admin user", args: []string{"admin", "user"}, wantOut: "Available Commands:\n  create"},
-		{name: "admin token", args: []string{"admin", "token"}, wantErr: "see issue #47"},
+		{name: "admin token", args: []string{"admin", "token"}, wantOut: "Available Commands:\n  create"},
 		{name: "admin repo", args: []string{"admin", "repo"}, wantOut: "Available Commands:\n  create"},
 		{name: "admin binding", args: []string{"admin", "binding"}, wantErr: "see issue #47"},
 		{name: "bad log level", args: []string{"version", "--log-level", "verbose"}, wantErr: `log level "verbose"`},

@@ -21,6 +21,9 @@ import (
 type Options struct {
 	// Repos is the service behind /api/v1/repos; required.
 	Repos *Repos
+	// Tokens is the service behind the tokens of a user and the deploy tokens of a repo; nil
+	// means one over the index, the audit writer, the clock and the logger of Repos.
+	Tokens *auth.Tokens
 	// Auth decides whether the request's principal may perform an action on a repo. nil allows
 	// everything: the server authenticates requests (#43), but every endpoint is open until
 	// RBAC (#45) sets it.
@@ -42,18 +45,27 @@ const maxBody = 64 << 10
 //	PATCH  /api/v1/repos/{format}/{repo}               change anonymousRead and policy
 //	DELETE /api/v1/repos/{format}/{repo}[?force=true]  delete a repo
 //	POST   /api/v1/repos/{format}/{repo}/reindex       501 until reindex comes with #29
+//	GET    /api/v1/repos/{format}/{repo}/deploy-tokens       the deploy tokens of a repo
+//	POST   /api/v1/repos/{format}/{repo}/deploy-tokens       create one; the answer has its secret
+//	DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}  revoke one
+//	GET    /api/v1/users/{name}/tokens                 the personal access tokens of a user
+//	POST   /api/v1/users/{name}/tokens                 create one; the answer has its secret
+//	DELETE /api/v1/users/{name}/tokens/{id}            revoke one
 //	GET    /api/v1/whoami                              the request's principal
 //
-// Every other method and path under /api/ is a JSON NOT_FOUND: the users, tokens and bindings
+// Every other method and path under /api/ is a JSON NOT_FOUND: the users and bindings
 // endpoints of docs/spec/http-routing.md §4 come with #47, audit with #46. Answers are JSON;
 // errors are the envelope of §4. New panics when o.Repos is nil.
 func New(o Options) http.Handler {
 	if o.Repos == nil {
 		panic("api: New: nil Options.Repos")
 	}
-	h := &handler{repos: o.Repos, auth: o.Auth, log: o.Log}
+	h := &handler{repos: o.Repos, tokens: o.Tokens, auth: o.Auth, log: o.Log}
 	if h.log == nil {
 		h.log = slog.Default()
+	}
+	if h.tokens == nil {
+		h.tokens = &auth.Tokens{Index: o.Repos.Index, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log}
 	}
 	mux := http.NewServeMux()
 	mux.Handle("GET /api/v1/repos", h.serve(h.listRepos))
@@ -62,6 +74,12 @@ func New(o Options) http.Handler {
 	mux.Handle("PATCH /api/v1/repos/{format}/{repo}", h.serve(h.updateRepo))
 	mux.Handle("DELETE /api/v1/repos/{format}/{repo}", h.serve(h.deleteRepo))
 	mux.Handle("POST /api/v1/repos/{format}/{repo}/reindex", h.serve(h.reindexRepo))
+	mux.Handle("GET /api/v1/repos/{format}/{repo}/deploy-tokens", h.serve(h.listDeployTokens))
+	mux.Handle("POST /api/v1/repos/{format}/{repo}/deploy-tokens", h.serve(h.createDeployToken))
+	mux.Handle("DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}", h.serve(h.revokeDeployToken))
+	mux.Handle("GET /api/v1/users/{name}/tokens", h.serve(h.listTokens))
+	mux.Handle("POST /api/v1/users/{name}/tokens", h.serve(h.createToken))
+	mux.Handle("DELETE /api/v1/users/{name}/tokens/{id}", h.serve(h.revokeToken))
 	mux.Handle("GET /api/v1/whoami", h.serve(h.whoami))
 	mux.Handle("/api/", h.serve(h.notFound))
 	return mux
@@ -69,9 +87,10 @@ func New(o Options) http.Handler {
 
 // handler serves the management API.
 type handler struct {
-	repos *Repos
-	auth  auth.Authorizer
-	log   *slog.Logger
+	repos  *Repos
+	tokens *auth.Tokens
+	auth   auth.Authorizer
+	log    *slog.Logger
 }
 
 // endpoint is a handler that returns its answer: the status and the value to encode as JSON
@@ -212,7 +231,7 @@ func (h *handler) reindexRepo(_ http.ResponseWriter, r *http.Request) (int, any,
 // notFound answers every other method and path under /api/.
 func (h *handler) notFound(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	return 0, nil, &clientError{
-		msg: fmt.Sprintf("%s %s is not in this version; users, tokens and bindings come with #47, audit with #46",
+		msg: fmt.Sprintf("%s %s is not in this version; users and bindings come with #47, audit with #46",
 			r.Method, r.URL.Path),
 		err: index.ErrNotFound,
 	}
@@ -233,11 +252,25 @@ const systemMask = "*"
 // Creating a repo is system-level, and asks for manage on */*: the admin binding matches every
 // repo, and #45 settles the system resource of rbac.md §2. No repo's existence is at stake
 // there, so an authenticated principal that is denied gets 403, never 404.
+//
+// The request's credential limits the principal first, with or without an Authorizer
+// (format.Authorize, auth.Credential.Limit): a deploy token and a personal access token with
+// scopes never get manage, and a deploy token reaches its own repo only.
 func (h *handler) allow(r *http.Request, a auth.Action, formatName, repo string) error {
-	if h.auth == nil {
-		return nil // TODO(#45): RBAC sets Options.Auth; until then every endpoint is open.
-	}
-	err := format.Authorize(r.Context(), format.Deps{Auth: h.auth}, a, index.Repo{Format: formatName, Name: repo})
+	// TODO(#45): RBAC sets Options.Auth; until then every endpoint is open to what the
+	// credential allows.
+	return h.authorize(r, format.Deps{Auth: h.auth}, a, formatName, repo)
+}
+
+// limit is allow without the Authorizer: what the request's credential allows alone.
+func (h *handler) limit(r *http.Request, a auth.Action, formatName, repo string) error {
+	return h.authorize(r, format.Deps{}, a, formatName, repo)
+}
+
+// authorize asks format.Authorize with deps, and answers a principal denied on the system
+// with format.ErrForbidden.
+func (h *handler) authorize(r *http.Request, deps format.Deps, a auth.Action, formatName, repo string) error {
+	err := format.Authorize(r.Context(), deps, a, index.Repo{Format: formatName, Name: repo})
 	if formatName == systemMask && repo == systemMask && errors.Is(err, index.ErrNotFound) {
 		return fmt.Errorf("%w: %s on the system", format.ErrForbidden, a)
 	}

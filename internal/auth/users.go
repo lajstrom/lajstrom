@@ -194,6 +194,19 @@ func (s *Users) update(ctx context.Context, name, action string, o Origin, chang
 // origin, and appends it on w, in the transaction of the change, when there is no
 // audit.Writer. The caller passes the event to writeAudit after the commit.
 func (s *Users) record(ctx context.Context, w index.Writer, action, name string, o Origin, details map[string]any) (index.AuditEvent, error) {
+	return recordAudit(ctx, w, s.Audit, index.AuditEvent{At: s.now(), Action: action, Subject: name}, o, details)
+}
+
+// writeAudit passes ev to the audit.Writer, after the commit of its change (writeAuditEvent).
+func (s *Users) writeAudit(ctx context.Context, ev index.AuditEvent) {
+	writeAuditEvent(ctx, s.Audit, s.log(), ev, "auth: audit event of a user change not written", "user")
+}
+
+// recordAudit completes ev, an event of a change with its time, action, subject and repo: the
+// principal is PrincipalFrom(ctx), the IP the origin's, the details details with the origin's
+// source and request id. It appends ev on w, in the transaction of the change, when aw is nil;
+// the caller passes the event to writeAuditEvent after the commit.
+func recordAudit(ctx context.Context, w index.Writer, aw audit.Writer, ev index.AuditEvent, o Origin, details map[string]any) (index.AuditEvent, error) {
 	if o.Source != "" {
 		details["source"] = o.Source
 	}
@@ -202,10 +215,10 @@ func (s *Users) record(ctx context.Context, w index.Writer, action, name string,
 	}
 	raw, err := json.Marshal(details)
 	if err != nil {
-		return index.AuditEvent{}, fmt.Errorf("auth: audit details of %s: %w", action, err)
+		return index.AuditEvent{}, fmt.Errorf("auth: audit details of %s: %w", ev.Action, err)
 	}
-	ev := index.AuditEvent{At: s.now(), Principal: PrincipalFrom(ctx).String(), Action: action, Subject: name, IP: o.IP, Details: raw}
-	if s.Audit == nil {
+	ev.Principal, ev.IP, ev.Details = PrincipalFrom(ctx).String(), o.IP, raw
+	if aw == nil {
 		if err := w.AppendAudit(ctx, &ev); err != nil {
 			return index.AuditEvent{}, err
 		}
@@ -213,15 +226,15 @@ func (s *Users) record(ctx context.Context, w index.Writer, action, name string,
 	return ev, nil
 }
 
-// writeAudit passes ev to the audit.Writer, after the commit of its change. A failure is
-// logged: the change is made, and is not undone for its event.
-func (s *Users) writeAudit(ctx context.Context, ev index.AuditEvent) {
-	if s.Audit == nil {
+// writeAuditEvent passes ev to aw, after the commit of its change; nothing when aw is nil. A
+// failure is logged with msg and the subject under the key subject: the change is made, and is
+// not undone for its event.
+func writeAuditEvent(ctx context.Context, aw audit.Writer, log *slog.Logger, ev index.AuditEvent, msg, subject string) {
+	if aw == nil {
 		return
 	}
-	if err := s.Audit.Write(ctx, ev); err != nil {
-		s.log().ErrorContext(ctx, "auth: audit event of a user change not written",
-			"action", ev.Action, "user", ev.Subject, "error", err.Error())
+	if err := aw.Write(ctx, ev); err != nil {
+		log.ErrorContext(ctx, msg, "action", ev.Action, subject, ev.Subject, "error", err.Error())
 	}
 }
 

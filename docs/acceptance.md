@@ -276,7 +276,7 @@ signed. `test/e2e/security.sh` automates the ones with a command; the rest are r
 | --- | --- | --- | --- |
 | X-01 | C-02, C-03; `curl http://art.test/` | TLS only; plain HTTP is refused by the edge (301 or closed), and the server will not start with a non-loopback `http` `externalURL` | #50 |
 | X-02 | C-07 after the whole suite, plus a `PUT` with `Authorization` and `Cookie` headers set | no secret in any log line; `Cookie` is never logged either | #23 |
-| X-03 | `SELECT secret_hash FROM tokens`; the API response that created the token | sha256 in the database; the secret is shown once in the creation response and never again (`GET` shows the hash prefix only) | #44 |
+| X-03 | `SELECT hash FROM tokens` (index-schema.md); the API response that created the token | sha256 in the database; the secret is shown once in the creation response and never again (`GET` shows the hash prefix only) | #44 |
 | X-04 | `SELECT password_hash FROM users` | argon2id with the parameters of rbac.md; 20 wrong passwords in a row for alice | the 11th and later answer 429 with `Retry-After` while a correct password for bob still works | #43, #50 |
 | X-05 | S-07, S-08 and the matrix of §3.8 on the frontends and on `/v2` | the 401/404/403 rule holds everywhere: anonymous never learns whether a repo exists, a principal without access gets the same answer as for a missing repo | #45 |
 | X-06 | raw `PUT` to `../../etc/passwd`, `%2e%2e/x`, `/raw/assets//x`, a path with `\0`, a 5 000-byte path; maven `PUT` with `..` in `groupPath`; apt `?suite=../x` | 400 every time; nothing written; the error names the rule | #13, #54, #42, #63 |

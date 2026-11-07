@@ -47,18 +47,24 @@ func HoldPrincipal(ctx context.Context, p auth.Principal) {
 	}
 }
 
-// authenticate reads the request's credentials and puts its principal in the context
-// (auth.WithPrincipal), for the authorizers and the audit log. Every route goes through it,
-// the system endpoints included: they simply allow the anonymous principal.
+// authenticate reads the request's credentials and puts its principal and the credential it
+// authenticated with in the context (auth.WithPrincipal, auth.WithCredential), for the
+// authorizers and the audit log. Every route goes through it, the system endpoints included:
+// they simply allow the anonymous principal.
 //
 //   - No Authorization header: the request goes on as auth.Anonymous. What anonymous may do is
 //     the authorizers' to decide (#45).
 //   - Basic (RFC 7617; the first colon splits the user name from the secret): the credentials
-//     are authenticated, and the request goes on as the user. Credentials that are refused, or
-//     that do not decode, are answered at once with 401 and the Basic challenge, whatever the
-//     route, in the error format of the route's family (writeRefusal).
-//   - Bearer and any other scheme: the request goes on as anonymous with the header untouched.
-//     The OCI facade verifies the bearer of /v2 and records its principal (HoldPrincipal).
+//     are authenticated (a password, user:<personal access token> or deploy:<deploy token>),
+//     and the request goes on as the user or the deploy token. Credentials that are refused,
+//     or that do not decode, are answered at once with 401 and the Basic challenge, whatever
+//     the route, in the error format of the route's family (writeRefusal).
+//   - Bearer with a token secret (ljs_pat_…, or ljs_dep_…, which is refused: a deploy token
+//     goes in Basic credentials) on every route but /v2: authenticated as a personal access
+//     token (auth.Authenticator.AuthenticateBearer), and refused like Basic credentials.
+//   - Any other bearer, a bearer on /v2 and any other scheme: the request goes on as anonymous
+//     with the header untouched. The OCI facade verifies the bearer of /v2, a JWT, and records
+//     its principal (HoldPrincipal).
 //
 // A nil Options.Authenticator authenticates nobody: every request is anonymous, as in the unit
 // tests of other packages.
@@ -67,32 +73,55 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		scheme, _, _ := strings.Cut(r.Header.Get("Authorization"), " ")
-		if !strings.EqualFold(scheme, "Basic") {
+		scheme, value, _ := strings.Cut(r.Header.Get("Authorization"), " ")
+		var (
+			p    auth.Principal
+			cred auth.Credential
+			user string // for the log of a failure
+			err  error
+		)
+		switch {
+		case strings.EqualFold(scheme, "Basic"):
+			var secret string
+			var ok bool
+			if user, secret, ok = r.BasicAuth(); !ok {
+				s.log.DebugContext(r.Context(), "authentication refused", "reason", "credentials that do not decode",
+					"requestId", RequestID(r.Context()))
+				s.writeRefusal(w, r, http.StatusUnauthorized, msgBadCredentials)
+				return
+			}
+			p, cred, err = s.opts.Authenticator.Authenticate(r.Context(), user, secret)
+		case strings.EqualFold(scheme, "Bearer") && tokenBearer(r.URL.Path, strings.TrimSpace(value)):
+			p, cred, err = s.opts.Authenticator.AuthenticateBearer(r.Context(), strings.TrimSpace(value))
+		default:
 			next.ServeHTTP(w, r)
 			return
 		}
-		user, secret, ok := r.BasicAuth()
-		if !ok {
-			s.log.DebugContext(r.Context(), "authentication refused", "reason", "credentials that do not decode",
-				"requestId", RequestID(r.Context()))
-			s.writeRefusal(w, r, http.StatusUnauthorized, msgBadCredentials)
-			return
-		}
-		p, err := s.opts.Authenticator.Authenticate(r.Context(), user, secret)
 		switch {
 		case errors.Is(err, auth.ErrBadCredentials):
 			s.writeRefusal(w, r, http.StatusUnauthorized, msgBadCredentials)
 			return
 		case err != nil:
-			s.log.ErrorContext(r.Context(), "authentication failed", "user", user, "error", err.Error(),
-				"requestId", RequestID(r.Context()))
+			attrs := []any{"error", err.Error(), "requestId", RequestID(r.Context())}
+			if user != "" {
+				attrs = append([]any{"user", user}, attrs...)
+			}
+			s.log.ErrorContext(r.Context(), "authentication failed", attrs...)
 			s.writeRefusal(w, r, http.StatusInternalServerError, msgAuthFailed)
 			return
 		}
 		HoldPrincipal(r.Context(), p)
-		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), p)))
+		next.ServeHTTP(w, r.WithContext(auth.WithCredential(auth.WithPrincipal(r.Context(), p), cred)))
 	})
+}
+
+// tokenBearer reports whether the bearer secret on path is the authenticator's: a token secret
+// (auth.PATPrefix or auth.DeployPrefix) outside /v2, whose bearer is the facade's JWT.
+func tokenBearer(path, secret string) bool {
+	if path == "/v2" || strings.HasPrefix(path, "/v2/") {
+		return false
+	}
+	return strings.HasPrefix(secret, auth.PATPrefix) || strings.HasPrefix(secret, auth.DeployPrefix)
 }
 
 // writeRefusal answers a request that the middleware refuses, 401 with a challenge or 500, in

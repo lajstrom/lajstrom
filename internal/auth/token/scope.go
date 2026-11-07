@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/index"
 )
 
 // Types of scopes and access entries.
@@ -132,15 +133,21 @@ func (sc *scopeSet) access() []Access {
 	return out
 }
 
-// Reduce returns the scopes with the actions authz allows p on each repository's
+// Reduce returns the scopes with the actions allowed to p on each repository's
 // <format>/<repo> (pull is read, push write, delete delete); a scope with no action left is
-// dropped. A nil authz allows every action, as the facade is open before RBAC (#45). The
-// catalog scope is kept for every principal: the catalog is filtered repo by repo when it is
-// listed. An error of authz is returned: the caller cannot decide.
+// dropped. The credential of the request (auth.CredentialFrom(ctx)) decides first, as
+// format.Authorize has it: a personal access token with scopes keeps only the actions of its
+// scopes, a deploy token only those of its scopes on its own repo, neither ever delete; so the
+// token carries the narrowing to every /v2 request. authz decides next, and a nil authz allows
+// what the credential allows, as the facade is open before RBAC (#45), whose evaluator adds
+// the bindings behind authz. The catalog scope is kept for every principal: the catalog is
+// filtered repo by repo when it is listed. An error of authz is returned: the caller cannot
+// decide.
 func Reduce(ctx context.Context, authz auth.Authorizer, p auth.Principal, scopes []Access) ([]Access, error) {
+	cred := auth.CredentialFrom(ctx)
 	out := make([]Access, 0, len(scopes))
 	for _, s := range scopes {
-		if authz == nil || s.Type != TypeRepository {
+		if s.Type != TypeRepository {
 			out = append(out, Access{Type: s.Type, Name: s.Name, Actions: slices.Clone(s.Actions)})
 			continue
 		}
@@ -148,9 +155,15 @@ func Reduce(ctx context.Context, authz auth.Authorizer, p auth.Principal, scopes
 		repo, _, _ := strings.Cut(rest, "/")
 		var kept []string
 		for _, a := range s.Actions {
-			ok, err := authz.Allowed(ctx, p, authAction(a), format, repo)
-			if err != nil {
-				return nil, fmt.Errorf("token: may %s %s %s/%s: %w", p, a, format, repo, err)
+			if cred.Limit(authAction(a), index.Repo{Format: format, Name: repo}) != nil {
+				continue // outside the credential's scopes or repo: never granted
+			}
+			ok := authz == nil
+			if !ok {
+				var err error
+				if ok, err = authz.Allowed(ctx, p, authAction(a), format, repo); err != nil {
+					return nil, fmt.Errorf("token: may %s %s %s/%s: %w", p, a, format, repo, err)
+				}
 			}
 			if ok {
 				kept = append(kept, a)

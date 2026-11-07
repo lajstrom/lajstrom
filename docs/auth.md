@@ -1,9 +1,10 @@
 # Authentication
 
 Who a request comes from, and how Lajstrom finds out. This page describes local users, their
-passwords, HTTP Basic on every route, the bearer tokens of the OCI facade, the bootstrap of the
-first admin and `whoami`. What a principal may do is RBAC's ([rbac.md](spec/rbac.md), #45);
-until then every route is open, and authentication only tells who is asking. The model is
+passwords, HTTP Basic on every route, the bearer tokens of the OCI facade, personal access
+tokens and deploy tokens, the bootstrap of the first admin and `whoami`. What a principal may do
+is RBAC's ([rbac.md](spec/rbac.md), #45); until then every route is open, authentication tells
+who is asking, and only the scopes of a token limit what it may do. The model is
 [ADR 0007](adr/0007-rbac-model.md); where the token signing key lives is
 [ADR 0010](adr/0010-bearer-token-signing-key.md).
 
@@ -14,11 +15,12 @@ audit log, in publication sessions and in the access log ([rbac.md](spec/rbac.md
 
 | Principal | Form | From |
 | --- | --- | --- |
-| local user | `user:<name>` | HTTP Basic with the user's password (this page) |
-| deploy token | `token:<id>` | HTTP Basic `deploy:<token>` (#44) |
+| local user | `user:<name>` | HTTP Basic with the user's password; HTTP Basic or a bearer with a personal access token of the user ([Tokens](#tokens)) |
+| deploy token | `token:<id>` | HTTP Basic `deploy:<token>` ([Tokens](#tokens)) |
 | anonymous | `anonymous` | a request without credentials |
 
-A personal access token acts as its user (#44); OIDC users and groups come after the MVP.
+A personal access token acts as its user: its principal is the user's, narrowed by the token's
+scopes. OIDC users and groups come after the MVP.
 
 There are no users in the configuration file, by decision: users live in the index database
 with the rest of the control plane, are created with `lajstrom admin user` (and with the users
@@ -29,7 +31,9 @@ API of #47), and are the same on every replica.
 A user name is 1 to 64 bytes of lowercase letters, digits, `.`, `_` and `-`, starting with a
 letter or a digit. It is what HTTP Basic carries before the colon and what `user:<name>` binds,
 so it has no colon, no space and no upper case. `deploy` is reserved: `deploy:<token>` is how a
-deploy token authenticates (#44). A password is 8 to 1024 bytes of UTF-8, any characters.
+deploy token authenticates. A password is 8 to 1024 bytes of UTF-8, any characters, that does
+not start with `ljs_pat_` or `ljs_dep_`: a secret with either prefix is a token's, never a
+password (a password set before #44 that starts with one no longer logs in; set another).
 
 Passwords are stored as argon2id hashes in `users.password_hash`
 ([index-schema.md](spec/index-schema.md)), in the PHC string format:
@@ -75,14 +79,21 @@ Every route reads the `Authorization` header, the frontends (`/raw/`, `/pypi/`, 
   in this version everything is open, so the dev stack works without credentials.
 - **`Basic`** ([RFC 7617](https://www.rfc-editor.org/rfc/rfc7617); the first colon splits the
   user name from the password): the credentials are checked, and the request goes on as
-  `user:<name>`. Credentials that are refused (an unknown user, a disabled one, a wrong
-  password) or that do not decode are answered at once with `401`, whatever the route: a client
-  that sends credentials learns at once that they are wrong. The challenge is
-  `WWW-Authenticate: Basic realm="lajstrom"`, except under `/v2/`, where it is the bearer
+  `user:<name>`, or as `token:<id>` for a deploy token. The secret decides what is checked: one
+  that starts with `ljs_pat_` is a personal access token of the user, one that starts with
+  `ljs_dep_` a deploy token, anything else the user's password ([Tokens](#tokens)). Credentials
+  that are refused (an unknown user, a disabled one, a wrong password, a token unknown, revoked,
+  expired or of another user) or that do not decode are answered at once with `401`, whatever
+  the route: a client that sends credentials learns at once that they are wrong. The challenge
+  is `WWW-Authenticate: Basic realm="lajstrom"`, except under `/v2/`, where it is the bearer
   challenge of the token flow (below) and the client learns it at `/v2/token`, which itself
   answers with the Basic challenge.
-- **`Bearer`** and any other scheme: the request goes on as anonymous with the header
-  untouched. The OCI facade verifies the bearer of `/v2` ([below](#bearer-tokens-on-v2)).
+- **`Bearer ljs_pat_…`** on every route but `/v2`: a personal access token, checked as in
+  Basic credentials, and refused the same way. `Bearer ljs_dep_…` is refused: a deploy token
+  goes in Basic credentials, `deploy:<token>`, one way for every client.
+- **Any other `Bearer`**, any bearer under `/v2`, and any other scheme: the request goes on as
+  anonymous with the header untouched. The OCI facade verifies the bearer of `/v2`, which is
+  its own JWT and nothing else ([below](#bearer-tokens-on-v2)).
 
 The body of the `401` follows the route:
 
@@ -93,8 +104,9 @@ The body of the `401` follows the route:
 | elsewhere | `credentials are needed: the ones sent were refused`, plain text |
 
 The access log line of every request has `principal`: the canonical form, `anonymous` for a
-request without credentials and for the `401`s above, the token's subject for a request with
-a valid bearer. The `Authorization` header is never logged, and neither is a token.
+request without credentials and for the `401`s above, `user:<owner>` for a personal access
+token, `token:<id>` for a deploy token, the token's subject for a request with a valid bearer
+on `/v2`. The `Authorization` header is never logged, and neither is a token or its hash.
 
 ### The 401/404/403 rule
 
@@ -104,8 +116,10 @@ elsewhere), `404` for a principal without any access to the repo, `403` for one 
 the repo but lacks the action. Before RBAC (#45) the Authorizer denies nothing, and the `401`s
 are: credentials that are refused, on every route; `whoami` without credentials; `GET /v2/`
 without credentials; and, under `/v2/`, a bearer that does not verify or does not name the
-repository. A bearer that names the repository without the action is `403`. The rest of the
-rule comes with #45.
+repository. A bearer that names the repository without the action is `403`. The scopes of a
+token hold already: a deploy token gets `404` on every repo but its own, and `403` for an
+action outside its scopes, as does a personal access token with scopes ([Tokens](#tokens)).
+The rest of the rule comes with #45.
 
 ## Bearer tokens on `/v2`
 
@@ -199,9 +213,10 @@ Www-Authenticate: Basic realm="lajstrom"
 
 `GET /v2/token?service=<service>&scope=<scope>&scope=…` issues a token for the principal of
 the request: the user of the Basic credentials (refused ones are `401` with the Basic
-challenge, from the authentication middleware), or `anonymous` without credentials. The
-`user:<PAT>` and `deploy:<token>` credentials of #44 come the same way. Only `GET`: the OAuth2
-`POST` form is not implemented (`405`), and the clients above use `GET`.
+challenge, from the authentication middleware), or `anonymous` without credentials. A
+personal access token (`user:<PAT>`) and a deploy token (`deploy:<token>`) come the same way,
+and their scopes narrow the token (below). Only `GET`: the OAuth2 `POST` form is not
+implemented (`405`), and the clients above use `GET`.
 
 - **Scopes**: each `scope` parameter is `repository:<format>/<repo>/<path>:<actions>`, several
   parameters or several scopes in one separated by spaces. The actions are a comma list of
@@ -210,11 +225,14 @@ challenge, from the authentication middleware), or `anonymous` without credentia
   with no action left are dropped, as the distribution token flow expects; a repository asked
   for twice gets the union. One scope of another type is kept: `registry:catalog:*`, which
   `crane catalog` and `oras repo ls` ask for to list `/v2/_catalog`.
-- **Reduction**: for each scope, each action is kept when the Authorizer allows it to the
-  principal on `<format>/<repo>`: `pull` is `read`, `push` is `write`, `delete` is `delete`
-  ([rbac.md](spec/rbac.md) §2). Without an Authorizer, the state until RBAC (#45), every
-  requested action is granted, to the anonymous principal too: the facade is open, and stays
-  open. `serve` says so at startup, at warn:
+- **Reduction**: for each scope, each action is kept when the credential allows it and the
+  Authorizer allows it to the principal on `<format>/<repo>`: `pull` is `read`, `push` is
+  `write`, `delete` is `delete` ([rbac.md](spec/rbac.md) §2). The credential first: a personal
+  access token with scopes keeps the actions of its scopes, a deploy token those of its scopes
+  on its own repo and nothing elsewhere, and neither ever gets `delete`; so a PAT with `read`
+  gets a token with `pull` only, and its push is `403 DENIED` (S-03). Without an Authorizer,
+  the state until RBAC (#45), every other requested action is granted, to the anonymous
+  principal too: the facade is open, and stays open. `serve` says so at startup, at warn:
 
   ```text
   level=WARN msg="authorization is not enforced until RBAC (#45): every principal, anonymous included, may do everything on /v2 and the frontends, and /v2/token therefore grants every requested scope"
@@ -242,7 +260,7 @@ challenge, from the authentication middleware), or `anonymous` without credentia
 | header `kid` | the fingerprint of the signing key: the lowercase hexadecimal sha256 of its public key (PKIX DER) |
 | header `typ` | `JWT` |
 | `iss`, `aud` | the service |
-| `sub` | the principal: `user:alice`, `anonymous`, later `token:<id>` |
+| `sub` | the principal: `user:alice` (with a password or a personal access token), `token:<id>` (a deploy token), `anonymous` |
 | `iat`, `nbf` | the time of issue, to the second |
 | `exp` | `iat` plus 20 minutes |
 | `jti` | 16 random bytes, base64url |
@@ -357,6 +375,196 @@ ok   admin key rotate --token --drop: 4f2155f3dddad8dc8682a11dc282cd36c70306478d
 PASS oci-token e2e against http://localhost:18080 as e2e-token-20261107214723-22564
 ```
 
+## Tokens
+
+Two kinds of token stand in for a password ([rbac.md](spec/rbac.md) §1):
+
+- A **personal access token** (PAT) acts as its user: the principal is `user:<name>`, with the
+  user's rights, narrowed by the token's `scopes` when it has any. It is what goes into
+  `auth.conf`, `~/.pypirc` and `settings.xml` instead of a password: it expires, it is revoked
+  alone, and it tells nothing about the password.
+- A **deploy token** is a principal of its own, `token:<id>`, bound to exactly one repo with
+  `read`, `write` or both: the credential of a CI job.
+
+### The secret
+
+`ljs_pat_` or `ljs_dep_`, then 43 characters of `0-9a-zA-Z`: 32 random bytes written as a
+number in base 62 and padded, so that every secret has 51 characters, none that a URL, a shell
+or a netrc file treats specially, one double-click selects it, and the prefix tells the kind,
+to the authenticator and to a secret scanner.
+
+The index keeps the lowercase hexadecimal sha256 of the whole secret, prefix included
+(`tokens.hash`), and finds the token by it. The secret is in the answer of its creation once,
+the API's `201` or the CLI's JSON line, and never again: it is not stored, logged, audited or
+answered. Every later view shows `hashPrefix`, the first 8 characters of the hash, to tell
+tokens apart (X-03). A lost secret is not recovered: create another token and revoke the old.
+
+A token is checked without argon2id and without a cache: 256 random bits are not guessed, so
+the lookup of the hash is the check, one query for the token and one for its user or repo, a
+miss costing what a hit costs.
+
+### Rules
+
+| | Personal access token | Deploy token |
+| --- | --- | --- |
+| principal | `user:<owner>` | `token:<id>` |
+| bound to | its user | one repo |
+| `scopes` | none (the user's full rights), or `read`, `write` or both | `read`, `write` or both, required; `delete`, `manage` and anything else are `400` |
+| expiry | required: 90 days when not given, at most 365 days ahead (`400` beyond, naming the bound) | optional: none is never |
+| `name` | 1 to 64 bytes of printable UTF-8, unique among the user's live tokens (`409`) | the same, among the repo's live tokens |
+
+A live token is neither revoked nor expired. A scope grants its action and nothing else:
+`write` does not include `read`, so a client that pushes through `/v2`, and reads blobs before
+it writes them, needs both. The bounds are constants, not configuration.
+
+Expiry and revocation count at the next request, on every replica: the token is read from the
+database on every request. A token is expired once `expiresAt` is past, without leeway.
+`lastUsedAt` is the time of the last request with the token, written at most once a minute per
+token and replica; a write that fails is logged at debug and refuses nothing. A PAT is refused
+while its user is disabled, and a repo deleted takes its deploy tokens with it.
+
+### What a token may do
+
+The scopes hold now, before RBAC, on every route and at `/v2/token`; RBAC (#45) adds the
+bindings behind them:
+
+- a PAT without scopes is its user: what the user may do (everything, until #45);
+- a PAT with scopes gets `read` with `read` and `write` with `write`, and never `delete` or
+  `manage`; anything else is `403` (S-03, X-14);
+- a deploy token is confined to its repo: on any other it is `404`, the answer of a repo that
+  does not exist, since it has no access there at all (S-04); on its repo it gets `read` and
+  `write` per its scopes, and `403` for an action outside them, `delete` and `manage` above all:
+  `DELETE` of a version, `PATCH` or `DELETE` of the repo, its deploy tokens (X-14).
+  `GET /api/v1/repos` lists its repo only;
+- the PATs of a user are the user's own to list, create and revoke, or the system admin's;
+  until #45, as every endpoint, everybody's. The deploy tokens of a repo need `manage` on it.
+  A deploy token or a PAT with scopes asking for either is `403`;
+- at `/v2/token` the same rules narrow the token ([above](#the-token-endpoint)); `/v2` itself
+  takes that token and no other bearer.
+
+### Where the secret goes
+
+- **curl**: `curl -u alice:ljs_pat_… https://art.example.com/raw/scratch/file`, or the same in
+  a config file, `curl -K` with `user = "alice:ljs_pat_…"`, to keep it off the command line. A
+  deploy token: `-u deploy:ljs_dep_…`.
+- **The management API**: `Authorization: Bearer ljs_pat_…`, or Basic. A deploy token goes in
+  Basic only, `deploy:ljs_dep_…`.
+- **apt**: `/etc/apt/auth.conf.d/lajstrom.conf`, mode 0600, one line per repo:
+
+  ```text
+  machine art.example.com/apt/ubuntu-internal login alice password ljs_pat_…
+  machine art.example.com/apt/ubuntu-internal login deploy password ljs_dep_…
+  ```
+
+  apt sends the credentials of a `machine` without a scheme over `https` only; for plain `http`
+  (the dev stack) write the scheme: `machine http://localhost:8080/apt/e2e`.
+- **pip and twine**: `~/.pypirc` with `username = alice` and `password = ljs_pat_…`, or
+  `username = __token__` and a deploy token, once the pypi frontend is there (#31).
+- **oras, docker, helm**: `oras login -u alice --password-stdin art.example.com` with the token
+  on standard input; the client gets its bearer from `/v2/token` with the token as its
+  password, so the narrowing holds on `/v2`. A deploy token logs in as `deploy`.
+- A client that insists on a user name with a deploy token may send any: only the secret
+  counts.
+
+### Creating, listing, revoking
+
+Through the API ([api.md](api.md#tokens)):
+
+```sh
+curl -s -u alice -X POST https://art.example.com/api/v1/users/alice/tokens \
+  -H 'Content-Type: application/json' -d '{"name": "laptop", "scopes": ["read"], "expiresIn": "30d"}'
+```
+
+```json
+{"id":7,"kind":"pat","user":"alice","name":"laptop","scopes":["read"],"expiresAt":"2026-12-07T12:00:00Z","lastUsedAt":null,"createdAt":"2026-11-07T12:00:00Z","revokedAt":null,"hashPrefix":"c68464d8","secret":"ljs_pat_…"}
+```
+
+Or from the command line, straight against the database of the configuration:
+
+```sh
+lajstrom admin token create --user alice --name laptop [--scopes read,write] [--expires 90d|2027-01-31T00:00:00Z]
+lajstrom admin token create --repo raw/assets --name ci --scopes write [--expires 30d]
+lajstrom admin token list --user alice         # or --repo raw/assets
+lajstrom admin token revoke 7
+```
+
+`create` prints the token as JSON on one line with its secret, and nothing else on standard
+output; `list` prints a table, `SCOPES` `all` for a PAT without scopes; `revoke` prints nothing,
+and changes nothing for a token revoked already:
+
+```text
+ID  KIND  NAME    SCOPES  EXPIRES               LAST USED             REVOKED  HASH
+7   pat   laptop  read    2026-12-07T12:00:00Z  2026-11-07T12:03:11Z  -        c68464d8
+```
+
+### Audit
+
+`token.create` (details `id`, `kind`, `name`, `scopes`, `expiresAt`) and `token.revoke`
+(`id`, `kind`, `name`), by the principal of the request (`anonymous` from the CLI), with the
+source and the request id. The subject is `user:<owner>` for a PAT and `<format>/<repo>` for a
+deploy token, whose repo is also the row's `repo`. Never the secret, never its hash. Revoking a
+revoked token writes nothing. The use of a token is not audited, as reads are not; `lastUsedAt`
+tells when it was last used.
+
+### End to end
+
+`test/e2e/tokens.sh` runs the above with real clients: a PAT created through the API, used as
+Basic on a raw `PUT` and as a bearer on `whoami`; an apt repo with a `.deb` built in
+`ubuntu:24.04` and uploaded with the PAT; `apt-get update && apt-get install` in
+`ubuntu:24.04` with a PAT (`login <user>`) and then a deploy token with `read` (`login deploy`)
+in `auth.conf.d`, each token's `lastUsedAt` showing that apt sent it, and a token that does not
+exist refused; the deploy token's `404` and `403`; a deploy token with `write`; `oras login`
+and push with the PAT; a PAT with `read` refused a push on the frontend and through its `/v2`
+token; revocation, expiry and an expiry over a year. The `twine upload` with a deploy token of
+#44's criterion waits for the pypi frontend (#31): pypi is a stub in this version.
+
+From a run against `bin/lajstrom serve` on the example configuration, with `server.listen` and
+`server.externalURL` moved to port 18080, the database in a temporary directory, the log at
+debug and the master key set, Zot of the dev stack behind it, and `LAJSTROM_SERVER_LOG` naming
+the server's log:
+
+```text
+ok   admin user create --name e2e-tokens-20261107230303-9005 --admin --password-stdin
+ok   POST /api/v1/users/e2e-tokens-20261107230303-9005/tokens -u e2e-tokens-20261107230303-9005: 201, Location /api/v1/users/e2e-tokens-20261107230303-9005/tokens/1, id 1, hashPrefix fe814aac, scopes all, expiresAt 2027-02-05T23:03:03.775997Z, the secret ljs_pat_… shown once
+ok   GET /api/v1/users/e2e-tokens-20261107230303-9005/tokens: hashPrefix fe814aac, no secret
+ok   PUT /raw/scratch/e2e-tokens-20261107230303-9005/hello.txt -u e2e-tokens-20261107230303-9005:<PAT>: 201 sha256:16639fd0b53ea5de4976786a1d831de39586d70d040ee62831948891b771afe9
+ok   GET /api/v1/whoami with Authorization: Bearer <PAT>: 200 {"principal":"user:e2e-tokens-20261107230303-9005"}
+ok   admin repo create apt/e2e --registry local
+ok   dpkg-deb --build in ubuntu:24.04, PUT /apt/e2e/upload?suite=noble -u e2e-tokens-20261107230303-9005:<PAT>: 201 sha256:ae2d069616b4d58ea91e1c7310a5d2b9cbbe4ca3baae6acedf23b579c507600b
+ok   GET /apt/e2e/key.asc: 200, the source is signed-by it
+ok   POST /api/v1/repos/apt/e2e/deploy-tokens with the PAT: 201, id 3, hashPrefix 876f72f1, scopes read, expiresAt never
+ok   apt-get update && apt-get install e2e-tokens-20261107230303-9005 in ubuntu:24.04 [signed-by=/etc/apt/keyrings/e2e.asc], auth.conf login e2e-tokens-20261107230303-9005 password <pat 2, scopes read>: installed; lastUsedAt 2026-11-07T23:03:05.481079Z
+ok   apt-get update && apt-get install e2e-tokens-20261107230303-9005 in ubuntu:24.04 [signed-by=/etc/apt/keyrings/e2e.asc], auth.conf login deploy password <deploy 3, scopes read>: installed; lastUsedAt 2026-11-07T23:03:06.986933Z
+ok   apt-get update with a deploy token that does not exist: fails, 401  Unauthorized
+ok   PUT /raw/scratch/… -u deploy:<deploy token 3, read on apt/e2e>: 404 (no access at all): index: not found: repository raw/scratch
+ok   PUT /apt/e2e/upload -u deploy:<deploy token 3, read>: 403: format: forbidden: write on apt/e2e: auth: outside the credential's scopes: the deploy token has read
+ok   deploy token 4 with write on raw/scratch, as gitlab-ci-token:<token>: PUT 201, DELETE 403, PATCH /api/v1/repos/raw/scratch 403 FORBIDDEN, PUT to apt/e2e 404
+ok   oras login localhost:18080 -u e2e-tokens-20261107230303-9005 --password-stdin <PAT>: Login Succeeded (Basic on /v2/token)
+ok   oras push localhost:18080/raw/scratch/t:c24abd62d6a6df18: Digest: sha256:0938f59f8ab5835ea0e3f9f2b420a51bb8570f07570a14ec1ed0d438786bb95a
+ok   GET /v2/token -u e2e-tokens-20261107230303-9005:<PAT> scope=repository:raw/scratch/t:pull,push: sub user:e2e-tokens-20261107230303-9005, actions pull,push
+ok   PUT /raw/scratch/… -u e2e-tokens-20261107230303-9005:<PAT 5, scopes read>: 403: format: forbidden: write on raw/scratch: auth: outside the credential's scopes: the personal access token has read
+ok   GET /v2/token -u e2e-tokens-20261107230303-9005:<read PAT> scope=…:pull,push: actions [pull]; POST /v2/raw/scratch/t/blobs/uploads/ with it: 403 DENIED: the bearer token does not grant push on raw/scratch/t
+ok   DELETE /api/v1/users/e2e-tokens-20261107230303-9005/tokens/1: 204; the next requests with it, bearer and Basic: 401; revokedAt 2026-11-07T23:03:10.184215Z
+ok   a PAT with expiresAt 2026-11-07T23:03:12Z: 200 at once, 401 three seconds later
+ok   a PAT with expiresAt 2027-12-12T23:03:10Z: 400 expiresAt: a personal access token expires at most 365 days ahead, at 2027-11-07T23:03:13Z at the latest
+ok   server log: principal=user:e2e-tokens-20261107230303-9005 (30 lines), principal=token:3 (5 lines), no secret
+PASS tokens e2e against http://localhost:18080 as e2e-tokens-20261107230303-9005
+```
+
+Without the master key apt repos are not signed, and the two apt steps run with
+`[trusted=yes]`; the rest is the same:
+
+```text
+ok   GET /apt/e2e/key.asc: 404, the server does not sign: [trusted=yes]
+ok   apt-get update && apt-get install e2e-tokens-20261107230011-31449 in ubuntu:24.04 [trusted=yes], auth.conf login e2e-tokens-20261107230011-31449 password <pat 5, scopes read>: installed; lastUsedAt 2026-11-07T23:00:12.35067Z
+ok   apt-get update && apt-get install e2e-tokens-20261107230011-31449 in ubuntu:24.04 [trusted=yes], auth.conf login deploy password <deploy 6, scopes read>: installed; lastUsedAt 2026-11-07T23:00:13.504948Z
+```
+
+oras sends its credentials only when challenged, and while the facade is open (#45) its
+pushes are not challenged: they go as `anonymous`, whatever the token. So the `403 DENIED` of a
+PAT with `read` is shown with the token that `oras` would get, by hand; once #45 challenges
+writes, `oras push` with that PAT gets it itself.
+
 ## Bootstrap: the first admin
 
 The first user is created from the command line, without HTTP, against the database of the
@@ -409,13 +617,15 @@ curl -s -u admin http://localhost:8080/api/v1/whoami
 ```
 
 Without credentials it is `401` with the Basic challenge and
-`{"error":{"code":"FORBIDDEN","message":"credentials are needed"}}`.
+`{"error":{"code":"FORBIDDEN","message":"credentials are needed"}}`. With a personal access
+token it is the token's user; with a deploy token,
+`{"principal":"token:3","kind":"token","name":"3"}`.
 
 ## What comes next
 
 | Issue | What |
 | --- | --- |
-| #44 | Personal access tokens (`user:<PAT>`, acting as the user) and deploy tokens (`deploy:<token>`, the principal `token:<id>`), in the same Basic credentials |
-| #45 | RBAC: the bindings decide what each principal may do, anonymous gets `401` with the challenge where it may not read, and the rule above holds everywhere |
+| #31 | The pypi frontend, and with it `twine upload` with a deploy token in `~/.pypirc` |
+| #45 | RBAC: the bindings decide what each principal may do, behind the scopes of its token; anonymous gets `401` with the challenge where it may not read, and the rule above holds everywhere |
 | #47 | The users API: `GET/POST /api/v1/users`, `PATCH`, `POST …/password`, with the same rules and audit events as `lajstrom admin user` |
 | #130 | Rate limiting of failed logins |

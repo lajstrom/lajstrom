@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,26 +16,34 @@ import (
 )
 
 // ErrBadCredentials means the credentials of a request were refused: an unknown user, a
-// disabled one, one without a password, or a wrong secret. It does not say which: the caller
-// answers 401 with a Basic challenge.
+// disabled one, one without a password, a wrong secret, or a token that is unknown, revoked,
+// expired or not the user's. It does not say which: the caller answers 401 with a Basic
+// challenge.
 var ErrBadCredentials = errors.New("auth: bad credentials")
 
 // Defaults of the verification cache.
 const (
-	// DefaultCacheTTL is how long a verified password is remembered.
+	// DefaultCacheTTL is how long a verified password is remembered, and the user name of a
+	// token's owner.
 	DefaultCacheTTL = 5 * time.Minute
-	// DefaultCacheSize bounds the number of remembered verifications.
+	// DefaultCacheSize bounds the number of remembered verifications, of remembered token
+	// owners and of remembered token uses, each.
 	DefaultCacheSize = 10000
 )
 
+// touchInterval is how often at most the authenticator records the use of a token
+// (tokens.last_used_at), per token and per replica.
+const touchInterval = time.Minute
+
 // Options configures an Authenticator.
 type Options struct {
-	// Index is where the users are read; required.
-	Index index.Reader
-	// Log receives the refusals, at debug level, with the user name and the reason; nil means
-	// slog.Default().
+	// Index is where the users and the tokens are read, and the use of a token is recorded
+	// (TouchToken); required.
+	Index index.Store
+	// Log receives the refusals, at debug level, with the user name or the token id and the
+	// reason; nil means slog.Default().
 	Log *slog.Logger
-	// Now is the clock of the cache; nil means time.Now.
+	// Now is the clock of the cache, of token expiry and of token use; nil means time.Now.
 	Now func() time.Time
 	// CacheTTL is how long a verified password is remembered; zero means DefaultCacheTTL.
 	CacheTTL time.Duration
@@ -52,8 +61,13 @@ type Options struct {
 // for CacheTTL, by a sha256 of the pair (never the secret), and count only while the user's
 // current hash is the one they were verified against. A new password, or a hash made with new
 // parameters, is verified again at the next request.
+//
+// A token (docs/auth.md, "Tokens") is read from the index on every call too, by the sha256 of
+// its secret, so that a revocation counts at the next request on every replica. It needs no
+// cache and no argon2id: the secret is 256 random bits, and the lookup of its hash is the
+// check. Its use is recorded at most once a minute.
 type Authenticator struct {
-	index index.Reader
+	index index.Store
 	log   *slog.Logger
 	now   func() time.Time
 	ttl   time.Duration
@@ -65,6 +79,17 @@ type Authenticator struct {
 	mu      sync.Mutex
 	entries map[cacheKey]*list.Element // of *cacheEntry
 	order   *list.List                 // oldest first
+
+	// owners remembers the name of a token's owner by user id, for a bearer, which carries
+	// no user name; touches remembers when the use of each token was last recorded.
+	owners  *bounded[int64, ownerEntry]
+	touches *bounded[int64, time.Time]
+}
+
+// ownerEntry is the name of a user, and when it stops counting.
+type ownerEntry struct {
+	name    string
+	expires time.Time
 }
 
 // cacheKey is sha256(username ‖ 0x00 ‖ secret).
@@ -102,6 +127,7 @@ func NewAuthenticator(o Options) *Authenticator {
 	if a.size <= 0 {
 		a.size = DefaultCacheSize
 	}
+	a.owners, a.touches = newBounded[int64, ownerEntry](a.size), newBounded[int64, time.Time](a.size)
 	dummyHash() // now, so that the first unknown user does not pay for it
 	return a
 }
@@ -115,15 +141,38 @@ var dummyHash = sync.OnceValue(func() string {
 	return hashWith(hashParams, string(b))
 })
 
-// Authenticate returns the principal user:<username> when secret is that user's password. An
-// unknown user, a disabled one, one without a password, and a wrong secret are each an error
-// wrapping ErrBadCredentials, after the same argon2id work; the reason is logged at debug level
-// with the user name, never anything about the secret. Any other error is a failure to decide
-// (the index is down, or the stored hash is malformed), which the caller answers 500.
+// Authenticate returns the principal of HTTP Basic credentials, username and secret, and the
+// credential it authenticated with. The prefix of the secret alone chooses the path:
 //
-// The secret of a personal access token (user:<PAT>) and of a deploy token (deploy:<token>)
-// is #44's; until then a secret that is not the user's password is ErrBadCredentials.
-func (a *Authenticator) Authenticate(ctx context.Context, username, secret string) (Principal, error) {
+//   - PATPrefix: a personal access token of the user username (authenticatePAT); the
+//     principal is user:<username>, the credential a CredPAT.
+//   - DeployPrefix: a deploy token, whatever username is (deploy, or anything for the clients
+//     that insist on a user name: authenticateDeploy); the principal is token:<id>, the
+//     credential a CredDeploy.
+//   - Anything else: the user's password (authenticatePassword); the principal is
+//     user:<username>, the credential a CredPassword.
+//
+// Every refusal is an error wrapping ErrBadCredentials, its reason logged at debug level with
+// the user name or the token id, never anything about the secret. Any other error is a failure
+// to decide (the index is down, or the stored hash is malformed), which the caller answers 500.
+func (a *Authenticator) Authenticate(ctx context.Context, username, secret string) (Principal, Credential, error) {
+	switch {
+	case strings.HasPrefix(secret, PATPrefix):
+		return a.authenticatePAT(ctx, username, secret)
+	case strings.HasPrefix(secret, DeployPrefix):
+		return a.authenticateDeploy(ctx, secret)
+	}
+	p, err := a.authenticatePassword(ctx, username, secret)
+	if err != nil {
+		return Principal{}, Credential{}, err
+	}
+	return p, Credential{Kind: CredPassword}, nil
+}
+
+// authenticatePassword returns the principal user:<username> when secret is that user's
+// password. An unknown user, a disabled one, one without a password, and a wrong secret are
+// each an error wrapping ErrBadCredentials, after the same argon2id work.
+func (a *Authenticator) authenticatePassword(ctx context.Context, username, secret string) (Principal, error) {
 	if CheckName(username) != nil {
 		// No user has such a name: nothing about a user is told by refusing it at once. It is
 		// not logged, in case it is a password typed into the wrong field.

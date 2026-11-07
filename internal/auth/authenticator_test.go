@@ -15,13 +15,16 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
-// fakeUsers is an index.Reader that has users and nothing else, and counts the reads.
+// fakeUsers is an index.Store that has users, tokens and repos and nothing else, and counts
+// the reads of users.
 type fakeUsers struct {
-	index.Reader
+	index.Store
 	mu    sync.Mutex
 	users map[string]index.User
 	err   error // the answer of every GetUser when set
 	reads atomic.Int64
+
+	tokenStore // tokenauth_test.go
 }
 
 func (f *fakeUsers) GetUser(_ context.Context, name string) (*index.User, error) {
@@ -125,8 +128,8 @@ func (f *authFixture) lastVerified() string {
 func (f *authFixture) wantOK(t *testing.T, user, secret string, n int) {
 	t.Helper()
 	before := f.verifications()
-	p, err := f.a.Authenticate(context.Background(), user, secret)
-	if err != nil || p != (Principal{Kind: KindUser, Name: user}) {
+	p, c, err := f.a.Authenticate(context.Background(), user, secret)
+	if err != nil || p != (Principal{Kind: KindUser, Name: user}) || c.Kind != CredPassword {
 		t.Fatalf("Authenticate(%s) = %v, %v; want user:%s", user, p, err, user)
 	}
 	if got := f.verifications() - before; got != n {
@@ -139,8 +142,8 @@ func (f *authFixture) wantOK(t *testing.T, user, secret string, n int) {
 func (f *authFixture) wantRefused(t *testing.T, user, secret string, n int) {
 	t.Helper()
 	before := f.verifications()
-	p, err := f.a.Authenticate(context.Background(), user, secret)
-	if !errors.Is(err, ErrBadCredentials) || p != (Principal{}) {
+	p, c, err := f.a.Authenticate(context.Background(), user, secret)
+	if !errors.Is(err, ErrBadCredentials) || p != (Principal{}) || c.Kind != "" {
 		t.Fatalf("Authenticate(%s) = %v, %v; want ErrBadCredentials", user, p, err)
 	}
 	if got := f.verifications() - before; got != n {
@@ -338,7 +341,7 @@ func TestAuthenticateFailures(t *testing.T) {
 	t.Run("index", func(t *testing.T) {
 		f := newAuthFixture(t, Options{})
 		f.users.err = errDown
-		_, err := f.a.Authenticate(context.Background(), "alice", alicePassword)
+		_, _, err := f.a.Authenticate(context.Background(), "alice", alicePassword)
 		if !errors.Is(err, errDown) || errors.Is(err, ErrBadCredentials) || f.verifications() != 0 {
 			t.Errorf("Authenticate = %v after %d verifications; want the index error, no verification", err, f.verifications())
 		}
@@ -347,7 +350,7 @@ func TestAuthenticateFailures(t *testing.T) {
 		f := newAuthFixture(t, Options{})
 		malformed := "$argon2id$v=19$garbage"
 		f.users.set(index.User{Name: "alice", PasswordHash: malformed, Kind: KindLocal})
-		_, err := f.a.Authenticate(context.Background(), "alice", alicePassword)
+		_, _, err := f.a.Authenticate(context.Background(), "alice", alicePassword)
 		if !errors.Is(err, ErrMalformedHash) || errors.Is(err, ErrBadCredentials) {
 			t.Errorf("Authenticate = %v; want ErrMalformedHash", err)
 		}
@@ -370,7 +373,7 @@ func TestAuthenticateRealCost(t *testing.T) {
 	_ = dummyHash()
 	timed := func(user, secret string) time.Duration {
 		start := time.Now()
-		_, _ = a.Authenticate(context.Background(), user, secret)
+		_, _, _ = a.Authenticate(context.Background(), user, secret)
 		return time.Since(start)
 	}
 	miss := timed("alice", alicePassword)
@@ -396,11 +399,11 @@ func TestAuthenticateConcurrent(t *testing.T) {
 			for j := range 6 {
 				switch (i + j) % 3 {
 				case 0:
-					_, _ = f.a.Authenticate(context.Background(), "alice", alicePassword)
+					_, _, _ = f.a.Authenticate(context.Background(), "alice", alicePassword)
 				case 1:
-					_, _ = f.a.Authenticate(context.Background(), "alice", bobPassword)
+					_, _, _ = f.a.Authenticate(context.Background(), "alice", bobPassword)
 				default:
-					_, _ = f.a.Authenticate(context.Background(), fmt.Sprintf("u%d", j), alicePassword)
+					_, _, _ = f.a.Authenticate(context.Background(), fmt.Sprintf("u%d", j), alicePassword)
 				}
 			}
 		})

@@ -111,6 +111,50 @@ func TestReduce(t *testing.T) {
 	}
 }
 
+// TestReduceCredential checks that the credential of the request narrows the token before the
+// Authorizer, with or without one: a personal access token with read gets pull only (S-03 on
+// /v2), with write push only, without scopes everything its user gets; a deploy token gets the
+// actions of its scopes on its own repo, nothing elsewhere and never delete (S-04, X-14); a
+// password changes nothing.
+func TestReduceCredential(t *testing.T) {
+	alice := auth.Principal{Kind: auth.KindUser, Name: "alice"}
+	deploy := auth.Principal{Kind: auth.KindToken, Name: "20"}
+	z := grants{
+		"user:alice": {"raw/assets": {auth.ActionRead, auth.ActionWrite, auth.ActionDelete}},
+		"token:20":   {"raw/assets": {auth.ActionRead, auth.ActionWrite}},
+	}
+	scopes := ParseScopes([]string{"repository:raw/assets/hello:*", "repository:pypi/internal/x:pull,push", "registry:catalog:*"})
+	pat := func(sc ...string) auth.Credential {
+		return auth.Credential{Kind: auth.CredPAT, TokenID: 1, UserID: 1, Scopes: sc}
+	}
+	dep := func(sc ...string) auth.Credential {
+		return auth.Credential{Kind: auth.CredDeploy, TokenID: 20, RepoID: 10, Repo: "raw/assets", Scopes: sc}
+	}
+	for _, tt := range []struct {
+		name  string
+		authz auth.Authorizer
+		p     auth.Principal
+		cred  auth.Credential
+		want  string
+	}{
+		{"password", nil, alice, auth.Credential{Kind: auth.CredPassword},
+			"[{registry catalog [*]} {repository pypi/internal/x [pull push]} {repository raw/assets/hello [pull push delete]}]"},
+		{"pat without scopes", z, alice, pat(), "[{registry catalog [*]} {repository raw/assets/hello [pull push delete]}]"},
+		{"pat read", nil, alice, pat("read"), "[{registry catalog [*]} {repository pypi/internal/x [pull]} {repository raw/assets/hello [pull]}]"},
+		{"pat read, with an Authorizer", z, alice, pat("read"), "[{registry catalog [*]} {repository raw/assets/hello [pull]}]"},
+		{"pat write", nil, alice, pat("write"), "[{registry catalog [*]} {repository pypi/internal/x [push]} {repository raw/assets/hello [push]}]"},
+		{"deploy read write", nil, deploy, dep("read", "write"), "[{registry catalog [*]} {repository raw/assets/hello [pull push]}]"},
+		{"deploy read write, with an Authorizer", z, deploy, dep("read", "write"), "[{registry catalog [*]} {repository raw/assets/hello [pull push]}]"},
+		{"deploy read", nil, deploy, dep("read"), "[{registry catalog [*]} {repository raw/assets/hello [pull]}]"},
+	} {
+		got, err := Reduce(auth.WithCredential(t.Context(), tt.cred), tt.authz, tt.p, scopes)
+		must(t, err)
+		if fmt.Sprint(got) != tt.want {
+			t.Errorf("%s: %v, want %s", tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestScopeAction(t *testing.T) {
 	for a, want := range map[auth.Action]string{auth.ActionRead: "pull", auth.ActionWrite: "push", auth.ActionDelete: "delete", auth.ActionManage: ""} {
 		if got := ScopeAction(a); got != want {

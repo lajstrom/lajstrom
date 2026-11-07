@@ -51,8 +51,9 @@ type Options struct {
 	// Facade is the OCI distribution API (internal/facade), mounted at /v2/. nil leaves /v2/ to
 	// the ServeMux, which answers it 404 in plain text.
 	Facade http.Handler
-	// Authenticator turns the HTTP Basic credentials of a request into its principal, on every
-	// route (authenticate). nil authenticates nobody: every request is anonymous.
+	// Authenticator turns the HTTP Basic credentials of a request, and a personal access token
+	// as a bearer outside /v2, into its principal and credential, on every route
+	// (authenticate). nil authenticates nobody: every request is anonymous.
 	Authenticator *auth.Authenticator
 }
 

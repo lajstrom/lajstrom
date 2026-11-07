@@ -36,6 +36,60 @@ func (z *authorizer) Allowed(_ context.Context, p auth.Principal, a auth.Action,
 	return slices.Contains(z.allow, a), nil
 }
 
+// TestAuthorizeCredential checks the credential's step before the Authorizer: without an
+// Authorizer a deploy token reaches its own repo only (404 elsewhere, the message of a repo
+// that does not exist), and gets neither delete nor manage there (403); a personal access token
+// with read does not write (403); with an Authorizer a denial of the credential asks it
+// nothing, and an allowance still asks it.
+func TestAuthorizeCredential(t *testing.T) {
+	scratch := index.Repo{ID: 10, Format: "raw", Name: "scratch"}
+	other := index.Repo{ID: 11, Format: "raw", Name: "other"}
+	deploy := auth.Credential{Kind: auth.CredDeploy, TokenID: 20, RepoID: 10, Repo: "raw/scratch", Scopes: []string{"write"}}
+	readPAT := auth.Credential{Kind: auth.CredPAT, TokenID: 1, UserID: 1, Scopes: []string{"read"}}
+	tests := []struct {
+		name   string
+		cred   auth.Credential
+		action auth.Action
+		repo   index.Repo
+		authz  *authorizer
+		want   error
+		msg    string
+		asked  int
+	}{
+		{name: "deploy writes its repo", cred: deploy, action: auth.ActionWrite, repo: scratch},
+		{name: "deploy writes another repo", cred: deploy, action: auth.ActionWrite, repo: other, want: index.ErrNotFound,
+			msg: "index: not found: repository raw/other"},
+		{name: "deploy deletes", cred: deploy, action: auth.ActionDelete, repo: scratch, want: format.ErrForbidden,
+			msg: "format: forbidden: delete on raw/scratch: auth: outside the credential's scopes: the deploy token has write"},
+		{name: "deploy manages", cred: deploy, action: auth.ActionManage, repo: scratch, want: format.ErrForbidden},
+		{name: "deploy reads without read", cred: deploy, action: auth.ActionRead, repo: scratch, want: format.ErrForbidden},
+		{name: "pat read writes", cred: readPAT, action: auth.ActionWrite, repo: other, want: format.ErrForbidden},
+		{name: "pat read reads", cred: readPAT, action: auth.ActionRead, repo: other},
+		{name: "a denial asks no Authorizer", cred: readPAT, action: auth.ActionWrite, repo: other, authz: &authorizer{allow: []auth.Action{auth.ActionWrite}},
+			want: format.ErrForbidden},
+		{name: "an allowance asks the Authorizer", cred: readPAT, action: auth.ActionRead, repo: other, authz: &authorizer{}, want: index.ErrNotFound, asked: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := auth.WithCredential(auth.WithPrincipal(context.Background(), auth.Principal{Kind: auth.KindToken, Name: "20"}), tt.cred)
+			var deps format.Deps
+			if tt.authz != nil {
+				deps.Auth = tt.authz
+			}
+			err := format.Authorize(ctx, deps, tt.action, tt.repo)
+			if !errors.Is(err, tt.want) || (tt.want != nil && errors.Is(err, auth.ErrScope) != errors.Is(tt.want, format.ErrForbidden)) {
+				t.Fatalf("Authorize = %v, want %v", err, tt.want)
+			}
+			if tt.msg != "" && err.Error() != tt.msg {
+				t.Errorf("message = %q, want %q", err, tt.msg)
+			}
+			if tt.authz != nil && len(tt.authz.asked) != tt.asked {
+				t.Errorf("the Authorizer was asked %d times, want %d", len(tt.authz.asked), tt.asked)
+			}
+		})
+	}
+}
+
 func TestAuthorize(t *testing.T) {
 	alice := auth.Principal{Kind: auth.KindUser, Name: "alice"}
 	deploy := auth.Principal{Kind: auth.KindToken, Name: "42"}

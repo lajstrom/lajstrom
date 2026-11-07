@@ -161,9 +161,10 @@ func parseParam(part, name string) (uint64, error) {
 	return n, nil
 }
 
-// CheckPassword checks that password is UTF-8 of MinPasswordLen to MaxPasswordLen bytes. Any
-// character is allowed. Errors wrap ErrInvalid and name the bound; they never contain the
-// password.
+// CheckPassword checks that password is UTF-8 of MinPasswordLen to MaxPasswordLen bytes that
+// does not start with a token prefix, PATPrefix or DeployPrefix: the Authenticator takes a
+// secret with either for a token, never for a password. Any other character is allowed. Errors
+// wrap ErrInvalid and name the bound; they never contain the password.
 func CheckPassword(password string) error {
 	switch {
 	case len(password) < MinPasswordLen:
@@ -172,12 +173,14 @@ func CheckPassword(password string) error {
 		return invalidf("password: must be at most %d bytes", MaxPasswordLen)
 	case !utf8.ValidString(password):
 		return invalidf("password: must be UTF-8")
+	case strings.HasPrefix(password, PATPrefix), strings.HasPrefix(password, DeployPrefix):
+		return invalidf("password: must not start with %s or %s: a secret with either is a token's", PATPrefix, DeployPrefix)
 	}
 	return nil
 }
 
 // reservedNames are user names that HTTP Basic gives another meaning: deploy:<token> is how a
-// deploy token authenticates (docs/spec/rbac.md §1, #44).
+// deploy token authenticates (docs/spec/rbac.md §1).
 var reservedNames = map[string]bool{"deploy": true}
 
 // CheckName checks a user name: 1 to MaxNameLen bytes of lowercase letters, digits, '.', '_'
