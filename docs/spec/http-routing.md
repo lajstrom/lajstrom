@@ -83,7 +83,7 @@ Writes require `write` on `<format>/<repo>`.
 | `HEAD` | same, no body |
 | `PUT /raw/<repo>/<path…>` | upload one file (body). Idempotent for identical bytes. Creates a new version (tag) for different bytes; the path now resolves to it. `201` with `Location` and `Docker-Content-Digest`. |
 | `DELETE /raw/<repo>/<path…>` | requires `delete`; removes all versions of the path (after the MVP: one version) |
-| `GET /raw/<repo>/` and any directory prefix with trailing `/` | JSON listing (`{"entries":[{"path","size","digest","created"}]}`); HTML after the MVP |
+| `GET /raw/<repo>/` and any directory prefix with trailing `/` | JSON listing (`{"entries":[{"path","size","digest","created"}]}`), recursive: one entry per version of every path below the prefix, at any depth, sorted by path and then `created`; `digest` is the manifest digest, the value `?digest=` takes. HTML after the MVP |
 
 Model: package = path, version = first 16 hex of the content sha256, variant none. `oras push`
 to `/v2/raw/<repo>/<escaped path>:<version>` works with the same annotations.

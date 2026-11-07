@@ -42,16 +42,23 @@ var (
 
 // Fake is a provider.Provider that keeps repositories in memory: blobs and manifests by digest,
 // tags, and referrers by the subject of the manifests pushed. It behaves like a registry with
-// create-on-push, the referrers API, a catalog, manifest deletes and mutable tags. Push and
-// PushReference read the content to its end and check its size and digest against the
-// descriptor, as a registry does. It records every successful push.
+// create-on-push, the referrers API, a catalog, manifest deletes and mutable tags, and without
+// blob redirects. Push and PushReference read the content to its end and check its size and
+// digest against the descriptor, as a registry does. It records every successful push.
 //
 // The Fail fields inject errors: when one is set, every call of that method returns it,
-// wrapped with the operation. Set them before the calls they should affect; they are not
-// guarded for changes during calls. Use a Fake as a pointer; it is safe for concurrent use.
+// wrapped with the operation. Set them, and RedirectURL and NoDeleteManifest, before the calls
+// they should affect; they are not guarded for changes during calls. Use a Fake as a pointer;
+// it is safe for concurrent use.
 type Fake struct {
 	// RegistryName is Name; empty means "fake".
 	RegistryName string
+	// RedirectURL, when set, answers BlobRedirectURL for a blob the repository name has: the
+	// URL and true to redirect, false to stream. Nil means no redirect, as before.
+	RedirectURL func(name string, d digest.Digest) (string, bool)
+	// NoDeleteManifest makes the Fake a registry that cannot delete manifests: Capabilities
+	// reports DeleteManifest false and Delete of a manifest returns provider.ErrUnsupported.
+	NoDeleteManifest bool
 	// FailPush fails Push before it reads the content.
 	FailPush error
 	// FailPushReference fails PushReference before it reads the content.
@@ -93,9 +100,11 @@ func (f *Fake) Name() string {
 	return f.RegistryName
 }
 
-// Capabilities reports create-on-push, referrers, catalog and manifest deletes.
+// Capabilities reports create-on-push, referrers, catalog and manifest deletes (unless
+// NoDeleteManifest), and blob redirects when RedirectURL is set.
 func (f *Fake) Capabilities(context.Context) (provider.Capabilities, error) {
-	return provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true, DeleteManifest: true}, nil
+	return provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true,
+		DeleteManifest: !f.NoDeleteManifest, BlobRedirect: f.RedirectURL != nil}, nil
 }
 
 // Repository returns the repository name; it exists once something is pushed to it.
@@ -134,9 +143,24 @@ func (f *Fake) DeleteRepository(_ context.Context, name string) error {
 	return nil
 }
 
-// BlobRedirectURL answers that there is no redirect: callers stream through Fetch.
-func (f *Fake) BlobRedirectURL(context.Context, string, digest.Digest) (string, bool, error) {
-	return "", false, nil
+// BlobRedirectURL asks RedirectURL about a blob the repository name has; without RedirectURL
+// there is no redirect and callers stream through Fetch. A blob the repository does not have is
+// provider.ErrNotFound, as a registry answers.
+func (f *Fake) BlobRedirectURL(_ context.Context, name string, d digest.Digest) (string, bool, error) {
+	if f.RedirectURL == nil {
+		return "", false, nil
+	}
+	f.mu.Lock()
+	ok := false
+	if rd := f.repo(name, false); rd != nil {
+		_, ok = rd.blobs[d]
+	}
+	f.mu.Unlock()
+	if !ok {
+		return "", false, fmt.Errorf("providertest: blob redirect %s@%s: %w", name, d, provider.ErrNotFound)
+	}
+	url, redirect := f.RedirectURL(name, d)
+	return url, redirect, nil
 }
 
 // Pushes returns the successful Push calls so far, in order.
@@ -296,11 +320,18 @@ func receive(expected ocispec.Descriptor, content io.Reader) ([]byte, error) {
 	if sink == io.Discard {
 		return nil, nil
 	}
+	if kept.Len() == 0 {
+		return []byte{}, nil // an empty blob is kept, not discarded: nil means discarded
+	}
 	return kept.Bytes(), nil
 }
 
-// Delete removes the manifest target, with the tags that point at it, or the blob target.
+// Delete removes the manifest target, with the tags that point at it, or the blob target. With
+// NoDeleteManifest a manifest is provider.ErrUnsupported.
 func (r *repository) Delete(_ context.Context, target ocispec.Descriptor) error {
+	if r.f.NoDeleteManifest && isManifest(target.MediaType) {
+		return fmt.Errorf("%s: %w", r.op("delete", target.Digest), provider.ErrUnsupported)
+	}
 	r.f.mu.Lock()
 	defer r.f.mu.Unlock()
 	rd := r.f.repo(r.name, false)

@@ -27,7 +27,8 @@ import (
 	"github.com/lajstrom/lajstrom/internal/provider/providertest"
 )
 
-// rawPlugin is a raw-like plugin for the tests; the real raw plugin comes with #13. Build makes
+// rawPlugin is a raw-like plugin for the tests, looser than internal/format/raw (several files,
+// a version from the parameters), so that the pipeline is tested on its own. Build makes
 // one raw.file layer per uploaded file, digested while it streams through once, and a metadata
 // layer {"files": [{"name", "size"}]}, with the annotations from the parameters name and
 // version. Validate checks the titles and returns the entry. EscapeName escapes each path

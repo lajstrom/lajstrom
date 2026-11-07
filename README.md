@@ -25,6 +25,7 @@ https://lajstrom.dev
 | | |
 | --- | --- |
 | [Start here](docs/onboarding.md) | one hour from zero to a claimed issue |
+| [Quick start: raw](docs/quickstart/raw.md) | `curl -T` a file in, `curl` it out, see the manifest in the registry |
 | [Architecture](docs/architecture.md) | components, storage model, the five flows |
 | [Specs](docs/spec/) | manifest profile, layout and interfaces, HTTP routing, index schema, RBAC |
 | [ADRs](docs/adr/) | decisions and why |
