@@ -2,14 +2,14 @@ package main
 
 import "github.com/spf13/cobra"
 
-// newAdminCmd returns the admin group: repo, and the placeholders user, token and binding
+// newAdminCmd returns the admin group: repo, key, and the placeholders user, token and binding
 // until #47 implements them.
 func newAdminCmd(a *app) *cobra.Command {
 	admin := &cobra.Command{
 		Use:   "admin",
-		Short: "Manage repos, users, tokens and bindings",
+		Short: "Manage repos, signing keys, users, tokens and bindings",
 	}
-	admin.AddCommand(newAdminRepoCmd(a))
+	admin.AddCommand(newAdminRepoCmd(a), newAdminKeyCmd(a))
 	for _, sub := range []struct {
 		use, short string
 		issue      int

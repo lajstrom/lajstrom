@@ -2,31 +2,51 @@ package deb
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
-// Routes mounts the dists/ routes of the apt frontend below /apt/ (docs/spec/http-routing.md
-// §3, apt), each a GET (and so a HEAD) that needs read on the repo:
+// The signed documents of a suite and the keyring of a repo (docs/spec/http-routing.md §3,
+// apt). The index_cache kinds are the file names below dists/<suite>/.
+const (
+	kindInRelease  = "InRelease"
+	kindReleaseGPG = "Release.gpg"
+
+	signatureContentType = "application/pgp-signature"
+	keysContentType      = "application/pgp-keys"
+
+	// signRounds bounds the rounds of handlers.signed; a round is lost when the suite is
+	// rendered again between the read of its Release and the store of the signatures.
+	signRounds = 3
+)
+
+// Routes mounts the routes of the apt frontend below /apt/ (docs/spec/http-routing.md §3,
+// apt), each a GET (and so a HEAD) that needs read on the repo:
 //
 //	/{repo}/dists/{suite}/Release                                    the Release of the suite
-//	/{repo}/dists/{suite}/InRelease, Release.gpg                     404 until #41 signs the Release
+//	/{repo}/dists/{suite}/InRelease, Release.gpg                     the Release signed with the repo's keys
 //	/{repo}/dists/{suite}/{component}/binary-{arch}/Packages         and Packages.gz, Packages.xz
 //	/{repo}/dists/{suite}/{component}/binary-{arch}/by-hash/SHA256/{hash}
+//	/{repo}/key.asc                                                  the keyring of the repo, for signed-by=
 //
 // The documents come from index_cache through format.CachedDocument and are served with
-// format.ServeDocument (ETag, Last-Modified, If-None-Match, Range). pool/, key.asc and the
-// upload route are #41 and #42; until then those paths are 404, and a package reaches an apt
-// repo by oras push through the facade, whose hook runs Validate. The handlers render with a
-// Plugin that keeps the providers of deps (RenderIndex reads a metadata layer the index left
-// out) and the clock of p.
+// format.ServeDocument (ETag, Last-Modified, If-None-Match, Range). deps.Signer signs; when it
+// is nil (the server has no master key) InRelease, Release.gpg and key.asc are 404 and clients
+// take the unsigned Release from a source marked [trusted=yes]. pool/ and the upload route
+// are #42; until then those paths are 404, and a package reaches an apt repo by oras push
+// through the facade, whose hook runs Validate. The handlers render with a Plugin that keeps
+// the providers of deps (RenderIndex reads a metadata layer the index left out) and the clock
+// of p.
 func (p Plugin) Routes(r format.Router, deps format.Deps) {
 	if deps.Log == nil {
 		deps.Log = slog.Default().With("format", Name)
@@ -39,6 +59,7 @@ func (p Plugin) Routes(r format.Router, deps format.Deps) {
 	r.HandleFunc("GET /{repo}/dists/{suite}/{file}", h.release)
 	r.HandleFunc("GET /{repo}/dists/{suite}/{component}/{dir}/{file}", h.packages)
 	r.HandleFunc("GET /{repo}/dists/{suite}/{component}/{dir}/by-hash/SHA256/{hash}", h.byHash)
+	r.HandleFunc("GET /{repo}/key.asc", h.publicKeys)
 }
 
 // handlers are the apt routes over one format.Deps.
@@ -71,9 +92,10 @@ func (h *handlers) fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-// release serves dists/{suite}/Release. InRelease and Release.gpg are the signed forms, which
-// #41 renders in the same scope from the bytes of this Release; until then they are 404, and
-// apt takes the unsigned Release from a source marked [trusted=yes].
+// release serves dists/{suite}/Release and its signed forms, InRelease (clearsigned) and
+// Release.gpg (the detached signature), made from the bytes of the Release in index_cache
+// (signed). Without a Signer those two are 404, and apt takes the unsigned Release from a
+// source marked [trusted=yes].
 func (h *handlers) release(w http.ResponseWriter, r *http.Request) {
 	repo, ok := h.start(w, r)
 	if !ok {
@@ -83,12 +105,123 @@ func (h *handlers) release(w http.ResponseWriter, r *http.Request) {
 	switch file {
 	case kindRelease:
 		h.serve(w, r, repo, suite, kindRelease)
-	case "InRelease", "Release.gpg":
-		h.fail(w, r, fmt.Errorf("%w: apt/%s dists/%s/%s: the Release is not signed until #41; use deb [trusted=yes] until then",
-			index.ErrNotFound, repo.Name, suite, file))
+	case kindInRelease, kindReleaseGPG:
+		if h.deps.Signer == nil {
+			h.fail(w, r, unsigned(repo, "dists/"+suite+"/"+file))
+			return
+		}
+		c, err := h.signed(r.Context(), repo, suite, file)
+		if err != nil {
+			h.fail(w, r, err)
+			return
+		}
+		format.ServeDocument(w, r, c, contentType(file))
 	default:
 		h.fail(w, r, notFound(repo, suite, file))
 	}
+}
+
+// publicKeys serves key.asc: the armored keyring of the repo from the Signer, its active key
+// (made on the first request) and the keys retired within keys.retireGrace, what signed-by=
+// points at. It is not cached: it is small, and a rotation changes it. Without a Signer it is
+// 404.
+func (h *handlers) publicKeys(w http.ResponseWriter, r *http.Request) {
+	repo, ok := h.start(w, r)
+	if !ok {
+		return
+	}
+	if h.deps.Signer == nil {
+		h.fail(w, r, unsigned(repo, "key.asc"))
+		return
+	}
+	b, err := h.deps.Signer.PublicKeys(r.Context(), repo)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	sum := sha256.Sum256(b)
+	format.ServeDocument(w, r, &index.Cache{Content: b, SHA256: hex.EncodeToString(sum[:])}, keysContentType)
+}
+
+// signed returns the InRelease or the Release.gpg of the suite, kind. Both are made from the
+// bytes of the Release of the suite in index_cache, rendered first when it is not there, and
+// stored beside it with its RenderedAt and SignedAt the time of signing; a signed document
+// whose RenderedAt is not that of the Release is of an older render and is made again. The
+// Signer signs outside any transaction of the index: it reads the repo's keys and makes the
+// first one, and in the transaction of format.CachedDocument that read would wait for the
+// connection the transaction holds (SQLite in memory has one) and the insert for its write
+// lock. The documents are stored only while the Release they sign is the one in index_cache,
+// so a render that replaced it meanwhile is signed in the next round.
+func (h *handlers) signed(ctx context.Context, repo index.Repo, suite, kind string) (*index.Cache, error) {
+	for range signRounds {
+		rel, err := h.cached(ctx, repo, suite, kindRelease)
+		if err != nil {
+			return nil, err
+		}
+		c, err := h.deps.Index.GetIndexCache(ctx, repo.ID, suite, kind)
+		switch {
+		case err == nil && c.RenderedAt.Equal(rel.RenderedAt):
+			return c, nil
+		case err != nil && !errors.Is(err, index.ErrNotFound):
+			return nil, err
+		}
+		in, err := h.deps.Signer.ClearSign(ctx, repo, rel.Content)
+		if err != nil {
+			return nil, err
+		}
+		sig, err := h.deps.Signer.DetachSign(ctx, repo, rel.Content)
+		if err != nil {
+			return nil, err
+		}
+		c, err = h.storeSigned(ctx, rel, kind, map[string][]byte{kindInRelease: in, kindReleaseGPG: sig})
+		if !errors.Is(err, errRenderedAgain) {
+			return c, err
+		}
+	}
+	return nil, fmt.Errorf("deb: apt/%s dists/%s/%s: the Release was rendered again while it was signed, %d times",
+		repo.Name, suite, kind, signRounds)
+}
+
+// errRenderedAgain is the error of storeSigned when the Release it signed is no longer the one
+// in index_cache.
+var errRenderedAgain = errors.New("deb: the Release was rendered again")
+
+// storeSigned stores the signed documents of the Release rel, by kind, in one transaction that
+// first checks that rel is still the Release in index_cache, and returns the one of kind.
+func (h *handlers) storeSigned(ctx context.Context, rel *index.Cache, kind string, docs map[string][]byte) (*index.Cache, error) {
+	var found *index.Cache
+	err := h.deps.Index.Tx(ctx, func(tx index.Writer) error {
+		cur, err := tx.GetIndexCache(ctx, rel.RepoID, rel.Scope, kindRelease)
+		switch {
+		case errors.Is(err, index.ErrNotFound):
+			return errRenderedAgain
+		case err != nil:
+			return err
+		case cur.SHA256 != rel.SHA256 || !cur.RenderedAt.Equal(rel.RenderedAt):
+			return errRenderedAgain
+		}
+		signedAt := time.Now().UTC()
+		for _, k := range []string{kindInRelease, kindReleaseGPG} {
+			sum := sha256.Sum256(docs[k])
+			c := &index.Cache{RepoID: rel.RepoID, Scope: rel.Scope, Kind: k, Content: docs[k], SHA256: hex.EncodeToString(sum[:]),
+				RenderedAt: rel.RenderedAt, SignedAt: &signedAt}
+			if err := tx.PutIndexCache(ctx, c); err != nil {
+				return err
+			}
+			if k == kind {
+				found = c
+			}
+		}
+		return nil
+	})
+	return found, err
+}
+
+// unsigned is the error for a signed document or the keyring of a repo when the server does
+// not sign.
+func unsigned(repo index.Repo, path string) error {
+	return fmt.Errorf("%w: apt/%s/%s: this server does not sign, keys.masterKeyEnv is not set; use deb [trusted=yes]",
+		index.ErrNotFound, repo.Name, path)
 }
 
 // packages serves dists/{suite}/{component}/{dir}/{file}: a Packages, Packages.gz or

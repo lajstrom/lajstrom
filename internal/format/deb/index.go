@@ -123,8 +123,10 @@ func (p Plugin) RenderIndex(ctx context.Context, repo index.Repo, scope format.I
 // contentType returns the Content-Type of the document kind.
 func contentType(kind string) string {
 	switch {
-	case kind == kindRelease:
+	case kind == kindRelease, kind == kindInRelease:
 		return releaseContentType
+	case kind == kindReleaseGPG:
+		return signatureContentType
 	case strings.HasSuffix(kind, ".gz"):
 		return gzipContentType
 	case strings.HasSuffix(kind, ".xz"):
@@ -346,7 +348,8 @@ func controlOrder(control map[string]string) []string {
 
 // releaseOf returns the Release of a suite: the fields of the suite, Acquire-By-Hash: yes, and
 // the MD5Sum, SHA1 and SHA256 sections with a line " <hash> <size> <path>" for each of docs,
-// the path below dists/<suite>/. It is not signed: InRelease and Release.gpg are #41.
+// the path below dists/<suite>/. The routes sign these bytes into InRelease and Release.gpg
+// (handlers.signed).
 func releaseOf(repo index.Repo, suite string, components, archs []string, docs []format.Document, date string) format.Document {
 	var b bytes.Buffer
 	for _, f := range [][2]string{

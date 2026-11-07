@@ -1,7 +1,7 @@
 # Configuration
 
-Lajstrom reads one YAML file. `serve`, `migrate`, `reindex` and `admin repo` load and validate
-it before they do anything else; `version` does not need it.
+Lajstrom reads one YAML file. `serve`, `migrate`, `reindex`, `admin repo` and `admin key` load
+and validate it before they do anything else; `version` does not need it.
 
 ```sh
 lajstrom serve --config /etc/lajstrom/lajstrom.yaml
@@ -26,7 +26,9 @@ Later steps win:
 3. **Environment overrides** for the scalar keys that have a variable in the Env column. An
    empty variable counts as unset. Lists (`registries`, `repos`) cannot be set from the
    environment.
-4. **Secrets**: each `registries[].auth.passwordEnv` is read from the environment.
+4. **Secrets**: each `registries[].auth.passwordEnv` is read from the environment. The master
+   key of `keys.masterKeyEnv` is not: `serve` and `admin key` read it when they start (see
+   [keys](#keys)).
 5. **Validation.** Every problem is reported at once, one line each, starting with the key:
 
    ```text
@@ -160,7 +162,23 @@ The `ingest` section is an addition to the shape in [layout.md](spec/layout.md) 
 
 | Key | Type | Default | Env | Description |
 | --- | --- | --- | --- | --- |
-| `keys.masterKeyEnv` | environment variable name | empty | none | Variable that holds the master key, which encrypts signing keys at rest (issue #41). Example: `LAJSTROM_MASTER_KEY`. |
+| `keys.masterKeyEnv` | environment variable name | empty | none | Variable that holds the master key, which encrypts the signing keys at rest: 64 hexadecimal characters (32 bytes), e.g. from `openssl rand -hex 32`. Example: `LAJSTROM_MASTER_KEY`. See below for what happens without it. |
+| `keys.algorithm` | `ed25519` or `rsa4096` | `ed25519` | none | Algorithm of the signing keys made from now on (each apt repo gets one on its first signed request, or with `lajstrom admin key`). `ed25519` is an OpenPGP EdDSA key, which apt verifies since 2.0 (Debian 11, Ubuntu 20.04); `rsa4096` is for older clients. Keys made before keep their algorithm; rotate a repo's key to change it. |
+| `keys.retireGrace` | duration (`720h`, `168h`) | `720h` | none | How long a key retired by a rotation keeps signing `InRelease` and `Release.gpg` beside the new key and stays in the repo's `key.asc`. Clients that pinned the old `key.asc` keep verifying until it ends; fetch `key.asc` again on every client before then ([operations.md](operations.md#rotation)). `0` drops a retired key at once, for a key that must not be trusted any more. Must not be negative. |
+
+The master key is read once, when `serve` or `admin key` starts:
+
+- **Set and valid**: apt repos are signed (`InRelease`, `Release.gpg`, `key.asc`), each with its
+  own key, made on first use and stored encrypted with the master key.
+- **Set but empty, or not 64 hexadecimal characters**: `serve` and `admin key` stop with an
+  error that names the variable and the format, never the value.
+- **`keys.masterKeyEnv` empty, or the variable not set**: signing is off. `serve` logs a warning
+  for every apt repo, whose `InRelease`, `Release.gpg` and `key.asc` are `404`; clients use
+  `[trusted=yes]`. When the index already holds signing keys, `serve` stops instead: only the
+  master key decrypts them, and their clients pinned them. `admin key` always needs it.
+
+[operations.md](operations.md#keys-and-apt-signing) has the procedures: generating and storing
+the master key, distributing `key.asc`, rotating a key.
 
 ### repos
 

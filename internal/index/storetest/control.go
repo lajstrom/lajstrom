@@ -2,7 +2,9 @@ package storetest
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -259,7 +261,6 @@ func testKeys(t *testing.T, s index.Store) {
 	repo := newRepo(t, s, "apt", "ubuntu")
 	keys := []index.Key{
 		{Kind: "jwt", Public: []byte("pub1"), PrivateEnc: []byte("enc1"), Fingerprint: "fp1", CreatedAt: at(1)},
-		{Kind: "jwt", Public: []byte("pub2"), PrivateEnc: []byte("enc2"), Fingerprint: "fp2", CreatedAt: at(2)},
 		{RepoID: &repo.ID, Kind: "gpg", Public: []byte("pub3"), PrivateEnc: []byte("enc3"), Fingerprint: "fp3", CreatedAt: at(3)},
 		{Kind: "jwt", Public: []byte("pub0"), PrivateEnc: []byte("enc0"), Fingerprint: "fp0", CreatedAt: at(9), RetiredAt: ptr(at(9))},
 	}
@@ -275,29 +276,32 @@ func testKeys(t *testing.T, s index.Store) {
 	}
 	k, err := getKey(nil, "jwt")
 	must(t, err)
-	same(t, "server jwt key", keys[1], k)
+	same(t, "server jwt key", keys[0], k)
 	k, err = getKey(&repo.ID, "gpg")
 	must(t, err)
-	same(t, "repo gpg key", keys[2], k)
+	same(t, "repo gpg key", keys[1], k)
 
-	must(t, s.RetireKey(ctx, keys[1].ID, at(5)))
-	keys[1].RetiredAt = ptr(at(5))
+	must(t, s.RetireKey(ctx, keys[0].ID, at(5)))
+	keys[0].RetiredAt = ptr(at(5))
+	wantErr(t, "GetKey after RetireKey of the one not retired", second(getKey(nil, "jwt")), index.ErrNotFound)
+	newer := index.Key{Kind: "jwt", Public: []byte("pub2"), PrivateEnc: []byte("enc2"), Fingerprint: "fp2", CreatedAt: at(6)}
+	must(t, s.CreateKey(ctx, &newer))
 	k, err = getKey(nil, "jwt")
 	must(t, err)
-	same(t, "server jwt key after RetireKey of the newest", keys[0], k)
-	must(t, s.RetireKey(ctx, keys[0].ID, time.Time{}))
+	same(t, "server jwt key after a rotation", newer, k)
+	must(t, s.RetireKey(ctx, newer.ID, time.Time{}))
 
 	server, err := s.ListKeys(ctx, nil)
 	must(t, err)
-	if len(server) != 3 || server[0].RetiredAt == nil {
-		t.Errorf("ListKeys(nil) = %+v, want 3 keys, the first retired now", server)
+	if len(server) != 3 || server[2].RetiredAt == nil {
+		t.Errorf("ListKeys(nil) = %+v, want 3 keys, the last retired now", server)
 	} else {
-		keys[0].RetiredAt = server[0].RetiredAt
-		same(t, "ListKeys(nil)", []index.Key{keys[0], keys[1], keys[3]}, server)
+		newer.RetiredAt = server[2].RetiredAt
+		same(t, "ListKeys(nil)", []index.Key{keys[0], keys[2], newer}, server)
 	}
 	ofRepo, err := s.ListKeys(ctx, &repo.ID)
 	must(t, err)
-	same(t, "ListKeys(repo)", []index.Key{keys[2]}, ofRepo)
+	same(t, "ListKeys(repo)", []index.Key{keys[1]}, ofRepo)
 
 	for _, tt := range []struct {
 		name string
@@ -310,6 +314,92 @@ func testKeys(t *testing.T, s index.Store) {
 		{"RetireKey missing", s.RetireKey(ctx, 999999, at(1)), index.ErrNotFound},
 	} {
 		wantErr(t, tt.name, tt.err, tt.want)
+	}
+}
+
+// testKeysActive checks the unique index of migration 0004: one key that is not retired per
+// kind and owner, the owner a repo or the server; retired keys do not count, and a key retired
+// makes room for the next.
+func testKeysActive(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	a, b := newRepo(t, s, "apt", "a"), newRepo(t, s, "apt", "b")
+	key := func(repoID *int64, kind, fp string, retired *time.Time) *index.Key {
+		return &index.Key{RepoID: repoID, Kind: kind, Public: []byte("pub-" + fp), PrivateEnc: []byte("enc-" + fp),
+			Fingerprint: fp, RetiredAt: retired}
+	}
+	first := key(&a.ID, "gpg", "a1", nil)
+	must(t, s.CreateKey(ctx, first))
+	for _, tt := range []struct {
+		name string
+		key  *index.Key
+		want error // nil: created
+	}{
+		{"a second gpg key of a", key(&a.ID, "gpg", "a2", nil), index.ErrConflict},
+		{"a jwt key of a", key(&a.ID, "jwt", "a3", nil), nil},
+		{"a retired gpg key of a", key(&a.ID, "gpg", "a4", ptr(at(1))), nil},
+		{"the gpg key of b", key(&b.ID, "gpg", "b1", nil), nil},
+		{"a server jwt key", key(nil, "jwt", "s1", nil), nil},
+		{"a second server jwt key", key(nil, "jwt", "s2", nil), index.ErrConflict},
+		{"a server gpg key", key(nil, "gpg", "s3", nil), nil},
+	} {
+		err := s.CreateKey(ctx, tt.key)
+		if tt.want == nil {
+			if err != nil {
+				t.Errorf("CreateKey of %s: %v", tt.name, err)
+			}
+			continue
+		}
+		wantErr(t, "CreateKey of "+tt.name, err, tt.want)
+	}
+	must(t, s.RetireKey(ctx, first.ID, at(2)))
+	next := key(&a.ID, "gpg", "a5", nil)
+	must(t, s.CreateKey(ctx, next))
+	got, err := s.GetKey(ctx, &a.ID, "gpg")
+	must(t, err)
+	same(t, "the gpg key of a after a rotation", *next, *got)
+	keys, err := s.ListKeys(ctx, &a.ID)
+	must(t, err)
+	var fps []string
+	for _, k := range keys {
+		fps = append(fps, k.Fingerprint)
+	}
+	same(t, "the keys of a", []string{"a1", "a3", "a4", "a5"}, fps)
+}
+
+// testKeyRace creates the gpg key of a new repo from several writers at once, as replicas do
+// on a repo's first signed request: one insert wins, the others are ErrConflict, and GetKey
+// returns the winner.
+func testKeyRace(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	const rounds, writers = 10, 8
+	for round := range rounds {
+		repo := newRepo(t, s, "apt", fmt.Sprintf("race-%d", round))
+		errs := make([]error, writers)
+		keys := make([]index.Key, writers)
+		var wg sync.WaitGroup
+		for i := range writers {
+			wg.Go(func() {
+				fp := fmt.Sprintf("fp-%d-%d", round, i)
+				keys[i] = index.Key{RepoID: &repo.ID, Kind: "gpg", Public: []byte(fp), PrivateEnc: []byte(fp), Fingerprint: fp}
+				errs[i] = s.CreateKey(ctx, &keys[i])
+			})
+		}
+		wg.Wait()
+		stored, err := s.GetKey(ctx, &repo.ID, "gpg")
+		must(t, err)
+		winners := 0
+		for i, err := range errs {
+			switch {
+			case err == nil:
+				winners++
+				same(t, fmt.Sprintf("round %d, writer %d", round, i), *stored, keys[i])
+			case !errors.Is(err, index.ErrConflict):
+				t.Errorf("round %d, writer %d: %v, want ErrConflict", round, i, err)
+			}
+		}
+		if winners != 1 {
+			t.Errorf("round %d: %d writers created the key, want 1", round, winners)
+		}
 	}
 }
 

@@ -71,8 +71,20 @@ type Publisher interface {
 	Upload(ctx context.Context, repo index.Repo, up Upload, principal auth.Principal) (*Published, error)
 }
 
+// Signer signs a repo's index documents with the repo's own key and serves the public keys
+// clients pin (apt's signed-by). internal/keys implements it; format does not import keys. A
+// nil Signer in Deps means signing is off.
+type Signer interface {
+	// ClearSign returns data clearsigned with the repo's key: apt's InRelease.
+	ClearSign(ctx context.Context, repo index.Repo, data []byte) ([]byte, error)
+	// DetachSign returns the armored detached signature of data: apt's Release.gpg.
+	DetachSign(ctx context.Context, repo index.Repo, data []byte) ([]byte, error)
+	// PublicKeys returns the armored keyring that verifies what the repo signs: apt's key.asc.
+	PublicKeys(ctx context.Context, repo index.Repo) ([]byte, error)
+}
+
 // Deps are the services a plugin's routes use. The server builds one Deps and passes it to
-// every plugin. Keys (apt signing) is added by the M2 signing issue (#41).
+// every plugin.
 type Deps struct {
 	// Index reads the index; frontends also refresh index_cache through it.
 	Index index.Store
@@ -87,4 +99,7 @@ type Deps struct {
 	Audit audit.Writer
 	// Log is the plugin's logger.
 	Log *slog.Logger
+	// Signer signs index documents with per-repo keys (apt InRelease, Release.gpg, key.asc);
+	// nil when the server has no master key (keys.masterKeyEnv) and signing is off.
+	Signer Signer
 }
