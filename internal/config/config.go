@@ -12,6 +12,7 @@ type Config struct {
 	Log        Log        `yaml:"log"`
 	Database   Database   `yaml:"database"`
 	Registries []Registry `yaml:"registries"`
+	Ingest     Ingest     `yaml:"ingest"`
 	Auth       Auth       `yaml:"auth"`
 	Keys       Keys       `yaml:"keys"`
 	Repos      []Repo     `yaml:"repos"`
@@ -115,6 +116,15 @@ func (a RegistryAuth) GoString() string {
 	return fmt.Sprintf("config.RegistryAuth{Username:%q, PasswordEnv:%q}", a.Username, a.PasswordEnv)
 }
 
+// Ingest configures the write path (internal/ingest).
+type Ingest struct {
+	// ClaimTTL is how long a publish's claim on a tag holds off a publish of other bytes to the
+	// same tag; a claim older than this is stale, and the next publish takes it over
+	// (docs/spec/index-schema.md, Coordination). It must outlast a manifest PUT and one index
+	// transaction, not the blob uploads, which come before the claim. Must not be negative.
+	ClaimTTL time.Duration `yaml:"claimTTL"`
+}
+
 // Auth configures authentication (docs/spec/rbac.md).
 type Auth struct {
 	// AnonymousRead is the server-wide switch for anonymous read: when false, no repo is
@@ -153,6 +163,7 @@ const (
 	DefaultRegistryType    = "generic"
 	DefaultRegistryTimeout = 30 * time.Second
 	DefaultRegistryRetries = 3
+	DefaultIngestClaimTTL  = 10 * time.Minute
 )
 
 // Default returns the configuration before the file is read. server.listen has no default.
@@ -161,5 +172,6 @@ func Default() *Config {
 		Server:   Server{ShutdownTimeout: DefaultShutdownTimeout},
 		Log:      Log{Level: DefaultLogLevel, Format: DefaultLogFormat},
 		Database: Database{Driver: DefaultDatabaseDriver, DSN: DefaultDatabaseDSN},
+		Ingest:   Ingest{ClaimTTL: DefaultIngestClaimTTL},
 	}
 }

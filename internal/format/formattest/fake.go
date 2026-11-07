@@ -25,7 +25,8 @@ import (
 //	                        unauthenticated, forbidden, notfound, conflict, unsupported,
 //	                        unauthorized (provider.ErrUnauthorized) or other (a plain error)
 //
-// and whatever Mount adds. Validate and Build return format.ErrUnsupported.
+// and whatever Mount adds. Validate and Build call ValidateFunc and BuildFunc, and return
+// format.ErrUnsupported when those are nil.
 type Fake struct {
 	// FormatName is the plugin name; empty means "fake".
 	FormatName string
@@ -33,6 +34,10 @@ type Fake struct {
 	Mount func(r format.Router, deps format.Deps)
 	// Render implements RenderIndex; nil makes RenderIndex return format.ErrUnsupported.
 	Render func(ctx context.Context, repo index.Repo, scope format.IndexScope) ([]format.Document, error)
+	// BuildFunc implements Build; nil makes Build return format.ErrUnsupported.
+	BuildFunc func(ctx context.Context, repo index.Repo, up format.Upload) (*format.Built, error)
+	// ValidateFunc implements Validate; nil makes Validate return format.ErrUnsupported.
+	ValidateFunc func(ctx context.Context, repo index.Repo, m ocispec.Manifest, fetch format.BlobFetcher) (*format.Entry, error)
 }
 
 // Name returns FormatName, or "fake" when it is empty.
@@ -54,14 +59,20 @@ func (Fake) EscapeName(name string) (string, error) {
 	return name, nil
 }
 
-// Validate returns format.ErrUnsupported.
-func (Fake) Validate(context.Context, index.Repo, ocispec.Manifest, format.BlobFetcher) (*format.Entry, error) {
-	return nil, format.ErrUnsupported
+// Validate calls ValidateFunc, or returns format.ErrUnsupported when it is nil.
+func (f Fake) Validate(ctx context.Context, repo index.Repo, m ocispec.Manifest, fetch format.BlobFetcher) (*format.Entry, error) {
+	if f.ValidateFunc == nil {
+		return nil, format.ErrUnsupported
+	}
+	return f.ValidateFunc(ctx, repo, m, fetch)
 }
 
-// Build returns format.ErrUnsupported.
-func (Fake) Build(context.Context, index.Repo, format.Upload) (*format.Built, error) {
-	return nil, format.ErrUnsupported
+// Build calls BuildFunc, or returns format.ErrUnsupported when it is nil.
+func (f Fake) Build(ctx context.Context, repo index.Repo, up format.Upload) (*format.Built, error) {
+	if f.BuildFunc == nil {
+		return nil, format.ErrUnsupported
+	}
+	return f.BuildFunc(ctx, repo, up)
 }
 
 // RenderIndex calls Render, or returns format.ErrUnsupported when it is nil.

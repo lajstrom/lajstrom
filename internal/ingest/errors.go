@@ -20,6 +20,7 @@ var (
 	// digest, also when the collision is found in the backend rather than in the index.
 	ErrConflict = index.ErrConflict
 
-	// ErrNotImplemented is returned until issue #12 fills in the pipeline.
+	// ErrNotImplemented was what the pipeline returned before issue #12 filled it in. Nothing
+	// returns it now; it stays for the parts that come later (publication sessions, #53).
 	ErrNotImplemented = errors.New("ingest: not implemented, see issue #12")
 )

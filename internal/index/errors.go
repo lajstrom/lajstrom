@@ -17,7 +17,8 @@ var (
 
 // TagConflictError is the error UpsertVersion returns, possibly wrapped, when the version's tag
 // already exists in the package with another manifest digest: the append-only tag rule of
-// docs/spec/manifest-profile.md §4.2. errors.Is(err, ErrConflict) reports true for it.
+// docs/spec/manifest-profile.md §4.2. ClaimTag returns it for a fresh claim of the tag with
+// another digest. errors.Is(err, ErrConflict) reports true for it.
 type TagConflictError struct {
 	// Tag is the tag that already exists.
 	Tag string

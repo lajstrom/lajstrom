@@ -29,6 +29,9 @@ registries:
     retries: 3                        # retries of a failed request (429, 5xx, timeouts); negative: none
     capabilities: {}                  # override what probing finds, e.g. {catalog: false, deleteManifest: false}
 
+ingest:
+  claimTTL: 10m                       # a publish's claim on a tag older than this is stale and taken over
+
 auth:
   anonymousRead: false                # server-wide switch for anonymous read (RBAC, issue #45)
   tokenSigningKeyFile: ""             # PEM key that signs OCI bearer tokens (issue #26)

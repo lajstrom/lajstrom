@@ -72,6 +72,11 @@ type Reader interface {
 	// ListAudit returns the audit events matching f, newest first.
 	ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error)
 
+	// Coordination.
+
+	// GetTagClaim returns the claim on tag of package pkg (format spelling) in a repo.
+	GetTagClaim(ctx context.Context, repoID int64, pkg, tag string) (*TagClaim, error)
+
 	// Derived.
 
 	// GetPackage returns the package with the given name (format spelling) in a repo.
@@ -155,6 +160,23 @@ type Writer interface {
 	// AppendAudit inserts ev; At is set when zero. Audit rows are never changed.
 	AppendAudit(ctx context.Context, ev *AuditEvent) error
 
+	// Coordination: tag claims, the lock on a tag that ingest takes before the registry write
+	// (docs/spec/index-schema.md, Coordination).
+
+	// ClaimTag inserts c, sets ClaimedAt to now when it is zero, and fills ID. When a claim
+	// for (RepoID, Package, Tag) exists, the claim rule decides: with c's digest, c is filled
+	// from it and the claim is shared (two replicas publishing the same bytes); with another
+	// digest and ClaimedAt before staleBefore, the row is taken over (digest, principal and
+	// ClaimedAt are c's, ID is the row's); with another digest and a fresh claim, nothing
+	// changes and the error is a *TagConflictError. A race between writers ends the same
+	// way: the loser gets the TagConflictError, never a driver error.
+	ClaimTag(ctx context.Context, c *TagClaim, staleBefore time.Time) error
+	// ReleaseTagClaim removes the claim.
+	ReleaseTagClaim(ctx context.Context, id int64) error
+	// ExpireTagClaims removes the claims whose ClaimedAt is before before, and returns how
+	// many it removed (reindex and the reconcile loop).
+	ExpireTagClaims(ctx context.Context, before time.Time) (int, error)
+
 	// Derived.
 
 	// UpsertPackage inserts p or, when (RepoID, Name) exists, fills p from the existing row.
@@ -184,6 +206,6 @@ type Writer interface {
 	PruneOCIRepos(ctx context.Context, repoID int64, seenBefore time.Time) (int, error)
 
 	// ResetDerived removes every derived row of a repo, or of all repos when repoID is 0,
-	// before a reindex. It never touches control-plane tables.
+	// before a reindex. It never touches control-plane tables or tag claims.
 	ResetDerived(ctx context.Context, repoID int64) error
 }

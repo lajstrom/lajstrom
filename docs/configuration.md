@@ -136,6 +136,14 @@ Each key under `capabilities` replaces what was found, for registries that answe
 key that is set is not probed. There is no `catalog` key outside `capabilities`. What was tested
 against which registry is in [registries/](registries/README.md).
 
+### ingest
+
+| Key | Type | Default | Env | Description |
+| --- | --- | --- | --- | --- |
+| `ingest.claimTTL` | duration (`10m`, `1h`) | `10m` | none | How long a publish's claim on a tag holds off a publish of other bytes to the same tag. Every publish claims its tag in the index before it writes the manifest to the registry and releases the claim once the index rows are written, so that two replicas cannot both write one tag ([index-schema.md](spec/index-schema.md), Coordination). A claim older than this, left by a replica that died mid-publish, is stale: the next publish of the tag takes it over, and `reindex` and the reconcile loop delete it. It must outlast one manifest `PUT` and one index transaction; blob uploads come before the claim and do not count. Must not be negative; `0` means the default. |
+
+The `ingest` section is an addition to the shape in [layout.md](spec/layout.md) §6.
+
 ### auth
 
 | Key | Type | Default | Env | Description |

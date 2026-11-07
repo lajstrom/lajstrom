@@ -266,6 +266,8 @@ type Reader interface {
     GetSession(ctx context.Context, repoID int64, key string) (*Session, error)
     GetSessionByID(ctx context.Context, id int64) (*Session, error)
     ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error)
+    // coordination
+    GetTagClaim(ctx context.Context, repoID int64, pkg, tag string) (*TagClaim, error)
     // derived
     GetPackage(ctx context.Context, repoID int64, name string) (*Package, error)
     ListPackages(ctx context.Context, repoID int64, prefix string) ([]Package, error)
@@ -299,6 +301,11 @@ type Writer interface {
     DeleteSession(ctx context.Context, id int64) error
     ExpireSessions(ctx context.Context, before time.Time) (int, error)
     AppendAudit(ctx context.Context, ev *AuditEvent) error
+    // coordination: same digest shares the claim, a stale one is taken over, a fresh one with
+    // another digest is *TagConflictError
+    ClaimTag(ctx context.Context, c *TagClaim, staleBefore time.Time) error
+    ReleaseTagClaim(ctx context.Context, id int64) error
+    ExpireTagClaims(ctx context.Context, before time.Time) (int, error)
     // derived (written only by ingest, reindex and delete)
     UpsertPackage(ctx context.Context, p *Package) error
     UpsertVersion(ctx context.Context, v *Version) error           // *TagConflictError on a tag with another digest
@@ -313,12 +320,13 @@ type Writer interface {
 }
 
 // Models, one struct per table of index-schema.md (fields in internal/index/models.go):
-// control plane Repo, User, Token, Binding, Key, Session, AuditEvent; derived Package, Version,
-// File, Cache (index_cache), OCIRepo; query types FileMatch (file + version + package) and
-// AuditFilter. Ids are int64, timestamps UTC, nullable columns are pointers.
+// control plane Repo, User, Token, Binding, Key, Session, AuditEvent; coordination TagClaim;
+// derived Package, Version, File, Cache (index_cache), OCIRepo; query types FileMatch (file +
+// version + package) and AuditFilter. Ids are int64, timestamps UTC, nullable columns are
+// pointers.
 
 var ErrNotFound, ErrConflict error
-type TagConflictError struct {              // errors.Is(err, ErrConflict) is true
+type TagConflictError struct {              // errors.Is(err, ErrConflict) is true; UpsertVersion, ClaimTag
     Tag      string
     Existing digest.Digest
 }
@@ -348,6 +356,7 @@ type Options struct {
     Audit     audit.Writer
     Now       func() time.Time                         // nil: time.Now
     Log       *slog.Logger                             // nil: slog.Default()
+    ClaimTTL  time.Duration                            // zero: 10 minutes (ingest.claimTTL)
 }
 func New(o Options) *Pipeline
 
@@ -460,6 +469,15 @@ Where the merged shapes differ from the first sketch of this section, and why:
   resolves a race on a tag with `INSERT … ON CONFLICT DO NOTHING` and a second read, so the
   loser gets the `TagConflictError`. `serve` migrates on start under the same lock as
   `lajstrom migrate`.
+- **A tag claim is the lock on a tag across replicas, in a table of its own** (#12). Ingest
+  inserts a `tag_claims` row in its own transaction before the registry write, then reads the
+  version of the tag; another digest there, or a fresh claim of another digest, is the 409, and
+  the same digest is the idempotent path. Then `PushReference`; a registry error releases the
+  claim. Then one transaction confirms: version, files, `index_cache`, audit, claim released.
+  A claim older than `Options.ClaimTTL` is taken over. The claim is not a `versions` row with a
+  null `indexed_at`: derived rows stay rebuildable from manifests, readers of `versions` need no
+  extra condition, `ResetDerived` cannot drop a claim mid-publish, and the claim has its own
+  timestamp for the TTL.
 
 ## 3. Approved dependencies
 
