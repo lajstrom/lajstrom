@@ -20,9 +20,14 @@ once without and once with the instance prefix `lajstrom-it/`.
 | distribution | 3.1.2, filesystem storage, `REGISTRY_STORAGE_DELETE_ENABLED=false`, htpasswd | Basic | yes | no (tag schema) | yes | **no**: the first manifest delete answered 405 `UNSUPPORTED`, DeleteManifest turned false; the delete step skipped | no | no redirect | pass (delete skipped) |
 | Zot | v2.1.23 (`zot-minimal-linux-arm64`, `sha256:d8ec72e9…0571f3`), default configuration | none | yes | **yes**: the probe got an empty OCI image index for a repository that does not exist | yes | yes | no (not probed) | no redirect: `BlobRedirectURL` saw 200 and streams | pass, with and without prefix |
 | Zot | v2.1.23, htpasswd | Basic | yes | yes | yes | yes | no | no redirect | pass (with prefix) |
+| Zot | v2.1.23 (`zot-minimal:v2.1.23`, the multi-arch index `sha256:59cb5740…cd3458`, arm64 as above), the dev stack: `dedupe`, `gc` every 10 min (`deploy/compose/zot/config.json`) | none | yes | yes | yes | yes | no (not probed) | no redirect | pass, with and without prefix |
 
 Notes:
 
+- The [dev stack](../dev-stack.md) runs distribution as in the first row (plus
+  `REGISTRY_LOG_LEVEL=info`) on `localhost:5001` and Zot as in the last row on `localhost:5000`:
+  `LAJSTROM_TEST_REGISTRY=localhost:5001` and `=localhost:5000` after `make dev-up`. Both passed
+  the test there on 2026-11-07, with and without the prefix.
 - The `registry:3` image enables deletes in its default configuration
   (`/etc/distribution/config.yml`), unlike distribution's own default.
 - distribution 3.1.2 has no referrers API: the routes do not exist, so the probe and oras-go

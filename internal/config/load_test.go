@@ -280,7 +280,7 @@ func TestExampleFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load example: %v", err)
 	}
-	if len(c.Registries) != 1 || len(c.Repos) != 1 {
-		t.Errorf("example has %d registries and %d repos, want 1 and 1", len(c.Registries), len(c.Repos))
+	if len(c.Registries) != 2 || len(c.Repos) != 1 {
+		t.Errorf("example has %d registries and %d repos, want 2 and 1", len(c.Registries), len(c.Repos))
 	}
 }

@@ -1,0 +1,86 @@
+# Lajstrom dev stack (issue #15, docs/dev-stack.md): the registries and the database that
+# make run, make test-integration and the e2e scripts work against. For development only: both
+# registries take anonymous pushes and the Postgres password is "lajstrom".
+#
+#   make dev-up            start, and wait until all three services are healthy
+#   make dev-ps            what runs, with its health
+#   make dev-logs          follow the logs
+#   make dev-down          stop and remove the containers; the volumes stay
+#   make dev-down RESET=1  the same, and remove the volumes: the next dev-up starts empty
+#
+# Published on 127.0.0.1 only. The host ports can be changed in deploy/compose/.env
+# (copy .env.example):
+#
+#   zot           localhost:5000  LAJSTROM_ZOT_PORT           registry "local" of lajstrom.example.yaml
+#   distribution  localhost:5001  LAJSTROM_DISTRIBUTION_PORT  registry "second"
+#   postgres      localhost:5432  LAJSTROM_PG_PORT            postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable
+#
+# Every image is pinned to a full version whose tag serves linux/amd64 and linux/arm64; the
+# digest of its image index is in the comment above it. Change a tag and its digest together;
+# for a registry, re-run the integration tests and update docs/registries/README.md.
+
+name: lajstrom-dev
+
+# Checks run every second until a container is healthy, then every 30 s; each check is a line
+# in the logs of the registries.
+x-healthcheck: &healthcheck
+  interval: 30s
+  timeout: 5s
+  retries: 3
+  start_period: 60s
+  start_interval: 1s
+
+services:
+  zot:
+    # Zot v2.1.23, the minimal build (no extensions), the version docs/registries/README.md lists.
+    # sha256:59cb5740832970818903c5ce104425762664c7880835ee566506aad397cd3458
+    image: ghcr.io/project-zot/zot-minimal:v2.1.23
+    volumes:
+      - ./zot/config.json:/etc/zot/config.json:ro
+      - zot-data:/var/lib/registry
+    ports:
+      - "127.0.0.1:${LAJSTROM_ZOT_PORT:-5000}:5000"
+    healthcheck:
+      <<: *healthcheck
+      # zot healthcheck probes /readyz at the address of the config. The image has no shell and
+      # names the binary after the architecture (zot-linux-<arch>-minimal); /proc/1/exe is that
+      # binary on both, since it runs as PID 1.
+      test: ["CMD", "/proc/1/exe", "healthcheck", "/etc/zot/config.json"]
+
+  distribution:
+    # distribution 3.1.2, which registry:3 pointed at on 2026-11-07.
+    # sha256:38907510915c3f1604c7e83d6ab602ab3020d092f73bdaed8696773693ff768c
+    image: registry:3.1.2
+    environment:
+      REGISTRY_STORAGE_DELETE_ENABLED: "true" # the image's default too; distribution's own is false
+      REGISTRY_LOG_LEVEL: info                # the image's default is debug
+    volumes:
+      - distribution-data:/var/lib/registry   # filesystem storage, the root of the image's configuration
+    ports:
+      - "127.0.0.1:${LAJSTROM_DISTRIBUTION_PORT:-5001}:5000"
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/v2/"]
+
+  postgres:
+    # PostgreSQL 17.11 on Alpine.
+    # sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    image: postgres:17.11-alpine
+    environment:
+      POSTGRES_DB: ${LAJSTROM_PG_DB:-lajstrom}
+      POSTGRES_USER: ${LAJSTROM_PG_USER:-lajstrom}
+      POSTGRES_PASSWORD: ${LAJSTROM_PG_PASSWORD:-lajstrom}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${LAJSTROM_PG_PORT:-5432}:5432"
+    healthcheck:
+      <<: *healthcheck
+      # Over TCP: on the first start the entrypoint runs initdb with a server that listens on
+      # the socket only, and restarts it; the socket would answer before the database is up.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+
+volumes:
+  zot-data:
+  distribution-data:
+  postgres-data:

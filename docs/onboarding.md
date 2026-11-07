@@ -28,9 +28,12 @@ oras version          # https://oras.land, for pushing test artifacts
 gh --version          # GitHub CLI, for issues and pull requests
 
 git clone git@github.com:lajstrom/lajstrom.git && cd lajstrom
-make dev-up           # Zot, distribution and Postgres in containers (after #15 lands)
+make dev-up           # Zot, distribution and Postgres in containers
 make check            # build, vet, test, lint, vulncheck, licenses: what CI runs
 ```
+
+[docs/dev-stack.md](dev-stack.md) has the ports, how to run Lajstrom and the integration tests
+against the stack, and how to reset it.
 
 Set the commit trailers once so you never forget them:
 

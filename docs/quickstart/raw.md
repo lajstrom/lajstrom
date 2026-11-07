@@ -10,7 +10,7 @@ in a few minutes. The endpoints are specified in [http-routing.md](../spec/http-
 You need Go, Docker, `curl` and `jq`; `crane` (or `oras`) to look into the registry is optional.
 
 ```sh
-docker run -d --name zot -p 5000:5000 ghcr.io/project-zot/zot-minimal-linux-amd64:v2.1.23  # or -arm64; make dev-up once #15 lands
+make dev-up                                           # Zot, distribution and Postgres: docs/dev-stack.md
 make run                                              # builds bin/lajstrom, serves deploy/compose/lajstrom.example.yaml
 curl -s http://localhost:8080/raw/scratch/            # {"entries":[]}
 ```
