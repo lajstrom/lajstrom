@@ -48,3 +48,4 @@ to `superseded by NNNN`. Typos and broken links may be fixed in place.
 | [0005](0005-manifest-profile-and-immutable-tags.md) | Manifest profile: OCI 1.1 artifacts with one immutable tag per variant | proposed |
 | [0006](0006-derived-index-and-control-plane.md) | Derived index plus a small control plane; SQLite and Postgres | proposed |
 | [0007](0007-rbac-model.md) | Authentication and RBAC model | proposed |
+| [0008](0008-policy-verdicts-and-enforcement.md) | Policy verdicts: deny lists, quarantine, and where enforcement lives | proposed |
