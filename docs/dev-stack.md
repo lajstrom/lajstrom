@@ -32,14 +32,59 @@ a restart keeps what was pushed and the index. The registry versions are those o
 - **Postgres**: 17, with the database, user and password of `.env` (all `lajstrom` by
   default), created when the volume is.
 
+## The s3 profile
+
+`make dev-up PROFILES=s3` starts two more services: a registry whose blob downloads are a `307`
+to its object storage, which the filesystem registries above never answer (#27).
+
+| Service | Image | Port | Used as |
+| --- | --- | --- | --- |
+| `distribution-s3` | `registry:3.1.2` | `localhost:5002` | distribution on the `s3` storage driver, bucket `distribution`; deletes enabled |
+| `minio` | `bitnamilegacy/minio:2025.7.23-debian-12-r5` | `localhost:9000` | the object store; user `lajstrom`, password `lajstrom-dev` |
+
+A blob `GET` or `HEAD` on distribution-s3 answers `307` with a URL that MinIO signs for 20
+minutes (`X-Amz-Expires=1200`); `curl -L` downloads the blob from MinIO. distribution signs its
+redirects for the endpoint it talks to (`REGISTRY_STORAGE_S3_REGIONENDPOINT`), and the signature
+covers the host, so the endpoint must be a name that works inside the registry's container and
+on the machine alike. The trick: distribution-s3 runs in the network namespace of minio
+(`network_mode: service:minio`), so it reaches MinIO as `localhost:9000`, and minio publishes
+port 9000 on the machine, where `localhost:9000` is MinIO too. The presigned URLs then name
+`http://localhost:9000/distribution/docker/registry/v2/blobs/…`, which a client on the machine
+follows. The port of distribution-s3 is published on the minio service for the same reason.
+`LAJSTROM_MINIO_PORT` changes the port on both sides and in the endpoint, since they must
+agree; a client in another container (CI service containers, the `ha` stack) needs an endpoint
+name of its own.
+
+MinIO's own image (`minio/minio`) is no longer on Docker Hub; the Bitnami build of the same
+release is, multi-arch, and creates the bucket of `MINIO_DEFAULT_BUCKETS` on its first start,
+so no one-shot `mc` service is needed. Its health check asks `/minio/health/live`; distribution-s3
+starts once MinIO is healthy. MinIO keeps its data in the volume `lajstrom-dev_minio-data`;
+distribution-s3 keeps nothing of its own.
+
+```sh
+make dev-up PROFILES=s3          # the three services and the two of the profile
+LAJSTROM_TEST_REGISTRY_S3=localhost:5002 go test -race -tags integration -run TestIntegrationS3Redirect ./internal/facade/
+LAJSTROM_TEST_REGISTRY=localhost:5002 go test -race -tags integration -run 'TestIntegration$' ./internal/provider/generic/
+make dev-down RESET=1            # every profile, and the volumes
+```
+
+A Lajstrom registry for it in `deploy/compose/lajstrom.yaml`:
+
+```yaml
+  - name: s3
+    type: generic
+    url: "http://localhost:5002"     # distribution on MinIO: blob GETs are 307 to localhost:9000
+```
+
 ## Commands
 
 ```sh
 make dev-up            # start, and return once all three are healthy
 make dev-ps            # the services, their health and ports
 make dev-logs          # follow the logs (Ctrl-C stops following, not the stack)
-make dev-down          # stop and remove the containers; the volumes stay
+make dev-down          # stop and remove the containers, of every profile; the volumes stay
 make dev-down RESET=1  # the same, and remove the volumes
+make dev-up PROFILES=s3  # the three, and distribution on MinIO (below)
 ```
 
 `make dev-up` returns when the health checks pass (`docker compose up -d --wait`): in 2 to 3 s
@@ -60,15 +105,16 @@ is a line in its log.
 
 ## Reset
 
-`make dev-down RESET=1` removes the containers and the three volumes; the next `make dev-up`
-starts with empty registries and a database without tables, which `make run` migrates. Only
-`RESET=1` removes the volumes; `make dev-down` alone never does.
+`make dev-down RESET=1` removes the containers and the volumes, MinIO's too; the next
+`make dev-up` starts with empty registries and a database without tables, which `make run`
+migrates. Only `RESET=1` removes the volumes; `make dev-down` alone never does.
 
 ## Settings
 
 Copy [deploy/compose/.env.example](../deploy/compose/.env.example) to `deploy/compose/.env`
 (not committed) to change a host port (`LAJSTROM_ZOT_PORT`, `LAJSTROM_DISTRIBUTION_PORT`,
-`LAJSTROM_PG_PORT`) or the Postgres credentials (`LAJSTROM_PG_DB`, `LAJSTROM_PG_USER`,
+`LAJSTROM_PG_PORT`, and for the s3 profile `LAJSTROM_DISTRIBUTION_S3_PORT` and
+`LAJSTROM_MINIO_PORT`) or the Postgres credentials (`LAJSTROM_PG_DB`, `LAJSTROM_PG_USER`,
 `LAJSTROM_PG_PASSWORD`). A variable set in the shell wins over the file. When you change a port,
 change what points at it too: the registry URL in your `deploy/compose/lajstrom.yaml`,
 `LAJSTROM_TEST_REGISTRY`, the DSN. New Postgres credentials take effect on a fresh volume
@@ -138,6 +184,7 @@ docker run --rm --network host -v "$PWD:/w" -w /w ghcr.io/oras-project/oras:v1.3
 make test                                              # unit tests, no stack needed
 LAJSTROM_TEST_REGISTRY=localhost:5000 make test-integration   # against Zot
 LAJSTROM_TEST_REGISTRY=localhost:5001 make test-integration   # against distribution
+LAJSTROM_TEST_REGISTRY=localhost:5000 LAJSTROM_TEST_REGISTRY_S3=localhost:5002 make test-integration   # and the 307 of distribution on S3 (PROFILES=s3)
 LAJSTROM_TEST_POSTGRES_DSN='postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable' go test -race ./internal/index/...
 test/e2e/raw.sh http://localhost:8080 scratch          # with make run in another terminal
 ```
@@ -147,7 +194,8 @@ of their own, so they can run again and side by side without a reset.
 
 CI runs the same three images, on the same ports, as service containers of the `integration`
 job ([CONTRIBUTING.md](../CONTRIBUTING.md#ci-overview)); Zot there runs on the configuration built
-into its image, since a service container cannot mount `config.json` from the checkout.
+into its image, since a service container cannot mount `config.json` from the checkout. CI does
+not run the s3 profile: the tests that need it skip without `LAJSTROM_TEST_REGISTRY_S3`.
 
 ## Docker on macOS and Linux
 

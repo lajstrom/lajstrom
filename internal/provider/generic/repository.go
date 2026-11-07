@@ -31,71 +31,16 @@ func (r *repository) op(verb, ref string) string {
 	return verb + " " + r.name + "@" + ref
 }
 
-// Fetch returns a reader of the blob or manifest target. A blob whose descriptor has a
-// negative size, as the facade has it for a client's GET by digest, is fetched by its digest
-// alone (one GET; oras-go checks the size of every other descriptor against Content-Length),
-// and the reader is then an io.ReadSeekCloser that goes forwards only: seeking to its end
-// gives the size without reading.
+// Fetch returns a reader of the blob or manifest target, whose descriptor carries its size:
+// oras-go checks it against Content-Length. A client's download of a blob by its digest
+// alone goes through Provider.OpenBlob.
 func (r *repository) Fetch(ctx context.Context, target ocispec.Descriptor) (io.ReadCloser, error) {
-	op := r.op("fetch", target.Digest.String())
-	if target.Size < 0 && !isManifest(target.MediaType) {
-		desc, rc, err := r.Repository.Blobs().FetchReference(ctx, target.Digest.String())
-		if err != nil {
-			return nil, translate(op, err)
-		}
-		return &sizedReader{rc: rc, size: desc.Size}, nil
-	}
 	rc, err := r.Repository.Fetch(ctx, target)
 	if err != nil {
-		return nil, translate(op, err)
+		return nil, translate(r.op("fetch", target.Digest.String()), err)
 	}
 	return rc, nil
 }
-
-// sizedReader is a blob's body with its size, as an io.ReadSeekCloser over a stream that goes
-// forwards only: a seek records the offset, the next Read discards the bytes up to it, and a
-// seek before what was read fails. Seeking to the end and back to the start before the first
-// Read, which is how http.ServeContent and the facade learn the size, reads nothing.
-type sizedReader struct {
-	rc   io.ReadCloser
-	size int64
-	pos  int64 // bytes taken from rc
-	off  int64 // where the next Read starts; at least pos
-}
-
-func (s *sizedReader) Seek(offset int64, whence int) (int64, error) {
-	abs := offset
-	switch whence {
-	case io.SeekStart:
-	case io.SeekCurrent:
-		abs += s.off
-	case io.SeekEnd:
-		abs += s.size
-	default:
-		return 0, errors.New("generic: seek: invalid whence")
-	}
-	if abs < s.pos {
-		return 0, errors.New("generic: seek: the blob stream cannot go backwards")
-	}
-	s.off = abs
-	return abs, nil
-}
-
-func (s *sizedReader) Read(p []byte) (int, error) {
-	if s.off > s.pos {
-		n, err := io.CopyN(io.Discard, s.rc, s.off-s.pos)
-		s.pos += n
-		if err != nil {
-			return 0, err
-		}
-	}
-	n, err := s.rc.Read(p)
-	s.pos += int64(n)
-	s.off = s.pos
-	return n, err
-}
-
-func (s *sizedReader) Close() error { return s.rc.Close() }
 
 // Exists reports whether the blob or manifest target exists.
 func (r *repository) Exists(ctx context.Context, target ocispec.Descriptor) (bool, error) {

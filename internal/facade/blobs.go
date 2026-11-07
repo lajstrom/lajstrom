@@ -2,14 +2,10 @@ package facade
 
 import (
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
-	"strconv"
-
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/server"
 )
@@ -17,15 +13,13 @@ import (
 // octetStream is the Content-Type of a blob.
 const octetStream = "application/octet-stream"
 
-// getBlob answers HEAD and GET …/blobs/<digest>: the blob streamed from the backend, with
-// Content-Length, Docker-Content-Digest, Content-Type application/octet-stream and
-// Accept-Ranges. The descriptor has no size (a client asks by digest alone), so the provider
-// fetches by the digest and its reader tells the size when it is an io.Seeker, which the
-// providers' readers of unsized blobs are; without one the answer has no Content-Length.
-// HEAD fetches too, and reads nothing.
-//
-// A Range header is not passed on: the answer is the whole blob with 200, which HTTP allows.
-// Ranges and the 307 to Provider.BlobRedirectURL come with #27.
+// getBlob answers HEAD and GET …/blobs/<digest> through format.ServeBlob, one request to the
+// backend: HEAD the backend's HEAD, GET with the client's Range passed through, a 307 to the
+// backend's storage when the provider gives a URL and the repo policy's blobRedirect allows
+// it, otherwise the backend's answer streamed, with Content-Type application/octet-stream,
+// Docker-Content-Digest, ETag (the digest), Content-Length and, from the backend,
+// Accept-Ranges and Content-Range. A blob the backend does not have is BLOB_UNKNOWN; a stream
+// that breaks after the headers is logged.
 func (h *handler) getBlob(w http.ResponseWriter, r *http.Request, t *target, arg string) error {
 	ctx := r.Context()
 	d, err := parseDigest(arg)
@@ -35,55 +29,29 @@ func (h *handler) getBlob(w http.ResponseWriter, r *http.Request, t *target, arg
 	if err := h.authorize(ctx, auth.ActionRead, t.repo); err != nil {
 		return err
 	}
-	rr, err := h.backend(ctx, t)
+	p, err := h.registry(t)
 	if err != nil {
 		return err
 	}
-	rc, err := rr.Fetch(ctx, ocispec.Descriptor{MediaType: octetStream, Digest: d, Size: -1})
-	if errors.Is(err, provider.ErrNotFound) {
-		return &apiError{code: codeBlobUnknown, msg: "blob unknown to registry", err: err}
-	}
+	err = format.ServeBlob(w, r, p, t.oci, d, format.ServeBlobOptions{
+		ContentType: octetStream,
+		Redirect:    format.BlobRedirect(t.repo),
+		Fail:        func(w http.ResponseWriter, err error) { h.fail(w, r, blobError(err)) },
+	})
 	if err != nil {
-		return &apiError{code: codeBlobUnknown, err: err}
-	}
-	defer func() { _ = rc.Close() }()
-	size, err := sizeOf(rc)
-	if err != nil {
-		return fmt.Errorf("facade: blob %s@%s: %w", t.name, d, err)
-	}
-	hdr := w.Header()
-	hdr.Set("Content-Type", octetStream)
-	hdr.Set("Docker-Content-Digest", d.String())
-	hdr.Set("Accept-Ranges", "bytes")
-	if size >= 0 {
-		hdr.Set("Content-Length", strconv.FormatInt(size, 10))
-	}
-	w.WriteHeader(http.StatusOK)
-	if r.Method == http.MethodHead {
-		return nil
-	}
-	if n, err := io.Copy(w, rc); err != nil && ctx.Err() == nil {
 		h.o.Log.WarnContext(ctx, "facade: the blob stream failed after the response started", "name", t.name,
-			"digest", d.String(), "bytes", n, "error", err.Error(), "requestId", server.RequestID(ctx))
+			"digest", d.String(), "error", err.Error(), "requestId", server.RequestID(ctx))
 	}
 	return nil
 }
 
-// sizeOf returns the size of a blob reader that is an io.Seeker, which it leaves at the start,
-// and -1 for any other reader.
-func sizeOf(rc io.Reader) (int64, error) {
-	s, ok := rc.(io.Seeker)
-	if !ok {
-		return -1, nil
+// blobError is the answer to an error of a blob read: BLOB_UNKNOWN, with the status of the
+// cause (404 for one the backend does not have).
+func blobError(err error) error {
+	if errors.Is(err, provider.ErrNotFound) {
+		return &apiError{code: codeBlobUnknown, msg: "blob unknown to registry", err: err}
 	}
-	size, err := s.Seek(0, io.SeekEnd)
-	if err != nil {
-		return 0, err
-	}
-	if _, err := s.Seek(0, io.SeekStart); err != nil {
-		return 0, err
-	}
-	return size, nil
+	return &apiError{code: codeBlobUnknown, err: err}
 }
 
 // deleteBlob answers DELETE …/blobs/<digest>: 405 until #61.

@@ -44,10 +44,45 @@ type Provider interface {
 	// ErrUnsupported where the backend cannot do that.
 	DeleteRepository(ctx context.Context, name string) error
 
-	// BlobRedirectURL returns a URL a client may be redirected to (307) to download a blob of
-	// the repository. The boolean is false when the backend cannot give one for this blob;
-	// callers then stream the blob through Repository.Fetch.
-	BlobRedirectURL(ctx context.Context, name string, d digest.Digest) (string, bool, error)
+	// OpenBlob opens the blob d of the repository name for a download, in one request to the
+	// backend: a GET with rangeHeader (the client's Range, "" for none) passed through. The
+	// answer is either a redirect the client is sent to (RedirectURL set, Body nil: a
+	// cross-origin Location the backend gave, a presigned URL) or an open body with the
+	// headers the caller forwards; the caller closes the body. A redirect to the registry's own
+	// origin is followed here, not returned. With redirect false, or Capabilities.BlobRedirect
+	// false, every redirect is followed and the body streamed: the redirect decision is taken
+	// per blob (policy.blobRedirect of the repo, docs/adr/0009). rangeHeader should name one
+	// range: a backend answers several with a multipart/byteranges body, whose Content-Type a
+	// Blob does not carry. provider.ErrNotFound when the backend has no such blob; a
+	// Docker-Content-Digest other than d is an error.
+	OpenBlob(ctx context.Context, name string, d digest.Digest, rangeHeader string, redirect bool) (Blob, error)
+
+	// StatBlob answers HEAD: the size and digest of the blob d, no body, no redirect (the
+	// provider follows them). provider.ErrNotFound when the backend has no such blob.
+	StatBlob(ctx context.Context, name string, d digest.Digest) (Blob, error)
+}
+
+// Blob is a blob opened for a download (OpenBlob), or its headers (StatBlob).
+type Blob struct {
+	// RedirectURL is where the client is sent (307); Body is nil then. The URL is the
+	// backend's Location as it gave it, absolute: a presigned URL carries its own
+	// credentials, and the client never gets Lajstrom's.
+	RedirectURL string
+	// Body is the bytes as the backend sent them; nil for a redirect, a 416 and a StatBlob.
+	Body io.ReadCloser
+	// Status is 200, 206 (a range) or 416 (a range the blob cannot satisfy), as the backend
+	// answered; 307 with RedirectURL.
+	Status int
+	// Size is the Content-Length of Body (the range's length for a 206; for a StatBlob, the
+	// blob's size); -1 when unknown.
+	Size int64
+	// ContentRange is the backend's Content-Range on a 206 or a 416, "" otherwise.
+	ContentRange string
+	// Digest is the Docker-Content-Digest of the backend, the digest asked for when it sent
+	// none.
+	Digest digest.Digest
+	// AcceptRanges is true when the backend said Accept-Ranges: bytes.
+	AcceptRanges bool
 }
 
 // Repository is the data path to one OCI repository. The generic provider returns oras-go's
@@ -129,7 +164,9 @@ type Capabilities struct {
 	DeleteManifest bool
 	// ImmutableTags is true when the backend itself refuses to re-point a tag.
 	ImmutableTags bool
-	// BlobRedirect is true when BlobRedirectURL can return URLs.
+	// BlobRedirect is true when OpenBlob may return a redirect URL. It is the operator's
+	// switch (registries[].capabilities.blobRedirect): false means OpenBlob follows every
+	// redirect and streams, and a client never gets a URL of the backend.
 	BlobRedirect bool
 	// MaxBlobSize is the largest blob the backend accepts, in bytes; 0 means unknown.
 	MaxBlobSize int64

@@ -70,7 +70,7 @@ const apiVersionHeader = "Docker-Distribution-API-Version"
 //	GET  /v2/_catalog?n=&last=                  OCI names of the repos the principal may read
 //	HEAD|GET /v2/<name>/manifests/<ref>         proxied to the backend
 //	PUT  /v2/<name>/manifests/<ref>             pass-through on an oci repo; the hook into ingest elsewhere
-//	HEAD|GET /v2/<name>/blobs/<digest>          streamed from the backend (Range and 307: #27)
+//	HEAD|GET /v2/<name>/blobs/<digest>          format.ServeBlob: 307 to the backend's storage, or streamed with Range
 //	POST /v2/<name>/blobs/uploads/              a session, a monolithic upload (?digest=) or a mount
 //	PATCH|PUT|GET|DELETE /v2/<name>/blobs/uploads/<id>   the session, from any replica
 //	GET  /v2/<name>/tags/list?n=&last=          from the index; from the backend on an oci repo
@@ -243,11 +243,20 @@ func (h *handler) authorize(ctx context.Context, a auth.Action, repo index.Repo)
 	return nil
 }
 
-// backend returns the provider's repository of t.
-func (h *handler) backend(ctx context.Context, t *target) (provider.Repository, error) {
+// registry returns the provider of t's repo.
+func (h *handler) registry(t *target) (provider.Provider, error) {
 	p, ok := h.o.Providers.Provider(t.repo.Registry)
 	if !ok || p == nil {
 		return nil, fmt.Errorf("facade: repo %s/%s: registry %q is not configured", t.repo.Format, t.repo.Name, t.repo.Registry)
+	}
+	return p, nil
+}
+
+// backend returns the provider's repository of t.
+func (h *handler) backend(ctx context.Context, t *target) (provider.Repository, error) {
+	p, err := h.registry(t)
+	if err != nil {
+		return nil, err
 	}
 	rr, err := p.Repository(ctx, t.oci)
 	if err != nil {

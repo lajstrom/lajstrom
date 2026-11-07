@@ -103,13 +103,19 @@ func TestPrefix(t *testing.T) {
 			if _, err := repo.Resolve(ctx, "v1"); err != nil {
 				t.Fatalf("Resolve: %v", err)
 			}
-			if _, _, err := p.BlobRedirectURL(ctx, "raw/scratch/notes", blob.Digest); err != nil {
-				t.Fatalf("BlobRedirectURL: %v", err)
+			b, err := p.OpenBlob(ctx, "raw/scratch/notes", blob.Digest, "", true)
+			if err != nil {
+				t.Fatalf("OpenBlob: %v", err)
+			}
+			_ = b.Body.Close()
+			if _, err := p.StatBlob(ctx, "raw/scratch/notes", blob.Digest); err != nil {
+				t.Fatalf("StatBlob: %v", err)
 			}
 			for _, want := range []string{
 				"POST /v2/" + tt.want + "/blobs/uploads/",
 				"PUT /v2/" + tt.want + "/manifests/v1",
 				"GET /v2/" + tt.want + "/blobs/" + blob.Digest.String(),
+				"HEAD /v2/" + tt.want + "/blobs/" + blob.Digest.String(),
 				"HEAD /v2/" + tt.want + "/manifests/v1",
 			} {
 				if f.count(want) == 0 {
@@ -705,9 +711,7 @@ func TestCredentials(t *testing.T) {
 				t.Fatalf("Fetch: %v", err)
 			}
 			_ = rc.Close()
-			if _, _, err := p.BlobRedirectURL(ctx, "raw/scratch/notes", blob.Digest); err != nil {
-				t.Fatalf("BlobRedirectURL: %v", err)
-			}
+			readBlobWithCredentials(t, f, p, blob.Digest)
 
 			basic := "Basic " + base64.StdEncoding.EncodeToString([]byte(f.user+":"+f.pass))
 			want := map[string]string{"basic": basic, "bearer": "Bearer " + f.token}[mode]
@@ -744,6 +748,33 @@ func TestCredentials(t *testing.T) {
 	}
 }
 
+// readBlobWithCredentials opens and stats the blob d of raw/scratch/notes through p, which
+// has credentials, and then through a redirect to another origin, which the provider follows
+// without any of Lajstrom's credentials.
+func readBlobWithCredentials(t *testing.T, f *fakeRegistry, p *Provider, d digest.Digest) {
+	t.Helper()
+	ctx := t.Context()
+	b, err := p.OpenBlob(ctx, "raw/scratch/notes", d, "bytes=1-2", true)
+	if err != nil || b.Status != http.StatusPartialContent {
+		t.Fatalf("OpenBlob = %+v, %v", b, err)
+	}
+	_ = b.Body.Close()
+	if _, err := p.StatBlob(ctx, "raw/scratch/notes", d); err != nil {
+		t.Fatalf("StatBlob: %v", err)
+	}
+	store := newObjectStore(t, f, "art/raw/scratch/notes")
+	f.redirect = store.srv.URL + "/bucket"
+	defer func() { f.redirect = "" }()
+	b, err = p.OpenBlob(ctx, "raw/scratch/notes", d, "", false)
+	if err != nil || b.Status != http.StatusOK {
+		t.Fatalf("OpenBlob through the object store = %+v, %v", b, err)
+	}
+	_ = b.Body.Close()
+	if got := store.log(); len(got) != 1 || got[0] != "GET /bucket/"+d.String()+" Range= Authorization=" {
+		t.Errorf("object store requests %q, want one GET without Authorization", got)
+	}
+}
+
 // noSecrets fails t when text contains one of secrets.
 func noSecrets(t *testing.T, what, text string, secrets []string) {
 	t.Helper()
@@ -751,128 +782,6 @@ func noSecrets(t *testing.T, what, text string, secrets []string) {
 		if strings.Contains(text, s) {
 			t.Errorf("%s contains %q:\n%s", what, s, text)
 		}
-	}
-}
-
-func TestBlobRedirectURL(t *testing.T) {
-	const name = "raw/scratch/notes"
-	hello := digest.FromString("hello")
-	relative := func(w http.ResponseWriter, r *http.Request) bool {
-		if !strings.Contains(r.URL.Path, "/blobs/") {
-			return false
-		}
-		w.Header().Set("Location", "/storage/blob?sig=abc")
-		w.WriteHeader(http.StatusFound)
-		return true
-	}
-	tests := []struct {
-		name     string
-		setup    func(f *fakeRegistry)
-		edit     func(c *config.Registry)
-		d        digest.Digest
-		wantURL  func(f *fakeRegistry) string // nil: ""
-		wantOK   bool
-		wantErr  error
-		wantReqs int
-	}{
-		{
-			name:     "307",
-			setup:    func(f *fakeRegistry) { f.redirect = "https://objects.example/bucket" },
-			d:        hello,
-			wantURL:  func(*fakeRegistry) string { return "https://objects.example/bucket/" + hello.String() },
-			wantOK:   true,
-			wantReqs: 1,
-		},
-		{
-			name:     "relative Location",
-			setup:    func(f *fakeRegistry) { f.hook = relative },
-			d:        hello,
-			wantURL:  func(f *fakeRegistry) string { return f.srv.URL + "/storage/blob?sig=abc" },
-			wantOK:   true,
-			wantReqs: 1,
-		},
-		{
-			name:     "200",
-			setup:    func(f *fakeRegistry) { f.blobs["art/"+name] = map[digest.Digest][]byte{hello: []byte("hello")} },
-			d:        hello,
-			wantReqs: 1,
-		},
-		{
-			name: "redirect into the registry's own API streams",
-			setup: func(f *fakeRegistry) {
-				f.hook = func(w http.ResponseWriter, r *http.Request) bool {
-					if !strings.Contains(r.URL.Path, "/blobs/") {
-						return false
-					}
-					w.Header().Set("Location", "/v2/art/"+name+"/blobs/"+hello.String())
-					w.WriteHeader(http.StatusTemporaryRedirect)
-					return true
-				}
-			},
-			d:        hello,
-			wantReqs: 1,
-		},
-		{name: "404", d: digest.FromString("missing"), wantErr: provider.ErrNotFound, wantReqs: 1},
-		{
-			name:  "blobRedirect false sends nothing",
-			setup: func(f *fakeRegistry) { f.redirect = "https://objects.example/bucket" },
-			edit:  func(c *config.Registry) { c.Capabilities.BlobRedirect = new(false) },
-			d:     hello,
-		},
-		{name: "invalid digest", d: "sha256:short", wantErr: errAny},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := newFakeRegistry(t)
-			if tt.setup != nil {
-				tt.setup(f)
-			}
-			log, _ := testLogger()
-			u, ok, err := f.provider(t, log, tt.edit).BlobRedirectURL(context.Background(), name, tt.d)
-			want := ""
-			if tt.wantURL != nil {
-				want = tt.wantURL(f)
-			}
-			if u != want || ok != tt.wantOK {
-				t.Errorf("BlobRedirectURL = %q, %v; want %q, %v", u, ok, want, tt.wantOK)
-			}
-			wantErr(t, "BlobRedirectURL", err, tt.wantErr)
-			if got := f.count("GET /v2/art/" + name + "/blobs/"); got != tt.wantReqs || len(f.log()) != tt.wantReqs {
-				t.Errorf("requests %q, want %d blob GETs", f.log(), tt.wantReqs)
-			}
-		})
-	}
-}
-
-func TestBlobRedirectURLClosesBody(t *testing.T) {
-	f := newFakeRegistry(t)
-	d := digest.FromString("large")
-	done := make(chan int64, 1)
-	f.streams[d] = func(w http.ResponseWriter) {
-		w.Header().Set("Content-Length", fmt.Sprint(int64(1)<<30))
-		chunk := make([]byte, 32<<10)
-		var n int64
-		for n < 1<<30 {
-			m, err := w.Write(chunk)
-			n += int64(m)
-			if err != nil {
-				break
-			}
-		}
-		done <- n
-	}
-	log, _ := testLogger()
-	u, ok, err := f.provider(t, log, nil).BlobRedirectURL(context.Background(), "raw/scratch/notes", d)
-	if err != nil || ok || u != "" {
-		t.Errorf("BlobRedirectURL = %q, %v, %v; want \"\", false, nil", u, ok, err)
-	}
-	select {
-	case n := <-done:
-		if n >= 1<<30 {
-			t.Errorf("the whole blob was sent: the body was read, not closed")
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the response body is still open")
 	}
 }
 

@@ -192,6 +192,26 @@ func CachedDocument(ctx context.Context, st index.Store, p Plugin, repo index.Re
 // ServeDocument: http.ServeContent with ETag "<sha256>" and Last-Modified RenderedAt.
 func ServeDocument(w http.ResponseWriter, r *http.Request, c *index.Cache, contentType string)
 
+// ServeBlob is the one read path of blob bytes, for the facade and every frontend (ADR 0009):
+// GET and HEAD of the blob d with one request to the backend at most. If-None-Match is 304
+// before any request; HEAD is Provider.StatBlob; GET is Provider.OpenBlob with the client's
+// Range when it is one byte range, a redirect answered 307 with Location, a body streamed with
+// the backend's status, Content-Length, Content-Range and Accept-Ranges. Errors before the
+// response go to opts.Fail (nil: WriteError); the error returned is a stream that broke after
+// the headers, for the caller's log.
+type ServeBlobOptions struct {
+    ContentType    string                   // required
+    ETag           string                   // "" means the blob digest, quoted
+    LastModified   time.Time                // zero means none
+    ManifestDigest digest.Digest            // Docker-Content-Digest when not the blob's (raw: the manifest)
+    Redirect       bool                     // false: stream even where the provider could redirect
+    Filename       string                   // Content-Disposition: attachment when set
+    Fail           func(w http.ResponseWriter, err error) // errors before the response; nil: WriteError
+}
+func ServeBlob(w http.ResponseWriter, r *http.Request, prov provider.Provider, name string, d digest.Digest, opts ServeBlobOptions) error
+// BlobRedirect reads policy.blobRedirect of the repo: "never" is false, anything else true.
+func BlobRedirect(repo index.Repo) bool
+
 var ErrInvalid, ErrUnsupported, ErrUnauthenticated, ErrForbidden error
 ```
 
@@ -222,7 +242,26 @@ type Provider interface {
     EnsureRepository(ctx context.Context, name string) error      // no-op where create-on-push works
     ListRepositories(ctx context.Context, prefix string) ([]string, error)
     DeleteRepository(ctx context.Context, name string) error
-    BlobRedirectURL(ctx context.Context, name string, d digest.Digest) (string, bool, error)
+    // OpenBlob: one GET of the blob with rangeHeader ("" for none) passed through. The answer
+    // is a redirect for the client (RedirectURL: a cross-origin Location the backend gave, a
+    // presigned URL) or the open body with its headers; a redirect to the registry's own origin
+    // is followed. redirect false, or Capabilities.BlobRedirect false, follows every redirect
+    // and streams: the decision is taken per blob (policy.blobRedirect of the repo, ADR 0009).
+    // ErrNotFound for a blob the backend does not have; another Docker-Content-Digest is an error.
+    OpenBlob(ctx context.Context, name string, d digest.Digest, rangeHeader string, redirect bool) (Blob, error)
+    // StatBlob: one HEAD, redirects followed; the size and digest, no body.
+    StatBlob(ctx context.Context, name string, d digest.Digest) (Blob, error)
+}
+
+// Blob is a blob opened for a download, or its headers (StatBlob).
+type Blob struct {
+    RedirectURL  string                     // the client is sent there (307); Body is nil
+    Body         io.ReadCloser              // the bytes as the backend sent them; nil for a redirect, a 416, a StatBlob
+    Status       int                        // 200, 206 or 416 as the backend answered; 307 with RedirectURL
+    Size         int64                      // Content-Length of Body (the range's for a 206); -1 unknown
+    ContentRange string                     // the backend's Content-Range on a 206 or 416
+    Digest       digest.Digest              // Docker-Content-Digest of the backend, d when it sent none
+    AcceptRanges bool                       // the backend said Accept-Ranges: bytes
 }
 
 // Repository is the data path; the generic provider wraps oras-go's remote.Repository (error translation).
@@ -259,7 +298,8 @@ type Set interface {
 type Map map[string]Provider                // implements Set
 
 type Capabilities struct {
-    CreateOnPush, Referrers, Catalog, DeleteManifest, ImmutableTags, BlobRedirect bool
+    CreateOnPush, Referrers, Catalog, DeleteManifest, ImmutableTags bool
+    BlobRedirect bool                       // the operator's switch (capabilities.blobRedirect): false, OpenBlob never returns a URL
     MaxBlobSize int64                       // 0 = unknown
 }
 

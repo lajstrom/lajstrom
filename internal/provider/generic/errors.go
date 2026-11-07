@@ -126,7 +126,7 @@ func responseDetail(resp *errcode.ErrorResponse) string {
 
 // parseErrorResponse reads the error codes of a registry response that did not succeed, as
 // oras-go does for the requests it sends; the requests this package sends itself
-// (capability probes, BlobRedirectURL) use it so that translate treats both alike.
+// (capability probes, OpenBlob, StatBlob) use it so that translate treats both alike.
 func parseErrorResponse(resp *http.Response) *errcode.ErrorResponse {
 	e := &errcode.ErrorResponse{StatusCode: resp.StatusCode}
 	if resp.Request != nil {

@@ -274,7 +274,7 @@ func TestIntegrationRawPush(t *testing.T) {
 	rawRoutes(t, st, providers).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/raw/assets/"+f.path, nil))
 	switch {
 	case rr.Code == http.StatusTemporaryRedirect:
-		t.Logf("the registry redirects blob downloads: %s", rr.Header().Get("Location"))
+		t.Logf("the registry redirects blob downloads: %s", redacted(rr.Header().Get("Location")))
 	case rr.Code != http.StatusOK || !bytes.Equal(rr.Body.Bytes(), f.content):
 		t.Errorf("GET /raw/assets/%s: %d %q", f.path, rr.Code, rr.Body)
 	}
@@ -291,6 +291,194 @@ func TestIntegrationRawPush(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "lajstrom.repo is missing") {
 		t.Errorf("a missing annotation: %d %s", resp.StatusCode, body)
 	}
+}
+
+// TestIntegrationBlobReads reads a blob through the facade from the registry of
+// LAJSTROM_TEST_REGISTRY, which streams (Zot and distribution on the filesystem): GET with
+// the whole blob, a Range answered 206 by the backend with those bytes, a range past the end
+// 416, HEAD with the size and no body, If-None-Match 304. On a registry that redirects, GET is
+// a 307 and the test follows it.
+func TestIntegrationBlobReads(t *testing.T) {
+	r := newReplicas(t)
+	b := bytes.Repeat([]byte("blob read "+randomHex(t)+" "), 400)
+	d := digest.FromBytes(b)
+	resp, body := request(t, http.MethodPost, r.a.URL+"/v2/"+r.name+"/blobs/uploads/?digest="+d.String(), bytes.NewReader(b), int64(len(b)))
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("blob: %d %s", resp.StatusCode, body)
+	}
+	blob := r.b.URL + "/v2/" + r.name + "/blobs/" + d.String()
+	resp, body = request(t, http.MethodGet, blob, nil, 0)
+	if resp.StatusCode == http.StatusTemporaryRedirect {
+		t.Logf("the registry redirects blob downloads to %s", redacted(resp.Header.Get("Location")))
+		resp, body = request(t, http.MethodGet, resp.Header.Get("Location"), nil, 0)
+	}
+	if resp.StatusCode != http.StatusOK || !bytes.Equal(body, b) || resp.ContentLength != int64(len(b)) {
+		t.Errorf("GET: %d, %d bytes, Content-Length %d", resp.StatusCode, len(body), resp.ContentLength)
+	}
+	if resp.Header.Get("Docker-Content-Digest") != d.String() && resp.Header.Get("Server") != "MinIO" {
+		t.Errorf("GET: Docker-Content-Digest %q", resp.Header.Get("Docker-Content-Digest"))
+	}
+
+	resp, body = request(t, http.MethodGet, blob, nil, 0, "Range", "bytes=1000-1999")
+	if resp.StatusCode == http.StatusTemporaryRedirect {
+		resp, body = request(t, http.MethodGet, resp.Header.Get("Location"), nil, 0, "Range", "bytes=1000-1999")
+	}
+	if resp.StatusCode != http.StatusPartialContent || !bytes.Equal(body, b[1000:2000]) ||
+		resp.Header.Get("Content-Range") != fmt.Sprintf("bytes 1000-1999/%d", len(b)) {
+		t.Errorf("GET with a Range: %d, %d bytes, Content-Range %q", resp.StatusCode, len(body), resp.Header.Get("Content-Range"))
+	}
+	t.Logf("GET with a Range: %d, Content-Range %s, Accept-Ranges %q", resp.StatusCode, resp.Header.Get("Content-Range"), resp.Header.Get("Accept-Ranges"))
+	resp, _ = request(t, http.MethodGet, blob, nil, 0, "Range", fmt.Sprintf("bytes=%d-", len(b)))
+	if resp.StatusCode != http.StatusRequestedRangeNotSatisfiable && resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Errorf("GET with a range past the end: %d", resp.StatusCode)
+	}
+
+	resp, body = request(t, http.MethodHead, blob, nil, 0)
+	if resp.StatusCode != http.StatusOK || len(body) != 0 || resp.ContentLength != int64(len(b)) || resp.Header.Get("Docker-Content-Digest") != d.String() {
+		t.Errorf("HEAD: %d, Content-Length %d, %d bytes of body", resp.StatusCode, resp.ContentLength, len(body))
+	}
+	if resp, _ := request(t, http.MethodGet, blob, nil, 0, "If-None-Match", `"`+d.String()+`"`); resp.StatusCode != http.StatusNotModified {
+		t.Errorf("GET with If-None-Match: %d", resp.StatusCode)
+	}
+}
+
+// TestIntegrationS3Redirect is the criterion of #27 on distribution with the S3 driver, the s3
+// profile of the dev stack (LAJSTROM_TEST_REGISTRY_S3=localhost:5002): a raw file pushed
+// through the facade, as oras pushes it, is a 307 to a presigned URL of the object store on a
+// GET through the facade and through /raw/assets/<path>, and following the Location, as curl
+// -L does, gives bytes whose digest is the blob's, a Range too; HEAD answers the size; with
+// policy.blobRedirect never both routes stream the bytes from the backend.
+func TestIntegrationS3Redirect(t *testing.T) {
+	addr := os.Getenv("LAJSTROM_TEST_REGISTRY_S3")
+	if addr == "" {
+		t.Skip("set LAJSTROM_TEST_REGISTRY_S3=host:port (the s3 profile of the dev stack: localhost:5002) to run against distribution on S3")
+	}
+	ctx := t.Context()
+	st, err := sqlite.Open(ctx, fmt.Sprintf("file:facade-it-%d?mode=memory&cache=shared", memoryDBs.Add(1)))
+	must(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	must(t, st.Migrate(ctx))
+	repo := index.Repo{Format: "raw", Name: "assets", Registry: "s3", Prefix: "raw/assets", Kind: "hosted"}
+	must(t, st.CreateRepo(ctx, &repo))
+	p, err := generic.New(config.Registry{Name: "s3", Type: generic.Type, URL: "http://" + addr, Prefix: "lajstrom-it/"}, nil)
+	must(t, err)
+	providers := provider.Map{"s3": p}
+	logs := &logBuffer{}
+	log := slog.New(slog.NewTextHandler(logs, nil))
+	srv := httptest.NewServer(New(Options{Index: st, Providers: providers, Log: log,
+		Ingest: ingest.New(ingest.Options{Providers: providers, Index: st, Log: log})}))
+	t.Cleanup(srv.Close)
+	raw := httptest.NewServer(rawRoutes(t, st, providers))
+	t.Cleanup(raw.Close)
+
+	f := rawFileOf("it-"+randomHex(t)+"/big.bin", strings.Repeat("s3 redirect "+randomHex(t)+"\n", 3000))
+	name := srv.URL + "/v2/raw/assets/" + f.path
+	resp, body := request(t, http.MethodPost, name+"/blobs/uploads/?digest="+f.digest.String(), bytes.NewReader(f.content), int64(len(f.content)))
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("blob: %d %s", resp.StatusCode, body)
+	}
+	m, md := f.body(t)
+	resp, body = request(t, http.MethodPut, name+"/manifests/"+f.tag(), bytes.NewReader(m), int64(len(m)), "Content-Type", ocispecManifest)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("manifest: %d %s\n%s", resp.StatusCode, body, logs)
+	}
+	routes := []blobRoute{
+		{name: "facade", url: name + "/blobs/" + f.digest.String(), digest: f.digest},
+		{name: "raw", url: raw.URL + "/raw/assets/" + f.path, digest: md},
+	}
+	for _, rt := range routes {
+		rt.checkRedirected(t, f)
+	}
+	repo.Policy = []byte(`{"blobRedirect": "never"}`)
+	must(t, st.UpdateRepo(ctx, &repo))
+	for _, rt := range routes {
+		rt.checkStreamed(t, f)
+	}
+	t.Logf("policy.blobRedirect never: both routes stream, a Range is answered 206 by the object store through the provider")
+}
+
+// blobRoute is a URL that answers the blob of a raw file: the facade's, or the raw route's.
+type blobRoute struct {
+	name   string
+	url    string
+	digest digest.Digest // the Docker-Content-Digest it answers: the blob's, or the manifest's
+}
+
+// noFollow is a client that returns a redirect as the answer.
+var noFollow = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+// checkRedirected checks that GET is a 307 whose Location, followed without Lajstrom's
+// credentials as curl -L does, gives the bytes of f, a Range too, and that HEAD is 200.
+func (rt blobRoute) checkRedirected(t *testing.T, f *rawFile) {
+	t.Helper()
+	resp := answer(t, noFollow, http.MethodGet, rt.url)
+	loc := resp.Header.Get("Location")
+	if resp.StatusCode != http.StatusTemporaryRedirect || loc == "" {
+		t.Fatalf("%s: GET %d, Location %q; want 307", rt.name, resp.StatusCode, loc)
+	}
+	if got := resp.Header.Get("Docker-Content-Digest"); got != rt.digest.String() {
+		t.Errorf("%s: Docker-Content-Digest %q, want %s", rt.name, got, rt.digest)
+	}
+	t.Logf("%s: GET 307, Location %s", rt.name, redacted(loc))
+	resp, body := request(t, http.MethodGet, rt.url, nil, 0)
+	if got := digest.FromBytes(body); resp.StatusCode != http.StatusOK || got != f.digest {
+		t.Errorf("%s: following the Location gave %d, %d bytes with digest %s; want %s", rt.name, resp.StatusCode, len(body), got, f.digest)
+	} else {
+		t.Logf("%s: following the Location gave %d bytes with digest %s, the blob's (served by %s)", rt.name, len(body), got, resp.Header.Get("Server"))
+	}
+	resp, body = request(t, http.MethodGet, rt.url, nil, 0, "Range", "bytes=100-199")
+	if resp.StatusCode != http.StatusPartialContent || !bytes.Equal(body, f.content[100:200]) {
+		t.Errorf("%s: a Range after the redirect gave %d, %d bytes", rt.name, resp.StatusCode, len(body))
+	}
+	resp, body = request(t, http.MethodHead, rt.url, nil, 0)
+	if resp.StatusCode != http.StatusOK || len(body) != 0 || resp.ContentLength != int64(len(f.content)) || resp.Header.Get("Location") != "" {
+		t.Errorf("%s: HEAD %d, Content-Length %d, Location %q", rt.name, resp.StatusCode, resp.ContentLength, resp.Header.Get("Location"))
+	}
+}
+
+// checkStreamed checks that GET streams the bytes of f with policy.blobRedirect never, and a
+// Range is answered 206 through the provider.
+func (rt blobRoute) checkStreamed(t *testing.T, f *rawFile) {
+	t.Helper()
+	what := rt.name + " with policy.blobRedirect never"
+	resp := answer(t, noFollow, http.MethodGet, rt.url)
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Location") != "" || resp.ContentLength != int64(len(f.content)) {
+		t.Errorf("%s: GET %d, Location %q, Content-Length %d; want the stream", what, resp.StatusCode, resp.Header.Get("Location"), resp.ContentLength)
+	}
+	if _, body := request(t, http.MethodGet, rt.url, nil, 0); digest.FromBytes(body) != f.digest {
+		t.Errorf("%s: %d bytes with digest %s", what, len(body), digest.FromBytes(body))
+	}
+	resp, body := request(t, http.MethodGet, rt.url, nil, 0, "Range", "bytes=100-199")
+	if resp.StatusCode != http.StatusPartialContent || !bytes.Equal(body, f.content[100:200]) ||
+		resp.Header.Get("Content-Range") != fmt.Sprintf("bytes 100-199/%d", len(f.content)) {
+		t.Errorf("%s: a Range gave %d, %d bytes, Content-Range %q", what, resp.StatusCode, len(body), resp.Header.Get("Content-Range"))
+	}
+}
+
+// answer sends method to u with client and returns the answer, its body read and closed.
+func answer(t *testing.T, client *http.Client, method, u string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), method, u, nil)
+	must(t, err)
+	resp, err := client.Do(req)
+	must(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	return resp
+}
+
+// redacted is a URL without its query, which carries a signature.
+func redacted(u string) string {
+	base, query, ok := strings.Cut(u, "?")
+	if !ok {
+		return u
+	}
+	var names []string
+	for _, kv := range strings.Split(query, "&") {
+		k, _, _ := strings.Cut(kv, "=")
+		names = append(names, k)
+	}
+	return base + "?" + strings.Join(names, "&") + " (values left out)"
 }
 
 // randomHex returns 8 random hex digits for repository names.
