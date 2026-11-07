@@ -315,7 +315,9 @@ func TestIntegrationBlobReads(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !bytes.Equal(body, b) || resp.ContentLength != int64(len(b)) {
 		t.Errorf("GET: %d, %d bytes, Content-Length %d", resp.StatusCode, len(body), resp.ContentLength)
 	}
-	if resp.Header.Get("Docker-Content-Digest") != d.String() && resp.Header.Get("Server") != "MinIO" {
+	// resp.Request.Response is the redirect the client followed, to the object store, whose
+	// answer has no Docker-Content-Digest.
+	if resp.Header.Get("Docker-Content-Digest") != d.String() && resp.Request.Response == nil {
 		t.Errorf("GET: Docker-Content-Digest %q", resp.Header.Get("Docker-Content-Digest"))
 	}
 

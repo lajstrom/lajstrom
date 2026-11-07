@@ -1,0 +1,14 @@
+{
+  "identities": [
+    {
+      "name": "lajstrom",
+      "credentials": [
+        {
+          "accessKey": "lajstrom",
+          "secretKey": "lajstrom-dev"
+        }
+      ],
+      "actions": ["Admin", "Read", "Write"]
+    }
+  ]
+}

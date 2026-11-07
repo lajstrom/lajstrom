@@ -34,46 +34,79 @@ a restart keeps what was pushed and the index. The registry versions are those o
 
 ## The s3 profile
 
-`make dev-up PROFILES=s3` starts two more services: a registry whose blob downloads are a `307`
-to its object storage, which the filesystem registries above never answer (#27).
+`make dev-up PROFILES=s3` adds a registry whose blob downloads are a `307` to its object storage,
+which the filesystem registries above never answer (#27): distribution on SeaweedFS (#118), two
+services and a one-shot.
 
 | Service | Image | Port | Used as |
 | --- | --- | --- | --- |
 | `distribution-s3` | `registry:3.1.2` | `localhost:5002` | distribution on the `s3` storage driver, bucket `distribution`; deletes enabled |
-| `minio` | `bitnamilegacy/minio:2025.7.23-debian-12-r5` | `localhost:9000` | the object store; user `lajstrom`, password `lajstrom-dev` |
+| `seaweedfs` | `chrislusf/seaweedfs:4.52` | `localhost:9000` | the object store, its S3 gateway; access key `lajstrom`, secret key `lajstrom-dev` |
+| `seaweedfs-bucket` | the same | not published | makes the bucket `distribution` when it is missing, then exits |
 
-A blob `GET` or `HEAD` on distribution-s3 answers `307` with a URL that MinIO signs for 20
-minutes (`X-Amz-Expires=1200`); `curl -L` downloads the blob from MinIO. distribution signs its
-redirects for the endpoint it talks to (`REGISTRY_STORAGE_S3_REGIONENDPOINT`), and the signature
-covers the host, so the endpoint must be a name that works inside the registry's container and
-on the machine alike. The trick: distribution-s3 runs in the network namespace of minio
-(`network_mode: service:minio`), so it reaches MinIO as `localhost:9000`, and minio publishes
-port 9000 on the machine, where `localhost:9000` is MinIO too. The presigned URLs then name
+A blob `GET` or `HEAD` on distribution-s3 answers `307` with a URL signed for 20 minutes
+(`X-Amz-Expires=1200`, the s3 driver's default), which SeaweedFS enforces: past it, `403`
+"Request has expired". `curl -L` downloads the blob from SeaweedFS, and a `Range` through the
+redirect is `206`. distribution signs its redirects for the endpoint it talks to
+(`REGISTRY_STORAGE_S3_REGIONENDPOINT`), and the signature covers the host, so the endpoint must
+be a name that works inside the registry's container and on the machine alike. The trick:
+distribution-s3 runs in the network namespace of seaweedfs (`network_mode: service:seaweedfs`),
+so it reaches the S3 gateway as `localhost:9000`, and seaweedfs publishes port 9000 on the
+machine, where `localhost:9000` is the gateway too. The presigned URLs then name
 `http://localhost:9000/distribution/docker/registry/v2/blobs/…`, which a client on the machine
-follows. The port of distribution-s3 is published on the minio service for the same reason.
-`LAJSTROM_MINIO_PORT` changes the port on both sides and in the endpoint, since they must
-agree; a client in another container (CI service containers, the `ha` stack) needs an endpoint
-name of its own.
+follows. The port of distribution-s3 is published on the seaweedfs service for the same reason.
+`LAJSTROM_S3_PORT` changes the port on both sides and in the endpoint, since they must agree; a
+client in another container (CI service containers, the `ha` stack) needs an endpoint name of its
+own. SeaweedFS has no option that does it otherwise: `-s3.domainName` is for bucket names in the
+host, and `-s3.externalUrl` adds a host the gateway checks signatures against, while the URL still
+names the host distribution signed for.
 
-MinIO's own image (`minio/minio`) is no longer on Docker Hub; the Bitnami build of the same
-release is, multi-arch, and creates the bucket of `MINIO_DEFAULT_BUCKETS` on its first start,
-so no one-shot `mc` service is needed. Its health check asks `/minio/health/live`; distribution-s3
-starts once MinIO is healthy. MinIO keeps its data in the volume `lajstrom-dev_minio-data`;
-distribution-s3 keeps nothing of its own.
+seaweedfs runs `weed server -s3`: the master, a volume server, the filer and the S3 gateway in one
+process, the gateway on port 9000 with the one identity of
+[deploy/compose/seaweedfs/s3.json](../deploy/compose/seaweedfs/s3.json) (`Admin`, `Read`, `Write`);
+compose.yaml comments the other flags. The image makes no bucket, and `s3.bucket.create` fails on
+one that exists: seaweedfs-bucket, in the same network namespace, runs `weed shell` once seaweedfs
+is healthy and creates `distribution` only when `s3.bucket.list` does not name it, as the bucket
+hook of SeaweedFS's Helm chart does. distribution-s3 starts once seaweedfs-bucket has exited 0;
+`docker compose -f deploy/compose/compose.yaml ps -a` shows it as `Exited (0)`. The health check of
+seaweedfs asks the gateway's `/healthz` with `wget` (the image is Alpine); the gateway starts last,
+5 s after the master. From an empty volume `make dev-up PROFILES=s3` returns in about 15 s, once
+the image is pulled (270 MB to download, 1 GB on disk: besides `weed` it carries SeaweedFS's Rust
+volume server, maintenance worker and vector engine); with the bucket there, in about 8 s.
+SeaweedFS keeps its data, the filer's metadata with it, in the volume
+`lajstrom-dev_seaweedfs-data`; distribution-s3 keeps nothing of its own.
+
+**MinIO as a fallback.** `make dev-up PROFILES=s3-minio` starts the same distribution on MinIO,
+the store of the profile before SeaweedFS: `distribution-s3-minio` on `localhost:5006` and `minio`
+(`bitnamilegacy/minio:2025.7.23-debian-12-r5`, the Bitnami build: `minio/minio` is no longer on
+Docker Hub) on `localhost:9001`, with the same user, password and bucket. The image creates the
+bucket itself, so there is no one-shot; its health check asks `/minio/health/live`, and its data
+is in the volume `lajstrom-dev_minio-data`. The trick is the same: distribution-s3-minio runs in
+the network namespace of minio and reaches it as `localhost:9001`, which minio publishes, and the
+presigned URLs name `http://localhost:9001/distribution/…`. `LAJSTROM_MINIO_PORT` and
+`LAJSTROM_DISTRIBUTION_S3_MINIO_PORT` move its two ports; they differ from those of the s3
+profile, so `PROFILES=s3,s3-minio` runs both. The integration tests run against both stores:
 
 ```sh
-make dev-up PROFILES=s3          # the three services and the two of the profile
-LAJSTROM_TEST_REGISTRY_S3=localhost:5002 go test -race -tags integration -run TestIntegrationS3Redirect ./internal/facade/
+make dev-up PROFILES=s3,s3-minio # the three services and those of both profiles
+LAJSTROM_TEST_REGISTRY_S3=localhost:5002 go test -race -tags integration -run TestIntegrationS3Redirect ./internal/facade/   # SeaweedFS
+LAJSTROM_TEST_REGISTRY_S3=localhost:5006 go test -race -tags integration -run TestIntegrationS3Redirect ./internal/facade/   # MinIO
 LAJSTROM_TEST_REGISTRY=localhost:5002 go test -race -tags integration -run 'TestIntegration$' ./internal/provider/generic/
+LAJSTROM_TEST_REGISTRY=localhost:5006 go test -race -tags integration -run 'TestIntegration$' ./internal/provider/generic/
+LAJSTROM_TEST_REGISTRY=localhost:5000 LAJSTROM_TEST_REGISTRY_S3=localhost:5002 go test -race -tags integration -run TestAptGetInstall ./internal/format/deb/
+LAJSTROM_TEST_REGISTRY=localhost:5000 LAJSTROM_TEST_REGISTRY_S3=localhost:5006 go test -race -tags integration -run TestAptGetInstall ./internal/format/deb/
 make dev-down RESET=1            # every profile, and the volumes
 ```
 
-A Lajstrom registry for it in `deploy/compose/lajstrom.yaml`:
+A Lajstrom registry for each in `deploy/compose/lajstrom.yaml`:
 
 ```yaml
   - name: s3
     type: generic
-    url: "http://localhost:5002"     # distribution on MinIO: blob GETs are 307 to localhost:9000
+    url: "http://localhost:5002"     # distribution on SeaweedFS: blob GETs are 307 to localhost:9000
+  - name: s3-minio
+    type: generic
+    url: "http://localhost:5006"     # distribution on MinIO: blob GETs are 307 to localhost:9001
 ```
 
 ## The gitlab profile
@@ -110,7 +143,8 @@ make dev-ps            # the services, their health and ports
 make dev-logs          # follow the logs (Ctrl-C stops following, not the stack)
 make dev-down          # stop and remove the containers, of every profile; the volumes stay
 make dev-down RESET=1  # the same, and remove the volumes
-make dev-up PROFILES=s3  # the three, and distribution on MinIO (below)
+make dev-up PROFILES=s3  # the three, and distribution on SeaweedFS (below)
+make dev-up PROFILES=s3-minio  # the three, and distribution on MinIO, the fallback (below)
 make dev-up PROFILES=gitlab  # the three, and the GitLab container registry (below)
 ```
 
@@ -132,7 +166,7 @@ is a line in its log.
 
 ## Reset
 
-`make dev-down RESET=1` removes the containers and the volumes, MinIO's too; the next
+`make dev-down RESET=1` removes the containers and the volumes, the object stores' too; the next
 `make dev-up` starts with empty registries and a database without tables, which `make run`
 migrates. Only `RESET=1` removes the volumes; `make dev-down` alone never does.
 
@@ -141,6 +175,7 @@ migrates. Only `RESET=1` removes the volumes; `make dev-down` alone never does.
 Copy [deploy/compose/.env.example](../deploy/compose/.env.example) to `deploy/compose/.env`
 (not committed) to change a host port (`LAJSTROM_ZOT_PORT`, `LAJSTROM_DISTRIBUTION_PORT`,
 `LAJSTROM_PG_PORT`, for the s3 profile `LAJSTROM_DISTRIBUTION_S3_PORT` and
+`LAJSTROM_S3_PORT`, for the s3-minio profile `LAJSTROM_DISTRIBUTION_S3_MINIO_PORT` and
 `LAJSTROM_MINIO_PORT`, and for the gitlab profile `LAJSTROM_GITLAB_PORT` and
 `LAJSTROM_GITLAB_DB_PORT`) or the Postgres credentials (`LAJSTROM_PG_DB`, `LAJSTROM_PG_USER`,
 `LAJSTROM_PG_PASSWORD`). A variable set in the shell wins over the file. When you change a port,
@@ -213,6 +248,7 @@ make test                                              # unit tests, no stack ne
 LAJSTROM_TEST_REGISTRY=localhost:5000 make test-integration   # against Zot
 LAJSTROM_TEST_REGISTRY=localhost:5001 make test-integration   # against distribution
 LAJSTROM_TEST_REGISTRY=localhost:5000 LAJSTROM_TEST_REGISTRY_S3=localhost:5002 make test-integration   # and the 307 of distribution on S3 (PROFILES=s3)
+LAJSTROM_TEST_REGISTRY=localhost:5000 LAJSTROM_TEST_REGISTRY_S3=localhost:5006 make test-integration   # the same on MinIO (PROFILES=s3-minio)
 LAJSTROM_TEST_POSTGRES_DSN='postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable' go test -race ./internal/index/...
 test/e2e/raw.sh http://localhost:8080 scratch          # with make run in another terminal
 ```
@@ -223,8 +259,8 @@ of their own, so they can run again and side by side without a reset.
 CI runs the same three images, on the same ports, as service containers of the `integration`
 job ([CONTRIBUTING.md](../CONTRIBUTING.md#ci-overview)); Zot there runs on the configuration built
 into its image, since a service container cannot mount `config.json` from the checkout. CI does
-not run the s3 profile (the tests that need it skip without `LAJSTROM_TEST_REGISTRY_S3`) nor the
-gitlab profile.
+not run the s3 and s3-minio profiles (the tests that need them skip without
+`LAJSTROM_TEST_REGISTRY_S3`) nor the gitlab profile.
 
 ## Docker on macOS and Linux
 
