@@ -7,7 +7,7 @@
 [![Go version](https://img.shields.io/github/go-mod/go-version/lajstrom/lajstrom)](go.mod)
 [![License](https://img.shields.io/github/license/lajstrom/lajstrom)](LICENSE)
 [![Commit activity](https://img.shields.io/github/commit-activity/m/lajstrom/lajstrom)](https://github.com/lajstrom/lajstrom/commits/main)
-[![Roadmap](https://img.shields.io/badge/v0.1.0-2026--12--04-blue)](docs/roadmap.md)
+[![Roadmap](https://img.shields.io/badge/roadmap-v0.1.0%20due%202026--12--04-orange)](docs/roadmap.md)
 
 # Lajstrom
 
