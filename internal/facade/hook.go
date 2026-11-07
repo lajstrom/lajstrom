@@ -1,0 +1,200 @@
+package facade
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+
+	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
+	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/ingest"
+	"github.com/lajstrom/lajstrom/internal/oci/profile"
+	"github.com/lajstrom/lajstrom/internal/provider"
+)
+
+// dockerManifestList is the media type of a Docker image index.
+const dockerManifestList = "application/vnd.docker.distribution.manifest.list.v2+json"
+
+// unknownArtifactType is the artifactType oras gives a manifest pushed without --artifact-type.
+const unknownArtifactType = "application/vnd.unknown.artifact.v1"
+
+// putManaged is the manifest hook: a manifest pushed to a repo Lajstrom manages, every format
+// but oci, is stored and indexed by ingest, the one write path (docs/spec/http-routing.md §2,
+// docs/architecture.md flow A). desc and body are what readManifest read; refDigest is the
+// digest of the reference, "" for a tag.
+//
+//  1. The manifest must be an OCI image manifest (docs/spec/manifest-profile.md §1): an image
+//     index or a Docker manifest is MANIFEST_INVALID, naming what the profile wants.
+//  2. The package path is the <path> of the name, the tag the reference or, for a push by
+//     digest, the tag of the annotations (manifestTag).
+//  3. Every layer must be in the backend, else MANIFEST_BLOB_UNKNOWN (checkLayers).
+//  4. ingest.Ingest validates the manifest, claims the tag, pushes the manifest with it and
+//     indexes it; ingestError answers its errors.
+//
+// The answer is 201 with Location (the digest, or the tag of a push by digest),
+// Docker-Content-Digest (the manifest the tag holds, also for the idempotent repeat) and, when
+// the manifest has a subject, OCI-Subject.
+func (h *handler) putManaged(w http.ResponseWriter, r *http.Request, t *target, ref string, refDigest digest.Digest, desc ocispec.Descriptor, body []byte) error {
+	ctx := r.Context()
+	if h.o.Ingest == nil {
+		return fmt.Errorf("facade: a manifest for %s, and Options.Ingest is nil", t.name)
+	}
+	m, err := decodeManaged(desc.MediaType, body)
+	if err != nil {
+		return err
+	}
+	tag, err := manifestTag(ref, refDigest, m)
+	if err != nil {
+		return err
+	}
+	if err := h.checkLayers(ctx, t, m); err != nil {
+		return err
+	}
+	res, err := h.o.Ingest.Ingest(ctx, t.repo, t.path, tag, m, body, auth.PrincipalFrom(ctx))
+	if err != nil {
+		return ingestError(t, m, err)
+	}
+	loc := res.Digest.String()
+	if refDigest != "" {
+		loc = res.Tag
+	}
+	hdr := w.Header()
+	hdr.Set("Location", "/v2/"+t.name+"/manifests/"+loc)
+	hdr.Set("Docker-Content-Digest", res.Digest.String())
+	if m.Subject != nil {
+		// The referrers listing is #28; the header costs nothing, and clients that set a
+		// subject look for it.
+		hdr.Set("OCI-Subject", m.Subject.Digest.String())
+	}
+	hdr.Set("Content-Length", "0")
+	w.WriteHeader(http.StatusCreated)
+	return nil
+}
+
+// decodeManaged returns the manifest of a PUT to a managed repo, which must be an OCI image
+// manifest of the media type mediaType: an image index (OCI or Docker), a Docker manifest or an
+// OCI artifact manifest is not a Lajstrom artifact, and an oci repo takes it.
+func decodeManaged(mediaType string, body []byte) (ocispec.Manifest, error) {
+	switch mediaType {
+	case ocispec.MediaTypeImageManifest:
+	case ocispec.MediaTypeImageIndex, dockerManifestList:
+		return ocispec.Manifest{}, &apiError{status: http.StatusBadRequest, code: codeManifestInvalid,
+			msg: "an image index is not a Lajstrom artifact; an oci repo takes it"}
+	default:
+		return ocispec.Manifest{}, &apiError{status: http.StatusBadRequest, code: codeManifestInvalid,
+			msg: fmt.Sprintf("a manifest of media type %s is not a Lajstrom artifact: the profile wants %s; an oci repo takes it",
+				mediaType, ocispec.MediaTypeImageManifest)}
+	}
+	var m ocispec.Manifest
+	if err := json.Unmarshal(body, &m); err != nil {
+		return ocispec.Manifest{}, &apiError{status: http.StatusBadRequest, code: codeManifestInvalid,
+			msg: "the body is not an OCI image manifest: " + err.Error(), err: err}
+	}
+	return m, nil
+}
+
+// manifestTag returns the tag to store m under: the reference when it is a tag. A push by
+// digest is accepted when the annotations yield a tag, Tag(lajstrom.version, lajstrom.variant)
+// (docs/spec/manifest-profile.md §4.2), which ingest then sets in the backend. Only those two
+// keys are read, not profile.ParseAnnotations, which returns no version when any other required
+// key is missing: the other keys are ingest's to check, as for a push by tag.
+func manifestTag(ref string, refDigest digest.Digest, m ocispec.Manifest) (string, error) {
+	if refDigest == "" {
+		return ref, nil
+	}
+	version := m.Annotations[profile.AnnotationVersion]
+	if version == "" {
+		return "", &apiError{status: http.StatusBadRequest, code: codeManifestInvalid,
+			msg: "a push by digest needs the " + profile.AnnotationVersion + " annotation; push with a tag"}
+	}
+	return profile.Tag(version, m.Annotations[profile.AnnotationVariant]), nil
+}
+
+// checkLayers answers MANIFEST_BLOB_UNKNOWN, naming the digest, when a layer of m is not in
+// the backend. Ingest checks the layers again (and pushes the empty config, which is
+// Lajstrom's own), but there a missing layer is ingest.ErrInvalid, MANIFEST_INVALID: the second
+// HEAD per layer is the price of the right code without a new error in the ingest contract. A
+// layer whose digest is malformed is left to the profile check of ingest, which names it. Each
+// digest is asked once, so a manifest that names one blob many times costs one HEAD.
+func (h *handler) checkLayers(ctx context.Context, t *target, m ocispec.Manifest) error {
+	rr, err := h.backend(ctx, t)
+	if err != nil {
+		return err
+	}
+	seen := make(map[digest.Digest]bool, len(m.Layers))
+	for _, l := range m.Layers {
+		if seen[l.Digest] || l.Digest.Validate() != nil {
+			continue
+		}
+		seen[l.Digest] = true
+		ok, err := rr.Exists(ctx, l)
+		switch {
+		case err != nil:
+			return fmt.Errorf("facade: layer %s of %s: %w", l.Digest, t.name, err)
+		case !ok:
+			return &apiError{status: http.StatusBadRequest, code: codeManifestBlobUnknown,
+				msg: fmt.Sprintf("manifest blob unknown to registry: layer %s was not uploaded to %s", l.Digest, t.name)}
+		}
+	}
+	return nil
+}
+
+// ingestError is the error table of the manifest hook, the one place where the errors of
+// ingest become answers:
+//
+//	ingest.ErrInvalid           400 MANIFEST_INVALID, the rule that failed in detail
+//	*index.TagConflictError     409 TAG_INVALID, the digest the tag holds in the message and in
+//	                            detail.existing
+//	ingest.ErrConflict          409 TAG_INVALID with the conflict's message (a raw path that
+//	                            another spelling holds, #97)
+//	format.ErrUnsupported       501 UNSUPPORTED
+//	provider.ErrUnauthorized    502 (the backend refused Lajstrom's credentials)
+//	anything else               500, logged with the request id
+//
+// The messages of ingest name annotations, rules, digests and OCI names, never a backend URL.
+// A manifest with oras's default artifactType gets the hint of the one it needs.
+func ingestError(t *target, m ocispec.Manifest, err error) error {
+	var conflict *index.TagConflictError
+	switch {
+	case errors.Is(err, ingest.ErrInvalid):
+		msg := fmt.Sprintf("the manifest is not a valid %s artifact for %s", t.repo.Format, t.name)
+		if m.ArtifactType == unknownArtifactType {
+			msg += "; pass --artifact-type " + artifactTypeOf(t.repo.Format)
+		}
+		return &apiError{status: http.StatusBadRequest, code: codeManifestInvalid, msg: msg, detail: validationText(err), err: err}
+	case errors.As(err, &conflict):
+		return &apiError{status: http.StatusConflict, code: codeTagInvalid,
+			msg:    fmt.Sprintf("tag %s of %s is taken by %s: tags are immutable", conflict.Tag, t.name, conflict.Existing),
+			detail: map[string]string{"existing": conflict.Existing.String()}, err: err}
+	case errors.Is(err, ingest.ErrConflict):
+		return &apiError{status: http.StatusConflict, code: codeTagInvalid, err: err}
+	case errors.Is(err, format.ErrUnsupported):
+		return &apiError{status: http.StatusNotImplemented, code: codeUnsupported, err: err}
+	case errors.Is(err, provider.ErrUnauthorized):
+		return &apiError{status: http.StatusBadGateway, err: err}
+	}
+	return &apiError{status: http.StatusInternalServerError, err: err}
+}
+
+// artifactTypeOf is the artifactType of the repo format f: apt stores deb.
+func artifactTypeOf(f string) string {
+	if typ, ok := profile.TypeByFormat(f); ok {
+		return profile.ArtifactType(typ.Name)
+	}
+	return profile.ArtifactType(f)
+}
+
+// validationText is the detail of a MANIFEST_INVALID: the message of ingest without the text of
+// the ErrInvalid sentinel, which the code says, on one line (the profile joins its findings with
+// newlines).
+func validationText(err error) string {
+	s := strings.ReplaceAll(err.Error(), ingest.ErrInvalid.Error()+": ", "")
+	return strings.ReplaceAll(s, "\n", "; ")
+}

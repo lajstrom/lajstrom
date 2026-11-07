@@ -10,9 +10,12 @@ import (
 	"strings"
 	"time"
 
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -25,12 +28,32 @@ type Options struct {
 	// Auth decides what the request's principal may do on a repo. nil allows everything: the
 	// facade is open until the bearer tokens of #26 and RBAC (#45) set it.
 	Auth auth.Authorizer
+	// Ingest stores a manifest pushed to a repo Lajstrom manages (every format but oci): the
+	// ingest pipeline. Required when such a repo is served; without it their manifest PUT is a
+	// 500.
+	Ingest Ingester
+	// MaxManifestSize is the largest manifest a PUT may carry, in bytes (server.maxManifestSize);
+	// zero or negative means 4 MiB, the least the distribution spec asks a registry to take.
+	MaxManifestSize int64
 	// Log receives the causes of the 5xx answers, with the request id; nil means
 	// slog.Default().
 	Log *slog.Logger
 	// Now is the clock of the upload sessions; nil means time.Now.
 	Now func() time.Time
 }
+
+// Ingester stores a manifest that a client pushed to a managed repo: *ingest.Pipeline. It is
+// the facade's own interface because format.Publisher, the frontends' view of the pipeline, has
+// Upload only.
+type Ingester interface {
+	Ingest(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, principal auth.Principal) (*ingest.Result, error)
+}
+
+var _ Ingester = (*ingest.Pipeline)(nil)
+
+// defaultMaxManifestSize is Options.MaxManifestSize when it is zero: a manifest is read into
+// memory, and the spec asks registries to take at least 4 MiB.
+const defaultMaxManifestSize = 4 << 20
 
 // ociFormat is the reserved format of the pass-through repos (format.Reserved): /v2 stores
 // what it gets there, indexes nothing, and no frontend serves them.
@@ -46,7 +69,7 @@ const apiVersionHeader = "Docker-Distribution-API-Version"
 //	GET  /v2/                                   200 {} (the challenge of rbac.md §4 comes with #26)
 //	GET  /v2/_catalog?n=&last=                  OCI names of the repos the principal may read
 //	HEAD|GET /v2/<name>/manifests/<ref>         proxied to the backend
-//	PUT  /v2/<name>/manifests/<ref>             pass-through on an oci repo; 501 elsewhere until #25
+//	PUT  /v2/<name>/manifests/<ref>             pass-through on an oci repo; the hook into ingest elsewhere
 //	HEAD|GET /v2/<name>/blobs/<digest>          streamed from the backend (Range and 307: #27)
 //	POST /v2/<name>/blobs/uploads/              a session, a monolithic upload (?digest=) or a mount
 //	PATCH|PUT|GET|DELETE /v2/<name>/blobs/uploads/<id>   the session, from any replica
@@ -70,6 +93,9 @@ func New(o Options) http.Handler {
 	}
 	if o.Now == nil {
 		o.Now = time.Now
+	}
+	if o.MaxManifestSize <= 0 {
+		o.MaxManifestSize = defaultMaxManifestSize
 	}
 	h := &handler{o: o, deps: format.Deps{Auth: o.Auth}}
 	h.endpoints = map[routeKind]map[string]endpoint{

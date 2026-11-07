@@ -21,10 +21,6 @@ import (
 	"github.com/lajstrom/lajstrom/internal/server"
 )
 
-// maxManifestSize is the largest manifest a PUT may carry: the spec asks registries to take at
-// least 4 MiB, and a manifest is read into memory.
-const maxManifestSize = 4 << 20
-
 // manifestMediaTypes are the media types a manifest PUT passes through: those oras-go sends
 // to the manifests endpoint, so the provider stores the manifest as one.
 var manifestMediaTypes = map[string]bool{
@@ -106,12 +102,12 @@ func manifestUnknown(err error) error {
 	return &apiError{code: codeManifestUnknown, err: err}
 }
 
-// putManifest answers PUT …/manifests/<ref>. On a repo of format oci the manifest passes
-// through: the body (Content-Length required, at most maxManifestSize) is read, checked to be
-// a manifest of one of manifestMediaTypes whose mediaType field, when it has one, is the
-// Content-Type, and pushed with its tag (PushReference) or by its digest, which must be the
-// reference's; then oci_repos records the OCI name, and the answer is 201. Every other
-// format answers 501 until the manifest hook of #25 hands the manifest to ingest.
+// putManifest answers PUT …/manifests/<ref>. The body (Content-Length required, at most
+// Options.MaxManifestSize) is read and checked to be a manifest of one of manifestMediaTypes
+// whose mediaType field, when it has one, is the Content-Type. On a repo of format oci the
+// manifest then passes through: it is pushed with its tag (PushReference) or by its digest,
+// which must be the reference's, oci_repos records the OCI name, and the answer is 201. Every
+// other format goes through the manifest hook into ingest (putManaged).
 func (h *handler) putManifest(w http.ResponseWriter, r *http.Request, t *target, ref string) error {
 	ctx := r.Context()
 	refDigest, err := parseReference(ref)
@@ -121,13 +117,12 @@ func (h *handler) putManifest(w http.ResponseWriter, r *http.Request, t *target,
 	if err := h.authorize(ctx, auth.ActionWrite, t.repo); err != nil {
 		return err
 	}
-	if t.repo.Format != ociFormat {
-		return &apiError{status: http.StatusNotImplemented, code: codeUnsupported,
-			msg: fmt.Sprintf("pushing a manifest to a %s repo: the manifest hook comes with #25", t.repo.Format)}
-	}
-	desc, body, err := readManifest(r, refDigest)
+	desc, body, err := readManifest(r, refDigest, h.o.MaxManifestSize)
 	if err != nil {
 		return err
+	}
+	if t.repo.Format != ociFormat {
+		return h.putManaged(w, r, t, ref, refDigest, desc, body)
 	}
 	rr, err := h.backend(ctx, t)
 	if err != nil {
@@ -156,15 +151,16 @@ func (h *handler) putManifest(w http.ResponseWriter, r *http.Request, t *target,
 	return nil
 }
 
-// readManifest reads the manifest of a PUT and returns its descriptor and bytes; refDigest,
-// when not empty, is the digest the reference names, whose algorithm digests the body.
-func readManifest(r *http.Request, refDigest digest.Digest) (ocispec.Descriptor, []byte, error) {
+// readManifest reads the manifest of a PUT, at most limit bytes, and returns its descriptor
+// and bytes; refDigest, when not empty, is the digest the reference names, whose algorithm
+// digests the body.
+func readManifest(r *http.Request, refDigest digest.Digest, limit int64) (ocispec.Descriptor, []byte, error) {
 	switch {
 	case r.ContentLength < 0:
 		return ocispec.Descriptor{}, nil, &apiError{status: http.StatusLengthRequired, code: codeManifestInvalid, msg: "a manifest needs a Content-Length"}
-	case r.ContentLength > maxManifestSize:
+	case r.ContentLength > limit:
 		return ocispec.Descriptor{}, nil, &apiError{status: http.StatusRequestEntityTooLarge, code: codeManifestInvalid,
-			msg: fmt.Sprintf("manifest of %d bytes, the limit is %d", r.ContentLength, maxManifestSize)}
+			msg: fmt.Sprintf("manifest of %d bytes, the limit is %d", r.ContentLength, limit)}
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, r.ContentLength))
 	if err != nil || int64(len(body)) != r.ContentLength {

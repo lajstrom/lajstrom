@@ -82,7 +82,7 @@ func TestRouteErrors(t *testing.T) {
 		{"delete manifest", http.MethodDelete, "/v2/oci/images/x/manifests/v1", http.StatusMethodNotAllowed, codeUnsupported, "#61"},
 		{"delete blob", http.MethodDelete, "/v2/oci/images/x/blobs/" + string(zeroDigest), http.StatusMethodNotAllowed, codeUnsupported, "#61"},
 		{"referrers", http.MethodGet, "/v2/oci/images/x/referrers/" + string(zeroDigest), http.StatusNotImplemented, codeUnsupported, "#28"},
-		{"manifest hook", http.MethodPut, "/v2/raw/assets/x/manifests/v1", http.StatusNotImplemented, codeUnsupported, "#25"},
+		{"manifest without a Content-Type", http.MethodPut, "/v2/raw/assets/x/manifests/v1", http.StatusBadRequest, codeManifestInvalid, "Content-Type"},
 		{"tags n invalid", http.MethodGet, "/v2/oci/images/x/tags/list?n=-1", http.StatusBadRequest, codeUnsupported, "n="},
 		{"catalog n invalid", http.MethodGet, "/v2/_catalog?n=x", http.StatusBadRequest, codeUnsupported, "n="},
 	}
@@ -143,6 +143,9 @@ func TestAuthorization(t *testing.T) {
 		{"reader writes", "reader", http.MethodPost, "/v2/oci/images/x/blobs/uploads/", http.StatusForbidden, codeDenied},
 		{"reader pushes a manifest", "reader", http.MethodPut, "/v2/oci/images/x/manifests/v1", http.StatusForbidden, codeDenied},
 		{"reader deletes", "reader", http.MethodDelete, "/v2/oci/images/x/manifests/v1", http.StatusForbidden, codeDenied},
+		{"anonymous pushes to a managed repo", "", http.MethodPut, "/v2/raw/assets/x/manifests/v1", http.StatusUnauthorized, codeUnauthorized},
+		{"reader pushes to a managed repo", "writer", http.MethodPut, "/v2/raw/assets/x/manifests/v1", http.StatusForbidden, codeDenied},
+		{"stranger pushes to a managed repo", "reader", http.MethodPut, "/v2/raw/assets/x/manifests/v1", http.StatusNotFound, codeNameUnknown},
 		{"stranger reads", "reader", http.MethodGet, "/v2/raw/assets/x/tags/list", http.StatusNotFound, codeNameUnknown},
 		{"stranger reads a blob", "reader", http.MethodGet, "/v2/raw/assets/x/blobs/" + string(zeroDigest), http.StatusNotFound, codeNameUnknown},
 		{"writer's upload status of an unknown id", "writer", http.MethodGet, "/v2/oci/images/x/blobs/uploads/" + strings.Repeat("0", 32), http.StatusNotFound, codeBlobUploadUnknown},

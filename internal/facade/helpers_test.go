@@ -24,6 +24,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/sqlite"
+	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/provider/providertest"
 )
@@ -36,24 +37,29 @@ const principalHeader = "X-Test-User"
 
 // env is a facade over the real SQLite store in memory, with the repos raw/assets and
 // oci/images on the registry "local", which is the fake provider unless envOptions says
-// otherwise.
+// otherwise, and the real ingest pipeline over both, with the plugins registered in the test
+// binary (raw, imported by hook_test.go).
 type env struct {
-	t     *testing.T
-	st    *sqlite.Store
-	prov  *providertest.Fake
-	reg   provider.Provider // the registry "local"
-	raw   index.Repo
-	oci   index.Repo
-	clock *clock
-	authz auth.Authorizer
-	logs  *logBuffer
-	h     http.Handler // replica A
+	t      *testing.T
+	st     *sqlite.Store
+	prov   *providertest.Fake
+	reg    provider.Provider // the registry "local"
+	raw    index.Repo
+	oci    index.Repo
+	clock  *clock
+	authz  auth.Authorizer
+	ingest Ingester
+	max    int64 // Options.MaxManifestSize
+	logs   *logBuffer
+	h      http.Handler // replica A
 }
 
 // envOptions change what newEnv builds.
 type envOptions struct {
-	authz    auth.Authorizer
-	registry func(*providertest.Fake) provider.Provider // wraps the fake as the registry "local"
+	authz       auth.Authorizer
+	registry    func(*providertest.Fake) provider.Provider // wraps the fake as the registry "local"
+	ingest      Ingester                                   // replaces the real pipeline
+	maxManifest int64                                      // Options.MaxManifestSize
 }
 
 func newEnv(t *testing.T, o envOptions) *env {
@@ -64,10 +70,14 @@ func newEnv(t *testing.T, o envOptions) *env {
 	t.Cleanup(func() { _ = st.Close() })
 	must(t, st.Migrate(ctx))
 	e := &env{t: t, st: st, prov: &providertest.Fake{RegistryName: "local"}, authz: o.authz, logs: &logBuffer{},
-		clock: &clock{now: time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC)}}
+		clock: &clock{now: time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC)}, ingest: o.ingest, max: o.maxManifest}
 	e.reg = e.prov
 	if o.registry != nil {
 		e.reg = o.registry(e.prov)
+	}
+	if e.ingest == nil {
+		e.ingest = ingest.New(ingest.Options{Providers: provider.Map{"local": e.reg}, Index: st,
+			Log: slog.New(slog.NewTextHandler(e.logs, nil)), Now: e.clock.Now})
 	}
 	for _, r := range []*index.Repo{&e.raw, &e.oci} {
 		*r = index.Repo{Registry: "local", Kind: "hosted"}
@@ -83,8 +93,8 @@ func newEnv(t *testing.T, o envOptions) *env {
 // replica returns another facade over the env's store and registry: what a second replica of
 // the server runs. It shares nothing with the others but the database and the backend.
 func (e *env) replica() http.Handler {
-	h := New(Options{Index: e.st, Providers: provider.Map{"local": e.reg}, Auth: e.authz,
-		Log: slog.New(slog.NewTextHandler(e.logs, nil)), Now: e.clock.Now})
+	h := New(Options{Index: e.st, Providers: provider.Map{"local": e.reg}, Auth: e.authz, Ingest: e.ingest,
+		MaxManifestSize: e.max, Log: slog.New(slog.NewTextHandler(e.logs, nil)), Now: e.clock.Now})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if name := r.Header.Get(principalHeader); name != "" {
 			r = r.WithContext(auth.WithPrincipal(r.Context(), auth.Principal{Kind: auth.KindUser, Name: name}))
