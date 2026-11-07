@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/lajstrom/lajstrom/internal/api"
+	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/facade"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/ingest"
@@ -38,7 +39,8 @@ const registryProbeTimeout = 10 * time.Second
 // Deps.Signer. The repo service over the index (api.Repos) runs the config bootstrap
 // before the server listens, and serves /api/v1. The OCI facade over the index and the
 // registries serves /v2/, and hands the manifests of managed repos to the same pipeline;
-// server.maxManifestSize bounds them.
+// server.maxManifestSize bounds them. The authenticator over the index's users reads the HTTP
+// Basic credentials of every request.
 func newServeCmd(a *app) *cobra.Command {
 	return &cobra.Command{
 		Use:         "serve",
@@ -88,6 +90,7 @@ func newServeCmd(a *app) *cobra.Command {
 			pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL})
 			v2 := facade.New(facade.Options{Index: st, Providers: providers, Ingest: pipe,
 				MaxManifestSize: c.Server.MaxManifestSize, Log: a.log})
+			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log})
 
 			srv, err := server.New(server.Options{
 				Listen:          c.Server.Listen,
@@ -99,6 +102,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Ready:           ready(a.log, c.Database.Driver, st),
 				API:             api.New(api.Options{Repos: repos, Log: a.log}),
 				Facade:          v2,
+				Authenticator:   authn,
 			})
 			if err != nil {
 				return err

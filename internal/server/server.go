@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 )
 
@@ -50,6 +51,9 @@ type Options struct {
 	// Facade is the OCI distribution API (internal/facade), mounted at /v2/. nil leaves /v2/ to
 	// the ServeMux, which answers it 404 in plain text.
 	Facade http.Handler
+	// Authenticator turns the HTTP Basic credentials of a request into its principal, on every
+	// route (authenticate). nil authenticates nobody: every request is anonymous.
+	Authenticator *auth.Authenticator
 }
 
 // Server is the Lajstrom HTTP server. Create it with New and start it with Run.
@@ -87,7 +91,7 @@ func New(o Options) (*Server, error) {
 	}
 	s := &Server{opts: o, log: o.Log, mux: http.NewServeMux(), bound: make(chan struct{})}
 	s.routes()
-	s.handler = s.recovery(requestID(s.accessLog(s.mux)))
+	s.handler = s.recovery(requestID(s.accessLog(s.authenticate(s.mux))))
 	s.srv = &http.Server{
 		Handler: s.handler,
 		// No ReadTimeout and no WriteTimeout: they bound the whole request body and the whole

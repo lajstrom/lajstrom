@@ -22,7 +22,7 @@ type Options struct {
 	// Repos is the service behind /api/v1/repos; required.
 	Repos *Repos
 	// Auth decides whether the request's principal may perform an action on a repo. nil allows
-	// everything: there is no authentication in this version, and every endpoint is open until
+	// everything: the server authenticates requests (#43), but every endpoint is open until
 	// RBAC (#45) sets it.
 	Auth auth.Authorizer
 	// Log receives the causes of the 5xx answers, with the request id; nil means
@@ -42,10 +42,11 @@ const maxBody = 64 << 10
 //	PATCH  /api/v1/repos/{format}/{repo}               change anonymousRead and policy
 //	DELETE /api/v1/repos/{format}/{repo}[?force=true]  delete a repo
 //	POST   /api/v1/repos/{format}/{repo}/reindex       501 until reindex comes with #29
+//	GET    /api/v1/whoami                              the request's principal
 //
-// Every other method and path under /api/ is a JSON NOT_FOUND: the users, tokens, bindings and
-// whoami endpoints of docs/spec/http-routing.md §4 come with #47, audit with #46. Answers are
-// JSON; errors are the envelope of §4. New panics when o.Repos is nil.
+// Every other method and path under /api/ is a JSON NOT_FOUND: the users, tokens and bindings
+// endpoints of docs/spec/http-routing.md §4 come with #47, audit with #46. Answers are JSON;
+// errors are the envelope of §4. New panics when o.Repos is nil.
 func New(o Options) http.Handler {
 	if o.Repos == nil {
 		panic("api: New: nil Options.Repos")
@@ -61,6 +62,7 @@ func New(o Options) http.Handler {
 	mux.Handle("PATCH /api/v1/repos/{format}/{repo}", h.serve(h.updateRepo))
 	mux.Handle("DELETE /api/v1/repos/{format}/{repo}", h.serve(h.deleteRepo))
 	mux.Handle("POST /api/v1/repos/{format}/{repo}/reindex", h.serve(h.reindexRepo))
+	mux.Handle("GET /api/v1/whoami", h.serve(h.whoami))
 	mux.Handle("/api/", h.serve(h.notFound))
 	return mux
 }
@@ -210,7 +212,7 @@ func (h *handler) reindexRepo(_ http.ResponseWriter, r *http.Request) (int, any,
 // notFound answers every other method and path under /api/.
 func (h *handler) notFound(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	return 0, nil, &clientError{
-		msg: fmt.Sprintf("%s %s is not in this version; users, tokens, bindings and whoami come with #47, audit with #46",
+		msg: fmt.Sprintf("%s %s is not in this version; users, tokens and bindings come with #47, audit with #46",
 			r.Method, r.URL.Path),
 		err: index.ErrNotFound,
 	}

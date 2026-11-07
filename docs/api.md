@@ -13,16 +13,20 @@ LAJSTROM=http://localhost:8080
 - **JSON.** Request bodies are one JSON object of at most 64 KiB; a field the endpoint does not
   know is an error, so a typo never passes silently. Answers are `application/json`. Times are
   RFC 3339 in UTC.
-- **Authentication** comes with #45: every endpoint is open in this version. From then on,
-  reading a repo and listing it need `read` on it, changing, deleting and reindexing it need
-  `manage`, and creating a repo needs the `admin` role ([rbac.md](spec/rbac.md) §2 and §3). A
-  denial does not tell whether a repo exists: `401` with a Basic challenge for a caller without
-  credentials, `404` for one without any access to the repo, `403` for one that can read it but
-  lacks the action. The list leaves out the repos the caller may not read.
+- **Authentication** is HTTP Basic with a local user's password, on every route
+  ([auth.md](auth.md)): a request with credentials runs as the user, one without as
+  `anonymous`, and credentials that are refused are `401` at once. `GET /api/v1/whoami` tells
+  who the caller is. **Authorization** comes with #45: every endpoint is open in this version.
+  From then on, reading a repo and listing it need `read` on it, changing, deleting and
+  reindexing it need `manage`, and creating a repo needs the `admin` role
+  ([rbac.md](spec/rbac.md) §2 and §3). A denial does not tell whether a repo exists: `401` with
+  a Basic challenge for a caller without credentials, `404` for one without any access to the
+  repo, `403` for one that can read it but lacks the action. The list leaves out the repos the
+  caller may not read.
 - **Audit.** Every change is one row of the audit log ([rbac.md](spec/rbac.md) §5): the
   principal, the action (`repo.create`, `repo.update`, `repo.delete`), the repo, the client
   address and details: the change, its source (`api`, `cli` or `config`) and the request id.
-- **Not in this version.** The users, tokens, bindings and `whoami` endpoints of
+- **Not in this version.** The users, tokens and bindings endpoints of
   [http-routing.md](spec/http-routing.md) §4 come with #47, the audit log with #46. Until then
   they, and any other path under `/api/`, answer `404 NOT_FOUND`.
 
@@ -37,7 +41,7 @@ Every error is answered with one envelope:
 | Status | Code | When |
 | --- | --- | --- |
 | 400 | `INVALID` | the request breaks a rule; the message starts with the field it is about |
-| 401 | `FORBIDDEN` | credentials are needed; with `WWW-Authenticate: Basic realm="lajstrom"` (after #45) |
+| 401 | `FORBIDDEN` | credentials are needed, or the ones sent were refused; with `WWW-Authenticate: Basic realm="lajstrom"` |
 | 403 | `FORBIDDEN` | the caller lacks the action (after #45) |
 | 404 | `NOT_FOUND` | no such repo or endpoint |
 | 409 | `CONFLICT` | the repo exists, or has versions and the delete is not forced |
@@ -169,3 +173,17 @@ lajstrom admin repo delete raw/scratch [--force]
 
 `create` prints the resource as JSON on one line, `list` a table (`--json`: the document of
 `GET /api/v1/repos`), `delete` nothing. An error goes to standard error with exit status 1.
+
+## Who am I: `GET /api/v1/whoami`
+
+`200` with the principal of the request ([auth.md](auth.md#whoami)): its canonical form, its
+kind and its name. Every principal may ask; no authorization is involved. Without credentials it
+is `401` with the Basic challenge.
+
+```sh
+curl -s -u alice "$LAJSTROM/api/v1/whoami"
+```
+
+```json
+{"principal": "user:alice", "kind": "user", "name": "alice"}
+```
