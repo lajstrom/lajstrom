@@ -129,12 +129,12 @@ func TestTag(t *testing.T) {
 	long := strings.Repeat("a", 129)
 	for _, tc := range []struct{ version, variant, want string }{
 		// §4.2, every row.
-		{"1:1.18.0-6ubuntu14.4", "amd64", "1_3a1.18.0-6ubuntu14.4__amd64"},
+		{"1:1.18.0-6ubuntu14.4", "jammy/main/amd64", "1_3a1.18.0-6ubuntu14.4__jammy_2fmain_2famd64"},
 		{"2.32.3", "py3-none-any", "2.32.3__py3-none-any"},
 		{"2.32.3", "sdist", "2.32.3__sdist"},
 		{"1.2.0", "", "1.2.0"},
 		{"1.0.0+build.7", "", "1.0.0_2bbuild.7"},
-		{"2.1~rc1", "all", "2.1_7erc1__all"},
+		{"2.1~rc1", "jammy/main/all", "2.1_7erc1__jammy_2fmain_2fall"},
 		{"1.0", "manylinux_2_17", "1.0__manylinux_5f2_5f17"},
 		// §3: a full wheel tag.
 		{"2.32.3", "cp311-cp311-manylinux_2_17_x86_64", "2.32.3__cp311-cp311-manylinux_5f2_5f17_5fx86_5f64"},

@@ -19,7 +19,7 @@ func debAnnotationMap() map[string]string {
 		AnnotationRepo:            "ubuntu-internal",
 		AnnotationName:            "nginx",
 		AnnotationVersion:         "1:1.18.0-6ubuntu14.4",
-		AnnotationVariant:         "amd64",
+		AnnotationVariant:         "jammy/main/amd64",
 		AnnotationDebArch:         "amd64",
 		AnnotationDebSuite:        "jammy",
 		AnnotationDebComponent:    "main",
@@ -36,7 +36,7 @@ func debAnnotations() Annotations {
 		Repo:       "ubuntu-internal",
 		Name:       "nginx",
 		Version:    "1:1.18.0-6ubuntu14.4",
-		Variant:    "amd64",
+		Variant:    "jammy/main/amd64",
 		Created:    time.Date(2026, 11, 6, 10, 0, 0, 0, time.UTC),
 		UploadedBy: "user:ci",
 		Attrs: map[string]string{

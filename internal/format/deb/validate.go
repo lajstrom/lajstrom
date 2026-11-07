@@ -21,13 +21,15 @@ import (
 // Validate checks a deb manifest (an oras push through the facade, or the output of Build)
 // beyond the profile, so that annotations, metadata layer and the package agree:
 //
+//   - lajstrom.deb.suite, .component and .arch are present and well formed, and
+//     lajstrom.variant is the three joined with "/", jammy/main/amd64; a variant that is the
+//     architecture alone, the form before #110, is refused with the variant and the tag it
+//     must be;
 //   - exactly one file layer, titled Filename(lajstrom.name, lajstrom.version,
-//     lajstrom.variant);
-//   - lajstrom.deb.arch is lajstrom.variant, lajstrom.deb.suite and .component are present
-//     and well formed;
+//     lajstrom.deb.arch);
 //   - the metadata layer (at most 4 MiB) has the control object, whose Package, Version and
-//     Architecture are the annotations, the md5sums object, the size and the sha256 of the file
-//     layer, and its title as filename;
+//     Architecture are lajstrom.name, .version and .deb.arch, the md5sums object, the size
+//     and the sha256 of the file layer, and its title as filename;
 //   - the control file and md5sums of the package itself, read through fetch with
 //     ParseControl, which reads the first KiB of the blob and not the rest, are the metadata's,
 //     field by field.
@@ -73,20 +75,51 @@ func (Plugin) Validate(ctx context.Context, _ index.Repo, m ocispec.Manifest, fe
 // checkAnnotations compares the annotations of a deb manifest with each other and with the
 // title of its file layer f.
 func checkAnnotations(a profile.Annotations, f profile.Layer) error {
-	if a.Variant == "" {
-		return fmt.Errorf("%w: a deb manifest has %s, the architecture", format.ErrInvalid, profile.AnnotationVariant)
-	}
-	if arch := a.Attrs[profile.AnnotationDebArch]; arch != a.Variant {
-		return fmt.Errorf("%w: %s %q is not %s %q", format.ErrInvalid, profile.AnnotationDebArch, arch, profile.AnnotationVariant, a.Variant)
-	}
-	for _, key := range []string{profile.AnnotationDebSuite, profile.AnnotationDebComponent} {
-		if err := checkDistName(key, a.Attrs[key]); err != nil {
+	suite, component, arch := a.Attrs[profile.AnnotationDebSuite], a.Attrs[profile.AnnotationDebComponent], a.Attrs[profile.AnnotationDebArch]
+	for _, c := range []struct{ key, value string }{{profile.AnnotationDebSuite, suite}, {profile.AnnotationDebComponent, component}} {
+		if err := checkDistName(c.key, c.value); err != nil {
 			return err
 		}
 	}
-	if want := Filename(a.Name, a.Version, a.Variant); f.Title != want {
+	if err := checkArchitecture(profile.AnnotationDebArch, arch); err != nil {
+		return err
+	}
+	if err := checkVariant(a, suite, component, arch); err != nil {
+		return err
+	}
+	if want := Filename(a.Name, a.Version, arch); f.Title != want {
 		return fmt.Errorf("%w: the file layer is titled %q, not %q, the file name of %s, %s and %s", format.ErrInvalid,
-			f.Title, want, profile.AnnotationName, profile.AnnotationVersion, profile.AnnotationVariant)
+			f.Title, want, profile.AnnotationName, profile.AnnotationVersion, profile.AnnotationDebArch)
+	}
+	return nil
+}
+
+// checkVariant checks that lajstrom.variant is variantOf(suite, component, arch), which are
+// well formed, and names the annotation it disagrees with. A manifest pushed in the shape of
+// #39, the architecture alone as the variant, is told the variant and the tag it must have.
+func checkVariant(a profile.Annotations, suite, component, arch string) error {
+	want := variantOf(suite, component, arch)
+	parts := strings.Split(a.Variant, "/")
+	switch {
+	case a.Variant == "":
+		return fmt.Errorf("%w: a deb manifest has %s, <suite>/<component>/<arch>: %q", format.ErrInvalid, profile.AnnotationVariant, want)
+	case a.Variant == arch:
+		return fmt.Errorf("%w: %s %q is the architecture alone; the variant of a deb manifest is %s, %s and %s joined with \"/\": "+
+			"%q, and its tag %s", format.ErrInvalid, profile.AnnotationVariant, a.Variant,
+			profile.AnnotationDebSuite, profile.AnnotationDebComponent, profile.AnnotationDebArch, want, profile.Tag(a.Version, want))
+	case len(parts) != 3:
+		return fmt.Errorf("%w: %s %q is not <suite>/<component>/<arch>; %s, %s and %s make it %q", format.ErrInvalid,
+			profile.AnnotationVariant, a.Variant, profile.AnnotationDebSuite, profile.AnnotationDebComponent, profile.AnnotationDebArch, want)
+	}
+	for i, c := range []struct{ what, key, value string }{
+		{"suite", profile.AnnotationDebSuite, suite},
+		{"component", profile.AnnotationDebComponent, component},
+		{"architecture", profile.AnnotationDebArch, arch},
+	} {
+		if parts[i] != c.value {
+			return fmt.Errorf("%w: %s %q names the %s %q, %s is %q", format.ErrInvalid,
+				profile.AnnotationVariant, a.Variant, c.what, parts[i], c.key, c.value)
+		}
 	}
 	return nil
 }
@@ -132,7 +165,7 @@ func (md *metadataIn) check(a profile.Annotations, f profile.Layer) error {
 	for _, c := range []struct{ field, key, want string }{
 		{FieldPackage, profile.AnnotationName, a.Name},
 		{FieldVersion, profile.AnnotationVersion, a.Version},
-		{FieldArchitecture, profile.AnnotationVariant, a.Variant},
+		{FieldArchitecture, profile.AnnotationDebArch, a.Attrs[profile.AnnotationDebArch]},
 	} {
 		switch v, ok := lookup(md.Control, c.field); {
 		case !ok:

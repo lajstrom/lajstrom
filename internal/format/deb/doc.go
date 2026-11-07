@@ -3,11 +3,14 @@
 // See docs/spec/http-routing.md §3 (apt) and docs/spec/manifest-profile.md.
 //
 // The model: a package version is one .deb, an ar archive (deb(5)) whose control file names
-// it. lajstrom.name is Package, lajstrom.version is Version as dpkg spells it, epoch included,
-// and lajstrom.variant is Architecture, so the tag of nginx 1:1.18.0-6ubuntu14.4 for amd64 is
-// 1_3a1.18.0-6ubuntu14.4__amd64. Suite and component are properties of the upload
-// (lajstrom.deb.suite, lajstrom.deb.component), not separate repos. The one file layer is titled
-// with the pool file name, nginx_1.18.0-6ubuntu14.4_amd64.deb; the metadata layer holds the
+// it, in one suite and component of the repo. lajstrom.name is Package, lajstrom.version is
+// Version as dpkg spells it, epoch included, and lajstrom.variant is
+// <suite>/<component>/<Architecture>, so the tag of nginx 1:1.18.0-6ubuntu14.4 for amd64 in
+// jammy/main is 1_3a1.18.0-6ubuntu14.4__jammy_2fmain_2famd64. Suite and component are
+// properties of the upload, not separate repos; lajstrom.deb.suite, .component and .arch carry
+// the three parts as well, for the indexes to group by. The same .deb in a second suite is a
+// second manifest over the same blobs (#110). The one file layer is titled with the pool file
+// name, nginx_1.18.0-6ubuntu14.4_amd64.deb, whatever the suite; the metadata layer holds the
 // control fields as written, md5sums, and the size, md5, sha1 and sha256 of the file, which
 // apt's Packages lists.
 //

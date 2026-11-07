@@ -12,6 +12,9 @@ the protocol frontends, `reindex` and third-party tools all agree.
 
 ## 1. Manifest
 
+nginx `1:1.18.0-6ubuntu14.4` for `amd64` in the suite `jammy`, component `main`, of the apt repo
+`ubuntu-internal`: the tag is `1_3a1.18.0-6ubuntu14.4__jammy_2fmain_2famd64` (section 4.2).
+
 ```json
 {
   "schemaVersion": 2,
@@ -42,7 +45,7 @@ the protocol frontends, `reindex` and third-party tools all agree.
     "lajstrom.repo": "ubuntu-internal",
     "lajstrom.name": "nginx",
     "lajstrom.version": "1:1.18.0-6ubuntu14.4",
-    "lajstrom.variant": "amd64",
+    "lajstrom.variant": "jammy/main/amd64",
     "lajstrom.deb.arch": "amd64",
     "lajstrom.deb.suite": "jammy",
     "lajstrom.deb.component": "main",
@@ -110,8 +113,8 @@ skipped).
 | `lajstrom.repo` | R | repo name as created in the control plane, e.g. `ubuntu-internal` |
 | `lajstrom.name` | R | package name in the format's own spelling (original case): `nginx`, `Requests` (pypi stores the normalised form in `lajstrom.pypi.normalized`), `com.example:lib-core` (maven `groupId:artifactId`), raw: the full path |
 | `lajstrom.version` | R | version string exactly as the format spells it: `1:1.18.0-6ubuntu14.4`, `2.32.3`, `1.2.0` |
-| `lajstrom.variant` | | platform discriminator, present when the format has one: deb/rpm arch (`amd64`, `all`), pypi wheel tag (`py3-none-any`, `cp311-cp311-manylinux_2_17_x86_64`) or `sdist`. Absent for maven, npm, raw. |
-| `lajstrom.deb.arch`, `lajstrom.deb.suite`, `lajstrom.deb.component` | deb | upload metadata; suite and component are properties of the upload, not separate repos |
+| `lajstrom.variant` | | platform discriminator, present when the format has one: deb `<suite>/<component>/<arch>`, the values of `lajstrom.deb.suite`, `.component` and `.arch` joined with `/` (`jammy/main/amd64`, `bookworm/main/all`); rpm arch (later); pypi wheel tag (`py3-none-any`, `cp311-cp311-manylinux_2_17_x86_64`) or `sdist`. Absent for maven, npm, raw. |
+| `lajstrom.deb.arch`, `lajstrom.deb.suite`, `lajstrom.deb.component` | deb | upload metadata and the three parts of `lajstrom.variant`, kept as annotations (and in `versions.attrs`) so that the apt indexes group by them without parsing the variant; `arch` is the control file's `Architecture`. Suite and component are properties of the upload, not separate repos: the same `.deb` in two suites is two manifests over the same blobs |
 | `lajstrom.pypi.normalized` | pypi | PEP 503 normalised project name |
 | `lajstrom.maven.groupId`, `lajstrom.maven.artifactId`, `lajstrom.maven.packaging` | maven | coordinates |
 | `lajstrom.raw.path` | raw | original path, case preserved, `/`-separated |
@@ -155,7 +158,8 @@ Examples: `art/apt/ubuntu-internal/nginx`, `art/pypi/internal/requests`,
 tag = Escape(version) [ "__" Escape(variant) ]
 ```
 
-- Tags are **immutable and append-only**. A new architecture or a new wheel is a new tag. A tag
+- Tags are **immutable and append-only**. A new architecture, a new suite or component of a
+  `.deb`, or a new wheel is a new tag. A tag
   is never re-pointed. Ingest of a tag that exists with a different digest is a `409 Conflict`;
   with the same digest it is idempotent (`201`). A frontend upload of the same files under a tag
   that holds them is the idempotent repeat as well, whatever `org.opencontainers.image.created`
@@ -175,13 +179,18 @@ Examples:
 
 | version | variant | tag |
 | --- | --- | --- |
-| `1:1.18.0-6ubuntu14.4` | `amd64` | `1_3a1.18.0-6ubuntu14.4__amd64` |
+| `1:1.18.0-6ubuntu14.4` | `jammy/main/amd64` | `1_3a1.18.0-6ubuntu14.4__jammy_2fmain_2famd64` |
 | `2.32.3` | `py3-none-any` | `2.32.3__py3-none-any` |
 | `2.32.3` | `sdist` | `2.32.3__sdist` |
 | `1.2.0` | | `1.2.0` |
 | `1.0.0+build.7` | | `1.0.0_2bbuild.7` |
-| `2.1~rc1` | `all` | `2.1_7erc1__all` |
+| `2.1~rc1` | `jammy/main/all` | `2.1_7erc1__jammy_2fmain_2fall` |
 | `manylinux_2_17` (as a variant) | | `…__manylinux_5f2_5f17` |
+
+The deb tag is `Escape(version)__Escape(suite/component/arch)`: the `/` of the variant becomes
+`_2f`, and the same `.deb` in `jammy` and `jammy-updates` is two tags,
+`1.0.0-1__jammy_2fmain_2famd64` and `1.0.0-1__jammy-updates_2fmain_2famd64`, over one file
+layer with one file name. A deb tag longer than 128 characters is hashed like any other.
 
 ### 4.3 `Escape` and `EscapeComponent`
 

@@ -90,7 +90,7 @@ component talks to it: the registry provider.
 | --- | --- | --- |
 | **Repo** `apt/ubuntu-internal` · hosted · backing `ecr-prod` · prefix `art/` · anonymous read | **OCI repository** `art/apt/ubuntu-internal/nginx` (lowercase) | `repos` (control plane): name · format · backing · prefix · policy |
 | **Package** `nginx` · name as the format spells it, original case kept in an annotation | | `packages`: repo_id · name · name_oci |
-| **Version** `1:1.18.0-6ubuntu14.4` · `amd64` · suite `jammy` · component `main` (upload metadata, not a separate repo) | **Tag** `1_3a1.18.0-6ubuntu14.4__amd64` (`Escape(version)__Escape(variant)`; every byte outside `[A-Za-z0-9.-]` becomes `_xx` hex: `:`→`_3a`, `+`→`_2b`, `~`→`_7e`, `_`→`_5f`) | `versions`: package_id · version · tag · digest · arch · suite · component · annotations |
+| **Version** `1:1.18.0-6ubuntu14.4` · `amd64` · suite `jammy` · component `main` (upload metadata, not a separate repo; the variant is `jammy/main/amd64`) | **Tag** `1_3a1.18.0-6ubuntu14.4__jammy_2fmain_2famd64` (`Escape(version)__Escape(variant)`; every byte outside `[A-Za-z0-9.-]` becomes `_xx` hex: `:`→`_3a`, `+`→`_2b`, `~`→`_7e`, `_`→`_5f`, `/`→`_2f`) | `versions`: package_id · version · tag · digest · arch · suite · component · annotations |
 | | **Manifest** (OCI image manifest 1.1): `artifactType application/vnd.lajstrom.deb.v1`; annotations `format=apt`, `repo=ubuntu-internal`, `name=nginx`, `version=1:1.18.0-6ubuntu14.4`, `arch=amd64`, `suite=jammy`, `component=main`; `layers[0] vnd.lajstrom.deb.package.v1`, `layers[1] vnd.lajstrom.deb.metadata.v1+json`; `config application/vnd.oci.empty.v1+json` | `index_cache`: repo · suite · component · arch · blob · signed_at |
 | **Files** `nginx_1.18.0-6ubuntu14.4_amd64.deb` 1.2 MiB, `metadata.json` (control, md5sums); file size limit = the registry's blob limit | **Referrers** (subject = this manifest): cosign signature · SBOM · SLSA attestation, the same for every format. **Blobs**: content-addressed, deduplicated across repos and formats | `files`: version_id · filename · layer_digest · size · media_type |
 
@@ -129,7 +129,7 @@ sequenceDiagram
   A-->>F: bearer with scope
   C->>F: upload blobs (.deb, metadata.json)
   F->>R: upload blobs, streamed
-  C->>F: PUT manifest, tag 1_3a1.18.0-6ubuntu14.4__amd64
+  C->>F: PUT manifest, tag 1_3a1.18.0-6ubuntu14.4__jammy_2fmain_2famd64
   F->>P: validate layers, parse control
   P-->>F: ok, index entry
   F->>D: claim tag
@@ -309,7 +309,7 @@ later means overwriting the tag. So we take the third option: one immutable tag 
 | metadata layer | `application/vnd.lajstrom.<format>.metadata.v1+json`: control, POM, package.json, METADATA | UI, search and reindex read it without unpacking the package; like the second layer of CUE and the info layer of conda |
 | manifest annotations | `lajstrom.schema=1`, `lajstrom.format`, `lajstrom.repo`, `lajstrom.name`, `lajstrom.version`, format-specific keys such as `lajstrom.deb.arch|suite|component`, plus `org.opencontainers.image.created|source|revision` | enough for reindex without the metadata layer; standard keys are understood by other UIs |
 | layer annotation | `org.opencontainers.image.title` = file name | `oras pull` without our software writes the original file to disk; exactly what apt-transport-oci requires |
-| tag | `Escape(version)[__Escape(variant)]`; variant = the format's platform discriminator: arch for deb and rpm, wheel tag for pypi, none for maven, npm, tf. Escape: bytes outside `[A-Za-z0-9.-]` become `_xx` (`:`→`_3a`, `+`→`_2b`, `~`→`_7e`, `_`→`_5f`); the 2026-11-05 draft's `_`→`__` was dropped because it made the separator ambiguous (ADR 0005) | tags are immutable and append-only: a new architecture is a new tag, not an overwritten index. Compatible with ECR immutability |
+| tag | `Escape(version)[__Escape(variant)]`; variant = the format's platform discriminator: suite/component/arch for deb, arch for rpm, wheel tag for pypi, none for maven, npm, tf. Escape: bytes outside `[A-Za-z0-9.-]` become `_xx` (`:`→`_3a`, `+`→`_2b`, `~`→`_7e`, `_`→`_5f`); the 2026-11-05 draft's `_`→`__` was dropped because it made the separator ambiguous (ADR 0005) | tags are immutable and append-only: a new architecture is a new tag, not an overwritten index. Compatible with ECR immutability |
 | referrers | cosign, notation, SBOM, SLSA as they are, `subject` = our manifest | nothing of our own for the supply chain |
 | passthrough | helm, opentofu, flux, timoni, cue, wasm, modelpack and unknown artifactTypes through a repo of type `oci` | recognised for the UI by the table above; bytes untouched |
 | bit-compatibility | conda: as conda-oci-mirror; apt: snapshot export in the apt-transport-oci layout | pixi and apt-with-plugin can read us directly, without our server |
