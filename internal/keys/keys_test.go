@@ -50,7 +50,9 @@ func newEnv(t *testing.T, o Options) *env {
 	must(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	must(t, st.Migrate(ctx))
-	e := &env{t: t, st: st, now: time.Now().Add(-60 * 24 * time.Hour)}
+	// The clock is truncated to the microsecond, the precision the store keeps, so a boundary
+	// of the grace is exact on a system whose time.Now has nanoseconds too.
+	e := &env{t: t, st: st, now: time.Now().Add(-60 * 24 * time.Hour).Truncate(time.Microsecond)}
 	e.repo = index.Repo{Format: "apt", Name: "ubuntu", Registry: "local", Prefix: "apt/ubuntu", Kind: "hosted"}
 	must(t, st.CreateRepo(ctx, &e.repo))
 	if o.Index == nil {

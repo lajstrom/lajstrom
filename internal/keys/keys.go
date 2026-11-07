@@ -306,7 +306,9 @@ func (s *Service) keyring(ctx context.Context, repo index.Repo) ([]index.Key, er
 	if err != nil {
 		return nil, fmt.Errorf("keys: the keys of %s: %w", repoName(repo), err)
 	}
-	since := s.now().Add(-s.grace)
+	// The store keeps timestamps to the microsecond; a clock with nanoseconds would put a
+	// key retired exactly one grace ago a few nanoseconds outside it.
+	since := s.now().Add(-s.grace).Truncate(time.Microsecond)
 	var active, retired []index.Key
 	for _, k := range all {
 		switch {
