@@ -26,6 +26,7 @@ becomes (`format.ServeBlob`): one request to the registry either way.
 | Zot | v2.1.23, htpasswd | Basic | yes | yes | yes | yes | no | no redirect: streamed, one request | pass (with prefix) |
 | Zot | v2.1.23 (`zot-minimal:v2.1.23`, the multi-arch index `sha256:59cb5740…cd3458`, arm64 as above), the dev stack: `dedupe`, `gc` every 10 min (`deploy/compose/zot/config.json`) | none | yes | yes | yes | yes | no (not probed) | no redirect: streamed, one request; a range 206, but no `Accept-Ranges` on a `GET` (its `HEAD` has one) | pass, with and without prefix |
 | GitLab container registry | v4.43.0 (`cng/gitlab-container-registry:v4.43.0-gitlab`, `sha256:fe9c6741…f8222e`), filesystem storage, delete enabled; metadata on the filesystem (A) or in its database (B, as GitLab.com): the gitlab profile of the dev stack (`make dev-up PROFILES=gitlab`) | none | yes | **no**: `/referrers/` is a plain 404 in both; tag schema | yes, `n`/`last` pagination, `n` at most 1000 | yes | no option in the registry: GitLab's rules come in GitLab's tokens, and with one every digest delete is 401 `PROTECTED_MANIFEST` | no redirect: streamed, one request; `Accept-Ranges: bytes`, a range 206 | A: pass, with and without prefix. B: **every Lajstrom manifest refused**, 400 `unknown media type` for the `artifactType`, unless `REGISTRY_FF_DYNAMIC_MEDIA_TYPES=true`; then pass |
+| GHCR ([ghcr.md](ghcr.md)) | ghcr.io on 2026-11-07, no version published (`registry/2.0`) | bearer from `/token`, which is the PAT in base64 | yes, on the first manifest; until then a blob answers `HEAD` 200 and `GET` 404 | **no**: `/referrers/` is 404 `MANIFEST_UNKNOWN`; the tag schema | **wrong**: `_catalog` is 200 with all of GHCR, so the probe says yes; `catalog: false`, and the packages REST API lists an organisation (#74) | **no**: 405 `UNSUPPORTED`, DeleteManifest turned false; the REST API deletes versions (#74) | no | **yes**: `GET` is 307 to `pkg-containers.githubusercontent.com` (an Azure SAS, 5 to 10 min), `HEAD` 200; `OpenBlob` returns it, and with redirect off follows it, a range 206 | **fail**, with the prefix `lajstrom-extras/`: list repositories (the catalog walk), upload sessions, a blob read before the first manifest |
 
 Notes:
 
@@ -54,6 +55,9 @@ Notes:
   so such a session stays in the bucket until distribution purges old uploads.
 - Bearer token authentication is covered by unit tests against a fake token endpoint, not yet
   against a real registry with a token server.
+- GHCR: the commands and answers, the 4 MiB chunk limit and the other upload deviations, the
+  overrides it needs, what the provider must do differently, and the packages the tests left
+  in `lajstrom-extras` are in [ghcr.md](ghcr.md).
 - Without credentials, both registries with htpasswd answer the probe with 401 and a Basic
   challenge; `Capabilities` then fails with `provider.ErrUnauthorized` (no credentials
   configured), which `serve` logs at startup.
