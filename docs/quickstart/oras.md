@@ -177,9 +177,10 @@ any replica behind the load balancer. Every body streams from the client to the 
 single `POST ?digest=` with the whole blob works too, and so does a mount
 (`?mount=<digest>&from=<name>`) from a repo you may read.
 
-Not yet: a `Range` and the `307` to the backend's object storage on a blob `GET` (#27, the blob
-is streamed whole), the referrers API (#28, `501`; a signature pushed to a managed repo is
-refused as an invalid artifact until then), deletes (#61, `405`).
+A blob `GET` passes a `Range` to the backend and answers `307` to the backend's object storage
+when it hands out a presigned URL (the `s3` profile of the dev stack; `policy.blobRedirect:
+never` on a repo always streams). Not yet: the referrers API (#28, `501`; a signature pushed
+to a managed repo is refused as an invalid artifact until then), deletes (#61, `405`).
 
 ## 5. Clean up
 

@@ -25,6 +25,12 @@ LDFLAGS := -X $(PKG)/internal/version.Version=$(VERSION) \
 
 COMPOSE_FILE := deploy/compose/compose.yaml
 COMPOSE      := docker compose -f $(COMPOSE_FILE)
+# PROFILES adds the services of compose profiles to dev-up, dev-ps and dev-logs:
+# make dev-up PROFILES=s3 also starts distribution on MinIO (docs/dev-stack.md). dev-down stops
+# the services of every profile.
+ifdef PROFILES
+export COMPOSE_PROFILES := $(PROFILES)
+endif
 # make run uses the local configuration when there is one, the example otherwise.
 RUN_CONFIG   := $(firstword $(wildcard deploy/compose/lajstrom.yaml) deploy/compose/lajstrom.example.yaml)
 
@@ -62,11 +68,11 @@ fmt-check: ## Fail when gofmt would change a file
 
 check: fmt-check build vet test lint vulncheck licenses ## Everything CI runs, in CI's order
 
-dev-up: ## Start the dev stack (Zot, distribution, Postgres) and wait until it is healthy
+dev-up: ## Start the dev stack (Zot, distribution, Postgres; PROFILES=s3 adds distribution on MinIO) and wait until it is healthy
 	$(COMPOSE) up -d --wait
 
-dev-down: ## Stop the dev stack; RESET=1 removes the volumes
-	$(COMPOSE) down $(if $(filter 1,$(RESET)),-v)
+dev-down: ## Stop the dev stack, every profile; RESET=1 removes the volumes
+	$(COMPOSE) --profile '*' down $(if $(filter 1,$(RESET)),-v)
 
 dev-ps: ## Show the services of the dev stack and their health
 	$(COMPOSE) ps

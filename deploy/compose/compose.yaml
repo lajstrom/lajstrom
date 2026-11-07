@@ -3,22 +3,26 @@
 # registries take anonymous pushes and the Postgres password is "lajstrom".
 #
 #   make dev-up            start, and wait until all three services are healthy
+#   make dev-up PROFILES=s3  the same, and distribution on MinIO (the s3 profile, #27)
 #   make dev-ps            what runs, with its health
 #   make dev-logs          follow the logs
-#   make dev-down          stop and remove the containers; the volumes stay
+#   make dev-down          stop and remove the containers of every profile; the volumes stay
 #   make dev-down RESET=1  the same, and remove the volumes: the next dev-up starts empty
 #
 # Published on 127.0.0.1 only. The host ports can be changed in deploy/compose/.env
 # (copy .env.example):
 #
-#   zot           localhost:5000  LAJSTROM_ZOT_PORT           registry "local" of lajstrom.example.yaml
-#   distribution  localhost:5001  LAJSTROM_DISTRIBUTION_PORT  registry "second"
-#   postgres      localhost:5432  LAJSTROM_PG_PORT            postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable
+#   zot              localhost:5000  LAJSTROM_ZOT_PORT              registry "local" of lajstrom.example.yaml
+#   distribution     localhost:5001  LAJSTROM_DISTRIBUTION_PORT     registry "second"
+#   postgres         localhost:5432  LAJSTROM_PG_PORT               postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable
+#   distribution-s3  localhost:5002  LAJSTROM_DISTRIBUTION_S3_PORT  s3 profile: blob GETs answer 307 to MinIO
+#   minio            localhost:9000  LAJSTROM_MINIO_PORT            s3 profile: the presigned URLs name it
 #
 # Every image is pinned to a full version whose tag serves linux/amd64 and linux/arm64; the
 # digest of its image index is in the comment above it. Change a tag and its digest together;
 # for a registry, re-run the integration tests and update docs/registries/README.md. The
-# integration job of .github/workflows/ci.yml runs the same images: change them there too.
+# integration job of .github/workflows/ci.yml runs the same images: change them there too. It
+# does not run the s3 profile.
 
 name: lajstrom-dev
 
@@ -63,6 +67,54 @@ services:
       <<: *healthcheck
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/v2/"]
 
+  # The s3 profile (make dev-up PROFILES=s3): distribution on MinIO, the backend that answers a
+  # blob GET with a 307 to a presigned URL (#27). distribution-s3 runs in the network namespace
+  # of minio, so that both reach MinIO as localhost:<port>: distribution signs its redirects for
+  # the endpoint it talks to, and the same URL then works from the host, where minio publishes
+  # that port. Its own port is published on the minio service for the same reason.
+  minio:
+    profiles: [s3]
+    # MinIO 2025-07-23, packaged by Bitnami: minio/minio is no longer on Docker Hub. The image
+    # creates the bucket of MINIO_DEFAULT_BUCKETS on its first start.
+    # sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
+    image: bitnamilegacy/minio:2025.7.23-debian-12-r5
+    environment:
+      MINIO_ROOT_USER: lajstrom
+      MINIO_ROOT_PASSWORD: lajstrom-dev
+      MINIO_DEFAULT_BUCKETS: distribution
+      MINIO_API_PORT_NUMBER: ${LAJSTROM_MINIO_PORT:-9000}
+    volumes:
+      - minio-data:/bitnami/minio/data
+    ports:
+      - "127.0.0.1:${LAJSTROM_MINIO_PORT:-9000}:${LAJSTROM_MINIO_PORT:-9000}"
+      - "127.0.0.1:${LAJSTROM_DISTRIBUTION_S3_PORT:-5002}:5000" # distribution-s3
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:${LAJSTROM_MINIO_PORT:-9000}/minio/health/live"]
+
+  distribution-s3:
+    profiles: [s3]
+    # The same distribution as above, on the s3 storage driver.
+    image: registry:3.1.2
+    network_mode: service:minio
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      REGISTRY_STORAGE: s3
+      REGISTRY_STORAGE_S3_REGION: us-east-1
+      REGISTRY_STORAGE_S3_REGIONENDPOINT: http://localhost:${LAJSTROM_MINIO_PORT:-9000}
+      REGISTRY_STORAGE_S3_FORCEPATHSTYLE: "true"
+      REGISTRY_STORAGE_S3_SECURE: "false"
+      REGISTRY_STORAGE_S3_BUCKET: distribution
+      REGISTRY_STORAGE_S3_ACCESSKEY: lajstrom
+      REGISTRY_STORAGE_S3_SECRETKEY: lajstrom-dev
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      REGISTRY_LOG_LEVEL: info
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/v2/"]
+
   postgres:
     # PostgreSQL 17.11 on Alpine.
     # sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
@@ -85,3 +137,4 @@ volumes:
   zot-data:
   distribution-data:
   postgres-data:
+  minio-data:

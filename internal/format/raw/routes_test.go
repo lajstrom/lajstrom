@@ -18,6 +18,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
+	"github.com/lajstrom/lajstrom/internal/provider/providertest"
 )
 
 const fileTxt = "docs/file.txt"
@@ -28,7 +29,7 @@ func tagOf(content string) string { return digest.FromString(content).Encoded()[
 // TestPutGetHead is R-01: PUT answers 201 with Location, Docker-Content-Digest and the JSON
 // body; GET returns the bytes with Content-Length, Content-Type from the metadata, ETag (the
 // blob digest), Last-Modified and Accept-Ranges; HEAD has the same headers and no body;
-// If-None-Match with the ETag is 304.
+// If-None-Match with the ETag is 304 without a request to the backend.
 func TestPutGetHead(t *testing.T) {
 	e := newEnv(t, envOptions{})
 	const content = "hello raw\n"
@@ -68,11 +69,27 @@ func TestPutGetHead(t *testing.T) {
 			header(t, rr, name, value)
 		}
 	}
-	if rr := e.do(http.MethodGet, target(fileTxt), nil, "If-None-Match", want["ETag"]); rr.Code != http.StatusNotModified {
-		t.Errorf("GET with If-None-Match = %d", rr.Code)
-	}
+	checkNotModified(t, e, target(fileTxt), want["ETag"])
 	if a := e.manifest("raw/scratch/docs/file.txt", desc.Digest); a[profile.AnnotationUploadedBy] != "anonymous" || a[profile.AnnotationRawPath] != fileTxt {
 		t.Errorf("manifest annotations = %v", a)
+	}
+}
+
+// checkNotModified checks that the GET and the HEAD before it asked the backend once each,
+// and that GET and HEAD with If-None-Match etag are 304 without asking it.
+func checkNotModified(t *testing.T, e *env, target, etag string) {
+	t.Helper()
+	opened, stated := len(e.prov.OpenBlobs()), len(e.prov.StatBlobs())
+	if opened != 1 || stated != 1 {
+		t.Errorf("GET and HEAD made %d OpenBlob and %d StatBlob calls, want one each", opened, stated)
+	}
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		if rr := e.do(method, target, nil, "If-None-Match", etag); rr.Code != http.StatusNotModified {
+			t.Errorf("%s with If-None-Match = %d", method, rr.Code)
+		}
+	}
+	if len(e.prov.OpenBlobs()) != opened || len(e.prov.StatBlobs()) != stated {
+		t.Errorf("a 304 asked the backend: %+v %+v", e.prov.OpenBlobs(), e.prov.StatBlobs())
 	}
 }
 
@@ -111,8 +128,10 @@ func TestPutVersions(t *testing.T) {
 	}
 }
 
-// TestRange checks R-06 as far as the frontend goes: a single range is 206 with those bytes,
-// several ranges are the whole file with 200, a range past the end is 416.
+// TestRange checks R-06 as far as the frontend goes: the Range goes to the backend, which
+// answers a single range with 206 and those bytes, and a range past the end with 416; several
+// ranges are not sent (backends answer them with multipart/byteranges, which format.ServeBlob
+// does not forward) and the answer is the whole file with 200.
 func TestRange(t *testing.T) {
 	e := newEnv(t, envOptions{})
 	var b strings.Builder
@@ -121,34 +140,75 @@ func TestRange(t *testing.T) {
 	}
 	content := b.String()
 	e.put("big.bin", content)
+	blob := digest.FromString(content)
+	sent := func(what, want string) {
+		t.Helper()
+		all := e.prov.OpenBlobs()
+		if last := all[len(all)-1]; last != (providertest.BlobRead{Name: "raw/scratch/big.bin", Digest: blob, Range: want}) {
+			t.Errorf("%s: the backend got %+v, want the Range %q", what, last, want)
+		}
+	}
 	rr := e.do(http.MethodGet, target("big.bin"), nil, "Range", "bytes=1000-1999")
 	if rr.Code != http.StatusPartialContent || rr.Body.String() != content[1000:2000] {
 		t.Errorf("single range = %d, %d bytes", rr.Code, rr.Body.Len())
 	}
 	header(t, rr, "Content-Range", "bytes 1000-1999/4000")
 	header(t, rr, "Content-Length", "1000")
+	sent("single range", "bytes=1000-1999")
 	if rr := e.do(http.MethodGet, target("big.bin"), nil, "Range", "bytes=0-9,20-29"); rr.Code != http.StatusOK || rr.Body.String() != content {
 		t.Errorf("multi-range = %d, %d bytes; want 200 and the whole file", rr.Code, rr.Body.Len())
 	}
-	if rr := e.do(http.MethodGet, target("big.bin"), nil, "Range", "bytes=5000-"); rr.Code != http.StatusRequestedRangeNotSatisfiable {
-		t.Errorf("range past the end = %d", rr.Code)
+	sent("multi-range", "")
+	rr = e.do(http.MethodGet, target("big.bin"), nil, "Range", "bytes=5000-")
+	if rr.Code != http.StatusRequestedRangeNotSatisfiable || rr.Body.Len() != 0 {
+		t.Errorf("range past the end = %d %q", rr.Code, rr.Body)
 	}
+	header(t, rr, "Content-Range", "bytes */4000")
+	sent("range past the end", "bytes=5000-")
 }
 
-// TestRedirect checks that GET and HEAD answer 307 to the URL the provider gives.
+// TestRedirect checks the redirect and the policy switch: GET answers 307 to the URL the
+// provider gives, with the manifest digest; HEAD answers the headers from the backend; with
+// policy.blobRedirect never, GET streams although the provider could redirect, and auto
+// redirects again.
 func TestRedirect(t *testing.T) {
 	e := newEnv(t, envOptions{})
 	resp := e.put(fileTxt, "redirected")
 	e.prov.RedirectURL = func(name string, d digest.Digest) (string, bool) {
 		return "https://blobs.test/" + name + "?d=" + d.Encoded(), true
 	}
-	for _, method := range []string{http.MethodGet, http.MethodHead} {
-		rr := e.do(method, target(fileTxt), nil)
-		if rr.Code != http.StatusTemporaryRedirect {
-			t.Errorf("%s = %d, want 307", method, rr.Code)
+	location := "https://blobs.test/raw/scratch/docs/file.txt?d=" + digest.FromString("redirected").Encoded()
+	rr := e.do(http.MethodGet, target(fileTxt), nil)
+	if rr.Code != http.StatusTemporaryRedirect {
+		t.Errorf("GET = %d, want 307", rr.Code)
+	}
+	header(t, rr, "Location", location)
+	header(t, rr, "Docker-Content-Digest", resp.Digest)
+	rr = e.do(http.MethodHead, target(fileTxt), nil)
+	if rr.Code != http.StatusOK || rr.Body.Len() != 0 {
+		t.Errorf("HEAD = %d %q, want 200 without a body", rr.Code, rr.Body)
+	}
+	header(t, rr, "Location", "")
+	header(t, rr, "Content-Length", "10")
+	header(t, rr, "Docker-Content-Digest", resp.Digest)
+
+	for _, tt := range []struct {
+		policy string
+		status int
+	}{
+		{`{"blobRedirect": "never"}`, http.StatusOK},
+		{`{"blobRedirect": "auto"}`, http.StatusTemporaryRedirect},
+	} {
+		repo := e.repo
+		repo.Policy = []byte(tt.policy)
+		must(t, e.st.UpdateRepo(t.Context(), &repo))
+		rr := e.do(http.MethodGet, target(fileTxt), nil)
+		if rr.Code != tt.status {
+			t.Errorf("GET with the policy %s = %d, want %d", tt.policy, rr.Code, tt.status)
 		}
-		header(t, rr, "Location", "https://blobs.test/raw/scratch/docs/file.txt?d="+digest.FromString("redirected").Encoded())
-		header(t, rr, "Docker-Content-Digest", resp.Digest)
+		if tt.status == http.StatusOK && (rr.Body.String() != "redirected" || rr.Header().Get("Location") != "") {
+			t.Errorf("GET with the policy %s: body %q, Location %q; want the stream", tt.policy, rr.Body, rr.Header().Get("Location"))
+		}
 	}
 }
 

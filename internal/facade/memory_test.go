@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/opencontainers/go-digest"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/provider/providertest"
@@ -171,30 +170,20 @@ func patternDigest(size int64) digest.Digest {
 	return digest.NewDigest(digest.SHA256, h)
 }
 
-// generated is the fake whose repositories serve the blob d as a pattern of size bytes:
-// downloads of a blob the fake discarded on upload.
+// generated is the fake that serves the blob d as a pattern of size bytes: downloads of a blob
+// the fake discarded on upload.
 type generated struct {
 	*providertest.Fake
 	d    digest.Digest
 	size int64
 }
 
-func (g generated) Repository(ctx context.Context, name string) (provider.Repository, error) {
-	rr, err := g.Fake.Repository(ctx, name)
-	return generatedRepository{Repository: rr, g: g}, err
-}
-
-type generatedRepository struct {
-	provider.Repository
-	g generated
-}
-
-func (r generatedRepository) Fetch(ctx context.Context, desc ocispec.Descriptor) (io.ReadCloser, error) {
-	if desc.Digest == r.g.d {
-		if ok, err := r.Exists(ctx, desc); err != nil || !ok {
-			return nil, fmt.Errorf("generated: blob %s was not uploaded: %w", desc.Digest, provider.ErrNotFound)
-		}
-		return newPattern(r.g.size), nil
+func (g generated) OpenBlob(ctx context.Context, name string, d digest.Digest, rangeHeader string, redirect bool) (provider.Blob, error) {
+	if d != g.d {
+		return g.Fake.OpenBlob(ctx, name, d, rangeHeader, redirect)
 	}
-	return r.Repository.Fetch(ctx, desc)
+	if _, err := g.StatBlob(ctx, name, d); err != nil {
+		return provider.Blob{}, fmt.Errorf("generated: blob %s was not uploaded: %w", d, err)
+	}
+	return provider.Blob{Status: http.StatusOK, Body: newPattern(g.size), Size: g.size, Digest: d, AcceptRanges: true}, nil
 }

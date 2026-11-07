@@ -82,7 +82,7 @@ func (s *faultyStore) Tx(ctx context.Context, fn func(index.Writer) error) error
 }
 
 // faultyProvider is the fake registry whose calls named in fail return errBoom; "stream" makes
-// a fetched blob fail after its first byte.
+// an opened blob fail after its first byte.
 type faultyProvider struct {
 	*providertest.Fake
 	fail faults
@@ -95,11 +95,26 @@ func (p *faultyProvider) Capabilities(ctx context.Context) (provider.Capabilitie
 	return p.Fake.Capabilities(ctx)
 }
 
-func (p *faultyProvider) BlobRedirectURL(ctx context.Context, name string, d digest.Digest) (string, bool, error) {
-	if p.fail["BlobRedirectURL"] {
-		return "", false, errBoom
+func (p *faultyProvider) OpenBlob(ctx context.Context, name string, d digest.Digest, rangeHeader string, redirect bool) (provider.Blob, error) {
+	if p.fail["OpenBlob"] {
+		return provider.Blob{}, errBoom
 	}
-	return p.Fake.BlobRedirectURL(ctx, name, d)
+	b, err := p.Fake.OpenBlob(ctx, name, d, rangeHeader, redirect)
+	if err != nil || b.Body == nil || !p.fail["stream"] {
+		return b, err
+	}
+	b.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(io.LimitReader(b.Body, 1), failingReader{}), b.Body}
+	return b, nil
+}
+
+func (p *faultyProvider) StatBlob(ctx context.Context, name string, d digest.Digest) (provider.Blob, error) {
+	if p.fail["StatBlob"] {
+		return provider.Blob{}, errBoom
+	}
+	return p.Fake.StatBlob(ctx, name, d)
 }
 
 func (p *faultyProvider) Repository(ctx context.Context, name string) (provider.Repository, error) {
@@ -115,20 +130,6 @@ type faultyRepository struct {
 	fail faults
 }
 
-func (r *faultyRepository) Fetch(ctx context.Context, d ocispec.Descriptor) (io.ReadCloser, error) {
-	if r.fail["Fetch"] {
-		return nil, errBoom
-	}
-	rc, err := r.Repository.Fetch(ctx, d)
-	if err != nil || !r.fail["stream"] {
-		return rc, err
-	}
-	return struct {
-		io.Reader
-		io.Closer
-	}{io.MultiReader(io.LimitReader(rc, 1), failingReader{}), rc}, nil
-}
-
 func (r *faultyRepository) Delete(ctx context.Context, d ocispec.Descriptor) error {
 	if r.fail["Delete"] {
 		return errBoom
@@ -142,9 +143,9 @@ type failingReader struct{}
 func (failingReader) Read([]byte) (int, error) { return 0, errBoom }
 
 // TestFailures checks that a failure of the index or the registry is a 500 whose cause is
-// logged and not answered, on GET, DELETE and the listing; that a PUT whose version cannot be
-// read back is still 201, without created; and that a stream that breaks after the headers is
-// logged.
+// logged and not answered, on GET, HEAD, DELETE and the listing; that a PUT whose version
+// cannot be read back is still 201, without created; and that a stream that breaks after the
+// headers is logged.
 func TestFailures(t *testing.T) {
 	tests := []struct {
 		name, method, target string
@@ -156,9 +157,8 @@ func TestFailures(t *testing.T) {
 		{"GET versions", http.MethodGet, target(fileTxt), "ListVersions", 500, "raw: request failed"},
 		{"GET files", http.MethodGet, target(fileTxt), "ListFiles", 500, "raw: request failed"},
 		{"GET pinned", http.MethodGet, target(fileTxt) + "?digest=" + digest.FromString("x").String(), "GetVersionByDigest", 500, "raw: request failed"},
-		{"GET redirect", http.MethodGet, target(fileTxt), "BlobRedirectURL", 500, "raw: request failed"},
-		{"GET repository", http.MethodGet, target(fileTxt), "Repository", 500, "raw: request failed"},
-		{"GET fetch", http.MethodGet, target(fileTxt), "Fetch", 500, "raw: request failed"},
+		{"GET open blob", http.MethodGet, target(fileTxt), "OpenBlob", 500, "raw: request failed"},
+		{"HEAD stat blob", http.MethodHead, target(fileTxt), "StatBlob", 500, "raw: request failed"},
 		{"GET stream", http.MethodGet, target(fileTxt), "stream", 200, "the blob stream failed after the response started"},
 		{"listing", http.MethodGet, "/raw/scratch/", "Tx", 500, "raw: request failed"},
 		{"DELETE package", http.MethodDelete, target(fileTxt), "GetPackage", 500, "raw: request failed"},

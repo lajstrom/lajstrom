@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -38,7 +39,7 @@ type fakeRegistry struct {
 	deleteDisabled bool   // answer DELETE with 405 UNSUPPORTED, like distribution without delete
 	catalogStatus  int    // answer _catalog with this status instead of the listing
 	catalogMode    string // "": paginate repos; "repeat": the first page again and again; "endless": a new page every time
-	redirect       string // answer blob GETs with 307 to redirect + "/" + digest
+	redirect       string // answer blob GETs and HEADs with 307 to redirect + "/" + digest
 	stateful       bool   // upload Locations are absolute and carry a _state that changes with every chunk and must come back, as distribution's
 	authMode       string // "", "basic" or "bearer"
 	user, pass     string // the credentials auth accepts
@@ -447,7 +448,7 @@ func (f *fakeRegistry) serveBlob(w http.ResponseWriter, r *http.Request, repo st
 		f.deleteBlob(w, repo, d)
 		return
 	}
-	if f.redirect != "" && r.Method == http.MethodGet {
+	if f.redirect != "" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 		w.Header().Set("Location", f.redirect+"/"+d.String())
 		w.WriteHeader(http.StatusTemporaryRedirect)
 		return
@@ -462,12 +463,10 @@ func (f *fakeRegistry) serveBlob(w http.ResponseWriter, r *http.Request, repo st
 	case !ok:
 		writeErr(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob unknown to registry")
 	default:
+		// ServeContent: Content-Length, Accept-Ranges, HEAD, a Range with 206, 416.
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Docker-Content-Digest", d.String())
-		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
-		if r.Method == http.MethodGet {
-			_, _ = w.Write(content)
-		}
+		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(content))
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -116,17 +117,18 @@ func TestIntegration(t *testing.T) {
 		t.Logf("referrers listed through the %s", map[bool]string{true: "referrers API", false: "sha256-<digest> tag schema"}[caps.Referrers])
 	})
 
-	step(t, "blob redirect", func(t *testing.T) {
-		u, ok, err := p.BlobRedirectURL(ctx, name, blobDesc.Digest)
+	step(t, "open blob", func(t *testing.T) {
+		b, err := p.OpenBlob(ctx, name, blobDesc.Digest, "", true)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !ok {
-			t.Logf("BlobRedirectURL: no redirect, the blob is streamed through Fetch")
+		if b.RedirectURL == "" {
+			t.Logf("OpenBlob: no redirect; the first answer streams (%d, Accept-Ranges %v)", b.Status, b.AcceptRanges)
+			wantBlobBody(t, b, http.StatusOK, blob)
 			return
 		}
-		t.Logf("BlobRedirectURL: redirect to %s://%s", schemeOf(u), hostOf(u))
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		t.Logf("OpenBlob: a redirect to %s://%s%s", schemeOf(b.RedirectURL), hostOf(b.RedirectURL), pathOf(b.RedirectURL))
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.RedirectURL, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -138,6 +140,38 @@ func TestIntegration(t *testing.T) {
 		got, err := io.ReadAll(resp.Body)
 		if err != nil || resp.StatusCode != http.StatusOK || !bytes.Equal(got, blob) {
 			t.Errorf("GET of the redirect URL = %d %q, %v; want the blob", resp.StatusCode, got, err)
+		}
+		// redirect false: the provider follows the redirect and streams.
+		b, err = p.OpenBlob(ctx, name, blobDesc.Digest, "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantBlobBody(t, b, http.StatusOK, blob)
+	})
+	step(t, "open blob with a range", func(t *testing.T) {
+		b, err := p.OpenBlob(ctx, name, blobDesc.Digest, "bytes=6-13", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantBlobBody(t, b, http.StatusPartialContent, blob[6:14])
+		if want := fmt.Sprintf("bytes 6-13/%d", len(blob)); b.ContentRange != want {
+			t.Errorf("Content-Range %q, want %q", b.ContentRange, want)
+		}
+		b, err = p.OpenBlob(ctx, name, blobDesc.Digest, fmt.Sprintf("bytes=%d-", len(blob)), false)
+		if err != nil || b.Status != http.StatusRequestedRangeNotSatisfiable || b.Body != nil {
+			t.Errorf("a range past the end = %+v, %v; want 416", b, err)
+		}
+	})
+	step(t, "stat blob", func(t *testing.T) {
+		b, err := p.StatBlob(ctx, name, blobDesc.Digest)
+		if err != nil || b.Status != http.StatusOK || b.Size != int64(len(blob)) || b.Digest != blobDesc.Digest || b.Body != nil {
+			t.Errorf("StatBlob = %+v, %v", b, err)
+		}
+		if _, err := p.StatBlob(ctx, name, digest.FromString("missing "+run)); !errors.Is(err, provider.ErrNotFound) {
+			t.Errorf("StatBlob of a missing blob: %v, want ErrNotFound", err)
+		}
+		if _, err := p.OpenBlob(ctx, name, digest.FromString("missing "+run), "", true); !errors.Is(err, provider.ErrNotFound) {
+			t.Errorf("OpenBlob of a missing blob: %v, want ErrNotFound", err)
 		}
 	})
 
@@ -298,7 +332,22 @@ func randomHex(t *testing.T) string {
 	return hex.EncodeToString(b)
 }
 
-// schemeOf and hostOf print a redirect URL without its query, which may carry a signature.
+// wantBlobBody reads and closes the body of b and fails t unless the answer is status with
+// want, its size and its digest.
+func wantBlobBody(t *testing.T, b provider.Blob, status int, want []byte) {
+	t.Helper()
+	if b.Body == nil {
+		t.Fatalf("OpenBlob = %+v, want a body", b)
+	}
+	got, err := io.ReadAll(b.Body)
+	_ = b.Body.Close()
+	if err != nil || b.Status != status || !bytes.Equal(got, want) || b.Size != int64(len(want)) || b.RedirectURL != "" {
+		t.Errorf("OpenBlob = %d, %d bytes (%+v), %v; want %d with %q", b.Status, len(got), b, err, status, want)
+	}
+}
+
+// schemeOf, hostOf and pathOf print a redirect URL without its query, which may carry a
+// signature.
 func schemeOf(u string) string {
 	s, _, _ := strings.Cut(u, "://")
 	return s
@@ -308,6 +357,13 @@ func hostOf(u string) string {
 	_, rest, _ := strings.Cut(u, "://")
 	host, _, _ := strings.Cut(rest, "/")
 	return host
+}
+
+func pathOf(u string) string {
+	_, rest, _ := strings.Cut(u, "://")
+	_, p, _ := strings.Cut(rest, "/")
+	p, _, _ = strings.Cut(p, "?")
+	return "/" + p
 }
 
 // testWriter sends log lines to t.Log.

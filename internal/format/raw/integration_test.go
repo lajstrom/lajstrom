@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -27,6 +28,8 @@ import (
 // TestIntegration runs PUT, GET, HEAD, a range and DELETE through the routes, the ingest
 // pipeline and the generic provider against the registry at LAJSTROM_TEST_REGISTRY (host:port,
 // plain HTTP), with LAJSTROM_TEST_REGISTRY_PREFIX, _USERNAME and _PASSWORD when they are set.
+// The range goes to the backend, which answers 206 with those bytes; HEAD is the backend's
+// HEAD; on a registry that redirects, GET is a 307 and HEAD still 200.
 // The manifest fetched back from the registry has the path as the layer title and the raw
 // annotations, which is what oras pull needs to write the original file name (R-08). The path
 // starts with a random directory, so runs do not collide in a registry that keeps what they
@@ -54,21 +57,28 @@ func TestIntegration(t *testing.T) {
 	rr := e.do(http.MethodGet, target(p), nil)
 	switch rr.Code {
 	case http.StatusTemporaryRedirect:
-		t.Logf("the registry redirects blob downloads: %s", rr.Header().Get("Location"))
+		loc, _, _ := strings.Cut(rr.Header().Get("Location"), "?") // the query carries a signature
+		t.Logf("the registry redirects blob downloads: %s", loc)
 	case http.StatusOK:
 		if rr.Body.String() != content {
 			t.Errorf("GET returned %d bytes, want the %d uploaded", rr.Body.Len(), len(content))
 		}
 		header(t, rr, "ETag", `"`+digest.FromString(content).String()+`"`)
 		header(t, rr, "Content-Type", "text/plain")
-		if rr := e.do(http.MethodGet, target(p), nil, "Range", "bytes=1000-1999"); rr.Code != http.StatusPartialContent || rr.Body.String() != content[1000:2000] {
+		rr := e.do(http.MethodGet, target(p), nil, "Range", "bytes=1000-1999")
+		if rr.Code != http.StatusPartialContent || rr.Body.String() != content[1000:2000] {
 			t.Errorf("range = %d, %d bytes", rr.Code, rr.Body.Len())
+		}
+		header(t, rr, "Content-Range", fmt.Sprintf("bytes 1000-1999/%d", len(content)))
+		header(t, rr, "Content-Length", "1000")
+		if rr := e.do(http.MethodGet, target(p), nil, "Range", fmt.Sprintf("bytes=%d-", len(content))); rr.Code != http.StatusRequestedRangeNotSatisfiable {
+			t.Errorf("range past the end = %d", rr.Code)
 		}
 	default:
 		t.Fatalf("GET = %d %s", rr.Code, rr.Body)
 	}
-	if rr := e.do(http.MethodHead, target(p), nil); rr.Body.Len() != 0 || (rr.Code != http.StatusOK && rr.Code != http.StatusTemporaryRedirect) {
-		t.Errorf("HEAD = %d with %d bytes", rr.Code, rr.Body.Len())
+	if rr := e.do(http.MethodHead, target(p), nil); rr.Body.Len() != 0 || rr.Code != http.StatusOK || rr.Header().Get("Content-Length") != fmt.Sprint(len(content)) {
+		t.Errorf("HEAD = %d with %d bytes, Content-Length %q", rr.Code, rr.Body.Len(), rr.Header().Get("Content-Length"))
 	}
 
 	caps, err := prov.Capabilities(t.Context())

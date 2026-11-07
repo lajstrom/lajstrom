@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -136,8 +137,100 @@ func TestFakeFaults(t *testing.T) {
 	}
 }
 
-// TestFakeRedirect checks RedirectURL: no redirect by default, the function's answer for a blob
-// the repository has, ErrNotFound for one it does not have.
+// TestFakeOpenBlob checks OpenBlob: the whole blob, a single range in its three forms, a range
+// past the end, the Ranges it ignores, and the record of every call.
+func TestFakeOpenBlob(t *testing.T) {
+	ctx := t.Context()
+	f, rr := newRepo(t)
+	b := []byte("0123456789")
+	desc := descriptor("application/octet-stream", b)
+	if err := rr.Push(ctx, desc, bytes.NewReader(b)); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		rng          string
+		status       int
+		body         string
+		contentRange string
+	}{
+		{"", http.StatusOK, "0123456789", ""},
+		{"bytes=2-4", http.StatusPartialContent, "234", "bytes 2-4/10"},
+		{"bytes=7-", http.StatusPartialContent, "789", "bytes 7-9/10"},
+		{"bytes=8-20", http.StatusPartialContent, "89", "bytes 8-9/10"},
+		{"bytes=-3", http.StatusPartialContent, "789", "bytes 7-9/10"},
+		{"bytes=-30", http.StatusPartialContent, "0123456789", "bytes 0-9/10"},
+		{"bytes=10-", http.StatusRequestedRangeNotSatisfiable, "", "bytes */10"},
+		{"bytes=0-1,4-5", http.StatusOK, "0123456789", ""},
+		{"bytes=4-2", http.StatusOK, "0123456789", ""},
+		{"bytes=x-", http.StatusOK, "0123456789", ""},
+		{"bytes=-0", http.StatusOK, "0123456789", ""},
+		{"bytes=-x", http.StatusOK, "0123456789", ""},
+		{"bytes=2-x", http.StatusOK, "0123456789", ""},
+		{"bytes=5", http.StatusOK, "0123456789", ""},
+		{"items=1-2", http.StatusOK, "0123456789", ""},
+	}
+	for _, tt := range tests {
+		got, err := f.OpenBlob(ctx, name, desc.Digest, tt.rng, true)
+		if err != nil {
+			t.Fatalf("OpenBlob(%q): %v", tt.rng, err)
+		}
+		body := readBody(got)
+		if got.Status != tt.status || body != tt.body || got.ContentRange != tt.contentRange || got.Digest != desc.Digest ||
+			!got.AcceptRanges || got.Size != int64(len(tt.body)) || got.RedirectURL != "" {
+			t.Errorf("OpenBlob(%q) = %+v with %q, want %d %q %q", tt.rng, got, body, tt.status, tt.body, tt.contentRange)
+		}
+		if tt.status == http.StatusRequestedRangeNotSatisfiable && got.Body != nil {
+			t.Errorf("OpenBlob(%q) has a body", tt.rng)
+		}
+	}
+	if len(f.OpenBlobs()) != len(tests) || f.OpenBlobs()[1] != (BlobRead{Name: name, Digest: desc.Digest, Range: "bytes=2-4"}) {
+		t.Errorf("OpenBlobs = %+v", f.OpenBlobs())
+	}
+}
+
+// TestFakeBlobMissing checks OpenBlob and StatBlob of blobs the repository does not have, of
+// one it has, and of one it discarded on push, and the record of StatBlob.
+func TestFakeBlobMissing(t *testing.T) {
+	ctx := t.Context()
+	f, rr := newRepo(t)
+	b := []byte("0123456789")
+	desc := descriptor("application/octet-stream", b)
+	if err := rr.Push(ctx, desc, bytes.NewReader(b)); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{name, "raw/scratch/other"} {
+		if _, err := f.OpenBlob(ctx, n, digest.FromString("missing"), "", true); !errors.Is(err, provider.ErrNotFound) {
+			t.Errorf("OpenBlob of a missing blob in %s: %v, want ErrNotFound", n, err)
+		}
+		if _, err := f.StatBlob(ctx, n, digest.FromString("missing")); !errors.Is(err, provider.ErrNotFound) {
+			t.Errorf("StatBlob of a missing blob in %s: %v, want ErrNotFound", n, err)
+		}
+	}
+	if st, err := f.StatBlob(ctx, name, desc.Digest); err != nil || st != (provider.Blob{Status: http.StatusOK, Size: 10, Digest: desc.Digest, AcceptRanges: true}) {
+		t.Errorf("StatBlob = %+v, %v", st, err)
+	}
+	if got := f.StatBlobs(); len(got) != 3 || got[2] != (BlobRead{Name: name, Digest: desc.Digest}) {
+		t.Errorf("StatBlobs = %+v", got)
+	}
+
+	big := ocispec.Descriptor{MediaType: "application/octet-stream", Size: MaxKept + 1}
+	d := digest.Canonical.Digester()
+	_, _ = io.Copy(d.Hash(), io.LimitReader(zeros{}, big.Size))
+	big.Digest = d.Digest()
+	if err := rr.Push(ctx, big, io.LimitReader(zeros{}, big.Size)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.OpenBlob(ctx, name, big.Digest, "", true); !errors.Is(err, provider.ErrNotFound) {
+		t.Errorf("OpenBlob of a discarded blob: %v, want ErrNotFound", err)
+	}
+	if st, err := f.StatBlob(ctx, name, big.Digest); err != nil || st.Size != big.Size {
+		t.Errorf("StatBlob of a discarded blob = %+v, %v; want its size", st, err)
+	}
+}
+
+// TestFakeRedirect checks RedirectURL: no redirect by default; the function's URL when it
+// says so, unless OpenBlob's redirect is false or NoBlobRedirect is set; ErrNotFound for a
+// blob the repository does not have, before RedirectURL is asked.
 func TestFakeRedirect(t *testing.T) {
 	ctx := t.Context()
 	f, rr := newRepo(t)
@@ -146,22 +239,40 @@ func TestFakeRedirect(t *testing.T) {
 	if err := rr.Push(ctx, desc, bytes.NewReader(b)); err != nil {
 		t.Fatal(err)
 	}
-	if url, ok, err := f.BlobRedirectURL(ctx, name, desc.Digest); url != "" || ok || err != nil {
-		t.Errorf("BlobRedirectURL without RedirectURL = %q, %v, %v", url, ok, err)
-	}
-	f.RedirectURL = func(n string, d digest.Digest) (string, bool) {
-		return "https://cdn.test/" + n + "/" + d.Encoded(), true
-	}
-	if url, ok, err := f.BlobRedirectURL(ctx, name, desc.Digest); url != "https://cdn.test/"+name+"/"+desc.Digest.Encoded() || !ok || err != nil {
-		t.Errorf("BlobRedirectURL = %q, %v, %v", url, ok, err)
-	}
-	for _, n := range []string{name, "raw/scratch/other"} {
-		if _, _, err := f.BlobRedirectURL(ctx, n, digest.FromString("missing")); !errors.Is(err, provider.ErrNotFound) {
-			t.Errorf("BlobRedirectURL of a missing blob in %s: %v, want ErrNotFound", n, err)
+	stream := func(what string, got provider.Blob, err error) {
+		t.Helper()
+		if err != nil || got.RedirectURL != "" || got.Body == nil || got.Status != http.StatusOK {
+			t.Errorf("%s = %+v, %v; want the stream", what, got, err)
 		}
+	}
+	got, err := f.OpenBlob(ctx, name, desc.Digest, "", true)
+	stream("OpenBlob without RedirectURL", got, err)
+	if c, _ := f.Capabilities(ctx); c.BlobRedirect {
+		t.Errorf("Capabilities without RedirectURL = %+v", c)
+	}
+	asked := 0
+	f.RedirectURL = func(n string, d digest.Digest) (string, bool) {
+		asked++
+		return "https://cdn.test/" + n + "/" + d.Encoded(), d == desc.Digest
+	}
+	got, err = f.OpenBlob(ctx, name, desc.Digest, "bytes=1-2", true)
+	want := provider.Blob{RedirectURL: "https://cdn.test/" + name + "/" + desc.Digest.Encoded(), Status: http.StatusTemporaryRedirect, Size: -1, Digest: desc.Digest}
+	if err != nil || got != want {
+		t.Errorf("OpenBlob = %+v, %v; want %+v", got, err, want)
+	}
+	got, err = f.OpenBlob(ctx, name, desc.Digest, "", false)
+	stream("OpenBlob with redirect false", got, err)
+	if _, err := f.OpenBlob(ctx, name, digest.FromString("missing"), "", true); !errors.Is(err, provider.ErrNotFound) || asked != 1 {
+		t.Errorf("OpenBlob of a missing blob: %v, RedirectURL asked %d times, want ErrNotFound and once", err, asked)
 	}
 	if c, _ := f.Capabilities(ctx); !c.DeleteManifest || !c.BlobRedirect {
 		t.Errorf("Capabilities = %+v, want DeleteManifest and BlobRedirect", c)
+	}
+	f.NoBlobRedirect = true
+	got, err = f.OpenBlob(ctx, name, desc.Digest, "", true)
+	stream("OpenBlob with NoBlobRedirect", got, err)
+	if c, _ := f.Capabilities(ctx); c.BlobRedirect || asked != 1 {
+		t.Errorf("Capabilities with NoBlobRedirect = %+v; RedirectURL asked %d times", c, asked)
 	}
 }
 
@@ -196,6 +307,15 @@ func TestFakeNoDeleteManifest(t *testing.T) {
 }
 
 func second[T any](_ T, err error) error { return err }
+
+// readBody reads the body of b; "" without one.
+func readBody(b provider.Blob) string {
+	if b.Body == nil {
+		return ""
+	}
+	all, _ := io.ReadAll(b.Body)
+	return string(all)
+}
 
 // zeros reads zero bytes forever.
 type zeros struct{}

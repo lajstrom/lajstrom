@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/opencontainers/go-digest"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
@@ -303,16 +302,13 @@ func pickVersion(ctx context.Context, st index.Reader, repo index.Repo, pkg *ind
 	return v, nil
 }
 
-// serve answers the file f: 307 to the URL the provider gives for the blob, else the blob
-// streamed through http.ServeContent with Content-Type (from the metadata), ETag (the blob
-// digest, so If-None-Match works), Last-Modified (created), Accept-Ranges and
-// Docker-Content-Digest (the manifest digest). Fetch is called for HEAD and for a 304 too: one
-// request to the backend that a later version may save.
-//
-// A single range is 206: the backend is read from the start and the bytes before the range are
-// discarded (forwardSeeker) until the provider has a ranged fetch (#27). A Range header with
-// several ranges is dropped, so the answer is the whole file with 200: they would need a stream
-// that seeks backwards.
+// serve answers the file f through format.ServeBlob: Content-Type from the metadata, ETag the
+// blob digest (so If-None-Match works without a request to the backend), Last-Modified the
+// version's created, Docker-Content-Digest the manifest digest, and the redirect as the repo
+// policy's blobRedirect allows. HEAD asks the backend for the headers; GET is one request,
+// with the client's Range: a 307 to the backend's storage when the provider gives a URL,
+// otherwise the backend's answer, 200, 206 or 416, streamed. A stream that breaks after the
+// headers is logged.
 func (h *handlers) serve(w http.ResponseWriter, r *http.Request, repo index.Repo, f *resolved) {
 	ctx := r.Context()
 	prov, err := registryOf(h.deps, repo)
@@ -320,53 +316,17 @@ func (h *handlers) serve(w http.ResponseWriter, r *http.Request, repo index.Repo
 		h.fail(w, r, err)
 		return
 	}
-	name := ociName(repo, f.pkg.NameOCI)
-	url, redirect, err := prov.BlobRedirectURL(ctx, name, f.file.Digest)
+	err = format.ServeBlob(w, r, prov, ociName(repo, f.pkg.NameOCI), f.file.Digest, format.ServeBlobOptions{
+		ContentType:    f.contentType,
+		LastModified:   f.version.CreatedAt,
+		ManifestDigest: f.version.Digest,
+		Redirect:       format.BlobRedirect(repo),
+		Fail:           func(w http.ResponseWriter, err error) { h.fail(w, r, err) },
+	})
 	if err != nil {
-		h.fail(w, r, err)
-		return
-	}
-	if redirect {
-		// The URL is the backend's answer for a blob the index names, never a value of the
-		// request; it is absolute (the provider resolves it), so it goes out as it is.
-		w.Header().Set("Location", url)
-		w.Header().Set("Docker-Content-Digest", f.version.Digest.String())
-		w.WriteHeader(http.StatusTemporaryRedirect)
-		return
-	}
-	rc, err := fetch(ctx, prov, name, f.file)
-	if err != nil {
-		h.fail(w, r, err)
-		return
-	}
-	defer func() { _ = rc.Close() }()
-	hdr := w.Header()
-	hdr.Set("Content-Type", f.contentType)
-	hdr.Set("ETag", `"`+f.file.Digest.String()+`"`)
-	hdr.Set("Accept-Ranges", "bytes")
-	hdr.Set("Docker-Content-Digest", f.version.Digest.String())
-	if strings.Contains(r.Header.Get("Range"), ",") {
-		r.Header.Del("Range")
-	}
-	s := newForwardSeeker(rc, f.file.Size)
-	http.ServeContent(w, r, f.pkg.Name, f.version.CreatedAt, s)
-	if s.err != nil && ctx.Err() == nil {
 		h.deps.Log.WarnContext(ctx, "raw: the blob stream failed after the response started", "repo", repo.Format+"/"+repo.Name,
-			"path", f.pkg.Name, "digest", f.file.Digest.String(), "error", s.err.Error())
+			"path", f.pkg.Name, "digest", f.file.Digest.String(), "error", err.Error())
 	}
-}
-
-// fetch opens the blob of file f in the OCI repository name.
-func fetch(ctx context.Context, prov provider.Provider, name string, f index.File) (io.ReadCloser, error) {
-	rr, err := prov.Repository(ctx, name)
-	if err != nil {
-		return nil, fmt.Errorf("raw: repository %s: %w", name, err)
-	}
-	rc, err := rr.Fetch(ctx, ocispec.Descriptor{MediaType: f.MediaType, Digest: f.Digest, Size: f.Size})
-	if err != nil {
-		return nil, fmt.Errorf("raw: fetch %s: %w", f.Digest, err)
-	}
-	return rc, nil
 }
 
 // registryOf returns the provider of the repo's registry.

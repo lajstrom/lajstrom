@@ -33,7 +33,8 @@ type clients struct {
 	// follow is the client of oras-go: it follows redirects, so blob downloads that the
 	// registry redirects to object storage work.
 	follow *auth.Client
-	// noFollow returns a redirect as the response, for BlobRedirectURL.
+	// noFollow returns a redirect as the response, for OpenBlob and StatBlob, which decide
+	// for each one whether the client gets it or the provider follows it.
 	noFollow *auth.Client
 	// cache is the token cache of both; the upload sessions look into it (repository.prime).
 	cache auth.Cache

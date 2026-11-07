@@ -6,17 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"net/http"
 	"net/url"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 
-	"github.com/opencontainers/go-digest"
 	"oras.land/oras-go/v2/registry"
 	"oras.land/oras-go/v2/registry/remote"
-	"oras.land/oras-go/v2/registry/remote/auth"
 
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/provider"
@@ -212,52 +209,4 @@ func (p *Provider) ListRepositories(ctx context.Context, prefix string) ([]strin
 		return nil, translate(op, err)
 	}
 	return slices.Sorted(maps.Keys(found)), nil
-}
-
-// BlobRedirectURL asks the registry for the blob with a GET that does not follow redirects. A
-// redirect (301, 302, 303, 307, 308) gives its Location, resolved against the request URL,
-// and true, unless the Location points back into the registry's own API (/v2/ on the
-// registry's host): a client cannot follow that without Lajstrom's credentials, so it is
-// false and the caller streams. 200 gives false (the body is closed unread) and the caller
-// streams the blob through Repository.Fetch; 404 is provider.ErrNotFound. With
-// capabilities.blobRedirect false it answers false without a request. A Range header is never
-// sent.
-func (p *Provider) BlobRedirectURL(ctx context.Context, name string, d digest.Digest) (string, bool, error) {
-	if o := p.override.BlobRedirect; o != nil && !*o {
-		return "", false, nil
-	}
-	op := "blob redirect " + name + "@" + d.String()
-	if err := d.Validate(); err != nil {
-		return "", false, fmt.Errorf("generic: %s: %w", op, err)
-	}
-	ref := registry.Reference{Registry: p.host, Repository: p.repoName(name), Reference: d.String()}
-	if err := ref.ValidateRepository(); err != nil {
-		return "", false, translate(op, err)
-	}
-	ctx = auth.AppendRepositoryScope(ctx, ref, auth.ActionPull)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.base+"/v2/"+ref.Repository+"/blobs/"+ref.Reference, nil)
-	if err != nil {
-		return "", false, fmt.Errorf("generic: %s: %w", op, err)
-	}
-	resp, err := p.clients.noFollow.Do(req)
-	if err != nil {
-		return "", false, translate(op, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	switch resp.StatusCode {
-	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
-		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
-		loc, err := resp.Location()
-		if err != nil {
-			return "", false, fmt.Errorf("generic: %s: redirect without a usable Location: %w", op, err)
-		}
-		if loc.Host == p.host && strings.HasPrefix(loc.Path, "/v2/") {
-			return "", false, nil
-		}
-		return loc.String(), true, nil
-	case http.StatusOK:
-		return "", false, nil
-	default:
-		return "", false, translate(op, parseErrorResponse(resp))
-	}
 }

@@ -14,7 +14,6 @@ import (
 	"testing/iotest"
 
 	"github.com/opencontainers/go-digest"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content"
 
 	"github.com/lajstrom/lajstrom/internal/config"
@@ -278,51 +277,6 @@ func TestUploadAcrossProviders(t *testing.T) {
 	if n := f2.count("GET "); n != 0 {
 		t.Errorf("%d GETs without credentials, want none", n)
 	}
-}
-
-// TestFetchUnsized fetches a blob by its digest alone: the size comes from seeking to the end,
-// the stream goes forwards only.
-func TestFetchUnsized(t *testing.T) {
-	ctx := t.Context()
-	f, repo := uploadRepo(t, nil)
-	blob := pushBlob(t, repo, "0123456789")
-	rc, err := repo.Fetch(ctx, ocispec.Descriptor{MediaType: octetStream, Digest: blob.Digest, Size: -1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = rc.Close() }()
-	s, ok := rc.(io.ReadSeeker)
-	if !ok {
-		t.Fatalf("the reader of an unsized blob is a %T, not an io.ReadSeeker", rc)
-	}
-	if n, err := s.Seek(0, io.SeekEnd); err != nil || n != 10 {
-		t.Fatalf("Seek(0, SeekEnd) = %d, %v", n, err)
-	}
-	if n, err := s.Seek(0, io.SeekStart); err != nil || n != 0 {
-		t.Fatalf("Seek(0, SeekStart) = %d, %v", n, err)
-	}
-	head := make([]byte, 3)
-	if _, err := io.ReadFull(s, head); err != nil || string(head) != "012" {
-		t.Fatalf("first bytes %q, %v", head, err)
-	}
-	if _, err := s.Seek(2, io.SeekCurrent); err != nil {
-		t.Fatal(err)
-	}
-	rest, _ := io.ReadAll(s)
-	if string(rest) != "56789" {
-		t.Errorf("after skipping 2 bytes: %q", rest)
-	}
-	if _, err := s.Seek(0, io.SeekStart); err == nil {
-		t.Error("a seek backwards succeeded")
-	}
-	if _, err := s.Seek(0, 7); err == nil {
-		t.Error("a seek with an invalid whence succeeded")
-	}
-	if n := f.count("GET /v2/art/raw/scratch/notes/blobs/"); n != 1 {
-		t.Errorf("%d GETs of the blob, want 1", n)
-	}
-	_, err = repo.Fetch(ctx, ocispec.Descriptor{MediaType: octetStream, Digest: digest.FromString("absent"), Size: -1})
-	wantErr(t, "Fetch of an absent unsized blob", err, provider.ErrNotFound)
 }
 
 func TestOffsetOf(t *testing.T) {

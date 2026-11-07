@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/opencontainers/go-digest"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content"
 
 	"github.com/lajstrom/lajstrom/internal/provider"
@@ -21,8 +20,8 @@ import (
 // TestIntegrationUploads drives the BlobUploader against the registry of
 // LAJSTROM_TEST_REGISTRY: a session that a second provider (another replica, with a token
 // cache of its own) continues, the monolithic shape, a last chunk of unknown size, a wrong
-// digest, a chunk out of order, the cancel, the mount, the empty blob, and the fetch of a blob
-// by its digest alone.
+// digest, a chunk out of order, the cancel, the mount, the empty blob, and the download of a
+// blob by its digest alone (OpenBlob, on the second provider).
 func TestIntegrationUploads(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -61,20 +60,17 @@ func TestIntegrationUploads(t *testing.T) {
 		}
 		wantBlob(ctx, t, a, blob)
 	})
-	step(t, "fetch by digest alone", func(t *testing.T) {
-		rc, err := b.Fetch(ctx, ocispec.Descriptor{MediaType: octetStream, Digest: d, Size: -1})
+	step(t, "download by digest alone", func(t *testing.T) {
+		got, err := pb.OpenBlob(ctx, name, d, "", false)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer func() { _ = rc.Close() }()
-		if n, err := rc.(io.Seeker).Seek(0, io.SeekEnd); err != nil || n != int64(len(blob)) {
-			t.Fatalf("size %d, %v", n, err)
+		defer func() { _ = got.Body.Close() }()
+		if got.Size != int64(len(blob)) || got.Digest != d {
+			t.Fatalf("OpenBlob = %+v", got)
 		}
-		if _, err := rc.(io.Seeker).Seek(0, io.SeekStart); err != nil {
-			t.Fatal(err)
-		}
-		if got, _ := io.ReadAll(rc); !bytes.Equal(got, blob) {
-			t.Errorf("content %q", got)
+		if all, _ := io.ReadAll(got.Body); !bytes.Equal(all, blob) {
+			t.Errorf("content %q", all)
 		}
 	})
 	step(t, "monolithic", func(t *testing.T) {

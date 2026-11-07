@@ -128,7 +128,7 @@ A list; each entry is one backend OCI registry. Repos refer to it by name.
 | `registries[].capabilities.catalog` | bool | probed | none | The registry lists repositories (`/v2/_catalog`). `false` turns repository listing off without asking, for registries whose catalog is missing, slow or wrong; Lajstrom then uses its own list of repositories. |
 | `registries[].capabilities.deleteManifest` | bool | probed | none | Manifests can be deleted. |
 | `registries[].capabilities.immutableTags` | bool | probed | none | The registry itself refuses to re-point a tag. |
-| `registries[].capabilities.blobRedirect` | bool | probed | none | Blob downloads may be redirected to the registry's storage. `false` makes Lajstrom stream every blob through itself without asking the registry for a redirect. |
+| `registries[].capabilities.blobRedirect` | bool | probed | none | A blob download may be answered with a `307` to the URL the registry redirects it to (a presigned URL of its object storage), so that the bytes bypass Lajstrom. Each download is one request to the registry, whose answer decides: a redirect to another origin goes to the client, a `200` or `206` streams. `false` makes Lajstrom follow every redirect of the registry and stream the bytes itself: a client never gets a URL of the registry, for storage that clients cannot reach. Per repo, `policy.blobRedirect: "never"` does the same ([api.md](api.md)). |
 | `registries[].capabilities.maxBlobSize` | bytes | `0` | none | Largest blob the registry accepts; `0` means unknown. Must not be negative. |
 
 #### Registry capabilities
@@ -139,6 +139,8 @@ At startup Lajstrom asks each registry what it supports, once, and keeps the ans
 `<prefix>lajstrom-probe` (an OCI image index: the referrers API; a 404: the tag schema). The
 `generic` type assumes create-on-push, manifest deletes and blob redirects, and no immutable
 tags; a registry that answers a manifest delete with 405 turns `deleteManifest` off from then on.
+Blob redirects need no probe: a download is one `GET` whose first answer is used as it is, a
+redirect or the bytes, so a registry on filesystem storage costs nothing for the assumption.
 Each key under `capabilities` replaces what was found, for registries that answer wrongly; a
 key that is set is not probed. There is no `catalog` key outside `capabilities`. What was tested
 against which registry is in [registries/](registries/README.md).

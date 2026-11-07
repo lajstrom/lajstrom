@@ -90,8 +90,8 @@ type CapabilityOverrides struct {
 	DeleteManifest *bool `yaml:"deleteManifest"`
 	// ImmutableTags: the backend itself refuses to re-point a tag.
 	ImmutableTags *bool `yaml:"immutableTags"`
-	// BlobRedirect: blob downloads may redirect; false makes BlobRedirectURL answer "no"
-	// without a request.
+	// BlobRedirect: blob downloads may redirect; false makes OpenBlob follow every redirect
+	// and stream, so that a client never gets a URL of the backend.
 	BlobRedirect *bool `yaml:"blobRedirect"`
 	// MaxBlobSize is the largest blob the backend accepts, in bytes; 0 leaves it unset.
 	MaxBlobSize int64 `yaml:"maxBlobSize"`

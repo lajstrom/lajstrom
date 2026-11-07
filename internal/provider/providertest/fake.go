@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -26,6 +28,13 @@ import (
 // push and then discarded, so a test can push gigabytes without holding them; reading it back
 // gives provider.ErrNotFound.
 const MaxKept = 1 << 20
+
+// BlobRead is one OpenBlob or StatBlob call, whatever its outcome.
+type BlobRead struct {
+	Name   string        // the repository, as the caller named it
+	Digest digest.Digest // the blob asked for
+	Range  string        // the Range of an OpenBlob, as given; empty for a StatBlob
+}
 
 // PushRecord is one successful Push or PushReference.
 type PushRecord struct {
@@ -43,21 +52,27 @@ var (
 // Fake is a provider.Provider that keeps repositories in memory: blobs and manifests by digest,
 // tags, and referrers by the subject of the manifests pushed. It behaves like a registry with
 // create-on-push, the referrers API, a catalog, manifest deletes and mutable tags, and without
-// blob redirects. Push and PushReference read the content to its end and check its size and
-// digest against the descriptor, as a registry does. It records every successful push. Its
-// blob upload sessions (BlobUploader) keep a partial blob per Upload.ID, kept like a pushed
-// blob; OpenUploads counts the sessions not finished or cancelled.
+// blob redirects unless RedirectURL is set. Push and PushReference read the content to its end
+// and check its size and digest against the descriptor, as a registry does. It records every
+// successful push, and every OpenBlob and StatBlob. Its blob upload sessions (BlobUploader)
+// keep a partial blob per Upload.ID, kept like a pushed blob; OpenUploads counts the sessions
+// not finished or cancelled.
 //
 // The Fail fields inject errors: when one is set, every call of that method returns it,
-// wrapped with the operation. Set them, and RedirectURL and NoDeleteManifest, before the calls
-// they should affect; they are not guarded for changes during calls. Use a Fake as a pointer;
-// it is safe for concurrent use.
+// wrapped with the operation. Set them, and RedirectURL, NoBlobRedirect and NoDeleteManifest,
+// before the calls they should affect; they are not guarded for changes during calls. Use a
+// Fake as a pointer; it is safe for concurrent use.
 type Fake struct {
 	// RegistryName is Name; empty means "fake".
 	RegistryName string
-	// RedirectURL, when set, answers BlobRedirectURL for a blob the repository name has: the
-	// URL and true to redirect, false to stream. Nil means no redirect, as before.
+	// RedirectURL, when set, is asked by OpenBlob about a blob the repository name has: the
+	// URL and true to redirect (a 307 the caller answers), false to stream. Nil means no
+	// redirect, as before. It is not asked when OpenBlob's redirect is false or with
+	// NoBlobRedirect.
 	RedirectURL func(name string, d digest.Digest) (string, bool)
+	// NoBlobRedirect is the operator's capabilities.blobRedirect: false: Capabilities reports
+	// BlobRedirect false and OpenBlob streams, RedirectURL or not.
+	NoBlobRedirect bool
 	// NoDeleteManifest makes the Fake a registry that cannot delete manifests: Capabilities
 	// reports DeleteManifest false and Delete of a manifest returns provider.ErrUnsupported.
 	NoDeleteManifest bool
@@ -72,6 +87,8 @@ type Fake struct {
 	repos          map[string]*repoData
 	pushes         []PushRecord
 	pushReferences []PushRecord
+	openBlobs      []BlobRead
+	statBlobs      []BlobRead
 	uploads        map[string]*partial // open upload sessions by Upload.ID
 	uploadSeq      int
 }
@@ -105,10 +122,10 @@ func (f *Fake) Name() string {
 }
 
 // Capabilities reports create-on-push, referrers, catalog and manifest deletes (unless
-// NoDeleteManifest), and blob redirects when RedirectURL is set.
+// NoDeleteManifest), and blob redirects when RedirectURL is set (unless NoBlobRedirect).
 func (f *Fake) Capabilities(context.Context) (provider.Capabilities, error) {
 	return provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true,
-		DeleteManifest: !f.NoDeleteManifest, BlobRedirect: f.RedirectURL != nil}, nil
+		DeleteManifest: !f.NoDeleteManifest, BlobRedirect: f.RedirectURL != nil && !f.NoBlobRedirect}, nil
 }
 
 // Repository returns the repository name; it exists once something is pushed to it.
@@ -147,24 +164,112 @@ func (f *Fake) DeleteRepository(_ context.Context, name string) error {
 	return nil
 }
 
-// BlobRedirectURL asks RedirectURL about a blob the repository name has; without RedirectURL
-// there is no redirect and callers stream through Fetch. A blob the repository does not have is
-// provider.ErrNotFound, as a registry answers.
-func (f *Fake) BlobRedirectURL(_ context.Context, name string, d digest.Digest) (string, bool, error) {
-	if f.RedirectURL == nil {
-		return "", false, nil
-	}
+// OpenBlob answers a download of a blob the repository name has, as a registry on
+// filesystem storage does: the whole blob with 200; a single range of Range (bytes=a-b,
+// bytes=a-, bytes=-n) with 206 and Content-Range, or with 416 and Content-Range bytes */<size>
+// when it starts past the end; any other Range, several ranges among them, is ignored (200).
+// AcceptRanges is true. With RedirectURL set, redirect true and no NoBlobRedirect, a URL that
+// RedirectURL gives is answered as a redirect. A blob the repository does not have, or one
+// larger than MaxKept, is provider.ErrNotFound. Every call is recorded (OpenBlobs).
+func (f *Fake) OpenBlob(_ context.Context, name string, d digest.Digest, rangeHeader string, redirect bool) (provider.Blob, error) {
 	f.mu.Lock()
-	ok := false
-	if rd := f.repo(name, false); rd != nil {
-		_, ok = rd.blobs[d]
+	f.openBlobs = append(f.openBlobs, BlobRead{Name: name, Digest: d, Range: rangeHeader})
+	b, ok := f.blob(name, d)
+	f.mu.Unlock()
+	if !ok || b.data == nil {
+		return provider.Blob{}, fmt.Errorf("providertest: open blob %s@%s: %w", name, d, provider.ErrNotFound)
 	}
+	if f.RedirectURL != nil && redirect && !f.NoBlobRedirect {
+		if url, ok := f.RedirectURL(name, d); ok {
+			return provider.Blob{RedirectURL: url, Status: http.StatusTemporaryRedirect, Size: -1, Digest: d}, nil
+		}
+	}
+	size := int64(len(b.data))
+	answer := provider.Blob{Status: http.StatusOK, Size: size, Digest: d, AcceptRanges: true}
+	first, last, ok := singleRange(rangeHeader, size)
+	switch {
+	case !ok:
+		answer.Body = io.NopCloser(bytes.NewReader(b.data))
+	case first >= size:
+		answer.Status, answer.Size = http.StatusRequestedRangeNotSatisfiable, 0
+		answer.ContentRange = fmt.Sprintf("bytes */%d", size)
+	default:
+		answer.Status, answer.Size = http.StatusPartialContent, last-first+1
+		answer.ContentRange = fmt.Sprintf("bytes %d-%d/%d", first, last, size)
+		answer.Body = io.NopCloser(bytes.NewReader(b.data[first : last+1]))
+	}
+	return answer, nil
+}
+
+// singleRange parses a Range of one byte range against a blob of size bytes: the first and
+// last byte, last clamped to the end; first is size or more when the range starts past the
+// end. ok is false for an empty, malformed or multiple Range.
+func singleRange(header string, size int64) (first, last int64, ok bool) {
+	spec, found := strings.CutPrefix(header, "bytes=")
+	if !found || strings.Contains(spec, ",") {
+		return 0, 0, false
+	}
+	a, b, found := strings.Cut(strings.TrimSpace(spec), "-")
+	if !found {
+		return 0, 0, false
+	}
+	if a == "" { // the last b bytes
+		n, err := strconv.ParseInt(b, 10, 64)
+		if err != nil || n <= 0 {
+			return 0, 0, false
+		}
+		return max(size-n, 0), size - 1, true
+	}
+	first, err := strconv.ParseInt(a, 10, 64)
+	if err != nil || first < 0 {
+		return 0, 0, false
+	}
+	last = size - 1
+	if b != "" {
+		if last, err = strconv.ParseInt(b, 10, 64); err != nil || last < first {
+			return 0, 0, false
+		}
+		last = min(last, size-1)
+	}
+	return first, last, true
+}
+
+// StatBlob answers the size and digest of a blob the repository name has, with AcceptRanges;
+// a blob larger than MaxKept has its size too. provider.ErrNotFound for a blob it does not
+// have. Every call is recorded (StatBlobs).
+func (f *Fake) StatBlob(_ context.Context, name string, d digest.Digest) (provider.Blob, error) {
+	f.mu.Lock()
+	f.statBlobs = append(f.statBlobs, BlobRead{Name: name, Digest: d})
+	b, ok := f.blob(name, d)
 	f.mu.Unlock()
 	if !ok {
-		return "", false, fmt.Errorf("providertest: blob redirect %s@%s: %w", name, d, provider.ErrNotFound)
+		return provider.Blob{}, fmt.Errorf("providertest: stat blob %s@%s: %w", name, d, provider.ErrNotFound)
 	}
-	url, redirect := f.RedirectURL(name, d)
-	return url, redirect, nil
+	return provider.Blob{Status: http.StatusOK, Size: b.size, Digest: d, AcceptRanges: true}, nil
+}
+
+// blob returns the blob d of the repository name. The caller holds f.mu.
+func (f *Fake) blob(name string, d digest.Digest) (blob, bool) {
+	rd := f.repo(name, false)
+	if rd == nil {
+		return blob{}, false
+	}
+	b, ok := rd.blobs[d]
+	return b, ok
+}
+
+// OpenBlobs returns the OpenBlob calls so far, in order.
+func (f *Fake) OpenBlobs() []BlobRead {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.openBlobs)
+}
+
+// StatBlobs returns the StatBlob calls so far, in order.
+func (f *Fake) StatBlobs() []BlobRead {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.statBlobs)
 }
 
 // OpenUploads returns how many upload sessions are open: started and neither finished nor
