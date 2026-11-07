@@ -4,6 +4,7 @@
 #
 #   make dev-up            start, and wait until all three services are healthy
 #   make dev-up PROFILES=s3  the same, and distribution on MinIO (the s3 profile, #27)
+#   make dev-up PROFILES=gitlab  the same, and the GitLab container registry, two variants (the gitlab profile, #117)
 #   make dev-ps            what runs, with its health
 #   make dev-logs          follow the logs
 #   make dev-down          stop and remove the containers of every profile; the volumes stay
@@ -17,12 +18,14 @@
 #   postgres         localhost:5432  LAJSTROM_PG_PORT               postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable
 #   distribution-s3  localhost:5002  LAJSTROM_DISTRIBUTION_S3_PORT  s3 profile: blob GETs answer 307 to MinIO
 #   minio            localhost:9000  LAJSTROM_MINIO_PORT            s3 profile: the presigned URLs name it
+#   gitlab           localhost:5003  LAJSTROM_GITLAB_PORT           gitlab profile: variant A, metadata on the filesystem
+#   gitlab-db        localhost:5004  LAJSTROM_GITLAB_DB_PORT        gitlab profile: variant B, the metadata database (docs/registries/gitlab.md)
 #
 # Every image is pinned to a full version whose tag serves linux/amd64 and linux/arm64; the
 # digest of its image index is in the comment above it. Change a tag and its digest together;
 # for a registry, re-run the integration tests and update docs/registries/README.md. The
 # integration job of .github/workflows/ci.yml runs the same images: change them there too. It
-# does not run the s3 profile.
+# does not run the s3 and gitlab profiles.
 
 name: lajstrom-dev
 
@@ -115,6 +118,73 @@ services:
       <<: *healthcheck
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/v2/"]
 
+  # The gitlab profile (make dev-up PROFILES=gitlab): the GitLab container registry, the fork of
+  # distribution that GitLab.com runs, in its two variants, to test Lajstrom against (#117,
+  # docs/registries/gitlab.md). The image is the registry as GitLab's cloud-native chart ships
+  # it; it runs as git (uid 1000). Its tag is rebuilt in place (the v4.43.0-gitlab below was
+  # built on 2026-11-07): the digest is that of the image index on the day of the test. No
+  # authentication: anyone on the machine can push, pull and delete.
+  gitlab:
+    profiles: [gitlab]
+    # GitLab container registry v4.43.0, linux/amd64 and linux/arm64; variant A, metadata on
+    # the filesystem.
+    # sha256:fe9c67416a605ffaa5a053c17a6d3b1eab0668a33a58b7bd938a476088f8222e
+    image: registry.gitlab.com/gitlab-org/build/cng/gitlab-container-registry:v4.43.0-gitlab
+    volumes:
+      # The image reads /etc/docker/registry/config.yml. It has no /var/lib/registry, and a
+      # named volume on a path the image lacks is created owned by root, which git cannot write;
+      # on the home of git, Docker gives the new volume that directory's owner.
+      - ./gitlab/config.yml:/etc/docker/registry/config.yml:ro
+      - gitlab-data:/home/git
+    ports:
+      - "127.0.0.1:${LAJSTROM_GITLAB_PORT:-5003}:5000"
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:5000/v2/"]
+
+  gitlab-db:
+    profiles: [gitlab]
+    # The same image; variant B, the metadata database: the schema migrations first (the
+    # image's /scripts/db-migrate: registry database migrate up), then the registry.
+    image: registry.gitlab.com/gitlab-org/build/cng/gitlab-container-registry:v4.43.0-gitlab
+    command: ["/bin/bash", "-c", "/scripts/db-migrate && exec /scripts/process-wrapper"]
+    environment:
+      # With the database the registry refuses a manifest whose artifactType or config media
+      # type is not in its table of known media types: every manifest of Lajstrom's profile
+      # (application/vnd.lajstrom.<format>.v1). true adds unknown types on push instead; false
+      # is the registry's default (docs/registries/gitlab.md, "Media types").
+      REGISTRY_FF_DYNAMIC_MEDIA_TYPES: ${LAJSTROM_GITLAB_DYNAMIC_MEDIA_TYPES:-false}
+      # How long after an event the online garbage collector reviews a manifest or a blob
+      # (gc.reviewafter); -1 reviews at once (docs/registries/gitlab.md, "Garbage collection").
+      REGISTRY_GC_REVIEWAFTER: ${LAJSTROM_GITLAB_GC_REVIEWAFTER:-24h}
+    depends_on:
+      gitlab-postgres:
+        condition: service_healthy
+    volumes:
+      - ./gitlab/config-db.yml:/etc/docker/registry/config.yml:ro
+      - gitlab-db-data:/home/git
+    ports:
+      - "127.0.0.1:${LAJSTROM_GITLAB_DB_PORT:-5004}:5000"
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:5000/v2/"]
+
+  gitlab-postgres:
+    profiles: [gitlab]
+    # The image of the stack's postgres (the registry needs 16 or later), with a database, user
+    # and password of its own: registry. Not published.
+    # sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    image: postgres:17.11-alpine
+    environment:
+      POSTGRES_DB: registry
+      POSTGRES_USER: registry
+      POSTGRES_PASSWORD: registry
+    volumes:
+      - gitlab-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U registry -d registry"]
+
   postgres:
     # PostgreSQL 17.11 on Alpine.
     # sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
@@ -138,3 +208,6 @@ volumes:
   distribution-data:
   postgres-data:
   minio-data:
+  gitlab-data:
+  gitlab-db-data:
+  gitlab-postgres-data:

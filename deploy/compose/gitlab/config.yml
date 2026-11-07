@@ -1,0 +1,19 @@
+# The GitLab container registry of the gitlab profile, variant A: metadata on the filesystem, as
+# the registry runs without its database (deploy/compose/compose.yaml,
+# docs/registries/gitlab.md). For development only: no authentication, anyone on the machine
+# can push, pull and delete.
+version: 0.1
+log:
+  level: info
+  formatter: text
+storage:
+  filesystem:
+    # The named volume is mounted on the home of the image's user (git, uid 1000), the one path
+    # it owns: see compose.yaml.
+    rootdirectory: /home/git/registry
+  delete:
+    enabled: true # the registry's default is false: manifest and blob deletes answer 405
+http:
+  addr: :5000
+database:
+  enabled: false
