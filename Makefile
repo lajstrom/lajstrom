@@ -32,7 +32,7 @@ RUN_CONFIG   := $(firstword $(wildcard deploy/compose/lajstrom.yaml) deploy/comp
 need-file = @test -e $(1) || { echo "$(1) does not exist yet: $(2)" >&2; exit 1; }
 
 .PHONY: help build test vet lint vulncheck licenses fmt-check check \
-	dev-up dev-down dev-logs test-integration e2e run clean
+	dev-up dev-down dev-ps dev-logs test-integration e2e run clean
 
 help: ## List the targets
 	@echo "Usage: make <target>"
@@ -62,16 +62,16 @@ fmt-check: ## Fail when gofmt would change a file
 
 check: fmt-check build vet test lint vulncheck licenses ## Everything CI runs, in CI's order
 
-dev-up: ## Start the dev stack: Zot, distribution, Postgres (issue #15)
-	$(call need-file,$(COMPOSE_FILE),the dev stack comes with issue #15)
+dev-up: ## Start the dev stack (Zot, distribution, Postgres) and wait until it is healthy
 	$(COMPOSE) up -d --wait
 
-dev-down: ## Stop the dev stack
-	$(call need-file,$(COMPOSE_FILE),the dev stack comes with issue #15)
-	$(COMPOSE) down
+dev-down: ## Stop the dev stack; RESET=1 removes the volumes
+	$(COMPOSE) down $(if $(filter 1,$(RESET)),-v)
+
+dev-ps: ## Show the services of the dev stack and their health
+	$(COMPOSE) ps
 
 dev-logs: ## Follow the logs of the dev stack
-	$(call need-file,$(COMPOSE_FILE),the dev stack comes with issue #15)
 	$(COMPOSE) logs -f
 
 test-integration: ## Integration tests against the dev stack; needs LAJSTROM_TEST_REGISTRY=host:port

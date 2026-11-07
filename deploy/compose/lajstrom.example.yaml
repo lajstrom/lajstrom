@@ -1,8 +1,16 @@
-# Lajstrom configuration for local development: SQLite and the Zot registry of the dev stack.
-# Every key is listed; docs/configuration.md describes them. Environment variables
-# LAJSTROM_SERVER_LISTEN, LAJSTROM_SERVER_EXTERNAL_URL, LAJSTROM_LOG_LEVEL, LAJSTROM_LOG_FORMAT,
-# LAJSTROM_DATABASE_DRIVER and LAJSTROM_DATABASE_DSN override the scalar keys of the same name.
-# Secrets never go into this file: name the environment variable that holds them (*Env keys).
+# Lajstrom configuration for local development: SQLite, and the two registries of the dev stack
+# (make dev-up, docs/dev-stack.md). Every key is listed; docs/configuration.md describes them.
+# Environment variables LAJSTROM_SERVER_LISTEN, LAJSTROM_SERVER_EXTERNAL_URL, LAJSTROM_LOG_LEVEL,
+# LAJSTROM_LOG_FORMAT, LAJSTROM_DATABASE_DRIVER and LAJSTROM_DATABASE_DSN override the scalar keys
+# of the same name. Secrets never go into this file: name the environment variable that holds
+# them (*Env keys).
+#
+# The index stays SQLite so that make run works without Docker. The Postgres of the dev stack is
+# one line away:
+#
+#   LAJSTROM_DATABASE_DRIVER=postgres LAJSTROM_DATABASE_DSN='postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable' make run
+#
+# make run prefers deploy/compose/lajstrom.yaml, your edited copy of this file (not committed).
 
 server:
   listen: ":8080"                     # host:port to listen on
@@ -28,6 +36,16 @@ registries:
     timeout: 30s                      # one request up to its response headers; a blob streams as long as it takes
     retries: 3                        # retries of a failed request (429, 5xx, timeouts); negative: none
     capabilities: {}                  # override what probing finds, e.g. {catalog: false, deleteManifest: false}
+  - name: second                      # distribution from the dev stack, for repos created with --registry second
+    type: generic
+    url: "http://localhost:5001"      # no referrers API: Lajstrom lists referrers through the sha256-<digest> tag schema
+    prefix: ""
+    auth:
+      username: ""                    # empty: the dev distribution allows anonymous push and pull
+      passwordEnv: ""
+    timeout: 30s
+    retries: 3
+    capabilities: {}
 
 ingest:
   claimTTL: 10m                       # a publish's claim on a tag older than this is stale and taken over

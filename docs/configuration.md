@@ -9,9 +9,12 @@ LAJSTROM_CONFIG=/etc/lajstrom/lajstrom.yaml lajstrom serve
 ```
 
 `--config` defaults to `lajstrom.yaml` in the current directory, or to `$LAJSTROM_CONFIG` when
-that is set. A commented example that works with the dev stack is
-[deploy/compose/lajstrom.example.yaml](../deploy/compose/lajstrom.example.yaml); `make run` uses
-it when `deploy/compose/lajstrom.yaml` does not exist.
+that is set. A commented example that works with the [dev stack](dev-stack.md) is
+[deploy/compose/lajstrom.example.yaml](../deploy/compose/lajstrom.example.yaml): SQLite, Zot as
+the registry `local`, distribution as `second`; `make run` uses it when
+`deploy/compose/lajstrom.yaml` does not exist. With `LAJSTROM_DATABASE_DRIVER=postgres` and
+`LAJSTROM_DATABASE_DSN='postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable'`
+it uses the Postgres of the stack instead.
 
 ## How the configuration is built
 

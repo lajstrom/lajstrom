@@ -3,3 +3,6 @@ dist/
 .DS_Store
 /lajstrom
 /lajstrom.db*
+# Local copies of deploy/compose/.env.example and lajstrom.example.yaml (docs/dev-stack.md).
+/deploy/compose/.env
+/deploy/compose/lajstrom.yaml
