@@ -130,6 +130,10 @@ test/e2e/raw.sh http://localhost:8080 scratch          # with make run in anothe
 The integration tests work in repositories with a random name and the Postgres tests in a schema
 of their own, so they can run again and side by side without a reset.
 
+CI runs the same three images, on the same ports, as service containers of the `integration`
+job ([CONTRIBUTING.md](../CONTRIBUTING.md#ci-overview)); Zot there runs on the configuration built
+into its image, since a service container cannot mount `config.json` from the checkout.
+
 ## Docker on macOS and Linux
 
 - **OrbStack**: the daemon may be asleep; `orb start` wakes it (`docker info` fails until then).
@@ -141,5 +145,6 @@ of their own, so they can run again and side by side without a reset.
 
 Every image tag is a multi-architecture index that serves `linux/amd64` and `linux/arm64`, so
 Intel and Apple silicon machines and the CI runners get the same versions. The digest of each
-index is in a comment in `compose.yaml`; when you bump a tag, update the digest, re-run the
-integration tests against the new registry and update [registries/](registries/README.md).
+index is in a comment in `compose.yaml`; when you bump a tag, update the digest and the same
+service of the `integration` job in `.github/workflows/ci.yml`, re-run the integration tests
+against the new registry and update [registries/](registries/README.md).

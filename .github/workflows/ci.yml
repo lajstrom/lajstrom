@@ -34,6 +34,166 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+  changes:
+    name: changes
+    # Decides whether the integration job runs. A paths filter under on: would gate the whole
+    # workflow, so the filter is a job: on a pull request, any changed path that matches below;
+    # on a push to main, always.
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Paths that need the integration tests
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" != "pull_request" ]; then
+            echo "${GITHUB_EVENT_NAME}: the integration tests run"
+            echo "code=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          git diff --name-only "${BASE_SHA}...HEAD" > "${RUNNER_TEMP}/changed.txt"
+          # Go code, the module files, the dev stack, the workflows, the Makefile, the
+          # migrations and the test scripts. Matching paths are printed.
+          if grep -E '\.go$|^go\.(mod|sum)$|^deploy/|^\.github/workflows/|^Makefile$|^internal/index/migrations/|^test/' "${RUNNER_TEMP}/changed.txt"; then
+            echo "code=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "no path that needs the integration tests changed: they are skipped"
+            echo "code=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+  integration:
+    # One cell per registry. The store suite runs on SQLite and on Postgres in both: the Postgres
+    # tests run whenever LAJSTROM_TEST_POSTGRES_DSN is set. Branch protection requires
+    # integration-result, not these cells (see there).
+    name: integration (${{ matrix.registry }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        registry: [zot, distribution]
+        include:
+          - registry: zot
+            address: localhost:5000
+          - registry: distribution
+            address: localhost:5001
+    # The images of deploy/compose/compose.yaml (#15), with the digests of their indexes: change
+    # a tag here and there together. Every cell runs all three; the matrix picks the registry
+    # the tests talk to.
+    services:
+      zot:
+        # Zot v2.1.23, the minimal build.
+        # sha256:59cb5740832970818903c5ce104425762664c7880835ee566506aad397cd3458
+        # The image's own configuration (HTTP on 5000, no auth): a service cannot mount
+        # deploy/compose/zot/config.json from the checkout. No health check: --health-cmd always
+        # runs through /bin/sh, the image has no shell, and the container would turn unhealthy.
+        # The first step waits for /v2/ instead.
+        image: ghcr.io/project-zot/zot-minimal:v2.1.23
+        ports:
+          - "5000:5000"
+      distribution:
+        # distribution 3.1.2.
+        # sha256:38907510915c3f1604c7e83d6ab602ab3020d092f73bdaed8696773693ff768c
+        image: registry:3.1.2
+        env:
+          REGISTRY_STORAGE_DELETE_ENABLED: "true"
+          REGISTRY_LOG_LEVEL: info
+        ports:
+          - "5001:5000"
+        options: >-
+          --health-cmd "wget -qO- http://127.0.0.1:5000/v2/"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+      postgres:
+        # PostgreSQL 17.11 on Alpine.
+        # sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+        image: postgres:17.11-alpine
+        env:
+          POSTGRES_DB: lajstrom
+          POSTGRES_USER: lajstrom
+          POSTGRES_PASSWORD: lajstrom
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U lajstrom -d lajstrom"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      LAJSTROM_TEST_REGISTRY: ${{ matrix.address }}
+      LAJSTROM_TEST_POSTGRES_DSN: "postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable"
+    steps:
+      - name: Wait for the services
+        # The steps start once distribution and Postgres pass their health checks; Zot has none.
+        # One probe per service, so that a failure names it.
+        timeout-minutes: 2
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          ready() { # name, then a command that succeeds once the service answers
+            local name=$1
+            shift
+            for _ in $(seq 1 30); do
+              if "$@" > /dev/null 2>&1; then
+                echo "ready: ${name}"
+                return 0
+              fi
+              sleep 1
+            done
+            echo "::error::${name} did not answer within 30 s: $*"
+            return 1
+          }
+          ready zot curl -fsS --max-time 2 http://localhost:5000/v2/
+          ready distribution curl -fsS --max-time 2 http://localhost:5001/v2/
+          ready postgres docker exec "${POSTGRES_CONTAINER}" pg_isready -h 127.0.0.1 -U lajstrom -d lajstrom
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # setup-go caches the module and build caches, keyed by go.sum (cache: true is its
+      # default); nothing else is cached.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - name: Integration tests
+        run: go test -race -tags integration ./...
+
+  integration-result:
+    name: integration-result
+    # The required check for the integration tests: green when both cells passed, or when the
+    # changes job found no path that needs them. A matrix job skipped by its if reports a single
+    # check with the unexpanded name, not integration (zot) and integration (distribution), so
+    # the cells cannot be required themselves: a doc-only pull request would wait for them.
+    needs: [changes, integration]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Result of the integration cells
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          INTEGRATION: ${{ needs.integration.result }}
+        run: |
+          echo "changes: ${CHANGES}, code: ${CODE:-unset}, integration: ${INTEGRATION}"
+          case "${CHANGES}/${CODE}/${INTEGRATION}" in
+            success/true/success) echo "the integration tests passed on both registries" ;;
+            success/false/skipped) echo "no path that needs the integration tests changed" ;;
+            *)
+              echo "::error::the integration tests did not pass (changes: ${CHANGES}, integration: ${INTEGRATION})"
+              exit 1
+              ;;
+          esac
+
   lint:
     name: lint
     runs-on: ubuntu-latest
