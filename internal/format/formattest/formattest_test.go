@@ -46,6 +46,24 @@ func TestFake(t *testing.T) {
 	}
 }
 
+func TestFakeHooks(t *testing.T) {
+	ctx := context.Background()
+	f := Fake{
+		ValidateFunc: func(context.Context, index.Repo, ocispec.Manifest, format.BlobFetcher) (*format.Entry, error) {
+			return &format.Entry{Name: "validated"}, nil
+		},
+		BuildFunc: func(_ context.Context, _ index.Repo, up format.Upload) (*format.Built, error) {
+			return &format.Built{Tag: up.Params["tag"]}, nil
+		},
+	}
+	if e, err := f.Validate(ctx, index.Repo{}, ocispec.Manifest{}, nil); err != nil || e.Name != "validated" {
+		t.Errorf("Validate with ValidateFunc = %v, %v", e, err)
+	}
+	if b, err := f.Build(ctx, index.Repo{}, format.Upload{Params: map[string]string{"tag": "1"}}); err != nil || b.Tag != "1" {
+		t.Errorf("Build with BuildFunc = %v, %v", b, err)
+	}
+}
+
 func TestFakeRoutes(t *testing.T) {
 	idx := &Index{Repos: []index.Repo{{ID: 1, Format: "fake", Name: "scratch"}}}
 	mux := http.NewServeMux()

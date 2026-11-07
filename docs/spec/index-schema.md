@@ -7,7 +7,8 @@
   [ADR 0006](../adr/0006-derived-index-and-control-plane.md).
 
 Two kinds of tables. **Derived** tables are rebuilt by `lajstrom reindex` from the registry and
-may be dropped at any time. **Control plane** tables are small, authoritative and backed up.
+may be dropped at any time. **Control plane** tables are small, authoritative and backed up. One
+**coordination** table, `tag_claims`, is neither: its rows live for one publish.
 SQLite and Postgres share one logical schema; dialect differences are confined to the migration
 files (`internal/index/migrations/{sqlite,postgres}/NNNN_*.sql`).
 
@@ -29,6 +30,23 @@ stored as RFC 3339 text in SQLite, `timestamptz` in Postgres; `json` = `text` in
 | `audit` | `id`, `at` ts, `principal` text, `action` text (`push`, `delete`, `repo.create`, `token.create`, …), `repo` text, `subject` text (package/version or user), `digest` text null, `ip` text, `details` json | append-only; retention by age later |
 | `schema_migrations` | `version` int, `applied_at` ts | |
 
+## Coordination
+
+Neither control plane nor derived: a row lives for one publish, so it is neither backed up nor
+rebuilt.
+
+| Table | Columns | Notes |
+| --- | --- | --- |
+| `tag_claims` | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `package` text (the format's spelling, `lajstrom.name`), `tag` text, `digest` text (manifest digest being published), `principal` text, `claimed_at` ts | unique `(repo_id, package, tag)`; written by ingest only |
+
+A `versions` row exists only after the registry accepted the manifest; the claim in
+`tag_claims` is the lock that serialises writers of one tag across replicas, and a claim older
+than `ingest.claimTTL` is stale: ingest takes it over, `reindex` and the reconcile loop delete
+it. Ingest inserts the claim first in its transaction and reads the version of the tag after,
+so a concurrent writer of the tag waits for the first one's commit and then sees its outcome.
+A claim with the same digest is shared (two replicas publishing the same bytes); a fresh claim
+with another digest is a `409`. `ResetDerived` does not touch claims.
+
 ## Derived (rebuilt by reindex)
 
 | Table | Columns | Notes |
@@ -44,20 +62,21 @@ stored as RFC 3339 text in SQLite, `timestamptz` in Postgres; `json` = `text` in
 
 The migrations are `internal/index/migrations/{sqlite,postgres}/NNNN_<name>.sql`, embedded in
 the binary; both directories have the same versions (a test asserts it), `0001_init.sql` creates
-every table above. The runner, `index.ApplyMigrations`, applies each pending file in a
-transaction of its own that also records the version in `schema_migrations` (created when
-missing). The transaction first takes the migration lock, `pg_advisory_xact_lock` on Postgres
-and `BEGIN IMMEDIATE` on SQLite, and reads `schema_migrations` under it, so replicas that start
-at once apply each version exactly once. `lajstrom migrate` and `lajstrom serve` (on start) run
-it.
+the control-plane and derived tables, `0002_tag_claims.sql` the coordination table. The runner,
+`index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
+the version in `schema_migrations` (created when missing). The transaction first takes the
+migration lock, `pg_advisory_xact_lock` on Postgres and `BEGIN IMMEDIATE` on SQLite, and reads
+`schema_migrations` under it, so replicas that start at once apply each version exactly once.
+`lajstrom migrate` and `lajstrom serve` (on start) run it.
 
 ## Invariants and rules
 
 - Every row in `packages`, `versions`, `files` corresponds to a manifest that exists in the
   registry with a tag; reindex removes rows whose manifest is gone and adds rows for manifests it
   finds. `index_cache` is dropped entirely at the end of a full reindex.
-- Writes to derived tables happen only in `ingest` (after the registry accepted the manifest),
-  `reindex`, and `delete`. Frontends read.
+- Writes to derived tables happen only in `ingest`, `reindex`, and `delete`. Frontends read.
+  Ingest claims the tag in `tag_claims` before the registry write, and writes the derived rows
+  after the registry accepted the manifest, in one transaction that also releases the claim.
 - Unique constraints implement the append-only tag rule: an insert that violates
   `(package_id, tag)` with a different digest is a `409`.
 - A foreign manifest (no `lajstrom.schema` annotation) under a managed path is recorded in

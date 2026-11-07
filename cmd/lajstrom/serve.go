@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	_ "github.com/lajstrom/lajstrom/internal/provider/generic" // registers registries[].type generic
 	"github.com/lajstrom/lajstrom/internal/server"
@@ -29,7 +30,8 @@ const registryProbeTimeout = 10 * time.Second
 //
 // Migrating on start takes the same lock as lajstrom migrate, so replicas that start together
 // apply each migration once. The index is Deps.Index of the format plugins and /-/readyz pings
-// it; the registries are Deps.Providers.
+// it; the registries are Deps.Providers; the ingest pipeline over both, with ingest.claimTTL,
+// is Deps.Ingest.
 func newServeCmd(a *app) *cobra.Command {
 	return &cobra.Command{
 		Use:         "serve",
@@ -66,6 +68,7 @@ func newServeCmd(a *app) *cobra.Command {
 				return err
 			}
 			probeRegistries(ctx, providers, a.log)
+			pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL})
 
 			srv, err := server.New(server.Options{
 				Listen:          c.Server.Listen,
@@ -73,7 +76,7 @@ func newServeCmd(a *app) *cobra.Command {
 				ShutdownTimeout: c.Server.ShutdownTimeout,
 				Log:             a.log,
 				Plugins:         format.All(),
-				Deps:            format.Deps{Index: st, Providers: providers},
+				Deps:            format.Deps{Index: st, Providers: providers, Ingest: pipe},
 				Ready:           ready(a.log, c.Database.Driver, st),
 			})
 			if err != nil {

@@ -132,8 +132,9 @@ sequenceDiagram
   C->>F: PUT manifest, tag 1_3a1.18.0-6ubuntu14.4__amd64
   F->>P: validate layers, parse control
   P-->>F: ok, index entry
+  F->>D: claim tag
   F->>R: PUT manifest + tag
-  F->>D: upsert version, files; invalidate index_cache
+  F->>D: confirm (versions, files; invalidate index_cache; release claim)
   F-->>C: 201 Created
 ```
 

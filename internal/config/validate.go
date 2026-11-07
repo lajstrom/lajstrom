@@ -23,6 +23,9 @@ func (c *Config) Validate() error {
 	c.Server.validate(&p)
 	c.Log.validate(&p)
 	c.Database.validate(&p)
+	if c.Ingest.ClaimTTL < 0 {
+		p.add("ingest.claimTTL", "must not be negative")
+	}
 	registries := map[string]int{}
 	for i, r := range c.Registries {
 		key := fmt.Sprintf("registries[%d]", i)

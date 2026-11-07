@@ -39,7 +39,7 @@ func TestLoadDefaults(t *testing.T) {
 		file string
 	}{
 		{name: "only server.listen", file: minimal},
-		{name: "explicit null sections", file: minimal + "log:\ndatabase:\nregistries:\nrepos:\n"},
+		{name: "explicit null sections", file: minimal + "log:\ndatabase:\nregistries:\ningest:\nrepos:\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -51,6 +51,7 @@ func TestLoadDefaults(t *testing.T) {
 				Server:   Server{Listen: ":8080", ShutdownTimeout: 30 * time.Second},
 				Log:      Log{Level: "info", Format: "text"},
 				Database: Database{Driver: "sqlite", DSN: "file:lajstrom.db"},
+				Ingest:   Ingest{ClaimTTL: 10 * time.Minute},
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("Load =\n%+v\nwant\n%+v", got, want)
@@ -116,6 +117,7 @@ func TestLoadErrors(t *testing.T) {
 			want: []string{"field password not found"},
 		},
 		{name: "duration without unit", file: minimal[:len(minimal)-1] + "\n  shutdownTimeout: 30\n", want: []string{"line 3", "into time.Duration"}},
+		{name: "negative claim TTL", file: minimal + "ingest: {claimTTL: -1m}\n", want: []string{"ingest.claimTTL: must not be negative"}},
 		{name: "env override is validated", file: minimal, env: map[string]string{"LAJSTROM_DATABASE_DRIVER": "mysql"}, want: []string{`database.driver: "mysql" is not sqlite or postgres`}},
 		{
 			name: "registry limits",

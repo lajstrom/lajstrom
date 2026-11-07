@@ -87,6 +87,20 @@ type Session struct {
 	ExpiresAt time.Time
 }
 
+// TagClaim is a row of tag_claims (coordination, neither control plane nor derived): the lock
+// a publish holds on a tag from before the registry write until its index rows are written.
+// It serialises the writers of one tag across replicas (docs/spec/index-schema.md,
+// Coordination).
+type TagClaim struct {
+	ID        int64
+	RepoID    int64
+	Package   string        // the format's spelling (lajstrom.name)
+	Tag       string        // the OCI tag being published
+	Digest    digest.Digest // manifest digest being published
+	Principal string        // canonical form of the principal that publishes
+	ClaimedAt time.Time
+}
+
 // AuditEvent is a row of audit (control plane, append-only; docs/spec/rbac.md §5).
 type AuditEvent struct {
 	ID        int64
