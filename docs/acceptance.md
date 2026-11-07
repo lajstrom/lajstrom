@@ -124,7 +124,7 @@ Columns: id, what to do, what must happen, issue. Priority is P0 unless the id c
 | R-06 | `curl -r 1000-1999` on a streamed file | 206 with 1000 bytes; the backend received the `Range` | #13 |
 | R-07 | `DELETE /raw/assets/docs/file.txt` as bob (reader), then as alice (writer), then as a maintainer | 403, 403, 204; after it `GET` is 404 and the manifests are gone from the backend when it can delete (else 501 and nothing changes) | #13, #61 |
 | R-08 | `oras pull art.test/raw/assets/docs/file.txt:<tag>` from the backend repository | writes a file named `file.txt` | #13 |
-| R-09 | `PUT /raw/assets/Docs/Readme.MD`, `/raw/assets/docs/readme.md`, `/raw/assets/с пробелом/файл.txt`, a 300-character path | four distinct versions; case preserved; the long path gets a hashed component; listing shows the original paths | #8, #13 |
+| R-09 | `PUT /raw/assets/Docs/Readme.MD`, `/raw/assets/docs/readme.md`, `/raw/assets/с пробелом/файл.txt`, a 300-character path | `docs/readme.md` is 409 naming `Docs/Readme.MD` (a raw path is unique without regard to case: the first spelling wins); the other three are distinct versions; case preserved; the long path gets a hashed component; listing shows the original paths | #8, #13, #97 |
 | R-10 | `PUT` an empty file | 201; `GET` returns 0 bytes with `Content-Length: 0` | #13 |
 
 ### 3.3 pypi

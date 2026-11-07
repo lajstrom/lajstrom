@@ -39,6 +39,13 @@ func (s *faultyStore) GetPackage(ctx context.Context, repoID int64, name string)
 	return s.Store.GetPackage(ctx, repoID, name)
 }
 
+func (s *faultyStore) GetPackageByNameOCI(ctx context.Context, repoID int64, nameOCI string) (*index.Package, error) {
+	if s.fail["GetPackageByNameOCI"] {
+		return nil, errBoom
+	}
+	return s.Store.GetPackageByNameOCI(ctx, repoID, nameOCI)
+}
+
 func (s *faultyStore) ListVersions(ctx context.Context, packageID int64) ([]index.Version, error) {
 	if s.fail["ListVersions"] {
 		return nil, errBoom
@@ -161,6 +168,7 @@ func TestFailures(t *testing.T) {
 		{"DELETE manifest", http.MethodDelete, target(fileTxt), "Delete", 500, "raw: request failed"},
 		{"DELETE rows", http.MethodDelete, target(fileTxt), "Tx", 500, "after the registry deleted"},
 		{"PUT read back", http.MethodPut, target("new.txt"), "GetVersionByDigest", 201, "published version not read back"},
+		{"PUT spelling", http.MethodPut, target("new.txt"), "GetPackageByNameOCI", 500, "raw: request failed"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

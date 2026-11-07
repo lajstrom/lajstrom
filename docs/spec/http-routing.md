@@ -81,7 +81,7 @@ Writes require `write` on `<format>/<repo>`.
 | --- | --- |
 | `GET /raw/<repo>/<path…>` | newest version of the file at `<path>`; `307` to the blob when the provider supports redirect, else stream. `?digest=sha256:…` pins a version. `Content-Type` from the metadata layer or sniffed. |
 | `HEAD` | same, no body |
-| `PUT /raw/<repo>/<path…>` | upload one file (body). Idempotent for identical bytes. Creates a new version (tag) for different bytes; the path now resolves to it. `201` with `Location` and `Docker-Content-Digest`. |
+| `PUT /raw/<repo>/<path…>` | upload one file (body). Idempotent for identical bytes. Creates a new version (tag) for different bytes; the path now resolves to it. `201` with `Location` and `Docker-Content-Digest`. `409` when the path exists in another spelling (the message names it). |
 | `DELETE /raw/<repo>/<path…>` | requires `delete`; removes all versions of the path (after the MVP: one version) |
 | `GET /raw/<repo>/` and any directory prefix with trailing `/` | JSON listing (`{"entries":[{"path","size","digest","created"}]}`), recursive: one entry per version of every path below the prefix, at any depth, sorted by path and then `created`; `digest` is the manifest digest, the value `?digest=` takes. HTML after the MVP |
 

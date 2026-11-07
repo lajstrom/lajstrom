@@ -83,13 +83,14 @@ type putResponse struct {
 // through deps.Ingest, and the answer is 201 with Location (the request path),
 // Docker-Content-Digest (the manifest digest) and a JSON body. The same bytes again are the
 // idempotent repeat of ingest, answered alike with the digest of the manifest stored first. The
-// spool is removed when the handler returns, whatever the outcome.
+// spool is removed when the handler returns, whatever the outcome. A path that another spelling
+// holds is 409 before the body is read (checkSpelling).
 func (h *handlers) put(w http.ResponseWriter, r *http.Request) {
 	repo, p, ok := h.start(w, r, auth.ActionWrite)
 	if !ok {
 		return
 	}
-	if err := checkPath(p); err != nil {
+	if err := checkSpelling(r.Context(), h.deps.Index, repo, p); err != nil {
 		h.fail(w, r, err)
 		return
 	}
@@ -134,6 +135,34 @@ func (h *handlers) put(w http.ResponseWriter, r *http.Request) {
 	hdr.Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// checkSpelling applies the path rules to p (repoPath) and the rule that a raw path is unique
+// without regard to case (docs/spec/manifest-profile.md §4.1, raw): OCI repository names are
+// lowercase, so Docs/Readme.MD and docs/readme.md are one repository, and the first spelling
+// holds it. A package of the repo with p's package path and another name is index.ErrConflict
+// naming it (409).
+//
+// The check runs here and not in Build, whose signature (format.Plugin) has no index, and before
+// the spool, so that a refused upload reads no byte of the body. Two spellings uploaded at once
+// both pass it; the unique index on packages (repo_id, name_oci) settles that race in the
+// pipeline, whose UpsertPackage answers the loser ErrConflict after its manifest is in the
+// registry, for reindex (#29) to report.
+func checkSpelling(ctx context.Context, st index.Reader, repo index.Repo, p string) error {
+	pkgPath, _, err := repoPath(repo, p)
+	if err != nil {
+		return err
+	}
+	pkg, err := st.GetPackageByNameOCI(ctx, repo.ID, pkgPath)
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		return nil
+	case err != nil:
+		return fmt.Errorf("raw: package path %q: %w", pkgPath, err)
+	case pkg.Name != p:
+		return fmt.Errorf("%w: path %q exists as %q; a raw path is unique without regard to case", index.ErrConflict, p, pkg.Name)
+	}
+	return nil
 }
 
 // limitBody returns the request body bounded by the repo policy's maxFileSize with

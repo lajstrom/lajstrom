@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -361,22 +362,28 @@ func TestBadPaths(t *testing.T) {
 	}
 }
 
-// TestR09 is R-09: four paths that differ in case, in script and in length are four versions
-// of four packages; the long one has a hashed component in the registry; the listing shows the
+// TestR09 is R-09: after Docs/Readme.MD, docs/readme.md is 409 naming it (a raw path is unique
+// without regard to case); paths that differ in script and in length are versions of packages
+// of their own, the long one with a hashed component in the registry; the listing shows the
 // original paths.
 func TestR09(t *testing.T) {
 	e := newEnv(t, envOptions{})
 	long := "long/" + strings.Repeat("x", 300) + ".txt"
-	paths := []string{"Docs/Readme.MD", "docs/readme.md", "с пробелом/файл.txt", long}
-	for i, p := range paths {
-		e.put(p, "content "+strconv.Itoa(i))
+	e.put("Docs/Readme.MD", "content 0")
+	rr := e.do(http.MethodPut, target("docs/readme.md"), strings.NewReader("content 1"))
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), `exists as "Docs/Readme.MD"`) {
+		t.Errorf("PUT docs/readme.md after Docs/Readme.MD = %d %q, want 409 naming Docs/Readme.MD", rr.Code, rr.Body)
 	}
-	rr := e.do(http.MethodGet, "/raw/scratch/", nil)
+	paths := []string{"Docs/Readme.MD", "с пробелом/файл.txt", long}
+	for i, p := range paths[1:] {
+		e.put(p, "content "+strconv.Itoa(i+1))
+	}
+	rr = e.do(http.MethodGet, "/raw/scratch/", nil)
 	var got []string
 	for _, en := range listingOf(t, rr.Body.Bytes()).Entries {
 		got = append(got, en.Path)
 	}
-	want := []string{"Docs/Readme.MD", "docs/readme.md", long, "с пробелом/файл.txt"} // byte order
+	want := []string{"Docs/Readme.MD", long, "с пробелом/файл.txt"} // byte order
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("listing paths = %q, want %q", got, want)
 	}
@@ -391,6 +398,56 @@ func TestR09(t *testing.T) {
 		if rr := e.do(http.MethodGet, target(p), nil); rr.Body.String() != "content "+strconv.Itoa(i) {
 			t.Errorf("GET %s = %d %q", p, rr.Code, rr.Body)
 		}
+	}
+}
+
+// readSpy is a request body that fails every read and records that there was one.
+type readSpy struct{ read atomic.Bool }
+
+func (s *readSpy) Read([]byte) (int, error) {
+	s.read.Store(true)
+	return 0, errBoom
+}
+
+// TestFirstSpellingWins checks that a raw path is unique without regard to case: after
+// Docs/Readme.MD, a PUT of another spelling is 409 naming Docs/Readme.MD, with other bytes and
+// with the same bytes, and reads no byte of the body (the spool is not written); nothing is
+// pushed and the listing shows one path. The first spelling keeps working: the same bytes are
+// the repeat, new bytes a new version.
+func TestFirstSpellingWins(t *testing.T) {
+	const first = "Docs/Readme.MD"
+	e := newEnv(t, envOptions{})
+	resp := e.put(first, "first")
+	for _, tt := range []struct {
+		path string
+		body io.Reader
+	}{
+		{"docs/readme.md", strings.NewReader("other")},
+		{"docs/readme.md", strings.NewReader("first")},
+		{"DOCS/README.MD", strings.NewReader("first")},
+		{"docs/Readme.MD", &readSpy{}},
+	} {
+		rr := e.do(http.MethodPut, target(tt.path), tt.body)
+		if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), `path "`+tt.path+`" exists as "`+first+`"`) {
+			t.Errorf("PUT %s = %d %q, want 409 naming %s", tt.path, rr.Code, rr.Body, first)
+		}
+		if spy, ok := tt.body.(*readSpy); ok && spy.read.Load() {
+			t.Errorf("PUT %s read the body of a refused upload", tt.path)
+		}
+	}
+	if n := len(e.prov.PushReferences()); n != 1 {
+		t.Errorf("%d manifest pushes, want the first only", n)
+	}
+	entries := listingOf(t, e.do(http.MethodGet, "/raw/scratch/", nil).Body.Bytes()).Entries
+	if len(entries) != 1 || entries[0].Path != first {
+		t.Errorf("listing = %+v, want %s once", entries, first)
+	}
+
+	if again := e.put(first, "first"); again.Digest != resp.Digest || len(e.versions(first)) != 1 {
+		t.Errorf("the same bytes at %s = %+v: %d versions, want the repeat of %s", first, again, len(e.versions(first)), resp.Digest)
+	}
+	if next := e.put(first, "second"); next.Digest == resp.Digest || len(e.versions(first)) != 2 {
+		t.Errorf("new bytes at %s = %+v: %d versions, want a second version", first, next, len(e.versions(first)))
 	}
 }
 

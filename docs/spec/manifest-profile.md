@@ -141,7 +141,7 @@ The OCI repository for a package is
 
 | Format | Package path |
 | --- | --- |
-| raw | each path component escaped with `EscapeComponent` (section 4.3), joined with `/`: `Docs/Readme.MD` → `docs/readme.md` (the original case is in `lajstrom.raw.path`). A component whose escaped form is longer than 64 bytes is replaced by `h0__` + the first 32 hex characters of `sha256(component)`, as in section 4.3 step 3: registries limit the OCI repository name to 255 characters, and `reindex` reads `lajstrom.raw.path`, so nothing decodes the path. A path whose OCI repository name is still longer than 255 bytes is refused with `400`. |
+| raw | each path component escaped with `EscapeComponent` (section 4.3), joined with `/`: `Docs/Readme.MD` → `docs/readme.md` (the original case is in `lajstrom.raw.path`). A component whose escaped form is longer than 64 bytes is replaced by `h0__` + the first 32 hex characters of `sha256(component)`, as in section 4.3 step 3: registries limit the OCI repository name to 255 characters, and `reindex` reads `lajstrom.raw.path`, so nothing decodes the path. A path whose OCI repository name is still longer than 255 bytes is refused with `400`. A raw path is unique without regard to case, since the OCI repository name is lowercase: the first spelling wins, and a path whose package path is taken by another spelling is a `409`. |
 | pypi | `EscapeComponent(normalized name)`: `Requests` → `requests` |
 | deb | `EscapeComponent(package)`: `libstdc++6` → `libstdc_2b_2b6` |
 | maven | `EscapeComponent(groupId lowercased)/EscapeComponent(artifactId)`: `com.example:Lib-Core` → `com.example/lib-core` |

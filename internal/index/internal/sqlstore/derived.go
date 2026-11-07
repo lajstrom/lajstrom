@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 	"unicode/utf8"
 
@@ -34,21 +35,37 @@ func (c *conn) ListPackages(ctx context.Context, repoID int64, prefix string) ([
 		repoID, utf8.RuneCountInString(prefix), prefix)
 }
 
+// GetPackageByNameOCI returns the package of a repo whose escaped package path is nameOCI; the
+// unique index packages_repo_name_oci allows one.
+func (c *conn) GetPackageByNameOCI(ctx context.Context, repoID int64, nameOCI string) (*index.Package, error) {
+	return getOne(ctx, c, fmt.Sprintf("packages with name_oci %q in repo %d", nameOCI, repoID), packageDests,
+		"SELECT "+packageCols+" FROM packages WHERE repo_id = ? AND name_oci = ?", repoID, nameOCI)
+}
+
 // UpsertPackage inserts p or, when (RepoID, Name) exists, fills p from the existing row. Of two
-// writers that insert the same package at once, the second finds the first's row.
+// writers that insert the same package at once, the second finds the first's row. A NameOCI
+// that another name holds is index.ErrConflict naming both (nameOCIConflict), also when that
+// name was inserted at the same time.
+//
+// ON CONFLICT has no target, so both unique indexes are arbiters: with the target (repo_id,
+// name), Postgres raises the violation of (repo_id, name_oci) when two writers insert one new
+// package at once, and the second never gets to find the first's row.
 func (c *conn) UpsertPackage(ctx context.Context, p *index.Package) error {
 	return c.withTx(ctx, func(c *conn) error {
 		existing, err := c.GetPackage(ctx, p.RepoID, p.Name)
 		if errors.Is(err, index.ErrNotFound) {
 			inserted, err := c.insertID(ctx, fmt.Sprintf("packages %q in repo %d", p.Name, p.RepoID),
 				"INSERT INTO packages (repo_id, name, name_oci, created_at) VALUES (?, ?, ?, ?)"+
-					" ON CONFLICT (repo_id, name) DO NOTHING RETURNING id",
+					" ON CONFLICT DO NOTHING RETURNING id",
 				[]any{p.RepoID, p.Name, p.NameOCI, c.d.EncodeTime(stamp(&p.CreatedAt, now()))},
 				&p.ID)
 			if inserted || err != nil {
 				return err
 			}
 			existing, err = c.GetPackage(ctx, p.RepoID, p.Name) // inserted concurrently
+			if errors.Is(err, index.ErrNotFound) {
+				return c.nameOCIConflict(ctx, p)
+			}
 			if err != nil {
 				return err
 			}
@@ -58,6 +75,19 @@ func (c *conn) UpsertPackage(ctx context.Context, p *index.Package) error {
 		*p = *existing
 		return nil
 	})
+}
+
+// nameOCIConflict is the error of p, whose insert found p.NameOCI held by another name: OCI
+// repository names are lowercase, so two spellings of one raw path are one repository.
+func (c *conn) nameOCIConflict(ctx context.Context, p *index.Package) error {
+	holder := "another package" // deleted again since the insert
+	if h, err := c.GetPackageByNameOCI(ctx, p.RepoID, p.NameOCI); err == nil {
+		holder = strconv.Quote(h.Name)
+	} else if !errors.Is(err, index.ErrNotFound) {
+		return err
+	}
+	return fmt.Errorf("%w: packages %q in repo %d: the package path %q belongs to %s",
+		index.ErrConflict, p.Name, p.RepoID, p.NameOCI, holder)
 }
 
 // DeletePackage removes the package; the foreign keys cascade to its versions and files.

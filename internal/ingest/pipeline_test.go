@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -331,8 +332,9 @@ func TestIngestPushFails(t *testing.T) {
 }
 
 // TestIngestIndexFailsAfterPush checks a confirm that fails after the registry accepted the
-// manifest: the error is returned, the manifest stays in the registry for reindex, and the
-// claim is released.
+// manifest: the error is returned (a 500, or ErrConflict when the index refused a conflict: a
+// tag, or the package path of another spelling), the manifest stays in the registry for
+// reindex, and the claim is released.
 func TestIngestIndexFailsAfterPush(t *testing.T) {
 	t.Run("repo deleted meanwhile", func(t *testing.T) {
 		e := newEnv(t)
@@ -360,6 +362,23 @@ func TestIngestIndexFailsAfterPush(t *testing.T) {
 		}}))
 		_, err := e.ingest(t, built, raw, pkgPath)
 		wantTagConflict(t, err, other)
+		if got := e.tagged(t, built.RepoPath, "1.0.0"); got != digest.FromBytes(raw) {
+			t.Errorf("the registry has %q under the tag, want the manifest %s", got, digest.FromBytes(raw))
+		}
+		e.noClaim(t, readme, "1.0.0")
+	})
+	t.Run("another spelling written meanwhile", func(t *testing.T) {
+		e := newEnv(t)
+		built, raw, pkgPath := e.prepare(t, upload(readme, "1.0.0", file{readme, "hello"}))
+		e.pipe = ingest.New(e.options(hooked{Fake: e.prov, afterPush: func() {
+			p := index.Package{RepoID: e.repo.ID, Name: strings.ToLower(readme), NameOCI: pkgPath}
+			must(t, e.st.UpsertPackage(context.Background(), &p))
+		}}))
+		_, err := e.ingest(t, built, raw, pkgPath)
+		var tc *index.TagConflictError
+		if !errors.Is(err, ingest.ErrConflict) || errors.As(err, &tc) || !strings.Contains(err.Error(), `belongs to "docs/readme.md"`) {
+			t.Errorf("Ingest: %v, want ErrConflict naming the other spelling", err)
+		}
 		if got := e.tagged(t, built.RepoPath, "1.0.0"); got != digest.FromBytes(raw) {
 			t.Errorf("the registry has %q under the tag, want the manifest %s", got, digest.FromBytes(raw))
 		}

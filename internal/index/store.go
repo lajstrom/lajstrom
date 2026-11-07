@@ -81,6 +81,9 @@ type Reader interface {
 
 	// GetPackage returns the package with the given name (format spelling) in a repo.
 	GetPackage(ctx context.Context, repoID int64, name string) (*Package, error)
+	// GetPackageByNameOCI returns the package of a repo whose escaped package path (NameOCI)
+	// is nameOCI; a repo has at most one.
+	GetPackageByNameOCI(ctx context.Context, repoID int64, nameOCI string) (*Package, error)
 	// ListPackages returns the packages of a repo whose name starts with prefix ("" = all),
 	// ordered by name.
 	ListPackages(ctx context.Context, repoID int64, prefix string) ([]Package, error)
@@ -180,6 +183,8 @@ type Writer interface {
 	// Derived.
 
 	// UpsertPackage inserts p or, when (RepoID, Name) exists, fills p from the existing row.
+	// NameOCI is unique within a repo too: when another name holds it, nothing changes and the
+	// error wraps ErrConflict and names both (two spellings of one raw path, #97).
 	UpsertPackage(ctx context.Context, p *Package) error
 	// UpsertVersion inserts v or, when (PackageID, Version, Variant) exists with the same
 	// digest, refreshes it in place (idempotent re-ingest). When (PackageID, Tag) exists with

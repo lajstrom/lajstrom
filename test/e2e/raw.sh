@@ -149,12 +149,19 @@ expect "R-04 digests of $file" "$(printf '%s\n' "$d1" "$d2")" \
 	"$(jq -r --arg p "$file" '.entries[] | select(.path == $p) | .digest' "$work/body")"
 ok "R-04 the listings of / and $run/docs/ show both versions, sorted, with the manifest digests"
 
-# R-09: four paths that differ in case, script and length are four versions.
+# R-09: a raw path is unique without regard to case, so after Docs/Readme.MD the path
+# docs/readme.md is 409 naming it; paths that differ in script and length are versions of their
+# own.
 long="$run/long/$(printf 'x%.0s' $(seq 1 300)).txt"
-r09=("$run/Docs/Readme.MD" "$run/docs/readme.md" "$run/с пробелом/файл.txt" "$long")
+r09=("$run/Docs/Readme.MD" "$run/с пробелом/файл.txt" "$long")
+twin="$run/docs/readme.md"
 for i in "${!r09[@]}"; do
 	printf 'R-09 file %d\n' "$i" >"$work/r09-$i"
 	put "$work/r09-$i" "${r09[$i]}"
+	[ "$i" = 0 ] || continue
+	req PUT "$(urlpath "$twin")" -T "$work/r09-$i"
+	expect "R-09 PUT $twin status" 409 "$status"
+	grep -qF "exists as \"${r09[0]}\"" "$work/body" || fail "R-09 PUT $twin: the 409 does not name ${r09[0]}: $(cat "$work/body")"
 done
 for i in "${!r09[@]}"; do
 	get "${r09[$i]}"
@@ -164,7 +171,8 @@ listing "$run/"
 for p in "${r09[@]}"; do
 	expect "R-09 '$p' in the listing" 1 "$(count "$p")"
 done
-ok "R-09 four paths, four versions; the listing shows the original paths"
+expect "R-09 '$twin' in the listing" 0 "$(count "$twin")"
+ok "R-09 $twin after ${r09[0]}: 409 naming it; three paths, three versions; the listing shows the original paths"
 
 # R-10: an empty file.
 : >"$work/empty"
