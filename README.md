@@ -22,7 +22,7 @@ https://lajstrom.dev
 
 ## Documentation
 
-| | |
+| Page | What it is for |
 | --- | --- |
 | [Start here](docs/onboarding.md) | one hour from zero to a claimed issue |
 | [Quick start: raw](docs/quickstart/raw.md) | `curl -T` a file in, `curl` it out, see the manifest in the registry |
