@@ -51,7 +51,7 @@ with another digest is a `409`. `ResetDerived` does not touch claims.
 
 | Table | Columns | Notes |
 | --- | --- | --- |
-| `packages` | `id`, `repo_id` → repos, `name` text (format spelling), `name_oci` text (escaped path), `created_at` ts | unique `(repo_id, name)` |
+| `packages` | `id`, `repo_id` → repos, `name` text (format spelling), `name_oci` text (escaped path), `created_at` ts | unique `(repo_id, name)`; unique `(repo_id, name_oci)`: one spelling per OCI repository |
 | `versions` | `id`, `package_id` → packages, `version` text, `variant` text (`''` when none), `tag` text, `digest` text (manifest digest), `artifact_type` text, `attrs` json (`lajstrom.<format>.*`), `metadata` json null (metadata layer, may be omitted for size), `created_at` ts (from `org.opencontainers.image.created`), `indexed_at` ts | unique `(package_id, version, variant)`; unique `(package_id, tag)` |
 | `files` | `id`, `version_id` → versions, `name` text, `media_type` text, `digest` text (layer), `size` int, `attrs` json (layer annotations) | index `(version_id, name)`; apt pool and maven lookups go by `(repo, name)` → add index on `name` |
 | `index_cache` | `id`, `repo_id`, `scope` text (`jammy/main/amd64`, `simple/requests`, `com.example/lib-core`), `kind` text (`Packages`, `Release`, `InRelease`, `simple`, `maven-metadata`), `content` blob, `sha256` text, `rendered_at` ts, `signed_at` ts null | invalidated by ingest, delete and reindex; rebuilt lazily on GET |
@@ -62,7 +62,8 @@ with another digest is a `409`. `ResetDerived` does not touch claims.
 
 The migrations are `internal/index/migrations/{sqlite,postgres}/NNNN_<name>.sql`, embedded in
 the binary; both directories have the same versions (a test asserts it), `0001_init.sql` creates
-the control-plane and derived tables, `0002_tag_claims.sql` the coordination table. The runner,
+the control-plane and derived tables, `0002_tag_claims.sql` the coordination table,
+`0003_packages_name_oci.sql` the unique index on `packages (repo_id, name_oci)`. The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the
 migration lock, `pg_advisory_xact_lock` on Postgres and `BEGIN IMMEDIATE` on SQLite, and reads

@@ -5,11 +5,104 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/lajstrom/lajstrom/internal/index"
 )
+
+// testPackageByNameOCI checks GetPackageByNameOCI and that NameOCI is unique within a repo:
+// another name with a NameOCI that a package holds is ErrConflict naming both names and changes
+// nothing, the holder upserts as before, the same NameOCI in another repo is a package of its
+// own, and once the holder is deleted the other name may take the NameOCI.
+func testPackageByNameOCI(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "raw", "a")
+	other := newRepo(t, s, "raw", "b")
+	first := index.Package{RepoID: repo.ID, Name: "Docs/Readme.MD", NameOCI: "docs/readme.md", CreatedAt: at(1)}
+	must(t, s.UpsertPackage(ctx, &first))
+	elsewhere := index.Package{RepoID: other.ID, Name: "docs/readme.md", NameOCI: "docs/readme.md", CreatedAt: at(2)}
+	must(t, s.UpsertPackage(ctx, &elsewhere))
+	onlyHere := newPackage(t, s, repo.ID, "only-a")
+
+	got, err := s.GetPackageByNameOCI(ctx, repo.ID, "docs/readme.md")
+	must(t, err)
+	same(t, "GetPackageByNameOCI", first, *got)
+	got, err = s.GetPackageByNameOCI(ctx, other.ID, "docs/readme.md")
+	must(t, err)
+	same(t, "GetPackageByNameOCI in the other repo", elsewhere, *got)
+
+	twin := index.Package{RepoID: repo.ID, Name: "docs/readme.md", NameOCI: "docs/readme.md", CreatedAt: at(3)}
+	err = s.UpsertPackage(ctx, &twin)
+	if !errors.Is(err, index.ErrConflict) || !strings.Contains(err.Error(), `"docs/readme.md"`) ||
+		!strings.Contains(err.Error(), `"Docs/Readme.MD"`) {
+		t.Errorf("UpsertPackage of another name with a NameOCI that is held: %v, want ErrConflict naming both names", err)
+	}
+	list, err := s.ListPackages(ctx, repo.ID, "")
+	must(t, err)
+	same(t, "packages after the conflict", []index.Package{first, onlyHere}, list)
+	again := index.Package{RepoID: repo.ID, Name: "Docs/Readme.MD", NameOCI: "docs/readme.md", CreatedAt: at(4)}
+	must(t, s.UpsertPackage(ctx, &again))
+	same(t, "UpsertPackage of the holder fills it from the row", first, again)
+
+	for _, tt := range []struct {
+		name string
+		err  error
+	}{
+		{"GetPackageByNameOCI missing", second(s.GetPackageByNameOCI(ctx, repo.ID, "docs/other.md"))},
+		{"GetPackageByNameOCI of a name", second(s.GetPackageByNameOCI(ctx, repo.ID, "Docs/Readme.MD"))},
+		{"GetPackageByNameOCI other repo", second(s.GetPackageByNameOCI(ctx, other.ID, onlyHere.NameOCI))},
+	} {
+		wantErr(t, tt.name, tt.err, index.ErrNotFound)
+	}
+
+	must(t, s.DeletePackage(ctx, first.ID))
+	twin.ID = 0
+	must(t, s.UpsertPackage(ctx, &twin))
+	got, err = s.GetPackageByNameOCI(ctx, repo.ID, "docs/readme.md")
+	must(t, err)
+	same(t, "GetPackageByNameOCI after the holder was deleted", twin, *got)
+}
+
+// testPackageNameOCIRace runs writers that upsert packages with one NameOCI at once, four per
+// name, for a few rounds: the writers of the name that wins share its row, every other writer
+// gets ErrConflict naming the winner, and none a driver error (a unique violation of the other
+// index, which Postgres raises when ON CONFLICT names one).
+func testPackageNameOCIRace(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "raw", "race")
+	names := []string{"docs/readme.md", "Docs/Readme.MD", "DOCS/README.MD", "docs/README.md"}
+	const rounds, writers = 20, 16
+	for round := range rounds {
+		dir := strconv.Itoa(round) + "/"
+		errs := make([]error, writers)
+		pkgs := make([]index.Package, writers)
+		var wg sync.WaitGroup
+		for i := range writers {
+			wg.Go(func() {
+				pkgs[i] = index.Package{RepoID: repo.ID, Name: dir + names[i%len(names)], NameOCI: dir + "docs/readme.md"}
+				errs[i] = s.UpsertPackage(ctx, &pkgs[i])
+			})
+		}
+		wg.Wait()
+		stored, err := s.GetPackageByNameOCI(ctx, repo.ID, dir+"docs/readme.md")
+		must(t, err)
+		winners := 0
+		for i, err := range errs {
+			switch {
+			case err == nil:
+				winners++
+				same(t, fmt.Sprintf("round %d, writer %d", round, i), *stored, pkgs[i])
+			case !errors.Is(err, index.ErrConflict) || !strings.Contains(err.Error(), strconv.Quote(stored.Name)):
+				t.Errorf("round %d, writer %d (%s): %v, want ErrConflict naming %q", round, i, pkgs[i].Name, err, stored.Name)
+			}
+		}
+		if winners != writers/len(names) {
+			t.Errorf("round %d: %d writers succeeded, want the %d of one name", round, winners, writers/len(names))
+		}
+	}
+}
 
 func testPackages(t *testing.T, s index.Store) {
 	ctx := t.Context()

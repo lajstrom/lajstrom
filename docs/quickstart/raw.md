@@ -46,6 +46,8 @@ Location: /raw/scratch/docs/file.txt
 
 The path after `/raw/scratch/` is the package, exactly as sent: case is preserved, `/` makes
 directories, a component may not be empty, `.` or `..`, and control bytes are refused (`400`).
+A path is unique without regard to case (R-09): once `Docs/Readme.MD` exists, a `PUT` of
+`docs/readme.md` is `409` naming it, because both are one OCI repository (section 8).
 The version is the first 16 hex digits of the sha256 of the bytes; `digest` and
 `Docker-Content-Digest` are the digest of the manifest in the registry. Without `-H
 'Content-Type: …'` (curl sends none with `-T`) the file is served as `application/octet-stream`.

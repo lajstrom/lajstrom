@@ -196,8 +196,9 @@ func (p *Pipeline) release(ctx context.Context, pub *publish) {
 // and releases the claim. existed reports that the version was there already with the same
 // digest: another replica published the same bytes under the shared claim and confirmed
 // first, and nothing is written. A failure is logged and returned as a plain error (500),
-// except a *index.TagConflictError, which is returned as it is; the manifest stays in the
-// registry and reindex picks it up.
+// except a conflict: a *index.TagConflictError is returned as it is, and another
+// index.ErrConflict, a package path that another spelling holds (#97), stays wrapped (409). The
+// manifest stays in the registry and reindex picks it up.
 func (p *Pipeline) confirm(ctx context.Context, pub *publish) (existed bool, err error) {
 	now := p.now()
 	ev := pub.event(now)
@@ -212,8 +213,11 @@ func (p *Pipeline) confirm(ctx context.Context, pub *publish) (existed bool, err
 			"digest", pub.digest.String(), "error", err.Error())
 		p.release(ctx, pub)
 		var conflict *index.TagConflictError
-		if errors.As(err, &conflict) {
+		switch {
+		case errors.As(err, &conflict):
 			return false, err
+		case errors.Is(err, index.ErrConflict):
+			return false, fmt.Errorf("ingest: index %s:%s after the registry accepted %s: %w", pub.name, pub.tag, pub.digest, err)
 		}
 		// The cause is in the message only: an index.ErrNotFound (the repo was deleted
 		// meanwhile) must not turn a half-done publish into a 404.

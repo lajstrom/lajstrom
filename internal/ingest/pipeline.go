@@ -122,10 +122,12 @@ type Result struct {
 //  6. confirm in one index transaction, only after the registry accepted the manifest:
 //     package, version and files, the OCI repository, the invalidated index_cache, the audit
 //     event, and the claim released. When this fails the manifest stays for reindex to pick
-//     up and the error is a plain one (500).
+//     up and the error is a plain one (500), unless the index refused a conflict: the tag
+//     taken meanwhile, or the package path held by another spelling of the name (#97).
 //
-// Errors wrap ErrInvalid (steps 1 to 3), ErrConflict (steps 4 and 5, with an
-// *index.TagConflictError naming the existing digest when it is known), or neither.
+// Errors wrap ErrInvalid (steps 1 to 3), ErrConflict (steps 4 to 6, with an
+// *index.TagConflictError naming the existing digest when the conflict is a tag and the digest
+// is known), or neither.
 func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, principal auth.Principal) (*Result, error) {
 	plugin, prov, err := p.lookup(repo)
 	if err != nil {
