@@ -61,7 +61,7 @@ func TestCommands(t *testing.T) {
 		{name: "serve missing config", args: []string{"serve", "--config", missing}, wantErr: "no such file"},
 		{name: "admin user", args: []string{"admin", "user", "create", "alice"}, wantErr: "not implemented, see issue #47"},
 		{name: "admin token", args: []string{"admin", "token"}, wantErr: "see issue #47"},
-		{name: "admin repo", args: []string{"admin", "repo"}, wantErr: "see issue #14"},
+		{name: "admin repo", args: []string{"admin", "repo"}, wantOut: "Available Commands:\n  create"},
 		{name: "admin binding", args: []string{"admin", "binding"}, wantErr: "see issue #47"},
 		{name: "bad log level", args: []string{"version", "--log-level", "verbose"}, wantErr: `log level "verbose"`},
 		{name: "bad log format", args: []string{"version", "--log-format", "xml"}, wantErr: `log format "xml"`},

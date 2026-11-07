@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/provider"
@@ -24,14 +25,16 @@ import (
 const registryProbeTimeout = 10 * time.Second
 
 // newServeCmd returns serve: load and validate the configuration (in the root's
-// PersistentPreRunE), open the index database and apply its pending migrations, build a
-// provider for every registry and probe its capabilities, build the server and run it until
-// SIGINT or SIGTERM, then close the database.
+// PersistentPreRunE), open the index database and apply its pending migrations, create the
+// repos of the configuration that the control plane does not have, build a provider for every
+// registry and probe its capabilities, build the server and run it until SIGINT or SIGTERM,
+// then close the database.
 //
 // Migrating on start takes the same lock as lajstrom migrate, so replicas that start together
 // apply each migration once. The index is Deps.Index of the format plugins and /-/readyz pings
 // it; the registries are Deps.Providers; the ingest pipeline over both, with ingest.claimTTL,
-// is Deps.Ingest.
+// is Deps.Ingest. The repo service over the index (api.Repos) runs the config bootstrap
+// before the server listens, and serves /api/v1.
 func newServeCmd(a *app) *cobra.Command {
 	return &cobra.Command{
 		Use:         "serve",
@@ -62,6 +65,12 @@ func newServeCmd(a *app) *cobra.Command {
 			}
 			a.log.Info("index migrations applied under the migration lock",
 				"database.driver", c.Database.Driver, "applied", applied)
+			repos := newRepos(c, st, a.log)
+			created, err := repos.Bootstrap(ctx, c.Repos)
+			if err != nil {
+				return err
+			}
+			a.log.Info("repos of the configuration bootstrapped", "configured", len(c.Repos), "created", created)
 
 			providers, err := provider.NewSet(c.Registries, a.log)
 			if err != nil {
@@ -78,6 +87,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Plugins:         format.All(),
 				Deps:            format.Deps{Index: st, Providers: providers, Ingest: pipe},
 				Ready:           ready(a.log, c.Database.Driver, st),
+				API:             api.New(api.Options{Repos: repos, Log: a.log}),
 			})
 			if err != nil {
 				return err

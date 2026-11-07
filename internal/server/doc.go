@@ -4,6 +4,7 @@
 // The middleware chain, outermost first: panic recovery, request id, access log. The system
 // endpoints are /-/healthz, /-/readyz and /-/version; /-/metrics comes with issue #23.
 // Format plugins are validated here and mounted below /<name>/ through format.NewRouter; the
-// OCI facade (/v2) and the management API (/api/v1) are mounted by their issues. Hardening
+// management API (Options.API, internal/api) is mounted at /api/; the OCI facade (/v2) is
+// mounted by its issue. Hardening
 // (request limits, shutdown drain of long transfers) is issue #50.
 package server

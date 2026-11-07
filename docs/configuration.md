@@ -1,7 +1,7 @@
 # Configuration
 
-Lajstrom reads one YAML file. `serve`, `migrate` and `reindex` load and validate it before they
-do anything else; `version` and `admin` do not need it.
+Lajstrom reads one YAML file. `serve`, `migrate`, `reindex` and `admin repo` load and validate
+it before they do anything else; `version` does not need it.
 
 ```sh
 lajstrom serve --config /etc/lajstrom/lajstrom.yaml
@@ -50,8 +50,9 @@ server:
 ```
 
 `serve` opens the index database (`database`, by default the SQLite file `lajstrom.db` in the
-current directory) and applies its pending migrations before it listens; `/-/readyz` answers
-503 while the database does not. It also contacts the registries: at startup it asks each one
+current directory), applies its pending migrations and creates the [repos](#repos) of the file
+that the database does not have, all before it listens; `/-/readyz` answers 503 while the
+database does not. It also contacts the registries: at startup it asks each one
 what it supports (see [capabilities](#registry-capabilities)) and logs the answer at info. A
 registry that does not answer within 10 s is logged at error and `serve` starts anyway, so that
 one backend down does not keep a replica from starting.
@@ -159,8 +160,25 @@ The `ingest` section is an addition to the shape in [layout.md](spec/layout.md) 
 
 ### repos
 
-Optional. Repos to create at startup when they do not exist (the config bootstrap of issue #14);
-repos created through the API are not listed here.
+Optional. Repos to create at startup when the control plane does not have them, the config
+bootstrap. Repos are also created through the [management API](api.md#repos) and with
+`lajstrom admin repo`, and those need not be listed here.
+
+On every start, after the migrations and before it listens, `serve` looks up each entry in the
+index database:
+
+- **Missing:** it is created exactly as `POST /api/v1/repos` would create it, with the same
+  checks and one `repo.create` audit row whose details say `"source": "config"`. The
+  configuration was validated already, so the one check that can still fail is the format: a
+  repo whose format plugin is not compiled into the binary stops `serve` with an error naming
+  the entry.
+- **Present:** it is left as it is. When its `registry` or `anonymousRead` differ from the
+  database, a warning names the repo and the field: the database wins, and a change goes
+  through the API or `lajstrom admin repo`.
+
+The bootstrap never deletes a repo and never changes one: removing an entry from this list
+leaves the repo in place. Replicas that start together create each repo once; a replica whose
+create loses to another's counts the repo as present.
 
 | Key | Type | Default | Env | Description |
 | --- | --- | --- | --- | --- |

@@ -231,7 +231,7 @@ RBAC matrix for S-02, expected status on the raw frontend (`/v2` maps 401 to `UN
 | G-03 | `repos:` in the config file with two repos; start twice | both exist after the first start; the second start changes nothing (idempotent merge) | #14 |
 | G-04 | `DELETE …/repos/raw/assets` as bob (reader), as a maintainer of that repo | 403, 204 (`manage` covers it, http-routing.md §4); afterwards `GET /raw/assets/…` is 404 and a bearer token issued before is rejected on that repo | #14, #45 |
 | G-05 | `POST …/repos/raw/assets/reindex` | 202, the reindex of that repo runs, the audit log has it | #14, #29 |
-| G-06 | every error of `/api/v1` | `{"error":{"code","message"}}` with the five codes of http-routing.md §4 only | #14, #47 |
+| G-06 | every error of `/api/v1` | `{"error":{"code","message"}}` with the six codes of http-routing.md §4 only | #14, #47 |
 | G-07 (P1) | `lajstrom admin export` | JSON of the control plane without secrets (token hashes yes, passwords no, private keys as ciphertext) | #47 |
 
 ### 3.10 Delivery

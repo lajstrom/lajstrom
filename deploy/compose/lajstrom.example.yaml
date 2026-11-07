@@ -39,8 +39,10 @@ auth:
 keys:
   masterKeyEnv: LAJSTROM_MASTER_KEY   # environment variable with the key that encrypts signing keys (issue #41)
 
-repos:                                # created at startup when missing (issue #14)
-  - name: scratch                     # repo name, unique within its format
-    format: raw                       # raw | pypi | apt | maven
-    registry: local                   # one of registries[].name
-    anonymousRead: false              # readable without credentials when auth.anonymousRead allows it
+# Repos to create at startup when the control plane does not have them (issue #14). serve refuses
+# a repo whose format is not compiled in, and the raw plugin comes with #13: uncomment the entry then.
+repos: []
+#  - name: scratch                    # repo name, unique within its format
+#    format: raw                      # raw | pypi | apt | maven
+#    registry: local                  # one of registries[].name
+#    anonymousRead: false             # readable without credentials when auth.anonymousRead allows it

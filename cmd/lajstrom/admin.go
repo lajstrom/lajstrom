@@ -2,20 +2,20 @@ package main
 
 import "github.com/spf13/cobra"
 
-// newAdminCmd returns the admin group. Its subgroups are placeholders until the issues that
-// implement them: repo (#14), user, token and binding (#47).
-func newAdminCmd() *cobra.Command {
+// newAdminCmd returns the admin group: repo, and the placeholders user, token and binding
+// until #47 implements them.
+func newAdminCmd(a *app) *cobra.Command {
 	admin := &cobra.Command{
 		Use:   "admin",
 		Short: "Manage repos, users, tokens and bindings",
 	}
+	admin.AddCommand(newAdminRepoCmd(a))
 	for _, sub := range []struct {
 		use, short string
 		issue      int
 	}{
 		{"user", "Manage local users", 47},
 		{"token", "Manage personal access and deploy tokens", 47},
-		{"repo", "Manage repos", 14},
 		{"binding", "Manage role bindings", 47},
 	} {
 		issue := sub.issue
