@@ -41,7 +41,33 @@ lajstrom admin user enable alice
 A disabled user's credentials are refused with `401` from the next request on, on every
 replica: the user is read from the database on every request, and the cache of verified
 passwords never outlives a change. Users are not deleted in this version; `lajstrom admin user
-list` shows who is disabled.
+list` shows who is disabled. A disabled user's personal access tokens are refused too.
+
+### A credential for CI
+
+A CI job gets a deploy token: a principal of its own, bound to one repo, with `write` (and
+`read` when the job also reads, as an OCI push through `/v2` does), never `delete` or
+`manage` ([auth.md](auth.md#tokens)):
+
+```sh
+lajstrom admin token create --repo raw/assets --name "ci $(date -u +%Y-%m)" --scopes read,write --expires 90d
+```
+
+or `POST /api/v1/repos/raw/assets/deploy-tokens` with `{"name": "ci 2026-11", "scopes":
+["read", "write"], "expiresIn": "90d"}`. Put the `secret` of the answer into the CI system's
+secret store at once: it is shown this once. The job sends it as Basic credentials,
+`deploy:<secret>` (`curl -u`, `oras login -u deploy --password-stdin`, `auth.conf` with
+`login deploy`); a client that insists on another user name may send any.
+
+To rotate it, create the next token, switch the CI secret to it, check its `LAST USED` in
+`lajstrom admin token list --repo raw/assets`, and revoke the old one by its id:
+
+```sh
+lajstrom admin token revoke 41
+```
+
+A revoked token is refused from the next request on, on every replica. The names of live
+tokens are unique per repo, so a date in the name keeps the old and the new apart.
 
 ## Keys and apt signing
 

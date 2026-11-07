@@ -2,6 +2,7 @@
 // audit) as JSON. See docs/spec/http-routing.md §4 and docs/api.md.
 //
 // Repos is the repo service that the handlers, lajstrom admin repo and the config bootstrap
-// share; New returns the handler the server mounts at /api/. Repos came with #14; users,
-// tokens and bindings come with #47, audit with #46.
+// share; New returns the handler the server mounts at /api/. Repos came with #14, the tokens
+// of a user and the deploy tokens of a repo with #44 (over auth.Tokens); users and bindings
+// come with #47, audit with #46.
 package api

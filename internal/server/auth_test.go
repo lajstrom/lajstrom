@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -29,12 +30,56 @@ var aliceHash = sync.OnceValue(func() string {
 	return h
 })
 
-// usersReader is an index.Reader with the user alice and nothing else; err, when set, is the
-// answer of every GetUser.
+// usersReader is an index.Store with the user alice, the repo raw/scratch, and the tokens of
+// tokenRows, and nothing else; err, when set, is the answer of every GetUser.
 type usersReader struct {
-	index.Reader
+	index.Store
 	err error
 }
+
+// Secrets of the tokens of usersReader: a personal access token of alice, one of hers that is
+// revoked, and a deploy token of raw/scratch with read.
+const (
+	alicePAT     = auth.PATPrefix + "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG"
+	revokedPAT   = auth.PATPrefix + "GFEDCBAzyxwvutsrqponmlkjihgfedcba9876543210"
+	scratchToken = auth.DeployPrefix + "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG"
+)
+
+// tokenRows are the tokens of usersReader by the hash of their secret.
+var tokenRows = func() map[string]index.Token {
+	alice, scratch := int64(1), int64(10)
+	hour := time.Now().Add(time.Hour)
+	revoked := time.Now().Add(-time.Hour)
+	return map[string]index.Token{
+		auth.HashSecret(alicePAT):     {ID: 1, Kind: auth.TokenPAT, UserID: &alice, ExpiresAt: &hour},
+		auth.HashSecret(revokedPAT):   {ID: 2, Kind: auth.TokenPAT, UserID: &alice, ExpiresAt: &hour, RevokedAt: &revoked},
+		auth.HashSecret(scratchToken): {ID: 7, Kind: auth.TokenDeploy, RepoID: &scratch, Scopes: []string{"read"}},
+	}
+}()
+
+func (u usersReader) GetTokenByHash(_ context.Context, hash string) (*index.Token, error) {
+	if t, ok := tokenRows[hash]; ok {
+		return &t, nil
+	}
+	return nil, index.ErrNotFound
+}
+
+func (u usersReader) ListUsers(ctx context.Context) ([]index.User, error) {
+	a, err := u.GetUser(ctx, "alice")
+	if err != nil {
+		return nil, err
+	}
+	return []index.User{*a}, nil
+}
+
+func (u usersReader) GetRepoByID(_ context.Context, id int64) (*index.Repo, error) {
+	if id == 10 {
+		return &index.Repo{ID: 10, Format: "raw", Name: "scratch"}, nil
+	}
+	return nil, index.ErrNotFound
+}
+
+func (u usersReader) TouchToken(context.Context, int64, time.Time) error { return nil }
 
 func (u usersReader) GetUser(_ context.Context, name string) (*index.User, error) {
 	switch {
@@ -55,16 +100,18 @@ func basic(user, password string) string {
 type seen struct {
 	called        bool
 	principal     auth.Principal
+	credential    auth.Credential
 	authorization string
 }
 
 // authServer returns a server with the authenticator over r, or none when r is nil, whose API,
 // facade and /test/ handlers record what they see.
-func authServer(t *testing.T, r index.Reader) (*Server, *seen, *bytes.Buffer) {
+func authServer(t *testing.T, r index.Store) (*Server, *seen, *bytes.Buffer) {
 	t.Helper()
 	var sw seen
 	record := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sw = seen{called: true, principal: auth.PrincipalFrom(r.Context()), authorization: r.Header.Get("Authorization")}
+		sw = seen{called: true, principal: auth.PrincipalFrom(r.Context()), credential: auth.CredentialFrom(r.Context()),
+			authorization: r.Header.Get("Authorization")}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	o := Options{API: record, Facade: record}
@@ -73,7 +120,75 @@ func authServer(t *testing.T, r index.Reader) (*Server, *seen, *bytes.Buffer) {
 	}
 	s, buf := newTestServer(t, o)
 	s.mux.Handle("/test/", record)
+	s.mux.Handle("/raw/", record)
 	return s, &sw, buf
+}
+
+// TestAuthenticateTokens checks the tokens in the middleware: a personal access token in Basic
+// credentials is its user, a deploy token is token:<id> whatever the user name, both with their
+// credential in the context; a personal access token as a bearer is its user on the API and
+// the frontends and goes on untouched under /v2/, whose bearer is the facade's; a deploy token
+// as a bearer and a revoked token are 401 in the route's format; the access log has the
+// principal, and no log has a secret.
+func TestAuthenticateTokens(t *testing.T) {
+	alice := auth.Principal{Kind: auth.KindUser, Name: "alice"}
+	deploy := auth.Principal{Kind: auth.KindToken, Name: "7"}
+	pat := auth.Credential{Kind: auth.CredPAT, TokenID: 1, UserID: 1}
+	dep := auth.Credential{Kind: auth.CredDeploy, TokenID: 7, RepoID: 10, Repo: "raw/scratch", Scopes: []string{"read"}}
+	const textBody = "credentials are needed: the ones sent were refused\n"
+	const apiBody = `{"error":{"code":"FORBIDDEN","message":"credentials are needed: the ones sent were refused"}}` + "\n"
+	tests := []struct {
+		name          string
+		path          string
+		authorization string
+		status        int
+		principal     auth.Principal
+		cred          auth.Credential
+		body, ctype   string // of a 401
+	}{
+		{name: "pat in basic", path: "/test/x", authorization: basic("alice", alicePAT), status: 204, principal: alice, cred: pat},
+		{name: "pat in basic on /v2/token", path: "/v2/token", authorization: basic("alice", alicePAT), status: 204, principal: alice, cred: pat},
+		{name: "deploy token in basic", path: "/raw/scratch/file", authorization: basic("deploy", scratchToken), status: 204, principal: deploy, cred: dep},
+		{name: "deploy token with any user", path: "/raw/scratch/file", authorization: basic("gitlab-ci-token", scratchToken), status: 204, principal: deploy, cred: dep},
+		{name: "pat bearer on whoami", path: "/api/v1/whoami", authorization: "Bearer " + alicePAT, status: 204, principal: alice, cred: pat},
+		{name: "pat bearer on raw", path: "/raw/scratch/file", authorization: "Bearer " + alicePAT, status: 204, principal: alice, cred: pat},
+		{name: "pat bearer in lower case", path: "/raw/scratch/file", authorization: "bearer " + alicePAT, status: 204, principal: alice, cred: pat},
+		{name: "pat bearer on /v2 goes on", path: "/v2/raw/scratch/x/tags/list", authorization: "Bearer " + alicePAT, status: 204, principal: auth.Anonymous},
+		{name: "pat bearer on /v2/token goes on", path: "/v2/token", authorization: "Bearer " + alicePAT, status: 204, principal: auth.Anonymous},
+		{name: "revoked bearer on /v2 goes on", path: "/v2/raw/scratch/x/tags/list", authorization: "Bearer " + revokedPAT, status: 204, principal: auth.Anonymous},
+		{name: "other bearer goes on", path: "/api/v1/whoami", authorization: "Bearer eyJhbGciOi.x.y", status: 204, principal: auth.Anonymous},
+		{name: "revoked pat in basic", path: "/raw/scratch/file", authorization: basic("alice", revokedPAT), status: 401, body: textBody, ctype: "text/plain; charset=utf-8"},
+		{name: "revoked pat bearer on the API", path: "/api/v1/repos", authorization: "Bearer " + revokedPAT, status: 401, body: apiBody, ctype: "application/json"},
+		{name: "revoked pat bearer on raw", path: "/raw/scratch/file", authorization: "Bearer " + revokedPAT, status: 401, body: textBody, ctype: "text/plain; charset=utf-8"},
+		{name: "deploy token bearer", path: "/api/v1/whoami", authorization: "Bearer " + scratchToken, status: 401, body: apiBody, ctype: "application/json"},
+		{name: "pat of alice as bob", path: "/test/x", authorization: basic("bob", alicePAT), status: 401, body: textBody, ctype: "text/plain; charset=utf-8"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, sw, logs := authServer(t, usersReader{})
+			r := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			r.Header.Set("Authorization", tt.authorization)
+			rr := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rr, r)
+			if rr.Code != tt.status {
+				t.Fatalf("status = %d, want %d; body %s", rr.Code, tt.status, rr.Body)
+			}
+			l := findLog(t, logs, "request")
+			if tt.status == http.StatusUnauthorized {
+				wantRefusal(t, rr, sw, l, tt.body, tt.ctype, basicChallenge)
+			} else {
+				wantPassed(t, sw, l, tt.principal, tt.authorization)
+				if fmt.Sprint(sw.credential) != fmt.Sprint(tt.cred) {
+					t.Errorf("the handler saw the credential %+v, want %+v", sw.credential, tt.cred)
+				}
+			}
+			for i, secret := range []string{alicePAT, revokedPAT, scratchToken, auth.HashSecret(alicePAT), auth.HashSecret(scratchToken)} {
+				if strings.Contains(logs.String(), secret) {
+					t.Errorf("the log contains secret or hash %d", i)
+				}
+			}
+		})
+	}
 }
 
 // TestAuthenticate checks the middleware: no credentials and other schemes go on as anonymous,

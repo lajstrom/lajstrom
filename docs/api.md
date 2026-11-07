@@ -1,6 +1,6 @@
 # Management API
 
-The management API is the REST interface to the control plane: repos now, users, tokens,
+The management API is the REST interface to the control plane: repos and tokens now, users,
 bindings and the audit log later. It lives under `/api/v1` on the same host as everything else
 ([http-routing.md](spec/http-routing.md) §1 and §4). The examples use the dev stack:
 
@@ -13,20 +13,24 @@ LAJSTROM=http://localhost:8080
 - **JSON.** Request bodies are one JSON object of at most 64 KiB; a field the endpoint does not
   know is an error, so a typo never passes silently. Answers are `application/json`. Times are
   RFC 3339 in UTC.
-- **Authentication** is HTTP Basic with a local user's password, on every route
-  ([auth.md](auth.md)): a request with credentials runs as the user, one without as
-  `anonymous`, and credentials that are refused are `401` at once. `GET /api/v1/whoami` tells
-  who the caller is. **Authorization** comes with #45: every endpoint is open in this version.
-  From then on, reading a repo and listing it need `read` on it, changing, deleting and
-  reindexing it need `manage`, and creating a repo needs the `admin` role
-  ([rbac.md](spec/rbac.md) §2 and §3). A denial does not tell whether a repo exists: `401` with
-  a Basic challenge for a caller without credentials, `404` for one without any access to the
-  repo, `403` for one that can read it but lacks the action. The list leaves out the repos the
-  caller may not read.
+- **Authentication** is HTTP Basic with a local user's password or a token, or
+  `Authorization: Bearer` with a personal access token, on every route ([auth.md](auth.md)):
+  a request with credentials runs as the user (`user:<name>`, for a personal access token
+  too) or the deploy token (`token:<id>`, Basic `deploy:<token>`), one without as `anonymous`,
+  and credentials that are refused are `401` at once. `GET /api/v1/whoami` tells who the
+  caller is. **Authorization** comes with #45: every endpoint is open in this version, but for
+  the scopes of a token ([auth.md](auth.md#what-a-token-may-do)), which hold already. From
+  then on, reading a repo and listing it need `read` on it, changing, deleting and reindexing
+  it and managing its deploy tokens need `manage`, creating a repo needs the `admin` role, and
+  the tokens of a user are the user's or the admin's ([rbac.md](spec/rbac.md) §2 and §3). A
+  denial does not tell whether a repo exists: `401` with a Basic challenge for a caller without
+  credentials, `404` for one without any access to the repo, `403` for one that can read it but
+  lacks the action. The list leaves out the repos the caller may not read.
 - **Audit.** Every change is one row of the audit log ([rbac.md](spec/rbac.md) §5): the
-  principal, the action (`repo.create`, `repo.update`, `repo.delete`), the repo, the client
-  address and details: the change, its source (`api`, `cli` or `config`) and the request id.
-- **Not in this version.** The users, tokens and bindings endpoints of
+  principal, the action (`repo.create`, `repo.update`, `repo.delete`, `token.create`,
+  `token.revoke`), the repo, the client address and details: the change, its source (`api`,
+  `cli` or `config`) and the request id.
+- **Not in this version.** The users and bindings endpoints of
   [http-routing.md](spec/http-routing.md) §4 come with #47, the audit log with #46. Until then
   they, and any other path under `/api/`, answer `404 NOT_FOUND`.
 
@@ -42,9 +46,9 @@ Every error is answered with one envelope:
 | --- | --- | --- |
 | 400 | `INVALID` | the request breaks a rule; the message starts with the field it is about |
 | 401 | `FORBIDDEN` | credentials are needed, or the ones sent were refused; with `WWW-Authenticate: Basic realm="lajstrom"` |
-| 403 | `FORBIDDEN` | the caller lacks the action (after #45) |
-| 404 | `NOT_FOUND` | no such repo or endpoint |
-| 409 | `CONFLICT` | the repo exists, or has versions and the delete is not forced |
+| 403 | `FORBIDDEN` | the caller lacks the action: now by the scopes of its token, after #45 by its bindings too |
+| 404 | `NOT_FOUND` | no such repo, user, token or endpoint |
+| 409 | `CONFLICT` | the repo exists, or has versions and the delete is not forced; a live token of the owner has the name |
 | 413 | `INVALID` | the body is larger than 64 KiB |
 | 501 | `UNAVAILABLE` | the endpoint comes with a later issue; the message names it |
 | 500 | `INTERNAL` | anything else; the message is the status text, the cause is in the server log with the request id (`X-Request-Id`) |
@@ -173,6 +177,94 @@ lajstrom admin repo delete raw/scratch [--force]
 
 `create` prints the resource as JSON on one line, `list` a table (`--json`: the document of
 `GET /api/v1/repos`), `delete` nothing. An error goes to standard error with exit status 1.
+
+## Tokens
+
+Personal access tokens belong to a user, deploy tokens to a repo; what they are, how they
+authenticate and what they may do is in [auth.md](auth.md#tokens). Both resources have one
+shape, and the secret only in the answer of a creation, the one time it is shown.
+
+### The resource
+
+```json
+{
+  "id": 7,
+  "kind": "pat",
+  "user": "alice",
+  "name": "laptop",
+  "scopes": ["read"],
+  "expiresAt": "2026-12-07T12:00:00Z",
+  "lastUsedAt": "2026-11-07T12:03:11Z",
+  "createdAt": "2026-11-07T12:00:00Z",
+  "revokedAt": null,
+  "hashPrefix": "c68464d8"
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `id` | set by the server; the `{id}` of `DELETE` |
+| `kind` | `pat` or `deploy`, from the collection |
+| `user`, `repo` | the owner: the user of a personal access token, `<format>/<name>` of the repo of a deploy token; the other is left out |
+| `name` | 1 to 64 bytes of printable UTF-8, unique among the owner's live tokens (neither revoked nor expired) |
+| `scopes` | `read`, `write` or both. A personal access token may have none, `[]`: its user's full rights. A deploy token needs one, and `delete` and `manage` are refused |
+| `expiresAt` | a personal access token always has one, at most 365 days ahead, 90 days when the creation gives none; a deploy token may have none, `null`, and never expires |
+| `lastUsedAt` | the last request with the token, to the minute; `null` before the first |
+| `createdAt`, `revokedAt` | set by the server; `revokedAt` is `null` while the token is not revoked |
+| `hashPrefix` | the first 8 hexadecimal characters of the sha256 of the secret, to tell tokens apart; the secret itself is never answered again |
+
+### Create: `POST /api/v1/users/<name>/tokens`, `POST /api/v1/repos/<format>/<repo>/deploy-tokens`
+
+The body has `name`, and optionally `scopes` (required for a deploy token) and the expiry,
+`expiresAt` (RFC 3339) or `expiresIn` (a number of days, `30d`, or a duration, `12h`), one of
+them at most. `201` with the resource and `secret`, and `Location` naming the token
+(`/api/v1/users/<name>/tokens/<id>`, the path of its `DELETE`); `400` for a field that breaks its
+rule, `expiresAt` over a year ahead or in the past, both `expiresAt` and `expiresIn`, or
+`delete` in the scopes of a deploy token; `404` for a user or repo that does not exist; `409`
+when the name is taken. The user need not be enabled.
+
+```sh
+curl -s -u alice -X POST "$LAJSTROM/api/v1/users/alice/tokens" \
+  -H 'Content-Type: application/json' -d '{"name": "laptop", "scopes": ["read"], "expiresIn": "30d"}'
+curl -s -u admin -X POST "$LAJSTROM/api/v1/repos/raw/assets/deploy-tokens" \
+  -H 'Content-Type: application/json' -d '{"name": "ci", "scopes": ["write"]}'
+```
+
+```json
+{"id": 8, "kind": "deploy", "repo": "raw/assets", "name": "ci", "scopes": ["write"], "expiresAt": null, "lastUsedAt": null, "createdAt": "2026-11-07T12:00:00Z", "revokedAt": null, "hashPrefix": "876f72f1", "secret": "ljs_dep_…"}
+```
+
+### List: `GET /api/v1/users/<name>/tokens`, `GET /api/v1/repos/<format>/<repo>/deploy-tokens`
+
+`200` with `{"tokens": [...]}` in the order of their creation, the revoked and expired ones
+included, never a secret; `404` for a user or repo that does not exist.
+
+### Revoke: `DELETE /api/v1/users/<name>/tokens/<id>`, `DELETE /api/v1/repos/<format>/<repo>/deploy-tokens/<id>`
+
+`204`: the token is refused from the next request on, on every replica. A token revoked already
+is `204` again and stays as it is. An id that is not a token of that user or repo is `404`.
+
+### Who may
+
+A user's own personal access tokens, or the admin's for any user (until #45, as every
+endpoint, anyone's); the deploy tokens of a repo with `manage` on it. A deploy token, and a
+personal access token with scopes, asking for any of these is `403`, even for its own repo or
+its own user: tokens never manage.
+
+### `lajstrom admin token`
+
+The same from the command line, straight against the index database of the configuration,
+audited with the source `cli`; `--user` and `--repo` choose the kind, one of them and not both:
+
+```sh
+lajstrom admin token create (--user <name> | --repo <format>/<repo>) --name <label> [--scopes read,write] [--expires 90d|<RFC 3339>]
+lajstrom admin token list (--user <name> | --repo <format>/<repo>)
+lajstrom admin token revoke <id>
+```
+
+`create` prints the resource and its secret as JSON on one line, and nothing else on standard
+output; `list` a table with the columns `ID`, `KIND`, `NAME`, `SCOPES`, `EXPIRES`, `LAST USED`,
+`REVOKED` and `HASH`; `revoke` nothing.
 
 ## Who am I: `GET /api/v1/whoami`
 
