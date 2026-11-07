@@ -3,6 +3,12 @@
   <img alt="Lajstrom" src="docs/assets/logo-wordmark.svg" width="308" height="64">
 </picture>
 
+[![CI](https://img.shields.io/github/actions/workflow/status/lajstrom/lajstrom/ci.yml?branch=main&label=ci)](https://github.com/lajstrom/lajstrom/actions/workflows/ci.yml)
+[![Go version](https://img.shields.io/github/go-mod/go-version/lajstrom/lajstrom)](go.mod)
+[![License](https://img.shields.io/github/license/lajstrom/lajstrom)](LICENSE)
+[![Commit activity](https://img.shields.io/github/commit-activity/m/lajstrom/lajstrom)](https://github.com/lajstrom/lajstrom/commits/main)
+[![Roadmap](https://img.shields.io/badge/v0.1.0-2026--12--04-blue)](docs/roadmap.md)
+
 # Lajstrom
 
 Artifact registry on top of any OCI registry.
@@ -49,3 +55,12 @@ Please report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
 
 Lajstrom is licensed under the [Apache License 2.0](LICENSE).
 Copyright 2026 The Lajstrom Authors.
+
+## Star history
+
+<a href="https://star-history.com/#lajstrom/lajstrom&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=lajstrom/lajstrom&type=Date&theme=dark">
+    <img alt="Star history of lajstrom/lajstrom" src="https://api.star-history.com/svg?repos=lajstrom/lajstrom&type=Date" width="600">
+  </picture>
+</a>
