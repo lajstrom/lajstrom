@@ -32,8 +32,8 @@ func newRepo(t *testing.T) (*Fake, provider.Repository) {
 	return f, rr
 }
 
-// TestFakeBlobs checks that pushes are verified, that a small blob reads back, and that a blob
-// above MaxKept exists but is not kept.
+// TestFakeBlobs checks that pushes are verified, that a small blob and an empty one read back,
+// and that a blob above MaxKept exists but is not kept.
 func TestFakeBlobs(t *testing.T) {
 	ctx := t.Context()
 	f, rr := newRepo(t)
@@ -50,6 +50,15 @@ func TestFakeBlobs(t *testing.T) {
 	} else if got, _ := io.ReadAll(rc); !bytes.Equal(got, small) {
 		t.Errorf("Fetch = %q", got)
 	}
+	emptyDesc := descriptor("application/octet-stream", nil)
+	if err := rr.Push(ctx, emptyDesc, bytes.NewReader(nil)); err != nil {
+		t.Fatal(err)
+	}
+	if rc, err := rr.Fetch(ctx, emptyDesc); err != nil {
+		t.Errorf("Fetch of an empty blob: %v", err)
+	} else if got, _ := io.ReadAll(rc); len(got) != 0 {
+		t.Errorf("Fetch of an empty blob = %q", got)
+	}
 
 	big := ocispec.Descriptor{MediaType: "application/octet-stream", Size: MaxKept + 1}
 	d := digest.Canonical.Digester()
@@ -64,8 +73,8 @@ func TestFakeBlobs(t *testing.T) {
 	if _, err := rr.Fetch(ctx, big); !errors.Is(err, provider.ErrNotFound) {
 		t.Errorf("Fetch of a discarded blob: %v, want ErrNotFound", err)
 	}
-	if got := len(f.Pushes()); got != 2 {
-		t.Errorf("%d pushes recorded, want 2", got)
+	if got := len(f.Pushes()); got != 3 {
+		t.Errorf("%d pushes recorded, want 3", got)
 	}
 	if names, _ := f.ListRepositories(ctx, "raw/"); !slices.Equal(names, []string{name}) {
 		t.Errorf("ListRepositories = %v", names)
@@ -124,6 +133,65 @@ func TestFakeFaults(t *testing.T) {
 	}
 	if len(f.Pushes()) != 0 || len(f.PushReferences()) != 0 {
 		t.Errorf("failed pushes were recorded: %v %v", f.Pushes(), f.PushReferences())
+	}
+}
+
+// TestFakeRedirect checks RedirectURL: no redirect by default, the function's answer for a blob
+// the repository has, ErrNotFound for one it does not have.
+func TestFakeRedirect(t *testing.T) {
+	ctx := t.Context()
+	f, rr := newRepo(t)
+	b := []byte("blob")
+	desc := descriptor("application/octet-stream", b)
+	if err := rr.Push(ctx, desc, bytes.NewReader(b)); err != nil {
+		t.Fatal(err)
+	}
+	if url, ok, err := f.BlobRedirectURL(ctx, name, desc.Digest); url != "" || ok || err != nil {
+		t.Errorf("BlobRedirectURL without RedirectURL = %q, %v, %v", url, ok, err)
+	}
+	f.RedirectURL = func(n string, d digest.Digest) (string, bool) {
+		return "https://cdn.test/" + n + "/" + d.Encoded(), true
+	}
+	if url, ok, err := f.BlobRedirectURL(ctx, name, desc.Digest); url != "https://cdn.test/"+name+"/"+desc.Digest.Encoded() || !ok || err != nil {
+		t.Errorf("BlobRedirectURL = %q, %v, %v", url, ok, err)
+	}
+	for _, n := range []string{name, "raw/scratch/other"} {
+		if _, _, err := f.BlobRedirectURL(ctx, n, digest.FromString("missing")); !errors.Is(err, provider.ErrNotFound) {
+			t.Errorf("BlobRedirectURL of a missing blob in %s: %v, want ErrNotFound", n, err)
+		}
+	}
+	if c, _ := f.Capabilities(ctx); !c.DeleteManifest || !c.BlobRedirect {
+		t.Errorf("Capabilities = %+v, want DeleteManifest and BlobRedirect", c)
+	}
+}
+
+// TestFakeNoDeleteManifest checks a Fake without manifest deletes: it says so in Capabilities and
+// refuses them, but still deletes blobs.
+func TestFakeNoDeleteManifest(t *testing.T) {
+	ctx := t.Context()
+	f, rr := newRepo(t)
+	b := []byte("blob")
+	desc := descriptor("application/octet-stream", b)
+	if err := rr.Push(ctx, desc, bytes.NewReader(b)); err != nil {
+		t.Fatal(err)
+	}
+	f.NoDeleteManifest = true
+	if c, _ := f.Capabilities(ctx); c.DeleteManifest {
+		t.Errorf("Capabilities with NoDeleteManifest = %+v", c)
+	}
+	m, _ := json.Marshal(ocispec.Manifest{MediaType: ocispec.MediaTypeImageManifest})
+	mDesc := descriptor(ocispec.MediaTypeImageManifest, m)
+	if err := rr.PushReference(ctx, mDesc, bytes.NewReader(m), "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := rr.Delete(ctx, mDesc); !errors.Is(err, provider.ErrUnsupported) {
+		t.Errorf("Delete of a manifest with NoDeleteManifest: %v, want ErrUnsupported", err)
+	}
+	if _, err := rr.Resolve(ctx, "1.0.0"); err != nil {
+		t.Errorf("the manifest is gone after a refused Delete: %v", err)
+	}
+	if err := rr.Delete(ctx, desc); err != nil {
+		t.Errorf("Delete of a blob with NoDeleteManifest: %v", err)
 	}
 }
 

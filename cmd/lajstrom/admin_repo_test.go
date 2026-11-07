@@ -6,29 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/opencontainers/go-digest"
 
 	"github.com/lajstrom/lajstrom/internal/api"
-	"github.com/lajstrom/lajstrom/internal/format"
-	"github.com/lajstrom/lajstrom/internal/format/formattest"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/sqlite"
 )
-
-var registerRaw sync.Once
-
-// useRawPlugin makes sure a plugin named raw is registered: the fake of formattest until the
-// raw plugin is compiled into the binary (#13).
-func useRawPlugin() {
-	registerRaw.Do(func() {
-		if _, ok := format.Lookup("raw"); !ok {
-			format.Register(formattest.Fake{FormatName: "raw"})
-		}
-	})
-}
 
 // writeRepoConfig writes a configuration whose index database is a SQLite file in dir, with
 // one registry, local, and returns its path and the database's DSN.
@@ -70,7 +55,6 @@ func runSteps(t *testing.T, cfg string, steps []step) {
 // TestAdminRepo runs admin repo create, list and delete against a migrated SQLite file: create,
 // list shows it, delete without --force refuses a repo with a version, with --force deletes it.
 func TestAdminRepo(t *testing.T) {
-	useRawPlugin()
 	cfg, dsn := writeRepoConfig(t, t.TempDir())
 	runSteps(t, cfg, []step{
 		{args: []string{"migrate"}, wantOut: "applied 0001"},
