@@ -11,6 +11,7 @@ import (
 // LAJSTROM_FIXTURES_OUT, an existing directory, and is skipped without it:
 //
 //	deb/hello_1.0.0-1_amd64.deb, deb/hello_1.0.0-1_all.deb
+//	deb/xz/hello_1.0.0-1_amd64.deb, deb/zst/hello_1.0.0-1_amd64.deb (control.tar.xz, .zst)
 //	pypi/my_pkg-1.0.0-py3-none-any.whl, pypi/my_pkg-1.0.0.tar.gz
 //	maven/com/example/lib-api/1.0.0/lib-api-1.0.0.{jar,pom}
 //	maven/com/example/lib-core/1.2.0/lib-core-1.2.0.{jar,pom}, the POM depends on lib-api
@@ -39,6 +40,10 @@ func TestWriteFixtures(t *testing.T) {
 	for _, arch := range []string{"amd64", "all"} {
 		b, want := Deb(DebOptions{Arch: arch})
 		write("deb/"+want.Filename, b)
+	}
+	for _, c := range []string{"xz", "zst"} {
+		b, want := Deb(DebOptions{ControlCompression: c})
+		write("deb/"+c+"/"+want.Filename, b)
 	}
 	whl, wheel := Wheel(WheelOptions{})
 	write("pypi/"+wheel.Filename, whl)

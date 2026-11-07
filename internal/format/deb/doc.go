@@ -2,5 +2,18 @@
 // parsing, Packages and Release rendering, signing through internal/keys, and pool routes.
 // See docs/spec/http-routing.md §3 (apt) and docs/spec/manifest-profile.md.
 //
-// Filled in by issues #39 (parse), #40 (index rendering) and #42 (pool and upload).
+// The model: a package version is one .deb, an ar archive (deb(5)) whose control file names
+// it. lajstrom.name is Package, lajstrom.version is Version as dpkg spells it, epoch included,
+// and lajstrom.variant is Architecture, so the tag of nginx 1:1.18.0-6ubuntu14.4 for amd64 is
+// 1_3a1.18.0-6ubuntu14.4__amd64. Suite and component are properties of the upload
+// (lajstrom.deb.suite, lajstrom.deb.component), not separate repos. The one file layer is titled
+// with the pool file name, nginx_1.18.0-6ubuntu14.4_amd64.deb; the metadata layer holds the
+// control fields as written, md5sums, and the size, md5, sha1 and sha256 of the file, which
+// apt's Packages lists.
+//
+// Parse reads a .deb in one pass for Build; ParseControl reads only up to the end of the
+// control member, for Validate. Issue #39 is the parser, Build and Validate; #40 renders the
+// indexes and #42 serves the pool and the upload route. The plugin registers itself with
+// format.Register when the package is imported; the binary imports it in
+// cmd/lajstrom/formats.go.
 package deb

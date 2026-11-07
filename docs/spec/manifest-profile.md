@@ -90,7 +90,7 @@ whose content is defined per format:
 | --- | --- |
 | raw | `{"path": "<original path>", "contentType": "<as uploaded>", "size": n, "sha256": "<hex>"}` |
 | pypi | the core metadata (PEP 566 JSON form) of the distribution: `name`, `version`, `summary`, `requires_python`, `requires_dist`, `classifiers`, …, plus `filename`, `sha256`, `packagetype` (`bdist_wheel`/`sdist`) |
-| deb | `{"control": {<control fields as strings>}, "md5sums": {<path>: <md5>}, "size": n, "sha256": "<hex>", "filename": "…"}` |
+| deb | `{"control": {<control fields as strings>}, "md5sums": {<path>: <md5>}, "size": n, "sha256": "<hex>", "md5": "<hex>", "sha1": "<hex>", "filename": "…"}`; `md5` and `sha1` of the whole file are optional (apt's `Packages` carries `MD5sum`, `SHA1` and `SHA256`; an upload through Lajstrom writes all three, a manifest pushed without the two still validates) |
 | maven | `{"groupId", "artifactId", "version", "packaging", "files": [{"name", "extension", "classifier", "sha1", "md5", "sha256", "size"}], "pom": {<parsed essentials: parent, dependencies>}}` |
 
 The metadata layer is optional for `raw` and mandatory for every other format. UI, search and
