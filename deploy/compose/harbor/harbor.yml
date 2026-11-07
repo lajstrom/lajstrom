@@ -1,0 +1,89 @@
+# Harbor for the capability-matrix spike (issue #21, docs/registries/harbor.md): the harbor.yml
+# of Harbor's v2.15.4 installer (harbor.yml.tmpl), for a local, throwaway instance. Not for
+# production: plain HTTP and the installer's default passwords. harbor.sh copies this file
+# into the installer, replaces the two paths marked below with directories of
+# LAJSTROM_HARBOR_DIR, and runs prepare, which generates docker-compose.yml and common/config.
+
+# The installer warns against localhost: clients outside this machine cannot use the name. The
+# token service names it in its realm (http://localhost:5005/service/token), and that is what
+# Lajstrom, oras and crane on this machine use.
+hostname: localhost
+
+http:
+  port: 5005
+
+# No https block: plain HTTP, as the rest of the dev stack.
+
+# The initial password of the admin user, the installer's default; it applies on the first
+# start only.
+harbor_admin_password: Harbor12345
+
+database:
+  password: root123
+  max_idle_conns: 100
+  max_open_conns: 900
+  conn_max_lifetime: 5m
+  conn_max_idle_time: 0
+
+# Set by harbor.sh to $LAJSTROM_HARBOR_DIR/data: the registry's blobs, the database, Redis and
+# the secrets. harbor.sh down removes it.
+data_volume: /set/by/harbor.sh/data
+
+# Filesystem storage (no storage_service block): Harbor's registry does not redirect blob
+# downloads. The trivy block is the installer's; Trivy runs only with prepare --with-trivy,
+# which harbor.sh does not pass.
+trivy:
+  ignore_unfixed: false
+  skip_update: false
+  skip_java_db_update: false
+  offline_scan: false
+  security_check: vuln
+  insecure: false
+  timeout: 5m0s
+
+jobservice:
+  max_job_workers: 10
+  max_job_duration_hours: 24
+  job_loggers:
+    - STD_OUTPUT
+    - FILE
+  logger_sweeper_duration: 1 #days
+
+notification:
+  webhook_job_max_retry: 3
+  webhook_job_http_client_timeout: 3 #seconds
+
+log:
+  level: info
+  local:
+    rotate_count: 50
+    rotate_size: 200M
+    # Set by harbor.sh to $LAJSTROM_HARBOR_DIR/log, instead of the default /var/log/harbor.
+    location: /set/by/harbor.sh/log
+
+_version: 2.15.0
+
+proxy:
+  http_proxy:
+  https_proxy:
+  no_proxy:
+  components:
+    - core
+    - jobservice
+    - trivy
+
+network:
+  allow_private_network_access: true
+
+content_trust:
+  legacy_signer_pull_enabled: true
+
+upload_purging:
+  enabled: true
+  age: 168h
+  interval: 24h
+  dryrun: false
+
+cache:
+  enabled: false
+  expire_hours: 24
