@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/lajstrom/lajstrom/internal/api"
+	"github.com/lajstrom/lajstrom/internal/facade"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/provider"
@@ -34,7 +35,8 @@ const registryProbeTimeout = 10 * time.Second
 // apply each migration once. The index is Deps.Index of the format plugins and /-/readyz pings
 // it; the registries are Deps.Providers; the ingest pipeline over both, with ingest.claimTTL,
 // is Deps.Ingest. The repo service over the index (api.Repos) runs the config bootstrap
-// before the server listens, and serves /api/v1.
+// before the server listens, and serves /api/v1. The OCI facade over the index and the
+// registries serves /v2/.
 func newServeCmd(a *app) *cobra.Command {
 	return &cobra.Command{
 		Use:         "serve",
@@ -88,6 +90,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Deps:            format.Deps{Index: st, Providers: providers, Ingest: pipe},
 				Ready:           ready(a.log, c.Database.Driver, st),
 				API:             api.New(api.Options{Repos: repos, Log: a.log}),
+				Facade:          facade.New(facade.Options{Index: st, Providers: providers, Log: a.log}),
 			})
 			if err != nil {
 				return err

@@ -39,6 +39,7 @@ type fakeRegistry struct {
 	catalogStatus  int    // answer _catalog with this status instead of the listing
 	catalogMode    string // "": paginate repos; "repeat": the first page again and again; "endless": a new page every time
 	redirect       string // answer blob GETs with 307 to redirect + "/" + digest
+	stateful       bool   // upload Locations are absolute and carry a _state that changes with every chunk and must come back, as distribution's
 	authMode       string // "", "basic" or "bearer"
 	user, pass     string // the credentials auth accepts
 	token          string // the bearer token /token issues
@@ -47,12 +48,13 @@ type fakeRegistry struct {
 	hook func(w http.ResponseWriter, r *http.Request) bool
 
 	mu        sync.Mutex
-	requests  []string                                      // "GET /v2/…?query"
-	auths     []string                                      // the Authorization header of each request
-	repos     []string                                      // the catalog, in addition to the repositories with content
-	manifests map[string]map[string]*fakeManifest           // repo → digest or tag → manifest
-	blobs     map[string]map[digest.Digest][]byte           // repo → digest → content
-	uploads   map[string]string                             // upload id → repo
+	requests  []string                            // "GET /v2/…?query"
+	auths     []string                            // the Authorization header of each request
+	repos     []string                            // the catalog, in addition to the repositories with content
+	manifests map[string]map[string]*fakeManifest // repo → digest or tag → manifest
+	blobs     map[string]map[digest.Digest][]byte // repo → digest → content
+	uploads   map[string]*fakeUpload              // upload id → session
+	uploadSeq int
 	streams   map[digest.Digest]func(w http.ResponseWriter) // blobs a GET answers with this function
 }
 
@@ -73,7 +75,7 @@ func newFakeRegistry(t *testing.T) *fakeRegistry {
 		token:     "t0ken-value",
 		manifests: map[string]map[string]*fakeManifest{},
 		blobs:     map[string]map[digest.Digest][]byte{},
-		uploads:   map[string]string{},
+		uploads:   map[string]*fakeUpload{},
 		streams:   map[digest.Digest]func(http.ResponseWriter){},
 	}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
@@ -319,37 +321,125 @@ func (f *fakeRegistry) serveManifest(w http.ResponseWriter, r *http.Request, rep
 	}
 }
 
+// fakeUpload is an upload session of the fake registry.
+type fakeUpload struct {
+	repo  string
+	data  []byte
+	state int // the _state of the session's Location when stateful
+}
+
 func (f *fakeRegistry) serveUpload(w http.ResponseWriter, r *http.Request, repo, id string) {
+	if r.Method == http.MethodPost && id == "" {
+		f.startUpload(w, r, repo)
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	up := f.uploads[id]
 	switch {
-	case r.Method == http.MethodPost && id == "":
-		f.mu.Lock()
-		id = strconv.Itoa(len(f.uploads) + 1)
-		f.uploads[id] = repo
-		f.mu.Unlock()
-		w.Header().Set("Location", "/v2/"+repo+"/blobs/uploads/"+id)
-		w.WriteHeader(http.StatusAccepted)
-	case r.Method == http.MethodPut:
-		want := digest.Digest(r.URL.Query().Get("digest"))
-		var content bytes.Buffer
-		if _, err := io.Copy(&content, r.Body); err != nil {
-			writeErr(w, http.StatusBadRequest, "BLOB_UPLOAD_INVALID", err.Error())
+	case up == nil || up.repo != repo:
+		writeErr(w, http.StatusNotFound, "BLOB_UPLOAD_UNKNOWN", "blob upload unknown to registry")
+		return
+	case f.stateful && r.URL.Query().Get("_state") != strconv.Itoa(up.state):
+		writeErr(w, http.StatusBadRequest, "BLOB_UPLOAD_INVALID", "blob upload invalid")
+		return
+	}
+	switch r.Method {
+	case http.MethodPatch:
+		if !f.appendChunk(w, r, up) {
 			return
 		}
-		if got := digest.FromBytes(content.Bytes()); got != want {
+		up.state++
+		f.answerSession(w, id, up, http.StatusAccepted)
+	case http.MethodPut:
+		if !f.appendChunk(w, r, up) {
+			return
+		}
+		want := digest.Digest(r.URL.Query().Get("digest"))
+		if got := digest.FromBytes(up.data); got != want {
 			writeErr(w, http.StatusBadRequest, "DIGEST_INVALID", "digest mismatch")
 			return
 		}
-		f.mu.Lock()
 		if f.blobs[repo] == nil {
 			f.blobs[repo] = map[digest.Digest][]byte{}
 		}
-		f.blobs[repo][want] = content.Bytes()
-		f.mu.Unlock()
+		f.blobs[repo][want] = up.data
+		delete(f.uploads, id)
+		w.Header().Set("Location", "/v2/"+repo+"/blobs/"+want.String())
 		w.Header().Set("Docker-Content-Digest", want.String())
 		w.WriteHeader(http.StatusCreated)
+	case http.MethodGet:
+		f.answerSession(w, id, up, http.StatusNoContent)
+	case http.MethodDelete:
+		delete(f.uploads, id)
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+// startUpload answers POST …/blobs/uploads/: a mount when ?mount= names a blob that ?from has,
+// otherwise a new session. The caller does not hold f.mu.
+func (f *fakeRegistry) startUpload(w http.ResponseWriter, r *http.Request, repo string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if m := digest.Digest(r.URL.Query().Get("mount")); m != "" {
+		if b, ok := f.blobs[r.URL.Query().Get("from")][m]; ok {
+			if f.blobs[repo] == nil {
+				f.blobs[repo] = map[digest.Digest][]byte{}
+			}
+			f.blobs[repo][m] = b
+			w.Header().Set("Location", "/v2/"+repo+"/blobs/"+m.String())
+			w.Header().Set("Docker-Content-Digest", m.String())
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+	}
+	f.uploadSeq++
+	id := strconv.Itoa(f.uploadSeq)
+	up := &fakeUpload{repo: repo}
+	f.uploads[id] = up
+	f.answerSession(w, id, up, http.StatusAccepted)
+}
+
+// appendChunk appends the body to the session: at the session's end when the request has a
+// Content-Range, which must start there (else 416). The caller holds f.mu.
+func (f *fakeRegistry) appendChunk(w http.ResponseWriter, r *http.Request, up *fakeUpload) bool {
+	if cr := r.Header.Get("Content-Range"); cr != "" {
+		first, _, _ := strings.Cut(cr, "-")
+		if n, err := strconv.Atoi(first); err != nil || n != len(up.data) {
+			w.Header().Set("Range", fmt.Sprintf("0-%d", max(len(up.data)-1, 0)))
+			writeErr(w, http.StatusRequestedRangeNotSatisfiable, "BLOB_UPLOAD_INVALID", "range not satisfiable")
+			return false
+		}
+	}
+	b, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "BLOB_UPLOAD_INVALID", err.Error())
+		return false
+	}
+	up.data = append(up.data, b...)
+	return true
+}
+
+// answerSession answers status with the session's Location, Range and, when stateful, its
+// Docker-Upload-UUID. The caller holds f.mu.
+func (f *fakeRegistry) answerSession(w http.ResponseWriter, id string, up *fakeUpload, status int) {
+	loc := "/v2/" + up.repo + "/blobs/uploads/" + id
+	if f.stateful {
+		loc = f.srv.URL + loc + "?_state=" + strconv.Itoa(up.state)
+		w.Header().Set("Docker-Upload-UUID", "uuid-"+id)
+	}
+	w.Header().Set("Location", loc)
+	w.Header().Set("Range", fmt.Sprintf("0-%d", max(len(up.data)-1, 0)))
+	w.WriteHeader(status)
+}
+
+// openUploads returns how many sessions are open.
+func (f *fakeRegistry) openUploads() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.uploads)
 }
 
 func (f *fakeRegistry) serveBlob(w http.ResponseWriter, r *http.Request, repo string, d digest.Digest) {

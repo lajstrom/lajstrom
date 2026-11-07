@@ -214,6 +214,18 @@ func TestReposDefaults(t *testing.T) {
 	}
 }
 
+// oci needs no plugin: the facade serves its repos.
+func TestCreateOCIRepo(t *testing.T) {
+	s := &Repos{Index: newStore(t), Formats: oneOf("raw"), Registries: oneOf("local")}
+	repo, err := s.Create(context.Background(), CreateRequest{Format: "oci", Name: "images", Registry: "local"}, Origin{})
+	if err != nil || repo.Format != "oci" || repo.Name != "images" {
+		t.Fatalf("Create oci/images = %+v, %v", repo, err)
+	}
+	if repos, err := s.List(context.Background(), "oci"); err != nil || len(repos) != 1 {
+		t.Errorf("List(oci) = %+v, %v", repos, err)
+	}
+}
+
 func TestCheckPolicy(t *testing.T) {
 	for _, tt := range []struct {
 		in, want string

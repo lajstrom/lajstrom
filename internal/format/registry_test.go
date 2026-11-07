@@ -192,7 +192,8 @@ func TestCheckName(t *testing.T) {
 		{name: "v3"},
 		{name: "apis"},
 		{name: "", want: "plugin name is empty"},
-		{name: "v2", want: `"v2" is a reserved URL segment (- .well-known api ui v2)`},
+		{name: "v2", want: `"v2" is a reserved URL segment (- .well-known api oci ui v2)`},
+		{name: "oci", want: `"oci" is a reserved`},
 		{name: "api", want: `"api" is a reserved`},
 		{name: "ui", want: `"ui" is a reserved`},
 		{name: "-", want: `"-" is a reserved`},
@@ -224,7 +225,7 @@ func TestCheckName(t *testing.T) {
 
 func TestIsReserved(t *testing.T) {
 	tests := map[string]bool{
-		"v2": true, "api": true, "ui": true, "-": true, ".well-known": true,
+		"v2": true, "api": true, "ui": true, "-": true, ".well-known": true, "oci": true,
 		"raw": false, "pypi": false, "": false, "API": false, "v2x": false,
 	}
 	for seg, want := range tests {

@@ -47,6 +47,9 @@ type Options struct {
 	// API is the management REST API (internal/api), mounted at /api/. nil leaves /api/ to the
 	// ServeMux, which answers it 404 in plain text.
 	API http.Handler
+	// Facade is the OCI distribution API (internal/facade), mounted at /v2/. nil leaves /v2/ to
+	// the ServeMux, which answers it 404 in plain text.
+	Facade http.Handler
 }
 
 // Server is the Lajstrom HTTP server. Create it with New and start it with Run.

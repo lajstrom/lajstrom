@@ -44,7 +44,9 @@ var (
 // tags, and referrers by the subject of the manifests pushed. It behaves like a registry with
 // create-on-push, the referrers API, a catalog, manifest deletes and mutable tags, and without
 // blob redirects. Push and PushReference read the content to its end and check its size and
-// digest against the descriptor, as a registry does. It records every successful push.
+// digest against the descriptor, as a registry does. It records every successful push. Its
+// blob upload sessions (BlobUploader) keep a partial blob per Upload.ID, kept like a pushed
+// blob; OpenUploads counts the sessions not finished or cancelled.
 //
 // The Fail fields inject errors: when one is set, every call of that method returns it,
 // wrapped with the operation. Set them, and RedirectURL and NoDeleteManifest, before the calls
@@ -70,6 +72,8 @@ type Fake struct {
 	repos          map[string]*repoData
 	pushes         []PushRecord
 	pushReferences []PushRecord
+	uploads        map[string]*partial // open upload sessions by Upload.ID
+	uploadSeq      int
 }
 
 // repoData is the content of one repository.
@@ -163,6 +167,14 @@ func (f *Fake) BlobRedirectURL(_ context.Context, name string, d digest.Digest) 
 	return url, redirect, nil
 }
 
+// OpenUploads returns how many upload sessions are open: started and neither finished nor
+// cancelled.
+func (f *Fake) OpenUploads() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.uploads)
+}
+
 // Pushes returns the successful Push calls so far, in order.
 func (f *Fake) Pushes() []PushRecord {
 	f.mu.Lock()
@@ -202,16 +214,18 @@ func (r *repository) op(verb string, ref any) string {
 	return fmt.Sprintf("providertest: %s %s@%v", verb, r.name, ref)
 }
 
-// Fetch returns the manifest or blob target. A discarded blob is provider.ErrNotFound.
+// Fetch returns the manifest or blob target, found by its digest alone: the size of the
+// descriptor may be -1 (unknown). The reader is an io.ReadSeekCloser, so seeking to its end
+// gives the size. A discarded blob is provider.ErrNotFound.
 func (r *repository) Fetch(_ context.Context, target ocispec.Descriptor) (io.ReadCloser, error) {
 	r.f.mu.Lock()
 	defer r.f.mu.Unlock()
 	if rd := r.f.repo(r.name, false); rd != nil {
 		if m, ok := rd.manifests[target.Digest]; ok {
-			return io.NopCloser(bytes.NewReader(m.data)), nil
+			return seekNopCloser{bytes.NewReader(m.data)}, nil
 		}
 		if b, ok := rd.blobs[target.Digest]; ok && b.data != nil {
-			return io.NopCloser(bytes.NewReader(b.data)), nil
+			return seekNopCloser{bytes.NewReader(b.data)}, nil
 		}
 		if _, ok := rd.blobs[target.Digest]; ok {
 			return nil, fmt.Errorf("%s: larger than %d bytes, discarded on push: %w", r.op("fetch", target.Digest), MaxKept, provider.ErrNotFound)
@@ -417,6 +431,11 @@ func (r *repository) Referrers(_ context.Context, desc ocispec.Descriptor, artif
 	r.f.mu.Unlock()
 	return fn(refs)
 }
+
+// seekNopCloser is a bytes.Reader with a Close that does nothing.
+type seekNopCloser struct{ *bytes.Reader }
+
+func (seekNopCloser) Close() error { return nil }
 
 // manifestMediaTypes are the media types the Fake stores as manifests.
 var manifestMediaTypes = map[string]bool{

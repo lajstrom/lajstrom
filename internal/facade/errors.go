@@ -1,0 +1,139 @@
+package facade
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+
+	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/server"
+)
+
+// The error codes of the distribution spec ("Error Codes") that the facade answers with, and
+// TAG_INVALID, distribution's code for a tag that cannot be written, which clients know.
+const (
+	codeBlobUnknown       = "BLOB_UNKNOWN"
+	codeBlobUploadInvalid = "BLOB_UPLOAD_INVALID"
+	codeBlobUploadUnknown = "BLOB_UPLOAD_UNKNOWN"
+	codeDigestInvalid     = "DIGEST_INVALID"
+	codeManifestInvalid   = "MANIFEST_INVALID"
+	codeManifestUnknown   = "MANIFEST_UNKNOWN"
+	codeNameInvalid       = "NAME_INVALID"
+	codeNameUnknown       = "NAME_UNKNOWN"
+	codeSizeInvalid       = "SIZE_INVALID"
+	codeUnauthorized      = "UNAUTHORIZED"
+	codeDenied            = "DENIED"
+	codeUnsupported       = "UNSUPPORTED"
+	codeTooManyRequests   = "TOOMANYREQUESTS"
+	codeTagInvalid        = "TAG_INVALID"
+	// codeUnknown is distribution's code of a 5xx; the spec defines codes for 4xx answers only.
+	codeUnknown = "UNKNOWN"
+)
+
+// basicChallenge is the WWW-Authenticate of a 401 until #26 answers with the bearer challenge
+// of rbac.md §4; it is the frontends' (format.WriteError).
+const basicChallenge = `Basic realm="lajstrom"`
+
+// apiError is an error the facade answers in the distribution format: the code that the
+// handler chose for what it was doing, the status (zero: format.StatusOf of the cause, the one
+// error table of the frontends, so that index and provider errors map as everywhere), the
+// message for the client (empty: the cause's), and the cause, for the status and the log.
+type apiError struct {
+	status int
+	code   string
+	msg    string
+	err    error
+}
+
+func (e *apiError) Error() string {
+	switch {
+	case e.err == nil:
+		return e.msg
+	case e.msg == "":
+		return e.err.Error()
+	}
+	return e.msg + ": " + e.err.Error()
+}
+
+func (e *apiError) Unwrap() error { return e.err }
+
+// methodNotAllowed is the answer to a method a route does not have.
+func methodNotAllowed(r *http.Request) error {
+	return &apiError{status: http.StatusMethodNotAllowed, code: codeUnsupported,
+		msg: fmt.Sprintf("%s is not supported on %s", r.Method, r.URL.Path)}
+}
+
+// errorBody is the error document of the distribution spec.
+type errorBody struct {
+	Errors []errorEntry `json:"errors"`
+}
+
+type errorEntry struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Detail  any    `json:"detail,omitempty"`
+}
+
+// fail answers err as the distribution spec's error document. The status is the apiError's,
+// or format.StatusOf of the cause; the code follows the status where the status decides it
+// (401 UNAUTHORIZED with the challenge, 403 DENIED, 429 TOOMANYREQUESTS, 501 UNSUPPORTED, 5xx
+// UNKNOWN) and is the handler's otherwise. A 5xx says only its status text, and its cause is
+// logged with the request id: a backend error must not reach the client.
+func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
+	var ae *apiError
+	if !errors.As(err, &ae) {
+		ae = &apiError{err: err}
+	}
+	status := ae.status
+	if status == 0 {
+		status = format.StatusOf(ae.err)
+	}
+	code, msg := ae.code, ae.msg
+	if msg == "" && ae.err != nil {
+		msg = ae.err.Error()
+	}
+	switch {
+	case status >= http.StatusInternalServerError && status != http.StatusNotImplemented:
+		code, msg = codeUnknown, http.StatusText(status)
+		h.o.Log.ErrorContext(r.Context(), "facade: request failed", "method", r.Method, "path", r.URL.Path,
+			"status", status, "error", err.Error(), "requestId", server.RequestID(r.Context()))
+	case status == http.StatusUnauthorized:
+		code = codeUnauthorized
+		w.Header().Set("WWW-Authenticate", basicChallenge)
+	case status == http.StatusForbidden:
+		code = codeDenied
+	case status == http.StatusTooManyRequests:
+		code = codeTooManyRequests
+	case status == http.StatusNotImplemented:
+		code = codeUnsupported
+	case code == "":
+		code = codeOfStatus(status)
+	}
+	writeJSON(w, status, errorBody{Errors: []errorEntry{{Code: code, Message: msg}}})
+}
+
+// codeOfStatus is the code of an error whose handler named none.
+func codeOfStatus(status int) string {
+	switch status {
+	case http.StatusNotFound:
+		return codeNameUnknown
+	case http.StatusRequestEntityTooLarge:
+		return codeSizeInvalid
+	case http.StatusConflict:
+		return codeTagInvalid
+	}
+	return codeUnsupported
+}
+
+// writeJSON answers status with v as JSON.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	body, err := json.Marshal(v)
+	if err != nil { // the values are the facade's own structs and string slices
+		body, status = []byte(`{"errors":[{"code":"UNKNOWN","message":"Internal Server Error"}]}`), http.StatusInternalServerError
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", fmt.Sprint(len(body)+1))
+	w.WriteHeader(status)
+	_, _ = w.Write(append(body, '\n'))
+}
