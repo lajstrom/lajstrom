@@ -7,10 +7,12 @@ import (
 	"net/http"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry"
 	"oras.land/oras-go/v2/registry/remote/auth"
 	"oras.land/oras-go/v2/registry/remote/errcode"
 
+	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -23,10 +25,13 @@ const (
 )
 
 // Capabilities probes the registry on the first call and caches the answer; a probe that
-// fails is not cached, so the next call probes again. Then capabilities: from the
-// configuration replace what the probe found. The probe is:
+// fails is not cached, so the next call probes again. The vendor table (vendor.go) sets what
+// the probe cannot measure, and capabilities: from the configuration replace both. The probe
+// is:
 //
-//   - reachability: GET /v2/; a failure is the error of Capabilities;
+//   - reachability: GET /v2/; a failure is the error of Capabilities. Its headers, the
+//     challenge of a 401 the auth client answered on the way, and the host of the URL name
+//     the vendor (detectVendor);
 //   - catalog: GET /v2/_catalog?n=1; 200 is true, 401, 403, 404 and 405 are false;
 //   - referrers: GET /v2/<prefix>lajstrom-probe/referrers/<zero digest>; 200 with an OCI
 //     image index is true, any other 200 and a 404 without NAME_UNKNOWN are false, and so is
@@ -36,8 +41,9 @@ const (
 //     MaxBlobSize is 0 (unknown) without a request; DeleteManifest turns false when the
 //     registry answers a manifest delete with 405.
 //
-// A capability that the configuration sets is not probed. The first successful probe logs
-// the result at info.
+// A capability that the vendor table or the configuration sets is not probed. The first
+// successful probe logs the result and the vendor at info, and warns about a GitLab registry
+// with its metadata database, which refuses artifact types it does not know.
 func (p *Provider) Capabilities(ctx context.Context) (provider.Capabilities, error) {
 	c, err := p.probeOnce(ctx)
 	if err != nil {
@@ -46,13 +52,19 @@ func (p *Provider) Capabilities(ctx context.Context) (provider.Capabilities, err
 	return p.effective(c), nil
 }
 
-// effective applies what Lajstrom learnt since the probe, then the overrides, to probed.
+// effective applies what Lajstrom learnt since the probe, then the overrides, to probed,
+// which holds the vendor table's capabilities already.
 func (p *Provider) effective(probed provider.Capabilities) provider.Capabilities {
 	c := probed
 	if p.deleteRefused.Load() {
 		c.DeleteManifest = false
 	}
-	o := p.override
+	apply(&c, p.override)
+	return c
+}
+
+// apply sets in c the capabilities that o sets: the vendor table's, or the configuration's.
+func apply(c *provider.Capabilities, o config.CapabilityOverrides) {
 	set := func(dst *bool, v *bool) {
 		if v != nil {
 			*dst = *v
@@ -67,7 +79,6 @@ func (p *Provider) effective(probed provider.Capabilities) provider.Capabilities
 	if o.MaxBlobSize > 0 {
 		c.MaxBlobSize = o.MaxBlobSize
 	}
-	return c
 }
 
 // probeOnce returns the cached probe, or probes and caches a successful answer. Concurrent
@@ -81,13 +92,19 @@ func (p *Provider) probeOnce(ctx context.Context) (provider.Capabilities, error)
 	if c := p.probed.Load(); c != nil {
 		return *c, nil
 	}
-	c, err := p.probe(ctx)
+	id, err := p.ping(ctx)
+	if err != nil {
+		return provider.Capabilities{}, translate("ping "+p.name, err)
+	}
+	v := detectVendor(id)
+	c, err := p.probe(ctx, vendorDefaults[v])
 	if err != nil {
 		return provider.Capabilities{}, err
 	}
 	p.probed.Store(&c)
 	e := p.effective(c)
 	p.log.InfoContext(ctx, "registry capabilities",
+		"vendor", string(v),
 		"createOnPush", e.CreateOnPush,
 		"referrers", e.Referrers,
 		"catalog", e.Catalog,
@@ -96,29 +113,58 @@ func (p *Provider) probeOnce(ctx context.Context) (provider.Capabilities, error)
 		"blobRedirect", e.BlobRedirect,
 		"maxBlobSize", e.MaxBlobSize,
 	)
+	if v == vendorGitLab && id.gitLabDatabase() {
+		p.log.WarnContext(ctx, "GitLab registry with its metadata database: it refuses a manifest whose artifactType or config media type it does not know, every one Lajstrom writes, unless REGISTRY_FF_DYNAMIC_MEDIA_TYPES is on or the types are known to it")
+	}
 	return c, nil
 }
 
-// probe asks the registry what it supports; see Capabilities.
-func (p *Provider) probe(ctx context.Context) (provider.Capabilities, error) {
-	if err := p.registry.Ping(ctx); err != nil {
-		return provider.Capabilities{}, translate("ping "+p.name, err)
+// ping sends GET /v2/, as oras-go's Registry.Ping does, and returns what the registry says
+// about itself; challengeTransport keeps the challenge of a 401 that the auth client answers.
+func (p *Provider) ping(ctx context.Context) (identity, error) {
+	id := identity{host: p.host}
+	resp, err := p.get(context.WithValue(ctx, challengeKey{}, &id.challenge), p.base+"/v2/")
+	if err != nil {
+		return id, err
 	}
+	defer func() { _ = resp.Body.Close() }()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		id.header = resp.Header
+		return id, nil
+	case http.StatusNotFound:
+		return id, errdef.ErrNotFound
+	}
+	return id, parseErrorResponse(resp)
+}
+
+// probe asks the registry, which answered the ping, what it supports, and applies d, the
+// vendor table's capabilities; see Capabilities.
+func (p *Provider) probe(ctx context.Context, d config.CapabilityOverrides) (provider.Capabilities, error) {
 	c := provider.Capabilities{CreateOnPush: true, DeleteManifest: true, BlobRedirect: true}
 	var err error
-	if p.override.Catalog == nil {
+	if p.override.Catalog == nil && d.Catalog == nil {
 		if c.Catalog, err = p.probeCatalog(ctx); err != nil {
 			return provider.Capabilities{}, translate("probe catalog of "+p.name, err)
 		}
 	}
 	state := referrersUnknown
-	if p.override.Referrers == nil {
+	switch {
+	case p.override.Referrers != nil:
+		// The configuration decides; referrersCapability reads it.
+	case d.Referrers != nil:
+		state = referrersUnsupported
+		if *d.Referrers {
+			state = referrersSupported
+		}
+	default:
 		if state, err = p.probeReferrers(ctx); err != nil {
 			return provider.Capabilities{}, translate("probe referrers of "+p.name, err)
 		}
 	}
 	c.Referrers = state == referrersSupported
 	p.referrers.Store(state)
+	apply(&c, d)
 	return c, nil
 }
 
@@ -191,13 +237,19 @@ func catalogMissing(err error) (*errcode.ErrorResponse, bool) {
 }
 
 // catalogUsable reports whether ListRepositories may ask for the catalog: not when the
-// configuration or the probe says there is none.
+// configuration, the probe or, before a probe, the vendor table for the host says there is
+// none.
 func (p *Provider) catalogUsable() bool {
 	if o := p.override.Catalog; o != nil {
 		return *o
 	}
-	c := p.probed.Load()
-	return c == nil || c.Catalog
+	if c := p.probed.Load(); c != nil {
+		return c.Catalog
+	}
+	if d := vendorDefaults[detectVendor(identity{host: p.host})].Catalog; d != nil {
+		return *d
+	}
+	return true
 }
 
 // referrersCapability returns whether the repositories should use the referrers API, and

@@ -82,7 +82,8 @@ needed for a standalone registry. Behind GitLab with protection or immutability 
    `Gitlab-Container-Registry-Database-Enabled: true`; the provider could log that a GitLab
    registry with the database refuses unknown artifact types unless
    `REGISTRY_FF_DYNAMIC_MEDIA_TYPES` is on or the types are known to it. The refusal itself
-   cannot be probed without pushing a manifest.
+   cannot be probed without pushing a manifest. Done in #35: the probe names the vendor
+   (`vendor=gitlab`) and warns when the database is on.
 
 Nothing else: catalog, tag listing, the referrers fallback, delete, uploads, mounts and ranges
 work as on distribution.
