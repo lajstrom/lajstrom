@@ -280,7 +280,9 @@ func TestExampleFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load example: %v", err)
 	}
-	if len(c.Registries) != 1 || len(c.Repos) != 1 {
-		t.Errorf("example has %d registries and %d repos, want 1 and 1", len(c.Registries), len(c.Repos))
+	// No repo until the raw plugin is compiled in (#13): serve refuses a repo of a format it
+	// does not have, and make run serves this file.
+	if len(c.Registries) != 1 || len(c.Repos) != 0 {
+		t.Errorf("example has %d registries and %d repos, want 1 and 0", len(c.Registries), len(c.Repos))
 	}
 }

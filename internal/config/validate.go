@@ -9,11 +9,13 @@ import (
 	"strings"
 )
 
-// namePattern is the rule for repo names (docs/spec/manifest-profile.md §4.1), also applied to
-// registry names and formats so that each is one safe URL and OCI path segment.
-var namePattern = regexp.MustCompile(`^[a-z0-9]+(?:[-._][a-z0-9]+)*$`)
+// RepoNamePattern is the rule for repo names (docs/spec/manifest-profile.md §4.1), also applied
+// to registry names and formats so that each is one safe URL and OCI path segment. The
+// management API (internal/api) checks repo names with it too. Treat it as read-only.
+var RepoNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:[-._][a-z0-9]+)*$`)
 
-const maxNameLen = 64
+// MaxNameLen is the longest repo or registry name, in bytes (docs/spec/manifest-profile.md §4.1).
+const MaxNameLen = 64
 
 // Validate checks c and returns nil or one error per problem, joined with errors.Join. Each
 // error starts with the key it is about, e.g. "repos[0].registry: …". Errors never contain
@@ -140,8 +142,8 @@ func validName(p *problems, key, name string) {
 	switch {
 	case name == "":
 		p.add(key, "must not be empty")
-	case len(name) > maxNameLen || !namePattern.MatchString(name):
-		p.add(key, "%q must be lowercase letters and digits separated by single '.', '_' or '-', at most %d characters", name, maxNameLen)
+	case len(name) > MaxNameLen || !RepoNamePattern.MatchString(name):
+		p.add(key, "%q must be lowercase letters and digits separated by single '.', '_' or '-', at most %d characters", name, MaxNameLen)
 	}
 }
 

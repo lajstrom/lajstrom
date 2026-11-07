@@ -151,7 +151,7 @@ role. Shapes are fixed in the API issue (M2-09); listed here so frontends do not
 | audit | `GET /api/v1/audit?repo=&principal=&since=` |
 | whoami | `GET /api/v1/whoami` |
 
-Errors: `{"error": {"code": "NOT_FOUND|CONFLICT|FORBIDDEN|INVALID|UNAVAILABLE", "message": "…"}}`.
+Errors: `{"error": {"code": "NOT_FOUND|CONFLICT|FORBIDDEN|INVALID|UNAVAILABLE|INTERNAL", "message": "…"}}`.
 
 ## 5. System endpoints
 

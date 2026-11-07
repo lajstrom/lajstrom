@@ -44,6 +44,9 @@ type Options struct {
 	// Ready reports whether the server can take traffic: the index database is reachable and
 	// the registries answer (docs/spec/http-routing.md §5). nil means always ready.
 	Ready func(ctx context.Context) error
+	// API is the management REST API (internal/api), mounted at /api/. nil leaves /api/ to the
+	// ServeMux, which answers it 404 in plain text.
+	API http.Handler
 }
 
 // Server is the Lajstrom HTTP server. Create it with New and start it with Run.
