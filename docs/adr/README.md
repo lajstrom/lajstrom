@@ -49,3 +49,4 @@ to `superseded by NNNN`. Typos and broken links may be fixed in place.
 | [0006](0006-derived-index-and-control-plane.md) | Derived index plus a small control plane; SQLite and Postgres | proposed |
 | [0007](0007-rbac-model.md) | Authentication and RBAC model | proposed |
 | [0008](0008-policy-verdicts-and-enforcement.md) | Policy verdicts: deny lists, quarantine, and where enforcement lives | proposed |
+| [0009](0009-encryption-at-rest-in-the-registry.md) | Encryption at rest in the registry: OCI encrypted layers, keys held by Lajstrom | proposed |
