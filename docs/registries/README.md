@@ -26,6 +26,7 @@ becomes (`format.ServeBlob`): one request to the registry either way.
 | Zot | v2.1.23, htpasswd | Basic | yes | yes | yes | yes | no | no redirect: streamed, one request | pass (with prefix) |
 | Zot | v2.1.23 (`zot-minimal:v2.1.23`, the multi-arch index `sha256:59cb5740…cd3458`, arm64 as above), the dev stack: `dedupe`, `gc` every 10 min (`deploy/compose/zot/config.json`) | none | yes | yes | yes | yes | no (not probed) | no redirect: streamed, one request; a range 206, but no `Accept-Ranges` on a `GET` (its `HEAD` has one) | pass, with and without prefix |
 | GitLab container registry | v4.43.0 (`cng/gitlab-container-registry:v4.43.0-gitlab`, `sha256:fe9c6741…f8222e`), filesystem storage, delete enabled; metadata on the filesystem (A) or in its database (B, as GitLab.com): the gitlab profile of the dev stack (`make dev-up PROFILES=gitlab`) | none | yes | **no**: `/referrers/` is a plain 404 in both; tag schema | yes, `n`/`last` pagination, `n` at most 1000 | yes | no option in the registry: GitLab's rules come in GitLab's tokens, and with one every digest delete is 401 `PROTECTED_MANIFEST` | no redirect: streamed, one request; `Accept-Ranges: bytes`, a range 206 | A: pass, with and without prefix. B: **every Lajstrom manifest refused**, 400 `unknown media type` for the `artifactType`, unless `REGISTRY_FF_DYNAMIC_MEDIA_TYPES=true`; then pass |
+| [Harbor](harbor.md) | v2.15.4 (online installer, `sha256:eeb899cf…9805c6`; amd64 images only, emulated on arm64), filesystem storage, a project `lajstrom-it` and a robot account of it: `deploy/compose/harbor/harbor.sh up` | Bearer, from Harbor's token service | yes, but only inside an existing project: `prefix: <project>/`; without it every repository is 401 `project … not found` and the referrers probe a 400 | **yes**: OCI 1.1, the `artifactType` filter, `OCI-Subject` | **no**: `_catalog` is for system admins with Basic auth; the REST API lists a project's repositories (`page_size` at most 100, `X-Total-Count`, `Link`) | yes, by digest; the subject's referrers go with it | per project, immutability rules: an existing tag and a digest delete of a manifest under one are 412 `PRECONDITION` "configured as immutable" | no redirect: streamed, one request; `Accept-Ranges: bytes`, a range 206 | pass with the prefix, but for one step: Harbor appends a chunk out of order instead of 416. Over a quota, 403 `DENIED`, which the provider reads as bad credentials (502) |
 
 Notes:
 
@@ -60,6 +61,11 @@ Notes:
 - The GitLab container registry, both variants, the online garbage collector (it deletes an
   untagged referrer 24 h after its push), a test of GitLab's immutable tags through its tokens,
   and the commands: [gitlab.md](gitlab.md).
+- Harbor runs from its installer as a compose project of its own on `localhost:5005`, not in the
+  dev stack (`deploy/compose/harbor/harbor.sh up` and `down`). It is the first registry here
+  whose tokens come from a real token service. The robot account, the prefix, the referrers,
+  immutability rules, quotas, the garbage collector (an untagged referrer survives it, with or
+  without `delete_untagged`) and the commands: [harbor.md](harbor.md).
 
 ## Commands
 
