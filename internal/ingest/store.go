@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
+	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -21,7 +24,8 @@ var errExisted = errors.New("ingest: the tag already holds this manifest")
 // manifest under it. The claim comes first: a concurrent claim of the tag holds the insert
 // until it commits, so the version read next sees the other publish's outcome. A version with
 // another digest, or a fresh claim of another digest, is the *index.TagConflictError, which
-// is returned as it is.
+// is returned as it is; for an Upload (repeatOnFiles) a version with the same file layers is
+// the repeat instead, and pub.existing names its manifest.
 func (p *Pipeline) claimTag(ctx context.Context, pub *publish) (existed bool, err error) {
 	now := p.now()
 	pub.claim = index.TagClaim{RepoID: pub.repo.ID, Package: pub.parsed.Annotations.Name, Tag: pub.tag,
@@ -36,10 +40,20 @@ func (p *Pipeline) claimTag(ctx context.Context, pub *publish) (existed bool, er
 			return err
 		case v == nil:
 			return nil
-		case v.Digest != pub.digest:
-			return &index.TagConflictError{Tag: pub.tag, Existing: v.Digest}
+		case v.Digest == pub.digest:
+			return errExisted
 		}
-		return errExisted
+		if pub.repeatOnFiles {
+			same, err := sameFiles(ctx, w, v.ID, pub.parsed.Files)
+			if err != nil {
+				return err
+			}
+			if same {
+				pub.existing = v.Digest
+				return errExisted
+			}
+		}
+		return &index.TagConflictError{Tag: pub.tag, Existing: v.Digest}
 	})
 	var conflict *index.TagConflictError
 	switch {
@@ -68,6 +82,62 @@ func versionByTag(ctx context.Context, r index.Reader, repoID int64, name, tag s
 		return nil, nil
 	}
 	return v, err
+}
+
+// repeat returns the version that built's tag already holds when it has the same file layers,
+// which Upload treats as the idempotent repeat: two builds of the same files differ by
+// org.opencontainers.image.created, so the digest cannot tell a retry from a new publish and
+// the files can. It runs before the blobs are pushed, so a repeat touches the registry not at
+// all; claimTag applies the rule again under the claim. A manifest that fails the profile is
+// left to the pipeline, which reports why.
+func (p *Pipeline) repeat(ctx context.Context, repo index.Repo, built *format.Built) (*index.Version, error) {
+	parsed, err := profile.Validate(built.Manifest)
+	if err != nil {
+		return nil, nil //nolint:nilerr // not a repeat; validate reports the error
+	}
+	v, err := versionByTag(ctx, p.index, repo.ID, parsed.Annotations.Name, built.Tag)
+	if err != nil {
+		return nil, fmt.Errorf("ingest: version %s:%s: %w", built.RepoPath, built.Tag, err)
+	}
+	if v == nil {
+		return nil, nil
+	}
+	same, err := sameFiles(ctx, p.index, v.ID, parsed.Files)
+	if err != nil || !same {
+		return nil, err
+	}
+	return v, nil
+}
+
+// sameFiles reports whether the files of a version are the file layers, as a set: the same
+// digest, size, media type and title each, in any order. The metadata layer is not compared:
+// it is built from the files.
+func sameFiles(ctx context.Context, r index.Reader, versionID int64, layers []profile.Layer) (bool, error) {
+	files, err := r.ListFiles(ctx, versionID)
+	if err != nil {
+		return false, fmt.Errorf("ingest: files of version %d: %w", versionID, err)
+	}
+	if len(files) != len(layers) {
+		return false, nil
+	}
+	type key struct {
+		digest    digest.Digest
+		size      int64
+		mediaType string
+		title     string
+	}
+	have := make(map[key]int, len(files))
+	for _, f := range files {
+		have[key{f.Digest, f.Size, f.MediaType, f.Name}]++
+	}
+	for _, l := range layers {
+		k := key{l.Digest, l.Size, l.MediaType, l.Title}
+		if have[k] == 0 {
+			return false, nil
+		}
+		have[k]--
+	}
+	return true, nil
 }
 
 // push puts the manifest and its tag in one request. On any error the claim is released.

@@ -111,6 +111,19 @@ func buildRaw(ctx context.Context, repo index.Repo, up format.Upload) (*format.B
 		RepoPath: profile.RepositoryPath("", repo.Format, repo.Name, path)}, nil
 }
 
+// buildRawAt is buildRaw with another org.opencontainers.image.created: the manifest of the
+// same files differs by that annotation alone.
+func buildRawAt(at time.Time) func(context.Context, index.Repo, format.Upload) (*format.Built, error) {
+	return func(ctx context.Context, repo index.Repo, up format.Upload) (*format.Built, error) {
+		b, err := buildRaw(ctx, repo, up)
+		if err != nil {
+			return nil, err
+		}
+		b.Manifest.Annotations[ocispec.AnnotationCreated] = at.UTC().Format(time.RFC3339Nano)
+		return b, nil
+	}
+}
+
 // blobOf is a BlobSource of bytes in memory.
 func blobOf(desc ocispec.Descriptor, b []byte) format.BlobSource {
 	return format.BlobSource{
