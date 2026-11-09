@@ -278,6 +278,14 @@ back at the first answer. `/-/healthz` is only "the process is up": point the li
 there and the readiness probe at `/-/readyz`, so that an outage of the registry or the database
 does not restart the pods.
 
+Where the check must run inside the container, as a Docker or Compose `healthcheck:` (the image
+has no shell and no HTTP client), `lajstrom healthcheck` is the client: one `GET` of
+`/-/readyz`, or of `/-/healthz` with `--live`, exit status 0 on `200` and 1 otherwise, one line
+either way, 3 seconds at most (`--timeout`). `--url http://127.0.0.1:8080` names the server and
+nothing else is read; without it the server is `server.listen` of the configuration on loopback,
+and only that key and `LAJSTROM_SERVER_LISTEN` are read, never a secret. It speaks plain HTTP
+unless `--url` says `https`; [deploy/compose.md](deploy/compose.md#the-health-check) uses it.
+
 ## Metrics
 
 Prometheus scrapes `GET /metrics` on the metrics listener, `server.metricsListen` (default

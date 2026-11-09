@@ -47,6 +47,14 @@ services:
         condition: service_healthy
       registry:
         condition: service_healthy
+    healthcheck:
+      # The image has no shell and no HTTP client: the binary asks its own /-/readyz, which is
+      # 503 while the database or the registry does not answer (lajstrom healthcheck).
+      test: ["CMD", "/lajstrom", "healthcheck", "--url", "http://127.0.0.1:8080"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
     stop_grace_period: 40s # server.shutdownTimeout (30s) and some
 

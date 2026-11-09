@@ -1,6 +1,6 @@
 // Command lajstrom is the Lajstrom server and its command-line tools: serve, migrate, reindex,
-// version and admin. Run lajstrom --help for the commands; docs/configuration.md describes the
-// configuration file.
+// version, admin and healthcheck. Run lajstrom --help for the commands; docs/configuration.md
+// describes the configuration file.
 package main
 
 import (

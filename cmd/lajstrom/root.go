@@ -53,6 +53,7 @@ func newRootCmd(lookupEnv func(string) (string, bool)) *cobra.Command {
 		newReindexCmd(a),
 		newVersionCmd(),
 		newAdminCmd(a),
+		newHealthcheckCmd(a),
 	)
 	return root
 }

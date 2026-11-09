@@ -354,6 +354,42 @@ func TestLoadTokenSigningKeyFile(t *testing.T) {
 	}
 }
 
+// TestServerListen reads server.listen and LAJSTROM_SERVER_LISTEN alone: a registry whose
+// password variable is unset, which Load refuses, does not matter; an unknown key or a listen
+// address that is not host:port does.
+func TestServerListen(t *testing.T) {
+	withSecret := minimal + "registries:\n  - {name: local, url: \"http://localhost:5000\", auth: {username: u, passwordEnv: UNSET_PASSWORD}}\n"
+	tests := []struct {
+		name, file string
+		env        map[string]string
+		want       string
+		wantErr    string
+	}{
+		{"the file", withSecret, nil, ":8080", ""},
+		{"the variable", withSecret, map[string]string{"LAJSTROM_SERVER_LISTEN": "127.0.0.1:9090"}, "127.0.0.1:9090", ""},
+		{"empty variable", withSecret, map[string]string{"LAJSTROM_SERVER_LISTEN": ""}, ":8080", ""},
+		{"unknown key", "server: {listen: \":8080\", lissen: x}\n", nil, "", "field lissen not found"},
+		{"not host:port", "server:\n  listen: \"8080\"\n", nil, "", `server.listen: "8080" is not host:port`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ServerListen(writeConfig(t, tt.file), env(tt.env))
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("ServerListen = %q, %v; want %q", got, err, tt.want)
+			}
+		})
+	}
+	if _, err := Load(writeConfig(t, withSecret), nil); err == nil {
+		t.Error("Load of the configuration with an unset password variable: no error, the test above proves nothing")
+	}
+}
+
 func TestLoadMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.yaml")
 	_, err := Load(path, nil)
