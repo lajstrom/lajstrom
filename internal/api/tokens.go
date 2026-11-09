@@ -51,12 +51,19 @@ func (req *TokenRequest) expiry() (auth.Expiry, error) {
 }
 
 // allowTokens decides whether the request may list, create and revoke the personal access
-// tokens of the user called name: the user itself, or the admin role (manage on the system,
+// tokens of the user called name: the user itself, the live user of that name whose uid is the
+// principal's, or the admin role (manage on the system,
 // auth.System). Either way the credential limits first (format.Authorize): a deploy token and a
 // personal access token with scopes never manage tokens, 403 (docs/acceptance.md X-14).
 func (h *handler) allowTokens(r *http.Request, name string) error {
-	if p := auth.PrincipalFrom(r.Context()); p.Kind == auth.KindUser && p.Name == name {
-		return h.limit(r, auth.ActionManage, auth.System, auth.System)
+	if p := auth.PrincipalFrom(r.Context()); p.Kind == auth.KindUser {
+		u, err := h.tokens.Index.GetUser(r.Context(), name)
+		switch {
+		case err == nil && u.UID == p.Name:
+			return h.limit(r, auth.ActionManage, auth.System, auth.System)
+		case err != nil && !errors.Is(err, index.ErrNotFound):
+			return err
+		}
 	}
 	return h.allow(r, auth.ActionManage, auth.System, auth.System)
 }

@@ -12,6 +12,8 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
+
+	"github.com/lajstrom/lajstrom/internal/index"
 )
 
 // ErrInvalid means a user name or a password breaks its rule. The message of an error that
@@ -184,7 +186,7 @@ func CheckPassword(password string) error {
 var reservedNames = map[string]bool{"deploy": true}
 
 // CheckName checks a user name: 1 to MaxNameLen bytes of lowercase letters, digits, '.', '_'
-// and '-', the first a letter or a digit, and not a reserved name. A name is what HTTP Basic
+// and '-', the first a letter or a digit, not a reserved name and not of the form of a uid. A name is what HTTP Basic
 // carries before the colon and what user:<name> binds, so it has no colon, no space and no
 // upper case. Errors wrap ErrInvalid.
 func CheckName(name string) error {
@@ -193,6 +195,9 @@ func CheckName(name string) error {
 	}
 	if reservedNames[name] {
 		return invalidf("name: %q is reserved: Basic credentials %s:<token> are a deploy token", name, name)
+	}
+	if index.IsUID(name) {
+		return invalidf("name: %q has the form of a uid, which user:<uid> means; a name may not (docs/spec/rbac.md §1)", name)
 	}
 	ok := len(name) <= MaxNameLen && isLowerOrDigit(name[0])
 	for i := 1; ok && i < len(name); i++ {

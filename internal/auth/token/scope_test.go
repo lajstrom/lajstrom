@@ -77,8 +77,8 @@ func (failing) Allowed(context.Context, auth.Principal, auth.Action, string, str
 // that fails is an error.
 func TestReduce(t *testing.T) {
 	z := grants{
-		"user:bob":   {"raw/assets": {auth.ActionRead}},
-		"user:alice": {"raw/assets": {auth.ActionRead, auth.ActionWrite}},
+		"user:bob":     {"raw/assets": {auth.ActionRead}},
+		alice.String(): {"raw/assets": {auth.ActionRead, auth.ActionWrite}},
 	}
 	scopes := ParseScopes([]string{"repository:raw/assets/hello:pull,push", "repository:pypi/internal/x:pull", "registry:catalog:*"})
 	for _, tt := range []struct {
@@ -117,11 +117,10 @@ func TestReduce(t *testing.T) {
 // actions of its scopes on its own repo, nothing elsewhere and never delete (S-04, X-14); a
 // password changes nothing.
 func TestReduceCredential(t *testing.T) {
-	alice := auth.Principal{Kind: auth.KindUser, Name: "alice"}
 	deploy := auth.Principal{Kind: auth.KindToken, Name: "20"}
 	z := grants{
-		"user:alice": {"raw/assets": {auth.ActionRead, auth.ActionWrite, auth.ActionDelete}},
-		"token:20":   {"raw/assets": {auth.ActionRead, auth.ActionWrite}},
+		alice.String(): {"raw/assets": {auth.ActionRead, auth.ActionWrite, auth.ActionDelete}},
+		"token:20":     {"raw/assets": {auth.ActionRead, auth.ActionWrite}},
 	}
 	scopes := ParseScopes([]string{"repository:raw/assets/hello:*", "repository:pypi/internal/x:pull,push", "registry:catalog:*"})
 	pat := func(sc ...string) auth.Credential {

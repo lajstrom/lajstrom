@@ -1,9 +1,12 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/lajstrom/lajstrom/internal/index"
 )
 
 // ErrInvalidPrincipal means a string is not a principal in canonical form.
@@ -24,13 +27,38 @@ const (
 	KindAnonymous Kind = "anonymous"
 )
 
-// Principal is who performs a request. Its canonical string form, used in bindings, sessions
-// and the audit log, is user:<name>, token:<id>, group:<name> or anonymous. The zero value is
-// not a valid principal.
+// Principal is who performs a request. Its canonical string form, used in bindings, sessions,
+// the audit log and the sub of a bearer token, is user:<uid>, token:<id>, group:<name> or
+// anonymous (docs/spec/rbac.md §1). The zero value is not a valid principal.
 type Principal struct {
 	Kind Kind
-	// Name is the user or group name, or the decimal id of a deploy token; empty for anonymous.
+	// Name is a user's uid (index.NewUID), a group's name or the decimal id of a deploy token;
+	// empty for anonymous. Where a person names a user, user:<name> parses too, with the name
+	// here; LookupUser finds the user either way.
 	Name string
+}
+
+// UserPrincipal returns the principal of the user u: user:<uid>.
+func UserPrincipal(u *index.User) Principal { return Principal{Kind: KindUser, Name: u.UID} }
+
+// LookupUser returns the live user that p names: by uid when p.Name has the form of one
+// (index.IsUID), by name otherwise, which at any moment is one live user's. A principal that is
+// not a user's, and a deleted user, is index.ErrNotFound.
+func LookupUser(ctx context.Context, r index.Reader, p Principal) (*index.User, error) {
+	if p.Kind != KindUser {
+		return nil, fmt.Errorf("%w: %s is not a user", index.ErrNotFound, p)
+	}
+	if !index.IsUID(p.Name) {
+		return r.GetUser(ctx, p.Name)
+	}
+	u, err := r.GetUserByUID(ctx, p.Name)
+	if err != nil {
+		return nil, err
+	}
+	if u.DeletedAt != nil {
+		return nil, fmt.Errorf("%w: user %s is deleted", index.ErrNotFound, p.Name)
+	}
+	return u, nil
 }
 
 // Anonymous is the principal of requests without credentials.

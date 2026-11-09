@@ -23,11 +23,10 @@ var ErrBadCredentials = errors.New("auth: bad credentials")
 
 // Defaults of the verification cache.
 const (
-	// DefaultCacheTTL is how long a verified password is remembered, and the user name of a
-	// token's owner.
+	// DefaultCacheTTL is how long a verified password is remembered.
 	DefaultCacheTTL = 5 * time.Minute
-	// DefaultCacheSize bounds the number of remembered verifications, of remembered token
-	// owners and of remembered token uses, each.
+	// DefaultCacheSize bounds the number of remembered verifications and of remembered token
+	// uses, each.
 	DefaultCacheSize = 10000
 )
 
@@ -80,16 +79,8 @@ type Authenticator struct {
 	entries map[cacheKey]*list.Element // of *cacheEntry
 	order   *list.List                 // oldest first
 
-	// owners remembers the name of a token's owner by user id, for a bearer, which carries
-	// no user name; touches remembers when the use of each token was last recorded.
-	owners  *bounded[int64, ownerEntry]
+	// touches remembers when the use of each token was last recorded.
 	touches *bounded[int64, time.Time]
-}
-
-// ownerEntry is the name of a user, and when it stops counting.
-type ownerEntry struct {
-	name    string
-	expires time.Time
 }
 
 // cacheKey is sha256(username ‖ 0x00 ‖ secret).
@@ -127,7 +118,7 @@ func NewAuthenticator(o Options) *Authenticator {
 	if a.size <= 0 {
 		a.size = DefaultCacheSize
 	}
-	a.owners, a.touches = newBounded[int64, ownerEntry](a.size), newBounded[int64, time.Time](a.size)
+	a.touches = newBounded[int64, time.Time](a.size)
 	dummyHash() // now, so that the first unknown user does not pay for it
 	return a
 }
@@ -169,7 +160,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, username, secret strin
 	return p, Credential{Kind: CredPassword}, nil
 }
 
-// authenticatePassword returns the principal user:<username> when secret is that user's
+// authenticatePassword returns the principal user:<uid> of the user called username when secret is its
 // password. An unknown user, a disabled one, one without a password, and a wrong secret are
 // each an error wrapping ErrBadCredentials, after the same argon2id work.
 func (a *Authenticator) authenticatePassword(ctx context.Context, username, secret string) (Principal, error) {
@@ -197,7 +188,7 @@ func (a *Authenticator) authenticatePassword(ctx context.Context, username, secr
 	}
 	key := keyOf(username, secret)
 	if a.cached(key, u.PasswordHash) {
-		return Principal{Kind: KindUser, Name: username}, nil
+		return UserPrincipal(u), nil
 	}
 	ok, err := a.verify(u.PasswordHash, secret)
 	switch {
@@ -207,7 +198,7 @@ func (a *Authenticator) authenticatePassword(ctx context.Context, username, secr
 		return Principal{}, a.refuse(ctx, username, "wrong password")
 	}
 	a.remember(key, u.PasswordHash)
-	return Principal{Kind: KindUser, Name: username}, nil
+	return UserPrincipal(u), nil
 }
 
 // refuse logs a refusal at debug level, with the user name unless it is empty, and returns

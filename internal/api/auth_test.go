@@ -22,6 +22,9 @@ func (f fakeAuth) Allowed(_ context.Context, p auth.Principal, a auth.Action, fo
 	if f.err != nil {
 		return false, f.err
 	}
+	if name, ok := testNames.Load(p.Name); ok {
+		p.Name = name.(string)
+	}
 	key := p.String() + " " + string(a) + " "
 	return f.grants[key+formatName+"/"+repo] || f.grants[key+"*/*"], nil
 }

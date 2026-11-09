@@ -33,7 +33,7 @@ func TestBindingsCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.ID == 0 || b.Principal != "user:alice" || b.Role != RoleWriter || b.RepoMask != "raw/assets" || !b.CreatedAt.Equal(usersNow) {
+	if b.ID == 0 || named(t, st, b.Principal) != "user:alice" || b.Name != "alice" || b.Role != RoleWriter || b.RepoMask != "raw/assets" || !b.CreatedAt.Equal(usersNow) {
 		t.Errorf("Create = %+v", b)
 	}
 	for _, mask := range []string{"raw/*", "*/assets", "*/*", "oci/mirror"} {
@@ -62,7 +62,7 @@ func wantBindingEvents(t *testing.T, st index.Reader, action string, n int, firs
 	if len(evs) != n {
 		t.Fatalf("%d %s events, want %d", len(evs), action, n)
 	}
-	if ev := evs[n-1]; ev.Principal != "anonymous" || ev.Subject != "user:alice" || string(ev.Details) != first {
+	if ev := evs[n-1]; ev.Principal != "anonymous" || named(t, st, ev.Subject) != "user:alice" || string(ev.Details) != first {
 		t.Errorf("the first %s event: %+v, want details %s", action, ev, first)
 	}
 }

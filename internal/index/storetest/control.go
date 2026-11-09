@@ -149,6 +149,9 @@ func testUsers(t *testing.T, s index.Store) {
 	got, err := s.GetUserByUID(ctx, users[0].UID)
 	must(t, err)
 	same(t, "GetUserByUID", users[0], *got)
+	got, err = s.GetUserByID(ctx, users[0].ID)
+	must(t, err)
+	same(t, "GetUserByID", users[0], *got)
 
 	// A rename and a new password; the uid stays.
 	u := users[1]
@@ -173,6 +176,7 @@ func testUsers(t *testing.T, s index.Store) {
 		{"GetUser missing", second(s.GetUser(ctx, "carol")), index.ErrNotFound},
 		{"GetUserByUID missing", second(s.GetUserByUID(ctx, index.NewUID(at(0)))), index.ErrNotFound},
 		{"GetUserByUID not a uid", second(s.GetUserByUID(ctx, "bob")), index.ErrNotFound},
+		{"GetUserByID missing", second(s.GetUserByID(ctx, 999999)), index.ErrNotFound},
 	} {
 		wantErr(t, tt.name, tt.err, tt.want)
 	}

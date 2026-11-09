@@ -31,7 +31,8 @@ import (
 
 const service = "art.test"
 
-var alice = auth.Principal{Kind: auth.KindUser, Name: "alice"}
+// alice is a user principal, user:<uid>, as the authenticator makes it (docs/spec/rbac.md §1).
+var alice = auth.Principal{Kind: auth.KindUser, Name: "019a6c3e-7b1e-7c3d-8e2f-00000000a11c"}
 
 // newKey makes a token key of alg, as keys makes them: the fingerprint is the sha256 of the
 // PKIX DER of the public key.
@@ -192,7 +193,7 @@ func checkIssued(t *testing.T, tok *Token, k *keys.TokenKey) string {
 		t.Errorf("jti %q is not 16 bytes of base64url", jti)
 	}
 	delete(payload, "jti")
-	want := map[string]any{"iss": service, "aud": []any{service}, "sub": "user:alice",
+	want := map[string]any{"iss": service, "aud": []any{service}, "sub": alice.String(),
 		"iat": float64(t0.Unix()), "nbf": float64(t0.Unix()), "exp": float64(t0.Unix() + 1200),
 		"access": []any{
 			map[string]any{"type": "registry", "name": "catalog", "actions": []any{"*"}},
@@ -306,23 +307,24 @@ func TestVerifyRefusals(t *testing.T) {
 	}
 	other, err := issuer.Issue(t.Context(), alice, "other.test", nil)
 	must(t, err)
-	wrongIssuer := claims("user:alice")
+	wrongIssuer := claims(alice.String())
 	wrongIssuer.Issuer = "other.test"
-	noExp := claims("user:alice")
+	noExp := claims(alice.String())
 	noExp.ExpiresAt = nil
-	none := sign(t, jwt.SigningMethodNone, jwt.UnsafeAllowNoneSignatureType, a.ID(), claims("user:alice"))
+	none := sign(t, jwt.SigningMethodNone, jwt.UnsafeAllowNoneSignatureType, a.ID(), claims(alice.String()))
 	changed := []byte(good.Raw)
 	changed[strings.LastIndexByte(good.Raw, '.')+5] ^= 0x01
 	tests := map[string]string{
-		"HS256 with the public key as the secret": sign(t, jwt.SigningMethodHS256, a.Key.Public, a.ID(), claims("user:alice")),
+		"HS256 with the public key as the secret": sign(t, jwt.SigningMethodHS256, a.Key.Public, a.ID(), claims(alice.String())),
 		"alg none":                       none,
 		"alg none without a signature":   strings.TrimSuffix(none, "."),
-		"a token of key A that names B":  sign(t, jwt.SigningMethodES256, a.Private, b.ID(), claims("user:alice")),
-		"ES256 that names an EdDSA key":  sign(t, jwt.SigningMethodES256, a.Private, ed.ID(), claims("user:alice")),
+		"a token of key A that names B":  sign(t, jwt.SigningMethodES256, a.Private, b.ID(), claims(alice.String())),
+		"ES256 that names an EdDSA key":  sign(t, jwt.SigningMethodES256, a.Private, ed.ID(), claims(alice.String())),
 		"another audience":               other.Raw,
 		"another issuer":                 sign(t, jwt.SigningMethodES256, a.Private, a.ID(), wrongIssuer),
-		"an unknown kid":                 sign(t, jwt.SigningMethodES256, a.Private, strings.Repeat("0", 64), claims("user:alice")),
-		"no kid":                         sign(t, jwt.SigningMethodES256, a.Private, "", claims("user:alice")),
+		"an unknown kid":                 sign(t, jwt.SigningMethodES256, a.Private, strings.Repeat("0", 64), claims(alice.String())),
+		"a user by name, of before #182": sign(t, jwt.SigningMethodES256, a.Private, a.ID(), claims("user:alice")),
+		"no kid":                         sign(t, jwt.SigningMethodES256, a.Private, "", claims(alice.String())),
 		"a changed signature":            string(changed),
 		"malformed":                      "not.a.jwt",
 		"empty":                          "",
@@ -397,7 +399,7 @@ func TestVerifierFlood(t *testing.T) {
 	_, verifier, vc, _ := pair(fk)
 	flood := func() {
 		for i := range 1000 {
-			made := sign(t, jwt.SigningMethodES256, k.Private, fmt.Sprintf("%064x", i), claims("user:alice"))
+			made := sign(t, jwt.SigningMethodES256, k.Private, fmt.Sprintf("%064x", i), claims(alice.String()))
 			if _, err := verifier.Verify(t.Context(), made, service); !errors.Is(err, ErrInvalidToken) {
 				t.Fatalf("a made-up kid: %v", err)
 			}
@@ -465,7 +467,7 @@ func TestRotationGrace(t *testing.T) {
 
 	// leaked signs with the old key at iat, as someone who holds it would.
 	leaked := func(iat time.Time) string {
-		cl := claims("user:mallory")
+		cl := claims("user:019a6c3e-7b1e-7c3d-8e2f-00000000beef") // mallory
 		cl.IssuedAt, cl.NotBefore, cl.ExpiresAt = jwt.NewNumericDate(iat), jwt.NewNumericDate(iat), jwt.NewNumericDate(iat.Add(Lifetime))
 		return sign(t, jwt.SigningMethodES256, old.Private, old.ID(), cl)
 	}
@@ -485,7 +487,7 @@ func TestRotationGrace(t *testing.T) {
 	_, err = tokens.RotateToken(ctx, true)
 	must(t, err)
 	c.set(t0.Add(time.Hour + time.Second))
-	cl := claims("user:mallory")
+	cl := claims("user:019a6c3e-7b1e-7c3d-8e2f-00000000beef") // mallory
 	cl.IssuedAt, cl.NotBefore, cl.ExpiresAt = jwt.NewNumericDate(c.Now()), jwt.NewNumericDate(c.Now()), jwt.NewNumericDate(c.Now().Add(Lifetime))
 	if _, err := verifier.Verify(ctx, sign(t, jwt.SigningMethodES256, before.Private, before.ID(), cl), service); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("a token of a dropped key: %v, want refused at once", err)

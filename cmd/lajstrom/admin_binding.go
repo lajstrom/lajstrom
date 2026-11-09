@@ -114,14 +114,18 @@ func (a *app) withBindings(ctx context.Context, fn func(context.Context, *auth.B
 	return fn(ctx, &auth.Bindings{Index: st, Formats: api.RepoFormat, Log: a.log})
 }
 
-// writeBindingTable prints bindings as a table with the columns ID, PRINCIPAL, ROLE, MASK and
+// writeBindingTable prints bindings as a table with the columns ID, USER, PRINCIPAL, ROLE, MASK and
 // CREATED.
 func writeBindingTable(out io.Writer, bindings []auth.Binding) error {
 	var buf bytes.Buffer
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	_, _ = io.WriteString(tw, "ID\tPRINCIPAL\tROLE\tMASK\tCREATED\n") // a bytes.Buffer does not fail
+	_, _ = io.WriteString(tw, "ID\tUSER\tPRINCIPAL\tROLE\tMASK\tCREATED\n") // a bytes.Buffer does not fail
 	for _, b := range bindings {
-		_, _ = fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", b.ID, b.Principal, b.Role, b.RepoMask, b.CreatedAt.Format(time.RFC3339))
+		name := b.Name
+		if name == "" {
+			name = "-"
+		}
+		_, _ = fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\n", b.ID, name, b.Principal, b.Role, b.RepoMask, b.CreatedAt.Format(time.RFC3339))
 	}
 	if err := tw.Flush(); err != nil {
 		return err

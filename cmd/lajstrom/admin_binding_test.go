@@ -34,7 +34,7 @@ func TestAdminBindingCreate(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &b); err != nil || strings.Count(out, "\n") != 1 {
 		t.Fatalf("create printed %q: want one JSON line (%v)", out, err)
 	}
-	if b.ID == 0 || b.Principal != "user:alice" || b.Role != "writer" || b.RepoMask != "raw/*" {
+	if b.ID == 0 || !strings.HasPrefix(b.Principal, "user:") || b.Name != "alice" || b.Role != "writer" || b.RepoMask != "raw/*" {
 		t.Errorf("create = %+v", b)
 	}
 	for _, tt := range []struct {
@@ -69,8 +69,9 @@ func TestAdminBindingListDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 4 || !strings.HasPrefix(lines[0], "ID  PRINCIPAL") ||
-		!strings.Contains(lines[1], "user:root   admin   */*") || !strings.Contains(lines[2], "user:alice  writer  raw/*") {
+	if len(lines) != 4 || !strings.HasPrefix(lines[0], "ID  USER   PRINCIPAL") ||
+		!strings.HasPrefix(lines[1], "1   root   user:0") || !strings.Contains(lines[1], "  admin   */*") ||
+		!strings.HasPrefix(lines[2], "2   alice  user:0") || !strings.Contains(lines[2], "  writer  raw/*") {
 		t.Errorf("list:\n%s", out)
 	}
 	if out, err := binding("list", "--principal", "user:root"); err != nil || strings.Count(out, "\n") != 2 {

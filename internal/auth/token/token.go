@@ -15,6 +15,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/keys"
 )
 
@@ -235,6 +236,10 @@ func (v *Verifier) Verify(ctx context.Context, raw, service string) (*Grant, err
 	p, err := auth.ParsePrincipal(c.Subject)
 	if err != nil {
 		return nil, v.refuse(ctx, kid, "the subject is not a principal")
+	}
+	if p.Kind == auth.KindUser && !index.IsUID(p.Name) {
+		// A token of before #182 names its user by name: the client gets another.
+		return nil, v.refuse(ctx, kid, "the subject names a user by name, not by uid")
 	}
 	return &Grant{Principal: p, Access: c.Access}, nil
 }

@@ -102,15 +102,21 @@ func TestAdminUser(t *testing.T) {
 	}{
 		{args: []string{"migrate"}, wantOut: "applied 0001"},
 		{env: env, args: []string{"admin", "user", "create", "--name", "admin", "--admin"},
-			wantOut: `{"name":"admin","kind":"local","disabled":false,"createdAt":"`},
+			wantOut: `","name":"admin","kind":"local","disabled":false,"createdAt":"`},
 		{env: env, args: []string{"admin", "user", "create", "--name", "admin"}, wantErr: "user admin already exists"},
 		{stdin: "alice-password\n", args: []string{"admin", "user", "create", "--name", "alice", "--password-stdin"},
-			wantOut: `{"name":"alice","kind":"local","disabled":false,`},
+			wantOut: `","name":"alice","kind":"local","disabled":false,`},
 		{args: []string{"admin", "user", "disable", "alice"}},
-		{args: []string{"admin", "user", "list"}, wantOut: "NAME   KIND   DISABLED  CREATED\nadmin  local  false     20"},
-		{args: []string{"admin", "user", "list"}, wantOut: "\nalice  local  true      20"},
+		{args: []string{"admin", "user", "list"}, wantOut: "NAME   UID                                   KIND   DISABLED  CREATED\nadmin  0"},
+		{args: []string{"admin", "user", "list"}, wantOut: "  local  true      20"},
 		{args: []string{"admin", "user", "enable", "alice"}},
-		{args: []string{"admin", "user", "list"}, wantOut: "\nalice  local  false     20"},
+		{args: []string{"admin", "user", "list"}, wantOut: "\nalice  0"},
+		{args: []string{"admin", "user", "rename", "alice", "alicia"}},
+		{args: []string{"admin", "user", "list"}, wantOut: "\nalicia  0"},
+		{args: []string{"admin", "user", "rename", "alicia", "admin"}, wantErr: "user admin already exists"},
+		{args: []string{"admin", "user", "delete", "admin"}, wantErr: "the last enabled user with an admin binding"},
+		{env: map[string]string{bootstrapEnv: "new-alice-password"}, args: []string{"admin", "user", "set-password", "alicia"}},
+		{args: []string{"admin", "user", "rename", "alicia", "alice"}},
 		{env: map[string]string{bootstrapEnv: "new-alice-password"}, args: []string{"admin", "user", "set-password", "alice"}},
 		{args: []string{"admin", "user", "disable", "nobody"}, wantErr: "user nobody does not exist"},
 		{args: []string{"admin", "user", "enable", "nobody"}, wantErr: "user nobody does not exist"},
@@ -141,13 +147,15 @@ func TestAdminUser(t *testing.T) {
 	wantPassword(t, dsn, "alice", "new-alice-password")
 	st := openTestStore(t, dsn)
 	bindings, err := st.ListBindings(context.Background(), "")
-	if err != nil || len(bindings) != 1 || bindings[0].Principal != "user:admin" || bindings[0].Role != "admin" || bindings[0].RepoMask != "*/*" {
+	admin, _ := st.GetUser(context.Background(), "admin")
+	if err != nil || admin == nil || len(bindings) != 1 || bindings[0].Principal != "user:"+admin.UID || bindings[0].Role != "admin" || bindings[0].RepoMask != "*/*" {
 		t.Errorf("bindings = %+v, %v; want the admin binding of admin only", bindings, err)
 	}
 	wantCLIAudit(t, dsn, auth.ActionUserCreate, 2)
 	wantCLIAudit(t, dsn, auth.ActionUserDisable, 1)
 	wantCLIAudit(t, dsn, auth.ActionUserEnable, 1)
-	wantCLIAudit(t, dsn, auth.ActionUserPassword, 1)
+	wantCLIAudit(t, dsn, auth.ActionUserPassword, 2)
+	wantCLIAudit(t, dsn, auth.ActionUserRename, 2)
 }
 
 // userCLI is a migrated SQLite database and its configuration, for admin user.

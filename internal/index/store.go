@@ -46,6 +46,8 @@ type Reader interface {
 	GetUser(ctx context.Context, name string) (*User, error)
 	// GetUserByUID returns the user with the given uid, live or deleted.
 	GetUserByUID(ctx context.Context, uid string) (*User, error)
+	// GetUserByID returns the user with the given id, live or deleted: the owner of a token.
+	GetUserByID(ctx context.Context, id int64) (*User, error)
 	// ListUsers returns the live users ordered by name.
 	ListUsers(ctx context.Context) ([]User, error)
 

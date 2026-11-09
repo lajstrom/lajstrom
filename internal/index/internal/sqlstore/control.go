@@ -96,6 +96,11 @@ func (c *conn) GetUserByUID(ctx context.Context, uid string) (*index.User, error
 	return getOne(ctx, c, "users uid "+uid, userDests, "SELECT "+userCols+" FROM users WHERE uid = ?", uid)
 }
 
+// GetUserByID returns the user with the given id, live or deleted.
+func (c *conn) GetUserByID(ctx context.Context, id int64) (*index.User, error) {
+	return getOne(ctx, c, fmt.Sprintf("users id %d", id), userDests, "SELECT "+userCols+" FROM users WHERE id = ?", id)
+}
+
 // ListUsers returns the live users ordered by name.
 func (c *conn) ListUsers(ctx context.Context) ([]index.User, error) {
 	return getAll(ctx, c, "users", userDests, "SELECT "+userCols+" FROM users WHERE deleted_at IS NULL ORDER BY name")

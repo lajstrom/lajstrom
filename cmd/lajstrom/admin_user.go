@@ -39,7 +39,8 @@ func newAdminUserCmd(a *app) *cobra.Command {
 		Use:   "user",
 		Short: "Manage local users",
 	}
-	user.AddCommand(newUserCreateCmd(a), newUserListCmd(a), newUserDisableCmd(a), newUserEnableCmd(a), newUserSetPasswordCmd(a))
+	user.AddCommand(newUserCreateCmd(a), newUserListCmd(a), newUserDisableCmd(a), newUserEnableCmd(a), newUserSetPasswordCmd(a),
+		newUserRenameCmd(a), newUserDeleteCmd(a))
 	return user
 }
 
@@ -117,6 +118,37 @@ func newUserDisableCmd(a *app) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
 				return users.Disable(ctx, args[0], auth.Origin{Source: api.SourceCLI})
+			})
+		},
+	}
+}
+
+// newUserRenameCmd returns admin user rename: the uid, and so the bindings and tokens, stay.
+func newUserRenameCmd(a *app) *cobra.Command {
+	return &cobra.Command{
+		Use:         "rename <name> <new name>",
+		Short:       "Rename a user; its uid, bindings and tokens stay",
+		Args:        cobra.ExactArgs(2),
+		Annotations: needsConfig,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
+				return users.Rename(ctx, args[0], args[1], auth.Origin{Source: api.SourceCLI})
+			})
+		},
+	}
+}
+
+// newUserDeleteCmd returns admin user delete (docs/spec/rbac.md §1): the user's tokens are
+// revoked and its bindings deleted, and its name is free for a new user, who inherits nothing.
+func newUserDeleteCmd(a *app) *cobra.Command {
+	return &cobra.Command{
+		Use:         "delete <name>",
+		Short:       "Delete a user: revoke its tokens, delete its bindings, free its name; not undone",
+		Args:        cobra.ExactArgs(1),
+		Annotations: needsConfig,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
+				return users.Delete(ctx, args[0], auth.Origin{Source: api.SourceCLI})
 			})
 		},
 	}
@@ -224,13 +256,13 @@ func promptPassword(out io.Writer, fd int, label string) (string, error) {
 	return string(b), nil
 }
 
-// writeUserTable prints users as a table with the columns NAME, KIND, DISABLED and CREATED.
+// writeUserTable prints users as a table with the columns NAME, UID, KIND, DISABLED and CREATED.
 func writeUserTable(out io.Writer, users []auth.User) error {
 	var buf bytes.Buffer
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	_, _ = io.WriteString(tw, "NAME\tKIND\tDISABLED\tCREATED\n") // a bytes.Buffer does not fail
+	_, _ = io.WriteString(tw, "NAME\tUID\tKIND\tDISABLED\tCREATED\n") // a bytes.Buffer does not fail
 	for _, u := range users {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%t\t%s\n", u.Name, u.Kind, u.Disabled, u.CreatedAt.Format(time.RFC3339))
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%s\n", u.Name, u.UID, u.Kind, u.Disabled, u.CreatedAt.Format(time.RFC3339))
 	}
 	if err := tw.Flush(); err != nil {
 		return err

@@ -118,15 +118,15 @@ func (s *Tokens) CreatePAT(ctx context.Context, user, name string, scopes []stri
 	if err != nil {
 		return nil, "", err
 	}
-	return s.create(ctx, TokenPAT, "user "+user, name, scopes, exp, o, func(w index.Writer) (*index.Token, string, string, error) {
+	return s.create(ctx, TokenPAT, "user "+user, name, scopes, exp, o, func(w index.Writer) (*index.Token, tokenOwner, error) {
 		u, err := w.GetUser(ctx, user)
 		if errors.Is(err, index.ErrNotFound) {
-			return nil, "", "", userError("create a token of", user, err)
+			return nil, tokenOwner{}, userError("create a token of", user, err)
 		}
 		if err != nil {
-			return nil, "", "", err
+			return nil, tokenOwner{}, err
 		}
-		return &index.Token{UserID: &u.ID}, u.Name, "", nil
+		return &index.Token{UserID: &u.ID}, tokenOwner{user: u.Name, uid: u.UID}, nil
 	})
 }
 
@@ -144,24 +144,30 @@ func (s *Tokens) CreateDeploy(ctx context.Context, repo, name string, scopes []s
 	if err != nil {
 		return nil, "", err
 	}
-	return s.create(ctx, TokenDeploy, "repo "+repo, name, scopes, exp, o, func(w index.Writer) (*index.Token, string, string, error) {
+	return s.create(ctx, TokenDeploy, "repo "+repo, name, scopes, exp, o, func(w index.Writer) (*index.Token, tokenOwner, error) {
 		r, err := w.GetRepo(ctx, formatName, repoName)
 		if errors.Is(err, index.ErrNotFound) {
-			return nil, "", "", repoError(repo, err)
+			return nil, tokenOwner{}, repoError(repo, err)
 		}
 		if err != nil {
-			return nil, "", "", err
+			return nil, tokenOwner{}, err
 		}
-		return &index.Token{RepoID: &r.ID}, "", repo, nil
+		return &index.Token{RepoID: &r.ID}, tokenOwner{repo: repo}, nil
 	})
+}
+
+// tokenOwner is the owner of a token: the name and the uid of the user of a personal access
+// token, or the repo <format>/<name> of a deploy token.
+type tokenOwner struct {
+	user, uid, repo string
 }
 
 // create checks name and the expiry and creates a token of kind with scopes in one
 // transaction with its token.create event. owner names the owner for the messages, user
 // <name> or repo <format>/<name>; read reads it in the transaction and returns the row with
-// its owner set, and the owner's name: the user's or the repo's.
+// its owner set, and the owner.
 func (s *Tokens) create(ctx context.Context, kind, owner, name string, scopes []string, exp Expiry, o Origin,
-	read func(index.Writer) (*index.Token, string, string, error)) (*Token, string, error) {
+	read func(index.Writer) (*index.Token, tokenOwner, error)) (*Token, string, error) {
 	if err := checkTokenName(name); err != nil {
 		return nil, "", err
 	}
@@ -176,12 +182,12 @@ func (s *Tokens) create(ctx context.Context, kind, owner, name string, scopes []
 	}
 	secret := newSecret(prefix)
 	var (
-		row        *index.Token
-		user, repo string
-		ev         index.AuditEvent
+		row *index.Token
+		own tokenOwner
+		ev  index.AuditEvent
 	)
 	err = s.Index.Tx(ctx, func(w index.Writer) (err error) {
-		if row, user, repo, err = read(w); err != nil {
+		if row, own, err = read(w); err != nil {
 			return err
 		}
 		live, err := w.ListTokens(ctx, row.UserID, row.RepoID)
@@ -195,7 +201,7 @@ func (s *Tokens) create(ctx context.Context, kind, owner, name string, scopes []
 		if err = w.CreateToken(ctx, row); err != nil {
 			return err
 		}
-		ev, err = s.record(ctx, w, ActionTokenCreate, user, repo, o, map[string]any{
+		ev, err = s.record(ctx, w, ActionTokenCreate, own, o, map[string]any{
 			"id": row.ID, "kind": kind, "name": name, "scopes": scopes, "expiresAt": expiresAt,
 		})
 		return err
@@ -204,7 +210,7 @@ func (s *Tokens) create(ctx context.Context, kind, owner, name string, scopes []
 		return nil, "", tokenError("create a token of "+owner, err)
 	}
 	s.writeAudit(ctx, ev)
-	t := tokenResource(row, user, repo)
+	t := tokenResource(row, own.user, own.repo)
 	return &t, secret, nil
 }
 
@@ -242,11 +248,11 @@ func (s *Tokens) ListDeploy(ctx context.Context, repo string) ([]Token, error) {
 
 // Get returns the token with id, of any kind and owner.
 func (s *Tokens) Get(ctx context.Context, id int64) (*Token, error) {
-	row, user, repo, err := find(ctx, s.Index, id)
+	row, own, err := find(ctx, s.Index, id)
 	if err != nil {
 		return nil, tokenError(fmt.Sprintf("get token %d", id), err)
 	}
-	t := tokenResource(row, user, repo)
+	t := tokenResource(row, own.user, own.repo)
 	return &t, nil
 }
 
@@ -257,7 +263,7 @@ func (s *Tokens) Get(ctx context.Context, id int64) (*Token, error) {
 func (s *Tokens) Revoke(ctx context.Context, id int64, o Origin) error {
 	var ev *index.AuditEvent
 	err := s.Index.Tx(ctx, func(w index.Writer) error {
-		row, user, repo, err := find(ctx, w, id)
+		row, own, err := find(ctx, w, id)
 		if err != nil || row.RevokedAt != nil {
 			return err
 		}
@@ -265,7 +271,7 @@ func (s *Tokens) Revoke(ctx context.Context, id int64, o Origin) error {
 		if err := w.RevokeToken(ctx, id, now); err != nil {
 			return err
 		}
-		e, err := s.record(ctx, w, ActionTokenRevoke, user, repo, o, map[string]any{"id": row.ID, "kind": row.Kind, "name": row.Name})
+		e, err := s.record(ctx, w, ActionTokenRevoke, own, o, map[string]any{"id": row.ID, "kind": row.Kind, "name": row.Name})
 		ev = &e
 		return err
 	})
@@ -278,40 +284,41 @@ func (s *Tokens) Revoke(ctx context.Context, id int64, o Origin) error {
 	return nil
 }
 
-// find returns the token with id and the name of its owner, the user's or the repo's. The
-// index has neither GetTokenByID nor GetUserByID: it lists the tokens and, for a personal
-// access token, the users; control-plane tables are small, and these are rare operations.
-func find(ctx context.Context, r index.Reader, id int64) (*index.Token, string, string, error) {
+// find returns the token with id and its owner. The index has no GetTokenByID: it lists the
+// tokens; control-plane tables are small, and these are rare operations.
+func find(ctx context.Context, r index.Reader, id int64) (*index.Token, tokenOwner, error) {
 	rows, err := r.ListTokens(ctx, nil, nil)
 	if err != nil {
-		return nil, "", "", err
+		return nil, tokenOwner{}, err
 	}
 	i := slices.IndexFunc(rows, func(t index.Token) bool { return t.ID == id })
 	if i < 0 {
-		return nil, "", "", &authError{msg: fmt.Sprintf("token %d does not exist", id), err: index.ErrNotFound}
+		return nil, tokenOwner{}, &authError{msg: fmt.Sprintf("token %d does not exist", id), err: index.ErrNotFound}
 	}
 	row := &rows[i]
 	switch {
 	case row.UserID != nil:
-		users, err := r.ListUsers(ctx)
-		if err != nil {
-			return nil, "", "", err
+		u, err := r.GetUserByID(ctx, *row.UserID)
+		if err != nil && !errors.Is(err, index.ErrNotFound) {
+			return nil, tokenOwner{}, err
 		}
-		for _, u := range users {
-			if u.ID == *row.UserID {
-				return row, u.Name, "", nil
+		if err == nil {
+			name := u.Name
+			if u.DeletedAt != nil {
+				name = u.DeletedName
 			}
+			return row, tokenOwner{user: name, uid: u.UID}, nil
 		}
 	case row.RepoID != nil:
 		repo, err := r.GetRepoByID(ctx, *row.RepoID)
 		if err != nil && !errors.Is(err, index.ErrNotFound) {
-			return nil, "", "", err
+			return nil, tokenOwner{}, err
 		}
 		if err == nil {
-			return row, "", repo.Format + "/" + repo.Name, nil
+			return row, tokenOwner{repo: repo.Format + "/" + repo.Name}, nil
 		}
 	}
-	return row, "", "", nil // an owner gone takes its tokens with it; no row is left like this
+	return row, tokenOwner{}, nil // an owner gone takes its tokens with it; no row is left like this
 }
 
 // alive reports whether t is neither revoked nor expired at now.
@@ -441,13 +448,13 @@ func tokenError(op string, err error) error {
 	return fmt.Errorf("auth: %s: %w", op, err)
 }
 
-// subjectOf is the subject of the audit event of a token: user:<name> for a personal access
+// subjectOf is the subject of the audit event of a token: user:<uid> for a personal access
 // token, <format>/<name> for a deploy token.
-func subjectOf(user, repo string) string {
-	if user != "" {
-		return Principal{Kind: KindUser, Name: user}.String()
+func subjectOf(own tokenOwner) string {
+	if own.uid != "" {
+		return Principal{Kind: KindUser, Name: own.uid}.String()
 	}
-	return repo
+	return own.repo
 }
 
 // resources returns the Tokens of rows of kind, whose owner is user or repo.
@@ -483,10 +490,10 @@ func utc(t *time.Time) *time.Time {
 	return &u
 }
 
-// record builds the audit event of a change of a token whose owner is user or repo,
-// and appends it on w when there is no audit.Writer (recordAudit).
-func (s *Tokens) record(ctx context.Context, w index.Writer, action, user, repo string, o Origin, details map[string]any) (index.AuditEvent, error) {
-	ev := index.AuditEvent{At: s.now(), Action: action, Repo: repo, Subject: subjectOf(user, repo)}
+// record builds the audit event of a change of a token of own, and appends it on w when there is
+// no audit.Writer (recordAudit).
+func (s *Tokens) record(ctx context.Context, w index.Writer, action string, own tokenOwner, o Origin, details map[string]any) (index.AuditEvent, error) {
+	ev := index.AuditEvent{At: s.now(), Action: action, Repo: own.repo, Subject: subjectOf(own)}
 	return recordAudit(ctx, w, s.Audit, ev, o, details)
 }
 
