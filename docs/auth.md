@@ -14,7 +14,7 @@ audit log, in publication sessions and in the access log ([rbac.md](spec/rbac.md
 
 | Principal | Form | From |
 | --- | --- | --- |
-| local user | `user:<name>` | HTTP Basic with the user's password; HTTP Basic or a bearer with a personal access token of the user ([Tokens](#tokens)) |
+| local user | `user:<uid>` | HTTP Basic with the user's password; HTTP Basic or a bearer with a personal access token of the user ([Tokens](#tokens)) |
 | deploy token | `token:<id>` | HTTP Basic `deploy:<token>` ([Tokens](#tokens)) |
 | anonymous | `anonymous` | a request without credentials |
 
@@ -28,11 +28,31 @@ API of #47), and are the same on every replica.
 ## Local users and passwords
 
 A user name is 1 to 64 bytes of lowercase letters, digits, `.`, `_` and `-`, starting with a
-letter or a digit. It is what HTTP Basic carries before the colon and what `user:<name>` binds,
-so it has no colon, no space and no upper case. `deploy` is reserved: `deploy:<token>` is how a
+letter or a digit. It is what HTTP Basic carries before the colon, so it has no colon, no space and no upper case. `deploy` is reserved: `deploy:<token>` is how a
 deploy token authenticates. A password is 8 to 1024 bytes of UTF-8, any characters, that does
 not start with `ljs_pat_` or `ljs_dep_`: a secret with either prefix is a token's, never a
 password (a password set before #44 that starts with one no longer logs in; set another).
+
+### The uid and the name
+
+A user is its **uid**, a UUID v7 made when the user is created and never changed
+([rbac.md](spec/rbac.md) §1): the principal is `user:<uid>`, and bindings, sessions, tokens and
+`/v2` tokens hold the uid. The name is what a person types: HTTP Basic, the CLI and
+`--principal user:<name>` take it and Lajstrom looks the uid up. A name has the form of a uid
+never, so `user:<s>` is unambiguous.
+
+- `lajstrom admin user rename <name> <new name>` changes the name only: the user keeps its
+  uid, its bindings and its tokens; the old name logs in no more from the next request.
+- `lajstrom admin user delete <name>` revokes the user's tokens, deletes its bindings and keeps
+  the row, disabled, under the name `~<uid>`, so that the audit log still names it. The name is
+  free again at once; a user created with it gets another uid and none of the old rights.
+- Neither may take away the last admin binding of an enabled user.
+- `admin user list` shows NAME, UID, KIND, DISABLED, CREATED; `admin binding list` shows the
+  principal with its USER name. `GET /api/v1/whoami` answers both: `{"principal": "user:<uid>",
+  "kind": "user", "name": "<name>", "uid": "<uid>"}`.
+
+A `/v2` token issued before #182, whose `sub` is `user:<name>`, is refused with 401; the client
+logs in again and gets one with the uid.
 
 Passwords are stored as argon2id hashes in `users.password_hash`
 ([index-schema.md](spec/index-schema.md)), in the PHC string format:
@@ -79,7 +99,7 @@ Every route reads the `Authorization` header, the frontends (`/raw/`, `/pypi/`, 
   challenge, so that the client sends credentials ([Authorization](#authorization)).
 - **`Basic`** ([RFC 7617](https://www.rfc-editor.org/rfc/rfc7617); the first colon splits the
   user name from the password): the credentials are checked, and the request goes on as
-  `user:<name>`, or as `token:<id>` for a deploy token. The secret decides what is checked: one
+  `user:<uid>`, or as `token:<id>` for a deploy token. The secret decides what is checked: one
   that starts with `ljs_pat_` is a personal access token of the user, one that starts with
   `ljs_dep_` a deploy token, anything else the user's password ([Tokens](#tokens)). Credentials
   that are refused (an unknown user, a disabled one, a wrong password, a token unknown, revoked,
@@ -127,8 +147,8 @@ A `maintainer` on `*/*` has every repo but not the system; the system needs the 
 
 ### Bindings
 
-A binding is `(principal, role, mask)`. The principal is `user:<name>` of an existing user; the
-mask is `<format>/<repo>`, each segment a name or `*`: `raw/assets` exactly, `raw/*` every raw
+A binding is `(principal, role, mask)`. The principal is `user:<name>` or `user:<uid>` of an
+existing user, stored as `user:<uid>`; the mask is `<format>/<repo>`, each segment a name or `*`: `raw/assets` exactly, `raw/*` every raw
 repo, `*/payments` the repo `payments` of every format, `*/*` everything. The repo need not
 exist: a binding may come before its repo, and outlives it. The rights of a principal are the
 union of its bindings. A deploy token has no bindings (its repo and scopes are its rights), and
@@ -482,7 +502,7 @@ PASS oci-token e2e against http://localhost:18080 as e2e-token-20261107214723-22
 
 Two kinds of token stand in for a password ([rbac.md](spec/rbac.md) §1):
 
-- A **personal access token** (PAT) acts as its user: the principal is `user:<name>`, with the
+- A **personal access token** (PAT) acts as its user: the principal is `user:<uid>`, with the
   user's rights, narrowed by the token's `scopes` when it has any. It is what goes into
   `auth.conf`, `~/.pypirc` and `settings.xml` instead of a password: it expires, it is revoked
   alone, and it tells nothing about the password.
@@ -510,7 +530,7 @@ miss costing what a hit costs.
 
 | | Personal access token | Deploy token |
 | --- | --- | --- |
-| principal | `user:<owner>` | `token:<id>` |
+| principal | `user:<owner's uid>` | `token:<id>` |
 | bound to | its user | one repo |
 | `scopes` | none (the user's full rights), or `read`, `write` or both | `read`, `write` or both, required; `delete`, `manage` and anything else are `400` |
 | expiry | required: 90 days when not given, at most 365 days ahead (`400` beyond, naming the bound) | optional: none is never |

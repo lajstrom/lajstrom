@@ -28,7 +28,7 @@
 # $LAJSTROM_CONFIG, else deploy/compose/lajstrom.example.yaml, with the same LAJSTROM_DATABASE_*
 # overrides. The binary is $LAJSTROM_BIN, else bin/lajstrom, else go run ./cmd/lajstrom. With
 # $LAJSTROM_SERVER_LOG, the server's log file, the script also checks that its access log names
-# the principals, user:<user> for the PAT and token:<id> for the deploy token, and holds no
+# the principals, user:<uid> for the PAT and token:<id> for the deploy token, and holds no
 # secret. Each run creates an admin user of its own and, at the end, revokes its tokens,
 # deletes its raw file and disables the user; the apt package stays (apt versions cannot be
 # deleted yet). Secrets go to curl in config files, to oras and lajstrom on standard input, and
@@ -197,6 +197,7 @@ password="$(head -c 24 /dev/urandom | base64 | tr -d '+/=\n')"
 printf 'user = "%s:%s"\n' "$user" "$password" >"$work/basic"
 out="$(printf '%s\n' "$password" | "${lajstrom[@]}" admin user create --name "$user" --admin --password-stdin)"
 expect "admin user create name" "$user" "$(jq -r .name <<<"$out")"
+uid="$(jq -r .uid <<<"$out")"
 ok "admin user create --name $user --admin --password-stdin"
 
 # A PAT, shown once (X-03).
@@ -218,8 +219,8 @@ req pat-basic PUT "$base/raw/$raw/$rawpath" -T "$work/hello.txt"
 expect "PUT /raw/$raw/$rawpath with the PAT status ($(cat "$work/body"))" 201 "$status"
 ok "PUT /raw/$raw/$rawpath -u $user:<PAT>: 201 $(jq -r .digest "$work/body")"
 req pat-bearer GET "$base/api/v1/whoami"
-expect "whoami with the PAT as a bearer" "200 user:$user" "$status $(jq -r .principal "$work/body")"
-ok "GET /api/v1/whoami with Authorization: Bearer <PAT>: 200 {\"principal\":\"user:$user\"}"
+expect "whoami with the PAT as a bearer" "200 user:$uid $user" "$status $(jq -r '"\(.principal) \(.name)"' "$work/body")"
+ok "GET /api/v1/whoami with Authorization: Bearer <PAT>: 200 {\"principal\":\"user:$uid\",\"name\":\"$user\"}"
 
 # The apt repo and a package uploaded with the PAT.
 req pat-bearer GET "$base/api/v1/repos/apt/$apt_repo"
@@ -309,8 +310,8 @@ ok "oras push $registry/$name:$tver: $(grep '^Digest:' "$work/oras.log")"
 req pat-basic GET "$base/v2/token?service=$service&scope=repository:$name:pull,push"
 expect "GET /v2/token with the PAT status" 200 "$status"
 jq -r .token "$work/body" >"$work/jwt-pat"
-expect "the PAT's /v2 token" "user:$user [\"pull\",\"push\"]" "$(claims "$work/jwt-pat" | jq -r '"\(.sub) \(.access[0].actions | tojson)"')"
-ok "GET /v2/token -u $user:<PAT> scope=repository:$name:pull,push: sub user:$user, actions pull,push"
+expect "the PAT's /v2 token" "user:$uid [\"pull\",\"push\"]" "$(claims "$work/jwt-pat" | jq -r '"\(.sub) \(.access[0].actions | tojson)"')"
+ok "GET /v2/token -u $user:<PAT> scope=repository:$name:pull,push: sub user:$uid, actions pull,push"
 
 # S-03: a PAT with read only pushes nothing, on the frontends and through its /v2 token.
 create pat-read "users/$user/tokens" "{\"name\": \"read $run\", \"scopes\": [\"read\"]}" basic
@@ -356,9 +357,9 @@ ok "a PAT with expiresAt $far: 400 $(jq -r .error.message "$work/body")"
 # The access log names the principals and holds no secret.
 if [ -n "${LAJSTROM_SERVER_LOG:-}" ]; then
 	sleep 0.2
-	grep -qE "principal=user:$user|\"principal\":\"user:$user\"" "$LAJSTROM_SERVER_LOG" || fail "the access log has no principal user:$user"
+	grep -qE "principal=user:$uid|\"principal\":\"user:$uid\"" "$LAJSTROM_SERVER_LOG" || fail "the access log has no principal user:$uid"
 	grep -qE "principal=token:$dep_id|\"principal\":\"token:$dep_id\"" "$LAJSTROM_SERVER_LOG" || fail "the access log has no principal token:$dep_id"
 	no_secret "$LAJSTROM_SERVER_LOG" "the server log"
-	ok "server log: principal=user:$user ($(grep -cE "principal=user:$user|\"principal\":\"user:$user\"" "$LAJSTROM_SERVER_LOG") lines), principal=token:$dep_id ($(grep -cE "principal=token:$dep_id|\"principal\":\"token:$dep_id\"" "$LAJSTROM_SERVER_LOG") lines), no secret"
+	ok "server log: principal=user:$uid ($(grep -cE "principal=user:$uid|\"principal\":\"user:$uid\"" "$LAJSTROM_SERVER_LOG") lines), principal=token:$dep_id ($(grep -cE "principal=token:$dep_id|\"principal\":\"token:$dep_id\"" "$LAJSTROM_SERVER_LOG") lines), no secret"
 fi
 echo "PASS tokens e2e against $base as $user"
