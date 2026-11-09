@@ -46,8 +46,8 @@ const VariantSdist = "sdist"
 // description, twice (the fields and core_metadata).
 const maxMetadata = 2*maxCoreMetadata + 64<<10
 
-// Plugin is the pypi format plugin (#31): Build and Validate of wheels and source distributions.
-// The simple index is #32 and the upload API #33; until then it mounts no routes.
+// Plugin is the pypi format plugin: Build and Validate of wheels and source distributions (#31),
+// the simple index (#32); the upload API is #33.
 type Plugin struct{}
 
 var _ format.Plugin = Plugin{}
@@ -68,14 +68,6 @@ func (Plugin) EscapeName(name string) (string, error) {
 		return "", fmt.Errorf("%w: %q is not a project name", format.ErrInvalid, name)
 	}
 	return profile.EscapeComponent(Normalize(name)), nil
-}
-
-// Routes mounts nothing yet: the simple index comes with #32, the upload API with #33.
-func (Plugin) Routes(format.Router, format.Deps) {}
-
-// RenderIndex is format.ErrUnsupported until the simple index of #32.
-func (Plugin) RenderIndex(context.Context, index.Repo, format.IndexScope, index.Reader) ([]format.Document, error) {
-	return nil, format.ErrUnsupported
 }
 
 // dist is a distribution file as its name and media type say: wheel or sdist.
