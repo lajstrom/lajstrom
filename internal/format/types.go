@@ -7,6 +7,8 @@ import (
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
+	"github.com/lajstrom/lajstrom/internal/index"
 )
 
 // Entry is what a plugin reads out of a manifest: the data for one row in versions and its rows
@@ -135,4 +137,27 @@ type Published struct {
 	// Existed is true for the idempotent repeat: the tag held a manifest with these files
 	// already, nothing was written, and Digest is that manifest.
 	Existed bool
+}
+
+// Deletion names what Publisher.Delete deletes: the manifest that Reference names in the OCI
+// repository of the package path Path below the repo.
+type Deletion struct {
+	// Path is the package path below <format>/<repo>/, index.Package.NameOCI for a version.
+	Path string
+	// Reference is a tag or a digest of the manifest.
+	Reference string
+	// ClientIP is the client's address, for the audit row.
+	ClientIP string
+}
+
+// Deleted is what Publisher.Delete reports back.
+type Deleted struct {
+	// Digest is the manifest deleted.
+	Digest digest.Digest
+	// Version is the version the manifest was, as the index had it before the delete; nil for
+	// a manifest that was no version: a referrer, a foreign manifest, any manifest of an oci
+	// repo.
+	Version *index.Version
+	// Referrers is the number of referrers deleted before it, theirs included.
+	Referrers int
 }

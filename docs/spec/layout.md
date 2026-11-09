@@ -92,6 +92,9 @@ type Router interface {                     // implementation: NewRouter
 // Publisher is the write path as plugins see it; *ingest.Pipeline implements it.
 type Publisher interface {
     Upload(ctx context.Context, repo index.Repo, up Upload, principal auth.Principal) (*Published, error)
+    // Delete: the manifest del names, its referrers before it, then its rows and the repo's
+    // rendered indexes, one audit row; ingest.Pipeline.Delete (#61)
+    Delete(ctx context.Context, repo index.Repo, del Deletion, principal auth.Principal) (*Deleted, error)
 }
 
 // Sessions are the publication sessions of a format whose upload is several requests (maven,
@@ -183,6 +186,16 @@ type Published struct {
     RepoPath string
     Entry    Entry
     Existed  bool                           // idempotent repeat: nothing was written
+}
+type Deletion struct {                      // the principal is a parameter of Publisher.Delete
+    Path      string                        // package path below <format>/<repo>/ (Package.NameOCI)
+    Reference string                        // a tag or a digest
+    ClientIP  string                        // for the audit row
+}
+type Deleted struct {
+    Digest    digest.Digest
+    Version   *index.Version                // the version it was; nil for a manifest that was none
+    Referrers int                           // deleted before it, theirs included
 }
 
 func Register(p Plugin)                     // panics on nil, a name CheckName rejects, a duplicate
@@ -595,6 +608,21 @@ type Referrer struct {
     Manifest []byte             // as received
     Subject  digest.Digest      // its subject, or the manifest cosign's tag names
 }
+
+// Delete deletes the manifest that del.Reference (a tag or a digest) names in the OCI repository
+// of del.Path, what refers to it, and what the index holds of it (http-routing.md §2, DELETE;
+// #61). Capabilities.DeleteManifest false is provider.ErrUnsupported and changes nothing. On a
+// managed repo a reference that names a version (its tag, or its digest in the package) deletes
+// the version; anything else is resolved in the backend. The referrers go first, each with its
+// own before it: cosign's legacy sha256-<hex>.sig, .att and .sbom, the tag-schema index
+// sha256-<hex>, the referrers the backend lists; without the referrers API under
+// Store.WithReferrersLock of the subject. The first request that changes anything is a plain
+// delete, so a backend that refuses deletes changes nothing (a referrer deleted on its own: its
+// subject's sha256-<hex> index goes first and is pushed again without it). Then the manifest, then one index
+// transaction: the version's rows, its package's when it was the last, index_cache of the repo,
+// the audit row (delete, Details {"referrers": n}). Errors wrap provider.ErrUnsupported,
+// index.ErrNotFound or provider.ErrConflict (the backend refused this one delete).
+func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Deletion, principal auth.Principal) (*format.Deleted, error)
 
 // Inspect runs the steps of Ingest that only read (1 to 3) on a manifest found in the registry
 // at <repo base>/<pkgPath>:<tag> and returns the rows step 6 writes; nothing is pushed or
