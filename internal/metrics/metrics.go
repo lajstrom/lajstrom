@@ -47,6 +47,11 @@ var (
 		Name: "lajstrom_provider_request_duration_seconds", Help: "Time of a request to a backend registry, to its response headers.",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"registry", "operation", "method", "status"})
+	// ProviderCircuitOpen is 1 while the circuit breaker of a registry is open or half-open:
+	// its requests fail at once instead of waiting for timeouts and retries.
+	ProviderCircuitOpen = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "lajstrom_provider_circuit_open", Help: "1 while the circuit breaker of a backend registry is open.",
+	}, []string{"registry"})
 	// DBDuration is the time of a statement of the index database, by the store method that ran
 	// it and whether it failed.
 	DBDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -65,7 +70,7 @@ var (
 )
 
 func init() {
-	registry.MustRegister(HTTPDuration, HTTPRequestSize, HTTPResponseSize, ProviderDuration, DBDuration, Ingest, buildInfo,
+	registry.MustRegister(HTTPDuration, HTTPRequestSize, HTTPResponseSize, ProviderDuration, ProviderCircuitOpen, DBDuration, Ingest, buildInfo,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 }
 

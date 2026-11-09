@@ -44,6 +44,8 @@ type clients struct {
 	credentials bool
 	// retries is how often a failed request, or a failed blob push, is tried again.
 	retries int
+	// breaker is the circuit breaker of the registry; every request goes through it.
+	breaker *breaker
 }
 
 // newClients builds the clients for the registry at host (host:port, as in the URL) from cfg.
@@ -55,13 +57,14 @@ func newClients(cfg config.Registry, host string, log *slog.Logger) clients {
 		timeout = config.DefaultRegistryTimeout
 	}
 	// The retry transport resends an idempotent request whose body can be replayed; a blob
-	// upload is retried as a whole by Push (pushRetry). Above it, the probe's ping sees the
-	// challenges.
-	rt := &challengeTransport{next: &retryTransport{
+	// upload is retried as a whole by Push (pushRetry). The breaker above it counts a request
+	// once however often it was tried. Above both, the probe's ping sees the challenges.
+	br := newBreaker(cfg.Name, log)
+	rt := &challengeTransport{next: &breakerTransport{b: br, next: &retryTransport{
 		next:    &logTransport{next: &metricsTransport{next: newTransport(timeout), registry: cfg.Name}, log: log},
 		retries: retries(cfg),
 		log:     log,
-	}}
+	}}}
 	var cred auth.CredentialFunc
 	if cfg.Auth.Username != "" {
 		cred = auth.StaticCredential(host, auth.Credential{Username: cfg.Auth.Username, Password: cfg.Auth.Password})
@@ -89,6 +92,7 @@ func newClients(cfg config.Registry, host string, log *slog.Logger) clients {
 		cache:       cache,
 		credentials: cred != nil,
 		retries:     retries(cfg),
+		breaker:     br,
 	}
 }
 
