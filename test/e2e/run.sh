@@ -6,8 +6,8 @@
 #   test/e2e/run.sh [<scenario>...]     e.g. test/e2e/run.sh raw oras; make e2e E2E='raw oras'
 #
 # Without arguments it runs every test/e2e/<name>.sh but lib.sh and run.sh: those of $order
-# below in that order, then any other by name. A scenario gets the base URL as its only
-# argument, so its defaults name the repos, and the environment:
+# below in that order, then any other by name, then ha.sh. A scenario gets the base URL as its
+# only argument, so its defaults name the repos, and the environment:
 #
 #   LAJSTROM_CONFIG        the configuration the server runs with (lajstrom admin uses it too)
 #   LAJSTROM_BIN           bin/lajstrom, absolute
@@ -33,6 +33,11 @@
 # others still run. On exit the server is stopped and the directory removed, unless
 # LAJSTROM_E2E_KEEP=1. The exit status is 1 when a scenario failed, 2 when the harness could
 # not start.
+#
+# ha.sh is the exception: it runs against the ha profile of the dev stack (two replicas behind
+# nginx, make dev-up PROFILES=ha), at http://localhost:$LAJSTROM_HA_PORT (8090), not against
+# the server of this run, and only when docker compose shows that profile's ha-nginx running;
+# otherwise the summary has a SKIP line for it, which is not a failure.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -59,10 +64,17 @@ else
 	done
 	for f in "$here"/*.sh; do
 		n="$(basename "$f" .sh)"
-		case " lib run $order " in *" $n "*) continue ;; esac
+		case " lib run ha $order " in *" $n "*) continue ;; esac
 		names+=("$n")
 	done
+	[ ! -f "$here/ha.sh" ] || names+=(ha)
 fi
+
+# ha_up: the ha profile of the dev stack runs (its edge, ha-nginx).
+ha_up() {
+	command -v docker >/dev/null &&
+		[ -n "$(docker compose -f "$root/deploy/compose/compose.yaml" ps -q --status running ha-nginx 2>/dev/null)" ]
+}
 
 tmp="${TMPDIR:-/tmp}"
 tmp="$(mktemp -d "${tmp%/}/lajstrom-e2e.XXXXXX")"
@@ -164,11 +176,22 @@ step "lajstrom serve on $base, index $tmp/lajstrom.db, registry local at $regist
 
 results=()
 failed=0
+skipped=0
 for n in "${names[@]}"; do
 	log="$tmp/$n.log"
 	echo "=== $n.sh"
+	target="$base"
+	if [ "$n" = ha ]; then
+		if ! ha_up; then
+			echo "run.sh: the ha profile is not up (make dev-up PROFILES=ha): ha.sh skipped"
+			results+=("$(printf 'SKIP %-14s         (the ha profile is not up)' "$n.sh")")
+			skipped=$((skipped + 1))
+			continue
+		fi
+		target="http://localhost:${LAJSTROM_HA_PORT:-8090}"
+	fi
 	t0=$SECONDS
-	if (cd "$root" && "$here/$n.sh" "$base") </dev/null 2>&1 | tee "$log"; then rc=0; else rc=$?; fi
+	if (cd "$root" && "$here/$n.sh" "$target") </dev/null 2>&1 | tee "$log"; then rc=0; else rc=$?; fi
 	took=$((SECONDS - t0))
 	if [ "$rc" = 0 ]; then
 		results+=("$(printf 'PASS %-14s %4d s' "$n.sh" "$took")")
@@ -179,8 +202,12 @@ for n in "${names[@]}"; do
 	{
 		echo "--- $n.sh failed with exit $rc after $took s:"
 		grep -E '^(FAIL |  at |  in )' "$log" || echo "(no FAIL line: the last lines of its output are above)"
-		echo "--- the last 50 lines of the server log:"
-		tail -n 50 "$LAJSTROM_SERVER_LOG"
+		if [ "$n" = ha ]; then
+			echo "--- the logs of the ha profile: docker compose -f deploy/compose/compose.yaml logs lajstrom-a lajstrom-b ha-nginx"
+		else
+			echo "--- the last 50 lines of the server log:"
+			tail -n 50 "$LAJSTROM_SERVER_LOG"
+		fi
 		echo "---"
 	} >&2
 	if ! kill -0 "$pid" 2>/dev/null; then
@@ -191,5 +218,5 @@ done
 
 echo "=== summary"
 printf '%s\n' "${results[@]}"
-echo "e2e: ${#results[@]} of ${#names[@]} scenarios ran, $failed failed, in $((SECONDS - start)) s against $base"
+echo "e2e: $((${#results[@]} - skipped)) of ${#names[@]} scenarios ran, $failed failed, $skipped skipped, in $((SECONDS - start)) s against $base"
 [ "$failed" = 0 ] || exit 1
