@@ -225,6 +225,10 @@ type publish struct {
 
 	repeatOnFiles bool          // Upload: the same file layers under the tag are the idempotent repeat
 	existing      digest.Digest // the manifest the tag holds, when the publish is a repeat of it
+
+	readOnly      bool // Inspect: nothing is pushed, not even the empty config
+	allowDegraded bool // Inspect: an unreadable metadata layer gives degraded rows
+	degraded      bool // the rows come from the annotations alone
 }
 
 // lookup returns the plugin of repo's format and the provider of its registry.

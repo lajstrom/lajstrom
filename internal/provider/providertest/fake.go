@@ -82,6 +82,8 @@ type Fake struct {
 	FailPushReference error
 	// FailExists fails Exists.
 	FailExists error
+	// FailFetch fails Fetch.
+	FailFetch error
 
 	mu             sync.Mutex
 	repos          map[string]*repoData
@@ -323,6 +325,9 @@ func (r *repository) op(verb string, ref any) string {
 // descriptor may be -1 (unknown). The reader is an io.ReadSeekCloser, so seeking to its end
 // gives the size. A discarded blob is provider.ErrNotFound.
 func (r *repository) Fetch(_ context.Context, target ocispec.Descriptor) (io.ReadCloser, error) {
+	if err := r.f.FailFetch; err != nil {
+		return nil, fmt.Errorf("%s: %w", r.op("fetch", target.Digest), err)
+	}
 	r.f.mu.Lock()
 	defer r.f.mu.Unlock()
 	if rd := r.f.repo(r.name, false); rd != nil {

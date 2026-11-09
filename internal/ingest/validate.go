@@ -15,6 +15,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
+	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
 // maxMetadata is the largest metadata layer ingest reads into versions.metadata when the plugin
@@ -49,6 +50,12 @@ func (p *Pipeline) validate(ctx context.Context, pub *publish) error {
 	// Validate.
 	if err := pub.checkBlobs(ctx); err != nil {
 		return err
+	}
+	if pub.allowDegraded && pub.parsed.Metadata != nil {
+		var err error
+		if pub.degraded, err = pub.metadataUnreadable(ctx); err != nil || pub.degraded {
+			return err
+		}
 	}
 	entry, err := pub.plugin.Validate(ctx, pub.repo, pub.manifest, pub.fetcher())
 	switch {
@@ -86,9 +93,13 @@ func (pub *publish) checkTarget() error {
 }
 
 // checkBlobs checks that every layer is in the backend, and pushes the empty config, which is
-// Lajstrom's own, when it is not.
+// Lajstrom's own, when it is not; Inspect pushes nothing, and with allowDegraded leaves a missing
+// metadata layer to metadataUnreadable.
 func (pub *publish) checkBlobs(ctx context.Context) error {
 	for _, l := range pub.manifest.Layers {
+		if pub.allowDegraded && pub.parsed.Metadata != nil && l.Digest == pub.parsed.Metadata.Digest {
+			continue
+		}
 		ok, err := pub.rr.Exists(ctx, l)
 		if err != nil {
 			return fmt.Errorf("ingest: layer %s in %s: %w", l.Digest, pub.name, err)
@@ -98,7 +109,10 @@ func (pub *publish) checkBlobs(ctx context.Context) error {
 		}
 	}
 	ok, err := pub.rr.Exists(ctx, profile.EmptyConfig)
-	if err == nil && !ok {
+	switch {
+	case err == nil && !ok && pub.readOnly:
+		return fmt.Errorf("%w: the empty config is not in %s", ErrInvalid, pub.name)
+	case err == nil && !ok:
 		err = pub.rr.Push(ctx, profile.EmptyConfig, bytes.NewReader(ocispec.DescriptorEmptyJSON.Data))
 	}
 	if err != nil {
@@ -137,6 +151,33 @@ func (pub *publish) descriptor(d digest.Digest) (ocispec.Descriptor, bool) {
 		}
 	}
 	return ocispec.Descriptor{}, false
+}
+
+// metadataUnreadable reports whether the metadata layer is missing from the backend, or its
+// bytes are not its digest's or not JSON: the rows are then degraded (Inspect with
+// allowDegraded). Any other failure, a backend that does not answer, is an error.
+func (pub *publish) metadataUnreadable(ctx context.Context) (bool, error) {
+	l := pub.parsed.Metadata
+	desc := ocispec.Descriptor{MediaType: l.MediaType, Digest: l.Digest, Size: l.Size}
+	rc, err := pub.rr.Fetch(ctx, desc)
+	if errors.Is(err, provider.ErrNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("ingest: fetch the metadata layer %s from %s: %w", l.Digest, pub.name, err)
+	}
+	defer func() { _ = rc.Close() }()
+	v := newVerifier(rc, desc)
+	md, err := io.ReadAll(io.LimitReader(v, maxMetadata+1))
+	switch {
+	case v.failure() != nil:
+		return true, nil
+	case err != nil:
+		return false, fmt.Errorf("ingest: read the metadata layer %s: %w", l.Digest, err)
+	case l.Size > maxMetadata: // not kept in versions.metadata; the plugin reads it
+		return false, nil
+	}
+	return !json.Valid(md), nil
 }
 
 // readMetadata returns the metadata for versions.metadata: the plugin's, else the metadata
