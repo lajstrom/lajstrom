@@ -246,3 +246,97 @@ names, and a migrated database; none goes through HTTP.
 
 `--repo` and `--token` exclude each other, and one of them is required. Without the master key
 the token commands fail and say that `serve` signs with an ephemeral key then.
+
+## Reindex
+
+The index database holds two kinds of tables ([index-schema.md](spec/index-schema.md)): the
+control plane (repos, users, tokens, bindings, keys, audit), which only the database has and
+which is backed up, and the derived tables (packages, versions, files, index caches, OCI
+repositories), which `lajstrom reindex` rebuilds from the manifests in the registries. Reindex
+is how a lost or damaged index comes back, how an existing registry prefix is attached, and how
+writes that went past Lajstrom (an `oras push` straight to the backend, a manifest deleted
+there) reach the index.
+
+### What a run does
+
+For each repo, or the one of `--repo`: the OCI repositories under the repo's path (the
+registry's catalog; the `oci_repos` rows of a backend without one), their tags, and per tag the
+digest of its manifest.
+
+- A tag whose manifest has the digest of its row in the index is only marked seen: the same
+  digest is the same bytes, checked when they were written. A second run therefore costs one
+  `HEAD` per tag. `--verify` reads and checks every manifest again, for instance after a fix in
+  a format plugin.
+- A new digest is read once and sorted. A profile manifest goes through the checks of a publish
+  (the profile, the format plugin, the blobs) and its rows are written. A manifest whose
+  metadata layer is missing or unreadable is indexed from its annotations and flagged
+  `degraded`; the next run reads it again. A manifest with a `subject`, or under a
+  `sha256-<hex>` tag (the referrers tag schema, cosign's `.sig`, `.att`, `.sbom`), is a referrer:
+  counted, and listed as an orphan when no version has its subject's digest. Anything else under
+  a repo's path, a Helm chart for instance, is foreign: recorded in `oci_repos`, listed, never
+  indexed, never served.
+- A tag that names another digest than its row is drift: the index keeps its digest and the
+  report lists both. Lajstrom never re-points a tag; whoever re-pointed it in the backend
+  decides which one is right.
+- With `--prune` (the default for a run of every repo, off with `--repo` unless given), every row
+  the run did not see is looked up in the registry by its tag once more, and removed only when
+  the registry says the tag is unknown; a package left without versions goes with it. A
+  registry that answers with an error removes nothing, and a run that cannot list a repo's
+  repositories sweeps nothing in that repo.
+- At the end the repo's cached indexes are dropped (the next `GET` renders them again), and tag
+  claims older than `ingest.claimTTL` are deleted.
+
+A repo whose format has no plugin in this binary (pypi and maven until they land) is listed
+with one error and left alone.
+
+### Running it
+
+```sh
+lajstrom reindex --config /etc/lajstrom/lajstrom.yaml             # every repo, with prune
+lajstrom reindex --repo apt/ubuntu-internal --report              # one repo, the lists too
+lajstrom reindex --verify --json > reindex-report.json            # every manifest read again
+```
+
+The output is one line of counts per repo (manifests, added, updated, unchanged, removed,
+degraded, referrers, foreign, orphan referrers, drift, errors); `--report` adds the lists, at most
+1 000 entries each, and `--json` prints the whole report. The exit status is not zero when the
+run itself failed (the database or the context) or another run holds the lock; manifests that
+could not be read or checked are errors in the report and do not change it. `--concurrency`
+(default 8) is how many manifests are read at once per registry. Progress is logged every 1 000
+manifests with the rate.
+
+A run takes the lock of its scope in the table `reindex_runs`: a second run of the same repo, or
+any run while every repo is being reindexed, is refused on every replica and in the CLI, with
+the replica and the time of the run that holds it. A run beats every 30 seconds; one whose
+heartbeat is two minutes old (a killed process) is closed as `abandoned` by the next start. The
+ten newest finished runs of each scope are kept, with their reports:
+`sqlite3 lajstrom.db "SELECT id, repo_id, state, started_at, finished_at, error FROM reindex_runs ORDER BY id DESC LIMIT 10"`.
+Every start is an audit row `repo.reindex` (`anonymous` with the source `cli` from the CLI).
+
+### On a cloud registry
+
+ECR bills storage and data transfer, not requests; within a region the transfer is free. A run
+over known digests reads the manifests' headers only. A full rebuild reads, per manifest, the
+manifest, the metadata layer and what the format plugin checks: for apt the head of the `.deb`
+up to its control member. The connection is closed early, but the bytes already in flight are
+transferred, so count the size of the packages: 10 000 packages of 2 MB are about 20 GB once.
+In the region that is free; through a NAT gateway it is the gateway's processing price (about
+$0.045 per GB, depending on the region), which the S3 gateway endpoint of the VPC avoids
+because ECR serves layers from S3; across regions or to the internet it is the transfer price
+(about $0.09 per GB, on both sides between regions). Prices as of November 2026.
+
+### Disaster recovery
+
+- **The derived tables are damaged or missing, the control plane is intact**: `lajstrom
+  reindex`. Frontends keep serving while it runs; what it has not reached yet is missing until
+  it does.
+- **The database is lost and there is a backup**: restore the backup, `lajstrom migrate`, then
+  `lajstrom reindex`. Everything published after the backup is in the registry and comes back;
+  users, tokens and bindings come back as they were at the backup. The keys decrypt only with
+  the master key of the backup ([The master key](#the-master-key)).
+- **The database is lost without a backup**: the control plane is gone. Create the repos again
+  with `lajstrom admin repo create` under the same format, name, registry and prefix, then
+  `lajstrom reindex` brings back every package. Users and tokens are created again; apt repos
+  get new keys, and their clients need the new `key.asc`.
+- **The registry was restored from its own backup or a replica**: `lajstrom reindex` with prune;
+  rows of manifests the restored registry does not have are removed, drift is reported.
