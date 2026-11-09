@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("Package: hello-doc\nVersion: 1:2.0~rc1-0ubuntu1\nArchitecture: all\nMaintainer: Lajstrom Tests <tests@lajstrom.dev>\nInstalled-Size: 2\nDepends: hello (= 1:2.0~rc1-0ubuntu1)\nSection: misc\nPriority: optional\nDescription: greets the tests of the deb format\n A package built in process by internal/testutil.\n .\n Nothing in it comes from a distribution.\n")

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("\nDescription: a control file written by hand  \n\tthe tab starts this continuation line\n .\n and a space this one\narchitecture: arm64\nSource: hello-src (2.0-1)\nVersion:2.0-1+b1\nMaintainer: Lajstrom Tests <tests@lajstrom.dev>\nX-Custom: kept: as written\nPackage: hello-bin\n\n")

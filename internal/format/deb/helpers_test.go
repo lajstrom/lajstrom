@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,14 +26,16 @@ type arMember struct {
 }
 
 // arOf returns the members as an ar archive: the global header, a 60-byte header per member as
-// dpkg-deb writes it (the name has no trailing "/" unless the test gives one) and the padding
-// byte after an odd member. The plugin's tests need archives the fixture builder does not make:
-// members out of order, unknown names, a control file written by hand.
+// dpkg-deb writes it (the name has no trailing "/" unless the test gives one, and is padded to
+// 16 bytes, not runes) and the padding byte after an odd member. The plugin's tests need
+// archives the fixture builder does not make: members out of order, unknown names, a control
+// file written by hand.
 func arOf(members ...arMember) []byte {
 	var b bytes.Buffer
 	b.WriteString(arMagic)
 	for _, m := range members {
-		fmt.Fprintf(&b, "%-16s%-12d%-6d%-6d%-8o%-10d`\n", m.name, 1767225600, 0, 0, 0o100644, len(m.data))
+		b.WriteString(m.name + strings.Repeat(" ", max(0, 16-len(m.name))))
+		fmt.Fprintf(&b, "%-12d%-6d%-6d%-8o%-10d`\n", 1767225600, 0, 0, 0o100644, len(m.data))
 		b.Write(m.data)
 		if len(m.data)%2 == 1 {
 			b.WriteByte('\n')
