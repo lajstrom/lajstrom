@@ -74,14 +74,15 @@ docker compose up -d --wait
 docker compose ps --format 'table {{.Service}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
 ```
 
-The run below used the snapshot image of the release build (#57), the port 18780 and
-`externalURL: "http://localhost:18780"`, since no edge was in front:
+The run below used an image built from the branch of `lajstrom healthcheck` with the
+`Dockerfile`, the port 18780 and `externalURL: "http://localhost:18780"`, since no edge was in
+front. `up --wait` returned after 11 seconds, once Lajstrom's own health check passed:
 
 ```text
-SERVICE    IMAGE                                                     STATUS                   PORTS
-lajstrom   ghcr.io/lajstrom/lajstrom:v0.0.2-snapshot.aa808b3-arm64   Up Less than a second    127.0.0.1:18780->8080/tcp
-postgres   postgres:17.11-alpine                                     Up 6 seconds (healthy)   5432/tcp
-registry   registry:3.1.2                                            Up 6 seconds (healthy)   5000/tcp
+SERVICE    IMAGE                   STATUS                    PORTS
+lajstrom   lajstrom:docs-hc        Up 5 seconds (healthy)    127.0.0.1:18780->8080/tcp
+postgres   postgres:17.11-alpine   Up 11 seconds (healthy)   5432/tcp
+registry   registry:3.1.2          Up 11 seconds (healthy)   5000/tcp
 ```
 
 Lajstrom starts once Postgres and the registry are healthy, applies the migrations, creates the
@@ -91,15 +92,40 @@ repos of the file and the bearer-token key, asks the registry what it supports, 
 ```text
 {"level":"INFO","msg":"index migrations applied under the migration lock","database.driver":"postgres","applied":[1,2,3,4,5,6,7,8,9]}
 {"level":"INFO","msg":"repo of the configuration created","repo":"raw/assets","registry":"local"}
-{"level":"INFO","msg":"token signing key made","fingerprint":"475550cb596b5da8b03554c032fc71999c47a8d38d6c84c8e42f46ed066cdbc2","algorithm":"ES256"}
+{"level":"INFO","msg":"token signing key made","fingerprint":"d45909810e5ed6333980a38b1725e5c8363898db0c028f2b2d823bb55a203313","algorithm":"ES256"}
 {"level":"INFO","msg":"registry capabilities","registry":"local","vendor":"unknown","createOnPush":true,"referrers":false,"catalog":true,"deleteManifest":true,"immutableTags":false,"blobRedirect":true,"maxBlobSize":0}
 {"level":"INFO","msg":"listening","addr":"[::]:8080","externalURL":"http://localhost:18780"}
 {"level":"INFO","msg":"metrics listening","addr":"[::]:9464","pprof":false}
 ```
 
-The `lajstrom` service has no health check: the image has no shell and no HTTP client to run
-one. The edge checks `GET /-/readyz` ([operations.md](../operations.md#readiness)); by hand,
-`curl -s localhost:8080/-/readyz` answers `ok`.
+### The health check
+
+The image has no shell and no HTTP client, so the `healthcheck:` of the `lajstrom` service runs
+the binary itself: `lajstrom healthcheck --url http://127.0.0.1:8080` GETs `/-/readyz` within
+3 seconds and exits 0 on `200`, 1 otherwise, with one line. It reads no configuration and no
+secret ([operations.md](../operations.md#readiness)). By hand:
+
+```sh
+docker compose exec -T lajstrom /lajstrom healthcheck --url http://127.0.0.1:8080
+docker compose exec -T lajstrom /lajstrom healthcheck --url http://127.0.0.1:8080 --live   # /-/healthz
+```
+
+```text
+http://127.0.0.1:8080/-/readyz: 200 ok
+http://127.0.0.1:8080/-/healthz: 200 ok
+```
+
+`/-/readyz` is `503` while the database does not answer or the registry has not answered for a
+minute. With the registry stopped (`docker compose stop registry` at 18:25:47), the service was
+`unhealthy` by 18:27:09: a minute for `/-/readyz`, then three failed checks 10 seconds apart.
+Docker does not restart an unhealthy container; the edge that checks `/-/readyz` stops sending
+it requests. Its health log (`docker inspect --format '{{range .State.Health.Log}}…'`):
+
+```text
+1 lajstrom: unhealthy: http://127.0.0.1:8080/-/readyz: 503 a registry has not answered for a minute
+```
+
+After `docker compose start registry` it was `healthy` again within 20 seconds.
 
 ## 4. The first admin and more repos
 
