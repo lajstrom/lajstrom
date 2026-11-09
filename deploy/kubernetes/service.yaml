@@ -1,0 +1,31 @@
+# The Service of the Deployment. The Ingress or route names the port http only; metrics is for
+# Prometheus (a ServiceMonitor selects it by name, docs/operations.md, Metrics).
+apiVersion: v1
+kind: Service
+metadata:
+  name: lajstrom
+  labels:
+    app.kubernetes.io/name: lajstrom
+spec:
+  selector:
+    app.kubernetes.io/name: lajstrom
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: metrics
+      port: 9464
+      targetPort: metrics
+---
+# At most one replica down at a time for a drain or an upgrade of the nodes.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: lajstrom
+  labels:
+    app.kubernetes.io/name: lajstrom
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lajstrom

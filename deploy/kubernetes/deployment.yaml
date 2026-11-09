@@ -1,0 +1,91 @@
+# Lajstrom, two replicas (docs/deploy/kubernetes.md). Every replica is the same: the state is in
+# Postgres and in the registry, so any number of them serve behind one Service. Needs the
+# ConfigMap lajstrom-config and the Secret lajstrom.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lajstrom
+  labels:
+    app.kubernetes.io/name: lajstrom
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lajstrom
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lajstrom
+    spec:
+      automountServiceAccountToken: false # Lajstrom never talks to the Kubernetes API
+      # server.shutdownTimeout (30s) for in-flight requests, and some.
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        # The nonroot user of the distroless image (65532); the image has no shell.
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: lajstrom
+          image: ghcr.io/lajstrom/lajstrom:v0.1.0 # pin a digest: …:vX.Y.Z@sha256:…
+          args: ["serve", "--config", "/etc/lajstrom/lajstrom.yaml"]
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: metrics
+              containerPort: 9464
+          envFrom:
+            # LAJSTROM_MASTER_KEY, LAJSTROM_DATABASE_DSN, LAJSTROM_REGISTRY_PASSWORD
+            - secretRef:
+                name: lajstrom
+          # serve applies the migrations before it listens: give the first start a minute.
+          startupProbe:
+            httpGet: {path: /-/healthz, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          # Only "the process answers": an outage of the database or the registry must not
+          # restart the pods (docs/operations.md, Readiness).
+          livenessProbe:
+            httpGet: {path: /-/healthz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # 503 while the database does not answer or a registry has not answered for a minute.
+          readinessProbe:
+            httpGet: {path: /-/readyz, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/lajstrom
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: lajstrom-config
+        # An upload is spooled here for the length of one request: size it for the largest
+        # concurrent uploads of one replica. Node disk, gone with the pod.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 4Gi

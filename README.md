@@ -40,6 +40,7 @@ https://lajstrom.dev
 | [Deploy with Compose](docs/deploy/compose.md) | one host for production: Lajstrom, Postgres and a registry with passwords, secrets in files, a backup |
 | [Testing](docs/testing.md) | the test levels and what each needs; `make e2e` and how to add a scenario |
 | [Authentication](docs/auth.md) | local users, argon2id passwords, HTTP Basic on every route, the first admin, `whoami` |
+| [Deploy on Kubernetes](docs/deploy/kubernetes.md) | plain manifests: two replicas on Postgres, probes, the restricted security context |
 | [Operations](docs/operations.md) | the master key, apt signing keys, `key.asc` for clients, key rotation |
 | [Architecture](docs/architecture.md) | components, storage model, the five flows |
 | [Specs](docs/spec/) | manifest profile, layout and interfaces, HTTP routing, index schema, RBAC |
