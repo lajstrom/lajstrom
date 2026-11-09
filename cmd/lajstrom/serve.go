@@ -101,6 +101,12 @@ func newServeCmd(a *app) *cobra.Command {
 				Inspector: pipe, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL})}
 			// Before the index closes: a run the shutdown cancels finishes as failed.
 			defer runs.wg.Wait()
+			if every := c.Reconcile.Interval; every > 0 {
+				a.log.Info("reconcile loop on: a reindex of every repo with prune", "interval", every.String())
+				runs.wg.Go(func() { runs.w.Reconcile(ctx, every) })
+			} else {
+				a.log.Info("reconcile loop off (reconcile.interval is 0)")
+			}
 			var authz auth.Authorizer // RBAC, #45
 			warnOpen(a.log, authz)
 			v2 := facade.New(facade.Options{Index: st, Providers: providers, Auth: authz, Ingest: pipe,

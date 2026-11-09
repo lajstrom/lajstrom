@@ -467,6 +467,11 @@ type Request struct {
 // error is the run's own (Report.Repos[].Errors hold the manifests that failed).
 func (w *Worker) Start(ctx context.Context, req Request) (*index.ReindexRun, error)
 func (w *Worker) Run(ctx context.Context, run *index.ReindexRun, req Request) (*Report, error)
+// Reconcile runs Start and Run for every repo with prune every interval until ctx ends (#30):
+// the first after a random part of it, a tick that overlaps a run elsewhere skipped; its runs
+// write no repo.reindex but one audit row reconcile per repo they changed.
+func (w *Worker) Reconcile(ctx context.Context, interval time.Duration)
+const SourceReconcile = "reconcile"
 
 type Report struct {
     Repos []RepoReport `json:"repos"`

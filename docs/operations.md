@@ -321,6 +321,19 @@ ten newest finished runs of each scope are kept, with their reports:
 `sqlite3 lajstrom.db "SELECT id, repo_id, state, started_at, finished_at, error FROM reindex_runs ORDER BY id DESC LIMIT 10"`.
 Every start is an audit row `repo.reindex` (`anonymous` with the source `cli` from the CLI).
 
+### Reconcile
+
+`serve` runs a reindex of every repo with prune every `reconcile.interval` (default `1h`, `0`
+turns it off), so that a push straight to the backend or a delete in the registry's console
+reaches the index without an operator. Each replica has the loop; the first run comes after a
+random part of the interval, and a tick while another run holds the lock (another replica's
+loop, the CLI, the API) is skipped, so with several replicas one of them runs about once an
+interval. The next tick is counted from the end of a run. Its runs are `reindex_runs` rows with
+the source `reconcile` and show in `GET …/reindex`; they write no audit row when they change
+nothing and one row `reconcile` per repo they changed (its details have the counts). A run over
+known digests costs one `HEAD` per tag ([On a cloud registry](#on-a-cloud-registry)), so the
+default interval is cheap; drift is reported, never repaired by re-pointing a tag.
+
 ### On a cloud registry
 
 ECR bills storage and data transfer, not requests; within a region the transfer is free. A run

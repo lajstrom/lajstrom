@@ -39,7 +39,7 @@ func TestLoadDefaults(t *testing.T) {
 		file string
 	}{
 		{name: "only server.listen", file: minimal},
-		{name: "explicit null sections", file: minimal + "log:\ndatabase:\nregistries:\ningest:\nkeys:\nrepos:\n"},
+		{name: "explicit null sections", file: minimal + "log:\ndatabase:\nregistries:\ningest:\nreconcile:\nkeys:\nrepos:\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -48,11 +48,12 @@ func TestLoadDefaults(t *testing.T) {
 				t.Fatalf("Load: %v", err)
 			}
 			want := &Config{
-				Server:   Server{Listen: ":8080", ShutdownTimeout: 30 * time.Second, MaxManifestSize: 4 << 20},
-				Log:      Log{Level: "info", Format: "text"},
-				Database: Database{Driver: "sqlite", DSN: "file:lajstrom.db"},
-				Ingest:   Ingest{ClaimTTL: 10 * time.Minute},
-				Keys:     Keys{Algorithm: "ed25519", RetireGrace: 720 * time.Hour, TokenAlgorithm: "ES256"},
+				Server:    Server{Listen: ":8080", ShutdownTimeout: 30 * time.Second, MaxManifestSize: 4 << 20},
+				Log:       Log{Level: "info", Format: "text"},
+				Database:  Database{Driver: "sqlite", DSN: "file:lajstrom.db"},
+				Ingest:    Ingest{ClaimTTL: 10 * time.Minute},
+				Reconcile: Reconcile{Interval: time.Hour},
+				Keys:      Keys{Algorithm: "ed25519", RetireGrace: 720 * time.Hour, TokenAlgorithm: "ES256"},
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("Load =\n%+v\nwant\n%+v", got, want)
@@ -119,6 +120,7 @@ func TestLoadErrors(t *testing.T) {
 		},
 		{name: "duration without unit", file: minimal[:len(minimal)-1] + "\n  shutdownTimeout: 30\n", want: []string{"line 3", "into time.Duration"}},
 		{name: "negative claim TTL", file: minimal + "ingest: {claimTTL: -1m}\n", want: []string{"ingest.claimTTL: must not be negative"}},
+		{name: "negative reconcile interval", file: minimal + "reconcile: {interval: -1h}\n", want: []string{"reconcile.interval: must not be negative"}},
 		{name: "negative manifest size", file: minimal + "  maxManifestSize: -1\n", want: []string{"server.maxManifestSize: must not be negative"}},
 		{name: "keys", file: minimal + "keys: {algorithm: dsa, retireGrace: -1h}\n",
 			want: []string{`keys.algorithm: "dsa" is not ed25519 or rsa4096`, "keys.retireGrace: must not be negative"}},

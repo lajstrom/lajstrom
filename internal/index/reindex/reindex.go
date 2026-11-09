@@ -76,13 +76,15 @@ type Worker struct {
 	log         *slog.Logger
 	concurrency int
 	claimTTL    time.Duration
-	heartbeat   time.Duration // heartbeatEvery; shorter in the tests
+	heartbeat   time.Duration                        // heartbeatEvery; shorter in the tests
+	after       func(time.Duration) <-chan time.Time // time.After; the tests' clock
+	jitter      func(time.Duration) time.Duration    // randomPart; the tests' choice
 }
 
 // New returns a Worker with the defaults of Options applied.
 func New(o Options) *Worker {
 	w := &Worker{index: o.Index, providers: o.Providers, inspector: o.Inspector, audit: o.Audit, now: o.Now, log: o.Log,
-		concurrency: o.Concurrency, claimTTL: o.ClaimTTL, heartbeat: heartbeatEvery}
+		concurrency: o.Concurrency, claimTTL: o.ClaimTTL, heartbeat: heartbeatEvery, after: time.After, jitter: randomPart}
 	if w.now == nil {
 		w.now = time.Now
 	}
@@ -116,8 +118,9 @@ type Request struct {
 var errTakenOver = errors.New("reindex: the run was taken over: its heartbeat was late and a later start closed it")
 
 // Start takes the lock of the run's scope (index.Store.StartReindexRun) and writes the audit
-// event repo.reindex. A run that overlaps is a *index.ReindexConflictError. The returned run
-// is what Run takes.
+// event repo.reindex, except for a run of the reconcile loop, which audits what it changed
+// instead. A run that overlaps is a *index.ReindexConflictError. The returned run is what Run
+// takes.
 func (w *Worker) Start(ctx context.Context, req Request) (*index.ReindexRun, error) {
 	run := index.ReindexRun{Source: req.Source, Principal: req.Principal, Replica: replica(),
 		Options: index.ReindexOptions{Prune: req.Prune, Verify: req.Verify}, StartedAt: w.now()}
@@ -128,12 +131,20 @@ func (w *Worker) Start(ctx context.Context, req Request) (*index.ReindexRun, err
 	if err := w.index.StartReindexRun(ctx, &run, run.StartedAt.Add(-staleAfter)); err != nil {
 		return nil, fmt.Errorf("reindex: start: %w", err)
 	}
-	ev := index.AuditEvent{At: run.StartedAt, Principal: req.Principal, Action: "repo.reindex",
-		Subject: fmt.Sprintf("run %d", run.ID)}
+	if req.Source == SourceReconcile {
+		return &run, nil
+	}
+	ev := index.AuditEvent{At: run.StartedAt, Principal: req.Principal, Action: "repo.reindex", Subject: "run " + itoa(run.ID)}
 	if req.Repo != nil {
 		ev.Repo = req.Repo.Format + "/" + req.Repo.Name
 	}
 	ev.Details, _ = json.Marshal(map[string]any{"run": run.ID, "source": req.Source, "prune": req.Prune, "verify": req.Verify})
+	w.writeAudit(ctx, ev)
+	return &run, nil
+}
+
+// writeAudit records ev with the audit writer, or in the index without one; a failure is logged.
+func (w *Worker) writeAudit(ctx context.Context, ev index.AuditEvent) {
 	var err error
 	if w.audit != nil {
 		err = w.audit.Write(ctx, ev)
@@ -141,10 +152,12 @@ func (w *Worker) Start(ctx context.Context, req Request) (*index.ReindexRun, err
 		err = w.index.AppendAudit(ctx, &ev)
 	}
 	if err != nil {
-		w.log.ErrorContext(ctx, "reindex: audit event of a run not written", "run", run.ID, "error", err.Error())
+		w.log.ErrorContext(ctx, "reindex: audit event not written", "action", ev.Action, "subject", ev.Subject, "error", err.Error())
 	}
-	return &run, nil
 }
+
+// itoa formats an id.
+func itoa(id int64) string { return strconv.FormatInt(id, 10) }
 
 // Run reads the registry for the run that Start returned, beats while it runs, and finishes
 // the run whatever happens: done when it went to the end, failed on an error of its own (the

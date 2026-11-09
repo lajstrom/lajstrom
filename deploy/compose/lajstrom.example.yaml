@@ -51,6 +51,9 @@ registries:
 ingest:
   claimTTL: 10m                       # a publish's claim on a tag older than this is stale and taken over
 
+reconcile:
+  interval: 1h                        # a reindex of every repo with prune this often; 0 turns it off
+
 auth:
   anonymousRead: false                # server-wide switch for anonymous read (RBAC, issue #45)
 

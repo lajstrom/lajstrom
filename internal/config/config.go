@@ -13,6 +13,7 @@ type Config struct {
 	Database   Database   `yaml:"database"`
 	Registries []Registry `yaml:"registries"`
 	Ingest     Ingest     `yaml:"ingest"`
+	Reconcile  Reconcile  `yaml:"reconcile"`
 	Auth       Auth       `yaml:"auth"`
 	Keys       Keys       `yaml:"keys"`
 	Repos      []Repo     `yaml:"repos"`
@@ -129,6 +130,14 @@ type Ingest struct {
 	ClaimTTL time.Duration `yaml:"claimTTL"`
 }
 
+// Reconcile configures the reconcile loop: a reindex of every repo with prune, run by serve
+// on a schedule (docs/operations.md, Reconcile).
+type Reconcile struct {
+	// Interval is the time between two runs on one replica; the first comes after a random
+	// part of it. 0 turns the loop off. Must not be negative.
+	Interval time.Duration `yaml:"interval"`
+}
+
 // Auth configures authentication (docs/spec/rbac.md).
 type Auth struct {
 	// AnonymousRead is the server-wide switch for anonymous read: when false, no repo is
@@ -194,6 +203,7 @@ const (
 	DefaultRegistryTimeout    = 30 * time.Second
 	DefaultRegistryRetries    = 3
 	DefaultIngestClaimTTL     = 10 * time.Minute
+	DefaultReconcileInterval  = time.Hour
 	DefaultKeysAlgorithm      = KeysAlgorithmEd25519
 	DefaultKeysRetireGrace    = 720 * time.Hour
 	DefaultKeysTokenAlgorithm = KeysTokenES256
@@ -202,10 +212,11 @@ const (
 // Default returns the configuration before the file is read. server.listen has no default.
 func Default() *Config {
 	return &Config{
-		Server:   Server{ShutdownTimeout: DefaultShutdownTimeout, MaxManifestSize: DefaultMaxManifestSize},
-		Log:      Log{Level: DefaultLogLevel, Format: DefaultLogFormat},
-		Database: Database{Driver: DefaultDatabaseDriver, DSN: DefaultDatabaseDSN},
-		Ingest:   Ingest{ClaimTTL: DefaultIngestClaimTTL},
-		Keys:     Keys{Algorithm: DefaultKeysAlgorithm, RetireGrace: DefaultKeysRetireGrace, TokenAlgorithm: DefaultKeysTokenAlgorithm},
+		Server:    Server{ShutdownTimeout: DefaultShutdownTimeout, MaxManifestSize: DefaultMaxManifestSize},
+		Log:       Log{Level: DefaultLogLevel, Format: DefaultLogFormat},
+		Database:  Database{Driver: DefaultDatabaseDriver, DSN: DefaultDatabaseDSN},
+		Ingest:    Ingest{ClaimTTL: DefaultIngestClaimTTL},
+		Reconcile: Reconcile{Interval: DefaultReconcileInterval},
+		Keys:      Keys{Algorithm: DefaultKeysAlgorithm, RetireGrace: DefaultKeysRetireGrace, TokenAlgorithm: DefaultKeysTokenAlgorithm},
 	}
 }
