@@ -112,6 +112,7 @@ cat >"$LAJSTROM_CONFIG" <<EOF
 server:
   listen: "127.0.0.1:$port"
   externalURL: "$base"
+  insecureHTTP: true
   shutdownTimeout: 5s
   metricsListen: ""
 log:

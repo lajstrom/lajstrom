@@ -24,8 +24,15 @@ type Server struct {
 	// Listen is the TCP address to listen on, host:port; ":8080" listens on every interface.
 	Listen string `yaml:"listen"`
 	// ExternalURL is the base of every absolute URL Lajstrom renders (docs/spec/http-routing.md
-	// §1). Optional until a feature renders absolute URLs.
+	// §1): https://<host>[:port], no path, query or fragment; http only for a loopback host with
+	// InsecureHTTP. Optional until a feature renders absolute URLs.
 	ExternalURL string `yaml:"externalURL"`
+	// InsecureHTTP allows an http ExternalURL on a loopback host, for the dev stack: clients see
+	// Lajstrom over TLS only everywhere else.
+	InsecureHTTP bool `yaml:"insecureHTTP"`
+	// TLS makes Lajstrom terminate TLS itself, for a single host; empty when TLS terminates at
+	// the edge.
+	TLS TLS `yaml:"tls"`
 	// ShutdownTimeout bounds the graceful shutdown: in-flight requests get this long to finish.
 	ShutdownTimeout time.Duration `yaml:"shutdownTimeout"`
 	// MaxManifestSize is the largest manifest a PUT to /v2 may carry, in bytes; the facade reads
@@ -46,6 +53,15 @@ type Server struct {
 	// one replica runs at once; the next one is answered 503 with Retry-After. Zero means no
 	// limit; negative is invalid.
 	MaxConcurrentUploads int `yaml:"maxConcurrentUploads"`
+}
+
+// TLS is the certificate of the listener when Lajstrom terminates TLS itself. Both files are
+// PEM; set both or neither.
+type TLS struct {
+	// CertFile is the certificate chain, the server's certificate first.
+	CertFile string `yaml:"certFile"`
+	// KeyFile is the private key of the certificate.
+	KeyFile string `yaml:"keyFile"`
 }
 
 // Log configures the process logger. The --log-level and --log-format flags override it.

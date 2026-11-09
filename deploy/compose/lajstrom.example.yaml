@@ -14,7 +14,11 @@
 
 server:
   listen: ":8080"                     # host:port to listen on
-  externalURL: "http://localhost:8080" # base of every absolute URL Lajstrom renders
+  externalURL: "http://localhost:8080" # base of every absolute URL Lajstrom renders; https://<host> outside the dev stack
+  insecureHTTP: true                  # allows the http externalURL above, on loopback only; never in production
+  tls:                                # TLS in Lajstrom itself, for a single host; empty: TLS at the edge
+    certFile: ""                      # PEM certificate chain
+    keyFile: ""                       # PEM private key
   shutdownTimeout: 30s                # how long in-flight requests get on SIGTERM
   maxManifestSize: 4194304            # bytes; the largest manifest a PUT to /v2 may carry
   metricsListen: "127.0.0.1:9464"     # GET /metrics for Prometheus; never the public host; empty: off

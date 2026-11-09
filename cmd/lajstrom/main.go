@@ -12,6 +12,6 @@ import (
 func main() {
 	if err := newRootCmd(os.LookupEnv).ExecuteContext(context.Background()); err != nil {
 		fmt.Fprintln(os.Stderr, "lajstrom:", err)
-		os.Exit(1)
+		os.Exit(exitStatus(err))
 	}
 }
