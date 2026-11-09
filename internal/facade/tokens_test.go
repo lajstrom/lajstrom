@@ -75,8 +75,8 @@ func payload(t *testing.T, raw string) map[string]any {
 }
 
 // TestTokenEndpoint checks GET /v2/token: the body and headers; the scopes reduced by the
-// Authorizer for a user and for anonymous, every scope granted without one; the scopes of
-// repos that do not exist dropped.
+// Authorizer for a user and for anonymous, every scope granted without one; the scope of a repo
+// that does not exist without actions, as that of a repo the principal may not read.
 func TestTokenEndpoint(t *testing.T) {
 	scopes := []string{"repository:raw/assets/hello:pull,push", "repository:raw/none/x:pull", "registry:catalog:*", "repository:oci/images/a:delete"}
 	for _, tt := range []struct {
@@ -88,14 +88,16 @@ func TestTokenEndpoint(t *testing.T) {
 	}{
 		{"anonymous, no Authorizer", nil, "", "anonymous",
 			"[map[actions:[*] name:catalog type:registry] map[actions:[delete] name:oci/images/a type:repository] " +
-				"map[actions:[pull push] name:raw/assets/hello type:repository]]"},
+				"map[actions:[pull push] name:raw/assets/hello type:repository] map[actions:[] name:raw/none/x type:repository]]"},
 		{"alice, no Authorizer", nil, "alice", "user:alice",
 			"[map[actions:[*] name:catalog type:registry] map[actions:[delete] name:oci/images/a type:repository] " +
-				"map[actions:[pull push] name:raw/assets/hello type:repository]]"},
+				"map[actions:[pull push] name:raw/assets/hello type:repository] map[actions:[] name:raw/none/x type:repository]]"},
 		{"bob, a reader of raw/assets (O-12)", authorizer{"bob": {"raw/assets": {auth.ActionRead}}}, "bob", "user:bob",
-			"[map[actions:[*] name:catalog type:registry] map[actions:[pull] name:raw/assets/hello type:repository]]"},
+			"[map[actions:[*] name:catalog type:registry] map[actions:[] name:oci/images/a type:repository] " +
+				"map[actions:[pull] name:raw/assets/hello type:repository] map[actions:[] name:raw/none/x type:repository]]"},
 		{"anonymous, an Authorizer that grants it nothing", authorizer{}, "", "anonymous",
-			"[map[actions:[*] name:catalog type:registry]]"},
+			"[map[actions:[*] name:catalog type:registry] map[actions:[] name:oci/images/a type:repository] " +
+				"map[actions:[] name:raw/assets/hello type:repository] map[actions:[] name:raw/none/x type:repository]]"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newEnv(t, envOptions{authz: tt.authz})
@@ -301,9 +303,10 @@ func TestBearerAccessLog(t *testing.T) {
 }
 
 // TestBearerMount checks a cross-repo mount with a bearer: a token without the source is 401
-// naming both repositories and insufficient_scope, so that the client gets a wider token; one
-// with both mounts; one that names the source without pull gets a plain session; the same
-// repository needs no second scope.
+// naming both repositories and insufficient_scope, so that the client gets a wider token,
+// whether the source exists or not; one with both mounts; one that names the source without
+// pull, or names one that does not exist, gets a plain session; the same repository needs no
+// second scope.
 func TestBearerMount(t *testing.T) {
 	e := newEnv(t, envOptions{})
 	d := e.pushBlob("oci/images/base", []byte("shared layer"))
@@ -327,7 +330,71 @@ func TestBearerMount(t *testing.T) {
 	wantCreated(t, "a mount from the same repository", rr, d)
 	rr = e.do(e.h, http.MethodPost, uploads+"?mount="+d.String()+"&from=oci/none/base", nil,
 		"Authorization", "Bearer "+e.issue(alice, repoAccess("oci/images/app", "pull", "push")))
+	wantError(t, "a mount from a repo that does not exist, with one scope", rr, http.StatusUnauthorized, codeUnauthorized)
+	wantHeader(t, "a mount from a repo that does not exist, with one scope", rr, "WWW-Authenticate",
+		realm+`,scope="repository:oci/images/app:pull,push repository:oci/none/base:pull",error="insufficient_scope"`)
+	rr = e.do(e.h, http.MethodPost, uploads+"?mount="+d.String()+"&from=oci/none/base", nil,
+		"Authorization", "Bearer "+e.getToken(e.h, "alice", "repository:oci/images/app:pull,push", "repository:oci/none/base:pull"))
 	wantStatus(t, "a mount from a repo that does not exist", rr, http.StatusAccepted)
+}
+
+// TestBearerExistence checks X-05 on /v2: every answer about a repo that alice may not read is
+// the answer about a repo that does not exist, with and without a bearer from the token
+// endpoint: 404 NAME_UNKNOWN to alice, 401 to the anonymous principal, 401 with
+// insufficient_scope for a token that does not name the repository, a plain session for a mount
+// from it.
+func TestBearerExistence(t *testing.T) {
+	e := newEnv(t, envOptions{authz: authorizer{"alice": {"raw/assets": {auth.ActionRead, auth.ActionWrite}}}})
+	d := e.pushBlob("oci/images/app", []byte("a layer"))
+	const (
+		tags  = "/v2/{repo}/tags/list"
+		mount = "/v2/raw/assets/hello/blobs/uploads/?mount={digest}&from={repo}"
+	)
+	for _, tt := range []struct {
+		name, user, method, target string
+		bearer                     bool
+		scopes                     []string
+		status                     int
+		code, challenge            string
+	}{
+		{"alice", "alice", http.MethodGet, tags, false, nil, http.StatusNotFound, codeNameUnknown, ""},
+		{"anonymous", "", http.MethodGet, tags, false, nil, http.StatusUnauthorized, codeUnauthorized, realm + `,scope="repository:{repo}:pull"`},
+		{"alice with a token for it", "alice", http.MethodGet, tags, true, []string{"repository:{repo}:pull,push"},
+			http.StatusNotFound, codeNameUnknown, ""},
+		{"alice with a token for it, a push", "alice", http.MethodPost, "/v2/{repo}/blobs/uploads/", true, []string{"repository:{repo}:pull,push"},
+			http.StatusNotFound, codeNameUnknown, ""},
+		{"anonymous with a token for it", "", http.MethodGet, tags, true, []string{"repository:{repo}:pull"},
+			http.StatusUnauthorized, codeUnauthorized, realm + `,scope="repository:{repo}:pull"`},
+		{"alice with a token for another", "alice", http.MethodGet, tags, true, []string{"repository:raw/assets/hello:pull"},
+			http.StatusUnauthorized, codeUnauthorized, realm + `,scope="repository:{repo}:pull",error="insufficient_scope"`},
+		{"a mount from it", "alice", http.MethodPost, mount, true, []string{"repository:raw/assets/hello:pull,push", "repository:{repo}:pull"},
+			http.StatusAccepted, "", ""},
+		{"a mount from it, a token that does not name it", "alice", http.MethodPost, mount, true, []string{"repository:raw/assets/hello:pull,push"},
+			http.StatusUnauthorized, codeUnauthorized, realm + `,scope="repository:raw/assets/hello:pull,push repository:{repo}:pull",error="insufficient_scope"`},
+	} {
+		for _, repo := range []string{"oci/images/app", "oci/none/app"} {
+			what := tt.name + " on " + repo
+			r := strings.NewReplacer("{repo}", repo, "{digest}", d.String())
+			var hdr []string
+			if tt.user != "" {
+				hdr = []string{principalHeader, tt.user}
+			}
+			if tt.bearer {
+				scopes := make([]string, len(tt.scopes))
+				for i, sc := range tt.scopes {
+					scopes[i] = r.Replace(sc)
+				}
+				hdr = []string{"Authorization", "Bearer " + e.getToken(e.h, tt.user, scopes...)}
+			}
+			rr := e.do(e.h, tt.method, r.Replace(tt.target), nil, hdr...)
+			if tt.code == "" {
+				wantStatus(t, what, rr, tt.status)
+			} else {
+				wantError(t, what, rr, tt.status, tt.code)
+			}
+			wantHeader(t, what, rr, "WWW-Authenticate", r.Replace(tt.challenge))
+		}
+	}
 }
 
 // TestBearerCatalog checks the catalog under a bearer: the token's view, the repositories it

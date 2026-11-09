@@ -148,23 +148,27 @@ func (h *handler) mount(w http.ResponseWriter, r *http.Request, t *target, rr pr
 // mount from: from is empty, not a name, not a repo, on another registry, or not readable:
 // in another repo the principal may not read, or, with a bearer, another repository the token
 // names without pull. A bearer that does not name another repository at all is the error of
-// allowedByToken, 401 with insufficient_scope.
+// namedByToken, 401 with insufficient_scope, before the repo is looked up: whether from
+// exists is not in the answer.
 func (h *handler) mountSource(ctx context.Context, t *target, from string) (string, bool, error) {
 	if from == "" {
 		return "", false, nil
+	}
+	g, bearer := grantFrom(ctx)
+	if bearer && from != t.name && token.ValidName(from) {
+		if _, named := g.Repository(from); !named {
+			return "", false, h.namedByToken(ctx, g, from)
+		}
+		if !g.Allows(from, token.ActionPull) {
+			return "", false, nil
+		}
 	}
 	src, err := h.resolve(ctx, from)
 	if err != nil || src.repo.Registry != t.repo.Registry {
 		return "", false, nil
 	}
-	if g, bearer := grantFrom(ctx); bearer {
-		if src.name == t.name {
-			return src.oci, true, nil
-		}
-		if _, named := g.Repository(src.name); !named {
-			return "", false, allowedByToken(g, auth.ActionRead, src.name)
-		}
-		return src.oci, g.Allows(src.name, token.ActionPull), nil
+	if bearer {
+		return src.oci, true, nil
 	}
 	if src.repo.ID != t.repo.ID && h.authorize(ctx, auth.ActionRead, src) != nil {
 		return "", false, nil

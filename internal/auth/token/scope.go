@@ -134,15 +134,16 @@ func (sc *scopeSet) access() []Access {
 }
 
 // Reduce returns the scopes with the actions allowed to p on each repository's
-// <format>/<repo> (pull is read, push write, delete delete); a scope with no action left is
-// dropped. The credential of the request (auth.CredentialFrom(ctx)) decides first, as
+// <format>/<repo> (pull is read, push write, delete delete). A scope with no action left stays,
+// with none (docs/spec/rbac.md §4): the token then names every repository it was asked for, and
+// whether one was granted nothing because it may not be read or because it does not exist is
+// not in it. The credential of the request (auth.CredentialFrom(ctx)) decides first, as
 // format.Authorize has it: a personal access token with scopes keeps only the actions of its
 // scopes, a deploy token only those of its scopes on its own repo, neither ever delete; so the
 // token carries the narrowing to every /v2 request. authz decides next, and a nil authz allows
-// what the credential allows, as the facade is open before RBAC (#45), whose evaluator adds
-// the bindings behind authz. The catalog scope is kept for every principal: the catalog is
-// filtered repo by repo when it is listed. An error of authz is returned: the caller cannot
-// decide.
+// what the credential allows, as the facade is open before RBAC (#45), whose evaluator adds the
+// bindings behind authz. The catalog scope is kept for every principal: the catalog is filtered
+// repo by repo when it is listed. An error of authz is returned: the caller cannot decide.
 func Reduce(ctx context.Context, authz auth.Authorizer, p auth.Principal, scopes []Access) ([]Access, error) {
 	cred := auth.CredentialFrom(ctx)
 	out := make([]Access, 0, len(scopes))
@@ -153,7 +154,7 @@ func Reduce(ctx context.Context, authz auth.Authorizer, p auth.Principal, scopes
 		}
 		format, rest, _ := strings.Cut(s.Name, "/")
 		repo, _, _ := strings.Cut(rest, "/")
-		var kept []string
+		kept := []string{}
 		for _, a := range s.Actions {
 			if cred.Limit(authAction(a), index.Repo{Format: format, Name: repo}) != nil {
 				continue // outside the credential's scopes or repo: never granted
@@ -169,9 +170,7 @@ func Reduce(ctx context.Context, authz auth.Authorizer, p auth.Principal, scopes
 				kept = append(kept, a)
 			}
 		}
-		if len(kept) > 0 {
-			out = append(out, Access{Type: s.Type, Name: s.Name, Actions: kept})
-		}
+		out = append(out, Access{Type: s.Type, Name: s.Name, Actions: kept})
 	}
 	return out, nil
 }
