@@ -67,6 +67,11 @@ what it supports (see [capabilities](#registry-capabilities)) and logs the answe
 registry that does not answer within 10 s is logged at error and `serve` starts anyway, so that
 one backend down does not keep a replica from starting.
 
+An upload is spooled to a temporary file for the length of its request, then pushed to the
+registry and removed. The file goes to `$TMPDIR` when it is set, `/tmp` otherwise; there is no
+configuration key for it. Give that directory room for the largest uploads one replica takes at
+once (a tmpfs in [Compose](deploy/compose.md), an `emptyDir` on [Kubernetes](deploy/kubernetes.md)).
+
 ## Reference
 
 ### server

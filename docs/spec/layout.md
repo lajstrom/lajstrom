@@ -10,7 +10,7 @@
 ## 1. Layout
 
 ```
-cmd/lajstrom/                 main; subcommands: serve, reindex, migrate, version, admin (user/token/repo/binding)
+cmd/lajstrom/                 main; subcommands: serve, reindex, migrate, version, admin (user/token/repo/binding), healthcheck
 internal/config/              config file (YAML) + env overrides; validation; example in deploy/
 internal/server/              http.Server, routing (net/http ServeMux, Go 1.22 patterns), middleware:
                               request id, logging, metrics, auth, panic recovery; mounts formats, facade, api

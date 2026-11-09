@@ -3,7 +3,7 @@
 A pushed tag `vX.Y.Z` builds and publishes a release without anyone's laptop:
 [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs goreleaser with
 [`.goreleaser.yaml`](../.goreleaser.yaml). Installing a release is described in
-`docs/install.md` (#58).
+[install.md](install.md).
 
 ## What a release contains
 

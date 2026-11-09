@@ -37,7 +37,7 @@ one, stop, explain why in the issue, and wait for the lead. Do not "just extend 
 ## Layout (details in docs/spec/layout.md)
 
 ```
-cmd/lajstrom            CLI: serve, reindex, migrate, version, admin
+cmd/lajstrom            CLI: serve, reindex, migrate, version, admin, healthcheck
 internal/server         router (net/http ServeMux), middleware
 internal/facade         OCI distribution API /v2 proxy + token + manifest hook
 internal/format/<fmt>   one package per format: parse.go (pure), routes.go (HTTP), index.go (render)

@@ -24,8 +24,8 @@ type Spooled struct {
 	closeErr error
 }
 
-// Spool copies r to a new temporary file in os.TempDir() (a configuration key for the directory
-// is a later issue) and returns it as a Spooled of name and contentType. size is the length the
+// Spool copies r to a new temporary file in os.TempDir(), $TMPDIR when it is set (decided on
+// #58: no configuration key of its own), and returns it as a Spooled of name and contentType. size is the length the
 // client declared, -1 when unknown; when it is known and r ends at another length, the error
 // wraps ErrInvalid. Nothing is hashed here: Build digests the file. The file is unlinked right
 // after it is created where the system allows it, so that a crash leaves nothing behind; Close
