@@ -31,6 +31,8 @@ jobs:
           - { package: ./internal/format/deb, target: FuzzParseControl }
           - { package: ./internal/format/deb, target: FuzzParseAr }
           - { package: ./internal/format/pypi, target: FuzzWheelFilename }
+          # FuzzCoreMetadata comes with #279 (#261).
+          - { package: ./internal/format/pypi, target: FuzzCoreMetadata }
           - { package: ./internal/format/maven, target: FuzzPOM }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
