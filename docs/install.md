@@ -133,5 +133,7 @@ machine.
 
 1. The configuration: [configuration.md](configuration.md); `lajstrom serve --config …`.
 2. The first admin: [operations.md](operations.md#the-first-admin).
-3. A quick start per format: [raw](quickstart/raw.md), [apt](quickstart/apt.md),
+3. Running it for good: [Docker Compose](deploy/compose.md), [Kubernetes](deploy/kubernetes.md),
+   behind a [reverse proxy](reverse-proxy.md), and [backups](operations.md#backup-and-restore).
+4. A quick start per format: [raw](quickstart/raw.md), [apt](quickstart/apt.md),
    [pypi](quickstart/pypi.md), [maven](quickstart/maven.md), [OCI with oras](quickstart/oras.md).
