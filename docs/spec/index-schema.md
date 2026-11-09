@@ -61,6 +61,16 @@ and the new run starts. `done` is a run that went to the end, whatever its repor
 process shut down). Finishing a run deletes the finished runs of the same scope beyond the ten
 newest.
 
+The referrers lock has no table. The `sha256-<hex>` tag-schema index of a subject is a
+read-modify-write of one tag, and OCI has no compare-and-swap for manifests: two referrers
+attached at once through two replicas can each write an index without the other's. Ingest holds
+the referrers lock of (OCI repository, subject) for the push of a referrer when the backend has
+no referrers API (`Capabilities.Referrers` false), and everything the push does to the index
+happens under it (`Store.WithReferrersLock`): on Postgres `pg_advisory_xact_lock` on a key hashed
+from both, in a transaction held for the push; on SQLite, which serves one replica, a lock of
+the process. With the referrers API the registry keeps the list, and no lock is taken. Approved
+by the maintainer on 2026-11-09 (#28).
+
 ## Derived (rebuilt by reindex)
 
 | Table | Columns | Notes |

@@ -44,6 +44,7 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"TagClaims", testTagClaims},
 		{"TagClaimRace", testTagClaimRace},
 		{"TagClaimsLifecycle", testTagClaimsLifecycle},
+		{"ReferrersLock", testReferrersLock},
 		{"Packages", testPackages},
 		{"PackageByNameOCI", testPackageByNameOCI},
 		{"PackageNameOCIRace", testPackageNameOCIRace},
