@@ -24,9 +24,9 @@ type Options struct {
 	// Tokens is the service behind the tokens of a user and the deploy tokens of a repo; nil
 	// means one over the index, the audit writer, the clock and the logger of Repos.
 	Tokens *auth.Tokens
-	// Auth decides whether the request's principal may perform an action on a repo. nil allows
-	// everything: the server authenticates requests (#43), but every endpoint is open until
-	// RBAC (#45) sets it.
+	// Auth decides whether the request's principal may perform an action on a repo or on the
+	// system (auth.System): serve sets auth.RBAC. nil allows everything the credential allows,
+	// for the tests of the handlers.
 	Auth auth.Authorizer
 	// Reindex starts the runs of POST …/reindex; nil answers it 501.
 	Reindex Reindexer
@@ -153,9 +153,11 @@ func denied(err error) bool {
 }
 
 // createRepo creates the repo of the CreateRequest in the body: 201 with the resource and its
-// Location.
+// Location. The admin role is checked before the body is read, and must stay first: the 409 of
+// a taken name, and the 400 of a body that does not parse, then reach an admin only, who sees
+// every repo, and nobody else learns by trying names which repos exist (docs/spec/rbac.md §3).
 func (h *handler) createRepo(w http.ResponseWriter, r *http.Request) (int, any, error) {
-	if err := h.allow(r, auth.ActionManage, systemMask, systemMask); err != nil {
+	if err := h.allow(r, auth.ActionManage, auth.System, auth.System); err != nil {
 		return 0, nil, err
 	}
 	var req CreateRequest
@@ -229,10 +231,6 @@ func (h *handler) notFound(_ http.ResponseWriter, r *http.Request) (int, any, er
 	}
 }
 
-// systemMask is the mask segment that matches everything; manage on */* is what the admin
-// binding grants.
-const systemMask = "*"
-
 // allow returns nil when the request's principal may perform a on formatName/repo. It is the
 // one place where the API asks the Authorizer, through format.Authorize, so that a denial
 // follows docs/spec/rbac.md §3 as on the frontends: the anonymous principal gets
@@ -241,16 +239,15 @@ const systemMask = "*"
 // (404), the answer of a repo that does not exist. Reading a repo and listing it need read;
 // changing, deleting and reindexing it need manage.
 //
-// Creating a repo is system-level, and asks for manage on */*: the admin binding matches every
-// repo, and #45 settles the system resource of rbac.md §2. No repo's existence is at stake
-// there, so an authenticated principal that is denied gets 403, never 404.
+// Creating a repo is system-level, and asks for manage on auth.System/auth.System, which only
+// the admin role has (rbac.md §2): a maintainer on */* has every repo and not the system. An
+// authenticated principal that is denied gets 403, never 404: the check comes before the body
+// names a repo (createRepo), so no repo's existence is at stake.
 //
 // The request's credential limits the principal first, with or without an Authorizer
 // (format.Authorize, auth.Credential.Limit): a deploy token and a personal access token with
 // scopes never get manage, and a deploy token reaches its own repo only.
 func (h *handler) allow(r *http.Request, a auth.Action, formatName, repo string) error {
-	// TODO(#45): RBAC sets Options.Auth; until then every endpoint is open to what the
-	// credential allows.
 	return h.authorize(r, format.Deps{Auth: h.auth}, a, formatName, repo)
 }
 
@@ -263,7 +260,7 @@ func (h *handler) limit(r *http.Request, a auth.Action, formatName, repo string)
 // with format.ErrForbidden.
 func (h *handler) authorize(r *http.Request, deps format.Deps, a auth.Action, formatName, repo string) error {
 	err := format.Authorize(r.Context(), deps, a, index.Repo{Format: formatName, Name: repo})
-	if formatName == systemMask && repo == systemMask && errors.Is(err, index.ErrNotFound) {
+	if formatName == auth.System && repo == auth.System && errors.Is(err, index.ErrNotFound) {
 		return fmt.Errorf("%w: %s on the system", format.ErrForbidden, a)
 	}
 	return err

@@ -140,10 +140,10 @@ func (sc *scopeSet) access() []Access {
 // not in it. The credential of the request (auth.CredentialFrom(ctx)) decides first, as
 // format.Authorize has it: a personal access token with scopes keeps only the actions of its
 // scopes, a deploy token only those of its scopes on its own repo, neither ever delete; so the
-// token carries the narrowing to every /v2 request. authz decides next, and a nil authz allows
-// what the credential allows, as the facade is open before RBAC (#45), whose evaluator adds the
-// bindings behind authz. The catalog scope is kept for every principal: the catalog is filtered
-// repo by repo when it is listed. An error of authz is returned: the caller cannot decide.
+// token carries the narrowing to every /v2 request. authz decides next, by the bindings
+// (auth.RBAC); a nil authz allows what the credential allows, for the tests. The catalog scope
+// is kept for every principal: the catalog is filtered repo by repo when it is listed. An error
+// of authz is returned: the caller cannot decide.
 func Reduce(ctx context.Context, authz auth.Authorizer, p auth.Principal, scopes []Access) ([]Access, error) {
 	cred := auth.CredentialFrom(ctx)
 	out := make([]Access, 0, len(scopes))

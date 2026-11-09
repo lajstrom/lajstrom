@@ -70,7 +70,7 @@ const (
 )
 
 // Origin says where a change comes from, for its audit event. The principal is not part of it:
-// it is auth.PrincipalFrom(ctx), anonymous until authentication comes with #45.
+// it is auth.PrincipalFrom(ctx): the request's, or anonymous for the CLI and the config bootstrap.
 type Origin struct {
 	// Source is SourceAPI, SourceCLI or SourceConfig; the audit details carry it as "source".
 	Source string

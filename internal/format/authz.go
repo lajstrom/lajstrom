@@ -15,8 +15,8 @@ import (
 // challenge, so that the client sends credentials); a principal that can read the repo but
 // lacks a gets ErrForbidden (403); one that cannot even read it gets index.ErrNotFound (404),
 // the answer a repo that does not exist gives. The authorizer's own error is returned unchanged
-// when it cannot decide (WriteError answers 500). A nil deps.Auth allows everything the
-// credential allows: the dev stack before RBAC (#45).
+// when it cannot decide (WriteError answers 500). serve sets deps.Auth to auth.RBAC; a nil
+// deps.Auth allows everything the credential allows, for the tests.
 //
 // The credential of the request decides first (limit), with or without an Authorizer.
 func Authorize(ctx context.Context, deps Deps, a auth.Action, repo index.Repo) error {
@@ -53,7 +53,7 @@ func Authorize(ctx context.Context, deps Deps, a auth.Action, repo index.Repo) e
 // narrow its user, a deploy token reaches its own repo only and never delete or manage. A
 // deploy token on another repo is index.ErrNotFound (404, no access at all), an action outside
 // the scopes ErrForbidden (403). It holds whether or not an Authorizer exists, so that the
-// scopes count before RBAC; #45's evaluator adds the bindings behind deps.Auth, after it.
+// scopes count whatever the Authorizer; auth.RBAC adds the bindings behind deps.Auth, after it.
 func limit(ctx context.Context, a auth.Action, repo index.Repo) error {
 	err := auth.CredentialFrom(ctx).Limit(a, repo)
 	if errors.Is(err, auth.ErrScope) {

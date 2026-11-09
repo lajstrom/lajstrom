@@ -51,15 +51,14 @@ func (req *TokenRequest) expiry() (auth.Expiry, error) {
 }
 
 // allowTokens decides whether the request may list, create and revoke the personal access
-// tokens of the user called name: the user itself, or the system admin (manage on */*). Until
-// RBAC (#45) sets the Authorizer, every principal may, as on every other endpoint. Either way
-// the credential limits first (format.Authorize): a deploy token and a personal access token
-// with scopes never manage tokens, 403 (docs/acceptance.md X-14).
+// tokens of the user called name: the user itself, or the admin role (manage on the system,
+// auth.System). Either way the credential limits first (format.Authorize): a deploy token and a
+// personal access token with scopes never manage tokens, 403 (docs/acceptance.md X-14).
 func (h *handler) allowTokens(r *http.Request, name string) error {
 	if p := auth.PrincipalFrom(r.Context()); p.Kind == auth.KindUser && p.Name == name {
-		return h.limit(r, auth.ActionManage, systemMask, systemMask)
+		return h.limit(r, auth.ActionManage, auth.System, auth.System)
 	}
-	return h.allow(r, auth.ActionManage, systemMask, systemMask)
+	return h.allow(r, auth.ActionManage, auth.System, auth.System)
 }
 
 // listTokens answers the personal access tokens of a user.
