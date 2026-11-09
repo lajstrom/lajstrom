@@ -191,7 +191,10 @@ func (h *handler) base(w http.ResponseWriter, r *http.Request) error {
 }
 
 // repository serves a route below /v2/<name>/: it parses the route, resolves the name to its
-// repo and calls the endpoint of the method.
+// repo and calls the endpoint of the method. A bearer is asked first whether it names the
+// repository (namedByToken), before the repo is looked up, so that the answer does not tell
+// whether it exists; a name that is not a repository name is resolve's to answer, by the name
+// alone.
 func (h *handler) repository(w http.ResponseWriter, r *http.Request, path string) error {
 	rt, ok := parseRoute(path)
 	if !ok {
@@ -201,6 +204,11 @@ func (h *handler) repository(w http.ResponseWriter, r *http.Request, path string
 	ep, ok := h.endpoints[rt.kind][r.Method]
 	if !ok {
 		return methodNotAllowed(r)
+	}
+	if g, bearer := grantFrom(r.Context()); bearer && token.ValidName(rt.name) {
+		if err := h.namedByToken(r.Context(), g, rt.name); err != nil {
+			return err
+		}
 	}
 	t, err := h.resolve(r.Context(), rt.name)
 	if err != nil {
@@ -224,9 +232,8 @@ const maxNameLen = 255
 var nameGrammar = regexp.MustCompile(`^[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*(/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*)*$`)
 
 // resolve returns the target of name: NAME_INVALID when it is not the grammar, NAME_UNKNOWN
-// when it is not <format>/<repo>/<path> of a repo of the control plane (401 to the anonymous
-// principal when an Authorizer is set, as the frontends answer: a denial does not tell
-// whether the repo exists, rbac.md §3). One GetRepo per request.
+// when it is not <format>/<repo>/<path>, and repoUnknown when it is not of a repo of the
+// control plane. One GetRepo per request.
 func (h *handler) resolve(ctx context.Context, name string) (*target, error) {
 	if len(name) > maxNameLen || !nameGrammar.MatchString(name) {
 		return nil, &apiError{status: http.StatusBadRequest, code: codeNameInvalid,
@@ -234,21 +241,33 @@ func (h *handler) resolve(ctx context.Context, name string) (*target, error) {
 	}
 	formatName, rest, _ := strings.Cut(name, "/")
 	repoName, path, ok := strings.Cut(rest, "/")
-	unknown := &apiError{status: http.StatusNotFound, code: codeNameUnknown,
-		msg: fmt.Sprintf("repository name %s not known to registry: a name is <format>/<repo>/<path> of an existing repo", name)}
 	if !ok {
-		return nil, unknown
+		return nil, nameUnknown(name)
 	}
 	repo, err := h.o.Index.GetRepo(ctx, formatName, repoName)
 	switch {
-	case errors.Is(err, index.ErrNotFound) && h.o.Auth != nil && auth.PrincipalFrom(ctx).Kind == auth.KindAnonymous:
-		return nil, &apiError{err: fmt.Errorf("%w: %s", format.ErrUnauthenticated, name)}
 	case errors.Is(err, index.ErrNotFound):
-		return nil, unknown
+		return nil, h.repoUnknown(ctx, name)
 	case err != nil:
 		return nil, fmt.Errorf("facade: repo of %s: %w", name, err)
 	}
 	return &target{repo: *repo, name: name, path: path, oci: ociName(*repo, path)}, nil
+}
+
+// repoUnknown is the answer to the repository name of a repo that does not exist: NAME_UNKNOWN,
+// and 401 to the anonymous principal when an Authorizer is set, as the frontends answer, so
+// that a denial does not tell whether the repo exists (docs/spec/rbac.md §3).
+func (h *handler) repoUnknown(ctx context.Context, name string) error {
+	if h.o.Auth != nil && auth.PrincipalFrom(ctx).Kind == auth.KindAnonymous {
+		return &apiError{err: fmt.Errorf("%w: %s", format.ErrUnauthenticated, name)}
+	}
+	return nameUnknown(name)
+}
+
+// nameUnknown is NAME_UNKNOWN for name.
+func nameUnknown(name string) error {
+	return &apiError{status: http.StatusNotFound, code: codeNameUnknown,
+		msg: fmt.Sprintf("repository name %s not known to registry: a name is <format>/<repo>/<path> of an existing repo", name)}
 }
 
 // repoBase and ociName are the OCI repository of a package as the provider names it, as
@@ -264,13 +283,14 @@ func repoBase(repo index.Repo) string {
 func ociName(repo index.Repo, pkgPath string) string { return repoBase(repo) + "/" + pkgPath }
 
 // authorize decides whether the request may do a on the repository t. A request with a bearer
-// is decided by the token's access claims and not by the Authorizer (allowedByToken: 401 with
-// insufficient_scope when the token lacks the repository, 403 when it lacks the action).
+// is decided by the token's access claims and not by the Authorizer (allowedByToken: 403 when
+// the token lacks the action; repository has answered a token that does not name t, or names
+// it without any action).
 // Without one the Authorizer decides for the request's principal (format.Authorize): a
 // principal that may not read the repo gets NAME_UNKNOWN, as for a repo that does not exist.
 func (h *handler) authorize(ctx context.Context, a auth.Action, t *target) error {
 	if g, ok := grantFrom(ctx); ok {
-		return allowedByToken(g, a, t.name)
+		return h.allowedByToken(ctx, g, a, t.name)
 	}
 	repo := t.repo
 	err := format.Authorize(ctx, h.deps, a, repo)

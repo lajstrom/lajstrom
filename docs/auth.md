@@ -221,9 +221,9 @@ implemented (`405`), and the clients above use `GET`.
 - **Scopes**: each `scope` parameter is `repository:<format>/<repo>/<path>:<actions>`, several
   parameters or several scopes in one separated by spaces. The actions are a comma list of
   `pull`, `push` and `delete`, `*` meaning the three; any other action is ignored. A scope of
-  another type, a name that is not `<format>/<repo>/<path>` of an existing repo, and a scope
-  with no action left are dropped, as the distribution token flow expects; a repository asked
-  for twice gets the union. One scope of another type is kept: `registry:catalog:*`, which
+  another type, a name that is not `<format>/<repo>/<path>`, and a scope with none of the three
+  actions are dropped, as the distribution token flow expects; a repository asked for twice
+  gets the union. The scope of a repo that does not exist stays, with no action (below). One scope of another type is kept: `registry:catalog:*`, which
   `crane catalog` and `oras repo ls` ask for to list `/v2/_catalog`.
 - **Reduction**: for each scope, each action is kept when the credential allows it and the
   Authorizer allows it to the principal on `<format>/<repo>`: `pull` is `read`, `push` is
@@ -238,8 +238,9 @@ implemented (`405`), and the clients above use `GET`.
   level=WARN msg="authorization is not enforced until RBAC (#45): every principal, anonymous included, may do everything on /v2 and the frontends, and /v2/token therefore grants every requested scope"
   ```
 
-  With #45, a reader asking for `pull,push` gets `pull` (O-12), and a principal that may not
-  read a repo gets no scope for it.
+  With #45, a reader asking for `pull,push` gets `pull` (O-12). A principal that may not read
+  a repo gets its scope with `"actions": []`, as for a repo that does not exist: the client can
+  decode the token, and the two must not differ in it ([rbac.md](spec/rbac.md) §3, §4).
 - **Service**: the configured one (below). A `service` parameter that names another is a
   client talking to another registry, not an error: it is ignored, and the token carries the
   configured service.
@@ -288,9 +289,14 @@ log, and is decided by the token's `access`, not by the Authorizer:
 - a repository the token does not name is `401` with the challenge, its `scope` and
   `error="insufficient_scope"`: the client gets a token with that scope and retries. A
   cross-repo mount names both repositories (`scope="repository:<target>:pull,push
-  repository:<from>:pull"`), which is how docker mounts from another repository;
-- an action the token does not grant on a repository it names is `403 DENIED`: the token
-  endpoint already refused it, and a wider token would not help (O-12);
+  repository:<from>:pull"`), which is how docker mounts from another repository. The facade
+  asks the token before it looks the repo up, so this is the answer whether the repo exists or
+  not;
+- a repository the token names with no action is the answer of a repo that does not exist:
+  `404 NAME_UNKNOWN`, and `401` with the challenge to `anonymous`. A mount from such a source
+  is a plain upload session (`202`), as from a source that does not exist;
+- an action the token does not grant on a repository it names with others is `403 DENIED`: the
+  token endpoint already refused it, and a wider token would not help (O-12);
 - `GET /v2/` is `200 {}` with any valid bearer, as with Basic credentials, and `401` with the
   challenge to the anonymous principal;
 - `GET /v2/_catalog` lists, with `registry:catalog:*`, the repositories the principal may read,

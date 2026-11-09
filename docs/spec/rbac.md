@@ -100,14 +100,22 @@ A denial on `<format>/<repo>` must not reveal whether the repo exists:
 
 - Authenticates with Basic (or none for anonymous).
 - For each requested scope the facade keeps the actions the principal is allowed on
-  `<format>/<repo>` (`pull`↔`read`, `push`↔`write`, `delete`↔`delete`); scopes with no allowed
-  action are dropped, as the distribution token spec expects.
+  `<format>/<repo>` (`pull`↔`read`, `push`↔`write`, `delete`↔`delete`). A scope with no allowed
+  action stays in the token with `actions: []`, and so does the scope of a repo that does not
+  exist: the client can read the token, and it names every repository asked for without telling
+  which exist (§3). Asking for what one may not have is not an error of the token endpoint, as
+  in the distribution token spec.
 - Issues a JWT (`ES256`, key from `keys`), `exp` 20 minutes, claims: `sub` (principal),
   `access: [{type: repository, name, actions}]`, `aud` = service, `jti`. Also returns
   `refresh_token` = none (clients re-authenticate with Basic).
-- The facade validates the bearer on every `/v2` request and enforces the actions; the backend
-  registry is never exposed to clients and trusts only Lajstrom (network policy or the backend's
-  own credentials held by the provider).
+- The facade validates the bearer on every `/v2` request and enforces the actions, by the token
+  before it looks the repo up, so that the answers keep §3: a repository the token does not name
+  is `401` with `error="insufficient_scope"`, whether its repo exists or not; one it names with
+  no action gets the answer of a repo that does not exist (`404 NAME_UNKNOWN`, `401` to
+  `anonymous`); one it names without the action is `403 DENIED`, as the principal can read it.
+  A cross-repo mount from a source the token names with no action is a plain upload session.
+  The backend registry is never exposed to clients and trusts only Lajstrom (network policy or
+  the backend's own credentials held by the provider).
 - A token is trusted until its `exp`, and the facade does not evaluate the bindings again on
   `/v2`. The bindings, a disabled user, a revoked or expired personal access or deploy token,
   and a repo's `anonymousRead` count when a token is issued: on `/v2` a change takes effect at

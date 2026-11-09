@@ -71,10 +71,10 @@ func (failing) Allowed(context.Context, auth.Principal, auth.Action, string, str
 }
 
 // TestReduce checks the reduction of the scopes to what the Authorizer allows: bob, a reader of
-// raw/assets, gets pull only on a pull,push scope (O-12 at the unit level), nothing on a repo
-// he may not read, and the catalog; alice, a writer, gets pull and push; without an Authorizer
-// every action is granted, the anonymous principal's included; an Authorizer that fails is an
-// error.
+// raw/assets, gets pull only on a pull,push scope (O-12 at the unit level), the scope of a repo
+// he may not read with no action, and the catalog; alice, a writer, gets pull and push; without
+// an Authorizer every action is granted, the anonymous principal's included; an Authorizer
+// that fails is an error.
 func TestReduce(t *testing.T) {
 	z := grants{
 		"user:bob":   {"raw/assets": {auth.ActionRead}},
@@ -87,9 +87,9 @@ func TestReduce(t *testing.T) {
 		p     auth.Principal
 		want  string
 	}{
-		{"bob, a reader", z, auth.Principal{Kind: auth.KindUser, Name: "bob"}, "[{registry catalog [*]} {repository raw/assets/hello [pull]}]"},
-		{"alice, a writer", z, alice, "[{registry catalog [*]} {repository raw/assets/hello [pull push]}]"},
-		{"anonymous", z, auth.Anonymous, "[{registry catalog [*]}]"},
+		{"bob, a reader", z, auth.Principal{Kind: auth.KindUser, Name: "bob"}, "[{registry catalog [*]} {repository pypi/internal/x []} {repository raw/assets/hello [pull]}]"},
+		{"alice, a writer", z, alice, "[{registry catalog [*]} {repository pypi/internal/x []} {repository raw/assets/hello [pull push]}]"},
+		{"anonymous", z, auth.Anonymous, "[{registry catalog [*]} {repository pypi/internal/x []} {repository raw/assets/hello []}]"},
 		{"no Authorizer", nil, auth.Anonymous, "[{registry catalog [*]} {repository pypi/internal/x [pull]} {repository raw/assets/hello [pull push]}]"},
 	} {
 		got, err := Reduce(t.Context(), tt.authz, tt.p, scopes)
@@ -139,13 +139,13 @@ func TestReduceCredential(t *testing.T) {
 	}{
 		{"password", nil, alice, auth.Credential{Kind: auth.CredPassword},
 			"[{registry catalog [*]} {repository pypi/internal/x [pull push]} {repository raw/assets/hello [pull push delete]}]"},
-		{"pat without scopes", z, alice, pat(), "[{registry catalog [*]} {repository raw/assets/hello [pull push delete]}]"},
+		{"pat without scopes", z, alice, pat(), "[{registry catalog [*]} {repository pypi/internal/x []} {repository raw/assets/hello [pull push delete]}]"},
 		{"pat read", nil, alice, pat("read"), "[{registry catalog [*]} {repository pypi/internal/x [pull]} {repository raw/assets/hello [pull]}]"},
-		{"pat read, with an Authorizer", z, alice, pat("read"), "[{registry catalog [*]} {repository raw/assets/hello [pull]}]"},
+		{"pat read, with an Authorizer", z, alice, pat("read"), "[{registry catalog [*]} {repository pypi/internal/x []} {repository raw/assets/hello [pull]}]"},
 		{"pat write", nil, alice, pat("write"), "[{registry catalog [*]} {repository pypi/internal/x [push]} {repository raw/assets/hello [push]}]"},
-		{"deploy read write", nil, deploy, dep("read", "write"), "[{registry catalog [*]} {repository raw/assets/hello [pull push]}]"},
-		{"deploy read write, with an Authorizer", z, deploy, dep("read", "write"), "[{registry catalog [*]} {repository raw/assets/hello [pull push]}]"},
-		{"deploy read", nil, deploy, dep("read"), "[{registry catalog [*]} {repository raw/assets/hello [pull]}]"},
+		{"deploy read write", nil, deploy, dep("read", "write"), "[{registry catalog [*]} {repository pypi/internal/x []} {repository raw/assets/hello [pull push]}]"},
+		{"deploy read write, with an Authorizer", z, deploy, dep("read", "write"), "[{registry catalog [*]} {repository pypi/internal/x []} {repository raw/assets/hello [pull push]}]"},
+		{"deploy read", nil, deploy, dep("read"), "[{registry catalog [*]} {repository pypi/internal/x []} {repository raw/assets/hello [pull]}]"},
 	} {
 		got, err := Reduce(auth.WithCredential(t.Context(), tt.cred), tt.authz, tt.p, scopes)
 		must(t, err)

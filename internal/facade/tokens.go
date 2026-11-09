@@ -45,8 +45,10 @@ type tokenResponse struct {
 // issueToken answers GET /v2/token?service=&scope=…: a token for the principal of the
 // request, authenticated by the middleware from Basic credentials (refused ones never get
 // here: the middleware answers them 401 with the Basic challenge) or anonymous. The scopes are
-// parsed (token.ParseScopes), those of repos that do not exist dropped, and reduced to what
-// the Authorizer allows the principal, every action when there is none (token.Reduce). The
+// parsed (token.ParseScopes), those of repos that do not exist left without actions
+// (unknownScopes), and reduced to what the Authorizer allows the principal, every action when
+// there is none (token.Reduce): every repository asked for is in the token, with no action
+// when it does not exist or the principal may not read it, alike (docs/spec/rbac.md §3). The
 // service is the configured one: a service parameter that names another is a client of
 // another registry, not an error, and is ignored. No audit row is written: a token is issued
 // for every docker pull and oras push, one row each would be noise, and the operations the
@@ -64,7 +66,7 @@ func (h *handler) issueToken(w http.ResponseWriter, r *http.Request) error {
 		h.o.Log.DebugContext(ctx, "token for another service: the token is for this one", "asked", s, "service", service)
 	}
 	p := auth.PrincipalFrom(ctx)
-	scopes, err := h.existingScopes(ctx, token.ParseScopes(q["scope"]))
+	scopes, err := h.unknownScopes(ctx, token.ParseScopes(q["scope"]))
 	if err != nil {
 		return err
 	}
@@ -82,25 +84,25 @@ func (h *handler) issueToken(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// existingScopes returns the scopes whose repository is <format>/<repo>/<path> of a repo of
-// the control plane; the catalog scope stays.
-func (h *handler) existingScopes(ctx context.Context, scopes []token.Access) ([]token.Access, error) {
-	out := scopes[:0]
-	for _, s := range scopes {
-		if s.Type == token.TypeRepository {
-			formatName, rest, _ := strings.Cut(s.Name, "/")
-			repoName, _, _ := strings.Cut(rest, "/")
-			_, err := h.o.Index.GetRepo(ctx, formatName, repoName)
-			if errors.Is(err, index.ErrNotFound) {
-				continue
-			}
-			if err != nil {
-				return nil, fmt.Errorf("facade: token: repo of %s: %w", s.Name, err)
-			}
+// unknownScopes returns the scopes with no action on each repository that is not
+// <format>/<repo>/<path> of a repo of the control plane; the others, and the catalog scope,
+// stay as they are.
+func (h *handler) unknownScopes(ctx context.Context, scopes []token.Access) ([]token.Access, error) {
+	for i, s := range scopes {
+		if s.Type != token.TypeRepository {
+			continue
 		}
-		out = append(out, s)
+		formatName, rest, _ := strings.Cut(s.Name, "/")
+		repoName, _, _ := strings.Cut(rest, "/")
+		_, err := h.o.Index.GetRepo(ctx, formatName, repoName)
+		switch {
+		case errors.Is(err, index.ErrNotFound):
+			scopes[i].Actions = nil
+		case err != nil:
+			return nil, fmt.Errorf("facade: token: repo of %s: %w", s.Name, err)
+		}
 	}
-	return out, nil
+	return scopes, nil
 }
 
 // bearer verifies the bearer token of r, when it has one, and returns r with the token's
@@ -125,14 +127,31 @@ func (h *handler) bearer(r *http.Request) (*http.Request, error) {
 	return r.WithContext(withGrant(auth.WithPrincipal(ctx, g.Principal), g)), nil
 }
 
-// allowedByToken decides by the access claims of g whether the request may do a on the
-// repository name: 401 with error="insufficient_scope" when the token grants nothing on it, so
-// that the client fetches a token with the scope of the challenge; 403 DENIED when it grants
-// the repository without the action, which the token endpoint already refused (O-12).
-func allowedByToken(g *token.Grant, a auth.Action, name string) error {
-	if _, ok := g.Repository(name); !ok {
+// namedByToken decides by the access claims of g what does not depend on the action nor on
+// whether the repo of the repository name exists, and so comes before the repo is looked up
+// (docs/spec/rbac.md §3, §4): 401 with error="insufficient_scope" when the token does not name
+// the repository, so that the client fetches a token with the scope of the challenge; when it
+// names it without any action, which the token endpoint grants on a repo that does not exist
+// and on one the principal may not read alike, the answer of a repo that does not exist
+// (repoUnknown).
+func (h *handler) namedByToken(ctx context.Context, g *token.Grant, name string) error {
+	access, ok := g.Repository(name)
+	switch {
+	case !ok:
 		return &apiError{status: http.StatusUnauthorized, insufficient: true,
 			msg: fmt.Sprintf("the bearer token grants nothing on %s: get a token with its scope", name)}
+	case len(access.Actions) == 0:
+		return h.repoUnknown(ctx, name)
+	}
+	return nil
+}
+
+// allowedByToken decides by the access claims of g whether the request may do a on the
+// repository name: namedByToken first; then 403 DENIED when the token names the repository
+// without the action, which the token endpoint already refused (O-12).
+func (h *handler) allowedByToken(ctx context.Context, g *token.Grant, a auth.Action, name string) error {
+	if err := h.namedByToken(ctx, g, name); err != nil {
+		return err
 	}
 	if want := token.ScopeAction(a); !g.Allows(name, want) {
 		return &apiError{status: http.StatusForbidden, msg: fmt.Sprintf("the bearer token does not grant %s on %s", want, name)}
