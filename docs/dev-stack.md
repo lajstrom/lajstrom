@@ -276,5 +276,6 @@ not run the s3 and s3-minio profiles (the tests that need them skip without
 Every image tag is a multi-architecture index that serves `linux/amd64` and `linux/arm64`, so
 Intel and Apple silicon machines and the CI runners get the same versions. The digest of each
 index is in a comment in `compose.yaml`; when you bump a tag, update the digest and the same
-service of the `integration` job in `.github/workflows/ci.yml`, re-run the integration tests
-against the new registry and update [registries/](registries/README.md).
+service of the `integration` job in `.github/workflows/ci.yml` (Zot also in the `e2e` job),
+re-run the integration tests against the new registry and update
+[registries/](registries/README.md).

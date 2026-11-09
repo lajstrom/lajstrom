@@ -198,6 +198,7 @@ scanoss-py inspect undeclared --input /tmp/scanoss-results.json
 | `changes` | whether the pull request changes a path that the integration tests depend on (below) |
 | `integration (zot)`, `integration (distribution)` | `go test -race -tags integration ./...` against Zot or distribution, the store suite on SQLite and Postgres; the dev stack's images as service containers |
 | `integration-result` | both integration cells passed, or nothing needed them; the required check for the integration tests |
+| `e2e` | `make e2e`: the end-to-end scenarios with real clients against Zot as a service container, in 6 minutes at most ([docs/testing.md](docs/testing.md)) |
 | `lint` | golangci-lint |
 | `vulncheck` | govulncheck |
 | `licenses` | dependency licenses against the allowlist |
@@ -213,7 +214,8 @@ they are skipped and CI takes as long as the other jobs. A job skipped by its co
 as passed for branch protection, but a skipped matrix job reports one check under its unexpanded
 name instead of one per registry, so required cells would keep a doc-only pull request waiting.
 Branch protection therefore requires `integration-result`, which passes when the cells passed or
-were skipped because nothing needed them, and fails otherwise.
+were skipped because nothing needed them, and fails otherwise. The `e2e` job runs on the same
+paths; it is one job, not a matrix, so its own check can be required.
 
 ## License
 

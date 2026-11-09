@@ -32,7 +32,8 @@ configuration has to add.
 
 `compose.yaml` is [deploy/compose/compose.yaml](../../deploy/compose/compose.yaml), `harbor.sh`
 [deploy/compose/harbor/harbor.sh](../../deploy/compose/harbor/harbor.sh), `ci.yml` the
-`integration` job of [.github/workflows/ci.yml](../../.github/workflows/ci.yml). `CI`: the
+`integration` job of [.github/workflows/ci.yml](../../.github/workflows/ci.yml) (and its `e2e`
+job for Zot). `CI`: the
 integration job runs every test against it on every pull request that touches code. `manual`: a
 profile of the dev stack or a script, run by hand. `hosted`: a service, an account and a token.
 
@@ -243,7 +244,7 @@ registries:
 The versions are pinned in three places: `deploy/compose/compose.yaml` (distribution, Zot, the
 GitLab container registry and its Postgres, SeaweedFS, MinIO), `deploy/compose/harbor/harbor.sh`
 (Harbor's version and the installer's sha256) and `.github/workflows/ci.yml` (distribution and
-Zot of the integration job, the same as in `compose.yaml`). **Whoever changes a pin re-runs the
+Zot of the integration job and of the e2e job, the same as in `compose.yaml`). **Whoever changes a pin re-runs the
 commands of that registry's page, updates the cells that changed and the "last verified" date,
 and says so in the PR.** GHCR has no pin: it is re-measured when something on its page stops
 being true, or quarterly. A registry that joins gets a page like [gitlab.md](gitlab.md), a row in
