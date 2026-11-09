@@ -49,6 +49,20 @@ https://lajstrom.dev
 | [Roadmap](docs/roadmap.md) | milestones, lanes, week by week |
 | [Process](docs/process.md) | issues, pull requests, reviews, working with AI assistants |
 
+## Our promise to users
+
+Lajstrom holds what people build and ship, so the people who run it have to be able to rely on
+it, and plan around it. Keeping them happy matters more to us than any single feature. While
+Lajstrom is 0.x, that means:
+
+- **A steady release cadence.** Releases come out on a regular schedule that we announce and
+  keep, not when a big feature happens to be done.
+- **No API stability guarantee yet.** The HTTP API, the configuration and the CLI may still
+  change between 0.x versions. When they do, the release notes say so and say how to upgrade.
+- **No LTS for now.** There are no long-term support branches; fixes ship in the next release.
+- **The license stays.** Lajstrom is Apache-2.0 and will stay Apache-2.0. We will not change the
+  license short of a truly extreme situation.
+
 ## Contributing
 
 Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Every commit needs a DCO
