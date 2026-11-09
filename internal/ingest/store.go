@@ -238,7 +238,8 @@ func (p *Pipeline) confirm(ctx context.Context, pub *publish) (existed bool, err
 // invalidated index_cache, the audit event when there is no audit.Writer, and the released
 // claim.
 func (p *Pipeline) writeRows(ctx context.Context, w index.Writer, pub *publish, ev *index.AuditEvent, now time.Time) (existed bool, err error) {
-	pkg := index.Package{RepoID: pub.repo.ID, Name: pub.parsed.Annotations.Name, NameOCI: pub.pkgPath, CreatedAt: now}
+	rows := pub.rows(now)
+	pkg := rows.Package
 	if err := w.UpsertPackage(ctx, &pkg); err != nil {
 		return false, err
 	}
@@ -249,14 +250,7 @@ func (p *Pipeline) writeRows(ctx context.Context, w index.Writer, pub *publish, 
 	case err != nil && !errors.Is(err, index.ErrNotFound):
 		return false, err
 	}
-	version := pub.version(pkg.ID, now)
-	if err := w.UpsertVersion(ctx, &version); err != nil {
-		return false, err
-	}
-	if err := w.ReplaceFiles(ctx, version.ID, pub.files()); err != nil {
-		return false, err
-	}
-	if err := w.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: pub.repo.ID, Path: pub.name, SeenAt: now}); err != nil {
+	if err := WriteRows(ctx, w, &rows, now); err != nil {
 		return false, err
 	}
 	// A plugin cannot name the index_cache scopes a version touches yet (format.Entry has no
@@ -290,7 +284,8 @@ func (pub *publish) version(packageID int64, now time.Time) index.Version {
 		created = now
 	}
 	return index.Version{PackageID: packageID, Version: a.Version, Variant: a.Variant, Tag: pub.tag, Digest: pub.digest,
-		ArtifactType: pub.manifest.ArtifactType, Attrs: a.Attrs, Metadata: pub.metadata, CreatedAt: created, IndexedAt: now}
+		ArtifactType: pub.manifest.ArtifactType, Attrs: a.Attrs, Metadata: pub.metadata, CreatedAt: created, IndexedAt: now,
+		Degraded: pub.degraded}
 }
 
 // files are the files rows of pub, one per file layer in manifest order.
