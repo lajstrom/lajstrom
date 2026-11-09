@@ -100,15 +100,17 @@ PASS raw.sh            3 s
 PASS oras.sh           0 s
 PASS auth.sh           1 s
 PASS rbac.sh           4 s
-PASS oci-token.sh      3 s
-PASS tokens.sh        10 s
-PASS apt.sh            5 s
-PASS pypi.sh          13 s
-e2e: 8 of 8 scenarios ran, 0 failed, in 47 s against http://127.0.0.1:45376
+PASS oci-token.sh     10 s
+PASS tokens.sh        20 s
+PASS apt.sh            4 s
+PASS pypi.sh          84 s
+PASS maven.sh         22 s
+e2e: 9 of 9 scenarios ran, 0 failed, in 155 s against http://127.0.0.1:35956
 ```
 
-Those are the times on an Apple silicon Mac with OrbStack, the images already pulled; the 47 s
-include `make build`, and `pypi.sh` installs build, twine and uv from PyPI in its container. A failed scenario does not stop the others. The harness exits 1 when one
+Those are the times on an Apple silicon Mac with OrbStack, the images already pulled and the
+maven caches warm; the 155 s include `make build`, and `pypi.sh` installs build, twine and uv
+from PyPI in its container, which took 84 s of them in that run and 10 to 15 s in others. A failed scenario does not stop the others. The harness exits 1 when one
 failed, 2 when it could not start (the build, the migration, a server that is not ready), and
 stops the server and removes the directory on exit; `LAJSTROM_E2E_KEEP=1` keeps it, with
 `server.log` and a log per scenario. It unsets the `LAJSTROM_SERVER_*`, `LAJSTROM_LOG_*` and
@@ -124,9 +126,11 @@ stops the server and removes the directory on exit; `LAJSTROM_E2E_KEEP=1` keeps 
 | `tokens.sh` | personal access tokens and deploy tokens on raw, apt (`auth.conf`) and `/v2` | curl, `ubuntu:24.04`, oras image |
 | `apt.sh` | a `.deb` by PUT and one by oras, `apt-get update`, `install` and `download` from the signed repo, the conflicts | `ubuntu:24.04` (`linux/amd64`), oras image |
 | `pypi.sh` | `python -m build`, twine upload, the same files again, other bytes (409), `pip install`, `uv pip install`, `uv publish` and `--check-url`, `pip install --upgrade`, PEP 658 in the access log | `python:3.13` (build, twine, uv from PyPI) |
+| `maven.sh` | a maven repo and a deploy token through the API; `mvn deploy` of a jar with sources, javadoc and pom (M-01: every PUT 201, one manifest with four file layers), the files and their four checksums (M-07), a second version and `maven-metadata.xml` (M-03), `mvn dependency:get` into an empty local repository and a version range (M-02), the same version again (200) and with a changed jar (409) (M-04), Gradle `publish` and resolve; needs the maven frontend (#54, #55) | `maven:3.9.16-eclipse-temurin-21`, `gradle:8.14.6-jdk21` (plugins from Maven Central, cached in the volumes `lajstrom-e2e-m2` and `lajstrom-e2e-gradle`) |
 
 The images are `ubuntu:24.04` for `linux/amd64`, emulated on Apple silicon,
-`ghcr.io/oras-project/oras:v1.3.6` and `python:3.13`; the first run pulls them. The containers use
+`ghcr.io/oras-project/oras:v1.3.6`, `python:3.13`, `maven:3.9.16-eclipse-temurin-21` and
+`gradle:8.14.6-jdk21`; the first run pulls them. The containers use
 `--network host`, which reaches the server's `127.0.0.1` on Linux and under OrbStack; Docker
 Desktop is not measured (its host networking is a setting of its own). The scenarios run under
 whatever `bash` is first on `PATH`; the bash 3.2 of macOS is enough.
