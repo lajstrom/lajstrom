@@ -2,6 +2,7 @@
   "bom": {
     "remove": [
       {"path": "cmd/lajstrom/logging.go", "purl": "pkg:golang/github.com/eldara-tech/swarmcli-cd"},
+      {"path": "cmd/lajstrom/sessions_test.go", "purl": "pkg:golang/github.com/go-filesystems/nfs"},
       {"path": "cmd/lajstrom/version.go", "purl": "pkg:golang/github.com/hyper-swe/mgit"},
       {"path": "internal/auth/context.go", "purl": "pkg:golang/github.com/an-idd/x-beacon"},
       {"path": "internal/provider/generic/repository.go", "purl": "pkg:golang/oras.land/oras-go/v3"},
