@@ -76,6 +76,11 @@ type Reader interface {
 
 	// GetTagClaim returns the claim on tag of package pkg (format spelling) in a repo.
 	GetTagClaim(ctx context.Context, repoID int64, pkg, tag string) (*TagClaim, error)
+	// GetReindexRun returns the reindex run with the given id.
+	GetReindexRun(ctx context.Context, id int64) (*ReindexRun, error)
+	// LatestReindexRun returns the newest run that covered repoID, its own or a run of every
+	// repo; repoID 0 selects the runs of every repo only.
+	LatestReindexRun(ctx context.Context, repoID int64) (*ReindexRun, error)
 
 	// Derived.
 
@@ -96,6 +101,9 @@ type Reader interface {
 	GetVersionByDigest(ctx context.Context, repoID int64, d digest.Digest) (*Version, error)
 	// ListVersions returns the versions of a package ordered by CreatedAt, then ID.
 	ListVersions(ctx context.Context, packageID int64) ([]Version, error)
+	// ListUnseenVersions returns the versions of a repo whose IndexedAt is before seenBefore,
+	// with their packages, ordered by package name and version id: the sweep of reindex.
+	ListUnseenVersions(ctx context.Context, repoID int64, seenBefore time.Time) ([]VersionMatch, error)
 
 	// ListFiles returns the files of a version in manifest order.
 	ListFiles(ctx context.Context, versionID int64) ([]File, error)
@@ -180,7 +188,23 @@ type Writer interface {
 	// many it removed (reindex and the reconcile loop).
 	ExpireTagClaims(ctx context.Context, before time.Time) (int, error)
 
-	// Derived.
+	// Coordination: reindex runs (docs/spec/index-schema.md, Coordination).
+
+	// StartReindexRun inserts r as running under the reindex lock and fills ID and State;
+	// StartedAt is now when zero, HeartbeatAt StartedAt when zero. A running run whose scope overlaps r's and
+	// whose HeartbeatAt is at or after staleBefore is a *ReindexConflictError and nothing
+	// changes; an older one is closed as abandoned first.
+	StartReindexRun(ctx context.Context, r *ReindexRun, staleBefore time.Time) error
+	// HeartbeatReindexRun sets HeartbeatAt of a running run; ErrNotFound when the run is not
+	// running any more (a later start closed it as abandoned), and the run should stop.
+	HeartbeatReindexRun(ctx context.Context, id int64, at time.Time) error
+	// FinishReindexRun stores State (done, failed or abandoned), FinishedAt (now when nil),
+	// Report and Error of the running run r.ID, and deletes the finished runs of its scope
+	// beyond the ten newest. ErrNotFound when the run is not running.
+	FinishReindexRun(ctx context.Context, r *ReindexRun) error
+
+	// Derived. Every version write and delete keeps packages.created_at the earliest CreatedAt
+	// of the package's versions.
 
 	// UpsertPackage inserts p or, when (RepoID, Name) exists, fills p from the existing row.
 	// NameOCI is unique within a repo too: when another name holds it, nothing changes and the
@@ -191,12 +215,18 @@ type Writer interface {
 	// a different digest it changes nothing and returns a *TagConflictError: tags are
 	// append-only and never re-pointed.
 	UpsertVersion(ctx context.Context, v *Version) error
+	// TouchVersions sets IndexedAt of the versions with the given ids, and nothing else: the
+	// rows a reindex saw without writing them. Ids that do not exist are skipped.
+	TouchVersions(ctx context.Context, ids []int64, at time.Time) error
 	// ReplaceFiles replaces the files of a version with files and fills their IDs.
 	ReplaceFiles(ctx context.Context, versionID int64, files []File) error
 	// DeleteVersion removes the version and its files.
 	DeleteVersion(ctx context.Context, id int64) error
 	// DeletePackage removes the package, its versions and their files.
 	DeletePackage(ctx context.Context, id int64) error
+	// DeleteEmptyPackages removes the packages of a repo that have no version, and returns how
+	// many it removed.
+	DeleteEmptyPackages(ctx context.Context, repoID int64) (int, error)
 
 	// PutIndexCache inserts c or replaces the row with the same (RepoID, Scope, Kind).
 	PutIndexCache(ctx context.Context, c *Cache) error

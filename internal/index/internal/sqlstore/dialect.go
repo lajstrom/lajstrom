@@ -27,6 +27,11 @@ type Dialect struct {
 	// IsForeignKey reports whether err is a violation of a foreign key: the row refers to a
 	// row that does not exist.
 	IsForeignKey func(err error) bool
+	// XactLock is the statement that takes a lock for the rest of the transaction, with the
+	// lock's key as its one parameter (Postgres: pg_advisory_xact_lock). Empty when every
+	// writing transaction holds the database's write lock from its start (SQLite, BEGIN
+	// IMMEDIATE).
+	XactLock string
 }
 
 // timeLayout is the text form of a timestamp on SQLite: fixed width, so that text order is

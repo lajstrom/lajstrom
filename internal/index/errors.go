@@ -3,6 +3,7 @@ package index
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 )
@@ -33,3 +34,24 @@ func (e *TagConflictError) Error() string {
 
 // Unwrap returns ErrConflict.
 func (e *TagConflictError) Unwrap() error { return ErrConflict }
+
+// ReindexConflictError is the error StartReindexRun returns when a running run overlaps the new
+// one and its heartbeat is fresh: a run of every repo overlaps every run, a run of one repo a
+// run of every repo and a run of the same repo. errors.Is(err, ErrConflict) reports true for it.
+type ReindexConflictError struct {
+	// Running is the run that holds the lock.
+	Running ReindexRun
+}
+
+// Error implements error.
+func (e *ReindexConflictError) Error() string {
+	scope := "every repo"
+	if e.Running.RepoID != nil {
+		scope = fmt.Sprintf("repo %d", *e.Running.RepoID)
+	}
+	return fmt.Sprintf("index: a reindex of %s is running on %s since %s (run %d)", scope, e.Running.Replica,
+		e.Running.StartedAt.Format(time.RFC3339), e.Running.ID)
+}
+
+// Unwrap returns ErrConflict.
+func (e *ReindexConflictError) Unwrap() error { return ErrConflict }

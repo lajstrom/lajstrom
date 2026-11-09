@@ -51,6 +51,12 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"Tx", testTx},
 		{"Cascades", testCascades},
 		{"ResetDerived", testResetDerived},
+		{"PackageCreatedAt", testPackageCreatedAt},
+		{"Degraded", testDegraded},
+		{"Sweep", testSweep},
+		{"ReindexRuns", testReindexRuns},
+		{"ReindexRunsKept", testReindexRunsKept},
+		{"ReindexRunRace", testReindexRunRace},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
