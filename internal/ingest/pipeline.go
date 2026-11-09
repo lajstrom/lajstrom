@@ -16,6 +16,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
@@ -128,7 +129,8 @@ type Result struct {
 // Errors wrap ErrInvalid (steps 1 to 3), ErrConflict (steps 4 to 6, with an
 // *index.TagConflictError naming the existing digest when the conflict is a tag and the digest
 // is known), or neither.
-func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, principal auth.Principal) (*Result, error) {
+func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, principal auth.Principal) (res *Result, err error) {
+	defer func() { count(repo.Format, res != nil && res.Existed, err) }()
 	plugin, prov, err := p.lookup(repo)
 	if err != nil {
 		return nil, err
@@ -149,7 +151,9 @@ func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag str
 // whatever org.opencontainers.image.created the new build carries: nothing is written, the
 // manifest in the registry stays the first, and Published.Digest is its digest. Other files
 // under the tag are ErrConflict.
-func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload, principal auth.Principal) (*format.Published, error) {
+func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload, principal auth.Principal) (_ *format.Published, err error) {
+	existed := false
+	defer func() { count(repo.Format, existed, err) }()
 	plugin, prov, err := p.lookup(repo)
 	if err != nil {
 		return nil, err
@@ -167,6 +171,7 @@ func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload
 	} else if v != nil {
 		p.log.InfoContext(ctx, "ingest: the tag already holds these files; nothing written", "repo", repo.Format+"/"+repo.Name,
 			"package", built.Entry.Name, "tag", built.Tag, "digest", v.Digest.String(), "principal", principal.String())
+		existed = true
 		return &format.Published{Digest: v.Digest, Tag: built.Tag, RepoPath: built.RepoPath, Entry: built.Entry}, nil
 	}
 	raw, _, err := profile.Encode(built.Manifest)
@@ -187,6 +192,7 @@ func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload
 	if err != nil {
 		return nil, err
 	}
+	existed = res.Existed
 	return &format.Published{Digest: res.Digest, Tag: res.Tag, RepoPath: res.RepoPath, Entry: res.Entry}, nil
 }
 
@@ -289,4 +295,21 @@ func (p *Pipeline) ingest(ctx context.Context, pub *publish) (*Result, error) {
 	p.log.InfoContext(ctx, msg, "repo", pub.repo.Format+"/"+pub.repo.Name, "package", pub.parsed.Annotations.Name,
 		"tag", pub.tag, "digest", d.String(), "principal", pub.principal.String())
 	return &Result{Digest: d, Tag: pub.tag, RepoPath: pub.name, Entry: *pub.entry, Existed: existed}, nil
+}
+
+// count records a publish of format in lajstrom_ingest_total: published, existed (an idempotent
+// repeat), invalid, conflict or error.
+func count(formatName string, existed bool, err error) {
+	result := "published"
+	switch {
+	case errors.Is(err, ErrInvalid):
+		result = "invalid"
+	case errors.Is(err, ErrConflict):
+		result = "conflict"
+	case err != nil:
+		result = "error"
+	case existed:
+		result = "existed"
+	}
+	metrics.Ingest.WithLabelValues(formatName, result).Inc()
 }

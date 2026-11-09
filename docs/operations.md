@@ -260,10 +260,10 @@ so the number of series is fixed by the code and the configuration.
 | --- | --- | --- |
 | `lajstrom_http_request_duration_seconds` | `method`, `route`, `status` | time to answer a request, by the route pattern it matched (`unmatched` for none) |
 | `lajstrom_http_request_size_bytes`, `lajstrom_http_response_size_bytes` | the same | the declared request body, the bytes written back |
+| `lajstrom_provider_request_duration_seconds` | `registry`, `operation`, `method`, `status` | a request to a backend registry, each retry its own, to its response headers; `operation` is `ping`, `catalog`, `manifest`, `blob`, `upload`, `tags`, `referrers` or `other` (a token realm, a redirect to the storage); `status` is `error` without an answer |
+| `lajstrom_db_query_duration_seconds` | `method`, `result` | a statement of the index database, by the store method that ran it (`GetRepo`, `UpsertVersion`, …); a missing row is `ok`, a refused or failed statement `error` |
+| `lajstrom_ingest_total` | `format`, `result` | publishes through the ingest pipeline: `published`, `existed` (an idempotent repeat), `invalid`, `conflict`, `error` |
 | `lajstrom_build_info` | `version`, `commit`, `goversion` | always 1 |
-
-The series of the registries, the index database and the ingest pipeline come with the next
-change of #23.
 
 ```yaml
 # prometheus.yml
