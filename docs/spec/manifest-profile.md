@@ -118,7 +118,7 @@ skipped).
 | `lajstrom.pypi.nonstandard` | pypi | `true` when the version is not a PEP 440 version: accepted and kept as written; pip 22 and later ignore such versions |
 | `lajstrom.maven.groupId`, `lajstrom.maven.artifactId`, `lajstrom.maven.packaging` | maven | coordinates |
 | `lajstrom.raw.path` | raw | original path, case preserved, `/`-separated |
-| `lajstrom.uploaded-by` | | principal name that performed the ingest (informational, not trusted for authz) |
+| `lajstrom.uploaded-by` | | the principal that performed the ingest, in its canonical form: `user:<uid>`, `token:<id>` (informational, not trusted for authz; a user's name is looked up by its uid, rbac.md §1) |
 | `org.opencontainers.image.created` | R | RFC 3339 UTC time of ingest |
 | `org.opencontainers.image.source`, `org.opencontainers.image.revision` | | passed through from the client if present (CI provenance) |
 
