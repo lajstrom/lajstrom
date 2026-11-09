@@ -1,10 +1,14 @@
 package ingest
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"slices"
 	"strings"
 
 	"github.com/opencontainers/go-digest"
@@ -93,16 +97,37 @@ type deletion struct {
 	gone    bool               // the backend does not have it any more: its rows and referrers go all the same
 	version *index.Version     // the version it is; nil for a manifest that is none
 	pkg     *index.Package     // the version's package
+	subject digest.Digest      // the subject of a manifest that is no version, when it has one
 
 	referrers int // deleted before it, theirs included
 }
 
-// find resolves the reference to a version of the index.
+// find resolves the reference: to a version of the index when it names one, else in the
+// backend, where a digest that a version holds still makes it that version.
 func (d *deletion) find(ctx context.Context) error {
 	if err := d.findVersion(ctx); err != nil || d.version != nil {
 		return err
 	}
-	return fmt.Errorf("%w: %s in %s is no version", index.ErrNotFound, d.del.Reference, d.name)
+	desc, err := d.rr.Resolve(ctx, d.del.Reference)
+	switch {
+	case errors.Is(err, provider.ErrNotFound):
+		return fmt.Errorf("%w: no manifest %s in %s", index.ErrNotFound, d.del.Reference, d.name)
+	case err != nil:
+		return fmt.Errorf("ingest: resolve %s in %s: %w", d.del.Reference, d.name, err)
+	}
+	d.target = desc
+	if d.repo.Format != ociFormat {
+		v, err := d.p.index.GetVersionByDigest(ctx, d.repo.ID, desc.Digest)
+		switch {
+		case err == nil && d.pkg != nil && v.PackageID == d.pkg.ID:
+			d.version = v
+			return nil
+		case err != nil && !errors.Is(err, index.ErrNotFound):
+			return fmt.Errorf("ingest: version of %s: %w", desc.Digest, err)
+		}
+	}
+	d.subject, err = d.subjectOf(ctx)
+	return err
 }
 
 // findVersion sets the version the reference names in the package of del.Path, by its digest
@@ -147,13 +172,43 @@ func (d *deletion) findVersion(ctx context.Context) error {
 	return nil
 }
 
-// deleteInBackend deletes the target with its referrers, under the referrers lock of the target
-// without the referrers API: its sha256-<hex> index goes.
+// subjectOf reads the subject of the target, a manifest that is no version: a referrer's
+// delete rewrites the tag-schema index of its subject, which is locked for it.
+func (d *deletion) subjectOf(ctx context.Context) (digest.Digest, error) {
+	b, err := d.fetch(ctx, d.target)
+	if err != nil {
+		return "", err
+	}
+	var m struct {
+		Subject *ocispec.Descriptor `json:"subject"`
+	}
+	if json.Unmarshal(b, &m) != nil || m.Subject == nil {
+		return "", nil // no manifest with a subject: nothing to lock but the target's own index
+	}
+	return m.Subject.Digest, nil
+}
+
+// maxManifestBytes bounds the read of a manifest that is deleted, or of a referrers index: the
+// facade takes manifests of 4 MiB by default.
+const maxManifestBytes = 16 << 20
+
+// deleteInBackend deletes the target with its referrers, under the referrers lock without the
+// referrers API: of the subject of a referrer, whose tag-schema index its delete rewrites, else
+// of the target, whose own index goes.
 func (d *deletion) deleteInBackend(ctx context.Context) error {
 	if d.api {
 		return d.deleteTarget(ctx)
 	}
-	return d.p.index.WithReferrersLock(ctx, d.name, d.target.Digest, d.deleteTarget)
+	key := d.target.Digest
+	if d.subject != "" {
+		key = d.subject
+	}
+	return d.p.index.WithReferrersLock(ctx, d.name, key, func(ctx context.Context) error {
+		if d.subject != "" {
+			return d.deleteReferrer(ctx)
+		}
+		return d.deleteTarget(ctx)
+	})
 }
 
 // deleteTarget deletes the target with its referrers, the target itself unless it is gone.
@@ -161,6 +216,82 @@ func (d *deletion) deleteTarget(ctx context.Context) error {
 	n, err := d.deleteTree(ctx, d.target, !d.gone, map[digest.Digest]bool{})
 	d.referrers = n
 	return err
+}
+
+// deleteReferrer deletes the target, a referrer, on a backend without the referrers API. Its
+// subject's sha256-<hex> index goes first, a plain delete, so that oras-go rewrites no index
+// before the delete of the referrer, which a backend that refuses deletes would leave out of the
+// index; then the referrer with its own; then the index is pushed again with the referrers it
+// listed but this one, or with all of them when the delete failed.
+func (d *deletion) deleteReferrer(ctx context.Context) error {
+	tag := "sha256-" + d.subject.Encoded()
+	idx, err := d.resolveTag(ctx, tag)
+	if err != nil {
+		return err
+	}
+	if idx == nil {
+		return d.deleteTarget(ctx)
+	}
+	listed, err := d.fetchIndex(ctx, *idx)
+	if err != nil {
+		return err
+	}
+	if err := d.deleteOne(ctx, *idx); err != nil {
+		return err
+	}
+	err = d.deleteTarget(ctx)
+	if err == nil {
+		listed.Manifests = slices.DeleteFunc(listed.Manifests, func(m ocispec.Descriptor) bool { return m.Digest == d.target.Digest })
+	}
+	if len(listed.Manifests) == 0 {
+		return err
+	}
+	if perr := d.pushIndex(ctx, tag, listed); perr != nil {
+		d.p.log.ErrorContext(ctx, "ingest: the referrers index of a subject was not pushed again; its referrers are not listed",
+			"name", d.name, "subject", d.subject.String(), "referrers", len(listed.Manifests), "error", perr.Error())
+		return cmp.Or(err, perr)
+	}
+	return err
+}
+
+// fetchIndex reads the image index desc.
+func (d *deletion) fetchIndex(ctx context.Context, desc ocispec.Descriptor) (ocispec.Index, error) {
+	var idx ocispec.Index
+	b, err := d.fetch(ctx, desc)
+	if err == nil {
+		err = json.Unmarshal(b, &idx)
+	}
+	if err != nil {
+		return idx, fmt.Errorf("ingest: referrers index %s in %s: %w", desc.Digest, d.name, err)
+	}
+	return idx, nil
+}
+
+// pushIndex pushes idx under tag.
+func (d *deletion) pushIndex(ctx context.Context, tag string, idx ocispec.Index) error {
+	b, err := json.Marshal(idx)
+	if err != nil {
+		return fmt.Errorf("ingest: referrers index %s: %w", tag, err)
+	}
+	desc := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageIndex, Digest: digest.FromBytes(b), Size: int64(len(b))}
+	if err := d.rr.PushReference(ctx, desc, bytes.NewReader(b), tag); err != nil {
+		return fmt.Errorf("ingest: push %s in %s: %w", tag, d.name, err)
+	}
+	return nil
+}
+
+// fetch reads the manifest desc, at most maxManifestBytes.
+func (d *deletion) fetch(ctx context.Context, desc ocispec.Descriptor) ([]byte, error) {
+	rc, err := d.rr.Fetch(ctx, desc)
+	if err != nil {
+		return nil, fmt.Errorf("ingest: fetch %s of %s: %w", desc.Digest, d.name, err)
+	}
+	defer func() { _ = rc.Close() }()
+	b, err := io.ReadAll(io.LimitReader(rc, maxManifestBytes))
+	if err != nil {
+		return nil, fmt.Errorf("ingest: read %s of %s: %w", desc.Digest, d.name, err)
+	}
+	return b, nil
 }
 
 // deleteTree deletes the referrers of desc, each with its own first, then desc itself unless
@@ -272,6 +403,8 @@ func (d *deletion) record(ctx context.Context, principal auth.Principal) error {
 		if d.version.Variant != "" {
 			ev.Subject += " " + d.version.Variant
 		}
+	case d.subject != "":
+		ev.Subject = d.subject.String()
 	default:
 		ev.Subject = d.name
 	}
