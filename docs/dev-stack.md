@@ -135,6 +135,74 @@ LAJSTROM_TEST_REGISTRY=localhost:5004 make test-integration   # variant B
 make dev-down RESET=1
 ```
 
+## The ha profile
+
+`make dev-up PROFILES=ha` adds the `ha` stack of [acceptance.md](acceptance.md) §4, which
+[test/e2e/ha.sh](../test/e2e/ha.sh) runs against (#226): two replicas of Lajstrom, built from the
+working tree, round robin behind nginx, on one Postgres and one distribution. Each request through
+the edge goes to the next replica, so a protocol of several requests crosses replicas by
+construction.
+
+| Service | Image | Port | Used as |
+| --- | --- | --- | --- |
+| `ha-nginx` | `nginx:1.30.6-alpine` | `localhost:8090` | the edge, the URL clients use and the `externalURL` of both replicas |
+| `lajstrom-a`, `lajstrom-b` | `lajstrom-dev-ha`, built from the working tree | `localhost:8091`, `localhost:8092` | the replicas, published so that a test can choose one past the edge |
+| `ha-postgres` | `postgres:17.11-alpine` | not published | the index of both: database, user and password `lajstrom` |
+| `ha-distribution` | `registry:3.1.2` | `localhost:5007` | the registry `local` of both; no referrers API |
+
+The profile shares nothing with the three services above: its own database, registry and volumes
+(`lajstrom-dev_ha-postgres-data`, `lajstrom-dev_ha-distribution-data`), and a network of its own,
+`ha` (`172.31.226.0/24`), with fixed addresses: nginx `.10`, the replicas `.11` and `.12`.
+
+- **The replicas** run the image of [deploy/compose/ha/Dockerfile](../deploy/compose/ha/Dockerfile):
+  `go build ./cmd/lajstrom` in `golang:1.27.3-alpine`, on the distroless base of the release image.
+  `pull_policy: build` rebuilds it on every `make dev-up`, so the stack always serves the working
+  tree: `make dev-up PROFILES=ha` took 29 s the first time, with the images pulled and the Go
+  modules still to download, and 7 s after a change of code, which recreates both replicas. Both
+  read
+  [deploy/compose/ha/lajstrom.yaml](../deploy/compose/ha/lajstrom.yaml): Postgres, the registry,
+  `externalURL` `http://localhost:8090` with `insecureHTTP: true` (loopback,
+  [configuration.md](configuration.md#server)), `trustedProxies: ["172.31.226.10/32"]`, nginx, text
+  logs, no reconcile loop, the repos of `test/e2e/run.sh`, and a fixed master key, the hex of
+  `lajstrom-ha-dev-stack-not-secret`. `LAJSTROM_CONFIG` names the file, so `lajstrom admin` in a
+  replica works on the same database. Both start at once on an empty database: one applies the
+  migrations under the migration lock, and the other logs `repo of the configuration was created
+  meanwhile, by another replica`. The health check is `lajstrom healthcheck`.
+- **nginx** runs [deploy/nginx/lajstrom.conf](../deploy/nginx/lajstrom.conf) through
+  [deploy/compose/ha/nginx.sed](../deploy/compose/ha/nginx.sed), which holds every difference: the
+  two replicas as the upstream instead of `lajstrom:8080`, and `listen 80` instead of
+  `listen 443 ssl` with its two certificate lines. The rest is the file as an operator deploys it:
+  bodies unbuffered both ways, the timeouts, the forwarded headers, the limit on `/v2/token` (20 a
+  second per address, a burst of 40), and the connection and bandwidth limits, commented.
+  `http2 on` stays, and on plain HTTP nginx answered HTTP/1.1 and HTTP/2 with prior knowledge on the
+  same port. nginx starts once both replicas are healthy; its health check asks `/-/readyz`
+  through itself.
+
+There is no admin; make one in a replica:
+
+```sh
+make dev-up PROFILES=ha
+docker compose -f deploy/compose/compose.yaml exec -T lajstrom-a /lajstrom admin user create --name admin --admin --password-stdin <<<"$password"
+curl -u "admin:$password" http://localhost:8090/api/v1/whoami
+test/e2e/ha.sh                 # testing.md
+make dev-down                  # the profile stops with the rest; RESET=1 removes its volumes too
+```
+
+The replicas believe the `X-Forwarded-For` of nginx only, so their access log names the client
+nginx saw, with nginx as `proxy`, and an address the client forged is not believed. A `PATCH`
+sent through the edge with `X-Forwarded-For: 203.0.113.9`, as nginx and then a replica logged it
+(under OrbStack every connection from the machine comes from the network's gateway, `.1`):
+
+```text
+172.31.226.1 - admin-1794260228 [09/Nov/2026:21:37:08 +0000] "PATCH /api/v1/repos/raw/scratch HTTP/1.1" 200 189 "-" "curl/8.7.1" "203.0.113.9"
+time=2026-11-09T21:37:08.350Z level=INFO msg=request method=PATCH path=/api/v1/repos/raw/scratch status=200 bytes=189 duration=3.510191ms requestId=demo-1794260228-2 remoteAddr=172.31.226.1 principal=user:01a1c23e-587e-7ce0-9ed0-76efdf716ffe proxy=172.31.226.10:59564
+```
+
+`LAJSTROM_HA_PORT` moves the edge, and the replicas' `externalURL` with it; `LAJSTROM_HA_A_PORT`,
+`LAJSTROM_HA_B_PORT` and `LAJSTROM_HA_DISTRIBUTION_PORT` the others. The address of nginx is in
+`ha/lajstrom.yaml` and in `compose.yaml`: change both together. `docker image rm lajstrom-dev-ha`
+removes the image, which `make dev-down` leaves.
+
 ## Commands
 
 ```sh
@@ -146,6 +214,7 @@ make dev-down RESET=1  # the same, and remove the volumes
 make dev-up PROFILES=s3  # the three, and distribution on SeaweedFS (below)
 make dev-up PROFILES=s3-minio  # the three, and distribution on MinIO, the fallback (below)
 make dev-up PROFILES=gitlab  # the three, and the GitLab container registry (below)
+make dev-up PROFILES=ha  # the three, and two replicas of Lajstrom behind nginx (below)
 ```
 
 `make dev-up` returns when the health checks pass (`docker compose up -d --wait`): in 2 to 3 s
@@ -176,8 +245,9 @@ Copy [deploy/compose/.env.example](../deploy/compose/.env.example) to `deploy/co
 (not committed) to change a host port (`LAJSTROM_ZOT_PORT`, `LAJSTROM_DISTRIBUTION_PORT`,
 `LAJSTROM_PG_PORT`, for the s3 profile `LAJSTROM_DISTRIBUTION_S3_PORT` and
 `LAJSTROM_S3_PORT`, for the s3-minio profile `LAJSTROM_DISTRIBUTION_S3_MINIO_PORT` and
-`LAJSTROM_MINIO_PORT`, and for the gitlab profile `LAJSTROM_GITLAB_PORT` and
-`LAJSTROM_GITLAB_DB_PORT`) or the Postgres credentials (`LAJSTROM_PG_DB`, `LAJSTROM_PG_USER`,
+`LAJSTROM_MINIO_PORT`, for the gitlab profile `LAJSTROM_GITLAB_PORT` and
+`LAJSTROM_GITLAB_DB_PORT`, and for the ha profile `LAJSTROM_HA_PORT`, `LAJSTROM_HA_A_PORT`,
+`LAJSTROM_HA_B_PORT` and `LAJSTROM_HA_DISTRIBUTION_PORT`) or the Postgres credentials (`LAJSTROM_PG_DB`, `LAJSTROM_PG_USER`,
 `LAJSTROM_PG_PASSWORD`). A variable set in the shell wins over the file. When you change a port,
 change what points at it too: the registry URL in your `deploy/compose/lajstrom.yaml`,
 `LAJSTROM_TEST_REGISTRY`, the DSN. New Postgres credentials take effect on a fresh volume
@@ -262,7 +332,7 @@ CI runs the same three images, on the same ports, as service containers of the `
 job ([CONTRIBUTING.md](../CONTRIBUTING.md#ci-overview)); Zot there runs on the configuration built
 into its image, since a service container cannot mount `config.json` from the checkout. CI does
 not run the s3 and s3-minio profiles (the tests that need them skip without
-`LAJSTROM_TEST_REGISTRY_S3`) nor the gitlab profile.
+`LAJSTROM_TEST_REGISTRY_S3`), nor the gitlab and ha profiles.
 
 ## Docker on macOS and Linux
 
