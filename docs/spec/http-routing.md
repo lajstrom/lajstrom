@@ -145,8 +145,17 @@ there) or `abort` (drop), per repo; default `abort`. Client config: `<repository
 
 ## 4. Management API `/api/v1`
 
-JSON, bearer (PAT) or Basic. All endpoints require `manage` on the resource or the system admin
-role. Shapes are fixed in the API issue (M2-09); listed here so frontends do not invent their own.
+JSON, bearer (PAT) or Basic. Shapes are fixed in the API issue (M2-09); listed here so frontends
+do not invent their own. What each call needs, in the actions of rbac.md §2 (decided on #136,
+2026-11-09):
+
+| Calls | Needs |
+| --- | --- |
+| reading a repo's content: `GET /api/v1/repos` (lists only the repos the caller may read), `GET …/repos/<format>/<repo>`, and the read endpoints of packages, versions and search that #136 adds | `read` on the repo; a repo the caller may not read is `404`, as on the frontends (rbac.md §3) |
+| changing a repo: `PATCH`, `DELETE`, `POST …/reindex`, `GET …/reindex`, the deploy tokens of the repo | `manage` on the repo |
+| creating a repo, and the system resources: users, bindings, audit, registries, every token | the admin role (`manage` on `*/*`) |
+| the personal access tokens of a user | the user themself, within what the credential allows, or the admin role |
+| `GET /api/v1/whoami` | nothing |
 
 | Resource | Endpoints |
 | --- | --- |
