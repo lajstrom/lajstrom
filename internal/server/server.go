@@ -128,7 +128,7 @@ func New(o Options) (*Server, error) {
 	s := &Server{opts: o, log: o.Log, mux: http.NewServeMux(), bound: make(chan struct{})}
 	s.baseCtx, s.abort = context.WithCancel(context.Background())
 	s.routes()
-	s.handler = s.track(s.recovery(requestID(s.clientAddress(s.accessLog(s.authenticate(s.limitUploads(s.stall(s.mux))))))))
+	s.handler = s.track(s.securityHeaders(s.recovery(requestID(s.clientAddress(s.accessLog(s.crossOrigin(s.authenticate(s.limitUploads(s.stall(s.mux))))))))))
 	s.srv = &http.Server{
 		Handler:     s.handler,
 		BaseContext: func(net.Listener) context.Context { return s.baseCtx },

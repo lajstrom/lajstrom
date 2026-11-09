@@ -44,7 +44,8 @@ func (s *Server) recovery(next http.Handler) http.Handler {
 }
 
 // writeInternalError answers 500 with {"error":"internal server error","requestId":id}. Headers
-// the handler set before it failed are dropped, except the request id.
+// the handler set before it failed are dropped, except the request id; the security headers
+// are set again.
 func writeInternalError(w http.ResponseWriter, id string) {
 	h := w.Header()
 	for k := range h {
@@ -52,6 +53,7 @@ func writeInternalError(w http.ResponseWriter, id string) {
 			delete(h, k)
 		}
 	}
+	setSecurityHeaders(h)
 	body, _ := json.Marshal(struct {
 		Error     string `json:"error"`
 		RequestID string `json:"requestId"`
