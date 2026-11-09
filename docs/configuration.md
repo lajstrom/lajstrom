@@ -244,12 +244,13 @@ index database:
 
 - **Missing:** it is created exactly as `POST /api/v1/repos` would create it, with the same
   checks and one `repo.create` audit row whose details say `"source": "config"`. The
-  configuration was validated already, so the one check that can still fail is the format: a
-  repo whose format plugin is not compiled into the binary stops `serve` with an error naming
-  the entry (`oci`, the pass-through format of the OCI facade, needs no plugin).
-- **Present:** it is left as it is. When its `registry` or `anonymousRead` differ from the
-  database, a warning names the repo and the field: the database wins, and a change goes
-  through the API or `lajstrom admin repo`.
+  configuration was validated already, so the checks that can still fail are the format and
+  the policy: a repo whose format plugin is not compiled into the binary (`oci`, the
+  pass-through format of the OCI facade, needs no plugin), or whose policy the API refuses,
+  stops `serve` with an error naming the entry.
+- **Present:** it is left as it is. When its `registry`, `anonymousRead` or `policy` differ
+  from the database, a warning names the repo and the field: the database wins, and a change
+  goes through the API or `lajstrom admin repo`.
 
 The bootstrap never deletes a repo and never changes one: removing an entry from this list
 leaves the repo in place. Replicas that start together create each repo once; a replica whose
@@ -261,5 +262,6 @@ create loses to another's counts the repo as present.
 | `repos[].format` | name | none, required | none | Plugin name: `raw`, `pypi`, `apt`, `maven`. |
 | `repos[].registry` | name | none, required | none | One of `registries[].name`. |
 | `repos[].anonymousRead` | bool | `false` | none | Readable without credentials, when `auth.anonymousRead` is `true`. |
+| `repos[].policy` | map | none | none | The repo's policy, with the keys and values of the management API ([api.md](api.md#policy)): `maxFileSize` (bytes, no limit by default), `blobRedirect` (`auto` by default, or `never`), and on a maven repo `maven.sessionTimeout` (`30m` by default, `1m` to `24h`). The API checks it when the bootstrap creates the repo, and a policy it refuses stops `serve` naming the entry and the key (`repos[0]: policy.maven: only a maven repo has it, not a raw repo`). Example: `{maxFileSize: 104857600, maven: {sessionTimeout: 2h}}`. |
 
 `(format, name)` must be unique across `repos`.

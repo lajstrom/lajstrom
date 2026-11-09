@@ -638,6 +638,20 @@ components:
               type: string
               description: How long a publication session lives after its last request, a duration from 1m to 24h.
               examples: [45m]
+    PolicyPatch:
+      type: object
+      description: >-
+        An RFC 7396 merge patch of the policy: a member sets its key, null removes it, maven
+        merges key by key. The policy that results is checked as a whole.
+      additionalProperties: false
+      properties:
+        maxFileSize: {type: [integer, "null"], format: int64, minimum: 1}
+        blobRedirect: {type: [string, "null"], enum: [auto, never, null]}
+        maven:
+          type: [object, "null"]
+          additionalProperties: false
+          properties:
+            sessionTimeout: {type: [string, "null"]}
     RepoList:
       type: object
       required: [repos]
@@ -666,7 +680,7 @@ components:
         anonymousRead: {type: boolean}
         policy:
           anyOf:
-            - {$ref: "#/components/schemas/Policy"}
+            - {$ref: "#/components/schemas/PolicyPatch"}
             - {type: "null"}
     ReindexRequest:
       type: object

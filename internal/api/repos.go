@@ -51,8 +51,8 @@ type CreateRequest struct {
 // UpdateRequest is a change to a repo, the body of PATCH /api/v1/repos/{format}/{repo}. A nil
 // AnonymousRead is left as it is. Policy tells absent from null by its bytes, as
 // encoding/json leaves them: nil (absent) leaves the policy, the JSON null clears it, an object
-// replaces it. Format, name, registry and kind cannot change: moving a repo to another
-// registry would orphan its artifacts.
+// is merged into it as an RFC 7396 merge patch (mergePolicy). Format, name, registry and kind
+// cannot change: moving a repo to another registry would orphan its artifacts.
 type UpdateRequest struct {
 	AnonymousRead *bool           `json:"anonymousRead"`
 	Policy        json.RawMessage `json:"policy"`
@@ -185,8 +185,9 @@ func (s *Repos) List(ctx context.Context, formatName string) ([]Repo, error) {
 
 // Update applies req to the repo formatName/name in one transaction with one repo.update audit
 // event, whose details name the fields that changed with their new values. A request that
-// changes nothing writes nothing and returns the repo as it is. The policy of req is checked
-// for the repo's format (checkPolicy). Errors wrap format.ErrInvalid (a policy that
+// changes nothing writes nothing and returns the repo as it is. The policy of req is merged
+// into the repo's (mergePolicy) and the result checked as a whole. Errors wrap
+// format.ErrInvalid (a policy that is neither an object nor null, or a merged policy that
 // checkPolicy refuses) or index.ErrNotFound.
 func (s *Repos) Update(ctx context.Context, formatName, name string, req UpdateRequest, o Origin) (*Repo, error) {
 	if _, err := decodePolicy(req.Policy); err != nil {
@@ -222,7 +223,7 @@ func (s *Repos) Update(ctx context.Context, formatName, name string, req UpdateR
 }
 
 // applyUpdate changes row as req says and returns the fields that changed, with their new
-// values: the policy as checkPolicy returned it.
+// values: the policy as the merge left it.
 func applyUpdate(row *index.Repo, req UpdateRequest) (map[string]any, error) {
 	changed := map[string]any{}
 	if req.AnonymousRead != nil && *req.AnonymousRead != row.AnonymousRead {
@@ -230,7 +231,7 @@ func applyUpdate(row *index.Repo, req UpdateRequest) (map[string]any, error) {
 		changed["anonymousRead"] = row.AnonymousRead
 	}
 	if req.Policy != nil {
-		policy, err := checkPolicy(row.Format, req.Policy)
+		policy, err := mergePolicy(row.Format, row.Policy, req.Policy)
 		if err != nil {
 			return nil, err
 		}
@@ -309,14 +310,15 @@ func versions(n int) string {
 // Bootstrap merges the repos of the configuration (repos[]) into the control plane at start,
 // after the migrations and before the server listens, and returns how many it created. An entry
 // that is not in the control plane is created exactly as Create would, by the anonymous
-// principal with the source config. An entry that exists is left as it is; when its registry
-// or anonymousRead differ from the control plane, a warning names the repo and the field: the
-// control plane wins. Bootstrap never deletes and never updates.
+// principal with the source config. An entry that exists is left as it is; when its registry,
+// anonymousRead or policy differ from the control plane, a warning names the repo and the
+// field: the control plane wins. Bootstrap never deletes and never updates.
 //
-// The configuration was validated already, and the checks of Create are the same, so the
-// error of an entry is for a format that is not compiled in; it is returned, naming the entry,
-// with the repos before it created. A repo that another replica creates between the lookup
-// and the create is a conflict, and counts as existing.
+// The configuration was validated already, and the checks of Create are the same but for the
+// format, which must be compiled in, and the policy, which only Create checks; the error of
+// an entry is returned, naming the entry, with the repos before it created. A repo that
+// another replica creates between the lookup and the create is a conflict, and counts as
+// existing.
 func (s *Repos) Bootstrap(ctx context.Context, repos []config.Repo) (created int, err error) {
 	ctx = auth.WithPrincipal(ctx, auth.Anonymous)
 	for i, c := range repos {
@@ -329,7 +331,11 @@ func (s *Repos) Bootstrap(ctx context.Context, repos []config.Repo) (created int
 		case !errors.Is(err, index.ErrNotFound):
 			return created, fmt.Errorf("api: bootstrap repos[%d] %s: %w", i, id, err)
 		}
-		req := CreateRequest{Format: c.Format, Name: c.Name, Registry: c.Registry, AnonymousRead: c.AnonymousRead}
+		policy, err := configPolicy(c)
+		if err != nil {
+			return created, fmt.Errorf("repos[%d]: %w", i, err)
+		}
+		req := CreateRequest{Format: c.Format, Name: c.Name, Registry: c.Registry, AnonymousRead: c.AnonymousRead, Policy: policy}
 		switch _, err := s.Create(ctx, req, Origin{Source: SourceConfig}); {
 		case errors.Is(err, index.ErrConflict):
 			s.log().InfoContext(ctx, "repo of the configuration was created meanwhile, by another replica", "repo", id)
@@ -343,9 +349,27 @@ func (s *Repos) Bootstrap(ctx context.Context, repos []config.Repo) (created int
 	return created, nil
 }
 
+// configPolicy is the policy of a configured repo as JSON, nil for none. YAML decodes a map
+// with keys that are not strings, which JSON cannot hold, into a value Marshal refuses.
+func configPolicy(c config.Repo) (json.RawMessage, error) {
+	if len(c.Policy) == 0 {
+		return nil, nil
+	}
+	b, err := json.Marshal(c.Policy)
+	if err != nil {
+		return nil, invalid("policy: %s", err.Error())
+	}
+	return b, nil
+}
+
 // warnDrift logs a warning for each field of a configured repo that differs from the repo in
 // the control plane.
 func (s *Repos) warnDrift(ctx context.Context, row *index.Repo, c config.Repo) {
+	if policy, err := configPolicy(c); err != nil || !samePolicy(policy, row.Policy) {
+		s.log().WarnContext(ctx, "repo of the configuration differs from the control plane, and the control plane wins;"+
+			" change it through the API or lajstrom admin repo",
+			"repo", row.Format+"/"+row.Name, "field", "policy", "config", string(policy), "controlPlane", string(row.Policy))
+	}
 	for _, f := range []struct {
 		field         string
 		config, plane any

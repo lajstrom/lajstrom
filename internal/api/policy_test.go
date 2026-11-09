@@ -50,6 +50,32 @@ func TestCheckPolicy(t *testing.T) {
 	}
 }
 
+// TestMergePolicy: PATCH merges as RFC 7396 says, and the merged policy is checked as a whole.
+func TestMergePolicy(t *testing.T) {
+	stored := `{"blobRedirect":"never","maven":{"sessionTimeout":"45m"},"maxFileSize":10}`
+	for _, tt := range []struct {
+		name, stored, patch, want, err string
+	}{
+		{"sets a key", stored, `{"maxFileSize":20}`, `{"blobRedirect":"never","maven":{"sessionTimeout":"45m"},"maxFileSize":20}`, ""},
+		{"null removes a key", stored, `{"blobRedirect":null}`, `{"maven":{"sessionTimeout":"45m"},"maxFileSize":10}`, ""},
+		{"nested objects merge", `{"maven":{"sessionTimeout":"45m"}}`, `{"maven":{"sessionTimeout":"2h"}}`, `{"maven":{"sessionTimeout":"2h"}}`, ""},
+		{"an object left empty goes", stored, `{"maven":{"sessionTimeout":null}}`, `{"blobRedirect":"never","maxFileSize":10}`, ""},
+		{"nothing left is no policy", `{"maxFileSize":10}`, `{"maxFileSize":null}`, "", ""},
+		{"null clears", stored, `null`, "", ""},
+		{"empty patch keeps", stored, `{}`, stored, ""},
+		{"onto no policy", "", `{"blobRedirect":"never","maxFileSize":null}`, `{"blobRedirect":"never"}`, ""},
+		{"the merge is checked", stored, `{"maxFileSize":0}`, "", "policy.maxFileSize: must be"},
+		{"a bad stored key must be removed", `{"x":1,"maxFileSize":10}`, `{"maxFileSize":20}`, "", "policy.x: unknown key"},
+		{"which a null member does", `{"x":1,"maxFileSize":10}`, `{"x":null}`, `{"maxFileSize":10}`, ""},
+		{"a patch that is not an object", stored, `[1]`, "", "policy: must be a JSON object or null"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := mergePolicy("maven", json.RawMessage(tt.stored), json.RawMessage(tt.patch))
+			wantPolicyResult(t, got, err, tt.want, tt.err)
+		})
+	}
+}
+
 // wantPolicyResult checks a policy and the error that came with it: want when wantErr is empty,
 // else an INVALID error whose message starts with wantErr.
 func wantPolicyResult(t *testing.T, got json.RawMessage, err error, want, wantErr string) {

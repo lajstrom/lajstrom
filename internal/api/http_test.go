@@ -225,6 +225,39 @@ func TestUpdate(t *testing.T) {
 	}
 }
 
+// TestUpdatePolicyMerge: PATCH merges the policy key by key (RFC 7396), the audit event has the
+// policy as the merge left it, and a refused merge changes nothing.
+func TestUpdatePolicyMerge(t *testing.T) {
+	f := newFixture(t, Options{})
+	f.create(t, "raw", "scratch")
+	patch := func(body string) Repo {
+		t.Helper()
+		var got Repo
+		decodeJSON(t, f.do(http.MethodPatch, "/api/v1/repos/raw/scratch", body, auth.Principal{}), http.StatusOK, &got)
+		return got
+	}
+	patch(`{"policy":{"maxFileSize":10,"blobRedirect":"never"}}`)
+	got := patch(`{"policy":{"maxFileSize":20}}`)
+	wantJSON(t, "policy", got.Policy, `{"blobRedirect":"never","maxFileSize":20}`)
+	got = patch(`{"policy":{"blobRedirect":null}}`)
+	wantJSON(t, "policy", got.Policy, `{"maxFileSize":20}`)
+	rows := auditOf(t, f.st, "repo.update")
+	if len(rows) != 3 {
+		t.Fatalf("%d repo.update events, want 3", len(rows))
+	}
+	wantJSON(t, "audit details", rows[0].details, `{"source":"api","changed":{"policy":{"maxFileSize":20}}}`)
+
+	wantError(t, f.do(http.MethodPatch, "/api/v1/repos/raw/scratch", `{"anonymousRead":true,"policy":{"maxFileSize":0}}`, auth.Principal{}),
+		http.StatusBadRequest, codeInvalid, "policy.maxFileSize: must be")
+	if r, err := f.repos.Get(t.Context(), "raw", "scratch"); err != nil || r.AnonymousRead || string(r.Policy) != `{"maxFileSize":20}` {
+		t.Errorf("after a refused merge: %+v, %v; want anonymousRead and the policy as they were", r, err)
+	}
+	got = patch(`{"policy":{"maxFileSize":null}}`)
+	if string(got.Policy) != "null" {
+		t.Errorf("policy %s after the last key went, want null", got.Policy)
+	}
+}
+
 func TestUpdateInvalid(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -228,6 +228,9 @@ type Repo struct {
 	Registry string `yaml:"registry"`
 	// AnonymousRead makes the repo readable without credentials, when auth.anonymousRead allows it.
 	AnonymousRead bool `yaml:"anonymousRead"`
+	// Policy is the repo's policy as the management API takes it (docs/api.md, the policy
+	// keys), checked when the bootstrap creates the repo; nil means none.
+	Policy map[string]any `yaml:"policy"`
 }
 
 // Defaults that Load applies before reading the file.

@@ -90,7 +90,7 @@ audit alike.
 | `registry` | one of `registries[].name` of the configuration | never: the artifacts stay in the registry they were pushed to |
 | `kind` | `hosted`, the only kind in this version; may be left out | never |
 | `anonymousRead` | readable without credentials, when `auth.anonymousRead` allows it; default `false` | `PATCH` |
-| `policy` | a JSON object of the keys below, or `null` for none | `PATCH` |
+| `policy` | a JSON object of the keys below, or `null` for none | `PATCH`, merged |
 | `createdAt`, `updatedAt` | set by the server | `updatedAt` on every change |
 
 #### Policy
@@ -147,16 +147,27 @@ curl -s "$LAJSTROM/api/v1/repos/raw/scratch"
 ### Change: `PATCH /api/v1/repos/<format>/<name>`
 
 The body has the fields to change, `anonymousRead` and `policy`; a field left out stays as it
-is. `policy` replaces the repo's policy and is checked ([Policy](#policy)); when it is refused
-nothing changes. `"policy": null` removes the policy. `format`, `name`, `registry` and `kind`
+is. `policy` is merged into the repo's policy as a JSON merge patch
+([RFC 7396](https://www.rfc-editor.org/rfc/rfc7396)): a key it has is set, a key whose value is
+`null` is removed, `maven` is merged key by key, and the keys it does not name stay; the
+policy that results is checked as a whole ([Policy](#policy)), and when it is refused nothing
+changes. `"policy": null` removes the whole policy. `format`, `name`, `registry` and `kind`
 cannot change and are `400`: moving a repo to another registry would orphan its artifacts.
 `200` with the resource as it is now; a body that changes nothing changes nothing, not even
-`updatedAt`.
+`updatedAt`. The audit row has the policy as the merge left it.
 
 ```sh
-curl -s -X PATCH "$LAJSTROM/api/v1/repos/raw/scratch" \
+# the policy is {"blobRedirect": "never", "maven": {"sessionTimeout": "45m"}}
+curl -s -X PATCH "$LAJSTROM/api/v1/repos/maven/releases" \
   -H 'Content-Type: application/json' \
   -d '{"anonymousRead": true, "policy": {"maxFileSize": 104857600}}'
+curl -s -X PATCH "$LAJSTROM/api/v1/repos/maven/releases" \
+  -H 'Content-Type: application/json' \
+  -d '{"policy": {"blobRedirect": null, "maven": {"sessionTimeout": "2h"}}}' | jq -c .policy
+```
+
+```json
+{"maven":{"sessionTimeout":"2h"},"maxFileSize":104857600}
 ```
 
 ### Delete: `DELETE /api/v1/repos/<format>/<name>`

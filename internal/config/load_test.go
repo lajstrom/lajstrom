@@ -242,6 +242,32 @@ registries:
 	}
 }
 
+// TestLoadRepoPolicy: repos[].policy is read as JSON-shaped values, which the bootstrap passes to
+// the API's checks as they are.
+func TestLoadRepoPolicy(t *testing.T) {
+	file := minimal + `
+registries:
+  - {name: local, url: "http://zot:5000"}
+repos:
+  - {name: scratch, format: raw, registry: local}
+  - name: releases
+    format: maven
+    registry: local
+    policy: {maxFileSize: 104857600, blobRedirect: never, maven: {sessionTimeout: 45m}}
+`
+	c, err := Load(writeConfig(t, file), nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Repos[0].Policy != nil {
+		t.Errorf("repos[0].policy = %v, want none", c.Repos[0].Policy)
+	}
+	got, err := json.Marshal(c.Repos[1].Policy)
+	if want := `{"blobRedirect":"never","maven":{"sessionTimeout":"45m"},"maxFileSize":104857600}`; err != nil || string(got) != want {
+		t.Errorf("repos[1].policy = %s, %v; want %s", got, err, want)
+	}
+}
+
 func TestLoadPasswordEnv(t *testing.T) {
 	file := minimal + `
 registries:
