@@ -310,7 +310,7 @@ func TestReindex(t *testing.T) {
 	f := newFixture(t, Options{})
 	f.create(t, "raw", "scratch")
 	wantError(t, f.do(http.MethodPost, "/api/v1/repos/raw/scratch/reindex", "", auth.Principal{}), http.StatusNotImplemented,
-		codeUnavailable, "reindex comes with #29")
+		codeUnavailable, "reindex is not enabled in this server")
 }
 
 func TestNotInThisVersion(t *testing.T) {

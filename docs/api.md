@@ -158,10 +158,40 @@ the audit row says how many versions the repo had. Role bindings name repos by m
 curl -s -X DELETE "$LAJSTROM/api/v1/repos/raw/scratch?force=true"
 ```
 
-### Reindex: `POST /api/v1/repos/<format>/<name>/reindex`
+### Reindex: `POST` and `GET /api/v1/repos/<format>/<name>/reindex`
 
-Rebuilds the repo's index from the registry. It comes with #29: until then `501 UNAVAILABLE`,
-or `404` when there is no such repo.
+`POST` starts a reindex of the repo on the replica that received it
+([operations.md](operations.md#reindex) says what a run does) and answers `202` with the run as
+soon as it holds the lock, before it reads the registry. The body is optional:
+`{"prune": false, "verify": false}`, the defaults of `lajstrom reindex --repo`; `prune` removes the
+rows of manifests that are gone from the registry, `verify` reads every manifest again. A run that
+overlaps, of this repo or of every repo, on any replica or in the CLI, is `409 CONFLICT` naming
+where it runs and since when. The start is an audit row `repo.reindex`. `GET` answers the latest
+run that covered the repo, its own or a run of every repo, with the repo's part of the report:
+
+```json
+{
+  "id": 12, "state": "done", "source": "api", "principal": "user:alice", "replica": "lajstrom-a 7",
+  "allRepos": false, "prune": true, "verify": false,
+  "startedAt": "2026-11-09T10:00:00Z", "heartbeatAt": "2026-11-09T10:00:30Z", "finishedAt": "2026-11-09T10:00:41Z",
+  "report": {
+    "repo": "raw/assets", "ociRepositories": 3, "manifests": 120, "added": 2, "updated": 0, "unchanged": 117,
+    "removed": 1, "degraded": 0, "referrers": 4,
+    "foreign": [{"repository": "charts/demo", "tag": "0.1.0", "digest": "sha256:…", "mediaType": "application/vnd.oci.image.manifest.v1+json"}],
+    "orphanReferrers": [], "drift": [], "errors": [], "truncated": false
+  }
+}
+```
+
+`state` is `running`, `done` (it went to the end, whatever the report lists), `failed` (the run's
+own error is in `error`) or `abandoned` (its heartbeat stopped, a later start closed it);
+`report` is `null` while it runs. Both need `manage` on the repo; `404` when there is no such
+repo, or, for `GET`, when no run has covered it.
+
+```sh
+curl -s -X POST "$LAJSTROM/api/v1/repos/raw/assets/reindex" -d '{"prune": true}'
+curl -s "$LAJSTROM/api/v1/repos/raw/assets/reindex" | jq '.state, .report.removed'
+```
 
 ## `lajstrom admin repo`
 
