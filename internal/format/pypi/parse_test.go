@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"errors"
-	"slices"
 	"strings"
 	"testing"
 
@@ -214,30 +213,4 @@ func zipOf(t *testing.T, names ...string) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
-}
-
-// FuzzParseWheelFilename checks that the parser never panics, and that what it accepts
-// round-trips: the parts make the file name again.
-func FuzzParseWheelFilename(f *testing.F) {
-	for _, s := range []string{"requests-2.32.3-py3-none-any.whl", "tool-1.0-2-py3-none-any.whl",
-		"numpy-2.1.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", "x.whl", "-----.whl"} {
-		f.Add(s)
-	}
-	f.Fuzz(func(t *testing.T, s string) {
-		w, err := ParseWheelFilename(s)
-		if err != nil {
-			return
-		}
-		parts := []string{w.Name, strings.ReplaceAll(w.Version, "-", "_")}
-		if w.Build != "" {
-			parts = append(parts, w.Build)
-		}
-		parts = append(parts, w.Python, w.ABI, w.Platform)
-		if again := strings.Join(parts, "-") + ".whl"; again != s {
-			t.Errorf("%q parsed into %+v, which makes %q", s, w, again)
-		}
-		if slices.Contains([]string{w.Python, w.ABI, w.Platform}, "") {
-			t.Errorf("%q: an empty tag", s)
-		}
-	})
 }
