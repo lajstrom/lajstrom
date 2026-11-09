@@ -165,6 +165,7 @@ needs, is in [registries/](registries/README.md).
 | Key | Type | Default | Env | Description |
 | --- | --- | --- | --- | --- |
 | `ingest.claimTTL` | duration (`10m`, `1h`) | `10m` | none | How long a publish's claim on a tag holds off a publish of other bytes to the same tag. Every publish claims its tag in the index before it writes the manifest to the registry and releases the claim once the index rows are written, so that two replicas cannot both write one tag ([index-schema.md](spec/index-schema.md), Coordination). A claim older than this, left by a replica that died mid-publish, is stale: the next publish of the tag takes it over, and `reindex` and the reconcile loop delete it. It must outlast one manifest `PUT` and one index transaction; blob uploads come before the claim and do not count. Must not be negative; `0` means the default. |
+| `reconcile.interval` | duration (`1h`, `30m`) | `1h` | none | How often each replica runs a reindex of every repo with prune, so that writes that went past Lajstrom (a push straight to the backend, a delete in the registry's console) reach the index ([operations.md](operations.md#reconcile)). The first run comes after a random part of the interval; a run that overlaps a run elsewhere waits for the next tick. `0` turns the loop off. Must not be negative. |
 
 The `ingest` section is an addition to the shape in [layout.md](spec/layout.md) §6.
 

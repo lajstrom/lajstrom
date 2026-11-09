@@ -28,6 +28,9 @@ func (c *Config) Validate() error {
 	if c.Ingest.ClaimTTL < 0 {
 		p.add("ingest.claimTTL", "must not be negative")
 	}
+	if c.Reconcile.Interval < 0 {
+		p.add("reconcile.interval", "must not be negative")
+	}
 	c.Keys.validate(&p)
 	registries := map[string]int{}
 	for i, r := range c.Registries {
