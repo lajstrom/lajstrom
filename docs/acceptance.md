@@ -252,8 +252,8 @@ robin per request, so every multi-request protocol crosses replicas by construct
 
 | Id | Steps | Expected | Issue |
 | --- | --- | --- | --- |
-| H-01 | run the whole of §3 against the `ha` stack | every check passes unchanged; the nginx access log shows both upstreams used | #34 |
-| H-02 | two `curl -T` of the same 100 MiB file to `raw/assets/big` at the same time, one to replica A and one to B (ports 8443 and 8444 bypass the round robin) | both 201 with the same digest; one blob and one manifest in the backend; one version in the index | #12, #24 |
+| H-01 | run the whole of §3 against the `ha` stack | every check passes unchanged, but X-04 through the round robin: the throttle of failed logins counts per replica ([auth.md](auth.md#failed-logins)), so X-04 runs on one replica past the edge; both upstreams served requests | #34 |
+| H-02 | two `curl -T` of the same 100 MiB file to `raw/assets/big` at the same time, one to replica A and one to B (ports 8091 and 8092 bypass the round robin) | both 201 with the same digest; one blob and one manifest in the backend; one version in the index | #12, #24 |
 | H-03 | two `oras push` of tag `race` with different bytes, one per replica, started within the same 100 ms (`&` and `wait`) | exactly one 201 and one 409 `TAG_INVALID`; `oras manifest fetch` from the backend returns the winner's digest; the index has the winner's digest; repeated 20 times | #12 |
 | H-04 | a chunked upload: `POST` on A, `PATCH` chunks on B, final `PUT` on A, by script | 201; the digest matches | #24 |
 | H-05 | `curl -T` 500 MiB to replica A; `docker kill lajstrom-a` after 100 MiB; retry the same `PUT` through the edge | the first fails with a connection error, the retry is 201; no version with a wrong digest in the index; no claim older than the TTL left after `ingest.claimTTL`; after `docker start lajstrom-a` its `/tmp` has no spool files | #12, #24 |

@@ -95,25 +95,39 @@ gets as `LAJSTROM_E2E_FORWARDED=1`), runs `lajstrom migrate`, makes the user
 `LAJSTROM_E2E_USER` and `LAJSTROM_E2E_PASSWORD`, starts `lajstrom serve` on a free port of
 `127.0.0.1` and waits for
 `/-/readyz`, at most 30 s. Then it runs every `test/e2e/<name>.sh` but `lib.sh` and `run.sh`,
-the known ones in a fixed order and any other after them, and prints a line per scenario:
+the known ones in a fixed order, any other after them and `ha.sh` last, against the ha profile
+when it is up ([below](#the-ha-stack)), and prints a line per scenario:
 
 ```text
 === summary
-PASS raw.sh            3 s
-PASS oras.sh           0 s
+PASS raw.sh            1 s
+PASS oras.sh           1 s
 PASS auth.sh           1 s
 PASS rbac.sh           4 s
-PASS oci-token.sh     10 s
-PASS tokens.sh        20 s
-PASS apt.sh            4 s
-PASS pypi.sh          84 s
-PASS maven.sh         22 s
-e2e: 9 of 9 scenarios ran, 0 failed, in 155 s against http://127.0.0.1:35956
+PASS oci-token.sh      2 s
+PASS cosign.sh         3 s
+PASS tokens.sh        10 s
+PASS apt.sh            8 s
+PASS pypi.sh          28 s
+PASS maven.sh         25 s
+PASS ha.sh            92 s
+e2e: 11 of 11 scenarios ran, 0 failed, 0 skipped, in 182 s against http://127.0.0.1:49348
+```
+
+and without the ha profile up, `make e2e E2E='raw ha'`:
+
+```text
+=== ha.sh
+run.sh: the ha profile is not up (make dev-up PROFILES=ha): ha.sh skipped
+=== summary
+PASS raw.sh            1 s
+SKIP ha.sh                  (the ha profile is not up)
+e2e: 1 of 2 scenarios ran, 0 failed, 1 skipped, in 9 s against http://127.0.0.1:32281
 ```
 
 Those are the times on an Apple silicon Mac with OrbStack, the images already pulled and the
-maven caches warm; the 155 s include `make build`, and `pypi.sh` installs build, twine and uv
-from PyPI in its container, which took 84 s of them in that run and 10 to 15 s in others. A failed scenario does not stop the others. The harness exits 1 when one
+maven caches warm; the 182 s include `make build`, and `pypi.sh` installs build, twine and uv
+from PyPI in its container, which took 84 s in one run and 10 to 30 s in others. A failed scenario does not stop the others. The harness exits 1 when one
 failed, 2 when it could not start (the build, the migration, a server that is not ready), and
 stops the server and removes the directory on exit; `LAJSTROM_E2E_KEEP=1` keeps it, with
 `server.log` and a log per scenario. It unsets the `LAJSTROM_SERVER_*`, `LAJSTROM_LOG_*` and
@@ -131,6 +145,7 @@ stops the server and removes the directory on exit; `LAJSTROM_E2E_KEEP=1` keeps 
 | `apt.sh` | a `.deb` by PUT and one by oras; the repo's `anonymousRead` on: `key.asc` into `/etc/apt/keyrings`, `apt-get update` (the `Packages` by-hash), `install` and `apt-cache policy` without credentials; off: the anonymous `apt-get update` fails with apt's 401, then with credentials in `/etc/apt/auth.conf.d` `update`, `install`, `download` and the sha256 of the files; a second `update` with `Acquire::By-Hash=no` (the `Packages` by name); a copy of the suite whose `Release` hashes are wrong fails `apt-get update` with apt's `Hash Sum mismatch`; the conflicts | `ubuntu:24.04` (`linux/amd64`), or the image of `APT_E2E_IMAGE`; oras image |
 | `pypi.sh` | `python -m build`, twine upload, the same files again, other bytes (409), `pip install`, `uv pip install`, `uv publish` and `--check-url`, `pip install --upgrade`, PEP 658 in the access log | `python:3.13` (build, twine, uv from PyPI) |
 | `maven.sh` | a maven repo and a deploy token through the API; `mvn deploy` of a jar with sources, javadoc and pom (M-01: every PUT 201, one manifest with four file layers), the files and their four checksums (M-07), a second version and `maven-metadata.xml` (M-03), `mvn dependency:get` into an empty local repository and a version range (M-02), the same version again (200) and with a changed jar (409) (M-04), Gradle `publish` and resolve; needs the maven frontend (#54, #55) | `maven:3.9.16-eclipse-temurin-21`, `gradle:8.14.6-jdk21` (plugins from Maven Central, cached in the volumes `lajstrom-e2e-m2` and `lajstrom-e2e-gradle`) |
+| `ha.sh` | [acceptance.md](acceptance.md) §4 on the `ha` profile, two replicas behind nginx; run only when the profile is up ([below](#the-ha-stack)) | curl, oras on `PATH`, else its image, `ghcr.io/sigstore/cosign/cosign:v3.1.4`, `python3` or `python:3.13`, and the images of the scenarios it runs through the edge |
 
 The images are `ubuntu:24.04` for `linux/amd64`, emulated on Apple silicon,
 `ghcr.io/oras-project/oras:v1.3.6`, `ghcr.io/sigstore/cosign/cosign:v3.1.4`, `python:3.13`,
@@ -149,6 +164,48 @@ It turns the `anonymousRead` of its repo on and off through the API, and sets it
 The containers use `--network host`, which reaches the server's `127.0.0.1` on Linux and under
 OrbStack; Docker Desktop is not measured (its host networking is a setting of its own). The
 scenarios run under whatever `bash` is first on `PATH`; the bash 3.2 of macOS is enough.
+
+### The ha stack
+
+`ha.sh` runs the scenarios of [acceptance.md](acceptance.md) §4 against the `ha` profile of the
+dev stack ([dev-stack.md](dev-stack.md#the-ha-profile)): two replicas, A and B, round robin behind
+nginx with [deploy/nginx/lajstrom.conf](../deploy/nginx/lajstrom.conf), on one Postgres and one
+distribution. `make e2e` runs it only when docker compose shows the profile's `ha-nginx` running,
+against `http://localhost:8090` and not against the server of the run; otherwise the summary says
+`SKIP ha.sh`, which is not a failure. By hand:
+
+```sh
+make dev-up PROFILES=ha
+test/e2e/ha.sh                       # every step
+HA_SUITE=none test/e2e/ha.sh         # without H-01, the scenarios of this page through the edge
+HA_SUITE='raw oras' test/e2e/ha.sh   # H-01 with those two only
+```
+
+It reaches A and B past the edge on ports 8091 and 8092, the backend on 5007, and the containers
+with `docker compose` in the project of `COMPOSE_PROJECT_NAME` (`lajstrom-dev` by default):
+`lajstrom admin` in A, `psql` in `ha-postgres`, the logs, the restarts. Its steps, each naming the
+ids it covers:
+
+| Step | What it checks |
+| --- | --- |
+| across replicas | a repo created through B counts on A; a raw `PUT` through A is the same bytes through B; `oras push` through A, `oras pull` through B; a bearer token from A's `/v2/token` accepted by B (H-12) |
+| control plane | a reader binding made through A lets the user read through B at the next request, deleted through B it stops on A; a repo's `anonymousRead` turned on through A counts on B, off through B counts on A (S-07, G-02) |
+| client address | a change through nginx with a forged `X-Forwarded-For`: the access log's `remoteAddr` and the audit row's `ip` are the address nginx saw, with nginx as `proxy`; past the edge, the peer (ADR 0011) |
+| H-02 | the same 100 MiB `PUT` through A and B at once: both 201 with one digest, one version, one tag in the backend |
+| H-03 | 20 times, one tag pushed with `oras` through A and B at once as two manifests (the same file, another created time): one 201 and one 409 `TAG_INVALID` naming the winner, whose digest the backend and the index hold |
+| H-04 | a blob upload begun on A, two chunks `PATCH`ed to B, finished on A: 201, and the blob on B |
+| H-09 | reindex on A and B at once: 202 and 409 `CONFLICT` |
+| H-13 | a wheel uploaded through A; its simple page asked on A and B at once: the same bytes and `ETag`, one `index_cache` row |
+| #28 | two `cosign sign`, through A and B at once, of one subject on distribution, which has no referrers API: `oras discover` lists both, `cosign verify` passes with each key, the backend has the `sha256-<hex>` tag |
+| #129 | 200 requests to `/v2/token` at once from one address: nginx answers those over 20 a second (a burst of 40) 429 with `Retry-After: 1`, the replicas none |
+| H-10 | the requests of a `pip install` (the simple page and the wheel) in a loop through the edge while A restarts, and then B: every one 200 |
+| H-01 | the scenarios of this page through the edge, with `lajstrom admin` in A and the logs of both replicas as the server log, and both replicas serving them; `auth.sh` goes to A past the edge, since the throttle of failed logins counts per replica ([auth.md](auth.md#failed-logins)) and the 11th wrong password of X-04 through the round robin is the 6th of either replica |
+
+Not covered yet: H-05 (a replica killed during an upload), H-06 and H-07 (Postgres and the
+registry restarted under load), H-08 as such (`maven.sh` through the edge deploys across
+replicas, but nothing checks which replica took the metadata `PUT`) and H-11 (an apt upload
+through A seen by `apt-get update` through B within a second; `apt.sh` through the edge runs
+across replicas without the timing).
 
 ### When a scenario fails
 
