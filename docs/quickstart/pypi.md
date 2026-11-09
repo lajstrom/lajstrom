@@ -5,7 +5,8 @@ or `uv publish` puts them in, the simple index (PEP 503 HTML and PEP 691 JSON) l
 them, and every file is an OCI artifact in the registry behind Lajstrom, one manifest per file,
 with its core metadata in a layer of its own. The endpoints are specified in
 [http-routing.md](../spec/http-routing.md) §3 (pypi); what lands in the registry is the
-[manifest profile](../spec/manifest-profile.md). `test/e2e/pypi.sh` runs everything below.
+[manifest profile](../spec/manifest-profile.md). `test/e2e/pypi.sh` runs the publish and install
+steps with checks ([the end-to-end script](#the-end-to-end-script)).
 
 ## 1. Start the dev stack, make a repo and a user
 
@@ -37,7 +38,15 @@ twine and uv publish always send credentials; a user's password or one of their
 
 ## 2. Publish
 
-In a project with a `pyproject.toml`:
+The clients run in `python:3.13` on the host's network, where `localhost:8080` is Lajstrom
+(Linux and OrbStack), with the directory of a project with a `pyproject.toml` as `/w`:
+
+```sh
+docker run --rm -it --network host -v "$PWD:/w" -w /w python:3.13 bash
+pip install --root-user-action=ignore build twine uv   # in the container; and poetry for section 3
+```
+
+Then, in the container:
 
 ```sh
 python -m build                                     # dist/<name>-<version>-py3-none-any.whl and .tar.gz
@@ -120,3 +129,23 @@ crane manifest localhost:5000/pypi/internal/my-pkg:1.0__py3-none-any | jq .annot
 
 `lajstrom reindex --repo pypi/internal` rebuilds the index of the repo from those manifests
 ([operations.md](../operations.md#reindex)).
+
+## The end-to-end script
+
+`test/e2e/pypi.sh` runs sections 2 and 3 with checks, in `python:3.13` (or the image
+`PYPI_E2E_IMAGE` names): a project built with `python -m build`, a wheel and an sdist, uploaded
+with twine; the same files again (`200`); other bytes under the same file name (`409`, which
+twine reports); `pip install` from the simple index in a clean venv; `uv pip install`;
+`uv publish` of the next version, then `uv publish --check-url`, which skips the files that are
+there; and `pip install --upgrade`, which gets the next version. With `LAJSTROM_SERVER_LOG`
+naming the server's log file, it also checks in the access log that pip read the core metadata
+(PEP 658) before the file. It creates the repo when it does not exist, and a user of its own
+with `writer` on it, with `bin/lajstrom admin` against the configuration of `LAJSTROM_CONFIG`
+(the example by default), so it runs from the repository's root:
+
+```sh
+test/e2e/pypi.sh http://localhost:8080 internal
+```
+
+It disables its user at the end; the distributions stay, since pypi files cannot be deleted yet.
+Poetry, `pip.conf` with `~/.netrc` and the `[[tool.uv.index]]` configuration are not in it.
