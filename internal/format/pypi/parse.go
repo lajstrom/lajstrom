@@ -172,7 +172,8 @@ func ParseCoreMetadata(b []byte) (CoreMetadata, error) {
 	fields := map[string]any{}
 	sc := bufio.NewScanner(bytes.NewReader(b))
 	sc.Buffer(make([]byte, 64<<10), maxCoreMetadata)
-	var last string // the key of the field a continuation line continues
+	var last string   // the key of the field a continuation line continues
+	var more []string // the continuation lines of the field last, joined to it when it ends
 	var body []string
 	inBody := false
 	for sc.Scan() {
@@ -181,10 +182,12 @@ func ParseCoreMetadata(b []byte) (CoreMetadata, error) {
 		case inBody:
 			body = append(body, line)
 		case line == "":
+			more = appendContinuation(fields, last, more)
 			inBody = true
 		case (line[0] == ' ' || line[0] == '\t') && last != "":
-			appendContinuation(fields, last, strings.TrimLeft(line, " \t"))
+			more = append(more, strings.TrimLeft(line, " \t"))
 		default:
+			more = appendContinuation(fields, last, more)
 			k, v, ok := strings.Cut(line, ":")
 			if !ok || k == "" {
 				return CoreMetadata{}, fmt.Errorf("%w: core metadata: the line %q is not a field", format.ErrInvalid, line)
@@ -202,6 +205,7 @@ func ParseCoreMetadata(b []byte) (CoreMetadata, error) {
 	if err := sc.Err(); err != nil {
 		return CoreMetadata{}, fmt.Errorf("%w: core metadata: %w", format.ErrInvalid, err)
 	}
+	appendContinuation(fields, last, more)
 	if d := strings.TrimRight(strings.Join(body, "\n"), "\n"); d != "" {
 		fields["description"] = d
 	}
@@ -219,14 +223,22 @@ func ParseCoreMetadata(b []byte) (CoreMetadata, error) {
 	return m, nil
 }
 
-// appendContinuation adds a continuation line to the field key.
-func appendContinuation(fields map[string]any, key, line string) {
+// appendContinuation appends the continuation lines to the field key, to its last value when it
+// is a list, each after a "\n", and returns lines emptied for the next field. It joins them once:
+// appending them one by one copied the value per line, a time that grew with the square of the
+// file (#261).
+func appendContinuation(fields map[string]any, key string, lines []string) []string {
+	if len(lines) == 0 {
+		return lines
+	}
+	more := "\n" + strings.Join(lines, "\n")
 	switch v := fields[key].(type) {
 	case []string:
-		v[len(v)-1] += "\n" + line
+		v[len(v)-1] += more
 	case string:
-		fields[key] = v + "\n" + line
+		fields[key] = v + more
 	}
+	return lines[:0]
 }
 
 // str returns v as a string, "" when it is none.

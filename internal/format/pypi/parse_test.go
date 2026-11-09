@@ -145,6 +145,37 @@ func TestParseCoreMetadata(t *testing.T) {
 	}
 }
 
+// coreMetadataAllocBound is the most ParseCoreMetadata may allocate for a file of n bytes: the
+// buffer of the scanner, a copy of each line, the keys, the map and the values.
+func coreMetadataAllocBound(n int) int { return testutil.AllocSlack + 128*n }
+
+// TestParseCoreMetadataContinuationLines checks that a field of many continuation lines costs
+// what the file has, a single field and the last value of a multiple-use one: appending each
+// line to the value copied it, and before #261 the 96 KiB here allocated 1.16 GB, quadrupling
+// with each doubling of the lines.
+func TestParseCoreMetadataContinuationLines(t *testing.T) {
+	long := "x" + strings.Repeat("\ny", 1<<15)
+	b := []byte("Metadata-Version: 2.1\nName: p\nVersion: 1\nSummary: x" + strings.Repeat("\n y", 1<<15) +
+		"\nClassifier: a\nClassifier: b\n\tc\n d\nLicense: MIT\n\nThe description.\n")
+	var (
+		m   CoreMetadata
+		err error
+	)
+	testutil.CheckAllocated(t, "ParseCoreMetadata", coreMetadataAllocBound(len(b)), func() { m, err = ParseCoreMetadata(b) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := m.Fields["summary"].(string); s != long {
+		t.Errorf("summary has %d bytes, want %d", len(s), len(long))
+	}
+	want := map[string]any{"classifier": []string{"a", "b\nc\nd"}, "license": "MIT", "description": "The description."}
+	for k, v := range want {
+		if d := cmp.Diff(v, m.Fields[k]); d != "" {
+			t.Errorf("%s (-want +got)\n%s", k, d)
+		}
+	}
+}
+
 func TestReadWheelMetadata(t *testing.T) {
 	whl, info := testutil.Wheel(testutil.WheelOptions{Name: "My-Pkg", Version: "2.0.1", RequiresDist: []string{"requests"}})
 	got, err := ReadWheelMetadata(bytes.NewReader(whl), int64(len(whl)))
