@@ -388,6 +388,78 @@ can hold at once, the disk for the spooled files of the frontends and the connec
 registry. A request refused for it is in the access log with status `503`. How many requests a
 client may send is the edge's to limit.
 
+## Performance
+
+Lajstrom streams bodies and holds none in memory (#62), so its memory does not grow with the
+size of a file or the number of transfers, and a transfer is as fast as the registry and the
+network allow:
+
+| Path | What happens to the body |
+| --- | --- |
+| a download: `GET /v2/…/blobs/<digest>`, `/raw/`, the apt pool, PyPI and Maven files | `format.ServeBlob`: one request to the registry, its body copied to the client through a fixed buffer, or a `307` to the registry's storage |
+| a `/v2` blob upload: `POST`, `PATCH`, `PUT` of a session | the client's body is the body of the request to the registry's session (`facade.requestBody`, the provider's `repository.send`) |
+| a file a frontend receives: raw `PUT`, apt `PUT …/upload`, a twine upload, a Maven `PUT` | spooled to **one temporary file of the body's size** in `$TMPDIR` for the length of the request (`format.Spool`, Maven's `ingest.spoolHashed`), so that the plugin can read it before ingest pushes it; removed when the request ends, and unlinked as soon as it is made where the system allows, so a crash leaves nothing. A twine upload takes a second spool of the file while it is checked (`pypi.readerAt`) |
+| what is read into memory | metadata only, each with a bound: a manifest (`server.maxManifestSize`, 4 MiB), a metadata layer (4 MiB), a POM (4 MiB), a deb's control archive (4 MiB unpacked), `maven-metadata.xml` (1 MiB), a wheel's `METADATA` (4 MiB), and the blocks of a zip's directory that ingest reads at offsets (64 KiB each, at most 32 kept) |
+
+So the disk of `$TMPDIR` must hold the frontend uploads that run at once: the sum of their
+sizes, bounded by `server.maxConcurrentUploads` and the repos' `policy.maxFileSize`. `/v2`
+uploads take no disk of Lajstrom's.
+
+The streaming audit of #62 read every `io.ReadAll`, `bytes.Buffer` and temporary file of
+`internal/` and `cmd/`: none is on a blob's path; each reads one of the bounded documents above,
+renders an index, or is a request spool. `TestStreamingMemory` (`internal/facade`) checks the
+same in `make test`: 1 GiB up and down through `/v2` against an in-process registry with the
+heap in use under 64 MiB.
+
+### The load test
+
+`make load` ([test/load/run.sh](../test/load/run.sh), [testing.md](testing.md#load)) serves
+`bin/lajstrom` with a SQLite index against the dev stack's Zot, pushes one object of 1 GiB of
+random bytes through a raw repo (`curl -T`) and through `/v2` (`oras push`), downloads it 8
+times at once each way (`curl`, and `oras blob fetch --output -`), checks every sha256, and
+every 0.2 s samples the server's resident set (`ps`), its Go heap in use
+(`go_memstats_heap_inuse_bytes` of the metrics listener) and the temporary files it holds open
+(`lsof`). It fails when the resident set of a phase passes 256 MiB, the bound of #62. It needs 3
+times the object's size of free disk at the peak (the object, the raw spool, Zot's copy, when
+Docker's disk is on the same filesystem), checks it before it starts, and deletes what it
+pushed when it ends.
+
+On 2026-11-09, Lajstrom at `129dc47`, an Apple M4 Pro with 14 cores and 24 GiB, macOS 27.0.1,
+Zot v2.1.23 of the dev stack in OrbStack, client and server on the same machine:
+
+```text
+$ make load
+lajstrom v0.0.1-180-g129dc47-dirty (129dc47, 2026-11-09T21:23:45Z), Darwin arm64, 14 CPUs; object 1024 MiB, 8 downloads at once; registry localhost:5000
+phase           MiB        s    MiB/s  RSS MiB heap MiB  tmp MiB samples
+idle              0     0.00        0       64       25        0     26
+raw-put        1024     4.36      235       31       26     1024      5
+raw-get        8192     6.00     1365       35       30        0      6
+v2-push        1024     2.62      391       37       32        0      5
+v2-get         8192     5.00     1638       33       35        0      7
+load: every digest matched; the peak resident set stayed under 256 MiB
+```
+
+Four runs that day, the others with the same script while other jobs used the machine:
+
+| Phase | Bytes | Time | Throughput | Peak resident set | Peak heap in use | Temporary file |
+| --- | --- | --- | --- | --- | --- | --- |
+| idle, before the first transfer | | | | 64–65 MiB | 23–26 MiB | |
+| raw `PUT`, one | 1 GiB | 4.0–5.3 s | 192–256 MiB/s | 31–65 MiB | 26–29 MiB | 1 GiB, the whole body |
+| raw `GET`, 8 at once | 8 GiB | 2.5–6.0 s | 1365–3287 MiB/s | 30–36 MiB | 28–32 MiB | none |
+| `oras push` through `/v2`, one | 1 GiB | 1.9–3.3 s | 312–551 MiB/s | 32–38 MiB | 30–34 MiB | none |
+| `oras blob fetch` through `/v2`, 8 at once | 8 GiB | 2.8–5.0 s | 1638–2895 MiB/s | 29–41 MiB | 32–37 MiB | none |
+
+The resident set of a transfer never passed what the idle process held after its start, and
+the heap grew by 10 MiB over 18 GiB moved: nothing scales with the size of a body or the number
+of downloads. A raw `PUT` takes longer than a `/v2` push of the same bytes because it writes
+the spool first (about 1 GiB/s here) and then streams it to the registry. The download
+throughput is the sum of 8 clients that each hash what they get, on the machine that also runs
+Lajstrom and Zot: it is the throughput of the whole setup, not a bound of Lajstrom's.
+
+Not measured: 8 uploads at once of 1 GiB each, which need 8 GiB of spool and 8 GiB in Zot's
+upload area at once (16 GiB of free disk; the machine had 6); a registry behind object
+storage, where a download is a `307` and does not pass through Lajstrom at all; Linux.
+
 ## Metrics
 
 Prometheus scrapes `GET /metrics` on the metrics listener, `server.metricsListen` (default

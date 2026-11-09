@@ -12,6 +12,7 @@ says how to run each one, what it needs, and how to add an end-to-end scenario.
 | OCI conformance | `test/conformance/run.sh` | a running Lajstrom, an `oci` repo | no |
 | Fuzz | `go test -fuzz=<name>` | Go | the seed corpus, as part of `make test` |
 | End-to-end | `make e2e` | the dev stack, Docker, `curl`, `jq` | `e2e` |
+| Load | `make load` | the dev stack, `oras`, `curl`, `jq`, `lsof`, 4 GiB of free disk | no |
 
 `make check` runs what every pull request must pass without the stack: gofmt, build, vet, unit
 tests, lint, vulncheck, licenses. The integration, conformance and end-to-end levels need the
@@ -202,3 +203,21 @@ itself; add its name to `order` in `run.sh` to place it among the others.
   `chown`s what it wrote: on Linux, the CI runner, files root made in a directory of root's
   cannot be removed by the cleanup.
 - **End with** `PASS <name> e2e against <base>` and exit 0.
+
+## Load
+
+```sh
+make dev-up
+make load                                  # 1 GiB, 8 downloads at once
+LAJSTROM_LOAD_SIZE_MIB=256 make load       # a smaller object, for a smaller disk
+```
+
+[test/load/run.sh](../test/load/run.sh) serves `bin/lajstrom` as `make e2e` does, pushes one
+object of random bytes through a raw repo (`curl -T`) and through `/v2` (`oras push`), downloads
+it with 8 clients at once each way (`curl`, `oras blob fetch --output -`), checks every sha256,
+and samples the server's resident set, its Go heap and the temporary files it holds open every
+0.2 s. It fails when the peak resident set of a phase passes `LAJSTROM_LOAD_MAX_RSS_MIB` (256).
+It is not part of `make e2e`: it moves 18 GiB and needs 3 times the object's size of free disk
+at the peak, which it checks before it starts. On exit it deletes what it pushed from the
+registry and removes its files. The method and the numbers are in
+[operations.md](operations.md#performance).
