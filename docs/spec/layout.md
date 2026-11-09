@@ -294,6 +294,12 @@ type Upload struct {                        // location as the backend answered 
     Offset   int64
 }
 
+// Pinger is optional: a Provider that has it is pinged by serve for /-/readyz (GET /v2/ with the
+// configured credentials); one without it counts as answering (#23).
+type Pinger interface {
+    Ping(ctx context.Context) error
+}
+
 type Set interface {
     Provider(name string) (Provider, bool)
 }

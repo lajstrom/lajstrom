@@ -119,6 +119,15 @@ func (p *Provider) probeOnce(ctx context.Context) (provider.Capabilities, error)
 	return c, nil
 }
 
+// Ping implements provider.Pinger: GET /v2/ answered 200, after the auth client answered a
+// challenge with the configured credentials. Errors wrap the sentinels of package provider.
+func (p *Provider) Ping(ctx context.Context) error {
+	_, err := p.ping(ctx)
+	return translate("ping", err)
+}
+
+var _ provider.Pinger = (*Provider)(nil)
+
 // ping sends GET /v2/, as oras-go's Registry.Ping does, and returns what the registry says
 // about itself; challengeTransport keeps the challenge of a 401 that the auth client answers.
 func (p *Provider) ping(ctx context.Context) (identity, error) {

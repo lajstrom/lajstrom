@@ -98,6 +98,9 @@ func newServeCmd(a *app) *cobra.Command {
 				return err
 			}
 			probeRegistries(ctx, providers, a.log)
+			health := newRegistryHealth(providers, a.log)
+			health.Ping(ctx)
+			go health.Run(ctx)
 			pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL})
 			runs := &backgroundReindex{ctx: ctx, log: a.log, w: reindex.New(reindex.Options{Index: st, Providers: providers,
 				Inspector: pipe, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL})}
@@ -122,7 +125,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Log:             a.log,
 				Plugins:         format.All(),
 				Deps:            format.Deps{Index: st, Providers: providers, Auth: authz, Ingest: pipe, Signer: signer},
-				Ready:           ready(a.log, c.Database.Driver, st),
+				Ready:           ready(a.log, c.Database.Driver, st, health),
 				API:             api.New(api.Options{Repos: repos, Reindex: runs, Log: a.log}),
 				Facade:          v2,
 				Authenticator:   authn,
@@ -164,14 +167,19 @@ func probeRegistries(ctx context.Context, providers provider.Map, log *slog.Logg
 	wg.Wait()
 }
 
-// ready is the readiness check of serve: the index database answers. A failure is logged with
-// its cause and answered without it: /-/readyz is public, and a driver error can name hosts
-// and users.
-func ready(log *slog.Logger, driver string, st store) func(context.Context) error {
+// ready is the readiness check of serve (docs/spec/http-routing.md §5): the index database
+// answers, and every registry answered GET /v2/ within the last minute. A failure is logged with
+// its cause and answered without it: /-/readyz is public, and a driver error can name hosts and
+// users; the registry probe logs its own failures once per outage.
+func ready(log *slog.Logger, driver string, st store, health *registryHealth) func(context.Context) error {
 	return func(ctx context.Context) error {
 		if err := st.Ping(ctx); err != nil {
 			log.WarnContext(ctx, "index database ping failed", "database.driver", driver, "error", err.Error())
 			return errors.New("index database is unreachable")
+		}
+		if stale := health.Stale(); len(stale) > 0 {
+			log.DebugContext(ctx, "not ready: registries without an answer for a minute", "registries", stale)
+			return errors.New("a registry has not answered for a minute")
 		}
 		return nil
 	}
