@@ -286,6 +286,31 @@ nothing else is read; without it the server is `server.listen` of the configurat
 and only that key and `LAJSTROM_SERVER_LISTEN` are read, never a secret. It speaks plain HTTP
 unless `--url` says `https`; [deploy/compose.md](deploy/compose.md#the-health-check) uses it.
 
+## Limits
+
+What bounds the work of one request, towards the registries and from the clients.
+
+### Requests to the registries
+
+Each request to a registry waits at most `registries[].timeout` (default `30s`) for the response
+headers, connecting and the TLS handshake included (each at most 10 s); a blob then streams for
+as long as its size needs.
+
+A request that fails in a way another attempt may fix is sent again, at most
+`registries[].retries` times (default `3`): a `429`, a `5xx` other than `501` and `505`, a
+timeout, a connection refused or reset. Never another `4xx`. Only idempotent requests are sent
+again: `GET`, `HEAD`, `DELETE` and the `PUT` of a manifest, when their body can be sent again.
+A `POST` that opens an upload session or mounts a blob, a `PATCH` that appends to one and the
+`PUT` that closes it are sent once, and the error goes back to the client, which retries the
+step. A blob that Lajstrom uploads itself (a file a frontend received, a metadata layer) is
+uploaded again from the start, in a new session, when the upload failed that way: a blob is
+content addressed, so uploading it twice is uploading it once. The wait before a retry doubles
+from 250 ms, with up to half of it random, and is at most 3 s; a `Retry-After` of a `429` or a
+`503` replaces it, and a registry that asks for more than 3 s gets no retry. A client that goes
+away ends the wait. Each retry is a line at `debug` level, `registry request retried`, with the
+method, the path, the attempt and the cause, never a header or the query; each attempt is its own
+sample in `lajstrom_provider_request_duration_seconds`.
+
 ## Metrics
 
 Prometheus scrapes `GET /metrics` on the metrics listener, `server.metricsListen` (default

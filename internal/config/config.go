@@ -73,9 +73,10 @@ type Registry struct {
 	// for the headers. It does not bound streaming a body. Load sets DefaultRegistryTimeout
 	// when it is zero; negative is invalid.
 	Timeout time.Duration `yaml:"timeout"`
-	// Retries is the maximum number of retries of a failed request (429, 5xx, network errors);
-	// only requests whose body can be replayed are retried. Load sets DefaultRegistryRetries
-	// when it is zero; negative disables retries.
+	// Retries is the maximum number of retries of a failed idempotent request (429, 5xx but
+	// 501 and 505, timeouts, refused or reset connections; never another 4xx), and of a blob
+	// upload from content that can be rewound, as a whole. Load sets DefaultRegistryRetries when
+	// it is zero; negative disables retries.
 	Retries int `yaml:"retries"`
 	// Capabilities overrides what probing finds, for backends that lie or cannot be probed.
 	Capabilities CapabilityOverrides `yaml:"capabilities"`

@@ -51,9 +51,18 @@ func (r *repository) Exists(ctx context.Context, target ocispec.Descriptor) (boo
 }
 
 // Push uploads the blob or manifest expected from content; a blob is streamed in one
-// monolithic upload. Content that already exists is success.
+// monolithic upload, which is done again from the start when it fails transiently and content
+// can be rewound (pushRetry); a manifest PUT is retried by the transport. Content that
+// already exists is success.
 func (r *repository) Push(ctx context.Context, expected ocispec.Descriptor, content io.Reader) error {
-	err := r.Repository.Push(ctx, expected, content)
+	var err error
+	if isManifest(expected.MediaType) {
+		err = r.Repository.Push(ctx, expected, content)
+	} else {
+		err = pushRetry(ctx, r.p.clients.retries, r.p.log, content, func(c io.Reader) error {
+			return r.Repository.Push(ctx, expected, c)
+		})
+	}
 	if errors.Is(err, errdef.ErrAlreadyExists) {
 		return nil
 	}
