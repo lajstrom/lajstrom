@@ -302,6 +302,46 @@ spec:
       interval: 30s
 ```
 
+## Audit
+
+Every write and every change of the control plane is one row of the `audit` table of the index
+([rbac.md](spec/rbac.md) §5):
+
+| Actions | Written by |
+| --- | --- |
+| `push`, `delete` | the frontends and the facade, through the ingest pipeline and the delete paths |
+| `repo.create`, `repo.update`, `repo.delete`, `repo.reindex` | the API, the CLI and the repos of the configuration |
+| `user.create`, `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete` | the API and `lajstrom admin user` |
+| `binding.create`, `binding.delete` | the API and `lajstrom admin binding` |
+| `token.create`, `token.revoke` | personal access tokens and deploy tokens, from the API and the CLI |
+| `key.rotate`, `key.drop` | `lajstrom admin key` |
+
+A row has the time, the principal (`user:<uid>`, `token:<id>`, `anonymous`) and, for a user,
+its name at the time (`principalName`, which stays when the user is renamed or deleted), the
+action, the repo, the subject (a package and version, the user or binding acted upon), the
+manifest digest, the client address and details: the change, its source (`api`, `cli`,
+`config`) and the request id.
+
+**The row is written in the transaction of its change.** There is no change without its row
+and no row without its change; when the database is down, the change fails with it, and nothing
+is buffered or dropped. #46 asked for an asynchronous queue that drops events when the database
+is down; with the row in the change's transaction there is nothing left for such a queue to
+save, so there is none.
+
+**Not audited:** reads (`pull`, `GET`), and the bearer tokens of `/v2/token`, which a docker
+or oras client gets for every pull and push: a row each would be noise, and what a token then
+allows is audited itself. Every request, with its principal, is in the access log.
+
+**Reading it:** `GET /api/v1/audit` as admin, newest first, by repo, principal, action and
+time, a page at a time ([api.md](api.md#audit)):
+
+```sh
+curl -fsS -u admin "$LAJSTROM/api/v1/audit?repo=raw/scratch&since=2026-11-09T00:00:00Z&limit=50" | jq -c '.events[]'
+```
+
+or SQL on the index. The table only grows in this version: no retention, no export; it is part
+of the backup of the index.
+
 ## Reindex
 
 The index database holds two kinds of tables ([index-schema.md](spec/index-schema.md)): the

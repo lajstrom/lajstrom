@@ -1,7 +1,7 @@
 # Management API
 
-The management API is the REST interface to the control plane: repos, users, bindings and
-tokens now, the audit log later. It lives under `/api/v1` on the same host as everything else
+The management API is the REST interface to the control plane: repos, users, bindings, tokens
+and the audit log. It lives under `/api/v1` on the same host as everything else
 ([http-routing.md](spec/http-routing.md) §1 and §4). The examples use the dev stack:
 
 ```sh
@@ -33,9 +33,7 @@ LAJSTROM=http://localhost:8080
   `cli` or `config`) and the request id.
 - **Lists** that can be long are pages: `?limit=` (100 when absent, 1 to 1000) and `?cursor=`,
   the `next` of the page before, an opaque string; the last page has no `next`.
-- **Not in this version.** The audit log of [http-routing.md](spec/http-routing.md) §4 comes
-  with #46. Until then
-  they, and any other path under `/api/`, answer `404 NOT_FOUND`.
+- **Any other path** under `/api/` answers `404 NOT_FOUND`.
 
 ### Errors
 
@@ -335,6 +333,37 @@ The admin role only, also to list one's own bindings; anyone else is `403`, anon
 
 The same, straight against the database of the configuration: `create`, `list`, `delete`
 ([auth.md](auth.md#bindings)).
+
+## Audit
+
+### List: `GET /api/v1/audit`
+
+The admin role reads the audit log ([operations.md](operations.md#audit)):
+`{"events": […], "next": "…"}`, a page of the events newest first ([Conventions](#conventions)).
+The cursor holds the place of the last event, not a position, so events written while a client
+pages do not shift the pages after the first.
+
+| Parameter | Selects |
+| --- | --- |
+| `repo` | `<format>/<name>` |
+| `principal` | `user:<name>` (the live user of that name, by its uid), `user:<uid>`, `token:<id>`, `anonymous` |
+| `action` | one action: `push`, `user.create`, … |
+| `since`, `until` | RFC 3339 times, `since` inclusive and `until` exclusive |
+
+```json
+{
+  "id": 41,
+  "at": "2026-11-09T16:48:44.981899Z",
+  "principal": "user:01a1c136-5180-7b5e-95ce-428e99e68887",
+  "principalName": "admin",
+  "action": "binding.create",
+  "subject": "user:01a1c136-51a6-7883-a350-b1cf6000a23f",
+  "ip": "127.0.0.1",
+  "details": {"id": 2, "role": "writer", "repoMask": "raw/*", "source": "api", "requestId": "…"}
+}
+```
+
+`repo`, `subject`, `digest`, `ip`, `details` and `principalName` are left out when empty.
 
 ## Tokens
 
