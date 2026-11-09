@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -131,8 +130,9 @@ type Repos struct {
 // Create validates req and creates the repo with one repo.create audit event, whose details are
 // the resource and the origin. Each validation error wraps format.ErrInvalid and names the
 // field: format a compiled-in plugin or oci, name the grammar of docs/spec/manifest-profile.md §4.1
-// (at most 64 bytes), registry a configured one, kind empty or hosted, policy a JSON object or
-// null. A repo that exists already is an error wrapping index.ErrConflict.
+// (at most 64 bytes), registry a configured one, kind empty or hosted, policy null or a JSON
+// object that checkPolicy takes. A repo that exists already is an error wrapping
+// index.ErrConflict.
 func (s *Repos) Create(ctx context.Context, req CreateRequest, o Origin) (*Repo, error) {
 	row, err := s.newRow(req)
 	if err != nil {
@@ -185,24 +185,24 @@ func (s *Repos) List(ctx context.Context, formatName string) ([]Repo, error) {
 
 // Update applies req to the repo formatName/name in one transaction with one repo.update audit
 // event, whose details name the fields that changed with their new values. A request that
-// changes nothing writes nothing and returns the repo as it is. Errors wrap format.ErrInvalid
-// (a policy that is neither an object nor null) or index.ErrNotFound.
+// changes nothing writes nothing and returns the repo as it is. The policy of req is checked
+// for the repo's format (checkPolicy). Errors wrap format.ErrInvalid (a policy that
+// checkPolicy refuses) or index.ErrNotFound.
 func (s *Repos) Update(ctx context.Context, formatName, name string, req UpdateRequest, o Origin) (*Repo, error) {
-	policy, err := checkPolicy(req.Policy)
-	if err != nil {
+	if _, err := decodePolicy(req.Policy); err != nil {
 		return nil, err
 	}
 	var (
 		row *index.Repo
 		ev  *index.AuditEvent
 	)
-	err = s.Index.Tx(ctx, func(w index.Writer) (err error) {
+	err := s.Index.Tx(ctx, func(w index.Writer) (err error) {
 		if row, err = w.GetRepo(ctx, formatName, name); err != nil {
 			return err
 		}
-		changed := applyUpdate(row, req, policy)
-		if len(changed) == 0 {
-			return nil
+		changed, err := applyUpdate(row, req)
+		if err != nil || len(changed) == 0 {
+			return err
 		}
 		if err = w.UpdateRepo(ctx, row); err != nil {
 			return err
@@ -222,18 +222,24 @@ func (s *Repos) Update(ctx context.Context, formatName, name string, req UpdateR
 }
 
 // applyUpdate changes row as req says and returns the fields that changed, with their new
-// values. policy is req.Policy as checkPolicy returned it.
-func applyUpdate(row *index.Repo, req UpdateRequest, policy json.RawMessage) map[string]any {
+// values: the policy as checkPolicy returned it.
+func applyUpdate(row *index.Repo, req UpdateRequest) (map[string]any, error) {
 	changed := map[string]any{}
 	if req.AnonymousRead != nil && *req.AnonymousRead != row.AnonymousRead {
 		row.AnonymousRead = *req.AnonymousRead
 		changed["anonymousRead"] = row.AnonymousRead
 	}
-	if req.Policy != nil && !samePolicy(row.Policy, policy) {
-		row.Policy = policy
-		changed["policy"] = policy
+	if req.Policy != nil {
+		policy, err := checkPolicy(row.Format, req.Policy)
+		if err != nil {
+			return nil, err
+		}
+		if !samePolicy(row.Policy, policy) {
+			row.Policy = policy
+			changed["policy"] = policy
+		}
 	}
-	return changed
+	return changed, nil
 }
 
 // Delete removes the repo formatName/name with one repo.delete audit event. A repo that has
@@ -362,7 +368,7 @@ func (s *Repos) newRow(req CreateRequest) (index.Repo, error) {
 			return index.Repo{}, err
 		}
 	}
-	policy, err := checkPolicy(req.Policy)
+	policy, err := checkPolicy(req.Format, req.Policy)
 	if err != nil {
 		return index.Repo{}, err
 	}
@@ -420,21 +426,6 @@ func checkKind(kind string) error {
 		return invalid("kind: %q is not supported; every repo is %s in this version", kind, kindHosted)
 	}
 	return nil
-}
-
-// checkPolicy returns p compacted, or nil when p is empty or the JSON null. A policy is an
-// opaque JSON object whose keys come with the formats (maxFileSize, maven.sessionTimeout); any
-// other JSON value is refused.
-func checkPolicy(p json.RawMessage) (json.RawMessage, error) {
-	p = bytes.TrimSpace(p)
-	if len(p) == 0 || string(p) == "null" {
-		return nil, nil
-	}
-	var buf bytes.Buffer
-	if p[0] != '{' || json.Compact(&buf, p) != nil { // Compact fails on anything but one JSON value
-		return nil, invalid("policy: must be a JSON object or null")
-	}
-	return buf.Bytes(), nil
 }
 
 // samePolicy reports whether two policies are the same JSON value. Postgres keeps a jsonb

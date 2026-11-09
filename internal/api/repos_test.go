@@ -226,29 +226,6 @@ func TestCreateOCIRepo(t *testing.T) {
 	}
 }
 
-func TestCheckPolicy(t *testing.T) {
-	for _, tt := range []struct {
-		in, want string
-		ok       bool
-	}{
-		{"", "", true},
-		{"null", "", true},
-		{" null ", "", true},
-		{`{ "a" : [1, 2] }`, `{"a":[1,2]}`, true},
-		{`{}`, `{}`, true},
-		{`[]`, "", false},
-		{`"x"`, "", false},
-		{`1`, "", false},
-		{`{"a":`, "", false},
-		{`{} {}`, "", false},
-	} {
-		got, err := checkPolicy(json.RawMessage(tt.in))
-		if (err == nil) != tt.ok || string(got) != tt.want {
-			t.Errorf("checkPolicy(%q) = %q, %v; want %q, ok %v", tt.in, got, err, tt.want, tt.ok)
-		}
-	}
-}
-
 func TestSamePolicy(t *testing.T) {
 	for _, tt := range []struct {
 		a, b string

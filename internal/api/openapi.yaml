@@ -610,9 +610,34 @@ components:
         registry: {type: string}
         kind: {type: string, enum: [hosted]}
         anonymousRead: {type: boolean}
-        policy: {type: [object, "null"]}
+        policy:
+          anyOf:
+            - {$ref: "#/components/schemas/Policy"}
+            - {type: "null"}
         createdAt: {type: string, format: date-time}
         updatedAt: {type: string, format: date-time}
+    Policy:
+      type: object
+      description: >-
+        The policy of a repo: the keys the server reads, with their defaults when absent
+        (no size limit, blobRedirect auto, maven.sessionTimeout 30m). Any other key is 400.
+      additionalProperties: false
+      properties:
+        maxFileSize:
+          type: integer
+          format: int64
+          minimum: 1
+          description: The largest file an upload may carry, in bytes; not on an oci repo.
+        blobRedirect: {type: string, enum: [auto, never]}
+        maven:
+          type: object
+          description: A maven repo only.
+          additionalProperties: false
+          properties:
+            sessionTimeout:
+              type: string
+              description: How long a publication session lives after its last request, a duration from 1m to 24h.
+              examples: [45m]
     RepoList:
       type: object
       required: [repos]
@@ -630,13 +655,19 @@ components:
         registry: {type: string}
         kind: {type: string, enum: [hosted]}
         anonymousRead: {type: boolean}
-        policy: {type: [object, "null"]}
+        policy:
+          anyOf:
+            - {$ref: "#/components/schemas/Policy"}
+            - {type: "null"}
     RepoPatch:
       type: object
       additionalProperties: false
       properties:
         anonymousRead: {type: boolean}
-        policy: {type: [object, "null"]}
+        policy:
+          anyOf:
+            - {$ref: "#/components/schemas/Policy"}
+            - {type: "null"}
     ReindexRequest:
       type: object
       additionalProperties: false

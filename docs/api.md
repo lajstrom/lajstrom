@@ -90,17 +90,23 @@ audit alike.
 | `registry` | one of `registries[].name` of the configuration | never: the artifacts stay in the registry they were pushed to |
 | `kind` | `hosted`, the only kind in this version; may be left out | never |
 | `anonymousRead` | readable without credentials, when `auth.anonymousRead` allows it; default `false` | `PATCH` |
-| `policy` | a JSON object, or `null`; its keys come with the features that read them (`maxFileSize`, `blobRedirect`, `maven.sessionTimeout`), below | `PATCH` |
+| `policy` | a JSON object of the keys below, or `null` for none | `PATCH` |
 | `createdAt`, `updatedAt` | set by the server | `updatedAt` on every change |
 
-The keys of `policy` that the server reads:
+#### Policy
 
-| Key | Values | Read by |
-| --- | --- | --- |
-| `maxFileSize` | the largest file an upload may carry, in bytes; a larger one is `413`. No limit when absent | raw `PUT`, apt `PUT …/upload` |
-| `blobRedirect` | `"auto"` (also when absent): a blob download, the facade's blob `GET` and a frontend's file `GET`, is a `307` to the registry's storage when the registry redirects it there (a presigned URL of its object store), so the bytes bypass Lajstrom. `"never"`: Lajstrom follows the registry's redirects and streams every blob of the repo itself, for clients that cannot follow a redirect to another host. The registry's `capabilities.blobRedirect: false` ([configuration.md](configuration.md)) does the same for all its repos | every blob read ([http-routing.md](spec/http-routing.md) §2, §3) |
+The keys of `policy`, each with what it is when absent:
 
-The server does not check the keys yet: a `maxFileSize` that is not a non-negative integer makes an upload `500`, and a `blobRedirect` that is not `"never"` is read as `"auto"`.
+| Key | Values | Absent | Read by |
+| --- | --- | --- | --- |
+| `maxFileSize` | the largest file an upload may carry, in bytes: an integer, at least 1; a larger file is `413`. Not on an `oci` repo, which stores what it gets | no limit | raw `PUT`, apt `PUT …/upload`, pypi upload, maven `PUT` of a file |
+| `blobRedirect` | `"auto"`: a blob download, the facade's blob `GET` and a frontend's file `GET`, is a `307` to the registry's storage when the registry redirects it there (a presigned URL of its object store), so the bytes bypass Lajstrom. `"never"`: Lajstrom follows the registry's redirects and streams every blob of the repo itself, for clients that cannot follow a redirect to another host. The registry's `capabilities.blobRedirect: false` ([configuration.md](configuration.md)) does the same for all its repos | `"auto"` | every blob read ([http-routing.md](spec/http-routing.md) §2, §3) |
+| `maven.sessionTimeout` | a maven repo only: how long a publication session of a deploy lives after its last request, a duration from `1m` to `24h` (`"45m"`, `"2h"`). When it is up, the files of the session are dropped and nothing is published: there is no seal that would publish a version missing files (#53) | `"30m"` | nothing yet: the sessions keep 30 minutes until the enforcement of #60 |
+
+The server checks a policy whole, when a repo is created and after every change: a key it does
+not know, a value out of its range, and `maven` on a repo of another format are `400`, with the
+key path first in the message (`policy.maxFileSize: must be an integer number of bytes, at
+least 1`). A member whose value is `null` is no key, and a policy without keys is `null`.
 
 `<format>/<name>` is the repo's path on every protocol (`/raw/scratch/…`), its OCI path in the
 registry below the instance prefix, and its name in role bindings.
@@ -141,9 +147,11 @@ curl -s "$LAJSTROM/api/v1/repos/raw/scratch"
 ### Change: `PATCH /api/v1/repos/<format>/<name>`
 
 The body has the fields to change, `anonymousRead` and `policy`; a field left out stays as it
-is, and `"policy": null` removes the policy. `format`, `name`, `registry` and `kind` cannot
-change and are `400`: moving a repo to another registry would orphan its artifacts. `200` with
-the resource as it is now; a body that changes nothing changes nothing, not even `updatedAt`.
+is. `policy` replaces the repo's policy and is checked ([Policy](#policy)); when it is refused
+nothing changes. `"policy": null` removes the policy. `format`, `name`, `registry` and `kind`
+cannot change and are `400`: moving a repo to another registry would orphan its artifacts.
+`200` with the resource as it is now; a body that changes nothing changes nothing, not even
+`updatedAt`.
 
 ```sh
 curl -s -X PATCH "$LAJSTROM/api/v1/repos/raw/scratch" \
