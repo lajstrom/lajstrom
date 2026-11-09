@@ -83,9 +83,10 @@ out="$(LAJSTROM_ADMIN_PASSWORD="$pw1" "${lajstrom[@]}" admin user create --name 
 expect "admin user create name" "$user" "$(jq -r .name <<<"$out")"
 expect "admin user create disabled" false "$(jq -r .disabled <<<"$out")"
 case "$out" in *argon2*) fail "admin user create printed the hash" ;; esac
+uid="$(jq -r .uid <<<"$out")"
 ok "admin user create --name $user: $(jq -c 'del(.createdAt)' <<<"$out")"
 out="$("${lajstrom[@]}" admin binding create --principal "user:$user" --role maintainer --mask "raw/$repo")"
-expect "admin binding create" "user:$user maintainer raw/$repo" "$(jq -r '[.principal, .role, .repoMask] | join(" ")' <<<"$out")"
+expect "admin binding create" "user:$uid $user maintainer raw/$repo" "$(jq -r '[.principal, .name, .role, .repoMask] | join(" ")' <<<"$out")"
 ok "admin binding create --principal user:$user --role maintainer --mask raw/$repo: id $(jq -r .id <<<"$out")"
 
 req - GET "$base/api/v1/whoami"
@@ -96,7 +97,7 @@ ok "GET /api/v1/whoami without credentials: 401 with Basic realm=\"lajstrom\""
 
 req old GET "$base/api/v1/whoami"
 expect "whoami status" 200 "$status"
-expect "whoami principal" "user:$user" "$(jq -r .principal "$work/body")"
+expect "whoami principal" "user:$uid $user" "$(jq -r '"\(.principal) \(.name)"' "$work/body")"
 ok "GET /api/v1/whoami as $user: 200 $(jq -c . "$work/body")"
 
 req wrong GET "$base/api/v1/whoami"
@@ -127,11 +128,30 @@ ok "admin user set-password $user; the old password: 401"
 put new
 expect "PUT with the new password status" 201 "$status"
 req new GET "$base/api/v1/whoami"
-expect "whoami with the new password" "user:$user" "$(jq -r .principal "$work/body")"
-ok "the new password: PUT 201, whoami user:$user"
+expect "whoami with the new password" "user:$uid" "$(jq -r .principal "$work/body")"
+ok "the new password: PUT 201, whoami user:$uid"
+
+# A user is its uid (#182): renamed, it keeps its uid and its binding; the old name is gone.
+was="$user"
+user="$user-renamed"
+"${lajstrom[@]}" admin user rename "$was" "$user" >/dev/null
+put new
+expect "PUT under the old name after the rename" 401 "$status"
+credentials new "$user" "$pw2"
+req new GET "$base/api/v1/whoami"
+expect "whoami after the rename" "user:$uid $user" "$(jq -r '"\(.principal) \(.name)"' "$work/body")"
+ok "admin user rename $was $user: the old name 401, whoami user:$uid $user"
 
 req new DELETE "$base/raw/$repo/$path"
 expect "DELETE status" 204 "$status"
 uploaded=""
-ok "cleanup: DELETE /raw/$repo/$path: 204; $user is disabled on exit"
-echo "PASS auth e2e against $base as $user"
+ok "DELETE /raw/$repo/$path as $user: 204, the maintainer binding holds across the rename"
+
+# Deleted, the user is refused; its name is free again, for a user with another uid.
+"${lajstrom[@]}" admin user delete "$user" >/dev/null
+req new GET "$base/api/v1/whoami"
+expect "whoami after the delete" 401 "$status"
+out="$(LAJSTROM_ADMIN_PASSWORD="$pw1" "${lajstrom[@]}" admin user create --name "$user")"
+[ "$(jq -r .uid <<<"$out")" != "$uid" ] || fail "the name $user came back with the deleted user's uid $uid"
+ok "admin user delete $user: whoami 401; admin user create --name $user: a new uid $(jq -r .uid <<<"$out"), disabled on exit"
+echo "PASS auth e2e against $base as $was"
