@@ -26,7 +26,8 @@ internal/ingest/              pipeline (validate → parse → push → index), 
 internal/provider/            Provider interface, Capabilities, errors
 internal/provider/generic/    oras-go based provider for distribution, Zot, Harbor, GHCR (+ small adapters)
 internal/provider/ecr/        ECR adapter: auth token, CreateRepository, DescribeRepositories
-internal/index/               Store interface, models, migrations (embedded SQL) and their runner, reindex worker
+internal/index/               Store interface, models, migrations (embedded SQL) and their runner
+internal/index/reindex/       reindex worker: walk the registry, mark and sweep, runs, the report
 internal/index/migrations/    <dialect>/NNNN_<name>.sql for sqlite and postgres, embedded; the same versions in both
 internal/index/internal/sqlstore/ the SQL both engines share: index.Store over database/sql and a Dialect
 internal/index/sqlite/        modernc.org/sqlite implementation
@@ -335,13 +336,21 @@ type Reader interface {
     ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error)
     // coordination
     GetTagClaim(ctx context.Context, repoID int64, pkg, tag string) (*TagClaim, error)
+    GetReindexRun(ctx context.Context, id int64) (*ReindexRun, error)
+    // LatestReindexRun: the newest run that covered repoID, its own or a run of every repo;
+    // repoID 0 selects the runs of every repo only
+    LatestReindexRun(ctx context.Context, repoID int64) (*ReindexRun, error)
     // derived
     GetPackage(ctx context.Context, repoID int64, name string) (*Package, error)
+    GetPackageByNameOCI(ctx context.Context, repoID int64, nameOCI string) (*Package, error)
     ListPackages(ctx context.Context, repoID int64, prefix string) ([]Package, error)
     GetVersion(ctx context.Context, packageID int64, version, variant string) (*Version, error)
     GetVersionByTag(ctx context.Context, packageID int64, tag string) (*Version, error)
     GetVersionByDigest(ctx context.Context, repoID int64, d digest.Digest) (*Version, error)
     ListVersions(ctx context.Context, packageID int64) ([]Version, error)
+    // ListUnseenVersions: the versions of a repo whose IndexedAt is before seenBefore, with
+    // their packages (the sweep of reindex)
+    ListUnseenVersions(ctx context.Context, repoID int64, seenBefore time.Time) ([]VersionMatch, error)
     ListFiles(ctx context.Context, versionID int64) ([]File, error)
     FindFiles(ctx context.Context, repoID int64, name string) ([]FileMatch, error)
     GetIndexCache(ctx context.Context, repoID int64, scope, kind string) (*Cache, error)
@@ -373,12 +382,24 @@ type Writer interface {
     ClaimTag(ctx context.Context, c *TagClaim, staleBefore time.Time) error
     ReleaseTagClaim(ctx context.Context, id int64) error
     ExpireTagClaims(ctx context.Context, before time.Time) (int, error)
-    // derived (written only by ingest, reindex and delete)
+    // StartReindexRun inserts r as running under the migration lock; a running run of an
+    // overlapping scope with a heartbeat at or after staleBefore is *ReindexConflictError, an
+    // older one is closed as abandoned first (index-schema.md, Coordination)
+    StartReindexRun(ctx context.Context, r *ReindexRun, staleBefore time.Time) error
+    // HeartbeatReindexRun sets HeartbeatAt; ErrNotFound when the run is not running any more
+    HeartbeatReindexRun(ctx context.Context, id int64, at time.Time) error
+    // FinishReindexRun stores State, FinishedAt, Report and Error of the running run r.ID and
+    // deletes the finished runs of its scope beyond the ten newest
+    FinishReindexRun(ctx context.Context, r *ReindexRun) error
+    // derived (written only by ingest, reindex and delete); every version write and delete keeps
+    // packages.created_at the earliest created_at of the package's versions
     UpsertPackage(ctx context.Context, p *Package) error
     UpsertVersion(ctx context.Context, v *Version) error           // *TagConflictError on a tag with another digest
+    TouchVersions(ctx context.Context, ids []int64, at time.Time) error // IndexedAt only: rows reindex saw
     ReplaceFiles(ctx context.Context, versionID int64, files []File) error
     DeleteVersion(ctx context.Context, id int64) error
     DeletePackage(ctx context.Context, id int64) error
+    DeleteEmptyPackages(ctx context.Context, repoID int64) (int, error) // packages without versions
     PutIndexCache(ctx context.Context, c *Cache) error
     InvalidateIndexCache(ctx context.Context, repoID int64, scope string) error
     UpsertOCIRepo(ctx context.Context, r *OCIRepo) error
@@ -387,15 +408,18 @@ type Writer interface {
 }
 
 // Models, one struct per table of index-schema.md (fields in internal/index/models.go):
-// control plane Repo, User, Token, Binding, Key, Session, AuditEvent; coordination TagClaim;
-// derived Package, Version, File, Cache (index_cache), OCIRepo; query types FileMatch (file +
-// version + package) and AuditFilter. Ids are int64, timestamps UTC, nullable columns are
+// control plane Repo, User, Token, Binding, Key, Session, AuditEvent; coordination TagClaim,
+// ReindexRun; derived Package, Version, File, Cache (index_cache), OCIRepo; query types
+// FileMatch (file + version + package), VersionMatch (version + package) and AuditFilter. Ids are int64, timestamps UTC, nullable columns are
 // pointers.
 
 var ErrNotFound, ErrConflict error
 type TagConflictError struct {              // errors.Is(err, ErrConflict) is true; UpsertVersion, ClaimTag
     Tag      string
     Existing digest.Digest
+}
+type ReindexConflictError struct {          // errors.Is(err, ErrConflict) is true; StartReindexRun
+    Running ReindexRun                      // the live run that overlaps: replica, StartedAt
 }
 
 // Migrations: migrations/<dialect>/NNNN_<name>.sql, embedded (index-schema.md, Migrations).
@@ -412,6 +436,73 @@ func Open(ctx context.Context, dsn string) (*Store, error)            // does no
 ```
 
 Both engines (SQLite, Postgres) pass the same conformance test suite in `internal/index/storetest`.
+
+### Reindex (`internal/index/reindex`)
+
+```go
+type Options struct {
+    Index       index.Store
+    Providers   provider.Set
+    Inspector   Inspector                     // *ingest.Pipeline
+    Audit       audit.Writer
+    Now         func() time.Time              // nil: time.Now
+    Log         *slog.Logger                  // nil: slog.Default()
+    Concurrency int                           // manifest reads at once per registry; zero: 8
+    ClaimTTL    time.Duration                 // stale tag claims are deleted; zero: ingest's default
+}
+type Inspector interface {
+    Inspect(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, o ingest.InspectOptions) (*ingest.Rows, error)
+}
+func New(o Options) *Worker
+
+type Request struct {
+    Repo      *index.Repo                     // nil: every repo
+    Prune     bool                            // sweep rows not seen (default on for a run of every repo)
+    Verify    bool                            // read and check every manifest, known digests too
+    Trigger   string                          // cli, api, reconcile
+    Principal string
+}
+// Start takes the lock (StartReindexRun) and writes repo.reindex; *index.ReindexConflictError
+// when a run overlaps. Run reads the registry, beats, and finishes the run whatever happens; its
+// error is the run's own (Report.Repos[].Errors hold the manifests that failed).
+func (w *Worker) Start(ctx context.Context, req Request) (*index.ReindexRun, error)
+func (w *Worker) Run(ctx context.Context, run *index.ReindexRun, req Request) (*Report, error)
+
+type Report struct {
+    Repos []RepoReport `json:"repos"`
+}
+type RepoReport struct {
+    Repo            string    `json:"repo"`            // <format>/<name>
+    OCIRepositories int       `json:"ociRepositories"`
+    Manifests       int       `json:"manifests"`       // tags read
+    Added           int       `json:"added"`
+    Updated         int       `json:"updated"`         // read again (verify, degraded) and changed
+    Unchanged       int       `json:"unchanged"`
+    Removed         int       `json:"removed"`
+    Degraded        int       `json:"degraded"`
+    Referrers       int       `json:"referrers"`
+    Foreign         []Finding `json:"foreign"`
+    OrphanReferrers []Finding `json:"orphanReferrers"`
+    Drift           []Drift   `json:"drift"`
+    Errors          []Finding `json:"errors"`
+    Truncated       bool      `json:"truncated"`       // a list stopped at 1 000 entries
+}
+type Finding struct {
+    Repository   string        `json:"repository"`    // OCI repository below the repo's base
+    Tag          string        `json:"tag,omitempty"`
+    Digest       digest.Digest `json:"digest"`
+    MediaType    string        `json:"mediaType,omitempty"`
+    ArtifactType string        `json:"artifactType,omitempty"`
+    Subject      digest.Digest `json:"subject,omitempty"`
+    Error        string        `json:"error,omitempty"`
+}
+type Drift struct {
+    Package  string        `json:"package"`
+    Tag      string        `json:"tag"`
+    Index    digest.Digest `json:"index"`
+    Registry digest.Digest `json:"registry"`
+}
+```
 
 ### Ingest (`internal/ingest`)
 
@@ -432,6 +523,28 @@ func New(o Options) *Pipeline
 func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, principal auth.Principal) (*Result, error)
 // Upload is the frontend path: Plugin.Build → push missing blobs → store as Ingest does.
 func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload, principal auth.Principal) (*format.Published, error)
+
+// Inspect runs the steps of Ingest that only read (1 to 3) on a manifest found in the registry
+// at <repo base>/<pkgPath>:<tag> and returns the rows step 6 writes; nothing is pushed or
+// claimed, and a missing blob is ErrInvalid. With AllowDegraded, a metadata layer that is missing
+// or unreadable gives rows from the annotations alone (Version.Degraded, no plugin Validate);
+// any other failure is the error Ingest would return.
+func (p *Pipeline) Inspect(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, o InspectOptions) (*Rows, error)
+type InspectOptions struct {
+    AllowDegraded bool
+}
+// Rows are the derived rows of one stored manifest: what Ingest writes after the registry
+// accepted it, and what reindex writes for a manifest it finds.
+type Rows struct {
+    Package index.Package                   // RepoID, Name, NameOCI
+    Version index.Version                   // PackageID filled by WriteRows
+    Files   []index.File
+    OCIRepo string                          // the OCI repository without the instance prefix
+}
+// WriteRows writes rows on w with IndexedAt at: package, version, files, OCI repository. It does
+// not touch index_cache, claims or audit; *index.TagConflictError when the tag holds another
+// digest.
+func WriteRows(ctx context.Context, w index.Writer, rows *Rows, at time.Time) error
 
 type Result struct {
     Digest   digest.Digest
