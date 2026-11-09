@@ -8,7 +8,8 @@
       {"path": "internal/provider/generic/repository.go", "purl": "pkg:golang/oras.land/oras-go/v3"},
       {"path": "internal/server/recorder.go", "purl": "pkg:golang/github.com/nauticana/keel"},
       {"path": "internal/server/requestid.go", "purl": "pkg:golang/github.com/zerx-lab/zkit"},
-      {"path": "test/conformance/run.sh", "purl": "pkg:github/adamcavendish/orb-chrysa"}
+      {"path": "test/conformance/run.sh", "purl": "pkg:github/adamcavendish/orb-chrysa"},
+      {"path": "deploy/compose/ha/Dockerfile", "purl": "pkg:github/deyna256/clan"}
     ]
   }
 }
