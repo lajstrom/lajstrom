@@ -37,6 +37,7 @@ internal/auth/                principals, password hashing, PAT/deploy tokens, R
 internal/api/                 /api/v1 management REST (repos, users, tokens, bindings), JSON
 internal/keys/                server signing key, per-repo GPG keys (apt), encryption at rest
 internal/audit/               audit log writer
+internal/metrics/             the Prometheus collectors (fixed labels) and the handler of the metrics listener
 internal/testutil/            registry/DB fixtures, fixture builders (make a .deb / .whl / .jar in-process)
 internal/version/             build information (version, commit, date), set with -ldflags; /-/version
 deploy/compose/               dev stack: zot, distribution, postgres; lajstrom.example.yaml

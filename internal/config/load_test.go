@@ -48,7 +48,7 @@ func TestLoadDefaults(t *testing.T) {
 				t.Fatalf("Load: %v", err)
 			}
 			want := &Config{
-				Server:    Server{Listen: ":8080", ShutdownTimeout: 30 * time.Second, MaxManifestSize: 4 << 20},
+				Server:    Server{Listen: ":8080", ShutdownTimeout: 30 * time.Second, MaxManifestSize: 4 << 20, MetricsListen: "127.0.0.1:9464"},
 				Log:       Log{Level: "info", Format: "text"},
 				Database:  Database{Driver: "sqlite", DSN: "file:lajstrom.db"},
 				Ingest:    Ingest{ClaimTTL: 10 * time.Minute},
@@ -121,6 +121,9 @@ func TestLoadErrors(t *testing.T) {
 		{name: "duration without unit", file: minimal[:len(minimal)-1] + "\n  shutdownTimeout: 30\n", want: []string{"line 3", "into time.Duration"}},
 		{name: "negative claim TTL", file: minimal + "ingest: {claimTTL: -1m}\n", want: []string{"ingest.claimTTL: must not be negative"}},
 		{name: "negative reconcile interval", file: minimal + "reconcile: {interval: -1h}\n", want: []string{"reconcile.interval: must not be negative"}},
+		{name: "metrics listener", file: minimal[:len(minimal)-1] + "\n  metricsListen: \"9464\"\n", want: []string{`server.metricsListen: "9464" is not host:port`}},
+		{name: "metrics on the public listener", file: minimal[:len(minimal)-1] + "\n  metricsListen: \":8080\"\n",
+			want: []string{"server.metricsListen: must not be server.listen"}},
 		{name: "negative manifest size", file: minimal + "  maxManifestSize: -1\n", want: []string{"server.maxManifestSize: must not be negative"}},
 		{name: "keys", file: minimal + "keys: {algorithm: dsa, retireGrace: -1h}\n",
 			want: []string{`keys.algorithm: "dsa" is not ed25519 or rsa4096`, "keys.retireGrace: must not be negative"}},

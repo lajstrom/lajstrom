@@ -13,6 +13,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/metrics"
 )
 
 // DefaultShutdownTimeout is the graceful shutdown bound when Options.ShutdownTimeout is zero.
@@ -55,6 +56,12 @@ type Options struct {
 	// as a bearer outside /v2, into its principal and credential, on every route
 	// (authenticate). nil authenticates nobody: every request is anonymous.
 	Authenticator *auth.Authenticator
+	// MetricsListen is the address of the metrics listener, host:port (server.metricsListen):
+	// GET /metrics, and /debug/pprof/ with Pprof. Empty means no metrics listener. The main
+	// listener never serves them (docs/spec/http-routing.md §5).
+	MetricsListen string
+	// Pprof serves /debug/pprof/ on the metrics listener (server.pprof).
+	Pprof bool
 }
 
 // Server is the Lajstrom HTTP server. Create it with New and start it with Run.
@@ -65,10 +72,11 @@ type Server struct {
 	handler http.Handler
 	srv     *http.Server
 
-	running atomic.Bool
-	bound   chan struct{} // closed when Run has bound the listener, or failed to
-	mu      sync.Mutex
-	addr    net.Addr
+	running     atomic.Bool
+	bound       chan struct{} // closed when Run has bound the listeners, or failed to
+	mu          sync.Mutex
+	addr        net.Addr
+	metricsAddr net.Addr
 }
 
 // New validates o, builds the routes and the middleware chain, and returns a Server that is not
@@ -117,6 +125,14 @@ func (s *Server) Addr() net.Addr {
 	return s.addr
 }
 
+// MetricsAddr returns the address of the metrics listener, with the actual port when
+// MetricsListen asked for port 0. It is nil until Run has bound it, and without MetricsListen.
+func (s *Server) MetricsAddr() net.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.metricsAddr
+}
+
 // Run listens on Options.Listen and serves until ctx is cancelled. Then it stops accepting
 // connections and waits up to ShutdownTimeout for in-flight requests to finish. It returns nil
 // after a clean stop, and an error when it cannot listen, when serving fails, or when requests
@@ -131,11 +147,33 @@ func (s *Server) Run(ctx context.Context) error {
 		close(s.bound)
 		return fmt.Errorf("server: %w", err)
 	}
+	var metricsLn net.Listener
+	if s.opts.MetricsListen != "" {
+		if metricsLn, err = lc.Listen(ctx, "tcp", s.opts.MetricsListen); err != nil {
+			_ = ln.Close()
+			close(s.bound)
+			return fmt.Errorf("server: metrics listener: %w", err)
+		}
+	}
 	s.mu.Lock()
 	s.addr = ln.Addr()
+	if metricsLn != nil {
+		s.metricsAddr = metricsLn.Addr()
+	}
 	s.mu.Unlock()
 	close(s.bound)
 	s.log.Info("listening", "addr", ln.Addr().String(), "externalURL", s.opts.ExternalURL)
+	if metricsLn != nil {
+		msrv := &http.Server{Handler: metrics.Handler(s.opts.Pprof), ReadHeaderTimeout: readHeaderTimeout,
+			ErrorLog: slog.NewLogLogger(s.log.Handler(), slog.LevelWarn)}
+		s.log.Info("metrics listening", "addr", metricsLn.Addr().String(), "pprof", s.opts.Pprof)
+		go func() {
+			if err := msrv.Serve(metricsLn); !errors.Is(err, http.ErrServerClosed) {
+				s.log.Error("metrics listener stopped", "error", err.Error())
+			}
+		}()
+		defer func() { _ = msrv.Close() }() // a scrape needs no drain
+	}
 
 	served := make(chan error, 1)
 	go func() { served <- s.srv.Serve(ln) }()

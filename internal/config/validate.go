@@ -81,6 +81,13 @@ func (s Server) validate(p *problems) {
 	if s.ShutdownTimeout <= 0 {
 		p.add("server.shutdownTimeout", "must be positive")
 	}
+	if s.MetricsListen != "" {
+		if _, _, err := net.SplitHostPort(s.MetricsListen); err != nil {
+			p.add("server.metricsListen", "%q is not host:port", s.MetricsListen)
+		} else if s.MetricsListen == s.Listen {
+			p.add("server.metricsListen", "must not be server.listen: the metrics are never on the public listener")
+		}
+	}
 	if s.MaxManifestSize < 0 {
 		p.add("server.maxManifestSize", "must not be negative")
 	}

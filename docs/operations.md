@@ -247,6 +247,49 @@ names, and a migrated database; none goes through HTTP.
 `--repo` and `--token` exclude each other, and one of them is required. Without the master key
 the token commands fail and say that `serve` signs with an ephemeral key then.
 
+## Metrics
+
+Prometheus scrapes `GET /metrics` on the metrics listener, `server.metricsListen` (default
+`127.0.0.1:9464`), a listener of its own that the edge never routes to; the main listener answers
+`404` there. `server.pprof: true` adds Go's `/debug/pprof/` to it. Every series is named
+`lajstrom_*` (plus the Go runtime's `go_*` and `process_*`), and no label carries a repo or
+package name: the labels are route patterns, methods, statuses, registry names and operations,
+so the number of series is fixed by the code and the configuration.
+
+| Series | Labels | What |
+| --- | --- | --- |
+| `lajstrom_http_request_duration_seconds` | `method`, `route`, `status` | time to answer a request, by the route pattern it matched (`unmatched` for none) |
+| `lajstrom_http_request_size_bytes`, `lajstrom_http_response_size_bytes` | the same | the declared request body, the bytes written back |
+| `lajstrom_build_info` | `version`, `commit`, `goversion` | always 1 |
+
+The series of the registries, the index database and the ingest pipeline come with the next
+change of #23.
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: lajstrom
+    static_configs:
+      - targets: ["lajstrom-a:9464", "lajstrom-b:9464"]
+```
+
+On Kubernetes, with `server.metricsListen: "0.0.0.0:9464"`, a port `metrics` on the pod that no
+Ingress names, and the Prometheus operator, the shape the Helm chart (#82) will render:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: lajstrom
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/name: lajstrom}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+```
+
 ## Reindex
 
 The index database holds two kinds of tables ([index-schema.md](spec/index-schema.md)): the
