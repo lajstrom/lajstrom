@@ -71,6 +71,13 @@ func TestParsePOM(t *testing.T) {
 				{GroupID: "com.example.libs", ArtifactID: "lib-api", Version: "7.1"},
 				{GroupID: "com.fasterxml.jackson.core", ArtifactID: "jackson-databind", Version: "${jackson.version}", Type: "jar", Classifier: "tests", Optional: "true"},
 			}}},
+		// Four rounds resolve the groupId; a dependency that refers to it took a fifth before #51.
+		{"a dependency sees the coordinates resolved", project(`<parent><groupId>g</groupId><artifactId>parent</artifactId>` +
+			`<version>${project.parent.groupId}</version></parent><groupId>${project.version}</groupId><artifactId>a</artifactId>` +
+			`<version>${project.packaging}</version><packaging>${project.parent.version}</packaging>` +
+			`<dependencies><dependency><groupId>${project.groupId}</groupId><artifactId>x</artifactId></dependency></dependencies>`),
+			POM{Coordinates: Coordinates{"g", "a", "g"}, Packaging: "g", Parent: &Coordinates{"g", "parent", "g"},
+				Dependencies: []Dependency{{GroupID: "g", ArtifactID: "x"}}}},
 		{"no namespace", []byte(`<project><modelVersion>4.0.0</modelVersion><groupId>log4j</groupId><artifactId>log4j</artifactId>` +
 			`<version>1.2.17</version><packaging>bundle</packaging></project>`),
 			POM{Coordinates: Coordinates{"log4j", "log4j", "1.2.17"}, Packaging: "bundle"}},
@@ -132,10 +139,40 @@ func TestParsePOMRefuses(t *testing.T) {
 		{"an entity", project(`<groupId>&ent;</groupId>`), "not a POM"},
 		{"windows-1252", []byte(`<?xml version="1.0" encoding="windows-1252"?><project/>`), "the encoding windows-1252"},
 		{"too large", big, "at most"},
+		{"references that refer to each other", referencesEachOther(64), "references of the POM expand to more than"},
+		{"one long value referred to often", project(`<groupId>com.example</groupId><artifactId>lib-core</artifactId>` +
+			`<version>1.` + strings.Repeat("0", 4<<10) + `</version><dependencies>` +
+			strings.Repeat(`<dependency><version>${project.version}</version></dependency>`, 64) + `</dependencies>`),
+			"references of the POM expand to more than"},
 	} {
 		_, err := ParsePOM(tt.pom)
 		if !errors.Is(err, format.ErrInvalid) || !strings.Contains(err.Error(), tt.msg) {
 			t.Errorf("%s: ParsePOM = %v, want ErrInvalid with %q", tt.name, err, tt.msg)
+		}
+	}
+}
+
+// referencesEachOther returns a POM whose groupId is k references to the version and whose
+// version is k references to the groupId: each round of the interpolation multiplied its length
+// by k, and before #51 a POM of 938 bytes (k = 16) allocated 186 MB, one of 2 KiB (k = 64)
+// would have needed hundreds of GB.
+func referencesEachOther(k int) []byte {
+	return project(`<groupId>` + strings.Repeat("${project.version}", k) + `</groupId><artifactId>a</artifactId>` +
+		`<version>` + strings.Repeat("${project.groupId}", k) + `</version>`)
+}
+
+// pomAllocBound is the most ParsePOM may allocate for a POM of n bytes: encoding/xml allocates
+// a few hundred bytes per element and attribute, the interpolation at most the POM and
+// expansionSlack.
+func pomAllocBound(n int) int { return testutil.AllocSlack + 256*n }
+
+// TestParsePOMExpansionBounded checks that what ParsePOM allocates for references that refer to
+// each other grows with the size of the POM, not with the length the references expand to.
+func TestParsePOMExpansionBounded(t *testing.T) {
+	for _, k := range []int{8, 16, 64, 1024} {
+		b := referencesEachOther(k)
+		if n := testutil.Allocated(func() { _, _ = ParsePOM(b) }); n > pomAllocBound(len(b)) {
+			t.Errorf("k = %d: ParsePOM of %d bytes allocated %d bytes, at most %d", k, len(b), n, pomAllocBound(len(b)))
 		}
 	}
 }
