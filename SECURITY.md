@@ -42,6 +42,16 @@ Out of scope:
 
 ## Supported versions
 
-Lajstrom is pre-release and in the design phase. **No version is supported yet**; the published
-`v0.0.1` only reserves the name. Until the first release, fixes land on `main` only. This section
-will list supported versions once releases exist.
+| Version | Supported | Security fixes |
+| --- | --- | --- |
+| `main` | yes | land here first |
+| the latest minor release, from `v0.1.0` | yes | in a patch release of it (`v0.1.x`) |
+| an older minor release | no | upgrade to the latest; an advisory says when an older one is affected |
+| `v0.0.1` | no | it only reserved the name |
+
+Until `v0.1.0` is released, fixes land on `main` only. Before 1.0, a minor release may change
+behaviour; the release notes say how.
+
+What Lajstrom defends against, what it leaves to the registry, the database and the edge in
+front of it, and the findings still open are in the
+[threat model](docs/security/threat-model.md).

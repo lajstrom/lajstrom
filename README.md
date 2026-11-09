@@ -43,6 +43,7 @@ https://lajstrom.dev
 | [Deploy on Kubernetes](docs/deploy/kubernetes.md) | plain manifests: two replicas on Postgres, probes, the restricted security context |
 | [Operations](docs/operations.md) | the master key, apt signing keys, `key.asc` for clients, key rotation |
 | [Behind a reverse proxy](docs/reverse-proxy.md) | TLS at the edge, `externalURL`, unbuffered uploads, rate limits on `/v2/token`; nginx and Caddy |
+| [Threat model](docs/security/threat-model.md) | what is protected and from whom, STRIDE over the flows, each threat with its mitigation or its issue, what the edge must do |
 | [Releasing](docs/release.md) | how a tag becomes binaries, images, SBOMs and signatures; verifying a release |
 | [Architecture](docs/architecture.md) | components, storage model, the five flows |
 | [Specs](docs/spec/) | manifest profile, layout and interfaces, HTTP routing, index schema, RBAC |
