@@ -94,6 +94,27 @@ A denial on `<format>/<repo>` must not reveal whether the repo exists:
 - `403` is only for a principal that can read the repo but lacks the action (`write`, `delete`,
   `manage`): it already knows that the repo exists.
 
+Every other route that could tell whether a repo exists keeps the rule too, and how is part of
+this spec, so that a review need not find it in the code:
+
+- **Creating a repo** (`POST /api/v1/repos`) is `system` (§2). The `admin` role is checked
+  before the body is read, so the `409` of a name that is taken, and the `400` of a body that
+  does not parse, reach an admin only, who sees every repo anyway. Every other principal gets
+  `403` (`anonymous` `401`) whatever the name: trying names by creating repos tells nothing.
+- **Bindings, users and the audit log** are `system` and `audit`: admin only. A binding's mask
+  need not name a repo that exists (above), so creating one tells nothing either.
+- **A repo's deploy tokens** need `manage` on it, decided before the repo is looked up: the
+  answers of this rule.
+- **A personal access token's scopes** are actions; they name no repo.
+- **Lists** (`GET /api/v1/repos`, `/v2/_catalog`) show only the repos the principal may read.
+- **`/v2` with a bearer**: the token names every repository asked for, with no action on one
+  that does not exist or may not be read alike, and the facade asks the token before it looks
+  the repo up (§4).
+
+The rule is about the answers, not their durations: a denial on a repo that exists may take a
+database read longer than the answer for one that does not. Making them equal is not in the
+MVP.
+
 ## 4. OCI bearer tokens
 
 `GET /v2/token?service=<host>&scope=repository:<format>/<repo>/<pkg>:pull,push&scope=…`
