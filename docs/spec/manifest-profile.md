@@ -79,7 +79,7 @@ suffix follows the OCI convention for the encoding of the bytes.
 | pypi | `application/vnd.lajstrom.pypi.sdist.v1.tar+gzip` | `*.tar.gz` sdist |
 | pypi | `application/vnd.lajstrom.pypi.sdist.v1+zip` | `*.zip` sdist (legacy) |
 | deb | `application/vnd.lajstrom.deb.package.v1` | `*.deb` (ar archive) |
-| maven | `application/vnd.lajstrom.maven.artifact.v1` | jar, war, aar, zip, … (layer annotations `lajstrom.maven.extension`, `lajstrom.maven.classifier`) |
+| maven | `application/vnd.lajstrom.maven.artifact.v1` | jar, war, aar, zip, … (layer annotations `lajstrom.maven.extension`, `lajstrom.maven.classifier`, the latter absent when the file has none); the file name is `<artifactId>-<version>[-<classifier>].<extension>`, the extension can have dots (`tar.gz`), and an `.asc` signature is an artifact too, with the extension of the signed file and `.asc` (`jar.asc`, `pom.asc`) |
 | maven | `application/vnd.lajstrom.maven.pom.v1+xml` | `*.pom` |
 | rpm (later) | `application/vnd.lajstrom.rpm.package.v1` | `*.rpm` |
 | npm (later) | `application/vnd.lajstrom.npm.tarball.v1.tar+gzip` | `*.tgz` |
@@ -94,7 +94,7 @@ whose content is defined per format:
 | raw | `{"path": "<original path>", "contentType": "<as uploaded>", "size": n, "sha256": "<hex>"}` |
 | pypi | the core metadata (PEP 566 JSON form) of the distribution: the fields with their keys in lowercase and `-` as `_` (`name`, `version`, `summary`, `requires_python`, `requires_dist`, `classifier`, …), the multiple-use fields as lists, the body as `description`; plus `filename`, `sha256`, `packagetype` (`bdist_wheel`/`sdist`) and `core_metadata`, the `METADATA` or `PKG-INFO` file as the distribution has it, which the simple index serves for PEP 658 |
 | deb | `{"control": {<control fields as strings>}, "md5sums": {<path>: <md5>}, "size": n, "sha256": "<hex>", "md5": "<hex>", "sha1": "<hex>", "filename": "…"}`; `md5` and `sha1` of the whole file are optional (apt's `Packages` carries `MD5sum`, `SHA1` and `SHA256`; an upload through Lajstrom writes all three, a manifest pushed without the two still validates) |
-| maven | `{"groupId", "artifactId", "version", "packaging", "files": [{"name", "extension", "classifier", "sha1", "md5", "sha256", "size"}], "pom": {<parsed essentials: parent, dependencies>}}` |
+| maven | `{"groupId", "artifactId", "version", "packaging", "files": [{"name", "extension", "classifier", "sha1", "md5", "sha256", "sha512", "size"}], "pom": {<parsed essentials: parent, dependencies>}}`; one entry per file layer, the POM included; the four checksums are of the whole file, computed at ingest, and are what the `.md5`, `.sha1`, `.sha256` and `.sha512` files serve (Gradle asks for `.sha512`) |
 
 The metadata layer is optional for `raw` and mandatory for every other format. UI, search and
 reindex read it without unpacking the package. Reindex must work from annotations alone when the

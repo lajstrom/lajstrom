@@ -149,12 +149,14 @@ type Upload struct {                        // the principal is a parameter of P
     Params map[string]string                // protocol parameters: twine fields, suite, raw path
 }
 type UploadedFile struct {
-    Name        string
+    Name        string                      // maven: the path below /maven/<repo>/
     Size        int64                       // -1 when unknown
     ContentType string
     Open        func() (io.ReadCloser, error) // re-openable: Build reads it, ingest pushes it
-    Checksums   map[string]string           // md5, sha1, sha256, sha512 when the caller has them (a
-                                            // session); Build may use them instead of reading the file
+    // Lowercase hex by md5, sha1, sha256, sha512, computed once as the bytes streamed in; nil
+    // when none. All four and a known Size: the file is in the backend (a session pushed it,
+    // #53), Build need not open it and leaves it out of Built.Blobs.
+    Checksums   map[string]string
 }
 type Built struct {
     Manifest ocispec.Manifest

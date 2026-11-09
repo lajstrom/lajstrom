@@ -53,7 +53,8 @@ type Upload struct {
 // it, and ingest opens it again to push the blob. The HTTP layer makes the request body
 // re-openable (a request spool, never artifact storage) and removes it when the request ends.
 type UploadedFile struct {
-	// Name is the file name as the client sent it.
+	// Name is the file name as the client sent it; for maven, the path of the file below
+	// /maven/<repo>/, com/example/lib-core/1.2.0/lib-core-1.2.0.jar.
 	Name string
 	// Size is the size in bytes, or -1 when unknown.
 	Size int64
@@ -61,10 +62,12 @@ type UploadedFile struct {
 	ContentType string
 	// Open returns a new reader positioned at the start of the file.
 	Open func() (io.ReadCloser, error)
-	// Checksums are the file's md5, sha1, sha256 and sha512, lowercase hexadecimal, by those
-	// names, when the caller has them: a publication session computes them as the file arrives,
-	// and the file is in the registry already. Build may use them in place of reading the file;
-	// nil means it reads it.
+	// Checksums are the digests of the whole file that the receiver computed once, while the
+	// bytes streamed in, as lowercase hex by algorithm: the keys are md5, sha1, sha256 and
+	// sha512. Nil when the receiver computed none. A file with all four and a known Size is in
+	// the backend already (a publication session pushed it as it arrived, #53): Build may
+	// describe its layer from them without opening it and leave it out of Built.Blobs, and
+	// ingest checks that the backend has it.
 	Checksums map[string]string
 }
 
