@@ -39,6 +39,7 @@ https://lajstrom.dev
 | [Testing](docs/testing.md) | the test levels and what each needs; `make e2e` and how to add a scenario |
 | [Authentication](docs/auth.md) | local users, argon2id passwords, HTTP Basic on every route, the first admin, `whoami` |
 | [Operations](docs/operations.md) | the master key, apt signing keys, `key.asc` for clients, key rotation |
+| [Behind a reverse proxy](docs/reverse-proxy.md) | TLS at the edge, `externalURL`, unbuffered uploads, rate limits on `/v2/token`; nginx and Caddy |
 | [Architecture](docs/architecture.md) | components, storage model, the five flows |
 | [Specs](docs/spec/) | manifest profile, layout and interfaces, HTTP routing, index schema, RBAC |
 | [ADRs](docs/adr/) | decisions and why |
