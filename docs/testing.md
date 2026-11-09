@@ -96,18 +96,18 @@ the known ones in a fixed order and any other after them, and prints a line per 
 
 ```text
 === summary
-PASS raw.sh            2 s
-PASS oras.sh           1 s
-PASS auth.sh           0 s
+PASS raw.sh            3 s
+PASS oras.sh           0 s
+PASS auth.sh           1 s
 PASS rbac.sh           4 s
 PASS oci-token.sh      3 s
 PASS tokens.sh        10 s
-PASS apt.sh            4 s
-PASS pypi.sh          10 s
-e2e: 8 of 8 scenarios ran, 0 failed, in 41 s against http://127.0.0.1:21342
+PASS apt.sh            5 s
+PASS pypi.sh          13 s
+e2e: 8 of 8 scenarios ran, 0 failed, in 47 s against http://127.0.0.1:45376
 ```
 
-Those are the times on an Apple silicon Mac with OrbStack, the images already pulled; the 41 s
+Those are the times on an Apple silicon Mac with OrbStack, the images already pulled; the 47 s
 include `make build`, and `pypi.sh` installs build, twine and uv from PyPI in its container. A failed scenario does not stop the others. The harness exits 1 when one
 failed, 2 when it could not start (the build, the migration, a server that is not ready), and
 stops the server and removes the directory on exit; `LAJSTROM_E2E_KEEP=1` keeps it, with
@@ -119,7 +119,7 @@ stops the server and removes the directory on exit; `LAJSTROM_E2E_KEEP=1` keeps 
 | `raw.sh` | R-01 to R-04, a range, R-09, R-10, DELETE | curl |
 | `oras.sh` | oras through `/v2`: the challenge without credentials, `oras login`, push with the raw profile, the repeat, another manifest under the tag (409), pull, tags, manifest fetch, the file on the raw frontend | oras on `PATH`, else its image |
 | `auth.sh` | local users, HTTP Basic, disable, enable, set-password | curl, `lajstrom admin user` |
-| `rbac.sh` | the S-02 matrix of the six principals on the raw frontend and on `/v2` (the tokens' actions included), a repo that may not be read answering as one that does not exist (S-08, X-05), a binding and a repo's `anonymousRead` counting from the next request (S-07), creating a repo with a taken name | curl, `lajstrom admin user` and `binding` |
+| `rbac.sh` | the S-02 matrix of the six principals on the raw frontend and on `/v2` (the tokens' actions included), a repo that may not be read answering as one that does not exist (S-08, X-05), the reader's `oras push` refused and the writer's through, a deploy token held to its repo (S-04), a binding and a repo's `anonymousRead` counting from the next request (S-07), creating a repo with a taken name | curl, oras on `PATH`, else its image, `lajstrom admin user` and `binding` |
 | `oci-token.sh` | the docker bearer flow, oras login, push and pull, token key rotations | curl, oras image, `lajstrom admin key` |
 | `tokens.sh` | personal access tokens and deploy tokens on raw, apt (`auth.conf`) and `/v2` | curl, `ubuntu:24.04`, oras image |
 | `apt.sh` | a `.deb` by PUT and one by oras, `apt-get update`, `install` and `download` from the signed repo, the conflicts | `ubuntu:24.04` (`linux/amd64`), oras image |

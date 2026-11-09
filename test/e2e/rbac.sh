@@ -9,6 +9,9 @@
 #     delete on the repo and on the one that does not exist: the token carries what the role
 #     allows, and the same empty actions on a repo the principal may not read and on one that does
 #     not exist (X-05); a manifest DELETE that passes the authorization is 405 until #61;
+#   - oras: the reader's oras push is refused, the writer's goes, and the file is on the frontend;
+#   - a deploy token with read and write on the repo: PUT 201 and DELETE 403 there, 404 on
+#     another repo and on one that does not exist (S-04);
 #   - a binding created and deleted with lajstrom admin binding counts from the next request, and
 #     so does the repo's anonymousRead, changed through the API (S-07);
 #   - creating a repo with a taken name is 403 to a reader, before the name matters, and 409 to
@@ -25,8 +28,9 @@
 # auth.anonymousRead: true (run.sh sets it), else S-07 fails and says so. On exit the users are
 # disabled (users are not deleted in this version) and the repo deleted. Passwords go to curl in
 # config files and to lajstrom on standard input, never on a command line; tokens are never
-# printed. It needs curl and jq, prints one line per step and exits non-zero at the first
-# failure, naming the assertion or the command (lib.sh).
+# printed. oras runs from ghcr.io/oras-project/oras:v1.3.6 with the host's network, or is the oras
+# on PATH. It needs curl, jq and oras or docker, prints one line per step and exits non-zero at
+# the first failure, naming the assertion or the command (lib.sh).
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -35,6 +39,7 @@ base="${base%/}"
 for tool in curl jq; do
 	command -v "$tool" >/dev/null || { echo "rbac.sh: $tool is required" >&2; exit 2; }
 done
+command -v oras >/dev/null || command -v docker >/dev/null || { echo "rbac.sh: oras or docker is required" >&2; exit 2; }
 export LAJSTROM_CONFIG="${LAJSTROM_CONFIG:-deploy/compose/lajstrom.example.yaml}"
 if [ -n "${LAJSTROM_BIN:-}" ]; then
 	lajstrom=("$LAJSTROM_BIN")
@@ -43,13 +48,16 @@ elif [ -x bin/lajstrom ]; then
 else
 	lajstrom=(go run ./cmd/lajstrom)
 fi
-service="${base#*://}" # the service of the tokens: the host of the base URL
+service="${base#*://}" # the service of the tokens, and host:port of the facade for oras
+plain=""               # --plain-http for an http:// base URL
+case "$base" in http://*) plain=--plain-http ;; esac
 
 work="$(mktemp -d)"
 e2e_credentials "$work"
 cp "$E2E_CURLRC" "$work/admin"
 run="$(date -u +%Y%m%d%H%M%S)-$RANDOM"
 repo="rbac-$run"
+other="rbac-other-$run" # a repo of the run that the deploy token is not for
 missing="rbac-missing-$run"
 users="" # the users this run made, disabled on exit
 created=""
@@ -60,6 +68,7 @@ cleanup() {
 	done
 	if [ -n "$created" ]; then
 		curl -sS -o /dev/null -K "$work/admin" -X DELETE "$base/api/v1/repos/raw/$repo?force=true" || true
+		curl -sS -o /dev/null -K "$work/admin" -X DELETE "$base/api/v1/repos/raw/$other?force=true" || true
 	fi
 	rm -rf "$work"
 }
@@ -89,14 +98,14 @@ answer() {
 	echo "$status${code:+/$code}"
 }
 
-# mkuser NAME ROLE MASK: a user with a random password, its Basic credentials in $work/NAME, and
-# the binding ROLE on MASK.
+# mkuser NAME ROLE MASK: a user with a random password, its Basic credentials in $work/NAME and
+# the password alone in $work/NAME.pw, and the binding ROLE on MASK.
 mkuser() {
 	local pw
 	pw="$(head -c 24 /dev/urandom | base64 | tr -d '+/=\n')"
 	printf '%s' "$pw" | "${lajstrom[@]}" admin user create --name "$1" --password-stdin >/dev/null
 	users="$users $1"
-	(umask 077 && printf 'user = "%s:%s"\n' "$1" "$pw" >"$work/$1")
+	(umask 077 && printf 'user = "%s:%s"\n' "$1" "$pw" >"$work/$1" && printf '%s\n' "$pw" >"$work/$1.pw")
 	"${lajstrom[@]}" admin binding create --principal "user:$1" --role "$2" --mask "$3" >/dev/null
 }
 
@@ -108,12 +117,36 @@ cred() {
 	esac
 }
 
+# oras ARGS...: oras in the run's directory as /w, with the registry configuration $work/$ORAS_AS.json.
+if command -v oras >/dev/null; then
+	oras() { (cd "$work" && command oras "$@" --registry-config "$work/$ORAS_AS.json" ${plain:+"$plain"}); }
+else
+	oras() { docker run --rm -i --network host -u "$(id -u):$(id -g)" -v "$work:/w" -w /w ghcr.io/oras-project/oras:v1.3.6 "$@" --registry-config "/w/$ORAS_AS.json" ${plain:+"$plain"}; }
+fi
+
+# oras_push WHO: oras login as WHO, then oras push of $work/oras-WHO.txt to raw/$repo with the raw
+# profile; the output goes to $work/oras.log and oras's status is returned.
+oras_push() {
+	local path="oras-$1.txt" version # the raw model: the version is the first 16 hex of the content's sha256
+	ORAS_AS="$1"
+	printf 'rbac oras e2e %s %s\n' "$1" "$run" >"$work/$path"
+	if command -v sha256sum >/dev/null; then version="$(sha256sum "$work/$path" | cut -c1-16)"; else version="$(shasum -a 256 "$work/$path" | cut -c1-16)"; fi
+	oras login -u "$1-$run" --password-stdin "$service" <"$work/$1-$run.pw" >"$work/oras.log" 2>&1 || return 1
+	oras push --artifact-type application/vnd.lajstrom.raw.v1 \
+		--annotation lajstrom.schema=1 --annotation lajstrom.format=raw --annotation "lajstrom.repo=$repo" \
+		--annotation "lajstrom.name=$path" --annotation "lajstrom.version=$version" \
+		--annotation "lajstrom.raw.path=$path" --annotation "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+		"$service/raw/$repo/$path:$version" "$path:application/vnd.lajstrom.raw.file.v1" >"$work/oras.log" 2>&1
+}
+
 printf 'rbac e2e %s\n' "$run" >"$work/file"
-req admin POST "$base/api/v1/repos" -H 'Content-Type: application/json' \
-	-d "{\"format\":\"raw\",\"name\":\"$repo\",\"registry\":\"local\"}"
-expect "POST /api/v1/repos raw/$repo as the admin" 201 "$status"
-created=yes
-step "POST /api/v1/repos raw/$repo as $E2E_USER (admin): 201"
+for r in "$repo" "$other"; do
+	req admin POST "$base/api/v1/repos" -H 'Content-Type: application/json' \
+		-d "{\"format\":\"raw\",\"name\":\"$r\",\"registry\":\"local\"}"
+	expect "POST /api/v1/repos raw/$r as the admin" 201 "$status"
+	created=yes
+done
+step "POST /api/v1/repos raw/$repo and raw/$other as $E2E_USER (admin): 201"
 
 # The principals of the matrix: the admin of the run is "admin"; the others are users of their
 # own, named after the role and the run.
@@ -191,6 +224,34 @@ maintainer ["pull","push","delete"]  200              202              405/UNSUP
 admin      ["pull","push","delete"]  200              202              405/UNSUPPORTED  404/NAME_UNKNOWN
 outsider   []                        404/NAME_UNKNOWN 404/NAME_UNKNOWN 404/NAME_UNKNOWN 404/NAME_UNKNOWN
 EOF
+
+# oras, a real client of /v2: the reader's push is refused (its token has pull only), the
+# writer's goes through ingest, and the file is on the frontend.
+if oras_push reader; then fail "oras push as the reader succeeded: $(cat "$work/oras.log")"; fi
+grep -qiE 'denied|403' "$work/oras.log" || fail "oras push as the reader: not a denial: $(cat "$work/oras.log")"
+denial="$(grep -iE -m1 'denied|403' "$work/oras.log")"
+oras_push writer || { cat "$work/oras.log" >&2; fail "oras push as the writer"; }
+digest="$(awk '$1 == "Digest:" { print $2 }' "$work/oras.log")"
+req reader GET "$base/raw/$repo/oras-writer.txt"
+expect "the reader GETs the writer's oras push" 200 "$status"
+step "oras push as the reader: refused, $denial; as the writer: $digest, and the reader GETs it on the frontend"
+
+# S-04: a deploy token with read and write on raw/$repo, made by the admin through the API, as
+# Basic deploy:<token>.
+req admin POST "$base/api/v1/repos/raw/$repo/deploy-tokens" -H 'Content-Type: application/json' \
+	-d "{\"name\": \"rbac $run\", \"scopes\": [\"read\", \"write\"]}"
+expect "POST deploy-tokens" 201 "$status"
+(umask 077 && printf 'user = "deploy:%s"\n' "$(jq -r .secret "$work/body")" >"$work/deploy")
+dep="$(jq -r .id "$work/body")"
+req deploy PUT "$base/raw/$repo/deploy.txt" -T "$work/file" -H 'Content-Type: text/plain'
+expect "deploy token PUT on its repo" 201 "$status"
+req deploy DELETE "$base/raw/$repo/deploy.txt"
+expect "deploy token DELETE on its repo" 403 "$status"
+req deploy PUT "$base/raw/$other/deploy.txt" -T "$work/file" -H 'Content-Type: text/plain'
+expect "deploy token PUT on another repo" 404 "$status"
+req deploy GET "$base/raw/$missing/seed.txt"
+expect "deploy token GET of a repo that does not exist" 404 "$status"
+step "deploy token $dep (read, write on raw/$repo): PUT 201, DELETE 403; raw/$other 404, a repo that does not exist 404"
 
 # A binding counts from the next request, on the server, though lajstrom admin wrote it to the
 # database behind the server's back (auth_version; rbac.md §3).
