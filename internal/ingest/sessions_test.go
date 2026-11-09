@@ -114,12 +114,18 @@ func TestSessionCommit(t *testing.T) {
 	}
 	same(t, "Files, in the order first added", []string{"a.jar", "b.pom", "c.jar", "d.asc", "e.zip"}, names)
 	pushedBefore := len(e.prov.Pushes())
+	var params map[string]string
+	e.plugin.BuildFunc = func(ctx context.Context, repo index.Repo, up format.Upload) (*format.Built, error) {
+		params = up.Params
+		return buildRaw(ctx, repo, up)
+	}
 
 	pub, err := e.pipe.Commit(ctx, s.ID)
 	must(t, err)
 	if pub.Existed || pub.Tag != "1.0" {
 		t.Errorf("Commit = %+v, want a new version under 1.0", pub)
 	}
+	same(t, "the parameters of the build", map[string]string{"name": "lib", "version": "1.0", "uploaded-by": "user:alice"}, params)
 	e.wantFileLayers(t, "raw/scratch/lib", pub.Tag, files)
 	for _, p := range e.prov.Pushes()[pushedBefore:] {
 		for _, f := range files {

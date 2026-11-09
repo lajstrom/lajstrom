@@ -24,11 +24,12 @@ const (
 	maxRepositoryLen = 255
 )
 
-// Plugin is the maven format plugin: paths, POMs, Build and Validate (#52), resolve and
-// maven-metadata.xml (#55). Deploy through publication sessions is #54; until it exists the
-// plugin does not register itself with format.Register and cmd/lajstrom does not compile it in,
-// so that no maven repo can be created that nothing can deploy to.
+// Plugin is the maven format plugin: paths, POMs, Build and Validate (#52), deploy through
+// publication sessions (#54), resolve and maven-metadata.xml (#55). It registers itself with
+// format.Register when the package is imported; cmd/lajstrom compiles it in.
 type Plugin struct{}
+
+func init() { format.Register(Plugin{}) }
 
 var _ format.Plugin = Plugin{}
 
@@ -58,8 +59,11 @@ func packagePath(groupID, artifactID string) string {
 	return profile.EscapeComponent(strings.ToLower(groupID)) + "/" + profile.EscapeComponent(artifactID)
 }
 
-// Routes mounts the maven frontend below /maven/: resolve (resolve.go); deploy is #54.
-func (Plugin) Routes(r format.Router, deps format.Deps) { resolveRoutes(r, deps) }
+// Routes mounts the maven frontend below /maven/: resolve (resolve.go) and deploy (deploy.go).
+func (Plugin) Routes(r format.Router, deps format.Deps) {
+	resolveRoutes(r, deps)
+	deployRoutes(r, deps)
+}
 
 // metadata is the content of the maven metadata layer (docs/spec/manifest-profile.md §2): the
 // coordinates and packaging, one entry per file layer, in manifest order, and the essentials of
