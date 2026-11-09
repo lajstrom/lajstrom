@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/opencontainers/go-digest"
-	"github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -17,11 +16,11 @@ func TestDeleteReferrers(t *testing.T) {
 	e := newEnv(t, envOptions{})
 	v := e.put(fileTxt, "one")
 	name := "raw/scratch/docs/file.txt"
-	subject := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: digest.Digest(v.Digest), Size: 1}
-	m, err := json.Marshal(ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageManifest,
-		ArtifactType: "application/vnd.dev.sigstore.bundle.v0.3+json", Config: ocispec.DescriptorEmptyJSON, Layers: []ocispec.Descriptor{},
-		Subject: &subject})
-	must(t, err)
+	// A cosign bundle of the version: an empty config, no layers, the version as its subject.
+	m := []byte(`{"schemaVersion":2,"mediaType":"` + ocispec.MediaTypeImageManifest + `",` +
+		`"artifactType":"application/vnd.dev.sigstore.bundle.v0.3+json",` +
+		`"config":{"mediaType":"` + ocispec.MediaTypeEmptyJSON + `","digest":"` + ocispec.DescriptorEmptyJSON.Digest.String() + `","size":2},` +
+		`"layers":[],"subject":{"mediaType":"` + ocispec.MediaTypeImageManifest + `","digest":"` + v.Digest + `","size":1}}`)
 	sig := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: digest.FromBytes(m), Size: int64(len(m))}
 	rr, err := e.prov.Repository(t.Context(), name)
 	must(t, err)
