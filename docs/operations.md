@@ -311,6 +311,18 @@ away ends the wait. Each retry is a line at `debug` level, `registry request ret
 method, the path, the attempt and the cause, never a header or the query; each attempt is its own
 sample in `lajstrom_provider_request_duration_seconds`.
 
+Each registry has a circuit breaker. Five requests in a row that the registry answers with a
+`5xx` other than `501`, or does not answer, each after its retries, open it: for 30 s every
+request to that registry fails at once (a `500` to the client) instead of waiting for timeouts
+and retries, and the log has `registry fails: circuit open` once, with the registry's name. Then
+the next `GET` or `HEAD` goes through as a trial, normally the readiness ping of `serve`; an
+answer closes the breaker (`registry answers again: circuit closed`), a failure opens it for
+another 30 s. A request with a body is never the trial, and fails at once until the breaker is
+closed. A `4xx` is an answer; a `429`, and a request whose client went away, count neither way.
+`lajstrom_provider_circuit_open{registry}` is `1` while the breaker is open. The ping that it
+refuses counts as unanswered, so a breaker that stays open for a minute turns
+[`/-/readyz`](#readiness) to `503`, as a registry that does not answer does.
+
 ## Metrics
 
 Prometheus scrapes `GET /metrics` on the metrics listener, `server.metricsListen` (default
@@ -325,6 +337,7 @@ so the number of series is fixed by the code and the configuration.
 | `lajstrom_http_request_duration_seconds` | `method`, `route`, `status` | time to answer a request, by the route pattern it matched (`unmatched` for none) |
 | `lajstrom_http_request_size_bytes`, `lajstrom_http_response_size_bytes` | the same | the declared request body, the bytes written back |
 | `lajstrom_provider_request_duration_seconds` | `registry`, `operation`, `method`, `status` | a request to a backend registry, each retry its own, to its response headers; `operation` is `ping`, `catalog`, `manifest`, `blob`, `upload`, `tags`, `referrers` or `other` (a token realm, a redirect to the storage); `status` is `error` without an answer |
+| `lajstrom_provider_circuit_open` | `registry` | `1` while the [circuit breaker](#requests-to-the-registries) of the registry is open, its requests failing at once; `0` otherwise |
 | `lajstrom_db_query_duration_seconds` | `method`, `result` | a statement of the index database, by the store method that ran it (`GetRepo`, `UpsertVersion`, …); a missing row is `ok`, a refused or failed statement `error` |
 | `lajstrom_ingest_total` | `format`, `result` | publishes through the ingest pipeline: `published`, `existed` (an idempotent repeat), `invalid`, `conflict`, `error` |
 | `lajstrom_build_info` | `version`, `commit`, `goversion` | always 1 |
