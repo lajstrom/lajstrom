@@ -31,6 +31,7 @@ https://lajstrom.dev
 | Page | What it is for |
 | --- | --- |
 | [Start here](docs/onboarding.md) | one hour from zero to a claimed issue |
+| [Install](docs/install.md) | the image, the archives with checksums and signatures, Homebrew, or `make build` |
 | [Quick start: raw](docs/quickstart/raw.md) | `curl -T` a file in, `curl` it out, see the manifest in the registry |
 | [Quick start: apt](docs/quickstart/apt.md) | a `.deb` in with `curl -T` or `oras push`, out with `apt-get install` from a signed repo |
 | [Quick start: pypi](docs/quickstart/pypi.md) | `twine upload` or `uv publish` in, `pip install` or `uv pip install` out, with PEP 658 metadata |
