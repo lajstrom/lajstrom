@@ -42,18 +42,24 @@ type tokenResponse struct {
 	IssuedAt    string `json:"issued_at"`
 }
 
+// maxTokenScopes is the most scopes a token request may ask for: each costs a lookup of its
+// repo and a question to the Authorizer, and a request is a few kilobytes of query, so without
+// a bound one anonymous request made thousands of each (#63, T-7 of the threat model). docker
+// asks for one or two (a mount names its source), oras and helm for a few.
+const maxTokenScopes = 100
+
 // issueToken answers GET /v2/token?service=&scope=…: a token for the principal of the
 // request, authenticated by the middleware from Basic credentials (refused ones never get
 // here: the middleware answers them 401 with the Basic challenge) or anonymous. The scopes are
-// parsed (token.ParseScopes), those of repos that do not exist left without actions
-// (unknownScopes), and reduced to what the Authorizer allows the principal, every action when
-// there is none (token.Reduce): every repository asked for is in the token, with no action
-// when it does not exist or the principal may not read it, alike (docs/spec/rbac.md §3). The
-// service is the configured one: a service parameter that names another is a client of
-// another registry, not an error, and is ignored. No audit row is written: a token is issued
-// for every docker pull and oras push, one row each would be noise, and the operations the
-// token then allows are audited themselves. Only GET: the OAuth2 POST form is not
-// implemented.
+// parsed (token.ParseScopes; more than maxTokenScopes is 400 UNSUPPORTED), those of repos that
+// do not exist left without actions (unknownScopes), and reduced to what the Authorizer allows
+// the principal, every action when there is none (token.Reduce): every repository asked for is
+// in the token, with no action when it does not exist or the principal may not read it, alike
+// (docs/spec/rbac.md §3). The service is the configured one: a service parameter that names
+// another is a client of another registry, not an error, and is ignored. No audit row is
+// written: a token is issued for every docker pull and oras push, one row each would be noise,
+// and the operations the token then allows are audited themselves. Only GET: the OAuth2 POST
+// form is not implemented.
 func (h *handler) issueToken(w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodGet {
 		return &apiError{status: http.StatusMethodNotAllowed, code: codeUnsupported,
@@ -66,7 +72,12 @@ func (h *handler) issueToken(w http.ResponseWriter, r *http.Request) error {
 		h.o.Log.DebugContext(ctx, "token for another service: the token is for this one", "asked", s, "service", service)
 	}
 	p := auth.PrincipalFrom(ctx)
-	scopes, err := h.unknownScopes(ctx, token.ParseScopes(q["scope"]))
+	asked := token.ParseScopes(q["scope"])
+	if len(asked) > maxTokenScopes {
+		return &apiError{status: http.StatusBadRequest, code: codeUnsupported,
+			msg: fmt.Sprintf("a token request may name at most %d repositories, this one names %d", maxTokenScopes, len(asked))}
+	}
+	scopes, err := h.unknownScopes(ctx, asked)
 	if err != nil {
 		return err
 	}

@@ -142,13 +142,18 @@ func (sc *scopeSet) access() []Access {
 // scopes, a deploy token only those of its scopes on its own repo, neither ever delete; so the
 // token carries the narrowing to every /v2 request. authz decides next, by the bindings
 // (auth.RBAC); a nil authz allows what the credential allows, for the tests. The catalog scope
-// is kept for every principal: the catalog is filtered repo by repo when it is listed. An error
-// of authz is returned: the caller cannot decide.
+// is kept for every principal but a personal access token whose scopes do not read: the
+// catalog is filtered repo by repo when it is listed, by the principal's bindings, and a /v2
+// request no longer carries the credential that would narrow them (#63, T-9 of the threat
+// model). An error of authz is returned: the caller cannot decide.
 func Reduce(ctx context.Context, authz auth.Authorizer, p auth.Principal, scopes []Access) ([]Access, error) {
 	cred := auth.CredentialFrom(ctx)
 	out := make([]Access, 0, len(scopes))
 	for _, s := range scopes {
 		if s.Type != TypeRepository {
+			if cred.Kind == auth.CredPAT && cred.Limit(auth.ActionRead, index.Repo{}) != nil {
+				continue // a token that may read nothing lists nothing
+			}
 			out = append(out, Access{Type: s.Type, Name: s.Name, Actions: slices.Clone(s.Actions)})
 			continue
 		}
