@@ -91,6 +91,12 @@ func (s Server) validate(p *problems) {
 	if s.MaxManifestSize < 0 {
 		p.add("server.maxManifestSize", "must not be negative")
 	}
+	if s.StallTimeout < 0 {
+		p.add("server.stallTimeout", "must not be negative")
+	}
+	if s.MaxConcurrentUploads < 0 {
+		p.add("server.maxConcurrentUploads", "must not be negative")
+	}
 }
 
 func (l Log) validate(p *problems) {

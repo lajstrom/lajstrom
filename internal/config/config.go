@@ -38,6 +38,14 @@ type Server struct {
 	MetricsListen string `yaml:"metricsListen"`
 	// Pprof serves /debug/pprof/ on the metrics listener.
 	Pprof bool `yaml:"pprof"`
+	// StallTimeout is how long a request body or a response may make no progress, no byte read
+	// from the client or taken by it, before the connection is closed. A transfer of any
+	// length passes while it moves. Zero turns it off; negative is invalid.
+	StallTimeout time.Duration `yaml:"stallTimeout"`
+	// MaxConcurrentUploads is how many uploads (POST, PUT and PATCH to the frontends and /v2)
+	// one replica runs at once; the next one is answered 503 with Retry-After. Zero means no
+	// limit; negative is invalid.
+	MaxConcurrentUploads int `yaml:"maxConcurrentUploads"`
 }
 
 // Log configures the process logger. The --log-level and --log-format flags override it.
@@ -208,6 +216,7 @@ const (
 	DefaultShutdownTimeout    = 30 * time.Second
 	DefaultMaxManifestSize    = 4 << 20          // the least the distribution spec asks a registry to take
 	DefaultMetricsListen      = "127.0.0.1:9464" // the port of the OpenTelemetry Prometheus exporter
+	DefaultStallTimeout       = time.Minute
 	DefaultLogLevel           = "info"
 	DefaultLogFormat          = "text"
 	DefaultDatabaseDriver     = "sqlite"
@@ -225,7 +234,8 @@ const (
 // Default returns the configuration before the file is read. server.listen has no default.
 func Default() *Config {
 	return &Config{
-		Server:    Server{ShutdownTimeout: DefaultShutdownTimeout, MaxManifestSize: DefaultMaxManifestSize, MetricsListen: DefaultMetricsListen},
+		Server: Server{ShutdownTimeout: DefaultShutdownTimeout, MaxManifestSize: DefaultMaxManifestSize, MetricsListen: DefaultMetricsListen,
+			StallTimeout: DefaultStallTimeout},
 		Log:       Log{Level: DefaultLogLevel, Format: DefaultLogFormat},
 		Database:  Database{Driver: DefaultDatabaseDriver, DSN: DefaultDatabaseDSN},
 		Ingest:    Ingest{ClaimTTL: DefaultIngestClaimTTL},

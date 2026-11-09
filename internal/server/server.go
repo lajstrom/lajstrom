@@ -62,6 +62,13 @@ type Options struct {
 	MetricsListen string
 	// Pprof serves /debug/pprof/ on the metrics listener (server.pprof).
 	Pprof bool
+	// StallTimeout is how long a request body or a response may make no progress before the
+	// connection is closed (server.stallTimeout); zero means no bound.
+	StallTimeout time.Duration
+	// MaxUploads is how many uploads (POST, PUT, PATCH outside /api/, /-/ and
+	// /v2/token) may run at once; the next one is answered 503 (server.maxConcurrentUploads).
+	// Zero means no limit.
+	MaxUploads int
 }
 
 // Server is the Lajstrom HTTP server. Create it with New and start it with Run.
@@ -100,12 +107,13 @@ func New(o Options) (*Server, error) {
 	}
 	s := &Server{opts: o, log: o.Log, mux: http.NewServeMux(), bound: make(chan struct{})}
 	s.routes()
-	s.handler = s.recovery(requestID(s.accessLog(s.authenticate(s.mux))))
+	s.handler = s.recovery(requestID(s.accessLog(s.authenticate(s.limitUploads(s.stall(s.mux))))))
 	s.srv = &http.Server{
 		Handler: s.handler,
 		// No ReadTimeout and no WriteTimeout: they bound the whole request body and the whole
 		// response, and a blob upload or download streams for as long as its size needs. Slow
-		// clients are bounded by ReadHeaderTimeout and IdleTimeout; per-route limits are #50.
+		// clients are bounded by ReadHeaderTimeout and IdleTimeout, and a body that stops
+		// moving by StallTimeout (stall).
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       idleTimeout,
 		MaxHeaderBytes:    maxHeaderBytes,
