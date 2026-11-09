@@ -135,7 +135,7 @@ func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag str
 	if err != nil {
 		return nil, err
 	}
-	t := &target{repo: repo, plugin: plugin, pkgPath: pkgPath, name: ociName(repo, pkgPath)}
+	t := &target{repo: repo, plugin: plugin, pkgPath: pkgPath, name: ociName(repo, pkgPath), prov: prov}
 	if t.rr, err = prov.Repository(ctx, t.name); err != nil {
 		return nil, fmt.Errorf("ingest: repository %s: %w", t.name, err)
 	}
@@ -178,7 +178,7 @@ func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload
 	if err != nil {
 		return nil, fmt.Errorf("ingest: %w", err)
 	}
-	t := &target{repo: repo, plugin: plugin, pkgPath: pkgPath, name: ociName(repo, pkgPath)}
+	t := &target{repo: repo, plugin: plugin, pkgPath: pkgPath, name: ociName(repo, pkgPath), prov: prov}
 	if err := prov.EnsureRepository(ctx, t.name); err != nil {
 		return nil, fmt.Errorf("ingest: ensure repository %s: %w", t.name, err)
 	}
@@ -213,6 +213,7 @@ type target struct {
 	pkgPath string              // the package path below <format>/<repo>/ (Plugin.EscapeName)
 	name    string              // <format>/<repo>/<pkgPath>, the repository as the provider names it
 	rr      provider.Repository // the data path to name
+	prov    provider.Provider   // the registry, for the range reads of the fetcher
 }
 
 // publish is one manifest on its way through the pipeline; the steps fill it in.

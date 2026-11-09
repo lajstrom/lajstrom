@@ -145,6 +145,8 @@ type BlobSource struct {
     Descriptor ocispec.Descriptor
     Open       func(ctx context.Context) (io.ReadCloser, error)
 }
+// Read streams the whole blob, checked against its digest; the reader may also be an io.ReaderAt
+// that reads parts with range requests, never the whole, and unchecked (ingest's is, #161).
 type BlobFetcher func(ctx context.Context, d digest.Digest) (io.ReadCloser, error)
 type IndexScope string                      // jammy/main/amd64, simple/requests, com.example/lib-core
 type Document struct {

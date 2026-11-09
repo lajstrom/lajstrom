@@ -3,18 +3,25 @@ package pypi
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/md5" //nolint:gosec // the md5_digest twine sends
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/opencontainers/go-digest"
+
+	"github.com/lajstrom/lajstrom/internal/provider"
+	"github.com/lajstrom/lajstrom/internal/provider/providertest"
 	"github.com/lajstrom/lajstrom/internal/testutil"
 )
 
@@ -142,12 +149,17 @@ func TestUploadRefuses(t *testing.T) {
 }
 
 // TestUploadStreams sends a 200 MiB wheel generated as it is sent: the upload is spooled and
-// read again without holding the file, so the bytes allocated are a fraction of it.
+// read again without holding the file, so the bytes allocated are a fraction of it. The fake
+// registry keeps no blob that large, so the range reads of Validate are served from a copy of
+// the wheel the generator writes to disk, which allocates nothing either.
 func TestUploadStreams(t *testing.T) {
 	if testing.Short() {
 		t.Skip("streams 200 MiB")
 	}
-	e := newEnv(t)
+	copyOnDisk, err := os.CreateTemp(t.TempDir(), "big-*.whl")
+	must(t, err)
+	t.Cleanup(func() { _ = copyOnDisk.Close() })
+	e := newEnvWith(t, func(f *providertest.Fake) provider.Provider { return &fromDisk{Fake: f, file: copyOnDisk} })
 	const size = 200 << 20
 	pr, pw := io.Pipe()
 	mw := multipart.NewWriter(pw)
@@ -162,7 +174,7 @@ func TestUploadStreams(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			zw := zip.NewWriter(w)
+			zw := zip.NewWriter(io.MultiWriter(w, copyOnDisk))
 			blob, err := zw.CreateHeader(&zip.FileHeader{Name: "big/data.bin", Method: zip.Store})
 			if err != nil {
 				return err
@@ -203,4 +215,23 @@ func TestUploadStreams(t *testing.T) {
 	if alloc > size/4 {
 		t.Errorf("the upload of %d MiB allocated %d MiB", size>>20, alloc>>20)
 	}
+}
+
+// fromDisk is the fake registry with the ranges of every blob it discarded served from file.
+type fromDisk struct {
+	*providertest.Fake
+	file *os.File
+}
+
+func (d *fromDisk) OpenBlob(ctx context.Context, name string, dg digest.Digest, rangeHeader string, redirect bool) (provider.Blob, error) {
+	b, err := d.Fake.OpenBlob(ctx, name, dg, rangeHeader, redirect)
+	if err == nil || rangeHeader == "" {
+		return b, err
+	}
+	var first, last int64
+	if _, serr := fmt.Sscanf(rangeHeader, "bytes=%d-%d", &first, &last); serr != nil {
+		return b, err
+	}
+	return provider.Blob{Status: http.StatusPartialContent, Size: last - first + 1, Digest: dg,
+		Body: io.NopCloser(io.NewSectionReader(d.file, first, last-first+1))}, nil
 }

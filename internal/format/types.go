@@ -88,7 +88,12 @@ type BlobSource struct {
 }
 
 // BlobFetcher reads a blob of the manifest being validated, from the OCI repository the
-// manifest is pushed to. Validate must close the returned reader.
+// manifest is pushed to. Validate must close the returned reader. Read streams the whole blob,
+// checked against its digest. The reader may also be an io.ReaderAt over the blob, of the size of
+// its descriptor, that reads parts with range requests and never the whole (ingest's is, #161): a
+// plugin that needs random access, to the directory at the end of a zip, type-asserts it and
+// calls ReadAt and not Read, so that a facade push or a reindex reads kilobytes of a large file.
+// The bytes of ReadAt are not checked against the digest, which only the whole blob can be.
 type BlobFetcher func(ctx context.Context, d digest.Digest) (io.ReadCloser, error)
 
 // IndexScope names the part of a repo an index document covers, in the format's own terms:

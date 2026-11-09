@@ -116,9 +116,8 @@ type metadataIn struct {
 // metadata layer agree: the name (lajstrom.name is the normalized name of both), the version
 // (exactly), the variant (the wheel's tag set, or sdist), the file name, its sha256 and
 // packagetype, and lajstrom.pypi.nonstandard is true exactly when the version is not PEP 440.
-// The core_metadata of the layer must say the same name and version. Validate reads the metadata
-// layer and not the distribution: the METADATA of a wheel is at the end of its zip, and the
-// fetcher has no range, so the archive itself is checked by Build, when it is uploaded.
+// The core_metadata of the layer must say the same name and version, and be, byte for byte, the
+// METADATA or PKG-INFO inside the distribution (checkArchive), which pip is told it is (PEP 658).
 func (Plugin) Validate(ctx context.Context, _ index.Repo, m ocispec.Manifest, fetch format.BlobFetcher) (*format.Entry, error) {
 	parsed, err := profile.Validate(m)
 	if err != nil {
@@ -141,6 +140,9 @@ func (Plugin) Validate(ctx context.Context, _ index.Repo, m ocispec.Manifest, fe
 	}
 	a := parsed.Annotations
 	if err := check(a, f, d, md); err != nil {
+		return nil, err
+	}
+	if err := checkArchive(ctx, fetch, f, md.CoreMetadata); err != nil {
 		return nil, err
 	}
 	return &format.Entry{Name: a.Name, Version: a.Version, Variant: a.Variant, Attrs: a.Attrs, Metadata: raw,
@@ -184,6 +186,78 @@ func check(a profile.Annotations, f profile.Layer, d dist, md *metadataIn) error
 		return fmt.Errorf("%w: the file layer has a %s digest; pypi clients check sha256", format.ErrInvalid, f.Digest.Algorithm())
 	}
 	return nil
+}
+
+// maxSdistScan bounds the bytes of a .tar.gz sdist read to find its PKG-INFO, which a build
+// writes near the start; a gzip stream cannot be read from the middle.
+const maxSdistScan = 64 << 20
+
+// checkArchive reads the core metadata inside the distribution f and compares it with core, the
+// core_metadata of the metadata layer. A wheel and a zip sdist are read with ReadAt, through
+// range requests, when the fetcher's reader has it (ingest's does: the zip's directory and the
+// one member, a few small requests), and otherwise spooled to a temporary file for the call; a
+// .tar.gz sdist is read as a stream until its PKG-INFO, at most maxSdistScan bytes of it.
+func checkArchive(ctx context.Context, fetch format.BlobFetcher, f profile.Layer, core string) error {
+	rc, err := fetch(ctx, f.Digest)
+	if err != nil {
+		return fmt.Errorf("pypi: fetch %s: %w", f.Title, err)
+	}
+	defer func() { _ = rc.Close() }()
+	var inside []byte
+	switch f.MediaType {
+	case profile.MediaTypePypiSdistTarGz:
+		s, err := ParseSdistFilename(f.Title)
+		if err != nil {
+			return err
+		}
+		inside, err = ReadSdistPKGInfo(io.LimitReader(rc, maxSdistScan), f.Size, s)
+		if err != nil {
+			return fmt.Errorf("%s: %w", f.Title, err)
+		}
+	default:
+		ra, cleanup, err := readerAt(rc)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		if f.MediaType == profile.MediaTypePypiWheel {
+			inside, err = ReadWheelMetadata(ra, f.Size)
+		} else {
+			s, perr := ParseSdistFilename(f.Title)
+			if perr != nil {
+				return perr
+			}
+			inside, err = ReadSdistPKGInfo(io.NewSectionReader(ra, 0, f.Size), f.Size, s)
+		}
+		if err != nil {
+			return fmt.Errorf("%s: %w", f.Title, err)
+		}
+	}
+	if string(inside) != core {
+		return fmt.Errorf("%w: the core_metadata of the metadata layer is not the core metadata inside %s", format.ErrInvalid, f.Title)
+	}
+	return nil
+}
+
+// readerAt returns rc as an io.ReaderAt: itself when it is one, else its bytes spooled to a
+// temporary file, removed by cleanup.
+func readerAt(rc io.Reader) (io.ReaderAt, func(), error) {
+	if ra, ok := rc.(io.ReaderAt); ok {
+		return ra, func() {}, nil
+	}
+	spool, err := os.CreateTemp("", "lajstrom-pypi-*")
+	if err != nil {
+		return nil, nil, fmt.Errorf("pypi: spool: %w", err)
+	}
+	cleanup := func() {
+		_ = spool.Close()
+		_ = os.Remove(spool.Name())
+	}
+	if _, err := io.Copy(spool, rc); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("pypi: spool: %w", err)
+	}
+	return spool, cleanup, nil
 }
 
 // readMetadata reads the metadata layer l through fetch.

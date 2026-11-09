@@ -101,12 +101,16 @@ func TestRenderGolden(t *testing.T) {
 type env struct {
 	t    *testing.T
 	st   *sqlite.Store
+	fake *providertest.Fake
 	pipe *ingest.Pipeline
 	repo index.Repo
 	h    http.Handler
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T) *env { return newEnvWith(t, nil) }
+
+// newEnvWith is newEnv with the registry wrap(fake) when wrap is not nil.
+func newEnvWith(t *testing.T, wrap func(*providertest.Fake) provider.Provider) *env {
 	t.Helper()
 	ctx := t.Context()
 	st, err := sqlite.Open(ctx, "file:pypi-"+t.Name()+"?mode=memory&cache=shared")
@@ -115,11 +119,15 @@ func newEnv(t *testing.T) *env {
 	must(t, st.Migrate(ctx))
 	e := &env{t: t, st: st, repo: index.Repo{Format: Name, Name: "internal", Registry: "local", Prefix: "pypi/internal", Kind: "hosted"}}
 	must(t, st.CreateRepo(ctx, &e.repo))
-	fake := &providertest.Fake{RegistryName: "local"}
+	e.fake = &providertest.Fake{RegistryName: "local"}
+	var prov provider.Provider = e.fake
+	if wrap != nil {
+		prov = wrap(e.fake)
+	}
 	log := slog.New(slog.DiscardHandler)
-	e.pipe = ingest.New(ingest.Options{Providers: provider.Map{"local": fake}, Index: st, Log: log,
+	e.pipe = ingest.New(ingest.Options{Providers: provider.Map{"local": prov}, Index: st, Log: log,
 		Plugins: func(name string) (format.Plugin, bool) { return Plugin{}, name == Name }})
-	deps := format.Deps{Index: st, Ingest: e.pipe, Providers: provider.Map{"local": fake}, Log: log}
+	deps := format.Deps{Index: st, Ingest: e.pipe, Providers: provider.Map{"local": prov}, Log: log}
 	mux := http.NewServeMux()
 	Plugin{}.Routes(format.NewRouter(mux, Name, deps), deps)
 	e.h = mux
