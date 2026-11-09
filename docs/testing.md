@@ -87,7 +87,9 @@ make e2e E2E='raw oras'        # those two; test/e2e/run.sh raw oras is the same
 temporary directory (a fresh SQLite index, the registry `local` at `$LAJSTROM_E2E_REGISTRY`,
 by default `localhost:5000`, the Zot of the stack, the repos `raw/scratch`, `apt/ubuntu`,
 `apt/e2e` and `pypi/e2e`, none readable anonymously, `auth.anonymousRead: true`, a master key of
-its own, no metrics listener, no reconcile loop), runs `lajstrom migrate`, makes the user
+its own, no metrics listener, no reconcile loop, `server.trustedProxies: ["127.0.0.1/32"]` so that the
+per-address throttles are on and a scenario can name a client in `X-Forwarded-For`, which it
+gets as `LAJSTROM_E2E_FORWARDED=1`), runs `lajstrom migrate`, makes the user
 `e2e-admin` with the admin binding and a random password, which the scenarios get as
 `LAJSTROM_E2E_USER` and `LAJSTROM_E2E_PASSWORD`, starts `lajstrom serve` on a free port of
 `127.0.0.1` and waits for
@@ -120,7 +122,7 @@ stops the server and removes the directory on exit; `LAJSTROM_E2E_KEEP=1` keeps 
 | --- | --- | --- |
 | `raw.sh` | R-01 to R-04, a range, R-09, R-10, DELETE | curl |
 | `oras.sh` | oras through `/v2`: the challenge without credentials, `oras login`, push with the raw profile, the repeat, another manifest under the tag (409), pull, tags, manifest fetch, the file on the raw frontend | oras on `PATH`, else its image |
-| `auth.sh` | local users, HTTP Basic, disable, enable, set-password | curl, `lajstrom admin user` |
+| `auth.sh` | local users, HTTP Basic, disable, enable, set-password, the throttle of failed logins (X-04) and of `/v2/token` | curl, `lajstrom admin user` |
 | `rbac.sh` | the S-02 matrix of the six principals on the raw frontend and on `/v2` (the tokens' actions included), a repo that may not be read answering as one that does not exist (S-08, X-05), the reader's `oras push` refused and the writer's through, a deploy token held to its repo (S-04), a binding and a repo's `anonymousRead` counting from the next request (S-07), creating a repo with a taken name | curl, oras on `PATH`, else its image, `lajstrom admin user` and `binding` |
 | `oci-token.sh` | the docker bearer flow, oras login, push and pull, token key rotations | curl, oras image, `lajstrom admin key` |
 | `tokens.sh` | personal access tokens and deploy tokens on raw, apt (`auth.conf`) and `/v2` | curl, `ubuntu:24.04`, oras image |

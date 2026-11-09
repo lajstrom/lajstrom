@@ -85,8 +85,69 @@ verification counts only while the user's stored hash is the one it was verified
 - a wrong password is never remembered: each try costs one verification.
 
 A user that does not exist costs one verification too, against a fixed hash, so that "no such
-user" and "wrong password" take the same time and the answer does not tell which. Rate limiting
-of failed logins comes with #130.
+user" and "wrong password" take the same time and the answer does not tell which. A failed
+verification counts against the account ([Failed logins](#failed-logins)).
+
+### Failed logins
+
+A refused password is a guess, and costs a replica one argon2id verification, about 17 ms of a
+core. So each failed verification counts against its account for a window of one minute, which
+opens with the first failure: a wrong password, and a user that is unknown, disabled or has no
+password, which cost the same verification. With 10 failures in its window, an account's
+passwords are no longer checked until the window closes: every request with Basic credentials
+that carry a password for it is answered `429 Too Many Requests` with `Retry-After`, the seconds
+left in the window, and no challenge. A correct password is answered `429` too, so the answer
+tells nothing about the password; after the window it works, and the count starts over.
+
+- **The account** is the user's uid: a rename keeps the count. A name that no user has is
+  counted by the name, the same way, so that the throttle does not tell whether a user exists:
+  its `429` comes after the same 10 failures, for the same time, with the same body, and costs
+  no verification either.
+- **A throttle, not a lockout.** Nothing needs unlocking: it lifts by itself when the window
+  closes. Someone who keeps sending wrong passwords for an account keeps its passwords
+  answered `429` for as long as they do, a minute at a time; they get no more than 10 guesses a
+  minute per replica, and never lock the user out of the tokens.
+- **Tokens are not throttled.** A personal access token or a deploy token is 256 random bits,
+  checked by a lookup without argon2id, and cannot be guessed; it works while its user's
+  password is under throttle, which is one more reason for CI to use one ([In CI](#in-ci)).
+- **A remembered verification** ([the cache](#the-verification-cache)) is not a failure, and
+  not a way around the throttle: the throttle is asked first.
+- **Tries in parallel** for one account, or from one address, are verified one after the
+  other, and the throttle is asked again before each: a burst of wrong passwords gets the
+  budget and `429` for the rest, not the budget plus the burst.
+
+**Per client address**, two more throttles bound what one address can do across accounts, and
+what it can make a replica spend:
+
+- **Failed logins**: each failure counts against the client address too, 30 a minute, whatever
+  the accounts; beyond, every password from the address is answered `429` until its minute has
+  passed, before the user is read. The budget is above an account's, so that one account under
+  throttle does not throttle the people behind the same address.
+- **The token endpoint**: 100 requests a second per address to `/v2/token`, with credentials
+  or without; beyond, `429` until the second has passed. It is checked before the Basic
+  credentials, so that a flood of token requests costs no argon2id.
+
+The client address is the one [ADR 0011](adr/0011-client-address-behind-a-proxy.md) defines:
+the peer of the connection, or the client that `X-Forwarded-For` names when the peer is in
+`server.trustedProxies` ([configuration.md](configuration.md#server)). An IPv6 address counts as
+its /64. **With an empty `server.trustedProxies`, the per-address throttles are off**, and the
+startup log says so: behind an edge every client would share the edge's address, and a
+`docker pull` storm or a broken CI job would throttle everyone at once. The per-account throttle
+needs no address and is always on.
+
+**Per replica.** The counts live in the memory of each replica, at most 10 000 keys per throttle
+(the one written longest ago dropped first), and a restart clears them. Behind a balancer, N
+replicas are N budgets: up to 10 × N guesses a minute for an account. The bound across replicas
+is the edge's ([operations.md](operations.md#failed-logins-and-the-edge)). The budgets are
+constants of `internal/auth`, not settings.
+
+The body of the `429` follows the route, like the `401`: under `/v2/`
+`{"errors":[{"code":"TOOMANYREQUESTS","message":"too many failed logins: try again after Retry-After seconds"}]}`
+(`too many token requests` on `/v2/token` over its budget), under `/api/`
+`{"error":{"code":"UNAVAILABLE","message":"…"}}`, plain text elsewhere. Each is logged at info
+as `throttled` with the `throttle` (`account`, `address` or `token`), the `account` for the first
+(`user:<uid>`, or `unknown` for a name that no user has; never the name typed, in case it was a
+password) and the client `address`, and counted in `lajstrom_auth_throttled_total`.
 
 ## HTTP Basic on every route
 
@@ -346,10 +407,10 @@ implemented (`405`), and the clients above use `GET`.
   "issued_at": "<RFC 3339>"}` and `Cache-Control: no-store`. The access log line has the
   principal. No audit row is written for a token: one per `docker pull` would be noise, and the
   pushes and deletes the token allows are audited themselves.
-- **Rate limiting**: none yet. #130 throttles the token endpoint per client address, with the
-  failed logins per account; it belongs in the server's middleware in front of the
-  authentication of the Basic credentials, so that a flood of token requests costs no argon2id
-  work.
+- **Rate limiting**: 100 requests a second per client address, then `429` with `Retry-After`
+  and `TOOMANYREQUESTS`, checked before the Basic credentials so that a flood costs no
+  argon2id; the passwords it carries count in the throttles of failed logins
+  ([Failed logins](#failed-logins)). Off without `server.trustedProxies`.
 
 ### What a token says
 
@@ -775,6 +836,4 @@ token it is the token's user; with a deploy token,
 
 ## What comes next
 
-| Issue | What |
-| --- | --- |
-| #130 | Rate limiting of failed logins |
+OIDC login and groups (#69). Nothing else of authentication is open for v0.1.0.

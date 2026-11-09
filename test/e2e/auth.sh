@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # End-to-end test of local users and HTTP Basic against a running Lajstrom (docs/auth.md,
 # docs/acceptance.md S-01 for the part of #43): the bootstrap command, whoami, Basic on a raw PUT,
-# disable, enable and set-password.
+# disable, enable and set-password; the throttle of failed logins, X-04 (#130), and with
+# LAJSTROM_E2E_FORWARDED=1 (the server trusts this host's X-Forwarded-For, as run.sh sets it up)
+# the throttle of /v2/token per client address. Its requests name made-up clients in
+# X-Forwarded-For, so that the budget of this host is left to the other scenarios.
 #
 #   test/e2e/auth.sh [<base url> [<raw repo>]]     default: http://localhost:8080 scratch
 #
@@ -35,11 +38,13 @@ work="$(mktemp -d)"
 user="e2e-$(date -u +%Y%m%d%H%M%S)-$RANDOM"
 path="$user/file.txt"
 uploaded=""
+x04="" # the user of X-04
 cleanup() {
 	if [ -n "$uploaded" ]; then
 		curl -sS -o /dev/null -K "$work/new" -X DELETE "$base/raw/$repo/$path" || true
 	fi
 	"${lajstrom[@]}" admin user disable "$user" >/dev/null 2>&1 || true
+	[ -z "$x04" ] || "${lajstrom[@]}" admin user disable "$x04" >/dev/null 2>&1 || true
 	rm -rf "$work"
 }
 trap cleanup EXIT
@@ -104,6 +109,57 @@ req wrong GET "$base/api/v1/whoami"
 expect "whoami with a wrong password status" 401 "$status"
 expect "whoami with a wrong password WWW-Authenticate" 'Basic realm="lajstrom"' "$(hdr www-authenticate)"
 ok "GET /api/v1/whoami with a wrong password: 401"
+
+# X-04 (#130): 20 wrong passwords in a row for one user, the 11th and later 429 with Retry-After,
+# while another user's password works from the same client; the right password of the first is
+# 429 too within the minute (a correct password after it is the unit tests': it takes a minute).
+x04="$user-x"
+client=(-H "X-Forwarded-For: 198.51.100.$((RANDOM % 100))")
+pwx="$(password)"
+out="$(LAJSTROM_ADMIN_PASSWORD="$pwx" "${lajstrom[@]}" admin user create --name "$x04")"
+uidx="$(jq -r .uid <<<"$out")"
+credentials x04 "$x04" "$pwx"
+credentials x04wrong "$x04" "$pwx-wrong"
+codes=""
+for i in $(seq 20); do
+	req x04wrong GET "$base/api/v1/whoami" "${client[@]}"
+	codes="$codes $status"
+	if [ "$i" -gt 10 ]; then
+		retry="$(hdr retry-after)"
+		case "$retry" in '' | *[!0-9]*) fail "wrong password $i: Retry-After '$retry'" ;; esac
+		[ "$retry" -ge 1 ] && [ "$retry" -le 60 ] || fail "wrong password $i: Retry-After $retry, want 1 to 60"
+	fi
+done
+expect "20 wrong passwords" "$(printf ' 401%.0s' $(seq 10))$(printf ' 429%.0s' $(seq 10))" "$codes"
+expect "the 429 body" UNAVAILABLE "$(jq -r .error.code "$work/body")"
+req old GET "$base/api/v1/whoami" "${client[@]}"
+expect "another user's password after the 20" 200 "$status"
+req x04 GET "$base/api/v1/whoami" "${client[@]}"
+expect "the right password under throttle" 429 "$status"
+if [ -n "${LAJSTROM_SERVER_LOG:-}" ]; then
+	grep -q "msg=throttled throttle=account account=user:$uidx address=" "$LAJSTROM_SERVER_LOG" ||
+		fail "no throttled line for user:$uidx in the server log"
+	! grep -qF -e "$pwx" "$LAJSTROM_SERVER_LOG" || fail "the server log has the password of $x04"
+fi
+ok "20 wrong passwords for $x04:$codes (Retry-After $retry); $user from the same client: 200; the right password: 429"
+
+if [ "${LAJSTROM_E2E_FORWARDED:-}" = 1 ]; then
+	# 200 requests to /v2/token from one client in well under a second, over one connection: the
+	# first 100 have a token, the later ones are 429 with Retry-After; another client behind the
+	# same proxy is not throttled.
+	flood="198.51.100.$((100 + RANDOM % 100))"
+	args=()
+	for _ in $(seq 200); do args+=(-o /dev/null "$base/v2/token?scope=repository:raw/$repo:pull"); done
+	out="$(curl -sS -H "X-Forwarded-For: $flood" -w '%{http_code}/%header{retry-after} ' "${args[@]}")"
+	expect "200 token requests" "$(printf '200/ %.0s' $(seq 100))$(printf '429/1 %.0s' $(seq 100))" "$out"
+	req - GET "$base/v2/token?scope=repository:raw/$repo:pull" -H "X-Forwarded-For: 198.51.100.$((RANDOM % 100))"
+	expect "a token for another client behind the proxy" 200 "$status"
+	if [ -n "${LAJSTROM_SERVER_LOG:-}" ]; then
+		grep -q "msg=throttled throttle=token address=$flood " "$LAJSTROM_SERVER_LOG" ||
+			fail "no throttled line for $flood in the server log"
+	fi
+	ok "200 GET /v2/token from $flood: 100 tokens, then 100 x 429 Retry-After: 1; another client: 200"
+fi
 
 put old
 expect "PUT as $user status" 201 "$status"
