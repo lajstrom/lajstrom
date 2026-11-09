@@ -161,7 +161,7 @@ Errors: `{"error": {"code": "NOT_FOUND|CONFLICT|FORBIDDEN|INVALID|UNAVAILABLE|IN
 
 Reindex of one repo (`manage`): `POST …/reindex` with an optional body `{"prune": true,
 "verify": false}` starts the run on the replica that received it and answers `202` with the run
-(`id`, `state`, `trigger`, `principal`, `replica`, `startedAt`), before the run reads the
+(`id`, `state`, `source`, `principal`, `replica`, `startedAt`), before the run reads the
 registry; a running run that overlaps it, on any replica or in the CLI, is `409 CONFLICT` naming
 where it runs and since when (index-schema.md, Coordination). `GET …/reindex` answers the latest
 run that covered the repo, its own or a run of every repo, with `state`, the times, `error` and

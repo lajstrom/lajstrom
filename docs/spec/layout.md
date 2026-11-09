@@ -382,7 +382,7 @@ type Writer interface {
     ClaimTag(ctx context.Context, c *TagClaim, staleBefore time.Time) error
     ReleaseTagClaim(ctx context.Context, id int64) error
     ExpireTagClaims(ctx context.Context, before time.Time) (int, error)
-    // StartReindexRun inserts r as running under the migration lock; a running run of an
+    // StartReindexRun inserts r as running under the reindex lock; a running run of an
     // overlapping scope with a heartbeat at or after staleBefore is *ReindexConflictError, an
     // older one is closed as abandoned first (index-schema.md, Coordination)
     StartReindexRun(ctx context.Context, r *ReindexRun, staleBefore time.Time) error
@@ -459,7 +459,7 @@ type Request struct {
     Repo      *index.Repo                     // nil: every repo
     Prune     bool                            // sweep rows not seen (default on for a run of every repo)
     Verify    bool                            // read and check every manifest, known digests too
-    Trigger   string                          // cli, api, reconcile
+    Source    string                          // cli, api, reconcile
     Principal string
 }
 // Start takes the lock (StartReindexRun) and writes repo.reindex; *index.ReindexConflictError
