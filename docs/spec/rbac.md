@@ -7,16 +7,38 @@
 
 | Principal | Form | MVP |
 | --- | --- | --- |
-| local user | `user:<name>`; password (argon2id) | yes |
+| local user | `user:<uid>` (below); password (argon2id) | yes |
 | personal access token (PAT) | acts as its user, optionally narrowed by `scopes`; expiry mandatory (max 1 year, default 90 days) | yes |
 | deploy token | `token:<id>`; bound to exactly one repo; scopes `read` and/or `write`; expiry optional | yes |
 | anonymous | `anonymous`; only ever gets `read`, and only on repos with `anonymousRead: true` | yes |
 | group | `group:<name>`; from OIDC claims | after the MVP |
-| OIDC user | `user:<subject or preferred_username>` | after the MVP |
+| OIDC user | `user:<uid>`, of the user its IdP's `sub` maps to | after the MVP |
 
 One credential works on every protocol: HTTP Basic on the frontends and on `/v2/token`
 (`user:password`, `user:PAT`, or `deploy:<token>`), and the resulting bearer on `/v2`.
 Passwords and token secrets are never logged; tokens are stored hashed (sha256) and shown once.
+
+### Users: the uid and the name
+
+A user's identity is its **uid**, a UUID v7 (RFC 9562) in its canonical text form, made when the
+user is created and never changed nor reused (#182). Everything that refers to a user refers to
+the uid: the principal `user:<uid>` that bindings, publication sessions, the audit log, the `sub`
+of a bearer token and the annotation `lajstrom.uploaded-by` carry, and the tokens, by the user's
+row. A version 7 UUID begins with the time of its creation, which `createdAt` shows anyway.
+
+The **name** is an attribute: what HTTP Basic carries before the colon and what people type. At
+any moment it names one live user: it is unique among the users that are not deleted, it can be
+changed (a rename), and a user that is deleted frees it. Where a person names a user (Basic, the
+CLI, the API, `--principal user:alice`), the server resolves the name to the live user's uid at
+the time of the request; answers and lists show both. A name of the form of a UUID is refused, so
+that `user:<x>` is a uid when `x` is a UUID and a name otherwise.
+
+**Deleting a user** disables it, revokes its tokens and removes its bindings, and keeps its row,
+marked deleted: a uid in the audit log always resolves to who it was. A new user of the freed name
+gets a new uid and inherits nothing. A user can be disabled instead, which is undone by enabling
+it; deleting is not undone. The last enabled user with an admin binding is neither deleted nor
+disabled (`409`). A rename changes nothing but the name: the bindings and tokens keep working, and
+the audit log keeps the name of each event's time.
 
 ## 2. Resources and actions
 
@@ -49,8 +71,8 @@ A principal may have many bindings; the effective permission on a repo is the un
 
 A binding is refused with `400`, naming the field, when:
 
-- its principal is not `user:<name>` of an existing user. `group:<name>` comes with OIDC, after
-  the MVP. `anonymous` reads through a repo's `anonymousRead` and gets nothing else, and a
+- its principal is not a live user, `user:<name>` (stored as the user's `user:<uid>`) or
+  `user:<uid>`. `group:<name>` comes with OIDC, after the MVP. `anonymous` reads through a repo's `anonymousRead` and gets nothing else, and a
   deploy token `token:<id>` gets its repo and its scopes and nothing else, so neither has
   bindings;
 - its role is not one of the four;
@@ -126,9 +148,11 @@ MVP.
   exist: the client can read the token, and it names every repository asked for without telling
   which exist (§3). Asking for what one may not have is not an error of the token endpoint, as
   in the distribution token spec.
-- Issues a JWT (`ES256`, key from `keys`), `exp` 20 minutes, claims: `sub` (principal),
-  `access: [{type: repository, name, actions}]`, `aud` = service, `jti`. Also returns
-  `refresh_token` = none (clients re-authenticate with Basic).
+- Issues a JWT (`ES256`, key from `keys`), `exp` 20 minutes, claims: `sub` (the principal,
+  `user:<uid>` for a user), `access: [{type: repository, name, actions}]`, `aud` = service,
+  `jti`. Also returns `refresh_token` = none (clients re-authenticate with Basic). A token whose
+  `sub` names a user by name, issued before the uid (#182), is refused like any token that does
+  not verify: `401`, and the client gets another.
 - The facade validates the bearer on every `/v2` request and enforces the actions, by the token
   before it looks the repo up, so that the answers keep §3: a repository the token does not name
   is `401` with `error="insufficient_scope"`, whether its repo exists or not; one it names with
