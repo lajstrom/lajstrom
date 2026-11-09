@@ -12,6 +12,10 @@
 #   assert_status WANT ARGS...  curl -sS ARGS... and fail unless the status is WANT; the status
 #                               is left in $E2E_STATUS, the body in $E2E_BODY. Its FAIL line
 #                               has the arguments: credentials go in a file, -K FILE
+#   e2e_credentials DIR         the user the scenario runs as, from LAJSTROM_E2E_USER and
+#                               LAJSTROM_E2E_PASSWORD (run.sh makes one, an admin): $E2E_USER,
+#                               $E2E_PASSWORD, and $E2E_CURLRC, a curl configuration in DIR with
+#                               both, for -K; exits 2 when they are not set
 #
 # and an ERR trap: any command that fails where set -e would exit prints "FAIL <script>: exit N
 # from: <the command>" and the calls that led there before the script exits, so that a broken
@@ -68,6 +72,15 @@ assert_status() {
 	E2E_STATUS="${out##*$'\n'}"
 	E2E_BODY="${out%$'\n'*}"
 	[ "$E2E_STATUS" = "$want" ] || fail "curl $*: status $E2E_STATUS, want $want: ${E2E_BODY:0:300}"
+}
+
+e2e_credentials() {
+	if [ -z "${LAJSTROM_E2E_USER:-}" ] || [ -z "${LAJSTROM_E2E_PASSWORD:-}" ]; then
+		echo "$e2e_script: set LAJSTROM_E2E_USER and LAJSTROM_E2E_PASSWORD to a user that may do what the scenario does (test/e2e/run.sh makes an admin)" >&2
+		exit 2
+	fi
+	E2E_USER="$LAJSTROM_E2E_USER" E2E_PASSWORD="$LAJSTROM_E2E_PASSWORD" E2E_CURLRC="$1/e2e.curlrc"
+	(umask 077 && printf 'user = "%s:%s"\n' "$E2E_USER" "$E2E_PASSWORD" >"$E2E_CURLRC")
 }
 
 # _e2e_err STATUS COMMAND LINE is the ERR trap.

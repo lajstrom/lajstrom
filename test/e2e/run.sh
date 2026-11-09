@@ -14,13 +14,16 @@
 #   LAJSTROM_MASTER_KEY    the server's master key: apt repos are signed; lajstrom admin key needs it
 #   LAJSTROM_SERVER_LOG    the server's log file
 #   LAJSTROM_E2E_REGISTRY  host:port of the registry `local`
+#   LAJSTROM_E2E_USER      a user with the admin binding, made for the run with a random password,
+#   LAJSTROM_E2E_PASSWORD  for the scenarios that need no user of their own (lib.sh, e2e_credentials)
 #
 # Everything lives in a temporary directory: the configuration, the SQLite index, the server's
 # log and the output of each scenario. The configuration has one registry, `local`, at
 # $LAJSTROM_E2E_REGISTRY (default localhost:5000, the Zot of make dev-up), and the repos
-# raw/scratch, apt/ubuntu and apt/e2e on it; no metrics listener, no reconcile loop. The
-# LAJSTROM_SERVER_*, LAJSTROM_LOG_* and LAJSTROM_DATABASE_* overrides of the caller's
-# environment are unset, so that the server and lajstrom admin both read the file. The server
+# raw/scratch, apt/ubuntu, apt/e2e and pypi/e2e on it, and the user $LAJSTROM_E2E_USER with the
+# admin binding; no metrics listener, no reconcile loop. The LAJSTROM_SERVER_*, LAJSTROM_LOG_*
+# and LAJSTROM_DATABASE_* overrides of the caller's environment are unset, so that the server and
+# lajstrom admin both read the file. The server
 # must answer /-/readyz within 30 s. A scenario that fails is reported with its FAIL lines (the
 # assertion or the failing command, from lib.sh) and the last 50 lines of the server log; the
 # others still run. On exit the server is stopped and the directory removed, unless
@@ -131,6 +134,11 @@ repos:
 EOF
 
 "$bin" migrate --config "$LAJSTROM_CONFIG" >"$tmp/migrate.log" 2>&1 || { cat "$tmp/migrate.log" >&2; echo "run.sh: lajstrom migrate failed" >&2; exit 2; }
+LAJSTROM_E2E_USER="e2e-admin"
+LAJSTROM_E2E_PASSWORD="$(head -c 24 /dev/urandom | base64 | tr -d '+/=\n')"
+export LAJSTROM_E2E_USER LAJSTROM_E2E_PASSWORD
+printf '%s' "$LAJSTROM_E2E_PASSWORD" | "$bin" admin user create --name "$LAJSTROM_E2E_USER" --admin --password-stdin \
+	--config "$LAJSTROM_CONFIG" >"$tmp/admin.log" 2>&1 || { cat "$tmp/admin.log" >&2; echo "run.sh: lajstrom admin user create failed" >&2; exit 2; }
 "$bin" serve --config "$LAJSTROM_CONFIG" >"$LAJSTROM_SERVER_LOG" 2>&1 </dev/null &
 pid=$!
 served=$SECONDS

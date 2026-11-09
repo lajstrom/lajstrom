@@ -4,11 +4,13 @@
 #
 #   test/e2e/raw.sh [<base url> [<repo>]]     default: http://localhost:8080 scratch
 #
-# The repo must exist (the example configuration creates raw/scratch) and be writable without
-# credentials, as on the dev stack. Every path starts with a directory of its own for the run, so
-# the script can run again against the same repo, and it deletes what it uploaded at the end. It
-# needs curl and jq, prints one line per step and exits non-zero at the first failure, naming the
-# assertion or the command (lib.sh). make e2e runs it (test/e2e/run.sh).
+# The repo must exist (the example configuration creates raw/scratch), and the user of
+# LAJSTROM_E2E_USER and LAJSTROM_E2E_PASSWORD must write and delete in it (run.sh makes an admin;
+# lib.sh, e2e_credentials). Every request carries those credentials, from a curl configuration
+# file. Every path starts with a directory of its own for the run, so the script can run again
+# against the same repo, and it deletes what it uploaded at the end. It needs curl and jq, prints
+# one line per step and exits non-zero at the first failure, naming the assertion or the command
+# (lib.sh). make e2e runs it (test/e2e/run.sh).
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -20,6 +22,7 @@ done
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+e2e_credentials "$work"
 run="e2e-$(date -u +%Y%m%d%H%M%S)-$RANDOM"
 created=()  # every path uploaded, for the cleanup
 status=""   # status of the last request
@@ -44,7 +47,7 @@ req() {
 		how=(-I) out=/dev/null
 		: >"$work/body"
 	fi
-	status="$(curl -sS --globoff "${how[@]}" -o "$out" -D "$work/headers.raw" -w '%{http_code}' "$@" "$base/raw/$repo/$path")"
+	status="$(curl -sS --globoff -K "$E2E_CURLRC" "${how[@]}" -o "$out" -D "$work/headers.raw" -w '%{http_code}' "$@" "$base/raw/$repo/$path")"
 	tr -d '\r' <"$work/headers.raw" | awk -F': ' 'NF > 1 { $1 = tolower($1); print }' OFS=': ' >"$work/headers"
 }
 
