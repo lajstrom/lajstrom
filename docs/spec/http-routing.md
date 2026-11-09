@@ -153,7 +153,7 @@ do not invent their own. What each call needs, in the actions of rbac.md §2 (de
 | --- | --- |
 | reading a repo's content: `GET /api/v1/repos` (lists only the repos the caller may read), `GET …/repos/<format>/<repo>`, and the read endpoints of packages, versions and search that #136 adds | `read` on the repo; a repo the caller may not read is `404`, as on the frontends (rbac.md §3) |
 | changing a repo: `PATCH`, `DELETE`, `POST …/reindex`, `GET …/reindex`, the deploy tokens of the repo | `manage` on the repo |
-| creating a repo, and the system resources: users, bindings, audit, registries, every token | the admin role (`manage` on `*/*`) |
+| creating a repo, and the system resources: users, bindings, audit, registries, every token | the admin role (rbac.md §2; a `maintainer` on `*/*` is not enough) |
 | the personal access tokens of a user | the user themself, within what the credential allows, or the admin role |
 | `GET /api/v1/whoami` | nothing |
 
