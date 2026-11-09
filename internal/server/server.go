@@ -19,6 +19,10 @@ import (
 // DefaultShutdownTimeout is the graceful shutdown bound when Options.ShutdownTimeout is zero.
 const DefaultShutdownTimeout = 30 * time.Second
 
+// abortGrace is how long Run waits, after the shutdown timeout, for the handlers it cancelled
+// to return; a variable so that tests can shorten it.
+var abortGrace = 5 * time.Second
+
 // Limits of the http.Server.
 const (
 	readHeaderTimeout = 10 * time.Second
@@ -80,7 +84,11 @@ type Server struct {
 	srv     *http.Server
 
 	running     atomic.Bool
-	bound       chan struct{} // closed when Run has bound the listeners, or failed to
+	draining    atomic.Bool  // set when Run's context ends; /-/readyz answers 503 from then on
+	inflight    atomic.Int64 // handlers running
+	abort       context.CancelFunc
+	baseCtx     context.Context // the parent of every request's context; abort cancels it
+	bound       chan struct{}   // closed when Run has bound the listeners, or failed to
 	mu          sync.Mutex
 	addr        net.Addr
 	metricsAddr net.Addr
@@ -106,10 +114,12 @@ func New(o Options) (*Server, error) {
 		o.Log = slog.Default()
 	}
 	s := &Server{opts: o, log: o.Log, mux: http.NewServeMux(), bound: make(chan struct{})}
+	s.baseCtx, s.abort = context.WithCancel(context.Background())
 	s.routes()
-	s.handler = s.recovery(requestID(s.accessLog(s.authenticate(s.limitUploads(s.stall(s.mux))))))
+	s.handler = s.track(s.recovery(requestID(s.accessLog(s.authenticate(s.limitUploads(s.stall(s.mux)))))))
 	s.srv = &http.Server{
-		Handler: s.handler,
+		Handler:     s.handler,
+		BaseContext: func(net.Listener) context.Context { return s.baseCtx },
 		// No ReadTimeout and no WriteTimeout: they bound the whole request body and the whole
 		// response, and a blob upload or download streams for as long as its size needs. Slow
 		// clients are bounded by ReadHeaderTimeout and IdleTimeout, and a body that stops
@@ -141,14 +151,19 @@ func (s *Server) MetricsAddr() net.Addr {
 	return s.metricsAddr
 }
 
-// Run listens on Options.Listen and serves until ctx is cancelled. Then it stops accepting
-// connections and waits up to ShutdownTimeout for in-flight requests to finish. It returns nil
+// Run listens on Options.Listen and serves until ctx is cancelled. Then it drains: /-/readyz
+// answers 503, the listener closes, and in-flight requests, uploads included, get up to
+// ShutdownTimeout to finish; idle connections are closed at once, the others after their
+// response. Requests still running at the deadline are aborted: their contexts are cancelled
+// and their connections closed, and Run waits up to abortGrace for their handlers to return,
+// so that what serve closes after Run (the index) is not closed under them. It returns nil
 // after a clean stop, and an error when it cannot listen, when serving fails, or when requests
-// are still running at the deadline (their connections are closed). Run may be called once.
+// were aborted. Run may be called once.
 func (s *Server) Run(ctx context.Context) error {
 	if !s.running.CompareAndSwap(false, true) {
 		return errors.New("server: Run called twice")
 	}
+	defer s.abort()
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", s.opts.Listen)
 	if err != nil {
@@ -191,11 +206,18 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 
-	s.log.Info("shutting down", "timeout", s.opts.ShutdownTimeout)
+	s.draining.Store(true)
+	s.log.Info("shutting down: not ready, draining in-flight requests",
+		"timeout", s.opts.ShutdownTimeout, "inflight", s.inflight.Load())
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.opts.ShutdownTimeout)
 	defer cancel()
 	if err := s.srv.Shutdown(sctx); err != nil {
+		s.log.Warn("shutdown timeout: aborting in-flight requests", "inflight", s.inflight.Load())
+		s.abort()
 		_ = s.srv.Close()
+		if !s.waitHandlers(abortGrace) {
+			s.log.Error("handlers still running after the abort", "inflight", s.inflight.Load())
+		}
 		return fmt.Errorf("server: shutdown: %w", err)
 	}
 	if err := <-served; !errors.Is(err, http.ErrServerClosed) {
@@ -203,4 +225,25 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	s.log.Info("stopped")
 	return nil
+}
+
+// track counts the running handlers for the shutdown.
+func (s *Server) track(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.inflight.Add(1)
+		defer s.inflight.Add(-1)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// waitHandlers waits up to d for every handler to return, and reports whether they did.
+func (s *Server) waitHandlers(d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for s.inflight.Load() > 0 {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return true
 }

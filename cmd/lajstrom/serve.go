@@ -33,7 +33,8 @@ const registryProbeTimeout = 10 * time.Second
 // PersistentPreRunE), open the index database and apply its pending migrations, create the
 // repos of the configuration that the control plane does not have, load the master key, build
 // a provider for every registry and probe its capabilities, build the server and run it until
-// SIGINT or SIGTERM, then close the database.
+// SIGINT or SIGTERM and the drain that follows (server.Run; a second signal stops the process
+// at once), then close the database.
 //
 // Migrating on start takes the same lock as lajstrom migrate, so replicas that start together
 // apply each migration once. The index is Deps.Index of the format plugins and /-/readyz pings
@@ -57,6 +58,8 @@ func newServeCmd(a *app) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) (err error) {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+			// The first signal starts the drain; a second one stops the process at once.
+			context.AfterFunc(ctx, stop)
 
 			c, v := a.cfg, version.Get()
 			metrics.SetBuild(v.Version, v.Commit)

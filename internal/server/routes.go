@@ -45,8 +45,13 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 	writeText(w, http.StatusOK, "ok\n")
 }
 
-// readyz runs Options.Ready and answers 503 with its error, or 200.
+// readyz answers 503 while the server shuts down, then runs Options.Ready and answers 503
+// with its error, or 200.
 func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
+	if s.draining.Load() {
+		writeText(w, http.StatusServiceUnavailable, "shutting down\n")
+		return
+	}
 	if s.opts.Ready != nil {
 		if err := s.opts.Ready(r.Context()); err != nil {
 			s.log.WarnContext(r.Context(), "not ready", "error", err.Error(), "requestId", RequestID(r.Context()))

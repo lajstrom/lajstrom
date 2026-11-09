@@ -286,6 +286,29 @@ nothing else is read; without it the server is `server.listen` of the configurat
 and only that key and `LAJSTROM_SERVER_LISTEN` are read, never a secret. It speaks plain HTTP
 unless `--url` says `https`; [deploy/compose.md](deploy/compose.md#the-health-check) uses it.
 
+## Shutdown
+
+On `SIGTERM` or `SIGINT`, `serve` drains: `/-/readyz` answers `503 shutting down`, the listener
+closes, so new connections are refused, and idle keep-alive connections are closed. Requests in
+flight, uploads included, get `server.shutdownTimeout` (default `30s`) to finish and are answered
+as usual, each on a connection that closes after its response; the process exits `0` once the
+last one is done. At the deadline, the requests still running are aborted: their contexts are
+cancelled, which stops their requests to the registry, and their connections closed; the
+process waits up to 5 s for their handlers to return, closes the index and exits with an error
+that says so. An upload aborted that way leaves nothing behind that another replica cannot
+handle: an OCI upload session lives in the index and in the registry, so the client resumes it
+or starts over on another replica; a publish cut off before its manifest is in the registry
+published nothing, and one cut off after it is indexed by the next reconcile; a claim on a tag
+expires after `ingest.claimTTL`. A reindex run in the background is cancelled at the
+signal and finishes as failed. A second signal stops the process at once, without the drain.
+
+Set `server.shutdownTimeout` from the longest upload a replica should finish, and the grace
+period of the orchestrator above it, or it kills the process before the drain ends:
+`terminationGracePeriodSeconds` on Kubernetes (30 s by default), `stop_grace_period` in Compose
+(10 s by default). On Kubernetes the endpoint of a terminating pod is removed while the pod
+gets `SIGTERM`, not before: a `preStop` hook that sleeps a few seconds keeps the listener open
+until the edge has stopped sending new requests to it.
+
 ## Limits
 
 What bounds the work of one request, towards the registries and from the clients.
