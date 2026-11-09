@@ -3,7 +3,7 @@ package index
 import (
 	"crypto/rand"
 	"encoding/binary"
-	"encoding/hex"
+	"fmt"
 	"time"
 )
 
@@ -24,17 +24,7 @@ func NewUID(at time.Time) string {
 
 // format writes the 16 bytes of a UUID as 8-4-4-4-12 lowercase hex digits.
 func format(b [16]byte) string {
-	var s [36]byte
-	hex.Encode(s[0:8], b[0:4])
-	s[8] = '-'
-	hex.Encode(s[9:13], b[4:6])
-	s[13] = '-'
-	hex.Encode(s[14:18], b[6:8])
-	s[18] = '-'
-	hex.Encode(s[19:23], b[8:10])
-	s[23] = '-'
-	hex.Encode(s[24:36], b[10:16])
-	return string(s[:])
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // IsUID reports whether s has the form of a uid: a UUID in its canonical text form, 8-4-4-4-12
