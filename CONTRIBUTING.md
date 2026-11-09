@@ -201,11 +201,11 @@ scanoss-py inspect undeclared --input /tmp/scanoss-results.json
 | `changes` | whether the pull request changes a path that the integration tests depend on (below) |
 | `integration (zot)`, `integration (distribution)` | `go test -race -tags integration ./...` against Zot or distribution, the store suite on SQLite and Postgres; the dev stack's images as service containers |
 | `integration-result` | both integration cells passed, or nothing needed them; the required check for the integration tests |
-| `e2e` | `make e2e`: the end-to-end scenarios with real clients against Zot as a service container, in 6 minutes at most ([docs/testing.md](docs/testing.md)) |
+| `e2e` | `make e2e`: the end-to-end scenarios with real clients against Zot as a service container, in 6 minutes at most ([docs/testing.md](docs/testing.md)), the client images pulled once beforehand and the maven and gradle caches of `maven.sh` kept between runs (actions/cache); then `apt.sh` again with `APT_E2E_IMAGE` `ubuntu:22.04` and `debian:12`, in 3 minutes at most |
 | `lint` | golangci-lint |
 | `vulncheck` | govulncheck |
 | `licenses` | dependency licenses against the allowlist |
-| `snippet-scan` | ScanOSS match against public open source code |
+| `snippet-scan` | ScanOSS match against public open source code, in 10 minutes at most; the client from PyPI (three bounded attempts, a pip cache), and an API that is unavailable or gives no result within 4 minutes makes a warning, not a failure |
 | `dco` | `Signed-off-by:` on every commit of the pull request |
 | `codeql` | CodeQL static analysis (separate workflow) |
 | `CLAAssistant` | CLA signature (separate workflow) |

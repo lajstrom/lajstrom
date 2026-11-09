@@ -196,14 +196,15 @@ jobs:
 
   e2e:
     # make e2e (#34, docs/testing.md): bin/lajstrom on the runner against Zot, and the scenarios
-    # of test/e2e/ with real clients, curl on the runner and oras and apt-get in containers with
-    # --network host. The same paths as the integration cells decide whether it runs. Not a
-    # matrix, so a skipped run reports the check e2e itself.
+    # of test/e2e/ with real clients, curl on the runner and oras, apt-get, pip, mvn and gradle in
+    # containers with --network host; then apt.sh again in the other apt clients of #48. The same
+    # paths as the integration cells decide whether it runs. Not a matrix, so a skipped run
+    # reports the check e2e itself.
     name: e2e
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     services:
       zot:
         # The Zot of the integration job: v2.1.23, the minimal build, on the configuration built
@@ -233,20 +234,70 @@ jobs:
         with:
           go-version: stable
       - name: Pull the client images
-        # The images the scenarios run (test/e2e/*.sh headers), pulled here so that the budget of
-        # the next step is the scenarios'. oras is not installed: oras.sh uses the image too.
-        timeout-minutes: 3
+        # The images the scenarios run (test/e2e/*.sh headers), pulled once here, four at a
+        # time, so that the budgets of the next steps are the scenarios'. oras is not installed:
+        # oras.sh uses the image too. ubuntu:22.04 and debian:12 are for the apt step below.
+        # The runner is linux/amd64, the platform apt.sh asks for.
+        id: images
+        timeout-minutes: 4
         run: |
-          docker pull --platform linux/amd64 ubuntu:24.04
-          docker pull ghcr.io/oras-project/oras:v1.3.6
-          docker pull python:3.13
+          set -euo pipefail
+          images=(
+            ubuntu:24.04                    # apt.sh, tokens.sh
+            ubuntu:22.04                    # apt.sh, below
+            debian:12                       # apt.sh, below
+            ghcr.io/oras-project/oras:v1.3.6
+            python:3.13                     # pypi.sh
+            maven:3.9.16-eclipse-temurin-21 # maven.sh
+            gradle:8.14.6-jdk21             # maven.sh
+          )
+          printf '%s\n' "${images[@]}" | xargs -n 1 -P 4 docker pull --quiet --platform linux/amd64
+      - name: Cache of the maven and gradle clients
+        # maven.sh's local repository and GRADLE_USER_HOME, the plugins and dependencies that mvn
+        # and gradle download from Maven Central: host directories here (MAVEN_E2E_M2 and
+        # MAVEN_E2E_GRADLE_HOME below, the script's header) instead of its docker volumes, so that
+        # they outlive the runner. The key follows the script, which names the images, and the
+        # fixtures; nothing of a run stays in the local repository, and gradle drops what a run
+        # resolved after 30 days unused. Gradle's lock files are left out.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/maven-e2e/m2
+            ${{ runner.temp }}/maven-e2e/gradle/caches
+            !${{ runner.temp }}/maven-e2e/gradle/caches/**/*.lock
+            !${{ runner.temp }}/maven-e2e/gradle/caches/**/gc.properties
+          key: maven-e2e-${{ runner.os }}-${{ hashFiles('test/e2e/maven.sh', 'test/e2e/fixtures/maven/**') }}
+          restore-keys: |
+            maven-e2e-${{ runner.os }}-
       - name: make e2e
         # The budget of #34. A failed scenario prints its FAIL lines and the last 50 lines of
         # the server log.
         timeout-minutes: 6
         env:
           LAJSTROM_E2E_REGISTRY: localhost:5000
+          MAVEN_E2E_M2: ${{ runner.temp }}/maven-e2e/m2
+          MAVEN_E2E_GRADLE_HOME: ${{ runner.temp }}/maven-e2e/gradle
         run: make e2e
+      - name: apt.sh in ubuntu:22.04 and debian:12
+        # #48: make e2e ran apt.sh in ubuntu:24.04, its default; here the issue's other two apt
+        # clients, each with a run.sh of its own (a server of its own; bin/lajstrom is built). It
+        # runs even when make e2e failed, and both images run when the first fails. The budget of
+        # #48 is three minutes.
+        if: ${{ !cancelled() && steps.images.outcome == 'success' }}
+        timeout-minutes: 3
+        env:
+          LAJSTROM_E2E_REGISTRY: localhost:5000
+        run: |
+          set -euo pipefail
+          failed=""
+          for image in ubuntu:22.04 debian:12; do
+            echo "=== APT_E2E_IMAGE=${image}"
+            APT_E2E_IMAGE="${image}" test/e2e/run.sh apt || failed="${failed} ${image}"
+          done
+          if [ -n "${failed}" ]; then
+            echo "::error::apt.sh failed in${failed}"
+            exit 1
+          fi
 
   lint:
     name: lint
@@ -298,6 +349,11 @@ jobs:
   snippet-scan:
     name: snippet-scan
     runs-on: ubuntu-latest
+    # The job takes under a minute, a scan of the whole tree too. The limit stops a job that
+    # hangs, as one did for over 20 minutes in the pip install of the client; the install (at
+    # most 4.5 minutes) and the scan (4) have bounds of their own below, inside it, so that a
+    # slow PyPI or API ends in a step that says so.
+    timeout-minutes: 10
     env:
       SCANOSS_VERSION: 1.54.3
       # Optional: a SCANOSS API key (repository secret) switches the scan from the shared,
@@ -309,10 +365,33 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: python
         with:
           python-version: "3.13"
+      - name: Cache of pip
+        # The wheels of the client and its dependencies, keyed by the exact Python and the
+        # pinned client: on a hit pip still asks PyPI's index, but downloads nothing.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pip
+          key: pip-scanoss-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-${{ env.SCANOSS_VERSION }}
       - name: Install ScanOSS client
-        run: python -m pip install --disable-pip-version-check "scanoss==${SCANOSS_VERSION}"
+        # Three attempts, each at most 75 s (one takes about 20): pip's --timeout ends a connection
+        # that stalls, timeout(1) an attempt that crawls. PyPI unreachable three times fails the
+        # job: without the client there is no scan.
+        timeout-minutes: 5
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3; do
+            if timeout 75 python -m pip install --disable-pip-version-check --retries 2 --timeout 15 \
+              "scanoss==${SCANOSS_VERSION}"; then
+              exit 0
+            fi
+            echo "::warning::snippet-scan: pip install scanoss==${SCANOSS_VERSION}, attempt ${attempt} of 3, failed"
+            [ "${attempt}" = 3 ] || sleep $((attempt * 10))
+          done
+          echo "::error::snippet-scan: pip install scanoss==${SCANOSS_VERSION} failed three times"
+          exit 1
       - name: Select files to scan
         # Pull requests: only files added or changed in the PR. Pushes to main: the whole tree.
         # Only source code is scanned: the snippet scan exists to catch copied code, and the
@@ -347,6 +426,8 @@ jobs:
         # Only file fingerprints are sent, never source code. The free OSSKB endpoint is shared
         # by every GitHub runner and gets rate-limited; when the service is unavailable the
         # scan is reported as skipped instead of failing the build. A real match still fails.
+        # A scan that runs past 4 minutes counts as an unavailable service too (timeout(1) exits
+        # 124), so that the job's limit is not what ends it.
         run: |
           # The default shell runs with -e; the scanner pipeline below is allowed to fail so
           # that the API-availability check after it can decide. Keep -u and pipefail.
@@ -360,16 +441,16 @@ jobs:
           if [ -n "${SCANOSS_API_KEY}" ]; then
             args+=(--apiurl https://api.scanoss.com/scan/direct --key "${SCANOSS_API_KEY}")
           fi
-          scanoss-py scan "${args[@]}" "${RUNNER_TEMP}/scan-input" 2>&1 | tee "${RUNNER_TEMP}/scanoss.log"
+          timeout 240 scanoss-py scan "${args[@]}" "${RUNNER_TEMP}/scan-input" 2>&1 | tee "${RUNNER_TEMP}/scanoss.log"
           rc=${PIPESTATUS[0]}
           if [ "$rc" -eq 0 ]; then
             [ -s "${RUNNER_TEMP}/scanoss-results.json" ] || echo '{}' > "${RUNNER_TEMP}/scanoss-results.json"
             echo "SCAN_STATE=scanned" >> "${GITHUB_ENV}"
             exit 0
           fi
-          if grep -qiE "rate limit|503|unavailable|ConnectionError|timed out" "${RUNNER_TEMP}/scanoss.log"; then
+          if [ "$rc" -eq 124 ] || grep -qiE "rate limit|503|unavailable|ConnectionError|timed out" "${RUNNER_TEMP}/scanoss.log"; then
             echo "SCAN_STATE=skipped-api-unavailable" >> "${GITHUB_ENV}"
-            echo "::warning::snippet-scan: SCANOSS API unavailable (rate limit or outage); scan skipped for this run"
+            echo "::warning::snippet-scan: SCANOSS API unavailable (rate limit, outage, or no result within 240 s, exit ${rc}); scan skipped for this run"
             exit 0
           fi
           echo "::error::snippet-scan: scanner failed for a reason other than API availability"
