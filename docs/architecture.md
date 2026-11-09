@@ -19,7 +19,8 @@ permissions, and not a single blob.
    registry. A small control plane (repos, users, tokens, bindings, audit) is the exception: it is
    not derivable, it is small, and it is backed up.
 3. **One write path.** `oras push`, `mvn deploy` and `twine upload` converge on one ingest
-   pipeline through a format plugin.
+   pipeline through a format plugin. Referrers (`cosign sign`, `oras attach`) go through the
+   same pipeline, which checks, locks, pushes and audits them and indexes nothing (#28).
 4. **One endpoint.** `https://host/<format>/<repo>/`; the OCI name mirrors the path:
    `host/<format>/<repo>/<pkg>`.
 5. **No client plugins.** Protocols are emulated on the server; native OCI clients (helm, oras,
@@ -137,6 +138,13 @@ sequenceDiagram
   F->>D: confirm (versions, files; invalidate index_cache; release claim)
   F-->>C: 201 Created
 ```
+
+A signature or an SBOM of the version (a manifest with `subject`, or cosign's legacy
+`sha256-<hex>.sig`) takes the same `PUT manifest` into the pipeline's referrer path instead:
+the subject and the blobs are checked, the manifest is pushed as it came (under the referrers
+lock of the subject when the registry has no referrers API, since the push rewrites the
+`sha256-<hex>` index), an audit event is written, and no derived row: the referrers are listed
+from the registry (manifest-profile.md §6).
 
 ### B. Publish with `mvn deploy`
 

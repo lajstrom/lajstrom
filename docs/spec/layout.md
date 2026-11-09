@@ -581,6 +581,21 @@ func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag str
 // Upload is the frontend path: Plugin.Build → push missing blobs → store as Ingest does.
 func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload, principal auth.Principal) (*format.Published, error)
 
+// PutReferrer stores a referrer (a signature, an SBOM, an attestation: profile.IsReferrer, or a
+// manifest with a subject on an oci repo) as it came, and indexes nothing. On a managed repo the
+// subject must be a manifest of the repository, the blobs in the backend, a tag cosign's
+// (ErrInvalid otherwise). Without Capabilities.Referrers the push runs under
+// Store.WithReferrersLock of the subject. One audit event: push, Subject the subject's digest,
+// Details {"kind", "artifactType"}. Approved by the maintainer on 2026-11-09 (#28).
+func (p *Pipeline) PutReferrer(ctx context.Context, repo index.Repo, r Referrer, principal auth.Principal) (digest.Digest, error)
+type Referrer struct {
+    Path     string             // the package path below the repo
+    Tag      string             // "" for a push by digest; on a managed repo cosign's legacy tag only
+    Desc     ocispec.Descriptor // media type, digest and size of Manifest
+    Manifest []byte             // as received
+    Subject  digest.Digest      // its subject, or the manifest cosign's tag names
+}
+
 // Inspect runs the steps of Ingest that only read (1 to 3) on a manifest found in the registry
 // at <repo base>/<pkgPath>:<tag> and returns the rows step 6 writes; nothing is pushed or
 // claimed, and a missing blob is ErrInvalid. With AllowDegraded, a metadata layer that is missing
