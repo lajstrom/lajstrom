@@ -88,9 +88,12 @@ func TestRunShutdownTimeout(t *testing.T) {
 		Listen:          "127.0.0.1:0",
 		Log:             slog.New(slog.DiscardHandler),
 		ShutdownTimeout: 20 * time.Millisecond,
-		Ready: func(context.Context) error {
+		Ready: func(ctx context.Context) error {
 			close(entered)
-			<-release // outlives the shutdown timeout
+			select { // outlives the shutdown timeout, until the abort cancels it
+			case <-release:
+			case <-ctx.Done():
+			}
 			return nil
 		},
 	})
