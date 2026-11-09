@@ -239,6 +239,7 @@ jobs:
         run: |
           docker pull --platform linux/amd64 ubuntu:24.04
           docker pull ghcr.io/oras-project/oras:v1.3.6
+          docker pull python:3.13
       - name: make e2e
         # The budget of #34. A failed scenario prints its FAIL lines and the last 50 lines of
         # the server log.
