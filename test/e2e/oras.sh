@@ -3,8 +3,9 @@
 # (docs/quickstart/oras.md §3; docs/acceptance.md O-01, O-02 and O-04): the challenge of
 # GET /v2/, oras login, oras push of a file to a raw repo with the raw profile, the same manifest
 # again (201, the same digest), another manifest under the tag (409 TAG_INVALID naming the
-# first), oras pull and the bytes, oras repo tags, oras manifest fetch, the raw frontend serving
-# the pushed file, then oras manifest delete through the facade (#61) and a 404.
+# first), the repo's policy (#60: PATCH merges it; a file above maxFileSize is 413 through oras
+# push and the raw PUT), oras pull and the bytes, oras repo tags, oras manifest fetch, the raw
+# frontend serving the pushed file, then oras manifest delete through the facade (#61) and a 404.
 #
 #   test/e2e/oras.sh [<base url> [<raw repo>]]     default: http://localhost:8080 scratch
 #
@@ -37,8 +38,11 @@ run="e2e-oras-$(date -u +%Y%m%d%H%M%S)-$RANDOM"
 path="$run/hello.txt"  # lower case: the path is also the OCI repository below raw/<repo>/
 name="raw/$repo/$path" # the OCI name of the file
 pushed=""
+policy_set=""
 cleanup() {
 	[ -z "$pushed" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/raw/$repo/$path" || true
+	[ -z "$policy_set" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X PATCH -H 'Content-Type: application/json' \
+		-d '{"policy": null}' "$base/api/v1/repos/raw/$repo" || true
 	rm -rf "$work"
 }
 trap cleanup EXIT
@@ -98,6 +102,31 @@ if push "2001-02-03T04:05:06Z"; then fail "oras push of another manifest under $
 grep -qF "tag $version of $name is taken by $digest" "$work/oras.log" ||
 	{ cat "$work/oras.log" >&2; fail "the refusal of another manifest under $version does not name $digest"; }
 step "oras push of another manifest under $version: refused, tag invalid: the tag is taken by $digest"
+
+# #60: the repo's policy. PATCH merges it into what the repo has; a file above maxFileSize is
+# 413 through /v2 (the manifest PUT, which ingest checks) and through the raw frontend. The
+# policy goes again at the end of the step, or in the cleanup when the step fails.
+patch_policy() {
+	assert_status 200 -K "$E2E_CURLRC" -X PATCH -H 'Content-Type: application/json' \
+		-d "{\"policy\": $1}" "$base/api/v1/repos/raw/$repo"
+	jq -c .policy <<<"$E2E_BODY"
+}
+assert_eq null "$(curl -sS -K "$E2E_CURLRC" "$base/api/v1/repos/raw/$repo" | jq -c .policy)" "the policy of raw/$repo before the step"
+policy_set=yes
+assert_eq '{"blobRedirect":"never"}' "$(patch_policy '{"blobRedirect": "never"}')" "PATCH blobRedirect"
+size="$(wc -c <"$work/$path" | tr -d ' ')"
+limit=$((size - 1))
+assert_eq "{\"blobRedirect\":\"never\",\"maxFileSize\":$limit}" "$(patch_policy "{\"maxFileSize\": $limit}")" "PATCH maxFileSize, merged"
+step "PATCH raw/$repo policy {blobRedirect}, then {maxFileSize: $limit}: merged into both"
+if push "$created"; then fail "oras push of a file of $size bytes over maxFileSize $limit succeeded: $(cat "$work/oras.log")"; fi
+grep -qiE 'size[ _]invalid' "$work/oras.log" && grep -qF "larger than the maxFileSize of raw/$repo, $limit bytes" "$work/oras.log" ||
+	{ cat "$work/oras.log" >&2; fail "the refusal of a file over maxFileSize is not SIZE_INVALID naming the limit"; }
+step "oras push of $size bytes with maxFileSize $limit: refused, 413 SIZE_INVALID naming the limit"
+assert_status 413 -K "$E2E_CURLRC" -T "$work/$path" "$base/raw/$repo/$run/large.txt"
+step "PUT /raw/$repo/$run/large.txt of $size bytes: 413"
+assert_eq null "$(patch_policy '{"maxFileSize": null, "blobRedirect": null}')" "PATCH removing both keys"
+policy_set=""
+step "PATCH raw/$repo policy {maxFileSize: null, blobRedirect: null}: no policy left"
 
 # O-02: pull, tags and the manifest through the facade, the file through the raw frontend.
 oras pull -o out "$registry/$name:$version" >"$work/oras.log" 2>&1 || { cat "$work/oras.log" >&2; fail "oras pull"; }

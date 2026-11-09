@@ -105,7 +105,7 @@ func (p *Pipeline) Open(ctx context.Context, repo index.Repo, name, version stri
 			return nil, fmt.Errorf("ingest: session %s: %w", key, err)
 		}
 		s = &index.Session{RepoID: repo.ID, Key: key, Principal: principal.String(), State: sessionOpen,
-			Files: state, ExpiresAt: p.now().Add(p.sessionTimeout)}
+			Files: state, ExpiresAt: p.now().Add(p.timeoutOf(repo))}
 		err = p.index.UpsertSession(ctx, s)
 		switch {
 		case err == nil:
@@ -166,7 +166,7 @@ func (p *Pipeline) Add(ctx context.Context, sessionID int64, name string, r io.R
 	}); err != nil {
 		return format.SessionFile{}, err
 	}
-	err = p.changeSession(ctx, sessionID, func(st *sessionState) error {
+	err = p.changeSession(ctx, sessionID, p.timeoutOf(t.repo), func(st *sessionState) error {
 		if !st.Committing.IsZero() {
 			return fmt.Errorf("%w: session %d is being committed; %s comes too late for it", ErrConflict, sessionID, name)
 		}
@@ -209,7 +209,12 @@ func (p *Pipeline) Commit(ctx context.Context, sessionID int64) (*format.Publish
 	if len(st.Files) == 0 {
 		return nil, fmt.Errorf("%w: session %d of %s %s has no files to commit", ErrInvalid, sessionID, st.Name, st.Version)
 	}
-	err = p.changeSession(ctx, sessionID, func(cur *sessionState) error {
+	repo, err := p.index.GetRepoByID(ctx, s.RepoID)
+	if err != nil {
+		return nil, fmt.Errorf("ingest: repo of session %d: %w", s.ID, err)
+	}
+	timeout := p.timeoutOf(*repo)
+	err = p.changeSession(ctx, sessionID, timeout, func(cur *sessionState) error {
 		if !cur.Committing.IsZero() && p.now().Sub(cur.Committing) < p.claimTTL {
 			return fmt.Errorf("%w: session %d of %s %s is being committed already", ErrConflict, sessionID, st.Name, st.Version)
 		}
@@ -220,13 +225,13 @@ func (p *Pipeline) Commit(ctx context.Context, sessionID int64) (*format.Publish
 	if err != nil {
 		return nil, err
 	}
-	pub, err := p.commitFiles(ctx, s, st)
+	pub, err := p.commitFiles(ctx, *repo, s, st)
 	// The row is written after a client that went away too: a mark left behind would make the
 	// next Commit a conflict until it is stale.
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionWriteTimeout)
 	defer cancel()
 	if err != nil {
-		if uerr := p.changeSession(wctx, sessionID, func(cur *sessionState) error { cur.Committing = time.Time{}; return nil }); uerr != nil {
+		if uerr := p.changeSession(wctx, sessionID, timeout, func(cur *sessionState) error { cur.Committing = time.Time{}; return nil }); uerr != nil {
 			p.log.WarnContext(ctx, "ingest: session left marked committing; the next commit takes over after the claim TTL",
 				"session", sessionID, "error", uerr.Error())
 		}
@@ -242,14 +247,10 @@ func (p *Pipeline) Commit(ctx context.Context, sessionID int64) (*format.Publish
 	return pub, nil
 }
 
-// commitFiles publishes the files of st through Upload, as the principal that opened s, with
-// the parameters name, version and uploaded-by. Each file reads back from the registry if Build
-// opens it.
-func (p *Pipeline) commitFiles(ctx context.Context, s *index.Session, st *sessionState) (*format.Published, error) {
-	repo, err := p.index.GetRepoByID(ctx, s.RepoID)
-	if err != nil {
-		return nil, fmt.Errorf("ingest: repo of session %d: %w", s.ID, err)
-	}
+// commitFiles publishes the files of st through Upload to repo, the repo of s, as the principal
+// that opened s, with the parameters name, version and uploaded-by. Each file reads back from
+// the registry if Build opens it.
+func (p *Pipeline) commitFiles(ctx context.Context, repo index.Repo, s *index.Session, st *sessionState) (*format.Published, error) {
 	principal, err := auth.ParsePrincipal(s.Principal)
 	if err != nil {
 		return nil, fmt.Errorf("ingest: session %d: %w", s.ID, err)
@@ -266,7 +267,7 @@ func (p *Pipeline) commitFiles(ctx context.Context, s *index.Session, st *sessio
 		up.Files = append(up.Files, format.UploadedFile{Name: f.Name, Size: f.Size, Checksums: f.Checksums,
 			Open: func() (io.ReadCloser, error) { return t.rr.Fetch(ctx, d) }})
 	}
-	return p.Upload(ctx, *repo, up, principal)
+	return p.Upload(ctx, repo, up, principal)
 }
 
 // Abort implements format.Sessions. A session being committed is not aborted: ErrConflict.
@@ -323,12 +324,13 @@ func (p *Pipeline) liveSession(ctx context.Context, id int64) (*index.Session, *
 }
 
 // changeSession applies change to the state of the open session id in one transaction that
-// starts with TouchSession, which also moves its expiry. A session that is not open, or whose
-// time is up, is index.ErrNotFound; an error of change is returned as it is.
-func (p *Pipeline) changeSession(ctx context.Context, id int64, change func(*sessionState) error) error {
+// starts with TouchSession, which also moves its expiry timeout on: timeoutOf the session's
+// repo, which the caller has read. A session that is not open, or whose time is up, is
+// index.ErrNotFound; an error of change is returned as it is.
+func (p *Pipeline) changeSession(ctx context.Context, id int64, timeout time.Duration, change func(*sessionState) error) error {
 	return p.index.Tx(ctx, func(w index.Writer) error {
 		now := p.now()
-		s, err := w.TouchSession(ctx, id, now, now.Add(p.sessionTimeout))
+		s, err := w.TouchSession(ctx, id, now, now.Add(timeout))
 		if errors.Is(err, index.ErrNotFound) {
 			return fmt.Errorf("%w: session %d is not open", index.ErrNotFound, id)
 		} else if err != nil {
@@ -349,6 +351,24 @@ func (p *Pipeline) changeSession(ctx context.Context, id int64, change func(*ses
 		}
 		return nil
 	})
+}
+
+// timeoutOf is how long a session of repo lives after its last request: the repo policy's
+// maven.sessionTimeout when it is a positive duration (the API checks it: 1m to 24h on a maven
+// repo), else Options.SessionTimeout. The policy is read leniently: one that does not parse is
+// none.
+func (p *Pipeline) timeoutOf(repo index.Repo) time.Duration {
+	var policy struct {
+		Maven struct {
+			SessionTimeout string `json:"sessionTimeout"`
+		} `json:"maven"`
+	}
+	if len(repo.Policy) > 0 && json.Unmarshal(repo.Policy, &policy) == nil {
+		if d, err := time.ParseDuration(policy.Maven.SessionTimeout); err == nil && d > 0 {
+			return d
+		}
+	}
+	return p.sessionTimeout
 }
 
 // sessionTarget is the OCI repository of the version a session publishes: where Add pushes

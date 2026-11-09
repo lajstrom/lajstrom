@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sync"
 
 	"github.com/opencontainers/go-digest"
@@ -44,6 +45,11 @@ func (p *Pipeline) validate(ctx context.Context, pub *publish) error {
 	pub.parsed = parsed
 	if err := pub.checkTarget(); err != nil {
 		return err
+	}
+	if !pub.readOnly {
+		if err := pub.checkSizes(); err != nil {
+			return err
+		}
 	}
 	// The blobs before the plugin: a missing layer is named here, rather than surfacing as
 	// whatever the plugin makes of a failed fetch, and a HEAD is cheaper than the GETs of
@@ -90,6 +96,37 @@ func (pub *publish) checkTarget() error {
 		}
 	}
 	return nil
+}
+
+// checkSizes refuses a file layer larger than the maxFileSize of the repo's policy
+// (format.MaxFileSize), which the frontends check as the bytes come and which a manifest pushed
+// to /v2 meets here first. Inspect does not check: reindex keeps what the registry has, whatever
+// the policy says now.
+func (pub *publish) checkSizes() error {
+	limit, err := format.MaxFileSize(pub.repo)
+	if err != nil || limit < 0 {
+		return err
+	}
+	for _, f := range pub.parsed.Files {
+		if f.Size > limit {
+			return &tooLarge{limit: limit, msg: fmt.Sprintf("the file %s of %d bytes is larger than the maxFileSize of %s/%s, %d bytes",
+				f.Title, f.Size, pub.repo.Format, pub.repo.Name, limit)}
+		}
+	}
+	return nil
+}
+
+// tooLarge is a file above the repo's maxFileSize: ErrInvalid, and an *http.MaxBytesError with
+// the limit, which the facade's hook answers 413 SIZE_INVALID. The message is the file's alone.
+type tooLarge struct {
+	msg   string
+	limit int64
+}
+
+func (e *tooLarge) Error() string { return e.msg }
+
+func (e *tooLarge) Unwrap() []error {
+	return []error{ErrInvalid, &http.MaxBytesError{Limit: e.limit}}
 }
 
 // checkBlobs checks that every layer is in the backend, and pushes the empty config, which is
