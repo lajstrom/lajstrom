@@ -23,6 +23,16 @@ type Store interface {
 	// returning fn's error. The Writer must not be used after fn returns.
 	Tx(ctx context.Context, fn func(Writer) error) error
 
+	// WithReferrersLock calls fn holding the lock on the referrers of subject in the OCI
+	// repository name (without the instance prefix), and returns fn's error: the writers of
+	// the sha256-<hex> tag-schema index of one subject never overlap, on any replica
+	// (docs/spec/index-schema.md, Coordination). On Postgres the lock is pg_advisory_xact_lock
+	// on a key hashed from name and subject, in a transaction held until fn returns, even when
+	// ctx ends meanwhile: fn holds one connection of the pool and should not wait on the store.
+	// On SQLite, which serves one replica, it is a lock of the process. When ctx ends while the
+	// lock is awaited, fn is not called and the error wraps ctx's.
+	WithReferrersLock(ctx context.Context, name string, subject digest.Digest, fn func(context.Context) error) error
+
 	// Close releases the database connection.
 	Close() error
 }

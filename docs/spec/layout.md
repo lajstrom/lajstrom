@@ -359,6 +359,10 @@ type Store interface {
     Writer
     Migrate(ctx context.Context) error
     Tx(ctx context.Context, fn func(Writer) error) error
+    // WithReferrersLock calls fn holding the lock on the referrers of subject in the OCI
+    // repository name: pg_advisory_xact_lock on Postgres, a process lock on SQLite
+    // (index-schema.md, Coordination)
+    WithReferrersLock(ctx context.Context, name string, subject digest.Digest, fn func(context.Context) error) error
     Close() error
 }
 
