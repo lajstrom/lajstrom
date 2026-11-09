@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
@@ -243,6 +244,24 @@ func TestDeleteThenReindex(t *testing.T) {
 			t.Errorf("api %t: reindex after the delete: %+v", api, r)
 		}
 	}
+}
+
+// failingTx is the store whose transactions fail.
+type failingTx struct{ index.Store }
+
+func (failingTx) Tx(context.Context, func(index.Writer) error) error { return errors.New("boom") }
+
+// TestDeleteRowsFail: when the index fails after the registry deleted the manifest, the error
+// has no sentinel (500, not a 404 of the index) and says so; reindex repairs the rows.
+func TestDeleteRowsFail(t *testing.T) {
+	e, _, subject := referrerEnv(t, true)
+	opts := e.options(e.prov)
+	opts.Index = failingTx{e.st}
+	_, err := ingest.New(opts).Delete(t.Context(), e.repo, format.Deletion{Path: "notes", Reference: subject.Digest.String()}, alice)
+	if err == nil || errors.Is(err, index.ErrNotFound) || !strings.Contains(err.Error(), "after the registry deleted") {
+		t.Errorf("Delete = %v", err)
+	}
+	gone(t, e, subject.Digest.String())
 }
 
 // TestDeleteKeepsPackage: a version that is not the last of its package leaves the package.

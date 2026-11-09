@@ -335,7 +335,7 @@ func TestDeleteUnsupported(t *testing.T) {
 	v := e.put(fileTxt, "one")
 	e.prov.NoDeleteManifest = true
 	rr := e.do(http.MethodDelete, target(fileTxt), nil)
-	if rr.Code != http.StatusNotImplemented || !strings.Contains(e.logs.String(), "the backend registry cannot delete manifests; nothing was deleted") {
+	if rr.Code != http.StatusNotImplemented || !strings.Contains(e.logs.String(), "does not delete manifests; nothing was deleted") {
 		t.Errorf("DELETE = %d %s; log %s", rr.Code, rr.Body, e.logs)
 	}
 	if rr := e.do(http.MethodGet, target(fileTxt), nil); rr.Code != http.StatusOK || len(e.versions(fileTxt)) != 1 || len(e.audit("delete")) != 0 {
@@ -347,7 +347,7 @@ func TestDeleteUnsupported(t *testing.T) {
 }
 
 // TestDeleteGoneAndAuditWriter checks that a manifest already gone from the registry does not
-// stop the delete of its rows, and that the audit rows go through Deps.Audit when it is set.
+// stop the delete of its rows, and that the audit rows go through the write path's audit writer when it has one.
 func TestDeleteGoneAndAuditWriter(t *testing.T) {
 	w := &auditWriter{}
 	e := newEnv(t, envOptions{audit: w})
@@ -361,8 +361,8 @@ func TestDeleteGoneAndAuditWriter(t *testing.T) {
 	if len(e.versions(fileTxt)) != 0 || len(e.audit("delete")) != 0 {
 		t.Errorf("after DELETE: %d versions, %d audit rows in the index", len(e.versions(fileTxt)), len(e.audit("delete")))
 	}
-	if len(w.events) != 1 || w.events[0].Action != "delete" || w.events[0].Principal != "user:alice" {
-		t.Errorf("audit writer events = %+v", w.events)
+	if n := len(w.events); n != 2 || w.events[1].Action != "delete" || w.events[1].Principal != "user:alice" {
+		t.Errorf("audit writer events = %+v, want the push and the delete", w.events)
 	}
 }
 

@@ -166,7 +166,6 @@ func TestFailures(t *testing.T) {
 		{"DELETE capabilities", http.MethodDelete, target(fileTxt), "Capabilities", 500, "raw: request failed"},
 		{"DELETE repository", http.MethodDelete, target(fileTxt), "Repository", 500, "raw: request failed"},
 		{"DELETE manifest", http.MethodDelete, target(fileTxt), "Delete", 500, "raw: request failed"},
-		{"DELETE rows", http.MethodDelete, target(fileTxt), "Tx", 500, "after the registry deleted"},
 		{"PUT read back", http.MethodPut, target("new.txt"), "GetVersionByDigest", 201, "published version not read back"},
 		{"PUT spelling", http.MethodPut, target("new.txt"), "GetPackageByNameOCI", 500, "raw: request failed"},
 	}
