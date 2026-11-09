@@ -159,14 +159,14 @@ bindings API comes with #47:
 
 ```text
 $ lajstrom admin binding create --principal user:alice --role writer --mask 'raw/*'
-{"id":2,"principal":"user:alice","role":"writer","repoMask":"raw/*","createdAt":"2026-11-09T11:27:00.003156Z"}
+{"id":2,"principal":"user:01a1c136-51a6-7883-a350-b1cf6000a23f","name":"alice","role":"writer","repoMask":"raw/*","createdAt":"2026-11-09T16:48:44.981899Z"}
 $ lajstrom admin binding create --principal user:alice --role reader --mask '*/payments'
-{"id":3,"principal":"user:alice","role":"reader","repoMask":"*/payments","createdAt":"2026-11-09T11:27:00.017687Z"}
+{"id":3,"principal":"user:01a1c136-51a6-7883-a350-b1cf6000a23f","name":"alice","role":"reader","repoMask":"*/payments","createdAt":"2026-11-09T16:48:44.997609Z"}
 $ lajstrom admin binding list
-ID  PRINCIPAL   ROLE    MASK        CREATED
-1   user:admin  admin   */*         2026-11-09T11:26:52Z
-2   user:alice  writer  raw/*       2026-11-09T11:27:00Z
-3   user:alice  reader  */payments  2026-11-09T11:27:00Z
+ID  USER   PRINCIPAL                                  ROLE    MASK        CREATED
+1   admin  user:01a1c136-5180-7b5e-95ce-428e99e68887  admin   */*         2026-11-09T16:48:44Z
+2   alice  user:01a1c136-51a6-7883-a350-b1cf6000a23f  writer  raw/*       2026-11-09T16:48:44Z
+3   alice  user:01a1c136-51a6-7883-a350-b1cf6000a23f  reader  */payments  2026-11-09T16:48:44Z
 $ lajstrom admin binding create --principal user:alice --role admin --mask 'raw/*'
 lajstrom: repoMask: an admin binding is on */*: the admin role is every repo and the system
 $ lajstrom admin binding create --principal token:3 --role writer --mask raw/assets
@@ -178,9 +178,10 @@ lajstrom: binding 1 is the last admin binding of an enabled user: create another
 ```
 
 (A run against a new SQLite database after `admin user create --name admin --admin` and
-`--name alice`.) `list --principal user:alice` lists one principal's. `delete <id>` refuses the
-last admin binding of an enabled user, so that somebody can still manage the server. Every
-change is an audit event, `binding.create` or `binding.delete`, with the principal as its
+`--name alice`.) The principal is stored with the user's uid and shown with its name.
+`list --principal user:alice` lists one principal's. `delete <id>` refuses the last admin
+binding of an enabled user, so that somebody can still manage the server. Every change is an
+audit event, `binding.create` or `binding.delete`, with the principal (`user:<uid>`) as its
 subject and the id, role and mask in the details.
 
 ### How a request is decided
@@ -194,7 +195,11 @@ For the principal of the request and an action on `<format>/<repo>`, in this ord
 4. the bindings whose mask matches the repo allow the actions of their roles;
 5. `anonymous`, and a user its bindings do not allow, may `read` a repo whose `anonymousRead` is
    on, when `auth.anonymousRead` is on too: both switches, and they are off by default (a
-   deploy token stays on its repo);
+   deploy token stays on its repo). The server's switch is configuration
+   ([configuration.md](configuration.md)); a repo's is `--anonymous-read` of
+   `lajstrom admin repo create`, `repos[].anonymousRead` for a repo the configuration creates,
+   or `PATCH /api/v1/repos/<format>/<name>` with `{"anonymousRead": true}` for one that exists
+   ([api.md](api.md));
 6. anything else is denied.
 
 A change counts from the next request, on every replica: a binding created or deleted, through
@@ -232,7 +237,8 @@ a bearer on every `/v2` request. Lajstrom is its own token server: the realm is 
 
 From a run against `bin/lajstrom serve` on the example configuration, with `server.listen` and
 `server.externalURL` moved to port 18080 and the master key set; the tokens are cut after their
-first characters:
+first characters (a run from before #182, when `sub` named the user by name; it is `user:<uid>`
+now, as in the e2e output below):
 
 ```text
 $ curl -si http://localhost:18080/v2/
@@ -353,7 +359,7 @@ implemented (`405`), and the clients above use `GET`.
 | header `kid` | the fingerprint of the signing key: the lowercase hexadecimal sha256 of its public key (PKIX DER) |
 | header `typ` | `JWT` |
 | `iss`, `aud` | the service |
-| `sub` | the principal: `user:alice` (with a password or a personal access token), `token:<id>` (a deploy token), `anonymous` |
+| `sub` | the principal: `user:<uid>` (a user, with a password or a personal access token), `token:<id>` (a deploy token), `anonymous` |
 | `iat`, `nbf` | the time of issue, to the second |
 | `exp` | `iat` plus 20 minutes |
 | `jti` | 16 random bytes, base64url |
@@ -371,7 +377,8 @@ service of the others (H-12).
 Every `/v2` request but `/v2/token` may carry `Authorization: Bearer <jwt>`. The facade looks
 up the key its `kid` names and accepts the algorithm of that key and nothing else, never
 `none`, never HMAC; then the signature, `exp` (required), `nbf` and `iat` with 60 seconds of
-clock skew, `iss` and `aud` against the service, and `sub`, which must be a principal. A token
+clock skew, `iss` and `aud` against the service, and `sub`, which must be a principal, a user by
+its uid. A token
 that fails any of them is `401` with the challenge; the reason is logged at debug, with the
 `kid` and never the token, and is not answered.
 
@@ -446,7 +453,7 @@ Whatever changed after a token was issued counts on `/v2` at the client's next `
 
 Evaluating the bindings on every `/v2` request would close the window for a binding and for
 `anonymousRead` only. The token does not say which credential it was issued for (`sub` is
-`user:alice` for a password and for a personal access token alike), so a revoked token would
+`user:<uid>` for a password and for a personal access token alike), so a revoked token would
 still count until `exp`, and each change would have a rule of its own.
 
 To take access away on `/v2` at once, remove it first (the binding, the token, the user) and
@@ -480,22 +487,23 @@ docker login localhost:8080 -u alice
 reads what anonymous may read and nothing else.
 
 `test/e2e/oci-token.sh` runs the flow end to end (the challenge, a token, its claims, a changed
-token, a token without push, `oras login`, push and pull, a rotation and a drop):
+token, a token without push, `oras login`, push and pull, a rotation and a drop); from `make e2e` on
+2026-11-09:
 
 ```text
-ok   GET /v2/: 401 WWW-Authenticate: Bearer realm="http://localhost:18080/v2/token",service="localhost:18080"
-ok   admin user create --name e2e-token-20261107214723-22564 --admin --password-stdin
-ok   GET /v2/token -u e2e-token-20261107214723-22564 scope=repository:raw/scratch/hello:pull,push: 200, expires_in 1200, issued_at 2026-11-07T21:47:23Z
-ok   claims: {"header":{"alg":"ES256","kid":"7510eb6690413c0dfca82391e00b126fd21cb737d5e9f3f2034a0c3f63dfd402","typ":"JWT"},"payload":{"iss":"localhost:18080","sub":"user:e2e-token-20261107214723-22564","aud":["localhost:18080"],"exp":1794089243,"nbf":1794088043,"iat":1794088043,"jti":"6F-DwcnnDZoyn-3VoptjIQ","access":[{"type":"repository","name":"raw/scratch/hello","actions":["pull","push"]}]}}
-ok   GET /v2/raw/scratch/hello/tags/list with the token: 200
-ok   the token with one byte changed: 401, WWW-Authenticate: Bearer realm="http://localhost:18080/v2/token",service="localhost:18080",scope="repository:raw/scratch/hello:pull"
+ok   GET /v2/: 401 WWW-Authenticate: Bearer realm="http://127.0.0.1:44240/v2/token",service="127.0.0.1:44240"
+ok   admin user create --name e2e-token-20261109162343-11444 --admin --password-stdin
+ok   GET /v2/token -u e2e-token-20261109162343-11444 scope=repository:raw/scratch/hello:pull,push: 200, expires_in 1200, issued_at 2026-11-09T16:23:43Z
+ok   claims: {"header":{"alg":"ES256","kid":"87ac72679a2c991a36a7e1eae7a7de9b337cf55274a72713df04e86c1fcfbc12","typ":"JWT"},"payload":{"iss":"127.0.0.1:44240","sub":"user:01a1c11f-69de-71e1-82db-9900a32cae11","aud":["127.0.0.1:44240"],"exp":1794242623,"nbf":1794241423,"iat":1794241423,"jti":"3NMyHgY4e_en8wOkuxJSsw","access":[{"type":"repository","name":"raw/scratch/hello","actions":["pull","push"]}]}}
+ok   GET /v2/raw/scratch/hello/tags/list with the token: 404
+ok   the token with one byte changed: 401, WWW-Authenticate: Bearer realm="http://127.0.0.1:44240/v2/token",service="127.0.0.1:44240",scope="repository:raw/scratch/hello:pull"
 ok   POST /v2/raw/scratch/hello/blobs/uploads/ with a pull-only token: 403 DENIED: the bearer token does not grant push on raw/scratch/hello
-ok   oras login localhost:18080 -u e2e-token-20261107214723-22564: Login Succeeded
-ok   oras push localhost:18080/raw/scratch/hello:d2c2335ae7f9acbc: Digest: sha256:824822b5759552cf0c8756ad414915c0bf7836d5b461ad680d720a5c62d7f451
-ok   oras pull localhost:18080/raw/scratch/hello:d2c2335ae7f9acbc: the same bytes
-ok   admin key rotate --token: 5ebc303f7ee99e4833c1c959f0e8ba3bbcd5c164d64370eff0cc3600e89e5372; the old token (kid 7510eb6690413c0d…) still 200; a new token has kid 5ebc303f7ee99e48…
-ok   admin key rotate --token --drop: 4f2155f3dddad8dc8682a11dc282cd36c70306478d4c3bf50c1e5761be4cfc79; the token of 5ebc303f7ee99e48… is 401, a new one 200
-PASS oci-token e2e against http://localhost:18080 as e2e-token-20261107214723-22564
+ok   oras login 127.0.0.1:44240 -u e2e-token-20261109162343-11444: Login Succeeded
+ok   oras push 127.0.0.1:44240/raw/scratch/hello:e7ec39e723694e49: Digest: sha256:864d1368ca1bb546333d26e5d65d2aed40e96ff23d359dee7ceea4e8fac13d21
+ok   oras pull 127.0.0.1:44240/raw/scratch/hello:e7ec39e723694e49: the same bytes
+ok   admin key rotate --token: 879fe137c3e5499884bbb18fa469794b47580003581007615c7e13100ad2f4b5; the old token (kid 87ac72679a2c991a…) still 200; a new token has kid 879fe137c3e54998…
+ok   admin key rotate --token --drop: 136159cb982e126067d6101eb00baddcd1c6fc715b4bf262f2b90424b871324e; the token of 879fe137c3e54998… is 401, a new one 200
+PASS oci-token e2e against http://127.0.0.1:44240 as e2e-token-20261109162343-11444
 ```
 
 ## Tokens
@@ -581,12 +589,41 @@ The scopes narrow what the bindings give, on every route and at `/v2/token`:
   apt sends the credentials of a `machine` without a scheme over `https` only; for plain `http`
   (the dev stack) write the scheme: `machine http://localhost:8080/apt/e2e`.
 - **pip and twine**: `~/.pypirc` with `username = alice` and `password = ljs_pat_…`, or
-  `username = __token__` and a deploy token, once the pypi frontend is there (#31).
+  `username = __token__` (or any name) and a deploy token.
 - **oras, docker, helm**: `oras login -u alice --password-stdin art.example.com` with the token
   on standard input; the client gets its bearer from `/v2/token` with the token as its
   password, so the narrowing holds on `/v2`. A deploy token logs in as `deploy`.
 - A client that insists on a user name with a deploy token may send any: only the secret
   counts.
+
+### In CI
+
+A pipeline gets a deploy token of its repo, with `write` and nothing else, from a secret of the
+CI system (a GitHub Actions secret, a masked and protected GitLab CI/CD variable), and hands it
+to curl on standard input, so that it is neither in the job's command lines nor in its log:
+
+```yaml
+# GitHub Actions
+- name: Upload
+  env:
+    LAJSTROM_DEPLOY_TOKEN: ${{ secrets.LAJSTROM_DEPLOY_TOKEN }}
+  run: |
+    printf 'user = "deploy:%s"\n' "$LAJSTROM_DEPLOY_TOKEN" |
+      curl -fsS -K - -T dist/app.tar.gz "https://art.example.com/raw/releases/app/${GITHUB_REF_NAME}/app.tar.gz"
+```
+
+```yaml
+# GitLab CI
+upload:
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - printf 'user = "deploy:%s"\n' "$LAJSTROM_DEPLOY_TOKEN" | curl -fsS -K - -T dist/app.tar.gz "https://art.example.com/raw/releases/app/${CI_COMMIT_TAG}/app.tar.gz"
+```
+
+The same secret goes into the client's own file where the client has one: `settings.xml`
+(`<username>deploy</username>`, `<password>${env.LAJSTROM_DEPLOY_TOKEN}</password>`), twine's
+`TWINE_USERNAME=deploy` and `TWINE_PASSWORD`, `oras login -u deploy --password-stdin`.
 
 ### Creating, listing, revoking
 
@@ -637,40 +674,38 @@ Basic on a raw `PUT` and as a bearer on `whoami`; an apt repo with a `.deb` buil
 in `auth.conf.d`, each token's `lastUsedAt` showing that apt sent it, and a token that does not
 exist refused; the deploy token's `404` and `403`; a deploy token with `write`; `oras login`
 and push with the PAT; a PAT with `read` refused a push on the frontend and through its `/v2`
-token; revocation, expiry and an expiry over a year. The `twine upload` with a deploy token of
-#44's criterion waits for the pypi frontend (#31): pypi is a stub in this version.
+token; revocation, expiry and an expiry over a year. `twine upload` with a deploy token, the
+rest of #44's criterion, is not in the script: `test/e2e/pypi.sh` uploads with a password.
 
-From a run against `bin/lajstrom serve` on the example configuration, with `server.listen` and
-`server.externalURL` moved to port 18080, the database in a temporary directory, the log at
-debug and the master key set, Zot of the dev stack behind it, and `LAJSTROM_SERVER_LOG` naming
-the server's log:
+From `E2E='auth tokens oci-token rbac' make e2e` on 2026-11-09, against the dev stack's Zot,
+after RBAC (#45) and the uid (#182):
 
 ```text
-ok   admin user create --name e2e-tokens-20261107230303-9005 --admin --password-stdin
-ok   POST /api/v1/users/e2e-tokens-20261107230303-9005/tokens -u e2e-tokens-20261107230303-9005: 201, Location /api/v1/users/e2e-tokens-20261107230303-9005/tokens/1, id 1, hashPrefix fe814aac, scopes all, expiresAt 2027-02-05T23:03:03.775997Z, the secret ljs_pat_… shown once
-ok   GET /api/v1/users/e2e-tokens-20261107230303-9005/tokens: hashPrefix fe814aac, no secret
-ok   PUT /raw/scratch/e2e-tokens-20261107230303-9005/hello.txt -u e2e-tokens-20261107230303-9005:<PAT>: 201 sha256:16639fd0b53ea5de4976786a1d831de39586d70d040ee62831948891b771afe9
-ok   GET /api/v1/whoami with Authorization: Bearer <PAT>: 200 {"principal":"user:e2e-tokens-20261107230303-9005"}
-ok   admin repo create apt/e2e --registry local
-ok   dpkg-deb --build in ubuntu:24.04, PUT /apt/e2e/upload?suite=noble -u e2e-tokens-20261107230303-9005:<PAT>: 201 sha256:ae2d069616b4d58ea91e1c7310a5d2b9cbbe4ca3baae6acedf23b579c507600b
+ok   admin user create --name e2e-tokens-20261109162333-19002 --admin --password-stdin
+ok   POST /api/v1/users/e2e-tokens-20261109162333-19002/tokens -u e2e-tokens-20261109162333-19002: 201, Location /api/v1/users/e2e-tokens-20261109162333-19002/tokens/1, id 1, hashPrefix 535bb986, scopes all, expiresAt 2027-02-07T16:23:34.004851Z, the secret ljs_pat_… shown once
+ok   GET /api/v1/users/e2e-tokens-20261109162333-19002/tokens: hashPrefix 535bb986, no secret
+ok   PUT /raw/scratch/e2e-tokens-20261109162333-19002/hello.txt -u e2e-tokens-20261109162333-19002:<PAT>: 201 sha256:b66ea0c7e94806507b93fd5084ab7cdd795b0f40e140d9be7ff6cc7ae764343e
+ok   GET /api/v1/whoami with Authorization: Bearer <PAT>: 200 {"principal":"user:01a1c11f-4347-7c22-bee9-195d60bbb247","name":"e2e-tokens-20261109162333-19002"}
+ok   apt/e2e exists
+ok   dpkg-deb --build in ubuntu:24.04, PUT /apt/e2e/upload?suite=noble -u e2e-tokens-20261109162333-19002:<PAT>: 201 sha256:5d6817acada8e4a16274916c0f787d161bf7dcc9e3b0ececf383ea6281cf3506
 ok   GET /apt/e2e/key.asc: 200, the source is signed-by it
-ok   POST /api/v1/repos/apt/e2e/deploy-tokens with the PAT: 201, id 3, hashPrefix 876f72f1, scopes read, expiresAt never
-ok   apt-get update && apt-get install e2e-tokens-20261107230303-9005 in ubuntu:24.04 [signed-by=/etc/apt/keyrings/e2e.asc], auth.conf login e2e-tokens-20261107230303-9005 password <pat 2, scopes read>: installed; lastUsedAt 2026-11-07T23:03:05.481079Z
-ok   apt-get update && apt-get install e2e-tokens-20261107230303-9005 in ubuntu:24.04 [signed-by=/etc/apt/keyrings/e2e.asc], auth.conf login deploy password <deploy 3, scopes read>: installed; lastUsedAt 2026-11-07T23:03:06.986933Z
+ok   POST /api/v1/repos/apt/e2e/deploy-tokens with the PAT: 201, id 3, hashPrefix 4e69750f, scopes read, expiresAt never
+ok   apt-get update && apt-get install e2e-tokens-20261109162333-19002 in ubuntu:24.04 [signed-by=/etc/apt/keyrings/e2e.asc], auth.conf login e2e-tokens-20261109162333-19002 password <pat 2, scopes read>: installed; lastUsedAt 2026-11-09T16:23:35.217286Z
+ok   apt-get update && apt-get install e2e-tokens-20261109162333-19002 in ubuntu:24.04 [signed-by=/etc/apt/keyrings/e2e.asc], auth.conf login deploy password <deploy 3, scopes read>: installed; lastUsedAt 2026-11-09T16:23:36.871001Z
 ok   apt-get update with a deploy token that does not exist: fails, 401  Unauthorized
 ok   PUT /raw/scratch/… -u deploy:<deploy token 3, read on apt/e2e>: 404 (no access at all): index: not found: repository raw/scratch
 ok   PUT /apt/e2e/upload -u deploy:<deploy token 3, read>: 403: format: forbidden: write on apt/e2e: auth: outside the credential's scopes: the deploy token has read
 ok   deploy token 4 with write on raw/scratch, as gitlab-ci-token:<token>: PUT 201, DELETE 403, PATCH /api/v1/repos/raw/scratch 403 FORBIDDEN, PUT to apt/e2e 404
-ok   oras login localhost:18080 -u e2e-tokens-20261107230303-9005 --password-stdin <PAT>: Login Succeeded (Basic on /v2/token)
-ok   oras push localhost:18080/raw/scratch/t:c24abd62d6a6df18: Digest: sha256:0938f59f8ab5835ea0e3f9f2b420a51bb8570f07570a14ec1ed0d438786bb95a
-ok   GET /v2/token -u e2e-tokens-20261107230303-9005:<PAT> scope=repository:raw/scratch/t:pull,push: sub user:e2e-tokens-20261107230303-9005, actions pull,push
-ok   PUT /raw/scratch/… -u e2e-tokens-20261107230303-9005:<PAT 5, scopes read>: 403: format: forbidden: write on raw/scratch: auth: outside the credential's scopes: the personal access token has read
-ok   GET /v2/token -u e2e-tokens-20261107230303-9005:<read PAT> scope=…:pull,push: actions [pull]; POST /v2/raw/scratch/t/blobs/uploads/ with it: 403 DENIED: the bearer token does not grant push on raw/scratch/t
-ok   DELETE /api/v1/users/e2e-tokens-20261107230303-9005/tokens/1: 204; the next requests with it, bearer and Basic: 401; revokedAt 2026-11-07T23:03:10.184215Z
-ok   a PAT with expiresAt 2026-11-07T23:03:12Z: 200 at once, 401 three seconds later
-ok   a PAT with expiresAt 2027-12-12T23:03:10Z: 400 expiresAt: a personal access token expires at most 365 days ahead, at 2027-11-07T23:03:13Z at the latest
-ok   server log: principal=user:e2e-tokens-20261107230303-9005 (30 lines), principal=token:3 (5 lines), no secret
-PASS tokens e2e against http://localhost:18080 as e2e-tokens-20261107230303-9005
+ok   oras login 127.0.0.1:44240 -u e2e-tokens-20261109162333-19002 --password-stdin <PAT>: Login Succeeded (Basic on /v2/token)
+ok   oras push 127.0.0.1:44240/raw/scratch/t:f3f65760c1fa8ba1: Digest: sha256:f4bd917e0e7d6a41c9c016f6d79cf5c19116fe7f44320b1463db3308f0175679
+ok   GET /v2/token -u e2e-tokens-20261109162333-19002:<PAT> scope=repository:raw/scratch/t:pull,push: sub user:01a1c11f-4347-7c22-bee9-195d60bbb247, actions pull,push
+ok   PUT /raw/scratch/… -u e2e-tokens-20261109162333-19002:<PAT 5, scopes read>: 403: format: forbidden: write on raw/scratch: auth: outside the credential's scopes: the personal access token has read
+ok   GET /v2/token -u e2e-tokens-20261109162333-19002:<read PAT> scope=…:pull,push: actions [pull]; POST /v2/raw/scratch/t/blobs/uploads/ with it: 403 DENIED: the bearer token does not grant push on raw/scratch/t
+ok   DELETE /api/v1/users/e2e-tokens-20261109162333-19002/tokens/1: 204; the next requests with it, bearer and Basic: 401; revokedAt 2026-11-09T16:23:39.83724Z
+ok   a PAT with expiresAt 2026-11-09T16:23:41Z: 200 at once, 401 three seconds later
+ok   a PAT with expiresAt 2027-12-14T16:23:39Z: 400 expiresAt: a personal access token expires at most 365 days ahead, at 2027-11-09T16:23:43Z at the latest
+ok   server log: principal=user:01a1c11f-4347-7c22-bee9-195d60bbb247 (38 lines), principal=token:3 (5 lines), no secret
+PASS tokens e2e against http://127.0.0.1:44240 as e2e-tokens-20261109162333-19002
 ```
 
 Without the master key apt repos are not signed, and the two apt steps run with
@@ -681,10 +716,6 @@ ok   GET /apt/e2e/key.asc: 404, the server does not sign: [trusted=yes]
 ok   apt-get update && apt-get install e2e-tokens-20261107230011-31449 in ubuntu:24.04 [trusted=yes], auth.conf login e2e-tokens-20261107230011-31449 password <pat 5, scopes read>: installed; lastUsedAt 2026-11-07T23:00:12.35067Z
 ok   apt-get update && apt-get install e2e-tokens-20261107230011-31449 in ubuntu:24.04 [trusted=yes], auth.conf login deploy password <deploy 6, scopes read>: installed; lastUsedAt 2026-11-07T23:00:13.504948Z
 ```
-
-The run above is from before RBAC (#45), when oras pushes were not challenged and went as
-`anonymous`; that is why the `403 DENIED` of a PAT with `read` is shown with the token that
-`oras` would get, by hand.
 
 ## Bootstrap: the first admin
 
@@ -746,6 +777,5 @@ token it is the token's user; with a deploy token,
 
 | Issue | What |
 | --- | --- |
-| #31 | The pypi frontend, and with it `twine upload` with a deploy token in `~/.pypirc` |
 | #47 | The users and bindings API: `GET/POST /api/v1/users`, `PATCH`, `POST …/password`, `/api/v1/bindings`, with the same rules and audit events as `lajstrom admin user` and `admin binding` |
 | #130 | Rate limiting of failed logins |
