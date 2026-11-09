@@ -1,0 +1,31 @@
+# The configuration file of Lajstrom (docs/configuration.md), mounted at /etc/lajstrom. No
+# secret is here: the master key, the database DSN and the registry password come from the
+# Secret lajstrom as environment variables (docs/deploy/kubernetes.md).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lajstrom-config
+  labels:
+    app.kubernetes.io/name: lajstrom
+data:
+  lajstrom.yaml: |
+    server:
+      listen: ":8080"
+      # The public URL of the ingress: the realm of the bearer challenge of /v2 is built from it.
+      externalURL: "https://art.example.com"
+      # Prometheus scrapes the pod's port metrics; no Ingress or route names it.
+      metricsListen: "0.0.0.0:9464"
+    log:
+      format: json
+    database:
+      # Postgres, which every replica shares; the DSN is LAJSTROM_DATABASE_DSN of the Secret.
+      driver: postgres
+    registries:
+      - name: main
+        url: "https://registry.example.com"
+        prefix: "lajstrom/"
+        auth:
+          username: lajstrom
+          passwordEnv: LAJSTROM_REGISTRY_PASSWORD
+    keys:
+      masterKeyEnv: LAJSTROM_MASTER_KEY
