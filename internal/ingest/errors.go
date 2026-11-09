@@ -21,6 +21,6 @@ var (
 	ErrConflict = index.ErrConflict
 
 	// ErrNotImplemented was what the pipeline returned before issue #12 filled it in. Nothing
-	// returns it now; it stays for the parts that come later (publication sessions, #53).
+	// returns it now; it stays for the parts that come later.
 	ErrNotImplemented = errors.New("ingest: not implemented, see issue #12")
 )

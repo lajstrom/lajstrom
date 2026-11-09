@@ -159,7 +159,7 @@ sequenceDiagram
   M->>FE: PUT maven-metadata.xml (commit)
   FE->>R: PUT manifest, tag 1.2.0, all layers
   FE->>D: upsert; maven-metadata.xml is rendered from the DB
-  Note over S: timeout without commit: seal or abort
+  Note over S: timeout without commit: the files are dropped
 ```
 
 ### C. Read: `apt-get update` and `install`

@@ -94,6 +94,25 @@ type Publisher interface {
     Upload(ctx context.Context, repo index.Repo, up Upload, principal auth.Principal) (*Published, error)
 }
 
+// Sessions are the publication sessions of a format whose upload is several requests (maven,
+// flow B); *ingest.Pipeline implements them (#53). A key, <name>:<version>, has one open session
+// in a repo, held by one principal. Add pushes the file and records it with its checksums;
+// Commit publishes the files through Upload, once at a time; a session whose time is up (30
+// minutes after its last request) is dropped, never published in part.
+type Sessions interface {
+    Open(ctx context.Context, repo index.Repo, name, version string, principal auth.Principal) (*index.Session, error)
+    Add(ctx context.Context, sessionID int64, name string, r io.Reader, size int64) (SessionFile, error)
+    Files(ctx context.Context, sessionID int64) ([]SessionFile, error)
+    Commit(ctx context.Context, sessionID int64) (*Published, error) // Existed: the idempotent repeat
+    Abort(ctx context.Context, sessionID int64) error
+}
+type SessionFile struct {
+    Name      string                        // maven: the path below the repo
+    Digest    digest.Digest
+    Size      int64
+    Checksums map[string]string             // md5, sha1, sha256, sha512, lowercase hex
+}
+
 // Signer signs a repo's index documents with the repo's own key and serves the public keys
 // clients pin (apt's signed-by); internal/keys implements it, format does not import keys (#41).
 type Signer interface {
@@ -110,6 +129,7 @@ type Deps struct {
     Audit     audit.Writer
     Log       *slog.Logger
     Signer    Signer                        // nil: signing is off (no keys.masterKeyEnv)
+    Sessions  Sessions                      // publication sessions (maven)
 }
 
 type Entry struct {
@@ -133,6 +153,8 @@ type UploadedFile struct {
     Size        int64                       // -1 when unknown
     ContentType string
     Open        func() (io.ReadCloser, error) // re-openable: Build reads it, ingest pushes it
+    Checksums   map[string]string           // md5, sha1, sha256, sha512 when the caller has them (a
+                                            // session); Build may use them instead of reading the file
 }
 type Built struct {
     Manifest ocispec.Manifest
@@ -158,6 +180,7 @@ type Published struct {
     Tag      string
     RepoPath string
     Entry    Entry
+    Existed  bool                           // idempotent repeat: nothing was written
 }
 
 func Register(p Plugin)                     // panics on nil, a name CheckName rejects, a duplicate
@@ -382,7 +405,10 @@ type Writer interface {
     DeleteBinding(ctx context.Context, id int64) error
     CreateKey(ctx context.Context, k *Key) error
     RetireKey(ctx context.Context, id int64, at time.Time) error
-    UpsertSession(ctx context.Context, s *Session) error
+    UpsertSession(ctx context.Context, s *Session) error // a second open session of a key: ErrConflict
+    // TouchSession moves the expiry of an open, unexpired session and returns it, holding the
+    // row until the transaction ends: a change of its files starts with it.
+    TouchSession(ctx context.Context, id int64, at, expiresAt time.Time) (*Session, error)
     DeleteSession(ctx context.Context, id int64) error
     ExpireSessions(ctx context.Context, before time.Time) (int, error)
     AppendAudit(ctx context.Context, ev *AuditEvent) error
@@ -529,6 +555,7 @@ type Options struct {
     Now       func() time.Time                         // nil: time.Now
     Log       *slog.Logger                             // nil: slog.Default()
     ClaimTTL  time.Duration                            // zero: 10 minutes (ingest.claimTTL)
+    SessionTimeout time.Duration                       // zero: 30 minutes after a session's last request
 }
 func New(o Options) *Pipeline
 
@@ -568,14 +595,12 @@ type Result struct {
     Existed  bool                           // idempotent repeat: nothing was written
 }
 
-// Sessions accumulate the files of one version over several requests (maven); issue #53.
-type Sessions interface {
-    Open(ctx context.Context, repo index.Repo, key string, principal auth.Principal) (*index.Session, error)
-    Add(ctx context.Context, sessionID int64, name string, r io.Reader, size int64) (ocispec.Descriptor, error)
-    Commit(ctx context.Context, sessionID int64) (*Result, error)
-    Abort(ctx context.Context, sessionID int64) error
-    Expire(ctx context.Context, now time.Time) (int, error)
-}
+// Pipeline implements format.Sessions (Open, Add, Files, Commit, Abort). The files column of a
+// session is {"name", "version", "files": [SessionFile…], "committing"}; Commit marks the session
+// committing before it publishes, so that one Commit runs at a time, and a mark older than
+// ClaimTTL is a Commit that died. ExpireSessions marks the open sessions of every kind whose time
+// is up; serve calls it every minute, and nothing depends on it.
+func (p *Pipeline) ExpireSessions(ctx context.Context) (int, error)
 
 var ErrInvalid = format.ErrInvalid
 var ErrConflict = index.ErrConflict

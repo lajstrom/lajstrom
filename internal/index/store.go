@@ -167,8 +167,14 @@ type Writer interface {
 	RetireKey(ctx context.Context, id int64, at time.Time) error
 
 	// UpsertSession inserts s when s.ID is 0 and otherwise stores State, Files and ExpiresAt
-	// of row s.ID; it sets UpdatedAt.
+	// of row s.ID; it sets UpdatedAt. A key has one open session in a repo: inserting a second
+	// is ErrConflict.
 	UpsertSession(ctx context.Context, s *Session) error
+	// TouchSession sets ExpiresAt of session id to expiresAt and returns the row, when the
+	// session is open and its ExpiresAt is after at; otherwise ErrNotFound. In a transaction it
+	// holds the row until the transaction ends, so that a read and a write of its Files that
+	// follow are not interleaved with another transaction's.
+	TouchSession(ctx context.Context, id int64, at, expiresAt time.Time) (*Session, error)
 	// DeleteSession removes the session.
 	DeleteSession(ctx context.Context, id int64) error
 	// ExpireSessions sets State to expired on open sessions whose ExpiresAt is before before,

@@ -113,6 +113,7 @@ func newServeCmd(a *app) *cobra.Command {
 			} else {
 				a.log.Info("reconcile loop off (reconcile.interval is 0)")
 			}
+			runs.wg.Go(func() { expireSessions(ctx, pipe, a.log, sessionExpiryInterval) })
 			authz := auth.NewRBAC(auth.RBACOptions{Index: st, AnonymousRead: c.Auth.AnonymousRead, Log: a.log})
 			a.log.Info("authorization by the bindings of the index (RBAC)", "auth.anonymousRead", c.Auth.AnonymousRead)
 			v2 := facade.New(facade.Options{Index: st, Providers: providers, Auth: authz, Ingest: pipe,
@@ -125,7 +126,7 @@ func newServeCmd(a *app) *cobra.Command {
 				ShutdownTimeout: c.Server.ShutdownTimeout,
 				Log:             a.log,
 				Plugins:         format.All(),
-				Deps:            format.Deps{Index: st, Providers: providers, Auth: authz, Ingest: pipe, Signer: signer},
+				Deps:            format.Deps{Index: st, Providers: providers, Auth: authz, Ingest: pipe, Signer: signer, Sessions: pipe},
 				Ready:           ready(a.log, c.Database.Driver, st, health),
 				API:             api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Log: a.log}),
 				Facade:          v2,
@@ -198,4 +199,29 @@ func (b *backgroundReindex) Start(ctx context.Context, req reindex.Request) (*in
 		}
 	})
 	return run, nil
+}
+
+// sessionExpiryInterval is how often serve marks the sessions whose time is up as expired.
+const sessionExpiryInterval = time.Minute
+
+// expireSessions marks the sessions whose time is up as expired every interval until ctx ends
+// (ingest.Pipeline.ExpireSessions). The sessions do not depend on it, it keeps their rows true;
+// a failure is logged and the next tick tries again.
+func expireSessions(ctx context.Context, pipe *ingest.Pipeline, log *slog.Logger, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		n, err := pipe.ExpireSessions(ctx)
+		switch {
+		case err != nil && ctx.Err() == nil:
+			log.WarnContext(ctx, "sessions not expired", "error", err.Error())
+		case n > 0:
+			log.InfoContext(ctx, "sessions expired: their files are dropped", "count", n)
+		}
+	}
 }

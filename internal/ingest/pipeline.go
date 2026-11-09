@@ -32,6 +32,8 @@ type Pipeline struct {
 	now       func() time.Time
 	log       *slog.Logger
 	claimTTL  time.Duration
+
+	sessionTimeout time.Duration
 }
 
 // Options configures a Pipeline.
@@ -53,6 +55,9 @@ type Options struct {
 	// claim is stale and the next publish takes it over (docs/spec/index-schema.md,
 	// Coordination). Zero, or negative, means 10 minutes (ingest.claimTTL).
 	ClaimTTL time.Duration
+	// SessionTimeout is how long a publication session lives after its last request; zero, or
+	// negative, means 30 minutes. A session whose time is up is dropped (format.Sessions).
+	SessionTimeout time.Duration
 }
 
 // defaultClaimTTL is ClaimTTL when Options leaves it zero.
@@ -68,6 +73,8 @@ func New(o Options) *Pipeline {
 		now:       o.Now,
 		log:       o.Log,
 		claimTTL:  o.ClaimTTL,
+
+		sessionTimeout: o.SessionTimeout,
 	}
 	if p.plugins == nil {
 		p.plugins = format.Lookup
@@ -80,6 +87,9 @@ func New(o Options) *Pipeline {
 	}
 	if p.claimTTL <= 0 {
 		p.claimTTL = defaultClaimTTL
+	}
+	if p.sessionTimeout <= 0 {
+		p.sessionTimeout = defaultSessionTimeout
 	}
 	return p
 }
@@ -172,7 +182,7 @@ func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload
 		p.log.InfoContext(ctx, "ingest: the tag already holds these files; nothing written", "repo", repo.Format+"/"+repo.Name,
 			"package", built.Entry.Name, "tag", built.Tag, "digest", v.Digest.String(), "principal", principal.String())
 		existed = true
-		return &format.Published{Digest: v.Digest, Tag: built.Tag, RepoPath: built.RepoPath, Entry: built.Entry}, nil
+		return &format.Published{Digest: v.Digest, Tag: built.Tag, RepoPath: built.RepoPath, Entry: built.Entry, Existed: true}, nil
 	}
 	raw, _, err := profile.Encode(built.Manifest)
 	if err != nil {
@@ -193,7 +203,7 @@ func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload
 		return nil, err
 	}
 	existed = res.Existed
-	return &format.Published{Digest: res.Digest, Tag: res.Tag, RepoPath: res.RepoPath, Entry: res.Entry}, nil
+	return &format.Published{Digest: res.Digest, Tag: res.Tag, RepoPath: res.RepoPath, Entry: res.Entry, Existed: res.Existed}, nil
 }
 
 // buildError wraps an error of Plugin.Build: the upload is invalid (400) unless the plugin

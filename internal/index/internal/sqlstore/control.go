@@ -297,6 +297,22 @@ func (c *conn) UpsertSession(ctx context.Context, s *index.Session) error {
 		&s.RepoID, &s.Key, &s.Principal, timeDest{&s.CreatedAt})
 }
 
+// TouchSession moves expires_at of an open session that has not expired at at, and returns the
+// row. The UPDATE comes first so that it takes the row's lock on Postgres, held until the
+// transaction ends; SQLite has one writer.
+func (c *conn) TouchSession(ctx context.Context, id int64, at, expiresAt time.Time) (*index.Session, error) {
+	var s index.Session
+	err := c.scanRow(ctx, fmt.Sprintf("open sessions id %d", id),
+		"UPDATE sessions SET expires_at = ?, updated_at = ? WHERE id = ? AND state = 'open' AND expires_at > ?"+
+			" RETURNING "+sessionCols,
+		[]any{c.d.EncodeTime(Normalize(expiresAt)), c.d.EncodeTime(now()), id, c.d.EncodeTime(Normalize(at))},
+		sessionDests(&s)...)
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
 // DeleteSession removes the session.
 func (c *conn) DeleteSession(ctx context.Context, id int64) error {
 	return c.execOne(ctx, fmt.Sprintf("sessions id %d", id), "DELETE FROM sessions WHERE id = ?", id)

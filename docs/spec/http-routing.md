@@ -139,9 +139,11 @@ MVP (they will be a repo option, not a separate format).
 | `PUT /maven/<repo>/<groupPath>/<artifactId>/<version>/<file>` | adds the file to the publication session `(repo, g, a, v)`; checksum files are verified against the session and not stored as layers. `201`. |
 | `PUT /maven/<repo>/<groupPath>/<artifactId>/maven-metadata.xml` (+ checksum PUTs) | **commit** of the session: builds the manifest with all files, ingests, closes the session. Idempotent re-PUT of an identical version: `200`. Different bytes for an existing version: `409`. |
 
-Sessions expire after `maven.sessionTimeout` (default 30 min): policy `seal` (commit what is
-there) or `abort` (drop), per repo; default `abort`. Client config: `<repository>` with
-`<url>https://host/maven/<repo></url>` and a `<server>` entry with user/token in `settings.xml`.
+A session expires 30 minutes after its last request (`maven.sessionTimeout` per repo comes with
+#60) and its files are dropped: nothing is published but by the commit. There is no `seal`,
+which would publish what had arrived, a version missing files (decided on #53). Client config:
+`<repository>` with `<url>https://host/maven/<repo></url>` and a `<server>` entry with
+user/token in `settings.xml`.
 
 ## 4. Management API `/api/v1`
 
