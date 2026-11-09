@@ -1,12 +1,10 @@
 package maven
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
 	"github.com/lajstrom/lajstrom/internal/format"
-	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
 )
 
@@ -62,11 +60,6 @@ func packagePath(groupID, artifactID string) string {
 
 // Routes mounts nothing yet: deploy is #54, resolve #55.
 func (Plugin) Routes(format.Router, format.Deps) {}
-
-// RenderIndex is format.ErrUnsupported until the maven-metadata.xml of #55.
-func (Plugin) RenderIndex(context.Context, index.Repo, format.IndexScope, index.Reader) ([]format.Document, error) {
-	return nil, format.ErrUnsupported
-}
 
 // metadata is the content of the maven metadata layer (docs/spec/manifest-profile.md §2): the
 // coordinates and packaging, one entry per file layer, in manifest order, and the essentials of
