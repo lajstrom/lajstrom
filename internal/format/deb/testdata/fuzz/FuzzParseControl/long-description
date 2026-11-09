@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("Package: libhello1\nVersion: 1.0.0-1\nArchitecture: arm64\nMaintainer: Lajstrom Tests <tests@lajstrom.dev>\nInstalled-Size: 2\nDepends: libc6 (>= 2.34)\nSection: misc\nPriority: optional\nDescription: a library\n that says hello\n .\n in two paragraphs\n   and a verbatim line\n")

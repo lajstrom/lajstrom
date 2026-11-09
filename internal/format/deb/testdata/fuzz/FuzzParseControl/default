@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("Package: hello\nVersion: 1.0.0-1\nArchitecture: amd64\nMaintainer: Lajstrom Tests <tests@lajstrom.dev>\nInstalled-Size: 2\nDepends: libc6 (>= 2.34)\nSection: misc\nPriority: optional\nDescription: greets the tests of the deb format\n A package built in process by internal/testutil.\n .\n Nothing in it comes from a distribution.\n")
