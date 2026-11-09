@@ -884,3 +884,46 @@ func TestNew(t *testing.T) {
 		}
 	})
 }
+
+// TestReferrerIndexDeleteRefused: on a registry without the referrers API that refuses deletes
+// (GHCR; distribution with deletes off), every referrer after the first replaces the
+// sha256-<hex> index, and oras-go's delete of the old one is refused. The push stored the
+// referrer and the new index, so it is a success, by digest and by tag, and the dangling index
+// is logged; the listing has every referrer.
+func TestReferrerIndexDeleteRefused(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeRegistry(t)
+	f.referrers, f.deleteDisabled = false, true
+	log, logs := testLogger()
+	p := f.provider(t, log, nil)
+	if _, err := p.Capabilities(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := p.Repository(ctx, "raw/scratch/notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := pushManifest(t, repo, "v1", nil)
+	want := []digest.Digest{
+		pushManifest(t, repo, "sig1", &subject).Digest, // no index yet: nothing to delete
+		pushManifest(t, repo, "", &subject).Digest,     // Push: the delete of the first index is refused
+		pushManifest(t, repo, "sig3", &subject).Digest, // PushReference: the same
+	}
+	var got []digest.Digest
+	if err := repo.Referrers(ctx, subject, "", func(r []ocispec.Descriptor) error {
+		for _, d := range r {
+			got = append(got, d.Digest)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Referrers: %v", err)
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("referrers = %v, want %v", got, want)
+	}
+	if n := strings.Count(logs.String(), "the old referrers index stays"); n != 2 {
+		t.Errorf("%d warnings of a dangling index, want 2:\n%s", n, logs)
+	}
+}
