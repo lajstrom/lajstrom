@@ -290,6 +290,7 @@ func testFiles(t *testing.T, s index.Store) {
 	other := newRepo(t, s, "apt", "other")
 	pkgA, pkgB := newPackage(t, s, repo.ID, "a"), newPackage(t, s, repo.ID, "b")
 	verA, verB := newVersion(t, s, pkgA.ID, "1.0"), newVersion(t, s, pkgB.ID, "2.0")
+	pkgA.CreatedAt, pkgB.CreatedAt = verA.CreatedAt, verB.CreatedAt // the earliest version's
 	filesA := []index.File{
 		{Name: "z.deb", MediaType: "application/vnd.debian.binary-package", Digest: dg("z"), Size: 30,
 			Attrs: map[string]string{"org.opencontainers.image.title": "z.deb"}},

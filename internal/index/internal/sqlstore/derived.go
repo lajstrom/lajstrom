@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -95,11 +97,22 @@ func (c *conn) DeletePackage(ctx context.Context, id int64) error {
 	return c.execOne(ctx, fmt.Sprintf("packages id %d", id), "DELETE FROM packages WHERE id = ?", id)
 }
 
-const versionCols = "id, package_id, version, variant, tag, digest, artifact_type, attrs, metadata, created_at, indexed_at"
+// DeleteEmptyPackages removes the packages of a repo that have no version.
+func (c *conn) DeleteEmptyPackages(ctx context.Context, repoID int64) (int, error) {
+	return c.exec(ctx, fmt.Sprintf("packages without versions in repo %d", repoID),
+		"DELETE FROM packages WHERE repo_id = ? AND NOT EXISTS (SELECT 1 FROM versions v WHERE v.package_id = packages.id)",
+		repoID)
+}
+
+const versionCols = "id, package_id, version, variant, tag, digest, artifact_type, attrs, metadata, created_at, indexed_at, degraded"
 
 func versionDests(v *index.Version) []any {
 	return []any{&v.ID, &v.PackageID, &v.Version, &v.Variant, &v.Tag, (*string)(&v.Digest), &v.ArtifactType,
-		jsonDest[map[string]string]{&v.Attrs}, rawDest{&v.Metadata}, timeDest{&v.CreatedAt}, timeDest{&v.IndexedAt}}
+		jsonDest[map[string]string]{&v.Attrs}, rawDest{&v.Metadata}, timeDest{&v.CreatedAt}, timeDest{&v.IndexedAt}, &v.Degraded}
+}
+
+func versionMatchDests(m *index.VersionMatch) []any {
+	return append(versionDests(&m.Version), packageDests(&m.Package)...)
 }
 
 // GetVersion returns the version of a package by version and variant.
@@ -136,6 +149,16 @@ func (c *conn) ListVersions(ctx context.Context, packageID int64) ([]index.Versi
 		"SELECT "+versionCols+" FROM versions WHERE package_id = ? ORDER BY created_at, id", packageID)
 }
 
+// ListUnseenVersions returns the versions of a repo whose IndexedAt is before seenBefore, with
+// their packages, ordered by package name and version id.
+func (c *conn) ListUnseenVersions(ctx context.Context, repoID int64, seenBefore time.Time) ([]index.VersionMatch, error) {
+	return getAll(ctx, c, fmt.Sprintf("versions of repo %d not seen since %s", repoID, Normalize(seenBefore).Format(time.RFC3339Nano)),
+		versionMatchDests,
+		"SELECT "+versionColsV+", "+packageColsP+" FROM versions v JOIN packages p ON p.id = v.package_id"+
+			" WHERE p.repo_id = ? AND v.indexed_at < ? ORDER BY p.name, v.id",
+		repoID, c.d.EncodeTime(seenBefore))
+}
+
 // UpsertVersion applies the tag rule (docs/spec/index-schema.md, Invariants and rules) in one
 // transaction. The row with v's tag decides: with v's digest it is refreshed in place and v.ID
 // filled (an idempotent re-ingest); with another digest nothing changes and the error is a
@@ -143,25 +166,26 @@ func (c *conn) ListVersions(ctx context.Context, packageID int64) ([]index.Versi
 // after all, by a writer that inserted it concurrently, the same rule applies, so the loser of
 // the race gets the TagConflictError too, never a driver error. (Version, Variant) taken under
 // another tag is a plain index.ErrConflict. CreatedAt and IndexedAt are set to now when zero.
+// The package's CreatedAt becomes the earliest CreatedAt of its versions.
 func (c *conn) UpsertVersion(ctx context.Context, v *index.Version) error {
 	ts := now()
 	stamp(&v.CreatedAt, ts)
 	stamp(&v.IndexedAt, ts)
 	return c.withTx(ctx, func(c *conn) error {
 		if found, err := c.refreshVersion(ctx, v); found || err != nil {
-			return err
+			return c.packageCreated(ctx, v.PackageID, err)
 		}
 		inserted, err := c.insertID(ctx, fmt.Sprintf("versions %q of package %d", v.Tag, v.PackageID),
-			"INSERT INTO versions (package_id, version, variant, tag, digest, artifact_type, attrs, metadata, created_at, indexed_at)"+
-				" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING id",
+			"INSERT INTO versions (package_id, version, variant, tag, digest, artifact_type, attrs, metadata, created_at, indexed_at, degraded)"+
+				" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING id",
 			[]any{v.PackageID, v.Version, v.Variant, v.Tag, string(v.Digest), v.ArtifactType, attrsArg(v.Attrs),
-				rawArg(v.Metadata), c.d.EncodeTime(v.CreatedAt), c.d.EncodeTime(v.IndexedAt)},
+				rawArg(v.Metadata), c.d.EncodeTime(v.CreatedAt), c.d.EncodeTime(v.IndexedAt), v.Degraded},
 			&v.ID)
 		if inserted || err != nil {
-			return err
+			return c.packageCreated(ctx, v.PackageID, err)
 		}
 		if found, err := c.refreshVersion(ctx, v); found || err != nil {
-			return err
+			return c.packageCreated(ctx, v.PackageID, err)
 		}
 		return fmt.Errorf("%w: versions %q variant %q of package %d exists with another tag than %q",
 			index.ErrConflict, v.Version, v.Variant, v.PackageID, v.Tag)
@@ -183,13 +207,58 @@ func (c *conn) refreshVersion(ctx context.Context, v *index.Version) (bool, erro
 	}
 	v.ID = existing.ID
 	return true, c.execOne(ctx, fmt.Sprintf("versions id %d", v.ID),
-		"UPDATE versions SET artifact_type = ?, attrs = ?, metadata = ?, created_at = ?, indexed_at = ? WHERE id = ?",
-		v.ArtifactType, attrsArg(v.Attrs), rawArg(v.Metadata), c.d.EncodeTime(v.CreatedAt), c.d.EncodeTime(v.IndexedAt), v.ID)
+		"UPDATE versions SET artifact_type = ?, attrs = ?, metadata = ?, created_at = ?, indexed_at = ?, degraded = ? WHERE id = ?",
+		v.ArtifactType, attrsArg(v.Attrs), rawArg(v.Metadata), c.d.EncodeTime(v.CreatedAt), c.d.EncodeTime(v.IndexedAt),
+		v.Degraded, v.ID)
 }
 
-// DeleteVersion removes the version; the foreign key cascades to its files.
+// packageCreated sets CreatedAt of the package to the earliest CreatedAt of its versions after
+// a version write or delete whose error is err; a package without versions keeps its own. With
+// err set it only returns err: the transaction rolls back.
+func (c *conn) packageCreated(ctx context.Context, packageID int64, err error) error {
+	if err != nil {
+		return err
+	}
+	_, err = c.exec(ctx, fmt.Sprintf("packages id %d", packageID),
+		"UPDATE packages SET created_at = (SELECT MIN(created_at) FROM versions WHERE package_id = ?)"+
+			" WHERE id = ? AND EXISTS (SELECT 1 FROM versions WHERE package_id = ?)",
+		packageID, packageID, packageID)
+	return err
+}
+
+// TouchVersions sets IndexedAt of the versions with the given ids, in statements of at most
+// touchBatch ids; ids that do not exist are skipped.
+func (c *conn) TouchVersions(ctx context.Context, ids []int64, at time.Time) error {
+	return c.withTx(ctx, func(c *conn) error {
+		for chunk := range slices.Chunk(ids, touchBatch) {
+			args := make([]any, 0, len(chunk)+1)
+			args = append(args, c.d.EncodeTime(at))
+			for _, id := range chunk {
+				args = append(args, id)
+			}
+			marks := strings.Repeat(", ?", len(chunk))[2:]
+			if _, err := c.exec(ctx, fmt.Sprintf("versions %d to touch", len(chunk)),
+				"UPDATE versions SET indexed_at = ? WHERE id IN ("+marks+")", args...); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// touchBatch bounds the ids of one statement of TouchVersions, well below the parameter limits
+// of SQLite (32 766) and Postgres (65 535).
+const touchBatch = 500
+
+// DeleteVersion removes the version; the foreign key cascades to its files. The package keeps
+// the earliest CreatedAt of the versions left.
 func (c *conn) DeleteVersion(ctx context.Context, id int64) error {
-	return c.execOne(ctx, fmt.Sprintf("versions id %d", id), "DELETE FROM versions WHERE id = ?", id)
+	return c.withTx(ctx, func(c *conn) error {
+		var packageID int64
+		err := c.scanRow(ctx, fmt.Sprintf("versions id %d", id), "DELETE FROM versions WHERE id = ? RETURNING package_id",
+			[]any{id}, &packageID)
+		return c.packageCreated(ctx, packageID, err)
+	})
 }
 
 const fileCols = "id, version_id, name, media_type, digest, size, attrs"

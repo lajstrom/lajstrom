@@ -101,6 +101,37 @@ type TagClaim struct {
 	ClaimedAt time.Time
 }
 
+// The states of a reindex run (docs/spec/index-schema.md, Coordination).
+const (
+	ReindexRunning   = "running"   // the lock of its scope while HeartbeatAt is fresh
+	ReindexDone      = "done"      // went to the end, whatever its report lists
+	ReindexFailed    = "failed"    // stopped on an error of its own
+	ReindexAbandoned = "abandoned" // its heartbeat stopped; closed by a later start
+)
+
+// ReindexRun is a row of reindex_runs (coordination): one run of reindex, and while it is
+// running the lock that keeps overlapping runs apart across replicas and the CLI.
+type ReindexRun struct {
+	ID          int64
+	RepoID      *int64 // nil: a run of every repo
+	State       string // ReindexRunning, ReindexDone, ReindexFailed or ReindexAbandoned
+	Source      string // cli, api, reconcile
+	Principal   string // canonical form of the principal that started it
+	Replica     string // host name and process id
+	Options     ReindexOptions
+	StartedAt   time.Time
+	HeartbeatAt time.Time
+	FinishedAt  *time.Time
+	Report      json.RawMessage // the run's report (reindex.Report); nil while it runs
+	Error       string          // why a run failed or was abandoned; "" otherwise
+}
+
+// ReindexOptions are the options a run was started with, stored as reindex_runs.options.
+type ReindexOptions struct {
+	Prune  bool `json:"prune,omitempty"`
+	Verify bool `json:"verify,omitempty"`
+}
+
 // AuditEvent is a row of audit (control plane, append-only; docs/spec/rbac.md §5).
 type AuditEvent struct {
 	ID        int64
@@ -135,7 +166,8 @@ type Version struct {
 	Attrs        map[string]string // lajstrom.<format>.* annotations
 	Metadata     json.RawMessage   // metadata layer; nil when absent or omitted for size
 	CreatedAt    time.Time         // org.opencontainers.image.created
-	IndexedAt    time.Time
+	IndexedAt    time.Time         // when ingest or reindex last wrote or saw the row
+	Degraded     bool              // written from the annotations alone: the metadata layer was unreadable
 }
 
 // File is a row of files (derived): one file layer of a version.
@@ -147,6 +179,12 @@ type File struct {
 	Digest    digest.Digest // layer digest
 	Size      int64
 	Attrs     map[string]string // layer annotations
+}
+
+// VersionMatch is a version together with its package, as Reader.ListUnseenVersions returns it.
+type VersionMatch struct {
+	Version Version
+	Package Package
 }
 
 // FileMatch is a file together with its version and package, as Reader.FindFiles returns it:

@@ -56,7 +56,8 @@ func TestIngest(t *testing.T) {
 	}
 	pkg, v := got.Packages[0], got.Versions[0]
 	same(t, "rows", rows{
-		Packages: []index.Package{{ID: pkg.ID, RepoID: e.repo.ID, Name: readme, NameOCI: "docs/readme.md", CreatedAt: now}},
+		// The package was created when its earliest version was (index-schema.md).
+		Packages: []index.Package{{ID: pkg.ID, RepoID: e.repo.ID, Name: readme, NameOCI: "docs/readme.md", CreatedAt: created}},
 		Versions: []index.Version{{ID: v.ID, PackageID: pkg.ID, Version: "1.0.0", Tag: "1.0.0", Digest: d,
 			ArtifactType: "application/vnd.lajstrom.raw.v1", Attrs: map[string]string{"lajstrom.raw.path": readme},
 			Metadata: json.RawMessage(`{"files":[{"name":"Docs/Readme.md","size":5}]}`), CreatedAt: created, IndexedAt: now}},

@@ -38,6 +38,7 @@ var dialect = sqlstore.Dialect{
 	Numbered:     true,
 	IsUnique:     func(err error) bool { return sqlState(err) == uniqueViolation },
 	IsForeignKey: func(err error) bool { return sqlState(err) == foreignKeyViolation },
+	XactLock:     "SELECT pg_advisory_xact_lock(?)",
 }
 
 // Open connects to the PostgreSQL database of dsn, a URL or a keyword/value string as pgx
