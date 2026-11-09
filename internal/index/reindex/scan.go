@@ -46,16 +46,18 @@ type scan struct {
 
 	mu          sync.Mutex
 	rep         RepoReport
-	seen        []int64 // version rows seen without being written
-	fatal       error   // the first error of the run's own: the database, the context
-	unsupported bool    // no plugin for the repo's format: the scan stops, and nothing is swept
+	seen        []int64                    // version rows seen without being written
+	referrers   map[digest.Digest]struct{} // a referrer is listed under its own tag and in a tag-schema index
+	fatal       error                      // the first error of the run's own: the database, the context
+	unsupported bool                       // no plugin for the repo's format: the scan stops, and nothing is swept
 }
 
 // repo reindexes one repo. The error is the run's own; everything about the registry and the
 // manifests is in the report.
 func (w *Worker) repo(ctx context.Context, repo index.Repo, start time.Time, req Request) (RepoReport, error) {
 	s := &scan{w: w, repo: repo, base: repoBase(repo), req: req, start: start, began: w.now(),
-		sem: make(chan struct{}, w.concurrency), rep: newRepoReport(repo.Format + "/" + repo.Name)}
+		sem: make(chan struct{}, w.concurrency), rep: newRepoReport(repo.Format + "/" + repo.Name),
+		referrers: map[digest.Digest]struct{}{}}
 	prov, ok := w.providers.Provider(repo.Registry)
 	if !ok || prov == nil {
 		s.failure(Finding{Error: fmt.Sprintf("registry %q is not configured", repo.Registry)})
@@ -256,16 +258,19 @@ func (s *scan) classify(ctx context.Context, pkgPath, tag string, desc ocispec.D
 	f := Finding{Repository: pkgPath, Tag: tag, Digest: desc.Digest, MediaType: mediaType, ArtifactType: p.ArtifactType}
 	switch m := tagSchema.FindStringSubmatch(tag); {
 	case m != nil:
-		n := 1
+		listed := []digest.Digest{desc.Digest}
 		if mediaType == ocispec.MediaTypeImageIndex {
-			n = len(p.Manifests)
+			listed = listed[:0]
+			for _, d := range p.Manifests {
+				listed = append(listed, d.Digest)
+			}
 		}
 		f.Subject = digest.Digest("sha256:" + m[1])
-		s.referrers(ctx, n, f)
+		s.referrer(ctx, listed, f)
 		return
 	case p.Subject != nil:
 		f.Subject = p.Subject.Digest
-		s.referrers(ctx, 1, f)
+		s.referrer(ctx, []digest.Digest{desc.Digest}, f)
 		return
 	case mediaType != ocispec.MediaTypeImageManifest || p.Annotations[profile.AnnotationSchema] == "":
 		s.foreign(f)
@@ -321,9 +326,9 @@ func (s *scan) write(ctx context.Context, rows *ingest.Rows, f Finding, reread b
 	}
 }
 
-// referrers counts n referrers of f.Subject and reports f as an orphan when no version of the
-// repo has that digest.
-func (s *scan) referrers(ctx context.Context, n int, f Finding) {
+// referrer counts the referrers listed, each digest once, and reports f as an orphan when no
+// version of the repo has its subject's digest.
+func (s *scan) referrer(ctx context.Context, listed []digest.Digest, f Finding) {
 	_, err := s.w.index.GetVersionByDigest(ctx, s.repo.ID, f.Subject)
 	orphan := errors.Is(err, index.ErrNotFound)
 	if !orphan && s.dbErr(err) {
@@ -331,7 +336,10 @@ func (s *scan) referrers(ctx context.Context, n int, f Finding) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.rep.Referrers += n
+	for _, d := range listed {
+		s.referrers[d] = struct{}{}
+	}
+	s.rep.Referrers = len(s.referrers)
 	if orphan {
 		add(&s.rep, &s.rep.OrphanReferrers, f)
 	}
