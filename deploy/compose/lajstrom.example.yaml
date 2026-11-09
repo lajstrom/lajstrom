@@ -1,8 +1,8 @@
 # Lajstrom configuration for local development: SQLite, and the two registries of the dev stack
 # (make dev-up, docs/dev-stack.md). Every key is listed; docs/configuration.md describes them.
-# Environment variables LAJSTROM_SERVER_LISTEN, LAJSTROM_SERVER_EXTERNAL_URL, LAJSTROM_LOG_LEVEL,
-# LAJSTROM_LOG_FORMAT, LAJSTROM_DATABASE_DRIVER and LAJSTROM_DATABASE_DSN override the scalar keys
-# of the same name. Secrets never go into this file: name the environment variable that holds
+# Environment variables LAJSTROM_SERVER_LISTEN, LAJSTROM_SERVER_EXTERNAL_URL,
+# LAJSTROM_SERVER_METRICS_LISTEN, LAJSTROM_LOG_LEVEL, LAJSTROM_LOG_FORMAT, LAJSTROM_DATABASE_DRIVER
+# and LAJSTROM_DATABASE_DSN override the scalar keys of the same name. Secrets never go into this file: name the environment variable that holds
 # them (*Env keys).
 #
 # The index stays SQLite so that make run works without Docker. The Postgres of the dev stack is
