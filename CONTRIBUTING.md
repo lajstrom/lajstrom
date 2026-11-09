@@ -201,7 +201,7 @@ scanoss-py inspect undeclared --input /tmp/scanoss-results.json
 | `changes` | whether the pull request changes a path that the integration tests depend on (below) |
 | `integration (zot)`, `integration (distribution)` | `go test -race -tags integration ./...` against Zot or distribution, the store suite on SQLite and Postgres; the dev stack's images as service containers |
 | `integration-result` | both integration cells passed, or nothing needed them; the required check for the integration tests |
-| `e2e` | `make e2e`: the end-to-end scenarios with real clients against Zot as a service container, in 6 minutes at most ([docs/testing.md](docs/testing.md)), the client images pulled once beforehand and the maven and gradle caches of `maven.sh` kept between runs (actions/cache); then `apt.sh` again with `APT_E2E_IMAGE` `ubuntu:22.04` and `debian:12`, in 3 minutes at most |
+| `e2e` | `make e2e`: the end-to-end scenarios with real clients against Zot as a service container, in 6 minutes at most ([docs/testing.md](docs/testing.md)), the client images pulled once beforehand and the maven and gradle caches of `maven.sh` kept between runs (actions/cache); then `apt.sh` again with `APT_E2E_IMAGE` `ubuntu:22.04` and `debian:12`, in 3 minutes at most, and `cosign.sh` against distribution, a registry without the referrers API (#28) |
 | `lint` | golangci-lint; `make api-lint`, vacuum on the OpenAPI document of the management API |
 | `vulncheck` | govulncheck |
 | `licenses` | dependency licenses against the allowlist |
