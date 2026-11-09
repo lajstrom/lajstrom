@@ -134,6 +134,14 @@ type Upload struct {
 	Offset   int64
 }
 
+// Pinger is a Provider that can say whether its registry answers now, with Lajstrom's
+// credentials: GET /v2/ for a registry of the distribution API. serve pings every registry that
+// has it in the background, and /-/readyz is ready while each answered within the last minute
+// (docs/spec/http-routing.md §5). A Provider without it counts as answering.
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
+
 // Set is the configured backend registries by name (registries[].name in the configuration).
 // index.Repo.Registry selects one; the server builds the Set at startup.
 type Set interface {

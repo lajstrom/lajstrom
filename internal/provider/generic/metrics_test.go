@@ -7,7 +7,9 @@ import (
 
 	dto "github.com/prometheus/client_model/go"
 
+	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/metrics"
+	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
 // TestOperation checks the operation label of the provider metrics, also for repository names
@@ -86,4 +88,26 @@ func sampleCount(t *testing.T, labels ...string) uint64 {
 		t.Fatal(err)
 	}
 	return m.GetHistogram().GetSampleCount()
+}
+
+// TestPing checks provider.Pinger on the fake registry: nil with the right credentials,
+// ErrUnauthorized without them, and an error when the registry is gone.
+func TestPing(t *testing.T) {
+	ctx := t.Context()
+	f := newFakeRegistry(t)
+	f.authMode = "basic"
+	log, _ := testLogger()
+	p := f.provider(t, log, func(c *config.Registry) {
+		c.Auth = config.RegistryAuth{Username: f.user, Password: f.pass, PasswordEnv: "FAKE_PASSWORD"}
+	})
+	if err := p.Ping(ctx); err != nil {
+		t.Errorf("Ping with the credentials: %v", err)
+	}
+	if err := f.provider(t, log, nil).Ping(ctx); !errors.Is(err, provider.ErrUnauthorized) {
+		t.Errorf("Ping without credentials: %v, want ErrUnauthorized", err)
+	}
+	f.srv.Close()
+	if err := p.Ping(ctx); err == nil {
+		t.Error("Ping of a registry that is gone: no error")
+	}
 }
