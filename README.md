@@ -34,6 +34,7 @@ https://lajstrom.dev
 | [Quick start: raw](docs/quickstart/raw.md) | `curl -T` a file in, `curl` it out, see the manifest in the registry |
 | [Quick start: apt](docs/quickstart/apt.md) | a `.deb` in with `curl -T` or `oras push`, out with `apt-get install` from a signed repo |
 | [Dev stack](docs/dev-stack.md) | `make dev-up`: Zot, distribution and Postgres for development and tests |
+| [Testing](docs/testing.md) | the test levels and what each needs; `make e2e` and how to add a scenario |
 | [Authentication](docs/auth.md) | local users, argon2id passwords, HTTP Basic on every route, the first admin, `whoami` |
 | [Operations](docs/operations.md) | the master key, apt signing keys, `key.asc` for clients, key rotation |
 | [Architecture](docs/architecture.md) | components, storage model, the five flows |

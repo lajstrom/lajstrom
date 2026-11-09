@@ -35,9 +35,6 @@ endif
 # make run uses the local configuration when there is one, the example otherwise.
 RUN_CONFIG   := $(firstword $(wildcard deploy/compose/lajstrom.yaml) deploy/compose/lajstrom.example.yaml)
 
-# need-file fails with a hint when a file that a later issue creates is missing: $(1) file, $(2) hint.
-need-file = @test -e $(1) || { echo "$(1) does not exist yet: $(2)" >&2; exit 1; }
-
 .PHONY: help build test vet lint vulncheck licenses fmt-check check \
 	dev-up dev-down dev-ps dev-logs test-integration e2e run clean
 
@@ -85,9 +82,8 @@ test-integration: ## Integration tests against the dev stack; needs LAJSTROM_TES
 	@test -n "$$LAJSTROM_TEST_REGISTRY" || { echo "set LAJSTROM_TEST_REGISTRY=host:port (after make dev-up: localhost:5000)" >&2; exit 1; }
 	$(GO) test -race -tags integration ./...
 
-e2e: ## End-to-end tests with real clients against the dev stack (issue #34)
-	$(call need-file,test/e2e/run.sh,the end-to-end harness comes with issue #34)
-	./test/e2e/run.sh
+e2e: ## End-to-end scenarios with real clients against the dev stack's Zot (docs/testing.md); E2E='raw oras' runs those only
+	./test/e2e/run.sh $(E2E)
 
 run: build ## Serve with deploy/compose/lajstrom.yaml, or the example when it does not exist
 	./$(BIN) serve --config $(RUN_CONFIG)

@@ -17,9 +17,10 @@
 # $APT_E2E_IMAGE, which builds and installs, and ghcr.io/oras-project/oras:v1.3.6; both
 # containers use --network host, which reaches the base URL on Linux and under OrbStack).
 # lajstrom admin deb metadata runs from $LAJSTROM_BIN, else bin/lajstrom, else go run
-# ./cmd/lajstrom. It prints one line per step and exits non-zero at the first failure. #48
-# wires it into make e2e and CI.
+# ./cmd/lajstrom. It prints one line per step and exits non-zero at the first failure, naming the
+# assertion or the command (lib.sh). make e2e runs it (test/e2e/run.sh).
 set -euo pipefail
+. "$(dirname "$0")/lib.sh"
 
 base="${1:-http://localhost:8080}"
 base="${base%/}"
@@ -42,9 +43,6 @@ two="e2e-oras-$run"  # pushed with oras
 version=1.0.0-1      # needs no escaping in a tag: digits, dots and a hyphen
 status=""            # status of the last request
 
-fail() { echo "FAIL $*" >&2; exit 1; }
-ok() { echo "ok   $*"; }
-
 # sha256 prints the hex sha256 of a file.
 sha256() {
 	if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
@@ -66,9 +64,6 @@ deb_metadata() {
 hdr() {
 	tr -d '\r' <"$work/headers" | awk -v n="$1" 'index(tolower($0), n ": ") == 1 { sub(/^[^:]*: /, ""); v = $0 } END { print v }'
 }
-
-# expect WHAT WANT GOT
-expect() { [ "$2" = "$3" ] || fail "$1: got '$3', want '$2'"; }
 
 # put FILE SUITE: PUT FILE to upload?suite=SUITE&component=main; the status goes to $status, the
 # headers to $work/headers, the body to $work/body.

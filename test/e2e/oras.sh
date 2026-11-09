@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# End-to-end test of oras through the OCI facade, without credentials, against a running
+# Lajstrom (docs/quickstart/oras.md §3; docs/acceptance.md O-01, O-02 and O-04 for an anonymous
+# client): the challenge of GET /v2/, oras push of a file to a raw repo with the raw profile,
+# the same manifest again (201, the same digest), another manifest under the tag (409
+# TAG_INVALID naming the first), oras pull and the bytes, oras repo tags, oras manifest fetch,
+# the raw frontend serving the pushed file, then DELETE and a 404.
+#
+#   test/e2e/oras.sh [<base url> [<raw repo>]]     default: http://localhost:8080 scratch
+#
+# The repo must exist (the example configuration creates raw/scratch) and take anonymous pushes
+# through /v2, as every repo does until RBAC (#45): oras gets an anonymous token from /v2/token.
+# oras login and tokens are in oci-token.sh and tokens.sh. The file is at a path of its own for
+# the run, so the script can run again against the same repo, and it deletes it at the end. oras
+# is the oras on PATH, else ghcr.io/oras-project/oras:v1.3.6 in docker with --network host (which
+# reaches the base URL on Linux and under OrbStack); either way it gets a registry configuration
+# of its own and no credentials. It needs curl and jq, prints one line per step and exits
+# non-zero at the first failure.
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+
+base="${1:-http://localhost:8080}"
+base="${base%/}"
+repo="${2:-scratch}"
+for tool in curl jq; do
+	command -v "$tool" >/dev/null || { echo "oras.sh: $tool is required" >&2; exit 2; }
+done
+oras_image=ghcr.io/oras-project/oras:v1.3.6
+registry="${base#*://}" # host:port of the facade, for oras
+plain=""                # --plain-http for an http:// base URL
+case "$base" in http://*) plain=--plain-http ;; esac
+
+work="$(mktemp -d)"
+run="e2e-oras-$(date -u +%Y%m%d%H%M%S)-$RANDOM"
+path="$run/hello.txt"  # lower case: the path is also the OCI repository below raw/<repo>/
+name="raw/$repo/$path" # the OCI name of the file
+pushed=""
+cleanup() {
+	[ -z "$pushed" ] || curl -sS -o /dev/null -X DELETE "$base/raw/$repo/$path" || true
+	rm -rf "$work"
+}
+trap cleanup EXIT
+
+# oras ARGS...: oras in the run's directory, with a registry configuration of its own there.
+if command -v oras >/dev/null; then
+	oras_how="$(command -v oras), $(command oras version | head -1)"
+	oras() { (cd "$work" && command oras "$@" --registry-config "$work/oras-auth.json" ${plain:+"$plain"}); }
+else
+	command -v docker >/dev/null || { echo "oras.sh: oras or docker is required" >&2; exit 2; }
+	oras_how="$oras_image"
+	# As the caller's user: what oras pull writes as root on Linux, the cleanup could not remove.
+	oras() { docker run --rm --network host -u "$(id -u):$(id -g)" -v "$work:/w" -w /w "$oras_image" "$@" --registry-config /w/oras-auth.json ${plain:+"$plain"}; }
+fi
+
+# sha256 prints the hex sha256 of a file.
+sha256() {
+	if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+# push CREATED: oras push of $path, with the raw annotations and CREATED as the created time,
+# from the run's directory, so that the layer is titled with the path; the output goes to
+# $work/oras.log and oras's status is returned.
+push() {
+	oras push --artifact-type application/vnd.lajstrom.raw.v1 \
+		--annotation lajstrom.schema=1 --annotation lajstrom.format=raw --annotation "lajstrom.repo=$repo" \
+		--annotation "lajstrom.name=$path" --annotation "lajstrom.version=$version" \
+		--annotation "lajstrom.raw.path=$path" --annotation "org.opencontainers.image.created=$1" \
+		"$registry/$name:$version" "$path:application/vnd.lajstrom.raw.file.v1" >"$work/oras.log" 2>&1
+}
+
+# O-01 without credentials: the challenge, which oras answers with an anonymous token.
+assert_status 401 -D "$work/headers" "$base/v2/"
+challenge="$(tr -d '\r' <"$work/headers" | awk 'tolower($1) == "www-authenticate:" { sub(/^[^:]*: /, ""); print }')"
+case "$challenge" in 'Bearer realm="'*'/v2/token",service="'*'"') ;; *) fail "GET /v2/ challenge: $challenge" ;; esac
+step "GET /v2/ without credentials: 401 WWW-Authenticate: $challenge"
+
+mkdir -p "$work/$run"
+printf 'oras e2e %s\n' "$run" >"$work/$path"
+version="$(sha256 "$work/$path" | cut -c1-16)" # the raw model: the first 16 hex of the content's sha256
+created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+push "$created" || { cat "$work/oras.log" >&2; fail "oras push $name:$version"; }
+pushed=yes
+digest="$(awk '$1 == "Digest:" { print $2 }' "$work/oras.log")"
+case "$digest" in sha256:*) ;; *) cat "$work/oras.log" >&2; fail "oras push printed no digest" ;; esac
+step "oras push $registry/$name:$version ($oras_how, no credentials): $digest"
+
+# The same manifest again is the idempotent repeat; another one under the tag is refused.
+push "$created" || { cat "$work/oras.log" >&2; fail "oras push of the same manifest again"; }
+assert_eq "$digest" "$(awk '$1 == "Digest:" { print $2 }' "$work/oras.log")" "the digest of the repeat"
+step "oras push of the same manifest again: the same digest"
+if push "2001-02-03T04:05:06Z"; then fail "oras push of another manifest under $version succeeded: $(cat "$work/oras.log")"; fi
+grep -qF "tag $version of $name is taken by $digest" "$work/oras.log" ||
+	{ cat "$work/oras.log" >&2; fail "the refusal of another manifest under $version does not name $digest"; }
+step "oras push of another manifest under $version: refused, tag invalid: the tag is taken by $digest"
+
+# O-02: pull, tags and the manifest through the facade, the file through the raw frontend.
+oras pull -o out "$registry/$name:$version" >"$work/oras.log" 2>&1 || { cat "$work/oras.log" >&2; fail "oras pull"; }
+cmp -s "$work/$path" "$work/out/$path" || fail "oras pull: out/$path is not the pushed file"
+step "oras pull $registry/$name:$version: out/$path, the same bytes"
+assert_eq "$version" "$(oras repo tags "$registry/$name")" "oras repo tags $registry/$name"
+step "oras repo tags $registry/$name: $version"
+oras manifest fetch "$registry/$name:$version" >"$work/manifest.json"
+assert_eq "$digest" "sha256:$(sha256 "$work/manifest.json")" "the digest of the fetched manifest"
+assert_eq "application/vnd.lajstrom.raw.v1 $path $path" \
+	"$(jq -r '[.artifactType, .annotations["lajstrom.raw.path"], .layers[0].annotations["org.opencontainers.image.title"]] | join(" ")' "$work/manifest.json")" \
+	"artifactType, lajstrom.raw.path and the layer title of the fetched manifest"
+step "oras manifest fetch: $digest, artifactType application/vnd.lajstrom.raw.v1, the layer titled $path"
+assert_status 200 -o "$work/get" "$base/raw/$repo/$path"
+cmp -s "$work/$path" "$work/get" || fail "GET /raw/$repo/$path: not the pushed bytes"
+step "GET /raw/$repo/$path: 200, the pushed bytes"
+
+# Cleanup: DELETE through the raw frontend, then 404.
+assert_status 204 -X DELETE "$base/raw/$repo/$path"
+pushed=""
+assert_status 404 -o /dev/null "$base/raw/$repo/$path"
+step "cleanup: DELETE /raw/$repo/$path: 204; GET is 404 after it"
+echo "PASS oras e2e against $base as anonymous"

@@ -178,6 +178,9 @@ LAJSTROM_TEST_REGISTRY=localhost:5000 make test-integration   # integration (zot
 LAJSTROM_TEST_REGISTRY=localhost:5001 make test-integration   # integration (distribution)
 ```
 
+The end-to-end scenarios, real clients against a server of their own, run with `make e2e`;
+[docs/testing.md](docs/testing.md) describes every test level and how to add a scenario.
+
 The snippet scan needs Python 3 and the ScanOSS client (it sends file fingerprints, not source code,
 to the public OSSKB service):
 

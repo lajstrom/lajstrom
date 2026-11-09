@@ -35,8 +35,10 @@
 # into the apt containers in a file, never on a command line, and are never printed: the script
 # prints token ids and hash prefixes. It needs curl, jq and docker (ubuntu:24.04 for
 # linux/amd64, or $APT_E2E_IMAGE, and ghcr.io/oras-project/oras:v1.3.6, with --network host),
-# prints one line per step and exits non-zero at the first failure.
+# prints one line per step and exits non-zero at the first failure, naming the assertion or the
+# command (lib.sh).
 set -euo pipefail
+. "$(dirname "$0")/lib.sh"
 umask 077
 
 base="${1:-http://localhost:8080}"
@@ -87,10 +89,6 @@ cleanup() {
 trap cleanup EXIT
 : >"$work/pats"
 : >"$work/deploys"
-
-fail() { echo "FAIL $*" >&2; exit 1; }
-ok() { echo "ok   $*"; }
-expect() { [ "$2" = "$3" ] || fail "$1: got '$3', want '$2'"; }
 
 # sha256 prints the hex sha256 of a file.
 sha256() {

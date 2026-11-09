@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# The end-to-end harness (#34, docs/testing.md): builds bin/lajstrom, serves it on a free port of
+# 127.0.0.1 with a configuration of its own, runs the scenarios of test/e2e/ against it and
+# prints a summary line per scenario. make e2e runs it.
+#
+#   test/e2e/run.sh [<scenario>...]     e.g. test/e2e/run.sh raw oras; make e2e E2E='raw oras'
+#
+# Without arguments it runs every test/e2e/<name>.sh but lib.sh and run.sh: those of $order
+# below in that order, then any other by name. A scenario gets the base URL as its only
+# argument, so its defaults name the repos, and the environment:
+#
+#   LAJSTROM_CONFIG        the configuration the server runs with (lajstrom admin uses it too)
+#   LAJSTROM_BIN           bin/lajstrom, absolute
+#   LAJSTROM_MASTER_KEY    the server's master key: apt repos are signed; lajstrom admin key needs it
+#   LAJSTROM_SERVER_LOG    the server's log file
+#   LAJSTROM_E2E_REGISTRY  host:port of the registry `local`
+#
+# Everything lives in a temporary directory: the configuration, the SQLite index, the server's
+# log and the output of each scenario. The configuration has one registry, `local`, at
+# $LAJSTROM_E2E_REGISTRY (default localhost:5000, the Zot of make dev-up), and the repos
+# raw/scratch, apt/ubuntu and apt/e2e on it; no metrics listener, no reconcile loop. The
+# LAJSTROM_SERVER_*, LAJSTROM_LOG_* and LAJSTROM_DATABASE_* overrides of the caller's
+# environment are unset, so that the server and lajstrom admin both read the file. The server
+# must answer /-/readyz within 30 s. A scenario that fails is reported with its FAIL lines (the
+# assertion or the failing command, from lib.sh) and the last 50 lines of the server log; the
+# others still run. On exit the server is stopped and the directory removed, unless
+# LAJSTROM_E2E_KEEP=1. The exit status is 1 when a scenario failed, 2 when the harness could
+# not start.
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+
+order="raw oras auth oci-token tokens apt" # the quick ones first
+here="$(cd "$(dirname "$0")" && pwd)"
+root="$(cd "$here/../.." && pwd)"
+registry="${LAJSTROM_E2E_REGISTRY:-localhost:5000}"
+for tool in curl jq make go; do
+	command -v "$tool" >/dev/null || { echo "run.sh: $tool is required" >&2; exit 2; }
+done
+
+# The scenarios: the arguments, or every script of the directory.
+names=()
+if [ $# -gt 0 ]; then
+	for n in "$@"; do
+		n="${n%.sh}"
+		case "$n" in lib | run) echo "run.sh: $n.sh is not a scenario" >&2; exit 2 ;; esac
+		[ -f "$here/$n.sh" ] || { echo "run.sh: no scenario test/e2e/$n.sh" >&2; exit 2; }
+		names+=("$n")
+	done
+else
+	for n in $order; do
+		[ ! -f "$here/$n.sh" ] || names+=("$n")
+	done
+	for f in "$here"/*.sh; do
+		n="$(basename "$f" .sh)"
+		case " lib run $order " in *" $n "*) continue ;; esac
+		names+=("$n")
+	done
+fi
+
+tmp="${TMPDIR:-/tmp}"
+tmp="$(mktemp -d "${tmp%/}/lajstrom-e2e.XXXXXX")"
+pid=""
+finish() {
+	if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+		kill -TERM "$pid" 2>/dev/null || true
+		wait "$pid" 2>/dev/null || true
+	fi
+	if [ "${LAJSTROM_E2E_KEEP:-}" = 1 ]; then
+		echo "run.sh: kept $tmp (the configuration, the index, server.log, a log per scenario)"
+	else
+		rm -rf "$tmp"
+	fi
+}
+trap finish EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# free_port prints a port of 127.0.0.1 that nothing listens on (curl: connection refused).
+free_port() {
+	local port rc _
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		port=$((20000 + RANDOM % 40000))
+		rc=0
+		curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$port/" || rc=$?
+		[ "$rc" != 7 ] || { echo "$port"; return 0; }
+	done
+	return 1
+}
+
+start=$SECONDS
+(cd "$root" && make --no-print-directory build) >"$tmp/build.log" 2>&1 || { cat "$tmp/build.log" >&2; echo "run.sh: make build failed" >&2; exit 2; }
+bin="$root/bin/lajstrom"
+step "make build: $("$bin" version | head -1)"
+
+port="$(free_port)" || { echo "run.sh: no free port found on 127.0.0.1" >&2; exit 2; }
+base="http://127.0.0.1:$port"
+unset LAJSTROM_SERVER_LISTEN LAJSTROM_SERVER_EXTERNAL_URL LAJSTROM_SERVER_METRICS_LISTEN \
+	LAJSTROM_LOG_LEVEL LAJSTROM_LOG_FORMAT LAJSTROM_DATABASE_DRIVER LAJSTROM_DATABASE_DSN LAJSTROM_ADMIN_PASSWORD
+LAJSTROM_MASTER_KEY="$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
+LAJSTROM_CONFIG="$tmp/lajstrom.yaml"
+LAJSTROM_BIN="$bin"
+LAJSTROM_SERVER_LOG="$tmp/server.log"
+LAJSTROM_E2E_REGISTRY="$registry"
+export LAJSTROM_MASTER_KEY LAJSTROM_CONFIG LAJSTROM_BIN LAJSTROM_SERVER_LOG LAJSTROM_E2E_REGISTRY
+cat >"$LAJSTROM_CONFIG" <<EOF
+# Written by test/e2e/run.sh for one run of the end-to-end scenarios.
+server:
+  listen: "127.0.0.1:$port"
+  externalURL: "$base"
+  shutdownTimeout: 5s
+  metricsListen: ""
+log:
+  level: info
+  format: text
+database:
+  driver: sqlite
+  dsn: "file:$tmp/lajstrom.db"
+registries:
+  - name: local
+    type: generic
+    url: "http://$registry"
+reconcile:
+  interval: 0s
+keys:
+  masterKeyEnv: LAJSTROM_MASTER_KEY
+repos:
+  - {name: scratch, format: raw, registry: local}
+  - {name: ubuntu, format: apt, registry: local}
+  - {name: e2e, format: apt, registry: local}
+EOF
+
+"$bin" migrate --config "$LAJSTROM_CONFIG" >"$tmp/migrate.log" 2>&1 || { cat "$tmp/migrate.log" >&2; echo "run.sh: lajstrom migrate failed" >&2; exit 2; }
+"$bin" serve --config "$LAJSTROM_CONFIG" >"$LAJSTROM_SERVER_LOG" 2>&1 </dev/null &
+pid=$!
+served=$SECONDS
+deadline=$((SECONDS + 30))
+until curl -fsS -o /dev/null --max-time 2 "$base/-/readyz" 2>/dev/null; do
+	if ! kill -0 "$pid" 2>/dev/null || [ "$SECONDS" -ge "$deadline" ]; then
+		tail -n 50 "$LAJSTROM_SERVER_LOG" >&2
+		echo "run.sh: lajstrom serve on $base was not ready within 30 s (registry $registry)" >&2
+		exit 2
+	fi
+	sleep 0.5
+done
+step "lajstrom serve on $base, index $tmp/lajstrom.db, registry local at $registry: ready after $((SECONDS - served)) s"
+
+results=()
+failed=0
+for n in "${names[@]}"; do
+	log="$tmp/$n.log"
+	echo "=== $n.sh"
+	t0=$SECONDS
+	if (cd "$root" && "$here/$n.sh" "$base") </dev/null 2>&1 | tee "$log"; then rc=0; else rc=$?; fi
+	took=$((SECONDS - t0))
+	if [ "$rc" = 0 ]; then
+		results+=("$(printf 'PASS %-14s %4d s' "$n.sh" "$took")")
+		continue
+	fi
+	failed=$((failed + 1))
+	results+=("$(printf 'FAIL %-14s %4d s  (exit %d)' "$n.sh" "$took" "$rc")")
+	{
+		echo "--- $n.sh failed with exit $rc after $took s:"
+		grep -E '^(FAIL |  at |  in )' "$log" || echo "(no FAIL line: the last lines of its output are above)"
+		echo "--- the last 50 lines of the server log:"
+		tail -n 50 "$LAJSTROM_SERVER_LOG"
+		echo "---"
+	} >&2
+	if ! kill -0 "$pid" 2>/dev/null; then
+		echo "run.sh: lajstrom serve exited during $n.sh; the scenarios after it do not run" >&2
+		break
+	fi
+done
+
+echo "=== summary"
+printf '%s\n' "${results[@]}"
+echo "e2e: ${#results[@]} of ${#names[@]} scenarios ran, $failed failed, in $((SECONDS - start)) s against $base"
+[ "$failed" = 0 ] || exit 1

@@ -250,11 +250,13 @@ LAJSTROM_TEST_REGISTRY=localhost:5001 make test-integration   # against distribu
 LAJSTROM_TEST_REGISTRY=localhost:5000 LAJSTROM_TEST_REGISTRY_S3=localhost:5002 make test-integration   # and the 307 of distribution on S3 (PROFILES=s3)
 LAJSTROM_TEST_REGISTRY=localhost:5000 LAJSTROM_TEST_REGISTRY_S3=localhost:5006 make test-integration   # the same on MinIO (PROFILES=s3-minio)
 LAJSTROM_TEST_POSTGRES_DSN='postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable' go test -race ./internal/index/...
-test/e2e/raw.sh http://localhost:8080 scratch          # with make run in another terminal
+make e2e                                               # the end-to-end scenarios, on a server of their own
+test/e2e/raw.sh http://localhost:8080 scratch          # one scenario, with make run in another terminal
 ```
 
 The integration tests work in repositories with a random name and the Postgres tests in a schema
-of their own, so they can run again and side by side without a reset.
+of their own, so they can run again and side by side without a reset. [testing.md](testing.md)
+describes every level and what it needs.
 
 CI runs the same three images, on the same ports, as service containers of the `integration`
 job ([CONTRIBUTING.md](../CONTRIBUTING.md#ci-overview)); Zot there runs on the configuration built
