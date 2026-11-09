@@ -260,3 +260,90 @@ func TestDeleteKeepsPackage(t *testing.T) {
 		t.Errorf("rows %+v, want the package with version two", rows)
 	}
 }
+
+// TestDeleteReferrer: a referrer deleted on its own, with its own referrers, and no version
+// with it; the audit row names its subject. Without the referrers API the subject's tag-schema
+// index is written again without it, under the subject's lock.
+func TestDeleteReferrer(t *testing.T) {
+	for _, api := range []bool{true, false} {
+		e, rec, subject := referrerEnv(t, api)
+		a := attach(t, e, subject, api)
+		sig, att := a.refs[1], a.refs[2]
+		rec.locks = nil
+		for _, tt := range []struct {
+			ref  digest.Digest
+			want int
+		}{{sig, 0}, {att, 1}} {
+			got, err := e.pipe.Delete(t.Context(), e.repo, format.Deletion{Path: "notes", Reference: tt.ref.String()}, alice)
+			must(t, err)
+			if got.Version != nil || got.Digest != tt.ref || got.Referrers != tt.want {
+				t.Errorf("api %t: Deleted %+v, want %s with %d referrers and no version", api, got, tt.ref, tt.want)
+			}
+		}
+		gone(t, e, sig.String(), att.String(), a.refs[3].String())
+		rows := e.rows(t)
+		if len(rows.Versions) != 1 || rows.Audit[0].Action != "delete" || rows.Audit[0].Subject != subject.Digest.String() {
+			t.Errorf("api %t: rows %+v", api, rows)
+		}
+		if api {
+			same(t, "locks", []string(nil), rec.locks)
+			continue
+		}
+		key := "raw/scratch/notes@" + subject.Digest.String()
+		same(t, "locks", []string{key, key}, rec.locks)
+		// The index listed sig and att: without sig it lists att, without att it is gone.
+		gone(t, e, "sha256-"+subject.Digest.Encoded())
+		if pushes := e.pushRefs("sha256-" + subject.Digest.Encoded()); len(pushes) != 2 {
+			t.Errorf("index pushes %+v: want the test's and one without the signature", pushes)
+		}
+	}
+}
+
+// TestDeleteReferrerRefused: without the referrers API, the first delete of a referrer on its
+// own is its subject's index, a plain delete; refused, nothing changed.
+func TestDeleteReferrerRefused(t *testing.T) {
+	e, rec, subject := referrerEnv(t, false)
+	a := attach(t, e, subject, false)
+	var deletes []digest.Digest
+	opts := e.options(refusing{registry{Fake: e.prov, api: false, rec: rec}, &sync.Mutex{}, &deletes})
+	opts.Index = rec
+	_, err := ingest.New(opts).Delete(t.Context(), e.repo, format.Deletion{Path: "notes", Reference: a.refs[1].String()}, alice)
+	if !errors.Is(err, provider.ErrUnsupported) {
+		t.Fatalf("Delete = %v, want ErrUnsupported", err)
+	}
+	same(t, "deletes asked", []digest.Digest{a.index}, deletes)
+	if d := e.tagged(t, "raw/scratch/notes", "sha256-"+subject.Digest.Encoded()); d != a.index {
+		t.Errorf("the index tag names %s, want %s", d, a.index)
+	}
+}
+
+// TestDeleteManifests: a manifest of an oci repo by its tag, audited with its repository; a
+// foreign tag of a managed repo that names a version's manifest deletes the version.
+func TestDeleteManifests(t *testing.T) {
+	e, _, subject := referrerEnv(t, true)
+	ctx := t.Context()
+	repo := index.Repo{Format: "oci", Name: "images", Registry: "local", Prefix: "oci/images", Kind: "hosted"}
+	must(t, e.st.CreateRepo(ctx, &repo))
+	rr, err := e.prov.Repository(ctx, "oci/images/app")
+	must(t, err)
+	img := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":` +
+		`{"mediaType":"application/vnd.oci.empty.v1+json","digest":"` + ocispec.DescriptorEmptyJSON.Digest.String() + `","size":2},"layers":[]}`)
+	desc := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: digest.FromBytes(img), Size: int64(len(img))}
+	must(t, rr.PushReference(ctx, desc, bytes.NewReader(img), "v1"))
+	got, err := e.pipe.Delete(ctx, repo, format.Deletion{Path: "app", Reference: "v1"}, alice)
+	must(t, err)
+	if got.Digest != desc.Digest || got.Version != nil {
+		t.Errorf("Deleted %+v", got)
+	}
+	if ev := e.rows(t).Audit[0]; ev.Repo != "oci/images" || ev.Subject != "oci/images/app" || ev.Digest != desc.Digest {
+		t.Errorf("audit event %+v", ev)
+	}
+	notes, err := e.prov.Repository(ctx, "raw/scratch/notes")
+	must(t, err)
+	must(t, notes.Tag(ctx, subject, "foreign"))
+	got, err = e.pipe.Delete(ctx, e.repo, format.Deletion{Path: "notes", Reference: "foreign"}, alice)
+	must(t, err)
+	if got.Version == nil || len(e.rows(t).Versions) != 0 {
+		t.Errorf("Deleted %+v: the foreign tag's manifest is the version", got)
+	}
+}
