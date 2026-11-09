@@ -33,6 +33,7 @@ https://lajstrom.dev
 | [Start here](docs/onboarding.md) | one hour from zero to a claimed issue |
 | [Quick start: raw](docs/quickstart/raw.md) | `curl -T` a file in, `curl` it out, see the manifest in the registry |
 | [Quick start: apt](docs/quickstart/apt.md) | a `.deb` in with `curl -T` or `oras push`, out with `apt-get install` from a signed repo |
+| [Quick start: pypi](docs/quickstart/pypi.md) | `twine upload` or `uv publish` in, `pip install` or `uv pip install` out, with PEP 658 metadata |
 | [Dev stack](docs/dev-stack.md) | `make dev-up`: Zot, distribution and Postgres for development and tests |
 | [Authentication](docs/auth.md) | local users, argon2id passwords, HTTP Basic on every route, the first admin, `whoami` |
 | [Operations](docs/operations.md) | the master key, apt signing keys, `key.asc` for clients, key rotation |
