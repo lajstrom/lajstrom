@@ -85,9 +85,12 @@ make e2e E2E='raw oras'        # those two; test/e2e/run.sh raw oras is the same
 
 [test/e2e/run.sh](../test/e2e/run.sh) builds `bin/lajstrom`, writes a configuration in a
 temporary directory (a fresh SQLite index, the registry `local` at `$LAJSTROM_E2E_REGISTRY`,
-by default `localhost:5000`, the Zot of the stack, the repos `raw/scratch`, `apt/ubuntu` and
-`apt/e2e`, a master key of its own, no metrics listener, no reconcile loop), runs
-`lajstrom migrate`, starts `lajstrom serve` on a free port of `127.0.0.1` and waits for
+by default `localhost:5000`, the Zot of the stack, the repos `raw/scratch`, `apt/ubuntu`,
+`apt/e2e` and `pypi/e2e`, none readable anonymously, `auth.anonymousRead: true`, a master key of
+its own, no metrics listener, no reconcile loop), runs `lajstrom migrate`, makes the user
+`e2e-admin` with the admin binding and a random password, which the scenarios get as
+`LAJSTROM_E2E_USER` and `LAJSTROM_E2E_PASSWORD`, starts `lajstrom serve` on a free port of
+`127.0.0.1` and waits for
 `/-/readyz`, at most 30 s. Then it runs every `test/e2e/<name>.sh` but `lib.sh` and `run.sh`,
 the known ones in a fixed order and any other after them, and prints a line per scenario:
 
@@ -113,8 +116,9 @@ stops the server and removes the directory on exit; `LAJSTROM_E2E_KEEP=1` keeps 
 | Scenario | What it checks | Clients |
 | --- | --- | --- |
 | `raw.sh` | R-01 to R-04, a range, R-09, R-10, DELETE | curl |
-| `oras.sh` | anonymous oras through `/v2`: the challenge, push with the raw profile, the repeat, another manifest under the tag (409), pull, tags, manifest fetch, the file on the raw frontend | oras on `PATH`, else its image |
+| `oras.sh` | oras through `/v2`: the challenge without credentials, `oras login`, push with the raw profile, the repeat, another manifest under the tag (409), pull, tags, manifest fetch, the file on the raw frontend | oras on `PATH`, else its image |
 | `auth.sh` | local users, HTTP Basic, disable, enable, set-password | curl, `lajstrom admin user` |
+| `rbac.sh` | the S-02 matrix of the six principals on the raw frontend and on `/v2` (the tokens' actions included), a repo that may not be read answering as one that does not exist (S-08, X-05), a binding and a repo's `anonymousRead` counting from the next request (S-07), creating a repo with a taken name | curl, `lajstrom admin user` and `binding` |
 | `oci-token.sh` | the docker bearer flow, oras login, push and pull, token key rotations | curl, oras image, `lajstrom admin key` |
 | `tokens.sh` | personal access tokens and deploy tokens on raw, apt (`auth.conf`) and `/v2` | curl, `ubuntu:24.04`, oras image |
 | `apt.sh` | a `.deb` by PUT and one by oras, `apt-get update`, `install` and `download` from the signed repo, the conflicts | `ubuntu:24.04` (`linux/amd64`), oras image |

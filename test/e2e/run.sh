@@ -20,8 +20,10 @@
 # Everything lives in a temporary directory: the configuration, the SQLite index, the server's
 # log and the output of each scenario. The configuration has one registry, `local`, at
 # $LAJSTROM_E2E_REGISTRY (default localhost:5000, the Zot of make dev-up), and the repos
-# raw/scratch, apt/ubuntu, apt/e2e and pypi/e2e on it, and the user $LAJSTROM_E2E_USER with the
-# admin binding; no metrics listener, no reconcile loop. The LAJSTROM_SERVER_*, LAJSTROM_LOG_*
+# raw/scratch, apt/ubuntu, apt/e2e and pypi/e2e on it, none readable anonymously, and the user
+# $LAJSTROM_E2E_USER with the admin binding; auth.anonymousRead is true, so that a repo's own
+# anonymousRead decides (rbac.sh turns it on for a repo of its own); no metrics listener, no
+# reconcile loop. The LAJSTROM_SERVER_*, LAJSTROM_LOG_*
 # and LAJSTROM_DATABASE_* overrides of the caller's environment are unset, so that the server and
 # lajstrom admin both read the file. The server
 # must answer /-/readyz within 30 s. A scenario that fails is reported with its FAIL lines (the
@@ -32,7 +34,7 @@
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-order="raw oras auth oci-token tokens apt pypi" # the quick ones first; pypi installs its clients
+order="raw oras auth rbac oci-token tokens apt pypi" # the quick ones first; pypi installs its clients
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 registry="${LAJSTROM_E2E_REGISTRY:-localhost:5000}"
@@ -126,6 +128,8 @@ reconcile:
   interval: 0s
 keys:
   masterKeyEnv: LAJSTROM_MASTER_KEY
+auth:
+  anonymousRead: true
 repos:
   - {name: scratch, format: raw, registry: local}
   - {name: ubuntu, format: apt, registry: local}
