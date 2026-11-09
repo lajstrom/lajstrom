@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/metrics"
+	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
 // The circuit breaker of a registry: breakerThreshold requests in a row that fail open it, and
@@ -17,9 +18,6 @@ var (
 	breakerThreshold = 5
 	breakerCooldown  = 30 * time.Second
 )
-
-// errCircuitOpen is the error of a request that the breaker does not send.
-var errCircuitOpen = errors.New("registry unavailable: too many failures in a row, requests fail fast for a while")
 
 // The states of a breaker.
 const (
@@ -30,8 +28,9 @@ const (
 
 // breaker is the circuit breaker of one registry. A request fails when the registry answers
 // with a 5xx other than 501, or does not answer; after breakerThreshold failures in a row the
-// breaker opens, and for breakerCooldown every request fails at once with errCircuitOpen
-// instead of waiting for timeouts and retries. Then the next GET or HEAD, the readiness ping
+// breaker opens, and for breakerCooldown every request fails at once with a
+// *provider.UnavailableError that says how much of the cooldown is left, instead of waiting for
+// timeouts and retries. Then the next GET or HEAD, the readiness ping
 // of serve every 20 s or a client's, goes through as a trial: an answer closes the breaker, a
 // failure opens it for another cooldown. A request with a body is never the trial: an upload
 // would keep the breaker half-open for as long as it streams. A 4xx is an answer; a 429 and a
@@ -69,8 +68,9 @@ func (b *breaker) allow(req *http.Request) (trial bool, err error) {
 			b.trial = true
 			return true, nil
 		}
+		return false, &provider.UnavailableError{} // a trial is under way: the answer is near
 	}
-	return false, errCircuitOpen
+	return false, &provider.UnavailableError{RetryAfter: max(breakerCooldown-b.now().Sub(b.opened), 0)}
 }
 
 // outcome classifies an attempt for the breaker: +1 the registry answered, -1 it failed, 0
@@ -124,7 +124,7 @@ func (b *breaker) open(ctx context.Context) {
 }
 
 // breakerTransport sends a request through the registry's breaker: a request it refuses
-// fails with errCircuitOpen, without reaching the registry. It sits above the retries, so a
+// fails with a *provider.UnavailableError, without reaching the registry. It sits above the retries, so a
 // request is one outcome however often it was tried.
 type breakerTransport struct {
 	next http.RoundTripper

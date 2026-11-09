@@ -8,6 +8,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/auth/token"
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/server"
 )
 
@@ -29,6 +30,9 @@ const (
 	codeUnsupported         = "UNSUPPORTED"
 	codeTooManyRequests     = "TOOMANYREQUESTS"
 	codeTagInvalid          = "TAG_INVALID"
+	// codeUnavailable is distribution's code of a 503, which docker retries: a registry whose
+	// circuit breaker is open.
+	codeUnavailable = "UNAVAILABLE"
 	// codeUnknown is distribution's code of a 5xx; the spec defines codes for 4xx answers only.
 	codeUnknown = "UNKNOWN"
 )
@@ -79,8 +83,9 @@ type errorEntry struct {
 
 // fail answers err as the distribution spec's error document. The status is the apiError's,
 // or format.StatusOf of the cause; the code follows the status where the status decides it
-// (401 UNAUTHORIZED with the challenge, 403 DENIED, 429 TOOMANYREQUESTS, 501 UNSUPPORTED, 5xx
-// UNKNOWN) and is the handler's otherwise. The challenge of a 401 is the bearer challenge of
+// (401 UNAUTHORIZED with the challenge, 403 DENIED, 429 TOOMANYREQUESTS, 501 UNSUPPORTED, the
+// 503 of an open circuit breaker UNAVAILABLE with Retry-After, other 5xx UNKNOWN) and is the
+// handler's otherwise. The challenge of a 401 is the bearer challenge of
 // the token flow (docs/spec/rbac.md §4) with the scope of the request (requestScope), and
 // error="insufficient_scope" when a valid bearer lacked it. A 5xx says only its status text,
 // without a detail, and its cause is logged with the request id: a backend error must not
@@ -98,7 +103,12 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if msg == "" && ae.err != nil {
 		msg = ae.err.Error()
 	}
+	format.SetRetryAfter(w.Header(), err)
 	switch {
+	case status == http.StatusServiceUnavailable && errors.Is(err, provider.ErrUnavailable):
+		code, msg, detail = codeUnavailable, http.StatusText(status), nil
+		h.o.Log.WarnContext(r.Context(), "facade: registry unavailable", "method", r.Method, "path", r.URL.Path,
+			"error", err.Error(), "requestId", server.RequestID(r.Context()))
 	case status >= http.StatusInternalServerError && status != http.StatusNotImplemented:
 		code, msg, detail = codeUnknown, http.StatusText(status), nil
 		h.o.Log.ErrorContext(r.Context(), "facade: request failed", "method", r.Method, "path", r.URL.Path,

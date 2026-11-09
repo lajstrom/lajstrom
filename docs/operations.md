@@ -336,9 +336,10 @@ sample in `lajstrom_provider_request_duration_seconds`.
 
 Each registry has a circuit breaker. Five requests in a row that the registry answers with a
 `5xx` other than `501`, or does not answer, each after its retries, open it: for 30 s every
-request to that registry fails at once (a `500` to the client) instead of waiting for timeouts
-and retries, and the log has `registry fails: circuit open` once, with the registry's name. Then
-the next `GET` or `HEAD` goes through as a trial, normally the readiness ping of `serve`; an
+request to that registry fails at once instead of waiting for timeouts and retries. The client
+gets `503` with `Retry-After`, the seconds until the trial below (on `/v2` with the code
+`UNAVAILABLE`, which docker retries), and the log has `registry fails: circuit open` once, with
+the registry's name. Then the next `GET` or `HEAD` goes through as a trial, normally the readiness ping of `serve`; an
 answer closes the breaker (`registry answers again: circuit closed`), a failure opens it for
 another 30 s. A request with a body is never the trial, and fails at once until the breaker is
 closed. A `4xx` is an answer; a `429`, and a request whose client went away, count neither way.

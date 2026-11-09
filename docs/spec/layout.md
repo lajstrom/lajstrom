@@ -210,9 +210,13 @@ func RepoFrom(ctx context.Context) (index.Repo, bool)
 func Authorize(ctx context.Context, deps Deps, a auth.Action, repo index.Repo) error
 
 // WriteError answers StatusOf(err) as text/plain (nosniff): err.Error() for 4xx, the status
-// text for 5xx; a 401 carries WWW-Authenticate: Basic realm="lajstrom".
+// text for 5xx; a 401 carries WWW-Authenticate: Basic realm="lajstrom", a 503 of
+// provider.ErrUnavailable Retry-After (SetRetryAfter).
 func WriteError(w http.ResponseWriter, err error) int
 func StatusOf(err error) int
+// SetRetryAfter sets Retry-After from provider.RetryAfter(err): whole seconds, rounded up, at
+// least 1; nothing for an error without one. WriteError, the facade and the API call it.
+func SetRetryAfter(h http.Header, err error)
 
 // CachedDocument returns the index_cache row of (repo, scope, kind), or renders the scope with
 // p.RenderIndex, stores every document (SHA256, RenderedAt) and returns the one of kind; lookup,
@@ -257,6 +261,7 @@ They are checked in this order:
 | `*http.MaxBytesError` | 413 |
 | `format.ErrUnsupported`, `provider.ErrUnsupported` | 501 |
 | `provider.ErrUnauthorized` (the backend rejected Lajstrom's own credentials) | 502 |
+| `provider.ErrUnavailable` (the circuit breaker of the registry is open, the request was not sent) | 503, `Retry-After`: the seconds until the breaker's trial request; under `/v2` the code `UNAVAILABLE`, on the API `UNAVAILABLE` |
 | anything else, `nil` included | 500 |
 
 ### Registry provider (`internal/provider`)
@@ -339,6 +344,11 @@ type Capabilities struct {
 }
 
 var ErrNotFound, ErrConflict, ErrUnsupported, ErrUnauthorized error
+// ErrUnavailable: the provider did not send the request, its registry's circuit breaker is
+// open. An *UnavailableError wraps it with the time until the breaker's trial request.
+var ErrUnavailable error
+type UnavailableError struct{ RetryAfter time.Duration }
+func RetryAfter(err error) (time.Duration, bool) // of the *UnavailableError err wraps
 ```
 
 ### Index store (`internal/index`)
