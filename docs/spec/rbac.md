@@ -17,6 +17,9 @@
 One credential works on every protocol: HTTP Basic on the frontends and on `/v2/token`
 (`user:password`, `user:PAT`, or `deploy:<token>`), and the resulting bearer on `/v2`.
 Passwords and token secrets are never logged; tokens are stored hashed (sha256) and shown once.
+Failed password checks are throttled per account (by uid; a name that no user has, by the
+name) and, with `server.trustedProxies`, per client address; a throttled request is `429` with
+`Retry-After`, whatever its password. Tokens are not throttled (docs/auth.md, #130).
 
 ### Users: the uid and the name
 
