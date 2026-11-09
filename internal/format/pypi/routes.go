@@ -26,13 +26,15 @@ const (
 	metadataSuffix      = ".metadata"
 )
 
-// Routes mounts the simple index below /pypi/ (docs/spec/http-routing.md §3, pypi), every route
-// a GET (and so a HEAD) that needs read on the repo:
+// Routes mounts the pypi frontend below /pypi/ (docs/spec/http-routing.md §3, pypi): the simple
+// index, every route a GET (and so a HEAD) that needs read on the repo, and the upload of twine,
+// which needs write:
 //
 //	GET /{repo}/simple/                                      the project list
 //	GET /{repo}/simple/{project}/                            the files of a project; another spelling is 301 to the normalized one
 //	GET /{repo}/files/{project}/{version}/{filename}         a distribution, through format.ServeBlob
 //	GET /{repo}/files/{project}/{version}/{filename}.metadata its core metadata (PEP 658), from the index
+//	POST /{repo}/                                            the legacy upload API (upload.go)
 //
 // The pages come from index_cache through format.CachedDocument, in the form the Accept header
 // asks for (PEP 691: JSON, or HTML by default), with Vary: Accept. Ingest drops the repo's
@@ -47,6 +49,8 @@ func (p Plugin) Routes(r format.Router, deps format.Deps) {
 	r.HandleFunc("GET /{repo}/simple/{project}/{$}", h.project)
 	r.HandleFunc("GET /{repo}/simple/{project}", h.slash)
 	r.HandleFunc("GET /{repo}/files/{project}/{version}/{filename}", h.file)
+	r.HandleFunc("POST /{repo}/{$}", h.upload)
+	r.HandleFunc("POST /{repo}", h.upload)
 }
 
 // handlers are the pypi routes over one format.Deps.
