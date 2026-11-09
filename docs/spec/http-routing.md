@@ -39,8 +39,9 @@ in clear. TLS terminates in one of two places: at the edge (an ingress or a reve
 default in Kubernetes; Lajstrom then listens on plain HTTP inside the network and trusts
 `X-Forwarded-*` only from `server.trustedProxies`), or in Lajstrom itself for a single host
 (`server.tls.certFile` and `server.tls.keyFile`; ACME after the MVP). Plain HTTP to clients is
-for the dev stack on loopback only, behind an explicit `server.insecureHTTP: true`. The
-configuration keys and checks are part of the hardening issue (#50).
+for the dev stack on loopback only, behind an explicit `server.insecureHTTP: true`.
+`server.trustedProxies`, a list of CIDR prefixes (ADR 0011), came with #130; the TLS keys and
+`server.insecureHTTP` are part of the hardening issue (#50).
 
 `server.externalURL` is the base for every absolute URL Lajstrom renders (simple index links,
 `WWW-Authenticate` realm, apt `Release` is path-relative and needs none).
@@ -169,6 +170,8 @@ do not invent their own. What each call needs, in the actions of rbac.md §2 (de
 | whoami | `GET /api/v1/whoami` |
 
 Errors: `{"error": {"code": "NOT_FOUND|CONFLICT|FORBIDDEN|INVALID|UNAVAILABLE|INTERNAL", "message": "…"}}`.
+A `429` (a throttle of failed logins, with `Retry-After`; #130) is `UNAVAILABLE`: try again
+later. There is no seventh code.
 
 Reindex of one repo (`manage`): `POST …/reindex` with an optional body `{"prune": true,
 "verify": false}` starts the run on the replica that received it and answers `202` with the run
