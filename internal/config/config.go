@@ -32,6 +32,12 @@ type Server struct {
 	// a manifest into memory. Load sets DefaultMaxManifestSize; zero means the default too,
 	// negative is invalid.
 	MaxManifestSize int64 `yaml:"maxManifestSize"`
+	// MetricsListen is the address of the metrics listener, host:port: GET /metrics, and
+	// /debug/pprof/ with Pprof (docs/spec/http-routing.md §5). Never the public host; empty
+	// turns it off.
+	MetricsListen string `yaml:"metricsListen"`
+	// Pprof serves /debug/pprof/ on the metrics listener.
+	Pprof bool `yaml:"pprof"`
 }
 
 // Log configures the process logger. The --log-level and --log-format flags override it.
@@ -194,7 +200,8 @@ type Repo struct {
 // Defaults that Load applies before reading the file.
 const (
 	DefaultShutdownTimeout    = 30 * time.Second
-	DefaultMaxManifestSize    = 4 << 20 // the least the distribution spec asks a registry to take
+	DefaultMaxManifestSize    = 4 << 20          // the least the distribution spec asks a registry to take
+	DefaultMetricsListen      = "127.0.0.1:9464" // the port of the OpenTelemetry Prometheus exporter
 	DefaultLogLevel           = "info"
 	DefaultLogFormat          = "text"
 	DefaultDatabaseDriver     = "sqlite"
@@ -212,7 +219,7 @@ const (
 // Default returns the configuration before the file is read. server.listen has no default.
 func Default() *Config {
 	return &Config{
-		Server:    Server{ShutdownTimeout: DefaultShutdownTimeout, MaxManifestSize: DefaultMaxManifestSize},
+		Server:    Server{ShutdownTimeout: DefaultShutdownTimeout, MaxManifestSize: DefaultMaxManifestSize, MetricsListen: DefaultMetricsListen},
 		Log:       Log{Level: DefaultLogLevel, Format: DefaultLogFormat},
 		Database:  Database{Driver: DefaultDatabaseDriver, DSN: DefaultDatabaseDSN},
 		Ingest:    Ingest{ClaimTTL: DefaultIngestClaimTTL},

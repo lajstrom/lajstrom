@@ -16,8 +16,8 @@ import (
 //  2. the YAML file at path; unknown keys are an error; registries[] get the defaults of the
 //     keys they leave empty (type, timeout, retries);
 //  3. the environment overrides LAJSTROM_SERVER_LISTEN, LAJSTROM_SERVER_EXTERNAL_URL,
-//     LAJSTROM_LOG_LEVEL, LAJSTROM_LOG_FORMAT, LAJSTROM_DATABASE_DRIVER and
-//     LAJSTROM_DATABASE_DSN; an empty variable counts as unset, and lists (registries, repos)
+//     LAJSTROM_SERVER_METRICS_LISTEN, LAJSTROM_LOG_LEVEL, LAJSTROM_LOG_FORMAT,
+//     LAJSTROM_DATABASE_DRIVER and LAJSTROM_DATABASE_DSN; an empty variable counts as unset, and lists (registries, repos)
 //     cannot be set from the environment;
 //  4. registries[].auth.passwordEnv, resolved into registries[].auth.password;
 //  5. Validate.
@@ -95,6 +95,7 @@ var envOverrides = []struct {
 }{
 	{"LAJSTROM_SERVER_LISTEN", func(c *Config, v string) { c.Server.Listen = v }},
 	{"LAJSTROM_SERVER_EXTERNAL_URL", func(c *Config, v string) { c.Server.ExternalURL = v }},
+	{"LAJSTROM_SERVER_METRICS_LISTEN", func(c *Config, v string) { c.Server.MetricsListen = v }},
 	{"LAJSTROM_LOG_LEVEL", func(c *Config, v string) { c.Log.Level = v }},
 	{"LAJSTROM_LOG_FORMAT", func(c *Config, v string) { c.Log.Format = v }},
 	{"LAJSTROM_DATABASE_DRIVER", func(c *Config, v string) { c.Database.Driver = v }},

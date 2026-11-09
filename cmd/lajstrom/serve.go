@@ -19,6 +19,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/reindex"
 	"github.com/lajstrom/lajstrom/internal/ingest"
+	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	_ "github.com/lajstrom/lajstrom/internal/provider/generic" // registers registries[].type generic
 	"github.com/lajstrom/lajstrom/internal/server"
@@ -57,6 +58,7 @@ func newServeCmd(a *app) *cobra.Command {
 			defer stop()
 
 			c, v := a.cfg, version.Get()
+			metrics.SetBuild(v.Version, v.Commit)
 			a.log.Info("starting lajstrom",
 				"version", v.Version,
 				"commit", v.Commit,
@@ -124,6 +126,8 @@ func newServeCmd(a *app) *cobra.Command {
 				API:             api.New(api.Options{Repos: repos, Reindex: runs, Log: a.log}),
 				Facade:          v2,
 				Authenticator:   authn,
+				MetricsListen:   c.Server.MetricsListen,
+				Pprof:           c.Server.Pprof,
 			})
 			if err != nil {
 				return err
