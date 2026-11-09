@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"oras.land/oras-go/v2/registry/remote/auth"
-	"oras.land/oras-go/v2/registry/remote/retry"
 
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/metrics"
@@ -25,8 +24,8 @@ const (
 )
 
 // retryWait bounds the wait between two attempts of a request; within the bounds, the
-// backoff is exponential from 250 ms with 10 % jitter, or the Retry-After of a 429. Tests set
-// both bounds to zero.
+// backoff is exponential from retryBase with jitter, or the Retry-After of a 429 or a 503
+// (backoff). Tests set both bounds to zero.
 var retryWait = struct{ min, max time.Duration }{min: 200 * time.Millisecond, max: 3 * time.Second}
 
 // clients are the two HTTP clients of a provider. They share the transport, the credentials
@@ -43,6 +42,8 @@ type clients struct {
 	// credentials is true when the registry's challenges are answered with a username and
 	// password.
 	credentials bool
+	// retries is how often a failed request, or a failed blob push, is tried again.
+	retries int
 }
 
 // newClients builds the clients for the registry at host (host:port, as in the URL) from cfg.
@@ -53,25 +54,13 @@ func newClients(cfg config.Registry, host string, log *slog.Logger) clients {
 	if timeout <= 0 {
 		timeout = config.DefaultRegistryTimeout
 	}
-	retries := cfg.Retries
-	switch {
-	case retries == 0:
-		retries = config.DefaultRegistryRetries
-	case retries < 0:
-		retries = 0
-	}
-	policy := &retry.GenericPolicy{
-		Retryable: retry.DefaultPredicate, // 408, 429, 5xx, timeouts, connection resets
-		Backoff:   retry.DefaultBackoff,
-		MinWait:   retryWait.min,
-		MaxWait:   retryWait.max,
-		MaxRetry:  retries,
-	}
-	// The retry transport resends a request only when its body can be replayed (GetBody); a
-	// streamed blob upload is sent once. Above it, the probe's ping sees the challenges.
-	rt := &challengeTransport{next: &retry.Transport{
-		Base:   &logTransport{next: &metricsTransport{next: newTransport(timeout), registry: cfg.Name}, log: log},
-		Policy: func() retry.Policy { return policy },
+	// The retry transport resends an idempotent request whose body can be replayed; a blob
+	// upload is retried as a whole by Push (pushRetry). Above it, the probe's ping sees the
+	// challenges.
+	rt := &challengeTransport{next: &retryTransport{
+		next:    &logTransport{next: &metricsTransport{next: newTransport(timeout), registry: cfg.Name}, log: log},
+		retries: retries(cfg),
+		log:     log,
 	}}
 	var cred auth.CredentialFunc
 	if cfg.Auth.Username != "" {
@@ -99,7 +88,20 @@ func newClients(cfg config.Registry, host string, log *slog.Logger) clients {
 		},
 		cache:       cache,
 		credentials: cred != nil,
+		retries:     retries(cfg),
 	}
+}
+
+// retries is registries[].retries with its default: DefaultRegistryRetries for 0, none for a
+// negative value.
+func retries(cfg config.Registry) int {
+	switch {
+	case cfg.Retries == 0:
+		return config.DefaultRegistryRetries
+	case cfg.Retries < 0:
+		return 0
+	}
+	return cfg.Retries
 }
 
 // newTransport is the default transport of net/http with timeout as the bound on the wait for
