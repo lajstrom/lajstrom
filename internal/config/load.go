@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -56,6 +57,9 @@ func decodeFile(path string, c *Config) error {
 	if err := dec.Decode(c); err != nil && !errors.Is(err, io.EOF) {
 		if setsTokenKeyFile(b) {
 			return fmt.Errorf("config: %s: auth.tokenSigningKeyFile is gone: the key lives in the database, ADR 0010", path)
+		}
+		if strings.Contains(err.Error(), "into time.Duration") {
+			return fmt.Errorf("config: %s: %w (a duration is written with its unit: 0s, 30s, 10m, 1h)", path, err)
 		}
 		return fmt.Errorf("config: %s: %w", path, err)
 	}
