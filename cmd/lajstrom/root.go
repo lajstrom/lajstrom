@@ -85,8 +85,3 @@ func (a *app) setup(cmd *cobra.Command, _ []string) error {
 	a.log = log
 	return nil
 }
-
-// notImplemented is the error of the commands whose implementation comes with a later issue.
-func notImplemented(issue int) error {
-	return fmt.Errorf("not implemented, see issue #%d", issue)
-}

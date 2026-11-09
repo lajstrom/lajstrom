@@ -95,6 +95,16 @@ const kindHosted = "hosted"
 // indexes nothing, so no plugin is needed (format.Reserved has it).
 const formatOCI = "oci"
 
+// RepoFormat reports whether a repo may have the format name on this server: a format plugin
+// compiled in, or oci. lajstrom admin binding checks the format of a mask with it.
+func RepoFormat(name string) bool {
+	if name == formatOCI {
+		return true
+	}
+	_, ok := format.Lookup(name)
+	return ok
+}
+
 // Repos manages the repos of the control plane (docs/spec/index-schema.md, repos). The handlers
 // of /api/v1/repos, lajstrom admin repo and the config bootstrap all go through it, so that the
 // validation and the audit events exist once. Every change is one audit event
