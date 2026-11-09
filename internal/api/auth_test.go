@@ -40,7 +40,12 @@ var grants = map[string]bool{
 	"user:alice read raw/open": true,
 }
 
+// TestAuthorization checks the 401/404/403 rule of docs/spec/rbac.md §3 on the management API.
+// Creating a repo is decided before the body is read: a principal that is not admin gets 403
+// (anonymous 401) for a name that is taken and for a body that does not parse alike, so that
+// only an admin, who sees every repo, ever gets the 409 that tells a name is taken.
 func TestAuthorization(t *testing.T) {
+	const taken = `{"format":"raw","name":"secret","registry":"local"}`
 	tests := []struct {
 		name           string
 		p              auth.Principal
@@ -53,6 +58,11 @@ func TestAuthorization(t *testing.T) {
 		{"anonymous creates", auth.Anonymous, http.MethodPost, "/api/v1/repos", scratch, http.StatusUnauthorized, codeForbidden},
 		{"reader creates", alice, http.MethodPost, "/api/v1/repos", scratch, http.StatusForbidden, codeForbidden},
 		{"stranger creates", bob, http.MethodPost, "/api/v1/repos", scratch, http.StatusForbidden, codeForbidden},
+		{"admin creates a taken name", admin, http.MethodPost, "/api/v1/repos", taken, http.StatusConflict, codeConflict},
+		{"anonymous creates a taken name", auth.Anonymous, http.MethodPost, "/api/v1/repos", taken, http.StatusUnauthorized, codeForbidden},
+		{"reader creates a taken name", alice, http.MethodPost, "/api/v1/repos", taken, http.StatusForbidden, codeForbidden},
+		{"stranger creates a taken name", bob, http.MethodPost, "/api/v1/repos", taken, http.StatusForbidden, codeForbidden},
+		{"stranger sends a body that does not parse", bob, http.MethodPost, "/api/v1/repos", "{", http.StatusForbidden, codeForbidden},
 		{"anonymous gets", auth.Anonymous, http.MethodGet, "/api/v1/repos/raw/open", "", http.StatusUnauthorized, codeForbidden},
 		{"anonymous gets an absent repo", auth.Anonymous, http.MethodGet, "/api/v1/repos/raw/absent", "", http.StatusUnauthorized, codeForbidden},
 		{"stranger gets", bob, http.MethodGet, "/api/v1/repos/raw/open", "", http.StatusNotFound, codeNotFound},
