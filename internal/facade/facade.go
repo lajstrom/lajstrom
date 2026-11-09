@@ -27,8 +27,8 @@ type Options struct {
 	// Providers are the backend registries by name; a repo's registry selects one.
 	Providers provider.Set
 	// Auth decides what the request's principal may do on a repo, for a request without a
-	// bearer, and which scopes /v2/token grants. nil allows everything, every requested scope
-	// included: the facade is open until RBAC (#45) sets it.
+	// bearer, and which scopes /v2/token grants: serve sets auth.RBAC. nil allows everything,
+	// every requested scope included, for the tests.
 	Auth auth.Authorizer
 	// Tokens are the keys of the bearer tokens of /v2 (ADR 0010): keys.Tokens over the index, or
 	// keys.EphemeralTokens without a master key; required.

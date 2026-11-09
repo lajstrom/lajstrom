@@ -53,7 +53,7 @@ func HoldPrincipal(ctx context.Context, p auth.Principal) {
 // they simply allow the anonymous principal.
 //
 //   - No Authorization header: the request goes on as auth.Anonymous. What anonymous may do is
-//     the authorizers' to decide (#45).
+//     the authorizers' to decide: read where anonymous read is on, nothing else (rbac.md §3).
 //   - Basic (RFC 7617; the first colon splits the user name from the secret): the credentials
 //     are authenticated (a password, user:<personal access token> or deploy:<deploy token>),
 //     and the request goes on as the user or the deploy token. Credentials that are refused,
@@ -66,6 +66,9 @@ func HoldPrincipal(ctx context.Context, p auth.Principal) {
 //     with the header untouched. The OCI facade verifies the bearer of /v2, a JWT, and records
 //     its principal (HoldPrincipal).
 //
+// Every request also gets an evaluation scope (auth.WithEvaluationScope): the RBAC evaluator
+// reads the index's auth_version once per request, however many repos the request checks.
+//
 // A nil Options.Authenticator authenticates nobody: every request is anonymous, as in the unit
 // tests of other packages.
 func (s *Server) authenticate(next http.Handler) http.Handler {
@@ -73,6 +76,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(auth.WithEvaluationScope(r.Context()))
 		scheme, value, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 		var (
 			p    auth.Principal

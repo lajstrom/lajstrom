@@ -16,11 +16,14 @@ make dev-up                                           # Zot, distribution and Po
 make run                                              # serves deploy/compose/lajstrom.example.yaml on :8080
 ```
 
-In another terminal, make a repo `oci/images` and a repo `raw/assets` on the Zot of the stack:
+In another terminal, make a repo `oci/images` and a repo `raw/assets` on the Zot of the stack,
+and the first user, an admin, with a password of your own (8 bytes at least):
 
 ```sh
 bin/lajstrom admin repo create oci/images --registry local --config deploy/compose/lajstrom.example.yaml
 bin/lajstrom admin repo create raw/assets --registry local --config deploy/compose/lajstrom.example.yaml
+export LAJSTROM_ADMIN_PASSWORD='a password of your own'
+bin/lajstrom admin user create --name admin --admin --config deploy/compose/lajstrom.example.yaml
 ```
 
 `oci` is not a plugin: it is the format of the pass-through repos, which hold any OCI artifact
@@ -31,12 +34,16 @@ oras from its image, on OrbStack or Linux, where `--network host` reaches `local
 the dev stack is plain HTTP, hence `--plain-http`:
 
 ```sh
-oras() { docker run --rm --network host -v "$PWD:/w" -w /w ghcr.io/oras-project/oras:v1.3.6 "$@"; }
+oras() { docker run --rm -i --network host -v "$PWD:/w" -w /w ghcr.io/oras-project/oras:v1.3.6 "$@" --registry-config /w/.oras-auth.json; }
+printf '%s\n' "$LAJSTROM_ADMIN_PASSWORD" | oras login --plain-http -u admin --password-stdin localhost:8080   # Login Succeeded
 printf 'hello facade\n' > file.txt
 ```
 
-Everything is open on the dev stack: the token endpoint and RBAC come with #26 and #45, and
-`GET /v2/` answers `200` until then.
+Nothing is open: `GET /v2/` without credentials is `401` with a `Bearer` challenge, and oras
+answers it with the login, which `/v2/token` exchanges for a token of 20 minutes with the
+actions the admin may do ([auth.md](../auth.md#bearer-tokens-on-v2)). The login lives in
+`.oras-auth.json` here; `rm .oras-auth.json` ends it. crane, if you use it, logs in once with
+`crane auth login localhost:8080 -u admin -p "$LAJSTROM_ADMIN_PASSWORD"`.
 
 ## 2. Push, pull, list on an `oci` repo
 
@@ -121,7 +128,7 @@ The manifest digest changes with the `created` time. The file is indexed now, th
 serves it, and its tags come from the index:
 
 ```sh
-curl http://localhost:8080/raw/assets/docs/hello.txt                       # hello lajstrom
+curl -u "admin:$LAJSTROM_ADMIN_PASSWORD" http://localhost:8080/raw/assets/docs/hello.txt   # hello lajstrom
 oras repo tags --plain-http localhost:8080/raw/assets/docs/hello.txt       # ec5ba820a095a4d6
 oras pull --plain-http -o out localhost:8080/raw/assets/docs/hello.txt:$v  # writes out/docs/hello.txt
 ```

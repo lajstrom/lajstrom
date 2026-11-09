@@ -45,8 +45,9 @@ const registryProbeTimeout = 10 * time.Second
 // serves /api/v1. The OCI facade over the index and the registries serves /v2/, issues and
 // verifies the bearer tokens with that key, and hands the manifests of managed repos to the
 // same pipeline; server.maxManifestSize bounds them. The authenticator over the index's users
-// reads the HTTP Basic credentials of every request. There is no Authorizer before RBAC
-// (#45), and serve says so at warn (warnOpen).
+// reads the HTTP Basic credentials of every request. The RBAC evaluator over the index's
+// bindings (auth.RBAC, with auth.anonymousRead) decides on the frontends, at /v2/token, on /v2
+// without a bearer and on /api/v1; there is no mode without it (docs/spec/rbac.md §3).
 func newServeCmd(a *app) *cobra.Command {
 	return &cobra.Command{
 		Use:         "serve",
@@ -112,8 +113,8 @@ func newServeCmd(a *app) *cobra.Command {
 			} else {
 				a.log.Info("reconcile loop off (reconcile.interval is 0)")
 			}
-			var authz auth.Authorizer // RBAC, #45
-			warnOpen(a.log, authz)
+			authz := auth.NewRBAC(auth.RBACOptions{Index: st, AnonymousRead: c.Auth.AnonymousRead, Log: a.log})
+			a.log.Info("authorization by the bindings of the index (RBAC)", "auth.anonymousRead", c.Auth.AnonymousRead)
 			v2 := facade.New(facade.Options{Index: st, Providers: providers, Auth: authz, Ingest: pipe,
 				Tokens: tokens, ExternalURL: c.Server.ExternalURL, MaxManifestSize: c.Server.MaxManifestSize, Log: a.log})
 			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log})
@@ -126,7 +127,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Plugins:         format.All(),
 				Deps:            format.Deps{Index: st, Providers: providers, Auth: authz, Ingest: pipe, Signer: signer},
 				Ready:           ready(a.log, c.Database.Driver, st, health),
-				API:             api.New(api.Options{Repos: repos, Reindex: runs, Log: a.log}),
+				API:             api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Log: a.log}),
 				Facade:          v2,
 				Authenticator:   authn,
 				MetricsListen:   c.Server.MetricsListen,
@@ -137,15 +138,6 @@ func newServeCmd(a *app) *cobra.Command {
 			}
 			return srv.Run(ctx)
 		},
-	}
-}
-
-// warnOpen logs at warn, when there is no Authorizer, that nothing is denied: every principal
-// may do everything, and the token endpoint grants every scope it is asked for.
-func warnOpen(log *slog.Logger, authz auth.Authorizer) {
-	if authz == nil {
-		log.Warn("authorization is not enforced until RBAC (#45): every principal, anonymous included, may do " +
-			"everything on /v2 and the frontends, and /v2/token therefore grants every requested scope")
 	}
 }
 

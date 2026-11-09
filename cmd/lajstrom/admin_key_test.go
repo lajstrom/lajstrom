@@ -18,7 +18,6 @@ import (
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 
-	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/sqlite"
@@ -465,27 +464,4 @@ func TestNewTokenKeys(t *testing.T) {
 	if _, err := newTokenKeys(ctx, c, lookup(map[string]string{"LAJSTROM_MASTER_KEY": "xyz"}), st, slog.New(slog.DiscardHandler)); err == nil {
 		t.Error("a malformed master key: no error")
 	}
-}
-
-// TestWarnOpen checks the startup line of serve without an Authorizer, and its absence with one.
-func TestWarnOpen(t *testing.T) {
-	var logged bytes.Buffer
-	log := slog.New(slog.NewTextHandler(&logged, nil))
-	warnOpen(log, nil)
-	if want := `level=WARN msg="authorization is not enforced until RBAC (#45): every principal, anonymous included, may do ` +
-		`everything on /v2 and the frontends, and /v2/token therefore grants every requested scope"`; !strings.Contains(logged.String(), want) {
-		t.Errorf("log %q, want %q", logged.String(), want)
-	}
-	logged.Reset()
-	warnOpen(log, denyAll{})
-	if logged.Len() != 0 {
-		t.Errorf("with an Authorizer: %q", logged.String())
-	}
-}
-
-// denyAll is an Authorizer that allows nothing.
-type denyAll struct{}
-
-func (denyAll) Allowed(context.Context, auth.Principal, auth.Action, string, string) (bool, error) {
-	return false, nil
 }

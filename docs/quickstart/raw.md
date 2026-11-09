@@ -12,27 +12,35 @@ You need Go, Docker, `curl` and `jq`; `crane` (or `oras`) to look into the regis
 ```sh
 make dev-up                                           # Zot, distribution and Postgres: docs/dev-stack.md
 make run                                              # builds bin/lajstrom, serves deploy/compose/lajstrom.example.yaml
-curl -s http://localhost:8080/raw/scratch/            # {"entries":[]}
 ```
 
 The example configuration uses SQLite (`lajstrom.db` in the current directory), the Zot at
-`localhost:5000`, and creates the repo `raw/scratch` at startup, so there is nothing else to set
-up. Everything is open on the dev stack: authentication comes with M2. Another repo is one call:
+`localhost:5000`, and creates the repo `raw/scratch` at startup. Another repo is one call:
 `bin/lajstrom admin repo create raw/assets --registry local --config deploy/compose/lajstrom.example.yaml`
 (see [api.md](../api.md)). A repo can cap the file size with the policy `{"maxFileSize": <bytes>}`;
 a larger upload is `413`.
 
-In another terminal, set the base URL once:
+Nothing is open, on the dev stack either: a request without credentials is `401`. In another
+terminal, create the first user, an admin, with a password of your own (8 bytes at least), and
+keep it for curl:
 
 ```sh
+export LAJSTROM_ADMIN_PASSWORD='a password of your own'
+bin/lajstrom admin user create --name admin --admin --config deploy/compose/lajstrom.example.yaml
+u="admin:$LAJSTROM_ADMIN_PASSWORD"
 base=http://localhost:8080/raw/scratch
+curl -s -u "$u" $base/                                # {"entries":[]}
 printf 'hello raw\n' > file.txt
 ```
+
+The admin may do everything. A user with less is a binding away, `writer` on this repo for
+example: `bin/lajstrom admin binding create --principal user:alice --role writer --mask raw/scratch`
+([auth.md](../auth.md)).
 
 ## 2. Upload a file (R-01)
 
 ```sh
-curl -i -T file.txt -H 'Content-Type: text/plain' $base/docs/file.txt
+curl -u "$u" -i -T file.txt -H 'Content-Type: text/plain' $base/docs/file.txt
 ```
 
 ```text
@@ -55,8 +63,8 @@ The version is the first 16 hex digits of the sha256 of the bytes; `digest` and
 ## 3. Download it
 
 ```sh
-curl $base/docs/file.txt          # hello raw
-curl -I $base/docs/file.txt       # the same headers, no body
+curl -u "$u" $base/docs/file.txt          # hello raw
+curl -u "$u" -I $base/docs/file.txt       # the same headers, no body
 ```
 
 ```text
@@ -76,11 +84,11 @@ download URLs (distribution on S3, for example), `GET` answers `307` to the blob
 ## 4. Upload it again, then change it (R-02, R-03)
 
 ```sh
-curl -s -T file.txt $base/docs/file.txt | jq -r .digest    # the same digest: 201, nothing new is stored
+curl -u "$u" -s -T file.txt $base/docs/file.txt | jq -r .digest    # the same digest: 201, nothing new is stored
 printf 'hello again\n' > file.txt
-curl -s -T file.txt $base/docs/file.txt | jq -r .digest    # a new digest: a new version
-curl $base/docs/file.txt                                   # hello again
-curl "$base/docs/file.txt?digest=sha256:9c1e…"             # hello raw: ?digest= pins a version
+curl -u "$u" -s -T file.txt $base/docs/file.txt | jq -r .digest    # a new digest: a new version
+curl -u "$u" $base/docs/file.txt                                   # hello again
+curl -u "$u" "$base/docs/file.txt?digest=sha256:9c1e…"             # hello raw: ?digest= pins a version
 ```
 
 A path resolves to its newest version, the most recently created one. Every version stays in
@@ -91,8 +99,8 @@ the newest: to roll back, delete the newer version (section 7) or pin `?digest=`
 ## 5. List (R-04)
 
 ```sh
-curl -s $base/ | jq .
-curl -s $base/docs/ | jq .
+curl -u "$u" -s $base/ | jq .
+curl -u "$u" -s $base/docs/ | jq .
 ```
 
 ```json
@@ -112,15 +120,15 @@ prefix that holds no file is `404`.
 
 ```sh
 : > empty
-curl -s -o /dev/null -w '%{http_code}\n' -T empty $base/empty    # 201
-curl -sI $base/empty | grep -i content-length                    # Content-Length: 0
+curl -u "$u" -s -o /dev/null -w '%{http_code}\n' -T empty $base/empty    # 201
+curl -u "$u" -sI $base/empty | grep -i content-length                    # Content-Length: 0
 ```
 
 ## 7. Delete
 
 ```sh
-curl -i -X DELETE $base/docs/file.txt     # 204: every version of the path is gone
-curl -i $base/docs/file.txt               # 404
+curl -u "$u" -i -X DELETE $base/docs/file.txt     # 204: every version of the path is gone
+curl -u "$u" -i $base/docs/file.txt               # 404
 ```
 
 The manifests are deleted in the registry first, then the index rows; the blobs are left to the
@@ -155,7 +163,7 @@ crane manifest --insecure localhost:5000/raw/scratch/docs/file.txt:3011d31f64522
     "lajstrom.raw.path": "docs/file.txt",
     "lajstrom.repo": "scratch",
     "lajstrom.schema": "1",
-    "lajstrom.uploaded-by": "anonymous",
+    "lajstrom.uploaded-by": "user:admin",
     "lajstrom.version": "3011d31f64522770",
     "org.opencontainers.image.created": "2026-11-07T10:00:00Z"
   }
@@ -169,9 +177,9 @@ from the manifests alone.
 
 ## The end-to-end script
 
-`test/e2e/raw.sh` runs all of the above with checks, against any Lajstrom with a writable raw
-repo, and cleans up after itself:
+`test/e2e/raw.sh` runs all of the above with checks, against any Lajstrom with a raw repo, as a
+user that may write and delete in it, and cleans up after itself:
 
 ```sh
-test/e2e/raw.sh http://localhost:8080 scratch
+LAJSTROM_E2E_USER=admin LAJSTROM_E2E_PASSWORD="$LAJSTROM_ADMIN_PASSWORD" test/e2e/raw.sh http://localhost:8080 scratch
 ```
