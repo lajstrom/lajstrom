@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/auth/token"
@@ -23,6 +26,7 @@ const tokenPath = "/v2/token"
 const (
 	msgBadCredentials = "credentials are needed: the ones sent were refused"
 	msgAuthFailed     = "Internal Server Error"
+	msgThrottled      = "too many failed logins: try again after Retry-After seconds"
 )
 
 // principalHolder carries the principal the authentication middleware settled on back to the
@@ -101,9 +105,13 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		var throttled *auth.ThrottledError
 		switch {
 		case errors.Is(err, auth.ErrBadCredentials):
 			s.writeRefusal(w, r, http.StatusUnauthorized, msgBadCredentials)
+			return
+		case errors.As(err, &throttled):
+			s.throttled(w, r, throttled, msgThrottled)
 			return
 		case err != nil:
 			attrs := []any{"error", err.Error(), "requestId", RequestID(r.Context())}
@@ -128,11 +136,31 @@ func tokenBearer(path, secret string) bool {
 	return strings.HasPrefix(secret, auth.PATPrefix) || strings.HasPrefix(secret, auth.DeployPrefix)
 }
 
-// writeRefusal answers a request that the middleware refuses, 401 with a challenge or 500, in
+// throttled answers a request that a throttle refused: 429 with Retry-After, in the format of
+// the route's family (writeRefusal), logged at info with the account, when there is one, and
+// the client address.
+func (s *Server) throttled(w http.ResponseWriter, r *http.Request, te *auth.ThrottledError, msg string) {
+	attrs := []any{"throttle", te.Throttle}
+	if te.Account != "" {
+		attrs = append(attrs, "account", te.Account)
+	}
+	s.log.InfoContext(r.Context(), "throttled", append(attrs, "address", ClientAddr(r.Context()),
+		"retryAfter", te.RetryAfter, "requestId", RequestID(r.Context()))...)
+	w.Header().Set("Retry-After", retryAfter(te.RetryAfter))
+	s.writeRefusal(w, r, http.StatusTooManyRequests, msg)
+}
+
+// retryAfter is the Retry-After header of a wait d: whole seconds, rounded up, at least 1.
+func retryAfter(d time.Duration) string {
+	return strconv.Itoa(max(int(math.Ceil(d.Seconds())), 1))
+}
+
+// writeRefusal answers a request that the middleware refuses, 401 with a challenge, 429 or 500, in
 // the error format of the route's family: the error document of the distribution spec under
 // /v2/ (internal/facade), the envelope of the management API under /api/ (internal/api; 401
 // is FORBIDDEN there, told apart by the status and the challenge), plain text elsewhere
-// (format.WriteError). The challenge of a 401 under /v2/ is the bearer challenge of the token
+// (format.WriteError). A 429 is TOOMANYREQUESTS under /v2/ and UNAVAILABLE under /api/, and
+// the caller has set Retry-After. The challenge of a 401 under /v2/ is the bearer challenge of the token
 // flow (docs/spec/rbac.md §4) without a scope, as the facade answers: the client goes to the
 // realm with the credentials that were refused, and learns there that they are wrong. On
 // /v2/token itself, the one endpoint of /v2 that takes Basic, and everywhere else, it is Basic.
@@ -150,15 +178,21 @@ func (s *Server) writeRefusal(w http.ResponseWriter, r *http.Request, status int
 	var body any
 	switch {
 	case v2:
-		code := "UNAUTHORIZED"
-		if status != http.StatusUnauthorized {
-			code = "UNKNOWN"
+		code := "UNKNOWN"
+		switch status {
+		case http.StatusUnauthorized:
+			code = "UNAUTHORIZED"
+		case http.StatusTooManyRequests:
+			code = "TOOMANYREQUESTS"
 		}
 		body = map[string]any{"errors": []map[string]string{{"code": code, "message": msg}}}
 	case strings.HasPrefix(path, "/api/"):
-		code := "FORBIDDEN"
-		if status != http.StatusUnauthorized {
-			code = "INTERNAL"
+		code := "INTERNAL"
+		switch status {
+		case http.StatusUnauthorized:
+			code = "FORBIDDEN"
+		case http.StatusTooManyRequests:
+			code = "UNAVAILABLE"
 		}
 		body = map[string]any{"error": map[string]string{"code": code, "message": msg}}
 	default:
