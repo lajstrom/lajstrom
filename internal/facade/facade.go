@@ -293,17 +293,19 @@ func ociName(repo index.Repo, pkgPath string) string { return repoBase(repo) + "
 // the token lacks the action; repository has answered a token that does not name t, or names
 // it without any action).
 // Without one the Authorizer decides for the request's principal (format.Authorize): a
-// principal that may not read the repo gets NAME_UNKNOWN, as for a repo that does not exist.
+// principal that may not read the repo gets the answer of a repo that does not exist, word for
+// word: NAME_UNKNOWN (nameUnknown), and to the anonymous principal 401 (repoUnknown).
 func (h *handler) authorize(ctx context.Context, a auth.Action, t *target) error {
 	if g, ok := grantFrom(ctx); ok {
 		return h.allowedByToken(ctx, g, a, t.name)
 	}
-	repo := t.repo
-	err := format.Authorize(ctx, h.deps, a, repo)
-	if errors.Is(err, index.ErrNotFound) {
-		return &apiError{code: codeNameUnknown, msg: fmt.Sprintf("repository %s/%s not known to registry", repo.Format, repo.Name), err: err}
-	}
-	if err != nil {
+	err := format.Authorize(ctx, h.deps, a, t.repo)
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		return nameUnknown(t.name)
+	case errors.Is(err, format.ErrUnauthenticated):
+		return h.repoUnknown(ctx, t.name)
+	case err != nil:
 		return &apiError{err: err}
 	}
 	return nil

@@ -53,16 +53,18 @@ func parseReference(ref string) (digest.Digest, error) {
 // Accept converts nothing: a manifest of a type the client did not list is returned all the
 // same (the spec allows a 404 instead; docker and oras list every type they read). A tag that
 // is not one names no manifest: 404 MANIFEST_UNKNOWN, as the conformance suite wants of a read;
-// a digest that is not one is 400 DIGEST_INVALID.
+// a digest that is not one is 400 DIGEST_INVALID. The read is authorized before the reference
+// is parsed, so that a principal that may not read the repo gets the answer of a repo that
+// does not exist, whatever the reference (docs/spec/rbac.md §3).
 func (h *handler) getManifest(w http.ResponseWriter, r *http.Request, t *target, ref string) error {
 	ctx := r.Context()
+	if err := h.authorize(ctx, auth.ActionRead, t); err != nil {
+		return err
+	}
 	var ae *apiError
 	if _, err := parseReference(ref); errors.As(err, &ae) && ae.code == codeTagInvalid {
 		return &apiError{status: http.StatusNotFound, code: codeManifestUnknown, msg: fmt.Sprintf("manifest unknown to registry: %q is not a tag", ref)}
 	} else if err != nil {
-		return err
-	}
-	if err := h.authorize(ctx, auth.ActionRead, t); err != nil {
 		return err
 	}
 	rr, err := h.backend(ctx, t)
@@ -114,11 +116,11 @@ func manifestUnknown(err error) error {
 // (putManaged).
 func (h *handler) putManifest(w http.ResponseWriter, r *http.Request, t *target, ref string) error {
 	ctx := r.Context()
-	refDigest, err := parseReference(ref)
-	if err != nil {
+	if err := h.authorize(ctx, auth.ActionWrite, t); err != nil {
 		return err
 	}
-	if err := h.authorize(ctx, auth.ActionWrite, t); err != nil {
+	refDigest, err := parseReference(ref)
+	if err != nil {
 		return err
 	}
 	desc, body, err := readManifest(r, refDigest, h.o.MaxManifestSize)
@@ -192,9 +194,19 @@ func readManifest(r *http.Request, refDigest digest.Digest, limit int64) (ocispe
 	}
 	var fields struct {
 		MediaType string `json:"mediaType"`
+		Subject   *struct {
+			Digest string `json:"digest"`
+		} `json:"subject"`
 	}
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return ocispec.Descriptor{}, nil, &apiError{status: http.StatusBadRequest, code: codeManifestInvalid, msg: "the manifest is not JSON", err: err}
+	}
+	// The subject's digest goes back in the OCI-Subject header of the answer: a digest only.
+	if fields.Subject != nil {
+		if _, err := digest.Parse(fields.Subject.Digest); err != nil {
+			return ocispec.Descriptor{}, nil, &apiError{status: http.StatusBadRequest, code: codeManifestInvalid,
+				msg: fmt.Sprintf("the manifest's subject has the digest %q, which is not one", fields.Subject.Digest)}
+		}
 	}
 	if fields.MediaType != "" && fields.MediaType != mediaType {
 		return ocispec.Descriptor{}, nil, &apiError{status: http.StatusBadRequest, code: codeManifestInvalid,

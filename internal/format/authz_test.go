@@ -156,3 +156,37 @@ func TestAuthorize(t *testing.T) {
 		})
 	}
 }
+
+// TestAuthorizeScopeOfAUser: a personal access token whose scopes refuse the action tells that
+// the repo exists (403) only when its user may read the repo by the bindings; otherwise the
+// answer is the 404 of a repo that does not exist (docs/spec/rbac.md §3; #63, R-4 of the
+// threat model).
+func TestAuthorizeScopeOfAUser(t *testing.T) {
+	repo := index.Repo{ID: 10, Format: "raw", Name: "scratch"}
+	readPAT := auth.Credential{Kind: auth.CredPAT, TokenID: 1, UserID: 1, Scopes: []string{"read"}}
+	alice := auth.Principal{Kind: auth.KindUser, Name: "alice"}
+	tests := []struct {
+		name  string
+		authz *authorizer
+		want  error
+	}{
+		{"the user may read the repo", &authorizer{allow: []auth.Action{auth.ActionRead}}, format.ErrForbidden},
+		{"the user may not read the repo", &authorizer{}, index.ErrNotFound},
+		{"the bindings cannot be read", &authorizer{err: errors.New("index: down")}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := auth.WithCredential(auth.WithPrincipal(context.Background(), alice), readPAT)
+			err := format.Authorize(ctx, format.Deps{Auth: tt.authz}, auth.ActionWrite, repo)
+			switch {
+			case tt.want == nil && (err == nil || errors.Is(err, format.ErrForbidden) || errors.Is(err, index.ErrNotFound)):
+				t.Fatalf("Authorize = %v, want the Authorizer's error", err)
+			case tt.want != nil && !errors.Is(err, tt.want):
+				t.Fatalf("Authorize = %v, want %v", err, tt.want)
+			}
+			if want := []question{{alice, auth.ActionRead, "raw", "scratch"}}; !slices.Equal(tt.authz.asked, want) {
+				t.Errorf("Allowed asked %v, want %v", tt.authz.asked, want)
+			}
+		})
+	}
+}
