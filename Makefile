@@ -80,7 +80,7 @@ licenses: ## Dependency licenses against the allowlist of CONTRIBUTING.md
 fmt-check: ## Fail when gofmt would change a file
 	@files="$$(gofmt -l .)"; if [ -n "$$files" ]; then echo "gofmt -l reports:" >&2; echo "$$files" >&2; exit 1; fi
 
-check: fmt-check build vet test lint api-lint vulncheck licenses ## Everything CI runs, in CI's order, and api-lint, which CI does not run yet
+check: fmt-check build vet test lint api-lint vulncheck licenses ## Everything CI runs, in CI's order
 
 dev-up: ## Start the dev stack (Zot, distribution, Postgres; PROFILES=s3 adds distribution on SeaweedFS, PROFILES=s3-minio on MinIO as the fallback, PROFILES=gitlab the GitLab registry) and wait until it is healthy
 	$(COMPOSE) up -d --wait
