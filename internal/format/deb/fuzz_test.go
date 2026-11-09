@@ -99,9 +99,8 @@ func FuzzParseControl(f *testing.F) {
 			c   Control
 			err error
 		)
-		if n := testutil.Allocated(func() { c, err = parseControl(b) }); n > controlAllocBound(len(b)) {
-			t.Fatalf("parseControl of %d bytes allocated %d bytes, at most %d", len(b), n, controlAllocBound(len(b)))
-		}
+		testutil.CheckAllocated(t, fmt.Sprintf("parseControl of %d bytes", len(b)), controlAllocBound(len(b)),
+			func() { c, err = parseControl(b) })
 		checkControlInDeb(t, b)
 		padded, perr := parseControl(slices.Concat([]byte("\n \t\n"), b, []byte("\n\n")))
 		if err != nil {
@@ -233,9 +232,8 @@ func FuzzParseAr(f *testing.F) {
 			members []arEntry
 			err     error
 		)
-		if n := testutil.Allocated(func() { members, err = readAr(b) }); n > arAllocBound(len(b)) {
-			t.Fatalf("reading %d bytes allocated %d bytes, at most %d", len(b), n, arAllocBound(len(b)))
-		}
+		testutil.CheckAllocated(t, fmt.Sprintf("reading %d bytes", len(b)), arAllocBound(len(b)),
+			func() { members, err = readAr(b) })
 		if err != nil && !errors.Is(err, format.ErrInvalid) {
 			t.Fatalf("readAr = %v, want ErrInvalid", err)
 		}

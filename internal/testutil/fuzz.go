@@ -45,14 +45,29 @@ func WriteFuzzCorpus(t testing.TB, target string, seeds map[string]any) {
 	}
 }
 
-// AllocSlack is what Allocated may count besides what fn allocated: the runtime counts small
-// objects a span at a time, up to a span per size class, and a fuzz worker does some work of
-// its own. A bound on Allocated is AllocSlack and a multiple of the size of the input.
+// AllocSlack is the constant part of a bound on what a parser may allocate, the other being a
+// multiple of the size of its input: what Allocated counts besides what fn allocated, since the
+// runtime counts small objects a span at a time, up to a span per size class.
 const AllocSlack = 1 << 20
 
-// Allocated returns about how many bytes the process allocated on the heap while fn ran, so
+// CheckAllocated fails t when fn, named by what, allocates more than limit bytes on the heap, so
 // that a fuzz target can check that a small input does not make a parser allocate without
-// bound; see AllocSlack.
+// bound. A single count of Allocated can be hundreds of KiB over what fn allocated (a span
+// counted at once, a GC in between), so a count over limit is taken again, twice at most, and t
+// fails only when the three are over: fn must allocate the same each time it runs.
+func CheckAllocated(t testing.TB, what string, limit int, fn func()) {
+	t.Helper()
+	n := 0
+	for range 3 {
+		if n = Allocated(fn); n <= limit {
+			return
+		}
+	}
+	t.Fatalf("%s allocated %d bytes, at most %d", what, n, limit)
+}
+
+// Allocated returns about how many bytes the process allocated on the heap while fn ran; see
+// CheckAllocated.
 func Allocated(fn func()) int {
 	s := []metrics.Sample{{Name: "/gc/heap/allocs:bytes"}}
 	metrics.Read(s)

@@ -2,6 +2,7 @@ package pypi
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -33,9 +34,8 @@ func FuzzWheelFilename(f *testing.F) {
 			w   Wheel
 			err error
 		)
-		if n := testutil.Allocated(func() { w, err = ParseWheelFilename(s) }); n > testutil.AllocSlack+64*len(s) {
-			t.Fatalf("ParseWheelFilename of %d bytes allocated %d bytes", len(s), n)
-		}
+		testutil.CheckAllocated(t, fmt.Sprintf("ParseWheelFilename of %d bytes", len(s)), testutil.AllocSlack+64*len(s),
+			func() { w, err = ParseWheelFilename(s) })
 		if err != nil {
 			if !errors.Is(err, format.ErrInvalid) {
 				t.Fatalf("ParseWheelFilename(%q) = %v, want ErrInvalid", s, err)

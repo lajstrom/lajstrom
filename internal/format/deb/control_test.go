@@ -139,7 +139,7 @@ func TestParseControlContinuationLines(t *testing.T) {
 		c   Control
 		err error
 	)
-	n := testutil.Allocated(func() { c, err = parseControl(b) })
+	testutil.CheckAllocated(t, "parseControl", controlAllocBound(len(b)), func() { c, err = parseControl(b) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,8 +148,5 @@ func TestParseControlContinuationLines(t *testing.T) {
 	}
 	if v, _ := c.Get("X-After"); v != "z" {
 		t.Errorf("X-After = %q, want z", v)
-	}
-	if n > controlAllocBound(len(b)) {
-		t.Errorf("parseControl of %d bytes allocated %d bytes, at most %d", len(b), n, controlAllocBound(len(b)))
 	}
 }
