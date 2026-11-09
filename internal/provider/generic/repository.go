@@ -53,7 +53,8 @@ func (r *repository) Exists(ctx context.Context, target ocispec.Descriptor) (boo
 // Push uploads the blob or manifest expected from content; a blob is streamed in one
 // monolithic upload, which is done again from the start when it fails transiently and content
 // can be rewound (pushRetry); a manifest PUT is retried by the transport. Content that
-// already exists is success.
+// already exists is success, and so is a referrer whose old referrers index the registry would
+// not delete (pushed).
 func (r *repository) Push(ctx context.Context, expected ocispec.Descriptor, content io.Reader) error {
 	var err error
 	if isManifest(expected.MediaType) {
@@ -66,7 +67,22 @@ func (r *repository) Push(ctx context.Context, expected ocispec.Descriptor, cont
 	if errors.Is(err, errdef.ErrAlreadyExists) {
 		return nil
 	}
-	return translate(r.op("push", expected.Digest.String()), err)
+	return translate(r.op("push", expected.Digest.String()), r.pushed(ctx, err))
+}
+
+// pushed is err of a manifest push, or nil when the push stored the manifest and the new
+// sha256-<hex> referrers index and only the delete of the index it replaced failed: oras-go
+// deletes it on a registry without the referrers API, and some registries refuse deletes
+// (GHCR; distribution with deletes off). The old index stays, untagged, for the registry's
+// garbage collector; it is logged.
+func (r *repository) pushed(ctx context.Context, err error) error {
+	var re *remote.ReferrersError
+	if !errors.As(err, &re) || !re.IsReferrersIndexDelete() {
+		return err
+	}
+	r.p.log.WarnContext(ctx, "generic: the registry refused to delete a replaced referrers index; the old referrers index stays, untagged",
+		"repository", r.name, "subject", re.Subject.Digest.String(), "error", err.Error())
+	return nil
 }
 
 // Delete removes the manifest or blob target. A 405 DENIED refuses this one delete, the way
@@ -99,7 +115,7 @@ func (r *repository) Resolve(ctx context.Context, reference string) (ocispec.Des
 
 // PushReference uploads the manifest expected and tags it reference in one PUT.
 func (r *repository) PushReference(ctx context.Context, expected ocispec.Descriptor, content io.Reader, reference string) error {
-	return translate(r.op("push", reference), r.Repository.PushReference(ctx, expected, content, reference))
+	return translate(r.op("push", reference), r.pushed(ctx, r.Repository.PushReference(ctx, expected, content, reference)))
 }
 
 // Tags calls fn with each page of the repository's tags, starting after last.
