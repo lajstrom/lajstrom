@@ -291,6 +291,11 @@ func TestTagInjective(t *testing.T) {
 	}
 }
 
+// FuzzEscape checks the properties of Escape and EscapeComponent (checkEscape), that Escape
+// copies a string with nothing to escape and makes any other at most three times as long, and
+// that Tag of a non-empty string is an OCI tag, hashed exactly when the unhashed tag would be
+// longer than 128 characters. testdata/fuzz/FuzzEscape has the versions, names, variants and
+// paths of the testutil fixtures, which TestFuzzCorpus writes.
 func FuzzEscape(f *testing.F) {
 	for _, s := range []string{
 		"", "_", ":", "+", "~", "/", " ", ".hidden", "-x", "1:1.18.0-6ubuntu14.4", "manylinux_2_17",
@@ -301,11 +306,74 @@ func FuzzEscape(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, s string) {
 		checkEscape(t, s)
-		if u, err := Unescape(s); err == nil && Escape(u) != s {
-			t.Fatalf("Unescape(%q) = %q, but Escape of it is %q", s, u, Escape(u))
+		e, c := Escape(s), EscapeComponent(s)
+		if len(e) > 3*len(s) || len(c) > max(3*len(s), len(hashedComponent(s))) {
+			t.Fatalf("%d bytes escape to %d, as a component to %d", len(s), len(e), len(c))
 		}
-		if s != "" && !ociTagGrammar.MatchString(Tag(s, s)) {
-			t.Fatalf("Tag(%q, %q) = %q does not match the OCI tag grammar", s, s, Tag(s, s))
+		needs := false
+		for i := range len(s) {
+			needs = needs || needsEscape(s[i], i)
+		}
+		if needs == (e == s) {
+			t.Fatalf("Escape(%q) = %q, though a byte needs escaping: %v", s, e, needs)
+		}
+		if s == "" {
+			return
+		}
+		tag := Tag(s, s)
+		if !ociTagGrammar.MatchString(tag) {
+			t.Fatalf("Tag(%q, %q) = %q does not match the OCI tag grammar", s, s, tag)
+		}
+		if long := len(e+"__"+e) > maxTagLen; IsHashedTag(tag) != long || long != (tag == hashedTag(s, s)) {
+			t.Fatalf("Tag(%q, %q) = %q: hashed %v, %d bytes unhashed", s, s, tag, IsHashedTag(tag), len(e+"__"+e))
 		}
 	})
+}
+
+// FuzzUnescape checks that Unescape accepts exactly what Escape produces. A string it decodes is
+// Escape of the result, which is no longer than it. A string it refuses, with ErrInvalidEscape,
+// is Escape of nothing: Escape(u) decodes escape by escape to u, so a string that does not
+// escape back to itself so decoded is no Escape(u).
+func FuzzUnescape(f *testing.F) {
+	for _, s := range []string{"", "a", "_5f", "_2e", "_2E", "_2ex", "_h", "_h00", "a_", "a_5", "_61", "-x", "a-", ".a", "a.",
+		"h0__0123", "_2d1", "_5f_5f", "a__b", "_ff_00", "_c3_a9"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		u, err := Unescape(s)
+		if err == nil {
+			if Escape(u) != s || len(u) > len(s) {
+				t.Fatalf("Unescape(%q) = %q, which Escape makes %q", s, u, Escape(u))
+			}
+			return
+		}
+		if !errors.Is(err, ErrInvalidEscape) {
+			t.Fatalf("Unescape(%q) = %v, want ErrInvalidEscape", s, err)
+		}
+		if d, ok := decodeEach(s); ok && Escape(d) == s {
+			t.Fatalf("Unescape(%q) refused Escape(%q)", s, d)
+		}
+	})
+}
+
+// decodeEach decodes every '_' and the two hex digits after it, in either case, and copies every
+// other byte: Unescape without its checks. It fails on a '_' without two hex digits after it.
+func decodeEach(s string) (string, bool) {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '_' {
+			b.WriteByte(s[i])
+			continue
+		}
+		if i+2 >= len(s) {
+			return "", false
+		}
+		c, err := hex.DecodeString(s[i+1 : i+3])
+		if err != nil {
+			return "", false
+		}
+		b.WriteByte(c[0])
+		i += 2
+	}
+	return b.String(), true
 }
