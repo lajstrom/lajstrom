@@ -71,6 +71,11 @@ type Publisher interface {
 	// Upload builds the manifest with the plugin of repo's format, pushes the blobs and the
 	// manifest, and indexes the result. See ingest.Pipeline.Upload.
 	Upload(ctx context.Context, repo index.Repo, up Upload, principal auth.Principal) (*Published, error)
+	// Delete deletes the manifest that del names in the backend, its referrers before it, and
+	// then what the index holds of it: a version's rows, the repo's rendered indexes, one audit
+	// row. A backend that cannot delete manifests is provider.ErrUnsupported, and nothing
+	// changes. See ingest.Pipeline.Delete (#61).
+	Delete(ctx context.Context, repo index.Repo, del Deletion, principal auth.Principal) (*Deleted, error)
 }
 
 // Sessions are the publication sessions of a format whose upload is several requests: maven PUTs
