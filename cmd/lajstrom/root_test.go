@@ -62,7 +62,7 @@ func TestCommands(t *testing.T) {
 		{name: "admin user", args: []string{"admin", "user"}, wantOut: "Available Commands:\n  create"},
 		{name: "admin token", args: []string{"admin", "token"}, wantOut: "Available Commands:\n  create"},
 		{name: "admin repo", args: []string{"admin", "repo"}, wantOut: "Available Commands:\n  create"},
-		{name: "admin binding", args: []string{"admin", "binding"}, wantErr: "see issue #47"},
+		{name: "admin binding", args: []string{"admin", "binding"}, wantOut: "Available Commands:\n  create"},
 		{name: "bad log level", args: []string{"version", "--log-level", "verbose"}, wantErr: `log level "verbose"`},
 		{name: "bad log format", args: []string{"version", "--log-format", "xml"}, wantErr: `log format "xml"`},
 		{name: "unknown command", args: []string{"frobnicate"}, wantErr: "unknown command"},
