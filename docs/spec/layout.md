@@ -735,11 +735,10 @@ disabled with an issue, not retried.
 | `make check` | fmt-check, build, vet, test, lint, vulncheck, licenses: exactly what CI runs; run before every pull request |
 | `make dev-up` / `make dev-down` / `make dev-logs` | compose stack in `deploy/compose/compose.yaml` (issue #15) |
 | `make test-integration` | `go test -race -tags integration ./...` against the dev stack; needs `LAJSTROM_TEST_REGISTRY` |
-| `make e2e` | `test/e2e/run.sh`, the end-to-end suite against the dev stack (issue #34) |
+| `make e2e` | `test/e2e/run.sh`: builds the binary, starts `serve` on a configuration of its own against the registry `$LAJSTROM_E2E_REGISTRY` (default the Zot of `make dev-up`) and runs every scenario of `test/e2e/`, or those of `E2E='raw oras'` (docs/testing.md) |
 | `make run` | build, then `lajstrom serve --config deploy/compose/lajstrom.yaml` (the example file when that does not exist) |
 | `make clean` | removes `bin/` |
 
-Targets whose files a later issue creates (`dev-*`, `e2e`) print which issue and fail.
 
 ## 6. Configuration (shape; every key in [docs/configuration.md](../configuration.md))
 

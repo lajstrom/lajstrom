@@ -120,7 +120,7 @@ Columns: id, what to do, what must happen, issue. Priority is P0 unless the id c
 | R-02 | same `PUT` again with identical bytes | 201, same digest, one version in the index (`Existed`) | #12, #13 |
 | R-03 | `PUT` different bytes to the same path, then `GET`; `GET ?digest=<old manifest digest>` | new bytes; the pinned `GET` returns the old bytes; both versions in the listing | #13 |
 | R-04 | `GET /raw/assets/` and `GET /raw/assets/docs/` | `{"entries":[{"path","size","digest","created"}…]}`, directory prefixes with a trailing `/`, sorted by path | #13 |
-| R-05 | `GET` a 200 MiB file on the `ha` stack (distribution + SeaweedFS) | 307 to a presigned URL that expires in 20 minutes (the s3 driver's `X-Amz-Expires=1200`); the bytes match; on the `single` stack (Zot) the body streams with `Accept-Ranges: bytes` | #13, #27 |
+| R-05 | `GET` a 200 MiB file on the `ha` stack (distribution + SeaweedFS) | 307 to a presigned URL that expires in 20 minutes (the s3 driver's `X-Amz-Expires=1200`); the bytes match; on the `single` stack (Zot) the body streams, and a `Range` of one byte range is `206` with that range: Zot sends no `Accept-Ranges` on `GET`, and Lajstrom passes on the backend's header and adds none (http-routing.md §2; docs/registries/zot.md) | #13, #27 |
 | R-06 | `curl -r 1000-1999` on a streamed file | 206 with 1000 bytes; the backend received the `Range` | #13 |
 | R-07 | `DELETE /raw/assets/docs/file.txt` as bob (reader), then as alice (writer), then as a maintainer | 403, 403, 204; after it `GET` is 404 and the manifests are gone from the backend when it can delete (else 501 and nothing changes) | #13, #61 |
 | R-08 | `oras pull art.test/raw/assets/docs/file.txt:<tag>` from the backend repository | writes a file named `file.txt` | #13 |
