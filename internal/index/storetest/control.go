@@ -540,6 +540,82 @@ func testSessions(t *testing.T, s index.Store) {
 	}
 }
 
+// testSessionsTouch: TouchSession moves the expiry of an open session that has not expired, and
+// finds no other; a key has one open session at a time.
+func testSessionsTouch(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "maven", "releases")
+	open := index.Session{RepoID: repo.ID, Key: "k2", Principal: "user:alice", State: "open", ExpiresAt: at(1000)}
+	must(t, s.UpsertSession(ctx, &open))
+	touched, err := s.TouchSession(ctx, open.ID, at(500), at(2000))
+	must(t, err)
+	if touched.ID != open.ID || touched.State != "open" || !touched.ExpiresAt.Equal(at(2000)) || touched.Key != "k2" {
+		t.Errorf("TouchSession = %+v, want session %d open until at(2000)", touched, open.ID)
+	}
+
+	// One open session per key: a second is a conflict, one after it closed is not.
+	first := index.Session{RepoID: repo.ID, Key: "k3", Principal: "user:alice", State: "open", ExpiresAt: at(1000)}
+	must(t, s.UpsertSession(ctx, &first))
+	dup := index.Session{RepoID: repo.ID, Key: "k3", Principal: "user:bob", State: "open", ExpiresAt: at(1000)}
+	wantErr(t, "UpsertSession of a second open session", s.UpsertSession(ctx, &dup), index.ErrConflict)
+	first.State = "aborted"
+	must(t, s.UpsertSession(ctx, &first))
+	must(t, s.UpsertSession(ctx, &dup))
+	must(t, s.DeleteSession(ctx, open.ID))
+
+	for _, tt := range []struct {
+		name string
+		err  error
+	}{
+		{"expired at", second(s.TouchSession(ctx, dup.ID, at(1000), at(3000)))},
+		{"not open", second(s.TouchSession(ctx, first.ID, at(0), at(3000)))},
+		{"deleted", second(s.TouchSession(ctx, open.ID, at(0), at(3000)))},
+	} {
+		wantErr(t, "TouchSession "+tt.name, tt.err, index.ErrNotFound)
+	}
+}
+
+// testSessionsConcurrent: transactions that each start with TouchSession, then read, change
+// and write the files of one session, at once, all land: TouchSession holds the row.
+func testSessionsConcurrent(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "maven", "releases")
+	sess := index.Session{RepoID: repo.ID, Key: "com.example:lib:1.0", Principal: "user:alice", State: "open",
+		Files: json.RawMessage(`[]`), ExpiresAt: at(1000)}
+	must(t, s.UpsertSession(ctx, &sess))
+	const n = 8
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			err := s.Tx(ctx, func(w index.Writer) error {
+				cur, err := w.TouchSession(ctx, sess.ID, at(0), at(1000))
+				if err != nil {
+					return err
+				}
+				var files []string
+				if err := json.Unmarshal(cur.Files, &files); err != nil {
+					return err
+				}
+				if cur.Files, err = json.Marshal(append(files, fmt.Sprintf("f%d", i))); err != nil {
+					return err
+				}
+				return w.UpsertSession(ctx, cur)
+			})
+			if err != nil {
+				t.Errorf("transaction %d: %v", i, err)
+			}
+		})
+	}
+	wg.Wait()
+	got, err := s.GetSessionByID(ctx, sess.ID)
+	must(t, err)
+	var files []string
+	must(t, json.Unmarshal(got.Files, &files))
+	if len(files) != n {
+		t.Errorf("%d files after %d concurrent changes, want all: %v", len(files), n, files)
+	}
+}
+
 func testAudit(t *testing.T, s index.Store) {
 	ctx := t.Context()
 	events := []index.AuditEvent{

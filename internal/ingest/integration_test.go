@@ -7,6 +7,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -176,4 +178,60 @@ func tagDigest(ctx context.Context, rr provider.Repository, tag string) digest.D
 		return ""
 	}
 	return desc.Digest
+}
+
+// TestSessionsIntegration runs publication sessions against the registry of TestIntegration:
+// five files added one by one commit as one manifest with five file layers and the metadata
+// layer, and one version of five files in the index; an aborted session and one whose time is up
+// publish nothing.
+func TestSessionsIntegration(t *testing.T) {
+	addr := os.Getenv("LAJSTROM_TEST_REGISTRY")
+	if addr == "" {
+		t.Skip("set LAJSTROM_TEST_REGISTRY=host:port to run against a registry")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	e, prov := integrationEnv(t, addr)
+	c := &clock{t: now}
+	o := e.options(prov)
+	o.Now, o.SessionTimeout = c.Now, time.Minute
+	e.pipe = ingest.New(o)
+
+	s, err := e.pipe.Open(ctx, e.repo, "lib", "1.0", alice)
+	must(t, err)
+	for i := range 5 {
+		add(t, e, s.ID, fmt.Sprintf("file-%d", i), fmt.Sprintf("file %d of %s", i, e.repo.Name))
+	}
+	pub, err := e.pipe.Commit(ctx, s.ID)
+	must(t, err)
+	rr, err := prov.Repository(ctx, "raw/"+e.repo.Name+"/lib")
+	must(t, err)
+	_, m := fetchManifest(ctx, t, rr, pub.Tag)
+	if len(m.Layers) != 6 {
+		t.Errorf("the manifest has %d layers, want five files and the metadata layer", len(m.Layers))
+	}
+	for i := range 5 {
+		if want := digest.FromString(fmt.Sprintf("file %d of %s", i, e.repo.Name)); m.Layers[i].Digest != want {
+			t.Errorf("layer %d: %s, want %s", i, m.Layers[i].Digest, want)
+		}
+	}
+
+	aborted, err := e.pipe.Open(ctx, e.repo, "aborted", "1.0", alice)
+	must(t, err)
+	add(t, e, aborted.ID, "file", "aborted "+e.repo.Name)
+	must(t, e.pipe.Abort(ctx, aborted.ID))
+	late, err := e.pipe.Open(ctx, e.repo, "late", "1.0", alice)
+	must(t, err)
+	add(t, e, late.ID, "file", "late "+e.repo.Name)
+	c.add(2 * time.Minute)
+	if _, err := e.pipe.Commit(ctx, late.ID); !errors.Is(err, index.ErrNotFound) {
+		t.Errorf("Commit after the timeout = %v, want ErrNotFound", err)
+	}
+	if n, err := e.pipe.ExpireSessions(ctx); err != nil || n != 1 {
+		t.Errorf("ExpireSessions = %d, %v; want the late session", n, err)
+	}
+	r := e.rows(t)
+	if len(r.Versions) != 1 || len(r.Files[0]) != 5 || r.Packages[0].Name != "lib" {
+		t.Errorf("index: %+v; want the five files of lib 1.0 alone", r)
+	}
 }

@@ -35,6 +35,8 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"KeysActive", testKeysActive},
 		{"KeyRace", testKeyRace},
 		{"Sessions", testSessions},
+		{"SessionsTouch", testSessionsTouch},
+		{"SessionsConcurrent", testSessionsConcurrent},
 		{"Audit", testAudit},
 		{"AuditDefaultLimit", testAuditDefaultLimit},
 		{"TagClaims", testTagClaims},

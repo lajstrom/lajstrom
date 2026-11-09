@@ -2,9 +2,11 @@ package format
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"net/http"
 
+	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/audit"
@@ -71,6 +73,54 @@ type Publisher interface {
 	Upload(ctx context.Context, repo index.Repo, up Upload, principal auth.Principal) (*Published, error)
 }
 
+// Sessions are the publication sessions of a format whose upload is several requests: maven PUTs
+// each file of a version, then maven-metadata.xml, which commits them (docs/architecture.md, flow
+// B). Each file goes to the registry when it arrives; the session in the index records it, and
+// Commit publishes the files as one version through Publisher.Upload. A session expires a while
+// after its last file (30 minutes by default), and its files are then dropped: a part of a version
+// is never published (docs/spec/http-routing.md §3, maven). One principal holds a session; a
+// key, the package and version, has one open session in a repo. *ingest.Pipeline implements it;
+// the interface lives here so that format does not import ingest.
+type Sessions interface {
+	// Open returns the open session of the package name at version in repo, opened by
+	// principal, and opens one when there is none. An open session of another principal is
+	// index.ErrConflict; a name the format does not allow, or an empty version, ErrInvalid.
+	Open(ctx context.Context, repo index.Repo, name, version string, principal auth.Principal) (*index.Session, error)
+
+	// Add stores the bytes of r in the registry as one blob and records it in the session as
+	// the file name, with its size and checksums, in place of a file of that name; size is -1
+	// when unknown. A session that is not open, or has expired, is index.ErrNotFound; one being
+	// committed, index.ErrConflict.
+	Add(ctx context.Context, sessionID int64, name string, r io.Reader, size int64) (SessionFile, error)
+
+	// Files returns the files of the session in the order they were first added.
+	Files(ctx context.Context, sessionID int64) ([]SessionFile, error)
+
+	// Commit publishes the files of the session as one version, through Publisher.Upload, and
+	// closes the session. It is the idempotent repeat when the version holds these files already
+	// (Published.Existed) and index.ErrConflict when it holds others, or when another Commit of
+	// the session is running. A session that is not open, or has expired, is index.ErrNotFound;
+	// one without files, ErrInvalid.
+	Commit(ctx context.Context, sessionID int64) (*Published, error)
+
+	// Abort closes the session without publishing; its blobs are left to the registry's garbage
+	// collection. A session that is closed already is left as it is.
+	Abort(ctx context.Context, sessionID int64) error
+}
+
+// SessionFile is a file of a publication session: its name there, the blob it is in the
+// registry, and its checksums, computed while it arrived.
+type SessionFile struct {
+	// Name is the file's name as the format gave it to Add (maven: the path below the repo).
+	Name string `json:"name"`
+	// Digest and Size are those of the blob.
+	Digest digest.Digest `json:"digest"`
+	Size   int64         `json:"size"`
+	// Checksums are the md5, sha1, sha256 and sha512 of the bytes, lowercase hexadecimal, by
+	// those names.
+	Checksums map[string]string `json:"checksums"`
+}
+
 // Signer signs a repo's index documents with the repo's own key and serves the public keys
 // clients pin (apt's signed-by). internal/keys implements it; format does not import keys. A
 // nil Signer in Deps means signing is off.
@@ -102,4 +152,6 @@ type Deps struct {
 	// Signer signs index documents with per-repo keys (apt InRelease, Release.gpg, key.asc);
 	// nil when the server has no master key (keys.masterKeyEnv) and signing is off.
 	Signer Signer
+	// Sessions are the publication sessions, for a format whose upload is several requests.
+	Sessions Sessions
 }

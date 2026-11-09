@@ -26,7 +26,7 @@ rows elsewhere are deferred as a block. Nothing else moves.
 | raw | `PUT`, `GET`, `HEAD`, `DELETE /raw/<repo>/<path…>`, `?digest=` pin, JSON listing, 307 to the registry when it supports redirect, `Range` | #13 |
 | pypi | `twine upload`, `pip install --index-url`, PEP 503 HTML, PEP 691 JSON, PEP 658 metadata, name normalisation | #31, #32, #33 |
 | apt | `PUT` upload of a `.deb`, `oras push` with the deb profile, signed `InRelease`, `Release` + `Release.gpg`, `Packages` (+gz, +xz), `by-hash`, `key.asc`, pool downloads; `apt-get update && apt-get install` on Ubuntu and Debian | #39, #40, #41, #42, #48 |
-| maven (cut line) | `mvn deploy` of a multi-file release, `mvn dependency:get`, Gradle publish and resolve, `maven-metadata.xml`, checksum files, publication sessions with `seal` or `abort` | #52, #53, #54, #55, #56 |
+| maven (cut line) | `mvn deploy` of a multi-file release, `mvn dependency:get`, Gradle publish and resolve, `maven-metadata.xml`, checksum files, publication sessions that publish on commit only | #52, #53, #54, #55, #56 |
 | OCI facade | `/v2`: token endpoint, blob uploads (monolithic, chunked, mount), blob and manifest reads, manifest `PUT` hook into ingest, `tags/list`, `_catalog`, referrers with tag-schema fallback, blob 307 redirect; `oras`, `crane`, `cosign` work | #24, #25, #26, #27, #28, #37 |
 | Ingest | one write path; profile and plugin validation; tag claim before the registry write; idempotent re-push; 409 on a tag with other bytes; audit event | #12 |
 | Index and reindex | SQLite (single node) and Postgres (HA) behind one `Store`; `reindex` rebuilds every derived row from the registry; `reindex --report` lists foreign manifests; the reconcile loop picks up drift | #10, #29, #30 |
@@ -180,7 +180,7 @@ Columns: id, what to do, what must happen, issue. Priority is P0 unless the id c
 | M-03 | `GET …/com/example/lib/maven-metadata.xml` | `latest`, `release`, `versions`, `lastUpdated` from the index; checksum files alongside | #55 |
 | M-04 | deploy 1.2.0 again unchanged; then with a changed jar | 200 idempotent; 409 | #54 |
 | M-05 | a `PUT` of `lib-1.2.0.jar.sha1` that does not match the jar | 400; the session stays open; a correct retry works | #54 |
-| M-06 | start a deploy, stop after the jar; wait `maven.sessionTimeout` (set to 30 s for the test) | with `abort` the session and its index rows are gone, the blobs are orphans the reconcile report lists; with `seal` the version exists with one file | #53 |
+| M-06 | start a deploy, stop after the jar; wait out the session's timeout (30 s for the test) | the session is expired, the version does not exist, the blobs are orphans the reconcile report lists; a new deploy of the version starts an empty session | #53 |
 | M-07 | `GET …/lib/1.2.0/lib-1.2.0.jar` on both stacks | 307 or stream | #55 |
 
 ### 3.7 Index and reindex

@@ -61,6 +61,11 @@ type UploadedFile struct {
 	ContentType string
 	// Open returns a new reader positioned at the start of the file.
 	Open func() (io.ReadCloser, error)
+	// Checksums are the file's md5, sha1, sha256 and sha512, lowercase hexadecimal, by those
+	// names, when the caller has them: a publication session computes them as the file arrives,
+	// and the file is in the registry already. Build may use them in place of reading the file;
+	// nil means it reads it.
+	Checksums map[string]string
 }
 
 // Built is the result of Plugin.Build: a complete manifest and the blobs ingest has to push
@@ -124,4 +129,7 @@ type Published struct {
 	RepoPath string
 	// Entry is the index entry of the stored manifest.
 	Entry Entry
+	// Existed is true for the idempotent repeat: the tag held a manifest with these files
+	// already, nothing was written, and Digest is that manifest.
+	Existed bool
 }
