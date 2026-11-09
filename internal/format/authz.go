@@ -18,10 +18,11 @@ import (
 // when it cannot decide (WriteError answers 500). serve sets deps.Auth to auth.RBAC; a nil
 // deps.Auth allows everything the credential allows, for the tests.
 //
-// The credential of the request decides first (limit), with or without an Authorizer.
+// The credential of the request decides first (limit), with or without an Authorizer; when it
+// refuses a user's action, the bindings still decide between 403 and 404 (refusedByCredential).
 func Authorize(ctx context.Context, deps Deps, a auth.Action, repo index.Repo) error {
 	if err := limit(ctx, a, repo); err != nil {
-		return err
+		return refusedByCredential(ctx, deps, repo, err)
 	}
 	if deps.Auth == nil {
 		return nil
@@ -44,6 +45,27 @@ func Authorize(ctx context.Context, deps Deps, a auth.Action, repo index.Repo) e
 		case canRead:
 			return fmt.Errorf("%w: %s on %s/%s", ErrForbidden, a, repo.Format, repo.Name)
 		}
+	}
+	return fmt.Errorf("%w: repository %s/%s", index.ErrNotFound, repo.Format, repo.Name)
+}
+
+// refusedByCredential answers the refusal err of the credential (limit): a personal access token
+// without the scope of the action is ErrForbidden, which tells that the repo exists, so a user
+// gets it only when its bindings let it read the repo, and otherwise the index.ErrNotFound of a
+// repo that does not exist (docs/spec/rbac.md §3). A deploy token is bound to its repo and
+// knows it: its refusals stay as they are, and so does any refusal without an Authorizer.
+func refusedByCredential(ctx context.Context, deps Deps, repo index.Repo, err error) error {
+	p := auth.PrincipalFrom(ctx)
+	if !errors.Is(err, ErrForbidden) || deps.Auth == nil || p.Kind != auth.KindUser {
+		return err
+	}
+	bindings := auth.WithCredential(ctx, auth.Credential{}) // the user's own reach, not the token's
+	canRead, aerr := deps.Auth.Allowed(bindings, p, auth.ActionRead, repo.Format, repo.Name)
+	switch {
+	case aerr != nil:
+		return aerr
+	case canRead:
+		return err
 	}
 	return fmt.Errorf("%w: repository %s/%s", index.ErrNotFound, repo.Format, repo.Name)
 }

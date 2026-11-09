@@ -22,11 +22,11 @@ const octetStream = "application/octet-stream"
 // that breaks after the headers is logged.
 func (h *handler) getBlob(w http.ResponseWriter, r *http.Request, t *target, arg string) error {
 	ctx := r.Context()
-	d, err := parseDigest(arg)
-	if err != nil {
+	if err := h.authorize(ctx, auth.ActionRead, t); err != nil { // before the digest: rbac.md §3
 		return err
 	}
-	if err := h.authorize(ctx, auth.ActionRead, t); err != nil {
+	d, err := parseDigest(arg)
+	if err != nil {
 		return err
 	}
 	p, err := h.registry(t)

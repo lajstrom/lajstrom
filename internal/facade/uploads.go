@@ -155,7 +155,10 @@ func (h *handler) mountSource(ctx context.Context, t *target, from string) (stri
 		return "", false, nil
 	}
 	g, bearer := grantFrom(ctx)
-	if bearer && from != t.name && token.ValidName(from) {
+	if bearer && from != t.name {
+		if !token.ValidName(from) { // no token names it: never a source, whatever resolve accepts
+			return "", false, nil
+		}
 		if _, named := g.Repository(from); !named {
 			return "", false, h.namedByToken(ctx, g, from)
 		}
@@ -225,11 +228,11 @@ func (h *handler) patchUpload(w http.ResponseWriter, r *http.Request, t *target,
 // cancelled, the row deleted, and the answer is 400 DIGEST_INVALID.
 func (h *handler) putUpload(w http.ResponseWriter, r *http.Request, t *target, id string) error {
 	ctx := r.Context()
-	d, err := parseDigest(r.URL.Query().Get("digest"))
+	s, st, rr, err := h.continueSession(r, t, id) // authorizes before the digest: rbac.md §3
 	if err != nil {
 		return err
 	}
-	s, st, rr, err := h.continueSession(r, t, id)
+	d, err := parseDigest(r.URL.Query().Get("digest"))
 	if err != nil {
 		return err
 	}
