@@ -209,6 +209,7 @@ scanoss-py inspect undeclared --input /tmp/scanoss-results.json
 | `dco` | `Signed-off-by:` on every commit of the pull request |
 | `codeql` | CodeQL static analysis (separate workflow) |
 | `CLAAssistant` | CLA signature (separate workflow) |
+| `snapshot` | `goreleaser release --snapshot` without publishing, on pushes to `main` and on pull requests that change the release configuration (Release workflow, [docs/release.md](docs/release.md)) |
 
 The integration cells run on every push to `main` and on a pull request that changes Go code
 (`*.go`), `go.mod` or `go.sum`, `deploy/`, `.github/workflows/`, the `Makefile`,
