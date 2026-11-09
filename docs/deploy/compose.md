@@ -18,7 +18,7 @@ page in [registries/](../registries/README.md) gives.
 
 ## 1. Secrets
 
-Three files in `secrets/` (git-ignored), made once:
+Four files in `secrets/` (git-ignored), made once:
 
 ```sh
 cd deploy/compose-production
@@ -26,27 +26,52 @@ umask 077
 mkdir -p secrets
 pg=$(openssl rand -hex 24)
 reg=$(openssl rand -hex 24)
+openssl rand -hex 32 > secrets/master-key
 printf '%s' "$pg" > secrets/postgres-password
 docker run --rm --entrypoint htpasswd httpd:2.4.66-alpine -Bbn lajstrom "$reg" > secrets/registry.htpasswd   # bcrypt
 cat > secrets/lajstrom.env <<EOF
-LAJSTROM_MASTER_KEY=$(openssl rand -hex 32)
 LAJSTROM_DATABASE_DSN=postgres://lajstrom:$pg@postgres:5432/lajstrom?sslmode=disable
 LAJSTROM_REGISTRY_PASSWORD=$reg
 EOF
 unset pg reg
+sudo chown 65532:65532 secrets/master-key   # on Linux: the image's user reads it (below)
 ```
 
 | File | Read by | What |
 | --- | --- | --- |
-| `secrets/lajstrom.env` | Compose, into the environment of `lajstrom` | the [master key](../operations.md#the-master-key), the DSN with the database password, the registry password |
+| `secrets/master-key` | `lajstrom`, as the Compose secret `lajstrom-master-key`, the file `/run/secrets/lajstrom-master-key` of `keys.masterKeyFile` | the [master key](../operations.md#the-master-key) |
+| `secrets/lajstrom.env` | Compose, into the environment of `lajstrom` | the DSN with the database password, the registry password |
 | `secrets/postgres-password` | `postgres`, as the Compose secret `POSTGRES_PASSWORD_FILE` names | the same database password |
 | `secrets/registry.htpasswd` | `registry`, as a Compose secret | the bcrypt line of the user `lajstrom` |
 
-Lajstrom reads the master key from an environment variable only (`keys.masterKeyEnv`), and
-the distroless image has no shell to read a file into one, so `lajstrom.env` is an `env_file`
-and not a Compose secret: whoever can run `docker inspect` on the host sees it. **Copy the
-master key somewhere apart from the host and from the database backups now**: without it the
-signing keys in the database are ciphertext ([operations.md](../operations.md#the-master-key)).
+The master key is a file in the container and nowhere else; once the stack is up (section 3):
+
+```sh
+docker compose logs --no-log-prefix lajstrom | grep 'master key'
+docker inspect "$(docker compose ps -q lajstrom)" --format '{{range .Mounts}}{{.Destination}} {{end}}'
+docker inspect "$(docker compose ps -q lajstrom)" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -c MASTER
+```
+
+```text
+{"time":"2026-11-09T18:18:43.057765241Z","level":"INFO","msg":"apt repos are signed with keys under the master key","keys.masterKeyFile":"/run/secrets/lajstrom-master-key","keys.algorithm":"ed25519","keys.retireGrace":"720h0m0s"}
+/etc/lajstrom/lajstrom.yaml /run/secrets/lajstrom-master-key
+0
+```
+
+Compose bind-mounts a file secret with the owner and mode of the host's file (it ignores `uid`,
+`gid` and `mode` for one, and says so), so the file must be readable by the image's user
+65532. On Linux that takes the `chown` above, after which `sudo cat secrets/master-key` reads it
+back. In Docker 29 on a Linux kernel (`docker:29-dind`), the same file owned by uid 1000 with
+`0600` was `keys.masterKeyFile: open /run/secrets/lajstrom-master-key: permission denied`, and
+owned by 65532 it was read. On macOS, OrbStack shows a shared file as owned by the container's
+user, so the run of this page had no `chown`. Lajstrom warns at start when the file is open to
+the group or others (`the master key file is open to more than its owner: make it 0400 or
+0600`); `0600` or `0400` is quiet. The DSN and the registry password have no file option and
+stay in the environment, where `docker inspect` shows them.
+
+**Copy the master key somewhere apart from the host and from the database backups now**:
+without it the signing keys in the database are ciphertext
+([operations.md](../operations.md#the-master-key)).
 
 ## 2. Configuration
 
@@ -59,6 +84,8 @@ signing keys in the database are ciphertext ([operations.md](../operations.md#th
   is not published.
 - `database.driver: postgres`; the DSN comes from `LAJSTROM_DATABASE_DSN`, since it carries the
   password.
+- `keys.masterKeyFile: /run/secrets/lajstrom-master-key`: the master key, from the Compose
+  secret.
 - `registries[0]`: the registry service, under the prefix `lajstrom/`, with the user `lajstrom`
   and the password from `LAJSTROM_REGISTRY_PASSWORD`.
 - `repos`: `raw/assets`, created at the first start; the database has every repo created later.

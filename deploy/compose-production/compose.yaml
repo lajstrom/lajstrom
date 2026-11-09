@@ -9,7 +9,8 @@
 # root filesystem is read-only and /tmp, where an upload is spooled for one request, is a tmpfs.
 #
 # The secrets are files in ./secrets (git-ignored), made once with the commands of the doc:
-#   secrets/lajstrom.env          LAJSTROM_MASTER_KEY, LAJSTROM_DATABASE_DSN, LAJSTROM_REGISTRY_PASSWORD
+#   secrets/master-key            the master key, owned by the image's user 65532, mode 0600
+#   secrets/lajstrom.env          LAJSTROM_DATABASE_DSN, LAJSTROM_REGISTRY_PASSWORD
 #   secrets/postgres-password     the password of the Postgres user lajstrom
 #   secrets/registry.htpasswd     the bcrypt htpasswd line of the registry user lajstrom
 #
@@ -23,9 +24,12 @@ services:
     # Pin a release by digest: ghcr.io/lajstrom/lajstrom:vX.Y.Z@sha256:… (docs/install.md).
     image: ${LAJSTROM_IMAGE:-ghcr.io/lajstrom/lajstrom:v0.1.0}
     command: ["serve", "--config", "/etc/lajstrom/lajstrom.yaml"]
-    # The master key, the database DSN and the registry password. Lajstrom reads the master key
-    # from an environment variable only, so the file is an env_file, not a compose secret.
+    # The database DSN and the registry password, which Lajstrom reads from the environment.
     env_file: ./secrets/lajstrom.env
+    # The master key as the file /run/secrets/lajstrom-master-key (keys.masterKeyFile). Compose
+    # bind-mounts a file secret with the owner and mode of the host's file and ignores uid, gid
+    # and mode, so the file itself must be readable by the image's user 65532.
+    secrets: [lajstrom-master-key]
     volumes:
       - ./lajstrom.yaml:/etc/lajstrom/lajstrom.yaml:ro
     read_only: true
@@ -86,6 +90,8 @@ services:
     restart: unless-stopped
 
 secrets:
+  lajstrom-master-key:
+    file: ./secrets/master-key
   postgres-password:
     file: ./secrets/postgres-password
   registry-htpasswd:

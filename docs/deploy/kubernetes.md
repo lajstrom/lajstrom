@@ -39,7 +39,10 @@ kubectl -n lajstrom create secret generic lajstrom \
   --from-literal=LAJSTROM_REGISTRY_PASSWORD="$reg"
 ```
 
-`$pg` and `$reg` are the passwords of the database user and of the registry user. A managed
+`$pg` and `$reg` are the passwords of the database user and of the registry user. The master
+key stays a variable here rather than `keys.masterKeyFile`: a Secret volume's files are root's,
+`0440` at best for the user 65532, which Lajstrom warns about
+([operations.md](../operations.md#the-master-key)). A managed
 Postgres wants `sslmode=require` (or `verify-full` with its CA). **Keep a copy of the master
 key outside the cluster and apart from the database backups**
 ([operations.md](../operations.md#the-master-key)): `kubectl -n lajstrom get secret lajstrom -o

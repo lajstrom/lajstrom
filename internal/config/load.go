@@ -18,10 +18,13 @@ import (
 //     keys they leave empty (type, timeout, retries);
 //  3. the environment overrides LAJSTROM_SERVER_LISTEN, LAJSTROM_SERVER_EXTERNAL_URL,
 //     LAJSTROM_SERVER_METRICS_LISTEN, LAJSTROM_LOG_LEVEL, LAJSTROM_LOG_FORMAT,
-//     LAJSTROM_DATABASE_DRIVER and LAJSTROM_DATABASE_DSN; an empty variable counts as unset, and lists (registries, repos)
+//     LAJSTROM_DATABASE_DRIVER, LAJSTROM_DATABASE_DSN and LAJSTROM_MASTER_KEY_FILE
+//     (keys.masterKeyFile); an empty variable counts as unset, and lists (registries, repos)
 //     cannot be set from the environment;
 //  4. registries[].auth.passwordEnv, resolved into registries[].auth.password;
-//  5. Validate.
+//  5. Validate, and one check that needs the environment: keys.masterKeyFile and the variable
+//     keys.masterKeyEnv names must not both be set (whether the variable is set is all Load
+//     reads of it).
 //
 // lookupEnv is os.LookupEnv in production; nil means an empty environment. Errors name the
 // file and never contain a secret.
@@ -38,10 +41,25 @@ func Load(path string, lookupEnv func(string) (string, bool)) (*Config, error) {
 	}
 	applyEnv(c, lookupEnv)
 	resolveSecrets(c, lookupEnv)
-	if err := c.Validate(); err != nil {
+	if err := errors.Join(c.Validate(), masterKeyTwice(c.Keys, lookupEnv)); err != nil {
 		return nil, fmt.Errorf("config: %s: invalid:\n%w", path, err)
 	}
 	return c, nil
+}
+
+// masterKeyTwice is the error of a master key that would come from two places: the file of
+// keys.masterKeyFile and the variable keys.masterKeyEnv names, set and not empty. Neither
+// value is read or shown.
+func masterKeyTwice(k Keys, lookupEnv func(string) (string, bool)) error {
+	if k.MasterKeyFile == "" || k.MasterKeyEnv == "" {
+		return nil
+	}
+	if v, ok := lookupEnv(k.MasterKeyEnv); !ok || v == "" {
+		return nil
+	}
+	return fmt.Errorf("keys.masterKeyFile: set together with the environment variable %s of keys.masterKeyEnv: "+
+		"the master key comes from one of them; unset the variable or keys.masterKeyFile (LAJSTROM_MASTER_KEY_FILE)",
+		k.MasterKeyEnv)
 }
 
 // decodeFile decodes the YAML file at path into c. An empty file leaves c unchanged. A file
@@ -104,6 +122,8 @@ var envOverrides = []struct {
 	{"LAJSTROM_LOG_FORMAT", func(c *Config, v string) { c.Log.Format = v }},
 	{"LAJSTROM_DATABASE_DRIVER", func(c *Config, v string) { c.Database.Driver = v }},
 	{"LAJSTROM_DATABASE_DSN", func(c *Config, v string) { c.Database.DSN = v }},
+	// The <variable>_FILE of the examples' LAJSTROM_MASTER_KEY, rather than LAJSTROM_KEYS_….
+	{"LAJSTROM_MASTER_KEY_FILE", func(c *Config, v string) { c.Keys.MasterKeyFile = v }},
 }
 
 func applyEnv(c *Config, lookupEnv func(string) (string, bool)) {

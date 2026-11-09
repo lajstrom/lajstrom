@@ -1,7 +1,7 @@
 # Lajstrom of deploy/compose-production/compose.yaml (docs/deploy/compose.md). Every key is in
 # docs/configuration.md; what is not here has its default. No secret is in this file: the
-# master key, the database DSN with its password and the registry password come from
-# secrets/lajstrom.env.
+# master key is the Compose secret lajstrom-master-key, and the database DSN with its password
+# and the registry password come from secrets/lajstrom.env.
 
 server:
   listen: ":8080"
@@ -28,7 +28,8 @@ registries:
       passwordEnv: LAJSTROM_REGISTRY_PASSWORD
 
 keys:
-  masterKeyEnv: LAJSTROM_MASTER_KEY
+  # The Compose secret lajstrom-master-key of compose.yaml.
+  masterKeyFile: /run/secrets/lajstrom-master-key
 
 # Created at the first start when the database does not have them; the API and
 # lajstrom admin repo create more. Listing them here also brings them back after the

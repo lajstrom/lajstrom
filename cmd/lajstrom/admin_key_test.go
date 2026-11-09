@@ -458,7 +458,7 @@ func TestNewTokenKeys(t *testing.T) {
 		t.Errorf("without the master key: %T, want *keys.EphemeralTokens", tokens)
 	}
 	if !strings.Contains(logged.String(), "level=WARN msg=\"bearer tokens are signed with an ephemeral key: they do not survive a restart "+
-		"and are not shared between replicas; set keys.masterKeyEnv\"") {
+		"and are not shared between replicas; set keys.masterKeyEnv or keys.masterKeyFile\"") {
 		t.Errorf("no warning:\n%s", logged.String())
 	}
 	if _, err := newTokenKeys(ctx, c, lookup(map[string]string{"LAJSTROM_MASTER_KEY": "xyz"}), st, slog.New(slog.DiscardHandler)); err == nil {
