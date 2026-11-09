@@ -523,7 +523,10 @@ A row has the time, the principal (`user:<uid>`, `token:<id>`, `anonymous`) and,
 its name at the time (`principalName`, which stays when the user is renamed or deleted), the
 action, the repo, the subject (a package and version, the user or binding acted upon), the
 manifest digest, the client address and details: the change, its source (`api`, `cli`,
-`config`) and the request id.
+`config`) and the request id. The client address is the one of the access log
+([ADR 0011](adr/0011-client-address-behind-a-proxy.md)): behind a proxy of
+`server.trustedProxies`, the client that `X-Forwarded-For` names, not the proxy. A `push` row
+has none: the ingest pipeline writes it, without the request.
 
 **The row is written in the transaction of its change.** There is no change without its row
 and no row without its change; when the database is down, the change fails with it, and nothing
