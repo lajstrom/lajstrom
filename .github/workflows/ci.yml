@@ -313,6 +313,10 @@ jobs:
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.15.0
+      # The OpenAPI document of the management API, linted with vacuum at the version the Makefile
+      # pins (#47); TestOpenAPIRoutes in build-test holds it to the routes.
+      - name: api-lint
+        run: make api-lint
 
   vulncheck:
     name: vulncheck
