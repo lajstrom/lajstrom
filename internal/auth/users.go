@@ -29,11 +29,15 @@ const (
 	ActionUserPassword = "user.password"
 	ActionUserDisable  = "user.disable"
 	ActionUserEnable   = "user.enable"
+	ActionUserRename   = "user.rename"
+	ActionUserDelete   = "user.delete"
 )
 
 // User is a local user as the CLI prints it and the users API (#47) answers it. It never
 // carries the password hash.
 type User struct {
+	// UID is the user's identity (docs/spec/rbac.md §1); principals refer to it, user:<uid>.
+	UID       string    `json:"uid"`
 	Name      string    `json:"name"`
 	Kind      string    `json:"kind"`
 	Disabled  bool      `json:"disabled"`
@@ -72,9 +76,10 @@ type Users struct {
 	Log *slog.Logger
 }
 
-// Create checks name and password and creates the local user with one user.create audit event,
-// whose details say whether it is an admin. With admin, the binding (user:<name>, admin, */*)
-// is created in the same transaction: the bootstrap of docs/spec/rbac.md §6.
+// Create checks name and password and creates the local user, with a new uid, and one
+// user.create audit event, whose details say whether it is an admin. With admin, the binding
+// (user:<uid>, admin, */*) is created in the same transaction: the bootstrap of
+// docs/spec/rbac.md §6.
 func (s *Users) Create(ctx context.Context, name, password string, admin bool, o Origin) (*User, error) {
 	if err := CheckName(name); err != nil {
 		return nil, err
@@ -90,12 +95,12 @@ func (s *Users) Create(ctx context.Context, name, password string, admin bool, o
 			return err
 		}
 		if admin {
-			b := index.Binding{Principal: Principal{Kind: KindUser, Name: name}.String(), Role: RoleAdmin, RepoMask: MaskAll, CreatedAt: row.CreatedAt}
+			b := index.Binding{Principal: UserPrincipal(&row).String(), Role: RoleAdmin, RepoMask: MaskAll, CreatedAt: row.CreatedAt}
 			if err = w.CreateBinding(ctx, &b); err != nil {
 				return err
 			}
 		}
-		ev, err = s.record(ctx, w, ActionUserCreate, name, o, map[string]any{"admin": admin})
+		ev, err = s.record(ctx, w, ActionUserCreate, &row, o, map[string]any{"admin": admin})
 		return err
 	})
 	if err != nil {
@@ -144,12 +149,87 @@ func (s *Users) SetPassword(ctx context.Context, name, password string, o Origin
 
 // Disable disables the user, with one user.disable audit event: its credentials are refused
 // from the next request on. A user that is disabled already is left as it is, without an event.
+// The last enabled user with an admin binding is not disabled (index.ErrConflict).
 func (s *Users) Disable(ctx context.Context, name string, o Origin) error {
 	return s.update(ctx, name, ActionUserDisable, o, func(u *index.User) bool {
 		changed := !u.Disabled
 		u.Disabled = true
 		return changed
 	})
+}
+
+// Rename gives the user called name the name to, with one user.rename audit event: its uid,
+// and so its bindings, tokens and sessions, stay. A name another live user has is
+// index.ErrConflict.
+func (s *Users) Rename(ctx context.Context, name, to string, o Origin) error {
+	if err := CheckName(to); err != nil {
+		return err
+	}
+	err := s.update(ctx, name, ActionUserRename, o, func(u *index.User) bool {
+		changed := u.Name != to
+		u.Name = to
+		return changed
+	})
+	if errors.Is(err, index.ErrConflict) {
+		return &authError{msg: fmt.Sprintf("user %s already exists", to), err: err}
+	}
+	return err
+}
+
+// Delete deletes the user called name (docs/spec/rbac.md §1), with one user.delete audit event:
+// in one transaction it revokes the user's live tokens, deletes its bindings, disables it and
+// marks it deleted, its name becoming ~<uid> so that the name is free, the row kept so that its
+// uid resolves to who it was. The last enabled user with an admin binding is not deleted
+// (index.ErrConflict). A deletion is not undone.
+func (s *Users) Delete(ctx context.Context, name string, o Origin) error {
+	var ev index.AuditEvent
+	err := s.Index.Tx(ctx, func(w index.Writer) error {
+		u, err := w.GetUser(ctx, name)
+		if err != nil {
+			return err
+		}
+		now := s.now()
+		tokens, err := w.ListTokens(ctx, &u.ID, nil)
+		if err != nil {
+			return err
+		}
+		revoked := 0
+		for _, t := range tokens {
+			if t.RevokedAt == nil {
+				if err := w.RevokeToken(ctx, t.ID, now); err != nil {
+					return err
+				}
+				revoked++
+			}
+		}
+		bindings, err := w.ListBindings(ctx, UserPrincipal(u).String())
+		if err != nil {
+			return err
+		}
+		admin := false
+		for _, b := range bindings {
+			admin = admin || b.Role == RoleAdmin
+			if err := w.DeleteBinding(ctx, b.ID); err != nil {
+				return err
+			}
+		}
+		u.Disabled, u.DeletedAt, u.DeletedName, u.Name = true, &now, u.Name, "~"+u.UID
+		if err := w.UpdateUser(ctx, u); err != nil {
+			return err
+		}
+		if admin {
+			if err := adminsLeft(ctx, w, u.DeletedName); err != nil {
+				return err
+			}
+		}
+		ev, err = s.record(ctx, w, ActionUserDelete, u, o, map[string]any{"tokensRevoked": revoked, "bindingsDeleted": len(bindings)})
+		return err
+	})
+	if err != nil {
+		return userError("delete", name, err)
+	}
+	s.writeAudit(ctx, ev)
+	return nil
 }
 
 // Enable enables a disabled user, with one user.enable audit event. A user that is enabled
@@ -163,7 +243,8 @@ func (s *Users) Enable(ctx context.Context, name string, o Origin) error {
 }
 
 // update applies change to the user called name in one transaction with one audit event of
-// action, when change reports that it changed something.
+// action, when change reports that it changed something. A change that leaves no enabled user
+// with an admin binding is index.ErrConflict.
 func (s *Users) update(ctx context.Context, name, action string, o Origin, change func(*index.User) bool) error {
 	var ev *index.AuditEvent
 	err := s.Index.Tx(ctx, func(w index.Writer) error {
@@ -177,7 +258,22 @@ func (s *Users) update(ctx context.Context, name, action string, o Origin, chang
 		if err := w.UpdateUser(ctx, row); err != nil {
 			return err
 		}
-		e, err := s.record(ctx, w, action, name, o, map[string]any{})
+		if action == ActionUserDisable {
+			admin, err := hasAdminBinding(ctx, w, row)
+			if err != nil {
+				return err
+			}
+			if admin {
+				if err := adminsLeft(ctx, w, name); err != nil {
+					return err
+				}
+			}
+		}
+		details := map[string]any{}
+		if action == ActionUserRename {
+			details["from"] = name
+		}
+		e, err := s.record(ctx, w, action, row, o, details)
 		ev = &e
 		return err
 	})
@@ -190,11 +286,73 @@ func (s *Users) update(ctx context.Context, name, action string, o Origin, chang
 	return nil
 }
 
-// record builds the audit event of a change of the user called name, with details and the
-// origin, and appends it on w, in the transaction of the change, when there is no
-// audit.Writer. The caller passes the event to writeAudit after the commit.
-func (s *Users) record(ctx context.Context, w index.Writer, action, name string, o Origin, details map[string]any) (index.AuditEvent, error) {
-	return recordAudit(ctx, w, s.Audit, index.AuditEvent{At: s.now(), Action: action, Subject: name}, o, details)
+// record builds the audit event of a change of the user u, its subject user:<uid> and its name in
+// the details (the name it had, for a deleted user), with details and the origin, and appends it
+// on w, in the transaction of the change, when there is no audit.Writer. The caller passes the
+// event to writeAudit after the commit.
+func (s *Users) record(ctx context.Context, w index.Writer, action string, u *index.User, o Origin, details map[string]any) (index.AuditEvent, error) {
+	details["name"] = u.Name
+	if u.DeletedAt != nil {
+		details["name"] = u.DeletedName
+	}
+	return recordAudit(ctx, w, s.Audit, index.AuditEvent{At: s.now(), Action: action, Subject: UserPrincipal(u).String()}, o, details)
+}
+
+// hasAdminBinding reports whether u has an admin binding.
+func hasAdminBinding(ctx context.Context, r index.Reader, u *index.User) (bool, error) {
+	bindings, err := r.ListBindings(ctx, UserPrincipal(u).String())
+	if err != nil {
+		return false, err
+	}
+	for _, b := range bindings {
+		if b.Role == RoleAdmin {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// adminsLeft returns an error wrapping index.ErrConflict, about the user called name, when no
+// enabled user with an admin binding is left on w: nobody could manage the server over HTTP.
+func adminsLeft(ctx context.Context, w index.Writer, name string) error {
+	ok, err := anyAdmin(ctx, w)
+	if err != nil || ok {
+		return err
+	}
+	return &authError{
+		msg: fmt.Sprintf("user %s is the last enabled user with an admin binding: create another admin first "+
+			"(lajstrom admin user create --admin, or admin binding create)", name),
+		err: index.ErrConflict,
+	}
+}
+
+// anyAdmin reports whether an enabled, live user has an admin binding on r. A binding whose
+// principal is no live user grants nothing.
+func anyAdmin(ctx context.Context, r index.Reader) (bool, error) {
+	bindings, err := r.ListBindings(ctx, "")
+	if err != nil {
+		return false, err
+	}
+	for _, b := range bindings {
+		if b.Role != RoleAdmin {
+			continue
+		}
+		p, perr := ParsePrincipal(b.Principal)
+		if perr != nil {
+			continue
+		}
+		u, err := LookupUser(ctx, r, p)
+		switch {
+		case errors.Is(err, index.ErrNotFound):
+			continue
+		case err != nil:
+			return false, err
+		}
+		if !u.Disabled {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // writeAudit passes ev to the audit.Writer, after the commit of its change (writeAuditEvent).
@@ -242,7 +400,10 @@ func writeAuditEvent(ctx context.Context, aw audit.Writer, log *slog.Logger, ev 
 // index.ErrNotFound and index.ErrConflict get a message for the person, anything else is
 // wrapped with op, for the log.
 func userError(op, name string, err error) error {
+	var ae *authError
 	switch {
+	case errors.As(err, &ae):
+		return err
 	case errors.Is(err, index.ErrNotFound):
 		return &authError{msg: fmt.Sprintf("user %s does not exist", name), err: err}
 	case errors.Is(err, index.ErrConflict):
@@ -253,7 +414,7 @@ func userError(op, name string, err error) error {
 
 // resource returns the User of a users row, with a UTC time.
 func resource(u *index.User) User {
-	return User{Name: u.Name, Kind: u.Kind, Disabled: u.Disabled, CreatedAt: u.CreatedAt.UTC()}
+	return User{UID: u.UID, Name: u.Name, Kind: u.Kind, Disabled: u.Disabled, CreatedAt: u.CreatedAt.UTC()}
 }
 
 func (s *Users) now() time.Time {

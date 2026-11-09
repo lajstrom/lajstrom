@@ -86,9 +86,19 @@ func (u usersReader) GetUser(_ context.Context, name string) (*index.User, error
 	case u.err != nil:
 		return nil, u.err
 	case name == "alice":
-		return &index.User{ID: 1, Name: "alice", PasswordHash: aliceHash(), Kind: auth.KindLocal}, nil
+		return &index.User{ID: 1, UID: aliceUID, Name: "alice", PasswordHash: aliceHash(), Kind: auth.KindLocal}, nil
 	}
 	return nil, index.ErrNotFound
+}
+
+// aliceUID is alice's uid.
+const aliceUID = "019a6c3e-7b1e-7c3d-8e2f-00000000a11c"
+
+func (u usersReader) GetUserByID(ctx context.Context, id int64) (*index.User, error) {
+	if id != 1 {
+		return nil, index.ErrNotFound
+	}
+	return u.GetUser(ctx, "alice")
 }
 
 // basic returns the Authorization header of HTTP Basic credentials.
@@ -131,7 +141,7 @@ func authServer(t *testing.T, r index.Store) (*Server, *seen, *bytes.Buffer) {
 // as a bearer and a revoked token are 401 in the route's format; the access log has the
 // principal, and no log has a secret.
 func TestAuthenticateTokens(t *testing.T) {
-	alice := auth.Principal{Kind: auth.KindUser, Name: "alice"}
+	alice := auth.Principal{Kind: auth.KindUser, Name: aliceUID}
 	deploy := auth.Principal{Kind: auth.KindToken, Name: "7"}
 	pat := auth.Credential{Kind: auth.CredPAT, TokenID: 1, UserID: 1}
 	dep := auth.Credential{Kind: auth.CredDeploy, TokenID: 7, RepoID: 10, Repo: "raw/scratch", Scopes: []string{"read"}}
@@ -196,7 +206,7 @@ func TestAuthenticateTokens(t *testing.T) {
 // that are refused or do not decode are 401 at once, with the challenge and the error format
 // of the route's family; the system endpoints are not special.
 func TestAuthenticate(t *testing.T) {
-	alice := auth.Principal{Kind: auth.KindUser, Name: "alice"}
+	alice := auth.Principal{Kind: auth.KindUser, Name: aliceUID}
 	const textBody = "credentials are needed: the ones sent were refused\n"
 	tests := []struct {
 		name          string

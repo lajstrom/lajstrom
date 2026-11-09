@@ -14,7 +14,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
-// authenticatePAT returns the principal user:<username> when secret is a personal access token
+// authenticatePAT returns the principal user:<uid> of the user called username when secret is a personal access token
 // of that user: a token of kind pat that is not revoked and not expired (ExpiresAt before now,
 // without leeway), whose owner is the user called username and is not disabled. A malformed
 // user name, the reserved name deploy among them, and a secret that is not of the token's
@@ -52,7 +52,7 @@ func (a *Authenticator) authenticatePAT(ctx context.Context, username, secret st
 		return Principal{}, Credential{}, a.refuseToken(ctx, username, t, reason)
 	}
 	a.touch(ctx, t.ID)
-	return Principal{Kind: KindUser, Name: u.Name}, patCredential(t), nil
+	return UserPrincipal(u), patCredential(t), nil
 }
 
 // authenticateDeploy returns the principal token:<id> when secret is a deploy token: a token
@@ -91,10 +91,8 @@ func (a *Authenticator) authenticateDeploy(ctx context.Context, secret string) (
 // deploy:<token>, one way for every client. Anything that is not a personal access token is
 // refused too.
 //
-// The token names its owner by id, and the index has no GetUserByID (it would come with #47,
-// the users API, and its contract change); the name is found with one ListUsers and
-// remembered for CacheTTL, the pair of id and name, which never changes. The owner is then
-// read by name with GetUser on every call, so that a disabled owner is refused at once.
+// The token names its owner by id, which GetUserByID reads on every call, so that a disabled or
+// deleted owner is refused at once and a renamed one keeps its tokens.
 func (a *Authenticator) AuthenticateBearer(ctx context.Context, secret string) (Principal, Credential, error) {
 	switch {
 	case strings.HasPrefix(secret, DeployPrefix):
@@ -109,28 +107,19 @@ func (a *Authenticator) AuthenticateBearer(ctx context.Context, secret string) (
 	if reason := a.dead(t, TokenPAT); reason != "" {
 		return Principal{}, Credential{}, a.refuseToken(ctx, "", t, reason)
 	}
-	name, err := a.ownerName(ctx, *t.UserID)
-	if err != nil {
-		return Principal{}, Credential{}, err
-	}
-	var u *index.User
-	if name != "" {
-		u, err = a.index.GetUser(ctx, name)
-		switch {
-		case errors.Is(err, index.ErrNotFound):
-			u = nil
-		case err != nil:
-			return Principal{}, Credential{}, fmt.Errorf("auth: authenticate token %d: its owner: %w", t.ID, err)
-		}
-	}
+	u, err := a.index.GetUserByID(ctx, *t.UserID)
 	switch {
-	case u == nil || u.ID != *t.UserID:
+	case errors.Is(err, index.ErrNotFound):
 		return Principal{}, Credential{}, a.refuseToken(ctx, "", t, "unknown user")
+	case err != nil:
+		return Principal{}, Credential{}, fmt.Errorf("auth: authenticate token %d: its owner: %w", t.ID, err)
+	case u.DeletedAt != nil:
+		return Principal{}, Credential{}, a.refuseToken(ctx, u.DeletedName, t, "deleted")
 	case u.Disabled:
 		return Principal{}, Credential{}, a.refuseToken(ctx, u.Name, t, "disabled")
 	}
 	a.touch(ctx, t.ID)
-	return Principal{Kind: KindUser, Name: u.Name}, patCredential(t), nil
+	return UserPrincipal(u), patCredential(t), nil
 }
 
 // patCredential is the credential of a personal access token.
@@ -186,26 +175,6 @@ func (a *Authenticator) refuseToken(ctx context.Context, username string, t *ind
 	return ErrBadCredentials
 }
 
-// ownerName returns the name of the user with id, from what it remembers or with one
-// ListUsers, which it then remembers for the TTL; "" when there is no such user.
-func (a *Authenticator) ownerName(ctx context.Context, id int64) (string, error) {
-	now := a.now()
-	if e, ok := a.owners.get(id); ok && now.Before(e.expires) {
-		return e.name, nil
-	}
-	users, err := a.index.ListUsers(ctx)
-	if err != nil {
-		return "", fmt.Errorf("auth: authenticate a token: the owner %d: %w", id, err)
-	}
-	for _, u := range users {
-		if u.ID == id {
-			a.owners.put(id, ownerEntry{name: u.Name, expires: now.Add(a.ttl)})
-			return u.Name, nil
-		}
-	}
-	return "", nil
-}
-
 // touch records the use of the token id now (TouchToken) when the last record of this replica
 // is a minute old or more. A record that fails is logged at debug and does not refuse the
 // request: last_used_at is for the person reading a token list, not for a decision.
@@ -235,22 +204,6 @@ type boundedEntry[K comparable, V any] struct {
 
 func newBounded[K comparable, V any](size int) *bounded[K, V] {
 	return &bounded[K, V]{size: size, entries: map[K]*list.Element{}, order: list.New()}
-}
-
-// get returns the value of k.
-func (b *bounded[K, V]) get(k K) (V, bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if el, ok := b.entries[k]; ok {
-		return el.Value.(*boundedEntry[K, V]).value, true
-	}
-	var zero V
-	return zero, false
-}
-
-// put stores v as the value of k.
-func (b *bounded[K, V]) put(k K, v V) {
-	b.putUnless(k, v, nil)
 }
 
 // putUnless stores v as the value of k and reports true, unless k has a value for which keep

@@ -25,8 +25,8 @@ func TestMigrationVersions(t *testing.T) {
 			break
 		}
 	}
-	if len(sqlite) < 8 {
-		t.Errorf("migration versions %v, want at least 0001_init to 0008_user_uid", sqlite)
+	if len(sqlite) < 9 {
+		t.Errorf("migration versions %v, want at least 0001_init to 0009_principal_uid", sqlite)
 	}
 	if _, err := MigrationVersions("mysql"); err == nil {
 		t.Error("MigrationVersions(mysql) succeeded")

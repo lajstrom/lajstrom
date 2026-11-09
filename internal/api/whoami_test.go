@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/server"
 )
 
@@ -20,13 +21,18 @@ func TestWhoami(t *testing.T) {
 		p    auth.Principal
 		want Whoami
 	}{
-		{name: "user", p: alice, want: Whoami{Principal: "user:alice", Kind: "user", Name: "alice"}},
-		{name: "user without any grant", o: Options{Auth: deny}, p: bob, want: Whoami{Principal: "user:bob", Kind: "user", Name: "bob"}},
+		{name: "user", p: alice, want: Whoami{Kind: "user", Name: "alice"}},
+		{name: "user without any grant", o: Options{Auth: deny}, p: bob, want: Whoami{Kind: "user", Name: "bob"}},
 		{name: "deploy token", p: auth.Principal{Kind: auth.KindToken, Name: "42"}, want: Whoami{Principal: "token:42", Kind: "token", Name: "42"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFixture(t, tt.o)
+			f.addUsers(t, "alice", "bob")
+			if tt.p.Kind == auth.KindUser { // user:<uid>, both in the principal and as the uid
+				tt.want.UID = f.uidOf(t, tt.p.Name)
+				tt.want.Principal = "user:" + tt.want.UID
+			}
 			var got Whoami
 			decodeJSON(t, f.do(http.MethodGet, "/api/v1/whoami", "", tt.p), http.StatusOK, &got)
 			if got != tt.want {
@@ -70,7 +76,7 @@ func TestWhoamiThroughServer(t *testing.T) {
 	wantError(t, get("", ""), http.StatusUnauthorized, codeForbidden, "credentials are needed")
 	var got Whoami
 	decodeJSON(t, get("alice", "alice-password"), http.StatusOK, &got)
-	if got != (Whoami{Principal: "user:alice", Kind: "user", Name: "alice"}) {
+	if got.Kind != "user" || got.Name != "alice" || !index.IsUID(got.UID) || got.Principal != "user:"+got.UID {
 		t.Errorf("whoami = %+v, want alice", got)
 	}
 	rr := get("alice", "wrong-password")

@@ -3,6 +3,8 @@ package facade
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -111,7 +113,7 @@ func (e *env) replicaWith(k token.Keys) http.Handler {
 		Now: e.clock.Now, Tokens: k, ExternalURL: e.extURL})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if name := r.Header.Get(principalHeader); name != "" {
-			r = r.WithContext(auth.WithPrincipal(r.Context(), auth.Principal{Kind: auth.KindUser, Name: name}))
+			r = r.WithContext(auth.WithPrincipal(r.Context(), userP(name)))
 		}
 		h.ServeHTTP(w, r)
 	})
@@ -178,8 +180,25 @@ func (b *logBuffer) String() string {
 type authorizer map[string]map[string][]auth.Action
 
 func (z authorizer) Allowed(_ context.Context, p auth.Principal, a auth.Action, f, r string) (bool, error) {
-	return slices.Contains(z[p.Name][f+"/"+r], a), nil
+	name := p.Name
+	if n, ok := testNames.Load(p.Name); ok {
+		name = n.(string)
+	}
+	return slices.Contains(z[name][f+"/"+r], a), nil
 }
+
+// userP is the principal of the test user called name, user:<uid>, as the authenticator makes
+// it: the uid is the first 16 bytes of the sha256 of the name, so that a test can name it.
+func userP(name string) auth.Principal {
+	sum := sha256.Sum256([]byte(name))
+	h := hex.EncodeToString(sum[:16])
+	uid := h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
+	testNames.Store(uid, name)
+	return auth.Principal{Kind: auth.KindUser, Name: uid}
+}
+
+// testNames maps the uids userP made to the names, for authorizer, whose grants name users.
+var testNames sync.Map
 
 // must stops the test on an error.
 func must(t *testing.T, err error) {

@@ -90,6 +90,47 @@ func testMigration0008(t *testing.T, db *sql.DB, dialect, mark string) {
 	}
 }
 
+// TestMigration0009 carries the principals of bindings and sessions over to user:<uid>: those of
+// users that exist change, those of users that do not and of groups stay; the audit log keeps its
+// principals and gets their names. On SQLite, and on Postgres with LAJSTROM_TEST_POSTGRES_DSN.
+func TestMigration0009(t *testing.T) {
+	t.Run(DialectSQLite, func(t *testing.T) {
+		db, err := sql.Open("sqlite", "file:migrate0009?mode=memory&cache=shared&_pragma=foreign_keys(1)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.SetMaxOpenConns(1)
+		t.Cleanup(func() { _ = db.Close() })
+		testMigration0009(t, db, DialectSQLite, "?")
+	})
+	t.Run(DialectPostgres, func(t *testing.T) {
+		dsn := os.Getenv("LAJSTROM_TEST_POSTGRES_DSN")
+		if dsn == "" {
+			t.Skip("set LAJSTROM_TEST_POSTGRES_DSN to run the Postgres half")
+		}
+		testMigration0009(t, postgresSchema(t, dsn), DialectPostgres, "$")
+	})
+}
+
+func testMigration0009(t *testing.T, db *sql.DB, dialect, mark string) {
+	ctx := t.Context()
+	applyUpTo(ctx, t, db, dialect, 7)
+	m := &migrationDB{t: t, db: db, mark: mark}
+	seedVersion7(m)
+	applyUpTo(ctx, t, db, dialect, 9)
+	uids := m.uids()
+	for q, want := range map[string]string{
+		"SELECT principal FROM bindings ORDER BY id":   "user:" + uids["alice"] + " user:" + uids["bob"] + " user:gone group:dev",
+		"SELECT principal FROM sessions":               "user:" + uids["alice"],
+		"SELECT principal FROM audit ORDER BY id":      "user:alice token:3 anonymous",
+		"SELECT principal_name FROM audit ORDER BY id": "alice  ",
+	} {
+		if got := strings.Join(m.strings(q), " "); got != want {
+			t.Errorf("%s: %q, want %q", q, got, want)
+		}
+	}
+}
+
 // migrationDB is a database under migration, with the placeholders of its dialect.
 type migrationDB struct {
 	t    *testing.T

@@ -19,10 +19,11 @@ import (
 // the reads of users.
 type fakeUsers struct {
 	index.Store
-	mu    sync.Mutex
-	users map[string]index.User
-	err   error // the answer of every GetUser when set
-	reads atomic.Int64
+	mu      sync.Mutex
+	users   map[string]index.User
+	deleted []index.User // users deleted, by markDeleted
+	err     error        // the answer of every GetUser when set
+	reads   atomic.Int64
 
 	tokenStore // tokenauth_test.go
 }
@@ -41,11 +42,53 @@ func (f *fakeUsers) GetUser(_ context.Context, name string) (*index.User, error)
 	return &u, nil
 }
 
-// set stores u.
+// set stores u, with an id and a uid when it has none.
 func (f *fakeUsers) set(u index.User) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if u.ID == 0 {
+		u.ID = int64(100 + len(f.users))
+	}
+	if u.UID == "" {
+		u.UID = testUID(u.ID)
+	}
 	f.users[u.Name] = u
+}
+
+// testUID is the uid of the fake user with id: fixed, so that a test can name the principal.
+func testUID(id int64) string { return fmt.Sprintf("00000000-0000-7000-8000-%012d", id) }
+
+// userP is the principal of a user of newAuthFixture: alice 1, bob 2, carol 3.
+func userP(name string) Principal {
+	return Principal{Kind: KindUser, Name: testUID(map[string]int64{"alice": 1, "bob": 2, "carol": 3}[name])}
+}
+
+// byName returns the live user called name.
+func (f *fakeUsers) byName(name string) index.User {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.users[name]
+}
+
+// rename renames the live user called from.
+func (f *fakeUsers) rename(from, to string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u := f.users[from]
+	delete(f.users, from)
+	u.Name = to
+	f.users[to] = u
+}
+
+// markDeleted deletes the live user called name: GetUser no longer finds it, GetUserByID does.
+func (f *fakeUsers) markDeleted(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u := f.users[name]
+	delete(f.users, name)
+	now := time.Now()
+	u.DeletedAt, u.DeletedName, u.Name, u.Disabled = &now, name, "~"+u.UID, true
+	f.deleted = append(f.deleted, u)
 }
 
 // cheap are argon2id parameters that cost next to nothing, for the users of the tests whose
@@ -91,9 +134,9 @@ func newAuthFixture(t *testing.T, o Options) *authFixture {
 	t.Helper()
 	f := &authFixture{
 		users: &fakeUsers{users: map[string]index.User{
-			"alice": {ID: 1, Name: "alice", PasswordHash: hashWith(cheap, alicePassword), Kind: KindLocal},
-			"bob":   {ID: 2, Name: "bob", PasswordHash: hashWith(cheap, bobPassword), Kind: KindLocal, Disabled: true},
-			"carol": {ID: 3, Name: "carol", Kind: KindLocal},
+			"alice": {ID: 1, UID: testUID(1), Name: "alice", PasswordHash: hashWith(cheap, alicePassword), Kind: KindLocal},
+			"bob":   {ID: 2, UID: testUID(2), Name: "bob", PasswordHash: hashWith(cheap, bobPassword), Kind: KindLocal, Disabled: true},
+			"carol": {ID: 3, UID: testUID(3), Name: "carol", Kind: KindLocal},
 		}},
 		clock: &clock{now: time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)},
 		logs:  &bytes.Buffer{},
@@ -129,7 +172,7 @@ func (f *authFixture) wantOK(t *testing.T, user, secret string, n int) {
 	t.Helper()
 	before := f.verifications()
 	p, c, err := f.a.Authenticate(context.Background(), user, secret)
-	if err != nil || p != (Principal{Kind: KindUser, Name: user}) || c.Kind != CredPassword {
+	if u := f.users.byName(user); err != nil || p != UserPrincipal(&u) || c.Kind != CredPassword {
 		t.Fatalf("Authenticate(%s) = %v, %v; want user:%s", user, p, err, user)
 	}
 	if got := f.verifications() - before; got != n {

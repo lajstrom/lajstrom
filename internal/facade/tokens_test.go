@@ -89,10 +89,10 @@ func TestTokenEndpoint(t *testing.T) {
 		{"anonymous, no Authorizer", nil, "", "anonymous",
 			"[map[actions:[*] name:catalog type:registry] map[actions:[delete] name:oci/images/a type:repository] " +
 				"map[actions:[pull push] name:raw/assets/hello type:repository] map[actions:[] name:raw/none/x type:repository]]"},
-		{"alice, no Authorizer", nil, "alice", "user:alice",
+		{"alice, no Authorizer", nil, "alice", userP("alice").String(),
 			"[map[actions:[*] name:catalog type:registry] map[actions:[delete] name:oci/images/a type:repository] " +
 				"map[actions:[pull push] name:raw/assets/hello type:repository] map[actions:[] name:raw/none/x type:repository]]"},
-		{"bob, a reader of raw/assets (O-12)", authorizer{"bob": {"raw/assets": {auth.ActionRead}}}, "bob", "user:bob",
+		{"bob, a reader of raw/assets (O-12)", authorizer{"bob": {"raw/assets": {auth.ActionRead}}}, "bob", userP("bob").String(),
 			"[map[actions:[*] name:catalog type:registry] map[actions:[] name:oci/images/a type:repository] " +
 				"map[actions:[pull] name:raw/assets/hello type:repository] map[actions:[] name:raw/none/x type:repository]]"},
 		{"anonymous, an Authorizer that grants it nothing", authorizer{}, "", "anonymous",
@@ -208,7 +208,7 @@ func (failingKeys) TokenVerifiers(context.Context) ([]*keys.TokenKey, error) {
 // that lacks the action 403 DENIED; GET /v2/ with any good one 200.
 func TestBearer(t *testing.T) {
 	e := newEnv(t, envOptions{authz: authorizer{}}) // the Authorizer allows nobody anything
-	alice := auth.Principal{Kind: auth.KindUser, Name: "alice"}
+	alice := userP("alice")
 	e.seedPackage("hello", "v1")
 	pull := e.issue(alice, repoAccess("raw/assets/hello", "pull"))
 	pushPull := e.issue(alice, repoAccess("oci/images/app", "pull", "push"))
@@ -219,7 +219,7 @@ func TestBearer(t *testing.T) {
 	rr = e.do(e.h, http.MethodPost, uploads, nil, bearer(pushPull)...)
 	wantStatus(t, "an upload with push", rr, http.StatusAccepted)
 	s, err := e.st.GetSession(t.Context(), e.oci.ID, uploadKind+uploadID(t, rr))
-	if err != nil || s.Principal != "user:alice" {
+	if err != nil || s.Principal != userP("alice").String() {
 		t.Errorf("the session of the upload: %+v, %v; want the principal of the token", s, err)
 	}
 	wantStatus(t, "GET /v2/ with a bearer", e.do(e.h, http.MethodGet, "/v2/", nil, bearer(pull)...), http.StatusOK)
@@ -280,8 +280,8 @@ func TestBearerAccessLog(t *testing.T) {
 	var logged bytes.Buffer
 	srv, err := server.New(server.Options{Listen: "127.0.0.1:0", Facade: e.h, Log: slog.New(slog.NewJSONHandler(&logged, nil))})
 	must(t, err)
-	raw := e.issue(auth.Principal{Kind: auth.KindUser, Name: "alice"}, repoAccess("raw/assets/hello", "pull"))
-	for _, tt := range []struct{ bearer, principal string }{{raw, "user:alice"}, {"garbage", "anonymous"}} {
+	raw := e.issue(userP("alice"), repoAccess("raw/assets/hello", "pull"))
+	for _, tt := range []struct{ bearer, principal string }{{raw, userP("alice").String()}, {"garbage", "anonymous"}} {
 		logged.Reset()
 		r := httptest.NewRequest(http.MethodGet, "/v2/raw/assets/hello/tags/list", nil)
 		r.Header.Set("Authorization", "Bearer "+tt.bearer)
@@ -310,7 +310,7 @@ func TestBearerAccessLog(t *testing.T) {
 func TestBearerMount(t *testing.T) {
 	e := newEnv(t, envOptions{})
 	d := e.pushBlob("oci/images/base", []byte("shared layer"))
-	alice := auth.Principal{Kind: auth.KindUser, Name: "alice"}
+	alice := userP("alice")
 	target := uploads + "?mount=" + d.String() + "&from=oci/images/base"
 	rr := e.do(e.h, http.MethodPost, target, nil, "Authorization", "Bearer "+e.issue(alice, repoAccess("oci/images/app", "pull", "push")))
 	wantError(t, "a mount with one scope", rr, http.StatusUnauthorized, codeUnauthorized)
@@ -404,7 +404,7 @@ func TestBearerCatalog(t *testing.T) {
 	e.seedPackage("hello", "v1")
 	e.seedPackage("world", "v1")
 	must(t, e.st.UpsertOCIRepo(t.Context(), &index.OCIRepo{RepoID: e.oci.ID, Path: "oci/images/app", SeenAt: e.clock.Now()}))
-	alice := auth.Principal{Kind: auth.KindUser, Name: "alice"}
+	alice := userP("alice")
 	for _, tt := range []struct {
 		name   string
 		access []token.Access

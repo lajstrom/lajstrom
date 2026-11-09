@@ -21,8 +21,11 @@ const (
 
 // Binding is a binding as the CLI prints it and the bindings API (#47) answers it.
 type Binding struct {
-	ID        int64     `json:"id"`
+	ID int64 `json:"id"`
+	// Principal is user:<uid>; Name is that user's name now (the name it had, for a user since
+	// deleted), for people.
 	Principal string    `json:"principal"`
+	Name      string    `json:"name,omitempty"`
 	Role      string    `json:"role"`
 	RepoMask  string    `json:"repoMask"`
 	CreatedAt time.Time `json:"createdAt"`
@@ -53,20 +56,24 @@ type Bindings struct {
 }
 
 // Create checks the binding (principal, role, mask) by docs/spec/rbac.md §3 and creates it,
-// with one binding.create audit event. It counts from the next request on, on every replica.
+// with one binding.create audit event. principal is user:<name> or user:<uid> of a live user,
+// stored as its user:<uid>. It counts from the next request on, on every replica.
 func (s *Bindings) Create(ctx context.Context, principal, role, mask string, o Origin) (*Binding, error) {
 	p, err := s.check(principal, role, mask)
 	if err != nil {
 		return nil, err
 	}
-	row := index.Binding{Principal: p.String(), Role: role, RepoMask: mask, CreatedAt: s.now()}
+	row := index.Binding{Role: role, RepoMask: mask, CreatedAt: s.now()}
+	name := ""
 	var ev index.AuditEvent
 	err = s.Index.Tx(ctx, func(w index.Writer) (err error) {
-		if _, err = w.GetUser(ctx, p.Name); errors.Is(err, index.ErrNotFound) {
+		u, err := LookupUser(ctx, w, p)
+		if errors.Is(err, index.ErrNotFound) {
 			return invalidf("principal: user %s does not exist", p.Name)
 		} else if err != nil {
 			return err
 		}
+		row.Principal, name = UserPrincipal(u).String(), u.Name
 		if err = w.CreateBinding(ctx, &row); err != nil {
 			return err
 		}
@@ -74,19 +81,30 @@ func (s *Bindings) Create(ctx context.Context, principal, role, mask string, o O
 		return err
 	})
 	if err != nil {
-		return nil, bindingError("create", fmt.Sprintf("%s %s on %s", row.Principal, role, mask), err)
+		return nil, bindingError("create", fmt.Sprintf("%s %s on %s", principal, role, mask), err)
 	}
 	s.writeAudit(ctx, ev)
-	b := bindingResource(&row)
+	b := bindingResource(&row, name)
 	return &b, nil
 }
 
-// List returns the bindings of principal, or every binding when principal is "", ordered by
-// id.
+// List returns the bindings of principal, user:<name> or user:<uid> of a live user, or every
+// binding when principal is "", ordered by id, each with its user's name.
 func (s *Bindings) List(ctx context.Context, principal string) ([]Binding, error) {
 	if principal != "" {
-		if _, err := ParsePrincipal(principal); err != nil {
+		p, err := ParsePrincipal(principal)
+		if err != nil {
 			return nil, invalidf("principal: %s", err.Error())
+		}
+		if p.Kind == KindUser {
+			u, err := LookupUser(ctx, s.Index, p)
+			switch {
+			case errors.Is(err, index.ErrNotFound):
+				return []Binding{}, nil
+			case err != nil:
+				return nil, fmt.Errorf("auth: list bindings: %w", err)
+			}
+			principal = UserPrincipal(u).String()
 		}
 	}
 	rows, err := s.Index.ListBindings(ctx, principal)
@@ -95,9 +113,32 @@ func (s *Bindings) List(ctx context.Context, principal string) ([]Binding, error
 	}
 	list := make([]Binding, len(rows))
 	for i := range rows {
-		list[i] = bindingResource(&rows[i])
+		name, err := principalName(ctx, s.Index, rows[i].Principal)
+		if err != nil {
+			return nil, fmt.Errorf("auth: list bindings: %w", err)
+		}
+		list[i] = bindingResource(&rows[i], name)
 	}
 	return list, nil
+}
+
+// principalName returns the name of the user of principal user:<uid>, the name it had for a user
+// since deleted, and "" for any other principal, or a user that does not exist.
+func principalName(ctx context.Context, r index.Reader, principal string) (string, error) {
+	p, err := ParsePrincipal(principal)
+	if err != nil || p.Kind != KindUser || !index.IsUID(p.Name) {
+		return "", nil //nolint:nilerr // a principal that is not a user's has no name
+	}
+	u, err := r.GetUserByUID(ctx, p.Name)
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		return "", nil
+	case err != nil:
+		return "", err
+	case u.DeletedAt != nil:
+		return u.DeletedName, nil
+	}
+	return u.Name, nil
 }
 
 // Delete removes the binding id, with one binding.delete audit event. The last admin binding
@@ -135,38 +176,24 @@ func (s *Bindings) Delete(ctx context.Context, id int64, o Origin) error {
 }
 
 // lastAdmin returns an error wrapping index.ErrConflict when the admin binding gone, deleted on
-// w, was one of an enabled user and no enabled user has an admin binding left.
+// w, was one of a live, enabled user and no such user has an admin binding left (anyAdmin).
 func lastAdmin(ctx context.Context, w index.Writer, gone index.Binding) error {
-	// enabled reports whether principal is an enabled user; a row that is not a user's grants
-	// nothing (RBAC), and neither does one of a user that does not exist.
-	enabled := func(principal string) (bool, error) {
-		p, perr := ParsePrincipal(principal)
-		if perr != nil || p.Kind != KindUser {
-			return false, nil
-		}
-		u, err := w.GetUser(ctx, p.Name)
-		switch {
-		case errors.Is(err, index.ErrNotFound):
-			return false, nil
-		case err != nil:
-			return false, err
-		}
-		return !u.Disabled, nil
+	p, perr := ParsePrincipal(gone.Principal)
+	if perr != nil {
+		return nil //nolint:nilerr // a binding whose principal is not one granted nothing
 	}
-	if ok, err := enabled(gone.Principal); err != nil || !ok {
+	u, err := LookupUser(ctx, w, p)
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		return nil
+	case err != nil:
 		return err
+	case u.Disabled:
+		return nil
 	}
-	rest, err := w.ListBindings(ctx, "")
-	if err != nil {
+	ok, err := anyAdmin(ctx, w)
+	if err != nil || ok {
 		return err
-	}
-	for _, b := range rest {
-		if b.Role != RoleAdmin {
-			continue
-		}
-		if ok, err := enabled(b.Principal); err != nil || ok {
-			return err
-		}
 	}
 	return &authError{
 		msg: fmt.Sprintf("binding %d is the last admin binding of an enabled user: create another first "+
@@ -234,9 +261,9 @@ func bindingError(op, what string, err error) error {
 	return fmt.Errorf("auth: %s binding %s: %w", op, what, err)
 }
 
-// bindingResource returns the Binding of a bindings row, with a UTC time.
-func bindingResource(b *index.Binding) Binding {
-	return Binding{ID: b.ID, Principal: b.Principal, Role: b.Role, RepoMask: b.RepoMask, CreatedAt: b.CreatedAt.UTC()}
+// bindingResource returns the Binding of a bindings row, with its user's name and a UTC time.
+func bindingResource(b *index.Binding, name string) Binding {
+	return Binding{ID: b.ID, Principal: b.Principal, Name: name, Role: b.Role, RepoMask: b.RepoMask, CreatedAt: b.CreatedAt.UTC()}
 }
 
 func (s *Bindings) now() time.Time {

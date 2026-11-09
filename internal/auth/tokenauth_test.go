@@ -57,6 +57,26 @@ func (f *fakeUsers) GetRepoByID(_ context.Context, id int64) (*index.Repo, error
 	return &r, nil
 }
 
+func (f *fakeUsers) GetUserByID(_ context.Context, id int64) (*index.User, error) {
+	f.reads.Add(1)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return nil, f.err
+	}
+	for _, u := range f.users {
+		if u.ID == id {
+			return &u, nil
+		}
+	}
+	for _, u := range f.deleted {
+		if u.ID == id {
+			return &u, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: user %d", index.ErrNotFound, id)
+}
+
 func (f *fakeUsers) ListUsers(context.Context) ([]index.User, error) {
 	f.listRead.Add(1)
 	if f.listErr != nil {
@@ -178,11 +198,11 @@ func TestAuthenticateTokens(t *testing.T) {
 		token             int64 // in the log line, 0 for none
 		tokenReads, reads int64 // GetTokenByHash, GetUser
 	}{
-		{name: "pat", user: "alice", which: "alice", want: Principal{Kind: KindUser, Name: "alice"},
+		{name: "pat", user: "alice", which: "alice", want: userP("alice"),
 			cred: Credential{Kind: CredPAT, TokenID: 1, UserID: 1, Scopes: []string{}}, tokenReads: 1, reads: 1},
-		{name: "pat with scopes", user: "alice", which: "alice-read", want: Principal{Kind: KindUser, Name: "alice"},
+		{name: "pat with scopes", user: "alice", which: "alice-read", want: userP("alice"),
 			cred: Credential{Kind: CredPAT, TokenID: 2, UserID: 1, Scopes: []string{"read"}}, tokenReads: 1, reads: 1},
-		{name: "pat of a user without a password", user: "carol", which: "carol", want: Principal{Kind: KindUser, Name: "carol"},
+		{name: "pat of a user without a password", user: "carol", which: "carol", want: userP("carol"),
 			cred: Credential{Kind: CredPAT, TokenID: 8, UserID: 3, Scopes: []string{}}, tokenReads: 1, reads: 1},
 		{name: "pat of another user", user: "carol", which: "alice", reason: "the token of another user", token: 1, tokenReads: 1, reads: 1},
 		{name: "pat with an unknown user", user: "dave", which: "alice", reason: "unknown user", token: 1, tokenReads: 1, reads: 1},
@@ -270,8 +290,8 @@ func TestAuthenticateBearer(t *testing.T) {
 		want        Principal // zero: refused
 		reason      string
 	}{
-		{name: "pat", which: "alice", want: Principal{Kind: KindUser, Name: "alice"}},
-		{name: "pat with scopes", which: "alice-read", want: Principal{Kind: KindUser, Name: "alice"}},
+		{name: "pat", which: "alice", want: userP("alice")},
+		{name: "pat with scopes", which: "alice-read", want: userP("alice")},
 		{name: "deploy token", which: "deploy", reason: "a deploy token as a bearer: it goes in Basic credentials, deploy:<token>"},
 		{name: "malformed", which: "eyJhbGciOi.x.y", reason: "malformed token"},
 		{name: "unknown", which: "unknown", reason: "unknown token"},
@@ -306,37 +326,30 @@ func TestAuthenticateBearer(t *testing.T) {
 	}
 }
 
-// TestAuthenticateBearerOwner checks that the owner of a bearer is found with one ListUsers per
-// CacheTTL, that the owner is still read by name on every call, and that a user who is not the
-// owner any more under the remembered name is refused.
+// TestAuthenticateBearerOwner checks that the owner of a bearer is read by id on every call
+// (GetUserByID), so that a renamed owner keeps its token, the principal staying its uid, and a
+// deleted one is refused at once.
 func TestAuthenticateBearerOwner(t *testing.T) {
 	f := newTokenFixture(t, Options{CacheTTL: time.Minute})
-	bearer := func() error {
-		_, _, err := f.a.AuthenticateBearer(context.Background(), f.secrets["alice"])
-		return err
+	bearer := func() (Principal, error) {
+		p, _, err := f.a.AuthenticateBearer(context.Background(), f.secrets["alice"])
+		return p, err
 	}
-	for range 3 {
-		if err := bearer(); err != nil {
-			t.Fatal(err)
-		}
+	p, err := bearer()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if l, r := f.users.listRead.Load(), f.users.reads.Load(); l != 1 || r != 3 {
-		t.Errorf("ListUsers %d, GetUser %d; want 1 and 3", l, r)
+	alice := f.users.byName("alice")
+	if p != UserPrincipal(&alice) {
+		t.Fatalf("principal %s, want alice's user:<uid>", p)
 	}
-	f.clock.advance(time.Minute - time.Nanosecond)
-	if err := bearer(); err != nil || f.users.listRead.Load() != 1 {
-		t.Errorf("before the TTL: %v, ListUsers %d; want the remembered owner", err, f.users.listRead.Load())
+	f.users.rename("alice", "alicia")
+	if p, err := bearer(); err != nil || p != UserPrincipal(&alice) {
+		t.Errorf("after a rename: %s, %v; want the same principal", p, err)
 	}
-	f.clock.advance(time.Nanosecond)
-	if err := bearer(); err != nil || f.users.listRead.Load() != 2 {
-		t.Errorf("at the TTL: %v, ListUsers %d; want the owner read again", err, f.users.listRead.Load())
-	}
-	f.users.set(index.User{ID: 77, Name: "alice", Kind: KindLocal}) // another alice: not the owner
-	if err := bearer(); !errors.Is(err, ErrBadCredentials) {
-		t.Errorf("another user under the owner's name: %v, want ErrBadCredentials", err)
-	}
-	if n := f.a.owners.len(); n != 1 {
-		t.Errorf("%d owners remembered, want 1", n)
+	f.users.markDeleted("alicia")
+	if _, err := bearer(); !errors.Is(err, ErrBadCredentials) {
+		t.Errorf("a deleted owner: %v, want ErrBadCredentials", err)
 	}
 }
 
@@ -416,7 +429,6 @@ func TestAuthenticateTokenFailures(t *testing.T) {
 		{"deploy token", func(u *fakeUsers) { u.tokenErr = errDown }, "deploy", "deploy"},
 		{"deploy repo", func(u *fakeUsers) { u.repoErr = errDown }, "deploy", "deploy"},
 		{"bearer token", func(u *fakeUsers) { u.tokenErr = errDown }, "", "alice"},
-		{"bearer owner list", func(u *fakeUsers) { u.listErr = errDown }, "", "alice"},
 		{"bearer owner", func(u *fakeUsers) { u.err = errDown }, "", "alice"},
 	}
 	for _, tt := range tests {

@@ -174,7 +174,7 @@ func (e *env) wantIndexed(f *rawFile, d digest.Digest) {
 	if got, want := [3]any{files[0].Name, files[0].Digest, files[0].MediaType}, [3]any{f.path, f.digest, profile.MediaTypeRawFile}; got != want {
 		e.t.Errorf("file name, digest, media type = %v, want %v", got, want)
 	}
-	if got, want := [3]any{evs[0].Principal, evs[0].Repo, evs[0].Digest}, [3]any{"user:alice", "raw/assets", d}; got != want {
+	if got, want := [3]any{evs[0].Principal, evs[0].Repo, evs[0].Digest}, [3]any{userP("alice").String(), "raw/assets", d}; got != want {
 		e.t.Errorf("audit principal, repo, digest = %v, want %v", got, want)
 	}
 }

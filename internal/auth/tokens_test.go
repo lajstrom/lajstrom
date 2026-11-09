@@ -92,7 +92,7 @@ func tokenAudit(t *testing.T, st index.Reader) []string {
 	}
 	out := make([]string, len(evs))
 	for i, ev := range evs {
-		out[i] = fmt.Sprintf("%s %s %s %s %s", ev.Principal, ev.Action, ev.Repo, ev.Subject, ev.Details)
+		out[i] = named(t, st, fmt.Sprintf("%s %s %s %s %s", ev.Principal, ev.Action, ev.Repo, ev.Subject, ev.Details))
 	}
 	return out
 }
@@ -367,7 +367,7 @@ func TestTokensAuditWriter(t *testing.T) {
 	}
 	w.fail = errors.New("audit: gone")
 	f.pat(t, "alice", "desktop", nil, Expiry{})
-	if !strings.Contains(f.logs.String(), `"msg":"auth: audit event of a token change not written","action":"token.create","subject":"user:alice","error":"audit: gone"`) {
+	if !strings.Contains(named(t, f.st, f.logs.String()), `"msg":"auth: audit event of a token change not written","action":"token.create","subject":"user:alice","error":"audit: gone"`) {
 		t.Errorf("log = %s", f.logs)
 	}
 	f.noSecrets(t)

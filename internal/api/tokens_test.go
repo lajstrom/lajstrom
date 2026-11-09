@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,6 +42,35 @@ func (f *fixture) addUsers(t *testing.T, names ...string) {
 	}
 }
 
+// asStored returns the principal the authenticator makes for p: user:<uid> of the user of that
+// name in the index, when the tests name one that exists, and records the uid's name for
+// fakeAuth; p otherwise.
+func (f *fixture) asStored(p auth.Principal) auth.Principal {
+	if p.Kind != auth.KindUser || index.IsUID(p.Name) {
+		return p
+	}
+	u, err := f.st.GetUser(context.Background(), p.Name)
+	if err != nil {
+		return p
+	}
+	testNames.Store(u.UID, u.Name)
+	return auth.UserPrincipal(u)
+}
+
+// testNames maps the uids asStored made to the users' names, for fakeAuth, whose grants name
+// users.
+var testNames sync.Map
+
+// uidOf returns the uid of the user called name.
+func (f *fixture) uidOf(t *testing.T, name string) string {
+	t.Helper()
+	u, err := f.st.GetUser(context.Background(), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.UID
+}
+
 // doAs is do with the credential c in the request's context too.
 func (f *fixture) doAs(method, target, body string, p auth.Principal, c auth.Credential) *httptest.ResponseRecorder {
 	var r *http.Request
@@ -49,7 +79,7 @@ func (f *fixture) doAs(method, target, body string, p auth.Principal, c auth.Cre
 	} else {
 		r = httptest.NewRequest(method, target, strings.NewReader(body))
 	}
-	r = r.WithContext(auth.WithCredential(auth.WithPrincipal(r.Context(), p), c))
+	r = r.WithContext(auth.WithCredential(auth.WithPrincipal(r.Context(), f.asStored(p)), c))
 	rr := httptest.NewRecorder()
 	f.h.ServeHTTP(rr, r)
 	return rr
@@ -133,12 +163,12 @@ func TestTokensAPIAudit(t *testing.T) {
 	wantStatus(t, f.do(http.MethodDelete, fmt.Sprintf("/api/v1/users/alice/tokens/%d", pat.ID), "", admin), http.StatusNoContent)
 	wantStatus(t, f.do(http.MethodDelete, fmt.Sprintf("/api/v1/users/alice/tokens/%d", pat.ID), "", admin), http.StatusNoContent)
 	ev := oneAudit(t, f.st, auth.ActionTokenCreate)
-	if ev.Principal != "user:admin" || ev.Subject != "user:alice" || ev.IP != "192.0.2.1" || ev.details["source"] != SourceAPI ||
+	if ev.Principal != "user:admin" || ev.Subject != "user:"+f.uidOf(t, "alice") || ev.IP != "192.0.2.1" || ev.details["source"] != SourceAPI ||
 		ev.details["name"] != "laptop" || ev.details["kind"] != "pat" {
 		t.Errorf("token.create = %+v %v", ev.AuditEvent, ev.details)
 	}
 	ev = oneAudit(t, f.st, auth.ActionTokenRevoke)
-	if ev.Principal != "user:admin" || ev.Subject != "user:alice" || ev.details["id"] != float64(pat.ID) {
+	if ev.Principal != "user:admin" || ev.Subject != "user:"+f.uidOf(t, "alice") || ev.details["id"] != float64(pat.ID) {
 		t.Errorf("token.revoke = %+v %v", ev.AuditEvent, ev.details)
 	}
 	evs, _ := f.st.ListAudit(context.Background(), index.AuditFilter{})
@@ -333,11 +363,12 @@ func TestTokensNeverLogged(t *testing.T) {
 
 	var who Whoami
 	decodeJSON(t, send("GET", "/api/v1/whoami", "", "Bearer "+pat.Secret), http.StatusOK, &who)
-	if who.Principal != "user:alice" {
+	alice := "user:" + f.uidOf(t, "alice")
+	if who.Principal != alice || who.Name != "alice" {
 		t.Errorf("whoami with the bearer = %+v", who)
 	}
 	decodeJSON(t, send("GET", "/api/v1/whoami", "", basicAuth("alice", pat.Secret)), http.StatusOK, &who)
-	if who.Principal != "user:alice" {
+	if who.Principal != alice {
 		t.Errorf("whoami with Basic = %+v", who)
 	}
 	decodeJSON(t, send("GET", "/api/v1/whoami", "", basicAuth("deploy", dep.Secret)), http.StatusOK, &who)
@@ -372,7 +403,7 @@ func TestTokensNeverLogged(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`"path":"/api/v1/whoami","status":200`, `"principal":"user:alice"`, fmt.Sprintf(`"principal":"token:%d"`, dep.ID),
+		`"path":"/api/v1/whoami","status":200`, `"principal":"` + alice + `"`, fmt.Sprintf(`"principal":"token:%d"`, dep.ID),
 		fmt.Sprintf(`"msg":"authentication refused","token":%d,"reason":"revoked"`, pat.ID),
 		`"reason":"a deploy token as a bearer: it goes in Basic credentials, deploy:<token>"`,
 	} {

@@ -80,7 +80,7 @@ func (f *fixture) do(method, target, body string, p auth.Principal) *httptest.Re
 		r = httptest.NewRequest(method, target, strings.NewReader(body))
 	}
 	if p.Kind != "" {
-		r = r.WithContext(auth.WithPrincipal(r.Context(), p))
+		r = r.WithContext(auth.WithPrincipal(r.Context(), f.asStored(p)))
 	}
 	rr := httptest.NewRecorder()
 	f.h.ServeHTTP(rr, r)

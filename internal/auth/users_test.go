@@ -40,6 +40,20 @@ func newUsers(t *testing.T) (*Users, *sqlite.Store, *bytes.Buffer) {
 
 var cli = Origin{Source: "cli"}
 
+// named returns s with the uid of every user of the index replaced by the user's name, so that a
+// test can say user:alice for alice's user:<uid>.
+func named(t *testing.T, st index.Reader, s string) string {
+	t.Helper()
+	users, err := st.ListUsers(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range users {
+		s = strings.ReplaceAll(s, u.UID, u.Name)
+	}
+	return s
+}
+
 // wantAudit checks the audit events of the index, newest first: each "<principal> <action>
 // <subject> <details>".
 func wantAudit(t *testing.T, st index.Reader, want ...string) {
@@ -50,7 +64,7 @@ func wantAudit(t *testing.T, st index.Reader, want ...string) {
 	}
 	got := make([]string, len(evs))
 	for i, ev := range evs {
-		got[i] = fmt.Sprintf("%s %s %s %s", ev.Principal, ev.Action, ev.Subject, ev.Details)
+		got[i] = named(t, st, fmt.Sprintf("%s %s %s %s", ev.Principal, ev.Action, ev.Subject, ev.Details))
 		if ev.Repo != "" || !ev.At.Equal(usersNow) {
 			t.Errorf("event %d: repo %q at %v, want no repo at %v", i, ev.Repo, ev.At, usersNow)
 		}
@@ -80,7 +94,7 @@ func wantAdminBinding(t *testing.T, st index.Reader) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(bindings) != 1 || bindings[0].Principal != "user:admin" || bindings[0].Role != RoleAdmin || bindings[0].RepoMask != MaskAll {
+	if len(bindings) != 1 || named(t, st, bindings[0].Principal) != "user:admin" || bindings[0].Role != RoleAdmin || bindings[0].RepoMask != MaskAll {
 		t.Errorf("bindings = %+v; want the one (user:admin, admin, */*)", bindings)
 	}
 }
@@ -92,7 +106,7 @@ func TestUsersCreate(t *testing.T) {
 	users, st, _ := newUsers(t)
 	u := createAdminAndAlice(t, users)
 	b, _ := json.Marshal(u)
-	if want := `{"name":"admin","kind":"local","disabled":false,"createdAt":"2026-11-07T12:00:00Z"}`; string(b) != want {
+	if want := `{"uid":"` + u.UID + `","name":"admin","kind":"local","disabled":false,"createdAt":"2026-11-07T12:00:00Z"}`; !index.IsUID(u.UID) || string(b) != want {
 		t.Errorf("user = %s, want %s", b, want)
 	}
 	row, err := st.GetUser(ctx, "admin")
@@ -111,8 +125,8 @@ func TestUsersCreate(t *testing.T) {
 		t.Errorf("List = %+v, %v; want admin and alice", list, err)
 	}
 	wantAudit(t, st,
-		`anonymous user.create alice {"admin":false,"source":"cli"}`,
-		`anonymous user.create admin {"admin":true,"source":"cli"}`,
+		`anonymous user.create user:alice {"admin":false,"name":"alice","source":"cli"}`,
+		`anonymous user.create user:admin {"admin":true,"name":"admin","source":"cli"}`,
 	)
 }
 
@@ -142,8 +156,8 @@ func TestUsersCreateRefused(t *testing.T) {
 	}
 	wantAdminBinding(t, st)
 	wantAudit(t, st,
-		`anonymous user.create alice {"admin":false,"source":"cli"}`,
-		`anonymous user.create admin {"admin":true,"source":"cli"}`,
+		`anonymous user.create user:alice {"admin":false,"name":"alice","source":"cli"}`,
+		`anonymous user.create user:admin {"admin":true,"name":"admin","source":"cli"}`,
 	)
 }
 
@@ -185,10 +199,10 @@ func TestUsersChanges(t *testing.T) {
 		}
 	}
 	wantAudit(t, st,
-		`user:admin user.enable alice {"source":"cli"}`,
-		`user:admin user.disable alice {"source":"cli"}`,
-		`user:admin user.password alice {"requestId":"req-1","source":"api"}`,
-		`anonymous user.create alice {"admin":false,"source":"cli"}`,
+		`user:admin user.enable user:alice {"name":"alice","source":"cli"}`,
+		`user:admin user.disable user:alice {"name":"alice","source":"cli"}`,
+		`user:admin user.password user:alice {"name":"alice","requestId":"req-1","source":"api"}`,
+		`anonymous user.create user:alice {"admin":false,"name":"alice","source":"cli"}`,
 	)
 	evs, _ := st.ListAudit(ctx, index.AuditFilter{Action: ActionUserPassword})
 	if len(evs) != 1 || evs[0].IP != "192.0.2.7" {
@@ -217,7 +231,7 @@ func TestUsersChangesRefused(t *testing.T) {
 	if err := users.SetPassword(ctx, "alice", "short", cli); !errors.Is(err, ErrInvalid) {
 		t.Errorf("SetPassword(short) = %v, want ErrInvalid", err)
 	}
-	wantAudit(t, st, `anonymous user.create alice {"admin":false,"source":"cli"}`)
+	wantAudit(t, st, `anonymous user.create user:alice {"admin":false,"name":"alice","source":"cli"}`)
 }
 
 // recordingAudit is an audit.Writer that keeps the events, or fails.
@@ -244,7 +258,7 @@ func TestUsersAuditWriter(t *testing.T) {
 	users, st, logs := newUsers(t)
 	rec := &recordingAudit{}
 	users.Audit = rec
-	if _, err := users.Create(ctx, "alice", "alice-password", true, cli); err != nil {
+	if _, err := users.Create(ctx, "alice", "alice-password", false, cli); err != nil {
 		t.Fatal(err)
 	}
 	if err := users.Disable(ctx, "alice", cli); err != nil {
@@ -262,7 +276,7 @@ func TestUsersAuditWriter(t *testing.T) {
 	if u, _ := users.Get(ctx, "alice"); u.Disabled {
 		t.Error("the change was undone for its event")
 	}
-	if !strings.Contains(logs.String(), `"msg":"auth: audit event of a user change not written","action":"user.enable","user":"alice","error":"audit: gone"`) {
+	if !strings.Contains(named(t, st, logs.String()), `"msg":"auth: audit event of a user change not written","action":"user.enable","user":"user:alice","error":"audit: gone"`) {
 		t.Errorf("log %s does not have the failure", logs)
 	}
 }
@@ -291,5 +305,123 @@ func TestUsersFailures(t *testing.T) {
 	}
 	if users.now().IsZero() || users.log() == nil {
 		t.Error("the defaults of a zero Users are not set")
+	}
+}
+
+// renameDeleteFixture is the users of createAdminAndAlice, alice with a writer binding on raw/*
+// and a personal access token, and the services over them.
+type renameDeleteFixture struct {
+	users    *Users
+	bindings *Bindings
+	tokens   *Tokens
+	st       *sqlite.Store
+	alice    *index.User
+}
+
+func newRenameDeleteFixture(t *testing.T) *renameDeleteFixture {
+	t.Helper()
+	ctx := context.Background()
+	users, st, _ := newUsers(t)
+	createAdminAndAlice(t, users)
+	f := &renameDeleteFixture{users: users, st: st,
+		bindings: &Bindings{Index: st, Now: users.Now, Log: users.Log}, tokens: &Tokens{Index: st, Now: users.Now, Log: users.Log}}
+	if _, err := f.bindings.Create(ctx, "user:alice", RoleWriter, "raw/*", cli); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.tokens.CreatePAT(ctx, "alice", "laptop", nil, Expiry{}, cli); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	if f.alice, err = st.GetUser(ctx, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// TestUsersRename covers #182: a rename keeps the uid, the bindings and the tokens, with one
+// user.rename event; a name another user has is a conflict.
+func TestUsersRename(t *testing.T) {
+	ctx := context.Background()
+	f := newRenameDeleteFixture(t)
+	if err := f.users.Rename(ctx, "alice", "alicia", cli); err != nil {
+		t.Fatal(err)
+	}
+	after, err := f.st.GetUser(ctx, "alicia")
+	if err != nil || after.UID != f.alice.UID {
+		t.Fatalf("after the rename: %+v, %v; want alice's uid", after, err)
+	}
+	if list, _ := f.bindings.List(ctx, "user:alicia"); len(list) != 1 || list[0].Name != "alicia" {
+		t.Errorf("alicia's bindings %+v, want alice's writer binding", list)
+	}
+	if list, _ := f.tokens.List(ctx, "alicia"); len(list) != 1 {
+		t.Errorf("alicia's tokens %+v, want alice's", list)
+	}
+	if err := f.users.Rename(ctx, "alicia", "admin", cli); !errors.Is(err, index.ErrConflict) || err.Error() != "user admin already exists" {
+		t.Errorf("a rename to admin = %v, want a conflict naming it", err)
+	}
+	evs, _ := f.st.ListAudit(ctx, index.AuditFilter{Action: ActionUserRename})
+	if len(evs) != 1 || string(evs[0].Details) != `{"from":"alice","name":"alicia","source":"cli"}` {
+		t.Errorf("user.rename events %+v", evs)
+	}
+}
+
+// TestUsersDelete covers #182: a deletion revokes the tokens, deletes the bindings and frees the
+// name, the row staying by its uid, with one user.delete event; a new user of the name inherits
+// nothing.
+func TestUsersDelete(t *testing.T) {
+	ctx := context.Background()
+	f := newRenameDeleteFixture(t)
+	if err := f.users.Delete(ctx, "alice", cli); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.GetUser(ctx, "alice"); !errors.Is(err, index.ErrNotFound) {
+		t.Errorf("GetUser of the deleted alice = %v, want ErrNotFound", err)
+	}
+	f.wantDeleted(t)
+	again, err := f.users.Create(ctx, "alice", "alice-password", false, cli)
+	if err != nil || again.UID == f.alice.UID {
+		t.Fatalf("a new alice: %+v, %v; want a new uid", again, err)
+	}
+	if list, _ := f.bindings.List(ctx, "user:alice"); len(list) != 0 {
+		t.Errorf("the new alice has the bindings %+v of the deleted one", list)
+	}
+	evs, _ := f.st.ListAudit(ctx, index.AuditFilter{Action: ActionUserDelete})
+	if len(evs) != 1 || evs[0].Subject != "user:"+f.alice.UID || string(evs[0].Details) != `{"bindingsDeleted":1,"name":"alice","source":"cli","tokensRevoked":1}` {
+		t.Errorf("user.delete events %+v", evs)
+	}
+}
+
+// wantDeleted checks alice's row as a deletion leaves it: kept by its uid, disabled, its name
+// in deleted_name, without bindings, its token revoked.
+func (f *renameDeleteFixture) wantDeleted(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	gone, err := f.st.GetUserByUID(ctx, f.alice.UID)
+	if err != nil || gone.DeletedAt == nil || gone.DeletedName != "alice" || !gone.Disabled {
+		t.Errorf("the deleted row %+v, %v; want it kept, disabled, its name alice", gone, err)
+	}
+	if list, _ := f.st.ListBindings(ctx, UserPrincipal(f.alice).String()); len(list) != 0 {
+		t.Errorf("the deleted user's bindings %+v, want none", list)
+	}
+	if rows, _ := f.st.ListTokens(ctx, &f.alice.ID, nil); len(rows) != 1 || rows[0].RevokedAt == nil {
+		t.Errorf("the deleted user's tokens %+v, want revoked", rows)
+	}
+}
+
+// TestUsersLastAdmin: the last enabled admin is neither deleted nor disabled; a name of the form
+// of a uid is refused.
+func TestUsersLastAdmin(t *testing.T) {
+	ctx := context.Background()
+	f := newRenameDeleteFixture(t)
+	for what, err := range map[string]error{
+		"delete":  f.users.Delete(ctx, "admin", cli),
+		"disable": f.users.Disable(ctx, "admin", cli),
+	} {
+		if !errors.Is(err, index.ErrConflict) || !strings.Contains(err.Error(), "the last enabled user with an admin binding") {
+			t.Errorf("%s of the last admin = %v, want a conflict", what, err)
+		}
+	}
+	if _, err := f.users.Create(ctx, f.alice.UID, "a-password-1", false, cli); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a name of the form of a uid = %v, want ErrInvalid", err)
 	}
 }
