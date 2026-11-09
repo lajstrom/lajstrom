@@ -197,7 +197,8 @@ jobs:
   e2e:
     # make e2e (#34, docs/testing.md): bin/lajstrom on the runner against Zot, and the scenarios
     # of test/e2e/ with real clients, curl on the runner and oras, apt-get, pip, mvn and gradle in
-    # containers with --network host; then apt.sh again in the other apt clients of #48. The same
+    # containers with --network host; then apt.sh again in the other apt clients of #48, and
+    # cosign.sh against distribution, a registry without the referrers API (#28). The same
     # paths as the integration cells decide whether it runs. Not a matrix, so a skipped run
     # reports the check e2e itself.
     name: e2e
@@ -213,6 +214,20 @@ jobs:
         image: ghcr.io/project-zot/zot-minimal:v2.1.23
         ports:
           - "5000:5000"
+      distribution:
+        # The distribution of the integration job, for cosign.sh below: no referrers API, so the
+        # facade writes the sha256-<hex> tag schema under the referrers lock (#28).
+        # sha256:38907510915c3f1604c7e83d6ab602ab3020d092f73bdaed8696773693ff768c
+        image: registry:3.1.2
+        env:
+          REGISTRY_STORAGE_DELETE_ENABLED: "true"
+          REGISTRY_LOG_LEVEL: info
+        ports:
+          - "5001:5000"
+        options: >-
+          --health-cmd "wget -qO- http://127.0.0.1:5000/v2/"
+          --health-interval 2s
+          --health-timeout 5s
     steps:
       - name: Wait for Zot
         timeout-minutes: 1
@@ -250,6 +265,7 @@ jobs:
             python:3.13                     # pypi.sh
             maven:3.9.16-eclipse-temurin-21 # maven.sh
             gradle:8.14.6-jdk21             # maven.sh
+            ghcr.io/sigstore/cosign/cosign:v3.1.4 # cosign.sh
           )
           printf '%s\n' "${images[@]}" | xargs -n 1 -P 4 docker pull --quiet --platform linux/amd64
       - name: Cache of the maven and gradle clients
@@ -298,6 +314,15 @@ jobs:
             echo "::error::apt.sh failed in${failed}"
             exit 1
           fi
+      - name: cosign.sh against distribution
+        # #28: make e2e ran cosign.sh against Zot, which has the referrers API; here against
+        # distribution, which has not: the signatures go to the sha256-<hex> tag, and cosign verify
+        # and oras discover still find them. A run.sh of its own; bin/lajstrom is built.
+        if: ${{ !cancelled() && steps.images.outcome == 'success' }}
+        timeout-minutes: 2
+        env:
+          LAJSTROM_E2E_REGISTRY: localhost:5001
+        run: test/e2e/run.sh cosign
 
   lint:
     name: lint
