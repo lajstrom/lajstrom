@@ -1,7 +1,7 @@
 # Management API
 
-The management API is the REST interface to the control plane: repos, users and tokens now,
-bindings and the audit log later. It lives under `/api/v1` on the same host as everything else
+The management API is the REST interface to the control plane: repos, users, bindings and
+tokens now, the audit log later. It lives under `/api/v1` on the same host as everything else
 ([http-routing.md](spec/http-routing.md) §1 and §4). The examples use the dev stack:
 
 ```sh
@@ -21,20 +21,20 @@ LAJSTROM=http://localhost:8080
   caller is. **Authorization** is RBAC's ([rbac.md](spec/rbac.md)): the bindings of the
   principal decide, behind the scopes of its token ([auth.md](auth.md#what-a-token-may-do)).
   Reading a repo and listing it need `read` on it, changing, deleting and reindexing
-  it and managing its deploy tokens need `manage`, creating a repo and managing users need the
-  `admin` role, and the tokens of a user are the user's or the admin's ([rbac.md](spec/rbac.md) §2 and §3). A
+  it and managing its deploy tokens need `manage`, creating a repo and managing users and
+  bindings need the `admin` role, and the tokens of a user are the user's or the admin's ([rbac.md](spec/rbac.md) §2 and §3). A
   denial does not tell whether a repo exists: `401` with a Basic challenge for a caller without
   credentials, `404` for one without any access to the repo, `403` for one that can read it but
   lacks the action. The list leaves out the repos the caller may not read.
 - **Audit.** Every change is one row of the audit log ([rbac.md](spec/rbac.md) §5): the
   principal, the action (`repo.create`, `repo.update`, `repo.delete`, `user.create`,
-  `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete`, `token.create`,
-  `token.revoke`), the repo, the client address and details: the change, its source (`api`,
+  `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete`,
+  `binding.create`, `binding.delete`, `token.create`, `token.revoke`), the repo, the client address and details: the change, its source (`api`,
   `cli` or `config`) and the request id.
 - **Lists** that can be long are pages: `?limit=` (100 when absent, 1 to 1000) and `?cursor=`,
   the `next` of the page before, an opaque string; the last page has no `next`.
-- **Not in this version.** The bindings endpoints of [http-routing.md](spec/http-routing.md) §4
-  come with #47, the audit log with #46. Until then
+- **Not in this version.** The audit log of [http-routing.md](spec/http-routing.md) §4 comes
+  with #46. Until then
   they, and any other path under `/api/`, answer `404 NOT_FOUND`.
 
 ### Errors
@@ -280,6 +280,61 @@ token with scopes and a deploy token never manage users.
 
 The same, straight against the database of the configuration: `create`, `list`, `rename`,
 `disable`, `enable`, `set-password`, `delete` ([auth.md](auth.md#local-users-and-passwords)).
+
+## Bindings
+
+A binding gives a user a role on the repos of a mask ([auth.md](auth.md#bindings),
+[rbac.md](spec/rbac.md) §3). The admin role manages them.
+
+### The resource
+
+```json
+{
+  "id": 2,
+  "principal": "user:01a1c136-51a6-7883-a350-b1cf6000a23f",
+  "name": "alice",
+  "role": "writer",
+  "repoMask": "raw/*",
+  "createdAt": "2026-11-09T16:48:44Z"
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `id` | set by the server; the `{id}` of `DELETE` |
+| `principal` | `user:<uid>` of a live user: a creation may name the user `user:<name>` or `user:<uid>`, and the uid is stored, so that a rename does not move the binding |
+| `name` | the user's name now, for people; answered, never sent |
+| `role` | `reader`, `writer`, `maintainer` or `admin` ([rbac.md](spec/rbac.md) §2) |
+| `repoMask` | `<format>/<repo>`, each segment a name or `*`; the format one that is served; an `admin` binding is on `*/*` only |
+| `createdAt` | set by the server |
+
+### List: `GET /api/v1/bindings`
+
+`{"bindings": […], "next": "…"}`: a page of the bindings ordered by id ([Conventions](#conventions)),
+of every principal or of `?principal=user:<name>` or `user:<uid>`; a user that does not exist
+has none.
+
+### Create: `POST /api/v1/bindings`
+
+The body has `principal`, `role` and `repoMask`. `201` with the resource and `Location:
+/api/v1/bindings/<id>`. A user that does not exist, a principal that is not a user (a deploy
+token gets its repo and scopes, `anonymous` a repo's `anonymousRead`), a role or a mask that
+breaks its rule are `400`; the same binding again is `409`. The binding counts from the next
+request on, on every replica.
+
+### Delete: `DELETE /api/v1/bindings/<id>`
+
+`204`; `404` for an id that is not a binding. The last admin binding of an enabled user is
+`409`, so that somebody can still manage the server.
+
+### Who may
+
+The admin role only, also to list one's own bindings; anyone else is `403`, anonymous `401`.
+
+### `lajstrom admin binding`
+
+The same, straight against the database of the configuration: `create`, `list`, `delete`
+([auth.md](auth.md#bindings)).
 
 ## Tokens
 
