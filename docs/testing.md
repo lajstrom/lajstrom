@@ -99,11 +99,12 @@ PASS auth.sh           0 s
 PASS oci-token.sh      3 s
 PASS tokens.sh        10 s
 PASS apt.sh            4 s
-e2e: 6 of 6 scenarios ran, 0 failed, in 27 s against http://127.0.0.1:50313
+PASS pypi.sh          11 s
+e2e: 7 of 7 scenarios ran, 0 failed, in 42 s against http://127.0.0.1:51474
 ```
 
-Those are the times on an Apple silicon Mac with OrbStack, the images already pulled; the 27 s
-include `make build`. A failed scenario does not stop the others. The harness exits 1 when one
+Those are the times on an Apple silicon Mac with OrbStack, the images already pulled; the 42 s
+include `make build`, and `pypi.sh` installs build, twine and uv from PyPI in its container. A failed scenario does not stop the others. The harness exits 1 when one
 failed, 2 when it could not start (the build, the migration, a server that is not ready), and
 stops the server and removes the directory on exit; `LAJSTROM_E2E_KEEP=1` keeps it, with
 `server.log` and a log per scenario. It unsets the `LAJSTROM_SERVER_*`, `LAJSTROM_LOG_*` and
@@ -117,9 +118,10 @@ stops the server and removes the directory on exit; `LAJSTROM_E2E_KEEP=1` keeps 
 | `oci-token.sh` | the docker bearer flow, oras login, push and pull, token key rotations | curl, oras image, `lajstrom admin key` |
 | `tokens.sh` | personal access tokens and deploy tokens on raw, apt (`auth.conf`) and `/v2` | curl, `ubuntu:24.04`, oras image |
 | `apt.sh` | a `.deb` by PUT and one by oras, `apt-get update`, `install` and `download` from the signed repo, the conflicts | `ubuntu:24.04` (`linux/amd64`), oras image |
+| `pypi.sh` | `python -m build`, twine upload, the same files again, other bytes (409), `pip install`, `uv pip install`, `uv publish` and `--check-url`, `pip install --upgrade`, PEP 658 in the access log | `python:3.13` (build, twine, uv from PyPI) |
 
-The images are `ubuntu:24.04` for `linux/amd64`, emulated on Apple silicon, and
-`ghcr.io/oras-project/oras:v1.3.6`; the first run pulls them. The containers use
+The images are `ubuntu:24.04` for `linux/amd64`, emulated on Apple silicon,
+`ghcr.io/oras-project/oras:v1.3.6` and `python:3.13`; the first run pulls them. The containers use
 `--network host`, which reaches the server's `127.0.0.1` on Linux and under OrbStack; Docker
 Desktop is not measured (its host networking is a setting of its own). The scenarios run under
 whatever `bash` is first on `PATH`; the bash 3.2 of macOS is enough.

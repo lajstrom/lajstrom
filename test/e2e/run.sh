@@ -29,7 +29,7 @@
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-order="raw oras auth oci-token tokens apt" # the quick ones first
+order="raw oras auth oci-token tokens apt pypi" # the quick ones first; pypi installs its clients
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 registry="${LAJSTROM_E2E_REGISTRY:-localhost:5000}"
@@ -127,6 +127,7 @@ repos:
   - {name: scratch, format: raw, registry: local}
   - {name: ubuntu, format: apt, registry: local}
   - {name: e2e, format: apt, registry: local}
+  - {name: e2e, format: pypi, registry: local}
 EOF
 
 "$bin" migrate --config "$LAJSTROM_CONFIG" >"$tmp/migrate.log" 2>&1 || { cat "$tmp/migrate.log" >&2; echo "run.sh: lajstrom migrate failed" >&2; exit 2; }
