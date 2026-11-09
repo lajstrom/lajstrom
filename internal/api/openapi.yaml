@@ -151,6 +151,37 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+      - name: name
+        in: path
+        required: true
+        description: The package name in the format's spelling; a raw path escapes its / as %2F.
+        schema: {type: string}
+      - name: version
+        in: path
+        required: true
+        schema: {type: string}
+    delete:
+      tags: [repos]
+      operationId: deleteVersion
+      summary: >-
+        Delete a version (delete): every variant, or the one variant names; each manifest with its
+        referrers, its rows and an audit row.
+      parameters:
+        - name: variant
+          in: query
+          description: Only this variant; empty for a format without variants.
+          schema: {type: string}
+      responses:
+        "204": {description: Deleted.}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "501": {$ref: "#/components/responses/Unavailable"}
   /api/v1/repos/{format}/{repo}/deploy-tokens:
     parameters:
       - $ref: "#/components/parameters/format"

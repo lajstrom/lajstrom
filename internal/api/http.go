@@ -36,6 +36,9 @@ type Options struct {
 	Auth auth.Authorizer
 	// Reindex starts the runs of POST …/reindex; nil answers it 501.
 	Reindex Reindexer
+	// Deleter deletes the versions of DELETE …/packages/{name}/versions/{version}: the ingest
+	// pipeline; nil answers it 501.
+	Deleter Deleter
 	// Log receives the causes of the 5xx answers, with the request id; nil means
 	// slog.Default().
 	Log *slog.Logger
@@ -54,6 +57,7 @@ const maxBody = 64 << 10
 //	DELETE /api/v1/repos/{format}/{repo}[?force=true]  delete a repo
 //	POST   /api/v1/repos/{format}/{repo}/reindex       start a reindex of the repo: 202, 409 when one runs
 //	GET    /api/v1/repos/{format}/{repo}/reindex       the latest run that covered the repo, with its report
+//	DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}[?variant=]  delete a version, its referrers first
 //	GET    /api/v1/repos/{format}/{repo}/deploy-tokens       the deploy tokens of a repo
 //	POST   /api/v1/repos/{format}/{repo}/deploy-tokens       create one; the answer has its secret
 //	DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}  revoke one
@@ -79,7 +83,8 @@ func New(o Options) http.Handler {
 	if o.Repos == nil {
 		panic("api: New: nil Options.Repos")
 	}
-	h := &handler{repos: o.Repos, tokens: o.Tokens, users: o.Users, bindings: o.Bindings, auth: o.Auth, reindex: o.Reindex, log: o.Log}
+	h := &handler{repos: o.Repos, tokens: o.Tokens, users: o.Users, bindings: o.Bindings, auth: o.Auth, reindex: o.Reindex,
+		deleter: o.Deleter, log: o.Log}
 	if h.log == nil {
 		h.log = slog.Default()
 	}
@@ -118,6 +123,7 @@ func (h *handler) routes() []route {
 		{"DELETE /api/v1/repos/{format}/{repo}", h.deleteRepo},
 		{"POST /api/v1/repos/{format}/{repo}/reindex", h.reindexRepo},
 		{"GET /api/v1/repos/{format}/{repo}/reindex", h.reindexStatus},
+		{"DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}", h.deleteVersion},
 		{"GET /api/v1/repos/{format}/{repo}/deploy-tokens", h.listDeployTokens},
 		{"POST /api/v1/repos/{format}/{repo}/deploy-tokens", h.createDeployToken},
 		{"DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}", h.revokeDeployToken},
@@ -146,6 +152,7 @@ type handler struct {
 	bindings *auth.Bindings
 	auth     auth.Authorizer
 	reindex  Reindexer
+	deleter  Deleter
 	log      *slog.Logger
 }
 

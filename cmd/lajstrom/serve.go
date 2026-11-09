@@ -137,7 +137,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Plugins:         format.All(),
 				Deps:            format.Deps{Index: st, Providers: providers, Auth: authz, Ingest: pipe, Signer: signer, Sessions: pipe},
 				Ready:           ready(a.log, c.Database.Driver, st, health),
-				API:             api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Log: a.log}),
+				API:             api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Deleter: pipe, Log: a.log}),
 				Facade:          v2,
 				Authenticator:   authn,
 				MetricsListen:   c.Server.MetricsListen,
