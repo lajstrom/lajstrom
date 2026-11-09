@@ -1,0 +1,155 @@
+# Release (#57). A pushed tag v* runs goreleaser (.goreleaser.yaml): the binaries for linux and
+# darwin on amd64 and arm64, their archives, checksums.txt and the SBOMs on a draft GitHub
+# release; the multi-arch image on ghcr.io and Docker Hub; cosign signatures of checksums.txt
+# and of the images, keyless through the job's GitHub OIDC token; the Homebrew cask in
+# lajstrom/homebrew-tap. A maintainer publishes the draft. docs/release.md has the steps.
+#
+# The snapshot job runs the same configuration without publishing or signing on every push to
+# main and on a pull request that changes it, and keeps the archives, checksums and SBOMs as a
+# workflow artifact for testing.
+#
+# Repository secrets of the release job; GITHUB_TOKEN covers the release and ghcr.io:
+#   DOCKERHUB_USERNAME, DOCKERHUB_TOKEN  a Docker Hub user and an access token with read and
+#                                        write on docker.io/lajstrom/lajstrom; without them
+#                                        the images go to ghcr.io only, with a warning
+#   HOMEBREW_TAP_TOKEN                   a fine-grained token with contents: write on
+#                                        lajstrom/homebrew-tap; without it the cask is not
+#                                        pushed, with a warning
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .goreleaser.yaml
+      - Dockerfile
+      - .github/workflows/release.yml
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # A release is never cancelled half-way; a newer push to main replaces its snapshot.
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  # The goreleaser of GORELEASER_IMAGE in the Makefile, and the syft and cosign its image has.
+  GORELEASER_VERSION: v2.20.0
+  SYFT_VERSION: v1.55.0
+  COSIGN_VERSION: v3.1.4
+
+jobs:
+  snapshot:
+    name: snapshot
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # tags and history: git describe, the snapshot version
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          # No Go cache in either job, so that no cache another run wrote reaches a build that
+          # is published or uploaded (cache poisoning).
+          cache: false
+      - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          syft-version: ${{ env.SYFT_VERSION }}
+      - name: goreleaser release --snapshot
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          distribution: goreleaser
+          version: ${{ env.GORELEASER_VERSION }}
+          args: release --snapshot --clean --skip=publish,sign
+      - name: Run the binary and the image
+        # The image of the runner's platform; the arm64 one would need emulation.
+        run: |
+          set -euo pipefail
+          version="$(jq -r .version dist/metadata.json)"
+          tar -xzf "dist/lajstrom_${version}_linux_amd64.tar.gz" -C "${RUNNER_TEMP}" lajstrom
+          "${RUNNER_TEMP}/lajstrom" version
+          docker run --rm "ghcr.io/lajstrom/lajstrom:v${version}-amd64" version
+          docker image inspect "ghcr.io/lajstrom/lajstrom:v${version}-amd64" --format '{{json .Config.Labels}}'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lajstrom-snapshot
+          path: |
+            dist/*.tar.gz
+            dist/*.sbom.json
+            dist/checksums.txt
+            dist/homebrew/Casks/lajstrom.rb
+            dist/metadata.json
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: release
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # the draft release and its assets
+      packages: write # ghcr.io/lajstrom/lajstrom
+      id-token: write # cosign keyless: the OIDC token Fulcio certifies
+    env:
+      # Read by the conditions below and by .goreleaser.yaml (the docker.io image name).
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # tags and history: the previous tag, the changelog
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+      - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          syft-version: ${{ env.SYFT_VERSION }}
+      # The docker-container driver: one multi-arch push with the SBOM attestation. The
+      # Dockerfile only copies files, so no emulation is needed for arm64.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Log in to ghcr.io
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to Docker Hub
+        if: env.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Optional targets
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "${DOCKERHUB_USERNAME}" ]; then
+            echo "::warning::DOCKERHUB_USERNAME is not set: the images are pushed to ghcr.io only, not to docker.io/lajstrom/lajstrom"
+          fi
+          if [ -z "${HOMEBREW_TAP_TOKEN}" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN is not set: the cask is not pushed to lajstrom/homebrew-tap"
+          fi
+      - name: goreleaser release
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          distribution: goreleaser
+          version: ${{ env.GORELEASER_VERSION }}
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          # The tag this run is for, not another one on the same commit.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
