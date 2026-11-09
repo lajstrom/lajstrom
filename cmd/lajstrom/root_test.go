@@ -54,8 +54,8 @@ func TestCommands(t *testing.T) {
 		wantOut string // substring of stdout
 	}{
 		{name: "version", args: []string{"version"}, wantOut: "lajstrom dev (unknown, unknown)\n"},
-		{name: "reindex", args: []string{"reindex", "--config", cfg}, wantErr: "not implemented, see issue #29"},
-		{name: "config from env", env: map[string]string{"LAJSTROM_CONFIG": cfg}, args: []string{"reindex"}, wantErr: "see issue #29"},
+		{name: "reindex before migrate", args: []string{"reindex", "--config", cfg}, wantErr: "no such table"},
+		{name: "config from env", env: map[string]string{"LAJSTROM_CONFIG": cfg}, args: []string{"reindex"}, wantErr: "no such table"},
 		{name: "migrate missing config", args: []string{"migrate", "--config", missing}, wantErr: missing},
 		{name: "invalid config", env: map[string]string{"LAJSTROM_DATABASE_DRIVER": "mysql"}, args: []string{"migrate", "--config", cfg}, wantErr: `database.driver: "mysql"`},
 		{name: "serve missing config", args: []string{"serve", "--config", missing}, wantErr: "no such file"},
