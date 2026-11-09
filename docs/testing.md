@@ -55,7 +55,15 @@ Every test works in repositories with a random name, so runs can repeat and run 
 `LAJSTROM_TEST_REGISTRY_PREFIX`, `_USERNAME`, `_PASSWORD` and `_TLS=1` point the provider tests
 at a registry outside the stack ([registries/](registries/README.md) has the commands per
 vendor); `LAJSTROM_TEST_REGISTRY_S3` adds the tests of a registry on S3 (the `s3` and
-`s3-minio` profiles, [dev-stack.md](dev-stack.md)).
+`s3-minio` profiles, [dev-stack.md](dev-stack.md)). `LAJSTROM_TEST_REGISTRY_NODELETE` adds the
+facade's test of a registry that refuses deletes, which the stack does not run (#61):
+
+```sh
+docker run -d --rm --name nodelete -p 127.0.0.1:5019:5000 -e REGISTRY_STORAGE_DELETE_ENABLED=false registry:3.1.2
+LAJSTROM_TEST_REGISTRY=localhost:5001 LAJSTROM_TEST_REGISTRY_NODELETE=localhost:5019 \
+  go test -tags integration ./internal/facade -run TestIntegrationDelete
+docker stop nodelete
+```
 
 ## OCI conformance
 

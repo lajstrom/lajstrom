@@ -54,10 +54,12 @@ func blobError(err error) error {
 	return &apiError{code: codeBlobUnknown, err: err}
 }
 
-// deleteBlob answers DELETE …/blobs/<digest>: 405 until #61.
+// deleteBlob answers DELETE …/blobs/<digest>: 405. A blob no manifest uses any more is the
+// backend's garbage collection's (docs/spec/http-routing.md §2).
 func (h *handler) deleteBlob(_ http.ResponseWriter, r *http.Request, t *target, _ string) error {
 	if err := h.authorize(r.Context(), auth.ActionDelete, t); err != nil {
 		return err
 	}
-	return &apiError{status: http.StatusMethodNotAllowed, code: codeUnsupported, msg: "deleting blobs comes with #61"}
+	return &apiError{status: http.StatusMethodNotAllowed, code: codeUnsupported,
+		msg: "blobs are not deleted through Lajstrom: delete the manifests, and the registry's garbage collection removes the blobs they used"}
 }
