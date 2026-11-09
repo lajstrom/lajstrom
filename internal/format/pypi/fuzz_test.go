@@ -83,8 +83,11 @@ func checkWheel(t *testing.T, s string, w Wheel) {
 // FuzzCoreMetadata feeds ParseCoreMetadata a METADATA or PKG-INFO file;
 // testdata/fuzz/FuzzCoreMetadata has those of testutil and real-looking ones, which
 // TestFuzzCorpus writes. Every error must be format.ErrInvalid, and what it allocates must grow
-// with the file. Line endings do not matter: with CRLF the file gives the same metadata or is
-// refused too. A file it accepts has its name and version, lists for the multiple-use fields and
+// with the file. Line endings do not matter: a file with LF line endings gives with CRLF the
+// same metadata, or is refused too. (Not when a line ends with "\r" already: the scanner takes
+// off one "\r" and ParseCoreMetadata another, so "\r\r\n" and "\r\r\r\n" end lines that differ by
+// one "\r"; testdata/fuzz/FuzzCoreMetadata/cr-before-lf is such a file.) A file it accepts has
+// its name and version, lists for the multiple-use fields and
 // the keywords, and written back by metadataOf, it parses to the same metadata. A file with a
 // field named "" (a line " :x" before the first field) cannot be written back and is left out.
 func FuzzCoreMetadata(f *testing.F) {
@@ -106,9 +109,11 @@ func FuzzCoreMetadata(f *testing.F) {
 		)
 		testutil.CheckAllocated(t, fmt.Sprintf("ParseCoreMetadata of %d bytes", len(b)), coreMetadataAllocBound(len(b)),
 			func() { m, err = ParseCoreMetadata(b) })
-		crlf, crlfErr := ParseCoreMetadata(bytes.ReplaceAll(b, []byte("\n"), []byte("\r\n")))
-		if (err == nil) != (crlfErr == nil) || err == nil && !reflect.DeepEqual(m, crlf) {
-			t.Fatalf("with CRLF, ParseCoreMetadata = %v, %+v; with LF %v, %+v", crlfErr, crlf, err, m)
+		if !bytes.Contains(b, []byte("\r\n")) {
+			crlf, crlfErr := ParseCoreMetadata(bytes.ReplaceAll(b, []byte("\n"), []byte("\r\n")))
+			if (err == nil) != (crlfErr == nil) || err == nil && !reflect.DeepEqual(m, crlf) {
+				t.Fatalf("with CRLF, ParseCoreMetadata = %v, %+v; with LF %v, %+v", crlfErr, crlf, err, m)
+			}
 		}
 		if err != nil {
 			if !errors.Is(err, format.ErrInvalid) {
