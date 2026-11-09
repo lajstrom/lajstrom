@@ -1,0 +1,2 @@
+go test fuzz v1
+string("my_pkg-1.0.0-1b-py3-none-any.whl")
