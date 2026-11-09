@@ -49,7 +49,7 @@ endif
 RUN_CONFIG   := $(firstword $(wildcard deploy/compose/lajstrom.yaml) deploy/compose/lajstrom.example.yaml)
 
 .PHONY: help build test vet lint api-lint vulncheck licenses fmt-check check \
-	dev-up dev-down dev-ps dev-logs test-integration e2e run snapshot release-check clean
+	dev-up dev-down dev-ps dev-logs test-integration e2e load run snapshot release-check clean
 
 help: ## List the targets
 	@echo "Usage: make <target>"
@@ -100,6 +100,9 @@ test-integration: ## Integration tests against the dev stack; needs LAJSTROM_TES
 
 e2e: ## End-to-end scenarios with real clients against the dev stack's Zot (docs/testing.md); E2E='raw oras' runs those only
 	./test/e2e/run.sh $(E2E)
+
+load: ## Load test: 1 GiB through raw and /v2 against the dev stack's Zot, the server's memory sampled; needs 4 GiB of free disk; not part of e2e (docs/operations.md, Performance)
+	./test/load/run.sh
 
 run: build ## Serve with deploy/compose/lajstrom.yaml, or the example when it does not exist
 	./$(BIN) serve --config $(RUN_CONFIG)
