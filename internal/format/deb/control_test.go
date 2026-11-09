@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/testutil"
 )
 
 // minimal is the smallest control file packageOf accepts.
@@ -121,5 +122,34 @@ func TestParseMD5Sums(t *testing.T) {
 		if _, err := parseMD5Sums([]byte(tc.md5sums)); !errors.Is(err, format.ErrInvalid) || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("parseMD5Sums(%q) = %v, want ErrInvalid containing %q", tc.md5sums, err, tc.want)
 		}
+	}
+}
+
+// controlAllocBound is the most parseControl may allocate for a control file of n bytes: the
+// file as a string, a string header per line, and the values.
+func controlAllocBound(n int) int { return testutil.AllocSlack + 64*n }
+
+// TestParseControlContinuationLines checks that a value of many continuation lines costs what
+// the file has: appending each line to the value copied it, and before #51 a control file of
+// 384 KiB allocated 26 GB in 3 s, a cost that grew with the square of the size up to MaxControl.
+func TestParseControlContinuationLines(t *testing.T) {
+	long := "x" + strings.Repeat("\n y", 1<<18)
+	b := []byte(minimal + "X-Long: " + long + "\nX-After: z\n")
+	var (
+		c   Control
+		err error
+	)
+	n := testutil.Allocated(func() { c, err = parseControl(b) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := c.Get("X-Long"); v != long {
+		t.Errorf("X-Long has %d bytes, want %d", len(v), len(long))
+	}
+	if v, _ := c.Get("X-After"); v != "z" {
+		t.Errorf("X-After = %q, want z", v)
+	}
+	if n > controlAllocBound(len(b)) {
+		t.Errorf("parseControl of %d bytes allocated %d bytes, at most %d", len(b), n, controlAllocBound(len(b)))
 	}
 }
