@@ -39,7 +39,7 @@ const (
 //     per repository on first use;
 //   - CreateOnPush, DeleteManifest and BlobRedirect are true, ImmutableTags is false and
 //     MaxBlobSize is 0 (unknown) without a request; DeleteManifest turns false when the
-//     registry answers a manifest delete with 405.
+//     registry answers a manifest delete with 405 UNSUPPORTED or a 405 without DENIED.
 //
 // A capability that the vendor table or the configuration sets is not probed. The first
 // successful probe logs the result and the vendor at info, and warns about a GitLab registry

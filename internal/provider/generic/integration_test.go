@@ -197,6 +197,52 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	step(t, "delete a manifest that an index lists", func(t *testing.T) {
+		if !caps.DeleteManifest {
+			t.Skip("the registry does not delete manifests (Capabilities.DeleteManifest false)")
+		}
+		r, err := p.Repository(ctx, base+"/indexed")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Push(ctx, blobDesc, bytes.NewReader(blob)); err != nil {
+			t.Fatal(err)
+		}
+		_, listed := pushTestManifest(ctx, t, r, "v1", nil, blobDesc)
+		index := pushTestIndex(ctx, t, r, "list", listed)
+		// Zot refuses the delete with 405 DENIED (docs/registries/zot.md, Delete), distribution
+		// deletes the manifest; neither turns DeleteManifest false (#153).
+		err = r.Delete(ctx, listed)
+		refused := errors.Is(err, provider.ErrConflict)
+		switch {
+		case refused:
+			t.Logf("the registry keeps a manifest that an index lists: %v", err)
+			if ok, err := r.Exists(ctx, listed); err != nil || !ok {
+				t.Errorf("Exists after a refused Delete = %v, %v; want true", ok, err)
+			}
+		case err != nil:
+			t.Fatalf("Delete of the listed manifest: %v, want ErrConflict or success", err)
+		default:
+			t.Logf("the registry deletes a manifest that an index lists")
+		}
+		if c, err := p.Capabilities(ctx); err != nil || !c.DeleteManifest {
+			t.Fatalf("Capabilities after the delete = %+v, %v; want DeleteManifest", c, err)
+		}
+		if err := r.Delete(ctx, index); err != nil {
+			t.Fatalf("Delete(index): %v", err)
+		}
+		if refused {
+			if err := r.Delete(ctx, listed); err != nil {
+				t.Fatalf("Delete of the manifest after its index: %v", err)
+			}
+		}
+		for _, d := range []ocispec.Descriptor{index, listed} {
+			if ok, err := r.Exists(ctx, d); err != nil || ok {
+				t.Errorf("Exists(%s) after Delete = %v, %v; want false", d.MediaType, ok, err)
+			}
+		}
+	})
+
 	step(t, "delete", func(t *testing.T) {
 		if !caps.DeleteManifest {
 			t.Skip("the registry does not delete manifests (Capabilities.DeleteManifest false)")
@@ -305,6 +351,24 @@ func pushTestManifest(ctx context.Context, t *testing.T, repo provider.Repositor
 		t.Fatalf("push manifest: %v", err)
 	}
 	return content, desc
+}
+
+// pushTestIndex pushes an OCI image index of manifests, tagged tag.
+func pushTestIndex(ctx context.Context, t *testing.T, repo provider.Repository, tag string, manifests ...ocispec.Descriptor) ocispec.Descriptor {
+	t.Helper()
+	content, err := json.Marshal(ocispec.Index{
+		Versioned: specs.Versioned{SchemaVersion: 2},
+		MediaType: ocispec.MediaTypeImageIndex,
+		Manifests: manifests,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc := descriptor(ocispec.MediaTypeImageIndex, content)
+	if err := repo.PushReference(ctx, desc, bytes.NewReader(content), tag); err != nil {
+		t.Fatalf("push index: %v", err)
+	}
+	return desc
 }
 
 // fetchAll reads the content desc describes.
