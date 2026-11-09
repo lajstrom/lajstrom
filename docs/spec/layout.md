@@ -476,7 +476,7 @@ type RepoReport struct {
     OCIRepositories int       `json:"ociRepositories"`
     Manifests       int       `json:"manifests"`       // tags read
     Added           int       `json:"added"`
-    Updated         int       `json:"updated"`         // read again (verify, degraded) and changed
+    Updated         int       `json:"updated"`         // read again (verify, degraded) and written
     Unchanged       int       `json:"unchanged"`
     Removed         int       `json:"removed"`
     Degraded        int       `json:"degraded"`

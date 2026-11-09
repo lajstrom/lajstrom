@@ -1,0 +1,251 @@
+// Package reindex rebuilds the derived index tables from the manifests in the registries
+// (docs/architecture.md, flow E; docs/spec/index-schema.md, Invariants): the proof that the
+// index is derived, the way to attach an existing prefix, and the repair of drift. A run marks
+// and sweeps: every row it writes or sees gets the time of the write, a known digest is seen
+// without being read again, and the rows a run did not see are looked up in the registry once
+// more before they go. A run holds the lock of its scope in reindex_runs while it beats.
+package reindex
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"strconv"
+	"time"
+
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
+	"github.com/lajstrom/lajstrom/internal/audit"
+	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/ingest"
+	"github.com/lajstrom/lajstrom/internal/provider"
+)
+
+// The timing of runs (docs/spec/index-schema.md, Coordination): a run beats every
+// heartbeatEvery, and one whose heartbeat is older than staleAfter is taken over.
+const (
+	heartbeatEvery = 30 * time.Second
+	staleAfter     = 2 * time.Minute
+)
+
+// defaultConcurrency is Options.Concurrency when it is zero.
+const defaultConcurrency = 8
+
+// defaultClaimTTL is Options.ClaimTTL when it is zero: ingest's default.
+const defaultClaimTTL = 10 * time.Minute
+
+// Options configures a Worker.
+type Options struct {
+	// Index is the index database.
+	Index index.Store
+	// Providers resolves repo.Registry to the backend registry.
+	Providers provider.Set
+	// Inspector checks a manifest and returns its rows: the ingest pipeline.
+	Inspector Inspector
+	// Audit records the start of a run; nil means the event goes to the index.
+	Audit audit.Writer
+	// Now is the clock; nil means time.Now.
+	Now func() time.Time
+	// Log is the logger; nil means slog.Default().
+	Log *slog.Logger
+	// Concurrency is how many manifests are read at once per registry; zero means 8.
+	Concurrency int
+	// ClaimTTL is ingest.claimTTL: tag claims older than that are deleted. Zero means 10
+	// minutes.
+	ClaimTTL time.Duration
+}
+
+// Inspector checks a manifest found in the registry and returns the rows to write; the ingest
+// pipeline implements it (ingest.Pipeline.Inspect).
+type Inspector interface {
+	Inspect(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, o ingest.InspectOptions) (*ingest.Rows, error)
+}
+
+var _ Inspector = (*ingest.Pipeline)(nil)
+
+// Worker runs reindex.
+type Worker struct {
+	index       index.Store
+	providers   provider.Set
+	inspector   Inspector
+	audit       audit.Writer
+	now         func() time.Time
+	log         *slog.Logger
+	concurrency int
+	claimTTL    time.Duration
+	heartbeat   time.Duration // heartbeatEvery; shorter in the tests
+}
+
+// New returns a Worker with the defaults of Options applied.
+func New(o Options) *Worker {
+	w := &Worker{index: o.Index, providers: o.Providers, inspector: o.Inspector, audit: o.Audit, now: o.Now, log: o.Log,
+		concurrency: o.Concurrency, claimTTL: o.ClaimTTL, heartbeat: heartbeatEvery}
+	if w.now == nil {
+		w.now = time.Now
+	}
+	if w.log == nil {
+		w.log = slog.Default()
+	}
+	if w.concurrency <= 0 {
+		w.concurrency = defaultConcurrency
+	}
+	if w.claimTTL <= 0 {
+		w.claimTTL = defaultClaimTTL
+	}
+	return w
+}
+
+// Request is what a run does.
+type Request struct {
+	// Repo is the repo to reindex; nil means every repo.
+	Repo *index.Repo
+	// Prune sweeps the rows the run did not see (the CLI's default for a run of every repo).
+	Prune bool
+	// Verify reads and checks every manifest, known digests too (after a plugin fix).
+	Verify bool
+	// Source is cli, api or reconcile.
+	Source string
+	// Principal is the canonical form of who started the run.
+	Principal string
+}
+
+// errTakenOver is the cause of a run whose row another start closed as abandoned.
+var errTakenOver = errors.New("reindex: the run was taken over: its heartbeat was late and a later start closed it")
+
+// Start takes the lock of the run's scope (index.Store.StartReindexRun) and writes the audit
+// event repo.reindex. A run that overlaps is a *index.ReindexConflictError. The returned run
+// is what Run takes.
+func (w *Worker) Start(ctx context.Context, req Request) (*index.ReindexRun, error) {
+	run := index.ReindexRun{Source: req.Source, Principal: req.Principal, Replica: replica(),
+		Options: index.ReindexOptions{Prune: req.Prune, Verify: req.Verify}, StartedAt: w.now()}
+	if req.Repo != nil {
+		id := req.Repo.ID
+		run.RepoID = &id
+	}
+	if err := w.index.StartReindexRun(ctx, &run, run.StartedAt.Add(-staleAfter)); err != nil {
+		return nil, fmt.Errorf("reindex: start: %w", err)
+	}
+	ev := index.AuditEvent{At: run.StartedAt, Principal: req.Principal, Action: "repo.reindex",
+		Subject: fmt.Sprintf("run %d", run.ID)}
+	if req.Repo != nil {
+		ev.Repo = req.Repo.Format + "/" + req.Repo.Name
+	}
+	ev.Details, _ = json.Marshal(map[string]any{"run": run.ID, "source": req.Source, "prune": req.Prune, "verify": req.Verify})
+	var err error
+	if w.audit != nil {
+		err = w.audit.Write(ctx, ev)
+	} else {
+		err = w.index.AppendAudit(ctx, &ev)
+	}
+	if err != nil {
+		w.log.ErrorContext(ctx, "reindex: audit event of a run not written", "run", run.ID, "error", err.Error())
+	}
+	return &run, nil
+}
+
+// Run reads the registry for the run that Start returned, beats while it runs, and finishes
+// the run whatever happens: done when it went to the end, failed on an error of its own (the
+// database, the context), and nothing when another start took it over. The error is the run's
+// own; the manifests that failed are in the report.
+func (w *Worker) Run(ctx context.Context, run *index.ReindexRun, req Request) (*Report, error) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	stop := w.beat(ctx, run.ID, cancel)
+	report, err := w.run(ctx, run, req)
+	stop()
+	if errors.Is(context.Cause(ctx), errTakenOver) {
+		err = errTakenOver
+	}
+	w.finish(context.WithoutCancel(ctx), run, report, err)
+	return report, err
+}
+
+// run reindexes the repos of req, one after the other.
+func (w *Worker) run(ctx context.Context, run *index.ReindexRun, req Request) (*Report, error) {
+	report := &Report{Repos: []RepoReport{}}
+	repos := []index.Repo{}
+	if req.Repo != nil {
+		repos = append(repos, *req.Repo)
+	} else {
+		var err error
+		if repos, err = w.index.ListRepos(ctx, ""); err != nil {
+			return report, fmt.Errorf("reindex: list the repos: %w", err)
+		}
+	}
+	if _, err := w.index.ExpireTagClaims(ctx, w.now().Add(-w.claimTTL)); err != nil {
+		return report, fmt.Errorf("reindex: expire stale tag claims: %w", err)
+	}
+	for _, repo := range repos {
+		rr, err := w.repo(ctx, repo, run.StartedAt, req)
+		report.Repos = append(report.Repos, rr)
+		if err != nil {
+			return report, err
+		}
+	}
+	return report, nil
+}
+
+// beat sets the run's heartbeat every w.heartbeat until stop is called, and cancels the run
+// with errTakenOver when the row is not running any more.
+func (w *Worker) beat(ctx context.Context, id int64, cancel context.CancelCauseFunc) (stop func()) {
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		t := time.NewTicker(w.heartbeat)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+			err := w.index.HeartbeatReindexRun(ctx, id, w.now())
+			switch {
+			case errors.Is(err, index.ErrNotFound):
+				w.log.ErrorContext(ctx, "reindex: the run was closed by a later start; stopping", "run", id)
+				cancel(errTakenOver)
+				return
+			case err != nil && ctx.Err() == nil:
+				w.log.WarnContext(ctx, "reindex: heartbeat not written", "run", id, "error", err.Error())
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-finished
+	}
+}
+
+// finish stores the outcome of a run.
+func (w *Worker) finish(ctx context.Context, run *index.ReindexRun, report *Report, err error) {
+	run.State, run.Error = index.ReindexDone, ""
+	if err != nil {
+		run.State, run.Error = index.ReindexFailed, err.Error()
+	}
+	if report != nil {
+		run.Report, _ = json.Marshal(report) // plain structs of strings and numbers
+	}
+	now := w.now()
+	run.FinishedAt = &now
+	if errors.Is(err, errTakenOver) {
+		return // the row is abandoned already
+	}
+	if ferr := w.index.FinishReindexRun(ctx, run); ferr != nil {
+		w.log.ErrorContext(ctx, "reindex: the outcome of a run not written", "run", run.ID, "state", run.State, "error", ferr.Error())
+	}
+}
+
+// replica names this process for reindex_runs.replica: host name and process id.
+func replica() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "unknown"
+	}
+	return host + " " + strconv.Itoa(os.Getpid())
+}
