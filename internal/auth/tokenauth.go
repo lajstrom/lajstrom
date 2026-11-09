@@ -217,13 +217,43 @@ func (b *bounded[K, V]) putUnless(k K, v V, keep func(V) bool) bool {
 		}
 		b.order.Remove(el)
 	}
+	b.push(k, v)
+	return true
+}
+
+// get returns the value of k, and whether there is one.
+func (b *bounded[K, V]) get(k K) (V, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if el, ok := b.entries[k]; ok {
+		return el.Value.(*boundedEntry[K, V]).value, true
+	}
+	var zero V
+	return zero, false
+}
+
+// update stores f(the value of k, whether there is one) as the value of k, in one step.
+func (b *bounded[K, V]) update(k K, f func(V, bool) V) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var old V
+	el, ok := b.entries[k]
+	if ok {
+		old = el.Value.(*boundedEntry[K, V]).value
+		b.order.Remove(el)
+	}
+	b.push(k, f(old, ok))
+}
+
+// push stores v as the value of k, written last, and evicts beyond the size; b.mu is held and
+// k has no entry.
+func (b *bounded[K, V]) push(k K, v V) {
 	b.entries[k] = b.order.PushBack(&boundedEntry[K, V]{key: k, value: v})
 	for b.order.Len() > b.size {
 		oldest := b.order.Front()
 		b.order.Remove(oldest)
 		delete(b.entries, oldest.Value.(*boundedEntry[K, V]).key)
 	}
-	return true
 }
 
 // len returns the number of entries.

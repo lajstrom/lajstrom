@@ -452,6 +452,7 @@ func TestAuthenticateConcurrent(t *testing.T) {
 		})
 	}
 	wg.Wait()
+	f.clock.advance(LoginWindow) // the 16 wrong passwords put alice under throttle
 	f.wantOK(t, "alice", alicePassword, 0)
 }
 
