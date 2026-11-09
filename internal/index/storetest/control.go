@@ -141,15 +141,26 @@ func testUsers(t *testing.T, s index.Store) {
 	must(t, err)
 	same(t, "ListUsers", []index.User{users[1], users[0]}, all)
 
-	u := users[1]
-	u.Name, u.PasswordHash, u.Disabled = "mallory", passwordHash("new"), false
-	must(t, s.UpdateUser(ctx, &u))
-	if u.Name != "alice" {
-		t.Errorf("UpdateUser changed the name to %q", u.Name)
+	for _, u := range users {
+		if !index.IsUID(u.UID) {
+			t.Errorf("CreateUser gave %s the uid %q", u.Name, u.UID)
+		}
 	}
-	got, err := s.GetUser(ctx, "alice")
+	got, err := s.GetUserByUID(ctx, users[0].UID)
+	must(t, err)
+	same(t, "GetUserByUID", users[0], *got)
+
+	// A rename and a new password; the uid stays.
+	u := users[1]
+	u.Name, u.PasswordHash, u.Disabled, u.UID = "mallory", passwordHash("new"), false, "ignored"
+	must(t, s.UpdateUser(ctx, &u))
+	if u.UID != users[1].UID {
+		t.Errorf("UpdateUser changed the uid to %q", u.UID)
+	}
+	got, err = s.GetUser(ctx, "mallory")
 	must(t, err)
 	same(t, "user after UpdateUser", u, *got)
+	wantErr(t, "GetUser of the old name", second(s.GetUser(ctx, "alice")), index.ErrNotFound)
 
 	for _, tt := range []struct {
 		name string
@@ -157,10 +168,36 @@ func testUsers(t *testing.T, s index.Store) {
 		want error
 	}{
 		{"CreateUser duplicate", s.CreateUser(ctx, &index.User{Name: "bob", Kind: "local"}), index.ErrConflict},
-		{"UpdateUser missing", s.UpdateUser(ctx, &index.User{ID: 999999, Kind: "local"}), index.ErrNotFound},
+		{"UpdateUser to a name another has", s.UpdateUser(ctx, &index.User{ID: u.ID, Name: "bob", Kind: "local"}), index.ErrConflict},
+		{"UpdateUser missing", s.UpdateUser(ctx, &index.User{ID: 999999, Name: "x", Kind: "local"}), index.ErrNotFound},
 		{"GetUser missing", second(s.GetUser(ctx, "carol")), index.ErrNotFound},
+		{"GetUserByUID missing", second(s.GetUserByUID(ctx, index.NewUID(at(0)))), index.ErrNotFound},
+		{"GetUserByUID not a uid", second(s.GetUserByUID(ctx, "bob")), index.ErrNotFound},
 	} {
 		wantErr(t, tt.name, tt.err, tt.want)
+	}
+}
+
+// testUsersDeleted: a deleted user keeps its row, by its uid, and frees its name: GetUser and
+// ListUsers do not see it, and a new user of the name gets another uid.
+func testUsersDeleted(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	bob := newUser(t, s, "bob")
+	deletedAt := at(5)
+	bob.DeletedName, bob.Name, bob.DeletedAt, bob.Disabled = bob.Name, "~"+bob.UID, &deletedAt, true
+	must(t, s.UpdateUser(ctx, &bob))
+	wantErr(t, "GetUser of a deleted user", second(s.GetUser(ctx, "bob")), index.ErrNotFound)
+	got, err := s.GetUserByUID(ctx, bob.UID)
+	must(t, err)
+	same(t, "GetUserByUID of a deleted user", bob, *got)
+	all, err := s.ListUsers(ctx)
+	must(t, err)
+	if len(all) != 0 {
+		t.Errorf("ListUsers = %+v, want no deleted user", all)
+	}
+	again := newUser(t, s, "bob")
+	if again.UID == bob.UID {
+		t.Errorf("the new bob has the uid of the deleted one")
 	}
 }
 
@@ -664,6 +701,42 @@ func testAudit(t *testing.T, s index.Store) {
 	must(t, s.AppendAudit(ctx, &now))
 	if now.At.Before(before) {
 		t.Errorf("zero At became %v, want now", now.At)
+	}
+}
+
+// testAuditPrincipalName: an event of user:<uid> gets the user's name of its time, a rename
+// changes the name of the events after it and not of those before, a deleted user's events get
+// the name it had, and a name given is kept; other principals get none.
+func testAuditPrincipalName(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	alice := newUser(t, s, "alice")
+	p := "user:" + alice.UID
+	evs := []*index.AuditEvent{{Principal: p, Action: "push"}}
+	must(t, s.AppendAudit(ctx, evs[0]))
+	alice.Name = "alicia"
+	must(t, s.UpdateUser(ctx, &alice))
+	evs = append(evs, &index.AuditEvent{Principal: p, Action: "push"})
+	must(t, s.AppendAudit(ctx, evs[1]))
+	deletedAt := at(9)
+	alice.DeletedName, alice.Name, alice.DeletedAt = alice.Name, "~"+alice.UID, &deletedAt
+	must(t, s.UpdateUser(ctx, &alice))
+	evs = append(evs, &index.AuditEvent{Principal: p, Action: "user.delete"},
+		&index.AuditEvent{Principal: p, PrincipalName: "given", Action: "push"},
+		&index.AuditEvent{Principal: "token:3", Action: "push"},
+		&index.AuditEvent{Principal: "user:alice", Action: "push"})
+	for _, ev := range evs[2:] {
+		must(t, s.AppendAudit(ctx, ev))
+	}
+	want := []string{"alice", "alicia", "alicia", "given", "", ""}
+	for i, ev := range evs {
+		if ev.PrincipalName != want[i] {
+			t.Errorf("event %d of %s: PrincipalName %q, want %q", i, ev.Principal, ev.PrincipalName, want[i])
+		}
+	}
+	listed, err := s.ListAudit(ctx, index.AuditFilter{Principal: p})
+	must(t, err)
+	if len(listed) != 4 || listed[3].PrincipalName != "alice" {
+		t.Errorf("ListAudit of %s: %+v, want 4 events, the oldest of alice", p, listed)
 	}
 }
 
