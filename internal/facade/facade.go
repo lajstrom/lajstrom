@@ -84,7 +84,7 @@ const apiVersionHeader = "Docker-Distribution-API-Version"
 //	POST /v2/<name>/blobs/uploads/              a session, a monolithic upload (?digest=) or a mount
 //	PATCH|PUT|GET|DELETE /v2/<name>/blobs/uploads/<id>   the session, from any replica
 //	GET  /v2/<name>/tags/list?n=&last=          from the index; from the backend on an oci repo
-//	GET  /v2/<name>/referrers/<digest>          501 until #28
+//	GET  /v2/<name>/referrers/<digest>          the referrers, ?artifactType=: the backend's API or the tag schema
 //	DELETE manifests and blobs                  405 until #61
 //
 // <name> is <format>/<repo>/<path>: the repo must exist (NAME_UNKNOWN), and the backend gets
@@ -324,12 +324,4 @@ func (h *handler) backend(ctx context.Context, t *target) (provider.Repository, 
 		return nil, fmt.Errorf("facade: repository %s: %w", t.name, err)
 	}
 	return rr, nil
-}
-
-// referrers answers GET …/referrers/<digest>: 501 until #28.
-func (h *handler) referrers(_ http.ResponseWriter, r *http.Request, t *target, _ string) error {
-	if err := h.authorize(r.Context(), auth.ActionRead, t); err != nil {
-		return err
-	}
-	return &apiError{status: http.StatusNotImplemented, code: codeUnsupported, msg: "the referrers API comes with #28"}
 }

@@ -13,7 +13,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -238,6 +240,55 @@ func TestIntegrationPassThrough(t *testing.T) {
 	resp, body = request(t, http.MethodGet, r.a.URL+"/v2/_catalog", nil, 0)
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"`+r.name+`"`) {
 		t.Errorf("_catalog: %d %s", resp.StatusCode, body)
+	}
+}
+
+// TestIntegrationReferrers lists the referrers of a manifest through the facade from a real
+// registry: through its referrers API (Zot) or the sha256-<hex> tag schema (distribution), which
+// the provider writes on the push of the referrer and reads for the listing. The subject and
+// two referrers are pushed to replica A of an oci repo, and replica B lists them, all, and those
+// of one artifactType with OCI-Filters-Applied.
+func TestIntegrationReferrers(t *testing.T) {
+	r := newReplicas(t)
+	layer := []byte("layer " + randomHex(t))
+	for _, b := range [][]byte{layer, ocispec.DescriptorEmptyJSON.Data, []byte("signature"), []byte("sbom")} {
+		resp, body := request(t, http.MethodPost, r.a.URL+"/v2/"+r.name+"/blobs/uploads/?digest="+digest.FromBytes(b).String(),
+			bytes.NewReader(b), int64(len(b)))
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("blob: %d %s", resp.StatusCode, body)
+		}
+	}
+	m, subject := manifest(t, layer, "subject")
+	put := func(ref string, b []byte) {
+		t.Helper()
+		resp, body := request(t, http.MethodPut, r.a.URL+"/v2/"+r.name+"/manifests/"+ref, bytes.NewReader(b), int64(len(b)),
+			"Content-Type", ocispecManifest)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("manifest %s: %d %s", ref, resp.StatusCode, body)
+		}
+	}
+	put("v1", m)
+	sig, sigDigest := referrerOf(t, subject, cosignBundle, "signature")
+	sbom, sbomDigest := referrerOf(t, subject, spdxJSON, "sbom")
+	put(sigDigest.String(), sig)
+	put(sbomDigest.String(), sbom)
+	for _, tt := range []struct {
+		query, filter string
+		want          []string
+	}{
+		{"", "", []string{sigDigest.String() + " " + cosignBundle, sbomDigest.String() + " " + spdxJSON}},
+		{"?artifactType=" + url.QueryEscape(spdxJSON), "artifactType", []string{sbomDigest.String() + " " + spdxJSON}},
+	} {
+		resp, body := request(t, http.MethodGet, r.b.URL+"/v2/"+r.name+"/referrers/"+subject.String()+tt.query, nil, 0)
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != ocispec.MediaTypeImageIndex ||
+			resp.Header.Get("OCI-Filters-Applied") != tt.filter {
+			t.Errorf("referrers%s: %d %q, OCI-Filters-Applied %q: %s", tt.query, resp.StatusCode, resp.Header.Get("Content-Type"),
+				resp.Header.Get("OCI-Filters-Applied"), body)
+		}
+		slices.Sort(tt.want)
+		if got := referrersOf(t, "referrers"+tt.query, body); !slices.Equal(got, tt.want) {
+			t.Errorf("referrers%s = %q, want %q", tt.query, got, tt.want)
+		}
 	}
 }
 

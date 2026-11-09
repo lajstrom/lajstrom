@@ -106,8 +106,10 @@ func manifestUnknown(err error) error {
 // Options.MaxManifestSize) is read and checked to be a manifest of one of manifestMediaTypes
 // whose mediaType field, when it has one, is the Content-Type. On a repo of format oci the
 // manifest then passes through: it is pushed with its tag (PushReference) or by its digest,
-// which must be the reference's, oci_repos records the OCI name, and the answer is 201. Every
-// other format goes through the manifest hook into ingest (putManaged).
+// which must be the reference's, oci_repos records the OCI name, and the answer is 201, with
+// OCI-Subject for a manifest with a subject: the facade serves the referrers API, and the
+// provider writes the tag schema where the backend has none. Every other format goes through
+// the manifest hook into ingest (putManaged).
 func (h *handler) putManifest(w http.ResponseWriter, r *http.Request, t *target, ref string) error {
 	ctx := r.Context()
 	refDigest, err := parseReference(ref)
@@ -144,10 +146,7 @@ func (h *handler) putManifest(w http.ResponseWriter, r *http.Request, t *target,
 		h.o.Log.ErrorContext(ctx, "facade: record the OCI repository", "name", t.name, "error", err.Error(),
 			"requestId", server.RequestID(ctx))
 	}
-	w.Header().Set("Location", "/v2/"+t.name+"/manifests/"+desc.Digest.String())
-	w.Header().Set("Docker-Content-Digest", desc.Digest.String())
-	w.Header().Set("Content-Length", "0")
-	w.WriteHeader(http.StatusCreated)
+	created(w, t, desc.Digest, subjectOf(body))
 	return nil
 }
 
