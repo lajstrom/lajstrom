@@ -220,3 +220,22 @@ func header(t *testing.T, rr *httptest.ResponseRecorder, name, want string) {
 		t.Errorf("%s = %q, want %q", name, got, want)
 	}
 }
+
+// sign pushes to the OCI repository name a cosign bundle whose subject is the manifest of
+// digest subject, straight to the registry, and returns the bundle's digest.
+func (e *env) sign(t *testing.T, name, subject string) digest.Digest {
+	t.Helper()
+	m := []byte(`{"schemaVersion":2,"mediaType":"` + ocispec.MediaTypeImageManifest + `",` +
+		`"artifactType":"application/vnd.dev.sigstore.bundle.v0.3+json",` +
+		`"config":{"mediaType":"` + ocispec.MediaTypeEmptyJSON + `","digest":"` + ocispec.DescriptorEmptyJSON.Digest.String() + `","size":2},` +
+		`"layers":[],"subject":{"mediaType":"` + ocispec.MediaTypeImageManifest + `","digest":"` + subject + `","size":1}}`)
+	d := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: digest.FromBytes(m), Size: int64(len(m))}
+	r, err := e.prov.Repository(t.Context(), name)
+	if err == nil {
+		err = r.Push(t.Context(), d, bytes.NewReader(m))
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d.Digest
+}
