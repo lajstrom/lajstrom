@@ -27,6 +27,11 @@ const (
 // lastUpdatedLayout is the format of lastUpdated in a maven-metadata.xml, yyyyMMddHHmmss in UTC.
 const lastUpdatedLayout = "20060102150405"
 
+// metadataScope returns the index_cache scope of the maven-metadata.xml of an artifact.
+func metadataScope(c Coordinates) format.IndexScope {
+	return format.IndexScope(c.GroupID + "/" + c.ArtifactID)
+}
+
 // metadataKind returns the index_cache kind of the maven-metadata.xml, for algorithm "", or of
 // its checksum file of algorithm.
 func metadataKind(algorithm string) string {
