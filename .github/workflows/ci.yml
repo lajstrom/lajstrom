@@ -194,6 +194,59 @@ jobs:
               ;;
           esac
 
+  e2e:
+    # make e2e (#34, docs/testing.md): bin/lajstrom on the runner against Zot, and the scenarios
+    # of test/e2e/ with real clients, curl on the runner and oras and apt-get in containers with
+    # --network host. The same paths as the integration cells decide whether it runs. Not a
+    # matrix, so a skipped run reports the check e2e itself.
+    name: e2e
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      zot:
+        # The Zot of the integration job: v2.1.23, the minimal build, on the configuration built
+        # into its image, without a health check (see there).
+        # sha256:59cb5740832970818903c5ce104425762664c7880835ee566506aad397cd3458
+        image: ghcr.io/project-zot/zot-minimal:v2.1.23
+        ports:
+          - "5000:5000"
+    steps:
+      - name: Wait for Zot
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 30); do
+            if curl -fsS --max-time 2 http://localhost:5000/v2/ > /dev/null 2>&1; then
+              echo "ready: zot"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::zot did not answer within 30 s: curl http://localhost:5000/v2/"
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - name: Pull the client images
+        # The images the scenarios run (test/e2e/*.sh headers), pulled here so that the budget of
+        # the next step is the scenarios'. oras is not installed: oras.sh uses the image too.
+        timeout-minutes: 3
+        run: |
+          docker pull --platform linux/amd64 ubuntu:24.04
+          docker pull ghcr.io/oras-project/oras:v1.3.6
+      - name: make e2e
+        # The budget of #34. A failed scenario prints its FAIL lines and the last 50 lines of
+        # the server log.
+        timeout-minutes: 6
+        env:
+          LAJSTROM_E2E_REGISTRY: localhost:5000
+        run: make e2e
+
   lint:
     name: lint
     runs-on: ubuntu-latest
