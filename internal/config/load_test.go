@@ -48,7 +48,8 @@ func TestLoadDefaults(t *testing.T) {
 				t.Fatalf("Load: %v", err)
 			}
 			want := &Config{
-				Server:    Server{Listen: ":8080", ShutdownTimeout: 30 * time.Second, MaxManifestSize: 4 << 20, MetricsListen: "127.0.0.1:9464"},
+				Server: Server{Listen: ":8080", ShutdownTimeout: 30 * time.Second, MaxManifestSize: 4 << 20, MetricsListen: "127.0.0.1:9464",
+					StallTimeout: time.Minute},
 				Log:       Log{Level: "info", Format: "text"},
 				Database:  Database{Driver: "sqlite", DSN: "file:lajstrom.db"},
 				Ingest:    Ingest{ClaimTTL: 10 * time.Minute},
@@ -127,6 +128,8 @@ func TestLoadErrors(t *testing.T) {
 		{name: "metrics on the public listener", file: minimal[:len(minimal)-1] + "\n  metricsListen: \":8080\"\n",
 			want: []string{"server.metricsListen: must not be server.listen"}},
 		{name: "negative manifest size", file: minimal + "  maxManifestSize: -1\n", want: []string{"server.maxManifestSize: must not be negative"}},
+		{name: "negative limits", file: minimal + "  stallTimeout: -1s\n  maxConcurrentUploads: -1\n",
+			want: []string{"server.stallTimeout: must not be negative", "server.maxConcurrentUploads: must not be negative"}},
 		{name: "keys", file: minimal + "keys: {algorithm: dsa, retireGrace: -1h}\n",
 			want: []string{`keys.algorithm: "dsa" is not ed25519 or rsa4096`, "keys.retireGrace: must not be negative"}},
 		{name: "empty keys.algorithm", file: minimal + "keys: {algorithm: \"\"}\n", want: []string{`keys.algorithm: "" is not ed25519 or rsa4096`}},

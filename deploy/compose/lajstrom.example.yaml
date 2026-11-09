@@ -19,6 +19,8 @@ server:
   maxManifestSize: 4194304            # bytes; the largest manifest a PUT to /v2 may carry
   metricsListen: "127.0.0.1:9464"     # GET /metrics for Prometheus; never the public host; empty: off
   pprof: false                        # /debug/pprof/ on the metrics listener
+  stallTimeout: 1m                    # a body that moves no byte for this long is cut off; 0s: off
+  maxConcurrentUploads: 0             # uploads at once per replica, the next one is 503; 0: no limit
 
 log:
   level: info                         # debug | info | warn | error

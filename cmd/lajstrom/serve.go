@@ -133,6 +133,8 @@ func newServeCmd(a *app) *cobra.Command {
 				Authenticator:   authn,
 				MetricsListen:   c.Server.MetricsListen,
 				Pprof:           c.Server.Pprof,
+				StallTimeout:    c.Server.StallTimeout,
+				MaxUploads:      c.Server.MaxConcurrentUploads,
 			})
 			if err != nil {
 				return err

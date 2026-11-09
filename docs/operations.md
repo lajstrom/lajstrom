@@ -323,6 +323,30 @@ closed. A `4xx` is an answer; a `429`, and a request whose client went away, cou
 refuses counts as unanswered, so a breaker that stays open for a minute turns
 [`/-/readyz`](#readiness) to `503`, as a registry that does not answer does.
 
+### Requests from clients
+
+| Bound | Value | What happens |
+| --- | --- | --- |
+| request headers | 10 s, fixed | a client that has not sent its headers in 10 s is disconnected |
+| header size | 1 MiB, fixed | `431 Request Header Fields Too Large` |
+| idle keep-alive connection | 120 s, fixed | the connection is closed |
+| a body that stops moving | `server.stallTimeout`, `1m` | each read of a request body and each write of a response must move within it, or the connection is closed; the handler gets a read or write error |
+| uploads at once | `server.maxConcurrentUploads`, no limit | `503` with `Retry-After: 5`, before the body is read |
+| a manifest | `server.maxManifestSize`, 4 MiB | `413` |
+| a body of the management API | 64 KiB, fixed | `413` |
+| a file a frontend receives | the repo's `policy.maxFileSize` | `413` |
+
+There is no bound on the whole length of a request or a response: a blob streams for as long as
+its size needs, which a fixed read or write timeout would cut off. `server.stallTimeout` bounds
+what a slow or stuck client can hold instead (a connection, a goroutine, an upload slot, a
+connection to the registry): only time in which no byte moves counts, and the time the server
+waits for the registry or the index between two reads does not. A client behind a slow link
+keeps sending and passes; one that stops sending, or opens a download and stops reading, is cut
+off. The limit on uploads at once is per replica, and off by default: set it from what a replica
+can hold at once, the disk for the spooled files of the frontends and the connections to the
+registry. A request refused for it is in the access log with status `503`. How many requests a
+client may send is the edge's to limit.
+
 ## Metrics
 
 Prometheus scrapes `GET /metrics` on the metrics listener, `server.metricsListen` (default
