@@ -3,6 +3,7 @@ package sqlstore
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -73,36 +74,54 @@ func (c *conn) DeleteRepo(ctx context.Context, id int64) error {
 	})
 }
 
-const userCols = "id, name, password_hash, kind, disabled, created_at"
+const userCols = "id, uid, name, password_hash, kind, disabled, created_at, deleted_at, deleted_name"
 
 func userDests(u *index.User) []any {
-	return []any{&u.ID, &u.Name, textDest{&u.PasswordHash}, &u.Kind, &u.Disabled, timeDest{&u.CreatedAt}}
+	return []any{&u.ID, textDest{&u.UID}, &u.Name, textDest{&u.PasswordHash}, &u.Kind, &u.Disabled, timeDest{&u.CreatedAt},
+		nullTimeDest{&u.DeletedAt}, textDest{&u.DeletedName}}
 }
 
-// GetUser returns the user with the given name.
+// GetUser returns the live user with the given name.
 func (c *conn) GetUser(ctx context.Context, name string) (*index.User, error) {
-	return getOne(ctx, c, "users "+name, userDests, "SELECT "+userCols+" FROM users WHERE name = ?", name)
+	return getOne(ctx, c, "users "+name, userDests,
+		"SELECT "+userCols+" FROM users WHERE name = ? AND deleted_at IS NULL", name)
 }
 
-// ListUsers returns all users ordered by name.
+// GetUserByUID returns the user with the given uid, live or deleted. A string that is not of
+// the form of a uid is no user's.
+func (c *conn) GetUserByUID(ctx context.Context, uid string) (*index.User, error) {
+	if !index.IsUID(uid) {
+		return nil, fmt.Errorf("%w: users uid %q", index.ErrNotFound, uid)
+	}
+	return getOne(ctx, c, "users uid "+uid, userDests, "SELECT "+userCols+" FROM users WHERE uid = ?", uid)
+}
+
+// ListUsers returns the live users ordered by name.
 func (c *conn) ListUsers(ctx context.Context) ([]index.User, error) {
-	return getAll(ctx, c, "users", userDests, "SELECT "+userCols+" FROM users ORDER BY name")
+	return getAll(ctx, c, "users", userDests, "SELECT "+userCols+" FROM users WHERE deleted_at IS NULL ORDER BY name")
 }
 
-// CreateUser inserts u.
+// CreateUser inserts u, with a new uid when UID is empty.
 func (c *conn) CreateUser(ctx context.Context, u *index.User) error {
+	stamp(&u.CreatedAt, now())
+	if u.UID == "" {
+		u.UID = index.NewUID(u.CreatedAt)
+	}
 	return c.scanRow(ctx, "users "+u.Name,
-		"INSERT INTO users (name, password_hash, kind, disabled, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
-		[]any{u.Name, textArg(u.PasswordHash), u.Kind, u.Disabled, c.d.EncodeTime(stamp(&u.CreatedAt, now()))},
+		"INSERT INTO users (uid, name, password_hash, kind, disabled, created_at, deleted_at, deleted_name)"+
+			" VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+		[]any{u.UID, u.Name, textArg(u.PasswordHash), u.Kind, u.Disabled, c.d.EncodeTime(u.CreatedAt),
+			c.d.encodeNullTime(stampNull(u.DeletedAt)), textArg(u.DeletedName)},
 		&u.ID)
 }
 
-// UpdateUser stores u by u.ID and fills Name and CreatedAt from the row.
+// UpdateUser stores u by u.ID and fills UID and CreatedAt from the row.
 func (c *conn) UpdateUser(ctx context.Context, u *index.User) error {
 	return c.scanRow(ctx, fmt.Sprintf("users id %d", u.ID),
-		"UPDATE users SET password_hash = ?, kind = ?, disabled = ? WHERE id = ? RETURNING name, created_at",
-		[]any{textArg(u.PasswordHash), u.Kind, u.Disabled, u.ID},
-		&u.Name, timeDest{&u.CreatedAt})
+		"UPDATE users SET name = ?, password_hash = ?, kind = ?, disabled = ?, deleted_at = ?, deleted_name = ?"+
+			" WHERE id = ? RETURNING uid, created_at",
+		[]any{u.Name, textArg(u.PasswordHash), u.Kind, u.Disabled, c.d.encodeNullTime(stampNull(u.DeletedAt)), textArg(u.DeletedName), u.ID},
+		textDest{&u.UID}, timeDest{&u.CreatedAt})
 }
 
 // tokCols, not tokenCols: gosec (G101) takes a long string named token… for a credential.
@@ -325,10 +344,10 @@ func (c *conn) ExpireSessions(ctx context.Context, before time.Time) (int, error
 		c.d.EncodeTime(now()), c.d.EncodeTime(before))
 }
 
-const auditCols = "id, at, principal, action, repo, subject, digest, ip, details"
+const auditCols = "id, at, principal, principal_name, action, repo, subject, digest, ip, details"
 
 func auditDests(ev *index.AuditEvent) []any {
-	return []any{&ev.ID, timeDest{&ev.At}, &ev.Principal, &ev.Action, &ev.Repo, &ev.Subject,
+	return []any{&ev.ID, timeDest{&ev.At}, &ev.Principal, textDest{&ev.PrincipalName}, &ev.Action, &ev.Repo, &ev.Subject,
 		textDest{(*string)(&ev.Digest)}, &ev.IP, rawDest{&ev.Details}}
 }
 
@@ -360,10 +379,15 @@ func (c *conn) ListAudit(ctx context.Context, f index.AuditFilter) ([]index.Audi
 
 // AppendAudit inserts ev; At is set when zero.
 func (c *conn) AppendAudit(ctx context.Context, ev *index.AuditEvent) error {
+	var uid any // the uid of a user principal, whose name the row gets when it has none
+	if rest, ok := strings.CutPrefix(ev.Principal, "user:"); ok && index.IsUID(rest) {
+		uid = rest
+	}
 	return c.scanRow(ctx, "audit "+ev.Action,
-		"INSERT INTO audit (at, principal, action, repo, subject, digest, ip, details)"+
-			" VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
-		[]any{c.d.EncodeTime(stamp(&ev.At, now())), ev.Principal, ev.Action, ev.Repo, ev.Subject,
+		"INSERT INTO audit (at, principal, principal_name, action, repo, subject, digest, ip, details)"+
+			" VALUES (?, ?, COALESCE(?, (SELECT COALESCE(deleted_name, name) FROM users WHERE CAST(uid AS TEXT) = ?)), ?, ?, ?, ?, ?, ?)"+
+			" RETURNING id, principal_name",
+		[]any{c.d.EncodeTime(stamp(&ev.At, now())), ev.Principal, textArg(ev.PrincipalName), uid, ev.Action, ev.Repo, ev.Subject,
 			textArg(string(ev.Digest)), ev.IP, rawArg(ev.Details)},
-		&ev.ID)
+		&ev.ID, textDest{&ev.PrincipalName})
 }

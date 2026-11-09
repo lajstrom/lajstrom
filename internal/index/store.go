@@ -42,9 +42,11 @@ type Reader interface {
 	// format and name.
 	ListRepos(ctx context.Context, format string) ([]Repo, error)
 
-	// GetUser returns the user with the given name.
+	// GetUser returns the live user with the given name.
 	GetUser(ctx context.Context, name string) (*User, error)
-	// ListUsers returns all users ordered by name.
+	// GetUserByUID returns the user with the given uid, live or deleted.
+	GetUserByUID(ctx context.Context, uid string) (*User, error)
+	// ListUsers returns the live users ordered by name.
 	ListUsers(ctx context.Context) ([]User, error)
 
 	// GetTokenByHash returns the token whose secret hashes to hash (hex sha256), revoked and
@@ -144,9 +146,10 @@ type Writer interface {
 	// DeleteRepo removes the repo and every row that refers to it.
 	DeleteRepo(ctx context.Context, id int64) error
 
-	// CreateUser inserts u; the name must be new.
+	// CreateUser inserts u; the name must be new. UID is made (NewUID) when it is empty.
 	CreateUser(ctx context.Context, u *User) error
-	// UpdateUser stores u by u.ID. Name cannot change.
+	// UpdateUser stores Name, PasswordHash, Kind, Disabled, DeletedAt and DeletedName of u by
+	// u.ID and fills UID and CreatedAt from the row. A name another user has is ErrConflict.
 	UpdateUser(ctx context.Context, u *User) error
 
 	// CreateToken inserts t; the hash must be new.
@@ -181,7 +184,9 @@ type Writer interface {
 	// and returns how many it changed.
 	ExpireSessions(ctx context.Context, before time.Time) (int, error)
 
-	// AppendAudit inserts ev; At is set when zero. Audit rows are never changed.
+	// AppendAudit inserts ev; At is set when zero, and PrincipalName, when empty and Principal is
+	// user:<uid>, to that user's name at the time (the name it had when deleted, for a deleted
+	// user). Audit rows are never changed.
 	AppendAudit(ctx context.Context, ev *AuditEvent) error
 
 	// Coordination: tag claims, the lock on a tag that ingest takes before the registry write

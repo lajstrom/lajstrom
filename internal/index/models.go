@@ -29,12 +29,20 @@ type Repo struct {
 
 // User is a row of users (control plane).
 type User struct {
-	ID           int64
+	ID int64
+	// UID is the user's identity, a UUID v7 (NewUID), made when the row is inserted and never
+	// changed: principals refer to it, user:<uid> (docs/spec/rbac.md §1).
+	UID string
+	// Name is unique among the users; a deleted user's is ~<uid>, which no name can be.
 	Name         string
 	PasswordHash string // argon2id; empty for users without a password
 	Kind         string // local; oidc after the MVP
 	Disabled     bool
 	CreatedAt    time.Time
+	// DeletedAt is when the user was deleted; nil for a live user. DeletedName is the name it
+	// had then.
+	DeletedAt   *time.Time
+	DeletedName string
 }
 
 // Token is a row of tokens (control plane): a personal access token or a deploy token.
@@ -136,13 +144,16 @@ type ReindexOptions struct {
 type AuditEvent struct {
 	ID        int64
 	At        time.Time
-	Principal string          // canonical form
-	Action    string          // push, delete, repo.create, token.create, …
-	Repo      string          // <format>/<repo>, empty for system actions
-	Subject   string          // package and version, or the user acted upon
-	Digest    digest.Digest   // manifest digest, empty when none
-	IP        string          // client address
-	Details   json.RawMessage // anything else, e.g. the request id
+	Principal string // canonical form
+	// PrincipalName is a user's name at the time of the event; AppendAudit looks it up by the
+	// uid of Principal when it is empty. Empty for other principals.
+	PrincipalName string
+	Action        string          // push, delete, repo.create, token.create, …
+	Repo          string          // <format>/<repo>, empty for system actions
+	Subject       string          // package and version, or the user acted upon
+	Digest        digest.Digest   // manifest digest, empty when none
+	IP            string          // client address
+	Details       json.RawMessage // anything else, e.g. the request id
 }
 
 // Package is a row of packages (derived).
