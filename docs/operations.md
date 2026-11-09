@@ -9,6 +9,25 @@ Lajstrom runs behind an edge that terminates TLS: [reverse-proxy.md](reverse-pro
 the edge must do (`server.externalURL`, uploads, forwarded headers, timeouts) and the rate limits
 that belong there, with an nginx and a Caddy configuration.
 
+### What Lajstrom answers browsers
+
+Lajstrom's clients are package managers, but a person may open a URL of it in a browser, and a
+browser keeps the HTTP Basic credentials it was given. So every answer of the main listener
+carries, whatever its route or status (#63):
+
+| Header | Value | Why |
+| --- | --- | --- |
+| `X-Content-Type-Options` | `nosniff` | a browser takes the type sent, and never guesses HTML in a file |
+| `Content-Security-Policy` | `default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'` | a raw file uploaded as `text/html` or `image/svg+xml`, or a POM served as XML, runs no script, loads nothing, submits no form and is framed by no page, on the registry's own origin |
+| `Referrer-Policy` | `no-referrer` | a link followed from a PyPI simple page does not send the registry's URL elsewhere |
+
+and no `Server` header. A request that changes something (not `GET`, `HEAD` or `OPTIONS`) and
+that a browser sends from another site, by its `Sec-Fetch-Site` or `Origin`, is refused with
+`403` before its credentials are checked: a page an admin visits cannot submit a form to
+`/api/v1` with the admin's cached credentials. Package clients send neither header and pass.
+`Strict-Transport-Security` is the edge's to set, with the certificate. The threat model is
+[security/threat-model.md](security/threat-model.md).
+
 ## Users
 
 Users live in the index database, not in the configuration file; [auth.md](auth.md) has the

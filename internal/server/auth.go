@@ -174,12 +174,13 @@ func retryAfter(d time.Duration) string {
 	return strconv.Itoa(max(int(math.Ceil(d.Seconds())), 1))
 }
 
-// writeRefusal answers a request that the middleware refuses, 401 with a challenge, 429 or 500, in
-// the error format of the route's family: the error document of the distribution spec under
+// writeRefusal answers a request that the middleware refuses, 401 with a challenge, 403, 429 or
+// 500, in the error format of the route's family: the error document of the distribution spec under
 // /v2/ (internal/facade), the envelope of the management API under /api/ (internal/api; 401
 // is FORBIDDEN there, told apart by the status and the challenge), plain text elsewhere
-// (format.WriteError). A 429 is TOOMANYREQUESTS under /v2/ and UNAVAILABLE under /api/, and
-// the caller has set Retry-After. The challenge of a 401 under /v2/ is the bearer challenge of the token
+// (format.WriteError). A 403 is DENIED under /v2/ and FORBIDDEN under /api/; a 429 is
+// TOOMANYREQUESTS under /v2/ and UNAVAILABLE under /api/, and the caller has set Retry-After.
+// The challenge of a 401 under /v2/ is the bearer challenge of the token
 // flow (docs/spec/rbac.md §4) without a scope, as the facade answers: the client goes to the
 // realm with the credentials that were refused, and learns there that they are wrong. On
 // /v2/token itself, the one endpoint of /v2 that takes Basic, and everywhere else, it is Basic.
@@ -201,6 +202,8 @@ func (s *Server) writeRefusal(w http.ResponseWriter, r *http.Request, status int
 		switch status {
 		case http.StatusUnauthorized:
 			code = "UNAUTHORIZED"
+		case http.StatusForbidden:
+			code = "DENIED"
 		case http.StatusTooManyRequests:
 			code = "TOOMANYREQUESTS"
 		}
@@ -208,7 +211,7 @@ func (s *Server) writeRefusal(w http.ResponseWriter, r *http.Request, status int
 	case strings.HasPrefix(path, "/api/"):
 		code := "INTERNAL"
 		switch status {
-		case http.StatusUnauthorized:
+		case http.StatusUnauthorized, http.StatusForbidden:
 			code = "FORBIDDEN"
 		case http.StatusTooManyRequests:
 			code = "UNAVAILABLE"
