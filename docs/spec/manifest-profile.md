@@ -92,7 +92,7 @@ whose content is defined per format:
 | Format | Content of `metadata.json` |
 | --- | --- |
 | raw | `{"path": "<original path>", "contentType": "<as uploaded>", "size": n, "sha256": "<hex>"}` |
-| pypi | the core metadata (PEP 566 JSON form) of the distribution: `name`, `version`, `summary`, `requires_python`, `requires_dist`, `classifiers`, …, plus `filename`, `sha256`, `packagetype` (`bdist_wheel`/`sdist`) |
+| pypi | the core metadata (PEP 566 JSON form) of the distribution: the fields with their keys in lowercase and `-` as `_` (`name`, `version`, `summary`, `requires_python`, `requires_dist`, `classifier`, …), the multiple-use fields as lists, the body as `description`; plus `filename`, `sha256`, `packagetype` (`bdist_wheel`/`sdist`) and `core_metadata`, the `METADATA` or `PKG-INFO` file as the distribution has it, which the simple index serves for PEP 658 |
 | deb | `{"control": {<control fields as strings>}, "md5sums": {<path>: <md5>}, "size": n, "sha256": "<hex>", "md5": "<hex>", "sha1": "<hex>", "filename": "…"}`; `md5` and `sha1` of the whole file are optional (apt's `Packages` carries `MD5sum`, `SHA1` and `SHA256`; an upload through Lajstrom writes all three, a manifest pushed without the two still validates) |
 | maven | `{"groupId", "artifactId", "version", "packaging", "files": [{"name", "extension", "classifier", "sha1", "md5", "sha256", "size"}], "pom": {<parsed essentials: parent, dependencies>}}` |
 
@@ -111,11 +111,11 @@ skipped).
 | `lajstrom.schema` | R | `"1"`. Bump only with an ADR. |
 | `lajstrom.format` | R | repo format: `raw`, `pypi`, `apt`, `maven`, … (the *protocol*, matches the first URL segment) |
 | `lajstrom.repo` | R | repo name as created in the control plane, e.g. `ubuntu-internal` |
-| `lajstrom.name` | R | package name in the format's own spelling (original case): `nginx`, `Requests` (pypi stores the normalised form in `lajstrom.pypi.normalized`), `com.example:lib-core` (maven `groupId:artifactId`), raw: the full path |
+| `lajstrom.name` | R | package name in the format's own spelling (original case): `nginx`, `com.example:lib-core` (maven `groupId:artifactId`), raw: the full path; for pypi the PEP 503 normalized name, `requests` for `Requests`, so that every spelling of a project is one package (the original spelling is the `name` of the metadata layer; decided on #31) |
 | `lajstrom.version` | R | version string exactly as the format spells it: `1:1.18.0-6ubuntu14.4`, `2.32.3`, `1.2.0` |
 | `lajstrom.variant` | | platform discriminator, present when the format has one: deb `<suite>/<component>/<arch>`, the values of `lajstrom.deb.suite`, `.component` and `.arch` joined with `/` (`jammy/main/amd64`, `bookworm/main/all`); rpm arch (later); pypi wheel tag (`py3-none-any`, `cp311-cp311-manylinux_2_17_x86_64`) or `sdist`. Absent for maven, npm, raw. |
 | `lajstrom.deb.arch`, `lajstrom.deb.suite`, `lajstrom.deb.component` | deb | upload metadata and the three parts of `lajstrom.variant`, kept as annotations (and in `versions.attrs`) so that the apt indexes group by them without parsing the variant; `arch` is the control file's `Architecture`. Suite and component are properties of the upload, not separate repos: the same `.deb` in two suites is two manifests over the same blobs |
-| `lajstrom.pypi.normalized` | pypi | PEP 503 normalised project name |
+| `lajstrom.pypi.nonstandard` | pypi | `true` when the version is not a PEP 440 version: accepted and kept as written; pip 22 and later ignore such versions |
 | `lajstrom.maven.groupId`, `lajstrom.maven.artifactId`, `lajstrom.maven.packaging` | maven | coordinates |
 | `lajstrom.raw.path` | raw | original path, case preserved, `/`-separated |
 | `lajstrom.uploaded-by` | | principal name that performed the ingest (informational, not trusted for authz) |
@@ -145,7 +145,7 @@ The OCI repository for a package is
 | Format | Package path |
 | --- | --- |
 | raw | each path component escaped with `EscapeComponent` (section 4.3), joined with `/`: `Docs/Readme.MD` → `docs/readme.md` (the original case is in `lajstrom.raw.path`). A component whose escaped form is longer than 64 bytes is replaced by `h0__` + the first 32 hex characters of `sha256(component)`, as in section 4.3 step 3: registries limit the OCI repository name to 255 characters, and `reindex` reads `lajstrom.raw.path`, so nothing decodes the path. A path whose OCI repository name is still longer than 255 bytes is refused with `400`. A raw path is unique without regard to case, since the OCI repository name is lowercase: the first spelling wins, and a path whose package path is taken by another spelling is a `409`. |
-| pypi | `EscapeComponent(normalized name)`: `Requests` → `requests` |
+| pypi | `EscapeComponent(lajstrom.name)`, the normalized name: `Requests` → `requests` |
 | deb | `EscapeComponent(package)`: `libstdc++6` → `libstdc_2b_2b6` |
 | maven | `EscapeComponent(groupId lowercased)/EscapeComponent(artifactId)`: `com.example:Lib-Core` → `com.example/lib-core` |
 

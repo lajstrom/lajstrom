@@ -62,8 +62,8 @@ const (
 	AnnotationDebSuite = "lajstrom.deb.suite"
 	// AnnotationDebComponent is the apt component of the upload.
 	AnnotationDebComponent = "lajstrom.deb.component"
-	// AnnotationPypiNormalized is the PEP 503 normalised project name.
-	AnnotationPypiNormalized = "lajstrom.pypi.normalized"
+	// AnnotationPypiNonstandard is "true" on a pypi version that is not a PEP 440 version.
+	AnnotationPypiNonstandard = "lajstrom.pypi.nonstandard"
 	// AnnotationMavenGroupID is the maven groupId.
 	AnnotationMavenGroupID = "lajstrom.maven.groupId"
 	// AnnotationMavenArtifactID is the maven artifactId.
