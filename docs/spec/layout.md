@@ -181,7 +181,7 @@ func RepoFrom(ctx context.Context) (index.Repo, bool)
 // Authorize asks deps.Auth whether auth.PrincipalFrom(ctx) may do a on repo: nil when allowed;
 // denied: ErrUnauthenticated for anonymous, ErrForbidden for a principal that can read the
 // repo, index.ErrNotFound for one that cannot (rbac.md §3); the authorizer's error unchanged.
-// A nil deps.Auth allows everything (until RBAC, #45).
+// A nil deps.Auth allows everything the credential allows, for the tests; serve sets auth.RBAC.
 func Authorize(ctx context.Context, deps Deps, a auth.Action, repo index.Repo) error
 
 // WriteError answers StatusOf(err) as text/plain (nosniff): err.Error() for 4xx, the status
@@ -645,7 +645,8 @@ Where the merged shapes differ from the first sketch of this section, and why:
 - **The principal comes from the context, not from a header parser.** Until the
   authentication middleware stores one with `auth.WithPrincipal` (#43 Basic, #26 bearer), every
   request is anonymous: parsing Basic credentials without verifying them would be a hole. A nil
-  `Deps.Auth` allows everything, which is the dev stack before RBAC (#45).
+  `Deps.Auth` allows everything the credential allows, for the tests; `serve` always sets
+  `auth.RBAC` (rbac.md §3).
 - **A denial does not reveal whether the repo exists** (rbac.md §3). `Authorize` answers 401
   to anonymous, 404 to a principal that cannot read the repo, and 403 only to one that can read
   it but lacks the action; the repo middleware answers a missing repo with the same 401 to

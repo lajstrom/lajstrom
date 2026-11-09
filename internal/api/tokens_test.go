@@ -262,7 +262,7 @@ func TestTokensAPIAuthorization(t *testing.T) {
 		{"deploy token reads its repo", false, deploy, deployCred("raw/scratch", 0), "GET", "/api/v1/repos/raw/scratch", "", 200},
 		{"deploy token reads another repo", false, deploy, deployCred("raw/scratch", 0), "GET", "/api/v1/repos/raw/other", "", 404},
 		{"scoped pat patches a repo", false, alice, scoped, "PATCH", "/api/v1/repos/raw/scratch", `{"anonymousRead": true}`, 403},
-		{"open before RBAC", false, bob, auth.Credential{Kind: auth.CredPassword}, "GET", "/api/v1/users/alice/tokens", "", 200},
+		{"another user's tokens without an Authorizer", false, bob, auth.Credential{Kind: auth.CredPassword}, "GET", "/api/v1/users/alice/tokens", "", 200},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

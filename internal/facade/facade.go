@@ -177,8 +177,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // base answers GET /v2/: 200 with {} to an authenticated request, by Basic credentials or a
 // bearer (an anonymous token included: its client has done the flow), and 401 with the bearer
-// challenge to the anonymous principal, which docker and oras answer with GET /v2/token. Even
-// while the facade is open: the anonymous client then gets a token with what it asks for.
+// challenge to the anonymous principal, which docker and oras answer with GET /v2/token: the
+// anonymous client then gets a token with what anonymous read allows it, and one that logs in
+// a token of its user.
 func (h *handler) base(w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return methodNotAllowed(r)

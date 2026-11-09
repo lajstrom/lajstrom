@@ -23,7 +23,14 @@ In another terminal:
 cfg=deploy/compose/lajstrom.example.yaml
 bin/lajstrom admin repo create pypi/internal --registry local --config $cfg
 bin/lajstrom admin user create --name alice --config $cfg     # asks for a password
+bin/lajstrom admin binding create --principal user:alice --role writer --mask pypi/internal --config $cfg
 ```
+
+The binding lets alice publish to `pypi/internal` and install from it: the role `writer` is
+`read` and `write` on the repos its mask names. Without it the repo answers her `404`, as a repo
+that does not exist would; a user who only installs gets `reader`, and a build machine a deploy
+token of the repo ([auth.md](../auth.md)). Nothing is open: without credentials every request is
+`401`.
 
 twine and uv publish always send credentials; a user's password or one of their
 [personal access tokens](../auth.md) both work, with any user name for a token.
