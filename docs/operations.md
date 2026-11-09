@@ -341,8 +341,9 @@ digest of its manifest.
 - At the end the repo's cached indexes are dropped (the next `GET` renders them again), and tag
   claims older than `ingest.claimTTL` are deleted.
 
-A repo whose format has no plugin in this binary (pypi and maven until they land) is listed
-with one error and left alone.
+A repo whose format has no plugin in this binary is listed with one error and left alone; a
+binary built from this repository has all four (raw, apt, pypi, maven). The manifests of an `oci` repo, which has
+no plugin by design, are listed as foreign and recorded in `oci_repos`.
 
 ### Running it
 
@@ -408,12 +409,128 @@ because ECR serves layers from S3; across regions or to the internet it is the t
   reindex`. Frontends keep serving while it runs; what it has not reached yet is missing until
   it does.
 - **The database is lost and there is a backup**: restore the backup, `lajstrom migrate`, then
-  `lajstrom reindex`. Everything published after the backup is in the registry and comes back;
+  `lajstrom reindex` ([Backup and restore](#backup-and-restore) has the steps and a rehearsal).
+  Everything published after the backup is in the registry and comes back;
   users, tokens and bindings come back as they were at the backup. The keys decrypt only with
   the master key of the backup ([The master key](#the-master-key)).
 - **The database is lost without a backup**: the control plane is gone. Create the repos again
-  with `lajstrom admin repo create` under the same format, name, registry and prefix, then
+  with `lajstrom admin repo create` (or the `repos` of the configuration) under the same format,
+  name and registry, with the registry's `prefix` unchanged, then
   `lajstrom reindex` brings back every package. Users and tokens are created again; apt repos
   get new keys, and their clients need the new `key.asc`.
 - **The registry was restored from its own backup or a replica**: `lajstrom reindex` with prune;
   rows of manifests the restored registry does not have are removed, drift is reported.
+
+## Backup and restore
+
+Lajstrom keeps no artifact: the registry has every byte and every manifest, and its own backup,
+or none if its storage is replicated. What Lajstrom adds is the index database and the master
+key, and only part of the database can be rebuilt from the registry.
+
+### What is where
+
+| Data | Lives in | In a database backup | Rebuilt by `reindex` |
+| --- | --- | --- | --- |
+| artifacts: blobs and manifests | the registry | no | they are the source |
+| repos | `repos` | yes | no: `reindex` walks the repos the database has; the `repos` of the configuration are created again at the next start |
+| users, bindings, personal access tokens, deploy tokens | `users`, `bindings`, `tokens` | yes | no |
+| apt signing keys, the bearer-token key | `keys`, the private keys encrypted with the master key | yes, as ciphertext | no |
+| audit log | `audit` | yes | no |
+| open maven publications, `/v2` upload sessions | `sessions` | yes, as they were | no: clients start them again |
+| packages, versions, files, cached indexes, OCI repositories | the derived tables | yes | yes |
+| tag claims, reindex runs | the coordination tables | yes | not needed: they live for one publish or one run |
+| the master key | the environment of `serve` and `admin key`, from your secret store | **no** | no: without it the keys in the database are useless |
+| the configuration file, the registry passwords, the DSN | your configuration management | no | no |
+
+`reindex` writes the derived rows from manifest annotations and metadata layers (through
+`ingest.WriteRows`), `oci_repos`, its own `reindex_runs` row and one audit row; it reads the
+repos from the database and nothing else of the control plane. The manifests of apt, pypi and
+maven carry `lajstrom.uploaded-by`, the principal that published (`user:<uid>`), as information;
+no user, token, binding or key is in the registry ([manifest-profile.md](spec/manifest-profile.md)).
+
+### Backing up
+
+- **Postgres**: `pg_dump --format=custom`, which reads one consistent snapshot while the
+  replicas keep serving; or the snapshots and point-in-time recovery of a managed Postgres.
+  The control plane changes rarely: daily, and before every upgrade, is plenty.
+- **SQLite**: the online backup of the `sqlite3` shell, consistent while `serve` writes:
+  `sqlite3 /var/lib/lajstrom/lajstrom.db ".backup /backup/lajstrom.db"`. A `cp` of the file
+  while `serve` runs misses what is still in `lajstrom.db-wal`.
+- **The master key**: once, when it is made, kept apart from the database backups (a password
+  manager, a vault, a printed copy in a safe). Without it the keys of a restored database do
+  not decrypt, and `serve` refuses to start until they are replaced
+  ([The master key](#the-master-key)).
+
+What a restore loses is what changed in the control plane after the backup: users, tokens,
+bindings and repos created since are gone, and **what was revoked, disabled or deleted since
+comes back**, since the dump has the rows as they were: revoke those tokens and disable those
+users again ([below](#a-rehearsal), a revoked deploy token works again after the restore). A key rotation since is
+undone: rotate again and distribute `key.asc` again. Artifacts are not lost: `reindex` adds what
+was published after the backup and removes what was deleted.
+
+### Restoring
+
+1. Stop every replica (`kubectl scale --replicas=0`, `docker compose stop lajstrom`), so that
+   none writes into the database while it is restored.
+2. Restore into an empty database: `pg_restore --no-owner --exit-on-error -d lajstrom
+   lajstrom.dump`; for SQLite, copy the backup in place of `lajstrom.db` with no
+   `lajstrom.db-wal` or `lajstrom.db-shm` beside it.
+3. Give the processes the master key of the backup, the same `keys.masterKeyEnv`.
+4. `lajstrom migrate`: the binary may be newer than the backup.
+5. `lajstrom reindex`: every repo, with prune.
+6. Start the replicas, and check: `whoami` of an admin, a package published before and one
+   after the backup, the fingerprint of an apt repo's `key.asc`, the bearer-token key's
+   fingerprint in the start log.
+
+### A rehearsal
+
+Run on 2026-11-09 against a Postgres 17.11 that was then thrown away, in the Compose stack of
+#58 (Lajstrom of the release snapshot, distribution 3.1.2), with `lj` for
+`docker compose exec -T lajstrom /lajstrom --config /etc/lajstrom/lajstrom.yaml`. Before the
+backup: a user `alice` with a `reader` binding on `raw/*`, a deploy token of `raw/assets`, the
+apt repo `apt/debs` with its key, and the files `before.txt` and `gone.txt`:
+
+```sh
+docker compose exec -T postgres pg_dump -U lajstrom -d lajstrom --format=custom > lajstrom.dump
+```
+
+After it: `after.txt` published, `gone.txt` deleted, a user `bob` created. Then the database
+was lost (the container and its volume removed), and restored into a new one:
+
+```sh
+docker compose stop lajstrom
+docker compose rm -f -s postgres && docker volume rm lajstrom-docs-compose_postgres-data
+docker compose up -d --wait postgres
+docker compose exec -T postgres pg_restore -U lajstrom -d lajstrom --no-owner --exit-on-error < lajstrom.dump
+docker compose run --rm -T lajstrom migrate --config /etc/lajstrom/lajstrom.yaml
+docker compose run --rm -T lajstrom reindex --config /etc/lajstrom/lajstrom.yaml --report
+docker compose up -d --wait lajstrom
+```
+
+```text
+schema is current at version 0009
+REPO        MANIFESTS  ADDED  UPDATED  UNCHANGED  REMOVED  DEGRADED  REFERRERS  FOREIGN  ORPHANS  DRIFT  ERRORS
+apt/debs    0          0      0        0          0        0         0          0        0        0      0
+oci/images  1          0      0        0          0        0         0          1        0        0      0
+raw/assets  3          1      0        2          1        0         0          0        0        0      0
+oci/images: foreign hello:1 sha256:9054279e24be9b8e39ede5221cfe7a7a6e9b8f7d5fac4af0c98c43d5e2acabb2 application/vnd.oci.image.manifest.v1+json
+```
+
+`after.txt` was added and `gone.txt` removed. The checks:
+
+| Check | Result |
+| --- | --- |
+| `admin`, `alice` (her binding), the deploy token | `200` |
+| `bob`, created after the backup | `401`: gone |
+| `before.txt`, `after.txt` | served |
+| `gone.txt` | `404` |
+| sha256 of `lj admin key export --repo apt/debs` | `9a63088a41d7e9aa…` before and after: the same key |
+| bearer-token key in the start log | `4e28d5adaf672aa2…`, the fingerprint made at the first start: no new key |
+
+A second run on the same stack revoked a deploy token after the backup: `401` before the
+restore, `200` again after it.
+
+The same on SQLite 3.54.0 of macOS, with `bin/lajstrom` and a registry of its own: a `.backup`
+while `serve` ran, a file published after it, the database removed, the backup copied in its
+place, `migrate` and `reindex` (`raw/assets  2  1  0  1  0 …`: one added, one unchanged), and
+both files served.
