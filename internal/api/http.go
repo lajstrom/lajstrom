@@ -28,6 +28,8 @@ type Options struct {
 	// everything: the server authenticates requests (#43), but every endpoint is open until
 	// RBAC (#45) sets it.
 	Auth auth.Authorizer
+	// Reindex starts the runs of POST …/reindex; nil answers it 501.
+	Reindex Reindexer
 	// Log receives the causes of the 5xx answers, with the request id; nil means
 	// slog.Default().
 	Log *slog.Logger
@@ -44,7 +46,8 @@ const maxBody = 64 << 10
 //	GET    /api/v1/repos/{format}/{repo}               one repo
 //	PATCH  /api/v1/repos/{format}/{repo}               change anonymousRead and policy
 //	DELETE /api/v1/repos/{format}/{repo}[?force=true]  delete a repo
-//	POST   /api/v1/repos/{format}/{repo}/reindex       501 until reindex comes with #29
+//	POST   /api/v1/repos/{format}/{repo}/reindex       start a reindex of the repo: 202, 409 when one runs
+//	GET    /api/v1/repos/{format}/{repo}/reindex       the latest run that covered the repo, with its report
 //	GET    /api/v1/repos/{format}/{repo}/deploy-tokens       the deploy tokens of a repo
 //	POST   /api/v1/repos/{format}/{repo}/deploy-tokens       create one; the answer has its secret
 //	DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}  revoke one
@@ -60,7 +63,7 @@ func New(o Options) http.Handler {
 	if o.Repos == nil {
 		panic("api: New: nil Options.Repos")
 	}
-	h := &handler{repos: o.Repos, tokens: o.Tokens, auth: o.Auth, log: o.Log}
+	h := &handler{repos: o.Repos, tokens: o.Tokens, auth: o.Auth, reindex: o.Reindex, log: o.Log}
 	if h.log == nil {
 		h.log = slog.Default()
 	}
@@ -74,6 +77,7 @@ func New(o Options) http.Handler {
 	mux.Handle("PATCH /api/v1/repos/{format}/{repo}", h.serve(h.updateRepo))
 	mux.Handle("DELETE /api/v1/repos/{format}/{repo}", h.serve(h.deleteRepo))
 	mux.Handle("POST /api/v1/repos/{format}/{repo}/reindex", h.serve(h.reindexRepo))
+	mux.Handle("GET /api/v1/repos/{format}/{repo}/reindex", h.serve(h.reindexStatus))
 	mux.Handle("GET /api/v1/repos/{format}/{repo}/deploy-tokens", h.serve(h.listDeployTokens))
 	mux.Handle("POST /api/v1/repos/{format}/{repo}/deploy-tokens", h.serve(h.createDeployToken))
 	mux.Handle("DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}", h.serve(h.revokeDeployToken))
@@ -87,10 +91,11 @@ func New(o Options) http.Handler {
 
 // handler serves the management API.
 type handler struct {
-	repos  *Repos
-	tokens *auth.Tokens
-	auth   auth.Authorizer
-	log    *slog.Logger
+	repos   *Repos
+	tokens  *auth.Tokens
+	auth    auth.Authorizer
+	reindex Reindexer
+	log     *slog.Logger
 }
 
 // endpoint is a handler that returns its answer: the status and the value to encode as JSON
@@ -213,19 +218,6 @@ func (h *handler) deleteRepo(_ http.ResponseWriter, r *http.Request) (int, any, 
 		return 0, nil, err
 	}
 	return http.StatusNoContent, nil, nil
-}
-
-// reindexRepo takes the path of the reindex of one repo now, so that it is not taken by
-// anything else: 404 for a repo that does not exist, 501 until reindex comes with #29.
-func (h *handler) reindexRepo(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	f, name := r.PathValue("format"), r.PathValue("repo")
-	if err := h.allow(r, auth.ActionManage, f, name); err != nil {
-		return 0, nil, err
-	}
-	if _, err := h.repos.Get(r.Context(), f, name); err != nil {
-		return 0, nil, err
-	}
-	return 0, nil, &clientError{msg: "reindex comes with #29", err: format.ErrUnsupported}
 }
 
 // notFound answers every other method and path under /api/.

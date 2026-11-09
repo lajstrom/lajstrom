@@ -16,6 +16,8 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/facade"
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/index/reindex"
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	_ "github.com/lajstrom/lajstrom/internal/provider/generic" // registers registries[].type generic
@@ -95,6 +97,10 @@ func newServeCmd(a *app) *cobra.Command {
 			}
 			probeRegistries(ctx, providers, a.log)
 			pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL})
+			runs := &backgroundReindex{ctx: ctx, log: a.log, w: reindex.New(reindex.Options{Index: st, Providers: providers,
+				Inspector: pipe, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL})}
+			// Before the index closes: a run the shutdown cancels finishes as failed.
+			defer runs.wg.Wait()
 			var authz auth.Authorizer // RBAC, #45
 			warnOpen(a.log, authz)
 			v2 := facade.New(facade.Options{Index: st, Providers: providers, Auth: authz, Ingest: pipe,
@@ -109,7 +115,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Plugins:         format.All(),
 				Deps:            format.Deps{Index: st, Providers: providers, Auth: authz, Ingest: pipe, Signer: signer},
 				Ready:           ready(a.log, c.Database.Driver, st),
-				API:             api.New(api.Options{Repos: repos, Log: a.log}),
+				API:             api.New(api.Options{Repos: repos, Reindex: runs, Log: a.log}),
 				Facade:          v2,
 				Authenticator:   authn,
 			})
@@ -159,4 +165,27 @@ func ready(log *slog.Logger, driver string, st store) func(context.Context) erro
 		}
 		return nil
 	}
+}
+
+// backgroundReindex starts the runs of POST …/reindex (api.Reindexer) on the server's context,
+// so that the shutdown cancels them, and lets serve wait for them before it closes the index.
+type backgroundReindex struct {
+	w   *reindex.Worker
+	ctx context.Context
+	log *slog.Logger
+	wg  sync.WaitGroup
+}
+
+// Start takes the lock of the run's scope and runs it in the background.
+func (b *backgroundReindex) Start(ctx context.Context, req reindex.Request) (*index.ReindexRun, error) {
+	run, err := b.w.Start(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	b.wg.Go(func() {
+		if _, err := b.w.Run(b.ctx, run, req); err != nil {
+			b.log.ErrorContext(b.ctx, "reindex: a run started through the API failed", "run", run.ID, "error", err.Error())
+		}
+	})
+	return run, nil
 }
