@@ -98,7 +98,7 @@ func newEnv(t *testing.T, o envOptions) *env {
 	if o.registry != nil {
 		providers["local"] = o.registry
 	}
-	pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: slog.New(slog.DiscardHandler),
+	pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Audit: o.audit, Log: slog.New(slog.DiscardHandler),
 		Plugins: func(name string) (format.Plugin, bool) { return Plugin{}, name == Name }})
 	var routeIndex index.Store = st
 	if o.store != nil {
