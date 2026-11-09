@@ -58,6 +58,34 @@ func TestBootstrap(t *testing.T) {
 	}
 }
 
+// TestBootstrapPolicy: a configured policy is created as the API would create it, checked the
+// same way, and a policy that differs from the control plane's is a warning.
+func TestBootstrapPolicy(t *testing.T) {
+	f := newFixture(t, Options{})
+	f.repos.Formats = oneOf("raw", "maven")
+	ctx := context.Background()
+	cfg := []config.Repo{{Name: "releases", Format: "maven", Registry: "local",
+		Policy: map[string]any{"maxFileSize": 1048576, "maven": map[string]any{"sessionTimeout": "45m"}}}}
+	if created, err := f.repos.Bootstrap(ctx, cfg); err != nil || created != 1 {
+		t.Fatalf("Bootstrap = %d, %v; want 1 created", created, err)
+	}
+	r, err := f.repos.Get(ctx, "maven", "releases")
+	if err != nil || string(r.Policy) != `{"maven":{"sessionTimeout":"45m"},"maxFileSize":1048576}` {
+		t.Fatalf("repo = %+v, %v; want the configured policy", r, err)
+	}
+	cfg[0].Policy["maxFileSize"] = 1
+	if _, err := f.repos.Bootstrap(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	wantLogs(t, f.logs, `"repo":"maven/releases","field":"policy","config":"{\"maven\":{\"sessionTimeout\":\"45m\"},\"maxFileSize\":1}"`)
+
+	_, err = f.repos.Bootstrap(ctx, []config.Repo{{Name: "scratch", Format: "raw", Registry: "local",
+		Policy: map[string]any{"maven": map[string]any{"sessionTimeout": "45m"}}}})
+	if err == nil || !strings.HasPrefix(err.Error(), "repos[0]: policy.maven: only a maven repo has it") {
+		t.Errorf("Bootstrap of a raw repo with a maven policy = %v, want the entry and the key named", err)
+	}
+}
+
 // wantRepo checks a repo, given as "<format>/<name> <registry> <anonymousRead>", hosted.
 func wantRepo(t *testing.T, s *Repos, want string) {
 	t.Helper()

@@ -32,7 +32,7 @@ var (
 )
 
 // policyObject is a policy decoded as JSON with numbers kept as written (json.Number), so that a
-// large maxFileSize is not rounded through float64.
+// merge does not round a large maxFileSize through float64.
 type policyObject = map[string]any
 
 // checkPolicy validates p, the whole policy of a repo of format formatName, and returns it
@@ -45,6 +45,22 @@ func checkPolicy(formatName string, p json.RawMessage) (json.RawMessage, error) 
 		return nil, err
 	}
 	return encodePolicy(formatName, mergeObject(policyObject{}, obj))
+}
+
+// mergePolicy applies patch, the policy of a PATCH, to stored, the repo's policy, as an RFC 7396
+// JSON merge patch: a member of patch sets its key, a null member removes it, and objects merge
+// key by key. The JSON null for patch removes the whole policy. The result is checked as
+// checkPolicy checks a policy; nil means none is left.
+func mergePolicy(formatName string, stored, patch json.RawMessage) (json.RawMessage, error) {
+	obj, err := decodePolicy(patch)
+	if err != nil || obj == nil {
+		return nil, err
+	}
+	base, err := decodePolicy(stored)
+	if err != nil || base == nil { // a stored policy that is not an object is replaced
+		base = policyObject{}
+	}
+	return encodePolicy(formatName, mergeObject(base, obj))
 }
 
 // decodePolicy returns p as an object, nil for empty or the JSON null; any other JSON value, or
