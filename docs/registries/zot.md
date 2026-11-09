@@ -87,9 +87,9 @@ level=INFO msg="registry capabilities" registry=integration vendor=unknown creat
 Against what was measured:
 
 - `createOnPush`, `referrers`, `catalog`, `maxBlobSize=0` (no limit is set or met): right.
-- `deleteManifest=true` is right, and **does not stay true**: the provider turns it false at
-  the first manifest delete answered with 405, and Zot answers 405 `DENIED` for the delete of a
-  manifest that an image index lists, though every other delete works (item 1 below).
+- `deleteManifest=true` is right and stays true: Zot answers 405 `DENIED` for the delete of a
+  manifest that an image index lists, though every other delete works, and the provider reads
+  that 405 as a refusal of the one delete, `provider.ErrConflict` (#153, item 1 below).
 - `immutableTags=false` is right for the default configuration and wrong behind an access
   control policy without `update`, which the probe cannot see: set it in the configuration.
 - `blobRedirect=true` is the operator's switch, not a finding: Zot redirects only on S3 with
@@ -99,19 +99,15 @@ Against what was measured:
 
 ## What the provider must do differently
 
-1. Read Zot's 405 `DENIED` to a manifest delete as a refusal of that manifest, not as "this
-   registry does not delete". Zot keeps a manifest that an image index lists ("manifest is
-   part of an index image, don't allow index manipulations" in its source) and answers 405
-   with the code `DENIED`, where distribution with deletes disabled answers 405
-   `UNSUPPORTED`. A test with the provider ([Delete](#delete)): the delete of such a manifest
-   logs "registry refuses manifest deletes; DeleteManifest is now false", returns
-   `provider: unsupported (HTTP 405, DENIED)`, and `Capabilities` says `DeleteManifest=false`
-   from then on, while the index and the manifest are deleted the next moment. After that the
-   raw route refuses every delete until a restart (by its code, `internal/format/raw/delete.go`:
-   "the backend registry cannot delete manifests"). Nothing Lajstrom writes on Zot is listed by an index today (the tag-schema index is
-   not used where the referrers API is), so it is latent until the facade deletes manifests
-   (#61) or something deletes a multi-platform image's parts; `refusesDelete` could ask for
-   `UNSUPPORTED` or a 405 without `DENIED`, and map this one to `ErrConflict`.
+1. Done in #153: read Zot's 405 `DENIED` to a delete as a refusal of that manifest or blob,
+   not as "this registry does not delete". Zot keeps a manifest that an image index lists
+   ("manifest is part of an index image, don't allow index manipulations" in its source) and
+   a blob that a manifest uses, and answers 405 with the code `DENIED`, where distribution with
+   deletes disabled answers 405 `UNSUPPORTED`. Before #153 the provider turned
+   `DeleteManifest` false at the first such answer ([Delete](#delete)), and the raw route then
+   refused every delete until a restart. Now a 405 `DENIED` (without `UNSUPPORTED`) is
+   `provider.ErrConflict`, 409 at `/raw/`, and changes nothing else; `UNSUPPORTED` and a 405
+   without `DENIED` still turn `DeleteManifest` false.
 2. Nothing else in the code. The rest is configuration: `capabilities: {immutableTags: true}`
    behind a policy without `update`, whose 403 `DENIED` the provider reads as bad credentials
    (`provider: unauthorized`) and nothing in Lajstrom but the reindex test's drift meets
@@ -271,8 +267,17 @@ Delete(index) = <nil>
 Delete(manifest) = <nil>
 ```
 
-Item 1 of [What the provider must do differently](#what-the-provider-must-do-differently).
-Deleting a subject leaves its referrers:
+Item 1 of [What the provider must do differently](#what-the-provider-must-do-differently),
+fixed by #153. The provider's integration test now deletes such a manifest
+(`delete a manifest that an index lists`), against the dev stack's Zot:
+
+```text
+the registry keeps a manifest that an index lists: generic: delete raw/it-61d72647/indexed@sha256:0399c2dd…: provider: conflict (HTTP 405, DENIED)
+--- PASS: TestIntegration/delete_a_manifest_that_an_index_lists
+```
+
+`DeleteManifest` stays true, and the index, then the manifest, are deleted. Deleting a subject
+leaves its referrers:
 
 ```text
 DELETE spike18/ref/pkg/manifests/sha256:<S>   202   v1 404, S 404; the referrers R1, R2 200

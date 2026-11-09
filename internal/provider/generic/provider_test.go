@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -567,15 +568,26 @@ func TestDeleteManifestLearnt(t *testing.T) {
 	tests := []struct {
 		name     string
 		override *bool
+		bare     bool // answer DELETE with a 405 without a body instead of 405 UNSUPPORTED
 		want     bool
 	}{
-		{name: "learnt false on 405", want: false},
+		{name: "learnt false on 405 UNSUPPORTED", want: false},
+		{name: "learnt false on a bare 405", bare: true, want: false},
 		{name: "override true wins", override: new(true), want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFakeRegistry(t)
-			f.deleteDisabled = true
+			f.deleteDisabled = !tt.bare
+			if tt.bare {
+				f.hook = func(w http.ResponseWriter, r *http.Request) bool {
+					if r.Method != http.MethodDelete {
+						return false
+					}
+					w.WriteHeader(http.StatusMethodNotAllowed)
+					return true
+				}
+			}
 			log, buf := testLogger()
 			p := f.provider(t, log, func(c *config.Registry) { c.Capabilities.DeleteManifest = tt.override })
 			if c, err := p.Capabilities(ctx); err != nil || !c.DeleteManifest {
@@ -605,6 +617,51 @@ func TestDeleteManifestLearnt(t *testing.T) {
 				t.Errorf("%d warnings about refused deletes, want 1:\n%s", n, buf)
 			}
 		})
+	}
+}
+
+// TestDeleteDenied: a 405 DENIED refuses one delete, as Zot refuses a manifest that an image
+// index lists and a blob that a manifest uses (#153). It is ErrConflict, DeleteManifest stays
+// true, and the next delete goes through.
+func TestDeleteDenied(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeRegistry(t)
+	var deletes atomic.Int32
+	f.hook = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method != http.MethodDelete || deletes.Add(1) > 2 {
+			return false
+		}
+		writeErr(w, http.StatusMethodNotAllowed, "DENIED", "requested access to the resource is denied")
+		return true
+	}
+	log, buf := testLogger()
+	p := f.provider(t, log, nil)
+	repo, err := p.Repository(ctx, "raw/scratch/notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := pushBlob(t, repo, "hello")
+	m := pushManifest(t, repo, "v1", nil)
+	for _, d := range []ocispec.Descriptor{blob, m} {
+		err := repo.Delete(ctx, d)
+		if !errors.Is(err, provider.ErrConflict) || errors.Is(err, provider.ErrUnsupported) {
+			t.Fatalf("Delete(%s) of a 405 DENIED = %v, want ErrConflict alone", d.MediaType, err)
+		}
+		if !strings.Contains(err.Error(), "HTTP 405, DENIED") {
+			t.Errorf("Delete error %q does not name the answer", err)
+		}
+	}
+	if c, err := p.Capabilities(ctx); err != nil || !c.DeleteManifest {
+		t.Errorf("Capabilities after a 405 DENIED = %+v, %v; want DeleteManifest", c, err)
+	}
+	if strings.Contains(buf.String(), "refuses manifest deletes") {
+		t.Errorf("a 405 DENIED logged that deletes are off:\n%s", buf)
+	}
+	if err := repo.Delete(ctx, m); err != nil {
+		t.Fatalf("the next Delete of the manifest: %v", err)
+	}
+	if ok, err := repo.Exists(ctx, m); err != nil || ok {
+		t.Errorf("Exists after Delete = %v, %v; want false", ok, err)
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/errcode"
+
+	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
 // repository is oras-go's remote.Repository with its errors translated into the sentinels of
@@ -58,14 +60,21 @@ func (r *repository) Push(ctx context.Context, expected ocispec.Descriptor, cont
 	return translate(r.op("push", expected.Digest.String()), err)
 }
 
-// Delete removes the manifest or blob target. The first manifest delete that the registry
-// refuses with 405 turns Capabilities.DeleteManifest false.
+// Delete removes the manifest or blob target. A 405 DENIED refuses this one delete, the way
+// Zot keeps a manifest that an image index lists and a blob that a manifest uses
+// (docs/registries/zot.md, Delete): it is provider.ErrConflict and changes nothing else. The
+// first manifest delete that the registry refuses otherwise with 405 turns
+// Capabilities.DeleteManifest false.
 func (r *repository) Delete(ctx context.Context, target ocispec.Descriptor) error {
 	err := r.Repository.Delete(ctx, target)
+	op := r.op("delete", target.Digest.String())
+	if resp := deniedOne(err); resp != nil {
+		return &backendError{op: op, kind: provider.ErrConflict, detail: responseDetail(resp), cause: err}
+	}
 	if err != nil && isManifest(target.MediaType) && refusesDelete(err) && !r.p.deleteRefused.Swap(true) {
 		r.p.log.WarnContext(ctx, "registry refuses manifest deletes; DeleteManifest is now false")
 	}
-	return translate(r.op("delete", target.Digest.String()), err)
+	return translate(op, err)
 }
 
 // Tag points the tag reference at the manifest desc.
@@ -107,10 +116,21 @@ var manifestMediaTypes = map[string]bool{
 // isManifest reports whether mediaType is a manifest's.
 func isManifest(mediaType string) bool { return manifestMediaTypes[mediaType] }
 
-// refusesDelete reports whether err is a registry's answer that it does not delete: 405 or
-// UNSUPPORTED.
+// refusesDelete reports whether err is a registry's answer that it does not delete:
+// UNSUPPORTED, or a 405 that deniedOne does not claim.
 func refusesDelete(err error) bool {
 	var resp *errcode.ErrorResponse
-	return errors.As(err, &resp) &&
+	return errors.As(err, &resp) && deniedOne(err) == nil &&
 		(resp.StatusCode == http.StatusMethodNotAllowed || hasCode(resp, errcode.ErrorCodeUnsupported))
+}
+
+// deniedOne returns the response of err when it refuses one delete rather than deletes: 405
+// with DENIED and without UNSUPPORTED. Otherwise it is nil.
+func deniedOne(err error) *errcode.ErrorResponse {
+	var resp *errcode.ErrorResponse
+	if errors.As(err, &resp) && resp.StatusCode == http.StatusMethodNotAllowed &&
+		hasCode(resp, errcode.ErrorCodeDenied) && !hasCode(resp, errcode.ErrorCodeUnsupported) {
+		return resp
+	}
+	return nil
 }

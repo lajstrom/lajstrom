@@ -60,7 +60,8 @@ type Provider struct {
 	// referrers is what the probe learnt about the referrers API, for the repositories that
 	// Repository hands out.
 	referrers atomic.Int32
-	// deleteRefused is set by the first manifest delete that the registry answers with 405.
+	// deleteRefused is set by the first manifest delete that the registry refuses as deletes,
+	// not as this one delete (refusesDelete, deniedOne).
 	deleteRefused atomic.Bool
 }
 
