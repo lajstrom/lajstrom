@@ -126,6 +126,8 @@ func newServeCmd(a *app) *cobra.Command {
 			srv, err := server.New(server.Options{
 				Listen:          c.Server.Listen,
 				ExternalURL:     c.Server.ExternalURL,
+				TLSCertFile:     c.Server.TLS.CertFile,
+				TLSKeyFile:      c.Server.TLS.KeyFile,
 				ShutdownTimeout: c.Server.ShutdownTimeout,
 				Log:             a.log,
 				Plugins:         format.All(),

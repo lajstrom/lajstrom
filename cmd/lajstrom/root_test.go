@@ -52,13 +52,19 @@ func TestCommands(t *testing.T) {
 		args    []string
 		wantErr string // substring; "" means success
 		wantOut string // substring of stdout
+		status  int    // the exit status of the error: 2 for the configuration, else 1
 	}{
 		{name: "version", args: []string{"version"}, wantOut: "lajstrom dev (unknown, unknown)\n"},
 		{name: "reindex before migrate", args: []string{"reindex", "--config", cfg}, wantErr: "no such table"},
 		{name: "config from env", env: map[string]string{"LAJSTROM_CONFIG": cfg}, args: []string{"reindex"}, wantErr: "no such table"},
-		{name: "migrate missing config", args: []string{"migrate", "--config", missing}, wantErr: missing},
-		{name: "invalid config", env: map[string]string{"LAJSTROM_DATABASE_DRIVER": "mysql"}, args: []string{"migrate", "--config", cfg}, wantErr: `database.driver: "mysql"`},
-		{name: "serve missing config", args: []string{"serve", "--config", missing}, wantErr: "no such file"},
+		{name: "migrate missing config", args: []string{"migrate", "--config", missing}, wantErr: missing, status: 2},
+		{name: "invalid config", env: map[string]string{"LAJSTROM_DATABASE_DRIVER": "mysql"}, args: []string{"migrate", "--config", cfg}, wantErr: `database.driver: "mysql"`, status: 2},
+		{name: "serve missing config", args: []string{"serve", "--config", missing}, wantErr: "no such file", status: 2},
+		// docs/acceptance.md C-02 and C-03.
+		{name: "serve with a path in externalURL", env: map[string]string{"LAJSTROM_SERVER_EXTERNAL_URL": "https://art.test/sub"},
+			args: []string{"serve", "--config", cfg}, wantErr: "server.externalURL: must be https://<host>[:port]: no path", status: 2},
+		{name: "serve with an http externalURL", env: map[string]string{"LAJSTROM_SERVER_EXTERNAL_URL": "http://art.test"},
+			args: []string{"serve", "--config", cfg}, wantErr: "TLS only; http is for the dev stack on a loopback host, with server.insecureHTTP", status: 2},
 		{name: "admin user", args: []string{"admin", "user"}, wantOut: "Available Commands:\n  create"},
 		{name: "admin token", args: []string{"admin", "token"}, wantOut: "Available Commands:\n  create"},
 		{name: "admin repo", args: []string{"admin", "repo"}, wantOut: "Available Commands:\n  create"},
@@ -75,6 +81,9 @@ func TestCommands(t *testing.T) {
 				t.Fatalf("error: %v", err)
 			case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
 				t.Fatalf("error = %v, want it to contain %q", err, tt.wantErr)
+			}
+			if want := max(tt.status, 1); err != nil && exitStatus(err) != want {
+				t.Errorf("exit status %d, want %d", exitStatus(err), want)
 			}
 			if !strings.Contains(out, tt.wantOut) {
 				t.Errorf("stdout = %q, want it to contain %q", out, tt.wantOut)

@@ -67,7 +67,7 @@ func TestLoadEnvOverride(t *testing.T) {
 	file := `
 server:
   listen: ":8080"
-  externalURL: http://file.example
+  externalURL: https://file.example
 log:
   level: info
   format: text
@@ -128,6 +128,7 @@ func TestLoadErrors(t *testing.T) {
 		{name: "metrics on the public listener", file: minimal[:len(minimal)-1] + "\n  metricsListen: \":8080\"\n",
 			want: []string{"server.metricsListen: must not be server.listen"}},
 		{name: "negative manifest size", file: minimal + "  maxManifestSize: -1\n", want: []string{"server.maxManifestSize: must not be negative"}},
+		{name: "half a TLS pair", file: minimal + "  tls: {certFile: /etc/lajstrom/tls.crt}\n", want: []string{"server.tls: certFile and keyFile must be set together"}},
 		{name: "negative limits", file: minimal + "  stallTimeout: -1s\n  maxConcurrentUploads: -1\n",
 			want: []string{"server.stallTimeout: must not be negative", "server.maxConcurrentUploads: must not be negative"}},
 		{name: "keys", file: minimal + "keys: {algorithm: dsa, retireGrace: -1h}\n",
@@ -169,7 +170,7 @@ repos:
 `,
 			want: []string{
 				"server.listen: must not be empty",
-				"server.externalURL: must be an absolute http(s) URL",
+				"server.externalURL: must be an absolute URL, https://<host>[:port]",
 				"server.shutdownTimeout: must be positive",
 				`log.level: "verbose" is not debug, info, warn or error`,
 				`log.format: "xml" is not text or json`,
@@ -412,5 +413,48 @@ func TestExampleFile(t *testing.T) {
 	}
 	if len(c.Registries) != 2 || len(c.Repos) != 1 {
 		t.Errorf("example has %d registries and %d repos, want 2 and 1", len(c.Registries), len(c.Repos))
+	}
+}
+
+// TestExternalURL checks the rules of server.externalURL (docs/spec/http-routing.md §1,
+// docs/acceptance.md C-02 and C-03): https://<host>[:port] without a path, query or fragment;
+// http only for a loopback host with server.insecureHTTP.
+func TestExternalURL(t *testing.T) {
+	tests := []struct {
+		url      string
+		insecure bool
+		want     string // a substring of the error; empty for none
+	}{
+		{url: "https://art.example.com"},
+		{url: "https://art.example.com:8443/"},
+		{url: "https://[2001:db8::1]:443"},
+		{url: "http://localhost:8080", insecure: true},
+		{url: "http://127.0.0.1:8080", insecure: true},
+		{url: "http://[::1]:8080", insecure: true},
+		{url: "https://art.test/sub", want: "no path, query or fragment is allowed"},
+		{url: "https://art.test/?x=1", want: "no path, query or fragment is allowed"},
+		{url: "https://art.test#top", want: "no path, query or fragment is allowed"},
+		{url: "http://art.test", want: "must be https: clients see Lajstrom over TLS only"},
+		{url: "http://localhost:8080", want: "server.insecureHTTP: true"},
+		{url: "http://art.test", insecure: true, want: "http is for a loopback host only"},
+		{url: "http://10.0.0.1:8080", insecure: true, want: "http is for a loopback host only"},
+		{url: "https://u:p@art.test", want: "must not contain credentials"}, //nolint:gosec // a fake password the error must not show
+		{url: "ftp://art.test", want: "must be an absolute URL"},
+		{url: "art.test", want: "must be an absolute URL"},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s insecure=%v", tt.url, tt.insecure), func(t *testing.T) {
+			file := fmt.Sprintf("%s  externalURL: %q\n  insecureHTTP: %v\n", minimal, tt.url, tt.insecure)
+			_, err := Load(writeConfig(t, file), nil)
+			switch {
+			case tt.want == "" && err != nil:
+				t.Errorf("Load: %v, want no error", err)
+			case tt.want != "" && (err == nil || !strings.Contains(err.Error(), "server.externalURL: ") || !strings.Contains(err.Error(), tt.want)):
+				t.Errorf("Load: %v, want server.externalURL: …%s…", err, tt.want)
+			}
+			if err != nil && strings.Contains(err.Error(), "u:p@") {
+				t.Errorf("the error shows the credentials: %v", err)
+			}
+		})
 	}
 }

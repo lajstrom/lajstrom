@@ -38,6 +38,9 @@ Later steps win:
    repos[0].registry: "zot" is not a configured registry
    ```
 
+   A configuration that cannot be read or is invalid ends every command with exit status `2`;
+   other errors with `1`.
+
 The `--log-level` and `--log-format` flags override `log.level` and `log.format` for one run.
 
 ## Secrets
@@ -71,7 +74,10 @@ one backend down does not keep a replica from starting.
 | Key | Type | Default | Env | Description |
 | --- | --- | --- | --- | --- |
 | `server.listen` | string, `host:port` | none, required | `LAJSTROM_SERVER_LISTEN` | TCP address to listen on. `":8080"` listens on every interface, `"127.0.0.1:8080"` on loopback only. |
-| `server.externalURL` | `https://<host>[:port]` | empty | `LAJSTROM_SERVER_EXTERNAL_URL` | Base of every absolute URL Lajstrom renders: token realm, redirects, simple index links ([http-routing.md](spec/http-routing.md) §1). No path, query or fragment: Lajstrom owns the whole host. `http://` only for the dev stack on loopback (the `server.insecureHTTP` switch and TLS keys come with #50). Example: `https://art.example.com`. |
+| `server.externalURL` | `https://<host>[:port]` | empty | `LAJSTROM_SERVER_EXTERNAL_URL` | Base of every absolute URL Lajstrom renders: token realm, redirects, simple index links ([http-routing.md](spec/http-routing.md) §1). No path, query or fragment (a trailing `/` is allowed): Lajstrom owns the whole host. Clients see Lajstrom over TLS only, so the scheme is `https`, whether TLS ends at the edge or in Lajstrom (`server.tls`); `http://` only for a loopback host (`localhost`, `127.0.0.1`, `::1`) with `server.insecureHTTP: true`, the dev stack. Example: `https://art.example.com`. |
+| `server.insecureHTTP` | bool | `false` | none | Allows an `http://` `server.externalURL` on a loopback host, for the dev stack on one machine. Without it, an `http` URL stops the start; with it, an `http` URL on any other host still does. It changes nothing else: Lajstrom listens on plain HTTP unless `server.tls` is set. |
+| `server.tls.certFile` | path | empty | none | PEM certificate chain, the server's certificate first, for TLS in Lajstrom itself on a single host: `server.listen` then speaks TLS 1.2 and later, with HTTP/2. Set together with `keyFile`; both empty (the default) is plain HTTP, for TLS at the edge. The files are read at start: a renewed certificate takes a restart. The metrics listener stays plain HTTP. |
+| `server.tls.keyFile` | path | empty | none | PEM private key of `certFile`. |
 | `server.shutdownTimeout` | duration (`30s`, `2m`) | `30s` | none | The drain after SIGINT or SIGTERM: `/-/readyz` answers `503` and the listener closes at once, and in-flight requests, uploads included, get this long to finish. Then the requests still running are cancelled and their connections closed, and the process exits with an error. A second signal stops it at once ([operations.md](operations.md#shutdown)). Must be positive. |
 | `server.maxManifestSize` | bytes | `4194304` (4 MiB) | none | Largest manifest a `PUT /v2/<name>/manifests/<ref>` may carry, on every repo; a larger one is `413` ([http-routing.md](spec/http-routing.md) §2). The OCI facade reads a manifest into memory before it checks it, so this bounds the memory of one push; the distribution spec asks a registry to take at least 4 MiB. Must not be negative; `0` means the default. |
 | `server.metricsListen` | string, `host:port` | `127.0.0.1:9464` | `LAJSTROM_SERVER_METRICS_LISTEN` | The metrics listener: `GET /metrics` for Prometheus, and `/debug/pprof/` with `server.pprof` ([operations.md](operations.md#metrics)). It is a listener of its own and never the public host: the main listener answers `404` on `/-/metrics` and `/metrics`, and the edge must not route to it. In a container set `0.0.0.0:9464` (or the pod IP) so that Prometheus reaches it, and keep the port off the ingress. Empty turns it off; it must not be `server.listen`. |

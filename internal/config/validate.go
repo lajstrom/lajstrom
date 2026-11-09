@@ -72,11 +72,9 @@ func (s Server) validate(p *problems) {
 	} else if _, _, err := net.SplitHostPort(s.Listen); err != nil {
 		p.add("server.listen", "%q is not host:port", s.Listen)
 	}
-	if s.ExternalURL != "" {
-		u, err := url.Parse(s.ExternalURL)
-		if err != nil || !isHTTP(u) || u.RawQuery != "" || u.Fragment != "" {
-			p.add("server.externalURL", "must be an absolute http(s) URL without query or fragment")
-		}
+	s.validateExternalURL(p)
+	if (s.TLS.CertFile == "") != (s.TLS.KeyFile == "") {
+		p.add("server.tls", "certFile and keyFile must be set together")
 	}
 	if s.ShutdownTimeout <= 0 {
 		p.add("server.shutdownTimeout", "must be positive")
@@ -97,6 +95,38 @@ func (s Server) validate(p *problems) {
 	if s.MaxConcurrentUploads < 0 {
 		p.add("server.maxConcurrentUploads", "must not be negative")
 	}
+}
+
+// validateExternalURL checks server.externalURL (docs/spec/http-routing.md §1): Lajstrom owns
+// the whole host and clients see it over TLS only, so https://<host>[:port] without a path,
+// query or fragment; http only for a loopback host, behind server.insecureHTTP.
+func (s Server) validateExternalURL(p *problems) {
+	if s.ExternalURL == "" {
+		return
+	}
+	const key = "server.externalURL"
+	u, err := url.Parse(s.ExternalURL)
+	switch {
+	case err != nil || !isHTTP(u):
+		p.add(key, "must be an absolute URL, https://<host>[:port]")
+	case u.User != nil:
+		p.add(key, "must not contain credentials")
+	case (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
+		p.add(key, "must be https://<host>[:port]: no path, query or fragment is allowed, Lajstrom owns the whole host")
+	case u.Scheme == "http" && !s.InsecureHTTP:
+		p.add(key, "must be https: clients see Lajstrom over TLS only; http is for the dev stack on a loopback host, with server.insecureHTTP: true")
+	case u.Scheme == "http" && !isLoopback(u.Hostname()):
+		p.add(key, "http is for a loopback host only (localhost, 127.0.0.1, ::1), even with server.insecureHTTP")
+	}
+}
+
+// isLoopback reports whether host is localhost or a loopback address.
+func isLoopback(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (l Log) validate(p *problems) {

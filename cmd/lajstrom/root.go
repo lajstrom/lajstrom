@@ -65,10 +65,10 @@ func (a *app) setup(cmd *cobra.Command, _ []string) error {
 	if cmd.Annotations["lajstrom/config"] == "required" {
 		cfg, err := config.Load(a.configPath, a.lookupEnv)
 		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("%w (choose the file with --config or LAJSTROM_CONFIG)", err)
+			return configError{fmt.Errorf("%w (choose the file with --config or LAJSTROM_CONFIG)", err)}
 		}
 		if err != nil {
-			return err
+			return configError{err}
 		}
 		a.cfg = cfg
 		level, format = cfg.Log.Level, cfg.Log.Format
@@ -85,4 +85,18 @@ func (a *app) setup(cmd *cobra.Command, _ []string) error {
 	}
 	a.log = log
 	return nil
+}
+
+// configError is a configuration that cannot be read or is invalid: the process exits with
+// status 2 for it, 1 for any other error.
+type configError struct{ error }
+
+func (e configError) Unwrap() error { return e.error }
+
+// exitStatus is the exit status of the process for the error of a command.
+func exitStatus(err error) int {
+	if errors.As(err, new(configError)) {
+		return 2
+	}
+	return 1
 }

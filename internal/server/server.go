@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -36,6 +37,9 @@ type Options struct {
 	Listen string
 	// ExternalURL is the base of absolute URLs (server.externalURL); empty when not configured.
 	ExternalURL string
+	// TLSCertFile and TLSKeyFile are the PEM certificate chain and key of the main listener
+	// (server.tls); New loads them, and Run serves TLS. Both empty: plain HTTP, TLS at the edge.
+	TLSCertFile, TLSKeyFile string
 	// ShutdownTimeout bounds the graceful shutdown; zero means DefaultShutdownTimeout.
 	ShutdownTimeout time.Duration
 	// Log receives the access log and the server's own events; nil means slog.Default().
@@ -110,6 +114,10 @@ func New(o Options) (*Server, error) {
 	if o.ShutdownTimeout <= 0 {
 		o.ShutdownTimeout = DefaultShutdownTimeout
 	}
+	tlsConfig, err := loadTLS(o.TLSCertFile, o.TLSKeyFile)
+	if err != nil {
+		return nil, err
+	}
 	if o.Log == nil {
 		o.Log = slog.Default()
 	}
@@ -128,8 +136,23 @@ func New(o Options) (*Server, error) {
 		IdleTimeout:       idleTimeout,
 		MaxHeaderBytes:    maxHeaderBytes,
 		ErrorLog:          slog.NewLogLogger(o.Log.Handler(), slog.LevelWarn),
+		TLSConfig:         tlsConfig,
 	}
 	return s, nil
+}
+
+// loadTLS loads the certificate of the main listener, or returns nil when certFile and keyFile
+// are both empty. TLS 1.2 is the oldest version it speaks; the cipher suites and curves are Go's
+// defaults, and HTTP/2 is offered.
+func loadTLS(certFile, keyFile string) (*tls.Config, error) {
+	if certFile == "" && keyFile == "" {
+		return nil, nil //nolint:nilnil // no TLS is not an error
+	}
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("server: tls: %w", err)
+	}
+	return &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}, nil
 }
 
 // Handler returns the server's handler: the routes behind the middleware chain.
@@ -185,7 +208,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 	close(s.bound)
-	s.log.Info("listening", "addr", ln.Addr().String(), "externalURL", s.opts.ExternalURL)
+	s.log.Info("listening", "addr", ln.Addr().String(), "externalURL", s.opts.ExternalURL, "tls", s.srv.TLSConfig != nil)
 	if metricsLn != nil {
 		msrv := &http.Server{Handler: metrics.Handler(s.opts.Pprof), ReadHeaderTimeout: readHeaderTimeout,
 			ErrorLog: slog.NewLogLogger(s.log.Handler(), slog.LevelWarn)}
@@ -199,7 +222,13 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	served := make(chan error, 1)
-	go func() { served <- s.srv.Serve(ln) }()
+	go func() {
+		if s.srv.TLSConfig != nil {
+			served <- s.srv.ServeTLS(ln, "", "") // the certificate is in TLSConfig
+			return
+		}
+		served <- s.srv.Serve(ln)
+	}()
 	select {
 	case err := <-served:
 		return fmt.Errorf("server: %w", err)
