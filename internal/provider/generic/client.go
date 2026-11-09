@@ -4,12 +4,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"oras.land/oras-go/v2/registry/remote/auth"
 	"oras.land/oras-go/v2/registry/remote/retry"
 
 	"github.com/lajstrom/lajstrom/internal/config"
+	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/version"
 )
 
@@ -68,7 +70,7 @@ func newClients(cfg config.Registry, host string, log *slog.Logger) clients {
 	// The retry transport resends a request only when its body can be replayed (GetBody); a
 	// streamed blob upload is sent once. Above it, the probe's ping sees the challenges.
 	rt := &challengeTransport{next: &retry.Transport{
-		Base:   &logTransport{next: newTransport(timeout), log: log},
+		Base:   &logTransport{next: &metricsTransport{next: newTransport(timeout), registry: cfg.Name}, log: log},
 		Policy: func() retry.Policy { return policy },
 	}}
 	var cred auth.CredentialFunc
@@ -162,4 +164,54 @@ func (t *logTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	t.log.DebugContext(ctx, "registry request", append(attrs, "status", resp.StatusCode)...)
 	return resp, nil
+}
+
+// metricsTransport records each request to the registry, each retry its own, in
+// lajstrom_provider_request_duration_seconds: the registry's name, the operation the path names
+// and the status, "error" when there was no answer. The time is to the response headers; a blob
+// streams after it.
+type metricsTransport struct {
+	next     http.RoundTripper
+	registry string
+}
+
+// RoundTrip implements http.RoundTripper.
+func (t *metricsTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	start := time.Now()
+	resp, err := t.next.RoundTrip(req)
+	status := "error"
+	if err == nil {
+		status = metrics.Status(resp.StatusCode)
+	}
+	metrics.ProviderDuration.WithLabelValues(t.registry, operation(req.URL.Path), req.Method, status).Observe(time.Since(start).Seconds())
+	return resp, err
+}
+
+// operationMarkers are the path segments of the distribution API that name an operation. A
+// repository name may contain any of them (a raw path a/manifests/b), so the operation is the
+// marker found last in the path: what follows it, a reference, a digest or an upload id, has no
+// slash. uploads comes before blobs, which it contains.
+var operationMarkers = []struct{ marker, op string }{
+	{"/blobs/uploads/", "upload"}, {"/blobs/", "blob"}, {"/manifests/", "manifest"},
+	{"/tags/list", "tags"}, {"/referrers/", "referrers"},
+}
+
+// operation names the operation of a request path for the metrics: ping, catalog, manifest,
+// blob, upload, tags, referrers, or other (a token realm, a redirect to the storage).
+func operation(path string) string {
+	switch {
+	case path == "/v2/" || path == "/v2":
+		return "ping"
+	case strings.HasPrefix(path, "/v2/_catalog"):
+		return "catalog"
+	case !strings.HasPrefix(path, "/v2/"):
+		return "other"
+	}
+	best, op := -1, "other"
+	for _, m := range operationMarkers {
+		if i := strings.LastIndex(path, m.marker); i > best {
+			best, op = i, m.op
+		}
+	}
+	return op
 }

@@ -9,10 +9,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/metrics"
 )
 
 // Store implements index.Store over a *sql.DB. Every method outside Tx is a transaction of
@@ -132,7 +134,8 @@ func (c *conn) fail(err error, what string) error {
 func notFound(what string) error { return fmt.Errorf("%w: %s", index.ErrNotFound, what) }
 
 // exec runs a statement and returns the number of rows it changed.
-func (c *conn) exec(ctx context.Context, what, query string, args ...any) (int, error) {
+func (c *conn) exec(ctx context.Context, what, query string, args ...any) (_ int, err error) {
+	defer observe(time.Now(), &err)
 	res, err := c.q.ExecContext(ctx, c.d.Rebind(query), args...)
 	if err != nil {
 		return 0, c.fail(err, what)
@@ -156,7 +159,8 @@ func (c *conn) execOne(ctx context.Context, what, query string, args ...any) err
 
 // scanRow runs a query that returns one row and scans it into dests; no row is
 // index.ErrNotFound.
-func (c *conn) scanRow(ctx context.Context, what, query string, args []any, dests ...any) error {
+func (c *conn) scanRow(ctx context.Context, what, query string, args []any, dests ...any) (err error) {
+	defer observe(time.Now(), &err)
 	if err := c.q.QueryRowContext(ctx, c.d.Rebind(query), args...).Scan(dests...); err != nil {
 		return c.fail(err, what)
 	}
@@ -165,8 +169,9 @@ func (c *conn) scanRow(ctx context.Context, what, query string, args []any, dest
 
 // insertID runs an INSERT … ON CONFLICT DO NOTHING RETURNING id into *id and reports whether
 // it inserted a row: false means a unique constraint holds another row.
-func (c *conn) insertID(ctx context.Context, what, query string, args []any, id *int64) (bool, error) {
-	err := c.q.QueryRowContext(ctx, c.d.Rebind(query), args...).Scan(id)
+func (c *conn) insertID(ctx context.Context, what, query string, args []any, id *int64) (_ bool, err error) {
+	defer observe(time.Now(), &err)
+	err = c.q.QueryRowContext(ctx, c.d.Rebind(query), args...).Scan(id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -187,7 +192,8 @@ func getOne[T any](ctx context.Context, c *conn, what string, dests func(*T) []a
 
 // getAll runs a query that returns rows of T, each scanned into dests(&v). No row is an
 // empty slice.
-func getAll[T any](ctx context.Context, c *conn, what string, dests func(*T) []any, query string, args ...any) ([]T, error) {
+func getAll[T any](ctx context.Context, c *conn, what string, dests func(*T) []any, query string, args ...any) (_ []T, err error) {
+	defer observe(time.Now(), &err)
 	rows, err := c.q.QueryContext(ctx, c.d.Rebind(query), args...)
 	if err != nil {
 		return nil, c.fail(err, what)
@@ -234,4 +240,31 @@ func qualify(alias, cols string) string {
 		parts[i] = alias + "." + p
 	}
 	return strings.Join(parts, ", ")
+}
+
+// observe records a statement that began at start in lajstrom_db_query_duration_seconds, by the
+// exported store method that ran it and whether *errp holds an error other than "no row".
+func observe(start time.Time, errp *error) {
+	result := "ok"
+	if *errp != nil && !errors.Is(*errp, index.ErrNotFound) {
+		result = "error"
+	}
+	metrics.DBDuration.WithLabelValues(storeMethod(), result).Observe(time.Since(start).Seconds())
+}
+
+// storeMethod returns the name of the innermost exported method of conn on the stack of the
+// statement, "other" when there is none: a label of the DB metrics from a set the code fixes.
+func storeMethod() string {
+	var pcs [12]uintptr
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(3, pcs[:])])
+	for {
+		f, more := frames.Next()
+		if _, name, ok := strings.Cut(f.Function, ".(*conn)."); ok && name != "" && name[0] >= 'A' && name[0] <= 'Z' &&
+			!strings.Contains(name, ".") {
+			return name
+		}
+		if !more {
+			return "other"
+		}
+	}
 }
