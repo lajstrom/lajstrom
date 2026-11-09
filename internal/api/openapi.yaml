@@ -1,0 +1,769 @@
+openapi: 3.1.0
+info:
+  title: Lajstrom management API
+  version: v1
+  description: >-
+    The REST interface to Lajstrom's control plane: repos, users, bindings, tokens and the audit
+    log. docs/api.md is the guide; this document is checked against the server's routes by
+    TestOpenAPIRoutes.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+servers:
+  - url: /
+tags:
+  - name: repos
+    description: Repos and their reindex runs.
+  - name: tokens
+    description: Personal access tokens of a user and deploy tokens of a repo.
+  - name: users
+    description: Local users.
+  - name: bindings
+    description: Roles of users on the repos of a mask.
+  - name: audit
+    description: The audit log.
+  - name: meta
+    description: Who is asking, and this document.
+security:
+  - basic: []
+  - bearer: []
+paths:
+  /api/v1/repos:
+    get:
+      tags: [repos]
+      operationId: listRepos
+      summary: The repos the caller may read.
+      parameters:
+        - name: format
+          in: query
+          description: Only the repos of this format.
+          schema: {type: string}
+      responses:
+        "200":
+          description: The repos, by format and name.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RepoList"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    post:
+      tags: [repos]
+      operationId: createRepo
+      summary: Create a repo (admin).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateRepo"}
+      responses:
+        "201":
+          description: The repo.
+          headers:
+            Location: {$ref: "#/components/headers/Location"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Repo"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+  /api/v1/repos/{format}/{repo}:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+    get:
+      tags: [repos]
+      operationId: getRepo
+      summary: One repo (read).
+      responses:
+        "200":
+          description: The repo.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Repo"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    patch:
+      tags: [repos]
+      operationId: updateRepo
+      summary: Change anonymousRead and policy (manage).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RepoPatch"}
+      responses:
+        "200":
+          description: The repo as it is then.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Repo"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    delete:
+      tags: [repos]
+      operationId: deleteRepo
+      summary: Delete a repo (manage); force deletes one that has packages.
+      parameters:
+        - name: force
+          in: query
+          schema: {type: boolean}
+      responses:
+        "204": {description: Deleted.}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+  /api/v1/repos/{format}/{repo}/reindex:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+    post:
+      tags: [repos]
+      operationId: reindexRepo
+      summary: Start a reindex of the repo (manage).
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ReindexRequest"}
+      responses:
+        "202":
+          description: The run, started.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ReindexRun"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+    get:
+      tags: [repos]
+      operationId: reindexStatus
+      summary: The latest run that covered the repo, with its report (manage).
+      responses:
+        "200":
+          description: The run.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ReindexRun"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/repos/{format}/{repo}/deploy-tokens:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+    get:
+      tags: [tokens]
+      operationId: listDeployTokens
+      summary: The deploy tokens of a repo (manage).
+      responses:
+        "200":
+          description: The tokens, in the order of their creation; never a secret.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TokenList"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    post:
+      tags: [tokens]
+      operationId: createDeployToken
+      summary: Create a deploy token of the repo (manage); the answer has its secret, once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/TokenRequest"}
+      responses:
+        "201":
+          description: The token and its secret.
+          headers:
+            Location: {$ref: "#/components/headers/Location"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CreatedToken"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/repos/{format}/{repo}/deploy-tokens/{id}:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+      - $ref: "#/components/parameters/id"
+    delete:
+      tags: [tokens]
+      operationId: revokeDeployToken
+      summary: Revoke a deploy token (manage); a revoked one again is 204.
+      responses:
+        "204": {description: Revoked.}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/users:
+    get:
+      tags: [users]
+      operationId: listUsers
+      summary: A page of the live users, by name (admin).
+      parameters:
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: The page.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UserList"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+    post:
+      tags: [users]
+      operationId: createUser
+      summary: Create a local user (admin).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/UserRequest"}
+      responses:
+        "201":
+          description: The user.
+          headers:
+            Location: {$ref: "#/components/headers/Location"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/User"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+  /api/v1/users/{user}:
+    parameters:
+      - $ref: "#/components/parameters/user"
+    get:
+      tags: [users]
+      operationId: getUser
+      summary: One live user (admin).
+      responses:
+        "200":
+          description: The user.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/User"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    patch:
+      tags: [users]
+      operationId: updateUser
+      summary: Change the name and disabled (admin).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/UserPatch"}
+      responses:
+        "200":
+          description: The user as it is then.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/User"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+    delete:
+      tags: [users]
+      operationId: deleteUser
+      summary: Delete a user (admin); its tokens are revoked and its bindings deleted.
+      responses:
+        "204": {description: Deleted.}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+  /api/v1/users/{user}/password:
+    parameters:
+      - $ref: "#/components/parameters/user"
+    post:
+      tags: [users]
+      operationId: setPassword
+      summary: Set the password of a user (admin).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PasswordRequest"}
+      responses:
+        "204": {description: Set.}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/users/{user}/tokens:
+    parameters:
+      - $ref: "#/components/parameters/user"
+    get:
+      tags: [tokens]
+      operationId: listTokens
+      summary: The personal access tokens of a user (the user, or admin).
+      responses:
+        "200":
+          description: The tokens, in the order of their creation; never a secret.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TokenList"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    post:
+      tags: [tokens]
+      operationId: createToken
+      summary: Create a personal access token of a user; the answer has its secret, once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/TokenRequest"}
+      responses:
+        "201":
+          description: The token and its secret.
+          headers:
+            Location: {$ref: "#/components/headers/Location"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CreatedToken"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/users/{user}/tokens/{id}:
+    parameters:
+      - $ref: "#/components/parameters/user"
+      - $ref: "#/components/parameters/id"
+    delete:
+      tags: [tokens]
+      operationId: revokeToken
+      summary: Revoke a personal access token; a revoked one again is 204.
+      responses:
+        "204": {description: Revoked.}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/bindings:
+    get:
+      tags: [bindings]
+      operationId: listBindings
+      summary: A page of the bindings, by id (admin).
+      parameters:
+        - name: principal
+          in: query
+          description: Only the bindings of user:<name> or user:<uid>.
+          schema: {type: string}
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: The page.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/BindingList"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+    post:
+      tags: [bindings]
+      operationId: createBinding
+      summary: Create a binding (admin).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/BindingRequest"}
+      responses:
+        "201":
+          description: The binding.
+          headers:
+            Location: {$ref: "#/components/headers/Location"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Binding"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+  /api/v1/bindings/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    delete:
+      tags: [bindings]
+      operationId: deleteBinding
+      summary: Delete a binding (admin); not the last admin binding of an enabled user.
+      responses:
+        "204": {description: Deleted.}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+  /api/v1/audit:
+    get:
+      tags: [audit]
+      operationId: listAudit
+      summary: A page of the audit log, newest first (admin).
+      parameters:
+        - name: repo
+          in: query
+          description: <format>/<name>.
+          schema: {type: string}
+        - name: principal
+          in: query
+          description: user:<name>, user:<uid>, token:<id> or anonymous.
+          schema: {type: string}
+        - name: action
+          in: query
+          schema: {type: string}
+        - name: since
+          in: query
+          description: Inclusive.
+          schema: {type: string, format: date-time}
+        - name: until
+          in: query
+          description: Exclusive.
+          schema: {type: string, format: date-time}
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: The page.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AuditList"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+  /api/v1/whoami:
+    get:
+      tags: [meta]
+      operationId: whoami
+      summary: The caller's principal.
+      security:
+        - {}
+        - basic: []
+        - bearer: []
+      responses:
+        "200":
+          description: The principal.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Whoami"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /api/v1/openapi.yaml:
+    get:
+      tags: [meta]
+      operationId: openAPI
+      summary: This document.
+      security:
+        - {}
+      responses:
+        "200":
+          description: The OpenAPI document.
+          content:
+            application/yaml:
+              schema: {type: string}
+components:
+  securitySchemes:
+    basic:
+      type: http
+      scheme: basic
+      description: A local user's password or token, or deploy:<deploy token>.
+    bearer:
+      type: http
+      scheme: bearer
+      description: A personal access token.
+  headers:
+    Location:
+      description: The path of the created resource.
+      schema: {type: string}
+  parameters:
+    format:
+      name: format
+      in: path
+      required: true
+      schema: {type: string}
+    repo:
+      name: repo
+      in: path
+      required: true
+      schema: {type: string}
+    id:
+      name: id
+      in: path
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    user:
+      name: user
+      in: path
+      required: true
+      description: The user's name or its uid.
+      schema: {type: string}
+    limit:
+      name: limit
+      in: query
+      description: The size of the page, 100 when absent.
+      schema: {type: integer, minimum: 1, maximum: 1000}
+    cursor:
+      name: cursor
+      in: query
+      description: The next of the page before; opaque.
+      schema: {type: string}
+  responses:
+    Invalid:
+      description: The request breaks a rule; the message names the field.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    Unauthorized:
+      description: No credentials, or credentials that are refused.
+      headers:
+        WWW-Authenticate:
+          description: Basic realm="lajstrom".
+          schema: {type: string}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    Forbidden:
+      description: The caller may not do this.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    NotFound:
+      description: No such resource, or a repo the caller may not read.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    Conflict:
+      description: The resource exists, or the change would break a rule of the server.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    Unavailable:
+      description: Not enabled in this server.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [NOT_FOUND, CONFLICT, FORBIDDEN, INVALID, UNAVAILABLE, INTERNAL]
+            message: {type: string}
+    Repo:
+      type: object
+      required: [format, name, registry, kind, anonymousRead, policy, createdAt, updatedAt]
+      properties:
+        format: {type: string}
+        name: {type: string}
+        registry: {type: string}
+        kind: {type: string, enum: [hosted]}
+        anonymousRead: {type: boolean}
+        policy: {type: [object, "null"]}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    RepoList:
+      type: object
+      required: [repos]
+      properties:
+        repos:
+          type: array
+          items: {$ref: "#/components/schemas/Repo"}
+    CreateRepo:
+      type: object
+      required: [format, name]
+      additionalProperties: false
+      properties:
+        format: {type: string}
+        name: {type: string}
+        registry: {type: string}
+        kind: {type: string, enum: [hosted]}
+        anonymousRead: {type: boolean}
+        policy: {type: [object, "null"]}
+    RepoPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        anonymousRead: {type: boolean}
+        policy: {type: [object, "null"]}
+    ReindexRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        prune: {type: boolean}
+        verify: {type: boolean}
+    ReindexRun:
+      type: object
+      required: [id, state, source, principal, replica, allRepos, prune, verify, startedAt, heartbeatAt, finishedAt, report]
+      properties:
+        id: {type: integer, format: int64}
+        state: {type: string}
+        source: {type: string}
+        principal: {type: string}
+        replica: {type: string}
+        allRepos: {type: boolean}
+        prune: {type: boolean}
+        verify: {type: boolean}
+        startedAt: {type: string, format: date-time}
+        heartbeatAt: {type: string, format: date-time}
+        finishedAt: {type: [string, "null"], format: date-time}
+        error: {type: string}
+        report:
+          description: The repo's part of the run's report; null while the run is running.
+          type: [object, "null"]
+    Token:
+      type: object
+      required: [id, kind, name, scopes, expiresAt, lastUsedAt, createdAt, revokedAt, hashPrefix]
+      properties:
+        id: {type: integer, format: int64}
+        kind: {type: string, enum: [pat, deploy]}
+        user: {type: string, description: The owner of a personal access token.}
+        repo: {type: string, description: The <format>/<name> of a deploy token.}
+        name: {type: string}
+        scopes:
+          type: array
+          items: {type: string, enum: [read, write]}
+        expiresAt: {type: [string, "null"], format: date-time}
+        lastUsedAt: {type: [string, "null"], format: date-time}
+        createdAt: {type: string, format: date-time}
+        revokedAt: {type: [string, "null"], format: date-time}
+        hashPrefix: {type: string}
+    CreatedToken:
+      allOf:
+        - $ref: "#/components/schemas/Token"
+        - type: object
+          required: [secret]
+          properties:
+            secret: {type: string, description: Shown this once.}
+    TokenList:
+      type: object
+      required: [tokens]
+      properties:
+        tokens:
+          type: array
+          items: {$ref: "#/components/schemas/Token"}
+    TokenRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: {type: string}
+        scopes:
+          type: array
+          items: {type: string, enum: [read, write]}
+        expiresAt: {type: string, format: date-time}
+        expiresIn: {type: string, description: A number of days (30d) or a duration (12h).}
+    User:
+      type: object
+      required: [uid, name, kind, disabled, createdAt]
+      properties:
+        uid: {type: string, format: uuid}
+        name: {type: string}
+        kind: {type: string, enum: [local]}
+        disabled: {type: boolean}
+        createdAt: {type: string, format: date-time}
+    UserList:
+      type: object
+      required: [users]
+      properties:
+        users:
+          type: array
+          items: {$ref: "#/components/schemas/User"}
+        next: {type: string}
+    UserRequest:
+      type: object
+      required: [name, password]
+      additionalProperties: false
+      properties:
+        name: {type: string}
+        password: {type: string, minLength: 8}
+        admin: {type: boolean}
+    UserPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: {type: string}
+        disabled: {type: boolean}
+    PasswordRequest:
+      type: object
+      required: [password]
+      additionalProperties: false
+      properties:
+        password: {type: string, minLength: 8}
+    Binding:
+      type: object
+      required: [id, principal, role, repoMask, createdAt]
+      properties:
+        id: {type: integer, format: int64}
+        principal: {type: string, description: user:<uid>.}
+        name: {type: string, description: The user's name now.}
+        role: {type: string, enum: [reader, writer, maintainer, admin]}
+        repoMask: {type: string}
+        createdAt: {type: string, format: date-time}
+    BindingList:
+      type: object
+      required: [bindings]
+      properties:
+        bindings:
+          type: array
+          items: {$ref: "#/components/schemas/Binding"}
+        next: {type: string}
+    BindingRequest:
+      type: object
+      required: [principal, role, repoMask]
+      additionalProperties: false
+      properties:
+        principal: {type: string, description: user:<name> or user:<uid>.}
+        role: {type: string, enum: [reader, writer, maintainer, admin]}
+        repoMask: {type: string}
+    AuditEntry:
+      type: object
+      required: [id, at, principal, action]
+      properties:
+        id: {type: integer, format: int64}
+        at: {type: string, format: date-time}
+        principal: {type: string}
+        principalName: {type: string}
+        action: {type: string}
+        repo: {type: string}
+        subject: {type: string}
+        digest: {type: string}
+        ip: {type: string}
+        details: {type: object}
+    AuditList:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items: {$ref: "#/components/schemas/AuditEntry"}
+        next: {type: string}
+    Whoami:
+      type: object
+      required: [principal, kind, name]
+      properties:
+        principal: {type: string}
+        kind: {type: string, enum: [user, token, anonymous]}
+        name: {type: string}
+        uid: {type: string, format: uuid}

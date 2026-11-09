@@ -63,14 +63,15 @@ const maxBody = 64 << 10
 //	PATCH  /api/v1/users/{user}                        change its name and disabled
 //	DELETE /api/v1/users/{user}                        delete it
 //	POST   /api/v1/users/{user}/password               set its password
-//	GET    /api/v1/users/{name}/tokens                 the personal access tokens of a user
-//	POST   /api/v1/users/{name}/tokens                 create one; the answer has its secret
-//	DELETE /api/v1/users/{name}/tokens/{id}            revoke one
+//	GET    /api/v1/users/{user}/tokens                 the personal access tokens of a user
+//	POST   /api/v1/users/{user}/tokens                 create one; the answer has its secret
+//	DELETE /api/v1/users/{user}/tokens/{id}            revoke one
 //	GET    /api/v1/bindings[?principal=&limit=&cursor=]  list the bindings, a page at a time
 //	POST   /api/v1/bindings                            create a binding
 //	DELETE /api/v1/bindings/{id}                       delete one
 //	GET    /api/v1/audit[?repo=&principal=&action=&since=&until=&limit=&cursor=]  the audit log, newest first
 //	GET    /api/v1/whoami                              the request's principal
+//	GET    /api/v1/openapi.yaml                        the OpenAPI document of these routes
 //
 // Every other method and path under /api/ is a JSON NOT_FOUND. Answers are JSON;
 // errors are the envelope of §4. New panics when o.Repos is nil.
@@ -92,32 +93,49 @@ func New(o Options) http.Handler {
 		h.bindings = &auth.Bindings{Index: o.Repos.Index, Formats: o.Repos.Formats, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log}
 	}
 	mux := http.NewServeMux()
-	mux.Handle("GET /api/v1/repos", h.serve(h.listRepos))
-	mux.Handle("POST /api/v1/repos", h.serve(h.createRepo))
-	mux.Handle("GET /api/v1/repos/{format}/{repo}", h.serve(h.getRepo))
-	mux.Handle("PATCH /api/v1/repos/{format}/{repo}", h.serve(h.updateRepo))
-	mux.Handle("DELETE /api/v1/repos/{format}/{repo}", h.serve(h.deleteRepo))
-	mux.Handle("POST /api/v1/repos/{format}/{repo}/reindex", h.serve(h.reindexRepo))
-	mux.Handle("GET /api/v1/repos/{format}/{repo}/reindex", h.serve(h.reindexStatus))
-	mux.Handle("GET /api/v1/repos/{format}/{repo}/deploy-tokens", h.serve(h.listDeployTokens))
-	mux.Handle("POST /api/v1/repos/{format}/{repo}/deploy-tokens", h.serve(h.createDeployToken))
-	mux.Handle("DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}", h.serve(h.revokeDeployToken))
-	mux.Handle("GET /api/v1/users", h.serve(h.listUsers))
-	mux.Handle("POST /api/v1/users", h.serve(h.createUser))
-	mux.Handle("GET /api/v1/users/{user}", h.serve(h.getUser))
-	mux.Handle("PATCH /api/v1/users/{user}", h.serve(h.updateUser))
-	mux.Handle("DELETE /api/v1/users/{user}", h.serve(h.deleteUser))
-	mux.Handle("POST /api/v1/users/{user}/password", h.serve(h.setPassword))
-	mux.Handle("GET /api/v1/users/{name}/tokens", h.serve(h.listTokens))
-	mux.Handle("POST /api/v1/users/{name}/tokens", h.serve(h.createToken))
-	mux.Handle("DELETE /api/v1/users/{name}/tokens/{id}", h.serve(h.revokeToken))
-	mux.Handle("GET /api/v1/bindings", h.serve(h.listBindings))
-	mux.Handle("POST /api/v1/bindings", h.serve(h.createBinding))
-	mux.Handle("DELETE /api/v1/bindings/{id}", h.serve(h.deleteBinding))
-	mux.Handle("GET /api/v1/audit", h.serve(h.listAudit))
-	mux.Handle("GET /api/v1/whoami", h.serve(h.whoami))
+	for _, rt := range h.routes() {
+		mux.Handle(rt.pattern, h.serve(rt.fn))
+	}
+	mux.Handle("GET /api/v1/openapi.yaml", http.HandlerFunc(serveOpenAPI))
 	mux.Handle("/api/", h.serve(h.notFound))
 	return mux
+}
+
+// route is a method and path of the API, as http.ServeMux takes them, and its endpoint.
+type route struct {
+	pattern string
+	fn      endpoint
+}
+
+// routes are the endpoints of the API: what New serves and what docs/api/openapi.yaml
+// describes (TestOpenAPIRoutes holds the two to each other).
+func (h *handler) routes() []route {
+	return []route{
+		{"GET /api/v1/repos", h.listRepos},
+		{"POST /api/v1/repos", h.createRepo},
+		{"GET /api/v1/repos/{format}/{repo}", h.getRepo},
+		{"PATCH /api/v1/repos/{format}/{repo}", h.updateRepo},
+		{"DELETE /api/v1/repos/{format}/{repo}", h.deleteRepo},
+		{"POST /api/v1/repos/{format}/{repo}/reindex", h.reindexRepo},
+		{"GET /api/v1/repos/{format}/{repo}/reindex", h.reindexStatus},
+		{"GET /api/v1/repos/{format}/{repo}/deploy-tokens", h.listDeployTokens},
+		{"POST /api/v1/repos/{format}/{repo}/deploy-tokens", h.createDeployToken},
+		{"DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}", h.revokeDeployToken},
+		{"GET /api/v1/users", h.listUsers},
+		{"POST /api/v1/users", h.createUser},
+		{"GET /api/v1/users/{user}", h.getUser},
+		{"PATCH /api/v1/users/{user}", h.updateUser},
+		{"DELETE /api/v1/users/{user}", h.deleteUser},
+		{"POST /api/v1/users/{user}/password", h.setPassword},
+		{"GET /api/v1/users/{user}/tokens", h.listTokens},
+		{"POST /api/v1/users/{user}/tokens", h.createToken},
+		{"DELETE /api/v1/users/{user}/tokens/{id}", h.revokeToken},
+		{"GET /api/v1/bindings", h.listBindings},
+		{"POST /api/v1/bindings", h.createBinding},
+		{"DELETE /api/v1/bindings/{id}", h.deleteBinding},
+		{"GET /api/v1/audit", h.listAudit},
+		{"GET /api/v1/whoami", h.whoami},
+	}
 }
 
 // handler serves the management API.

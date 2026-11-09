@@ -8,6 +8,11 @@ and the audit log. It lives under `/api/v1` on the same host as everything else
 LAJSTROM=http://localhost:8080
 ```
 
+The OpenAPI 3.1 document of these endpoints is
+[`internal/api/openapi.yaml`](../internal/api/openapi.yaml), served at
+`GET /api/v1/openapi.yaml` to anyone. A test holds it to the server's routes, and
+`make api-lint` lints it with vacuum.
+
 ## Conventions
 
 - **JSON.** Request bodies are one JSON object of at most 64 KiB; a field the endpoint does not

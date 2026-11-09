@@ -10,6 +10,7 @@ PKG     := github.com/lajstrom/lajstrom
 # Tool versions: the same as .github/workflows/ci.yml.
 GOLANGCI_LINT_VERSION ?= v2.15.0
 GO_LICENSES_VERSION   ?= v1.6.0
+VACUUM_VERSION        ?= v0.39.3
 ALLOWED_LICENSES      := Apache-2.0,MIT,BSD-2-Clause,BSD-3-Clause,ISC,MPL-2.0,Unlicense,CC0-1.0,0BSD
 # Modules whose license was verified by hand because go-licenses cannot classify the text
 # (CONTRIBUTING.md, dependency license policy): modernc.org/mathutil is BSD-3-Clause.
@@ -35,7 +36,7 @@ endif
 # make run uses the local configuration when there is one, the example otherwise.
 RUN_CONFIG   := $(firstword $(wildcard deploy/compose/lajstrom.yaml) deploy/compose/lajstrom.example.yaml)
 
-.PHONY: help build test vet lint vulncheck licenses fmt-check check \
+.PHONY: help build test vet lint api-lint vulncheck licenses fmt-check check \
 	dev-up dev-down dev-ps dev-logs test-integration e2e run clean
 
 help: ## List the targets
@@ -57,6 +58,9 @@ lint: ## golangci-lint at the version CI pins (configuration in .golangci.yml)
 
 vulncheck: ## Known vulnerabilities in dependencies and the standard library
 	$(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+api-lint: ## Lint the OpenAPI document of the management API (internal/api/openapi.yaml) with vacuum, at the version pinned above
+	$(GO) run github.com/daveshanley/vacuum@$(VACUUM_VERSION) lint -d internal/api/openapi.yaml
 
 licenses: ## Dependency licenses against the allowlist of CONTRIBUTING.md
 	$(GO) run github.com/google/go-licenses@$(GO_LICENSES_VERSION) check ./... --allowed_licenses=$(ALLOWED_LICENSES) $(foreach m,$(LICENSE_IGNORES),--ignore $(m))

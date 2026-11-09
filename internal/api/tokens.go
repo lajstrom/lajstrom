@@ -68,10 +68,24 @@ func (h *handler) allowTokens(r *http.Request, name string) error {
 	return h.allow(r, auth.ActionManage, auth.System, auth.System)
 }
 
+// tokenOwner returns the name of the user of {user}, a name or a uid, when the request may
+// manage that user's personal access tokens (allowTokens). A uid that is no live user's is
+// 404 for the admin role only, so that nobody else learns which uids exist.
+func (h *handler) tokenOwner(r *http.Request) (string, error) {
+	name, err := h.userName(r)
+	if err != nil {
+		if aerr := h.allowAdmin(r); aerr != nil {
+			return "", aerr
+		}
+		return "", err
+	}
+	return name, h.allowTokens(r, name)
+}
+
 // listTokens answers the personal access tokens of a user.
 func (h *handler) listTokens(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	name := r.PathValue("name")
-	if err := h.allowTokens(r, name); err != nil {
+	name, err := h.tokenOwner(r)
+	if err != nil {
 		return 0, nil, err
 	}
 	list, err := h.tokens.List(r.Context(), name)
@@ -84,8 +98,8 @@ func (h *handler) listTokens(_ http.ResponseWriter, r *http.Request) (int, any, 
 // createToken creates a personal access token of a user from the TokenRequest of the body: 201
 // with the token, its secret (the one time it is shown) and its Location.
 func (h *handler) createToken(w http.ResponseWriter, r *http.Request) (int, any, error) {
-	name := r.PathValue("name")
-	if err := h.allowTokens(r, name); err != nil {
+	name, err := h.tokenOwner(r)
+	if err != nil {
 		return 0, nil, err
 	}
 	req, exp, err := tokenRequest(w, r)
@@ -103,8 +117,8 @@ func (h *handler) createToken(w http.ResponseWriter, r *http.Request) (int, any,
 // revokeToken revokes a personal access token of a user: 204, also for a token revoked
 // already; 404 for an id that is not a token of that user.
 func (h *handler) revokeToken(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	name := r.PathValue("name")
-	if err := h.allowTokens(r, name); err != nil {
+	name, err := h.tokenOwner(r)
+	if err != nil {
 		return 0, nil, err
 	}
 	return h.revoke(r, func(t *auth.Token) bool { return t.Kind == auth.TokenPAT && t.User == name }, "user "+name)
