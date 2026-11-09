@@ -1,0 +1,96 @@
+# A production-shaped Lajstrom on one host (docs/deploy/compose.md): Lajstrom, Postgres as the
+# index database, distribution as the registry that holds every byte. Not the dev stack
+# (deploy/compose, docs/dev-stack.md): every service has a password, nothing but Lajstrom is
+# published, and Lajstrom listens on loopback for the TLS edge in front of it.
+#
+#   docs/deploy/compose.md        make the secrets, start, create the first admin, back up
+#
+# Only Postgres and the registry keep data, each in a named volume. Lajstrom keeps nothing: its
+# root filesystem is read-only and /tmp, where an upload is spooled for one request, is a tmpfs.
+#
+# The secrets are files in ./secrets (git-ignored), made once with the commands of the doc:
+#   secrets/lajstrom.env          LAJSTROM_MASTER_KEY, LAJSTROM_DATABASE_DSN, LAJSTROM_REGISTRY_PASSWORD
+#   secrets/postgres-password     the password of the Postgres user lajstrom
+#   secrets/registry.htpasswd     the bcrypt htpasswd line of the registry user lajstrom
+#
+# A registry you already run (Zot, Harbor, ECR, GitLab): delete the registry service and its
+# volume, and point registries[0] of lajstrom.yaml at it (docs/registries/).
+
+name: lajstrom
+
+services:
+  lajstrom:
+    # Pin a release by digest: ghcr.io/lajstrom/lajstrom:vX.Y.Z@sha256:… (docs/install.md).
+    image: ${LAJSTROM_IMAGE:-ghcr.io/lajstrom/lajstrom:v0.1.0}
+    command: ["serve", "--config", "/etc/lajstrom/lajstrom.yaml"]
+    # The master key, the database DSN and the registry password. Lajstrom reads the master key
+    # from an environment variable only, so the file is an env_file, not a compose secret.
+    env_file: ./secrets/lajstrom.env
+    volumes:
+      - ./lajstrom.yaml:/etc/lajstrom/lajstrom.yaml:ro
+    read_only: true
+    tmpfs:
+      # Uploads are spooled here for the length of one request: size it for the largest
+      # concurrent uploads. tmpfs is memory; a large-upload host mounts a disk directory instead.
+      - /tmp:size=2g,mode=1777
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    ports:
+      # The TLS edge on this host proxies to it; never publish it on every interface.
+      - "127.0.0.1:${LAJSTROM_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      registry:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 40s # server.shutdownTimeout (30s) and some
+
+  postgres:
+    # The Postgres of the dev stack and of CI, the one Lajstrom is tested against (17.11).
+    image: postgres:17.11-alpine
+    environment:
+      POSTGRES_USER: lajstrom
+      POSTGRES_DB: lajstrom
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+    secrets: [postgres-password]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "lajstrom", "-d", "lajstrom"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  registry:
+    # distribution 3.1.2 on its filesystem storage, Basic auth with one user (docs/registries/distribution.md).
+    image: registry:3.1.2
+    environment:
+      REGISTRY_AUTH: htpasswd
+      REGISTRY_AUTH_HTPASSWD_REALM: lajstrom
+      REGISTRY_AUTH_HTPASSWD_PATH: /run/secrets/registry-htpasswd
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      REGISTRY_LOG_LEVEL: info
+    secrets: [registry-htpasswd]
+    volumes:
+      - registry-data:/var/lib/registry
+    healthcheck:
+      # /v2/ is 401 without credentials; the root answers 200 without them.
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:5000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+secrets:
+  postgres-password:
+    file: ./secrets/postgres-password
+  registry-htpasswd:
+    file: ./secrets/registry.htpasswd
+
+volumes:
+  postgres-data:
+  registry-data:

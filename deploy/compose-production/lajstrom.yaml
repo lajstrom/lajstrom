@@ -1,0 +1,39 @@
+# Lajstrom of deploy/compose-production/compose.yaml (docs/deploy/compose.md). Every key is in
+# docs/configuration.md; what is not here has its default. No secret is in this file: the
+# master key, the database DSN with its password and the registry password come from
+# secrets/lajstrom.env.
+
+server:
+  listen: ":8080"
+  # The public URL that clients use, the TLS edge's (docs/configuration.md, server.externalURL):
+  # the realm of the bearer challenge of /v2 is <externalURL>/v2/token.
+  externalURL: "https://art.example.com"
+  # Prometheus scrapes it inside the compose network; the port is not published.
+  metricsListen: "0.0.0.0:9464"
+
+log:
+  format: json
+
+database:
+  driver: postgres
+  # dsn: from LAJSTROM_DATABASE_DSN in secrets/lajstrom.env: it carries the password.
+
+registries:
+  - name: local
+    url: "http://registry:5000"
+    # Every OCI repository Lajstrom creates is under lajstrom/ in the registry.
+    prefix: "lajstrom/"
+    auth:
+      username: lajstrom
+      passwordEnv: LAJSTROM_REGISTRY_PASSWORD
+
+keys:
+  masterKeyEnv: LAJSTROM_MASTER_KEY
+
+# Created at the first start when the database does not have them; the API and
+# lajstrom admin repo create more. Listing them here also brings them back after the
+# database is lost without a backup (docs/operations.md, Disaster recovery).
+repos:
+  - name: assets
+    format: raw
+    registry: local

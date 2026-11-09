@@ -1,0 +1,200 @@
+# Deploy with Docker Compose
+
+One host, three containers: Lajstrom, Postgres as its index database, and a registry that holds
+every byte. [deploy/compose-production/](../../deploy/compose-production/) has the two files,
+`compose.yaml` and `lajstrom.yaml`. It is not the [dev stack](../dev-stack.md): every service
+has a password, only Lajstrom publishes a port, on loopback, for the TLS edge on the same host,
+and Lajstrom runs as a user without privileges on a read-only root filesystem.
+
+| Service | Image | Published | Keeps data in |
+| --- | --- | --- | --- |
+| `lajstrom` | `ghcr.io/lajstrom/lajstrom`, the release image (#57), user 65532, read-only root, all capabilities dropped | `127.0.0.1:8080` | nothing: `/tmp`, where an upload is spooled for one request, is a tmpfs |
+| `postgres` | `postgres:17.11-alpine` | no | the volume `postgres-data`: the index, the control plane with it ([index-schema.md](../spec/index-schema.md)) |
+| `registry` | `registry:3.1.2`, Basic auth with one user | no | the volume `registry-data`: every artifact |
+
+A registry you already run (Zot, Harbor, ECR, the GitLab registry): delete the `registry` service
+and its volume, and point `registries[0]` of `lajstrom.yaml` at it, with the configuration its
+page in [registries/](../registries/README.md) gives.
+
+## 1. Secrets
+
+Three files in `secrets/` (git-ignored), made once:
+
+```sh
+cd deploy/compose-production
+umask 077
+mkdir -p secrets
+pg=$(openssl rand -hex 24)
+reg=$(openssl rand -hex 24)
+printf '%s' "$pg" > secrets/postgres-password
+docker run --rm --entrypoint htpasswd httpd:2.4.66-alpine -Bbn lajstrom "$reg" > secrets/registry.htpasswd   # bcrypt
+cat > secrets/lajstrom.env <<EOF
+LAJSTROM_MASTER_KEY=$(openssl rand -hex 32)
+LAJSTROM_DATABASE_DSN=postgres://lajstrom:$pg@postgres:5432/lajstrom?sslmode=disable
+LAJSTROM_REGISTRY_PASSWORD=$reg
+EOF
+unset pg reg
+```
+
+| File | Read by | What |
+| --- | --- | --- |
+| `secrets/lajstrom.env` | Compose, into the environment of `lajstrom` | the [master key](../operations.md#the-master-key), the DSN with the database password, the registry password |
+| `secrets/postgres-password` | `postgres`, as the Compose secret `POSTGRES_PASSWORD_FILE` names | the same database password |
+| `secrets/registry.htpasswd` | `registry`, as a Compose secret | the bcrypt line of the user `lajstrom` |
+
+Lajstrom reads the master key from an environment variable only (`keys.masterKeyEnv`), and
+the distroless image has no shell to read a file into one, so `lajstrom.env` is an `env_file`
+and not a Compose secret: whoever can run `docker inspect` on the host sees it. **Copy the
+master key somewhere apart from the host and from the database backups now**: without it the
+signing keys in the database are ciphertext ([operations.md](../operations.md#the-master-key)).
+
+## 2. Configuration
+
+`lajstrom.yaml` is short, every key is in [configuration.md](../configuration.md):
+
+- `server.externalURL`: the public URL of the TLS edge, `https://art.example.com` in the file.
+  The realm of the bearer challenge of `/v2` is built from it, so `docker login` and `oras login`
+  fail when it is wrong.
+- `server.metricsListen: "0.0.0.0:9464"`: Prometheus on the Compose network scrapes it; the port
+  is not published.
+- `database.driver: postgres`; the DSN comes from `LAJSTROM_DATABASE_DSN`, since it carries the
+  password.
+- `registries[0]`: the registry service, under the prefix `lajstrom/`, with the user `lajstrom`
+  and the password from `LAJSTROM_REGISTRY_PASSWORD`.
+- `repos`: `raw/assets`, created at the first start; the database has every repo created later.
+
+The image is `ghcr.io/lajstrom/lajstrom:v0.1.0` unless `LAJSTROM_IMAGE` says otherwise; pin a
+digest there in production, `ghcr.io/lajstrom/lajstrom:vX.Y.Z@sha256:…`. `LAJSTROM_PORT`
+changes the loopback port (default 8080). Both can go into a `.env` beside `compose.yaml`.
+
+## 3. Start
+
+```sh
+docker compose up -d --wait
+docker compose ps --format 'table {{.Service}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+```
+
+The run below used the snapshot image of the release build (#57), the port 18780 and
+`externalURL: "http://localhost:18780"`, since no edge was in front:
+
+```text
+SERVICE    IMAGE                                                     STATUS                   PORTS
+lajstrom   ghcr.io/lajstrom/lajstrom:v0.0.2-snapshot.aa808b3-arm64   Up Less than a second    127.0.0.1:18780->8080/tcp
+postgres   postgres:17.11-alpine                                     Up 6 seconds (healthy)   5432/tcp
+registry   registry:3.1.2                                            Up 6 seconds (healthy)   5000/tcp
+```
+
+Lajstrom starts once Postgres and the registry are healthy, applies the migrations, creates the
+repos of the file and the bearer-token key, asks the registry what it supports, and listens
+(`docker compose logs lajstrom`, JSON, without the times):
+
+```text
+{"level":"INFO","msg":"index migrations applied under the migration lock","database.driver":"postgres","applied":[1,2,3,4,5,6,7,8,9]}
+{"level":"INFO","msg":"repo of the configuration created","repo":"raw/assets","registry":"local"}
+{"level":"INFO","msg":"token signing key made","fingerprint":"475550cb596b5da8b03554c032fc71999c47a8d38d6c84c8e42f46ed066cdbc2","algorithm":"ES256"}
+{"level":"INFO","msg":"registry capabilities","registry":"local","vendor":"unknown","createOnPush":true,"referrers":false,"catalog":true,"deleteManifest":true,"immutableTags":false,"blobRedirect":true,"maxBlobSize":0}
+{"level":"INFO","msg":"listening","addr":"[::]:8080","externalURL":"http://localhost:18780"}
+{"level":"INFO","msg":"metrics listening","addr":"[::]:9464","pprof":false}
+```
+
+The `lajstrom` service has no health check: the image has no shell and no HTTP client to run
+one. The edge checks `GET /-/readyz` ([operations.md](../operations.md#readiness)); by hand,
+`curl -s localhost:8080/-/readyz` answers `ok`.
+
+## 4. The first admin and more repos
+
+The `admin` commands run in the container, against the same database, with the same
+environment; a function saves typing:
+
+```sh
+lj() { docker compose exec -T lajstrom /lajstrom --config /etc/lajstrom/lajstrom.yaml "$@"; }
+printf '%s\n' "$LAJSTROM_ADMIN_PASSWORD" | lj admin user create --name admin --admin --password-stdin
+lj admin repo create oci/images --registry local
+```
+
+```text
+{"uid":"01a1c155-57ca-7c43-a38e-9595784a4098","name":"admin","kind":"local","disabled":false,"createdAt":"2026-11-09T17:22:38.154331Z"}
+{"format":"oci","name":"images","registry":"local","kind":"hosted","anonymousRead":false,"policy":null,"createdAt":"2026-11-09T17:22:38.363197Z","updatedAt":"2026-11-09T17:22:38.363197Z"}
+```
+
+[auth.md](../auth.md) has the rest: users, bindings, tokens for CI.
+
+## 5. Push and pull
+
+Through the edge, with `https://art.example.com`; the run talked to the loopback port, hence
+`--plain-http`:
+
+```sh
+printf 'hello compose\n' > hello.txt
+curl -s -u "admin:$LAJSTROM_ADMIN_PASSWORD" -o /dev/null -w '%{http_code}\n' -T hello.txt http://localhost:18780/raw/assets/docs/hello.txt   # 201
+curl -s -u "admin:$LAJSTROM_ADMIN_PASSWORD" http://localhost:18780/raw/assets/docs/hello.txt                                              # hello compose
+
+printf '%s\n' "$LAJSTROM_ADMIN_PASSWORD" | oras login --plain-http -u admin --password-stdin localhost:18780   # Login Succeeded
+oras push --plain-http --artifact-type application/vnd.example.notes localhost:18780/oci/images/hello:1 hello.txt
+oras pull --plain-http -o out localhost:18780/oci/images/hello:1                                          # out/hello.txt
+```
+
+```text
+Pushed [registry] localhost:18780/oci/images/hello:1
+ArtifactType: application/vnd.example.notes
+Digest: sha256:fba0e544c5bc3b78f28c2eff6db63da06c81a557337e35f5221ce7c82d806b9c
+…
+Pulled [registry] localhost:18780/oci/images/hello:1
+Digest: sha256:fba0e544c5bc3b78f28c2eff6db63da06c81a557337e35f5221ce7c82d806b9c
+```
+
+Both land in the registry under the prefix, and nowhere else:
+
+```sh
+docker compose exec -T registry sh -c 'ls /var/lib/registry/docker/registry/v2/repositories/lajstrom/*/*'
+```
+
+```text
+/var/lib/registry/docker/registry/v2/repositories/lajstrom/oci/images:
+hello
+
+/var/lib/registry/docker/registry/v2/repositories/lajstrom/raw/assets:
+docs
+```
+
+## 6. Back up
+
+What must be backed up is the database and the master key; the registry has its own backup, or
+none if its storage is replicated ([operations.md](../operations.md#disaster-recovery)). A
+dump of the running database, in Postgres's custom format:
+
+```sh
+docker compose exec -T postgres pg_dump -U lajstrom -d lajstrom --format=custom > "lajstrom-$(date -u +%Y%m%dT%H%M%SZ).dump"
+```
+
+Restoring it into a new, empty database, then `migrate` and `reindex` before Lajstrom starts,
+was rehearsed on this stack. The volume is `<project>_postgres-data`: `lajstrom_postgres-data`
+with the name of `compose.yaml`; the run used the project name `lajstrom-docs-compose`. The
+`docker volume rm` deletes the database: read the dump first.
+
+```sh
+docker compose exec -T postgres pg_restore --list < lajstrom-….dump | grep -c 'TABLE DATA'   # 16 in the run
+docker compose stop lajstrom
+docker compose rm -f -s postgres && docker volume rm lajstrom_postgres-data
+docker compose up -d --wait postgres
+docker compose exec -T postgres pg_restore -U lajstrom -d lajstrom --no-owner --exit-on-error < lajstrom-….dump
+docker compose run --rm -T lajstrom migrate --config /etc/lajstrom/lajstrom.yaml
+docker compose run --rm -T lajstrom reindex --config /etc/lajstrom/lajstrom.yaml --report
+docker compose up -d --wait lajstrom
+```
+
+## 7. Upgrade and remove
+
+A new release: set `LAJSTROM_IMAGE` to it and `docker compose up -d`; `serve` applies the
+migrations of the new version on start. This has not been tried: there is no release yet.
+`docker compose down` stops and removes the containers and keeps the volumes;
+`docker compose down -v` deletes the index and every artifact.
+
+## What was not verified
+
+- An edge in front, TLS and `externalURL` with `https`: #129 describes the edge.
+- A host other than macOS with OrbStack 2.2.5 (Docker 29.8.2, Compose 5.5.0): on Linux the
+  secret files are bind-mounted with mode 0600 and read by root inside `postgres` and
+  `registry`, which Docker's default allows; rootless Docker or user namespaces were not tried.
+- An external registry instead of the `registry` service; the registry pages list what was
+  tested against each one.
