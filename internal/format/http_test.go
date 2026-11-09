@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -15,9 +16,10 @@ import (
 func TestWriteError(t *testing.T) {
 	tooLarge := &http.MaxBytesError{Limit: 1024}
 	tests := []struct {
-		name   string
-		err    error
-		status int
+		name       string
+		err        error
+		status     int
+		retryAfter string // the Retry-After header; empty for none
 	}{
 		{name: "invalid", err: format.ErrInvalid, status: 400},
 		{name: "wrapped invalid", err: fmt.Errorf("pypi: wheel: %w", format.ErrInvalid), status: 400},
@@ -33,6 +35,8 @@ func TestWriteError(t *testing.T) {
 		{name: "unsupported", err: format.ErrUnsupported, status: 501},
 		{name: "provider unsupported", err: fmt.Errorf("ecr: %w", provider.ErrUnsupported), status: 501},
 		{name: "backend rejected our credentials", err: fmt.Errorf("generic: %w", provider.ErrUnauthorized), status: 502},
+		{name: "circuit breaker open", err: fmt.Errorf("raw: push: %w", &provider.UnavailableError{RetryAfter: 12 * time.Second}), status: 503, retryAfter: "12"},
+		{name: "unavailable without a time", err: provider.ErrUnavailable, status: 503},
 		{name: "first match wins", err: errors.Join(index.ErrNotFound, format.ErrInvalid), status: 400},
 		{name: "other", err: errors.New("index: database is unreachable"), status: 500},
 		{name: "nil", status: 500},
@@ -67,7 +71,34 @@ func TestWriteError(t *testing.T) {
 				t.Errorf("WWW-Authenticate = %q, want %q", h.Get("WWW-Authenticate"), challenge)
 			case h.Get("Content-Length") != "":
 				t.Errorf("stale Content-Length %q", h.Get("Content-Length"))
+			case h.Get("Retry-After") != tt.retryAfter:
+				t.Errorf("Retry-After = %q, want %q", h.Get("Retry-After"), tt.retryAfter)
 			}
 		})
+	}
+}
+
+// TestSetRetryAfter checks the seconds of Retry-After: the time left rounded up, at least 1, and
+// no header for an error that does not say when to try again.
+func TestSetRetryAfter(t *testing.T) {
+	tests := []struct {
+		err  error
+		want string
+	}{
+		{&provider.UnavailableError{RetryAfter: 0}, "1"},
+		{&provider.UnavailableError{RetryAfter: 300 * time.Millisecond}, "1"},
+		{&provider.UnavailableError{RetryAfter: time.Second}, "1"},
+		{&provider.UnavailableError{RetryAfter: 1200 * time.Millisecond}, "2"},
+		{fmt.Errorf("facade: %w", &provider.UnavailableError{RetryAfter: 30 * time.Second}), "30"},
+		{provider.ErrUnavailable, ""},
+		{errors.New("other"), ""},
+		{nil, ""},
+	}
+	for _, tt := range tests {
+		h := http.Header{}
+		format.SetRetryAfter(h, tt.err)
+		if got := h.Get("Retry-After"); got != tt.want {
+			t.Errorf("SetRetryAfter(%v) = %q, want %q", tt.err, got, tt.want)
+		}
 	}
 }

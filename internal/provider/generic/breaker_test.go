@@ -17,6 +17,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/metrics"
+	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
 // clock is a time a test moves by hand.
@@ -96,7 +97,10 @@ func TestBreakerOpensAndCloses(t *testing.T) {
 	if g := circuitGauge(t, "breaker-test"); g != 1 || !strings.Contains(buf.String(), "circuit open") {
 		t.Errorf("circuit gauge %v after 3 failures, want 1, and a log line:\n%s", g, buf)
 	}
-	_ = wantCall(t, f, "Tags while open", tags, true, 0)
+	err = wantCall(t, f, "Tags while open", tags, true, 0)
+	if after, ok := provider.RetryAfter(err); !ok || after != time.Minute {
+		t.Errorf("RetryAfter of a refusal at the opening = %v, %v; want the whole cooldown, 1m", after, ok)
+	}
 	_ = wantCall(t, f, "Ping while open", ping, true, 0)
 
 	clk.add(time.Minute) // the cooldown is over: half-open
@@ -125,7 +129,7 @@ func wantCall(t *testing.T, f *fakeRegistry, what string, call func() error, ref
 	t.Helper()
 	before := len(f.log())
 	err := call()
-	if got := errors.Is(err, errCircuitOpen); got != refused {
+	if got := errors.Is(err, provider.ErrUnavailable); got != refused {
 		t.Errorf("%s: %v; refused by the breaker: %v, want %v", what, err, got, refused)
 	}
 	if n := len(f.log()) - before; n != sent {
@@ -182,7 +186,7 @@ func TestBreakerCounts(t *testing.T) {
 				_, _ = listTags(ctx, repo)
 			}
 			_, err = listTags(t.Context(), repo)
-			if got := errors.Is(err, errCircuitOpen); got != tt.open {
+			if got := errors.Is(err, provider.ErrUnavailable); got != tt.open {
 				t.Errorf("circuit open = %v (last error %v), want %v", got, err, tt.open)
 			}
 		})
@@ -202,16 +206,21 @@ func TestBreakerOneTrial(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.done(t.Context(), false, -1) // opens
-	if _, err := b.allow(get); !errors.Is(err, errCircuitOpen) {
+	clk.add(20 * time.Second)
+	if _, err := b.allow(get); !errors.Is(err, provider.ErrUnavailable) {
 		t.Fatalf("allow while open = %v", err)
+	} else if after, _ := provider.RetryAfter(err); after != 40*time.Second {
+		t.Errorf("RetryAfter 20 s into a 1 min cooldown = %v, want 40s", after)
 	}
-	clk.add(time.Minute)
+	clk.add(40 * time.Second)
 	trial, err := b.allow(get)
 	if err != nil || !trial {
 		t.Fatalf("allow after the cooldown = %v, %v; want the trial", trial, err)
 	}
-	if _, err := b.allow(get); !errors.Is(err, errCircuitOpen) {
-		t.Errorf("a second GET during the trial = %v, want errCircuitOpen", err)
+	if _, err := b.allow(get); !errors.Is(err, provider.ErrUnavailable) {
+		t.Errorf("a second GET during the trial = %v, want provider.ErrUnavailable", err)
+	} else if after, _ := provider.RetryAfter(err); after != 0 {
+		t.Errorf("RetryAfter during the trial = %v, want 0", after)
 	}
 	b.done(t.Context(), true, 0) // the trial's caller went away
 	if trial, err := b.allow(get); err != nil || !trial {
