@@ -1,0 +1,171 @@
+# goreleaser configuration of the release (#57). A pushed tag v* runs it in
+# .github/workflows/release.yml; make snapshot runs it locally without publishing or signing.
+# docs/release.md describes how a release is cut and how to verify one.
+version: 2
+
+project_name: lajstrom
+
+git:
+  # Sorts v0.1.0 after v0.1.0-rc.1 when both tags point at the same commit.
+  prerelease_suffix: "-"
+
+snapshot:
+  # 0.0.1-snapshot.6b52bd4: the archives and image tags of a snapshot say what they are.
+  version_template: "{{ incpatch .Version }}-snapshot.{{ .ShortCommit }}"
+
+builds:
+  - id: lajstrom
+    main: ./cmd/lajstrom
+    binary: lajstrom
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    # internal/version as make build sets it: git describe --tags --always --dirty (on a
+    # release, the tag the workflow was started for), the short commit, the build time in
+    # RFC 3339 UTC. -s -w strip the symbol table and DWARF; the module build info stays.
+    ldflags:
+      - -s -w
+      - -X github.com/lajstrom/lajstrom/internal/version.Version={{ if .IsSnapshot }}{{ .Summary }}{{ else }}{{ .Tag }}{{ end }}
+      - -X github.com/lajstrom/lajstrom/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/lajstrom/lajstrom/internal/version.Date={{ .Date }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: lajstrom
+    ids: [lajstrom]
+    formats: [tar.gz]
+    # lajstrom_0.1.0_darwin_arm64.tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - NOTICE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# One SPDX JSON SBOM per archive, by syft: lajstrom_0.1.0_linux_amd64.tar.gz.sbom.json. The
+# images carry their own, as a buildx attestation (dockers_v2.sbom).
+sboms:
+  - id: archives
+    artifacts: archive
+
+# Keyless: cosign gets a short-lived certificate from Fulcio for the workflow's GitHub OIDC
+# identity and records the signature in Rekor. The bundle holds both.
+signs:
+  - id: checksums
+    cmd: cosign
+    artifacts: checksum
+    signature: "${artifact}.sigstore.json"
+    args: ["sign-blob", "--bundle=${signature}", "${artifact}", "--yes"]
+    output: true
+
+dockers_v2:
+  - id: lajstrom
+    ids: [lajstrom]
+    dockerfile: Dockerfile
+    # docker.io only with Docker Hub credentials (release.yml logs in when DOCKERHUB_USERNAME
+    # is set); a snapshot builds both names.
+    images:
+      - ghcr.io/lajstrom/lajstrom
+      - '{{ if or .IsSnapshot (isEnvSet "DOCKERHUB_USERNAME") }}docker.io/lajstrom/lajstrom{{ end }}'
+    # v0.1.0 always, latest only on a stable release (not on v0.1.0-rc.1, not on a snapshot).
+    tags:
+      - "v{{ .Version }}"
+      - '{{ if not (or .IsSnapshot .Prerelease) }}latest{{ end }}'
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    # The static labels are in the Dockerfile; these change with every release.
+    labels:
+      org.opencontainers.image.version: "v{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+    # On the image index, where ghcr.io and Docker Hub read them.
+    annotations:
+      org.opencontainers.image.title: Lajstrom
+      org.opencontainers.image.description: Artifact registry on top of any OCI registry
+      org.opencontainers.image.source: https://github.com/lajstrom/lajstrom
+      org.opencontainers.image.licenses: Apache-2.0
+      org.opencontainers.image.version: "v{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+
+# Every pushed image by digest, keyless like signs.
+docker_signs:
+  - id: images
+    cmd: cosign
+    args: ["sign", "${artifact}@${digest}", "--yes"]
+    output: true
+
+# The cask goes to lajstrom/homebrew-tap: brew install lajstrom/tap/lajstrom. Without
+# HOMEBREW_TAP_TOKEN it is written to dist/homebrew/Casks/lajstrom.rb and not pushed.
+homebrew_casks:
+  - name: lajstrom
+    ids: [lajstrom]
+    binaries: [lajstrom]
+    homepage: https://lajstrom.dev
+    description: Artifact registry on top of any OCI registry
+    directory: Casks
+    repository:
+      owner: lajstrom
+      name: homebrew-tap
+      token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
+    skip_upload: '{{ if isEnvSet "HOMEBREW_TAP_TOKEN" }}false{{ else }}true{{ end }}'
+    commit_msg_template: "lajstrom {{ .Tag }}"
+    # The binaries are not notarized: without this macOS refuses to run the downloaded binary.
+    # brew has checked its sha256 against the cask before this runs.
+    hooks:
+      post:
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/lajstrom"]
+          end
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^feat(\(.+\))?!?:'
+      order: 0
+    - title: Bug fixes
+      regexp: '^fix(\(.+\))?!?:'
+      order: 1
+    - title: Performance
+      regexp: '^perf(\(.+\))?!?:'
+      order: 2
+    - title: Documentation
+      regexp: '^docs(\(.+\))?!?:'
+      order: 3
+    - title: Other changes
+      order: 999
+  filters:
+    exclude:
+      - '^(test|ci|chore)(\(.+\))?!?:'
+
+# A draft: a maintainer reads the notes and publishes it (docs/release.md). A tag with a
+# suffix, v0.1.0-rc.1, is marked as a pre-release.
+release:
+  draft: true
+  replace_existing_draft: true
+  prerelease: auto
+  footer: |
+    ## Verify
+
+    `checksums.txt` and the images are signed keylessly by the release workflow:
+
+    ```sh
+    cosign verify-blob checksums.txt --bundle checksums.txt.sigstore.json \
+      --certificate-identity 'https://github.com/lajstrom/lajstrom/.github/workflows/release.yml@refs/tags/{{ .Tag }}' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    sha256sum --ignore-missing -c checksums.txt
+
+    cosign verify ghcr.io/lajstrom/lajstrom:{{ .Tag }} \
+      --certificate-identity 'https://github.com/lajstrom/lajstrom/.github/workflows/release.yml@refs/tags/{{ .Tag }}' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    ```
