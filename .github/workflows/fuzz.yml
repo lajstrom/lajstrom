@@ -1,0 +1,61 @@
+name: Fuzz
+
+# Each fuzz target for ten minutes, once a week and by hand (#51). The targets are those of
+# make fuzz (Makefile, FUZZ_TARGETS); a crasher is kept as an artifact, to commit with its fix
+# and a regression test (docs/testing.md).
+on:
+  schedule:
+    - cron: "43 2 * * 0" # weekly, Sunday 02:43 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { package: ./internal/oci/profile, target: FuzzEscape }
+          - { package: ./internal/oci/profile, target: FuzzUnescape }
+          - { package: ./internal/oci/profile, target: FuzzValidate }
+          - { package: ./internal/format/deb, target: FuzzParse }
+          - { package: ./internal/format/deb, target: FuzzParseControl }
+          - { package: ./internal/format/deb, target: FuzzParseAr }
+          - { package: ./internal/format/pypi, target: FuzzWheelFilename }
+          - { package: ./internal/format/maven, target: FuzzPOM }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - name: Where go test keeps the fuzz cache
+        id: gocache
+        run: echo "fuzz=$(go env GOCACHE)/fuzz" >> "${GITHUB_OUTPUT}"
+      # The inputs go test -fuzz found interesting, from one week to the next.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.gocache.outputs.fuzz }}
+          key: fuzz-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-${{ matrix.target }}-
+      - name: Fuzz for 10 minutes
+        env:
+          TARGET: ${{ matrix.package }}:${{ matrix.target }}
+        run: make fuzz FUZZTIME=10m FUZZ_TARGETS="${TARGET}"
+      - name: Keep the crasher
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: crasher-${{ matrix.target }}
+          path: ${{ matrix.package }}/testdata/fuzz/${{ matrix.target }}/
+          if-no-files-found: ignore
