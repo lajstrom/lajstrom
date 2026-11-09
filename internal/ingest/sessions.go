@@ -242,8 +242,9 @@ func (p *Pipeline) Commit(ctx context.Context, sessionID int64) (*format.Publish
 	return pub, nil
 }
 
-// commitFiles publishes the files of st through Upload, as the principal that opened s. Each
-// file reads back from the registry if Build opens it.
+// commitFiles publishes the files of st through Upload, as the principal that opened s, with
+// the parameters name, version and uploaded-by. Each file reads back from the registry if Build
+// opens it.
 func (p *Pipeline) commitFiles(ctx context.Context, s *index.Session, st *sessionState) (*format.Published, error) {
 	repo, err := p.index.GetRepoByID(ctx, s.RepoID)
 	if err != nil {
@@ -257,7 +258,9 @@ func (p *Pipeline) commitFiles(ctx context.Context, s *index.Session, st *sessio
 	if err != nil {
 		return nil, err
 	}
-	up := format.Upload{Params: map[string]string{"name": st.Name, "version": st.Version}}
+	// uploaded-by is the parameter of every format's ParamUploadedBy: the principal is the
+	// session's, who sent the files.
+	up := format.Upload{Params: map[string]string{"name": st.Name, "version": st.Version, "uploaded-by": s.Principal}}
 	for _, f := range st.Files {
 		d := ocispec.Descriptor{MediaType: sessionBlobType, Digest: f.Digest, Size: f.Size}
 		up.Files = append(up.Files, format.UploadedFile{Name: f.Name, Size: f.Size, Checksums: f.Checksums,
