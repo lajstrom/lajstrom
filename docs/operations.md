@@ -92,16 +92,24 @@ openssl rand -hex 32
 ```
 
 It lives in the environment variable that `keys.masterKeyEnv` names (`LAJSTROM_MASTER_KEY` in
-the examples), never in the configuration file, and every replica gets the same value. `serve`
-and `lajstrom admin key` read it when they start. A variable that is set but empty, or is not 64
-hexadecimal characters, stops them with an error that names the variable and the format, never
-the value. Without a master key (`keys.masterKeyEnv` empty, or the variable not set) signing is
+the examples), or in a file of its own that `keys.masterKeyFile` (`LAJSTROM_MASTER_KEY_FILE`)
+names, never in the configuration file, and every replica gets the same value. Setting the file
+and the variable both is a configuration error. `serve` and `lajstrom admin key` read it when
+they start. A variable or a file that is empty, or is not 64 hexadecimal characters (spaces and
+line breaks around them are ignored), stops them with an error that names the variable or the
+file and the format, never the value; so does a file that is missing or cannot be read. A file
+that the group or others may read or write is used, with a warning: make it `0400` or `0600`.
+Without a master key (neither is set, or the variable is not) signing is
 off: `serve` logs a warning for every apt repo, `InRelease`, `Release.gpg` and `key.asc` are
 `404`, and clients have to mark the source `[trusted=yes]`; bearer tokens are signed with an
 ephemeral key ([below](#the-bearer-token-key)). Once the index holds apt signing keys, `serve`
 refuses to start without the master key: those keys are useless without it, and the clients
 that pinned them would see the repos turn unsigned. The token key does not count: no client
 pins it.
+
+With Docker Compose the master key is a Compose secret, the file
+`/run/secrets/lajstrom-master-key` of `keys.masterKeyFile`; the file on the host must belong to
+the image's user 65532 ([deploy/compose.md](deploy/compose.md#1-secrets)).
 
 In Kubernetes the master key is a Secret, passed to the container as the variable:
 
@@ -121,6 +129,11 @@ env:
         name: lajstrom-master-key
         key: LAJSTROM_MASTER_KEY
 ```
+
+A Secret mounted as a volume would be a file, but the kubelet makes its files owned by root:
+with `defaultMode: 0400` the user 65532 cannot read it, and with `fsGroup: 65532` it becomes
+`0440` (tried on kind, Kubernetes 1.37), which Lajstrom warns about. The variable is the cleaner
+fit there.
 
 Keep a copy of the master key apart from the database backups: a backup of the index holds the
 private keys only as ciphertext (`keys.private_enc`, AES-256-GCM), and the master key alone
@@ -485,7 +498,7 @@ key, and only part of the database can be rebuilt from the registry.
 | open maven publications, `/v2` upload sessions | `sessions` | yes, as they were | no: clients start them again |
 | packages, versions, files, cached indexes, OCI repositories | the derived tables | yes | yes |
 | tag claims, reindex runs | the coordination tables | yes | not needed: they live for one publish or one run |
-| the master key | the environment of `serve` and `admin key`, from your secret store | **no** | no: without it the keys in the database are useless |
+| the master key | the environment of `serve` and `admin key`, or the file of `keys.masterKeyFile`, from your secret store | **no** | no: without it the keys in the database are useless |
 | the configuration file, the registry passwords, the DSN | your configuration management | no | no |
 
 `reindex` writes the derived rows from manifest annotations and metadata layers (through
@@ -521,7 +534,8 @@ was published after the backup and removes what was deleted.
 2. Restore into an empty database: `pg_restore --no-owner --exit-on-error -d lajstrom
    lajstrom.dump`; for SQLite, copy the backup in place of `lajstrom.db` with no
    `lajstrom.db-wal` or `lajstrom.db-shm` beside it.
-3. Give the processes the master key of the backup, the same `keys.masterKeyEnv`.
+3. Give the processes the master key of the backup, through the same `keys.masterKeyEnv` or
+   `keys.masterKeyFile`.
 4. `lajstrom migrate`: the binary may be newer than the backup.
 5. `lajstrom reindex`: every repo, with prune.
 6. Start the replicas, and check: `whoami` of an admin, a package published before and one

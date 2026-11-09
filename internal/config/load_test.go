@@ -86,6 +86,7 @@ database:
 		{"LAJSTROM_LOG_FORMAT", "json", func(c *Config) string { return c.Log.Format }, "json"},
 		{"LAJSTROM_DATABASE_DRIVER", "postgres", func(c *Config) string { return c.Database.Driver }, "postgres"},
 		{"LAJSTROM_DATABASE_DSN", "postgres://db/lajstrom", func(c *Config) string { return c.Database.DSN }, "postgres://db/lajstrom"},
+		{"LAJSTROM_MASTER_KEY_FILE", "/run/secrets/master-key", func(c *Config) string { return c.Keys.MasterKeyFile }, "/run/secrets/master-key"},
 		{"LAJSTROM_SERVER_LISTEN", "", func(c *Config) string { return c.Server.Listen }, ":8080"}, // empty = unset
 		{"LAJSTROM_UNRELATED", "x", func(c *Config) string { return c.Database.DSN }, "file:file.db"},
 	}
@@ -287,6 +288,50 @@ func TestLoadKeys(t *testing.T) {
 	want := Keys{MasterKeyEnv: "LAJSTROM_MASTER_KEY", Algorithm: "rsa4096", RetireGrace: 48 * time.Hour, TokenAlgorithm: "EdDSA"}
 	if c.Keys != want {
 		t.Errorf("keys = %+v, want %+v", c.Keys, want)
+	}
+}
+
+// TestLoadMasterKeyFile: keys.masterKeyFile is a path that Load keeps and does not open; the file
+// and the variable of keys.masterKeyEnv set together are an error that names both and shows
+// neither value, and an empty variable counts as unset.
+func TestLoadMasterKeyFile(t *testing.T) {
+	const twice = "keys.masterKeyFile: set together with the environment variable LAJSTROM_MASTER_KEY of keys.masterKeyEnv"
+	withEnv := minimal + "keys: {masterKeyEnv: LAJSTROM_MASTER_KEY}\n"
+	withFile := minimal + "keys: {masterKeyEnv: LAJSTROM_MASTER_KEY, masterKeyFile: /run/secrets/master-key}\n"
+	onlyFile := minimal + "keys: {masterKeyFile: /run/secrets/master-key}\n"
+	value := strings.Repeat("ab", 32)
+	tests := []struct {
+		name    string
+		file    string
+		env     map[string]string
+		wantErr bool
+	}{
+		{"file, variable unset", withFile, nil, false},
+		{"file, variable empty", withFile, map[string]string{"LAJSTROM_MASTER_KEY": ""}, false},
+		{"file and variable", withFile, map[string]string{"LAJSTROM_MASTER_KEY": value}, true},
+		{"LAJSTROM_MASTER_KEY_FILE and variable", withEnv, map[string]string{"LAJSTROM_MASTER_KEY": value, "LAJSTROM_MASTER_KEY_FILE": "/k"}, true},
+		{"file without masterKeyEnv, a variable of that name set", onlyFile, map[string]string{"LAJSTROM_MASTER_KEY": value}, false},
+		{"variable only", withEnv, map[string]string{"LAJSTROM_MASTER_KEY": value}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := Load(writeConfig(t, tt.file), env(tt.env))
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("Load: %v", err)
+				}
+				if strings.Contains(tt.file, "masterKeyFile") && c.Keys.MasterKeyFile != "/run/secrets/master-key" {
+					t.Errorf("keys.masterKeyFile = %q", c.Keys.MasterKeyFile)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), twice) {
+				t.Fatalf("Load: %v, want %q", err, twice)
+			}
+			if strings.Contains(err.Error(), value) {
+				t.Errorf("the error shows the master key: %v", err)
+			}
+		})
 	}
 }
 

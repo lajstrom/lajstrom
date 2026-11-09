@@ -20,12 +20,13 @@ const aptFormat = "apt"
 
 // ephemeralTokens says what a server without a master key does with bearer tokens.
 const ephemeralTokens = "bearer tokens are signed with an ephemeral key: they do not survive a restart and are not " +
-	"shared between replicas; set keys.masterKeyEnv"
+	"shared between replicas; set keys.masterKeyEnv or keys.masterKeyFile"
 
 // newAdminKeyCmd returns admin key: export, rotate and drop the signing keys in the index
 // database, without HTTP: the signing key of an apt repo (--repo) or the key that signs the
-// bearer tokens of /v2 (--token, ADR 0010). Every command needs the master key, from the
-// variable keys.masterKeyEnv names, and assumes that lajstrom migrate ran.
+// bearer tokens of /v2 (--token, ADR 0010). Every command needs the master key, from the file
+// of keys.masterKeyFile or the variable keys.masterKeyEnv names, and assumes that lajstrom
+// migrate ran.
 func newAdminKeyCmd(a *app) *cobra.Command {
 	key := &cobra.Command{
 		Use:   "key",
@@ -192,7 +193,7 @@ func (a *app) withTokenKeys(ctx context.Context, fn func(context.Context, *keys.
 // withMaster loads the master key, opens the index database and runs fn with both, then
 // closes the database. hint follows the error of a missing master key.
 func (a *app) withMaster(ctx context.Context, hint string, fn func(context.Context, *keys.Master, store) error) (err error) {
-	m, err := keys.LoadMaster(a.cfg.Keys.MasterKeyEnv, a.lookupEnv)
+	m, err := loadMaster(a.cfg.Keys, a.lookupEnv, a.log)
 	if errors.Is(err, keys.ErrNoMasterKey) {
 		return fmt.Errorf("admin key needs the master key: %w%s", err, hint)
 	}
@@ -218,13 +219,14 @@ func newTokens(c *config.Config, st index.Store, m *keys.Master, log *slog.Logge
 }
 
 // newTokenKeys returns the bearer-token keys of serve, loaded or made now, before the server
-// listens: the key of the index under the master key of keys.masterKeyEnv, made when there is
-// none, with one line at info that names its fingerprint and algorithm. An active key that
-// does not decrypt stops serve with an error that names it and admin key drop --token. Without
-// a master key (keys.masterKeyEnv empty, or the variable not set) the keys are an ephemeral key
-// in memory, with a warning; a variable that is set but empty or malformed is an error.
+// listens: the key of the index under the master key (loadMaster), made when there is none,
+// with one line at info that names its fingerprint and algorithm. An active key that does not
+// decrypt stops serve with an error that names it and admin key drop --token. Without a
+// master key (neither keys.masterKeyFile nor keys.masterKeyEnv set, or the variable not set)
+// the keys are an ephemeral key in memory, with a warning; a variable or a file that is empty
+// or malformed is an error. serve calls newSigner first, which warns about the file's mode.
 func newTokenKeys(ctx context.Context, c *config.Config, lookupEnv func(string) (string, bool), st index.Store, log *slog.Logger) (token.Keys, error) {
-	m, err := keys.LoadMaster(c.Keys.MasterKeyEnv, lookupEnv)
+	m, err := loadMaster(c.Keys, lookupEnv, nil)
 	if errors.Is(err, keys.ErrNoMasterKey) {
 		e := keys.NewEphemeralTokens()
 		k, _ := e.TokenSigner(ctx) // the ephemeral key: never an error
@@ -242,19 +244,20 @@ func newTokenKeys(ctx context.Context, c *config.Config, lookupEnv func(string) 
 	if err != nil {
 		return nil, fmt.Errorf("the bearer-token key: %w", err)
 	}
+	src, name := masterSource(c.Keys)
 	log.InfoContext(ctx, "bearer tokens are signed with the key in the database", "fingerprint", k.ID(),
-		"algorithm", k.Algorithm, "keys.masterKeyEnv", c.Keys.MasterKeyEnv)
+		"algorithm", k.Algorithm, src, name)
 	return t, nil
 }
 
-// newSigner returns the Signer of serve: the keys service over st with the master key of
-// keys.masterKeyEnv, or nil when signing is off. Signing is off when keys.masterKeyEnv is
-// empty or names a variable that is not set, and the index holds no signing key: every apt
-// repo is unsigned then, and each gets a warning. A variable that is set but empty or
-// malformed is an error, and so is a missing master key while the index holds signing keys:
+// newSigner returns the Signer of serve: the keys service over st with the master key
+// (loadMaster), or nil when signing is off. Signing is off when neither keys.masterKeyFile nor
+// keys.masterKeyEnv is set, or the variable is not set, and the index holds no signing key:
+// every apt repo is unsigned then, and each gets a warning. A variable or a file that is empty
+// or malformed is an error, and so is a missing master key while the index holds signing keys:
 // only that key decrypts them, and their repos' clients pinned them.
 func newSigner(ctx context.Context, c *config.Config, lookupEnv func(string) (string, bool), st index.Store, log *slog.Logger) (format.Signer, error) {
-	m, err := keys.LoadMaster(c.Keys.MasterKeyEnv, lookupEnv)
+	m, err := loadMaster(c.Keys, lookupEnv, log)
 	if errors.Is(err, keys.ErrNoMasterKey) {
 		return nil, signingOff(ctx, st, err, log)
 	}
@@ -265,7 +268,8 @@ func newSigner(ctx context.Context, c *config.Config, lookupEnv func(string) (st
 	if err != nil {
 		return nil, err
 	}
-	log.Info("apt repos are signed with keys under the master key", "keys.masterKeyEnv", c.Keys.MasterKeyEnv,
+	src, name := masterSource(c.Keys)
+	log.Info("apt repos are signed with keys under the master key", src, name,
 		"keys.algorithm", c.Keys.Algorithm, "keys.retireGrace", c.Keys.RetireGrace.String())
 	return svc, nil
 }

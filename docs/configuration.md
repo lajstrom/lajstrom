@@ -28,8 +28,8 @@ Later steps win:
    empty variable counts as unset. Lists (`registries`, `repos`) cannot be set from the
    environment.
 4. **Secrets**: each `registries[].auth.passwordEnv` is read from the environment. The master
-   key of `keys.masterKeyEnv` is not: `serve` and `admin key` read it when they start (see
-   [keys](#keys)).
+   key of `keys.masterKeyEnv` or `keys.masterKeyFile` is not: `serve` and `admin key` read it
+   when they start (see [keys](#keys)).
 5. **Validation.** Every problem is reported at once, one line each, starting with the key:
 
    ```text
@@ -43,8 +43,9 @@ The `--log-level` and `--log-format` flags override `log.level` and `log.format`
 ## Secrets
 
 Secrets never go into the file. Keys ending in `Env` name the environment variable that holds
-the secret: `registries[].auth.passwordEnv` and `keys.masterKeyEnv`. A `password` key in the file
-is rejected. Lajstrom never logs a secret or puts one in an error message.
+the secret: `registries[].auth.passwordEnv` and `keys.masterKeyEnv`. The master key can also come
+from a file of its own, `keys.masterKeyFile`, for a secret mounted as a file. A `password` key in
+the file is rejected. Lajstrom never logs a secret or puts one in an error message.
 
 ## What `serve` needs
 
@@ -193,19 +194,22 @@ encrypted with the master key ([ADR 0010](adr/0010-bearer-token-signing-key.md),
 | Key | Type | Default | Env | Description |
 | --- | --- | --- | --- | --- |
 | `keys.masterKeyEnv` | environment variable name | empty | none | Variable that holds the master key, which encrypts the signing keys at rest: 64 hexadecimal characters (32 bytes), e.g. from `openssl rand -hex 32`. It has two readers: the apt signing keys of the repos and the key that signs the bearer tokens of `/v2`. Example: `LAJSTROM_MASTER_KEY`. See below for what happens without it. |
+| `keys.masterKeyFile` | file path | empty | `LAJSTROM_MASTER_KEY_FILE` | File that holds the master key instead of the variable, in the same encoding; spaces and line breaks around the key are ignored, so `openssl rand -hex 32 > file` works. For a Compose secret or a Kubernetes Secret mounted as a file, e.g. `/run/secrets/lajstrom-master-key`. Setting it while the variable of `keys.masterKeyEnv` is set (and not empty) is a configuration error of every command. The file should be `0400` or `0600`: a mode that lets the group or others read or write it is used, with a warning at start. An addition to the shape in [layout.md](spec/layout.md) §6. |
 | `keys.algorithm` | `ed25519` or `rsa4096` | `ed25519` | none | Algorithm of the signing keys made from now on (each apt repo gets one on its first signed request, or with `lajstrom admin key`). `ed25519` is an OpenPGP EdDSA key, which apt verifies since 2.0 (Debian 11, Ubuntu 20.04); `rsa4096` is for older clients. Keys made before keep their algorithm; rotate a repo's key to change it. |
 | `keys.retireGrace` | duration (`720h`, `168h`) | `720h` | none | How long a key retired by a rotation keeps signing `InRelease` and `Release.gpg` beside the new key and stays in the repo's `key.asc`. Clients that pinned the old `key.asc` keep verifying until it ends; fetch `key.asc` again on every client before then ([operations.md](operations.md#rotation)). `0s` drops a retired key at once, for a key that must not be trusted any more. Must not be negative. It does not apply to the bearer-token key, whose retired key verifies for the token lifetime and the clock skew, 21 minutes. |
 | `keys.tokenAlgorithm` | `ES256` or `EdDSA` | `ES256` | none | Algorithm of the bearer-token signing keys made from now on: `ES256` is ECDSA on P-256, `EdDSA` is Ed25519. A key keeps its algorithm; `lajstrom admin key rotate --token` makes a key of the new one ([operations.md](operations.md#the-bearer-token-key)). The token lifetime (20 minutes) and the clock skew tolerated between replicas (60 seconds) are fixed ([rbac.md](spec/rbac.md) §4). |
 
-The master key is read once, when `serve` or `admin key` starts:
+The master key is read once, when `serve` or `admin key` starts, from the file of
+`keys.masterKeyFile` when it is set, otherwise from the variable `keys.masterKeyEnv` names:
 
 - **Set and valid**: apt repos are signed (`InRelease`, `Release.gpg`, `key.asc`), each with its
   own key, made on first use and stored encrypted with the master key; the bearer tokens of
   `/v2` are signed with the token key of the database, made at the first start, the same on
   every replica.
 - **Set but empty, or not 64 hexadecimal characters**: `serve` and `admin key` stop with an
-  error that names the variable and the format, never the value.
-- **`keys.masterKeyEnv` empty, or the variable not set**: signing is off. `serve` logs a warning
+  error that names the variable or the file and the format, never the value. So does a file
+  that is missing or cannot be read: a configured file is never taken for "no master key".
+- **Neither `keys.masterKeyFile` nor `keys.masterKeyEnv`, or the variable not set**: signing is off. `serve` logs a warning
   for every apt repo, whose `InRelease`, `Release.gpg` and `key.asc` are `404`; clients use
   `[trusted=yes]`. When the index already holds apt signing keys, `serve` stops instead: only
   the master key decrypts them, and their clients pinned them. Bearer tokens are signed with an

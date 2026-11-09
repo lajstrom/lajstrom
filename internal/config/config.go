@@ -161,6 +161,11 @@ type Keys struct {
 	// is not set while the index holds no apt signing key: apt signing is off, and bearer
 	// tokens are signed with an ephemeral key.
 	MasterKeyEnv string `yaml:"masterKeyEnv"`
+	// MasterKeyFile is the path of a file that holds the master key, in the encoding of the
+	// variable, for a secret mounted as a file (a Compose secret, a Kubernetes Secret volume);
+	// env LAJSTROM_MASTER_KEY_FILE. Like the variable, it is read by serve and admin key, never
+	// by Load. Setting it while the variable of MasterKeyEnv is set is a configuration error.
+	MasterKeyFile string `yaml:"masterKeyFile"`
 	// Algorithm is the algorithm of the repo keys made from now on: ed25519 (apt 2.0 and later)
 	// or rsa4096 (older apt). Keys made before keep theirs.
 	Algorithm string `yaml:"algorithm"`

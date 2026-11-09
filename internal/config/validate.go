@@ -114,7 +114,8 @@ func (d Database) validate(p *problems) {
 }
 
 // validate checks the keys section. The master key itself is not read here: serve and admin
-// key read the variable keys.masterKeyEnv names (keys.LoadMaster).
+// key read the file of keys.masterKeyFile or the variable keys.masterKeyEnv names; Load checks
+// that not both are set.
 func (k Keys) validate(p *problems) {
 	if k.Algorithm != KeysAlgorithmEd25519 && k.Algorithm != KeysAlgorithmRSA4096 {
 		p.add("keys.algorithm", "%q is not %s or %s", k.Algorithm, KeysAlgorithmEd25519, KeysAlgorithmRSA4096)
