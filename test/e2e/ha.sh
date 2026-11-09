@@ -22,7 +22,9 @@
 #   - H-02, H-03 (20 times), H-04, H-09, H-13;
 #   - two cosign signatures of one subject through A and B at once, both listed afterwards (#28);
 #   - 200 requests to /v2/token at once from one address: 429 from nginx with Retry-After (#129);
-#   - H-10: the requests of a pip install in a loop through the edge while A and then B restart.
+#   - H-10: the requests of a pip install in a loop through the edge while A and then B restart;
+#   - H-01: the scenarios of test/e2e/ through the edge, as run.sh runs them; HA_SUITE='raw oras'
+#     runs those only, HA_SUITE=none none.
 #
 # The run's repo, users and files are named after the run; on exit the repo is deleted through
 # the API and the users are disabled; the backend keeps the bytes (make dev-down RESET=1). It
@@ -51,7 +53,9 @@ work="$(mktemp -d)"
 run="ha-$(date -u +%Y%m%d%H%M%S)-$RANDOM"
 repo="$run"
 made=()
+logs=""
 cleanup() {
+	[ -z "$logs" ] || kill "$logs" 2>/dev/null || true
 	[ -z "${E2E_CURLRC:-}" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$edge/api/v1/repos/raw/$repo?force=true" || true
 	for u in ${made[@]+"${made[@]}"}; do lajstrom admin user disable "$u" >/dev/null 2>&1 || true; done
 	rm -rf "$work"
@@ -331,4 +335,51 @@ wait "$looper"
 assert_eq "" "$(grep -v '^200 ' "$work/h10.codes" | cut -d' ' -f1 | sort | uniq -c | tr '\n' ' ')" "H-10: the requests that were not 200, of $(wc -l <"$work/h10.codes" | tr -d ' ')"
 step "H-10: $(wc -l <"$work/h10.codes" | tr -d ' ') requests through the edge while A and then B restarted: all 200, the slowest in $(sort -k2 -n "$work/h10.codes" | tail -n 1 | cut -d' ' -f2) s"
 
+# H-01: the scenarios of test/e2e/ through the edge, as run.sh runs them against one server, with
+# lajstrom admin in replica A and the logs of both replicas as the server log. auth.sh goes to A
+# past the edge: the throttle of failed logins counts per replica (docs/auth.md), so through the
+# round robin the 11th wrong password of X-04 is only the 6th that one replica saw.
+suite="${HA_SUITE-raw oras auth rbac oci-token cosign tokens apt pypi maven}"
+[ "$suite" != none ] || suite=""
+mkdir -p "$work/bin"
+cat >"$work/bin/lajstrom" <<EOF
+#!/bin/sh
+# lajstrom of the scenarios: in replica A, with LAJSTROM_ADMIN_PASSWORD when it is set; admin deb
+# metadata reads a file of this machine, so it runs here.
+case "\$1 \$2 \$3" in "admin deb metadata")
+	[ ! -x '$root/bin/lajstrom' ] || exec '$root/bin/lajstrom' "\$@"
+	cd '$root' && exec go run ./cmd/lajstrom "\$@" ;;
+esac
+exec docker compose -f '$root/deploy/compose/compose.yaml' exec -T \${LAJSTROM_ADMIN_PASSWORD+-e LAJSTROM_ADMIN_PASSWORD} lajstrom-a /lajstrom "\$@"
+EOF
+chmod +x "$work/bin/lajstrom"
+since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+"${compose[@]}" logs -f --no-log-prefix --since "$since" lajstrom-a lajstrom-b >"$work/server.log" 2>&1 &
+logs=$!
+unset LAJSTROM_E2E_FORWARDED LAJSTROM_CONFIG
+LAJSTROM_MASTER_KEY="$("${compose[@]}" --profile ha config --format json | jq -r '.services["lajstrom-a"].environment.LAJSTROM_MASTER_KEY')"
+export LAJSTROM_MASTER_KEY
+failed=""
+for n in $suite; do
+	t0=$SECONDS
+	to="$edge" how="through the edge"
+	[ "$n" != auth ] || to="$a" how="on A, past the edge"
+	if LAJSTROM_BIN="$work/bin/lajstrom" LAJSTROM_SERVER_LOG="$work/server.log" LAJSTROM_E2E_REGISTRY="${backend#http://}" \
+		"$here/$n.sh" "$to" >"$work/$n.log" 2>&1 </dev/null; then
+		step "H-01: $n.sh $how: $(grep '^PASS' "$work/$n.log" || echo "exit 0") ($((SECONDS - t0)) s)"
+	else
+		failed="$failed $n.sh"
+		printf 'FAIL H-01: %s.sh %s, after %d s:\n' "$n" "$how" $((SECONDS - t0))
+		grep -E '^(FAIL |  at |  in )' "$work/$n.log" || tail -n 20 "$work/$n.log"
+	fi
+done
+[ -z "$failed" ] || fail "H-01:$failed"
+if [ -n "$suite" ]; then
+	for r in a b; do
+		served="$("${compose[@]}" logs --no-log-prefix --since "$since" "lajstrom-$r" 2>/dev/null | grep -c 'msg=request' || true)"
+		[ "$served" -gt 0 ] || fail "H-01: replica $r served no request of the scenarios"
+		eval "served_$r=$served"
+	done
+	step "H-01: the replicas served $served_a and $served_b requests of the scenarios"
+fi
 echo "PASS ha e2e against $edge, A $a, B $b"
