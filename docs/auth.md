@@ -22,8 +22,8 @@ A personal access token acts as its user: its principal is the user's, narrowed 
 scopes. OIDC users and groups come after the MVP.
 
 There are no users in the configuration file, by decision: users live in the index database
-with the rest of the control plane, are created with `lajstrom admin user` (and with the users
-API of #47), and are the same on every replica.
+with the rest of the control plane, are created with `lajstrom admin user` and with the users
+API ([api.md](api.md#users)), and are the same on every replica.
 
 ## Local users and passwords
 
@@ -154,8 +154,8 @@ exist: a binding may come before its repo, and outlives it. The rights of a prin
 union of its bindings. A deploy token has no bindings (its repo and scopes are its rights), and
 neither has `anonymous` (a repo's `anonymousRead` is).
 
-`lajstrom admin binding` manages them, straight against the database of the configuration; the
-bindings API comes with #47:
+`lajstrom admin binding` manages them, straight against the database of the configuration, and
+`/api/v1/bindings` over HTTP ([api.md](api.md#bindings)):
 
 ```text
 $ lajstrom admin binding create --principal user:alice --role writer --mask 'raw/*'
@@ -203,7 +203,7 @@ For the principal of the request and an action on `<format>/<repo>`, in this ord
 6. anything else is denied.
 
 A change counts from the next request, on every replica: a binding created or deleted, through
-the CLI or (#47) the API, a repo's `anonymousRead`, a user disabled. Each replica keeps the
+the CLI or the API, a repo's `anonymousRead`, a user disabled. Each replica keeps the
 bindings in memory and reads one counter of the index, `auth_version`, once per request; a
 change moves it, and the next request reloads. `auth.anonymousRead` is configuration and
 changes with a restart. On `/v2` a token, once issued, holds until it expires
@@ -752,8 +752,8 @@ A name that exists is refused (`user alice already exists`, exit status 1). Ever
 audit event ([rbac.md](spec/rbac.md) §5) with the user as its subject: `user.create` (its
 details say whether the user is an admin), `user.password`, `user.disable`, `user.enable`, by
 `anonymous` with the source `cli`. `disable` of a disabled user and `enable` of an enabled one
-change nothing and write no event. Everything after the bootstrap goes through `/api/v1` once
-#47 brings the users API.
+change nothing and write no event. Everything after the bootstrap can go through `/api/v1`
+([api.md](api.md#users)).
 
 ## whoami
 
@@ -777,5 +777,4 @@ token it is the token's user; with a deploy token,
 
 | Issue | What |
 | --- | --- |
-| #47 | The users and bindings API: `GET/POST /api/v1/users`, `PATCH`, `POST …/password`, `/api/v1/bindings`, with the same rules and audit events as `lajstrom admin user` and `admin binding` |
 | #130 | Rate limiting of failed logins |

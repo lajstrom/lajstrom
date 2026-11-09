@@ -27,6 +27,9 @@ type Options struct {
 	// Users is the service behind /api/v1/users; nil means one over the index, the audit
 	// writer, the clock and the logger of Repos.
 	Users *auth.Users
+	// Bindings is the service behind /api/v1/bindings; nil means one over the index, the
+	// formats, the audit writer, the clock and the logger of Repos.
+	Bindings *auth.Bindings
 	// Auth decides whether the request's principal may perform an action on a repo or on the
 	// system (auth.System): serve sets auth.RBAC. nil allows everything the credential allows,
 	// for the tests of the handlers.
@@ -63,16 +66,19 @@ const maxBody = 64 << 10
 //	GET    /api/v1/users/{name}/tokens                 the personal access tokens of a user
 //	POST   /api/v1/users/{name}/tokens                 create one; the answer has its secret
 //	DELETE /api/v1/users/{name}/tokens/{id}            revoke one
+//	GET    /api/v1/bindings[?principal=&limit=&cursor=]  list the bindings, a page at a time
+//	POST   /api/v1/bindings                            create a binding
+//	DELETE /api/v1/bindings/{id}                       delete one
 //	GET    /api/v1/whoami                              the request's principal
 //
-// Every other method and path under /api/ is a JSON NOT_FOUND: the bindings endpoints of
-// docs/spec/http-routing.md §4 come with #47, audit with #46. Answers are JSON;
+// Every other method and path under /api/ is a JSON NOT_FOUND: the audit endpoint of
+// docs/spec/http-routing.md §4 comes with #46. Answers are JSON;
 // errors are the envelope of §4. New panics when o.Repos is nil.
 func New(o Options) http.Handler {
 	if o.Repos == nil {
 		panic("api: New: nil Options.Repos")
 	}
-	h := &handler{repos: o.Repos, tokens: o.Tokens, users: o.Users, auth: o.Auth, reindex: o.Reindex, log: o.Log}
+	h := &handler{repos: o.Repos, tokens: o.Tokens, users: o.Users, bindings: o.Bindings, auth: o.Auth, reindex: o.Reindex, log: o.Log}
 	if h.log == nil {
 		h.log = slog.Default()
 	}
@@ -81,6 +87,9 @@ func New(o Options) http.Handler {
 	}
 	if h.users == nil {
 		h.users = &auth.Users{Index: o.Repos.Index, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log}
+	}
+	if h.bindings == nil {
+		h.bindings = &auth.Bindings{Index: o.Repos.Index, Formats: o.Repos.Formats, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log}
 	}
 	mux := http.NewServeMux()
 	mux.Handle("GET /api/v1/repos", h.serve(h.listRepos))
@@ -102,6 +111,9 @@ func New(o Options) http.Handler {
 	mux.Handle("GET /api/v1/users/{name}/tokens", h.serve(h.listTokens))
 	mux.Handle("POST /api/v1/users/{name}/tokens", h.serve(h.createToken))
 	mux.Handle("DELETE /api/v1/users/{name}/tokens/{id}", h.serve(h.revokeToken))
+	mux.Handle("GET /api/v1/bindings", h.serve(h.listBindings))
+	mux.Handle("POST /api/v1/bindings", h.serve(h.createBinding))
+	mux.Handle("DELETE /api/v1/bindings/{id}", h.serve(h.deleteBinding))
 	mux.Handle("GET /api/v1/whoami", h.serve(h.whoami))
 	mux.Handle("/api/", h.serve(h.notFound))
 	return mux
@@ -109,12 +121,13 @@ func New(o Options) http.Handler {
 
 // handler serves the management API.
 type handler struct {
-	repos   *Repos
-	tokens  *auth.Tokens
-	users   *auth.Users
-	auth    auth.Authorizer
-	reindex Reindexer
-	log     *slog.Logger
+	repos    *Repos
+	tokens   *auth.Tokens
+	users    *auth.Users
+	bindings *auth.Bindings
+	auth     auth.Authorizer
+	reindex  Reindexer
+	log      *slog.Logger
 }
 
 // endpoint is a handler that returns its answer: the status and the value to encode as JSON
@@ -244,7 +257,7 @@ func (h *handler) deleteRepo(_ http.ResponseWriter, r *http.Request) (int, any, 
 // notFound answers every other method and path under /api/.
 func (h *handler) notFound(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	return 0, nil, &clientError{
-		msg: fmt.Sprintf("%s %s is not in this version; bindings come with #47, audit with #46",
+		msg: fmt.Sprintf("%s %s is not in this version; audit comes with #46",
 			r.Method, r.URL.Path),
 		err: index.ErrNotFound,
 	}

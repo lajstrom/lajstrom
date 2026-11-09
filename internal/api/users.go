@@ -45,9 +45,9 @@ const (
 	maxLimit     = 1000
 )
 
-// allowUsers decides whether the request may manage users: the admin role (manage on the
-// system, auth.System; docs/spec/http-routing.md §4).
-func (h *handler) allowUsers(r *http.Request) error {
+// allowAdmin decides whether the request may manage the system's resources, users and
+// bindings: the admin role (manage on the system, auth.System; docs/spec/http-routing.md §4).
+func (h *handler) allowAdmin(r *http.Request) error {
 	return h.allow(r, auth.ActionManage, auth.System, auth.System)
 }
 
@@ -72,7 +72,7 @@ func (h *handler) userName(r *http.Request) (string, error) {
 // listUsers answers a page of the live users, ordered by name: ?limit of them (100 when
 // absent, 1000 at most), after the user of ?cursor, the Next of the page before.
 func (h *handler) listUsers(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	if err := h.allowUsers(r); err != nil {
+	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
 	}
 	limit, after, err := page(r)
@@ -121,7 +121,7 @@ func cursor(key string) string { return base64.RawURLEncoding.EncodeToString([]b
 // createUser creates a local user from the UserRequest of the body: 201 with the user and its
 // Location.
 func (h *handler) createUser(w http.ResponseWriter, r *http.Request) (int, any, error) {
-	if err := h.allowUsers(r); err != nil {
+	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
 	}
 	var req UserRequest
@@ -138,7 +138,7 @@ func (h *handler) createUser(w http.ResponseWriter, r *http.Request) (int, any, 
 
 // getUser answers one live user.
 func (h *handler) getUser(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	if err := h.allowUsers(r); err != nil {
+	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
 	}
 	name, err := h.userName(r)
@@ -157,7 +157,7 @@ func (h *handler) getUser(_ http.ResponseWriter, r *http.Request) (int, any, err
 // (user.disable or user.enable, user.rename), and a change to what the user already has is no
 // event.
 func (h *handler) updateUser(w http.ResponseWriter, r *http.Request) (int, any, error) {
-	if err := h.allowUsers(r); err != nil {
+	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
 	}
 	name, err := h.userName(r)
@@ -199,7 +199,7 @@ func (h *handler) updateUser(w http.ResponseWriter, r *http.Request) (int, any, 
 
 // deleteUser deletes a user (auth.Users.Delete): 204.
 func (h *handler) deleteUser(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	if err := h.allowUsers(r); err != nil {
+	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
 	}
 	name, err := h.userName(r)
@@ -214,7 +214,7 @@ func (h *handler) deleteUser(_ http.ResponseWriter, r *http.Request) (int, any, 
 
 // setPassword sets the password of a user from the PasswordRequest of the body: 204.
 func (h *handler) setPassword(w http.ResponseWriter, r *http.Request) (int, any, error) {
-	if err := h.allowUsers(r); err != nil {
+	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
 	}
 	name, err := h.userName(r)
