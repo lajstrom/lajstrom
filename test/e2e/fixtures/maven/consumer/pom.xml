@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The Maven consumer of test/e2e/maven.sh: depends on the library of ../lib through the version
+  range [1.0,2.0), which Maven resolves by reading maven-metadata.xml of the repository. maven.sh
+  runs dependency:list and dependency:copy-dependencies on it, with the run's groupId as
+  -De2e.groupId= and the repository from the profile lajstrom of its settings.xml.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.example.e2e</groupId>
+  <artifactId>consumer</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+
+  <properties>
+    <e2e.groupId>com.example.e2e</e2e.groupId>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>${e2e.groupId}</groupId>
+      <artifactId>lib</artifactId>
+      <version>[1.0,2.0)</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-dependency-plugin</artifactId>
+          <version>3.8.1</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+  </build>
+</project>

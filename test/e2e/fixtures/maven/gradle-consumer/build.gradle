@@ -1,0 +1,35 @@
+// The Gradle consumer of test/e2e/maven.sh: resolves the Maven library of ../lib through the
+// version range [1.0,2.0), which Gradle reads from maven-metadata.xml, and the Gradle library of
+// ../gradle-lib at its version, with its module metadata. The task resolve copies the files
+// into build/resolved, named with the versions resolved. The repository, the groupId and the
+// version of the Gradle library come as -Pe2eUrl=, -Pe2eGroup= and -Pe2eGradleVersion=, the
+// credentials of the repository named lajstrom (lajstromUsername, lajstromPassword) in
+// gradle.properties of maven.sh's copy.
+repositories {
+    maven {
+        name = 'lajstrom'
+        url = providers.gradleProperty('e2eUrl').getOrElse('http://localhost:8080/maven/releases')
+        allowInsecureProtocol = url.scheme == 'http'
+        credentials(PasswordCredentials)
+        authentication {
+            basic(BasicAuthentication)
+        }
+    }
+}
+
+configurations {
+    e2e {
+        canBeConsumed = false
+    }
+}
+
+def e2eGroup = providers.gradleProperty('e2eGroup').getOrElse('com.example.e2e')
+dependencies {
+    e2e "${e2eGroup}:lib:[1.0,2.0)"
+    e2e "${e2eGroup}:gradle-lib:${providers.gradleProperty('e2eGradleVersion').getOrElse('1.0.0')}"
+}
+
+tasks.register('resolve', Copy) {
+    from configurations.e2e
+    into layout.buildDirectory.dir('resolved')
+}
