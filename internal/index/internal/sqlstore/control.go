@@ -38,32 +38,39 @@ func (c *conn) ListRepos(ctx context.Context, format string) ([]index.Repo, erro
 		"SELECT "+repoCols+" FROM repos WHERE format = ? ORDER BY name", format)
 }
 
-// CreateRepo inserts r. UpdatedAt defaults to CreatedAt.
+// CreateRepo inserts r and increments auth_version. UpdatedAt defaults to CreatedAt.
 func (c *conn) CreateRepo(ctx context.Context, r *index.Repo) error {
 	created := stamp(&r.CreatedAt, now())
 	updated := stamp(&r.UpdatedAt, created)
-	return c.scanRow(ctx, "repos "+r.Format+"/"+r.Name,
-		"INSERT INTO repos (format, name, registry, prefix, kind, anonymous_read, policy, created_at, updated_at)"+
-			" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
-		[]any{r.Format, r.Name, r.Registry, r.Prefix, r.Kind, r.AnonymousRead, rawArg(r.Policy),
-			c.d.EncodeTime(created), c.d.EncodeTime(updated)},
-		&r.ID)
+	return c.withAuthChange(ctx, func(c *conn) error {
+		return c.scanRow(ctx, "repos "+r.Format+"/"+r.Name,
+			"INSERT INTO repos (format, name, registry, prefix, kind, anonymous_read, policy, created_at, updated_at)"+
+				" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+			[]any{r.Format, r.Name, r.Registry, r.Prefix, r.Kind, r.AnonymousRead, rawArg(r.Policy),
+				c.d.EncodeTime(created), c.d.EncodeTime(updated)},
+			&r.ID)
+	})
 }
 
-// UpdateRepo stores r by r.ID, sets UpdatedAt, and fills Format, Name and CreatedAt from the
-// row: they do not change.
+// UpdateRepo stores r by r.ID, sets UpdatedAt, fills Format, Name and CreatedAt from the row
+// (they do not change), and increments auth_version.
 func (c *conn) UpdateRepo(ctx context.Context, r *index.Repo) error {
 	r.UpdatedAt = now()
-	return c.scanRow(ctx, fmt.Sprintf("repos id %d", r.ID),
-		"UPDATE repos SET registry = ?, prefix = ?, kind = ?, anonymous_read = ?, policy = ?, updated_at = ?"+
-			" WHERE id = ? RETURNING format, name, created_at",
-		[]any{r.Registry, r.Prefix, r.Kind, r.AnonymousRead, rawArg(r.Policy), c.d.EncodeTime(r.UpdatedAt), r.ID},
-		&r.Format, &r.Name, timeDest{&r.CreatedAt})
+	return c.withAuthChange(ctx, func(c *conn) error {
+		return c.scanRow(ctx, fmt.Sprintf("repos id %d", r.ID),
+			"UPDATE repos SET registry = ?, prefix = ?, kind = ?, anonymous_read = ?, policy = ?, updated_at = ?"+
+				" WHERE id = ? RETURNING format, name, created_at",
+			[]any{r.Registry, r.Prefix, r.Kind, r.AnonymousRead, rawArg(r.Policy), c.d.EncodeTime(r.UpdatedAt), r.ID},
+			&r.Format, &r.Name, timeDest{&r.CreatedAt})
+	})
 }
 
-// DeleteRepo removes the repo; the foreign keys cascade to every row that refers to it.
+// DeleteRepo removes the repo, the foreign keys cascading to every row that refers to it, and
+// increments auth_version.
 func (c *conn) DeleteRepo(ctx context.Context, id int64) error {
-	return c.execOne(ctx, fmt.Sprintf("repos id %d", id), "DELETE FROM repos WHERE id = ?", id)
+	return c.withAuthChange(ctx, func(c *conn) error {
+		return c.execOne(ctx, fmt.Sprintf("repos id %d", id), "DELETE FROM repos WHERE id = ?", id)
+	})
 }
 
 const userCols = "id, name, password_hash, kind, disabled, created_at"
@@ -163,17 +170,40 @@ func (c *conn) ListBindings(ctx context.Context, principal string) ([]index.Bind
 	return getAll(ctx, c, "bindings", bindingDests, "SELECT "+bindingCols+" FROM bindings"+w.clause()+" ORDER BY id", w.args...)
 }
 
-// CreateBinding inserts b.
+// CreateBinding inserts b and increments auth_version.
 func (c *conn) CreateBinding(ctx context.Context, b *index.Binding) error {
-	return c.scanRow(ctx, "bindings "+b.Principal,
-		"INSERT INTO bindings (principal, role, repo_mask, created_at) VALUES (?, ?, ?, ?) RETURNING id",
-		[]any{b.Principal, b.Role, b.RepoMask, c.d.EncodeTime(stamp(&b.CreatedAt, now()))},
-		&b.ID)
+	return c.withAuthChange(ctx, func(c *conn) error {
+		return c.scanRow(ctx, "bindings "+b.Principal,
+			"INSERT INTO bindings (principal, role, repo_mask, created_at) VALUES (?, ?, ?, ?) RETURNING id",
+			[]any{b.Principal, b.Role, b.RepoMask, c.d.EncodeTime(stamp(&b.CreatedAt, now()))},
+			&b.ID)
+	})
 }
 
-// DeleteBinding removes the binding.
+// DeleteBinding removes the binding and increments auth_version.
 func (c *conn) DeleteBinding(ctx context.Context, id int64) error {
-	return c.execOne(ctx, fmt.Sprintf("bindings id %d", id), "DELETE FROM bindings WHERE id = ?", id)
+	return c.withAuthChange(ctx, func(c *conn) error {
+		return c.execOne(ctx, fmt.Sprintf("bindings id %d", id), "DELETE FROM bindings WHERE id = ?", id)
+	})
+}
+
+// AuthVersion returns the counter of auth_version.
+func (c *conn) AuthVersion(ctx context.Context) (int64, error) {
+	var v int64
+	err := c.scanRow(ctx, "auth_version", "SELECT version FROM auth_version WHERE id = 1", nil, &v)
+	return v, err
+}
+
+// withAuthChange runs fn, a write of bindings or repos, and increments auth_version in the same
+// transaction (docs/spec/rbac.md §3). A write that fails leaves the counter as it was.
+func (c *conn) withAuthChange(ctx context.Context, fn func(*conn) error) error {
+	return c.withTx(ctx, func(c *conn) error {
+		if err := fn(c); err != nil {
+			return err
+		}
+		return c.execOne(ctx, "auth_version",
+			"UPDATE auth_version SET version = version + 1, updated_at = ? WHERE id = 1", c.d.EncodeTime(now()))
+	})
 }
 
 const keyCols = "id, repo_id, kind, public, private_enc, fingerprint, created_at, retired_at"

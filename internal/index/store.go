@@ -57,6 +57,12 @@ type Reader interface {
 	// ListBindings returns the bindings of principal (canonical form, docs/spec/rbac.md §1),
 	// or every binding when principal is "".
 	ListBindings(ctx context.Context, principal string) ([]Binding, error)
+	// AuthVersion returns the counter of auth_version, which every write of bindings and of
+	// repos increments in its transaction (docs/spec/rbac.md §3). An evaluator reads it before
+	// the bindings and the repos of its snapshot, so that a snapshot is never newer than the
+	// version it is kept under: a write between the reads makes the next request reload once
+	// more.
+	AuthVersion(ctx context.Context) (int64, error)
 
 	// GetKey returns the key of kind that is not retired; repoID nil selects the server key.
 	GetKey(ctx context.Context, repoID *int64, kind string) (*Key, error)
@@ -130,7 +136,8 @@ type Writer interface {
 
 	// Control plane.
 
-	// CreateRepo inserts r; (format, name) must be new.
+	// CreateRepo inserts r; (format, name) must be new. It increments AuthVersion, as
+	// UpdateRepo, DeleteRepo, CreateBinding and DeleteBinding do, in the same transaction.
 	CreateRepo(ctx context.Context, r *Repo) error
 	// UpdateRepo stores r by r.ID and sets UpdatedAt. Format and Name cannot change.
 	UpdateRepo(ctx context.Context, r *Repo) error

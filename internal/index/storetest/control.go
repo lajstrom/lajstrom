@@ -232,11 +232,13 @@ func testBindings(t *testing.T, s index.Store) {
 		{Principal: "user:alice", Role: "writer", RepoMask: "raw/*", CreatedAt: at(1)},
 		{Principal: "group:dev", Role: "reader", RepoMask: "*/*"},
 		{Principal: "user:alice", Role: "admin", RepoMask: "*/*"},
-		{Principal: "user:alice", Role: "admin", RepoMask: "*/*"}, // no unique constraint
+		{Principal: "user:alice", Role: "reader", RepoMask: "*/*"},
 	}
 	for i := range bindings {
 		must(t, s.CreateBinding(ctx, &bindings[i]))
 	}
+	dup := index.Binding{Principal: "user:alice", Role: "admin", RepoMask: "*/*"}
+	wantErr(t, "CreateBinding of the same principal, role and mask", s.CreateBinding(ctx, &dup), index.ErrConflict)
 	for _, tt := range []struct {
 		principal string
 		want      []index.Binding
@@ -254,6 +256,78 @@ func testBindings(t *testing.T, s index.Store) {
 	must(t, err)
 	same(t, "bindings after DeleteBinding", bindings[:3], got)
 	wantErr(t, "DeleteBinding deleted", s.DeleteBinding(ctx, bindings[3].ID), index.ErrNotFound)
+}
+
+// testAuthVersion: every write of bindings and of repos increments auth_version in its
+// transaction; a write that fails, a rolled back transaction and any other write leave it
+// (docs/spec/rbac.md §3).
+func testAuthVersion(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	version := func() int64 {
+		t.Helper()
+		v, err := s.AuthVersion(ctx)
+		must(t, err)
+		return v
+	}
+	if v := version(); v < 1 {
+		t.Fatalf("AuthVersion after Migrate = %d, want 1 or more", v)
+	}
+	r := index.Repo{Format: "raw", Name: "auth", Registry: "local", Prefix: "raw/auth", Kind: "hosted"}
+	b := index.Binding{Principal: "user:alice", Role: "reader", RepoMask: "raw/*"}
+	for _, step := range []struct {
+		name  string
+		write func() error
+		moves bool
+		err   error
+	}{
+		{"CreateRepo", func() error { return s.CreateRepo(ctx, &r) }, true, nil},
+		{"CreateRepo of the same name", func() error { d := r; d.ID = 0; return s.CreateRepo(ctx, &d) }, false, index.ErrConflict},
+		{"UpdateRepo", func() error { r.AnonymousRead = true; return s.UpdateRepo(ctx, &r) }, true, nil},
+		{"UpdateRepo of a missing id", func() error { m := r; m.ID += 1000; return s.UpdateRepo(ctx, &m) }, false, index.ErrNotFound},
+		{"CreateBinding", func() error { return s.CreateBinding(ctx, &b) }, true, nil},
+		{"CreateBinding of the same binding", func() error { d := b; d.ID = 0; return s.CreateBinding(ctx, &d) }, false, index.ErrConflict},
+		{"DeleteBinding", func() error { return s.DeleteBinding(ctx, b.ID) }, true, nil},
+		{"DeleteBinding again", func() error { return s.DeleteBinding(ctx, b.ID) }, false, index.ErrNotFound},
+		{"CreateUser", func() error { _ = newUser(t, s, "auth"); return nil }, false, nil},
+		{"DeleteRepo", func() error { return s.DeleteRepo(ctx, r.ID) }, true, nil},
+		{"DeleteRepo again", func() error { return s.DeleteRepo(ctx, r.ID) }, false, index.ErrNotFound},
+	} {
+		before := version()
+		if err := step.write(); step.err == nil {
+			must(t, err)
+		} else {
+			wantErr(t, step.name, err, step.err)
+		}
+		want := before
+		if step.moves {
+			want++
+		}
+		if got := version(); got != want {
+			t.Errorf("AuthVersion after %s = %d, want %d", step.name, got, want)
+		}
+	}
+
+	before := version()
+	must(t, s.Tx(ctx, func(w index.Writer) error {
+		for _, mask := range []string{"raw/a", "raw/b"} {
+			if err := w.CreateBinding(ctx, &index.Binding{Principal: "user:bob", Role: "reader", RepoMask: mask}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+	if got := version(); got != before+2 {
+		t.Errorf("AuthVersion after a Tx of two CreateBinding = %d, want %d", got, before+2)
+	}
+	errRollback := errors.New("roll back")
+	err := s.Tx(ctx, func(w index.Writer) error {
+		must(t, w.CreateBinding(ctx, &index.Binding{Principal: "user:bob", Role: "writer", RepoMask: "raw/a"}))
+		return errRollback
+	})
+	wantErr(t, "a Tx that rolls back", err, errRollback)
+	if got := version(); got != before+2 {
+		t.Errorf("AuthVersion after a rolled back Tx = %d, want %d", got, before+2)
+	}
 }
 
 func testKeys(t *testing.T, s index.Store) {
