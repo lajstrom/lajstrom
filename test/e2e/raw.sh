@@ -7,9 +7,10 @@
 # The repo must exist (the example configuration creates raw/scratch) and be writable without
 # credentials, as on the dev stack. Every path starts with a directory of its own for the run, so
 # the script can run again against the same repo, and it deletes what it uploaded at the end. It
-# needs curl and jq, prints one line per step and exits non-zero at the first failure. make e2e
-# runs it once #34 lands; until then run it by hand.
+# needs curl and jq, prints one line per step and exits non-zero at the first failure, naming the
+# assertion or the command (lib.sh). make e2e runs it (test/e2e/run.sh).
 set -euo pipefail
+. "$(dirname "$0")/lib.sh"
 
 base="${1:-http://localhost:8080}"
 repo="${2:-scratch}"
@@ -23,9 +24,6 @@ run="e2e-$(date -u +%Y%m%d%H%M%S)-$RANDOM"
 created=()  # every path uploaded, for the cleanup
 status=""   # status of the last request
 digest=""   # manifest digest of the last put
-
-fail() { echo "FAIL $*" >&2; exit 1; }
-ok() { echo "ok   $*"; }
 
 # sha256 prints the hex sha256 of a file.
 sha256() {
@@ -52,9 +50,6 @@ req() {
 
 # hdr NAME prints the value of the response header NAME (lower case), the last one sent.
 hdr() { awk -F': ' -v n="$1" '$1 == n { sub(/^[^:]*: /, ""); v = $0 } END { print v }' "$work/headers"; }
-
-# expect WHAT WANT GOT
-expect() { [ "$2" = "$3" ] || fail "$1: got '$3', want '$2'"; }
 
 # put FILE PATH: PUT FILE to PATH, check 201, Location and the body; the digest goes to $digest.
 put() {
@@ -100,7 +95,9 @@ cmp -s "$work/v1" "$work/body" || fail "R-01 GET: the bytes differ from the file
 expect "R-01 GET Content-Length" 4000 "$(hdr content-length)"
 expect "R-01 GET Content-Type" text/plain "$(hdr content-type)"
 expect "R-01 GET ETag" "\"sha256:$(sha256 "$work/v1")\"" "$(hdr etag)"
-expect "R-01 GET Accept-Ranges" bytes "$(hdr accept-ranges)"
+# Accept-Ranges is the backend's (http-routing.md §2, §3): distribution sends it on a GET, Zot
+# only on a HEAD. The range below is 206 either way.
+case "$(hdr accept-ranges)" in "" | bytes) ;; *) fail "R-01 GET Accept-Ranges: '$(hdr accept-ranges)', want 'bytes' or none" ;; esac
 expect "R-01 GET Docker-Content-Digest" "$d1" "$(hdr docker-content-digest)"
 lastmod="$(hdr last-modified)"
 [ -n "$lastmod" ] || fail "R-01 GET: no Last-Modified"

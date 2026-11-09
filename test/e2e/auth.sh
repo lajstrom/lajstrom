@@ -13,8 +13,9 @@
 # #45). Each run creates a user of its own, named after the run, and disables it at the end;
 # users are not deleted in this version. Passwords go to curl in a config file, never on a
 # command line, and are never printed. It needs curl and jq, prints one line per step and exits
-# non-zero at the first failure.
+# non-zero at the first failure, naming the assertion or the command (lib.sh).
 set -euo pipefail
+. "$(dirname "$0")/lib.sh"
 
 base="${1:-http://localhost:8080}"
 repo="${2:-scratch}"
@@ -43,10 +44,6 @@ cleanup() {
 }
 trap cleanup EXIT
 status="" # status of the last request
-
-fail() { echo "FAIL $*" >&2; exit 1; }
-ok() { echo "ok   $*"; }
-expect() { [ "$2" = "$3" ] || fail "$1: got '$3', want '$2'"; }
 
 # password prints a new random password: 24 bytes of urandom in base64 without +, / and =.
 password() { head -c 24 /dev/urandom | base64 | tr -d '+/=\n'; }

@@ -18,8 +18,9 @@
 # own and disables it at the end. The password goes to curl in a config file and to oras and
 # lajstrom on standard input, never on a command line; tokens are never printed, their decoded
 # claims are. It needs curl, jq and docker, prints one line per step and exits non-zero at the
-# first failure.
+# first failure, naming the assertion or the command (lib.sh).
 set -euo pipefail
+. "$(dirname "$0")/lib.sh"
 
 base="${1:-http://localhost:8080}"
 base="${base%/}"
@@ -51,10 +52,6 @@ cleanup() {
 }
 trap cleanup EXIT
 status="" # status of the last request
-
-fail() { echo "FAIL $*" >&2; exit 1; }
-ok() { echo "ok   $*"; }
-expect() { [ "$2" = "$3" ] || fail "$1: got '$3', want '$2'"; }
 
 # sha256 prints the hex sha256 of a file.
 sha256() {
@@ -91,9 +88,10 @@ token() {
 }
 
 # oras ARGS...: oras in its container, with the run's directory as /w and the registry
-# configuration of the login there.
+# configuration of the login there. It runs as the caller's user: what oras pull writes as root
+# on Linux, the cleanup could not remove.
 oras() {
-	docker run --rm -i --network host -v "$work:/w" -w /w "$oras_image" "$@" --registry-config /w/oras-auth.json ${plain:+"$plain"}
+	docker run --rm -i --network host -u "$(id -u):$(id -g)" -v "$work:/w" -w /w "$oras_image" "$@" --registry-config /w/oras-auth.json ${plain:+"$plain"}
 }
 
 # O-01, first step: the challenge.
