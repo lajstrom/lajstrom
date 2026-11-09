@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("Metadata-Version: 2.1\nName: Flask-Login\nVersion: 0.6.3\nSummary: A package built in process by internal/testutil.\nRequires-Python: >=3.7\nRequires-Dist: Flask>=1.0.4\nRequires-Dist: Werkzeug>=1.0.1\nRequires-Dist: pytest; extra == \"test\"\n")

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("Metadata-Version: 2.1\nName: My-Pkg\nVersion: 1.0.0\nSummary: A package built in process by internal/testutil.\n")

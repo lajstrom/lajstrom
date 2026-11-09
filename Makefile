@@ -57,6 +57,7 @@ FUZZ_TARGETS ?= \
 	./internal/format/deb:FuzzParseControl \
 	./internal/format/deb:FuzzParseAr \
 	./internal/format/pypi:FuzzWheelFilename \
+	./internal/format/pypi:FuzzCoreMetadata \
 	./internal/format/maven:FuzzPOM
 # make run uses the local configuration when there is one, the example otherwise.
 RUN_CONFIG   := $(firstword $(wildcard deploy/compose/lajstrom.yaml) deploy/compose/lajstrom.example.yaml)
