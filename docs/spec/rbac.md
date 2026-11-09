@@ -172,9 +172,12 @@ MVP.
 
 ## 5. Audit
 
-Every write (`push`, `delete`), every control-plane change and every token issuance is an
-`audit` row with the principal, action, repo, subject, digest, client IP and request id. Reads
-are not audited in the MVP (a per-repo option later).
+Every write (`push`, `delete`), every control-plane change, and every creation and revocation of
+a personal access token or a deploy token is an `audit` row with the principal, action, repo,
+subject, digest, client IP and request id, written in the transaction of its change. Reads are
+not audited in the MVP (a per-repo option later). The short-lived bearer tokens of `/v2/token`
+are not audited either (decided on #46, 2026-11-09): a client gets one for every pull and push,
+and what a token allows is audited itself.
 
 ## 6. Bootstrap
 
