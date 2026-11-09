@@ -200,6 +200,31 @@ curl -s -X POST "$LAJSTROM/api/v1/repos/raw/assets/reindex" -d '{"prune": true}'
 curl -s "$LAJSTROM/api/v1/repos/raw/assets/reindex" | jq '.state, .report.removed'
 ```
 
+### Delete a version: `DELETE /api/v1/repos/<format>/<name>/packages/<package>/versions/<version>`
+
+Removes a bad version everywhere it is visible ([http-routing.md](spec/http-routing.md) §4):
+every variant of the version, or with `?variant=` the one variant (`?variant=` with no value is
+the variant of a format that has none). Each variant is one manifest, deleted in the registry as
+`DELETE /v2/<format>/<name>/<path>/manifests/<digest>` deletes it: its referrers first
+(signatures, attestations, SBOMs, cosign's `sha256-<hex>.sig` tags, the tag-schema index), then
+the manifest, then its rows in the index, the package's with its last version, and the repo's
+rendered indexes (apt `Packages` and `Release`, the simple index, `maven-metadata.xml`), which the
+next `GET` renders without it. Each manifest writes one audit row, action `delete`, with the
+number of referrers in `details.referrers`. Blobs are left to the registry's garbage collection.
+
+`<package>` is the name in the format's spelling, one path segment: a raw path escapes its `/`
+as `%2F`, and a reverse proxy in front must pass it on encoded. `204`. It needs `delete` on the
+repo (the `maintainer` role); `404` when the repo, the package, the version or the variant does
+not exist; `501 UNAVAILABLE` naming the registry when it cannot delete manifests
+(`capabilities.deleteManifest: false`, GHCR, distribution with deletes off), and nothing
+changed; `409 CONFLICT` when the registry refuses to delete this manifest alone. The variants
+deleted before an error stay deleted.
+
+```sh
+curl -s -X DELETE "$LAJSTROM/api/v1/repos/pypi/libs/packages/requests/versions/2.32.0?variant=sdist"
+curl -s -X DELETE "$LAJSTROM/api/v1/repos/raw/assets/packages/docs%2Freadme.txt/versions/0123456789abcdef"
+```
+
 ## `lajstrom admin repo`
 
 The same operations from the command line, straight against the index database of the
