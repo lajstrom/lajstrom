@@ -40,10 +40,9 @@ OCI_NAMESPACE=oci/conformance-second/a OCI_CROSSMOUNT_NAMESPACE=oci/conformance-
 
 ## What passes
 
-Measured on 2026-11-07 with v1.1.1 against Zot and against distribution: **pull** (23 specs)
-and **push** (26 specs) pass. **Content discovery** passes its tag listing and fails five specs
-until the referrers API of #28: the four `GET …/referrers/<digest>` specs (the facade answers
-`501 UNSUPPORTED`) and the references setup, which wants `OCI-Subject` on the `PUT` of a
-manifest with a subject; the pass-through does not see the backend's response headers. The
-suite exits non-zero for those five; the pull and push lines of its summary are the ones to
-read.
+Measured on 2026-11-09 with v1.1.1 against Zot and against distribution: **pull**, **push**
+and **content discovery** pass, 64 specs of 79, and the suite exits 0; the 15 skipped are
+content management (deletes, #61). Content discovery includes the referrers API (#28): the
+facade lists referrers from the provider, through Zot's referrers API or the `sha256-<hex>` tag
+schema that the provider writes on distribution, and answers `OCI-Subject` on the `PUT` of a
+manifest with a subject whatever the backend sends. Until #28 those five specs failed.
