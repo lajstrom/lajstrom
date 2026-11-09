@@ -56,6 +56,7 @@ Every error is answered with one envelope:
 | 404 | `NOT_FOUND` | no such repo, user, token or endpoint |
 | 409 | `CONFLICT` | the repo exists, or has versions and the delete is not forced; a live token of the owner has the name |
 | 413 | `INVALID` | the body is larger than 64 KiB |
+| 429 | `UNAVAILABLE` | too many failed logins: the password is not checked until the time in `Retry-After` has passed ([auth.md](auth.md#failed-logins)) |
 | 501 | `UNAVAILABLE` | the endpoint comes with a later issue; the message names it |
 | 500 | `INTERNAL` | anything else; the message is the status text, the cause is in the server log with the request id (`X-Request-Id`) |
 

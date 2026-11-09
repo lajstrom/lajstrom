@@ -16,6 +16,8 @@
 #   LAJSTROM_E2E_REGISTRY  host:port of the registry `local`
 #   LAJSTROM_E2E_USER      a user with the admin binding, made for the run with a random password,
 #   LAJSTROM_E2E_PASSWORD  for the scenarios that need no user of their own (lib.sh, e2e_credentials)
+#   LAJSTROM_E2E_FORWARDED 1: the server trusts the X-Forwarded-For of 127.0.0.1
+#                          (server.trustedProxies), so that the per-address throttles are on
 #
 # Everything lives in a temporary directory: the configuration, the SQLite index, the server's
 # log and the output of each scenario. The configuration has one registry, `local`, at
@@ -106,7 +108,8 @@ LAJSTROM_CONFIG="$tmp/lajstrom.yaml"
 LAJSTROM_BIN="$bin"
 LAJSTROM_SERVER_LOG="$tmp/server.log"
 LAJSTROM_E2E_REGISTRY="$registry"
-export LAJSTROM_MASTER_KEY LAJSTROM_CONFIG LAJSTROM_BIN LAJSTROM_SERVER_LOG LAJSTROM_E2E_REGISTRY
+LAJSTROM_E2E_FORWARDED=1
+export LAJSTROM_MASTER_KEY LAJSTROM_CONFIG LAJSTROM_BIN LAJSTROM_SERVER_LOG LAJSTROM_E2E_REGISTRY LAJSTROM_E2E_FORWARDED
 cat >"$LAJSTROM_CONFIG" <<EOF
 # Written by test/e2e/run.sh for one run of the end-to-end scenarios.
 server:
@@ -115,6 +118,7 @@ server:
   insecureHTTP: true
   shutdownTimeout: 5s
   metricsListen: ""
+  trustedProxies: ["127.0.0.1/32"]
 log:
   level: info
   format: text

@@ -75,6 +75,23 @@ lajstrom admin token revoke 41
 A revoked token is refused from the next request on, on every replica. The names of live
 tokens are unique per repo, so a date in the name keeps the old and the new apart.
 
+### Failed logins and the edge
+
+Lajstrom throttles what only it can see ([auth.md](auth.md#failed-logins)): failed password
+logins per account (10 a minute) and per client address (30 a minute), and requests to
+`/v2/token` per client address (100 a second); beyond, `429` with `Retry-After`. The per-address
+throttles need `server.trustedProxies`, so that the address is the client's and not the edge's;
+with an empty list they are off, and the startup line says so.
+
+The counts live in the memory of each replica and are not shared: N replicas are N budgets, and
+a restart starts over. That makes guessing a password slow and keeps argon2id from eating a
+replica; it is not a bound across replicas, and it is no volume limit. Both belong to the edge:
+a request limit per client address there, on every route, is the bound across replicas, and the
+one that holds when the per-address throttle is off. Each throttled request is a `throttled`
+line at info with the throttle, the account's uid when it is an account's, and the client
+address, and a count in `lajstrom_auth_throttled_total`: an account that keeps showing up is
+being guessed, or has a stale password in a job somewhere.
+
 ## Keys and apt signing
 
 Every apt repo is signed with a key of its own: `InRelease` is the `Release` clearsigned,
@@ -388,6 +405,7 @@ so the number of series is fixed by the code and the configuration.
 | `lajstrom_provider_circuit_open` | `registry` | `1` while the [circuit breaker](#requests-to-the-registries) of the registry is open, its requests failing at once; `0` otherwise |
 | `lajstrom_db_query_duration_seconds` | `method`, `result` | a statement of the index database, by the store method that ran it (`GetRepo`, `UpsertVersion`, …); a missing row is `ok`, a refused or failed statement `error` |
 | `lajstrom_ingest_total` | `format`, `result` | publishes through the ingest pipeline: `published`, `existed` (an idempotent repeat), `invalid`, `conflict`, `error` |
+| `lajstrom_auth_throttled_total` | `throttle` | requests answered `429` by a throttle ([auth.md](auth.md#failed-logins)): `account` and `address` (failed logins), `token` (requests to `/v2/token`) |
 | `lajstrom_build_info` | `version`, `commit`, `goversion` | always 1 |
 
 ```yaml
