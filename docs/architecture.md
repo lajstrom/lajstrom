@@ -225,16 +225,28 @@ sequenceDiagram
   participant RP as Registry provider
   participant R as Registry
   participant D as Index DB
+  W->>D: start the run (lock: one run per repo across replicas)
   W->>RP: listRepos(prefix art/)
   RP->>R: DescribeRepositories or _catalog
   loop each OCI repo
     W->>R: GET tags/list
-    W->>R: GET manifest by tag, cached by digest
-    W->>D: upsert packages, versions, files from annotations
+    W->>R: HEAD manifest by tag
+    alt digest already in the index
+      W->>D: mark the row seen
+    else new digest
+      W->>R: GET manifest, cached by digest; the blobs the plugin checks
+      W->>D: upsert packages, versions, files from annotations
+    end
   end
+  W->>R: HEAD the tags of the rows not seen
   W->>D: delete rows without a manifest
-  W->>D: reset index_cache
+  W->>D: reset index_cache, finish the run with its report
 ```
+
+Reindex marks and sweeps instead of emptying the tables first, so the frontends keep serving
+during a run, and it reads a manifest only when its digest is new: a digest names the same
+bytes, which were checked when they were written. A tag that names another digest than the index
+is reported as drift and never re-pointed (index-schema.md, Invariants).
 
 ## 4. Boundaries of responsibility
 

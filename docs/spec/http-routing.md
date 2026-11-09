@@ -150,7 +150,7 @@ role. Shapes are fixed in the API issue (M2-09); listed here so frontends do not
 
 | Resource | Endpoints |
 | --- | --- |
-| repos | `GET/POST /api/v1/repos`, `GET/PATCH/DELETE /api/v1/repos/<format>/<repo>`, `POST …/reindex` |
+| repos | `GET/POST /api/v1/repos`, `GET/PATCH/DELETE /api/v1/repos/<format>/<repo>`, `POST …/reindex`, `GET …/reindex` |
 | users | `GET/POST /api/v1/users`, `GET/PATCH/DELETE /api/v1/users/<name>`, `POST …/password` |
 | tokens | `GET/POST /api/v1/users/<name>/tokens` (PAT), `DELETE …/tokens/<id>`; `GET/POST /api/v1/repos/<format>/<repo>/deploy-tokens`, `DELETE …/<id>` |
 | bindings | `GET/POST /api/v1/bindings`, `DELETE /api/v1/bindings/<id>` |
@@ -158,6 +158,15 @@ role. Shapes are fixed in the API issue (M2-09); listed here so frontends do not
 | whoami | `GET /api/v1/whoami` |
 
 Errors: `{"error": {"code": "NOT_FOUND|CONFLICT|FORBIDDEN|INVALID|UNAVAILABLE|INTERNAL", "message": "…"}}`.
+
+Reindex of one repo (`manage`): `POST …/reindex` with an optional body `{"prune": true,
+"verify": false}` starts the run on the replica that received it and answers `202` with the run
+(`id`, `state`, `trigger`, `principal`, `replica`, `startedAt`), before the run reads the
+registry; a running run that overlaps it, on any replica or in the CLI, is `409 CONFLICT` naming
+where it runs and since when (index-schema.md, Coordination). `GET …/reindex` answers the latest
+run that covered the repo, its own or a run of every repo, with `state`, the times, `error` and
+the repo's part of the report (layout.md, `reindex.Report`); `404` when no run has covered it.
+The run writes the audit event `repo.reindex` when it starts.
 
 ## 5. System endpoints
 
