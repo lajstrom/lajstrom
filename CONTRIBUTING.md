@@ -82,7 +82,10 @@ welcome. They are held to the same bar as any other contribution, plus a few rul
 - **Snippet scan.** CI runs a snippet scan (`snippet-scan` job) against a public database of open
   source code. A flagged match blocks the merge until it is explained in the pull request and a
   maintainer has decided how to handle it: rewrite it, or record it as an approved component in
-  `scanoss.json`.
+  `scanoss.json` (`bom.include`). A match that is not copied code, an idiom that many projects
+  write the same way, is removed for that file and that component only (`bom.remove` with
+  `path` and `purl`); another component matching the same file still fails. A push to `main`
+  scans the whole tree, so an update of the database can flag a file that passed before.
 - **Human-written description.** Pull requests without a human-written description of what the
   change does and why are closed.
 - **No automation at scale.** Fully automated or bulk AI-generated pull requests and issues are
