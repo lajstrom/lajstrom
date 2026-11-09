@@ -44,9 +44,8 @@ func FuzzPOM(f *testing.F) {
 			pom *POM
 			err error
 		)
-		if n := testutil.Allocated(func() { pom, err = ParsePOM(b) }); n > pomAllocBound(len(b)) {
-			t.Fatalf("ParsePOM of %d bytes allocated %d bytes, at most %d", len(b), n, pomAllocBound(len(b)))
-		}
+		testutil.CheckAllocated(t, fmt.Sprintf("ParsePOM of %d bytes", len(b)), pomAllocBound(len(b)),
+			func() { pom, err = ParsePOM(b) })
 		if err != nil {
 			if !errors.Is(err, format.ErrInvalid) {
 				t.Fatalf("ParsePOM = %v, want ErrInvalid", err)

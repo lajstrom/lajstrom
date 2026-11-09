@@ -2,6 +2,7 @@ package maven
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -171,8 +172,7 @@ func pomAllocBound(n int) int { return testutil.AllocSlack + 256*n }
 func TestParsePOMExpansionBounded(t *testing.T) {
 	for _, k := range []int{8, 16, 64, 1024} {
 		b := referencesEachOther(k)
-		if n := testutil.Allocated(func() { _, _ = ParsePOM(b) }); n > pomAllocBound(len(b)) {
-			t.Errorf("k = %d: ParsePOM of %d bytes allocated %d bytes, at most %d", k, len(b), n, pomAllocBound(len(b)))
-		}
+		testutil.CheckAllocated(t, fmt.Sprintf("k = %d: ParsePOM of %d bytes", k, len(b)), pomAllocBound(len(b)),
+			func() { _, _ = ParsePOM(b) })
 	}
 }
