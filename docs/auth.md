@@ -332,14 +332,39 @@ a client whose token the next start refuses gets another.
 
 ### What a token does not say
 
-A token is trusted for its lifetime, as the distribution token flow expects. A user disabled or
-a binding removed takes effect at once on the frontends and at the next `/v2/token`, and within
-20 minutes on `/v2` for a token already issued (the consequence in ADR 0010). The token names
-repositories by name, so a repo deleted is unknown at once (`NAME_UNKNOWN`). An operator who
-needs every outstanding token gone now runs `lajstrom admin key rotate --token --drop`: within a
-second no replica accepts a token of the old key, and clients get new tokens with their
-credentials. Whether the facade should instead ask the Authorizer on every `/v2` request is
-#45's decision.
+A token is trusted until its `exp`, as the distribution token flow expects: the facade checks
+the signature, the expiry and the `access` claim on every `/v2` request, and does not evaluate
+the bindings again (decided in #45; [rbac.md](spec/rbac.md) §4, the consequence in ADR 0010).
+Whatever changed after a token was issued counts on `/v2` at the client's next `/v2/token`:
+
+| Change | Frontends and `/api/v1` | `/v2/token` | `/v2`, with a token issued before the change |
+| --- | --- | --- | --- |
+| a binding created or deleted | the next request, on every replica (#45) | the next token | at the token's `exp`: 20 minutes at most |
+| a repo's `anonymousRead` changed | the next request, on every replica (#45) | the next token | 20 minutes at most |
+| a user disabled | the next request, on every replica | the next token | 20 minutes at most |
+| a personal access or deploy token revoked, or expired | the next request, on every replica | the next token | 20 minutes at most |
+| a repo deleted | the next request: `404` | the next token | at once: `NAME_UNKNOWN`, the token names the repository |
+| `lajstrom admin key rotate --token --drop` | nothing | tokens of the new key | within a second: every token of the old key is refused |
+
+Evaluating the bindings on every `/v2` request would close the window for a binding and for
+`anonymousRead` only. The token does not say which credential it was issued for (`sub` is
+`user:alice` for a password and for a personal access token alike), so a revoked token would
+still count until `exp`, and each change would have a rule of its own.
+
+To take access away on `/v2` at once, remove it first (the binding, the token, the user) and
+then end every outstanding token:
+
+```sh
+lajstrom admin key rotate --token --drop
+```
+
+Within a second no replica accepts a token of the old key. Every client of `/v2` gets a `401`
+on its next request, asks `/v2/token` again with its credentials, and gets a token of the new
+key under the bindings of that moment; a client whose access is gone gets none. The rotation
+ends the tokens of every principal, not only of the one whose access changed: it is the
+emergency brake, not the everyday path ([operations.md](operations.md#the-bearer-token-key)).
+Without a master key `serve` signs with an ephemeral key and the token commands fail
+([above](#the-signing-key)); a restart of `serve` ends every token instead.
 
 ### Clients
 

@@ -25,10 +25,11 @@ stored as RFC 3339 text in SQLite, `timestamptz` in Postgres; `json` = `text` in
 | `repos` | `id`, `format` text, `name` text, `registry` text (config name), `prefix` text, `kind` text (`hosted`; `proxy`/`group` later), `anonymous_read` bool, `policy` json (`maxFileSize`, `maven.sessionTimeout`, …), `created_at` ts, `updated_at` ts | unique `(format, name)` |
 | `users` | `id`, `name` text unique, `password_hash` text null, `kind` text (`local`; `oidc` later), `disabled` bool, `created_at` ts | the first user is created by `lajstrom admin user create` |
 | `tokens` | `id`, `kind` text (`pat`, `deploy`), `user_id` → users null, `repo_id` → repos null, `name` text, `hash` text (sha256 of the secret), `scopes` json (`["read","write"]`), `expires_at` ts null, `last_used_at` ts null, `created_at` ts, `revoked_at` ts null | a PAT acts as its user; a deploy token is a principal of its own bound to one repo |
-| `bindings` | `id`, `principal` text (`user:<name>`, `group:<name>`, `token:<id>`, `anonymous`), `role` text (`reader`, `writer`, `maintainer`, `admin`), `repo_mask` text (`apt/*`, `*/payments`, `maven/releases`), `created_at` ts | rbac.md |
+| `bindings` | `id`, `principal` text (`user:<name>`; `group:<name>` after the MVP), `role` text (`reader`, `writer`, `maintainer`, `admin`), `repo_mask` text (`apt/*`, `*/payments`, `maven/releases`), `created_at` ts | rbac.md |
 | `keys` | `id`, `repo_id` → repos null (null = server key), `kind` text (`gpg`, `jwt`), `public` blob, `private_enc` blob (encrypted with the master key), `fingerprint` text, `created_at` ts, `retired_at` ts null | apt signing keys; JWT signing key. Unique `keys_active` on `(kind, COALESCE(repo_id, 0)) WHERE retired_at IS NULL`: one key that is not retired per kind and owner, so two replicas that make a repo's first key at once leave one (the second insert is a conflict, and that replica reads the first one's key). A `gpg` row: `public` the OpenPGP public key packets, `private_enc` nonce ‖ AES-256-GCM(private key packets) with the fingerprint (uppercase hex) as additional data |
 | `sessions` | `id`, `repo_id`, `key` text (`g:a:v`), `principal` text, `state` text (`open`, `committed`, `aborted`, `expired`), `files` json (uploaded descriptors), `created_at` ts, `updated_at` ts, `expires_at` ts | publication sessions (maven; later docker stitching) |
 | `audit` | `id`, `at` ts, `principal` text, `action` text (`push`, `delete`, `repo.create`, `token.create`, …), `repo` text, `subject` text (package/version or user), `digest` text null, `ip` text, `details` json | append-only; retention by age later |
+| `auth_version` | `id` int (always 1), `version` bigint, `updated_at` ts | one row, made by its migration; incremented in the transaction of every insert or delete of `bindings` and every insert, update or delete of `repos`. A replica reads it before it evaluates a request and reloads its snapshot of the bindings and of the repos' `anonymous_read` when it moved (rbac.md §3) |
 | `schema_migrations` | `version` int, `applied_at` ts | |
 
 ## Coordination
@@ -79,7 +80,8 @@ the control-plane and derived tables, `0002_tag_claims.sql` the coordination tab
 `0003_packages_name_oci.sql` the unique index on `packages (repo_id, name_oci)`,
 `0004_keys_active.sql` the unique index `keys_active` (one key not retired per kind and owner),
 `0005_reindex.sql` the table `reindex_runs`, the column `versions.degraded`, and
-`packages.created_at` set to the earliest `created_at` of each package's versions.
+`packages.created_at` set to the earliest `created_at` of each package's versions,
+`0006_auth_version.sql` the table `auth_version` with its row.
 The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the
