@@ -11,5 +11,7 @@
 // token and the tokens API, their secrets (PATPrefix, DeployPrefix, HashSecret), their paths
 // in the Authenticator (Basic user:<PAT> and deploy:<token>, AuthenticateBearer), and the
 // Credential of a request, whose Limit is the part of RBAC that depends on the credential
-// (format.Authorize and token.Reduce apply it). RBAC comes with #45.
+// (format.Authorize and token.Reduce apply it). Issue #45 brings RBAC: the Authorizer RBAC
+// evaluates the bindings, the credential and anonymous read in memory, from a snapshot that it
+// reloads when the index's auth_version moved, read once per request (WithEvaluationScope).
 package auth
