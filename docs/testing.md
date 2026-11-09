@@ -99,14 +99,15 @@ the known ones in a fixed order and any other after them, and prints a line per 
 PASS raw.sh            2 s
 PASS oras.sh           1 s
 PASS auth.sh           0 s
+PASS rbac.sh           4 s
 PASS oci-token.sh      3 s
 PASS tokens.sh        10 s
 PASS apt.sh            4 s
-PASS pypi.sh          11 s
-e2e: 7 of 7 scenarios ran, 0 failed, in 42 s against http://127.0.0.1:51474
+PASS pypi.sh          10 s
+e2e: 8 of 8 scenarios ran, 0 failed, in 41 s against http://127.0.0.1:21342
 ```
 
-Those are the times on an Apple silicon Mac with OrbStack, the images already pulled; the 42 s
+Those are the times on an Apple silicon Mac with OrbStack, the images already pulled; the 41 s
 include `make build`, and `pypi.sh` installs build, twine and uv from PyPI in its container. A failed scenario does not stop the others. The harness exits 1 when one
 failed, 2 when it could not start (the build, the migration, a server that is not ready), and
 stops the server and removes the directory on exit; `LAJSTROM_E2E_KEEP=1` keeps it, with

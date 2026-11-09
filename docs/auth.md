@@ -1,12 +1,11 @@
-# Authentication
+# Authentication and authorization
 
-Who a request comes from, and how Lajstrom finds out. This page describes local users, their
-passwords, HTTP Basic on every route, the bearer tokens of the OCI facade, personal access
-tokens and deploy tokens, the bootstrap of the first admin and `whoami`. What a principal may do
-is RBAC's ([rbac.md](spec/rbac.md), #45); until then every route is open, authentication tells
-who is asking, and only the scopes of a token limit what it may do. The model is
-[ADR 0007](adr/0007-rbac-model.md); where the token signing key lives is
-[ADR 0010](adr/0010-bearer-token-signing-key.md).
+Who a request comes from, how Lajstrom finds out, and what the principal may do. This page
+describes local users, their passwords, HTTP Basic on every route, the roles and bindings that
+decide every request ([Authorization](#authorization)), the bearer tokens of the OCI facade,
+personal access tokens and deploy tokens, the bootstrap of the first admin and `whoami`. The
+normative rules are [rbac.md](spec/rbac.md); the model is [ADR 0007](adr/0007-rbac-model.md);
+where the token signing key lives is [ADR 0010](adr/0010-bearer-token-signing-key.md).
 
 ## Principals
 
@@ -75,8 +74,9 @@ Every route reads the `Authorization` header, the frontends (`/raw/`, `/pypi/`, 
 `/maven/`), the OCI facade (`/v2/`), the management API (`/api/`) and the system endpoints
 (`/-/healthz`, `/-/readyz`, `/-/version`) alike:
 
-- **No header**: the request goes on as `anonymous`. What anonymous may do is RBAC's to decide;
-  in this version everything is open, so the dev stack works without credentials.
+- **No header**: the request goes on as `anonymous`, which may read a repo with `anonymousRead`
+  when `auth.anonymousRead` allows it, and nothing else: everywhere else it gets `401` with the
+  challenge, so that the client sends credentials ([Authorization](#authorization)).
 - **`Basic`** ([RFC 7617](https://www.rfc-editor.org/rfc/rfc7617); the first colon splits the
   user name from the password): the credentials are checked, and the request goes on as
   `user:<name>`, or as `token:<id>` for a deploy token. The secret decides what is checked: one
@@ -108,18 +108,97 @@ request without credentials and for the `401`s above, `user:<owner>` for a perso
 token, `token:<id>` for a deploy token, the token's subject for a request with a valid bearer
 on `/v2`. The `Authorization` header is never logged, and neither is a token or its hash.
 
+## Authorization
+
+Every request is decided by RBAC ([rbac.md](spec/rbac.md) §3): the bindings of the principal in
+the index, behind the scopes of its token. There is no configuration without it; the dev stack
+and the quick starts log in too.
+
+### Roles
+
+| Role | On the repos its mask names |
+| --- | --- |
+| `reader` | `read`: `GET` and `HEAD` on the frontends, `pull` on `/v2`, the repo in the lists |
+| `writer` | `read`, `write`: uploads, `push` |
+| `maintainer` | `read`, `write`, `delete` and `manage`: deleting versions, changing the repo, its deploy tokens, reindexing it |
+| `admin` | everything on every repo, and the system: users, bindings, creating a repo, every user's tokens, the audit log |
+
+A `maintainer` on `*/*` has every repo but not the system; the system needs the `admin` role.
+
+### Bindings
+
+A binding is `(principal, role, mask)`. The principal is `user:<name>` of an existing user; the
+mask is `<format>/<repo>`, each segment a name or `*`: `raw/assets` exactly, `raw/*` every raw
+repo, `*/payments` the repo `payments` of every format, `*/*` everything. The repo need not
+exist: a binding may come before its repo, and outlives it. The rights of a principal are the
+union of its bindings. A deploy token has no bindings (its repo and scopes are its rights), and
+neither has `anonymous` (a repo's `anonymousRead` is).
+
+`lajstrom admin binding` manages them, straight against the database of the configuration; the
+bindings API comes with #47:
+
+```text
+$ lajstrom admin binding create --principal user:alice --role writer --mask 'raw/*'
+{"id":2,"principal":"user:alice","role":"writer","repoMask":"raw/*","createdAt":"2026-11-09T11:27:00.003156Z"}
+$ lajstrom admin binding create --principal user:alice --role reader --mask '*/payments'
+{"id":3,"principal":"user:alice","role":"reader","repoMask":"*/payments","createdAt":"2026-11-09T11:27:00.017687Z"}
+$ lajstrom admin binding list
+ID  PRINCIPAL   ROLE    MASK        CREATED
+1   user:admin  admin   */*         2026-11-09T11:26:52Z
+2   user:alice  writer  raw/*       2026-11-09T11:27:00Z
+3   user:alice  reader  */payments  2026-11-09T11:27:00Z
+$ lajstrom admin binding create --principal user:alice --role admin --mask 'raw/*'
+lajstrom: repoMask: an admin binding is on */*: the admin role is every repo and the system
+$ lajstrom admin binding create --principal token:3 --role writer --mask raw/assets
+lajstrom: principal: token:3 cannot be bound: a binding is for user:<name>; anonymous reads through a repo's anonymousRead, a deploy token gets its repo and scopes, groups come after the MVP
+$ lajstrom admin binding create --principal user:alice --role writer --mask 'raw/*'
+lajstrom: binding user:alice writer on raw/* exists already
+$ lajstrom admin binding delete 1
+lajstrom: binding 1 is the last admin binding of an enabled user: create another first (lajstrom admin binding create, or admin user create --admin)
+```
+
+(A run against a new SQLite database after `admin user create --name admin --admin` and
+`--name alice`.) `list --principal user:alice` lists one principal's. `delete <id>` refuses the
+last admin binding of an enabled user, so that somebody can still manage the server. Every
+change is an audit event, `binding.create` or `binding.delete`, with the principal as its
+subject and the id, role and mask in the details.
+
+### How a request is decided
+
+For the principal of the request and an action on `<format>/<repo>`, in this order:
+
+1. an `admin` binding allows everything;
+2. a deploy token reaches its own repo, with the actions of its scopes, never `delete` or
+   `manage`;
+3. a personal access token with scopes keeps only those actions, an admin's too;
+4. the bindings whose mask matches the repo allow the actions of their roles;
+5. `anonymous`, and a user its bindings do not allow, may `read` a repo whose `anonymousRead` is
+   on, when `auth.anonymousRead` is on too: both switches, and they are off by default (a
+   deploy token stays on its repo);
+6. anything else is denied.
+
+A change counts from the next request, on every replica: a binding created or deleted, through
+the CLI or (#47) the API, a repo's `anonymousRead`, a user disabled. Each replica keeps the
+bindings in memory and reads one counter of the index, `auth_version`, once per request; a
+change moves it, and the next request reloads. `auth.anonymousRead` is configuration and
+changes with a restart. On `/v2` a token, once issued, holds until it expires
+([What a token does not say](#what-a-token-does-not-say)).
+
 ### The 401/404/403 rule
 
-[rbac.md](spec/rbac.md) §3 decides what a denial answers so that it does not reveal whether a
-repo exists: `401` with the challenge for `anonymous` (the bearer challenge under `/v2/`, Basic
-elsewhere), `404` for a principal without any access to the repo, `403` for one that can read
-the repo but lacks the action. Before RBAC (#45) the Authorizer denies nothing, and the `401`s
-are: credentials that are refused, on every route; `whoami` without credentials; `GET /v2/`
-without credentials; and, under `/v2/`, a bearer that does not verify or does not name the
-repository. A bearer that names the repository without the action is `403`. The scopes of a
-token hold already: a deploy token gets `404` on every repo but its own, and `403` for an
-action outside its scopes, as does a personal access token with scopes ([Tokens](#tokens)).
-The rest of the rule comes with #45.
+A denial does not tell whether a repo exists ([rbac.md](spec/rbac.md) §3):
+
+- `anonymous` gets `401` with the challenge (the bearer challenge under `/v2/`, Basic
+  elsewhere), on a repo it may not read and on one that does not exist alike;
+- a principal with no access to the repo at all gets `404`, the answer of a repo that does not
+  exist;
+- `403` is for a principal that can read the repo and lacks the action.
+
+So a user whose only binding is `reader` on `pypi/*` gets `404` on `raw/assets` and on
+`raw/missing`, and a reader of `raw/assets` gets `403` for a `PUT` there. The same holds on
+every route: rbac.md §3 lists the others that could tell (creating a repo, bindings, the lists,
+`/v2` with a bearer) and why they do not. `test/e2e/rbac.sh` checks the matrix of
+[acceptance.md](acceptance.md) S-02 with real requests, on the raw frontend and on `/v2`.
 
 ## Bearer tokens on `/v2`
 
@@ -230,17 +309,10 @@ implemented (`405`), and the clients above use `GET`.
   `write`, `delete` is `delete` ([rbac.md](spec/rbac.md) §2). The credential first: a personal
   access token with scopes keeps the actions of its scopes, a deploy token those of its scopes
   on its own repo and nothing elsewhere, and neither ever gets `delete`; so a PAT with `read`
-  gets a token with `pull` only, and its push is `403 DENIED` (S-03). Without an Authorizer,
-  the state until RBAC (#45), every other requested action is granted, to the anonymous
-  principal too: the facade is open, and stays open. `serve` says so at startup, at warn:
-
-  ```text
-  level=WARN msg="authorization is not enforced until RBAC (#45): every principal, anonymous included, may do everything on /v2 and the frontends, and /v2/token therefore grants every requested scope"
-  ```
-
-  With #45, a reader asking for `pull,push` gets `pull` (O-12). A principal that may not read
-  a repo gets its scope with `"actions": []`, as for a repo that does not exist: the client can
-  decode the token, and the two must not differ in it ([rbac.md](spec/rbac.md) §3, §4).
+  gets a token with `pull` only, and its push is `403 DENIED` (S-03). The bindings next: a
+  reader asking for `pull,push` gets `pull` (O-12). A principal that may not read a repo gets
+  its scope with `"actions": []`, as for a repo that does not exist: the client can decode the
+  token, and the two must not differ in it ([rbac.md](spec/rbac.md) §3, §4).
 - **Service**: the configured one (below). A `service` parameter that names another is a
   client talking to another registry, not an error: it is ignored, and the token carries the
   configured service.
@@ -302,8 +374,8 @@ log, and is decided by the token's `access`, not by the Authorizer:
 - `GET /v2/_catalog` lists, with `registry:catalog:*`, the repositories the principal may read,
   and otherwise the repositories the token grants `pull` on.
 
-A request without a bearer runs as before: as the Basic user or anonymous, decided by the
-Authorizer (none until #45: everything allowed), except that its `401`s carry the bearer
+A request without a bearer runs as on the other routes: as the Basic user or anonymous, decided
+by the bindings ([Authorization](#authorization)), except that its `401`s carry the bearer
 challenge, with the scope the request needed: `pull` for `GET` and `HEAD`, `pull,push` for the
 uploads and a manifest `PUT`, `delete` for `DELETE`.
 
@@ -340,13 +412,13 @@ a client whose token the next start refuses gets another.
 
 A token is trusted until its `exp`, as the distribution token flow expects: the facade checks
 the signature, the expiry and the `access` claim on every `/v2` request, and does not evaluate
-the bindings again (decided in #45; [rbac.md](spec/rbac.md) §4, the consequence in ADR 0010).
+the bindings again ([rbac.md](spec/rbac.md) §4, the consequence in ADR 0010).
 Whatever changed after a token was issued counts on `/v2` at the client's next `/v2/token`:
 
 | Change | Frontends and `/api/v1` | `/v2/token` | `/v2`, with a token issued before the change |
 | --- | --- | --- | --- |
-| a binding created or deleted | the next request, on every replica (#45) | the next token | at the token's `exp`: 20 minutes at most |
-| a repo's `anonymousRead` changed | the next request, on every replica (#45) | the next token | 20 minutes at most |
+| a binding created or deleted | the next request, on every replica | the next token | at the token's `exp`: 20 minutes at most |
+| a repo's `anonymousRead` changed | the next request, on every replica | the next token | 20 minutes at most |
 | a user disabled | the next request, on every replica | the next token | 20 minutes at most |
 | a personal access or deploy token revoked, or expired | the next request, on every replica | the next token | 20 minutes at most |
 | a repo deleted | the next request: `404` | the next token | at once: `NAME_UNKNOWN`, the token names the repository |
@@ -384,8 +456,8 @@ docker login localhost:8080 -u alice
 ```
 
 `oras` and docker get a token when the facade challenges them: at `login`, which asks
-`GET /v2/`, and on any `401`. While the facade is open (#45) their pushes and pulls are not
-challenged and go without a token, as anonymous; nothing changes for them on the dev stack.
+`GET /v2/`, and on any `401`. A client that has not logged in gets the anonymous token, which
+reads what anonymous may read and nothing else.
 
 `test/e2e/oci-token.sh` runs the flow end to end (the challenge, a token, its claims, a changed
 token, a token without push, `oras login`, push and pull, a rotation and a drop):
@@ -456,10 +528,9 @@ while its user is disabled, and a repo deleted takes its deploy tokens with it.
 
 ### What a token may do
 
-The scopes hold now, before RBAC, on every route and at `/v2/token`; RBAC (#45) adds the
-bindings behind them:
+The scopes narrow what the bindings give, on every route and at `/v2/token`:
 
-- a PAT without scopes is its user: what the user may do (everything, until #45);
+- a PAT without scopes is its user: what the user's bindings allow;
 - a PAT with scopes gets `read` with `read` and `write` with `write`, and never `delete` or
   `manage`; anything else is `403` (S-03, X-14);
 - a deploy token is confined to its repo: on any other it is `404`, the answer of a repo that
@@ -467,8 +538,8 @@ bindings behind them:
   `write` per its scopes, and `403` for an action outside them, `delete` and `manage` above all:
   `DELETE` of a version, `PATCH` or `DELETE` of the repo, its deploy tokens (X-14).
   `GET /api/v1/repos` lists its repo only;
-- the PATs of a user are the user's own to list, create and revoke, or the system admin's;
-  until #45, as every endpoint, everybody's. The deploy tokens of a repo need `manage` on it.
+- the PATs of a user are the user's own to list, create and revoke, or the admin's. The deploy
+  tokens of a repo need `manage` on it.
   A deploy token or a PAT with scopes asking for either is `403`;
 - at `/v2/token` the same rules narrow the token ([above](#the-token-endpoint)); `/v2` itself
   takes that token and no other bearer.
@@ -591,10 +662,9 @@ ok   apt-get update && apt-get install e2e-tokens-20261107230011-31449 in ubuntu
 ok   apt-get update && apt-get install e2e-tokens-20261107230011-31449 in ubuntu:24.04 [trusted=yes], auth.conf login deploy password <deploy 6, scopes read>: installed; lastUsedAt 2026-11-07T23:00:13.504948Z
 ```
 
-oras sends its credentials only when challenged, and while the facade is open (#45) its
-pushes are not challenged: they go as `anonymous`, whatever the token. So the `403 DENIED` of a
-PAT with `read` is shown with the token that `oras` would get, by hand; once #45 challenges
-writes, `oras push` with that PAT gets it itself.
+The run above is from before RBAC (#45), when oras pushes were not challenged and went as
+`anonymous`; that is why the `403 DENIED` of a PAT with `read` is shown with the token that
+`oras` would get, by hand.
 
 ## Bootstrap: the first admin
 
@@ -610,8 +680,8 @@ LAJSTROM_ADMIN_PASSWORD='…' lajstrom admin user create --name admin --admin --
 ```
 
 `--admin` also creates the binding `(user:admin, admin, */*)`: everything on every repo, the
-system and the audit log. The binding is evaluated by RBAC (#45); the row is there from the
-start. The password comes from, in this order:
+system and the audit log ([Authorization](#authorization)). The password comes from, in this
+order:
 
 1. `LAJSTROM_ADMIN_PASSWORD`, when it is set;
 2. standard input with `--password-stdin`, the whole of it without the trailing newline
@@ -657,6 +727,5 @@ token it is the token's user; with a deploy token,
 | Issue | What |
 | --- | --- |
 | #31 | The pypi frontend, and with it `twine upload` with a deploy token in `~/.pypirc` |
-| #45 | RBAC: the bindings decide what each principal may do, behind the scopes of its token; anonymous gets `401` with the challenge where it may not read, and the rule above holds everywhere |
-| #47 | The users API: `GET/POST /api/v1/users`, `PATCH`, `POST …/password`, with the same rules and audit events as `lajstrom admin user` |
+| #47 | The users and bindings API: `GET/POST /api/v1/users`, `PATCH`, `POST …/password`, `/api/v1/bindings`, with the same rules and audit events as `lajstrom admin user` and `admin binding` |
 | #130 | Rate limiting of failed logins |
