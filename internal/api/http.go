@@ -401,9 +401,13 @@ func origin(r *http.Request) Origin {
 	return Origin{Source: SourceAPI, IP: clientIP(r), RequestID: server.RequestID(r.Context())}
 }
 
-// clientIP is the address of the client without the port. X-Forwarded-For, from trusted
-// proxies only, comes with #50.
+// clientIP is the address of the client without the port: the server's (server.ClientAddr,
+// which believes X-Forwarded-For from server.trustedProxies only, ADR 0011), or the peer of the
+// connection for a request that did not come through the server's middleware.
 func clientIP(r *http.Request) string {
+	if addr := server.ClientAddr(r.Context()); addr != "" {
+		return addr
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr

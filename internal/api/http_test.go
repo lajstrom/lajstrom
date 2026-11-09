@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -396,6 +397,37 @@ func TestRequestIDInAudit(t *testing.T) {
 	wantStatus(t, rr, http.StatusCreated)
 	if ev := oneAudit(t, f.st, "repo.create"); ev.details["requestId"] != "req-1" {
 		t.Errorf("audit details = %v, want requestId req-1", ev.details)
+	}
+}
+
+// TestClientAddrInAudit checks that a change through the server behind a trusted proxy records
+// the client that X-Forwarded-For names, not the proxy (server.trustedProxies, ADR 0011), and
+// the peer when the peer is not trusted.
+func TestClientAddrInAudit(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		trusted []netip.Prefix
+		want    string
+	}{
+		{"behind a trusted proxy", []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}, "198.51.100.7"},
+		{"no trusted proxy", nil, "192.0.2.1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t, Options{})
+			srv, err := server.New(server.Options{Listen: "127.0.0.1:0", API: f.h, Log: f.repos.Log, TrustedProxies: tt.trusted})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := httptest.NewRequest(http.MethodPost, "/api/v1/repos", strings.NewReader(scratch))
+			r.RemoteAddr = "192.0.2.1:41000"
+			r.Header.Set("X-Forwarded-For", "198.51.100.7")
+			rr := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rr, r)
+			wantStatus(t, rr, http.StatusCreated)
+			if ev := oneAudit(t, f.st, "repo.create"); ev.IP != tt.want {
+				t.Errorf("audit ip = %q, want %q", ev.IP, tt.want)
+			}
+		})
 	}
 }
 
