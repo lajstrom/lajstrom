@@ -40,7 +40,8 @@ COMPOSE_FILE := deploy/compose/compose.yaml
 COMPOSE      := docker compose -f $(COMPOSE_FILE)
 # PROFILES adds the services of compose profiles to dev-up, dev-ps and dev-logs:
 # make dev-up PROFILES=s3 also starts distribution on SeaweedFS, PROFILES=s3-minio the same on
-# MinIO, the fallback, PROFILES=gitlab the GitLab container registry; several with commas, e.g.
+# MinIO, the fallback, PROFILES=gitlab the GitLab container registry, PROFILES=ha two replicas of
+# Lajstrom built from the working tree behind nginx (test/e2e/ha.sh); several with commas, e.g.
 # PROFILES=s3,s3-minio (docs/dev-stack.md). dev-down stops the services of every profile.
 ifdef PROFILES
 export COMPOSE_PROFILES := $(PROFILES)
@@ -82,7 +83,7 @@ fmt-check: ## Fail when gofmt would change a file
 
 check: fmt-check build vet test lint api-lint vulncheck licenses ## Everything CI runs, in CI's order
 
-dev-up: ## Start the dev stack (Zot, distribution, Postgres; PROFILES=s3 adds distribution on SeaweedFS, PROFILES=s3-minio on MinIO as the fallback, PROFILES=gitlab the GitLab registry) and wait until it is healthy
+dev-up: ## Start the dev stack (Zot, distribution, Postgres; PROFILES=s3 adds distribution on SeaweedFS, PROFILES=s3-minio on MinIO as the fallback, PROFILES=gitlab the GitLab registry, PROFILES=ha two replicas behind nginx) and wait until it is healthy
 	$(COMPOSE) up -d --wait
 
 dev-down: ## Stop the dev stack, every profile; RESET=1 removes the volumes

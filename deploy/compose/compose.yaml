@@ -6,6 +6,7 @@
 #   make dev-up PROFILES=s3  the same, and distribution on SeaweedFS (the s3 profile, #27, #118)
 #   make dev-up PROFILES=s3-minio  the same, and distribution on MinIO, the fallback of the s3 profile
 #   make dev-up PROFILES=gitlab  the same, and the GitLab container registry, two variants (the gitlab profile, #117)
+#   make dev-up PROFILES=ha  the same, and two replicas of Lajstrom behind nginx (the ha profile, #226)
 #   make dev-ps            what runs, with its health
 #   make dev-logs          follow the logs
 #   make dev-down          stop and remove the containers of every profile; the volumes stay
@@ -23,12 +24,16 @@
 #   minio            localhost:9001  LAJSTROM_MINIO_PORT            s3-minio profile: the presigned URLs name it
 #   gitlab           localhost:5003  LAJSTROM_GITLAB_PORT           gitlab profile: variant A, metadata on the filesystem
 #   gitlab-db        localhost:5004  LAJSTROM_GITLAB_DB_PORT        gitlab profile: variant B, the metadata database (docs/registries/gitlab.md)
+#   ha-nginx         localhost:8090  LAJSTROM_HA_PORT               ha profile: the edge, round robin over the two replicas
+#   lajstrom-a       localhost:8091  LAJSTROM_HA_A_PORT             ha profile: replica A, past the edge
+#   lajstrom-b       localhost:8092  LAJSTROM_HA_B_PORT             ha profile: replica B, past the edge
+#   ha-distribution  localhost:5007  LAJSTROM_HA_DISTRIBUTION_PORT  ha profile: the registry of both replicas
 #
 # Every image is pinned to a full version whose tag serves linux/amd64 and linux/arm64; the
 # digest of its image index is in the comment above it. Change a tag and its digest together;
 # for a registry, re-run the integration tests and update docs/registries/README.md. The
 # integration job of .github/workflows/ci.yml runs the same images, and its e2e job the same Zot:
-# change them there too. CI does not run the s3, s3-minio and gitlab profiles.
+# change them there too. CI does not run the s3, s3-minio, gitlab and ha profiles.
 
 name: lajstrom-dev
 
@@ -255,6 +260,104 @@ services:
       <<: *healthcheck
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U registry -d registry"]
 
+  # The ha profile (make dev-up PROFILES=ha, #226): two replicas of Lajstrom built from the
+  # working tree, behind nginx with the configuration of deploy/nginx/, on a Postgres and a
+  # distribution of the profile's own (docs/acceptance.md §4, test/e2e/ha.sh). Its services are
+  # on the network ha only, at fixed addresses: the replicas trust the X-Forwarded-For of
+  # ha-nginx's (server.trustedProxies of ha/lajstrom.yaml). The edge is the URL clients use;
+  # the replicas are published too, so that a test can choose one.
+  ha-postgres:
+    profiles: [ha]
+    image: postgres:17.11-alpine
+    environment:
+      POSTGRES_DB: lajstrom
+      POSTGRES_USER: lajstrom
+      POSTGRES_PASSWORD: lajstrom
+    volumes:
+      - ha-postgres-data:/var/lib/postgresql/data
+    networks: [ha]
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U lajstrom -d lajstrom"]
+
+  ha-distribution:
+    profiles: [ha]
+    # The distribution above, a second one: no referrers API, Docker and OCI media types.
+    image: registry:3.1.2
+    environment:
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      REGISTRY_LOG_LEVEL: info
+    volumes:
+      - ha-distribution-data:/var/lib/registry
+    ports:
+      - "127.0.0.1:${LAJSTROM_HA_DISTRIBUTION_PORT:-5007}:5000"
+    networks: [ha]
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/v2/"]
+
+  lajstrom-a: &lajstrom-ha
+    profiles: [ha]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/ha/Dockerfile
+    image: lajstrom-dev-ha
+    pull_policy: build # rebuilt from the working tree on every make dev-up
+    environment:
+      LAJSTROM_CONFIG: /etc/lajstrom/lajstrom.yaml # serve, and lajstrom admin through docker compose exec
+      LAJSTROM_SERVER_EXTERNAL_URL: http://localhost:${LAJSTROM_HA_PORT:-8090}
+      # A fixed master key: the hex of "lajstrom-ha-dev-stack-not-secret".
+      LAJSTROM_MASTER_KEY: 6c616a7374726f6d2d68612d6465762d737461636b2d6e6f742d736563726574
+    volumes:
+      - ./ha/lajstrom.yaml:/etc/lajstrom/lajstrom.yaml:ro
+    ports:
+      - "127.0.0.1:${LAJSTROM_HA_A_PORT:-8091}:8080"
+    networks:
+      ha: {ipv4_address: 172.31.226.11}
+    depends_on:
+      ha-postgres:
+        condition: service_healthy
+      ha-distribution:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck
+      # The image has no shell: the binary asks its own /-/readyz.
+      test: ["CMD", "/lajstrom", "healthcheck", "--url", "http://127.0.0.1:8080"]
+    stop_grace_period: 15s # server.shutdownTimeout (10s) and some
+
+  lajstrom-b:
+    <<: *lajstrom-ha
+    ports:
+      - "127.0.0.1:${LAJSTROM_HA_B_PORT:-8092}:8080"
+    networks:
+      ha: {ipv4_address: 172.31.226.12}
+
+  ha-nginx:
+    profiles: [ha]
+    # nginx 1.30.6 on Alpine, the version deploy/nginx/lajstrom.conf was tried with.
+    # sha256:583b7f2fce1cdb8da5ad5c39ebd3c33b98b87d493190e548bdee1fa8c619c311
+    image: nginx:1.30.6-alpine
+    # deploy/nginx/lajstrom.conf through ha/nginx.sed, which holds every difference.
+    command:
+      - /bin/sh
+      - -c
+      - sed -f /etc/lajstrom/nginx.sed /etc/lajstrom/lajstrom.conf >/etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'
+    volumes:
+      - ../nginx/lajstrom.conf:/etc/lajstrom/lajstrom.conf:ro
+      - ./ha/nginx.sed:/etc/lajstrom/nginx.sed:ro
+    ports:
+      - "127.0.0.1:${LAJSTROM_HA_PORT:-8090}:80"
+    networks:
+      ha: {ipv4_address: 172.31.226.10}
+    depends_on:
+      lajstrom-a:
+        condition: service_healthy
+      lajstrom-b:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1/-/readyz"]
+
   postgres:
     # PostgreSQL 17.11 on Alpine.
     # sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
@@ -282,3 +385,11 @@ volumes:
   gitlab-data:
   gitlab-db-data:
   gitlab-postgres-data:
+  ha-postgres-data:
+  ha-distribution-data:
+
+networks:
+  ha:
+    ipam:
+      config:
+        - subnet: 172.31.226.0/24

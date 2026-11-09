@@ -1,0 +1,41 @@
+# The configuration of both replicas of the ha profile (deploy/compose/compose.yaml,
+# docs/dev-stack.md): one Postgres and one distribution of the profile's own, nginx in front.
+# compose.yaml sets LAJSTROM_SERVER_EXTERNAL_URL from the edge's port and the master key.
+# For development only, as the rest of the dev stack.
+
+server:
+  listen: ":8080"
+  externalURL: "http://localhost:8090" # the edge, ha-nginx; LAJSTROM_SERVER_EXTERNAL_URL follows LAJSTROM_HA_PORT
+  insecureHTTP: true                   # an http externalURL on loopback: the dev stack
+  shutdownTimeout: 10s                 # less than the stop_grace_period of compose.yaml
+  metricsListen: ""
+  trustedProxies: ["172.31.226.10/32"] # ha-nginx, at its fixed address on the network ha
+
+log:
+  level: info
+  format: text                         # as test/e2e/run.sh: the scenarios read it
+
+database:
+  driver: postgres
+  dsn: "postgres://lajstrom:lajstrom@ha-postgres:5432/lajstrom?sslmode=disable"
+
+registries:
+  - name: local
+    type: generic
+    url: "http://ha-distribution:5000"   # no referrers API: referrers through the sha256-<digest> tag schema
+
+reconcile:
+  interval: 0s
+
+keys:
+  masterKeyEnv: LAJSTROM_MASTER_KEY
+
+auth:
+  anonymousRead: true                  # a repo's own anonymousRead decides
+
+# The repos of test/e2e/run.sh, so that its scenarios run against the edge as well.
+repos:
+  - {name: scratch, format: raw, registry: local}
+  - {name: ubuntu, format: apt, registry: local}
+  - {name: e2e, format: apt, registry: local}
+  - {name: e2e, format: pypi, registry: local}

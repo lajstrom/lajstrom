@@ -1,0 +1,7 @@
+# The build context of deploy/compose/ha/Dockerfile is the root of the checkout: only what
+# go build ./cmd/lajstrom reads goes in.
+*
+!go.mod
+!go.sum
+!cmd
+!internal
