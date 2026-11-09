@@ -3,6 +3,12 @@
 What running Lajstrom asks of an operator beyond the [configuration](configuration.md). The
 dev stack is in [dev-stack.md](dev-stack.md).
 
+## Deployment
+
+Lajstrom runs behind an edge that terminates TLS: [reverse-proxy.md](reverse-proxy.md) has what
+the edge must do (`server.externalURL`, uploads, forwarded headers, timeouts) and the rate limits
+that belong there, with an nginx and a Caddy configuration.
+
 ## Users
 
 Users live in the index database, not in the configuration file; [auth.md](auth.md) has the

@@ -1,0 +1,17 @@
+# Caddy in front of Lajstrom (docs/reverse-proxy.md). Caddy gets and renews the certificate of
+# the host itself (automatic HTTPS), passes X-Forwarded-For and X-Forwarded-Proto, takes request
+# bodies of any size without buffering them, and leaves Location and WWW-Authenticate alone.
+# Tried with Caddy 2.11.9; replace art.example.com and the upstream address.
+art.example.com {
+	reverse_proxy lajstrom:8080 {
+		# Every response streamed as it comes, not buffered: blobs are gigabytes.
+		flush_interval -1
+		# Health of each upstream, for more than one replica.
+		health_uri /-/readyz
+		health_interval 10s
+		# Idle upstream connections closed before Lajstrom closes them (120 s).
+		transport http {
+			keepalive 60s
+		}
+	}
+}
