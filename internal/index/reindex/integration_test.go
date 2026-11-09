@@ -9,7 +9,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
+	"fmt"
 	"os"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -195,4 +199,140 @@ func manifestSize(ctx context.Context, t *testing.T, prov provider.Provider, pub
 	desc, err := rr.Resolve(ctx, pub.Tag)
 	must(t, err)
 	return desc.Size
+}
+
+// TestScale is the last criterion of #29 and N-06: LAJSTROM_TEST_REINDEX_MANIFESTS raw manifests
+// (10000 for the criterion) in packages of 100 versions, pushed straight to the registry, then
+// a run that rebuilds them from an empty index, and a second run over known digests. It logs
+// both rates for docs/operations.md and, from 10 000 manifests on, fails a rebuild slower than
+// 12 ms a manifest (10 000 in two minutes). The manifests are deleted at the end where the
+// registry deletes manifests.
+func TestScale(t *testing.T) {
+	addr, n := os.Getenv("LAJSTROM_TEST_REGISTRY"), 0
+	if s := os.Getenv("LAJSTROM_TEST_REINDEX_MANIFESTS"); s != "" {
+		var err error
+		if n, err = strconv.Atoi(s); err != nil || n < 1 {
+			t.Fatalf("LAJSTROM_TEST_REINDEX_MANIFESTS=%q is not a positive number", s)
+		}
+	}
+	if addr == "" || n == 0 {
+		t.Skip("set LAJSTROM_TEST_REGISTRY=host:port and LAJSTROM_TEST_REINDEX_MANIFESTS=10000")
+	}
+	ctx := t.Context()
+	prov, err := generic.New(config.Registry{Name: "local", Type: generic.Type, URL: "http://" + addr,
+		Prefix: os.Getenv("LAJSTROM_TEST_REGISTRY_PREFIX")}, slog.New(slog.DiscardHandler))
+	must(t, err)
+	caps, err := prov.Capabilities(ctx)
+	must(t, err)
+	e := newEnv(t)
+	suffix := make([]byte, 4)
+	_, _ = rand.Read(suffix)
+	e.repo = e.newRepo(t, "raw", "scale-"+hex.EncodeToString(suffix))
+	e.repo.Prefix = ""
+	must(t, e.st.UpdateRepo(ctx, &e.repo))
+	plugins := func(name string) (format.Plugin, bool) { return raw.Plugin{}, name == raw.Name }
+	e.pipe = ingest.New(ingest.Options{Providers: provider.Map{"local": prov}, Index: e.st, Plugins: plugins,
+		Log: slog.New(slog.DiscardHandler)})
+	e.w = reindex.New(reindex.Options{Index: e.st, Providers: provider.Map{"local": prov}, Inspector: e.pipe,
+		Log: slog.New(slog.DiscardHandler)})
+
+	began := time.Now()
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 32)
+	failed := atomic.Int64{}
+	for i := range n {
+		sem <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-sem }()
+			path := fmt.Sprintf("pkg-%03d/file.bin", i/100)
+			if err := pushRaw(ctx, prov, e.repo, path, fmt.Sprintf("%s %d", e.repo.Name, i)); err != nil {
+				if failed.Add(1) == 1 {
+					t.Errorf("push %d: %v", i, err)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	if failed.Load() > 0 {
+		t.Fatalf("%d pushes failed", failed.Load())
+	}
+	t.Logf("pushed %d manifests in %s", n, time.Since(began).Round(time.Millisecond))
+	if caps.DeleteManifest {
+		t.Cleanup(func() { deleteAll(context.Background(), t, prov, "raw/"+e.repo.Name+"/") })
+	}
+
+	began = time.Now()
+	r := e.run(t, reindex.Request{Prune: true})
+	rebuild := time.Since(began)
+	if r.Added != n || len(r.Errors) != 0 {
+		t.Fatalf("rebuild: %d added of %d, %d errors (%+v)", r.Added, n, len(r.Errors), r.Errors[:min(3, len(r.Errors))])
+	}
+	began = time.Now()
+	r = e.run(t, reindex.Request{Prune: true})
+	again := time.Since(began)
+	if r.Unchanged != n {
+		t.Errorf("second run: %d unchanged of %d", r.Unchanged, n)
+	}
+	t.Logf("rebuild of %d manifests: %s (%.0f/s); a run over known digests: %s (%.0f/s)", n,
+		rebuild.Round(time.Millisecond), float64(n)/rebuild.Seconds(), again.Round(time.Millisecond), float64(n)/again.Seconds())
+	if n >= 10000 && rebuild > time.Duration(n)*12*time.Millisecond {
+		t.Errorf("rebuild of %d manifests took %s, more than 12 ms a manifest", n, rebuild)
+	}
+}
+
+// pushRaw pushes the raw manifest of content at path straight to the registry.
+func pushRaw(ctx context.Context, prov provider.Provider, repo index.Repo, path, content string) error {
+	built, err := raw.Plugin{}.Build(ctx, repo, rawUpload(path, content))
+	if err != nil {
+		return err
+	}
+	rr, err := prov.Repository(ctx, built.RepoPath)
+	if err != nil {
+		return err
+	}
+	for _, b := range built.Blobs {
+		if ok, err := rr.Exists(ctx, b.Descriptor); err == nil && ok {
+			continue // the empty config, pushed by another version of the package
+		}
+		rc, err := b.Open(ctx)
+		if err != nil {
+			return err
+		}
+		err = rr.Push(ctx, b.Descriptor, rc)
+		_ = rc.Close()
+		if err != nil {
+			if ok, xerr := rr.Exists(ctx, b.Descriptor); xerr != nil || !ok { // not a concurrent push of the same blob
+				return err
+			}
+		}
+	}
+	b, d, err := profile.Encode(built.Manifest)
+	if err != nil {
+		return err
+	}
+	return rr.PushReference(ctx, ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: d, Size: int64(len(b))},
+		bytes.NewReader(b), built.Tag)
+}
+
+// deleteAll deletes every manifest under prefix, best effort.
+func deleteAll(ctx context.Context, t *testing.T, prov provider.Provider, prefix string) {
+	names, err := prov.ListRepositories(ctx, prefix)
+	if err != nil {
+		t.Logf("cleanup: %v", err)
+		return
+	}
+	for _, name := range names {
+		rr, err := prov.Repository(ctx, name)
+		if err != nil {
+			continue
+		}
+		_ = rr.Tags(ctx, "", func(tags []string) error {
+			for _, tag := range tags {
+				if desc, err := rr.Resolve(ctx, tag); err == nil {
+					_ = rr.Delete(ctx, desc)
+				}
+			}
+			return nil
+		})
+	}
 }

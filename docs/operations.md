@@ -305,6 +305,14 @@ could not be read or checked are errors in the report and do not change it. `--c
 (default 8) is how many manifests are read at once per registry. Progress is logged every 1 000
 manifests with the rate.
 
+How long it takes, measured with `TestScale` (`LAJSTROM_TEST_REINDEX_MANIFESTS=10000 make
+test-integration`) on the Zot of the dev stack, SQLite as the index, an Apple M4 Pro, 2026-11-09:
+10 000 raw manifests in 100 packages rebuild from an empty index in 6.1 s (about 1 650 a second),
+and a second run over the same digests takes 1.4 s (about 7 000 a second). A registry across a
+network is slower by its round trips: a rebuild costs a `HEAD`, a `GET` of the manifest and the
+blob reads of the format per manifest, a run over known digests one `HEAD`. Postgres has not
+been measured yet.
+
 A run takes the lock of its scope in the table `reindex_runs`: a second run of the same repo, or
 any run while every repo is being reindexed, is refused on every replica and in the CLI, with
 the replica and the time of the run that holds it. A run beats every 30 seconds; one whose
