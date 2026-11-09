@@ -25,6 +25,7 @@ server:
   pprof: false                        # /debug/pprof/ on the metrics listener
   stallTimeout: 1m                    # a body that moves no byte for this long is cut off; 0s: off
   maxConcurrentUploads: 0             # uploads at once per replica, the next one is 503; 0: no limit
+  trustedProxies: []                 # CIDRs of the edge whose X-Forwarded-For is believed; empty: the peer is the client
 
 log:
   level: info                         # debug | info | warn | error

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -77,6 +78,9 @@ type Options struct {
 	// /v2/token) may run at once; the next one is answered 503 (server.maxConcurrentUploads).
 	// Zero means no limit.
 	MaxUploads int
+	// TrustedProxies are the peers whose X-Forwarded-For names the client
+	// (server.trustedProxies, ADR 0011). Empty: the peer of the connection is the client.
+	TrustedProxies []netip.Prefix
 }
 
 // Server is the Lajstrom HTTP server. Create it with New and start it with Run.
@@ -124,7 +128,7 @@ func New(o Options) (*Server, error) {
 	s := &Server{opts: o, log: o.Log, mux: http.NewServeMux(), bound: make(chan struct{})}
 	s.baseCtx, s.abort = context.WithCancel(context.Background())
 	s.routes()
-	s.handler = s.track(s.recovery(requestID(s.accessLog(s.authenticate(s.limitUploads(s.stall(s.mux)))))))
+	s.handler = s.track(s.recovery(requestID(s.clientAddress(s.accessLog(s.authenticate(s.limitUploads(s.stall(s.mux))))))))
 	s.srv = &http.Server{
 		Handler:     s.handler,
 		BaseContext: func(net.Listener) context.Context { return s.baseCtx },
@@ -209,6 +213,7 @@ func (s *Server) Run(ctx context.Context) error {
 	s.mu.Unlock()
 	close(s.bound)
 	s.log.Info("listening", "addr", ln.Addr().String(), "externalURL", s.opts.ExternalURL, "tls", s.srv.TLSConfig != nil)
+	s.logTrust()
 	if metricsLn != nil {
 		msrv := &http.Server{Handler: metrics.Handler(s.opts.Pprof), ReadHeaderTimeout: readHeaderTimeout,
 			ErrorLog: slog.NewLogLogger(s.log.Handler(), slog.LevelWarn)}

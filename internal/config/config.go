@@ -53,6 +53,9 @@ type Server struct {
 	// one replica runs at once; the next one is answered 503 with Retry-After. Zero means no
 	// limit; negative is invalid.
 	MaxConcurrentUploads int `yaml:"maxConcurrentUploads"`
+	// TrustedProxies are the peers whose X-Forwarded-For is believed, as CIDR prefixes; a bare
+	// address is one host (ADR 0011). Empty: the peer of the connection is the client.
+	TrustedProxies []string `yaml:"trustedProxies"`
 }
 
 // TLS is the certificate of the listener when Lajstrom terminates TLS itself. Both files are

@@ -131,6 +131,8 @@ func TestLoadErrors(t *testing.T) {
 		{name: "half a TLS pair", file: minimal + "  tls: {certFile: /etc/lajstrom/tls.crt}\n", want: []string{"server.tls: certFile and keyFile must be set together"}},
 		{name: "negative limits", file: minimal + "  stallTimeout: -1s\n  maxConcurrentUploads: -1\n",
 			want: []string{"server.stallTimeout: must not be negative", "server.maxConcurrentUploads: must not be negative"}},
+		{name: "trusted proxies", file: minimal + "  trustedProxies: [\"10.0.0.0/8\", \"proxy.local\", \"10.0.0.1/33\", \"::ffff:0:0/80\"]\n",
+			want: []string{`server.trustedProxies[1]: "proxy.local" is not an address`, `server.trustedProxies[2]: "10.0.0.1/33"`, `server.trustedProxies[3]`}},
 		{name: "keys", file: minimal + "keys: {algorithm: dsa, retireGrace: -1h}\n",
 			want: []string{`keys.algorithm: "dsa" is not ed25519 or rsa4096`, "keys.retireGrace: must not be negative"}},
 		{name: "empty keys.algorithm", file: minimal + "keys: {algorithm: \"\"}\n", want: []string{`keys.algorithm: "" is not ed25519 or rsa4096`}},
@@ -456,5 +458,30 @@ func TestExternalURL(t *testing.T) {
 				t.Errorf("the error shows the credentials: %v", err)
 			}
 		})
+	}
+}
+
+func TestTrustedPrefixes(t *testing.T) {
+	tests := []struct {
+		in   []string
+		want string
+	}{
+		{nil, "[]"},
+		{[]string{"10.0.0.0/8", "127.0.0.1", "::1", "2001:db8::/32"}, "[10.0.0.0/8 127.0.0.1/32 ::1/128 2001:db8::/32]"},
+		{[]string{"10.1.2.3/8", "0.0.0.0/0", "::/0"}, "[10.0.0.0/8 0.0.0.0/0 ::/0]"},
+		{[]string{"::ffff:10.0.0.0/104", "::ffff:192.0.2.7", "fe80::1%eth0"}, "[10.0.0.0/8 192.0.2.7/32 fe80::1/128]"},
+	}
+	for _, tt := range tests {
+		got, err := Server{TrustedProxies: tt.in}.TrustedPrefixes()
+		if err != nil {
+			t.Fatalf("TrustedPrefixes(%q): %v", tt.in, err)
+		}
+		if s := fmt.Sprint(got); s != tt.want {
+			t.Errorf("TrustedPrefixes(%q) = %s, want %s", tt.in, s, tt.want)
+		}
+	}
+	if _, err := (Server{TrustedProxies: []string{"10.0.0.0/8", "nope"}}).TrustedPrefixes(); err == nil ||
+		!strings.Contains(err.Error(), "server.trustedProxies[1]") {
+		t.Errorf("TrustedPrefixes of a bad entry: %v", err)
 	}
 }
