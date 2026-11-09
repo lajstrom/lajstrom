@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("MetAdAtA-Version:0\nNAme:0\nVersion:\n \r\r\n")
