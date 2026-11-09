@@ -316,8 +316,7 @@ func TestReindex(t *testing.T) {
 func TestNotInThisVersion(t *testing.T) {
 	f := newFixture(t, Options{})
 	for _, tt := range []struct{ method, target string }{
-		{http.MethodGet, "/api/v1/users"},
-		{http.MethodPost, "/api/v1/users/alice/password"},
+		{http.MethodPut, "/api/v1/users/alice/password"},
 		{http.MethodGet, "/api/v1/bindings"},
 		{http.MethodGet, "/api/v1/audit?repo=raw/scratch"},
 		{http.MethodPost, "/api/v1/whoami"},

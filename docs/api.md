@@ -1,6 +1,6 @@
 # Management API
 
-The management API is the REST interface to the control plane: repos and tokens now, users,
+The management API is the REST interface to the control plane: repos, users and tokens now,
 bindings and the audit log later. It lives under `/api/v1` on the same host as everything else
 ([http-routing.md](spec/http-routing.md) §1 and §4). The examples use the dev stack:
 
@@ -15,23 +15,26 @@ LAJSTROM=http://localhost:8080
   RFC 3339 in UTC.
 - **Authentication** is HTTP Basic with a local user's password or a token, or
   `Authorization: Bearer` with a personal access token, on every route ([auth.md](auth.md)):
-  a request with credentials runs as the user (`user:<name>`, for a personal access token
+  a request with credentials runs as the user (`user:<uid>`, for a personal access token
   too) or the deploy token (`token:<id>`, Basic `deploy:<token>`), one without as `anonymous`,
   and credentials that are refused are `401` at once. `GET /api/v1/whoami` tells who the
   caller is. **Authorization** is RBAC's ([rbac.md](spec/rbac.md)): the bindings of the
   principal decide, behind the scopes of its token ([auth.md](auth.md#what-a-token-may-do)).
   Reading a repo and listing it need `read` on it, changing, deleting and reindexing
-  it and managing its deploy tokens need `manage`, creating a repo needs the `admin` role, and
-  the tokens of a user are the user's or the admin's ([rbac.md](spec/rbac.md) §2 and §3). A
+  it and managing its deploy tokens need `manage`, creating a repo and managing users need the
+  `admin` role, and the tokens of a user are the user's or the admin's ([rbac.md](spec/rbac.md) §2 and §3). A
   denial does not tell whether a repo exists: `401` with a Basic challenge for a caller without
   credentials, `404` for one without any access to the repo, `403` for one that can read it but
   lacks the action. The list leaves out the repos the caller may not read.
 - **Audit.** Every change is one row of the audit log ([rbac.md](spec/rbac.md) §5): the
-  principal, the action (`repo.create`, `repo.update`, `repo.delete`, `token.create`,
+  principal, the action (`repo.create`, `repo.update`, `repo.delete`, `user.create`,
+  `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete`, `token.create`,
   `token.revoke`), the repo, the client address and details: the change, its source (`api`,
   `cli` or `config`) and the request id.
-- **Not in this version.** The users and bindings endpoints of
-  [http-routing.md](spec/http-routing.md) §4 come with #47, the audit log with #46. Until then
+- **Lists** that can be long are pages: `?limit=` (100 when absent, 1 to 1000) and `?cursor=`,
+  the `next` of the page before, an opaque string; the last page has no `next`.
+- **Not in this version.** The bindings endpoints of [http-routing.md](spec/http-routing.md) §4
+  come with #47, the audit log with #46. Until then
   they, and any other path under `/api/`, answer `404 NOT_FOUND`.
 
 ### Errors
@@ -207,6 +210,76 @@ lajstrom admin repo delete raw/scratch [--force]
 
 `create` prints the resource as JSON on one line, `list` a table (`--json`: the document of
 `GET /api/v1/repos`), `delete` nothing. An error goes to standard error with exit status 1.
+
+## Users
+
+Local users, managed by the admin role; what a user is, its uid and its name, is in
+[auth.md](auth.md#the-uid-and-the-name). `<user>` in a path is the user's name or its uid.
+
+### The resource
+
+```json
+{
+  "uid": "01a1c136-51a6-7883-a350-b1cf6000a23f",
+  "name": "alice",
+  "kind": "local",
+  "disabled": false,
+  "createdAt": "2026-11-09T16:48:44Z"
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `uid` | set by the server, a UUID v7; never changes |
+| `name` | 1 to 64 bytes of lowercase letters, digits, `.`, `_` and `-`, starting with a letter or a digit, not of the form of a uid, `deploy` reserved; unique among the live users |
+| `kind` | `local` in this version |
+| `disabled` | a disabled user's credentials and tokens are refused from the next request on |
+| `createdAt` | set by the server |
+
+A password is never answered.
+
+### List: `GET /api/v1/users`
+
+`{"users": […], "next": "…"}`: a page of the live users, ordered by name ([Conventions](#conventions)).
+
+### Create: `POST /api/v1/users`
+
+The body has `name`, `password` (8 to 1024 bytes) and optionally `admin`, `true` to bind the
+user to the admin role on `*/*` in the same transaction. `201` with the resource and `Location:
+/api/v1/users/<name>`; a name that a live user has is `409`.
+
+### Get: `GET /api/v1/users/<user>`
+
+The resource; `404` for a user that does not exist or was deleted.
+
+### Change: `PATCH /api/v1/users/<user>`
+
+The body has `name`, `disabled` or both. `disabled` changes first, then the name; each change
+is an audit event of its own, and a value the user has already is none. `200` with the resource.
+A new name that another live user has is `409`; disabling the last enabled user with an admin
+binding is `409`.
+
+### Password: `POST /api/v1/users/<user>/password`
+
+The body is `{"password": "…"}`; `204`. The old password fails from the next request on.
+
+### Delete: `DELETE /api/v1/users/<user>`
+
+`204`. The user's tokens are revoked and its bindings deleted; the row is kept, under the name
+`~<uid>`, so that the audit log still names it, and the name is free at once
+([auth.md](auth.md#the-uid-and-the-name)). Deleting the last enabled user with an admin binding
+is `409`. A deletion is not undone.
+
+### Who may
+
+The admin role only, for every endpoint of users, a user's own record included (the caller
+reads itself with `GET /api/v1/whoami`); anyone else is `403`, anonymous `401`. A personal access
+token with scopes and a deploy token never manage users.
+
+### `lajstrom admin user`
+
+The same, straight against the database of the configuration: `create`, `list`, `rename`,
+`disable`, `enable`, `set-password`, `delete` ([auth.md](auth.md#local-users-and-passwords)).
 
 ## Tokens
 

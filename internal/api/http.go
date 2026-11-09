@@ -24,6 +24,9 @@ type Options struct {
 	// Tokens is the service behind the tokens of a user and the deploy tokens of a repo; nil
 	// means one over the index, the audit writer, the clock and the logger of Repos.
 	Tokens *auth.Tokens
+	// Users is the service behind /api/v1/users; nil means one over the index, the audit
+	// writer, the clock and the logger of Repos.
+	Users *auth.Users
 	// Auth decides whether the request's principal may perform an action on a repo or on the
 	// system (auth.System): serve sets auth.RBAC. nil allows everything the credential allows,
 	// for the tests of the handlers.
@@ -51,24 +54,33 @@ const maxBody = 64 << 10
 //	GET    /api/v1/repos/{format}/{repo}/deploy-tokens       the deploy tokens of a repo
 //	POST   /api/v1/repos/{format}/{repo}/deploy-tokens       create one; the answer has its secret
 //	DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}  revoke one
+//	GET    /api/v1/users[?limit=&cursor=]              list the live users, a page at a time
+//	POST   /api/v1/users                               create a user
+//	GET    /api/v1/users/{user}                        one user, by name or uid
+//	PATCH  /api/v1/users/{user}                        change its name and disabled
+//	DELETE /api/v1/users/{user}                        delete it
+//	POST   /api/v1/users/{user}/password               set its password
 //	GET    /api/v1/users/{name}/tokens                 the personal access tokens of a user
 //	POST   /api/v1/users/{name}/tokens                 create one; the answer has its secret
 //	DELETE /api/v1/users/{name}/tokens/{id}            revoke one
 //	GET    /api/v1/whoami                              the request's principal
 //
-// Every other method and path under /api/ is a JSON NOT_FOUND: the users and bindings
-// endpoints of docs/spec/http-routing.md §4 come with #47, audit with #46. Answers are JSON;
+// Every other method and path under /api/ is a JSON NOT_FOUND: the bindings endpoints of
+// docs/spec/http-routing.md §4 come with #47, audit with #46. Answers are JSON;
 // errors are the envelope of §4. New panics when o.Repos is nil.
 func New(o Options) http.Handler {
 	if o.Repos == nil {
 		panic("api: New: nil Options.Repos")
 	}
-	h := &handler{repos: o.Repos, tokens: o.Tokens, auth: o.Auth, reindex: o.Reindex, log: o.Log}
+	h := &handler{repos: o.Repos, tokens: o.Tokens, users: o.Users, auth: o.Auth, reindex: o.Reindex, log: o.Log}
 	if h.log == nil {
 		h.log = slog.Default()
 	}
 	if h.tokens == nil {
 		h.tokens = &auth.Tokens{Index: o.Repos.Index, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log}
+	}
+	if h.users == nil {
+		h.users = &auth.Users{Index: o.Repos.Index, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log}
 	}
 	mux := http.NewServeMux()
 	mux.Handle("GET /api/v1/repos", h.serve(h.listRepos))
@@ -81,6 +93,12 @@ func New(o Options) http.Handler {
 	mux.Handle("GET /api/v1/repos/{format}/{repo}/deploy-tokens", h.serve(h.listDeployTokens))
 	mux.Handle("POST /api/v1/repos/{format}/{repo}/deploy-tokens", h.serve(h.createDeployToken))
 	mux.Handle("DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}", h.serve(h.revokeDeployToken))
+	mux.Handle("GET /api/v1/users", h.serve(h.listUsers))
+	mux.Handle("POST /api/v1/users", h.serve(h.createUser))
+	mux.Handle("GET /api/v1/users/{user}", h.serve(h.getUser))
+	mux.Handle("PATCH /api/v1/users/{user}", h.serve(h.updateUser))
+	mux.Handle("DELETE /api/v1/users/{user}", h.serve(h.deleteUser))
+	mux.Handle("POST /api/v1/users/{user}/password", h.serve(h.setPassword))
 	mux.Handle("GET /api/v1/users/{name}/tokens", h.serve(h.listTokens))
 	mux.Handle("POST /api/v1/users/{name}/tokens", h.serve(h.createToken))
 	mux.Handle("DELETE /api/v1/users/{name}/tokens/{id}", h.serve(h.revokeToken))
@@ -93,6 +111,7 @@ func New(o Options) http.Handler {
 type handler struct {
 	repos   *Repos
 	tokens  *auth.Tokens
+	users   *auth.Users
 	auth    auth.Authorizer
 	reindex Reindexer
 	log     *slog.Logger
@@ -225,7 +244,7 @@ func (h *handler) deleteRepo(_ http.ResponseWriter, r *http.Request) (int, any, 
 // notFound answers every other method and path under /api/.
 func (h *handler) notFound(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	return 0, nil, &clientError{
-		msg: fmt.Sprintf("%s %s is not in this version; users and bindings come with #47, audit with #46",
+		msg: fmt.Sprintf("%s %s is not in this version; bindings come with #47, audit with #46",
 			r.Method, r.URL.Path),
 		err: index.ErrNotFound,
 	}
