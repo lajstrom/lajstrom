@@ -39,7 +39,7 @@ neither backed up nor rebuilt.
 | Table | Columns | Notes |
 | --- | --- | --- |
 | `tag_claims` | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `package` text (the format's spelling, `lajstrom.name`), `tag` text, `digest` text (manifest digest being published), `principal` text, `claimed_at` ts | unique `(repo_id, package, tag)`; written by ingest only |
-| `reindex_runs` | `id`, `repo_id` → repos null (`ON DELETE CASCADE`; null: a run of every repo), `state` text (`running`, `done`, `failed`, `abandoned`), `trigger` text (`cli`, `api`, `reconcile`), `principal` text, `replica` text (host name and process id), `options` json (`prune`, `verify`), `started_at` ts, `heartbeat_at` ts, `finished_at` ts null, `report` json null (layout.md, `reindex.Report`), `error` text null | index `(COALESCE(repo_id, 0), started_at)`; written by reindex only |
+| `reindex_runs` | `id`, `repo_id` → repos null (`ON DELETE CASCADE`; null: a run of every repo), `state` text (`running`, `done`, `failed`, `abandoned`), `source` text (`cli`, `api`, `reconcile`), `principal` text, `replica` text (host name and process id), `options` json (`prune`, `verify`), `started_at` ts, `heartbeat_at` ts, `finished_at` ts null, `report` json null (layout.md, `reindex.Report`), `error` text null | index `(COALESCE(repo_id, 0), started_at)`; written by reindex only |
 
 A `versions` row exists only after the registry accepted the manifest; the claim in
 `tag_claims` is the lock that serialises writers of one tag across replicas, and a claim older
@@ -50,9 +50,9 @@ A claim with the same digest is shared (two replicas publishing the same bytes);
 with another digest is a `409`. `ResetDerived` does not touch claims.
 
 A `reindex_runs` row in state `running` is the lock that keeps two runs of one repo apart across
-replicas and the CLI. Starting a run takes the migration lock (`pg_advisory_xact_lock` on
-Postgres, `BEGIN IMMEDIATE` on SQLite) and, under it, refuses a run when a running row
-overlaps it: a run of every repo overlaps every run, a run of one repo overlaps a run of every
+replicas and the CLI. Starting a run takes a transaction lock of its own
+(`pg_advisory_xact_lock` with the reindex key on Postgres, the write lock of `BEGIN IMMEDIATE`
+on SQLite) and, under it, refuses a run when a running row overlaps it: a run of every repo overlaps every run, a run of one repo overlaps a run of every
 repo and a run of the same repo. A running row whose `heartbeat_at` is older than the stale bound
 (2 minutes; the run beats every 30 seconds) is closed as `abandoned` by the start that finds it,
 and the new run starts. `done` is a run that went to the end, whatever its report lists;
