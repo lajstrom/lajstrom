@@ -8,7 +8,8 @@
 #   - the same matrix on /v2, each principal with a token from /v2/token asked for pull, push and
 #     delete on the repo and on the one that does not exist: the token carries what the role
 #     allows, and the same empty actions on a repo the principal may not read and on one that does
-#     not exist (X-05); a manifest DELETE that passes the authorization is 405 until #61;
+#     not exist (X-05); a manifest DELETE that passes the authorization reaches the delete (#61),
+#     404 MANIFEST_UNKNOWN for a digest that names nothing;
 #   - oras: the reader's oras push is refused, the writer's goes, and the file is on the frontend;
 #   - a deploy token with read and write on the repo: PUT 201 and DELETE 403 there, 404 on
 #     another repo and on one that does not exist (S-04);
@@ -189,7 +190,8 @@ outsider   404 404 404 404
 EOF
 
 # S-02 on /v2: a token asked for everything on both repositories, then a pull (tags/list), a
-# push (an upload session, cancelled), a manifest DELETE (405 until #61 once authorized) and a
+# push (an upload session, cancelled), a manifest DELETE (of a digest that names nothing: 404
+# MANIFEST_UNKNOWN once authorized, #61) and a
 # pull of the repository that does not exist. The token's access on the repo that does not exist
 # is [] for everybody, and the same [] on the repo for a principal that may not read it.
 name="raw/$repo/seed.txt"
@@ -220,8 +222,8 @@ done <<'EOF'
 anonymous  []                        401/UNAUTHORIZED 401/UNAUTHORIZED 401/UNAUTHORIZED 401/UNAUTHORIZED
 reader     ["pull"]                  200              403/DENIED       403/DENIED       404/NAME_UNKNOWN
 writer     ["pull","push"]           200              202              403/DENIED       404/NAME_UNKNOWN
-maintainer ["pull","push","delete"]  200              202              405/UNSUPPORTED  404/NAME_UNKNOWN
-admin      ["pull","push","delete"]  200              202              405/UNSUPPORTED  404/NAME_UNKNOWN
+maintainer ["pull","push","delete"]  200              202              404/MANIFEST_UNKNOWN 404/NAME_UNKNOWN
+admin      ["pull","push","delete"]  200              202              404/MANIFEST_UNKNOWN 404/NAME_UNKNOWN
 outsider   []                        404/NAME_UNKNOWN 404/NAME_UNKNOWN 404/NAME_UNKNOWN 404/NAME_UNKNOWN
 EOF
 

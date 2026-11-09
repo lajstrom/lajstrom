@@ -4,7 +4,7 @@
 # GET /v2/, oras login, oras push of a file to a raw repo with the raw profile, the same manifest
 # again (201, the same digest), another manifest under the tag (409 TAG_INVALID naming the
 # first), oras pull and the bytes, oras repo tags, oras manifest fetch, the raw frontend serving
-# the pushed file, then DELETE and a 404.
+# the pushed file, then oras manifest delete through the facade (#61) and a 404.
 #
 #   test/e2e/oras.sh [<base url> [<raw repo>]]     default: http://localhost:8080 scratch
 #
@@ -115,9 +115,13 @@ assert_status 200 -K "$E2E_CURLRC" -o "$work/get" "$base/raw/$repo/$path"
 cmp -s "$work/$path" "$work/get" || fail "GET /raw/$repo/$path: not the pushed bytes"
 step "GET /raw/$repo/$path: 200, the pushed bytes"
 
-# Cleanup: DELETE through the raw frontend, then 404.
-assert_status 204 -K "$E2E_CURLRC" -X DELETE "$base/raw/$repo/$path"
+# #61, and the cleanup: oras manifest delete through the facade (202), then the version is gone
+# from the facade and from the raw frontend.
+oras manifest delete --force "$registry/$name:$version" >"$work/oras.log" 2>&1 ||
+	{ cat "$work/oras.log" >&2; fail "oras manifest delete $name:$version"; }
 pushed=""
+assert_status 404 -K "$E2E_CURLRC" -o /dev/null "$base/v2/$name/manifests/$digest"
+assert_eq "" "$(oras repo tags "$registry/$name")" "oras repo tags after the delete"
 assert_status 404 -K "$E2E_CURLRC" -o /dev/null "$base/raw/$repo/$path"
-step "cleanup: DELETE /raw/$repo/$path: 204; GET is 404 after it"
+step "oras manifest delete $registry/$name:$version: the manifest 404, no tag, GET /raw/$repo/$path 404"
 echo "PASS oras e2e against $base as $E2E_USER"
