@@ -318,7 +318,7 @@ func TestNotInThisVersion(t *testing.T) {
 	for _, tt := range []struct{ method, target string }{
 		{http.MethodPut, "/api/v1/users/alice/password"},
 		{http.MethodGet, "/api/v1/bindings/1"},
-		{http.MethodGet, "/api/v1/audit?repo=raw/scratch"},
+		{http.MethodDelete, "/api/v1/audit"},
 		{http.MethodPost, "/api/v1/whoami"},
 		{http.MethodGet, "/api/v1/users/alice/tokens/1"},
 		{http.MethodPut, "/api/v1/repos"},
@@ -327,7 +327,7 @@ func TestNotInThisVersion(t *testing.T) {
 	} {
 		t.Run(tt.method+" "+tt.target, func(t *testing.T) {
 			wantError(t, f.do(tt.method, tt.target, "", auth.Principal{}), http.StatusNotFound, codeNotFound,
-				"is not in this version", "#46")
+				"is not an endpoint of this version")
 		})
 	}
 }

@@ -69,10 +69,10 @@ const maxBody = 64 << 10
 //	GET    /api/v1/bindings[?principal=&limit=&cursor=]  list the bindings, a page at a time
 //	POST   /api/v1/bindings                            create a binding
 //	DELETE /api/v1/bindings/{id}                       delete one
+//	GET    /api/v1/audit[?repo=&principal=&action=&since=&until=&limit=&cursor=]  the audit log, newest first
 //	GET    /api/v1/whoami                              the request's principal
 //
-// Every other method and path under /api/ is a JSON NOT_FOUND: the audit endpoint of
-// docs/spec/http-routing.md §4 comes with #46. Answers are JSON;
+// Every other method and path under /api/ is a JSON NOT_FOUND. Answers are JSON;
 // errors are the envelope of §4. New panics when o.Repos is nil.
 func New(o Options) http.Handler {
 	if o.Repos == nil {
@@ -114,6 +114,7 @@ func New(o Options) http.Handler {
 	mux.Handle("GET /api/v1/bindings", h.serve(h.listBindings))
 	mux.Handle("POST /api/v1/bindings", h.serve(h.createBinding))
 	mux.Handle("DELETE /api/v1/bindings/{id}", h.serve(h.deleteBinding))
+	mux.Handle("GET /api/v1/audit", h.serve(h.listAudit))
 	mux.Handle("GET /api/v1/whoami", h.serve(h.whoami))
 	mux.Handle("/api/", h.serve(h.notFound))
 	return mux
@@ -257,7 +258,7 @@ func (h *handler) deleteRepo(_ http.ResponseWriter, r *http.Request) (int, any, 
 // notFound answers every other method and path under /api/.
 func (h *handler) notFound(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	return 0, nil, &clientError{
-		msg: fmt.Sprintf("%s %s is not in this version; audit comes with #46",
+		msg: fmt.Sprintf("%s %s is not an endpoint of this version (docs/api.md)",
 			r.Method, r.URL.Path),
 		err: index.ErrNotFound,
 	}
