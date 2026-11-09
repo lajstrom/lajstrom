@@ -17,8 +17,8 @@
 # is ghcr.io/sigstore/cosign/cosign:v3.1.4 in docker with --network host, with HTTPS_PROXY set to
 # a closed port: nothing reaches the public Sigstore (Rekor, Fulcio, TUF). oras is the oras on
 # PATH, else ghcr.io/oras-project/oras:v1.3.6. The file is at a path of its own for the run,
-# deleted at the end; its signatures stay in the backend, which keeps the referrers of a deleted
-# manifest. It needs curl, jq and docker.
+# deleted at the end with its signatures (#61): then no referrer, no sha256-<hex> tag and no
+# manifest is left, and the audit row counts the signatures. It needs curl, jq and docker.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -170,4 +170,15 @@ step "a reader of raw/$repo: cosign verify passes, cosign sign is DENIED"
 assert_status 204 -K "$E2E_CURLRC" -X DELETE "$base/raw/$repo/$path"
 pushed=""
 step "DELETE /raw/$repo/$path: 204"
+
+# #61: the delete took the signatures first. The referrers API lists none, no sha256-<hex> tag is
+# left (the tag-schema index, cosign's legacy .sig), and the audit row counts both signatures.
+assert_status 200 -K "$E2E_CURLRC" "$base/v2/$name/referrers/$digest"
+assert_eq "0" "$(jq '.manifests | length' <<<"$E2E_BODY")" "the referrers after the delete"
+for ref in "$digest" "$signature" "sha256-$hex" "sha256-$hex.sig"; do
+	assert_status 404 -K "$E2E_CURLRC" -o /dev/null "$base/v2/$name/manifests/$ref"
+done
+assert_status 200 -K "$E2E_CURLRC" --globoff "$base/api/v1/audit?action=delete&repo=raw/$repo&limit=1"
+assert_eq "$digest 2" "$(jq -r '.events[0] | "\(.digest) \(.details.referrers)"' <<<"$E2E_BODY")" "the audit row of the delete"
+step "after the delete: no referrers, no manifest under $digest, sha256-${hex:0:12}… or its .sig; the audit row counts 2 referrers"
 echo "PASS cosign e2e against $base/v2/raw/$repo/"

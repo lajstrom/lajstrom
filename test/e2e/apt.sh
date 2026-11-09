@@ -18,7 +18,9 @@
 #     file: source: apt-get update fails, and its own "Hash Sum mismatch" error is printed, as a
 #     broken Release from the server would make the steps above fail with it;
 #   - the same bytes again (201, the same digest); other bytes under the same name, version and
-#     architecture in the same suite (409, the tag) and in another suite (409, the pool file name).
+#     architecture in the same suite (409, the tag) and in another suite (409, the pool file name);
+#   - both versions deleted through DELETE /api/v1/repos/apt/<repo>/packages/<name>/versions/<v>
+#     (#61): the next Packages and apt-get update have neither.
 #
 #   test/e2e/apt.sh [<base url> [<repo>]]     default: http://localhost:8080 ubuntu
 #
@@ -28,8 +30,9 @@
 # configuration file, oras logs in with them, and apt-get has them in /etc/apt/auth.conf.d. The
 # server must have auth.anonymousRead: true (run.sh sets it), else the anonymous step fails and
 # says so; on exit the repo's anonymousRead is set back to what it was. The packages are named
-# after the run, so the script can run again against the same repo; apt versions cannot be
-# deleted yet, so they stay. With $LAJSTROM_SERVER_LOG, the server's log file (run.sh sets it),
+# after the run, so the script can run again against the same repo; the last step deletes them
+# through the API (#61), which needs delete on the repo too, and a run that fails before it
+# leaves them. With $LAJSTROM_SERVER_LOG, the server's log file (run.sh sets it),
 # the script reads in its access log how apt fetched the Packages (by-hash or by name) and as
 # whom; without it those checks are left out and the steps say so.
 #
@@ -359,4 +362,27 @@ expect "PUT other bytes to noble status ($(cat "$work/body"))" 409 "$status"
 grep -qF "pool file name ${one}_${version}_amd64.deb is held by version $version in jammy/main" "$work/body" ||
 	fail "the 409 does not name the pool file name: $(cat "$work/body")"
 ok "PUT of other bytes as $one $version amd64 to noble/main: 409, $(tr -d '\n' <"$work/body")"
+
+# #61: both versions deleted through the API are gone from the next Packages and from apt.
+for p in "$one" "$two"; do
+	status="$(curl -sS -K "$E2E_CURLRC" -o "$work/body" -w '%{http_code}' -X DELETE \
+		"$base/api/v1/repos/apt/$repo/packages/$p/versions/$version")"
+	expect "DELETE of $p $version status ($(cat "$work/body"))" 204 "$status"
+done
+# A suite left without versions is 404 (http-routing.md §3), as on a server of its own (run.sh).
+status="$(curl -sS -K "$E2E_CURLRC" -o "$work/Packages.after" -w '%{http_code}' "$base/apt/$repo/dists/jammy/main/binary-amd64/Packages")"
+case "$status" in
+200) if grep -qE "^Package: ($one|$two)\$" "$work/Packages.after"; then fail "the Packages lists $one or $two after the delete"; fi
+	after="the Packages lists neither" ;;
+404) after="jammy has no version left: its Packages is 404" ;;
+*) fail "GET of the Packages after the delete: $status" ;;
+esac
+in_client gone.log "
+	apt-get purge -y $one $two
+	rm -rf /var/lib/apt/lists/* /etc/apt/sources.list.d/*
+	echo 'deb [$source_opts] $base/apt/$repo jammy main' > /etc/apt/sources.list.d/$repo.list
+	apt-get update || echo 'apt-get update failed'
+	if apt-cache show $one $two; then echo 'still there'; exit 1; fi" ||
+	{ cat "$work/gone.log" >&2; fail "apt-get after the delete still has $one or $two"; }
+ok "DELETE /api/v1/repos/apt/$repo/packages/{$one,$two}/versions/$version: 204; $after; purged, apt-get update, apt-cache show finds neither"
 echo "PASS apt e2e against $base/apt/$repo/"

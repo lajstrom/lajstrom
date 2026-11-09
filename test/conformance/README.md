@@ -23,7 +23,7 @@ The defaults are those of issue #24:
 | `OCI_NAMESPACE` | `oci/conformance/a` |
 | `OCI_CROSSMOUNT_NAMESPACE` | `oci/conformance/b` |
 | `OCI_TEST_PULL`, `OCI_TEST_PUSH`, `OCI_TEST_CONTENT_DISCOVERY` | `1` |
-| `OCI_TEST_CONTENT_MANAGEMENT` | `0` (deletes come with #61) |
+| `OCI_TEST_CONTENT_MANAGEMENT` | `0`: not measured since #61, where blob `DELETE` stays `405` and a tag `DELETE` deletes the manifest it names |
 | `OCI_HIDE_SKIPPED_WORKFLOWS` | `1` |
 | `SPEC_VERSION` | `v1.1.1`, the tag of the suite |
 | `CONFORMANCE_DIR` | `~/.cache/lajstrom/conformance`: the clone and the built `conformance.test` |
