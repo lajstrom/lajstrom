@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"strings"
 	"sync"
@@ -85,6 +86,9 @@ type Authenticator struct {
 	// logins counts the failed password verifications per account (accountKey), addresses
 	// per client address, and tokens the requests to the token endpoint per client address.
 	logins, addresses, tokens *throttle
+	// addressLocks and accountLocks serialize the verifications of an address and of an
+	// account (lockLogin).
+	addressLocks, accountLocks [loginLocks]sync.Mutex
 }
 
 // cacheKey is sha256(username ‖ 0x00 ‖ secret).
@@ -186,8 +190,8 @@ func (a *Authenticator) authenticatePassword(ctx context.Context, username, secr
 		return Principal{}, a.refuse(ctx, username, "malformed password")
 	}
 	addr := throttleAddress(ctx)
-	if wait := a.addresses.wait(addr); wait > 0 { // "" has no failures
-		return Principal{}, &ThrottledError{Throttle: "address", RetryAfter: wait}
+	if err := a.throttledLogin(addr, "", nil); err != nil {
+		return Principal{}, err
 	}
 	u, err := a.index.GetUser(ctx, username)
 	switch {
@@ -197,12 +201,25 @@ func (a *Authenticator) authenticatePassword(ctx context.Context, username, secr
 		return Principal{}, fmt.Errorf("auth: authenticate %s: %w", username, err)
 	}
 	account := accountKey(u, username)
-	if wait := a.logins.wait(account); wait > 0 {
-		te := &ThrottledError{Throttle: "account", Account: "unknown", RetryAfter: wait}
-		if u != nil {
-			te.Account = account
-		}
-		return Principal{}, te
+	if err := a.throttledLogin("", account, u); err != nil {
+		return Principal{}, err
+	}
+	if unusable(u) == "" && a.cached(keyOf(username, secret), u.PasswordHash) {
+		return UserPrincipal(u), nil
+	}
+	return a.verifyPassword(ctx, u, username, secret, account, addr)
+}
+
+// verifyPassword verifies secret against the password of u, called username, and counts a
+// failure against account and addr. It holds the locks of addr and of account meanwhile
+// (lockLogin), so that tries in parallel are verified one after the other, and asks the
+// throttles again under them: a burst of wrong passwords gets the budget, not the budget plus
+// the burst. A right password that another try verified while this one waited is remembered by
+// then and costs nothing.
+func (a *Authenticator) verifyPassword(ctx context.Context, u *index.User, username, secret, account, addr string) (Principal, error) {
+	defer a.lockLogin(addr, account)()
+	if err := a.throttledLogin(addr, account, u); err != nil {
+		return Principal{}, err
 	}
 	if reason := unusable(u); reason != "" {
 		a.dummyVerify(secret)
@@ -223,6 +240,50 @@ func (a *Authenticator) authenticatePassword(ctx context.Context, username, secr
 	}
 	a.remember(key, u.PasswordHash)
 	return UserPrincipal(u), nil
+}
+
+// throttledLogin returns the *ThrottledError of the address addr, then of the account of
+// the user u (nil: unknown), or nil when neither is throttled. An empty addr or account is not
+// asked.
+func (a *Authenticator) throttledLogin(addr, account string, u *index.User) error {
+	if wait := a.addresses.wait(addr); addr != "" && wait > 0 {
+		return &ThrottledError{Throttle: "address", RetryAfter: wait}
+	}
+	if wait := a.logins.wait(account); account != "" && wait > 0 {
+		te := &ThrottledError{Throttle: "account", Account: "unknown", RetryAfter: wait}
+		if u != nil {
+			te.Account = account
+		}
+		return te
+	}
+	return nil
+}
+
+// loginLocks is the number of stripes of the locks of lockLogin: two keys may share one, which
+// costs a wait, never a wrong answer.
+const loginLocks = 256
+
+// lockLogin locks the stripe of the address addr, unless it is "", then the stripe of the
+// account, always in this order, and returns the function that unlocks both.
+func (a *Authenticator) lockLogin(addr, account string) func() {
+	stripe := func(locks *[loginLocks]sync.Mutex, key string) *sync.Mutex {
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(key)) // a hash.Hash never fails to write
+		return &locks[h.Sum32()%loginLocks]
+	}
+	var am *sync.Mutex
+	if addr != "" {
+		am = stripe(&a.addressLocks, addr)
+		am.Lock()
+	}
+	m := stripe(&a.accountLocks, account)
+	m.Lock()
+	return func() {
+		m.Unlock()
+		if am != nil {
+			am.Unlock()
+		}
+	}
 }
 
 // unusable returns why the password of the user u cannot be checked, "" when it can: none (u
