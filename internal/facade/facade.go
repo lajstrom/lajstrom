@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
@@ -37,9 +38,9 @@ type Options struct {
 	// <ExternalURL>/v2/token and the service its host. Empty: the request's Host over http://,
 	// the dev stack (token.Realm).
 	ExternalURL string
-	// Ingest stores a manifest pushed to a repo Lajstrom manages (every format but oci): the
-	// ingest pipeline. Required when such a repo is served; without it their manifest PUT is a
-	// 500.
+	// Ingest stores a manifest pushed to a repo Lajstrom manages (every format but oci), and a
+	// referrer pushed to any repo: the ingest pipeline. Required; without it those manifest PUTs
+	// are a 500.
 	Ingest Ingester
 	// MaxManifestSize is the largest manifest a PUT may carry, in bytes (server.maxManifestSize);
 	// zero or negative means 4 MiB, the least the distribution spec asks a registry to take.
@@ -51,11 +52,12 @@ type Options struct {
 	Now func() time.Time
 }
 
-// Ingester stores a manifest that a client pushed to a managed repo: *ingest.Pipeline. It is
-// the facade's own interface because format.Publisher, the frontends' view of the pipeline, has
-// Upload only.
+// Ingester stores a manifest that a client pushed to a managed repo, and a referrer pushed to
+// any repo: *ingest.Pipeline. It is the facade's own interface because format.Publisher, the
+// frontends' view of the pipeline, has Upload only.
 type Ingester interface {
 	Ingest(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, principal auth.Principal) (*ingest.Result, error)
+	PutReferrer(ctx context.Context, repo index.Repo, r ingest.Referrer, principal auth.Principal) (digest.Digest, error)
 }
 
 var _ Ingester = (*ingest.Pipeline)(nil)

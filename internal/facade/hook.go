@@ -31,7 +31,9 @@ const unknownArtifactType = "application/vnd.unknown.artifact.v1"
 // digest of the reference, "" for a tag.
 //
 //  1. The manifest must be an OCI image manifest (docs/spec/manifest-profile.md §1): an image
-//     index or a Docker manifest is MANIFEST_INVALID, naming what the profile wants.
+//     index or a Docker manifest is MANIFEST_INVALID, naming what the profile wants. A
+//     referrer, a signature or an SBOM of a version (profile.IsReferrer), goes to ingest's
+//     referrer path unindexed (putReferrer, manifest-profile.md §6) instead of the steps below.
 //  2. The package path is the <path> of the name, the tag the reference or, for a push by
 //     digest, the tag of the annotations (manifestTag).
 //  3. Every layer must be in the backend, else MANIFEST_BLOB_UNKNOWN (checkLayers).
@@ -50,11 +52,14 @@ func (h *handler) putManaged(w http.ResponseWriter, r *http.Request, t *target, 
 	if err != nil {
 		return err
 	}
+	if profile.IsReferrer(map[bool]string{true: ref}[refDigest == ""], m) {
+		return h.putReferrer(w, r, t, ref, refDigest, desc, body, m)
+	}
 	tag, err := manifestTag(ref, refDigest, m)
 	if err != nil {
 		return err
 	}
-	if err := h.checkLayers(ctx, t, m); err != nil {
+	if err := h.checkLayers(ctx, t, m.Layers); err != nil {
 		return err
 	}
 	res, err := h.o.Ingest.Ingest(ctx, t.repo, t.path, tag, m, body, auth.PrincipalFrom(ctx))
@@ -69,8 +74,7 @@ func (h *handler) putManaged(w http.ResponseWriter, r *http.Request, t *target, 
 	hdr.Set("Location", "/v2/"+t.name+"/manifests/"+loc)
 	hdr.Set("Docker-Content-Digest", res.Digest.String())
 	if m.Subject != nil {
-		// The referrers listing is #28; the header costs nothing, and clients that set a
-		// subject look for it.
+		// The facade serves the referrers API (referrers.go), whatever the backend has.
 		hdr.Set("OCI-Subject", m.Subject.Digest.String())
 	}
 	hdr.Set("Content-Length", "0")
@@ -117,19 +121,20 @@ func manifestTag(ref string, refDigest digest.Digest, m ocispec.Manifest) (strin
 	return profile.Tag(version, m.Annotations[profile.AnnotationVariant]), nil
 }
 
-// checkLayers answers MANIFEST_BLOB_UNKNOWN, naming the digest, when a layer of m is not in
-// the backend. Ingest checks the layers again (and pushes the empty config, which is
-// Lajstrom's own), but there a missing layer is ingest.ErrInvalid, MANIFEST_INVALID: the second
-// HEAD per layer is the price of the right code without a new error in the ingest contract. A
-// layer whose digest is malformed is left to the profile check of ingest, which names it. Each
-// digest is asked once, so a manifest that names one blob many times costs one HEAD.
-func (h *handler) checkLayers(ctx context.Context, t *target, m ocispec.Manifest) error {
+// checkLayers answers MANIFEST_BLOB_UNKNOWN, naming the digest, when a blob of blobs (the
+// layers of a manifest; the config too for a referrer) is not in the backend. Ingest checks the
+// layers again (and pushes the empty config, which is Lajstrom's own), but there a missing layer
+// is ingest.ErrInvalid, MANIFEST_INVALID: the second HEAD per layer is the price of the right
+// code without a new error in the ingest contract. A blob whose digest is malformed is left to
+// the profile check of ingest, or to the backend, which names it. Each digest is asked once, so
+// a manifest that names one blob many times costs one HEAD.
+func (h *handler) checkLayers(ctx context.Context, t *target, blobs []ocispec.Descriptor) error {
 	rr, err := h.backend(ctx, t)
 	if err != nil {
 		return err
 	}
-	seen := make(map[digest.Digest]bool, len(m.Layers))
-	for _, l := range m.Layers {
+	seen := make(map[digest.Digest]bool, len(blobs))
+	for _, l := range blobs {
 		if seen[l.Digest] || l.Digest.Validate() != nil {
 			continue
 		}
@@ -140,7 +145,7 @@ func (h *handler) checkLayers(ctx context.Context, t *target, m ocispec.Manifest
 			return fmt.Errorf("facade: layer %s of %s: %w", l.Digest, t.name, err)
 		case !ok:
 			return &apiError{status: http.StatusBadRequest, code: codeManifestBlobUnknown,
-				msg: fmt.Sprintf("manifest blob unknown to registry: layer %s was not uploaded to %s", l.Digest, t.name)}
+				msg: fmt.Sprintf("manifest blob unknown to registry: blob %s was not uploaded to %s", l.Digest, t.name)}
 		}
 	}
 	return nil
