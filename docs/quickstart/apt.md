@@ -442,28 +442,41 @@ sub   cv25519 2026-11-09 [E]
 ## The end-to-end script
 
 `test/e2e/apt.sh` runs sections 2 to 7 with checks against any Lajstrom with a writable apt repo:
-two packages named after the run, one uploaded with `PUT`, one pushed with oras, `apt-get update
-&& apt-get install` of both signed by `key.asc` (or `[trusted=yes]` when the server does not sign),
-`apt-get download` and the hashes, the repeat and the two `409`s. It runs as the user of
-`LAJSTROM_E2E_USER` and `LAJSTROM_E2E_PASSWORD`, which needs `write` on the repo, and gives apt
-the same credentials in `auth.conf`. It needs `curl`, `jq` and Docker, runs `admin deb metadata`
-from `bin/lajstrom` (or `go run`), and builds and installs in `ubuntu:24.04`, or in the image
-`APT_E2E_IMAGE` names (`ubuntu:22.04` and `debian:12` pass too):
+two packages named after the run, one uploaded with `PUT`, one pushed with oras; the repo's
+`anonymousRead` turned on through the API, `key.asc` and `apt-get update && apt-get install` of
+both without credentials, signed by `key.asc` (or `[trusted=yes]` when the server does not sign),
+and `apt-cache policy`; `anonymousRead` off, the anonymous `apt-get update` refused with a `401`,
+then the same with credentials in `auth.conf`, `apt-get download` and the hashes; a second
+`apt-get update` with `Acquire::By-Hash=no`; a copy of the suite with wrong hashes in its
+`Release`, which apt refuses with `Hash Sum mismatch`; the repeat and the two `409`s. It runs as
+the user of `LAJSTROM_E2E_USER` and `LAJSTROM_E2E_PASSWORD`, which needs `write` and `manage` on
+the repo, sets the repo's `anonymousRead` back as it was on exit, and needs the server's
+`auth.anonymousRead: true`. It needs `curl`, `jq` and Docker, runs `admin deb metadata` from
+`bin/lajstrom` (or `go run`), and builds and installs in `ubuntu:24.04`, or in the image
+`APT_E2E_IMAGE` names (`ubuntu:22.04` and `debian:12` pass too). Given the server's log file in
+`LAJSTROM_SERVER_LOG`, it also checks that apt asked for the `Packages` by-hash, and by name with
+`Acquire::By-Hash=no`:
 
 ```sh
 LAJSTROM_E2E_USER=admin LAJSTROM_E2E_PASSWORD="$LAJSTROM_ADMIN_PASSWORD" test/e2e/apt.sh http://localhost:8080 ubuntu
 ```
 
 ```text
-ok   dpkg-deb --build: e2e-put-20261109112301-31726_1.0.0-1_amd64.deb, e2e-oras-20261109112301-31726_1.0.0-1_amd64.deb, and other bytes under the first name
-ok   PUT e2e-put-20261109112301-31726_1.0.0-1_amd64.deb to jammy/main: 201 with sha256:a1ac37ba73748354f86f9878d171e1cdae09ccb1a9ab7068092e30e9a8c798fe, Location in the pool
-ok   oras push e2e-oras-20261109112301-31726_1.0.0-1_amd64.deb to jammy/main: Digest: sha256:3d13f3626fd9693bd046a08611ebd8d13aec107ab8049f848546b06c7f5104b6
-ok   GET key.asc: 200, the source is signed-by it
-ok   apt-get update && apt-get install e2e-put-20261109112301-31726 e2e-oras-20261109112301-31726 in ubuntu:24.04 [signed-by=/etc/apt/keyrings/ubuntu.asc], auth.conf login admin: both installed, their files there
-ok   apt-get download e2e-put-20261109112301-31726 e2e-oras-20261109112301-31726: sha256 83bc1a66cc38cfb77b6a14915b02825aa53b596e880d732413e6028779c2b9b1 and 9f233f4ac5a6741daa8913d226a5be200372fc4c4f846b581257cd91d1c66429, those of the uploaded files
-ok   PUT of the same bytes again: 201, the same digest sha256:a1ac37ba73748354f86f9878d171e1cdae09ccb1a9ab7068092e30e9a8c798fe
-ok   PUT of other bytes as e2e-put-20261109112301-31726 1.0.0-1 amd64 to jammy/main: 409, index: tag "1.0.0-1__jammy_2fmain_2famd64" already points at sha256:a1ac37ba73748354f86f9878d171e1cdae09ccb1a9ab7068092e30e9a8c798fe
-ok   PUT of other bytes as e2e-put-20261109112301-31726 1.0.0-1 amd64 to noble/main: 409, index: conflict: pool file name e2e-put-20261109112301-31726_1.0.0-1_amd64.deb is held by version 1.0.0-1 in jammy/main with another content; a Debian pool holds one content per file name
+ok   dpkg-deb --build: e2e-put-20261109161811-25900_1.0.0-1_amd64.deb, e2e-oras-20261109161811-25900_1.0.0-1_amd64.deb, and other bytes under the first name
+ok   PUT e2e-put-20261109161811-25900_1.0.0-1_amd64.deb to jammy/main: 201 with sha256:0bfafbc6d84febf324cc9e55f1cc8580930864964cbc3e1c9bff32193fb8c248, Location in the pool
+ok   oras push e2e-oras-20261109161811-25900_1.0.0-1_amd64.deb to jammy/main: Digest: sha256:b04c365e7520f077faf1cade1f953bf81e975468361d150c6cfbd570475658fa
+ok   PATCH /api/v1/repos/apt/ubuntu anonymousRead true (it was false): anonymous GET of dists/jammy/Release 200
+ok   anonymous GET key.asc: 200, the source is signed-by it
+ok   client container ubuntu:24.04 (linux/amd64): apt 2.8.3 (amd64)
+ok   anonymous apt-get update && apt-get install e2e-put-20261109161811-25900 e2e-oras-20261109161811-25900 [signed-by=/etc/apt/keyrings/ubuntu.asc]: both installed, their files there, apt-cache policy candidate 1.0.0-1 from jammy/main; how apt fetched the Packages is not checked without a server log
+ok   PATCH anonymousRead false: anonymous GET 401, anonymous apt-get update fails: E: Failed to fetch http://localhost:8080/apt/ubuntu/dists/jammy/InRelease  401  Unauthorized [IP: 127.0.0.1 8080]
+ok   apt-get update && apt-get install e2e-put-20261109161811-25900 e2e-oras-20261109161811-25900, auth.conf login admin: both installed again, apt-cache policy candidate 1.0.0-1; how apt fetched the Packages is not checked without a server log
+ok   apt-get download e2e-put-20261109161811-25900 e2e-oras-20261109161811-25900: sha256 712eb898f671bfc9dcf63b0a67ced4bcae991112d1b4b922c072dff52eb66190 and ef9f1405d75f13134e1d13b1c45945c475a9b4796af290e5db0edf7e5750109b, those of the uploaded files
+ok   apt-get -o Acquire::By-Hash=no update: apt-cache policy candidate 1.0.0-1; how apt fetched the Packages is not checked without a server log
+ok   a copy of the suite whose Release has every SHA256 one digit off: apt-get update fails: E: Failed to fetch file:/w/mirror/dists/jammy/main/binary-amd64/Packages.gz Hash Sum mismatch
+ok   PUT of the same bytes again: 201, the same digest sha256:0bfafbc6d84febf324cc9e55f1cc8580930864964cbc3e1c9bff32193fb8c248
+ok   PUT of other bytes as e2e-put-20261109161811-25900 1.0.0-1 amd64 to jammy/main: 409, index: tag "1.0.0-1__jammy_2fmain_2famd64" already points at sha256:0bfafbc6d84febf324cc9e55f1cc8580930864964cbc3e1c9bff32193fb8c248
+ok   PUT of other bytes as e2e-put-20261109161811-25900 1.0.0-1 amd64 to noble/main: 409, index: conflict: pool file name e2e-put-20261109161811-25900_1.0.0-1_amd64.deb is held by version 1.0.0-1 in jammy/main with another content; a Debian pool holds one content per file name
 PASS apt e2e against http://localhost:8080/apt/ubuntu/
 ```
 
