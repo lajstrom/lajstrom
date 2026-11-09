@@ -17,6 +17,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/provider"
+	"github.com/lajstrom/lajstrom/internal/server"
 )
 
 // Routes mounts the raw frontend below /raw/ (docs/spec/http-routing.md §3, raw):
@@ -317,9 +318,13 @@ func (h *handlers) delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// clientIP is the address of the client without the port. X-Forwarded-For, from trusted
-// proxies only, comes with #50.
+// clientIP is the address of the client without the port: the server's (server.ClientAddr,
+// which believes X-Forwarded-For from server.trustedProxies only, ADR 0011), or the peer of the
+// connection for a request that did not come through the server's middleware.
 func clientIP(r *http.Request) string {
+	if addr := server.ClientAddr(r.Context()); addr != "" {
+		return addr
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
