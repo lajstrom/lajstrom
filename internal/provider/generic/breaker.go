@@ -37,8 +37,8 @@ const (
 // would keep the breaker half-open for as long as it streams. A 4xx is an answer; a 429 and a
 // request whose caller went away count neither way.
 type breaker struct {
-	registry string
-	log      *slog.Logger
+	registry string       // the label of the metric
+	log      *slog.Logger // carries registry=<name>
 	now      func() time.Time
 
 	mu       sync.Mutex
@@ -99,7 +99,7 @@ func (b *breaker) done(ctx context.Context, trial bool, result int) {
 	switch {
 	case result > 0:
 		if b.state != breakerClosed {
-			b.log.InfoContext(ctx, "registry answers again: circuit closed", "registry", b.registry)
+			b.log.InfoContext(ctx, "registry answers again: circuit closed") // the logger names the registry
 			metrics.ProviderCircuitOpen.WithLabelValues(b.registry).Set(0)
 		}
 		b.state, b.failures = breakerClosed, 0
@@ -117,7 +117,7 @@ func (b *breaker) done(ctx context.Context, trial bool, result int) {
 func (b *breaker) open(ctx context.Context) {
 	if b.state == breakerClosed {
 		b.log.WarnContext(ctx, "registry fails: circuit open, its requests fail at once for a while",
-			"registry", b.registry, "failures", b.failures, "cooldown", breakerCooldown)
+			"failures", b.failures, "cooldown", breakerCooldown)
 		metrics.ProviderCircuitOpen.WithLabelValues(b.registry).Set(1)
 	}
 	b.state, b.opened, b.failures = breakerOpen, b.now(), 0
