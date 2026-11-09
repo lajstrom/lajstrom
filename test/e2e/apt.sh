@@ -279,6 +279,8 @@ ok "PATCH anonymousRead false: anonymous GET 401, anonymous apt-get update fails
 # A-04, A-07: with the credentials in /etc/apt/auth.conf.d: apt-get update by-hash, install of
 # both again (purged, the archives cleaned), download of both and their sha256, apt-cache policy.
 (umask 077 && printf 'machine %s login %s password %s\n' "$machine" "$E2E_USER" "$E2E_PASSWORD" >"$work/client/auth.conf")
+# The access log names a user by its uid (#182): whoami says which.
+principal="$(curl -fsS -K "$E2E_CURLRC" "$base/api/v1/whoami" | jq -r .principal)"
 from="$(mark)"
 in_client auth.log "
 	install -m 0600 /w/auth.conf /etc/apt/auth.conf.d/lajstrom.conf && rm /w/auth.conf
@@ -292,7 +294,7 @@ in_client auth.log "
 quiet auth.log
 grep -qxF "greeting: hello from $one / hello from $two" "$work/auth.log" || { cat "$work/auth.log" >&2; fail "the installed files"; }
 policy auth.log
-seen="$(fetched "$from" "user:$E2E_USER" by-hash)"
+seen="$(fetched "$from" "$principal" by-hash)"
 ok "apt-get update && apt-get install $one $two, auth.conf login $E2E_USER: both installed again, apt-cache policy candidate $version; $seen"
 for f in "$deb1" "$deb2"; do
 	got="$work/client/download/$(basename "$f")"
@@ -309,7 +311,7 @@ in_client nohash.log "
 	apt-cache policy $one $two" || { cat "$work/nohash.log" >&2; fail "apt-get -o Acquire::By-Hash=no update in $image"; }
 quiet nohash.log
 policy nohash.log
-seen="$(fetched "$from" "user:$E2E_USER" name)"
+seen="$(fetched "$from" "$principal" name)"
 ok "apt-get -o Acquire::By-Hash=no update: apt-cache policy candidate $version; $seen"
 
 # A broken Release: a copy of the suite (Release and the indexes it lists, the same bytes apt got
