@@ -77,7 +77,8 @@ func parseControl(b []byte) (Control, error) {
 		return Control{}, fmt.Errorf("%w: control is not UTF-8", format.ErrInvalid)
 	}
 	c := Control{index: map[string]int{}}
-	ended := 0 // the blank line that ended the paragraph; 0 while it goes on
+	ended := 0        // the blank line that ended the paragraph; 0 while it goes on
+	var more []string // the continuation lines of the last field, joined to its value at its end
 	for i, line := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
 		n := i + 1
 		if j := strings.IndexFunc(line, isControlChar); j >= 0 {
@@ -96,17 +97,29 @@ func parseControl(b []byte) (Control, error) {
 			if len(c.Fields) == 0 {
 				return Control{}, fmt.Errorf("%w: control line %d is a continuation line with no field before it", format.ErrInvalid, n)
 			}
-			c.Fields[len(c.Fields)-1].Value += "\n" + trimmed
+			more = append(more, trimmed)
 		default:
+			more = c.continueLast(more)
 			if err := c.add(n, trimmed); err != nil {
 				return Control{}, err
 			}
 		}
 	}
+	c.continueLast(more)
 	if len(c.Fields) == 0 {
 		return Control{}, fmt.Errorf("%w: control has no fields", format.ErrInvalid)
 	}
 	return c, nil
+}
+
+// continueLast appends the continuation lines to the value of the last field, each after a
+// "\n", and returns lines emptied for the next field. It joins them once: appending them one by
+// one copied the value per line, a time that grew with the square of the file.
+func (c *Control) continueLast(lines []string) []string {
+	if len(lines) > 0 {
+		c.Fields[len(c.Fields)-1].Value += "\n" + strings.Join(lines, "\n")
+	}
+	return lines[:0]
 }
 
 // add appends the field of line n, "Name: value".
