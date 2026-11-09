@@ -24,6 +24,18 @@ LDFLAGS := -X $(PKG)/internal/version.Version=$(VERSION) \
 	-X $(PKG)/internal/version.Commit=$(COMMIT) \
 	-X $(PKG)/internal/version.Date=$(DATE)
 
+# goreleaser for snapshot and release-check: the version of .github/workflows/release.yml, from
+# its image, which brings syft, cosign, docker and buildx. The checkout is mounted at its own
+# path (with the common git directory of a worktree), buildx builds on the host's Docker through
+# its socket, and dist/ is handed back to the caller's user at the end.
+GORELEASER_IMAGE ?= goreleaser/goreleaser:v2.20.0@sha256:19ca96ff782e521af4002ca42dd42021d360a04a8d2a06bb79f720a284c3fee1
+GIT_COMMON_DIR   := $(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+GORELEASER_RUN    = docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+	-v '$(CURDIR):$(CURDIR)' -w '$(CURDIR)' \
+	$(if $(filter-out $(CURDIR)/%,$(GIT_COMMON_DIR)),-v '$(GIT_COMMON_DIR):$(GIT_COMMON_DIR)') \
+	-e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
+	--entrypoint sh $(GORELEASER_IMAGE) -c
+
 COMPOSE_FILE := deploy/compose/compose.yaml
 COMPOSE      := docker compose -f $(COMPOSE_FILE)
 # PROFILES adds the services of compose profiles to dev-up, dev-ps and dev-logs:
@@ -37,7 +49,7 @@ endif
 RUN_CONFIG   := $(firstword $(wildcard deploy/compose/lajstrom.yaml) deploy/compose/lajstrom.example.yaml)
 
 .PHONY: help build test vet lint api-lint vulncheck licenses fmt-check check \
-	dev-up dev-down dev-ps dev-logs test-integration e2e run clean
+	dev-up dev-down dev-ps dev-logs test-integration e2e run snapshot release-check clean
 
 help: ## List the targets
 	@echo "Usage: make <target>"
@@ -92,5 +104,12 @@ e2e: ## End-to-end scenarios with real clients against the dev stack's Zot (docs
 run: build ## Serve with deploy/compose/lajstrom.yaml, or the example when it does not exist
 	./$(BIN) serve --config $(RUN_CONFIG)
 
+snapshot: ## The release without publishing or signing: archives, checksums, SBOMs, cask in dist/, images in the local Docker
+	$(GORELEASER_RUN) 'goreleaser release --snapshot --clean --skip=publish,sign; rc=$$?; \
+		[ ! -d dist ] || chown -R $(shell id -u):$(shell id -g) dist; exit $$rc'
+
+release-check: ## Validate .goreleaser.yaml with the release's goreleaser
+	$(GORELEASER_RUN) 'goreleaser check'
+
 clean: ## Remove build output
-	rm -rf bin/
+	rm -rf bin/ dist/
