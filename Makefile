@@ -46,10 +46,22 @@ COMPOSE      := docker compose -f $(COMPOSE_FILE)
 ifdef PROFILES
 export COMPOSE_PROFILES := $(PROFILES)
 endif
+# The fuzz targets, <package>:<target>. make fuzz runs each for FUZZTIME, one after another; a
+# crasher stays in testdata/fuzz/<target>/ of its package (docs/testing.md).
+FUZZTIME     ?= 30s
+FUZZ_TARGETS ?= \
+	./internal/oci/profile:FuzzEscape \
+	./internal/oci/profile:FuzzUnescape \
+	./internal/oci/profile:FuzzValidate \
+	./internal/format/deb:FuzzParse \
+	./internal/format/deb:FuzzParseControl \
+	./internal/format/deb:FuzzParseAr \
+	./internal/format/pypi:FuzzWheelFilename \
+	./internal/format/maven:FuzzPOM
 # make run uses the local configuration when there is one, the example otherwise.
 RUN_CONFIG   := $(firstword $(wildcard deploy/compose/lajstrom.yaml) deploy/compose/lajstrom.example.yaml)
 
-.PHONY: help build test vet lint api-lint vulncheck licenses fmt-check check \
+.PHONY: help build test vet lint api-lint vulncheck licenses fmt-check check fuzz \
 	dev-up dev-down dev-ps dev-logs test-integration e2e load run snapshot release-check clean
 
 help: ## List the targets
@@ -82,6 +94,13 @@ fmt-check: ## Fail when gofmt would change a file
 	@files="$$(gofmt -l .)"; if [ -n "$$files" ]; then echo "gofmt -l reports:" >&2; echo "$$files" >&2; exit 1; fi
 
 check: fmt-check build vet test lint api-lint vulncheck licenses ## Everything CI runs, in CI's order
+
+fuzz: ## Run each fuzz target for FUZZTIME (30s) one after another; FUZZ_TARGETS='<package>:<target> …' picks some
+	@failed=; for t in $(FUZZ_TARGETS); do \
+		echo "== $${t##*:} ($${t%%:*}) for $(FUZZTIME)"; \
+		$(GO) test -run '^$$' -fuzz "^$${t##*:}\$$" -fuzztime $(FUZZTIME) $${t%%:*} || failed="$$failed $${t##*:}"; \
+	done; \
+	if [ -n "$$failed" ]; then echo "make fuzz: failed:$$failed" >&2; exit 1; fi
 
 dev-up: ## Start the dev stack (Zot, distribution, Postgres; PROFILES=s3 adds distribution on SeaweedFS, PROFILES=s3-minio on MinIO as the fallback, PROFILES=gitlab the GitLab registry, PROFILES=ha two replicas behind nginx) and wait until it is healthy
 	$(COMPOSE) up -d --wait

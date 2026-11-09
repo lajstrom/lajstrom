@@ -73,16 +73,28 @@ variables and what passes.
 
 ## Fuzz
 
-`FuzzEscape` and `FuzzValidate` (`internal/oci/profile`), `FuzzParse` and `FuzzControl`
-(`internal/format/deb`). `go test` runs their seed corpus with the unit tests; fuzz one for a
-while by hand:
+`FuzzEscape`, `FuzzUnescape` and `FuzzValidate` (`internal/oci/profile`), `FuzzParse`,
+`FuzzParseControl` and `FuzzParseAr` (`internal/format/deb`), `FuzzWheelFilename`
+(`internal/format/pypi`) and `FuzzPOM` (`internal/format/maven`). Each checks properties of
+what the parser accepts (round trips, idempotence), that what it refuses stays refused, and that
+what it allocates grows with the input (`testutil.Allocated`). `go test` runs their seed corpus
+with the unit tests; `make fuzz` fuzzes each for 30 s, one after another:
 
 ```sh
+make fuzz                                                    # every target, 30 s each
+make fuzz FUZZTIME=10m FUZZ_TARGETS=./internal/format/maven:FuzzPOM
 go test -run '^$' -fuzz '^FuzzEscape$' -fuzztime 30s ./internal/oci/profile/
 ```
 
-A crash leaves its input in `testdata/fuzz/<name>/`; commit it with the fix, it is a seed from
-then on.
+The seed corpus in `testdata/fuzz/<name>/` is built in process from the `testutil` fixtures;
+`TestFuzzCorpus` of each package writes it again:
+
+```sh
+LAJSTROM_FUZZ_CORPUS=write go test -run '^TestFuzzCorpus$' ./internal/...
+```
+
+A crash leaves its input in `testdata/fuzz/<name>/`; commit it with the fix and a regression
+test, it is a seed from then on.
 
 ## End-to-end
 
