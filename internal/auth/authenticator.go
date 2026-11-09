@@ -82,8 +82,9 @@ type Authenticator struct {
 	// touches remembers when the use of each token was last recorded.
 	touches *bounded[int64, time.Time]
 
-	// logins counts the failed password verifications per account (accountKey).
-	logins *throttle
+	// logins counts the failed password verifications per account (accountKey), addresses
+	// per client address, and tokens the requests to the token endpoint per client address.
+	logins, addresses, tokens *throttle
 }
 
 // cacheKey is sha256(username ‖ 0x00 ‖ secret).
@@ -123,6 +124,8 @@ func NewAuthenticator(o Options) *Authenticator {
 	}
 	a.touches = newBounded[int64, time.Time](a.size)
 	a.logins = newThrottle(LoginFailures, LoginWindow, a.now)
+	a.addresses = newThrottle(AddressFailures, LoginWindow, a.now)
+	a.tokens = newThrottle(TokenRequests, TokenWindow, a.now)
 	dummyHash() // now, so that the first unknown user does not pay for it
 	return a
 }
@@ -170,7 +173,9 @@ func (a *Authenticator) Authenticate(ctx context.Context, username, secret strin
 // failed login of the account. An account with LoginFailures of them in its window is refused
 // with a *ThrottledError before its secret is looked at, the right password too: the answer
 // tells nothing about the secret. A name that no user has is throttled by the name, alike, so
-// that the throttle does not tell whether a user exists either.
+// that the throttle does not tell whether a user exists either. The failures count against
+// the client address of ctx too (WithClientAddress), which with AddressFailures of them is
+// refused the same way, before the user is read.
 func (a *Authenticator) authenticatePassword(ctx context.Context, username, secret string) (Principal, error) {
 	if CheckName(username) != nil {
 		// No user has such a name: nothing about a user is told by refusing it at once. It is
@@ -179,6 +184,10 @@ func (a *Authenticator) authenticatePassword(ctx context.Context, username, secr
 	}
 	if secret == "" || len(secret) > MaxPasswordLen {
 		return Principal{}, a.refuse(ctx, username, "malformed password")
+	}
+	addr := throttleAddress(ctx)
+	if wait := a.addresses.wait(addr); wait > 0 { // "" has no failures
+		return Principal{}, &ThrottledError{Throttle: "address", RetryAfter: wait}
 	}
 	u, err := a.index.GetUser(ctx, username)
 	switch {
@@ -195,18 +204,9 @@ func (a *Authenticator) authenticatePassword(ctx context.Context, username, secr
 		}
 		return Principal{}, te
 	}
-	reason := ""
-	switch {
-	case u == nil:
-		reason = "unknown user"
-	case u.Disabled:
-		reason = "disabled"
-	case u.PasswordHash == "":
-		reason = "no password"
-	}
-	if reason != "" {
+	if reason := unusable(u); reason != "" {
 		a.dummyVerify(secret)
-		a.logins.add(account)
+		a.failed(account, addr)
 		return Principal{}, a.refuse(ctx, username, reason)
 	}
 	key := keyOf(username, secret)
@@ -218,11 +218,33 @@ func (a *Authenticator) authenticatePassword(ctx context.Context, username, secr
 	case err != nil:
 		return Principal{}, fmt.Errorf("auth: authenticate %s: the stored password hash: %w", username, err)
 	case !ok:
-		a.logins.add(account)
+		a.failed(account, addr)
 		return Principal{}, a.refuse(ctx, username, "wrong password")
 	}
 	a.remember(key, u.PasswordHash)
 	return UserPrincipal(u), nil
+}
+
+// unusable returns why the password of the user u cannot be checked, "" when it can: none (u
+// nil), disabled, without a password.
+func unusable(u *index.User) string {
+	switch {
+	case u == nil:
+		return "unknown user"
+	case u.Disabled:
+		return "disabled"
+	case u.PasswordHash == "":
+		return "no password"
+	}
+	return ""
+}
+
+// failed counts a failed login against the account and, unless it is "", the address.
+func (a *Authenticator) failed(account, addr string) {
+	a.logins.add(account)
+	if addr != "" {
+		a.addresses.add(addr)
+	}
 }
 
 // accountKey is the key of the throttle of failed logins of the user u, called username:

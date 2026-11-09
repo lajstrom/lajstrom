@@ -12,6 +12,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/auth/token"
+	"github.com/lajstrom/lajstrom/internal/metrics"
 )
 
 // basicChallenge is the WWW-Authenticate header of a 401 outside /v2/, and on /v2/token: clients
@@ -24,9 +25,10 @@ const tokenPath = "/v2/token"
 
 // Messages of the answers of the authentication middleware.
 const (
-	msgBadCredentials = "credentials are needed: the ones sent were refused"
-	msgAuthFailed     = "Internal Server Error"
-	msgThrottled      = "too many failed logins: try again after Retry-After seconds"
+	msgBadCredentials  = "credentials are needed: the ones sent were refused"
+	msgAuthFailed      = "Internal Server Error"
+	msgThrottled       = "too many failed logins: try again after Retry-After seconds"
+	msgTooManyRequests = "too many token requests: try again after Retry-After seconds"
 )
 
 // principalHolder carries the principal the authentication middleware settled on back to the
@@ -71,7 +73,8 @@ func HoldPrincipal(ctx context.Context, p auth.Principal) {
 //     its principal (HoldPrincipal).
 //
 // Every request also gets an evaluation scope (auth.WithEvaluationScope): the RBAC evaluator
-// reads the index's auth_version once per request, however many repos the request checks.
+// reads the index's auth_version once per request, however many repos the request checks. A
+// request to /v2/token is counted against its client address first (tokenThrottled).
 //
 // A nil Options.Authenticator authenticates nobody: every request is anonymous, as in the unit
 // tests of other packages.
@@ -81,6 +84,9 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(auth.WithEvaluationScope(r.Context()))
+		if s.tokenThrottled(w, r) {
+			return
+		}
 		scheme, value, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 		var (
 			p    auth.Principal
@@ -110,7 +116,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		case errors.Is(err, auth.ErrBadCredentials):
 			s.writeRefusal(w, r, http.StatusUnauthorized, msgBadCredentials)
 			return
-		case errors.As(err, &throttled):
+		case errors.As(err, &throttled): // a failed-login throttle: account or address
 			s.throttled(w, r, throttled, msgThrottled)
 			return
 		case err != nil:
@@ -136,10 +142,23 @@ func tokenBearer(path, secret string) bool {
 	return strings.HasPrefix(secret, auth.PATPrefix) || strings.HasPrefix(secret, auth.DeployPrefix)
 }
 
+// tokenThrottled answers 429 and reports true when r is a request to the token endpoint from a
+// client address that made too many (auth.Authenticator.AllowTokenRequest). It runs before
+// the credentials are checked, so that a flood of token requests costs no argon2id.
+func (s *Server) tokenThrottled(w http.ResponseWriter, r *http.Request) bool {
+	var te *auth.ThrottledError
+	if r.URL.Path != tokenPath || !errors.As(s.opts.Authenticator.AllowTokenRequest(r.Context()), &te) {
+		return false
+	}
+	s.throttled(w, r, te, msgTooManyRequests)
+	return true
+}
+
 // throttled answers a request that a throttle refused: 429 with Retry-After, in the format of
-// the route's family (writeRefusal), logged at info with the account, when there is one, and
-// the client address.
+// the route's family (writeRefusal), counted in lajstrom_auth_throttled_total and logged at
+// info with the account, when there is one, and the client address.
 func (s *Server) throttled(w http.ResponseWriter, r *http.Request, te *auth.ThrottledError, msg string) {
+	metrics.Throttled.WithLabelValues(te.Throttle).Inc()
 	attrs := []any{"throttle", te.Throttle}
 	if te.Account != "" {
 		attrs = append(attrs, "account", te.Account)

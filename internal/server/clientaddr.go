@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+
+	"github.com/lajstrom/lajstrom/internal/auth"
 )
 
 // client is where a request came from (ADR 0011): addr is the client's address, without a port,
@@ -26,7 +28,10 @@ func ClientAddr(ctx context.Context) string {
 
 // clientAddress resolves the client of each request once (resolveClient) and puts it in the
 // context, for the access log, the authentication and ClientAddr. No other code reads a
-// forwarded header.
+// forwarded header. With server.trustedProxies, the address counts in the per-address
+// throttles of internal/auth (auth.WithClientAddress); without, it does not: behind an edge
+// every client would share the edge's address, and one bucket for everyone is worse than none
+// (ADR 0011).
 func (s *Server) clientAddress(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, bad := resolveClient(r.RemoteAddr, r.Header.Values("X-Forwarded-For"), s.opts.TrustedProxies)
@@ -34,22 +39,28 @@ func (s *Server) clientAddress(next http.Handler) http.Handler {
 			s.log.DebugContext(r.Context(), "X-Forwarded-For has an entry that is not an address: the peer is the client",
 				"remoteAddr", r.RemoteAddr, "requestId", RequestID(r.Context()))
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), clientKey{}, c)))
+		ctx := context.WithValue(r.Context(), clientKey{}, c)
+		if len(s.opts.TrustedProxies) > 0 {
+			ctx = auth.WithClientAddress(ctx, c.addr)
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
 // logTrust says once, at startup, where the client address comes from.
 func (s *Server) logTrust() {
 	if len(s.opts.TrustedProxies) == 0 {
-		s.log.Info("server.trustedProxies is empty: X-Forwarded-For is ignored and the client address is the peer " +
-			"of the connection; behind an edge, the log records the edge's address")
+		s.log.Info("server.trustedProxies is empty: X-Forwarded-For is ignored, the client address is the peer " +
+			"of the connection, and the per-address throttle of failed logins and /v2/token is off; behind an edge, " +
+			"the log records the edge's address")
 		return
 	}
 	list := make([]string, len(s.opts.TrustedProxies))
 	for i, p := range s.opts.TrustedProxies {
 		list[i] = p.String()
 	}
-	s.log.Info("the client address is read from X-Forwarded-For when the peer is a trusted proxy", "trustedProxies", list)
+	s.log.Info("the client address is read from X-Forwarded-For when the peer is a trusted proxy, "+
+		"and the per-address throttle of failed logins and /v2/token is on", "trustedProxies", list)
 }
 
 // resolveClient returns the client of a request whose connection's peer is remoteAddr

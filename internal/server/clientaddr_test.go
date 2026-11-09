@@ -76,10 +76,12 @@ func TestClientAddress(t *testing.T) {
 		wantStart string
 	}{
 		{name: "no list", remote: "10.1.2.3:443", wantAddr: "10.1.2.3", wantLog: "10.1.2.3:443",
-			wantStart: "server.trustedProxies is empty: X-Forwarded-For is ignored and the client address is the peer of the connection; behind an edge, the log records the edge's address"},
+			wantStart: "server.trustedProxies is empty: X-Forwarded-For is ignored, the client address is the peer of the connection, " +
+				"and the per-address throttle of failed logins and /v2/token is off; behind an edge, the log records the edge's address"},
 		{name: "behind a trusted proxy", trusted: prefixes(t, "10.0.0.0/8"), remote: "10.1.2.3:443", wantAddr: "198.51.100.1",
 			wantLog: "198.51.100.1", wantProxy: "10.1.2.3:443",
-			wantStart: "the client address is read from X-Forwarded-For when the peer is a trusted proxy"},
+			wantStart: "the client address is read from X-Forwarded-For when the peer is a trusted proxy, " +
+				"and the per-address throttle of failed logins and /v2/token is on"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
