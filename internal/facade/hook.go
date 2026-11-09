@@ -154,6 +154,7 @@ func (h *handler) checkLayers(ctx context.Context, t *target, blobs []ocispec.De
 // ingestError is the error table of the manifest hook, the one place where the errors of
 // ingest become answers:
 //
+//	*http.MaxBytesError         413 SIZE_INVALID: a file above the repo's maxFileSize, named
 //	ingest.ErrInvalid           400 MANIFEST_INVALID, the rule that failed in detail
 //	*index.TagConflictError     409 TAG_INVALID, the digest the tag holds in the message and in
 //	                            detail.existing
@@ -166,8 +167,13 @@ func (h *handler) checkLayers(ctx context.Context, t *target, blobs []ocispec.De
 // The messages of ingest name annotations, rules, digests and OCI names, never a backend URL.
 // A manifest with oras's default artifactType gets the hint of the one it needs.
 func ingestError(t *target, m ocispec.Manifest, err error) error {
-	var conflict *index.TagConflictError
+	var (
+		conflict *index.TagConflictError
+		tooLarge *http.MaxBytesError
+	)
 	switch {
+	case errors.As(err, &tooLarge):
+		return &apiError{status: http.StatusRequestEntityTooLarge, code: codeSizeInvalid, msg: err.Error(), err: err}
 	case errors.Is(err, ingest.ErrInvalid):
 		msg := fmt.Sprintf("the manifest is not a valid %s artifact for %s", t.repo.Format, t.name)
 		if m.ArtifactType == unknownArtifactType {

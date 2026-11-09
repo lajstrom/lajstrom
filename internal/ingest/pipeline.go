@@ -56,7 +56,8 @@ type Options struct {
 	// Coordination). Zero, or negative, means 10 minutes (ingest.claimTTL).
 	ClaimTTL time.Duration
 	// SessionTimeout is how long a publication session lives after its last request; zero, or
-	// negative, means 30 minutes. A session whose time is up is dropped (format.Sessions).
+	// negative, means 30 minutes. A repo whose policy has maven.sessionTimeout uses that
+	// instead (docs/api.md). A session whose time is up is dropped (format.Sessions).
 	SessionTimeout time.Duration
 }
 
@@ -120,7 +121,8 @@ type Result struct {
 //  1. check the profile rules that hold for every format: artifactType selects the plugin of
 //     repo's format, config is the empty descriptor, the required annotations are present and
 //     agree with repo, the package path computed from the annotations (§4.1) equals pkgPath
-//     and the tag computed from them (§4.2) equals tag;
+//     and the tag computed from them (§4.2) equals tag; no file layer is larger than the
+//     repo policy's maxFileSize (the error also wraps an *http.MaxBytesError with the limit);
 //  2. check that every layer exists in the backend (the empty config is pushed when missing);
 //  3. run the plugin's Validate with a BlobFetcher backed by the provider, limited to the
 //     blobs the manifest names;

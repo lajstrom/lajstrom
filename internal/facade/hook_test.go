@@ -322,6 +322,29 @@ func TestManifestHookSize(t *testing.T) {
 	wantError(t, "oci", rr, http.StatusRequestEntityTooLarge, codeManifestInvalid)
 }
 
+// TestManifestHookMaxFileSize: a manifest whose file is larger than the repo policy's
+// maxFileSize is 413 SIZE_INVALID naming the file and the limit, from ingest, and nothing is
+// indexed; at the limit it is stored.
+func TestManifestHookMaxFileSize(t *testing.T) {
+	e := newEnv(t, envOptions{})
+	e.raw.Policy = json.RawMessage(`{"maxFileSize":10}`)
+	must(t, e.st.UpdateRepo(t.Context(), &e.raw))
+	f := e.newRawFile("docs/large.txt", "eleven byte")
+	body, _ := f.body(t)
+	msg := wantError(t, "above the limit", e.put(f, f.tag(), body), http.StatusRequestEntityTooLarge, codeSizeInvalid)
+	if want := "the file docs/large.txt of 11 bytes is larger than the maxFileSize of raw/assets, 10 bytes"; msg != want {
+		t.Errorf("message %q, want %q", msg, want)
+	}
+	if _, err := e.st.GetPackage(t.Context(), e.raw.ID, "docs/large.txt"); !errors.Is(err, index.ErrNotFound) {
+		t.Errorf("the package of the refused manifest: %v, want none", err)
+	}
+	f = e.newRawFile("docs/fits.txt", "ten bytes!")
+	body, _ = f.body(t)
+	if rr := e.put(f, f.tag(), body); rr.Code != http.StatusCreated {
+		t.Errorf("a file at the limit: %d %s, want 201", rr.Code, rr.Body)
+	}
+}
+
 // stubIngester answers every Ingest with err.
 type stubIngester struct{ err error }
 
@@ -348,6 +371,9 @@ func TestManifestHookErrors(t *testing.T) {
 		{name: "invalid with oras's default artifactType", err: fmt.Errorf("%w: artifactType", ingest.ErrInvalid), unknown: true,
 			status: http.StatusBadRequest, code: codeManifestInvalid,
 			message: "the manifest is not a valid raw artifact for raw/assets/docs/e.txt; pass --artifact-type application/vnd.lajstrom.raw.v1", detail: "artifactType"},
+		{name: "too large", err: fmt.Errorf("%w: a file of 11 bytes: %w", ingest.ErrInvalid, &http.MaxBytesError{Limit: 10}),
+			status: http.StatusRequestEntityTooLarge, code: codeSizeInvalid,
+			message: "format: invalid: a file of 11 bytes: http: request body too large"},
 		{name: "tag conflict", err: fmt.Errorf("ingest: push: %w", &index.TagConflictError{Tag: "t1", Existing: existing}),
 			status: http.StatusConflict, code: codeTagInvalid,
 			message: "tag t1 of raw/assets/docs/e.txt is taken by " + existing.String() + ": tags are immutable",
