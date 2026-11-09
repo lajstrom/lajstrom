@@ -10,6 +10,8 @@ import (
 
 // accessLog writes one Info line per request after the handler returns. It logs the path and
 // never the query string or any header: queries and Authorization carry credentials. The
+// remoteAddr is the client's (clientAddress): the peer of the connection with its port, or the
+// address X-Forwarded-For names, without a port, with the peer as proxy. The
 // principal is the one the authentication middleware settled on, through a holder in the
 // context, anonymous when it settled on none, the requests it refused included. A request
 // whose handler panics has no access line; the recovery's error line replaces it. The same
@@ -22,7 +24,7 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 		ctx, held := withPrincipalHolder(r.Context())
 		next.ServeHTTP(rec, r.WithContext(ctx))
 		s.observe(r, rec, time.Since(start))
-		s.log.LogAttrs(r.Context(), slog.LevelInfo, "request",
+		attrs := []slog.Attr{
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
 			slog.Int("status", rec.statusCode()),
@@ -31,7 +33,12 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 			slog.String("requestId", RequestID(r.Context())),
 			slog.String("remoteAddr", r.RemoteAddr),
 			slog.String("principal", held.p.String()),
-		)
+		}
+		if c, _ := r.Context().Value(clientKey{}).(client); c.proxy != "" {
+			attrs[6] = slog.String("remoteAddr", c.addr)
+			attrs = append(attrs, slog.String("proxy", r.RemoteAddr))
+		}
+		s.log.LogAttrs(r.Context(), slog.LevelInfo, "request", attrs...)
 	})
 }
 

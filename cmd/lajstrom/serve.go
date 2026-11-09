@@ -122,6 +122,10 @@ func newServeCmd(a *app) *cobra.Command {
 			v2 := facade.New(facade.Options{Index: st, Providers: providers, Auth: authz, Ingest: pipe,
 				Tokens: tokens, ExternalURL: c.Server.ExternalURL, MaxManifestSize: c.Server.MaxManifestSize, Log: a.log})
 			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log})
+			proxies, err := c.Server.TrustedPrefixes()
+			if err != nil {
+				return err
+			}
 
 			srv, err := server.New(server.Options{
 				Listen:          c.Server.Listen,
@@ -140,6 +144,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Pprof:           c.Server.Pprof,
 				StallTimeout:    c.Server.StallTimeout,
 				MaxUploads:      c.Server.MaxConcurrentUploads,
+				TrustedProxies:  proxies,
 			})
 			if err != nil {
 				return err

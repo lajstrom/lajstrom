@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
@@ -95,6 +96,11 @@ func (s Server) validate(p *problems) {
 	if s.MaxConcurrentUploads < 0 {
 		p.add("server.maxConcurrentUploads", "must not be negative")
 	}
+	for i, e := range s.TrustedProxies {
+		if _, err := parsePrefix(e); err != nil {
+			p.add(fmt.Sprintf("server.trustedProxies[%d]", i), "%q is not an address or a CIDR prefix", e)
+		}
+	}
 }
 
 // validateExternalURL checks server.externalURL (docs/spec/http-routing.md §1): Lajstrom owns
@@ -127,6 +133,44 @@ func isLoopback(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// TrustedPrefixes returns server.trustedProxies as prefixes, a bare address as /32 or /128,
+// IPv4-mapped IPv6 as IPv4 (ADR 0011). It fails on an entry that Validate refuses.
+func (s Server) TrustedPrefixes() ([]netip.Prefix, error) {
+	out := make([]netip.Prefix, 0, len(s.TrustedProxies))
+	for i, e := range s.TrustedProxies {
+		pfx, err := parsePrefix(e)
+		if err != nil {
+			return nil, fmt.Errorf("server.trustedProxies[%d]: %w", i, err)
+		}
+		out = append(out, pfx)
+	}
+	return out, nil
+}
+
+// parsePrefix parses a CIDR prefix, or a bare address as the prefix of that one host. The
+// prefix is masked, and an IPv4-mapped IPv6 one is turned into IPv4.
+func parsePrefix(s string) (netip.Prefix, error) {
+	if !strings.Contains(s, "/") {
+		a, err := netip.ParseAddr(s)
+		if err != nil {
+			return netip.Prefix{}, err
+		}
+		a = a.Unmap().WithZone("")
+		return netip.PrefixFrom(a, a.BitLen()), nil
+	}
+	pfx, err := netip.ParsePrefix(s)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	if a := pfx.Addr(); a.Is4In6() {
+		if pfx.Bits() < 96 {
+			return netip.Prefix{}, fmt.Errorf("%q: an IPv4-mapped prefix shorter than /96", s)
+		}
+		pfx = netip.PrefixFrom(a.Unmap(), pfx.Bits()-96)
+	}
+	return pfx.Masked(), nil
 }
 
 func (l Log) validate(p *problems) {
