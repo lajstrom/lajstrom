@@ -122,21 +122,15 @@ func (pub *publish) checkBlobs(ctx context.Context) error {
 }
 
 // fetcher is the BlobFetcher of the plugin's Validate: it reads the config and the layers of
-// the manifest from the backend, checked against their descriptors, and nothing else.
+// the manifest from the backend, and nothing else. Its reader is a fetchedBlob: Read streams the
+// whole blob checked against its descriptor, ReadAt reads parts with range requests.
 func (pub *publish) fetcher() format.BlobFetcher {
 	return func(ctx context.Context, d digest.Digest) (io.ReadCloser, error) {
 		desc, ok := pub.descriptor(d)
 		if !ok {
 			return nil, fmt.Errorf("%w: the manifest names no blob %s", ErrInvalid, d)
 		}
-		rc, err := pub.rr.Fetch(ctx, desc)
-		if err != nil {
-			return nil, fmt.Errorf("ingest: fetch %s from %s: %w", d, pub.name, err)
-		}
-		return struct {
-			io.Reader
-			io.Closer
-		}{newVerifier(rc, desc), rc}, nil
+		return &fetchedBlob{ctx: ctx, pub: pub, desc: desc, blocks: map[int64][]byte{}}, nil
 	}
 }
 

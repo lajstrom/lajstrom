@@ -46,7 +46,7 @@ func (p *Pipeline) Inspect(ctx context.Context, repo index.Repo, pkgPath, tag st
 	if err != nil {
 		return nil, err
 	}
-	t := &target{repo: repo, plugin: plugin, pkgPath: pkgPath, name: ociName(repo, pkgPath)}
+	t := &target{repo: repo, plugin: plugin, pkgPath: pkgPath, name: ociName(repo, pkgPath), prov: prov}
 	if t.rr, err = prov.Repository(ctx, t.name); err != nil {
 		return nil, fmt.Errorf("ingest: repository %s: %w", t.name, err)
 	}

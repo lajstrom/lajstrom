@@ -394,8 +394,9 @@ default interval is cheap; drift is reported, never repaired by re-pointing a ta
 ECR bills storage and data transfer, not requests; within a region the transfer is free. A run
 over known digests reads the manifests' headers only. A full rebuild reads, per manifest, the
 manifest, the metadata layer and what the format plugin checks: for apt the head of the `.deb`
-up to its control member. The connection is closed early, but the bytes already in flight are
-transferred, so count the size of the packages: 10 000 packages of 2 MB are about 20 GB once.
+up to its control member (for pypi, the zip's directory and its `METADATA` with range requests:
+a few kilobytes per wheel; an sdist until its `PKG-INFO`). The connection of a `.deb` is closed
+early, but the bytes already in flight are transferred, so for apt count the size of the packages: 10 000 packages of 2 MB are about 20 GB once.
 In the region that is free; through a NAT gateway it is the gateway's processing price (about
 $0.045 per GB, depending on the region), which the S3 gateway endpoint of the VPC avoids
 because ECR serves layers from S3; across regions or to the internet it is the transfer price
