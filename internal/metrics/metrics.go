@@ -63,6 +63,12 @@ var (
 	Ingest = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "lajstrom_ingest_total", Help: "Publishes through the ingest pipeline, by format and result.",
 	}, []string{"format", "result"})
+	// Throttled counts the requests refused 429 by a throttle of internal/auth: account and
+	// address (the failed logins of an account, of a client address), token (the requests to
+	// /v2/token of a client address).
+	Throttled = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "lajstrom_auth_throttled_total", Help: "Requests refused 429 by a throttle of internal/auth, by throttle.",
+	}, []string{"throttle"})
 	// buildInfo is 1 with the build in its labels.
 	buildInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "lajstrom_build_info", Help: "Always 1; the labels say which build runs.",
@@ -70,7 +76,7 @@ var (
 )
 
 func init() {
-	registry.MustRegister(HTTPDuration, HTTPRequestSize, HTTPResponseSize, ProviderDuration, ProviderCircuitOpen, DBDuration, Ingest, buildInfo,
+	registry.MustRegister(HTTPDuration, HTTPRequestSize, HTTPResponseSize, ProviderDuration, ProviderCircuitOpen, DBDuration, Ingest, Throttled, buildInfo,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 }
 
