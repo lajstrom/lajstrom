@@ -36,6 +36,7 @@ https://lajstrom.dev
 | [Quick start: pypi](docs/quickstart/pypi.md) | `twine upload` or `uv publish` in, `pip install` or `uv pip install` out, with PEP 658 metadata |
 | [Quick start: maven](docs/quickstart/maven.md) | `mvn deploy` or Gradle's `publish` in, `mvn dependency:get` or a Gradle build out, with all four checksums |
 | [Dev stack](docs/dev-stack.md) | `make dev-up`: Zot, distribution and Postgres for development and tests |
+| [Deploy with Compose](docs/deploy/compose.md) | one host for production: Lajstrom, Postgres and a registry with passwords, secrets in files, a backup |
 | [Testing](docs/testing.md) | the test levels and what each needs; `make e2e` and how to add a scenario |
 | [Authentication](docs/auth.md) | local users, argon2id passwords, HTTP Basic on every route, the first admin, `whoami` |
 | [Operations](docs/operations.md) | the master key, apt signing keys, `key.asc` for clients, key rotation |
