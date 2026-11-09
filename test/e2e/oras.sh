@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-# End-to-end test of oras through the OCI facade, without credentials, against a running
-# Lajstrom (docs/quickstart/oras.md §3; docs/acceptance.md O-01, O-02 and O-04 for an anonymous
-# client): the challenge of GET /v2/, oras push of a file to a raw repo with the raw profile,
-# the same manifest again (201, the same digest), another manifest under the tag (409
-# TAG_INVALID naming the first), oras pull and the bytes, oras repo tags, oras manifest fetch,
-# the raw frontend serving the pushed file, then DELETE and a 404.
+# End-to-end test of oras through the OCI facade against a running Lajstrom
+# (docs/quickstart/oras.md §3; docs/acceptance.md O-01, O-02 and O-04): the challenge of
+# GET /v2/, oras login, oras push of a file to a raw repo with the raw profile, the same manifest
+# again (201, the same digest), another manifest under the tag (409 TAG_INVALID naming the
+# first), oras pull and the bytes, oras repo tags, oras manifest fetch, the raw frontend serving
+# the pushed file, then DELETE and a 404.
 #
 #   test/e2e/oras.sh [<base url> [<raw repo>]]     default: http://localhost:8080 scratch
 #
-# The repo must exist (the example configuration creates raw/scratch) and take anonymous pushes
-# through /v2, as every repo does until RBAC (#45): oras gets an anonymous token from /v2/token.
-# oras login and tokens are in oci-token.sh and tokens.sh. The file is at a path of its own for
-# the run, so the script can run again against the same repo, and it deletes it at the end. oras
-# is the oras on PATH, else ghcr.io/oras-project/oras:v1.3.6 in docker with --network host (which
-# reaches the base URL on Linux and under OrbStack); either way it gets a registry configuration
-# of its own and no credentials. It needs curl and jq, prints one line per step and exits
+# The repo must exist (the example configuration creates raw/scratch), and the user of
+# LAJSTROM_E2E_USER and LAJSTROM_E2E_PASSWORD must push to it and delete in it (run.sh makes an
+# admin; lib.sh, e2e_credentials): oras logs in with them, and gets its tokens from /v2/token
+# with Basic. Tokens of other kinds are in oci-token.sh and tokens.sh. The file is at a path of
+# its own for the run, so the script can run again against the same repo, and it deletes it at
+# the end. oras is the oras on PATH, else ghcr.io/oras-project/oras:v1.3.6 in docker with
+# --network host (which reaches the base URL on Linux and under OrbStack); either way it gets a
+# registry configuration of its own. It needs curl and jq, prints one line per step and exits
 # non-zero at the first failure.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
@@ -31,12 +32,13 @@ plain=""                # --plain-http for an http:// base URL
 case "$base" in http://*) plain=--plain-http ;; esac
 
 work="$(mktemp -d)"
+e2e_credentials "$work"
 run="e2e-oras-$(date -u +%Y%m%d%H%M%S)-$RANDOM"
 path="$run/hello.txt"  # lower case: the path is also the OCI repository below raw/<repo>/
 name="raw/$repo/$path" # the OCI name of the file
 pushed=""
 cleanup() {
-	[ -z "$pushed" ] || curl -sS -o /dev/null -X DELETE "$base/raw/$repo/$path" || true
+	[ -z "$pushed" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/raw/$repo/$path" || true
 	rm -rf "$work"
 }
 trap cleanup EXIT
@@ -49,7 +51,7 @@ else
 	command -v docker >/dev/null || { echo "oras.sh: oras or docker is required" >&2; exit 2; }
 	oras_how="$oras_image"
 	# As the caller's user: what oras pull writes as root on Linux, the cleanup could not remove.
-	oras() { docker run --rm --network host -u "$(id -u):$(id -g)" -v "$work:/w" -w /w "$oras_image" "$@" --registry-config /w/oras-auth.json ${plain:+"$plain"}; }
+	oras() { docker run --rm -i --network host -u "$(id -u):$(id -g)" -v "$work:/w" -w /w "$oras_image" "$@" --registry-config /w/oras-auth.json ${plain:+"$plain"}; }
 fi
 
 # sha256 prints the hex sha256 of a file.
@@ -68,11 +70,15 @@ push() {
 		"$registry/$name:$version" "$path:application/vnd.lajstrom.raw.file.v1" >"$work/oras.log" 2>&1
 }
 
-# O-01 without credentials: the challenge, which oras answers with an anonymous token.
+# O-01: the challenge without credentials, which oras answers with its login.
 assert_status 401 -D "$work/headers" "$base/v2/"
 challenge="$(tr -d '\r' <"$work/headers" | awk 'tolower($1) == "www-authenticate:" { sub(/^[^:]*: /, ""); print }')"
 case "$challenge" in 'Bearer realm="'*'/v2/token",service="'*'"') ;; *) fail "GET /v2/ challenge: $challenge" ;; esac
 step "GET /v2/ without credentials: 401 WWW-Authenticate: $challenge"
+printf '%s\n' "$E2E_PASSWORD" | oras login -u "$E2E_USER" --password-stdin "$registry" >"$work/oras.log" 2>&1 ||
+	{ cat "$work/oras.log" >&2; fail "oras login"; }
+grep -q 'Login Succeeded' "$work/oras.log" || fail "oras login: $(cat "$work/oras.log")"
+step "oras login $registry -u $E2E_USER: Login Succeeded"
 
 mkdir -p "$work/$run"
 printf 'oras e2e %s\n' "$run" >"$work/$path"
@@ -82,7 +88,7 @@ push "$created" || { cat "$work/oras.log" >&2; fail "oras push $name:$version"; 
 pushed=yes
 digest="$(awk '$1 == "Digest:" { print $2 }' "$work/oras.log")"
 case "$digest" in sha256:*) ;; *) cat "$work/oras.log" >&2; fail "oras push printed no digest" ;; esac
-step "oras push $registry/$name:$version ($oras_how, no credentials): $digest"
+step "oras push $registry/$name:$version ($oras_how, as $E2E_USER): $digest"
 
 # The same manifest again is the idempotent repeat; another one under the tag is refused.
 push "$created" || { cat "$work/oras.log" >&2; fail "oras push of the same manifest again"; }
@@ -105,13 +111,13 @@ assert_eq "application/vnd.lajstrom.raw.v1 $path $path" \
 	"$(jq -r '[.artifactType, .annotations["lajstrom.raw.path"], .layers[0].annotations["org.opencontainers.image.title"]] | join(" ")' "$work/manifest.json")" \
 	"artifactType, lajstrom.raw.path and the layer title of the fetched manifest"
 step "oras manifest fetch: $digest, artifactType application/vnd.lajstrom.raw.v1, the layer titled $path"
-assert_status 200 -o "$work/get" "$base/raw/$repo/$path"
+assert_status 200 -K "$E2E_CURLRC" -o "$work/get" "$base/raw/$repo/$path"
 cmp -s "$work/$path" "$work/get" || fail "GET /raw/$repo/$path: not the pushed bytes"
 step "GET /raw/$repo/$path: 200, the pushed bytes"
 
 # Cleanup: DELETE through the raw frontend, then 404.
-assert_status 204 -X DELETE "$base/raw/$repo/$path"
+assert_status 204 -K "$E2E_CURLRC" -X DELETE "$base/raw/$repo/$path"
 pushed=""
-assert_status 404 -o /dev/null "$base/raw/$repo/$path"
+assert_status 404 -K "$E2E_CURLRC" -o /dev/null "$base/raw/$repo/$path"
 step "cleanup: DELETE /raw/$repo/$path: 204; GET is 404 after it"
-echo "PASS oras e2e against $base as anonymous"
+echo "PASS oras e2e against $base as $E2E_USER"

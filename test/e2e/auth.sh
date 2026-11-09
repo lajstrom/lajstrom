@@ -9,10 +9,10 @@
 # configuration the server runs with: $LAJSTROM_CONFIG, else deploy/compose/lajstrom.example.yaml,
 # with the same LAJSTROM_DATABASE_* overrides (the example's SQLite path is relative: run the
 # script from the server's directory). The binary is $LAJSTROM_BIN, else bin/lajstrom, else go
-# run ./cmd/lajstrom. The repo must exist and be writable by the user (every repo is, until RBAC,
-# #45). Each run creates a user of its own, named after the run, and disables it at the end;
-# users are not deleted in this version. Passwords go to curl in a config file, never on a
-# command line, and are never printed. It needs curl and jq, prints one line per step and exits
+# run ./cmd/lajstrom. The repo must exist; the user gets the maintainer role on it (lajstrom
+# admin binding create), to put and delete. Each run creates a user of its own, named after the
+# run, and disables it at the end; users are not deleted in this version. Passwords go to curl in
+# a config file, never on a command line, and are never printed. It needs curl and jq, prints one line per step and exits
 # non-zero at the first failure, naming the assertion or the command (lib.sh).
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
@@ -84,6 +84,9 @@ expect "admin user create name" "$user" "$(jq -r .name <<<"$out")"
 expect "admin user create disabled" false "$(jq -r .disabled <<<"$out")"
 case "$out" in *argon2*) fail "admin user create printed the hash" ;; esac
 ok "admin user create --name $user: $(jq -c 'del(.createdAt)' <<<"$out")"
+out="$("${lajstrom[@]}" admin binding create --principal "user:$user" --role maintainer --mask "raw/$repo")"
+expect "admin binding create" "user:$user maintainer raw/$repo" "$(jq -r '[.principal, .role, .repoMask] | join(" ")' <<<"$out")"
+ok "admin binding create --principal user:$user --role maintainer --mask raw/$repo: id $(jq -r .id <<<"$out")"
 
 req - GET "$base/api/v1/whoami"
 expect "whoami without credentials status" 401 "$status"

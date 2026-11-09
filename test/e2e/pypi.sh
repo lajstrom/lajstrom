@@ -15,7 +15,8 @@
 # runs with: $LAJSTROM_CONFIG, else deploy/compose/lajstrom.example.yaml, with the same
 # LAJSTROM_DATABASE_* overrides. The binary is $LAJSTROM_BIN, else bin/lajstrom, else go run
 # ./cmd/lajstrom. $LAJSTROM_SERVER_LOG, the server's log file, adds the check of PEP 658. Each
-# run uses a project and a user of its own and disables the user at the end; the distributions
+# run uses a project and a user of its own, with the writer role on the repo (lajstrom admin
+# binding create), and disables the user at the end; the distributions
 # stay (pypi files cannot be deleted yet). The password goes to lajstrom on standard input and
 # into the container in a file. It needs curl, jq and docker (python:3.13, or $PYPI_E2E_IMAGE,
 # with --network host, which reaches the base URL on Linux and under OrbStack), prints one line
@@ -60,6 +61,7 @@ step "repo pypi/$repo"
 	"${lajstrom[@]}" admin repo create "pypi/$repo" --registry local >/dev/null
 password="$(head -c 24 /dev/urandom | base64 | tr -d '/+=')"
 printf '%s' "$password" | "${lajstrom[@]}" admin user create --name "$user" --password-stdin >/dev/null
+"${lajstrom[@]}" admin binding create --principal "user:$user" --role writer --mask "pypi/$repo" >/dev/null
 printf '%s:%s\n' "$user" "$password" >"$work/credentials"
 
 # The client side, in python:3.13: every step prints a line, the first failure exits non-zero.
