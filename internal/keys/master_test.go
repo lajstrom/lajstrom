@@ -109,7 +109,14 @@ func TestLoadMaster(t *testing.T) {
 func TestMasterRedacted(t *testing.T) {
 	m := master(t, testMasterHex)
 	var logged bytes.Buffer
-	slog.New(slog.NewJSONHandler(&logged, nil)).Info("start", "master", m)
+	// Without the time, whose digits could hold the key's first ones (…:10.012380561Z did).
+	noTime := func(_ []string, a slog.Attr) slog.Attr {
+		if a.Key == slog.TimeKey {
+			return slog.Attr{}
+		}
+		return a
+	}
+	slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{ReplaceAttr: noTime})).Info("start", "master", m)
 	for _, s := range []string{fmt.Sprint(m), fmt.Sprintf("%+v", m), fmt.Sprintf("%#v", m), m.String(),
 		fmt.Sprintf("%v", *m), fmt.Sprintf("%+v", struct{ M *Master }{m}), logged.String()} {
 		if strings.Contains(s, "0123") || strings.Contains(s, "aead") || !strings.Contains(s, "redacted") {
