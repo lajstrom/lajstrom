@@ -53,11 +53,13 @@ type Options struct {
 }
 
 // Ingester stores a manifest that a client pushed to a managed repo, and a referrer pushed to
-// any repo: *ingest.Pipeline. It is the facade's own interface because format.Publisher, the
-// frontends' view of the pipeline, has Upload only.
+// any repo, and deletes a manifest of any repo: *ingest.Pipeline. It is the facade's own
+// interface because format.Publisher, the frontends' view of the pipeline, has Upload and
+// Delete only.
 type Ingester interface {
 	Ingest(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, principal auth.Principal) (*ingest.Result, error)
 	PutReferrer(ctx context.Context, repo index.Repo, r ingest.Referrer, principal auth.Principal) (digest.Digest, error)
+	Delete(ctx context.Context, repo index.Repo, del format.Deletion, principal auth.Principal) (*format.Deleted, error)
 }
 
 var _ Ingester = (*ingest.Pipeline)(nil)
@@ -87,7 +89,8 @@ const apiVersionHeader = "Docker-Distribution-API-Version"
 //	PATCH|PUT|GET|DELETE /v2/<name>/blobs/uploads/<id>   the session, from any replica
 //	GET  /v2/<name>/tags/list?n=&last=          from the index; from the backend on an oci repo
 //	GET  /v2/<name>/referrers/<digest>          the referrers, ?artifactType=: the backend's API or the tag schema
-//	DELETE manifests and blobs                  405 until #61
+//	DELETE /v2/<name>/manifests/<ref>           ingest deletes it, its referrers first, and its rows: 202
+//	DELETE /v2/<name>/blobs/<digest>            405: blobs are the backend's garbage collection's
 //
 // <name> is <format>/<repo>/<path>: the repo must exist (NAME_UNKNOWN), and the backend gets
 // the OCI name <repo prefix>/<path>. Errors are the JSON of the distribution spec; a 401 has

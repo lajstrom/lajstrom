@@ -16,6 +16,7 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/server"
@@ -211,10 +212,48 @@ func readManifest(r *http.Request, refDigest digest.Digest, limit int64) (ocispe
 	return ocispec.Descriptor{MediaType: mediaType, Digest: d, Size: int64(len(body))}, body, nil
 }
 
-// deleteManifest answers DELETE …/manifests/<ref>: 405 until #61.
-func (h *handler) deleteManifest(_ http.ResponseWriter, r *http.Request, t *target, _ string) error {
-	if err := h.authorize(r.Context(), auth.ActionDelete, t); err != nil {
+// deleteManifest answers DELETE …/manifests/<ref> (docs/spec/http-routing.md §2): delete on
+// the repo is checked before the reference, which ingest resolves and deletes with its
+// referrers (Ingester.Delete): a version of a managed repo with its rows in the index, any
+// other manifest as the backend has it. 202 Accepted without a body; deleteError has the
+// errors.
+func (h *handler) deleteManifest(w http.ResponseWriter, r *http.Request, t *target, ref string) error {
+	ctx := r.Context()
+	if err := h.authorize(ctx, auth.ActionDelete, t); err != nil {
 		return err
 	}
-	return &apiError{status: http.StatusMethodNotAllowed, code: codeUnsupported, msg: "deleting manifests comes with #61"}
+	if _, err := parseReference(ref); err != nil {
+		return err
+	}
+	if h.o.Ingest == nil {
+		return errors.New("facade: no ingest pipeline: Options.Ingest is required")
+	}
+	del := format.Deletion{Path: t.path, Reference: ref, ClientIP: server.ClientAddr(ctx)}
+	if _, err := h.o.Ingest.Delete(ctx, t.repo, del, auth.PrincipalFrom(ctx)); err != nil {
+		return deleteError(t, ref, err)
+	}
+	w.WriteHeader(http.StatusAccepted)
+	return nil
+}
+
+// deleteError is the error table of a manifest delete:
+//
+//	provider.ErrUnsupported   405 UNSUPPORTED: the backend does not delete manifests
+//	index.ErrNotFound         404 MANIFEST_UNKNOWN
+//	provider.ErrConflict      409 DENIED: the backend refused this one delete
+//	anything else             format.StatusOf: 502 for the backend's credentials, 503 for an
+//	                          open circuit breaker, else 500, logged
+func deleteError(t *target, ref string, err error) error {
+	switch {
+	case errors.Is(err, provider.ErrUnsupported):
+		return &apiError{status: http.StatusMethodNotAllowed, code: codeUnsupported, err: err,
+			msg: fmt.Sprintf("the registry %q of %s/%s does not delete manifests; nothing was deleted", t.repo.Registry, t.repo.Format, t.repo.Name)}
+	case errors.Is(err, index.ErrNotFound), errors.Is(err, provider.ErrNotFound):
+		return &apiError{status: http.StatusNotFound, code: codeManifestUnknown, err: err,
+			msg: fmt.Sprintf("manifest unknown to registry: %s in %s", ref, t.name)}
+	case errors.Is(err, provider.ErrConflict):
+		return &apiError{status: http.StatusConflict, code: codeDenied, err: err,
+			msg: fmt.Sprintf("the registry refused to delete %s in %s: another manifest refers to it", ref, t.name)}
+	}
+	return &apiError{err: err}
 }
