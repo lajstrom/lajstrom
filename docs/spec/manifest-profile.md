@@ -249,7 +249,8 @@ optional per-repo `maxFileSize` from the control plane.
 ## 6. Referrers
 
 Signatures and attestations attach with `subject` = our manifest and are passed through to the
-backend unchanged. Lajstrom lists referrers with the referrers API when the provider has it, and
+backend unchanged, by the referrer path of ingest (`PutReferrer`), which indexes nothing; so is
+a manifest under cosign's legacy tag `sha256-<hex>.sig`, `.att` or `.sbom`. Lajstrom lists referrers with the referrers API when the provider has it, and
 with the `sha256-<digest>` tag schema otherwise (`Capabilities.Referrers`). Lajstrom never
 rewrites a referrer. Artifact types the UI recognises: cosign (`application/vnd.dev.cosign.*`),
 notation (`application/vnd.cncf.notary.signature`), SPDX, CycloneDX, in-toto/DSSE.

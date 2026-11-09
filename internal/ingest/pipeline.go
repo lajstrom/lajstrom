@@ -254,12 +254,9 @@ func (p *Pipeline) lookup(repo index.Repo) (format.Plugin, provider.Provider, er
 	if !ok {
 		return nil, nil, fmt.Errorf("ingest: repo %s/%s: no plugin for the format: %w", repo.Format, repo.Name, format.ErrUnsupported)
 	}
-	var prov provider.Provider
-	if p.providers != nil {
-		prov, ok = p.providers.Provider(repo.Registry)
-	}
-	if prov == nil || !ok {
-		return nil, nil, fmt.Errorf("ingest: repo %s/%s: registry %q is not configured", repo.Format, repo.Name, repo.Registry)
+	prov, err := p.registry(repo)
+	if err != nil {
+		return nil, nil, err
 	}
 	return plugin, prov, nil
 }
