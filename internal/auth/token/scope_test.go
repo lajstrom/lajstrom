@@ -141,7 +141,7 @@ func TestReduceCredential(t *testing.T) {
 		{"pat without scopes", z, alice, pat(), "[{registry catalog [*]} {repository pypi/internal/x []} {repository raw/assets/hello [pull push delete]}]"},
 		{"pat read", nil, alice, pat("read"), "[{registry catalog [*]} {repository pypi/internal/x [pull]} {repository raw/assets/hello [pull]}]"},
 		{"pat read, with an Authorizer", z, alice, pat("read"), "[{registry catalog [*]} {repository pypi/internal/x []} {repository raw/assets/hello [pull]}]"},
-		{"pat write", nil, alice, pat("write"), "[{registry catalog [*]} {repository pypi/internal/x [push]} {repository raw/assets/hello [push]}]"},
+		{"pat write: no catalog, which it could not read", nil, alice, pat("write"), "[{repository pypi/internal/x [push]} {repository raw/assets/hello [push]}]"},
 		{"deploy read write", nil, deploy, dep("read", "write"), "[{registry catalog [*]} {repository pypi/internal/x []} {repository raw/assets/hello [pull push]}]"},
 		{"deploy read write, with an Authorizer", z, deploy, dep("read", "write"), "[{registry catalog [*]} {repository pypi/internal/x []} {repository raw/assets/hello [pull push]}]"},
 		{"deploy read", nil, deploy, dep("read"), "[{registry catalog [*]} {repository pypi/internal/x []} {repository raw/assets/hello [pull]}]"},

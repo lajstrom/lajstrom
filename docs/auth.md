@@ -390,7 +390,10 @@ implemented (`405`), and the clients above use `GET`.
   another type, a name that is not `<format>/<repo>/<path>`, and a scope with none of the three
   actions are dropped, as the distribution token flow expects; a repository asked for twice
   gets the union. The scope of a repo that does not exist stays, with no action (below). One scope of another type is kept: `registry:catalog:*`, which
-  `crane catalog` and `oras repo ls` ask for to list `/v2/_catalog`.
+  `crane catalog` and `oras repo ls` ask for to list `/v2/_catalog`; a personal access token
+  whose scopes do not include `read` does not get it, since the catalog is listed by its user's
+  bindings. A request may name at most 100 repositories: more is `400` with `UNSUPPORTED`,
+  before any repo is looked up (docker asks for one or two, oras and helm for a few).
 - **Reduction**: for each scope, each action is kept when the credential allows it and the
   Authorizer allows it to the principal on `<format>/<repo>`: `pull` is `read`, `push` is
   `write`, `delete` is `delete` ([rbac.md](spec/rbac.md) §2). The credential first: a personal
