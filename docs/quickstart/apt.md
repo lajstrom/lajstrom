@@ -20,22 +20,30 @@ make run                                          # serves deploy/compose/lajstr
 ```
 
 In another terminal (export the same `LAJSTROM_MASTER_KEY` there too: `admin key` of section 8
-needs it), make the repo `apt/ubuntu` on the Zot of the stack:
+needs it), make the repo `apt/ubuntu` on the Zot of the stack, and the first user, an admin,
+with a password of your own (8 bytes at least):
 
 ```sh
 bin/lajstrom admin repo create apt/ubuntu --registry local --config deploy/compose/lajstrom.example.yaml
+export LAJSTROM_ADMIN_PASSWORD='a password of your own'
+bin/lajstrom admin user create --name admin --admin --config deploy/compose/lajstrom.example.yaml
+u="admin:$LAJSTROM_ADMIN_PASSWORD"
 ```
 
 ```json
-{"format":"apt","name":"ubuntu","registry":"local","kind":"hosted","anonymousRead":false,"policy":null,"createdAt":"2026-11-07T17:48:03.284166Z","updatedAt":"2026-11-07T17:48:03.284166Z"}
+{"format":"apt","name":"ubuntu","registry":"local","kind":"hosted","anonymousRead":false,"policy":null,"createdAt":"2026-11-09T11:22:02.207106Z","updatedAt":"2026-11-09T11:22:02.207106Z"}
+{"name":"admin","kind":"local","disabled":false,"createdAt":"2026-11-09T11:22:02.234934Z"}
 ```
 
 The repo gets its signing key on first use, and from then on `serve` refuses to start without
 the master key that encrypts it ([operations.md](../operations.md#keys-and-apt-signing)); to start
 over, remove `lajstrom.db` and run `make dev-down RESET=1`. Without `LAJSTROM_MASTER_KEY` the repo
 is unsigned, `key.asc`, `InRelease` and `Release.gpg` are `404`, and the client line below is
-`deb [trusted=yes] http://localhost:8080/apt/ubuntu jammy main` instead. Everything is open on the
-dev stack: authentication comes with #45.
+`deb [trusted=yes] http://localhost:8080/apt/ubuntu jammy main` instead.
+
+Nothing is open, on the dev stack either: a request without credentials is `401`, `key.asc`
+included. The uploads below send the admin's (`-u "$u"`); apt-get reads with a deploy token of
+its own (section 4). Who may do what is in [auth.md](../auth.md).
 
 ## 2. Build a package
 
@@ -54,17 +62,17 @@ dpkg-deb: building package 'hello' in 'hello_1.0.0-1_amd64.deb'.
 ## 3. Upload it (A-01)
 
 ```sh
-curl -sS -i -T hello_1.0.0-1_amd64.deb "http://localhost:8080/apt/ubuntu/upload?suite=jammy&component=main"
+curl -sS -u "$u" -i -T hello_1.0.0-1_amd64.deb "http://localhost:8080/apt/ubuntu/upload?suite=jammy&component=main"
 ```
 
 ```text
 HTTP/1.1 201 Created
 Content-Type: application/json
-Docker-Content-Digest: sha256:d35b504ae333547709098c6f55b4263063e901ff04c258eae97beecd043f7cc0
+Docker-Content-Digest: sha256:9ce05923875bfdaf6260fa85804a95e7488f08802d49110cd7f2537af2d84720
 Location: /apt/ubuntu/pool/main/h/hello/hello_1.0.0-1_amd64.deb
 Content-Length: 256
 
-{"package":"hello","version":"1.0.0-1","architecture":"amd64","suite":"jammy","component":"main","filename":"hello_1.0.0-1_amd64.deb","digest":"sha256:d35b504ae333547709098c6f55b4263063e901ff04c258eae97beecd043f7cc0","tag":"1.0.0-1__jammy_2fmain_2famd64"}
+{"package":"hello","version":"1.0.0-1","architecture":"amd64","suite":"jammy","component":"main","filename":"hello_1.0.0-1_amd64.deb","digest":"sha256:9ce05923875bfdaf6260fa85804a95e7488f08802d49110cd7f2537af2d84720","tag":"1.0.0-1__jammy_2fmain_2famd64"}
 ```
 
 `suite` and `component` are required: lowercase letters, digits, `.`, `+` and `-`. Suites and
@@ -77,7 +85,7 @@ archive (`pool/<component>/<first letter>/<source>/`, `lib` and one more letter 
 source). The repo's index lists it now:
 
 ```sh
-curl -s http://localhost:8080/apt/ubuntu/dists/jammy/main/binary-amd64/Packages
+curl -s -u "$u" http://localhost:8080/apt/ubuntu/dists/jammy/main/binary-amd64/Packages
 ```
 
 ```text
@@ -88,26 +96,39 @@ Maintainer: You <you@example.com>
 Description: says hello
 Filename: pool/main/h/hello/hello_1.0.0-1_amd64.deb
 Size: 544
-MD5sum: 8b587af8c3443a778935363b567d52a0
-SHA1: f00c8b9c2e8f7ec0c6f0bf0ca2f243d90abb93f7
-SHA256: 13c06eb8263b01df968a4d443cca0ce86cb41e089377c8a2ef79186d201a8590
+MD5sum: ef150acf940c9996cecffe460a80eec5
+SHA1: c460d07dd4156d183975894794c10493de4b08e3
+SHA256: 3b4aaa5310bd8c7c3d8dbaf8a8bc5644bf9a3fed1d53ad84da9e2e8845d85ead
 ```
 
 ## 4. Install it with apt-get (A-04)
 
-A clean `ubuntu:24.04` on the host's network, where `localhost:8080` is Lajstrom (Linux and
-OrbStack):
+apt-get reads with a deploy token of the repo with `read`: it reaches this repo only and never
+writes, so it is the credential to put on machines, rather than a user's password. Make one; its
+secret is shown this once:
 
 ```sh
-docker run --rm -it --network host --platform linux/amd64 ubuntu:24.04 bash
+curl -s -u "$u" -H 'Content-Type: application/json' -d '{"name": "apt clients", "scopes": ["read"]}' \
+  http://localhost:8080/api/v1/repos/apt/ubuntu/deploy-tokens | jq -r .secret > apt-token
 ```
 
-In the container, pin the repo's key and add the source, as on any machine
-([operations.md](../operations.md#keys-and-apt-signing)); the image has no `curl`, so apt's own
-`apt-helper` fetches `key.asc`:
+A clean `ubuntu:24.04` on the host's network, where `localhost:8080` is Lajstrom (Linux and
+OrbStack), with the secret in its environment:
+
+```sh
+docker run --rm -it --network host --platform linux/amd64 -e APT_TOKEN="$(cat apt-token)" ubuntu:24.04 bash
+```
+
+In the container, give apt the token, pin the repo's key and add the source, as on any machine
+([operations.md](../operations.md#keys-and-apt-signing)). The token goes in
+`/etc/apt/auth.conf.d` as the password of the login `deploy`, under a machine written with
+`http://`: that is the only form for which apt sends credentials over plain http. The image has
+no `curl`, so apt's own `apt-helper` fetches `key.asc`, with the same `auth.conf`:
 
 ```sh
 rm /etc/apt/sources.list.d/ubuntu.sources     # only the Lajstrom repo, for a short output
+printf 'machine http://localhost:8080/apt/ubuntu\nlogin deploy\npassword %s\n' "$APT_TOKEN" > /etc/apt/auth.conf.d/lajstrom.conf
+chmod 600 /etc/apt/auth.conf.d/lajstrom.conf
 install -d -m 0755 /etc/apt/keyrings
 /usr/lib/apt/apt-helper -o APT::Sandbox::User=root download-file http://localhost:8080/apt/ubuntu/key.asc /etc/apt/keyrings/ubuntu.asc
 echo "deb [signed-by=/etc/apt/keyrings/ubuntu.asc] http://localhost:8080/apt/ubuntu jammy main" > /etc/apt/sources.list.d/lajstrom.list
@@ -117,10 +138,10 @@ cat /usr/share/hello/greeting
 
 ```text
 Get:1 http://localhost:8080/apt/ubuntu/key.asc [758 B]
-Fetched 758 B in 0s (15.2 kB/s)
+Fetched 758 B in 0s (14.6 kB/s)
 Get:1 http://localhost:8080/apt/ubuntu jammy InRelease [1274 B]
-Get:2 http://localhost:8080/apt/ubuntu jammy/main amd64 Packages [272 B]
-Fetched 1546 B in 1s (2888 B/s)
+Get:2 http://localhost:8080/apt/ubuntu jammy/main amd64 Packages [271 B]
+Fetched 1545 B in 0s (3091 B/s)
 Reading package lists...
 Reading package lists...
 Building dependency tree...
@@ -132,7 +153,7 @@ Need to get 544 B of archives.
 After this operation, 0 B of additional disk space will be used.
 Get:1 http://localhost:8080/apt/ubuntu jammy/main amd64 hello amd64 1.0.0-1 [544 B]
 debconf: delaying package configuration, since apt-utils is not installed
-Fetched 544 B in 0s (11.3 kB/s)
+Fetched 544 B in 0s (12.1 kB/s)
 Selecting previously unselected package hello.
 Preparing to unpack .../hello_1.0.0-1_amd64.deb ...
 Unpacking hello (1.0.0-1) ...
@@ -142,7 +163,12 @@ hello from lajstrom
 
 apt verified `InRelease` against the key it was given (no `[trusted=yes]`) and took `Packages.gz`
 by its hash (`Acquire-By-Hash: yes`). On a machine with `curl`, the key is
-`curl -fsSL http://localhost:8080/apt/ubuntu/key.asc | sudo tee /etc/apt/keyrings/ubuntu.asc`.
+`curl -fsSL -u "deploy:$APT_TOKEN" http://localhost:8080/apt/ubuntu/key.asc | sudo tee /etc/apt/keyrings/ubuntu.asc`.
+Without the `auth.conf` file, `apt-get update` fails, and says why:
+
+```text
+E: Failed to fetch http://localhost:8080/apt/ubuntu/dists/jammy/InRelease  401  Unauthorized [IP: 127.0.0.1 8080]
+```
 
 ## 5. Download it and check the hash (A-07)
 
@@ -154,15 +180,15 @@ cd /tmp && apt-get -o APT::Sandbox::User=root download hello && sha256sum hello_
 
 ```text
 Get:1 http://localhost:8080/apt/ubuntu jammy/main amd64 hello amd64 1.0.0-1 [544 B]
-Fetched 544 B in 0s (11.0 kB/s)
-13c06eb8263b01df968a4d443cca0ce86cb41e089377c8a2ef79186d201a8590  hello_1.0.0-1_amd64.deb
+Fetched 544 B in 0s (10.3 kB/s)
+3b4aaa5310bd8c7c3d8dbaf8a8bc5644bf9a3fed1d53ad84da9e2e8845d85ead  hello_1.0.0-1_amd64.deb
 ```
 
 The same as `sha256sum hello_1.0.0-1_amd64.deb` (`shasum -a 256` on macOS) on the host: the bytes
 uploaded. The pool file is the blob in the registry, read as the facade's blob `GET`:
 
 ```sh
-curl -sI http://localhost:8080/apt/ubuntu/pool/main/h/hello/hello_1.0.0-1_amd64.deb
+curl -sI -u "$u" http://localhost:8080/apt/ubuntu/pool/main/h/hello/hello_1.0.0-1_amd64.deb
 ```
 
 ```text
@@ -170,9 +196,9 @@ HTTP/1.1 200 OK
 Accept-Ranges: bytes
 Content-Length: 544
 Content-Type: application/vnd.debian.binary-package
-Docker-Content-Digest: sha256:d35b504ae333547709098c6f55b4263063e901ff04c258eae97beecd043f7cc0
-Etag: "sha256:13c06eb8263b01df968a4d443cca0ce86cb41e089377c8a2ef79186d201a8590"
-Last-Modified: Sat, 07 Nov 2026 17:48:33 GMT
+Docker-Content-Digest: sha256:9ce05923875bfdaf6260fa85804a95e7488f08802d49110cd7f2537af2d84720
+Etag: "sha256:3b4aaa5310bd8c7c3d8dbaf8a8bc5644bf9a3fed1d53ad84da9e2e8845d85ead"
+Last-Modified: Mon, 09 Nov 2026 11:22:02 GMT
 ```
 
 When the registry hands out download URLs (distribution on S3, the `s3` profile of the dev
@@ -184,11 +210,11 @@ streams instead ([api.md](../api.md)).
 The same bytes again are the idempotent repeat: `201`, the same digest, nothing new stored.
 
 ```sh
-curl -sS -T hello_1.0.0-1_amd64.deb "http://localhost:8080/apt/ubuntu/upload?suite=jammy&component=main" | jq -r .digest
+curl -sS -u "$u" -T hello_1.0.0-1_amd64.deb "http://localhost:8080/apt/ubuntu/upload?suite=jammy&component=main" | jq -r .digest
 ```
 
 ```text
-sha256:d35b504ae333547709098c6f55b4263063e901ff04c258eae97beecd043f7cc0
+sha256:9ce05923875bfdaf6260fa85804a95e7488f08802d49110cd7f2537af2d84720
 ```
 
 Other bytes under the same name, version and architecture are refused. Build them:
@@ -201,7 +227,7 @@ docker run --rm --platform linux/amd64 -u "$(id -u):$(id -g)" -v "$PWD/other:/w"
 In the same suite and component the tag holds another manifest, and tags are immutable:
 
 ```sh
-curl -sS -i -T other/hello_1.0.0-1_amd64.deb "http://localhost:8080/apt/ubuntu/upload?suite=jammy&component=main"
+curl -sS -u "$u" -i -T other/hello_1.0.0-1_amd64.deb "http://localhost:8080/apt/ubuntu/upload?suite=jammy&component=main"
 ```
 
 ```text
@@ -210,14 +236,14 @@ Content-Type: text/plain; charset=utf-8
 X-Content-Type-Options: nosniff
 Content-Length: 133
 
-index: tag "1.0.0-1__jammy_2fmain_2famd64" already points at sha256:d35b504ae333547709098c6f55b4263063e901ff04c258eae97beecd043f7cc0
+index: tag "1.0.0-1__jammy_2fmain_2famd64" already points at sha256:9ce05923875bfdaf6260fa85804a95e7488f08802d49110cd7f2537af2d84720
 ```
 
 In another suite it would be another tag, but the same pool file: the repo has one pool, and a
 Debian pool holds one content per file name, or apt fails the hash check in one of the suites:
 
 ```sh
-curl -sS -i -T other/hello_1.0.0-1_amd64.deb "http://localhost:8080/apt/ubuntu/upload?suite=noble&component=main"
+curl -sS -u "$u" -i -T other/hello_1.0.0-1_amd64.deb "http://localhost:8080/apt/ubuntu/upload?suite=noble&component=main"
 ```
 
 ```text
@@ -264,18 +290,20 @@ jq . metadata.json
     "Version": "2.0-1"
   },
   "filename": "world_2.0-1_amd64.deb",
-  "md5": "742c0d1d047e28256efd506c049e3975",
+  "md5": "982ee694203649d75e40d8bef5b4c061",
   "md5sums": {},
-  "sha1": "42ede0ca06b1bb58b394ecdb4e07f294d0abc7cd",
-  "sha256": "9fd4bafef4983c560f177072c2d5b91da8a1de896d6ded1cd7428f62eeaf43f3",
+  "sha1": "d5907133e1d774fc0269303ad2fa8ec62609eaa6",
+  "sha256": "de3391aec059d1488b2957d44d92187d77f69b1383c97c39c4ca2b0f6544c67c",
   "size": 552
 }
 ```
 
-oras from its image, as in [oras.md](oras.md):
+oras from its image, as in [oras.md](oras.md), logged in as the admin (the login is kept in
+`.oras-auth.json`; `rm .oras-auth.json` ends it):
 
 ```sh
-oras() { docker run --rm --network host -v "$PWD:/w" -w /w ghcr.io/oras-project/oras:v1.3.6 "$@"; }
+oras() { docker run --rm -i --network host -v "$PWD:/w" -w /w ghcr.io/oras-project/oras:v1.3.6 "$@" --registry-config /w/.oras-auth.json; }
+printf '%s\n' "$LAJSTROM_ADMIN_PASSWORD" | oras login --plain-http -u admin --password-stdin localhost:8080   # Login Succeeded
 oras push --plain-http --artifact-type application/vnd.lajstrom.deb.v1 \
   --annotation lajstrom.schema=1 --annotation lajstrom.format=apt --annotation lajstrom.repo=ubuntu \
   --annotation lajstrom.name=world --annotation lajstrom.version=2.0-1 \
@@ -290,17 +318,17 @@ oras push --plain-http --artifact-type application/vnd.lajstrom.deb.v1 \
 ```text
 Preparing world_2.0-1_amd64.deb
 Preparing metadata.json
-Uploading b3bf08120400 metadata.json
+Uploading 8056e80399e3 metadata.json
 Uploading 44136fa355b3 application/vnd.oci.empty.v1+json
-Uploading 9fd4bafef498 world_2.0-1_amd64.deb
-Uploaded  b3bf08120400 metadata.json
+Uploaded  8056e80399e3 metadata.json
+Uploading de3391aec059 world_2.0-1_amd64.deb
 Uploaded  44136fa355b3 application/vnd.oci.empty.v1+json
-Uploaded  9fd4bafef498 world_2.0-1_amd64.deb
-Uploading 8be60c696361 application/vnd.oci.image.manifest.v1+json
-Uploaded  8be60c696361 application/vnd.oci.image.manifest.v1+json
+Uploaded  de3391aec059 world_2.0-1_amd64.deb
+Uploading 5f314216d6f5 application/vnd.oci.image.manifest.v1+json
+Uploaded  5f314216d6f5 application/vnd.oci.image.manifest.v1+json
 Pushed [registry] localhost:8080/apt/ubuntu/world:2.0-1__jammy_2fmain_2famd64
 ArtifactType: application/vnd.lajstrom.deb.v1
-Digest: sha256:8be60c6963617350c777beb896c5c84841b6eb15c75a653edd36a27617abde14
+Digest: sha256:5f314216d6f51590feadef916074b75399a15123d7f736c24774eea4d7a366b4
 ```
 
 What the frontend sets itself, the client sets here
@@ -335,8 +363,8 @@ apt-get install -y world && cat /usr/share/world/greeting
 
 ```text
 Get:1 http://localhost:8080/apt/ubuntu jammy InRelease [1274 B]
-Get:2 http://localhost:8080/apt/ubuntu jammy/main amd64 Packages [403 B]
-Fetched 1677 B in 1s (3130 B/s)
+Get:2 http://localhost:8080/apt/ubuntu jammy/main amd64 Packages [404 B]
+Fetched 1678 B in 1s (3149 B/s)
 Reading package lists...
 hello:
   Installed: (none)
@@ -363,7 +391,7 @@ After this operation, 0 B of additional disk space will be used.
 Get:1 http://localhost:8080/apt/ubuntu jammy/main amd64 hello amd64 1.0.0-1 [544 B]
 Get:2 http://localhost:8080/apt/ubuntu jammy/main amd64 world amd64 2.0-1 [552 B]
 debconf: delaying package configuration, since apt-utils is not installed
-Fetched 1096 B in 0s (22.4 kB/s)
+Fetched 1096 B in 0s (22.5 kB/s)
 Selecting previously unselected package hello.
 Preparing to unpack .../hello_1.0.0-1_amd64.deb ...
 Unpacking hello (1.0.0-1) ...
@@ -384,8 +412,8 @@ bin/lajstrom admin key rotate --repo apt/ubuntu --config deploy/compose/lajstrom
 ```
 
 ```text
-time=2026-11-07T18:50:17.366+01:00 level=INFO msg="signing key rotated" repo=apt/ubuntu fingerprint=35C7506AC5AFACF61337EDAC87726522A83C3733 retired=8DFC877B80909766BF2BF13049628AC6D674219B algorithm=ed25519
-35C7506AC5AFACF61337EDAC87726522A83C3733
+time=2026-11-09T12:22:52.761+01:00 level=INFO msg="signing key rotated" repo=apt/ubuntu fingerprint=90437F941E860E17CAC800E38E96B0284D430BA4 retired=F762A1BC316399727A66E759559497E61058255B algorithm=ed25519
+90437F941E860E17CAC800E38E96B0284D430BA4
 ```
 
 The new key signs from now on, and for `keys.retireGrace` (720 hours in the example) the retired
@@ -394,21 +422,21 @@ updating until they fetch `key.asc` again
 ([operations.md](../operations.md#keys-and-apt-signing) has the runbook):
 
 ```sh
-curl -s http://localhost:8080/apt/ubuntu/key.asc | gpg --show-keys
+curl -s -u "$u" http://localhost:8080/apt/ubuntu/key.asc | gpg --show-keys
 ```
 
 ```text
-pub   ed25519 2026-11-07 [SC]
-      35C7506AC5AFACF61337EDAC87726522A83C3733
+pub   ed25519 2026-11-09 [SC]
+      90437F941E860E17CAC800E38E96B0284D430BA4
 uid                      Lajstrom apt/ubuntu
-sub   cv25519 2026-11-07 [E]
-      B56AAA01837F8F18A4E9A1B5446FD7B70DE04272
+sub   cv25519 2026-11-09 [E]
+      B2189B0A31BEEC57D7DABF8804FA284DEB71E114
 
-pub   ed25519 2026-11-07 [SC]
-      8DFC877B80909766BF2BF13049628AC6D674219B
+pub   ed25519 2026-11-09 [SC]
+      F762A1BC316399727A66E759559497E61058255B
 uid                      Lajstrom apt/ubuntu
-sub   cv25519 2026-11-07 [E]
-      B5B5B7B015D9C8BBAD1EC0C7E521CEFE59E74627
+sub   cv25519 2026-11-09 [E]
+      1C1B89A5715194FBB62B03069764BAAA3D3901A6
 ```
 
 ## The end-to-end script
@@ -416,24 +444,26 @@ sub   cv25519 2026-11-07 [E]
 `test/e2e/apt.sh` runs sections 2 to 7 with checks against any Lajstrom with a writable apt repo:
 two packages named after the run, one uploaded with `PUT`, one pushed with oras, `apt-get update
 && apt-get install` of both signed by `key.asc` (or `[trusted=yes]` when the server does not sign),
-`apt-get download` and the hashes, the repeat and the two `409`s. It needs `curl`, `jq` and
-Docker, runs `admin deb metadata` from `bin/lajstrom` (or `go run`), and builds and installs in
-`ubuntu:24.04`, or in the image `APT_E2E_IMAGE` names (`ubuntu:22.04` and `debian:12` pass too):
+`apt-get download` and the hashes, the repeat and the two `409`s. It runs as the user of
+`LAJSTROM_E2E_USER` and `LAJSTROM_E2E_PASSWORD`, which needs `write` on the repo, and gives apt
+the same credentials in `auth.conf`. It needs `curl`, `jq` and Docker, runs `admin deb metadata`
+from `bin/lajstrom` (or `go run`), and builds and installs in `ubuntu:24.04`, or in the image
+`APT_E2E_IMAGE` names (`ubuntu:22.04` and `debian:12` pass too):
 
 ```sh
-test/e2e/apt.sh http://localhost:8080 ubuntu
+LAJSTROM_E2E_USER=admin LAJSTROM_E2E_PASSWORD="$LAJSTROM_ADMIN_PASSWORD" test/e2e/apt.sh http://localhost:8080 ubuntu
 ```
 
 ```text
-ok   dpkg-deb --build: e2e-put-20261107175156-7721_1.0.0-1_amd64.deb, e2e-oras-20261107175156-7721_1.0.0-1_amd64.deb, and other bytes under the first name
-ok   PUT e2e-put-20261107175156-7721_1.0.0-1_amd64.deb to jammy/main: 201 with sha256:9bd826ef9b87f9c70b75ab1e2e7e91cd83c50134b10c5766f14bbc865a130d63, Location in the pool
-ok   oras push e2e-oras-20261107175156-7721_1.0.0-1_amd64.deb to jammy/main: Digest: sha256:30a2e3b3b227950113806e981fe3f341705d594f370ed2579c57ebff413934aa
+ok   dpkg-deb --build: e2e-put-20261109112301-31726_1.0.0-1_amd64.deb, e2e-oras-20261109112301-31726_1.0.0-1_amd64.deb, and other bytes under the first name
+ok   PUT e2e-put-20261109112301-31726_1.0.0-1_amd64.deb to jammy/main: 201 with sha256:a1ac37ba73748354f86f9878d171e1cdae09ccb1a9ab7068092e30e9a8c798fe, Location in the pool
+ok   oras push e2e-oras-20261109112301-31726_1.0.0-1_amd64.deb to jammy/main: Digest: sha256:3d13f3626fd9693bd046a08611ebd8d13aec107ab8049f848546b06c7f5104b6
 ok   GET key.asc: 200, the source is signed-by it
-ok   apt-get update && apt-get install e2e-put-20261107175156-7721 e2e-oras-20261107175156-7721 in ubuntu:24.04 [signed-by=/etc/apt/keyrings/ubuntu.asc]: both installed, their files there
-ok   apt-get download e2e-put-20261107175156-7721 e2e-oras-20261107175156-7721: sha256 644c85b74c90915d3e6a61af61dd8cd6d427dee6655e25732b21b73ef8504ef0 and 0bb3c58942f28c311c9b99b8f8d05f85727a50b16d659fa17d134408dfc54852, those of the uploaded files
-ok   PUT of the same bytes again: 201, the same digest sha256:9bd826ef9b87f9c70b75ab1e2e7e91cd83c50134b10c5766f14bbc865a130d63
-ok   PUT of other bytes as e2e-put-20261107175156-7721 1.0.0-1 amd64 to jammy/main: 409, index: tag "1.0.0-1__jammy_2fmain_2famd64" already points at sha256:9bd826ef9b87f9c70b75ab1e2e7e91cd83c50134b10c5766f14bbc865a130d63
-ok   PUT of other bytes as e2e-put-20261107175156-7721 1.0.0-1 amd64 to noble/main: 409, index: conflict: pool file name e2e-put-20261107175156-7721_1.0.0-1_amd64.deb is held by version 1.0.0-1 in jammy/main with another content; a Debian pool holds one content per file name
+ok   apt-get update && apt-get install e2e-put-20261109112301-31726 e2e-oras-20261109112301-31726 in ubuntu:24.04 [signed-by=/etc/apt/keyrings/ubuntu.asc], auth.conf login admin: both installed, their files there
+ok   apt-get download e2e-put-20261109112301-31726 e2e-oras-20261109112301-31726: sha256 83bc1a66cc38cfb77b6a14915b02825aa53b596e880d732413e6028779c2b9b1 and 9f233f4ac5a6741daa8913d226a5be200372fc4c4f846b581257cd91d1c66429, those of the uploaded files
+ok   PUT of the same bytes again: 201, the same digest sha256:a1ac37ba73748354f86f9878d171e1cdae09ccb1a9ab7068092e30e9a8c798fe
+ok   PUT of other bytes as e2e-put-20261109112301-31726 1.0.0-1 amd64 to jammy/main: 409, index: tag "1.0.0-1__jammy_2fmain_2famd64" already points at sha256:a1ac37ba73748354f86f9878d171e1cdae09ccb1a9ab7068092e30e9a8c798fe
+ok   PUT of other bytes as e2e-put-20261109112301-31726 1.0.0-1 amd64 to noble/main: 409, index: conflict: pool file name e2e-put-20261109112301-31726_1.0.0-1_amd64.deb is held by version 1.0.0-1 in jammy/main with another content; a Debian pool holds one content per file name
 PASS apt e2e against http://localhost:8080/apt/ubuntu/
 ```
 

@@ -18,9 +18,9 @@ LAJSTROM=http://localhost:8080
   a request with credentials runs as the user (`user:<name>`, for a personal access token
   too) or the deploy token (`token:<id>`, Basic `deploy:<token>`), one without as `anonymous`,
   and credentials that are refused are `401` at once. `GET /api/v1/whoami` tells who the
-  caller is. **Authorization** comes with #45: every endpoint is open in this version, but for
-  the scopes of a token ([auth.md](auth.md#what-a-token-may-do)), which hold already. From
-  then on, reading a repo and listing it need `read` on it, changing, deleting and reindexing
+  caller is. **Authorization** is RBAC's ([rbac.md](spec/rbac.md)): the bindings of the
+  principal decide, behind the scopes of its token ([auth.md](auth.md#what-a-token-may-do)).
+  Reading a repo and listing it need `read` on it, changing, deleting and reindexing
   it and managing its deploy tokens need `manage`, creating a repo needs the `admin` role, and
   the tokens of a user are the user's or the admin's ([rbac.md](spec/rbac.md) §2 and §3). A
   denial does not tell whether a repo exists: `401` with a Basic challenge for a caller without
@@ -276,8 +276,7 @@ is `204` again and stays as it is. An id that is not a token of that user or rep
 
 ### Who may
 
-A user's own personal access tokens, or the admin's for any user (until #45, as every
-endpoint, anyone's); the deploy tokens of a repo with `manage` on it. A deploy token, and a
+A user's own personal access tokens, or the admin's for any user; the deploy tokens of a repo with `manage` on it. A deploy token, and a
 personal access token with scopes, asking for any of these is `403`, even for its own repo or
 its own user: tokens never manage.
 
