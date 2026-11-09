@@ -124,16 +124,27 @@ stops the server and removes the directory on exit; `LAJSTROM_E2E_KEEP=1` keeps 
 | `rbac.sh` | the S-02 matrix of the six principals on the raw frontend and on `/v2` (the tokens' actions included), a repo that may not be read answering as one that does not exist (S-08, X-05), the reader's `oras push` refused and the writer's through, a deploy token held to its repo (S-04), a binding and a repo's `anonymousRead` counting from the next request (S-07), creating a repo with a taken name | curl, oras on `PATH`, else its image, `lajstrom admin user` and `binding` |
 | `oci-token.sh` | the docker bearer flow, oras login, push and pull, token key rotations | curl, oras image, `lajstrom admin key` |
 | `tokens.sh` | personal access tokens and deploy tokens on raw, apt (`auth.conf`) and `/v2` | curl, `ubuntu:24.04`, oras image |
-| `apt.sh` | a `.deb` by PUT and one by oras, `apt-get update`, `install` and `download` from the signed repo, the conflicts | `ubuntu:24.04` (`linux/amd64`), oras image |
+| `apt.sh` | a `.deb` by PUT and one by oras; the repo's `anonymousRead` on: `key.asc` into `/etc/apt/keyrings`, `apt-get update` (the `Packages` by-hash), `install` and `apt-cache policy` without credentials; off: the anonymous `apt-get update` fails with apt's 401, then with credentials in `/etc/apt/auth.conf.d` `update`, `install`, `download` and the sha256 of the files; a second `update` with `Acquire::By-Hash=no` (the `Packages` by name); a copy of the suite whose `Release` hashes are wrong fails `apt-get update` with apt's `Hash Sum mismatch`; the conflicts | `ubuntu:24.04` (`linux/amd64`), or the image of `APT_E2E_IMAGE`; oras image |
 | `pypi.sh` | `python -m build`, twine upload, the same files again, other bytes (409), `pip install`, `uv pip install`, `uv publish` and `--check-url`, `pip install --upgrade`, PEP 658 in the access log | `python:3.13` (build, twine, uv from PyPI) |
 | `maven.sh` | a maven repo and a deploy token through the API; `mvn deploy` of a jar with sources, javadoc and pom (M-01: every PUT 201, one manifest with four file layers), the files and their four checksums (M-07), a second version and `maven-metadata.xml` (M-03), `mvn dependency:get` into an empty local repository and a version range (M-02), the same version again (200) and with a changed jar (409) (M-04), Gradle `publish` and resolve; needs the maven frontend (#54, #55) | `maven:3.9.16-eclipse-temurin-21`, `gradle:8.14.6-jdk21` (plugins from Maven Central, cached in the volumes `lajstrom-e2e-m2` and `lajstrom-e2e-gradle`) |
 
 The images are `ubuntu:24.04` for `linux/amd64`, emulated on Apple silicon,
 `ghcr.io/oras-project/oras:v1.3.6`, `python:3.13`, `maven:3.9.16-eclipse-temurin-21` and
-`gradle:8.14.6-jdk21`; the first run pulls them. The containers use
-`--network host`, which reaches the server's `127.0.0.1` on Linux and under OrbStack; Docker
-Desktop is not measured (its host networking is a setting of its own). The scenarios run under
-whatever `bash` is first on `PATH`; the bash 3.2 of macOS is enough.
+`gradle:8.14.6-jdk21`; the first run pulls them. `apt.sh` and `tokens.sh` take their apt client
+from `APT_E2E_IMAGE` when it is set; `apt.sh` passes in `ubuntu:22.04`, `ubuntu:24.04` and
+`debian:12`:
+
+```sh
+APT_E2E_IMAGE=debian:12 test/e2e/run.sh apt
+```
+
+`apt.sh` reads in the server's access log whether apt asked for the `Packages` by-hash or by name,
+and as whom; run by hand without `LAJSTROM_SERVER_LOG` it leaves those checks out and says so.
+It turns the `anonymousRead` of its repo on and off through the API, and sets it back on exit.
+
+The containers use `--network host`, which reaches the server's `127.0.0.1` on Linux and under
+OrbStack; Docker Desktop is not measured (its host networking is a setting of its own). The
+scenarios run under whatever `bash` is first on `PATH`; the bash 3.2 of macOS is enough.
 
 ### When a scenario fails
 
