@@ -68,8 +68,9 @@ func newReplicas(t *testing.T) *replicas {
 		must(t, err)
 		tokens, err := keys.NewTokens(keys.TokenOptions{Index: st, Master: master, Log: slog.New(slog.NewTextHandler(r.logs, nil))})
 		must(t, err)
+		log := slog.New(slog.NewTextHandler(r.logs, nil))
 		srv := httptest.NewServer(New(Options{Index: st, Providers: provider.Map{"it": p}, Tokens: tokens,
-			ExternalURL: "https://art.test", Log: slog.New(slog.NewTextHandler(r.logs, nil))}))
+			ExternalURL: "https://art.test", Log: log, Ingest: ingest.New(ingest.Options{Providers: provider.Map{"it": p}, Index: st, Log: log})}))
 		t.Cleanup(srv.Close)
 		return srv
 	}
@@ -378,6 +379,24 @@ func TestIntegrationRawPush(t *testing.T) {
 		t.Logf("the registry redirects blob downloads: %s", redacted(rr.Header().Get("Location")))
 	case rr.Code != http.StatusOK || !bytes.Equal(rr.Body.Bytes(), f.content):
 		t.Errorf("GET /raw/assets/%s: %d %q", f.path, rr.Code, rr.Body)
+	}
+
+	// A signature of the file passes through the hook unindexed, and the referrers API lists it:
+	// the backend's, or the tag schema that the provider wrote.
+	for _, b := range [][]byte{ocispec.DescriptorEmptyJSON.Data, []byte("signature")} {
+		resp, body = request(t, http.MethodPost, name+"/blobs/uploads/?digest="+digest.FromBytes(b).String(), bytes.NewReader(b), int64(len(b)))
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("blob of the signature: %d %s", resp.StatusCode, body)
+		}
+	}
+	sig, sigDigest := referrerOf(t, d, cosignBundle, "signature")
+	resp, body = request(t, http.MethodPut, name+"/manifests/"+sigDigest.String(), bytes.NewReader(sig), int64(len(sig)), "Content-Type", ocispecManifest)
+	if resp.StatusCode != http.StatusCreated || resp.Header.Get("OCI-Subject") != d.String() {
+		t.Fatalf("signature: %d, OCI-Subject %q: %s\n%s", resp.StatusCode, resp.Header.Get("OCI-Subject"), body, logs)
+	}
+	resp, body = request(t, http.MethodGet, name+"/referrers/"+d.String(), nil, 0)
+	if got := referrersOf(t, "referrers", body); resp.StatusCode != http.StatusOK || len(got) != 1 || got[0] != sigDigest.String()+" "+cosignBundle {
+		t.Errorf("referrers: %d %q, want %s", resp.StatusCode, got, sigDigest)
 	}
 
 	f.m.Annotations[ocispec.AnnotationCreated] = "2026-11-07T10:00:01Z"

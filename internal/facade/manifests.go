@@ -106,10 +106,11 @@ func manifestUnknown(err error) error {
 // Options.MaxManifestSize) is read and checked to be a manifest of one of manifestMediaTypes
 // whose mediaType field, when it has one, is the Content-Type. On a repo of format oci the
 // manifest then passes through: it is pushed with its tag (PushReference) or by its digest,
-// which must be the reference's, oci_repos records the OCI name, and the answer is 201, with
-// OCI-Subject for a manifest with a subject: the facade serves the referrers API, and the
-// provider writes the tag schema where the backend has none. Every other format goes through
-// the manifest hook into ingest (putManaged).
+// which must be the reference's (passThrough; a manifest with a subject goes through ingest),
+// oci_repos records the OCI name, and the answer is 201, with OCI-Subject for a manifest with a
+// subject: the facade serves the referrers API, and the provider writes the tag schema where
+// the backend has none. Every other format goes through the manifest hook into ingest
+// (putManaged).
 func (h *handler) putManifest(w http.ResponseWriter, r *http.Request, t *target, ref string) error {
 	ctx := r.Context()
 	refDigest, err := parseReference(ref)
@@ -126,20 +127,8 @@ func (h *handler) putManifest(w http.ResponseWriter, r *http.Request, t *target,
 	if t.repo.Format != ociFormat {
 		return h.putManaged(w, r, t, ref, refDigest, desc, body)
 	}
-	rr, err := h.backend(ctx, t)
-	if err != nil {
+	if err := h.passThrough(r, t, ref, refDigest, desc, body); err != nil {
 		return err
-	}
-	if refDigest != "" {
-		err = rr.Push(ctx, desc, bytes.NewReader(body))
-	} else {
-		err = rr.PushReference(ctx, desc, bytes.NewReader(body), ref)
-	}
-	switch {
-	case errors.Is(err, provider.ErrConflict):
-		return &apiError{code: codeTagInvalid, err: err}
-	case err != nil:
-		return &apiError{code: codeManifestInvalid, err: err}
 	}
 	if err := h.o.Index.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: t.repo.ID, Path: t.oci, SeenAt: h.o.Now()}); err != nil {
 		// The registry has the manifest and is the truth; reindex records the repository.
@@ -147,6 +136,36 @@ func (h *handler) putManifest(w http.ResponseWriter, r *http.Request, t *target,
 			"requestId", server.RequestID(ctx))
 	}
 	created(w, t, desc.Digest, subjectOf(body))
+	return nil
+}
+
+// passThrough stores a manifest of an oci repo in the backend as it came, by digest or under the
+// tag ref: a manifest with a subject through ingest (ingestReferrer), which takes the referrers
+// lock where the backend has no referrers API, any other one directly.
+func (h *handler) passThrough(r *http.Request, t *target, ref string, refDigest digest.Digest, desc ocispec.Descriptor, body []byte) error {
+	tag := ref
+	if refDigest != "" {
+		tag = ""
+	}
+	if subject := subjectOf(body); subject != nil {
+		return h.ingestReferrer(r, t, tag, desc, body, subject.Digest)
+	}
+	ctx := r.Context()
+	rr, err := h.backend(ctx, t)
+	if err != nil {
+		return err
+	}
+	if tag == "" {
+		err = rr.Push(ctx, desc, bytes.NewReader(body))
+	} else {
+		err = rr.PushReference(ctx, desc, bytes.NewReader(body), tag)
+	}
+	switch {
+	case errors.Is(err, provider.ErrConflict):
+		return &apiError{code: codeTagInvalid, err: err}
+	case err != nil:
+		return &apiError{code: codeManifestInvalid, err: err}
+	}
 	return nil
 }
 
