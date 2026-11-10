@@ -197,6 +197,7 @@ func (r *run) measureAll(ctx context.Context) {
 		{[]string{"largestBlob", "chunkSize"}, r.measureBlobSizes},
 		{[]string{"manifestSize"}, r.measureManifestSize},
 		{[]string{"profile"}, r.measureProfile},
+		{[]string{"chunkOrder", "sessionStatus", "cancel", "mount", "wrongDigest", "replica"}, r.measureUploads},
 	}
 	for _, g := range groups {
 		if err := g.fn(r.in(ctx, g.keys[0])); err != nil {
