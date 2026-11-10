@@ -13,6 +13,7 @@ a single blob. Go, single binary, SQLite or Postgres as a derived index.
    touches endpoints, the database, or auth.
 5. The issue you are implementing (`gh issue view <n>`). Its acceptance criteria are the
    definition of done.
+6. `docs/spec/guarantees.md` — the invariants Lajstrom promises, and what each one assumes.
 
 ## Invariants you must not break
 
