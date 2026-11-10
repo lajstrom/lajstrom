@@ -157,7 +157,7 @@ stops the server and removes the directory on exit; `LAJSTROM_E2E_KEEP=1` keeps 
 | Scenario | What it checks | Clients |
 | --- | --- | --- |
 | `raw.sh` | R-01 to R-04, a range, R-09, R-10, DELETE | curl |
-| `oras.sh` | oras through `/v2`: the challenge without credentials, `oras login`, push with the raw profile, the repeat, another manifest under the tag (409), pull, tags, manifest fetch, the file on the raw frontend | oras on `PATH`, else its image |
+| `oras.sh` | oras through `/v2`: the challenge without credentials, `oras login`, push with the raw profile, the repeat, another manifest under the tag (409), pull, tags, manifest fetch, the file on the raw frontend, the delete; on an `oci` repo of the run's own, the push rows (#245) and one image under two tags, whose delete by one tag is 409 DENIED naming the other and by digest deletes both (#284) | oras on `PATH`, else its image |
 | `auth.sh` | local users, HTTP Basic, disable, enable, set-password, the throttle of failed logins (X-04) and of `/v2/token` | curl, `lajstrom admin user` |
 | `rbac.sh` | the S-02 matrix of the six principals on the raw frontend and on `/v2` (the tokens' actions included), a repo that may not be read answering as one that does not exist (S-08, X-05), the reader's `oras push` refused and the writer's through, a deploy token held to its repo (S-04), a binding and a repo's `anonymousRead` counting from the next request (S-07), creating a repo with a taken name | curl, oras on `PATH`, else its image, `lajstrom admin user` and `binding` |
 | `oci-token.sh` | the docker bearer flow, oras login, push and pull, token key rotations | curl, oras image, `lajstrom admin key` |

@@ -185,7 +185,8 @@ func (h *handler) recordPassThrough(ctx context.Context, t *target, tag string, 
 
 // passThrough stores a manifest of an oci repo in the backend as it came, by digest or under the
 // tag ref: a manifest with a subject through ingest (ingestReferrer), which takes the referrers
-// lock where the backend has no referrers API, any other one directly.
+// lock where the backend has no referrers API and for a push by tag, any other one directly, by
+// tag under the tag lock of its digest.
 func (h *handler) passThrough(r *http.Request, t *target, ref string, refDigest digest.Digest, desc ocispec.Descriptor, body []byte) error {
 	tag := ref
 	if refDigest != "" {
@@ -202,7 +203,11 @@ func (h *handler) passThrough(r *http.Request, t *target, ref string, refDigest 
 	if tag == "" {
 		err = rr.Push(ctx, desc, bytes.NewReader(body))
 	} else {
-		err = rr.PushReference(ctx, desc, bytes.NewReader(body), tag)
+		// The tag lock of the manifest, which a delete holds while it counts the manifest's tags
+		// (docs/spec/index-schema.md, Coordination): the tag is counted or pushed after it.
+		err = h.o.Index.WithReferrersLock(ctx, t.oci, desc.Digest, func(ctx context.Context) error {
+			return rr.PushReference(ctx, desc, bytes.NewReader(body), tag)
+		})
 	}
 	switch {
 	case errors.Is(err, provider.ErrConflict):
@@ -293,11 +298,19 @@ func (h *handler) deleteManifest(w http.ResponseWriter, r *http.Request, t *targ
 //
 //	provider.ErrUnsupported   405 UNSUPPORTED: the backend does not delete manifests
 //	index.ErrNotFound         404 MANIFEST_UNKNOWN
+//	index.ErrConflict         409 DENIED: other tags name the manifest of a tag of an oci repo,
+//	                          named in the message and in detail.tags (#284)
 //	provider.ErrConflict      409 DENIED: the backend refused this one delete
 //	anything else             format.StatusOf: 502 for the backend's credentials, 503 for an
 //	                          open circuit breaker, else 500, logged
 func deleteError(t *target, ref string, err error) error {
+	var tagged interface{ OtherTags() []string }
 	switch {
+	case errors.As(err, &tagged) && errors.Is(err, index.ErrConflict):
+		tags := tagged.OtherTags()
+		return &apiError{status: http.StatusConflict, code: codeDenied, err: err, detail: map[string][]string{"tags": tags},
+			msg: fmt.Sprintf("%s in %s is also tagged %s: a delete by tag would delete those tags too, nothing was deleted; delete by digest to delete the manifest with every tag",
+				ref, t.name, strings.Join(tags, ", "))}
 	case errors.Is(err, provider.ErrUnsupported):
 		return &apiError{status: http.StatusMethodNotAllowed, code: codeUnsupported, err: err,
 			msg: fmt.Sprintf("the registry %q of %s/%s does not delete manifests; nothing was deleted", t.repo.Registry, t.repo.Format, t.repo.Name)}
