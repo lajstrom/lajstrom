@@ -435,9 +435,12 @@ func TestManifestHookErrors(t *testing.T) {
 		{name: "invalid", err: fmt.Errorf("%w: %w", ingest.ErrInvalid, errors.Join(errors.New("rule one"), errors.New("rule two"))),
 			status: http.StatusBadRequest, code: codeManifestInvalid,
 			message: "the manifest is not a valid raw artifact for raw/assets/docs/e.txt", detail: "rule one; rule two"},
+		// The facade's own profile check refuses it before ingest, through the same table.
 		{name: "invalid with oras's default artifactType", err: fmt.Errorf("%w: artifactType", ingest.ErrInvalid), unknown: true,
 			status: http.StatusBadRequest, code: codeManifestInvalid,
-			message: "the manifest is not a valid raw artifact for raw/assets/docs/e.txt; pass --artifact-type application/vnd.lajstrom.raw.v1", detail: "artifactType"},
+			message: "the manifest is not a valid raw artifact for raw/assets/docs/e.txt; pass --artifact-type application/vnd.lajstrom.raw.v1",
+			detail: `profile: invalid artifactType: "application/vnd.unknown.artifact.v1" is not application/vnd.lajstrom.<type>.v1; ` +
+				`profile: invalid layer title: layer 0: "docs/e.txt" is not a file name`},
 		{name: "too large", err: fmt.Errorf("%w: a file of 11 bytes: %w", ingest.ErrInvalid, &http.MaxBytesError{Limit: 10}),
 			status: http.StatusRequestEntityTooLarge, code: codeSizeInvalid,
 			message: "format: invalid: a file of 11 bytes: http: request body too large"},

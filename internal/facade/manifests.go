@@ -33,6 +33,12 @@ var manifestMediaTypes = map[string]bool{
 	"application/vnd.docker.distribution.manifest.list.v2+json": true,
 }
 
+// maxLayers is the most layers a manifest PUT may name, on every repo: an image has tens, a
+// ModelPack artifact hundreds. The facade asks the registry about each layer of a managed
+// manifest, and ingest asks again, so without a bound one PUT of 4 MiB with 25 000 layers made
+// 50 000 requests to the registry (threat model M-2).
+const maxLayers = 1000
+
 // tagGrammar is the grammar of a tag (distribution spec, "Pulling manifests").
 var tagGrammar = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`)
 
@@ -220,7 +226,8 @@ func (h *handler) passThrough(r *http.Request, t *target, ref string, refDigest 
 
 // readManifest reads the manifest of a PUT, at most limit bytes, and returns its descriptor
 // and bytes; refDigest, when not empty, is the digest the reference names, whose algorithm
-// digests the body.
+// digests the body. A manifest with more than maxLayers layers is MANIFEST_INVALID, before
+// anything asks the registry.
 func readManifest(r *http.Request, refDigest digest.Digest, limit int64) (ocispec.Descriptor, []byte, error) {
 	switch {
 	case r.ContentLength < 0:
@@ -238,25 +245,8 @@ func readManifest(r *http.Request, refDigest digest.Digest, limit int64) (ocispe
 		return ocispec.Descriptor{}, nil, &apiError{status: http.StatusBadRequest, code: codeManifestInvalid,
 			msg: fmt.Sprintf("Content-Type %q is not a manifest media type", r.Header.Get("Content-Type"))}
 	}
-	var fields struct {
-		MediaType string `json:"mediaType"`
-		Subject   *struct {
-			Digest string `json:"digest"`
-		} `json:"subject"`
-	}
-	if err := json.Unmarshal(body, &fields); err != nil {
-		return ocispec.Descriptor{}, nil, &apiError{status: http.StatusBadRequest, code: codeManifestInvalid, msg: "the manifest is not JSON", err: err}
-	}
-	// The subject's digest goes back in the OCI-Subject header of the answer: a digest only.
-	if fields.Subject != nil {
-		if _, err := digest.Parse(fields.Subject.Digest); err != nil {
-			return ocispec.Descriptor{}, nil, &apiError{status: http.StatusBadRequest, code: codeManifestInvalid,
-				msg: fmt.Sprintf("the manifest's subject has the digest %q, which is not one", fields.Subject.Digest)}
-		}
-	}
-	if fields.MediaType != "" && fields.MediaType != mediaType {
-		return ocispec.Descriptor{}, nil, &apiError{status: http.StatusBadRequest, code: codeManifestInvalid,
-			msg: fmt.Sprintf("the manifest's mediaType %q is not its Content-Type %q", fields.MediaType, mediaType)}
+	if err := checkFields(body, mediaType); err != nil {
+		return ocispec.Descriptor{}, nil, err
 	}
 	alg := digest.Canonical
 	if refDigest != "" {
@@ -268,6 +258,40 @@ func readManifest(r *http.Request, refDigest digest.Digest, limit int64) (ocispe
 			msg: fmt.Sprintf("the manifest's digest is %s, not %s", d, refDigest)}
 	}
 	return ocispec.Descriptor{MediaType: mediaType, Digest: d, Size: int64(len(body))}, body, nil
+}
+
+// checkFields checks the fields of a manifest body that every repo relies on: JSON, at most
+// maxLayers layers, a subject whose digest parses, and a mediaType, when it has one, that is
+// the Content-Type mediaType.
+func checkFields(body []byte, mediaType string) error {
+	var fields struct {
+		MediaType string `json:"mediaType"`
+		Subject   *struct {
+			Digest string `json:"digest"`
+		} `json:"subject"`
+		Layers json.RawMessage `json:"layers"`
+	}
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return &apiError{status: http.StatusBadRequest, code: codeManifestInvalid, msg: "the manifest is not JSON", err: err}
+	}
+	// Layers that are not a list are left to the manifest's decoder, or to the backend.
+	var layers []json.RawMessage
+	if json.Unmarshal(fields.Layers, &layers) == nil && len(layers) > maxLayers {
+		return &apiError{status: http.StatusBadRequest, code: codeManifestInvalid,
+			msg: fmt.Sprintf("the manifest has %d layers, the limit is %d", len(layers), maxLayers)}
+	}
+	// The subject's digest goes back in the OCI-Subject header of the answer: a digest only.
+	if fields.Subject != nil {
+		if _, err := digest.Parse(fields.Subject.Digest); err != nil {
+			return &apiError{status: http.StatusBadRequest, code: codeManifestInvalid,
+				msg: fmt.Sprintf("the manifest's subject has the digest %q, which is not one", fields.Subject.Digest)}
+		}
+	}
+	if fields.MediaType != "" && fields.MediaType != mediaType {
+		return &apiError{status: http.StatusBadRequest, code: codeManifestInvalid,
+			msg: fmt.Sprintf("the manifest's mediaType %q is not its Content-Type %q", fields.MediaType, mediaType)}
+	}
+	return nil
 }
 
 // deleteManifest answers DELETE …/manifests/<ref> (docs/spec/http-routing.md §2): delete on
