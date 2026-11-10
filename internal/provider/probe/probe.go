@@ -193,6 +193,10 @@ func (r *run) measureAll(ctx context.Context) {
 		{[]string{"tags"}, r.measureTags},
 		{[]string{"deleteDigest", "deleteTag"}, r.measureDeletes},
 		{[]string{"immutableTags"}, r.measureImmutable},
+		{[]string{"blobRedirect", "range"}, r.measureBlobReads},
+		{[]string{"largestBlob", "chunkSize"}, r.measureBlobSizes},
+		{[]string{"manifestSize"}, r.measureManifestSize},
+		{[]string{"profile"}, r.measureProfile},
 	}
 	for _, g := range groups {
 		if err := g.fn(r.in(ctx, g.keys[0])); err != nil {
@@ -276,6 +280,18 @@ func (r *run) send(ctx context.Context, method, target string) (answer, error) {
 // startUpload opens an upload session in repo: POST blobs/uploads/.
 func (r *run) startUpload(ctx context.Context, repo string) (answer, error) {
 	return r.send(ctx, http.MethodPost, r.path(repo, "blobs/uploads/"))
+}
+
+// session opens an upload session in repo and returns its location.
+func (r *run) session(ctx context.Context, repo string) (*url.URL, error) {
+	a, err := r.startUpload(ctx, repo)
+	if err != nil {
+		return nil, err
+	}
+	if !a.ok(http.StatusAccepted) || a.location() == nil {
+		return nil, fmt.Errorf("the upload session: %s", a.refusal())
+	}
+	return a.location(), nil
 }
 
 // withDigest is the session URL u with the query parameter digest set.
