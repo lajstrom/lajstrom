@@ -80,11 +80,30 @@ func (h *handler) startUpload(w http.ResponseWriter, r *http.Request, t *target,
 	case q.Has("digest"):
 		return h.monolithic(w, r, t, rr, q.Get("digest"))
 	}
+	if err := h.ensureRepository(ctx, t); err != nil {
+		return err
+	}
 	u, err := rr.StartBlobUpload(ctx)
 	if err != nil {
 		return &apiError{code: codeBlobUploadInvalid, err: err}
 	}
 	return h.openSession(w, r, t, rr, u)
+}
+
+// ensureRepository creates the backend's repository of t where the backend does not create
+// one on push (ECR without a creation template, capabilities.createOnPush: false), before the
+// first request that writes to it: a blob upload or a mount (#356). Elsewhere it is a no-op,
+// and the provider remembers a repository it created or found, so a push asks the backend
+// once per repository and while, as ingest's publishes do.
+func (h *handler) ensureRepository(ctx context.Context, t *target) error {
+	p, err := h.registry(t)
+	if err != nil {
+		return err
+	}
+	if err := p.EnsureRepository(ctx, t.oci); err != nil {
+		return &apiError{code: codeBlobUploadInvalid, err: fmt.Errorf("facade: ensure repository %s: %w", t.name, err)}
+	}
+	return nil
 }
 
 // monolithic answers POST …/blobs/uploads/?digest=: the body is the whole blob, streamed into
@@ -97,6 +116,9 @@ func (h *handler) monolithic(w http.ResponseWriter, r *http.Request, t *target, 
 		return err
 	}
 	if err := limitBlob(w, r, t, 0, r.ContentLength); err != nil {
+		return err
+	}
+	if err := h.ensureRepository(ctx, t); err != nil {
 		return err
 	}
 	u, err := rr.StartBlobUpload(ctx)
@@ -128,6 +150,9 @@ func (h *handler) mount(w http.ResponseWriter, r *http.Request, t *target, rr pr
 	}
 	src, ok, err := h.mountSource(ctx, t, from)
 	if err != nil {
+		return err
+	}
+	if err := h.ensureRepository(ctx, t); err != nil {
 		return err
 	}
 	if ok {
