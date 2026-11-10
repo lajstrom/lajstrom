@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"runtime/debug"
+
+	"github.com/lajstrom/lajstrom/internal/auth"
 )
 
 // recovery turns a panic in a handler into a 500 JSON response with the request id, and logs
@@ -31,7 +33,7 @@ func (s *Server) recovery(next http.Handler) http.Handler {
 				"panic", fmt.Sprint(v),
 				"requestId", id,
 				"method", r.Method,
-				"path", r.URL.Path,
+				"path", auth.RedactSecrets(r.URL.Path),
 				"stack", string(debug.Stack()),
 			)
 			if rec.started() {

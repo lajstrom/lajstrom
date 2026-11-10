@@ -5,11 +5,13 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/metrics"
 )
 
-// accessLog writes one Info line per request after the handler returns. It logs the path and
-// never the query string or any header: queries and Authorization carry credentials. The
+// accessLog writes one Info line per request after the handler returns. It logs the path, its
+// token secrets redacted (npm logout has one in it), and never the query string or any header:
+// queries and Authorization carry credentials. The
 // remoteAddr is the client's (clientAddress): the peer of the connection with its port, or the
 // address X-Forwarded-For names, without a port, with the peer as proxy. The
 // principal is the one the authentication middleware settled on, through a holder in the
@@ -26,7 +28,7 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 		s.observe(r, rec, time.Since(start))
 		attrs := []slog.Attr{
 			slog.String("method", r.Method),
-			slog.String("path", r.URL.Path),
+			slog.String("path", auth.RedactSecrets(r.URL.Path)),
 			slog.Int("status", rec.statusCode()),
 			slog.Int64("bytes", rec.bytes),
 			slog.Duration("duration", time.Since(start)),

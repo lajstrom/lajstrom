@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 )
@@ -21,7 +22,7 @@ import (
 //	GET /{repo}/<name>/-/<file>      a tarball, through format.ServeBlob
 //	PUT /{repo}/<name>               npm publish (publish.go), write
 //	    /{repo}/-/…                  the registry's own routes (special): dist-tags (disttags.go);
-//	                                 ping, whoami, search, audit (cli.go)
+//	                                 ping, whoami, search, audit (cli.go); login, logout (login.go)
 //
 // GET is HEAD too. Every answer is JSON, an error {"error": "<message>"}.
 func (p Plugin) Routes(r format.Router, deps format.Deps) {
@@ -46,30 +47,49 @@ func special(path string) []string {
 }
 
 // serveSpecial dispatches a route below /npm/<repo>/-/; each checks its own action. Everything
-// else there (npm token, access, owner, team, star, profile) is 404.
+// else there (npm token, access, owner, team, star, profile, and the web login, after whose 404
+// npm asks for a password) is 404.
 func (h *handlers) serveSpecial(w http.ResponseWriter, r *http.Request, segs []string) {
 	repo, ok := format.RepoFrom(r.Context())
 	if !ok {
 		h.fail(w, r, errors.New("npm: the route has no repo"))
 		return
 	}
-	read := r.Method == http.MethodGet || r.Method == http.MethodHead
-	switch route := strings.Join(segs, "/"); {
-	case segs[0] == "package":
-		h.distTags(w, r, repo, segs[1:])
-	case read && route == "ping":
-		h.ping(w, r, repo)
-	case read && route == "whoami":
-		h.whoami(w, r, repo)
-	case read && route == "v1/search":
-		h.search(w, r, repo)
-	case r.Method == http.MethodPost && route == "npm/v1/security/advisories/bulk":
-		h.audit(w, r, repo, true)
-	case r.Method == http.MethodPost && (route == "npm/v1/security/audits" || route == "npm/v1/security/audits/quick"):
-		h.audit(w, r, repo, false)
-	default: // the web login (-/v1/login) among them: npm then asks for a password
-		h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
+	method := r.Method
+	if method == http.MethodHead {
+		method = http.MethodGet
 	}
+	if serve := h.specialRoute(method, segs); serve != nil {
+		serve(w, r, repo)
+		return
+	}
+	h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
+}
+
+// specialHandler serves a route below /npm/<repo>/-/ of a repo.
+type specialHandler func(http.ResponseWriter, *http.Request, index.Repo)
+
+// specialRoute returns the handler of method and the segments below /-/, nil for none.
+func (h *handlers) specialRoute(method string, segs []string) specialHandler {
+	switch {
+	case segs[0] == "package":
+		return func(w http.ResponseWriter, r *http.Request, repo index.Repo) { h.distTags(w, r, repo, segs[1:]) }
+	case method == http.MethodPut && len(segs) == 2 && segs[0] == "user":
+		return func(w http.ResponseWriter, r *http.Request, repo index.Repo) { h.login(w, r, repo, segs[1]) }
+	case method == http.MethodDelete && len(segs) == 3 && segs[0] == "user" && segs[1] == "token":
+		return func(w http.ResponseWriter, r *http.Request, _ index.Repo) { h.logout(w, r, segs[2]) }
+	}
+	audit := func(bulk bool) specialHandler {
+		return func(w http.ResponseWriter, r *http.Request, repo index.Repo) { h.audit(w, r, repo, bulk) }
+	}
+	return map[string]specialHandler{
+		"GET ping":                             h.ping,
+		"GET whoami":                           h.whoami,
+		"GET v1/search":                        h.search,
+		"POST npm/v1/security/advisories/bulk": audit(true),
+		"POST npm/v1/security/audits":          audit(false),
+		"POST npm/v1/security/audits/quick":    audit(false),
+	}[method+" "+strings.Join(segs, "/")]
 }
 
 // post dispatches a POST: the registry's own routes.
@@ -158,7 +178,7 @@ func (h *handlers) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if status < http.StatusInternalServerError {
 		msg = err.Error()
 	} else {
-		h.deps.Log.ErrorContext(r.Context(), "npm: request failed", "method", r.Method, "path", r.URL.EscapedPath(),
+		h.deps.Log.ErrorContext(r.Context(), "npm: request failed", "method", r.Method, "path", auth.RedactSecrets(r.URL.EscapedPath()),
 			"status", status, "error", err.Error())
 	}
 	switch status {

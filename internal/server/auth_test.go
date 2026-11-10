@@ -131,7 +131,42 @@ func authServer(t *testing.T, r index.Store) (*Server, *seen, *bytes.Buffer) {
 	s, buf := newTestServer(t, o)
 	s.mux.Handle("/test/", record)
 	s.mux.Handle("/raw/", record)
+	s.mux.Handle("/npm/", record)
 	return s, &sw, buf
+}
+
+// TestAuthenticateNpmLogin: the legacy login of npm goes on as anonymous with its Authorization
+// untouched, a revoked bearer included, since its body has the password; any other request on
+// the path is authenticated. A secret in a path is not logged (npm logout has one).
+func TestAuthenticateNpmLogin(t *testing.T) {
+	login := "/npm/internal/-/user/org.couchdb.user:alice"
+	for _, tc := range []struct {
+		method, path, authorization string
+		status                      int
+	}{
+		{http.MethodPut, login, "Bearer " + revokedPAT, http.StatusNoContent},
+		{http.MethodPut, login, basic("alice", "wrong"), http.StatusNoContent},
+		{http.MethodGet, login, "Bearer " + revokedPAT, http.StatusUnauthorized},
+		{http.MethodPut, "/npm/internal/-/user/token/" + revokedPAT, "Bearer " + revokedPAT, http.StatusUnauthorized},
+		{http.MethodDelete, "/npm/internal/-/user/token/" + alicePAT, "Bearer " + alicePAT, http.StatusNoContent},
+	} {
+		s, sw, logs := authServer(t, usersReader{})
+		r := httptest.NewRequest(tc.method, tc.path, nil)
+		r.Header.Set("Authorization", tc.authorization)
+		rr := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rr, r)
+		if rr.Code != tc.status {
+			t.Errorf("%s %s: %d, want %d", tc.method, tc.path, rr.Code, tc.status)
+		}
+		if tc.path == login && tc.status == http.StatusNoContent && (sw.principal != auth.Anonymous || sw.authorization != tc.authorization) {
+			t.Errorf("%s %s: the handler saw %v with %q", tc.method, tc.path, sw.principal, sw.authorization)
+		}
+		for _, secret := range []string{alicePAT, revokedPAT} {
+			if strings.Contains(logs.String(), secret) {
+				t.Errorf("%s %s: the log has a secret: %s", tc.method, tc.path, logs)
+			}
+		}
+	}
 }
 
 // TestAuthenticateTokens checks the tokens in the middleware: a personal access token in Basic

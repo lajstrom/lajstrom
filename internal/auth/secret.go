@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"math/big"
+	"regexp"
 	"strings"
 )
 
@@ -25,6 +26,19 @@ const secretDigits = 43
 
 // SecretLen is the length of a token secret: the prefix and 43 base-62 digits.
 const SecretLen = len(PATPrefix) + secretDigits
+
+// secretInText matches what may be a token secret in a text, a path that carries one (npm
+// logout's DELETE /-/user/token/<token>) or a message: either prefix and what follows it.
+var secretInText = regexp.MustCompile(`(` + PATPrefix + `|` + DeployPrefix + `)[0-9A-Za-z]+`)
+
+// RedactSecrets returns s with every token secret in it replaced by its prefix and "…", for the
+// logs, which never have a secret.
+func RedactSecrets(s string) string {
+	if !strings.Contains(s, "ljs_") {
+		return s
+	}
+	return secretInText.ReplaceAllString(s, "${1}…")
+}
 
 // HashPrefixLen is the number of hexadecimal characters of the hash that every view of a token
 // shows after its creation (docs/acceptance.md X-03): enough to tell tokens apart, far too few
