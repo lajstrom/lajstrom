@@ -36,8 +36,8 @@ func newAdminRepoCmd(a *app) *cobra.Command {
 // newRepoCreateCmd returns admin repo create: create a repo and print it as JSON on one line.
 func newRepoCreateCmd(a *app) *cobra.Command {
 	var (
-		req    api.CreateRequest
-		policy string
+		req              api.CreateRequest
+		policy, upstream string
 	)
 	cmd := &cobra.Command{
 		Use:         "create <format>/<name>",
@@ -49,7 +49,7 @@ func newRepoCreateCmd(a *app) *cobra.Command {
 			if req.Format, req.Name, err = splitRepo(args[0]); err != nil {
 				return err
 			}
-			req.Policy = json.RawMessage(policy)
+			req.Policy, req.Upstream = json.RawMessage(policy), json.RawMessage(upstream)
 			return a.withRepos(cmd.Context(), func(ctx context.Context, repos *api.Repos) error {
 				repo, err := repos.Create(ctx, req, api.Origin{Source: api.SourceCLI})
 				if err != nil {
@@ -63,6 +63,8 @@ func newRepoCreateCmd(a *app) *cobra.Command {
 	f.StringVar(&req.Registry, "registry", "", "registry that stores the repo's artifacts, one of registries[].name")
 	f.BoolVar(&req.AnonymousRead, "anonymous-read", false, "readable without credentials, when auth.anonymousRead allows it")
 	f.StringVar(&policy, "policy", "", `repo policy, a JSON object, e.g. '{"maxFileSize": 1048576}'`)
+	f.StringVar(&req.Kind, "kind", "", "hosted (the default) or proxy, a repo that serves an upstream of the configuration")
+	f.StringVar(&upstream, "upstream", "", `a proxy's settings, a JSON object, e.g. '{"name": "npmjs", "deny": ["@acme/*"]}'`)
 	_ = cmd.MarkFlagRequired("registry") // fails only for a flag that does not exist
 	return cmd
 }
@@ -133,16 +135,24 @@ func (a *app) withRepos(ctx context.Context, fn func(context.Context, *api.Repos
 
 // newRepos returns the repo service over st for serve and admin repo: the formats are the
 // plugins compiled into the binary (format.Lookup, the default of api.Repos), the registries
-// those of the configuration.
+// and the upstreams those of the configuration.
 func newRepos(c *config.Config, st index.Store, log *slog.Logger) *api.Repos {
 	registries := make(map[string]bool, len(c.Registries))
 	for _, r := range c.Registries {
 		registries[r.Name] = true
 	}
+	upstreams := make(map[string]string, len(c.Upstreams))
+	for _, u := range c.Upstreams {
+		upstreams[u.Name] = u.Format
+	}
 	return &api.Repos{
 		Index:      st,
 		Registries: func(name string) bool { return registries[name] },
-		Log:        log,
+		Upstreams: func(name string) (string, bool) {
+			f, ok := upstreams[name]
+			return f, ok
+		},
+		Log: log,
 	}
 }
 

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/proxy"
 )
 
 // Repo is the repos resource of the management API, as GET /api/v1/repos/{format}/{repo}
@@ -24,11 +26,14 @@ type Repo struct {
 	Format        string          `json:"format"`
 	Name          string          `json:"name"`
 	Registry      string          `json:"registry"`
-	Kind          string          `json:"kind"` // hosted; proxy and group after the MVP
+	Kind          string          `json:"kind"` // hosted or proxy; group with #311
 	AnonymousRead bool            `json:"anonymousRead"`
 	Policy        json.RawMessage `json:"policy"` // a JSON object, or nil (null)
-	CreatedAt     time.Time       `json:"createdAt"`
-	UpdatedAt     time.Time       `json:"updatedAt"`
+	// Upstream is a proxy repo's settings (docs/spec/proxy-and-group.md §2.2), every key with
+	// its value: the upstream's name, never its URL or credentials. Absent on another kind.
+	Upstream  json.RawMessage `json:"upstream,omitempty"`
+	CreatedAt time.Time       `json:"createdAt"`
+	UpdatedAt time.Time       `json:"updatedAt"`
 }
 
 // RepoList is the answer of GET /api/v1/repos and of lajstrom admin repo list --json.
@@ -37,8 +42,9 @@ type RepoList struct {
 }
 
 // CreateRequest is a repo to create: the body of POST /api/v1/repos, and what lajstrom admin
-// repo create and the config bootstrap pass to Repos.Create. Kind is empty or hosted. Policy is
-// a JSON object, or empty or the JSON null for none; its keys come with the formats.
+// repo create and the config bootstrap pass to Repos.Create. Kind is empty or hosted, or proxy
+// with Upstream, the proxy's settings (proxy.ParseSettings). Policy is a JSON object, or empty
+// or the JSON null for none; its keys come with the formats.
 type CreateRequest struct {
 	Format        string          `json:"format"`
 	Name          string          `json:"name"`
@@ -46,6 +52,7 @@ type CreateRequest struct {
 	Kind          string          `json:"kind"`
 	AnonymousRead bool            `json:"anonymousRead"`
 	Policy        json.RawMessage `json:"policy"`
+	Upstream      json.RawMessage `json:"upstream"`
 }
 
 // UpdateRequest is a change to a repo, the body of PATCH /api/v1/repos/{format}/{repo}. A nil
@@ -87,9 +94,6 @@ const (
 	actionDelete = "repo.delete"
 )
 
-// kindHosted is the only repo kind of this version.
-const kindHosted = "hosted"
-
 // formatOCI is the format of the pass-through repos: the OCI facade stores what it gets and
 // indexes nothing, so no plugin is needed (format.Reserved has it).
 const formatOCI = "oci"
@@ -117,6 +121,12 @@ type Repos struct {
 	Formats func(name string) bool
 	// Registries reports whether a registry of that name is configured; nil means none is.
 	Registries func(name string) bool
+	// Upstreams returns the format of the configured upstream of that name (upstreams[]) and
+	// whether there is one; nil means none is configured.
+	Upstreams func(name string) (formatName string, ok bool)
+	// Proxiers returns the proxy hooks of a format's plugin, and whether it has proxy repos;
+	// nil means format.Lookup and the plugin's format.Proxier.
+	Proxiers func(formatName string) (format.Proxier, bool)
 	// Audit records the events; nil means each event goes to the index in the transaction of
 	// its change.
 	Audit audit.Writer
@@ -130,9 +140,9 @@ type Repos struct {
 // Create validates req and creates the repo with one repo.create audit event, whose details are
 // the resource and the origin. Each validation error wraps format.ErrInvalid and names the
 // field: format a compiled-in plugin or oci, name the grammar of docs/spec/manifest-profile.md §4.1
-// (at most 64 bytes), registry a configured one, kind empty or hosted, policy null or a JSON
-// object that checkPolicy takes. A repo that exists already is an error wrapping
-// index.ErrConflict.
+// (at most 64 bytes), registry a configured one, kind empty, hosted or proxy, upstream on a
+// proxy only (checkKind), policy null or a JSON object that checkPolicy takes. A repo that
+// exists already is an error wrapping index.ErrConflict.
 func (s *Repos) Create(ctx context.Context, req CreateRequest, o Origin) (*Repo, error) {
 	row, err := s.newRow(req)
 	if err != nil {
@@ -331,11 +341,16 @@ func (s *Repos) Bootstrap(ctx context.Context, repos []config.Repo) (created int
 		case !errors.Is(err, index.ErrNotFound):
 			return created, fmt.Errorf("api: bootstrap repos[%d] %s: %w", i, id, err)
 		}
-		policy, err := configPolicy(c)
+		policy, err := configJSON("policy", c.Policy)
 		if err != nil {
 			return created, fmt.Errorf("repos[%d]: %w", i, err)
 		}
-		req := CreateRequest{Format: c.Format, Name: c.Name, Registry: c.Registry, AnonymousRead: c.AnonymousRead, Policy: policy}
+		upstream, err := configJSON("upstream", c.Upstream)
+		if err != nil {
+			return created, fmt.Errorf("repos[%d]: %w", i, err)
+		}
+		req := CreateRequest{Format: c.Format, Name: c.Name, Registry: c.Registry, Kind: c.Kind, AnonymousRead: c.AnonymousRead,
+			Policy: policy, Upstream: upstream}
 		switch _, err := s.Create(ctx, req, Origin{Source: SourceConfig}); {
 		case errors.Is(err, index.ErrConflict):
 			s.log().InfoContext(ctx, "repo of the configuration was created meanwhile, by another replica", "repo", id)
@@ -349,48 +364,69 @@ func (s *Repos) Bootstrap(ctx context.Context, repos []config.Repo) (created int
 	return created, nil
 }
 
-// configPolicy is the policy of a configured repo as JSON, nil for none. YAML decodes a map
-// with keys that are not strings, which JSON cannot hold, into a value Marshal refuses.
-func configPolicy(c config.Repo) (json.RawMessage, error) {
-	if len(c.Policy) == 0 {
+// configJSON is a map of a configured repo (policy, upstream) as JSON, nil for none. YAML
+// decodes a map with keys that are not strings, which JSON cannot hold, into a value Marshal
+// refuses.
+func configJSON(field string, m map[string]any) (json.RawMessage, error) {
+	if len(m) == 0 {
 		return nil, nil
 	}
-	b, err := json.Marshal(c.Policy)
+	b, err := json.Marshal(m)
 	if err != nil {
-		return nil, invalid("policy: %s", err.Error())
+		return nil, invalid("%s: %s", field, err.Error())
 	}
 	return b, nil
 }
 
 // warnDrift logs a warning for each field of a configured repo that differs from the repo in
-// the control plane.
+// the control plane. The upstream is compared as ParseSettings reads it, defaults filled in.
 func (s *Repos) warnDrift(ctx context.Context, row *index.Repo, c config.Repo) {
-	if policy, err := configPolicy(c); err != nil || !samePolicy(policy, row.Policy) {
-		s.log().WarnContext(ctx, "repo of the configuration differs from the control plane, and the control plane wins;"+
-			" change it through the API or lajstrom admin repo",
-			"repo", row.Format+"/"+row.Name, "field", "policy", "config", string(policy), "controlPlane", string(row.Policy))
+	policy, err := configJSON("policy", c.Policy)
+	if err != nil || !samePolicy(policy, row.Policy) {
+		s.warnField(ctx, row, "policy", string(policy), string(row.Policy))
+	}
+	upstream, err := configJSON("upstream", c.Upstream)
+	if settings, perr := proxy.ParseSettings(upstream); err == nil && perr == nil {
+		upstream = settings.JSON()
+	}
+	if !samePolicy(upstream, row.Upstream) {
+		s.warnField(ctx, row, "upstream", string(upstream), string(row.Upstream))
+	}
+	kind := c.Kind
+	if kind == "" {
+		kind = index.KindHosted
 	}
 	for _, f := range []struct {
 		field         string
 		config, plane any
 	}{
 		{"registry", c.Registry, row.Registry},
+		{"kind", kind, row.Kind},
 		{"anonymousRead", c.AnonymousRead, row.AnonymousRead},
 	} {
 		if f.config != f.plane {
-			s.log().WarnContext(ctx, "repo of the configuration differs from the control plane, and the control plane wins;"+
-				" change it through the API or lajstrom admin repo",
-				"repo", row.Format+"/"+row.Name, "field", f.field, "config", f.config, "controlPlane", f.plane)
+			s.warnField(ctx, row, f.field, f.config, f.plane)
 		}
 	}
 }
 
+// warnField logs that field of the configured repo row differs from the control plane.
+func (s *Repos) warnField(ctx context.Context, row *index.Repo, field string, configured, plane any) {
+	s.log().WarnContext(ctx, "repo of the configuration differs from the control plane, and the control plane wins;"+
+		" change it through the API or lajstrom admin repo",
+		"repo", row.Format+"/"+row.Name, "field", field, "config", configured, "controlPlane", plane)
+}
+
 // newRow validates req and returns the repos row to insert.
 func (s *Repos) newRow(req CreateRequest) (index.Repo, error) {
-	for _, err := range []error{s.checkFormat(req.Format), checkName(req.Name), s.checkRegistry(req.Registry), checkKind(req.Kind)} {
+	for _, err := range []error{s.checkFormat(req.Format), checkName(req.Name), s.checkRegistry(req.Registry)} {
 		if err != nil {
 			return index.Repo{}, err
 		}
+	}
+	kind, upstream, err := s.checkKind(req)
+	if err != nil {
+		return index.Repo{}, err
 	}
 	policy, err := checkPolicy(req.Format, req.Policy)
 	if err != nil {
@@ -399,7 +435,7 @@ func (s *Repos) newRow(req CreateRequest) (index.Repo, error) {
 	now := s.now()
 	return index.Repo{
 		Format: req.Format, Name: req.Name, Registry: req.Registry, Prefix: req.Format + "/" + req.Name,
-		Kind: kindHosted, AnonymousRead: req.AnonymousRead, Policy: policy, CreatedAt: now, UpdatedAt: now,
+		Kind: kind, AnonymousRead: req.AnonymousRead, Policy: policy, Upstream: upstream, CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
 
@@ -444,12 +480,75 @@ func (s *Repos) checkRegistry(name string) error {
 	return nil
 }
 
-// checkKind checks that kind is empty or hosted.
-func checkKind(kind string) error {
-	if kind != "" && kind != kindHosted {
-		return invalid("kind: %q is not supported; every repo is %s in this version", kind, kindHosted)
+// checkKind checks the kind of req and the upstream that goes with it (docs/spec/proxy-and-group.md
+// §2.5), and returns the kind and the upstream to store: on a proxy the settings with every key
+// (proxy.Settings.JSON), else nil. A proxy needs a format whose plugin has proxy repos; group
+// repos come with #311.
+func (s *Repos) checkKind(req CreateRequest) (string, json.RawMessage, error) {
+	switch req.Kind {
+	case "", index.KindHosted:
+		if !isNull(req.Upstream) {
+			return "", nil, invalid("upstream: only a proxy repo has one, not a %s repo", index.KindHosted)
+		}
+		return index.KindHosted, nil, nil
+	case index.KindProxy:
+	case index.KindGroup:
+		return "", nil, invalid("kind: %q is not supported in this version; a repo is %s or %s", req.Kind, index.KindHosted, index.KindProxy)
+	default:
+		return "", nil, invalid("kind: %q is not %s, %s or %s", req.Kind, index.KindHosted, index.KindProxy, index.KindGroup)
 	}
-	return nil
+	if _, ok := s.proxier(req.Format); !ok {
+		return "", nil, invalid("kind: format %s has no proxy repos", req.Format)
+	}
+	if isNull(req.Upstream) {
+		return "", nil, invalid("upstream: a proxy repo must name one of upstreams[].name of the configuration")
+	}
+	settings, err := s.checkUpstream(req.Format, req.Upstream)
+	if err != nil {
+		return "", nil, err
+	}
+	return index.KindProxy, settings.JSON(), nil
+}
+
+// checkUpstream reads the settings of a proxy repo of formatName and checks that they name a
+// configured upstream of that format. The API never takes the upstream's URL: the settings have
+// no key for it.
+func (s *Repos) checkUpstream(formatName string, raw json.RawMessage) (proxy.Settings, error) {
+	settings, err := proxy.ParseSettings(raw)
+	if err != nil {
+		return proxy.Settings{}, err
+	}
+	var upstreamFormat string
+	ok := false
+	if s.Upstreams != nil {
+		upstreamFormat, ok = s.Upstreams(settings.Upstream)
+	}
+	switch {
+	case !ok:
+		return proxy.Settings{}, invalid("upstream.name: %q is not a configured upstream", settings.Upstream)
+	case upstreamFormat != formatName:
+		return proxy.Settings{}, invalid("upstream.name: %q serves %s, not %s", settings.Upstream, upstreamFormat, formatName)
+	}
+	return settings, nil
+}
+
+// proxier returns the proxy hooks of the plugin of formatName, when it has proxy repos.
+func (s *Repos) proxier(formatName string) (format.Proxier, bool) {
+	if s.Proxiers != nil {
+		return s.Proxiers(formatName)
+	}
+	p, ok := format.Lookup(formatName)
+	if !ok {
+		return nil, false
+	}
+	px, ok := p.(format.Proxier)
+	return px, ok
+}
+
+// isNull reports whether a JSON member is absent or the JSON null.
+func isNull(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	return len(raw) == 0 || string(raw) == "null"
 }
 
 // samePolicy reports whether two policies are the same JSON value. Postgres keeps a jsonb
@@ -523,7 +622,7 @@ func repoError(op, formatName, name string, err error) error {
 func resource(r *index.Repo) Repo {
 	return Repo{
 		Format: r.Format, Name: r.Name, Registry: r.Registry, Kind: r.Kind, AnonymousRead: r.AnonymousRead,
-		Policy: r.Policy, CreatedAt: r.CreatedAt.UTC(), UpdatedAt: r.UpdatedAt.UTC(),
+		Policy: r.Policy, Upstream: r.Upstream, CreatedAt: r.CreatedAt.UTC(), UpdatedAt: r.UpdatedAt.UTC(),
 	}
 }
 

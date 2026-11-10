@@ -344,7 +344,7 @@ func (b *patchBody) request() (UpdateRequest, error) {
 		{"format", "it identifies the repo", b.Format},
 		{"name", "it identifies the repo", b.Name},
 		{"registry", "the artifacts stay in the registry they were pushed to, and moving the repo would orphan them", b.Registry},
-		{"kind", "every repo is hosted in this version", b.Kind},
+		{"kind", "it is set when the repo is created", b.Kind},
 	} {
 		if f.value != nil {
 			return UpdateRequest{}, invalid("%s: cannot change; %s", f.field, f.why)

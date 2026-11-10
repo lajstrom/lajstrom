@@ -611,14 +611,40 @@ components:
         format: {type: string}
         name: {type: string}
         registry: {type: string}
-        kind: {type: string, enum: [hosted]}
+        kind: {type: string, enum: [hosted, proxy]}
         anonymousRead: {type: boolean}
         policy:
           anyOf:
             - {$ref: "#/components/schemas/Policy"}
             - {type: "null"}
+        upstream:
+          $ref: "#/components/schemas/Upstream"
+          description: A proxy repo only, with every key; absent on another kind.
         createdAt: {type: string, format: date-time}
         updatedAt: {type: string, format: date-time}
+    Upstream:
+      type: object
+      description: >-
+        A proxy repo's settings (docs/spec/proxy-and-group.md §2.2). The upstream is named as the
+        configuration names it (upstreams[].name); its URL and credentials are configuration and
+        never part of the API. Absent keys take their defaults.
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: {type: string, description: "One of upstreams[].name of the repo's format."}
+        metadataTTL: {type: string, description: "How long a cached document is used, a duration from 0s to 168h; default 10m.", examples: [10m]}
+        negativeTTL: {type: string, description: "How long a name the upstream does not have is remembered, 0s to 24h; default 2m.", examples: [2m]}
+        offline: {type: boolean, description: "Never ask the upstream; default false."}
+        allow:
+          type: array
+          maxItems: 256
+          description: "Name patterns, * matching any run: a name is fetched when one matches; empty, every name."
+          items: {type: string, minLength: 1, maxLength: 256}
+        deny:
+          type: array
+          maxItems: 256
+          description: Name patterns that are never fetched; deny wins over allow.
+          items: {type: string, minLength: 1, maxLength: 256}
     Policy:
       type: object
       description: >-
@@ -670,12 +696,17 @@ components:
         format: {type: string}
         name: {type: string}
         registry: {type: string}
-        kind: {type: string, enum: [hosted]}
+        kind: {type: string, enum: [hosted, proxy]}
         anonymousRead: {type: boolean}
         policy:
           anyOf:
             - {$ref: "#/components/schemas/Policy"}
             - {type: "null"}
+        upstream:
+          anyOf:
+            - {$ref: "#/components/schemas/Upstream"}
+            - {type: "null"}
+          description: Required on a proxy repo, refused on another kind.
     RepoPatch:
       type: object
       additionalProperties: false
