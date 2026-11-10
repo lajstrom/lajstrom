@@ -371,7 +371,7 @@ type ArtifactRef struct {
     Kind                   string           // the document kind whose Entries list the artifact
 }
 
-// Proxy is the core as the plugins' handlers see it; *proxy.Core implements it. Both methods
+// Proxy is the core as the plugins' handlers see it; *proxy.Core implements it. Its methods
 // take a repo of kind proxy (#311 extends them to groups); another kind wraps ErrUnsupported.
 type Proxy interface {
     // Document: the lists (§3), then the index_cache row of (repo, Key(name), kind) while the
@@ -384,6 +384,31 @@ type Proxy interface {
     // the principal of ctx (auth.PrincipalFrom); the handler serves it as a hosted file
     // (ServeBlob). Errors wrap the sentinels of §6.
     File(ctx context.Context, repo index.Repo, path string) (*index.FileMatch, error)
+    // Forward sends req to the repo's upstream and returns the answer, which nothing keeps: a
+    // request of the format's protocol that only the upstream can answer (npm audit). It is
+    // the core's own request through the upstream client (§9.2): the upstream's credentials on
+    // its origin only, no header of the client's, the timeouts and retries of §2.1 (the body
+    // is sent again), at most 5 redirects, never https to http, public addresses off the
+    // upstream's host. Body is read whole before the first byte goes out, at most 16 MiB; a
+    // larger one wraps *http.MaxBytesError (413) and nothing is sent, an error of Body is
+    // returned wrapped. A 2xx is returned with StatusCode, Header (the upstream's: the handler
+    // copies what its protocol needs, never Set-Cookie) and Body, which the caller closes: it
+    // streams, a read past maxMetadataSize fails wrapping ErrBadGateway, a stall of the timeout
+    // ErrGatewayTimeout. Otherwise nothing of the upstream's body is read: an offline repo
+    // (§4.4) sends nothing and wraps index.ErrNotFound, as do the upstream's 404 and 410; its
+    // 400, 413, 415 and 422 wrap ErrInvalid (the client's body refused); its 429 is an
+    // *UnavailableError; a timeout ErrGatewayTimeout; anything else ErrBadGateway (§6). Not
+    // cached, no audit row; logged and counted as every upstream request (operation forward).
+    Forward(ctx context.Context, repo index.Repo, req ForwardRequest) (*http.Response, error)
+}
+// ForwardRequest is what Proxy.Forward sends: each part chosen by the plugin, nothing copied
+// from the client's request.
+type ForwardRequest struct {
+    Method      string                      // POST; "" means GET
+    Path        string                      // relative to upstreams[].url, escaped, with its query: "-/npm/v1/security/advisories/bulk"; one that resolves outside the upstream's URL is an error
+    ContentType string                      // of Body; "" for none
+    Accept      string                      // "" for none
+    Body        io.Reader                   // nil for none; sent without Content-Encoding (a plugin decodes a gzipped body)
 }
 ```
 
@@ -985,6 +1010,16 @@ Where the merged shapes differ from the first sketch of this section, and why:
 - **A `proxy_meta` write does not invalidate on its own.** The core writes the row and drops
   the `index_cache` rows of the name in one `Tx`; a `304` is `TouchProxyMeta`, which drops
   nothing. Expired `absent` rows are swept per repo, since `negativeTTL` is a repo's.
+- **A proxy forwards what it does not keep through the core** (#384). npm audit is a `POST`
+  that only the upstream can answer, and the core's client is the one way to an upstream
+  (its credentials, timeouts and SSRF rules), so `Proxy.Forward` sends a request the plugin
+  builds field by field, `ForwardRequest`, not the client's `*http.Request`: no header of the
+  client's reaches the upstream unless the plugin names it. The body is held in memory, at
+  most 16 MiB, so that a retry and a `307` or `308` send it again; it goes decoded, since a
+  plugin decodes it to bound it and a group's (#311) to read it. The answer streams back,
+  bounded by `maxMetadataSize` rather than a key of its own. The upstream's error statuses are
+  classified as a document's (proxy-and-group.md §6), its `400`, `413`, `415` and `422` being
+  the client's `400`, and its error body is never passed on. A group's forward is #311's.
 - **The npm journal has store methods of its own** (ADR 0012, #307). `ListJournal` and
   `ListJournalState` read one package: the journal writer reads the last `seq` and the state
   under the package's journal lock, a packument reads both for its `dist-tags`, `deprecated`,
