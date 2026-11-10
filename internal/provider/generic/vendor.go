@@ -39,6 +39,9 @@ const (
 	nexusRealm         = "Sonatype Nexus Repository Manager"
 )
 
+// ghcrMaxBlobSize is GHCR's largest layer, 10 GB.
+const ghcrMaxBlobSize = 10_000_000_000
+
 // vendorDefaults is the vendor table: what each vendor needs set that the probe cannot
 // measure. A capability set here replaces what the probe would find and is not probed;
 // registries[].capabilities still replaces it.
@@ -50,8 +53,9 @@ var vendorDefaults = map[vendor]config.CapabilityOverrides{
 	// _catalog answers 200 with every repository of GHCR, which the probe cannot tell from a
 	// catalog Lajstrom can use, and every delete through /v2 is 405 (docs/registries/ghcr.md).
 	// A tag read a fraction of a second after its push is sometimes 404 (users' reports,
-	// docs/registries/README.md, Consistency).
-	vendorGHCR: {Catalog: new(false), DeleteManifest: new(false), Consistency: config.ConsistencyEventual},
+	// docs/registries/README.md, Consistency). A layer is at most 10 GB (GitHub's documented
+	// limit), which no probe measures: the bound of a /v2 blob upload (#246).
+	vendorGHCR: {Catalog: new(false), DeleteManifest: new(false), Consistency: config.ConsistencyEventual, MaxBlobSize: ghcrMaxBlobSize},
 	// The probe is right: the referrers API, and no catalog for a project robot
 	// (docs/registries/harbor.md).
 	vendorHarbor: {},
