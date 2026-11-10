@@ -97,6 +97,12 @@ type Registry struct {
 	Prefix string `yaml:"prefix"`
 	// Auth holds Lajstrom's own credentials for the registry.
 	Auth RegistryAuth `yaml:"auth"`
+	// TokenRealmHosts are the host names, besides the registry's own, that the token realm of
+	// its bearer challenge may be on, so that the credentials go there: exact names or IP
+	// addresses, no port and no wildcard. A realm on one of them must be https. The generic
+	// provider adds the hosts of its vendor table for the registries it knows by host name
+	// (GitLab.com, Docker Hub).
+	TokenRealmHosts []string `yaml:"tokenRealmHosts"`
 	// Timeout bounds one request up to the response headers: dial, TLS handshake and the wait
 	// for the headers. It does not bound streaming a body. Load sets DefaultRegistryTimeout
 	// when it is zero; negative is invalid.

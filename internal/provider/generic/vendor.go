@@ -3,6 +3,8 @@ package generic
 import (
 	"net"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/lajstrom/lajstrom/internal/config"
@@ -93,6 +95,25 @@ func afterProbe(v vendor, probed *provider.Capabilities, referrers bool) quirks 
 	case vendorUnknown, vendorGitLab, vendorGHCR, vendorHarbor, vendorGitea:
 	}
 	return quirks{}
+}
+
+// vendorRealmHosts is the vendor table's part for token realms: for a registry known by its host
+// name, the hosts besides its own that the realm of its bearer challenge is on. They get the
+// credentials as registries[].tokenRealmHosts would give them (realmTransport); the
+// configuration's hosts are added to these.
+var vendorRealmHosts = map[string][]string{
+	// GitLab.com: Bearer realm="https://gitlab.com/jwt/auth".
+	"registry.gitlab.com": {"gitlab.com"},
+	// Docker Hub: Bearer realm="https://auth.docker.io/token".
+	"registry-1.docker.io": {"auth.docker.io"},
+	"docker.io":            {"auth.docker.io"},
+}
+
+// realmHosts returns the hosts besides the registry's own that its token realm may be on: those
+// of cfg and those of the vendor table for the host of base.
+func realmHosts(cfg config.Registry, base *url.URL) []string {
+	host := strings.ToLower(strings.TrimSuffix(base.Hostname(), "."))
+	return append(slices.Clone(cfg.TokenRealmHosts), vendorRealmHosts[host]...)
 }
 
 // identity is what a registry says about itself: the host of its URL, the headers of its 200

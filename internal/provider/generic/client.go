@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,7 +74,7 @@ func newClients(cfg config.Registry, base *url.URL, log *slog.Logger, rotating a
 	// upload is retried as a whole by Push (pushRetry). The breaker above it counts a request
 	// once however often it was tried. Above both, the probe's ping sees the challenges.
 	br := newBreaker(cfg.Name, log)
-	rt := &realmTransport{registry: cfg.Name, base: base, next: &challengeTransport{next: &breakerTransport{b: br, next: &retryTransport{
+	rt := &realmTransport{registry: cfg.Name, base: base, hosts: realmHosts(cfg, base), next: &challengeTransport{next: &breakerTransport{b: br, next: &retryTransport{
 		next:    &logTransport{next: &metricsTransport{next: newTransport(timeout), registry: cfg.Name}, log: log},
 		retries: retries(cfg),
 		log:     log,
@@ -200,16 +202,18 @@ func (t *challengeTransport) RoundTrip(req *http.Request) (*http.Response, error
 }
 
 // realmTransport refuses the bearer challenge of the registry when the token realm it names
-// is not on the registry's host name, or is plain http for a registry on https: oras-go would
-// send the registry's username and password there (threat model P-3), and it takes any public
-// or private host as a realm. Another port of the registry's host is allowed, a token server
-// beside the registry, as the dev stack's Harbor and GitLab have. The refusal is a
-// *realmError, which names the registry and not the realm. The auth client never sees the
-// challenge, so nothing is sent to the realm.
+// is not on the registry's host name nor on one of hosts, or is plain http for a registry on
+// https: oras-go would send the registry's username and password there (threat model P-3), and
+// it takes any public or private host as a realm. Another port of the registry's host is
+// allowed, a token server beside the registry, as the dev stack's Harbor and GitLab have. A
+// host of hosts (registries[].tokenRealmHosts and the vendor table's, realmHosts) is allowed
+// over https only. The refusal is a *realmError, which names the registry and the realm's host,
+// not its URL. The auth client never sees the challenge, so nothing is sent to the realm.
 type realmTransport struct {
 	next     http.RoundTripper
 	registry string   // the registry's name, for the error
 	base     *url.URL // the registry's URL
+	hosts    []string // the other hosts a realm may be on, over https
 }
 
 // RoundTrip implements http.RoundTripper.
@@ -222,7 +226,7 @@ func (t *realmTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if scheme != "bearer" {
 		return resp, nil
 	}
-	if reason := refuseRealm(t.base, realm); reason != "" {
+	if reason := refuseRealm(t.base, realm, t.hosts); reason != "" {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBody))
 		_ = resp.Body.Close()
 		return nil, &realmError{registry: t.registry, reason: reason}
@@ -231,8 +235,8 @@ func (t *realmTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // refuseRealm says why the registry at base may not name realm as its token realm, or is ""
-// when it may.
-func refuseRealm(base *url.URL, realm string) string {
+// when it may: on the registry's host name, or over https on one of hosts.
+func refuseRealm(base *url.URL, realm string, hosts []string) string {
 	u, err := url.Parse(realm)
 	switch {
 	case err != nil || u.Host == "":
@@ -241,10 +245,25 @@ func refuseRealm(base *url.URL, realm string) string {
 		return "the realm of its bearer challenge is not http(s)"
 	case base.Scheme == "https" && u.Scheme != "https":
 		return "the realm of its bearer challenge downgrades https to http"
-	case !sameHostname(u, base):
-		return "the realm of its bearer challenge is on another host than the registry"
+	case sameHostname(u, base):
+		return ""
+	case !slices.ContainsFunc(hosts, func(h string) bool { return isHost(u.Hostname(), h) }):
+		return fmt.Sprintf("the realm of its bearer challenge is on the host %s, neither the registry's nor one of its tokenRealmHosts", shownHost(u))
+	case u.Scheme != "https":
+		return fmt.Sprintf("the realm of its bearer challenge is on the host %s of its tokenRealmHosts but not https", shownHost(u))
 	}
 	return ""
+}
+
+// shownHost is the host name of u for an error, quoted; a name longer than any host name is
+// cut, since the registry chose it.
+func shownHost(u *url.URL) string {
+	const maxHost = 253
+	h := u.Hostname()
+	if len(h) > maxHost {
+		h = h[:maxHost] + "..."
+	}
+	return strconv.Quote(h)
 }
 
 // sameHostname reports whether a and b name one host, whatever their ports.

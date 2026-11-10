@@ -107,10 +107,11 @@ database:
 
 func TestLoadErrors(t *testing.T) {
 	tests := []struct {
-		name string
-		file string
-		env  map[string]string
-		want []string // substrings of the error
+		name    string
+		file    string
+		env     map[string]string
+		want    []string // substrings of the error
+		wantNot []string // substrings the error must not have
 	}{
 		{name: "empty file", file: "", want: []string{"server.listen: must not be empty"}},
 		{name: "unknown top-level key", file: minimal + "metrics: {}\n", want: []string{"field metrics not found"}},
@@ -143,6 +144,26 @@ func TestLoadErrors(t *testing.T) {
 			name: "registry limits",
 			file: minimal + "registries:\n  - {name: local, url: \"http://zot:5000\", timeout: -1s, capabilities: {maxBlobSize: -1}}\n",
 			want: []string{"registries[0].timeout: must not be negative", "registries[0].capabilities.maxBlobSize: must not be negative"},
+		},
+		{
+			name: "token realm hosts",
+			file: minimal + `registries:
+  - name: local
+    url: "https://registry.example"
+    tokenRealmHosts: [gitlab.com, "*.docker.io", "https://auth.docker.io", "auth.docker.io:443", "", "auth.example.", "a..b", "-a.example", "fe80::1%eth0", "auth.docker.io/token", "::1", 192.0.2.1, Auth-1.Example]
+`,
+			want: []string{
+				`registries[0].tokenRealmHosts[1]: "*.docker.io" is not a host name or an IP address`,
+				`registries[0].tokenRealmHosts[2]: "https://auth.docker.io"`,
+				`registries[0].tokenRealmHosts[3]: "auth.docker.io:443"`,
+				`registries[0].tokenRealmHosts[4]: ""`,
+				`registries[0].tokenRealmHosts[5]: "auth.example."`,
+				`registries[0].tokenRealmHosts[6]: "a..b"`,
+				`registries[0].tokenRealmHosts[7]: "-a.example"`,
+				`registries[0].tokenRealmHosts[8]: "fe80::1%eth0"`,
+				`registries[0].tokenRealmHosts[9]: "auth.docker.io/token"`,
+			},
+			wantNot: []string{"tokenRealmHosts[0]", "tokenRealmHosts[10]", "tokenRealmHosts[11]", "tokenRealmHosts[12]"},
 		},
 		{
 			name: "unknown capability",
@@ -208,6 +229,11 @@ repos:
 					t.Errorf("error does not contain %q:\n%s", w, msg)
 				}
 			}
+			for _, w := range tt.wantNot {
+				if strings.Contains(msg, w) {
+					t.Errorf("error contains %q:\n%s", w, msg)
+				}
+			}
 			if strings.Contains(msg, "secret") || strings.Contains(msg, "hunter2") {
 				t.Errorf("error contains a password:\n%s", msg)
 			}
@@ -224,6 +250,7 @@ registries:
     timeout: 5s
     retries: -1
     capabilities: {referrers: false, catalog: false, deleteManifest: true, maxBlobSize: 1073741824}
+    tokenRealmHosts: [auth.registry.example, 10.0.0.5]
 `
 	c, err := Load(writeConfig(t, file), nil)
 	if err != nil {
@@ -234,7 +261,8 @@ registries:
 		{Name: "defaults", Type: "generic", URL: "http://zot:5000", Timeout: 30 * time.Second, Retries: 3},
 		{
 			Name: "tuned", Type: "generic", URL: "https://registry.example", Timeout: 5 * time.Second, Retries: -1,
-			Capabilities: CapabilityOverrides{Referrers: &f, Catalog: &f, DeleteManifest: &tr, MaxBlobSize: 1 << 30},
+			Capabilities:    CapabilityOverrides{Referrers: &f, Catalog: &f, DeleteManifest: &tr, MaxBlobSize: 1 << 30},
+			TokenRealmHosts: []string{"auth.registry.example", "10.0.0.5"},
 		},
 	}
 	if !reflect.DeepEqual(c.Registries, want) {
