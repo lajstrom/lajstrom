@@ -19,7 +19,7 @@ account, and what is written below from the AWS documentation or from memory say
   current one, so a long upload session never meets an expired one. A refresh that fails is
   logged and tried again at most once a minute while the token still works.
 - **Repositories**: ECR does not create a repository on push. `EnsureRepository`, which ingest
-  calls before each publish, creates it with `CreateRepository`, with the tag mutability, its
+  calls before each publish and the facade before a blob upload or a mount (#356), creates it with `CreateRepository`, with the tag mutability, its
   exclusion filters and the encryption of `registries[].ecr`; a repository that exists, created
   by Terraform or another replica, is left as it is. A repository is asked for once per 10
   minutes. With `capabilities.createOnPush: true` (a creation template with `CREATE_ON_PUSH`, or
@@ -126,7 +126,7 @@ Then:
 
 ```sh
 LAJSTROM_TEST_ECR_ENDPOINT=http://localhost:5010 LAJSTROM_TEST_ECR_REGISTRY=localhost:5011 \
-  go test -race -tags integration -run TestIntegrationMoto ./internal/provider/ecr/
+  go test -race -tags integration -run 'TestIntegrationMoto|TestIntegrationECRNewPath' ./internal/provider/ecr/ ./internal/facade/
 ```
 
 `TestIntegrationMoto` builds the provider with the SDK against moto: `Capabilities` pings the
@@ -135,8 +135,10 @@ distribution with moto's token, `EnsureRepository` creates a repository twice (o
 `DescribeRepositories` reads back, and accepts one made beforehand; a blob and a tagged manifest
 go through `/v2` and come back; `ListRepositories` lists the run's prefix; `DeleteRepository` of
 a repository with an image is `ErrConflict`, with `forceDelete` it goes, and again it is
-`ErrNotFound`. It skips without the two variables, so the integration job of CI, which has no
-moto, skips it.
+`ErrNotFound`. `TestIntegrationECRNewPath` pushes a tagged artifact to a new path with oras-go
+through the facade: the facade creates the repository in moto before the first blob, which
+`ListRepositories` shows (the distribution would take the blobs without it). Both skip without
+the two variables, so the integration job of CI, which has no moto, skips them.
 
 What moto does not do, tested with the fake client of the unit tests instead:
 
