@@ -1,0 +1,42 @@
+# Sonatype Nexus Repository for the capability-matrix spike (issue #119,
+# docs/registries/nexus.md): a compose project of its own, "lajstrom-nexus", beside the dev stack
+# and not part of it (make dev-down does not touch it). For development only: plain HTTP and the
+# passwords of nexus.sh.
+#
+#   deploy/compose/nexus/nexus.sh up     start, wait, and set it up through the REST API
+#   deploy/compose/nexus/nexus.sh down   stop, and remove the container and its volume
+#
+# Published on 127.0.0.1 only:
+#
+#   localhost:8081  LAJSTROM_NEXUS_PORT         the UI, the REST API and /repository/<name>/
+#   localhost:5008  LAJSTROM_NEXUS_DOCKER_PORT  the HTTP connector of the docker hosted repository "lajstrom": /v2/
+#   localhost:5015  LAJSTROM_NEXUS_OCI_PORT     the HTTP connector of the OCI hosted repository "lajstrom-oci": /v2/
+
+name: lajstrom-nexus
+
+services:
+  nexus:
+    # Nexus Repository Community Edition 3.98.1-01 (built 2026-11-05), linux/amd64 and
+    # linux/arm64; the digest of the image index is the pin.
+    image: sonatype/nexus3:3.98.1@sha256:91a9af44af777c353db11a5ee73850c7eb24b03c997ff4cc62a3500ad38a1332
+    environment:
+      # The image's default heap is 2703 MiB; 1 GiB is enough for the tests.
+      INSTALL4J_ADD_VM_PARAMS: >-
+        -Xms1g -Xmx1g -XX:MaxDirectMemorySize=1g -Djava.util.prefs.userRoot=/nexus-data/javaprefs
+    volumes:
+      - nexus-data:/nexus-data
+    ports:
+      - "127.0.0.1:${LAJSTROM_NEXUS_PORT:-8081}:8081"
+      # The repositories' connectors; nexus.sh creates the docker repository with httpPort
+      # 8082 and the OCI one with 8083.
+      - "127.0.0.1:${LAJSTROM_NEXUS_DOCKER_PORT:-5008}:8082"
+      - "127.0.0.1:${LAJSTROM_NEXUS_OCI_PORT:-5015}:8083"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8081/service/rest/v1/status/writable"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
+
+volumes:
+  nexus-data:
