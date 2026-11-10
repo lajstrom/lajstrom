@@ -173,7 +173,7 @@ func TestLoadErrors(t *testing.T) {
 		{
 			name: "spoolUnknownLength not a bool",
 			file: minimal + "registries:\n  - name: local\n    url: \"http://zot:5000\"\n    uploads: {spoolUnknownLength: sometimes}\n",
-			want: []string{"line 6", "into bool"},
+			want: []string{"line 7", "into bool"},
 		},
 		{
 			name: "unknown uploads key",
