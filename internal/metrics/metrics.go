@@ -63,6 +63,25 @@ var (
 	Ingest = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "lajstrom_ingest_total", Help: "Publishes through the ingest pipeline, by format and result.",
 	}, []string{"format", "result"})
+	// ProxyUpstreamDuration is the time of a request to a proxy repo's upstream, to its
+	// response headers, by upstream name (upstreams[].name), operation (document, file) and
+	// status ("error" when there was no answer).
+	ProxyUpstreamDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name: "lajstrom_proxy_upstream_request_duration_seconds", Help: "Time of a request to a proxy's upstream, to its response headers.",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"upstream", "operation", "status"})
+	// ProxyDocuments counts the reads of an upstream's documents by a proxy repo, by upstream and
+	// result: fresh (the cache, no request), revalidated (304), refreshed (200), absent (404 or
+	// 410), stale (the upstream failed and the cache was used), offline (no request), error.
+	ProxyDocuments = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "lajstrom_proxy_documents_total", Help: "Reads of upstream documents by proxy repos, by upstream and result.",
+	}, []string{"upstream", "result"})
+	// ProxyFetches counts the file requests of proxy repos, by upstream and result: held (a hit),
+	// fetched (a miss downloaded and ingested), shared (a miss another request fetched),
+	// missing (the upstream does not have it), rejected (checksum, size, Validate), error.
+	ProxyFetches = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "lajstrom_proxy_fetches_total", Help: "File requests of proxy repos, by upstream and result.",
+	}, []string{"upstream", "result"})
 	// Throttled counts the requests refused 429 by a throttle of internal/auth: account and
 	// address (the failed logins of an account, of a client address), token (the requests to
 	// /v2/token of a client address).
@@ -76,7 +95,8 @@ var (
 )
 
 func init() {
-	registry.MustRegister(HTTPDuration, HTTPRequestSize, HTTPResponseSize, ProviderDuration, ProviderCircuitOpen, DBDuration, Ingest, Throttled, buildInfo,
+	registry.MustRegister(HTTPDuration, HTTPRequestSize, HTTPResponseSize, ProviderDuration, ProviderCircuitOpen, DBDuration, Ingest,
+		ProxyUpstreamDuration, ProxyDocuments, ProxyFetches, Throttled, buildInfo,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 }
 
