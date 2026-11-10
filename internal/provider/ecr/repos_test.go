@@ -2,6 +2,7 @@ package ecr
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -84,5 +85,56 @@ func TestEnsureRepositoryCreateOnPush(t *testing.T) {
 	wantErr(t, "createOnPush", p.EnsureRepository(t.Context(), "raw/scratch/notes"), nil)
 	if n := f.count("CreateRepository"); n != 0 {
 		t.Errorf("CreateRepository called %d times, want none", n)
+	}
+}
+
+// TestListRepositories: every page of DescribeRepositories, filtered by the instance prefix and
+// the prefix asked for, without the instance prefix.
+func TestListRepositories(t *testing.T) {
+	ctx := t.Context()
+	f := newFakeECR(newClock())
+	f.pageSize = 2
+	for _, n := range []string{"art/raw/a/x", "art/raw/b", "art/pypi/c", "other/raw/d", "art/raw/e", "art/rawish/f", "raw/g"} {
+		f.repos[n] = ecr.CreateRepositoryInput{}
+	}
+	p := fakeProvider(t, f, nil)
+	got, err := p.ListRepositories(ctx, "raw/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"raw/a/x", "raw/b", "raw/e"}; !slices.Equal(got, want) {
+		t.Errorf("ListRepositories = %q, want %q", got, want)
+	}
+	if n := f.count("DescribeRepositories"); n != 4 {
+		t.Errorf("DescribeRepositories called %d times, want 4 pages", n)
+	}
+
+	f.listErr = &smithy.GenericAPIError{Code: "AccessDeniedException"}
+	_, err = p.ListRepositories(ctx, "raw/")
+	wantErr(t, "denied", err, provider.ErrUnauthorized)
+
+	off := fakeProvider(t, f, func(c *config.Registry) { c.Capabilities.Catalog = aws.Bool(false) })
+	_, err = off.ListRepositories(ctx, "raw/")
+	wantErr(t, "catalog false", err, provider.ErrUnsupported)
+}
+
+// TestDeleteRepository: without forceDelete ECR refuses a repository with images (409); with
+// it, the images go too; a repository that does not exist is 404.
+func TestDeleteRepository(t *testing.T) {
+	ctx := t.Context()
+	f := newFakeECR(newClock())
+	p := fakeProvider(t, f, nil)
+	wantErr(t, "ensure", p.EnsureRepository(ctx, "raw/scratch/notes"), nil)
+	f.images["art/raw/scratch/notes"] = 3
+	wantErr(t, "not empty", p.DeleteRepository(ctx, "raw/scratch/notes"), provider.ErrConflict)
+
+	force := fakeProvider(t, f, func(c *config.Registry) { c.ECR.ForceDelete = true })
+	wantErr(t, "force", force.DeleteRepository(ctx, "raw/scratch/notes"), nil)
+	wantErr(t, "gone", p.DeleteRepository(ctx, "raw/scratch/notes"), provider.ErrNotFound)
+
+	// The delete forgets the repository: the next ensure creates it again.
+	wantErr(t, "ensure after the delete", p.EnsureRepository(ctx, "raw/scratch/notes"), nil)
+	if _, ok := f.repos["art/raw/scratch/notes"]; !ok {
+		t.Error("EnsureRepository after DeleteRepository did not create the repository")
 	}
 }

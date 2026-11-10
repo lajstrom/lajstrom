@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ecr"
 
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
@@ -16,6 +19,8 @@ const (
 	// created or found exists: ingest ensures the repository of every publish. A repository
 	// deleted behind Lajstrom's back is created again after at most this long.
 	knownFor = 10 * time.Minute
+	// pageSize is the page size of DescribeRepositories, its maximum.
+	pageSize = 1000
 )
 
 // EnsureRepository creates the repository name below the instance prefix with CreateRepository,
@@ -47,14 +52,52 @@ func (p *Provider) EnsureRepository(ctx context.Context, name string) error {
 	return nil
 }
 
-// ListRepositories is DescribeRepositories, in the next part of #36; until then it is
-// unsupported, and callers use the oci_repos table.
-func (p *Provider) ListRepositories(_ context.Context, prefix string) ([]string, error) {
-	return nil, fmt.Errorf("ecr: list repositories %s: %w", prefix, provider.ErrUnsupported)
+// ListRepositories lists the registry's repositories with DescribeRepositories, every page,
+// and returns the names below the instance prefix that start with prefix, without the
+// instance prefix, sorted. ECR filters by exact names only, so the prefix is applied here. It
+// returns an error wrapping provider.ErrUnsupported when capabilities.catalog is false.
+func (p *Provider) ListRepositories(ctx context.Context, prefix string) ([]string, error) {
+	op := "list repositories " + prefix
+	if !p.catalog {
+		return nil, fmt.Errorf("ecr: %s: capabilities.catalog is false: %w", op, provider.ErrUnsupported)
+	}
+	want := p.prefix + prefix
+	pages := ecr.NewDescribeRepositoriesPaginator(p.api,
+		&ecr.DescribeRepositoriesInput{RegistryId: p.registryID, MaxResults: aws.Int32(pageSize)},
+		func(o *ecr.DescribeRepositoriesPaginatorOptions) { o.StopOnDuplicateToken = true })
+	var names []string
+	for pages.HasMorePages() {
+		out, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, translate(op, err)
+		}
+		for _, r := range out.Repositories {
+			if n := aws.ToString(r.RepositoryName); strings.HasPrefix(n, want) {
+				names = append(names, strings.TrimPrefix(n, p.prefix))
+			}
+		}
+	}
+	slices.Sort(names)
+	return slices.Compact(names), nil
 }
 
-// DeleteRepository is DeleteRepository of the ECR API, in the next part of #36; until then
-// it is unsupported.
-func (p *Provider) DeleteRepository(_ context.Context, name string) error {
-	return fmt.Errorf("ecr: delete repository %s: %w", name, provider.ErrUnsupported)
+// DeleteRepository deletes the repository name below the instance prefix with
+// DeleteRepository. With registries[].ecr.forceDelete it deletes the images too; without, ECR
+// refuses a repository that holds any, which is provider.ErrConflict. A repository that does
+// not exist is provider.ErrNotFound.
+func (p *Provider) DeleteRepository(ctx context.Context, name string) error {
+	if name == "" {
+		return errors.New("ecr: delete repository: empty name")
+	}
+	p.known.Delete(name)
+	_, err := p.api.DeleteRepository(ctx, &ecr.DeleteRepositoryInput{
+		RepositoryName: aws.String(p.prefix + name),
+		RegistryId:     p.registryID,
+		Force:          p.forceDelete,
+	})
+	if err != nil {
+		return translate("delete repository "+name, err)
+	}
+	p.log.InfoContext(ctx, "ECR repository deleted", "repository", name, "force", p.forceDelete)
+	return nil
 }
