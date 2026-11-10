@@ -54,7 +54,7 @@ func TestLoadDefaults(t *testing.T) {
 			}
 			want := &Config{
 				Server: Server{Listen: ":8080", ExternalURL: "https://art.example.com", ShutdownTimeout: 30 * time.Second, MaxManifestSize: 4 << 20, MetricsListen: "127.0.0.1:9464",
-					StallTimeout: time.Minute, UploadSessions: UploadSessions{PerRepo: 256, PerPrincipal: 1024}},
+					StallTimeout: time.Minute, MaxConcurrentUploads: 32, UploadSessions: UploadSessions{PerRepo: 256, PerPrincipal: 1024}},
 				Log:       Log{Level: "info", Format: "text"},
 				Database:  Database{Driver: "sqlite", DSN: "file:lajstrom.db"},
 				Ingest:    Ingest{ClaimTTL: 10 * time.Minute},
@@ -87,6 +87,19 @@ func TestLoadUploadSessions(t *testing.T) {
 		}
 		if got.Server.UploadSessions != tt.want {
 			t.Errorf("%q: %+v, want %+v", tt.file, got.Server.UploadSessions, tt.want)
+		}
+	}
+}
+
+// TestMaxConcurrentUploads: the default bounds the uploads of a replica (#246); 0 in the file
+// lifts it.
+func TestMaxConcurrentUploads(t *testing.T) {
+	for file, want := range map[string]int{minimal: 32, minimal + "  maxConcurrentUploads: 0\n": 0, minimal + "  maxConcurrentUploads: 5\n": 5} {
+		c, err := Load(writeConfig(t, file), nil)
+		if err != nil {
+			t.Errorf("Load(%q): %v", file, err)
+		} else if c.Server.MaxConcurrentUploads != want {
+			t.Errorf("Load(%q): maxConcurrentUploads %d, want %d", file, c.Server.MaxConcurrentUploads, want)
 		}
 	}
 }

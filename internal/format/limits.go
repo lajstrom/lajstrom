@@ -10,13 +10,39 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
-// MaxFileSize returns policy.maxFileSize of the repo, an integer number of bytes, or -1 when the
-// policy sets none (docs/api.md, the policy keys). A value that is not a non-negative integer is
-// an error, which StatusOf answers with 500: an upload is not let through a limit that cannot
-// be read. Every frontend that takes an upload bounds it with LimitBody, which reads this.
+// defaultMaxFileSizes is MaxFileSize of a repo whose policy sets none, by format
+// (docs/spec/manifest-profile.md §5, #246): an upload a frontend spools, and a blob of /v2, is
+// bounded out of the box. The sizes are above the largest files of the package size survey of
+// #439: npm's largest tarball 152 MiB, PyTorch's CUDA wheels 2.1 GiB, Maven Central's largest
+// jar 2.3 GiB, .debs of 5 GiB.
+var defaultMaxFileSizes = map[string]int64{
+	"npm":   512 << 20,
+	"pypi":  4 << 30,
+	"maven": 4 << 30,
+	"apt":   8 << 30,
+	"raw":   8 << 30,
+}
+
+// defaultMaxFileSize is the default of a format defaultMaxFileSizes does not name.
+const defaultMaxFileSize = 8 << 30
+
+// defaultMaxFileSizeOf returns the maxFileSize of a repo of format whose policy sets none.
+func defaultMaxFileSizeOf(format string) int64 {
+	if n, ok := defaultMaxFileSizes[format]; ok {
+		return n
+	}
+	return defaultMaxFileSize
+}
+
+// MaxFileSize returns policy.maxFileSize of the repo, an integer number of bytes, or the default
+// of the repo's format when the policy sets none (npm 512 MiB, pypi and maven 4 GiB, apt, raw and
+// any other 8 GiB; docs/api.md, the policy keys). A value that is not a non-negative integer is
+// an error, which StatusOf answers with 500: an upload is not let through a limit that cannot be
+// read. Every frontend that takes an upload bounds it with LimitBody, which reads this. An oci
+// repo, which stores what it gets, does not ask.
 func MaxFileSize(repo index.Repo) (int64, error) {
 	if len(repo.Policy) == 0 {
-		return -1, nil
+		return defaultMaxFileSizeOf(repo.Format), nil
 	}
 	var p struct {
 		MaxFileSize *int64 `json:"maxFileSize"`
@@ -26,7 +52,7 @@ func MaxFileSize(repo index.Repo) (int64, error) {
 	case err != nil:
 		return 0, fmt.Errorf("format: repo %s/%s: policy maxFileSize: %w", repo.Format, repo.Name, err)
 	case p.MaxFileSize == nil:
-		return -1, nil
+		return defaultMaxFileSizeOf(repo.Format), nil
 	case *p.MaxFileSize < 0:
 		return 0, fmt.Errorf("format: repo %s/%s: policy maxFileSize %d is negative", repo.Format, repo.Name, *p.MaxFileSize)
 	}
@@ -34,11 +60,10 @@ func MaxFileSize(repo index.Repo) (int64, error) {
 }
 
 // LimitBody returns the body of the upload r bounded by MaxFileSize of the repo with
-// http.MaxBytesReader, or as it is when the policy sets none. A declared Content-Length above
-// the limit is refused before anything is read. Past the limit, the reader fails with an error
-// that names the repo and its limit and wraps the *http.MaxBytesError, so that the error of
-// Spool says why and StatusOf answers 413. The error of LimitBody itself is that 413, or the
-// 500 of a policy MaxFileSize cannot read.
+// http.MaxBytesReader. A declared Content-Length above the limit is refused before anything is
+// read. Past the limit, the reader fails with an error that names the repo and its limit and
+// wraps the *http.MaxBytesError, so that the error of Spool says why and StatusOf answers 413.
+// The error of LimitBody itself is that 413, or the 500 of a policy MaxFileSize cannot read.
 func LimitBody(w http.ResponseWriter, r *http.Request, repo index.Repo) (io.Reader, error) {
 	limit, err := MaxFileSize(repo)
 	if err != nil || limit < 0 {

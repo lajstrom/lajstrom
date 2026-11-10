@@ -61,3 +61,20 @@ func TestUploadMaxBlobSize(t *testing.T) {
 		t.Errorf("message %q does not name the repo's bound", msg)
 	}
 }
+
+// TestUploadDefaultMaxFileSize: a repo whose policy sets no maxFileSize is bounded by its
+// format's default on /v2 too, 8 GiB for raw (#246): a blob that declares one byte more is 413
+// before anything streams.
+func TestUploadDefaultMaxFileSize(t *testing.T) {
+	e := newEnv(t, envOptions{})
+	const raw = "/v2/raw/assets/docs/big.iso/blobs/uploads/"
+	b := []byte("a few bytes")
+	rr := e.do(e.h, http.MethodPost, raw+"?digest="+digest.FromBytes(b).String(), bytes.NewReader(b), "Content-Length", "8589934593")
+	msg := wantError(t, "a blob of 8 GiB and a byte", rr, http.StatusRequestEntityTooLarge, codeSizeInvalid)
+	if !strings.Contains(msg, "the maxFileSize of raw/assets, 8589934592 bytes") {
+		t.Errorf("message %q does not name the default bound", msg)
+	}
+	if n := e.prov.OpenUploads(); n != 0 {
+		t.Errorf("%d backend sessions open", n)
+	}
+}

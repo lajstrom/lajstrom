@@ -14,28 +14,34 @@ import (
 
 func TestMaxFileSize(t *testing.T) {
 	for _, tt := range []struct {
-		policy string
-		want   int64
-		err    bool
+		format, policy string
+		want           int64
+		err            bool
 	}{
-		{"", -1, false},
-		{"null", -1, false},
-		{`{"maven":{"sessionTimeout":"1h"}}`, -1, false},
-		{`{"maxFileSize":1048576}`, 1048576, false},
-		{`{"maxFileSize":0}`, 0, false},
-		{`{"maxFileSize":-1}`, 0, true},
-		{`{"maxFileSize":"1MiB"}`, 0, true},
-		{`{"maxFileSize":1.5}`, 0, true},
+		{"raw", "", 8 << 30, false}, // the format's default (#246)
+		{"raw", "null", 8 << 30, false},
+		{"raw", `{"blobRedirect":"never"}`, 8 << 30, false},
+		{"maven", `{"maven":{"sessionTimeout":"1h"}}`, 4 << 30, false},
+		{"pypi", "", 4 << 30, false},
+		{"apt", "", 8 << 30, false},
+		{"npm", "", 512 << 20, false},
+		{"rpm", "", 8 << 30, false}, // a format the table does not name
+		{"npm", `{"maxFileSize":1073741824}`, 1 << 30, false},
+		{"raw", `{"maxFileSize":1048576}`, 1048576, false},
+		{"raw", `{"maxFileSize":0}`, 0, false},
+		{"raw", `{"maxFileSize":-1}`, 0, true},
+		{"raw", `{"maxFileSize":"1MiB"}`, 0, true},
+		{"raw", `{"maxFileSize":1.5}`, 0, true},
 	} {
-		got, err := format.MaxFileSize(index.Repo{Format: "raw", Name: "scratch", Policy: []byte(tt.policy)})
+		got, err := format.MaxFileSize(index.Repo{Format: tt.format, Name: "scratch", Policy: []byte(tt.policy)})
 		if got != tt.want || (err != nil) != tt.err {
-			t.Errorf("MaxFileSize(%s) = %d, %v; want %d, error %v", tt.policy, got, err, tt.want, tt.err)
+			t.Errorf("MaxFileSize(%s, %s) = %d, %v; want %d, error %v", tt.format, tt.policy, got, err, tt.want, tt.err)
 		}
 	}
 }
 
 // TestLimitBody checks LimitBody with Spool, as the frontends use them: without a policy the
-// body is the request's; up to the limit it is spooled whole; above it, with a declared
+// format's default bound passes a small body; up to the limit it is spooled whole; above it, with a declared
 // Content-Length, LimitBody refuses before a read, and without one the spool fails, both 413
 // with the repo and the limit named; a policy that cannot be read is 500.
 func TestLimitBody(t *testing.T) {

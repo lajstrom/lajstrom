@@ -51,8 +51,8 @@ type Server struct {
 	// length passes while it moves. Zero turns it off; negative is invalid.
 	StallTimeout time.Duration `yaml:"stallTimeout"`
 	// MaxConcurrentUploads is how many uploads (POST, PUT and PATCH to the frontends and /v2)
-	// one replica runs at once; the next one is answered 503 with Retry-After. Zero means no
-	// limit; negative is invalid.
+	// one replica runs at once; the next one is answered 503 with Retry-After. Load sets
+	// DefaultMaxConcurrentUploads; zero in the file means no limit; negative is invalid.
 	MaxConcurrentUploads int `yaml:"maxConcurrentUploads"`
 	// UploadSessions bounds the live /v2 upload sessions of one principal on one replica.
 	UploadSessions UploadSessions `yaml:"uploadSessions"`
@@ -396,22 +396,25 @@ const (
 
 // Defaults that Load applies before reading the file.
 const (
-	DefaultShutdownTimeout    = 30 * time.Second
-	DefaultMaxManifestSize    = 4 << 20          // the least the distribution spec asks a registry to take
-	DefaultMetricsListen      = "127.0.0.1:9464" // the port of the OpenTelemetry Prometheus exporter
-	DefaultStallTimeout       = time.Minute
-	DefaultLogLevel           = "info"
-	DefaultLogFormat          = "text"
-	DefaultDatabaseDriver     = "sqlite"
-	DefaultDatabaseDSN        = "file:lajstrom.db"
-	DefaultRegistryType       = "generic"
-	DefaultRegistryTimeout    = 30 * time.Second
-	DefaultRegistryRetries    = 3
-	DefaultIngestClaimTTL     = 10 * time.Minute
-	DefaultReconcileInterval  = time.Hour
-	DefaultKeysAlgorithm      = KeysAlgorithmEd25519
-	DefaultKeysRetireGrace    = 720 * time.Hour
-	DefaultKeysTokenAlgorithm = KeysTokenES256
+	DefaultShutdownTimeout = 30 * time.Second
+	DefaultMaxManifestSize = 4 << 20          // the least the distribution spec asks a registry to take
+	DefaultMetricsListen   = "127.0.0.1:9464" // the port of the OpenTelemetry Prometheus exporter
+	DefaultStallTimeout    = time.Minute
+	// DefaultMaxConcurrentUploads bounds the spooled uploads of a replica, and so its $TMPDIR,
+	// out of the box (U-6 of the threat model, #246).
+	DefaultMaxConcurrentUploads = 32
+	DefaultLogLevel             = "info"
+	DefaultLogFormat            = "text"
+	DefaultDatabaseDriver       = "sqlite"
+	DefaultDatabaseDSN          = "file:lajstrom.db"
+	DefaultRegistryType         = "generic"
+	DefaultRegistryTimeout      = 30 * time.Second
+	DefaultRegistryRetries      = 3
+	DefaultIngestClaimTTL       = 10 * time.Minute
+	DefaultReconcileInterval    = time.Hour
+	DefaultKeysAlgorithm        = KeysAlgorithmEd25519
+	DefaultKeysRetireGrace      = 720 * time.Hour
+	DefaultKeysTokenAlgorithm   = KeysTokenES256
 )
 
 // The defaults of server.uploadSessions (#246): a principal's live sessions of one repo, about 50
@@ -433,7 +436,7 @@ const (
 func Default() *Config {
 	return &Config{
 		Server: Server{ShutdownTimeout: DefaultShutdownTimeout, MaxManifestSize: DefaultMaxManifestSize, MetricsListen: DefaultMetricsListen,
-			StallTimeout:   DefaultStallTimeout,
+			StallTimeout: DefaultStallTimeout, MaxConcurrentUploads: DefaultMaxConcurrentUploads,
 			UploadSessions: UploadSessions{PerRepo: DefaultUploadSessionsPerRepo, PerPrincipal: DefaultUploadSessionsPerPrincipal}},
 		Log:       Log{Level: DefaultLogLevel, Format: DefaultLogFormat},
 		Database:  Database{Driver: DefaultDatabaseDriver, DSN: DefaultDatabaseDSN},
