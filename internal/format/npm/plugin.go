@@ -1,5 +1,14 @@
 package npm
 
+import (
+	"context"
+	"fmt"
+
+	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/oci/profile"
+)
+
 // Name is the plugin name: the repo format, the first URL segment, lajstrom.format and the type
 // of the artifactType.
 const Name = "npm"
@@ -23,6 +32,35 @@ const maxMetadata = 2 << 20
 // readmePlaceholder is the readme npm sends for a package without one; it is not kept.
 const readmePlaceholder = "ERROR: No README data found!"
 
-// Plugin is the npm format plugin. Build makes the manifest of a version (#304); Validate, the
-// routes and the registration come next.
+// Plugin is the npm format plugin: Build and Validate of a version (#304), the publish route
+// (#305), the packuments and the tarballs (#306). It registers itself with format.Register when
+// the package is imported.
 type Plugin struct{}
+
+var _ format.Plugin = Plugin{}
+
+func init() { format.Register(Plugin{}) }
+
+// Name returns "npm".
+func (Plugin) Name() string { return Name }
+
+// ArtifactType returns application/vnd.lajstrom.npm.v1.
+func (Plugin) ArtifactType() string { return profile.ArtifactType(Name) }
+
+// EscapeName returns the package path of a package name (docs/spec/manifest-profile.md §4.1):
+// lodash → lodash, @acme/widgets → acme/widgets, JSONStream → jsonstream. A name CheckName
+// refuses wraps format.ErrInvalid.
+func (Plugin) EscapeName(name string) (string, error) {
+	if err := CheckName(name); err != nil {
+		return "", err
+	}
+	return packagePath(name), nil
+}
+
+// Routes mounts nothing yet: publish is #305, the packuments and the tarballs #306.
+func (Plugin) Routes(format.Router, format.Deps) {}
+
+// RenderIndex renders nothing yet: the packuments are #306.
+func (Plugin) RenderIndex(context.Context, index.Repo, format.IndexScope, index.Reader) ([]format.Document, error) {
+	return nil, fmt.Errorf("%w: npm packuments", format.ErrUnsupported)
+}
