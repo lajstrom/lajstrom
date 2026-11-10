@@ -71,6 +71,15 @@ from both, in a transaction held for the push; on SQLite, which serves one repli
 the process. With the referrers API the registry keeps the list, and no lock is taken. Approved
 by the maintainer on 2026-11-09 (#28).
 
+The same lock is the **tag lock** of a manifest: the referrers lock of its subject when it has
+one, else the lock keyed by its own digest. A delete through ingest holds it while it counts the
+tags of the manifest and deletes it (http-routing.md §2, DELETE: a delete by tag of a manifest
+that other tags name is refused), and a push by tag to an `oci` repo, which passes through to
+the backend, holds it for the push; both whether the backend has the referrers API or not. A tag
+pushed during a delete is then either counted by it or pushed after it. One operation takes one
+such lock, never two, since `WithReferrersLock` holds a connection of the pool. Approved by the
+maintainer on 2026-11-10 (#284).
+
 ## Derived (rebuilt by reindex)
 
 | Table | Columns | Notes |
