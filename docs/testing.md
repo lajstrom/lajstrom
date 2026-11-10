@@ -233,6 +233,36 @@ replicas, but nothing checks which replica took the metadata `PUT`) and H-11 (an
 through A seen by `apt-get update` through B within a second; `apt.sh` through the edge runs
 across replicas without the timing).
 
+### A proxy of npmjs.org
+
+[test/e2e/manual/npm-proxy.sh](../test/e2e/manual/npm-proxy.sh) installs a public package with
+its whole tree through a proxy repo of registry.npmjs.org ([proxy-and-group.md](spec/proxy-and-group.md),
+#310). It needs the network, so it lives below `manual/`, which `make e2e` does not run; the
+scenario of CI, against a recorded upstream, is #312. It needs `npm` on `PATH` and the registry of
+the dev stack:
+
+```sh
+make dev-up
+test/e2e/manual/npm-proxy.sh                      # jest@29.7.0
+test/e2e/manual/npm-proxy.sh express @babel/core  # any package specs
+```
+
+It serves `bin/lajstrom` as `run.sh` does, with the upstream `npmjs` (`$NPM_PROXY_UPSTREAM`,
+`https://registry.npmjs.org/` by default), a proxy repo `npm/npmjs-<run>` readable anonymously,
+debug logs and the metrics listener. Then it runs `npm install` twice, each time into an empty
+project with an empty npm cache, and counts from the access log and the metrics: the first
+install must fetch each tarball once from the upstream, the second must ask the upstream for
+none, the tarballs coming from the registry. What it pushed stays in the registry under
+`npm/npmjs-<run>/`. On 2026-11-10, npm 11.20.0 on Node 26, against the Zot of the dev stack:
+
+```text
+install 1: jest@29.7.0: 267 packages in 9 s; Lajstrom answered 268 tarball requests for 266 tarballs; the upstream was asked for 266 tarballs and 270 packuments; the proxy fetched 266
+install 2: jest@29.7.0: 267 packages in 3 s; Lajstrom answered 268 tarball requests for 266 tarballs; the upstream was asked for 0 tarballs and 0 packuments; the proxy fetched 0
+```
+
+npm asks for one tarball (`semver`) three times, once per place in the tree. The second install
+asks the upstream for no packument either: the packuments are still within `metadataTTL`.
+
 ### When a scenario fails
 
 Each scenario sources [test/e2e/lib.sh](../test/e2e/lib.sh). An assertion that fails prints the
