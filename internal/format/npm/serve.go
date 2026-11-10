@@ -60,7 +60,11 @@ func (h *handlers) packument(w http.ResponseWriter, r *http.Request, repo index.
 	}
 	w.Header().Add("Vary", "Accept")
 	w.Header().Set("Cache-Control", "no-cache")
-	c, err := h.document(r, repo, name, kind)
+	document := h.document
+	if repo.Kind == index.KindGroup && r.URL.Query().Get("write") == "true" {
+		document = h.writeDocument
+	}
+	c, err := document(r, repo, name, kind)
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -87,10 +91,10 @@ func abbreviated(accept []string) bool {
 
 // document returns the packument of kind of the package: from index_cache, rendered on a miss,
 // when the plugin has its ExternalURL; without one, rendered for this request with the base of
-// its host, and not kept, since another host would see that base. A proxy repo's comes from the
-// core (proxyDocument).
+// its host, and not kept, since another host would see that base. A proxy's and a group's come
+// from the core (proxyDocument).
 func (h *handlers) document(r *http.Request, repo index.Repo, name, kind string) (*index.Cache, error) {
-	if repo.Kind == index.KindProxy {
+	if repo.Kind == index.KindProxy || repo.Kind == index.KindGroup {
 		return h.proxyDocument(r, repo, name, kind)
 	}
 	ctx, scope := r.Context(), format.IndexScope(name)
@@ -160,18 +164,27 @@ func requestBase(r *http.Request) string {
 // tarball serves the tarball file of the package's version whose tarball layer has that title,
 // as the facade serves a blob (format.ServeBlob): 307 to the backend's storage when it redirects
 // and policy.blobRedirect allows it, else streamed. ETag the blob digest, Last-Modified the
-// version's created, Docker-Content-Digest the manifest digest. A proxy repo's file comes from
-// the core, fetched from the upstream on a miss (proxyTarball).
+// version's created, Docker-Content-Digest the manifest digest. A proxy's file comes from the
+// core, fetched from the upstream on a miss, and a group's from the member that holds it
+// (proxyTarball), whose registry serves it.
 func (h *handlers) tarball(w http.ResponseWriter, r *http.Request, repo index.Repo, name, file string) {
 	ctx := r.Context()
 	find := h.hostedTarball
-	if repo.Kind == index.KindProxy {
+	if repo.Kind == index.KindProxy || repo.Kind == index.KindGroup {
 		find = h.proxyTarball
 	}
 	m, err := find(ctx, repo, name, file)
 	if err != nil {
 		h.fail(w, r, err)
 		return
+	}
+	if m.Package.RepoID != repo.ID {
+		member, err := h.deps.Index.GetRepoByID(ctx, m.Package.RepoID)
+		if err != nil {
+			h.fail(w, r, fmt.Errorf("npm: the member of %s/%s that holds %s: %w", repo.Format, repo.Name, file, err))
+			return
+		}
+		repo = *member
 	}
 	prov, err := h.registry(ctx, repo)
 	if err != nil {

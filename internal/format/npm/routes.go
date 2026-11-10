@@ -104,7 +104,8 @@ func (h *handlers) post(w http.ResponseWriter, r *http.Request) {
 }
 
 // del dispatches a DELETE: the registry's own routes, and npm unpublish of a package or of a
-// version's tarball, which a proxy repo does not take, 405.
+// version's tarball, which a proxy repo does not take, 405, and a group sends to its hosted
+// member (writeTarget).
 func (h *handlers) del(w http.ResponseWriter, r *http.Request) {
 	if segs := special(r.PathValue("path")); segs != nil {
 		h.serveSpecial(w, r, segs)
@@ -115,7 +116,8 @@ func (h *handlers) del(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, errors.New("npm: the route has no repo"))
 		return
 	}
-	if err := h.refuseWrite(r.Context(), repo); err != nil {
+	r, repo, err := h.writeTarget(r, repo)
+	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
@@ -160,7 +162,7 @@ func parseTarget(p string) (target, bool) {
 
 // put dispatches a PUT: the publish of a package, and the packument update of npm deprecate
 // and unpublish (PUT <name> without _attachments, PUT <name>/-rev/<rev>); a proxy repo takes
-// neither, 405.
+// neither, 405, and a group sends both to its hosted member (writeTarget).
 func (h *handlers) put(w http.ResponseWriter, r *http.Request) {
 	if segs := special(r.PathValue("path")); segs != nil {
 		h.serveSpecial(w, r, segs)
@@ -171,7 +173,8 @@ func (h *handlers) put(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, errors.New("npm: the route has no repo"))
 		return
 	}
-	if err := h.refuseWrite(r.Context(), repo); err != nil {
+	r, repo, err := h.writeTarget(r, repo)
+	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
