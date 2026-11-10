@@ -236,7 +236,9 @@ func (r *repository) prime(ctx context.Context, loc *url.URL) {
 	if s, err := r.p.clients.cache.GetScheme(ctx, r.p.host); err == nil && s == auth.SchemeBasic {
 		return
 	}
-	req, err := http.NewRequestWithContext(r.scoped(ctx), http.MethodGet, loc.String(), nil)
+	ctx = r.scoped(ctx)
+	var challenge string
+	req, err := http.NewRequestWithContext(context.WithValue(ctx, challengeKey{}, &challenge), http.MethodGet, loc.String(), nil)
 	if err != nil {
 		return
 	}
@@ -245,6 +247,31 @@ func (r *repository) prime(ctx context.Context, loc *url.URL) {
 		return // the request with the body reports the failure
 	}
 	_ = resp.Body.Close()
+	aliasToken(ctx, r.p.clients.cache, r.p.host, challenge)
+}
+
+// aliasToken caches the bearer token that the auth client got after challenge also under the
+// scopes of ctx alone. The auth client keys a token by the request's scopes merged with the
+// challenge's scope parameter, but looks a request up by its scopes alone before it is
+// challenged: when the challenge names a scope the request does not (Gitea's scope="*", on
+// every challenge), the streamed request after prime would go out without the token, and
+// could not be sent again after its 401.
+func aliasToken(ctx context.Context, cache auth.Cache, host, challenge string) {
+	scheme, scope := challengeParam(challenge, "scope")
+	if scheme != "bearer" || scope == "" {
+		return
+	}
+	scopes := auth.GetAllScopesForHost(ctx, host)
+	own := strings.Join(scopes, " ")
+	merged := strings.Join(auth.CleanScopes(append(slices.Clone(scopes), strings.Split(scope, " ")...)), " ")
+	if merged == own {
+		return
+	}
+	token, err := cache.GetToken(ctx, host, auth.SchemeBearer, merged)
+	if err != nil {
+		return
+	}
+	_, _ = cache.Set(ctx, host, auth.SchemeBearer, own, func(context.Context) (string, error) { return token, nil })
 }
 
 // session returns prev updated from the registry's answer: its Location (resolved and checked
