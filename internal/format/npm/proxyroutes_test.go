@@ -32,6 +32,8 @@ type fakeNpmjs struct {
 	tarballs   map[string][]byte                  // path → bytes
 	packuments atomic.Int32
 	files      atomic.Int32
+	audits     []seenAudit  // the audit requests, in order (serveAudit)
+	auditCode  atomic.Int32 // the status of an audit answer; 0 is 200 with advisories
 }
 
 func newFakeNpmjs(t *testing.T) *fakeNpmjs {
@@ -54,6 +56,10 @@ func newFakeNpmjs(t *testing.T) *fakeNpmjs {
 func (u *fakeNpmjs) serve(w http.ResponseWriter, r *http.Request) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	if r.Method == http.MethodPost {
+		u.serveAudit(w, r)
+		return
+	}
 	if b, ok := u.tarballs[r.URL.Path]; ok || strings.Contains(r.URL.Path, "/-/") {
 		u.files.Add(1)
 		if !ok {

@@ -23,6 +23,14 @@ import (
 // maxAuditBody bounds the body of an audit request, decoded.
 const maxAuditBody = 16 << 20
 
+// The audit routes below /npm/<repo>/-/: npm's bulk advisories (npm 10 and 11, yarn 4), and
+// npm 6's audits of pnpm 9 and pnpm 10.
+const (
+	auditBulk  = "npm/v1/security/advisories/bulk"
+	auditFull  = "npm/v1/security/audits"
+	auditQuick = "npm/v1/security/audits/quick"
+)
+
 // The bounds of a search page.
 const (
 	searchSize    = 20
@@ -180,44 +188,74 @@ var emptyAuditReport = map[string]any{
 	},
 }
 
-// audit answers npm audit and pnpm audit for a hosted repo, which knows no advisory for its
-// packages: the bulk endpoint {}, the two others the empty report. The body, gzipped when
-// Content-Encoding says so, is read and bounded at 16 MiB decoded (413). A proxy forwards to
-// its upstream and a group the bulk request without its hosted names (ADR 0013, #310, #311):
-// 501 here until then.
-func (h *handlers) audit(w http.ResponseWriter, r *http.Request, repo index.Repo, bulk bool) {
+// audit answers npm audit and pnpm audit on route, one of the audit routes: a hosted repo knows
+// no advisory for its packages, and answers the bulk route {} and the two others the empty
+// report; a proxy repo forwards the request to its upstream (proxyAudit). The body, gzipped
+// when Content-Encoding says so, is bounded at 16 MiB decoded (413).
+func (h *handlers) audit(w http.ResponseWriter, r *http.Request, repo index.Repo, route string) {
 	if err := format.Authorize(r.Context(), h.deps, auth.ActionRead, repo); err != nil {
 		h.fail(w, r, err)
 		return
 	}
-	if repo.Kind != "" && repo.Kind != index.KindHosted {
-		h.fail(w, r, fmt.Errorf("%w: the audit of a %s repo", format.ErrUnsupported, repo.Kind))
+	if repo.Kind == index.KindGroup {
+		// #311: the bulk route without the names that the group's hosted member holds,
+		// forwarded as proxyAudit forwards it; the two others 501 (http-routing.md, npm).
+		h.fail(w, r, fmt.Errorf("%w: the audit of a group repo", format.ErrUnsupported))
 		return
 	}
-	var body io.Reader = http.MaxBytesReader(w, r.Body, maxAuditBody)
-	if strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
-		zr, err := gzip.NewReader(body)
-		if err != nil {
-			h.fail(w, r, fmt.Errorf("%w: the audit body is not gzip: %w", format.ErrInvalid, err))
-			return
-		}
-		body = zr
-	}
-	n, err := io.Copy(io.Discard, io.LimitReader(body, maxAuditBody+1))
-	switch {
-	case err != nil && errors.As(err, new(*http.MaxBytesError)):
+	body, err := newAuditBody(w, r)
+	if err != nil {
 		h.fail(w, r, err)
 		return
-	case err != nil:
-		h.fail(w, r, fmt.Errorf("%w: the audit body: %w", format.ErrInvalid, err))
-		return
-	case n > maxAuditBody:
-		h.fail(w, r, fmt.Errorf("the audit body is larger than %d bytes decoded: %w", maxAuditBody, &http.MaxBytesError{Limit: maxAuditBody}))
+	}
+	if repo.Kind == index.KindProxy {
+		h.proxyAudit(w, r, repo, route, body)
 		return
 	}
-	if bulk {
+	if _, err := io.Copy(io.Discard, body); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	if route == auditBulk {
 		writeJSON(w, http.StatusOK, struct{}{})
 		return
 	}
 	writeJSON(w, http.StatusOK, emptyAuditReport)
+}
+
+// auditBody is the body of an audit request, decoded when Content-Encoding is gzip: a read past
+// maxAuditBody bytes decoded fails with an *http.MaxBytesError (413), and any other error of
+// the client's body wraps format.ErrInvalid (400).
+type auditBody struct {
+	r    io.Reader
+	left int64
+}
+
+func newAuditBody(w http.ResponseWriter, r *http.Request) (*auditBody, error) {
+	var body io.Reader = http.MaxBytesReader(w, r.Body, maxAuditBody)
+	if strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
+		zr, err := gzip.NewReader(body)
+		switch {
+		case errors.As(err, new(*http.MaxBytesError)):
+			return nil, err
+		case err != nil:
+			return nil, fmt.Errorf("%w: the audit body is not gzip: %w", format.ErrInvalid, err)
+		}
+		body = zr
+	}
+	return &auditBody{r: body, left: maxAuditBody}, nil
+}
+
+func (b *auditBody) Read(p []byte) (int, error) {
+	if int64(len(p)) > b.left+1 {
+		p = p[:b.left+1] // one byte more tells a body of the bound from a larger one
+	}
+	n, err := b.r.Read(p)
+	if b.left -= int64(n); b.left < 0 {
+		return 0, fmt.Errorf("the audit body is larger than %d bytes decoded: %w", maxAuditBody, &http.MaxBytesError{Limit: maxAuditBody})
+	}
+	if err != nil && !errors.Is(err, io.EOF) && !errors.As(err, new(*http.MaxBytesError)) {
+		err = fmt.Errorf("%w: the audit body: %w", format.ErrInvalid, err)
+	}
+	return n, err
 }
