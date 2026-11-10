@@ -74,10 +74,12 @@ variables and what passes.
 ## Fuzz
 
 `FuzzEscape`, `FuzzUnescape` and `FuzzValidate` (`internal/oci/profile`), `FuzzParse`,
-`FuzzParseControl` and `FuzzParseAr` (`internal/format/deb`), `FuzzWheelFilename` and
-`FuzzCoreMetadata` (`internal/format/pypi`), and `FuzzPOM` (`internal/format/maven`). Each
-checks properties of what the parser accepts (round trips, idempotence), that what it refuses
-stays refused, and that what it allocates grows with the input (`testutil.CheckAllocated`).
+`FuzzParseControl` and `FuzzParseAr` (`internal/format/deb`), `FuzzWheelFilename`,
+`FuzzCoreMetadata` and `FuzzZipEntries` (`internal/format/pypi`), and `FuzzPOM`
+(`internal/format/maven`). Each checks properties of what the parser accepts (round trips,
+idempotence), that what it refuses stays refused, and that what it allocates grows with the
+input (`testutil.CheckAllocated`); `FuzzZipEntries`, that the count of a zip directory that
+bounds it (#243) is never below what `zip.NewReader` reads.
 `go test` runs their seed corpus with the unit tests; `make fuzz` fuzzes each for 30 s, one
 after another:
 

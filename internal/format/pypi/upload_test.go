@@ -98,8 +98,8 @@ func TestUpload(t *testing.T) {
 }
 
 // TestUploadRefuses checks the 400s: digests that are not the file's, md5 in base64 accepted,
-// another action or protocol, no file, fields that disagree with the file, not a form; nothing
-// is published by any of them.
+// another action or protocol, no file, fields that disagree with the file, not a form, a zip
+// directory of 262 145 entries whose end record says 1 (#243); nothing is published by any.
 func TestUploadRefuses(t *testing.T) {
 	e := newEnv(t)
 	whl, wi := testutil.Wheel(testutil.WheelOptions{Name: "tool", Version: "2.0"})
@@ -119,6 +119,11 @@ func TestUploadRefuses(t *testing.T) {
 		{"another filetype", func(f *form) { f.fields["filetype"] = PackagetypeSdist }},
 		{"a file that is not a wheel", func(f *form) {
 			f.content = []byte("not a zip")
+			delete(f.fields, "sha256_digest")
+			delete(f.fields, "md5_digest")
+		}},
+		{"a wheel of more than maxEntries entries", func(f *form) {
+			f.content = testutil.ZipDirectoryBomb(4<<16+1, 1)
 			delete(f.fields, "sha256_digest")
 			delete(f.fields, "md5_digest")
 		}},
