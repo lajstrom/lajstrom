@@ -69,6 +69,7 @@ func TestClientAddress(t *testing.T) {
 	tests := []struct {
 		name      string
 		trusted   []netip.Prefix
+		tls       bool
 		remote    string
 		wantAddr  string
 		wantLog   string
@@ -82,10 +83,17 @@ func TestClientAddress(t *testing.T) {
 			wantLog: "198.51.100.1", wantProxy: "10.1.2.3:443",
 			wantStart: "the client address is read from X-Forwarded-For when the peer is a trusted proxy, " +
 				"and the per-address throttle of failed logins and /v2/token is on"},
+		{name: "server.tls, no list", tls: true, remote: "10.1.2.3:443", wantAddr: "10.1.2.3", wantLog: "10.1.2.3:443",
+			wantStart: "server.tls is set and server.trustedProxies is empty: X-Forwarded-For is ignored, the client address " +
+				"is the peer of the connection, and the per-address throttle of failed logins and /v2/token is on with it"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s, buf := newTestServer(t, Options{TrustedProxies: tt.trusted})
+			o := Options{TrustedProxies: tt.trusted}
+			if tt.tls {
+				o.TLSCertFile, o.TLSKeyFile, _ = selfSigned(t)
+			}
+			s, buf := newTestServer(t, o)
 			var got string
 			s.mux.HandleFunc("GET /test/client", func(_ http.ResponseWriter, r *http.Request) { got = ClientAddr(r.Context()) })
 			req := httptest.NewRequest(http.MethodGet, "/test/client", nil)

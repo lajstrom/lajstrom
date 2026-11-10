@@ -132,8 +132,11 @@ the peer of the connection, or the client that `X-Forwarded-For` names when the 
 `server.trustedProxies` ([configuration.md](configuration.md#server)). An IPv6 address counts as
 its /64. **With an empty `server.trustedProxies`, the per-address throttles are off**, and the
 startup log says so: behind an edge every client would share the edge's address, and a
-`docker pull` storm or a broken CI job would throttle everyone at once. The per-account throttle
-needs no address and is always on.
+`docker pull` storm or a broken CI job would throttle everyone at once. The exception is
+`server.tls`: Lajstrom terminates TLS itself, the peer is the client, and the per-address
+throttles are on with it (#248), as the startup log says; an L4 balancer in front that hides the
+client would make its address everyone's, so TLS then belongs at an L7 edge with the list. The
+per-account throttle needs no address and is always on.
 
 **Per replica.** The counts live in the memory of each replica, at most 10 000 keys per
 throttle, and a restart clears them. Behind a balancer, N replicas are N budgets: up to 10 × N
@@ -423,7 +426,8 @@ implemented (`405`), and the clients above use `GET`.
 - **Rate limiting**: 100 requests a second per client address, then `429` with `Retry-After`
   and `TOOMANYREQUESTS`, checked before the Basic credentials so that a flood costs no
   argon2id; the passwords it carries count in the throttles of failed logins
-  ([Failed logins](#failed-logins)). Off without `server.trustedProxies`.
+  ([Failed logins](#failed-logins)). Off without `server.trustedProxies`, unless `server.tls`
+  is set.
 
 ### What a token says
 

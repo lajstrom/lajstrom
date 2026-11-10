@@ -15,13 +15,15 @@ import (
 // in one instant, the later ones 429 with Retry-After in the distribution's error format. From
 // behind a trusted proxy the address is the forwarded one, and another client behind the same
 // proxy goes on; from behind an untrusted one it is the proxy's, whatever the header says;
-// without server.trustedProxies the per-address throttle is off.
+// without server.trustedProxies the per-address throttle is off, unless Lajstrom terminates TLS
+// itself (server.tls, #248): then the peer is the client, whatever the header says.
 func TestTokenThrottle(t *testing.T) {
 	const body = `{"errors":[{"code":"TOOMANYREQUESTS","message":"too many token requests: try again after Retry-After seconds"}]}` + "\n"
 	edge := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}
 	tests := []struct {
 		name    string
 		trusted []netip.Prefix
+		tls     bool
 		remote  string
 		xff     func(i int) string
 		refused int
@@ -33,13 +35,19 @@ func TestTokenThrottle(t *testing.T) {
 		{name: "behind an untrusted proxy", trusted: edge, remote: "192.0.2.50:443", xff: func(i int) string { return fmt.Sprintf("198.51.100.%d", i%250) },
 			refused: 200 - auth.TokenRequests, address: "192.0.2.50"},
 		{name: "without trusted proxies", remote: "192.0.2.50:443", xff: func(int) string { return "198.51.100.7" }},
+		{name: "server.tls without trusted proxies", tls: true, remote: "192.0.2.50:443", xff: func(i int) string { return fmt.Sprintf("198.51.100.%d", i%250) },
+			refused: 200 - auth.TokenRequests, address: "192.0.2.50"},
 	}
 	now := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			facade := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-			s, logs := newTestServer(t, Options{Facade: facade, TrustedProxies: tt.trusted,
-				Authenticator: auth.NewAuthenticator(auth.Options{Index: usersReader{}, Now: func() time.Time { return now }})})
+			o := Options{Facade: facade, TrustedProxies: tt.trusted,
+				Authenticator: auth.NewAuthenticator(auth.Options{Index: usersReader{}, Now: func() time.Time { return now }})}
+			if tt.tls {
+				o.TLSCertFile, o.TLSKeyFile, _ = selfSigned(t)
+			}
+			s, logs := newTestServer(t, o)
 			get := func(xff string) *httptest.ResponseRecorder {
 				rr := httptest.NewRecorder()
 				r := httptest.NewRequest(http.MethodGet, "/v2/token?scope=repository:raw/scratch:pull", nil)
