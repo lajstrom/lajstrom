@@ -1,10 +1,12 @@
 package auth
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"fmt"
 	"net/netip"
+	"sync"
 	"time"
 )
 
@@ -28,8 +30,9 @@ const (
 	TokenRequests = 100
 	// TokenWindow is the window of TokenRequests.
 	TokenWindow = time.Second
-	// throttleSize bounds the keys a throttle remembers, the one written longest ago dropped
-	// first.
+	// throttleSize bounds the keys a throttle remembers. A new key takes the place of a window
+	// that has closed, else of the open window opened first that does not throttle its key
+	// (throttle.makeRoom).
 	throttleSize = 10000
 )
 
@@ -97,30 +100,38 @@ func (a *Authenticator) AllowTokenRequest(ctx context.Context) error {
 
 // throttle counts events per key within a window that opens with the first event of the key
 // and lasts window; a key with budget events in its open window is throttled until it closes.
-// It remembers at most throttleSize keys, in memory, per replica. Its methods may be called
-// concurrently.
+// It remembers at most size keys (throttleSize), in memory, per replica; makeRoom says which
+// one a new key replaces. Its methods may be called concurrently.
 type throttle struct {
 	budget int
 	window time.Duration
+	size   int
 	now    func() time.Time
-	keys   *bounded[string, throttleWindow]
+
+	mu    sync.Mutex
+	keys  map[string]*list.Element // of *throttleWindow
+	order *list.List               // the windows by the time they opened, the first first
 }
 
 // throttleWindow is the window of a key: when it opened and the events since.
 type throttleWindow struct {
+	key   string
 	start time.Time
 	n     int
 }
 
 func newThrottle(budget int, window time.Duration, now func() time.Time) *throttle {
-	return &throttle{budget: budget, window: window, now: now, keys: newBounded[string, throttleWindow](throttleSize)}
+	return &throttle{budget: budget, window: window, size: throttleSize, now: now,
+		keys: map[string]*list.Element{}, order: list.New()}
 }
 
 // wait returns how long key is throttled: until its window closes when the window holds budget
 // events, zero otherwise.
 func (t *throttle) wait(key string) time.Duration {
-	w, ok := t.keys.get(key)
-	if !ok || w.n < t.budget {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	w := t.lookup(key)
+	if w == nil || w.n < t.budget {
 		return 0
 	}
 	return max(w.start.Add(t.window).Sub(t.now()), 0)
@@ -128,30 +139,93 @@ func (t *throttle) wait(key string) time.Duration {
 
 // take counts an event of key and returns zero when key is not throttled; when it is, it
 // counts nothing and returns how long it is throttled.
-func (t *throttle) take(key string) (wait time.Duration) {
+func (t *throttle) take(key string) time.Duration {
 	now := t.now()
-	t.keys.update(key, func(w throttleWindow, ok bool) throttleWindow {
-		switch {
-		case !ok || !now.Before(w.start.Add(t.window)):
-			return throttleWindow{start: now, n: 1}
-		case w.n >= t.budget:
-			wait = w.start.Add(t.window).Sub(now)
-			return w
-		}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	switch w := t.lookup(key); {
+	case w == nil || t.closed(w, now):
+		t.open(key, now)
+	case w.n >= t.budget:
+		return w.start.Add(t.window).Sub(now)
+	default:
 		w.n++
-		return w
-	})
-	return wait
+	}
+	return 0
 }
 
 // add counts an event of key, in its window, or in a new one when its window has closed.
 func (t *throttle) add(key string) {
 	now := t.now()
-	t.keys.update(key, func(w throttleWindow, ok bool) throttleWindow {
-		if !ok || !now.Before(w.start.Add(t.window)) {
-			return throttleWindow{start: now, n: 1}
-		}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if w := t.lookup(key); w != nil && !t.closed(w, now) {
 		w.n++
-		return w
-	})
+		return
+	}
+	t.open(key, now)
+}
+
+// lookup returns the window of key, nil when it has none; t.mu is held.
+func (t *throttle) lookup(key string) *throttleWindow {
+	if el, ok := t.keys[key]; ok {
+		return el.Value.(*throttleWindow)
+	}
+	return nil
+}
+
+// closed reports whether w has closed at now.
+func (t *throttle) closed(w *throttleWindow, now time.Time) bool {
+	return !now.Before(w.start.Add(t.window))
+}
+
+// open opens a window of key at now with one event, in place of its closed one. A new key
+// needs room; when makeRoom finds none, the key is not tracked. t.mu is held.
+func (t *throttle) open(key string, now time.Time) {
+	if el, ok := t.keys[key]; ok {
+		t.order.Remove(el)
+	} else if len(t.keys) >= t.size && !t.makeRoom(now) {
+		return
+	}
+	t.keys[key] = t.order.PushBack(&throttleWindow{key: key, start: now, n: 1})
+}
+
+// makeRoom drops the windows that have closed, or, when none has, the open window opened first
+// that does not hold budget events, and reports whether it dropped one. It never drops a
+// window that throttles its key while the window is open: failures of other keys must not
+// end a throttle (threat model A-2, #251). When every window is open and full, nothing is
+// dropped and the new key goes untracked: the throttle fails open. Reaching that takes size ×
+// budget events within one window, 100 000 failed logins a minute on one replica (each an
+// argon2id verification), and failing closed would let them lock every other account out.
+// The windows are in the order they opened and all last as long, so the closed ones come
+// first. t.mu is held.
+func (t *throttle) makeRoom(now time.Time) bool {
+	dropped := false
+	for el := t.order.Front(); el != nil && t.closed(el.Value.(*throttleWindow), now); el = t.order.Front() {
+		t.drop(el)
+		dropped = true
+	}
+	if dropped {
+		return true
+	}
+	for el := t.order.Front(); el != nil; el = el.Next() {
+		if el.Value.(*throttleWindow).n < t.budget {
+			t.drop(el)
+			return true
+		}
+	}
+	return false
+}
+
+// drop forgets the window el; t.mu is held.
+func (t *throttle) drop(el *list.Element) {
+	t.order.Remove(el)
+	delete(t.keys, el.Value.(*throttleWindow).key)
+}
+
+// len returns the number of keys.
+func (t *throttle) len() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.keys)
 }

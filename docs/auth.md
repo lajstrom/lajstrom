@@ -135,11 +135,21 @@ startup log says so: behind an edge every client would share the edge's address,
 `docker pull` storm or a broken CI job would throttle everyone at once. The per-account throttle
 needs no address and is always on.
 
-**Per replica.** The counts live in the memory of each replica, at most 10 000 keys per throttle
-(the one written longest ago dropped first), and a restart clears them. Behind a balancer, N
-replicas are N budgets: up to 10 × N guesses a minute for an account. The bound across replicas
-is the edge's ([operations.md](operations.md#failed-logins-and-the-edge)). The budgets are
-constants of `internal/auth`, not settings.
+**Per replica.** The counts live in the memory of each replica, at most 10 000 keys per
+throttle, and a restart clears them. Behind a balancer, N replicas are N budgets: up to 10 × N
+guesses a minute for an account. The bound across replicas is the edge's
+([operations.md](operations.md#failed-logins-and-the-edge)). The budgets are constants of
+`internal/auth`, not settings.
+
+**When a throttle is full**, a new key takes the place of a window that has closed, or, when
+every window is still open, of the open window opened first that has not reached its budget.
+A window that throttles its account is never dropped while it is open, so failures of other
+names cannot end it: an account under throttle stays under throttle through a flood of
+failures of names that no user has. When all 10 000 windows are open and at their budget, a
+new key is not counted until a window closes: the throttle fails open. Getting there takes
+100 000 failed logins within a minute on one replica, each an argon2id verification, about
+1 700 core-seconds; failing closed instead would let such a flood lock every other account
+out of the replica for a minute.
 
 The body of the `429` follows the route, like the `401`: under `/v2/`
 `{"errors":[{"code":"TOOMANYREQUESTS","message":"too many failed logins: try again after Retry-After seconds"}]}`
