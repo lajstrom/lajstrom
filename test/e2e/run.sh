@@ -24,7 +24,9 @@
 # $LAJSTROM_E2E_REGISTRY (default localhost:5000, the Zot of make dev-up), with the capabilities
 # of $LAJSTROM_E2E_CAPABILITIES when it is set, a YAML flow mapping such as '{catalog: false}'
 # for a registry without a catalog (#37), and the repos
-# raw/scratch, apt/ubuntu, apt/e2e and pypi/e2e on it, none readable anonymously, and the user
+# raw/scratch, apt/ubuntu, apt/e2e and pypi/e2e on it, none readable anonymously; the upstream
+# npmjs at $LAJSTROM_E2E_NPM_UPSTREAM (default https://registry.npmjs.org/), which npm.sh makes
+# a proxy repo of; and the user
 # $LAJSTROM_E2E_USER with the admin binding; auth.anonymousRead is true, so that a repo's own
 # anonymousRead decides (rbac.sh turns it on for a repo of its own); no metrics listener, no
 # reconcile loop. The LAJSTROM_SERVER_*, LAJSTROM_LOG_*
@@ -45,7 +47,7 @@
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-order="raw oras auth rbac oci-token cosign tokens apt pypi maven" # the quick ones first; pypi installs its clients, maven builds with mvn and gradle
+order="raw oras auth rbac oci-token cosign tokens apt pypi maven npm" # the quick ones first; pypi and npm install their clients, maven builds with mvn and gradle
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 registry="${LAJSTROM_E2E_REGISTRY:-localhost:5000}"
@@ -157,6 +159,10 @@ registries:
     type: generic
     url: "http://$registry"
 ${LAJSTROM_E2E_CAPABILITIES:+    capabilities: $LAJSTROM_E2E_CAPABILITIES}
+upstreams:
+  - name: npmjs
+    format: npm
+    url: "${LAJSTROM_E2E_NPM_UPSTREAM:-https://registry.npmjs.org/}"
 reconcile:
   interval: 0s
 keys:

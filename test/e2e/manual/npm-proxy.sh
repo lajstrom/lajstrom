@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # npm install through a proxy repo of registry.npmjs.org (#310, docs/testing.md, "A proxy of
-# npmjs.org"). A manual scenario: it needs the network, so make e2e does not run it (run.sh runs
-# test/e2e/*.sh only); the e2e of CI, with a recorded upstream, is #312.
+# npmjs.org"). A manual scenario, with a tree of hundreds of packages and the counts of the
+# metrics, so make e2e does not run it (run.sh runs test/e2e/*.sh only); test/e2e/npm.sh installs
+# a small tree through a proxy of the same upstream in make e2e (#312).
 #
 #   test/e2e/manual/npm-proxy.sh [<package spec>...]     default: jest@29.7.0
 #
