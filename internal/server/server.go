@@ -90,6 +90,9 @@ type Server struct {
 	mux     *http.ServeMux
 	handler http.Handler
 	srv     *http.Server
+	// byAddress is whether the client address counts in the per-address throttles: Lajstrom
+	// knows the client behind trusted proxies, or when it terminates TLS itself (clientAddress).
+	byAddress bool
 
 	running     atomic.Bool
 	draining    atomic.Bool  // set when Run's context ends; /-/readyz answers 503 from then on
@@ -125,7 +128,8 @@ func New(o Options) (*Server, error) {
 	if o.Log == nil {
 		o.Log = slog.Default()
 	}
-	s := &Server{opts: o, log: o.Log, mux: http.NewServeMux(), bound: make(chan struct{})}
+	s := &Server{opts: o, log: o.Log, mux: http.NewServeMux(), bound: make(chan struct{}),
+		byAddress: len(o.TrustedProxies) > 0 || tlsConfig != nil}
 	s.baseCtx, s.abort = context.WithCancel(context.Background())
 	s.routes()
 	s.handler = s.track(s.securityHeaders(s.recovery(requestID(s.clientAddress(s.accessLog(s.crossOrigin(s.authenticate(s.limitUploads(s.stall(s.mux))))))))))

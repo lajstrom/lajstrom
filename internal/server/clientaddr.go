@@ -29,9 +29,10 @@ func ClientAddr(ctx context.Context) string {
 // clientAddress resolves the client of each request once (resolveClient) and puts it in the
 // context, for the access log, the authentication and ClientAddr. No other code reads a
 // forwarded header. With server.trustedProxies, the address counts in the per-address
-// throttles of internal/auth (auth.WithClientAddress); without, it does not: behind an edge
-// every client would share the edge's address, and one bucket for everyone is worse than none
-// (ADR 0011).
+// throttles of internal/auth (auth.WithClientAddress), and so it does with server.tls, where
+// Lajstrom terminates TLS and the peer is the client (#248); behind an edge without the list
+// it does not: every client would share the edge's address, and one bucket for everyone is
+// worse than none (ADR 0011).
 func (s *Server) clientAddress(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, bad := resolveClient(r.RemoteAddr, r.Header.Values("X-Forwarded-For"), s.opts.TrustedProxies)
@@ -40,7 +41,7 @@ func (s *Server) clientAddress(next http.Handler) http.Handler {
 				"remoteAddr", r.RemoteAddr, "requestId", RequestID(r.Context()))
 		}
 		ctx := context.WithValue(r.Context(), clientKey{}, c)
-		if len(s.opts.TrustedProxies) > 0 {
+		if s.byAddress {
 			ctx = auth.WithClientAddress(ctx, c.addr)
 		}
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -49,6 +50,11 @@ func (s *Server) clientAddress(next http.Handler) http.Handler {
 
 // logTrust says once, at startup, where the client address comes from.
 func (s *Server) logTrust() {
+	if len(s.opts.TrustedProxies) == 0 && s.byAddress {
+		s.log.Info("server.tls is set and server.trustedProxies is empty: X-Forwarded-For is ignored, the client address " +
+			"is the peer of the connection, and the per-address throttle of failed logins and /v2/token is on with it")
+		return
+	}
 	if len(s.opts.TrustedProxies) == 0 {
 		s.log.Info("server.trustedProxies is empty: X-Forwarded-For is ignored, the client address is the peer " +
 			"of the connection, and the per-address throttle of failed logins and /v2/token is off; behind an edge, " +

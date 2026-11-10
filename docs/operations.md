@@ -100,7 +100,8 @@ Lajstrom throttles what only it can see ([auth.md](auth.md#failed-logins)): fail
 logins per account (10 a minute) and per client address (30 a minute), and requests to
 `/v2/token` per client address (100 a second); beyond, `429` with `Retry-After`. The per-address
 throttles need `server.trustedProxies`, so that the address is the client's and not the edge's;
-with an empty list they are off, and the startup line says so.
+with an empty list they are off, and the startup line says so. Without an edge, with
+`server.tls`, the peer is the client and they are on with an empty list too (#248).
 
 The counts live in the memory of each replica and are not shared: N replicas are N budgets, and
 a restart starts over. That makes guessing a password slow and keeps argon2id from eating a
@@ -861,6 +862,16 @@ was published after the backup and removes what was deleted.
 6. Start the replicas, and check: `whoami` of an admin, a package published before and one
    after the backup, the fingerprint of an apt repo's `key.asc`, the bearer-token key's
    fingerprint in the start log.
+
+A database restored on **another server**, a staging copy of production with the same master
+key, has production's bearer-token key: a token one of them issues verifies on the other
+wherever the service, `server.externalURL`'s host, is the same, with the access of the issuer's
+bindings. Before it serves, give it a key of its own there, ending every token of the old one
+([The bearer-token key](#the-bearer-token-key)):
+
+```sh
+lajstrom admin key rotate --token --drop
+```
 
 ### A rehearsal
 

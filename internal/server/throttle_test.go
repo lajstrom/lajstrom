@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -58,6 +59,50 @@ func TestThrottled(t *testing.T) {
 
 	if rr := serveAs(s, "/test/x", "Bearer "+alicePAT); rr.Code != http.StatusNoContent || sw.principal.String() != "user:"+aliceUID {
 		t.Errorf("a personal access token under throttle: %d as %v, want 204 as user:%s", rr.Code, sw.principal, aliceUID)
+	}
+}
+
+// TestAddressThrottleTLS: with server.tls and no server.trustedProxies the peer is the client,
+// and AddressFailures failed logins from it, on as many accounts, throttle the address: the
+// next request from it is 429 whatever its password, another address goes on (#248). Without
+// server.tls the per-address throttle is off, as behind an edge without the list.
+func TestAddressThrottleTLS(t *testing.T) {
+	for _, withTLS := range []bool{true, false} {
+		t.Run(fmt.Sprintf("tls=%t", withTLS), func(t *testing.T) {
+			o := Options{Authenticator: auth.NewAuthenticator(auth.Options{Index: usersReader{}})}
+			if withTLS {
+				o.TLSCertFile, o.TLSKeyFile, _ = selfSigned(t)
+			}
+			s, logs := newTestServer(t, o)
+			s.mux.HandleFunc("/test/", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+			from := func(addr, authz string) *httptest.ResponseRecorder {
+				rr := httptest.NewRecorder()
+				r := httptest.NewRequest(http.MethodGet, "/test/x", nil)
+				r.RemoteAddr = addr + ":443"
+				r.Header.Set("Authorization", authz)
+				s.Handler().ServeHTTP(rr, r)
+				return rr
+			}
+			for i := range auth.AddressFailures {
+				if rr := from("192.0.2.77", basic(fmt.Sprintf("nobody-%d", i), "wrong")); rr.Code != http.StatusUnauthorized {
+					t.Fatalf("failed login %d: %d, want 401", i, rr.Code)
+				}
+			}
+			rr := from("192.0.2.77", basic("alice", alicePassword))
+			if !withTLS {
+				if rr.Code != http.StatusNoContent {
+					t.Errorf("without server.tls, alice from the address: %d, want 204", rr.Code)
+				}
+				return
+			}
+			wantThrottled(t, rr, "too many failed logins: try again after Retry-After seconds\n", 60)
+			if l := findLog(t, logs, "throttled"); l["throttle"] != "address" || l["address"] != "192.0.2.77" {
+				t.Errorf("log line = %v", l)
+			}
+			if rr := from("192.0.2.78", basic("alice", alicePassword)); rr.Code != http.StatusNoContent {
+				t.Errorf("alice from another address: %d, want 204", rr.Code)
+			}
+		})
 	}
 }
 
