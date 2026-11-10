@@ -115,7 +115,11 @@ type zipEnd struct {
 // comment that fits; instead of it, the zip64 end record when one of its fields is saturated
 // and a zip64 locator of disk 0 of 1 is before it.
 func findZipEnd(r io.ReaderAt, size int64) (zipEnd, error) {
-	tail := make([]byte, min(max(size, 0), zipEndSearch))
+	n := int64(zipEndSearch) // the tail read is at most this, whatever size says
+	if size < n {
+		n = max(size, 0)
+	}
+	tail := make([]byte, n)
 	if _, err := r.ReadAt(tail, size-int64(len(tail))); err != nil && !errors.Is(err, io.EOF) {
 		return zipEnd{}, err
 	}
