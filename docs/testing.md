@@ -113,7 +113,9 @@ make e2e E2E='raw oras'        # those two; test/e2e/run.sh raw oras is the same
 temporary directory (a fresh SQLite index, the registry `local` at `$LAJSTROM_E2E_REGISTRY`,
 by default `localhost:5000`, the Zot of the stack, with the `capabilities` of
 `$LAJSTROM_E2E_CAPABILITIES` when set, e.g. `'{catalog: false}'`, the repos `raw/scratch`, `apt/ubuntu`,
-`apt/e2e` and `pypi/e2e`, none readable anonymously, `auth.anonymousRead: true`, a master key of
+`apt/e2e` and `pypi/e2e`, none readable anonymously, the upstream `npmjs` at
+`$LAJSTROM_E2E_NPM_UPSTREAM`, by default `https://registry.npmjs.org/`, for the proxy repo of
+`npm.sh`, `auth.anonymousRead: true`, a master key of
 its own, no metrics listener, no reconcile loop, `server.trustedProxies: ["127.0.0.1/32"]` so that the
 per-address throttles are on and a scenario can name a client in `X-Forwarded-For`, which it
 gets as `LAJSTROM_E2E_FORWARDED=1`), runs `lajstrom migrate`, makes the user
@@ -171,11 +173,12 @@ stops the server and removes the directory on exit; `LAJSTROM_E2E_KEEP=1` keeps 
 | `apt.sh` | a `.deb` by PUT and one by oras; the repo's `anonymousRead` on: `key.asc` into `/etc/apt/keyrings`, `apt-get update` (the `Packages` by-hash), `install` and `apt-cache policy` without credentials; off: the anonymous `apt-get update` fails with apt's 401, then with credentials in `/etc/apt/auth.conf.d` `update`, `install`, `download` and the sha256 of the files; a second `update` with `Acquire::By-Hash=no` (the `Packages` by name); a copy of the suite whose `Release` hashes are wrong fails `apt-get update` with apt's `Hash Sum mismatch`; the conflicts | `ubuntu:24.04` (`linux/amd64`), or the image of `APT_E2E_IMAGE`; oras image |
 | `pypi.sh` | `python -m build`, twine upload, the same files again, other bytes (409), `pip install`, `uv pip install`, `uv publish` and `--check-url`, `pip install --upgrade`, PEP 658 in the access log | `python:3.13` (build, twine, uv from PyPI) |
 | `maven.sh` | a maven repo and a deploy token through the API; `mvn deploy` of a jar with sources, javadoc and pom (M-01: every PUT 201, one manifest with four file layers), the files and their four checksums (M-07), a second version and `maven-metadata.xml` (M-03), `mvn dependency:get` into an empty local repository and a version range (M-02), the same version again (200) and with a changed jar (409) (M-04), Gradle `publish` and resolve; needs the maven frontend (#54, #55) | `maven:3.9.16-eclipse-temurin-21`, `gradle:8.14.6-jdk21` (plugins from Maven Central, cached in the volumes `lajstrom-e2e-m2` and `lajstrom-e2e-gradle`) |
+| `npm.sh` | an npm repo, a user (writer) and a deploy token through the API; npm: `npm login` with the password (the prompts answered in a pseudo-terminal), `whoami`, `publish` of an unscoped package (three versions, one `--tag beta`) and a scoped one, `install` into an empty project with an empty cache, `dist-tag add`, `ls`, `rm` and an install by tag, `deprecate` and its warning, then cleared; pnpm with the deploy token as `_authToken`: `whoami`, `publish` of an unscoped and a scoped package that depends on npm's, `add` from an empty store; yarn: `yarn npm login`, `whoami`, `publish`, `tag add`, `list`, `remove`, `add` from an empty cache; a proxy repo of the upstream `npmjs`: `npm install chalk@4.1.2` from an empty cache twice, each tarball fetched once (`proxy.fetch` in the audit log) and in the registry, none the second time; the group, a marked place for #311; `npm unpublish` as a writer (403), then as maintainer of a version and of a package; `npm logout` revokes its token. `NPM_E2E_UPSTREAM=` leaves the proxy out | `node:26.13.0-slim` (npm 11.20.0; pnpm 10.34.9 and yarn 4.18.1 installed from registry.npmjs.org) |
 | `ha.sh` | [acceptance.md](acceptance.md) §4 on the `ha` profile, two replicas behind nginx; run only when the profile is up ([below](#the-ha-stack)) | curl, oras on `PATH`, else its image, `ghcr.io/sigstore/cosign/cosign:v3.1.4`, `python3` or `python:3.13`, and the images of the scenarios it runs through the edge |
 
 The images are `ubuntu:24.04` for `linux/amd64`, emulated on Apple silicon,
 `ghcr.io/oras-project/oras:v1.3.6`, `ghcr.io/sigstore/cosign/cosign:v3.1.4`, `python:3.13`,
-`maven:3.9.16-eclipse-temurin-21` and `gradle:8.14.6-jdk21`; the first run pulls them. `apt.sh` and `tokens.sh` take their apt client
+`maven:3.9.16-eclipse-temurin-21`, `gradle:8.14.6-jdk21` and `node:26.13.0-slim`; the first run pulls them. `apt.sh` and `tokens.sh` take their apt client
 from `APT_E2E_IMAGE` when it is set; `apt.sh` passes in `ubuntu:22.04`, `ubuntu:24.04` and
 `debian:12`:
 
@@ -237,9 +240,9 @@ across replicas without the timing).
 
 [test/e2e/manual/npm-proxy.sh](../test/e2e/manual/npm-proxy.sh) installs a public package with
 its whole tree through a proxy repo of registry.npmjs.org ([proxy-and-group.md](spec/proxy-and-group.md),
-#310). It needs the network, so it lives below `manual/`, which `make e2e` does not run; the
-scenario of CI, against a recorded upstream, is #312. It needs `npm` on `PATH` and the registry of
-the dev stack:
+#310). It needs the network, so it lives below `manual/`, which `make e2e` does not run; in
+`make e2e`, `npm.sh` installs a smaller tree, `chalk@4.1.2` (6 packages), through a proxy of the same
+upstream. It needs `npm` on `PATH` and the registry of the dev stack:
 
 ```sh
 make dev-up
