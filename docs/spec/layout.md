@@ -33,6 +33,7 @@ internal/index/internal/sqlstore/ the SQL both engines share: index.Store over d
 internal/index/sqlite/        modernc.org/sqlite implementation
 internal/index/postgres/      pgx implementation
 internal/index/storetest/     conformance suite of index.Store, run by both engines; imported only by tests
+internal/proxy/               proxy repos (ADR 0013): the settings, the upstream client, the metadata cache, fetch on miss
 internal/auth/                principals, password hashing, PAT/deploy tokens, RBAC evaluation, bearer JWT
 internal/api/                 /api/v1 management REST (repos, users, tokens, bindings), JSON
 internal/keys/                server signing key, per-repo GPG keys (apt), encryption at rest
@@ -148,6 +149,7 @@ type Deps struct {
     Log       *slog.Logger
     Signer    Signer                        // nil: signing is off (no keys.masterKeyEnv)
     Sessions  Sessions                      // publication sessions (maven)
+    Proxy     Proxy                         // the core of proxy repos (*proxy.Core, ADR 0013); nil: none is served
 }
 
 type Entry struct {
@@ -165,6 +167,15 @@ type FileEntry struct {
 type Upload struct {                        // the principal is a parameter of Publisher.Upload
     Files  []UploadedFile
     Params map[string]string                // protocol parameters: twine fields, suite, raw path
+    Origin *Origin                          // set by the proxy fetcher only (ADR 0013); nil on a client's upload
+}
+// Origin is where a proxied artifact came from (manifest-profile.md §3.1): ingest writes
+// lajstrom.origin.url and lajstrom.origin.checksum from it, leaves lajstrom.uploaded-by out, and
+// audits proxy.fetch instead of push (rbac.md §7).
+type Origin struct {
+    Upstream string                         // upstreams[].name, details.upstream of the audit row
+    URL      string                         // the first file's URL as asked, before redirects, without userinfo, query, fragment
+    Checksum string                         // <algorithm>:<lowercase hex>, the upstream's checksum that was verified
 }
 type UploadedFile struct {
     Name        string                      // maven: the path below /maven/<repo>/
@@ -238,12 +249,13 @@ func RepoFrom(ctx context.Context) (index.Repo, bool)
 func Authorize(ctx context.Context, deps Deps, a auth.Action, repo index.Repo) error
 
 // WriteError answers StatusOf(err) as text/plain (nosniff): err.Error() for 4xx, the status
-// text for 5xx; a 401 carries WWW-Authenticate: Basic realm="lajstrom", a 503 of
-// provider.ErrUnavailable Retry-After (SetRetryAfter).
+// text for 5xx; a 401 carries WWW-Authenticate: Basic realm="lajstrom", a 405 Allow: GET, HEAD,
+// a 503 of provider.ErrUnavailable or of an *UnavailableError Retry-After (SetRetryAfter).
 func WriteError(w http.ResponseWriter, err error) int
 func StatusOf(err error) int
-// SetRetryAfter sets Retry-After from provider.RetryAfter(err): whole seconds, rounded up, at
-// least 1; nothing for an error without one. WriteError, the facade and the API call it.
+// SetRetryAfter sets Retry-After from provider.RetryAfter(err), or from the *UnavailableError
+// err wraps: whole seconds, rounded up, at least 1; nothing for an error without one.
+// WriteError, the facade and the API call it.
 func SetRetryAfter(h http.Header, err error)
 
 // CachedDocument returns the index_cache row of (repo, scope, kind), or renders the scope with
@@ -274,6 +286,13 @@ func ServeBlob(w http.ResponseWriter, r *http.Request, prov provider.Provider, n
 func BlobRedirect(repo index.Repo) bool
 
 var ErrInvalid, ErrUnsupported, ErrUnauthenticated, ErrForbidden error
+// The statuses of a proxy's upstream and of a repo that takes no writes (ADR 0013,
+// proxy-and-group.md §6).
+var ErrMethodNotAllowed error               // a write route of a proxy, or of a group without a hosted member
+var ErrBadGateway error                     // the upstream failed, refused Lajstrom's credentials, redirected where it may not, sent bytes the checksum or Validate refuses
+var ErrUnavailable error                    // the upstream answered 429; an *UnavailableError carries its wait
+var ErrGatewayTimeout error                 // the upstream did not answer within upstreams[].timeout
+type UnavailableError struct{ RetryAfter time.Duration } // Unwrap: ErrUnavailable; the upstream's Retry-After, at most 60 s, 5 s without one
 ```
 
 `StatusOf` is the one error table of the frontends; plugins wrap these sentinels with `%w`.
@@ -284,13 +303,89 @@ They are checked in this order:
 | `format.ErrInvalid` | 400 |
 | `format.ErrUnauthenticated` | 401, `WWW-Authenticate: Basic realm="lajstrom"` |
 | `format.ErrForbidden` | 403 |
+| `format.ErrMethodNotAllowed` | 405, `Allow: GET, HEAD` |
 | `index.ErrNotFound`, `provider.ErrNotFound` | 404 |
 | `index.ErrConflict`, `provider.ErrConflict` | 409 |
 | `*http.MaxBytesError` | 413 |
 | `format.ErrUnsupported`, `provider.ErrUnsupported` | 501 |
 | `provider.ErrUnauthorized` (the backend rejected Lajstrom's own credentials) | 502 |
 | `provider.ErrUnavailable` (the circuit breaker of the registry is open, the request was not sent) | 503, `Retry-After`: the seconds until the breaker's trial request; under `/v2` the code `UNAVAILABLE`, on the API `UNAVAILABLE` |
+| `format.ErrBadGateway` | 502 |
+| `format.ErrUnavailable` (the upstream answered `429`) | 503, `Retry-After`: the `*format.UnavailableError`'s, whole seconds, at least 1 |
+| `format.ErrGatewayTimeout` | 504 |
 | anything else, `nil` included | 500 |
+
+### Proxy repos (`internal/format`, ADR 0013)
+
+What a plugin provides for proxy repos of its format, and what its handlers ask the core
+(proxy-and-group.md §10). A format has the kind `proxy` when its plugin implements `Proxier`;
+creating a proxy repo of another format is `400`. The core, `internal/proxy`, does everything
+else: the allow and deny lists, `proxy_meta` and its TTLs, the fetch claims, the upstream client,
+the spool and the checksum, the ingest call, the statuses of §6.
+
+```go
+// Proxier is implemented by a plugin whose format has proxy repos.
+type Proxier interface {
+    // Key is a name as proxy_meta, index_cache and the allow and deny patterns see it: npm the
+    // name, pypi the PEP 503 name, maven groupId:artifactId. A name the format does not allow
+    // wraps ErrInvalid.
+    Key(name string) (string, error)
+    // MetadataRequest is the upstream request for the document of kind of name.
+    MetadataRequest(name, kind string) (UpstreamRequest, error)
+    // ParseMetadata reads a document of kind of name as the upstream sent it, or as Keep kept
+    // it (Keep parses to the same Entries). A body it cannot read wraps ErrInvalid.
+    ParseMetadata(name, kind string, body []byte) (*UpstreamIndex, error)
+    // FileRequest maps a path below /<format>/<repo>/ to the artifact and the file it names; a
+    // path that names no file of the format wraps index.ErrNotFound.
+    FileRequest(path string) (ArtifactRef, error)
+    // RenderProxy renders the document of kind of name for a proxy repo (§7) from kept, what
+    // proxy_meta holds (nil without a row: the repo's versions alone, as a hosted repo's
+    // document), and the versions of the name that st has in repo, whose bytes (checksums,
+    // size) win over kept's. Every link to a file starts with base,
+    // <server.externalURL>/<format>/<repo>/. The Document's Kind is kind.
+    RenderProxy(ctx context.Context, repo index.Repo, name, kind string, kept []byte, st index.Reader, base string) (Document, error)
+}
+type UpstreamRequest struct {
+    Path   string                           // relative to upstreams[].url, escaped, with its query: "left-pad", "@acme%2fwidgets"
+    Accept string                           // the Accept header; "" for none
+}
+type UpstreamIndex struct {
+    Keep        []byte                      // what proxy_meta keeps: the body, or a form the plugin trimmed
+    ContentType string                      // of Keep
+    Entries     []UpstreamEntry             // one per artifact the document lists
+}
+type UpstreamEntry struct {
+    Version, Variant string
+    Files     []UpstreamFile                // what one fetch downloads (npm: the tarball), in the order Build takes them
+    Params    map[string]string             // the Upload.Params Build needs for the artifact, as a client's upload carries them
+    Published time.Time                     // the upstream's publish time; zero when none (ADR 0008, quarantine)
+}
+type UpstreamFile struct {
+    Name      string                        // UploadedFile.Name, and the name of the files row
+    URL       string                        // absolute, or relative to upstreams[].url
+    Checksums map[string]string             // sha512, sha256, sha1 → lowercase hex; the strongest is verified
+}
+type ArtifactRef struct {
+    Name, Version, Variant string           // the package name as the format spells it, the version, the variant ("" when none)
+    File                   string           // UpstreamFile.Name and files.name of the file asked for
+    Kind                   string           // the document kind whose Entries list the artifact
+}
+
+// Proxy is the core as the plugins' handlers see it; *proxy.Core implements it. Both methods
+// take a repo of kind proxy (#311 extends them to groups); another kind wraps ErrUnsupported.
+type Proxy interface {
+    // Document: the lists (§3), then the index_cache row of (repo, Key(name), kind) while the
+    // proxy_meta row of (Key(name), kind) is fresh; otherwise the upstream is asked (§4.2), the
+    // row written and the index_cache rows of scope Key(name) invalidated in one transaction,
+    // and the document rendered (RenderProxy) and stored. Without a row it is rendered and not
+    // stored. Errors wrap the sentinels of §6.
+    Document(ctx context.Context, repo index.Repo, name, kind string) (*index.Cache, error)
+    // File: the file path names (FileRequest), held or fetched and ingested on a miss (§5) by
+    // the principal of ctx (auth.PrincipalFrom); the handler serves it as a hosted file
+    // (ServeBlob). Errors wrap the sentinels of §6.
+    File(ctx context.Context, repo index.Repo, path string) (*index.FileMatch, error)
+}
+```
 
 ### Registry provider (`internal/provider`)
 
@@ -412,6 +507,7 @@ type Reader interface {
     ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error)
     // coordination
     GetTagClaim(ctx context.Context, repoID int64, pkg, tag string) (*TagClaim, error)
+    GetFetchClaim(ctx context.Context, repoID int64, pkg, tag string) (*FetchClaim, error)
     GetReindexRun(ctx context.Context, id int64) (*ReindexRun, error)
     // LatestReindexRun: the newest run that covered repoID, its own or a run of every repo;
     // repoID 0 selects the runs of every repo only
@@ -431,6 +527,8 @@ type Reader interface {
     FindFiles(ctx context.Context, repoID int64, name string) ([]FileMatch, error)
     GetIndexCache(ctx context.Context, repoID int64, scope, kind string) (*Cache, error)
     ListOCIRepos(ctx context.Context, repoID int64) ([]OCIRepo, error)
+    // a cache of the upstream (ADR 0013): the row of a proxy repo's name key and document kind
+    GetProxyMeta(ctx context.Context, repoID int64, name, kind string) (*ProxyMeta, error)
 }
 
 // Unique violations wrap ErrConflict; updates and deletes of a missing id wrap ErrNotFound.
@@ -438,8 +536,8 @@ type Writer interface {
     Reader
     // control plane
     CreateRepo(ctx context.Context, r *Repo) error
-    UpdateRepo(ctx context.Context, r *Repo) error
-    DeleteRepo(ctx context.Context, id int64) error
+    UpdateRepo(ctx context.Context, r *Repo) error  // Format, Name and Kind never change
+    DeleteRepo(ctx context.Context, id int64) error // its proxy_meta and fetch_claims rows go with it
     CreateUser(ctx context.Context, u *User) error
     UpdateUser(ctx context.Context, u *User) error
     CreateToken(ctx context.Context, t *Token) error
@@ -470,6 +568,16 @@ type Writer interface {
     // FinishReindexRun stores State, FinishedAt, Report and Error of the running run r.ID and
     // deletes the finished runs of its scope beyond the ten newest
     FinishReindexRun(ctx context.Context, r *ReindexRun) error
+    // ClaimFetch inserts c, the lock of a proxy fetch on (RepoID, Package, Tag) across replicas
+    // (index-schema.md, Proxy and group repos), ClaimedAt now when zero and HeartbeatAt
+    // ClaimedAt when zero, and fills ID. A claim there whose HeartbeatAt is at or after
+    // staleBefore wraps ErrConflict and nothing changes (the loser of a race gets it too); an
+    // older one is deleted and c inserted with a new id, so that the heartbeat and the release
+    // of the fetch that held it find nothing
+    ClaimFetch(ctx context.Context, c *FetchClaim, staleBefore time.Time) error
+    HeartbeatFetchClaim(ctx context.Context, id int64, at time.Time) error // ErrNotFound: released or taken over
+    ReleaseFetchClaim(ctx context.Context, id int64) error
+    ExpireFetchClaims(ctx context.Context, before time.Time) (int, error)  // HeartbeatAt before before; reindex, reconcile
     // derived (written only by ingest, reindex and delete); every version write and delete keeps
     // packages.created_at the earliest created_at of the package's versions
     UpsertPackage(ctx context.Context, p *Package) error
@@ -483,14 +591,44 @@ type Writer interface {
     InvalidateIndexCache(ctx context.Context, repoID int64, scope string) error
     UpsertOCIRepo(ctx context.Context, r *OCIRepo) error
     PruneOCIRepos(ctx context.Context, repoID int64, seenBefore time.Time) (int, error)
-    ResetDerived(ctx context.Context, repoID int64) error
+    ResetDerived(ctx context.Context, repoID int64) error // leaves the claims of both kinds and proxy_meta
+    // proxy_meta, a cache of the upstream that reindex neither reads nor writes; the caller
+    // invalidates the index_cache rows of scope Name in the same transaction (a 304: none)
+    PutProxyMeta(ctx context.Context, m *ProxyMeta) error                         // insert, or replace the row of (RepoID, Name, Kind); fills ID
+    TouchProxyMeta(ctx context.Context, id int64, checkedAt time.Time) error      // CheckedAt only: a 304
+    DeleteProxyMeta(ctx context.Context, repoID int64, name string) (int, error)  // the rows of one name key, or every row of the repo when ""
+    ExpireProxyMeta(ctx context.Context, repoID int64, before time.Time) (int, error) // the repo's absent rows checked before before
 }
 
 // Models, one struct per table of index-schema.md (fields in internal/index/models.go):
 // control plane Repo, User, Token, Binding, Key, Session, AuditEvent; coordination TagClaim,
-// ReindexRun; derived Package, Version, File, Cache (index_cache), OCIRepo; query types
-// FileMatch (file + version + package), VersionMatch (version + package) and AuditFilter. Ids are int64, timestamps UTC, nullable columns are
-// pointers.
+// ReindexRun, FetchClaim; derived Package, Version, File, Cache (index_cache), OCIRepo,
+// ProxyMeta; query types FileMatch (file + version + package), VersionMatch (version + package)
+// and AuditFilter. Ids are int64, timestamps UTC, nullable columns are pointers.
+
+// Repo, for ADR 0013 (repos.upstream; repos.group comes with #311):
+//     Kind     string                         // KindHosted, KindProxy or KindGroup
+//     Upstream json.RawMessage                // a proxy's settings (proxy-and-group.md §2.2); nil on another kind
+const KindHosted, KindProxy, KindGroup = "hosted", "proxy", "group"
+
+const ProxyMetaPresent, ProxyMetaAbsent = "present", "absent"
+type ProxyMeta struct {                     // a row of proxy_meta
+    ID, RepoID         int64
+    Name, Kind         string               // Proxier.Key of the name, the plugin's document kind
+    State              string               // ProxyMetaPresent or ProxyMetaAbsent
+    Content            []byte               // UpstreamIndex.Keep; nil when absent
+    ContentType        string
+    SHA256             string               // hex sha256 of Content; "" when absent
+    ETag, LastModified string               // the upstream's validators as it sent them; "" when none
+    CheckedAt          time.Time            // when the upstream last answered for the name
+}
+type FetchClaim struct {                    // a row of fetch_claims
+    ID, RepoID             int64
+    Package, Tag           string           // the package path (Plugin.EscapeName), profile.Tag of version and variant
+    Principal              string           // of the request whose miss started the fetch
+    Replica                string           // host name and process id
+    ClaimedAt, HeartbeatAt time.Time
+}
 
 var ErrNotFound, ErrConflict error
 type TagConflictError struct {              // errors.Is(err, ErrConflict) is true; UpsertVersion, ClaimTag
@@ -604,10 +742,15 @@ type Options struct {
 func New(o Options) *Pipeline
 
 // Ingest stores a manifest the facade received for <format>/<repo>/<pkgPath>:<tag>; raw defines
-// the digest. Errors wrap ErrInvalid (profile, plugin, missing blobs) or ErrConflict (tag, or the
-// package path of another spelling).
+// the digest. Errors wrap ErrInvalid (profile, plugin, missing blobs, a lajstrom.origin.* key,
+// which only Upload with an Origin writes) or ErrConflict (tag, or the package path of another
+// spelling). Inspect reads the lajstrom.origin.* keys as any annotation.
 func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, principal auth.Principal) (*Result, error)
-// Upload is the frontend path: Plugin.Build → push missing blobs → store as Ingest does.
+// Upload is the frontend path: Plugin.Build → push missing blobs → store as Ingest does. With
+// up.Origin (the proxy fetcher, ADR 0013) it sets lajstrom.origin.url and lajstrom.origin.checksum
+// on the built manifest and removes lajstrom.uploaded-by, and the audit row is proxy.fetch with
+// details {"upstream", "url", "checksum", "size"}, size the sum of the file layers'; without one,
+// a built manifest with a lajstrom.origin.* key is ErrInvalid.
 func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload, principal auth.Principal) (*format.Published, error)
 
 // PutReferrer stores a referrer (a signature, an SBOM, an attestation: profile.IsReferrer, or a
@@ -788,6 +931,23 @@ Where the merged shapes differ from the first sketch of this section, and why:
   transaction of `CachedDocument`, because it reads the repo's keys and inserts the first one,
   which inside that transaction would wait for the connection or the write lock it holds
   (SQLite).
+- **Proxy repos plug in through `format.Proxier`** (ADR 0013, #309). It is the sketch of
+  proxy-and-group.md §10 without `MergeGroup`, which comes with the groups of #311, and with
+  three changes: `RenderProxy` reads the held versions through an `index.Reader`, as
+  `RenderIndex` does, rather than taking them, so that it reads their files and metadata as it
+  needs; an `UpstreamEntry` carries the `Params` that `Build` takes, so that the core builds the
+  upload without knowing the format; an `ArtifactRef` names the document `Kind` that lists it.
+  One kind names the `proxy_meta` row, the upstream request, the parse, the rendered document
+  and its `index_cache` row, whose scope in a proxy repo is `Key(name)`. The handlers reach the
+  core through `Deps.Proxy` and serve what it returns as they serve a hosted repo's.
+- **A proxy's settings are JSON in `index`**, as `Policy` is: `Repo.Upstream`. `internal/proxy`
+  parses and checks them, and the management API calls it.
+- **A takeover of a stale fetch claim gives the claim a new id**, unlike a tag claim's: the
+  fetch whose claim went stale finds no row to beat or to release, and cannot release its
+  successor's.
+- **A `proxy_meta` write does not invalidate on its own.** The core writes the row and drops
+  the `index_cache` rows of the name in one `Tx`; a `304` is `TouchProxyMeta`, which drops
+  nothing. Expired `absent` rows are swept per repo, since `negativeTTL` is a repo's.
 
 ## 3. Approved dependencies
 
