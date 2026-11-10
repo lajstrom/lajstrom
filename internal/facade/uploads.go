@@ -3,6 +3,7 @@ package facade
 import (
 	"context"
 	"crypto/rand"
+	"encoding"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -27,9 +28,10 @@ import (
 // index, not a value held in memory: the row holds the backend's session (provider.Upload:
 // its location, its id, its offset) and the OCI name, and any replica that gets the next
 // request loads it, calls the provider with it and writes it back. A row rather than an id
-// signed with a server key, because there is no shared key before #41; one UpsertSession per
-// chunk is cheap at the chunk sizes clients use. Every body streams from the client to the
-// backend: nothing is spooled.
+// signed with a server key, because there is no shared key before #41; the two UpsertSession of
+// a chunk (Recheck before it streams, the new state after) are cheap at the chunk sizes clients
+// use. Every body streams from the client to the backend: nothing is spooled. The row also
+// keeps the hash of the bytes that passed (verify.go).
 
 const (
 	// uploadTTL is how long an upload session lives after its last request. The backends keep
@@ -43,13 +45,21 @@ const (
 	cleanupTimeout = 10 * time.Second
 )
 
-// uploadState is the files column of an upload session's row: the backend's session and the
-// OCI name it belongs to, as the client addresses it.
+// uploadState is the files column of an upload session's row: the backend's session, the OCI
+// name it belongs to, as the client addresses it, and the hash of the bytes that went through
+// the facade into it.
 type uploadState struct {
 	Name     string `json:"name"`
 	Location string `json:"location"`
 	ID       string `json:"id"`
 	Offset   int64  `json:"offset"`
+	// SHA256 is the state of the sha256 of the first Hashed bytes, as crypto/sha256 marshals
+	// it: nil before the first byte.
+	SHA256 []byte `json:"sha256,omitempty"`
+	Hashed int64  `json:"hashed"`
+	// Recheck is set while a chunk streams, and stays when it fails: the backend may then hold
+	// bytes the hash did not see, which closingHash asks it before the close.
+	Recheck bool `json:"recheck,omitempty"`
 }
 
 func (s uploadState) upload() provider.Upload {
@@ -126,7 +136,7 @@ func (h *handler) monolithic(w http.ResponseWriter, r *http.Request, t *target, 
 		return &apiError{code: codeBlobUploadInvalid, err: err}
 	}
 	body, size := requestBody(r)
-	if _, err := rr.FinishBlobUpload(ctx, u, d, body.reader(), size); err != nil {
+	if err := finishChecked(ctx, rr, u, d, d.Algorithm().Hash(), body, size); err != nil {
 		h.cancelBackend(ctx, rr, u)
 		return finishError(err, body)
 	}
@@ -218,7 +228,7 @@ func (h *handler) openSession(w http.ResponseWriter, r *http.Request, t *target,
 		return err
 	}
 	s := &index.Session{RepoID: t.repo.ID, Key: uploadKind + id, Principal: auth.PrincipalFrom(ctx).String(), State: "open"}
-	if err := h.saveSession(ctx, s, t, u); err != nil {
+	if err := h.saveSession(ctx, s, uploadState{Name: t.name, Location: u.Location, ID: u.ID, Offset: u.Offset}); err != nil {
 		h.cancelBackend(ctx, rr, u)
 		return err
 	}
@@ -227,8 +237,9 @@ func (h *handler) openSession(w http.ResponseWriter, r *http.Request, t *target,
 }
 
 // patchUpload answers PATCH …/blobs/uploads/<id>: the body streamed to the backend session as
-// one chunk, 202 with the new Range. A Content-Range must start at the session's offset (416
-// with the Range otherwise) and span Content-Length bytes.
+// one chunk, and hashed, 202 with the new Range. A Content-Range must start at the session's
+// offset (416 with the Range otherwise) and span Content-Length bytes. The row says Recheck
+// while the chunk streams; a backend that then holds more than what passed ends the session.
 func (h *handler) patchUpload(w http.ResponseWriter, r *http.Request, t *target, id string) error {
 	ctx := r.Context()
 	s, st, rr, err := h.continueSession(r, t, id)
@@ -244,14 +255,36 @@ func (h *handler) patchUpload(w http.ResponseWriter, r *http.Request, t *target,
 		return err
 	}
 	body, _ := requestBody(r)
-	u, err := rr.AppendBlobChunk(ctx, st.upload(), body.reader(), size)
+	hs, err := st.sha256()
+	if err != nil {
+		return err
+	}
+	var rd io.Reader
+	if body != nil {
+		st.Recheck, rd = true, io.TeeReader(body, hs)
+		if err := h.saveSession(ctx, s, st); err != nil {
+			return err
+		}
+	}
+	u, err := rr.AppendBlobChunk(ctx, st.upload(), rd, size)
 	if err != nil {
 		if cutAtLimit(body) {
 			h.endUpload(ctx, s, rr, st)
 		}
 		return h.sessionError(ctx, s, err, body)
 	}
-	if err := h.saveSession(ctx, s, t, u); err != nil {
+	if body != nil {
+		if u.Offset != st.Hashed+body.n {
+			h.endUpload(ctx, s, rr, st)
+			return &apiError{status: http.StatusNotFound, code: codeBlobUploadUnknown, msg: errUnchecked.Error(), err: errUnchecked}
+		}
+		if st.SHA256, err = hs.(encoding.BinaryMarshaler).MarshalBinary(); err != nil {
+			return fmt.Errorf("facade: upload session: sha256 state: %w", err)
+		}
+		st.Hashed, st.Recheck = u.Offset, false
+	}
+	st.Location, st.ID, st.Offset = u.Location, u.ID, u.Offset
+	if err := h.saveSession(ctx, s, st); err != nil {
 		return err
 	}
 	answerSession(w, t, id, u, http.StatusAccepted)
@@ -259,9 +292,11 @@ func (h *handler) patchUpload(w http.ResponseWriter, r *http.Request, t *target,
 }
 
 // putUpload answers PUT …/blobs/uploads/<id>?digest=: the last chunk, if any, and the close of
-// the backend session; 201 with the blob's Location, and the row is deleted. A digest the
-// backend refuses ends the session (the spec's rule after an error): the backend session is
-// cancelled, the row deleted, and the answer is 400 DIGEST_INVALID.
+// the backend session; 201 with the blob's Location, and the row is deleted. Bytes without the
+// digest (finishChecked), a session that cannot be checked (closingHash) and a digest the
+// backend refuses end the session (the spec's rule after an error): the backend session is
+// cancelled, the row deleted, and the answer is 400 DIGEST_INVALID. So does any failure once
+// the last chunk has begun to stream, since the backend may hold part of it.
 func (h *handler) putUpload(w http.ResponseWriter, r *http.Request, t *target, id string) error {
 	ctx := r.Context()
 	s, st, rr, err := h.continueSession(r, t, id) // authorizes before the digest: rbac.md §3
@@ -284,8 +319,17 @@ func (h *handler) putUpload(w http.ResponseWriter, r *http.Request, t *target, i
 	if size == 0 {
 		body = nil
 	}
-	if _, err := rr.FinishBlobUpload(ctx, st.upload(), d, body.reader(), size); err != nil {
-		if errors.Is(err, content.ErrMismatchedDigest) || cutAtLimit(body) {
+	hs, err := closingHash(ctx, rr, st, d)
+	var ae *apiError
+	switch {
+	case errors.As(err, &ae): // a session that cannot be checked
+		h.endUpload(ctx, s, rr, st)
+		return err
+	case err != nil:
+		return h.sessionError(ctx, s, err, nil)
+	}
+	if err := finishChecked(ctx, rr, st.upload(), d, hs, body, size); err != nil {
+		if ends(err, body) {
 			h.endUpload(ctx, s, rr, st)
 			return finishError(err, body)
 		}
@@ -294,6 +338,17 @@ func (h *handler) putUpload(w http.ResponseWriter, r *http.Request, t *target, i
 	h.dropSession(ctx, s)
 	answerBlob(w, t, d)
 	return nil
+}
+
+// ends reports whether the failed close of an upload ends its session: a digest refused, here or
+// by the backend, a body cut at the repo's maxFileSize, or a last chunk of which the backend may
+// hold a part. A session the backend no longer knows is sessionError's.
+func ends(err error, body *bodyReader) bool {
+	switch {
+	case errors.Is(err, errNotDigest), errors.Is(err, content.ErrMismatchedDigest), cutAtLimit(body):
+		return true
+	}
+	return body != nil && body.n > 0 && !errors.Is(err, provider.ErrNotFound)
 }
 
 // uploadStatus answers GET …/blobs/uploads/<id>: 204 with the Range of the backend session,
@@ -308,7 +363,8 @@ func (h *handler) uploadStatus(w http.ResponseWriter, r *http.Request, t *target
 	if err != nil {
 		return h.sessionError(ctx, s, err, nil)
 	}
-	if err := h.saveSession(ctx, s, t, u); err != nil {
+	st.Location, st.ID, st.Offset = u.Location, u.ID, u.Offset
+	if err := h.saveSession(ctx, s, st); err != nil {
 		return err
 	}
 	answerSession(w, t, id, u, http.StatusNoContent)
@@ -369,10 +425,9 @@ func (h *handler) continueSession(r *http.Request, t *target, id string) (*index
 	return s, st, rr, nil
 }
 
-// saveSession writes the row s with the backend session u, and moves its expiry uploadTTL
-// from now.
-func (h *handler) saveSession(ctx context.Context, s *index.Session, t *target, u provider.Upload) error {
-	files, err := json.Marshal(uploadState{Name: t.name, Location: u.Location, ID: u.ID, Offset: u.Offset})
+// saveSession writes the row s with the upload st, and moves its expiry uploadTTL from now.
+func (h *handler) saveSession(ctx context.Context, s *index.Session, st uploadState) error {
+	files, err := json.Marshal(st)
 	if err != nil {
 		return fmt.Errorf("facade: upload session: %w", err)
 	}
@@ -409,7 +464,7 @@ func (h *handler) sessionError(ctx context.Context, s *index.Session, err error,
 // status of the cause.
 func finishError(err error, body *bodyReader) error {
 	switch {
-	case errors.Is(err, content.ErrMismatchedDigest):
+	case errors.Is(err, errNotDigest), errors.Is(err, content.ErrMismatchedDigest):
 		return &apiError{status: http.StatusBadRequest, code: codeDigestInvalid, msg: "provided digest did not match uploaded content", err: err}
 	case cutAtLimit(body):
 		return &apiError{status: http.StatusRequestEntityTooLarge, code: codeSizeInvalid,
@@ -590,14 +645,6 @@ type bodyReader struct {
 	r   io.Reader
 	n   int64
 	err error
-}
-
-// reader is b as an io.Reader: nil for a nil b, never an interface holding a nil pointer.
-func (b *bodyReader) reader() io.Reader {
-	if b == nil {
-		return nil
-	}
-	return b
 }
 
 func (b *bodyReader) Read(p []byte) (int, error) {

@@ -43,7 +43,7 @@ A function is named by its package and name: `facade.resolve` is `resolve` in
 | holder of a deploy token | read and/or write on one repo | the token's scopes |
 | holder of a stolen bearer JWT | its `access` for up to 20 minutes, from anywhere | the token's claims |
 | the edge | sets `X-Forwarded-For` | only when its address is in `server.trustedProxies` ([ADR 0011](../adr/0011-client-address-behind-a-proxy.md)) |
-| the registry | stores and answers | trusted to store and serve content. Clients check the digests they are given: OCI clients the descriptor, apt the `Packages` hashes, pip the `#sha256=`. Ingest checks what it reads back. Lajstrom does not hash a blob again while it streams it. Its redirects and token realm are checked before its credentials follow them (P-2, P-3) |
+| the registry | stores and answers | trusted to store and serve content. Clients check the digests they are given: OCI clients the descriptor, apt the `Packages` hashes, pip the `#sha256=`. Ingest checks what it reads back. The facade hashes a blob that a client uploads as it streams (P-9), not one it serves. Its redirects and token realm are checked before its credentials follow them (P-2, P-3) |
 | the operator: configuration, CLI, database | everything | trusted; out of scope, as [SECURITY.md](../../SECURITY.md) has it |
 
 ### What the backend trusts
@@ -64,7 +64,7 @@ The table summarises; the IDs point to §3.
 
 | Flow | Spoofing | Tampering | Repudiation | Information disclosure | Denial of service | Elevation of privilege |
 | --- | --- | --- | --- | --- | --- | --- |
-| A. `oras push` through `/v2` | T-3, T-5, A-1 | P-1, M-1, M-3, F-5 | A-3 | R-1, R-2, P-5 | M-2, U-3, U-4, T-7 | T-1, P-7, T-9 |
+| A. `oras push` through `/v2` | T-3, T-5, A-1 | P-1, P-9, M-1, M-3, F-5 | A-3 | R-1, R-2, P-5 | M-2, U-3, U-4, T-7 | T-1, P-7, T-9 |
 | B. `mvn deploy`, twine, raw and apt `PUT` | A-1, A-5 | F-1, F-2, F-5, U-5 | A-4 | R-4 | F-4, U-5, U-6 | R-4 |
 | C. reads: apt, pip, maven, raw, `/v2` | T-3 | P-2 | none (reads are not audited, rbac.md §5) | R-1, R-2, P-5, B-1 | U-6 | none |
 | Token flow `/v2/token` | T-2, T-3, T-5 | none | none (tokens are not audited, rbac.md §5) | T-9 | T-7, A-1 | T-1, T-6, T-8 |
@@ -86,6 +86,7 @@ The table summarises; the IDs point to §3.
 | P-6 | **A presigned URL leaks.** | It names one blob, expires as the backend sets it, and only goes to a principal allowed to read the blob. `policy.blobRedirect: never` and `capabilities.blobRedirect: false` keep blobs on Lajstrom's connection. | accepted ([http-routing.md](../spec/http-routing.md) §2) |
 | P-7 | **Confused deputy: a cross-repo mount from a repo the client may not read.** | `facade.mountSource` passes `from` to the backend only when the bearer names it with `pull` (or the principal may read it, without a bearer) and the source is on the same registry; otherwise the answer is a plain upload session. This pass makes the bearer check not depend on `token.ValidName` and `resolve` accepting the same names. | mitigated; hardened in #260 |
 | P-8 | **A client reaches the registry directly.** | Outside Lajstrom: the network, or credentials only Lajstrom holds (§1). | the deployment's job ([reverse-proxy.md](../reverse-proxy.md), [operations.md](../operations.md)) |
+| P-9 | **A blob stored under a digest it does not have.** A registry that checks no digest (JFrog JCR 7.161, [registries/jfrog-jcr.md](../registries/jfrog-jcr.md#uploads-and-digests)) stores what a `/v2` upload sends under the digest the client names, and serves it so; integrity, signatures and dedup rest on that digest. | `facade.verifier` hashes the bytes as they stream to the backend and holds the last byte back until the hash is known: a closing `PUT` or `POST ?digest=` whose bytes do not have the digest is `400 DIGEST_INVALID`, the backend's request breaks off one byte short, and the session ends. Between chunks the sha256 state is in the session row (`uploadState`), so any replica continues it. A chunk sets `Recheck` in the row before it streams; after one that failed, `facade.closingHash` asks the backend's offset before the close, and a session whose backend holds bytes the hash did not see ends. Chunks are checked in sha256 only: a chunked upload closed with another algorithm is `400`. Mounts and blobs the client skips stream nothing and rely on the backend (P-5). Residue: two requests of one session at once, which only its owner can send (U-1), on a backend that checks neither a chunk's offset nor the digest; JCR checks offsets. Tests: `TestUploadVerifiesDigest`, `TestUploadVerifiedAcrossReplicas`, `TestUploadBrokenBody`. | fixed in #368; residue accepted |
 
 ### The token flow (`/v2/token` and the bearer on `/v2`)
 
