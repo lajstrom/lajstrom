@@ -16,14 +16,18 @@ import (
 // one segment, lodash or @scope%2fname, or two, @scope/name; the path below /npm/{repo}/ is read
 // by parseTarget:
 //
-//	PUT /{repo}/<name>    npm publish (publish.go), write
+//	GET /{repo}/<name>               the packument, full or abbreviated (serve.go), read
+//	GET /{repo}/<name>/<version>     one version of the full packument, or of the dist-tag
+//	GET /{repo}/<name>/-/<file>      a tarball, through format.ServeBlob
+//	PUT /{repo}/<name>               npm publish (publish.go), write
 //
-// Every answer is JSON, an error {"error": "<message>"}.
+// GET is HEAD too. Every answer is JSON, an error {"error": "<message>"}.
 func (p Plugin) Routes(r format.Router, deps format.Deps) {
 	if deps.Log == nil {
 		deps.Log = slog.Default().With("format", Name)
 	}
 	h := &handlers{deps: deps, plugin: p}
+	r.HandleFunc("GET /{repo}/{path...}", h.get)
 	r.HandleFunc("PUT /{repo}/{path...}", h.put)
 }
 
