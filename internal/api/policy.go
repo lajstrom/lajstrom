@@ -12,23 +12,29 @@ import (
 
 // The keys of a repo's policy and their bounds (docs/api.md, the policy keys). Each key has a
 // reader elsewhere: maxFileSize format.MaxFileSize (the uploads of the frontends and ingest),
-// blobRedirect format.BlobRedirect (every blob read), maven.sessionTimeout the publication
-// sessions of ingest. The readers are lenient; the API is where a policy is checked.
+// blobRedirect format.BlobRedirect (every blob read), maven.sessionTimeout and
+// maven.maxSessionFiles the publication sessions of ingest. The readers are lenient; the API is
+// where a policy is checked.
 const (
-	keyMaxFileSize    = "maxFileSize"
-	keyBlobRedirect   = "blobRedirect"
-	keyMaven          = "maven"
-	keySessionTimeout = "sessionTimeout"
+	keyMaxFileSize     = "maxFileSize"
+	keyBlobRedirect    = "blobRedirect"
+	keyMaven           = "maven"
+	keySessionTimeout  = "sessionTimeout"
+	keyMaxSessionFiles = "maxSessionFiles"
 
 	minSessionTimeout = time.Minute
 	maxSessionTimeout = 24 * time.Hour
+	// maxSessionFiles is the largest maven.maxSessionFiles: the manifest of a version has a layer
+	// for each file and one for its metadata, and a manifest of /v2 has at most 1 000 layers
+	// (facade.maxLayers), so a version stays one that /v2 takes back.
+	maxSessionFiles = 999
 )
 
 // policyKeys are the keys of a policy, and mavenKeys those of policy.maven, as the messages
 // list them.
 var (
 	policyKeys = []string{keyMaxFileSize, keyBlobRedirect, keyMaven}
-	mavenKeys  = []string{keySessionTimeout}
+	mavenKeys  = []string{keyMaxSessionFiles, keySessionTimeout}
 )
 
 // policyObject is a policy decoded as JSON with numbers kept as written (json.Number), so that a
@@ -165,7 +171,8 @@ func checkMaxFileSize(formatName string, v any) error {
 }
 
 // checkMavenPolicy checks policy.maven: an object, on a maven repo, whose sessionTimeout is a
-// duration from minSessionTimeout to maxSessionTimeout.
+// duration from minSessionTimeout to maxSessionTimeout and whose maxSessionFiles is an integer
+// from 1 to maxSessionFiles.
 func checkMavenPolicy(formatName string, v any) error {
 	obj, ok := v.(policyObject)
 	switch {
@@ -175,12 +182,23 @@ func checkMavenPolicy(formatName string, v any) error {
 		return invalid("policy.maven: must be a JSON object")
 	}
 	for _, k := range slices.Sorted(maps.Keys(obj)) {
-		if k != keySessionTimeout {
+		switch k {
+		case keySessionTimeout:
+			s, _ := obj[k].(string)
+			if d, err := time.ParseDuration(s); err != nil || d < minSessionTimeout || d > maxSessionTimeout {
+				return invalid(`policy.maven.sessionTimeout: must be a duration from 1m to 24h, e.g. "45m"`)
+			}
+		case keyMaxSessionFiles:
+			n, ok := obj[k].(json.Number)
+			if ok {
+				i, err := n.Int64()
+				ok = err == nil && i >= 1 && i <= maxSessionFiles
+			}
+			if !ok {
+				return invalid("policy.maven.maxSessionFiles: must be an integer from 1 to %d", maxSessionFiles)
+			}
+		default:
 			return unknownKey("policy.maven."+k, mavenKeys)
-		}
-		s, _ := obj[k].(string)
-		if d, err := time.ParseDuration(s); err != nil || d < minSessionTimeout || d > maxSessionTimeout {
-			return invalid(`policy.maven.sessionTimeout: must be a duration from 1m to 24h, e.g. "45m"`)
 		}
 	}
 	return nil

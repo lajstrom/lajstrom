@@ -91,3 +91,24 @@ func TestSessionTimeoutPolicy(t *testing.T) {
 		})
 	}
 }
+
+// TestSessionFilesPolicy: a session stores the repo policy's maven.maxSessionFiles files; the
+// next is ErrInvalid naming the bound and its key, and a file of the session may come again.
+// Without the key, or with a value that does not parse, the bound is 256 (TestDeploySessionFiles
+// of the maven frontend fills it).
+func TestSessionFilesPolicy(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t)
+	e.setPolicy(t, `{"maven":{"maxSessionFiles":2}}`)
+	s, err := e.pipe.Open(ctx, e.repo, "lib", "1.0", alice)
+	must(t, err)
+	add(t, e, s.ID, "a.jar", "aaa")
+	add(t, e, s.ID, "b.jar", "bbb")
+	_, err = e.pipe.Add(ctx, s.ID, "c.jar", strings.NewReader("c"), 1)
+	if !errors.Is(err, ingest.ErrInvalid) || !strings.Contains(err.Error(), "holds 2 files, the bound policy.maven.maxSessionFiles") {
+		t.Errorf("a third file = %v, want ErrInvalid naming the bound and its key", err)
+	}
+	add(t, e, s.ID, "a.jar", "again")
+	e.setPolicy(t, `{"maven":{"maxSessionFiles":"many"}}`)
+	add(t, e, s.ID, "c.jar", "ccc")
+}

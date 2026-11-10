@@ -59,6 +59,12 @@ const sessionWriteTimeout = 10 * time.Second
 // layers give them theirs.
 const sessionBlobType = "application/octet-stream"
 
+// defaultMaxSessionFiles is how many files a publication session holds when the repo's
+// maven.maxSessionFiles does not say (U-5 of the threat model, #246): every Add writes the whole
+// list again. The largest version on Maven Central, org.nd4j:libnd4j 1.0.0-M1, stores 76 files,
+// its signatures counted and its checksums not.
+const defaultMaxSessionFiles = 256
+
 var _ format.Sessions = (*Pipeline)(nil)
 
 // sessionState is the files column of a publication session's row.
@@ -70,6 +76,25 @@ type sessionState struct {
 	Files []format.SessionFile `json:"files"`
 	// Committing is when a Commit started, while it runs; zero otherwise.
 	Committing time.Time `json:"committing,omitzero"`
+}
+
+// room refuses a new file name in a session of repo that holds the files its policy allows
+// (maxFilesOf); a file it holds may come again, and replaces itself. What the session stores is
+// what counts: the maven frontend checks a checksum file against its file and drops it, and
+// keeps no maven-metadata.xml, so neither reaches a session.
+func (st *sessionState) room(repo index.Repo, name string) error {
+	limit := maxFilesOf(repo)
+	if len(st.Files) < limit {
+		return nil
+	}
+	for _, f := range st.Files {
+		if f.Name == name {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: the deploy of %s %s holds %d files, the bound policy.maven.maxSessionFiles of %s/%s (%d by default; "+
+		"checksum files and maven-metadata.xml do not count): %s is one too many; a manager of the repo may raise the bound",
+		ErrInvalid, st.Name, st.Version, limit, repo.Format, repo.Name, defaultMaxSessionFiles, name)
 }
 
 // sessionKey is the key of the session of name at version.
@@ -150,6 +175,9 @@ func (p *Pipeline) Add(ctx context.Context, sessionID int64, name string, r io.R
 	if err != nil {
 		return format.SessionFile{}, err
 	}
+	if err := st.room(t.repo, name); err != nil { // before the bytes are stored; again below, under the lock
+		return format.SessionFile{}, err
+	}
 	f, sf, err := spoolHashed(r, name, size)
 	if err != nil {
 		return format.SessionFile{}, err
@@ -175,6 +203,9 @@ func (p *Pipeline) Add(ctx context.Context, sessionID int64, name string, r io.R
 				st.Files[i] = sf
 				return nil
 			}
+		}
+		if err := st.room(t.repo, name); err != nil {
+			return err
 		}
 		st.Files = append(st.Files, sf)
 		return nil
@@ -369,6 +400,21 @@ func (p *Pipeline) timeoutOf(repo index.Repo) time.Duration {
 		}
 	}
 	return p.sessionTimeout
+}
+
+// maxFilesOf is how many files a session of repo holds: the repo policy's maven.maxSessionFiles
+// when it is positive (the API checks it: 1 to 999 on a maven repo), else
+// defaultMaxSessionFiles. The policy is read leniently, as timeoutOf reads it.
+func maxFilesOf(repo index.Repo) int {
+	var policy struct {
+		Maven struct {
+			MaxSessionFiles int `json:"maxSessionFiles"`
+		} `json:"maven"`
+	}
+	if len(repo.Policy) > 0 && json.Unmarshal(repo.Policy, &policy) == nil && policy.Maven.MaxSessionFiles > 0 {
+		return policy.Maven.MaxSessionFiles
+	}
+	return defaultMaxSessionFiles
 }
 
 // sessionTarget is the OCI repository of the version a session publishes: where Add pushes

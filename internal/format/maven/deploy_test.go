@@ -311,6 +311,66 @@ func TestDeployPrincipals(t *testing.T) {
 	}
 }
 
+// TestDeploySessionFiles: a publication session stores at most 256 files by default
+// (http-routing.md §3, #246); the next file of the version is 400 naming the bound and the key
+// that raises it, before it is stored, and a file the session holds may come again.
+func TestDeploySessionFiles(t *testing.T) {
+	e := newDeployEnv(t, nil)
+	jar := release("1.2.0", "")[0]
+	dir := jar.path[:strings.LastIndex(jar.path, "/")+1]
+	for i := range 256 {
+		e.wantPut(fmt.Sprintf("%slib-core-1.2.0-part%03d.bin", dir, i), []byte{byte(i)}, http.StatusCreated)
+	}
+	rr := e.put("alice", jar.path, jar.body)
+	if body := rr.Body.String(); rr.Code != http.StatusBadRequest || !strings.Contains(body, "holds 256 files, the bound policy.maven.maxSessionFiles of maven/releases") {
+		t.Errorf("the 257th file: %d %s, want 400 naming the bound and its key", rr.Code, body)
+	}
+	e.wantPut(dir+"lib-core-1.2.0-part000.bin", []byte("again"), http.StatusCreated)
+}
+
+// TestDeploySessionFilesCounted: with maven.maxSessionFiles 8, a Gradle deploy of four files, a
+// .module, a signature, a signature of the signature and a .sigstore.json fills the session,
+// although every one of them has four checksum files: checksums, of a signature or a .module
+// too, are not stored and do not count, and neither does maven-metadata.xml, which commits the
+// eight. The bound is a session's, not the version's: the same deploy again is 200.
+func TestDeploySessionFilesCounted(t *testing.T) {
+	e := newDeployEnv(t, nil)
+	e.repo.Policy = json.RawMessage(`{"maven":{"maxSessionFiles":8}}`)
+	must(t, e.st.UpdateRepo(t.Context(), &e.repo))
+	files := release("1.2.0", "")
+	dir := files[0].path[:strings.LastIndex(files[0].path, "/")+1]
+	files = append(files,
+		deployFile{dir + "lib-core-1.2.0.module", []byte(`{"formatVersion":"1.1"}`)},
+		deployFile{dir + "lib-core-1.2.0.jar.asc", []byte("-----BEGIN PGP SIGNATURE-----")},
+		deployFile{dir + "lib-core-1.2.0.jar.asc.asc", []byte("-----BEGIN PGP SIGNATURE----- again")},
+		deployFile{dir + "lib-core-1.2.0.jar.sigstore.json", []byte(`{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}`)})
+	putAll := func() {
+		t.Helper()
+		for _, f := range files {
+			e.wantPut(f.path, f.body, http.StatusCreated)
+			for _, a := range []string{MD5, SHA1, SHA256, SHA512} {
+				e.wantPut(f.path+"."+a, []byte(sumsOf(f.body)[a]), http.StatusCreated)
+			}
+		}
+	}
+	putAll()
+	rr := e.put("alice", dir+"lib-core-1.2.0-extra.jar", []byte("one too many"))
+	if body := rr.Body.String(); rr.Code != http.StatusBadRequest || !strings.Contains(body, "holds 8 files, the bound policy.maven.maxSessionFiles") {
+		t.Errorf("the ninth file: %d %s, want 400 naming the bound", rr.Code, body)
+	}
+	e.wantPut(files[0].path, files[0].body, http.StatusCreated)
+	if got := e.put("alice", metadataPath, metadataDoc("1.2.0")).Code; got != http.StatusCreated {
+		t.Fatalf("maven-metadata.xml of a full session: %d, want 201", got)
+	}
+	if vs := e.versions(); len(vs) != 1 || len(e.manifest(vs[0]).Layers) != len(files)+1 {
+		t.Errorf("versions %+v, want one of %d files and its metadata", vs, len(files))
+	}
+	putAll()
+	if got := e.put("alice", metadataPath, metadataDoc("1.2.0")).Code; got != http.StatusOK {
+		t.Errorf("the same deploy again: %d, want 200", got)
+	}
+}
+
 // TestDeploySpelling: after com.example:lib-core 1.2.0, a file of Com.Example:lib-core, whose
 // package path is the same, is 409 naming com.example:lib-core, under the same version and
 // under another; it is not stored and opens no session (#244).
