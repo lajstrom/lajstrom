@@ -2,6 +2,7 @@ package generic
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -184,6 +185,26 @@ func TestOpenBlob(t *testing.T) {
 				}
 			},
 			want: openWant{status: 200, body: string(data), size: -1, registry: 1},
+		},
+		{
+			// Nexus's docker repositories gzip a blob whose bytes look like text when the
+			// client offers gzip; Go's transport would offer it and unzip, and the size would
+			// be lost (#119). The provider asks for the blob's own bytes.
+			name: "a registry that compresses when the client offers gzip",
+			setup: func(f *fakeRegistry, _ string) {
+				f.hook = func(w http.ResponseWriter, r *http.Request) bool {
+					if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+						return false
+					}
+					w.Header().Set("Content-Encoding", "gzip")
+					w.Header().Set("Docker-Content-Digest", d.String())
+					zw := gzip.NewWriter(w)
+					_, _ = zw.Write(data)
+					_ = zw.Close()
+					return true
+				}
+			},
+			want: openWant{status: 200, body: string(data), size: 16, registry: 1},
 		},
 		{
 			name: "the registry refuses Lajstrom",

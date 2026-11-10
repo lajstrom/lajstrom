@@ -123,6 +123,10 @@ func newTransport(timeout time.Duration) *http.Transport {
 	t.TLSHandshakeTimeout = dial
 	t.ResponseHeaderTimeout = timeout
 	t.MaxIdleConnsPerHost = maxIdleConnsPerHost
+	// No Accept-Encoding: gzip. A blob is served as its own bytes: a registry that compresses
+	// when offered (Nexus's docker repositories, for blobs that look like text) would cost the
+	// Content-Length that the provider passes on, and the transport's unzipping the CPU.
+	t.DisableCompression = true
 	return t
 }
 
