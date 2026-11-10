@@ -393,6 +393,7 @@ refuses counts as unanswered, so a breaker that stays open for a minute turns
 | a body that stops moving | `server.stallTimeout`, `1m` | each read of a request body and each write of a response must move within it, or the connection is closed; the handler gets a read or write error |
 | uploads at once | `server.maxConcurrentUploads`, no limit | `503` with `Retry-After: 5`, before the body is read |
 | a manifest | `server.maxManifestSize`, 4 MiB | `413` |
+| the layers of a manifest | 1 000, fixed | `400 MANIFEST_INVALID` naming the bound, on every repo, before Lajstrom asks the registry about any layer |
 | a body of the management API | 64 KiB, fixed | `413` |
 | a file a frontend receives | the repo's `policy.maxFileSize` | `413` |
 

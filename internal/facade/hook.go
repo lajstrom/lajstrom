@@ -36,8 +36,10 @@ const unknownArtifactType = "application/vnd.unknown.artifact.v1"
 //     referrer path unindexed (putReferrer, manifest-profile.md §6) instead of the steps below.
 //  2. The package path is the <path> of the name, the tag the reference or, for a push by
 //     digest, the tag of the annotations (manifestTag).
-//  3. Every layer must be in the backend, else MANIFEST_BLOB_UNKNOWN (checkLayers).
-//  4. ingest.Ingest validates the manifest, claims the tag, pushes the manifest with it and
+//  3. The manifest must satisfy the profile (profile.Validate), which needs no backend, else
+//     MANIFEST_INVALID as ingest answers it; readManifest has bounded the layers (maxLayers).
+//  4. Every layer must be in the backend, else MANIFEST_BLOB_UNKNOWN (checkLayers).
+//  5. ingest.Ingest validates the manifest, claims the tag, pushes the manifest with it and
 //     indexes it; ingestError answers its errors.
 //
 // The answer is 201 with Location (the digest, or the tag of a push by digest),
@@ -58,6 +60,11 @@ func (h *handler) putManaged(w http.ResponseWriter, r *http.Request, t *target, 
 	tag, err := manifestTag(ref, refDigest, m)
 	if err != nil {
 		return err
+	}
+	// The profile needs no backend: a manifest it refuses costs no request to the registry
+	// (threat model M-2). Ingest checks it again, as it does for every publish.
+	if _, err := profile.Validate(m); err != nil {
+		return ingestError(t, m, fmt.Errorf("%w: %w", ingest.ErrInvalid, err))
 	}
 	if err := h.checkLayers(ctx, t, m.Layers); err != nil {
 		return err

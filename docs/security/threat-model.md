@@ -128,7 +128,7 @@ The table summarises; the IDs point to §3.
 | ID | Threat | Mitigation | Status |
 | --- | --- | --- | --- |
 | M-1 | **An oversized or malformed manifest.** | `facade.readManifest` runs after authorisation. Without `Content-Length` it answers `411` (no chunked body); above `server.maxManifestSize` (4 MiB) `413`. It reads through `io.LimitReader`, and a short body is `400`. It checks that the body is JSON and that its `mediaType` is its `Content-Type`. `encoding/json` bounds nesting. | mitigated |
-| M-2 | **A manifest with tens of thousands of layers.** `facade.checkLayers` sends one `HEAD` per layer to the registry before the profile is checked, and ingest checks them again. | none | open: #247 |
+| M-2 | **A manifest with tens of thousands of layers.** `facade.checkLayers` sent one `HEAD` per layer to the registry before the profile was checked, and ingest checks them again: one PUT of 4 MiB with 25 000 layers made 50 000 requests to the registry. | `facade.readManifest` refuses more than 1 000 layers (`maxLayers`) with `400 MANIFEST_INVALID` naming the bound, on managed and `oci` repos alike, before anything asks the registry. On a managed repo, `facade.putManaged` checks the profile (`profile.Validate`, no backend) before `checkLayers`, so a manifest the profile refuses costs no request either (#247). Test: `TestManifestLayersBound` counts the requests to the registry. What remains: a managed manifest's layers are still asked twice, by `checkLayers` and by ingest, so at most 2 000 `HEAD`s per PUT; asking once needs ingest to report a missing layer as its own error, a change of its contract. The annotations are bounded by `server.maxManifestSize` only. | mitigated |
 | M-3 | **Header injection through `OCI-Subject`.** The subject's digest came from the client's JSON unchecked into a response header; only net/http stopped CR/LF. | This pass: `facade.readManifest` refuses a subject whose digest does not parse, `400 MANIFEST_INVALID`. The other headers built from input (`Location`, `Link`, the challenge) take checked names, digests, tags and ids, `url.Values.Encode` and `strconv.Quote`. | fixed in #260 |
 
 ### Referrers (#28)
@@ -216,7 +216,6 @@ configuration, part 1 and part 2. In terms of this document:
 | --- | --- | --- |
 | [#242](https://github.com/lajstrom/lajstrom/issues/242) credentials over a downgrading redirect; the token realm | P-2, P-3 | p2 |
 | [#246](https://github.com/lajstrom/lajstrom/issues/246) upload quotas | U-3 to U-6 | p2 |
-| [#247](https://github.com/lajstrom/lajstrom/issues/247) the layers of a manifest | M-2 | p2 |
 | [#248](https://github.com/lajstrom/lajstrom/issues/248) a server without an edge | T-2, N-2, N-3 | p2 |
 | [#249](https://github.com/lajstrom/lajstrom/issues/249) a PAT that mints PATs | T-8 | p2, needs a decision |
 | [#250](https://github.com/lajstrom/lajstrom/issues/250) nested registry prefixes | P-1 | p2 |
