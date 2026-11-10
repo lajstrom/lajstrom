@@ -41,6 +41,14 @@ func (e *backendError) Error() string {
 
 func (e *backendError) Unwrap() []error { return []error{e.kind, e.cause} }
 
+// credentialError is the failure of a rotating credential (Options.Credential), as the auth
+// client met it; translate makes it ErrUnauthorized.
+type credentialError struct{ err error }
+
+func (e *credentialError) Error() string { return "credential: " + e.err.Error() }
+
+func (e *credentialError) Unwrap() error { return e.err }
+
 // translate turns an error of oras-go or of a registry response into one that wraps a sentinel
 // of package provider where one applies:
 //
@@ -48,7 +56,9 @@ func (e *backendError) Unwrap() []error { return []error{e.kind, e.cause} }
 //   - HTTP 409, TAG_INVALID, or an error whose message says the tag is immutable: ErrConflict;
 //   - HTTP 405, UNSUPPORTED, errdef.ErrUnsupported: ErrUnsupported;
 //   - HTTP 401 and 403, UNAUTHORIZED, DENIED, and a Basic challenge without configured
-//     credentials: ErrUnauthorized, the registry rejected Lajstrom's own credentials.
+//     credentials: ErrUnauthorized, the registry rejected Lajstrom's own credentials;
+//   - a rotating credential that failed (Options.Credential): ErrUnauthorized, with the
+//     credential's error in the message instead of oras-go's, which names the URL.
 //
 // A refused token realm (realmError) is wrapped without what net/http and oras-go put around
 // it, which names the request URL. Everything else, context errors included, is wrapped with
@@ -61,6 +71,10 @@ func translate(op string, err error) error {
 	var realm *realmError
 	if errors.As(err, &realm) {
 		return fmt.Errorf("generic: %s: %w", op, realm)
+	}
+	var ce *credentialError
+	if errors.As(err, &ce) {
+		return &backendError{op: op, kind: provider.ErrUnauthorized, detail: ce.Error(), cause: err}
 	}
 	var resp *errcode.ErrorResponse
 	if errors.As(err, &resp) {

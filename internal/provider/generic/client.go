@@ -1,6 +1,8 @@
 package generic
 
 import (
+	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
@@ -59,8 +61,9 @@ type clients struct {
 // newClients builds the clients for the registry at base (its URL: scheme and host:port) from
 // cfg. Every request carries User-Agent lajstrom/<version>; with a username, the registry's
 // Basic or bearer challenge is answered with the username and password, and tokens are cached.
-// A bearer challenge whose realm realmTransport refuses is an error instead.
-func newClients(cfg config.Registry, base *url.URL, log *slog.Logger) clients {
+// A non-nil rotating replaces the username and password (Options.Credential). A bearer
+// challenge whose realm realmTransport refuses is an error instead.
+func newClients(cfg config.Registry, base *url.URL, log *slog.Logger, rotating auth.CredentialFunc) clients {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = config.DefaultRegistryTimeout
@@ -75,11 +78,21 @@ func newClients(cfg config.Registry, base *url.URL, log *slog.Logger) clients {
 		log:     log,
 	}}}}
 	var cred auth.CredentialFunc
-	if cfg.Auth.Username != "" {
+	cache := auth.NewCache()
+	switch {
+	case rotating != nil:
+		cred = func(ctx context.Context, hostport string) (auth.Credential, error) {
+			c, err := rotating(ctx, hostport)
+			if err != nil {
+				return auth.EmptyCredential, &credentialError{err: err}
+			}
+			return c, nil
+		}
+		cache = &rotatingCache{Cache: cache, cred: cred}
+	case cfg.Auth.Username != "":
 		cred = auth.StaticCredential(base.Host, auth.Credential{Username: cfg.Auth.Username, Password: cfg.Auth.Password})
 	}
 	header := http.Header{"User-Agent": {"lajstrom/" + version.Get().Version}}
-	cache := auth.NewCache()
 	noFollow := &http.Client{
 		Transport: rt,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -118,6 +131,29 @@ func retries(cfg config.Registry) int {
 		return 0
 	}
 	return cfg.Retries
+}
+
+// rotatingCache is the token cache of a rotating credential (Options.Credential). The scheme
+// and the bearer tokens are cached as by the cache it wraps, but a Basic token is made from
+// the credential for every request: oras-go's cache would send the first one until a 401.
+type rotatingCache struct {
+	auth.Cache
+	cred auth.CredentialFunc
+}
+
+// GetToken implements auth.Cache.
+func (c *rotatingCache) GetToken(ctx context.Context, registry string, scheme auth.Scheme, key string) (string, error) {
+	if scheme != auth.SchemeBasic {
+		return c.Cache.GetToken(ctx, registry, scheme, key)
+	}
+	cred, err := c.cred(ctx, registry)
+	if err != nil {
+		return "", err
+	}
+	if cred.Username == "" || cred.Password == "" {
+		return "", auth.ErrBasicCredentialNotFound
+	}
+	return base64.StdEncoding.EncodeToString([]byte(cred.Username + ":" + cred.Password)), nil
 }
 
 // newTransport is the default transport of net/http with timeout as the bound on the wait for

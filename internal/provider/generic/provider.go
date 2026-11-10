@@ -14,6 +14,7 @@ import (
 
 	"oras.land/oras-go/v2/registry"
 	"oras.land/oras-go/v2/registry/remote"
+	"oras.land/oras-go/v2/registry/remote/auth"
 
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/provider"
@@ -77,6 +78,22 @@ const (
 // lives at /v2/ of the host. A nil log means slog.Default(); every line carries
 // registry=<name>.
 func New(cfg config.Registry, log *slog.Logger) (*Provider, error) {
+	return NewWithOptions(cfg, log, Options{})
+}
+
+// Options are what a provider type built on this one changes in New: internal/provider/ecr
+// keeps the data path of this package and brings its own credentials. The zero value is New.
+type Options struct {
+	// Credential answers the registry's challenges in place of registries[].auth, for a
+	// credential that expires and is replaced, such as ECR's authorization token. Once the
+	// registry asked for Basic, every request asks Credential again instead of reusing what
+	// the first challenge got, so a replaced credential is sent from the next request on, not
+	// after a 401. A Credential that fails fails the request with provider.ErrUnauthorized.
+	Credential auth.CredentialFunc
+}
+
+// NewWithOptions is New with the changes of o.
+func NewWithOptions(cfg config.Registry, log *slog.Logger, o Options) (*Provider, error) {
 	u, err := url.Parse(cfg.URL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, errors.New("generic: url must be an absolute http(s) URL")
@@ -101,7 +118,7 @@ func New(cfg config.Registry, log *slog.Logger) (*Provider, error) {
 		prefix:   normalisePrefix(cfg.Prefix),
 		override: cfg.Capabilities,
 		log:      log,
-		clients:  newClients(cfg, u, log),
+		clients:  newClients(cfg, u, log, o.Credential),
 		maxPages: maxPages,
 	}
 	reg := &remote.Registry{RepositoryListPageSize: pageSize}
