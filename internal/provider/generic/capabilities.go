@@ -2,8 +2,10 @@ package generic
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -22,6 +24,8 @@ const (
 	probeRepository = "lajstrom-probe"
 	// zeroDigest is the subject of the referrers probe; no manifest has it.
 	zeroDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	// maxCatalogProbeBody bounds how much of the catalog probe's answer, one entry, is read.
+	maxCatalogProbeBody = 64 << 10
 )
 
 // Capabilities probes the registry on the first call and caches the answer; a probe that
@@ -32,7 +36,8 @@ const (
 //   - reachability: GET /v2/; a failure is the error of Capabilities. Its headers, the
 //     challenge of a 401 the auth client answered on the way, and the host of the URL name
 //     the vendor (detectVendor);
-//   - catalog: GET /v2/_catalog?n=1; 200 is true, 401, 403, 404 and 405 are false;
+//   - catalog: GET /v2/_catalog?n=1; 200 with a catalog (a JSON object with repositories)
+//     is true; a 200 without one, 401, 403, 404 and 405 are false;
 //   - referrers: GET /v2/<prefix>lajstrom-probe/referrers/<zero digest>; 200 with an OCI
 //     image index is true, any other 200 and a 404 without NAME_UNKNOWN are false, and so is
 //     an answer that does not tell (404 NAME_UNKNOWN, 401, 403), in which case oras-go decides
@@ -177,7 +182,9 @@ func (p *Provider) probe(ctx context.Context, d config.CapabilityOverrides) (pro
 	return c, nil
 }
 
-// probeCatalog asks for one entry of the catalog.
+// probeCatalog asks for one entry of the catalog. A 200 counts only with a catalog in its
+// body, a JSON object with repositories: JFrog's router answers 200 with an empty body, which
+// ListRepositories cannot read.
 func (p *Provider) probeCatalog(ctx context.Context) (bool, error) {
 	ctx = auth.AppendScopesForHost(ctx, p.host, auth.ScopeRegistryCatalog)
 	resp, err := p.get(ctx, p.base+"/v2/_catalog?n=1")
@@ -186,7 +193,11 @@ func (p *Provider) probeCatalog(ctx context.Context) (bool, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusOK {
-		return true, nil
+		var body struct {
+			Repositories json.RawMessage `json:"repositories"`
+		}
+		err := json.NewDecoder(io.LimitReader(resp.Body, maxCatalogProbeBody)).Decode(&body)
+		return err == nil && body.Repositories != nil, nil
 	}
 	errResp := parseErrorResponse(resp)
 	if _, missing := catalogMissing(errResp); missing {

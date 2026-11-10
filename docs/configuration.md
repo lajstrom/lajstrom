@@ -151,8 +151,8 @@ A list; each entry is one backend OCI registry. Repos refer to it by name.
 #### Registry capabilities
 
 At startup Lajstrom asks each registry what it supports, once, and keeps the answer: `GET /v2/`
-(the registry answers, and accepts the credentials), `GET /v2/_catalog?n=1` (a catalog: 200 yes;
-401, 403, 404, 405 no) and the referrers of a digest no manifest has in the repository
+(the registry answers, and accepts the credentials), `GET /v2/_catalog?n=1` (a catalog: 200
+with a JSON catalog yes; a 200 without one, 401, 403, 404, 405 no) and the referrers of a digest no manifest has in the repository
 `<prefix>lajstrom-probe` (an OCI image index: the referrers API; a 404: the tag schema). The
 `generic` type assumes create-on-push, manifest deletes and blob redirects, and no immutable
 tags; a registry that answers a manifest delete with 405 turns `deleteManifest` off from then on.
