@@ -22,6 +22,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	_ "github.com/lajstrom/lajstrom/internal/provider/generic" // registers registries[].type generic
+	"github.com/lajstrom/lajstrom/internal/proxy"
 	"github.com/lajstrom/lajstrom/internal/server"
 	"github.com/lajstrom/lajstrom/internal/version"
 )
@@ -30,7 +31,8 @@ import (
 const registryProbeTimeout = 10 * time.Second
 
 // newServeCmd returns serve: load and validate the configuration (in the root's
-// PersistentPreRunE), open the index database and apply its pending migrations, create the
+// PersistentPreRunE), read the credential files of the upstreams (loadUpstreams), open the
+// index database and apply its pending migrations, create the
 // repos of the configuration that the control plane does not have, load the master key, build
 // a provider for every registry and probe its capabilities, build the server and run it until
 // SIGINT or SIGTERM and the drain that follows (server.Run; a second signal stops the process
@@ -48,7 +50,10 @@ const registryProbeTimeout = 10 * time.Second
 // same pipeline; server.maxManifestSize bounds them. The authenticator over the index's users
 // reads the HTTP Basic credentials of every request. The RBAC evaluator over the index's
 // bindings (auth.RBAC, with auth.anonymousRead) decides on the frontends, at /v2/token, on /v2
-// without a bearer and on /api/v1; there is no mode without it (docs/spec/rbac.md §3).
+// without a bearer and on /api/v1; there is no mode without it (docs/spec/rbac.md §3). The core
+// of proxy repos over the index, the pipeline and the upstreams is Deps.Proxy; a proxy repo whose
+// upstream is not configured is logged at error, and its expired negative entries are swept
+// every minute (ADR 0013).
 func newServeCmd(a *app) *cobra.Command {
 	return &cobra.Command{
 		Use:         "serve",
@@ -71,6 +76,10 @@ func newServeCmd(a *app) *cobra.Command {
 				"registries", len(c.Registries),
 				"repos", len(c.Repos),
 			)
+			upstreams, err := loadUpstreams(c, format.Lookup, a.log)
+			if err != nil {
+				return err
+			}
 			st, err := openStore(ctx, c.Database)
 			if err != nil {
 				return err
@@ -117,7 +126,15 @@ func newServeCmd(a *app) *cobra.Command {
 				a.log.Info("reconcile loop off (reconcile.interval is 0)")
 			}
 			runs.wg.Go(func() { expireSessions(ctx, pipe, a.log, sessionExpiryInterval) })
+			if err := checkProxyRepos(ctx, st, upstreams, a.log); err != nil {
+				return err
+			}
+			proxyCore := proxy.New(proxy.Options{Index: st, Ingest: pipe, Providers: providers, Upstreams: upstreams,
+				ExternalURL: c.Server.ExternalURL, Context: ctx, Log: a.log})
+			runs.wg.Go(func() { sweepProxyMeta(ctx, proxyCore, a.log, proxySweepInterval) })
 			authz := auth.NewRBAC(auth.RBACOptions{Index: st, AnonymousRead: c.Auth.AnonymousRead, Log: a.log})
+			deps := format.Deps{Index: st, Providers: providers, Auth: authz, Ingest: pipe, Signer: signer, Sessions: pipe,
+				Proxy: proxyCore}
 			a.log.Info("authorization by the bindings of the index (RBAC)", "auth.anonymousRead", c.Auth.AnonymousRead)
 			v2 := facade.New(facade.Options{Index: st, Providers: providers, Auth: authz, Ingest: pipe,
 				Tokens: tokens, ExternalURL: c.Server.ExternalURL, MaxManifestSize: c.Server.MaxManifestSize, Log: a.log})
@@ -135,7 +152,7 @@ func newServeCmd(a *app) *cobra.Command {
 				ShutdownTimeout: c.Server.ShutdownTimeout,
 				Log:             a.log,
 				Plugins:         format.All(),
-				Deps:            format.Deps{Index: st, Providers: providers, Auth: authz, Ingest: pipe, Signer: signer, Sessions: pipe},
+				Deps:            deps,
 				Ready:           ready(a.log, c.Database.Driver, st, health),
 				API:             api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Deleter: pipe, Log: a.log}),
 				Facade:          v2,
