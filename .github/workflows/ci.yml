@@ -346,6 +346,53 @@ jobs:
           LAJSTROM_E2E_REGISTRY: localhost:5001
         run: test/e2e/run.sh npm
 
+  e2e-gitea:
+    # #353: the scenarios of test/e2e/ against Gitea's container registry, a backend with
+    # credentials and an instance prefix (docs/registries/gitea.md): the Gitea of
+    # deploy/compose/gitea, set up by its gitea.sh (a user, an organisation whose name is the
+    # prefix, a token with write:package), and run.sh with the user, the token's file and the
+    # prefix. The scenarios that pass there: raw.sh checks ranges, which Gitea does not serve;
+    # apt, pypi and maven run in the e2e job against Zot. Not required.
+    name: e2e (gitea)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - name: Pull the images
+        # Gitea, pinned by digest in its compose file, and the clients of the scenarios below
+        # (test/e2e/*.sh headers), four at a time.
+        timeout-minutes: 4
+        run: |
+          set -euo pipefail
+          docker compose -f deploy/compose/gitea/compose.yaml pull --quiet gitea
+          images=(
+            ubuntu:24.04                    # tokens.sh
+            ghcr.io/oras-project/oras:v1.3.6
+            ghcr.io/sigstore/cosign/cosign:v3.1.4 # cosign.sh
+          )
+          printf '%s\n' "${images[@]}" | xargs -n 1 -P 4 docker pull --quiet --platform linux/amd64
+      - name: Start and set up Gitea
+        timeout-minutes: 2
+        run: deploy/compose/gitea/gitea.sh up
+      - name: run.sh against Gitea
+        timeout-minutes: 4
+        env:
+          LAJSTROM_E2E_REGISTRY: localhost:5009
+          LAJSTROM_E2E_REGISTRY_USER: lajstrom
+          LAJSTROM_E2E_REGISTRY_PASSWORD_FILE: deploy/compose/gitea/.work/gitea.token
+          LAJSTROM_E2E_REGISTRY_PREFIX: lajstrom-it/
+        run: test/e2e/run.sh oras auth rbac oci-token cosign tokens
+      - name: Gitea's log
+        if: failure()
+        run: docker compose -f deploy/compose/gitea/compose.yaml logs --tail 200 gitea
+
   lint:
     name: lint
     runs-on: ubuntu-latest
