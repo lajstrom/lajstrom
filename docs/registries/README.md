@@ -27,6 +27,7 @@ configuration has to add.
 | GitLab container registry v4.43.0, A (metadata on the filesystem) | `registry.gitlab.com/gitlab-org/build/cng/gitlab-container-registry:v4.43.0-gitlab`, index `sha256:fe9c67416a605ffaa5a053c17a6d3b1eab0668a33a58b7bd938a476088f8222e` (CNG rebuilds the tag in place: the digest is the pin) | `compose.yaml` (`gitlab`, profile `gitlab`) | 2026-11-07 | `manual` |
 | GitLab container registry v4.43.0, B (metadata database, as GitLab.com) | the same, and `postgres:17.11-alpine`, index `sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac` | `compose.yaml` (`gitlab-db`, `gitlab-postgres`, profile `gitlab`) | 2026-11-07 | `manual` |
 | GHCR | `ghcr.io`, no version published (`registry/2.0`) | nothing: a hosted service | 2026-11-07 | `hosted`: an account in the test organisation `lajstrom-extras` and a token |
+| JFrog Container Registry 7.161.26 | `releases-docker.jfrog.io/jfrog/artifactory-jcr:7.161.26`, index `sha256:fd8d64416384c2ede4478c89bfa85ba7e9193db4db0dc36db3a307a0b9a5128b`, and `postgres:17.11-alpine` (it needs 4 GiB of memory) | [`jfrog-jcr/compose.yaml`](../../deploy/compose/jfrog-jcr/compose.yaml), set up by `jcr.sh` | 2026-11-10 | `manual` |
 | Harbor v2.15.4 | `harbor-online-installer-v2.15.4.tgz`, sha256 `eeb899cf7b626c925790adba87db9008dd1d73a693a72442651b5bdece9805c6` (images linux/amd64 only) | `harbor.sh` | 2026-11-07 | `manual` |
 | Nexus Repository 3.98.1, Community Edition, a `docker` and an `oci` hosted repository | `sonatype/nexus3:3.98.1`, index `sha256:91a9af44af777c353db11a5ee73850c7eb24b03c997ff4cc62a3500ad38a1332` | `nexus/compose.yaml`, set up by `nexus.sh` | 2026-11-10 | `manual` |
 | MinIO 2025-07-23, behind distribution | `bitnamilegacy/minio:2025.7.23-debian-12-r5`, index `sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20` | `compose.yaml` (`minio`, profile `s3-minio`) | 2026-11-09 | `manual` |
@@ -87,6 +88,49 @@ one Nexus with a hosted repository of each of its two registry formats, `docker`
 | Garbage collector and an untagged referrer (#37) | [kept; with `--delete-untagged`, while a tag-schema index lists it](distribution.md#garbage-collection) | [kept, with or without its subject](zot.md#garbage-collection) | [kept; `--delete-untagged` deletes it](gitlab.md#garbage-collection) | [**deleted 24 h after its push**](gitlab.md#garbage-collection) | *not measured* | [kept; it goes with its subject](harbor.md#garbage-collection) | [**deleted by the task "Delete unused manifests"**; listed by a tag-schema index, kept](nexus.md#garbage-collection) | [kept: no collector task](nexus.md#garbage-collection) |
 | What the probe finds | [`referrers=false catalog=true`](distribution.md#the-probe) | [`referrers=true catalog=true`](zot.md#the-row) | [`referrers=false catalog=true`](gitlab.md#the-row) | [`referrers=false catalog=true`](gitlab.md#the-row) | [`catalog=true`, wrong; vendor table: `false`](ghcr.md#the-probe) | [`referrers=true catalog=false`](harbor.md#the-row) | [`referrers=false catalog=true`](nexus.md#the-row) | [`referrers=true catalog=true`](nexus.md#the-row) |
 | Overrides needed | [none; `deleteManifest: false` with deletes disabled](distribution.md#the-probe) | [none; `immutableTags: true` behind a policy without `update`](zot.md#configuration) | [none; behind GitLab with rules, `deleteManifest: false`](gitlab.md#the-row) | [the flag on the registry; behind GitLab, as A](gitlab.md#media-types) | [none since the vendor table](ghcr.md#the-probe) | [none; `prefix: <project>/`](harbor.md#the-row) | [`deleteManifest: false`, or deletes leave the tags](nexus.md#what-the-provider-must-do-differently) | [none; ranges cannot be turned off](nexus.md#what-the-provider-must-do-differently) |
+
+### JFrog Container Registry
+
+JFrog Container Registry 7.161.26, the free Artifactory edition for containers
+([jfrog-jcr.md](jfrog-jcr.md)), measured on 2026-11-10 with a local docker repository as
+Lajstrom's prefix (`prefix: <repo-key>/`, the repository path method). Its cells are here, in
+the rows of the table above, rather than a column of it, so that the spikes of Nexus (#119) and
+Gitea (#120), which add theirs, merge apart; they become a column in one edit afterwards. **Not
+a backend for data yet**: JCR keeps a blob under whatever digest it is told and drops the body
+of a closing `PUT` after a `PATCH`, and its `HEAD` of a blob says 200 where `GET` is 404. Its
+deviations are on its page, [Deviations](jfrog-jcr.md#deviations-from-the-specification); its
+`registries[]` entry is [Configuration](jfrog-jcr.md#configuration); whoever changes the pin
+in its compose file re-runs [Commands](jfrog-jcr.md#commands).
+
+| | JCR 7.161.26 |
+| --- | --- |
+| Create on push | [yes, inside an existing repository key; a key never (404)](jfrog-jcr.md#create-on-push) |
+| Where a repository may be created | [below `<repo-key>/`, at any depth](jfrog-jcr.md#create-on-push) |
+| Referrers API | [yes, with the `artifactType` filter](jfrog-jcr.md#referrers) |
+| `OCI-Subject` on a push with `subject` | [yes](jfrog-jcr.md#referrers) |
+| Catalog (`_catalog`) and its limits | [**200 with an empty body**; per key at `/v2/<repo-key>/_catalog`, `n`/`last`/`Link`, lexical](jfrog-jcr.md#catalog-and-tags) |
+| A listing API of its own | [Artifactory's Docker and storage APIs](jfrog-jcr.md#catalog-and-tags) |
+| Tag list order and pagination | [lexical; `n`/`last`/`Link`](jfrog-jcr.md#catalog-and-tags) |
+| Delete a manifest by digest | [yes, 202, with its tags; its referrers stay](jfrog-jcr.md#delete) |
+| Delete by tag | [yes: the manifest stays](jfrog-jcr.md#delete) |
+| Delete a repository | [Artifactory's REST API](jfrog-jcr.md#delete) |
+| Immutable tags, where the rule lives | [none: a tag re-points with 201; Artifactory's overwrite permission, not measurable on JCR](jfrog-jcr.md#immutable-tags) |
+| Blob redirect | [none on the filesystem store](jfrog-jcr.md#blob-reads-head-and-get) |
+| `Range` and `Accept-Ranges` | [206, 416 past the end; `Accept-Ranges: bytes` on `GET`](jfrog-jcr.md#blob-reads-head-and-get) |
+| Largest blob measured | [1 GiB in one `PUT`](jfrog-jcr.md#blob-reads-head-and-get) |
+| Manifest size limit | [none met: 8 MiB + 1 byte is 201](jfrog-jcr.md#blob-reads-head-and-get) |
+| Lajstrom's manifest profile (`artifactType`, empty config, own media types) | [accepted](jfrog-jcr.md#media-types) |
+| Auth | [Bearer from `/v2/token`, Basic too; the admin's access token (no other user through REST)](jfrog-jcr.md#run-it) |
+| Rate limits seen | [none](jfrog-jcr.md#our-tests-against-it) |
+| Upload: chunk out of order | [416](jfrog-jcr.md#uploads-and-digests) |
+| Upload: chunk size limit | *not measured* |
+| Upload: session status (`GET`) | [works, 204 with `Range`](jfrog-jcr.md#uploads-and-digests) |
+| Upload: cancel (`DELETE`) | [405](jfrog-jcr.md#uploads-and-digests) |
+| Upload: wrong digest, empty blob | [**a wrong digest is 201 and stored**; the empty blob stored](jfrog-jcr.md#uploads-and-digests) |
+| Upload continued by another replica | [fails: ours (#342), then **the closing `PUT`'s body dropped**](jfrog-jcr.md#uploads-and-digests) |
+| Garbage collector and an untagged referrer (#37) | *not measured* |
+| What the probe finds | [`referrers=true catalog=true`, wrong; with the probe fix of #338 `catalog=false`](jfrog-jcr.md#what-the-provider-must-do-differently) |
+| Overrides needed | [none; `prefix: <repo-key>/`](jfrog-jcr.md#configuration) |
 
 ## Object stores behind distribution
 

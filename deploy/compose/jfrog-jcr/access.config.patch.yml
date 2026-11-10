@@ -1,0 +1,7 @@
+# A patch of the Access configuration (access.config.template.yml in the container), which the
+# image copies from /bootstrap/access/ to var/etc/access/ on start and Access applies: it lets
+# the admin create an access token with Basic credentials (POST /access/api/v1/tokens), the
+# first step of jcr.sh setup. Without it the Access API takes Bearer tokens only ("Unsupported
+# authentication method Basic"), and the only admin token is one made by hand in the UI.
+token:
+  allow-basic-auth: true

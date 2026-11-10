@@ -1,0 +1,75 @@
+# JFrog Container Registry for the capability-matrix spike (issue #338,
+# docs/registries/jfrog-jcr.md): the free Artifactory edition for containers, as the compose
+# project "lajstrom-jcr" on http://localhost:5010, beside the dev stack and not part of it (its
+# own project, network and volumes; make dev-down does not touch it). For development only:
+# plain HTTP, and the passwords below and in jcr.sh.
+#
+#   deploy/compose/jfrog-jcr/jcr.sh up      start, wait, and set it up through the REST API
+#   deploy/compose/jfrog-jcr/jcr.sh down    stop, and remove the containers and the volumes
+#
+# Resources: Artifactory is a JVM with the router, access, metadata, frontend and event
+# services beside it, in one container, which settles at 3.2 to 3.5 GiB: give the Docker VM
+# 4 GiB free for it (mem_limit below). The image is 2.1 GB to pull and 5.4 GB on disk; from
+# nothing to healthy in about 80 s. This Artifactory does not start on its embedded Derby
+# ("Cannot start the application with a database other than PostgreSQL"): the postgres service
+# is required.
+
+name: lajstrom-jcr
+
+services:
+  jcr:
+    # JFrog Container Registry 7.161.26, the version docs/registries/README.md lists; the tag
+    # serves linux/amd64 and linux/arm64.
+    # sha256:fd8d64416384c2ede4478c89bfa85ba7e9193db4db0dc36db3a307a0b9a5128b
+    image: releases-docker.jfrog.io/jfrog/artifactory-jcr:7.161.26@sha256:fd8d64416384c2ede4478c89bfa85ba7e9193db4db0dc36db3a307a0b9a5128b
+    mem_limit: 4g
+    ulimits:
+      nofile: {soft: 32000, hard: 32000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      JF_SHARED_DATABASE_TYPE: postgresql
+      JF_SHARED_DATABASE_DRIVER: org.postgresql.Driver
+      JF_SHARED_DATABASE_URL: jdbc:postgresql://postgres:5432/artifactory
+      JF_SHARED_DATABASE_USERNAME: artifactory
+      JF_SHARED_DATABASE_PASSWORD: artifactory
+    volumes:
+      - jcr-var:/var/opt/jfrog/artifactory
+      # Basic credentials for the Access token API (access.config.patch.yml); the entrypoint
+      # copies /bootstrap into var/etc on each start, without overwriting.
+      - ./access.config.patch.yml:/bootstrap/access/access.config.patch.yml:ro
+    ports:
+      # The router: the UI, the REST APIs under /artifactory and /access, and /v2 (the
+      # repository path method: localhost:5010/<repo-key>/<image>).
+      - "127.0.0.1:${LAJSTROM_JCR_PORT:-5010}:8082"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:8082/artifactory/api/system/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 300s
+      start_interval: 2s
+
+  postgres:
+    # The image of the dev stack's postgres, with a database, user and password of its own:
+    # artifactory. Not published.
+    # sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    image: postgres:17.11-alpine
+    environment:
+      POSTGRES_DB: artifactory
+      POSTGRES_USER: artifactory
+      POSTGRES_PASSWORD: artifactory
+    volumes:
+      - jcr-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U artifactory -d artifactory"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 1s
+
+volumes:
+  jcr-var:
+  jcr-postgres:
