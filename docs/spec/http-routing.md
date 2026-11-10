@@ -44,7 +44,11 @@ for the dev stack on loopback only, behind an explicit `server.insecureHTTP: tru
 `server.insecureHTTP` are part of the hardening issue (#50).
 
 `server.externalURL` is the base for every absolute URL Lajstrom renders (simple index links,
-`WWW-Authenticate` realm, apt `Release` is path-relative and needs none).
+`WWW-Authenticate` realm, apt `Release` is path-relative and needs none), and its host is the
+`service` of the token flow, the `iss` and `aud` of every bearer token. It is required: only with
+`server.insecureHTTP: true`, the dev stack, may it be empty (#248). Then the realm and the service
+come from the request's `Host`, and the realm is `https://` when the request came over TLS
+(`server.tls`), `http://` otherwise.
 
 ## 2. OCI facade `/v2`
 
