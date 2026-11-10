@@ -33,9 +33,10 @@ type publication struct {
 // built from the tarball and the version document. 201 {"ok": true}, also for the same tarball
 // again; 409 for another tarball under a published version; 400 naming the rule; 413 over the
 // repo's maxFileSize or the bound of the rest of the body. It needs write on the repo. The
-// dist-tags of the body, latest when it has none, are journal adds. A body without _attachments
-// is the packument update of npm deprecate and unpublish (#308), 501 here.
-func (h *handlers) publish(w http.ResponseWriter, r *http.Request, repo index.Repo, name string) {
+// dist-tags of the body, latest when it has none, are journal adds. A body without _attachments,
+// or any body at PUT /<name>/-rev/<rev> (rev), is the packument update of npm deprecate and
+// unpublish (update).
+func (h *handlers) publish(w http.ResponseWriter, r *http.Request, repo index.Repo, name, rev string) {
 	ctx := r.Context()
 	if err := format.Authorize(ctx, h.deps, auth.ActionWrite, repo); err != nil {
 		h.fail(w, r, err)
@@ -60,8 +61,8 @@ func (h *handlers) publish(w http.ResponseWriter, r *http.Request, repo index.Re
 			h.deps.Log.WarnContext(ctx, "npm: publish spool not removed", "error", err.Error())
 		}
 	}()
-	if body.attachments == nil {
-		h.fail(w, r, fmt.Errorf("%w: a body without _attachments, the packument update of npm deprecate and unpublish", format.ErrUnsupported))
+	if body.attachments == nil || rev != "" {
+		h.update(w, r, repo, name, rev, body.fields)
 		return
 	}
 	pub, err := checkPublish(name, body)

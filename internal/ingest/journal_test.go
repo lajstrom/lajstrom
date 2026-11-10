@@ -282,3 +282,28 @@ func fetchFake(t *testing.T, rr provider.Repository, tag string) ([]byte, ocispe
 	must(t, json.Unmarshal(raw, &m))
 	return raw, m
 }
+
+// TestJournalDelete: an entry deleted through Delete, as the unpublish of a package deletes its
+// journal, goes from the registry and the index, and the state is folded again from the rest.
+func TestJournalDelete(t *testing.T) {
+	ctx := t.Context()
+	e := newNpmEnv(t, "1.0.0", "2.0.0")
+	_, err := e.pipe.Journal(ctx, e.npm, widgetsPath, []format.JournalOp{opAdd("latest", "1.0.0"), opAdd("next", "2.0.0"),
+		opAdd("latest", "2.0.0")}, alice)
+	must(t, err)
+	del, err := e.pipe.Delete(ctx, e.npm, format.Deletion{Path: widgetsPath, Reference: profile.JournalTag(3)}, alice)
+	must(t, err)
+	if del.Version != nil || del.Digest == "" || e.tagged(t, "npm/internal/"+widgetsPath, profile.JournalTag(3)) != "" {
+		t.Errorf("Delete of entry 3: %+v; the tag is still there", del)
+	}
+	if rows := e.entries(t); len(rows) != 2 || rows[1].Seq != 2 {
+		t.Errorf("rows after the delete: %+v", rows)
+	}
+	same(t, "state without entry 3", []index.JournalState{
+		{PackageID: e.pkg.ID, Kind: index.JournalDistTag, Key: "latest", Value: "1.0.0", Seq: 1},
+		{PackageID: e.pkg.ID, Kind: index.JournalDistTag, Key: "next", Value: "2.0.0", Seq: 2},
+	}, e.state(t))
+	if _, err := e.pipe.Delete(ctx, e.npm, format.Deletion{Path: widgetsPath, Reference: profile.JournalTag(3)}, alice); !errors.Is(err, index.ErrNotFound) {
+		t.Errorf("Delete of entry 3 again: %v", err)
+	}
+}
