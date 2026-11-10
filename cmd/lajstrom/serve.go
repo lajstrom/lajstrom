@@ -37,7 +37,8 @@ const registryProbeTimeout = 10 * time.Second
 // repos of the configuration that the control plane does not have, load the master key, build
 // a provider for every registry and probe its capabilities, build the server and run it until
 // SIGINT or SIGTERM and the drain that follows (server.Run; a second signal stops the process
-// at once), then close the database.
+// at once), then stop the background work and close the database. A server that cannot listen
+// returns its error at once.
 //
 // Migrating on start takes the same lock as lajstrom migrate, so replicas that start together
 // apply each migration once. The index is Deps.Index of the format plugins and /-/readyz pings
@@ -118,8 +119,11 @@ func newServeCmd(a *app) *cobra.Command {
 			pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL})
 			runs := &backgroundReindex{ctx: ctx, log: a.log, w: reindex.New(reindex.Options{Index: st, Providers: providers,
 				Inspector: pipe, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL})}
-			// Before the index closes: a run the shutdown cancels finishes as failed.
-			defer runs.wg.Wait()
+			// Before the index closes: a run the shutdown cancels finishes as failed. stop ends the
+			// background work first, also when serve returns without a signal, because the listener
+			// cannot bind or the server cannot be built: else the wait would never end, and serve
+			// would hang without printing its error (#372).
+			defer func() { stop(); runs.wg.Wait() }()
 			if every := c.Reconcile.Interval; every > 0 {
 				a.log.Info("reconcile loop on: a reindex of every repo with prune", "interval", every.String())
 				runs.wg.Go(func() { runs.w.Reconcile(ctx, every) })
