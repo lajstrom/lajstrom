@@ -463,6 +463,48 @@ on demand, and on a pull request that changes the script or the workflow, at 1 G
 uploads and 8 downloads at once, and puts the table in the job summary. It is not a required
 check: a failed run is a regression to look into, not a gate on other pull requests.
 
+#### On Linux, 8 uploads and 8 downloads at once
+
+On 2026-11-10, the Load workflow on its own pull request (#287,
+[run 42778572674](https://github.com/lajstrom/lajstrom/actions/runs/42778572674), three
+attempts), Lajstrom built from `f45dffb`, the merge of #287 into #286 (the code of main at
+`cd2391d`, the script of #286), on a GitHub `ubuntu-latest` runner (image
+`ubuntu-26.04` 20261101.186.1): Ubuntu 26.04.1 LTS, kernel 7.0.0-1019-azure, 4 vCPUs of an AMD
+EPYC (7763, 9V45 and 9V74 in the three attempts), 16 GiB, Docker 29.4.2, Zot v2.1.23 of the dev
+stack, 86 GiB free on the root filesystem (no SDK had to go), client and server on the same
+runner. The first attempt:
+
+```text
+$ LAJSTROM_LOAD_UPLOADS=8 make load
+lajstrom f45dffb (f45dffb, 2026-11-10T07:54:49Z), Linux x86_64, 4 CPUs; object 1024 MiB, 8 uploads and 8 downloads at once; registry localhost:5000
+phase           MiB        s    MiB/s  RSS MiB heap MiB  tmp MiB samples
+idle              0     0.00        0       65       27        0     28
+raw-put        8192    57.65      142       66       39     8192    221
+raw-get        8192     6.83     1199       32        5        0     20
+v2-push        8192    19.89      412       33        6        0     72
+v2-get         8192     8.75      936       33        5        0     25
+load: every digest matched; the peak resident set stayed within 256 MiB
+```
+
+The three attempts:
+
+| Phase | Bytes | Time | Throughput | Peak resident set | Peak heap in use | Temporary files |
+| --- | --- | --- | --- | --- | --- | --- |
+| idle, before the first transfer | | | | 65 MiB | 26–27 MiB | |
+| raw `PUT`, 8 at once | 8 GiB | 57.7–89.6 s | 91–142 MiB/s | 65–66 MiB | 39 MiB | 8 GiB, 8 whole bodies |
+| raw `GET`, 8 at once | 8 GiB | 4.7–6.8 s | 1199–1747 MiB/s | 31–32 MiB | 4–5 MiB | none |
+| `oras push` through `/v2`, 8 at once | 8 GiB | 19.9–33.2 s | 247–412 MiB/s | 33 MiB | 5–6 MiB | none |
+| `oras blob fetch` through `/v2`, 8 at once | 8 GiB | 6.1–8.8 s | 936–1341 MiB/s | 32–33 MiB | 5 MiB | none |
+
+So the bound of #62 holds with 8 transfers of 1 GiB at once in each direction, raw and `/v2`:
+the peak resident set was 66 MiB, during the 8 raw `PUT`s, one MiB above the idle process,
+and the heap in use peaked at 39 MiB there, with 8 GiB of bodies in flight. The raw `PUT`s are
+the slowest phase: each body is written twice on the runner's one disk, to Lajstrom's spool and
+then to Zot's upload area, where a `/v2` push writes it once, and the 4 vCPUs are shared by the
+8 clients, Lajstrom and Zot. The times vary from one attempt to the next with the runner's host.
+
+#### On macOS, 1 upload at a time
+
 On 2026-11-09, Lajstrom at `129dc47`, an Apple M4 Pro with 14 cores and 24 GiB, macOS 27.0.1,
 Zot v2.1.23 of the dev stack in OrbStack, client and server on the same machine:
 
@@ -495,9 +537,11 @@ the spool first (about 1 GiB/s here) and then streams it to the registry. The do
 throughput is the sum of 8 clients that each hash what they get, on the machine that also runs
 Lajstrom and Zot: it is the throughput of the whole setup, not a bound of Lajstrom's.
 
-Not measured: 8 uploads at once of 1 GiB each, which need 8 GiB of spool and 8 GiB in Zot's
-upload area at once (16 GiB of free disk; the machine had 6); a registry behind object
-storage, where a download is a `307` and does not pass through Lajstrom at all; Linux.
+The uploads ran one at a time there: 8 at once need 18 GiB of free disk and the machine had 6.
+
+Not measured: a registry behind object storage, where a download is a `307` and does not pass
+through Lajstrom at all; a registry on another machine, where the network and not the disk
+bounds a transfer.
 
 ## Metrics
 
