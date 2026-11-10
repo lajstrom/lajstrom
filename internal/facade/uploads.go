@@ -503,19 +503,16 @@ func (h *handler) limitBlob(w http.ResponseWriter, r *http.Request, t *target, o
 	return nil
 }
 
-// blobLimit returns the bound of a blob upload of t and what it is: the repo policy's
-// maxFileSize, or the registry's capabilities.maxBlobSize when that is smaller; on an oci repo,
-// which stores what it gets, maxBlobSize alone; -1 when there is none. A registry whose
-// capabilities cannot be read bounds nothing here: its own answer will.
+// blobLimit returns the bound of a blob upload of t and what it is: the repo's maxFileSize
+// (format.MaxFileSize, an oci repo's too), or the registry's capabilities.maxBlobSize when that
+// is smaller; -1 when there is none (manifest-profile.md §5). A registry whose capabilities
+// cannot be read bounds nothing here: its own answer will.
 func (h *handler) blobLimit(ctx context.Context, t *target) (int64, string, error) {
-	limit, bound := int64(-1), ""
-	if t.repo.Format != ociFormat {
-		n, err := format.MaxFileSize(t.repo)
-		if err != nil {
-			return 0, "", fmt.Errorf("facade: %w", err)
-		}
-		limit, bound = n, fmt.Sprintf("the maxFileSize of %s/%s", t.repo.Format, t.repo.Name)
+	limit, err := format.MaxFileSize(t.repo)
+	if err != nil {
+		return 0, "", fmt.Errorf("facade: %w", err)
 	}
+	bound := fmt.Sprintf("the maxFileSize of %s/%s", t.repo.Format, t.repo.Name)
 	p, err := h.registry(t)
 	if err != nil {
 		return 0, "", err

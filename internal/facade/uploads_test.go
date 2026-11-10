@@ -334,16 +334,16 @@ func TestUploadRowNotWritten(t *testing.T) {
 }
 
 // TestUploadMaxFileSize: a /v2 blob upload to a repo with maxFileSize 10 (U-3 of the
-// threat-model pass of #63) is 413 SIZE_INVALID as soon as a declared size would carry the blob
-// past it, and where a body of unknown length passes it; a session so refused ends. Ten bytes
-// pass, in one request or in chunks, and an oci repo is not bounded.
+// threat-model pass of #63), a raw repo and an oci one alike (#246), is 413 SIZE_INVALID as soon
+// as a declared size would carry the blob past it, and where a body of unknown length passes it,
+// counted with the bytes the session's earlier PATCHes sent; a session so refused ends. Ten bytes
+// pass, in one request or in chunks.
 func TestUploadMaxFileSize(t *testing.T) {
 	e := newEnv(t, envOptions{})
 	for _, r := range []*index.Repo{&e.raw, &e.oci} {
-		r.Policy = json.RawMessage(`{"maxFileSize":10}`) // on oci only through the index: the API refuses it
+		r.Policy = json.RawMessage(`{"maxFileSize":10}`)
 		must(t, e.st.UpdateRepo(t.Context(), r))
 	}
-	const raw = "/v2/raw/assets/docs/big.txt/blobs/uploads/"
 	eleven, ten := []byte("eleven byte"), []byte("ten bytes!")
 	noBackendSessions := func(what string) {
 		t.Helper()
@@ -351,42 +351,47 @@ func TestUploadMaxFileSize(t *testing.T) {
 			t.Errorf("%s: %d backend sessions open", what, n)
 		}
 	}
-	post := func(b []byte, length string) *httptest.ResponseRecorder {
-		return e.do(e.h, http.MethodPost, raw+"?digest="+digest.FromBytes(b).String(), bytes.NewReader(b), "Content-Length", length)
-	}
-	wantError(t, "monolithic POST of 11 bytes", post(eleven, "11"), http.StatusRequestEntityTooLarge, codeSizeInvalid)
-	wantError(t, "monolithic POST of 11 bytes, chunked", post(eleven, "-1"), http.StatusRequestEntityTooLarge, codeSizeInvalid)
-	noBackendSessions("monolithic POST")
-	wantStatus(t, "monolithic POST of 10 bytes", post(ten, "10"), http.StatusCreated)
-
-	start := func() string {
-		t.Helper()
-		rr := e.do(e.h, http.MethodPost, raw, nil)
-		wantStatus(t, "POST", rr, http.StatusAccepted)
-		return uploadID(t, rr)
-	}
-	for _, tt := range []struct{ name, method, length string }{
-		{"PATCH of 5 more", http.MethodPatch, "5"},
-		{"PATCH of 5 more, chunked", http.MethodPatch, "-1"},
-		{"PUT of 5 more", http.MethodPut, "5"},
-		{"PUT of 5 more, chunked", http.MethodPut, "-1"},
-	} {
-		id := start()
-		wantStatus(t, tt.name+": the first 6", e.do(e.h, http.MethodPatch, raw+id, bytes.NewReader(eleven[:6])), http.StatusAccepted)
-		target := raw + id
-		if tt.method == http.MethodPut {
-			target += "?digest=" + digest.FromBytes(eleven).String()
+	for _, base := range []string{"/v2/raw/assets/docs/big.txt/blobs/uploads/", uploads} {
+		post := func(b []byte, length string) *httptest.ResponseRecorder {
+			return e.do(e.h, http.MethodPost, base+"?digest="+digest.FromBytes(b).String(), bytes.NewReader(b), "Content-Length", length)
 		}
-		rr := e.do(e.h, tt.method, target, bytes.NewReader(eleven[6:]), "Content-Length", tt.length)
-		wantError(t, tt.name, rr, http.StatusRequestEntityTooLarge, codeSizeInvalid)
-		wantError(t, tt.name+": the session after it", e.do(e.h, http.MethodGet, raw+id, nil), http.StatusNotFound, codeBlobUploadUnknown)
-		noBackendSessions(tt.name)
-	}
+		wantError(t, base+" monolithic POST of 11 bytes", post(eleven, "11"), http.StatusRequestEntityTooLarge, codeSizeInvalid)
+		wantError(t, base+" monolithic POST of 11 bytes, chunked", post(eleven, "-1"), http.StatusRequestEntityTooLarge, codeSizeInvalid)
+		noBackendSessions(base + " monolithic POST")
+		wantStatus(t, base+" monolithic POST of 10 bytes", post(ten, "10"), http.StatusCreated)
 
-	id := start()
-	wantStatus(t, "PATCH of 6, chunked", e.do(e.h, http.MethodPatch, raw+id, bytes.NewReader(ten[:6]), "Content-Length", "-1"), http.StatusAccepted)
-	rr := e.do(e.h, http.MethodPut, raw+id+"?digest="+digest.FromBytes(ten).String(), bytes.NewReader(ten[6:]))
-	wantStatus(t, "PUT of the last 4", rr, http.StatusCreated)
-	wantCreated(t, "11 bytes to an oci repo", e.do(e.h, http.MethodPost, uploads+"?digest="+digest.FromBytes(eleven).String(),
-		bytes.NewReader(eleven)), digest.FromBytes(eleven))
+		start := func() string {
+			t.Helper()
+			rr := e.do(e.h, http.MethodPost, base, nil)
+			wantStatus(t, "POST", rr, http.StatusAccepted)
+			return uploadID(t, rr)
+		}
+		for _, tt := range []struct{ name, method, first, length string }{
+			{"PATCH of 5 more", http.MethodPatch, "6", "5"},
+			{"PATCH of 5 more, chunked", http.MethodPatch, "6", "-1"},
+			{"PATCH of 5 more, both chunked", http.MethodPatch, "-1", "-1"},
+			{"PUT of 5 more", http.MethodPut, "6", "5"},
+			{"PUT of 5 more, chunked", http.MethodPut, "6", "-1"},
+			{"PUT of 5 more, both chunked", http.MethodPut, "-1", "-1"},
+		} {
+			name := base + " " + tt.name
+			id := start()
+			wantStatus(t, name+": the first 6", e.do(e.h, http.MethodPatch, base+id, bytes.NewReader(eleven[:6]), "Content-Length", tt.first),
+				http.StatusAccepted)
+			target := base + id
+			if tt.method == http.MethodPut {
+				target += "?digest=" + digest.FromBytes(eleven).String()
+			}
+			rr := e.do(e.h, tt.method, target, bytes.NewReader(eleven[6:]), "Content-Length", tt.length)
+			wantError(t, name, rr, http.StatusRequestEntityTooLarge, codeSizeInvalid)
+			wantError(t, name+": the session after it", e.do(e.h, http.MethodGet, base+id, nil), http.StatusNotFound, codeBlobUploadUnknown)
+			noBackendSessions(name)
+		}
+
+		id := start()
+		wantStatus(t, base+" PATCH of 6, chunked", e.do(e.h, http.MethodPatch, base+id, bytes.NewReader(ten[:6]), "Content-Length", "-1"),
+			http.StatusAccepted)
+		rr := e.do(e.h, http.MethodPut, base+id+"?digest="+digest.FromBytes(ten).String(), bytes.NewReader(ten[6:]))
+		wantStatus(t, base+" PUT of the last 4", rr, http.StatusCreated)
+	}
 }
