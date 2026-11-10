@@ -25,7 +25,11 @@ type Repo struct {
 	Policy        json.RawMessage // maxFileSize, maven.sessionTimeout, …
 	// Upstream is a proxy repo's settings (docs/spec/proxy-and-group.md §2.2): the upstream's
 	// name, the TTLs, offline, allow and deny; nil on another kind. internal/proxy reads it.
-	Upstream  json.RawMessage
+	Upstream json.RawMessage
+	// Group is a group's settings but its members (docs/spec/proxy-and-group.md §2.3), {"merge"};
+	// nil on another kind. A group's members are group_members rows (Reader.ListGroupMembers,
+	// Writer.SetGroupMembers), its Registry is "" and its Policy nil.
+	Group     json.RawMessage
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -34,7 +38,7 @@ type Repo struct {
 const (
 	KindHosted = "hosted" // holds what was published to it
 	KindProxy  = "proxy"  // holds what it fetched from its upstream
-	KindGroup  = "group"  // holds nothing: its members, in order (#311)
+	KindGroup  = "group"  // holds nothing: its members, in order
 )
 
 // User is a row of users (control plane).
