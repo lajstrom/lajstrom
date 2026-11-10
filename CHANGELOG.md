@@ -38,6 +38,7 @@ release are drafted in [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md).
 - **Audit log** of every write and control-plane change, written in the transaction of the change.
 - **CLI:**
   - `serve`, `reindex`, `migrate`, `version`;
+  - `reindex --attach`, which names the OCI repositories of a repo on a registry without a catalog;
   - `admin` (`user`, `binding`, `token`, `repo`, `key`, `deb`);
   - `healthcheck`, for the distroless image.
 - **Operations:**

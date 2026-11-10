@@ -437,12 +437,13 @@ func (c *counting) Inspect(ctx context.Context, repo index.Repo, pkgPath, tag st
 }
 
 // wrapped is the fake registry with a catalog that can hide a repository or fail, and a
-// Resolve that can fail.
+// Resolve and a tag list that can fail.
 type wrapped struct {
 	*providertest.Fake
 	hide        string
 	failList    error
 	failResolve error
+	failTags    error
 }
 
 func (w *wrapped) ListRepositories(ctx context.Context, prefix string) ([]string, error) {
@@ -468,6 +469,13 @@ func (r *resolving) Resolve(ctx context.Context, reference string) (ocispec.Desc
 		return ocispec.Descriptor{}, r.w.failResolve
 	}
 	return r.Repository.Resolve(ctx, reference)
+}
+
+func (r *resolving) Tags(ctx context.Context, last string, fn func(tags []string) error) error {
+	if r.w.failTags != nil {
+		return r.w.failTags
+	}
+	return r.Repository.Tags(ctx, last, fn)
 }
 
 func must(t *testing.T, err error) {

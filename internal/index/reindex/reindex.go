@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -112,6 +113,12 @@ type Request struct {
 	Source string
 	// Principal is the canonical form of who started the run.
 	Principal string
+	// Repositories are OCI repositories of Repo that the run reads besides those the registry
+	// lists: the first attach of a prefix on a registry without a catalog, whose oci_repos has
+	// no row of them yet (#37). They are names below the registry's instance prefix and under
+	// the repo's path, as oci_repos.path holds them. One the run reads is recorded in oci_repos,
+	// so later runs and the reconcile loop find it without the list. They need Repo.
+	Repositories []string
 }
 
 // errTakenOver is the cause of a run whose row another start closed as abandoned.
@@ -119,9 +126,12 @@ var errTakenOver = errors.New("reindex: the run was taken over: its heartbeat wa
 
 // Start takes the lock of the run's scope (index.Store.StartReindexRun) and writes the audit
 // event repo.reindex, except for a run of the reconcile loop, which audits what it changed
-// instead. A run that overlaps is a *index.ReindexConflictError. The returned run is what Run
-// takes.
+// instead. A run that overlaps is a *index.ReindexConflictError; Repositories that are not the
+// repo's are refused before. The returned run is what Run takes.
 func (w *Worker) Start(ctx context.Context, req Request) (*index.ReindexRun, error) {
+	if err := checkRepositories(req); err != nil {
+		return nil, err
+	}
 	run := index.ReindexRun{Source: req.Source, Principal: req.Principal, Replica: replica(),
 		Options: index.ReindexOptions{Prune: req.Prune, Verify: req.Verify}, StartedAt: w.now()}
 	if req.Repo != nil {
@@ -138,9 +148,32 @@ func (w *Worker) Start(ctx context.Context, req Request) (*index.ReindexRun, err
 	if req.Repo != nil {
 		ev.Repo = req.Repo.Format + "/" + req.Repo.Name
 	}
-	ev.Details, _ = json.Marshal(map[string]any{"run": run.ID, "source": req.Source, "prune": req.Prune, "verify": req.Verify})
+	details := map[string]any{"run": run.ID, "source": req.Source, "prune": req.Prune, "verify": req.Verify}
+	if len(req.Repositories) > 0 {
+		details["attached"] = len(req.Repositories)
+	}
+	ev.Details, _ = json.Marshal(details)
 	w.writeAudit(ctx, ev)
 	return &run, nil
+}
+
+// checkRepositories refuses Request.Repositories without a Repo, and a name that is not below
+// the repo's path.
+func checkRepositories(req Request) error {
+	if len(req.Repositories) == 0 {
+		return nil
+	}
+	if req.Repo == nil {
+		return errors.New("reindex: the OCI repositories to attach need the repo they belong to")
+	}
+	base := repoBase(*req.Repo) + "/"
+	for _, name := range req.Repositories {
+		if !strings.HasPrefix(name, base) || name == base {
+			return fmt.Errorf("reindex: %q is not an OCI repository of %s/%s: its name must start with %s",
+				name, req.Repo.Format, req.Repo.Name, base)
+		}
+	}
+	return nil
 }
 
 // writeAudit records ev with the audit writer, or in the index without one; a failure is logged.
