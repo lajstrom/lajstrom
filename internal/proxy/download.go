@@ -198,12 +198,16 @@ func (c *Core) stale(ctx context.Context, p *proxied, row *index.ProxyMeta) {
 }
 
 // reject writes the audit row proxy.reject of a fetch refused for its bytes (rbac.md §7): the
-// principal of the request, the client's address, and the reason with what details says.
+// principal of the request, the client's address, the group it came through, and the reason
+// with what details says.
 func (c *Core) reject(ctx context.Context, p *proxied, a artifact, asked, reason string, details map[string]any) {
 	countFetch(p, fetchRejected)
 	details["upstream"], details["url"], details["reason"] = p.settings.Upstream, asked, reason
 	if id := server.RequestID(ctx); id != "" {
 		details["requestId"] = id
+	}
+	if group, ok := format.ViaFrom(ctx); ok {
+		details["via"] = group.Format + "/" + group.Name
 	}
 	ev := index.AuditEvent{At: c.o.Now(), Principal: auth.PrincipalFrom(ctx).String(), Action: "proxy.reject", Repo: p.id(),
 		Subject: a.subject(), IP: server.ClientAddr(ctx)}

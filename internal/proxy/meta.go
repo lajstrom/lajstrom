@@ -30,8 +30,12 @@ const (
 // row has expired (§4.2), rendered with the plugin's RenderProxy and cached in index_cache under
 // the scope of the name's key. A name the upstream does not have is index.ErrNotFound. When the
 // upstream fails, the row is used however old; without one, the versions the repo holds are
-// rendered, and without those the upstream's failure is the error (§6).
+// rendered, and without those the upstream's failure is the error (§6). A group's document is
+// its members' merged (groupDocument).
 func (c *Core) Document(ctx context.Context, repo index.Repo, name, kind string) (*index.Cache, error) {
+	if repo.Kind == index.KindGroup {
+		return c.groupDocument(ctx, repo, name, kind)
+	}
 	p, err := c.resolve(repo)
 	if err != nil {
 		return nil, err

@@ -31,6 +31,20 @@ type accounts struct {
 	*auth.Tokens
 }
 
+// lookupIn returns a lookup of plugins by name, as format.Lookup is of the registered ones: the
+// core of proxy and group repos renders a hosted member's documents with the plugin serve
+// mounts, which has server.externalURL, so that it caches what the member's own routes do.
+func lookupIn(plugins []format.Plugin) func(name string) (format.Plugin, bool) {
+	byName := make(map[string]format.Plugin, len(plugins))
+	for _, p := range plugins {
+		byName[p.Name()] = p
+	}
+	return func(name string) (format.Plugin, bool) {
+		p, ok := byName[name]
+		return p, ok
+	}
+}
+
 // servedPlugins returns format.All(), each plugin that renders absolute URLs given externalURL
 // and each that logs users in given a, for serve to mount. Ingest and reindex keep
 // format.Lookup: Build and Validate render nothing.
