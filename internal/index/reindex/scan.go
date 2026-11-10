@@ -168,6 +168,7 @@ func (s *scan) ociRepo(ctx context.Context, name string) {
 		return
 	}
 	cache := &manifests{byDigest: map[digest.Digest][]byte{}}
+	tags, journal := s.splitJournal(tags)
 	var wg sync.WaitGroup
 	for _, tag := range tags {
 		if s.stopped(ctx) {
@@ -180,6 +181,9 @@ func (s *scan) ociRepo(ctx context.Context, name string) {
 		})
 	}
 	wg.Wait()
+	if s.repo.Format == npmFormat && pkgPath != "" && !s.stopped(ctx) {
+		s.journal(ctx, rr, cache, pkgPath, journal)
+	}
 }
 
 // manifests caches the manifests of one OCI repository by digest: two tags may name one.
