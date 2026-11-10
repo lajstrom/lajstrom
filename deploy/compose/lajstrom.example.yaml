@@ -47,6 +47,8 @@ registries:
     timeout: 30s                      # one request up to its response headers; a blob streams as long as it takes
     retries: 3                        # retries of a failed request (429, 5xx, timeouts); negative: none
     capabilities: {}                  # override what probing finds, e.g. {catalog: false, deleteManifest: false}
+    uploads:
+      spoolUnknownLength: false       # Gitea, Forgejo, JFrog: spool a /v2 chunk of unknown length after the first to $TMPDIR
   - name: second                      # distribution from the dev stack, for repos created with --registry second
     type: generic
     url: "http://localhost:5001"      # no referrers API: Lajstrom lists referrers through the sha256-<digest> tag schema

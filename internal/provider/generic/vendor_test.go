@@ -188,6 +188,7 @@ func TestCapabilitiesVendor(t *testing.T) {
 		want   provider.Capabilities // the defaults when zero
 		quirks quirks
 		warn   bool
+		hint   bool // the hint at uploads.spoolUnknownLength
 	}{
 		{name: "distribution", setup: headers(plainV2, true), vendor: vendorUnknown},
 		{name: "GitLab A", setup: headers(gitLabA, true), vendor: vendorGitLab},
@@ -204,8 +205,12 @@ func TestCapabilitiesVendor(t *testing.T) {
 			edit: func(c *config.Registry) { c.Capabilities.Referrers = new(false) },
 		},
 		{name: "Nexus, oci format", setup: headers(nexusV2, true), vendor: vendorNexus, quirks: quirks{wholeBlobs: true}},
-		{name: "Gitea", setup: challenge("bearer", "Bearer", `,service="container_registry",scope="*"`, false), vendor: vendorGitea, want: noReferrers},
-		{name: "JFrog", setup: headers(jfrogV2, true), vendor: vendorJFrog, quirks: quirks{blobExistsByGET: true}},
+		{name: "Gitea", setup: challenge("bearer", "Bearer", `,service="container_registry",scope="*"`, false), vendor: vendorGitea, want: noReferrers, hint: true},
+		{
+			name: "Gitea, the spool on", setup: challenge("bearer", "Bearer", `,service="container_registry",scope="*"`, false), vendor: vendorGitea, want: noReferrers,
+			edit: func(c *config.Registry) { c.Uploads.SpoolUnknownLength = true },
+		},
+		{name: "JFrog", setup: headers(jfrogV2, true), vendor: vendorJFrog, quirks: quirks{blobExistsByGET: true}, hint: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -234,6 +239,9 @@ func TestCapabilitiesVendor(t *testing.T) {
 			}
 			logs := buf.String()
 			checkProbeLog(t, logs, tt.vendor, tt.quirks != (quirks{}), tt.warn)
+			if hinted := strings.Contains(logs, `msg="hint: the registry refuses a /v2 chunk of unknown length`); hinted != tt.hint {
+				t.Errorf("the hint at uploads.spoolUnknownLength logged: %v, want %v\n%s", hinted, tt.hint, logs)
+			}
 			if _, err := p.Capabilities(ctx); err != nil || buf.String() != logs {
 				t.Errorf("the second Capabilities = %v, or logged again", err)
 			}

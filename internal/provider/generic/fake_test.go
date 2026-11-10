@@ -41,6 +41,7 @@ type fakeRegistry struct {
 	catalogMode    string // "": paginate repos; "repeat": the first page again and again; "endless": a new page every time
 	redirect       string // answer blob GETs and HEADs with 307 to redirect + "/" + digest
 	stateful       bool   // upload Locations are absolute and carry a _state that changes with every chunk and must come back, as distribution's
+	refuseStreamed int    // answer a chunk without a known length and Content-Range into a session that holds bytes with this status, as Gitea (400) and JFrog (416); 0 takes it
 	authMode       string // "", "basic" or "bearer"
 	challengeScope string // the scope parameter of the bearer challenge; Gitea sends "*" whatever the request
 	user, pass     string // the credentials auth accepts
@@ -414,8 +415,14 @@ func (f *fakeRegistry) startUpload(w http.ResponseWriter, r *http.Request, repo 
 }
 
 // appendChunk appends the body to the session: at the session's end when the request has a
-// Content-Range, which must start there (else 416). The caller holds f.mu.
+// Content-Range, which must start there (else 416). With refuseStreamed, a chunk of unknown
+// length after the first write is refused. The caller holds f.mu.
 func (f *fakeRegistry) appendChunk(w http.ResponseWriter, r *http.Request, up *fakeUpload) bool {
+	known := r.ContentLength >= 0 && r.Header.Get("Content-Range") != ""
+	if f.refuseStreamed != 0 && !known && r.ContentLength != 0 && len(up.data) > 0 {
+		writeErr(w, f.refuseStreamed, "BLOB_UPLOAD_INVALID", "Stream uploads after first write are not allowed")
+		return false
+	}
 	if cr := r.Header.Get("Content-Range"); cr != "" {
 		first, _, _ := strings.Cut(cr, "-")
 		if n, err := strconv.Atoi(first); err != nil || n != len(up.data) {

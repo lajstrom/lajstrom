@@ -274,7 +274,7 @@ func TestIntegration(t *testing.T) {
 
 // integrationProvider returns a Provider for the registry of LAJSTROM_TEST_REGISTRY, and its
 // configuration; it skips the test when the variable is not set.
-func integrationProvider(_ context.Context, t *testing.T) (*Provider, config.Registry) {
+func integrationProvider(_ context.Context, t *testing.T, edit ...func(*config.Registry)) (*Provider, config.Registry) {
 	t.Helper()
 	addr := os.Getenv("LAJSTROM_TEST_REGISTRY")
 	if addr == "" {
@@ -293,6 +293,11 @@ func integrationProvider(_ context.Context, t *testing.T) (*Provider, config.Reg
 			Username: os.Getenv("LAJSTROM_TEST_REGISTRY_USERNAME"),
 			Password: os.Getenv("LAJSTROM_TEST_REGISTRY_PASSWORD"),
 		},
+		// Gitea and JFrog need it (#425).
+		Uploads: config.RegistryUploads{SpoolUnknownLength: os.Getenv("LAJSTROM_TEST_REGISTRY_SPOOL_UNKNOWN_LENGTH") == "1"},
+	}
+	for _, e := range edit {
+		e(&cfg)
 	}
 	log := slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	p, err := New(cfg, log)

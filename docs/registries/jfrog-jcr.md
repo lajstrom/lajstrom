@@ -194,7 +194,10 @@ test log, with the prefix). On main it said `catalog=true`, and every `ListRepos
    request's own scopes as well, and with it the facade's uploads pass on JCR but for item 2.
 6. Optional: a chunk of unknown size after the first is 416 without `Content-Range`. The
    provider sends one so (`AppendBlobChunk(…, -1)`); docker sends a single streamed `PATCH`,
-   which JCR takes. Spooling such a chunk to know its size would do.
+   which JCR takes. Spooling such a chunk to know its size would do. **Done in #425, behind a
+   flag:** `registries[].uploads.spoolUnknownLength: true` spools it and sends it with
+   `Content-Range`; off by default, with a hint at start (`vendor=jfrog`). The unit tests answer
+   416 as JCR did; not run against JCR again.
 7. Optional: name the vendor. Every answer of JCR, the 200 of `GET /v2/` included, has
    `X-Jfrog-Version: Artifactory/7.161.26 86126900` and `X-Artifactory-Id`; a `jfrog` vendor
    could log what items 2 to 4 cost, and list repositories through `/v2/<repo-key>/_catalog`

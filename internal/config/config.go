@@ -114,6 +114,8 @@ type Registry struct {
 	Retries int `yaml:"retries"`
 	// Capabilities overrides what probing finds, for backends that lie or cannot be probed.
 	Capabilities CapabilityOverrides `yaml:"capabilities"`
+	// Uploads changes how the chunks of a /v2 upload are sent to the registry.
+	Uploads RegistryUploads `yaml:"uploads"`
 	// ECR configures a registry of type ecr; it must stay empty for the other types.
 	ECR ECR `yaml:"ecr"`
 }
@@ -173,6 +175,17 @@ type CapabilityOverrides struct {
 	BlobRedirect *bool `yaml:"blobRedirect"`
 	// MaxBlobSize is the largest blob the backend accepts, in bytes; 0 leaves it unset.
 	MaxBlobSize int64 `yaml:"maxBlobSize"`
+}
+
+// RegistryUploads is how the provider sends the chunks of a /v2 upload session to a registry
+// (docs/configuration.md, Uploads).
+type RegistryUploads struct {
+	// SpoolUnknownLength spools a chunk of unknown length into a session that already holds
+	// bytes to a temporary file for its one request, to send it with Content-Range, for the
+	// registries that refuse it streamed: Gitea and Forgejo (400), JFrog (416). Off by default:
+	// Lajstrom runs on ephemeral disks, and nothing on /v2 writes to disk unless the operator
+	// asks for it (#425).
+	SpoolUnknownLength bool `yaml:"spoolUnknownLength"`
 }
 
 // RegistryAuth holds the credentials Lajstrom uses towards a registry. The password never

@@ -49,8 +49,9 @@ const (
 // A capability that the vendor table or the configuration sets is not probed. What the vendor
 // table decides from the probe's answer (afterProbe) comes before the configuration's overrides,
 // with the vendor's quirks: the blob reads of Nexus's oci format and JFrog's blob HEAD. The
-// first successful probe logs the result and the vendor at info, and warns about a GitLab
-// registry with its metadata database, which refuses artifact types it does not know.
+// first successful probe logs the result and the vendor at info, hints at
+// registries[].uploads.spoolUnknownLength for Gitea and JFrog when it is off, and warns about a
+// GitLab registry with its metadata database, which refuses artifact types it does not know.
 func (p *Provider) Capabilities(ctx context.Context) (provider.Capabilities, error) {
 	c, err := p.probeOnce(ctx)
 	if err != nil {
@@ -125,6 +126,11 @@ func (p *Provider) probeOnce(ctx context.Context) (provider.Capabilities, error)
 	if q != (quirks{}) {
 		p.log.InfoContext(ctx, "registry needs workarounds", "vendor", string(v),
 			"blobsReadWhole", q.wholeBlobs, "blobExistsByGET", q.blobExistsByGET)
+	}
+	if hintSpool(v) && !p.spoolUnknown {
+		p.log.InfoContext(ctx, "hint: the registry refuses a /v2 chunk of unknown length after the first write, "+
+			"and such an upload fails with its 4xx; registries[].uploads.spoolUnknownLength spools that chunk to $TMPDIR",
+			"vendor", string(v))
 	}
 	if v == vendorGitLab && id.gitLabDatabase() {
 		p.log.WarnContext(ctx, "GitLab registry with its metadata database: it refuses a manifest whose artifactType or config media type it does not know, every one Lajstrom writes, unless REGISTRY_FF_DYNAMIC_MEDIA_TYPES is on or the types are known to it")
