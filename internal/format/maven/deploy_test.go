@@ -311,6 +311,30 @@ func TestDeployPrincipals(t *testing.T) {
 	}
 }
 
+// TestDeploySpelling: after com.example:lib-core 1.2.0, a file of Com.Example:lib-core, whose
+// package path is the same, is 409 naming com.example:lib-core, under the same version and
+// under another; it is not stored and opens no session (#244).
+func TestDeploySpelling(t *testing.T) {
+	e := newDeployEnv(t, nil)
+	if got := e.deploy("mvn", release("1.2.0", ""), metadataDoc("1.2.0")); got != http.StatusCreated {
+		t.Fatalf("the deploy of com.example:lib-core: %d, want 201", got)
+	}
+	pushes := len(e.fake.Pushes())
+	for _, version := range []string{"1.2.0", "1.3.0"} {
+		b, info := testutil.Jar(testutil.JarOptions{GroupID: "Com.Example", Version: version})
+		rr := e.put("alice", info.Path, b)
+		if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "Com.Example:lib-core exists as com.example:lib-core") {
+			t.Errorf("PUT %s: %d %s, want 409 naming com.example:lib-core", info.Path, rr.Code, rr.Body)
+		}
+		if _, err := e.st.GetSession(t.Context(), e.repo.ID, "Com.Example:lib-core:"+version); err == nil {
+			t.Errorf("a session of Com.Example:lib-core %s was opened", version)
+		}
+	}
+	if n := len(e.fake.Pushes()) - pushes; n != 0 {
+		t.Errorf("%d blobs of the refused spelling pushed", n)
+	}
+}
+
 // readers lets the users it lists read every repo, and nobody write.
 type readers map[string]bool
 

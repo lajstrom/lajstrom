@@ -144,9 +144,8 @@ func (h *handlers) put(w http.ResponseWriter, r *http.Request) {
 //
 // The check runs here and not in Build, whose signature (format.Plugin) has no index, and before
 // the spool, so that a refused upload reads no byte of the body. Two spellings uploaded at once
-// both pass it; the unique index on packages (repo_id, name_oci) settles that race in the
-// pipeline, whose UpsertPackage answers the loser ErrConflict after its manifest is in the
-// registry, for reindex (#29) to report.
+// both pass it; the pipeline settles that race under its claim on the package path, and the
+// loser gets ErrConflict before its manifest is pushed (#244).
 func checkSpelling(ctx context.Context, st index.Reader, repo index.Repo, p string) error {
 	pkgPath, _, err := repoPath(repo, p)
 	if err != nil {

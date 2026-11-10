@@ -217,9 +217,9 @@ func bytesBlob(desc ocispec.Descriptor, b []byte) format.BlobSource {
 // metadata layer. Errors wrap format.ErrInvalid, except a failure to fetch the metadata layer.
 //
 // The rule that a raw path is unique without regard to case does not run here: Validate gets a
-// BlobFetcher, not the index. On the facade path the unique index on packages (repo_id,
-// name_oci) refuses the second spelling when ingest confirms the push (409); the manifest stays
-// in the registry, and reindex (#29) reports it. The PUT route checks before the body is read.
+// BlobFetcher, not the index. On the facade path ingest refuses the second spelling under its
+// claim on the package path, before the manifest is pushed (409, #244). The PUT route checks
+// before the body is read.
 func (Plugin) Validate(ctx context.Context, repo index.Repo, m ocispec.Manifest, fetch format.BlobFetcher) (*format.Entry, error) {
 	parsed, err := profile.Validate(m)
 	if err != nil {

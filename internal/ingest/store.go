@@ -20,21 +20,27 @@ import (
 // rolled back with it and nothing is written.
 var errExisted = errors.New("ingest: the tag already holds this manifest")
 
-// claimTag claims pub's tag in one transaction and reports whether the index already has the
-// manifest under it. The claim comes first: a concurrent claim of the tag holds the insert
-// until it commits, so the version read next sees the other publish's outcome. A version with
-// another digest, or a fresh claim of another digest, is the *index.TagConflictError, which
-// is returned as it is; for an Upload (repeatOnFiles) a version with the same file layers is
-// the repeat instead, and pub.existing names its manifest.
+// claimTag claims pub's package path and tag in one transaction and reports whether the index
+// already has the manifest under the tag. The claims come first, the package path's before the
+// tag's (claimPath): a concurrent claim of either holds the insert until it commits, so the
+// package and the version read next see the other publish's outcome. Both are keyed by the
+// package path, which names the OCI repository (docs/spec/index-schema.md, Coordination). A
+// package of another spelling, or a fresh claim of another spelling, is ErrConflict naming it
+// (#244); a version with another digest, or a fresh claim of another digest, is the
+// *index.TagConflictError. Both are returned as they are. For an Upload (repeatOnFiles) a
+// version with the same file layers is the repeat instead, and pub.existing names its manifest.
 func (p *Pipeline) claimTag(ctx context.Context, pub *publish) (existed bool, err error) {
 	now := p.now()
-	pub.claim = index.TagClaim{RepoID: pub.repo.ID, Package: pub.parsed.Annotations.Name, Tag: pub.tag,
+	pub.claim = index.TagClaim{RepoID: pub.repo.ID, Package: pub.pkgPath, Tag: pub.tag,
 		Digest: pub.digest, Principal: pub.principal.String(), ClaimedAt: now}
 	err = p.index.Tx(ctx, func(w index.Writer) error {
+		if err := p.claimPath(ctx, w, pub, now); err != nil {
+			return err
+		}
 		if err := w.ClaimTag(ctx, &pub.claim, now.Add(-p.claimTTL)); err != nil {
 			return err
 		}
-		v, err := versionByTag(ctx, w, pub.repo.ID, pub.claim.Package, pub.tag)
+		v, err := versionByTag(ctx, w, pub.repo.ID, pub.pkgPath, pub.parsed.Annotations.Name, pub.tag)
 		switch {
 		case err != nil:
 			return err
@@ -55,26 +61,68 @@ func (p *Pipeline) claimTag(ctx context.Context, pub *publish) (existed bool, er
 		}
 		return &index.TagConflictError{Tag: pub.tag, Existing: v.Digest}
 	})
-	var conflict *index.TagConflictError
 	switch {
 	case err == nil:
 		return false, nil
 	case errors.Is(err, errExisted):
 		return true, nil
-	case errors.As(err, &conflict):
+	case errors.Is(err, ErrConflict):
 		return false, err
 	}
 	return false, fmt.Errorf("ingest: claim %s:%s: %w", pub.name, pub.tag, err)
 }
 
-// versionByTag returns the version of package name in a repo that has tag, or nil when there is
-// none.
-func versionByTag(ctx context.Context, r index.Reader, repoID int64, name, tag string) (*index.Version, error) {
-	pkg, err := r.GetPackage(ctx, repoID, name)
-	if errors.Is(err, index.ErrNotFound) {
-		return nil, nil
+// pathTag is the tag of the claim on a package path; an OCI tag is never empty.
+const pathTag = ""
+
+// claimPath claims pub's package path on w for its spelling: the claim with pathTag and the
+// digest of lajstrom.name, which the publishes of one spelling share. A fresh claim of another
+// spelling is ErrConflict. A stale claim of the spelling, left by a publish that stopped, is
+// made again rather than shared, so that another spelling cannot take it over while pub runs.
+func (p *Pipeline) claimPath(ctx context.Context, w index.Writer, pub *publish, now time.Time) error {
+	name, stale := pub.parsed.Annotations.Name, now.Add(-p.claimTTL)
+	claim := func() (index.TagClaim, error) {
+		c := index.TagClaim{RepoID: pub.repo.ID, Package: pub.pkgPath, Tag: pathTag, Digest: digest.FromString(name),
+			Principal: pub.principal.String(), ClaimedAt: now}
+		return c, w.ClaimTag(ctx, &c, stale)
 	}
-	if err != nil {
+	c, err := claim()
+	if err == nil && c.ClaimedAt.Before(stale) {
+		if err = w.ReleaseTagClaim(ctx, c.ID); err == nil {
+			c, err = claim()
+		}
+	}
+	var conflict *index.TagConflictError
+	if errors.As(err, &conflict) {
+		return fmt.Errorf("%w: %q: another spelling of the name is being published to the package path %s; "+
+			"names that differ only in case share it, and the first spelling published holds it", ErrConflict, name, pub.pkgPath)
+	}
+	pub.pathClaim = c.ID
+	return err
+}
+
+// packageOf returns the package of a repo whose package path is pkgPath, or nil when there is
+// none. A package of another name there is ErrConflict naming it: names that differ only in
+// case share the package path, and the first spelling published holds it (#244).
+func packageOf(ctx context.Context, r index.Reader, repoID int64, pkgPath, name string) (*index.Package, error) {
+	pkg, err := r.GetPackageByNameOCI(ctx, repoID, pkgPath)
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	case pkg.Name != name:
+		return nil, fmt.Errorf("%w: %q exists as %q: names that differ only in case share the package path %s, "+
+			"which the first spelling published holds", ErrConflict, name, pkg.Name, pkgPath)
+	}
+	return pkg, nil
+}
+
+// versionByTag returns the version that has tag in the package of name at pkgPath (packageOf),
+// or nil when there is none.
+func versionByTag(ctx context.Context, r index.Reader, repoID int64, pkgPath, name, tag string) (*index.Version, error) {
+	pkg, err := packageOf(ctx, r, repoID, pkgPath, name)
+	if err != nil || pkg == nil {
 		return nil, err
 	}
 	v, err := r.GetVersionByTag(ctx, pkg.ID, tag)
@@ -88,14 +136,15 @@ func versionByTag(ctx context.Context, r index.Reader, repoID int64, name, tag s
 // which Upload treats as the idempotent repeat: two builds of the same files differ by
 // org.opencontainers.image.created, so the digest cannot tell a retry from a new publish and
 // the files can. It runs before the blobs are pushed, so a repeat touches the registry not at
-// all; claimTag applies the rule again under the claim. A manifest that fails the profile is
-// left to the pipeline, which reports why.
-func (p *Pipeline) repeat(ctx context.Context, repo index.Repo, built *format.Built) (*index.Version, error) {
+// all, and neither does an upload of another spelling than the package's at pkgPath, which is
+// ErrConflict; claimTag applies both rules again under the claims. A manifest that fails the
+// profile is left to the pipeline, which reports why.
+func (p *Pipeline) repeat(ctx context.Context, repo index.Repo, pkgPath string, built *format.Built) (*index.Version, error) {
 	parsed, err := profile.Validate(built.Manifest)
 	if err != nil {
 		return nil, nil //nolint:nilerr // not a repeat; validate reports the error
 	}
-	v, err := versionByTag(ctx, p.index, repo.ID, parsed.Annotations.Name, built.Tag)
+	v, err := versionByTag(ctx, p.index, repo.ID, pkgPath, parsed.Annotations.Name, built.Tag)
 	if err != nil {
 		return nil, fmt.Errorf("ingest: version %s:%s: %w", built.RepoPath, built.Tag, err)
 	}
@@ -247,7 +296,7 @@ func (p *Pipeline) writeRows(ctx context.Context, w index.Writer, pub *publish, 
 	v, err := w.GetVersionByTag(ctx, pkg.ID, pub.tag)
 	switch {
 	case err == nil && v.Digest == pub.digest:
-		return true, releaseClaim(ctx, w, pub.claim.ID)
+		return true, pub.releaseClaims(ctx, w)
 	case err != nil && !errors.Is(err, index.ErrNotFound):
 		return false, err
 	}
@@ -264,14 +313,17 @@ func (p *Pipeline) writeRows(ctx context.Context, w index.Writer, pub *publish, 
 			return false, err
 		}
 	}
-	return false, releaseClaim(ctx, w, pub.claim.ID)
+	return false, pub.releaseClaims(ctx, w)
 }
 
-// releaseClaim deletes a claim on w; one that is gone already (released by a replica that
-// shared it) is fine.
-func releaseClaim(ctx context.Context, w index.Writer, id int64) error {
-	if err := w.ReleaseTagClaim(ctx, id); err != nil && !errors.Is(err, index.ErrNotFound) {
-		return err
+// releaseClaims deletes pub's claims on its tag and on its package path on w, in the
+// transaction that writes the package row, which holds the package path from then on. A claim
+// that is gone already (released by a publish that shared it) is fine.
+func (pub *publish) releaseClaims(ctx context.Context, w index.Writer) error {
+	for _, id := range []int64{pub.claim.ID, pub.pathClaim} {
+		if err := w.ReleaseTagClaim(ctx, id); err != nil && !errors.Is(err, index.ErrNotFound) {
+			return err
+		}
 	}
 	return nil
 }

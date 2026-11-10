@@ -158,8 +158,8 @@ func (h *handler) checkLayers(ctx context.Context, t *target, blobs []ocispec.De
 //	ingest.ErrInvalid           400 MANIFEST_INVALID, the rule that failed in detail
 //	*index.TagConflictError     409 TAG_INVALID, the digest the tag holds in the message and in
 //	                            detail.existing
-//	ingest.ErrConflict          409 TAG_INVALID with the conflict's message (a raw path that
-//	                            another spelling holds, #97)
+//	ingest.ErrConflict          409 TAG_INVALID with the conflict's message (a package path
+//	                            that another spelling holds or is being published to, #244)
 //	format.ErrUnsupported       501 UNSUPPORTED
 //	provider.ErrUnauthorized    502 (the backend refused Lajstrom's credentials)
 //	anything else               500, logged with the request id

@@ -94,7 +94,7 @@ type Reader interface {
 
 	// Coordination.
 
-	// GetTagClaim returns the claim on tag of package pkg (format spelling) in a repo.
+	// GetTagClaim returns the claim on tag of the package path pkg (NameOCI) in a repo.
 	GetTagClaim(ctx context.Context, repoID int64, pkg, tag string) (*TagClaim, error)
 	// GetReindexRun returns the reindex run with the given id.
 	GetReindexRun(ctx context.Context, id int64) (*ReindexRun, error)

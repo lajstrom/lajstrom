@@ -97,14 +97,14 @@ type Session struct {
 
 // TagClaim is a row of tag_claims (coordination, neither control plane nor derived): the lock
 // a publish holds on a tag from before the registry write until its index rows are written.
-// It serialises the writers of one tag across replicas (docs/spec/index-schema.md,
-// Coordination).
+// It serialises the writers of one tag across replicas; the claim on a package path, with the
+// tag "", the writers of its spellings (docs/spec/index-schema.md, Coordination).
 type TagClaim struct {
 	ID        int64
 	RepoID    int64
-	Package   string        // the format's spelling (lajstrom.name)
-	Tag       string        // the OCI tag being published
-	Digest    digest.Digest // manifest digest being published
+	Package   string        // the package path (Package.NameOCI)
+	Tag       string        // the OCI tag being published; "" on a package path
+	Digest    digest.Digest // manifest digest being published; on a package path, of the spelling
 	Principal string        // canonical form of the principal that publishes
 	ClaimedAt time.Time
 }

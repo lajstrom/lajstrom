@@ -126,17 +126,20 @@ type Result struct {
 //  2. check that every layer exists in the backend (the empty config is pushed when missing);
 //  3. run the plugin's Validate with a BlobFetcher backed by the provider, limited to the
 //     blobs the manifest names;
-//  4. claim the tag in the index (docs/spec/index-schema.md, Coordination): another digest
+//  4. claim the package path and the tag in the index (docs/spec/index-schema.md,
+//     Coordination): a package of another spelling of the name at the package path, or a
+//     fresh claim of another spelling, is ErrConflict naming it (#244); another digest
 //     already confirmed under the tag, or a fresh claim of another digest, is ErrConflict;
 //     the same digest confirmed is Existed and nothing is written;
 //  5. check the tag in the backend (another digest there is ErrConflict), then PUT the
 //     manifest with its tag in one request (provider.Repository.PushReference); a failure
-//     releases the claim;
+//     releases the claim on the tag;
 //  6. confirm in one index transaction, only after the registry accepted the manifest:
 //     package, version and files, the OCI repository, the invalidated index_cache, the audit
-//     event, and the claim released. When this fails the manifest stays for reindex to pick
+//     event, and both claims released. When this fails the manifest stays for reindex to pick
 //     up and the error is a plain one (500), unless the index refused a conflict: the tag
-//     taken meanwhile, or the package path held by another spelling of the name (#97).
+//     taken meanwhile, or the package path held by another spelling of the name that reindex
+//     found meanwhile (#97).
 //
 // Errors wrap ErrInvalid (steps 1 to 3), ErrConflict (steps 4 to 6, with an
 // *index.TagConflictError naming the existing digest when the conflict is a tag and the digest
@@ -162,7 +165,8 @@ func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag str
 // An upload of the same files under a tag that holds them already is the idempotent repeat,
 // whatever org.opencontainers.image.created the new build carries: nothing is written, the
 // manifest in the registry stays the first, and Published.Digest is its digest. Other files
-// under the tag are ErrConflict.
+// under the tag are ErrConflict, and so is another spelling of the name of the package at the
+// package path, found before any blob is pushed.
 func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload, principal auth.Principal) (_ *format.Published, err error) {
 	existed := false
 	defer func() { count(repo.Format, existed, err) }()
@@ -178,7 +182,7 @@ func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload
 	if !ok || pkgPath == "" {
 		return nil, fmt.Errorf("ingest: the %s plugin built %q, which is not a package path below %s", repo.Format, built.RepoPath, repoBase(repo))
 	}
-	if v, err := p.repeat(ctx, repo, built); err != nil {
+	if v, err := p.repeat(ctx, repo, pkgPath, built); err != nil {
 		return nil, err
 	} else if v != nil {
 		p.log.InfoContext(ctx, "ingest: the tag already holds these files; nothing written", "repo", repo.Format+"/"+repo.Name,
@@ -240,7 +244,10 @@ type publish struct {
 	parsed   *profile.Parsed // profile.Validate of manifest
 	entry    *format.Entry   // Plugin.Validate of manifest
 	metadata json.RawMessage // for versions.metadata; nil when absent or too large
-	claim    index.TagClaim
+	claim    index.TagClaim  // the claim on the tag
+	// pathClaim is the id of the claim on the package path, which the publishes of one
+	// spelling share: confirm releases it, a failure leaves it to go stale (claimPath).
+	pathClaim int64
 
 	repeatOnFiles bool          // Upload: the same file layers under the tag are the idempotent repeat
 	existing      digest.Digest // the manifest the tag holds, when the publish is a repeat of it
