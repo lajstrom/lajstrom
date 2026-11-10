@@ -44,7 +44,8 @@ type Referrer struct {
 // the manifest has a subject, the push, which also rewrites the sha256-<hex> index of the
 // subject, runs under the referrers lock of the index (Store.WithReferrersLock). After the push
 // one audit event is written: a push by principal whose subject is the subject's digest, with
-// the referrer's kind and artifact type in the details; a repeat writes another. Errors wrap
+// the client address, and the referrer's kind and artifact type and the request id in the
+// details; a repeat writes another. Errors wrap
 // ErrInvalid (the checks) or ErrConflict (a tag the backend will not re-point).
 func (p *Pipeline) PutReferrer(ctx context.Context, repo index.Repo, r Referrer, principal auth.Principal) (digest.Digest, error) {
 	m, err := parseReferrer(r)
@@ -155,9 +156,9 @@ func (p *Pipeline) checkReferrer(ctx context.Context, prov provider.Provider, na
 // audit.Writer when there is one, else to the index. The referrer is stored whatever happens
 // here, so a failure is logged.
 func (p *Pipeline) auditReferrer(ctx context.Context, repo index.Repo, r Referrer, kind, artifactType string, principal auth.Principal) {
-	details, _ := json.Marshal(map[string]string{"kind": kind, "artifactType": artifactType}) // strings always marshal
 	ev := index.AuditEvent{At: p.now(), Principal: principal.String(), Action: "push", Repo: repo.Format + "/" + repo.Name,
-		Subject: r.Subject.String(), Digest: r.Desc.Digest, Details: details}
+		Subject: r.Subject.String(), Digest: r.Desc.Digest}
+	withOrigin(ctx, &ev, map[string]any{"kind": kind, "artifactType": artifactType})
 	var err error
 	if p.audit != nil {
 		err = p.audit.Write(ctx, ev)

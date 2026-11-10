@@ -41,8 +41,9 @@ import (
 //  4. For a version, one index transaction deletes its rows, its package's when it was the last
 //     version, invalidates the repo's index_cache and appends the audit row; for any other
 //     manifest the audit row alone is written. The row is a delete by principal with
-//     del.ClientIP, the version's subject (or the manifest's subject digest), the digest, and
-//     the number of referrers in the details.
+//     del.ClientIP (the request's client address when it is empty), the version's subject (or
+//     the manifest's subject digest), the digest, and the number of referrers and the request
+//     id in the details.
 //
 // Errors wrap provider.ErrUnsupported (the backend does not delete manifests), index.ErrNotFound
 // (nothing to delete) or provider.ErrConflict (the backend refused this one delete: Zot keeps a
@@ -394,9 +395,9 @@ func (d *deletion) deleteOne(ctx context.Context, desc ocispec.Descriptor) error
 // the audit.Writer after the commit when there is one. The backend has deleted already, so a
 // failure of the transaction is an error without a sentinel (500): reindex repairs the rows.
 func (d *deletion) record(ctx context.Context, principal auth.Principal) error {
-	details, _ := json.Marshal(map[string]int{"referrers": d.referrers}) // an int map always marshals
 	ev := index.AuditEvent{At: d.p.now(), Principal: principal.String(), Action: "delete",
-		Repo: d.repo.Format + "/" + d.repo.Name, Digest: d.target.Digest, IP: d.del.ClientIP, Details: details}
+		Repo: d.repo.Format + "/" + d.repo.Name, Digest: d.target.Digest, IP: d.del.ClientIP}
+	withOrigin(ctx, &ev, map[string]any{"referrers": d.referrers})
 	switch {
 	case d.version != nil:
 		ev.Subject = d.pkg.Name + " " + d.version.Version

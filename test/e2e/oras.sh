@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 # End-to-end test of oras through the OCI facade against a running Lajstrom
 # (docs/quickstart/oras.md §3; docs/acceptance.md O-01, O-02 and O-04): the challenge of
-# GET /v2/, oras login, oras push of a file to a raw repo with the raw profile, the same manifest
-# again (201, the same digest), another manifest under the tag (409 TAG_INVALID naming the
-# first), the repo's policy (#60: PATCH merges it; a file above maxFileSize is 413 through oras
-# push and the raw PUT), oras pull and the bytes, oras repo tags, oras manifest fetch, the raw
-# frontend serving the pushed file, then oras manifest delete through the facade (#61) and a 404.
+# GET /v2/, oras login, oras push of a file to a raw repo with the raw profile and its audit row
+# (#283: the client address and the request id), the same manifest again (201, the same
+# digest), another manifest under the tag (409 TAG_INVALID naming the first), the repo's policy
+# (#60: PATCH merges it; a file above maxFileSize is 413 through oras push and the raw PUT),
+# oras pull and the bytes, oras repo tags, oras manifest fetch, the raw frontend serving the
+# pushed file, then oras manifest delete through the facade (#61) and a 404.
 #
 #   test/e2e/oras.sh [<base url> [<raw repo>]]     default: http://localhost:8080 scratch
 #
 # The repo must exist (the example configuration creates raw/scratch), and the user of
-# LAJSTROM_E2E_USER and LAJSTROM_E2E_PASSWORD must push to it and delete in it (run.sh makes an
-# admin; lib.sh, e2e_credentials): oras logs in with them, and gets its tokens from /v2/token
-# with Basic. Tokens of other kinds are in oci-token.sh and tokens.sh. The file is at a path of
+# LAJSTROM_E2E_USER and LAJSTROM_E2E_PASSWORD must push to it and delete in it, and read the
+# audit log, which takes the admin role (run.sh makes an admin; lib.sh, e2e_credentials): oras
+# logs in with them, and gets its tokens from /v2/token with Basic. Tokens of other kinds are in
+# oci-token.sh and tokens.sh. With $LAJSTROM_SERVER_LOG, the server's log file (run.sh sets it),
+# the audit row's address is checked against the access log. The file is at a path of
 # its own for the run, so the script can run again against the same repo, and it deletes it at
 # the end. oras is the oras on PATH, else ghcr.io/oras-project/oras:v1.3.6 in docker with
 # --network host (which reaches the base URL on Linux and under OrbStack); either way it gets a
@@ -93,6 +96,22 @@ pushed=yes
 digest="$(awk '$1 == "Digest:" { print $2 }' "$work/oras.log")"
 case "$digest" in sha256:*) ;; *) cat "$work/oras.log" >&2; fail "oras push printed no digest" ;; esac
 step "oras push $registry/$name:$version ($oras_how, as $E2E_USER): $digest"
+
+# #283: the push writes one audit row, with the client's address and the request id. With the
+# server's log, the address is the remoteAddr of the access log line of that request: oras sends
+# no X-Forwarded-For, so it is the peer.
+assert_status 200 -K "$E2E_CURLRC" "$base/api/v1/audit?action=push&repo=raw/$repo&limit=50"
+row="$(jq -c --arg d "$digest" '[.events[] | select(.digest == $d)]' <<<"$E2E_BODY")"
+assert_eq 1 "$(jq length <<<"$row")" "the audit rows of the push of $digest"
+ip="$(jq -r '.[0].ip // ""' <<<"$row")"
+rid="$(jq -r '.[0].details.requestId // ""' <<<"$row")"
+[ -n "$ip" ] && [ -n "$rid" ] || fail "the audit row of the push has no ip or no request id: $row"
+if [ -n "${LAJSTROM_SERVER_LOG:-}" ] && [ -f "$LAJSTROM_SERVER_LOG" ]; then
+	seen="$(grep -F " requestId=$rid " "$LAJSTROM_SERVER_LOG" | grep -F ' msg=request ' | grep -oE 'remoteAddr=[^ ]+' | tail -1 |
+		sed -E 's/^remoteAddr=//; s/:[0-9]+$//; s/^\[(.*)\]$/\1/')"
+	assert_eq "$seen" "$ip" "the audit ip of the push, the remoteAddr of its access log line"
+fi
+step "the audit row of the push: ip $ip, requestId $rid"
 
 # The same manifest again is the idempotent repeat; another one under the tag is refused.
 push "$created" || { cat "$work/oras.log" >&2; fail "oras push of the same manifest again"; }
