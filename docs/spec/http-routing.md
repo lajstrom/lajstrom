@@ -227,9 +227,10 @@ when the upstream fails and nothing is cached or held, when it refuses Lajstrom'
 redirects from `https` to `http` or to an address that is not public, serves a file whose
 checksum differs from its metadata, or a file that the plugin's `Validate` refuses; `504` when
 it does not answer in `upstreams[].timeout`; `503` with `Retry-After` when it answers `429`;
-`403` naming the bound for a file above `maxFileSize` or the registry's `maxBlobSize`; `404`
-for a name outside `allow` and `deny`, one the upstream does not have, and a miss in offline
-mode. A cached document is served instead of any `5xx` that the upstream causes. Messages name
+`403` naming the bound for a file above `maxFileSize` or the registry's `maxBlobSize`; `403
+DENIED` naming the list and the pattern for a name outside `allow` and `deny` (through a group,
+a member that does not have it); `404` for one the upstream does not have, and a miss in
+offline mode. A cached document is served instead of any `5xx` that the upstream causes. Messages name
 the upstream by its configured name, never its URL.
 
 Management API (§4), in addition:

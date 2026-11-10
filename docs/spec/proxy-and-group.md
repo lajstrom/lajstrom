@@ -147,9 +147,11 @@ characters, `/` and `:` included, and every other character matches itself: `@ac
 `com.acme:*`, `*-internal`.
 
 A proxy fetches a name when `allow` is empty or a pattern of it matches, and no pattern of
-`deny` matches; `deny` wins. A name it does not fetch is answered as one the upstream does not
-have (`404`, §6), and no request goes to the upstream for it. The lists say what a proxy
-mirrors; refusing a version for a reason, with `403`, is ADR 0008's rules, which are asked at
+`deny` matches; `deny` wins. A name it does not fetch is `403 DENIED` naming the list and the
+pattern that refused it (`deny: @acme/*`, or `allow` when no pattern of it matches), as ADR
+0008's rules answer, and no request goes to the upstream for it; through a group, the member
+does not have the name (§8.1), so a name that no other member has is the group's `404`. The
+lists say what a proxy mirrors; refusing a version for a reason, with `403`, is ADR 0008's rules, which are asked at
 the same point (§5, step 3).
 
 ## 4. The metadata cache
@@ -164,7 +166,7 @@ upstream answered `404` or `410`). It is fresh while `checked_at` plus the repo'
 
 ### 4.2 A read
 
-1. A name outside the lists (§3): `404`, no row, no request.
+1. A name outside the lists (§3): `403`, no row, no request.
 2. A fresh row: used as it is.
 3. No row, or an expired one: a request to the upstream (`If-None-Match` and
    `If-Modified-Since` from the row when it has them):
@@ -206,7 +208,7 @@ A request for a file of a proxy repo, directly or through a group, runs these st
 
 1. The plugin maps the path to the artifact and the file (§10): name, version, variant, file
    name. A path it cannot map is the format's `404`.
-2. A name outside the lists (§3): `404`.
+2. A name outside the lists (§3): `403` (through a group: the member does not have it).
 3. The index has the version, with the file: it is served as a hosted file is
    (`format.ServeBlob`), and nothing else happens. This is where ADR 0008's `policy.Decider`
    will be asked, before step 4, for a held version and a fetch alike.
@@ -250,7 +252,8 @@ connection to the registry.
 | The upstream, or the fetch | A document | A file |
 | --- | --- | --- |
 | answers | served (§7) | ingested, then served |
-| a name outside the lists; offline and nothing held | `404` | `404` |
+| a name outside the lists | `403` naming the list and the pattern; through a group, the member does not have it | the same |
+| offline and nothing held | `404` | `404` |
 | `404`, `410` | `404`; an `absent` row | `404`; the name's row made stale |
 | `401`, `403` (Lajstrom's own credentials) | the cached row, else the held versions, else `502` | `502`; logged at error |
 | `429` | the cached row, else the held versions, else `503` with `Retry-After` (the upstream's, at most 60 s; 5 s without one) | `503` with `Retry-After` |
@@ -286,7 +289,7 @@ repo holds (§10, `RenderProxy`), and it is kept in `index_cache` as a hosted re
 
 A request on group `G` for name `N` asks the members of `G` in order. A member takes part unless
 it is hidden (§8.2). The hosted member answers from its index; a proxy member as a proxy does
-(§4, §7), with every request it makes upstream counted as its own, not the group's.
+(§4, §7), and a name outside its lists (§3) is one it does not have, with every request it makes upstream counted as its own, not the group's.
 
 ### 8.2 Hosted names hide the upstream
 
