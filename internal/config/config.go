@@ -12,6 +12,7 @@ type Config struct {
 	Log        Log        `yaml:"log"`
 	Database   Database   `yaml:"database"`
 	Registries []Registry `yaml:"registries"`
+	Upstreams  []Upstream `yaml:"upstreams"`
 	Ingest     Ingest     `yaml:"ingest"`
 	Reconcile  Reconcile  `yaml:"reconcile"`
 	Auth       Auth       `yaml:"auth"`
@@ -155,6 +156,46 @@ func (a RegistryAuth) GoString() string {
 	return fmt.Sprintf("config.RegistryAuth{Username:%q, PasswordEnv:%q}", a.Username, a.PasswordEnv)
 }
 
+// Upstream is a registry that proxy repos of one format serve and keep what they fetched from
+// (docs/spec/proxy-and-group.md §2.1, ADR 0013). It is the operator's, like a Registry: a proxy
+// repo names it by Name, and the management API never takes its URL or its credentials.
+type Upstream struct {
+	// Name identifies the upstream in repos[].upstream.name; the grammar of registry names.
+	Name string `yaml:"name"`
+	// Format is the plugin whose proxy repos it serves; serve checks that the plugin has the
+	// kind proxy.
+	Format string `yaml:"format"`
+	// URL is the base of every request, http(s), with a path or not; no credentials, query or
+	// fragment. http is accepted, with a warning at start.
+	URL string `yaml:"url"`
+	// Auth holds Lajstrom's own credentials for the upstream, as files that serve reads at start.
+	Auth UpstreamAuth `yaml:"auth"`
+	// Timeout bounds the wait for the response headers (connecting and TLS at most 10 s each)
+	// and every wait for the next bytes of a body. Load sets DefaultUpstreamTimeout when it is
+	// zero; negative is invalid.
+	Timeout time.Duration `yaml:"timeout"`
+	// Retries is the number of retries of a request, as for a registry. Load sets
+	// DefaultUpstreamRetries when it is zero; negative disables retries.
+	Retries int `yaml:"retries"`
+	// MaxMetadataSize is the largest document the upstream may answer for one name, in bytes;
+	// a larger one is not cached. Load sets DefaultUpstreamMaxMetadataSize when it is zero;
+	// negative is invalid.
+	MaxMetadataSize int64 `yaml:"maxMetadataSize"`
+}
+
+// UpstreamAuth names the files that hold Lajstrom's credentials for an upstream: HTTP Basic
+// with Username and PasswordFile, or a bearer token with TokenFile. Load does not read them;
+// serve does, at start, as it reads keys.masterKeyFile.
+type UpstreamAuth struct {
+	// Username is the user of HTTP Basic, with PasswordFile.
+	Username string `yaml:"username"`
+	// PasswordFile is the file that holds the password of Username.
+	PasswordFile string `yaml:"passwordFile"`
+	// TokenFile is the file that holds a bearer token (Authorization: Bearer), npm's
+	// _authToken. Not with Username.
+	TokenFile string `yaml:"tokenFile"`
+}
+
 // Ingest configures the write path (internal/ingest).
 type Ingest struct {
 	// ClaimTTL is how long a publish's claim on a tag holds off a publish of other bytes to the
@@ -226,12 +267,25 @@ type Repo struct {
 	Format string `yaml:"format"`
 	// Registry is the name of the registry that stores the repo's artifacts.
 	Registry string `yaml:"registry"`
+	// Kind is hosted (empty means hosted) or proxy (docs/spec/proxy-and-group.md §1).
+	Kind string `yaml:"kind"`
 	// AnonymousRead makes the repo readable without credentials, when auth.anonymousRead allows it.
 	AnonymousRead bool `yaml:"anonymousRead"`
 	// Policy is the repo's policy as the management API takes it (docs/api.md, the policy
 	// keys), checked when the bootstrap creates the repo; nil means none.
 	Policy map[string]any `yaml:"policy"`
+	// Upstream is a proxy repo's upstream settings as the management API takes them
+	// (docs/spec/proxy-and-group.md §2.2): name, one of upstreams[].name of the repo's
+	// format, and the TTLs, offline, allow and deny, which the bootstrap checks. Required on a
+	// proxy, refused on another kind.
+	Upstream map[string]any `yaml:"upstream"`
 }
+
+// The kinds of repos[].kind (docs/spec/proxy-and-group.md §1); groups come with #311.
+const (
+	KindHosted = "hosted"
+	KindProxy  = "proxy"
+)
 
 // Defaults that Load applies before reading the file.
 const (
@@ -251,6 +305,14 @@ const (
 	DefaultKeysAlgorithm      = KeysAlgorithmEd25519
 	DefaultKeysRetireGrace    = 720 * time.Hour
 	DefaultKeysTokenAlgorithm = KeysTokenES256
+)
+
+// The defaults of upstreams[] that Load applies to the keys an entry leaves out
+// (docs/spec/proxy-and-group.md §2.1).
+const (
+	DefaultUpstreamTimeout         = 30 * time.Second
+	DefaultUpstreamRetries         = 2
+	DefaultUpstreamMaxMetadataSize = 64 << 20
 )
 
 // Default returns the configuration before the file is read. server.listen has no default.

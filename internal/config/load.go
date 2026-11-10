@@ -16,7 +16,8 @@ import (
 //
 //  1. the defaults of Default;
 //  2. the YAML file at path; unknown keys are an error; registries[] get the defaults of the
-//     keys they leave empty (type, timeout, retries);
+//     keys they leave empty (type, timeout, retries), and upstreams[] theirs (timeout, retries,
+//     maxMetadataSize);
 //  3. the environment overrides LAJSTROM_SERVER_LISTEN, LAJSTROM_SERVER_EXTERNAL_URL,
 //     LAJSTROM_SERVER_METRICS_LISTEN, LAJSTROM_LOG_LEVEL, LAJSTROM_LOG_FORMAT,
 //     LAJSTROM_DATABASE_DRIVER, LAJSTROM_DATABASE_DSN and LAJSTROM_MASTER_KEY_FILE
@@ -39,6 +40,9 @@ func Load(path string, lookupEnv func(string) (string, bool)) (*Config, error) {
 	}
 	for i := range c.Registries {
 		c.Registries[i].applyDefaults()
+	}
+	for i := range c.Upstreams {
+		c.Upstreams[i].applyDefaults()
 	}
 	applyEnv(c, lookupEnv)
 	resolveSecrets(c, lookupEnv)
@@ -108,6 +112,19 @@ func (r *Registry) applyDefaults() {
 	}
 	if r.Retries == 0 {
 		r.Retries = DefaultRegistryRetries
+	}
+}
+
+// applyDefaults fills the keys of u that the file left at their zero value.
+func (u *Upstream) applyDefaults() {
+	if u.Timeout == 0 {
+		u.Timeout = DefaultUpstreamTimeout
+	}
+	if u.Retries == 0 {
+		u.Retries = DefaultUpstreamRetries
+	}
+	if u.MaxMetadataSize == 0 {
+		u.MaxMetadataSize = DefaultUpstreamMaxMetadataSize
 	}
 }
 

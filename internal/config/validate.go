@@ -43,6 +43,16 @@ func (c *Config) Validate() error {
 			registries[r.Name] = i
 		}
 	}
+	upstreams := map[string]int{}
+	for i, u := range c.Upstreams {
+		key := fmt.Sprintf("upstreams[%d]", i)
+		u.validate(&p, key)
+		if first, dup := upstreams[u.Name]; dup && u.Name != "" {
+			p.add(key+".name", "%q is already used by upstreams[%d]", u.Name, first)
+		} else {
+			upstreams[u.Name] = i
+		}
+	}
 	repos := map[string]int{}
 	for i, r := range c.Repos {
 		key := fmt.Sprintf("repos[%d]", i)
@@ -50,6 +60,7 @@ func (c *Config) Validate() error {
 		if _, ok := registries[r.Registry]; !ok && r.Registry != "" {
 			p.add(key+".registry", "%q is not a configured registry", r.Registry)
 		}
+		r.validateUpstream(&p, key, c.Upstreams, upstreams)
 		id := r.Format + "/" + r.Name
 		if first, dup := repos[id]; dup {
 			p.add(key, "%q is already declared by repos[%d]", id, first)
@@ -245,6 +256,72 @@ func (r Repo) validate(p *problems, key string) {
 	if r.Registry == "" {
 		p.add(key+".registry", "must not be empty")
 	}
+}
+
+// validateUpstream checks the kind of a repo and its upstream against the configuration: a
+// proxy has an upstream that names a configured one of its format, another kind has none. The
+// other keys of the upstream (TTLs, offline, allow, deny) are the API's to check, when the
+// bootstrap creates the repo (docs/spec/proxy-and-group.md §2.5).
+func (r Repo) validateUpstream(p *problems, key string, upstreams []Upstream, byName map[string]int) {
+	switch r.Kind {
+	case "", KindHosted:
+		if r.Upstream != nil {
+			p.add(key+".upstream", "only a proxy repo has one, not a %s repo", KindHosted)
+		}
+		return
+	case KindProxy:
+	default:
+		p.add(key+".kind", "%q is not %s or %s", r.Kind, KindHosted, KindProxy)
+		return
+	}
+	if r.Upstream == nil {
+		p.add(key+".upstream", "a proxy repo must name one of upstreams[].name")
+		return
+	}
+	name, ok := r.Upstream["name"].(string)
+	i, configured := byName[name]
+	switch {
+	case !ok || name == "":
+		p.add(key+".upstream.name", "must be one of upstreams[].name")
+	case !configured:
+		p.add(key+".upstream.name", "%q is not a configured upstream", name)
+	case upstreams[i].Format != r.Format && r.Format != "":
+		p.add(key+".upstream.name", "%q serves %s, not %s", name, upstreams[i].Format, r.Format)
+	}
+}
+
+func (u Upstream) validate(p *problems, key string) {
+	validName(p, key+".name", u.Name)
+	validName(p, key+".format", u.Format)
+	// The URL is never quoted in errors, as a registry's.
+	switch v, err := url.Parse(u.URL); {
+	case err != nil || !isHTTP(v):
+		p.add(key+".url", "must be an absolute http(s) URL")
+	case v.User != nil:
+		p.add(key+".url", "must not contain credentials; use auth")
+	case v.RawQuery != "" || v.ForceQuery || v.Fragment != "":
+		p.add(key+".url", "must not have a query or a fragment")
+	}
+	if u.Timeout < 0 {
+		p.add(key+".timeout", "must not be negative")
+	}
+	if u.MaxMetadataSize < 0 {
+		p.add(key+".maxMetadataSize", "must not be negative")
+	}
+	a := u.Auth
+	switch {
+	case a.TokenFile != "" && (a.Username != "" || a.PasswordFile != ""):
+		p.add(key+".auth", "tokenFile is a bearer token: not with username and passwordFile")
+	case (a.Username == "") != (a.PasswordFile == ""):
+		p.add(key+".auth", "username and passwordFile must be set together")
+	}
+}
+
+// Insecure reports whether the upstream is reached over plain http, which serve warns about:
+// what it serves is not authenticated.
+func (u Upstream) Insecure() bool {
+	v, err := url.Parse(u.URL)
+	return err == nil && v.Scheme == "http"
 }
 
 func validName(p *problems, key, name string) {
