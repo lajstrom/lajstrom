@@ -9,7 +9,9 @@
 # sha256-<hex> tag schema, which the script reads from the backend. lajstrom reindex --repo then
 # finds the signatures as referrers of the file, with nothing foreign, orphaned or failed on its
 # path: through the registry's catalog, or the OCI repositories the index records on a registry
-# without one (LAJSTROM_E2E_CAPABILITIES='{catalog: false}' for run.sh, #37).
+# without one (LAJSTROM_E2E_CAPABILITIES='{catalog: false}' for run.sh, #37). The backend is
+# asked below LAJSTROM_E2E_REGISTRY_PREFIX, with the credentials of LAJSTROM_E2E_REGISTRY_USER
+# and LAJSTROM_E2E_REGISTRY_PASSWORD_FILE when they are set (run.sh, #353).
 #
 #   test/e2e/cosign.sh [<base url> [<raw repo>]]     default: http://localhost:8080 scratch
 #
@@ -80,6 +82,30 @@ else
 	oras() { docker run --rm -i --network host -u "$(id -u):$(id -g)" -v "$work:/w" -w /w "$oras_image" "$@" --registry-config /w/oras-auth.json ${plain:+"$plain"}; }
 fi
 
+# backend_get PATH OUT: GET PATH of the backend into OUT, and print the status. With
+# LAJSTROM_E2E_REGISTRY_USER and LAJSTROM_E2E_REGISTRY_PASSWORD_FILE it sends them as Basic; a
+# 401 with a Bearer challenge then gets a token from the realm, with the same credentials or
+# none, for pull on bname, and the request is sent again with it. The secrets go to curl in
+# configuration files of the run, never on a command line.
+backend_get() {
+	local code realm service
+	: >"$work/backend.curlrc"
+	chmod 600 "$work/backend.curlrc"
+	if [ -n "${LAJSTROM_E2E_REGISTRY_USER:-}" ]; then
+		printf 'user = "%s:%s"\n' "$LAJSTROM_E2E_REGISTRY_USER" "$(tr -d '\r\n' <"$LAJSTROM_E2E_REGISTRY_PASSWORD_FILE")" >"$work/backend.curlrc"
+	fi
+	code="$(curl -sS -K "$work/backend.curlrc" -o "$2" -D "$work/backend.headers" -w '%{http_code}' "http://$backend$1")"
+	realm="$(sed -n 's/^[Ww][Ww][Ww]-[Aa]uthenticate: *Bearer .*realm="\([^"]*\)".*/\1/p' "$work/backend.headers" | head -1)"
+	if [ "$code" != 401 ] || [ -z "$realm" ]; then
+		echo "$code"
+		return 0
+	fi
+	service="$(sed -n 's/^[Ww][Ww][Ww]-[Aa]uthenticate: .*service="\([^"]*\)".*/\1/p' "$work/backend.headers" | head -1)"
+	curl -fsS -K "$work/backend.curlrc" -G --data-urlencode "service=$service" --data-urlencode "scope=repository:$bname:pull" "$realm" |
+		jq -r '"header = \"Authorization: Bearer \(.token // .access_token)\""' >"$work/backend.curlrc"
+	curl -sS -K "$work/backend.curlrc" -o "$2" -w '%{http_code}' "http://$backend$1"
+}
+
 # sha256 prints the hex sha256 of a file.
 sha256() {
 	if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
@@ -127,14 +153,18 @@ grep -qi '^oci-filters-applied: artifactType' "$work/headers" || fail "the refer
 assert_status 401 "$base/v2/$name/referrers/$digest"
 step "GET /v2/$name/referrers/$digest?artifactType=…: $signature, OCI-Filters-Applied; anonymous: 401"
 
-# What the backend did: its referrers API, or the tag schema the provider wrote.
+# What the backend did: its referrers API, or the tag schema the provider wrote. The backend is
+# asked as Lajstrom asks it: in the repository below the instance prefix, with the registry's
+# credentials when run.sh has them (#353).
 backend="${LAJSTROM_E2E_REGISTRY:-}"
 if [ -n "$backend" ]; then
-	code="$(curl -sS -o /dev/null -w '%{http_code}' "http://$backend/v2/$name/referrers/$digest")"
+	bname="${LAJSTROM_E2E_REGISTRY_PREFIX:-}$name"
+	code="$(backend_get "/v2/$bname/referrers/$digest" "$work/backend.json")"
 	if [ "$code" = 200 ]; then
 		step "the backend $backend: its referrers API"
 	else
-		curl -fsS "http://$backend/v2/$name/tags/list" | jq -e --arg t "sha256-${digest#sha256:}" '.tags | index($t)' >/dev/null ||
+		assert_eq 200 "$(backend_get "/v2/$bname/tags/list" "$work/backend.json")" "the backend's tags/list of $bname"
+		jq -e --arg t "sha256-${digest#sha256:}" '.tags | index($t)' "$work/backend.json" >/dev/null ||
 			fail "the backend $backend has no referrers API ($code) and no tag sha256-${digest#sha256:}"
 		step "the backend $backend: no referrers API ($code); the provider wrote the tag sha256-${digest#sha256:}"
 	fi

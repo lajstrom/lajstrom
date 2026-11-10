@@ -18,6 +18,14 @@
 #   LAJSTROM_E2E_PASSWORD  for the scenarios that need no user of their own (lib.sh, e2e_credentials)
 #   LAJSTROM_E2E_FORWARDED 1: the server trusts the X-Forwarded-For of 127.0.0.1
 #                          (server.trustedProxies), so that the per-address throttles are on
+#   LAJSTROM_E2E_REGISTRY_USER, LAJSTROM_E2E_REGISTRY_PASSWORD_FILE, LAJSTROM_E2E_REGISTRY_PREFIX
+#                          as the caller set them, and LAJSTROM_E2E_REGISTRY_PASSWORD (below)
+#
+# The registry `local` may need credentials and an instance prefix (#353), as Gitea's does
+# (deploy/compose/gitea): LAJSTROM_E2E_REGISTRY_USER names the user, and
+# LAJSTROM_E2E_REGISTRY_PASSWORD_FILE a file that holds its password or token, which run.sh
+# reads into LAJSTROM_E2E_REGISTRY_PASSWORD, the passwordEnv of registries[].auth, for the
+# server and lajstrom admin; LAJSTROM_E2E_REGISTRY_PREFIX is registries[].prefix, ending in /.
 #
 # Everything lives in a temporary directory: the configuration, the SQLite index, the server's
 # log and the output of each scenario. The configuration has one registry, `local`, at
@@ -51,6 +59,17 @@ order="raw oras auth rbac oci-token cosign tokens apt pypi maven npm" # the quic
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 registry="${LAJSTROM_E2E_REGISTRY:-localhost:5000}"
+registry_user="${LAJSTROM_E2E_REGISTRY_USER:-}"
+registry_prefix="${LAJSTROM_E2E_REGISTRY_PREFIX:-}"
+if [ -n "$registry_user" ]; then
+	secret="${LAJSTROM_E2E_REGISTRY_PASSWORD_FILE:-}"
+	[ -n "$secret" ] && [ -s "$secret" ] ||
+		{ echo "run.sh: LAJSTROM_E2E_REGISTRY_USER needs LAJSTROM_E2E_REGISTRY_PASSWORD_FILE, a file with the password" >&2; exit 2; }
+	LAJSTROM_E2E_REGISTRY_PASSWORD_FILE="$(cd "$(dirname "$secret")" && pwd)/$(basename "$secret")"
+	LAJSTROM_E2E_REGISTRY_PASSWORD="$(tr -d '\r\n' <"$secret")"
+	export LAJSTROM_E2E_REGISTRY_USER LAJSTROM_E2E_REGISTRY_PASSWORD_FILE LAJSTROM_E2E_REGISTRY_PASSWORD
+fi
+[ -z "$registry_prefix" ] || export LAJSTROM_E2E_REGISTRY_PREFIX
 for tool in curl jq make go; do
 	command -v "$tool" >/dev/null || { echo "run.sh: $tool is required" >&2; exit 2; }
 done
@@ -158,6 +177,10 @@ registries:
   - name: local
     type: generic
     url: "http://$registry"
+${registry_prefix:+    prefix: $registry_prefix}
+${registry_user:+    auth:
+      username: $registry_user
+      passwordEnv: LAJSTROM_E2E_REGISTRY_PASSWORD}
 ${LAJSTROM_E2E_CAPABILITIES:+    capabilities: $LAJSTROM_E2E_CAPABILITIES}
 upstreams:
   - name: npmjs
@@ -193,7 +216,7 @@ until curl -fsS -o /dev/null --max-time 2 "$base/-/readyz" 2>/dev/null; do
 	fi
 	sleep 0.5
 done
-step "lajstrom serve on $base, index $tmp/lajstrom.db, registry local at $registry${LAJSTROM_E2E_CAPABILITIES:+ $LAJSTROM_E2E_CAPABILITIES}: ready after $((SECONDS - served)) s"
+step "lajstrom serve on $base, index $tmp/lajstrom.db, registry local at $registry${registry_prefix:+, prefix $registry_prefix}${registry_user:+, user $registry_user}${LAJSTROM_E2E_CAPABILITIES:+ $LAJSTROM_E2E_CAPABILITIES}: ready after $((SECONDS - served)) s"
 
 results=()
 failed=0

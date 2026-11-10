@@ -340,7 +340,10 @@ The failures, by owner:
   Forgejo's status offset.
 - **Ours, the provider:** the challenge scope, fixed here (item 1).
 - **Ours, the harness:** `run.sh` without registry credentials, `cosign.sh`'s anonymous check of
-  the backend.
+  the backend. Both done in #353: `run.sh` takes the user, a file with its token and the prefix
+  ([testing.md](../testing.md#a-registry-with-credentials-and-a-prefix)), and `cosign.sh` asks
+  the backend below the prefix with them. On 2026-11-10 `oras`, `auth`, `rbac`, `oci-token`,
+  `cosign` and `tokens` passed against Gitea 1.27.3 so, the stock `run.sh`.
 
 The conformance suite was not run.
 
