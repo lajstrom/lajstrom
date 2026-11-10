@@ -3,13 +3,19 @@ package ecr
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	"github.com/aws/aws-sdk-go-v2/service/ecr/types"
 	"github.com/opencontainers/go-digest"
@@ -21,6 +27,12 @@ import (
 
 // Type is the registries[].type of this provider.
 const Type = "ecr"
+
+func init() {
+	provider.Register(Type, func(cfg config.Registry, log *slog.Logger) (provider.Provider, error) {
+		return New(cfg, log)
+	})
+}
 
 // maxLayerSize is ECR's quota on the size of a layer, 52,000 MiB, from the AWS service quotas
 // page: to be measured by #19.
@@ -35,6 +47,8 @@ var (
 type api interface {
 	tokenAPI
 	CreateRepository(ctx context.Context, in *ecr.CreateRepositoryInput, optFns ...func(*ecr.Options)) (*ecr.CreateRepositoryOutput, error)
+	ecr.DescribeRepositoriesAPIClient
+	DeleteRepository(ctx context.Context, in *ecr.DeleteRepositoryInput, optFns ...func(*ecr.Options)) (*ecr.DeleteRepositoryOutput, error)
 }
 
 // Provider is the Provider of one Amazon ECR registry. The data path, /v2, is the generic
@@ -57,6 +71,49 @@ type Provider struct {
 	// known holds the Lajstrom names of the repositories that exist, with the time until
 	// which EnsureRepository believes it without asking ECR.
 	known sync.Map
+}
+
+// hostPattern is the host of an ECR registry, which names its account and region:
+// <account>.dkr.ecr[-fips].<region>.amazonaws.com[.cn], or dual-stack
+// <account>.dkr-ecr[-fips].<region>.on.aws.
+var hostPattern = regexp.MustCompile(`^([0-9]{12})\.dkr[.-]ecr(?:-fips)?\.([a-z0-9-]+)\.(?:amazonaws\.com(?:\.cn)?|on\.aws)$`)
+
+// New returns the Provider for cfg. The credentials are the AWS SDK's default chain; the
+// region is registries[].ecr.region, else the one in the URL's host, else the SDK's. It does
+// not talk to AWS or to the registry. A nil log means slog.Default().
+func New(cfg config.Registry, log *slog.Logger) (*Provider, error) {
+	u, err := url.Parse(cfg.URL)
+	if err != nil || u.Host == "" {
+		return nil, errors.New("ecr: url must be an absolute http(s) URL")
+	}
+	var account, region string
+	if m := hostPattern.FindStringSubmatch(strings.ToLower(u.Hostname())); m != nil {
+		account, region = m[1], m[2]
+	}
+	region = cmp.Or(cfg.ECR.Region, region)
+	timeout := cmp.Or(cfg.Timeout, config.DefaultRegistryTimeout)
+	opts := []func(*awsconfig.LoadOptions) error{
+		awsconfig.WithRetryer(retryer(cfg.Retries)),
+		awsconfig.WithHTTPClient(awshttp.NewBuildableClient().WithTransportOptions(func(t *http.Transport) {
+			t.ResponseHeaderTimeout = timeout
+		})),
+	}
+	if region != "" {
+		opts = append(opts, awsconfig.WithRegion(region))
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), opts...)
+	if err != nil {
+		return nil, fmt.Errorf("ecr: AWS configuration: %w", err)
+	}
+	if awsCfg.Region == "" {
+		return nil, errors.New("ecr: no AWS region: set registries[].ecr.region or AWS_REGION, or use the registry's host as url")
+	}
+	client := ecr.NewFromConfig(awsCfg, func(o *ecr.Options) {
+		if cfg.ECR.Endpoint != "" {
+			o.BaseEndpoint = aws.String(cfg.ECR.Endpoint)
+		}
+	})
+	return newProvider(cfg, log, client, account, time.Now)
 }
 
 // newProvider returns the Provider for cfg on the ECR API client, with the account the URL

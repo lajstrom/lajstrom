@@ -5,6 +5,9 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -36,9 +39,9 @@ func (c *clock) advance(d time.Duration) {
 	c.t = c.t.Add(d)
 }
 
-// fakeECR is the ECR API of the unit tests: tokens that live for lifetime on the clock, and
-// repositories in a map. An error knob set fails its operation. Every call is counted by
-// operation name.
+// fakeECR is the ECR API of the unit tests: tokens that live for lifetime on the clock,
+// repositories in a map, DescribeRepositories paginated by pageSize. An error knob set fails
+// its operation. Every call is counted by operation name.
 type fakeECR struct {
 	clock    *clock
 	lifetime time.Duration // of the tokens issued
@@ -51,11 +54,16 @@ type fakeECR struct {
 
 	createErr error
 	repos     map[string]ecr.CreateRepositoryInput // name → how it was created
+
+	listErr, deleteErr error
+	pageSize           int            // of DescribeRepositories; 0 is one page
+	images             map[string]int // name → images it holds
 }
 
 func newFakeECR(c *clock) *fakeECR {
 	f := &fakeECR{clock: c, lifetime: 12 * time.Hour, calls: map[string]int{}}
 	f.repos = map[string]ecr.CreateRepositoryInput{}
+	f.images = map[string]int{}
 	return f
 }
 
@@ -120,6 +128,46 @@ func (f *fakeECR) keep(in ecr.CreateRepositoryInput) bool {
 	}
 	f.repos[key] = in
 	return true
+}
+
+func (f *fakeECR) DescribeRepositories(_ context.Context, in *ecr.DescribeRepositoriesInput, _ ...func(*ecr.Options)) (*ecr.DescribeRepositoriesOutput, error) {
+	if err := f.call("DescribeRepositories", &f.listErr); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	names := slices.Sorted(maps.Keys(f.repos))
+	start, _ := strconv.Atoi(aws.ToString(in.NextToken))
+	end := len(names)
+	if f.pageSize > 0 {
+		end = min(start+f.pageSize, len(names))
+	}
+	out := &ecr.DescribeRepositoriesOutput{}
+	for _, n := range names[start:end] {
+		out.Repositories = append(out.Repositories, types.Repository{RepositoryName: aws.String(n)})
+	}
+	if end < len(names) {
+		out.NextToken = aws.String(strconv.Itoa(end))
+	}
+	return out, nil
+}
+
+func (f *fakeECR) DeleteRepository(_ context.Context, in *ecr.DeleteRepositoryInput, _ ...func(*ecr.Options)) (*ecr.DeleteRepositoryOutput, error) {
+	if err := f.call("DeleteRepository", &f.deleteErr); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	name := aws.ToString(in.RepositoryName)
+	if _, ok := f.repos[name]; !ok {
+		return nil, &types.RepositoryNotFoundException{Message: aws.String("The repository with name '" + name + "' does not exist")}
+	}
+	if f.images[name] > 0 && !in.Force {
+		return nil, &types.RepositoryNotEmptyException{Message: aws.String("The repository with name '" + name + "' still contains images")}
+	}
+	delete(f.repos, name)
+	delete(f.images, name)
+	return &ecr.DeleteRepositoryOutput{}, nil
 }
 
 // fakeProvider is a Provider on f with the instance prefix art/; edit changes the
