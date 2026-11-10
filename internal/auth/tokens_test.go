@@ -175,6 +175,11 @@ func TestTokensBounds(t *testing.T) {
 	f.pat(t, "alice", strings.Repeat("é", 32), nil, Expiry{})
 	f.deploy(t, "raw/scratch", "forever", []string{"read"}, Expiry{})
 	f.deploy(t, "raw/scratch", "long", []string{"write", "read"}, Expiry{In: 400 * 24 * time.Hour})
+	group := index.Repo{Format: "raw", Name: "all", Prefix: "raw/all", Kind: index.KindGroup}
+	if err := f.st.CreateRepo(ctx, &group); err != nil {
+		t.Fatal(err)
+	}
+	f.deploy(t, "raw/all", "reader", []string{"read"}, Expiry{})
 	for _, tt := range []struct {
 		name     string
 		deploy   bool
@@ -197,6 +202,8 @@ func TestTokensBounds(t *testing.T) {
 		{"deploy scope delete", true, "raw/scratch", "x", []string{"read", "delete"}, Expiry{}, ErrInvalid,
 			`scopes: "delete" is not a scope of a deploy token: it gets read, write or both, never delete or manage`},
 		{"deploy scope manage", true, "raw/scratch", "x", []string{"manage"}, Expiry{}, ErrInvalid, `scopes: "manage" is not a scope of a deploy token`},
+		{"deploy write on a group", true, "raw/all", "x", []string{"read", "write"}, Expiry{}, ErrInvalid,
+			"scopes: raw/all is a group, and its deploy token reads only"},
 		{"empty name", false, "alice", "", nil, Expiry{}, ErrInvalid, "name: must not be empty"},
 		{"long name", false, "alice", strings.Repeat("x", 65), nil, Expiry{}, ErrInvalid, "name: must be at most 64 bytes"},
 		{"control character", false, "alice", "a\tb", nil, Expiry{}, ErrInvalid, `name: "a\tb" must be printable UTF-8`},
@@ -228,8 +235,9 @@ func TestTokensBounds(t *testing.T) {
 		`deploy "forever" [read] expires never live`,
 		`deploy "long" [read write] expires 2027-12-12T12:00:00Z live`,
 	})
-	if n := len(tokenAudit(t, f.st)); n != 6 {
-		t.Errorf("%d audit events, want the 6 creations: a refusal writes nothing", n)
+	wantTokens(t, f, "raw/all", []string{`deploy "reader" [read] expires never live`})
+	if n := len(tokenAudit(t, f.st)); n != 7 {
+		t.Errorf("%d audit events, want the 7 creations: a refusal writes nothing", n)
 	}
 	f.noSecrets(t)
 }

@@ -70,6 +70,11 @@ func (c *Config) Validate() error {
 			repos[id] = i
 		}
 	}
+	for i, r := range c.Repos {
+		if r.Kind == KindGroup {
+			r.validateMembers(&p, fmt.Sprintf("repos[%d]", i), c.Repos, repos)
+		}
+	}
 	return errors.Join(p...)
 }
 
@@ -358,25 +363,38 @@ func (e ECR) validateMutability(p *problems, key string) {
 func (r Repo) validate(p *problems, key string) {
 	validName(p, key+".name", r.Name)
 	validName(p, key+".format", r.Format)
-	if r.Registry == "" {
+	switch {
+	case r.Kind == KindGroup && r.Registry != "":
+		p.add(key+".registry", "a group has none; its members' registries hold what it serves")
+	case r.Kind == KindGroup && r.Policy != nil:
+		p.add(key+".policy", "a group has none; its members' policies apply")
+	case r.Kind != KindGroup && r.Registry == "":
 		p.add(key+".registry", "must not be empty")
 	}
 }
 
 // validateUpstream checks the kind of a repo and its upstream against the configuration: a
-// proxy has an upstream that names a configured one of its format, another kind has none. The
-// other keys of the upstream (TTLs, offline, allow, deny) are the API's to check, when the
-// bootstrap creates the repo (docs/spec/proxy-and-group.md §2.5).
+// proxy has an upstream that names a configured one of its format, another kind has none; a
+// group has a group, another kind has none. The other keys of the upstream (TTLs, offline,
+// allow, deny) are the API's to check, when the bootstrap creates the repo
+// (docs/spec/proxy-and-group.md §2.5).
 func (r Repo) validateUpstream(p *problems, key string, upstreams []Upstream, byName map[string]int) {
-	switch r.Kind {
-	case "", KindHosted:
+	kind := r.Kind
+	if kind == "" {
+		kind = KindHosted
+	}
+	if kind != KindGroup && r.Group != nil {
+		p.add(key+".group", "only a group repo has one, not a %s repo", kind)
+	}
+	switch kind {
+	case KindHosted, KindGroup:
 		if r.Upstream != nil {
-			p.add(key+".upstream", "only a proxy repo has one, not a %s repo", KindHosted)
+			p.add(key+".upstream", "only a proxy repo has one, not a %s repo", kind)
 		}
 		return
 	case KindProxy:
 	default:
-		p.add(key+".kind", "%q is not %s or %s", r.Kind, KindHosted, KindProxy)
+		p.add(key+".kind", "%q is not %s, %s or %s", r.Kind, KindHosted, KindProxy, KindGroup)
 		return
 	}
 	if r.Upstream == nil {
@@ -393,6 +411,53 @@ func (r Repo) validateUpstream(p *problems, key string, upstreams []Upstream, by
 	case upstreams[i].Format != r.Format && r.Format != "":
 		p.add(key+".upstream.name", "%q serves %s, not %s", name, upstreams[i].Format, r.Format)
 	}
+}
+
+// maxMembers bounds group.members (docs/spec/proxy-and-group.md §2.3).
+const maxMembers = 16
+
+// validateMembers checks the members of the group r against the repos of the configuration
+// (byID: <format>/<name> to its index): a list of 1 to 16 names, none twice, none a group and at
+// most one hosted among those the configuration declares. A member it does not declare may be
+// in the control plane already: the bootstrap checks it there, as it checks merge.
+func (r Repo) validateMembers(p *problems, key string, repos []Repo, byID map[string]int) {
+	raw, ok := r.Group["members"].([]any)
+	if r.Group == nil || !ok || len(raw) == 0 || len(raw) > maxMembers {
+		p.add(key+".group.members", "must name 1 to %d repos of format %s", maxMembers, r.Format)
+		return
+	}
+	seen, hosted := map[string]int{}, -1
+	for i, v := range raw {
+		field := fmt.Sprintf("%s.group.members[%d]", key, i)
+		name, ok := v.(string)
+		if !ok || name == "" {
+			p.add(field, "must be the name of a repo")
+			continue
+		}
+		if first, dup := seen[name]; dup {
+			p.add(field, "%q is already group.members[%d]", name, first)
+			continue
+		}
+		seen[name] = i
+		if j, declared := byID[r.Format+"/"+name]; declared {
+			hosted = memberKind(p, field, name, repos[j].Kind, i, hosted)
+		}
+	}
+}
+
+// memberKind checks the kind of the declared member name, the i-th, and returns the index of
+// the hosted member so far: hosted, or i when it is the first.
+func memberKind(p *problems, field, name, kind string, i, hosted int) int {
+	switch {
+	case kind == KindGroup:
+		p.add(field, "%q is a group; a group is not a member", name)
+	case kind != "" && kind != KindHosted:
+	case hosted >= 0:
+		p.add(field, "%q is a second hosted member, after group.members[%d]", name, hosted)
+	default:
+		return i
+	}
+	return hosted
 }
 
 func (u Upstream) validate(p *problems, key string) {

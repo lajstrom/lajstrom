@@ -214,7 +214,8 @@ func (w *Worker) Run(ctx context.Context, run *index.ReindexRun, req Request) (*
 	return report, err
 }
 
-// run reindexes the repos of req, one after the other.
+// run reindexes the repos of req, one after the other. A group holds nothing
+// (docs/spec/index-schema.md, Proxy and group repos): its report is empty.
 func (w *Worker) run(ctx context.Context, run *index.ReindexRun, req Request) (*Report, error) {
 	report := &Report{Repos: []RepoReport{}}
 	repos := []index.Repo{}
@@ -233,6 +234,10 @@ func (w *Worker) run(ctx context.Context, run *index.ReindexRun, req Request) (*
 		return report, fmt.Errorf("reindex: expire stale fetch claims: %w", err)
 	}
 	for _, repo := range repos {
+		if repo.Kind == index.KindGroup {
+			report.Repos = append(report.Repos, newRepoReport(repo.Format+"/"+repo.Name))
+			continue
+		}
 		rr, err := w.repo(ctx, repo, run.StartedAt, req)
 		report.Repos = append(report.Repos, rr)
 		if err != nil {

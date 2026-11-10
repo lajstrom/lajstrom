@@ -102,13 +102,40 @@ repos:
   - {name: g, format: npm, registry: local, kind: hosted, upstream: {name: npmjs}}
 `,
 			want: []string{
-				`repos[0].kind: "mirror" is not hosted or proxy`,
+				`repos[0].kind: "mirror" is not hosted, proxy or group`,
 				"repos[1].upstream: a proxy repo must name one of upstreams[].name",
 				"repos[2].upstream.name: must be one of upstreams[].name",
 				`repos[3].upstream.name: "pypi" is not a configured upstream`,
 				`repos[4].upstream.name: "npmjs" serves npm, not pypi`,
 				"repos[5].upstream: only a proxy repo has one, not a hosted repo",
 				"repos[6].upstream: only a proxy repo has one, not a hosted repo",
+			},
+		},
+		{
+			name: "group repos",
+			file: registries + `repos:
+  - {name: all, format: npm, kind: group, group: {members: [internal, nested, internal, private, npmjs]}}
+  - {name: internal, format: npm, registry: local}
+  - {name: nested, format: npm, kind: group, group: {members: [all]}}
+  - {name: private, format: npm, registry: local, kind: hosted}
+  - {name: empty, format: npm, kind: group, group: {members: []}}
+  - {name: none, format: npm, kind: group}
+  - {name: stored, format: npm, kind: group, registry: local, group: {members: [internal]}}
+  - {name: rules, format: npm, kind: group, policy: {maxFileSize: 1}, group: {members: [internal]}}
+  - {name: hosted, format: npm, registry: local, group: {members: [internal]}}
+  - {name: up, format: npm, kind: group, upstream: {name: npmjs}, group: {members: [internal]}}
+`,
+			want: []string{
+				`repos[0].group.members[1]: "nested" is a group`,
+				`repos[0].group.members[2]: "internal" is already group.members[0]`,
+				`repos[0].group.members[3]: "private" is a second hosted member, after group.members[0]`,
+				`repos[2].group.members[0]: "all" is a group`,
+				"repos[4].group.members: must name 1 to 16 repos of format npm",
+				"repos[5].group.members: must name 1 to 16 repos of format npm",
+				"repos[6].registry: a group has none",
+				"repos[7].policy: a group has none",
+				"repos[8].group: only a group repo has one, not a hosted repo",
+				"repos[9].upstream: only a proxy repo has one, not a group repo",
 			},
 		},
 	}
