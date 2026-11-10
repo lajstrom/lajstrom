@@ -74,8 +74,10 @@ func (r *repository) MountBlob(ctx context.Context, d digest.Digest, from string
 // AppendBlobChunk streams body to the session: PATCH <location>, 202 with the new Location
 // and Range. A chunk of known size carries Content-Range from the session's offset, which the
 // registry checks (416 when it does not hold that many bytes); one of unknown size goes out
-// with chunked encoding and no Content-Range, the streamed PATCH that docker sends. A chunk of
-// 0 bytes sends nothing.
+// with chunked encoding and no Content-Range, the streamed PATCH that docker sends. With
+// registries[].uploads.spoolUnknownLength on, a chunk of unknown size into a session that holds
+// bytes is spooled first and sent as one of known size (spool.go). A chunk of 0 bytes sends
+// nothing.
 func (r *repository) AppendBlobChunk(ctx context.Context, u provider.Upload, body io.Reader, size int64) (provider.Upload, error) {
 	op := r.op("append to upload", u.ID)
 	loc, err := r.p.location(u.Location)
@@ -84,6 +86,21 @@ func (r *repository) AppendBlobChunk(ctx context.Context, u provider.Upload, bod
 	}
 	if size == 0 || body == nil {
 		return u, nil
+	}
+	if size < 0 && u.Offset > 0 && r.p.spoolUnknown {
+		c, err := spoolChunk(body)
+		if err != nil {
+			return u, fmt.Errorf("generic: %s: %w", op, err)
+		}
+		defer func() {
+			if cerr := c.close(); cerr != nil {
+				r.p.log.WarnContext(ctx, "generic: remove a spooled chunk", "error", cerr.Error())
+			}
+		}()
+		if c.size == 0 {
+			return u, nil
+		}
+		body, size = c.reader(), c.size
 	}
 	r.prime(ctx, loc)
 	var hdr http.Header
@@ -104,8 +121,9 @@ func (r *repository) AppendBlobChunk(ctx context.Context, u provider.Upload, bod
 // upload. Otherwise it is sent first as a PATCH of its own (AppendBlobChunk), and the PUT has
 // no body: registries read the body of the closing PUT by its Content-Length, and JFrog drops
 // the body of a closing PUT that follows a PATCH and answers 201 for the short blob
-// (docs/registries/jfrog-jcr.md, item 2). When that PATCH fails, no PUT is sent. The
-// registry's DIGEST_INVALID wraps content.ErrMismatchedDigest.
+// (docs/registries/jfrog-jcr.md, item 2); a chunk of unknown size may be spooled there first.
+// When that PATCH fails, no PUT is sent. The registry's DIGEST_INVALID wraps
+// content.ErrMismatchedDigest.
 func (r *repository) FinishBlobUpload(ctx context.Context, u provider.Upload, d digest.Digest, body io.Reader, size int64) (ocispec.Descriptor, error) {
 	op := r.op("finish upload", u.ID)
 	if err := d.Validate(); err != nil {

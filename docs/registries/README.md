@@ -227,7 +227,7 @@ word upstream, and the row says so; where one costs Lajstrom something, the row 
 | Nexus 3.98.1 | Three wrong passwords for a user make Nexus answer that user 429 with `Retry-After`, the right password included, for about 30 s ([nexus.md](nexus.md#what-the-provider-must-do-differently)) | Authentication is out of the spec's purview. Anyone who knows the service account's name can keep Lajstrom out; the provider waits out the `Retry-After` |
 | Nexus 3.98.1, `docker` format | The task "Docker - Delete unused manifests and images" deletes an untagged referrer pushed by digest ([nexus.md](nexus.md#garbage-collection)) | Retention is not in the spec; Lajstrom writes the tag schema on this format, whose referrers the task keeps (#37) |
 | Gitea 1.27.3 | No `Range` support: a range is 200 with the whole blob, no `Accept-Ranges` ([gitea.md](gitea.md#blob-reads-ranges-sizes)); Forgejo answers 206 | "A registry SHOULD support the `Range` request header"; RFC 9110 lets a server ignore it. A resumed download starts over; worth a word upstream |
-| Gitea 1.27.3, Forgejo 17.0.1 | A `PATCH` without `Content-Range` after the first write is 400 `BLOB_UPLOAD_INVALID` "Stream uploads after first write are not allowed" ([gitea.md](gitea.md#uploads)) | 1.1.1 defines a chunk `PATCH` with `Content-Range` only; the streamed `PATCH` is Docker's, and one works. The provider streams a last chunk of unknown size into a session that holds bytes (gitea.md, item 4) |
+| Gitea 1.27.3, Forgejo 17.0.1 | A `PATCH` without `Content-Range` after the first write is 400 `BLOB_UPLOAD_INVALID` "Stream uploads after first write are not allowed" ([gitea.md](gitea.md#uploads)) | 1.1.1 defines a chunk `PATCH` with `Content-Range` only; the streamed `PATCH` is Docker's, and one works. The provider streams a chunk of unknown size into a session that holds bytes, and spools it first with `registries[].uploads.spoolUnknownLength` (gitea.md, item 4; #425) |
 | Gitea 1.27.3, Forgejo 17.0.1 | A re-pointed tag, and the delete of a tag, delete the manifest it named when nothing else holds it, with the layers only it used ([gitea.md](gitea.md#immutable-tags)) | Retention is not in the spec. Lajstrom re-points only the tag schema's index, whose old version is garbage |
 | Gitea 1.27.3, Forgejo 17.0.1 | Every challenge says `scope="*"`, whatever the request; the token is the user's for 24 h ([gitea.md](gitea.md#owners-tokens-and-create-on-push)) | Token auth is outside the spec. It cost every streamed upload until the provider kept its primed token under the request's own scopes (#120) |
 
@@ -407,7 +407,7 @@ cannot delete. The runs by hand are on the pages: [distribution.md](distribution
 ### Upload sessions
 
 `TestIntegrationUploads` (#24): a session continued by a second provider and its status, a chunk
-of unknown size, the monolithic `PUT`, the empty blob, a wrong digest refused as a digest
+of unknown size, two more spooled (`uploads.spoolUnknownLength`, #425), the monolithic `PUT`, the empty blob, a wrong digest refused as a digest
 mismatch, a chunk out of order refused, the cancel and the 404 of the session after it, and the
 mount. It passes on distribution and Zot on the filesystem, in CI on every pull request. On S3
 both fail at one step, the cancel of a session after a refused digest: distribution answers 500,

@@ -54,6 +54,9 @@ type Provider struct {
 	clients  clients
 	registry *remote.Registry
 	maxPages int // catalog pages; a field so that tests can lower it
+	// spoolUnknown is registries[].uploads.spoolUnknownLength: a chunk of unknown length into a
+	// session that holds bytes is spooled to learn its length (spool.go).
+	spoolUnknown bool
 
 	// mu serialises probing; probed is the answer of the first probe that succeeded.
 	mu     sync.Mutex
@@ -130,6 +133,8 @@ func NewWithOptions(cfg config.Registry, log *slog.Logger, o Options) (*Provider
 		log:      log,
 		clients:  newClients(cfg, u, log, o.Credential),
 		maxPages: maxPages,
+
+		spoolUnknown: cfg.Uploads.SpoolUnknownLength,
 	}
 	reg := &remote.Registry{RepositoryListPageSize: pageSize}
 	reg.Reference = registry.Reference{Registry: u.Host}

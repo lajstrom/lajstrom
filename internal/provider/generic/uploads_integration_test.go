@@ -14,20 +14,25 @@ import (
 	"github.com/opencontainers/go-digest"
 	"oras.land/oras-go/v2/content"
 
+	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
 // TestIntegrationUploads drives the BlobUploader against the registry of
 // LAJSTROM_TEST_REGISTRY: a session that a second provider (another replica, with a token
-// cache of its own) continues, the monolithic shape, a last chunk of unknown size, a wrong
-// digest, a chunk out of order, the cancel, the mount, the empty blob, and the download of a
-// blob by its digest alone (OpenBlob, on the second provider).
+// cache of its own) continues, the monolithic shape, a last chunk of unknown size, chunks of
+// unknown size spooled, a wrong digest, a chunk out of order, the cancel, the mount, the empty
+// blob, and the download of a blob by its digest alone (OpenBlob, on the second provider).
+// LAJSTROM_TEST_REGISTRY_SPOOL_UNKNOWN_LENGTH=1 turns uploads.spoolUnknownLength on for every
+// step, which Gitea and JFrog need for the steps with a chunk of unknown size after a write.
 func TestIntegrationUploads(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
 	pa, cfg := integrationProvider(ctx, t)
 	pb, _ := integrationProvider(ctx, t)
-	t.Logf("uploads against %s", cfg.URL)
+	t.Logf("uploads against %s, spoolUnknownLength=%v", cfg.URL, cfg.Uploads.SpoolUnknownLength)
 	name := "raw/it-" + randomHex(t) + "/uploads"
 	a, err := pa.Repository(ctx, name)
 	if err != nil {
@@ -95,6 +100,26 @@ func TestIntegrationUploads(t *testing.T) {
 			t.Fatal(err)
 		}
 		wantBlob(ctx, t, a, data)
+	})
+	step(t, "chunks of unknown size, spooled", func(t *testing.T) {
+		// On, whatever the environment says: the first chunk streams, the next two are spooled.
+		ps, _ := integrationProvider(ctx, t, func(c *config.Registry) { c.Uploads.SpoolUnknownLength = true })
+		s, err := ps.Repository(ctx, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := []byte("streamed, spooled, spooled " + randomHex(t))
+		u, _ := s.StartBlobUpload(ctx)
+		for _, chunk := range [][]byte{data[:10], data[10:19]} {
+			if u, err = s.AppendBlobChunk(ctx, u, io.MultiReader(bytes.NewReader(chunk)), -1); err != nil {
+				t.Fatalf("chunk %q of unknown size: %v", chunk, err)
+			}
+		}
+		if _, err := s.FinishBlobUpload(ctx, u, digest.FromBytes(data), io.MultiReader(bytes.NewReader(data[19:])), -1); err != nil {
+			t.Fatal(err)
+		}
+		wantBlob(ctx, t, a, data)
+		noSpoolLeft(t, tmp)
 	})
 	step(t, "empty blob", func(t *testing.T) {
 		u, _ := a.StartBlobUpload(ctx)

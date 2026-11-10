@@ -55,11 +55,18 @@ var vendorDefaults = map[vendor]config.CapabilityOverrides{
 	vendorHarbor: {},
 	// The rest depends on the repository format, which the referrers probe tells: afterProbe.
 	vendorNexus: {},
-	// The probe is right (docs/registries/gitea.md); the upload sessions need nothing of it.
+	// The probe is right (docs/registries/gitea.md). A chunk of unknown length after the first
+	// write needs registries[].uploads.spoolUnknownLength, which is the operator's: hintSpool.
 	vendorGitea: {},
 	// The probe is right since it wants a catalog in the 200; HEAD lies: afterProbe.
 	vendorJFrog: {},
 }
+
+// hintSpool reports whether the start hints at registries[].uploads.spoolUnknownLength for v:
+// Gitea and Forgejo refuse a chunk without Content-Range into a session that holds bytes (400),
+// JFrog too (416). The table never turns the flag on: it writes to disk, which is the operator's
+// to allow (#425).
+func hintSpool(v vendor) bool { return v == vendorGitea || v == vendorJFrog }
 
 // quirks are what the provider does differently for a vendor beyond provider.Capabilities, as
 // the vendor table and the probe decide them (afterProbe).

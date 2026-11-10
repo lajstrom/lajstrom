@@ -171,6 +171,16 @@ func TestLoadErrors(t *testing.T) {
 			wantNot: []string{"tokenRealmHosts[0]", "tokenRealmHosts[10]", "tokenRealmHosts[11]", "tokenRealmHosts[12]"},
 		},
 		{
+			name: "spoolUnknownLength not a bool",
+			file: minimal + "registries:\n  - name: local\n    url: \"http://zot:5000\"\n    uploads: {spoolUnknownLength: sometimes}\n",
+			want: []string{"line 6", "into bool"},
+		},
+		{
+			name: "unknown uploads key",
+			file: minimal + "registries:\n  - {name: local, url: \"http://zot:5000\", uploads: {spool: true}}\n",
+			want: []string{"field spool not found"},
+		},
+		{
 			name: "unknown capability",
 			file: minimal + "registries:\n  - {name: local, url: \"http://zot:5000\", capabilities: {deletes: false}}\n",
 			want: []string{"field deletes not found"},
@@ -256,6 +266,7 @@ registries:
     retries: -1
     capabilities: {referrers: false, catalog: false, deleteManifest: true, maxBlobSize: 1073741824}
     tokenRealmHosts: [auth.registry.example, 10.0.0.5]
+    uploads: {spoolUnknownLength: true}
 `
 	c, err := Load(writeConfig(t, file), nil)
 	if err != nil {
@@ -268,6 +279,7 @@ registries:
 			Name: "tuned", Type: "generic", URL: "https://registry.example", Timeout: 5 * time.Second, Retries: -1,
 			Capabilities:    CapabilityOverrides{Referrers: &f, Catalog: &f, DeleteManifest: &tr, MaxBlobSize: 1 << 30},
 			TokenRealmHosts: []string{"auth.registry.example", "10.0.0.5"},
+			Uploads:         RegistryUploads{SpoolUnknownLength: true},
 		},
 	}
 	if !reflect.DeepEqual(c.Registries, want) {

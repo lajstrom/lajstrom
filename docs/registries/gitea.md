@@ -41,7 +41,7 @@ deploy/compose/gitea/gitea.sh down          # both, with their volumes and the t
 | Organisation | `lajstrom-it`, private, by `POST /api/v1/orgs` |
 | Team | `packages` in the organisation: permission write, the one unit `repo.packages`; the user in it |
 | Token | the user's, scope `write:package`, by `POST /api/v1/users/lajstrom/tokens`, written to `deploy/compose/gitea/.work/<service>.token` (ignored by git) |
-| Lajstrom | `prefix: lajstrom-it/`, `auth.username: lajstrom`, the token in the variable `passwordEnv` names |
+| Lajstrom | `prefix: lajstrom-it/`, `auth.username: lajstrom`, the token in the variable `passwordEnv` names; `uploads.spoolUnknownLength: true` for clients that stream more than one chunk ([item 4](#what-the-provider-must-do-differently)) |
 
 `LAJSTROM_GITEA_CLEANUP_OLDER_THAN` (default `24h`) sets `[cron.cleanup_packages] OLDER_THAN`
 for the [cleanup](#cleanup) experiment.
@@ -50,7 +50,7 @@ for the [cleanup](#cleanup) experiment.
 
 | Registry | Version | Auth | Create on push | Referrers | Catalog | Delete manifest | Immutable tags | Blob redirect | Result |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Gitea | 1.27.3, local storage, `prefix: lajstrom-it/` (an organisation) | Bearer from `/v2/token` with the token; Basic straight on `/v2/` works too | yes, below an existing owner the user may write, at any depth; another owner 401, a missing one 404 | **no**: `/referrers/` is a plain-text 404; the `sha256-<digest>` tag schema | yes, `n`/`last`/`Link`, lexical; the user's view | yes, by digest, with every tag; by tag the tag, and the manifest with its last tag when it was pushed by tag only | **none**; tags are **case-insensitive and lower-cased** | none on local storage | pass but for ranges (Gitea serves none) and a streamed `PATCH` after the first chunk, with the fix of item 1 |
+| Gitea | 1.27.3, local storage, `prefix: lajstrom-it/` (an organisation) | Bearer from `/v2/token` with the token; Basic straight on `/v2/` works too | yes, below an existing owner the user may write, at any depth; another owner 401, a missing one 404 | **no**: `/referrers/` is a plain-text 404; the `sha256-<digest>` tag schema | yes, `n`/`last`/`Link`, lexical; the user's view | yes, by digest, with every tag; by tag the tag, and the manifest with its last tag when it was pushed by tag only | **none**; tags are **case-insensitive and lower-cased** | none on local storage | pass but for ranges (Gitea serves none) and a streamed `PATCH` after the first chunk, with the fix of item 1; that `PATCH` passes with `uploads.spoolUnknownLength` (item 4) |
 | Gitea | the same, no prefix | — | **no**: every repository needs an owner; `raw/…` is the owner `raw`, 404 | — | — | — | — | — | fail: nothing can be written |
 | Forgejo | 17.0.1, the same setup | the same | the same | the same: a 404 with an empty body | the same | the same | the same | none | as Gitea, but ranges work and the upload status is off by one byte |
 
@@ -85,7 +85,11 @@ serve log of the e2e run). That is right; no override in `registries[].capabilit
    Forgejo answer 400 `BLOB_UPLOAD_INVALID` "Stream uploads after first write are not allowed".
    The provider does it for `FinishBlobUpload` with a last chunk of unknown size
    (`TestIntegrationUploads/session across providers`, the "chunk of unknown size" step). A
-   docker client sends one streamed `PATCH`, which works.
+   docker client sends one streamed `PATCH`, which works. **Done in #425, behind a flag:** with
+   `registries[].uploads.spoolUnknownLength: true` the provider spools such a chunk to `$TMPDIR`
+   for its request and sends it with `Content-Range`; the first chunk still streams. The flag is
+   off by default, and the vendor table leaves it so: Lajstrom runs on ephemeral disks. With it
+   off, `serve` logs a hint at start (`vendor=gitea`), and such a chunk fails with the 400.
 5. Read a size-limit refusal as one: over `[packages] LIMIT_SIZE_CONTAINER` the closing `PUT`
    is 403 with an empty body, which the provider makes `ErrUnauthorized` (bad credentials), as
    it does Harbor's quota (harbor.md, item 1): the same contract question.
@@ -300,7 +304,7 @@ run apt-get in `ubuntu:22.04`, `ubuntu:24.04` and `debian:12`.
 | Test | Gitea, without the fix | Gitea, with the fix | Forgejo, with the fix |
 | --- | --- | --- | --- |
 | provider `TestIntegration` | **fail**: open blob with a range, 200 for 206 (the steps after it do not run) | the same | pass |
-| provider `TestIntegrationUploads` | **fail**: session across providers, `request body is not rewindable` | **fail**: the same step, the chunk of unknown size: 400 "Stream uploads after first write are not allowed" | the same as Gitea |
+| provider `TestIntegrationUploads` | **fail**: session across providers, `request body is not rewindable` | **fail**: the same step, the chunk of unknown size: 400 "Stream uploads after first write are not allowed"; **pass** with `uploads.spoolUnknownLength` (#425, 2026-11-10) | the same as Gitea (not run with the flag) |
 | ingest `TestIntegration` | pass | pass | pass |
 | raw `TestIntegration` | **fail**: the range, 200 | **fail**: the range | pass |
 | reindex `TestIntegration` | pass | pass | pass |
@@ -353,3 +357,7 @@ LAJSTROM_TEST_REGISTRY=localhost:5009 LAJSTROM_TEST_REGISTRY_USERNAME=lajstrom L
   LAJSTROM_TEST_POSTGRES_DSN='postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable' \
   go test -race -count=1 -tags integration ./...
 ```
+
+`LAJSTROM_TEST_REGISTRY_SPOOL_UNKNOWN_LENGTH=1` turns `uploads.spoolUnknownLength` on in the
+provider's integration tests ([item 4](#what-the-provider-must-do-differently)); without it
+`TestIntegrationUploads` fails at the chunk of unknown size, with it it passes.
