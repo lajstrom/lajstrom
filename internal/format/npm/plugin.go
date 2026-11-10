@@ -57,9 +57,6 @@ func (Plugin) EscapeName(name string) (string, error) {
 	return packagePath(name), nil
 }
 
-// Routes mounts nothing yet: publish is #305, the packuments and the tarballs #306.
-func (Plugin) Routes(format.Router, format.Deps) {}
-
 // RenderIndex renders nothing yet: the packuments are #306.
 func (Plugin) RenderIndex(context.Context, index.Repo, format.IndexScope, index.Reader) ([]format.Document, error) {
 	return nil, fmt.Errorf("%w: npm packuments", format.ErrUnsupported)
