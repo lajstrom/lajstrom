@@ -438,10 +438,30 @@ random bytes through a raw repo (`curl -T`) and through `/v2` (`oras push`), dow
 times at once each way (`curl`, and `oras blob fetch --output -`), checks every sha256, and
 every 0.2 s samples the server's resident set (`ps`), its Go heap in use
 (`go_memstats_heap_inuse_bytes` of the metrics listener) and the temporary files it holds open
-(`lsof`). It fails when the resident set of a phase passes 256 MiB, the bound of #62. It needs 3
-times the object's size of free disk at the peak (the object, the raw spool, Zot's copy, when
-Docker's disk is on the same filesystem), checks it before it starts, and deletes what it
-pushed when it ends.
+(`lsof`). It exits 1 when the resident set of a phase passes `LAJSTROM_LOAD_MAX_RSS_MIB`, by
+default 256 MiB, the bound of #62, and 2 when a transfer fails or a digest differs. It checks
+the free disk before it starts and deletes what it pushed when it ends.
+
+```sh
+make dev-up
+make load                                   # 1 upload at a time, 8 downloads at once
+LAJSTROM_LOAD_UPLOADS=8 make load           # 8 uploads at once too: 18 GiB of disk
+LAJSTROM_LOAD_SUMMARY=load.md make load     # the table as Markdown in load.md, too
+```
+
+`LAJSTROM_LOAD_UPLOADS` is how many uploads run at once in each upload phase, 1 by default;
+each goes to a file or image of its own (`big-<i>.bin`, `oci/<run>/big-<i>:v1`), a repository
+of its own in the registry, so that no upload finds its blob there already and skips sending
+it. The disk it needs at the peak, when
+Docker's disk is on the same filesystem as `$TMPDIR`: during the raw `PUT`, the object, one
+spool per upload and one upload in Zot's upload area per upload, 1 + 2 × U times the object;
+during the `/v2` push, the object, Zot's one copy (it deduplicates the same bytes) and U
+uploads, 2 + U times; plus 1 GiB. At 1 GiB that is 4 GiB for one upload and 18 GiB for 8.
+
+The [Load workflow](../.github/workflows/load.yml) runs it on a GitHub Linux runner every night,
+on demand, and on a pull request that changes the script or the workflow, at 1 GiB with 8
+uploads and 8 downloads at once, and puts the table in the job summary. It is not a required
+check: a failed run is a regression to look into, not a gate on other pull requests.
 
 On 2026-11-09, Lajstrom at `129dc47`, an Apple M4 Pro with 14 cores and 24 GiB, macOS 27.0.1,
 Zot v2.1.23 of the dev stack in OrbStack, client and server on the same machine:
