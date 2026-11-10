@@ -556,13 +556,14 @@ for the breaker, which opens after five as above.
 | header size | 1 MiB, fixed | `431 Request Header Fields Too Large` |
 | idle keep-alive connection | 120 s, fixed | the connection is closed |
 | a body that stops moving | `server.stallTimeout`, `1m` | each read of a request body and each write of a response must move within it, or the connection is closed; the handler gets a read or write error |
-| uploads at once | `server.maxConcurrentUploads`, no limit | `503` with `Retry-After: 5`, before the body is read |
+| uploads at once | `server.maxConcurrentUploads`, 32 | `503` with `Retry-After: 5`, before the body is read |
 | a manifest | `server.maxManifestSize`, 4 MiB | `413` |
 | the layers of a manifest | 1 000, fixed | `400 MANIFEST_INVALID` naming the bound, on every repo, before Lajstrom asks the registry about any layer |
 | a body of the management API | 64 KiB, fixed | `413` |
-| a file a frontend receives | the repo's `policy.maxFileSize` | `413` |
+| a file a frontend receives | the repo's `policy.maxFileSize`; by default npm 512 MiB, pypi and maven 4 GiB, apt and raw 8 GiB | `413` |
 | a blob of `/v2` | the repo's `policy.maxFileSize`, on an `oci` repo too, or the registry's `capabilities.maxBlobSize` when it is smaller | `413 SIZE_INVALID` naming the bound, before the blob streams when its size is declared (`Content-Length`, `Content-Range`), else where the bytes of the session pass the bound, counted across its `PATCH`es and the closing `PUT`; the session ends |
 | live `/v2` upload sessions of a principal | `server.uploadSessions.perRepo`, 256 in one repo, and `server.uploadSessions.perPrincipal`, 1024 in all repos, on each replica | `429 TOOMANYREQUESTS` with `Retry-After` for a new session, naming the bound and its key. A session counts while a request on it runs and for 5 minutes after the last one; an idle one stays resumable until it expires, an hour after its last request. Its `DELETE`, its closing `PUT` and an error that ends it free the slot at once |
+| the files of a Maven deploy | the repo's `policy.maven.maxSessionFiles`, 256 by default, in one publication session | `400` naming the bound and the key, before the file is stored; a file of the session sent again replaces it. Signatures and `.sigstore.json` count, checksum files and `maven-metadata.xml` do not; a deploy of a version that exists starts its own session |
 
 There is no bound on the whole length of a request or a response: a blob streams for as long as
 its size needs, which a fixed read or write timeout would cut off. `server.stallTimeout` bounds
@@ -570,9 +571,9 @@ what a slow or stuck client can hold instead (a connection, a goroutine, an uplo
 connection to the registry): only time in which no byte moves counts, and the time the server
 waits for the registry or the index between two reads does not. A client behind a slow link
 keeps sending and passes; one that stops sending, or opens a download and stops reading, is cut
-off. The limit on uploads at once is per replica, and off by default: set it from what a replica
+off. The limit on uploads at once is per replica, 32 by default (#246): set it from what a replica
 can hold at once, the disk for the spooled files of the frontends and the connections to the
-registry. A request refused for it is in the access log with status `503`. How many requests a
+registry; `0` lifts it. A request refused for it is in the access log with status `503`. How many requests a
 client may send is the edge's to limit.
 
 The bounds on live upload sessions count per replica too: a replica counts the sessions it has
@@ -595,10 +596,12 @@ network allow:
 | a file another frontend receives: apt `PUT …/upload`, a twine upload, a Maven `PUT` | spooled to **one temporary file of the body's size** in `$TMPDIR` for the length of the request (`format.Spool`, Maven's `ingest.spoolHashed`), so that the plugin can read it before ingest pushes it; removed when the request ends, and unlinked as soon as it is made where the system allows, so a crash leaves nothing. A twine upload takes a second spool of the file while it is checked (`pypi.readerAt`) |
 | what is read into memory | metadata only, each with a bound: a manifest (`server.maxManifestSize`, 4 MiB), a metadata layer (4 MiB), a POM (4 MiB), a deb's control archive (4 MiB unpacked), `maven-metadata.xml` (1 MiB), a wheel's `METADATA` (4 MiB), and the blocks of a zip's directory that ingest reads at offsets (64 KiB each, at most 32 kept) |
 
-So the disk of `$TMPDIR` must hold the apt, PyPI and Maven uploads that run at once: the sum
-of their sizes, bounded by `server.maxConcurrentUploads` and the repos' `policy.maxFileSize`.
-Raw uploads take none; the other formats move to streaming one by one (ADR 0014). `/v2`
-uploads take no disk of Lajstrom's, but for the spooled chunks of a registry with
+So the disk of `$TMPDIR` must hold the apt, npm, PyPI and Maven uploads that run at once: the
+sum of their sizes, bounded by `server.maxConcurrentUploads` and the repos' `policy.maxFileSize`:
+by default 32 uploads of at most 8 GiB (apt; 4 GiB for pypi and maven, 512 MiB for npm), 256 GiB
+at the worst, and twice the file for a twine upload, which spools twice. Lower either bound to
+fit the disk. Raw uploads take none; the other formats move to streaming one by one (ADR 0014).
+`/v2` uploads take no disk of Lajstrom's, but for the spooled chunks of a registry with
 `uploads.spoolUnknownLength` on.
 
 The streaming audit of #62 read every `io.ReadAll`, `bytes.Buffer` and temporary file of
