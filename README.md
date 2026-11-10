@@ -48,6 +48,7 @@ https://lajstrom.dev
 | [Threat model](docs/security/threat-model.md) | what is protected and from whom, STRIDE over the flows, each threat with its mitigation or its issue, what the edge must do |
 | [Releasing](docs/release.md) | how a tag becomes binaries, images, SBOMs and signatures; verifying a release |
 | [Architecture](docs/architecture.md) | components, storage model, the five flows |
+| [Comparison](docs/comparison.md) | Lajstrom next to Nexus, Artifactory, Harbor and others: a feature matrix with sources, where it differs, where it is not the right choice yet |
 | [Specs](docs/spec/) | manifest profile, layout and interfaces, HTTP routing, index schema, RBAC |
 | [ADRs](docs/adr/) | decisions and why |
 | [Roadmap](docs/roadmap.md) | milestones, lanes, week by week |
