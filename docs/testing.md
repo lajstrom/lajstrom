@@ -197,6 +197,26 @@ The containers use `--network host`, which reaches the server's `127.0.0.1` on L
 OrbStack; Docker Desktop is not measured (its host networking is a setting of its own). The
 scenarios run under whatever `bash` is first on `PATH`; the bash 3.2 of macOS is enough.
 
+### A registry with credentials and a prefix
+
+The registry `local` of the run may need credentials and an instance prefix, as Gitea's does
+([registries/gitea.md](registries/gitea.md)): `LAJSTROM_E2E_REGISTRY_USER` names the user,
+`LAJSTROM_E2E_REGISTRY_PASSWORD_FILE` a file with its password or token, and
+`LAJSTROM_E2E_REGISTRY_PREFIX` the prefix, ending in `/` (#353). `run.sh` writes them into
+`registries[].auth` and `registries[].prefix`, the password through the variable
+`LAJSTROM_E2E_REGISTRY_PASSWORD`, and passes all four to the scenarios; `cosign.sh` asks the
+backend below the prefix and with those credentials, through the backend's token realm when it
+challenges for a bearer. Against the Gitea of `deploy/compose/gitea`, the scenarios that pass
+there (Gitea serves no ranges, which `raw.sh` checks):
+
+```sh
+deploy/compose/gitea/gitea.sh up
+LAJSTROM_E2E_REGISTRY=localhost:5009 LAJSTROM_E2E_REGISTRY_USER=lajstrom \
+  LAJSTROM_E2E_REGISTRY_PASSWORD_FILE=deploy/compose/gitea/.work/gitea.token \
+  LAJSTROM_E2E_REGISTRY_PREFIX=lajstrom-it/ test/e2e/run.sh oras auth rbac oci-token cosign tokens
+deploy/compose/gitea/gitea.sh down
+```
+
 ### The ha stack
 
 `ha.sh` runs the scenarios of [acceptance.md](acceptance.md) §4 against the `ha` profile of the
