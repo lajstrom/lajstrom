@@ -10,7 +10,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -228,9 +227,11 @@ func TestListenURL(t *testing.T) {
 
 // TestHealthcheckTLS: without --url, a configuration with server.tls makes the check speak
 // https to server.listen on loopback, with the first certificate of server.tls.certFile as the
-// only root and a name it carries: the server's own certificate passes, a chain file whose
-// leaf a CA signed too; another certificate and an expired one do not. The key file is never
-// read. With --url nothing is pinned and the system roots apply, as before.
+// only root and a name it carries: the server's own certificate passes, and so does a chain
+// file whose leaf a CA signed for art.example.com alone, which names neither localhost nor
+// 127.0.0.1; another certificate and an expired one do not, and a certificate without a
+// subjectAltName is refused before any request. The key file is never read. With --url
+// nothing is pinned and the system roots apply, as before.
 func TestHealthcheckTLS(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name string, ders ...[]byte) string {
@@ -277,7 +278,10 @@ func TestHealthcheckTLS(t *testing.T) {
 			chained.URL + "/-/readyz: 200 ok\n", ""},
 		{"another certificate", []string{"--config", config(plain, write("other.pem", leaf.cert.Raw))}, "",
 			"unhealthy: " + plain.URL + "/-/readyz: tls: failed to verify certificate"},
-		{"an expired certificate", []string{"--config", config(old, write("expired.pem", expired.cert.Raw))}, "", "expired"},
+		{"an expired certificate", []string{"--config", config(old, write("expired.pem", expired.cert.Raw))}, "",
+			"unhealthy: " + old.URL + "/-/readyz: tls: failed to verify certificate: x509: certificate has expired"},
+		{"a certificate that names no host", []string{"--config", config(plain, write("ca.pem", ca.cert.Raw))}, "",
+			"the certificate names no host (subjectAltName)"},
 		{"a certFile without a certificate", []string{"--config", config(plain, notPEM)}, "", "server.tls.certFile " + notPEM + ": no certificate"},
 		{"a certFile that is missing", []string{"--config", config(plain, filepath.Join(dir, "missing.pem"))}, "", "server.tls.certFile"},
 		{"--url: the system roots", []string{"--url", plain.URL}, "", "unhealthy: " + plain.URL + "/-/readyz: tls: failed to verify certificate"},
@@ -323,8 +327,9 @@ type testCert struct {
 	key  *ecdsa.PrivateKey
 }
 
-// newTestCert makes a certificate for art.example.com and 127.0.0.1, valid for a day from
-// notBefore, signed by parent, or by itself when parent is nil; ca makes it a CA.
+// newTestCert makes a certificate for art.example.com alone, neither localhost nor an address
+// the check dials, valid for a day from notBefore, signed by parent, or by itself when parent
+// is nil; ca makes it a CA.
 func newTestCert(t *testing.T, parent *testCert, ca bool, notBefore time.Time) *testCert {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -336,12 +341,12 @@ func newTestCert(t *testing.T, parent *testCert, ca bool, notBefore time.Time) *
 		t.Fatal(err)
 	}
 	tmpl := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "lajstrom test " + serial.String()},
-		DNSNames: []string{"art.example.com"}, IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)},
+		DNSNames:  []string{"art.example.com"},
 		NotBefore: notBefore, NotAfter: notBefore.Add(24 * time.Hour), BasicConstraintsValid: true, IsCA: ca,
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
 	if ca {
 		tmpl.KeyUsage |= x509.KeyUsageCertSign
-		tmpl.DNSNames, tmpl.IPAddresses, tmpl.ExtKeyUsage = nil, nil, nil
+		tmpl.DNSNames, tmpl.ExtKeyUsage = nil, nil
 	}
 	signer, signerKey := tmpl, key
 	if parent != nil {
