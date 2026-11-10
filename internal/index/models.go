@@ -20,12 +20,22 @@ type Repo struct {
 	Name          string          // unique per format
 	Registry      string          // name of the backend registry in the configuration
 	Prefix        string          // path of the repo's packages below the registry's instance prefix; the MVP always uses <format>/<name>
-	Kind          string          // hosted; proxy and group after the MVP
+	Kind          string          // KindHosted, KindProxy or KindGroup; set by CreateRepo, never updated
 	AnonymousRead bool            // read for everyone (docs/spec/rbac.md §3, step 5)
 	Policy        json.RawMessage // maxFileSize, maven.sessionTimeout, …
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// Upstream is a proxy repo's settings (docs/spec/proxy-and-group.md §2.2): the upstream's
+	// name, the TTLs, offline, allow and deny; nil on another kind. internal/proxy reads it.
+	Upstream  json.RawMessage
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
+
+// The kinds of repos (docs/spec/proxy-and-group.md §1, ADR 0013).
+const (
+	KindHosted = "hosted" // holds what was published to it
+	KindProxy  = "proxy"  // holds what it fetched from its upstream
+	KindGroup  = "group"  // holds nothing: its members, in order (#311)
+)
 
 // User is a row of users (control plane).
 type User struct {
@@ -226,6 +236,32 @@ type OCIRepo struct {
 	RepoID int64
 	Path   string // <format>/<repo>/<package path>, without the instance prefix (as Provider names it)
 	SeenAt time.Time
+}
+
+// The states of a proxy_meta row.
+const (
+	ProxyMetaPresent = "present" // the upstream answered with a document
+	ProxyMetaAbsent  = "absent"  // the upstream answered 404 or 410: a negative entry
+)
+
+// ProxyMeta is a row of proxy_meta (derived, a cache of the upstream: docs/spec/index-schema.md,
+// Proxy and group repos): the upstream's document of one name of a proxy repo, as the plugin
+// chose to keep it. Reindex neither reads nor writes it, and ResetDerived leaves it. Its expiry
+// is not stored: it is CheckedAt plus the repo's TTL of its state, read with the row.
+type ProxyMeta struct {
+	ID          int64
+	RepoID      int64
+	Name        string // the plugin's key of the name (format.Proxier.Key)
+	Kind        string // the plugin's document kind
+	State       string // ProxyMetaPresent or ProxyMetaAbsent
+	Content     []byte // the document as the plugin kept it; nil when absent
+	ContentType string // of Content; "" when absent
+	SHA256      string // hex sha256 of Content; "" when absent
+	// ETag and LastModified are the upstream's validators as it sent them, for the conditional
+	// request of a revalidation; "" when it sent none.
+	ETag         string
+	LastModified string
+	CheckedAt    time.Time // when the upstream last answered for the name
 }
 
 // AuditFilter selects audit events for Reader.ListAudit. Empty strings and zero times do not

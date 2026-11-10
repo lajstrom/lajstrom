@@ -136,6 +136,11 @@ type Reader interface {
 
 	// ListOCIRepos returns the OCI repositories recorded for a repo, ordered by path.
 	ListOCIRepos(ctx context.Context, repoID int64) ([]OCIRepo, error)
+
+	// A cache of the upstream (ADR 0013).
+
+	// GetProxyMeta returns the proxy_meta row of a proxy repo's name key and document kind.
+	GetProxyMeta(ctx context.Context, repoID int64, name, kind string) (*ProxyMeta, error)
 }
 
 // Writer is the write side of the index; ingest, reindex, delete and the management API use
@@ -153,9 +158,10 @@ type Writer interface {
 	// CreateRepo inserts r; (format, name) must be new. It increments AuthVersion, as
 	// UpdateRepo, DeleteRepo, CreateBinding and DeleteBinding do, in the same transaction.
 	CreateRepo(ctx context.Context, r *Repo) error
-	// UpdateRepo stores r by r.ID and sets UpdatedAt. Format and Name cannot change.
+	// UpdateRepo stores r by r.ID and sets UpdatedAt. Format, Name and Kind cannot change: they
+	// are filled from the row.
 	UpdateRepo(ctx context.Context, r *Repo) error
-	// DeleteRepo removes the repo and every row that refers to it.
+	// DeleteRepo removes the repo and every row that refers to it, proxy_meta included.
 	DeleteRepo(ctx context.Context, id int64) error
 
 	// CreateUser inserts u; the name must be new. UID is made (NewUID) when it is empty.
@@ -271,6 +277,23 @@ type Writer interface {
 	PruneOCIRepos(ctx context.Context, repoID int64, seenBefore time.Time) (int, error)
 
 	// ResetDerived removes every derived row of a repo, or of all repos when repoID is 0,
-	// before a reindex. It never touches control-plane tables or tag claims.
+	// before a reindex. It never touches control-plane tables, tag claims or proxy_meta, which
+	// is a cache of the upstream and not of the registry.
 	ResetDerived(ctx context.Context, repoID int64) error
+
+	// A cache of the upstream (ADR 0013; docs/spec/proxy-and-group.md §4). A write of a row
+	// does not invalidate the repo's rendered documents of the name: the caller removes the
+	// index_cache rows of scope Name in the same transaction, a 304 (TouchProxyMeta) none.
+
+	// PutProxyMeta inserts m or replaces the row of (RepoID, Name, Kind), keeping its id, and
+	// fills ID. CheckedAt is now when zero.
+	PutProxyMeta(ctx context.Context, m *ProxyMeta) error
+	// TouchProxyMeta sets CheckedAt of the row and nothing else: the upstream answered 304.
+	TouchProxyMeta(ctx context.Context, id int64, checkedAt time.Time) error
+	// DeleteProxyMeta removes the rows of the name key name in a repo, of every kind, or every
+	// row of the repo when name is "", and returns how many it removed.
+	DeleteProxyMeta(ctx context.Context, repoID int64, name string) (int, error)
+	// ExpireProxyMeta removes the absent rows of a repo whose CheckedAt is before before, and
+	// returns how many it removed: the sweep of negative entries, by the repo's negativeTTL.
+	ExpireProxyMeta(ctx context.Context, repoID int64, before time.Time) (int, error)
 }
