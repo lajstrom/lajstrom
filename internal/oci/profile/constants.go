@@ -35,6 +35,8 @@ const (
 	MediaTypeMavenArtifact = "application/vnd.lajstrom.maven.artifact.v1"
 	// MediaTypeMavenPom is a maven POM, *.pom.
 	MediaTypeMavenPom = "application/vnd.lajstrom.maven.pom.v1+xml"
+	// MediaTypeNpmTarball is an npm package tarball, <name without the scope>-<version>.tgz.
+	MediaTypeNpmTarball = "application/vnd.lajstrom.npm.tarball.v1.tar+gzip"
 )
 
 // Annotation keys (docs/spec/manifest-profile.md §3). The OCI keys are used from ocispec:
@@ -85,6 +87,12 @@ const (
 	AnnotationMavenClassifier = "lajstrom.maven.classifier"
 	// AnnotationRawPath is the original path of a raw file, case preserved, /-separated.
 	AnnotationRawPath = "lajstrom.raw.path"
+	// AnnotationNpmIntegrity is npm's dist.integrity of a tarball layer, sha512-<base64> (layer
+	// annotation).
+	AnnotationNpmIntegrity = "lajstrom.npm.integrity"
+	// AnnotationNpmShasum is npm's dist.shasum of a tarball layer, the sha1 in lowercase hex
+	// (layer annotation).
+	AnnotationNpmShasum = "lajstrom.npm.shasum"
 )
 
 const (
@@ -178,9 +186,10 @@ var types = []Type{
 		Name: "maven", Format: "maven", MetadataRequired: true,
 		FileMediaTypes: []string{MediaTypeMavenArtifact, MediaTypeMavenPom},
 	},
+	{Name: "npm", Format: "npm", FileMediaTypes: []string{MediaTypeNpmTarball}, MetadataRequired: true},
 }
 
-// Types returns every known type: raw, pypi, deb, maven. The result is a copy.
+// Types returns every known type: raw, pypi, deb, maven, npm. The result is a copy.
 func Types() []Type {
 	out := make([]Type, len(types))
 	for i, t := range types {

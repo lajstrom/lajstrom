@@ -48,7 +48,7 @@ func TestTypes(t *testing.T) {
 			t.Errorf("type %s: MetadataRequired = %v", typ.Name, typ.MetadataRequired)
 		}
 	}
-	if want := []string{"raw", "pypi", "deb", "maven"}; !slices.Equal(names, want) {
+	if want := []string{"raw", "pypi", "deb", "maven", "npm"}; !slices.Equal(names, want) {
 		t.Errorf("Types() = %v, want %v", names, want)
 	}
 	if typ, ok := TypeByFormat("apt"); !ok || typ.Name != "deb" {
