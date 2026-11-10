@@ -50,7 +50,7 @@ func (p *Pipeline) validate(ctx context.Context, pub *publish) error {
 		return err
 	}
 	if !pub.readOnly {
-		if err := pub.checkSizes(); err != nil {
+		if err := pub.checkSizes(ctx); err != nil {
 			return err
 		}
 	}
@@ -101,19 +101,29 @@ func (pub *publish) checkTarget() error {
 	return nil
 }
 
-// checkSizes refuses a file layer larger than the maxFileSize of the repo's policy
-// (format.MaxFileSize), which the frontends check as the bytes come and which a manifest pushed
-// to /v2 meets here first. Inspect does not check: reindex keeps what the registry has, whatever
-// the policy says now.
-func (pub *publish) checkSizes() error {
+// checkSizes refuses a file layer larger than its bound (manifest-profile.md §5): the repo's
+// maxFileSize (format.MaxFileSize), which the frontends check as the bytes come and which a
+// manifest pushed to /v2 meets here first, or the registry's capabilities.maxBlobSize when that
+// is smaller, which no frontend reads. Inspect does not check: reindex keeps what the registry
+// has, whatever the policy says now.
+func (pub *publish) checkSizes(ctx context.Context) error {
 	limit, err := format.MaxFileSize(pub.repo)
-	if err != nil || limit < 0 {
+	if err != nil {
 		return err
+	}
+	bound := fmt.Sprintf("the maxFileSize of %s/%s", pub.repo.Format, pub.repo.Name)
+	if pub.prov != nil {
+		if caps, err := pub.prov.Capabilities(ctx); err == nil && caps.MaxBlobSize > 0 && (limit < 0 || caps.MaxBlobSize < limit) {
+			limit, bound = caps.MaxBlobSize, "the maxBlobSize of registry "+pub.repo.Registry
+		}
+	}
+	if limit < 0 {
+		return nil
 	}
 	for _, f := range pub.parsed.Files {
 		if f.Size > limit {
-			return &tooLarge{limit: limit, msg: fmt.Sprintf("the file %s of %d bytes is larger than the maxFileSize of %s/%s, %d bytes",
-				f.Title, f.Size, pub.repo.Format, pub.repo.Name, limit)}
+			return &tooLarge{limit: limit, msg: fmt.Sprintf("the file %s of %d bytes is larger than %s, %d bytes",
+				f.Title, f.Size, bound, limit)}
 		}
 	}
 	return nil

@@ -1,6 +1,7 @@
 package ingest_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/ingest"
+	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
 // setPolicy stores policy as the policy of the env's repo, in the index and in e.repo.
@@ -49,6 +51,42 @@ func TestIngestMaxFileSize(t *testing.T) {
 	e.setPolicy(t, `{"maxFileSize":5}`)
 	if _, err := e.ingest(t, built, raw, pkgPath); err != nil {
 		t.Errorf("Ingest of 5 bytes with maxFileSize 5 = %v", err)
+	}
+}
+
+// maxBlobRegistry is a registry whose capabilities say maxBlobSize.
+type maxBlobRegistry struct {
+	provider.Provider
+	max int64
+}
+
+func (r maxBlobRegistry) Capabilities(ctx context.Context) (provider.Capabilities, error) {
+	c, err := r.Provider.Capabilities(ctx)
+	c.MaxBlobSize = r.max
+	return c, err
+}
+
+// TestIngestMaxBlobSize: the registry's maxBlobSize bounds a file when it is below the repo's
+// maxFileSize (manifest-profile.md §5, #246), the message naming the registry; the frontends,
+// which bound a body by the repo's maxFileSize alone, meet it here, before anything is pushed.
+func TestIngestMaxBlobSize(t *testing.T) {
+	e := newEnv(t)
+	e.pipe = ingest.New(e.options(maxBlobRegistry{Provider: e.prov, max: 4}))
+	built, raw, pkgPath := e.prepare(t, upload(readme, "1.0.0", file{readme, "hello"}))
+	_, err := e.ingest(t, built, raw, pkgPath)
+	var mbe *http.MaxBytesError
+	if !errors.Is(err, ingest.ErrInvalid) || !errors.As(err, &mbe) || mbe.Limit != 4 {
+		t.Fatalf("Ingest of 5 bytes, maxBlobSize 4 = %v, want ErrInvalid and a MaxBytesError of 4", err)
+	}
+	if want := "the file Docs/Readme.md of 5 bytes is larger than the maxBlobSize of registry local, 4 bytes"; err.Error() != want {
+		t.Errorf("message %q, want %q", err, want)
+	}
+	if len(e.prov.PushReferences()) != 0 {
+		t.Errorf("the manifest was pushed: %+v", e.prov.PushReferences())
+	}
+	e.setPolicy(t, `{"maxFileSize":3}`)
+	if _, err := e.ingest(t, built, raw, pkgPath); err == nil || !strings.Contains(err.Error(), "the maxFileSize of raw/scratch, 3 bytes") {
+		t.Errorf("Ingest with maxFileSize 3 below maxBlobSize 4 = %v, want the repo's bound named", err)
 	}
 }
 
