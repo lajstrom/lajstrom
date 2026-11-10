@@ -8,18 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/oci/profile"
 )
-
-// distTag is the grammar of a dist-tag (docs/spec/manifest-profile.md §8): never begins with a
-// digit, so never read as a version.
-var distTag = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]{0,127}$`)
 
 // publication is a publish body that checkPublish took: the version, its document, the readme of
 // the body and the dist-tags that name the version.
@@ -36,8 +32,9 @@ type publication struct {
 // checkPublish, and the version published through deps.Ingest as one manifest of the profile,
 // built from the tarball and the version document. 201 {"ok": true}, also for the same tarball
 // again; 409 for another tarball under a published version; 400 naming the rule; 413 over the
-// repo's maxFileSize or the bound of the rest of the body. It needs write on the repo. A body
-// without _attachments is the packument update of npm deprecate and unpublish (#308), 501 here.
+// repo's maxFileSize or the bound of the rest of the body. It needs write on the repo. The
+// dist-tags of the body, latest when it has none, are journal adds. A body without _attachments
+// is the packument update of npm deprecate and unpublish (#308), 501 here.
 func (h *handlers) publish(w http.ResponseWriter, r *http.Request, repo index.Repo, name string) {
 	ctx := r.Context()
 	if err := format.Authorize(ctx, h.deps, auth.ActionWrite, repo); err != nil {
@@ -84,10 +81,17 @@ func (h *handlers) publish(w http.ResponseWriter, r *http.Request, repo index.Re
 		h.fail(w, r, err)
 		return
 	}
-	// TODO(#307): append a journal add for each tag of pub.tags (latest when the body has none)
-	// that does not name the version yet, after the version is indexed, so that a repeat after a
-	// failed append completes it (docs/spec/http-routing.md, npm, Publish). Until the journal
-	// exists nothing is recorded: the packument's latest is the highest version.
+	// The dist-tags go to the journal after the version is indexed, those that name it already
+	// excepted, so that a repeat after a failed append completes it (docs/spec/http-routing.md,
+	// npm, Publish).
+	tags := pub.tags
+	if len(tags) == 0 {
+		tags = []string{profile.LatestTag}
+	}
+	if err := h.setTags(ctx, repo, name, pub.version, tags); err != nil {
+		h.fail(w, r, err)
+		return
+	}
 	h.deps.Log.InfoContext(ctx, "npm: published", "repo", repo.Format+"/"+repo.Name, "package", name, "version", pub.version,
 		"digest", res.Digest.String(), "existed", res.Existed, "distTags", pub.tags)
 	w.Header().Set("Docker-Content-Digest", res.Digest.String())
@@ -183,7 +187,7 @@ func tagsOf(raw json.RawMessage, version string) ([]string, error) {
 	var out []string
 	for tag, v := range tags {
 		switch {
-		case !distTag.MatchString(tag):
+		case !profile.IsDistTag(tag):
 			return nil, fmt.Errorf("%w: the dist-tag %q is not a letter and up to 127 letters, digits, '.', '_' or '-'", format.ErrInvalid, tag)
 		case v != version:
 			return nil, fmt.Errorf("%w: the dist-tag %s names %s, which this publish is not; it publishes %s", format.ErrInvalid, tag, v, version)

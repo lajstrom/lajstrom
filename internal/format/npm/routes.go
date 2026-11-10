@@ -20,6 +20,7 @@ import (
 //	GET /{repo}/<name>/<version>     one version of the full packument, or of the dist-tag
 //	GET /{repo}/<name>/-/<file>      a tarball, through format.ServeBlob
 //	PUT /{repo}/<name>               npm publish (publish.go), write
+//	    /{repo}/-/…                  the registry's own routes (special): dist-tags (disttags.go)
 //
 // GET is HEAD too. Every answer is JSON, an error {"error": "<message>"}.
 func (p Plugin) Routes(r format.Router, deps format.Deps) {
@@ -29,6 +30,42 @@ func (p Plugin) Routes(r format.Router, deps format.Deps) {
 	h := &handlers{deps: deps, plugin: p}
 	r.HandleFunc("GET /{repo}/{path...}", h.get)
 	r.HandleFunc("PUT /{repo}/{path...}", h.put)
+	r.HandleFunc("DELETE /{repo}/{path...}", h.del)
+}
+
+// special returns the segments of a path below /npm/<repo>/-/, the registry's own routes, and
+// nil for any other path.
+func special(path string) []string {
+	rest, ok := strings.CutPrefix(path, "-/")
+	if !ok {
+		return nil
+	}
+	return strings.Split(rest, "/")
+}
+
+// serveSpecial dispatches a route below /npm/<repo>/-/; each checks its own action. Everything
+// else there (npm token, access, owner, team, star, profile) is 404.
+func (h *handlers) serveSpecial(w http.ResponseWriter, r *http.Request, segs []string) {
+	repo, ok := format.RepoFrom(r.Context())
+	if !ok {
+		h.fail(w, r, errors.New("npm: the route has no repo"))
+		return
+	}
+	switch segs[0] {
+	case "package":
+		h.distTags(w, r, repo, segs[1:])
+	default:
+		h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
+	}
+}
+
+// del dispatches a DELETE: the registry's own routes; nothing else yet.
+func (h *handlers) del(w http.ResponseWriter, r *http.Request) {
+	if segs := special(r.PathValue("path")); segs != nil {
+		h.serveSpecial(w, r, segs)
+		return
+	}
+	h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
 }
 
 // handlers are the npm routes over one format.Deps.
@@ -62,6 +99,10 @@ func parseTarget(p string) (target, bool) {
 // put dispatches a PUT: the publish of a package; the packument update of npm deprecate and
 // unpublish, PUT <name>/-rev/<rev>, is not implemented yet (#308).
 func (h *handlers) put(w http.ResponseWriter, r *http.Request) {
+	if segs := special(r.PathValue("path")); segs != nil {
+		h.serveSpecial(w, r, segs)
+		return
+	}
 	repo, ok := format.RepoFrom(r.Context())
 	if !ok {
 		h.fail(w, r, errors.New("npm: the route has no repo"))

@@ -22,6 +22,10 @@ import (
 // get dispatches a GET (and a HEAD) once the principal may read the repo: the packument of a
 // package, one of its versions, or a tarball (docs/spec/http-routing.md, npm).
 func (h *handlers) get(w http.ResponseWriter, r *http.Request) {
+	if segs := special(r.PathValue("path")); segs != nil {
+		h.serveSpecial(w, r, segs)
+		return
+	}
 	repo, ok := format.RepoFrom(r.Context())
 	if !ok {
 		h.fail(w, r, errors.New("npm: the route has no repo"))
