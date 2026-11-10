@@ -23,8 +23,9 @@ as in Basic, buys a new one with the default expiry (http-routing.md, npm); nobo
 that way.
 Passwords and token secrets are never logged; tokens are stored hashed (sha256) and shown once.
 Failed password checks are throttled per account (by uid; a name that no user has, by the
-name) and, with `server.trustedProxies`, per client address; a throttled request is `429` with
-`Retry-After`, whatever its password. Tokens are not throttled (docs/auth.md, #130).
+name) and per client address, where Lajstrom knows the client: with `server.trustedProxies`
+behind an edge, or with `server.tls`, when the peer is the client (#248); a throttled request is
+`429` with `Retry-After`, whatever its password. Tokens are not throttled (docs/auth.md, #130).
 
 ### Users: the uid and the name
 

@@ -1,6 +1,6 @@
 # 0011. The client address behind a reverse proxy: a list of trusted proxies, nothing else
 
-- Status: accepted
+- Status: accepted; amended by #248 (below, Amendment)
 - Date: 2026-11-08
 - Deciders: gecube
 
@@ -170,3 +170,13 @@ where the address is still real.
 - Entries and header values may be IPv6; an `X-Forwarded-For` entry that carries a port (some
   edges write `address:port`) is parsed without it; an entry that is not an address makes the
   whole header untrusted and the peer the client, logged at debug.
+
+## Amendment: TLS in Lajstrom (#248, 2026-11-10)
+
+With `server.tls` set, Lajstrom terminates TLS itself: the front is "nothing" of the two
+supported fronts above, and the peer is the client. An empty `server.trustedProxies` then turns
+the per-address throttles on with the peer as the client, and the startup line says so; behind
+an edge (no `server.tls`) an empty list still turns them off. The one front where this makes
+every client one bucket is an L4 balancer that hides the client's address in front of
+`server.tls`: as above, the address is then the balancer's, and an L7 edge with
+`server.trustedProxies` is the way to keep it.
