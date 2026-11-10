@@ -23,6 +23,10 @@ const (
 	maxPackageJSON = 2 << 20
 )
 
+// maxPaths bounds the paths of the entries a read keeps for npm's directories.bin (normalise):
+// past it they are dropped, and only a directories.bin to expand is refused.
+var maxPaths = 16 << 20
+
 // The files of a tarball's top directory that the profile looks at
 // (docs/spec/manifest-profile.md §2, npm).
 const (
@@ -43,6 +47,10 @@ type Tarball struct {
 	// HasShrinkwrap and HasBindingGyp say whether the top directory has npm-shrinkwrap.json and
 	// binding.gyp, regular files.
 	HasShrinkwrap, HasBindingGyp bool
+	// paths are the paths of the entries below Root, each followed by a NUL, which no tar path
+	// has; nil and pathsDropped when they were more than maxPaths bytes.
+	paths        []byte
+	pathsDropped bool
 }
 
 // HasInstallScript reports whether an install of the package runs a script: package.json has a
@@ -101,6 +109,7 @@ func (t *Tarball) take(r io.Reader, h *tar.Header, pkg *[]byte) error {
 	if err != nil {
 		return err
 	}
+	t.keep(rel)
 	regular := h.Typeflag == tar.TypeReg
 	switch {
 	case strings.EqualFold(rel, filePackageJSON):
@@ -115,6 +124,17 @@ func (t *Tarball) take(r io.Reader, h *tar.Header, pkg *[]byte) error {
 		t.HasBindingGyp = true
 	}
 	return nil
+}
+
+// keep keeps the path rel of an entry, unless it is the top directory, up to maxPaths bytes.
+func (t *Tarball) keep(rel string) {
+	switch {
+	case rel == "" || t.pathsDropped:
+	case len(t.paths)+len(rel)+1 > maxPaths:
+		t.paths, t.pathsDropped = nil, true
+	default:
+		t.paths = append(append(t.paths, rel...), 0)
+	}
 }
 
 // entry returns the path of h below the top directory, "" for the top directory itself, and

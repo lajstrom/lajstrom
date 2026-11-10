@@ -79,7 +79,8 @@ func (fc *facts) layer(name, version string) profile.Layer {
 }
 
 // check compares the document of a version with the tarball's package.json: the name and the
-// version npm takes, the same in both, and what an install runs (checkInstall).
+// version npm takes, the same in both, and what an install runs (checkInstall), both normalised
+// as npm's CLI normalises the document it sends (Tarball.normalise).
 func (fc *facts) check(doc *PackageJSON) error {
 	pkg := fc.tarball.PackageJSON
 	if err := CheckName(pkg.Name); err != nil {
@@ -91,6 +92,13 @@ func (fc *facts) check(doc *PackageJSON) error {
 	if doc.Name != pkg.Name || doc.Version != pkg.Version {
 		return fmt.Errorf("%w: the version document is of %s@%s, the tarball's package.json of %s@%s",
 			format.ErrInvalid, doc.Name, doc.Version, pkg.Name, pkg.Version)
+	}
+	doc, err := fc.tarball.normalise(doc)
+	if err != nil {
+		return err
+	}
+	if pkg, err = fc.tarball.normalise(pkg); err != nil {
+		return err
 	}
 	return checkInstall(doc, pkg)
 }
