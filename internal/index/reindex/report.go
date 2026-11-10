@@ -23,9 +23,12 @@ type RepoReport struct {
 	Referrers       int       `json:"referrers"`
 	Foreign         []Finding `json:"foreign"`
 	OrphanReferrers []Finding `json:"orphanReferrers"`
-	Drift           []Drift   `json:"drift"`
-	Errors          []Finding `json:"errors"`
-	Truncated       bool      `json:"truncated"` // a list stopped at maxFindings entries
+	// OrphanJournal are the npm journal entries of an OCI repository without versions
+	// (docs/spec/manifest-profile.md §8): not indexed, adopted by the next append to the package.
+	OrphanJournal []Finding `json:"orphanJournal"`
+	Drift         []Drift   `json:"drift"`
+	Errors        []Finding `json:"errors"`
+	Truncated     bool      `json:"truncated"` // a list stopped at maxFindings entries
 }
 
 // Finding is a manifest, or a failure, that a RepoReport lists.
@@ -60,5 +63,6 @@ func add[T any](r *RepoReport, list *[]T, v T) {
 // newRepoReport returns the empty report of a repo, with empty lists rather than nil ones, so
 // the JSON has [] for them.
 func newRepoReport(repo string) RepoReport {
-	return RepoReport{Repo: repo, Foreign: []Finding{}, OrphanReferrers: []Finding{}, Drift: []Drift{}, Errors: []Finding{}}
+	return RepoReport{Repo: repo, Foreign: []Finding{}, OrphanReferrers: []Finding{}, OrphanJournal: []Finding{},
+		Drift: []Drift{}, Errors: []Finding{}}
 }
