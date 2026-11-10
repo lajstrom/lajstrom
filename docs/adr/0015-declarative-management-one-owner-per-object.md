@@ -1,6 +1,6 @@
 # 0015. Declarative management: one owner per object
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-10
 - Deciders: gecube
 
@@ -111,6 +111,11 @@ The survey's open questions (§8) were answered by the lead on 2026-11-10: the i
 (point 2), named RoleBindings and no git-only mode in v1 (point 10), sources in the configuration
 only (point 5), a conflict refuses the whole revision (point 6), prune off by default for watched
 directories (point 8), toggles in a state sub-resource (point 11), and `409 MANAGED` (point 4).
+Accepted by the lead on 2026-11-10 with the three questions of its PR answered as proposed: a
+RoleBinding's identity is `spec.name`, like every kind's key; a held prune (`Orphaned`, waiting
+for confirmation or referenced by another owner's group) changes nothing, so the rest of the
+revision applies, while a conflict or an invalid object still refuses it whole; and `offline`
+moves to the state sub-resource before v0.1.0, so it never ships under `upstream`.
 
 1. **Declarable kinds:** `Repo` (hosted, proxy and group, with its policy) and `RoleBinding`;
    later OIDC group mappings and retention rules. The configuration keeps the infrastructure:
@@ -455,9 +460,8 @@ apply; the other changes of the plan are elided here.
   model gets a review of these two surfaces when the watcher lands.
 - `repos` is deprecated: every install that uses it migrates before the release that removes it,
   and the quickstarts and the Compose example move to a `dir` source.
-- `offline` leaves `upstream` for the state sub-resource: a change of api.md, configuration.md and
-  proxy-and-group.md §2.2, allowed before 1.0 by the minor-version rule and stated in the notes of
-  its release.
+- `offline` leaves `upstream` for the state sub-resource before v0.1.0, so no release carries it
+  under `upstream`: a change of api.md, configuration.md and proxy-and-group.md §2.2.
 - `lajstrom.io/v1alpha1` is a new contract: it changes under the same rule until it is `v1`. The
   owner columns, the `sources` table, the named RoleBindings, the `MANAGED` code, the new members
   of the error envelope and of the resources, and the endpoints of `/api/v1/sources` change
