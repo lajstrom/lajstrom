@@ -44,6 +44,7 @@ type fakeRegistry struct {
 	authMode       string // "", "basic" or "bearer"
 	user, pass     string // the credentials auth accepts
 	token          string // the bearer token /token issues
+	realm          string // the realm of the bearer challenge; empty: the fake's own /token
 
 	// hook sees every request first; it returns true when it answered it.
 	hook func(w http.ResponseWriter, r *http.Request) bool
@@ -164,7 +165,11 @@ func (f *fakeRegistry) authorized(w http.ResponseWriter, r *http.Request) bool {
 		if r.Header.Get("Authorization") == "Bearer "+f.token {
 			return true
 		}
-		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm=%q,service="fake"`, f.srv.URL+"/token"))
+		realm := f.realm
+		if realm == "" {
+			realm = f.srv.URL + "/token"
+		}
+		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm=%q,service="fake"`, realm))
 	default:
 		return true
 	}

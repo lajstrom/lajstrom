@@ -101,7 +101,7 @@ func New(cfg config.Registry, log *slog.Logger) (*Provider, error) {
 		prefix:   normalisePrefix(cfg.Prefix),
 		override: cfg.Capabilities,
 		log:      log,
-		clients:  newClients(cfg, u.Host, log),
+		clients:  newClients(cfg, u, log),
 		maxPages: maxPages,
 	}
 	reg := &remote.Registry{RepositoryListPageSize: pageSize}

@@ -50,11 +50,17 @@ func (e *backendError) Unwrap() []error { return []error{e.kind, e.cause} }
 //   - HTTP 401 and 403, UNAUTHORIZED, DENIED, and a Basic challenge without configured
 //     credentials: ErrUnauthorized, the registry rejected Lajstrom's own credentials.
 //
-// Everything else, context errors included, is wrapped with %w and the operation. nil stays
-// nil. errdef.ErrAlreadyExists is not translated: the call sites where it means success drop it.
+// A refused token realm (realmError) is wrapped without what net/http and oras-go put around
+// it, which names the request URL. Everything else, context errors included, is wrapped with
+// %w and the operation. nil stays nil. errdef.ErrAlreadyExists is not translated: the call
+// sites where it means success drop it.
 func translate(op string, err error) error {
 	if err == nil {
 		return nil
+	}
+	var realm *realmError
+	if errors.As(err, &realm) {
+		return fmt.Errorf("generic: %s: %w", op, realm)
 	}
 	var resp *errcode.ErrorResponse
 	if errors.As(err, &resp) {
