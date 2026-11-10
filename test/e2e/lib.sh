@@ -16,6 +16,9 @@
 #                               LAJSTROM_E2E_PASSWORD (run.sh makes one, an admin): $E2E_USER,
 #                               $E2E_PASSWORD, and $E2E_CURLRC, a curl configuration in DIR with
 #                               both, for -K; exits 2 when they are not set
+#   free_port                   a port of 127.0.0.1 for a server of the harness (run.sh,
+#                               manual/npm-proxy.sh): nothing listens on it, and it is below the
+#                               ephemeral range
 #
 # and an ERR trap: any command that fails where set -e would exit prints "FAIL <script>: exit N
 # from: <the command>" and the calls that led there before the script exits, so that a broken
@@ -81,6 +84,31 @@ e2e_credentials() {
 	fi
 	E2E_USER="$LAJSTROM_E2E_USER" E2E_PASSWORD="$LAJSTROM_E2E_PASSWORD" E2E_CURLRC="$1/e2e.curlrc"
 	(umask 077 && printf 'user = "%s:%s"\n' "$E2E_USER" "$E2E_PASSWORD" >"$E2E_CURLRC")
+}
+
+# free_port draws ports from 20000 up to the start of the ephemeral range, the ports connect()
+# gives to clients, and prints the first that nothing listens on (curl: connection refused).
+# Not an ephemeral port: on Linux a port that a client socket of 127.0.0.1 holds, open or for a
+# minute in TIME_WAIT after a curl, apt-get or registry connection, refuses a connection as a
+# free port does, but a listener cannot bind it (#372). The range starts at
+# /proc/sys/net/ipv4/ip_local_port_range on Linux (32768 by default) and at
+# net.inet.ip.portrange.first on macOS (49152); when it starts below 21000, any port from 20000.
+free_port() {
+	local first="" port rc _
+	if [ -r /proc/sys/net/ipv4/ip_local_port_range ]; then
+		read -r first _ </proc/sys/net/ipv4/ip_local_port_range || first=""
+	else
+		first="$(sysctl -n net.inet.ip.portrange.first 2>/dev/null)" || first=""
+	fi
+	case "$first" in "" | *[!0-9]*) first=32768 ;; esac
+	[ "$first" -gt 21000 ] || first=60000
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		port=$((20000 + RANDOM % (first - 20000)))
+		rc=0
+		curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$port/" || rc=$?
+		[ "$rc" != 7 ] || { echo "$port"; return 0; }
+	done
+	return 1
 }
 
 # _e2e_err STATUS COMMAND LINE is the ERR trap.

@@ -136,10 +136,21 @@ trap finish EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# free_port is that of test/e2e/lib.sh, whose traps this script does without: a port from 20000
+# up to the ephemeral range that nothing listens on. On Linux a port that a client socket holds,
+# open or in TIME_WAIT, refuses a connection as a free one does, but a listener cannot bind it
+# (#372).
 free_port() {
-	local port rc _
+	local first="" port rc _
+	if [ -r /proc/sys/net/ipv4/ip_local_port_range ]; then
+		read -r first _ </proc/sys/net/ipv4/ip_local_port_range || first=""
+	else
+		first="$(sysctl -n net.inet.ip.portrange.first 2>/dev/null)" || first=""
+	fi
+	case "$first" in "" | *[!0-9]*) first=32768 ;; esac
+	[ "$first" -gt 21000 ] || first=60000
 	for _ in 1 2 3 4 5 6 7 8 9 10; do
-		port=$((20000 + RANDOM % 40000))
+		port=$((20000 + RANDOM % (first - 20000)))
 		rc=0
 		curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$port/" || rc=$?
 		[ "$rc" != 7 ] || { echo "$port"; return 0; }

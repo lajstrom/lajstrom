@@ -54,18 +54,6 @@ finish() {
 }
 trap finish EXIT
 
-# free_port prints a port of 127.0.0.1 that nothing listens on (curl: connection refused).
-free_port() {
-	local port rc _
-	for _ in 1 2 3 4 5 6 7 8 9 10; do
-		port=$((20000 + RANDOM % 40000))
-		rc=0
-		curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$port/" || rc=$?
-		[ "$rc" != 7 ] || { echo "$port"; return 0; }
-	done
-	return 1
-}
-
 (cd "$root" && make --no-print-directory build) >"$tmp/build.log" 2>&1 || { cat "$tmp/build.log" >&2; exit 2; }
 port="$(free_port)" && mport="$(free_port)" || { echo "npm-proxy.sh: no free port" >&2; exit 2; }
 base="http://127.0.0.1:$port"
