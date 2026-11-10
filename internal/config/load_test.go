@@ -31,14 +31,19 @@ func env(m map[string]string) func(string) (string, bool) {
 	}
 }
 
-const minimal = "server:\n  listen: \":8080\"\n"
+// listenOnly is a configuration with server.listen alone, which Load refuses: the externalURL
+// is required (#248). minimal adds it.
+const (
+	listenOnly = "server:\n  listen: \":8080\"\n"
+	minimal    = listenOnly + "  externalURL: https://art.example.com\n"
+)
 
 func TestLoadDefaults(t *testing.T) {
 	tests := []struct {
 		name string
 		file string
 	}{
-		{name: "only server.listen", file: minimal},
+		{name: "server.listen and server.externalURL", file: minimal},
 		{name: "explicit null sections", file: minimal + "log:\ndatabase:\nregistries:\ningest:\nreconcile:\nkeys:\nrepos:\n"},
 	}
 	for _, tt := range tests {
@@ -48,7 +53,7 @@ func TestLoadDefaults(t *testing.T) {
 				t.Fatalf("Load: %v", err)
 			}
 			want := &Config{
-				Server: Server{Listen: ":8080", ShutdownTimeout: 30 * time.Second, MaxManifestSize: 4 << 20, MetricsListen: "127.0.0.1:9464",
+				Server: Server{Listen: ":8080", ExternalURL: "https://art.example.com", ShutdownTimeout: 30 * time.Second, MaxManifestSize: 4 << 20, MetricsListen: "127.0.0.1:9464",
 					StallTimeout: time.Minute},
 				Log:       Log{Level: "info", Format: "text"},
 				Database:  Database{Driver: "sqlite", DSN: "file:lajstrom.db"},
@@ -121,7 +126,7 @@ func TestLoadErrors(t *testing.T) {
 			file: minimal + "registries:\n  - {name: local, url: \"http://zot:5000\", auth: {username: u, password: hunter2}}\n",
 			want: []string{"field password not found"},
 		},
-		{name: "duration without unit", file: minimal[:len(minimal)-1] + "\n  shutdownTimeout: 30\n", want: []string{"line 3", "into time.Duration", "with its unit: 0s"}},
+		{name: "duration without unit", file: minimal[:len(minimal)-1] + "\n  shutdownTimeout: 30\n", want: []string{"line 4", "into time.Duration", "with its unit: 0s"}},
 		{name: "a zero without unit", file: minimal + "reconcile: {interval: 0}\n", want: []string{"into time.Duration", "with its unit: 0s"}},
 		{name: "negative claim TTL", file: minimal + "ingest: {claimTTL: -1m}\n", want: []string{"ingest.claimTTL: must not be negative"}},
 		{name: "negative reconcile interval", file: minimal + "reconcile: {interval: -1h}\n", want: []string{"reconcile.interval: must not be negative"}},
@@ -594,7 +599,8 @@ func TestExampleFile(t *testing.T) {
 
 // TestExternalURL checks the rules of server.externalURL (docs/spec/http-routing.md §1,
 // docs/acceptance.md C-02 and C-03): https://<host>[:port] without a path, query or fragment;
-// http only for a loopback host with server.insecureHTTP.
+// http only for a loopback host with server.insecureHTTP; required but with server.insecureHTTP
+// (#248).
 func TestExternalURL(t *testing.T) {
 	tests := []struct {
 		url      string
@@ -602,6 +608,8 @@ func TestExternalURL(t *testing.T) {
 		want     string // a substring of the error; empty for none
 	}{
 		{url: "https://art.example.com"},
+		{url: "", want: "must be set to the URL clients use"},
+		{url: "", insecure: true},
 		{url: "https://art.example.com:8443/"},
 		{url: "https://[2001:db8::1]:443"},
 		{url: "http://localhost:8080", insecure: true},
@@ -620,7 +628,7 @@ func TestExternalURL(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%s insecure=%v", tt.url, tt.insecure), func(t *testing.T) {
-			file := fmt.Sprintf("%s  externalURL: %q\n  insecureHTTP: %v\n", minimal, tt.url, tt.insecure)
+			file := fmt.Sprintf("%s  externalURL: %q\n  insecureHTTP: %v\n", listenOnly, tt.url, tt.insecure)
 			_, err := Load(writeConfig(t, file), nil)
 			switch {
 			case tt.want == "" && err != nil:

@@ -58,6 +58,8 @@ externalURL "https://localhost:18743": www-authenticate: Bearer realm="https://l
 ```
 
 (`curl -sD - https://localhost:18743/v2/` through nginx, Lajstrom restarted between the two.)
+Since #248 the key is required outside the dev stack (`server.insecureHTTP`), so the first line
+is the dev stack's only.
 
 ### Uploads
 

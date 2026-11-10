@@ -133,7 +133,7 @@ func TestAdminKeyMasterKeyFile(t *testing.T) {
 	}
 
 	withFile := filepath.Join(dir, "with-file.yaml")
-	body := "server:\n  listen: \":8080\"\ndatabase:\n  driver: sqlite\n  dsn: \"" + dsn + "\"\n" +
+	body := "server:\n  listen: \":8080\"\n  externalURL: https://art.example.com\ndatabase:\n  driver: sqlite\n  dsn: \"" + dsn + "\"\n" +
 		"keys:\n  masterKeyEnv: LAJSTROM_MASTER_KEY\n  masterKeyFile: " + keyFile + "\n"
 	if err := os.WriteFile(withFile, []byte(body), 0o600); err != nil {
 		t.Fatal(err)

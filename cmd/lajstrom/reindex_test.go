@@ -22,7 +22,7 @@ func TestReindexAttach(t *testing.T) {
 		}
 		return p
 	}
-	cfg := write("lajstrom.yaml", "server:\n  listen: \":8080\"\ndatabase:\n  driver: sqlite\n  dsn: \"file:"+
+	cfg := write("lajstrom.yaml", "server:\n  listen: \":8080\"\n  externalURL: https://art.example.com\ndatabase:\n  driver: sqlite\n  dsn: \"file:"+
 		filepath.Join(dir, "lajstrom.db")+"\"\nregistries:\n  - name: local\n    url: \"http://127.0.0.1:1\"\n")
 	good := write("good.txt", "# raw/assets on the old registry\nraw/assets/docs/readme.md\n\n  raw/assets/bin/tool  \n")
 	runSteps(t, cfg, []step{
@@ -45,7 +45,7 @@ func TestReindexAttach(t *testing.T) {
 func TestReindex(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "lajstrom.yaml")
-	body := "server:\n  listen: \":8080\"\ndatabase:\n  driver: sqlite\n  dsn: \"file:" + filepath.Join(dir, "lajstrom.db") + "\"\n" +
+	body := "server:\n  listen: \":8080\"\n  externalURL: https://art.example.com\ndatabase:\n  driver: sqlite\n  dsn: \"file:" + filepath.Join(dir, "lajstrom.db") + "\"\n" +
 		"registries:\n  - name: local\n    url: \"http://127.0.0.1:1\"\n"
 	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
 		t.Fatal(err)

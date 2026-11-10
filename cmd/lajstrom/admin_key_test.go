@@ -33,7 +33,7 @@ var testMasterKey = strings.Repeat("0123456789abcdef", 4)
 func writeKeyConfig(t *testing.T, dir string) (cfg, dsn string) {
 	t.Helper()
 	cfg, dsn = filepath.Join(dir, "lajstrom.yaml"), "file:"+filepath.Join(dir, "lajstrom.db")
-	body := "server:\n  listen: \":8080\"\ndatabase:\n  driver: sqlite\n  dsn: \"" + dsn + "\"\n" +
+	body := "server:\n  listen: \":8080\"\n  externalURL: https://art.example.com\ndatabase:\n  driver: sqlite\n  dsn: \"" + dsn + "\"\n" +
 		"registries:\n  - name: local\n    url: \"http://localhost:5000\"\nkeys:\n  masterKeyEnv: LAJSTROM_MASTER_KEY\n"
 	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -399,7 +399,7 @@ func TestServeTokenKey(t *testing.T) {
 	}
 
 	gone := filepath.Join(t.TempDir(), "gone.yaml")
-	if err := os.WriteFile(gone, []byte("server:\n  listen: \":8080\"\nauth:\n  tokenSigningKeyFile: /etc/lajstrom/jwt.key\n"), 0o600); err != nil {
+	if err := os.WriteFile(gone, []byte("server:\n  listen: \":8080\"\n  externalURL: https://art.example.com\nauth:\n  tokenSigningKeyFile: /etc/lajstrom/jwt.key\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	runEnv(t, gone, env, []step{{args: []string{"serve"}, wantErr: "auth.tokenSigningKeyFile is gone: the key lives in the database, ADR 0010"}})

@@ -118,12 +118,18 @@ func (s Server) validate(p *problems) {
 
 // validateExternalURL checks server.externalURL (docs/spec/http-routing.md §1): Lajstrom owns
 // the whole host and clients see it over TLS only, so https://<host>[:port] without a path,
-// query or fragment; http only for a loopback host, behind server.insecureHTTP.
+// query or fragment; http only for a loopback host, behind server.insecureHTTP. It is required
+// but for the dev stack (server.insecureHTTP): without it the token's audience and the realm
+// come from the request's Host, which the client chooses (#248).
 func (s Server) validateExternalURL(p *problems) {
+	const key = "server.externalURL"
 	if s.ExternalURL == "" {
+		if !s.InsecureHTTP {
+			p.add(key, "must be set to the URL clients use, https://<host>[:port]: it is the realm and the audience of the bearer tokens; "+
+				"only the dev stack, with server.insecureHTTP: true, may leave it empty")
+		}
 		return
 	}
-	const key = "server.externalURL"
 	u, err := url.Parse(s.ExternalURL)
 	switch {
 	case err != nil || !isHTTP(u):
