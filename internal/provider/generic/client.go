@@ -1,9 +1,12 @@
 package generic
 
 import (
+	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -28,8 +31,8 @@ const (
 // (backoff). Tests set both bounds to zero.
 var retryWait = struct{ min, max time.Duration }{min: 200 * time.Millisecond, max: 3 * time.Second}
 
-// clients are the two HTTP clients of a provider. They share the transport, the credentials
-// and the token cache.
+// clients are the HTTP clients of a provider. They share the transport; the two auth clients
+// share the credentials and the token cache.
 type clients struct {
 	// follow is the client of oras-go: it follows redirects, so blob downloads that the
 	// registry redirects to object storage work.
@@ -37,6 +40,11 @@ type clients struct {
 	// noFollow returns a redirect as the response, for OpenBlob and StatBlob, which decide
 	// for each one whether the client gets it or the provider follows it.
 	noFollow *auth.Client
+	// anonymous is noFollow without the credentials and the token cache, for the hops of a
+	// blob redirect that has left the registry's origin.
+	anonymous *http.Client
+	// header is what every request carries: the User-Agent.
+	header http.Header
 	// cache is the token cache of both; the upload sessions look into it (repository.prime).
 	cache auth.Cache
 	// credentials is true when the registry's challenges are answered with a username and
@@ -48,10 +56,11 @@ type clients struct {
 	breaker *breaker
 }
 
-// newClients builds the clients for the registry at host (host:port, as in the URL) from cfg.
-// Every request carries User-Agent lajstrom/<version>; with a username, the registry's Basic
-// or bearer challenge is answered with the username and password, and tokens are cached.
-func newClients(cfg config.Registry, host string, log *slog.Logger) clients {
+// newClients builds the clients for the registry at base (its URL: scheme and host:port) from
+// cfg. Every request carries User-Agent lajstrom/<version>; with a username, the registry's
+// Basic or bearer challenge is answered with the username and password, and tokens are cached.
+// A bearer challenge whose realm realmTransport refuses is an error instead.
+func newClients(cfg config.Registry, base *url.URL, log *slog.Logger) clients {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = config.DefaultRegistryTimeout
@@ -60,17 +69,23 @@ func newClients(cfg config.Registry, host string, log *slog.Logger) clients {
 	// upload is retried as a whole by Push (pushRetry). The breaker above it counts a request
 	// once however often it was tried. Above both, the probe's ping sees the challenges.
 	br := newBreaker(cfg.Name, log)
-	rt := &challengeTransport{next: &breakerTransport{b: br, next: &retryTransport{
+	rt := &realmTransport{registry: cfg.Name, base: base, next: &challengeTransport{next: &breakerTransport{b: br, next: &retryTransport{
 		next:    &logTransport{next: &metricsTransport{next: newTransport(timeout), registry: cfg.Name}, log: log},
 		retries: retries(cfg),
 		log:     log,
-	}}}
+	}}}}
 	var cred auth.CredentialFunc
 	if cfg.Auth.Username != "" {
-		cred = auth.StaticCredential(host, auth.Credential{Username: cfg.Auth.Username, Password: cfg.Auth.Password})
+		cred = auth.StaticCredential(base.Host, auth.Credential{Username: cfg.Auth.Username, Password: cfg.Auth.Password})
 	}
 	header := http.Header{"User-Agent": {"lajstrom/" + version.Get().Version}}
 	cache := auth.NewCache()
+	noFollow := &http.Client{
+		Transport: rt,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	return clients{
 		follow: &auth.Client{
 			Client:     &http.Client{Transport: rt},
@@ -79,16 +94,13 @@ func newClients(cfg config.Registry, host string, log *slog.Logger) clients {
 			Cache:      cache,
 		},
 		noFollow: &auth.Client{
-			Client: &http.Client{
-				Transport: rt,
-				CheckRedirect: func(*http.Request, []*http.Request) error {
-					return http.ErrUseLastResponse
-				},
-			},
+			Client:     noFollow,
 			Header:     header,
 			Credential: cred,
 			Cache:      cache,
 		},
+		anonymous:   noFollow,
+		header:      header,
 		cache:       cache,
 		credentials: cred != nil,
 		retries:     retries(cfg),
@@ -145,6 +157,67 @@ func (t *challengeTransport) RoundTrip(req *http.Request) (*http.Response, error
 		*dst = resp.Header.Get("WWW-Authenticate")
 	}
 	return resp, nil
+}
+
+// realmTransport refuses the bearer challenge of the registry when the token realm it names
+// is not on the registry's host name, or is plain http for a registry on https: oras-go would
+// send the registry's username and password there (threat model P-3), and it takes any public
+// or private host as a realm. Another port of the registry's host is allowed, a token server
+// beside the registry, as the dev stack's Harbor and GitLab have. The refusal is a
+// *realmError, which names the registry and not the realm. The auth client never sees the
+// challenge, so nothing is sent to the realm.
+type realmTransport struct {
+	next     http.RoundTripper
+	registry string   // the registry's name, for the error
+	base     *url.URL // the registry's URL
+}
+
+// RoundTrip implements http.RoundTripper.
+func (t *realmTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.next.RoundTrip(req)
+	if err != nil || resp.StatusCode != http.StatusUnauthorized || !sameHostname(req.URL, t.base) {
+		return resp, err
+	}
+	scheme, realm := challengeParam(resp.Header.Get("WWW-Authenticate"), "realm")
+	if scheme != "bearer" {
+		return resp, nil
+	}
+	if reason := refuseRealm(t.base, realm); reason != "" {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBody))
+		_ = resp.Body.Close()
+		return nil, &realmError{registry: t.registry, reason: reason}
+	}
+	return resp, nil
+}
+
+// refuseRealm says why the registry at base may not name realm as its token realm, or is ""
+// when it may.
+func refuseRealm(base *url.URL, realm string) string {
+	u, err := url.Parse(realm)
+	switch {
+	case err != nil || u.Host == "":
+		return "the realm of its bearer challenge is not an absolute URL"
+	case u.Scheme != "https" && u.Scheme != "http":
+		return "the realm of its bearer challenge is not http(s)"
+	case base.Scheme == "https" && u.Scheme != "https":
+		return "the realm of its bearer challenge downgrades https to http"
+	case !sameHostname(u, base):
+		return "the realm of its bearer challenge is on another host than the registry"
+	}
+	return ""
+}
+
+// sameHostname reports whether a and b name one host, whatever their ports.
+func sameHostname(a, b *url.URL) bool {
+	return strings.EqualFold(strings.TrimSuffix(a.Hostname(), "."), strings.TrimSuffix(b.Hostname(), "."))
+}
+
+// realmError is a bearer challenge that realmTransport refused. translate drops what net/http
+// and oras-go wrap around it, which names the request URL.
+type realmError struct{ registry, reason string }
+
+func (e *realmError) Error() string {
+	return fmt.Sprintf("registry %q: %s; its credentials are not sent there", e.registry, e.reason)
 }
 
 // logTransport logs every attempt of a request to the registry at debug level: method, path,

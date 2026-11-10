@@ -26,9 +26,9 @@ const maxRedirects = 5
 //     Location, resolved against the request URL, as RedirectURL, and the body is closed; with
 //     redirect false or capabilities.blobRedirect false it is followed instead. A redirect to
 //     the registry's own origin is always followed: a client could not use it without
-//     Lajstrom's credentials. Each hop is one more GET with the Range, through the provider's
-//     auth client, which answers the challenges of the registry's host only, so another
-//     origin never gets Lajstrom's credentials; at most maxRedirects hops;
+//     Lajstrom's credentials. Each hop is one more GET with the Range (blobRequest): with
+//     Lajstrom's credentials while the chain stays on the registry's origin, without them
+//     once it has left it, and never from https to http; at most maxRedirects hops;
 //   - 200 and 206 give the open body with Size from Content-Length (-1 without one),
 //     ContentRange (206), Digest and AcceptRanges;
 //   - 416 gives Status 416 and ContentRange, and no body;
@@ -87,6 +87,12 @@ func (p *Provider) StatBlob(ctx context.Context, name string, d digest.Digest) (
 // each a new request with the Range. With returnRedirect a redirect to another origin ends
 // the chain: its response is closed and the Location returned. Otherwise the response is
 // returned open, whatever its status.
+//
+// The registry's credentials go only to its origin (threat model P-2): the auth client's
+// token cache is keyed by host and port without the scheme, so a hop from https to http on
+// the same host would carry them in clear text, and such a hop is refused. Once a hop leaves
+// the origin, the chain goes on without credentials, even back to the origin, as oras-go's
+// own redirects do.
 func (p *Provider) blobRequest(ctx context.Context, op, method, name string, d digest.Digest, rangeHeader string, returnRedirect bool) (*http.Response, *url.URL, error) {
 	if err := d.Validate(); err != nil {
 		return nil, nil, fmt.Errorf("generic: %s: %w", op, err)
@@ -97,6 +103,7 @@ func (p *Provider) blobRequest(ctx context.Context, op, method, name string, d d
 	}
 	ctx = auth.AppendRepositoryScope(ctx, ref, auth.ActionPull)
 	target := p.base + "/v2/" + ref.Repository + "/blobs/" + ref.Reference
+	left := false // a hop has left the registry's origin
 	for hops := 0; ; hops++ {
 		req, err := http.NewRequestWithContext(ctx, method, target, nil)
 		if err != nil {
@@ -105,7 +112,7 @@ func (p *Provider) blobRequest(ctx context.Context, op, method, name string, d d
 		if rangeHeader != "" {
 			req.Header.Set("Range", rangeHeader)
 		}
-		resp, err := p.clients.noFollow.Do(req)
+		resp, err := p.hop(req, left)
 		if err != nil {
 			return nil, nil, translate(op, err)
 		}
@@ -123,9 +130,24 @@ func (p *Provider) blobRequest(ctx context.Context, op, method, name string, d d
 			return nil, loc, nil
 		case hops == maxRedirects:
 			return nil, nil, fmt.Errorf("generic: %s: more than %d redirects", op, maxRedirects)
+		case req.URL.Scheme == "https" && loc.Scheme != "https":
+			return nil, nil, fmt.Errorf("generic: %s: a redirect from https to %s refused", op, loc.Scheme)
 		}
+		left = left || !p.sameOrigin(loc)
 		target = loc.String()
 	}
+}
+
+// hop sends one request of a blob's redirect chain, without redirects: through the auth
+// client, or, once the chain has left the registry's origin, without credentials.
+func (p *Provider) hop(req *http.Request, left bool) (*http.Response, error) {
+	if !left {
+		return p.clients.noFollow.Do(req)
+	}
+	for k, v := range p.clients.header {
+		req.Header[k] = v
+	}
+	return p.clients.anonymous.Do(req)
 }
 
 // isRedirect reports whether status is a redirect with a Location.
