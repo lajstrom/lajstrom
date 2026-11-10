@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/server"
 )
@@ -310,12 +312,43 @@ func (h *handler) deleteManifest(w http.ResponseWriter, r *http.Request, t *targ
 	if h.o.Ingest == nil {
 		return errors.New("facade: no ingest pipeline: Options.Ingest is required")
 	}
+	if err := h.refuseJournal(ctx, t, ref); err != nil {
+		return err
+	}
 	del := format.Deletion{Path: t.path, Reference: ref, ClientIP: server.ClientAddr(ctx)}
 	if _, err := h.o.Ingest.Delete(ctx, t.repo, del, auth.PrincipalFrom(ctx)); err != nil {
 		return deleteError(t, ref, err)
 	}
 	w.WriteHeader(http.StatusAccepted)
 	return nil
+}
+
+// refuseJournal refuses the delete of an entry of an npm package's journal, by its tag _j<seq>
+// or by a digest the index has of it, 409 DENIED: an entry goes with its package, which only the
+// unpublish of the package deletes (docs/spec/manifest-profile.md §8).
+func (h *handler) refuseJournal(ctx context.Context, t *target, ref string) error {
+	if t.repo.Format != "npm" {
+		return nil
+	}
+	_, entry := profile.JournalSeq(ref)
+	if !entry && strings.Contains(ref, ":") {
+		pkg, err := h.o.Index.GetPackageByNameOCI(ctx, t.repo.ID, t.path)
+		if errors.Is(err, index.ErrNotFound) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		rows, err := h.o.Index.ListJournal(ctx, pkg.ID)
+		if err != nil {
+			return err
+		}
+		entry = slices.ContainsFunc(rows, func(e index.JournalEntry) bool { return e.Digest.String() == ref })
+	}
+	if !entry {
+		return nil
+	}
+	return &apiError{status: http.StatusConflict, code: codeDenied,
+		msg: fmt.Sprintf("%s in %s is an entry of the npm journal, which goes with its package: npm unpublish deletes it", ref, t.name)}
 }
 
 // deleteError is the error table of a manifest delete:

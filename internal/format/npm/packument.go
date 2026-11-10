@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -86,10 +87,10 @@ type packed struct {
 
 // RenderIndex renders the two packuments of the package whose name is scope
 // (docs/spec/http-routing.md, npm): the full one, kind packument, and the abbreviated one, kind
-// packument-abbreviated, from the package's versions and their metadata layers, with an
-// absolute dist.tarball under p.ExternalURL. A package the repo does not have renders nothing,
-// which format.CachedDocument answers with index.ErrNotFound. Until the journal of #307 there
-// are no dist-tags of a publish: latest is the highest release, else the highest version.
+// packument-abbreviated, from the package's versions, their metadata layers and its journal
+// (dist-tags, deprecations, _rev), with an absolute dist.tarball under p.ExternalURL. A package
+// the repo does not have renders nothing, which format.CachedDocument answers with
+// index.ErrNotFound.
 func (p Plugin) RenderIndex(ctx context.Context, repo index.Repo, scope format.IndexScope, st index.Reader) ([]format.Document, error) {
 	name := string(scope)
 	if CheckName(name) != nil {
@@ -115,7 +116,11 @@ func (p Plugin) RenderIndex(ctx context.Context, repo index.Repo, scope format.I
 		all = append(all, pv)
 	}
 	slices.SortFunc(all, func(a, b packed) int { return a.semver.compare(b.semver) })
-	full, abbreviated, err := packuments(name, all)
+	j, err := readJournal(ctx, st, pkg.ID)
+	if err != nil {
+		return nil, err
+	}
+	full, abbreviated, err := packuments(name, all, j)
 	if err != nil {
 		return nil, err
 	}
@@ -159,8 +164,56 @@ func (p Plugin) tarballURL(repo index.Repo, name, file string) string {
 	return strings.TrimSuffix(p.ExternalURL, "/") + "/" + Name + "/" + repo.Name + "/" + name + "/-/" + file
 }
 
-// packuments returns the full and the abbreviated packument of the versions, in SemVer order.
-func packuments(name string, all []packed) (full, abbreviated []byte, err error) {
+// journalView is what the packuments show of a package's journal: its state, its last seq and
+// the time of its newest entry.
+type journalView struct {
+	tags       map[string]string // dist-tag → version
+	deprecated map[string]string // version → message
+	seq        int64             // the highest seq; 0 without an entry
+	modified   time.Time         // the created of the newest entry; zero without one
+}
+
+// readJournal reads the journal of the package pkgID from the index.
+func readJournal(ctx context.Context, st index.Reader, pkgID int64) (journalView, error) {
+	j := journalView{tags: map[string]string{}, deprecated: map[string]string{}}
+	rows, err := st.ListJournal(ctx, pkgID)
+	if err != nil {
+		return j, err
+	}
+	for _, r := range rows {
+		j.seq, j.modified = max(j.seq, r.Seq), maxTime(j.modified, r.CreatedAt)
+	}
+	state, err := st.ListJournalState(ctx, pkgID)
+	if err != nil {
+		return j, err
+	}
+	for _, s := range state {
+		switch s.Kind {
+		case index.JournalDistTag:
+			j.tags[s.Key] = s.Value
+		case index.JournalDeprecated:
+			j.deprecated[s.Key] = s.Value
+		}
+	}
+	return j, nil
+}
+
+// distTags returns the dist-tags of the packument: the state's whose version the package has,
+// and, without such a latest, latest the highest release, else the highest version.
+func distTags(all []packed, j journalView) (map[string]string, packed) {
+	byVersion := make(map[string]packed, len(all))
+	for _, pv := range all {
+		byVersion[pv.version] = pv
+	}
+	tags := map[string]string{}
+	for tag, v := range j.tags {
+		if _, ok := byVersion[v]; ok {
+			tags[tag] = v
+		}
+	}
+	if latest, ok := byVersion[tags["latest"]]; ok {
+		return tags, latest
+	}
 	latest := all[len(all)-1]
 	for _, pv := range slices.Backward(all) {
 		if pv.semver.pre == nil {
@@ -168,14 +221,24 @@ func packuments(name string, all []packed) (full, abbreviated []byte, err error)
 			break
 		}
 	}
-	tags := map[string]string{"latest": latest.version}
-	created, modified := all[0].created, all[0].created
+	tags["latest"] = latest.version
+	return tags, latest
+}
+
+// packuments returns the full and the abbreviated packument of the versions, in SemVer order,
+// with the package's journal.
+func packuments(name string, all []packed, j journalView) (full, abbreviated []byte, err error) {
+	tags, latest := distTags(all, j)
+	created, modified := all[0].created, maxTime(all[0].created, j.modified)
 	times := ordered{}
 	versions, short := ordered{}, ordered{}
 	digests := make([]string, 0, len(all))
 	for _, pv := range all {
 		created, modified = minTime(created, pv.created), maxTime(modified, pv.created)
 		times = append(times, member{pv.version, mustJSON(pv.created.UTC().Format(timeLayout))})
+		if msg, ok := j.deprecated[pv.version]; ok {
+			pv.doc["deprecated"] = mustJSON(msg)
+		}
 		versions = append(versions, member{pv.version, mustJSON(pv.doc)})
 		abbreviated := map[string]json.RawMessage{}
 		for _, k := range abbreviatedKeys {
@@ -188,7 +251,8 @@ func packuments(name string, all []packed) (full, abbreviated []byte, err error)
 	}
 	slices.Sort(digests)
 	sum := sha256.Sum256([]byte(strings.Join(digests, "")))
-	doc := ordered{{"_id", mustJSON(name)}, {"_rev", mustJSON("0-" + hex.EncodeToString(sum[:])[:32])}, {"name", mustJSON(name)},
+	rev := strconv.FormatInt(j.seq, 10) + "-" + hex.EncodeToString(sum[:])[:32]
+	doc := ordered{{"_id", mustJSON(name)}, {"_rev", mustJSON(rev)}, {"name", mustJSON(name)},
 		{"dist-tags", mustJSON(tags)}, {"versions", mustJSON(versions)},
 		{"time", mustJSON(append(ordered{{"created", mustJSON(created.UTC().Format(timeLayout))},
 			{"modified", mustJSON(modified.UTC().Format(timeLayout))}}, times...))}}
