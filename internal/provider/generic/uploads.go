@@ -99,18 +99,21 @@ func (r *repository) AppendBlobChunk(ctx context.Context, u provider.Upload, bod
 	return r.session(op, resp, u, u.Offset+cr.n)
 }
 
-// FinishBlobUpload closes the session: PUT <location>?digest=<d>, 201, with the last chunk as
-// the body. A last chunk of unknown size is sent first as a PATCH of its own: registries read
-// the body of the closing PUT by its Content-Length. The registry's DIGEST_INVALID wraps
-// content.ErrMismatchedDigest.
+// FinishBlobUpload closes the session: PUT <location>?digest=<d>, 201. The last chunk is the
+// body of the PUT only when its size is known and the session holds no bytes yet, a monolithic
+// upload. Otherwise it is sent first as a PATCH of its own (AppendBlobChunk), and the PUT has
+// no body: registries read the body of the closing PUT by its Content-Length, and JFrog drops
+// the body of a closing PUT that follows a PATCH and answers 201 for the short blob
+// (docs/registries/jfrog-jcr.md, item 2). When that PATCH fails, no PUT is sent. The
+// registry's DIGEST_INVALID wraps content.ErrMismatchedDigest.
 func (r *repository) FinishBlobUpload(ctx context.Context, u provider.Upload, d digest.Digest, body io.Reader, size int64) (ocispec.Descriptor, error) {
 	op := r.op("finish upload", u.ID)
 	if err := d.Validate(); err != nil {
 		return ocispec.Descriptor{}, &backendError{op: op, kind: content.ErrMismatchedDigest, detail: "invalid digest", cause: err}
 	}
-	if body != nil && size < 0 {
+	if body != nil && size != 0 && (size < 0 || u.Offset > 0) {
 		var err error
-		if u, err = r.AppendBlobChunk(ctx, u, body, -1); err != nil {
+		if u, err = r.AppendBlobChunk(ctx, u, body, size); err != nil {
 			return ocispec.Descriptor{}, err
 		}
 		body, size = nil, 0

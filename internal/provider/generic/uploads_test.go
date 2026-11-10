@@ -98,7 +98,7 @@ func uploadChunks(t *testing.T, repo provider.Repository, stateful bool) provide
 }
 
 // wantStored checks that the registry holds blob as d, that no session is open, and that the
-// chunks went as two PATCHes and the PUT with the digest.
+// chunks went as three PATCHes, the last chunk among them, and the PUT with the digest.
 func wantStored(t *testing.T, f *fakeRegistry, d digest.Digest, blob []byte) {
 	t.Helper()
 	f.mu.Lock()
@@ -116,12 +116,14 @@ func wantStored(t *testing.T, f *fakeRegistry, d digest.Digest, blob []byte) {
 			chunks = append(chunks, line)
 		}
 	}
-	if len(chunks) != 3 || !strings.Contains(chunks[2], "digest="+url.QueryEscape(d.String())) {
-		t.Errorf("chunk requests %q, want two PATCHes and the PUT with the digest", chunks)
+	if len(chunks) != 4 || !strings.HasPrefix(chunks[2], "PATCH ") || !strings.Contains(chunks[3], "digest="+url.QueryEscape(d.String())) {
+		t.Errorf("chunk requests %q, want three PATCHes and the PUT with the digest", chunks)
 	}
 }
 
-// TestUploadHeaders checks Content-Range and Content-Length of every chunk.
+// TestUploadHeaders checks Content-Range and Content-Length of every chunk. The closing PUT
+// carries the last chunk only when the session is empty and the chunk's size known; otherwise
+// the chunk goes first as a PATCH (JFrog drops the body of a closing PUT after a PATCH).
 func TestUploadHeaders(t *testing.T) {
 	ctx := t.Context()
 	var seen []string
@@ -133,25 +135,60 @@ func TestUploadHeaders(t *testing.T) {
 			return false
 		}
 	})
+	finish := func(u provider.Upload, blob, last string, size int64) {
+		t.Helper()
+		desc, err := repo.FinishBlobUpload(ctx, u, digest.FromString(blob), strings.NewReader(last), size)
+		if err != nil || desc.Size != int64(len(blob)) {
+			t.Fatalf("FinishBlobUpload of %q = %+v, %v", blob, desc, err)
+		}
+	}
 	u, _ := repo.StartBlobUpload(ctx)
 	u, _ = repo.AppendBlobChunk(ctx, u, strings.NewReader("abc"), 3)
 	u, _ = repo.AppendBlobChunk(ctx, u, strings.NewReader("de"), -1)
-	if _, err := repo.FinishBlobUpload(ctx, u, digest.FromString("abcdefg"), strings.NewReader("fg"), -1); err != nil {
-		t.Fatal(err)
-	}
+	finish(u, "abcdefg", "fg", -1)
 	u, _ = repo.StartBlobUpload(ctx)
-	if _, err := repo.FinishBlobUpload(ctx, u, digest.FromString("xyz"), strings.NewReader("xyz"), 3); err != nil {
-		t.Fatal(err)
-	}
+	finish(u, "xyz", "xyz", 3)
+	u, _ = repo.StartBlobUpload(ctx)
+	u, _ = repo.AppendBlobChunk(ctx, u, strings.NewReader("streamed"), -1)
+	finish(u, "streamed end", " end", 4)
 	want := []string{
 		`PATCH range="0-2" length=3`,
 		`PATCH range="" length=-1`,
 		`PATCH range="" length=-1`, // the last chunk of unknown size goes first
 		`PUT range="" length=0`,
-		`PUT range="0-2" length=3`,
+		`PUT range="0-2" length=3`, // into an empty session: the body of the PUT
+		`PATCH range="" length=-1`,
+		`PATCH range="8-11" length=4`, // of known size after a write: a PATCH, not the PUT's body
+		`PUT range="" length=0`,
 	}
 	if !slices.Equal(seen, want) {
 		t.Errorf("chunks\n%q\nwant\n%q", seen, want)
+	}
+}
+
+// TestUploadLastChunkBreaks: a last chunk that breaks off while it streams, as the facade's
+// digest check breaks one off (#368), fails the finish, and no PUT closes a session that holds
+// bytes; in an empty one the PUT itself breaks off.
+func TestUploadLastChunkBreaks(t *testing.T) {
+	ctx := t.Context()
+	f, repo := uploadRepo(t, nil)
+	for _, offset := range []int64{0, 3} {
+		u, _ := repo.StartBlobUpload(ctx)
+		if offset > 0 {
+			u, _ = repo.AppendBlobChunk(ctx, u, strings.NewReader("abc"), 3)
+		}
+		broken := io.MultiReader(strings.NewReader("de"), iotest.ErrReader(errors.New("not the digest")))
+		if _, err := repo.FinishBlobUpload(ctx, u, digest.FromString("abcdef"), broken, 3); err == nil {
+			t.Errorf("offset %d: FinishBlobUpload of a broken chunk succeeded", offset)
+		}
+	}
+	if n := f.count("PUT "); n != 1 {
+		t.Errorf("%d PUT requests, want the monolithic one only, which broke off", n)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if n := len(f.blobs["art/raw/scratch/notes"]); n != 0 {
+		t.Errorf("the registry holds %d blobs, want none", n)
 	}
 }
 
