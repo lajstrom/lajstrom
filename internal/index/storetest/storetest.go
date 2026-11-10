@@ -66,6 +66,10 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"ProxyMeta", testProxyMeta},
 		{"FetchClaims", testFetchClaims},
 		{"FetchClaimRace", testFetchClaimRace},
+		{"Journal", testJournal},
+		{"JournalState", testJournalState},
+		{"JournalCascades", testJournalCascades},
+		{"JournalRace", testJournalRace},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
