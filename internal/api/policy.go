@@ -153,12 +153,10 @@ func checkPolicyKeys(formatName string, obj policyObject) error {
 	return nil
 }
 
-// checkMaxFileSize checks policy.maxFileSize: an integer number of bytes, at least 1, on a repo
-// whose uploads are checked (every format but oci).
-func checkMaxFileSize(formatName string, v any) error {
-	if formatName == formatOCI {
-		return invalid("policy.maxFileSize: an oci repo is a pass-through, and nothing checks the size of what it stores")
-	}
+// checkMaxFileSize checks policy.maxFileSize: an integer number of bytes, at least 1, on a repo of
+// any format, oci included: it bounds the blobs of an oci repo's /v2 uploads too (#246), and a
+// repo of ML models raises it.
+func checkMaxFileSize(_ string, v any) error {
 	n, ok := v.(json.Number)
 	if ok {
 		i, err := n.Int64()

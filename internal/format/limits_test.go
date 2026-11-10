@@ -25,7 +25,9 @@ func TestMaxFileSize(t *testing.T) {
 		{"pypi", "", 4 << 30, false},
 		{"apt", "", 8 << 30, false},
 		{"npm", "", 512 << 20, false},
-		{"rpm", "", 8 << 30, false}, // a format the table does not name
+		{"oci", "", 16 << 30, false},
+		{"oci", `{"maxFileSize":274877906944}`, 256 << 30, false}, // a repo of ML models
+		{"rpm", "", 8 << 30, false},                               // a format the table does not name
 		{"npm", `{"maxFileSize":1073741824}`, 1 << 30, false},
 		{"raw", `{"maxFileSize":1048576}`, 1048576, false},
 		{"raw", `{"maxFileSize":0}`, 0, false},

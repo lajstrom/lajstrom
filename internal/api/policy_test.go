@@ -35,7 +35,7 @@ func TestCheckPolicy(t *testing.T) {
 		{"negative size", "raw", `{"maxFileSize":-1}`, "", "policy.maxFileSize: must be"},
 		{"fractional size", "raw", `{"maxFileSize":1.5}`, "", "policy.maxFileSize: must be"},
 		{"size as a string", "raw", `{"maxFileSize":"1M"}`, "", "policy.maxFileSize: must be"},
-		{"size on oci", "oci", `{"maxFileSize":1}`, "", "policy.maxFileSize: an oci repo is a pass-through"},
+		{"size on oci", "oci", `{"maxFileSize":274877906944}`, `{"maxFileSize":274877906944}`, ""},
 		{"blobRedirect other", "raw", `{"blobRedirect":"always"}`, "", `policy.blobRedirect: must be "auto" or "never"`},
 		{"blobRedirect bool", "raw", `{"blobRedirect":false}`, "", `policy.blobRedirect: must be "auto" or "never"`},
 		{"maven on raw", "raw", `{"maven":{"sessionTimeout":"45m"}}`, "", "policy.maven: only a maven repo has it, not a raw repo"},

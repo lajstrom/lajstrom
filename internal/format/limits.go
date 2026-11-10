@@ -14,13 +14,15 @@ import (
 // (docs/spec/manifest-profile.md §5, #246): an upload a frontend spools, and a blob of /v2, is
 // bounded out of the box. The sizes are above the largest files of the package size survey of
 // #439: npm's largest tarball 152 MiB, PyTorch's CUDA wheels 2.1 GiB, Maven Central's largest
-// jar 2.3 GiB, .debs of 5 GiB.
+// jar 2.3 GiB, .debs of 5 GiB, an image layer of 10.78 GiB (rocm/pytorch). ML models are larger
+// still (a 70B model in fp16 is one blob of 131 GiB): their oci repos set a policy.
 var defaultMaxFileSizes = map[string]int64{
 	"npm":   512 << 20,
 	"pypi":  4 << 30,
 	"maven": 4 << 30,
 	"apt":   8 << 30,
 	"raw":   8 << 30,
+	"oci":   16 << 30,
 }
 
 // defaultMaxFileSize is the default of a format defaultMaxFileSizes does not name.
@@ -36,10 +38,10 @@ func defaultMaxFileSizeOf(format string) int64 {
 
 // MaxFileSize returns policy.maxFileSize of the repo, an integer number of bytes, or the default
 // of the repo's format when the policy sets none (npm 512 MiB, pypi and maven 4 GiB, apt, raw and
-// any other 8 GiB; docs/api.md, the policy keys). A value that is not a non-negative integer is
-// an error, which StatusOf answers with 500: an upload is not let through a limit that cannot be
-// read. Every frontend that takes an upload bounds it with LimitBody, which reads this. An oci
-// repo, which stores what it gets, does not ask.
+// any other 8 GiB, oci 16 GiB; docs/api.md, the policy keys). A value that is not a non-negative
+// integer is an error, which StatusOf answers with 500: an upload is not let through a limit that
+// cannot be read. Every frontend that takes an upload bounds it with LimitBody, which reads this,
+// and the facade a /v2 blob, of an oci repo too.
 func MaxFileSize(repo index.Repo) (int64, error) {
 	if len(repo.Policy) == 0 {
 		return defaultMaxFileSizeOf(repo.Format), nil
