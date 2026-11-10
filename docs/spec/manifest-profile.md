@@ -59,7 +59,7 @@ Rules:
 | Element | Rule |
 | --- | --- |
 | `mediaType` | always `application/vnd.oci.image.manifest.v1+json`. Image indexes are never used for a package version (they are mutable). |
-| `artifactType` | `application/vnd.lajstrom.<format>.v1`. `<format>` is the plugin name: `raw`, `pypi`, `deb`, `maven` in the MVP; `rpm`, `npm`, `nuget`, `cargo`, `go` later. It selects the plugin and filters referrers. Note: the apt *protocol* stores `deb` *packages*; the artifactType is `deb`, the annotation `lajstrom.format` is `apt` (the repo format). |
+| `artifactType` | `application/vnd.lajstrom.<format>.v1`. `<format>` is the plugin name: `raw`, `pypi`, `deb`, `maven` in the MVP; `npm` in M4 (ADR 0012); `rpm`, `nuget`, `cargo`, `go` later. It selects the plugin and filters referrers. Note: the apt *protocol* stores `deb` *packages*; the artifactType is `deb`, the annotation `lajstrom.format` is `apt` (the repo format). An npm package's OCI repository also holds the journal of its dist-tags, manifests of their own types (section 8). |
 | `config` | always the OCI empty descriptor (`application/vnd.oci.empty.v1+json`, the 2-byte blob `{}`). No logic in config. |
 | `layers` | one or more file layers plus at most one metadata layer. Order: file layers first, metadata layer last. Every layer carries `org.opencontainers.image.title` with the exact file name (no directories, except for `raw`, whose title is the original `/`-separated path, section 4.1). |
 | `subject` | not set by Lajstrom. Referrers (signatures, SBOMs) set `subject` to our manifest. |
@@ -82,7 +82,7 @@ suffix follows the OCI convention for the encoding of the bytes.
 | maven | `application/vnd.lajstrom.maven.artifact.v1` | jar, war, aar, zip, … (layer annotations `lajstrom.maven.extension`, `lajstrom.maven.classifier`, the latter absent when the file has none); the file name is `<artifactId>-<version>[-<classifier>].<extension>`, the extension can have dots (`tar.gz`), and an `.asc` signature is an artifact too, with the extension of the signed file and `.asc` (`jar.asc`, `pom.asc`) |
 | maven | `application/vnd.lajstrom.maven.pom.v1+xml` | `*.pom` |
 | rpm (later) | `application/vnd.lajstrom.rpm.package.v1` | `*.rpm` |
-| npm (later) | `application/vnd.lajstrom.npm.tarball.v1.tar+gzip` | `*.tgz` |
+| npm | `application/vnd.lajstrom.npm.tarball.v1.tar+gzip` | the package tarball, exactly one per manifest, titled `<name without the scope>-<version>.tgz` (`widgets-1.2.0.tgz` for `@acme/widgets`), the file name npm serves it under; layer annotations `lajstrom.npm.integrity` (`sha512-<base64>`, npm's `dist.integrity`) and `lajstrom.npm.shasum` (sha1, lowercase hex, npm's `dist.shasum`), so that a version without its metadata layer still renders its `dist` |
 
 ### Metadata layer
 
@@ -95,6 +95,7 @@ whose content is defined per format:
 | pypi | the core metadata (PEP 566 JSON form) of the distribution: the fields with their keys in lowercase and `-` as `_` (`name`, `version`, `summary`, `requires_python`, `requires_dist`, `classifier`, …), the multiple-use fields as lists, the body as `description`; plus `filename`, `sha256`, `packagetype` (`bdist_wheel`/`sdist`) and `core_metadata`, the `METADATA` or `PKG-INFO` file as the distribution has it, which the simple index serves for PEP 658 |
 | deb | `{"control": {<control fields as strings>}, "md5sums": {<path>: <md5>}, "size": n, "sha256": "<hex>", "md5": "<hex>", "sha1": "<hex>", "filename": "…"}`; `md5` and `sha1` of the whole file are optional (apt's `Packages` carries `MD5sum`, `SHA1` and `SHA256`; an upload through Lajstrom writes all three, a manifest pushed without the two still validates) |
 | maven | `{"groupId", "artifactId", "version", "packaging", "files": [{"name", "extension", "classifier", "sha1", "md5", "sha256", "sha512", "size"}], "pom": {<parsed essentials: parent, dependencies>}}`; one entry per file layer, the POM included; the four checksums are of the whole file, computed at ingest, and are what the `.md5`, `.sha1`, `.sha256` and `.sha512` files serve (Gradle asks for `.sha512`) |
+| npm | `{"name", "version", "manifest": {<the version document>}, "readme", "filename", "size", "integrity", "shasum", "sha256", "hasShrinkwrap", "hasInstallScript"}`; `manifest` is the version object of the publish body (http-routing.md, npm) without `dist`, `readme` and every key that begins with `_` (`_id`, `_resolved`, `_from`, `_nodeVersion`, …): what the packument serves in `versions`, with the `dist`, `_id` and `deprecated` it renders; an `oras push` writes the tarball's `package.json` there. `readme` is the version document's, or the body's top-level one (yarn), absent for npm's placeholder `ERROR: No README data found!`. `size` and the checksums are of the tarball. `hasShrinkwrap`: the tarball has `npm-shrinkwrap.json` in its top directory (`package/`); `hasInstallScript`: its `package.json` has a `preinstall`, `install` or `postinstall` script, or the top directory has `binding.gyp` (npm runs `node-gyp rebuild`); both are read from the tarball, never from the body. `Validate` checks `name`, `version`, `filename`, `size` and the checksums against the annotations and the tarball layer, and the tarball's `package.json` for the name and version. At most 2 MiB (a publish above it is `413`) |
 
 The metadata layer is optional for `raw` and mandatory for every other format. UI, search and
 reindex read it without unpacking the package. Reindex must work from annotations alone when the
@@ -103,8 +104,8 @@ metadata layer is missing or unreadable (degraded rows are flagged, not dropped)
 ## 3. Annotations
 
 All keys are prefixed `lajstrom.`. Values are strings. Keys marked **R** are required on every
-manifest; reindex rejects manifests without them (they are listed as "foreign" in the UI and
-skipped).
+manifest of a version; reindex rejects manifests without them (they are listed as "foreign" in
+the UI and skipped). The journal manifests of npm have a set of their own (section 8).
 
 | Key | R | Value |
 | --- | --- | --- |
@@ -117,6 +118,7 @@ skipped).
 | `lajstrom.deb.arch`, `lajstrom.deb.suite`, `lajstrom.deb.component` | deb | upload metadata and the three parts of `lajstrom.variant`, kept as annotations (and in `versions.attrs`) so that the apt indexes group by them without parsing the variant; `arch` is the control file's `Architecture`. Suite and component are properties of the upload, not separate repos: the same `.deb` in two suites is two manifests over the same blobs |
 | `lajstrom.pypi.nonstandard` | pypi | `true` when the version is not a PEP 440 version: accepted and kept as written; pip 22 and later ignore such versions |
 | `lajstrom.maven.groupId`, `lajstrom.maven.artifactId`, `lajstrom.maven.packaging` | maven | coordinates |
+| `lajstrom.npm.*` | npm | on a version, none beyond the layer annotations of section 2; `lajstrom.name` is the name as npm writes it, `@acme/widgets` with its scope. The journal's keys are in section 8 |
 | `lajstrom.raw.path` | raw | original path, case preserved, `/`-separated |
 | `lajstrom.uploaded-by` | | the principal that performed the ingest, in its canonical form: `user:<uid>`, `token:<id>` (informational, not trusted for authz; a user's name is looked up by its uid, rbac.md §1) |
 | `org.opencontainers.image.created` | R | RFC 3339 UTC time of ingest |
@@ -165,9 +167,11 @@ The OCI repository for a package is
 | pypi | `EscapeComponent(lajstrom.name)`, the normalized name: `Requests` → `requests` |
 | deb | `EscapeComponent(package)`: `libstdc++6` → `libstdc_2b_2b6` |
 | maven | `EscapeComponent(groupId lowercased)/EscapeComponent(artifactId)`: `com.example:Lib-Core` → `com.example/lib-core` |
+| npm | `EscapeComponent(name)`; a scoped name `@scope/name` is two components without the `@`, `EscapeComponent(scope)/EscapeComponent(name)`: `lodash` → `lodash`, `@acme/widgets` → `acme/widgets`, `@types/node` → `types/node`, `JSONStream` → `jsonstream` (an old npmjs.org name; the case stays in `lajstrom.name`). An unscoped name has no `/`, so a path of one component is an unscoped package and one of two a scoped one |
 
 Examples: `art/apt/ubuntu-internal/nginx`, `art/pypi/internal/requests`,
-`art/maven/releases/com.example/lib-core`, `art/raw/assets/docs/readme.md`.
+`art/maven/releases/com.example/lib-core`, `art/raw/assets/docs/readme.md`,
+`art/npm/internal/acme/widgets`.
 
 Names that differ only in ASCII case have one package path, unless a component is replaced by
 its hash (section 4.3 step 3, or a long raw component), which is of the original spelling: a raw
@@ -215,6 +219,10 @@ The deb tag is `Escape(version)__Escape(suite/component/arch)`: the `/` of the v
 `_2f`, and the same `.deb` in `jammy` and `jammy-updates` is two tags,
 `1.0.0-1__jammy_2fmain_2famd64` and `1.0.0-1__jammy-updates_2fmain_2famd64`, over one file
 layer with one file name. A deb tag longer than 128 characters is hashed like any other.
+
+The npm tag is `Escape(version)` (`1.2.0`, `2.0.0-rc.1`); npm has no variant. The tags `_j…`
+of an npm package's OCI repository are its journal (section 8): every `_` that `Escape` writes
+is followed by two hex digits and a hashed tag begins with `_h`, so no version has such a tag.
 
 ### 4.3 `Escape` and `EscapeComponent`
 
@@ -286,3 +294,92 @@ notation (`application/vnd.cncf.notary.signature`), SPDX, CycloneDX, in-toto/DSS
 Anything pushed to `/v2/oci/<repo>/…` is proxied as-is. Known conventions (Helm, OpenTofu, Flux,
 Timoni, CUE, Wasm, ModelPack, Docker images) are recognised by artifactType/config media type for
 the UI only. No annotations are required, nothing is indexed beyond repository, tag and digest.
+
+## 8. The npm journal: dist-tags and deprecations (ADR 0012)
+
+What changes on an npm package, its dist-tags and the deprecation of its versions, is an
+append-only journal in the package's OCI repository: one manifest per change, never rewritten,
+its tag never re-pointed. The index holds the current state (index-schema.md, npm), and reindex
+replays the journal. The 7th change of `@acme/widgets` in the repo `internal`, under the tag
+`_j00000007` of `art/npm/internal/acme/widgets`:
+
+```json
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.manifest.v1+json",
+  "artifactType": "application/vnd.lajstrom.npm.dist-tags.v1",
+  "config": {
+    "mediaType": "application/vnd.oci.empty.v1+json",
+    "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "size": 2
+  },
+  "layers": [
+    {
+      "mediaType": "application/vnd.oci.empty.v1+json",
+      "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "size": 2
+    }
+  ],
+  "annotations": {
+    "lajstrom.schema": "1",
+    "lajstrom.format": "npm",
+    "lajstrom.repo": "internal",
+    "lajstrom.name": "@acme/widgets",
+    "lajstrom.npm.seq": "7",
+    "lajstrom.npm.op": "add",
+    "lajstrom.npm.tag": "beta",
+    "lajstrom.npm.version": "1.3.0-beta.2",
+    "lajstrom.uploaded-by": "user:019a6b1e-5c3d-7f00-8a11-2b3c4d5e6f70",
+    "org.opencontainers.image.created": "2026-11-10T10:00:00Z"
+  }
+}
+```
+
+| artifactType | `lajstrom.npm.op` | Keys of the op | Meaning |
+| --- | --- | --- | --- |
+| `application/vnd.lajstrom.npm.dist-tags.v1` | `add` | `lajstrom.npm.tag`, `lajstrom.npm.version` | the dist-tag names the version from now on |
+| `application/vnd.lajstrom.npm.dist-tags.v1` | `rm` | `lajstrom.npm.tag` | the dist-tag is removed |
+| `application/vnd.lajstrom.npm.deprecation.v1` | `deprecate` | `lajstrom.npm.version`, `lajstrom.npm.message` | the version is deprecated with the message |
+| `application/vnd.lajstrom.npm.deprecation.v1` | `undeprecate` | `lajstrom.npm.version` | the version's deprecation is cleared |
+
+| Element | Rule |
+| --- | --- |
+| `config`, `layers` | the empty descriptor, and one layer that is the empty descriptor again (image-spec 1.1's form of an artifact without blobs): the change is in the annotations |
+| annotations | required: `lajstrom.schema`, `lajstrom.format` (`npm`), `lajstrom.repo`, `lajstrom.name`, `lajstrom.npm.seq`, `lajstrom.npm.op`, the keys of the op and `org.opencontainers.image.created`; `lajstrom.uploaded-by` as on a version. No `lajstrom.version` nor `lajstrom.variant`: an entry is not a version |
+| `lajstrom.npm.seq` | the entry's number in the package's journal, decimal: `1` for the first, one more for each next |
+| tag | `_j` and the `seq` zero-padded to eight digits (`_j00000007`; more digits after `_j99999999`) |
+| `lajstrom.npm.tag` | `^[A-Za-z][A-Za-z0-9._-]{0,127}$`: never begins with a digit, so never read as a version. `latest` is moved by an `add` and never removed |
+| `lajstrom.npm.version` | a version the package has when the entry is written |
+| `lajstrom.npm.message` | 1 to 4096 bytes of UTF-8 |
+
+**Writing** (ingest only, for the npm routes of http-routing.md). An append holds the package's
+**journal lock**: the referrers lock of index-schema.md (`Store.WithReferrersLock`) keyed by the
+package's OCI repository and the digest of the empty blob (`sha256:44136fa…`, the config's
+digest above), which no manifest has, so the key never meets the referrers lock or the tag lock
+of a manifest. Under it the writer takes `n`, the highest `seq` the index has for the package;
+looks up the tag of `n + 1` in the registry and, while there is one (an entry whose index row
+was lost), validates it, indexes it and looks up the next; pushes its own entries as `n + 1`,
+`n + 2`, …; and writes their `journal` rows, the package's new `journal_state` and the
+invalidation of its documents in `index_cache` before it lets the lock go. The order of the
+journal is the order of the lock. An append is never made under another lock: a publish appends
+after its version is confirmed and its claims released, an unpublish after its deletes.
+
+**Replay.** The state of a package is the fold of its entries in `seq` order: `add` sets the
+dist-tag to the version, `rm` removes it, `deprecate` sets the version's message, `undeprecate`
+clears it. An entry may name a version deleted since; the state keeps it and the packument
+leaves it out (http-routing.md, npm).
+
+**Reindex.** The `_j` tags of an npm package's OCI repository are read as its version tags are
+(mark and sweep: a digest the index has is seen without a read), and the package's state is
+replayed once the repository is read. An entry is reported and skipped when its annotations
+break the rules above, when its tag is not the tag of its `seq`, or when its `lajstrom.name` is
+not the package of the repository. A missing `seq` is reported and the replay goes on over the
+rest. Entries in a repository without versions are reported as orphans and not indexed: no
+package row holds them, and the next append to a package of that name adopts them.
+
+**Deleting.** A journal entry goes with its package only: the unpublish of a whole package
+deletes its versions, then every entry, under the journal lock and no other (no other writer
+touches a `_j` tag, so no tag lock is taken for an entry). Through `/v2` the facade pushes
+none (section 5: not the artifactType of the format) and deletes none (http-routing.md, npm).
+A proxy repo (ADR 0013) journals nothing: a proxied package's dist-tags and deprecations are
+the upstream's.

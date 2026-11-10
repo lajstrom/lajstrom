@@ -15,7 +15,12 @@
 | OIDC user | `user:<uid>`, of the user its IdP's `sub` maps to | after the MVP |
 
 One credential works on every protocol: HTTP Basic on the frontends and on `/v2/token`
-(`user:password`, `user:PAT`, or `deploy:<token>`), and the resulting bearer on `/v2`.
+(`user:password`, `user:PAT`, or `deploy:<token>`), and the resulting bearer on `/v2`. Outside
+`/v2`, `Authorization: Bearer <secret>` with a personal access token or a deploy token counts
+as its Basic form does: npm sends `_authToken` so, and yarn `npmAuthToken` (ADR 0012).
+`npm login` is a way to get a personal access token: the user's password, checked and throttled
+as in Basic, buys a new one with the default expiry (http-routing.md, npm); nobody signs up
+that way.
 Passwords and token secrets are never logged; tokens are stored hashed (sha256) and shown once.
 Failed password checks are throttled per account (by uid; a name that no user has, by the
 name) and, with `server.trustedProxies`, per client address; a throttled request is `429` with
@@ -55,6 +60,10 @@ are after the MVP. Two system-level resources, which only the `admin` role reach
 | `write` | PUT/POST on the frontend; `push` scope on `/v2`; create versions |
 | `delete` | DELETE versions/manifests; `delete` scope on `/v2` |
 | `manage` | change the repo (policy, anonymous read, deploy tokens), reindex it |
+
+On npm's routes (http-routing.md, npm), changing a package's dist-tags or deprecations is
+`write`, the `DELETE` of a dist-tag included, and an unpublish is `delete`, a version that a
+packument update leaves out included.
 
 ## 3. Roles and bindings
 
