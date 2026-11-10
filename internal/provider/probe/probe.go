@@ -188,6 +188,9 @@ func (r *run) measureAll(ctx context.Context) {
 		fn   func(context.Context) error
 	}{
 		{[]string{"createOnPush", "where"}, r.measureCreate},
+		{[]string{"referrers", "ociSubject"}, r.measureReferrers},
+		{[]string{"catalog"}, r.measureCatalog},
+		{[]string{"tags"}, r.measureTags},
 	}
 	for _, g := range groups {
 		if err := g.fn(r.in(ctx, g.keys[0])); err != nil {
@@ -324,6 +327,11 @@ type manifest struct {
 	digest    digest.Digest
 }
 
+// desc is the descriptor of m.
+func (m manifest) desc() ocispec.Descriptor {
+	return ocispec.Descriptor{MediaType: m.mediaType, Digest: m.digest, Size: int64(len(m.body))}
+}
+
 // emptyDesc is the empty blob {}, the config and the one layer of the probe's manifests.
 var emptyDesc = profile.EmptyConfig
 
@@ -362,6 +370,36 @@ func (r *run) pushManifest(ctx context.Context, repo, ref string, m manifest) (a
 	}
 	return a, err
 }
+
+// mustPush pushes m under ref and fails unless the registry took it. A registry that drops a
+// blob with the last manifest that used it (Gitea) gets the empty blob again.
+func (r *run) mustPush(ctx context.Context, repo, ref string, m manifest) error {
+	if err := r.ensureBase(ctx, repo); err != nil {
+		return err
+	}
+	a, err := r.pushManifest(ctx, repo, ref, m)
+	if err == nil && a.status == http.StatusNotFound && strings.Contains(a.code(), "BLOB_UNKNOWN") {
+		r.based[repo] = false
+		if err := r.ensureBase(ctx, repo); err != nil {
+			return err
+		}
+		a, err = r.pushManifest(ctx, repo, ref, m)
+	}
+	if err != nil {
+		return err
+	}
+	if !a.ok(http.StatusCreated, http.StatusOK) {
+		return fmt.Errorf("push of a manifest to %s:%s: %s", r.name(repo), ref, a.refusal())
+	}
+	return nil
+}
+
+// manifestAccept is the Accept header of a manifest request: OCI's types, which distribution
+// and Harbor want, and Docker's.
+var manifestAccept = http.Header{"Accept": {strings.Join([]string{
+	ocispec.MediaTypeImageManifest, ocispec.MediaTypeImageIndex,
+	"application/vnd.docker.distribution.manifest.v2+json",
+}, ", ")}}
 
 // tagList is the body of tags/list.
 type tagList struct {
