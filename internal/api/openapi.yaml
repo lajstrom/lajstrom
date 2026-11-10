@@ -734,7 +734,8 @@ components:
       type: object
       description: >-
         The policy of a repo: the keys the server reads, with their defaults when absent
-        (no size limit, blobRedirect auto, maven.sessionTimeout 30m). Any other key is 400.
+        (no size limit, blobRedirect auto, maven.sessionTimeout 30m, maven.maxSessionFiles 256).
+        Any other key is 400.
       additionalProperties: false
       properties:
         maxFileSize:
@@ -752,6 +753,13 @@ components:
               type: string
               description: How long a publication session lives after its last request, a duration from 1m to 24h.
               examples: [45m]
+            maxSessionFiles:
+              type: integer
+              minimum: 1
+              maximum: 999
+              description: >-
+                How many files a publication session of a deploy stores, signatures included,
+                checksum files and maven-metadata.xml not; the next is 400.
     PolicyPatch:
       type: object
       description: >-
@@ -766,6 +774,7 @@ components:
           additionalProperties: false
           properties:
             sessionTimeout: {type: [string, "null"]}
+            maxSessionFiles: {type: [integer, "null"], minimum: 1, maximum: 999}
     RepoList:
       type: object
       required: [repos]
