@@ -30,6 +30,7 @@ import (
 func newReindexCmd(a *app) *cobra.Command {
 	var (
 		repoFlag    string
+		attach      string
 		prune       bool
 		verify      bool
 		report      bool
@@ -42,19 +43,31 @@ func newReindexCmd(a *app) *cobra.Command {
 		Long: "Rebuild the index from the manifests in the registries: every repo, or one with --repo.\n" +
 			"A manifest whose digest the index has is not read again unless --verify. With --prune (the\n" +
 			"default for every repo) the rows of manifests that are gone from the registry are removed.\n" +
-			"--report lists foreign manifests, orphan referrers, drift and errors; --json prints the report.",
+			"--report lists foreign manifests, orphan referrers, drift and errors; --json prints the report.\n" +
+			"A registry without a catalog lists only the OCI repositories that the index records: --attach\n" +
+			"names others of --repo in a file, one per line, for the first attach of an existing prefix.",
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, _ []string) (err error) {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			c := a.cfg
+			var attached []string
+			if attach != "" {
+				if repoFlag == "" {
+					return errors.New("--attach needs --repo: the OCI repositories of the file belong to one repo")
+				}
+				if attached, err = readRepositories(attach); err != nil {
+					return err
+				}
+			}
 			st, err := openStore(ctx, c.Database)
 			if err != nil {
 				return err
 			}
 			defer func() { err = errors.Join(err, st.Close()) }()
-			req := reindex.Request{Prune: prune, Verify: verify, Source: "cli", Principal: auth.Anonymous.String()}
+			req := reindex.Request{Prune: prune, Verify: verify, Source: "cli", Principal: auth.Anonymous.String(),
+				Repositories: attached}
 			if !cmd.Flags().Changed("prune") {
 				req.Prune = repoFlag == ""
 			}
@@ -79,7 +92,8 @@ func newReindexCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			a.log.InfoContext(ctx, "reindex: started", "run", run.ID, "repo", repoFlag, "prune", req.Prune, "verify", req.Verify)
+			a.log.InfoContext(ctx, "reindex: started", "run", run.ID, "repo", repoFlag, "prune", req.Prune, "verify", req.Verify,
+				"attached", len(attached))
 			rep, err := w.Run(ctx, run, req)
 			if rep != nil {
 				var werr error
@@ -95,6 +109,8 @@ func newReindexCmd(a *app) *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.StringVar(&repoFlag, "repo", "", "the repo to reindex, <format>/<name>; every repo when empty")
+	f.StringVar(&attach, "attach", "", "a file of OCI repositories of --repo to read besides the registry's listing, one per line, "+
+		"e.g. raw/assets/docs/readme.md: the first attach on a registry without a catalog")
 	f.BoolVar(&prune, "prune", false, "remove the rows of manifests that are gone (default true without --repo)")
 	f.BoolVar(&verify, "verify", false, "read and check every manifest, also those whose digest the index has")
 	f.BoolVar(&report, "report", false, "list foreign manifests, orphan referrers, drift and errors")
@@ -114,6 +130,25 @@ func lookupRepo(ctx context.Context, st index.Reader, s string) (*index.Repo, er
 		return nil, fmt.Errorf("repo %s does not exist", s)
 	}
 	return repo, err
+}
+
+// readRepositories reads the file of --attach: an OCI repository name per line, below the
+// registry's instance prefix; blank lines and lines that start with # are skipped.
+func readRepositories(path string) ([]string, error) {
+	b, err := os.ReadFile(path) // #nosec G304 -- the operator names the file
+	if err != nil {
+		return nil, fmt.Errorf("--attach: %w", err)
+	}
+	var names []string
+	for line := range strings.Lines(string(b)) {
+		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
+			names = append(names, line)
+		}
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("--attach: %s names no OCI repository", path)
+	}
+	return names, nil
 }
 
 // writeReport prints one line of counts per repo and, with lists, the findings below it.

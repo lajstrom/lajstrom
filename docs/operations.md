@@ -681,6 +681,7 @@ no plugin by design, are listed as foreign and recorded in `oci_repos`.
 lajstrom reindex --config /etc/lajstrom/lajstrom.yaml             # every repo, with prune
 lajstrom reindex --repo apt/ubuntu-internal --report              # one repo, the lists too
 lajstrom reindex --verify --json > reindex-report.json            # every manifest read again
+lajstrom reindex --repo raw/assets --attach raw-assets.txt        # a registry without a catalog (below)
 ```
 
 The output is one line of counts per repo (manifests, added, updated, unchanged, removed,
@@ -720,6 +721,35 @@ nothing and one row `reconcile` per repo they changed (its details have the coun
 known digests costs one `HEAD` per tag ([On a cloud registry](#on-a-cloud-registry)), so the
 default interval is cheap; drift is reported, never repaired by re-pointing a tag.
 
+### Without a catalog
+
+Some registries do not list their repositories to Lajstrom: Harbor's `_catalog` is for system
+administrators with Basic auth, GHCR's lists all of GHCR, ECR has none
+([registries](registries/README.md)). The probe or the vendor table then sets `catalog` false, as
+`capabilities.catalog: false` in the registry's configuration does. A run reads the OCI
+repositories that the index records in `oci_repos` instead: ingest records each one it writes
+to, and a run each one it reads. Each is checked by its tag list: one the registry no longer
+knows loses its row, and with prune its versions; one whose tag list fails keeps its row and is
+an error of the report.
+
+What the index does not record, a run does not see: a push straight to the backend into a new
+OCI repository, and every repository once the derived tables are lost (a database lost without
+a backup; what was pushed after the backup of one that was restored). Name those once with
+`--attach` and `--repo`: a file of OCI repositories of the repo, one per line, as `oci_repos`
+holds them, under the repo's `<format>/<name>/` and without the registry's `prefix`. Blank lines
+and lines that start with `#` are skipped, and a name outside the repo refuses the run. A
+repository the registry does not know is skipped; the others are recorded, so that the next
+runs and the reconcile loop find them without the file.
+
+```sh
+cat > raw-assets.txt <<'EOF'
+# raw/assets, from the registry's own listing (Harbor: GET /api/v2.0/projects/<project>/repositories)
+raw/assets/docs/readme.md
+raw/assets/bin/tool
+EOF
+lajstrom reindex --repo raw/assets --attach raw-assets.txt --report
+```
+
 ### On a cloud registry
 
 ECR bills storage and data transfer, not requests; within a region the transfer is free. A run
@@ -750,6 +780,10 @@ because ECR serves layers from S3; across regions or to the internet it is the t
   get new keys, and their clients need the new `key.asc`.
 - **The registry was restored from its own backup or a replica**: `lajstrom reindex` with prune;
   rows of manifests the restored registry does not have are removed, drift is reported.
+
+On a registry without a catalog a run finds only the OCI repositories that `oci_repos` holds:
+in the first three cases, name the others per repo with `--attach` ([Without a
+catalog](#without-a-catalog)).
 
 ## Backup and restore
 

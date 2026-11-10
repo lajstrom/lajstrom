@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +44,8 @@ type scan struct {
 	start time.Time // the run's start: rows not seen since are unseen
 	began time.Time // when this repo's scan began, for the rate in the log
 	sem   chan struct{}
+	// recorded is the oci_repos rows the listing came from on a registry without a catalog.
+	recorded map[string]bool
 
 	mu          sync.Mutex
 	rep         RepoReport
@@ -92,25 +95,44 @@ func (w *Worker) repo(ctx context.Context, repo index.Repo, start time.Time, req
 }
 
 // list returns the OCI repositories under the repo's base: the registry's catalog, or the
-// oci_repos rows of a backend without one (issue #37). listed is false when the listing failed:
-// the scan then sweeps nothing.
+// oci_repos rows of a backend without one (#37), and those of Request.Repositories; ociRepo
+// checks each by its tag list. listed is false when the listing failed: the scan then sweeps
+// nothing.
 func (s *scan) list(ctx context.Context) (names []string, listed bool) {
 	names, err := s.prov.ListRepositories(ctx, s.base+"/")
-	if errors.Is(err, provider.ErrUnsupported) {
-		rows, err := s.w.index.ListOCIRepos(ctx, s.repo.ID)
-		if err != nil {
-			s.dbErr(err)
-			return nil, false
-		}
-		names = names[:0]
-		for _, r := range rows {
-			names = append(names, r.Path)
-		}
-		return names, true
-	}
-	if err != nil {
+	switch {
+	case errors.Is(err, provider.ErrUnsupported):
+		names, listed = s.recordedRepos(ctx)
+	case err != nil:
 		s.failure(Finding{Error: "list the OCI repositories: " + err.Error()})
+	default:
+		listed = true
+	}
+	if len(s.req.Repositories) > 0 {
+		names = append(names, s.req.Repositories...)
+		slices.Sort(names)
+		names = slices.Compact(names)
+	}
+	return names, listed
+}
+
+// recordedRepos returns the OCI repositories that oci_repos records for the repo: the listing of
+// a registry without a catalog. Ingest records those it writes to and a run those it reads; one
+// pushed straight to the registry is not there until a run attaches it (Request.Repositories).
+func (s *scan) recordedRepos(ctx context.Context) ([]string, bool) {
+	rows, err := s.w.index.ListOCIRepos(ctx, s.repo.ID)
+	if s.dbErr(err) {
 		return nil, false
+	}
+	s.recorded = make(map[string]bool, len(rows))
+	names := make([]string, 0, len(rows))
+	for _, r := range rows {
+		names = append(names, r.Path)
+		s.recorded[r.Path] = true
+	}
+	if len(names)+len(s.req.Repositories) == 0 && s.req.Source != SourceReconcile {
+		s.w.log.WarnContext(ctx, "reindex: the registry has no catalog and the index records no OCI repository of the repo; "+
+			"name them with lajstrom reindex --repo <repo> --attach <file>", "repo", s.rep.Repo)
 	}
 	return names, true
 }
@@ -132,6 +154,11 @@ func (s *scan) ociRepo(ctx context.Context, name string) {
 		return // gone: not seen, so its oci_repos row and its versions are swept
 	}
 	if err != nil {
+		if s.recorded[name] {
+			// Without a catalog its row is the only record of it: it stays until the registry
+			// says that the repository is gone.
+			s.dbErr(s.w.index.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: s.repo.ID, Path: name, SeenAt: s.w.now()}))
+		}
 		s.failure(Finding{Repository: pkgPath, Error: "list the tags: " + err.Error()})
 		return
 	}
