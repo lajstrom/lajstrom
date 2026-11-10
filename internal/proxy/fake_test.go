@@ -241,6 +241,7 @@ type fakeUpstream struct {
 	files     map[string][]byte
 	status    atomic.Int32
 	fileDelay atomic.Int64 // nanoseconds before a file's body
+	metaDelay atomic.Int64 // nanoseconds before a document's answer
 	metaCalls atomic.Int32
 	fileCalls atomic.Int32
 }
@@ -262,6 +263,11 @@ func (u *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	defer u.mu.Unlock()
 	if name, ok := strings.CutPrefix(r.URL.Path, "/meta/"); ok {
 		u.metaCalls.Add(1)
+		if d := time.Duration(u.metaDelay.Load()); d > 0 {
+			u.mu.Unlock()
+			time.Sleep(d)
+			u.mu.Lock()
+		}
 		d, ok := u.docs[name]
 		if !ok {
 			http.NotFound(w, r)

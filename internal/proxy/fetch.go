@@ -69,9 +69,8 @@ func (c *Core) File(ctx context.Context, repo index.Repo, path string) (*index.F
 		return nil, err
 	}
 	fl, joined := c.flights.join(fmt.Sprintf("%d/%s:%s", p.repo.ID, a.pkgPath, a.tag), func() (bool, error) {
-		fctx, cancel := context.WithCancel(context.WithoutCancel(ctx)) // the request's values, not its end
+		fctx, cancel := c.detach(ctx)
 		defer cancel()
-		defer context.AfterFunc(c.o.Context, cancel)()
 		return c.fetch(fctx, p, a, entry, row)
 	})
 	select {

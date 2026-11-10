@@ -262,9 +262,13 @@ none, the tarballs coming from the registry. What it pushed stays in the registr
 `npm/npmjs-<run>/`. On 2026-11-10, npm 11.20.0 on Node 26, against the Zot of the dev stack:
 
 ```text
-install 1: jest@29.7.0: 267 packages in 9 s; Lajstrom answered 268 tarball requests for 266 tarballs; the upstream was asked for 266 tarballs and 270 packuments; the proxy fetched 266
+install 1: jest@29.7.0: 267 packages in 11 s; Lajstrom answered 268 tarball requests for 266 tarballs; the upstream was asked for 266 tarballs and 261 packuments; the proxy fetched 266
 install 2: jest@29.7.0: 267 packages in 3 s; Lajstrom answered 268 tarball requests for 266 tarballs; the upstream was asked for 0 tarballs and 0 packuments; the proxy fetched 0
 ```
+
+The tree has 261 names, and the upstream was asked once for each: npm asks for a packument
+again before the first answer is in, and the requests that miss one document at once share one
+upstream request (#383; before it, 270).
 
 npm asks for one tarball (`semver`) three times, once per place in the tree. The second install
 asks the upstream for no packument either: the packuments are still within `metadataTTL`.

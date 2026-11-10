@@ -22,6 +22,7 @@ const (
 	docAbsent      = "absent"
 	docStale       = "stale"
 	docOffline     = "offline"
+	docShared      = "shared"
 )
 
 // Document returns the document of kind of name in the proxy repo repo (format.Proxy): after
@@ -44,22 +45,50 @@ func (c *Core) Document(ctx context.Context, repo index.Repo, name, kind string)
 }
 
 // refresh brings the proxy_meta row of (key, kind) up to date as §4.2 says: a fresh row stays,
-// an offline repo asks nothing, otherwise the upstream is asked with the row's validators. A
-// 200 replaces the row and drops the name's rendered documents in one transaction; a 304 moves
-// checked_at; a 404 or a 410 makes the row absent, or deletes it with a negativeTTL of 0s.
-// What the upstream fails to answer leaves the row as it is, and is returned for render.
+// an offline repo asks nothing, otherwise the upstream is asked with the row's validators, once
+// on this replica for all the requests that miss the row at the same time (revalidate). What
+// the upstream fails to answer leaves the row as it is, and is returned for render.
 func (c *Core) refresh(ctx context.Context, p *proxied, name, key, kind string) error {
 	row, err := metaRow(ctx, c.o.Index, p.repo.ID, key, kind)
 	if err != nil {
 		return err
 	}
-	now := c.o.Now()
 	switch {
-	case row != nil && p.fresh(row, now):
+	case row != nil && p.fresh(row, c.o.Now()):
 		countDoc(p, docFresh)
 		return nil
 	case p.up == nil:
 		countDoc(p, docOffline)
+		return nil
+	}
+	fl, joined := c.flights.join(fmt.Sprintf("meta:%d:%s:%s", p.repo.ID, kind, key), func() (bool, error) {
+		fctx, cancel := c.detach(ctx)
+		defer cancel()
+		return false, c.revalidate(fctx, p, name, key, kind)
+	})
+	select {
+	case <-fl.done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if joined {
+		countDoc(p, docShared)
+	}
+	return fl.err
+}
+
+// revalidate asks the upstream for the document, on a context of its own: a 200 replaces the
+// row and drops the name's rendered documents in one transaction; a 304 moves checked_at; a 404
+// or a 410 makes the row absent, or deletes it with a negativeTTL of 0s. It reads the row again
+// first: a refresh that ended after the caller read it may have made it fresh.
+func (c *Core) revalidate(ctx context.Context, p *proxied, name, key, kind string) error {
+	row, err := metaRow(ctx, c.o.Index, p.repo.ID, key, kind)
+	if err != nil {
+		return err
+	}
+	now := c.o.Now()
+	if row != nil && p.fresh(row, now) {
+		countDoc(p, docFresh)
 		return nil
 	}
 	err = c.ask(ctx, p, row, name, key, kind, now)
