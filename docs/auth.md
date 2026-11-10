@@ -179,9 +179,9 @@ Every route reads the `Authorization` header, the frontends (`/raw/`, `/pypi/`, 
   is `WWW-Authenticate: Basic realm="lajstrom"`, except under `/v2/`, where it is the bearer
   challenge of the token flow (below) and the client learns it at `/v2/token`, which itself
   answers with the Basic challenge.
-- **`Bearer ljs_pat_…`** on every route but `/v2`: a personal access token, checked as in
-  Basic credentials, and refused the same way. `Bearer ljs_dep_…` is refused: a deploy token
-  goes in Basic credentials, `deploy:<token>`, one way for every client.
+- **`Bearer ljs_pat_…`** and **`Bearer ljs_dep_…`** on every route but `/v2`: a personal access
+  token or a deploy token, checked as in Basic credentials, and refused the same way. npm sends
+  its `_authToken` so, and yarn its `npmAuthToken` ([ADR 0012](adr/0012-npm-profile-routes-and-dist-tags-journal.md)).
 - **Any other `Bearer`**, any bearer under `/v2`, and any other scheme: the request goes on as
   anonymous with the header untouched. The OCI facade verifies the bearer of `/v2`, which is
   its own JWT and nothing else ([below](#bearer-tokens-on-v2)).

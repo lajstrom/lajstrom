@@ -65,9 +65,9 @@ func HoldPrincipal(ctx context.Context, p auth.Principal) {
 //     and the request goes on as the user or the deploy token. Credentials that are refused,
 //     or that do not decode, are answered at once with 401 and the Basic challenge, whatever
 //     the route, in the error format of the route's family (writeRefusal).
-//   - Bearer with a token secret (ljs_pat_…, or ljs_dep_…, which is refused: a deploy token
-//     goes in Basic credentials) on every route but /v2: authenticated as a personal access
-//     token (auth.Authenticator.AuthenticateBearer), and refused like Basic credentials.
+//   - Bearer with a token secret (ljs_pat_… or ljs_dep_…, as npm's _authToken sends it) on
+//     every route but /v2: authenticated as a personal access token or a deploy token
+//     (auth.Authenticator.AuthenticateBearer), and refused like Basic credentials.
 //   - Any other bearer, a bearer on /v2 and any other scheme: the request goes on as anonymous
 //     with the header untouched. The OCI facade verifies the bearer of /v2, a JWT, and records
 //     its principal (HoldPrincipal).

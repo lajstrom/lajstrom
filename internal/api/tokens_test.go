@@ -353,7 +353,8 @@ func TestTokensAPIAuthorization(t *testing.T) {
 
 // TestTokensNeverLogged runs the authenticator, the middleware and the API with every logger
 // writing JSON at debug into one buffer: a token is created, used in Basic credentials and as
-// a bearer, refused once revoked, and a deploy token is used and refused as a bearer; the log
+// a bearer, refused once revoked, and a deploy token is used in Basic credentials and as a bearer
+// (ADR 0012); the log
 // then holds neither secret nor its hash, and the access log names the principals,
 // user:<owner> for the personal access token and token:<id> for the deploy token.
 //
@@ -405,7 +406,10 @@ func TestTokensNeverLogged(t *testing.T) {
 	if who.Principal != fmt.Sprintf("token:%d", dep.ID) {
 		t.Errorf("whoami of the deploy token = %+v", who)
 	}
-	wantStatus(t, send("GET", "/api/v1/whoami", "", "Bearer "+dep.Secret), http.StatusUnauthorized)
+	decodeJSON(t, send("GET", "/api/v1/whoami", "", "Bearer "+dep.Secret), http.StatusOK, &who)
+	if who.Principal != fmt.Sprintf("token:%d", dep.ID) {
+		t.Errorf("whoami of the deploy token as a bearer = %+v", who)
+	}
 	wantStatus(t, send("DELETE", fmt.Sprintf("/api/v1/users/alice/tokens/%d", pat.ID), "", "Bearer "+pat.Secret), http.StatusNoContent)
 	wantStatus(t, send("GET", "/api/v1/whoami", "", "Bearer "+pat.Secret), http.StatusUnauthorized) // S-05: at the next request
 	wantStatus(t, send("GET", "/api/v1/whoami", "", basicAuth("alice", pat.Secret)), http.StatusUnauthorized)
@@ -419,7 +423,7 @@ func TestTokensNeverLogged(t *testing.T) {
 		{basicAuth("alice", plantedPAT), http.StatusOK},
 		{basicAuth("bob", plantedPAT), http.StatusUnauthorized},
 		{basicAuth("deploy", plantedDeploy), http.StatusOK},
-		{"Bearer " + plantedDeploy, http.StatusUnauthorized},
+		{"Bearer " + plantedDeploy, http.StatusOK},
 	} {
 		wantStatus(t, send("GET", "/api/v1/whoami", "", tt.authorization), tt.status)
 	}
@@ -435,7 +439,6 @@ func TestTokensNeverLogged(t *testing.T) {
 	for _, want := range []string{
 		`"path":"/api/v1/whoami","status":200`, `"principal":"` + alice + `"`, fmt.Sprintf(`"principal":"token:%d"`, dep.ID),
 		fmt.Sprintf(`"msg":"authentication refused","token":%d,"reason":"revoked"`, pat.ID),
-		`"reason":"a deploy token as a bearer: it goes in Basic credentials, deploy:<token>"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the log does not have %s:\n%s", want, text)

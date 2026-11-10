@@ -137,9 +137,9 @@ func authServer(t *testing.T, r index.Store) (*Server, *seen, *bytes.Buffer) {
 // TestAuthenticateTokens checks the tokens in the middleware: a personal access token in Basic
 // credentials is its user, a deploy token is token:<id> whatever the user name, both with their
 // credential in the context; a personal access token as a bearer is its user on the API and
-// the frontends and goes on untouched under /v2/, whose bearer is the facade's; a deploy token
-// as a bearer and a revoked token are 401 in the route's format; the access log has the
-// principal, and no log has a secret.
+// the frontends and goes on untouched under /v2/, whose bearer is the facade's, and so is a
+// deploy token as a bearer, token:<id> (ADR 0012); a revoked token is 401 in the route's format;
+// the access log has the principal, and no log has a secret.
 func TestAuthenticateTokens(t *testing.T) {
 	alice := auth.Principal{Kind: auth.KindUser, Name: aliceUID}
 	deploy := auth.Principal{Kind: auth.KindToken, Name: "7"}
@@ -170,7 +170,8 @@ func TestAuthenticateTokens(t *testing.T) {
 		{name: "revoked pat in basic", path: "/raw/scratch/file", authorization: basic("alice", revokedPAT), status: 401, body: textBody, ctype: "text/plain; charset=utf-8"},
 		{name: "revoked pat bearer on the API", path: "/api/v1/repos", authorization: "Bearer " + revokedPAT, status: 401, body: apiBody, ctype: "application/json"},
 		{name: "revoked pat bearer on raw", path: "/raw/scratch/file", authorization: "Bearer " + revokedPAT, status: 401, body: textBody, ctype: "text/plain; charset=utf-8"},
-		{name: "deploy token bearer", path: "/api/v1/whoami", authorization: "Bearer " + scratchToken, status: 401, body: apiBody, ctype: "application/json"},
+		{name: "deploy token bearer", path: "/raw/scratch/file", authorization: "Bearer " + scratchToken, status: 204, principal: deploy, cred: dep},
+		{name: "deploy token bearer on /v2 goes on", path: "/v2/raw/scratch/x/tags/list", authorization: "Bearer " + scratchToken, status: 204, principal: auth.Anonymous},
 		{name: "pat of alice as bob", path: "/test/x", authorization: basic("bob", alicePAT), status: 401, body: textBody, ctype: "text/plain; charset=utf-8"},
 	}
 	for _, tt := range tests {

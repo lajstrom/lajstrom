@@ -281,9 +281,9 @@ func (f *tokenFixture) wantRefusal(t *testing.T, p Principal, c Credential, err 
 	}
 }
 
-// TestAuthenticateBearer is the table of Authorization: Bearer with a personal access token:
-// the owner comes from the token, a deploy token and anything that is not a personal access
-// token are refused, and so are the refusals of the Basic path.
+// TestAuthenticateBearer is the table of Authorization: Bearer with a token: a personal access
+// token is its owner, a deploy token token:<id> (ADR 0012), anything else is refused, and so are
+// the refusals of the Basic path.
 func TestAuthenticateBearer(t *testing.T) {
 	tests := []struct {
 		name, which string
@@ -292,7 +292,9 @@ func TestAuthenticateBearer(t *testing.T) {
 	}{
 		{name: "pat", which: "alice", want: userP("alice")},
 		{name: "pat with scopes", which: "alice-read", want: userP("alice")},
-		{name: "deploy token", which: "deploy", reason: "a deploy token as a bearer: it goes in Basic credentials, deploy:<token>"},
+		{name: "deploy token", which: "deploy", want: Principal{Kind: KindToken, Name: "20"}},
+		{name: "deploy token revoked", which: "deploy-revoked", reason: "revoked"},
+		{name: "deploy token unknown", which: "unknown-deploy", reason: "unknown token"},
 		{name: "malformed", which: "eyJhbGciOi.x.y", reason: "malformed token"},
 		{name: "unknown", which: "unknown", reason: "unknown token"},
 		{name: "revoked", which: "alice-revoked", reason: "revoked"},
@@ -309,9 +311,10 @@ func TestAuthenticateBearer(t *testing.T) {
 				secret = s
 			}
 			p, c, err := f.a.AuthenticateBearer(context.Background(), secret)
+			want := map[Kind]Credential{KindUser: {Kind: CredPAT, UserID: 1}, KindToken: {Kind: CredDeploy, TokenID: 20, RepoID: 10}}[tt.want.Kind]
 			if tt.want != (Principal{}) {
-				if err != nil || p != tt.want || c.Kind != CredPAT || c.UserID != 1 {
-					t.Fatalf("AuthenticateBearer = %v, %+v, %v; want %v", p, c, err, tt.want)
+				if err != nil || p != tt.want || c.Kind != want.Kind || c.UserID != want.UserID || c.RepoID != want.RepoID {
+					t.Fatalf("AuthenticateBearer = %v, %+v, %v; want %v, %+v", p, c, err, tt.want, want)
 				}
 			} else {
 				if !errors.Is(err, ErrBadCredentials) || p != (Principal{}) {
