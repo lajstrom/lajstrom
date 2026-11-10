@@ -589,7 +589,8 @@ type Options struct {
 func New(o Options) *Pipeline
 
 // Ingest stores a manifest the facade received for <format>/<repo>/<pkgPath>:<tag>; raw defines
-// the digest. Errors wrap ErrInvalid (profile, plugin, missing blobs) or ErrConflict (tag).
+// the digest. Errors wrap ErrInvalid (profile, plugin, missing blobs) or ErrConflict (tag, or the
+// package path of another spelling).
 func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, principal auth.Principal) (*Result, error)
 // Upload is the frontend path: Plugin.Build → push missing blobs → store as Ingest does.
 func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload, principal auth.Principal) (*format.Published, error)
@@ -751,8 +752,12 @@ Where the merged shapes differ from the first sketch of this section, and why:
 - **A tag claim is the lock on a tag across replicas, in a table of its own** (#12). Ingest
   inserts a `tag_claims` row in its own transaction before the registry write, then reads the
   version of the tag; another digest there, or a fresh claim of another digest, is the 409, and
-  the same digest is the idempotent path. Then `PushReference`; a registry error releases the
-  claim. Then one transaction confirms: version, files, `index_cache`, audit, claim released.
+  the same digest is the idempotent path. The claims are keyed by the package path, and a claim
+  on the package path, with the digest of the spelling, comes before the one on the tag (#244):
+  two spellings of a name share an OCI repository, so a package of another spelling, or a fresh
+  claim of another spelling, is the 409 before the manifest is pushed. Then `PushReference`; a
+  registry error releases the claim on the tag. Then one transaction confirms: version, files,
+  `index_cache`, audit, both claims released.
   A claim older than `Options.ClaimTTL` is taken over. The claim is not a `versions` row with a
   null `indexed_at`: derived rows stay rebuildable from manifests, readers of `versions` need no
   extra condition, `ResetDerived` cannot drop a claim mid-publish, and the claim has its own
