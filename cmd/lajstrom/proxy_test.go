@@ -57,7 +57,7 @@ func TestLoadUpstreams(t *testing.T) {
 		}
 	}
 	c.Upstreams[0].Format, c.Upstreams[0].Auth.TokenFile = "npm", filepath.Join(t.TempDir(), "missing")
-	if _, err := loadUpstreams(c, plugins, log); err == nil || !strings.HasPrefix(err.Error(), "upstreams[0].auth.tokenFile: open ") {
+	if _, err := loadUpstreams(c, plugins, log); err == nil || !strings.HasPrefix(err.Error(), "upstreams[0].auth.tokenFile: the file does not exist") {
 		t.Errorf("a missing token file: %v", err)
 	}
 }
