@@ -217,6 +217,11 @@ file, never held whole in memory; the rest of the body is at most 4 MiB, and the
 - a body `name` that is not `<name>`; not exactly one version and one attachment (npm's
   provenance bundle, a second attachment, is refused in M4); a version document whose `name` and
   `version` are not the body's;
+- a version document that differs from the tarball's `package.json` in `dependencies`,
+  `optionalDependencies`, `peerDependencies`, `bundleDependencies` (or `bundledDependencies`),
+  `bin`, or the scripts `preinstall`, `install` and `postinstall` (compared as JSON values, a
+  missing key equal to an empty one), naming the key: the packument never says other than what
+  an install of the tarball runs (ADR 0012);
 - a name npm refuses for a new package: more than 214 bytes, an upper-case letter, a leading `.`
   or `_`, a character that `encodeURIComponent` changes (the `/` of a scope aside),
   `node_modules`, `favicon.ico`;

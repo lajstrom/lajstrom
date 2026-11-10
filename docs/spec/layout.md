@@ -95,6 +95,21 @@ type Publisher interface {
     // Delete: the manifest del names, its referrers before it, then its rows and the repo's
     // rendered indexes, one audit row; ingest.Pipeline.Delete (#61)
     Delete(ctx context.Context, repo index.Repo, del Deletion, principal auth.Principal) (*Deleted, error)
+    // Journal appends ops to the journal of the package pkgPath (manifest-profile.md §8, ADR
+    // 0012): under the package's lock, one manifest per op with the next numbers, then the
+    // current state in the index, the repo's rendered indexes invalidated and an audit row per
+    // op, in one transaction. It returns the numbers given; ingest.Pipeline.Journal (#307)
+    Journal(ctx context.Context, repo index.Repo, pkgPath string, ops []JournalOp, principal auth.Principal) ([]int64, error)
+}
+
+// JournalOp is one change of a package's journal (manifest-profile.md §8): ArtifactType and Op
+// select the kind, the other fields are the keys of that op, empty when the op has none.
+type JournalOp struct {
+    ArtifactType string // application/vnd.lajstrom.npm.dist-tags.v1, …npm.deprecation.v1
+    Op           string // add, rm, deprecate, undeprecate
+    Tag          string // lajstrom.npm.tag
+    Version      string // lajstrom.npm.version
+    Message      string // lajstrom.npm.message, deprecate only
 }
 
 // Sessions are the publication sessions of a format whose upload is several requests (maven,

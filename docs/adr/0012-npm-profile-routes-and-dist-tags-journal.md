@@ -1,6 +1,6 @@
 # 0012. npm: the profile, the routes, and dist-tags as a journal in the registry
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-10
 - Deciders: gecube
 
@@ -81,7 +81,13 @@ one manifest, `artifactType` `application/vnd.lajstrom.npm.v1`: the tarball laye
 `application/vnd.lajstrom.npm.tarball.v1.tar+gzip` (title `<name without scope>-<version>.tgz`,
 annotations `lajstrom.npm.integrity` and `lajstrom.npm.shasum`) and the metadata layer
 `application/vnd.lajstrom.npm.metadata.v1+json` with the publish body's version document,
-without `dist`, `readme` and the keys that begin with `_`. Package path
+without `dist`, `readme` and the keys that begin with `_`. The document must agree with the
+tarball's `package.json` on what decides what an install runs: `name`, `version`,
+`dependencies`, `optionalDependencies`, `peerDependencies`, `bundleDependencies` (or
+`bundledDependencies`), `bin`, and the install scripts `preinstall`, `install` and
+`postinstall`, each compared as JSON values, a missing key equal to an empty one; any other
+answer is `400` naming the key ("manifest confusion" is refused at publish, without
+reimplementing npm's normalisation of the rest; decided by the lead on 2026-11-10). Package path
 `EscapeComponent(name)`, for `@scope/name` `EscapeComponent(scope)/EscapeComponent(name)`; tag
 `Escape(version)`, no variant.
 
@@ -124,13 +130,17 @@ of #61), dist-tags, `ping`, `whoami`, the legacy login answering a new personal 
   version; a version deleted through `/v2` or `/api/v1` writes none, its tags drop out of the
   packument, and would name it again if the same version were published anew. Lajstrom allows
   that republish; npmjs.org does not.
-- The body's version document trusts the publisher for what the packument says about
-  dependencies and scripts beyond name and version (`hasInstallScript` is computed from the
-  tarball). A writer is an authenticated principal of the repo; a stricter check is a later
-  issue.
+- The body's version document is trusted for what an install does not run on (description,
+  keywords, repository, engines…); what it runs on must equal the tarball's `package.json`
+  (dependencies of every kind, `bin`, the install scripts), so the packument cannot hide a
+  dependency or a script the tarball has (`hasInstallScript` is computed from the tarball).
+  npm's normalisation of `bin` (a string for a package's own name, `directories.bin`) is not
+  applied: a publisher whose document and `package.json` differ only by it gets `400` and
+  publishes with the normalised form in both, which npm's CLI already sends.
 - `Bearer ljs_dep_…` is accepted outside `/v2` (docs/auth.md said it is refused; the
   implementation changes it).
 - The proxy and the group (ADR 0013) reuse the profile; a proxied package's dist-tags are the
   upstream's and are not journaled.
-- The Go shape of the journal write (one method of `format.Publisher`, implemented by ingest,
-  the one write path) is added by #307 on these semantics.
+- The Go shape of the journal write is one method of `format.Publisher`, `Journal`,
+  implemented by ingest, the one write path; its signature is in layout.md §2 with this ADR
+  (decided by the lead on 2026-11-10), and #307 implements it.
