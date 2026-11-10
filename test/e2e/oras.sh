@@ -7,7 +7,9 @@
 # (#60: PATCH merges it; a file above maxFileSize is 413 through oras push and the raw PUT),
 # oras pull and the bytes, oras repo tags, oras manifest fetch, the raw frontend serving the
 # pushed file, then oras manifest delete through the facade (#61) and a 404. Last, an oci repo of
-# the run's own (§2 of the quick start): oras push of an artifact twice, a push row each (#245).
+# the run's own (§2 of the quick start): oras push of an artifact twice, a push row each (#245),
+# and one manifest under two tags, whose delete by one tag is 409 DENIED naming the other, and by
+# its digest deletes both (#284).
 #
 #   test/e2e/oras.sh [<base url> [<raw repo>]]     default: http://localhost:8080 scratch
 #
@@ -43,11 +45,14 @@ run="e2e-oras-$(date -u +%Y%m%d%H%M%S)-$RANDOM"
 path="$run/hello.txt"  # lower case: the path is also the OCI repository below raw/<repo>/
 name="raw/$repo/$path" # the OCI name of the file
 oci="oci/$run/notes"    # the OCI name of the oci step's artifact, in the oci repo of the run
+img="oci/$run/image"   # the OCI name of the image of #284, in the same oci repo
 pushed=""
+oci_pushed=""
 policy_set=""
 oci_made=""
 cleanup() {
 	[ -z "$pushed" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/raw/$repo/$path" || true
+	[ -z "$oci_pushed" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/v2/$img/manifests/$img_digest" || true
 	[ -z "$policy_set" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X PATCH -H 'Content-Type: application/json' \
 		-d '{"policy": null}' "$base/api/v1/repos/raw/$repo" || true
 	if [ -n "$oci_made" ]; then
@@ -202,7 +207,32 @@ assert_eq 2 "$(jq '[.events[].details.requestId | select(. != null)] | unique | 
 step "oras push $registry/$oci:1 twice: two push rows, subject $oci, digest $oci_digest, tag 1, ip $ip"
 oras manifest delete --force "$registry/$oci:1" >"$work/oras.log" 2>&1 ||
 	{ cat "$work/oras.log" >&2; fail "oras manifest delete $oci:1"; }
+step "oras manifest delete $registry/$oci:1"
+
+# #284: one manifest of the run's oci repo under two tags. A delete by one tag would take the
+# other: it is 409 DENIED naming it, and both tags still name the manifest. oras deletes by digest
+# only (it resolves a tag first), so the delete by tag is curl's; the delete by digest is oras's.
+printf 'oci e2e %s\n' "$run" >"$work/image.txt"
+oras push "$registry/$img:one,two" image.txt >"$work/oras.log" 2>&1 || { cat "$work/oras.log" >&2; fail "oras push $img:one,two"; }
+img_digest="$(awk '$1 == "Digest:" { print $2 }' "$work/oras.log")"
+oci_pushed=yes
+case "$img_digest" in sha256:*) ;; *) cat "$work/oras.log" >&2; fail "oras push $img:one,two printed no digest" ;; esac
+step "oras push $registry/$img:one,two: $img_digest"
+assert_status 409 -K "$E2E_CURLRC" -X DELETE "$base/v2/$img/manifests/one"
+assert_eq "DENIED two" "$(jq -r '.errors[0] | .code + " " + (.detail.tags | join(","))' <<<"$E2E_BODY")" "the refusal of the delete by tag"
+for tag in one two; do
+	assert_status 200 -K "$E2E_CURLRC" -o /dev/null -I "$base/v2/$img/manifests/$tag"
+done
+step "DELETE /v2/$img/manifests/one: 409 DENIED naming two, both tags kept"
+oras manifest delete --force "$registry/$img@$img_digest" >"$work/oras.log" 2>&1 ||
+	{ cat "$work/oras.log" >&2; fail "oras manifest delete $img@$img_digest"; }
+oci_pushed=""
+for ref in one two "$img_digest"; do
+	assert_status 404 -K "$E2E_CURLRC" -o /dev/null -I "$base/v2/$img/manifests/$ref"
+done
+step "oras manifest delete $registry/$img@$img_digest: the manifest and both tags 404"
+
 assert_status 204 -K "$E2E_CURLRC" -X DELETE "$base/api/v1/repos/oci/$run"
 oci_made=""
-step "oras manifest delete $registry/$oci:1, DELETE /api/v1/repos/oci/$run: 204"
+step "DELETE /api/v1/repos/oci/$run: 204"
 echo "PASS oras e2e against $base as $E2E_USER"
