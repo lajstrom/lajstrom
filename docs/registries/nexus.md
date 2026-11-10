@@ -49,6 +49,10 @@ API stay on `localhost:8081`.
 
 ## The row
 
+`lajstrom registry probe` measures every row of this table but the listing API, auth, rate
+limits and the garbage collector, which still need a person;
+[README.md](README.md#measuring-a-registry-lajstrom-registry-probe) says how.
+
 | Registry | Version | Auth | Create on push | Referrers | Catalog | Delete manifest | Immutable tags | Blob redirect | Result |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Nexus, docker | 3.98.1 CE, `docker` hosted, `writePolicy: allow` | Basic (`forceBasicAuth`); `/v2/token` too | yes, anywhere, at any depth | **no**: an HTML 404; the `sha256-<digest>` tag schema | yes, `n`/`last`/`Link` (absolute) | **only the digest**: the tags that name the manifest stay and serve it | `writePolicy: allow_once`: an existing tag is 409 `REDEPLOY_DISABLED`, the same manifest too | none: blob store on the file system | **fail**: the digest delete; a `PATCH` after the cancel is 500 |

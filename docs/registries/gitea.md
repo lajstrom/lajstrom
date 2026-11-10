@@ -54,6 +54,14 @@ for the [cleanup](#cleanup) experiment.
 | Gitea | the same, no prefix | — | **no**: every repository needs an owner; `raw/…` is the owner `raw`, 404 | — | — | — | — | — | fail: nothing can be written |
 | Forgejo | 17.0.1, the same setup | the same | the same | the same: a 404 with an empty body | the same | the same | the same | none | as Gitea, but ranges work and the upload status is off by one byte |
 
+`lajstrom registry probe` measures every row of this table but the listing API, auth, rate
+limits and the garbage collector, which still need a person;
+[README.md](README.md#measuring-a-registry-lajstrom-registry-probe) says how. Against Gitea
+(2026-11-10, `--registry-prefix lajstrom-it/`) it gave the Gitea column cell for cell, and the
+corrections of this page: the mount and the manifest limit ([Blob reads, ranges,
+sizes](#blob-reads-ranges-sizes)), and that a digest delete takes the blobs only that manifest
+used.
+
 The probe reports `vendor=unknown createOnPush=true referrers=false catalog=true
 deleteManifest=true immutableTags=false blobRedirect=true maxBlobSize=0` (the test log and the
 serve log of the e2e run). That is right; no override in `registries[].capabilities` is needed.
@@ -98,8 +106,8 @@ serve log of the e2e run). That is right; no override in `registries[].capabilit
    `vendor=gitea`, Forgejo too. The entry changes nothing else: the probe is right, and item 2
    is still a contract question.
 
-Nothing else: the token service, the tag schema, catalog, tags, delete, mounts (refused with
-202), the monolithic `POST`, the cancel and the digest check work as the provider expects.
+Nothing else: the token service, the tag schema, catalog, tags, delete, mounts, the monolithic
+`POST`, the cancel and the digest check work as the provider expects.
 
 ## Owners, tokens and create on push
 
@@ -207,9 +215,10 @@ DELETE blobs/sha256:<layer>                           202   GET afterwards 404
 DELETE tags/reference/t1                              404 404 page not found
 ```
 
-A digest delete takes every tag with the manifest. In Gitea a manifest pushed by tag is that
-tag's package version; one pushed by digest is a version of its own, named by the digest, and
-stays when its tags go. `/v2` has no repository delete; the REST API's package delete was not
+A digest delete takes every tag with the manifest, and the blobs only that manifest used: the
+empty config of the probe's manifest answered `HEAD` 404 after it. In Gitea a manifest pushed
+by tag is that tag's package version; one pushed by digest is a version of its own, named by the
+digest, and stays when its tags go. `/v2` has no repository delete; the REST API's package delete was not
 tried.
 
 ## Immutable tags
@@ -234,13 +243,15 @@ garbage. The re-pointing of `5.4.final` above deleted `a` the same way.
   end. No redirect on local storage; `[storage.packages] SERVE_DIRECT` with MinIO or Azure
   storage redirects (read in Gitea's configuration cheat sheet, not run).
 - A blob is visible in its image only: the same digest in another image of the owner is 404
-  there, and a mount (`POST ?mount=&from=`) answers 202 and opens a session.
+  there, until a mount (`POST ?mount=&from=` from that image, and `?mount=` alone) answers 201
+  and the blob 200 in its new image (`lajstrom registry probe` and curl, 2026-11-10; this page
+  said 202, a session, before).
 - 256 MiB and 512 MiB in one monolithic `PUT`: 201 in about 1 s each; Gitea sets no limit by
   default (`[packages] LIMIT_SIZE_CONTAINER = -1`). Larger blobs were not tried: the machine's
   disk was nearly full. With `LIMIT_SIZE_CONTAINER=1M` a monolithic `PUT` of 2 MiB is 403
   with an empty body, while `PATCH`es past the limit are 202.
-- Manifests: 4 MiB, 4 MiB + 1 and 10 MiB are 201; 32 MiB is 413 `MANIFEST_INVALID` "Manifest
-  exceeds maximum size" (the limit between was not bisected).
+- Manifests: 4 MiB, 4 MiB + 1 and 10 MiB are 201; 16 MiB (the probe's ladder) and 32 MiB are
+  413 `MANIFEST_INVALID` "Manifest exceeds maximum size": the limit is between 10 and 16 MiB.
 
 ## Uploads
 
