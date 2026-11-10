@@ -277,8 +277,14 @@ The ingest pipeline rejects a manifest with `400` (facade: `MANIFEST_INVALID`) w
 `409 Conflict` (facade: `TAG_INVALID` with a message) when the tag exists with another digest,
 or when the package path is another spelling's, or is being published under another spelling
 (section 4.1). Both are found under the claims, before the registry write.
-Sizes: a single file is limited by the backend registry's blob limit; Lajstrom enforces an
-optional per-repo `maxFileSize` from the control plane.
+Sizes: a file, and a blob of `/v2`, is bounded by the smaller of the repo's bound and the
+registry's `capabilities.maxBlobSize` (the configuration's, or the vendor table's: GHCR's
+10 GB a layer). The repo's bound is the `maxFileSize` of its policy in the control plane, on
+every repo, an `oci` one included; when the policy sets none, the default of its format (#246,
+from the package size survey of #439): npm 512 MiB, pypi and maven 4 GiB, apt and raw 8 GiB,
+`oci` 16 GiB, and 8 GiB for a format this list does not name. A policy's `maxFileSize` overrides
+the default, higher or lower: an `oci` repo of ML models needs 64 to 256 GiB, a mirror of Ollama
+models terabytes.
 
 ## 6. Referrers
 
