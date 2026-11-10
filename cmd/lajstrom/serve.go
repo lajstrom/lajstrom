@@ -152,7 +152,7 @@ func newServeCmd(a *app) *cobra.Command {
 				TLSKeyFile:      c.Server.TLS.KeyFile,
 				ShutdownTimeout: c.Server.ShutdownTimeout,
 				Log:             a.log,
-				Plugins:         servedPlugins(c.Server.ExternalURL),
+				Plugins:         servedPlugins(c.Server.ExternalURL, accounts{authn, &auth.Tokens{Index: st, Log: a.log}}),
 				Deps:            deps,
 				Ready:           ready(a.log, c.Database.Driver, st, health),
 				API:             api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Deleter: pipe, Log: a.log}),

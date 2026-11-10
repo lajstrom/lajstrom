@@ -181,33 +181,67 @@ func (a *Authenticator) Authenticate(ctx context.Context, username, secret strin
 // the client address of ctx too (WithClientAddress), which with AddressFailures of them is
 // refused the same way, before the user is read.
 func (a *Authenticator) authenticatePassword(ctx context.Context, username, secret string) (Principal, error) {
-	if CheckName(username) != nil {
-		// No user has such a name: nothing about a user is told by refusing it at once. It is
-		// not logged, in case it is a password typed into the wrong field.
-		return Principal{}, a.refuse(ctx, "", "malformed user name")
-	}
-	if secret == "" || len(secret) > MaxPasswordLen {
-		return Principal{}, a.refuse(ctx, username, "malformed password")
-	}
-	addr := throttleAddress(ctx)
-	if err := a.throttledLogin(addr, "", nil); err != nil {
-		return Principal{}, err
-	}
-	u, err := a.index.GetUser(ctx, username)
-	switch {
-	case errors.Is(err, index.ErrNotFound):
-		u = nil
-	case err != nil:
-		return Principal{}, fmt.Errorf("auth: authenticate %s: %w", username, err)
-	}
-	account := accountKey(u, username)
-	if err := a.throttledLogin("", account, u); err != nil {
+	u, account, addr, err := a.loginUser(ctx, username, secret)
+	if err != nil {
 		return Principal{}, err
 	}
 	if unusable(u) == "" && a.cached(keyOf(username, secret), u.PasswordHash) {
 		return UserPrincipal(u), nil
 	}
 	return a.verifyPassword(ctx, u, username, secret, account, addr)
+}
+
+// AuthenticatePassword returns the principal user:<uid> of the user called username when
+// password is its password, and a CredPassword: Authenticate for a password only, and without
+// the cache of verified secrets. It is the check of npm login, whose body carries the password
+// and which makes a personal access token, which a token may never do (#365): a secret of a
+// token's shape is refused as a wrong password is. Everything else is authenticatePassword's:
+// the same refusals, the same throttles, the same argon2id work, every attempt verified.
+func (a *Authenticator) AuthenticatePassword(ctx context.Context, username, password string) (Principal, Credential, error) {
+	if strings.HasPrefix(password, PATPrefix) || strings.HasPrefix(password, DeployPrefix) {
+		return Principal{}, Credential{}, a.refuse(ctx, username, "a token in place of a password")
+	}
+	u, account, addr, err := a.loginUser(ctx, username, password)
+	if err != nil {
+		return Principal{}, Credential{}, err
+	}
+	defer a.lockLogin(addr, account)()
+	p, err := a.checkPassword(ctx, u, username, password, account, addr)
+	if err != nil {
+		return Principal{}, Credential{}, err
+	}
+	return p, Credential{Kind: CredPassword}, nil
+}
+
+// loginUser runs the checks of a password login that come before its verification: a
+// malformed user name or password is refused, the client address of ctx and then the account
+// of the user called username (nil when there is none) must not be throttled. It returns the
+// user and the keys of the two throttles.
+func (a *Authenticator) loginUser(ctx context.Context, username, secret string) (*index.User, string, string, error) {
+	if CheckName(username) != nil {
+		// No user has such a name: nothing about a user is told by refusing it at once. It is
+		// not logged, in case it is a password typed into the wrong field.
+		return nil, "", "", a.refuse(ctx, "", "malformed user name")
+	}
+	if secret == "" || len(secret) > MaxPasswordLen {
+		return nil, "", "", a.refuse(ctx, username, "malformed password")
+	}
+	addr := throttleAddress(ctx)
+	if err := a.throttledLogin(addr, "", nil); err != nil {
+		return nil, "", "", err
+	}
+	u, err := a.index.GetUser(ctx, username)
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		u = nil
+	case err != nil:
+		return nil, "", "", fmt.Errorf("auth: authenticate %s: %w", username, err)
+	}
+	account := accountKey(u, username)
+	if err := a.throttledLogin("", account, u); err != nil {
+		return nil, "", "", err
+	}
+	return u, account, addr, nil
 }
 
 // verifyPassword verifies secret against the password of u, called username, and counts a
@@ -218,6 +252,21 @@ func (a *Authenticator) authenticatePassword(ctx context.Context, username, secr
 // then and costs nothing.
 func (a *Authenticator) verifyPassword(ctx context.Context, u *index.User, username, secret, account, addr string) (Principal, error) {
 	defer a.lockLogin(addr, account)()
+	key := keyOf(username, secret)
+	if err := a.throttledLogin(addr, account, u); err == nil && unusable(u) == "" && a.cached(key, u.PasswordHash) {
+		return UserPrincipal(u), nil
+	}
+	p, err := a.checkPassword(ctx, u, username, secret, account, addr)
+	if err == nil {
+		a.remember(key, u.PasswordHash)
+	}
+	return p, err
+}
+
+// checkPassword verifies secret against the password of u with argon2id, under the locks of
+// addr and account that the caller holds: the throttles are asked again, an unusable user costs
+// the work of a verification all the same, and a failure counts against account and addr.
+func (a *Authenticator) checkPassword(ctx context.Context, u *index.User, username, secret, account, addr string) (Principal, error) {
 	if err := a.throttledLogin(addr, account, u); err != nil {
 		return Principal{}, err
 	}
@@ -225,10 +274,6 @@ func (a *Authenticator) verifyPassword(ctx context.Context, u *index.User, usern
 		a.dummyVerify(secret)
 		a.failed(account, addr)
 		return Principal{}, a.refuse(ctx, username, reason)
-	}
-	key := keyOf(username, secret)
-	if a.cached(key, u.PasswordHash) {
-		return UserPrincipal(u), nil
 	}
 	ok, err := a.verify(u.PasswordHash, secret)
 	switch {
@@ -238,7 +283,6 @@ func (a *Authenticator) verifyPassword(ctx context.Context, u *index.User, usern
 		a.failed(account, addr)
 		return Principal{}, a.refuse(ctx, username, "wrong password")
 	}
-	a.remember(key, u.PasswordHash)
 	return UserPrincipal(u), nil
 }
 

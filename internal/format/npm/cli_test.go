@@ -52,6 +52,7 @@ func TestPingWhoami(t *testing.T) {
 		{"web login", alice, http.MethodPost, "/npm/internal/-/v1/login", http.StatusNotFound, "", false},
 		{"npm token", alice, http.MethodGet, "/npm/internal/-/npm/v1/tokens", http.StatusNotFound, "", false},
 		{"a POST of a package", alice, http.MethodPost, "/npm/internal/widgets", http.StatusNotFound, "", false},
+		{"a POST of a dist-tag", alice, http.MethodPost, "/npm/internal/-/package/widgets/dist-tags/latest", http.StatusNotFound, "", false},
 	} {
 		rr := as(h, tc.p, tc.method, tc.path, []byte(`{}`))
 		if rr.Code != tc.status || (tc.body != "" && strings.TrimSpace(rr.Body.String()) != tc.body) ||

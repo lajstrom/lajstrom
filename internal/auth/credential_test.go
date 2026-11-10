@@ -168,3 +168,18 @@ func TestCheckPasswordTokenPrefix(t *testing.T) {
 		t.Errorf("CheckPassword of another ljs_ word = %v", err)
 	}
 }
+
+// TestRedactSecrets: a token secret in a text keeps its prefix only.
+func TestRedactSecrets(t *testing.T) {
+	pat, dep := PATPrefix+strings.Repeat("a", 43), DeployPrefix+strings.Repeat("B", 43)
+	for in, want := range map[string]string{
+		"/npm/internal/-/user/token/" + pat: "/npm/internal/-/user/token/ljs_pat_…",
+		"a " + dep + " and " + pat + "/x":   "a ljs_dep_… and ljs_pat_…/x",
+		"/npm/internal/widgets":             "/npm/internal/widgets",
+		"ljs_other":                         "ljs_other",
+	} {
+		if got := RedactSecrets(in); got != want {
+			t.Errorf("RedactSecrets(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

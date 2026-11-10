@@ -472,3 +472,41 @@ func TestAuthenticatorDefaults(t *testing.T) {
 		t.Error("NewAuthenticator left the logger or the clock nil")
 	}
 }
+
+// TestAuthenticatePassword is the check of npm login: a password only, every attempt verified
+// and none remembered (the cache of Authenticate is not used, so a login never puts a password
+// in it), the refusals and the throttle of failed logins of Authenticate, and a secret of a token's shape refused
+// as a wrong password is, without the index and without argon2id.
+func TestAuthenticatePassword(t *testing.T) {
+	f := newAuthFixture(t, Options{})
+	ctx := context.Background()
+	for i := range 2 {
+		p, c, err := f.a.AuthenticatePassword(ctx, "alice", alicePassword)
+		if u := f.users.byName("alice"); err != nil || p != UserPrincipal(&u) || c.Kind != CredPassword {
+			t.Fatalf("AuthenticatePassword = %v, %+v, %v", p, c, err)
+		}
+		if f.verifications() != i+1 || f.a.cacheLen() != 0 {
+			t.Errorf("attempt %d: %d verifications, %d remembered; want every attempt verified, none remembered", i+1, f.verifications(), f.a.cacheLen())
+		}
+	}
+	for _, secret := range []string{PATPrefix + strings.Repeat("a", 43), DeployPrefix + strings.Repeat("a", 43)} {
+		reads := f.users.reads.Load()
+		if _, _, err := f.a.AuthenticatePassword(ctx, "alice", secret); !errors.Is(err, ErrBadCredentials) || f.users.reads.Load() != reads {
+			t.Errorf("a token as the password: %v after %d reads", err, f.users.reads.Load()-reads)
+		}
+	}
+	for _, tc := range []struct{ user, password string }{{"alice", bobPassword}, {"bob", bobPassword}, {"dave", alicePassword}, {"carol", "x"}} {
+		if _, _, err := f.a.AuthenticatePassword(ctx, tc.user, tc.password); !errors.Is(err, ErrBadCredentials) {
+			t.Errorf("AuthenticatePassword(%s) = %v, want ErrBadCredentials", tc.user, err)
+		}
+	}
+	for range LoginFailures - 1 { // alice has failed once above
+		_, _, _ = f.a.AuthenticatePassword(ctx, "alice", bobPassword)
+	}
+	if _, _, err := f.a.AuthenticatePassword(ctx, "alice", alicePassword); !errors.As(err, new(*ThrottledError)) {
+		t.Errorf("the right password after %d failures: %v, want the throttle", LoginFailures, err)
+	}
+	if strings.Contains(f.logs.String(), alicePassword) {
+		t.Error("the log has the password")
+	}
+}

@@ -62,8 +62,10 @@ func (h *handlers) distTags(w http.ResponseWriter, r *http.Request, repo index.R
 		h.fail(w, r, fmt.Errorf("%w: %s %s", index.ErrNotFound, r.Method, r.URL.Path))
 	case r.Method == http.MethodPut:
 		h.addDistTag(w, r, repo, t)
-	default:
+	case r.Method == http.MethodDelete:
 		h.rmDistTag(w, r, repo, t)
+	default:
+		h.fail(w, r, fmt.Errorf("%w: %s %s", index.ErrNotFound, r.Method, r.URL.Path))
 	}
 }
 

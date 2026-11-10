@@ -37,6 +37,9 @@ type Plugin struct {
 	// Empty, the routes render a packument for each request with the base of its host, and do
 	// not keep it (the dev stack without server.externalURL).
 	ExternalURL string
+	// Accounts checks the password of npm login and makes and revokes its tokens; nil, npm
+	// login is 501 and npm logout 404.
+	Accounts Accounts
 }
 
 // WithExternalURL returns the plugin with ExternalURL u: serve gives every plugin that has the

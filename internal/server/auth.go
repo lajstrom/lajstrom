@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -68,6 +69,9 @@ func HoldPrincipal(ctx context.Context, p auth.Principal) {
 //   - Bearer with a token secret (ljs_pat_… or ljs_dep_…, as npm's _authToken sends it) on
 //     every route but /v2: authenticated as a personal access token or a deploy token
 //     (auth.Authenticator.AuthenticateBearer), and refused like Basic credentials.
+//   - The legacy login of npm (npmLogin): the request goes on as anonymous with the header
+//     untouched, whatever it says. Its body carries the password, which the npm plugin checks,
+//     and npm sends with it the token it had, revoked or not (docs/spec/http-routing.md, npm).
 //   - Any other bearer, a bearer on /v2 and any other scheme: the request goes on as anonymous
 //     with the header untouched. The OCI facade verifies the bearer of /v2, a JWT, and records
 //     its principal (HoldPrincipal).
@@ -85,6 +89,10 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(auth.WithEvaluationScope(r.Context()))
 		if s.tokenThrottled(w, r) {
+			return
+		}
+		if r.Method == http.MethodPut && npmLogin.MatchString(r.URL.Path) {
+			next.ServeHTTP(w, r)
 			return
 		}
 		scheme, value, _ := strings.Cut(r.Header.Get("Authorization"), " ")
@@ -132,6 +140,9 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(auth.WithCredential(auth.WithPrincipal(r.Context(), p), cred)))
 	})
 }
+
+// npmLogin is the path of npm's legacy login, PUT /npm/<repo>/-/user/org.couchdb.user:<name>.
+var npmLogin = regexp.MustCompile(`^/npm/[^/]+/-/user/org\.couchdb\.user:[^/]+$`)
 
 // tokenBearer reports whether the bearer secret on path is the authenticator's: a token secret
 // (auth.PATPrefix or auth.DeployPrefix) outside /v2, whose bearer is the facade's JWT.
