@@ -25,7 +25,8 @@ const maxBody = 4 << 20
 const keyAttachments = "_attachments"
 
 // publishBody is npm's publish body as readBody read it: every member but _attachments as JSON,
-// and the attachments with their data decoded into spool files. Close removes the files.
+// and the attachments with their data decoded into spool files, nil for a body without
+// _attachments. Close removes the files.
 type publishBody struct {
 	fields      map[string]json.RawMessage
 	attachments []*attachment
