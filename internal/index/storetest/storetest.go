@@ -64,6 +64,8 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"ReindexRunsKept", testReindexRunsKept},
 		{"ReindexRunRace", testReindexRunRace},
 		{"ProxyMeta", testProxyMeta},
+		{"FetchClaims", testFetchClaims},
+		{"FetchClaimRace", testFetchClaimRace},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -38,6 +38,11 @@ const defaultConcurrency = 8
 // defaultClaimTTL is Options.ClaimTTL when it is zero: ingest's default.
 const defaultClaimTTL = 10 * time.Minute
 
+// fetchClaimStale is when the claim of a proxy fetch is stale: 2 minutes after its last beat
+// (docs/spec/index-schema.md, Proxy and group repos). A run deletes the stale ones, as it does
+// the stale tag claims.
+const fetchClaimStale = 2 * time.Minute
+
 // Options configures a Worker.
 type Options struct {
 	// Index is the index database.
@@ -223,6 +228,9 @@ func (w *Worker) run(ctx context.Context, run *index.ReindexRun, req Request) (*
 	}
 	if _, err := w.index.ExpireTagClaims(ctx, w.now().Add(-w.claimTTL)); err != nil {
 		return report, fmt.Errorf("reindex: expire stale tag claims: %w", err)
+	}
+	if _, err := w.index.ExpireFetchClaims(ctx, w.now().Add(-fetchClaimStale)); err != nil {
+		return report, fmt.Errorf("reindex: expire stale fetch claims: %w", err)
 	}
 	for _, repo := range repos {
 		rr, err := w.repo(ctx, repo, run.StartedAt, req)

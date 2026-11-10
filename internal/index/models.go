@@ -119,6 +119,22 @@ type TagClaim struct {
 	ClaimedAt time.Time
 }
 
+// FetchClaim is a row of fetch_claims (coordination): the lock a proxy fetch holds on one
+// artifact from before its download until after its ingest, so that two replicas that miss it
+// at once download it once (docs/spec/index-schema.md, Proxy and group repos). It is not a tag
+// claim: the digest is unknown until the download ends, and the ingest inside the fetch takes
+// its tag claims as every publish does.
+type FetchClaim struct {
+	ID          int64
+	RepoID      int64
+	Package     string // the package path (Plugin.EscapeName)
+	Tag         string // profile.Tag of the version and variant
+	Principal   string // canonical form of the principal whose request started the fetch
+	Replica     string // host name and process id
+	ClaimedAt   time.Time
+	HeartbeatAt time.Time // stale 2 minutes after the last beat
+}
+
 // The states of a reindex run (docs/spec/index-schema.md, Coordination).
 const (
 	ReindexRunning   = "running"   // the lock of its scope while HeartbeatAt is fresh
