@@ -82,17 +82,15 @@ func (h *handlers) specialRoute(method string, segs []string) specialHandler {
 	case method == http.MethodDelete && len(segs) == 3 && segs[0] == "user" && segs[1] == "token":
 		return func(w http.ResponseWriter, r *http.Request, _ index.Repo) { h.logout(w, r, segs[2]) }
 	}
-	audit := func(bulk bool) specialHandler {
-		return func(w http.ResponseWriter, r *http.Request, repo index.Repo) { h.audit(w, r, repo, bulk) }
+	route := strings.Join(segs, "/")
+	if method == http.MethodPost && (route == auditBulk || route == auditFull || route == auditQuick) {
+		return func(w http.ResponseWriter, r *http.Request, repo index.Repo) { h.audit(w, r, repo, route) }
 	}
 	return map[string]specialHandler{
-		"GET ping":                             h.ping,
-		"GET whoami":                           h.whoami,
-		"GET v1/search":                        h.search,
-		"POST npm/v1/security/advisories/bulk": audit(true),
-		"POST npm/v1/security/audits":          audit(false),
-		"POST npm/v1/security/audits/quick":    audit(false),
-	}[method+" "+strings.Join(segs, "/")]
+		"GET ping":      h.ping,
+		"GET whoami":    h.whoami,
+		"GET v1/search": h.search,
+	}[method+" "+route]
 }
 
 // post dispatches a POST: the registry's own routes.

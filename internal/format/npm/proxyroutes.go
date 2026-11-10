@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
@@ -54,6 +55,35 @@ func (h *handlers) proxyTarball(ctx context.Context, repo index.Repo, name, file
 		return nil, err
 	}
 	return core.File(ctx, repo, name+"/-/"+file)
+}
+
+// proxyAudit forwards an audit request on route to the upstream of a proxy repo through the core
+// (format.Proxy.Forward): a POST of the same route below the upstream's URL, the body decoded.
+// The upstream's answer is the answer, its status and its body as it sent them, with
+// Content-Type application/json and its npm-notice, which npm prints, and no other header of
+// the upstream's (http-routing.md, npm). Nothing is kept.
+func (h *handlers) proxyAudit(w http.ResponseWriter, r *http.Request, repo index.Repo, route string, body io.Reader) {
+	core, err := h.proxyCore(repo)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	resp, err := core.Forward(r.Context(), repo, format.ForwardRequest{Method: http.MethodPost, Path: "-/" + route,
+		ContentType: "application/json", Accept: "application/json", Body: body})
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if notice := resp.Header.Get("npm-notice"); notice != "" {
+		w.Header().Set("npm-notice", notice)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(resp.StatusCode)
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		h.deps.Log.WarnContext(r.Context(), "npm: the upstream's audit answer broke off", "repo", repo.Name, "error", err.Error())
+	}
 }
 
 // refuseWrite returns nil for a repo that takes the writes of npm, and for a proxy repo an
