@@ -4,6 +4,9 @@ go 1.27
 
 require (
 	github.com/ProtonMail/go-crypto v1.5.2
+	github.com/aws/aws-sdk-go-v2 v1.47.8
+	github.com/aws/aws-sdk-go-v2/service/ecr v1.67.5
+	github.com/aws/smithy-go v1.28.9
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/go-cmp v0.7.0
 	github.com/jackc/pgx/v5 v5.12.0
