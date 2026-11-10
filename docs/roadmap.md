@@ -1,7 +1,7 @@
 # Roadmap: the first month (2026-11-06 → 2026-12-06)
 
 - Owner: @gecube. Updated when a milestone closes; dates move only by a decision recorded here.
-- Tracking: GitHub milestones M0–M3 and the issues in [`docs/plan/`](plan/). This page is the
+- Tracking: GitHub milestones M0–M4 and the issues in [`docs/plan/`](plan/). This page is the
   narrative; the issues are the truth for status.
 
 ## Goal
@@ -14,8 +14,8 @@ end-to-end tests with the real clients, a container image and installation docs.
 two replicas behind one edge with Postgres (SQLite is for a single node) and the e2e suite
 proves it: concurrent pushes to different replicas, a replica killed mid-upload.
 
-Not this month (post-MVP, tracked as `post-mvp` issues): rpm, npm, terraform, proxy and group
-repos, OIDC, UI, docker passthrough and multi-arch stitching, retention, Harbor and GHCR
+Not this month (post-MVP, tracked as `post-mvp` issues): rpm, terraform, proxy and group repos
+beyond npm (M4, below), OIDC, UI, docker passthrough and multi-arch stitching, retention, Harbor and GHCR
 adapters beyond the spike, FQDN mode.
 
 ## Milestones
@@ -27,6 +27,7 @@ adapters beyond the spike, FQDN mode.
 | **M2 — apt and auth** | Fri 2026-11-27 | an Ubuntu container does `apt-get update && apt-get install hello` from `http://host/apt/ubuntu-internal jammy main` with `signed-by` our key; a user with a `writer` binding can push, a `reader` cannot, a deploy token works on one repo only, anonymous read toggles per repo; writes are in the audit log; all of it via `/api/v1` and the `admin` CLI. |
 | **M3 — maven and v0.1.0** | Fri 2026-12-04 | `mvn deploy` of a multi-file artifact and `mvn dependency:get` from a clean `~/.m2`; `goreleaser` produces binaries, `ghcr.io/lajstrom/lajstrom:v0.1.0`, `docker.io/lajstrom/lajstrom:v0.1.0`, SBOM and a cosign signature; the install guide works on a fresh machine; tag `v0.1.0` with release notes. |
 | Buffer | Sat–Sun 2026-12-05/06 | slack for whatever slipped; no new scope. |
+| **M4 — npm: hosted, proxy, group** | Fri 2026-12-18 | A Verdaccio-style npm registry: npm, pnpm and yarn publish a scoped package to a hosted repo and install it, with a public dependency, from a clean cache through one `.npmrc` line (`registry=https://host/npm/<group>/`), the group serving the hosted repo and a caching proxy of npmjs.org; `npm login`, `dist-tag`, `unpublish`; dist-tags kept in the registry as a journal, so reindex restores them. Spec first: #302 (npm, ADR 0012), #303 (proxy and group, ADR 0013). |
 
 Priority inside a milestone: `priority/p0` issues define "done"; `p1` are planned and get cut
 first if the week runs out; `p2` are opportunistic.
@@ -123,6 +124,7 @@ stays in v0.1.0 or becomes the first post-MVP milestone.
 
 ## After v0.1.0 (preview, not committed)
 
-Month 2 candidates in rough order: docker passthrough with RBAC, proxy repos (pypi, maven
-first), rpm, npm, OIDC, retention, UI read-only ([lajstrom-ui](https://github.com/lajstrom/lajstrom-ui)),
+M4 (above, decided on 2026-11-10) is npm with its proxy and group repos. Month 2 candidates after
+it, in rough order: docker passthrough with RBAC, proxy repos for pypi and maven on M4's core
+(#67), rpm, OIDC, retention, UI read-only ([lajstrom-ui](https://github.com/lajstrom/lajstrom-ui)),
 Harbor adapter, apt-transport-oci export.
