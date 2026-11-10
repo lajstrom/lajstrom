@@ -165,7 +165,11 @@ test log, with the prefix). On main it said `catalog=true`, and every `ListRepos
    is short, under the digest of the whole. The provider's `FinishBlobUpload` with a last chunk
    should send it as a `PATCH` and close with an empty `PUT` when the session already holds
    bytes; the facade's `TestIntegrationUploadAcrossReplicas` fails on this (`mismatch
-   Content-Length` on the read-back). A single `PUT` after the `POST` keeps its body.
+   Content-Length` on the read-back). A single `PUT` after the `POST` keeps its body. **Done in
+   #352:** `FinishBlobUpload` puts a last chunk in the closing `PUT` only when the session holds
+   no bytes yet; otherwise it sends the chunk as a `PATCH` with its `Content-Range` and closes
+   with an empty `PUT`, on every registry. The unit tests check the requests; not run against
+   JCR again.
 3. **Do not rely on the registry for the digest.** JCR stores whatever it is sent under the digest
    it is told, in a session or monolithically, and serves it so. Ingest computes its digests from
    its spool, so what it pushes is right; the facade passed a client's digest through, so a
