@@ -428,13 +428,14 @@ network allow:
 | Path | What happens to the body |
 | --- | --- |
 | a download: `GET /v2/…/blobs/<digest>`, `/raw/`, the apt pool, PyPI and Maven files | `format.ServeBlob`: one request to the registry, its body copied to the client through a fixed buffer, or a `307` to the registry's storage |
-| a `/v2` blob upload: `POST`, `PATCH`, `PUT` of a session | the client's body is the body of the request to the registry's session (`facade.requestBody`, the provider's `repository.send`) |
+| a `/v2` blob upload: `POST`, `PATCH`, `PUT` of a session | the client's body is the body of the request to the registry's session (`facade.requestBody`, the provider's `repository.send`); with [`registries[].uploads.spoolUnknownLength`](configuration.md#uploads) on, a chunk of unknown length into a session that holds bytes is spooled first to one temporary file of the chunk's size in `$TMPDIR`, unlinked as soon as it is made and closed when the request ends |
 | a file a frontend receives: raw `PUT`, apt `PUT …/upload`, a twine upload, a Maven `PUT` | spooled to **one temporary file of the body's size** in `$TMPDIR` for the length of the request (`format.Spool`, Maven's `ingest.spoolHashed`), so that the plugin can read it before ingest pushes it; removed when the request ends, and unlinked as soon as it is made where the system allows, so a crash leaves nothing. A twine upload takes a second spool of the file while it is checked (`pypi.readerAt`) |
 | what is read into memory | metadata only, each with a bound: a manifest (`server.maxManifestSize`, 4 MiB), a metadata layer (4 MiB), a POM (4 MiB), a deb's control archive (4 MiB unpacked), `maven-metadata.xml` (1 MiB), a wheel's `METADATA` (4 MiB), and the blocks of a zip's directory that ingest reads at offsets (64 KiB each, at most 32 kept) |
 
 So the disk of `$TMPDIR` must hold the frontend uploads that run at once: the sum of their
 sizes, bounded by `server.maxConcurrentUploads` and the repos' `policy.maxFileSize`. `/v2`
-uploads take no disk of Lajstrom's.
+uploads take no disk of Lajstrom's, but for the spooled chunks of a registry with
+`uploads.spoolUnknownLength` on.
 
 The streaming audit of #62 read every `io.ReadAll`, `bytes.Buffer` and temporary file of
 `internal/` and `cmd/`: none is on a blob's path; each reads one of the bounded documents above,
