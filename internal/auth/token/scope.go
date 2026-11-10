@@ -208,14 +208,21 @@ func ScopeAction(a auth.Action) string {
 
 // Realm returns the realm and the service of the token flow for r (docs/spec/http-routing.md
 // §1). With externalURL, server.externalURL, the realm is <scheme>://<host>/v2/token and the
-// service the host, with the port when it has one. Without, the realm is
-// http://<Host>/v2/token and the service the request's Host: the dev stack. Replicas behind
-// one edge share one Host, so a token from one is for the service of the other.
+// service the host, with the port when it has one. Without, which only the dev stack may have
+// (server.insecureHTTP, #248), the realm is <scheme>://<Host>/v2/token and the service the
+// request's Host, the scheme https when the request came over TLS (server.tls) and http
+// otherwise: a client never sends its Basic credentials to the realm in clear text over a
+// connection it made with TLS. Replicas behind one edge share one Host, so a token from one is
+// for the service of the other.
 func Realm(externalURL string, r *http.Request) (realm, service string) {
 	if u, err := url.Parse(externalURL); externalURL != "" && err == nil && u.Host != "" {
 		return u.Scheme + "://" + u.Host + "/v2/token", u.Host
 	}
-	return "http://" + r.Host + "/v2/token", r.Host
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host + "/v2/token", r.Host
 }
 
 // Challenge returns the WWW-Authenticate value of a 401 under /v2/:
