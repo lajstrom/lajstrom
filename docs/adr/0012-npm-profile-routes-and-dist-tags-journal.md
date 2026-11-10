@@ -81,13 +81,15 @@ one manifest, `artifactType` `application/vnd.lajstrom.npm.v1`: the tarball laye
 `application/vnd.lajstrom.npm.tarball.v1.tar+gzip` (title `<name without scope>-<version>.tgz`,
 annotations `lajstrom.npm.integrity` and `lajstrom.npm.shasum`) and the metadata layer
 `application/vnd.lajstrom.npm.metadata.v1+json` with the publish body's version document,
-without `dist`, `readme` and the keys that begin with `_`. The tarball's `package.json` is first given
-the three normalisations npm's CLI applies to the document it sends but not to the file it packs
-(npm 10 and 11, checked with the real clients on 2026-11-10): `bin` as a string becomes
-`{<name without its scope>: <path>}`; `directories.bin` without `bin` becomes a `bin` of every
-file of that directory in the tarball, by its base name; and a `binding.gyp` at the package's
-root with neither an `install` nor a `preinstall` script adds the script `install` `node-gyp
-rebuild`. Paths are compared without a leading `./`. Then the document must agree with
+without `dist`, `readme` and the keys that begin with `_`. Both the document and the tarball's
+`package.json` are first given the three normalisations npm's CLI applies to the document it
+sends but not to the file it packs (npm 10 and 11 normalise, yarn 4 sends the file unchanged:
+both sides, so that every client compares alike; checked with the real clients on 2026-11-10):
+`bin` as a string becomes `{<name without its scope>: <path>}`; `directories.bin` without `bin`
+becomes a `bin` of what that directory of the tarball holds, as npm lists it: every entry whose
+name does not begin with `.`, subdirectories included and walked, each by its base name; and a
+`binding.gyp` at the package's root with neither an `install` nor a `preinstall` script adds the
+script `install` `node-gyp rebuild`. Paths lose a leading `./`. Then the document must agree with
 the tarball's `package.json` on what decides what an install runs: `name`, `version`,
 `dependencies`, `optionalDependencies`, `peerDependencies`, `bundleDependencies` (or
 `bundledDependencies`), `bin`, and the install scripts `preinstall`, `install` and
