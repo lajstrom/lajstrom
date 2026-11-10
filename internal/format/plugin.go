@@ -159,4 +159,7 @@ type Deps struct {
 	Signer Signer
 	// Sessions are the publication sessions, for a format whose upload is several requests.
 	Sessions Sessions
+	// Proxy is the core of proxy repos (*proxy.Core, ADR 0013); nil when the server serves
+	// none. A handler asks it for the documents and files of a repo of kind proxy.
+	Proxy Proxy
 }

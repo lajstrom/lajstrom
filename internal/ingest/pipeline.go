@@ -120,7 +120,8 @@ type Result struct {
 //
 //  1. check the profile rules that hold for every format: artifactType selects the plugin of
 //     repo's format, config is the empty descriptor, the required annotations are present and
-//     agree with repo, the package path computed from the annotations (§4.1) equals pkgPath
+//     agree with repo, no key starts with lajstrom.origin. (only the proxy fetcher writes them,
+//     through Upload, §3.1), the package path computed from the annotations (§4.1) equals pkgPath
 //     and the tag computed from them (§4.2) equals tag; no file layer is larger than the
 //     repo policy's maxFileSize (the error also wraps an *http.MaxBytesError with the limit);
 //  2. check that every layer exists in the backend (the empty config is pushed when missing);
@@ -162,6 +163,12 @@ func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag str
 // from its source and checking it against its descriptor on the way, and then stores the
 // manifest as Ingest does. It implements format.Publisher.
 //
+// With up.Origin, the proxy fetcher's upload (ADR 0013), the built manifest gets
+// lajstrom.origin.url and lajstrom.origin.checksum and loses lajstrom.uploaded-by
+// (docs/spec/manifest-profile.md §3.1), and the audit row is proxy.fetch with the details
+// upstream, url, checksum and size, the sum of the file layers' (docs/spec/rbac.md §7). Without
+// it, a built manifest with a lajstrom.origin.* key is ErrInvalid, as on Ingest.
+//
 // An upload of the same files under a tag that holds them already is the idempotent repeat,
 // whatever org.opencontainers.image.created the new build carries: nothing is written, the
 // manifest in the registry stays the first, and Published.Digest is its digest. Other files
@@ -177,6 +184,9 @@ func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload
 	built, err := plugin.Build(ctx, repo, up)
 	if err != nil {
 		return nil, buildError(repo, err)
+	}
+	if up.Origin != nil {
+		setOrigin(&built.Manifest, up.Origin)
 	}
 	pkgPath, ok := strings.CutPrefix(built.RepoPath, repoBase(repo)+"/")
 	if !ok || pkgPath == "" {
@@ -204,7 +214,8 @@ func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload
 	if err := t.pushBlobs(ctx, built); err != nil {
 		return nil, err
 	}
-	res, err := p.ingest(ctx, &publish{target: t, tag: built.Tag, manifest: built.Manifest, raw: raw, principal: principal, repeatOnFiles: true})
+	res, err := p.ingest(ctx, &publish{target: t, tag: built.Tag, manifest: built.Manifest, raw: raw, principal: principal,
+		repeatOnFiles: true, origin: up.Origin})
 	if err != nil {
 		return nil, err
 	}
@@ -251,6 +262,9 @@ type publish struct {
 
 	repeatOnFiles bool          // Upload: the same file layers under the tag are the idempotent repeat
 	existing      digest.Digest // the manifest the tag holds, when the publish is a repeat of it
+
+	// origin is set on the proxy fetcher's upload: the origin annotations and proxy.fetch.
+	origin *format.Origin
 
 	readOnly      bool // Inspect: nothing is pushed, not even the empty config
 	allowDegraded bool // Inspect: an unreadable metadata layer gives degraded rows

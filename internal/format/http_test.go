@@ -37,6 +37,10 @@ func TestWriteError(t *testing.T) {
 		{name: "backend rejected our credentials", err: fmt.Errorf("generic: %w", provider.ErrUnauthorized), status: 502},
 		{name: "circuit breaker open", err: fmt.Errorf("raw: push: %w", &provider.UnavailableError{RetryAfter: 12 * time.Second}), status: 503, retryAfter: "12"},
 		{name: "unavailable without a time", err: provider.ErrUnavailable, status: 503},
+		{name: "a write to a proxy", err: fmt.Errorf("npm: publish: %w", format.ErrMethodNotAllowed), status: 405},
+		{name: "upstream failed", err: fmt.Errorf("proxy: upstream npmjs: %w", format.ErrBadGateway), status: 502},
+		{name: "upstream asked to wait", err: fmt.Errorf("proxy: %w", &format.UnavailableError{RetryAfter: 1500 * time.Millisecond}), status: 503, retryAfter: "2"},
+		{name: "upstream timeout", err: fmt.Errorf("proxy: %w", format.ErrGatewayTimeout), status: 504},
 		{name: "first match wins", err: errors.Join(index.ErrNotFound, format.ErrInvalid), status: 400},
 		{name: "other", err: errors.New("index: database is unreachable"), status: 500},
 		{name: "nil", status: 500},
@@ -55,12 +59,17 @@ func TestWriteError(t *testing.T) {
 			if tt.status < 500 {
 				body = tt.err.Error() + "\n"
 			}
-			challenge := ""
-			if tt.status == http.StatusUnauthorized {
+			challenge, allow := "", ""
+			switch tt.status {
+			case http.StatusUnauthorized:
 				challenge = `Basic realm="lajstrom"`
+			case http.StatusMethodNotAllowed:
+				allow = "GET, HEAD"
 			}
 			h := rr.Header()
 			switch {
+			case h.Get("Allow") != allow:
+				t.Errorf("Allow = %q, want %q", h.Get("Allow"), allow)
 			case rr.Code != tt.status:
 				t.Errorf("status = %d, want %d", rr.Code, tt.status)
 			case rr.Body.String() != body:

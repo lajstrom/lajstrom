@@ -56,6 +56,15 @@ const (
 	AnnotationVariant = "lajstrom.variant"
 	// AnnotationUploadedBy is the principal that performed the ingest (informational).
 	AnnotationUploadedBy = "lajstrom.uploaded-by"
+	// AnnotationOriginURL is the URL a proxied artifact's first file was asked for, before any
+	// redirect (§3.1). Only the proxy fetcher writes it, through ingest.
+	AnnotationOriginURL = "lajstrom.origin.url"
+	// AnnotationOriginChecksum is the upstream's checksum that was verified before a proxied
+	// artifact was ingested, <algorithm>:<lowercase hex> (§3.1).
+	AnnotationOriginChecksum = "lajstrom.origin.checksum"
+	// AnnotationOriginPrefix starts every key that only the proxy fetcher writes: a manifest a
+	// client pushes or uploads with one is refused (§3.1).
+	AnnotationOriginPrefix = "lajstrom.origin."
 	// AnnotationDebArch is the Debian architecture of the upload.
 	AnnotationDebArch = "lajstrom.deb.arch"
 	// AnnotationDebSuite is the apt suite of the upload.

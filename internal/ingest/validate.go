@@ -43,6 +43,9 @@ func (p *Pipeline) validate(ctx context.Context, pub *publish) error {
 		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	pub.parsed = parsed
+	if err := pub.checkOrigin(); err != nil {
+		return err
+	}
 	if err := pub.checkTarget(); err != nil {
 		return err
 	}

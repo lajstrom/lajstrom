@@ -251,7 +251,7 @@ func (p *Pipeline) release(ctx context.Context, pub *publish) {
 func (p *Pipeline) confirm(ctx context.Context, pub *publish) (existed bool, err error) {
 	now := p.now()
 	ev := pub.event(now)
-	withOrigin(ctx, &ev, nil)
+	withOrigin(ctx, &ev, pub.auditDetails())
 	err = p.index.Tx(ctx, func(w index.Writer) error {
 		var err error
 		existed, err = p.writeRows(ctx, w, pub, &ev, now)
@@ -350,14 +350,19 @@ func (pub *publish) files() []index.File {
 	return files
 }
 
-// event is the audit event of pub: a push by its principal, the subject name, version and
-// variant. confirm adds the client address and the request id of the request (withOrigin).
+// event is the audit event of pub: a push by its principal, or the proxy.fetch of a proxied
+// artifact by the principal whose request caused it, the subject name, version and variant.
+// confirm adds the client address and the request id of the request (withOrigin).
 func (pub *publish) event(now time.Time) index.AuditEvent {
 	a := pub.parsed.Annotations
 	subject := a.Name + " " + a.Version
 	if a.Variant != "" {
 		subject += " " + a.Variant
 	}
-	return index.AuditEvent{At: now, Principal: pub.principal.String(), Action: "push",
+	action := actionPush
+	if pub.origin != nil {
+		action = actionProxyFetch
+	}
+	return index.AuditEvent{At: now, Principal: pub.principal.String(), Action: action,
 		Repo: pub.repo.Format + "/" + pub.repo.Name, Subject: subject, Digest: pub.digest}
 }
