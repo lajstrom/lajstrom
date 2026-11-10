@@ -561,7 +561,7 @@ for the breaker, which opens after five as above.
 | the layers of a manifest | 1 000, fixed | `400 MANIFEST_INVALID` naming the bound, on every repo, before Lajstrom asks the registry about any layer |
 | a body of the management API | 64 KiB, fixed | `413` |
 | a file a frontend receives | the repo's `policy.maxFileSize`; by default npm 512 MiB, pypi and maven 4 GiB, apt and raw 8 GiB | `413` |
-| a blob of `/v2` | the repo's `policy.maxFileSize`, on an `oci` repo too, or the registry's `capabilities.maxBlobSize` when it is smaller | `413 SIZE_INVALID` naming the bound, before the blob streams when its size is declared (`Content-Length`, `Content-Range`), else where the bytes of the session pass the bound, counted across its `PATCH`es and the closing `PUT`; the session ends |
+| a blob of `/v2` | the repo's `policy.maxFileSize`, on an `oci` repo too (by default as for a file, 16 GiB for `oci`), or the registry's `capabilities.maxBlobSize` when it is smaller (GHCR's 10 GB from the vendor table); [below](#large-blobs-ml-models) | `413 SIZE_INVALID` naming the bound, before the blob streams when its size is declared (`Content-Length`, `Content-Range`), else where the bytes of the session pass the bound, counted across its `PATCH`es and the closing `PUT`; the session ends |
 | live `/v2` upload sessions of a principal | `server.uploadSessions.perRepo`, 256 in one repo, and `server.uploadSessions.perPrincipal`, 1024 in all repos, on each replica | `429 TOOMANYREQUESTS` with `Retry-After` for a new session, naming the bound and its key. A session counts while a request on it runs and for 5 minutes after the last one; an idle one stays resumable until it expires, an hour after its last request. Its `DELETE`, its closing `PUT` and an error that ends it free the slot at once |
 | the files of a Maven deploy | the repo's `policy.maven.maxSessionFiles`, 256 by default, in one publication session | `400` naming the bound and the key, before the file is stored; a file of the session sent again replaces it. Signatures and `.sigstore.json` count, checksum files and `maven-metadata.xml` do not; a deploy of a version that exists starts its own session |
 
@@ -581,6 +581,37 @@ answered a request of, so behind N replicas a principal may hold up to N times a
 replica may refuse a session while another has room. Raise `server.uploadSessions.perRepo` when
 more CI runners than about 50 push new layers into one repo with one credential at once; a
 refused session is in the access log with status `429`.
+
+### Large blobs: ML models
+
+The default bound of a file or a blob is its format's: npm 512 MiB, pypi and maven 4 GiB, apt and
+raw 8 GiB, `oci` 16 GiB, above the largest of each that the package size survey of #439 found (an
+image layer of 10.78 GiB, rocm/pytorch). Machine-learning models are larger: one blob of 131 GiB
+for a 70B model in fp16 (Ollama, KitOps), shards of up to about 50 GB (Docker Model Runner). An
+`oci` repo for models raises its own bound, 64 to 256 GiB, a mirror of Ollama's models
+terabytes:
+
+```sh
+curl -s -X PATCH -u admin "$LAJSTROM/api/v1/repos/oci/models" \
+  -H 'Content-Type: application/json' -d '{"policy": {"maxFileSize": 274877906944}}'   # 256 GiB
+```
+
+The registry's `capabilities.maxBlobSize`, when it is smaller, still wins (GHCR's 10 GB a layer
+cannot be raised), and every hop must take such a blob too:
+
+- **distribution and Zot on S3**: S3 takes at most 10 000 parts, so the storage driver's
+  `chunksize` must be at least the blob's size / 10 000 (13.1 MiB for 131 GiB; 26 MiB for 256 GiB),
+  and `multipartcopychunksize` large enough for the copy that commits the upload;
+- **Harbor**: `BEEGO_MAX_UPLOAD_SIZE_BYTES` of its core;
+- **Nexus** on S3: `nexus.s3.multipartupload.chunksize`;
+- **the edge and any proxy** between the client, Lajstrom and the registry: no body limit
+  (nginx `client_max_body_size 0`), no request buffering (`proxy_request_buffering off`), and
+  timeouts that cut a stalled transfer, never a long one (Traefik's `readTimeout=0`; an edge
+  whose timeout bounds the whole request cuts a blob of 100 GiB).
+  [reverse-proxy.md](reverse-proxy.md) has the nginx, Caddy and Traefik settings.
+
+Lajstrom itself streams a `/v2` blob and spools nothing of it, so its disk needs no room for one;
+`server.stallTimeout` only cuts a transfer that stops moving.
 
 ## Performance
 

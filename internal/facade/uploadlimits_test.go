@@ -63,16 +63,20 @@ func TestUploadMaxBlobSize(t *testing.T) {
 }
 
 // TestUploadDefaultMaxFileSize: a repo whose policy sets no maxFileSize is bounded by its
-// format's default on /v2 too, 8 GiB for raw (#246): a blob that declares one byte more is 413
-// before anything streams.
+// format's default on /v2 too, 8 GiB for raw and 16 GiB for oci (#246): a blob that declares one
+// byte more is 413 before anything streams.
 func TestUploadDefaultMaxFileSize(t *testing.T) {
 	e := newEnv(t, envOptions{})
-	const raw = "/v2/raw/assets/docs/big.iso/blobs/uploads/"
 	b := []byte("a few bytes")
-	rr := e.do(e.h, http.MethodPost, raw+"?digest="+digest.FromBytes(b).String(), bytes.NewReader(b), "Content-Length", "8589934593")
-	msg := wantError(t, "a blob of 8 GiB and a byte", rr, http.StatusRequestEntityTooLarge, codeSizeInvalid)
-	if !strings.Contains(msg, "the maxFileSize of raw/assets, 8589934592 bytes") {
-		t.Errorf("message %q does not name the default bound", msg)
+	for _, tt := range []struct{ base, length, bound string }{
+		{"/v2/raw/assets/docs/big.iso/blobs/uploads/", "8589934593", "the maxFileSize of raw/assets, 8589934592 bytes"},
+		{uploads, "17179869185", "the maxFileSize of oci/images, 17179869184 bytes"},
+	} {
+		rr := e.do(e.h, http.MethodPost, tt.base+"?digest="+digest.FromBytes(b).String(), bytes.NewReader(b), "Content-Length", tt.length)
+		msg := wantError(t, tt.base+": the default and a byte", rr, http.StatusRequestEntityTooLarge, codeSizeInvalid)
+		if !strings.Contains(msg, tt.bound) {
+			t.Errorf("message %q does not name the default bound %q", msg, tt.bound)
+		}
 	}
 	if n := e.prov.OpenUploads(); n != 0 {
 		t.Errorf("%d backend sessions open", n)

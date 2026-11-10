@@ -734,15 +734,16 @@ components:
       type: object
       description: >-
         The policy of a repo: the keys the server reads, with their defaults when absent
-        (no size limit, blobRedirect auto, maven.sessionTimeout 30m, maven.maxSessionFiles 256).
-        Any other key is 400.
+        (maxFileSize by format: npm 512 MiB, pypi and maven 4 GiB, apt and raw 8 GiB, oci 16 GiB;
+        blobRedirect auto, maven.sessionTimeout 30m, maven.maxSessionFiles 256). Any other key is
+        400.
       additionalProperties: false
       properties:
         maxFileSize:
           type: integer
           format: int64
           minimum: 1
-          description: The largest file an upload may carry, in bytes; not on an oci repo.
+          description: The largest file an upload, or a /v2 blob, may carry, in bytes; on every repo, oci included.
         blobRedirect: {type: string, enum: [auto, never]}
         maven:
           type: object
