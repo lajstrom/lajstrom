@@ -196,11 +196,13 @@ jobs:
 
   e2e:
     # make e2e (#34, docs/testing.md): bin/lajstrom on the runner against Zot, and the scenarios
-    # of test/e2e/ with real clients, curl on the runner and oras, apt-get, pip, mvn and gradle in
-    # containers with --network host; then apt.sh again in the other apt clients of #48, and
-    # cosign.sh against distribution, a registry without the referrers API (#28). The same
-    # paths as the integration cells decide whether it runs. Not a matrix, so a skipped run
-    # reports the check e2e itself.
+    # of test/e2e/ with real clients, curl on the runner and oras, apt-get, pip, mvn, gradle, npm,
+    # pnpm and yarn in containers with --network host; then apt.sh again in the other apt clients
+    # of #48, cosign.sh against distribution, a registry without the referrers API (#28), and
+    # npm.sh against distribution (#312). npm.sh reaches registry.npmjs.org: it installs pnpm and
+    # yarn from there, and its proxy repo fetches a public package through it. The same paths as
+    # the integration cells decide whether it runs. Not a matrix, so a skipped run reports the
+    # check e2e itself.
     name: e2e
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -266,6 +268,7 @@ jobs:
             maven:3.9.16-eclipse-temurin-21 # maven.sh
             gradle:8.14.6-jdk21             # maven.sh
             ghcr.io/sigstore/cosign/cosign:v3.1.4 # cosign.sh
+            node:26.13.0-slim               # npm.sh
           )
           printf '%s\n' "${images[@]}" | xargs -n 1 -P 4 docker pull --quiet --platform linux/amd64
       - name: Cache of the maven and gradle clients
@@ -332,6 +335,16 @@ jobs:
           LAJSTROM_E2E_REGISTRY: localhost:5001
           LAJSTROM_E2E_CAPABILITIES: "{catalog: false}"
         run: test/e2e/run.sh cosign
+      - name: npm.sh against distribution
+        # #312: make e2e ran npm.sh against Zot; here against distribution, the registry of the
+        # other integration cell: the journal of dist-tags, npm unpublish's deletes and the
+        # proxy's fetches on a registry without the referrers API. A run.sh of its own;
+        # bin/lajstrom is built.
+        if: ${{ !cancelled() && steps.images.outcome == 'success' }}
+        timeout-minutes: 3
+        env:
+          LAJSTROM_E2E_REGISTRY: localhost:5001
+        run: test/e2e/run.sh npm
 
   lint:
     name: lint
