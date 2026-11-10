@@ -282,10 +282,13 @@ func (e *env) rows(t *testing.T) rows {
 	return r
 }
 
-// noClaim fails the test when a claim on tag of package name is left.
+// noClaim fails the test when a claim on tag of package name is left; tag "" is the claim on
+// its package path. Claims are keyed by the package path.
 func (e *env) noClaim(t *testing.T, name, tag string) {
 	t.Helper()
-	if c, err := e.st.GetTagClaim(t.Context(), e.repo.ID, name, tag); err == nil {
+	pkgPath, err := escapeRaw(name)
+	must(t, err)
+	if c, err := e.st.GetTagClaim(t.Context(), e.repo.ID, pkgPath, tag); err == nil {
 		t.Errorf("claim left: %+v", c)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -18,11 +19,13 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
-	_ "github.com/lajstrom/lajstrom/internal/format/raw" // the plugin of raw/assets, for the pipeline and rawRoutes
+	_ "github.com/lajstrom/lajstrom/internal/format/maven" // the plugin of a maven repo, for TestManifestHookSpellingMaven
+	_ "github.com/lajstrom/lajstrom/internal/format/raw"   // the plugin of raw/assets, for the pipeline and rawRoutes
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider"
+	"github.com/lajstrom/lajstrom/internal/testutil"
 )
 
 // rawFile is a file of raw/assets as oras pushes it (docs/quickstart/oras.md): the file blob
@@ -286,9 +289,10 @@ func TestManifestHookByDigest(t *testing.T) {
 	}
 }
 
-// TestManifestHookSpelling is the lead's note on #25 from #97: a raw path pushed in another
-// spelling, with other bytes, passes Validate and is refused by the unique package path when
-// ingest confirms: 409 with the conflict's message, which names both spellings.
+// TestManifestHookSpelling is the lead's note on #25 from #97, and #244: a raw path pushed in
+// another spelling passes Validate and is refused under ingest's claims, under another tag
+// (other bytes) and under the first spelling's own tag (the same bytes): 409 with the
+// conflict's message, which names both spellings, and the manifest is not pushed.
 func TestManifestHookSpelling(t *testing.T) {
 	e := newEnv(t, envOptions{})
 	first := e.newRawFile("docs/readme.md", "first spelling")
@@ -296,14 +300,77 @@ func TestManifestHookSpelling(t *testing.T) {
 		first.m.Annotations[k] = "Docs/Readme.MD"
 	}
 	first.m.Layers[0].Annotations[ocispec.AnnotationTitle] = "Docs/Readme.MD"
-	body, _ := first.body(t)
+	body, d := first.body(t)
 	wantStatus(t, "first spelling", e.put(first, first.tag(), body), http.StatusCreated)
-	second := e.newRawFile("docs/readme.md", "second spelling, other bytes")
-	body, _ = second.body(t)
-	entry := wantEntry(t, "second spelling", e.put(second, second.tag(), body), http.StatusConflict, codeTagInvalid)
-	if !strings.Contains(entry.Message, "Docs/Readme.MD") || !strings.Contains(entry.Message, "docs/readme.md") || entry.Detail != nil {
-		t.Errorf("message %q, detail %#v: want both spellings and no detail", entry.Message, entry.Detail)
+	for _, content := range []string{"second spelling, other bytes", "first spelling"} {
+		second := e.newRawFile("docs/readme.md", content)
+		body, _ = second.body(t)
+		entry := wantEntry(t, "second spelling", e.put(second, second.tag(), body), http.StatusConflict, codeTagInvalid)
+		if !strings.Contains(entry.Message, `"docs/readme.md" exists as "Docs/Readme.MD"`) || entry.Detail != nil {
+			t.Errorf("message %q, detail %#v: want both spellings and no detail", entry.Message, entry.Detail)
+		}
 	}
+	if refs := e.prov.PushReferences(); len(refs) != 1 || refs[0].Digest != d {
+		t.Errorf("PushReferences = %+v, want the first spelling's only", refs)
+	}
+}
+
+// TestManifestHookSpellingMaven is #244 as it was found: after com.example:lib-core 1.2.0,
+// Com.Example:lib-core 1.2.0 pushed through /v2 to the same OCI repository and tag is 409 naming
+// com.example:lib-core, and the tag keeps the first manifest.
+func TestManifestHookSpellingMaven(t *testing.T) {
+	e := newEnv(t, envOptions{})
+	repo := index.Repo{Format: "maven", Name: "releases", Registry: "local", Prefix: "maven/releases", Kind: "hosted"}
+	must(t, e.st.CreateRepo(t.Context(), &repo))
+	var first digest.Digest
+	for _, group := range []string{"com.example", "Com.Example"} {
+		built, body := e.mavenBuilt(repo, group)
+		rr := e.do(e.h, http.MethodPut, "/v2/"+built.RepoPath+"/manifests/"+built.Tag, bytes.NewReader(body),
+			"Content-Type", ocispecManifest, principalHeader, "alice")
+		if first == "" {
+			wantStatus(t, group, rr, http.StatusCreated)
+			first = digest.FromBytes(body)
+			continue
+		}
+		entry := wantEntry(t, group, rr, http.StatusConflict, codeTagInvalid)
+		if !strings.Contains(entry.Message, `"Com.Example:lib-core" exists as "com.example:lib-core"`) {
+			t.Errorf("message %q, want both spellings", entry.Message)
+		}
+	}
+	if refs := e.prov.PushReferences(); len(refs) != 1 || refs[0].Digest != first {
+		t.Errorf("PushReferences = %+v, want the first spelling's only", refs)
+	}
+}
+
+// mavenBuilt is lib-core 1.2.0 of group, a jar and its POM, as the maven plugin builds it; its
+// blobs are in the fake, as a client pushes them before the manifest, whose bytes it returns.
+func (e *env) mavenBuilt(repo index.Repo, group string) (*format.Built, []byte) {
+	e.t.Helper()
+	ctx := e.t.Context()
+	jar, jarInfo := testutil.Jar(testutil.JarOptions{GroupID: group})
+	pom, pomInfo := testutil.POM(testutil.POMOptions{GroupID: group})
+	var up format.Upload
+	for path, b := range map[string][]byte{jarInfo.Path: jar, pomInfo.Path: pom} {
+		up.Files = append(up.Files, format.UploadedFile{Name: path, Size: int64(len(b)),
+			Open: func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(b)), nil }})
+	}
+	plugin, ok := format.Lookup("maven")
+	if !ok {
+		e.t.Fatal("the maven plugin is not registered")
+	}
+	built, err := plugin.Build(ctx, repo, up)
+	must(e.t, err)
+	for _, blob := range built.Blobs {
+		rc, err := blob.Open(ctx)
+		must(e.t, err)
+		b, err := io.ReadAll(rc)
+		must(e.t, err)
+		_ = rc.Close()
+		e.pushBlob(built.RepoPath, b)
+	}
+	body, _, err := profile.Encode(built.Manifest)
+	must(e.t, err)
+	return built, body
 }
 
 // TestManifestHookSize: the limit of Options.MaxManifestSize holds on managed and oci repos.

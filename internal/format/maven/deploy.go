@@ -86,6 +86,9 @@ func (d *deployer) file(r *http.Request, repo index.Repo, path string, body io.R
 	if err != nil {
 		return 0, err
 	}
+	if err := d.checkSpelling(r, repo, f.Coordinates); err != nil {
+		return 0, err
+	}
 	s, err := d.deps.Sessions.Open(ctx, repo, f.Name(), f.Version, auth.PrincipalFrom(ctx))
 	if err != nil {
 		return 0, err
@@ -94,6 +97,27 @@ func (d *deployer) file(r *http.Request, repo index.Repo, path string, body io.R
 		return 0, err
 	}
 	return http.StatusCreated, nil
+}
+
+// checkSpelling refuses a file of c when another spelling of its groupId:artifactId holds the
+// package path (docs/spec/manifest-profile.md §4.1): the package path is lowercase, so
+// Com.Example:lib and com.example:lib are one OCI repository, and the first spelling published
+// keeps it. A package of another name there is index.ErrConflict naming it (409). The check runs
+// before the session is opened, so that a refused file is not stored. Two spellings deployed at
+// once both pass it; ingest settles that race under its claims before either manifest is pushed
+// (#244).
+func (d *deployer) checkSpelling(r *http.Request, repo index.Repo, c Coordinates) error {
+	pkg, err := d.deps.Index.GetPackageByNameOCI(r.Context(), repo.ID, packagePath(c.GroupID, c.ArtifactID))
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		return nil
+	case err != nil:
+		return fmt.Errorf("maven: package path of %s: %w", c.Name(), err)
+	case pkg.Name != c.Name():
+		return fmt.Errorf("%w: %s exists as %s: a groupId:artifactId is one package path without regard to case, "+
+			"and the first spelling published holds it", index.ErrConflict, c.Name(), pkg.Name)
+	}
+	return nil
 }
 
 // checksum checks the checksum file at path against the file it names in the principal's

@@ -71,6 +71,7 @@ func TestIngest(t *testing.T) {
 		t.Errorf("index_cache of the repo after ingest: %v, want ErrNotFound", err)
 	}
 	e.noClaim(t, readme, "1.0.0")
+	e.noClaim(t, readme, "") // the claim on the package path
 
 	again, err := e.ingest(t, built, raw, pkgPath)
 	must(t, err)
@@ -82,6 +83,7 @@ func TestIngest(t *testing.T) {
 	}
 	same(t, "rows after the repeat", got, e.rows(t))
 	e.noClaim(t, readme, "1.0.0")
+	e.noClaim(t, readme, "")
 }
 
 // TestIngestConflict checks that other bytes under a confirmed tag are ErrConflict with the
@@ -494,7 +496,7 @@ func TestIngestStaleClaim(t *testing.T) {
 			e := newEnv(t)
 			built, raw, pkgPath := e.prepare(t, upload(readme, "1.0.0", file{readme, "hello"}))
 			other := digest.FromString("a publish that died")
-			c := index.TagClaim{RepoID: e.repo.ID, Package: readme, Tag: "1.0.0", Digest: other, Principal: "user:bob", ClaimedAt: now.Add(-tt.age)}
+			c := index.TagClaim{RepoID: e.repo.ID, Package: pkgPath, Tag: "1.0.0", Digest: other, Principal: "user:bob", ClaimedAt: now.Add(-tt.age)}
 			must(t, e.st.ClaimTag(t.Context(), &c, now.Add(-time.Hour)))
 			_, err := e.ingest(t, built, raw, pkgPath)
 			if tt.stale {
