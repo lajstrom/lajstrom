@@ -572,6 +572,9 @@ so the number of series is fixed by the code and the configuration.
 | `lajstrom_provider_circuit_open` | `registry` | `1` while the [circuit breaker](#requests-to-the-registries) of the registry is open, its requests failing at once; `0` otherwise |
 | `lajstrom_db_query_duration_seconds` | `method`, `result` | a statement of the index database, by the store method that ran it (`GetRepo`, `UpsertVersion`, …); a missing row is `ok`, a refused or failed statement `error` |
 | `lajstrom_ingest_total` | `format`, `result` | publishes through the ingest pipeline: `published`, `existed` (an idempotent repeat), `invalid`, `conflict`, `error` |
+| `lajstrom_proxy_upstream_request_duration_seconds` | `upstream`, `operation`, `status` | requests of proxy repos to their upstreams ([proxy-and-group.md](spec/proxy-and-group.md)), to the response headers: `document` or `file`, the status or `error` |
+| `lajstrom_proxy_documents_total` | `upstream`, `result` | reads of upstream documents: `fresh` (the cache), `revalidated` (`304`), `refreshed` (`200`), `absent` (`404`, `410`), `stale` (the upstream failed, the cache or the held versions served), `offline` |
+| `lajstrom_proxy_fetches_total` | `upstream`, `result` | file requests of proxy repos: `held` (a hit), `fetched` (a miss downloaded and published), `shared` (a miss another request or replica fetched), `missing`, `rejected` (checksum, size, `Validate`), `error` |
 | `lajstrom_auth_throttled_total` | `throttle` | requests answered `429` by a throttle ([auth.md](auth.md#failed-logins)): `account` and `address` (failed logins), `token` (requests to `/v2/token`) |
 | `lajstrom_build_info` | `version`, `commit`, `goversion` | always 1 |
 
