@@ -17,8 +17,17 @@ Lajstrom is meant to run on ephemeral disks (a Kubernetes `emptyDir`), decided o
 There the spool is a cost the operator must size: in the worst case
 `server.maxConcurrentUploads × maxFileSize` bytes, nothing bounds it but the disk (#427), and a
 full disk fails an upload half way or evicts the pod. Memory is no alternative: packages of a
-gigabyte and more exist (the lead has built .deb packages of 5 GiB; PyPI carries CUDA wheels of
-hundreds of MB), and eight of them at once would be gigabytes of RSS.
+gigabyte and more exist, and eight of them at once would be gigabytes of RSS.
+
+The sizes, measured on 2026-11-10 from public indexes
+([package-sizes-2026-11.md](../design/package-sizes-2026-11.md)): the median package is small
+everywhere (8 KiB npm to 670 KiB wheels), p99 is 6–90 MiB, but every ecosystem has a tail 10 to
+100 times its p99, and the tail sets the disk. Debian and Ubuntu reach 3.0 GiB (no public .deb
+above 4 GiB; the lead builds .debs of 5 GiB); pypi.org stops near 1 GiB, PyTorch's own index
+serves 2.1 GiB CUDA wheels; Maven Central's largest jar is 2.3 GiB (2024), nothing above 1 GiB in
+2026; npm's largest is 152 MiB; release assets reach GitHub's 2 GiB cap. A spool for eight
+concurrent uploads therefore needs one huge file plus seven typical ones, 3–5 GiB for debs, and
+a static budget that no client can exceed is `maxConcurrentUploads × maxFileSize`.
 
 What the spool buys is the second read: parsing and hashing before anything reaches the
 registry. Every format can do both in one pass over the stream instead:
@@ -27,9 +36,9 @@ registry. Every format can do both in one pass over the stream instead:
 | --- | --- | --- |
 | raw | nothing: the digest only | |
 | npm | `package/package.json` in the tarball, the tarball inside the publish JSON | anywhere in the tar; npm writes it last (#350): read as the tar streams |
-| apt (.deb) | the control file | `control.tar.*`, the 2nd member of the ar archive, at the start |
+| apt (.deb) | the control file | `control.tar.*`, the 2nd member of the ar archive: at byte 132, under 1 MiB even in the 3.0 GiB package |
 | pypi sdist | `PKG-INFO` | anywhere in the tar.gz (setuptools: early; flit, hatchling: last); read as it streams |
-| pypi wheel | `*.dist-info/METADATA`, `WHEEL` | a zip: the local headers stream in order and `.dist-info/` comes last by convention; the central directory, at the end, is the reference |
+| pypi wheel | `*.dist-info/METADATA`, `WHEEL` | a zip: METADATA is at 99.6–99.999 % of the largest wheels and among the last 7 entries in 70 of 80 random ones (tensorflow puts it first); none of 93 inspected uses data descriptors; the central directory, at the end, is up to 2.9 MiB and is the reference |
 | maven | the POM is a file of its own, small; jars and others are not parsed | |
 
 And the registry's blob upload already separates the bytes from the commit: bytes go in with
@@ -48,7 +57,11 @@ before its close leaves nothing.
 
 Option 4. A frontend upload, and a proxy fetch, is one pass over its body:
 
-1. The body is read once. Each byte goes to a blob upload session in the registry (`PATCH`, in
+1. The body is read once. A blob upload session belongs to an OCI repository, which for apt
+   follows from the package name in the control file: the first bytes are held in memory up to
+   the control archive's bound (`MaxControl`, 4 MiB, #243) before the session opens; every other
+   format knows its repository from the request (path, file name, form fields). Each byte goes
+   to a blob upload session in the registry (`PATCH`, in
    the chunk sizes the provider and its vendor entry choose, #415), to the hashes the format
    needs (sha256 always; md5, sha1, sha512 for apt's and maven's indexes), and to the format's
    streaming inspector, which extracts the metadata it needs as the bytes pass and ignores the
@@ -93,6 +106,12 @@ their own before the first format moves.
 - **Two failure modes get rarer, one gets new:** no `ENOSPC` half way and no spool left behind;
   a session the registry expires while a slow client uploads (sessions are kept alive by the
   `PATCH`es) and a cancel that fails (the registry expires the session itself).
+- **A push that fails half way cannot be retried from local bytes**: the client retries the
+  upload, as it would after any 5xx. And a slow client keeps a registry upload session open for
+  its whole transfer.
+- **The wheel inspector is the one new parser of substance.** It captures METADATA from the local
+  headers as they pass and checks it against the central directory held from the tail at the
+  end; the read-back of step 5 covers the rest.
 - **Each format's inspector is new code that parses hostile input on a stream.** The bounds of
   #243 apply; each inspector gets a fuzz target.
 - **Registries without chunked uploads**, or with small chunk limits (GHCR: 4 MiB a `PATCH`),
