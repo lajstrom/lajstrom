@@ -259,10 +259,20 @@ func (h *handler) updateRepo(w http.ResponseWriter, r *http.Request) (int, any, 
 	if err != nil {
 		return 0, nil, err
 	}
-	if req.Upstream != nil && namesUpstream(req.Upstream) {
+	for _, admin := range []struct {
+		patch json.RawMessage
+		key   string
+		msg   string
+	}{
+		{req.Upstream, "name", "upstream.name: only the admin role chooses the upstream of a proxy repo"},
+		{req.Group, "members", "group.members: only the admin role chooses the members of a group"},
+	} {
+		if admin.patch == nil || !hasKey(admin.patch, admin.key) {
+			continue
+		}
 		switch err := h.allow(r, auth.ActionManage, auth.System, auth.System); {
 		case denied(err):
-			return 0, nil, &clientError{msg: "upstream.name: only the admin role chooses the upstream of a proxy repo", err: format.ErrForbidden}
+			return 0, nil, &clientError{msg: admin.msg, err: format.ErrForbidden}
 		case err != nil:
 			return 0, nil, err
 		}
@@ -340,6 +350,7 @@ type patchBody struct {
 	AnonymousRead *bool           `json:"anonymousRead"`
 	Policy        json.RawMessage `json:"policy"`
 	Upstream      json.RawMessage `json:"upstream"`
+	Group         json.RawMessage `json:"group"`
 	Format        json.RawMessage `json:"format"`
 	Name          json.RawMessage `json:"name"`
 	Registry      json.RawMessage `json:"registry"`
@@ -361,7 +372,7 @@ func (b *patchBody) request() (UpdateRequest, error) {
 			return UpdateRequest{}, invalid("%s: cannot change; %s", f.field, f.why)
 		}
 	}
-	return UpdateRequest{AnonymousRead: b.AnonymousRead, Policy: b.Policy, Upstream: b.Upstream}, nil
+	return UpdateRequest{AnonymousRead: b.AnonymousRead, Policy: b.Policy, Upstream: b.Upstream, Group: b.Group}, nil
 }
 
 // decodeBody reads the JSON object of the request body into v: at most maxBody bytes, no field

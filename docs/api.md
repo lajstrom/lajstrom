@@ -87,11 +87,12 @@ audit alike.
 | --- | --- | --- |
 | `format` | a format plugin the server has: `raw`, `pypi`, `apt`, `maven`, `npm`; or `oci`, the pass-through repos of the OCI facade, which need no plugin ([http-routing.md](spec/http-routing.md) §1) | never |
 | `name` | unique within the format; lowercase letters and digits separated by single `.`, `_` or `-`, at most 64 characters ([manifest-profile.md](spec/manifest-profile.md) §4.1) | never |
-| `registry` | one of `registries[].name` of the configuration | never: the artifacts stay in the registry they were pushed to |
-| `kind` | `hosted` (the default; may be left out) or `proxy`, a repo that serves an upstream and keeps what it fetched ([proxy-and-group.md](spec/proxy-and-group.md)); `proxy` needs a format whose plugin has proxy repos | never |
+| `registry` | one of `registries[].name` of the configuration; none on a group, whose resource has no `registry` | never: the artifacts stay in the registry they were pushed to |
+| `kind` | `hosted` (the default; may be left out), `proxy`, a repo that serves an upstream and keeps what it fetched, or `group`, one URL for several repos of its format ([proxy-and-group.md](spec/proxy-and-group.md)); `proxy` and `group` need a format whose plugin has them (npm) | never |
 | `anonymousRead` | readable without credentials, when `auth.anonymousRead` allows it; default `false` | `PATCH` |
-| `policy` | a JSON object of the keys below, or `null` for none | `PATCH`, merged |
+| `policy` | a JSON object of the keys below, or `null` for none; none on a group, whose resource has no `policy` | `PATCH`, merged |
 | `upstream` | a proxy repo only, required there: `name`, one of `upstreams[].name` of the repo's format in the [configuration](configuration.md#upstreams), and `metadataTTL` (`"10m"`, `0s` to `168h`), `negativeTTL` (`"2m"`, `0s` to `24h`), `offline` (`false`), `allow` and `deny` (at most 256 name patterns each, `*` matching any run: `"@acme/*"`) ([proxy-and-group.md](spec/proxy-and-group.md) §2.2, §3). The resource shows every key; the upstream's URL and credentials are configuration and never part of the API, and a key the server does not know is `400` | see [proxy-and-group.md](spec/proxy-and-group.md) §2.2 |
+| `group` | a group only, required there: `members`, the names of 1 to 16 repos of the group's format, in the order they are read, each `hosted` or `proxy` and at most one `hosted`, and `merge` (at most 256 name patterns): the names whose versions are merged even when the hosted member holds them ([proxy-and-group.md](spec/proxy-and-group.md) §2.3, §8). The resource shows both keys | `members` by the admin role, `merge` by `manage` |
 | `createdAt`, `updatedAt` | set by the server | `updatedAt` on every change |
 
 #### Policy
@@ -128,7 +129,8 @@ curl -s "$LAJSTROM/api/v1/repos?format=raw"
 ### Create: `POST /api/v1/repos`
 
 The body has `format`, `name` and `registry`, and optionally `kind`, `anonymousRead` and
-`policy`, and `upstream` for a proxy. `201` with the resource and
+`policy`, and `upstream` for a proxy; a group has `group` and neither `registry` nor `policy`.
+`201` with the resource and
 `Location: /api/v1/repos/<format>/<name>`; `400` for a field that breaks its rule, `409` when the
 repo exists.
 
@@ -140,6 +142,10 @@ curl -s -X POST "$LAJSTROM/api/v1/repos" \
 curl -s -X POST "$LAJSTROM/api/v1/repos" \
   -H 'Content-Type: application/json' \
   -d '{"format": "npm", "name": "npmjs", "registry": "local", "kind": "proxy", "upstream": {"name": "npmjs", "deny": ["@acme/*"]}}'
+# one URL for the hosted npm/internal and that proxy: internal's names hide npmjs's
+curl -s -X POST "$LAJSTROM/api/v1/repos" \
+  -H 'Content-Type: application/json' \
+  -d '{"format": "npm", "name": "all", "kind": "group", "group": {"members": ["internal", "npmjs"]}}'
 ```
 
 ### Get: `GET /api/v1/repos/<format>/<name>`
@@ -162,7 +168,9 @@ cannot change and are `400`: moving a repo to another registry would orphan its 
 On a proxy repo, `upstream` is merged into its settings the same way (`allow` and `deny` are
 replaced whole) and checked whole; it cannot be removed. Changing `upstream.name` needs the admin
 role, since it changes what every reader of the repo gets, and drops the repo's cache of the old
-upstream; the other keys need `manage` ([rbac.md](spec/rbac.md) §7).
+upstream; the other keys need `manage` ([rbac.md](spec/rbac.md) §7). On a group, `group` is
+merged the same way, each list replaced whole; changing `members` needs the admin role, `merge`
+needs `manage`, and the members are checked as on a create.
 `200` with the resource as it is now; a body that changes nothing changes nothing, not even
 `updatedAt`. The audit row has the policy as the merge left it.
 
@@ -188,7 +196,8 @@ every row of the index that refers to the repo goes with it: packages, versions 
 rendered indexes, deploy tokens, signing keys, publication sessions and tag claims. The
 artifacts stay in the registry, untouched;
 the audit row says how many versions the repo had. Role bindings name repos by mask and stay.
-`404` when there is no such repo.
+`404` when there is no such repo. A repo that is a member of a group is `409` naming the groups,
+`force` or not: change the group's members first.
 
 ```sh
 curl -s -X DELETE "$LAJSTROM/api/v1/repos/raw/scratch?force=true"

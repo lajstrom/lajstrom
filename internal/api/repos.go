@@ -26,14 +26,35 @@ type Repo struct {
 	Format        string          `json:"format"`
 	Name          string          `json:"name"`
 	Registry      string          `json:"registry"`
-	Kind          string          `json:"kind"` // hosted or proxy; group with #311
+	Kind          string          `json:"kind"` // hosted, proxy or group
 	AnonymousRead bool            `json:"anonymousRead"`
 	Policy        json.RawMessage `json:"policy"` // a JSON object, or nil (null)
 	// Upstream is a proxy repo's settings (docs/spec/proxy-and-group.md §2.2), every key with
 	// its value: the upstream's name, never its URL or credentials. Absent on another kind.
-	Upstream  json.RawMessage `json:"upstream,omitempty"`
+	Upstream json.RawMessage `json:"upstream,omitempty"`
+	// Group is a group's settings (§2.3): {"members", "merge"}, the members by name in order.
+	// Absent on another kind.
+	Group     json.RawMessage `json:"group,omitempty"`
 	CreatedAt time.Time       `json:"createdAt"`
 	UpdatedAt time.Time       `json:"updatedAt"`
+}
+
+// MarshalJSON writes r as the API shows it: a group has neither a registry nor a policy, and
+// its resource has neither key (docs/spec/proxy-and-group.md §2.3).
+func (r Repo) MarshalJSON() ([]byte, error) {
+	type plain Repo
+	if r.Kind != index.KindGroup {
+		return json.Marshal(plain(r))
+	}
+	return json.Marshal(struct {
+		Format        string          `json:"format"`
+		Name          string          `json:"name"`
+		Kind          string          `json:"kind"`
+		AnonymousRead bool            `json:"anonymousRead"`
+		Group         json.RawMessage `json:"group,omitempty"`
+		CreatedAt     time.Time       `json:"createdAt"`
+		UpdatedAt     time.Time       `json:"updatedAt"`
+	}{r.Format, r.Name, r.Kind, r.AnonymousRead, r.Group, r.CreatedAt, r.UpdatedAt})
 }
 
 // RepoList is the answer of GET /api/v1/repos and of lajstrom admin repo list --json.
@@ -42,9 +63,10 @@ type RepoList struct {
 }
 
 // CreateRequest is a repo to create: the body of POST /api/v1/repos, and what lajstrom admin
-// repo create and the config bootstrap pass to Repos.Create. Kind is empty or hosted, or proxy
-// with Upstream, the proxy's settings (proxy.ParseSettings). Policy is a JSON object, or empty
-// or the JSON null for none; its keys come with the formats.
+// repo create and the config bootstrap pass to Repos.Create. Kind is empty or hosted, proxy
+// with Upstream, the proxy's settings (proxy.ParseSettings), or group with Group, the group's
+// members and merge patterns (proxy.ParseGroup) and no Registry. Policy is a JSON object, or
+// empty or the JSON null for none, and none on a group; its keys come with the formats.
 type CreateRequest struct {
 	Format        string          `json:"format"`
 	Name          string          `json:"name"`
@@ -53,6 +75,7 @@ type CreateRequest struct {
 	AnonymousRead bool            `json:"anonymousRead"`
 	Policy        json.RawMessage `json:"policy"`
 	Upstream      json.RawMessage `json:"upstream"`
+	Group         json.RawMessage `json:"group"`
 }
 
 // UpdateRequest is a change to a repo, the body of PATCH /api/v1/repos/{format}/{repo}. A nil
@@ -66,6 +89,9 @@ type UpdateRequest struct {
 	// Upstream is merged into a proxy's settings as Policy is into the policy; nil (absent)
 	// leaves them. The settings cannot be removed, and only a proxy has them.
 	Upstream json.RawMessage `json:"upstream"`
+	// Group is merged into a group's settings, {"members", "merge"}, the same way; each list is
+	// replaced whole. Only a group has them.
+	Group json.RawMessage `json:"group"`
 }
 
 // Sources of a change, the "source" of its audit details.
@@ -130,6 +156,9 @@ type Repos struct {
 	// Proxiers returns the proxy hooks of a format's plugin, and whether it has proxy repos;
 	// nil means format.Lookup and the plugin's format.Proxier.
 	Proxiers func(formatName string) (format.Proxier, bool)
+	// Groupers reports whether a format's plugin has group repos; nil means format.Lookup and
+	// the plugin's format.Grouper.
+	Groupers func(formatName string) bool
 	// Audit records the events; nil means each event goes to the index in the transaction of
 	// its change.
 	Audit audit.Writer
@@ -147,23 +176,39 @@ type Repos struct {
 // proxy only (checkKind), policy null or a JSON object that checkPolicy takes. A repo that
 // exists already is an error wrapping index.ErrConflict.
 func (s *Repos) Create(ctx context.Context, req CreateRequest, o Origin) (*Repo, error) {
-	row, err := s.newRow(req)
+	row, group, err := s.newRow(req)
 	if err != nil {
 		return nil, err
 	}
-	var ev index.AuditEvent
+	var (
+		ev index.AuditEvent
+		r  Repo
+	)
 	err = s.Index.Tx(ctx, func(w index.Writer) (err error) {
+		var members []int64
+		if group != nil {
+			if members, err = checkMembers(ctx, w, req.Format, group.Members); err != nil {
+				return err
+			}
+		}
 		if err = w.CreateRepo(ctx, &row); err != nil {
 			return err
 		}
-		ev, err = s.record(ctx, w, actionCreate, &row, o, map[string]any{"repo": resource(&row)})
+		if group != nil {
+			if err = w.SetGroupMembers(ctx, row.ID, members); err != nil {
+				return err
+			}
+		}
+		if r, err = resource(ctx, w, &row); err != nil {
+			return err
+		}
+		ev, err = s.record(ctx, w, actionCreate, &row, o, map[string]any{"repo": r})
 		return err
 	})
 	if err != nil {
 		return nil, repoError("create", req.Format, req.Name, err)
 	}
 	s.writeAudit(ctx, ev)
-	r := resource(&row)
 	return &r, nil
 }
 
@@ -173,7 +218,10 @@ func (s *Repos) Get(ctx context.Context, formatName, name string) (*Repo, error)
 	if err != nil {
 		return nil, repoError("get", formatName, name, err)
 	}
-	r := resource(row)
+	r, err := resource(ctx, s.Index, row)
+	if err != nil {
+		return nil, repoError("get", formatName, name, err)
+	}
 	return &r, nil
 }
 
@@ -191,7 +239,9 @@ func (s *Repos) List(ctx context.Context, formatName string) ([]Repo, error) {
 	}
 	repos := make([]Repo, len(rows))
 	for i := range rows {
-		repos[i] = resource(&rows[i])
+		if repos[i], err = resource(ctx, s.Index, &rows[i]); err != nil {
+			return nil, fmt.Errorf("api: list repos: %w", err)
+		}
 	}
 	return repos, nil
 }
@@ -216,26 +266,9 @@ func (s *Repos) Update(ctx context.Context, formatName, name string, req UpdateR
 		if row, err = w.GetRepo(ctx, formatName, name); err != nil {
 			return err
 		}
-		changed, err := applyUpdate(row, req)
-		if err != nil {
+		changed, err := s.change(ctx, w, row, req)
+		if err != nil || len(changed) == 0 {
 			return err
-		}
-		renamed := false
-		if req.Upstream != nil {
-			if renamed, err = s.applyUpstream(row, req.Upstream, changed); err != nil {
-				return err
-			}
-		}
-		if len(changed) == 0 {
-			return nil
-		}
-		if err = w.UpdateRepo(ctx, row); err != nil {
-			return err
-		}
-		if renamed {
-			if err := dropUpstreamCache(ctx, w, row.ID, ""); err != nil {
-				return err
-			}
 		}
 		e, err := s.record(ctx, w, actionUpdate, row, o, map[string]any{"changed": changed})
 		ev = &e
@@ -247,8 +280,51 @@ func (s *Repos) Update(ctx context.Context, formatName, name string, req UpdateR
 	if ev != nil {
 		s.writeAudit(ctx, *ev)
 	}
-	r := resource(row)
+	r, err := resource(ctx, s.Index, row)
+	if err != nil {
+		return nil, repoError("update", formatName, name, err)
+	}
 	return &r, nil
+}
+
+// change applies req to row on w and returns the fields that changed, with their new values,
+// having written them: the repos row; a group's members, which change with it; and, for a
+// proxy whose upstream is renamed, the drop of its cache of the old one. Nothing changed writes
+// nothing.
+func (s *Repos) change(ctx context.Context, w index.Writer, row *index.Repo, req UpdateRequest) (map[string]any, error) {
+	changed, err := applyUpdate(row, req)
+	if err != nil {
+		return nil, err
+	}
+	renamed := false
+	if req.Upstream != nil {
+		if renamed, err = s.applyUpstream(row, req.Upstream, changed); err != nil {
+			return nil, err
+		}
+	}
+	var members []int64
+	if req.Group != nil {
+		if members, err = applyGroup(ctx, w, row, req.Group, changed); err != nil {
+			return nil, err
+		}
+	}
+	if len(changed) == 0 {
+		return nil, nil
+	}
+	if err = w.UpdateRepo(ctx, row); err != nil {
+		return nil, err
+	}
+	if members != nil {
+		if err = w.SetGroupMembers(ctx, row.ID, members); err != nil {
+			return nil, err
+		}
+	}
+	if renamed {
+		if err := dropUpstreamCache(ctx, w, row.ID, ""); err != nil {
+			return nil, err
+		}
+	}
+	return changed, nil
 }
 
 // applyUpdate changes row as req says and returns the fields that changed, with their new
@@ -258,6 +334,9 @@ func applyUpdate(row *index.Repo, req UpdateRequest) (map[string]any, error) {
 	if req.AnonymousRead != nil && *req.AnonymousRead != row.AnonymousRead {
 		row.AnonymousRead = *req.AnonymousRead
 		changed["anonymousRead"] = row.AnonymousRead
+	}
+	if req.Policy != nil && row.Kind == index.KindGroup {
+		return nil, invalid("policy: a group has none; its members' policies apply")
 	}
 	if req.Policy != nil {
 		policy, err := mergePolicy(row.Format, row.Policy, req.Policy)
@@ -284,6 +363,9 @@ func (s *Repos) Delete(ctx context.Context, formatName, name string, force bool,
 	err := s.Index.Tx(ctx, func(w index.Writer) (err error) {
 		row, err := w.GetRepo(ctx, formatName, name)
 		if err != nil {
+			return err
+		}
+		if err := notAMember(ctx, w, row); err != nil {
 			return err
 		}
 		n, err := countVersions(ctx, w, row.ID)
@@ -350,7 +432,8 @@ func versions(n int) string {
 // existing.
 func (s *Repos) Bootstrap(ctx context.Context, repos []config.Repo) (created int, err error) {
 	ctx = auth.WithPrincipal(ctx, auth.Anonymous)
-	for i, c := range repos {
+	for _, i := range groupsLast(repos) {
+		c := repos[i]
 		id := c.Format + "/" + c.Name
 		existing, err := s.Index.GetRepo(ctx, c.Format, c.Name)
 		switch {
@@ -368,8 +451,12 @@ func (s *Repos) Bootstrap(ctx context.Context, repos []config.Repo) (created int
 		if err != nil {
 			return created, fmt.Errorf("repos[%d]: %w", i, err)
 		}
+		group, err := configJSON("group", c.Group)
+		if err != nil {
+			return created, fmt.Errorf("repos[%d]: %w", i, err)
+		}
 		req := CreateRequest{Format: c.Format, Name: c.Name, Registry: c.Registry, Kind: c.Kind, AnonymousRead: c.AnonymousRead,
-			Policy: policy, Upstream: upstream}
+			Policy: policy, Upstream: upstream, Group: group}
 		switch _, err := s.Create(ctx, req, Origin{Source: SourceConfig}); {
 		case errors.Is(err, index.ErrConflict):
 			s.log().InfoContext(ctx, "repo of the configuration was created meanwhile, by another replica", "repo", id)
@@ -411,6 +498,13 @@ func (s *Repos) warnDrift(ctx context.Context, row *index.Repo, c config.Repo) {
 	if !samePolicy(upstream, row.Upstream) {
 		s.warnField(ctx, row, "upstream", string(upstream), string(row.Upstream))
 	}
+	group, err := configJSON("group", c.Group)
+	if g, gerr := proxy.ParseGroup(group); err == nil && gerr == nil {
+		group = g.JSON()
+	}
+	if current, err := resource(ctx, s.Index, row); err == nil && !samePolicy(group, current.Group) {
+		s.warnField(ctx, row, "group", string(group), string(current.Group))
+	}
 	kind := c.Kind
 	if kind == "" {
 		kind = index.KindHosted
@@ -436,26 +530,40 @@ func (s *Repos) warnField(ctx context.Context, row *index.Repo, field string, co
 		"repo", row.Format+"/"+row.Name, "field", field, "config", configured, "controlPlane", plane)
 }
 
-// newRow validates req and returns the repos row to insert.
-func (s *Repos) newRow(req CreateRequest) (index.Repo, error) {
-	for _, err := range []error{s.checkFormat(req.Format), checkName(req.Name), s.checkRegistry(req.Registry)} {
+// newRow validates req and returns the repos row to insert, and a group's settings, whose
+// members the caller checks against the index (checkMembers).
+func (s *Repos) newRow(req CreateRequest) (index.Repo, *proxy.GroupSettings, error) {
+	checks := []error{s.checkFormat(req.Format), checkName(req.Name)}
+	if req.Kind != index.KindGroup {
+		checks = append(checks, s.checkRegistry(req.Registry))
+	}
+	for _, err := range checks {
 		if err != nil {
-			return index.Repo{}, err
+			return index.Repo{}, nil, err
 		}
 	}
 	kind, upstream, err := s.checkKind(req)
 	if err != nil {
-		return index.Repo{}, err
+		return index.Repo{}, nil, err
+	}
+	if kind == index.KindGroup {
+		group, err := s.checkGroup(req)
+		if err != nil {
+			return index.Repo{}, nil, err
+		}
+		now := s.now()
+		return index.Repo{Format: req.Format, Name: req.Name, Prefix: req.Format + "/" + req.Name, Kind: kind,
+			AnonymousRead: req.AnonymousRead, Group: group.Stored(), CreatedAt: now, UpdatedAt: now}, &group, nil
 	}
 	policy, err := checkPolicy(req.Format, req.Policy)
 	if err != nil {
-		return index.Repo{}, err
+		return index.Repo{}, nil, err
 	}
 	now := s.now()
 	return index.Repo{
 		Format: req.Format, Name: req.Name, Registry: req.Registry, Prefix: req.Format + "/" + req.Name,
 		Kind: kind, AnonymousRead: req.AnonymousRead, Policy: policy, Upstream: upstream, CreatedAt: now, UpdatedAt: now,
-	}, nil
+	}, nil, nil
 }
 
 // checkFormat checks that a format plugin of that name is compiled in, or that it is oci.
@@ -504,17 +612,21 @@ func (s *Repos) checkRegistry(name string) error {
 // (proxy.Settings.JSON), else nil. A proxy needs a format whose plugin has proxy repos; group
 // repos come with #311.
 func (s *Repos) checkKind(req CreateRequest) (string, json.RawMessage, error) {
-	switch req.Kind {
-	case "", index.KindHosted:
-		if !isNull(req.Upstream) {
-			return "", nil, invalid("upstream: only a proxy repo has one, not a %s repo", index.KindHosted)
-		}
-		return index.KindHosted, nil, nil
-	case index.KindProxy:
-	case index.KindGroup:
-		return "", nil, invalid("kind: %q is not supported in this version; a repo is %s or %s", req.Kind, index.KindHosted, index.KindProxy)
-	default:
+	kind := req.Kind
+	if kind == "" {
+		kind = index.KindHosted
+	}
+	switch {
+	case kind != index.KindHosted && kind != index.KindProxy && kind != index.KindGroup:
 		return "", nil, invalid("kind: %q is not %s, %s or %s", req.Kind, index.KindHosted, index.KindProxy, index.KindGroup)
+	case kind != index.KindProxy && !isNull(req.Upstream):
+		return "", nil, invalid("upstream: only a proxy repo has one, not a %s repo", kind)
+	case kind != index.KindGroup && !isNull(req.Group):
+		return "", nil, invalid("group: only a group repo has one, not a %s repo", kind)
+	case kind == index.KindHosted:
+		return index.KindHosted, nil, nil
+	case kind == index.KindGroup:
+		return index.KindGroup, nil, nil
 	}
 	if _, ok := s.proxier(req.Format); !ok {
 		return "", nil, invalid("kind: format %s has no proxy repos", req.Format)
@@ -637,12 +749,22 @@ func repoError(op, formatName, name string, err error) error {
 	return fmt.Errorf("api: %s repo %s/%s: %w", op, formatName, name, err)
 }
 
-// resource returns the API form of a repos row, with UTC times.
-func resource(r *index.Repo) Repo {
-	return Repo{
+// resource returns the API form of a repos row, with UTC times; a group's with its members, read
+// on rd.
+func resource(ctx context.Context, rd index.Reader, r *index.Repo) (Repo, error) {
+	out := Repo{
 		Format: r.Format, Name: r.Name, Registry: r.Registry, Kind: r.Kind, AnonymousRead: r.AnonymousRead,
 		Policy: r.Policy, Upstream: r.Upstream, CreatedAt: r.CreatedAt.UTC(), UpdatedAt: r.UpdatedAt.UTC(),
 	}
+	if r.Kind != index.KindGroup {
+		return out, nil
+	}
+	g, err := groupOf(ctx, rd, r)
+	if err != nil {
+		return Repo{}, err
+	}
+	out.Group = g.JSON()
+	return out, nil
 }
 
 func (s *Repos) now() time.Time {
