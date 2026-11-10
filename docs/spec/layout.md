@@ -529,6 +529,10 @@ type Reader interface {
     ListOCIRepos(ctx context.Context, repoID int64) ([]OCIRepo, error)
     // a cache of the upstream (ADR 0013): the row of a proxy repo's name key and document kind
     GetProxyMeta(ctx context.Context, repoID int64, name, kind string) (*ProxyMeta, error)
+    // the npm journal (ADR 0012, index-schema.md, npm): a package's entries in seq order, and
+    // its current state ordered by kind and key
+    ListJournal(ctx context.Context, packageID int64) ([]JournalEntry, error)
+    ListJournalState(ctx context.Context, packageID int64) ([]JournalState, error)
 }
 
 // Unique violations wrap ErrConflict; updates and deletes of a missing id wrap ErrNotFound.
@@ -598,13 +602,23 @@ type Writer interface {
     TouchProxyMeta(ctx context.Context, id int64, checkedAt time.Time) error      // CheckedAt only: a 304
     DeleteProxyMeta(ctx context.Context, repoID int64, name string) (int, error)  // the rows of one name key, or every row of the repo when ""
     ExpireProxyMeta(ctx context.Context, repoID int64, before time.Time) (int, error) // the repo's absent rows checked before before
+    // the npm journal (derived; written by ingest, reindex and delete). UpsertJournal inserts e
+    // and fills ID, or, when the row of (PackageID, Seq) has e's tag and digest, sets its
+    // IndexedAt and fills e from it; another tag or digest there is a *TagConflictError and
+    // nothing changes: an entry is never rewritten. CreatedAt and IndexedAt are now when zero
+    UpsertJournal(ctx context.Context, e *JournalEntry) error
+    TouchJournal(ctx context.Context, ids []int64, at time.Time) error // IndexedAt only: entries reindex saw
+    DeleteJournal(ctx context.Context, id int64) error                 // the reindex sweep
+    // ReplaceJournalState makes the package's journal_state rows exactly state, PackageID
+    // filled: the fold of its entries, written in the transaction of the entries it folds
+    ReplaceJournalState(ctx context.Context, packageID int64, state []JournalState) error
 }
 
 // Models, one struct per table of index-schema.md (fields in internal/index/models.go):
 // control plane Repo, User, Token, Binding, Key, Session, AuditEvent; coordination TagClaim,
 // ReindexRun, FetchClaim; derived Package, Version, File, Cache (index_cache), OCIRepo,
-// ProxyMeta; query types FileMatch (file + version + package), VersionMatch (version + package)
-// and AuditFilter. Ids are int64, timestamps UTC, nullable columns are pointers.
+// ProxyMeta, JournalEntry, JournalState; query types FileMatch (file + version + package),
+// VersionMatch (version + package) and AuditFilter. Ids are int64, timestamps UTC, nullable columns are pointers.
 
 // Repo, for ADR 0013 (repos.upstream; repos.group comes with #311):
 //     Kind     string                         // KindHosted, KindProxy or KindGroup
@@ -621,6 +635,25 @@ type ProxyMeta struct {                     // a row of proxy_meta
     SHA256             string               // hex sha256 of Content; "" when absent
     ETag, LastModified string               // the upstream's validators as it sent them; "" when none
     CheckedAt          time.Time            // when the upstream last answered for the name
+}
+// The npm journal (ADR 0012, manifest-profile.md §8, index-schema.md, npm). Both tables cascade
+// with packages: DeletePackage, DeleteEmptyPackages and ResetDerived take a package's rows.
+const JournalDistTag, JournalDeprecated = "dist-tag", "deprecated" // journal_state.kind
+type JournalEntry struct {                  // a row of journal: one entry in the registry
+    ID, PackageID int64
+    Seq           int64                     // lajstrom.npm.seq
+    Tag           string                    // _j00000007
+    Digest        digest.Digest             // the entry's manifest
+    ArtifactType  string
+    Attrs         map[string]string         // the entry's lajstrom.npm.* annotations
+    CreatedAt     time.Time                 // org.opencontainers.image.created
+    IndexedAt     time.Time                 // when ingest or reindex last wrote or saw the row
+}
+type JournalState struct {                  // a row of journal_state: the fold of a package's entries
+    PackageID  int64
+    Kind       string                       // JournalDistTag or JournalDeprecated
+    Key, Value string                       // a dist-tag and its version; a version and its message
+    Seq        int64                        // the entry that set it
 }
 type FetchClaim struct {                    // a row of fetch_claims
     ID, RepoID             int64
@@ -705,6 +738,7 @@ type RepoReport struct {
     Referrers       int       `json:"referrers"`
     Foreign         []Finding `json:"foreign"`
     OrphanReferrers []Finding `json:"orphanReferrers"`
+    OrphanJournal   []Finding `json:"orphanJournal"`   // npm journal entries of a repository without versions
     Drift           []Drift   `json:"drift"`
     Errors          []Finding `json:"errors"`
     Truncated       bool      `json:"truncated"`       // a list stopped at 1 000 entries
@@ -772,8 +806,11 @@ type Referrer struct {
 // of del.Path, what refers to it, and what the index holds of it (http-routing.md §2, DELETE;
 // #61). Capabilities.DeleteManifest false is provider.ErrUnsupported and changes nothing. On a
 // managed repo a reference that names a version (its tag, or its digest in the package) deletes
-// the version; anything else is resolved in the backend. The referrers go first, each with its
-// own before it: cosign's legacy sha256-<hex>.sig, .att and .sbom, the tag-schema index
+// the version; anything else is resolved in the backend. A journal tag (_j…) of an npm package
+// is deleted under the package's journal lock, not its tag lock (manifest-profile.md §8, the
+// unpublish of a package), and the index transaction deletes its journal row, when the package
+// still has one, and folds the package's state again from the entries left. The referrers go
+// first, each with its own before it: cosign's legacy sha256-<hex>.sig, .att and .sbom, the tag-schema index
 // sha256-<hex>, the referrers the backend lists; without the referrers API under
 // Store.WithReferrersLock of the subject. The first request that changes anything is a plain
 // delete, so a backend that refuses deletes changes nothing (a referrer deleted on its own: its
@@ -948,6 +985,16 @@ Where the merged shapes differ from the first sketch of this section, and why:
 - **A `proxy_meta` write does not invalidate on its own.** The core writes the row and drops
   the `index_cache` rows of the name in one `Tx`; a `304` is `TouchProxyMeta`, which drops
   nothing. Expired `absent` rows are swept per repo, since `negativeTTL` is a repo's.
+- **The npm journal has store methods of its own** (ADR 0012, #307). `ListJournal` and
+  `ListJournalState` read one package: the journal writer reads the last `seq` and the state
+  under the package's journal lock, a packument reads both for its `dist-tags`, `deprecated`,
+  `_rev` and `time.modified`, and reindex reads a package's entries once per OCI repository and
+  compares them with the `_j` tags it lists, so it needs neither a lookup by tag nor a list of
+  the repo's unseen entries. `ReplaceJournalState` writes the whole fold, not a change: the
+  writer folds its entries over the state it read, reindex folds every entry, and both write
+  the result the same way. `UpsertJournal` keeps the append-only rule of `UpsertVersion`: an
+  entry under its `seq` is never rewritten. The validation of an entry and the fold are pure
+  functions of `internal/oci/profile`, which ingest and reindex share.
 
 ## 3. Approved dependencies
 
