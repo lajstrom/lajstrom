@@ -607,6 +607,16 @@ miss costing what a hit costs.
 | `scopes` | none (the user's full rights), or `read`, `write` or both | `read`, `write` or both, required; `delete`, `manage` and anything else are `400` |
 | expiry | required: 90 days when not given, at most 365 days ahead (`400` beyond, naming the bound) | optional: none is never |
 | `name` | 1 to 64 bytes of printable UTF-8, unique among the user's live tokens (`409`) | the same, among the repo's live tokens |
+| created with | a password only (`403` with a token, #249) | a password, or a personal access token without scopes, of a user with `manage` on the repo |
+
+**A personal access token is created with a password**, never with a token: a request whose
+credential is a personal access token, with scopes or without, the admin's too, or a deploy
+token gets `403` on `POST /api/v1/users/<name>/tokens` before its body is read. A stolen token
+would otherwise mint tokens that last up to a year and outlive its revocation. Later an OIDC
+session will create them too (#69); `npm login` checks the password (#308), and
+`lajstrom admin token create` needs no credential, as it runs against the database. A token
+still lists and revokes its user's tokens. CI that wants a fresh personal access token asks
+for it with a password, or gets a deploy token instead ([In CI](#in-ci)).
 
 A live token is neither revoked nor expired. A scope grants its action and nothing else:
 `write` does not include `read`, so a client that pushes through `/v2`, and reads blobs before
@@ -630,9 +640,9 @@ The scopes narrow what the bindings give, on every route and at `/v2/token`:
   `write` per its scopes, and `403` for an action outside them, `delete` and `manage` above all:
   `DELETE` of a version, `PATCH` or `DELETE` of the repo, its deploy tokens (X-14).
   `GET /api/v1/repos` lists its repo only;
-- the PATs of a user are the user's own to list, create and revoke, or the admin's. The deploy
-  tokens of a repo need `manage` on it.
-  A deploy token or a PAT with scopes asking for either is `403`;
+- the PATs of a user are the user's own to list, create and revoke, or the admin's, and are
+  created with a password only ([Rules](#rules)). The deploy tokens of a repo need `manage` on
+  it. A deploy token or a PAT with scopes asking for either is `403`;
 - at `/v2/token` the same rules narrow the token ([above](#the-token-endpoint)); `/v2` itself
   takes that token and no other bearer.
 
@@ -722,9 +732,10 @@ ID  KIND  NAME    SCOPES  EXPIRES               LAST USED             REVOKED  H
 
 ### Audit
 
-`token.create` (details `id`, `kind`, `name`, `scopes`, `expiresAt`) and `token.revoke`
-(`id`, `kind`, `name`), by the principal of the request (`anonymous` from the CLI), with the
-source and the request id. The subject is `user:<owner>` for a PAT and `<format>/<repo>` for a
+`token.create` (details `id`, `kind`, `name`, `scopes`, `expiresAt`, and `createdBy`, the
+credential of the request: `password`, or `token:<id>` for a token, which a deploy token made
+with a personal access token has; none from the CLI) and `token.revoke` (`id`, `kind`, `name`),
+by the principal of the request (`anonymous` from the CLI), with the source and the request id. The subject is `user:<owner>` for a PAT and `<format>/<repo>` for a
 deploy token, whose repo is also the row's `repo`. Never the secret, never its hash. Revoking a
 revoked token writes nothing. The use of a token is not audited, as reads are not; `lastUsedAt`
 tells when it was last used.

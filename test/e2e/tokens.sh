@@ -6,7 +6,8 @@
 #
 #   - a personal access token (PAT) through POST /api/v1/users/<user>/tokens with the admin's
 #     password, its secret shown once, the list with the hash prefix only;
-#   - the PAT as Basic on a raw PUT and as a bearer on whoami;
+#   - the PAT as Basic on a raw PUT and as a bearer on whoami, and refused (403) when it would
+#     create a PAT: only a password creates one (#249);
 #   - an apt repo with a .deb built in ubuntu:24.04 and uploaded with the PAT; a PAT and a deploy
 #     token with read for apt, each in /etc/apt/auth.conf.d (login <user> and login deploy),
 #     apt-get update and install in ubuntu:24.04 ([trusted=yes] when the server has no master
@@ -245,9 +246,14 @@ case "$status" in
 *) fail "GET key.asc: status $status" ;;
 esac
 
+# A PAT creates no PAT (#249): 403 before the body is read; the password creates it.
+req pat-bearer POST "$base/api/v1/users/$user/tokens" -H 'Content-Type: application/json' -d "{\"name\": \"minted $run\"}"
+expect "POST /api/v1/users/$user/tokens with the PAT ($(jq -c . "$work/body" 2>/dev/null))" 403 "$status"
+ok "POST /api/v1/users/$user/tokens with Authorization: Bearer <PAT>: 403 $(jq -r .error.message "$work/body")"
+
 # apt with a PAT of its own (login <user>) and with a deploy token with read (login deploy);
 # lastUsedAt, null before, shows that apt's requests carried the token.
-create pat-apt "users/$user/tokens" "{\"name\": \"apt $run\", \"scopes\": [\"read\"]}" pat-bearer
+create pat-apt "users/$user/tokens" "{\"name\": \"apt $run\", \"scopes\": [\"read\"]}" basic
 create dep "repos/apt/$apt_repo/deploy-tokens" "{\"name\": \"e2e $run\", \"scopes\": [\"read\"]}" pat-bearer
 dep_id="$(jq -r .id "$work/dep.json")"
 expect "the deploy token's prefix" ljs_dep_ "$(cut -c1-8 "$work/dep")"
