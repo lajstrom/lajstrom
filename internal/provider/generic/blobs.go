@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/opencontainers/go-digest"
@@ -35,11 +36,17 @@ const maxRedirects = 5
 //   - 404 is provider.ErrNotFound, and every other answer goes through translate.
 //
 // A Docker-Content-Digest that does not parse, or names another digest than d, is an error
-// that wraps content.ErrMismatchedDigest: the bytes are not the blob asked for.
+// that wraps content.ErrMismatchedDigest: the bytes are not the blob asked for. A registry
+// whose vendor fails ranges (quirks.wholeBlobs) is asked without rangeHeader: the answer is
+// the whole blob, 200, without AcceptRanges.
 func (p *Provider) OpenBlob(ctx context.Context, name string, d digest.Digest, rangeHeader string, redirect bool) (provider.Blob, error) {
 	op := "open blob " + name + "@" + d.String()
 	if o := p.override.BlobRedirect; o != nil && !*o {
 		redirect = false
+	}
+	whole := p.quirk().wholeBlobs
+	if whole {
+		rangeHeader = ""
 	}
 	resp, loc, err := p.blobRequest(ctx, op, http.MethodGet, name, d, rangeHeader, redirect)
 	if err != nil {
@@ -56,6 +63,7 @@ func (p *Provider) OpenBlob(ctx context.Context, name string, d digest.Digest, r
 			return provider.Blob{}, err
 		}
 		b.Body = resp.Body
+		b.AcceptRanges = b.AcceptRanges && !whole
 		return b, nil
 	case http.StatusRequestedRangeNotSatisfiable:
 		defer func() { _ = resp.Body.Close() }()
@@ -70,8 +78,14 @@ func (p *Provider) OpenBlob(ctx context.Context, name string, d digest.Digest, r
 
 // StatBlob sends one HEAD of the blob and follows every redirect (up to maxRedirects, as
 // OpenBlob does): Status 200 with Size, Digest and AcceptRanges; 404 is provider.ErrNotFound.
+// A registry whose HEAD says a blob exists where GET does not (quirks.blobExistsByGET) is asked
+// with a GET of the first byte instead (statByGET).
 func (p *Provider) StatBlob(ctx context.Context, name string, d digest.Digest) (provider.Blob, error) {
 	op := "stat blob " + name + "@" + d.String()
+	q := p.quirk()
+	if q.blobExistsByGET {
+		return p.statByGET(ctx, op, name, d)
+	}
 	resp, _, err := p.blobRequest(ctx, op, http.MethodHead, name, d, "", false)
 	if err != nil {
 		return provider.Blob{}, err
@@ -80,7 +94,46 @@ func (p *Provider) StatBlob(ctx context.Context, name string, d digest.Digest) (
 	if resp.StatusCode != http.StatusOK {
 		return provider.Blob{}, translate(op, parseErrorResponse(resp))
 	}
-	return headersOf(op, resp, d)
+	b, err := headersOf(op, resp, d)
+	b.AcceptRanges = b.AcceptRanges && !q.wholeBlobs
+	return b, err
+}
+
+// statByGET answers StatBlob with a GET of the blob's first byte, Range: bytes=0-0, whose
+// body is closed unread. The size is the complete length of the 206's Content-Range, or of a
+// 416's (an empty blob), or the Content-Length of a 200 that ignored the range; -1 when the
+// answer does not say.
+func (p *Provider) statByGET(ctx context.Context, op, name string, d digest.Digest) (provider.Blob, error) {
+	resp, _, err := p.blobRequest(ctx, op, http.MethodGet, name, d, "bytes=0-0", false)
+	if err != nil {
+		return provider.Blob{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusPartialContent, http.StatusRequestedRangeNotSatisfiable:
+	default:
+		return provider.Blob{}, translate(op, parseErrorResponse(resp))
+	}
+	b, err := headersOf(op, resp, d)
+	if err != nil {
+		return provider.Blob{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		b.Size = completeLength(b.ContentRange)
+	}
+	b.Status, b.ContentRange = http.StatusOK, ""
+	return b, nil
+}
+
+// completeLength is the length after the "/" of a Content-Range, bytes 0-0/13 or bytes */0;
+// -1 for "*" or a header that does not parse.
+func completeLength(contentRange string) int64 {
+	_, total, ok := strings.Cut(contentRange, "/")
+	n, err := strconv.ParseInt(strings.TrimSpace(total), 10, 64)
+	if !ok || err != nil || n < 0 {
+		return -1
+	}
+	return n
 }
 
 // blobRequest sends method to the blob d of name and follows the redirects it gets itself,

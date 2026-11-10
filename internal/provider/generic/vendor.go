@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/lajstrom/lajstrom/internal/config"
+	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
 // vendor is a registry product the provider recognises from what the registry says about
@@ -18,12 +19,22 @@ const (
 	vendorGitLab  vendor = "gitlab"
 	vendorGHCR    vendor = "ghcr"
 	vendorHarbor  vendor = "harbor"
+	vendorNexus   vendor = "nexus"
+	vendorGitea   vendor = "gitea" // Forgejo too: it answers alike
+	vendorJFrog   vendor = "jfrog"
 )
 
 // Headers of the GitLab container registry's answer to GET /v2/.
 const (
 	headerGitLabVersion  = "Gitlab-Container-Registry-Version"
 	headerGitLabDatabase = "Gitlab-Container-Registry-Database-Enabled"
+)
+
+// What Nexus Repository and JFrog's Artifactory say about themselves on GET /v2/.
+const (
+	headerJFrogVersion = "X-Jfrog-Version" // on every answer of Artifactory and JCR
+	nexusServer        = "nexus/"          // Server: Nexus/3.98.1-01 (COMMUNITY), lower-cased
+	nexusRealm         = "Sonatype Nexus Repository Manager"
 )
 
 // vendorDefaults is the vendor table: what each vendor needs set that the probe cannot
@@ -40,6 +51,48 @@ var vendorDefaults = map[vendor]config.CapabilityOverrides{
 	// The probe is right: the referrers API, and no catalog for a project robot
 	// (docs/registries/harbor.md).
 	vendorHarbor: {},
+	// The rest depends on the repository format, which the referrers probe tells: afterProbe.
+	vendorNexus: {},
+	// The probe is right (docs/registries/gitea.md); the upload sessions need nothing of it.
+	vendorGitea: {},
+	// The probe is right since it wants a catalog in the 200; HEAD lies: afterProbe.
+	vendorJFrog: {},
+}
+
+// quirks are what the provider does differently for a vendor beyond provider.Capabilities, as
+// the vendor table and the probe decide them (afterProbe).
+type quirks struct {
+	// wholeBlobs: a blob GET goes without the client's Range and is answered whole (200), and
+	// no blob is said to take ranges. Nexus's oci format answers every ranged GET with 500
+	// (docs/registries/nexus.md, item 3); a 200 for a range is what Gitea answers anyway, and
+	// what the facade, the frontends and ingest's ReadAt take.
+	wholeBlobs bool
+	// blobExistsByGET: StatBlob, and so Exists of a blob, asks GET of the blob's first byte, not
+	// HEAD. JFrog answers HEAD 200 in any image path of the repository key once a manifest
+	// anywhere names the blob, while GET there is 404 (docs/registries/jfrog-jcr.md, item 4).
+	blobExistsByGET bool
+}
+
+// afterProbe is the part of the vendor table that depends on what the probe found: it changes
+// probed, the capabilities before the configuration's overrides, and returns the vendor's
+// quirks. referrers is whether the referrers API is used, overrides included:
+//
+//   - Nexus: the docker format has no referrers API, and a manifest delete by digest leaves
+//     every tag that names it (docs/registries/nexus.md, item 2), so DeleteManifest is false;
+//     the oci format has it, and fails every range (wholeBlobs);
+//   - JFrog: blobExistsByGET.
+func afterProbe(v vendor, probed *provider.Capabilities, referrers bool) quirks {
+	switch v {
+	case vendorNexus:
+		if referrers {
+			return quirks{wholeBlobs: true}
+		}
+		probed.DeleteManifest = false
+	case vendorJFrog:
+		return quirks{blobExistsByGET: true}
+	case vendorUnknown, vendorGitLab, vendorGHCR, vendorHarbor, vendorGitea:
+	}
+	return quirks{}
 }
 
 // identity is what a registry says about itself: the host of its URL, the headers of its 200
@@ -55,20 +108,37 @@ type identity struct {
 //
 //   - GitLab: GET /v2/ answers Gitlab-Container-Registry-Version;
 //   - GHCR: the host is ghcr.io;
-//   - Harbor: GET /v2/ challenges with Bearer and service="harbor-registry".
+//   - JFrog: GET /v2/ answers X-Jfrog-Version;
+//   - Nexus: GET /v2/ answers Server: Nexus/<version>, or challenges with Basic and
+//     realm="Sonatype Nexus Repository Manager";
+//   - Harbor: GET /v2/ challenges with Bearer and service="harbor-registry";
+//   - Gitea and Forgejo: GET /v2/ challenges with Bearer, service="container_registry" and
+//     scope="*" (GitLab's service has the same name, without the scope).
 //
-// Anything else is vendorUnknown. Harbor is told by its challenge alone, which the auth client
-// meets on the first request only: a Harbor whose first request was not the probe's stays
-// unknown, which changes the log line and nothing else.
+// Anything else is vendorUnknown. Harbor and Gitea are told by their challenge alone, which
+// the auth client meets on the first request only: one whose first request was not the
+// probe's stays unknown, which changes the log line and nothing else.
 func detectVendor(id identity) vendor {
 	switch {
 	case id.header.Get(headerGitLabVersion) != "":
 		return vendorGitLab
 	case isHost(id.host, "ghcr.io"):
 		return vendorGHCR
+	case id.header.Get(headerJFrogVersion) != "":
+		return vendorJFrog
+	case strings.HasPrefix(strings.ToLower(id.header.Get("Server")), nexusServer):
+		return vendorNexus
 	}
-	if scheme, service := challengeParam(id.challenge, "service"); scheme == "bearer" && service == "harbor-registry" {
+	scheme, realm := challengeParam(id.challenge, "realm")
+	_, service := challengeParam(id.challenge, "service")
+	_, scope := challengeParam(id.challenge, "scope")
+	switch {
+	case scheme == "basic" && realm == nexusRealm:
+		return vendorNexus
+	case scheme == "bearer" && service == "harbor-registry":
 		return vendorHarbor
+	case scheme == "bearer" && service == "container_registry" && scope == "*":
+		return vendorGitea
 	}
 	return vendorUnknown
 }

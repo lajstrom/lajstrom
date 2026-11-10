@@ -46,9 +46,11 @@ const (
 //     MaxBlobSize is 0 (unknown) without a request; DeleteManifest turns false when the
 //     registry answers a manifest delete with 405 UNSUPPORTED or a 405 without DENIED.
 //
-// A capability that the vendor table or the configuration sets is not probed. The first
-// successful probe logs the result and the vendor at info, and warns about a GitLab registry
-// with its metadata database, which refuses artifact types it does not know.
+// A capability that the vendor table or the configuration sets is not probed. What the vendor
+// table decides from the probe's answer (afterProbe) comes before the configuration's overrides,
+// with the vendor's quirks: the blob reads of Nexus's oci format and JFrog's blob HEAD. The
+// first successful probe logs the result and the vendor at info, and warns about a GitLab
+// registry with its metadata database, which refuses artifact types it does not know.
 func (p *Provider) Capabilities(ctx context.Context) (provider.Capabilities, error) {
 	c, err := p.probeOnce(ctx)
 	if err != nil {
@@ -106,6 +108,8 @@ func (p *Provider) probeOnce(ctx context.Context) (provider.Capabilities, error)
 	if err != nil {
 		return provider.Capabilities{}, err
 	}
+	q := afterProbe(v, &c, p.effective(c).Referrers)
+	p.quirks.Store(&q)
 	p.probed.Store(&c)
 	e := p.effective(c)
 	p.log.InfoContext(ctx, "registry capabilities",
@@ -118,6 +122,10 @@ func (p *Provider) probeOnce(ctx context.Context) (provider.Capabilities, error)
 		"blobRedirect", e.BlobRedirect,
 		"maxBlobSize", e.MaxBlobSize,
 	)
+	if q != (quirks{}) {
+		p.log.InfoContext(ctx, "registry needs workarounds", "vendor", string(v),
+			"blobsReadWhole", q.wholeBlobs, "blobExistsByGET", q.blobExistsByGET)
+	}
 	if v == vendorGitLab && id.gitLabDatabase() {
 		p.log.WarnContext(ctx, "GitLab registry with its metadata database: it refuses a manifest whose artifactType or config media type it does not know, every one Lajstrom writes, unless REGISTRY_FF_DYNAMIC_MEDIA_TYPES is on or the types are known to it")
 	}

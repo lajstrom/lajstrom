@@ -168,16 +168,27 @@ redirect or the bytes, so a registry on filesystem storage costs nothing for the
 
 What a probe cannot measure comes from a table of vendors, which Lajstrom tells apart by what a
 registry says about itself: a `Gitlab-Container-Registry-Version` header on `GET /v2/` is the
-GitLab container registry, the host `ghcr.io` is GHCR, and a Bearer challenge with
-`service="harbor-registry"` on `GET /v2/` is Harbor. GHCR gets `catalog: false` (its
+GitLab container registry, the host `ghcr.io` is GHCR, a Bearer challenge with
+`service="harbor-registry"` on `GET /v2/` is Harbor, `X-Jfrog-Version` on it is JFrog's
+Artifactory or JCR, `Server: Nexus/…` or a Basic challenge with `realm="Sonatype Nexus Repository
+Manager"` is Nexus Repository, and a Bearer challenge with `service="container_registry"` and
+`scope="*"` is Gitea or Forgejo. GHCR gets `catalog: false` (its
 `_catalog` answers 200 with every repository of GHCR, which the probe cannot tell from a usable
-one) and `deleteManifest: false` (every delete through `/v2` is 405), without asking; GitLab and
-Harbor need nothing, the probe is right for them. A GitLab registry that answers
+one) and `deleteManifest: false` (every delete through `/v2` is 405), without asking; GitLab,
+Harbor and Gitea need nothing, the probe is right for them. Nexus depends on the format of the
+repository, which the referrers probe tells: the `docker` format, without the referrers API, gets
+`deleteManifest: false`, since a delete by digest leaves every tag that names the manifest
+([nexus.md](registries/nexus.md#delete)); the `oci` format answers every ranged `GET` of a blob
+with 500, so Lajstrom asks it for whole blobs and serves a client's range with the whole blob
+(`200`, no `Accept-Ranges`). JFrog answers `HEAD` of a blob with 200 in an image path where
+`GET` is 404 ([jfrog-jcr.md](registries/jfrog-jcr.md#blob-reads-head-and-get)), so Lajstrom
+asks whether a blob exists with a `GET` of its first byte. A GitLab registry that answers
 `Gitlab-Container-Registry-Database-Enabled: true` gets a warning at startup: with its database
 it refuses a manifest whose `artifactType` it does not know, every one Lajstrom writes, unless
 `REGISTRY_FF_DYNAMIC_MEDIA_TYPES` is on ([gitlab.md](registries/gitlab.md#media-types)). The
-startup line names the vendor, `vendor=gitlab`, `ghcr`, `harbor` or `unknown`, beside the
-capabilities. A registry the table does not know gets the probe alone.
+startup line names the vendor, `vendor=gitlab`, `ghcr`, `harbor`, `nexus`, `gitea`, `jfrog` or
+`unknown`, beside the capabilities, and a line `registry needs workarounds` says when blobs are
+read whole or their existence asked with `GET`. A registry the table does not know gets the probe alone.
 
 Each key under `capabilities` replaces what was found and what the vendor table sets, for
 registries that answer wrongly; a key that is set is not probed. There is no `catalog` key

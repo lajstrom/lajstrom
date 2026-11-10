@@ -64,6 +64,16 @@ type Provider struct {
 	// deleteRefused is set by the first manifest delete that the registry refuses as deletes,
 	// not as this one delete (refusesDelete, deniedOne).
 	deleteRefused atomic.Bool
+	// quirks are the vendor's, set by the first probe that succeeded; none before it.
+	quirks atomic.Pointer[quirks]
+}
+
+// quirk returns the vendor's quirks, none before the probe.
+func (p *Provider) quirk() quirks {
+	if q := p.quirks.Load(); q != nil {
+		return *q
+	}
+	return quirks{}
 }
 
 // Referrers API support as the probe found it.

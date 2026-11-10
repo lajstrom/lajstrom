@@ -89,9 +89,10 @@ serve log of the e2e run). That is right; no override in `registries[].capabilit
 5. Read a size-limit refusal as one: over `[packages] LIMIT_SIZE_CONTAINER` the closing `PUT`
    is 403 with an empty body, which the provider makes `ErrUnauthorized` (bad credentials), as
    it does Harbor's quota (harbor.md, item 1): the same contract question.
-6. Optional: name the vendor. `GET /v2/` challenges `Bearer
-   realm="<ROOT_URL>v2/token",service="container_registry",scope="*"`; a `gitea` entry in the
-   vendor table would log it and could carry item 2. The probe is right without it.
+6. **Done in #352:** name the vendor. `GET /v2/` challenges `Bearer
+   realm="<ROOT_URL>v2/token",service="container_registry",scope="*"`, which makes it
+   `vendor=gitea`, Forgejo too. The entry changes nothing else: the probe is right, and item 2
+   is still a contract question.
 
 Nothing else: the token service, the tag schema, catalog, tags, delete, mounts (refused with
 202), the monolithic `POST`, the cancel and the digest check work as the provider expects.
