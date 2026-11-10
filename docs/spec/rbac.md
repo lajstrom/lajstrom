@@ -8,7 +8,7 @@
 | Principal | Form | MVP |
 | --- | --- | --- |
 | local user | `user:<uid>` (below); password (argon2id) | yes |
-| personal access token (PAT) | acts as its user, optionally narrowed by `scopes`; expiry mandatory (max 1 year, default 90 days) | yes |
+| personal access token (PAT) | acts as its user, optionally narrowed by `scopes`; expiry mandatory (max 1 year, default 90 days); created with a password, never with a token (§3) | yes |
 | deploy token | `token:<id>`; bound to exactly one repo; scopes `read` and/or `write`; expiry optional | yes |
 | anonymous | `anonymous`; only ever gets `read`, and only on repos with `anonymousRead: true` | yes |
 | group | `group:<name>`; from OIDC claims | after the MVP |
@@ -140,6 +140,13 @@ this spec, so that a review need not find it in the code:
 - **A repo's deploy tokens** need `manage` on it, decided before the repo is looked up: the
   answers of this rule.
 - **A personal access token's scopes** are actions; they name no repo.
+- **Creating a personal access token** (`POST /api/v1/users/<name>/tokens`) takes a password
+  (later an OIDC session) as the request's credential, besides the user's own or the `admin`
+  role. A personal access token, with scopes or without, the admin's too, and a deploy token
+  get `403` before the body is read, whoever's tokens they name: a stolen token must not mint
+  tokens that outlive its revocation (decided on #249, 2026-11-10). A token still lists and
+  revokes its user's tokens. The command line (`lajstrom admin token create`) has no
+  credential and is the operator's.
 - **Lists** (`GET /api/v1/repos`, `/v2/_catalog`) show only the repos the principal may read.
 - **`/v2` with a bearer**: the token names every repository asked for, with no action on one
   that does not exist or may not be read alike, and the facade asks the token before it looks
@@ -186,7 +193,9 @@ MVP.
 
 Every write (`push`, `delete`), every control-plane change, and every creation and revocation of
 a personal access token or a deploy token is an `audit` row with the principal, action, repo,
-subject, digest, client IP and request id, written in the transaction of its change. Reads are
+subject, digest, client IP and request id, written in the transaction of its change. The
+creation's row also names the credential that created the token, `createdBy` in its details:
+`password`, or `token:<id>` for a token. Reads are
 not audited in the MVP (a per-repo option later). The short-lived bearer tokens of `/v2/token`
 are not audited either (decided on #46, 2026-11-09): a client gets one for every pull and push,
 and what a token allows is audited itself.

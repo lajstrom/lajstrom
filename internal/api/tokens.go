@@ -96,8 +96,13 @@ func (h *handler) listTokens(_ http.ResponseWriter, r *http.Request) (int, any, 
 }
 
 // createToken creates a personal access token of a user from the TokenRequest of the body: 201
-// with the token, its secret (the one time it is shown) and its Location.
+// with the token, its secret (the one time it is shown) and its Location. A request whose
+// credential is a token, a personal access token with scopes or without or a deploy token, is
+// 403 before anything else (auth.MayCreatePAT, #249): only a password creates one.
 func (h *handler) createToken(w http.ResponseWriter, r *http.Request) (int, any, error) {
+	if err := auth.MayCreatePAT(r.Context()); err != nil {
+		return 0, nil, serviceError(err)
+	}
 	name, err := h.tokenOwner(r)
 	if err != nil {
 		return 0, nil, err
@@ -213,11 +218,15 @@ func tokenRequest(w http.ResponseWriter, r *http.Request) (TokenRequest, auth.Ex
 }
 
 // serviceError turns an error of auth.Tokens into the one the API answers: auth.ErrInvalid is
-// 400 with the service's message, which names the field; index.ErrNotFound and
+// 400 with the service's message, which names the field; auth.ErrScope is 403 with it, a
+// credential that may not create a personal access token; index.ErrNotFound and
 // index.ErrConflict keep their message and status; anything else is a 500.
 func serviceError(err error) error {
-	if errors.Is(err, auth.ErrInvalid) {
+	switch {
+	case errors.Is(err, auth.ErrInvalid):
 		return &clientError{msg: err.Error(), err: format.ErrInvalid}
+	case errors.Is(err, auth.ErrScope):
+		return &clientError{msg: err.Error(), err: format.ErrForbidden}
 	}
 	return err
 }

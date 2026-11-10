@@ -458,7 +458,10 @@ them at most. `201` with the resource and `secret`, and `Location` naming the to
 (`/api/v1/users/<name>/tokens/<id>`, the path of its `DELETE`); `400` for a field that breaks its
 rule, `expiresAt` over a year ahead or in the past, both `expiresAt` and `expiresIn`, or
 `delete` in the scopes of a deploy token; `404` for a user or repo that does not exist; `409`
-when the name is taken. The user need not be enabled.
+when the name is taken. The user need not be enabled. A personal access token is created with a
+password only: with a personal access token as the credential, with scopes or without, the
+admin's too, or with a deploy token, `POST /api/v1/users/<name>/tokens` is `403` before the body
+is read ([auth.md](auth.md#rules)).
 
 ```sh
 curl -s -u alice -X POST "$LAJSTROM/api/v1/users/alice/tokens" \

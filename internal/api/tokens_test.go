@@ -178,6 +178,27 @@ func TestTokensAPIAudit(t *testing.T) {
 	}
 }
 
+// TestTokensAPINoMint is #249 through the API: a personal access token of alice, with scopes or
+// without, gets 403 FORBIDDEN on POST /api/v1/users/alice/tokens with a message that says a
+// password creates one, and her password gets 201, whose token.create row says createdBy
+// password.
+func TestTokensAPINoMint(t *testing.T) {
+	f := newFixture(t, Options{})
+	f.addUsers(t, "alice")
+	for _, c := range []auth.Credential{
+		{Kind: auth.CredPAT, TokenID: 1, UserID: 2},
+		{Kind: auth.CredPAT, TokenID: 1, UserID: 2, Scopes: []string{"read", "write"}},
+	} {
+		wantError(t, f.doAs(http.MethodPost, "/api/v1/users/alice/tokens", `{"name": "minted"}`, alice, c), http.StatusForbidden, codeForbidden,
+			"a personal access token is created with a password")
+	}
+	rr := f.doAs(http.MethodPost, "/api/v1/users/alice/tokens", `{"name": "laptop"}`, alice, auth.Credential{Kind: auth.CredPassword})
+	wantStatus(t, rr, http.StatusCreated)
+	if ev := oneAudit(t, f.st, auth.ActionTokenCreate); ev.details["createdBy"] != "password" || ev.details["name"] != "laptop" {
+		t.Errorf("token.create = %+v %v, want createdBy password", ev.AuditEvent, ev.details)
+	}
+}
+
 // TestTokensAPIRefused is the table of the refusals: 400 for a field that breaks its rule
 // (S-06: an expiry over a year; X-14: delete in the scopes of a deploy token), 409 for a name
 // taken, 404 for an unknown user, repo or token, and for the token of another user or repo.
@@ -250,13 +271,17 @@ func TestTokensAPIRefused(t *testing.T) {
 // TestTokensAPIAuthorization checks who may manage tokens: a user its own, the admin anyone's,
 // manage on the repo for its deploy tokens; a deploy token and a personal access token with
 // scopes are 403 without any Authorizer, as is a deploy token changing its own repo (X-14),
-// and a deploy token on another repo is 404 (S-04).
+// and a deploy token on another repo is 404 (S-04). A personal access token, with scopes or
+// without, the admin's too, creates no personal access token (403 before the body is read,
+// #249), while it still lists and revokes them and creates deploy tokens.
 func TestTokensAPIAuthorization(t *testing.T) {
 	deployCred := func(repo string, id int64) auth.Credential {
 		return auth.Credential{Kind: auth.CredDeploy, TokenID: 20, RepoID: id, Repo: repo, Scopes: []string{"read", "write"}}
 	}
 	scoped := auth.Credential{Kind: auth.CredPAT, TokenID: 1, UserID: 2, Scopes: []string{"read", "write"}}
 	full := auth.Credential{Kind: auth.CredPAT, TokenID: 1, UserID: 2}
+	adminPAT := auth.Credential{Kind: auth.CredPAT, TokenID: 2, UserID: 1}
+	carolPAT := auth.Credential{Kind: auth.CredPAT, TokenID: 3, UserID: 3}
 	deploy := auth.Principal{Kind: auth.KindToken, Name: "20"}
 	carol := auth.Principal{Kind: auth.KindUser, Name: "carol"}
 	g := map[string]bool{"user:admin manage */*": true, "user:admin read */*": true, "user:carol manage raw/scratch": true,
@@ -281,6 +306,11 @@ func TestTokensAPIAuthorization(t *testing.T) {
 		{"maintainer of another repo", true, carol, auth.Credential{Kind: auth.CredPassword}, "GET", "/api/v1/repos/raw/other/deploy-tokens", "", 404},
 		{"reader of the repo", true, alice, auth.Credential{Kind: auth.CredPassword}, "GET", "/api/v1/repos/raw/open/deploy-tokens", "", 403},
 		{"self with a scoped pat", false, alice, scoped, "POST", "/api/v1/users/alice/tokens", `{"name": "z"}`, 403},
+		{"self with a pat creates", true, alice, full, "POST", "/api/v1/users/alice/tokens", `{"name": "z"}`, 403},
+		{"self with a pat and a bad body", true, alice, full, "POST", "/api/v1/users/alice/tokens", `{"name": 1}`, 403},
+		{"admin with a pat creates", true, admin, adminPAT, "POST", "/api/v1/users/alice/tokens", `{"name": "z"}`, 403},
+		{"self with a pat revokes", true, alice, full, "DELETE", "/api/v1/users/alice/tokens/999", "", 404},
+		{"maintainer with a pat creates a deploy token", true, carol, carolPAT, "POST", "/api/v1/repos/raw/scratch/deploy-tokens", `{"name": "x", "scopes": ["read"]}`, 201},
 		{"self with a scoped pat lists", false, alice, scoped, "GET", "/api/v1/users/alice/tokens", "", 403},
 		{"scoped pat on deploy tokens", false, alice, scoped, "GET", "/api/v1/repos/raw/scratch/deploy-tokens", "", 403},
 		{"deploy token on user tokens", false, deploy, deployCred("raw/scratch", 0), "GET", "/api/v1/users/alice/tokens", "", 403},

@@ -112,8 +112,12 @@ type Tokens struct {
 // MaxTokenNameLen bytes of printable UTF-8, unique among the user's live tokens (neither
 // revoked nor expired). scopes are empty, for the user's full rights, or read and/or write.
 // The expiry is mandatory: DefaultPATLifetime when exp gives none, at most MaxPATLifetime
-// ahead. The user need not be enabled.
+// ahead. The user need not be enabled. The credential of ctx must be one that may create it
+// (MayCreatePAT).
 func (s *Tokens) CreatePAT(ctx context.Context, user, name string, scopes []string, exp Expiry, o Origin) (*Token, string, error) {
+	if err := MayCreatePAT(ctx); err != nil {
+		return nil, "", err
+	}
 	scopes, err := checkScopes(scopes, TokenPAT)
 	if err != nil {
 		return nil, "", err
@@ -128,6 +132,32 @@ func (s *Tokens) CreatePAT(ctx context.Context, user, name string, scopes []stri
 		}
 		return &index.Token{UserID: &u.ID}, tokenOwner{user: u.Name, uid: u.UID}, nil
 	})
+}
+
+// MayCreatePAT returns nil when the credential of ctx may create a personal access token: a
+// password, or none, as from the command line, which the operator runs. A personal access
+// token, with scopes or without, and a deploy token may not, an error wrapping ErrScope: a
+// stolen token would otherwise mint tokens that outlive its revocation (decided on #249,
+// docs/auth.md, Rules).
+func MayCreatePAT(ctx context.Context) error {
+	switch CredentialFrom(ctx).Kind {
+	case CredPAT, CredDeploy:
+		return &authError{msg: "a personal access token is created with a password, not with a token", err: ErrScope}
+	case CredPassword:
+	}
+	return nil
+}
+
+// createdBy is the credential c as the createdBy of a token.create event: password, or
+// token:<id> for a token; "" for none.
+func createdBy(c Credential) string {
+	switch c.Kind {
+	case CredPassword:
+		return string(CredPassword)
+	case CredPAT, CredDeploy:
+		return "token:" + strconv.FormatInt(c.TokenID, 10)
+	}
+	return ""
 }
 
 // CreateDeploy creates a deploy token of the repo <format>/<name> and returns it with its
@@ -163,7 +193,8 @@ type tokenOwner struct {
 }
 
 // create checks name and the expiry and creates a token of kind with scopes in one
-// transaction with its token.create event. owner names the owner for the messages, user
+// transaction with its token.create event, whose details name the credential of ctx
+// (createdBy). owner names the owner for the messages, user
 // <name> or repo <format>/<name>; read reads it in the transaction and returns the row with
 // its owner set, and the owner.
 func (s *Tokens) create(ctx context.Context, kind, owner, name string, scopes []string, exp Expiry, o Origin,
@@ -201,9 +232,11 @@ func (s *Tokens) create(ctx context.Context, kind, owner, name string, scopes []
 		if err = w.CreateToken(ctx, row); err != nil {
 			return err
 		}
-		ev, err = s.record(ctx, w, ActionTokenCreate, own, o, map[string]any{
-			"id": row.ID, "kind": kind, "name": name, "scopes": scopes, "expiresAt": expiresAt,
-		})
+		details := map[string]any{"id": row.ID, "kind": kind, "name": name, "scopes": scopes, "expiresAt": expiresAt}
+		if by := createdBy(CredentialFrom(ctx)); by != "" {
+			details["createdBy"] = by
+		}
+		ev, err = s.record(ctx, w, ActionTokenCreate, own, o, details)
 		return err
 	})
 	if err != nil {

@@ -408,6 +408,82 @@ func TestParseLifetime(t *testing.T) {
 	}
 }
 
+// TestTokensCreatedBy checks the credential rule of a new personal access token (#249): a
+// password, or no credential (the command line), creates one; a personal access token, with
+// scopes or without, and a deploy token do not, with an error wrapping ErrScope, and nothing is
+// written. The token.create event names the credential that created the token in createdBy:
+// password, or token:<id> for a token (here a deploy token created with a personal access
+// token); nothing from the command line.
+func TestTokensCreatedBy(t *testing.T) {
+	f := newTokensFixture(t)
+	admin := WithPrincipal(context.Background(), Principal{Kind: KindUser, Name: "admin"})
+	pat := Credential{Kind: CredPAT, TokenID: 7, UserID: 1}
+	tests := []struct {
+		name    string
+		c       Credential
+		deploy  bool   // create a deploy token of raw/scratch, else a PAT of alice
+		refused bool   // ErrScope, and no event
+		by      string // createdBy of the event, "" for none
+	}{
+		{name: "a password", c: Credential{Kind: CredPassword}, by: "password"},
+		{name: "the command line", by: ""},
+		{name: "a pat without scopes", c: pat, refused: true},
+		{name: "a pat with scopes", c: Credential{Kind: CredPAT, TokenID: 8, UserID: 1, Scopes: []string{"read", "write"}}, refused: true},
+		{name: "a deploy token", c: Credential{Kind: CredDeploy, TokenID: 9, RepoID: 1, Repo: "raw/scratch", Scopes: []string{"write"}}, refused: true},
+		{name: "a deploy token by a pat", c: pat, deploy: true, by: "token:7"},
+	}
+	create := func(ctx context.Context, deploy bool, name string) error {
+		var (
+			secret string
+			err    error
+		)
+		if deploy {
+			_, secret, err = f.tokens.CreateDeploy(ctx, "raw/scratch", name, []string{ScopeRead}, Expiry{}, cli)
+		} else {
+			_, secret, err = f.tokens.CreatePAT(ctx, "alice", name, nil, Expiry{}, cli)
+		}
+		if secret != "" {
+			f.secrets = append(f.secrets, secret)
+		}
+		return err
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := WithCredential(admin, tt.c)
+			before := len(tokenAudit(t, f.st))
+			err := create(ctx, tt.deploy, fmt.Sprintf("t%d", i))
+			added := len(tokenAudit(t, f.st)) - before
+			switch {
+			case tt.refused && (!errors.Is(err, ErrScope) || added != 0 || !strings.Contains(err.Error(), "password")):
+				t.Fatalf("create = %v with %d new events; want ErrScope saying a password creates one, and no event", err, added)
+			case tt.refused:
+				return
+			case err != nil || added != 1:
+				t.Fatalf("create = %v with %d new events, want one", err, added)
+			}
+			if by := createdByOf(t, f.st); by != tt.by {
+				t.Errorf("createdBy = %q, want %q", by, tt.by)
+			}
+		})
+	}
+	f.noSecrets(t)
+}
+
+// createdByOf returns the createdBy of the newest audit event, "" when it has none.
+func createdByOf(t *testing.T, st index.Reader) string {
+	t.Helper()
+	evs, err := st.ListAudit(context.Background(), index.AuditFilter{})
+	if err != nil || len(evs) == 0 {
+		t.Fatalf("ListAudit = %d events, %v", len(evs), err)
+	}
+	var details map[string]any
+	if err := json.Unmarshal(evs[0].Details, &details); err != nil {
+		t.Fatal(err)
+	}
+	by, _ := details["createdBy"].(string)
+	return by
+}
+
 // TestTokensDefaults checks the clock and the logger of a zero Tokens.
 func TestTokensDefaults(t *testing.T) {
 	var s Tokens

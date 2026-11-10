@@ -356,6 +356,9 @@ paths:
       tags: [tokens]
       operationId: createToken
       summary: Create a personal access token of a user; the answer has its secret, once.
+      description: >-
+        Only a password creates one: a request whose credential is a personal access token,
+        with scopes or without, or a deploy token is 403.
       requestBody:
         required: true
         content:
