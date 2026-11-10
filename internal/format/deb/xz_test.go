@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"strings"
 	"testing"
 
 	"github.com/ulikunitz/xz"
+
+	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/testutil"
 )
 
 // xzOf compresses data with the xz writer of github.com/ulikunitz/xz and cfg.
@@ -205,5 +209,34 @@ func TestXZStopsAtTheIndex(t *testing.T) {
 	}
 	if n, err := r.Read(make([]byte, 10)); n != 0 || !errors.Is(err, io.EOF) {
 		t.Errorf("Read of an empty stream = %d, %v; want io.EOF", n, err)
+	}
+}
+
+// TestXZBlocks checks the bound on the blocks of a control.tar.xz (#243): maxXZBlocks are read,
+// one more is refused, and so is the bomb of the threat model, 20 000 empty blocks that each
+// declare a 64 MiB dictionary, which the decoder allocates afresh per block: Parse allocates
+// at most maxXZBlocks dictionaries.
+func TestXZBlocks(t *testing.T) {
+	for _, tc := range []struct {
+		empty int
+		want  string
+	}{
+		{maxXZBlocks - 1, ""},
+		{maxXZBlocks, "control.tar.xz: xz: more than 16 blocks"},
+		{20000, "control.tar.xz: xz: more than 16 blocks"},
+	} {
+		b, info := testutil.Deb(testutil.DebOptions{ControlCompression: "xz", XZEmptyBlocks: tc.empty})
+		var (
+			pkg *Package
+			err error
+		)
+		testutil.CheckAllocated(t, fmt.Sprintf("Parse of %d blocks", tc.empty+1), maxXZBlocks*(maxDictionary+1<<20)+testutil.AllocSlack,
+			func() { pkg, err = Parse(bytes.NewReader(b)) })
+		switch {
+		case tc.want == "" && (err != nil || pkg.Name != info.Package):
+			t.Errorf("%d blocks: %v", tc.empty+1, err)
+		case tc.want != "" && (!errors.Is(err, format.ErrInvalid) || !strings.Contains(err.Error(), tc.want)):
+			t.Errorf("%d blocks: %v, want ErrInvalid with %q", tc.empty+1, err, tc.want)
+		}
 	}
 }

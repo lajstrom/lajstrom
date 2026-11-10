@@ -125,10 +125,12 @@ func TestUploadConflicts(t *testing.T) {
 
 // TestUploadRefuses checks the 400s of the upload route, before anything is published: suite
 // or component missing or not of the grammar of Build, named; a body that is not a .deb, empty,
-// or shorter than its Content-Length, named after the client's file name when it sends one.
+// or shorter than its Content-Length, named after the client's file name when it sends one; a
+// control.tar.xz of 20 001 blocks (#243).
 func TestUploadRefuses(t *testing.T) {
 	e := newAptEnv(t, envOptions{})
 	hello, _ := testutil.Deb(testutil.DebOptions{})
+	bomb, _ := testutil.Deb(testutil.DebOptions{ControlCompression: "xz", XZEmptyBlocks: 20000})
 	for _, c := range []struct {
 		query string
 		body  []byte
@@ -147,6 +149,7 @@ func TestUploadRefuses(t *testing.T) {
 		{"suite=jammy&component=main", []byte("not a package"), []string{"Content-Disposition", `attachment; filename="../x/hello.deb"`},
 			`deb: "hello.deb": format: invalid`},
 		{"suite=jammy&component=main", hello[:100], nil, `format: invalid`},
+		{"suite=jammy&component=main", bomb, nil, `format: invalid: control.tar.xz: xz: more than 16 blocks`},
 	} {
 		rr := e.put(c.query, c.body, c.hdr...)
 		if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), c.want) {

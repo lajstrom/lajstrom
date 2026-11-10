@@ -34,6 +34,8 @@ func FuzzParse(f *testing.F) {
 		flipped[controlEnd(f, b)-40] ^= 0x55
 		f.Add(flipped)
 	}
+	blocks, _ := testutil.Deb(testutil.DebOptions{ControlCompression: "xz", XZEmptyBlocks: 2})
+	f.Add(blocks)
 	f.Add(debOf(f, handControl, ptr("d41d8cd98f00b204e9800998ecf8427e  usr/share/x\n"), ""))
 	f.Add(debOf(f, minimal+"Source: hello-src (1:2.0-1)\n", nil, "gz"))
 	f.Add([]byte(arMagic))

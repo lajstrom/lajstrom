@@ -35,6 +35,10 @@ type DebOptions struct {
 	// reads: "gz" (default, control.tar.gz), "xz" (control.tar.xz), "zst" (control.tar.zst)
 	// or "none" (control.tar). Deb panics on any other value.
 	ControlCompression string
+	// XZEmptyBlocks, with ControlCompression "xz", puts that many empty blocks before the one of
+	// the control tar, each declaring a 64 MiB dictionary: a bomb of #243, as dpkg-deb writes one
+	// block. The stream is then written by hand, the control tar in uncompressed LZMA2 chunks.
+	XZEmptyBlocks int
 }
 
 // DebFile is a data file of a package as md5sums lists it.
@@ -136,11 +140,15 @@ func Deb(opts DebOptions) ([]byte, DebInfo) {
 	ar.WriteString("!<arch>\n")
 	arMember(&ar, "debian-binary", []byte("2.0\n"))
 	var compressed []byte
-	info.ControlMember, compressed = controlMember(o.ControlCompression, tarOf([]member{
+	controlTar := tarOf([]member{
 		{name: "./"},
 		{name: "./control", body: info.ControlFile},
 		{name: "./md5sums", body: []byte(md5sums.String())},
-	}))
+	})
+	info.ControlMember, compressed = controlMember(o.ControlCompression, controlTar)
+	if o.ControlCompression == "xz" && o.XZEmptyBlocks > 0 {
+		compressed = xzEmptyBlocks(o.XZEmptyBlocks, controlTar)
+	}
 	arMember(&ar, info.ControlMember, compressed)
 	arMember(&ar, "data.tar.gz", tarGz(data))
 
