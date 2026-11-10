@@ -1,11 +1,13 @@
 package proxy_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -71,6 +73,45 @@ func TestDocumentCache(t *testing.T) {
 	must(t, err)
 	if l := listing(t, doc); len(l) != 2 {
 		t.Errorf("after the upstream changed: %s, want two versions", doc.Content)
+	}
+}
+
+// TestDocumentOneRequest: requests that miss one document at once, on one replica, make one
+// upstream request (§4.2, #383), whether the upstream has the name or not; a client that leaves
+// gets its context's error and does not cancel the request for the others.
+func TestDocumentOneRequest(t *testing.T) {
+	const n = 16
+	e := newEnv(t, `{"name": "up", "metadataTTL": "10m", "negativeTTL": "2m"}`)
+	e.up.publish("tool", "1.0.0", "one", nil)
+	e.up.metaDelay.Store(int64(300 * time.Millisecond))
+	c := e.core(t, "r1", proxy.Options{})
+	for _, tt := range []struct {
+		name    string
+		present bool
+	}{{"tool", true}, {"nope", false}} {
+		before := e.up.metaCalls.Load()
+		var wg sync.WaitGroup
+		errs := make([]error, n)
+		gone, leave := context.WithCancel(t.Context())
+		wg.Go(func() {
+			if _, err := c.Document(gone, e.repo, tt.name, docKind); !errors.Is(err, context.Canceled) {
+				t.Errorf("%s: a client that left: %v, want context.Canceled", tt.name, err)
+			}
+		})
+		for i := range n {
+			wg.Go(func() { _, errs[i] = c.Document(t.Context(), e.repo, tt.name, docKind) })
+		}
+		time.Sleep(50 * time.Millisecond)
+		leave()
+		wg.Wait()
+		for i, err := range errs {
+			if (err == nil) != tt.present || (err != nil && !errors.Is(err, index.ErrNotFound)) {
+				t.Errorf("%s: request %d: %v", tt.name, i, err)
+			}
+		}
+		if got := e.up.metaCalls.Load() - before; got != 1 {
+			t.Errorf("%s: %d concurrent misses made %d upstream requests, want 1", tt.name, n+1, got)
+		}
 	}
 }
 
