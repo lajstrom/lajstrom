@@ -427,6 +427,11 @@ func TestCapabilities(t *testing.T) {
 		{name: "catalog 401", setup: func(f *fakeRegistry) { f.catalogStatus = 401 }, want: with(func(c *provider.Capabilities) { c.Catalog = false })},
 		{name: "catalog 403", setup: func(f *fakeRegistry) { f.catalogStatus = 403 }, want: with(func(c *provider.Capabilities) { c.Catalog = false })},
 		{name: "catalog 405", setup: func(f *fakeRegistry) { f.catalogStatus = 405 }, want: with(func(c *provider.Capabilities) { c.Catalog = false })},
+		// JFrog's router answers /v2/_catalog with 200 and no body (docs/registries/jfrog-jcr.md).
+		{name: "catalog 200 without a body", setup: func(f *fakeRegistry) { f.hook = catalogAnswer("") }, want: with(func(c *provider.Capabilities) { c.Catalog = false })},
+		{name: "catalog 200, not JSON", setup: func(f *fakeRegistry) { f.hook = catalogAnswer("<html></html>") }, want: with(func(c *provider.Capabilities) { c.Catalog = false })},
+		{name: "catalog 200 without repositories", setup: func(f *fakeRegistry) { f.hook = catalogAnswer(`{}`) }, want: with(func(c *provider.Capabilities) { c.Catalog = false })},
+		{name: "catalog 200, an empty catalog", setup: func(f *fakeRegistry) { f.hook = catalogAnswer(`{"repositories":[]}`) }, want: defaults},
 		{
 			name: "every override",
 			edit: func(c *config.Registry) {
@@ -478,6 +483,17 @@ func TestCapabilities(t *testing.T) {
 				t.Errorf("want one info line with the matrix, got\n%s", buf)
 			}
 		})
+	}
+}
+
+// catalogAnswer is a hook of the fake registry that answers /v2/_catalog with 200 and body.
+func catalogAnswer(body string) func(http.ResponseWriter, *http.Request) bool {
+	return func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path != "/v2/_catalog" {
+			return false
+		}
+		_, _ = io.WriteString(w, body)
+		return true
 	}
 }
 
