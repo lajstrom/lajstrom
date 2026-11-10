@@ -36,7 +36,7 @@ func run(t *testing.T, env map[string]string, args ...string) (string, string, e
 func writeConfig(t *testing.T, dir string) string {
 	t.Helper()
 	cfg := filepath.Join(dir, "lajstrom.yaml")
-	body := "server:\n  listen: \":8080\"\ndatabase:\n  driver: sqlite\n  dsn: \"file:" + filepath.Join(dir, "lajstrom.db") + "\"\n"
+	body := "server:\n  listen: \":8080\"\n  externalURL: https://art.example.com\ndatabase:\n  driver: sqlite\n  dsn: \"file:" + filepath.Join(dir, "lajstrom.db") + "\"\n"
 	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

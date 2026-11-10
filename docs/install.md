@@ -46,11 +46,13 @@ $ docker run --rm ghcr.io/lajstrom/lajstrom:v0.0.2-snapshot.aa808b3-arm64
 lajstrom: config: open lajstrom.yaml: no such file or directory (choose the file with --config or LAJSTROM_CONFIG)
 ```
 
-Mount one and name it; the smallest that starts is `server.listen` alone (SQLite in the
-container, no registry: a first look, not a deployment):
+Mount one and name it; the smallest that starts is `server.listen` and the URL clients use,
+here the dev stack's `http://localhost:8080` with `server.insecureHTTP` (SQLite in the
+container, no registry: a first look, not a deployment; a deployment's `externalURL` is
+`https://<host>`):
 
 ```sh
-printf 'server:\n  listen: ":8080"\n' > lajstrom.yaml
+printf 'server:\n  listen: ":8080"\n  externalURL: "http://localhost:8080"\n  insecureHTTP: true\n' > lajstrom.yaml
 docker run -d --name lajstrom -p 127.0.0.1:8080:8080 \
   -v "$PWD/lajstrom.yaml:/etc/lajstrom/lajstrom.yaml:ro" \
   ghcr.io/lajstrom/lajstrom:$TAG serve --config /etc/lajstrom/lajstrom.yaml
