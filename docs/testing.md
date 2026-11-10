@@ -55,7 +55,9 @@ Every test works in repositories with a random name, so runs can repeat and run 
 `LAJSTROM_TEST_REGISTRY_PREFIX`, `_USERNAME`, `_PASSWORD` and `_TLS=1` point the provider tests
 at a registry outside the stack ([registries/](registries/README.md) has the commands per
 vendor); `LAJSTROM_TEST_REGISTRY_S3` adds the tests of a registry on S3 (the `s3` and
-`s3-minio` profiles, [dev-stack.md](dev-stack.md)). `LAJSTROM_TEST_REGISTRY_NODELETE` adds the
+`s3-minio` profiles, [dev-stack.md](dev-stack.md)), and `LAJSTROM_TEST_ECR_ENDPOINT` with
+`LAJSTROM_TEST_ECR_REGISTRY` the ECR provider against moto (the `ecr` profile,
+[registries/ecr.md](registries/ecr.md#tested-against-moto)). `LAJSTROM_TEST_REGISTRY_NODELETE` adds the
 facade's test of a registry that refuses deletes, which the stack does not run (#61):
 
 ```sh

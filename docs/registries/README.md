@@ -45,7 +45,7 @@ memory before the spikes and is kept as it was, not measured:
 
 | Registry | Issue | Tier |
 | --- | --- | --- |
-| Amazon ECR | spike #19 (needs an AWS account; not run), adapter #36 | `untested`. From memory: a repository is created on push only through a creation template with `CREATE_ON_PUSH`, otherwise by `CreateRepository` from the adapter; the OCI 1.1 referrers API since 2024-06, but pushing referrers with oras returned 405 (aws/containers-roadmap#2783); listing by `DescribeRepositories`, no `_catalog`; manifest delete yes; immutable tags a per-repository option that must be respected; blob `GET` a 307 to S3; an image count limit per repository and a 12-hour token |
+| Amazon ECR | spike #19 (needs an AWS account; not run), adapter #36 ([ecr.md](ecr.md): tested against moto, the AWS mock, with distribution for `/v2`; live ECR pending #19) | `untested`. From memory: a repository is created on push only through a creation template with `CREATE_ON_PUSH`, otherwise by `CreateRepository` from the adapter; the OCI 1.1 referrers API since 2024-06, but pushing referrers with oras returned 405 (aws/containers-roadmap#2783); listing by `DescribeRepositories`, no `_catalog`; manifest delete yes; immutable tags a per-repository option that must be respected; blob `GET` a 307 to S3; an image count limit per repository and a 12-hour token |
 | Gitea container registry | spike #120 | `untested` |
 | Quay | none | `untested` |
 | Azure Container Registry | none | `untested` |
@@ -364,4 +364,6 @@ container registry is the `gitlab` profile of the dev stack on `localhost:5003` 
 `localhost:5004` (B). Nexus is a compose project of its own, `lajstrom-nexus`, on
 `localhost:8081` (UI and REST API), `localhost:5008` and `localhost:5015` (the connectors),
 set up by `deploy/compose/nexus/nexus.sh up`. The packages the GHCR tests left in `lajstrom-extras`, and their deletion,
-are in [ghcr.md](ghcr.md#packages-left-in-lajstrom-extras).
+are in [ghcr.md](ghcr.md#packages-left-in-lajstrom-extras). The ECR provider's stand-in, moto
+for the API and a distribution for `/v2`, is the `ecr` profile on `localhost:5010` and
+`localhost:5011` ([ecr.md](ecr.md#tested-against-moto)).
