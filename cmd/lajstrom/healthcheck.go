@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -99,33 +100,46 @@ func listenURL(listen string, https bool) string {
 }
 
 // pinnedTLS returns the TLS configuration of a check of a serve that terminates TLS with the
-// chain of certFile: the server must present the first certificate of that file, byte for
-// byte, and nothing else of it is checked. The check goes to loopback while the certificate
-// names the public host, so the system roots and the host name cannot be the test; the file
-// that serve itself loaded is a stricter one. A certificate renewed on disk and not yet loaded
-// fails the check, so that the orchestrator restarts serve with it.
+// chain of certFile, whose first certificate is the server's. That certificate is the only
+// root, and the name checked is one it carries, its first DNS name or else its first address:
+// the check goes to loopback while the certificate names the public host, so neither the
+// system roots nor the host of the URL can be the test. The usual verification does the rest,
+// the dates included, and the server must then present that very certificate, byte for byte.
+// A certificate renewed on disk and not yet loaded fails the check, so that the orchestrator
+// restarts serve with it.
 func pinnedTLS(certFile string) (*tls.Config, error) {
 	b, err := os.ReadFile(certFile) // #nosec G304 -- the operator's configuration names it
 	if err != nil {
 		return nil, fmt.Errorf("server.tls.certFile: %w", err)
 	}
-	var want []byte
-	for block, rest := pem.Decode(b); block != nil; block, rest = pem.Decode(rest) {
+	var leaf *x509.Certificate
+	for block, rest := pem.Decode(b); block != nil && leaf == nil; block, rest = pem.Decode(rest) {
 		if block.Type == "CERTIFICATE" {
-			want = block.Bytes
-			break
+			if leaf, err = x509.ParseCertificate(block.Bytes); err != nil {
+				return nil, fmt.Errorf("server.tls.certFile %s: %w", certFile, err)
+			}
 		}
 	}
-	if want == nil {
+	if leaf == nil {
 		return nil, fmt.Errorf("server.tls.certFile %s: no certificate", certFile)
 	}
+	var name string
+	switch {
+	case len(leaf.DNSNames) > 0:
+		name = leaf.DNSNames[0]
+	case len(leaf.IPAddresses) > 0:
+		name = leaf.IPAddresses[0].String()
+	default:
+		return nil, fmt.Errorf("server.tls.certFile %s: the certificate names no host (subjectAltName)", certFile)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(leaf)
 	return &tls.Config{
 		MinVersion: tls.VersionTLS12,
-		// The chain and the name are not checked against roots: VerifyConnection compares the
-		// certificate with the pinned one instead, on every handshake.
-		InsecureSkipVerify: true, //nolint:gosec // the certificate is pinned by VerifyConnection
+		RootCAs:    roots,
+		ServerName: name,
 		VerifyConnection: func(cs tls.ConnectionState) error {
-			if len(cs.PeerCertificates) == 0 || !bytes.Equal(cs.PeerCertificates[0].Raw, want) {
+			if len(cs.PeerCertificates) == 0 || !bytes.Equal(cs.PeerCertificates[0].Raw, leaf.Raw) {
 				return errors.New("the server's certificate is not the first one of server.tls.certFile")
 			}
 			return nil
