@@ -249,6 +249,7 @@ func (r Registry) validate(p *problems, key string) {
 	if a.PasswordEnv != "" && a.Password == "" {
 		p.add(key+".auth.passwordEnv", "environment variable %q is not set or empty", a.PasswordEnv)
 	}
+	r.validateTokenRealmHosts(p, key)
 	r.validateECR(p, key)
 }
 
@@ -384,6 +385,36 @@ func validName(p *problems, key, name string) {
 	case len(name) > MaxNameLen || !RepoNamePattern.MatchString(name):
 		p.add(key, "%q must be lowercase letters and digits separated by single '.', '_' or '-', at most %d characters", name, MaxNameLen)
 	}
+}
+
+// validateTokenRealmHosts checks that each of tokenRealmHosts is a host name or an IP address.
+func (r Registry) validateTokenRealmHosts(p *problems, key string) {
+	for i, h := range r.TokenRealmHosts {
+		if !validHost(h) {
+			p.add(fmt.Sprintf("%s.tokenRealmHosts[%d]", key, i), "%q is not a host name or an IP address: no scheme, port, path or wildcard", h)
+		}
+	}
+}
+
+// hostLabel is one label of a DNS host name: letters, digits and inner hyphens, at most 63.
+var hostLabel = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
+
+// validHost reports whether h is what the host of a URL may be, without a port: an IP address
+// without a zone, or a host name of labels separated by single dots, at most 253 characters,
+// without a root dot.
+func validHost(h string) bool {
+	if a, err := netip.ParseAddr(h); err == nil {
+		return a.Zone() == ""
+	}
+	if h == "" || len(h) > 253 {
+		return false
+	}
+	for l := range strings.SplitSeq(h, ".") {
+		if !hostLabel.MatchString(l) {
+			return false
+		}
+	}
+	return true
 }
 
 func isHTTP(u *url.URL) bool {

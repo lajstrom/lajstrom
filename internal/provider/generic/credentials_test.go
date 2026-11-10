@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -138,48 +140,62 @@ func TestBlobRedirectLeavesOrigin(t *testing.T) {
 }
 
 // TestTokenRealm checks which token realms of a bearer challenge get the registry's
-// credentials (threat model P-3): the registry's host name, on any port; not another host
-// name, not http for a registry on https, not a realm that is no URL. A refused realm gets no
-// request, and the error names the registry, not a URL.
+// credentials (threat model P-3): the registry's host name, on any port; a host of
+// tokenRealmHosts over https; not another host name, not http for a registry on https or for a
+// listed host, not a realm that is no URL. A refused realm gets no request, and the error names
+// the registry, not a URL. A registry on http is on localhost, the token servers on 127.0.0.1:
+// two host names of one machine, and httptest's certificate is for 127.0.0.1.
 func TestTokenRealm(t *testing.T) {
+	type servers struct{ own, plain, tls string } // the registry's URL, a token server on http, one on https
 	tests := []struct {
 		name  string
-		tls   bool                           // the registry is on https
-		realm func(own, token string) string // own: the registry's URL, token: the token server's
+		tls   bool     // the registry is on https, on 127.0.0.1
+		hosts []string // tokenRealmHosts
+		realm func(s servers) string
 		ok    bool
 	}{
-		{name: "the registry's own origin", realm: func(own, _ string) string { return own + "/token" }, ok: true},
-		{name: "another port of the registry's host", realm: func(_, token string) string { return token + "/token" }, ok: true},
-		{name: "another host name", realm: func(_, token string) string {
-			return strings.Replace(token, "127.0.0.1", "localhost", 1) + "/token"
-		}},
-		{name: "http for a registry on https", tls: true, realm: func(_, token string) string { return token + "/token" }},
-		{name: "not a URL", realm: func(string, string) string { return "token" }},
+		{name: "the registry's own origin", realm: func(s servers) string { return s.own + "/token" }, ok: true},
+		{name: "another port of the registry's host", realm: func(s servers) string { return local(s.plain) + "/token" }, ok: true},
+		{name: "another host name", realm: func(s servers) string { return s.plain + "/token" }},
+		{name: "another host name over https", realm: func(s servers) string { return s.tls + "/token" }},
+		{name: "a host of tokenRealmHosts over https", hosts: []string{"auth.example", "127.0.0.1"}, realm: func(s servers) string { return s.tls + "/token" }, ok: true},
+		{name: "a host of tokenRealmHosts over http", hosts: []string{"127.0.0.1"}, realm: func(s servers) string { return s.plain + "/token" }},
+		{name: "a host other than those of tokenRealmHosts", hosts: []string{"127.0.0.2", "localhost.example"}, realm: func(s servers) string { return s.tls + "/token" }},
+		{name: "http for a registry on https", tls: true, realm: func(s servers) string { return s.plain + "/token" }},
+		{name: "not a URL", realm: func(servers) string { return "token" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFakeRegistry(t)
 			f.authMode = "bearer"
 			var tokens atomic.Int32
-			token := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			issue := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				tokens.Add(1)
 				f.serveToken(w, r)
-			}))
-			t.Cleanup(token.Close)
-			own := f.srv.URL
+			})
+			plain := httptest.NewServer(issue)
+			t.Cleanup(plain.Close)
+			secure := httptest.NewTLSServer(issue)
+			t.Cleanup(secure.Close)
+			pool := x509.NewCertPool()
+			pool.AddCert(secure.Certificate()) // httptest's one certificate, the registry's on https too
+			trusting(t, pool)
+			own := local(f.srv.URL)
 			if tt.tls {
 				srv := httptest.NewTLSServer(http.HandlerFunc(f.serve))
 				t.Cleanup(srv.Close)
-				pool := x509.NewCertPool()
-				pool.AddCert(srv.Certificate())
-				trusting(t, pool)
 				own = srv.URL
 			}
-			f.realm = tt.realm(own, token.URL)
+			f.realm = tt.realm(servers{own: own, plain: plain.URL, tls: secure.URL})
 			p := f.provider(t, nil, func(c *config.Registry) {
 				c.URL = own
 				c.Auth = config.RegistryAuth{Username: f.user, Password: f.pass}
+				c.TokenRealmHosts = tt.hosts
 			})
+			// oras-go refuses a realm on a loopback address unless it is the registry's host
+			// name, which the token servers of a test cannot help being; a deployment keeps it.
+			p.clients.follow.BlockedRealmPrefixes = []netip.Prefix{}
+			p.clients.noFollow.BlockedRealmPrefixes = []netip.Prefix{}
 			err := p.Ping(context.Background())
 			n := int(tokens.Load()) + f.count("GET /token")
 			if tt.ok {
@@ -196,6 +212,50 @@ func TestTokenRealm(t *testing.T) {
 			}
 			if n != 0 {
 				t.Errorf("%d token requests to a refused realm", n)
+			}
+		})
+	}
+}
+
+// local is the URL u, on 127.0.0.1, with the host name localhost instead.
+func local(u string) string { return strings.Replace(u, "127.0.0.1", "localhost", 1) }
+
+// TestRefuseRealm: the vendor table's hosts are allowed without configuration, for the
+// registries it knows by host name, and only for them; the configuration's are added.
+func TestRefuseRealm(t *testing.T) {
+	tests := []struct {
+		registry, realm string
+		hosts           []string // tokenRealmHosts
+		ok              bool
+	}{
+		{"https://registry.gitlab.com", "https://gitlab.com/jwt/auth", nil, true},
+		{"https://REGISTRY.GitLab.com.:443", "https://gitlab.com./jwt/auth", nil, true},
+		{"https://registry-1.docker.io", "https://auth.docker.io/token", nil, true},
+		{"https://docker.io", "https://auth.docker.io/token", nil, true},
+		{"https://registry-1.docker.io", "https://auth.docker.io/token", []string{"auth.example"}, true},
+		{"https://registry.gitlab.com", "http://gitlab.com/jwt/auth", nil, false},
+		{"https://registry.gitlab.com", "https://auth.docker.io/token", nil, false},
+		{"https://registry-1.docker.io", "https://gitlab.com/jwt/auth", nil, false},
+		{"https://gitlab.example", "https://gitlab.com/jwt/auth", nil, false},
+		{"https://index.docker.io", "https://auth.docker.io/token", nil, false},
+		{"https://index.docker.io", "https://auth.docker.io/token", []string{"auth.docker.io"}, true},
+		{"https://registry.example", "https://AUTH.example./token", []string{"auth.example"}, true},
+		{"https://registry.example", "https://auth.example.evil/token", []string{"auth.example"}, false},
+		{"https://registry.example", "https://evil-auth.example/token", []string{"auth.example"}, false},
+		{"http://registry.example", "http://auth.example/token", []string{"auth.example"}, false},
+		{"http://registry.example", "https://auth.example/token", []string{"auth.example"}, true},
+		{"https://registry.example", "https://registry.example:8443/token", nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.registry+" "+tt.realm, func(t *testing.T) {
+			base, err := url.Parse(tt.registry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hosts := realmHosts(config.Registry{TokenRealmHosts: tt.hosts}, base)
+			reason := refuseRealm(base, tt.realm, hosts)
+			if (reason == "") != tt.ok {
+				t.Errorf("refuseRealm = %q with the hosts %q, want allowed %v", reason, hosts, tt.ok)
 			}
 		})
 	}
