@@ -194,8 +194,11 @@ assert_status 201 -K "$E2E_CURLRC" -H 'Content-Type: application/json' \
 	-d "{\"format\":\"oci\",\"name\":\"$run\",\"registry\":\"local\"}" "$base/api/v1/repos"
 oci_made=yes
 printf 'oci e2e %s\n' "$run" >"$work/notes.txt"
+# oras writes the time of each push into the manifest (org.opencontainers.image.created, in
+# seconds): pinned, the repeat is the same manifest even when it falls in the next second.
 for what in push repeat; do
-	oras push --artifact-type application/vnd.example.notes "$registry/$oci:1" notes.txt >"$work/oras.log" 2>&1 ||
+	oras push --artifact-type application/vnd.example.notes --annotation "org.opencontainers.image.created=2026-01-01T00:00:00Z" \
+		"$registry/$oci:1" notes.txt >"$work/oras.log" 2>&1 ||
 		{ cat "$work/oras.log" >&2; fail "oras push $oci:1, the $what"; }
 done
 oci_digest="$(awk '$1 == "Digest:" { print $2 }' "$work/oras.log")"
