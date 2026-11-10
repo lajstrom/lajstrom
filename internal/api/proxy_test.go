@@ -31,18 +31,23 @@ func (stubProxier) RenderProxy(context.Context, index.Repo, string, string, []by
 	return format.Document{}, format.ErrUnsupported
 }
 
-// newProxyFixture is newFixture with the format npm, which has proxy repos, and the upstreams
-// npmjs (npm) and pypi (pypi).
+// newProxyFixture is newFixture with proxy repos (withProxies).
 func newProxyFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := newFixture(t, Options{})
+	withProxies(f)
+	return f
+}
+
+// withProxies gives f the format npm, which has proxy repos, and the upstreams npmjs and
+// npmjs2 (npm) and pypi (pypi).
+func withProxies(f *fixture) {
 	f.repos.Formats = oneOf("raw", "pypi", "npm")
 	f.repos.Proxiers = func(name string) (format.Proxier, bool) { return stubProxier{}, name == "npm" }
 	f.repos.Upstreams = func(name string) (string, bool) {
-		formatName, ok := map[string]string{"npmjs": "npm", "pypi": "pypi"}[name]
+		formatName, ok := map[string]string{"npmjs": "npm", "npmjs2": "npm", "pypi": "pypi"}[name]
 		return formatName, ok
 	}
-	return f
 }
 
 // TestCreateProxy: a proxy repo is created with its settings, every key written out with its

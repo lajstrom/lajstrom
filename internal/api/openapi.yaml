@@ -182,6 +182,27 @@ paths:
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
         "501": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/repos/{format}/{repo}/upstream-cache:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+    delete:
+      tags: [repos]
+      operationId: purgeUpstreamCache
+      summary: >-
+        Drop a proxy repo's cache of its upstream's documents, or of one name (manage); the next
+        read asks the upstream again. What the repo fetched stays.
+      parameters:
+        - name: name
+          in: query
+          description: Only the documents of this package name.
+          schema: {type: string}
+      responses:
+        "204": {description: Dropped.}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
   /api/v1/repos/{format}/{repo}/deploy-tokens:
     parameters:
       - $ref: "#/components/parameters/format"
@@ -716,6 +737,13 @@ components:
           anyOf:
             - {$ref: "#/components/schemas/PolicyPatch"}
             - {type: "null"}
+        upstream:
+          type: object
+          description: >-
+            A proxy repo only: an RFC 7396 merge patch of its settings (the keys of Upstream),
+            checked whole after the merge; allow and deny are replaced whole. Changing name needs
+            the admin role and drops the repo's cache of the old upstream; the other keys need
+            manage.
     ReindexRequest:
       type: object
       additionalProperties: false

@@ -65,7 +65,11 @@ func mergePolicy(formatName string, stored, patch json.RawMessage) (json.RawMess
 
 // decodePolicy returns p as an object, nil for empty or the JSON null; any other JSON value, or
 // more than one, is refused.
-func decodePolicy(p json.RawMessage) (policyObject, error) {
+func decodePolicy(p json.RawMessage) (policyObject, error) { return decodeObject("policy", p) }
+
+// decodeObject is decodePolicy for the member field of a body: an object, nil for empty or the
+// JSON null, and an error naming field for anything else.
+func decodeObject(field string, p json.RawMessage) (policyObject, error) {
 	p = bytes.TrimSpace(p)
 	if len(p) == 0 || string(p) == "null" {
 		return nil, nil
@@ -74,7 +78,7 @@ func decodePolicy(p json.RawMessage) (policyObject, error) {
 	dec.UseNumber()
 	var obj policyObject
 	if p[0] != '{' || dec.Decode(&obj) != nil || dec.Decode(new(any)) != io.EOF {
-		return nil, invalid("policy: must be a JSON object or null")
+		return nil, invalid("%s: must be a JSON object or null", field)
 	}
 	return obj, nil
 }
