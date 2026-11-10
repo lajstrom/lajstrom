@@ -7,9 +7,9 @@
   [ADR 0006](../adr/0006-derived-index-and-control-plane.md).
 
 Two kinds of tables. **Derived** tables are rebuilt by `lajstrom reindex` from the registry and
-may be dropped at any time. **Control plane** tables are small, authoritative and backed up. Two
-**coordination** tables, `tag_claims` and `reindex_runs`, are neither: their rows live for one
-publish or one reindex run.
+may be dropped at any time. **Control plane** tables are small, authoritative and backed up. The
+**coordination** tables, `tag_claims`, `reindex_runs` and `fetch_claims`, are neither: their rows
+live for one publish, one reindex run or one fetch.
 SQLite and Postgres share one logical schema; dialect differences are confined to the migration
 files (`internal/index/migrations/{sqlite,postgres}/NNNN_*.sql`).
 
@@ -22,7 +22,7 @@ stored as RFC 3339 text in SQLite, `timestamptz` in Postgres; `json` = `text` in
 
 | Table | Columns | Notes |
 | --- | --- | --- |
-| `repos` | `id`, `format` text, `name` text, `registry` text (config name), `prefix` text, `kind` text (`hosted`; `proxy`/`group` later), `anonymous_read` bool, `policy` json (`maxFileSize`, `maven.sessionTimeout`, …), `created_at` ts, `updated_at` ts | unique `(format, name)` |
+| `repos` | `id`, `format` text, `name` text, `registry` text (config name), `prefix` text, `kind` text (`hosted`, `proxy`, `group`; [below](#proxy-and-group-repos)), `anonymous_read` bool, `policy` json (`maxFileSize`, `maven.sessionTimeout`, …), `upstream` json null, `group` json null, `created_at` ts, `updated_at` ts | unique `(format, name)` |
 | `users` | `id`, `uid` (a UUID v7; `uuid` on Postgres, text on SQLite), `name` text unique, `password_hash` text null, `kind` text (`local`; `oidc` later), `disabled` bool, `created_at` ts, `deleted_at` ts null, `deleted_name` text null | the first user is created by `lajstrom admin user create`. `uid` is unique and never changes (0008). A deleted user keeps its row (rbac.md §1): its `name` becomes `~<uid>`, which no user name can be, so that the name is free for a live user, and the name it had goes to `deleted_name`. (SQLite cannot drop the unique constraint of a column without rebuilding the table, and a rebuild would cascade into `tokens`; this way both dialects keep it.) |
 | `tokens` | `id`, `kind` text (`pat`, `deploy`), `user_id` → users null, `repo_id` → repos null, `name` text, `hash` text (sha256 of the secret), `scopes` json (`["read","write"]`), `expires_at` ts null, `last_used_at` ts null, `created_at` ts, `revoked_at` ts null | a PAT acts as its user; a deploy token is a principal of its own bound to one repo |
 | `bindings` | `id`, `principal` text (`user:<uid>`; `group:<name>` after the MVP), `role` text (`reader`, `writer`, `maintainer`, `admin`), `repo_mask` text (`apt/*`, `*/payments`, `maven/releases`), `created_at` ts | unique `(principal, role, repo_mask)`: the same binding twice is `409`; rbac.md |
@@ -31,6 +31,38 @@ stored as RFC 3339 text in SQLite, `timestamptz` in Postgres; `json` = `text` in
 | `audit` | `id`, `at` ts, `principal` text (`user:<uid>`, `token:<id>`, `anonymous`), `principal_name` text null (a user's name at the time of the event, written with the row), `action` text (`push`, `delete`, `repo.create`, `token.create`, …), `repo` text, `subject` text (package/version, or a user's `user:<uid>`), `digest` text null, `ip` text, `details` json | append-only; retention by age later. Rows written before 0008 carry the principal as it was then, `user:<name>`, and that name as `principal_name` |
 | `auth_version` | `id` int (always 1), `version` bigint, `updated_at` ts | one row, made by its migration; incremented in the transaction of every insert or delete of `bindings` and every insert, update or delete of `repos`. A replica reads it before it evaluates a request and reloads its snapshot of the bindings and of the repos' `anonymous_read` when it moved (rbac.md §3) |
 | `schema_migrations` | `version` int, `applied_at` ts | |
+
+## Proxy and group repos
+
+The tables and columns of the kinds `proxy` and `group` ([ADR 0013](../adr/0013-proxy-and-group-repos.md),
+[proxy-and-group.md](proxy-and-group.md)), in all three classes. They come with the migration of
+their implementation issue.
+
+| Table | Class | Columns | Notes |
+| --- | --- | --- | --- |
+| `repos` | control plane | `upstream` json null: a proxy's `{"name", "metadataTTL", "negativeTTL", "offline", "allow", "deny"}`; `group` json null: a group's `{"merge"}` | `kind` is set on insert and never updated. `upstream` only on a proxy, `group` only on a group; a group's `registry` is `''` and its `policy` NULL. The upstream's URL and credentials are in the configuration, never in a row |
+| `group_members` | control plane | `group_id` → repos (`ON DELETE CASCADE`), `member_id` → repos (`ON DELETE RESTRICT`), `position` int (from 0, the member order) | primary key `(group_id, position)`, unique `(group_id, member_id)`. Written in the transaction that updates the group's `repos` row, so `auth_version` moves with it; a repo that is a member is not deleted (`409` naming its groups) |
+| `fetch_claims` | coordination | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `package` text (the package path), `tag` text, `principal` text, `replica` text (host name and process id), `claimed_at` ts, `heartbeat_at` ts | unique `(repo_id, package, tag)`; written by the proxy fetcher only |
+| `proxy_meta` | derived, a cache | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `name` text (the plugin's key of the name), `kind` text (the plugin's document kind, npm `packument`), `state` text (`present`, `absent`), `content` blob null, `content_type` text null, `sha256` text null, `etag` text null, `last_modified` text null (the upstream's validators), `checked_at` ts | unique `(repo_id, name, kind)`; the `proxy_meta (later)` of the Derived table |
+
+A `fetch_claims` row is the lock that keeps two replicas from downloading one artifact: the
+fetcher inserts it before the download and deletes it after the ingest, or after a failure, in
+transactions of its own. It beats every 30 seconds, and a row whose `heartbeat_at` is older than
+2 minutes is stale: a fetch of the artifact takes it over, and `reindex` and the reconcile loop
+delete it. It is not a `tag_claims` row: the digest is unknown until the download ends, and the
+ingest inside the fetch takes its tag claims as every publish does. `ResetDerived` does not touch
+it.
+
+`proxy_meta` is a cache of the upstream, not of the registry: reindex neither reads nor writes
+it, `ResetDerived` leaves it, it is not backed up, and dropping it costs upstream requests and
+nothing else. A row's expiry is not stored: it is `checked_at` plus the repo's TTL of its
+state, read when the row is. A write of a row invalidates the repo's `index_cache` rows of the
+name in the same transaction. Expired `absent` rows are deleted once a minute, with the expired
+sessions.
+
+A proxy repo has `packages`, `versions`, `files`, `index_cache` and `oci_repos` rows as a hosted
+repo has, rebuilt by reindex from its manifests; the `attrs` of a proxied version hold its
+`lajstrom.origin.*` annotations too. A group has none of them.
 
 ## Coordination
 

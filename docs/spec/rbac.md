@@ -189,3 +189,47 @@ from the command line (no HTTP), prompting for the password or reading
 `LAJSTROM_ADMIN_PASSWORD`. The bindings of other users are made with
 `lajstrom admin binding create|list|delete` from the command line (#45), which needs the database
 and no credentials, or with `/api/v1/bindings` (#47). Everything else goes through `/api/v1`.
+
+## 7. Proxy and group repos
+
+A proxy and a group ([ADR 0013](../adr/0013-proxy-and-group-repos.md),
+[proxy-and-group.md](proxy-and-group.md)) are repos: the resource is `<format>/<repo>`, masks
+match them as they match a hosted repo, and the evaluation of §3 is unchanged. What each action
+means on them:
+
+| Action | proxy | group |
+| --- | --- | --- |
+| `read` | every read, a fetch on a miss included: the fetch is the server's, and the reader needs no `write` for it | every read through the group, of every member (below) |
+| `write` | the referrers of `/v2` (a signature or an attestation of a proxied artifact); the format's publish routes are `405` | nothing of its own: a write through the group is its hosted member's |
+| `delete` | a held version, which the next miss fetches again | nothing of its own |
+| `manage` | as on a hosted repo, the keys of `upstream` but `name`, and the purge of its cache | as on a hosted repo, and `group.merge` |
+
+**Read on the group is the whole permission.** For a read through a group, the members'
+bindings, deploy tokens and `anonymousRead` are not asked: a principal that may read the group
+reads the content of every member through it, the hosted member's included. Who may read a
+group is therefore who may read its members' content, and `manage` on a group (its
+`anonymousRead`, its deploy tokens) decides that: bind it as one would `manage` on every member.
+
+**A write through a group** needs `read` on the group, then the action on the group's hosted
+member, evaluated as if the request had come to the member's own URL. A principal that cannot
+read the group gets the group's denial (§3); one that can read it and lacks the action on the
+member gets `403` naming the member, which the group's resource already shows its readers. A
+deploy token of a group has the scope `read` only; a `write` scope is `400`, since it would grant
+nothing.
+
+**The admin role** creates proxy and group repos, as every repo, and alone changes a proxy's
+`upstream.name` and a group's `members`: both change what every reader of the repo gets, and a
+member added by someone without `read` on it would publish it to the group's readers. The URL
+of an upstream and its credentials are configuration; no action sets them.
+
+**Audit** (§5), in addition:
+
+| Action | When | Principal and fields |
+| --- | --- | --- |
+| `proxy.fetch` | a proxied ingest: the fetcher pushed an artifact | the principal of the request whose miss caused it (a user, a token, `anonymous`), through a group too; `repo` the proxy, `subject` the version, `digest` the manifest's, `ip` the client's; `details` `{"upstream", "url", "checksum", "size"}` and `via`, the group, when there was one |
+| `proxy.reject` | a fetch refused for its bytes: a checksum that differs, an artifact that `Validate` refuses, a file above a bound | as `proxy.fetch`, without `digest`; `details.reason` (`checksum`, `invalid`, `size`) and, for a checksum, both values |
+| `repo.cache.purge` | `DELETE …/upstream-cache` (http-routing.md §6) | the caller; `details.name` when one name was purged |
+
+The principal of `proxy.fetch` is who brought the artifact in, not who may publish: it was
+checked for `read` only. Requests for an upstream's metadata are reads and are not audited,
+negative entries included.

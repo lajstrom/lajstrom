@@ -201,3 +201,46 @@ Prometheus metrics are not on the public host: `server.metricsListen` (default
 `127.0.0.1:9464`, the OpenTelemetry Prometheus exporter convention) serves `GET /metrics`, and
 `/debug/pprof/` when `server.pprof` is on. The edge never routes to it; Prometheus scrapes it
 inside the network. Issue #23.
+
+## 6. Proxy and group repos
+
+A proxy or a group repo ([ADR 0013](../adr/0013-proxy-and-group-repos.md),
+[proxy-and-group.md](proxy-and-group.md)) is `/<format>/<repo>/` like a hosted one, with the
+routes of its format: a client sees no difference, and the npm routes (ADR 0012) serve all three
+kinds. What changes is who answers and what a write does.
+
+| Request | proxy | group |
+| --- | --- | --- |
+| a read route of the format (a document, a file) | the upstream's document, cached, and the files it holds or fetches on a miss (proxy-and-group.md §4 to §7) | the members, in order, with hosted names hiding the upstream (§8) |
+| a write route of the format (publish, unpublish, a dist-tag) | `405` with `Allow: GET, HEAD` | the same request on the group's hosted member, authorized there (rbac.md §7); `405` without one |
+| `GET`, `HEAD` on `/v2/<format>/<repo>/…` (manifests, blobs, tags, referrers) | as on a hosted repo, for what it holds; `/v2` never fetches | `404 NAME_UNKNOWN`: a group has no OCI repository |
+| `PUT` of a manifest on `/v2` | a referrer (manifest-profile.md §6) as on a hosted repo, with `write`; any other manifest `405 UNSUPPORTED` | `404 NAME_UNKNOWN` |
+| blob uploads on `/v2` | as on a hosted repo, with `write` (the blobs of referrers) | `404 NAME_UNKNOWN` |
+| `DELETE` of a manifest on `/v2`, and of a version on `/api/v1` | as on a hosted repo, with `delete`: the next miss fetches it again | `404`: a group has no versions |
+| `GET /v2/_catalog` | its OCI repositories | nothing |
+
+A manifest pushed by a client with a `lajstrom.origin.*` annotation is `400 MANIFEST_INVALID`
+on every repo: only the fetcher writes them (manifest-profile.md §3.1).
+
+Statuses that only a proxy has, on a read route (the full table is proxy-and-group.md §6): `502`
+when the upstream fails and nothing is cached or held, when it refuses Lajstrom's credentials,
+redirects from `https` to `http` or to an address that is not public, serves a file whose
+checksum differs from its metadata, or a file that the plugin's `Validate` refuses; `504` when
+it does not answer in `upstreams[].timeout`; `503` with `Retry-After` when it answers `429`;
+`403` naming the bound for a file above `maxFileSize` or the registry's `maxBlobSize`; `404`
+for a name outside `allow` and `deny`, one the upstream does not have, and a miss in offline
+mode. A cached document is served instead of any `5xx` that the upstream causes. Messages name
+the upstream by its configured name, never its URL.
+
+Management API (§4), in addition:
+
+| Call | Needs |
+| --- | --- |
+| `POST /api/v1/repos` with `kind` `proxy` or `group` | the admin role, as every create |
+| `PATCH` of `upstream.name` or of `group.members` | the admin role |
+| `PATCH` of the other keys of `upstream` and `group`, and of `anonymousRead` | `manage` on the repo |
+| `DELETE /api/v1/repos/<format>/<repo>/upstream-cache[?name=<name>]` | `manage` on a proxy repo: drops its `proxy_meta` rows, or the rows of one name, and their rendered documents; `204`, `400` on a repo that is not a proxy; audit `repo.cache.purge` |
+| `DELETE /api/v1/repos/<format>/<repo>` of a repo that is a member of a group | `409 CONFLICT` naming the groups, `force` or not |
+
+The repo resource has `kind` and, by kind, `upstream` or `group` (proxy-and-group.md §2.4),
+with the upstream's name only, never its URL or its credentials.

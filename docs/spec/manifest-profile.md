@@ -127,6 +127,23 @@ Clients that push with `oras` set the required annotations themselves
 The plugin's `Validate` checks that annotations and metadata layer agree with the bytes
 (for example the control file inside the `.deb` says the same name, version and arch).
 
+### 3.1 Proxied artifacts
+
+An artifact that a proxy repo fetched from its upstream ([ADR 0013](../adr/0013-proxy-and-group-repos.md),
+[proxy-and-group.md](proxy-and-group.md) §5) is an ordinary manifest of its format's profile,
+built and validated as an upload of the same files would be, with two annotations more and
+without `lajstrom.uploaded-by`:
+
+| Key | Value |
+| --- | --- |
+| `lajstrom.origin.url` | the URL the file was asked for, before any redirect, without userinfo, query or fragment: `https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz`. For an artifact of several files, the URL of the first file layer |
+| `lajstrom.origin.checksum` | the upstream's checksum that was verified before the ingest, `<algorithm>:<lowercase hex>`: `sha512:…`, `sha256:…`, `sha1:…` |
+
+Only the fetcher writes them: a manifest that a client pushes or uploads with a key that starts
+with `lajstrom.origin.` is rejected with `400` (section 5), on every repo. Reindex reads them as
+it reads every annotation, so a proxy repo is rebuilt from the registry like a hosted one, and
+the index keeps them in `versions.attrs`.
+
 ## 4. Naming: OCI repository and tag
 
 ### 4.1 Repository path
