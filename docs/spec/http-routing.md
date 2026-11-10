@@ -175,7 +175,7 @@ without access, `403` without the action). Credentials: Basic as on every fronte
 | `PUT /npm/<repo>/-/user/org.couchdb.user:<name>` | the legacy login of `npm login`, `npm adduser` and `yarn npm login` (below) |
 | `DELETE /npm/<repo>/-/user/token/<token>` | `npm logout`: when `<token>` is the request's own personal access token, it is revoked, with an audit row; `200 {"ok": true}`. Any other token is `404` |
 | `POST /npm/<repo>/-/v1/login` | `404`: no web login in M4. npm then prompts for the user name and password and logs in with the legacy route |
-| `POST /npm/<repo>/-/npm/v1/security/advisories/bulk`, `…/audits`, `…/audits/quick` | `read`. `npm audit` and the audit of `npm install` (bulk), `pnpm audit` (the two others); below |
+| `POST /npm/<repo>/-/npm/v1/security/advisories/bulk`, `…/audits`, `…/audits/quick` | `read`. `npm audit`, `yarn npm audit` and the audit of `npm install` (bulk), `pnpm audit` (the two others); below |
 | `GET /npm/<repo>/-/v1/search?text=&size=&from=` | `read`. `npm search`; below |
 
 Everything else under `/npm/<repo>/-/` (`npm token`, `access`, `owner`, `team`, `star`, `profile`)
@@ -266,19 +266,34 @@ answer is a new personal access token of the user, not narrowed, with the defaul
 `201 {"ok": true, "id": "org.couchdb.user:<name>", "token": "<secret>"}`. npm and yarn store it as
 their auth token; `GET /api/v1/users/<name>/tokens` lists it.
 
-**Audit.** The body, gzipped when `Content-Encoding: gzip` says so, is at most 16 MiB decoded.
+**Audit.** Three routes, each a `POST` with a JSON body: `-/npm/v1/security/advisories/bulk`,
+npm's bulk advisories, `{"<name>": ["<version>", …]}`, which npm 10 and 11 and yarn 4 send (npm
+gzipped, for `npm install` too); `-/npm/v1/security/audits`, pnpm 9's, and
+`-/npm/v1/security/audits/quick`, pnpm 10's, both with npm 6's dependency tree. The body,
+gzipped when `Content-Encoding: gzip` says so, is at most 16 MiB decoded (`413`).
 
 - Hosted: no advisory is known for its packages. Bulk: `{}`; the two others: the empty report,
   `{"actions": [], "advisories": {}, "muted": [], "metadata": {"vulnerabilities": {"info": 0,
   "low": 0, "moderate": 0, "high": 0, "critical": 0}, "dependencies": 0, "devDependencies": 0,
   "optionalDependencies": 0, "totalDependencies": 0}}`.
-- Proxy: forwarded to the upstream as it came, with the upstream's credentials (ADR 0013), and
-  its answer returned; an upstream that does not answer is `502`.
+- Proxy: forwarded through the core (layout.md, `Proxy.Forward`; proxy-and-group.md §9.2): a
+  `POST` of the same path below `upstreams[].url`, with the body decoded, `Content-Type` and
+  `Accept` `application/json`, and the upstream's credentials, never a header of the
+  client's. A `2xx` is answered with its status and its body as the upstream sent it,
+  `Content-Type: application/json`, and the upstream's `npm-notice`, which npm prints
+  (npmjs.org announces with it that the two older routes retire); no other header of the
+  upstream's. Otherwise the statuses of proxy-and-group.md §6, with npm's error body, never
+  the upstream's own: the upstream's `404` or `410` is `404`; its
+  `400`, `413`, `415` or `422`, the body refused, `400`; its `429` `503` with `Retry-After`; a
+  timeout `504`; anything else `502`. An offline proxy (§4.4 there) sends nothing and answers
+  `404`. The allow and deny lists bound what a proxy mirrors, not what an audit sends: every
+  name of the body goes to the upstream, and a project with private names audits through a
+  group.
 - Group: the bulk request, without the names its hosted members hold, forwarded as a proxy does
   (`{}` when no name is left). The two others are `501`: a tree loses what hangs below a private
   package when the package is cut out, and sent whole it would publish the private names.
 
-Nothing is cached.
+Nothing is cached, and an audit writes no audit row: it is a read.
 
 **Search.** From the index, never from an upstream: the repo's packages (a group's: those of
 its members, a proxy's: those it has cached) whose name contains `text` without regard to case,

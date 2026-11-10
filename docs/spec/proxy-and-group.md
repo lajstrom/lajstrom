@@ -358,6 +358,12 @@ chooses the upstream of a proxy repo and the members of a group; `manage` the re
 - **What is kept**: the URL a file was asked for, before redirects, without userinfo, query or
   fragment, becomes `lajstrom.origin.url`. A redirect's target, which may be a presigned URL, is
   never stored and never logged.
+- **Forwarded requests**: a request that only the upstream can answer (npm audit,
+  http-routing.md) is sent by the core as these rules say, below `upstreams[].url`, with what
+  the plugin chose of the client's request (layout.md, `Proxy.Forward`): its body, at most
+  16 MiB, and a `Content-Type`, never a header the client sent. The answer is returned to
+  that client and kept nowhere, bounded by `maxMetadataSize`; an offline proxy (§4.4) sends
+  nothing.
 
 ### 9.3 Logs and audit
 
