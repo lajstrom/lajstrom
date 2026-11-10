@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -247,6 +248,58 @@ func (r Registry) validate(p *problems, key string) {
 	}
 	if a.PasswordEnv != "" && a.Password == "" {
 		p.add(key+".auth.passwordEnv", "environment variable %q is not set or empty", a.PasswordEnv)
+	}
+	r.validateECR(p, key)
+}
+
+// validateECR checks the keys of type ecr: its own, and no auth.
+func (r Registry) validateECR(p *problems, key string) {
+	switch {
+	case r.Type == "ecr":
+		if r.Auth.Username != "" || r.Auth.PasswordEnv != "" {
+			p.add(key+".auth", "must be empty for type ecr: the credentials come from the AWS SDK's default chain")
+		}
+		r.ECR.validate(p, key+".ecr")
+	case !r.ECR.IsZero():
+		p.add(key+".ecr", "is only for type ecr")
+	}
+}
+
+// The values of registries[].ecr.imageTagMutability and .encryption; "" is the first of each.
+var (
+	ecrMutabilities = []string{"IMMUTABLE", "IMMUTABLE_WITH_EXCLUSION", "MUTABLE", "MUTABLE_WITH_EXCLUSION"}
+	ecrEncryptions  = []string{"AES256", "KMS", "KMS_DSSE"}
+)
+
+func (e ECR) validate(p *problems, key string) {
+	if e.Endpoint != "" {
+		if u, err := url.Parse(e.Endpoint); err != nil || !isHTTP(u) || u.User != nil {
+			p.add(key+".endpoint", "must be an absolute http(s) URL without credentials")
+		}
+	}
+	e.validateMutability(p, key)
+	if e.Encryption != "" && !slices.Contains(ecrEncryptions, e.Encryption) {
+		p.add(key+".encryption", "%q is not one of %s", e.Encryption, strings.Join(ecrEncryptions, ", "))
+	}
+	if e.KMSKey != "" && !strings.HasPrefix(e.Encryption, "KMS") {
+		p.add(key+".kmsKey", "needs encryption KMS or KMS_DSSE")
+	}
+}
+
+// validateMutability checks imageTagMutability and its exclusion filters.
+func (e ECR) validateMutability(p *problems, key string) {
+	if e.ImageTagMutability != "" && !slices.Contains(ecrMutabilities, e.ImageTagMutability) {
+		p.add(key+".imageTagMutability", "%q is not one of %s", e.ImageTagMutability, strings.Join(ecrMutabilities, ", "))
+	}
+	exclusion := strings.HasSuffix(e.ImageTagMutability, "_WITH_EXCLUSION")
+	switch {
+	case exclusion && len(e.ImageTagMutabilityExclusions) == 0:
+		p.add(key+".imageTagMutabilityExclusions", "must name a filter with %s", e.ImageTagMutability)
+	case !exclusion && len(e.ImageTagMutabilityExclusions) > 0:
+		p.add(key+".imageTagMutabilityExclusions", "needs an imageTagMutability that ends in _WITH_EXCLUSION")
+	}
+	if slices.Contains(e.ImageTagMutabilityExclusions, "") {
+		p.add(key+".imageTagMutabilityExclusions", "must not contain an empty filter")
 	}
 }
 

@@ -242,6 +242,51 @@ registries:
 	}
 }
 
+func TestLoadRegistryECR(t *testing.T) {
+	file := minimal + `
+registries:
+  - name: ecr
+    type: ecr
+    url: https://123456789012.dkr.ecr.eu-west-1.amazonaws.com
+    ecr:
+      endpoint: http://localhost:5010
+      imageTagMutability: IMMUTABLE_WITH_EXCLUSION
+      imageTagMutabilityExclusions: ["sha256-*"]
+      encryption: KMS
+      kmsKey: alias/lajstrom
+      forceDelete: true
+`
+	c, err := Load(writeConfig(t, file), nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := ECR{Endpoint: "http://localhost:5010", ImageTagMutability: "IMMUTABLE_WITH_EXCLUSION",
+		ImageTagMutabilityExclusions: []string{"sha256-*"}, Encryption: "KMS", KMSKey: "alias/lajstrom", ForceDelete: true}
+	if got := c.Registries[0].ECR; !reflect.DeepEqual(got, want) {
+		t.Errorf("ecr =\n%+v\nwant\n%+v", got, want)
+	}
+
+	bad := []struct{ name, entry, want string }{
+		{"ecr on generic", `{name: r, url: "http://zot:5000", ecr: {region: us-east-1}}`, "registries[0].ecr: is only for type ecr"},
+		{"auth on ecr", `{name: r, type: ecr, url: "https://r.example", auth: {username: AWS, passwordEnv: X}}`, "registries[0].auth: must be empty for type ecr"},
+		{"endpoint", `{name: r, type: ecr, url: "https://r.example", ecr: {endpoint: "localhost:5010"}}`, "registries[0].ecr.endpoint: must be an absolute http(s) URL"},
+		{"mutability", `{name: r, type: ecr, url: "https://r.example", ecr: {imageTagMutability: immutable}}`, `registries[0].ecr.imageTagMutability: "immutable" is not one of IMMUTABLE`},
+		{"exclusion without filter", `{name: r, type: ecr, url: "https://r.example", ecr: {imageTagMutability: MUTABLE_WITH_EXCLUSION}}`, "registries[0].ecr.imageTagMutabilityExclusions: must name a filter"},
+		{"filter without exclusion", `{name: r, type: ecr, url: "https://r.example", ecr: {imageTagMutabilityExclusions: ["v*"]}}`, "registries[0].ecr.imageTagMutabilityExclusions: needs an imageTagMutability"},
+		{"empty filter", `{name: r, type: ecr, url: "https://r.example", ecr: {imageTagMutability: IMMUTABLE_WITH_EXCLUSION, imageTagMutabilityExclusions: [""]}}`, "must not contain an empty filter"},
+		{"encryption", `{name: r, type: ecr, url: "https://r.example", ecr: {encryption: SSE}}`, `registries[0].ecr.encryption: "SSE" is not one of AES256, KMS, KMS_DSSE`},
+		{"key without KMS", `{name: r, type: ecr, url: "https://r.example", ecr: {kmsKey: alias/x}}`, "registries[0].ecr.kmsKey: needs encryption KMS or KMS_DSSE"},
+	}
+	for _, tt := range bad {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, minimal+"registries:\n  - "+tt.entry+"\n"), nil)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Load: %v; want an error containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
 // TestLoadRepoPolicy: repos[].policy is read as JSON-shaped values, which the bootstrap passes to
 // the API's checks as they are.
 func TestLoadRepoPolicy(t *testing.T) {
