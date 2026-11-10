@@ -67,7 +67,7 @@ func TestRegistryProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := filepath.Join(dir, "lajstrom.yaml")
-	body := "server:\n  listen: \":8080\"\ndatabase:\n  driver: sqlite\n  dsn: \"file:" + filepath.Join(dir, "lajstrom.db") + "\"\n" +
+	body := "server:\n  listen: \":8080\"\n  externalURL: https://art.example.com\ndatabase:\n  driver: sqlite\n  dsn: \"file:" + filepath.Join(dir, "lajstrom.db") + "\"\n" +
 		"registries:\n  - name: taken\n    type: generic\n    url: " + srv.URL +
 		"\n    auth:\n      username: probe\n      passwordEnv: PROBE_PASSWORD\n"
 	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
