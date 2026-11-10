@@ -93,11 +93,12 @@ func testRepos(t *testing.T, s index.Store) {
 
 	before := time.Now().Truncate(time.Microsecond)
 	u := repos[0]
-	u.Name, u.CreatedAt = "renamed", time.Time{} // neither is stored
-	u.Registry, u.Prefix, u.Kind, u.AnonymousRead, u.Policy = "zot", "raw/elsewhere", "proxy", false, nil
+	u.Name, u.CreatedAt, u.Kind = "renamed", time.Time{}, index.KindProxy // none is stored
+	u.Registry, u.Prefix, u.AnonymousRead, u.Policy = "zot", "raw/elsewhere", false, nil
+	u.Upstream = json.RawMessage(`{"name": "npmjs", "deny": ["@acme/*"]}`)
 	must(t, s.UpdateRepo(ctx, &u))
-	if u.Name != "scratch" || !u.CreatedAt.Equal(repos[0].CreatedAt) || u.UpdatedAt.Before(before) {
-		t.Errorf("UpdateRepo filled %+v, want the stored name and CreatedAt and UpdatedAt now", u)
+	if u.Name != "scratch" || u.Kind != index.KindHosted || !u.CreatedAt.Equal(repos[0].CreatedAt) || u.UpdatedAt.Before(before) {
+		t.Errorf("UpdateRepo filled %+v, want the stored name, kind and CreatedAt and UpdatedAt now", u)
 	}
 	got, err := s.GetRepoByID(ctx, u.ID)
 	must(t, err)

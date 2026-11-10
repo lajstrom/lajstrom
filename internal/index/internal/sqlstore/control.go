@@ -11,11 +11,11 @@ import (
 
 // Control plane: repos, users, tokens, bindings, keys, sessions, audit.
 
-const repoCols = "id, format, name, registry, prefix, kind, anonymous_read, policy, created_at, updated_at"
+const repoCols = "id, format, name, registry, prefix, kind, anonymous_read, policy, upstream, created_at, updated_at"
 
 func repoDests(r *index.Repo) []any {
 	return []any{&r.ID, &r.Format, &r.Name, &r.Registry, &r.Prefix, &r.Kind, &r.AnonymousRead,
-		rawDest{&r.Policy}, timeDest{&r.CreatedAt}, timeDest{&r.UpdatedAt}}
+		rawDest{&r.Policy}, rawDest{&r.Upstream}, timeDest{&r.CreatedAt}, timeDest{&r.UpdatedAt}}
 }
 
 // GetRepo returns the repo with the given format and name.
@@ -45,24 +45,24 @@ func (c *conn) CreateRepo(ctx context.Context, r *index.Repo) error {
 	updated := stamp(&r.UpdatedAt, created)
 	return c.withAuthChange(ctx, func(c *conn) error {
 		return c.scanRow(ctx, "repos "+r.Format+"/"+r.Name,
-			"INSERT INTO repos (format, name, registry, prefix, kind, anonymous_read, policy, created_at, updated_at)"+
-				" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
-			[]any{r.Format, r.Name, r.Registry, r.Prefix, r.Kind, r.AnonymousRead, rawArg(r.Policy),
+			"INSERT INTO repos (format, name, registry, prefix, kind, anonymous_read, policy, upstream, created_at, updated_at)"+
+				" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+			[]any{r.Format, r.Name, r.Registry, r.Prefix, r.Kind, r.AnonymousRead, rawArg(r.Policy), rawArg(r.Upstream),
 				c.d.EncodeTime(created), c.d.EncodeTime(updated)},
 			&r.ID)
 	})
 }
 
-// UpdateRepo stores r by r.ID, sets UpdatedAt, fills Format, Name and CreatedAt from the row
-// (they do not change), and increments auth_version.
+// UpdateRepo stores r by r.ID, sets UpdatedAt, fills Format, Name, Kind and CreatedAt from the
+// row (they do not change), and increments auth_version.
 func (c *conn) UpdateRepo(ctx context.Context, r *index.Repo) error {
 	r.UpdatedAt = now()
 	return c.withAuthChange(ctx, func(c *conn) error {
 		return c.scanRow(ctx, fmt.Sprintf("repos id %d", r.ID),
-			"UPDATE repos SET registry = ?, prefix = ?, kind = ?, anonymous_read = ?, policy = ?, updated_at = ?"+
-				" WHERE id = ? RETURNING format, name, created_at",
-			[]any{r.Registry, r.Prefix, r.Kind, r.AnonymousRead, rawArg(r.Policy), c.d.EncodeTime(r.UpdatedAt), r.ID},
-			&r.Format, &r.Name, timeDest{&r.CreatedAt})
+			"UPDATE repos SET registry = ?, prefix = ?, anonymous_read = ?, policy = ?, upstream = ?, updated_at = ?"+
+				" WHERE id = ? RETURNING format, name, kind, created_at",
+			[]any{r.Registry, r.Prefix, r.AnonymousRead, rawArg(r.Policy), rawArg(r.Upstream), c.d.EncodeTime(r.UpdatedAt), r.ID},
+			&r.Format, &r.Name, &r.Kind, timeDest{&r.CreatedAt})
 	})
 }
 
