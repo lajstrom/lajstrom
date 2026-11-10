@@ -195,16 +195,26 @@ func TestPutReferrerRefused(t *testing.T) {
 }
 
 // TestPutReferrerOCI: an oci repo takes a referrer as it comes, a subject it does not have
-// included (the conformance suite pushes one), under the lock when the backend has no
-// referrers API.
+// included (the conformance suite pushes one). By tag it is pushed under the lock of its
+// subject, the tag lock, with the referrers API or without; by digest only without the API.
 func TestPutReferrerOCI(t *testing.T) {
-	e, rec, _ := referrerEnv(t, false)
-	repo := index.Repo{Format: "oci", Name: "images", Registry: "local", Prefix: "oci/images", Kind: "hosted"}
-	must(t, e.st.CreateRepo(t.Context(), &repo))
-	nowhere := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: digest.FromString("nowhere"), Size: 2}
-	r := signature(t, nowhere, "a layer the backend checks, not ingest")
-	r.Path, r.Tag = "app", "anything"
-	_, err := e.pipe.PutReferrer(t.Context(), repo, r, alice)
-	must(t, err)
-	same(t, "locks", []string{"oci/images/app@" + nowhere.Digest.String()}, rec.locks)
+	for _, api := range []bool{false, true} {
+		e, rec, _ := referrerEnv(t, api)
+		repo := ociRepo(t, e)
+		nowhere := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: digest.FromString("nowhere"), Size: 2}
+		r := signature(t, nowhere, "a layer the backend checks, not ingest")
+		r.Path, r.Tag = "app", "anything"
+		_, err := e.pipe.PutReferrer(t.Context(), repo, r, alice)
+		must(t, err)
+		key := "oci/images/app@" + nowhere.Digest.String()
+		same(t, "locks", []string{key}, rec.locks)
+		r.Tag = ""
+		_, err = e.pipe.PutReferrer(t.Context(), repo, r, alice)
+		must(t, err)
+		wantLocks := []string{key, key}
+		if api {
+			wantLocks = wantLocks[:1]
+		}
+		same(t, "locks after a push by digest", wantLocks, rec.locks)
+	}
 }

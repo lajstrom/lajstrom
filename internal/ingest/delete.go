@@ -10,6 +10,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -30,10 +31,13 @@ import (
 //  2. The reference, a tag or a digest, is resolved: on a managed repo to a version of the index
 //     when it names one (by its tag, or by its digest in the package of del.Path), else in the
 //     backend; one that names nothing is index.ErrNotFound.
-//  3. The referrers go first, each with its own referrers before it: cosign's legacy manifests
+//  3. Under the tag lock of the manifest (Store.WithReferrersLock, keyed by its subject when it
+//     has one, else by its own digest), with the referrers API or without: on an oci repo a
+//     delete by tag lists the repository's tags and resolves each, and a manifest that other
+//     tags also name is refused, index.ErrConflict naming them, and nothing changes (#284).
+//     The referrers go first, each with its own referrers before it: cosign's legacy manifests
 //     under sha256-<hex>.sig, .att and .sbom, the tag-schema index sha256-<hex>, then the
-//     referrers the backend lists. Without the referrers API this runs under the referrers lock
-//     of the subject (Store.WithReferrersLock). Then the manifest, with every tag that names it.
+//     referrers the backend lists. Then the manifest, with every tag that names it.
 //     The first request that changes anything is a plain delete, so a backend that refuses
 //     deletes refuses it, provider.ErrUnsupported, and nothing has changed: a referrer deleted
 //     on its own, without the referrers API, has its subject's sha256-<hex> index deleted first
@@ -46,9 +50,10 @@ import (
 //     id in the details.
 //
 // Errors wrap provider.ErrUnsupported (the backend does not delete manifests), index.ErrNotFound
-// (nothing to delete) or provider.ErrConflict (the backend refused this one delete: Zot keeps a
-// manifest that an image index lists), or none. Blobs are left to the backend's garbage
-// collection.
+// (nothing to delete), index.ErrConflict (other tags name the manifest: the error has a method
+// OtherTags() []string, which returns them sorted) or provider.ErrConflict (the backend refused
+// this one delete: Zot keeps a manifest that an image index lists), or none. Blobs are left to
+// the backend's garbage collection.
 func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Deletion, principal auth.Principal) (*format.Deleted, error) {
 	if del.Path == "" || del.Reference == "" {
 		return nil, invalid(fmt.Errorf("ingest: delete in %s/%s: a package path and a reference are required", repo.Format, repo.Name))
@@ -193,24 +198,92 @@ func (d *deletion) subjectOf(ctx context.Context) (digest.Digest, error) {
 // facade takes manifests of 4 MiB by default.
 const maxManifestBytes = 16 << 20
 
-// deleteInBackend deletes the target with its referrers, under the referrers lock without the
-// referrers API: of the subject of a referrer, whose tag-schema index its delete rewrites, else
-// of the target, whose own index goes.
+// deleteInBackend deletes the target with its referrers under its tag lock, one lock for the
+// whole delete: the referrers lock of the subject of a referrer, whose tag-schema index its
+// delete rewrites without the referrers API, else of the target, whose own index goes. A push by
+// tag to an oci repo holds the same lock, so a tag pushed meanwhile is either counted by
+// refuseTagged or pushed after the delete (docs/spec/index-schema.md, Coordination).
 func (d *deletion) deleteInBackend(ctx context.Context) error {
-	if d.api {
-		return d.deleteTarget(ctx)
-	}
 	key := d.target.Digest
 	if d.subject != "" {
 		key = d.subject
 	}
 	return d.p.index.WithReferrersLock(ctx, d.name, key, func(ctx context.Context) error {
-		if d.subject != "" {
+		if err := d.refuseTagged(ctx); err != nil {
+			return err
+		}
+		if d.subject != "" && !d.api {
 			return d.deleteReferrer(ctx)
 		}
 		return d.deleteTarget(ctx)
 	})
 }
+
+// tagResolvers bounds the resolves of refuseTagged that run at once.
+const tagResolvers = 8
+
+// refuseTagged refuses the delete by tag of a manifest of an oci repo that other tags also
+// name, with a tagsError naming them. The distribution API cannot list the tags of a digest: it
+// lists the repository's tags and resolves each but the reference, tagResolvers at a time. A
+// delete by digest is not refused, nor one on a managed repo, where a manifest has one tag.
+func (d *deletion) refuseTagged(ctx context.Context) error {
+	if d.repo.Format != ociFormat || strings.Contains(d.del.Reference, ":") {
+		return nil
+	}
+	var tags []string
+	err := d.rr.Tags(ctx, "", func(page []string) error {
+		tags = append(tags, page...)
+		return nil
+	})
+	if err != nil && !errors.Is(err, provider.ErrNotFound) {
+		return fmt.Errorf("ingest: tags of %s: %w", d.name, err)
+	}
+	tags = slices.DeleteFunc(tags, func(t string) bool { return t == d.del.Reference })
+	names, errs := make([]bool, len(tags)), make([]error, len(tags))
+	sem := make(chan struct{}, tagResolvers)
+	var wg sync.WaitGroup
+	for i, tag := range tags {
+		sem <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-sem }()
+			desc, err := d.resolveTag(ctx, tag)
+			names[i], errs[i] = desc != nil && desc.Digest == d.target.Digest, err
+		})
+	}
+	wg.Wait()
+	if err := cmp.Or(errs...); err != nil {
+		return err
+	}
+	var others []string
+	for i, tag := range tags {
+		if names[i] {
+			others = append(others, tag)
+		}
+	}
+	if len(others) == 0 {
+		return nil
+	}
+	slices.Sort(others)
+	return &tagsError{name: d.name, ref: d.del.Reference, digest: d.target.Digest, tags: others}
+}
+
+// tagsError refuses a delete by tag of a manifest that other tags also name: index.ErrConflict,
+// with the tags for the facade's answer (OtherTags).
+type tagsError struct {
+	name, ref string
+	digest    digest.Digest
+	tags      []string
+}
+
+func (e *tagsError) Error() string {
+	return fmt.Sprintf("ingest: delete %s:%s: the manifest %s is also tagged %s, which the delete would take with it; "+
+		"nothing was deleted (a delete by digest deletes every tag)", e.name, e.ref, e.digest, strings.Join(e.tags, ", "))
+}
+
+func (e *tagsError) Unwrap() error { return index.ErrConflict }
+
+// OtherTags returns the other tags that name the manifest, sorted.
+func (e *tagsError) OtherTags() []string { return slices.Clone(e.tags) }
 
 // deleteTarget deletes the target with its referrers, the target itself unless it is gone.
 func (d *deletion) deleteTarget(ctx context.Context) error {

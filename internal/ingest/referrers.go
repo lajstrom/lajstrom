@@ -42,7 +42,8 @@ type Referrer struct {
 // must be in the backend, and a tag must be cosign's; an oci repo takes the referrer as it
 // comes, as a registry does. When the backend has no referrers API (Capabilities.Referrers) and
 // the manifest has a subject, the push, which also rewrites the sha256-<hex> index of the
-// subject, runs under the referrers lock of the index (Store.WithReferrersLock). After the push
+// subject, runs under the referrers lock of the index (Store.WithReferrersLock); a push by tag to
+// an oci repo runs under it with the API too, the tag lock that a delete holds. After the push
 // one audit event is written: a push by principal whose subject is the subject's digest, with
 // the client address, and the referrer's kind and artifact type and the request id in the
 // details; a repeat writes another. Errors wrap
@@ -62,7 +63,7 @@ func (p *Pipeline) PutReferrer(ctx context.Context, repo index.Repo, r Referrer,
 			return "", err
 		}
 	}
-	if err := p.pushReferrer(ctx, prov, name, r, m.Subject != nil); err != nil {
+	if err := p.pushReferrer(ctx, prov, name, r, m.Subject != nil, repo.Format == ociFormat && r.Tag != ""); err != nil {
 		return "", err
 	}
 	kind := profile.ReferrerKind(r.Tag, m)
@@ -92,8 +93,10 @@ func parseReferrer(r Referrer) (ocispec.Manifest, error) {
 // pushReferrer pushes r to the repository name, by digest or under its tag. When the manifest
 // has a subject and the backend no referrers API, the provider's push also rewrites the
 // sha256-<hex> index of the subject, and the whole push, the repository included, runs under the
-// referrers lock of the subject.
-func (p *Pipeline) pushReferrer(ctx context.Context, prov provider.Provider, name string, r Referrer, hasSubject bool) error {
+// referrers lock of the subject. A push by tag to an oci repo (tagLock) holds the tag lock of the
+// manifest with the API too, which a delete holds while it counts the tags: the lock of its
+// subject, else of its own digest (docs/spec/index-schema.md, Coordination).
+func (p *Pipeline) pushReferrer(ctx context.Context, prov provider.Provider, name string, r Referrer, hasSubject, tagLock bool) error {
 	push := func(ctx context.Context) error {
 		rr, err := prov.Repository(ctx, name)
 		if err != nil {
@@ -108,8 +111,12 @@ func (p *Pipeline) pushReferrer(ctx context.Context, prov provider.Provider, nam
 	if err != nil {
 		return fmt.Errorf("ingest: capabilities of the registry of %s: %w", name, err)
 	}
-	if !caps.Referrers && hasSubject {
-		err = p.index.WithReferrersLock(ctx, name, r.Subject, push)
+	key := r.Subject
+	if !hasSubject {
+		key = r.Desc.Digest
+	}
+	if (hasSubject && !caps.Referrers) || tagLock {
+		err = p.index.WithReferrersLock(ctx, name, key, push)
 	} else {
 		err = push(ctx)
 	}

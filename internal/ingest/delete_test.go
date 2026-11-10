@@ -83,8 +83,8 @@ func gone(t *testing.T, e *env, refs ...string) {
 // TestDeleteVersion: a version deleted by its tag and by its digest, with and without the
 // referrers API: the referrers go, theirs too, the legacy signature and the tag-schema index,
 // then the manifest; the rows go, the package with its last version, the repo's rendered
-// documents too, and one audit row counts the referrers. Without the API it runs under the
-// referrers lock of the version.
+// documents too, and one audit row counts the referrers. With the API or without, it runs under
+// one lock, the tag lock of the version.
 func TestDeleteVersion(t *testing.T) {
 	for _, tt := range []struct {
 		name string
@@ -105,11 +105,7 @@ func TestDeleteVersion(t *testing.T) {
 				t.Errorf("Deleted = %+v, want %s, version 1.0, 4 referrers", got, subject.Digest)
 			}
 			wantVersionGone(t, e, a)
-			wantLocks := []string{"raw/scratch/notes@" + subject.Digest.String()}
-			if tt.api {
-				wantLocks = nil
-			}
-			same(t, "locks", wantLocks, rec.locks)
+			same(t, "locks", []string{"raw/scratch/notes@" + subject.Digest.String()}, rec.locks)
 		})
 	}
 }
@@ -282,7 +278,8 @@ func TestDeleteKeepsPackage(t *testing.T) {
 
 // TestDeleteReferrer: a referrer deleted on its own, with its own referrers, and no version
 // with it; the audit row names its subject. Without the referrers API the subject's tag-schema
-// index is written again without it, under the subject's lock.
+// index is written again without it. Each delete runs under the subject's lock, with the API
+// too: the tag lock of a referrer.
 func TestDeleteReferrer(t *testing.T) {
 	for _, api := range []bool{true, false} {
 		e, rec, subject := referrerEnv(t, api)
@@ -304,12 +301,11 @@ func TestDeleteReferrer(t *testing.T) {
 		if len(rows.Versions) != 1 || rows.Audit[0].Action != "delete" || rows.Audit[0].Subject != subject.Digest.String() {
 			t.Errorf("api %t: rows %+v", api, rows)
 		}
-		if api {
-			same(t, "locks", []string(nil), rec.locks)
-			continue
-		}
 		key := "raw/scratch/notes@" + subject.Digest.String()
 		same(t, "locks", []string{key, key}, rec.locks)
+		if api {
+			continue
+		}
 		// The index listed sig and att: without sig it lists att, without att it is gone.
 		gone(t, e, "sha256-"+subject.Digest.Encoded())
 		if pushes := e.pushRefs("sha256-" + subject.Digest.Encoded()); len(pushes) != 2 {
