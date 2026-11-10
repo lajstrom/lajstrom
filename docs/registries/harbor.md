@@ -68,6 +68,10 @@ quote it in a shell.
 
 ## The row
 
+`lajstrom registry probe` measures every row of this table but the listing API, auth, rate
+limits and the garbage collector, which still need a person;
+[README.md](README.md#measuring-a-registry-lajstrom-registry-probe) says how.
+
 | Registry | Version | Auth | Create on push | Referrers | Catalog | Delete manifest | Immutable tags | Blob redirect | Result |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Harbor | v2.15.4, filesystem storage, `prefix: lajstrom-it/` (a project) | Bearer from Harbor's token service, a project robot | yes, inside an existing project, at any depth; outside one 401 `project … not found` | **yes**: OCI 1.1 referrers API, `artifactType` filter, `OCI-Subject` on the push | **no** for a robot: `_catalog` is for system admins with Basic auth; the REST API lists a project's repositories | yes, by digest, and the subject's referrers go with it; by tag 400 | per project, immutability rules: an existing tag is 412 `PRECONDITION`, and so is a digest delete of a manifest under one | no redirect: streamed, one request; `Accept-Ranges: bytes`, a range 206 | pass, but for a chunk out of order, which Harbor takes |

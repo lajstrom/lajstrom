@@ -201,6 +201,9 @@ it refuses a manifest whose `artifactType` it does not know, every one Lajstrom 
 startup line names the vendor, `vendor=gitlab`, `ghcr`, `harbor`, `nexus`, `gitea`, `jfrog` or
 `unknown`, beside the capabilities, and a line `registry needs workarounds` says when blobs are
 read whole or their existence asked with `GET`. A registry the table does not know gets the probe alone.
+To see what a registry does before attaching it, beyond these answers, `lajstrom registry probe`
+measures its row of the capability matrix in a scratch prefix and deletes what it pushed
+([registries/README.md](registries/README.md#measuring-a-registry-lajstrom-registry-probe)).
 
 Each key under `capabilities` replaces what was found and what the vendor table sets, for
 registries that answer wrongly; a key that is set is not probed. There is no `catalog` key

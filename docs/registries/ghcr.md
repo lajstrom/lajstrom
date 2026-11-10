@@ -11,6 +11,10 @@ from the middle of the run, see "Delete"), used as `$(gh auth token)` and never 
 
 ## The row
 
+`lajstrom registry probe` measures every row of this table but the listing API, auth, rate
+limits and the garbage collector, which still need a person;
+[README.md](README.md#measuring-a-registry-lajstrom-registry-probe) says how.
+
 | Registry | Version | Auth | Create on push | Referrers | Catalog | Delete manifest | Immutable tags | Blob redirect | Result |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | GHCR | ghcr.io on 2026-11-07, no version published (`registry/2.0`); prefix `lajstrom-extras/` | bearer from `/token`, which is the PAT in base64 | yes, on the first manifest: a repository with blobs only is no package, and its blobs answer `GET` with 404 | **no**: `/referrers/<digest>` is 404 `MANIFEST_UNKNOWN`, no `OCI-Subject`; the tag schema works, and oras 1.3.6 falls back to it | **wrong**: `_catalog` answers 200 with all of GHCR, so the probe says yes; set `catalog: false`; the packages REST API lists an organisation | **no** through `/v2` (405 `UNSUPPORTED`, DeleteManifest turned false); yes through the REST API, by version, with `delete:packages` | no: a tag re-points with 201 | **yes**: `GET` is 307 to `pkg-containers.githubusercontent.com` (an Azure SAS behind Fastly, good for 5 to 10 min), `HEAD` 200 without one; `OpenBlob` returns it, and with redirect off follows it, a range 206 from the CDN | **fail**: list repositories, upload sessions, a blob read before the first manifest |

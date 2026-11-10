@@ -53,7 +53,7 @@ distribution-s3 does in the dev stack, so that the presigned URLs they sign for
 | Where a repository may be created | [anywhere; a name component of more than 255 bytes is 500](#create-on-push) |
 | Referrers API | [yes, with the `artifactType` filter; no tag schema](#referrers) |
 | `OCI-Subject` on a push with `subject` | [yes](#referrers) |
-| Catalog (`_catalog`) and its limits | [yes, `n`/`last`/`Link`, lexical, no largest `n`](#catalog) |
+| Catalog (`_catalog`) and its limits | [yes, `n`/`last`/`Link`, component by component (`/` first), no largest `n`](#catalog) |
 | A listing API of its own | [none in the minimal build](#catalog) |
 | Tag list order and pagination | [lexical; `n`/`last`/`Link`](#tags) |
 | Delete a manifest by digest | [yes, 202, its tags with it; **405** for a manifest an index lists](#delete) |
@@ -76,6 +76,10 @@ distribution-s3 does in the dev stack, so that the presigned URLs they sign for
 | Garbage collector and an untagged referrer (#37) | [kept, with or without its subject; an untagged manifest goes after `gcDelay`](#garbage-collection) |
 | What the probe finds | [`referrers=true catalog=true`](#the-row) |
 | Overrides needed | [none; `immutableTags: true` behind a policy without `update`](#configuration) |
+
+`lajstrom registry probe` measures every row of this table but the listing API, auth, rate
+limits and the garbage collector, which still need a person;
+[README.md](README.md#measuring-a-registry-lajstrom-registry-probe) says how.
 
 The probe logged the same line against all four Zots the suite ran on (the dev stack, the dev
 configuration without a prefix, S3 with redirects, htpasswd without `update`):
@@ -207,7 +211,19 @@ GET …?last=spike18/cat/r150                         200  the 12 after it
 walk with n=100, following Link                     4 pages, 376 names, no duplicates
 ```
 
-Lexical order; `last` is a position in it, not a name that must exist; a `Link` only when more
+Ordered component by component, `/` first: names that share a prefix up to a `/` are listed
+before the names that continue it with another character. The 160 names above do not show it;
+`lajstrom registry probe` (2026-11-10, against the dev stack's Zot) pushed `pre`, `pre/sub`,
+`pre-x`, `pre.y` and `prea` below one prefix:
+
+```text
+GET /v2/_catalog?last=<prefix>ord&n=100    … "<prefix>ord/pre","<prefix>ord/pre/sub","<prefix>ord/pre-x","<prefix>ord/pre.y","<prefix>ord/prea" …
+GET /v2/_catalog?last=<prefix>ord/pre&n=2  Link: </v2/_catalog?n=2&last=<prefix>ord/pre-x>; rel="next"   ["<prefix>ord/pre/sub","<prefix>ord/pre-x"]
+```
+
+That is the order of distribution on a filesystem ([distribution.md](distribution.md#catalog)),
+not byte order (which puts `pre-x` and `pre.y` before `pre/sub`); this page said "lexical" before
+the probe. `last` is a position in it, not a name that must exist; a `Link` only when more
 remain; no largest `n`. The probe's `n=1` gets 200: `catalog=true`, and `ListRepositories`
 works. The catalog lists every repository, those without a manifest too
 ([Create on push](#create-on-push)). The minimal build has no listing API of its own: the

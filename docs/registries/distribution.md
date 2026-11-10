@@ -108,6 +108,12 @@ Every repository pushed was below `spike17/`.
 
 The cells of the [Capabilities](README.md#capabilities) table. S3 is the same on SeaweedFS and on
 MinIO unless the cell says otherwise; deletes are enabled unless it says otherwise.
+`lajstrom registry probe` measures every row of this table but the listing API, auth, rate
+limits and the garbage collector, which still need a person;
+[README.md](README.md#measuring-a-registry-lajstrom-registry-probe) says how. Against the dev
+stack (`make registry-matrix`, 2026-11-10) it gave the filesystem column, cell for cell, but
+where its bounds are smaller (8 MiB blobs, 1001 tags not pushed); its catalog order is the
+filesystem's, `/` first.
 
 | | Filesystem (the dev stack) | S3 (SeaweedFS, MinIO) |
 | --- | --- | --- |

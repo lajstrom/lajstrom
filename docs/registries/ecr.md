@@ -106,6 +106,9 @@ statement above allows `*`; the provider filters the names), which `/v2` call ne
 
 ## Capabilities
 
+`lajstrom registry probe` does not probe a registry of type `ecr`: its credentials come from the
+AWS SDK; the live check is #19.
+
 | Capability | Value | Where it comes from |
 | --- | --- | --- |
 | Create on push | no | ECR; `CreateRepository` from `EnsureRepository`; `createOnPush: true` for a creation template |

@@ -115,6 +115,10 @@ says `<dockerReverseProxyMethod>path</dockerReverseProxyMethod>`, the default:
 
 ## The row
 
+`lajstrom registry probe` measures every row of this table but the listing API, auth, rate
+limits and the garbage collector, which still need a person;
+[README.md](README.md#measuring-a-registry-lajstrom-registry-probe) says how.
+
 | Row of the matrix | JCR 7.161.26, a local docker repository as the prefix |
 | --- | --- |
 | Create on push | [yes, inside an existing repository key; a key is never created (404)](#create-on-push) |

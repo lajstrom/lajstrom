@@ -58,6 +58,11 @@ after the variable goes back to `false` (`down -v` forgets them).
 | GitLab, variant B | v4.43.0, dynamic media types, token auth from a test token server | Bearer | yes | no (tag schema) | yes | yes | — | no redirect | pass, but for the cross-replica upload ([Bearer tokens](#bearer-tokens)) |
 | GitLab, variant B | the same, the token carries `tag_immutable_patterns: [".*"]` | Bearer | yes | no (tag schema) | yes | **no**: every digest delete answers 401 `PROTECTED_MANIFEST`, which the provider reads as bad credentials | **yes, from the token**: an existing tag is 401 `IMMUTABLE_TAG` | no redirect | fail: the delete steps |
 
+`lajstrom registry probe` measures every row of this table but the listing API, auth, rate
+limits and the garbage collector, which still need a person;
+[README.md](README.md#measuring-a-registry-lajstrom-registry-probe) says how. Its run is
+[below](#lajstrom-registry-probe).
+
 The probe reports the same capabilities for every variant: `createOnPush=true referrers=false
 catalog=true deleteManifest=true immutableTags=false blobRedirect=true maxBlobSize=0` (the serve
 log and the test log). That is right for A and B; no override in `registries[].capabilities` is
@@ -209,13 +214,58 @@ loopback realm unless it is the registry's own host name (`bearer realm host "12
   `Range: bytes=0-4` is 206 with `Content-Range: bytes 0-4/22`. Object storage was not tested
   (`storage.redirect.disable`, default false, redirects with S3, GCS and Azure).
 - A 2 GiB blob in one monolithic `PUT` was 201 on both (3.0 s and 3.7 s); the registry sets no
-  blob limit. `validation.manifests.payloadsizelimit` (default 0, none) limits manifests.
+  blob limit. `validation.manifests.payloadsizelimit` (default 0, none) is not the only limit on
+  manifests: the HTTP handler takes 4 MiB, as distribution's, and a manifest of 4 MiB + 1 byte is
+  400 `MANIFEST_INVALID` "http: request body too large" on both ([the probe](#lajstrom-registry-probe);
+  this page said "none by default", from the configuration read, before it).
 - `Docker-Content-Digest` on the blob `PUT`, the manifest `PUT`, `HEAD` and `GET`. No
   `OCI-Subject` anywhere. `GET /v2/` adds `Gitlab-Container-Registry-Version: 4.43.0-gitlab`,
   `Gitlab-Container-Registry-Features: tag_delete` and
   `Gitlab-Container-Registry-Database-Enabled: false` (A) or `true` (B).
 - No `http.secret` in the configurations: the registry generates one and warns, which matters
   only for several registry replicas behind one address.
+
+## `lajstrom registry probe`
+
+The probe (#339) against both variants of the `gitlab` profile, on fresh volumes and with the
+defaults (`REGISTRY_FF_DYNAMIC_MEDIA_TYPES` off), on 2026-11-10; A once more with
+`--max-blob-size 2GiB --max-manifest-size 32MiB`:
+
+| Row | A | B |
+| --- | --- | --- |
+| Create on push | yes, with the first manifest | the same |
+| Where a repository may be created | anywhere; at any depth, inside another repository too; at most 255 characters (256: **500 `UNKNOWN`**) | the same |
+| Referrers API | no: a plain 404, the tag schema | the same |
+| `OCI-Subject` | no | no |
+| Catalog | yes, `n`/`last`/`Link`, component by component (`/` first), `n` at most 1000 (1001: 400 `PAGINATION_NUMBER_INVALID`) | the same, but lexical |
+| Tag list | lexical, byte by byte; **`n` and `last` ignored**: the whole list, no `Link` | lexical, byte by byte; `n`/`last`/`Link` |
+| Delete by digest | yes, 202, with its tags; its referrers stay | yes, 202, with its tags; **a manifest with a referrer: 500 `UNKNOWN`**; **409 `MANIFEST_REFERENCED`** for a manifest an index lists |
+| Delete by tag | yes, 202: the manifest stays, untagged | the same |
+| Delete a repository | no `/v2` API; an emptied repository stays in `_catalog`, its tag list 200 | no `/v2` API; it leaves `_catalog` with its last manifest, its tag list 200 |
+| Immutable tags | none: a tag re-points with 201 | the same |
+| Blob redirect, `Range` | none: the bytes; 206, 416 past the end; `Accept-Ranges: bytes` | the same |
+| Largest blob, chunk size | 2 GiB in one `PUT` and in one `PATCH`; no limit met | 8 MiB, the default bound (the 2 GiB run filled the machine's disk before it reached B) |
+| Manifest size | 4 MiB; one byte more is 400 `MANIFEST_INVALID` | the same |
+| Profile | accepted, stored as pushed | **refused**: 400 `MANIFEST_INVALID` "unknown media type: application/vnd.lajstrom.raw.v1" |
+| Uploads | 416 `CONTENT_RANGE_INVALID` out of order; the session's `GET` 204 with `Range`; the cancel 204, then 404 `BLOB_UPLOAD_UNKNOWN`; a mount 201; a wrong digest 400 `DIGEST_INVALID`, the session stays; the empty blob stored; a session continued by another provider works | the same |
+| What the probe finds, overrides | `referrers=false catalog=true`; none | the same; **no override helps**: the profile is refused |
+
+New against the rest of this page, which had not measured them:
+
+- **A ignores `n` and `last` on `tags/list`**: `?n=2` answers every tag and no `Link`, and so
+  does `?n=1&last=a` (curl: `{"tags":["a","b","c"]}` for both). B pages as the spec says. The
+  provider follows `Link` and reads a whole list in one page, so nothing breaks.
+- **B cannot delete a manifest that a referrer names**: 500 `UNKNOWN`, and the registry's log
+  says why: `deleting manifest: ERROR: insert or update on table "gc_manifest_review_queue"
+  violates foreign key constraint "fk_gc_manifest_review_queue_tp_lvl_nspc_id_rp_id_mfst_id_mnfsts"`.
+  The referrer deleted first, the subject goes (the probe's cleanup). Lajstrom's deletes delete
+  what refers to a version before the version (`internal/ingest`), so they do not meet it; a
+  client that deletes a subject through the facade's `/v2` does. A manifest an image index lists
+  is 409 `MANIFEST_REFERENCED` (Zot: 405 `DENIED`).
+- A name over 255 characters is 500 `UNKNOWN` on both, `{"Name":…,"Reason":{}}` in its detail,
+  where distribution answers 400 `NAME_INVALID`. Lajstrom's names stop at 255.
+- The catalog's order is the storage's: the filesystem's (`/` first) on A, lexical from the
+  database on B.
 
 ## Garbage collection
 
