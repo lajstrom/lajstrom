@@ -168,9 +168,11 @@ of its versions, kept in the registry as a journal of manifests (manifest-profil
 - The state is never a column of `versions`: a version row is its manifest's, the state is the
   journal's. A packument (http-routing.md, npm) reads both; its `_rev` is computed from `journal`
   and `versions` and needs no column.
-- A package's rows go with it. When its last version is deleted outside an unpublish of the
-  package, its entries stay in the registry as orphans, which reindex reports and the next
-  append to that name adopts.
+- A package's rows go with it: both tables refer to `packages` with `ON DELETE CASCADE`, so
+  `DeletePackage`, `DeleteEmptyPackages` and `ResetDerived` take them, and reindex rebuilds
+  them. When its last version is deleted outside an unpublish of the package, its entries stay
+  in the registry as orphans, which reindex reports (`orphanJournal`) and the next append to
+  that name adopts. Both tables come with the migration of #307.
 - `index_cache` holds two documents per npm package: scope the package name (`@acme/widgets`),
   kinds `packument` and `packument-abbreviated`, rendered together. A publish or a delete of a
   version of the package, each journal append and reindex invalidate them: at least the

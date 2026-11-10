@@ -374,8 +374,9 @@ leaves it out (http-routing.md, npm).
 replayed once the repository is read. An entry is reported and skipped when its annotations
 break the rules above, when its tag is not the tag of its `seq`, or when its `lajstrom.name` is
 not the package of the repository. A missing `seq` is reported and the replay goes on over the
-rest. Entries in a repository without versions are reported as orphans and not indexed: no
-package row holds them, and the next append to a package of that name adopts them.
+rest. Entries in a repository without versions are reported as orphans (the report's
+`orphanJournal`) and not indexed: no package row holds them, and the next append to a package of
+that name adopts them.
 
 **Deleting.** A journal entry goes with its package only: the unpublish of a whole package
 deletes its versions, then every entry, under the journal lock and no other (no other writer
