@@ -143,6 +143,14 @@ type Reader interface {
 
 	// GetProxyMeta returns the proxy_meta row of a proxy repo's name key and document kind.
 	GetProxyMeta(ctx context.Context, repoID int64, name, kind string) (*ProxyMeta, error)
+
+	// The npm journal (ADR 0012; docs/spec/index-schema.md, npm).
+
+	// ListJournal returns the journal entries of a package ordered by Seq.
+	ListJournal(ctx context.Context, packageID int64) ([]JournalEntry, error)
+	// ListJournalState returns the current dist-tags and deprecations of a package, the fold of
+	// its journal, ordered by Kind and Key.
+	ListJournalState(ctx context.Context, packageID int64) ([]JournalState, error)
 }
 
 // Writer is the write side of the index; ingest, reindex, delete and the management API use
@@ -317,4 +325,23 @@ type Writer interface {
 	// ExpireProxyMeta removes the absent rows of a repo whose CheckedAt is before before, and
 	// returns how many it removed: the sweep of negative entries, by the repo's negativeTTL.
 	ExpireProxyMeta(ctx context.Context, repoID int64, before time.Time) (int, error)
+
+	// The npm journal (derived; ADR 0012, docs/spec/index-schema.md, npm), written by ingest,
+	// reindex and delete. Both tables go with their package: DeletePackage, DeleteEmptyPackages
+	// and ResetDerived take a package's rows.
+
+	// UpsertJournal inserts e and fills ID or, when the row of (PackageID, Seq) has e's tag and
+	// digest, sets its IndexedAt and fills e from it. Another tag or digest under the Seq, or
+	// e's tag under another Seq, is a *TagConflictError and nothing changes: an entry is never
+	// rewritten. CreatedAt and IndexedAt are set to now when zero.
+	UpsertJournal(ctx context.Context, e *JournalEntry) error
+	// TouchJournal sets IndexedAt of the entries with the given ids, and nothing else: the
+	// entries a reindex saw without writing them. Ids that do not exist are skipped.
+	TouchJournal(ctx context.Context, ids []int64, at time.Time) error
+	// DeleteJournal removes the journal entry: the sweep of reindex, the delete of an entry.
+	DeleteJournal(ctx context.Context, id int64) error
+	// ReplaceJournalState makes the journal_state rows of the package exactly state and fills
+	// their PackageID: the fold of its entries, written in the transaction of the entries it
+	// folds. A missing package wraps ErrNotFound; two rows of one (Kind, Key), ErrConflict.
+	ReplaceJournalState(ctx context.Context, packageID int64, state []JournalState) error
 }
