@@ -1,0 +1,1027 @@
+# Spec: guarantees
+
+- Status: normative, v1 (2026-11-10). Changes need an issue labelled `contract` (below, "How a
+  guarantee changes").
+- Owned by: the lead. Every pull request that changes a mechanism or a test named here updates
+  the entry.
+- Related: [ADR 0001](../adr/0001-oci-registry-as-sole-storage.md) to
+  [ADR 0013](../adr/0013-proxy-and-group-repos.md), every spec of this directory,
+  [threat-model.md](../security/threat-model.md), [registries/README.md](../registries/README.md)
+  (the matrix), [acceptance.md](../acceptance.md), [testing.md](../testing.md).
+
+## The rule
+
+**What this document guarantees is the contract. Anything it does not guarantee, a user has no
+right to rely on.** That an observable behaviour holds today does not make it a promise
+(Hyrum's law, refused on purpose): it may change in any release, without notice.
+
+- **What is in the contract.** The guarantees below; the normative text of the specs of this
+  directory (the wire formats, endpoints, statuses, tables and Go contracts they define); and the
+  references of the three interfaces the README's promise names: the management API
+  ([api.md](../api.md) and its OpenAPI document), the configuration
+  ([configuration.md](../configuration.md)) and the CLI's commands, flags and exit statuses. This
+  document includes them by reference and does not repeat them. The ADRs record why; what they
+  decided is guaranteed through the spec that carries it. Everything else describes and does not
+  promise: architecture.md, operations.md, the guides, the README, code comments, log lines,
+  tests. When this document and a spec disagree, that is a bug of one of them: open an issue
+  labelled `contract`; until it is decided, the narrower reading holds.
+- **How a guarantee changes.** Adding, withdrawing or changing the statement, the scope or the
+  assumptions of a guarantee is a contract change: an issue labelled `contract`, a pull request
+  the lead approves, and a line in the release notes that says what changed and how to adapt.
+  While Lajstrom is 0.x, that may happen in any release, as the README's
+  [promise to users](../../README.md#our-promise-to-users) says of the API, the configuration and
+  the CLI; from 1.0 on, only in a major release. Updating the mechanism, the tests or the status
+  of an entry as the code moves is not a contract change, and a pull request that makes a
+  guarantee weaker than its status says is a bug.
+- **Ids.** `G-1`, `G-2`, …, never reused and never renumbered; a withdrawn guarantee keeps its id
+  and says so. They are not the acceptance checks `G-01` to `G-07` of acceptance.md (repo
+  management), which carry a leading zero.
+
+## How to read an entry
+
+Each guarantee has:
+
+| Field | What it says |
+| --- | --- |
+| Statement | one sentence that a test can check |
+| Scope | the formats, repo kinds (`hosted`, `proxy`, `group`, and `oci`, the pass-through format) and paths it covers; what is outside it is not guaranteed |
+| Assumes | what it needs of the registry and of the database, by the names of the next section; "any" means it needs none of them |
+| Mechanism | the code that makes it hold: `package.Function` or `package.Type.Method`, as the threat model names them (`ingest.Pipeline.claimTag` is the method in `internal/ingest`) |
+| Tests | the tests that prove it, by name, and the steps of the end-to-end scripts (`test/e2e/<script>`, with the acceptance id they cover) |
+| When violated | whether Lajstrom notices, where it says so, and what repairs it |
+| Status | `holds`; `holds on strongly consistent registries only`; `partly` (the entry says which part does not hold); `not yet` (with its issue) |
+
+Two markers flag a weakness of the evidence, not of the code: **untested**, a part of the
+statement that no test proves; **unchecked**, an assumption that Lajstrom relies on and does not
+verify at run time. Every marker has a row in [Gaps](#gaps).
+
+## What the guarantees rest on
+
+### The registry
+
+Lajstrom checks none of these at run time unless an entry says it does. What each registry
+does is measured in [registries/README.md](../registries/README.md); a registry that is not there
+is not tested.
+
+| Name | The property | What is known |
+| --- | --- | --- |
+| **read-after-write** | after the registry answers `2xx` to a manifest push or delete, every later read sees it: `HEAD` and `GET` by tag and by digest, the tag list, the catalog | measured for no registry of the matrix; ECR is eventually consistent by design ([#446](https://github.com/lajstrom/lajstrom/issues/446)); `registry probe` will measure it ([#339](https://github.com/lajstrom/lajstrom/issues/339)) |
+| **durable 201** | what the registry acknowledged stays until it is deleted through the registry's API | assumed everywhere; never measured |
+| **complete listings** | the catalog and the tag list name every repository and tag written before the call, and none deleted before it | the matrix measures the catalog's limits and the tag lists' order, not their lag; Harbor, GHCR and ECR have no usable catalog, and Lajstrom reads `oci_repos` instead ([operations.md](../operations.md#without-a-catalog)) |
+| **digest check** | the registry refuses a blob whose bytes are not the digest it is closed with | every registry of the matrix but JFrog JCR 7.161 (it stores any bytes under any digest) |
+| **scoped blobs** | a blob is readable only in a repository that holds it | measured on Zot only (threat model P-5) |
+| **case-exact tags** | two tags that differ in case are two tags | not on Gitea and Forgejo, which fold tag case ([#426](https://github.com/lajstrom/lajstrom/issues/426)) |
+| **GC keeps what is named** | the garbage collector keeps a manifest a tag names and a referrer whose subject exists | GitLab B deletes an untagged referrer 24 h after its push; Nexus's task "Delete unused manifests" deletes one; Gitea deletes the manifest a re-pointed tag named |
+
+### The database
+
+| Name | The property |
+| --- | --- |
+| **one database** | every replica uses the same database, and the same master key (`keys.masterKeyEnv` or `keys.masterKeyFile`) |
+| **Postgres for replicas** | more than one replica needs Postgres. SQLite serves one replica: its referrers and journal locks are locks of the process (index-schema.md, Coordination). Two replicas on one SQLite file are not detected (acceptance.md H-14) |
+| **clocks agree** | the clocks of the replicas, and of the CLI, agree within 60 seconds: the skew a bearer token is checked with, and well inside the bounds that compare times written by other replicas (stale claims after `ingest.claimTTL`, 10 minutes; stale fetch claims and reindex runs after 2 minutes) |
+
+## Storage and the index
+
+### G-1. Artifact bytes live only in the registry
+
+- **Statement.** The bytes of a package file are stored in the registry and nowhere else: never in
+  the database, and on a replica's disk only as a spool of one request, removed when it ends.
+- **Scope.** Every format and kind, both write paths (a frontend upload, a `/v2` blob upload) and
+  the proxy fetch. The database keeps derived copies of metadata that reindex rebuilds or a cache
+  may drop: `versions.metadata` (a metadata layer of at most 4 MiB), rendered documents in
+  `index_cache`, an upstream's documents in `proxy_meta`.
+- **Assumes.** Any.
+- **Mechanism.** `format.Spool` (one temporary file per upload, mode 0600, unlinked at creation
+  where the system allows, removed on `Close`), `ingest.spoolHashed`, the proxy's
+  `proxy.Core.spool`; `/v2` uploads stream into the backend's session (`facade` uploads, the
+  provider's `BlobUploader`) and take no disk.
+- **Tests.** `TestSpool`, `TestSpoolErrors`, `TestSpoolNoTempDir`, `TestUploadDoesNotHoldTheFile`,
+  `TestStreamingMemory`, `TestUploadStreams` (pypi).
+- **When violated.** A spool that a `SIGKILL` leaves where the system cannot unlink at creation
+  stays in `$TMPDIR` (threat model U-2); nothing serves from it.
+- **Status.** `holds`. **Untested:** no test kills a replica during an upload (acceptance.md
+  H-05).
+
+### G-2. One write path
+
+- **Statement.** Every manifest Lajstrom writes to a managed repo (every format but `oci`) is
+  written by `internal/ingest`: a publish, a referrer, a journal entry, a proxied artifact, a
+  delete.
+- **Scope.** Managed repos. On an `oci` repo the facade passes a manifest without a subject
+  through to the backend itself (`facade.handler.passThrough`, http-routing.md §2); blobs reach
+  the registry through the facade's upload sessions and ingest's blob pushes, by design.
+- **Assumes.** Any.
+- **Mechanism.** Frontends publish through `format.Deps.Ingest` (`format.Publisher`, implemented
+  by `ingest.Pipeline`); the manifest hook hands `/v2` pushes to ingest
+  (`facade.handler.putManaged`); the proxy fetcher calls `Publisher.Upload`. `make lint`
+  (depguard, rule `registry-client`) keeps the registry client out of every package but
+  `internal/provider`.
+- **Tests.** `TestManifestHook`, `TestReferrerHandOff`, `TestUploadWithOrigin`, `TestFileMiss`
+  (proxy), and per format the upload tests that assert the published rows (`TestUpload` of deb
+  and pypi, `TestPutGetHead` of raw, `TestDeploy` of maven, `TestPublish` of npm).
+- **When violated.** A manifest written past ingest has no claim, no validation and no audit row;
+  reindex finds it later as a publish past Lajstrom (G-3).
+- **Status.** `holds`. **Untested:** nothing machine-checks that a plugin does not push:
+  `format.Deps.Providers` gives plugins the provider for reads, and its `Repository` has `Push`
+  and `PushReference`; lint stops only the import of the registry client.
+
+### G-3. The index is rebuildable from the registry
+
+- **Statement.** After `lajstrom reindex` over a repo, the derived rows (`packages`, `versions`,
+  `files`, `oci_repos`, npm's `journal` and `journal_state`) equal what ingest wrote for the
+  manifests in the registry, in every column but the ids and `indexed_at`, and `index_cache` is
+  empty.
+- **Scope.** Every format and the `hosted` and `proxy` kinds (a proxy's `proxy_meta` is a cache
+  and is not rebuilt); the control plane is not derived and comes from a backup
+  ([operations.md](../operations.md#backup-and-restore)). On a registry without a catalog, only the
+  OCI repositories that `oci_repos` records or `--attach` names.
+- **Assumes.** Registry: **complete listings** (**unchecked**); **durable 201**. Database: any.
+- **Mechanism.** One mapping from a manifest to its rows: `ingest.Pipeline.Inspect` runs the
+  read-only steps of ingest, and `ingest.WriteRows` writes what ingest writes; the
+  `reindex.Worker` lists (`scan.list`, `scan.ociRepo`), marks and sweeps; the journal is
+  replayed in `seq` order (`reindex.replay.run`). A manifest whose metadata layer is missing is
+  indexed from its annotations and flagged `degraded`.
+- **Tests.** `TestRebuild` (I-01, raw), `TestIntegration` of `internal/index/reindex` (I-01 against
+  Zot and distribution), `TestInspectIsIngest`, `TestJournalReindex`, `TestJournalReindexLost`,
+  `TestPushReindex` (npm), `TestReindexProxied`, `TestNoCatalog`, `TestAttach`,
+  `TestRebuildTagSchema`, `TestDegraded`, `TestKnownDigests`, `TestScale`; `cosign.sh` (the
+  referrers found by `reindex --repo`).
+- **When violated.** A column that is not derivable is lost silently at the first rebuild. A
+  listing that lags misses the newest manifests until a later run.
+- **Status.** `holds on strongly consistent registries only`. **Untested:** the equality is
+  tested for raw, npm and an npm proxy only, not for apt, pypi or maven; acceptance.md I-01 is
+  not a step of the end-to-end suite.
+
+### G-4. A version in the index is readable from the registry
+
+- **Statement.** Every `versions` row names a manifest that the registry serves under the row's
+  tag, with the row's digest, and whose blobs it serves.
+- **Scope.** Managed repos, every kind that has rows (`hosted`, `proxy`); a proxy answers a miss
+  from the registry right after its ingest, so the same holds for it.
+- **Assumes.** Registry: **read-after-write** (**unchecked**), **durable 201** (**unchecked**),
+  **GC keeps what is named**. Database: any.
+- **Mechanism.** A row is written only after the registry accepted the manifest
+  (`ingest.Pipeline.confirm`, after `publish.pushManifest`); a delete deletes in the registry
+  first (G-13); the reconcile loop removes the rows of a tag the registry no longer knows (G-5).
+- **Tests.** `TestIngestPushFails`, `TestIngestIndexFailsAfterPush`, `TestBypassAndDelete`,
+  `TestDeleteThenReindex`.
+- **When violated.** A client gets `404` (`BLOB_UNKNOWN`, `MANIFEST_UNKNOWN`, the format's
+  `404`) for a version the index lists. On a lagging registry this lasts as long as the lag; a
+  manifest the registry lost goes from the index at the next reconcile, which counts it among
+  `removed` and says nothing more; a tag re-pointed in the backend is drift (G-7), and on Gitea
+  the manifest it named is then deleted.
+- **Status.** `holds on strongly consistent registries only` ([#446](https://github.com/lajstrom/lajstrom/issues/446)).
+  **Untested:** no test runs against a registry with a read-after-write lag.
+
+### G-5. Prune never removes what the registry still holds
+
+- **Statement.** Reindex and the reconcile loop delete a derived row only when the registry
+  answers that the row's tag is unknown, looked up again after the listing; an error, a timeout
+  or a listing that failed removes nothing.
+- **Scope.** `reindex` with `--prune` (the default for every repo), the reconcile loop, the npm
+  journal's rows.
+- **Assumes.** Registry: **read-after-write** (**unchecked**): a lagging registry answers
+  "unknown" for a tag it holds. Database: any.
+- **Mechanism.** `reindex.scan.sweep` (each unseen row resolved by its tag; only
+  `provider.ErrNotFound` deletes), `scan.list` (no sweep when the listing failed),
+  `reindex.replay.sweep` for the journal.
+- **Tests.** `TestSweepKeepsWhatItCannotCheck`, `TestBypassAndDelete`, `TestDrift`,
+  `TestNoCatalog`, the store conformance case `Sweep`, `TestReconcile`.
+- **When violated.** A version published shortly before a run, inside the registry's lag, loses
+  its rows: it is missing from every index and its files are `404` until the next run lists it
+  again and adds it back. The run's audit row `reconcile` counts the removal; nothing alerts.
+- **Status.** `holds on strongly consistent registries only` ([#446](https://github.com/lajstrom/lajstrom/issues/446):
+  a grace age and two observations before a removal). **Untested:** no test with a lagging
+  registry.
+
+## Publishing and tags
+
+### G-6. Among concurrent publishes of one tag, one wins
+
+- **Statement.** When publishes of one tag of one package path run at once, on one replica or
+  several, at most one manifest is pushed under the tag: the others share it (the same bytes,
+  `201`, one version) or get `409` naming the winner's digest.
+- **Scope.** Managed repos, every write path (frontends, `/v2`, the proxy fetch).
+- **Assumes.** Registry: any. Database: **one database**, **Postgres for replicas**, **clocks
+  agree** (a claim older than `ingest.claimTTL` is taken over).
+- **Mechanism.** `ingest.Pipeline.claimTag`: in one transaction, the claim on the package path
+  (`claimPath`), then on the tag (`Writer.ClaimTag`, unique `(repo_id, package, tag)` in
+  `tag_claims`), then the version of the tag is read; `UpsertVersion` resolves a race with
+  `INSERT … ON CONFLICT DO NOTHING` and a second read.
+- **Tests.** `TestIngestConcurrent`, `TestIngestConflict`, `TestIngestStaleClaim`,
+  `TestUploadRepeatRace`, `TestIngestSpellingRace`, the store conformance cases `TagClaims`,
+  `TagClaimRace`, `TagClaimsLifecycle`, `VersionTagRace`; `ha.sh` H-02 (one 100 MiB file through
+  both replicas: one version) and H-03 (twenty rounds of one tag through both: one `201`, one
+  `409 TAG_INVALID` naming the winner, whose digest the backend and the index hold).
+- **When violated.** Not observed. A claim left by a dead publish holds its tag until it is
+  stale; reindex and the reconcile loop delete stale claims.
+- **Status.** `holds`. During a rolling upgrade from a version before #244, the claims of the two
+  versions do not exclude each other (index-schema.md, Coordination).
+
+### G-7. A tag is never re-pointed through Lajstrom
+
+- **Statement.** Once a tag of a managed repo names a manifest in the registry, no request to
+  Lajstrom makes it name another: a publish of other bytes under it is `409`, and nothing in
+  Lajstrom re-points a tag on conflict, on reindex or on drift.
+- **Scope.** Managed repos: version tags and the `_j<seq>` tags of npm's journal. Not `oci`
+  repos, whose tags pass through and follow the backend's rules. Not writes straight to the
+  backend: Lajstrom reports them (drift) and leaves them.
+- **Assumes.** Registry: **read-after-write** (**unchecked**) for the backstop below; **case-exact
+  tags** (on Gitea and Forgejo two versions that differ only in case are one tag, and the second
+  is a `409`: [#426](https://github.com/lajstrom/lajstrom/issues/426)). Database: as G-6.
+- **Mechanism.** The index and the claims (G-6) decide; then `publish.pushManifest` resolves the
+  tag in the backend before the push and refuses another digest there, which catches a tag the
+  index lacks (a confirm that failed after the push, a write past Lajstrom, an index not yet
+  rebuilt); a backend with immutable tags refuses the push on its own.
+  `Writer.UpsertJournal` never rewrites an entry; the journal adopts a stray entry instead of
+  overwriting it (`ingest.journal.adopt`). Reindex reports drift (`scan.drift`) and keeps the
+  index's digest.
+- **Tests.** `TestIngestConflict`, `TestIngestTagInBackend`, `TestIngestIndexFailsAfterPush`,
+  `TestManifestHook`, `TestDrift`, `TestJournalAdopts`, the store conformance case `Journal`;
+  `oras.sh` (another manifest under the tag: `409`), the conflicts of `raw.sh`, `pypi.sh`,
+  `apt.sh`, `maven.sh` (acceptance.md E-01).
+- **When violated.** Reindex lists the tag as drift (`reindex --report`, `GET …/reindex`) with
+  both digests; nothing repairs it, by design: whoever re-pointed it decides.
+- **Status.** `holds on strongly consistent registries only`: the index guards every tag it
+  knows on any registry; a tag it does not know is guarded by a read that a lagging registry can
+  answer `404`, and the push then re-points it on a registry with mutable tags
+  ([#446](https://github.com/lajstrom/lajstrom/issues/446)).
+
+### G-8. The same bytes again are an idempotent repeat
+
+- **Statement.** A publish of a manifest a tag already holds, and a frontend upload of the same
+  files under a tag that holds them, answer success with the existing digest and write nothing.
+- **Scope.** Managed repos. Through `/v2` the manifest decides (its digest); through a frontend
+  the file layers do, whatever `org.opencontainers.image.created` the new build carries
+  (manifest-profile.md §4.2). A raw `PUT` of bytes an older version holds does not make it the
+  newest (http-routing.md, raw).
+- **Assumes.** Any.
+- **Mechanism.** `ingest.Pipeline.repeat` and `sameFiles` before the blobs are pushed, again under
+  the claims in `claimTag`; `confirm` reports `Existed`.
+- **Tests.** `TestUploadRepeat`, `TestUploadRepeatRace`, `TestIngest`, `TestSessionRepeat`; R-02 in
+  `raw.sh`, the repeats of `pypi.sh`, `apt.sh`, `maven.sh` and `oras.sh` (E-01).
+- **When violated.** Not observed.
+- **Status.** `holds`.
+
+### G-9. A version is published whole, or not at all
+
+- **Statement.** A version appears in the index with all its files or not at all, and a publish
+  that is refused (`4xx`) pushes no manifest.
+- **Scope.** Managed repos. A maven version is one commit of its publication session; npm, pypi,
+  apt and raw one request; `/v2` one manifest. Blobs uploaded before a refusal stay in the
+  registry for its garbage collector.
+- **Assumes.** Any.
+- **Mechanism.** One manifest per (package, version, variant) (ADR 0005); validation, the profile
+  and the claims run before the manifest push (`ingest.Pipeline.validate`, `claimTag`);
+  `ingest.Pipeline.Commit` publishes a session's files at once, and an expired session publishes
+  nothing.
+- **Tests.** `TestIngestInvalid`, `TestIngestSpelling`, `TestManifestLayersBound`,
+  `TestSessionCommit`, `TestSessionCommitOnce`, `TestSessionExpiry`, `TestDeployInterrupted`,
+  `TestDeployExpiry`; `maven.sh` (M-01: one manifest with four file layers).
+- **When violated.** Not observed.
+- **Status.** `holds`.
+
+### G-10. A case variant never squats another spelling
+
+- **Statement.** Names that differ only in ASCII case share one package path, the first spelling
+  published holds it, and a publish of another spelling is `409` naming the first, refused before
+  its manifest or its files are stored.
+- **Scope.** Managed repos and every write path; raw paths, maven coordinates, and the names of
+  every format whose package path folds case.
+- **Assumes.** Database: as G-6.
+- **Mechanism.** `ingest.Pipeline.claimPath` (the claim on the package path with the digest of
+  the spelling) and `ingest.packageOf` under the claims; earlier, before a file is stored,
+  `raw.checkSpelling` and maven's `deployer.checkSpelling`.
+- **Tests.** `TestIngestSpelling`, `TestIngestSpellingRace`, `TestIngestPathClaim`,
+  `TestManifestHookSpelling`, `TestManifestHookSpellingMaven`, `TestDeploySpelling`,
+  `TestFirstSpellingWins`, `TestIngestSpellings` (pypi); R-09 in `raw.sh`.
+- **When violated.** Not observed. Threat model F-5.
+- **Status.** `holds`, with G-6's note on rolling upgrades.
+
+### G-11. A blob is stored only under its own digest
+
+- **Statement.** No blob is completed in the registry through Lajstrom under a digest that its
+  bytes do not have, whether the registry checks digests or not.
+- **Scope.** `/v2` uploads (monolithic, chunked, a `POST ?digest=`), across replicas; the blobs
+  ingest pushes for a frontend upload, a proxy fetch and a metadata layer. Not a mount and not a
+  blob the registry already has: nothing streams, and they rely on the registry (**digest check**,
+  **scoped blobs**). What Lajstrom serves is not hashed on the way out ([Not
+  guaranteed](#not-guaranteed)).
+- **Assumes.** Registry: none for what streams through Lajstrom. Database: **one database** for a
+  chunked upload across replicas.
+- **Mechanism.** `facade.verifier` hashes a `/v2` upload as it streams and holds its last byte
+  back until the hash is known; between chunks the sha256 state is in the session row
+  (`uploadState`), and `facade.closingHash` asks the backend's offset after a failed chunk.
+  Ingest's own pushes and reads go through `ingest.verifier` (`target.pushBlob`,
+  `publish.readMetadata`, `publish.metadataUnreadable`, a whole read of `fetchedBlob`).
+- **Tests.** `TestUploadVerifiesDigest`, `TestUploadVerifiedAcrossReplicas`, `TestUploadBrokenBody`,
+  `TestVerifierShortReads`, `TestUploadDigestInvalid`, `TestIngestFetcher`, `TestFetchedBlob`,
+  `TestUploadErrors` (ingest).
+- **When violated.** The upload is `400 DIGEST_INVALID` and its session ends; ingest's is
+  `ErrInvalid`. A range read of a plugin's `Validate` (`fetchedBlob.ReadAt`: a zip's directory,
+  a `.deb`'s control member) cannot be hashed and trusts the registry.
+- **Status.** `holds` ([#368](https://github.com/lajstrom/lajstrom/issues/368)); the residue of
+  threat model P-9 (two requests of one session at once, on a backend that checks neither
+  offsets nor digests) is accepted.
+
+### G-12. A managed repo holds only manifests of the profile
+
+- **Statement.** Every manifest that Lajstrom indexes in a managed repo satisfies
+  manifest-profile.md (§5's checks and the plugin's `Validate`), and only the proxy fetcher
+  writes the `lajstrom.origin.*` annotations.
+- **Scope.** Managed repos, every write path, and reindex for what it finds in the registry
+  (a manifest that fails is an error of the report, never indexed). Referrers are passed through
+  as they came (§6), and foreign manifests are listed, never indexed.
+- **Assumes.** Registry: **scoped blobs** for the layer checks. Database: any.
+- **Mechanism.** `profile.Validate`; `facade.handler.putManaged` validates the profile before it
+  asks the registry (`checkLayers`); `ingest.Pipeline.validate` (target, sizes, blobs, the
+  plugin's `Validate`), `publish.checkOrigin`; reindex goes through `Inspect`.
+- **Tests.** `TestValidate`, `TestValidateReportsAll`, `FuzzValidate`, `TestManifestHookInvalid`,
+  `TestIngestInvalid`, `TestInspectInvalid`, `TestOriginRefused`, `TestForeignAndReferrers`, and
+  each format's `TestBuildValidate`, `TestValidateRefuses`, `TestBuildRefuses`.
+- **When violated.** `400 MANIFEST_INVALID` naming the rule (http-routing.md §2), or the
+  format's `400`.
+- **Status.** `holds`.
+
+## Delete
+
+### G-13. A delete changes the index, the caches and the audit log at once
+
+- **Statement.** A delete removes the manifest and its referrers from the registry first, then,
+  in one transaction, the version's rows (its package's when it was the last), the repo's
+  rendered documents and writes the audit row; a backend that cannot delete changes nothing.
+- **Scope.** `DELETE` on `/v2`, the raw frontend, `/api/v1` versions, npm's unpublish. Several
+  versions in one request (a raw path, an npm package, a version with every variant) are
+  deleted one by one: those deleted before a failure stay deleted (http-routing.md §4).
+- **Assumes.** Registry: **read-after-write** (**unchecked**): a reconcile that lists a just-deleted
+  tag adds its rows back until the next run. Database: any.
+- **Mechanism.** `ingest.Pipeline.Delete`: `deletion.find`, `deletion.deleteInBackend` (under the
+  tag lock, the first request a plain delete so that a refusal changes nothing),
+  `deletion.record` (rows, `InvalidateIndexCache`, `AppendAudit` in one `Store.Tx`).
+- **Tests.** `TestDeleteVersion`, `TestDeleteRefused`, `TestDeleteNotFound`, `TestDeleteRowsFail`,
+  `TestDeleteThenReindex`, `TestDeleteKeepsPackage`, `TestDeleteReferrer`, `TestDeleteManifests`,
+  `TestDeleteTagged`, `TestTagPushAndDelete`, `TestDeleteInvalidatesIndexes` (deb),
+  `TestDeleteGoneAndAuditWriter` (raw), `TestIntegrationDelete`,
+  `TestIntegrationDeleteUnsupported`, `TestIntegrationDeleteRefused`; R-07 in `raw.sh`, the deletes
+  of `oras.sh` and the unpublishes of `npm.sh`.
+- **When violated.** When the transaction fails after the registry deleted the manifest, the
+  client gets `500` saying so, the rows and the cached documents stay until reindex removes them,
+  and the delete has no audit row (G-14).
+- **Status.** `partly`: atomic across the index, the caches and the audit log; not across them
+  and the registry, which no transaction spans.
+
+## Audit
+
+### G-14. Every write has an audit row
+
+- **Statement.** Every write through Lajstrom (a push, a delete, a journal entry, a proxied
+  ingest) and every change of the control plane has one audit row, written in the transaction
+  of the change, with the principal, the action, the repo, the subject, the digest, the client
+  address and the request id.
+- **Scope.** As rbac.md §5 and §7; reads and the bearer tokens of `/v2/token` are not audited. A
+  reindex writes one row when it starts (`repo.reindex`), the reconcile loop one row per repo it
+  changed (`reconcile`), not one per version.
+- **Assumes.** Database: any. The wiring of `serve`, which sets no `audit.Writer` (a test seam
+  that writes after the commit and only logs a failure).
+- **Mechanism.** `ingest.Pipeline.writeRows` (publish), `deletion.record`, `journal.record`,
+  `ingest.Pipeline.auditReferrer`, the `auth.Users`, `auth.Tokens` and `auth.Bindings` changes,
+  `api` repo changes, `facade.handler.recordPassThrough` for an `oci` repo; the address and the
+  request id through `ingest.withOrigin`.
+- **Tests.** `TestIngestAuditWriter`, `TestPushAuditOrigin`, `TestOCIPushAudit`,
+  `TestRequestIDInAudit`, `TestClientAddrInAudit`, `TestPrincipalInAudit`, `TestTokensAPIAudit`,
+  `TestTokensAuditWriter`, `TestTokensCreatedBy`, `TestUsersAuditWriter`,
+  `TestDeleteGoneAndAuditWriter`, `TestAuditAPI`, `TestReconcile`; the audit rows checked by
+  `oras.sh` (#245) and `npm.sh` (`proxy.fetch`).
+- **When violated.** A write without its row is logged at error. Writes straight to the registry
+  have no row by construction; the reconcile row counts what they changed in the index.
+- **Status.** `partly`. A push to an `oci` repo writes its row after the registry push, in a
+  transaction of its own whose failure is only logged; a delete whose index transaction fails
+  after the registry delete has none (G-13). **Untested:** acceptance.md S-09 (one row per write
+  of the whole suite) is not automated.
+
+## Access
+
+### G-15. A denial is decided before the input is read
+
+- **Statement.** A principal that may not do a request gets the denial of rbac.md §3 whatever the
+  input: before the body is read, before a digest, a tag or a name is parsed, before the repo is
+  looked up where the rule says so.
+- **Scope.** `/v2` (with a bearer and without), the management API (creating a repo, creating a
+  token, the system resources), the frontends.
+- **Assumes.** Any.
+- **Mechanism.** `facade.handler.authorize` first in every handler, `facade.namedByToken` before
+  `resolve`; `api` checks the admin role and `auth.MayCreatePAT` before `decodeBody`; the
+  frontends call `format.Authorize` at the start of each handler (`raw.handlers.start`,
+  `pypi.handlers.start`, npm's `publish`, maven's deployer, deb's upload).
+- **Tests.** `TestDenialBeforeInput`, `TestBearerExistence`, `TestTokensAPINoMint`,
+  `TestAuthorization` (facade, api, raw), `TestUploadAuthorize` (deb), `TestPublishDenied` (npm),
+  `TestResolveAuthorize` (maven); `rbac.sh`.
+- **When violated.** A denial that depends on the input tells whether a repo exists (threat model
+  R-2, fixed in #260).
+- **Status.** `holds`. **Untested:** on the frontends, no test sends a malformed body or path to
+  a repo the principal may not read.
+
+### G-16. A denial does not tell whether a repo exists
+
+- **Statement.** `anonymous` gets `401` on a repo it may not read and on a missing one alike; an
+  authenticated principal without `read` gets `404`, the answer for a missing repo; `403` only
+  to a principal that can read the repo; lists name only readable repos.
+- **Scope.** Every route of rbac.md §3: frontends, `/v2` (with and without a bearer, `_catalog`,
+  the token endpoint's scopes), `/api/v1`. Not the time an answer takes ([Not
+  guaranteed](#not-guaranteed)).
+- **Assumes.** Any.
+- **Mechanism.** `format.Authorize` (the credential's limit, then the bindings; `404` when the
+  credential refuses and the user may not read), the repo middleware, `facade.repoUnknown`,
+  `facade.unknownScopes`, `facade.handler.catalog`, `token.Reduce`.
+- **Tests.** `TestAuthorizeRBAC`, `TestAuthorizeScopeOfAUser`,
+  `TestRepoMiddlewareMissingRepoByPrincipal`, `TestBearerExistence`, `TestBearerCatalog`, `TestCatalog`, `TestListFiltered`, `TestAuthorization`
+  (facade, raw, api), `TestReferrersAccess`; `rbac.sh` (S-02, S-08, X-05).
+- **When violated.** Threat model R-1 to R-4.
+- **Status.** `holds`.
+
+### G-17. An authorization change counts from the next request on every replica
+
+- **Statement.** A binding created or deleted, a repo created or deleted, a repo's
+  `anonymousRead` changed, a user disabled or a token revoked counts from the next request on
+  every replica; a bearer token already issued keeps its access until it expires (20 minutes),
+  except on a deleted repo, which is unknown at once.
+- **Scope.** Frontends and `/api/v1` at once; `/v2` at the client's next `/v2/token`.
+- **Assumes.** Database: **one database**. When `auth_version` cannot be read, the request is an
+  error, never a decision.
+- **Mechanism.** Every such change moves `auth_version` in its transaction; `auth.RBAC.current`
+  reads it before an evaluation and reloads the snapshot when it moved (`RBAC.fresh`,
+  `RBAC.load`); tokens are looked up on every request (`auth.Authenticator`).
+- **Tests.** `TestRBACNextRequest`, `TestRBACIndexDown`, the store conformance case `AuthVersion`,
+  `TestTokensRevoke`; `rbac.sh` (S-07), the control-plane step of `ha.sh`, S-05 in `tokens.sh`.
+- **When violated.** Not observed.
+- **Status.** `holds`.
+
+### G-18. A credential never grants more than it says
+
+- **Statement.** A deploy token acts on its one repo with its `read` and `write` scopes and never
+  `delete` or `manage`; a personal access token's scopes only narrow its user's rights; a token
+  never creates a personal access token; a bearer token never carries an action its credential
+  lacks.
+- **Scope.** Every protocol, the bearer of `/v2` included.
+- **Assumes.** Any.
+- **Mechanism.** `auth.Credential.Limit`, `token.ParseScopes`, `token.Reduce` (at most 100
+  repositories a request), `auth.MayCreatePAT` (asked by `api.createToken` and again by
+  `auth.Tokens.CreatePAT`).
+- **Tests.** `TestCredentialLimit`, `TestReduce`, `TestReduceCredential`, `TestParseScopes`,
+  `TestTokenScopesBound`, `TestTokensAPINoMint`, `TestTokensAPIAuthorization`,
+  `TestTokensCreatedBy`, `TestAuthorizeCredential`; `tokens.sh`, `rbac.sh` (S-04), acceptance.md
+  X-14.
+- **When violated.** Threat model T-1, T-6, T-8, T-9.
+- **Status.** `holds`.
+
+### G-19. A bearer token verifies on every replica, and only under a live key
+
+- **Statement.** A token issued by one replica verifies on every replica while its key is active
+  or retired within the token lifetime plus 60 seconds of skew; it verifies nowhere once its key
+  is dropped, within a second; the verifier accepts only the algorithm of the key the `kid`
+  names.
+- **Scope.** `/v2/token` and the bearer of `/v2`, with `server.externalURL` set: without it the
+  audience is the request's `Host` (threat model T-2, [#248](https://github.com/lajstrom/lajstrom/issues/248)).
+- **Assumes.** Database: **one database** with one master key on every replica (without a master
+  key each replica signs with an ephemeral key of its own, and says so at start); **clocks
+  agree**.
+- **Mechanism.** ADR 0010: the key is a `keys` row of kind `jwt` under the master key;
+  `keys.Tokens.TokenVerifiers`; `token.Verifier.Verify` (`iss`, `aud`, `exp`, `nbf`, `iat`, the
+  `kid`, the algorithm pinned per key, a reload at most once a second for an unknown `kid`).
+- **Tests.** `TestTokenAcrossReplicas`, `TestIntegrationTokenAcrossReplicas`, `TestVerifierReload`,
+  `TestVerifierFlood`, `TestVerifyRefusals`, `TestVerifyTimes`, `TestRotationGrace`,
+  `TestRotateToken`, `TestDropToken`, `TestTokenUndecryptable`, `TestEphemeralTokens`;
+  `oci-token.sh`, `ha.sh` H-12.
+- **When violated.** `401` and a new token from the client's credentials.
+- **Status.** `holds`.
+
+### G-20. Credentials go only where they belong
+
+- **Statement.** The registry's credentials are sent only to the registry's origin and to a token
+  realm it is allowed to name, never over a downgrade to `http`; an upstream's credentials only
+  to the upstream's origin; a client's credentials never reach a registry or an upstream.
+- **Scope.** The generic provider (manifests, blobs and their redirects, upload sessions, the
+  bearer challenge) and the proxy's upstream client.
+- **Assumes.** The registries of the matrix: the realm and redirect checks were not probed on
+  ECR, GHCR, Harbor and the rest (threat model §6). oras-go's `auth.Client` drops `Authorization`
+  on a cross-origin redirect (**unchecked** by a test of ours for that client).
+- **Mechanism.** `generic.Provider.location`, `generic.Provider.blobRequest`,
+  `generic.realmTransport` with `refuseRealm` and `realmHosts` (`registries[].tokenRealmHosts`);
+  `proxy.Upstream.authorize`, `checkRedirect`, `checkTarget`; the fetcher's requests are its own
+  (`User-Agent: lajstrom/<version>`), and a forwarded request carries only what the plugin names
+  (`Proxy.Forward`).
+- **Tests.** `TestBlobRedirectDowngrade`, `TestBlobRedirectLeavesOrigin`, `TestTokenRealm`,
+  `TestRefuseRealm`, `TestUploadDowngrade`, `TestSameOrigin`, `TestCredentials`, `TestRedirects`,
+  `TestForward`, `TestProxyRequestHost`, `TestLoadNestedPrefixes`.
+- **When violated.** Threat model P-2, P-3, P-4.
+- **Status.** `holds`.
+
+### G-21. No secret is logged
+
+- **Statement.** No password, token secret, bearer token, `Authorization` or `Cookie` value,
+  master key, registry or upstream credential, database DSN or presigned URL appears in a log
+  line, an error message or a metric label.
+- **Scope.** Every log of `serve` and the CLI, at every level.
+- **Assumes.** Any.
+- **Mechanism.** `server.Server.accessLog` (method, path, status, principal, addresses; never the
+  query, a header or a body); the redacting `String` of `token.Token`, `keys.TokenKey`,
+  `config.RegistryAuth`; the provider's `logTransport` and `withoutURL`; `postgres.Open`; the
+  proxy logs no body and no redirect target (threat model L-1 to L-4).
+- **Tests.** `TestTokensNeverLogged`, `TestRedactSecrets`, `TestTokenRedacted`,
+  `TestTokenKeyRedacted`, `TestEntityRedacted`, `TestMasterRedacted`, `TestOpenDoesNotLeakTheDSN`,
+  `TestAccessLog`, `TestBearerAccessLog`, `TestRetryLog`.
+- **When violated.** Not detected by Lajstrom.
+- **Status.** `partly`: at `debug`, a typed user name that may be a mistyped password is logged
+  for an unknown user, and the `kid` an attacker sends is logged without a length bound (threat
+  model L-3). **Untested:** acceptance.md C-07 (grep the logs of both replicas for every secret
+  the suite used) is not automated.
+
+### G-22. The client address comes only from a trusted proxy
+
+- **Statement.** `X-Forwarded-For` is read only when the peer is in `server.trustedProxies`,
+  right to left, the first untrusted hop being the client; the result is the address of the
+  access log, of `audit.ip` and of the per-address throttles, and no other code reads a
+  forwarded header.
+- **Scope.** Every request. `audit.ip` is exactly as reliable as the chain in front (ADR 0011).
+- **Assumes.** Any.
+- **Mechanism.** `server.resolveClient`, `server.ClientAddr`.
+- **Tests.** `TestResolveClient`, `TestClientAddress`, `TestClientAddrInAudit`,
+  `TestAddressThrottle`; the client-address step of `ha.sh`.
+- **When violated.** Threat model N-1.
+- **Status.** `holds`.
+
+## Bounds
+
+### G-23. Every request is bounded in size
+
+- **Statement.** No request makes a replica hold more than the documented bounds: a manifest of
+  `server.maxManifestSize` (4 MiB) with at most 1 000 layers, a management body of 64 KiB, 100
+  repositories a token request, a frontend file of the repo's `policy.maxFileSize`, the npm
+  bounds of http-routing.md (a publish body besides its tarball 4 MiB, an audit body 16 MiB), an
+  upstream document of `upstreams[].maxMetadataSize`, `server.maxConcurrentUploads` uploads at
+  once, a body that stops moving for `server.stallTimeout`.
+- **Scope.** Every route; a `/v2` blob upload only as far as the list below says.
+- **Assumes.** Any.
+- **Mechanism.** `facade.readManifest`, `api` body limits, `token.Reduce`, `format.MaxFileSize`
+  and `format.LimitBody`, `server.Server.limitUploads`, `server.Server.stall`, npm's `readBody`,
+  `proxy.readDocument`.
+- **Tests.** `TestManifestHookSize`, `TestManifestLayersBound`, `TestOversizedBody`,
+  `TestTokenScopesBound`, `TestIngestMaxFileSize`, `TestPutMaxFileSize`, `TestUploadMaxFileSize`
+  (deb, facade), `TestManifestHookMaxFileSize`, `TestMaxFileSize`, `TestLimitBody`,
+  `TestReadBodyBounded`, `TestDocumentLimits`, `TestForwardBounds`, `TestMaxUploads`,
+  `TestStallRequestBody`, `TestStallResponse`.
+- **When violated.** `413`, `400` naming the bound, or `503` with `Retry-After`.
+- **Status.** `partly`: a `/v2` blob is not bounded by `maxFileSize` or the registry's
+  `maxBlobSize`, open upload sessions and a maven session's files have no bound, and
+  `maxFileSize` and `maxConcurrentUploads` are unlimited by default (threat model U-3 to U-6;
+  [#246](https://github.com/lajstrom/lajstrom/issues/246)); the bytes of `$TMPDIR` a replica may
+  hold have no budget ([#427](https://github.com/lajstrom/lajstrom/issues/427)).
+
+### G-24. A parser allocates in proportion to its input, within a fixed cap
+
+- **Statement.** No package a client uploads, and no document an upstream serves, makes a parser
+  allocate or work beyond the caps of threat model F-4: archive bombs, entry floods, entity
+  expansion and oversized metadata are refused within seconds.
+- **Scope.** The parsers of deb, pypi, maven and npm, the profile's `Validate`, the proxy's
+  documents.
+- **Assumes.** Any.
+- **Mechanism.** deb `capReader` and `xzReader.startBlock`, `pypi.checkZipEntries`,
+  `pypi.readTarGzFile`, `npm.ReadTarball`, the size caps of POM, `maven-metadata.xml`, wheel
+  `METADATA` and checksum files; `encoding/xml` expands no entities.
+- **Tests.** `TestXZBlocks`, `TestSdistBombs`, `TestZipBombs`, `TestTarballBombs`,
+  `TestParsePOMExpansionBounded`, `TestParseControlLimit`, `TestMetadataTooLarge`, and the fuzz
+  targets of testing.md (`FuzzZipEntries`, `FuzzPackageJSON`, `FuzzParse`, `FuzzPOM`, …), which
+  check that allocation grows with the input (`testutil.CheckAllocated`).
+- **When violated.** `400` or `413` naming the bound.
+- **Status.** `holds`.
+
+### G-25. A replica's memory does not grow with the size of a file
+
+- **Statement.** Uploads and downloads stream; only bounded metadata is read into memory, so a
+  replica's heap does not grow with the size of a blob or the number of bytes in flight.
+- **Scope.** Every download (`format.ServeBlob`), `/v2` uploads, frontend uploads (spooled to
+  disk, G-1), the proxy fetch.
+- **Assumes.** Any.
+- **Mechanism.** `format.ServeBlob` through a fixed buffer, `facade` request bodies passed to the
+  provider's session, `format.Spool`; the bounded reads of operations.md, Performance.
+- **Tests.** `TestStreamingMemory` (1 GiB up and down through `/v2`, heap under 64 MiB),
+  `TestUploadDoesNotHoldTheFile`, `TestStream1GiB`; the load test (`make load`, acceptance.md
+  N-01), nightly and not required.
+- **When violated.** Not observed.
+- **Status.** `holds`.
+
+## Replicas and caches
+
+### G-26. Replicas coordinate through the database
+
+- **Statement.** Any replica continues what another began (a `/v2` upload session, a maven
+  publication session), and the claims and locks of index-schema.md exclude across replicas: one
+  publish per tag (G-6), one reindex run per scope, one proxy fetch per artifact, one referrers
+  index or journal append at a time per subject or package, one open session per key, one
+  active key per kind and owner.
+- **Scope.** Every replica of one deployment.
+- **Assumes.** Database: **one database**, **Postgres for replicas** (**unchecked**: H-14),
+  **clocks agree** (**unchecked**).
+- **Mechanism.** `tag_claims` (`Writer.ClaimTag`), `reindex_runs` (`Writer.StartReindexRun` under
+  `pg_advisory_xact_lock` or `BEGIN IMMEDIATE`), `fetch_claims` (`Writer.ClaimFetch`, a heartbeat
+  every 30 s, stale after 2 minutes), `Store.WithReferrersLock` (the referrers, tag and journal
+  locks), the unique indexes `sessions_open_key` and `keys_active`, the `sessions` rows of
+  uploads (`facade` `uploadState`).
+- **Tests.** The store conformance cases `TagClaimRace`, `ReindexRunRace`, `FetchClaimRace`,
+  `KeyRace`, `SessionsConcurrent`, `JournalRace`, `PackageNameOCIRace`, `ReferrersLock`;
+  `TestUploadAcrossReplicas`, `TestMonolithicUploadAbandoned`,
+  `TestIntegrationUploadAcrossReplicas`, `TestSessionConcurrent`, `TestSessionCommitOnce`, `TestKeyForRace`, `TestTokenSignerRace`,
+  `TestRuns`, `TestTakenOver`, `TestStaleFetchClaims`, `TestFileTwoReplicas`, `TestFileClaims`,
+  `TestIntegrationReferrersConcurrent`, `TestIntegrationJournalReplicas`, `TestBootstrapReplicas`;
+  `ha.sh` H-02, H-03, H-04, H-09, H-12, H-13 and the step of #28.
+- **When violated.** Two replicas on one SQLite file, or clocks that disagree by more than the
+  stale bounds, can take over a live claim; nothing reports it.
+- **Status.** `holds`. **Untested:** acceptance.md H-05 to H-08 and H-11 (a replica killed in an
+  upload, Postgres and the registry restarted under load, a maven deploy across replicas, an apt
+  upload seen through the other replica within a second; testing.md, The ha stack).
+
+### G-27. A cached document is invalidated by every change it depends on
+
+- **Statement.** After a publish, a delete, a journal append, a reindex, a key rotation or a
+  write of an upstream's document commits, no replica serves a rendered document of the repo
+  that predates it.
+- **Scope.** `index_cache` (apt, pypi, maven, raw listings, npm packuments, a proxy's documents);
+  the snapshot of the bindings (G-17) and the cache of token keys (G-19) have their own entries.
+  A group caches nothing.
+- **Assumes.** Database: as below.
+- **Mechanism.** Each change invalidates in its own transaction (`Writer.InvalidateIndexCache` in
+  `ingest.Pipeline.writeRows`, `deletion.deleteRows`, `journal.record`, `reindex.Worker.repo`, the
+  `proxy_meta` writes); `format.CachedDocument` renders lazily, in one transaction with its read.
+- **Tests.** `TestCachedDocument`, `TestCachedDocumentErrors`, `TestRoutesCache`,
+  `TestRoutesNewRender`, `TestRoutesSignedAfterPublish`, `TestPackumentCache`,
+  `TestDeleteInvalidatesIndexes`, `TestIndexCache` (formattest), `TestDocumentCache`; `ha.sh`
+  H-13.
+- **When violated.** On Postgres (read committed), a render that began before an invalidation
+  can store its stale document after it, and the document is served until the next invalidation
+  of the repo: the next change, or the next reconcile run (each run invalidates every repo it
+  reads), which `reconcile.interval: 0` turns off.
+- **Status.** `partly`: holds on SQLite, whose fill and invalidation cannot interleave; on
+  Postgres the window above is open (`format.CachedDocument` says so). **Untested:** acceptance.md
+  A-09 and H-11 are not automated.
+
+### G-28. A migration is applied exactly once
+
+- **Statement.** Each schema migration is applied once, in a transaction that records it, also
+  when several replicas and the CLI start at once.
+- **Scope.** `lajstrom migrate` and the start of `serve`, both engines. Which binary versions may
+  run against which schema during a rolling upgrade is not guaranteed
+  ([#225](https://github.com/lajstrom/lajstrom/issues/225)).
+- **Assumes.** Database: **one database**.
+- **Mechanism.** `index.ApplyMigrations` under the migration lock (`pg_advisory_xact_lock`,
+  `BEGIN IMMEDIATE`).
+- **Tests.** `TestConcurrentMigrate`, `TestFileMigrate`, `TestMigrationVersions`,
+  `TestMigrationVersion`, `TestMigrate`.
+- **When violated.** Not observed.
+- **Status.** `holds`.
+
+## npm
+
+### G-29. The journal has one order, and its replay is the state
+
+- **Statement.** A package's dist-tag and deprecation changes are journal entries numbered from 1
+  without gaps in the order of the package's journal lock, never rewritten, and the state the
+  packument serves is the fold of the entries in `seq` order, which reindex replays to the same
+  state.
+- **Scope.** Hosted npm repos. A proxy journals nothing: its dist-tags are the upstream's.
+- **Assumes.** Registry: **read-after-write** (**unchecked**): a writer that crashed after its
+  push leaves an entry the next append must see to adopt it, and a lagging registry hides it,
+  so the next append pushes its own entry under that tag. Database: **Postgres for replicas**
+  (on SQLite the journal lock is a lock of the process).
+- **Mechanism.** `ingest.Pipeline.Journal`: under `Store.WithReferrersLock` (the package's OCI
+  repository and the empty blob's digest), `journal.append` reads the last `seq`, `journal.adopt`
+  takes the entries the registry has after it, `journal.push`, `journal.record` (rows, the folded
+  state, the invalidation and the audit rows in one transaction); `profile.JournalState.Apply`
+  folds; `reindex.replay` replays and reports what breaks the rules.
+- **Tests.** `TestJournal`, `TestJournalConcurrent`, `TestJournalAdopts`, `TestJournalRefused`,
+  `TestJournalDelete`, `TestIntegrationJournalReplicas`, the store conformance cases `Journal`,
+  `JournalState`, `JournalCascades`, `JournalRace`, `TestJournalState` (profile),
+  `TestJournalReindex`, `TestJournalReindexLost`, `TestJournalReindexOrphans`, `TestDistTags`,
+  `TestDeprecate`, `TestDeleteJournalEntry`; the dist-tag and deprecate steps of `npm.sh`.
+- **When violated.** Reindex reports an entry whose annotations, tag or name break the rules, a
+  missing `seq`, and orphans (`orphanJournal`); an entry that breaks the rules stops the next
+  append until the operator removes it.
+- **Status.** `holds on strongly consistent registries only` ([#446](https://github.com/lajstrom/lajstrom/issues/446)).
+
+### G-30. The packument never says other than what the tarball installs
+
+- **Statement.** A version's document in the packument agrees with its tarball's `package.json`,
+  after npm's three normalisations, on `name`, `version`, every kind of dependency, `bin` and
+  the install scripts; `hasInstallScript` and `_hasShrinkwrap` are read from the tarball.
+- **Scope.** Versions published to a hosted npm repo by `npm publish` (and pnpm and yarn, which
+  send npm's body) or by `oras push`. Not a proxy's packument, which is the upstream's document.
+- **Assumes.** Any.
+- **Mechanism.** npm's `checkInstall`, `Tarball.normalise`, `facts.check`, the plugin's `Validate`.
+- **Tests.** `TestPublishRefuses`, `TestNormalise`, `TestNormaliseCaptured`, `TestNormaliseBinDir`,
+  `TestBuildValidate`, `TestValidateRefuses`, `TestReadTarball`, `FuzzPackageJSON`; the publishes
+  of `npm.sh`.
+- **When violated.** `400` naming the key. A normalisation that a later npm adds is a `400` for an
+  honest package until ADR 0012 adds it.
+- **Status.** `holds`.
+
+## Proxy and group repos
+
+### G-31. A proxy downloads an artifact once, and checks it before it keeps it
+
+- **Statement.** Concurrent misses of one artifact download it once, on one replica or across
+  replicas; nothing is pushed unless the strongest checksum the upstream's document gives
+  matches the downloaded bytes, and a file without a checksum is refused; one replica asks the
+  upstream for one name's document once at a time.
+- **Scope.** Proxy repos (npm in M4), directly and through a group.
+- **Assumes.** Registry: **read-after-write** (**unchecked**) for the waiters, which look the
+  version up in the index and are then served from the registry. Database: **Postgres for
+  replicas**, **clocks agree**. The upstream's document and file come over the same channel: the
+  checksum proves the transfer, not the upstream's honesty.
+- **Mechanism.** `proxy.flights.join` on a replica; `proxy.Core.claim` (`fetch_claims`),
+  `Core.heartbeat`; `Core.download` with `strongest`; `Core.reject` writes `proxy.reject`.
+- **Tests.** `TestFileOneFetch`, `TestFileTwoReplicas`, `TestFileClaims`, `TestFileChecksum`,
+  `TestFileRefused`, `TestFileMiss`, the store conformance case `FetchClaimRace`; `npm.sh` (each
+  tarball fetched once, `proxy.fetch` in the audit log).
+- **When violated.** A checksum mismatch is `502`, an audit row `proxy.reject` and a warning
+  naming both values.
+- **Status.** `partly`: files hold; concurrent misses of one document on one replica each ask the
+  upstream ([#383](https://github.com/lajstrom/lajstrom/issues/383)).
+
+### G-32. A proxy reaches only what the operator configured
+
+- **Statement.** The URL and the credentials of an upstream come only from the configuration; a
+  URL on another host, from a document or a redirect, is followed only over `https` and only to
+  public unicast addresses; a redirect from `https` to `http` is refused.
+- **Scope.** Proxy repos and the requests forwarded through them (npm audit).
+- **Assumes.** Any; with an egress proxy, Lajstrom refuses an address literal of a private range
+  and the egress proxy enforces the rest.
+- **Mechanism.** `config` (`upstreams[]`), `proxy.ParseSettings` (a repo names an upstream, never
+  a URL), `proxy.Upstream.checkRedirect`, `checkTarget`, `dialFunc` and `public`.
+- **Tests.** `TestPublic`, `TestRedirects`, `TestEgressProxy`, `TestLoadUpstreams`,
+  `TestLoadUpstreamErrors`, `TestParseSettingsErrors`, `TestPatchUpstreamInvalid`,
+  `TestCreateProxyInvalid`, `TestForwardErrors`.
+- **When violated.** `502` (http-routing.md §6); threat model S-1.
+- **Status.** `holds`.
+
+### G-33. A proxied artifact is an ordinary artifact
+
+- **Statement.** What a proxy fetched is a manifest of the profile in the registry, with its
+  origin in annotations, so it survives the loss of the database and of the upstream, and
+  reindex rebuilds it; `proxy_meta` is a cache whose loss costs upstream requests only.
+- **Scope.** Proxy repos.
+- **Assumes.** As G-3.
+- **Mechanism.** The fetcher publishes through `Publisher.Upload` with an `Origin`
+  (`ingest.setOrigin`); reindex neither reads nor writes `proxy_meta`, and `ResetDerived` leaves
+  it.
+- **Tests.** `TestReindexProxied`, `TestUploadWithOrigin`, `TestFileUpstreamDown`,
+  `TestDocumentUpstreamDown`, `TestDocumentCache`; the proxy steps of `npm.sh`.
+- **When violated.** As G-3.
+- **Status.** `holds`.
+
+### G-34. In a group, a name the hosted member holds hides every proxy member's versions
+
+- **Statement.** When a group's hosted member has a package of a name's package path, no proxy
+  member's version or file of that name is served through the group and no upstream request is
+  made for it, unless the name matches `group.merge`.
+- **Scope.** Group repos (proxy-and-group.md §8). The rule holds only while the hosted member has
+  the name; `deny` on the proxy protects names that are not published yet.
+- **Assumes.** Database: any.
+- **Mechanism.** Not merged: the group repos of [#311](https://github.com/lajstrom/lajstrom/issues/311)
+  are draft pull requests.
+- **Tests.** None yet; `npm.sh` has a marked place for the group.
+- **When violated.** Dependency confusion (ADR 0013).
+- **Status.** `not yet` ([#311](https://github.com/lajstrom/lajstrom/issues/311)).
+
+## Referrers
+
+### G-35. Referrers are kept as they came, and none is lost to a race
+
+- **Statement.** A referrer pushed through Lajstrom is stored unchanged and listed by
+  `GET /v2/<name>/referrers/<digest>`; two referrers of one subject pushed at once, through one
+  replica or two, are both listed, also on a registry without the referrers API.
+- **Scope.** Managed and `oci` repos; the tag schema `sha256-<hex>` where the registry has no
+  referrers API.
+- **Assumes.** Registry: **GC keeps what is named** (**unchecked**): GitLab B deletes an untagged
+  referrer 24 hours after its push, and Nexus's task "Delete unused manifests" deletes one.
+  Database: **Postgres for replicas** (on SQLite the referrers lock is a lock of the process).
+- **Mechanism.** `ingest.Pipeline.PutReferrer` (`checkReferrer`, `pushReferrer` under
+  `Store.WithReferrersLock` without the API), the provider's tag-schema fallback
+  (`Repository.Referrers`).
+- **Tests.** `TestPutReferrer`, `TestPutReferrerRefused`, `TestPutReferrerOCI`, `TestReferrers`,
+  `TestReferrerPush`, `TestIntegrationReferrers`, `TestIntegrationReferrersConcurrent`,
+  `TestRebuildTagSchema`, `TestReferrerIndexDeleteRefused`; `cosign.sh` (on Zot and on
+  distribution), the step of #28 in `ha.sh`.
+- **When violated.** A referrer the registry collected is missing from the list; nothing reports
+  it.
+- **Status.** `partly`: no race loses one; a registry's garbage collector can.
+  [#326](https://github.com/lajstrom/lajstrom/issues/326) writes the tag schema as well on a
+  registry with the API, as insurance.
+
+## Operations
+
+### G-36. A replica that stops drains first
+
+- **Statement.** On `SIGTERM` or `SIGINT` a replica answers `/-/readyz` with `503`, refuses new
+  connections, lets the requests in flight finish within `server.shutdownTimeout`, and what an
+  abort leaves behind another replica can handle: an upload session in the index and the
+  registry, a publish not yet indexed for the next reconcile, a claim that goes stale.
+- **Scope.** `serve`.
+- **Assumes.** The orchestrator's grace period is longer than `server.shutdownTimeout`
+  (operations.md, Shutdown).
+- **Mechanism.** `server.Server.Run`, `server.Server.track`, `waitHandlers`.
+- **Tests.** `TestDrainCompletesUpload`, `TestDrainTimeoutAborts`, `TestDrainReadyz`,
+  `TestRunGracefulShutdown`, `TestRunShutdownTimeout`; `ha.sh` H-10.
+- **When violated.** The client of an aborted request retries.
+- **Status.** `holds`. **Untested:** H-05 (a replica killed, not stopped, in an upload).
+
+### G-37. Readiness says whether a replica can serve
+
+- **Statement.** `/-/readyz` is `200` only while the index database answers and every configured
+  registry answered `GET /v2/` with Lajstrom's credentials within the last minute, and `503`
+  while draining; `/-/healthz` is `200` while the process runs.
+- **Scope.** `serve`, `lajstrom healthcheck`.
+- **Assumes.** Any.
+- **Mechanism.** `server.Server.readyz`, the provider's `Pinger` every 20 s, the circuit breaker.
+- **Tests.** `TestReady`, `TestReadyFollowsTheRegistries`, `TestSystemEndpoints`, `TestPing`,
+  `TestBreakerOpensAndCloses`, `TestHealthcheck`.
+- **When violated.** Not observed.
+- **Status.** `holds`.
+
+## Decided, not built
+
+### G-38. A denied version is kept out of the protocol clients' indexes
+
+- **Statement.** A version that a policy rule or verdict denies is left out of every rendered
+  index, its download is `403` with the reason, its upload is refused at ingest, and a proxy
+  does not fetch it (ADR 0008); OCI pulls are refused only on a repo with `enforcePull`.
+- **Scope.** Every frontend, the proxy fetch, `/v2` as ADR 0008 says.
+- **Assumes.** As G-27 for the invalidation of rendered indexes when a rule changes.
+- **Mechanism.** None yet: the seams of ADR 0008 (one read path per plugin, `index_cache`
+  invalidation, the proxy's step 3).
+- **Tests.** None.
+- **When violated.** —
+- **Status.** `not yet` ([#101](https://github.com/lajstrom/lajstrom/issues/101)).
+
+### G-39. A repo encrypted at rest is unreadable without Lajstrom's key
+
+- **Statement.** On a repo with `policy.encryption.mode: at-rest`, every blob Lajstrom writes is
+  an ocicrypt ciphertext under a key the registry never sees, and is decrypted only on
+  Lajstrom's read path (ADR 0009).
+- **Scope.** Repos that turn it on.
+- **Assumes.** The master key, or the KMS, outlives the artifacts.
+- **Mechanism.** None yet: the two write paths and the one read helper that ADR 0009 keeps open.
+- **Tests.** None.
+- **When violated.** —
+- **Status.** `not yet` ([#114](https://github.com/lajstrom/lajstrom/issues/114)).
+
+## Summary
+
+| Id | Guarantee | Status | Markers |
+| --- | --- | --- | --- |
+| G-1 | artifact bytes only in the registry | holds | untested (H-05) |
+| G-2 | one write path | holds | untested (plugins could push) |
+| G-3 | the index rebuildable from the registry | strongly consistent only | unchecked (listings); untested (apt, pypi, maven; I-01 e2e) |
+| G-4 | a version in the index is readable | strongly consistent only | unchecked; untested |
+| G-5 | prune never removes what the registry holds | strongly consistent only | unchecked; untested |
+| G-6 | one winner among concurrent publishes | holds | |
+| G-7 | a tag is never re-pointed | strongly consistent only | unchecked |
+| G-8 | the idempotent repeat | holds | |
+| G-9 | a version whole or not at all | holds | |
+| G-10 | case variants never squat | holds | |
+| G-11 | a blob stored only under its digest | holds | |
+| G-12 | only manifests of the profile | holds | |
+| G-13 | delete atomic across index, caches, audit | partly | unchecked |
+| G-14 | every write has an audit row | partly | untested (S-09) |
+| G-15 | denial before input | holds | untested (frontends) |
+| G-16 | a denial hides existence | holds | |
+| G-17 | authorization changes count at once | holds | |
+| G-18 | a credential never grants more | holds | |
+| G-19 | bearer tokens across replicas, live keys only | holds | |
+| G-20 | credentials go only where they belong | holds | unchecked (oras-go redirects) |
+| G-21 | no secret logged | partly | untested (C-07) |
+| G-22 | the client address from trusted proxies only | holds | |
+| G-23 | every request bounded in size | partly | |
+| G-24 | parsers bounded | holds | |
+| G-25 | memory independent of file size | holds | |
+| G-26 | replicas coordinate through the database | holds | unchecked (SQLite, clocks); untested (H-05 to H-08, H-11) |
+| G-27 | cached documents invalidated | partly | untested (A-09, H-11) |
+| G-28 | a migration applied once | holds | |
+| G-29 | the npm journal's order and replay | strongly consistent only | unchecked |
+| G-30 | packument agrees with the tarball | holds | |
+| G-31 | proxy fetch once, checked | partly | unchecked |
+| G-32 | a proxy reaches only what is configured | holds | |
+| G-33 | a proxied artifact is ordinary | holds | |
+| G-34 | hosted names hide the upstream in a group | not yet (#311) | |
+| G-35 | referrers kept, none lost to a race | partly | unchecked (GC) |
+| G-36 | drain on stop | holds | untested (H-05) |
+| G-37 | readiness | holds | |
+| G-38 | denied versions kept out | not yet (#101) | |
+| G-39 | encryption at rest | not yet (#114) | |
+
+## Not guaranteed
+
+Behaviours people are likely to depend on, and must not. Each line says why; where a spec
+promises part of it, the line says which part stays a promise.
+
+- **The order of items in a list**, unless the contract states it. It states these: the raw
+  listing (by path, then `created`), apt's `Packages` (by name and version), npm search (by
+  name), a group's members (in member order), and the lists of api.md (repos by format and
+  name, users by name, bindings by id, tokens by creation, the audit log newest first). Not
+  stated, so not guaranteed: the order of `tags/list` and `_catalog` beyond what `n`, `last` and
+  `Link` need to continue a page, the keys of a packument's `versions` and `time`, the
+  manifests of a referrers index, the suites, components and architectures of a `Release`.
+- **The wording of a message.** Statuses, the OCI error codes and the six codes of `/api/v1`
+  (http-routing.md §4) are the contract, and so are the structured fields a spec names
+  (`detail.existing` of a `409 TAG_INVALID`). Where a spec says that a message names something (a
+  field, a digest, a bound, a backend), it does; the sentence around it may change in any
+  release. Parse the codes and the structured fields, never the text.
+- **Timing and latency.** Response times, throughput, the measurements of operations.md and the
+  targets of acceptance.md §7, how soon within its interval the reconcile loop runs, and whether
+  a denial takes as long as the answer for a missing repo (threat model R-5). What is
+  guaranteed are the bounds the specs and the configuration set: a token's 20 minutes and
+  60 seconds of skew, the TTLs, the timeouts, the second of `admin key rotate --token --drop`.
+- **The internal OCI layout.** What manifest-profile.md makes normative is guaranteed: the media
+  types, the annotations, the tags, the repository paths, the journal. Not guaranteed: the
+  bytes of a manifest Lajstrom builds (field order, whitespace), so its digest for the same file
+  differs between builds and may differ between releases; keys of a metadata layer beyond those
+  §2 lists; whether a blob is uploaded whole or in chunks, and whether it is mounted; the blobs
+  that refused or aborted uploads leave in the registry, which are its garbage collector's.
+- **Tags of `oci` repos.** They pass through, and are as mutable or immutable as the backend
+  makes them.
+- **The bytes Lajstrom serves are their digest.** A download streams what the registry sends,
+  unhashed (threat model §1): the registry is trusted to serve what it stored, and the clients
+  check (OCI clients the descriptor, apt the `Packages` hashes, pip `#sha256=`, npm `integrity`,
+  Maven the checksum files). A client that checks nothing (`curl` on the raw frontend) gets no
+  such guarantee from Lajstrom.
+- **The bytes of a rendered document across releases.** Its content, as the format's protocol
+  defines it, is guaranteed; its whitespace and field order, and so its `ETag` and its
+  `by-hash` name, may change in a release, and a reindex renders it again.
+- **The database as an interface.** SQL against any table: the derived and coordination tables
+  may be renamed freely (index-schema.md), and the queries operations.md shows are an operator's
+  aid. Read through `/api/v1`, the CLI, and `lajstrom admin export`.
+- **Opaque values.** Upload ids, the form and length of token secrets, the claims of a bearer
+  token beyond those rbac.md §4 names, generated request ids, run ids, an `ETag` whose form no
+  spec states. What a spec defines stays defined: a blob's `ETag` is its digest, an npm
+  document's its sha256, npm's `_rev` is `<seq>-<hex>`.
+- **Which replica answers.** Any replica may answer any request, and every answer is the same
+  but for what is per replica by design: the throttles of failed logins and of `/v2/token`
+  count per replica (auth.md; a shared one is [#282](https://github.com/lajstrom/lajstrom/issues/282)).
+- **Retries and backoff, beyond their keys.** configuration.md defines `registries[].retries`
+  and `upstreams[].retries`: which failures are retried, that only idempotent requests are sent
+  again, how many times by default, and a wait that doubles from 250 ms to at most 3 s. The
+  jitter within those waits, and the circuit breaker's thresholds and periods (operations.md,
+  Limits), are not guaranteed.
+- **Logs and metrics.** No log message, field or level of a line is stable: `log.format` chooses
+  text or JSON lines, and that is all the configuration promises. The metric series of
+  operations.md are documented, not declared stable, and so is the rule that no label carries a
+  repo or package name. What is guaranteed about logs is G-21.
+- **Registries outside the tested matrix.** A guarantee holds on a registry as far as
+  [registries/README.md](../registries/README.md) measured the properties it assumes: checked on
+  every pull request for the `CI` tier (distribution on the filesystem, Zot), as measured on its
+  date for the `manual` and `hosted` tiers, not at all for the `untested` ones (ECR, Quay, Azure
+  Container Registry, Docker Hub) and for versions other than the pinned ones.
+- **Anything marked preview or not committed.** The roadmap's "After v0.1.0 (preview, not
+  committed)", the work of draft pull requests, the plugin hooks of proxy-and-group.md §10
+  ("not a contract yet"), and the entries above with status `not yet`.
+- **A blob redirect or a stream.** Whether a download is a `307` to the backend's storage or a
+  stream is the backend's and the repo's policy's (http-routing.md §2): a client must follow
+  both. How long a presigned URL lives is the backend's.
+- **A raw file's sniffed `Content-Type`.** Without one in the metadata layer, the type is
+  sniffed, and the sniffing may change.
+- **Deduplication.** Whether one file in two repos is one blob is the registry's.
+- **The CLI's human output.** Tables, progress lines and their wording; `reindex --json` is the
+  `reindex.Report` of layout.md.
+- **The `details` of an audit row** beyond the keys rbac.md names (`createdBy`, the `proxy.fetch`
+  and `proxy.reject` keys, `via`).
+- **Writes straight to the registry.** Lajstrom indexes a profile manifest it finds there at the
+  next run and reports what it cannot index; until then it promises nothing about it.
+- **An upstream's cache.** A proxy's `proxy_meta` rows may be dropped at any time, and what a
+  proxy lists follows the upstream while it answers.
+
+## Gaps
+
+Every **untested** and **unchecked** marker above, and every `partly` and `not yet`, with what it
+costs and what would close it. "new issue" means that no issue tracks it yet.
+
+| Gap | Impact | Proposed fix | Issue |
+| --- | --- | --- | --- |
+| Read-after-write is assumed, never measured or tolerated (G-3, G-4, G-5, G-7, G-13, G-29, G-31) | on ECR: a download `404` after a `201`, a false `MANIFEST_BLOB_UNKNOWN`, a version pruned for an interval after its publish, a deleted version re-added for an interval, a crashed writer's journal entry or a tag the index lacks re-pointed | a consistency model per registry, a visibility barrier on publish, read-back retries, a grace age and two observations before a removal; the probe measures the lag | [#446](https://github.com/lajstrom/lajstrom/issues/446), [#339](https://github.com/lajstrom/lajstrom/issues/339) |
+| No test with a registry that lags (G-3, G-4, G-5) | the gap above cannot regress visibly | a fake registry with configurable lag, as #446's criteria say | [#446](https://github.com/lajstrom/lajstrom/issues/446) |
+| A durable `201` is assumed (G-4) | a manifest the registry lost leaves the index silently at the next reconcile, counted among `removed` | report the removal of a row ingest confirmed as a finding of its own, with a metric | new issue |
+| Reindex equality is tested for raw, npm and an npm proxy only; I-01 is not in the end-to-end suite (G-3) | a column of apt, pypi or maven that annotations cannot rebuild would be lost at the first reindex, unnoticed | an equality test per format (publish, drop the derived rows, reindex, compare), and I-01 as an end-to-end step | new issue |
+| Nothing machine-checks the one write path in plugins (G-2) | a plugin could push a manifest past ingest: no claim, validation or audit row | a read-only provider view in `format.Deps`, or a lint rule against `Push`, `PushReference` and `Delete` outside `internal/ingest`, `internal/facade` and `internal/provider` (a `contract` change of `format`) | new issue |
+| A delete whose index transaction fails after the registry delete, and a push to an `oci` repo whose row fails after the push, have no audit row (G-13, G-14) | an unaudited write | record the intent before the registry write and complete it after, or write the row in a transaction of its own when the main one fails | new issue |
+| A stale rendered document on Postgres when a render races an invalidation (G-27) | a client sees an index without the newest publish, or with a deleted version, until the next change or reconcile; indefinitely with `reconcile.interval: 0` | a per-repo generation that the store checks before it keeps a render, or a lock of the repo's cache rows | new issue |
+| The garbage collectors of GitLab B and Nexus delete untagged referrers (G-35) | signatures and SBOMs vanish | the tag schema as well on registries with the API (#326); for GitLab B and Nexus, a vendor-table warning or a tag per referrer | [#326](https://github.com/lajstrom/lajstrom/issues/326), new issue |
+| No frontend test of a denial with malformed input (G-15) | a regression of the R-2 kind on a frontend goes unseen | a table test per frontend, as `TestDenialBeforeInput` does for `/v2` | new issue |
+| A typed user name and an unbounded `kid` at `debug` (G-21, threat model L-3) | a mistyped password in a debug log | log the uid only, bound the `kid` | new issue |
+| Acceptance C-07 and S-09 are not automated (G-14, G-21) | a redaction or an audit regression goes unseen | after the suite, grep both replicas' logs for every secret used, and count the audit rows of its writes | new issue |
+| Upload quotas: `/v2` blob size, open sessions, maven session files, unlimited defaults (G-23) | a writer fills the registry or `$TMPDIR`, or holds sessions | the three parts of #246 (pull requests #416, #419, #422); a spool budget | [#246](https://github.com/lajstrom/lajstrom/issues/246), [#427](https://github.com/lajstrom/lajstrom/issues/427) |
+| One upstream request per document per replica (G-31) | concurrent misses of a packument each ask the upstream | share the request on a replica (pull request #399) | [#383](https://github.com/lajstrom/lajstrom/issues/383) |
+| SQLite under several replicas is not detected (G-26, G-29, G-35) | the process locks of SQLite exclude nothing across replicas | refuse to start a second replica on SQLite (a row naming the live replica) | new issue |
+| Replica clocks are assumed to agree, never checked (G-19, G-26) | a replica whose clock runs ahead takes over live claims and refuses valid tokens | compare the replica's clock with the database's at start and on the heartbeats; warn or refuse past a bound | new issue |
+| HA steps H-05 to H-08 and H-11 are not automated (G-1, G-26, G-27, G-36) | a fault during an upload, a restart of Postgres or the registry, a maven deploy across replicas are untested | the missing steps of `ha.sh` (testing.md, The ha stack) | new issue |
+| Registries that fold tag case (G-7) | two versions that differ in case: the second is a `409` with an unclear message | `Capabilities.TagsFoldCase` | [#426](https://github.com/lajstrom/lajstrom/issues/426) |
+| The bearer audience without `server.externalURL` (G-19) | a staging server restored from production's database accepts production's tokens | require `externalURL` | [#248](https://github.com/lajstrom/lajstrom/issues/248) |
+| Rolling upgrades: which binary runs against which schema; pre-#244 claims (G-6, G-28) | a mixed fleet may not exclude publishes | the rules of #225 | [#225](https://github.com/lajstrom/lajstrom/issues/225) |
+| Groups (G-34), policy (G-38), encryption at rest (G-39) | not built | as the issues say | [#311](https://github.com/lajstrom/lajstrom/issues/311), [#101](https://github.com/lajstrom/lajstrom/issues/101), [#114](https://github.com/lajstrom/lajstrom/issues/114) |
