@@ -214,6 +214,19 @@ The connections to an upstream go through the egress proxy of the environment, `
 through it belongs in `NO_PROXY`. A repo that names an upstream the file no longer has is served
 as if it were offline, with an error at every start naming the repo and the upstream.
 
+npmjs.org, a hosted npm repo and a proxy of npmjs.org that never asks it for the scope `@acme`
+([quickstart/npm.md](quickstart/npm.md) §9):
+
+```yaml
+upstreams:
+  - name: npmjs
+    format: npm
+    url: "https://registry.npmjs.org/"
+repos:
+  - {name: internal, format: npm, registry: local}
+  - {name: npmjs, format: npm, registry: local, kind: proxy, upstream: {name: npmjs, deny: ["@acme/*"]}}
+```
+
 ### ingest
 
 | Key | Type | Default | Env | Description |
@@ -296,7 +309,7 @@ create loses to another's counts the repo as present.
 | Key | Type | Default | Env | Description |
 | --- | --- | --- | --- | --- |
 | `repos[].name` | name | none, required | none | Repo name, unique within its format; same rule as registry names ([manifest-profile.md](spec/manifest-profile.md) §4.1). Example: `scratch`. |
-| `repos[].format` | name | none, required | none | Plugin name: `raw`, `pypi`, `apt`, `maven`. |
+| `repos[].format` | name | none, required | none | Plugin name: `raw`, `pypi`, `apt`, `maven`, `npm`. |
 | `repos[].registry` | name | none, required | none | One of `registries[].name`. |
 | `repos[].kind` | `hosted`, `proxy` | `hosted` | none | What the repo serves ([proxy-and-group.md](spec/proxy-and-group.md) §1): what is published to it, or what it fetched from an upstream. Set at creation and never changed. A proxy needs a format whose plugin has proxy repos. |
 | `repos[].upstream` | map | none | none | A proxy repo's upstream, with the keys of the management API ([proxy-and-group.md](spec/proxy-and-group.md) §2.2): `name`, one of `upstreams[].name` of the repo's format (required), `metadataTTL` (`10m`), `negativeTTL` (`2m`), `offline` (`false`), `allow` and `deny` (lists of name patterns). Required on a proxy repo, refused on another kind. Example: `{name: npmjs, deny: ["@acme/*"]}`. |

@@ -85,7 +85,7 @@ audit alike.
 
 | Field | Rule | Changes |
 | --- | --- | --- |
-| `format` | a format plugin the server has: `raw`, `pypi`, `apt`, `maven`; or `oci`, the pass-through repos of the OCI facade, which need no plugin ([http-routing.md](spec/http-routing.md) §1) | never |
+| `format` | a format plugin the server has: `raw`, `pypi`, `apt`, `maven`, `npm`; or `oci`, the pass-through repos of the OCI facade, which need no plugin ([http-routing.md](spec/http-routing.md) §1) | never |
 | `name` | unique within the format; lowercase letters and digits separated by single `.`, `_` or `-`, at most 64 characters ([manifest-profile.md](spec/manifest-profile.md) §4.1) | never |
 | `registry` | one of `registries[].name` of the configuration | never: the artifacts stay in the registry they were pushed to |
 | `kind` | `hosted` (the default; may be left out) or `proxy`, a repo that serves an upstream and keeps what it fetched ([proxy-and-group.md](spec/proxy-and-group.md)); `proxy` needs a format whose plugin has proxy repos | never |

@@ -136,4 +136,5 @@ machine.
 3. Running it for good: [Docker Compose](deploy/compose.md), [Kubernetes](deploy/kubernetes.md),
    behind a [reverse proxy](reverse-proxy.md), and [backups](operations.md#backup-and-restore).
 4. A quick start per format: [raw](quickstart/raw.md), [apt](quickstart/apt.md),
-   [pypi](quickstart/pypi.md), [maven](quickstart/maven.md), [OCI with oras](quickstart/oras.md).
+   [pypi](quickstart/pypi.md), [maven](quickstart/maven.md), [npm](quickstart/npm.md),
+   [OCI with oras](quickstart/oras.md).

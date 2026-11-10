@@ -37,6 +37,7 @@ https://lajstrom.dev
 | [Quick start: apt](docs/quickstart/apt.md) | a `.deb` in with `curl -T` or `oras push`, out with `apt-get install` from a signed repo |
 | [Quick start: pypi](docs/quickstart/pypi.md) | `twine upload` or `uv publish` in, `pip install` or `uv pip install` out, with PEP 658 metadata |
 | [Quick start: maven](docs/quickstart/maven.md) | `mvn deploy` or Gradle's `publish` in, `mvn dependency:get` or a Gradle build out, with all four checksums |
+| [Quick start: npm](docs/quickstart/npm.md) | `npm publish`, `pnpm` and `yarn npm publish` in, `npm install` out, dist-tags, tokens, a proxy of npmjs.org, coming from Verdaccio |
 | [Dev stack](docs/dev-stack.md) | `make dev-up`: Zot, distribution and Postgres for development and tests |
 | [Deploy with Compose](docs/deploy/compose.md) | one host for production: Lajstrom, Postgres and a registry with passwords, secrets in files, a backup |
 | [Testing](docs/testing.md) | the test levels and what each needs; `make e2e` and how to add a scenario |
