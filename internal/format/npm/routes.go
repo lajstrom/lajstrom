@@ -67,6 +67,10 @@ func (h *handlers) put(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, errors.New("npm: the route has no repo"))
 		return
 	}
+	if err := h.refuseWrite(r.Context(), repo); err != nil {
+		h.fail(w, r, err)
+		return
+	}
 	t, ok := parseTarget(r.PathValue("path"))
 	switch {
 	case !ok:
@@ -82,7 +86,8 @@ func (h *handlers) put(w http.ResponseWriter, r *http.Request) {
 
 // fail answers err as npm reads an error, {"error": "<message>"}, with the status of
 // format.StatusOf: the message for a 4xx, the status text for a 5xx, whose cause is logged; a 401
-// carries the Basic challenge and a 503 Retry-After, as format.WriteError does.
+// carries the Basic challenge, a 405 Allow: GET, HEAD and a 503 Retry-After, as
+// format.WriteError does.
 func (h *handlers) fail(w http.ResponseWriter, r *http.Request, err error) {
 	status := format.StatusOf(err)
 	msg := http.StatusText(status)
@@ -92,8 +97,11 @@ func (h *handlers) fail(w http.ResponseWriter, r *http.Request, err error) {
 		h.deps.Log.ErrorContext(r.Context(), "npm: request failed", "method", r.Method, "path", r.URL.EscapedPath(),
 			"status", status, "error", err.Error())
 	}
-	if status == http.StatusUnauthorized {
+	switch status {
+	case http.StatusUnauthorized:
 		w.Header().Set("WWW-Authenticate", `Basic realm="lajstrom"`)
+	case http.StatusMethodNotAllowed:
+		w.Header().Set("Allow", "GET, HEAD")
 	}
 	format.SetRetryAfter(w.Header(), err)
 	writeJSON(w, status, map[string]string{"error": msg})
