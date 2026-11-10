@@ -120,7 +120,7 @@ func testJournalCascades(t *testing.T, s index.Store) {
 	other := newPackage(t, s, repo.ID, "gadgets")
 	for _, p := range []index.Package{pkg, other} {
 		must(t, s.UpsertJournal(ctx, ptr(journalEntry(p.ID, 1, p.Name))))
-		must(t, s.ReplaceJournalState(ctx, p.ID, journalStateFixture[:1]))
+		must(t, s.ReplaceJournalState(ctx, p.ID, slices.Clone(journalStateFixture[:1])))
 	}
 	must(t, s.DeletePackage(ctx, pkg.ID))
 	for what, n := range map[string]func() (int, error){
@@ -140,7 +140,7 @@ func testJournalCascades(t *testing.T, s index.Store) {
 	kept := newPackage(t, s, repo.ID, "kept")
 	newVersion(t, s, kept.ID, "1.0.0")
 	must(t, s.UpsertJournal(ctx, ptr(journalEntry(kept.ID, 1, "kept"))))
-	must(t, s.ReplaceJournalState(ctx, kept.ID, journalStateFixture[:1]))
+	must(t, s.ReplaceJournalState(ctx, kept.ID, slices.Clone(journalStateFixture[:1])))
 	must(t, s.ResetDerived(ctx, repo.ID))
 	if rows, err := s.ListJournal(ctx, kept.ID); err != nil || len(rows) != 0 {
 		t.Errorf("journal after ResetDerived: %d rows, %v", len(rows), err)
