@@ -41,7 +41,7 @@ their implementation issue.
 | Table | Class | Columns | Notes |
 | --- | --- | --- | --- |
 | `repos` | control plane | `upstream` json null: a proxy's `{"name", "metadataTTL", "negativeTTL", "offline", "allow", "deny"}`; `group` json null: a group's `{"merge"}` | `kind` is set on insert and never updated. `upstream` only on a proxy, `group` only on a group; a group's `registry` is `''` and its `policy` NULL. The upstream's URL and credentials are in the configuration, never in a row |
-| `group_members` | control plane | `group_id` → repos (`ON DELETE CASCADE`), `member_id` → repos (`ON DELETE RESTRICT`), `position` int (from 0, the member order) | primary key `(group_id, position)`, unique `(group_id, member_id)`. Written in the transaction that updates the group's `repos` row, so `auth_version` moves with it; a repo that is a member is not deleted (`409` naming its groups) |
+| `group_members` | control plane | `group_id` → repos (`ON DELETE CASCADE`), `member_id` → repos (`ON DELETE RESTRICT`), `position` int (from 0, the member order) | primary key `(group_id, position)`, unique `(group_id, member_id)`, index `group_members_member` on `(member_id)` (`ListGroupsOf`). Written in the transaction that updates the group's `repos` row, so `auth_version` moves with it; a repo that is a member is not deleted (`409` naming its groups). Migration `0013_groups.sql`, with the column `repos.group` |
 | `fetch_claims` | coordination | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `package` text (the package path), `tag` text, `principal` text, `replica` text (host name and process id), `claimed_at` ts, `heartbeat_at` ts | unique `(repo_id, package, tag)`; written by the proxy fetcher only |
 | `proxy_meta` | derived, a cache | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `name` text (the plugin's key of the name), `kind` text (the plugin's document kind, npm `packument`), `state` text (`present`, `absent`), `content` blob null, `content_type` text null, `sha256` text null, `etag` text null, `last_modified` text null (the upstream's validators), `checked_at` ts | unique `(repo_id, name, kind)`; the `proxy_meta (later)` of the Derived table |
 
@@ -62,7 +62,10 @@ sessions.
 
 A proxy repo has `packages`, `versions`, `files`, `index_cache` and `oci_repos` rows as a hosted
 repo has, rebuilt by reindex from its manifests; the `attrs` of a proxied version hold its
-`lajstrom.origin.*` annotations too. A group has none of them.
+`lajstrom.origin.*` annotations too. A group has none of them, nor `proxy_meta`, `fetch_claims`
+or `tag_claims` rows: reindex and the reconcile loop pass it by, and its documents are merged
+from its members' on every request (proxy-and-group.md §8.5). `group_members` is control plane:
+a backup of the database keeps it, and reindex neither reads nor writes it.
 
 ## Coordination
 
