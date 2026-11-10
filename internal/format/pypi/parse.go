@@ -275,10 +275,21 @@ func ReadWheelMetadata(r io.ReaderAt, size int64) ([]byte, error) {
 	return readMember(found)
 }
 
+// maxSdistUnpacked bounds the bytes a .tar.gz sdist unpacks to up to its PKG-INFO, as
+// maxEntries bounds its tar entries (#243): a GiB of zeros is 0.2 s of gunzip, and 2^18 empty
+// entries 0.3 s. setuptools writes PKG-INFO among the first entries; flit, hatchling,
+// meson-python and others last, after the whole tree. The largest of those on PyPI in November
+// 2026 is msgraph-beta-sdk 1.67.0: 12 MiB, 270 MiB and 29 096 entries unpacked.
+const maxSdistUnpacked = 1 << 30
+
+// errUnpacked is the read error of a stream past its bound of unpacked bytes.
+var errUnpacked = errors.New("unpacked past the bound")
+
 // ReadSdistPKGInfo returns the PKG-INFO at the top of a source distribution:
-// <root>/PKG-INFO, root being {name}-{version}. A .tar.gz is read as a stream; a .zip needs
-// r to be an io.ReaderAt as well, with size, and has at most maxEntries entries. Errors wrap
-// format.ErrInvalid, except a failure to read.
+// <root>/PKG-INFO, root being {name}-{version}. A .tar.gz is read as a stream, at most
+// maxSdistUnpacked bytes and maxEntries entries of it; a .zip needs r to be an io.ReaderAt as
+// well, with size, and at most maxEntries entries. Errors wrap format.ErrInvalid, except a
+// failure to read.
 func ReadSdistPKGInfo(r io.Reader, size int64, s Sdist) ([]byte, error) {
 	want := s.Root() + "/PKG-INFO"
 	if s.Kind == SdistZip {
@@ -300,23 +311,57 @@ func ReadSdistPKGInfo(r io.Reader, size int64, s Sdist) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("%w: the sdist has no %s", format.ErrInvalid, want)
 	}
+	return readTarGzFile(r, want, maxSdistUnpacked, maxEntries)
+}
+
+// readTarGzFile returns the regular file want of the sdist r, a .tar.gz, reading no more than
+// limit bytes unpacked and entries entries up to it. Errors wrap format.ErrInvalid, except a
+// failure to read.
+func readTarGzFile(r io.Reader, want string, limit int64, entries int) ([]byte, error) {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
 		return nil, fmt.Errorf("%w: the sdist is not gzip: %w", format.ErrInvalid, err)
 	}
-	tr := tar.NewReader(gz)
-	for {
+	tr := tar.NewReader(&unpacked{r: gz, left: limit})
+	past := fmt.Errorf("%w: the sdist unpacks to more than %d bytes up to %s", format.ErrInvalid, limit, want)
+	for n := 1; ; n++ {
 		h, err := tr.Next()
-		if errors.Is(err, io.EOF) {
+		switch {
+		case errors.Is(err, io.EOF):
 			return nil, fmt.Errorf("%w: the sdist has no %s", format.ErrInvalid, want)
-		}
-		if err != nil {
+		case errors.Is(err, errUnpacked):
+			return nil, past
+		case err != nil:
 			return nil, fmt.Errorf("%w: the sdist is not a tar archive: %w", format.ErrInvalid, err)
-		}
-		if path.Clean(h.Name) == want && h.Typeflag == tar.TypeReg {
-			return readLimited(tr, h.Size)
+		case path.Clean(h.Name) == want && h.Typeflag == tar.TypeReg:
+			b, err := readLimited(tr, h.Size)
+			if errors.Is(err, errUnpacked) {
+				return nil, past
+			}
+			return b, err
+		case n == entries:
+			return nil, fmt.Errorf("%w: the sdist has no %s in its first %d entries", format.ErrInvalid, want, entries)
 		}
 	}
+}
+
+// unpacked passes at most left bytes of r through, and fails the read after them with
+// errUnpacked.
+type unpacked struct {
+	r    io.Reader
+	left int64
+}
+
+func (u *unpacked) Read(p []byte) (int, error) {
+	if u.left <= 0 {
+		return 0, errUnpacked
+	}
+	if int64(len(p)) > u.left {
+		p = p[:u.left]
+	}
+	n, err := u.r.Read(p)
+	u.left -= int64(n)
+	return n, err
 }
 
 // readMember returns the bytes of a zip member, at most maxCoreMetadata.

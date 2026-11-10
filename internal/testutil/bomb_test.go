@@ -3,6 +3,7 @@ package testutil
 import (
 	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"io"
 	"strconv"
 	"testing"
@@ -11,7 +12,7 @@ import (
 )
 
 // The bombs were also checked once with xz -t and xz -lvv (the blocks, their dictionaries and
-// the index) and Python's zipfile on 2026-11-10 (#243).
+// the index), Python's zipfile, and gzip -t and tar -t on 2026-11-10 (#243).
 
 // TestXZEmptyBlocks reads the stream of xzEmptyBlocks with the xz reader of
 // github.com/ulikunitz/xz, which checks the index and the footer too.
@@ -40,6 +41,20 @@ func TestZipDirectoryBomb(t *testing.T) {
 				t.Errorf("entry %d is %q", i, f.Name)
 			}
 		}
+	}
+}
+
+// TestGzipOfRepeated unpacks the stream of gzipOfRepeated, which gzip checks with its CRC-32
+// and size.
+func TestGzipOfRepeated(t *testing.T) {
+	parts := []repeated{{[]byte("head"), 1}, {make([]byte, 512), 5000}, {[]byte("ab"), 3}, {nil, 2}, {[]byte("tail"), 1}}
+	var want []byte
+	for _, p := range parts {
+		want = append(want, bytes.Repeat(p.unit, p.count)...)
+	}
+	got, err := io.ReadAll(must2(gzip.NewReader(bytes.NewReader(gzipOfRepeated(parts...)))))
+	if err != nil || !bytes.Equal(got, want) {
+		t.Errorf("read %d bytes, %v; want %d", len(got), err, len(want))
 	}
 }
 

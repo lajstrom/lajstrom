@@ -84,3 +84,61 @@ func TestZipBombs(t *testing.T) {
 		t.Errorf("%d entries: %v", maxEntries, err)
 	}
 }
+
+// TestReadTarGzFile reads sdists whose PKG-INFO comes after empty files and a file of zeros,
+// with the bounds of the call: at a bound PKG-INFO is read, one entry or one byte past it is
+// ErrInvalid.
+func TestReadTarGzFile(t *testing.T) {
+	for _, tc := range []struct {
+		entries int   // empty files before PKG-INFO
+		zeros   int64 // and the size of the file of zeros
+		less    int64 // the bound of bytes less what reading up to PKG-INFO's end takes
+		bound   int   // the bound of entries
+		want    string
+	}{
+		{entries: 7, bound: 9},
+		{entries: 7, bound: 8, want: "the sdist has no my_pkg-1.0.0/PKG-INFO in its first 8 entries"},
+		{zeros: 4096, bound: 3},
+		{zeros: 4096, less: 1, bound: 3, want: "the sdist unpacks to more than"},
+		{entries: 3, zeros: 1 << 20, less: 1<<20 + 512, bound: 10, want: "up to my_pkg-1.0.0/PKG-INFO"},
+	} {
+		b, info := testutil.SdistBomb(testutil.SdistOptions{}, tc.entries, tc.zeros)
+		// The headers of the top directory, the files and PKG-INFO, the zeros and PKG-INFO.
+		need := int64(512*(tc.entries+2)) + tc.zeros + int64(len(info.PKGInfo))
+		if tc.zeros > 0 {
+			need += 512
+		}
+		got, err := readTarGzFile(bytes.NewReader(b), info.Root+"/PKG-INFO", need-tc.less, tc.bound)
+		switch {
+		case tc.want == "" && (err != nil || !bytes.Equal(got, info.PKGInfo)):
+			t.Errorf("%+v: %q, %v", tc, got, err)
+		case tc.want != "" && (!errors.Is(err, format.ErrInvalid) || !strings.Contains(err.Error(), tc.want)):
+			t.Errorf("%+v: %v, want ErrInvalid with %q", tc, err, tc.want)
+		}
+	}
+}
+
+// TestSdistBombs reads the bombs of #243 through ReadSdistPKGInfo, with its bounds: a GiB of
+// zeros before PKG-INFO, a MiB of gzip, which unbounded cost 13 s per Validate at 64 MiB; and
+// maxEntries empty files.
+func TestSdistBombs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("unpacks a GiB")
+	}
+	for _, tc := range []struct {
+		entries int
+		zeros   int64
+		want    string
+	}{
+		{0, maxSdistUnpacked, "the sdist unpacks to more than 1073741824 bytes up to my_pkg-1.0.0/PKG-INFO"},
+		{maxEntries, 0, "the sdist has no my_pkg-1.0.0/PKG-INFO in its first 262144 entries"},
+	} {
+		b, info := testutil.SdistBomb(testutil.SdistOptions{}, tc.entries, tc.zeros)
+		s, err := ParseSdistFilename(info.Filename)
+		must(t, err)
+		if _, err := ReadSdistPKGInfo(bytes.NewReader(b), int64(len(b)), s); !errors.Is(err, format.ErrInvalid) ||
+			!strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%d entries, %d zeros: %v, want ErrInvalid with %q", tc.entries, tc.zeros, err, tc.want)
+		}
+	}
+}

@@ -1,6 +1,9 @@
 package testutil
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/flate"
 	"encoding/binary"
 	"hash/crc32"
 	"hash/crc64"
@@ -77,4 +80,69 @@ func xzEmptyBlocks(empty int, data []byte) []byte {
 	b = append(b, le32(index, crc32.ChecksumIEEE(index))...)
 	footer := append(le32(nil, uint32(len(index)/4)), 0, 0x04) //nolint:gosec // (index and CRC32)/4 - 1
 	return append(append(le32(b, crc32.ChecksumIEEE(footer)), footer...), 'Y', 'Z')
+}
+
+// SdistBomb returns the sdist of Sdist(opts) with, between its top directory and PKG-INFO,
+// entries empty files and then a file of zeros zero bytes, rounded up to 512 (none when 0):
+// small to send, and costly to read up to PKG-INFO, which some build backends write last. A
+// GiB of zeros is about a MiB of gzip.
+func SdistBomb(opts SdistOptions, entries int, zeros int64) ([]byte, SdistInfo) {
+	members, info := sdistMembers(opts)
+	parts := []repeated{{tarOf(members[:1])[:512], 1}, {tarHeader(info.Root+"/empty", 0), entries}}
+	if blocks := int((zeros + 511) / 512); blocks > 0 {
+		parts = append(parts, repeated{tarHeader(info.Root+"/zeros", int64(blocks)*512), 1}, repeated{make([]byte, 512), blocks})
+	}
+	b := gzipOfRepeated(append(parts, repeated{tarOf(members[1:]), 1})...)
+	info.Size = int64(len(b))
+	info.Checksums = checksumsOf(b)
+	return b, info
+}
+
+// tarHeader returns the ustar header of a file of size bytes, as tarOf writes it.
+func tarHeader(name string, size int64) []byte {
+	var buf bytes.Buffer
+	must(tar.NewWriter(&buf).WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: size, ModTime: fixtureTime,
+		Uname: "root", Gname: "root", Format: tar.FormatUSTAR}))
+	return buf.Bytes()
+}
+
+// repeated is count copies of unit, a part of what gzipOfRepeated compresses.
+type repeated struct {
+	unit  []byte
+	count int
+}
+
+// gzipOfRepeated returns the parts one after another, compressed with gzip. Each part is
+// compressed a MiB at a time by a new writer, flushed to a byte boundary, so the compressed
+// bytes of a MiB stand for it wherever they are copied: a GiB costs the time of a MiB.
+func gzipOfRepeated(parts ...repeated) []byte {
+	out := []byte{0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff} // no name, no time
+	var sum, size uint32
+	for _, p := range parts {
+		per := max(1, (1<<20)/max(1, len(p.unit)))
+		var chunk, z []byte
+		for left := p.count; left > 0; left -= per {
+			if k := min(per, left); len(chunk) != k*len(p.unit) {
+				chunk = bytes.Repeat(p.unit, k)
+				z = deflated(chunk)
+			}
+			out = append(out, z...)
+			sum = crc32.Update(sum, crc32.IEEETable, chunk)
+			size += uint32(len(chunk)) //nolint:gosec // gzip keeps the size modulo 2^32
+		}
+	}
+	out = append(out, 0x03, 0x00) // the final block: empty, fixed codes
+	return binary.LittleEndian.AppendUint32(binary.LittleEndian.AppendUint32(out, sum), size)
+}
+
+// deflated returns b compressed by a new flate writer, flushed and not closed: no block is the
+// final one, and the last ends on a byte boundary.
+func deflated(b []byte) []byte {
+	var buf bytes.Buffer
+	w, err := flate.NewWriter(&buf, flate.BestCompression)
+	must(err)
+	_, err = w.Write(b)
+	must(err)
+	must(w.Flush())
+	return buf.Bytes()
 }
