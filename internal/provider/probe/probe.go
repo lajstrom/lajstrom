@@ -191,6 +191,8 @@ func (r *run) measureAll(ctx context.Context) {
 		{[]string{"referrers", "ociSubject"}, r.measureReferrers},
 		{[]string{"catalog"}, r.measureCatalog},
 		{[]string{"tags"}, r.measureTags},
+		{[]string{"deleteDigest", "deleteTag"}, r.measureDeletes},
+		{[]string{"immutableTags"}, r.measureImmutable},
 	}
 	for _, g := range groups {
 		if err := g.fn(r.in(ctx, g.keys[0])); err != nil {
@@ -400,6 +402,11 @@ var manifestAccept = http.Header{"Accept": {strings.Join([]string{
 	ocispec.MediaTypeImageManifest, ocispec.MediaTypeImageIndex,
 	"application/vnd.docker.distribution.manifest.v2+json",
 }, ", ")}}
+
+// getManifest asks repo for the manifest ref.
+func (r *run) getManifest(ctx context.Context, repo, ref string) (answer, error) {
+	return r.get(ctx, r.path(repo, "manifests/"+ref), manifestAccept)
+}
 
 // tagList is the body of tags/list.
 type tagList struct {
