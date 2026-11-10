@@ -19,7 +19,7 @@ const maxSecretFile = 64 << 10
 // LoadUpstreams returns the clients of the configured upstreams by name, with their credentials
 // read from the files the configuration names (docs/configuration.md, upstreams): serve calls it
 // at start, as it reads keys.masterKeyFile. A file that is missing, unreadable, empty or larger
-// than a secret is an error naming the key and the file, never the content; a file that the
+// than a secret is an error naming the key, never the path or the content; a file that the
 // group or others may read is used, with a warning. An http URL is used with a warning: what it
 // serves is not authenticated.
 func LoadUpstreams(cfg []config.Upstream, o UpstreamOptions) (map[string]*Upstream, error) {
@@ -69,28 +69,29 @@ func authorization(key string, a config.UpstreamAuth, log *slog.Logger) (string,
 }
 
 // readSecret reads the secret of the file at path, which key names, without the spaces and line
-// breaks around it. Its errors and its warning name the key, which the configuration maps to the
-// file, and the cause: never the content, and not the path, which stays in the configuration.
+// breaks around it. Its errors and its warning carry the key, which the caller builds from the
+// entry's index and a constant, and fixed text: no value that comes from the path or the file
+// reaches them, so neither the content nor the path is ever logged; the operator finds the file
+// from the key in the configuration.
 func readSecret(key, path string, log *slog.Logger) (string, error) {
 	f, err := os.Open(path) // #nosec G304 -- the operator names the file
 	if err != nil {
-		return "", fmt.Errorf("%s: open: %w", key, withoutPath(err))
+		return "", fmt.Errorf("%s: the file %s", key, fileProblem(err))
 	}
 	defer func() { _ = f.Close() }()
 	fi, err := f.Stat()
 	if err != nil {
-		return "", fmt.Errorf("%s: stat: %w", key, withoutPath(err))
+		return "", fmt.Errorf("%s: the file %s", key, fileProblem(err))
 	}
 	if !fi.Mode().IsRegular() {
 		return "", fmt.Errorf("%s: not a regular file", key)
 	}
-	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
-		log.Warn("a credential file of an upstream is open to more than its owner: make it 0400 or 0600",
-			"key", key, "mode", fmt.Sprintf("%04o", perm))
+	if fi.Mode().Perm()&0o077 != 0 {
+		log.Warn("a credential file of an upstream is open to the group or others: make it 0400 or 0600", "key", key)
 	}
 	b, err := io.ReadAll(io.LimitReader(f, maxSecretFile+1))
 	if err != nil {
-		return "", fmt.Errorf("%s: read: %w", key, withoutPath(err))
+		return "", fmt.Errorf("%s: the file %s", key, fileProblem(err))
 	}
 	secret := strings.TrimSpace(string(b))
 	clear(b)
@@ -103,11 +104,13 @@ func readSecret(key, path string, log *slog.Logger) (string, error) {
 	return secret, nil
 }
 
-// withoutPath is the cause of a *fs.PathError without its path.
-func withoutPath(err error) error {
-	var pe *fs.PathError
-	if errors.As(err, &pe) {
-		return pe.Err
+// fileProblem says what is wrong with a file in fixed words, from the class of err alone.
+func fileProblem(err error) string {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "does not exist"
+	case errors.Is(err, fs.ErrPermission):
+		return "is not readable: permission denied"
 	}
-	return err
+	return "cannot be read"
 }

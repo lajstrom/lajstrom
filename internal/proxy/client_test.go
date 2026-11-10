@@ -285,7 +285,7 @@ func TestLoadUpstreams(t *testing.T) {
 	if ups["a"].authorization != "Bearer tok" || ups["b"].authorization != "Basic dTpwdw==" || ups["c"].authorization != "" {
 		t.Errorf("authorization of a %q, b %q, c %q", ups["a"].authorization, ups["b"].authorization, ups["c"].authorization)
 	}
-	for _, w := range []string{"key=upstreams[1].auth.passwordFile", "mode=0644", "upstream=b", "plain http"} {
+	for _, w := range []string{"key=upstreams[1].auth.passwordFile", "open to the group or others", "upstream=b", "plain http"} {
 		if !strings.Contains(logs.String(), w) {
 			t.Errorf("log does not contain %q:\n%s", w, logs.String())
 		}
@@ -293,7 +293,7 @@ func TestLoadUpstreams(t *testing.T) {
 	for _, tt := range []struct {
 		file, want string
 	}{
-		{filepath.Join(dir, "nope"), "upstreams[0].auth.tokenFile: open: no such file or directory"},
+		{filepath.Join(dir, "nope"), "upstreams[0].auth.tokenFile: the file does not exist"},
 		{write("empty", "\n \n", 0o600), "upstreams[0].auth.tokenFile: the file is empty"},
 	} {
 		_, err := LoadUpstreams([]config.Upstream{{Name: "a", Format: "npm", URL: "https://a.example", Auth: config.UpstreamAuth{TokenFile: tt.file}}},
