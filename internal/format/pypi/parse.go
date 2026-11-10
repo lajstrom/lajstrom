@@ -248,9 +248,12 @@ func str(v any) string {
 }
 
 // ReadWheelMetadata returns the METADATA of a wheel: the file METADATA of the one
-// *.dist-info directory at the top of the archive. Errors wrap format.ErrInvalid, except a
-// failure to read.
+// *.dist-info directory at the top of the archive, which has at most maxEntries entries.
+// Errors wrap format.ErrInvalid, except a failure to read.
 func ReadWheelMetadata(r io.ReaderAt, size int64) ([]byte, error) {
+	if err := checkZipEntries(r, size, "wheel"); err != nil {
+		return nil, err
+	}
 	zr, err := zip.NewReader(r, size)
 	if err != nil {
 		return nil, fmt.Errorf("%w: the wheel is not a zip archive: %w", format.ErrInvalid, err)
@@ -274,14 +277,17 @@ func ReadWheelMetadata(r io.ReaderAt, size int64) ([]byte, error) {
 
 // ReadSdistPKGInfo returns the PKG-INFO at the top of a source distribution:
 // <root>/PKG-INFO, root being {name}-{version}. A .tar.gz is read as a stream; a .zip needs
-// r to be an io.ReaderAt as well, with size. Errors wrap format.ErrInvalid, except a failure
-// to read.
+// r to be an io.ReaderAt as well, with size, and has at most maxEntries entries. Errors wrap
+// format.ErrInvalid, except a failure to read.
 func ReadSdistPKGInfo(r io.Reader, size int64, s Sdist) ([]byte, error) {
 	want := s.Root() + "/PKG-INFO"
 	if s.Kind == SdistZip {
 		ra, ok := r.(io.ReaderAt)
 		if !ok {
 			return nil, errors.New("pypi: a zip sdist needs random access")
+		}
+		if err := checkZipEntries(ra, size, "sdist"); err != nil {
+			return nil, err
 		}
 		zr, err := zip.NewReader(ra, size)
 		if err != nil {

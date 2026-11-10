@@ -4,11 +4,42 @@ import (
 	"encoding/binary"
 	"hash/crc32"
 	"hash/crc64"
+	"strconv"
 )
 
 // The bombs of #243 (docs/security/threat-model.md, F-4): archives small to send and costly to
 // read, for the bounds of the parsers. Building one costs neither: what repeats is written, or
 // compressed, once and copied.
+
+// ZipDirectoryBomb returns a zip archive that is a central directory of entries empty stored
+// members, named 0, 1, … (without the local headers that would come before it, which a reader
+// of the directory does not look at), and an end record that says records; records of 0xffff
+// or more take a zip64 end record and its locator. records other than entries is an end record
+// that lies, which archive/zip reads all the same when the two agree modulo 65 536.
+func ZipDirectoryBomb(entries int, records uint64) []byte {
+	le16, le32, le64 := binary.LittleEndian.AppendUint16, binary.LittleEndian.AppendUint32, binary.LittleEndian.AppendUint64
+	var b []byte
+	for i := range entries {
+		name := strconv.Itoa(i)
+		b = le32(b, 0x02014b50)
+		b = le16(le16(b, 20), 20)          // made by and needed: 2.0
+		b = append(b, make([]byte, 20)...) // flags, method, time, date, crc-32, both sizes
+		b = le16(b, uint16(len(name)))     //nolint:gosec // a decimal number, a few bytes
+		b = append(b, make([]byte, 16)...) // extra, comment, disk, attributes, offset
+		b = append(b, name...)
+	}
+	dirSize := uint64(len(b))
+	if records >= 0xffff {
+		end64 := uint64(len(b))
+		b = le64(le32(b, 0x06064b50), 44)
+		b = le16(le16(b, 45), 45)
+		b = le64(le64(le64(le64(le64(b, 0), records), records), dirSize), 0) // disks, records twice, size, offset
+		b = le32(le64(le32(le32(b, 0x07064b50), 0), end64), 1)
+	}
+	b = le32(le32(b, 0x06054b50), 0)
+	b = le16(le16(b, uint16(min(records, 0xffff))), uint16(min(records, 0xffff)))
+	return le16(le32(le32(b, uint32(min(dirSize, 0xffffffff))), 0), 0) // size, offset, no comment
+}
 
 // xzEmptyBlocks returns data as an xz stream with CRC64 checks: empty blocks, each a header that
 // declares LZMA2 with a 64 MiB dictionary and then only the LZMA2 end marker, then one block of

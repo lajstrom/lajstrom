@@ -1,6 +1,7 @@
 package pypi
 
 import (
+	"archive/zip"
 	"bytes"
 	"errors"
 	"fmt"
@@ -188,6 +189,28 @@ func metadataOf(m CoreMetadata) []byte {
 		}
 	}
 	return []byte(b.String())
+}
+
+// FuzzZipEntries reads an archive with zipEntries and with zip.NewReader: whenever zip.NewReader
+// reads it, zipEntries finds the directory and counts at least as many headers as it has files,
+// so that checkZipEntries refuses every archive of which zip.NewReader would keep more than
+// maxEntries (#243). The seeds are a wheel, one after a shebang line, and directories whose end
+// record says as many entries, more, or as many with zip64.
+func FuzzZipEntries(f *testing.F) {
+	whl, _ := testutil.Wheel(testutil.WheelOptions{})
+	for _, b := range [][]byte{whl, append([]byte("#!/usr/bin/env python3\n"), whl...), testutil.ZipDirectoryBomb(3, 3),
+		testutil.ZipDirectoryBomb(2, 1<<16+2), testutil.ZipDirectoryBomb(2, 5), testutil.ZipDirectoryBomb(0, 0)} {
+		f.Add(b)
+	}
+	f.Fuzz(func(t *testing.T, b []byte) {
+		zr, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
+		if err != nil {
+			return
+		}
+		if n, err := zipEntries(bytes.NewReader(b), int64(len(b)), len(b)); err != nil || n < len(zr.File) {
+			t.Fatalf("zip.NewReader read %d files; zipEntries = %d, %v", len(zr.File), n, err)
+		}
+	})
 }
 
 // TestFuzzCorpus writes testdata/fuzz/FuzzWheelFilename and FuzzCoreMetadata when
