@@ -119,8 +119,11 @@ per-address throttles are on and a scenario can name a client in `X-Forwarded-Fo
 gets as `LAJSTROM_E2E_FORWARDED=1`), runs `lajstrom migrate`, makes the user
 `e2e-admin` with the admin binding and a random password, which the scenarios get as
 `LAJSTROM_E2E_USER` and `LAJSTROM_E2E_PASSWORD`, starts `lajstrom serve` on a free port of
-`127.0.0.1` and waits for
-`/-/readyz`, at most 30 s. Then it runs every `test/e2e/<name>.sh` but `lib.sh` and `run.sh`,
+`127.0.0.1` below the ephemeral range (on Linux a port that a client socket holds, even in
+TIME_WAIT, looks free but cannot be bound, #372) and waits for
+`/-/readyz`, at most 30 s; when the server is not ready by then, or exits before, the harness
+prints the end of its log, whether it runs or its exit status, and what `/-/readyz` answers.
+Then it runs every `test/e2e/<name>.sh` but `lib.sh` and `run.sh`,
 the known ones in a fixed order, any other after them and `ha.sh` last, against the ha profile
 when it is up ([below](#the-ha-stack)), and prints a line per scenario:
 

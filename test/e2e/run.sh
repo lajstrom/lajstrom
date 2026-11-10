@@ -29,12 +29,14 @@
 # anonymousRead decides (rbac.sh turns it on for a repo of its own); no metrics listener, no
 # reconcile loop. The LAJSTROM_SERVER_*, LAJSTROM_LOG_*
 # and LAJSTROM_DATABASE_* overrides of the caller's environment are unset, so that the server and
-# lajstrom admin both read the file. The server
-# must answer /-/readyz within 30 s. A scenario that fails is reported with its FAIL lines (the
-# assertion or the failing command, from lib.sh) and the last 50 lines of the server log; the
-# others still run. On exit the server is stopped and the directory removed, unless
-# LAJSTROM_E2E_KEEP=1. The exit status is 1 when a scenario failed, 2 when the harness could
-# not start.
+# lajstrom admin both read the file. The port is one of free_port (lib.sh), below the ephemeral
+# range. The server must answer /-/readyz within 30 s; when it does not, or exits before, run.sh
+# prints the last 50 lines of its log, whether it runs or its exit status, and what /-/readyz
+# answers, its status and body, or why it does not answer. A scenario that fails is reported
+# with its FAIL lines (the assertion or the failing command, from lib.sh) and the last 50 lines
+# of the server log; the others still run. On exit the server is stopped and the directory
+# removed, unless LAJSTROM_E2E_KEEP=1. The exit status is 1 when a scenario failed, 2 when the
+# harness could not start.
 #
 # ha.sh is the exception: it runs against the ha profile of the dev stack (two replicas behind
 # nginx, make dev-up PROFILES=ha), at http://localhost:$LAJSTROM_HA_PORT (8090), not against
@@ -96,16 +98,27 @@ trap finish EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# free_port prints a port of 127.0.0.1 that nothing listens on (curl: connection refused).
-free_port() {
-	local port rc _
-	for _ in 1 2 3 4 5 6 7 8 9 10; do
-		port=$((20000 + RANDOM % 40000))
-		rc=0
-		curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$port/" || rc=$?
-		[ "$rc" != 7 ] || { echo "$port"; return 0; }
-	done
-	return 1
+# not_ready says why the server is not ready (#372): the end of its log, whether the process
+# runs or how it exited, and what GET /-/readyz answers, or why nothing answers.
+not_ready() {
+	local rc=0 code why="was not ready within 30 s"
+	echo "--- the last 50 lines of the server log:"
+	tail -n 50 "$LAJSTROM_SERVER_LOG"
+	if kill -0 "$pid" 2>/dev/null; then
+		echo "--- lajstrom serve: running, pid $pid"
+	else
+		wait "$pid" || rc=$?
+		pid=""
+		why="exited with status $rc before it was ready"
+		echo "--- lajstrom serve: exited with status $rc"
+	fi
+	code="$(curl -sS -o "$tmp/readyz" -w '%{http_code}' --max-time 2 "$base/-/readyz" 2>"$tmp/readyz.err")" || code=""
+	if [ -n "$code" ]; then
+		echo "--- GET /-/readyz: $code $(head -c 300 "$tmp/readyz")"
+	else
+		echo "--- GET /-/readyz: no answer: $(cat "$tmp/readyz.err")"
+	fi
+	echo "run.sh: lajstrom serve on $base $why (registry $registry)"
 }
 
 start=$SECONDS
@@ -169,8 +182,7 @@ served=$SECONDS
 deadline=$((SECONDS + 30))
 until curl -fsS -o /dev/null --max-time 2 "$base/-/readyz" 2>/dev/null; do
 	if ! kill -0 "$pid" 2>/dev/null || [ "$SECONDS" -ge "$deadline" ]; then
-		tail -n 50 "$LAJSTROM_SERVER_LOG" >&2
-		echo "run.sh: lajstrom serve on $base was not ready within 30 s (registry $registry)" >&2
+		not_ready >&2
 		exit 2
 	fi
 	sleep 0.5
