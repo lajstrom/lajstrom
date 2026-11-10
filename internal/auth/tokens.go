@@ -163,8 +163,9 @@ func createdBy(c Credential) string {
 // CreateDeploy creates a deploy token of the repo <format>/<name> and returns it with its
 // secret, DeployPrefix and 43 characters, with one token.create audit event whose repo is the
 // repo. name is as for CreatePAT, unique among the repo's live tokens. scopes are read, write
-// or both, required: delete and manage are never a deploy token's. The expiry is optional, and
-// not bounded.
+// or both, required: delete and manage are never a deploy token's. A group's deploy token reads
+// only: a write through a group is its hosted member's, which the token does not reach
+// (docs/spec/rbac.md §7). The expiry is optional, and not bounded.
 func (s *Tokens) CreateDeploy(ctx context.Context, repo, name string, scopes []string, exp Expiry, o Origin) (*Token, string, error) {
 	scopes, err := checkScopes(scopes, TokenDeploy)
 	if err != nil {
@@ -181,6 +182,10 @@ func (s *Tokens) CreateDeploy(ctx context.Context, repo, name string, scopes []s
 		}
 		if err != nil {
 			return nil, tokenOwner{}, err
+		}
+		if r.Kind == index.KindGroup && slices.Contains(scopes, ScopeWrite) {
+			return nil, tokenOwner{}, invalidf("scopes: %s is a group, and its deploy token reads only: a write through it is "+
+				"its hosted member's, which the token would not reach", repo)
 		}
 		return &index.Token{RepoID: &r.ID}, tokenOwner{repo: repo}, nil
 	})

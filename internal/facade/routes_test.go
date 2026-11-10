@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/provider/providertest"
 )
@@ -65,6 +66,8 @@ func TestBase(t *testing.T) {
 // and the routes whose issues come later.
 func TestRouteErrors(t *testing.T) {
 	e := newEnv(t, envOptions{})
+	group := index.Repo{Format: "raw", Name: "all", Prefix: "raw/all", Kind: index.KindGroup}
+	must(t, e.st.CreateRepo(t.Context(), &group))
 	long := "oci/images/" + strings.Repeat("a", maxNameLen)
 	tests := []struct {
 		name, method, target string
@@ -76,6 +79,8 @@ func TestRouteErrors(t *testing.T) {
 		{"name with a double slash", http.MethodGet, "/v2/raw/assets//x/tags/list", http.StatusBadRequest, codeNameInvalid, ""},
 		{"name too long", http.MethodGet, "/v2/" + long + "/tags/list", http.StatusBadRequest, codeNameInvalid, ""},
 		{"repo unknown", http.MethodGet, "/v2/raw/none/x/tags/list", http.StatusNotFound, codeNameUnknown, "raw/none/x"},
+		{"a group", http.MethodGet, "/v2/raw/all/x/manifests/v1", http.StatusNotFound, codeNameUnknown, "raw/all/x"},
+		{"a push to a group", http.MethodPut, "/v2/raw/all/x/manifests/v1", http.StatusNotFound, codeNameUnknown, "raw/all/x"},
 		{"format unknown", http.MethodGet, "/v2/apt/assets/x/manifests/v1", http.StatusNotFound, codeNameUnknown, ""},
 		{"no path below the repo", http.MethodGet, "/v2/raw/assets/tags/list", http.StatusNotFound, codeNameUnknown, "<format>/<repo>/<path>"},
 		{"no endpoint", http.MethodGet, "/v2/raw/assets/x", http.StatusNotFound, codeNameUnknown, "not an endpoint"},

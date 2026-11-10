@@ -204,6 +204,18 @@ func TestRebuild(t *testing.T) {
 	}
 }
 
+// TestGroup: a group holds nothing, has no registry, and its report is empty, without an error
+// (docs/spec/index-schema.md, Proxy and group repos).
+func TestGroup(t *testing.T) {
+	e := newEnv(t)
+	group := index.Repo{Format: "raw", Name: "all", Prefix: "raw/all", Kind: index.KindGroup}
+	must(t, e.st.CreateRepo(t.Context(), &group))
+	r := e.run(t, reindex.Request{Repo: &group, Prune: true})
+	if r.Repo != "raw/all" || r.OCIRepositories != 0 || len(r.Errors) != 0 {
+		t.Errorf("report of a group: %+v", r)
+	}
+}
+
 // TestKnownDigests checks the skip rule: a second run reads no manifest it knows, a verifying
 // run reads every one again.
 func TestKnownDigests(t *testing.T) {

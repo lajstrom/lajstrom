@@ -36,8 +36,8 @@ func newAdminRepoCmd(a *app) *cobra.Command {
 // newRepoCreateCmd returns admin repo create: create a repo and print it as JSON on one line.
 func newRepoCreateCmd(a *app) *cobra.Command {
 	var (
-		req              api.CreateRequest
-		policy, upstream string
+		req                     api.CreateRequest
+		policy, upstream, group string
 	)
 	cmd := &cobra.Command{
 		Use:         "create <format>/<name>",
@@ -49,7 +49,7 @@ func newRepoCreateCmd(a *app) *cobra.Command {
 			if req.Format, req.Name, err = splitRepo(args[0]); err != nil {
 				return err
 			}
-			req.Policy, req.Upstream = json.RawMessage(policy), json.RawMessage(upstream)
+			req.Policy, req.Upstream, req.Group = json.RawMessage(policy), json.RawMessage(upstream), json.RawMessage(group)
 			return a.withRepos(cmd.Context(), func(ctx context.Context, repos *api.Repos) error {
 				repo, err := repos.Create(ctx, req, api.Origin{Source: api.SourceCLI})
 				if err != nil {
@@ -60,12 +60,12 @@ func newRepoCreateCmd(a *app) *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&req.Registry, "registry", "", "registry that stores the repo's artifacts, one of registries[].name")
+	f.StringVar(&req.Registry, "registry", "", "registry that stores the repo's artifacts, one of registries[].name; none for a group")
 	f.BoolVar(&req.AnonymousRead, "anonymous-read", false, "readable without credentials, when auth.anonymousRead allows it")
 	f.StringVar(&policy, "policy", "", `repo policy, a JSON object, e.g. '{"maxFileSize": 1048576}'`)
-	f.StringVar(&req.Kind, "kind", "", "hosted (the default) or proxy, a repo that serves an upstream of the configuration")
+	f.StringVar(&req.Kind, "kind", "", "hosted (the default), proxy, a repo that serves an upstream of the configuration, or group")
 	f.StringVar(&upstream, "upstream", "", `a proxy's settings, a JSON object, e.g. '{"name": "npmjs", "deny": ["@acme/*"]}'`)
-	_ = cmd.MarkFlagRequired("registry") // fails only for a flag that does not exist
+	f.StringVar(&group, "group", "", `a group's settings, a JSON object, e.g. '{"members": ["internal", "npmjs"]}'`)
 	return cmd
 }
 
@@ -176,13 +176,17 @@ func writeJSONLine(out io.Writer, v any) error {
 }
 
 // writeRepoTable prints repos as a table with the columns FORMAT, NAME, REGISTRY,
-// ANONYMOUS-READ and CREATED.
+// ANONYMOUS-READ and CREATED; a group, which has no registry, shows "-" there.
 func writeRepoTable(out io.Writer, repos []api.Repo) error {
 	var buf bytes.Buffer
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 	_, _ = io.WriteString(tw, "FORMAT\tNAME\tREGISTRY\tANONYMOUS-READ\tCREATED\n") // a bytes.Buffer does not fail
 	for _, r := range repos {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%s\n", r.Format, r.Name, r.Registry, r.AnonymousRead, r.CreatedAt.Format(time.RFC3339))
+		registry := r.Registry
+		if registry == "" {
+			registry = "-"
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%s\n", r.Format, r.Name, registry, r.AnonymousRead, r.CreatedAt.Format(time.RFC3339))
 	}
 	if err := tw.Flush(); err != nil {
 		return err

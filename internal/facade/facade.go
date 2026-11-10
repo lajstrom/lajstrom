@@ -239,7 +239,8 @@ var nameGrammar = regexp.MustCompile(`^[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*(/[a-z0-
 
 // resolve returns the target of name: NAME_INVALID when it is not the grammar, NAME_UNKNOWN
 // when it is not <format>/<repo>/<path>, and repoUnknown when it is not of a repo of the
-// control plane. One GetRepo per request.
+// control plane or is of a group, which has no OCI repository (docs/spec/http-routing.md §6).
+// One GetRepo per request.
 func (h *handler) resolve(ctx context.Context, name string) (*target, error) {
 	if len(name) > maxNameLen || !nameGrammar.MatchString(name) {
 		return nil, &apiError{status: http.StatusBadRequest, code: codeNameInvalid,
@@ -252,7 +253,7 @@ func (h *handler) resolve(ctx context.Context, name string) (*target, error) {
 	}
 	repo, err := h.o.Index.GetRepo(ctx, formatName, repoName)
 	switch {
-	case errors.Is(err, index.ErrNotFound):
+	case errors.Is(err, index.ErrNotFound), err == nil && repo.Kind == index.KindGroup:
 		return nil, h.repoUnknown(ctx, name)
 	case err != nil:
 		return nil, fmt.Errorf("facade: repo of %s: %w", name, err)

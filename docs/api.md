@@ -284,6 +284,7 @@ configuration, without HTTP; run `lajstrom migrate` first. A change is audited w
 ```sh
 lajstrom admin repo create raw/scratch --registry local [--anonymous-read] [--policy '{"maxFileSize": 104857600}']
 lajstrom admin repo create npm/npmjs --registry local --kind proxy --upstream '{"name": "npmjs", "deny": ["@acme/*"]}'
+lajstrom admin repo create npm/all --kind group --group '{"members": ["internal", "npmjs"]}'
 lajstrom admin repo list [--format raw] [--json]
 lajstrom admin repo delete raw/scratch [--force]
 ```
