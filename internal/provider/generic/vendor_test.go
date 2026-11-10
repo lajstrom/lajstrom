@@ -129,7 +129,8 @@ func TestVendorDefaults(t *testing.T) {
 		{vendorUnknown, probed},
 		{vendorGitLab, probed},
 		{vendorHarbor, probed},
-		{vendorGHCR, provider.Capabilities{CreateOnPush: true, Referrers: true, BlobRedirect: true, Consistency: provider.ConsistencyEventual}},
+		{vendorGHCR, provider.Capabilities{CreateOnPush: true, Referrers: true, BlobRedirect: true, Consistency: provider.ConsistencyEventual,
+			MaxBlobSize: 10_000_000_000}},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.vendor), func(t *testing.T) {
@@ -315,8 +316,9 @@ func TestVendorDefaultsInTheProbe(t *testing.T) {
 		{
 			name:     "GHCR",
 			defaults: ghcr,
-			want:     provider.Capabilities{CreateOnPush: true, Referrers: true, BlobRedirect: true, Consistency: provider.ConsistencyEventual},
-			noProbe:  []string{"GET /v2/_catalog"},
+			want: provider.Capabilities{CreateOnPush: true, Referrers: true, BlobRedirect: true, Consistency: provider.ConsistencyEventual,
+				MaxBlobSize: 10_000_000_000},
+			noProbe: []string{"GET /v2/_catalog"},
 		},
 		{
 			name:     "the configuration wins over GHCR's",
@@ -326,7 +328,7 @@ func TestVendorDefaultsInTheProbe(t *testing.T) {
 				c.Capabilities.ConsistencyBound = 3 * time.Second
 			},
 			want: provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true, DeleteManifest: true, BlobRedirect: true,
-				Consistency: provider.ConsistencyEventual, ConsistencyBound: 3 * time.Second},
+				Consistency: provider.ConsistencyEventual, ConsistencyBound: 3 * time.Second, MaxBlobSize: 10_000_000_000},
 			noProbe: []string{"GET /v2/_catalog"},
 		},
 		{

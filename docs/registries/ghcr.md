@@ -50,7 +50,8 @@ registries:
 
 Since #35 the provider's vendor table sets `catalog: false` and `deleteManifest: false` for the
 host `ghcr.io` without asking (the catalog is not probed), and the line says `vendor=ghcr`; the
-two keys may stay in the configuration.
+two keys may stay in the configuration. Since #246 it sets `maxBlobSize: 10000000000` too, which
+bounds a `/v2` blob upload before it streams.
 
 ## Measurements
 
