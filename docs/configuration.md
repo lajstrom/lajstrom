@@ -155,6 +155,11 @@ A list; each entry is one backend OCI registry. Repos refer to it by name.
 | `registries[].ecr.kmsKey` | KMS key ARN, ID or alias | empty | none | Key of `KMS` or `KMS_DSSE` encryption; empty is the AWS managed key of ECR. Refused with `AES256`. |
 | `registries[].ecr.forceDelete` | bool | `false` | none | A repository delete also removes a repository that still holds images; `false` lets ECR refuse it (`409`). |
 
+Two registries on one URL (the same scheme, host and port) must not have `prefix`es that nest,
+one the other or beginning with it, the empty prefix included: with `""` and `raw/x/`, repo
+`raw/x` of the first and path `raw/y/pkg` would be repo `raw/y` of the second. Such a pair is
+refused, naming both.
+
 #### Registry capabilities
 
 At startup Lajstrom asks each registry what it supports, once, and keeps the answer: `GET /v2/`
