@@ -245,8 +245,24 @@ func RepoFrom(ctx context.Context) (index.Repo, bool)
 // Authorize asks deps.Auth whether auth.PrincipalFrom(ctx) may do a on repo: nil when allowed;
 // denied: ErrUnauthenticated for anonymous, ErrForbidden for a principal that can read the
 // repo, index.ErrNotFound for one that cannot (rbac.md §3); the authorizer's error unchanged.
+// Through a group (ViaFrom(ctx), set by WriteTarget once the principal may read the group), a
+// principal that is not anonymous and cannot read repo gets ErrForbidden naming repo, not
+// index.ErrNotFound: the group's resource shows its members to its readers (rbac.md §7).
 // A nil deps.Auth allows everything the credential allows, for the tests; serve sets auth.RBAC.
 func Authorize(ctx context.Context, deps Deps, a auth.Action, repo index.Repo) error
+
+// WriteTarget returns the repo that takes a write route sent to repo, and the context to serve
+// it with (proxy-and-group.md §8.4): a hosted repo and ctx unchanged; for a group, once the
+// principal may read the group (Authorize), its hosted member (deps.Index.ListGroupMembers) and
+// WithVia(ctx, repo); for a proxy, or a group without a hosted member, an error wrapping
+// ErrMethodNotAllowed once the principal may read it. The handler then authorizes the route's
+// own action on the repo returned, with the context returned, and serves the write there.
+func WriteTarget(ctx context.Context, deps Deps, repo index.Repo) (context.Context, index.Repo, error)
+// WithVia marks ctx as a request that came through group: ingest adds details.via,
+// <format>/<group>, to the audit rows of the uploads, deletes and journal entries made with it,
+// and the proxy core to its proxy.fetch and proxy.reject rows (rbac.md §7). ViaFrom reads it.
+func WithVia(ctx context.Context, group index.Repo) context.Context
+func ViaFrom(ctx context.Context) (index.Repo, bool)
 
 // WriteError answers StatusOf(err) as text/plain (nosniff): err.Error() for 4xx, the status
 // text for 5xx; a 401 carries WWW-Authenticate: Basic realm="lajstrom", a 405 Allow: GET, HEAD,
@@ -315,13 +331,16 @@ They are checked in this order:
 | `format.ErrGatewayTimeout` | 504 |
 | anything else, `nil` included | 500 |
 
-### Proxy repos (`internal/format`, ADR 0013)
+### Proxy and group repos (`internal/format`, ADR 0013)
 
-What a plugin provides for proxy repos of its format, and what its handlers ask the core
-(proxy-and-group.md §10). A format has the kind `proxy` when its plugin implements `Proxier`;
-creating a proxy repo of another format is `400`. The core, `internal/proxy`, does everything
-else: the allow and deny lists, `proxy_meta` and its TTLs, the fetch claims, the upstream client,
-the spool and the checksum, the ingest call, the statuses of §6.
+What a plugin provides for proxy and group repos of its format, and what its handlers ask the
+core (proxy-and-group.md §10). A format has the kind `proxy` when its plugin implements
+`Proxier`, and the kind `group` when it implements `Grouper`; creating a repo of a kind the
+format does not have is `400`. The core, `internal/proxy`, does everything else: the allow and
+deny lists, `proxy_meta` and its TTLs, the fetch claims, the upstream client, the spool and the
+checksum, the ingest call, the statuses of §6, a group's members and which of them take part. A
+handler asks the core for a document or a file of a proxy or a group alike, and for a write
+asks `WriteTarget` where it goes.
 
 ```go
 // Proxier is implemented by a plugin whose format has proxy repos.
@@ -371,18 +390,50 @@ type ArtifactRef struct {
     Kind                   string           // the document kind whose Entries list the artifact
 }
 
-// Proxy is the core as the plugins' handlers see it; *proxy.Core implements it. Its methods
-// take a repo of kind proxy (#311 extends them to groups); another kind wraps ErrUnsupported.
+// Grouper is implemented by a plugin whose format has group repos (#311). It is a Proxier: the
+// core reads a group's members with Key, FileRequest and the documents of Proxy.Document.
+type Grouper interface {
+    Proxier
+    // MergeGroup merges the documents of kind of name of the members of group that take part
+    // (§8.1, §8.2), in member order, into the group's document (§8.3): the union of their
+    // versions, the first member's entry of a version that several have, the format's own
+    // fields by the format's rules (npm: http-routing.md, npm, Group). Every link to a file
+    // starts with base, <server.externalURL>/<format>/<group>/; a member's links are under its
+    // own base. docs has at least one element. The Document's Kind is kind.
+    MergeGroup(ctx context.Context, group index.Repo, name, kind string, docs []MemberDocument, base string) (Document, error)
+}
+type MemberDocument struct {
+    Repo    index.Repo                       // the member; its Kind tells the hosted member from a proxy
+    Content []byte                           // its document of the kind, as it serves it
+}
+
+// Proxy is the core as the plugins' handlers see it; *proxy.Core implements it. Document and
+// File take a repo of kind proxy, or of kind group of a format whose plugin is a Grouper;
+// Forward a repo of kind proxy; another kind wraps ErrUnsupported.
 type Proxy interface {
-    // Document: the lists (§3), then the index_cache row of (repo, Key(name), kind) while the
-    // proxy_meta row of (Key(name), kind) is fresh; otherwise the upstream is asked (§4.2), the
-    // row written and the index_cache rows of scope Key(name) invalidated in one transaction,
-    // and the document rendered (RenderProxy) and stored. Without a row it is rendered and not
-    // stored. Errors wrap the sentinels of §6.
+    // Document of a proxy: the lists (§3), then the index_cache row of (repo, Key(name), kind)
+    // while the proxy_meta row of (Key(name), kind) is fresh; otherwise the upstream is asked
+    // (§4.2), the row written and the index_cache rows of scope Key(name) invalidated in one
+    // transaction, and the document rendered (RenderProxy) and stored. Without a row it is
+    // rendered and not stored. Errors wrap the sentinels of §6.
+    // Document of a group (§8): the members in order (Index.ListGroupMembers), each proxy member
+    // hidden while the hosted member has a package of the package path of name and name
+    // matches no group.merge pattern; the hosted member's document is CachedDocument of scope
+    // Key(name) and kind (a format with groups renders a hosted repo's document of a name under
+    // that scope), a proxy member's what Document answers for it with WithVia(ctx, group), a 403
+    // of its lists or a 404 meaning the member does not have the name, and another error that
+    // it does not take part (§8.1). The documents are merged (MergeGroup) on every call and
+    // nothing is stored: the Cache has RepoID the group's, Scope Key(name), SHA256 the group's
+    // ETag (§8.5), RenderedAt the newest member document's, no ID. When no member has the name:
+    // the first proxy member's error, else index.ErrNotFound.
     Document(ctx context.Context, repo index.Repo, name, kind string) (*index.Cache, error)
-    // File: the file path names (FileRequest), held or fetched and ingested on a miss (§5) by
-    // the principal of ctx (auth.PrincipalFrom); the handler serves it as a hosted file
+    // File of a proxy: the file path names (FileRequest), held or fetched and ingested on a miss
+    // (§5) by the principal of ctx (auth.PrincipalFrom); the handler serves it as a hosted file
     // (ServeBlob). Errors wrap the sentinels of §6.
+    // File of a group: the first member taking part (as for Document) that holds the file, or,
+    // for a proxy member, File on it, with WithVia(ctx, group); index.ErrNotFound when the
+    // hosted member has the name and not the version. The FileMatch's Package.RepoID is the
+    // member that holds the file: the handler serves it from that repo (Index.GetRepoByID).
     File(ctx context.Context, repo index.Repo, path string) (*index.FileMatch, error)
     // Forward sends req to the repo's upstream and returns the answer, which nothing keeps: a
     // request of the format's protocol that only the upstream can answer (npm audit). It is
@@ -520,6 +571,10 @@ type Reader interface {
     GetRepo(ctx context.Context, format, name string) (*Repo, error)
     GetRepoByID(ctx context.Context, id int64) (*Repo, error)
     ListRepos(ctx context.Context, format string) ([]Repo, error)
+    // groups (ADR 0013, index-schema.md, group_members): the members of a group in member
+    // order, and the groups that have a repo as a member, ordered by format and name
+    ListGroupMembers(ctx context.Context, groupID int64) ([]Repo, error)
+    ListGroupsOf(ctx context.Context, memberID int64) ([]Repo, error)
     GetUser(ctx context.Context, name string) (*User, error)
     ListUsers(ctx context.Context) ([]User, error)
     GetTokenByHash(ctx context.Context, hash string) (*Token, error)
@@ -566,7 +621,14 @@ type Writer interface {
     // control plane
     CreateRepo(ctx context.Context, r *Repo) error
     UpdateRepo(ctx context.Context, r *Repo) error  // Format, Name and Kind never change
-    DeleteRepo(ctx context.Context, id int64) error // its proxy_meta and fetch_claims rows go with it
+    // DeleteRepo: its proxy_meta, fetch_claims and, for a group, group_members rows go with
+    // it; a repo that is a member of a group wraps ErrConflict and nothing is deleted
+    DeleteRepo(ctx context.Context, id int64) error
+    // SetGroupMembers makes the group_members rows of the group exactly memberIDs, position the
+    // index in it; an id that is no repo wraps ErrNotFound, an id named twice ErrConflict. The
+    // caller writes the group's repos row in the same transaction (CreateRepo, UpdateRepo), so
+    // that auth_version moves with the members
+    SetGroupMembers(ctx context.Context, groupID int64, memberIDs []int64) error
     CreateUser(ctx context.Context, u *User) error
     UpdateUser(ctx context.Context, u *User) error
     CreateToken(ctx context.Context, t *Token) error
@@ -645,9 +707,12 @@ type Writer interface {
 // ProxyMeta, JournalEntry, JournalState; query types FileMatch (file + version + package),
 // VersionMatch (version + package) and AuditFilter. Ids are int64, timestamps UTC, nullable columns are pointers.
 
-// Repo, for ADR 0013 (repos.upstream; repos.group comes with #311):
+// Repo, for ADR 0013 (repos.upstream, repos.group):
 //     Kind     string                         // KindHosted, KindProxy or KindGroup
 //     Upstream json.RawMessage                // a proxy's settings (proxy-and-group.md §2.2); nil on another kind
+//     Group    json.RawMessage                // a group's settings but its members, {"merge"} (§2.3); nil on another kind
+// A group's Registry is "" and its Policy nil; its members are group_members rows
+// (ListGroupMembers, SetGroupMembers), not a field: GetRepo stays one row.
 const KindHosted, KindProxy, KindGroup = "hosted", "proxy", "group"
 
 const ProxyMetaPresent, ProxyMetaAbsent = "present", "absent"
@@ -809,7 +874,9 @@ func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag str
 // up.Origin (the proxy fetcher, ADR 0013) it sets lajstrom.origin.url and lajstrom.origin.checksum
 // on the built manifest and removes lajstrom.uploaded-by, and the audit row is proxy.fetch with
 // details {"upstream", "url", "checksum", "size"}, size the sum of the file layers'; without one,
-// a built manifest with a lajstrom.origin.* key is ErrInvalid.
+// a built manifest with a lajstrom.origin.* key is ErrInvalid. Upload, Delete and Journal made
+// with a context of format.WithVia (a write through a group, a fetch of a group's proxy member)
+// add details.via, <format>/<group>, to their audit rows (rbac.md §7); nothing else changes.
 func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload, principal auth.Principal) (*format.Published, error)
 
 // PutReferrer stores a referrer (a signature, an SBOM, an attestation: profile.IsReferrer, or a
@@ -1020,6 +1087,26 @@ Where the merged shapes differ from the first sketch of this section, and why:
   bounded by `maxMetadataSize` rather than a key of its own. The upstream's error statuses are
   classified as a document's (proxy-and-group.md §6), its `400`, `413`, `415` and `422` being
   the client's `400`, and its error body is never passed on. A group's forward is #311's.
+- **Groups plug in through `format.Grouper`** (#311), a `Proxier` with `MergeGroup`, rather
+  than a sixth method of `Proxier`: a format may have proxies before groups (#67, #68), and
+  the implementers of `Proxier` keep compiling. `MergeGroup` takes the members' documents as
+  they serve them, links under their own bases, and writes every link under the group's. The
+  hosted member's document is its `index_cache` row of scope `Key(name)`, so no hook maps a name
+  to a hosted scope; a format whose hosted scope differs adds one with its groups.
+- **`format.Proxy` serves groups with `Document` and `File`.** A handler asks it for a proxy's
+  document or a group's alike. `File` keeps its `*index.FileMatch`, whose `Package.RepoID`
+  names the member that holds the file: the handler looks that repo up (`GetRepoByID`, one
+  primary-key read) to reach its registry, as a group has none.
+- **Members are rows, `group_members`, not a list in `repos.group`.** The foreign key
+  `ON DELETE RESTRICT` keeps a member from being deleted by any replica, without a check that
+  races with a concurrent change of the group; `ListGroupsOf` is an index scan; and `repos.group`
+  keeps what `manage` changes (`merge`) apart from what only the admin changes (members).
+- **A write through a group is the member's, found by `format.WriteTarget`**, a function of
+  `format` over the index rather than a method of the core: it is the same for every format,
+  and it replaces the check each handler made of a proxy's kind. The group reaches the audit rows of ingest and of the
+  core through the context (`WithVia`), not as a field of `Upload`, `Deletion` and `JournalOp`:
+  one marker, read where the rows are written. `Authorize` reads it too, so that a principal
+  that read the group and is denied on its hosted member gets `403` naming the member.
 - **The npm journal has store methods of its own** (ADR 0012, #307). `ListJournal` and
   `ListJournalState` read one package: the journal writer reads the last `seq` and the state
   under the package's journal lock, a packument reads both for its `dist-tags`, `deprecated`,

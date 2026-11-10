@@ -302,6 +302,23 @@ sorted by name; `from` and `size` (default 20, at most 250) paginate.
 "detail": {"quality": 1, "popularity": 1, "maintenance": 1}}, "searchScore": 1}], "total", "time"}`,
 `version` being `latest` and `description` its.
 
+**Group** (ADR 0013, proxy-and-group.md §8, #311). A group has the routes above:
+
+- The packument of a name merges the packuments of the members that take part (§8.1, §8.2), of
+  the kind asked, in member order: `versions` is their union, a version that several members
+  have taken from the first; `time` likewise per version, with `created` the earliest and
+  `modified` the latest of the members'; each tag of `dist-tags` is the first member's that has
+  the tag; every other member of the document (`_id`, `_rev`, `description`, `readme`, …) is
+  the first member's. `dist.tarball` names the group. `ETag` is the group's (§8.5).
+- `?write=true` answers the hosted member's own full packument, links under the group (§8.4):
+  `deprecate` and `unpublish` send it back, and the hosted member takes only its own versions.
+- A tarball comes from the member that holds it or, for a proxy member, fetches it (§8.3), and
+  is served from that member's registry as a hosted repo's is.
+- `GET …/dist-tags` answers the merged packument's `dist-tags`.
+- Publish, the packument update, the unpublish routes and the dist-tag `PUT` and `DELETE` are
+  the hosted member's, with `read` on the group and the route's own action on the member
+  (rbac.md §7); `405` without a hosted member.
+
 **Through `/v2`.** An npm version pushed with `oras push` is ingested as any other
 (manifest-profile.md §5) and appends no journal entry: until a dist-tag names a version,
 `latest` falls back as above. A journal manifest is never pushed (its artifactType is not the

@@ -231,9 +231,10 @@ group is therefore who may read its members' content, and `manage` on a group (i
 **A write through a group** needs `read` on the group, then the action on the group's hosted
 member, evaluated as if the request had come to the member's own URL. A principal that cannot
 read the group gets the group's denial (§3); one that can read it and lacks the action on the
-member gets `403` naming the member, which the group's resource already shows its readers. A
-deploy token of a group has the scope `read` only; a `write` scope is `400`, since it would grant
-nothing.
+member gets `403` naming the member, which the group's resource already shows its readers. The
+audit rows of the write (`push`, `delete`, `npm.dist-tag`, `npm.deprecate`) are the member's,
+with `details.via` the group, `<format>/<group>`. A deploy token of a group has the scope `read`
+only; a `write` scope is `400`, since it would grant nothing.
 
 **The admin role** creates proxy and group repos, as every repo, and alone changes a proxy's
 `upstream.name` and a group's `members`: both change what every reader of the repo gets, and a

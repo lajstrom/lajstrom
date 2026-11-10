@@ -291,6 +291,11 @@ A request on group `G` for name `N` asks the members of `G` in order. A member t
 it is hidden (§8.2). The hosted member answers from its index; a proxy member as a proxy does
 (§4, §7), and a name outside its lists (§3) is one it does not have, with every request it makes upstream counted as its own, not the group's.
 
+A proxy member that fails for `N` (§6: its upstream errs, and it has neither a row nor a held
+version) does not take part in this answer, and the failure is logged at warn with the member and
+its upstream: the group answers from the members that have `N`. When none has it, the group
+answers with the first such failure's status, and with `404` when no member failed.
+
 ### 8.2 Hosted names hide the upstream
 
 When the hosted member of `G` holds `N`, that is, its index has a package of the package path
@@ -308,8 +313,10 @@ member has the name or not.
 
 The plugin merges the documents of the members that take part, in member order
 (§10, `MergeGroup`): the union of their versions, and for a version that several members have,
-the first member's entry; format-level fields (npm's `dist-tags`) by the format's ADR. Every link
-names the group. A name that no member has is `404`.
+the first member's entry; format-level fields (npm's `dist-tags`) by the format's rules (npm:
+[http-routing.md](http-routing.md), npm, **Group**). Every link names the group. A name that no
+member has is `404`. The hosted member's document is the one its own URL serves, from its
+`index_cache`; a proxy member's is the one of §7.
 
 A file of `N` is served by the first member taking part that holds it, or, for a proxy member
 whose document lists it, fetched there (§5) and served. When the hosted member holds `N` and
@@ -322,6 +329,12 @@ on the hosted member `H`: the ingest, the audit row and the index rows are `H`'s
 `details.via` the group, and the permission is `H`'s (rbac.md §7). A group without a hosted
 member answers a write with `405`.
 
+The read that a write of the format starts from, the format's write form of a document (npm's
+`GET /<name>?write=true`, which `deprecate` and `unpublish` send back changed), is `H`'s own
+document, with its links under the group, once the principal may read the group: a write sends
+back what it read, and `H` takes no version of another member. Without a hosted member it is
+`405`, as the write would be.
+
 ### 8.5 Caching
 
 A group stores nothing: no `packages`, `versions`, `files`, `oci_repos`, `index_cache` or
@@ -329,7 +342,8 @@ A group stores nothing: no `packages`, `versions`, `files`, `oci_repos`, `index_
 a member's change is seen on the next request and nothing is invalidated. The `ETag` of a
 group's document is the sha256 of the group's `updatedAt` and of the `sha256` of each
 member document that took part, in order, so that a conditional request is answered `304`
-without a merge.
+without sending the body. The merge runs for it too in M4: `format.Proxy.Document` takes no
+validator, and the merge is of documents already in memory.
 
 ## 9. Security
 
@@ -372,11 +386,12 @@ status, duration. A proxied ingest is logged at info and is the audit row `proxy
 refused one is `proxy.reject` (rbac.md §7). A credential file's content, a token and the
 upstream's response body never reach a log or an error.
 
-## 10. Plugin hooks (not a contract yet)
+## 10. Plugin hooks
 
-This section describes what a plugin provides for `proxy` and `group`. It changes no exported
-interface: the Go shapes come with a later issue labelled `contract`, which may name them
-differently. A sketch:
+This section describes what a plugin provides for `proxy` and `group`. The Go shapes are
+[layout.md](layout.md) §2, "Proxy and group repos": `format.Proxier` (#309), and
+`format.Grouper`, a `Proxier` with `MergeGroup` (#311); the write target is
+`format.WriteTarget`. The sketch they came from:
 
 ```go
 // Proxier: a format with proxy and group repos.
