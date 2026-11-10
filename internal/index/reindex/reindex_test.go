@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/opencontainers/go-digest"
@@ -425,14 +426,16 @@ func TestRuns(t *testing.T) {
 	}
 }
 
-// counting is an Inspector that counts its calls.
+// counting is an Inspector that counts its calls, and takes slow longer for each.
 type counting struct {
 	reindex.Inspector
 	calls atomic.Int64
+	slow  time.Duration
 }
 
 func (c *counting) Inspect(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, o ingest.InspectOptions) (*ingest.Rows, error) {
 	c.calls.Add(1)
+	time.Sleep(c.slow)
 	return c.Inspector.Inspect(ctx, repo, pkgPath, tag, m, raw, o)
 }
 

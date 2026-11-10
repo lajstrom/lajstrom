@@ -5,6 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/index/reindex"
 	"github.com/lajstrom/lajstrom/internal/provider"
@@ -72,6 +76,26 @@ func TestAttach(t *testing.T) {
 	r = e.run(t, reindex.Request{Prune: true})
 	if r.OCIRepositories != 3 || r.Unchanged != 3 || len(r.Errors) != 0 {
 		t.Errorf("the next run: %+v", *r)
+	}
+}
+
+// TestRebuildTagSchema checks that a rebuild does not report the referrers of the versions it
+// writes as orphans: the sha256-<hex> index of a registry without the referrers API is read
+// while the subject's row is being written, here slowly.
+func TestRebuildTagSchema(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t)
+	pub := e.publish(t, "hello", "hello")
+	sig := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: digest.FromString("signature"), Size: 1,
+		ArtifactType: "application/vnd.dev.cosign.artifact.sig.v1+json"}
+	e.pushManifest(t, pub.RepoPath, "sha256-"+pub.Digest.Encoded(),
+		ocispec.Index{Versioned: specs2, MediaType: ocispec.MediaTypeImageIndex, Manifests: []ocispec.Descriptor{sig}},
+		ocispec.MediaTypeImageIndex)
+	must(t, e.st.ResetDerived(ctx, e.repo.ID))
+	e.inspect.slow = 50 * time.Millisecond
+	r := e.run(t, reindex.Request{Prune: true})
+	if r.Added != 1 || r.Referrers != 1 || len(r.OrphanReferrers) != 0 || len(r.Errors) != 0 {
+		t.Errorf("report: %+v", *r)
 	}
 }
 

@@ -51,6 +51,7 @@ type scan struct {
 	rep         RepoReport
 	seen        []int64                    // version rows seen without being written
 	referrers   map[digest.Digest]struct{} // a referrer is listed under its own tag and in a tag-schema index
+	subjects    []Finding                  // the referrers read, whose subjects orphans looks up
 	fatal       error                      // the first error of the run's own: the database, the context
 	unsupported bool                       // no plugin for the repo's format: the scan stops, and nothing is swept
 }
@@ -75,6 +76,7 @@ func (w *Worker) repo(ctx context.Context, repo index.Repo, start time.Time, req
 		}
 		s.ociRepo(ctx, name)
 	}
+	s.orphans(ctx)
 	if s.fatal == nil && ctx.Err() == nil {
 		s.dbErr(w.index.TouchVersions(ctx, s.seen, w.now()))
 	}
@@ -293,11 +295,11 @@ func (s *scan) classify(ctx context.Context, pkgPath, tag string, desc ocispec.D
 			}
 		}
 		f.Subject = digest.Digest("sha256:" + m[1])
-		s.referrer(ctx, listed, f)
+		s.referrer(listed, f)
 		return
 	case p.Subject != nil:
 		f.Subject = p.Subject.Digest
-		s.referrer(ctx, []digest.Digest{desc.Digest}, f)
+		s.referrer([]digest.Digest{desc.Digest}, f)
 		return
 	case mediaType != ocispec.MediaTypeImageManifest || p.Annotations[profile.AnnotationSchema] == "":
 		s.foreign(f)
@@ -353,22 +355,34 @@ func (s *scan) write(ctx context.Context, rows *ingest.Rows, f Finding, reread b
 	}
 }
 
-// referrer counts the referrers listed, each digest once, and reports f as an orphan when no
-// version of the repo has its subject's digest.
-func (s *scan) referrer(ctx context.Context, listed []digest.Digest, f Finding) {
-	_, err := s.w.index.GetVersionByDigest(ctx, s.repo.ID, f.Subject)
-	orphan := errors.Is(err, index.ErrNotFound)
-	if !orphan && s.dbErr(err) {
-		return
-	}
+// referrer counts the referrers listed, each digest once, and keeps f for orphans.
+func (s *scan) referrer(listed []digest.Digest, f Finding) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, d := range listed {
 		s.referrers[d] = struct{}{}
 	}
 	s.rep.Referrers = len(s.referrers)
-	if orphan {
-		add(&s.rep, &s.rep.OrphanReferrers, f)
+	s.subjects = append(s.subjects, f)
+}
+
+// orphans reports the referrers read whose subject's digest no version of the repo has, once
+// every tag is read: a rebuild may write the subject's row after it read the referrer, the
+// sha256-<hex> index of the tag schema in particular.
+func (s *scan) orphans(ctx context.Context) {
+	for _, f := range s.subjects {
+		if s.stopped(ctx) {
+			return
+		}
+		_, err := s.w.index.GetVersionByDigest(ctx, s.repo.ID, f.Subject)
+		switch {
+		case errors.Is(err, index.ErrNotFound):
+			s.mu.Lock()
+			add(&s.rep, &s.rep.OrphanReferrers, f)
+			s.mu.Unlock()
+		case s.dbErr(err):
+			return
+		}
 	}
 }
 
