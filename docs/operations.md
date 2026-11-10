@@ -561,6 +561,7 @@ for the breaker, which opens after five as above.
 | the layers of a manifest | 1 000, fixed | `400 MANIFEST_INVALID` naming the bound, on every repo, before Lajstrom asks the registry about any layer |
 | a body of the management API | 64 KiB, fixed | `413` |
 | a file a frontend receives | the repo's `policy.maxFileSize` | `413` |
+| a blob of `/v2` | the repo's `policy.maxFileSize`, or the registry's `capabilities.maxBlobSize` when it is smaller; on an `oci` repo `maxBlobSize` alone | `413 SIZE_INVALID` naming the bound, before the blob streams when its size is declared, else where it passes the bound; the session ends |
 
 There is no bound on the whole length of a request or a response: a blob streams for as long as
 its size needs, which a fixed read or write timeout would cut off. `server.stallTimeout` bounds

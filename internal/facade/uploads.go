@@ -127,7 +127,7 @@ func (h *handler) monolithic(w http.ResponseWriter, r *http.Request, t *target, 
 	if err != nil {
 		return err
 	}
-	if err := limitBlob(w, r, t, 0, r.ContentLength); err != nil {
+	if err := h.limitBlob(w, r, t, 0, r.ContentLength); err != nil {
 		return err
 	}
 	if err := h.ensureRepository(ctx, t); err != nil {
@@ -252,7 +252,7 @@ func (h *handler) patchUpload(w http.ResponseWriter, r *http.Request, t *target,
 	if err != nil {
 		return err
 	}
-	if err := limitBlob(w, r, t, st.Offset, size); err != nil {
+	if err := h.limitBlob(w, r, t, st.Offset, size); err != nil {
 		h.endUpload(ctx, s, rr, st)
 		return err
 	}
@@ -313,7 +313,7 @@ func (h *handler) putUpload(w http.ResponseWriter, r *http.Request, t *target, i
 	if err != nil {
 		return err
 	}
-	if err := limitBlob(w, r, t, st.Offset, size); err != nil {
+	if err := h.limitBlob(w, r, t, st.Offset, size); err != nil {
 		h.endUpload(ctx, s, rr, st)
 		return err
 	}
@@ -469,8 +469,12 @@ func finishError(err error, body *bodyReader) error {
 	case errors.Is(err, errNotDigest), errors.Is(err, content.ErrMismatchedDigest):
 		return &apiError{status: http.StatusBadRequest, code: codeDigestInvalid, msg: "provided digest did not match uploaded content", err: err}
 	case cutAtLimit(body):
-		return &apiError{status: http.StatusRequestEntityTooLarge, code: codeSizeInvalid,
-			msg: "the blob is larger than the maxFileSize of the repo: the upload ends", err: err}
+		msg := "the blob is larger than the bound of the upload: the upload ends"
+		var cut *blobTooLarge
+		if errors.As(body.err, &cut) {
+			msg = cut.msg
+		}
+		return &apiError{status: http.StatusRequestEntityTooLarge, code: codeSizeInvalid, msg: msg, err: err}
 	case body != nil && body.err != nil:
 		return &apiError{status: http.StatusBadRequest, code: codeBlobUploadInvalid,
 			msg: fmt.Sprintf("the request body broke off after %d bytes", body.n), err: err}
@@ -478,38 +482,82 @@ func finishError(err error, body *bodyReader) error {
 	return &apiError{code: codeBlobUploadInvalid, err: err}
 }
 
-// limitBlob bounds what a request may add to an upload of t that holds offset bytes by the repo
-// policy's maxFileSize (U-3 of the threat-model pass of #63; #246 has the rest of the /v2
-// bounds): when offset and the declared size, the request's Content-Length or Content-Range,
-// pass it, the answer is 413 SIZE_INVALID before anything streams; a body of unknown length
-// (size -1) is cut where it would pass it (http.MaxBytesReader; finishError answers 413). An
-// oci repo, which nothing bounds, and a repo without the key are left as they are.
-func limitBlob(w http.ResponseWriter, r *http.Request, t *target, offset, size int64) error {
-	if t.repo.Format == ociFormat {
-		return nil
+// limitBlob bounds what a request may add to an upload of t that holds offset bytes (U-3 of the
+// threat model, #246) by blobLimit: when offset and the declared size, the request's
+// Content-Length or Content-Range, pass it, the answer is 413 SIZE_INVALID naming the bound
+// before anything streams; a body of unknown length (size -1) is cut where it would pass it
+// (http.MaxBytesReader in a tooLargeBody; finishError answers 413). Without a bound the request
+// is left as it is.
+func (h *handler) limitBlob(w http.ResponseWriter, r *http.Request, t *target, offset, size int64) error {
+	limit, bound, err := h.blobLimit(r.Context(), t)
+	if err != nil || limit < 0 {
+		return err
 	}
-	limit, err := format.MaxFileSize(t.repo)
+	msg := fmt.Sprintf("the blob is larger than %s, %d bytes: the upload ends", bound, limit)
 	switch {
-	case err != nil:
-		return fmt.Errorf("facade: %w", err)
-	case limit < 0:
-		return nil
 	case offset+max(size, 0) > limit:
-		return &apiError{status: http.StatusRequestEntityTooLarge, code: codeSizeInvalid,
-			msg: fmt.Sprintf("the blob is larger than the maxFileSize of %s/%s, %d bytes: the upload ends", t.repo.Format, t.repo.Name, limit)}
+		return &apiError{status: http.StatusRequestEntityTooLarge, code: codeSizeInvalid, msg: msg}
 	case size < 0 && r.Body != nil:
-		r.Body = http.MaxBytesReader(w, r.Body, limit-offset)
+		r.Body = tooLargeBody{ReadCloser: http.MaxBytesReader(w, r.Body, limit-offset), msg: msg}
 	}
 	return nil
 }
 
-// cutAtLimit reports whether body was cut at the repo's maxFileSize (limitBlob).
+// blobLimit returns the bound of a blob upload of t and what it is: the repo policy's
+// maxFileSize, or the registry's capabilities.maxBlobSize when that is smaller; on an oci repo,
+// which stores what it gets, maxBlobSize alone; -1 when there is none. A registry whose
+// capabilities cannot be read bounds nothing here: its own answer will.
+func (h *handler) blobLimit(ctx context.Context, t *target) (int64, string, error) {
+	limit, bound := int64(-1), ""
+	if t.repo.Format != ociFormat {
+		n, err := format.MaxFileSize(t.repo)
+		if err != nil {
+			return 0, "", fmt.Errorf("facade: %w", err)
+		}
+		limit, bound = n, fmt.Sprintf("the maxFileSize of %s/%s", t.repo.Format, t.repo.Name)
+	}
+	p, err := h.registry(t)
+	if err != nil {
+		return 0, "", err
+	}
+	if caps, err := p.Capabilities(ctx); err == nil && caps.MaxBlobSize > 0 && (limit < 0 || caps.MaxBlobSize < limit) {
+		limit, bound = caps.MaxBlobSize, "the maxBlobSize of registry "+t.repo.Registry
+	}
+	return limit, bound, nil
+}
+
+// tooLargeBody is a body that limitBlob cut at its bound: its error past the bound names it, in
+// a *blobTooLarge that wraps the *http.MaxBytesError.
+type tooLargeBody struct {
+	io.ReadCloser
+	msg string
+}
+
+func (b tooLargeBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	var mbe *http.MaxBytesError
+	if errors.As(err, &mbe) {
+		err = &blobTooLarge{msg: b.msg, err: err}
+	}
+	return n, err
+}
+
+// blobTooLarge is the error of a tooLargeBody past its bound; msg names the bound.
+type blobTooLarge struct {
+	msg string
+	err error
+}
+
+func (e *blobTooLarge) Error() string { return e.msg + ": " + e.err.Error() }
+func (e *blobTooLarge) Unwrap() error { return e.err }
+
+// cutAtLimit reports whether body was cut at its bound (limitBlob).
 func cutAtLimit(body *bodyReader) bool {
 	var tooLarge *http.MaxBytesError
 	return body != nil && errors.As(body.err, &tooLarge)
 }
 
-// endUpload ends the upload session s after a request that can never fit the repo's maxFileSize:
+// endUpload ends the upload session s after a request that can never fit its bound:
 // the backend session st is cancelled and the row dropped.
 func (h *handler) endUpload(ctx context.Context, s *index.Session, rr provider.Repository, st uploadState) {
 	h.cancelBackend(ctx, rr, st.upload())
