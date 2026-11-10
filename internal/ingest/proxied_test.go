@@ -67,6 +67,35 @@ func TestUploadWithOrigin(t *testing.T) {
 	same(t, "audit details", map[string]any{"upstream": "upstream", "url": origin.URL, "checksum": origin.Checksum, "size": float64(8)}, details)
 }
 
+// TestAuditVia: an upload, a fetch and a delete made through a group (format.WithVia) name the
+// group in details.via of their audit rows (docs/spec/rbac.md §7); nothing else changes.
+func TestAuditVia(t *testing.T) {
+	e := newEnv(t)
+	ctx := format.WithVia(t.Context(), index.Repo{Format: "raw", Name: "all", Kind: index.KindGroup})
+	pub, err := e.pipe.Upload(ctx, e.repo, upload("tool", "1.0.0", file{"tool.tgz", "bytes"}), alice)
+	must(t, err)
+	up := upload("tool", "2.0.0", file{"tool.tgz", "other"})
+	up.Origin = origin
+	_, err = e.pipe.Upload(ctx, e.repo, up, alice)
+	must(t, err)
+	_, err = e.pipe.Delete(ctx, e.repo, format.Deletion{Path: "tool", Reference: pub.Tag}, alice)
+	must(t, err)
+	want := map[string]map[string]any{
+		"push":        {"via": "raw/all"},
+		"proxy.fetch": {"via": "raw/all", "upstream": "upstream", "url": origin.URL, "checksum": origin.Checksum, "size": float64(5)},
+		"delete":      {"via": "raw/all", "referrers": float64(0)},
+	}
+	rows := e.rows(t)
+	if len(rows.Audit) != len(want) {
+		t.Fatalf("%d audit rows, want %d", len(rows.Audit), len(want))
+	}
+	for _, ev := range rows.Audit {
+		var details map[string]any
+		must(t, json.Unmarshal(ev.Details, &details))
+		same(t, "details of "+ev.Action, want[ev.Action], details)
+	}
+}
+
 // TestOriginRefused: a lajstrom.origin.* key that does not come from the fetcher is 400, on an
 // upload and on a push through the facade; Inspect reads it as any annotation.
 func TestOriginRefused(t *testing.T) {

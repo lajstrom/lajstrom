@@ -102,21 +102,60 @@ type ArtifactRef struct {
 	Kind string
 }
 
-// Proxy is the core of proxy repos as the plugins' handlers see it; *proxy.Core implements it
-// (docs/spec/proxy-and-group.md §4 to §7, §9.2). Its methods take a repo of kind proxy (#311
-// extends them to groups); another kind gives an error wrapping ErrUnsupported. Their errors
-// wrap the sentinels that StatusOf answers with the statuses of §6.
+// Grouper is implemented by a plugin whose format has group repos (ADR 0013,
+// docs/spec/proxy-and-group.md §8): a format has the kind group when its plugin implements it.
+// It is a Proxier: the core reads a group's members with Key, FileRequest and the documents of
+// Proxy.Document.
+type Grouper interface {
+	Proxier
+
+	// MergeGroup merges the documents of kind of name of the members of group that take part
+	// (§8.1, §8.2), in member order, into the group's document (§8.3): the union of their
+	// versions, the first member's entry of a version that several have, the format's own
+	// fields by the format's rules (npm: docs/spec/http-routing.md, npm, Group). Every link to a
+	// file starts with base, <server.externalURL>/<format>/<group>/; a member's links are under
+	// its own base. docs has at least one element. The Document's Kind is kind.
+	MergeGroup(ctx context.Context, group index.Repo, name, kind string, docs []MemberDocument, base string) (Document, error)
+}
+
+// MemberDocument is the document of one member of a group, as the member serves it.
+type MemberDocument struct {
+	// Repo is the member; its Kind tells the hosted member from a proxy.
+	Repo index.Repo
+	// Content is the member's document of the kind, its links under the member's own base.
+	Content []byte
+}
+
+// Proxy is the core of proxy and group repos as the plugins' handlers see it; *proxy.Core
+// implements it (docs/spec/proxy-and-group.md §4 to §9.2). Document and File take a repo of kind
+// proxy, or of kind group of a format whose plugin is a Grouper, and Forward a repo of kind
+// proxy; another kind gives an error wrapping ErrUnsupported. Their errors wrap the sentinels
+// that StatusOf answers with the statuses of §6.
 type Proxy interface {
-	// Document returns the document of kind of name: after the allow and deny lists (§3), the
-	// index_cache row of (repo, Key(name), kind) while the proxy_meta row of (Key(name), kind)
-	// is fresh; otherwise the upstream is asked (§4.2), the row written and the index_cache
-	// rows of scope Key(name) invalidated in one transaction, and the document rendered
-	// (Proxier.RenderProxy) and stored. Without a row it is rendered and not stored.
+	// Document returns the document of kind of name. Of a proxy: after the allow and deny lists
+	// (§3), the index_cache row of (repo, Key(name), kind) while the proxy_meta row of
+	// (Key(name), kind) is fresh; otherwise the upstream is asked (§4.2), the row written and the
+	// index_cache rows of scope Key(name) invalidated in one transaction, and the document
+	// rendered (Proxier.RenderProxy) and stored. Without a row it is rendered and not stored.
+	//
+	// Of a group (§8): the documents of the members that take part, merged on every call
+	// (Grouper.MergeGroup) and stored nowhere. The hosted member's is its index_cache row of
+	// scope Key(name) and kind (CachedDocument), a proxy member's what Document answers for it
+	// with WithVia(ctx, group). A proxy member is hidden while the hosted member has a package of
+	// the package path of name that matches no group.merge pattern; one whose lists refuse the
+	// name or that answers 404 does not have it; one that fails otherwise does not take part
+	// (§8.1). The Cache has the group's RepoID, Scope Key(name), SHA256 the group's ETag (§8.5),
+	// RenderedAt the newest member document's, and no ID. When no member has the name: the
+	// first failure of a proxy member, else index.ErrNotFound.
 	Document(ctx context.Context, repo index.Repo, name, kind string) (*index.Cache, error)
 
-	// File returns the file that path names (Proxier.FileRequest), held or fetched from the
-	// upstream and ingested on a miss (§5) by the principal of ctx (auth.PrincipalFrom). The
-	// handler serves it as a hosted file is served (ServeBlob).
+	// File returns the file that path names (Proxier.FileRequest). Of a proxy: held, or fetched
+	// from the upstream and ingested on a miss (§5) by the principal of ctx (auth.PrincipalFrom).
+	// Of a group: the first member taking part, as for Document, that holds the file, or, for a
+	// proxy member, File on it with WithVia(ctx, group); index.ErrNotFound when the hosted member
+	// has the name and not the version. The FileMatch's Package.RepoID is the repo that holds the
+	// file: the handler serves it from that repo (index.Reader.GetRepoByID), as a hosted file is
+	// served (ServeBlob).
 	File(ctx context.Context, repo index.Repo, path string) (*index.FileMatch, error)
 
 	// Forward sends req to the repo's upstream and returns the answer, which nothing keeps: a

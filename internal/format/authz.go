@@ -20,7 +20,21 @@ import (
 //
 // The credential of the request decides first (limit), with or without an Authorizer; when it
 // refuses a user's action, the bindings still decide between 403 and 404 (refusedByCredential).
+//
+// Through a group (ViaFrom: WriteTarget found that the principal may read the group), the 404
+// of a principal that cannot read repo, the group's member, is ErrForbidden naming the member:
+// the group's resource shows its members to its readers (docs/spec/rbac.md §7).
 func Authorize(ctx context.Context, deps Deps, a auth.Action, repo index.Repo) error {
+	err := authorize(ctx, deps, a, repo)
+	if group, ok := ViaFrom(ctx); ok && errors.Is(err, index.ErrNotFound) {
+		return fmt.Errorf("%w: %s on %s/%s, the hosted member of the group %s/%s", ErrForbidden, a, repo.Format, repo.Name,
+			group.Format, group.Name)
+	}
+	return err
+}
+
+// authorize is Authorize without the answer of a request through a group.
+func authorize(ctx context.Context, deps Deps, a auth.Action, repo index.Repo) error {
 	if err := limit(ctx, a, repo); err != nil {
 		return refusedByCredential(ctx, deps, repo, err)
 	}
