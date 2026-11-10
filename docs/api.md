@@ -159,6 +159,10 @@ is. `policy` is merged into the repo's policy as a JSON merge patch
 policy that results is checked as a whole ([Policy](#policy)), and when it is refused nothing
 changes. `"policy": null` removes the whole policy. `format`, `name`, `registry` and `kind`
 cannot change and are `400`: moving a repo to another registry would orphan its artifacts.
+On a proxy repo, `upstream` is merged into its settings the same way (`allow` and `deny` are
+replaced whole) and checked whole; it cannot be removed. Changing `upstream.name` needs the admin
+role, since it changes what every reader of the repo gets, and drops the repo's cache of the old
+upstream; the other keys need `manage` ([rbac.md](spec/rbac.md) §7).
 `200` with the resource as it is now; a body that changes nothing changes nothing, not even
 `updatedAt`. The audit row has the policy as the merge left it.
 
@@ -248,6 +252,18 @@ deleted before an error stay deleted.
 ```sh
 curl -s -X DELETE "$LAJSTROM/api/v1/repos/pypi/libs/packages/requests/versions/2.32.0?variant=sdist"
 curl -s -X DELETE "$LAJSTROM/api/v1/repos/raw/assets/packages/docs%2Freadme.txt/versions/0123456789abcdef"
+```
+
+### Purge a proxy's cache: `DELETE /api/v1/repos/<format>/<name>/upstream-cache[?name=<package>]`
+
+Drops what a proxy repo keeps of its upstream's documents ([proxy-and-group.md](spec/proxy-and-group.md)
+§4.3), of one package with `?name=`, and the documents rendered from them; the next read asks the
+upstream again. What the repo fetched stays: its versions are deleted as a hosted repo's are.
+`manage` on the repo; `204`, `400` on a repo that is not a proxy, one audit row
+`repo.cache.purge` with `details.name` when one name was purged.
+
+```sh
+curl -s -X DELETE "$LAJSTROM/api/v1/repos/npm/npmjs/upstream-cache?name=left-pad"
 ```
 
 ## `lajstrom admin repo`

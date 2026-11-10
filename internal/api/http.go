@@ -53,11 +53,12 @@ const maxBody = 64 << 10
 //	GET    /api/v1/repos[?format=<f>]                  list the repos
 //	POST   /api/v1/repos                               create a repo
 //	GET    /api/v1/repos/{format}/{repo}               one repo
-//	PATCH  /api/v1/repos/{format}/{repo}               change anonymousRead and policy
+//	PATCH  /api/v1/repos/{format}/{repo}               change anonymousRead, policy and a proxy's upstream
 //	DELETE /api/v1/repos/{format}/{repo}[?force=true]  delete a repo
 //	POST   /api/v1/repos/{format}/{repo}/reindex       start a reindex of the repo: 202, 409 when one runs
 //	GET    /api/v1/repos/{format}/{repo}/reindex       the latest run that covered the repo, with its report
 //	DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}[?variant=]  delete a version, its referrers first
+//	DELETE /api/v1/repos/{format}/{repo}/upstream-cache[?name=]  drop a proxy's cache of its upstream, or of one name
 //	GET    /api/v1/repos/{format}/{repo}/deploy-tokens       the deploy tokens of a repo
 //	POST   /api/v1/repos/{format}/{repo}/deploy-tokens       create one; the answer has its secret
 //	DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}  revoke one
@@ -124,6 +125,7 @@ func (h *handler) routes() []route {
 		{"POST /api/v1/repos/{format}/{repo}/reindex", h.reindexRepo},
 		{"GET /api/v1/repos/{format}/{repo}/reindex", h.reindexStatus},
 		{"DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}", h.deleteVersion},
+		{"DELETE /api/v1/repos/{format}/{repo}/upstream-cache", h.purgeUpstreamCache},
 		{"GET /api/v1/repos/{format}/{repo}/deploy-tokens", h.listDeployTokens},
 		{"POST /api/v1/repos/{format}/{repo}/deploy-tokens", h.createDeployToken},
 		{"DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}", h.revokeDeployToken},
@@ -257,6 +259,14 @@ func (h *handler) updateRepo(w http.ResponseWriter, r *http.Request) (int, any, 
 	if err != nil {
 		return 0, nil, err
 	}
+	if req.Upstream != nil && namesUpstream(req.Upstream) {
+		switch err := h.allow(r, auth.ActionManage, auth.System, auth.System); {
+		case denied(err):
+			return 0, nil, &clientError{msg: "upstream.name: only the admin role chooses the upstream of a proxy repo", err: format.ErrForbidden}
+		case err != nil:
+			return 0, nil, err
+		}
+	}
 	repo, err := h.repos.Update(r.Context(), f, name, req, origin(r))
 	if err != nil {
 		return 0, nil, err
@@ -329,6 +339,7 @@ func (h *handler) authorize(r *http.Request, deps format.Deps, a auth.Action, fo
 type patchBody struct {
 	AnonymousRead *bool           `json:"anonymousRead"`
 	Policy        json.RawMessage `json:"policy"`
+	Upstream      json.RawMessage `json:"upstream"`
 	Format        json.RawMessage `json:"format"`
 	Name          json.RawMessage `json:"name"`
 	Registry      json.RawMessage `json:"registry"`
@@ -350,7 +361,7 @@ func (b *patchBody) request() (UpdateRequest, error) {
 			return UpdateRequest{}, invalid("%s: cannot change; %s", f.field, f.why)
 		}
 	}
-	return UpdateRequest{AnonymousRead: b.AnonymousRead, Policy: b.Policy}, nil
+	return UpdateRequest{AnonymousRead: b.AnonymousRead, Policy: b.Policy, Upstream: b.Upstream}, nil
 }
 
 // decodeBody reads the JSON object of the request body into v: at most maxBody bytes, no field

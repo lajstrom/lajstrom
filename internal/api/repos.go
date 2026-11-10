@@ -63,6 +63,9 @@ type CreateRequest struct {
 type UpdateRequest struct {
 	AnonymousRead *bool           `json:"anonymousRead"`
 	Policy        json.RawMessage `json:"policy"`
+	// Upstream is merged into a proxy's settings as Policy is into the policy; nil (absent)
+	// leaves them. The settings cannot be removed, and only a proxy has them.
+	Upstream json.RawMessage `json:"upstream"`
 }
 
 // Sources of a change, the "source" of its audit details.
@@ -196,9 +199,11 @@ func (s *Repos) List(ctx context.Context, formatName string) ([]Repo, error) {
 // Update applies req to the repo formatName/name in one transaction with one repo.update audit
 // event, whose details name the fields that changed with their new values. A request that
 // changes nothing writes nothing and returns the repo as it is. The policy of req is merged
-// into the repo's (mergePolicy) and the result checked as a whole. Errors wrap
-// format.ErrInvalid (a policy that is neither an object nor null, or a merged policy that
-// checkPolicy refuses) or index.ErrNotFound.
+// into the repo's (mergePolicy) and the result checked as a whole; so is the upstream of a
+// proxy, and a change of its name drops the repo's cache of the old upstream (proxy_meta) and
+// its rendered documents in the same transaction (docs/spec/proxy-and-group.md §2.2). Errors
+// wrap format.ErrInvalid (a policy or an upstream that is not an object, a merge that is
+// refused, an upstream on a repo that is not a proxy) or index.ErrNotFound.
 func (s *Repos) Update(ctx context.Context, formatName, name string, req UpdateRequest, o Origin) (*Repo, error) {
 	if _, err := decodePolicy(req.Policy); err != nil {
 		return nil, err
@@ -212,11 +217,25 @@ func (s *Repos) Update(ctx context.Context, formatName, name string, req UpdateR
 			return err
 		}
 		changed, err := applyUpdate(row, req)
-		if err != nil || len(changed) == 0 {
+		if err != nil {
 			return err
+		}
+		renamed := false
+		if req.Upstream != nil {
+			if renamed, err = s.applyUpstream(row, req.Upstream, changed); err != nil {
+				return err
+			}
+		}
+		if len(changed) == 0 {
+			return nil
 		}
 		if err = w.UpdateRepo(ctx, row); err != nil {
 			return err
+		}
+		if renamed {
+			if err := dropUpstreamCache(ctx, w, row.ID, ""); err != nil {
+				return err
+			}
 		}
 		e, err := s.record(ctx, w, actionUpdate, row, o, map[string]any{"changed": changed})
 		ev = &e
@@ -516,7 +535,7 @@ func (s *Repos) checkKind(req CreateRequest) (string, json.RawMessage, error) {
 func (s *Repos) checkUpstream(formatName string, raw json.RawMessage) (proxy.Settings, error) {
 	settings, err := proxy.ParseSettings(raw)
 	if err != nil {
-		return proxy.Settings{}, err
+		return proxy.Settings{}, &clientError{msg: err.Error(), err: err} // the message names the field
 	}
 	var upstreamFormat string
 	ok := false
