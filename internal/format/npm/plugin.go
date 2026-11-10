@@ -1,11 +1,7 @@
 package npm
 
 import (
-	"context"
-	"fmt"
-
 	"github.com/lajstrom/lajstrom/internal/format"
-	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
 )
 
@@ -34,8 +30,21 @@ const readmePlaceholder = "ERROR: No README data found!"
 
 // Plugin is the npm format plugin: Build and Validate of a version (#304), the publish route
 // (#305), the packuments and the tarballs (#306). It registers itself with format.Register when
-// the package is imported.
-type Plugin struct{}
+// the package is imported, without an ExternalURL; serve mounts the routes of the plugin
+// WithExternalURL returns.
+type Plugin struct {
+	// ExternalURL is server.externalURL, the base of the absolute dist.tarball of a packument.
+	// Empty, the routes render a packument for each request with the base of its host, and do
+	// not keep it (the dev stack without server.externalURL).
+	ExternalURL string
+}
+
+// WithExternalURL returns the plugin with ExternalURL u: serve gives every plugin that has the
+// method server.externalURL.
+func (p Plugin) WithExternalURL(u string) format.Plugin {
+	p.ExternalURL = u
+	return p
+}
 
 var _ format.Plugin = Plugin{}
 
@@ -55,9 +64,4 @@ func (Plugin) EscapeName(name string) (string, error) {
 		return "", err
 	}
 	return packagePath(name), nil
-}
-
-// RenderIndex renders nothing yet: the packuments are #306.
-func (Plugin) RenderIndex(context.Context, index.Repo, format.IndexScope, index.Reader) ([]format.Document, error) {
-	return nil, fmt.Errorf("%w: npm packuments", format.ErrUnsupported)
 }
