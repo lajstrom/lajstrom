@@ -2,6 +2,7 @@ package facade
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -110,9 +111,10 @@ func manifestUnknown(err error) error {
 // whose mediaType field, when it has one, is the Content-Type. On a repo of format oci the
 // manifest then passes through: it is pushed with its tag (PushReference) or by its digest,
 // which must be the reference's (passThrough; a manifest with a subject goes through ingest),
-// oci_repos records the OCI name, and the answer is 201, with OCI-Subject for a manifest with a
-// subject: the facade serves the referrers API, and the provider writes the tag schema where
-// the backend has none. Every other format goes through the manifest hook into ingest
+// oci_repos records the OCI name and the audit log the push of a manifest without a subject
+// (recordPassThrough); the answer is 201, with OCI-Subject for a manifest with a subject: the
+// facade serves the referrers API, and the provider writes the tag schema where the backend
+// has none. Every other format goes through the manifest hook into ingest
 // (putManaged).
 func (h *handler) putManifest(w http.ResponseWriter, r *http.Request, t *target, ref string) error {
 	ctx := r.Context()
@@ -133,13 +135,52 @@ func (h *handler) putManifest(w http.ResponseWriter, r *http.Request, t *target,
 	if err := h.passThrough(r, t, ref, refDigest, desc, body); err != nil {
 		return err
 	}
-	if err := h.o.Index.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: t.repo.ID, Path: t.oci, SeenAt: h.o.Now()}); err != nil {
-		// The registry has the manifest and is the truth; reindex records the repository.
-		h.o.Log.ErrorContext(ctx, "facade: record the OCI repository", "name", t.name, "error", err.Error(),
-			"requestId", server.RequestID(ctx))
+	subject := subjectOf(body)
+	tag := ref
+	if refDigest != "" {
+		tag = ""
 	}
-	created(w, t, desc.Digest, subjectOf(body))
+	h.recordPassThrough(ctx, t, tag, desc.Digest, subject == nil)
+	created(w, t, desc.Digest, subject)
 	return nil
+}
+
+// recordPassThrough records the manifest d that passThrough stored in t, an oci repo, in one
+// transaction: oci_repos gets the OCI name, and the audit log a push row when audit is set
+// (docs/spec/rbac.md §5). audit is false for a manifest with a subject, which ingest audited as
+// a referrer. The row has the principal, the repo, the OCI name as the subject, the digest, the
+// client address (server.ClientAddr), and the tag, "" for a push by digest, and the request id
+// in the details. Every PUT writes one, the repeat of a manifest the backend has too: no index
+// row tells the facade that it was there, as a version does for a managed repo. The backend has
+// the manifest and is the truth, so a failure is logged: reindex records the repository, and
+// the log line is what is left of the push.
+func (h *handler) recordPassThrough(ctx context.Context, t *target, tag string, d digest.Digest, audit bool) {
+	now := h.o.Now()
+	err := h.o.Index.Tx(ctx, func(w index.Writer) error {
+		if err := w.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: t.repo.ID, Path: t.oci, SeenAt: now}); err != nil {
+			return err
+		}
+		if !audit {
+			return nil
+		}
+		details := map[string]string{}
+		if tag != "" {
+			details["tag"] = tag
+		}
+		if id := server.RequestID(ctx); id != "" {
+			details["requestId"] = id
+		}
+		ev := index.AuditEvent{At: now, Principal: auth.PrincipalFrom(ctx).String(), Action: "push",
+			Repo: t.repo.Format + "/" + t.repo.Name, Subject: t.oci, Digest: d, IP: server.ClientAddr(ctx)}
+		if len(details) > 0 {
+			ev.Details, _ = json.Marshal(details) // strings always marshal
+		}
+		return w.AppendAudit(ctx, &ev)
+	})
+	if err != nil {
+		h.o.Log.ErrorContext(ctx, "facade: record the OCI repository and the push in the audit log", "name", t.name,
+			"digest", d.String(), "principal", auth.PrincipalFrom(ctx).String(), "error", err.Error(), "requestId", server.RequestID(ctx))
+	}
 }
 
 // passThrough stores a manifest of an oci repo in the backend as it came, by digest or under the

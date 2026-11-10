@@ -595,7 +595,7 @@ Every write and every change of the control plane is one row of the `audit` tabl
 
 | Actions | Written by |
 | --- | --- |
-| `push`, `delete` | the frontends and the facade, through the ingest pipeline and the delete paths |
+| `push`, `delete` | the frontends and the facade, through the ingest pipeline and the delete paths; the facade itself for a push to an `oci` repo |
 | `repo.create`, `repo.update`, `repo.delete`, `repo.reindex` | the API, the CLI and the repos of the configuration |
 | `user.create`, `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete` | the API and `lajstrom admin user` |
 | `binding.create`, `binding.delete` | the API and `lajstrom admin binding` |

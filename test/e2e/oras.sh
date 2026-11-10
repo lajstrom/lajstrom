@@ -6,13 +6,15 @@
 # digest), another manifest under the tag (409 TAG_INVALID naming the first), the repo's policy
 # (#60: PATCH merges it; a file above maxFileSize is 413 through oras push and the raw PUT),
 # oras pull and the bytes, oras repo tags, oras manifest fetch, the raw frontend serving the
-# pushed file, then oras manifest delete through the facade (#61) and a 404.
+# pushed file, then oras manifest delete through the facade (#61) and a 404. Last, an oci repo of
+# the run's own (§2 of the quick start): oras push of an artifact twice, a push row each (#245).
 #
 #   test/e2e/oras.sh [<base url> [<raw repo>]]     default: http://localhost:8080 scratch
 #
 # The repo must exist (the example configuration creates raw/scratch), and the user of
-# LAJSTROM_E2E_USER and LAJSTROM_E2E_PASSWORD must push to it and delete in it, and read the
-# audit log, which takes the admin role (run.sh makes an admin; lib.sh, e2e_credentials): oras
+# LAJSTROM_E2E_USER and LAJSTROM_E2E_PASSWORD must push to it and delete in it, create and
+# delete a repo on the registry local, and read the audit log, which takes the admin role
+# (run.sh makes an admin; lib.sh, e2e_credentials): oras
 # logs in with them, and gets its tokens from /v2/token with Basic. Tokens of other kinds are in
 # oci-token.sh and tokens.sh. With $LAJSTROM_SERVER_LOG, the server's log file (run.sh sets it),
 # the audit row's address is checked against the access log. The file is at a path of
@@ -40,12 +42,18 @@ e2e_credentials "$work"
 run="e2e-oras-$(date -u +%Y%m%d%H%M%S)-$RANDOM"
 path="$run/hello.txt"  # lower case: the path is also the OCI repository below raw/<repo>/
 name="raw/$repo/$path" # the OCI name of the file
+oci="oci/$run/notes"    # the OCI name of the oci step's artifact, in the oci repo of the run
 pushed=""
 policy_set=""
+oci_made=""
 cleanup() {
 	[ -z "$pushed" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/raw/$repo/$path" || true
 	[ -z "$policy_set" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X PATCH -H 'Content-Type: application/json' \
 		-d '{"policy": null}' "$base/api/v1/repos/raw/$repo" || true
+	if [ -n "$oci_made" ]; then
+		curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/v2/$oci/manifests/1" || true
+		curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/api/v1/repos/oci/$run?force=true" || true
+	fi
 	rm -rf "$work"
 }
 trap cleanup EXIT
@@ -172,4 +180,29 @@ assert_status 404 -K "$E2E_CURLRC" -o /dev/null "$base/v2/$name/manifests/$diges
 assert_eq "" "$(oras repo tags "$registry/$name")" "oras repo tags after the delete"
 assert_status 404 -K "$E2E_CURLRC" -o /dev/null "$base/raw/$repo/$path"
 step "oras manifest delete $registry/$name:$version: the manifest 404, no tag, GET /raw/$repo/$path 404"
+
+# #245: an oci repo of the run's own, made here. A manifest pushed to it writes a push row with
+# the OCI name as the subject, the digest, the tag, the client address (the raw push's) and the
+# request id; the repeat of the same manifest writes another. The manifest and the repo are
+# deleted after.
+assert_status 201 -K "$E2E_CURLRC" -H 'Content-Type: application/json' \
+	-d "{\"format\":\"oci\",\"name\":\"$run\",\"registry\":\"local\"}" "$base/api/v1/repos"
+oci_made=yes
+printf 'oci e2e %s\n' "$run" >"$work/notes.txt"
+for what in push repeat; do
+	oras push --artifact-type application/vnd.example.notes "$registry/$oci:1" notes.txt >"$work/oras.log" 2>&1 ||
+		{ cat "$work/oras.log" >&2; fail "oras push $oci:1, the $what"; }
+done
+oci_digest="$(awk '$1 == "Digest:" { print $2 }' "$work/oras.log")"
+assert_status 200 -K "$E2E_CURLRC" "$base/api/v1/audit?action=push&repo=oci/$run&limit=10"
+assert_eq "$oci $oci_digest 1 $ip" "$(jq -r '.events[] | "\(.subject) \(.digest) \(.details.tag) \(.ip)"' <<<"$E2E_BODY" | sort -u)" \
+	"the push rows of $oci:1"
+assert_eq 2 "$(jq '[.events[].details.requestId | select(. != null)] | unique | length' <<<"$E2E_BODY")" \
+	"the request ids of the push rows of $oci:1"
+step "oras push $registry/$oci:1 twice: two push rows, subject $oci, digest $oci_digest, tag 1, ip $ip"
+oras manifest delete --force "$registry/$oci:1" >"$work/oras.log" 2>&1 ||
+	{ cat "$work/oras.log" >&2; fail "oras manifest delete $oci:1"; }
+assert_status 204 -K "$E2E_CURLRC" -X DELETE "$base/api/v1/repos/oci/$run"
+oci_made=""
+step "oras manifest delete $registry/$oci:1, DELETE /api/v1/repos/oci/$run: 204"
 echo "PASS oras e2e against $base as $E2E_USER"
