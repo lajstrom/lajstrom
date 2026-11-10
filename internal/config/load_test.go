@@ -287,6 +287,77 @@ registries:
 	}
 }
 
+// TestLoadNestedPrefixes: two registries on one URL, the same scheme, host and port, must not
+// have prefixes that nest, or a repository of one is a repository of the other (threat model
+// P-1, issue #250).
+func TestLoadNestedPrefixes(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []string
+		want    string // the error, "" when the configuration loads
+	}{
+		{
+			name:    "the issue's case: an empty prefix and raw/x/",
+			entries: []string{`{name: a, url: "https://r"}`, `{name: b, url: "https://r", prefix: "raw/x/"}`},
+			want:    `registries[1].prefix: "raw/x/" of registry "b" nests with "" of registry "a" (registries[0]) on the same URL`,
+		},
+		{
+			name:    "the longer prefix first",
+			entries: []string{`{name: a, url: "https://r", prefix: "art/raw/"}`, `{name: b, url: "https://r", prefix: "art/"}`},
+			want:    `registries[1].prefix: "art/" of registry "b" nests with "art/raw/" of registry "a" (registries[0])`,
+		},
+		{
+			name:    "the same prefix",
+			entries: []string{`{name: a, url: "http://zot:5000", prefix: "art/"}`, `{name: b, url: "http://zot:5000", prefix: "art/"}`},
+			want:    `registries[1].prefix: "art/" of registry "b" nests with "art/" of registry "a"`,
+		},
+		{
+			name:    "two empty prefixes",
+			entries: []string{`{name: a, url: "http://zot:5000"}`, `{name: b, url: "http://zot:5000/"}`},
+			want:    `registries[1].prefix: "" of registry "b" nests with "" of registry "a"`,
+		},
+		{
+			name:    "the default port written out, the host in capitals",
+			entries: []string{`{name: a, url: "https://R.example"}`, `{name: b, url: "https://r.example.:443", prefix: "x/"}`},
+			want:    `registries[1].prefix: "x/" of registry "b" nests with "" of registry "a"`,
+		},
+		{
+			name:    "a third registry nests with the first",
+			entries: []string{`{name: a, url: "https://r", prefix: "a/"}`, `{name: b, url: "https://r", prefix: "b/"}`, `{name: c, url: "https://r", prefix: "a/c/"}`},
+			want:    `registries[2].prefix: "a/c/" of registry "c" nests with "a/" of registry "a" (registries[0])`,
+		},
+		{
+			name:    "prefixes that share characters, not a component",
+			entries: []string{`{name: a, url: "https://r", prefix: "art/"}`, `{name: b, url: "https://r", prefix: "art2/"}`, `{name: c, url: "https://r", prefix: "ar/"}`},
+		},
+		{
+			name:    "another port",
+			entries: []string{`{name: a, url: "http://localhost:5000"}`, `{name: b, url: "http://localhost:5001", prefix: "raw/x/"}`},
+		},
+		{
+			name:    "another scheme",
+			entries: []string{`{name: a, url: "http://r"}`, `{name: b, url: "https://r", prefix: "raw/x/"}`},
+		},
+		{
+			name:    "another host",
+			entries: []string{`{name: a, url: "https://r1"}`, `{name: b, url: "https://r2"}`},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, minimal+"registries:\n  - "+strings.Join(tt.entries, "\n  - ")+"\n"), nil)
+			switch {
+			case tt.want == "" && err != nil:
+				t.Errorf("Load: %v, want success", err)
+			case tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)):
+				t.Errorf("Load: %v; want an error containing %q", err, tt.want)
+			case tt.want != "" && strings.Count(err.Error(), "nests with") != 1:
+				t.Errorf("Load: %v; want the pair reported once", err)
+			}
+		})
+	}
+}
+
 // TestLoadRepoPolicy: repos[].policy is read as JSON-shaped values, which the bootstrap passes to
 // the API's checks as they are.
 func TestLoadRepoPolicy(t *testing.T) {

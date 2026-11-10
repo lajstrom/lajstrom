@@ -44,6 +44,7 @@ func (c *Config) Validate() error {
 			registries[r.Name] = i
 		}
 	}
+	validateNesting(&p, c.Registries)
 	upstreams := map[string]int{}
 	for i, u := range c.Upstreams {
 		key := fmt.Sprintf("upstreams[%d]", i)
@@ -233,7 +234,7 @@ func (r Registry) validate(p *problems, key string) {
 	case u.User != nil:
 		p.add(key+".url", "must not contain credentials; use auth")
 	}
-	if r.Prefix != "" && (strings.HasPrefix(r.Prefix, "/") || !strings.HasSuffix(r.Prefix, "/")) {
+	if !validPrefix(r.Prefix) {
 		p.add(key+".prefix", `must not start with "/" and must end with "/" when set`)
 	}
 	if r.Timeout < 0 {
@@ -250,6 +251,56 @@ func (r Registry) validate(p *problems, key string) {
 		p.add(key+".auth.passwordEnv", "environment variable %q is not set or empty", a.PasswordEnv)
 	}
 	r.validateECR(p, key)
+}
+
+// validateNesting refuses two registries on one URL, the same scheme, host and port, whose
+// instance prefixes nest: one is the other or begins with it, the empty prefix included. The
+// OCI names below the longer prefix are names below the shorter one too, so a repo on one
+// registry would write and read a repo on the other (threat model P-1). Each pair is reported
+// once, at the later registry, with both names. A registry whose URL or prefix is invalid is
+// left out: Registry.validate reports it.
+func validateNesting(p *problems, regs []Registry) {
+	type place struct {
+		origin, prefix string
+		i              int
+	}
+	var seen []place
+	for i, r := range regs {
+		origin, ok := registryOrigin(r.URL)
+		if !ok || !validPrefix(r.Prefix) {
+			continue
+		}
+		for _, s := range seen {
+			if s.origin == origin && (strings.HasPrefix(r.Prefix, s.prefix) || strings.HasPrefix(s.prefix, r.Prefix)) {
+				p.add(fmt.Sprintf("registries[%d].prefix", i),
+					"%q of registry %q nests with %q of registry %q (registries[%d]) on the same URL: a repository of one would be a repository of the other",
+					r.Prefix, r.Name, s.prefix, regs[s.i].Name, s.i)
+			}
+		}
+		seen = append(seen, place{origin: origin, prefix: r.Prefix, i: i})
+	}
+}
+
+// registryOrigin is the scheme, host and port of a registry URL, lower-cased, the port written
+// out when the URL leaves the default of its scheme, and the root dot of the host dropped.
+func registryOrigin(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || !isHTTP(u) || u.User != nil {
+		return "", false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	port := u.Port()
+	if port == "" {
+		port = map[string]string{"http": "80", "https": "443"}[scheme]
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	return scheme + "://" + net.JoinHostPort(host, port), true
+}
+
+// validPrefix reports whether prefix is a valid registries[].prefix: empty, or not starting with
+// "/" and ending with "/".
+func validPrefix(prefix string) bool {
+	return prefix == "" || (!strings.HasPrefix(prefix, "/") && strings.HasSuffix(prefix, "/"))
 }
 
 // validateECR checks the keys of type ecr: its own, and no auth.
