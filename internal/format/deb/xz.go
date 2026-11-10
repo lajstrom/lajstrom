@@ -20,6 +20,14 @@ import (
 // before it decodes a byte, so a larger one is refused rather than allocated.
 const maxDictionary = 64 << 20
 
+// maxXZBlocks is the most blocks a control.tar.xz may have (#243). The decoder allocates the
+// dictionary of each block afresh, so their number bounds what one parse allocates, as
+// maxDictionary bounds a block: 16 empty blocks of 64 MiB are a GiB and about 20 ms, 20 000 of
+// them were 8 s. dpkg-deb writes one block: xz's encoder makes a stream one block, and its
+// multithreaded encoder a block per three dictionaries, at least 1 MiB, so at most four of the
+// MaxControl bytes Parse reads.
+const maxXZBlocks = 16
+
 // xz container constants (The .xz File Format 1.2.1, §2).
 const (
 	xzStreamHeaderLen = 12
@@ -134,6 +142,9 @@ func (x *xzReader) startBlock() error {
 	if first == 0 { // the index indicator: no more blocks
 		x.done = true
 		return nil
+	}
+	if x.n == maxXZBlocks {
+		return fmt.Errorf("xz: more than %d blocks", maxXZBlocks)
 	}
 	x.n++
 	h := make([]byte, (int(first)+1)*4)
