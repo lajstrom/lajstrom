@@ -106,7 +106,7 @@ func (c *Core) ask(ctx context.Context, p *proxied, row *index.ProxyMeta, name, 
 	}
 	parsed, err := p.hooks.ParseMetadata(name, kind, body)
 	if err != nil {
-		return fmt.Errorf("%w: upstream %s: a document of %q that does not parse: %w", format.ErrBadGateway, p.settings.Upstream, name, err)
+		return fmt.Errorf("%w: upstream %s: a document of %q that does not parse: %s", format.ErrBadGateway, p.settings.Upstream, name, err.Error())
 	}
 	sum := sha256.Sum256(parsed.Keep)
 	m := index.ProxyMeta{RepoID: p.repo.ID, Name: key, Kind: kind, State: index.ProxyMetaPresent, Content: parsed.Keep,

@@ -1,0 +1,301 @@
+package proxy
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/metrics"
+	"github.com/lajstrom/lajstrom/internal/oci/profile"
+)
+
+// The results of lajstrom_proxy_fetches_total.
+const (
+	fetchHeld     = "held"
+	fetchFetched  = "fetched"
+	fetchShared   = "shared"
+	fetchMissing  = "missing"
+	fetchRejected = "rejected"
+	fetchError    = "error"
+)
+
+// artifact is the artifact a file request names, as the index and the claims key it.
+type artifact struct {
+	ref     format.ArtifactRef
+	key     string // the plugin's key of the name
+	pkgPath string // the package path (Plugin.EscapeName)
+	tag     string // profile.Tag of version and variant
+}
+
+// subject is the artifact as the audit rows name it: name, version and variant.
+func (a artifact) subject() string {
+	s := a.ref.Name + " " + a.ref.Version
+	if a.ref.Variant != "" {
+		s += " " + a.ref.Variant
+	}
+	return s
+}
+
+// File returns the file that path names in the proxy repo repo (format.Proxy), as docs/spec/
+// proxy-and-group.md §5 says: after the allow and deny lists, the file the repo holds, or else,
+// unless the repo is offline, the file fetched from the upstream into the one write path by the
+// principal of ctx, once across replicas, and served from the registry like a held one. The
+// fetch runs on a context of its own: a client that leaves does not cancel it for the requests
+// that wait on it, the server's shutdown does.
+func (c *Core) File(ctx context.Context, repo index.Repo, path string) (*index.FileMatch, error) {
+	p, err := c.resolve(repo)
+	if err != nil {
+		return nil, err
+	}
+	a, err := p.artifact(path)
+	if err != nil {
+		return nil, err
+	}
+	if m, err := c.held(ctx, p, a); m != nil || err != nil {
+		if m != nil {
+			countFetch(p, fetchHeld)
+		}
+		return m, err
+	}
+	if p.up == nil {
+		return nil, fmt.Errorf("%w: proxy: %s is offline and does not hold %s", index.ErrNotFound, p.id(), a.ref.File)
+	}
+	entry, row, err := c.entry(ctx, p, a)
+	if err != nil {
+		return nil, err
+	}
+	fl, joined := c.flights.join(fmt.Sprintf("%d/%s:%s", p.repo.ID, a.pkgPath, a.tag), func() (bool, error) {
+		fctx, cancel := context.WithCancel(context.WithoutCancel(ctx)) // the request's values, not its end
+		defer cancel()
+		defer context.AfterFunc(c.o.Context, cancel)()
+		return c.fetch(fctx, p, a, entry, row)
+	})
+	select {
+	case <-fl.done:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if fl.err != nil {
+		return nil, fl.err
+	}
+	m, err := c.held(ctx, p, a)
+	switch {
+	case err != nil:
+		return nil, err
+	case m == nil:
+		countFetch(p, fetchError)
+		return nil, fmt.Errorf("%w: proxy: %s: %s was fetched and is not in the index", format.ErrBadGateway, p.id(), a.subject())
+	case joined || fl.shared:
+		countFetch(p, fetchShared)
+	default:
+		countFetch(p, fetchFetched)
+	}
+	return m, nil
+}
+
+// artifact maps a request path to the artifact, after the lists.
+func (p *proxied) artifact(path string) (artifact, error) {
+	ref, err := p.hooks.FileRequest(path)
+	if err != nil {
+		return artifact{}, err
+	}
+	key, err := p.key(ref.Name)
+	if err != nil {
+		return artifact{}, err
+	}
+	pkgPath, err := p.plugin.EscapeName(ref.Name)
+	if err != nil {
+		return artifact{}, fmt.Errorf("%w: %w", index.ErrNotFound, err)
+	}
+	return artifact{ref: ref, key: key, pkgPath: pkgPath, tag: profile.Tag(ref.Version, ref.Variant)}, nil
+}
+
+// held returns the file of the artifact that the index has, nil when it does not have the
+// version, and index.ErrNotFound when it has the version without the file.
+func (c *Core) held(ctx context.Context, p *proxied, a artifact) (*index.FileMatch, error) {
+	pkg, err := c.o.Index.GetPackageByNameOCI(ctx, p.repo.ID, a.pkgPath)
+	if errors.Is(err, index.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	v, err := c.o.Index.GetVersion(ctx, pkg.ID, a.ref.Version, a.ref.Variant)
+	if errors.Is(err, index.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	files, err := c.o.Index.ListFiles(ctx, v.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range files {
+		if f.Name == a.ref.File {
+			return &index.FileMatch{File: f, Version: *v, Package: *pkg}, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: proxy: %s: %s has no file %s", index.ErrNotFound, p.id(), a.subject(), a.ref.File)
+}
+
+// entry returns the entry of the artifact in the name's document (§5, step 5), brought up to
+// date as a read of the document is, and the row it comes from. A version the document does
+// not list, or a file its entry does not have, is index.ErrNotFound.
+func (c *Core) entry(ctx context.Context, p *proxied, a artifact) (*format.UpstreamEntry, *index.ProxyMeta, error) {
+	upErr := c.refresh(ctx, p, a.ref.Name, a.key, a.ref.Kind)
+	row, err := metaRow(ctx, c.o.Index, p.repo.ID, a.key, a.ref.Kind)
+	switch {
+	case err != nil:
+		return nil, nil, err
+	case row == nil && upErr != nil:
+		return nil, nil, upErr
+	case row == nil || row.State == index.ProxyMetaAbsent:
+		countFetch(p, fetchMissing)
+		return nil, nil, fmt.Errorf("%w: proxy: %s: upstream %s does not have %q", index.ErrNotFound, p.id(), p.settings.Upstream, a.ref.Name)
+	}
+	parsed, err := p.hooks.ParseMetadata(a.ref.Name, a.ref.Kind, row.Content)
+	if err != nil {
+		return nil, nil, fmt.Errorf("proxy: %s: the kept document of %q does not parse: %s", p.id(), a.ref.Name, err.Error())
+	}
+	for i, e := range parsed.Entries {
+		if e.Version != a.ref.Version || e.Variant != a.ref.Variant {
+			continue
+		}
+		for _, f := range e.Files {
+			if f.Name == a.ref.File {
+				return &parsed.Entries[i], row, nil
+			}
+		}
+	}
+	countFetch(p, fetchMissing)
+	return nil, nil, fmt.Errorf("%w: proxy: %s: upstream %s does not list %s", index.ErrNotFound, p.id(), p.settings.Upstream, a.ref.File)
+}
+
+// fetch takes the artifact's claim, downloads its files, checks them and ingests them (§5,
+// steps 6 to 10), on its own context. shared reports that another replica fetched it while
+// this one waited.
+func (c *Core) fetch(ctx context.Context, p *proxied, a artifact, entry *format.UpstreamEntry, row *index.ProxyMeta) (shared bool, err error) {
+	principal := auth.PrincipalFrom(ctx)
+	cl := index.FetchClaim{RepoID: p.repo.ID, Package: a.pkgPath, Tag: a.tag, Principal: principal.String(), Replica: c.o.Replica}
+	if shared, err := c.claim(ctx, p, a, &cl); shared || err != nil {
+		return shared, err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := c.heartbeat(ctx, p, cl.ID, cancel)
+	defer func() {
+		stop()
+		if err := c.o.Index.ReleaseFetchClaim(context.WithoutCancel(ctx), cl.ID); err != nil && !errors.Is(err, index.ErrNotFound) {
+			c.o.Log.WarnContext(ctx, "proxy: a fetch claim not released; it goes stale", "repo", p.id(), "artifact", a.subject(), "error", err.Error())
+		}
+	}()
+	d, err := c.download(ctx, p, a, entry, row)
+	if err != nil {
+		return false, err
+	}
+	defer d.close()
+	up := format.Upload{Files: d.files, Params: entry.Params, Origin: d.origin}
+	pub, err := c.o.Ingest.Upload(ctx, p.repo, up, principal)
+	switch {
+	case errors.Is(err, format.ErrInvalid):
+		c.reject(ctx, p, a, d.origin.URL, "invalid", map[string]any{"error": err.Error()})
+		return false, fmt.Errorf("%w: proxy: %s: upstream %s served %s, which the format refuses: %s", format.ErrBadGateway,
+			p.id(), p.settings.Upstream, a.subject(), err.Error())
+	case errors.Is(err, index.ErrConflict):
+		// The tag holds other bytes: the repo serves what it holds (ADR 0005).
+		c.o.Log.WarnContext(ctx, "proxy: the upstream serves other bytes than the repo holds under the tag; the repo's are served",
+			"repo", p.id(), "upstream", p.settings.Upstream, "artifact", a.subject(), "error", err.Error())
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	c.o.Log.InfoContext(ctx, "proxy: fetched from the upstream and published", "repo", p.id(), "upstream", p.settings.Upstream,
+		"artifact", a.subject(), "digest", pub.Digest.String(), "principal", principal.String())
+	return false, nil
+}
+
+// claim takes the fetch claim of the artifact (§5, step 6). While another replica holds a fresh
+// claim, the request waits, looking the version up in the index after WaitFirst and then twice
+// as long each time, at most WaitLongest apart: shared is true when the version appears; a
+// claim gone without it is taken, once; a claim that stopped beating is taken over.
+func (c *Core) claim(ctx context.Context, p *proxied, a artifact, cl *index.FetchClaim) (shared bool, err error) {
+	wait, retried := c.o.WaitFirst, false
+	for {
+		now := c.o.Now()
+		cl.ClaimedAt, cl.HeartbeatAt = now, now
+		err := c.o.Index.ClaimFetch(ctx, cl, now.Add(-c.o.ClaimStale))
+		if !errors.Is(err, index.ErrConflict) {
+			return false, err
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return false, ctx.Err()
+			case <-time.After(wait):
+			}
+			wait = min(2*wait, c.o.WaitLongest)
+			if m, err := c.held(ctx, p, a); m != nil || err != nil {
+				return m != nil, err
+			}
+			other, err := c.o.Index.GetFetchClaim(ctx, p.repo.ID, a.pkgPath, a.tag)
+			if errors.Is(err, index.ErrNotFound) {
+				if retried {
+					return false, fmt.Errorf("%w: proxy: %s: the fetch of %s by another replica ended without it", format.ErrBadGateway,
+						p.id(), a.subject())
+				}
+				retried = true
+				break
+			}
+			if err != nil {
+				return false, err
+			}
+			if other.HeartbeatAt.Before(c.o.Now().Add(-c.o.ClaimStale)) {
+				break // stale: ClaimFetch takes it over
+			}
+		}
+	}
+}
+
+// heartbeat beats the claim every ClaimHeartbeat until stop is called. A claim that is gone,
+// taken over by a replica that found it stale, cancels the fetch: this one does not hold it.
+func (c *Core) heartbeat(ctx context.Context, p *proxied, id int64, cancel context.CancelFunc) (stop func()) {
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		t := time.NewTicker(c.o.ClaimHeartbeat)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+			err := c.o.Index.HeartbeatFetchClaim(ctx, id, c.o.Now())
+			if errors.Is(err, index.ErrNotFound) {
+				c.o.Log.WarnContext(ctx, "proxy: the fetch claim was taken over; the fetch stops", "repo", p.id(), "claim", id)
+				cancel()
+				return
+			}
+			if err != nil && ctx.Err() == nil {
+				c.o.Log.WarnContext(ctx, "proxy: a fetch claim did not beat", "repo", p.id(), "claim", id, "error", err.Error())
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-finished
+	}
+}
+
+// countFetch records a file request in lajstrom_proxy_fetches_total.
+func countFetch(p *proxied, result string) {
+	metrics.ProxyFetches.WithLabelValues(p.settings.Upstream, result).Inc()
+}

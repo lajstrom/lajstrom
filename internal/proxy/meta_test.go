@@ -170,8 +170,9 @@ func TestDocumentLimits(t *testing.T) {
 	e.up.docs["broken"] = &upstreamDoc{Name: "broken"}
 	e.up.mu.Unlock()
 	e.plugin.broken = true
-	if _, err := e.core(t, "r1", proxy.Options{}).Document(ctx, e.repo, "broken", docKind); !errors.Is(err, format.ErrBadGateway) {
-		t.Errorf("a document that does not parse: %v, want ErrBadGateway", err)
+	_, err := e.core(t, "r1", proxy.Options{}).Document(ctx, e.repo, "broken", docKind)
+	if status, _ := statusOf(err); status != http.StatusBadGateway {
+		t.Errorf("a document that does not parse: %v (%d), want 502", err, status)
 	}
 }
 

@@ -62,8 +62,11 @@ const (
 // Its methods may be called concurrently; what must be coordinated across replicas goes
 // through the index (proxy_meta, fetch_claims).
 type Core struct {
-	o Options
+	o       Options
+	flights flights
 }
+
+var _ format.Proxy = (*Core)(nil)
 
 // New returns a Core with the defaults of Options applied.
 func New(o Options) *Core {
