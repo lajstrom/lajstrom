@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
@@ -167,18 +168,27 @@ func TestScopeAction(t *testing.T) {
 
 // TestRealm checks the realm and the service: from the external URL with its port and without
 // its path, else from the request's Host.
+// TestRealm checks the realm and the service: from server.externalURL, else from the request's
+// Host, over https when the request came over TLS (#248).
 func TestRealm(t *testing.T) {
-	r := httptest.NewRequest("GET", "http://localhost:8080/v2/", nil)
-	for _, tt := range []struct{ externalURL, realm, service string }{
-		{"https://art.test", "https://art.test/v2/token", "art.test"},
-		{"https://art.test:8443/", "https://art.test:8443/v2/token", "art.test:8443"},
-		{"http://localhost:18080", "http://localhost:18080/v2/token", "localhost:18080"},
-		{"", "http://localhost:8080/v2/token", "localhost:8080"},
-		{"::not a url", "http://localhost:8080/v2/token", "localhost:8080"},
+	plain := httptest.NewRequest("GET", "http://localhost:8080/v2/", nil)
+	overTLS := httptest.NewRequest("GET", "https://localhost:8443/v2/", nil) // r.TLS is set
+	for _, tt := range []struct {
+		externalURL    string
+		r              *http.Request
+		realm, service string
+	}{
+		{"https://art.test", plain, "https://art.test/v2/token", "art.test"},
+		{"https://art.test:8443/", plain, "https://art.test:8443/v2/token", "art.test:8443"},
+		{"http://localhost:18080", plain, "http://localhost:18080/v2/token", "localhost:18080"},
+		{"", plain, "http://localhost:8080/v2/token", "localhost:8080"},
+		{"::not a url", plain, "http://localhost:8080/v2/token", "localhost:8080"},
+		{"", overTLS, "https://localhost:8443/v2/token", "localhost:8443"},
+		{"https://art.test", overTLS, "https://art.test/v2/token", "art.test"},
 	} {
-		realm, svc := Realm(tt.externalURL, r)
+		realm, svc := Realm(tt.externalURL, tt.r)
 		if realm != tt.realm || svc != tt.service {
-			t.Errorf("Realm(%q) = %q, %q; want %q, %q", tt.externalURL, realm, svc, tt.realm, tt.service)
+			t.Errorf("Realm(%q, TLS %t) = %q, %q; want %q, %q", tt.externalURL, tt.r.TLS != nil, realm, svc, tt.realm, tt.service)
 		}
 	}
 }
