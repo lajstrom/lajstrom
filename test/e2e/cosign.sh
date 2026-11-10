@@ -6,7 +6,10 @@
 # reader's signature refused and its verify through, an anonymous referrers request 401. Against
 # a backend with the referrers API (Zot) the signature is listed by it; against one without
 # (distribution, LAJSTROM_E2E_REGISTRY=localhost:5001) the step says that the provider wrote the
-# sha256-<hex> tag schema, which the script reads from the backend.
+# sha256-<hex> tag schema, which the script reads from the backend. lajstrom reindex --repo then
+# finds the signatures as referrers of the file, with nothing foreign, orphaned or failed on its
+# path: through the registry's catalog, or the OCI repositories the index records on a registry
+# without one (LAJSTROM_E2E_CAPABILITIES='{catalog: false}' for run.sh, #37).
 #
 #   test/e2e/cosign.sh [<base url> [<raw repo>]]     default: http://localhost:8080 scratch
 #
@@ -147,6 +150,12 @@ cosign writer verify --key cosign.pub --insecure-ignore-tlog=true --new-bundle-f
 	>/dev/null 2>"$work/verify.log" || { cat "$work/verify.log" >&2; fail "cosign verify of the legacy signature"; }
 hex="${digest#sha256:}"
 step "cosign sign and verify --new-bundle-format=false: the tag sha256-${hex:0:12}….sig through the facade"
+
+"${lajstrom[@]}" reindex --repo "raw/$repo" --json >"$work/reindex.json" 2>"$work/reindex.log" ||
+	{ cat "$work/reindex.log" >&2; fail "lajstrom reindex --repo raw/$repo"; }
+jq -e --arg p "$path" '.repos[0] | .referrers >= 1 and ([.foreign[], .orphanReferrers[], .errors[] | select(.repository == $p)] | length == 0)' \
+	"$work/reindex.json" >/dev/null || { jq -c '.repos[0]' "$work/reindex.json" >&2; fail "lajstrom reindex: the signatures of $path"; }
+step "lajstrom reindex --repo raw/$repo: $(jq -r '.repos[0] | "\(.ociRepositories) OCI repositories, \(.referrers) referrers"' "$work/reindex.json"), nothing amiss on $path"
 
 if cosign writer verify --key other.pub --insecure-ignore-tlog=true ${insecure:+"$insecure"} "$subject" >/dev/null 2>"$work/verify.log"; then
 	fail "cosign verify with a key that signed nothing succeeded"

@@ -21,7 +21,9 @@
 #
 # Everything lives in a temporary directory: the configuration, the SQLite index, the server's
 # log and the output of each scenario. The configuration has one registry, `local`, at
-# $LAJSTROM_E2E_REGISTRY (default localhost:5000, the Zot of make dev-up), and the repos
+# $LAJSTROM_E2E_REGISTRY (default localhost:5000, the Zot of make dev-up), with the capabilities
+# of $LAJSTROM_E2E_CAPABILITIES when it is set, a YAML flow mapping such as '{catalog: false}'
+# for a registry without a catalog (#37), and the repos
 # raw/scratch, apt/ubuntu, apt/e2e and pypi/e2e on it, none readable anonymously, and the user
 # $LAJSTROM_E2E_USER with the admin binding; auth.anonymousRead is true, so that a repo's own
 # anonymousRead decides (rbac.sh turns it on for a repo of its own); no metrics listener, no
@@ -141,6 +143,7 @@ registries:
   - name: local
     type: generic
     url: "http://$registry"
+${LAJSTROM_E2E_CAPABILITIES:+    capabilities: $LAJSTROM_E2E_CAPABILITIES}
 reconcile:
   interval: 0s
 keys:
@@ -172,7 +175,7 @@ until curl -fsS -o /dev/null --max-time 2 "$base/-/readyz" 2>/dev/null; do
 	fi
 	sleep 0.5
 done
-step "lajstrom serve on $base, index $tmp/lajstrom.db, registry local at $registry: ready after $((SECONDS - served)) s"
+step "lajstrom serve on $base, index $tmp/lajstrom.db, registry local at $registry${LAJSTROM_E2E_CAPABILITIES:+ $LAJSTROM_E2E_CAPABILITIES}: ready after $((SECONDS - served)) s"
 
 results=()
 failed=0
