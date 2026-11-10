@@ -88,7 +88,7 @@ func TestCreateInvalid(t *testing.T) {
 		{"no registry", `{"format":"raw","name":"scratch"}`, "registry: must not be empty"},
 		{"unknown registry", `{"format":"raw","name":"scratch","registry":"zot"}`, `registry: "zot" is not a configured registry`},
 		{"kind proxy of a format without", `{"format":"raw","name":"scratch","registry":"local","kind":"proxy"}`, "kind: format raw has no proxy repos"},
-		{"kind group", `{"format":"raw","name":"scratch","registry":"local","kind":"group"}`, `kind: "group" is not supported`},
+		{"kind group", `{"format":"raw","name":"scratch","kind":"group","group":{"members":["a"]}}`, `kind: format raw has no group repos`},
 		{"kind other", `{"format":"raw","name":"scratch","registry":"local","kind":"mirror"}`, `kind: "mirror" is not hosted, proxy or group`},
 		{"upstream on hosted", `{"format":"raw","name":"scratch","registry":"local","upstream":{"name":"npmjs"}}`,
 			"upstream: only a proxy repo has one, not a hosted repo"},

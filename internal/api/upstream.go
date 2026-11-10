@@ -113,13 +113,14 @@ func (h *handler) purgeUpstreamCache(_ http.ResponseWriter, r *http.Request) (in
 	return http.StatusNoContent, nil, nil
 }
 
-// namesUpstream reports whether the upstream member of a PATCH names an upstream: a change of
-// what every reader of a proxy gets, which only the admin role makes (docs/spec/rbac.md §7).
-func namesUpstream(patch json.RawMessage) bool {
+// hasKey reports whether a member of a PATCH, an object, has key: upstream.name and
+// group.members change what every reader of a proxy or a group gets, which only the admin role
+// does (docs/spec/rbac.md §7).
+func hasKey(patch json.RawMessage, key string) bool {
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(patch, &obj) != nil {
 		return false // Update refuses it
 	}
-	_, ok := obj["name"]
+	_, ok := obj[key]
 	return ok
 }

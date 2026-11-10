@@ -627,22 +627,45 @@ components:
             message: {type: string}
     Repo:
       type: object
-      required: [format, name, registry, kind, anonymousRead, policy, createdAt, updatedAt]
+      required: [format, name, kind, anonymousRead, createdAt, updatedAt]
       properties:
         format: {type: string}
         name: {type: string}
-        registry: {type: string}
-        kind: {type: string, enum: [hosted, proxy]}
+        registry: {type: string, description: Absent on a group.}
+        kind: {type: string, enum: [hosted, proxy, group]}
         anonymousRead: {type: boolean}
         policy:
           anyOf:
             - {$ref: "#/components/schemas/Policy"}
             - {type: "null"}
+          description: Absent on a group.
         upstream:
           $ref: "#/components/schemas/Upstream"
           description: A proxy repo only, with every key; absent on another kind.
+        group:
+          $ref: "#/components/schemas/Group"
+          description: A group only, with both keys; absent on another kind.
         createdAt: {type: string, format: date-time}
         updatedAt: {type: string, format: date-time}
+    Group:
+      type: object
+      description: >-
+        A group's settings (docs/spec/proxy-and-group.md §2.3): its members, read in order, and
+        the names a hosted member does not hide.
+      required: [members]
+      additionalProperties: false
+      properties:
+        members:
+          type: array
+          minItems: 1
+          maxItems: 16
+          description: Repos of the group's format by name, in order; each hosted or proxy, at most one hosted.
+          items: {type: string}
+        merge:
+          type: array
+          maxItems: 256
+          description: Name patterns whose versions are merged across members even when the hosted member holds the name.
+          items: {type: string, minLength: 1, maxLength: 256}
     Upstream:
       type: object
       description: >-
@@ -716,18 +739,24 @@ components:
       properties:
         format: {type: string}
         name: {type: string}
-        registry: {type: string}
-        kind: {type: string, enum: [hosted, proxy]}
+        registry: {type: string, description: Required but on a group, which has none.}
+        kind: {type: string, enum: [hosted, proxy, group]}
         anonymousRead: {type: boolean}
         policy:
           anyOf:
             - {$ref: "#/components/schemas/Policy"}
             - {type: "null"}
+          description: None on a group.
         upstream:
           anyOf:
             - {$ref: "#/components/schemas/Upstream"}
             - {type: "null"}
           description: Required on a proxy repo, refused on another kind.
+        group:
+          anyOf:
+            - {$ref: "#/components/schemas/Group"}
+            - {type: "null"}
+          description: Required on a group, refused on another kind.
     RepoPatch:
       type: object
       additionalProperties: false
@@ -744,6 +773,12 @@ components:
             checked whole after the merge; allow and deny are replaced whole. Changing name needs
             the admin role and drops the repo's cache of the old upstream; the other keys need
             manage.
+        group:
+          type: object
+          description: >-
+            A group only: an RFC 7396 merge patch of its settings (the keys of Group), checked
+            whole after the merge; each list is replaced whole. Changing members needs the admin
+            role; merge needs manage.
     ReindexRequest:
       type: object
       additionalProperties: false

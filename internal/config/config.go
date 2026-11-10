@@ -307,9 +307,9 @@ type Repo struct {
 	Name string `yaml:"name"`
 	// Format is the plugin name: raw, pypi, apt, maven.
 	Format string `yaml:"format"`
-	// Registry is the name of the registry that stores the repo's artifacts.
+	// Registry is the name of the registry that stores the repo's artifacts; a group has none.
 	Registry string `yaml:"registry"`
-	// Kind is hosted (empty means hosted) or proxy (docs/spec/proxy-and-group.md §1).
+	// Kind is hosted (empty means hosted), proxy or group (docs/spec/proxy-and-group.md §1).
 	Kind string `yaml:"kind"`
 	// AnonymousRead makes the repo readable without credentials, when auth.anonymousRead allows it.
 	AnonymousRead bool `yaml:"anonymousRead"`
@@ -321,12 +321,17 @@ type Repo struct {
 	// format, and the TTLs, offline, allow and deny, which the bootstrap checks. Required on a
 	// proxy, refused on another kind.
 	Upstream map[string]any `yaml:"upstream"`
+	// Group is a group's settings as the management API takes them (docs/spec/proxy-and-group.md
+	// §2.3): members, the names of 1 to 16 repos of the group's format in order, and merge, which
+	// the bootstrap checks with the members' kinds. Required on a group, refused on another kind.
+	Group map[string]any `yaml:"group"`
 }
 
-// The kinds of repos[].kind (docs/spec/proxy-and-group.md §1); groups come with #311.
+// The kinds of repos[].kind (docs/spec/proxy-and-group.md §1).
 const (
 	KindHosted = "hosted"
 	KindProxy  = "proxy"
+	KindGroup  = "group"
 )
 
 // Defaults that Load applies before reading the file.
