@@ -118,7 +118,7 @@ func TestInstallTarballs(t *testing.T) {
 		}
 	}
 	for _, path := range []string{"/npm/internal/other", "/npm/internal/@acme/widgets/9.9.9", "/npm/internal/widgets/-/other-1.0.0.tgz",
-		"/npm/internal/@acme/widgets/-/widgets-2.0.0.tgz", "/npm/internal/-/ping", "/npm/internal/a/b/c"} {
+		"/npm/internal/@acme/widgets/-/widgets-2.0.0.tgz", "/npm/internal/-/token", "/npm/internal/a/b/c"} {
 		if rr := get(h, path); rr.Code != http.StatusNotFound || !strings.Contains(rr.Body.String(), `"error"`) {
 			t.Errorf("%s: %d %s", path, rr.Code, rr.Body)
 		}

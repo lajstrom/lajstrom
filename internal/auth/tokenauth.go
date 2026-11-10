@@ -86,17 +86,17 @@ func (a *Authenticator) authenticateDeploy(ctx context.Context, secret string) (
 
 // AuthenticateBearer returns the principal of Authorization: Bearer <secret> outside /v2 (the
 // management API and the frontends; the bearer of /v2 is the JWT of #26, which the facade
-// verifies): a personal access token, as authenticatePAT checks it, without a user name. The
-// principal is user:<owner>. A deploy token is refused here: it goes in Basic credentials,
-// deploy:<token>, one way for every client. Anything that is not a personal access token is
-// refused too.
+// verifies): a personal access token, as authenticatePAT checks it, without a user name, whose
+// principal is user:<owner>; or a deploy token, as authenticateDeploy checks it, token:<id>,
+// which npm's _authToken and yarn's npmAuthToken send so (ADR 0012, docs/spec/rbac.md §1).
+// Anything else is refused.
 //
 // The token names its owner by id, which GetUserByID reads on every call, so that a disabled or
 // deleted owner is refused at once and a renamed one keeps its tokens.
 func (a *Authenticator) AuthenticateBearer(ctx context.Context, secret string) (Principal, Credential, error) {
 	switch {
 	case strings.HasPrefix(secret, DeployPrefix):
-		return Principal{}, Credential{}, a.refuse(ctx, "", "a deploy token as a bearer: it goes in Basic credentials, deploy:<token>")
+		return a.authenticateDeploy(ctx, secret)
 	case !tokenShaped(secret, PATPrefix):
 		return Principal{}, Credential{}, a.refuse(ctx, "", "malformed token")
 	}

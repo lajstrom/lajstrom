@@ -20,7 +20,8 @@ import (
 //	GET /{repo}/<name>/<version>     one version of the full packument, or of the dist-tag
 //	GET /{repo}/<name>/-/<file>      a tarball, through format.ServeBlob
 //	PUT /{repo}/<name>               npm publish (publish.go), write
-//	    /{repo}/-/…                  the registry's own routes (special): dist-tags (disttags.go)
+//	    /{repo}/-/…                  the registry's own routes (special): dist-tags (disttags.go);
+//	                                 ping, whoami, search, audit (cli.go)
 //
 // GET is HEAD too. Every answer is JSON, an error {"error": "<message>"}.
 func (p Plugin) Routes(r format.Router, deps format.Deps) {
@@ -31,6 +32,7 @@ func (p Plugin) Routes(r format.Router, deps format.Deps) {
 	r.HandleFunc("GET /{repo}/{path...}", h.get)
 	r.HandleFunc("PUT /{repo}/{path...}", h.put)
 	r.HandleFunc("DELETE /{repo}/{path...}", h.del)
+	r.HandleFunc("POST /{repo}/{path...}", h.post)
 }
 
 // special returns the segments of a path below /npm/<repo>/-/, the registry's own routes, and
@@ -51,12 +53,33 @@ func (h *handlers) serveSpecial(w http.ResponseWriter, r *http.Request, segs []s
 		h.fail(w, r, errors.New("npm: the route has no repo"))
 		return
 	}
-	switch segs[0] {
-	case "package":
+	read := r.Method == http.MethodGet || r.Method == http.MethodHead
+	switch route := strings.Join(segs, "/"); {
+	case segs[0] == "package":
 		h.distTags(w, r, repo, segs[1:])
-	default:
+	case read && route == "ping":
+		h.ping(w, r, repo)
+	case read && route == "whoami":
+		h.whoami(w, r, repo)
+	case read && route == "v1/search":
+		h.search(w, r, repo)
+	case r.Method == http.MethodPost && route == "npm/v1/security/advisories/bulk":
+		h.audit(w, r, repo, true)
+	case r.Method == http.MethodPost && (route == "npm/v1/security/audits" || route == "npm/v1/security/audits/quick"):
+		h.audit(w, r, repo, false)
+	default: // the web login (-/v1/login) among them: npm then asks for a password
 		h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
 	}
+}
+
+// post dispatches a POST: the registry's own routes.
+func (h *handlers) post(w http.ResponseWriter, r *http.Request) {
+	segs := special(r.PathValue("path"))
+	if segs == nil {
+		h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
+		return
+	}
+	h.serveSpecial(w, r, segs)
 }
 
 // del dispatches a DELETE: the registry's own routes; nothing else yet.
