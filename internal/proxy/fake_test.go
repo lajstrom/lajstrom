@@ -8,6 +8,7 @@ import (
 	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -231,6 +232,44 @@ func (p *pkgPlugin) RenderProxy(ctx context.Context, repo index.Repo, name, _ st
 	b, err := json.Marshal(out)
 	return format.Document{Kind: docKind, Path: name, ContentType: "application/json", Content: b}, err
 }
+
+// RenderIndex renders a hosted repo's document of a name, scope the name, as RenderProxy does
+// without a kept document, with its links under https://art.test/raw/<repo>/; nothing for a
+// name the repo does not hold.
+func (p *pkgPlugin) RenderIndex(ctx context.Context, repo index.Repo, scope format.IndexScope, st index.Reader) ([]format.Document, error) {
+	path, err := p.EscapeName(string(scope))
+	if err != nil {
+		return nil, nil
+	}
+	if _, err := st.GetPackageByNameOCI(ctx, repo.ID, path); errors.Is(err, index.ErrNotFound) {
+		return nil, nil
+	}
+	doc, err := p.RenderProxy(ctx, repo, string(scope), docKind, nil, st, "https://art.test/raw/"+repo.Name+"/")
+	return []format.Document{doc}, err
+}
+
+// MergeGroup merges the members' listings, version → "<link> <sha256>": the first member's
+// entry of a version, each link moved below base.
+func (p *pkgPlugin) MergeGroup(_ context.Context, _ index.Repo, name, _ string, docs []format.MemberDocument, base string) (format.Document, error) {
+	out := map[string]string{}
+	for _, d := range docs {
+		var listing map[string]string
+		if err := json.Unmarshal(d.Content, &listing); err != nil {
+			return format.Document{}, err
+		}
+		for v, entry := range listing {
+			if _, ok := out[v]; ok {
+				continue
+			}
+			link, sum, _ := strings.Cut(entry, " ")
+			out[v] = base + name + "/-/" + link[strings.LastIndex(link, "/")+1:] + " " + sum + " " + d.Repo.Name
+		}
+	}
+	b, err := json.Marshal(out)
+	return format.Document{Kind: docKind, Path: name, ContentType: "application/json", Content: b}, err
+}
+
+var _ format.Grouper = (*pkgPlugin)(nil)
 
 // fakeUpstream is the upstream of these tests: meta/<name> answers the document of the name
 // with an ETag and 304 for it, files/<file> its bytes. Status, when set, answers every request.

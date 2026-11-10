@@ -45,8 +45,16 @@ func (a artifact) subject() string {
 // unless the repo is offline, the file fetched from the upstream into the one write path by the
 // principal of ctx, once across replicas, and served from the registry like a held one. The
 // fetch runs on a context of its own: a client that leaves does not cancel it for the requests
-// that wait on it, the server's shutdown does.
+// that wait on it, the server's shutdown does. A group's file is its members' (groupFile).
 func (c *Core) File(ctx context.Context, repo index.Repo, path string) (*index.FileMatch, error) {
+	if repo.Kind == index.KindGroup {
+		return c.groupFile(ctx, repo, path)
+	}
+	return c.proxyFile(ctx, repo, path)
+}
+
+// proxyFile is File of a proxy repo.
+func (c *Core) proxyFile(ctx context.Context, repo index.Repo, path string) (*index.FileMatch, error) {
 	p, err := c.resolve(repo)
 	if err != nil {
 		return nil, err
@@ -116,21 +124,27 @@ func (p *proxied) artifact(path string) (artifact, error) {
 // held returns the file of the artifact that the index has, nil when it does not have the
 // version, and index.ErrNotFound when it has the version without the file.
 func (c *Core) held(ctx context.Context, p *proxied, a artifact) (*index.FileMatch, error) {
-	pkg, err := c.o.Index.GetPackageByNameOCI(ctx, p.repo.ID, a.pkgPath)
+	return heldFile(ctx, c.o.Index, p.repo, a)
+}
+
+// heldFile returns the file of the artifact that repo holds in the index r, nil when it does not
+// hold the version, and index.ErrNotFound when it holds the version without the file.
+func heldFile(ctx context.Context, r index.Reader, repo index.Repo, a artifact) (*index.FileMatch, error) {
+	pkg, err := r.GetPackageByNameOCI(ctx, repo.ID, a.pkgPath)
 	if errors.Is(err, index.ErrNotFound) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	v, err := c.o.Index.GetVersion(ctx, pkg.ID, a.ref.Version, a.ref.Variant)
+	v, err := r.GetVersion(ctx, pkg.ID, a.ref.Version, a.ref.Variant)
 	if errors.Is(err, index.ErrNotFound) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	files, err := c.o.Index.ListFiles(ctx, v.ID)
+	files, err := r.ListFiles(ctx, v.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +153,7 @@ func (c *Core) held(ctx context.Context, p *proxied, a artifact) (*index.FileMat
 			return &index.FileMatch{File: f, Version: *v, Package: *pkg}, nil
 		}
 	}
-	return nil, fmt.Errorf("%w: proxy: %s: %s has no file %s", index.ErrNotFound, p.id(), a.subject(), a.ref.File)
+	return nil, fmt.Errorf("%w: %s/%s: %s has no file %s", index.ErrNotFound, repo.Format, repo.Name, a.subject(), a.ref.File)
 }
 
 // entry returns the entry of the artifact in the name's document (§5, step 5), brought up to
