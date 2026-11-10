@@ -49,6 +49,23 @@ type Upload struct {
 	Files []UploadedFile
 	// Params are protocol parameters: twine form fields, apt suite and component, the raw path.
 	Params map[string]string
+	// Origin is set by the proxy fetcher on an artifact it fetched from an upstream, and only
+	// there (ADR 0013); nil on every upload of a client. Ingest writes the origin annotations
+	// from it, leaves lajstrom.uploaded-by out and audits proxy.fetch instead of push.
+	Origin *Origin
+}
+
+// Origin is where a proxied artifact came from (docs/spec/manifest-profile.md §3.1).
+type Origin struct {
+	// Upstream is the name of the upstream in the configuration (upstreams[].name), for the
+	// audit row; never its URL.
+	Upstream string
+	// URL is the URL the first file was asked for, before any redirect, without userinfo,
+	// query or fragment: lajstrom.origin.url.
+	URL string
+	// Checksum is the upstream's checksum that was verified before the ingest,
+	// <algorithm>:<lowercase hex>: lajstrom.origin.checksum.
+	Checksum string
 }
 
 // UploadedFile is one file of an Upload. It is re-openable: Build opens it to parse and digest

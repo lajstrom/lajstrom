@@ -17,16 +17,20 @@ const basicChallenge = `Basic realm="lajstrom"`
 // WriteError answers err with the status its sentinel maps to and a text/plain body (with
 // X-Content-Type-Options: nosniff) and returns the status. 4xx bodies are err.Error()+"\n";
 // 5xx bodies are http.StatusText(status)+"\n" (the cause is for the log, not the client).
-// A 401 carries WWW-Authenticate: Basic realm="lajstrom", a 503 of provider.ErrUnavailable
-// Retry-After (SetRetryAfter). See StatusOf for the mapping.
+// A 401 carries WWW-Authenticate: Basic realm="lajstrom", a 405 Allow: GET, HEAD, a 503 of
+// provider.ErrUnavailable or of an *UnavailableError Retry-After (SetRetryAfter). See StatusOf
+// for the mapping.
 func WriteError(w http.ResponseWriter, err error) int {
 	status := StatusOf(err)
 	msg := http.StatusText(status)
 	if status < http.StatusInternalServerError {
 		msg = err.Error()
 	}
-	if status == http.StatusUnauthorized {
+	switch status {
+	case http.StatusUnauthorized:
 		w.Header().Set("WWW-Authenticate", basicChallenge)
+	case http.StatusMethodNotAllowed:
+		w.Header().Set("Allow", "GET, HEAD")
 	}
 	SetRetryAfter(w.Header(), err)
 	http.Error(w, msg, status) // text/plain, nosniff, msg+"\n", no stale Content-Length
@@ -35,10 +39,15 @@ func WriteError(w http.ResponseWriter, err error) int {
 
 // SetRetryAfter sets Retry-After in h when err says when to try again: a
 // provider.ErrUnavailable of an open circuit breaker, whose time left until its trial request
-// becomes whole seconds, at least 1. Every writer of error answers calls it (WriteError, the
-// OCI facade, the management API), so that the header is set wherever StatusOf answers 503.
+// becomes whole seconds, at least 1, or an *UnavailableError of an upstream that asked to wait.
+// Every writer of error answers calls it (WriteError, the OCI facade, the management API), so
+// that the header is set wherever StatusOf answers 503.
 func SetRetryAfter(h http.Header, err error) {
 	after, ok := provider.RetryAfter(err)
+	var u *UnavailableError
+	if !ok && errors.As(err, &u) {
+		after, ok = u.RetryAfter, true
+	}
 	if !ok {
 		return
 	}
@@ -53,12 +62,16 @@ func SetRetryAfter(h http.Header, err error) {
 //	ErrInvalid                                 400 Bad Request
 //	ErrUnauthenticated                         401 Unauthorized
 //	ErrForbidden                               403 Forbidden
+//	ErrMethodNotAllowed                        405 Method Not Allowed, with Allow: GET, HEAD
 //	index.ErrNotFound, provider.ErrNotFound    404 Not Found
 //	index.ErrConflict, provider.ErrConflict    409 Conflict
 //	*http.MaxBytesError                        413 Content Too Large
 //	ErrUnsupported, provider.ErrUnsupported    501 Not Implemented
 //	provider.ErrUnauthorized                   502 Bad Gateway (the backend rejected our credentials)
 //	provider.ErrUnavailable                    503 Service Unavailable, with Retry-After (SetRetryAfter)
+//	ErrBadGateway                              502 Bad Gateway (a proxy's upstream failed)
+//	ErrUnavailable                             503 Service Unavailable, with Retry-After (the upstream's)
+//	ErrGatewayTimeout                          504 Gateway Timeout
 //	anything else, nil included                500 Internal Server Error
 func StatusOf(err error) int {
 	var tooLarge *http.MaxBytesError
@@ -71,6 +84,8 @@ func StatusOf(err error) int {
 		return http.StatusUnauthorized
 	case errors.Is(err, ErrForbidden):
 		return http.StatusForbidden
+	case errors.Is(err, ErrMethodNotAllowed):
+		return http.StatusMethodNotAllowed
 	case errors.Is(err, index.ErrNotFound), errors.Is(err, provider.ErrNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, index.ErrConflict), errors.Is(err, provider.ErrConflict):
@@ -83,6 +98,12 @@ func StatusOf(err error) int {
 		return http.StatusBadGateway
 	case errors.Is(err, provider.ErrUnavailable):
 		return http.StatusServiceUnavailable
+	case errors.Is(err, ErrBadGateway):
+		return http.StatusBadGateway
+	case errors.Is(err, ErrUnavailable):
+		return http.StatusServiceUnavailable
+	case errors.Is(err, ErrGatewayTimeout):
+		return http.StatusGatewayTimeout
 	default:
 		return http.StatusInternalServerError
 	}

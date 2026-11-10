@@ -1,6 +1,9 @@
 package format
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 var (
 	// ErrInvalid means a manifest or an upload does not satisfy the manifest profile or the
@@ -21,3 +24,39 @@ var (
 	// 403; a principal without any access gets index.ErrNotFound (docs/spec/rbac.md §3).
 	ErrForbidden = errors.New("format: forbidden")
 )
+
+// The errors of a proxy's upstream and of a repo that takes no writes (ADR 0013,
+// docs/spec/proxy-and-group.md §6). A message names the upstream by its configured name, never
+// its URL, a credential or a body the upstream sent.
+var (
+	// ErrMethodNotAllowed means the repo takes no write of this kind: a write route of a proxy,
+	// or of a group without a hosted member. Frontends answer 405 with Allow: GET, HEAD.
+	ErrMethodNotAllowed = errors.New("format: method not allowed")
+
+	// ErrBadGateway means the upstream failed: an error status, a connection or TLS error, a
+	// refused redirect, Lajstrom's credentials refused, a document too large or unreadable, or
+	// bytes that fail their checksum or Validate. Frontends answer 502.
+	ErrBadGateway = errors.New("format: bad gateway")
+
+	// ErrUnavailable means the upstream asked to wait (429). Frontends answer 503 with the
+	// Retry-After of the *UnavailableError that wraps it.
+	ErrUnavailable = errors.New("format: upstream unavailable")
+
+	// ErrGatewayTimeout means the upstream did not answer within its timeout. Frontends answer
+	// 504.
+	ErrGatewayTimeout = errors.New("format: gateway timeout")
+)
+
+// UnavailableError is an ErrUnavailable that says when to ask again: the upstream's own
+// Retry-After, at most a minute, 5 seconds when it sent none.
+type UnavailableError struct {
+	// RetryAfter is the wait.
+	RetryAfter time.Duration
+}
+
+func (e *UnavailableError) Error() string {
+	return "format: upstream unavailable: it asked to wait " + e.RetryAfter.Round(time.Second).String()
+}
+
+// Unwrap returns ErrUnavailable, so that errors.Is matches the sentinel.
+func (e *UnavailableError) Unwrap() error { return ErrUnavailable }
