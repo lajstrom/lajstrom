@@ -1,0 +1,64 @@
+# Gitea's container registry for the capability-matrix spike (issue #120,
+# docs/registries/gitea.md): a compose project of its own, "lajstrom-gitea", beside the dev stack
+# and not part of it (make dev-down does not touch it). Forgejo, the fork, is the profile
+# "forgejo". For development only: plain HTTP, SQLite, and the passwords of gitea.sh.
+#
+#   deploy/compose/gitea/gitea.sh up            start Gitea, wait, and set it up (users, org, team, token)
+#   deploy/compose/gitea/gitea.sh up forgejo    the same with Forgejo
+#   deploy/compose/gitea/gitea.sh down          stop both, and remove the containers and the volumes
+#
+# Published on 127.0.0.1 only; the web UI, the REST API and the registry's /v2/ share the port:
+#
+#   gitea    localhost:5009  LAJSTROM_GITEA_PORT
+#   forgejo  localhost:5014  LAJSTROM_FORGEJO_PORT   profile forgejo
+
+name: lajstrom-gitea
+
+x-forge-env: &forge-env
+  GITEA__security__INSTALL_LOCK: "true"
+  GITEA__database__DB_TYPE: sqlite3
+  GITEA__service__DISABLE_REGISTRATION: "true"
+  GITEA__packages__ENABLED: "true"
+  GITEA__log__LEVEL: Info
+  # What the cron task cleanup_packages leaves alone, by age ([cron.cleanup_packages]
+  # OLDER_THAN); 1s lets a run now collect what was just pushed (docs/registries/gitea.md,
+  # "Cleanup").
+  GITEA__cron_0X2E_cleanup_packages__OLDER_THAN: ${LAJSTROM_GITEA_CLEANUP_OLDER_THAN:-24h}
+
+services:
+  gitea:
+    # Gitea 1.27.3, the rootless image, linux/amd64, arm64 and riscv64; the digest of the
+    # image index is the pin.
+    image: gitea/gitea:1.27.3-rootless@sha256:1c17ecaead42eb3b5391553d8708103a4beb0e86edf5b9ebc1eb269c318845f2
+    environment:
+      <<: *forge-env
+      # The registry's Bearer realm is <ROOT_URL>v2/token: it must be the address clients use.
+      GITEA__server__ROOT_URL: http://localhost:${LAJSTROM_GITEA_PORT:-5009}/
+    volumes:
+      - gitea-data:/var/lib/gitea
+      - gitea-config:/etc/gitea
+    ports:
+      - "127.0.0.1:${LAJSTROM_GITEA_PORT:-5009}:3000"
+    healthcheck: &forge-health
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:3000/api/healthz"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  forgejo:
+    profiles: [forgejo]
+    # Forgejo 17.0.1, the rootless image; the digest of the image index is the pin.
+    image: codeberg.org/forgejo/forgejo:17.0.1-rootless@sha256:5ef02fbcf22beef56b8c844952ffad58cfe177b6f98e46e6abb5df90b88dc8d3
+    environment:
+      <<: *forge-env
+      GITEA__server__ROOT_URL: http://localhost:${LAJSTROM_FORGEJO_PORT:-5014}/
+    volumes:
+      - forgejo-data:/var/lib/gitea
+    ports:
+      - "127.0.0.1:${LAJSTROM_FORGEJO_PORT:-5014}:3000"
+    healthcheck: *forge-health
+
+volumes:
+  gitea-data:
+  gitea-config:
+  forgejo-data:
