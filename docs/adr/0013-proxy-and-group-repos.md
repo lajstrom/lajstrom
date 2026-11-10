@@ -1,6 +1,6 @@
 # 0013. Proxy and group repos: fetch on miss into the one write path, hosted names hide the upstream
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-10
 - Deciders: gecube
 
