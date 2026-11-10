@@ -96,6 +96,8 @@ type Reader interface {
 
 	// GetTagClaim returns the claim on tag of the package path pkg (NameOCI) in a repo.
 	GetTagClaim(ctx context.Context, repoID int64, pkg, tag string) (*TagClaim, error)
+	// GetFetchClaim returns the claim of a proxy fetch on tag of the package path pkg in a repo.
+	GetFetchClaim(ctx context.Context, repoID int64, pkg, tag string) (*FetchClaim, error)
 	// GetReindexRun returns the reindex run with the given id.
 	GetReindexRun(ctx context.Context, id int64) (*ReindexRun, error)
 	// LatestReindexRun returns the newest run that covered repoID, its own or a run of every
@@ -223,6 +225,25 @@ type Writer interface {
 	// ExpireTagClaims removes the claims whose ClaimedAt is before before, and returns how
 	// many it removed (reindex and the reconcile loop).
 	ExpireTagClaims(ctx context.Context, before time.Time) (int, error)
+
+	// Coordination: fetch claims, the lock of a proxy fetch on one artifact across replicas
+	// (docs/spec/index-schema.md, Proxy and group repos). ResetDerived does not touch them.
+
+	// ClaimFetch inserts c, sets ClaimedAt to now when it is zero and HeartbeatAt to ClaimedAt
+	// when it is zero, and fills ID. When a claim of (RepoID, Package, Tag) exists, its
+	// HeartbeatAt decides: at or after staleBefore, the error wraps ErrConflict and nothing
+	// changes; before it, the row is deleted and c inserted with a new id, so that the
+	// heartbeats and the release of the fetch that held it find nothing. The loser of a race
+	// gets the ErrConflict, never a driver error.
+	ClaimFetch(ctx context.Context, c *FetchClaim, staleBefore time.Time) error
+	// HeartbeatFetchClaim sets HeartbeatAt of the claim; ErrNotFound when it is gone, released
+	// or taken over, and the fetch should not go on believing it holds it.
+	HeartbeatFetchClaim(ctx context.Context, id int64, at time.Time) error
+	// ReleaseFetchClaim removes the claim.
+	ReleaseFetchClaim(ctx context.Context, id int64) error
+	// ExpireFetchClaims removes the claims whose HeartbeatAt is before before, and returns how
+	// many it removed (reindex and the reconcile loop).
+	ExpireFetchClaims(ctx context.Context, before time.Time) (int, error)
 
 	// Coordination: reindex runs (docs/spec/index-schema.md, Coordination).
 
