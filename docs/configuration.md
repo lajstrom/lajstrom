@@ -25,8 +25,8 @@ Later steps win:
 2. **The file.** Keys are camelCase. An unknown key is an error that names the key and the
    line, so a typo never passes silently. An empty file is allowed and leaves the defaults.
 3. **Environment overrides** for the scalar keys that have a variable in the Env column. An
-   empty variable counts as unset. Lists (`registries`, `repos`) cannot be set from the
-   environment.
+   empty variable counts as unset. Lists (`registries`, `upstreams`, `repos`) cannot be set
+   from the environment.
 4. **Secrets**: each `registries[].auth.passwordEnv` is read from the environment. The master
    key of `keys.masterKeyEnv` or `keys.masterKeyFile` is not: `serve` and `admin key` read it
    when they start (see [keys](#keys)).
@@ -177,6 +177,36 @@ registries that answer wrongly; a key that is set is not probed. There is no `ca
 outside `capabilities`. What was tested against which registry, and the configuration each one
 needs, is in [registries/](registries/README.md).
 
+### upstreams
+
+A list; each entry is a registry that [proxy repos](spec/proxy-and-group.md) of one format serve
+and keep what they fetched from, as Verdaccio's `uplinks`. A proxy repo refers to it by name
+(`repos[].upstream.name`); the management API never takes an upstream's URL or credentials, so
+only the operator decides where Lajstrom sends requests ([ADR 0013](adr/0013-proxy-and-group-repos.md)).
+
+| Key | Type | Default | Env | Description |
+| --- | --- | --- | --- | --- |
+| `upstreams[].name` | name | none, required | none | Unique; the grammar of `registries[].name`. Example: `npmjs`. |
+| `upstreams[].format` | plugin name | none, required | none | The format it serves: a plugin of this build that has proxy repos (`serve` checks). Only a proxy repo of this format names it. |
+| `upstreams[].url` | absolute `http(s)` URL | none, required | none | Base of every request, e.g. `https://registry.npmjs.org/`. A path is allowed; credentials, a query and a fragment are not. `http` is accepted with a warning at start: what it serves is not authenticated. |
+| `upstreams[].auth.username` | string | empty | none | With `passwordFile`: HTTP Basic. |
+| `upstreams[].auth.passwordFile` | path | empty | none | File that holds the password of `username`. |
+| `upstreams[].auth.tokenFile` | path | empty | none | File that holds a bearer token (`Authorization: Bearer`), npm's `_authToken`. Not with `username`. |
+| `upstreams[].timeout` | duration | `30s` | none | Bounds the wait for the response headers (connecting and TLS at most 10 s each) and every wait for the next bytes of a body. Must not be negative; `0s` means the default. |
+| `upstreams[].retries` | integer | `2` | none | Retries of a request, as `registries[].retries` defines them: `429`, `5xx` but `501` and `505`, timeouts, connections refused or reset; the wait doubles from 250 ms, at most 3 s. `0` means the default; a negative value disables retries. |
+| `upstreams[].maxMetadataSize` | bytes | `67108864` (64 MiB) | none | Largest document the upstream may answer for one name; a larger one is not cached. Must not be negative; `0` means the default. |
+
+The credential files are read when `serve` starts, as `keys.masterKeyFile` is: a file that is
+missing, unreadable or empty stops `serve`, and one that the group or others may read is used,
+with a warning. Spaces and line breaks around the value are ignored, and a rotated secret takes a
+restart. The credentials go to the origin (scheme, host and port) of `url` only, never to a host
+a redirect or a document names; a client's own credentials are never forwarded.
+
+The connections to an upstream go through the egress proxy of the environment, `HTTPS_PROXY`,
+`HTTP_PROXY` and `NO_PROXY`, as the connections to the registries do; a registry that must not go
+through it belongs in `NO_PROXY`. A repo that names an upstream the file no longer has is served
+as if it were offline, with an error at every start naming the repo and the upstream.
+
 ### ingest
 
 | Key | Type | Default | Env | Description |
@@ -261,6 +291,8 @@ create loses to another's counts the repo as present.
 | `repos[].name` | name | none, required | none | Repo name, unique within its format; same rule as registry names ([manifest-profile.md](spec/manifest-profile.md) §4.1). Example: `scratch`. |
 | `repos[].format` | name | none, required | none | Plugin name: `raw`, `pypi`, `apt`, `maven`. |
 | `repos[].registry` | name | none, required | none | One of `registries[].name`. |
+| `repos[].kind` | `hosted`, `proxy` | `hosted` | none | What the repo serves ([proxy-and-group.md](spec/proxy-and-group.md) §1): what is published to it, or what it fetched from an upstream. Set at creation and never changed. A proxy needs a format whose plugin has proxy repos. |
+| `repos[].upstream` | map | none | none | A proxy repo's upstream, with the keys of the management API ([proxy-and-group.md](spec/proxy-and-group.md) §2.2): `name`, one of `upstreams[].name` of the repo's format (required), `metadataTTL` (`10m`), `negativeTTL` (`2m`), `offline` (`false`), `allow` and `deny` (lists of name patterns). Required on a proxy repo, refused on another kind. Example: `{name: npmjs, deny: ["@acme/*"]}`. |
 | `repos[].anonymousRead` | bool | `false` | none | Readable without credentials, when `auth.anonymousRead` is `true`. |
 | `repos[].policy` | map | none | none | The repo's policy, with the keys and values of the management API ([api.md](api.md#policy)): `maxFileSize` (bytes, no limit by default), `blobRedirect` (`auto` by default, or `never`), and on a maven repo `maven.sessionTimeout` (`30m` by default, `1m` to `24h`). The API checks it when the bootstrap creates the repo, and a policy it refuses stops `serve` naming the entry and the key (`repos[0]: policy.maven: only a maven repo has it, not a raw repo`). Example: `{maxFileSize: 104857600, maven: {sessionTimeout: 2h}}`. |
 

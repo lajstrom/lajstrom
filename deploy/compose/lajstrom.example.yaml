@@ -57,6 +57,15 @@ registries:
     retries: 3
     capabilities: {}
 
+upstreams: []                         # registries that proxy repos serve (ADR 0013), with a format whose plugin has proxy repos:
+#  - name: npmjs                      # referred to by repos[].upstream.name
+#    format: npm
+#    url: "https://registry.npmjs.org/"
+#    auth: {tokenFile: ""}            # or {username: …, passwordFile: …}; files read at start
+#    timeout: 30s                     # up to the response headers, and every wait for the next bytes of a body
+#    retries: 2
+#    maxMetadataSize: 67108864        # the largest document of one name that is cached
+
 ingest:
   claimTTL: 10m                       # a publish's claim on a tag older than this is stale and taken over
 
