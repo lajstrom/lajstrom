@@ -131,7 +131,7 @@ func newProxyRepo(t *testing.T, externalURL string) *proxyRepo {
 	must(t, err)
 	providers := provider.Map{"local": p.fake}
 	core := proxy.New(proxy.Options{Index: p.st, Ingest: p.pipe, Providers: providers, Upstreams: map[string]*proxy.Upstream{"npmjs": up},
-		Plugins: func(name string) (format.Plugin, bool) { return Plugin{}, name == Name }, ExternalURL: externalURL,
+		Plugins: func(name string) (format.Plugin, bool) { return Plugin{ExternalURL: externalURL}, name == Name }, ExternalURL: externalURL,
 		Now: func() time.Time { return time.Unix(0, p.now.Load()).UTC() }, Log: slog.New(slog.DiscardHandler)})
 	deps := format.Deps{Index: p.st, Ingest: p.pipe, Providers: providers, Proxy: core, Log: slog.New(slog.DiscardHandler)}
 	mux := http.NewServeMux()

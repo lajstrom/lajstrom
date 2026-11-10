@@ -46,9 +46,17 @@ func parseDistTags(segs []string) (distTagTarget, bool) {
 //	PUT    /-/package/<name>/dist-tags/<tag>   write: a journal add; the body is a JSON string, a version
 //	DELETE /-/package/<name>/dist-tags/<tag>   write: a journal rm; latest is 400, a tag the package does not have 404
 //
-// A proxy repo's dist-tags are its upstream's: a change is 405 there (ADR 0013).
+// A proxy repo's dist-tags are its upstream's: a change is 405 there; a group's change is its
+// hosted member's (ADR 0013, writeTarget).
 func (h *handlers) distTags(w http.ResponseWriter, r *http.Request, repo index.Repo, segs []string) {
 	t, ok := parseDistTags(segs)
+	if ok && t.tag != "" && (r.Method == http.MethodPut || r.Method == http.MethodDelete) {
+		var err error
+		if r, repo, err = h.writeTarget(r, repo); err != nil {
+			h.fail(w, r, err)
+			return
+		}
+	}
 	switch {
 	case !ok:
 		h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
@@ -95,10 +103,6 @@ func (h *handlers) listDistTags(w http.ResponseWriter, r *http.Request, repo ind
 // names that version already: 201 {"ok": true}.
 func (h *handlers) addDistTag(w http.ResponseWriter, r *http.Request, repo index.Repo, t distTagTarget) {
 	ctx := r.Context()
-	if err := h.refuseWrite(ctx, repo); err != nil {
-		h.fail(w, r, err)
-		return
-	}
 	if err := format.Authorize(ctx, h.deps, auth.ActionWrite, repo); err != nil {
 		h.fail(w, r, err)
 		return
@@ -126,10 +130,6 @@ func (h *handlers) addDistTag(w http.ResponseWriter, r *http.Request, repo index
 // rmDistTag removes the dist-tag with a journal rm: 200 {"ok": true}.
 func (h *handlers) rmDistTag(w http.ResponseWriter, r *http.Request, repo index.Repo, t distTagTarget) {
 	ctx := r.Context()
-	if err := h.refuseWrite(ctx, repo); err != nil {
-		h.fail(w, r, err)
-		return
-	}
 	if err := format.Authorize(ctx, h.deps, auth.ActionWrite, repo); err != nil {
 		h.fail(w, r, err)
 		return

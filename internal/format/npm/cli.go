@@ -1,7 +1,9 @@
 package npm
 
 import (
+	"cmp"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -101,16 +103,16 @@ func (h *handlers) search(w http.ResponseWriter, r *http.Request, repo index.Rep
 	q := r.URL.Query()
 	text := strings.ToLower(q.Get("text"))
 	size, from := queryInt(q.Get("size"), searchSize, maxSearchSize), queryInt(q.Get("from"), 0, -1)
-	pkgs, err := h.deps.Index.ListPackages(ctx, repo.ID, "")
+	pkgs, err := h.searchable(ctx, repo)
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
-	pkgs = slices.DeleteFunc(pkgs, func(p index.Package) bool { return !strings.Contains(strings.ToLower(p.Name), text) })
+	pkgs = slices.DeleteFunc(pkgs, func(p searchable) bool { return !strings.Contains(strings.ToLower(p.name), text) })
 	total := len(pkgs)
 	objects := []searchObject{}
 	for _, p := range pkgs[min(from, total):min(from+size, total)] {
-		o, err := h.searchObject(r, repo, p.Name)
+		o, err := h.searchObject(r, p.repo, p.name)
 		if errors.Is(err, index.ErrNotFound) {
 			continue // deleted since the list
 		}
@@ -121,6 +123,52 @@ func (h *handlers) search(w http.ResponseWriter, r *http.Request, repo index.Rep
 		objects = append(objects, o)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"objects": objects, "total": total, "time": time.Now().UTC().Format(time.RFC3339)})
+}
+
+// searchable is a package a search looks through, and the repo that holds it.
+type searchable struct {
+	name string
+	repo index.Repo
+}
+
+// searchable returns the packages a search of repo looks through, sorted by name: the repo's
+// own; a group's members', the hosted member's first and a proxy member's of a name that no
+// member before it holds, as a group hides them (docs/spec/proxy-and-group.md §8.2).
+func (h *handlers) searchable(ctx context.Context, repo index.Repo) ([]searchable, error) {
+	repos := []index.Repo{repo}
+	if repo.Kind == index.KindGroup {
+		members, err := h.deps.Index.ListGroupMembers(ctx, repo.ID)
+		if err != nil {
+			return nil, err
+		}
+		repos = slices.SortedStableFunc(slices.Values(members), func(a, b index.Repo) int {
+			return cmp.Compare(rank(a), rank(b))
+		})
+	}
+	seen := map[string]bool{}
+	var out []searchable
+	for _, m := range repos {
+		pkgs, err := h.deps.Index.ListPackages(ctx, m.ID, "")
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range pkgs {
+			if !seen[p.Name] {
+				seen[p.Name] = true
+				out = append(out, searchable{name: p.Name, repo: m})
+			}
+		}
+	}
+	slices.SortFunc(out, func(a, b searchable) int { return strings.Compare(a.name, b.name) })
+	return out, nil
+}
+
+// rank orders a group's members for a search: the hosted member first.
+func rank(r index.Repo) int {
+	if r.Kind == index.KindHosted {
+		return 0
+	}
+	return 1
 }
 
 // queryInt reads a non-negative integer parameter: def when it is missing or not one, and at most
@@ -197,15 +245,18 @@ func (h *handlers) audit(w http.ResponseWriter, r *http.Request, repo index.Repo
 		h.fail(w, r, err)
 		return
 	}
-	if repo.Kind == index.KindGroup {
-		// #311: the bulk route without the names that the group's hosted member holds,
-		// forwarded as proxyAudit forwards it; the two others 501 (http-routing.md, npm).
-		h.fail(w, r, fmt.Errorf("%w: the audit of a group repo", format.ErrUnsupported))
+	if repo.Kind == index.KindGroup && route != auditBulk {
+		h.fail(w, r, fmt.Errorf("%w: npm 6's audit of a group: its tree would carry the private names or lose what hangs below them",
+			format.ErrUnsupported))
 		return
 	}
 	body, err := newAuditBody(w, r)
 	if err != nil {
 		h.fail(w, r, err)
+		return
+	}
+	if repo.Kind == index.KindGroup {
+		h.groupAudit(w, r, repo, body)
 		return
 	}
 	if repo.Kind == index.KindProxy {

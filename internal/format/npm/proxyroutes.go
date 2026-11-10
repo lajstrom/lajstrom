@@ -8,15 +8,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
-	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
-// The routes of a proxy repo of npm are the hosted repo's (docs/spec/http-routing.md §6): its
-// packuments and its tarballs come from the core of proxy repos, Deps.Proxy, which asks the
-// upstream and fetches a tarball on its first request; a write is 405.
+// The routes of a proxy repo and of a group of npm are the hosted repo's (docs/spec/
+// http-routing.md §6): their packuments and their tarballs come from the core of proxy and group
+// repos, Deps.Proxy, which asks the upstream and fetches a tarball on its first request, and
+// merges a group's members; a write to a proxy is 405, a write to a group its hosted member's.
 
 // proxyCore returns the core of proxy repos, or an error wrapping format.ErrUnsupported when the
 // server has none.
@@ -86,15 +87,40 @@ func (h *handlers) proxyAudit(w http.ResponseWriter, r *http.Request, repo index
 	}
 }
 
-// refuseWrite returns nil for a repo that takes the writes of npm, and for a proxy repo an
-// error wrapping format.ErrMethodNotAllowed, once the principal may read it: a principal that
-// may not is answered as for any request (rbac.md §3).
-func (h *handlers) refuseWrite(ctx context.Context, repo index.Repo) error {
-	if repo.Kind != index.KindProxy {
-		return nil
+// writeTarget returns the request and the repo that serve a write route sent to repo
+// (format.WriteTarget, docs/spec/proxy-and-group.md §8.4): a hosted repo itself; a group's
+// hosted member, once the principal may read the group, with the group in the request's context
+// for the audit rows and the denials; for a proxy, and a group without a hosted member, an
+// error wrapping format.ErrMethodNotAllowed once the principal may read it.
+func (h *handlers) writeTarget(r *http.Request, repo index.Repo) (*http.Request, index.Repo, error) {
+	ctx, target, err := format.WriteTarget(r.Context(), h.deps, repo)
+	if err != nil {
+		return r, repo, err
 	}
-	if err := format.Authorize(ctx, h.deps, auth.ActionRead, repo); err != nil {
-		return err
+	return r.WithContext(ctx), target, nil
+}
+
+// writeDocument answers ?write=true on a group, the read that npm deprecate and unpublish send
+// back changed: the hosted member's own full packument, its links under the group (§8.4).
+func (h *handlers) writeDocument(r *http.Request, group index.Repo, name, kind string) (*index.Cache, error) {
+	r, target, err := h.writeTarget(r, group)
+	if err != nil {
+		return nil, err
 	}
-	return fmt.Errorf("%w: npm/%s is a proxy of an upstream and takes no writes", format.ErrMethodNotAllowed, repo.Name)
+	c, err := h.document(r, target, name, kind)
+	if err != nil {
+		return nil, err
+	}
+	base := strings.TrimSuffix(h.plugin.ExternalURL, "/")
+	if base == "" {
+		base = requestBase(r)
+	}
+	d, err := h.plugin.MergeGroup(r.Context(), group, name, kind, []format.MemberDocument{{Repo: target, Content: c.Content}},
+		base+"/"+Name+"/"+group.Name+"/")
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(d.Content)
+	return &index.Cache{RepoID: group.ID, Scope: name, Kind: kind, Content: d.Content, SHA256: hex.EncodeToString(sum[:]),
+		RenderedAt: c.RenderedAt}, nil
 }

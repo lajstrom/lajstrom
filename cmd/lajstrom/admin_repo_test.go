@@ -107,6 +107,22 @@ func TestAdminRepoApt(t *testing.T) {
 	})
 }
 
+// TestAdminRepoGroup creates an npm group: the binary's npm plugin has group repos (#311); a
+// member is not deleted while the group lists it.
+func TestAdminRepoGroup(t *testing.T) {
+	cfg, _ := writeRepoConfig(t, t.TempDir())
+	runSteps(t, cfg, []step{
+		{args: []string{"migrate"}, wantOut: "applied 0001"},
+		{args: []string{"admin", "repo", "create", "npm/internal", "--registry", "local"}, wantOut: `"kind":"hosted"`},
+		{args: []string{"admin", "repo", "create", "npm/all", "--kind", "group", "--group", `{"members": ["internal"]}`},
+			wantOut: `{"format":"npm","name":"all","kind":"group","anonymousRead":false,"group":{"members":["internal"],"merge":[]},`},
+		{args: []string{"admin", "repo", "list", "--format", "npm"}, wantOut: "\nnpm     all       -         false"},
+		{args: []string{"admin", "repo", "delete", "npm/internal"}, wantErr: "repo npm/internal is a member of the group(s) npm/all"},
+		{args: []string{"admin", "repo", "delete", "npm/all"}},
+		{args: []string{"admin", "repo", "delete", "npm/internal"}},
+	})
+}
+
 // addCLIVersion adds a package with one version to a repo of the database at dsn.
 func addCLIVersion(t *testing.T, dsn, formatName, name string) {
 	t.Helper()

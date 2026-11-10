@@ -547,10 +547,97 @@ request.
 ## 10. A group: one URL for both
 
 A group repo serves the hosted repo and the proxy under one URL, one `registry=` line for
-everything, with the names the hosted repo holds hiding the upstream's versions of those names:
-[#311](https://github.com/lajstrom/lajstrom/issues/311), being built. This section comes with it.
-Until then, the two lines of section 9 (`registry=` for the proxy, `@acme:registry=` for the
-private scope) do the same for a scope.
+everything ([proxy-and-group.md](../spec/proxy-and-group.md) §8). It holds nothing of its own:
+it reads its members in order, and a name the hosted member holds hides every version the
+upstream has of that name, so a public package that takes the name of a private one is never
+installed in its place. On the host:
+
+```sh
+bin/lajstrom admin repo create npm/all --kind group --group '{"members": ["internal", "npmjs"]}' --config $cfg
+bin/lajstrom admin binding create --principal user:alice --role reader --mask npm/all --config $cfg
+```
+
+```json
+{"format":"npm","name":"all","kind":"group","anonymousRead":false,"group":{"members":["internal","npmjs"],"merge":[]},"createdAt":"2026-11-10T18:16:02.953062Z","updatedAt":"2026-11-10T18:16:02.953062Z"}
+{"id":3,"principal":"user:01a1c6ac-8cba-76ff-82c7-bbd3503fe0f0","name":"alice","role":"reader","repoMask":"npm/all","createdAt":"2026-11-10T18:16:02.965333Z"}
+```
+
+`read` on the group is all a reader needs: through it, alice reads both members whatever her
+bindings on them. Writes through the group go to its hosted member and need the permission
+there: alice publishes to `npm/all` because she is a `writer` on `npm/internal`. Only the admin
+role chooses a group's members ([rbac.md](../spec/rbac.md) §7). In alice's container, the group
+replaces both lines of section 9:
+
+```sh
+npm config set registry http://localhost:8080/npm/all/
+npm config delete @acme:registry
+npm login
+cat ~/.npmrc
+mkdir /app4 && cd /app4 && npm init -y >/dev/null
+npm install --cache /tmp/empty-cache-4 chalk@4.1.2 @acme/widgets
+npm ls --all
+npm view @acme/widgets dist-tags versions
+npm view chalk@4.1.2 dist.tarball
+```
+
+```text
+npm notice Log in on http://localhost:8080/npm/all/
+Username: alice
+Password:
+Logged in on http://localhost:8080/npm/all/.
+registry=http://localhost:8080/npm/all/
+//localhost:8080/npm/internal/:_authToken=ljs_pat_…
+//localhost:8080/npm/all/:_authToken=ljs_pat_…
+
+added 7 packages, and audited 8 packages in 821ms
+
+found 0 vulnerabilities
+app4@1.0.0 /app4
+├── @acme/widgets@1.1.0
+└─┬ chalk@4.1.2
+  ├─┬ ansi-styles@4.3.0
+  │ └─┬ color-convert@2.0.1
+  │   └── color-name@1.1.4
+  └─┬ supports-color@7.2.0
+    └── has-flag@4.0.0
+dist-tags = { beta: '2.0.0-beta.0', latest: '1.1.0' }
+versions = [ '1.0.0', '1.1.0', '2.0.0-beta.0' ]
+http://localhost:8080/npm/all/chalk/-/chalk-4.1.2.tgz
+```
+
+Every link names the group; a tarball comes from the member that holds it, and the proxy
+fetches through the group what it does not hold yet, its audit row `proxy.fetch` with
+`"via": "npm/all"`. The packument of a name is merged from the members that have it, the hosted
+member's versions and dist-tags first; nothing is cached for the group itself, so a publish to
+the hosted repo is seen at once. `npm audit` through the group goes to npmjs.org without the
+names the hosted repo holds, which never leave the server.
+
+A publish, `npm dist-tag`, `npm deprecate` and `npm unpublish` through the group are the hosted
+repo's:
+
+```sh
+cd /widgets
+npm version 1.2.0
+echo 'module.exports = () => "widgets 1.2.0";' > index.js
+npm publish
+npm view @acme/widgets dist-tags --registry http://localhost:8080/npm/internal/
+```
+
+```text
+v1.2.0
+npm notice package: @acme/widgets@1.2.0
+…
+npm notice Publishing to http://localhost:8080/npm/all/ with tag latest and default access
++ @acme/widgets@1.2.0
+{ beta: '2.0.0-beta.0', latest: '1.2.0' }
+```
+
+The audit rows are `npm/internal`'s, `push` and `npm.dist-tag`, with `"via": "npm/all"`. A group
+without a hosted member answers a write `405`. The hosted name hides the upstream only while the
+hosted repo has it: before the first publish of a name, the group asks the upstream for it, so
+`deny` on the proxy (section 9) is what keeps a private scope from ever being looked up there.
+`group.merge` lists names whose versions are merged across members even when the hosted repo
+holds them ([api.md](../api.md#the-resource)).
 
 ## 11. In the registry
 
@@ -639,7 +726,7 @@ What a Verdaccio `config.yaml` says, and where it goes:
 | `packages: {'@acme/*': {access, publish, unpublish}}` | bindings on a repo: `reader` installs, `writer` also publishes and moves dist-tags and deprecations, `maintainer` also unpublishes. A binding names a repo, not a pattern of package names: a scope that needs other people gets a repo of its own |
 | `$all`, `$anonymous` | the repo's `anonymousRead`, with `auth.anonymousRead: true` in the configuration |
 | `$authenticated` | none: each user gets a binding |
-| `packages: {'**': {proxy: npmjs}}` | a group repo of the hosted repo and the proxy, one URL for both: #311. Until then, `@scope:registry=` for the private scopes beside `registry=` for the proxy (section 9) |
+| `packages: {'**': {proxy: npmjs}}` | a group repo of the hosted repo and the proxy, one URL for both (section 10); unlike Verdaccio, a name the hosted repo holds hides the upstream's versions of it |
 | a private scope without `proxy` | `deny: ["@acme/*"]` on the proxy: it never asks the upstream for those names |
 | `auth: {htpasswd: {file, max_users}}` | local users made by an admin, `lajstrom admin user` or `/api/v1/users`; `npm adduser` never creates one, as `max_users: -1` |
 | `security.api.jwt` | personal access tokens, which `npm login` makes, and deploy tokens of a repo for machines: listed, narrowed and revoked through `lajstrom admin token` and the API |
