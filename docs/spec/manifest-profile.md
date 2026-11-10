@@ -152,6 +152,13 @@ The OCI repository for a package is
 Examples: `art/apt/ubuntu-internal/nginx`, `art/pypi/internal/requests`,
 `art/maven/releases/com.example/lib-core`, `art/raw/assets/docs/readme.md`.
 
+Names that differ only in ASCII case have one package path, unless a component is replaced by
+its hash (section 4.3 step 3, or a long raw component), which is of the original spelling: a raw
+path, and a maven groupId and artifactId, keep their case in `lajstrom.name`; pypi and deb
+names are lowercase already. The first spelling published holds the package path, and a
+publish of another spelling is a `409` naming the first, refused before its manifest is pushed
+(index-schema.md, Coordination; #244).
+
 ### 4.2 Tag
 
 ```
@@ -242,7 +249,9 @@ The ingest pipeline rejects a manifest with `400` (facade: `MANIFEST_INVALID`) w
 - a layer referenced by the manifest has not been uploaded (the facade checks blob existence in
   the backend before `PUT manifest`).
 
-`409 Conflict` (facade: `TAG_INVALID` with a message) when the tag exists with another digest.
+`409 Conflict` (facade: `TAG_INVALID` with a message) when the tag exists with another digest,
+or when the package path is another spelling's, or is being published under another spelling
+(section 4.1). Both are found under the claims, before the registry write.
 Sizes: a single file is limited by the backend registry's blob limit; Lajstrom enforces an
 optional per-repo `maxFileSize` from the control plane.
 

@@ -39,16 +39,39 @@ neither backed up nor rebuilt.
 
 | Table | Columns | Notes |
 | --- | --- | --- |
-| `tag_claims` | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `package` text (the format's spelling, `lajstrom.name`), `tag` text, `digest` text (manifest digest being published), `principal` text, `claimed_at` ts | unique `(repo_id, package, tag)`; written by ingest only |
+| `tag_claims` | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `package` text (the package path, `name_oci`), `tag` text (`''` in the claim on the package path), `digest` text (manifest digest being published; in the claim on the package path, the sha256 digest of the spelling, `lajstrom.name`), `principal` text, `claimed_at` ts | unique `(repo_id, package, tag)`; written by ingest only |
 | `reindex_runs` | `id`, `repo_id` → repos null (`ON DELETE CASCADE`; null: a run of every repo), `state` text (`running`, `done`, `failed`, `abandoned`), `source` text (`cli`, `api`, `reconcile`), `principal` text, `replica` text (host name and process id), `options` json (`prune`, `verify`), `started_at` ts, `heartbeat_at` ts, `finished_at` ts null, `report` json null (layout.md, `reindex.Report`), `error` text null | index `(COALESCE(repo_id, 0), started_at)`; written by reindex only |
 
-A `versions` row exists only after the registry accepted the manifest; the claim in
-`tag_claims` is the lock that serialises writers of one tag across replicas, and a claim older
-than `ingest.claimTTL` is stale: ingest takes it over, `reindex` and the reconcile loop delete
-it. Ingest inserts the claim first in its transaction and reads the version of the tag after,
-so a concurrent writer of the tag waits for the first one's commit and then sees its outcome.
-A claim with the same digest is shared (two replicas publishing the same bytes); a fresh claim
-with another digest is a `409`. `ResetDerived` does not touch claims.
+A `versions` row exists only after the registry accepted the manifest; the claims in
+`tag_claims` are the locks that serialise the writers of one OCI repository across replicas,
+and a claim older than `ingest.claimTTL` is stale: ingest takes it over, `reindex` and the
+reconcile loop delete it. A claim is keyed by the package path, as the registry keys the
+manifest. Names that differ only in ASCII case (maven `Com.Example:lib` and `com.example:lib`,
+raw `Docs/Readme.MD` and `docs/readme.md`) have one package path, so one OCI repository and one
+set of tags, and a package path has one spelling: the first one published
+(`packages (repo_id, name_oci)`, #244).
+
+A publish takes two claims, first in its transaction, before the registry write: the claim on
+the package path (tag `''`, digest the sha256 digest of the spelling), then the claim on its
+tag (the manifest digest). After them it reads the package of the package path and the version
+of the tag, so a concurrent writer of the tag, or of another spelling, waits for the first
+one's commit and then sees its outcome. Every publish takes the two in this order, so two
+publishes never wait on each other crosswise. A claim with the same digest is shared: on a tag,
+two replicas publishing the same bytes; on a package path, the publishes of one spelling. A
+fresh claim with another digest is a `409`: on a tag, other bytes; on a package path, another
+spelling being published. A package of the package path with another name is a `409` naming
+that name. A publish refused by a claim or by the package pushes no manifest.
+
+The transaction that writes the derived rows releases both claims; from then on the package
+row holds the package path. A publish that stops before that releases the claim on its tag and
+leaves the claim on the package path to go stale, for another publish of the spelling may share
+it. A publish that shares a stale claim on a package path makes it again (deletes the row and
+inserts its own, in its transaction), so that the claim is not taken over while the publish
+runs. `ResetDerived` does not touch claims. A replica of an earlier version keys its claims by
+the spelling and takes no claim on the package path. Its rows are released or go stale as
+before and need no migration, but during a rolling upgrade the claims of the two versions do
+not exclude each other, and the check of the tag in the backend before the push is the one
+guard between them.
 
 A `reindex_runs` row in state `running` is the lock that keeps two runs of one repo apart across
 replicas and the CLI. Starting a run takes a transaction lock of its own
@@ -115,8 +138,9 @@ migration lock, `pg_advisory_xact_lock` on Postgres and `BEGIN IMMEDIATE` on SQL
   registry with a tag; reindex removes rows whose manifest is gone and adds rows for manifests it
   finds. `index_cache` is dropped entirely at the end of a full reindex.
 - Writes to derived tables happen only in `ingest`, `reindex`, and `delete`. Frontends read.
-  Ingest claims the tag in `tag_claims` before the registry write, and writes the derived rows
-  after the registry accepted the manifest, in one transaction that also releases the claim.
+  Ingest claims the package path and the tag in `tag_claims` before the registry write, and
+  writes the derived rows after the registry accepted the manifest, in one transaction that
+  also releases both claims.
 - Unique constraints implement the append-only tag rule: an insert that violates
   `(package_id, tag)` with a different digest is a `409`.
 - A foreign manifest (no `lajstrom.schema` annotation) under a managed path is recorded in
