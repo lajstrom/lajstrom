@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -226,47 +227,60 @@ func TestListenURL(t *testing.T) {
 }
 
 // TestHealthcheckTLS: without --url, a configuration with server.tls makes the check speak
-// https to server.listen on loopback, and accept the server's certificate only when it is the
-// first one of server.tls.certFile, whatever names it has; the key file is never read. With
-// --url, nothing is pinned and the system roots apply, as before.
+// https to server.listen on loopback, with the first certificate of server.tls.certFile as the
+// only root and a name it carries: the server's own certificate passes, a chain file whose
+// leaf a CA signed too; another certificate and an expired one do not. The key file is never
+// read. With --url nothing is pinned and the system roots apply, as before.
 func TestHealthcheckTLS(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/-/readyz" {
-			http.NotFound(w, r)
-			return
-		}
-		_, _ = w.Write([]byte("ok\n"))
-	}))
-	defer srv.Close()
-	port := srv.URL[strings.LastIndex(srv.URL, ":")+1:]
 	dir := t.TempDir()
-	write := func(name, body string) string {
+	write := func(name string, ders ...[]byte) string {
+		var b []byte
+		for _, der := range ders {
+			b = append(b, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
+		}
+		if len(ders) == 0 {
+			b = []byte("not a certificate\n")
+		}
 		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	now := time.Now()
+	ca := newTestCert(t, nil, true, now.Add(-time.Hour))
+	leaf := newTestCert(t, ca, false, now.Add(-time.Hour))
+	expired := newTestCert(t, nil, false, now.Add(-48*time.Hour))
+	plain := readyServer(t, nil)
+	chained := readyServer(t, &tls.Certificate{Certificate: [][]byte{leaf.cert.Raw, ca.cert.Raw}, PrivateKey: leaf.key})
+	old := readyServer(t, &tls.Certificate{Certificate: [][]byte{expired.cert.Raw}, PrivateKey: expired.key})
+	missingKey := filepath.Join(dir, "never-read.key")
+	config := func(srv *httptest.Server, certFile string) string {
+		port := srv.URL[strings.LastIndex(srv.URL, ":")+1:]
+		p := filepath.Join(dir, "lajstrom-"+port+"-"+filepath.Base(certFile)+".yaml")
+		body := "server:\n  listen: \":" + port + "\"\n  tls:\n    certFile: \"" + certFile + "\"\n    keyFile: \"" + missingKey + "\"\n"
 		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		return p
 	}
-	served := write("served.pem", string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})))
-	other := write("other.pem", otherCertificate(t))
-	notPEM := write("not.pem", "not a certificate\n")
-	missingKey := filepath.Join(dir, "never-read.key")
-	config := func(certFile string) string {
-		return write("lajstrom-"+filepath.Base(certFile)+".yaml", "server:\n  listen: \":"+port+"\"\n  tls:\n    certFile: \""+certFile+
-			"\"\n    keyFile: \""+missingKey+"\"\n")
-	}
+	notPEM := write("not.pem")
 	tests := []struct {
 		name    string
 		args    []string
 		wantOut string
 		wantErr string
 	}{
-		{"the certificate of certFile", []string{"--config", config(served)}, "https://127.0.0.1:" + port + "/-/readyz: 200 ok\n", ""},
-		{"another certificate", []string{"--config", config(other)}, "",
-			"unhealthy: https://127.0.0.1:" + port + "/-/readyz: the server's certificate is not the first one of server.tls.certFile"},
-		{"a certFile without a certificate", []string{"--config", config(notPEM)}, "", "server.tls.certFile " + notPEM + ": no certificate"},
-		{"a certFile that is missing", []string{"--config", config(filepath.Join(dir, "missing.pem"))}, "", "server.tls.certFile"},
-		{"--url: the system roots", []string{"--url", srv.URL}, "", "unhealthy: " + srv.URL + "/-/readyz: tls: failed to verify certificate"},
+		{"the server's own certificate", []string{"--config", config(plain, write("plain.pem", plain.Certificate().Raw))},
+			plain.URL + "/-/readyz: 200 ok\n", ""},
+		{"a chain whose leaf a CA signed", []string{"--config", config(chained, write("chain.pem", leaf.cert.Raw, ca.cert.Raw))},
+			chained.URL + "/-/readyz: 200 ok\n", ""},
+		{"another certificate", []string{"--config", config(plain, write("other.pem", leaf.cert.Raw))}, "",
+			"unhealthy: " + plain.URL + "/-/readyz: tls: failed to verify certificate"},
+		{"an expired certificate", []string{"--config", config(old, write("expired.pem", expired.cert.Raw))}, "", "expired"},
+		{"a certFile without a certificate", []string{"--config", config(plain, notPEM)}, "", "server.tls.certFile " + notPEM + ": no certificate"},
+		{"a certFile that is missing", []string{"--config", config(plain, filepath.Join(dir, "missing.pem"))}, "", "server.tls.certFile"},
+		{"--url: the system roots", []string{"--url", plain.URL}, "", "unhealthy: " + plain.URL + "/-/readyz: tls: failed to verify certificate"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -284,19 +298,62 @@ func TestHealthcheckTLS(t *testing.T) {
 	}
 }
 
-// otherCertificate returns a PEM self-signed certificate for 127.0.0.1 that no server of the
-// test has.
-func otherCertificate(t *testing.T) string {
+// readyServer is a TLS server that answers /-/readyz with 200 ok, with cert as its
+// certificate, or httptest's own with nil.
+func readyServer(t *testing.T, cert *tls.Certificate) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/-/readyz" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte("ok\n"))
+	}))
+	if cert != nil {
+		srv.TLS = &tls.Config{Certificates: []tls.Certificate{*cert}, MinVersion: tls.VersionTLS12}
+	}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// testCert is a certificate made by the test, with its key.
+type testCert struct {
+	cert *x509.Certificate
+	key  *ecdsa.PrivateKey
+}
+
+// newTestCert makes a certificate for art.example.com and 127.0.0.1, valid for a day from
+// notBefore, signed by parent, or by itself when parent is nil; ca makes it a CA.
+func newTestCert(t *testing.T, parent *testCert, ca bool, notBefore time.Time) *testCert {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tmpl := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "other"},
-		IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	serial, err := rand.Int(rand.Reader, big.NewInt(1<<62))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	tmpl := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "lajstrom test " + serial.String()},
+		DNSNames: []string{"art.example.com"}, IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)},
+		NotBefore: notBefore, NotAfter: notBefore.Add(24 * time.Hour), BasicConstraintsValid: true, IsCA: ca,
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	if ca {
+		tmpl.KeyUsage |= x509.KeyUsageCertSign
+		tmpl.DNSNames, tmpl.IPAddresses, tmpl.ExtKeyUsage = nil, nil, nil
+	}
+	signer, signerKey := tmpl, key
+	if parent != nil {
+		signer, signerKey = parent.cert, parent.key
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, signer, &key.PublicKey, signerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &testCert{cert: cert, key: key}
 }

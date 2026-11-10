@@ -323,11 +323,13 @@ server is `server.listen` of the configuration on loopback, and only that key,
 `LAJSTROM_SERVER_LISTEN` and `server.tls` are read, never a secret.
 
 With `server.tls` set, serve speaks TLS only, and the check speaks `https` to it. The
-certificate is pinned: it must be the first certificate of `server.tls.certFile`, the file
-serve loaded, byte for byte. The check reads that file and never the key. It does not check the
-chain, the names or the dates: the check goes to loopback, and the certificate names the public
-host. A certificate renewed on disk fails the check until serve is restarted, which is what
-loads it (`server.tls.certFile` in [configuration.md](configuration.md#server)), so the
+certificate is pinned: the first certificate of `server.tls.certFile`, the file serve loaded,
+is the only root the check trusts, and the server must present it, byte for byte. The check
+goes to loopback while the certificate names the public host, so it verifies the name against
+one that the certificate carries (its first DNS name, else its first address); the dates count
+as for any client, so an expired certificate fails the check. The check reads that file and
+never the key. A certificate renewed on disk fails the check until serve is restarted, which is
+what loads it (`server.tls.certFile` in [configuration.md](configuration.md#server)), so the
 orchestrator's restart picks it up. [deploy/compose.md](deploy/compose.md#the-health-check)
 uses the check.
 
