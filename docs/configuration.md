@@ -74,6 +74,8 @@ An upload is spooled to a temporary file for the length of its request, then pus
 registry and removed. The file goes to `$TMPDIR` when it is set, `/tmp` otherwise; there is no
 configuration key for it. Give that directory room for the largest uploads one replica takes at
 once (a tmpfs in [Compose](deploy/compose.md), an `emptyDir` on [Kubernetes](deploy/kubernetes.md)).
+A `/v2` upload streams to the registry and takes no disk, but for the chunks of
+[`registries[].uploads.spoolUnknownLength`](#uploads).
 
 ## Reference
 
@@ -151,6 +153,7 @@ A list; each entry is one backend OCI registry. Repos refer to it by name.
 | `registries[].capabilities.immutableTags` | bool | probed | none | The registry itself refuses to re-point a tag. |
 | `registries[].capabilities.blobRedirect` | bool | probed | none | A blob download may be answered with a `307` to the URL the registry redirects it to (a presigned URL of its object storage), so that the bytes bypass Lajstrom. Each download is one request to the registry, whose answer decides: a redirect to another origin goes to the client, a `200` or `206` streams. `false` makes Lajstrom follow every redirect of the registry and stream the bytes itself: a client never gets a URL of the registry, for storage that clients cannot reach. Per repo, `policy.blobRedirect: "never"` does the same ([api.md](api.md)). |
 | `registries[].capabilities.maxBlobSize` | bytes | `0` | none | Largest blob the registry accepts; `0` means unknown. Must not be negative. |
+| `registries[].uploads.spoolUnknownLength` | bool | `false` | none | A `/v2` chunk of unknown length (chunked encoding, no `Content-Length`) into a session of the registry that already holds bytes is spooled to a temporary file in `$TMPDIR` for its one request, then sent with its `Content-Range`: for registries that refuse such a chunk streamed, Gitea and Forgejo with 400 "Stream uploads after first write are not allowed" ([gitea.md](registries/gitea.md#uploads)), JFrog with 416 ([jfrog-jcr.md](registries/jfrog-jcr.md#uploads-and-digests)). The file is bounded by the repo's `policy.maxFileSize` where it has one (a chunk past it is `413` and the session ends), unlinked as soon as it is made, closed when the request ends, whether it succeeded, failed or the client went away, and never served from. Off, every chunk streams, and such a chunk fails with the registry's 4xx; nothing is stored. The vendor table never turns it on; see [uploads](#uploads). |
 | `registries[].ecr.region` | AWS region | from the URL, else the SDK's | none | Type `ecr` only, as every `ecr` key. The region of the registry; empty takes the one in the URL's host (`<account>.dkr.ecr.<region>.amazonaws.com`), else the AWS SDK's (`AWS_REGION`, the profile). The credentials are the SDK's default chain: the environment, the shared profile, web identity (IRSA), the instance or task role; `auth` stays empty ([registries/ecr.md](registries/ecr.md)). |
 | `registries[].ecr.endpoint` | absolute `http(s)` URL | the SDK's | none | Endpoint of the ECR API instead of the SDK's for the region: a VPC endpoint, or the moto mock of the integration tests (`http://localhost:5010`). `url` stays the registry's `/v2` endpoint. |
 | `registries[].ecr.imageTagMutability` | `IMMUTABLE`, `IMMUTABLE_WITH_EXCLUSION`, `MUTABLE`, `MUTABLE_WITH_EXCLUSION` | `IMMUTABLE` | none | Tag mutability of the repositories Lajstrom creates (`CreateRepository`); `capabilities.immutableTags` follows it. A repository that exists keeps its own. |
@@ -203,6 +206,18 @@ Each key under `capabilities` replaces what was found and what the vendor table 
 registries that answer wrongly; a key that is set is not probed. There is no `catalog` key
 outside `capabilities`. What was tested against which registry, and the configuration each one
 needs, is in [registries/](registries/README.md).
+
+#### Uploads
+
+`registries[].uploads.spoolUnknownLength` is off by default because Lajstrom runs on ephemeral
+disks (a tmpfs in [Compose](deploy/compose.md), an `emptyDir` on [Kubernetes](deploy/kubernetes.md)):
+by default nothing on `/v2` writes to disk, and `$TMPDIR` needs room for the frontends' uploads
+only. The chunk it spools is one that docker, containerd and oras do not send: they stream one
+`PATCH` per blob into an empty session, which every registry takes, and that `PATCH` is never
+spooled. Turn it on for a Gitea, Forgejo or JFrog registry whose clients send several streamed
+`PATCH`es, or close with a chunked `PUT` after a `PATCH`, and give `$TMPDIR` room for one chunk
+per such upload at once. When the vendor table names a registry `gitea` or `jfrog` and the key is
+off, `serve` logs a hint at start that names the key.
 
 ### upstreams
 
