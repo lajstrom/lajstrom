@@ -14,8 +14,9 @@ import (
 
 // maxEntries bounds the members of an archive read for its core metadata (#243): the headers
 // of a zip's central directory, of which zip.NewReader keeps a File each, about 280 bytes and
-// the name, so 70 MiB at the bound. The most on PyPI in November 2026 are the 58 569 of the
-// homeassistant wheel, which gains about 8 000 a year; 2^18 is 4.5 times that.
+// the name, so 70 MiB at the bound; and the tar entries of an sdist up to its PKG-INFO. The
+// most on PyPI in November 2026 are the 58 569 of the homeassistant wheel, which gains about
+// 8 000 a year, and the 61 370 of its sdist, with PKG-INFO fourth; 2^18 is 4.3 times that.
 const maxEntries = 1 << 18
 
 // Signatures and lengths of the zip records read here (APPNOTE.TXT 6.3, §4.3.12 to §4.3.16),

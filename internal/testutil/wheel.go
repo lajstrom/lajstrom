@@ -203,6 +203,16 @@ type SdistInfo struct {
 // <module>/__init__.py, and the facts a parser finds in it. The same options give the same
 // bytes: every member is dated 2026-01-01 00:00 UTC and owned by root.
 func Sdist(opts SdistOptions) ([]byte, SdistInfo) {
+	members, info := sdistMembers(opts)
+	b := tarGz(members)
+	info.Size = int64(len(b))
+	info.Checksums = checksumsOf(b)
+	return b, info
+}
+
+// sdistMembers returns the members of Sdist(opts), its top directory first, and its facts but
+// the size and the checksums.
+func sdistMembers(opts SdistOptions) ([]member, SdistInfo) {
 	var o SdistOptions
 	o.Name, o.Version, o.Summary = pyDefaults(opts.Name, opts.Version, opts.Summary)
 	info := SdistInfo{Name: o.Name, Normalized: normalizePyPI(o.Name), Version: o.Version, Summary: o.Summary}
@@ -213,16 +223,13 @@ func Sdist(opts SdistOptions) ([]byte, SdistInfo) {
 	info.PKGInfo = fmt.Appendf(nil, "Metadata-Version: 2.1\nName: %s\nVersion: %s\nSummary: %s\n", o.Name, o.Version, o.Summary)
 	pyproject := fmt.Appendf(nil, "[build-system]\nrequires = [\"setuptools>=61\"]\nbuild-backend = \"setuptools.build_meta\"\n\n"+
 		"[project]\nname = %s\nversion = %s\ndescription = %s\n", tomlString(o.Name), tomlString(o.Version), tomlString(o.Summary))
-	b := tarGz([]member{
+	return []member{
 		{name: info.Root + "/"},
 		{name: info.Root + "/PKG-INFO", body: info.PKGInfo},
 		{name: info.Root + "/pyproject.toml", body: pyproject},
 		{name: info.Root + "/" + escaped + "/"},
 		{name: info.Root + "/" + escaped + "/__init__.py", body: pyInit(o.Version)},
-	})
-	info.Size = int64(len(b))
-	info.Checksums = checksumsOf(b)
-	return b, info
+	}, info
 }
 
 // pyDefaults returns name, version and summary, each set to its default when empty.
