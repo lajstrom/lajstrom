@@ -215,6 +215,7 @@ make dev-up PROFILES=s3  # the three, and distribution on SeaweedFS (below)
 make dev-up PROFILES=s3-minio  # the three, and distribution on MinIO, the fallback (below)
 make dev-up PROFILES=gitlab  # the three, and the GitLab container registry (below)
 make dev-up PROFILES=ha  # the three, and two replicas of Lajstrom behind nginx (below)
+make dev-up PROFILES=ecr  # the three, and moto with a distribution for the ECR provider (registries/ecr.md)
 ```
 
 `make dev-up` returns when the health checks pass (`docker compose up -d --wait`): in 2 to 3 s
@@ -247,7 +248,8 @@ Copy [deploy/compose/.env.example](../deploy/compose/.env.example) to `deploy/co
 `LAJSTROM_S3_PORT`, for the s3-minio profile `LAJSTROM_DISTRIBUTION_S3_MINIO_PORT` and
 `LAJSTROM_MINIO_PORT`, for the gitlab profile `LAJSTROM_GITLAB_PORT` and
 `LAJSTROM_GITLAB_DB_PORT`, and for the ha profile `LAJSTROM_HA_PORT`, `LAJSTROM_HA_A_PORT`,
-`LAJSTROM_HA_B_PORT` and `LAJSTROM_HA_DISTRIBUTION_PORT`) or the Postgres credentials (`LAJSTROM_PG_DB`, `LAJSTROM_PG_USER`,
+`LAJSTROM_HA_B_PORT` and `LAJSTROM_HA_DISTRIBUTION_PORT`, and for the ecr profile `LAJSTROM_MOTO_PORT` and
+`LAJSTROM_ECR_DISTRIBUTION_PORT`) or the Postgres credentials (`LAJSTROM_PG_DB`, `LAJSTROM_PG_USER`,
 `LAJSTROM_PG_PASSWORD`). A variable set in the shell wins over the file. When you change a port,
 change what points at it too: the registry URL in your `deploy/compose/lajstrom.yaml`,
 `LAJSTROM_TEST_REGISTRY`, the DSN. New Postgres credentials take effect on a fresh volume
@@ -319,6 +321,7 @@ LAJSTROM_TEST_REGISTRY=localhost:5000 make test-integration   # against Zot
 LAJSTROM_TEST_REGISTRY=localhost:5001 make test-integration   # against distribution
 LAJSTROM_TEST_REGISTRY=localhost:5000 LAJSTROM_TEST_REGISTRY_S3=localhost:5002 make test-integration   # and the 307 of distribution on S3 (PROFILES=s3)
 LAJSTROM_TEST_REGISTRY=localhost:5000 LAJSTROM_TEST_REGISTRY_S3=localhost:5006 make test-integration   # the same on MinIO (PROFILES=s3-minio)
+LAJSTROM_TEST_REGISTRY=localhost:5000 LAJSTROM_TEST_ECR_ENDPOINT=http://localhost:5010 LAJSTROM_TEST_ECR_REGISTRY=localhost:5011 make test-integration   # and the ECR provider against moto (PROFILES=ecr)
 LAJSTROM_TEST_POSTGRES_DSN='postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable' go test -race ./internal/index/...
 make e2e                                               # the end-to-end scenarios, on a server of their own
 test/e2e/raw.sh http://localhost:8080 scratch          # one scenario, with make run in another terminal
@@ -332,7 +335,8 @@ CI runs the same three images, on the same ports, as service containers of the `
 job ([CONTRIBUTING.md](../CONTRIBUTING.md#ci-overview)); Zot there runs on the configuration built
 into its image, since a service container cannot mount `config.json` from the checkout. CI does
 not run the s3 and s3-minio profiles (the tests that need them skip without
-`LAJSTROM_TEST_REGISTRY_S3`), nor the gitlab and ha profiles.
+`LAJSTROM_TEST_REGISTRY_S3`), nor the gitlab, ha and ecr profiles (the ECR test skips without
+`LAJSTROM_TEST_ECR_ENDPOINT` and `LAJSTROM_TEST_ECR_REGISTRY`).
 
 ## Docker on macOS and Linux
 
