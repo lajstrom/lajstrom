@@ -88,9 +88,10 @@ audit alike.
 | `format` | a format plugin the server has: `raw`, `pypi`, `apt`, `maven`; or `oci`, the pass-through repos of the OCI facade, which need no plugin ([http-routing.md](spec/http-routing.md) §1) | never |
 | `name` | unique within the format; lowercase letters and digits separated by single `.`, `_` or `-`, at most 64 characters ([manifest-profile.md](spec/manifest-profile.md) §4.1) | never |
 | `registry` | one of `registries[].name` of the configuration | never: the artifacts stay in the registry they were pushed to |
-| `kind` | `hosted`, the only kind in this version; may be left out | never |
+| `kind` | `hosted` (the default; may be left out) or `proxy`, a repo that serves an upstream and keeps what it fetched ([proxy-and-group.md](spec/proxy-and-group.md)); `proxy` needs a format whose plugin has proxy repos | never |
 | `anonymousRead` | readable without credentials, when `auth.anonymousRead` allows it; default `false` | `PATCH` |
 | `policy` | a JSON object of the keys below, or `null` for none | `PATCH`, merged |
+| `upstream` | a proxy repo only, required there: `name`, one of `upstreams[].name` of the repo's format in the [configuration](configuration.md#upstreams), and `metadataTTL` (`"10m"`, `0s` to `168h`), `negativeTTL` (`"2m"`, `0s` to `24h`), `offline` (`false`), `allow` and `deny` (at most 256 name patterns each, `*` matching any run: `"@acme/*"`) ([proxy-and-group.md](spec/proxy-and-group.md) §2.2, §3). The resource shows every key; the upstream's URL and credentials are configuration and never part of the API, and a key the server does not know is `400` | see [proxy-and-group.md](spec/proxy-and-group.md) §2.2 |
 | `createdAt`, `updatedAt` | set by the server | `updatedAt` on every change |
 
 #### Policy
@@ -127,13 +128,18 @@ curl -s "$LAJSTROM/api/v1/repos?format=raw"
 ### Create: `POST /api/v1/repos`
 
 The body has `format`, `name` and `registry`, and optionally `kind`, `anonymousRead` and
-`policy`. `201` with the resource and `Location: /api/v1/repos/<format>/<name>`; `400` for a
-field that breaks its rule, `409` when the repo exists.
+`policy`, and `upstream` for a proxy. `201` with the resource and
+`Location: /api/v1/repos/<format>/<name>`; `400` for a field that breaks its rule, `409` when the
+repo exists.
 
 ```sh
 curl -s -X POST "$LAJSTROM/api/v1/repos" \
   -H 'Content-Type: application/json' \
   -d '{"format": "raw", "name": "scratch", "registry": "local"}'
+# a proxy of the upstream npmjs of the configuration, which never fetches the scope @acme
+curl -s -X POST "$LAJSTROM/api/v1/repos" \
+  -H 'Content-Type: application/json' \
+  -d '{"format": "npm", "name": "npmjs", "registry": "local", "kind": "proxy", "upstream": {"name": "npmjs", "deny": ["@acme/*"]}}'
 ```
 
 ### Get: `GET /api/v1/repos/<format>/<name>`
@@ -252,6 +258,7 @@ configuration, without HTTP; run `lajstrom migrate` first. A change is audited w
 
 ```sh
 lajstrom admin repo create raw/scratch --registry local [--anonymous-read] [--policy '{"maxFileSize": 104857600}']
+lajstrom admin repo create npm/npmjs --registry local --kind proxy --upstream '{"name": "npmjs", "deny": ["@acme/*"]}'
 lajstrom admin repo list [--format raw] [--json]
 lajstrom admin repo delete raw/scratch [--force]
 ```
