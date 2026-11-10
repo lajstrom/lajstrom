@@ -75,7 +75,9 @@ the docker format's `deleteManifest`, which says true while a delete leaves the 
    that tag. Through Lajstrom a package or version deleted on this format is back after the
    next reindex. The provider would need to delete by each tag it knows of the manifest,
    which `Repository.Delete` by descriptor does not carry: a contract question. The OCI
-   format deletes the tags with the digest, as the spec says.
+   format deletes the tags with the digest, as the spec says. **Since #352** the vendor
+   table sets `deleteManifest: false` for a Nexus without the referrers API, the docker
+   format: Lajstrom refuses a delete there instead of leaving the tags.
 3. On the OCI format, survive a 500 to a ranged `GET`. Every `GET` of a blob with `Range`
    (one range, an open range, a suffix, two ranges, past the end) is 500 `UNKNOWN`
    (`IllegalArgumentException: Paths must start with a slash` in Nexus's log), though `HEAD`
@@ -84,15 +86,18 @@ the docker format's `deleteManifest`, which says true while a delete leaves the 
    `/raw/` is 500. The provider could retry such a `GET` without `Range` and skip to the
    offset, as ingest already does with a 200, or a capability `ranges: false` from the vendor
    table could; either is a change to file. The docker format serves ranges (206, 416).
+   **Since #352** the provider asks a Nexus with the referrers API, the OCI format, for whole
+   blobs: no `Range` goes out, a client's range is answered with the whole blob (200) and no
+   blob says `Accept-Ranges`, and ingest's `ReadAt` reads up to its block, as on Gitea. The
+   unit tests answer as Nexus did; not run against Nexus again.
 4. Expect 429 for a wrong password, and for the right one after it. Three failed logins of a
    user make Nexus answer that user 429 "Too many authentication attempts" with
    `Retry-After: 29`, the right password included, until it expires. The provider retries a
    429 with its `Retry-After`; a misconfigured `passwordEnv`, or anyone guessing the service
    account's password elsewhere, keeps Lajstrom out. Worth a line in the operations guide.
-5. Optional: name the vendor. `Server: Nexus/<version> (COMMUNITY)` on `GET /v2/` and the
-   challenge `BASIC realm="Sonatype Nexus Repository Manager"`; a `nexus` entry in the vendor
-   table could set `deleteManifest: false` for the docker format (no way to tell it from the
-   OCI format but the referrers probe) and carry item 3.
+5. **Done in #352:** name the vendor. `Server: Nexus/<version> (COMMUNITY)` on `GET /v2/` or
+   the challenge `BASIC realm="Sonatype Nexus Repository Manager"` make it `vendor=nexus`; the
+   referrers probe tells the formats apart, and the table carries items 2 and 3.
 
 Nothing else: Basic auth, create on push, the manifest profile, tags, catalog, uploads across
 replicas and the digest check work as the provider expects.

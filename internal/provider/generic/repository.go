@@ -44,8 +44,17 @@ func (r *repository) Fetch(ctx context.Context, target ocispec.Descriptor) (io.R
 	return rc, nil
 }
 
-// Exists reports whether the blob or manifest target exists.
+// Exists reports whether the blob or manifest target exists. A blob is asked through
+// Provider.StatBlob where the vendor's HEAD cannot be believed (quirks.blobExistsByGET), so that
+// a blob ingest or the facade skips is one it can read back.
 func (r *repository) Exists(ctx context.Context, target ocispec.Descriptor) (bool, error) {
+	if !isManifest(target.MediaType) && r.p.quirk().blobExistsByGET {
+		_, err := r.p.StatBlob(ctx, r.name, target.Digest)
+		if errors.Is(err, provider.ErrNotFound) {
+			return false, nil
+		}
+		return err == nil, err
+	}
 	ok, err := r.Repository.Exists(ctx, target)
 	return ok, translate(r.op("exists", target.Digest.String()), err)
 }

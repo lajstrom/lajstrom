@@ -180,7 +180,11 @@ test log, with the prefix). On main it said `catalog=true`, and every `ListRepos
    package, ingest the metadata layer) and fails `provider: not found`: the same `.deb` in two
    Lajstrom apt repos, or any content the JCR repository already has, is refused. A manifest that
    names such a blob without an upload is 201, so only the read before it fails. Validating from
-   the spool, as [ghcr.md](ghcr.md) asks, fixes it too.
+   the spool, as [ghcr.md](ghcr.md) asks, fixes it too. **Since #352** the provider asks a JFrog
+   registry with a `GET` of the blob's first byte (`Range: bytes=0-0`) for `StatBlob` and a
+   blob's `Exists`, never `HEAD`: ingest uploads what this path does not serve, and the facade
+   answers a client's `HEAD`, and checks a manifest's layers, as `GET` would. The unit tests
+   answer as JCR did; not run against JCR again.
 5. **Hold the token for the repository's scope however the challenge spells it.** The challenge
    names the image without the key; #342 (Gitea's `scope="*"`) caches the token under the
    request's own scopes as well, and with it the facade's uploads pass on JCR but for item 2.
@@ -190,7 +194,8 @@ test log, with the prefix). On main it said `catalog=true`, and every `ListRepos
 7. Optional: name the vendor. Every answer of JCR, the 200 of `GET /v2/` included, has
    `X-Jfrog-Version: Artifactory/7.161.26 86126900` and `X-Artifactory-Id`; a `jfrog` vendor
    could log what items 2 to 4 cost, and list repositories through `/v2/<repo-key>/_catalog`
-   (with the key put back on the names) instead of having none.
+   (with the key put back on the names) instead of having none. **Since #352** it is
+   `vendor=jfrog` and carries item 4; the per-key catalog is not done.
 8. Nothing to do: the cancel of an upload session is 405 and the session stays until JCR purges
    it (when, not measured); the facade logs `facade: cancel backend upload session …
    unsupported (HTTP 405, )` and goes on.
