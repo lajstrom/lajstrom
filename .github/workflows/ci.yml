@@ -323,6 +323,15 @@ jobs:
         env:
           LAJSTROM_E2E_REGISTRY: localhost:5001
         run: test/e2e/run.sh cosign
+      - name: cosign.sh against distribution without a catalog
+        # #37: Lajstrom's capabilities.catalog false, so reindex reads oci_repos instead of
+        # /v2/_catalog, which distribution cannot turn off.
+        if: ${{ !cancelled() && steps.images.outcome == 'success' }}
+        timeout-minutes: 2
+        env:
+          LAJSTROM_E2E_REGISTRY: localhost:5001
+          LAJSTROM_E2E_CAPABILITIES: "{catalog: false}"
+        run: test/e2e/run.sh cosign
 
   lint:
     name: lint
