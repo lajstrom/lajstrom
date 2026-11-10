@@ -6,6 +6,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/lajstrom/lajstrom/ci.yml?branch=main&label=ci)](https://github.com/lajstrom/lajstrom/actions/workflows/ci.yml)
 [![Go version](https://img.shields.io/github/go-mod/go-version/lajstrom/lajstrom)](go.mod)
 [![License](https://img.shields.io/github/license/lajstrom/lajstrom)](LICENSE)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lajstrom/lajstrom/badge)](https://scorecard.dev/viewer/?uri=github.com/lajstrom/lajstrom)
 [![Commit activity](https://img.shields.io/github/commit-activity/m/lajstrom/lajstrom)](https://github.com/lajstrom/lajstrom/commits/main)
 [![Roadmap](https://img.shields.io/badge/roadmap-v0.1.0%20due%202026--12--04-orange)](docs/roadmap.md)
 
