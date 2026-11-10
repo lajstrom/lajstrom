@@ -2,6 +2,8 @@ package format
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -101,9 +103,9 @@ type ArtifactRef struct {
 }
 
 // Proxy is the core of proxy repos as the plugins' handlers see it; *proxy.Core implements it
-// (docs/spec/proxy-and-group.md §4 to §7). Both methods take a repo of kind proxy (#311 extends
-// them to groups); another kind gives an error wrapping ErrUnsupported. Their errors wrap the
-// sentinels that StatusOf answers with the statuses of §6.
+// (docs/spec/proxy-and-group.md §4 to §7, §9.2). Its methods take a repo of kind proxy (#311
+// extends them to groups); another kind gives an error wrapping ErrUnsupported. Their errors
+// wrap the sentinels that StatusOf answers with the statuses of §6.
 type Proxy interface {
 	// Document returns the document of kind of name: after the allow and deny lists (§3), the
 	// index_cache row of (repo, Key(name), kind) while the proxy_meta row of (Key(name), kind)
@@ -116,4 +118,40 @@ type Proxy interface {
 	// upstream and ingested on a miss (§5) by the principal of ctx (auth.PrincipalFrom). The
 	// handler serves it as a hosted file is served (ServeBlob).
 	File(ctx context.Context, repo index.Repo, path string) (*index.FileMatch, error)
+
+	// Forward sends req to the repo's upstream and returns the answer, which nothing keeps: a
+	// request of the format's protocol that only the upstream can answer (npm audit). It is the
+	// core's own request through the upstream client (§9.2): the upstream's credentials on its
+	// origin only, no header of the client's, the timeouts and retries of upstreams[] (the body
+	// is sent again), at most 5 redirects, never from https to http, public addresses off the
+	// upstream's host.
+	//
+	// Body is read whole before the first byte goes out, at most 16 MiB: a larger one wraps
+	// *http.MaxBytesError (413) and nothing is sent; an error of Body is returned wrapped. A 2xx
+	// is returned with StatusCode, Header (the upstream's: the handler copies what its protocol
+	// needs, never Set-Cookie) and Body, which the caller closes: it streams, and a read past
+	// the upstream's maxMetadataSize fails wrapping ErrBadGateway, a stall of its timeout
+	// ErrGatewayTimeout. Otherwise nothing of the upstream's body is read: an offline repo
+	// (§4.4) sends nothing and wraps index.ErrNotFound, as do the upstream's 404 and 410; its
+	// 400, 413, 415 and 422 wrap ErrInvalid, the client's body refused; its 429 is an
+	// *UnavailableError; a timeout wraps ErrGatewayTimeout, anything else ErrBadGateway (§6).
+	// Nothing is cached and no audit row is written.
+	Forward(ctx context.Context, repo index.Repo, req ForwardRequest) (*http.Response, error)
+}
+
+// ForwardRequest is what Proxy.Forward sends to an upstream: each part is chosen by the plugin,
+// and nothing is copied from the client's request.
+type ForwardRequest struct {
+	// Method is the request's method, POST; "" means GET.
+	Method string
+	// Path is relative to upstreams[].url, escaped, with its query when it has one:
+	// "-/npm/v1/security/advisories/bulk". One that resolves outside that URL is an error.
+	Path string
+	// ContentType is the media type of Body; "" for none.
+	ContentType string
+	// Accept is the Accept header; "" for none.
+	Accept string
+	// Body is the request's body, nil for none. It is sent without Content-Encoding: a plugin
+	// decodes a gzipped body.
+	Body io.Reader
 }

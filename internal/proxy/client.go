@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -147,11 +148,27 @@ type Response struct {
 // wraps format.ErrBadGateway, format.ErrGatewayTimeout or a *format.UnavailableError (§6).
 // operation (document, file) labels the metrics.
 func (u *Upstream) Get(ctx context.Context, operation string, target *url.URL, accept, etag, lastModified string) (*Response, error) {
-	if err := u.checkTarget(target); err != nil {
+	return u.send(ctx, call{operation: operation, method: http.MethodGet, target: target,
+		header: map[string]string{"Accept": accept, "If-None-Match": etag, "If-Modified-Since": lastModified}})
+}
+
+// call is one request to an upstream, as Get and Core.Forward build it.
+type call struct {
+	operation string            // the metrics label: document, file, forward
+	method    string            // GET, or a forwarded request's
+	target    *url.URL          // absolute
+	header    map[string]string // the request's own headers; "" for none
+	body      []byte            // nil for none; sent again on a retry, a 307 and a 308
+}
+
+// send sends c as Get says, retried as upstreams[].retries says; a request of another method
+// than GET is answered with its body on any 2xx.
+func (u *Upstream) send(ctx context.Context, c call) (*Response, error) {
+	if err := u.checkTarget(c.target); err != nil {
 		return nil, err
 	}
 	for attempt := 0; ; attempt++ {
-		resp, err := u.once(ctx, operation, target, accept, etag, lastModified)
+		resp, err := u.once(ctx, c)
 		if err == nil || attempt >= u.retries || !retryable(err) || ctx.Err() != nil {
 			return resp, err
 		}
@@ -160,7 +177,7 @@ func (u *Upstream) Get(ctx context.Context, operation string, target *url.URL, a
 		if errors.As(err, &busy) && busy.RetryAfter <= retryLongest {
 			wait = busy.RetryAfter
 		}
-		u.log.DebugContext(ctx, "proxy: upstream request retried", "upstream", u.name, "path", target.Path, "wait", wait.String(),
+		u.log.DebugContext(ctx, "proxy: upstream request retried", "upstream", u.name, "path", c.target.Path, "wait", wait.String(),
 			"error", err.Error())
 		select {
 		case <-ctx.Done():
@@ -171,15 +188,19 @@ func (u *Upstream) Get(ctx context.Context, operation string, target *url.URL, a
 }
 
 // once sends one request and classifies its answer.
-func (u *Upstream) once(parent context.Context, operation string, target *url.URL, accept, etag, lastModified string) (*Response, error) {
+func (u *Upstream) once(parent context.Context, c call) (*Response, error) {
 	ctx, cancel := context.WithCancel(parent)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	var body io.Reader
+	if c.body != nil {
+		body = bytes.NewReader(c.body) // and GetBody, for a 307 and a 308
+	}
+	req, err := http.NewRequestWithContext(ctx, c.method, c.target.String(), body)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("%w: upstream %s: %s", format.ErrBadGateway, u.name, err.Error())
 	}
 	req.Header.Set("User-Agent", "lajstrom/"+version.Get().Version)
-	for k, v := range map[string]string{"Accept": accept, "If-None-Match": etag, "If-Modified-Since": lastModified} {
+	for k, v := range c.header {
 		if v != "" {
 			req.Header.Set(k, v)
 		}
@@ -191,15 +212,15 @@ func (u *Upstream) once(parent context.Context, operation string, target *url.UR
 	if resp != nil {
 		status = strconv.Itoa(resp.StatusCode)
 	}
-	metrics.ProxyUpstreamDuration.WithLabelValues(u.name, operation, status).Observe(time.Since(start).Seconds())
-	u.log.DebugContext(ctx, "proxy: upstream request", "upstream", u.name, "method", http.MethodGet, "path", target.Path,
+	metrics.ProxyUpstreamDuration.WithLabelValues(u.name, c.operation, status).Observe(time.Since(start).Seconds())
+	u.log.DebugContext(ctx, "proxy: upstream request", "upstream", u.name, "method", c.method, "path", c.target.Path,
 		"status", status, "duration", time.Since(start).String())
 	if err != nil {
 		cancel()
 		return nil, u.transportError(parent, err)
 	}
-	switch resp.StatusCode {
-	case http.StatusOK, http.StatusPartialContent:
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent ||
+		c.method != http.MethodGet && resp.StatusCode/100 == 2 {
 		return &Response{Status: resp.StatusCode, Header: resp.Header, ContentLength: resp.ContentLength,
 			Body: newStallBody(resp.Body, u.timeout, cancel)}, nil
 	}

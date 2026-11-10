@@ -64,8 +64,9 @@ var (
 		Name: "lajstrom_ingest_total", Help: "Publishes through the ingest pipeline, by format and result.",
 	}, []string{"format", "result"})
 	// ProxyUpstreamDuration is the time of a request to a proxy repo's upstream, to its
-	// response headers, by upstream name (upstreams[].name), operation (document, file) and
-	// status ("error" when there was no answer).
+	// response headers, by upstream name (upstreams[].name), operation (document, file,
+	// forward: a request of a client's sent on, npm audit) and status ("error" when there was no
+	// answer).
 	ProxyUpstreamDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "lajstrom_proxy_upstream_request_duration_seconds", Help: "Time of a request to a proxy's upstream, to its response headers.",
 		Buckets: prometheus.DefBuckets,
