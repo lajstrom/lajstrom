@@ -108,6 +108,42 @@ type Registry struct {
 	Retries int `yaml:"retries"`
 	// Capabilities overrides what probing finds, for backends that lie or cannot be probed.
 	Capabilities CapabilityOverrides `yaml:"capabilities"`
+	// ECR configures a registry of type ecr; it must stay empty for the other types.
+	ECR ECR `yaml:"ecr"`
+}
+
+// ECR configures a registry of type ecr (internal/provider/ecr, docs/registries/ecr.md): where
+// its API is and how the repositories Lajstrom creates are set up. The credentials come from
+// the AWS SDK's default chain (environment, shared profile, web identity as with IRSA, the
+// instance or task role), never from the file: registries[].auth stays empty.
+type ECR struct {
+	// Region is the AWS region of the registry. Empty: the region in the URL's host
+	// (<account>.dkr.ecr.<region>.amazonaws.com), else the SDK's (AWS_REGION, the profile).
+	Region string `yaml:"region"`
+	// Endpoint replaces the endpoint of the ECR API, an http(s) URL: a VPC endpoint, or a mock
+	// such as moto in the tests. Empty: the SDK's endpoint for the region.
+	Endpoint string `yaml:"endpoint"`
+	// ImageTagMutability of the repositories Lajstrom creates: IMMUTABLE (empty means it),
+	// IMMUTABLE_WITH_EXCLUSION, MUTABLE or MUTABLE_WITH_EXCLUSION.
+	ImageTagMutability string `yaml:"imageTagMutability"`
+	// ImageTagMutabilityExclusions are the wildcard filters of a *_WITH_EXCLUSION mutability,
+	// such as "sha256-*"; required with one, not allowed with the others.
+	ImageTagMutabilityExclusions []string `yaml:"imageTagMutabilityExclusions"`
+	// Encryption of the repositories Lajstrom creates: AES256 (empty means it), KMS or
+	// KMS_DSSE.
+	Encryption string `yaml:"encryption"`
+	// KMSKey is the KMS key of KMS or KMS_DSSE encryption, an ARN, ID or alias; empty is the
+	// AWS managed key of ECR.
+	KMSKey string `yaml:"kmsKey"`
+	// ForceDelete makes a repository delete remove a repository that still holds images;
+	// without it, ECR refuses that delete.
+	ForceDelete bool `yaml:"forceDelete"`
+}
+
+// IsZero reports whether e sets nothing, as for a registry of another type.
+func (e ECR) IsZero() bool {
+	return e.Region == "" && e.Endpoint == "" && e.ImageTagMutability == "" && len(e.ImageTagMutabilityExclusions) == 0 &&
+		e.Encryption == "" && e.KMSKey == "" && !e.ForceDelete
 }
 
 // CapabilityOverrides are the capabilities a registry configuration sets by hand. A set value
