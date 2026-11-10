@@ -239,38 +239,49 @@ func TestUploadMount(t *testing.T) {
 // TestUploadAcrossProviders continues, with a provider whose token cache is empty (another
 // replica), a session that the first provider started, against a registry with bearer
 // tokens. The streamed chunk cannot be sent twice, so the provider takes the challenge with a
-// bodyless GET first.
+// bodyless GET first. The challenge may name scopes of its own, which the auth client adds to
+// the key of the token it caches: Gitea's names "*" whatever the request (#120).
 func TestUploadAcrossProviders(t *testing.T) {
 	ctx := t.Context()
-	f := newFakeRegistry(t)
-	f.authMode = "bearer"
-	log, _ := testLogger()
-	creds := func(c *config.Registry) {
-		c.Auth = config.RegistryAuth{Username: f.user, Password: f.pass, PasswordEnv: "FAKE_PASSWORD"}
-	}
-	a, _ := f.provider(t, log, creds).Repository(ctx, "raw/scratch/notes")
-	b, _ := f.provider(t, log, creds).Repository(ctx, "raw/scratch/notes")
-	u, err := a.StartBlobUpload(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	before := len(f.log())
-	// A reader without a GetBody: the request cannot be replayed after a 401.
-	if u, err = b.AppendBlobChunk(ctx, u, io.MultiReader(strings.NewReader("chunk")), 5); err != nil {
-		t.Fatalf("chunk on the second provider: %v", err)
-	}
-	after := f.log()[before:]
-	if len(after) < 2 || !strings.HasPrefix(after[0], "GET /v2/art/raw/scratch/notes/blobs/uploads/") ||
-		!strings.HasPrefix(after[len(after)-1], "PATCH ") {
-		t.Errorf("requests of the chunk %q, want the priming GET first and one PATCH last", after)
-	}
-	if _, err := a.FinishBlobUpload(ctx, u, digest.FromString("chunk"), nil, 0); err != nil {
-		t.Fatalf("finish on the first provider: %v", err)
+	for _, tc := range []struct{ name, scope string }{
+		{"no scope in the challenge", ""},
+		{"the repository's scope in the challenge", "repository:art/raw/scratch/notes:pull,push"},
+		{"a scope of its own in the challenge", "*"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeRegistry(t)
+			f.authMode, f.challengeScope = "bearer", tc.scope
+			log, _ := testLogger()
+			creds := func(c *config.Registry) {
+				c.Auth = config.RegistryAuth{Username: f.user, Password: f.pass, PasswordEnv: "FAKE_PASSWORD"}
+			}
+			a, _ := f.provider(t, log, creds).Repository(ctx, "raw/scratch/notes")
+			b, _ := f.provider(t, log, creds).Repository(ctx, "raw/scratch/notes")
+			u, err := a.StartBlobUpload(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := len(f.log())
+			// A reader without a GetBody: the request cannot be replayed after a 401.
+			if u, err = b.AppendBlobChunk(ctx, u, io.MultiReader(strings.NewReader("chunk")), 5); err != nil {
+				t.Fatalf("chunk on the second provider: %v", err)
+			}
+			after := f.log()[before:]
+			if len(after) < 2 || !strings.HasPrefix(after[0], "GET /v2/art/raw/scratch/notes/blobs/uploads/") ||
+				!strings.HasPrefix(after[len(after)-1], "PATCH ") {
+				t.Errorf("requests of the chunk %q, want the priming GET first and one PATCH last", after)
+			}
+			// The last chunk streamed with the closing PUT, on the provider that started the
+			// session: its token was cached by the POST.
+			if _, err := a.FinishBlobUpload(ctx, u, digest.FromString("chunk-end"), io.MultiReader(strings.NewReader("-end")), 4); err != nil {
+				t.Fatalf("finish on the first provider: %v", err)
+			}
+		})
 	}
 
 	// Without credentials nothing is primed.
 	f2, repo := uploadRepo(t, nil)
-	u, _ = repo.StartBlobUpload(ctx)
+	u, _ := repo.StartBlobUpload(ctx)
 	if _, err := repo.AppendBlobChunk(ctx, u, strings.NewReader("x"), 1); err != nil {
 		t.Fatal(err)
 	}

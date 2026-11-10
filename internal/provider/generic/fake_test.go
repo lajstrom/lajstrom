@@ -42,6 +42,7 @@ type fakeRegistry struct {
 	redirect       string // answer blob GETs and HEADs with 307 to redirect + "/" + digest
 	stateful       bool   // upload Locations are absolute and carry a _state that changes with every chunk and must come back, as distribution's
 	authMode       string // "", "basic" or "bearer"
+	challengeScope string // the scope parameter of the bearer challenge; Gitea sends "*" whatever the request
 	user, pass     string // the credentials auth accepts
 	token          string // the bearer token /token issues
 	realm          string // the realm of the bearer challenge; empty: the fake's own /token
@@ -169,7 +170,11 @@ func (f *fakeRegistry) authorized(w http.ResponseWriter, r *http.Request) bool {
 		if realm == "" {
 			realm = f.srv.URL + "/token"
 		}
-		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm=%q,service="fake"`, realm))
+		challenge := fmt.Sprintf(`Bearer realm=%q,service="fake"`, realm)
+		if f.challengeScope != "" {
+			challenge += fmt.Sprintf(",scope=%q", f.challengeScope)
+		}
+		w.Header().Set("WWW-Authenticate", challenge)
 	default:
 		return true
 	}
