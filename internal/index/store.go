@@ -51,6 +51,11 @@ type Reader interface {
 	// ListRepos returns the repos of format, or of every format when format is "", ordered by
 	// format and name.
 	ListRepos(ctx context.Context, format string) ([]Repo, error)
+	// ListGroupMembers returns the members of the group groupID in member order
+	// (docs/spec/index-schema.md, group_members); none for a repo that is not a group.
+	ListGroupMembers(ctx context.Context, groupID int64) ([]Repo, error)
+	// ListGroupsOf returns the groups that have memberID as a member, ordered by format and name.
+	ListGroupsOf(ctx context.Context, memberID int64) ([]Repo, error)
 
 	// GetUser returns the live user with the given name.
 	GetUser(ctx context.Context, name string) (*User, error)
@@ -171,8 +176,14 @@ type Writer interface {
 	// UpdateRepo stores r by r.ID and sets UpdatedAt. Format, Name and Kind cannot change: they
 	// are filled from the row.
 	UpdateRepo(ctx context.Context, r *Repo) error
-	// DeleteRepo removes the repo and every row that refers to it, proxy_meta included.
+	// DeleteRepo removes the repo and every row that refers to it, proxy_meta and a group's
+	// group_members rows included. A repo that is a member of a group is ErrConflict, and
+	// nothing is deleted.
 	DeleteRepo(ctx context.Context, id int64) error
+	// SetGroupMembers makes the group_members rows of the group groupID exactly memberIDs, in
+	// that order. An id that is no repo is ErrNotFound, an id named twice ErrConflict. The caller
+	// writes the group's repos row in the same transaction, so that AuthVersion moves with it.
+	SetGroupMembers(ctx context.Context, groupID int64, memberIDs []int64) error
 
 	// CreateUser inserts u; the name must be new. UID is made (NewUID) when it is empty.
 	CreateUser(ctx context.Context, u *User) error

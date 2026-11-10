@@ -11,11 +11,11 @@ import (
 
 // Control plane: repos, users, tokens, bindings, keys, sessions, audit.
 
-const repoCols = "id, format, name, registry, prefix, kind, anonymous_read, policy, upstream, created_at, updated_at"
+const repoCols = `id, format, name, registry, prefix, kind, anonymous_read, policy, upstream, "group", created_at, updated_at`
 
 func repoDests(r *index.Repo) []any {
 	return []any{&r.ID, &r.Format, &r.Name, &r.Registry, &r.Prefix, &r.Kind, &r.AnonymousRead,
-		rawDest{&r.Policy}, rawDest{&r.Upstream}, timeDest{&r.CreatedAt}, timeDest{&r.UpdatedAt}}
+		rawDest{&r.Policy}, rawDest{&r.Upstream}, rawDest{&r.Group}, timeDest{&r.CreatedAt}, timeDest{&r.UpdatedAt}}
 }
 
 // GetRepo returns the repo with the given format and name.
@@ -45,10 +45,10 @@ func (c *conn) CreateRepo(ctx context.Context, r *index.Repo) error {
 	updated := stamp(&r.UpdatedAt, created)
 	return c.withAuthChange(ctx, func(c *conn) error {
 		return c.scanRow(ctx, "repos "+r.Format+"/"+r.Name,
-			"INSERT INTO repos (format, name, registry, prefix, kind, anonymous_read, policy, upstream, created_at, updated_at)"+
-				" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+			`INSERT INTO repos (format, name, registry, prefix, kind, anonymous_read, policy, upstream, "group", created_at, updated_at)`+
+				" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
 			[]any{r.Format, r.Name, r.Registry, r.Prefix, r.Kind, r.AnonymousRead, rawArg(r.Policy), rawArg(r.Upstream),
-				c.d.EncodeTime(created), c.d.EncodeTime(updated)},
+				rawArg(r.Group), c.d.EncodeTime(created), c.d.EncodeTime(updated)},
 			&r.ID)
 	})
 }
@@ -59,19 +59,89 @@ func (c *conn) UpdateRepo(ctx context.Context, r *index.Repo) error {
 	r.UpdatedAt = now()
 	return c.withAuthChange(ctx, func(c *conn) error {
 		return c.scanRow(ctx, fmt.Sprintf("repos id %d", r.ID),
-			"UPDATE repos SET registry = ?, prefix = ?, anonymous_read = ?, policy = ?, upstream = ?, updated_at = ?"+
+			`UPDATE repos SET registry = ?, prefix = ?, anonymous_read = ?, policy = ?, upstream = ?, "group" = ?, updated_at = ?`+
 				" WHERE id = ? RETURNING format, name, kind, created_at",
-			[]any{r.Registry, r.Prefix, r.AnonymousRead, rawArg(r.Policy), rawArg(r.Upstream), c.d.EncodeTime(r.UpdatedAt), r.ID},
+			[]any{r.Registry, r.Prefix, r.AnonymousRead, rawArg(r.Policy), rawArg(r.Upstream), rawArg(r.Group),
+				c.d.EncodeTime(r.UpdatedAt), r.ID},
 			&r.Format, &r.Name, &r.Kind, timeDest{&r.CreatedAt})
 	})
 }
 
 // DeleteRepo removes the repo, the foreign keys cascading to every row that refers to it, and
-// increments auth_version.
+// increments auth_version. A member of a group is ErrConflict: it is looked up first, and
+// group_members.member_id restricts the delete of one that a concurrent change made a member.
 func (c *conn) DeleteRepo(ctx context.Context, id int64) error {
+	what := fmt.Sprintf("repos id %d", id)
 	return c.withAuthChange(ctx, func(c *conn) error {
-		return c.execOne(ctx, fmt.Sprintf("repos id %d", id), "DELETE FROM repos WHERE id = ?", id)
+		groups, err := c.ListGroupsOf(ctx, id)
+		if err != nil {
+			return err
+		}
+		if len(groups) > 0 {
+			return fmt.Errorf("%w: %s is a member of %d group(s)", index.ErrConflict, what, len(groups))
+		}
+		return c.deleteRepoRow(ctx, what, id)
 	})
+}
+
+// deleteRepoRow deletes the repos row of id: a violation of a foreign key is the restriction of
+// group_members, ErrConflict, not a missing row.
+func (c *conn) deleteRepoRow(ctx context.Context, what string, id int64) (err error) {
+	defer observe(time.Now(), &err)
+	res, err := c.q.ExecContext(ctx, c.d.Rebind("DELETE FROM repos WHERE id = ?"), id)
+	switch {
+	case err != nil && c.d.IsForeignKey(err):
+		return fmt.Errorf("%w: %s is a member of a group", index.ErrConflict, what)
+	case err != nil:
+		return c.fail(err, what)
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		if err != nil {
+			return c.fail(err, what)
+		}
+		return notFound(what)
+	}
+	return nil
+}
+
+// ListGroupMembers returns the members of a group in member order.
+func (c *conn) ListGroupMembers(ctx context.Context, groupID int64) ([]index.Repo, error) {
+	return getAll(ctx, c, fmt.Sprintf("group_members of %d", groupID), repoDests,
+		"SELECT "+prefixed("r.", repoCols)+" FROM group_members m JOIN repos r ON r.id = m.member_id"+
+			" WHERE m.group_id = ? ORDER BY m.position", groupID)
+}
+
+// ListGroupsOf returns the groups that have the repo as a member, by format and name.
+func (c *conn) ListGroupsOf(ctx context.Context, memberID int64) ([]index.Repo, error) {
+	return getAll(ctx, c, fmt.Sprintf("groups of %d", memberID), repoDests,
+		"SELECT "+prefixed("r.", repoCols)+" FROM group_members m JOIN repos r ON r.id = m.group_id"+
+			" WHERE m.member_id = ? ORDER BY r.format, r.name", memberID)
+}
+
+// SetGroupMembers replaces the group_members rows of a group with memberIDs, in order.
+func (c *conn) SetGroupMembers(ctx context.Context, groupID int64, memberIDs []int64) error {
+	what := fmt.Sprintf("group_members of %d", groupID)
+	return c.withTx(ctx, func(c *conn) error {
+		if _, err := c.exec(ctx, what, "DELETE FROM group_members WHERE group_id = ?", groupID); err != nil {
+			return err
+		}
+		for i, id := range memberIDs {
+			if _, err := c.exec(ctx, fmt.Sprintf("%s: member %d", what, id),
+				"INSERT INTO group_members (group_id, member_id, position) VALUES (?, ?, ?)", groupID, id, i); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// prefixed returns the comma-separated columns cols, each with the table prefix p.
+func prefixed(p, cols string) string {
+	parts := strings.Split(cols, ", ")
+	for i := range parts {
+		parts[i] = p + parts[i]
+	}
+	return strings.Join(parts, ", ")
 }
 
 const userCols = "id, uid, name, password_hash, kind, disabled, created_at, deleted_at, deleted_name"
