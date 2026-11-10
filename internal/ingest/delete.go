@@ -18,6 +18,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -32,7 +33,9 @@ import (
 //     when it names one (by its tag, or by its digest in the package of del.Path), else in the
 //     backend; one that names nothing is index.ErrNotFound.
 //  3. Under the tag lock of the manifest (Store.WithReferrersLock, keyed by its subject when it
-//     has one, else by its own digest), with the referrers API or without: on an oci repo a
+//     has one, else by its own digest; a journal tag _j<seq> of an npm package under the
+//     package's journal lock instead, keyed by the empty blob's digest, docs/spec/
+//     manifest-profile.md §8), with the referrers API or without: on an oci repo a
 //     delete by tag lists the repository's tags and resolves each, and a manifest that other
 //     tags also name is refused, index.ErrConflict naming them, and nothing changes (#284).
 //     The referrers go first, each with its own referrers before it: cosign's legacy manifests
@@ -43,8 +46,10 @@ import (
 //     on its own, without the referrers API, has its subject's sha256-<hex> index deleted first
 //     and pushed again without it after. A manifest that is gone already is not an error.
 //  4. For a version, one index transaction deletes its rows, its package's when it was the last
-//     version, invalidates the repo's index_cache and appends the audit row; for any other
-//     manifest the audit row alone is written. The row is a delete by principal with
+//     version, invalidates the repo's index_cache and appends the audit row; for a journal entry
+//     of a package the index still has, its row, the package's state folded again from the rows
+//     left and the invalidated index_cache with the audit row; for any other manifest the audit
+//     row alone is written. The row is a delete by principal with
 //     del.ClientIP (the request's client address when it is empty), the version's subject (or
 //     the manifest's subject digest), the digest, and the number of referrers and the request
 //     id in the details.
@@ -76,6 +81,9 @@ func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Delet
 		return nil, fmt.Errorf("ingest: repository %s: %w", name, err)
 	}
 	d := &deletion{p: p, repo: repo, del: del, name: name, rr: rr, api: caps.Referrers}
+	if _, entry := profile.JournalSeq(del.Reference); entry && repo.Format == "npm" {
+		d.journal = true
+	}
 	if err := d.find(ctx); err != nil {
 		return nil, err
 	}
@@ -104,6 +112,7 @@ type deletion struct {
 	version *index.Version     // the version it is; nil for a manifest that is none
 	pkg     *index.Package     // the version's package
 	subject digest.Digest      // the subject of a manifest that is no version, when it has one
+	journal bool               // the reference is a journal tag of an npm package
 
 	referrers int // deleted before it, theirs included
 }
@@ -205,7 +214,10 @@ const maxManifestBytes = 16 << 20
 // refuseTagged or pushed after the delete (docs/spec/index-schema.md, Coordination).
 func (d *deletion) deleteInBackend(ctx context.Context) error {
 	key := d.target.Digest
-	if d.subject != "" {
+	switch {
+	case d.journal:
+		key = profile.EmptyConfig.Digest
+	case d.subject != "":
 		key = d.subject
 	}
 	return d.p.index.WithReferrersLock(ctx, d.name, key, func(ctx context.Context) error {
@@ -483,8 +495,13 @@ func (d *deletion) record(ctx context.Context, principal auth.Principal) error {
 		ev.Subject = d.name
 	}
 	err := d.p.index.Tx(ctx, func(w index.Writer) error {
-		if d.version != nil {
+		switch {
+		case d.version != nil:
 			if err := d.deleteRows(ctx, w); err != nil {
+				return err
+			}
+		case d.journal && d.pkg != nil:
+			if err := d.deleteEntry(ctx, w); err != nil {
 				return err
 			}
 		}
@@ -519,6 +536,27 @@ func (d *deletion) deleteRows(ctx context.Context, w index.Writer) error {
 		if err := w.DeletePackage(ctx, d.pkg.ID); err != nil && !errors.Is(err, index.ErrNotFound) {
 			return err
 		}
+	}
+	return w.InvalidateIndexCache(ctx, d.repo.ID, "")
+}
+
+// deleteEntry deletes the journal row of the entry under the reference's tag, when the package
+// has one, folds the package's state again from the rows left and invalidates the repo's
+// index_cache.
+func (d *deletion) deleteEntry(ctx context.Context, w index.Writer) error {
+	rows, err := w.ListJournal(ctx, d.pkg.ID)
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(rows, func(e index.JournalEntry) bool { return e.Tag == d.del.Reference })
+	if i < 0 {
+		return nil
+	}
+	if err := w.DeleteJournal(ctx, rows[i].ID); err != nil && !errors.Is(err, index.ErrNotFound) {
+		return err
+	}
+	if err := w.ReplaceJournalState(ctx, d.pkg.ID, foldJournal(slices.Delete(rows, i, i+1))); err != nil {
+		return err
 	}
 	return w.InvalidateIndexCache(ctx, d.repo.ID, "")
 }

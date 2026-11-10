@@ -89,7 +89,8 @@ func TestPublishCaptured(t *testing.T) {
 }
 
 // TestPublish publishes a scoped package as npm does, at @acme/widgets in two segments, and
-// another tarball under its version: 409. A packument update is not implemented yet: 501.
+// another tarball under its version: 409. A packument update without its _rev or its versions
+// is 400 (unpublish_test.go has the rest).
 func TestPublish(t *testing.T) {
 	p := newPipeline(t)
 	h := p.routes(nil)
@@ -107,7 +108,7 @@ func TestPublish(t *testing.T) {
 		{"/npm/internal/@acme/widgets", `{"name": "@acme/widgets", "versions": {}}`},
 		{"/npm/internal/@acme/widgets/-rev/0-x", `{}`},
 	} {
-		if rr := do(h, http.MethodPut, tc.path, []byte(tc.body), false); rr.Code != http.StatusNotImplemented {
+		if rr := do(h, http.MethodPut, tc.path, []byte(tc.body), false); rr.Code != http.StatusBadRequest {
 			t.Errorf("%s: %d %s", tc.path, rr.Code, rr.Body)
 		}
 	}

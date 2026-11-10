@@ -20,7 +20,10 @@ import (
 //	GET /{repo}/<name>               the packument, full or abbreviated (serve.go), read
 //	GET /{repo}/<name>/<version>     one version of the full packument, or of the dist-tag
 //	GET /{repo}/<name>/-/<file>      a tarball, through format.ServeBlob
-//	PUT /{repo}/<name>               npm publish (publish.go), write
+//	PUT /{repo}/<name>               npm publish (publish.go), write; without _attachments, and
+//	PUT /{repo}/<name>/-rev/<rev>    the packument update of npm deprecate and unpublish (unpublish.go)
+//	DELETE /{repo}/<name>/-rev/<rev>             npm unpublish of the package, delete
+//	DELETE /{repo}/<name>/-/<file>/-rev/<rev>    npm unpublish of a version, delete
 //	    /{repo}/-/…                  the registry's own routes (special): dist-tags (disttags.go);
 //	                                 ping, whoami, search, audit (cli.go); login, logout (login.go)
 //
@@ -102,13 +105,31 @@ func (h *handlers) post(w http.ResponseWriter, r *http.Request) {
 	h.serveSpecial(w, r, segs)
 }
 
-// del dispatches a DELETE: the registry's own routes; nothing else yet.
+// del dispatches a DELETE: the registry's own routes, and npm unpublish of a package or of a
+// version's tarball, which a proxy repo does not take, 405.
 func (h *handlers) del(w http.ResponseWriter, r *http.Request) {
 	if segs := special(r.PathValue("path")); segs != nil {
 		h.serveSpecial(w, r, segs)
 		return
 	}
-	h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
+	repo, ok := format.RepoFrom(r.Context())
+	if !ok {
+		h.fail(w, r, errors.New("npm: the route has no repo"))
+		return
+	}
+	if err := h.refuseWrite(r.Context(), repo); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	t, ok := parseTarget(r.PathValue("path"))
+	switch {
+	case ok && len(t.rest) == 2 && t.rest[0] == "-rev":
+		h.unpublishPackage(w, r, repo, t.name, t.rest[1])
+	case ok && len(t.rest) == 4 && t.rest[0] == "-" && t.rest[2] == "-rev":
+		h.unpublishFile(w, r, repo, t.name, t.rest[1])
+	default:
+		h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
+	}
 }
 
 // handlers are the npm routes over one format.Deps.
@@ -139,8 +160,9 @@ func parseTarget(p string) (target, bool) {
 	return target{name: strings.Join(segs[:n], "/"), rest: segs[n:]}, true
 }
 
-// put dispatches a PUT: the publish of a package; the packument update of npm deprecate and
-// unpublish, PUT <name>/-rev/<rev>, is not implemented yet (#308).
+// put dispatches a PUT: the publish of a package, and the packument update of npm deprecate
+// and unpublish (PUT <name> without _attachments, PUT <name>/-rev/<rev>); a proxy repo takes
+// neither, 405.
 func (h *handlers) put(w http.ResponseWriter, r *http.Request) {
 	if segs := special(r.PathValue("path")); segs != nil {
 		h.serveSpecial(w, r, segs)
@@ -160,9 +182,9 @@ func (h *handlers) put(w http.ResponseWriter, r *http.Request) {
 	case !ok:
 		h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
 	case len(t.rest) == 0:
-		h.publish(w, r, repo, t.name)
+		h.publish(w, r, repo, t.name, "")
 	case len(t.rest) == 2 && t.rest[0] == "-rev":
-		h.fail(w, r, fmt.Errorf("%w: the packument update of npm deprecate and unpublish", format.ErrUnsupported))
+		h.publish(w, r, repo, t.name, t.rest[1])
 	default:
 		h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
 	}
