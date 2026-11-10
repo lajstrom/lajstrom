@@ -2,7 +2,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/tls"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 	"unicode"
@@ -26,8 +30,10 @@ const defaultHealthTimeout = 3 * time.Second
 // /-/healthz with --live, for the health check of a container whose image has no shell and no
 // HTTP client. It exits 0 when the answer is 200 and 1 otherwise, with one line either way.
 // --url names the server, and no configuration is read then; without it the server is
-// server.listen of the configuration, of which nothing else is read (config.ServerListen):
-// no secret, no database, no registry.
+// server.listen of the configuration, of which nothing else is read but server.tls
+// (config.ServerListen): no secret, no database, no registry. With server.tls the check
+// speaks https and pins the certificate of server.tls.certFile (pinnedTLS); the key is never
+// read.
 func newHealthcheckCmd(a *app) *cobra.Command {
 	var (
 		base    string
@@ -39,21 +45,27 @@ func newHealthcheckCmd(a *app) *cobra.Command {
 		Short: "Ask a running serve whether it is ready (/-/readyz) or up (/-/healthz with --live); exit 0 or 1",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			var pinned *tls.Config
 			if base == "" {
-				listen, err := config.ServerListen(a.configPath, a.lookupEnv)
+				listen, files, err := config.ServerListen(a.configPath, a.lookupEnv)
 				if errors.Is(err, fs.ErrNotExist) {
 					return fmt.Errorf("%w (name the server with --url, or the configuration with --config)", err)
 				}
 				if err != nil {
 					return err
 				}
-				base = listenURL(listen)
+				if files.CertFile != "" {
+					if pinned, err = pinnedTLS(files.CertFile); err != nil {
+						return err
+					}
+				}
+				base = listenURL(listen, pinned != nil)
 			}
 			target, err := healthURL(base, live)
 			if err != nil {
 				return err
 			}
-			line, err := healthcheck(cmd.Context(), target, timeout)
+			line, err := healthcheck(cmd.Context(), target, timeout, pinned)
 			if err != nil {
 				return err
 			}
@@ -69,9 +81,9 @@ func newHealthcheckCmd(a *app) *cobra.Command {
 }
 
 // listenURL returns the URL of a server that listens on listen, a host:port that
-// config.ServerListen checked: an address of every interface (":8080", "0.0.0.0:8080",
-// "[::]:8080") is asked on loopback.
-func listenURL(listen string) string {
+// config.ServerListen checked, over https when it terminates TLS itself: an address of every
+// interface (":8080", "0.0.0.0:8080", "[::]:8080") is asked on loopback.
+func listenURL(listen string, https bool) string {
 	host, port, _ := net.SplitHostPort(listen)
 	switch host {
 	case "", "0.0.0.0":
@@ -79,7 +91,46 @@ func listenURL(listen string) string {
 	case "::":
 		host = "::1"
 	}
-	return "http://" + net.JoinHostPort(host, port)
+	scheme := "http://"
+	if https {
+		scheme = "https://"
+	}
+	return scheme + net.JoinHostPort(host, port)
+}
+
+// pinnedTLS returns the TLS configuration of a check of a serve that terminates TLS with the
+// chain of certFile: the server must present the first certificate of that file, byte for
+// byte, and nothing else of it is checked. The check goes to loopback while the certificate
+// names the public host, so the system roots and the host name cannot be the test; the file
+// that serve itself loaded is a stricter one. A certificate renewed on disk and not yet loaded
+// fails the check, so that the orchestrator restarts serve with it.
+func pinnedTLS(certFile string) (*tls.Config, error) {
+	b, err := os.ReadFile(certFile) // #nosec G304 -- the operator's configuration names it
+	if err != nil {
+		return nil, fmt.Errorf("server.tls.certFile: %w", err)
+	}
+	var want []byte
+	for block, rest := pem.Decode(b); block != nil; block, rest = pem.Decode(rest) {
+		if block.Type == "CERTIFICATE" {
+			want = block.Bytes
+			break
+		}
+	}
+	if want == nil {
+		return nil, fmt.Errorf("server.tls.certFile %s: no certificate", certFile)
+	}
+	return &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		// The chain and the name are not checked against roots: VerifyConnection compares the
+		// certificate with the pinned one instead, on every handshake.
+		InsecureSkipVerify: true, //nolint:gosec // the certificate is pinned by VerifyConnection
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 || !bytes.Equal(cs.PeerCertificates[0].Raw, want) {
+				return errors.New("the server's certificate is not the first one of server.tls.certFile")
+			}
+			return nil
+		},
+	}, nil
 }
 
 // healthURL returns the URL of /-/readyz, or of /-/healthz with live, under base, an absolute
@@ -100,10 +151,11 @@ func healthURL(base string, live bool) (string, error) {
 // healthcheck GETs target once, within timeout, without a proxy, a redirect or a kept
 // connection, and returns "<target>: <status> <first line of the body>" when the answer is
 // 200; any other answer, or none, is an error of the same form that starts with "unhealthy".
-func healthcheck(ctx context.Context, target string, timeout time.Duration) (string, error) {
+// tlsConfig, when not nil, is the TLS of an https target; nil is the system's roots.
+func healthcheck(ctx context.Context, target string, timeout time.Duration, tlsConfig *tls.Config) (string, error) {
 	client := &http.Client{
 		Timeout:       timeout,
-		Transport:     &http.Transport{Proxy: nil, DisableKeepAlives: true},
+		Transport:     &http.Transport{Proxy: nil, DisableKeepAlives: true, TLSClientConfig: tlsConfig},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)

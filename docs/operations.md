@@ -318,9 +318,18 @@ Where the check must run inside the container, as a Docker or Compose `healthche
 has no shell and no HTTP client), `lajstrom healthcheck` is the client: one `GET` of
 `/-/readyz`, or of `/-/healthz` with `--live`, exit status 0 on `200` and 1 otherwise, one line
 either way, 3 seconds at most (`--timeout`). `--url http://127.0.0.1:8080` names the server and
-nothing else is read; without it the server is `server.listen` of the configuration on loopback,
-and only that key and `LAJSTROM_SERVER_LISTEN` are read, never a secret. It speaks plain HTTP
-unless `--url` says `https`; [deploy/compose.md](deploy/compose.md#the-health-check) uses it.
+nothing else is read; an `https` URL is checked against the system's roots. Without it the
+server is `server.listen` of the configuration on loopback, and only that key,
+`LAJSTROM_SERVER_LISTEN` and `server.tls` are read, never a secret.
+
+With `server.tls` set, serve speaks TLS only, and the check speaks `https` to it. The
+certificate is pinned: it must be the first certificate of `server.tls.certFile`, the file
+serve loaded, byte for byte. The check reads that file and never the key. It does not check the
+chain, the names or the dates: the check goes to loopback, and the certificate names the public
+host. A certificate renewed on disk fails the check until serve is restarted, which is what
+loads it (`server.tls.certFile` in [configuration.md](configuration.md#server)), so the
+orchestrator's restart picks it up. [deploy/compose.md](deploy/compose.md#the-health-check)
+uses the check.
 
 ## Shutdown
 

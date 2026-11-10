@@ -2,6 +2,14 @@ package main
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -208,8 +216,87 @@ func TestListenURL(t *testing.T) {
 		"10.1.2.3:8080":  "http://10.1.2.3:8080",
 		"lajstrom:8080":  "http://lajstrom:8080",
 	} {
-		if got := listenURL(listen); got != want {
+		if got := listenURL(listen, false); got != want {
 			t.Errorf("listenURL(%q) = %q, want %q", listen, got, want)
 		}
+		if got, want := listenURL(listen, true), "https"+strings.TrimPrefix(want, "http"); got != want {
+			t.Errorf("listenURL(%q) with TLS = %q, want %q", listen, got, want)
+		}
 	}
+}
+
+// TestHealthcheckTLS: without --url, a configuration with server.tls makes the check speak
+// https to server.listen on loopback, and accept the server's certificate only when it is the
+// first one of server.tls.certFile, whatever names it has; the key file is never read. With
+// --url, nothing is pinned and the system roots apply, as before.
+func TestHealthcheckTLS(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/-/readyz" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte("ok\n"))
+	}))
+	defer srv.Close()
+	port := srv.URL[strings.LastIndex(srv.URL, ":")+1:]
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	served := write("served.pem", string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})))
+	other := write("other.pem", otherCertificate(t))
+	notPEM := write("not.pem", "not a certificate\n")
+	missingKey := filepath.Join(dir, "never-read.key")
+	config := func(certFile string) string {
+		return write("lajstrom-"+filepath.Base(certFile)+".yaml", "server:\n  listen: \":"+port+"\"\n  tls:\n    certFile: \""+certFile+
+			"\"\n    keyFile: \""+missingKey+"\"\n")
+	}
+	tests := []struct {
+		name    string
+		args    []string
+		wantOut string
+		wantErr string
+	}{
+		{"the certificate of certFile", []string{"--config", config(served)}, "https://127.0.0.1:" + port + "/-/readyz: 200 ok\n", ""},
+		{"another certificate", []string{"--config", config(other)}, "",
+			"unhealthy: https://127.0.0.1:" + port + "/-/readyz: the server's certificate is not the first one of server.tls.certFile"},
+		{"a certFile without a certificate", []string{"--config", config(notPEM)}, "", "server.tls.certFile " + notPEM + ": no certificate"},
+		{"a certFile that is missing", []string{"--config", config(filepath.Join(dir, "missing.pem"))}, "", "server.tls.certFile"},
+		{"--url: the system roots", []string{"--url", srv.URL}, "", "unhealthy: " + srv.URL + "/-/readyz: tls: failed to verify certificate"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, _, err := run(t, nil, append([]string{"healthcheck"}, tt.args...)...)
+			if tt.wantErr == "" {
+				if err != nil || out != tt.wantOut {
+					t.Fatalf("stdout %q, error %v; want %q", out, err, tt.wantOut)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// otherCertificate returns a PEM self-signed certificate for 127.0.0.1 that no server of the
+// test has.
+func otherCertificate(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "other"},
+		IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }

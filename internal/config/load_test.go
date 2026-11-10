@@ -386,34 +386,38 @@ func TestLoadTokenSigningKeyFile(t *testing.T) {
 	}
 }
 
-// TestServerListen reads server.listen and LAJSTROM_SERVER_LISTEN alone: a registry whose
-// password variable is unset, which Load refuses, does not matter; an unknown key or a listen
-// address that is not host:port does.
+// TestServerListen reads server.listen, LAJSTROM_SERVER_LISTEN and server.tls alone: a
+// registry whose password variable is unset, which Load refuses, does not matter, and neither
+// do certificate files that do not exist; an unknown key or a listen address that is not
+// host:port does.
 func TestServerListen(t *testing.T) {
 	withSecret := minimal + "registries:\n  - {name: local, url: \"http://localhost:5000\", auth: {username: u, passwordEnv: UNSET_PASSWORD}}\n"
+	withTLS := "server:\n  listen: \":8443\"\n  tls: {certFile: /missing/tls.crt, keyFile: /missing/tls.key}\n"
 	tests := []struct {
 		name, file string
 		env        map[string]string
 		want       string
+		wantTLS    TLS
 		wantErr    string
 	}{
-		{"the file", withSecret, nil, ":8080", ""},
-		{"the variable", withSecret, map[string]string{"LAJSTROM_SERVER_LISTEN": "127.0.0.1:9090"}, "127.0.0.1:9090", ""},
-		{"empty variable", withSecret, map[string]string{"LAJSTROM_SERVER_LISTEN": ""}, ":8080", ""},
-		{"unknown key", "server: {listen: \":8080\", lissen: x}\n", nil, "", "field lissen not found"},
-		{"not host:port", "server:\n  listen: \"8080\"\n", nil, "", `server.listen: "8080" is not host:port`},
+		{"the file", withSecret, nil, ":8080", TLS{}, ""},
+		{"the variable", withSecret, map[string]string{"LAJSTROM_SERVER_LISTEN": "127.0.0.1:9090"}, "127.0.0.1:9090", TLS{}, ""},
+		{"empty variable", withSecret, map[string]string{"LAJSTROM_SERVER_LISTEN": ""}, ":8080", TLS{}, ""},
+		{"tls", withTLS, nil, ":8443", TLS{CertFile: "/missing/tls.crt", KeyFile: "/missing/tls.key"}, ""},
+		{"unknown key", "server: {listen: \":8080\", lissen: x}\n", nil, "", TLS{}, "field lissen not found"},
+		{"not host:port", "server:\n  listen: \"8080\"\n", nil, "", TLS{}, `server.listen: "8080" is not host:port`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ServerListen(writeConfig(t, tt.file), env(tt.env))
+			got, gotTLS, err := ServerListen(writeConfig(t, tt.file), env(tt.env))
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("error = %v, want %q", err, tt.wantErr)
 				}
 				return
 			}
-			if err != nil || got != tt.want {
-				t.Fatalf("ServerListen = %q, %v; want %q", got, err, tt.want)
+			if err != nil || got != tt.want || gotTLS != tt.wantTLS {
+				t.Fatalf("ServerListen = %q, %+v, %v; want %q, %+v", got, gotTLS, err, tt.want, tt.wantTLS)
 			}
 		})
 	}

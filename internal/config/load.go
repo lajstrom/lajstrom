@@ -147,13 +147,14 @@ func resolveSecrets(c *Config, lookupEnv func(string) (string, bool)) {
 }
 
 // ServerListen returns server.listen of the file at path, with its default and
-// LAJSTROM_SERVER_LISTEN, and reads nothing else: no secret is resolved, no other variable is
-// looked up and the rest of the file is not validated, so that lajstrom healthcheck finds the
+// LAJSTROM_SERVER_LISTEN, and server.tls, the paths of the certificate and the key as written,
+// and reads nothing else: no secret is resolved, no other variable is looked up, no file is
+// opened and the rest of the file is not validated, so that lajstrom healthcheck finds the
 // server without the secrets of serve. An unknown key is an error, as for Load.
-func ServerListen(path string, lookupEnv func(string) (string, bool)) (string, error) {
+func ServerListen(path string, lookupEnv func(string) (string, bool)) (string, TLS, error) {
 	c := Default()
 	if err := decodeFile(path, c); err != nil {
-		return "", err
+		return "", TLS{}, err
 	}
 	if lookupEnv != nil {
 		if v, ok := lookupEnv("LAJSTROM_SERVER_LISTEN"); ok && v != "" {
@@ -161,7 +162,7 @@ func ServerListen(path string, lookupEnv func(string) (string, bool)) (string, e
 		}
 	}
 	if _, _, err := net.SplitHostPort(c.Server.Listen); err != nil {
-		return "", fmt.Errorf("config: %s: server.listen: %q is not host:port", path, c.Server.Listen)
+		return "", TLS{}, fmt.Errorf("config: %s: server.listen: %q is not host:port", path, c.Server.Listen)
 	}
-	return c.Server.Listen, nil
+	return c.Server.Listen, c.Server.TLS, nil
 }
