@@ -324,6 +324,7 @@ LAJSTROM_TEST_REGISTRY=localhost:5000 LAJSTROM_TEST_REGISTRY_S3=localhost:5006 m
 LAJSTROM_TEST_REGISTRY=localhost:5000 LAJSTROM_TEST_ECR_ENDPOINT=http://localhost:5010 LAJSTROM_TEST_ECR_REGISTRY=localhost:5011 make test-integration   # and the ECR provider against moto (PROFILES=ecr)
 LAJSTROM_TEST_POSTGRES_DSN='postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable' go test -race ./internal/index/...
 make e2e                                               # the end-to-end scenarios, on a server of their own
+make registry-matrix                                   # the capability matrix of Zot and distribution (docs/registries/README.md)
 test/e2e/raw.sh http://localhost:8080 scratch          # one scenario, with make run in another terminal
 ```
 

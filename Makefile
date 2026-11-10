@@ -61,11 +61,16 @@ FUZZ_TARGETS ?= \
 	./internal/format/pypi:FuzzZipEntries \
 	./internal/format/maven:FuzzPOM \
 	./internal/format/npm:FuzzPackageJSON
+# The registries make registry-matrix probes: the dev stack's Zot and distribution. Another
+# registry of the stack, e.g. MATRIX_URLS='http://localhost:5003 http://localhost:5004' after
+# make dev-up PROFILES=gitlab; MATRIX_ARGS='-v' adds the requests, '-o json' JSON.
+MATRIX_URLS ?= http://localhost:5000 http://localhost:5001
+MATRIX_ARGS ?=
 # make run uses the local configuration when there is one, the example otherwise.
 RUN_CONFIG   := $(firstword $(wildcard deploy/compose/lajstrom.yaml) deploy/compose/lajstrom.example.yaml)
 
 .PHONY: help build test vet lint api-lint vulncheck licenses fmt-check check fuzz \
-	dev-up dev-down dev-ps dev-logs test-integration e2e load run snapshot release-check clean
+	dev-up dev-down dev-ps dev-logs test-integration e2e load registry-matrix run snapshot release-check clean
 
 help: ## List the targets
 	@echo "Usage: make <target>"
@@ -126,6 +131,9 @@ e2e: ## End-to-end scenarios with real clients against the dev stack's Zot (docs
 
 load: ## Load test: 1 GiB through raw and /v2 against the dev stack's Zot, the server's memory sampled; needs 4 GiB of free disk, 18 GiB with LAJSTROM_LOAD_UPLOADS=8; not part of e2e (docs/operations.md, Performance)
 	./test/load/run.sh
+
+registry-matrix: build ## The capability matrix of the dev stack's registries, measured by lajstrom registry probe (docs/registries/README.md); needs dev-up; MATRIX_URLS, MATRIX_ARGS
+	./$(BIN) registry probe $(foreach u,$(MATRIX_URLS),--url $(u)) $(MATRIX_ARGS)
 
 run: build ## Serve with deploy/compose/lajstrom.yaml, or the example when it does not exist
 	./$(BIN) serve --config $(RUN_CONFIG)
