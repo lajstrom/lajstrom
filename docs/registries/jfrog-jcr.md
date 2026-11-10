@@ -168,11 +168,11 @@ test log, with the prefix). On main it said `catalog=true`, and every `ListRepos
    Content-Length` on the read-back). A single `PUT` after the `POST` keeps its body.
 3. **Do not rely on the registry for the digest.** JCR stores whatever it is sent under the digest
    it is told, in a session or monolithically, and serves it so. Ingest computes its digests from
-   its spool, so what it pushes is right; the facade passes a client's digest through, so a
-   client can store bytes under a digest they do not hash to, which every later reader gets. The
-   facade could hash what it streams (Go's `sha256` digest marshals its state, which a session
-   record could carry across replicas), or the provider could compare the size of the stored
-   blob after closing (`HEAD`) to catch item 2 at least. A question for an issue.
+   its spool, so what it pushes is right; the facade passed a client's digest through, so a
+   client could store bytes under a digest they do not hash to, which every later reader gets.
+   Done in #368: the facade hashes what it streams, with the sha256 state in the session row
+   across replicas, and holds a blob's last byte back until the digest matches (threat model,
+   [P-9](../security/threat-model.md)).
 4. **Check a blob's existence with `GET`, or push without checking, on JCR.** `HEAD` of a digest
    that a manifest anywhere in the repository key names is 200 in every image path, while `GET`
    there is 404 until a manifest of that path names it ([Blob reads](#blob-reads-head-and-get)).

@@ -157,7 +157,7 @@ func TestUploadDigestInvalid(t *testing.T) {
 	}
 	wantError(t, "GET after the wrong digest", e.do(e.h, http.MethodGet, uploads+id, nil), http.StatusNotFound, codeBlobUploadUnknown)
 
-	// sha512: the digest's algorithm is the backend's to check.
+	// sha512 in one request: hashed in its own algorithm.
 	id = e.start(e.h)
 	b := []byte("sha512 content")
 	sum := sha512.Sum512(b)
@@ -268,7 +268,10 @@ func TestUploadMount(t *testing.T) {
 	wantCreated(t, "mount from a repo the principal may read", rr, d2)
 }
 
-// TestUploadBrokenBody: a body that breaks off is 400 and cancels the monolithic session.
+// TestUploadBrokenBody: a body that breaks off is 400 and cancels the monolithic session. A
+// chunk that breaks off leaves bytes in the backend that the hash did not take (the fake keeps
+// them): the close is then 400 DIGEST_INVALID and a further chunk 404, and either ends the
+// session (#368).
 func TestUploadBrokenBody(t *testing.T) {
 	e := newEnv(t, envOptions{})
 	b := bytes.Repeat([]byte("x"), 1000)
@@ -283,6 +286,15 @@ func TestUploadBrokenBody(t *testing.T) {
 	wantError(t, "chunk that breaks off", rr, http.StatusBadRequest, codeBlobUploadInvalid)
 	rr = e.do(e.h, http.MethodGet, uploads+id, nil)
 	wantHeader(t, "status after a broken chunk", rr, "Range", "0-299")
+	rr = e.do(e.h, http.MethodPatch, uploads+id, bytes.NewReader(b[300:]), "Content-Range", "300-999")
+	wantError(t, "chunk after it", rr, http.StatusNotFound, codeBlobUploadUnknown)
+	e.wantNoUpload("chunk after a broken chunk", id)
+
+	id = e.start(e.h)
+	e.do(e.h, http.MethodPatch, uploads+id, brokenAfter(b, 300), "Content-Length", "1000")
+	rr = e.do(e.h, http.MethodPut, uploads+id+"?digest="+d.String(), bytes.NewReader(b[300:]))
+	wantError(t, "close after a broken chunk", rr, http.StatusBadRequest, codeDigestInvalid)
+	e.wantNoUpload("close after a broken chunk", id)
 }
 
 // brokenAfter is a body of b that fails after n bytes, as a client that goes away.
@@ -318,7 +330,7 @@ func TestUploadRowNotWritten(t *testing.T) {
 	wantError(t, "PATCH whose row cannot be written", e.do(h, http.MethodPatch, uploads+id, strings.NewReader("abc")),
 		http.StatusInternalServerError, codeUnknown)
 	rr = e.do(e.h, http.MethodGet, uploads+id, nil)
-	wantHeader(t, "status after it", rr, "Range", "0-2")
+	wantHeader(t, "status after it: the chunk did not stream without its Recheck in the row", rr, "Range", "0-0")
 }
 
 // TestUploadMaxFileSize: a /v2 blob upload to a repo with maxFileSize 10 (U-3 of the
