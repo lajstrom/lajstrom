@@ -83,8 +83,12 @@ func abbreviated(accept []string) bool {
 
 // document returns the packument of kind of the package: from index_cache, rendered on a miss,
 // when the plugin has its ExternalURL; without one, rendered for this request with the base of
-// its host, and not kept, since another host would see that base.
+// its host, and not kept, since another host would see that base. A proxy repo's comes from the
+// core (proxyDocument).
 func (h *handlers) document(r *http.Request, repo index.Repo, name, kind string) (*index.Cache, error) {
+	if repo.Kind == index.KindProxy {
+		return h.proxyDocument(r, repo, name, kind)
+	}
 	ctx, scope := r.Context(), format.IndexScope(name)
 	missing := fmt.Errorf("%w: the package %s is not in %s/%s", index.ErrNotFound, name, repo.Format, repo.Name)
 	if h.plugin.ExternalURL != "" {
@@ -95,10 +99,7 @@ func (h *handlers) document(r *http.Request, repo index.Repo, name, kind string)
 		return c, err
 	}
 	p := h.plugin
-	p.ExternalURL = "http://" + r.Host
-	if r.TLS != nil {
-		p.ExternalURL = "https://" + r.Host
-	}
+	p.ExternalURL = requestBase(r)
 	docs, err := p.RenderIndex(ctx, repo, scope, h.deps.Index)
 	if err != nil {
 		return nil, err
@@ -143,26 +144,29 @@ func (h *handlers) version(w http.ResponseWriter, r *http.Request, repo index.Re
 	}
 }
 
+// requestBase is the base of the links of a packument rendered for one request: the request's
+// scheme and host.
+func requestBase(r *http.Request) string {
+	if r.TLS != nil {
+		return "https://" + r.Host
+	}
+	return "http://" + r.Host
+}
+
 // tarball serves the tarball file of the package's version whose tarball layer has that title,
 // as the facade serves a blob (format.ServeBlob): 307 to the backend's storage when it redirects
 // and policy.blobRedirect allows it, else streamed. ETag the blob digest, Last-Modified the
-// version's created, Docker-Content-Digest the manifest digest.
+// version's created, Docker-Content-Digest the manifest digest. A proxy repo's file comes from
+// the core, fetched from the upstream on a miss (proxyTarball).
 func (h *handlers) tarball(w http.ResponseWriter, r *http.Request, repo index.Repo, name, file string) {
 	ctx := r.Context()
-	matches, err := h.deps.Index.FindFiles(ctx, repo.ID, file)
+	find := h.hostedTarball
+	if repo.Kind == index.KindProxy {
+		find = h.proxyTarball
+	}
+	m, err := find(ctx, repo, name, file)
 	if err != nil {
 		h.fail(w, r, err)
-		return
-	}
-	var m *index.FileMatch
-	for i := range matches {
-		if matches[i].Package.Name == name { // the same file name in @acme/widgets and widgets
-			m = &matches[i]
-			break
-		}
-	}
-	if m == nil {
-		h.fail(w, r, fmt.Errorf("%w: %s has no tarball %s", index.ErrNotFound, name, file))
 		return
 	}
 	prov, err := h.registry(ctx, repo)
@@ -178,6 +182,20 @@ func (h *handlers) tarball(w http.ResponseWriter, r *http.Request, repo index.Re
 		h.deps.Log.WarnContext(ctx, "npm: the tarball stream failed after the response started", "repo", repo.Format+"/"+repo.Name,
 			"file", file, "digest", m.File.Digest.String(), "error", err.Error())
 	}
+}
+
+// hostedTarball returns the file of the package's version whose tarball is file.
+func (h *handlers) hostedTarball(ctx context.Context, repo index.Repo, name, file string) (*index.FileMatch, error) {
+	matches, err := h.deps.Index.FindFiles(ctx, repo.ID, file)
+	if err != nil {
+		return nil, err
+	}
+	for i := range matches {
+		if matches[i].Package.Name == name { // the same file name in @acme/widgets and widgets
+			return &matches[i], nil
+		}
+	}
+	return nil, fmt.Errorf("%w: %s has no tarball %s", index.ErrNotFound, name, file)
 }
 
 // registry returns the provider of the repo's registry.
