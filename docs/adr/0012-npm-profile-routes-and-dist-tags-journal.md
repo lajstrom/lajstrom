@@ -1,0 +1,136 @@
+# 0012. npm: the profile, the routes, and dist-tags as a journal in the registry
+
+- Status: proposed
+- Date: 2026-11-10
+- Deciders: gecube
+
+## Context
+
+M4 (decided on 2026-11-10) is a Verdaccio-style npm registry: a hosted repo, a caching proxy of
+npmjs.org and a group that serves both under one URL. The proxy and the group are ADR 0013
+(#303); this record is what is npm's own (#302).
+
+npm differs from the formats of the MVP in one way. Besides immutable versions, a package has
+state that changes: `dist-tags` (`latest`, `next`, `beta`), names that `npm install pkg@beta`
+resolves and that `npm publish`, `npm dist-tag add` and `npm unpublish` move, and deprecation
+messages, set and cleared on published versions. ADR 0001 keeps everything in the registry and
+ADR 0005 makes tags immutable, so this state can be neither a re-pointed OCI tag nor a row only
+the database holds: `reindex` must restore it. The lead decided that dist-tags live in the
+registry as an append-only journal: each change a small manifest that refers to the package,
+never rewritten; the index holds the current map; reindex replays the journal.
+
+### What the clients ask of a registry
+
+From the registry API docs
+([package metadata](https://github.com/npm/registry/blob/main/docs/responses/package-metadata.md))
+and a capture made for this record on 2026-11-10: npm 10.9.9 (Node 22), npm 11.19.1 (Node 24),
+pnpm 9.15.9 and 10.34.9, yarn 4.18.1, each in its container against a throwaway logging
+registry written for the capture, mounted below a path (`/npm/test/`) as Lajstrom's repos are.
+The capture's registry and scripts are not kept; the e2e of #312 runs the same commands against
+Lajstrom. The scoped name is `@acme%2fwidgets` in every URL a client builds (pnpm writes `%2F`).
+
+| Command | What goes over the wire |
+| --- | --- |
+| install | `GET /<name>`. npm 10 and 11 ask for the full packument (`Accept: application/json`), yarn 4 too (no `Accept`), pnpm 9 and 10 for the abbreviated one (`Accept: application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*`); `npm outdated`, `npm publish` and `npm unpublish` also ask for the abbreviated one first. Tarballs: npm and pnpm fetch `dist.tarball` as written; yarn builds `/<name>/-/<file>` itself, with `%2f` in a scoped name. `npm ci` and `pnpm install --frozen-lockfile` fetch tarballs only. |
+| publish | `PUT /<name>`, JSON: `_id`, `name`, `dist-tags` (one tag, `latest` unless `--tag`), `versions` (one version document with `dist.integrity`, `dist.shasum` and a placeholder `dist.tarball`), `access` (`null`, `public`, `restricted`), `_attachments` (one entry `<name>-<version>.tgz`, `@acme/widgets-1.2.0.tgz` for a scoped name: `content_type`, base64 `data`, `length`); yarn adds a top-level `readme`. pnpm 9 and 10 pack and run npm's publish, whose version document then carries `_resolved` (a local path), `_from` and `_integrity`. npm 11 reads the packument first and refuses, on the client, a prerelease or a version below the highest without `--tag`; npm 10 sends both, with `latest`. |
+| dist-tag | `GET /-/package/<name>/dist-tags`; `PUT …/dist-tags/<tag>` with a JSON string body, the version; `DELETE …/dist-tags/<tag>`. yarn sends the `GET` without credentials. |
+| deprecate | `GET /<name>?write=true`, then `PUT /<name>` with the whole packument as read, `_rev` included and `versions[v].deprecated` set (`""` clears it). |
+| unpublish | One version: `GET /<name>?write=true` twice, `PUT /<name>/-rev/<rev>` with the packument without the version and without the dist-tags that named it, `GET ?write=true` again, `DELETE <path of dist.tarball>/-rev/<rev>`: the tarball URL's path on the host, not joined to the registry URL. The whole package: `DELETE /<name>/-rev/<rev>`. |
+| login | npm's default `--auth-type=web`: `POST /-/v1/login` with `{}`; a `404` makes npm prompt for a user name and a password and send the legacy `PUT /-/user/org.couchdb.user:<name>` with `{_id, name, password, type: "user", roles: [], date}`, without credentials or with the stale bearer it had; the answer's `token` becomes `_authToken`. The web flow answers `{loginUrl, doneUrl}` and npm polls `doneUrl` (`202` with `Retry-After`, then `200 {"token"}`). `yarn npm login` sends the legacy `PUT` only. |
+| logout | npm: `DELETE /-/user/token/<the token>`. yarn: no request. |
+| whoami, ping | `GET /-/whoami` → `{"username"}`; `GET /-/ping`. |
+| audit | npm 10, 11 and yarn 4: `POST /-/npm/v1/security/advisories/bulk`, `{name: [versions]}` (npm gzips it). pnpm 9: `POST /-/npm/v1/security/audits`, pnpm 10: `…/audits/quick`, both with npm 6's dependency tree. |
+| search | `GET /-/v1/search?text=&size=20&from=0&quality=…&popularity=…&maintenance=…` |
+
+pnpm 9 and 10 hand `login`, `whoami`, `ping`, `dist-tag`, `view`, `deprecate`, `search` and
+`unpublish` to the npm CLI. npm sends `Authorization: Bearer` from `_authToken` (Basic from
+`_auth`), with `npm-command` and `npm-auth-type` headers. Two yarn 4 defaults matter for a
+private registry: it sends no credentials for an unscoped package unless `npmAlwaysAuth: true`,
+and does not retry a `401` with them; and `npmMinimalAgeGate` is 1440 minutes, so a version
+published in the last day is not installed unless `npmPreapprovedPackages` names it. Both are
+client configuration for the docs (#313); the second needs a true `time` in the packument.
+
+## Considered options
+
+For the journal entries:
+
+- **Referrers of a version** (`subject` = the version manifest a tag names). Deleting a version
+  deletes its referrers (#61), so an unpublish would erase history; a removal names no
+  version; the referrers API lists in no order.
+- **Tagged manifests in the package's OCI repository**, one immutable tag per entry, numbered.
+
+For their order across replicas:
+
+- **Claims** in `tag_claims` on the next entry's tag: a race is a `409` and the loser retries
+  after the winner's confirm.
+- **A lock per package** held for the append: the referrers lock of index-schema.md, keyed by
+  the package's OCI repository and a digest that no manifest has.
+
+For the version document a packument serves:
+
+- **The publish body's** version object, as npmjs.org serves it, checked against the tarball's
+  `package.json` for name and version.
+- **The tarball's `package.json`**, normalised by Lajstrom as npm normalises it (`bin`,
+  `directories.bin`, `gypfile`), so that the packument cannot say other dependencies than the
+  tarball ("manifest confusion"), at the price of reimplementing npm's normalisation.
+
+## Decision
+
+**The profile** (normative in [manifest-profile.md](../spec/manifest-profile.md)). A version is
+one manifest, `artifactType` `application/vnd.lajstrom.npm.v1`: the tarball layer
+`application/vnd.lajstrom.npm.tarball.v1.tar+gzip` (title `<name without scope>-<version>.tgz`,
+annotations `lajstrom.npm.integrity` and `lajstrom.npm.shasum`) and the metadata layer
+`application/vnd.lajstrom.npm.metadata.v1+json` with the publish body's version document,
+without `dist`, `readme` and the keys that begin with `_`. Package path
+`EscapeComponent(name)`, for `@scope/name` `EscapeComponent(scope)/EscapeComponent(name)`; tag
+`Escape(version)`, no variant.
+
+**The journal.** Each change of a package's dist-tags or deprecations is one manifest in the
+package's OCI repository: `artifactType` `application/vnd.lajstrom.npm.dist-tags.v1` (`add`,
+`rm`) or `application/vnd.lajstrom.npm.deprecation.v1` (`deprecate`, `undeprecate`), the empty
+config and one empty layer, the change in `lajstrom.npm.*` annotations, its number in
+`lajstrom.npm.seq` and the tag `_j<seq>` (eight digits, `_j00000001`), which `Escape` can never
+produce. Entries are numbered from 1 without gaps, under the package's journal lock (the
+referrers lock of the package's OCI repository and the empty blob's digest). Under it the writer
+looks for the entry after the index's last in the registry, adopts any it finds, pushes the
+next and indexes it; the order is the lock's. An OCI tag is never re-pointed: the current map is
+derived. `npm publish` appends an `add` of the body's tag after the version is indexed;
+deprecations are entries of the same journal, in M4.
+
+**The index** ([index-schema.md](../spec/index-schema.md), npm). `journal`, one row per entry,
+and `journal_state`, the fold: the current dist-tags and deprecations of each package, written
+with each entry and rebuilt by reindex from the entries in order. The packument drops a tag
+whose version is gone and, without `latest`, names the highest release.
+
+**The routes** ([http-routing.md](../spec/http-routing.md), npm): the full and the abbreviated
+packument from `index_cache`, tarballs through `format.ServeBlob`, publish, the packument
+update of `deprecate` and `unpublish` (checked against `_rev`, deletions through the delete path
+of #61), dist-tags, `ping`, `whoami`, the legacy login answering a new personal access token
+(no self-registration; the web login is `404`, and npm falls back to the password prompt),
+`logout`, `audit` and `search`. A bearer carries a personal access token or a deploy token, as
+`_authToken` sends it ([rbac.md](../spec/rbac.md) §1).
+
+## Consequences
+
+- dist-tags and deprecations survive the loss of the database: reindex replays the journal, and
+  the derived map can be compared with the replay in a test (#307).
+- One `latest` entry per publish: a package has about as many journal tags as versions, and
+  reindex reads each tag like a version tag. No compaction in M4; a snapshot entry that a
+  replay starts from is the way, later.
+- A writer that crashed after its push leaves an entry the index lacks; the next append or
+  reindex adopts it. The journal lock is held across a registry push, as the referrers lock
+  already is.
+- `npm unpublish`'s packument update writes the `rm` entries of the tags that named the
+  version; a version deleted through `/v2` or `/api/v1` writes none, its tags drop out of the
+  packument, and would name it again if the same version were published anew. Lajstrom allows
+  that republish; npmjs.org does not.
+- The body's version document trusts the publisher for what the packument says about
+  dependencies and scripts beyond name and version (`hasInstallScript` is computed from the
+  tarball). A writer is an authenticated principal of the repo; a stricter check is a later
+  issue.
+- `Bearer ljs_dep_…` is accepted outside `/v2` (docs/auth.md said it is refused; the
+  implementation changes it).
+- The proxy and the group (ADR 0013) reuse the profile; a proxied package's dist-tags are the
+  upstream's and are not journaled.
+- The Go shape of the journal write (one method of `format.Publisher`, implemented by ingest,
+  the one write path) is added by #307 on these semantics.

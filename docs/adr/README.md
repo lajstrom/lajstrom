@@ -52,4 +52,5 @@ to `superseded by NNNN`. Typos and broken links may be fixed in place.
 | [0009](0009-encryption-at-rest-in-the-registry.md) | Encryption at rest in the registry: OCI encrypted layers, keys held by Lajstrom | accepted |
 | [0010](0010-bearer-token-signing-key.md) | Where the bearer-token signing key lives: the database, under the master key | accepted |
 | [0011](0011-client-address-behind-a-proxy.md) | The client address behind a reverse proxy: a list of trusted proxies, nothing else | accepted |
-| [0013](0013-proxy-and-group-repos.md) | Proxy and group repos: fetch on miss into the one write path, hosted names hide the upstream | proposed |
+| [0012](0012-npm-profile-routes-and-dist-tags-journal.md) | npm: the profile, the routes, and dist-tags as a journal in the registry | accepted |
+| [0013](0013-proxy-and-group-repos.md) | Proxy and group repos: fetch on miss into the one write path, hosted names hide the upstream | accepted |

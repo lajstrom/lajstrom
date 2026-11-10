@@ -146,6 +146,37 @@ maintainer on 2026-11-10 (#284).
 | `oci_repos` | `id`, `repo_id`, `path` text (full OCI path incl. prefix), `seen_at` ts | repository list for backends without a catalog; reconcile source |
 | `proxy_meta` (later) | upstream metadata cache with TTL | after the MVP |
 
+### npm: the journal and its state (ADR 0012)
+
+Two more derived tables hold what changes on an npm package: its dist-tags and the deprecation
+of its versions, kept in the registry as a journal of manifests (manifest-profile.md §8).
+
+| Table | Columns | Notes |
+| --- | --- | --- |
+| `journal` | `id`, `package_id` → packages (`ON DELETE CASCADE`), `seq` int, `tag` text (`_j…`), `digest` text (the entry's manifest digest), `artifact_type` text, `attrs` json (the entry's `lajstrom.npm.*` annotations), `created_at` ts (from `org.opencontainers.image.created`), `indexed_at` ts | unique `(package_id, seq)`; unique `(package_id, tag)`. One row per journal entry in the registry |
+| `journal_state` | `id`, `package_id` → packages (`ON DELETE CASCADE`), `kind` text (`dist-tag`, `deprecated`), `key` text (the dist-tag; the version), `value` text (the version; the message), `seq` int (the entry that set it) | unique `(package_id, kind, key)`. The current dist-tags and deprecations: the fold of the package's `journal` rows in `seq` order |
+
+- Both are written by the journal writer of ingest, by reindex and by delete, never by a
+  frontend. The writer inserts the rows of its entries, updates the package's `journal_state` and
+  invalidates its documents in one transaction, before it releases the package's journal lock:
+  the referrers lock (Coordination) keyed by the package's OCI repository and the empty blob's
+  digest, which no manifest has. The order of a package's entries is the order of that lock.
+- Reindex marks and sweeps `journal` as it does `versions`: a `_j` tag that names the digest of
+  its row is seen without a read, a row whose tag the registry answers as unknown is deleted.
+  Then it replaces the package's `journal_state` with the replay of its rows, in one transaction.
+  The test of #307 drops both tables, runs reindex and compares.
+- The state is never a column of `versions`: a version row is its manifest's, the state is the
+  journal's. A packument (http-routing.md, npm) reads both; its `_rev` is computed from `journal`
+  and `versions` and needs no column.
+- A package's rows go with it. When its last version is deleted outside an unpublish of the
+  package, its entries stay in the registry as orphans, which reindex reports and the next
+  append to that name adopts.
+- `index_cache` holds two documents per npm package: scope the package name (`@acme/widgets`),
+  kinds `packument` and `packument-abbreviated`, rendered together. A publish or a delete of a
+  version of the package, each journal append and reindex invalidate them: at least the
+  package's scope; the whole repo's, as the delete path does, is correct too. A group's
+  packuments are ADR 0013's.
+
 ## Migrations
 
 The migrations are `internal/index/migrations/{sqlite,postgres}/NNNN_<name>.sql`, embedded in

@@ -146,6 +146,154 @@ which would publish what had arrived, a version missing files (decided on #53). 
 `<repository>` with `<url>https://host/maven/<repo></url>` and a `<server>` entry with
 user/token in `settings.xml`.
 
+### npm (M4, ADR 0012)
+
+The npm registry API as npm 10 and 11, pnpm 9 and 10 and yarn 4 use it (the survey of ADR
+0012), for a hosted repo; a proxy and a group repo answer the same routes as ADR 0013 says, a
+group passing its writes to its hosted member. `<name>` is a package name: `lodash`, or a
+scoped name as one segment `@scope%2fname` (`%2F` too) or as two, `@scope/name`; a segment that
+begins with `@` is a scope. Every answer is JSON, an error `{"error": "<message>"}`; the denials
+of rbac.md §3 hold (`401` with `WWW-Authenticate: Basic realm="lajstrom"` to anonymous, `404`
+without access, `403` without the action). Credentials: Basic as on every frontend, and
+`Authorization: Bearer` with a personal access token or a deploy token, which `_authToken` in
+`.npmrc` sends (rbac.md §1).
+
+| Method and path | Behaviour |
+| --- | --- |
+| `GET /npm/<repo>/<name>`, `HEAD` | `read`. The packument (below), from `index_cache`: the abbreviated one, `Content-Type: application/vnd.npm.install-v1+json`, when `Accept` names that type with a `q` above 0 and the query has no `write=true`; else the full one, `application/json` (npm 10 and 11 install with it, and yarn 4). `ETag` the document's sha256, `If-None-Match` is `304`, `Vary: Accept`, `Cache-Control: no-cache` (clients revalidate, and see a publish at once). `404` for a package the repo does not have |
+| `GET /npm/<repo>/<name>/<version>` | `read`. One version of the full packument; a dist-tag in place of the version resolves through the map. `404` |
+| `GET /npm/<repo>/<name>/-/<file>`, `HEAD` | `read`. The tarball of the package's version whose tarball layer is titled `<file>` (`widgets-1.2.0.tgz`), read as the blob `GET` of the facade (§2, `format.ServeBlob`): `307` to the backend's storage when it redirects and `policy.blobRedirect` allows it, else the backend's `200`, `206` or `416` streamed. `ETag` the blob digest, `Last-Modified` the version's `created`, `Docker-Content-Digest` the manifest digest, `Content-Type: application/octet-stream`. `404` for a file no version has |
+| `PUT /npm/<repo>/<name>` with `_attachments` | publish, `write` (below). `201 {"ok": true}` |
+| `PUT /npm/<repo>/<name>` without `_attachments`, `PUT /npm/<repo>/<name>/-rev/<rev>` | a packument update: npm's `deprecate`, and the first step of its unpublish of a version (below). `201 {"ok": true}` |
+| `DELETE /npm/<repo>/<name>/-rev/<rev>` | unpublish of the package, `delete`. `<rev>` must be the current `_rev`, else `409`. Every version is deleted as the `DELETE` of its manifest on `/v2` deletes it (§2, #61: its referrers first, an audit row each), then every journal entry, under the journal lock (manifest-profile.md §8). `200 {"ok": true}`; a backend that cannot delete manifests is `501` and nothing changes; versions deleted before a failure stay deleted |
+| `DELETE /npm/<repo>/<name>/-/<file>/-rev/<rev>` | the last step of npm's unpublish of a version, `delete`, at the path of `dist.tarball`: the version whose tarball is `<file>`, when it is still there, is deleted as on `/v2`. `200 {"ok": true}` either way; `<rev>` is not checked (npm read the packument again just before) |
+| `GET /npm/<repo>/-/package/<name>/dist-tags` | `read`. The packument's `dist-tags` |
+| `PUT /npm/<repo>/-/package/<name>/dist-tags/<tag>` | `write`. The body is a JSON string, a version of the package; a malformed tag (manifest-profile.md §8) or a version the package does not have is `400`. A journal `add`, none when the tag names the version already. `201 {"ok": true}` |
+| `DELETE /npm/<repo>/-/package/<name>/dist-tags/<tag>` | `write`. A journal `rm`; `latest` is `400`, a tag the package does not have `404`. `200 {"ok": true}` |
+| `GET /npm/<repo>/-/ping` | `read`. `200 {}` |
+| `GET /npm/<repo>/-/whoami` | `read`. `200 {"username": "<name>"}`: the user's name, `token:<id>` for a deploy token; `401` to anonymous, on a repo with anonymous read too |
+| `PUT /npm/<repo>/-/user/org.couchdb.user:<name>` | the legacy login of `npm login`, `npm adduser` and `yarn npm login` (below) |
+| `DELETE /npm/<repo>/-/user/token/<token>` | `npm logout`: when `<token>` is the request's own personal access token, it is revoked, with an audit row; `200 {"ok": true}`. Any other token is `404` |
+| `POST /npm/<repo>/-/v1/login` | `404`: no web login in M4. npm then prompts for the user name and password and logs in with the legacy route |
+| `POST /npm/<repo>/-/npm/v1/security/advisories/bulk`, `…/audits`, `…/audits/quick` | `read`. `npm audit` and the audit of `npm install` (bulk), `pnpm audit` (the two others); below |
+| `GET /npm/<repo>/-/v1/search?text=&size=&from=` | `read`. `npm search`; below |
+
+Everything else under `/npm/<repo>/-/` (`npm token`, `access`, `owner`, `team`, `star`, `profile`)
+is `404`. Every journal entry (manifest-profile.md §8) is an audit row of its own, action
+`npm.dist-tag` or `npm.deprecate`, with the entry's digest.
+
+**Packument.** Rendered from the package's versions, their metadata layers
+(manifest-profile.md §2) and its `journal_state` (index-schema.md, npm), in one render with
+both documents, scope the package name, kinds `packument` and `packument-abbreviated`.
+
+- Full: `_id` and `name`, `_rev`, `dist-tags`, `versions`, `time`, and from the version that
+  `latest` names `description`, `keywords`, `license`, `homepage`, `repository`, `bugs`,
+  `author` and `readme`. A version is its metadata's `manifest` with `_id` (`<name>@<version>`),
+  `dist` (`tarball`, `shasum`, `integrity`), `deprecated` when the state has a message for it,
+  `_hasShrinkwrap` and `hasInstallScript`. `time` has `created` (the first version's),
+  `modified` (the newest version's or journal entry's) and each version's `created`, which yarn
+  4's age gate reads.
+- Abbreviated: `name`, `modified`, `dist-tags` and `versions`, each version with the fields of
+  the registry API's abbreviated form that it has: `name`, `version`, `deprecated`,
+  `dependencies`, `optionalDependencies`, `devDependencies`, `peerDependencies`,
+  `peerDependenciesMeta`, `bundleDependencies`, `acceptDependencies`, `bin`, `directories`,
+  `engines`, `cpu`, `os`, `libc`, `funding`, `dist`, `_hasShrinkwrap`, `hasInstallScript`.
+- `dist.tarball` is absolute, `<server.externalURL>/npm/<repo>/<name>/-/<file>` with the scope's
+  `/` as it is (`…/npm/internal/@acme/widgets/-/widgets-1.2.0.tgz`), `<repo>` the repo asked (a
+  group's own, ADR 0013). A new `externalURL` needs the documents reset (`reindex`).
+- `dist-tags`: the state's tags whose version the package has. Without such a `latest`, `latest`
+  is the highest version by SemVer precedence that is not a prerelease, else the highest. A
+  version without its metadata layer (a degraded row) is `{name, version, dist}` from its
+  annotations.
+- `_rev` is `<seq>-<hex>`: the package's highest journal `seq` (`0` without one) and the first 32
+  hex digits of the sha256 of its versions' manifest digests, sorted, one per line. Every
+  publish, delete and journal entry changes it, and every replica computes the same.
+
+**Publish.** npm's body (ADR 0012): `name`, `dist-tags`, `versions` with one version document,
+`_attachments` with its tarball in base64. The tarball is decoded as it streams into a spool
+file, never held whole in memory; the rest of the body is at most 4 MiB, and the repo's
+`maxFileSize` applies to the tarball (`413` for either). `400`, naming the rule, for:
+
+- a body `name` that is not `<name>`; not exactly one version and one attachment (npm's
+  provenance bundle, a second attachment, is refused in M4); a version document whose `name` and
+  `version` are not the body's;
+- a name npm refuses for a new package: more than 214 bytes, an upper-case letter, a leading `.`
+  or `_`, a character that `encodeURIComponent` changes (the `/` of a scope aside),
+  `node_modules`, `favicon.ico`;
+- a version that is not SemVer 2.0.0, or has build metadata (npm strips it, so no two versions
+  differ by it alone);
+- an attachment whose `length` is not its decoded size; a `dist.integrity` or `dist.shasum` of
+  the document that the tarball does not have;
+- a tarball that is not a gzipped tar with one top directory holding a `package.json` of the
+  same `name` and `version` (read once, whole, bounded as an sdist is, #243);
+- a dist-tag in `dist-tags` that is malformed (manifest-profile.md §8) or names another version.
+
+The version is ingested as one manifest of the profile (claims, push, confirm, an audit row
+`push`); the same tarball again is the idempotent repeat, another under a published version
+`409`. Then each tag of the body's `dist-tags` (`latest` when it has none) that does not name the
+version yet is a journal `add`, so a repeat after a failed append completes it. `access` is
+ignored: who reads a package is the repo's RBAC.
+
+**Packument update.** The whole packument, as read with `?write=true` and changed. Its `_rev`,
+the URL's `-rev/<rev>` or else the body's, must be the current one: `409` otherwise (the package
+changed; read it again), `400` without one. Against the state of that `_rev`:
+
+- a version missing from `versions` is deleted as on `/v2` (`delete`);
+- each difference in `dist-tags` is an `add` or an `rm` (`write`); a body without `latest` leaves
+  it as it is, and a tag naming a version that is not in the body is `400`;
+- each difference in a version's `deprecated` (a message, or `""` or nothing for none) is a
+  `deprecate` or an `undeprecate` (`write`);
+- a version in the body that the package does not have is `400`: a version comes with its
+  tarball. Every other field (`maintainers`, `readme`, `time`, …) is ignored.
+
+The permissions are checked before anything changes; the deletes go first, an audit row
+`delete` each, then the journal entries in one append.
+
+**Login.** The body is `{"name", "password", …}` and `<name>` must be its `name` (`400`). The
+password is checked as a Basic password is, throttled as failed logins are (`429` with
+`Retry-After`); the request's `Authorization` header is ignored, as npm sends the token it had,
+revoked or not, and the request is decided as the user of the body, never as anonymous. A wrong
+password, an unknown or a disabled user are `401` alike, and nobody is created, whatever
+`npm adduser` asks. A user that may not read the repo gets `404` (rbac.md §3). Otherwise the
+answer is a new personal access token of the user, not narrowed, with the default expiry, named
+`npm login <repo> <date>`, with an audit row:
+`201 {"ok": true, "id": "org.couchdb.user:<name>", "token": "<secret>"}`. npm and yarn store it as
+their auth token; `GET /api/v1/users/<name>/tokens` lists it.
+
+**Audit.** The body, gzipped when `Content-Encoding: gzip` says so, is at most 16 MiB decoded.
+
+- Hosted: no advisory is known for its packages. Bulk: `{}`; the two others: the empty report,
+  `{"actions": [], "advisories": {}, "muted": [], "metadata": {"vulnerabilities": {"info": 0,
+  "low": 0, "moderate": 0, "high": 0, "critical": 0}, "dependencies": 0, "devDependencies": 0,
+  "optionalDependencies": 0, "totalDependencies": 0}}`.
+- Proxy: forwarded to the upstream as it came, with the upstream's credentials (ADR 0013), and
+  its answer returned; an upstream that does not answer is `502`.
+- Group: the bulk request, without the names its hosted members hold, forwarded as a proxy does
+  (`{}` when no name is left). The two others are `501`: a tree loses what hangs below a private
+  package when the package is cut out, and sent whole it would publish the private names.
+
+Nothing is cached.
+
+**Search.** From the index, never from an upstream: the repo's packages (a group's: those of
+its members, a proxy's: those it has cached) whose name contains `text` without regard to case,
+sorted by name; `from` and `size` (default 20, at most 250) paginate.
+`{"objects": [{"package": {"name", "version", "description", "date"}, "score": {"final": 1,
+"detail": {"quality": 1, "popularity": 1, "maintenance": 1}}, "searchScore": 1}], "total", "time"}`,
+`version` being `latest` and `description` its.
+
+**Through `/v2`.** An npm version pushed with `oras push` is ingested as any other
+(manifest-profile.md §5) and appends no journal entry: until a dist-tag names a version,
+`latest` falls back as above. A journal manifest is never pushed (its artifactType is not the
+format's: `400 MANIFEST_INVALID`) nor deleted (`409 DENIED`: an entry goes with its package);
+`tags/list` lists the versions only. A version deleted through `/v2` or `/api/v1` drops out of
+the packument with the dist-tags that name it.
+
+Client config: `registry=https://host/npm/<repo>/` and `//host/npm/<repo>/:_authToken=<token>`
+in `.npmrc`, or `npm login --registry=https://host/npm/<repo>/`; yarn 4: `npmRegistryServer:
+"https://host/npm/<repo>"` and `npmAuthToken`, with `npmAlwaysAuth: true` on a repo without
+anonymous read and the repo's scopes in `npmPreapprovedPackages`, or yarn holds a new version
+back for a day.
+
 ## 4. Management API `/api/v1`
 
 JSON, bearer (PAT) or Basic. Shapes are fixed in the API issue (M2-09); listed here so frontends
