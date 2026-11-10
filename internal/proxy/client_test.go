@@ -293,13 +293,13 @@ func TestLoadUpstreams(t *testing.T) {
 	for _, tt := range []struct {
 		file, want string
 	}{
-		{filepath.Join(dir, "nope"), "upstreams[0].auth.tokenFile: open " + filepath.Join(dir, "nope")},
-		{write("empty", "\n \n", 0o600), "upstreams[0].auth.tokenFile: the file " + filepath.Join(dir, "empty") + " is empty"},
+		{filepath.Join(dir, "nope"), "upstreams[0].auth.tokenFile: open: no such file or directory"},
+		{write("empty", "\n \n", 0o600), "upstreams[0].auth.tokenFile: the file is empty"},
 	} {
 		_, err := LoadUpstreams([]config.Upstream{{Name: "a", Format: "npm", URL: "https://a.example", Auth: config.UpstreamAuth{TokenFile: tt.file}}},
 			UpstreamOptions{Log: slog.New(slog.DiscardHandler)})
-		if err == nil || !strings.HasPrefix(err.Error(), tt.want) {
-			t.Errorf("LoadUpstreams with %s: %v, want %q", tt.file, err, tt.want)
+		if err == nil || !strings.HasPrefix(err.Error(), tt.want) || strings.Contains(err.Error(), dir) {
+			t.Errorf("LoadUpstreams with %s: %v, want %q and no path", tt.file, err, tt.want)
 		}
 	}
 }

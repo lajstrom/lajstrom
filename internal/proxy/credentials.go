@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"strings"
@@ -67,35 +69,45 @@ func authorization(key string, a config.UpstreamAuth, log *slog.Logger) (string,
 }
 
 // readSecret reads the secret of the file at path, which key names, without the spaces and line
-// breaks around it. Its errors name key and path, never the content.
+// breaks around it. Its errors and its warning name the key, which the configuration maps to the
+// file, and the cause: never the content, and not the path, which stays in the configuration.
 func readSecret(key, path string, log *slog.Logger) (string, error) {
 	f, err := os.Open(path) // #nosec G304 -- the operator names the file
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", key, err) // a *PathError: the path and the cause
+		return "", fmt.Errorf("%s: open: %w", key, withoutPath(err))
 	}
 	defer func() { _ = f.Close() }()
 	fi, err := f.Stat()
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", key, err)
+		return "", fmt.Errorf("%s: stat: %w", key, withoutPath(err))
 	}
 	if !fi.Mode().IsRegular() {
-		return "", fmt.Errorf("%s: %s is not a regular file", key, path)
+		return "", fmt.Errorf("%s: not a regular file", key)
 	}
 	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
 		log.Warn("a credential file of an upstream is open to more than its owner: make it 0400 or 0600",
-			"key", key, "file", path, "mode", fmt.Sprintf("%04o", perm))
+			"key", key, "mode", fmt.Sprintf("%04o", perm))
 	}
 	b, err := io.ReadAll(io.LimitReader(f, maxSecretFile+1))
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", key, err)
+		return "", fmt.Errorf("%s: read: %w", key, withoutPath(err))
 	}
 	secret := strings.TrimSpace(string(b))
 	clear(b)
 	switch {
 	case len(b) > maxSecretFile:
-		return "", fmt.Errorf("%s: the file %s is larger than a secret, %d bytes", key, path, maxSecretFile)
+		return "", fmt.Errorf("%s: the file is larger than a secret, %d bytes", key, maxSecretFile)
 	case secret == "":
-		return "", fmt.Errorf("%s: the file %s is empty", key, path)
+		return "", fmt.Errorf("%s: the file is empty", key)
 	}
 	return secret, nil
+}
+
+// withoutPath is the cause of a *fs.PathError without its path.
+func withoutPath(err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err
+	}
+	return err
 }
