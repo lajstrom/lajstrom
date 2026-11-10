@@ -54,5 +54,6 @@ to `superseded by NNNN`. Typos and broken links may be fixed in place.
 | [0011](0011-client-address-behind-a-proxy.md) | The client address behind a reverse proxy: a list of trusted proxies, nothing else | accepted |
 | [0012](0012-npm-profile-routes-and-dist-tags-journal.md) | npm: the profile, the routes, and dist-tags as a journal in the registry | accepted |
 | [0013](0013-proxy-and-group-repos.md) | Proxy and group repos: fetch on miss into the one write path, hosted names hide the upstream | accepted |
+| [0014](0014-uploads-stream-into-the-registry.md) | Uploads stream into the registry: no request spool | proposed |
 | [0015](0015-declarative-management-one-owner-per-object.md) | Declarative management: one owner per object | accepted |
 | [0016](0016-go-the-language-of-the-network-os.md) | Go: the language of the network operating system | accepted |
