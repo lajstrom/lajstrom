@@ -81,13 +81,21 @@ one manifest, `artifactType` `application/vnd.lajstrom.npm.v1`: the tarball laye
 `application/vnd.lajstrom.npm.tarball.v1.tar+gzip` (title `<name without scope>-<version>.tgz`,
 annotations `lajstrom.npm.integrity` and `lajstrom.npm.shasum`) and the metadata layer
 `application/vnd.lajstrom.npm.metadata.v1+json` with the publish body's version document,
-without `dist`, `readme` and the keys that begin with `_`. The document must agree with the
-tarball's `package.json` on what decides what an install runs: `name`, `version`,
+without `dist`, `readme` and the keys that begin with `_`. The tarball's `package.json` is first given
+the three normalisations npm's CLI applies to the document it sends but not to the file it packs
+(npm 10 and 11, checked with the real clients on 2026-11-10): `bin` as a string becomes
+`{<name without its scope>: <path>}`; `directories.bin` without `bin` becomes a `bin` of every
+file of that directory in the tarball, by its base name; and a `binding.gyp` at the package's
+root with neither an `install` nor a `preinstall` script adds the script `install` `node-gyp
+rebuild`. Paths are compared without a leading `./`. Then the document must agree with
+the tarball's `package.json` on what decides what an install runs: `name`, `version`,
 `dependencies`, `optionalDependencies`, `peerDependencies`, `bundleDependencies` (or
 `bundledDependencies`), `bin`, and the install scripts `preinstall`, `install` and
 `postinstall`, each compared as JSON values, a missing key equal to an empty one; any other
 answer is `400` naming the key ("manifest confusion" is refused at publish, without
-reimplementing npm's normalisation of the rest; decided by the lead on 2026-11-10). Package path
+reimplementing npm's normalisation of what an install does not run on; decided by the lead on
+2026-11-10, the three normalisations corrected the same day after #345 found that npm packs the
+raw file). Package path
 `EscapeComponent(name)`, for `@scope/name` `EscapeComponent(scope)/EscapeComponent(name)`; tag
 `Escape(version)`, no variant.
 
@@ -134,9 +142,10 @@ of #61), dist-tags, `ping`, `whoami`, the legacy login answering a new personal 
   keywords, repository, engines…); what it runs on must equal the tarball's `package.json`
   (dependencies of every kind, `bin`, the install scripts), so the packument cannot hide a
   dependency or a script the tarball has (`hasInstallScript` is computed from the tarball).
-  npm's normalisation of `bin` (a string for a package's own name, `directories.bin`) is not
-  applied: a publisher whose document and `package.json` differ only by it gets `400` and
-  publishes with the normalised form in both, which npm's CLI already sends.
+  The three normalisations above are the ones that touch what an install runs; without them
+  `npm publish` of a package with a string `bin`, a `directories.bin` or a `binding.gyp` is
+  refused although nothing was hidden. A new normalisation in a later npm shows up as a `400`
+  for an honest package and is added here.
 - `Bearer ljs_dep_…` is accepted outside `/v2` (docs/auth.md said it is refused; the
   implementation changes it).
 - The proxy and the group (ADR 0013) reuse the profile; a proxied package's dist-tags are the

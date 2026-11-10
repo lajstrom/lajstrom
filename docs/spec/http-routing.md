@@ -220,8 +220,9 @@ file, never held whole in memory; the rest of the body is at most 4 MiB, and the
 - a version document that differs from the tarball's `package.json` in `dependencies`,
   `optionalDependencies`, `peerDependencies`, `bundleDependencies` (or `bundledDependencies`),
   `bin`, or the scripts `preinstall`, `install` and `postinstall` (compared as JSON values, a
-  missing key equal to an empty one), naming the key: the packument never says other than what
-  an install of the tarball runs (ADR 0012);
+  missing key equal to an empty one, after npm's three normalisations of the tarball's file:
+  a string `bin`, `directories.bin`, and `binding.gyp` without an install script; ADR 0012),
+  naming the key: the packument never says other than what an install of the tarball runs;
 - a name npm refuses for a new package: more than 214 bytes, an upper-case letter, a leading `.`
   or `_`, a character that `encodeURIComponent` changes (the `/` of a scope aside),
   `node_modules`, `favicon.ico`;
