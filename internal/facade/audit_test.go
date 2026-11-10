@@ -3,6 +3,7 @@ package facade
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/server"
 )
 
@@ -89,5 +91,58 @@ func TestPushAuditOrigin(t *testing.T) {
 				t.Errorf("push rows %+v, want %+v", got, want)
 			}
 		})
+	}
+}
+
+// auditRow is what TestOCIPushAudit checks of an audit row.
+type auditRow struct {
+	Principal, Repo, Subject string
+	Digest                   digest.Digest
+	IP, Details              string
+}
+
+// TestOCIPushAudit (#245): through the server behind a trusted proxy, a manifest pushed to an
+// oci repo writes one push row in the transaction of oci_repos: alice, the repo, the OCI name as
+// the subject, the digest, the forwarded address, the tag and the request id. The repeat of
+// the same manifest writes another; a push by digest has no tag; a referrer is audited by
+// ingest alone, once; a push the backend refuses writes none.
+func TestOCIPushAudit(t *testing.T) {
+	e := newEnv(t, envOptions{})
+	put := e.viaServer([]netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")})
+	body, d := manifest(t, []byte("layer"), "first")
+	put("req-1", "oci/images/app", "v1", body)
+	put("req-2", "oci/images/app", "v1", body)
+	byDigest, d2 := manifest(t, []byte("layer"), "second")
+	put("req-3", "oci/images/app", d2.String(), byDigest)
+	e.pushBlob("oci/images/app", ocispec.DescriptorEmptyJSON.Data)
+	e.pushBlob("oci/images/app", []byte("signature"))
+	sig, sigDigest := referrerOf(t, d, cosignBundle, "signature")
+	put("req-4", "oci/images/app", sigDigest.String(), sig)
+	e.prov.FailPushReference = fmt.Errorf("the tag is immutable: %w", provider.ErrConflict)
+	other, _ := manifest(t, []byte("layer"), "third")
+	wantError(t, "a push the backend refuses", e.do(e.h, http.MethodPut, "/v2/oci/images/app/manifests/v1", bytes.NewReader(other),
+		"Content-Type", ocispecManifest, principalHeader, "alice"), http.StatusConflict, codeTagInvalid)
+
+	evs, err := e.st.ListAudit(t.Context(), index.AuditFilter{Action: "push"})
+	must(t, err)
+	got := make([]auditRow, len(evs))
+	for i, ev := range evs {
+		got[i] = auditRow{ev.Principal, ev.Repo, ev.Subject, ev.Digest, ev.IP, string(ev.Details)}
+	}
+	alice := userP("alice").String()
+	want := []auditRow{
+		{alice, "oci/images", d.String(), sigDigest, "198.51.100.7",
+			`{"artifactType":"` + cosignBundle + `","kind":"attestation","requestId":"req-4"}`},
+		{alice, "oci/images", "oci/images/app", d2, "198.51.100.7", `{"requestId":"req-3"}`},
+		{alice, "oci/images", "oci/images/app", d, "198.51.100.7", `{"requestId":"req-2","tag":"v1"}`},
+		{alice, "oci/images", "oci/images/app", d, "198.51.100.7", `{"requestId":"req-1","tag":"v1"}`},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("push rows\n%+v\nwant\n%+v", got, want)
+	}
+	ocis, err := e.st.ListOCIRepos(t.Context(), e.oci.ID)
+	must(t, err)
+	if len(ocis) != 1 || ocis[0].Path != "oci/images/app" {
+		t.Errorf("oci_repos = %+v, want oci/images/app", ocis)
 	}
 }

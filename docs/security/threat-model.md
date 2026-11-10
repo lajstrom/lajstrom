@@ -166,7 +166,7 @@ The table summarises; the IDs point to §3.
 | --- | --- | --- | --- |
 | A-1 | **Password guessing.** | argon2id ([auth.md](../auth.md)). Per account, `Authenticator.authenticatePassword` and `verifyPassword` allow 10 failures a minute, checked before the cache and argon2id. Per address, with `trustedProxies`, they allow 30 failures a minute, checked before the user is read. `/v2/token` takes 100 requests a second per address (`AllowTokenRequest`, checked before Basic). Each throttle and the cache hold at most 10 000 keys. Tests: `TestLoginThrottle`, `TestLoginThrottleAlike`, `TestLoginThrottleParallel`, `TestAddressThrottle`, `TestAllowTokenRequest`, `TestThrottled`, `TestTokenThrottle`, and e2e `auth.sh` (X-04). Tokens are 256 random bits and are not throttled. The budgets are per replica; across replicas the bound is the edge's. | mitigated |
 | A-2 | **The throttle's memory bound evicts a throttled account.** Failures of 10 000 other names push out its full window, which `throttle.wait` reads without refreshing. | none | open: #251 |
-| A-3 | **A push to an `oci` repo leaves no audit row** (`facade.passThrough`), against rbac.md §5. | Referrers and managed repos are audited. | open: #245 |
+| A-3 | **A push to an `oci` repo leaves no audit row** (`facade.passThrough`), against rbac.md §5. | `facade.recordPassThrough` writes a `push` row in the transaction that records `oci_repos`: the principal, the repo, the OCI name as the subject, the digest, the client address, the tag and the request id. Every PUT writes one, the repeat of a manifest too (#245). Referrers (`ingest.Pipeline.auditReferrer`) and managed repos are audited by ingest, with the client address (`ingest.withOrigin`, #283). Tests: `TestOCIPushAudit`, `TestPushAuditOrigin`. | mitigated |
 | A-4 | **An audit row lost or forged.** | The row is written in the transaction of its change ([operations.md](../operations.md#audit)). The address is the client behind a trusted proxy (`server.ClientAddr`, 129dc47). The audit API is admin only. | mitigated |
 | A-5 | **Basic parsing and timing.** | `r.BasicAuth` splits at the first colon, and `CheckName` forbids `:` and the name `deploy`. The secret's prefix picks the kind of credential. `VerifyPassword` compares in constant time. An unknown, disabled or password-less user costs `dummyVerify`. The verification cache key is a sha256 of name and secret, valid while the stored hash is the same (`keyOf`). | mitigated |
 
@@ -216,7 +216,6 @@ configuration, part 1 and part 2. In terms of this document:
 | --- | --- | --- |
 | [#243](https://github.com/lajstrom/lajstrom/issues/243) archive bombs: xz blocks, sdist decompression, zip directories | F-4 | p1 |
 | [#244](https://github.com/lajstrom/lajstrom/issues/244) a case variant squats another spelling's tag | F-5 | p1 |
-| [#245](https://github.com/lajstrom/lajstrom/issues/245) a push to an `oci` repo writes no audit row | A-3 | p1 |
 | [#242](https://github.com/lajstrom/lajstrom/issues/242) credentials over a downgrading redirect; the token realm | P-2, P-3 | p2 |
 | [#246](https://github.com/lajstrom/lajstrom/issues/246) upload quotas | U-3 to U-6 | p2 |
 | [#247](https://github.com/lajstrom/lajstrom/issues/247) the layers of a manifest | M-2 | p2 |
@@ -226,7 +225,7 @@ configuration, part 1 and part 2. In terms of this document:
 | [#251](https://github.com/lajstrom/lajstrom/issues/251) throttle eviction | A-2 | p2 |
 | [#60](https://github.com/lajstrom/lajstrom/issues/60) typed, validated repo policy | U-7 | (its own) |
 
-None is critical. #243, #244 and #245 need a principal with `write`; the rest need a writer,
+None is critical. #243 and #244 need a principal with `write`; the rest need a writer,
 an operator's mistake or a hostile registry. Two findings would let a writer's upload, or any
 web page, act with an admin's browser credentials. Both are fixed in this pass: stored XSS
 (B-1) and CSRF (B-2).
