@@ -629,11 +629,14 @@ manifest digest, the client address and details: the change, its source (`api`, 
 ingest pipeline, a `push` through `/v2` or a frontend and a `delete`, read the address and the
 request id from the request that made them.
 
-**The row is written in the transaction of its change.** There is no change without its row
-and no row without its change; when the database is down, the change fails with it, and nothing
-is buffered or dropped. #46 asked for an asynchronous queue that drops events when the database
-is down; with the row in the change's transaction there is nothing left for such a queue to
-save, so there is none.
+**The row is written in the transaction of its change.** There is no change of the index
+without its row and no row without its change; when the database is down, the change fails with
+it, and nothing is buffered or dropped. No transaction spans the registry: a delete whose index
+transaction fails after the registry deleted the manifest, and a push to an `oci` repo whose row
+fails after the push, have no row, only a log line at error
+([guarantees.md](spec/guarantees.md) INV-14). #46 asked for an asynchronous queue that drops
+events when the database is down; with the row in the change's transaction there is nothing
+left for such a queue to save, so there is none.
 
 **Not audited:** reads (`pull`, `GET`), and the bearer tokens of `/v2/token`, which a docker
 or oras client gets for every pull and push: a row each would be noise, and what a token then

@@ -194,12 +194,14 @@ MVP.
 
 Every write (`push`, `delete`), every control-plane change, and every creation and revocation of
 a personal access token or a deploy token is an `audit` row with the principal, action, repo,
-subject, digest, client IP and request id, written in the transaction of its change. The
-creation's row also names the credential that created the token, `createdBy` in its details:
-`password`, or `token:<id>` for a token. Reads are
-not audited in the MVP (a per-repo option later). The short-lived bearer tokens of `/v2/token`
-are not audited either (decided on #46, 2026-11-09): a client gets one for every pull and push,
-and what a token allows is audited itself.
+subject, digest, client IP and request id, written in the transaction of its change in the
+index. No transaction spans the registry: when the index transaction of a registry write fails
+after the write, or the row of a push to an `oci` repo does, the write has no row and the
+failure is logged at error ([guarantees.md](guarantees.md) INV-14). The creation's row also
+names the credential that created the token, `createdBy` in its details: `password`, or
+`token:<id>` for a token. Reads are not audited in the MVP (a per-repo option later). The
+short-lived bearer tokens of `/v2/token` are not audited either (decided on #46, 2026-11-09): a
+client gets one for every pull and push, and what a token allows is audited itself.
 
 ## 6. Bootstrap
 
