@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -158,7 +159,7 @@ func (p *Pipeline) pushReferrer(ctx context.Context, prov provider.Provider, nam
 
 // checkReferrer runs the checks of a referrer of a managed repo: a tag must be cosign's and name
 // the subject, the subject must be a manifest of the repository name, and the config and
-// layers of m must be in the backend.
+// layers of m must be in the backend; one it does not serve is read again (readBlob).
 func (p *Pipeline) checkReferrer(ctx context.Context, prov provider.Provider, name string, r Referrer, m ocispec.Manifest) error {
 	if r.Tag != "" {
 		if subject, _, ok := profile.CosignTag(r.Tag); !ok || subject != r.Subject {
@@ -174,8 +175,12 @@ func (p *Pipeline) checkReferrer(ctx context.Context, prov provider.Provider, na
 	} else if err != nil {
 		return fmt.Errorf("ingest: subject %s of %s: %w", r.Subject, name, err)
 	}
+	var deadline time.Time
 	for _, b := range append([]ocispec.Descriptor{m.Config}, m.Layers...) {
 		ok, err := rr.Exists(ctx, b)
+		if err == nil && !ok {
+			ok, err = readBlob(ctx, prov, rr, b, p.visibility, &deadline)
+		}
 		switch {
 		case err != nil:
 			return fmt.Errorf("ingest: blob %s of %s: %w", b.Digest, name, err)

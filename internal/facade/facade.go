@@ -54,6 +54,11 @@ type Options struct {
 	Log *slog.Logger
 	// Now is the clock of the upload sessions and of the tokens; nil means time.Now.
 	Now func() time.Time
+	// VisibilityTimeout is how long a blob that a manifest names and the backend does not
+	// serve is read again before the PUT is MANIFEST_BLOB_UNKNOWN, on a registry not
+	// classified strong (ingest.visibilityTimeout); a registry's consistencyBound raises it.
+	// Zero or negative means 30 seconds.
+	VisibilityTimeout time.Duration
 }
 
 // Ingester stores a manifest that a client pushed to a managed repo, and a referrer pushed to
@@ -71,6 +76,9 @@ var _ Ingester = (*ingest.Pipeline)(nil)
 // defaultMaxManifestSize is Options.MaxManifestSize when it is zero: a manifest is read into
 // memory, and the spec asks registries to take at least 4 MiB.
 const defaultMaxManifestSize = 4 << 20
+
+// defaultVisibilityTimeout is Options.VisibilityTimeout when it is zero, ingest's default.
+const defaultVisibilityTimeout = 30 * time.Second
 
 // ociFormat is the reserved format of the pass-through repos (format.Reserved): /v2 stores
 // what it gets there, indexes nothing, and no frontend serves them.
@@ -122,6 +130,9 @@ func New(o Options) http.Handler {
 	}
 	if o.MaxManifestSize <= 0 {
 		o.MaxManifestSize = defaultMaxManifestSize
+	}
+	if o.VisibilityTimeout <= 0 {
+		o.VisibilityTimeout = defaultVisibilityTimeout
 	}
 	h := &handler{o: o, deps: format.Deps{Auth: o.Auth},
 		issuer:   token.NewIssuer(token.Options{Keys: o.Tokens, Now: o.Now, Log: o.Log}),
