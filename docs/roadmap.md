@@ -8,14 +8,15 @@
 
 **v0.1.0 by Friday 2026-12-04**: a single Go binary that serves hosted repositories for four
 formats (raw, pypi, apt, maven) on top of an OCI registry (Zot and docker distribution verified;
-ECR adapter if the spike allows), with local users, tokens and RBAC, a reindex command that is
+ECR adapter if the spike allows), with local users, tokens and RBAC, retention as a scheduled
+`lajstrom admin retention` over a conditional delete API (#72), a reindex command that is
 proven to rebuild the index from the registry, an OCI facade that `oras` and `cosign` can use,
 end-to-end tests with the real clients, a container image and installation docs. It runs as
 two replicas behind one edge with Postgres (SQLite is for a single node) and the e2e suite
 proves it: concurrent pushes to different replicas, a replica killed mid-upload.
 
 Not this month (post-MVP, tracked as `post-mvp` issues): rpm, terraform, proxy and group repos
-beyond npm (M4, below), OIDC, UI, docker passthrough and multi-arch stitching, retention (a CLI over the delete API, #72), Harbor and GHCR
+beyond npm (M4, below), OIDC, UI, docker passthrough and multi-arch stitching, Harbor and GHCR
 adapters beyond the spike, FQDN mode.
 
 ## Milestones
@@ -126,5 +127,5 @@ stays in v0.1.0 or becomes the first post-MVP milestone.
 
 M4 (above, decided on 2026-11-10) is npm with its proxy and group repos. Month 2 candidates after
 it, in rough order: docker passthrough with RBAC, proxy repos for pypi and maven on M4's core
-(#67), rpm and OIDC (M6), `lajstrom admin retention` over the delete API (#72), UI read-only ([lajstrom-ui](https://github.com/lajstrom/lajstrom-ui)),
+(#67), rpm and OIDC (M6), UI read-only ([lajstrom-ui](https://github.com/lajstrom/lajstrom-ui)),
 Harbor adapter, apt-transport-oci export.

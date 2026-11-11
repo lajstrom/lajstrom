@@ -79,6 +79,7 @@ after bootstrap the GitHub issues are the live status.
 | M3-10 | feat(facade): DELETE manifest and version: provider delete plus index removal, capability-gated | core | S | p1 | M1-01, M2-07 |
 | M3-11 | perf: streaming audit and a load test of 1 GiB upload/download through the facade and raw | platform | M | p1 | M1-01, M0-07 |
 | M3-12 | security: threat-model pass on the facade and token flow; headers; rate limits | core | M | p1 | M2-07, M1-03 |
+| P-09 | feat(api,cli): retention by external means: conditional delete, a list of versions, a batch, and lajstrom admin retention | core | L | p1 |  |
 
 ## Post-MVP (no milestone)
 
@@ -92,7 +93,6 @@ after bootstrap the GitHub issues are the live status.
 | P-06 | feat(auth): OIDC login, groups from claims, group bindings | none | L | p2 |  |
 | P-07 | feat(ui): read-only web UI: repos, packages, versions, files, referrers, audit | none | L | p2 |  |
 | P-08 | feat(facade): docker image passthrough with RBAC and audit; multi-arch stitching by hook | none | L | p2 |  |
-| P-09 | feat(cli): retention by external means: lajstrom admin retention over the delete API, run by the operator's scheduler | none | M | p2 |  |
 | P-10 | feat(provider): Harbor adapter: projects, robot accounts, quotas, immutability rules | none | L | p2 |  |
 | P-11 | feat(provider): GHCR adapter: packages REST API for listing and delete | none | L | p2 |  |
 | P-12 | feat(server): FQDN mode: <repo>.<host> rewrite, wildcard TLS notes | none | L | p2 |  |
@@ -111,4 +111,4 @@ after bootstrap the GitHub issues are the live status.
 | M0 | 23 | 3.5 | 0.5 | 27 |
 | M1 | 17 | 9 | 0 | 26 |
 | M2 | 18.5 | 2.5 | 0.5 | 21.5 |
-| M3 | 18.5 | 4 | 0 | 22.5 |
+| M3 | 18.5 | 8 | 0 | 26.5 |
