@@ -195,15 +195,22 @@ func sameDigests(a, b []digest.Digest) bool {
 }
 
 // deleteEach deletes the variants of a version through the Deleter, each conditional on its
-// digest and on c, in the batch job when it is not empty.
+// digest and on c, in the batch job when it is not empty. A failure after the first variant is
+// a *format.PartialError naming the variants deleted before it.
 func (h *handler) deleteEach(r *http.Request, repo *index.Repo, pkg *index.Package, versions []index.Version, c conditions, job string) error {
 	ctx := r.Context()
+	var deleted []string
 	for _, v := range versions {
 		del := format.Deletion{Path: pkg.NameOCI, Reference: v.Digest.String(), ClientIP: clientIP(r), Job: job,
 			Condition: &format.Condition{Version: v.Version, Variant: v.Variant, UnmodifiedSince: c.since, Force: c.force}}
 		if _, err := h.deleter.Delete(ctx, *repo, del, auth.PrincipalFrom(ctx)); err != nil {
-			return versionDeleteError(repo, pkg, v, err)
+			return format.Partial(versionDeleteError(repo, pkg, v, err), deleted)
 		}
+		name := v.Version
+		if v.Variant != "" {
+			name += " " + v.Variant
+		}
+		deleted = append(deleted, name+" ("+v.Digest.String()+")")
 	}
 	return nil
 }

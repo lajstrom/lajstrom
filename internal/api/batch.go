@@ -184,12 +184,13 @@ func (h *handler) deleteItem(r *http.Request, repo *index.Repo, it BatchDeleteIt
 	return res
 }
 
-// clientMessage is the message the API answers err with: its own for a 4xx and a *clientError,
-// the status text for any other 5xx (fail).
+// clientMessage is the message the API answers err with (fail): its own for a 4xx and a
+// *clientError, for any other 5xx the status text and what a *format.PartialError deleted
+// (format.ClientMessage).
 func clientMessage(err error) string {
 	var ce *clientError
-	if format.StatusOf(err) >= http.StatusInternalServerError && !errors.As(err, &ce) {
-		return http.StatusText(format.StatusOf(err))
+	if errors.As(err, &ce) {
+		return strings.TrimSpace(err.Error())
 	}
-	return strings.TrimSpace(err.Error())
+	return strings.TrimSpace(format.ClientMessage(err))
 }
