@@ -224,4 +224,14 @@ func TestGroupAudit(t *testing.T) {
 	if rr := as(p.h, alice, http.MethodPost, "/npm/all/-/"+auditQuick, []byte(`{}`)); rr.Code != http.StatusNotImplemented {
 		t.Errorf("npm 6's audit of a group: %d %s", rr.Code, rr.Body)
 	}
+	// The proxy member's deny list counts too, for names the hosted member does not hold (#514).
+	p.repo.Upstream = json.RawMessage(`{"name": "npmjs", "deny": ["@corp/*"]}`)
+	must(t, p.st.UpdateRepo(t.Context(), &p.repo))
+	rr = as(p.h, alice, http.MethodPost, "/npm/all/-/"+auditBulk, []byte(`{"@acme/widgets":["1.0.0"],"@corp/tools":["2.0.0"],"lodash":["4.17.15"]}`))
+	p.up.mu.Lock()
+	seen = slices.Clone(p.up.audits)
+	p.up.mu.Unlock()
+	if rr.Code != http.StatusOK || len(seen) != 2 || seen[1].body != `{"lodash":["4.17.15"]}` {
+		t.Errorf("the bulk audit of the group with a denied name: %d %s, the upstream got %+v", rr.Code, rr.Body, seen)
+	}
 }

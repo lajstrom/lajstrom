@@ -168,6 +168,34 @@ func TestForwardErrors(t *testing.T) {
 	}
 }
 
+// TestDenies: the deny list of a proxy repo, matched on the plugin's key of a name, or on the
+// name itself when the plugin refuses it, ignoring ASCII case; allow does not count, and another
+// kind of repo is an error (#514).
+func TestDenies(t *testing.T) {
+	f := newForwardUpstream(t, func(http.ResponseWriter, *http.Request) {})
+	core, repo := forwardCore(t, f, `{"name": "up", "allow": ["lodash"], "deny": ["@acme/*", "*-internal"]}`, 0, 0)
+	for _, tt := range []struct {
+		name, pattern string
+		denied        bool
+	}{
+		{"@acme/widgets", "@acme/*", true}, {"@ACME/Gadgets", "@acme/*", true}, {"tools-internal", "*-internal", true},
+		{"lodash", "", false}, {"chalk", "", false}, {"@acmeish/x", "", false}, {"", "", false},
+	} {
+		pattern, denied, err := core.Denies(repo, tt.name)
+		if err != nil || denied != tt.denied || pattern != tt.pattern {
+			t.Errorf("%q: %q %v %v, want %q %v", tt.name, pattern, denied, err, tt.pattern, tt.denied)
+		}
+	}
+	hosted := repo
+	hosted.Kind = index.KindHosted
+	if _, _, err := core.Denies(hosted, "@acme/widgets"); format.StatusOf(err) != http.StatusNotImplemented {
+		t.Errorf("a hosted repo: %v", err)
+	}
+	if len(f.requests()) != 0 {
+		t.Errorf("Denies asked the upstream")
+	}
+}
+
 // TestForwardResend: a retry and a 307 send the body again, a retry from the URL first asked; a
 // redirect to another host that is not https is refused.
 func TestForwardResend(t *testing.T) {

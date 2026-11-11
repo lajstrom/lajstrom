@@ -290,12 +290,16 @@ gzipped when `Content-Encoding: gzip` says so, is at most 16 MiB decoded (`413`)
   the upstream's own: the upstream's `404` or `410` is `404`; its
   `400`, `413`, `415` or `422`, the body refused, `400`; its `429` `503` with `Retry-After`; a
   timeout `504`; anything else `502`. An offline proxy (§4.4 there) sends nothing and answers
-  `404`. The allow and deny lists bound what a proxy mirrors, not what an audit sends: every
-  name of the body goes to the upstream, and a project with private names audits through a
-  group.
+  `404`. A name that the proxy's `deny` refuses (proxy-and-group.md §3) never leaves the server
+  (#514): the bulk request is sent without those names, and is `{}` without a request when no
+  name is left; nothing in the answer tells which names were left out. npm 6's tree (the two
+  other routes) cannot lose a package without what hangs below it: it is sent whole when no
+  name in it, the project's own included, is denied, and is `501` naming the name and the
+  pattern when one is. `allow` does not bound an audit.
 - Group: the bulk request, without the names its hosted members hold, forwarded as a proxy does
-  (`{}` when no name is left). The two others are `501`: a tree loses what hangs below a private
-  package when the package is cut out, and sent whole it would publish the private names.
+  to its first proxy member, which leaves out the names its `deny` refuses (`{}` when no name is
+  left). The two others are `501`: a tree loses what hangs below a private package when the
+  package is cut out, and sent whole it would publish the private names.
 
 Nothing is cached, and an audit writes no audit row: it is a read.
 

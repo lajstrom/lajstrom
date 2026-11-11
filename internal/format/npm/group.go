@@ -1,7 +1,6 @@
 package npm
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -76,16 +75,13 @@ func (Plugin) MergeGroup(_ context.Context, _ index.Repo, name, kind string, doc
 
 // groupAudit answers the bulk audit of a group (docs/spec/http-routing.md, npm, Audit): the
 // request without the names that the group's hosted member holds, which never leave the
-// server, forwarded to its first proxy member as proxyAudit forwards it; {} when no name is
-// left or the group has no proxy member.
+// server, forwarded to its first proxy member as proxyAudit forwards a bulk request, without
+// the names that member's deny list refuses too; {} when no name is left or the group has no
+// proxy member.
 func (h *handlers) groupAudit(w http.ResponseWriter, r *http.Request, group index.Repo, body io.Reader) {
 	ctx := r.Context()
-	var names map[string]json.RawMessage
-	if err := json.NewDecoder(body).Decode(&names); err != nil {
-		var tooLarge *http.MaxBytesError
-		if !errors.As(err, &tooLarge) {
-			err = fmt.Errorf("%w: the audit body is not a JSON object of names: %w", format.ErrInvalid, err)
-		}
+	names, err := bulkNames(body)
+	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
@@ -110,7 +106,12 @@ func (h *handlers) groupAudit(w http.ResponseWriter, r *http.Request, group inde
 		writeJSON(w, http.StatusOK, struct{}{})
 		return
 	}
-	h.proxyAudit(w, r.WithContext(format.WithVia(ctx, group)), *upstream, auditBulk, bytes.NewReader(mustJSON(names)))
+	core, err := h.proxyCore(*upstream)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	h.forwardBulk(w, r.WithContext(format.WithVia(ctx, group)), core, *upstream, names)
 }
 
 // dropHeld removes from names those that the hosted repo holds, by package path.
