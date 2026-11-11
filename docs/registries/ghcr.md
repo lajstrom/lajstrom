@@ -385,8 +385,9 @@ answer 401 with the Bearer challenge.
   - chunks of at most 4 MiB, each with `Content-Range`: a client's larger chunk is split, and a
     chunk of unknown size is spooled first (one request's spool), because a `PATCH` without
     `Content-Range` throws away what the session held. The uploads that Lajstrom streams itself,
-    a raw `PUT` (ADR 0014), go in chunks of 4 MiB on GHCR, by the vendor table (#558); the
-    facade passes a client's chunk on as it came;
+    a raw `PUT`, an apt upload, a Maven file (ADR 0014), go in chunks of 4 MiB on GHCR, by the
+    vendor table, or of `registries[].uploads.chunkSize` (#558); the facade passes a client's
+    chunk on as it came, and a monolithic `POST ?digest=` is not held to 4 MiB (100 MiB, above);
   - 404 `BLOB_UPLOAD_INVALID` on the closing `PUT` is a digest mismatch here;
   - the 0-byte blob is never uploaded: GHCR already "has" it everywhere.
 - **No blob read before the first manifest**: in a repository without a manifest, `GET` of a

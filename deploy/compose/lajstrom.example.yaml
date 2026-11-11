@@ -55,6 +55,7 @@ registries:
     capabilities: {}                  # override what probing finds, e.g. {catalog: false, deleteManifest: false}
     uploads:
       spoolUnknownLength: false       # Gitea, Forgejo, JFrog: spool a /v2 chunk of unknown length after the first to $TMPDIR
+      chunkSize: 0                    # bytes of each PATCH of an upload Lajstrom streams; 0: 4 MiB on GHCR, else 8 MiB
   - name: second                      # distribution from the dev stack, for repos created with --registry second
     type: generic
     url: "http://localhost:5001"      # no referrers API: Lajstrom lists referrers through the sha256-<digest> tag schema

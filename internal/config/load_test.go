@@ -195,6 +195,12 @@ func TestLoadErrors(t *testing.T) {
 				"registries[0].capabilities.maxNameDepth: must not be negative"},
 		},
 		{
+			name: "registry chunk size",
+			file: minimal + "registries:\n  - {name: a, url: \"http://zot:5000\", uploads: {chunkSize: -1}}\n" +
+				"  - {name: b, url: \"http://zot:5001\", uploads: {chunkSize: 268435457}}\n",
+			want: []string{"registries[0].uploads.chunkSize: must be between 0", "registries[1].uploads.chunkSize: must be between 0"},
+		},
+		{
 			name: "registry consistency",
 			file: minimal + "registries:\n  - {name: a, url: \"http://zot:5000\", capabilities: {consistency: maybe, consistencyBound: -1s}}\n" +
 				"  - {name: b, url: \"http://zot:5001\", capabilities: {consistency: strong, consistencyBound: 2s}}\n",
@@ -322,7 +328,7 @@ registries:
     retries: -1
     capabilities: {referrers: false, catalog: false, deleteManifest: true, maxBlobSize: 1073741824, consistency: eventual, consistencyBound: 4s, maxNameDepth: 4}
     tokenRealmHosts: [auth.registry.example, 10.0.0.5]
-    uploads: {spoolUnknownLength: true}
+    uploads: {spoolUnknownLength: true, chunkSize: 4194304}
 `
 	c, err := Load(writeConfig(t, file), nil)
 	if err != nil {
@@ -336,7 +342,7 @@ registries:
 			Capabilities: CapabilityOverrides{Referrers: &f, Catalog: &f, DeleteManifest: &tr, MaxBlobSize: 1 << 30,
 				Consistency: ConsistencyEventual, ConsistencyBound: 4 * time.Second, MaxNameDepth: 4},
 			TokenRealmHosts: []string{"auth.registry.example", "10.0.0.5"},
-			Uploads:         RegistryUploads{SpoolUnknownLength: true},
+			Uploads:         RegistryUploads{SpoolUnknownLength: true, ChunkSize: 4 << 20},
 		},
 	}
 	if !reflect.DeepEqual(c.Registries, want) {

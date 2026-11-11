@@ -286,6 +286,9 @@ func (r Registry) validate(p *problems, key string) {
 		p.add(key+".capabilities.maxNameDepth", "must not be negative")
 	}
 	r.Capabilities.validateConsistency(p, key+".capabilities")
+	if r.Uploads.ChunkSize < 0 || r.Uploads.ChunkSize > MaxUploadChunkSize {
+		p.add(key+".uploads.chunkSize", "must be between 0 (the vendor table's) and %d bytes (256 MiB)", MaxUploadChunkSize)
+	}
 	a := r.Auth
 	if (a.Username == "") != (a.PasswordEnv == "") {
 		p.add(key+".auth", "username and passwordEnv must be set together")
