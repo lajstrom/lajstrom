@@ -425,9 +425,10 @@ status is `holds on strongly consistent registries only` do not hold there.
   (http-routing.md §4).
 - **Assumes.** Registry: **read-after-write** (**unchecked**): a reconcile that lists a just-deleted
   tag adds its rows back until the next run. Database: any.
-- **Mechanism.** `ingest.Pipeline.Delete`: `deletion.find`, `deletion.deleteInBackend` (under the
-  tag lock, the first request a plain delete so that a refusal changes nothing),
-  `deletion.record` (rows, `InvalidateIndexCache`, `AppendAudit` in one `Store.Tx`).
+- **Mechanism.** `ingest.Pipeline.Delete`: `deletion.find`, then under the tag lock
+  (`deletion.locked`) `deletion.deleteInBackend` (the first request a plain delete so that a
+  refusal changes nothing) and `deletion.record` (the rows by the manifest's digest,
+  `InvalidateIndexCache`, `AppendAudit` in one `Store.Tx`, before the lock is released).
 - **Tests.** `TestDeleteVersion`, `TestDeleteRefused`, `TestDeleteNotFound`, `TestDeleteRowsFail`,
   `TestDeleteThenReindex`, `TestDeleteKeepsPackage`, `TestDeleteReferrer`, `TestDeleteManifests`,
   `TestDeleteTagged`, `TestTagPushAndDelete`, `TestDeleteInvalidatesIndexes` (deb),
@@ -463,15 +464,15 @@ status is `holds on strongly consistent registries only` do not hold there.
   `journal_state` under them, and `deletion.record` deletes the rows by digest before the locks
   are released; a dist-tag move checks under the journal lock that its version exists
   (`journal.checkVersions`). The API checks the same conditions for every variant before the
-  first delete (`api.handler.deleteVersion`, `api.handler.deleteVersions`).
-- **Tests.** `TestConditionalDelete`, `TestConditionalDeleteRepublishRace`,
-  `TestConditionalDeleteDistTagRace` (goroutines, `-race`), `TestDeleteVersionConditions`,
-  `TestBatchDelete`; `retention.sh`.
+  first delete (`api.conditions.check`), so that a refusal finds nothing deleted.
+- **Tests.** `TestConditionalDelete`, `TestConditionalDeletePointers` (the lock order),
+  `TestConditionalDeleteRepublishRace`, `TestConditionalDeleteDistTagRace` (goroutines, `-race`),
+  `TestDeleteVersionConditions`.
 - **When violated.** A delete that removed a version re-published or dist-tagged after the read
   leaves the newer version's rows without a manifest, which reindex removes, or a dist-tag
   naming a version that is gone, which the packument leaves out; nothing reports it.
-- **Status.** `not yet` ([#72](https://github.com/lajstrom/lajstrom/issues/72)): the mechanism and
-  the tests above are those of its pull requests.
+- **Status.** `partly`: the single `DELETE` holds; the batch comes with the next pull request of
+  [#72](https://github.com/lajstrom/lajstrom/issues/72).
 
 ## Audit
 
@@ -1120,7 +1121,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-39 | encryption at rest | not yet (#114) | |
 | INV-40 | a streamed download has its digest | holds | |
 | INV-41 | a binary only on a schema it can run on | partly | untested (the previous release's binary) |
-| INV-42 | a conditional delete never removes a changed version | not yet (#72) | |
+| INV-42 | a conditional delete never removes a changed version | partly (#72: the batch) | |
 
 ## Not guaranteed
 
