@@ -427,8 +427,9 @@ status is `holds on strongly consistent registries only` do not hold there.
   tag adds its rows back until the next run. Database: any.
 - **Mechanism.** `ingest.Pipeline.Delete`: `deletion.find`, then under the tag lock
   (`deletion.locked`) `deletion.deleteInBackend` (the first request a plain delete so that a
-  refusal changes nothing) and `deletion.record` (the rows by the manifest's digest,
-  `InvalidateIndexCache`, `AppendAudit` in one `Store.Tx`, before the lock is released).
+  refusal changes nothing, after the audit row is written pending) and `deletion.record` (the
+  rows by the manifest's digest, `InvalidateIndexCache` and the audit row completed in one
+  `Store.Tx`, before the lock is released).
 - **Tests.** `TestDeleteVersion`, `TestDeleteRefused`, `TestDeleteNotFound`, `TestDeleteRowsFail`,
   `TestDeleteThenReindex`, `TestDeleteKeepsPackage`, `TestDeleteReferrer`, `TestDeleteManifests`,
   `TestDeleteTagged`, `TestTagPushAndDelete`, `TestDeleteInvalidatesIndexes` (deb),
@@ -447,8 +448,10 @@ status is `holds on strongly consistent registries only` do not hold there.
 - **Statement.** A delete with conditions removes a manifest only while, under the locks the
   delete holds, the version still has the digests the client read, was published no later than
   the client's cut-off, and no pointer names it unless the delete is forced; when a condition
-  fails nothing is deleted and the answer says which (`412`, or `409` naming the pointers). A
-  variant published while the delete runs is not among the digests the client sent and stays.
+  fails nothing is deleted, no audit row is written (the refusal comes before the pending row,
+  as a refused delete by tag does), and the answer says which (`412`, or `409` naming the
+  pointers). A variant published while the delete runs is not among the digests the client
+  sent and stays.
 - **Scope.** `DELETE /api/v1/…/versions/<version>` with `If-Match` or `If-Unmodified-Since`, and
   every item of `POST /api/v1/…/versions:delete` (http-routing.md §4); the pointers are npm's
   dist-tags. Not `DELETE` on `/v2`, the raw frontend or npm's unpublish, which take no

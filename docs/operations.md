@@ -981,7 +981,7 @@ the cut-off it decided on (now less `--max-age`, else now), and prints what the 
 each: `deleted`, or `changed` (published again, or a variant added, since the list), `protected`
 (a dist-tag moved onto it), `young`, `gone`, `error`. The server checks each version under the
 lock that a publish of its tag and a move of a dist-tag take, so a version that changed after
-the list is reported, never deleted ([guarantees.md](spec/guarantees.md), INV-41). A run that
+the list is reported, never deleted ([guarantees.md](spec/guarantees.md), INV-42). A run that
 races a publish deletes fewer versions, never more; the next run picks up the rest.
 
 | Exit status | Meaning |
