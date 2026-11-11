@@ -73,7 +73,8 @@ and reversible (`UnescapeComponent`), and a name that kept to the grammar keeps 
 | maven `com.example:Lib-Core`, deb `libstdc++6` | `com.example/lib-core`, `libstdc_2b_2b6` | the same |
 
 A repo whose name breaks rule 2 is refused at creation, by the configuration and by the
-management API. The instance prefix is the operator's and is not checked.
+management API. The instance prefix is the operator's and is not escaped: a prefix with a
+component that breaks rule 1 or 2 is refused when the configuration is validated (#610).
 
 **Written in the new form, read in both.** Each component now has one earlier form
 (`profile.LegacyPackagePath`): `h0__` for `h0_h`, the marked bytes unescaped.

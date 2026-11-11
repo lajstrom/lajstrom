@@ -273,6 +273,8 @@ func (r Registry) validate(p *problems, key string) {
 	}
 	if !validPrefix(r.Prefix) {
 		p.add(key+".prefix", `must not start with "/" and must end with "/" when set`)
+	} else {
+		validatePrefixGrammar(p, key+".prefix", r.Prefix)
 	}
 	if r.Timeout < 0 {
 		p.add(key+".timeout", "must not be negative")
@@ -364,6 +366,37 @@ func registryOrigin(raw string) (string, bool) {
 // "/" and ending with "/".
 func validPrefix(prefix string) bool {
 	return prefix == "" || (!strings.HasPrefix(prefix, "/") && strings.HasSuffix(prefix, "/"))
+}
+
+// reservedPrefixComponent says why a component of a registries[].prefix that
+// profile.ReservedComponent names is refused, after the quoted component.
+const reservedPrefixComponent = "ends in blobs, .uploads or .sync, or is index.json, oci-layout, manifests or referrers, " +
+	"names that Zot's storage or Harbor's routes keep for themselves (ADR 0017)"
+
+// validatePrefixGrammar checks the components of prefix, a registries[].prefix of validPrefix,
+// against the grammar of the OCI names Lajstrom writes (ADR 0017): every name on the registry
+// starts with the prefix, so a component that breaks a rule breaks every name. Each component
+// keeps to the 1.0 grammar, which Gitea and Forgejo check (RepoNamePattern), and is no
+// profile.ReservedComponent; and no component tags comes before one that starts with list
+// (profile.PackagePath). The component after the prefix is a format, which never starts with
+// list.
+func validatePrefixGrammar(p *problems, key, prefix string) {
+	if prefix == "" {
+		return
+	}
+	parts := strings.Split(strings.TrimSuffix(prefix, "/"), "/")
+	for _, c := range parts {
+		switch {
+		case !RepoNamePattern.MatchString(c):
+			p.add(key, "%q: component %q must be lowercase letters and digits separated by single '.', '_' or '-' "+
+				"(ADR 0017, which Gitea and Forgejo check)", prefix, c)
+		case profile.ReservedComponent(c):
+			p.add(key, "%q: component %q %s", prefix, c, reservedPrefixComponent)
+		}
+	}
+	if profile.PackagePath(parts...) != strings.Join(parts, "/") {
+		p.add(key, "%q: a component tags before one that starts with list is the tag list to Harbor's routes (ADR 0017)", prefix)
+	}
 }
 
 // validateECR checks the keys of type ecr: its own, and no auth.

@@ -461,6 +461,50 @@ func TestLoadNestedPrefixes(t *testing.T) {
 
 // TestLoadRepoPolicy: repos[].policy is read as JSON-shaped values, which the bootstrap passes to
 // the API's checks as they are.
+// TestLoadPrefixGrammar: every OCI name on a registry starts with its prefix, so each component
+// of the prefix keeps to the grammar of ADR 0017 and is none of its reserved words (#610).
+func TestLoadPrefixGrammar(t *testing.T) {
+	tests := []struct {
+		prefix string
+		want   string // the error after `registries[0].prefix: "<prefix>": `, "" when it loads
+	}{
+		{prefix: ""},
+		{prefix: "lajstrom/"},
+		{prefix: "team-a/lajstrom_it.v2/"},
+		{prefix: "a/tags/"},               // the format comes next, never list…
+		{prefix: "x/tags/other/"},         // Harbor serves x/tags/…, but tags/list…
+		{prefix: "blobsx/manifest/sync/"}, // a word that only contains a reserved one
+		{prefix: "Team/", want: `component "Team" must be lowercase letters and digits separated by single '.', '_' or '-'`},
+		{prefix: "a--b/", want: `component "a--b" must be lowercase letters`},
+		{prefix: "a__b/", want: `component "a__b" must be lowercase letters`},
+		{prefix: "a//", want: `component "" must be lowercase letters`},
+		{prefix: "x/-a/", want: `component "-a" must be lowercase letters`},
+		{prefix: "x./", want: `component "x." must be lowercase letters`},
+		{prefix: "team-blobs/", want: `component "team-blobs" ends in blobs, .uploads or .sync, or is index.json, oci-layout, manifests or referrers`},
+		{prefix: "a/blobs/", want: `component "blobs" ends in blobs`},
+		{prefix: "a/my.uploads/", want: `component "my.uploads" ends in blobs`},
+		{prefix: "cache.sync/", want: `component "cache.sync" ends in blobs`},
+		{prefix: "x/index.json/", want: `component "index.json" ends in blobs`},
+		{prefix: "oci-layout/", want: `component "oci-layout" ends in blobs`},
+		{prefix: "k8s/manifests/", want: `component "manifests" ends in blobs`},
+		{prefix: "referrers/", want: `component "referrers" ends in blobs`},
+		{prefix: "x/tags/list/", want: "a component tags before one that starts with list is the tag list to Harbor's routes"},
+		{prefix: "x/tags/listing/", want: "a component tags before one that starts with list"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.prefix, func(t *testing.T) {
+			_, err := Load(writeConfig(t, minimal+"registries:\n  - {name: local, url: \"http://zot:5000\", prefix: \""+tt.prefix+"\"}\n"), nil)
+			want := fmt.Sprintf("registries[0].prefix: %q: %s", tt.prefix, tt.want)
+			switch {
+			case tt.want == "" && err != nil:
+				t.Errorf("Load: %v, want success", err)
+			case tt.want != "" && (err == nil || !strings.Contains(err.Error(), want)):
+				t.Errorf("Load: %v; want an error containing %q", err, want)
+			}
+		})
+	}
+}
+
 func TestLoadRepoPolicy(t *testing.T) {
 	file := minimal + `
 registries:
