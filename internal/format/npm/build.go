@@ -108,19 +108,16 @@ func (fc *facts) check(doc *PackageJSON) error {
 // titled <name without the scope>-<version>.tgz with lajstrom.npm.integrity and .shasum, and the
 // metadata layer with the document as manifest, without dist, readme and the keys that begin
 // with _. The document must agree with package.json (facts.check). lajstrom.name and .version
-// are package.json's, created is now in whole seconds. Errors wrap format.ErrInvalid, except a
-// failure to read the file.
+// are package.json's, created is now in whole seconds. A tarball that streamed into the
+// registry, with an inspector (Inspect), is described from what the inspector found and the
+// sha256 of ingest, and its layer is not among the blobs. Errors wrap format.ErrInvalid, except
+// a failure to read the file.
 func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*format.Built, error) {
 	if len(in.Files) != 1 {
 		return nil, fmt.Errorf("%w: an npm upload is one tarball, got %d files", format.ErrInvalid, len(in.Files))
 	}
 	f := in.Files[0]
-	rc, err := f.Open()
-	if err != nil {
-		return nil, fmt.Errorf("npm: open %s: %w", f.Name, err)
-	}
-	fc, err := readFacts(rc)
-	_ = rc.Close()
+	fc, err := uploadedFacts(f)
 	switch {
 	case err != nil:
 		return nil, err
@@ -148,18 +145,32 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", format.ErrInvalid, err)
 	}
+	blobs := []format.BlobSource{bytesBlob(profile.EmptyConfig, ocispec.DescriptorEmptyJSON.Data)}
+	if f.Inspector == nil { // a streamed tarball is in its upload session, which ingest commits
+		blobs = append(blobs, format.BlobSource{Descriptor: m.Layers[0], Open: func(context.Context) (io.ReadCloser, error) { return f.Open() }})
+	}
 	return &format.Built{
 		Manifest: m,
-		Blobs: []format.BlobSource{
-			bytesBlob(profile.EmptyConfig, ocispec.DescriptorEmptyJSON.Data),
-			{Descriptor: m.Layers[0], Open: func(context.Context) (io.ReadCloser, error) { return f.Open() }},
-			bytesBlob(m.Layers[1], md),
-		},
+		Blobs:    append(blobs, bytesBlob(m.Layers[1], md)),
 		Entry: format.Entry{Name: name, Version: version, Metadata: md, Files: []format.FileEntry{{Name: tarball.Title,
 			MediaType: tarball.MediaType, Digest: tarball.Digest, Size: tarball.Size, Attrs: tarball.Annotations}}},
 		Tag:      profile.Tag(version, ""),
 		RepoPath: profile.RepositoryPath("", Name, repo.Name, packagePath(name)),
 	}, nil
+}
+
+// uploadedFacts returns the facts of the tarball f: those its inspector found, for a tarball
+// that streamed into the registry, else those of a read of it.
+func uploadedFacts(f format.UploadedFile) (*facts, error) {
+	if f.Inspector != nil {
+		return streamedFacts(f)
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return nil, fmt.Errorf("npm: open %s: %w", f.Name, err)
+	}
+	defer func() { _ = rc.Close() }()
+	return readFacts(rc)
 }
 
 // metadata returns the metadata layer of the version doc of the tarball: the document without

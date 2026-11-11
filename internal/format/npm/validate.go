@@ -3,6 +3,7 @@ package npm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -21,8 +22,10 @@ import (
 // layer must say the name, the version, the file name, the size and the checksums of the layer,
 // and its manifest the name and the version. The tarball is read whole: its digests, its
 // package.json (the name, the version, what an install runs: checkInstall), and its
-// hasShrinkwrap and hasInstallScript must be those of the metadata layer. Errors wrap
-// format.ErrInvalid, except a failure to fetch.
+// hasShrinkwrap and hasInstallScript must be those of the metadata layer; but for the tarball of
+// a publish that streams in (format.ErrStreamed), which Build checked and described from what
+// the inspector read of the same bytes. Errors wrap format.ErrInvalid, except a failure to
+// fetch.
 func (Plugin) Validate(ctx context.Context, _ index.Repo, m ocispec.Manifest, fetch format.BlobFetcher) (*format.Entry, error) {
 	parsed, err := profile.Validate(m)
 	if err != nil {
@@ -46,40 +49,47 @@ func (Plugin) Validate(ctx context.Context, _ index.Repo, m ocispec.Manifest, fe
 	if err != nil {
 		return nil, fmt.Errorf("the manifest of the metadata layer: %w", err)
 	}
-	rc, err := fetch(ctx, f.Digest)
-	if err != nil {
-		return nil, fmt.Errorf("npm: fetch %s: %w", f.Title, err)
-	}
-	fc, err := readFacts(rc)
-	_ = rc.Close()
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", f.Title, err)
-	}
-	if err := fc.check(doc); err != nil {
-		return nil, err
-	}
-	for _, c := range []struct {
+	type check struct {
 		what      string
 		got, want any
-	}{
+	}
+	checks := []check{
 		{"the name of the metadata layer", md.Name, a.Name},
 		{"the version of the metadata layer", md.Version, a.Version},
 		{"the name of its manifest", doc.Name, a.Name},
 		{"the version of its manifest", doc.Version, a.Version},
 		{"the filename of the metadata layer", md.Filename, f.Title},
 		{"the size of the metadata layer", md.Size, f.Size},
-		{"the size of the tarball", fc.size, f.Size},
 		{"the sha256 of the metadata layer", md.SHA256, f.Digest.Encoded()},
-		{"the sha256 of the tarball", fc.digest, f.Digest},
-		{"the integrity of the metadata layer", md.Integrity, fc.integrity},
-		{"the shasum of the metadata layer", md.Shasum, fc.shasum},
-		{profile.AnnotationNpmIntegrity, f.Annotations[profile.AnnotationNpmIntegrity], fc.integrity},
-		{profile.AnnotationNpmShasum, f.Annotations[profile.AnnotationNpmShasum], fc.shasum},
-		{"hasShrinkwrap of the metadata layer", md.HasShrinkwrap, fc.tarball.HasShrinkwrap},
-		{"hasInstallScript of the metadata layer", md.HasInstallScript, fc.tarball.HasInstallScript()},
-	} {
+		{profile.AnnotationNpmIntegrity, f.Annotations[profile.AnnotationNpmIntegrity], md.Integrity},
+		{profile.AnnotationNpmShasum, f.Annotations[profile.AnnotationNpmShasum], md.Shasum},
+	}
+	rc, err := fetch(ctx, f.Digest)
+	switch {
+	case errors.Is(err, format.ErrStreamed):
+	case err != nil:
+		return nil, fmt.Errorf("npm: fetch %s: %w", f.Title, err)
+	default:
+		fc, err := readFacts(rc)
+		_ = rc.Close()
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", f.Title, err)
+		}
+		if err := fc.check(doc); err != nil {
+			return nil, err
+		}
+		checks = append(checks, []check{
+			{"the size of the tarball", fc.size, f.Size},
+			{"the sha256 of the tarball", fc.digest, f.Digest},
+			{"the integrity of the metadata layer", md.Integrity, fc.integrity},
+			{"the shasum of the metadata layer", md.Shasum, fc.shasum},
+			{"hasShrinkwrap of the metadata layer", md.HasShrinkwrap, fc.tarball.HasShrinkwrap},
+			{"hasInstallScript of the metadata layer", md.HasInstallScript, fc.tarball.HasInstallScript()},
+		}...)
+	}
+	for _, c := range checks {
 		if c.got != c.want {
-			return nil, fmt.Errorf("%w: %s: %v, the tarball's is %v", format.ErrInvalid, c.what, c.got, c.want)
+			return nil, fmt.Errorf("%w: %s: %v, want %v", format.ErrInvalid, c.what, c.got, c.want)
 		}
 	}
 	return &format.Entry{Name: a.Name, Version: a.Version, Attrs: a.Attrs, Metadata: raw,

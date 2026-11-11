@@ -91,7 +91,7 @@ variables and what passes.
 `FuzzEscape`, `FuzzUnescape` and `FuzzValidate` (`internal/oci/profile`), `FuzzParse`,
 `FuzzInspector`, `FuzzParseControl` and `FuzzParseAr` (`internal/format/deb`), `FuzzWheelFilename`,
 `FuzzCoreMetadata`, `FuzzZipEntries`, `FuzzSdistInspector` and `FuzzZipInspector` (`internal/format/pypi`), `FuzzPOM`
-(`internal/format/maven`), and `FuzzPackageJSON` (`internal/format/npm`). Each checks properties of what the parser accepts (round trips,
+(`internal/format/maven`), and `FuzzPackageJSON` and `FuzzTarballInspector` (`internal/format/npm`). Each checks properties of what the parser accepts (round trips,
 idempotence), that what it refuses stays refused, and that what it allocates grows with the
 input (`testutil.CheckAllocated`); `FuzzZipEntries`, that the count of a zip directory that
 bounds it (#243) is never below what `zip.NewReader` reads.

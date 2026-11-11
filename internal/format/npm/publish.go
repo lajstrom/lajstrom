@@ -2,11 +2,13 @@ package npm
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -28,14 +30,17 @@ type publication struct {
 }
 
 // publish is npm publish, pnpm publish and yarn npm publish (docs/spec/http-routing.md, npm):
-// PUT /npm/<repo>/<name> with npm's body, read by readBody as it streams, checked by
-// checkPublish, and the version published through deps.Ingest as one manifest of the profile,
-// built from the tarball and the version document. 201 {"ok": true}, also for the same tarball
-// again; 409 for another tarball under a published version; 400 naming the rule; 413 over the
-// repo's maxFileSize or the bound of the rest of the body. It needs write on the repo. The
-// dist-tags of the body, latest when it has none, are journal adds. A body without _attachments,
-// or any body at PUT /<name>/-rev/<rev> (rev), is the packument update of npm deprecate and
-// unpublish (update).
+// PUT /npm/<repo>/<name> with npm's body, read by readBody as it streams, and the version
+// published through deps.Ingest as one manifest of the profile, built from the tarball and the
+// version document. The tarball streams into the registry as its data is decoded (ADR 0014,
+// streamTarball), and the upload ends only once the rest of the body is read and checked by
+// checkPublish: a body refused stores nothing, whatever the order of its members (yarn sends
+// _attachments before versions). 201 {"ok": true}, also for the same tarball again; 409 for
+// another tarball under a published version; 400 naming the rule; 413 over the repo's
+// maxFileSize or the bound of the rest of the body. It needs write on the repo. The dist-tags of
+// the body, latest when it has none, are journal adds. A body without _attachments, or any body
+// at PUT /<name>/-rev/<rev> (rev), whose data is dropped, is the packument update of npm
+// deprecate and unpublish (update).
 func (h *handlers) publish(w http.ResponseWriter, r *http.Request, repo index.Repo, name, rev string) {
 	ctx := r.Context()
 	if err := format.Authorize(ctx, h.deps, auth.ActionWrite, repo); err != nil {
@@ -51,31 +56,45 @@ func (h *handlers) publish(w http.ResponseWriter, r *http.Request, repo index.Re
 		h.fail(w, r, err)
 		return
 	}
-	body, err := readBody(r.Body, limit, repo.Format+"/"+repo.Name)
-	if err != nil {
-		h.fail(w, r, err)
-		return
-	}
-	defer func() {
-		if err := body.Close(); err != nil {
-			h.deps.Log.WarnContext(ctx, "npm: publish spool not removed", "error", err.Error())
-		}
-	}()
-	if body.attachments == nil || rev != "" {
-		h.update(w, r, repo, name, rev, body.fields)
-		return
-	}
-	pub, err := checkPublish(name, body)
-	if err != nil {
-		h.fail(w, r, err)
-		return
-	}
 	principal := auth.PrincipalFrom(ctx)
-	res, err := h.deps.Ingest.Upload(ctx, repo, format.Upload{Files: []format.UploadedFile{pub.tarball.file.File()},
-		Params: map[string]string{ParamUploadedBy: principal.String(), ParamDocument: string(pub.document), ParamReadme: pub.readme}}, principal)
+	var tarball *streamedTarball
+	body, err := readBody(r.Body, limit, repo.Format+"/"+repo.Name, func(file string, data io.Reader) error {
+		if rev != "" {
+			return nil
+		}
+		tarball = h.streamTarball(ctx, repo, name, file, principal)
+		return tarball.send(data)
+	})
+	if tarball == nil { // no data: an update, or a publish that checkPublish refuses
+		if err == nil && (body.attachments == nil || rev != "") {
+			h.update(w, r, repo, name, rev, body.fields)
+			return
+		}
+		if err == nil {
+			_, err = checkPublish(name, body)
+		}
+		h.fail(w, r, err)
+		return
+	}
+	var pub *publication
+	if err == nil {
+		pub, err = checkPublish(name, body)
+	}
+	if err == nil {
+		tarball.params[ParamDocument], tarball.params[ParamReadme] = string(pub.document), pub.readme
+	}
+	res, err := tarball.end(err)
+	h.published(w, r, repo, name, pub, res, err)
+}
+
+// published answers a publish whose upload returned res and err, and appends its dist-tags to the
+// journal.
+func (h *handlers) published(w http.ResponseWriter, r *http.Request, repo index.Repo, name string, pub *publication,
+	res *format.Published, err error) {
+	ctx := r.Context()
 	var conflict *index.TagConflictError
 	switch {
-	case errors.As(err, &conflict) || errors.Is(err, index.ErrConflict):
+	case pub != nil && (errors.As(err, &conflict) || errors.Is(err, index.ErrConflict)):
 		h.fail(w, r, fmt.Errorf("%w: cannot publish over the published version %s@%s, which has another tarball", index.ErrConflict, name, pub.version))
 		return
 	case err != nil:
@@ -97,6 +116,53 @@ func (h *handlers) publish(w http.ResponseWriter, r *http.Request, repo index.Re
 		"digest", res.Digest.String(), "existed", res.Existed, "distTags", pub.tags)
 	w.Header().Set("Docker-Content-Digest", res.Digest.String())
 	writeJSON(w, http.StatusCreated, map[string]bool{"ok": true})
+}
+
+// streamedTarball is the tarball of a publish on its way into the registry: UploadStream runs on
+// a goroutine of its own and reads the tarball from a pipe, which send fills with the data of
+// the attachment as readBody decodes it. The pipe ends with end, once the rest of the body is read
+// and checked, so that the upload is refused, and stores nothing, when the body is; until then
+// end may add the version document of the body to params, which Build reads after the end.
+type streamedTarball struct {
+	pw     *io.PipeWriter
+	params map[string]string
+	done   chan struct{}
+	res    *format.Published
+	err    error
+}
+
+// errUploadEnded is the error of a write of the tarball after its upload returned.
+var errUploadEnded = errors.New("npm: the upload of the tarball ended")
+
+// streamTarball starts the upload of the tarball file of the package name.
+func (h *handlers) streamTarball(ctx context.Context, repo index.Repo, name, file string, principal auth.Principal) *streamedTarball {
+	pr, pw := io.Pipe()
+	t := &streamedTarball{pw: pw, params: map[string]string{ParamUploadedBy: principal.String()}, done: make(chan struct{})}
+	go func() {
+		defer close(t.done)
+		t.res, t.err = h.deps.Ingest.UploadStream(ctx, repo, format.StreamUpload{Name: name,
+			File: format.UploadedFile{Name: file, Size: -1, ContentType: "application/octet-stream"}, Body: pr, Params: t.params}, principal)
+		_ = pr.CloseWithError(errUploadEnded) // a PipeReader's CloseWithError is always nil
+	}()
+	return t
+}
+
+// send copies the decoded data of the attachment into the upload.
+func (t *streamedTarball) send(data io.Reader) error {
+	_, err := io.Copy(t.pw, data)
+	return err
+}
+
+// end ends the tarball, with err when the body failed or was refused, and returns what the
+// upload returned.
+func (t *streamedTarball) end(err error) (*format.Published, error) {
+	if err != nil {
+		_ = t.pw.CloseWithError(err) // a PipeWriter's CloseWithError is always nil
+	} else {
+		_ = t.pw.Close()
+	}
+	<-t.done
+	return t.res, t.err
 }
 
 // checkPublish checks a publish body for the package name of the URL (docs/spec/http-routing.md,
@@ -156,7 +222,10 @@ func checkPublish(name string, b *publishBody) (*publication, error) {
 // dist.integrity (each sha512, sha256 or sha1 of it; other algorithms are ignored) and the
 // dist.shasum, each when it is there.
 func (a *attachment) check(doc *PackageJSON) error {
-	size := a.file.File().Size
+	if !a.data {
+		return fmt.Errorf("%w: the attachment %q has no data", format.ErrInvalid, a.name)
+	}
+	size := a.size
 	var length int64
 	if a.length != nil && (json.Unmarshal(a.length, &length) != nil || length != size) {
 		return fmt.Errorf("%w: the attachment %q says a length of %s, its data has %d bytes", format.ErrInvalid, a.name, a.length, size)
