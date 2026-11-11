@@ -29,6 +29,9 @@ const (
 	// DefaultMaxManifestSize bounds the manifests a run pushes unless Options says otherwise:
 	// one byte above 4 MiB, the limit of distribution, Zot and Harbor.
 	DefaultMaxManifestSize = 4<<20 + 1
+	// DefaultRoutingHeads is how many times the row "Routing words in a name" asks for each
+	// blob by HEAD unless Options says otherwise: Harbor v2.15.4 missed one in 1 to 17 of 20.
+	DefaultRoutingHeads = 20
 )
 
 // Options are the choices of one run.
@@ -40,6 +43,9 @@ type Options struct {
 	MaxBlobSize int64
 	// MaxManifestSize bounds the manifests of the size ladder; 0 is DefaultMaxManifestSize.
 	MaxManifestSize int64
+	// RoutingHeads is how many times the row "Routing words in a name" asks for each blob by
+	// HEAD; 0 is DefaultRoutingHeads.
+	RoutingHeads int
 	// Log receives what the generic provider logs besides its requests; nil is slog.Default().
 	Log *slog.Logger
 }
@@ -105,6 +111,9 @@ func Run(ctx context.Context, cfg config.Registry, o Options) (*Report, error) {
 	}
 	if o.MaxManifestSize <= 0 {
 		o.MaxManifestSize = DefaultMaxManifestSize
+	}
+	if o.RoutingHeads <= 0 {
+		o.RoutingHeads = DefaultRoutingHeads
 	}
 	if o.Log == nil {
 		o.Log = slog.Default()
@@ -193,6 +202,7 @@ func (r *run) measureAll(ctx context.Context) {
 		fn   func(context.Context) error
 	}{
 		{[]string{"createOnPush", "where"}, r.measureCreate},
+		{[]string{"routingWords"}, r.measureRoutingWords},
 		{[]string{"referrers", "ociSubject"}, r.measureReferrers},
 		{[]string{"catalog"}, r.measureCatalog},
 		{[]string{"tags"}, r.measureTags},

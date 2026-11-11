@@ -64,14 +64,21 @@ func TestSanitiseURL(t *testing.T) {
 
 func TestRepositoryOf(t *testing.T) {
 	cases := map[string]string{
-		"/v2/a/b/blobs/uploads/":         "a/b",
-		"/v2/a/manifests/sha256:00":      "a",
-		"/v2/p/x/y/tags/list":            "p/x/y",
-		"/v2/a/referrers/sha256:00":      "a",
-		"/v2/_catalog":                   "",
-		"/v2/":                           "",
-		"/token":                         "",
-		"/v2/lajstrom-it/s/up/blobs/abc": "lajstrom-it/s/up",
+		"/v2/a/b/blobs/uploads/":                     "a/b",
+		"/v2/a/manifests/sha256:00":                  "a",
+		"/v2/p/x/y/tags/list":                        "p/x/y",
+		"/v2/a/referrers/sha256:00":                  "a",
+		"/v2/_catalog":                               "",
+		"/v2/":                                       "",
+		"/token":                                     "",
+		"/v2/lajstrom-it/s/up/blobs/abc":             "lajstrom-it/s/up",
+		"/v2/s/route/x/manifests/y/blobs/uploads/":   "s/route/x/manifests/y",
+		"/v2/s/route/x/manifests/y/manifests/v1":     "s/route/x/manifests/y",
+		"/v2/s/route/x/tags/list/tags/list":          "s/route/x/tags/list",
+		"/v2/s/route/x/tags/list/blobs/uploads/1f":   "s/route/x/tags/list",
+		"/v2/s/route/x/referrers/y/referrers/sha256": "s/route/x/referrers/y",
+		"/v2/x/blobs/blobs/sha256:00":                "x/blobs",
+		"/v2/blobs/uploads/":                         "",
 	}
 	for path, want := range cases {
 		if got := repositoryOf(path); got != want {

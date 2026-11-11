@@ -75,7 +75,7 @@ func (r *run) measureConsistency(ctx context.Context) error {
 		}); err != nil {
 			return err
 		}
-		m := r.lagManifest(i, ocispec.Descriptor{MediaType: "application/octet-stream", Digest: d, Size: int64(len(data))})
+		m := r.layerManifest(fmt.Sprintf("lag %d", i), ocispec.Descriptor{MediaType: "application/octet-stream", Digest: d, Size: int64(len(data))})
 		tag := fmt.Sprintf("lag-%d", i)
 		if a, err = r.pushManifest(ctx, repo, tag, m); err != nil {
 			return err
@@ -96,15 +96,15 @@ func (r *run) measureConsistency(ctx context.Context) error {
 	return nil
 }
 
-// lagManifest is the manifest of write i of the consistency measurement: the empty config and
-// the blob layer.
-func (r *run) lagManifest(i int, layer ocispec.Descriptor) manifest {
+// layerManifest is an image manifest of the empty config and one layer, the note as its
+// description: a write of the consistency measurement, an image of the routing words.
+func (r *run) layerManifest(note string, layer ocispec.Descriptor) manifest {
 	m := ocispec.Manifest{
 		Versioned:   specs.Versioned{SchemaVersion: 2},
 		MediaType:   ocispec.MediaTypeImageManifest,
 		Config:      emptyDesc,
 		Layers:      []ocispec.Descriptor{layer},
-		Annotations: map[string]string{ocispec.AnnotationDescription: fmt.Sprintf("lajstrom registry probe %s: lag %d", r.id, i)},
+		Annotations: map[string]string{ocispec.AnnotationDescription: "lajstrom registry probe " + r.id + ": " + note},
 	}
 	return encode(m.MediaType, m)
 }

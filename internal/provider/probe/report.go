@@ -12,6 +12,7 @@ import (
 var Rows = []struct{ Key, Title string }{
 	{"createOnPush", "Create on push"},
 	{"where", "Where a repository may be created"},
+	{"routingWords", "Routing words in a name (`manifests`, `referrers`, `tags/list`)"},
 	{"referrers", "Referrers API"},
 	{"ociSubject", "`OCI-Subject` on a push with `subject`"},
 	{"catalog", "Catalog (`_catalog`) and its limits"},
@@ -69,6 +70,9 @@ type Report struct {
 	Vendor       string       `json:"vendor"`
 	Capabilities Capabilities `json:"capabilities"`
 	Cells        []*Cell      `json:"cells"`
+	// RoutingWords is what the row "Routing words in a name" measured, name by name; nil when
+	// it was not measured.
+	RoutingWords *RoutingWords `json:"routingWords,omitempty"`
 	// LeftBehind lists what the run pushed and could not delete.
 	LeftBehind []string `json:"leftBehind,omitempty"`
 }
@@ -130,6 +134,10 @@ func WriteMarkdown(w io.Writer, reports []*Report, verbose bool) error {
 	for _, r := range reports {
 		fmt.Fprintf(&b, "\n%s: %s, scratch prefix `%s`, %s; the provider's probe: vendor=%s.\n",
 			r.Registry, r.URL, r.Scratch, r.Date, r.Vendor)
+		if w := r.RoutingWords; w != nil {
+			fmt.Fprintf(&b, "Routing words, %d blob `HEAD`s and a `GET` in each name below `%s`: %s.\n",
+				w.Heads, r.Scratch+routingDir, routingDetail(w, r.Scratch+routingDir))
+		}
 		if len(r.LeftBehind) > 0 {
 			fmt.Fprintf(&b, "Left behind (the registry refused their deletes): %s.\n", strings.Join(r.LeftBehind, ", "))
 		}

@@ -167,22 +167,28 @@ func withScopes(ctx context.Context, host, method, path string) context.Context 
 	return auth.AppendRepositoryScope(ctx, registry.Reference{Registry: host, Repository: name}, actions...)
 }
 
-// routeMarkers end the repository name in a path of the distribution API.
-var routeMarkers = []string{"/blobs/", "/manifests/", "/tags/list", "/referrers/"}
-
 // repositoryOf returns the repository name of a path of the distribution API, "" for another
-// path. The probe's names hold none of the markers.
+// path. The route is matched at the end of the path and the name is everything before it, so
+// that a name with a component the routes use (the row "Routing words in a name") is whole.
 func repositoryOf(path string) string {
 	rest, ok := strings.CutPrefix(path, "/v2/")
 	if !ok {
 		return ""
 	}
-	for _, m := range routeMarkers {
-		if i := strings.Index(rest, m); i > 0 {
-			return rest[:i]
-		}
+	segs := strings.Split(rest, "/")
+	n := len(segs)
+	k := 0
+	switch {
+	case n >= 4 && segs[n-3] == "blobs" && segs[n-2] == "uploads": // blobs/uploads/ and blobs/uploads/<id>
+		k = 3
+	case n < 3:
+	case segs[n-2] == "tags" && segs[n-1] == "list", segs[n-2] == "blobs", segs[n-2] == "manifests", segs[n-2] == "referrers":
+		k = 2
 	}
-	return ""
+	if k == 0 {
+		return ""
+	}
+	return strings.Join(segs[:n-k], "/")
 }
 
 // digestOf returns the sha256 digest that h computed.
