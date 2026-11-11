@@ -28,8 +28,7 @@
 #   - H-05: A killed (SIGKILL) in a 500 MiB PUT; the PUT again through the edge; A started again;
 #   - H-06, H-07: ha-postgres, then ha-distribution, stopped for 3 s and started again while
 #     each replica is asked meanwhile and the requests of a pip install, raw PUTs and A's
-#     /-/readyz run in loops through the edge; the 500s that Lajstrom answers in H-07 are a
-#     "gap" line, not a failure (docs/testing.md);
+#     /-/readyz run in loops through the edge;
 #   - H-08: a maven deploy whose PUTs alternate between A and B;
 #   - H-11: a .deb uploaded through A, apt-get update through B within a second (A-09);
 #   - H-10: the requests of a pip install in a loop through the edge while A and then B restart;
@@ -384,18 +383,16 @@ whole H-05 huge
 rm "$work/huge"
 step "H-05: A killed $((sent / 1048576)) MiB into a 500 MiB PUT: curl exit $rc; the PUT again through the edge 201, $digest in the index and the backend; A started, its /tmp empty; one version, no claim, reindex finds nothing missing"
 
-# outage ID SERVICE STATUSES [GAP]: SERVICE stopped and started again, as docker restart does,
+# outage ID SERVICE STATUSES: SERVICE stopped and started again, as docker restart does,
 # with the outage held open while each replica is asked, past the edge, for the wheel of H-13, a
 # raw PUT and its /-/readyz (the probes, $work/ID.probes); meanwhile three loops run until both
 # replicas serve again: the requests of a pip install through the edge (as H-10), raw PUTs of a
 # new file each through the edge, and A's /-/readyz (the loads, $work/ID.reads, .puts, .ready).
 # A probe of the wheel or a PUT must be answered one of STATUSES, a load 200 (201 for a PUT) or
-# one of STATUSES, and every load 200 or 201 once both replicas serve again. GAP is a status that
-# the acceptance check does not allow but Lajstrom answers today: it counts as one of STATUSES
-# and is printed in a gap line. Then: neither replica restarted, every PUT that failed is 201
-# again, and the index is whole.
+# one of STATUSES, and every load 200 or 201 once both replicas serve again. Then: neither
+# replica restarted, every PUT that failed is 201 again, and the index is whole.
 outage() {
-	local id="$1" svc="$2" ok="$3 ${4:-}" gap="${4:-}" before t0 n_reads n_puts pids=() r f got seen
+	local id="$1" svc="$2" ok="$3" before t0 n_reads n_puts pids=() r f got seen
 	before="$(started)"
 	mkdir -p "$work/$id"
 	while [ ! -f "$work/$id.stop" ]; do
@@ -450,9 +447,6 @@ outage() {
 	got="$(awk '{ print $NF }' "$work/$id.reads" "$work/$id.puts" | sort | uniq -c | awk '{ printf "%s%s×%s", sep, $2, $1; sep = " " }')"
 	seen="$(awk -v ok=" 200 201 $ok " '{ c = $NF } index(ok, " " c " ") == 0 { print c }' "$work/$id.reads" "$work/$id.puts" | sort -u | tr '\n' ' ')"
 	assert_eq "" "$seen" "$id: the loads, statuses other than 200, 201 and $ok (all: $got)"
-	f="$(awk -v g="$gap" '$NF == g { n++ } END { print n + 0 }' "$work/$id.reads" "$work/$id.puts" "$work/$id.probes")"
-	[ -z "$gap" ] || [ "$f" = 0 ] ||
-		printf 'gap  %s: %s requests answered %s while %s was out, where the acceptance check wants %s\n' "$id" "$f" "$gap" "$svc" "$3"
 	assert_eq "" "$(tail -n "+$((n_reads + 1))" "$work/$id.reads" | grep -v '^200$' | sort | uniq -c | tr '\n' ' ')" "$id: the reads once both replicas served again"
 	assert_eq "" "$(tail -n "+$((n_puts + 1))" "$work/$id.puts" | grep -v ' 201$' | tr '\n' ' ')" "$id: the PUTs once both replicas served again"
 	for f in $(awk '$1 !~ /^(wheel|readyz)-/ && $2 != 201 { print $1 }' "$work/$id.puts" "$work/$id.probes"); do
@@ -467,8 +461,8 @@ outage H-06 ha-postgres 503
 assert_eq "readyz-a 503 readyz-b 503" "$(grep '^readyz-' "$work/H-06.probes" | tr '\n' ' ' | sed 's/ $//')" "H-06: readyz of A and B while ha-postgres was out"
 step "H-06: ha-postgres stopped and started: $outage_summary; no restart of A or B; the failed PUTs again 201; one version each, no claim, reindex finds nothing missing"
 
-# H-07: the registry out under load: 502 or 503 (500 today, before the circuit opens: the gap).
-outage H-07 ha-distribution '502 503' 500
+# H-07: the registry out under load: 502 or 503, a name that does not resolve included (#561).
+outage H-07 ha-distribution '502 503'
 step "H-07: ha-distribution stopped and started: $outage_summary; no restart of A or B; the failed PUTs again 201; one version each, no claim, reindex finds nothing missing"
 
 # H-08: a maven deploy of com.example.ha:lib:1.0.0 to a maven repo of the run, in the order of

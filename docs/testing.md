@@ -288,12 +288,12 @@ Its steps, each naming the ids it covers:
 | H-10 | the requests of a `pip install` (the simple page and the wheel) in a loop through the edge while A restarts, and then B: every one 200 |
 | H-01 | the scenarios of this page through the edge, with `lajstrom admin` in A and the logs of both replicas as the server log, and both replicas serving them; `auth.sh` goes to A past the edge, since the throttle of failed logins counts per replica ([auth.md](auth.md#failed-logins)) and the 11th wrong password of X-04 through the round robin is the 6th of either replica |
 
-One answer of H-07 is not that of acceptance.md yet, and `ha.sh` takes it and prints a `gap`
-line with its number instead of failing: while the registry's name does not resolve, a `PUT`
-answers 500 until the circuit opens ([#561](https://github.com/lajstrom/lajstrom/issues/561)).
 While Postgres is out, a request that needs the index answers 503 with `Retry-After: 5`
 (`index.ErrUnavailable`, [#560](https://github.com/lajstrom/lajstrom/issues/560)), and H-06
-takes nothing else.
+takes nothing else. While the registry is out, its name does not resolve on the network `ha`,
+and a request that needs it answers 503 before the circuit opens as after
+(`provider.ErrUnavailable`, [#561](https://github.com/lajstrom/lajstrom/issues/561)); H-07
+takes 502 or 503 and nothing else.
 
 ### A proxy of npmjs.org
 
