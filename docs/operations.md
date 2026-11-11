@@ -599,7 +599,8 @@ the registry's name. Then the next `GET` or `HEAD` goes through as a trial, norm
 answer closes the breaker (`registry answers again: circuit closed`), a failure opens it for
 another 30 s. A request with a body is never the trial, and fails at once until the breaker is
 closed. A `4xx` is an answer; a `429`, a request whose client went away, and an upload whose
-client's body stalled or broke off as it streamed through to the registry, count neither way.
+client's body stalled or broke off as it streamed through to the registry, count neither way,
+unless the registry gave up on the body first ([below](#requests-from-clients)).
 `lajstrom_provider_circuit_open{registry}` is `1` while the breaker is open. The ping that it
 refuses counts as unanswered, so a breaker that stays open for a minute turns
 [`/-/readyz`](#readiness) to `503`, as a registry that does not answer does.
@@ -674,6 +675,18 @@ can hold at once: the memory of the frontend uploads (a chunk of 8 MiB each and 
 metadata of [Performance](#performance)), the disk for the `/v2` chunks that
 `uploads.spoolUnknownLength` spools, and the connections to the registry; `0` lifts it. A request refused for it is in the access log with status `503`. How many requests a
 client may send is the edge's to limit.
+
+The registry, and any proxy in front of it, must wait longer for a request body than Lajstrom
+does: their body timeout above `server.stallTimeout`. A `/v2` upload streams through to the
+registry, so a client that pauses pauses the registry's request too. Within
+`server.stallTimeout` Lajstrom keeps waiting; a registry that gives up first closes the
+connection while no read of the client's body has failed, and Lajstrom counts that as a
+registry failure: five such uploads in a row open the [circuit breaker](#requests-to-the-registries)
+for 30 s, for every client (#648). nginx's `client_body_timeout` is 60 s between two reads by
+default ([nginx](https://nginx.org/en/docs/http/ngx_http_core_module.html#client_body_timeout)),
+the default `server.stallTimeout`, so the two race. Raise the registry's and its proxy's (600 s,
+as [reverse-proxy.md](reverse-proxy.md) sets for the edge), or set `server.stallTimeout` below
+them; with `0s` Lajstrom never cuts, and every stall the registry cuts counts.
 
 The bounds on live upload sessions count per replica too: a replica counts the sessions it has
 answered a request of, so behind N replicas a principal may hold up to N times as many, and one
