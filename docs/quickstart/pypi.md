@@ -10,15 +10,16 @@ steps with checks ([the end-to-end script](#the-end-to-end-script)).
 
 ## 1. Start the dev stack, make a repo and a user
 
-You need Go, Docker and `curl`; the Python side runs in `python:3.13`, so nothing of Python is
-needed on the host.
+You need Go, Docker, `curl` and `jq`, and `crane` to look into the registry (optional); the
+Python side runs in `python:3.13`, so nothing of Python is needed on the host.
 
 ```sh
 make dev-up                        # Zot, distribution and Postgres: docs/dev-stack.md
 make run                           # serves deploy/compose/lajstrom.example.yaml on :8080
 ```
 
-In another terminal:
+`make run` serves your copy, `deploy/compose/lajstrom.yaml`, instead when there is one; then set
+`cfg` below to that file. In another terminal, from the repository's root:
 
 ```sh
 cfg=deploy/compose/lajstrom.example.yaml
@@ -33,17 +34,36 @@ that does not exist would; a user who only installs gets `reader`, and a build m
 token of the repo ([auth.md](../auth.md)). Nothing is open: without credentials every request is
 `401`.
 
-twine and uv publish always send credentials; a user's password or one of their
-[personal access tokens](../auth.md) both work, with any user name for a token.
+twine, uv publish and poetry publish always send credentials; a user's password or one of their
+[personal access tokens](../auth.md) both work, with any user name for a token. twine and uv ask
+for the password; `TWINE_PASSWORD` and `UV_PUBLISH_PASSWORD` give it without a prompt, in CI
+for example.
 
 ## 2. Publish
 
+Any project with a `pyproject.toml` will do. The smallest, `my-pkg`, outside the checkout:
+
+```sh
+mkdir -p ~/my-pkg/my_pkg && cd ~/my-pkg
+echo 'def hello(): return "hello"' > my_pkg/__init__.py
+cat > pyproject.toml <<'EOF'
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "my-pkg"
+version = "1.0"
+requires-python = ">=3.9"
+EOF
+```
+
 The clients run in `python:3.13` on the host's network, where `localhost:8080` is Lajstrom
-(Linux and OrbStack), with the directory of a project with a `pyproject.toml` as `/w`:
+(Linux and OrbStack), with the project's directory as `/w`:
 
 ```sh
 docker run --rm -it --network host -v "$PWD:/w" -w /w python:3.13 bash
-pip install --root-user-action=ignore build twine uv   # in the container; and poetry for section 3
+pip install --root-user-action=ignore build twine uv   # in the container; and poetry for Poetry
 ```
 
 Then, in the container:
@@ -51,8 +71,20 @@ Then, in the container:
 ```sh
 python -m build                                     # dist/<name>-<version>-py3-none-any.whl and .tar.gz
 twine upload --repository-url http://localhost:8080/pypi/internal/ -u alice dist/*
-uv publish --publish-url http://localhost:8080/pypi/internal/ -u alice dist/*
+uv publish --publish-url http://localhost:8080/pypi/internal/ -u alice dist/*   # the same files again: 200
 ```
+
+Poetry publishes the files in `dist/`, with the repository and its credentials in its
+configuration:
+
+```sh
+poetry config repositories.internal http://localhost:8080/pypi/internal/
+poetry config http-basic.internal alice <password>
+poetry publish -r internal                          # the same files again: 200
+```
+
+`poetry publish --build` builds them again first, with Poetry's backend: other bytes under the
+same file names, so `409` here.
 
 - One upload is one file and one manifest; the wheel's tag set (`py3-none-any`,
   `cp311-cp311-manylinux_2_17_x86_64`) or `sdist` tells the files of a version apart.
@@ -62,9 +94,12 @@ uv publish --publish-url http://localhost:8080/pypi/internal/ -u alice dist/*
   `blake2_256_digest`) must be the file's.
 - The same bytes again are `200`, and nothing changes. Other bytes under a file name that is
   there (the same version and tag set) are `409 File already exists`: files are immutable.
-- **Skipping what is there:** `uv publish --check-url http://localhost:8080/pypi/internal/simple/`
-  skips the files the index already has. twine 6 and later refuse `--skip-existing` for any
-  repository but PyPI's own, before they send anything.
+- **Skipping what is there:**
+  `uv publish --check-url http://alice:<password>@localhost:8080/pypi/internal/simple/` skips the
+  files the index already has. The check URL needs the credentials in it: uv sends those of `-u`
+  to the upload URL only, so without them the first check is `401` and that file is sent again
+  (`200`, nothing changes). twine 6 and later refuse `--skip-existing` for any repository but
+  PyPI's own, before they send anything.
 - The project name is stored normalized (PEP 503): `My_Pkg`, `my-pkg` and `MY.PKG` are one
   project, `my-pkg`; the original spelling stays in the core metadata, so `pip show` prints it.
 - A version that is not PEP 440 (`latest`) is accepted and flagged
@@ -74,8 +109,11 @@ uv publish --publish-url http://localhost:8080/pypi/internal/ -u alice dist/*
 
 ```sh
 pip install --index-url http://alice:<password>@localhost:8080/pypi/internal/simple/ my-pkg
-uv pip install --index-url http://alice:<password>@localhost:8080/pypi/internal/simple/ my-pkg
+uv pip install --system --index-url http://alice:<password>@localhost:8080/pypi/internal/simple/ my-pkg
 ```
+
+`uv pip install` refuses to run outside a virtual environment: `--system` installs into the
+container's Python, `uv venv` makes an environment instead.
 
 In `pip.conf` (`~/.config/pip/pip.conf`, or `/etc/pip.conf`), with the credentials in
 `~/.netrc` (`machine localhost login alice password <password>`) rather than in the URL:
@@ -85,7 +123,7 @@ In `pip.conf` (`~/.config/pip/pip.conf`, or `/etc/pip.conf`), with the credentia
 index-url = http://localhost:8080/pypi/internal/simple/
 ```
 
-uv, in `pyproject.toml` or `uv.toml`, with `UV_INDEX_INTERNAL_USERNAME` and
+uv, in a project's `pyproject.toml` for `uv add my-pkg`, with `UV_INDEX_INTERNAL_USERNAME` and
 `UV_INDEX_INTERNAL_PASSWORD` in the environment:
 
 ```toml
@@ -95,11 +133,15 @@ url = "http://localhost:8080/pypi/internal/simple/"
 default = true
 ```
 
-Poetry:
+In `uv.toml`, which `uv pip install my-pkg` reads too, the table is `[[index]]` with the same
+keys; `[[tool.uv.index]]` there is a parse error.
+
+Poetry, in the project that depends on `my-pkg` (`poetry new consumer && cd consumer` makes one):
 
 ```sh
 poetry source add --priority=primary internal http://localhost:8080/pypi/internal/simple/
 poetry config http-basic.internal alice <password>
+poetry add my-pkg
 ```
 
 The index serves what pip and uv need to resolve without downloading: `data-requires-python`,
@@ -127,8 +169,8 @@ crane ls localhost:5000/pypi/internal/my-pkg
 crane manifest localhost:5000/pypi/internal/my-pkg:1.0__py3-none-any | jq .annotations
 ```
 
-`lajstrom reindex --repo pypi/internal` rebuilds the index of the repo from those manifests
-([operations.md](../operations.md#reindex)).
+`bin/lajstrom reindex --repo pypi/internal --config $cfg` rebuilds the index of the repo from
+those manifests ([operations.md](../operations.md#reindex)).
 
 ## The end-to-end script
 
