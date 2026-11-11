@@ -1,7 +1,9 @@
 package maven
 
 import (
+	"bytes"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/lajstrom/lajstrom/internal/format/formattest"
@@ -29,4 +31,16 @@ func TestRegistryRefusals(t *testing.T) {
 			r.Check(t, rr)
 		})
 	}
+}
+
+// TestDeployStalled: a PUT whose client stops sending part way, its body cut by
+// server.stallTimeout, is 408, not a 500 at ERROR (#576).
+func TestDeployStalled(t *testing.T) {
+	e := newDeployEnv(t, nil)
+	f := release("1.2.0", "")[0]
+	req := httptest.NewRequest(http.MethodPut, "/maven/releases/"+f.path, formattest.Stalled(bytes.NewReader(f.body[:len(f.body)/2])))
+	req.Header.Set("X-Test-User", "alice")
+	rr := httptest.NewRecorder()
+	e.h.ServeHTTP(rr, req)
+	formattest.CheckStalled(t, rr)
 }

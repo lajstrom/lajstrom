@@ -1,6 +1,7 @@
 package format_test
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,18 +10,25 @@ import (
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/format/formattest"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
 func TestWriteError(t *testing.T) {
 	tooLarge := &http.MaxBytesError{Limit: 1024}
+	// The body of a 408: its cause names the connection, and the registry's URL.
+	const stalled = "the request body stopped: no byte came within the server's stall timeout\n"
 	tests := []struct {
 		name       string
 		err        error
 		status     int
 		retryAfter string // the Retry-After header; empty for none
+		body       string // the body, when it is not the error's message for a 4xx or the status text
 	}{
+		{name: "stalled body", err: fmt.Errorf("raw: upload: %w", formattest.ErrStalled), status: 408, body: stalled},
+		{name: "stalled body made invalid", err: fmt.Errorf("%w: the upload: %w", format.ErrInvalid, formattest.ErrStalled),
+			status: 408, body: stalled},
 		{name: "invalid", err: format.ErrInvalid, status: 400},
 		{name: "wrapped invalid", err: fmt.Errorf("pypi: wheel: %w", format.ErrInvalid), status: 400},
 		{name: "unauthenticated", err: fmt.Errorf("%w: read on fake/scratch", format.ErrUnauthenticated), status: 401},
@@ -64,6 +72,7 @@ func TestWriteError(t *testing.T) {
 			if tt.status < 500 {
 				body = tt.err.Error() + "\n"
 			}
+			body = cmp.Or(tt.body, body)
 			challenge, allow := "", ""
 			switch tt.status {
 			case http.StatusUnauthorized:

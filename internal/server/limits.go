@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/lajstrom/lajstrom/internal/auth"
 )
 
 // uploadRetryAfter is the Retry-After, in seconds, of an upload refused because
@@ -19,7 +21,8 @@ const uploadRetryAfter = "5"
 // any size and length passes while it moves; a client that stops sending or stops reading
 // does not hold a connection, a goroutine, an upload slot and a connection to the registry
 // for ever. The time the handler spends between two reads or writes (a registry, the index)
-// is not counted. Zero turns it off.
+// is not counted. Zero turns it off. A body cut off is logged at info: the client's doing,
+// which the handler answers 408 (format.StatusOf, #576).
 func (s *Server) stall(next http.Handler) http.Handler {
 	d := s.opts.StallTimeout
 	if d <= 0 {
@@ -29,7 +32,11 @@ func (s *Server) stall(next http.Handler) http.Handler {
 		rc := http.NewResponseController(w)
 		var body *stallBody
 		if r.Body != nil && r.Body != http.NoBody {
-			body = &stallBody{ReadCloser: r.Body, rc: rc, d: d}
+			body = &stallBody{ReadCloser: r.Body, rc: rc, d: d, cut: func(read int64) {
+				s.log.InfoContext(r.Context(), "request body stalled: nothing came within server.stallTimeout, the connection is closed",
+					"method", r.Method, "path", auth.RedactSecrets(r.URL.Path), "read", read, "stallTimeout", d.String(),
+					"requestId", RequestID(r.Context()))
+			}}
 			r.Body = body
 		}
 		sw := &stallWriter{ResponseWriter: w, rc: rc, d: d}
@@ -53,6 +60,8 @@ type stallBody struct {
 	io.ReadCloser
 	rc      *http.ResponseController
 	d       time.Duration
+	cut     func(read int64) // called once, when a read misses the deadline, with the bytes read
+	read    int64
 	ended   bool // a read returned an error, io.EOF included
 	stalled bool // a read missed the deadline
 }
@@ -63,9 +72,11 @@ func (b *stallBody) Read(p []byte) (int, error) {
 	}
 	_ = b.rc.SetReadDeadline(time.Now().Add(b.d)) // ErrNotSupported: no deadline, as before
 	n, err := b.ReadCloser.Read(p)
+	b.read += int64(n)
 	switch {
 	case errors.Is(err, os.ErrDeadlineExceeded):
 		b.ended, b.stalled = true, true
+		b.cut(b.read)
 	case err != nil:
 		b.ended = true
 		_ = b.rc.SetReadDeadline(time.Time{})

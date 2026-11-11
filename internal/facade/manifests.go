@@ -292,7 +292,8 @@ func readManifest(r *http.Request, refDigest digest.Digest, limit int64) (ocispe
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, r.ContentLength))
 	if err != nil || int64(len(body)) != r.ContentLength {
-		return ocispec.Descriptor{}, nil, &apiError{status: http.StatusBadRequest, code: codeManifestInvalid, msg: "the manifest body broke off", err: err}
+		status, how := brokeOff(err)
+		return ocispec.Descriptor{}, nil, &apiError{status: status, code: codeManifestInvalid, msg: "the manifest body " + how, err: err}
 	}
 	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if !manifestMediaTypes[mediaType] {

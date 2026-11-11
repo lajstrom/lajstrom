@@ -16,6 +16,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/format/formattest"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/testutil"
 )
@@ -190,6 +191,18 @@ func TestUploadMaxFileSize(t *testing.T) {
 	}
 	if n := len(e.prov.Pushes()) + len(e.prov.PushReferences()); n != 0 {
 		t.Errorf("refused uploads pushed %d blobs and manifests", n)
+	}
+}
+
+// TestUploadStalled: an upload whose client stops sending part way, its body cut by
+// server.stallTimeout, is 408, not a 500 at ERROR (#576), and pushes nothing.
+func TestUploadStalled(t *testing.T) {
+	e := newAptEnv(t, envOptions{})
+	hello, _ := testutil.Deb(testutil.DebOptions{})
+	formattest.CheckStalled(t, e.send(http.MethodPut, "upload?suite=jammy&component=main",
+		formattest.Stalled(bytes.NewReader(hello[:len(hello)/2])), "X-Test-User", "alice"))
+	if n := len(e.prov.Pushes()) + len(e.prov.PushReferences()); n != 0 {
+		t.Errorf("the stalled upload pushed %d blobs and manifests", n)
 	}
 }
 

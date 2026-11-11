@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -12,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/format/formattest"
 )
 
 // stallBound is the StallTimeout of the stall tests.
@@ -107,6 +111,30 @@ func TestStallRequestBody(t *testing.T) {
 		}
 		wantStatus(t, c, http.StatusCreated)
 	})
+}
+
+// TestStallAnswer: a body cut by the stall bound is the client's doing: the handler that
+// answers its read error with format.WriteError answers 408, and the server logs the stall at
+// info, with the bytes read, and nothing at error (#576).
+func TestStallAnswer(t *testing.T) {
+	s, logs := newTestServer(t, Options{StallTimeout: stallBound, Facade: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, err := io.ReadAll(r.Body)
+		format.WriteError(w, fmt.Errorf("upload: %w", err))
+	})})
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/v2/x", formattest.Stalled(strings.NewReader("abc"))))
+	if rr.Code != http.StatusRequestTimeout {
+		t.Errorf("status %d %q, want 408", rr.Code, rr.Body)
+	}
+	l := findLog(t, logs, "request body stalled: nothing came within server.stallTimeout, the connection is closed")
+	if l["level"] != "INFO" || l["read"] != 3.0 || l["path"] != "/v2/x" || l["stallTimeout"] != stallBound.String() {
+		t.Errorf("stall log %v", l)
+	}
+	for _, l := range logLines(t, logs) {
+		if l["level"] == "ERROR" {
+			t.Errorf("logged at error: %v", l)
+		}
+	}
 }
 
 // wantStatus reads a response from c and checks its status.

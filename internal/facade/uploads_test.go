@@ -18,6 +18,7 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/format/formattest"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
@@ -295,6 +296,31 @@ func TestUploadBrokenBody(t *testing.T) {
 	rr = e.do(e.h, http.MethodPut, uploads+id+"?digest="+d.String(), bytes.NewReader(b[300:]))
 	wantError(t, "close after a broken chunk", rr, http.StatusBadRequest, codeDigestInvalid)
 	e.wantNoUpload("close after a broken chunk", id)
+}
+
+// TestUploadStalledBody: a body that server.stallTimeout cuts is 408 with the code of a body
+// that broke off, BLOB_UPLOAD_INVALID or MANIFEST_INVALID, and its message says it stalled; the
+// monolithic session is cancelled (#576).
+func TestUploadStalledBody(t *testing.T) {
+	e := newEnv(t, envOptions{})
+	b := bytes.Repeat([]byte("x"), 1000)
+	stalled := formattest.Stalled(bytes.NewReader(b[:300]))
+	rr := e.do(e.h, http.MethodPost, uploads+"?digest="+digest.FromBytes(b).String(), stalled, "Content-Length", "1000")
+	if msg := wantError(t, "monolithic POST that stalls", rr, http.StatusRequestTimeout, codeBlobUploadInvalid); msg != "the request body stalled after 300 bytes" {
+		t.Errorf("message %q", msg)
+	}
+	if n := e.prov.OpenUploads(); n != 0 {
+		t.Errorf("%d backend sessions open", n)
+	}
+	id := e.start(e.h)
+	rr = e.do(e.h, http.MethodPatch, uploads+id, formattest.Stalled(bytes.NewReader(b[:300])), "Content-Length", "1000")
+	wantError(t, "chunk that stalls", rr, http.StatusRequestTimeout, codeBlobUploadInvalid)
+	m := []byte(`{"schemaVersion":2}`)
+	rr = e.do(e.h, http.MethodPut, "/v2/oci/images/app/manifests/v1", formattest.Stalled(bytes.NewReader(m)),
+		"Content-Type", ocispec.MediaTypeImageManifest, "Content-Length", "100")
+	if msg := wantError(t, "manifest that stalls", rr, http.StatusRequestTimeout, codeManifestInvalid); msg != "the manifest body stalled" {
+		t.Errorf("message %q", msg)
+	}
 }
 
 // brokenAfter is a body of b that fails after n bytes, as a client that goes away.

@@ -493,8 +493,8 @@ func (h *handler) sessionError(ctx context.Context, s *index.Session, err error,
 
 // finishError is the answer to a failed chunk or finish: a digest the backend refused is
 // DIGEST_INVALID, a body cut at the repo's maxFileSize (limitBlob) 413 SIZE_INVALID, a client
-// body that broke off BLOB_UPLOAD_INVALID (400), anything else BLOB_UPLOAD_INVALID with the
-// status of the cause.
+// body that broke off BLOB_UPLOAD_INVALID (400, or 408 when it stalled: brokeOff), anything else
+// BLOB_UPLOAD_INVALID with the status of the cause.
 func finishError(err error, body *bodyReader) error {
 	switch {
 	case errors.Is(err, errNotDigest), errors.Is(err, content.ErrMismatchedDigest):
@@ -507,10 +507,20 @@ func finishError(err error, body *bodyReader) error {
 		}
 		return &apiError{status: http.StatusRequestEntityTooLarge, code: codeSizeInvalid, msg: msg, err: err}
 	case body != nil && body.err != nil:
-		return &apiError{status: http.StatusBadRequest, code: codeBlobUploadInvalid,
-			msg: fmt.Sprintf("the request body broke off after %d bytes", body.n), err: err}
+		status, how := brokeOff(body.err)
+		return &apiError{status: status, code: codeBlobUploadInvalid,
+			msg: fmt.Sprintf("the request body %s after %d bytes", how, body.n), err: err}
 	}
 	return &apiError{code: codeBlobUploadInvalid, err: err}
+}
+
+// brokeOff returns the status of a client body that ended early with err, and how it ended:
+// 408 "stalled" when server.stallTimeout cut it (format.StatusOf, #576), else 400 "broke off".
+func brokeOff(err error) (int, string) {
+	if format.StatusOf(err) == http.StatusRequestTimeout {
+		return http.StatusRequestTimeout, "stalled"
+	}
+	return http.StatusBadRequest, "broke off"
 }
 
 // limitBlob bounds what a request may add to an upload of t that holds offset bytes (U-3 of the

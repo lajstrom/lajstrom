@@ -632,7 +632,7 @@ What an operator of ECR sees:
 | request headers | 10 s, fixed | a client that has not sent its headers in 10 s is disconnected |
 | header size | 1 MiB, fixed | `431 Request Header Fields Too Large` |
 | idle keep-alive connection | 120 s, fixed | the connection is closed |
-| a body that stops moving | `server.stallTimeout`, `1m` | each read of a request body and each write of a response must move within it, or the connection is closed; the handler gets a read or write error |
+| a body that stops moving | `server.stallTimeout`, `1m` | each read of a request body and each write of a response must move within it, or the connection is closed. An upload whose body stops is answered `408 Request Timeout` (`BLOB_UPLOAD_INVALID` or `MANIFEST_INVALID` on `/v2`) and logged at info, `request body stalled` with the bytes read: the client stopped, not Lajstrom |
 | uploads at once | `server.maxConcurrentUploads`, 32 | `503` with `Retry-After: 5`, before the body is read |
 | a manifest | `server.maxManifestSize`, 4 MiB | `413` |
 | the layers of a manifest | 1 000, fixed | `400 MANIFEST_INVALID` naming the bound, on every repo, before Lajstrom asks the registry about any layer |

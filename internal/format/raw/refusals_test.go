@@ -94,3 +94,31 @@ func TestRegistryRefusalsOverHTTP(t *testing.T) {
 		})
 	}
 }
+
+// TestPutStalledOverHTTP is TestPutStalled through the generic provider: the client's body
+// streams into the registry's upload, and the error of its read comes back through net/http
+// and oras-go to a 408 whose message does not name the registry (#576).
+func TestPutStalledOverHTTP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/blobs/uploads/"):
+			w.Header().Set("Location", r.URL.Path+"1")
+			w.WriteHeader(http.StatusAccepted)
+		case r.Method == http.MethodPatch || r.Method == http.MethodPut:
+			w.Header().Set("Location", r.URL.Path)
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	reg, err := generic.New(config.Registry{Name: "local", Type: generic.Type, URL: srv.URL}, slog.New(slog.DiscardHandler))
+	must(t, err)
+	e := newEnv(t, envOptions{registry: reg})
+	rr := e.do(http.MethodPut, target("dir/file.txt"), formattest.Stalled(strings.NewReader(strings.Repeat("x", 1000))))
+	formattest.CheckStalled(t, rr)
+	if strings.Contains(rr.Body.String(), srv.URL) || strings.Contains(e.logs.String(), "level=ERROR") {
+		t.Errorf("answer %q, log %s", rr.Body, e.logs)
+	}
+}
