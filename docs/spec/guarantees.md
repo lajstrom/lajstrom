@@ -267,9 +267,9 @@ status is `holds on strongly consistent registries only` do not hold there.
   `TestPruneTwoReplicas`, `TestStatManifest`, the store conformance cases `Sightings`,
   `SightingRace` and `Sweep`, `TestSweepKeepsWhatItCannotCheck`, `TestBypassAndDelete`,
   `TestDrift`, `TestNoCatalog`, `TestNoCatalogRepositoryGone`, `TestNoCatalogRecordsAgain`, `TestJournalReindexLost`,
-  `TestRepositoryUnknown`, `TestReconcile`; `TestIntegration` of `internal/provider/generic` and
-  of `internal/index/reindex`, and `TestIntegrationRepositoryUnknown`, against Zot and
-  distribution.
+  `TestRepositoryUnknown`, `TestRepositoryUnknownAskedOnce`, `TestReconcile`; `TestIntegration` of
+  `internal/provider/generic` and of `internal/index/reindex`, and `TestIntegrationRepositoryUnknown`,
+  against Zot and distribution.
 - **When violated.** A registry that lags longer than the grace age and answers
   `MANIFEST_UNKNOWN` twice for a manifest it holds loses that version's rows until the next run
   lists it again and adds it back; the run's audit row `reconcile` counts the removal; nothing

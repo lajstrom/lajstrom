@@ -197,6 +197,37 @@ func TestRepositoryUnknown(t *testing.T) {
 	}
 }
 
+// TestRepositoryUnknownAskedOnce: a run asks the tag list of an OCI repository whose manifests
+// are a 404 without MANIFEST_UNKNOWN once, whatever it answers, and not again for its next
+// version: a 404 lists both versions in RepositoryUnknown, a failure keeps both errors (#567).
+func TestRepositoryUnknownAskedOnce(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		failTags        error
+		unknown, errors int
+	}{
+		{name: "a 404", unknown: 2},
+		{name: "a 5xx", failTags: errServer, errors: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			gone := e.publish(t, "docs/gone.txt", "one")
+			e.publish(t, "docs/gone.txt", "two")
+			e.publish(t, "docs/kept.txt", "kept")
+			must(t, e.fake.DeleteRepository(t.Context(), gone.RepoPath))
+			e.prov.failTags, e.prov.tagsIn = tt.failTags, gone.RepoPath
+			e.clock.later(2 * time.Hour)
+			r := e.run(t, reindex.Request{Prune: true})
+			if r.Removed != 0 || r.Pending != 0 || len(r.RepositoryUnknown) != tt.unknown || len(r.Errors) != tt.errors {
+				t.Errorf("the run: %+v; want %d in RepositoryUnknown, %d errors, nothing removed", *r, tt.unknown, tt.errors)
+			}
+			if n := e.prov.tagLists[gone.RepoPath]; n != 1 {
+				t.Errorf("the tag list of %s asked %d times in the run, want once", gone.RepoPath, n)
+			}
+		})
+	}
+}
+
 // TestPruneTwoReplicas is the prune of two replicas' reconcile loops on one database: runs that
 // overlap are refused, and the answers MANIFEST_UNKNOWN that one replica got count for the
 // other, but two runs that follow each other within 10 minutes are not two answers.
