@@ -71,7 +71,7 @@ MATRIX_ARGS ?=
 # make run uses the local configuration when there is one, the example otherwise.
 RUN_CONFIG   := $(firstword $(wildcard deploy/compose/lajstrom.yaml) deploy/compose/lajstrom.example.yaml)
 
-.PHONY: help build test vet lint api-lint vulncheck licenses fmt-check check fuzz \
+.PHONY: help build test vet lint api-lint vulncheck licenses fmt-check check fuzz guarantees \
 	dev-up dev-down dev-ps dev-logs test-integration e2e load registry-matrix run snapshot release-check clean
 
 help: ## List the targets
@@ -82,8 +82,11 @@ build: ## Compile every package and build bin/lajstrom with version, commit and 
 	$(GO) build ./...
 	$(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd/lajstrom
 
-test: ## Unit tests with the race detector
+test: ## Unit tests with the race detector; they check docs/spec/guarantees.md against the tests (tools/guarantees)
 	$(GO) test -race ./...
+
+guarantees: ## What each guarantee of docs/spec/guarantees.md proves, as a Markdown table; fails on what make test fails on
+	$(GO) run ./tools/guarantees -report
 
 vet: ## go vet
 	$(GO) vet ./...

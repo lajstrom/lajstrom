@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end test of a raw repo with curl against a running Lajstrom (docs/acceptance.md §3.2):
-# R-01, R-02, R-03, R-04, a single range, R-09, R-10, then DELETE and a 404.
+# R-01, R-02, R-03, R-04, a single range, R-09, R-10, then R-07: DELETE and a 404.
 #
 #   test/e2e/raw.sh [<base url> [<repo>]]     default: http://localhost:8080 scratch
 #
@@ -182,12 +182,13 @@ expect "R-10 Content-Length" 0 "$(hdr content-length)"
 [ ! -s "$work/body" ] || fail "R-10: GET of the empty file has a body"
 ok "R-10 an empty file: 201; GET has Content-Length 0"
 
-# DELETE removes every version of the path; GET is 404 after it.
+# R-07, the delete by a principal that may: DELETE removes every version of the path; GET is
+# 404 after it.
 req DELETE "$(urlpath "$file")"
-expect "DELETE $file status" 204 "$status"
+expect "R-07 DELETE $file status" 204 "$status"
 req GET "$(urlpath "$file")"
-expect "GET $file after DELETE status" 404 "$status"
-ok "DELETE $file: 204; GET is 404 after it"
+expect "R-07 GET $file after DELETE status" 404 "$status"
+ok "R-07 DELETE $file: 204; GET is 404 after it"
 
 # Cleanup: the other paths of the run.
 n=0

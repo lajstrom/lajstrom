@@ -28,6 +28,13 @@ Next to the code, table tests, no network and no containers. Fixtures are built 
 process with [internal/testutil](../internal/testutil) (a `.deb`, a `.whl`, a `.jar` in memory);
 binary packages from distributions are never checked in.
 
+The unit tests include the check of [guarantees.md](spec/guarantees.md) (#447,
+[tools/guarantees](../tools/guarantees)): every guarantee that holds names a test, every other
+names an issue, and every test an entry names exists and is not skipped unconditionally. Renaming
+or deleting such a test fails `make test` with the guarantee's id, so the entry changes in the
+same pull request. `make guarantees` prints a table of what each guarantee proves, for the release
+notes.
+
 ## Store conformance
 
 [internal/index/storetest](../internal/index/storetest) is one suite that every `index.Store`
