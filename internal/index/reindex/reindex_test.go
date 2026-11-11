@@ -36,13 +36,14 @@ var alice = auth.Principal{Kind: auth.KindUser, Name: "alice"}
 // env is one repo raw/scratch on a fake registry, the ingest pipeline with the raw plugin, and
 // a worker whose inspector counts its calls.
 type env struct {
-	st      *sqlite.Store
-	fake    *providertest.Fake
-	prov    *wrapped
-	pipe    *ingest.Pipeline
-	inspect *counting
-	w       *reindex.Worker
-	repo    index.Repo
+	st        index.Store
+	fake      *providertest.Fake
+	prov      *wrapped
+	providers provider.Map // of pipe and w
+	pipe      *ingest.Pipeline
+	inspect   *counting
+	w         *reindex.Worker
+	repo      index.Repo
 }
 
 var memoryDBs atomic.Int64
@@ -56,12 +57,13 @@ func newEnv(t *testing.T) *env {
 	must(t, st.Migrate(ctx))
 	e := &env{st: st, fake: &providertest.Fake{RegistryName: "local"}}
 	e.prov = &wrapped{Fake: e.fake}
+	e.providers = provider.Map{"local": e.prov}
 	e.repo = e.newRepo(t, "raw", "scratch")
 	plugins := func(name string) (format.Plugin, bool) { return raw.Plugin{}, name == raw.Name }
 	log := slog.New(slog.DiscardHandler)
-	e.pipe = ingest.New(ingest.Options{Providers: provider.Map{"local": e.prov}, Index: st, Plugins: plugins, Log: log})
+	e.pipe = ingest.New(ingest.Options{Providers: e.providers, Index: st, Plugins: plugins, Log: log})
 	e.inspect = &counting{Inspector: e.pipe}
-	e.w = reindex.New(reindex.Options{Index: st, Providers: provider.Map{"local": e.prov}, Inspector: e.inspect, Log: log})
+	e.w = reindex.New(reindex.Options{Index: st, Providers: e.providers, Inspector: e.inspect, Log: log})
 	return e
 }
 
