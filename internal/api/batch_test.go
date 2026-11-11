@@ -72,19 +72,7 @@ func TestBatchDelete(t *testing.T) {
 	if got := statuses(res); got != "deleted changed young protected gone gone changed error" || res.DryRun {
 		t.Fatalf("statuses %s", got)
 	}
-	r := res.Results
-	if len(r[1].Digests) != 1 || r[1].Digests[0] != dg("requests1.1") || !strings.Contains(r[1].Message, "changed since it was read") {
-		t.Errorf("changed: %+v", r[1])
-	}
-	if r[2].LastModified == nil || !r[2].LastModified.Equal(old.Add(60*24*time.Hour)) || !strings.Contains(r[2].Message, "after the cut-off") {
-		t.Errorf("young: %+v", r[2])
-	}
-	if len(r[3].Pointers) != 1 || r[3].Pointers[0] != (format.Pointer{Kind: "dist-tag", Name: "latest"}) {
-		t.Errorf("protected: %+v", r[3])
-	}
-	if r[6].Digests[0] != digest.FromString("again").String() || !strings.Contains(r[7].Message, "does not delete manifests") || r[0].Message != "" {
-		t.Errorf("refused under the lock, failed: %+v, %+v; deleted %+v", r[6], r[7], r[0])
-	}
+	wantResults(t, res.Results, old.Add(60*24*time.Hour))
 	var refs []string
 	for _, del := range d.got {
 		if del.Job != "retention-7" || del.Condition == nil || del.Condition.Force || !del.Condition.UnmodifiedSince.Equal(time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)) {
@@ -97,6 +85,25 @@ func TestBatchDelete(t *testing.T) {
 	slices.Sort(want)
 	if !slices.Equal(refs, want) {
 		t.Errorf("deleted %v, want %v", refs, want)
+	}
+}
+
+// wantResults checks the fields of the results of TestBatchDelete beside their statuses: the
+// digests now of changed, the publish time of young, published at young, the pointers of
+// protected, the messages of a refusal under the lock and of an error, none for deleted.
+func wantResults(t *testing.T, r []BatchItemResult, young time.Time) {
+	t.Helper()
+	if len(r[1].Digests) != 1 || r[1].Digests[0] != digest.FromString("requests1.1").String() || !strings.Contains(r[1].Message, "changed since it was read") {
+		t.Errorf("changed: %+v", r[1])
+	}
+	if r[2].LastModified == nil || !r[2].LastModified.Equal(young) || !strings.Contains(r[2].Message, "after the cut-off") {
+		t.Errorf("young: %+v", r[2])
+	}
+	if len(r[3].Pointers) != 1 || r[3].Pointers[0] != (format.Pointer{Kind: "dist-tag", Name: "latest"}) {
+		t.Errorf("protected: %+v", r[3])
+	}
+	if r[6].Digests[0] != digest.FromString("again").String() || !strings.Contains(r[7].Message, "does not delete manifests") || r[0].Message != "" {
+		t.Errorf("refused under the lock, failed: %+v, %+v; deleted %+v", r[6], r[7], r[0])
 	}
 }
 
