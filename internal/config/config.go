@@ -286,7 +286,28 @@ type Auth struct {
 	// AnonymousRead is the server-wide switch for anonymous read: when false, no repo is
 	// readable without credentials, whatever its own anonymousRead (RBAC, issue #45).
 	AnonymousRead bool `yaml:"anonymousRead"`
+	// Bootstrap is the one-time token that makes the first admin (docs/auth.md, Bootstrap).
+	Bootstrap Bootstrap `yaml:"bootstrap"`
 }
+
+// Bootstrap configures the bootstrap token: while no enabled user has an admin binding, serve
+// makes the operator's token valid on every replica, which lajstrom admin bootstrap exchanges
+// once for the first admin. Once an admin exists, the token is dead.
+type Bootstrap struct {
+	// TokenFile is the path of a file that holds the token, 32 to 256 bytes that the operator
+	// made (openssl rand -hex 32), mounted from a Kubernetes Secret or a Compose secret; env
+	// LAJSTROM_BOOTSTRAP_TOKEN_FILE. serve reads it at start while no admin exists, never Load;
+	// once one exists, serve warns while the file exists.
+	// Empty, or a file that does not exist: there is no token, and serve warns how to make the
+	// first admin. serve never makes a token and never logs one.
+	TokenFile string `yaml:"tokenFile"`
+	// TTL is how long a token is valid once serve made it valid; DefaultBootstrapTTL when the
+	// file leaves it out. Must be positive.
+	TTL time.Duration `yaml:"ttl"`
+}
+
+// DefaultBootstrapTTL is the default of auth.bootstrap.ttl: a day to exchange the token.
+const DefaultBootstrapTTL = 24 * time.Hour
 
 // Keys configures signing keys (issue #41, internal/keys): the apt keys of the repos and the
 // key that signs the bearer tokens of /v2 (issue #26, ADR 0010).
@@ -397,6 +418,7 @@ func Default() *Config {
 		Database:  Database{Driver: DefaultDatabaseDriver, DSN: DefaultDatabaseDSN},
 		Ingest:    Ingest{ClaimTTL: DefaultIngestClaimTTL},
 		Reconcile: Reconcile{Interval: DefaultReconcileInterval},
+		Auth:      Auth{Bootstrap: Bootstrap{TTL: DefaultBootstrapTTL}},
 		Keys:      Keys{Algorithm: DefaultKeysAlgorithm, RetireGrace: DefaultKeysRetireGrace, TokenAlgorithm: DefaultKeysTokenAlgorithm},
 	}
 }

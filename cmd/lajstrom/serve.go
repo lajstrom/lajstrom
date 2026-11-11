@@ -49,7 +49,8 @@ const registryProbeTimeout = 10 * time.Second
 // Deps.Signer. The bearer-token key is loaded or made right after (newTokenKeys), before the
 // server listens, so that a server that cannot load it fails at start (ADR 0010). The repo
 // service over the index (api.Repos) runs the config bootstrap before the server listens, and
-// serves /api/v1. The OCI facade over the index and the registries serves /v2/, issues and
+// serves /api/v1. While no admin exists, the token of auth.bootstrap.tokenFile is made valid
+// next (auth.Bootstrap.Arm); without one, a warning says how to make the first admin. The OCI facade over the index and the registries serves /v2/, issues and
 // verifies the bearer tokens with that key, and hands the manifests of managed repos to the
 // same pipeline; server.maxManifestSize bounds them. The authenticator over the index's users
 // reads the HTTP Basic credentials of every request. The RBAC evaluator over the index's
@@ -107,6 +108,10 @@ func newServeCmd(a *app) *cobra.Command {
 				return err
 			}
 			a.log.Info("repos of the configuration bootstrapped", "configured", len(c.Repos), "created", created)
+			boot := &auth.Bootstrap{Index: st, Users: &auth.Users{Index: st, Log: a.log}, TTL: c.Auth.Bootstrap.TTL, Log: a.log}
+			if err := boot.Arm(ctx, c.Auth.Bootstrap.TokenFile); err != nil {
+				return err
+			}
 			signer, err := newSigner(ctx, c, a.lookupEnv, st, a.log)
 			if err != nil {
 				return err

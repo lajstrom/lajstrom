@@ -59,6 +59,7 @@ func TestLoadDefaults(t *testing.T) {
 				Database:  Database{Driver: "sqlite", DSN: "file:lajstrom.db"},
 				Ingest:    Ingest{ClaimTTL: 10 * time.Minute},
 				Reconcile: Reconcile{Interval: time.Hour},
+				Auth:      Auth{Bootstrap: Bootstrap{TTL: 24 * time.Hour}},
 				Keys:      Keys{Algorithm: "ed25519", RetireGrace: 720 * time.Hour, TokenAlgorithm: "ES256"},
 			}
 			if !reflect.DeepEqual(got, want) {
@@ -93,6 +94,7 @@ database:
 		{"LAJSTROM_DATABASE_DRIVER", "postgres", func(c *Config) string { return c.Database.Driver }, "postgres"},
 		{"LAJSTROM_DATABASE_DSN", "postgres://db/lajstrom", func(c *Config) string { return c.Database.DSN }, "postgres://db/lajstrom"},
 		{"LAJSTROM_MASTER_KEY_FILE", "/run/secrets/master-key", func(c *Config) string { return c.Keys.MasterKeyFile }, "/run/secrets/master-key"},
+		{"LAJSTROM_BOOTSTRAP_TOKEN_FILE", "/run/secrets/bootstrap", func(c *Config) string { return c.Auth.Bootstrap.TokenFile }, "/run/secrets/bootstrap"},
 		{"LAJSTROM_SERVER_LISTEN", "", func(c *Config) string { return c.Server.Listen }, ":8080"}, // empty = unset
 		{"LAJSTROM_UNRELATED", "x", func(c *Config) string { return c.Database.DSN }, "file:file.db"},
 	}
@@ -130,6 +132,7 @@ func TestLoadErrors(t *testing.T) {
 		{name: "a zero without unit", file: minimal + "reconcile: {interval: 0}\n", want: []string{"into time.Duration", "with its unit: 0s"}},
 		{name: "negative claim TTL", file: minimal + "ingest: {claimTTL: -1m}\n", want: []string{"ingest.claimTTL: must not be negative"}},
 		{name: "negative reconcile interval", file: minimal + "reconcile: {interval: -1h}\n", want: []string{"reconcile.interval: must not be negative"}},
+		{name: "zero bootstrap ttl", file: minimal + "auth: {bootstrap: {ttl: 0s}}\n", want: []string{"auth.bootstrap.ttl: must be positive"}},
 		{name: "metrics listener", file: minimal[:len(minimal)-1] + "\n  metricsListen: \"9464\"\n", want: []string{`server.metricsListen: "9464" is not host:port`}},
 		{name: "metrics on the public listener", file: minimal[:len(minimal)-1] + "\n  metricsListen: \":8080\"\n",
 			want: []string{"server.metricsListen: must not be server.listen"}},
