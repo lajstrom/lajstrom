@@ -177,7 +177,9 @@ type catalogList struct {
 // and a Link. oci repos are there too: their manifest PUT records the repository. With a
 // bearer that grants registry:catalog:*, the scope catalog clients ask for, the repos are those
 // the token's principal may read; with any other bearer, the token's view: the repositories it
-// grants pull on.
+// grants pull on. The anonymous principal without a bearer gets 401 with the challenge of that
+// scope, as on GET /v2/: crane and oras authenticate only when challenged, so a 200 to them
+// would list what anonymous may read to a client that has logged in.
 func (h *handler) catalog(w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return methodNotAllowed(r)
@@ -187,31 +189,13 @@ func (h *handler) catalog(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	repos, err := h.o.Index.ListRepos(ctx, "")
-	if err != nil {
-		return fmt.Errorf("facade: catalog: %w", err)
-	}
 	g, bearer := grantFrom(ctx)
-	tokenView := bearer && !g.Catalog()
-	names := []string{}
-	for _, repo := range repos {
-		if !tokenView {
-			switch err := format.Authorize(ctx, h.deps, auth.ActionRead, repo); {
-			case denied(err):
-				continue
-			case err != nil:
-				return fmt.Errorf("facade: catalog: %w", err)
-			}
-		}
-		ocis, err := h.ociNames(ctx, repo)
-		if err != nil {
-			return err
-		}
-		for _, name := range ocis {
-			if !tokenView || g.Allows(name, token.ActionPull) {
-				names = append(names, name)
-			}
-		}
+	if !bearer && auth.PrincipalFrom(ctx).Kind == auth.KindAnonymous {
+		return &apiError{status: http.StatusUnauthorized, msg: "authentication required: get a token from the realm of the challenge"}
+	}
+	names, err := h.catalogNames(ctx, g, bearer && !g.Catalog())
+	if err != nil {
+		return err
 	}
 	slices.Sort(names)
 	names, more := p.apply(slices.Compact(names))
@@ -220,6 +204,36 @@ func (h *handler) catalog(w http.ResponseWriter, r *http.Request) error {
 	}
 	writeJSON(w, http.StatusOK, catalogList{Repositories: names})
 	return nil
+}
+
+// catalogNames returns the names of the catalog, unsorted: with tokenView, those of every repo
+// that g grants pull on; otherwise those of every repo the principal may read.
+func (h *handler) catalogNames(ctx context.Context, g *token.Grant, tokenView bool) ([]string, error) {
+	repos, err := h.o.Index.ListRepos(ctx, "")
+	if err != nil {
+		return nil, fmt.Errorf("facade: catalog: %w", err)
+	}
+	names := []string{}
+	for _, repo := range repos {
+		if !tokenView {
+			switch err := format.Authorize(ctx, h.deps, auth.ActionRead, repo); {
+			case denied(err):
+				continue
+			case err != nil:
+				return nil, fmt.Errorf("facade: catalog: %w", err)
+			}
+		}
+		ocis, err := h.ociNames(ctx, repo)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range ocis {
+			if !tokenView || g.Allows(name, token.ActionPull) {
+				names = append(names, name)
+			}
+		}
+	}
+	return names, nil
 }
 
 // ociNames returns the names, <format>/<repo>/<path>, of the OCI repositories that oci_repos

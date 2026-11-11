@@ -138,20 +138,56 @@ func TestCatalog(t *testing.T) {
 	all := []string{"oci/images/app", "oci/images/base/tools", "raw/assets/docs/readme.md", "raw/assets/hello"}
 
 	open := New(Options{Index: e.st, Providers: provider.Map{"local": e.prov}, Tokens: e.tokens}) // no Authorizer
-	if pages := e.listing(open, "/v2/_catalog", "repositories"); !equalPages(pages, [][]string{all}) {
+	bearer := "Bearer " + e.getToken(open, "", "registry:catalog:*")
+	if pages := e.listing(open, "/v2/_catalog", "repositories", "Authorization", bearer); !equalPages(pages, [][]string{all}) {
 		t.Errorf("catalog without an Authorizer: %q", pages)
 	}
-	if pages := e.listing(open, "/v2/_catalog?n=3", "repositories"); !equalPages(pages, [][]string{all[:3], all[3:]}) {
+	if pages := e.listing(open, "/v2/_catalog?n=3", "repositories", "Authorization", bearer); !equalPages(pages, [][]string{all[:3], all[3:]}) {
 		t.Errorf("catalog pages: %q", pages)
 	}
-	if pages := e.listing(open, "/v2/_catalog?n=1&last="+all[1], "repositories"); !equalPages(pages, [][]string{{all[2]}, {all[3]}}) {
+	if pages := e.listing(open, "/v2/_catalog?n=1&last="+all[1], "repositories", "Authorization", bearer); !equalPages(pages, [][]string{{all[2]}, {all[3]}}) {
 		t.Errorf("catalog after %s: %q", all[1], pages)
 	}
 	if pages := e.listing(e.h, "/v2/_catalog", "repositories", principalHeader, "dev"); !equalPages(pages, [][]string{all[:2]}) {
 		t.Errorf("catalog of dev: %q", pages)
 	}
-	if pages := e.listing(e.h, "/v2/_catalog", "repositories"); !equalPages(pages, [][]string{{}}) {
-		t.Errorf("catalog of anonymous: %q", pages)
+}
+
+// TestCatalogChallengesAnonymous checks that GET /v2/_catalog without credentials is 401 with the
+// challenge of registry:catalog:*, as GET /v2/ is: crane catalog and oras repo ls authenticate
+// only when challenged, so a 200 would list what anonymous may read to a client that has logged
+// in. The client then lists with a token: of its user, or of anonymous, which reads what
+// anonymous read allows.
+func TestCatalogChallengesAnonymous(t *testing.T) {
+	z := authorizer{"dev": {"oci/images": {auth.ActionRead, auth.ActionWrite}}, "": {"raw/assets": {auth.ActionRead}}}
+	e := newEnv(t, envOptions{authz: z})
+	e.seedPackage("hello", "1")
+	body, _ := manifest(t, []byte("app"), "app")
+	wantStatus(t, "PUT app", e.do(e.h, http.MethodPut, "/v2/oci/images/app/manifests/1", bytes.NewReader(body),
+		"Content-Type", ocispecManifest, principalHeader, "dev"), http.StatusCreated)
+
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		rr := e.do(e.h, method, "/v2/_catalog", nil)
+		wantStatus(t, method+" /v2/_catalog as anonymous", rr, http.StatusUnauthorized)
+		wantHeader(t, method+" /v2/_catalog as anonymous", rr, "WWW-Authenticate",
+			`Bearer realm="http://example.com/v2/token",service="example.com",scope="registry:catalog:*"`)
+	}
+	wantError(t, "GET /v2/_catalog as anonymous", e.do(e.h, http.MethodGet, "/v2/_catalog", nil), http.StatusUnauthorized, codeUnauthorized)
+
+	for _, tt := range []struct {
+		user string
+		want []string
+	}{
+		{"dev", []string{"oci/images/app"}},
+		{"", []string{"raw/assets/hello"}}, // the anonymous token: what anonymous may read
+	} {
+		tok := e.getToken(e.h, tt.user, "registry:catalog:*")
+		if pages := e.listing(e.h, "/v2/_catalog", "repositories", "Authorization", "Bearer "+tok); !equalPages(pages, [][]string{tt.want}) {
+			t.Errorf("catalog with the token of %q: %q, want %q", tt.user, pages, tt.want)
+		}
+	}
+	if pages := e.listing(e.h, "/v2/_catalog", "repositories", principalHeader, "dev"); !equalPages(pages, [][]string{{"oci/images/app"}}) {
+		t.Errorf("catalog of dev by Basic: %q", pages)
 	}
 }
 
