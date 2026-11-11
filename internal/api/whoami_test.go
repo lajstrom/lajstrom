@@ -43,7 +43,7 @@ func TestWhoami(t *testing.T) {
 	for _, o := range []Options{{}, {Auth: deny}} {
 		f := newFixture(t, o)
 		rr := f.do(http.MethodGet, "/api/v1/whoami", "", auth.Anonymous)
-		wantError(t, rr, http.StatusUnauthorized, codeForbidden, "credentials are needed")
+		wantError(t, rr, http.StatusUnauthorized, codeUnauthenticated, "credentials are needed")
 		if c := rr.Header().Get("WWW-Authenticate"); c != basicChallenge {
 			t.Errorf("WWW-Authenticate = %q, want %q", c, basicChallenge)
 		}
@@ -73,14 +73,14 @@ func TestWhoamiThroughServer(t *testing.T) {
 		return rr
 	}
 
-	wantError(t, get("", ""), http.StatusUnauthorized, codeForbidden, "credentials are needed")
+	wantError(t, get("", ""), http.StatusUnauthorized, codeUnauthenticated, "credentials are needed")
 	var got Whoami
 	decodeJSON(t, get("alice", "alice-password"), http.StatusOK, &got)
 	if got.Kind != "user" || got.Name != "alice" || !index.IsUID(got.UID) || got.Principal != "user:"+got.UID {
 		t.Errorf("whoami = %+v, want alice", got)
 	}
 	rr := get("alice", "wrong-password")
-	wantError(t, rr, http.StatusUnauthorized, codeForbidden, "credentials are needed")
+	wantError(t, rr, http.StatusUnauthorized, codeUnauthenticated, "credentials are needed")
 	if c := rr.Header().Get("WWW-Authenticate"); c != basicChallenge {
 		t.Errorf("WWW-Authenticate = %q, want %q", c, basicChallenge)
 	}

@@ -197,7 +197,7 @@ The body of the `401` follows the route:
 | Route | Body |
 | --- | --- |
 | `/v2/` | `{"errors":[{"code":"UNAUTHORIZED","message":"credentials are needed: the ones sent were refused"}]}`, the error format of the distribution spec |
-| `/api/` | `{"error":{"code":"FORBIDDEN","message":"credentials are needed: the ones sent were refused"}}`, the envelope of [api.md](api.md) |
+| `/api/` | `{"error":{"code":"UNAUTHENTICATED","message":"credentials are needed: the ones sent were refused"}}`, the envelope of [api.md](api.md) |
 | elsewhere | `credentials are needed: the ones sent were refused`, plain text |
 
 The access log line of every request has `principal`: the canonical form, `anonymous` for a
@@ -975,7 +975,7 @@ curl -s -u admin http://localhost:8080/api/v1/whoami
 ```
 
 Without credentials it is `401` with the Basic challenge and
-`{"error":{"code":"FORBIDDEN","message":"credentials are needed"}}`. With a personal access
+`{"error":{"code":"UNAUTHENTICATED","message":"credentials are needed"}}`. With a personal access
 token it is the token's user; with a deploy token,
 `{"principal":"token:3","kind":"token","name":"3"}`.
 

@@ -189,11 +189,11 @@ func retryAfter(d time.Duration) string {
 
 // writeRefusal answers a request that the middleware refuses, 401 with a challenge, 403, 429,
 // 500 or 503, in the error format of the route's family: the error document of the distribution
-// spec under /v2/ (internal/facade), the envelope of the management API under /api/ (internal/api; 401
-// is FORBIDDEN there, told apart by the status and the challenge), plain text elsewhere
-// (format.WriteError). A 403 is DENIED under /v2/ and FORBIDDEN under /api/; a 429 is
-// TOOMANYREQUESTS under /v2/ and UNAVAILABLE under /api/, a 503 UNAVAILABLE under both, and the
-// caller has set Retry-After.
+// spec under /v2/ (internal/facade), the envelope of the management API under /api/
+// (internal/api), plain text elsewhere (format.WriteError). A 401 is UNAUTHORIZED under /v2/
+// and UNAUTHENTICATED under /api/ (#579); a 403 is DENIED under /v2/ and FORBIDDEN under /api/;
+// a 429 is TOOMANYREQUESTS under /v2/ and UNAVAILABLE under /api/, a 503 UNAVAILABLE under
+// both, and the caller has set Retry-After.
 // The challenge of a 401 under /v2/ is the bearer challenge of the token
 // flow (docs/spec/rbac.md §4) without a scope, as the facade answers: the client goes to the
 // realm with the credentials that were refused, and learns there that they are wrong. On
@@ -227,7 +227,9 @@ func (s *Server) writeRefusal(w http.ResponseWriter, r *http.Request, status int
 	case strings.HasPrefix(path, "/api/"):
 		code := "INTERNAL"
 		switch status {
-		case http.StatusUnauthorized, http.StatusForbidden:
+		case http.StatusUnauthorized:
+			code = "UNAUTHENTICATED"
+		case http.StatusForbidden:
 			code = "FORBIDDEN"
 		case http.StatusTooManyRequests, http.StatusServiceUnavailable:
 			code = "UNAVAILABLE"

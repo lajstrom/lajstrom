@@ -400,10 +400,11 @@ do not invent their own. What each call needs, in the actions of rbac.md §2 (de
 | whoami | `GET /api/v1/whoami` |
 | bootstrap | `POST /api/v1/bootstrap` |
 
-Errors: `{"error": {"code": "NOT_FOUND|CONFLICT|FORBIDDEN|INVALID|UNAVAILABLE|INTERNAL", "message": "…"}}`.
-A `429` (a throttle of failed logins, with `Retry-After`; #130) is `UNAVAILABLE`: try again
-later. A `412` (a conditional delete that found the version changed) is `CONFLICT`, as `409` is.
-There is no seventh code.
+Errors: `{"error": {"code": "NOT_FOUND|CONFLICT|UNAUTHENTICATED|FORBIDDEN|INVALID|UNAVAILABLE|INTERNAL", "message": "…"}}`.
+A `401` (no credentials, or credentials refused, with the Basic challenge) is `UNAUTHENTICATED`,
+a `403` (the caller lacks the action) `FORBIDDEN` (#579). A `429` (a throttle of failed logins,
+with `Retry-After`; #130) is `UNAVAILABLE`: try again later. A `412` (a conditional delete that
+found the version changed) is `CONFLICT`, as `409` is. There is no eighth code.
 
 Lists of a repo's content (`read`): `GET …/packages` pages the packages by name, `?prefix=`
 keeps those whose name starts with it; `GET …/packages/<name>/versions` pages the versions,

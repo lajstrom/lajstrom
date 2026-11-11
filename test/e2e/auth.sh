@@ -98,8 +98,8 @@ ok "admin binding create --principal user:$user --role maintainer --mask raw/$re
 req - GET "$base/api/v1/whoami"
 expect "whoami without credentials status" 401 "$status"
 expect "whoami without credentials WWW-Authenticate" 'Basic realm="lajstrom"' "$(hdr www-authenticate)"
-expect "whoami without credentials code" FORBIDDEN "$(jq -r .error.code "$work/body")"
-ok "GET /api/v1/whoami without credentials: 401 with Basic realm=\"lajstrom\""
+expect "whoami without credentials code" UNAUTHENTICATED "$(jq -r .error.code "$work/body")"
+ok "GET /api/v1/whoami without credentials: 401 UNAUTHENTICATED with Basic realm=\"lajstrom\""
 
 req old GET "$base/api/v1/whoami"
 expect "whoami status" 200 "$status"

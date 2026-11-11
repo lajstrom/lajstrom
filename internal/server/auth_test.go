@@ -181,7 +181,7 @@ func TestAuthenticateTokens(t *testing.T) {
 	pat := auth.Credential{Kind: auth.CredPAT, TokenID: 1, UserID: 1}
 	dep := auth.Credential{Kind: auth.CredDeploy, TokenID: 7, RepoID: 10, Repo: "raw/scratch", Scopes: []string{"read"}}
 	const textBody = "credentials are needed: the ones sent were refused\n"
-	const apiBody = `{"error":{"code":"FORBIDDEN","message":"credentials are needed: the ones sent were refused"}}` + "\n"
+	const apiBody = `{"error":{"code":"UNAUTHENTICATED","message":"credentials are needed: the ones sent were refused"}}` + "\n"
 	tests := []struct {
 		name          string
 		path          string
@@ -277,12 +277,12 @@ func TestAuthenticate(t *testing.T) {
 			body: `{"errors":[{"code":"UNAUTHORIZED","message":"credentials are needed: the ones sent were refused"}]}` + "\n", ctype: "application/json"},
 		{name: "basic on /v2/token", path: "/v2/token", authorization: basic("alice", alicePassword), status: 204, principal: alice},
 		{name: "wrong password, API", path: "/api/v1/repos", authorization: basic("alice", "wrong-password"), status: 401,
-			body: `{"error":{"code":"FORBIDDEN","message":"credentials are needed: the ones sent were refused"}}` + "\n", ctype: "application/json"},
+			body: `{"error":{"code":"UNAUTHENTICATED","message":"credentials are needed: the ones sent were refused"}}` + "\n", ctype: "application/json"},
 		{name: "not base64", path: "/test/x", authorization: "Basic !!!not-base64", status: 401, body: textBody, ctype: "text/plain; charset=utf-8"},
 		{name: "no colon", path: "/test/x", authorization: "Basic " + base64.StdEncoding.EncodeToString([]byte("alice")), status: 401,
 			body: textBody, ctype: "text/plain; charset=utf-8"},
 		{name: "scheme only", path: "/api/v1/repos", authorization: "Basic", status: 401,
-			body: `{"error":{"code":"FORBIDDEN","message":"credentials are needed: the ones sent were refused"}}` + "\n", ctype: "application/json"},
+			body: `{"error":{"code":"UNAUTHENTICATED","message":"credentials are needed: the ones sent were refused"}}` + "\n", ctype: "application/json"},
 		{name: "no user name", path: "/test/x", authorization: basic("", alicePassword), status: 401,
 			body: textBody, ctype: "text/plain; charset=utf-8"},
 	}

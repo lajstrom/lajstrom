@@ -493,9 +493,9 @@ func TestWriteJSONFailure(t *testing.T) {
 
 func TestCodeOf(t *testing.T) {
 	for status, want := range map[int]string{
-		400: codeInvalid, 401: codeForbidden, 403: codeForbidden, 404: codeNotFound, 405: codeInvalid,
-		409: codeConflict, 412: codeConflict, 413: codeInvalid, 500: codeInternal, 501: codeUnavailable, 502: codeUnavailable,
-		503: codeUnavailable, 504: codeInternal,
+		400: codeInvalid, 401: codeUnauthenticated, 403: codeForbidden, 404: codeNotFound, 405: codeInvalid,
+		409: codeConflict, 412: codeConflict, 413: codeInvalid, 429: codeUnavailable, 500: codeInternal, 501: codeUnavailable,
+		502: codeUnavailable, 503: codeUnavailable, 504: codeInternal,
 	} {
 		if got := codeOf(status); got != want {
 			t.Errorf("codeOf(%d) = %s, want %s", status, got, want)

@@ -163,7 +163,7 @@ func TestListErrors(t *testing.T) {
 	publish(t, f.st, repo.ID, "requests", "1.0", testNow)
 	for _, target := range []string{"/api/v1/repos/pypi/libs/packages", "/api/v1/repos/pypi/libs/packages/requests/versions"} {
 		wantError(t, f.do(http.MethodGet, target, "", bob), http.StatusNotFound, codeNotFound)
-		wantError(t, f.do(http.MethodGet, target, "", auth.Principal{}), http.StatusUnauthorized, codeForbidden)
+		wantError(t, f.do(http.MethodGet, target, "", auth.Principal{}), http.StatusUnauthorized, codeUnauthenticated)
 		wantStatus(t, f.do(http.MethodGet, target, "", admin), http.StatusOK)
 	}
 }
