@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"io"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -178,4 +179,27 @@ type Capabilities struct {
 	BlobRedirect bool
 	// MaxBlobSize is the largest blob the backend accepts, in bytes; 0 means unknown.
 	MaxBlobSize int64
+	// Consistency is when the backend's reads see a write it acknowledged: strong, eventual,
+	// or unknown (ConsistencyUnknown) when neither the vendor table nor the configuration
+	// says. Ingest reads every publish back whatever it is; it decides whether a 404 of a blob
+	// a client says it uploaded is worth reading again.
+	Consistency Consistency
+	// ConsistencyBound is the longest lag known of an eventual backend, from the 2xx of a write
+	// until every read sees it (registries[].capabilities.consistencyBound, which
+	// `lajstrom registry probe` measures); 0 when none is known.
+	ConsistencyBound time.Duration
 }
+
+// Consistency is a backend's read-after-write model (docs/registries/README.md, Consistency).
+type Consistency string
+
+// The models. ConsistencyUnknown is the zero value.
+const (
+	// ConsistencyUnknown: nobody classified the backend.
+	ConsistencyUnknown Consistency = ""
+	// ConsistencyStrong: every read after the 2xx of a write sees it, by tag and by digest.
+	ConsistencyStrong Consistency = "strong"
+	// ConsistencyEventual: the backend may answer 404 for a manifest, a blob or a tag it
+	// acknowledged a moment before, or list it late (ECR, GHCR).
+	ConsistencyEventual Consistency = "eventual"
+)

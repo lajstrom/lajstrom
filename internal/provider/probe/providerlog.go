@@ -10,7 +10,12 @@ import (
 
 // capabilitiesOf converts c.
 func capabilitiesOf(c provider.Capabilities) Capabilities {
-	return Capabilities(c)
+	o := Capabilities{CreateOnPush: c.CreateOnPush, Referrers: c.Referrers, Catalog: c.Catalog, DeleteManifest: c.DeleteManifest,
+		ImmutableTags: c.ImmutableTags, BlobRedirect: c.BlobRedirect, MaxBlobSize: c.MaxBlobSize, Consistency: string(c.Consistency)}
+	if c.ConsistencyBound > 0 {
+		o.ConsistencyBound = c.ConsistencyBound.String()
+	}
+	return o
 }
 
 // providerLog is the slog handler of the generic provider that the run asks: its request lines

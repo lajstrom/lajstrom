@@ -171,6 +171,11 @@ func capabilities(o config.CapabilityOverrides, mutability types.ImageTagMutabil
 	if o.MaxBlobSize == 0 {
 		o.MaxBlobSize = maxLayerSize
 	}
+	// A manifest or a blob can be 404 for a moment after its push (docs/registries/ecr.md,
+	// Consistency); AWS documents no bound, and #19 measures one.
+	if o.Consistency == "" {
+		o.Consistency = config.ConsistencyEventual
+	}
 	return o
 }
 

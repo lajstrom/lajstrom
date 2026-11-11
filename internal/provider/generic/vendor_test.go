@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -128,7 +129,7 @@ func TestVendorDefaults(t *testing.T) {
 		{vendorUnknown, probed},
 		{vendorGitLab, probed},
 		{vendorHarbor, probed},
-		{vendorGHCR, provider.Capabilities{CreateOnPush: true, Referrers: true, BlobRedirect: true}},
+		{vendorGHCR, provider.Capabilities{CreateOnPush: true, Referrers: true, BlobRedirect: true, Consistency: provider.ConsistencyEventual}},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.vendor), func(t *testing.T) {
@@ -265,6 +266,40 @@ func checkProbeLog(t *testing.T, logs string, v vendor, workarounds, warn bool) 
 	}
 }
 
+// TestConsistencyLog: the startup line says the consistency, and an eventually consistent
+// registry without a bound of its lag gets a warning.
+func TestConsistencyLog(t *testing.T) {
+	tests := []struct {
+		name  string
+		set   config.CapabilityOverrides
+		line  string
+		warns bool
+	}{
+		{"unknown", config.CapabilityOverrides{}, "consistency=unknown", false},
+		{"strong", config.CapabilityOverrides{Consistency: config.ConsistencyStrong}, "consistency=strong", false},
+		{"eventual", config.CapabilityOverrides{Consistency: config.ConsistencyEventual}, "consistency=eventual", true},
+		{"eventual with a bound", config.CapabilityOverrides{Consistency: config.ConsistencyEventual, ConsistencyBound: 2 * time.Second},
+			`consistency="eventual within 2s"`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeRegistry(t)
+			log, buf := testLogger()
+			p := f.provider(t, log, func(c *config.Registry) { c.Capabilities = tt.set })
+			if _, err := p.Capabilities(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			logs := buf.String()
+			if !strings.Contains(logs, tt.line) {
+				t.Errorf("want %s on the capabilities line, got\n%s", tt.line, logs)
+			}
+			if warned := strings.Contains(logs, `level=WARN msg="the registry is eventually consistent`); warned != tt.warns {
+				t.Errorf("warned: %v, want %v\n%s", warned, tt.warns, logs)
+			}
+		})
+	}
+}
+
 // TestVendorDefaultsInTheProbe applies the defaults of the table the way probeOnce does for
 // GHCR, which is told by its host and so cannot be the fake.
 func TestVendorDefaultsInTheProbe(t *testing.T) {
@@ -280,15 +315,19 @@ func TestVendorDefaultsInTheProbe(t *testing.T) {
 		{
 			name:     "GHCR",
 			defaults: ghcr,
-			want:     provider.Capabilities{CreateOnPush: true, Referrers: true, BlobRedirect: true},
+			want:     provider.Capabilities{CreateOnPush: true, Referrers: true, BlobRedirect: true, Consistency: provider.ConsistencyEventual},
 			noProbe:  []string{"GET /v2/_catalog"},
 		},
 		{
 			name:     "the configuration wins over GHCR's",
 			defaults: ghcr,
-			edit:     func(c *config.Registry) { c.Capabilities.Catalog, c.Capabilities.DeleteManifest = new(true), new(true) },
-			want:     provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true, DeleteManifest: true, BlobRedirect: true},
-			noProbe:  []string{"GET /v2/_catalog"},
+			edit: func(c *config.Registry) {
+				c.Capabilities.Catalog, c.Capabilities.DeleteManifest = new(true), new(true)
+				c.Capabilities.ConsistencyBound = 3 * time.Second
+			},
+			want: provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true, DeleteManifest: true, BlobRedirect: true,
+				Consistency: provider.ConsistencyEventual, ConsistencyBound: 3 * time.Second},
+			noProbe: []string{"GET /v2/_catalog"},
 		},
 		{
 			name:     "a vendor without referrers",

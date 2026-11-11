@@ -175,7 +175,20 @@ type CapabilityOverrides struct {
 	BlobRedirect *bool `yaml:"blobRedirect"`
 	// MaxBlobSize is the largest blob the backend accepts, in bytes; 0 leaves it unset.
 	MaxBlobSize int64 `yaml:"maxBlobSize"`
+	// Consistency is the backend's read-after-write model, ConsistencyStrong or
+	// ConsistencyEventual; empty leaves it unset.
+	Consistency string `yaml:"consistency"`
+	// ConsistencyBound is the longest lag measured on an eventual backend, from the 2xx of a
+	// write until every read sees it (lajstrom registry probe); 0 leaves it unset. Must not be
+	// negative, nor set with consistency strong.
+	ConsistencyBound time.Duration `yaml:"consistencyBound"`
 }
+
+// The models of registries[].capabilities.consistency.
+const (
+	ConsistencyStrong   = "strong"
+	ConsistencyEventual = "eventual"
+)
 
 // RegistryUploads is how the provider sends the chunks of a /v2 upload session to a registry
 // (docs/configuration.md, Uploads).

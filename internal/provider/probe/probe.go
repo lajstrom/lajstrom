@@ -85,6 +85,11 @@ type facts struct {
 	deleteRefused  bool // a manifest delete by digest is refused as deletes
 	repointRefused bool // pushing another manifest under an existing tag is refused
 	profileRefused bool
+	// lag is the longest a read took to see a write; lagged is set when one did not see it
+	// at the first ask, lagUnbounded when one did not within lagLimit.
+	lag          time.Duration
+	lagged       bool
+	lagUnbounded bool
 }
 
 // Run measures the row of the registry cfg (registries[].type generic) and deletes what it
@@ -191,6 +196,7 @@ func (r *run) measureAll(ctx context.Context) {
 		{[]string{"referrers", "ociSubject"}, r.measureReferrers},
 		{[]string{"catalog"}, r.measureCatalog},
 		{[]string{"tags"}, r.measureTags},
+		{[]string{"consistency"}, r.measureConsistency},
 		{[]string{"deleteDigest", "deleteTag"}, r.measureDeletes},
 		{[]string{"immutableTags"}, r.measureImmutable},
 		{[]string{"blobRedirect", "range"}, r.measureBlobReads},
@@ -232,6 +238,7 @@ func overridesVerdict(caps Capabilities, f facts) string {
 	if f.repointRefused && !caps.ImmutableTags {
 		o = append(o, "`immutableTags: true`")
 	}
+	o = append(o, consistencyOverrides(caps, f)...)
 	if f.profileRefused {
 		o = append(o, "no override helps: **the registry refuses Lajstrom's manifests**")
 	}

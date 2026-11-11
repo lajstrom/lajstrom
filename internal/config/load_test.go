@@ -151,6 +151,14 @@ func TestLoadErrors(t *testing.T) {
 			want: []string{"registries[0].timeout: must not be negative", "registries[0].capabilities.maxBlobSize: must not be negative"},
 		},
 		{
+			name: "registry consistency",
+			file: minimal + "registries:\n  - {name: a, url: \"http://zot:5000\", capabilities: {consistency: maybe, consistencyBound: -1s}}\n" +
+				"  - {name: b, url: \"http://zot:5001\", capabilities: {consistency: strong, consistencyBound: 2s}}\n",
+			want: []string{`registries[0].capabilities.consistency: "maybe" is not strong or eventual`,
+				"registries[0].capabilities.consistencyBound: must not be negative",
+				"registries[1].capabilities.consistencyBound: a strongly consistent registry has no lag"},
+		},
+		{
 			name: "token realm hosts",
 			file: minimal + `registries:
   - name: local
@@ -264,7 +272,7 @@ registries:
     url: https://registry.example
     timeout: 5s
     retries: -1
-    capabilities: {referrers: false, catalog: false, deleteManifest: true, maxBlobSize: 1073741824}
+    capabilities: {referrers: false, catalog: false, deleteManifest: true, maxBlobSize: 1073741824, consistency: eventual, consistencyBound: 4s}
     tokenRealmHosts: [auth.registry.example, 10.0.0.5]
     uploads: {spoolUnknownLength: true}
 `
@@ -277,7 +285,8 @@ registries:
 		{Name: "defaults", Type: "generic", URL: "http://zot:5000", Timeout: 30 * time.Second, Retries: 3},
 		{
 			Name: "tuned", Type: "generic", URL: "https://registry.example", Timeout: 5 * time.Second, Retries: -1,
-			Capabilities:    CapabilityOverrides{Referrers: &f, Catalog: &f, DeleteManifest: &tr, MaxBlobSize: 1 << 30},
+			Capabilities: CapabilityOverrides{Referrers: &f, Catalog: &f, DeleteManifest: &tr, MaxBlobSize: 1 << 30,
+				Consistency: ConsistencyEventual, ConsistencyBound: 4 * time.Second},
 			TokenRealmHosts: []string{"auth.registry.example", "10.0.0.5"},
 			Uploads:         RegistryUploads{SpoolUnknownLength: true},
 		},
