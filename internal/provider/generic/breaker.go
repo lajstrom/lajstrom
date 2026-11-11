@@ -3,9 +3,11 @@ package generic
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/metrics"
@@ -33,8 +35,8 @@ const (
 // timeouts and retries. Then the next GET or HEAD, the readiness ping
 // of serve every 20 s or a client's, goes through as a trial: an answer closes the breaker, a
 // failure opens it for another cooldown. A request with a body is never the trial: an upload
-// would keep the breaker half-open for as long as it streams. A 4xx is an answer; a 429 and a
-// request whose caller went away count neither way.
+// would keep the breaker half-open for as long as it streams. A 4xx is an answer; a 429, a
+// request whose caller went away and one whose body failed to read count neither way.
 type breaker struct {
 	registry string       // the label of the metric
 	log      *slog.Logger // carries registry=<name>
@@ -76,10 +78,13 @@ func (b *breaker) allow(req *http.Request) (trial bool, err error) {
 }
 
 // outcome classifies an attempt for the breaker: +1 the registry answered, -1 it failed, 0
-// neither (a 429, the caller's context ended).
-func outcome(ctx context.Context, resp *http.Response, err error) int {
+// neither (a 429, the caller's context ended, or bodyFailed: a read of the request's body failed
+// and no answer came, the caller's doing).
+func outcome(ctx context.Context, resp *http.Response, err error, bodyFailed bool) int {
 	switch {
 	case ctx.Err() != nil || errors.Is(err, context.Canceled):
+		return 0
+	case err != nil && bodyFailed:
 		return 0
 	case err != nil:
 		return -1
@@ -127,7 +132,10 @@ func (b *breaker) open(ctx context.Context) {
 
 // breakerTransport sends a request through the registry's breaker: a request it refuses
 // fails with a *provider.UnavailableError, without reaching the registry. It sits above the retries, so a
-// request is one outcome however often it was tried.
+// request is one outcome however often it was tried. It watches the reads of the request's
+// body: the facade streams a client's upload into the registry, and a client that stalls past
+// server.stallTimeout, breaks off or sends a broken chunked encoding fails the request to the
+// registry as a registry that does not answer would (#638).
 type breakerTransport struct {
 	next http.RoundTripper
 	b    *breaker
@@ -142,8 +150,15 @@ func (t *breakerTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}
 		return nil, err
 	}
+	var body *watchedBody
+	if req.Body != nil && req.Body != http.NoBody {
+		body = &watchedBody{ReadCloser: req.Body}
+		watched := *req // a RoundTripper must not change the request it was given
+		watched.Body = body
+		req = &watched
+	}
 	resp, err := t.next.RoundTrip(req)
-	t.b.done(req.Context(), trial, outcome(req.Context(), resp, err))
+	t.b.done(req.Context(), trial, outcome(req.Context(), resp, err, body.failed()))
 	if resp != nil {
 		if after, ok := retryAfter(resp); ok {
 			t.b.askedToWait(after)
@@ -151,6 +166,25 @@ func (t *breakerTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	return resp, err
 }
+
+// watchedBody is the body of a request through breakerTransport: it records a read that failed
+// with an error other than io.EOF. The transport reads it in a goroutine of its own, hence the
+// atomic.
+type watchedBody struct {
+	io.ReadCloser
+	broke atomic.Bool // a read failed
+}
+
+func (b *watchedBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) {
+		b.broke.Store(true)
+	}
+	return n, err
+}
+
+// failed reports whether a read of the body failed; false for a request without one.
+func (b *watchedBody) failed() bool { return b != nil && b.broke.Load() }
 
 // askedToWait records that the registry asked for a wait of d, with the Retry-After of a 429 or
 // 503: it throttles Lajstrom's credential, so the wait is the registry's, not one request's.
