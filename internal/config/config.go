@@ -40,6 +40,13 @@ type Server struct {
 	// a manifest into memory. Load sets DefaultMaxManifestSize; zero means the default too,
 	// negative is invalid.
 	MaxManifestSize int64 `yaml:"maxManifestSize"`
+	// MaxCreatedAhead and MaxCreatedBehind bound org.opencontainers.image.created of a version
+	// pushed to /v2: at most this far after and before the server's clock, else the manifest is
+	// refused (a version's publish time, which retention reads). Load sets
+	// DefaultMaxCreatedAhead and DefaultMaxCreatedBehind; zero means the default too, negative
+	// is invalid.
+	MaxCreatedAhead  time.Duration `yaml:"maxCreatedAhead"`
+	MaxCreatedBehind time.Duration `yaml:"maxCreatedBehind"`
 	// MetricsListen is the address of the metrics listener, host:port: GET /metrics, and
 	// /debug/pprof/ with Pprof (docs/spec/http-routing.md §5). Never the public host; empty
 	// turns it off.
@@ -406,10 +413,12 @@ const (
 
 // Defaults that Load applies before reading the file.
 const (
-	DefaultShutdownTimeout = 30 * time.Second
-	DefaultMaxManifestSize = 4 << 20          // the least the distribution spec asks a registry to take
-	DefaultMetricsListen   = "127.0.0.1:9464" // the port of the OpenTelemetry Prometheus exporter
-	DefaultStallTimeout    = time.Minute
+	DefaultShutdownTimeout  = 30 * time.Second
+	DefaultMaxManifestSize  = 4 << 20          // the least the distribution spec asks a registry to take
+	DefaultMaxCreatedAhead  = 5 * time.Minute  // a client's clock a few minutes off
+	DefaultMaxCreatedBehind = time.Hour        // oras writes the time before it uploads the layers
+	DefaultMetricsListen    = "127.0.0.1:9464" // the port of the OpenTelemetry Prometheus exporter
+	DefaultStallTimeout     = time.Minute
 	// DefaultMaxConcurrentUploads bounds the spooled uploads of a replica, and so its $TMPDIR,
 	// out of the box (U-6 of the threat model, #246).
 	DefaultMaxConcurrentUploads = 32
@@ -452,6 +461,7 @@ func Default() *Config {
 	return &Config{
 		Server: Server{ShutdownTimeout: DefaultShutdownTimeout, MaxManifestSize: DefaultMaxManifestSize, MetricsListen: DefaultMetricsListen,
 			StallTimeout: DefaultStallTimeout, MaxConcurrentUploads: DefaultMaxConcurrentUploads,
+			MaxCreatedAhead: DefaultMaxCreatedAhead, MaxCreatedBehind: DefaultMaxCreatedBehind,
 			UploadSessions: UploadSessions{PerRepo: DefaultUploadSessionsPerRepo, PerPrincipal: DefaultUploadSessionsPerPrincipal}},
 		Log:       Log{Level: DefaultLogLevel, Format: DefaultLogFormat},
 		Database:  Database{Driver: DefaultDatabaseDriver, DSN: DefaultDatabaseDSN},

@@ -49,10 +49,16 @@ type Options struct {
 	// on this replica, and UploadSessionsPerPrincipal how many in all repos
 	// (server.uploadSessions, quota.go); zero or negative means no bound.
 	UploadSessionsPerRepo, UploadSessionsPerPrincipal int
+	// MaxCreatedAhead and MaxCreatedBehind bound org.opencontainers.image.created of a version
+	// pushed to a managed repo: at most this far after and before Now
+	// (server.maxCreatedAhead and server.maxCreatedBehind, checkCreated). Zero or negative
+	// means 5 minutes and 1 hour.
+	MaxCreatedAhead, MaxCreatedBehind time.Duration
 	// Log receives the causes of the 5xx answers, with the request id; nil means
 	// slog.Default().
 	Log *slog.Logger
-	// Now is the clock of the upload sessions and of the tokens; nil means time.Now.
+	// Now is the clock of the upload sessions, of the tokens and of checkCreated; nil means
+	// time.Now.
 	Now func() time.Time
 	// VisibilityTimeout is how long a blob that a manifest names and the backend does not
 	// serve is read again before the PUT is MANIFEST_BLOB_UNKNOWN, on a registry not
@@ -79,6 +85,14 @@ const defaultMaxManifestSize = 4 << 20
 
 // defaultVisibilityTimeout is Options.VisibilityTimeout when it is zero, ingest's default.
 const defaultVisibilityTimeout = 30 * time.Second
+
+// The defaults of Options.MaxCreatedAhead and MaxCreatedBehind: a client's clock may be a few
+// minutes off, and oras writes the time when it packs the manifest, before it uploads the
+// layers.
+const (
+	defaultMaxCreatedAhead  = 5 * time.Minute
+	defaultMaxCreatedBehind = time.Hour
+)
 
 // ociFormat is the reserved format of the pass-through repos (format.Reserved): /v2 stores
 // what it gets there, indexes nothing, and no frontend serves them.
@@ -133,6 +147,12 @@ func New(o Options) http.Handler {
 	}
 	if o.VisibilityTimeout <= 0 {
 		o.VisibilityTimeout = defaultVisibilityTimeout
+	}
+	if o.MaxCreatedAhead <= 0 {
+		o.MaxCreatedAhead = defaultMaxCreatedAhead
+	}
+	if o.MaxCreatedBehind <= 0 {
+		o.MaxCreatedBehind = defaultMaxCreatedBehind
 	}
 	h := &handler{o: o, deps: format.Deps{Auth: o.Auth},
 		issuer:   token.NewIssuer(token.Options{Keys: o.Tokens, Now: o.Now, Log: o.Log}),

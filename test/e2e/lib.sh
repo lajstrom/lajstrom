@@ -68,6 +68,9 @@ ok() { step "$@"; }
 assert_eq() { [ "$1" = "$2" ] || fail "$3: got '$2', want '$1'"; }
 expect() { [ "$2" = "$3" ] || fail "$1: got '$3', want '$2'"; }
 
+# utc_at SECONDS prints the time SECONDS after the epoch as RFC 3339 UTC, with BSD or GNU date.
+utc_at() { date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
+
 assert_status() {
 	local want="$1" out
 	shift

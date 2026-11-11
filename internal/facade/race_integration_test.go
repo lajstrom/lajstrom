@@ -13,6 +13,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -68,7 +69,7 @@ func TestIntegrationReferrersConcurrent(t *testing.T) {
 	}
 	replicas := []string{replica(), replica()}
 
-	f := rawFileOf("it/hello.txt", "hello lajstrom "+randomHex(t)+"\n")
+	f := rawFileOf("it/hello.txt", "hello lajstrom "+randomHex(t)+"\n").at(time.Now())
 	f.m.Annotations[profile.AnnotationRepo] = name
 	path := "/v2/raw/" + name + "/" + f.path
 	blobs := [][]byte{f.content, ocispec.DescriptorEmptyJSON.Data}

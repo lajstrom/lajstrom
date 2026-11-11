@@ -103,7 +103,8 @@ step "oras login $registry -u $E2E_USER: Login Succeeded"
 mkdir -p "$work/$run"
 printf 'oras e2e %s\n' "$run" >"$work/$path"
 version="$(sha256 "$work/$path" | cut -c1-16)" # the raw model: the first 16 hex of the content's sha256
-created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+now="$(date -u +%s)"
+created="$(utc_at "$now")"
 push "$created" || { cat "$work/oras.log" >&2; fail "oras push $name:$version"; }
 pushed=yes
 digest="$(awk '$1 == "Digest:" { print $2 }' "$work/oras.log")"
@@ -130,7 +131,13 @@ step "the audit row of the push: ip $ip, requestId $rid"
 push "$created" || { cat "$work/oras.log" >&2; fail "oras push of the same manifest again"; }
 assert_eq "$digest" "$(awk '$1 == "Digest:" { print $2 }' "$work/oras.log")" "the digest of the repeat"
 step "oras push of the same manifest again: the same digest"
-if push "2001-02-03T04:05:06Z"; then fail "oras push of another manifest under $version succeeded: $(cat "$work/oras.log")"; fi
+# #551: a created time a year back is refused before the tag is looked at; the bound is the
+# server's maxCreatedBehind, an hour by default.
+if push "$(utc_at "$((now - 366 * 86400))")"; then fail "oras push of a manifest created a year back succeeded: $(cat "$work/oras.log")"; fi
+grep -qiE 'manifest[ _]invalid' "$work/oras.log" && grep -qF "behind the server's clock" "$work/oras.log" ||
+	{ cat "$work/oras.log" >&2; fail "the refusal of a manifest created a year back is not MANIFEST_INVALID naming the clock"; }
+step "oras push of a manifest created a year back: refused, manifest invalid: behind the server's clock"
+if push "$(utc_at "$((now + 1))")"; then fail "oras push of another manifest under $version succeeded: $(cat "$work/oras.log")"; fi
 grep -qF "tag $version of $name is taken by $digest" "$work/oras.log" ||
 	{ cat "$work/oras.log" >&2; fail "the refusal of another manifest under $version does not name $digest"; }
 step "oras push of another manifest under $version: refused, tag invalid: the tag is taken by $digest"
