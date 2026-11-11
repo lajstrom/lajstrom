@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# End-to-end test of a raw repo with curl against a running Lajstrom (docs/acceptance.md §3.2):
-# R-01, R-02, R-03, R-04, a single range, R-09, R-10, then R-07: DELETE and a 404.
+# End-to-end test of a raw repo with curl against a running Lajstrom (docs/acceptance.md §3.2,
+# docs/quickstart/raw.md): R-01, R-02, R-03, a single range, R-04, the rollback of the quick
+# start (a version deleted through the management API, the path's other versions still served),
+# R-09, R-10, the size cap of a repo made with --policy '{"maxFileSize": 1048576}' (a larger
+# upload is 413), then R-07: DELETE and a 404.
 #
 #   test/e2e/raw.sh [<base url> [<repo>]]     default: http://localhost:8080 scratch
 #
@@ -8,9 +11,13 @@
 # LAJSTROM_E2E_USER and LAJSTROM_E2E_PASSWORD must write and delete in it (run.sh makes an admin;
 # lib.sh, e2e_credentials). Every request carries those credentials, from a curl configuration
 # file. Every path starts with a directory of its own for the run, so the script can run again
-# against the same repo, and it deletes what it uploaded at the end. It needs curl and jq, prints
-# one line per step and exits non-zero at the first failure, naming the assertion or the command
-# (lib.sh). make e2e runs it (test/e2e/run.sh).
+# against the same repo, and it deletes what it uploaded at the end. The size cap's repo,
+# raw/<run>, is made and deleted with lajstrom admin repo, as the quick start makes one: straight
+# against the index database of $LAJSTROM_CONFIG, else deploy/compose/lajstrom.example.yaml, with
+# the binary $LAJSTROM_BIN, else bin/lajstrom, else go run ./cmd/lajstrom; the user writes and
+# deletes in it too (an admin may). It needs curl and jq, prints one line per step and exits
+# non-zero at the first failure, naming the assertion or the command (lib.sh). make e2e runs it
+# (test/e2e/run.sh).
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -20,8 +27,25 @@ for tool in curl jq; do
 	command -v "$tool" >/dev/null || { echo "raw.sh: $tool is required" >&2; exit 2; }
 done
 
+export LAJSTROM_CONFIG="${LAJSTROM_CONFIG:-deploy/compose/lajstrom.example.yaml}"
+if [ -n "${LAJSTROM_BIN:-}" ]; then
+	lajstrom=("$LAJSTROM_BIN")
+elif [ -x bin/lajstrom ]; then
+	lajstrom=(bin/lajstrom)
+else
+	lajstrom=(go run ./cmd/lajstrom)
+fi
+
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+limited="" # the size cap's repo while it exists
+cleanup() {
+	if [ -n "$limited" ]; then
+		curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/raw/$limited/at-limit.bin" || true
+		"${lajstrom[@]}" admin repo delete "raw/$limited" >/dev/null 2>&1 || true
+	fi
+	rm -rf "$work"
+}
+trap cleanup EXIT
 e2e_credentials "$work"
 run="e2e-$(date -u +%Y%m%d%H%M%S)-$RANDOM"
 created=()  # every path uploaded, for the cleanup
@@ -149,6 +173,27 @@ expect "R-04 digests of $file" "$(printf '%s\n' "$d1" "$d2")" \
 	"$(jq -r --arg p "$file" '.entries[] | select(.path == $p) | .digest' "$work/body")"
 ok "R-04 the listings of / and $run/docs/ show both versions, sorted, with the manifest digests"
 
+# The rollback of the quick start (§4): one version deleted through the management API, its
+# version the first 16 hex digits of the sha256 of its bytes and the path's '/' escaped as %2F;
+# the path's other versions are still served, the newest of them by GET.
+head -c 2000 /dev/urandom >"$work/v3"
+put "$work/v3" "$file"
+d3="$digest"
+v3="$(jq -r .version "$work/body")"
+expect "the version of the third file" "$(sha256 "$work/v3" | cut -c1-16)" "$v3"
+assert_status 204 -K "$E2E_CURLRC" -X DELETE \
+	"$base/api/v1/repos/raw/$repo/packages/$(jq -rn --arg p "$file" '$p | @uri')/versions/$v3"
+listing "$run/docs/"
+expect "the digests of $file after the version delete" "$(printf '%s\n' "$d1" "$d2")" \
+	"$(jq -r --arg p "$file" '.entries[] | select(.path == $p) | .digest' "$work/body")"
+get "$file"
+cmp -s "$work/v2" "$work/body" || fail "GET after the version delete: not the bytes of $d2"
+get "$file" -G --data-urlencode "digest=$d1"
+cmp -s "$work/v1" "$work/body" || fail "GET ?digest=$d1 after the version delete: not its bytes"
+req GET "$(urlpath "$file")" -G --data-urlencode "digest=$d3"
+expect "GET ?digest=$d3 of the deleted version status" 404 "$status"
+ok "DELETE /api/v1/repos/raw/$repo/packages/…/versions/$v3, the newest of three versions: 204; the other two listed and served, GET the second; ?digest= of the deleted one 404"
+
 # R-09: a raw path is unique without regard to case, so after Docs/Readme.MD the path
 # docs/readme.md is 409 naming it; paths that differ in script and length are versions of their
 # own.
@@ -181,6 +226,20 @@ get "$run/empty"
 expect "R-10 Content-Length" 0 "$(hdr content-length)"
 [ ! -s "$work/body" ] || fail "R-10: GET of the empty file has a body"
 ok "R-10 an empty file: 201; GET has Content-Length 0"
+
+# The size cap of the quick start (§1): a repo made with the policy maxFileSize takes a file of
+# that size and refuses a larger one with 413, keeping nothing of it.
+limited="$run"
+"${lajstrom[@]}" admin repo create "raw/$limited" --registry local --policy '{"maxFileSize": 1048576}' >/dev/null
+head -c 1048576 /dev/urandom >"$work/limit"
+head -c 1048577 /dev/urandom >"$work/over"
+assert_status 201 -K "$E2E_CURLRC" -o /dev/null -T "$work/limit" "$base/raw/$limited/at-limit.bin"
+assert_status 413 -K "$E2E_CURLRC" -T "$work/over" "$base/raw/$limited/over-limit.bin"
+assert_status 404 -K "$E2E_CURLRC" -o /dev/null "$base/raw/$limited/over-limit.bin"
+assert_status 204 -K "$E2E_CURLRC" -X DELETE "$base/raw/$limited/at-limit.bin"
+"${lajstrom[@]}" admin repo delete "raw/$limited" >/dev/null
+limited=""
+ok "raw/$run with --policy '{\"maxFileSize\": 1048576}': PUT of 1048576 bytes 201, of 1048577 bytes 413 and not stored; the repo deleted"
 
 # R-07, the delete by a principal that may: DELETE removes every version of the path; GET is
 # 404 after it.
