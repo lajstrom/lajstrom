@@ -365,8 +365,9 @@ How to do each today:
   index at the next reconcile ([operations.md](operations.md#reconcile)). Such a rule sees tags,
   not versions: Lajstrom's npm dist-tag journal (`_j…` tags,
   [ADR 0012](adr/0012-npm-profile-routes-and-dist-tags-journal.md)) and cosign's `sha256-…` tags
-  live in the same OCI repository, so exclude them, and preview the rule first. This route is
-  not tested against Lajstrom's layout.
+  live in the same OCI repository, so exclude them, and preview the rule first
+  ([operations.md](operations.md#the-registrys-own-rules) has what to exclude per registry). This
+  route is not tested against Lajstrom's layout.
 - **Scanning.** Get the package with `oras pull` or its own client, or the SBOM attached to it,
   and scan it with the scanner you run: Trivy reads CycloneDX and SPDX SBOMs
   ([Trivy SBOM][trivy-sbom]), Grype scans images, directories and SBOMs ([Grype][grype]).

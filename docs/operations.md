@@ -1049,22 +1049,61 @@ spec:
 Run it once without `--apply` and read the list before you schedule it. The blobs of what it
 deletes go when the registry's garbage collection runs, as for every delete.
 
-**The registry's own rules.** A registry's lifecycle rules (ECR lifecycle policies, Harbor tag
-retention, GitLab cleanup policies) delete under Lajstrom, by tag and age, and know nothing of
-versions, dist-tags or signatures. Prefer `lajstrom admin retention`. Where a registry rule is
-needed anyway:
+### The registry's own rules
 
-- exclude the npm journal tags `_j<n>` of every package: they are the history of its dist-tags
-  and deprecations (manifest-profile.md §8), and a journal with a gap stops the package's next
+A registry's own rules (ECR lifecycle policies, Harbor tag retention, GitLab cleanup policies,
+Nexus cleanup policies, Zot retention) delete under Lajstrom, by tag, count and age, and know
+nothing of versions, dist-tags or signatures. Prefer `lajstrom admin retention`, and keep the
+registry's rules off the repositories under Lajstrom's prefix. Lajstrom needs, in each of them
+([manifest-profile.md](spec/manifest-profile.md)):
+
+- every tag: a version's, `Escape(version)[__Escape(variant)]` or `_h` and 40 hex digits (§4.2),
+  and an npm package's journal, `_j` and eight digits or more (§8). The journal is the history
+  of the package's dist-tags and deprecations, and a journal with a gap stops the package's next
   dist-tag change;
-- exclude cosign's tags `sha256-<hex>`, `sha256-<hex>.sig`, `.att` and `.sbom` and keep untagged
-  manifests that have a subject: they are the signatures, attestations and SBOMs of versions
-  that stay (manifest-profile.md §6);
-- the index follows at the next reconcile, which removes the rows of a manifest the registry
-  answers as unknown; until then a client sees a version that is gone (`404` on its download),
-  and the delete has no audit row of Lajstrom's. The grace period of
-  [#446](https://github.com/lajstrom/lajstrom/issues/446) will keep a version a registry
-  briefly forgets.
+- the referrers, the signatures, attestations and SBOMs of versions (§6): untagged manifests
+  with a `subject` on a registry with the referrers API; without it, the indexes tagged
+  `sha256-<hex>` and the untagged manifests they list. cosign's own tags, `sha256-<hex>.sig`,
+  `.att` and `.sbom`, are referrers too.
+
+Lajstrom writes no other untagged manifest into a managed repo: every manifest ingest writes is
+tagged, and an untagged manifest without a `subject` is at most a `sha256-<hex>` index that a
+newer one replaced. So a collector of untagged manifests that spares the referrers is safe. (An
+`oci` repo holds what its clients push, as any registry does.) What deletes what Lajstrom needs:
+
+- **a rule by count**: it counts a package's versions, its journal entries and its
+  `sha256-<hex>` indexes together;
+- **a rule by age or by last pull**: no client downloads a journal entry, and a version nobody
+  downloaded for a while is still a version;
+- **a rule by tag pattern** written for versions: it catches the journal and `sha256-` tags as
+  well, or, as a list of tags to keep, deletes them;
+- **a collector of untagged manifests that ignores `subject`**: it takes the referrers;
+- and after any of them, the next collection: a manifest whose tag went, and the referrers that
+  only a deleted `sha256-<hex>` index listed.
+
+Per registry (measured where the registry's page says so; otherwise from the vendor's
+documentation):
+
+| Registry | What deletes what Lajstrom needs | Safe configuration |
+| --- | --- | --- |
+| ECR | A lifecycle rule with `tagStatus` `tagged` or `any` (`imageCountMoreThan`, `sinceImagePushed`, `sinceImagePulled`) expires versions and journal entries "within 24 hours"; an image one archives must be restored before it is used again, which takes up to 20 minutes ([lifecycle](https://docs.aws.amazon.com/AmazonECR/latest/userguide/LifecyclePolicies.html), [archive](https://docs.aws.amazon.com/AmazonECR/latest/userguide/archive_restore_image.html)). A referrer is spared while its subject exists ([blog](https://aws.amazon.com/blogs/opensource/diving-into-oci-image-and-distribution-1-1-support-in-amazon-ecr/)) and expires within 24 hours of its subject's deletion ([lifecycle](https://docs.aws.amazon.com/AmazonECR/latest/userguide/LifecyclePolicies.html#lp_evaluation_rules)) | No lifecycle policy on the repositories under the prefix, or rules with `tagStatus: untagged` only. The lifecycle policy of a repository creation template applies to the repositories ECR creates on push, not to those Lajstrom creates with `CreateRepository` ([templates](https://docs.aws.amazon.com/AmazonECR/latest/userguide/repository-creation-templates.html)) |
+| Harbor | Tag retention keeps what its rules match and deletes every other tag of a repository a rule matches; with "untagged artifacts" unticked it deletes the untagged artifacts too ([retention](https://goharbor.io/docs/main/working-with-projects/working-with-images/create-tag-retention-rules/)). Whether retention counts a referrer, which Harbor shows as an accessory of its subject, as untagged is not documented: unverified. GC with `delete_untagged` keeps the referrers (measured, [harbor.md](registries/harbor.md#garbage-collection)) | No retention rule that matches Lajstrom's repositories. In a project shared with other images, a rule "retain always" for them, tags `**`, untagged artifacts ticked: rules are OR'ed |
+| GitLab | A cleanup policy deletes the tags its `name_regex` matches (`.*` is the default value), beyond `keep_n` and older than `older_than`; it spares `latest`, `name_regex_keep`, protected and immutable tags, and anchors both regexes ([cleanup](https://docs.gitlab.com/user/packages/container_registry/reduce_container_registry_storage/#how-the-cleanup-policy-works)). The online collector then deletes an untagged manifest a day after the event that left it untagged, so a version's manifest, and a referrer once no `sha256-` index lists it (measured, [gitlab.md](registries/gitlab.md#garbage-collection)) | No cleanup policy on the project. If one is needed for other images: `name_regex_keep: '(_j[0-9]+\|sha256-.*)'`, and versions deleted through Lajstrom |
+| Nexus, `docker` format | A cleanup policy deletes tags by age or last download ("Cleanup only evaluates tagged manifests for Docker"); the task "Docker - Delete unused manifests and images" then deletes the manifests no tag references ([cleanup](https://help.sonatype.com/en/cleanup-policies.html)). Lajstrom writes the tag schema there, and a referrer listed by a tagged index survives that task (measured, [nexus.md](registries/nexus.md#garbage-collection)) | No cleanup policy on the Nexus repository Lajstrom writes to. The unused-manifests task is then safe for Lajstrom |
+| GHCR | No retention of its own. A cleanup through the REST API or [`actions/delete-package-versions`](https://github.com/actions/delete-package-versions) (`delete-only-untagged-versions`, `min-versions-to-keep`) deletes package versions, and on GHCR every manifest is one: a referrer listed by a `sha256-` index is an untagged version (measured, [ghcr.md](registries/ghcr.md#delete); a deleted version can be restored for 30 days) | Run neither on Lajstrom's packages |
+| Zot | A retention policy whose `repositories` match removes every tag no `keepTags` entry keeps; `patterns` are regexes; `deleteUntagged` is on by default; a repository no policy matches keeps everything ([retention](https://zotregistry.dev/v2.1.23/articles/retention/)). Referrers survive the collector, also of a deleted subject unless `deleteReferrers: true` (measured, [zot.md](registries/zot.md#garbage-collection)) | No policy whose `repositories` match the prefix, or one with `keepTags: [{patterns: [".*"]}]` |
+| distribution | `registry garbage-collect --delete-untagged` deletes the untagged manifests no tagged index lists; Lajstrom's referrers are listed (measured, [distribution.md](registries/distribution.md#garbage-collection)) | Safe with and without `--delete-untagged` |
+| Gitea | The owner's cleanup rules (keep N, keep and remove regexes, anchored, case-insensitive) delete versions, that is tags ([storage](https://docs.gitea.com/usage/packages/storage)); the daily cleanup keeps untagged manifests (measured, [gitea.md](registries/gitea.md#cleanup)) | No rule on the owner Lajstrom writes to, or a keep regex `(_j[0-9]+\|sha256-.*)` |
+
+Google Artifact Registry's `keepCount` and ACR's `acr purge`, whose tag regex is not anchored,
+are in [quirks.md](registries/quirks.md#garbage-collection-and-rules-that-read-tags).
+
+When a registry's rule deletes a version anyway, the index follows at the next reconcile, which
+removes the rows of a manifest the registry answers as unknown
+([Reconcile](#reconcile)). Until then a client sees a version that is gone (`404` on its
+download), and the delete has no audit row of Lajstrom's. The grace period of
+[#446](https://github.com/lajstrom/lajstrom/issues/446) will keep a version a registry briefly
+forgets.
 
 ## Reindex
 
