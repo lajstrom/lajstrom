@@ -229,8 +229,8 @@ func (pub *publish) fetcher() format.BlobFetcher {
 			return nil, fmt.Errorf("%w: the manifest names no blob %s", ErrInvalid, d)
 		}
 		if pub.streamed.holds(d) && !pub.streamed.done {
-			return nil, fmt.Errorf("ingest: blob %s streams into %s and is committed after Validate: "+
-				"a Streamer's Validate takes what it needs of it from the inspector", d, pub.name)
+			return nil, fmt.Errorf("ingest: blob %s into %s, committed after Validate: a Streamer's Validate takes what it needs "+
+				"of it from the inspector: %w", d, pub.name, format.ErrStreamed)
 		}
 		if _, ok := pub.streamed.heldBlob(d); ok {
 			rc, err := pub.open(ctx, desc)
