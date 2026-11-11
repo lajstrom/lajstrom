@@ -29,6 +29,14 @@ adapters beyond the spike, FQDN mode.
 | Buffer | Sat–Sun 2026-12-05/06 | slack for whatever slipped; no new scope. |
 | **M4 — npm: hosted, proxy, group** | Fri 2026-12-18 | A Verdaccio-style npm registry: npm, pnpm and yarn publish a scoped package to a hosted repo and install it, with a public dependency, from a clean cache through one `.npmrc` line (`registry=https://host/npm/<group>/`), the group serving the hosted repo and a caching proxy of npmjs.org; `npm login`, `dist-tag`, `unpublish`; dist-tags kept in the registry as a journal, so reindex restores them. Spec first: #302 (npm, ADR 0012), #303 (proxy and group, ADR 0013). |
 
+**M4 status, 2026-11-11: ahead of its date.** The npm plugin, the dist-tags journal, the npm
+CLI routes, and proxy and group repos are merged (#302 to #311). The demo is one script,
+`make e2e E2E=npm` ([test/e2e/npm.sh](../test/e2e/npm.sh), #312), and CI runs it against Zot
+and distribution. The docs are [quickstart/npm.md](quickstart/npm.md), with "Coming from
+Verdaccio", and the proxy and group parts of [api.md](api.md) and
+[configuration.md](configuration.md) (#313). One check is left before the milestone closes:
+someone who did not write the code follows the quick start on a clean machine (#313).
+
 Priority inside a milestone: `priority/p0` issues define "done"; `p1` are planned and get cut
 first if the week runs out; `p2` are opportunistic.
 
@@ -124,6 +132,12 @@ stays in v0.1.0 or becomes the first post-MVP milestone.
 
 ## After v0.1.0 (preview, not committed)
 
+**M4 status, 2026-11-11: ahead of its date.** The npm plugin, the dist-tags journal, the npm
+CLI routes, and proxy and group repos are merged (#302 to #311). The demo is one script,
+`make e2e E2E=npm` ([test/e2e/npm.sh](../test/e2e/npm.sh), #312), and CI runs it against Zot
+and distribution. The docs are [quickstart/npm.md](quickstart/npm.md), with "Coming from
+Verdaccio", and the proxy and group parts of [api.md](api.md) and
+[configuration.md](configuration.md) (#313). One check is left before the milestone closes:
 M4 (above, decided on 2026-11-10) is npm with its proxy and group repos. Month 2 candidates after
 it, in rough order: docker passthrough with RBAC, proxy repos for pypi and maven on M4's core
 (#67), rpm and OIDC (M6), `lajstrom admin retention` over the delete API (#72), UI read-only ([lajstrom-ui](https://github.com/lajstrom/lajstrom-ui)),
