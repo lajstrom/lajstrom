@@ -295,11 +295,11 @@ type iotestErrReader struct{}
 
 func (iotestErrReader) Read([]byte) (int, error) { return 0, errors.New("broken pipe") }
 
-// admin user does not migrate: a database without the schema is the store's error.
+// admin user does not migrate: on a database without the schema it names the command that does.
 func TestAdminUserWithoutMigrate(t *testing.T) {
 	cfg := writeConfig(t, t.TempDir())
-	if _, _, err := run(t, nil, "admin", "user", "list", "--config", cfg); err == nil || !strings.Contains(err.Error(), "no such table") {
-		t.Errorf("list before migrate: %v, want the missing table", err)
+	if _, _, err := run(t, nil, "admin", "user", "list", "--config", cfg); err == nil || !strings.Contains(err.Error(), "not migrated: "+migrateHint) {
+		t.Errorf("list before migrate: %v, want the hint to migrate", err)
 	}
 	if _, _, err := run(t, nil, "admin", "user", "list", "--config", filepath.Join(t.TempDir(), "missing.yaml")); err == nil {
 		t.Error("list without a configuration succeeded")

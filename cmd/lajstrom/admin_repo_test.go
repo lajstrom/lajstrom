@@ -171,10 +171,10 @@ func wantCLIAudit(t *testing.T, dsn, action string, n int) {
 	}
 }
 
-// admin does not migrate: a database without the schema is the store's error.
+// admin does not migrate: on a database without the schema it names the command that does.
 func TestAdminRepoWithoutMigrate(t *testing.T) {
 	cfg, _ := writeRepoConfig(t, t.TempDir())
-	if _, _, err := run(t, nil, "admin", "repo", "list", "--config", cfg); err == nil || !strings.Contains(err.Error(), "no such table") {
-		t.Errorf("list before migrate: %v, want the missing table", err)
+	if _, _, err := run(t, nil, "admin", "repo", "list", "--config", cfg); err == nil || !strings.Contains(err.Error(), "not migrated: "+migrateHint) {
+		t.Errorf("list before migrate: %v, want the hint to migrate", err)
 	}
 }
