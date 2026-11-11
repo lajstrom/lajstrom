@@ -50,6 +50,8 @@ func (h *handler) putReferrer(w http.ResponseWriter, r *http.Request, t *target,
 //	ingest.ErrInvalid           400 MANIFEST_INVALID, the rule that failed in the message
 //	ingest.ErrConflict          409 TAG_INVALID (a backend that will not re-point a tag)
 //	provider.ErrUnauthorized    502 (the backend refused Lajstrom's credentials)
+//	*ingest.NotVisibleError     503 UNAVAILABLE naming what the registry does not serve yet
+//	                            (notServed)
 //	anything else               the status of format.StatusOf, 500 when it knows none
 func (h *handler) ingestReferrer(r *http.Request, t *target, tag string, desc ocispec.Descriptor, body []byte, subject digest.Digest) error {
 	ctx := r.Context()
@@ -67,6 +69,10 @@ func (h *handler) ingestReferrer(r *http.Request, t *target, tag string, desc oc
 		return &apiError{status: http.StatusConflict, code: codeTagInvalid, err: err}
 	case errors.Is(err, provider.ErrUnauthorized):
 		return &apiError{status: http.StatusBadGateway, err: err}
+	}
+	var notVisible *ingest.NotVisibleError
+	if errors.As(err, &notVisible) {
+		return notServed(t, notVisible, err)
 	}
 	return &apiError{code: codeManifestInvalid, err: err}
 }

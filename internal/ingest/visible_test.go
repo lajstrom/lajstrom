@@ -1,10 +1,19 @@
 package ingest_test
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -98,6 +107,87 @@ func TestVisibilityTimeout(t *testing.T) {
 	}
 	e.noClaim(t, "tool", "1.0.0")
 	e.noClaim(t, "tool", "")
+}
+
+// TestNotVisibleNames: the error of a push the registry does not serve in time names what it
+// does not serve, by what was pushed: the manifest by its digest, its tag and its blobs, sorted,
+// in the order of Missing; nothing of the registry's own.
+func TestNotVisibleNames(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t)
+	lag := &blobsLost{Lag: &providertest.Lag{Fake: e.prov, Manifests: -1}}
+	o := e.options(lag)
+	o.VisibilityTimeout = 100 * time.Millisecond
+	e.pipe = ingest.New(o)
+	_, published := e.pipe.Upload(ctx, e.repo, upload("tool", "1.0.0", file{"tool", "linux binary"}), alice)
+	wantNotVisible(t, published)
+	var nv *ingest.NotVisibleError
+	if !errors.As(published, &nv) {
+		t.Fatalf("error = %v, want an *ingest.NotVisibleError", published)
+	}
+	refs := e.pushRefs("1.0.0")
+	if len(refs) != 1 {
+		t.Fatalf("pushes %v, want one", refs)
+	}
+	lag.Serve()
+	rr, err := e.prov.Repository(ctx, nv.Name)
+	must(t, err)
+	rc, err := rr.Fetch(ctx, ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: refs[0].Digest})
+	must(t, err)
+	var m ocispec.Manifest
+	must(t, json.NewDecoder(rc).Decode(&m))
+	_ = rc.Close()
+	blobs := []digest.Digest{m.Config.Digest}
+	for _, l := range m.Layers {
+		blobs = append(blobs, l.Digest)
+	}
+	slices.Sort(blobs)
+	want := &ingest.NotVisibleError{Name: "raw/scratch/tool", Digest: refs[0].Digest, Manifest: true, Tag: "1.0.0",
+		Blobs: slices.Compact(blobs), Waited: 100 * time.Millisecond}
+	if nv.Name != want.Name || nv.Digest != want.Digest || !nv.Manifest || nv.Tag != want.Tag ||
+		!slices.Equal(nv.Blobs, want.Blobs) || nv.Subject != "" || nv.Waited != want.Waited {
+		t.Errorf("NotVisibleError = %+v, want %+v", nv, want)
+	}
+	missing := []string{"the manifest", "the tag 1.0.0"}
+	for _, b := range want.Blobs {
+		missing = append(missing, "the blob "+b.String())
+	}
+	if got := nv.Missing(); !slices.Equal(got, missing) {
+		t.Errorf("Missing = %q, want %q", got, missing)
+	}
+	if !strings.Contains(published.Error(), strings.Join(missing, ", ")) {
+		t.Errorf("error %q does not name %q", published, missing)
+	}
+}
+
+// blobsLost is a lagging registry that stops serving blobs once a manifest is pushed: the checks
+// of the blobs before the push see them, the visibility barrier after it does not.
+type blobsLost struct {
+	*providertest.Lag
+	pushed atomic.Bool
+}
+
+func (b *blobsLost) Repository(ctx context.Context, name string) (provider.Repository, error) {
+	rr, err := b.Lag.Repository(ctx, name)
+	return lostRepository{Repository: rr, b: b}, err
+}
+
+// lostRepository is a repository of blobsLost.
+type lostRepository struct {
+	provider.Repository
+	b *blobsLost
+}
+
+func (r lostRepository) PushReference(ctx context.Context, desc ocispec.Descriptor, content io.Reader, ref string) error {
+	defer r.b.pushed.Store(true)
+	return r.Repository.PushReference(ctx, desc, content, ref)
+}
+
+func (r lostRepository) Exists(ctx context.Context, desc ocispec.Descriptor) (bool, error) {
+	if r.b.pushed.Load() && desc.MediaType != ocispec.MediaTypeImageManifest {
+		return false, nil
+	}
+	return r.Repository.Exists(ctx, desc)
 }
 
 // TestVisibilityTimeoutIngest: a manifest of /v2 that the registry does not serve in time is

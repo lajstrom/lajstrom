@@ -995,8 +995,24 @@ func New(o Options) *Pipeline
 // Ingest stores a manifest the facade received for <format>/<repo>/<pkgPath>:<tag>; raw defines
 // the digest. Errors wrap ErrInvalid (profile, plugin, missing blobs, a lajstrom.origin.* key,
 // which only Upload with an Origin writes) or ErrConflict (tag, or the package path of another
-// spelling). Inspect reads the lajstrom.origin.* keys as any annotation.
+// spelling). Inspect reads the lajstrom.origin.* keys as any annotation. A push the registry
+// does not serve within the visibility timeout is a *NotVisibleError, from Ingest, Upload,
+// PutReferrer and Journal alike.
 func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, principal auth.Principal) (*Result, error)
+
+// NotVisibleError names what of a push the registry does not serve yet; it wraps a
+// *provider.UnavailableError of 30 s (503 with Retry-After). Missing names the same in words:
+// "the manifest", "the tag <tag>", "the blob <digest>", "the referrers of <digest>".
+type NotVisibleError struct {
+    Name     string          // the OCI name of the push, without the registry's instance prefix
+    Digest   digest.Digest   // the manifest
+    Manifest bool            // the manifest is not served by its digest
+    Tag      string          // the tag does not name the manifest yet; "" when it does or there is none
+    Blobs    []digest.Digest // the blobs not served, sorted
+    Subject  digest.Digest   // a referrer's subject whose referrers do not list it yet
+    Waited   time.Duration
+}
+func (e *NotVisibleError) Missing() []string
 // Upload is the frontend path: Plugin.Build → push missing blobs → store as Ingest does. With
 // up.Origin (the proxy fetcher, ADR 0013) it sets lajstrom.origin.url and lajstrom.origin.checksum
 // on the built manifest and removes lajstrom.uploaded-by, and the audit row is proxy.fetch with
