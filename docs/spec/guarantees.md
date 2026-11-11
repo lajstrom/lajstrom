@@ -434,7 +434,7 @@ status is `holds on strongly consistent registries only` do not hold there.
   `TestDeleteThenReindex`, `TestDeleteKeepsPackage`, `TestDeleteReferrer`, `TestDeleteManifests`,
   `TestDeleteTagged`, `TestTagPushAndDelete`, `TestDeleteInvalidatesIndexes` (deb),
   `TestDeleteGoneAndAuditWriter` (raw), `TestDeletePartial` (raw), `TestDeleteVersionPartial`,
-  `TestPartial`, `TestIntegrationDelete`,
+  `TestUnpublishPartial` (npm), `TestPartial`, `TestIntegrationDelete`,
   `TestIntegrationDeleteUnsupported`, `TestIntegrationDeleteRefused`; R-07 in `raw.sh`, the deletes
   of `oras.sh` and the unpublishes of `npm.sh`.
 - **When violated.** No transaction spans the registry: when the transaction fails after the
