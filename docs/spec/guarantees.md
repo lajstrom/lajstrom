@@ -169,16 +169,19 @@ status is `holds on strongly consistent registries only` do not hold there.
   `reindex.Worker` lists (`scan.list`, `scan.ociRepo`), marks and sweeps; the journal is
   replayed in `seq` order (`reindex.replay.run`). A manifest whose metadata layer is missing is
   indexed from its annotations and flagged `degraded`.
-- **Tests.** `TestRebuild` (I-01, raw), `TestIntegration` of `internal/index/reindex` (I-01 against
-  Zot and distribution), `TestInspectIsIngest`, `TestJournalReindex`, `TestJournalReindexLost`,
-  `TestPushReindex` (npm), `TestReindexProxied`, `TestNoCatalog`, `TestAttach`,
-  `TestRebuildTagSchema`, `TestDegraded`, `TestKnownDigests`, `TestScale`; `cosign.sh` (the
-  referrers found by `reindex --repo`).
+- **Tests.** `TestRebuild` (I-01 on a raw repo), `TestRebuildFormats` (three more formats) and
+  `TestRebuildPackageCreated` of `internal/index/reindex`, `TestIntegration` and
+  `TestIntegrationFormats` of `internal/index/reindex` (I-01 against Zot and distribution, on
+  SQLite and Postgres), `TestRenderSameSecond` of `internal/format/pypi`, the store conformance
+  case `PackageCreatedAtRace` (writers of one package at once keep its earliest time, #584),
+  `TestInspectIsIngest`, `TestJournalReindex`, `TestJournalReindexLost`, `TestPushReindex` (npm),
+  `TestReindexProxied`, `TestNoCatalog`, `TestAttach`, `TestRebuildTagSchema`, `TestDegraded`,
+  `TestKnownDigests`, `TestScale`; `cosign.sh` (the referrers found by `reindex --repo`).
 - **When violated.** A column that is not derivable is lost silently at the first rebuild. A
   listing that lags misses the newest manifests until a later run.
-- **Status.** `holds on strongly consistent registries only`. **Untested:** the equality is
-  tested for raw, npm and an npm proxy only, not for apt, pypi or maven; acceptance.md I-01 is
-  not a step of the end-to-end suite.
+- **Status.** `holds on strongly consistent registries only`
+  ([#446](https://github.com/lajstrom/lajstrom/issues/446): a listing that lags is not yet
+  tolerated). **Untested:** acceptance.md I-01 is not a step of the end-to-end suite.
 
 ### INV-4. A version in the index is readable from the registry
 
@@ -328,7 +331,7 @@ status is `holds on strongly consistent registries only` do not hold there.
   visibility barrier (INV-4), or a publish of the same files still on its way.
 - **Tests.** `TestUploadRepeat`, `TestUploadRepeatRace`, `TestIngest`, `TestSessionRepeat`,
   `TestVisibilityRetryRebuilt`; R-02 in
-  `raw.sh`, the repeats of `pypi.sh`, `apt.sh`, `maven.sh` and `oras.sh` (E-01).
+  `raw.sh`, the repeats of `pypi.sh`, `apt.sh`, `maven.sh` and `oras.sh` (acceptance.md E-01).
 - **When violated.** Not observed.
 - **Status.** `holds`.
 
@@ -442,47 +445,6 @@ status is `holds on strongly consistent registries only` do not hold there.
   documents stay until reindex removes them, and the delete has no audit row (INV-14).
 - **Status.** `holds`: the answer to a delete of several versions that fails names those deleted
   before the failure, a `5xx` too (`format.PartialError`, #476).
-
-### INV-42. A conditional delete never removes a version that changed after the client read it
-
-- **Statement.** A delete with conditions removes a manifest only while, under the locks the
-  delete holds, the version still has the digests the client read, was published no later than
-  the client's cut-off, and no pointer names it unless the delete is forced; when a condition
-  fails nothing is deleted, no audit row is written (the refusal comes before the pending row,
-  as a refused delete by tag does), and the answer says which (`412`, or `409` naming the
-  pointers). A variant published while the delete runs is not among the digests the client
-  sent and stays.
-- **Scope.** `DELETE /api/v1/…/versions/<version>` with `If-Match` or `If-Unmodified-Since`, and
-  every item of `POST /api/v1/…/versions:delete` (http-routing.md §4); the pointers are npm's
-  dist-tags. Not `DELETE` on `/v2`, the raw frontend or npm's unpublish, which take no
-  condition. The publish time is the manifest's `org.opencontainers.image.created`: the
-  frontends write it from the server's clock, a client pushing on `/v2` writes its own, which
-  the facade refuses when it is more than `server.maxCreatedAhead` (5 minutes) after the
-  server's clock or more than `server.maxCreatedBehind` (an hour) before it: a writer moves the
-  age of its version by that much at most.
-- **Assumes.** Registry: a delete by digest removes that manifest only (any registry of the
-  matrix). Database: the referrers lock excludes across replicas (Postgres; SQLite serves one
-  replica, INV-26).
-- **Mechanism.** `ingest.Pipeline.Delete` with `format.Deletion.Condition`: `deletion.locked`
-  takes the package's journal lock, then the tag lock (index-schema.md, Coordination: one order),
-  `deletion.check` reads the version again by its digest, its `created_at` and the package's
-  `journal_state` under them, and `deletion.record` deletes the rows by digest before the locks
-  are released; a dist-tag move checks under the journal lock that its version exists
-  (`journal.checkVersions`). The API checks the same conditions for every variant before the
-  first delete (`api.conditions.check`), so that a refusal finds nothing deleted. The bound of a
-  `/v2` push's time is `facade.checkCreated`, before the facade asks the registry; the repeat of
-  a manifest the repo has passes, as it writes nothing.
-- **Tests.** `TestConditionalDelete`, `TestConditionalDeletePointers` (the lock order),
-  `TestConditionalDeleteRepublishRace`, `TestConditionalDeleteDistTagRace` (goroutines, `-race`),
-  `TestDeleteVersionConditions`, `TestBatchDelete`, `TestAdminRetention`,
-  `TestManifestHookCreated`, `TestManifestHookCreatedRepeat`; `retention.sh`, and the push of a
-  manifest a year old in `oras.sh`.
-- **When violated.** A delete that removed a version re-published or dist-tagged after the read
-  leaves the newer version's rows without a manifest, which reindex removes, or a dist-tag
-  naming a version that is gone, which the packument leaves out; nothing reports it.
-- **Status.** `holds`.
-
-## Audit
 
 ### INV-14. Every write has an audit row
 
@@ -1083,6 +1045,49 @@ status is `holds on strongly consistent registries only` do not hold there.
 - **Status.** `partly`: whether a migration is expand is reviewed, not tested. **Untested:** the
   binary of the previous release on the schema of the next one, after v0.1.0
   ([#485](https://github.com/lajstrom/lajstrom/issues/485)).
+
+## Retention
+
+### INV-42. A conditional delete never removes a version that changed after the client read it
+
+- **Statement.** A delete with conditions removes a manifest only while, under the locks the
+  delete holds, the version still has the digests the client read, was published no later than
+  the client's cut-off, and no pointer names it unless the delete is forced; when a condition
+  fails nothing is deleted, no audit row is written (the refusal comes before the pending row,
+  as a refused delete by tag does), and the answer says which (`412`, or `409` naming the
+  pointers). A variant published while the delete runs is not among the digests the client
+  sent and stays.
+- **Scope.** `DELETE /api/v1/…/versions/<version>` with `If-Match` or `If-Unmodified-Since`, and
+  every item of `POST /api/v1/…/versions:delete` (http-routing.md §4); the pointers are npm's
+  dist-tags. Not `DELETE` on `/v2`, the raw frontend or npm's unpublish, which take no
+  condition. The publish time is the manifest's `org.opencontainers.image.created`: the
+  frontends write it from the server's clock, a client pushing on `/v2` writes its own, which
+  the facade refuses when it is more than `server.maxCreatedAhead` (5 minutes) after the
+  server's clock or more than `server.maxCreatedBehind` (an hour) before it: a writer moves the
+  age of its version by that much at most.
+- **Assumes.** Registry: a delete by digest removes that manifest only (any registry of the
+  matrix). Database: the referrers lock excludes across replicas (Postgres; SQLite serves one
+  replica, INV-26).
+- **Mechanism.** `ingest.Pipeline.Delete` with `format.Deletion.Condition`: `deletion.locked`
+  takes the package's journal lock, then the tag lock (index-schema.md, Coordination: one order),
+  `deletion.check` reads the version again by its digest, its `created_at` and the package's
+  `journal_state` under them, and `deletion.record` deletes the rows by digest before the locks
+  are released; a dist-tag move checks under the journal lock that its version exists
+  (`journal.checkVersions`). The API checks the same conditions for every variant before the
+  first delete (`api.conditions.check`), so that a refusal finds nothing deleted. The bound of a
+  `/v2` push's time is `facade.checkCreated`, before the facade asks the registry; the repeat of
+  a manifest the repo has passes, as it writes nothing.
+- **Tests.** `TestConditionalDelete`, `TestConditionalDeletePointers` (the lock order),
+  `TestConditionalDeleteRepublishRace`, `TestConditionalDeleteDistTagRace` (goroutines, `-race`),
+  `TestDeleteVersionConditions`, `TestBatchDelete`, `TestAdminRetention`,
+  `TestManifestHookCreated`, `TestManifestHookCreatedRepeat`; `retention.sh`, and the push of a
+  manifest a year old in `oras.sh`.
+- **When violated.** A delete that removed a version re-published or dist-tagged after the read
+  leaves the newer version's rows without a manifest, which reindex removes, or a dist-tag
+  naming a version that is gone, which the packument leaves out; nothing reports it.
+- **Status.** `holds`.
+
+## Audit
 
 ## Summary
 
