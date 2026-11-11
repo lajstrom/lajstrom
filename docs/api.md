@@ -54,7 +54,8 @@ Every error is answered with one envelope:
 | 401 | `FORBIDDEN` | credentials are needed, or the ones sent were refused; with `WWW-Authenticate: Basic realm="lajstrom"` |
 | 403 | `FORBIDDEN` | the caller lacks the action: now by the scopes of its token, after #45 by its bindings too |
 | 404 | `NOT_FOUND` | no such repo, user, token or endpoint |
-| 409 | `CONFLICT` | the repo exists, or has versions and the delete is not forced; a live token of the owner has the name |
+| 409 | `CONFLICT` | the repo exists, or has versions and the delete is not forced; a live token of the owner has the name; a pointer names the version to delete |
+| 412 | `CONFLICT` | a conditional delete found the version changed since the client read it, or published after the cut-off; nothing was deleted |
 | 413 | `INVALID` | the body is larger than 64 KiB |
 | 429 | `UNAVAILABLE` | too many failed logins: the password is not checked until the time in `Retry-After` has passed ([auth.md](auth.md#failed-logins)) |
 | 501 | `UNAVAILABLE` | the endpoint comes with a later issue; the message names it |
@@ -277,6 +278,57 @@ curl -s -X POST "$LAJSTROM/api/v1/repos/raw/assets/reindex" -d '{"prune": true}'
 curl -s "$LAJSTROM/api/v1/repos/raw/assets/reindex" | jq '.state, .report.removed'
 ```
 
+### List packages: `GET /api/v1/repos/<format>/<name>/packages`
+
+A page of the repo's packages, ordered by name (`?limit=`, `?cursor=` as in
+[Conventions](#conventions)); `?prefix=` keeps those whose name starts with it. It needs `read`
+on the repo. The cursor holds the place of the page's last package, its name, not a position:
+packages published or deleted while a client pages neither repeat nor skip the others.
+
+```json
+{"packages": [{"name": "@acme/widgets", "createdAt": "2026-03-02T10:00:00Z"}], "next": "…"}
+```
+
+`createdAt` is the publish time of the package's first version. A group has no packages: the
+list is empty.
+
+### List versions: `GET /api/v1/repos/<format>/<name>/packages/<package>/versions`
+
+A page of the package's versions, newest first, with what a retention job decides on and what
+a conditional delete compares: each version's variants with their manifest digests, its
+publish times, and the pointers that name it. It needs `read`; `404` when the repo or the
+package does not exist. `<package>` is one path segment, as for the delete below.
+
+```json
+{
+  "versions": [
+    {
+      "version": "2.1.0",
+      "publishedAt": "2026-11-02T09:00:00Z",
+      "lastModified": "2026-11-02T09:00:00Z",
+      "variants": [{"variant": "", "tag": "2.1.0", "digest": "sha256:…", "publishedAt": "2026-11-02T09:00:00Z"}],
+      "pointers": [{"kind": "dist-tag", "name": "latest"}]
+    }
+  ],
+  "next": "…"
+}
+```
+
+- **The publish time** of a variant is `org.opencontainers.image.created` of its manifest
+  (`versions.created_at`), which reindex rebuilds: the frontends write it from the server's
+  clock when they build the manifest; a manifest pushed on `/v2` carries the time its client
+  wrote. A version's `publishedAt` is that of its first variant and orders the list,
+  `lastModified` that of its newest variant: a wheel added to an old version makes it modified,
+  not newer.
+- **The order** is `publishedAt` descending, then the version string descending (byte order). The
+  cursor holds the place of the page's last version, `publishedAt` and version, so a version
+  published while a client pages comes before the first page and shifts nothing: a job that
+  ranks versions by this list ranks an old version lower than it is now, never higher, and
+  deletes fewer, never more.
+- **Pointers** name a version and can move to another: on npm the dist-tags
+  ([http-routing.md](spec/http-routing.md), npm), `latest` included. No other format has them.
+  A version a pointer names is refused by a delete unless it is forced.
+
 ### Delete a version: `DELETE /api/v1/repos/<format>/<name>/packages/<package>/versions/<version>`
 
 Removes a bad version everywhere it is visible ([http-routing.md](spec/http-routing.md) §4):
@@ -287,7 +339,8 @@ the variant of a format that has none). Each variant is one manifest, deleted in
 the manifest, then its rows in the index, the package's with its last version, and the repo's
 rendered indexes (apt `Packages` and `Release`, the simple index, `maven-metadata.xml`), which the
 next `GET` renders without it. Each manifest writes one audit row, action `delete`, with the
-number of referrers in `details.referrers`. Blobs are left to the registry's garbage collection.
+number of referrers in `details.referrers`, and the token of the request in `details.token`
+(`token:<id>`) when it came with one. Blobs are left to the registry's garbage collection.
 
 `<package>` is the name in the format's spelling, one path segment: a raw path escapes its `/`
 as `%2F`, and a reverse proxy in front must pass it on encoded. `204`. It needs `delete` on the
@@ -299,10 +352,91 @@ deleted before an error stay deleted. On a proxy repo the version goes as on a h
 the next request for it fetches it again; a group has no versions, `404`: the version is deleted
 in the member that holds it.
 
+**Conditions.** A client that read the version first (a retention job, a UI) makes the delete a
+compare-and-delete: the server checks each condition again under the locks that the delete
+holds, which a move of a pointer waits for ([index-schema.md](spec/index-schema.md),
+Coordination), so that nothing changes between the check and the delete. A version can change
+after the read and before the delete only by being deleted and published again, by gaining or
+losing a variant, or by a pointer moving onto it; each is refused, and nothing is deleted.
+
+| Condition | Refused with |
+| --- | --- |
+| `If-Match: "sha256:…", "sha256:…"`: the digests of the variants the client read, each a quoted entity tag; the variants the delete takes must have exactly these digests. `*` matches any | `412 CONFLICT`: the version changed since it was read; the message names its digests now |
+| `If-Unmodified-Since: <HTTP-date>`: the cut-off; no variant the delete takes may have been published after it, in whole seconds | `412 CONFLICT`: the version was published after the cut-off |
+| always, unless `?force=true`: no pointer names the version | `409 CONFLICT` naming the pointers (`dist-tag latest`) |
+
+A delete without the headers has no condition of the client's and keeps working as before: an
+operator who removes a leaked secret does not wait for a grace age, and with `?force=true` not
+for a dist-tag either; the dist-tag then names a version that is gone, which the packument leaves
+out until it moves. Unlike RFC 9110, which ignores `If-Unmodified-Since` beside `If-Match`, both
+are checked: they are two conditions, the digests and the age. A value that is not an entity
+tag list or an HTTP-date is `400`, never ignored: a condition is not dropped silently. The
+conditions are checked for every variant before the first is deleted, and again for each under
+its lock.
+
 ```sh
 curl -s -X DELETE "$LAJSTROM/api/v1/repos/pypi/libs/packages/requests/versions/2.32.0?variant=sdist"
 curl -s -X DELETE "$LAJSTROM/api/v1/repos/raw/assets/packages/docs%2Freadme.txt/versions/0123456789abcdef"
+curl -s -X DELETE "$LAJSTROM/api/v1/repos/npm/internal/packages/@acme%2Fwidgets/versions/1.0.0" \
+  -H 'If-Match: "sha256:4f0c…"' -H 'If-Unmodified-Since: Sun, 01 Nov 2026 00:00:00 GMT'
 ```
+
+### Delete versions in a batch: `POST /api/v1/repos/<format>/<name>/versions:delete`
+
+The delete of a retention job: a list of versions, each with the digests of its variants as the
+client read them, and the job's cut-off. Each item is checked and deleted on its own, under its
+own locks, with the conditions of the single delete: its digests as `If-Match`, the cut-off as
+`If-Unmodified-Since`, and pointers always refused (a batch is never forced). The batch is not
+all-or-nothing, and a rerun is idempotent: an item deleted the first time is `gone` the second.
+It needs `delete` on the repo, checked before the body is read; `404` when the repo does not
+exist.
+
+```json
+{
+  "items": [{"package": "@acme/widgets", "version": "1.0.0", "digests": ["sha256:…"]}],
+  "cutoff": "2026-08-01T00:00:00Z",
+  "dryRun": true,
+  "job": "retention-2026-11-11"
+}
+```
+
+`items` is 1 to 1000 versions (the body is at most 64 KiB, about 300 of them), `cutoff` an
+RFC 3339 time (absent: none), `dryRun` checks every item and deletes nothing, and `job` names the
+batch in the audit rows (`details.job`, with `details.token`), up to 64 letters, digits, `.`, `_`
+and `-`; without it the server makes one. A client that sends one job in several requests ties
+them together. The answer is `200` with a result per item, in the order of the request:
+
+```json
+{
+  "job": "retention-2026-11-11",
+  "dryRun": false,
+  "results": [
+    {"package": "@acme/widgets", "version": "1.0.0", "status": "deleted"},
+    {"package": "@acme/widgets", "version": "1.1.0", "status": "protected", "message": "…",
+     "pointers": [{"kind": "dist-tag", "name": "beta"}]}
+  ]
+}
+```
+
+| Status | The item |
+| --- | --- |
+| `deleted` | was deleted, every variant; in a dry run, would be |
+| `changed` | has other digests than the item's: published again, or a variant added or removed; `digests` has them now |
+| `protected` | a pointer names it; `pointers` has them |
+| `young` | was published after the cut-off; `lastModified` says when |
+| `gone` | does not exist, or its package does not: deleted meanwhile, or by an earlier run |
+| `error` | failed otherwise, `message` says why; the other items go on. A registry that cannot delete manifests fails every item so |
+
+When a variant's delete is refused after another variant of the item was deleted (a race under
+the lock), the item has the refusal's status and its message names the variants deleted.
+
+```sh
+curl -s -X POST "$LAJSTROM/api/v1/repos/npm/internal/versions:delete" \
+  -d '{"items": [{"package": "@acme/widgets", "version": "1.0.0", "digests": ["sha256:4f0c…"]}], "dryRun": true}'
+```
+
+`lajstrom admin retention` is a client of these endpoints that a scheduler runs
+([operations.md](operations.md#retention)).
 
 ### Purge a proxy's cache: `DELETE /api/v1/repos/<format>/<name>/upstream-cache[?name=<package>]`
 
