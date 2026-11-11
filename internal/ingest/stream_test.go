@@ -247,6 +247,30 @@ func TestUploadStreamClosesInspector(t *testing.T) {
 	}
 }
 
+// TestUploadStreamInspectorPanics: a format.ReadInspector whose parser panics on its goroutine
+// makes UploadStream panic on the caller's, where the server's recovery answers 500, and the
+// session is cancelled on the way: nothing stored, none open.
+func TestUploadStreamInspectorPanics(t *testing.T) {
+	const content = "a body of a few chunks"
+	e, sp := newStreamEnv(t)
+	sp.inspection = format.Inspection{Inspector: format.ReadInspector(func(r io.Reader) error {
+		_, _ = io.ReadFull(r, make([]byte, 5))
+		panic("the parser's bug")
+	})}
+	func() {
+		defer func() {
+			if v := recover(); v == nil || !strings.Contains(fmt.Sprint(v), "the parser's bug") {
+				t.Errorf("UploadStream panicked with %v, want the parser's panic", v)
+			}
+		}()
+		_, err := e.pipe.UploadStream(t.Context(), e.repo, streamUpload("1.0.0", content), alice)
+		t.Errorf("UploadStream = %v, want a panic", err)
+	}()
+	if e.stored(t, content) || e.prov.OpenUploads() != 0 {
+		t.Errorf("the file stored %v, %d sessions open; want nothing", e.stored(t, content), e.prov.OpenUploads())
+	}
+}
+
 // TestUploadStreamNotStreamer: a plugin that is not a Streamer is ErrUnsupported, and a name it
 // does not allow ErrInvalid, before anything reaches the registry.
 func TestUploadStreamNotStreamer(t *testing.T) {
