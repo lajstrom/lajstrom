@@ -162,8 +162,15 @@ status is `holds on strongly consistent registries only` do not hold there.
 - **Scope.** Every format and the `hosted` and `proxy` kinds (a proxy's `proxy_meta` is a cache
   and is not rebuilt); the control plane is not derived and comes from a backup
   ([operations.md](../operations.md#backup-and-restore)). On a registry without a catalog, only the
-  OCI repositories that `oci_repos` records or `--attach` names.
-- **Assumes.** Registry: **complete listings** (**unchecked**); **durable 201**. Database: any.
+  OCI repositories that `oci_repos` records or `--attach` names. The manifests at OCI names in the
+  grammar of [ADR 0017](../adr/0017-the-grammar-of-oci-names.md), which Lajstrom writes, and at
+  the earlier form of those names, which it reads
+  ([manifest-profile.md](manifest-profile.md#43-escape-and-escapecomponent) §4.3); on Zot an
+  earlier name that ends in `blobs`, `.uploads` or `.sync` is not in the catalog, and only
+  `oci_repos` or `--attach` finds it.
+- **Assumes.** Registry: **complete listings** (**unchecked**) of the names in the grammar of
+  ADR 0017 (Zot's catalog leaves out others, [quirks.md](../registries/quirks.md)); **durable 201**.
+  Database: any.
 - **Mechanism.** One mapping from a manifest to its rows: `ingest.Pipeline.Inspect` runs the
   read-only steps of ingest, and `ingest.WriteRows` writes what ingest writes; the
   `reindex.Worker` lists (`scan.list`, `scan.ociRepo`), marks and sweeps; the journal is

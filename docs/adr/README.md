@@ -57,3 +57,4 @@ to `superseded by NNNN`. Typos and broken links may be fixed in place.
 | [0014](0014-uploads-stream-into-the-registry.md) | Uploads stream into the registry: no request spool | accepted |
 | [0015](0015-declarative-management-one-owner-per-object.md) | Declarative management: one owner per object | accepted |
 | [0016](0016-go-the-language-of-the-network-os.md) | Go: the language of the network operating system | accepted |
+| [0017](0017-the-grammar-of-oci-names.md) | The grammar of OCI names | accepted |

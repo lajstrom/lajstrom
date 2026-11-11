@@ -1,6 +1,7 @@
 # 0005. Manifest profile: OCI 1.1 artifacts with one immutable tag per variant
 
-- Status: accepted
+- Status: accepted; the hashed path component `h0__` superseded by
+  [0017](0017-the-grammar-of-oci-names.md)
 - Date: 2026-11-06
 - Deciders: gecube
 
