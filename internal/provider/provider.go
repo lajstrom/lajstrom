@@ -104,8 +104,8 @@ type Repository interface {
 // requests and never in memory (docs/spec/layout.md §1, conventions).
 //
 // Errors wrap the sentinels of this package as the other methods do: a session the backend
-// no longer knows is ErrNotFound, and any other 4xx that no sentinel names is a
-// *RejectedError. FinishBlobUpload reports a digest the backend refuses with an error that
+// no longer knows is ErrNotFound, and any other 4xx that no sentinel names, or a 503, is a
+// *RejectedError (of a 429 or 503 that is ErrUnavailable too). FinishBlobUpload reports a digest the backend refuses with an error that
 // wraps oras-go's content.ErrMismatchedDigest. No error message carries the backend's URL or
 // the instance prefix.
 type BlobUploader interface {

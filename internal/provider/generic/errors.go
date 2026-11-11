@@ -115,10 +115,11 @@ func classifyResponse(resp *errcode.ErrorResponse) error {
 }
 
 // translateSession is translate for the answer resp of a request of an upload session, whose
-// error codes er holds: a 4xx that no sentinel names is a *provider.RejectedError with its first
-// error code and the Retry-After of a 429, which the facade passes on to the client.
+// error codes er holds: a 4xx or a 503 that no sentinel names is a *provider.RejectedError
+// with its first error code and the Retry-After of a 429 or 503, which the facade answers.
 func (p *Provider) translateSession(op string, resp *http.Response, er *errcode.ErrorResponse) error {
-	if er.StatusCode < 400 || er.StatusCode > 499 || classifyResponse(er) != nil {
+	refused := er.StatusCode >= 400 && er.StatusCode <= 499 || er.StatusCode == http.StatusServiceUnavailable
+	if !refused || classifyResponse(er) != nil {
 		return translate(op, er)
 	}
 	rej := &provider.RejectedError{Registry: p.name, Status: er.StatusCode}
