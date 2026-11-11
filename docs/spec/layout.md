@@ -544,8 +544,8 @@ type BlobWriter interface {
     Commit(ctx context.Context, d digest.Digest) (ocispec.Descriptor, error) // content.ErrMismatchedDigest when refused
     Cancel(ctx context.Context) error
 }
-// NewChunkedWriter is the BlobWriter of a BlobUploader, chunks of chunkSize bytes; the generic
-// provider's are 8 MiB.
+// NewChunkedWriter is the BlobWriter of a BlobUploader, chunks of chunkSize bytes, bounded to
+// 1 byte to 256 MiB; the generic provider's are 8 MiB.
 func NewChunkedWriter(ctx context.Context, u BlobUploader, chunkSize int) BlobWriter
 var ErrWriterClosed error                   // Write or Commit after Commit or Cancel
 

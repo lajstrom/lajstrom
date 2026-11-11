@@ -14,16 +14,29 @@ import (
 // it.
 var ErrWriterClosed = errors.New("provider: the blob writer is committed or cancelled")
 
-// minChunk is the first buffer of a chunked writer: a small file is held in a small buffer, and
-// the buffer doubles up to the chunk size.
-const minChunk = 64 << 10
+// The bounds of a chunked writer's buffer: it starts at minChunk, so that a small file is held
+// in a small buffer, and doubles up to the chunk size, which is at most maxChunk.
+const (
+	minChunk = 64 << 10
+	// maxChunk is the largest chunk of NewChunkedWriter, 256 MiB: what one upload may hold in
+	// memory. No registry measured needs more in one PATCH (docs/registries/README.md).
+	maxChunk = 256 << 20
+)
 
 // NewChunkedWriter returns the BlobWriter of a BlobUploader that sends chunks of chunkSize
-// bytes (a non-positive one is taken as 1). The session is opened by the first chunk that is
-// full, or by Commit: a blob of at most chunkSize bytes is one monolithic PUT, and one that is
-// cancelled before its first chunk sends nothing. Write, the chunks and the POST use ctx.
+// bytes: a non-positive one is taken as 1, one above maxChunk as maxChunk. The session is
+// opened by the first chunk that is full, or by Commit: a blob of at most one chunk is one
+// monolithic PUT, and one that is cancelled before its first chunk sends nothing. Write, the
+// chunks and the POST use ctx.
 func NewChunkedWriter(ctx context.Context, u BlobUploader, chunkSize int) BlobWriter {
-	return &chunkedWriter{ctx: ctx, up: u, chunk: max(chunkSize, 1)}
+	chunk := chunkSize
+	if chunk < 1 {
+		chunk = 1
+	}
+	if chunk > maxChunk {
+		chunk = maxChunk
+	}
+	return &chunkedWriter{ctx: ctx, up: u, chunk: chunk}
 }
 
 // chunkedWriter is the BlobWriter of NewChunkedWriter.
@@ -50,11 +63,7 @@ func (w *chunkedWriter) Write(p []byte) (int, error) {
 	n := 0
 	for len(p) > 0 {
 		k := min(len(p), w.chunk-len(w.buf))
-		if len(w.buf)+k > cap(w.buf) {
-			grown := make([]byte, len(w.buf), min(w.chunk, max(2*cap(w.buf), len(w.buf)+k, minChunk)))
-			copy(grown, w.buf)
-			w.buf = grown
-		}
+		w.grow(k)
 		w.buf = append(w.buf, p[:k]...)
 		p, n, w.size = p[k:], n+k, w.size+int64(k)
 		if len(w.buf) == w.chunk {
@@ -65,6 +74,33 @@ func (w *chunkedWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return n, nil
+}
+
+// grow makes room in the buffer for k more bytes, which the chunk has room for: the capacity
+// starts at minChunk and doubles until they fit, and is at most the chunk. No size is a sum
+// with k; each doubling is of a capacity of at most half the chunk, which NewChunkedWriter
+// bounds by maxChunk, so nothing overflows.
+func (w *chunkedWriter) grow(k int) {
+	if k <= cap(w.buf)-len(w.buf) {
+		return
+	}
+	n := cap(w.buf)
+	if n < minChunk {
+		n = minChunk
+	}
+	for n < w.chunk && n-len(w.buf) < k {
+		if n > w.chunk/2 {
+			n = w.chunk
+		} else {
+			n *= 2
+		}
+	}
+	if n > w.chunk {
+		n = w.chunk
+	}
+	grown := make([]byte, len(w.buf), n)
+	copy(grown, w.buf)
+	w.buf = grown
 }
 
 // flush sends the buffer as a chunk of known size, the session's next PATCH.
