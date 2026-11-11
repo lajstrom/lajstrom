@@ -248,16 +248,50 @@ not load-tested.
 
 ## Upgrade
 
-Back up the database, run `lajstrom migrate` of the new release once as a Job, then set the new
-image; the rolling update starts one new replica before it stops an old one
-(`maxUnavailable: 0`), and the old ones serve on the migrated schema meanwhile. Without the
-Job, the first new replica applies the migrations at start, under the lock. The Job, the
-rollback and the releases with a contract migration are in
-[operations.md](../operations.md#upgrades). Not tried: there is no release yet.
+Back up the database ([operations.md](../operations.md#backing-up)), run `lajstrom migrate` of
+the new release once, as the Job of `migrate-job.yaml`, then set the new image:
+
+```sh
+kubectl -n lajstrom delete job lajstrom-migrate --ignore-not-found
+kubectl set image --local -f deploy/kubernetes/migrate-job.yaml \
+  migrate=ghcr.io/lajstrom/lajstrom:vX.Y.Z -o yaml | kubectl -n lajstrom apply -f -
+kubectl -n lajstrom wait --for=condition=complete --timeout=30m job/lajstrom-migrate
+kubectl -n lajstrom logs job/lajstrom-migrate
+kubectl -n lajstrom set image deployment/lajstrom lajstrom=ghcr.io/lajstrom/lajstrom:vX.Y.Z
+kubectl -n lajstrom rollout status deploy/lajstrom
+```
+
+The rolling update starts one new replica before it stops an old one (`maxUnavailable: 0`), and
+the old ones serve on the migrated schema meanwhile. Without the Job, the first new replica
+applies the migrations at start, under the lock. The rules, the rollback and the releases with
+a contract migration are in [operations.md](../operations.md#upgrades).
+
+The run below was on OrbStack's Kubernetes 1.36.5 (one node), in the namespace
+`migrations-e2e`, with these manifests in an overlay as in the run above (an in-cluster
+distribution 3.1.2 and Postgres 17.11), and three images built from one commit, three releases:
+`n` (migrations up to 0014), `n1` (and 0015, a new table: expand), `n2` (and 0016, which drops
+it, `-- lajstrom:requires 0015`: contract). The steps, with what the Job printed and what the
+replicas logged at start (a selection, without the times):
+
+| Step | Commands | What happened |
+| --- | --- | --- |
+| install `n` | `apply -k` | one replica applied 0001 to 0014 under the lock, the other none: `"applied":[],"schema":14` |
+| skip to `n2` | the Job of `n2` | `Failed`: `a pending migration would break the replicas serving on the schema: migration postgres/0016_drop_upgrade_probe.sql needs a binary that knows migration 0015, and the schema is at version 0014; upgrade through the release in between, or stop every replica and run lajstrom migrate --allow-breaking`; nothing applied, `n` serving |
+| `n` to `n1` | the Job of `n1`, `set image` | `applied 0015`, while `n` served; the new replicas: `"applied":[],"schema":15` |
+| back to `n` | `rollout undo` | `"msg":"the index schema is newer than this binary, and compatible with it","schema":15,"known":14` |
+| `n1` to `n2` | `set image` `n1`, the Job of `n2`, `set image` `n2` | `applied 0016`; the new replicas: `"applied":[],"schema":16` |
+| back to `n1` | `rollout undo` | `"msg":"the index schema is newer than this binary, and compatible with it","schema":16,"known":15` |
+| back to `n` | `set image` `n` | the new pod in `CrashLoopBackOff`: `lajstrom: index: the schema is newer than this binary: schema version 0016 needs a binary that knows migration 0015, and this one knows up to 0014`; `rollout status` timed out, the two `n1` replicas kept serving |
+| forward to `n2` | `set image` `n2` | rolled out |
+
+A pod requested a file through the Service four times a second throughout. Without a `preStop`
+hook, some requests of every rollout found a stopping replica's listener closed, before its
+endpoint was gone: 5 of 194 over two rollouts got no answer. With the hook of `deployment.yaml`
+(a 5-second sleep before `SIGTERM`), none of 228 over the same two rollouts.
 
 ## What was not verified
 
 - An Ingress or a Gateway in front, TLS, and a multi-node cluster.
 - A managed Postgres, `sslmode=require`, and an external registry.
-- Upgrades on a cluster, and the migration Job. The schema rules are tested on the migrations
-  alone (`TestUpgrade`), not with the binary of a previous release.
+- An upgrade from a published release: the run above built its three releases from one commit
+  (#485 tests the binary of the previous release after v0.1.0). A migration that runs long.

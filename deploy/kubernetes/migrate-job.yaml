@@ -1,0 +1,63 @@
+# lajstrom migrate of a new release, run once before the Deployment gets the release's image
+# (docs/operations.md, Upgrades). Not in kustomization.yaml: a Job runs once and its pod template
+# cannot change, so each upgrade deletes the Job of the one before and creates this one with the
+# image of the new release:
+#
+#   kubectl delete job lajstrom-migrate --ignore-not-found
+#   kubectl set image --local -f deploy/kubernetes/migrate-job.yaml \
+#     migrate=ghcr.io/lajstrom/lajstrom:vX.Y.Z -o yaml | kubectl apply -f -
+#   kubectl wait --for=condition=complete --timeout=30m job/lajstrom-migrate
+#
+# Needs the ConfigMap lajstrom-config and the Secret lajstrom of the Deployment. When serve runs
+# as a database user with data rights only, give the Job a Secret of its own whose
+# LAJSTROM_DATABASE_DSN names the schema's owner (docs/operations.md, A database user for serve).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: lajstrom-migrate
+  labels:
+    app.kubernetes.io/name: lajstrom
+    app.kubernetes.io/component: migrate
+spec:
+  # A migration that fails rolls back; read its log before running it again.
+  backoffLimit: 0
+  template:
+    metadata:
+      # Not app.kubernetes.io/name: lajstrom, which the Service selects.
+      labels:
+        app.kubernetes.io/name: lajstrom-migrate
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: ghcr.io/lajstrom/lajstrom:v0.1.0 # the new release; pin a digest
+          args: ["migrate", "--config", "/etc/lajstrom/lajstrom.yaml"]
+          envFrom:
+            - secretRef:
+                name: lajstrom
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/lajstrom
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: lajstrom-config

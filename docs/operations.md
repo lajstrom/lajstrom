@@ -376,7 +376,10 @@ period of the orchestrator above it, or it kills the process before the drain en
 `terminationGracePeriodSeconds` on Kubernetes (30 s by default), `stop_grace_period` in Compose
 (10 s by default). On Kubernetes the endpoint of a terminating pod is removed while the pod
 gets `SIGTERM`, not before: a `preStop` hook that sleeps a few seconds keeps the listener open
-until the edge has stopped sending new requests to it.
+until the edge has stopped sending new requests to it. `deploy/kubernetes` sleeps 5 seconds
+(the `sleep` action, Kubernetes 1.30 and later; the image has no shell), which a rolling update
+on a cluster needed ([deploy/kubernetes.md](deploy/kubernetes.md#upgrade)); the grace period
+counts the sleep too.
 
 ## Upgrades
 
@@ -401,36 +404,24 @@ release before keep serving on the migrated schema, and the new ones find nothin
 `serve` still migrates on start, under the same lock, so a replica that starts before the
 migration ran does it itself; a separate run is better for three reasons: a failing migration
 stops the upgrade before any replica changes, a long one is not killed by the startup probe
-(`deploy/kubernetes`: 30 tries, 2 s apart), and its output is in one place. On Kubernetes, as a
-Job, with the ConfigMap and the Secret of [deploy/kubernetes.md](deploy/kubernetes.md)
-(not tried on a cluster):
-
-```yaml
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: lajstrom-migrate-v0-2-0   # one per release
-spec:
-  backoffLimit: 0
-  template:
-    spec:
-      restartPolicy: Never
-      automountServiceAccountToken: false
-      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532}
-      containers:
-        - name: migrate
-          image: ghcr.io/lajstrom/lajstrom:v0.2.0   # the new release
-          args: ["migrate", "--config", "/etc/lajstrom/lajstrom.yaml"]
-          envFrom: [{secretRef: {name: lajstrom}}]
-          volumeMounts: [{name: config, mountPath: /etc/lajstrom, readOnly: true}]
-      volumes: [{name: config, configMap: {name: lajstrom-config}}]
-```
+(`deploy/kubernetes`: 30 tries, 2 s apart), and its output is in one place. On Kubernetes, the
+Job [`deploy/kubernetes/migrate-job.yaml`](../deploy/kubernetes/migrate-job.yaml) is that run,
+with the ConfigMap and the Secret of the Deployment. A Job's pod template cannot change, so each
+upgrade deletes the one before:
 
 ```sh
-kubectl apply -f migrate-job.yaml
-kubectl wait --for=condition=complete --timeout=30m job/lajstrom-migrate-v0-2-0
+kubectl delete job lajstrom-migrate --ignore-not-found
+kubectl set image --local -f deploy/kubernetes/migrate-job.yaml \
+  migrate=ghcr.io/lajstrom/lajstrom:v0.2.0 -o yaml | kubectl apply -f -
+kubectl wait --for=condition=complete --timeout=30m job/lajstrom-migrate
+kubectl logs job/lajstrom-migrate            # applied 0015
 kubectl set image deployment/lajstrom lajstrom=ghcr.io/lajstrom/lajstrom:v0.2.0
+kubectl rollout status deployment/lajstrom
 ```
+
+A Job that fails (`kubectl wait --for=condition=failed`) applied nothing of the migration that
+failed, and the replicas keep their image; its log says why. The run on a cluster, with the
+outputs, is in [deploy/kubernetes.md](deploy/kubernetes.md#upgrade).
 
 A Helm `pre-upgrade` hook or an Argo CD `PreSync` hook runs the same Job. Without either, an
 init container that runs `lajstrom migrate` before `serve` does the same in each new pod: the
@@ -443,9 +434,11 @@ Finish one rolling update before the next.
 
 A rollback (`kubectl rollout undo`) runs the release before on the newer schema. After expand
 migrations it starts and logs `the index schema is newer than this binary, and compatible with
-it`. After a contract migration it refuses to start: `the schema is newer than this binary:
-schema version 0016 needs a binary that knows migration 0015, and this one knows up to 0014`.
-Roll forward, or restore the backup of before the upgrade ([Restoring](#restoring)), which
+it`; so does a rollback to the release a contract migration requires. To an older release it
+refuses to start: `the schema is newer than this binary: schema version 0016 needs a binary
+that knows migration 0015, and this one knows up to 0014`. Its pods crash-loop, the rollout
+stalls, and the replicas of the newer release keep serving (`maxUnavailable: 0`). Roll forward,
+or restore the backup of before the upgrade ([Restoring](#restoring)), which
 loses the changes to users, tokens and bindings made since.
 
 ### One node
