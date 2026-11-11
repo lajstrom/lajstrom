@@ -23,10 +23,16 @@ var migrationFiles embed.FS
 
 // migration is one embedded migration file.
 type migration struct {
-	version int
-	name    string // file name, for errors
-	sql     string
+	version  int
+	name     string // file name, for errors
+	sql      string
+	requires int // the version a binary must know to run on a schema with it; 0: any binary
 }
+
+// requiresDirective starts the line of a contract migration's leading comment that names the
+// version a binary must know to run on a schema with it: "-- lajstrom:requires 0014"
+// (docs/spec/index-schema.md, Upgrades).
+const requiresDirective = "-- lajstrom:requires "
 
 // MigrationVersions returns the versions of the migrations embedded for dialect, ascending.
 // Both dialects have the same set.
@@ -62,7 +68,11 @@ func migrations(dialect string) ([]migration, error) {
 		if err != nil {
 			return nil, fmt.Errorf("index: migrations: %w", err)
 		}
-		ms = append(ms, migration{version: v, name: dialect + "/" + e.Name(), sql: string(body)})
+		m := migration{version: v, name: dialect + "/" + e.Name(), sql: string(body)}
+		if m.requires, err = migrationRequires(m); err != nil {
+			return nil, err
+		}
+		ms = append(ms, m)
 	}
 	slices.SortFunc(ms, func(a, b migration) int { return cmp.Compare(a.version, b.version) })
 	for i := 1; i < len(ms); i++ {
@@ -82,4 +92,24 @@ func migrationVersion(file string) (int, error) {
 		}
 	}
 	return 0, errors.New("index: migration file " + strconv.Quote(file) + " is not named NNNN_<name>.sql")
+}
+
+// migrationRequires returns the version that the requires directive among the leading comment
+// lines of m names, or 0 when there is none. The version is at least 1 and at most m's own.
+func migrationRequires(m migration) (int, error) {
+	for line := range strings.Lines(m.sql) {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "--") {
+			break
+		}
+		arg, ok := strings.CutPrefix(line, requiresDirective)
+		if !ok {
+			continue
+		}
+		if v, err := strconv.Atoi(strings.TrimSpace(arg)); err == nil && v > 0 && v <= m.version {
+			return v, nil
+		}
+		return 0, fmt.Errorf("index: migration %s: %q does not name a version from 0001 to %04d", m.name, line, m.version)
+	}
+	return 0, nil
 }

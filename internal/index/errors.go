@@ -14,6 +14,13 @@ var (
 	// ErrConflict means a unique constraint was violated: a duplicate name, or a tag that
 	// already points at another digest (see TagConflictError).
 	ErrConflict = errors.New("index: conflict")
+	// ErrSchemaTooNew means the database has migrations this binary does not know, and one of
+	// them requires a version above the newest this binary knows (ApplyMigrations).
+	ErrSchemaTooNew = errors.New("index: the schema is newer than this binary")
+	// ErrBreakingMigration means a pending migration requires a version above the schema's,
+	// so binaries serving on the schema would stop working, and it was not applied
+	// (ApplyMigrations, MigrateOptions.Breaking).
+	ErrBreakingMigration = errors.New("index: a pending migration would break the replicas serving on the schema")
 )
 
 // TagConflictError is the error UpsertVersion returns, possibly wrapped, when the version's tag

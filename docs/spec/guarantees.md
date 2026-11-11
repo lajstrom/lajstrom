@@ -701,9 +701,8 @@ status is `holds on strongly consistent registries only` do not hold there.
 
 - **Statement.** Each schema migration is applied once, in a transaction that records it, also
   when several replicas and the CLI start at once.
-- **Scope.** `lajstrom migrate` and the start of `serve`, both engines. Which binary versions may
-  run against which schema during a rolling upgrade is not guaranteed
-  ([#225](https://github.com/lajstrom/lajstrom/issues/225)).
+- **Scope.** `lajstrom migrate` and the start of `serve`, both engines. Which binary runs on which
+  schema during an upgrade is INV-41.
 - **Assumes.** Database: **one database**.
 - **Mechanism.** `index.ApplyMigrations` under the migration lock (`pg_advisory_xact_lock`,
   `BEGIN IMMEDIATE`).
@@ -933,6 +932,26 @@ status is `holds on strongly consistent registries only` do not hold there.
   only copy (INV-1): what repairs it is the registry's, or a new publish.
 - **Status.** `holds`.
 
+## Upgrades
+
+### INV-41. A binary runs only on a schema it can run on
+
+- **Statement.** `serve` and `lajstrom migrate` refuse a schema with a migration they do not know
+  that requires a version above the newest they know, and apply no migration that requires a
+  version above the schema's newest unless told to (`migrate --allow-breaking`; `serve` on
+  SQLite), applying nothing when they refuse; a binary of the release before runs on the schema
+  after an expand migration (index-schema.md, Upgrades).
+- **Scope.** Binaries from migration 0014 on, both engines.
+- **Assumes.** Database: **one database**. A migration that is not expand carries its
+  `-- lajstrom:requires` line: review checks it, no code does.
+- **Mechanism.** `index.ApplyMigrations`, `schema_migrations.requires`.
+- **Tests.** `TestUpgrade`, `TestMigrationRequires`.
+- **When violated.** A contract migration without its line: the replicas of the release before
+  keep serving and fail on the statements it broke; a rollback starts and fails the same way.
+- **Status.** `partly`: whether a migration is expand is reviewed, not tested. **Untested:** the
+  binary of the previous release on the schema of the next one, after v0.1.0
+  ([#485](https://github.com/lajstrom/lajstrom/issues/485)).
+
 ## Summary
 
 | Id | Guarantee | Status | Markers |
@@ -977,6 +996,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-38 | denied versions kept out | not yet (#101) | |
 | INV-39 | encryption at rest | not yet (#114) | |
 | INV-40 | a streamed download has its digest | holds | |
+| INV-41 | a binary only on a schema it can run on | partly | untested (the previous release's binary) |
 
 ## Not guaranteed
 
@@ -1086,6 +1106,6 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | Replica clocks are assumed to agree, never checked (INV-19, INV-26) | a replica whose clock runs ahead takes over live claims and refuses valid tokens | compare the replica's clock with the database's at start and on the heartbeats; warn or refuse past a bound | new issue |
 | Registries that fold tag case (INV-7) | two versions that differ in case: the second is a `409` with an unclear message | `Capabilities.TagsFoldCase` | [#426](https://github.com/lajstrom/lajstrom/issues/426) |
 | The bearer audience without `server.externalURL` (INV-19) | a staging server restored from production's database accepts production's tokens | require `externalURL` | [#248](https://github.com/lajstrom/lajstrom/issues/248) |
-| Rolling upgrades: which binary runs against which schema; pre-#244 claims (INV-6, INV-28) | a mixed fleet may not exclude publishes | the rules of #225 | [#225](https://github.com/lajstrom/lajstrom/issues/225) |
+| Whether a migration is expand is reviewed, not tested; no test runs the previous release's binary on the next schema; pre-#244 claims (INV-6, INV-41) | a contract migration without its `requires` line breaks the replicas of the release before during a rolling update; a mixed fleet may not exclude publishes | after v0.1.0, CI runs the previous release's binary on a schema the new binary migrated | [#485](https://github.com/lajstrom/lajstrom/issues/485) |
 | Groups (INV-34), policy (INV-38), encryption at rest (INV-39) | not built | as the issues say | [#311](https://github.com/lajstrom/lajstrom/issues/311), [#101](https://github.com/lajstrom/lajstrom/issues/101), [#114](https://github.com/lajstrom/lajstrom/issues/114) |
 | A streamed download is not hashed (INV-40) | a registry that serves other bytes than it stored reaches a client that checks nothing | hash in `format.ServeBlob`, hold the last byte back, abort the connection on a mismatch | new issue |

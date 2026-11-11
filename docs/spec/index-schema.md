@@ -30,7 +30,7 @@ stored as RFC 3339 text in SQLite, `timestamptz` in Postgres; `json` = `text` in
 | `sessions` | `id`, `repo_id`, `key` text (`g:a:v`; `blob-upload:<id>` for an upload of the facade), `principal` text (`user:<uid>`, `token:<id>`), `state` text (`open`, `committed`, `aborted`, `expired`), `files` json (a publication session: `{"name", "version", "files": [{"name", "digest", "size", "checksums"}], "committing"}`; an upload: `{"name", "location", "id", "offset", "sha256", "hashed", "recheck"}`, the backend's session, the sha256 state of the bytes that passed so far and their count, and whether a chunk failed since), `created_at` ts, `updated_at` ts, `expires_at` ts | publication sessions (maven; later docker stitching) and the blob uploads of the facade. Unique `sessions_open_key` on `(repo_id, key) WHERE state = 'open'` (0007): two requests that open the session of one version at once end in one, and a change of its files is a transaction that starts with an `UPDATE` of the row, which holds it |
 | `audit` | `id`, `at` ts, `principal` text (`user:<uid>`, `token:<id>`, `anonymous`), `principal_name` text null (a user's name at the time of the event, written with the row), `action` text (`push`, `delete`, `repo.create`, `token.create`, …), `repo` text, `subject` text (package/version, or a user's `user:<uid>`), `digest` text null, `ip` text, `details` json | append-only; retention by age later. Rows written before 0008 carry the principal as it was then, `user:<name>`, and that name as `principal_name` |
 | `auth_version` | `id` int (always 1), `version` bigint, `updated_at` ts | one row, made by its migration; incremented in the transaction of every insert or delete of `bindings` and every insert, update or delete of `repos`. A replica reads it before it evaluates a request and reloads its snapshot of the bindings and of the repos' `anonymous_read` when it moved (rbac.md §3) |
-| `schema_migrations` | `version` int, `applied_at` ts | |
+| `schema_migrations` | `version` int, `applied_at` ts, `requires` int (0014; `0` but for a contract migration) | one row per applied migration; [Upgrades](#upgrades) |
 
 ## Proxy and group repos
 
@@ -192,13 +192,85 @@ the control-plane and derived tables, `0002_tag_claims.sql` the coordination tab
 `0005_reindex.sql` the table `reindex_runs`, the column `versions.degraded`, and
 `packages.created_at` set to the earliest `created_at` of each package's versions,
 `0006_auth_version.sql` the table `auth_version` with its row and the unique index
-`bindings_unique` (a binding made twice before it is kept once, the first).
+`bindings_unique` (a binding made twice before it is kept once, the first), and
+`0014_schema_requires.sql` the column `schema_migrations.requires` ([Upgrades](#upgrades)).
 The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the
 migration lock, `pg_advisory_xact_lock` on Postgres and `BEGIN IMMEDIATE` on SQLite, and reads
 `schema_migrations` under it, so replicas that start at once apply each version exactly once.
-`lajstrom migrate` and `lajstrom serve` (on start) run it.
+`lajstrom migrate` and `lajstrom serve` (on start) run it. When no migration is pending, it
+runs no statement that changes the schema. A migration file is never changed once a release
+has it: the runner records only its version, so a fix is a new migration.
+
+## Upgrades
+
+During a rolling update the replicas of two releases share one database: release N+1 (its
+first replica, or `lajstrom migrate`) migrates the schema while the replicas of release N still
+serve on it, and a rollback runs release N on the schema of N+1. So every migration is one of
+two kinds.
+
+**Expand** (the default): release N runs on the schema after it. It adds a table, an index, or
+a column that is nullable or has a default the database fills; it adds a constraint that every
+row release N writes meets; it fills or rewrites rows only where release N reads the result as
+it read the rows before. A unique index that release N's inserts may violate, or a backfill of
+values release N does not understand (0009 rewrote `user:<name>` to `user:<uid>`), is not
+expand.
+
+**Contract**: everything else: a dropped or renamed table or column, a changed type, a column
+made `NOT NULL`, a constraint that release N's writes do not meet. A contract migration removes
+only what the release before it no longer uses, so it comes at least one release after the
+change that stopped using it, and its leading comment has the line
+
+```sql
+-- lajstrom:requires NNNN
+```
+
+where NNNN is the first migration of the release that stopped using what it removes: every
+binary that knows NNNN runs on the schema after it, and no binary that uses it knows NNNN. A
+release that stops using a table or column and has no migration of its own adds one that only
+records its version (a file with a comment only). A rename is an added column, written beside
+the old one for as long as a release that reads the old one may run, and a contract migration
+that drops the old one later. The runner records NNNN in
+`schema_migrations.requires`, so a binary that does not know the migration knows what it
+requires. Both dialects declare the same (a test asserts it).
+
+**What a binary tolerates.** So that release N runs on the schema of N+1, and N+1 on the rows
+N writes during the update:
+
+- Statements name their columns: no `SELECT *`, no `INSERT` without a column list. Tables,
+  columns and indexes a binary does not know are left alone.
+- A value it does not know in a column of a fixed set (`kind`, `state`, `role`, `source`, a
+  principal's prefix) fails the request that reads the row, or skips the row, and never stops
+  the replica or rewrites the row.
+- A field added to a `json` column has a meaning when absent: a replica of release N rewrites
+  the column (`repos.policy`, `sessions.files`) without it.
+- Release N+1 reads rows that N inserts after the migration: a column N+1 adds is NULL or its
+  default in them, a backfill in the migration does not cover them, and N+1 reads them as N
+  meant them.
+
+**What a binary does with the schema it finds.** `index.ApplyMigrations` reads
+`schema_migrations` first, at the start of `serve` and in `lajstrom migrate`:
+
+| The database | What happens |
+| --- | --- |
+| no migrations | every migration is applied |
+| pending migrations, none requiring more than the schema's newest version | they are applied |
+| a pending migration requires more than the schema's newest version | nothing is applied, `ErrBreakingMigration`: the replicas serving on the schema may not know NNNN. `serve` on Postgres and `lajstrom migrate` refuse, exit status 1; `lajstrom migrate --allow-breaking` applies it, once the operator has stopped them; `serve` on SQLite applies it, for it is the only replica |
+| current | nothing, and no statement that changes the schema |
+| versions the binary does not know, none requiring more than its newest | it runs: `serve` logs a warning, `migrate` says so |
+| versions the binary does not know, one requiring more than its newest | nothing is applied, `ErrSchemaTooNew`: `serve` and `migrate` refuse with exit status 1 and name the migration a binary must know |
+
+There are no down migrations: a rollback is the binary of the release before on the newer
+schema, which expand migrations allow; to a release older than the one a contract migration
+requires, it is a restore of the backup taken before the upgrade. The migrations 0001 to 0014
+require nothing; binaries built before 0014 do not check the schema. `serve` migrating on start
+is the default, enough for one node; with several replicas, `lajstrom migrate` of the new
+release runs once before the rolling update ([operations.md](../operations.md#upgrades)). A release with a
+contract migration says so in its notes ([release.md](../release.md#migrations-in-the-notes)).
+`TestUpgrade` runs the migrations of four releases against one database on both engines: an
+expand migration, the marker, a contract migration, a rollback, and an upgrade that skips a
+release.
 
 ## Invariants and rules
 

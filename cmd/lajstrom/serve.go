@@ -41,7 +41,9 @@ const registryProbeTimeout = 10 * time.Second
 // returns its error at once.
 //
 // Migrating on start takes the same lock as lajstrom migrate, so replicas that start together
-// apply each migration once. The index is Deps.Index of the format plugins and /-/readyz pings
+// apply each migration once. Serve does not start on a schema that requires a newer binary, nor,
+// on Postgres, apply a migration that would break the replicas serving on the schema before it
+// (index.ApplyMigrations, docs/operations.md, Upgrades). The index is Deps.Index of the format plugins and /-/readyz pings
 // it; the registries are Deps.Providers; the ingest pipeline over both, with ingest.claimTTL,
 // is Deps.Ingest; the signing keys over the index and the master key (newSigner) are
 // Deps.Signer. The bearer-token key is loaded or made right after (newTokenKeys), before the
@@ -87,12 +89,18 @@ func newServeCmd(a *app) *cobra.Command {
 				return err
 			}
 			defer func() { err = errors.Join(err, st.Close()) }()
-			applied, err := st.ApplyMigrations(ctx)
+			// On SQLite this process is the only replica, so no binary of the schema before the run
+			// is serving on it: a breaking migration is safe to apply.
+			mig, err := st.ApplyMigrations(ctx, index.MigrateOptions{Breaking: c.Database.Driver == index.DialectSQLite})
 			if err != nil {
-				return err
+				return migrationHint(err)
 			}
 			a.log.Info("index migrations applied under the migration lock",
-				"database.driver", c.Database.Driver, "applied", applied)
+				"database.driver", c.Database.Driver, "applied", mig.Applied, "schema", mig.Version)
+			if mig.Version > mig.Known {
+				a.log.Warn("the index schema is newer than this binary, and compatible with it",
+					"schema", mig.Version, "known", mig.Known)
+			}
 			repos := newRepos(c, st, a.log)
 			created, err := repos.Bootstrap(ctx, c.Repos)
 			if err != nil {

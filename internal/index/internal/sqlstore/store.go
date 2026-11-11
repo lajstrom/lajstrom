@@ -35,14 +35,13 @@ func New(db *sql.DB, d Dialect) *Store {
 
 // Migrate applies the embedded migrations that are not applied yet (index.ApplyMigrations).
 func (s *Store) Migrate(ctx context.Context) error {
-	_, err := s.ApplyMigrations(ctx)
+	_, err := s.ApplyMigrations(ctx, index.MigrateOptions{})
 	return err
 }
 
-// ApplyMigrations is Migrate that also returns the versions it applied: empty when the schema
-// was current.
-func (s *Store) ApplyMigrations(ctx context.Context) ([]int, error) {
-	return index.ApplyMigrations(ctx, s.db, s.d.Name)
+// ApplyMigrations is Migrate with options, and it reports what it found and applied.
+func (s *Store) ApplyMigrations(ctx context.Context, opts index.MigrateOptions) (index.MigrationReport, error) {
+	return index.ApplyMigrations(ctx, s.db, s.d.Name, opts)
 }
 
 // AppliedMigrations returns the versions recorded in schema_migrations, ascending.
