@@ -390,7 +390,7 @@ release.
   resolve asks for the manifest by its digest (`Provider.StatManifest`). Only `404
   MANIFEST_UNKNOWN` counts as unknown, and the row goes only on the second such answer at least
   10 minutes after the first (`prune_sightings`, Coordination) and when its `indexed_at` is at
-  least `reconcile.graceAge` old (guarantees.md, G-5); packages left without versions go with
+  least `reconcile.graceAge` old (guarantees.md, INV-5); packages left without versions go with
   it. Any other answer (`NAME_UNKNOWN`, a `404` without the code, a `5xx`, `401`, `403`, a
   timeout) keeps the row and is an error of the report, and a run that cannot list the repo's
   OCI repositories sweeps nothing. An `oci_repos` row goes when no run has seen its repository
