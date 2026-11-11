@@ -102,6 +102,9 @@ func at(u provider.Upload, p *partial) provider.Upload {
 
 // StartBlobUpload opens a session; its ID is the key of the Fake's partial blobs.
 func (r *repository) StartBlobUpload(context.Context) (provider.Upload, error) {
+	if err := r.f.FailUpload; err != nil {
+		return provider.Upload{}, fmt.Errorf("fake: start a blob upload in %s: %w", r.name, err)
+	}
 	r.f.mu.Lock()
 	defer r.f.mu.Unlock()
 	if r.f.uploads == nil {

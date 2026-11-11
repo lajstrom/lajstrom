@@ -15,7 +15,8 @@ import (
 // reports it, and what the frontend answers its client (format.StatusOf, #494).
 type Refusal struct {
 	Name string
-	// Push fails the blob pushes of a providertest.Fake, PushReference its manifest pushes.
+	// Push fails the blob pushes of a providertest.Fake and its blob upload sessions,
+	// PushReference its manifest pushes.
 	Push, PushReference error
 	// Status is the frontend's answer, RetryAfter its Retry-After, "" for none.
 	Status     int
@@ -42,7 +43,7 @@ func refusal(status int, code string, after time.Duration) error {
 
 // Apply makes f refuse as r.
 func (r Refusal) Apply(f *providertest.Fake) {
-	f.FailPush, f.FailPushReference = r.Push, r.PushReference
+	f.FailPush, f.FailUpload, f.FailPushReference = r.Push, r.Push, r.PushReference
 }
 
 // Check fails t when rr is not the answer of r: its status and Retry-After, and, for a 4xx, a
