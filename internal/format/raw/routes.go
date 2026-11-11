@@ -78,12 +78,12 @@ type putResponse struct {
 }
 
 // put uploads the request body as the file at the path: the body, bounded by the repo policy's
-// maxFileSize (format.LimitBody, 413 above it), is spooled to a temporary file for the request
-// and published through deps.Ingest, and the answer is 201 with Location (the request path),
-// Docker-Content-Digest (the manifest digest) and a JSON body. The same bytes again are the
-// idempotent repeat of ingest, answered alike with the digest of the manifest stored first. The
-// spool is removed when the handler returns, whatever the outcome. A path that another spelling
-// holds is 409 before the body is read (checkSpelling).
+// maxFileSize (format.LimitBody, 413 above it), streams into the registry through
+// deps.Ingest.UploadStream, which keeps it only when the publish goes through (ADR 0014), and the
+// answer is 201 with Location (the request path), Docker-Content-Digest (the manifest digest) and
+// a JSON body. Nothing of the body is written to a local disk. The same bytes again are the
+// idempotent repeat of ingest, answered alike with the digest of the manifest stored first. A
+// path that another spelling holds is 409 before the body is read (checkSpelling).
 func (h *handlers) put(w http.ResponseWriter, r *http.Request) {
 	repo, p, ok := h.start(w, r, auth.ActionWrite)
 	if !ok {
@@ -102,27 +102,21 @@ func (h *handlers) put(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	sp, err := format.Spool(body, p, r.Header.Get("Content-Type"), r.ContentLength)
-	if err != nil {
-		h.fail(w, r, err)
-		return
-	}
-	defer func() {
-		if err := sp.Close(); err != nil {
-			h.deps.Log.WarnContext(r.Context(), "raw: upload spool not removed", "error", err.Error())
-		}
-	}()
 	principal := auth.PrincipalFrom(r.Context())
-	file := sp.File()
-	pub, err := h.deps.Ingest.Upload(r.Context(), repo, format.Upload{
-		Files:  []format.UploadedFile{file},
+	pub, err := h.deps.Ingest.UploadStream(r.Context(), repo, format.StreamUpload{
+		Name:   p,
+		File:   format.UploadedFile{Name: p, Size: r.ContentLength, ContentType: r.Header.Get("Content-Type")},
+		Body:   body,
 		Params: map[string]string{ParamPath: p, ParamUploadedBy: principal.String()},
 	}, principal)
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
-	resp := putResponse{Path: p, Version: pub.Entry.Version, Digest: pub.Digest.String(), Size: file.Size}
+	resp := putResponse{Path: p, Version: pub.Entry.Version, Digest: pub.Digest.String()}
+	if len(pub.Entry.Files) == 1 {
+		resp.Size = pub.Entry.Files[0].Size
+	}
 	if v, err := h.deps.Index.GetVersionByDigest(r.Context(), repo.ID, pub.Digest); err == nil {
 		resp.Created = v.CreatedAt.UTC().Format(time.RFC3339)
 	} else {
@@ -143,7 +137,7 @@ func (h *handlers) put(w http.ResponseWriter, r *http.Request) {
 // naming it (409).
 //
 // The check runs here and not in Build, whose signature (format.Plugin) has no index, and before
-// the spool, so that a refused upload reads no byte of the body. Two spellings uploaded at once
+// the body streams, so that a refused upload reads no byte of it. Two spellings uploaded at once
 // both pass it; the pipeline settles that race under its claim on the package path, and the
 // loser gets ErrConflict before its manifest is pushed (#244).
 func checkSpelling(ctx context.Context, st index.Reader, repo index.Repo, p string) error {

@@ -12,7 +12,7 @@ says how to run each one, what it needs, and how to add an end-to-end scenario.
 | OCI conformance | `test/conformance/run.sh` | a running Lajstrom, an `oci` repo | no |
 | Fuzz | `go test -fuzz=<name>` | Go | the seed corpus, as part of `make test` |
 | End-to-end | `make e2e` | the dev stack, Docker, `curl`, `jq` | `e2e` |
-| Load | `make load` | the dev stack, `oras`, `curl`, `jq`, `lsof`, 4 GiB of free disk (18 GiB with 8 uploads at once) | `load` (the Load workflow): nightly, on demand, and on a pull request that changes the load test; not required |
+| Load | `make load` | the dev stack, `oras`, `curl`, `jq`, `lsof`, 4 GiB of free disk (11 GiB with 8 uploads at once) | `load` (the Load workflow): nightly, on demand, and on a pull request that changes the load test; not required |
 
 `make check` runs what every pull request must pass without the stack: gofmt, build, vet, unit
 tests, lint, vulncheck, licenses. The integration, conformance and end-to-end levels need the
@@ -371,7 +371,7 @@ itself; add its name to `order` in `run.sh` to place it among the others.
 ```sh
 make dev-up
 make load                                  # 1 GiB, 1 upload at a time, 8 downloads at once
-LAJSTROM_LOAD_UPLOADS=8 make load          # 8 uploads at once too; 18 GiB of free disk
+LAJSTROM_LOAD_UPLOADS=8 make load          # 8 uploads at once too; 11 GiB of free disk
 LAJSTROM_LOAD_SIZE_MIB=256 make load       # a smaller object, for a smaller disk
 ```
 
@@ -382,7 +382,7 @@ object of random bytes through a raw repo (`curl -T`) and through `/v2` (`oras p
 samples the server's resident set, its Go heap and the temporary files it holds open every
 0.2 s. It exits 1 when the peak resident set of a phase passes `LAJSTROM_LOAD_MAX_RSS_MIB`
 (256), 2 when a transfer fails. It is not part of `make e2e`: it moves 18 GiB (32 GiB with 8
-uploads) and needs 3 + 1 GiB of free disk at the peak for one upload at a time, 17 + 1 GiB for 8,
+uploads) and needs 3 + 1 GiB of free disk at the peak for one upload at a time, 10 + 1 GiB for 8,
 which it checks before it starts. On exit it deletes what it pushed from the registry and
 removes its files. The [Load workflow](../.github/workflows/load.yml) runs it nightly and on
 demand with 8 uploads at once; `LAJSTROM_LOAD_SUMMARY` names a file, such as the job summary, to

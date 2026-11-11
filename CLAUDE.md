@@ -72,8 +72,10 @@ make e2e              # real clients (oras, pip, apt-get, mvn) against the stack
 - Wrap errors with `%w`; sentinel errors per package (`ErrNotFound`, `ErrConflict`,
   `ErrUnsupported`); map to HTTP status in one place per package.
 - `context.Context` on every I/O call. Stream blobs when serving and when pushing to the
-  registry; an upload may be spooled to a temporary file for the duration of one request (never
-  kept, never served from). Artifact bytes live only in the registry.
+  registry; an upload streams into the registry (ADR 0014); a temporary file only where the
+  operator turns it on (#425). Formats move one by one (raw has); until its move, a format's
+  upload is still spooled for one request, never kept, never served from. Artifact bytes live
+  only in the registry.
 - `log/slog` for logs; never log secrets, tokens, passwords or Authorization headers.
 - Tests: table tests; fixtures built in-process with `internal/testutil` (make a `.deb`, a
   `.whl`, a `.jar` in memory). Do not vendor binary packages from distributions.
