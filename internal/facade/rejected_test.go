@@ -25,10 +25,10 @@ const internals = "registry.internal"
 
 // refusingRegistry is a registry with the upload endpoints of the distribution API and nothing
 // else (any other path is 404, which the capability probe takes), whose GET /v2/ answers the
-// headers v2. It refuses the requests that refuse picks, which sees the bytes the session holds,
-// with status, the headers hdr and, when code is not empty, an error of that code whose message
-// names internals and a credential; without a code the body is empty, as a proxy in front of a
-// registry answers.
+// headers v2. It refuses the requests on any other path that refuse picks, which sees the bytes
+// an upload session holds, with status, the headers hdr and, when code is not empty, an error
+// of that code whose message names internals and a credential; without a code the body is
+// empty, as a proxy in front of a registry answers.
 type refusingRegistry struct {
 	v2     http.Header
 	refuse func(r *http.Request, held int64) bool
@@ -52,9 +52,6 @@ func (f *refusingRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header()[k] = v
 		}
 		return
-	case !upload:
-		http.NotFound(w, r)
-		return
 	case f.refuse(r, held):
 		for k, v := range f.hdr {
 			w.Header()[k] = v
@@ -64,6 +61,9 @@ func (f *refusingRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if f.code != "" {
 			_, _ = fmt.Fprintf(w, `{"errors":[{"code":%q,"message":"refused by %s for robot:s3cret"}]}`, f.code, internals)
 		}
+		return
+	case !upload:
+		http.NotFound(w, r)
 		return
 	case r.Method == http.MethodPost:
 		f.seq++
