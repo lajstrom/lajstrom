@@ -1,7 +1,7 @@
 # Spec: guarantees
 
-- Status: normative, v1 (2026-11-10). Changes need an issue labelled `contract` (below, "How a
-  guarantee changes").
+- Status: normative, v2 (2026-11-11: the lead's answers to the questions of v1). Changes need
+  an issue labelled `contract` (below, "How a guarantee changes").
 - Owned by: the lead. Every pull request that changes a mechanism or a test named here updates
   the entry.
 - Related: [ADR 0001](../adr/0001-oci-registry-as-sole-storage.md) to
@@ -16,15 +16,20 @@ right to rely on.** That an observable behaviour holds today does not make it a 
 (Hyrum's law, refused on purpose): it may change in any release, without notice.
 
 - **What is in the contract.** The guarantees below; the normative text of the specs of this
-  directory (the wire formats, endpoints, statuses, tables and Go contracts they define); and the
+  directory (the wire formats, endpoints, statuses, tables and Go contracts they define); the
   references of the three interfaces the README's promise names: the management API
-  ([api.md](../api.md) and its OpenAPI document), the configuration
-  ([configuration.md](../configuration.md)) and the CLI's commands, flags and exit statuses. This
-  document includes them by reference and does not repeat them. The ADRs record why; what they
-  decided is guaranteed through the spec that carries it. Everything else describes and does not
-  promise: architecture.md, operations.md, the guides, the README, code comments, log lines,
-  tests. When this document and a spec disagree, that is a bug of one of them: open an issue
-  labelled `contract`; until it is decided, the narrower reading holds.
+  ([api.md](../api.md) and its OpenAPI document), the keys of the configuration and what each
+  means ([configuration.md](../configuration.md)), and the CLI's commands, flags and exit
+  statuses; the names of the metric series of [operations.md](../operations.md#metrics) and its
+  rule that no label carries a repo or package name; and the prefixes `ljs_pat_` and `ljs_dep_`
+  of token secrets ([auth.md](../auth.md#tokens)), which secret scanners key on. This document
+  includes them by reference and does not repeat them. Not in the contract: the default value of
+  a configuration key, and the timings of retries ([Not guaranteed](#not-guaranteed)). The ADRs
+  record why; what they decided is guaranteed through the spec that carries it. Everything else
+  describes and does not promise: architecture.md, operations.md but for its metric names, the
+  guides, the README, code comments, log lines, tests. When this document and a spec disagree,
+  that is a bug of one of them: open an issue labelled `contract`; until it is decided, the
+  narrower reading holds.
 - **How a guarantee changes.** Adding, withdrawing or changing the statement, the scope or the
   assumptions of a guarantee is a contract change: an issue labelled `contract`, a pull request
   the lead approves, and a line in the release notes that says what changed and how to adapt.
@@ -72,6 +77,22 @@ is not tested.
 | **scoped blobs** | a blob is readable only in a repository that holds it | measured on Zot only (threat model P-5) |
 | **case-exact tags** | two tags that differ in case are two tags | not on Gitea and Forgejo, which fold tag case ([#426](https://github.com/lajstrom/lajstrom/issues/426)) |
 | **GC keeps what is named** | the garbage collector keeps a manifest a tag names and a referrer whose subject exists | GitLab B deletes an untagged referrer 24 h after its push; Nexus's task "Delete unused manifests" deletes one; Gitea deletes the manifest a re-pointed tag named |
+
+**Where the guarantees hold**, by the tiers of the matrix
+([Versions tested](../registries/README.md#versions-tested)):
+
+- `CI` (distribution on the filesystem, Zot, at their pinned versions): as each entry's status
+  says. Every pull request that touches code checks them.
+- `manual` and `hosted`: as measured on its date, at the pinned version, and not checked since:
+  GitLab A and B, GHCR and Harbor on 2026-11-07; distribution on S3, MinIO and SeaweedFS on
+  2026-11-09; JFrog JCR, Nexus, Gitea and Forgejo on 2026-11-10.
+- `untested` (ECR, Quay, Azure Container Registry, Docker Hub), and any version other than the
+  pinned one: nothing is promised.
+
+**An eventually consistent registry is not refused.** Until
+[#446](https://github.com/lajstrom/lajstrom/issues/446) (priority p1) lands, Lajstrom serves a
+registry without **read-after-write**, such as ECR, and warns at start instead: the entries whose
+status is `holds on strongly consistent registries only` do not hold there.
 
 ### The database
 
@@ -177,23 +198,26 @@ is not tested.
 ### INV-5. Prune never removes what the registry still holds
 
 - **Statement.** Reindex and the reconcile loop delete a derived row only when the registry
-  answers that the row's tag is unknown, looked up again after the listing; an error, a timeout
-  or a listing that failed removes nothing.
+  answers that the row's tag is unknown, looked up again after the listing, on two consecutive
+  runs, and never the row of a version younger than `reconcile.graceAge`; an error, a timeout or
+  a listing that failed removes nothing.
 - **Scope.** `reindex` with `--prune` (the default for every repo), the reconcile loop, the npm
   journal's rows.
-- **Assumes.** Registry: **read-after-write** (**unchecked**): a lagging registry answers
-  "unknown" for a tag it holds. Database: any.
+- **Assumes.** Registry: a read-after-write lag shorter than `reconcile.graceAge`
+  (**unchecked**); until the grace age is built, **read-after-write** (**unchecked**): a lagging
+  registry answers "unknown" for a tag it holds. Database: any.
 - **Mechanism.** `reindex.scan.sweep` (each unseen row resolved by its tag; only
   `provider.ErrNotFound` deletes), `scan.list` (no sweep when the listing failed),
-  `reindex.replay.sweep` for the journal.
+  `reindex.replay.sweep` for the journal. The grace age and the second observation: none yet.
 - **Tests.** `TestSweepKeepsWhatItCannotCheck`, `TestBypassAndDelete`, `TestDrift`,
   `TestNoCatalog`, the store conformance case `Sweep`, `TestReconcile`.
 - **When violated.** A version published shortly before a run, inside the registry's lag, loses
   its rows: it is missing from every index and its files are `404` until the next run lists it
   again and adds it back. The run's audit row `reconcile` counts the removal; nothing alerts.
-- **Status.** `holds on strongly consistent registries only` ([#446](https://github.com/lajstrom/lajstrom/issues/446):
-  a grace age and two observations before a removal). **Untested:** no test with a lagging
-  registry.
+- **Status.** `not yet` ([#446](https://github.com/lajstrom/lajstrom/issues/446)): the grace age
+  and the second observation are not built. What holds today, on strongly consistent registries
+  only: a row goes at the first "unknown" of its lookup after the listing, and an error, a
+  timeout or a failed listing removes nothing. **Untested:** no test with a lagging registry.
 
 ## Publishing and tags
 
@@ -306,8 +330,7 @@ is not tested.
 - **Scope.** `/v2` uploads (monolithic, chunked, a `POST ?digest=`), across replicas; the blobs
   ingest pushes for a frontend upload, a proxy fetch and a metadata layer. Not a mount and not a
   blob the registry already has: nothing streams, and they rely on the registry (**digest check**,
-  **scoped blobs**). What Lajstrom serves is not hashed on the way out ([Not
-  guaranteed](#not-guaranteed)).
+  **scoped blobs**). What Lajstrom serves is not hashed on the way out yet (INV-40).
 - **Assumes.** Registry: none for what streams through Lajstrom. Database: **one database** for a
   chunked upload across replicas.
 - **Mechanism.** `facade.verifier` hashes a `/v2` upload as it streams and holds its last byte
@@ -346,14 +369,16 @@ is not tested.
 
 ## Delete
 
-### INV-13. A delete changes the index, the caches and the audit log at once
+### INV-13. Each version is deleted from the index, the caches and the audit log at once
 
-- **Statement.** A delete removes the manifest and its referrers from the registry first, then,
-  in one transaction, the version's rows (its package's when it was the last), the repo's
-  rendered documents and writes the audit row; a backend that cannot delete changes nothing.
+- **Statement.** A delete removes a version's manifest and its referrers from the registry first,
+  then, in one transaction, the version's rows (its package's when it was the last), the repo's
+  rendered documents, and writes the audit row; a backend that cannot delete changes nothing. A
+  delete of several versions is not all-or-nothing: they are deleted one by one, those deleted
+  before a failure stay deleted, and the answer names them.
 - **Scope.** `DELETE` on `/v2`, the raw frontend, `/api/v1` versions, npm's unpublish. Several
-  versions in one request (a raw path, an npm package, a version with every variant) are
-  deleted one by one: those deleted before a failure stay deleted (http-routing.md §4).
+  versions in one request: a raw path, an npm package, a version with every variant
+  (http-routing.md §4).
 - **Assumes.** Registry: **read-after-write** (**unchecked**): a reconcile that lists a just-deleted
   tag adds its rows back until the next run. Database: any.
 - **Mechanism.** `ingest.Pipeline.Delete`: `deletion.find`, `deletion.deleteInBackend` (under the
@@ -365,20 +390,23 @@ is not tested.
   `TestDeleteGoneAndAuditWriter` (raw), `TestIntegrationDelete`,
   `TestIntegrationDeleteUnsupported`, `TestIntegrationDeleteRefused`; R-07 in `raw.sh`, the deletes
   of `oras.sh` and the unpublishes of `npm.sh`.
-- **When violated.** When the transaction fails after the registry deleted the manifest, the
-  client gets `500` saying so, the rows and the cached documents stay until reindex removes them,
-  and the delete has no audit row (INV-14).
-- **Status.** `partly`: atomic across the index, the caches and the audit log; not across them
-  and the registry, which no transaction spans.
+- **When violated.** No transaction spans the registry: when the transaction fails after the
+  registry deleted the manifest, the client gets `500` saying so, the rows and the cached
+  documents stay until reindex removes them, and the delete has no audit row (INV-14).
+- **Status.** `partly`: each version's removal holds as stated; the answer to a delete of several
+  versions that fails does not name the versions deleted before the failure yet (each has its
+  audit row) (new issue).
 
 ## Audit
 
-### INV-14. Every write has an audit row
+### INV-14. Every change of the index has its audit row in its transaction
 
-- **Statement.** Every write through Lajstrom (a push, a delete, a journal entry, a proxied
-  ingest) and every change of the control plane has one audit row, written in the transaction
-  of the change, with the principal, the action, the repo, the subject, the digest, the client
-  address and the request id.
+- **Statement.** Every change of the index and of the control plane through Lajstrom has one audit
+  row, written in the transaction of the change, with the principal, the action, the repo, the
+  subject, the digest, the client address and the request id. A write to the registry (a push, a
+  delete, a journal entry, a proxied ingest) has its row in the transaction that records it in
+  the index; when that transaction fails after the registry write, or the row of a push to an
+  `oci` repo fails, the write has no row and the failure is logged at error.
 - **Scope.** As rbac.md §5 and §7; reads and the bearer tokens of `/v2/token` are not audited. A
   reindex writes one row when it starts (`repo.reindex`), the reconcile loop one row per repo it
   changed (`reconcile`), not one per version.
@@ -386,19 +414,22 @@ is not tested.
   that writes after the commit and only logs a failure).
 - **Mechanism.** `ingest.Pipeline.writeRows` (publish), `deletion.record`, `journal.record`,
   `ingest.Pipeline.auditReferrer`, the `auth.Users`, `auth.Tokens` and `auth.Bindings` changes,
-  `api` repo changes, `facade.handler.recordPassThrough` for an `oci` repo; the address and the
-  request id through `ingest.withOrigin`.
+  `api` repo changes, `facade.handler.recordPassThrough` for an `oci` repo (its own transaction
+  after the registry push; a failure is logged); the address and the request id through
+  `ingest.withOrigin`. A failed transaction after a registry write is an error without a
+  sentinel, which the frontends and the facade answer `500` and log at error.
 - **Tests.** `TestIngestAuditWriter`, `TestPushAuditOrigin`, `TestOCIPushAudit`,
   `TestRequestIDInAudit`, `TestClientAddrInAudit`, `TestPrincipalInAudit`, `TestTokensAPIAudit`,
   `TestTokensAuditWriter`, `TestTokensCreatedBy`, `TestUsersAuditWriter`,
-  `TestDeleteGoneAndAuditWriter`, `TestAuditAPI`, `TestReconcile`; the audit rows checked by
-  `oras.sh` (#245) and `npm.sh` (`proxy.fetch`).
-- **When violated.** A write without its row is logged at error. Writes straight to the registry
-  have no row by construction; the reconcile row counts what they changed in the index.
-- **Status.** `partly`. A push to an `oci` repo writes its row after the registry push, in a
-  transaction of its own whose failure is only logged; a delete whose index transaction fails
-  after the registry delete has none (INV-13). **Untested:** acceptance.md S-09 (one row per write
-  of the whole suite) is not automated.
+  `TestDeleteGoneAndAuditWriter`, `TestDeleteRowsFail`, `TestAuditAPI`, `TestReconcile`; the audit
+  rows checked by `oras.sh` (#245) and `npm.sh` (`proxy.fetch`).
+- **When violated.** A registry write without its row is the log line at error and nothing
+  else. Writes straight to the registry have no row by construction; the reconcile row counts
+  what they changed in the index.
+- **Status.** `holds`. Not built: an audit row of the intent before every registry write and one
+  of its result after it, so that no write to the registry lacks a row (new issue).
+  **Untested:** the error log of a push to an `oci` repo whose row fails; acceptance.md S-09 (one
+  row per write of the whole suite) is not automated.
 
 ## Access
 
@@ -874,6 +905,23 @@ is not tested.
 - **When violated.** —
 - **Status.** `not yet` ([#114](https://github.com/lajstrom/lajstrom/issues/114)).
 
+### INV-40. A download that streams through Lajstrom has its digest
+
+- **Statement.** A blob that Lajstrom streams to a client is hashed as it passes, and its last
+  byte is held back until the hash is known: when the bytes do not have the blob's digest, the
+  connection is aborted, so that no client receives the whole of a blob whose bytes are not its
+  digest. As on upload (INV-11).
+- **Scope.** Every download through `format.ServeBlob`: the frontends and the blob `GET` of
+  `/v2`. Not a `307` redirect to the backend's storage, whose bytes do not pass through
+  Lajstrom ([Not guaranteed](#not-guaranteed)), and not a `206` answer to a `Range` request,
+  which is not the whole blob.
+- **Assumes.** Any.
+- **Mechanism.** None yet: a verifying writer in `format.ServeBlob`, like `facade.verifier`.
+- **Tests.** None.
+- **When violated.** Today: a client that checks nothing (`curl` on the raw frontend) gets the
+  bytes the registry sent.
+- **Status.** `not yet` (new issue).
+
 ## Summary
 
 | Id | Guarantee | Status | Markers |
@@ -882,7 +930,7 @@ is not tested.
 | INV-2 | one write path | holds | untested (plugins could push) |
 | INV-3 | the index rebuildable from the registry | strongly consistent only | unchecked (listings); untested (apt, pypi, maven; I-01 e2e) |
 | INV-4 | a version in the index is readable | strongly consistent only | unchecked; untested |
-| INV-5 | prune never removes what the registry holds | strongly consistent only | unchecked; untested |
+| INV-5 | prune never removes what the registry holds | not yet (#446) | unchecked; untested |
 | INV-6 | one winner among concurrent publishes | holds | |
 | INV-7 | a tag is never re-pointed | strongly consistent only | unchecked |
 | INV-8 | the idempotent repeat | holds | |
@@ -890,8 +938,8 @@ is not tested.
 | INV-10 | case variants never squat | holds | |
 | INV-11 | a blob stored only under its digest | holds | |
 | INV-12 | only manifests of the profile | holds | |
-| INV-13 | delete atomic across index, caches, audit | partly | unchecked |
-| INV-14 | every write has an audit row | partly | untested (S-09) |
+| INV-13 | each version deleted at once from index, caches, audit | partly | unchecked |
+| INV-14 | every change of the index has its audit row | holds | untested (`oci` row failure, S-09) |
 | INV-15 | denial before input | holds | untested (frontends) |
 | INV-16 | a denial hides existence | holds | |
 | INV-17 | authorization changes count at once | holds | |
@@ -917,6 +965,7 @@ is not tested.
 | INV-37 | readiness | holds | |
 | INV-38 | denied versions kept out | not yet (#101) | |
 | INV-39 | encryption at rest | not yet (#114) | |
+| INV-40 | a streamed download has its digest | not yet | |
 
 ## Not guaranteed
 
@@ -938,8 +987,9 @@ promises part of it, the line says which part stays a promise.
 - **Timing and latency.** Response times, throughput, the measurements of operations.md and the
   targets of acceptance.md §7, how soon within its interval the reconcile loop runs, and whether
   a denial takes as long as the answer for a missing repo (threat model R-5). What is
-  guaranteed are the bounds the specs and the configuration set: a token's 20 minutes and
-  60 seconds of skew, the TTLs, the timeouts, the second of `admin key rotate --token --drop`.
+  guaranteed are the bounds the specs set (a token's 20 minutes and 60 seconds of skew, the
+  second of `admin key rotate --token --drop`) and the TTLs and timeouts a configuration sets;
+  their default values are not (below).
 - **The internal OCI layout.** What manifest-profile.md makes normative is guaranteed: the media
   types, the annotations, the tags, the repository paths, the journal. Not guaranteed: the
   bytes of a manifest Lajstrom builds (field order, whitespace), so its digest for the same file
@@ -948,41 +998,43 @@ promises part of it, the line says which part stays a promise.
   that refused or aborted uploads leave in the registry, which are its garbage collector's.
 - **Tags of `oci` repos.** They pass through, and are as mutable or immutable as the backend
   makes them.
-- **The bytes Lajstrom serves are their digest.** A download streams what the registry sends,
-  unhashed (threat model §1): the registry is trusted to serve what it stored, and the clients
-  check (OCI clients the descriptor, apt the `Packages` hashes, pip `#sha256=`, npm `integrity`,
-  Maven the checksum files). A client that checks nothing (`curl` on the raw frontend) gets no
-  such guarantee from Lajstrom.
+- **The bytes of a redirected download are their digest.** A `307` to the backend's storage
+  sends the client to bytes that do not pass through Lajstrom: the registry is trusted to serve
+  what it stored, and the clients check (OCI clients the descriptor, apt the `Packages` hashes,
+  pip `#sha256=`, npm `integrity`, Maven the checksum files). A download that streams through
+  Lajstrom is checked once INV-40 is built; until then it is unhashed too (threat model §1).
 - **The bytes of a rendered document across releases.** Its content, as the format's protocol
   defines it, is guaranteed; its whitespace and field order, and so its `ETag` and its
   `by-hash` name, may change in a release, and a reindex renders it again.
 - **The database as an interface.** SQL against any table: the derived and coordination tables
   may be renamed freely (index-schema.md), and the queries operations.md shows are an operator's
   aid. Read through `/api/v1`, the CLI, and `lajstrom admin export`.
-- **Opaque values.** Upload ids, the form and length of token secrets, the claims of a bearer
+- **Opaque values.** Upload ids, a token secret after its prefix, the claims of a bearer
   token beyond those rbac.md §4 names, generated request ids, run ids, an `ETag` whose form no
   spec states. What a spec defines stays defined: a blob's `ETag` is its digest, an npm
   document's its sha256, npm's `_rev` is `<seq>-<hex>`.
 - **Which replica answers.** Any replica may answer any request, and every answer is the same
   but for what is per replica by design: the throttles of failed logins and of `/v2/token`
   count per replica (auth.md; a shared one is [#282](https://github.com/lajstrom/lajstrom/issues/282)).
-- **Retries and backoff, beyond their keys.** configuration.md defines `registries[].retries`
-  and `upstreams[].retries`: which failures are retried, that only idempotent requests are sent
-  again, how many times by default, and a wait that doubles from 250 ms to at most 3 s. The
-  jitter within those waits, and the circuit breaker's thresholds and periods (operations.md,
-  Limits), are not guaranteed.
-- **Logs and metrics.** No log message, field or level of a line is stable: `log.format` chooses
-  text or JSON lines, and that is all the configuration promises. The metric series of
-  operations.md are documented, not declared stable, and so is the rule that no label carries a
-  repo or package name. What is guaranteed about logs is INV-21.
-- **Registries outside the tested matrix.** A guarantee holds on a registry as far as
-  [registries/README.md](../registries/README.md) measured the properties it assumes: checked on
-  every pull request for the `CI` tier (distribution on the filesystem, Zot), as measured on its
-  date for the `manual` and `hosted` tiers, not at all for the `untested` ones (ECR, Quay, Azure
-  Container Registry, Docker Hub) and for versions other than the pinned ones.
+- **Default values, and the timings of retries.** configuration.md documents the default of
+  each key, how many times a request is retried by default (`registries[].retries`,
+  `upstreams[].retries`) and the waits between retries (doubling from 250 ms to at most 3 s,
+  with jitter); a release may change any of them: set a key to rely on its value. What a key
+  means stays a promise: for the retries, which failures are retried and that only idempotent
+  requests are sent again. The circuit breaker's thresholds and periods (operations.md, Limits)
+  are not guaranteed either.
+- **Logs, and metrics beyond their names.** No log message, field or level of a line is
+  stable: `log.format` chooses text or JSON lines, and that is all the configuration promises.
+  Of the metrics, the names of the series and the rule that no label carries a repo or package
+  name are in the contract; their other labels, a histogram's buckets and the help texts are
+  not. What is guaranteed about logs is INV-21.
+- **Registries outside the `CI` tier.** What a guarantee promises on the other tiers is what
+  [Where the guarantees hold](#the-registry) says: as measured on a date for `manual` and
+  `hosted`, nothing for `untested` and for versions other than the pinned ones.
 - **Anything marked preview or not committed.** The roadmap's "After v0.1.0 (preview, not
   committed)", the work of draft pull requests, the plugin hooks of proxy-and-group.md §10
-  ("not a contract yet"), and the entries above with status `not yet`.
+  ("not a contract yet"), and what an entry with status `not yet` promises beyond the part its
+  status says holds today.
 - **A blob redirect or a stream.** Whether a download is a `307` to the backend's storage or a
   stream is the backend's and the repo's policy's (http-routing.md §2): a client must follow
   both. How long a presigned URL lives is the backend's.
@@ -1010,7 +1062,8 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | A durable `201` is assumed (INV-4) | a manifest the registry lost leaves the index silently at the next reconcile, counted among `removed` | report the removal of a row ingest confirmed as a finding of its own, with a metric | new issue |
 | Reindex equality is tested for raw, npm and an npm proxy only; I-01 is not in the end-to-end suite (INV-3) | a column of apt, pypi or maven that annotations cannot rebuild would be lost at the first reindex, unnoticed | an equality test per format (publish, drop the derived rows, reindex, compare), and I-01 as an end-to-end step | new issue |
 | Nothing machine-checks the one write path in plugins (INV-2) | a plugin could push a manifest past ingest: no claim, validation or audit row | a read-only provider view in `format.Deps`, or a lint rule against `Push`, `PushReference` and `Delete` outside `internal/ingest`, `internal/facade` and `internal/provider` (a `contract` change of `format`) | new issue |
-| A delete whose index transaction fails after the registry delete, and a push to an `oci` repo whose row fails after the push, have no audit row (INV-13, INV-14) | an unaudited write | record the intent before the registry write and complete it after, or write the row in a transaction of its own when the main one fails | new issue |
+| A delete whose index transaction fails after the registry delete, and a push to an `oci` repo whose row fails after the push, have no audit row (INV-13, INV-14) | an unaudited write, of which only a log line at error is left | an audit row of the intent before the registry write, and one of its result after it | new issue |
+| The answer to a failed delete of several versions does not name those deleted before the failure (INV-13) | the client cannot tell what is left without listing the package again | name them in the error's message or a structured field | new issue |
 | A stale rendered document on Postgres when a render races an invalidation (INV-27) | a client sees an index without the newest publish, or with a deleted version, until the next change or reconcile; indefinitely with `reconcile.interval: 0` | a per-repo generation that the store checks before it keeps a render, or a lock of the repo's cache rows | new issue |
 | The garbage collectors of GitLab B and Nexus delete untagged referrers (INV-35) | signatures and SBOMs vanish | the tag schema as well on registries with the API (#326); for GitLab B and Nexus, a vendor-table warning or a tag per referrer | [#326](https://github.com/lajstrom/lajstrom/issues/326), new issue |
 | No frontend test of a denial with malformed input (INV-15) | a regression of the R-2 kind on a frontend goes unseen | a table test per frontend, as `TestDenialBeforeInput` does for `/v2` | new issue |
@@ -1025,3 +1078,4 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | The bearer audience without `server.externalURL` (INV-19) | a staging server restored from production's database accepts production's tokens | require `externalURL` | [#248](https://github.com/lajstrom/lajstrom/issues/248) |
 | Rolling upgrades: which binary runs against which schema; pre-#244 claims (INV-6, INV-28) | a mixed fleet may not exclude publishes | the rules of #225 | [#225](https://github.com/lajstrom/lajstrom/issues/225) |
 | Groups (INV-34), policy (INV-38), encryption at rest (INV-39) | not built | as the issues say | [#311](https://github.com/lajstrom/lajstrom/issues/311), [#101](https://github.com/lajstrom/lajstrom/issues/101), [#114](https://github.com/lajstrom/lajstrom/issues/114) |
+| A streamed download is not hashed (INV-40) | a registry that serves other bytes than it stored reaches a client that checks nothing | hash in `format.ServeBlob`, hold the last byte back, abort the connection on a mismatch | new issue |
