@@ -115,6 +115,36 @@ func TestFakeManifests(t *testing.T) {
 	}
 }
 
+// TestFakeStatManifest checks StatManifest: a manifest it has, MANIFEST_UNKNOWN in a repository
+// it has, NAME_UNKNOWN in one it does not, and FailStatManifest.
+func TestFakeStatManifest(t *testing.T) {
+	ctx := t.Context()
+	f, rr := newRepo(t)
+	m, _ := json.Marshal(ocispec.Manifest{MediaType: ocispec.MediaTypeImageManifest})
+	desc := descriptor(ocispec.MediaTypeImageManifest, m)
+	if err := rr.PushReference(ctx, desc, bytes.NewReader(m), "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := f.StatManifest(ctx, name, desc.Digest); err != nil || got.Digest != desc.Digest || got.Size != desc.Size || got.MediaType != desc.MediaType {
+		t.Errorf("StatManifest = %v, %v", got, err)
+	}
+	if err := rr.Delete(ctx, desc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.StatManifest(ctx, name, desc.Digest); !errors.Is(err, provider.ErrManifestUnknown) {
+		t.Errorf("StatManifest after Delete: %v, want ErrManifestUnknown", err)
+	}
+	if _, err := f.StatManifest(ctx, "raw/scratch/none", desc.Digest); !errors.Is(err, provider.ErrNotFound) ||
+		errors.Is(err, provider.ErrManifestUnknown) {
+		t.Errorf("StatManifest in a repository the registry does not have: %v, want ErrNotFound alone", err)
+	}
+	boom := errors.New("boom")
+	f.FailStatManifest = func(string, digest.Digest) error { return boom }
+	if _, err := f.StatManifest(ctx, name, desc.Digest); !errors.Is(err, boom) {
+		t.Errorf("StatManifest with FailStatManifest: %v", err)
+	}
+}
+
 // TestFakeFaults checks the injected errors.
 func TestFakeFaults(t *testing.T) {
 	ctx := t.Context()

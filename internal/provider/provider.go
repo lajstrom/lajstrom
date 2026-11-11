@@ -61,6 +61,13 @@ type Provider interface {
 	// StatBlob answers HEAD: the size and digest of the blob d, no body, no redirect (the
 	// provider follows them). provider.ErrNotFound when the backend has no such blob.
 	StatBlob(ctx context.Context, name string, d digest.Digest) (Blob, error)
+
+	// StatManifest answers HEAD of the manifest d of the repository name by its digest: its
+	// media type, size and digest, no body. On a 404 it asks GET as well, whose answer carries
+	// the error code a HEAD cannot: 404 with MANIFEST_UNKNOWN wraps ErrManifestUnknown and
+	// ErrNotFound, any other 404 (NAME_UNKNOWN, no code) ErrNotFound alone, and a GET that
+	// finds the manifest after all answers as the HEAD would have.
+	StatManifest(ctx context.Context, name string, d digest.Digest) (ocispec.Descriptor, error)
 }
 
 // Blob is a blob opened for a download (OpenBlob), or its headers (StatBlob).

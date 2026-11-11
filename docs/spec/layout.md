@@ -528,6 +528,10 @@ type Provider interface {
     OpenBlob(ctx context.Context, name string, d digest.Digest, rangeHeader string, redirect bool) (Blob, error)
     // StatBlob: one HEAD, redirects followed; the size and digest, no body.
     StatBlob(ctx context.Context, name string, d digest.Digest) (Blob, error)
+    // StatManifest: one HEAD of the manifest by its digest; on a 404 a GET too, for the error
+    // code a HEAD has no body for. ErrManifestUnknown (and ErrNotFound) only for a 404 with
+    // MANIFEST_UNKNOWN: what prune counts as unknown (guarantees.md, G-5).
+    StatManifest(ctx context.Context, name string, d digest.Digest) (ocispec.Descriptor, error)
 }
 
 // Blob is a blob opened for a download, or its headers (StatBlob).
@@ -611,6 +615,8 @@ var ErrNotFound, ErrConflict, ErrUnsupported, ErrUnauthorized error
 var ErrUnavailable error
 type UnavailableError struct{ RetryAfter time.Duration }
 func RetryAfter(err error) (time.Duration, bool) // of the *UnavailableError err wraps
+// ErrManifestUnknown: a 404 with MANIFEST_UNKNOWN to StatManifest; the error wraps ErrNotFound too.
+var ErrManifestUnknown error
 ```
 
 ### Index store (`internal/index`)

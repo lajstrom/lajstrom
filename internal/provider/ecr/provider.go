@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	"github.com/aws/aws-sdk-go-v2/service/ecr/types"
 	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/provider"
@@ -233,6 +234,11 @@ func (p *Provider) OpenBlob(ctx context.Context, name string, d digest.Digest, r
 // StatBlob is the generic provider's.
 func (p *Provider) StatBlob(ctx context.Context, name string, d digest.Digest) (provider.Blob, error) {
 	return p.data.StatBlob(ctx, name, d)
+}
+
+// StatManifest is the generic provider's.
+func (p *Provider) StatManifest(ctx context.Context, name string, d digest.Digest) (ocispec.Descriptor, error) {
+	return p.data.StatManifest(ctx, name, d)
 }
 
 // Ping implements provider.Pinger: GET /v2/ with the authorization token.

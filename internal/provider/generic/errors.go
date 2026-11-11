@@ -31,6 +31,7 @@ type backendError struct {
 	kind   error  // provider.ErrNotFound, ErrConflict, ErrUnsupported, ErrUnauthorized, ErrUnavailable or a *RejectedError
 	detail string // "HTTP 404, MANIFEST_UNKNOWN"; empty when the cause was not an HTTP answer
 	cause  error
+	also   error // provider.ErrManifestUnknown from StatManifest (manifestUnknown); nil otherwise
 }
 
 func (e *backendError) Error() string {
@@ -41,7 +42,12 @@ func (e *backendError) Error() string {
 	return msg
 }
 
-func (e *backendError) Unwrap() []error { return []error{e.kind, e.cause} }
+func (e *backendError) Unwrap() []error {
+	if e.also != nil {
+		return []error{e.kind, e.also, e.cause}
+	}
+	return []error{e.kind, e.cause}
+}
 
 // credentialError is the failure of a rotating credential (Options.Credential), as the auth
 // client met it; translate makes it ErrUnauthorized.
