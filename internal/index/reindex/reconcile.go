@@ -66,7 +66,7 @@ func (w *Worker) reconcileOnce(ctx context.Context) {
 		ev := index.AuditEvent{At: w.now(), Principal: req.Principal, Action: SourceReconcile, Repo: r.Repo,
 			Subject: "run " + itoa(run.ID)}
 		ev.Details, _ = json.Marshal(map[string]any{"run": run.ID, "added": r.Added, "updated": r.Updated,
-			"removed": r.Removed, "drift": len(r.Drift), "errors": len(r.Errors)})
+			"removed": r.Removed, "drift": len(r.Drift), "split": len(r.Split), "errors": len(r.Errors)})
 		w.writeAudit(context.WithoutCancel(ctx), ev)
 	}
 }

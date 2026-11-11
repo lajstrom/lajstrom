@@ -30,8 +30,11 @@ type RepoReport struct {
 	// (docs/spec/manifest-profile.md §8): not indexed, adopted by the next append to the package.
 	OrphanJournal []Finding `json:"orphanJournal"`
 	Drift         []Drift   `json:"drift"`
-	Errors        []Finding `json:"errors"`
-	Truncated     bool      `json:"truncated"` // a list stopped at maxFindings entries
+	// Split are the packages found at two forms of their OCI name (ADR 0017), one entry per
+	// other form: the versions there are not indexed (#609).
+	Split     []Split   `json:"split"`
+	Errors    []Finding `json:"errors"`
+	Truncated bool      `json:"truncated"` // a list stopped at maxFindings entries
 }
 
 // Finding is a manifest, or a failure, that a RepoReport lists.
@@ -54,6 +57,18 @@ type Drift struct {
 	Registry digest.Digest `json:"registry"`
 }
 
+// Split is a package whose manifests are at two forms of its OCI name (ADR 0017): the index has
+// the package, and its versions, at Indexed; the manifests at Other are left out, since their
+// rows would send each download to Indexed, which does not hold them. A run copies or moves
+// nothing in the registry.
+type Split struct {
+	Package     string   `json:"package"`
+	Indexed     string   `json:"indexed"`     // the package's name_oci, below the repo's base
+	IndexedTags []string `json:"indexedTags"` // the tags of its versions in the index
+	Other       string   `json:"other"`       // the other form, below the repo's base
+	OtherTags   []string `json:"otherTags"`   // the tags of the profile manifests there, not indexed
+}
+
 // add appends v to *list unless the list is full, and then marks the report truncated.
 func add[T any](r *RepoReport, list *[]T, v T) {
 	if len(*list) >= maxFindings {
@@ -67,5 +82,5 @@ func add[T any](r *RepoReport, list *[]T, v T) {
 // the JSON has [] for them.
 func newRepoReport(repo string) RepoReport {
 	return RepoReport{Repo: repo, Foreign: []Finding{}, OrphanReferrers: []Finding{}, OrphanJournal: []Finding{},
-		Drift: []Drift{}, Errors: []Finding{}}
+		Drift: []Drift{}, Split: []Split{}, Errors: []Finding{}}
 }

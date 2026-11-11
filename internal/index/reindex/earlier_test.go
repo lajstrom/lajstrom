@@ -1,11 +1,8 @@
 package reindex_test
 
 import (
-	"bytes"
 	"strings"
 	"testing"
-
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/format/raw"
 	"github.com/lajstrom/lajstrom/internal/index/reindex"
@@ -16,21 +13,7 @@ import (
 // an earlier Lajstrom wrote it.
 func (e *env) bypassAt(t *testing.T, name, path, content string) {
 	t.Helper()
-	ctx := t.Context()
-	built, err := raw.Plugin{}.Build(ctx, e.repo, rawUpload(path, content))
-	must(t, err)
-	rr, err := e.fake.Repository(ctx, name)
-	must(t, err)
-	for _, b := range built.Blobs {
-		rc, err := b.Open(ctx)
-		must(t, err)
-		must(t, rr.Push(ctx, b.Descriptor, rc))
-		_ = rc.Close()
-	}
-	b, d, err := profile.Encode(built.Manifest)
-	must(t, err)
-	must(t, rr.PushReference(ctx, ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: d, Size: int64(len(b))},
-		bytes.NewReader(b), built.Tag))
+	pushRawAt(t, e.fake, e.repo, name, path, content)
 }
 
 // bypassEarlier pushes version "one" of each of earlierPaths at an earlier form of its package
