@@ -110,8 +110,17 @@ func (l *lockRole) outlives(ctx context.Context, t *testing.T) {
 	}
 }
 
+// yugabyteSessionExpiry is the longest YugabyteDB keeps the lock of a terminated backend: the
+// YB-TServer flag pg_client_session_expiration_ms, 60 s by default, which the YugabyteDB
+// workflow keeps (#640, docs/deploy/databases.md#yugabytedb).
+const yugabyteSessionExpiry = 60 * time.Second
+
 // terminated ends the lock's backend from its function, as a server that shuts down does: the
-// error wraps index.ErrUnavailable and says that the lock was lost.
+// error wraps index.ErrUnavailable and says that the lock was lost, and the next lock is taken.
+// Postgres releases the lock with the backend. YugabyteDB releases it with the backend or, when
+// the backend's abort lost the race with its exit (yugabyte/yugabyte-db#31866), when the
+// YB-TServer expires the backend's session, up to yugabyteSessionExpiry later: there the next
+// lock waits for that, on a deadline of its own.
 func (l *lockRole) terminated(ctx context.Context, t *testing.T) {
 	n := -1
 	err := l.s.WithReferrersLock(ctx, l.name, l.subject, func(ctx context.Context) error {
@@ -129,7 +138,21 @@ func (l *lockRole) terminated(ctx context.Context, t *testing.T) {
 	if !errors.Is(err, index.ErrUnavailable) || !strings.Contains(err.Error(), "was lost") {
 		t.Fatalf("WithReferrersLock after its backend was terminated: %v, want index.ErrUnavailable saying the lock was lost", err)
 	}
-	if err := l.s.WithReferrersLock(ctx, l.name, l.subject, func(context.Context) error { return nil }); err != nil {
-		t.Errorf("the lock after the termination: %v", err)
+	yb, err := isYugabyte(ctx, l.admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait := ctx
+	if yb {
+		var cancel context.CancelFunc
+		wait, cancel = context.WithTimeout(t.Context(), yugabyteSessionExpiry+30*time.Second)
+		defer cancel()
+	}
+	start := time.Now()
+	if err := l.s.WithReferrersLock(wait, l.name, l.subject, func(context.Context) error { return nil }); err != nil {
+		t.Errorf("the lock after the termination, waited %v: %v", time.Since(start).Round(100*time.Millisecond), err)
+	}
+	if yb {
+		t.Logf("YugabyteDB released the terminated backend's lock after %v", time.Since(start).Round(100*time.Millisecond))
 	}
 }
