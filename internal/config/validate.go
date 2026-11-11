@@ -33,6 +33,9 @@ func (c *Config) Validate() error {
 	if c.Reconcile.Interval < 0 {
 		p.add("reconcile.interval", "must not be negative")
 	}
+	if c.Reconcile.GraceAge < 0 {
+		p.add("reconcile.graceAge", "must not be negative")
+	}
 	c.Auth.validate(&p)
 	c.Keys.validate(&p)
 	registries := map[string]int{}

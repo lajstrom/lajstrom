@@ -896,6 +896,7 @@ type Options struct {
     Log         *slog.Logger                  // nil: slog.Default()
     Concurrency int                           // manifest reads at once per registry; zero: 8
     ClaimTTL    time.Duration                 // stale tag claims are deleted; zero: ingest's default
+    GraceAge    time.Duration                 // reconcile.graceAge: prune keeps a younger row; zero: 1 h
 }
 type Inspector interface {
     Inspect(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, o ingest.InspectOptions) (*ingest.Rows, error)
@@ -931,6 +932,7 @@ type RepoReport struct {
     Updated         int       `json:"updated"`         // read again (verify, degraded) and written
     Unchanged       int       `json:"unchanged"`
     Removed         int       `json:"removed"`
+    Pending         int       `json:"pending"`         // answered MANIFEST_UNKNOWN, kept until a second answer and the grace age
     Degraded        int       `json:"degraded"`
     Referrers       int       `json:"referrers"`
     Foreign         []Finding `json:"foreign"`

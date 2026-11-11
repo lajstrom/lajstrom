@@ -287,11 +287,16 @@ type Ingest struct {
 }
 
 // Reconcile configures the reconcile loop: a reindex of every repo with prune, run by serve
-// on a schedule (docs/operations.md, Reconcile).
+// on a schedule (docs/operations.md, Reconcile), and what every prune keeps.
 type Reconcile struct {
 	// Interval is the time between two runs on one replica; the first comes after a random
 	// part of it. 0 turns the loop off. Must not be negative.
 	Interval time.Duration `yaml:"interval"`
+	// GraceAge is how long after ingest wrote a row, or a run last saw its manifest in the
+	// registry, prune keeps the row whatever the registry answers: the read-after-write lag of
+	// the registry and of what is between (docs/spec/guarantees.md, G-5). It holds for the
+	// loop, lajstrom reindex and the API's reindex. 0 means the default; must not be negative.
+	GraceAge time.Duration `yaml:"graceAge"`
 }
 
 // Auth configures authentication (docs/spec/rbac.md).
@@ -412,6 +417,7 @@ const (
 	DefaultRegistryRetries      = 3
 	DefaultIngestClaimTTL       = 10 * time.Minute
 	DefaultReconcileInterval    = time.Hour
+	DefaultReconcileGraceAge    = time.Hour
 	DefaultKeysAlgorithm        = KeysAlgorithmEd25519
 	DefaultKeysRetireGrace      = 720 * time.Hour
 	DefaultKeysTokenAlgorithm   = KeysTokenES256
@@ -441,7 +447,7 @@ func Default() *Config {
 		Log:       Log{Level: DefaultLogLevel, Format: DefaultLogFormat},
 		Database:  Database{Driver: DefaultDatabaseDriver, DSN: DefaultDatabaseDSN},
 		Ingest:    Ingest{ClaimTTL: DefaultIngestClaimTTL},
-		Reconcile: Reconcile{Interval: DefaultReconcileInterval},
+		Reconcile: Reconcile{Interval: DefaultReconcileInterval, GraceAge: DefaultReconcileGraceAge},
 		Auth:      Auth{Bootstrap: Bootstrap{TTL: DefaultBootstrapTTL}},
 		Keys:      Keys{Algorithm: DefaultKeysAlgorithm, RetireGrace: DefaultKeysRetireGrace, TokenAlgorithm: DefaultKeysTokenAlgorithm},
 	}

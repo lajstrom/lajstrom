@@ -16,8 +16,9 @@ import (
 
 // TestNoCatalog is #37 on a registry without a catalog (ListRepositories unsupported): a run
 // reads the OCI repositories that oci_repos records and checks each by its tag list. One whose
-// tag list fails keeps its row and its versions; one the registry no longer knows loses both
-// with prune; one pushed past Lajstrom is not read.
+// tag list fails keeps its row and its versions; one the registry no longer knows keeps its
+// versions, which only MANIFEST_UNKNOWN removes (#446), and its row for the grace age; one
+// pushed past Lajstrom is not read.
 func TestNoCatalog(t *testing.T) {
 	ctx := t.Context()
 	e := newEnv(t)
@@ -42,10 +43,40 @@ func TestNoCatalog(t *testing.T) {
 	e.prov.failTags = nil
 	must(t, e.fake.DeleteRepository(ctx, gone.RepoPath))
 	r = e.run(t, reindex.Request{Prune: true})
-	if r.Removed != 1 || r.Unchanged != 1 || len(r.Errors) != 0 {
+	if r.Removed != 0 || r.Unchanged != 1 || len(r.Errors) != 1 || !strings.Contains(r.Errors[0].Error, "NAME_UNKNOWN") {
 		t.Errorf("a repository the registry does not know: %+v", *r)
 	}
-	same(t, "oci_repos after it", both[1:], e.derived(t).OCIRepos)
+	same(t, "oci_repos after it", both, e.derived(t).OCIRepos)
+	e.clock.later(2 * time.Hour)
+	r = e.run(t, reindex.Request{Prune: true})
+	if r.Removed != 0 || r.Unchanged != 1 || len(r.Errors) != 1 {
+		t.Errorf("a repository the registry does not know, two hours later: %+v", *r)
+	}
+	same(t, "oci_repos past the grace age", both[1:], e.derived(t).OCIRepos)
+	if _, err := e.st.GetPackage(ctx, e.repo.ID, "docs/gone.txt"); err != nil {
+		t.Errorf("the package of a repository the registry does not know: %v", err)
+	}
+}
+
+// TestNoCatalogRecordsAgain: on a registry without a catalog, the sweep that finds a version
+// by its tag records its OCI repository again, which a tag list that failed for longer than the
+// grace age, or a lagging one, let go (#446).
+func TestNoCatalogRecordsAgain(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t)
+	e.prov.failList = fmt.Errorf("no catalog: %w", provider.ErrUnsupported)
+	e.publish(t, "docs/kept.txt", "kept")
+	_, err := e.st.PruneOCIRepos(ctx, e.repo.ID, time.Now().Add(time.Hour))
+	must(t, err)
+	same(t, "oci_repos let go", []string{}, e.derived(t).OCIRepos)
+	r := e.run(t, reindex.Request{Prune: true})
+	if r.OCIRepositories != 0 || r.Removed != 0 || len(r.Errors) != 0 {
+		t.Errorf("a run without the row: %+v", *r)
+	}
+	same(t, "oci_repos after the sweep", []string{"raw/scratch/docs/kept.txt"}, e.derived(t).OCIRepos)
+	if r = e.run(t, reindex.Request{Prune: true}); r.OCIRepositories != 1 || r.Unchanged != 1 {
+		t.Errorf("the next run: %+v", *r)
+	}
 }
 
 // TestAttach is the first attach of a prefix on a registry without a catalog (#37): once the

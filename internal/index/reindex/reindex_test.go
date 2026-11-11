@@ -37,7 +37,7 @@ import (
 var alice = auth.Principal{Kind: auth.KindUser, Name: "alice"}
 
 // env is one repo raw/scratch on a fake registry, the ingest pipeline with the raw plugin, and
-// a worker whose inspector counts its calls.
+// a worker whose inspector counts its calls and whose clock is clock's.
 type env struct {
 	st        index.Store
 	fake      *providertest.Fake
@@ -47,7 +47,17 @@ type env struct {
 	inspect   *counting
 	w         *reindex.Worker
 	repo      index.Repo
+	clock     *clock
 }
+
+// clock is the time now, moved forward by later: ingest writes its rows at the real time, and a
+// worker on the clock sees them as old as the clock is ahead.
+type clock struct{ ahead atomic.Int64 }
+
+func (c *clock) now() time.Time { return time.Now().Add(time.Duration(c.ahead.Load())) }
+
+// later moves the clock forward by d.
+func (c *clock) later(d time.Duration) { c.ahead.Add(int64(d)) }
 
 var memoryDBs atomic.Int64
 
@@ -58,7 +68,7 @@ func newEnv(t *testing.T) *env {
 	must(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	must(t, st.Migrate(ctx))
-	e := &env{st: st, fake: &providertest.Fake{RegistryName: "local"}}
+	e := &env{st: st, fake: &providertest.Fake{RegistryName: "local"}, clock: &clock{}}
 	e.prov = &wrapped{Fake: e.fake}
 	e.providers = provider.Map{"local": e.prov}
 	e.repo = e.newRepo(t, "raw", "scratch")
@@ -66,7 +76,7 @@ func newEnv(t *testing.T) *env {
 	log := slog.New(slog.DiscardHandler)
 	e.pipe = ingest.New(ingest.Options{Providers: e.providers, Index: st, Plugins: plugins, Log: log})
 	e.inspect = &counting{Inspector: e.pipe}
-	e.w = reindex.New(reindex.Options{Index: st, Providers: e.providers, Inspector: e.inspect, Log: log})
+	e.w = reindex.New(reindex.Options{Index: st, Providers: e.providers, Inspector: e.inspect, Log: log, Now: e.clock.now})
 	return e
 }
 
@@ -307,7 +317,8 @@ func TestKnownDigests(t *testing.T) {
 }
 
 // TestBypassAndDelete is the drift test of #29: a manifest pushed straight to the backend is
-// indexed; a manifest deleted in the backend loses its rows with prune, and keeps them without.
+// indexed; a manifest deleted in the backend loses its rows with prune, once its version is
+// older than the grace age and the registry said so twice, and keeps them without prune.
 func TestBypassAndDelete(t *testing.T) {
 	ctx := t.Context()
 	e := newEnv(t)
@@ -327,8 +338,13 @@ func TestBypassAndDelete(t *testing.T) {
 		t.Errorf("without prune the rows stay: %v", err)
 	}
 	r = e.run(t, reindex.Request{Prune: true})
-	if r.Removed != 1 || r.Unchanged != 1 {
-		t.Errorf("with prune: %+v", *r)
+	if r.Removed != 0 || r.Pending != 1 || r.Unchanged != 1 {
+		t.Errorf("with prune, a version younger than the grace age: %+v", *r)
+	}
+	e.clock.later(2 * time.Hour)
+	r = e.run(t, reindex.Request{Prune: true})
+	if r.Removed != 1 || r.Pending != 0 || r.Unchanged != 1 {
+		t.Errorf("with prune, two hours later: %+v", *r)
 	}
 	if _, err := e.st.GetPackage(ctx, e.repo.ID, "gone.txt"); !errors.Is(err, index.ErrNotFound) {
 		t.Errorf("the package of the deleted manifest: %v, want ErrNotFound", err)
@@ -532,6 +548,7 @@ type wrapped struct {
 	hide        string
 	failList    error
 	failResolve error
+	resolveIn   string // when set, failResolve fails the Resolve of this repository only
 	failTags    error
 }
 
@@ -545,16 +562,17 @@ func (w *wrapped) ListRepositories(ctx context.Context, prefix string) ([]string
 
 func (w *wrapped) Repository(ctx context.Context, name string) (provider.Repository, error) {
 	rr, err := w.Fake.Repository(ctx, name)
-	return &resolving{Repository: rr, w: w}, err
+	return &resolving{Repository: rr, w: w, name: name}, err
 }
 
 type resolving struct {
 	provider.Repository
-	w *wrapped
+	w    *wrapped
+	name string
 }
 
 func (r *resolving) Resolve(ctx context.Context, reference string) (ocispec.Descriptor, error) {
-	if r.w.failResolve != nil {
+	if r.w.failResolve != nil && (r.w.resolveIn == "" || r.w.resolveIn == r.name) {
 		return ocispec.Descriptor{}, r.w.failResolve
 	}
 	return r.Repository.Resolve(ctx, reference)

@@ -12,13 +12,16 @@ type Report struct {
 
 // RepoReport is the part of a Report about one repo.
 type RepoReport struct {
-	Repo            string    `json:"repo"` // <format>/<name>
-	OCIRepositories int       `json:"ociRepositories"`
-	Manifests       int       `json:"manifests"` // tags read
-	Added           int       `json:"added"`
-	Updated         int       `json:"updated"` // read again (verify, degraded) and written
-	Unchanged       int       `json:"unchanged"`
-	Removed         int       `json:"removed"`
+	Repo            string `json:"repo"` // <format>/<name>
+	OCIRepositories int    `json:"ociRepositories"`
+	Manifests       int    `json:"manifests"` // tags read
+	Added           int    `json:"added"`
+	Updated         int    `json:"updated"` // read again (verify, degraded) and written
+	Unchanged       int    `json:"unchanged"`
+	Removed         int    `json:"removed"`
+	// Pending are the rows whose manifest the registry answered unknown and that stay until
+	// a second answer unknownApart later and their grace age (docs/spec/guarantees.md, G-5).
+	Pending         int       `json:"pending"`
 	Degraded        int       `json:"degraded"`
 	Referrers       int       `json:"referrers"`
 	Foreign         []Finding `json:"foreign"`

@@ -138,7 +138,7 @@ func newServeCmd(a *app) *cobra.Command {
 			go health.Run(ctx)
 			pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL})
 			runs := &backgroundReindex{ctx: ctx, log: a.log, w: reindex.New(reindex.Options{Index: st, Providers: providers,
-				Inspector: pipe, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL})}
+				Inspector: pipe, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL, GraceAge: c.Reconcile.GraceAge})}
 			// Before the index closes: a run the shutdown cancels finishes as failed. stop ends the
 			// background work first, also when serve returns without a signal, because the listener
 			// cannot bind or the server cannot be built: else the wait would never end, and serve

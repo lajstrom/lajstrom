@@ -196,8 +196,9 @@ func (j *replay) entry(raw []byte, tag string) (profile.JournalEntry, error) {
 	return e, nil
 }
 
-// sweep looks up the tag of a row the listing did not have: a tag the registry does not know
-// deletes the row, its digest keeps it, another digest is drift.
+// sweep looks up the tag of a row the listing did not have: its digest keeps it, another digest
+// is drift, and a tag the registry does not know asks for the manifest (scan.lookup), whose
+// second answer MANIFEST_UNKNOWN deletes a row older than the grace age.
 func (j *replay) sweep(ctx context.Context, r index.JournalEntry) error {
 	desc, err := j.rr.Resolve(ctx, r.Tag)
 	switch {
@@ -206,12 +207,18 @@ func (j *replay) sweep(ctx context.Context, r index.JournalEntry) error {
 	case err == nil:
 		j.drift(r, desc.Digest)
 	case errors.Is(err, provider.ErrNotFound):
-		if err := j.s.w.index.DeleteJournal(ctx, r.ID); err != nil && !errors.Is(err, index.ErrNotFound) {
-			return err
+		switch j.s.lookup(ctx, j.s.base+"/"+j.pkgPath, Finding{Repository: j.pkgPath, Tag: r.Tag, Digest: r.Digest}, r.IndexedAt) {
+		case present:
+			j.see(r.ID, false)
+		case gone:
+			if err := j.s.w.index.DeleteJournal(ctx, r.ID); err != nil && !errors.Is(err, index.ErrNotFound) {
+				return err
+			}
+			j.s.mu.Lock()
+			j.s.rep.Removed++
+			j.s.mu.Unlock()
+		case pending, unchecked:
 		}
-		j.s.mu.Lock()
-		j.s.rep.Removed++
-		j.s.mu.Unlock()
 	default:
 		j.s.failure(Finding{Repository: j.pkgPath, Tag: r.Tag, Digest: r.Digest, Error: "look up the tag before removing its row: " + err.Error()})
 	}

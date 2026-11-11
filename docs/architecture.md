@@ -246,8 +246,8 @@ sequenceDiagram
       W->>D: upsert packages, versions, files from annotations
     end
   end
-  W->>R: HEAD the tags of the rows not seen
-  W->>D: delete rows without a manifest
+  W->>R: HEAD the tags of the rows not seen; HEAD (then GET) the manifest of a tag not found
+  W->>D: record MANIFEST_UNKNOWN; delete a row on the second, 10 min later, past its grace age
   W->>D: reset index_cache, finish the run with its report
 ```
 
