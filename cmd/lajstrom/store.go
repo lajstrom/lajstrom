@@ -15,7 +15,7 @@ import (
 type store interface {
 	index.Store
 	Ping(ctx context.Context) error
-	ApplyMigrations(ctx context.Context) ([]int, error)
+	ApplyMigrations(ctx context.Context, opts index.MigrateOptions) (index.MigrationReport, error)
 	AppliedMigrations(ctx context.Context) ([]int, error)
 }
 

@@ -771,12 +771,23 @@ type ReindexConflictError struct {          // errors.Is(err, ErrConflict) is tr
 const DialectSQLite, DialectPostgres = "sqlite", "postgres"
 func MigrationVersions(dialect string) ([]int, error)                 // embedded, ascending
 // ApplyMigrations applies the pending migrations, each in a transaction under the migration
-// lock that records it in schema_migrations, and returns those it applied (empty: current).
-func ApplyMigrations(ctx context.Context, db *sql.DB, dialect string) (applied []int, err error)
+// lock that records it in schema_migrations, and reports those it applied (empty: current).
+// It refuses a schema that requires a newer binary (ErrSchemaTooNew) and, unless
+// opts.Breaking, a pending migration that requires more than the schema has
+// (ErrBreakingMigration), applying nothing (index-schema.md, Upgrades).
+func ApplyMigrations(ctx context.Context, db *sql.DB, dialect string, opts MigrateOptions) (MigrationReport, error)
+type MigrateOptions struct{ Breaking bool }
+type MigrationReport struct {
+    Applied []int                           // applied by this run, ascending
+    Version int                             // newest in schema_migrations after the run
+    Known   int                             // newest embedded; Version > Known: a newer schema it runs on
+}
+var ErrSchemaTooNew, ErrBreakingMigration error
 func AppliedMigrations(ctx context.Context, db *sql.DB) ([]int, error) // from schema_migrations
 
 // Drivers (internal/index/sqlite, internal/index/postgres): *Store implements index.Store and
-// adds Ping(ctx) error, ApplyMigrations(ctx) ([]int, error), AppliedMigrations(ctx) ([]int, error).
+// adds Ping(ctx) error, ApplyMigrations(ctx, MigrateOptions) (MigrationReport, error),
+// AppliedMigrations(ctx) ([]int, error).
 func Open(ctx context.Context, dsn string) (*Store, error)            // does not migrate
 ```
 

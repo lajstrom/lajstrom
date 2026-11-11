@@ -90,7 +90,10 @@ func TestFileMigrate(t *testing.T) {
 	errs := make([]error, 2)
 	var wg sync.WaitGroup
 	for i, s := range []*Store{a, b} {
-		wg.Go(func() { applied[i], errs[i] = s.ApplyMigrations(ctx) })
+		wg.Go(func() {
+			rep, err := s.ApplyMigrations(ctx, index.MigrateOptions{})
+			applied[i], errs[i] = rep.Applied, err
+		})
 	}
 	wg.Wait()
 	if err := errors.Join(errs...); err != nil {
