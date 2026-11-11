@@ -47,6 +47,11 @@ var journalActions = map[string]string{
 //     entry's digest), written pending before the op's push. When it fails the entries stay in
 //     the registry, and the next append or reindex adopts them; the error is a plain one (500),
 //     and the rows of the ops are failed with it, as on a failed push.
+//
+// When the database ended the lock's transaction before step 4 returned (index.ErrUnavailable,
+// the lock lost, #615), the entries are recorded and their audit rows stay ok, and the error is
+// returned all the same (503): another writer may have held the lock meanwhile. The client's
+// retry appends its ops again, which folds to the same state.
 func (p *Pipeline) Journal(ctx context.Context, repo index.Repo, pkgPath string, ops []format.JournalOp, principal auth.Principal) ([]int64, error) {
 	if err := checkJournal(repo, ops); err != nil || len(ops) == 0 {
 		return []int64{}, err
@@ -60,8 +65,10 @@ func (p *Pipeline) Journal(ctx context.Context, repo index.Repo, pkgPath string,
 		return nil, fmt.Errorf("ingest: repository %s: %w", j.name, err)
 	}
 	if err := p.index.WithReferrersLock(ctx, j.name, profile.EmptyConfig.Digest, j.append); err != nil {
-		for i := range j.events {
-			p.fail(ctx, &j.events[i], err)
+		if !j.recorded { // else only the lock was lost, after the rows were ok
+			for i := range j.events {
+				p.fail(ctx, &j.events[i], err)
+			}
 		}
 		return nil, err
 	}
@@ -116,6 +123,8 @@ type journal struct {
 	pushes  []pushed                // the ops' entries, for awaitVisible
 	at      time.Time               // the time of the entries and of their rows
 	pushed  bool                    // the empty blob is in the repository
+
+	recorded bool // record committed: the audit rows are ok
 }
 
 // append runs steps 2 to 4 of Journal under the journal lock.
@@ -377,6 +386,7 @@ func (j *journal) record(ctx context.Context) error {
 			"name", j.name, "entries", len(j.written), "error", err.Error())
 		return fmt.Errorf("ingest: index the journal of %s after the registry took it: %s", j.name, err.Error())
 	}
+	j.recorded = true
 	if j.p.audit != nil {
 		for _, ev := range j.events {
 			if err := j.p.audit.Write(ctx, ev); err != nil {

@@ -34,9 +34,11 @@ type Dialect struct {
 	// locked or cannot be opened. nil means never.
 	IsUnavailable func(err error) bool
 	// XactLock is the statement that takes a lock for the rest of the transaction, with the
-	// lock's key as its one parameter (Postgres: pg_advisory_xact_lock). Empty when every
-	// writing transaction holds the database's write lock from its start (SQLite, BEGIN
-	// IMMEDIATE).
+	// lock's key as its one parameter, and lifts the server's timeout of idle transactions for
+	// the rest of it, in one round trip: the referrers lock idles while its function talks to
+	// the registry (Postgres: set_config of idle_in_transaction_session_timeout, local, and
+	// pg_advisory_xact_lock). Empty when every writing transaction holds the database's write
+	// lock from its start (SQLite, BEGIN IMMEDIATE).
 	XactLock string
 	// Clock is the query that returns the time of the database's clock, as a timestamp the
 	// store decodes (Postgres: clock_timestamp(); SQLite: 'now' as text, the host's clock).

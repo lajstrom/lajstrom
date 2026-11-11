@@ -8,6 +8,8 @@ import (
 	"sync"
 
 	"github.com/opencontainers/go-digest"
+
+	"github.com/lajstrom/lajstrom/internal/index"
 )
 
 // Coordination: the referrers lock (docs/spec/index-schema.md, Coordination).
@@ -15,7 +17,11 @@ import (
 // WithReferrersLock calls fn holding the lock on the referrers of subject in the OCI repository
 // name (index.Store). On Postgres it is the advisory lock of referrersLockKey in a transaction
 // of its own, begun without ctx's cancellation so that it ends when fn returns and not before;
-// the wait for the lock is ctx's. On SQLite (no XactLock) it is processLocks.
+// the wait for the lock is ctx's. The transaction idles while fn talks to the registry, so
+// XactLock also lifts the server's timeout of idle transactions for it. It ends with a COMMIT
+// whose result is checked: when the server or a pooler ended the transaction before, the lock
+// went with it, and the error wraps index.ErrUnavailable (#615). On SQLite (no XactLock) it is
+// processLocks.
 func (s *Store) WithReferrersLock(ctx context.Context, name string, subject digest.Digest, fn func(context.Context) error) error {
 	what := name + "@" + subject.String()
 	if s.d.XactLock == "" {
@@ -30,11 +36,19 @@ func (s *Store) WithReferrersLock(ctx context.Context, name string, subject dige
 	if err != nil {
 		return s.d.wrap(err, "begin")
 	}
-	defer func() { _ = tx.Rollback() }() // nothing was written: the end of the transaction releases the lock
+	defer func() { _ = tx.Rollback() }() // after an error or a panic; nothing was written
 	if _, err := tx.ExecContext(ctx, s.d.Rebind(s.d.XactLock), referrersLockKey(name, subject)); err != nil {
 		return s.d.wrap(err, "the referrers lock of "+what)
 	}
-	return fn(ctx)
+	if err := fn(ctx); err != nil {
+		return err
+	}
+	// Nothing was written: the COMMIT only proves that the transaction, and so the lock, lasted
+	// until fn returned. When it did not, another writer may have held the lock meanwhile.
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%w: the referrers lock of %s was lost before its function returned: %w", index.ErrUnavailable, what, err)
+	}
+	return nil
 }
 
 // referrersLockKey is the key of the Postgres advisory lock on the referrers of subject in name:

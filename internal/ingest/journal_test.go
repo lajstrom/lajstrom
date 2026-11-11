@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -222,6 +224,33 @@ func TestJournalAdopts(t *testing.T) {
 	if len(e.pushRefs(profile.JournalTag(5))) != 0 || len(e.entries(t)) != 3 {
 		t.Error("Journal over a broken entry wrote")
 	}
+}
+
+// TestJournalLockLost: an append whose journal lock was lost after its entry was recorded
+// (#615) is index.ErrUnavailable, a 503; the entry is recorded and its audit row stays ok, not
+// failed. The client's retry appends the op again, which folds to the same dist-tags.
+func TestJournalLockLost(t *testing.T) {
+	ctx := t.Context()
+	e := newNpmEnv(t, "1.0.0")
+	var log bytes.Buffer
+	opts := e.options(e.prov)
+	opts.Index = &lockLost{Store: e.st, lost: 1}
+	opts.Log = slog.New(slog.NewTextHandler(&log, nil))
+	e.pipe = ingest.New(opts)
+	latest := []format.JournalOp{opAdd("latest", "1.0.0")}
+	if _, err := e.pipe.Journal(ctx, e.npm, widgetsPath, latest, alice); !errors.Is(err, index.ErrUnavailable) {
+		t.Fatalf("Journal under a lost lock: %v, want index.ErrUnavailable", err)
+	}
+	if ev := e.rows(t).Audit[0]; ev.State != index.AuditOK || strings.Contains(log.String(), "not marked failed") {
+		t.Errorf("the audit row of the recorded entry: %s %q; log: %s", ev.State, ev.Error, log.String())
+	}
+	tag := index.JournalState{PackageID: e.pkg.ID, Kind: index.JournalDistTag, Key: "latest", Value: "1.0.0", Seq: 1}
+	same(t, "state", []index.JournalState{tag}, e.state(t))
+	seqs, err := e.pipe.Journal(ctx, e.npm, widgetsPath, latest, alice)
+	must(t, err)
+	same(t, "seqs of the retry", []int64{2}, seqs)
+	tag.Seq = 2
+	same(t, "state after the retry", []index.JournalState{tag}, e.state(t))
 }
 
 // TestJournalConcurrent: changes of one dist-tag through two pipelines at once, as through two

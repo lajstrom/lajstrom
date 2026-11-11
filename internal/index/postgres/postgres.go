@@ -54,7 +54,7 @@ var dialect = sqlstore.Dialect{
 	IsUnique:      func(err error) bool { return sqlState(err) == uniqueViolation },
 	IsForeignKey:  func(err error) bool { return sqlState(err) == foreignKeyViolation },
 	IsUnavailable: isUnavailable,
-	XactLock:      "SELECT pg_advisory_xact_lock(?)",
+	XactLock:      "SELECT set_config('idle_in_transaction_session_timeout', '0', true), pg_advisory_xact_lock(?)",
 	Clock:         "SELECT clock_timestamp()",
 }
 
