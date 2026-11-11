@@ -369,7 +369,7 @@ They are checked in this order:
 | `*http.MaxBytesError` | 413 |
 | `format.ErrUnsupported`, `provider.ErrUnsupported` | 501 |
 | `provider.ErrUnauthorized` (the backend rejected Lajstrom's own credentials) | 502 |
-| `provider.ErrUnavailable` (the circuit breaker of the registry is open, the request was not sent; or its host name does not resolve, #561) | 503, `Retry-After`: the seconds until the breaker's trial request, none for a name that does not resolve; under `/v2` the code `UNAVAILABLE`, on the API `UNAVAILABLE` |
+| `provider.ErrUnavailable` (the circuit breaker of the registry is open, the request was not sent; or its host name does not resolve, #561; or it refused or reset the connection, #593) | 503, `Retry-After`: the seconds until the breaker's trial request, none for a registry that could not be reached; under `/v2` the code `UNAVAILABLE`, on the API `UNAVAILABLE` |
 | `index.ErrUnavailable` (the database did not answer) | 503, `Retry-After: 5`; under `/v2` the code `UNAVAILABLE`, on the API `UNAVAILABLE`; the authentication middleware answers it so too |
 | `format.ErrBadGateway` | 502 |
 | `format.ErrUnavailable` (the upstream answered `429`) | 503, `Retry-After`: the `*format.UnavailableError`'s, whole seconds, at least 1 |

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"syscall"
 	"time"
 
 	"oras.land/oras-go/v2/errdef"
@@ -80,6 +81,9 @@ func (p *Provider) translate(op string, err error) error {
 //   - a *net.DNSError, the registry's host name (or its token realm's, or a redirect's) that
 //     does not resolve, "no such host" or a temporary failure: ErrUnavailable, without a wait
 //     (#561). The message leaves out the name; errors.As still finds the *net.DNSError.
+//   - a connection that the registry (or its token realm, or a redirect's host) refused
+//     (ECONNREFUSED), or reset (ECONNRESET, or EPIPE on a write after the reset), after the
+//     retries: ErrUnavailable, without a wait (#593). errors.Is still finds the errno.
 //
 // A refused token realm (realmError) is wrapped without what net/http and oras-go put around
 // it, which names the request URL. Everything else, context errors included, is wrapped with
@@ -124,6 +128,10 @@ func translateAs(registry string, wait func() time.Duration, op string, err erro
 		return &backendError{op: op, kind: provider.ErrUnauthorized, detail: "no credentials configured", cause: err}
 	case errors.As(err, &dns):
 		return &backendError{op: op, kind: provider.ErrUnavailable, detail: "the host name does not resolve", cause: err}
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return &backendError{op: op, kind: provider.ErrUnavailable, detail: "the connection was refused", cause: err}
+	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.EPIPE):
+		return &backendError{op: op, kind: provider.ErrUnavailable, detail: "the connection was reset", cause: err}
 	}
 	return fmt.Errorf("generic: %s: %w", op, err)
 }
