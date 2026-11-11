@@ -87,29 +87,44 @@ func SetRetryAfter(h http.Header, err error) {
 //	ErrUnavailable                             503 Service Unavailable, with Retry-After (the upstream's)
 //	ErrGatewayTimeout                          504 Gateway Timeout
 //	anything else, nil included                500 Internal Server Error
-//
-//nolint:gocyclo // one case per row of the table above, in its order
 func StatusOf(err error) int {
+	if err == nil {
+		return http.StatusInternalServerError
+	}
+	if status, ok := clientStatus(err); ok {
+		return status
+	}
+	return serverStatus(err)
+}
+
+// clientStatus returns the 4xx of the table of StatusOf that err has, in its order.
+func clientStatus(err error) (int, bool) {
 	var tooLarge *http.MaxBytesError
 	switch {
-	case err == nil:
-		return http.StatusInternalServerError
 	case errors.Is(err, ErrInvalid):
-		return http.StatusBadRequest
+		return http.StatusBadRequest, true
 	case errors.Is(err, ErrUnauthenticated):
-		return http.StatusUnauthorized
+		return http.StatusUnauthorized, true
 	case errors.Is(err, ErrForbidden):
-		return http.StatusForbidden
+		return http.StatusForbidden, true
 	case errors.Is(err, ErrMethodNotAllowed):
-		return http.StatusMethodNotAllowed
+		return http.StatusMethodNotAllowed, true
 	case errors.Is(err, index.ErrNotFound), errors.Is(err, provider.ErrNotFound):
-		return http.StatusNotFound
+		return http.StatusNotFound, true
 	case errors.Is(err, index.ErrConflict), errors.Is(err, provider.ErrConflict):
-		return http.StatusConflict
+		return http.StatusConflict, true
 	case errors.Is(err, ErrPrecondition):
-		return http.StatusPreconditionFailed
+		return http.StatusPreconditionFailed, true
 	case errors.As(err, &tooLarge), refusedBy(err, http.StatusRequestEntityTooLarge):
-		return http.StatusRequestEntityTooLarge
+		return http.StatusRequestEntityTooLarge, true
+	}
+	return 0, false
+}
+
+// serverStatus returns the 5xx of the table of StatusOf that err has, in its order, 500 when
+// none.
+func serverStatus(err error) int {
+	switch {
 	case errors.Is(err, ErrUnsupported), errors.Is(err, provider.ErrUnsupported):
 		return http.StatusNotImplemented
 	case errors.Is(err, provider.ErrUnauthorized), refusedBy(err, 0):
