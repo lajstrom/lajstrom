@@ -471,7 +471,7 @@ func (s *readSpy) Read([]byte) (int, error) {
 
 // TestFirstSpellingWins checks that a raw path is unique without regard to case: after
 // Docs/Readme.MD, a PUT of another spelling is 409 naming Docs/Readme.MD, with other bytes and
-// with the same bytes, and reads no byte of the body (the spool is not written); nothing is
+// with the same bytes, and reads no byte of the body (nothing streams); nothing is
 // pushed and the listing shows one path. The first spelling keeps working: the same bytes are
 // the repeat, new bytes a new version.
 func TestFirstSpellingWins(t *testing.T) {

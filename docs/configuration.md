@@ -76,9 +76,11 @@ and the ping wait up to 10 s each, one after the other, so the listener opens up
 and `/-/readyz` answers `503` until every registry has answered
 ([operations.md](operations.md#readiness)).
 
-An upload is spooled to a temporary file for the length of its request, then pushed to the
-registry and removed. The file goes to `$TMPDIR` when it is set, `/tmp` otherwise; there is no
-configuration key for it. Give that directory room for the largest uploads one replica takes at
+A raw upload streams into the registry and takes no disk
+([ADR 0014](adr/0014-uploads-stream-into-the-registry.md)). An upload to the other frontends
+(apt, PyPI, Maven, npm) is spooled to a temporary file for the length of its request, then
+pushed to the registry and removed, until its format moves to streaming too. The file goes to
+`$TMPDIR` when it is set, `/tmp` otherwise; there is no configuration key for it. Give that directory room for the largest uploads one replica takes at
 once (a tmpfs in [Compose](deploy/compose.md), an `emptyDir` on [Kubernetes](deploy/kubernetes.md)).
 A `/v2` upload streams to the registry and takes no disk, but for the chunks of
 [`registries[].uploads.spoolUnknownLength`](#uploads).

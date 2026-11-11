@@ -133,7 +133,7 @@ test-integration: ## Integration tests against the dev stack; needs LAJSTROM_TES
 e2e: ## End-to-end scenarios with real clients against the dev stack's Zot (docs/testing.md); E2E='raw oras' runs those only
 	./test/e2e/run.sh $(E2E)
 
-load: ## Load test: 1 GiB through raw and /v2 against the dev stack's Zot, the server's memory sampled; needs 4 GiB of free disk, 18 GiB with LAJSTROM_LOAD_UPLOADS=8; not part of e2e (docs/operations.md, Performance)
+load: ## Load test: 1 GiB through raw and /v2 against the dev stack's Zot, the server's memory sampled; needs 4 GiB of free disk, 11 GiB with LAJSTROM_LOAD_UPLOADS=8; not part of e2e (docs/operations.md, Performance)
 	./test/load/run.sh
 
 registry-matrix: build ## The capability matrix of the dev stack's registries, measured by lajstrom registry probe (docs/registries/README.md); needs dev-up; MATRIX_URLS, MATRIX_ARGS

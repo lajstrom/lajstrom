@@ -14,7 +14,7 @@
 # U = $LAJSTROM_LOAD_UPLOADS and P = $LAJSTROM_LOAD_PARALLEL:
 #
 #   raw PUT      U curl -T of the object at once, the i-th to /raw/<run>/big-<i>.bin (each
-#                spooled to a temporary file, then pushed to the registry)
+#                streamed into the registry as it arrives, ADR 0014)
 #   raw GET      P curl downloads at once, of big-1.bin to big-U.bin in turn, each piped into
 #                sha256
 #   v2 push      U oras push of the same object at once, the i-th to oci/<run>/big-<i>:v1
@@ -26,8 +26,9 @@
 # keeps the bytes once on disk).
 #
 # Every 0.2 s it samples the server's resident set (ps), its Go heap in use (the metrics
-# listener) and, in the upload phases, the temporary files it holds open (lsof: the upload spool
-# is unlinked as soon as it is made, so only an open descriptor shows it), and prints per phase
+# listener) and, in the upload phases, the temporary files it holds open (lsof: a spool is
+# unlinked as soon as it is made, so only an open descriptor shows it; a raw PUT has none since
+# ADR 0014, and the column shows that), and prints per phase
 # the time, the throughput and the peaks. Exit status: 0 when every digest matched and the peak
 # resident set of every phase stayed within $LAJSTROM_LOAD_MAX_RSS_MIB; 1 when a phase went over
 # it (after the table); 2 when the run could not be made or a transfer failed (a request, a
@@ -47,11 +48,11 @@
 #                               the samples); the object itself is always removed
 #
 # Disk: the object lives in $TMPDIR for the whole run. During the raw PUT each upload has its
-# spool there and its upload in the registry's upload area: 1 + 2 x U times the size at the
-# peak. The registry then keeps one copy (Zot deduplicates the same bytes), and during the v2
-# push it receives U uploads more: 2 + U times the size. With Docker on the same disk (Docker
-# Desktop, OrbStack, a CI runner) the script wants the larger of the two plus 1 GiB free on the
-# filesystem of $TMPDIR, 4 GiB for U = 1 and 18 GiB for U = 8 at 1 GiB, and refuses to start
+# upload in the registry's upload area: 1 + U times the size at the peak. The registry then
+# keeps one copy (Zot deduplicates the same bytes), and during the v2 push it receives U uploads
+# more: 2 + U times the size, the peak. With Docker on the same disk (Docker Desktop, OrbStack,
+# a CI runner) the script wants that plus 1 GiB free on the filesystem of $TMPDIR, 4 GiB for
+# U = 1 and 11 GiB for U = 8 at 1 GiB, and refuses to start
 # otherwise. At the end it deletes what it pushed from the registry (the manifests and blobs of
 # the repositories of <run>, nothing else) and removes its files.
 set -euo pipefail
@@ -84,10 +85,9 @@ curl -fsS -o /dev/null --max-time 5 "http://$registry/v2/" || die "no registry a
 
 # The disk, before anything is written.
 tmp="${TMPDIR:-/tmp}"
-# The peak is the raw PUT's (the object, U spools, U uploads in the registry) or the v2 push's
-# (the object, the registry's copy, U uploads), whichever is larger; see the header.
-copies=$((1 + 2 * uploads))
-[ "$copies" -ge $((2 + uploads)) ] || copies=$((2 + uploads))
+# The peak is the v2 push's (the object, the registry's copy, U uploads); the raw PUT's is one
+# less (the object, U uploads in the registry); see the header.
+copies=$((2 + uploads))
 need_mib=$((copies * size_mib + 1024))
 free_mib=$(($(df -Pk "$tmp" | awk 'NR==2 {print $4}') / 1024))
 say "disk: $free_mib MiB free in $tmp; the run needs $need_mib MiB ($copies x $size_mib MiB at the peak with $uploads uploads at once, 1 GiB to spare)"

@@ -583,11 +583,13 @@ network allow:
 | --- | --- |
 | a download: `GET /v2/…/blobs/<digest>`, `/raw/`, the apt pool, PyPI and Maven files | `format.ServeBlob`: one request to the registry, its body copied to the client through a fixed buffer, or a `307` to the registry's storage |
 | a `/v2` blob upload: `POST`, `PATCH`, `PUT` of a session | the client's body is the body of the request to the registry's session (`facade.requestBody`, the provider's `repository.send`); with [`registries[].uploads.spoolUnknownLength`](configuration.md#uploads) on, a chunk of unknown length into a session that holds bytes is spooled first to one temporary file of the chunk's size in `$TMPDIR`, unlinked as soon as it is made and closed when the request ends |
-| a file a frontend receives: raw `PUT`, apt `PUT …/upload`, a twine upload, a Maven `PUT` | spooled to **one temporary file of the body's size** in `$TMPDIR` for the length of the request (`format.Spool`, Maven's `ingest.spoolHashed`), so that the plugin can read it before ingest pushes it; removed when the request ends, and unlinked as soon as it is made where the system allows, so a crash leaves nothing. A twine upload takes a second spool of the file while it is checked (`pypi.readerAt`) |
+| a raw `PUT` | streamed into an upload session of the registry as it arrives (`ingest.Pipeline.UploadStream`, [ADR 0014](adr/0014-uploads-stream-into-the-registry.md)): in chunks of 8 MiB, each a `PATCH`, one held in memory per upload, while sha256 is computed; the session is closed with that digest only once every check passed, and cancelled otherwise. No disk |
+| a file another frontend receives: apt `PUT …/upload`, a twine upload, a Maven `PUT` | spooled to **one temporary file of the body's size** in `$TMPDIR` for the length of the request (`format.Spool`, Maven's `ingest.spoolHashed`), so that the plugin can read it before ingest pushes it; removed when the request ends, and unlinked as soon as it is made where the system allows, so a crash leaves nothing. A twine upload takes a second spool of the file while it is checked (`pypi.readerAt`) |
 | what is read into memory | metadata only, each with a bound: a manifest (`server.maxManifestSize`, 4 MiB), a metadata layer (4 MiB), a POM (4 MiB), a deb's control archive (4 MiB unpacked), `maven-metadata.xml` (1 MiB), a wheel's `METADATA` (4 MiB), and the blocks of a zip's directory that ingest reads at offsets (64 KiB each, at most 32 kept) |
 
-So the disk of `$TMPDIR` must hold the frontend uploads that run at once: the sum of their
-sizes, bounded by `server.maxConcurrentUploads` and the repos' `policy.maxFileSize`. `/v2`
+So the disk of `$TMPDIR` must hold the apt, PyPI and Maven uploads that run at once: the sum
+of their sizes, bounded by `server.maxConcurrentUploads` and the repos' `policy.maxFileSize`.
+Raw uploads take none; the other formats move to streaming one by one (ADR 0014). `/v2`
 uploads take no disk of Lajstrom's, but for the spooled chunks of a registry with
 `uploads.spoolUnknownLength` on.
 
@@ -612,7 +614,7 @@ the free disk before it starts and deletes what it pushed when it ends.
 ```sh
 make dev-up
 make load                                   # 1 upload at a time, 8 downloads at once
-LAJSTROM_LOAD_UPLOADS=8 make load           # 8 uploads at once too: 18 GiB of disk
+LAJSTROM_LOAD_UPLOADS=8 make load           # 8 uploads at once too: 11 GiB of disk
 LAJSTROM_LOAD_SUMMARY=load.md make load     # the table as Markdown in load.md, too
 ```
 
@@ -620,10 +622,11 @@ LAJSTROM_LOAD_SUMMARY=load.md make load     # the table as Markdown in load.md, 
 each goes to a file or image of its own (`big-<i>.bin`, `oci/<run>/big-<i>:v1`), a repository
 of its own in the registry, so that no upload finds its blob there already and skips sending
 it. The disk it needs at the peak, when
-Docker's disk is on the same filesystem as `$TMPDIR`: during the raw `PUT`, the object, one
-spool per upload and one upload in Zot's upload area per upload, 1 + 2 × U times the object;
-during the `/v2` push, the object, Zot's one copy (it deduplicates the same bytes) and U
-uploads, 2 + U times; plus 1 GiB. At 1 GiB that is 4 GiB for one upload and 18 GiB for 8.
+Docker's disk is on the same filesystem as `$TMPDIR`: during the raw `PUT`, the object and one
+upload in Zot's upload area per upload, 1 + U times the object; during the `/v2` push, the
+object, Zot's one copy (it deduplicates the same bytes) and U uploads, 2 + U times; plus 1 GiB.
+At 1 GiB that is 4 GiB for one upload and 11 GiB for 8. Before raw streamed (ADR 0014), the raw
+`PUT` also took one spool per upload, 1 + 2 × U times, 18 GiB for 8.
 
 The [Load workflow](../.github/workflows/load.yml) runs it on a GitHub Linux runner every night,
 on demand, and on a pull request that changes the script or the workflow, at 1 GiB with 8

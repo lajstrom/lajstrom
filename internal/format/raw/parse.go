@@ -132,9 +132,11 @@ func repoPath(repo index.Repo, p string) (pkgPath, name string, err error) {
 // metadata layer {"path", "contentType", "size", "sha256"}. The path is in.Params[ParamPath],
 // checked again here; in.Files must hold exactly one file, whose ContentType (or
 // application/octet-stream) goes into the metadata. The version is the first 16 hex digits of
-// the sha256 of the bytes, the layer digest, so the file is read once. created is now, in whole
-// seconds: the pipeline's clock does not reach Build, and the idempotent repeat of ingest
-// ignores it. Errors wrap format.ErrInvalid, except a failure to read the file.
+// the sha256 of the bytes, the layer digest. A file streamed into the registry (no Open, ADR
+// 0014) is described by its sha256 checksum and its size and left out of Built.Blobs: ingest
+// commits its upload session. A file with Open is read once. created is now, in whole seconds:
+// the pipeline's clock does not reach Build, and the idempotent repeat of ingest ignores it.
+// Errors wrap format.ErrInvalid, except a failure to read the file.
 func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*format.Built, error) {
 	p := in.Params[ParamPath]
 	_, name, err := repoPath(repo, p)
@@ -149,6 +151,7 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 	if err != nil {
 		return nil, err
 	}
+	blobs := []format.BlobSource{bytesBlob(profile.EmptyConfig, ocispec.DescriptorEmptyJSON.Data)}
 	contentType := f.ContentType
 	if contentType == "" {
 		contentType = defaultContentType
@@ -167,13 +170,12 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", format.ErrInvalid, err)
 	}
+	if f.Open != nil {
+		blobs = append(blobs, format.BlobSource{Descriptor: m.Layers[0], Open: func(context.Context) (io.ReadCloser, error) { return f.Open() }})
+	}
 	return &format.Built{
 		Manifest: m,
-		Blobs: []format.BlobSource{
-			bytesBlob(profile.EmptyConfig, ocispec.DescriptorEmptyJSON.Data),
-			{Descriptor: m.Layers[0], Open: func(context.Context) (io.ReadCloser, error) { return f.Open() }},
-			bytesBlob(m.Layers[1], md),
-		},
+		Blobs:    append(blobs, bytesBlob(m.Layers[1], md)),
 		Entry: format.Entry{Name: p, Version: version, Attrs: attrs, Metadata: md,
 			Files: []format.FileEntry{{Name: p, MediaType: file.MediaType, Digest: d, Size: size}}},
 		Tag:      profile.Tag(version, ""),
@@ -181,9 +183,17 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 	}, nil
 }
 
-// digestFile reads f once and returns the sha256 digest and the size of its bytes. A size other
-// than the one f declares wraps format.ErrInvalid.
+// digestFile returns the sha256 digest and the size of the bytes of f: of a streamed file (no
+// Open), its sha256 checksum and its size; of another, what reading it once gives. A size other
+// than the one f declares, and a streamed file without a sha256 or a size, wrap format.ErrInvalid.
 func digestFile(f format.UploadedFile) (digest.Digest, int64, error) {
+	if f.Open == nil {
+		d := digest.NewDigestFromEncoded(digest.SHA256, f.Checksums["sha256"])
+		if err := d.Validate(); err != nil || f.Size < 0 {
+			return "", 0, fmt.Errorf("%w: %q has neither Open nor its sha256 and size", format.ErrInvalid, f.Name)
+		}
+		return d, f.Size, nil
+	}
 	rc, err := f.Open()
 	if err != nil {
 		return "", 0, fmt.Errorf("raw: open %q: %w", f.Name, err)
