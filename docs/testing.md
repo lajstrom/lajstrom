@@ -12,11 +12,12 @@ says how to run each one, what it needs, and how to add an end-to-end scenario.
 | OCI conformance | `test/conformance/run.sh` | a running Lajstrom, an `oci` repo | no |
 | Fuzz | `go test -fuzz=<name>` | Go | the seed corpus, as part of `make test` |
 | End-to-end | `make e2e` | the dev stack, Docker, `curl`, `jq` | `e2e`; `ha` (the HA workflow): `ha.sh` without H-01 on the ha profile, nightly, on demand, and on a pull request that changes ingest, the index, the facade, the profile or the scripts it runs; not required |
+| Upgrade | `test/upgrade/run.sh` | the dev stack, Docker, `curl`, `jq`, `psql`; a release from v0.1.0 on | `upgrade` (the Upgrade workflow): on a pull request that changes a migration, and on demand; skipped until v0.1.0; not required |
 | Load | `make load` | the dev stack, `oras`, `curl`, `jq`, `lsof`, 4 GiB of free disk (11 GiB with 8 uploads at once) | `load` (the Load workflow): nightly, on demand, and on a pull request that changes the load test; not required |
 
 `make check` runs what every pull request must pass without the stack: gofmt, build, vet, unit
-tests, lint, vulncheck, licenses. The integration, conformance and end-to-end levels need the
-[dev stack](dev-stack.md) (`make dev-up`) and are not part of it.
+tests, lint, vulncheck, licenses. The integration, conformance, end-to-end and upgrade levels
+need the [dev stack](dev-stack.md) (`make dev-up`) and are not part of it.
 
 ## Unit
 
@@ -176,6 +177,8 @@ failed, 2 when it could not start (the build, the migration, a server that is no
 stops the server and removes the directory on exit; `LAJSTROM_E2E_KEEP=1` keeps it, with
 `server.log` and a log per scenario. It unsets the `LAJSTROM_SERVER_*`, `LAJSTROM_LOG_*` and
 `LAJSTROM_DATABASE_*` overrides of your shell, so the server always runs the file it wrote.
+With `LAJSTROM_E2E_INDEX_DSN`, a Postgres DSN, the index is that database instead of a new SQLite
+file: `run.sh` migrates it and leaves it on exit ([Upgrade](#upgrade) sets it).
 
 | Scenario | What it checks | Clients |
 | --- | --- | --- |
@@ -390,6 +393,34 @@ itself; add its name to `order` in `run.sh` to place it among the others.
   `chown`s what it wrote: on Linux, the CI runner, files root made in a directory of root's
   cannot be removed by the cleanup.
 - **End with** `PASS <name> e2e against <base>` and exit 0.
+
+## Upgrade
+
+```sh
+make dev-up
+export LAJSTROM_UPGRADE_POSTGRES_DSN='postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable'
+test/upgrade/run.sh                                   # the previous release's whole suite
+LAJSTROM_UPGRADE_FROM=<ref> test/upgrade/run.sh raw oras pypi
+```
+
+[test/upgrade/run.sh](../test/upgrade/run.sh) runs the binary of the release before on the
+schema the next one migrated, as during a rolling update and after a rollback
+([index-schema.md](spec/index-schema.md#upgrades), INV-41 of [guarantees.md](spec/guarantees.md)).
+It checks the previous release out in a git worktree and builds both binaries. In a schema of its
+own in the database of `LAJSTROM_UPGRADE_POSTGRES_DSN`, the previous binary migrates, then this
+checkout's, which applies the next release's migrations and refuses one that breaks the release
+before, then the previous one again, which must run on what it finds. Last, the previous
+release's `test/e2e/run.sh` runs with `LAJSTROM_E2E_INDEX_DSN` on that schema: that release's
+binary and scenarios, those of the arguments or all. On exit the schema is dropped and the
+worktree removed; the exit status is `run.sh`'s, or 2 when a step before it failed.
+
+The previous release is the highest tag `vX.Y.Z` from v0.1.0 on that is an ancestor of `HEAD`;
+`v0.0.1` reserved the name before there was any code. Without such a tag the script says so and
+exits 0. `LAJSTROM_UPGRADE_FROM` names any other ref whose `run.sh` knows
+`LAJSTROM_E2E_INDEX_DSN` (#485); an older one cannot run. `TestUpgrade` (`internal/index`)
+checks the same rules on every pull request with the migration sets of four simulated releases;
+this script runs the real previous release. The [Upgrade workflow](../.github/workflows/upgrade.yml)
+runs it on a pull request that changes a migration, and by hand with a ref to upgrade from.
 
 ## Load
 

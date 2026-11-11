@@ -1087,12 +1087,17 @@ status is `holds on strongly consistent registries only` do not hold there.
 - **Assumes.** Database: **one database**. A migration that is not expand carries its
   `-- lajstrom:requires` line: review checks it, no code does.
 - **Mechanism.** `index.ApplyMigrations`, `schema_migrations.requires`.
-- **Tests.** `TestUpgrade`, `TestMigrationRequires`.
+- **Tests.** `TestUpgrade`, `TestMigrationRequires`; from v0.1.0 on, the job `upgrade` of the
+  Upgrade workflow (`test/upgrade/run.sh`): on every pull request that changes a migration, the
+  previous release's end-to-end suite, with its binary, on a Postgres schema that the pull
+  request's binary migrated.
 - **When violated.** A contract migration without its line: the replicas of the release before
   keep serving and fail on the statements it broke; a rollback starts and fails the same way.
-- **Status.** `partly`: whether a migration is expand is reviewed, not tested. **Untested:** the
-  binary of the previous release on the schema of the next one, after v0.1.0
-  ([#485](https://github.com/lajstrom/lajstrom/issues/485)).
+  From v0.1.0 on, the job `upgrade` fails on the pull request that adds it.
+- **Status.** `partly` until a release from v0.1.0 on exists, then it holds: until then the job
+  `upgrade` has no release to run and is skipped, whether a migration is expand is reviewed and
+  not tested, and the binary of the previous release on the schema of the next one is
+  **untested** ([#485](https://github.com/lajstrom/lajstrom/issues/485)).
 
 ## Retention
 
@@ -1181,7 +1186,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-38 | denied versions kept out | not yet (#101) | |
 | INV-39 | encryption at rest | not yet (#114) | |
 | INV-40 | a streamed download has its digest | holds | |
-| INV-41 | a binary only on a schema it can run on | partly | untested (the previous release's binary) |
+| INV-41 | a binary only on a schema it can run on | partly | untested until v0.1.0 (the previous release's binary) |
 | INV-42 | a conditional delete never removes a changed version | holds | |
 
 ## Not guaranteed
@@ -1290,5 +1295,5 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | One upstream request per document per replica (INV-31) | concurrent misses of a packument each ask the upstream | share the request on a replica (pull request #399) | [#383](https://github.com/lajstrom/lajstrom/issues/383) |
 | Registries that fold tag case (INV-7) | two versions that differ in case: the second is a `409` with an unclear message | `Capabilities.TagsFoldCase` | [#426](https://github.com/lajstrom/lajstrom/issues/426) |
 | The bearer audience without `server.externalURL` (INV-19) | a staging server restored from production's database accepts production's tokens | require `externalURL` | [#248](https://github.com/lajstrom/lajstrom/issues/248) |
-| Whether a migration is expand is reviewed, not tested; no test runs the previous release's binary on the next schema; pre-#244 claims (INV-6, INV-41) | a contract migration without its `requires` line breaks the replicas of the release before during a rolling update; a mixed fleet may not exclude publishes | after v0.1.0, CI runs the previous release's binary on a schema the new binary migrated | [#485](https://github.com/lajstrom/lajstrom/issues/485) |
+| Whether a migration is expand is reviewed, not tested; the job `upgrade`, which runs the previous release's binary on the next schema, is skipped until there is a release; pre-#244 claims (INV-6, INV-41) | a contract migration without its `requires` line breaks the replicas of the release before during a rolling update; a mixed fleet may not exclude publishes | tag v0.1.0: from then on the job `upgrade` (`test/upgrade/run.sh`) runs on every pull request that changes a migration | [#485](https://github.com/lajstrom/lajstrom/issues/485) |
 | Groups (INV-34), policy (INV-38), encryption at rest (INV-39) | not built | as the issues say | [#311](https://github.com/lajstrom/lajstrom/issues/311), [#101](https://github.com/lajstrom/lajstrom/issues/101), [#114](https://github.com/lajstrom/lajstrom/issues/114) |
