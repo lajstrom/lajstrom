@@ -1,0 +1,97 @@
+name: Upgrade
+
+# The binary of the previous release on a schema that this commit's binary migrated (#485;
+# docs/testing.md, Upgrade; INV-41 of docs/spec/guarantees.md): test/upgrade/run.sh migrates a
+# Postgres schema with the previous release's binary, then with this commit's, and runs the
+# previous release's end-to-end suite with its binary on it, as the replicas of the release
+# before serve during a rolling update and after a rollback. The previous release is the highest
+# tag vX.Y.Z from v0.1.0 on that is an ancestor of the commit; until there is one, the job passes
+# with a notice that says so.
+#
+# It runs on a pull request that changes a migration, the code that applies them, the script or
+# this file, and by hand (Run workflow) with any ref to upgrade from, from #485 on. A workflow of
+# its own, as the YugabyteDB one: a paths filter gates a whole workflow, and most pull requests
+# do not run it. Not required.
+on:
+  pull_request:
+    paths:
+      - "internal/index/migrations/**"
+      - "internal/index/migrate.go"
+      - "internal/index/migrations.go"
+      - "test/upgrade/**"
+      - ".github/workflows/upgrade.yml"
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "The ref to upgrade from: a tag, a branch or a commit; empty for the previous release"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  upgrade:
+    name: upgrade
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The Zot and the Postgres of ci.yml's e2e job, with the digests of their indexes.
+    services:
+      zot:
+        # Zot v2.1.23, the minimal build, without a health check (see ci.yml).
+        # sha256:59cb5740832970818903c5ce104425762664c7880835ee566506aad397cd3458
+        image: ghcr.io/project-zot/zot-minimal:v2.1.23
+        ports:
+          - "5000:5000"
+      postgres:
+        # PostgreSQL 17.11 on Alpine; the script creates a schema of its own and drops it.
+        # sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+        image: postgres:17.11-alpine
+        env:
+          POSTGRES_DB: lajstrom
+          POSTGRES_USER: lajstrom
+          POSTGRES_PASSWORD: lajstrom
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U lajstrom -d lajstrom"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - name: Wait for Zot
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 30); do
+            if curl -fsS --max-time 2 http://localhost:5000/v2/ > /dev/null 2>&1; then
+              echo "ready: zot"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::zot did not answer within 30 s: curl http://localhost:5000/v2/"
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # the tags and the history: the previous release, checked out in a worktree
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - name: test/upgrade/run.sh
+        # Every scenario of the previous release; docker run pulls their client images as they
+        # start, so the budget holds the pulls too. ha.sh is skipped without the ha profile, and
+        # first-admin.sh's replicas without LAJSTROM_E2E_POSTGRES_DSN: they run on servers and
+        # schemas of their own, not on the migrated one. The ref of Run workflow reaches the
+        # script through the environment, never the command line.
+        timeout-minutes: 20
+        env:
+          LAJSTROM_UPGRADE_FROM: ${{ inputs.from }}
+          LAJSTROM_UPGRADE_POSTGRES_DSN: "postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable"
+          LAJSTROM_E2E_REGISTRY: localhost:5000
+        run: test/upgrade/run.sh

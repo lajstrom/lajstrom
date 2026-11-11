@@ -29,6 +29,11 @@
 # reads into LAJSTROM_E2E_REGISTRY_PASSWORD, the passwordEnv of registries[].auth, for the
 # server and lajstrom admin; LAJSTROM_E2E_REGISTRY_PREFIX is registries[].prefix, ending in /.
 #
+# The index may be a Postgres database of the caller's (#485): LAJSTROM_E2E_INDEX_DSN is its
+# DSN, which the configuration names instead of a new SQLite file. run.sh runs lajstrom migrate
+# on it as on the SQLite file, and leaves it as it is on exit. test/upgrade/run.sh sets it to a
+# schema that the next release migrated, and runs the run.sh of the release before.
+#
 # Everything lives in a temporary directory: the configuration, the SQLite index, the server's
 # log and the output of each scenario. The configuration has one registry, `local`, at
 # $LAJSTROM_E2E_REGISTRY (default localhost:5000, the Zot of make dev-up), with the capabilities
@@ -168,6 +173,10 @@ LAJSTROM_SERVER_LOG="$tmp/server.log"
 LAJSTROM_E2E_REGISTRY="$registry"
 LAJSTROM_E2E_FORWARDED=1
 export LAJSTROM_MASTER_KEY LAJSTROM_CONFIG LAJSTROM_BIN LAJSTROM_SERVER_LOG LAJSTROM_E2E_REGISTRY LAJSTROM_E2E_FORWARDED
+driver=sqlite dsn="file:$tmp/lajstrom.db" index="$tmp/lajstrom.db"
+if [ -n "${LAJSTROM_E2E_INDEX_DSN:-}" ]; then
+	driver=postgres dsn="$LAJSTROM_E2E_INDEX_DSN" index="the Postgres of LAJSTROM_E2E_INDEX_DSN"
+fi
 cat >"$LAJSTROM_CONFIG" <<EOF
 # Written by test/e2e/run.sh for one run of the end-to-end scenarios.
 server:
@@ -181,8 +190,8 @@ log:
   level: info
   format: text
 database:
-  driver: sqlite
-  dsn: "file:$tmp/lajstrom.db"
+  driver: $driver
+  dsn: "$dsn"
 registries:
   - name: local
     type: generic
@@ -224,7 +233,7 @@ until curl -fsS -o /dev/null --max-time 2 "$base/-/readyz" 2>/dev/null; do
 	fi
 	sleep 0.5
 done
-step "lajstrom serve on $base, index $tmp/lajstrom.db, registry local at $registry${registry_prefix:+, prefix $registry_prefix}${registry_user:+, user $registry_user}${LAJSTROM_E2E_CAPABILITIES:+ $LAJSTROM_E2E_CAPABILITIES}: ready after $((SECONDS - served)) s"
+step "lajstrom serve on $base, index $index, registry local at $registry${registry_prefix:+, prefix $registry_prefix}${registry_user:+, user $registry_user}${LAJSTROM_E2E_CAPABILITIES:+ $LAJSTROM_E2E_CAPABILITIES}: ready after $((SECONDS - served)) s"
 LAJSTROM_E2E_USER="e2e-admin"
 LAJSTROM_E2E_PASSWORD="$(head -c 24 /dev/urandom | base64 | tr -d '+/=\n')"
 export LAJSTROM_E2E_USER LAJSTROM_E2E_PASSWORD
