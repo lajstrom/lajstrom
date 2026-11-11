@@ -88,6 +88,7 @@ type envOptions struct {
 	audit    audit.Writer
 	registry provider.Provider             // the registry "local"; nil means the fake (env.prov)
 	store    func(index.Store) index.Store // wraps the store the routes read; ingest writes to the store itself
+	ingested func(index.Store) index.Store // wraps the store ingest writes to
 }
 
 func newEnv(t *testing.T, o envOptions) *env {
@@ -98,7 +99,11 @@ func newEnv(t *testing.T, o envOptions) *env {
 	if o.registry != nil {
 		providers["local"] = o.registry
 	}
-	pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Audit: o.audit, Log: slog.New(slog.DiscardHandler),
+	var ingestIndex index.Store = st
+	if o.ingested != nil {
+		ingestIndex = o.ingested(st)
+	}
+	pipe := ingest.New(ingest.Options{Providers: providers, Index: ingestIndex, Audit: o.audit, Log: slog.New(slog.DiscardHandler),
 		Plugins: func(name string) (format.Plugin, bool) { return Plugin{}, name == Name }})
 	var routeIndex index.Store = st
 	if o.store != nil {

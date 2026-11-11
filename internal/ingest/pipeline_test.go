@@ -275,6 +275,30 @@ func (r hookedRepository) PushReference(ctx context.Context, desc ocispec.Descri
 	return err
 }
 
+// confirmDown is a store whose first transaction that writes a package, the confirm of a
+// publish after the registry took its manifest, fails as a database that dropped out does,
+// with index.ErrUnavailable.
+type confirmDown struct {
+	index.Store
+	done atomic.Bool
+}
+
+func (s *confirmDown) Tx(ctx context.Context, fn func(index.Writer) error) error {
+	return s.Store.Tx(ctx, func(w index.Writer) error { return fn(confirmDownWriter{Writer: w, s: s}) })
+}
+
+type confirmDownWriter struct {
+	index.Writer
+	s *confirmDown
+}
+
+func (w confirmDownWriter) UpsertPackage(ctx context.Context, p *index.Package) error {
+	if w.s.done.CompareAndSwap(false, true) {
+		return fmt.Errorf("%w: packages: %w", index.ErrUnavailable, errDown)
+	}
+	return w.Writer.UpsertPackage(ctx, p)
+}
+
 // gate holds the first caller of pass until a second one arrives, or for at most d; it lets
 // two publishes that both got past the claim meet before either pushes.
 type gate struct {
@@ -334,6 +358,35 @@ func TestIngestPushFails(t *testing.T) {
 				t.Errorf("retry: %+v, rows %+v", res, r)
 			}
 		})
+	}
+}
+
+// TestIngestIndexUnavailableAfterPush checks a confirm whose database did not answer after the
+// registry accepted the manifest (#641): the error wraps index.ErrUnavailable, a 503 with
+// Retry-After: 5, the manifest stays in the registry, the claim is released, the audit row is
+// failed, and the same publish again indexes the version.
+func TestIngestIndexUnavailableAfterPush(t *testing.T) {
+	e := newEnv(t)
+	built, raw, pkgPath := e.prepare(t, upload(readme, "1.0.0", file{readme, "hello"}))
+	opts := e.options(e.prov)
+	opts.Index = &confirmDown{Store: e.st}
+	e.pipe = ingest.New(opts)
+	_, err := e.ingest(t, built, raw, pkgPath)
+	h := http.Header{}
+	format.SetRetryAfter(h, err)
+	if !errors.Is(err, index.ErrUnavailable) || format.StatusOf(err) != http.StatusServiceUnavailable || h.Get("Retry-After") != "5" {
+		t.Fatalf("Ingest: %v (status %d, Retry-After %q), want index.ErrUnavailable: 503, Retry-After: 5",
+			err, format.StatusOf(err), h.Get("Retry-After"))
+	}
+	if got := e.tagged(t, built.RepoPath, "1.0.0"); got != digest.FromBytes(raw) {
+		t.Errorf("the registry has %q under the tag, want the manifest %s", got, digest.FromBytes(raw))
+	}
+	e.noClaim(t, readme, "1.0.0")
+	if ev := e.rows(t).Audit; len(ev) != 1 || ev[0].State != index.AuditFailed {
+		t.Errorf("audit rows %+v, want the push failed", ev)
+	}
+	if _, err := e.ingest(t, built, raw, pkgPath); err != nil || len(e.rows(t).Versions) != 1 {
+		t.Errorf("the same publish again: %v, versions %+v", err, e.rows(t).Versions)
 	}
 }
 

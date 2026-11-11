@@ -1,14 +1,22 @@
 package raw
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/opencontainers/go-digest"
+
 	"github.com/lajstrom/lajstrom/internal/config"
+	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider/generic"
 )
 
@@ -35,4 +43,55 @@ func TestRegistryUnavailable(t *testing.T) {
 	if s, err := strconv.Atoi(rr.Header().Get("Retry-After")); err != nil || s < 1 || s > 30 {
 		t.Errorf("Retry-After %q, want 1 to 30 seconds", rr.Header().Get("Retry-After"))
 	}
+}
+
+// TestIndexUnavailableAtConfirm uploads a file whose index write fails after the registry took
+// its manifest, the database out (#641): 503 with Retry-After: 5 and the status text only, not
+// a 500 nor the database's error; the claim is released, and the same PUT again is 201.
+func TestIndexUnavailableAtConfirm(t *testing.T) {
+	e := newEnv(t, envOptions{ingested: downAtConfirm})
+	rr := e.do(http.MethodPut, target("dir/file.txt"), strings.NewReader("content"))
+	if rr.Code != http.StatusServiceUnavailable || rr.Body.String() != "Service Unavailable\n" || rr.Header().Get("Retry-After") != "5" {
+		t.Fatalf("PUT while the index is out = %d %q, Retry-After %q; want 503 Service Unavailable, 5",
+			rr.Code, rr.Body, rr.Header().Get("Retry-After"))
+	}
+	if len(e.prov.PushReferences()) != 1 || len(e.versions("dir/file.txt")) != 0 {
+		t.Fatalf("%d manifest pushes, %d versions; want the push and no version", len(e.prov.PushReferences()), len(e.versions("dir/file.txt")))
+	}
+	pkgPath, err := Plugin{}.EscapeName("dir/file.txt")
+	must(t, err)
+	tag := profile.Tag(digest.FromString("content").Encoded()[:versionLen], "")
+	if c, err := e.st.GetTagClaim(t.Context(), e.repo.ID, pkgPath, tag); !errors.Is(err, index.ErrNotFound) {
+		t.Errorf("the claim on the tag %s: %+v, %v; want it released", tag, c, err)
+	}
+	e.put("dir/file.txt", "content")
+	if vs := e.versions("dir/file.txt"); len(vs) != 1 {
+		t.Errorf("versions after the same PUT again: %+v, want one", vs)
+	}
+}
+
+// downAtConfirm wraps st: the first transaction that writes a package, the confirm of a publish
+// after the registry took its manifest, fails as a database that dropped out does, with
+// index.ErrUnavailable and a cause that names its host.
+func downAtConfirm(st index.Store) index.Store { return &confirmDown{Store: st} }
+
+type confirmDown struct {
+	index.Store
+	done atomic.Bool
+}
+
+func (s *confirmDown) Tx(ctx context.Context, fn func(index.Writer) error) error {
+	return s.Store.Tx(ctx, func(w index.Writer) error { return fn(confirmDownWriter{Writer: w, s: s}) })
+}
+
+type confirmDownWriter struct {
+	index.Writer
+	s *confirmDown
+}
+
+func (w confirmDownWriter) UpsertPackage(ctx context.Context, p *index.Package) error {
+	if w.s.done.CompareAndSwap(false, true) {
+		return fmt.Errorf("%w: packages: dial tcp 10.0.0.7:5432: connect: connection refused", index.ErrUnavailable)
+	}
+	return w.Writer.UpsertPackage(ctx, p)
 }
