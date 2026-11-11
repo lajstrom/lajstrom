@@ -45,6 +45,12 @@ passes. It runs on in-memory SQLite in `make test`, and on Postgres too when
 LAJSTROM_TEST_POSTGRES_DSN='postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable' go test -race ./internal/index/...
 ```
 
+Behind a pooler in transaction mode (PgBouncer, Odyssey) the schema, a `search_path` in the DSN,
+does not reach the server connection that runs a statement. There,
+`LAJSTROM_TEST_POSTGRES_ISOLATION=database` gives each test a database of its own: the DSN's user
+must create and drop databases, and the pooler must route every database name to the server
+(PgBouncer: `* = host=…`) and let in the roles the tests create (PgBouncer: `auth_user`).
+
 ## Integration
 
 Tests behind `//go:build integration`, against a real registry: the provider, the facade,

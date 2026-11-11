@@ -30,16 +30,16 @@ func TestDataRole(t *testing.T) {
 	dsn := testDSN(t)
 	role, password := newRole(t, dsn)
 
-	// owned migrates a new schema as the owner, grants it to role and returns the role's DSN
-	// for it and the owner's connection.
+	// owned migrates a new namespace as the owner, grants its schema to role and returns the
+	// role's DSN for it and the owner's connection.
 	owned := func(t *testing.T) (string, *sql.DB) {
-		schema := newSchema(t, dsn)
-		openMigrated(t, withSearchPath(dsn, schema))
-		owner := openDB(t, withSearchPath(dsn, schema))
-		if _, err := owner.ExecContext(t.Context(), fmt.Sprintf(dataGrants, schema, role)); err != nil {
+		ns := newNamespace(t, dsn)
+		openMigrated(t, ns.dsn(dsn))
+		owner := openDB(t, ns.dsn(dsn))
+		if _, err := owner.ExecContext(t.Context(), fmt.Sprintf(dataGrants, ns.schema, role)); err != nil {
 			t.Fatal(err)
 		}
-		return withSearchPath(withUser(t, dsn, role, password), schema), owner
+		return ns.dsn(withUser(t, dsn, role, password)), owner
 	}
 
 	t.Run("conformance", func(t *testing.T) {

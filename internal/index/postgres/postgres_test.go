@@ -43,36 +43,59 @@ func testDSN(t *testing.T) string {
 	return dsn
 }
 
-// schemaDSN creates an empty schema, drops it when the test ends, and returns dsn with the
-// schema as its search_path: every test runs in a namespace of its own.
-func schemaDSN(t *testing.T, dsn string) string {
+// isolationEnv names the variable that, set to "database", gives every test a database of its
+// own instead of a schema of the test database. A pooler in transaction mode (PgBouncer,
+// Odyssey) does not carry a DSN's search_path to the server connection that runs a statement,
+// so the tests behind one need it (docs/deploy/databases.md).
+const isolationEnv = "LAJSTROM_TEST_POSTGRES_ISOLATION"
+
+// isolatedDSN creates an empty namespace (newNamespace), drops it when the test ends, and
+// returns dsn in it: every test runs in a namespace of its own.
+func isolatedDSN(t *testing.T, dsn string) string {
 	t.Helper()
-	return withSearchPath(dsn, newSchema(t, dsn))
+	return newNamespace(t, dsn).dsn(dsn)
 }
 
-// newSchema creates an empty schema, drops it when the test ends, and returns its name.
-func newSchema(t *testing.T, dsn string) string {
+// namespace is where the tables of one test live: a schema of the test database, as the DSN's
+// search_path, or a database of its own (isolationEnv) and its schema public.
+type namespace struct{ schema, database string }
+
+// newNamespace creates an empty namespace, drops it when the test ends, and returns it.
+func newNamespace(t *testing.T, dsn string) namespace {
 	t.Helper()
-	schema := "lajstrom_test_" + strings.ToLower(rand.Text())
+	name := "lajstrom_test_" + strings.ToLower(rand.Text())
+	ns, kind, force := namespace{schema: name}, "SCHEMA", " CASCADE"
+	switch mode := os.Getenv(isolationEnv); mode {
+	case "", "schema":
+	case "database":
+		ns, kind, force = namespace{schema: "public", database: name}, "DATABASE", " WITH (FORCE)"
+	default:
+		t.Fatalf("%s=%q: want schema or database", isolationEnv, mode)
+	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), "CREATE SCHEMA "+schema); err != nil {
+	if _, err := db.ExecContext(t.Context(), "CREATE "+kind+" "+name); err != nil {
 		_ = db.Close()
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if _, err := db.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE"); err != nil {
+		if _, err := db.ExecContext(context.Background(), "DROP "+kind+" "+name+force); err != nil {
 			t.Error(err)
 		}
 		_ = db.Close()
 	})
-	return schema
+	return ns
 }
 
-// withSearchPath returns dsn, a URL or a keyword/value string, with search_path set.
-func withSearchPath(dsn, schema string) string { return withParam(dsn, "search_path", schema) }
+// dsn returns dsn, a URL or a keyword/value string, in the namespace.
+func (ns namespace) dsn(dsn string) string {
+	if ns.database != "" {
+		return withParam(dsn, "dbname", ns.database)
+	}
+	return withParam(dsn, "search_path", ns.schema)
+}
 
 // withParam returns dsn, a URL or a keyword/value string, with the run-time parameter key set.
 func withParam(dsn, key, value string) string {
@@ -109,7 +132,7 @@ func openMigrated(t *testing.T, dsn string) *Store {
 func TestConformance(t *testing.T) {
 	dsn := testDSN(t)
 	storetest.Run(t, func(t *testing.T) index.Store {
-		return openMigrated(t, schemaDSN(t, dsn))
+		return openMigrated(t, isolatedDSN(t, dsn))
 	})
 }
 
@@ -117,7 +140,7 @@ func TestConformance(t *testing.T) {
 // starting together do: the advisory lock lets each migration apply once.
 func TestConcurrentMigrate(t *testing.T) {
 	ctx := t.Context()
-	dsn := schemaDSN(t, testDSN(t))
+	dsn := isolatedDSN(t, testDSN(t))
 	stores := make([]*Store, 2)
 	for i := range stores {
 		s, err := Open(ctx, dsn)
@@ -203,7 +226,7 @@ func TestOpenDoesNotLeakTheDSN(t *testing.T) {
 // Postgres, which serves many replicas.
 func TestReplicasCoexist(t *testing.T) {
 	ctx := t.Context()
-	dsn := schemaDSN(t, testDSN(t))
+	dsn := isolatedDSN(t, testDSN(t))
 	a, b := openMigrated(t, dsn), openMigrated(t, dsn)
 	start := time.Now()
 	for i, s := range []*Store{a, b} {
@@ -288,7 +311,7 @@ func TestTerminatedConnection(t *testing.T) {
 	ctx := t.Context()
 	dsn := testDSN(t)
 	app := "lajstrom_test_" + strings.ToLower(rand.Text())
-	s := openMigrated(t, withParam(schemaDSN(t, dsn), "application_name", app))
+	s := openMigrated(t, withParam(isolatedDSN(t, dsn), "application_name", app))
 	admin, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
