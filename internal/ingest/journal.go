@@ -35,9 +35,13 @@ var journalActions = map[string]string{
 //     empty blob's digest, which no manifest has: the package (index.ErrNotFound without one)
 //     and n, the highest seq the index has of it; the tags _j<n+1>, _j<n+2>, … that the registry
 //     has, each read, checked and adopted (an entry whose writer stopped before its index
-//     write); then every version an op names must be one of the package (ErrInvalid); then each
-//     op is pushed as the next entry.
-//  3. One index transaction, still under the lock: the journal rows of the adopted and the new
+//     write), and one the registry does not serve yet but an earlier append claimed (claimed);
+//     then every version an op names must be one of the package (ErrInvalid); then each op is
+//     claimed in tag_claims under its tag and pushed as the next entry.
+//  3. The new entries read back until the registry serves them (the visibility barrier,
+//     awaitVisible); past the visibility timeout the error wraps provider.ErrUnavailable (503
+//     with Retry-After), nothing is recorded, and the next append adopts the entries.
+//  4. One index transaction, still under the lock: the journal rows of the adopted and the new
 //     entries, the package's journal_state folded from all its rows, the repo's index_cache
 //     invalidated, and the audit row of each op ok (npm.dist-tag or npm.deprecate, with the
 //     entry's digest), written pending before the op's push. When it fails the entries stay in
@@ -51,7 +55,7 @@ func (p *Pipeline) Journal(ctx context.Context, repo index.Repo, pkgPath string,
 	if err != nil {
 		return nil, err
 	}
-	j := &journal{p: p, repo: repo, pkgPath: pkgPath, name: ociName(repo, pkgPath), ops: ops, principal: principal}
+	j := &journal{p: p, repo: repo, pkgPath: pkgPath, name: ociName(repo, pkgPath), ops: ops, principal: principal, prov: prov}
 	if j.rr, err = prov.Repository(ctx, j.name); err != nil {
 		return nil, fmt.Errorf("ingest: repository %s: %w", j.name, err)
 	}
@@ -100,6 +104,7 @@ type journal struct {
 	pkgPath   string
 	name      string // the OCI repository, without the instance prefix
 	rr        provider.Repository
+	prov      provider.Provider
 	ops       []format.JournalOp
 	principal auth.Principal
 
@@ -108,11 +113,12 @@ type journal struct {
 	written []profile.JournalEntry  // adopted, then the ops' own
 	digests map[int64]digest.Digest // of written, by seq
 	events  []index.AuditEvent      // one per op
+	pushes  []pushed                // the ops' entries, for awaitVisible
 	at      time.Time               // the time of the entries and of their rows
 	pushed  bool                    // the empty blob is in the repository
 }
 
-// append runs steps 2 and 3 of Journal under the journal lock.
+// append runs steps 2 to 4 of Journal under the journal lock.
 func (j *journal) append(ctx context.Context) error {
 	var err error
 	if j.pkg, err = j.p.index.GetPackageByNameOCI(ctx, j.repo.ID, j.pkgPath); err != nil {
@@ -146,6 +152,11 @@ func (j *journal) append(ctx context.Context) error {
 		}
 		j.written = append(j.written, e)
 	}
+	for _, w := range j.pushes {
+		if err := j.p.awaitVisible(ctx, w); err != nil {
+			return err
+		}
+	}
 	return j.record(ctx)
 }
 
@@ -157,7 +168,10 @@ func (j *journal) adopt(ctx context.Context, n int64) error {
 		tag := profile.JournalTag(seq)
 		desc, err := j.rr.Resolve(ctx, tag)
 		if errors.Is(err, provider.ErrNotFound) {
-			return nil
+			var ok bool
+			if desc, ok, err = j.claimed(ctx, tag); err != nil || !ok {
+				return err
+			}
 		}
 		if err != nil {
 			return fmt.Errorf("ingest: resolve %s:%s: %w", j.name, tag, err)
@@ -174,6 +188,54 @@ func (j *journal) adopt(ctx context.Context, n int64) error {
 		}
 		return fmt.Errorf("ingest: the journal of %s cannot go on: %s:%s is not entry %d of the package: %s", j.name, j.name, tag, seq, err.Error())
 	}
+}
+
+// claimed reads back the entry tag, which the registry does not serve, when an earlier append
+// claimed it: its writer stopped after the claim, perhaps after the push, on a registry that
+// may not serve the push yet. ok is false when nothing claims tag, or a stale claim, or a claim
+// the registry says was never pushed: a strongly consistent one that does not serve it. The
+// claim is released then, and tag is the next append's. On any other registry an entry it
+// does not serve within the visibility timeout is a *provider.UnavailableError, 503: the
+// journal cannot tell a lost push from a late one, and waits until the claim is stale rather
+// than push another entry under the tag.
+func (j *journal) claimed(ctx context.Context, tag string) (desc ocispec.Descriptor, ok bool, err error) {
+	c, err := j.p.index.GetTagClaim(ctx, j.repo.ID, j.pkgPath, tag)
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		return desc, false, nil
+	case err != nil:
+		return desc, false, fmt.Errorf("ingest: the claim of %s:%s: %w", j.name, tag, err)
+	}
+	caps, err := j.prov.Capabilities(ctx)
+	if err != nil {
+		return desc, false, fmt.Errorf("ingest: capabilities of the registry of %s: %w", j.name, err)
+	}
+	stale := c.ClaimedAt.Before(j.p.now().Add(-j.p.claimTTL))
+	timeout := max(j.p.visibility, caps.ConsistencyBound)
+	if stale || caps.Consistency == provider.ConsistencyStrong {
+		timeout = 0
+	}
+	ok, err = provider.ReadBack{Timeout: timeout}.Await(ctx, func(ctx context.Context) (bool, error) {
+		var rerr error
+		desc, rerr = j.rr.Resolve(ctx, tag)
+		if errors.Is(rerr, provider.ErrNotFound) {
+			return false, nil
+		}
+		return rerr == nil, rerr
+	})
+	switch {
+	case err != nil:
+		return desc, false, fmt.Errorf("ingest: resolve %s:%s: %w", j.name, tag, err)
+	case ok:
+		return desc, true, nil
+	case !stale && caps.Consistency != provider.ConsistencyStrong:
+		return desc, false, fmt.Errorf("ingest: %s:%s: %w", j.name, tag, &provider.UnavailableError{RetryAfter: visibilityRetryAfter,
+			Reason: "an earlier append claimed the journal entry " + tag + " and the registry does not serve it; the journal waits for it until the claim is stale"})
+	}
+	if err := j.p.index.ReleaseTagClaim(ctx, c.ID); err != nil && !errors.Is(err, index.ErrNotFound) {
+		return desc, false, fmt.Errorf("ingest: release the claim of %s:%s: %w", j.name, tag, err)
+	}
+	return desc, false, nil
 }
 
 // read fetches the manifest desc and parses it as a journal entry.
@@ -240,10 +302,21 @@ func (j *journal) push(ctx context.Context, e profile.JournalEntry) error {
 	}
 	tag := profile.JournalTag(e.Seq)
 	desc := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: d, Size: int64(len(raw))}
+	now := j.p.now()
+	claim := index.TagClaim{RepoID: j.repo.ID, Package: j.pkgPath, Tag: tag, Digest: d, Principal: j.principal.String(), ClaimedAt: now}
+	if err := j.p.index.ClaimTag(ctx, &claim, now.Add(-j.p.claimTTL)); err != nil {
+		return fmt.Errorf("ingest: claim %s:%s: %w", j.name, tag, err)
+	}
 	if err := j.rr.PushReference(ctx, desc, bytes.NewReader(raw), tag); err != nil {
+		if rerr := j.p.index.ReleaseTagClaim(context.WithoutCancel(ctx), claim.ID); rerr != nil && !errors.Is(rerr, index.ErrNotFound) {
+			j.p.log.WarnContext(ctx, "ingest: journal claim not released; it holds the entry until it is stale", "name", j.name, "tag", tag,
+				"error", rerr.Error())
+		}
 		return fmt.Errorf("ingest: push %s:%s: %w", j.name, tag, err)
 	}
 	j.digests[e.Seq] = d
+	j.pushes = append(j.pushes, pushed{name: j.name, rr: j.rr, prov: j.prov, manifest: desc, tag: tag,
+		blobs: append([]ocispec.Descriptor{m.Config}, m.Layers...)})
 	return nil
 }
 
@@ -267,14 +340,18 @@ func (j *journal) intend(ctx context.Context, e profile.JournalEntry, d digest.D
 }
 
 // record writes the rows of the written entries, the package's state folded from all its rows,
-// the invalidated index_cache and the completed audit rows in one transaction, and the audit
-// rows to the audit.Writer after it when there is one.
+// the invalidated index_cache and the completed audit rows, and releases the claims of the
+// written entries, in one transaction; then the audit rows to the audit.Writer when there is
+// one.
 func (j *journal) record(ctx context.Context) error {
 	err := j.p.index.Tx(ctx, func(w index.Writer) error {
 		for _, e := range j.written {
 			row := index.JournalEntry{PackageID: j.pkg.ID, Seq: e.Seq, Tag: profile.JournalTag(e.Seq), Digest: j.digests[e.Seq],
 				ArtifactType: e.ArtifactType, Attrs: e.Attrs(), CreatedAt: e.Created, IndexedAt: j.at}
 			if err := w.UpsertJournal(ctx, &row); err != nil {
+				return err
+			}
+			if err := j.release(ctx, w, row.Tag); err != nil {
 				return err
 			}
 		}
@@ -309,6 +386,21 @@ func (j *journal) record(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// release deletes the claim of the entry tag on w, if there is one.
+func (j *journal) release(ctx context.Context, w index.Writer, tag string) error {
+	c, err := w.GetTagClaim(ctx, j.repo.ID, j.pkgPath, tag)
+	if errors.Is(err, index.ErrNotFound) {
+		return nil
+	}
+	if err == nil {
+		err = w.ReleaseTagClaim(ctx, c.ID)
+	}
+	if errors.Is(err, index.ErrNotFound) {
+		return nil
+	}
+	return err
 }
 
 // foldJournal returns the state of a package from its journal rows in seq order (§8, Replay), as

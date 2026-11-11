@@ -286,8 +286,8 @@ type Ingest struct {
 	ClaimTTL time.Duration `yaml:"claimTTL"`
 	// VisibilityTimeout is how long a publish reads back what it pushed until the registry
 	// serves it, before it answers 503 (the visibility barrier, docs/registries/README.md,
-	// Consistency); a registry's capabilities.consistencyBound raises it. Must not be
-	// negative; zero means the default.
+	// Consistency), twice that for a referrer; a registry's capabilities.consistencyBound
+	// raises it. Must not be negative; zero means the default.
 	VisibilityTimeout time.Duration `yaml:"visibilityTimeout"`
 }
 

@@ -616,7 +616,14 @@ What an operator of ECR sees:
   registry took a push and does not serve it yet` at warning, naming what was missing. The
   manifest stays in the registry and the index has no version. The claim on the tag stays as
   well, for `ingest.claimTTL`: another digest under the tag is `409`, and the same publish
-  again completes it. A client that never retries leaves the manifest for reindex to index.
+  again completes it, also from a frontend that builds the manifest again with another
+  `created` time: an upload of the same files takes the first manifest over. A client that
+  never retries leaves the manifest for reindex to index.
+- A referrer (a signature, an SBOM) waits twice as long, until the registry lists it among its
+  subject's referrers too: Docker Hub's referrers list was seen a minute behind.
+- An npm dist-tag or deprecation the registry did not serve in time is `503` the same way. Its
+  journal entry stays claimed in the index; the next change of that package adopts it once the
+  registry serves it, and answers `503` until then, or until the claim is stale.
 
 ### Requests from clients
 

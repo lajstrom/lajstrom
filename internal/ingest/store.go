@@ -3,8 +3,10 @@ package ingest
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/opencontainers/go-digest"
@@ -28,8 +30,29 @@ var errExisted = errors.New("ingest: the tag already holds this manifest")
 // package of another spelling, or a fresh claim of another spelling, is ErrConflict naming it
 // (#244); a version with another digest, or a fresh claim of another digest, is the
 // *index.TagConflictError. Both are returned as they are. For an Upload (repeatOnFiles) a
-// version with the same file layers is the repeat instead, and pub.existing names its manifest.
+// version with the same file layers is the repeat instead, and pub.existing names its manifest;
+// and a fresh claim of another digest whose manifest the registry has, with the same files, is
+// the publish that pub repeats: pub takes over that manifest (adoptClaimed) and its claim.
 func (p *Pipeline) claimTag(ctx context.Context, pub *publish) (existed bool, err error) {
+	existed, claimed, err := p.claimOnce(ctx, pub)
+	if claimed == "" {
+		return existed, err
+	}
+	adopted, aerr := p.adoptClaimed(ctx, pub, claimed)
+	switch {
+	case aerr != nil:
+		return false, aerr
+	case !adopted:
+		return false, err
+	}
+	existed, _, err = p.claimOnce(ctx, pub)
+	return existed, err
+}
+
+// claimOnce is one claim transaction of claimTag. claimed is the digest of the fresh claim of
+// another digest that refused an Upload's claim, which claimTag may adopt; err is the
+// *index.TagConflictError then.
+func (p *Pipeline) claimOnce(ctx context.Context, pub *publish) (existed bool, claimed digest.Digest, err error) {
 	now := p.now()
 	pub.claim = index.TagClaim{RepoID: pub.repo.ID, Package: pub.pkgPath, Tag: pub.tag,
 		Digest: pub.digest, Principal: pub.principal.String(), ClaimedAt: now}
@@ -38,6 +61,10 @@ func (p *Pipeline) claimTag(ctx context.Context, pub *publish) (existed bool, er
 			return err
 		}
 		if err := w.ClaimTag(ctx, &pub.claim, now.Add(-p.claimTTL)); err != nil {
+			var conflict *index.TagConflictError
+			if pub.repeatOnFiles && errors.As(err, &conflict) {
+				claimed = conflict.Existing
+			}
 			return err
 		}
 		v, err := versionByTag(ctx, w, pub.repo.ID, pub.pkgPath, pub.parsed.Annotations.Name, pub.tag)
@@ -63,13 +90,100 @@ func (p *Pipeline) claimTag(ctx context.Context, pub *publish) (existed bool, er
 	})
 	switch {
 	case err == nil:
-		return false, nil
+		return false, "", nil
 	case errors.Is(err, errExisted):
-		return true, nil
+		return true, "", nil
 	case errors.Is(err, ErrConflict):
+		return false, claimed, err
+	}
+	return false, "", fmt.Errorf("ingest: claim %s:%s: %w", pub.name, pub.tag, err)
+}
+
+// adoptClaimed makes pub the publish of the manifest d, which a fresh claim on pub's tag holds,
+// when the registry has it with the same name and the same file layers: a publish of the same
+// files that pushed it and did not confirm it, a frontend's upload answered 503 by the
+// visibility barrier or one still on its way. A frontend builds the manifest again for a retry,
+// with another org.opencontainers.image.created and so another digest, and would get 409 from
+// the claim of its own first attempt. pub then validates d as it validated its own build, and
+// pushes and confirms it. adopted is false when the registry does not serve d within the
+// visibility timeout (a strongly consistent one is read once) or d is another artifact.
+func (p *Pipeline) adoptClaimed(ctx context.Context, pub *publish, d digest.Digest) (adopted bool, err error) {
+	caps, err := pub.prov.Capabilities(ctx)
+	if err != nil {
+		return false, fmt.Errorf("ingest: capabilities of the registry of %s: %w", pub.name, err)
+	}
+	timeout := max(p.visibility, caps.ConsistencyBound)
+	if caps.Consistency == provider.ConsistencyStrong {
+		timeout = 0
+	}
+	var desc ocispec.Descriptor
+	found, err := provider.ReadBack{Timeout: timeout}.Await(ctx, func(ctx context.Context) (bool, error) {
+		var rerr error
+		desc, rerr = pub.rr.Resolve(ctx, d.String())
+		if errors.Is(rerr, provider.ErrNotFound) {
+			return false, nil
+		}
+		return rerr == nil, rerr
+	})
+	if err != nil || !found {
 		return false, err
 	}
-	return false, fmt.Errorf("ingest: claim %s:%s: %w", pub.name, pub.tag, err)
+	m, raw, err := fetchManifest(ctx, pub.rr, desc)
+	if err != nil {
+		return false, fmt.Errorf("ingest: the claimed manifest %s@%s: %w", pub.name, d, err)
+	}
+	parsed, err := profile.Validate(m)
+	if err != nil || parsed.Annotations.Name != pub.parsed.Annotations.Name || !sameLayers(parsed.Files, pub.parsed.Files) {
+		return false, nil //nolint:nilerr // another artifact: the claim's conflict stands
+	}
+	p.log.InfoContext(ctx, "ingest: an upload of the same files takes over the manifest of a publish not confirmed",
+		"name", pub.name, "tag", pub.tag, "digest", d.String(), "built", pub.digest.String())
+	pub.manifest, pub.raw, pub.digest = m, raw, d
+	return true, p.validate(ctx, pub)
+}
+
+// fetchManifest reads the manifest desc of rr, which must be its digest's bytes.
+func fetchManifest(ctx context.Context, rr provider.Repository, desc ocispec.Descriptor) (ocispec.Manifest, []byte, error) {
+	var m ocispec.Manifest
+	rc, err := rr.Fetch(ctx, desc)
+	if err != nil {
+		return m, nil, err
+	}
+	defer func() { _ = rc.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(rc, maxManifestBytes))
+	switch {
+	case err != nil:
+		return m, nil, err
+	case digest.FromBytes(raw) != desc.Digest:
+		return m, nil, fmt.Errorf("the manifest's bytes are not %s", desc.Digest)
+	}
+	return m, raw, json.Unmarshal(raw, &m)
+}
+
+// sameLayers reports whether a and b are the same file layers, as a set: the same digest, size,
+// media type and title each, in any order.
+func sameLayers(a, b []profile.Layer) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	type key struct {
+		digest    digest.Digest
+		size      int64
+		mediaType string
+		title     string
+	}
+	have := make(map[key]int, len(a))
+	for _, l := range a {
+		have[key{l.Digest, l.Size, l.MediaType, l.Title}]++
+	}
+	for _, l := range b {
+		k := key{l.Digest, l.Size, l.MediaType, l.Title}
+		if have[k] == 0 {
+			return false
+		}
+		have[k]--
+	}
+	return true
 }
 
 // pathTag is the tag of the claim on a package path; an OCI tag is never empty.
@@ -166,27 +280,11 @@ func sameFiles(ctx context.Context, r index.Reader, versionID int64, layers []pr
 	if err != nil {
 		return false, fmt.Errorf("ingest: files of version %d: %w", versionID, err)
 	}
-	if len(files) != len(layers) {
-		return false, nil
+	had := make([]profile.Layer, len(files))
+	for i, f := range files {
+		had[i] = profile.Layer{Digest: f.Digest, Size: f.Size, MediaType: f.MediaType, Title: f.Name}
 	}
-	type key struct {
-		digest    digest.Digest
-		size      int64
-		mediaType string
-		title     string
-	}
-	have := make(map[key]int, len(files))
-	for _, f := range files {
-		have[key{f.Digest, f.Size, f.MediaType, f.Name}]++
-	}
-	for _, l := range layers {
-		k := key{l.Digest, l.Size, l.MediaType, l.Title}
-		if have[k] == 0 {
-			return false, nil
-		}
-		have[k]--
-	}
-	return true, nil
+	return sameLayers(had, layers), nil
 }
 
 // push puts the manifest and its tag in one request, its audit row pending before the request
