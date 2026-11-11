@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end test of a maven repo with mvn and Gradle against a running Lajstrom (#54, #55, #56;
-# docs/spec/http-routing.md §3 maven; docs/acceptance.md M-01 to M-04 and M-07, and H-08 when
+# docs/spec/http-routing.md §3 maven; docs/acceptance.md M-01 to M-05 and M-07, and H-08 when
 # the base URL is the edge of the ha stack):
 #
 #   - a maven repo of its own, created through POST /api/v1/repos, and a deploy token with read
@@ -28,6 +28,10 @@
 #     taken from the client, whose metadata says release 1.0.0 (M-04);
 #   - mvn deploy of 1.0.0 with a changed jar: fails with a 409 at the commit; curl shows the
 #     server's message, which names the version; the jar served is still the first (M-04);
+#   - with curl, <group>:streamed:1.0.0, a jar of 20 MiB, which streams into the registry in
+#     several chunks (ADR 0014), and a .sha1 that disagrees with it: 400, as mvn takes it and goes
+#     on; its maven-metadata.xml is 400 naming the jar, and the jar is 404; the jar again and its
+#     .sha1, then the same maven-metadata.xml: 201, and the jar served is the bytes (M-05);
 #   - gradle publish of <group>:gradle-lib:1.0.0 (fixtures/maven/gradle-lib, maven-publish: the
 #     jar, the pom and the .module, each with .md5, .sha1, .sha256 and .sha512): every PUT 201,
 #     the manifest's three file layers, the files and checksums served; gradle resolve
@@ -545,6 +549,40 @@ fi
 expect "M-04 the commit of other bytes under $group:lib:1.0.0 with curl ($(head -c 300 "$work/body"))" 409 "$status"
 grep -qF 1.0.0 "$work/body" || fail "M-04 the message of the 409 does not name the version 1.0.0: $(head -c 300 "$work/body")"
 step "M-04 mvn deploy of $group:lib:1.0.0 with a changed jar: fails, \"$said\", $at; with curl: 409 \"$(tr -d '\n' <"$work/body" | head -c 200)\"; lib-1.0.0.jar is still the first"
+
+# M-05: a .sha1 that disagrees with its jar keeps the deploy from committing until the jar comes
+# again; the jar, 20 MiB, streams into the registry in several chunks (ADR 0014).
+sdir="$gpath/streamed/1.0.0"
+head -c 20971520 /dev/urandom >"$work/streamed-1.0.0.jar"
+printf '<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>%s</groupId><artifactId>streamed</artifactId><version>1.0.0</version></project>\n' \
+	"$group" >"$work/streamed-1.0.0.pom"
+printf '<metadata><groupId>%s</groupId><artifactId>streamed</artifactId><versioning><release>1.0.0</release><versions><version>1.0.0</version></versions></versioning></metadata>\n' \
+	"$group" >"$work/streamed.xml"
+printf '%040d\n' 0 >"$work/wrong.sha1"
+req deploy PUT "$url/$sdir/streamed-1.0.0.jar" -T "$work/streamed-1.0.0.jar"
+expect "M-05 PUT streamed-1.0.0.jar ($(head -c 300 "$work/body"))" 201 "$status"
+req deploy PUT "$url/$sdir/streamed-1.0.0.jar.sha1" -T "$work/wrong.sha1"
+expect "M-05 PUT of a .sha1 that disagrees ($(head -c 300 "$work/body"))" 400 "$status"
+refused="$(tr -d '\n' <"$work/body")"
+req deploy PUT "$url/$sdir/streamed-1.0.0.pom" -T "$work/streamed-1.0.0.pom"
+expect "M-05 PUT streamed-1.0.0.pom ($(head -c 300 "$work/body"))" 201 "$status"
+req deploy PUT "$url/$gpath/streamed/maven-metadata.xml" -T "$work/streamed.xml"
+expect "M-05 the commit of a deploy whose jar was refused ($(head -c 300 "$work/body"))" 400 "$status"
+grep -qF "holds $sdir/streamed-1.0.0.jar, which was refused" "$work/body" ||
+	fail "M-05 the 400 of the commit does not name the jar: $(head -c 300 "$work/body")"
+commit="$(tr -d '\n' <"$work/body" | head -c 160)…"
+req deploy GET "$url/$sdir/streamed-1.0.0.jar"
+expect "M-05 GET of the refused jar" 404 "$status"
+req deploy PUT "$url/$sdir/streamed-1.0.0.jar" -T "$work/streamed-1.0.0.jar"
+expect "M-05 PUT streamed-1.0.0.jar again ($(head -c 300 "$work/body"))" 201 "$status"
+digest sha1 "$work/streamed-1.0.0.jar" >"$work/right.sha1"
+req deploy PUT "$url/$sdir/streamed-1.0.0.jar.sha1" -T "$work/right.sha1"
+expect "M-05 PUT of its .sha1 ($(head -c 300 "$work/body"))" 201 "$status"
+req deploy PUT "$url/$gpath/streamed/maven-metadata.xml" -T "$work/streamed.xml"
+expect "M-05 the commit after the jar again ($(head -c 300 "$work/body"))" 201 "$status"
+req deploy GET "$url/$sdir/streamed-1.0.0.jar" -L
+cmp -s "$work/streamed-1.0.0.jar" "$work/body" || fail "M-05 streamed-1.0.0.jar served is not the 20 MiB deployed"
+step "M-05 $group:streamed:1.0.0 with curl, a jar of 20 MiB and a .sha1 that disagrees: 400 \"$(printf '%s' "$refused" | head -c 120)…\"; maven-metadata.xml 400 \"$commit\", the jar 404; the jar again and its .sha1: the commit 201, the jar served the bytes"
 
 # TODO(#60): M-06 and #54's second criterion end to end, a session left without
 # maven-metadata.xml that expires: PUT lib-2.0.0.jar alone with curl, wait out the repo's

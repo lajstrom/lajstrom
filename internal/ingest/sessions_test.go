@@ -227,6 +227,37 @@ func TestSessionRules(t *testing.T) {
 	}
 }
 
+// TestSessionRefuse: a file that Refuse refused keeps Commit from publishing, ErrInvalid naming
+// the file and the reason, and the session open, until Add replaces the file; then the session
+// commits. Refuse of a file the session does not hold is ErrNotFound.
+func TestSessionRefuse(t *testing.T) {
+	ctx := t.Context()
+	e, _ := sessionEnv(t)
+	s, err := e.pipe.Open(ctx, e.repo, "lib", "1.0", alice)
+	must(t, err)
+	add(t, e, s.ID, "a.jar", "corrupted on the way")
+	add(t, e, s.ID, "b.pom", "<project/>")
+	if err := e.pipe.Refuse(ctx, s.ID, "c.jar", "never added"); !errors.Is(err, index.ErrNotFound) {
+		t.Errorf("Refuse of a file the session does not hold = %v, want ErrNotFound", err)
+	}
+	const reason = "the sha1 of a.jar is 0a, a.jar.sha1 says 0b"
+	must(t, e.pipe.Refuse(ctx, s.ID, "a.jar", reason))
+	for range 2 { // and again: the session stays as it is
+		_, err = e.pipe.Commit(ctx, s.ID)
+		if !errors.Is(err, ingest.ErrInvalid) || !strings.Contains(err.Error(), "holds a.jar, which was refused: "+reason) {
+			t.Fatalf("Commit of a session with a refused file = %v, want ErrInvalid naming a.jar and why", err)
+		}
+	}
+	if r := e.rows(t); len(r.Versions) != 0 || len(e.pushRefs("1.0")) != 0 || e.state(t, s.ID) != "open" {
+		t.Errorf("rows %+v, %d manifests pushed, session %s; want nothing published and the session open",
+			r, len(e.pushRefs("1.0")), e.state(t, s.ID))
+	}
+	add(t, e, s.ID, "a.jar", "aaa") // uploaded again
+	pub, err := e.pipe.Commit(ctx, s.ID)
+	must(t, err)
+	e.wantFileLayers(t, "raw/scratch/lib", pub.Tag, []file{{"a.jar", "aaa"}, {"b.pom", "<project/>"}})
+}
+
 // TestSessionAddStreams: with a TMPDIR that takes no file, Add streams a file of several chunks
 // into the registry and commits its blob with the checksums it computed; one whose body fails,
 // or is shorter than its size, stores no blob, leaves no session open in the registry and adds
@@ -368,6 +399,9 @@ func TestSessionCommitOnce(t *testing.T) {
 	}
 	if err := e.pipe.Abort(ctx, s.ID); !errors.Is(err, index.ErrConflict) {
 		t.Errorf("Abort during the commit = %v, want ErrConflict", err)
+	}
+	if err := e.pipe.Refuse(ctx, s.ID, "a.jar", "too late"); !errors.Is(err, index.ErrConflict) {
+		t.Errorf("Refuse during the commit = %v, want ErrConflict", err)
 	}
 	close(release)
 	if err := <-done; !errors.Is(err, ingest.ErrInvalid) {

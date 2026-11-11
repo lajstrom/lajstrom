@@ -181,7 +181,7 @@ Columns: id, what to do, what must happen, issue. Priority is P0 unless the id c
 | M-02 | `mvn dependency:get -Dartifact=com.example:lib:1.2.0` from a clean `~/.m2`; a Gradle build that resolves it | resolves; `.sha1` and `.sha512` files match | #55, #56 |
 | M-03 | `GET …/com/example/lib/maven-metadata.xml` | `latest`, `release`, `versions`, `lastUpdated` from the index; checksum files alongside | #55 |
 | M-04 | deploy 1.2.0 again unchanged; then with a changed jar | 200 idempotent; 409 | #54 |
-| M-05 | a `PUT` of `lib-1.2.0.jar.sha1` that does not match the jar | 400; the session stays open; a correct retry works | #54 |
+| M-05 | a `PUT` of `lib-1.2.0.jar.sha1` that does not match the jar | 400; the session stays open, and its `maven-metadata.xml` is 400 naming the jar, nothing published, until the jar is uploaded again; a correct retry works | #54, #557 |
 | M-06 | start a deploy, stop after the jar; wait out the session's timeout (30 s for the test) | the session is expired, the version does not exist, the blobs are orphans the reconcile report lists; a new deploy of the version starts an empty session | #53 |
 | M-07 | `GET …/lib/1.2.0/lib-1.2.0.jar` on both stacks | 307 or stream | #55 |
 
