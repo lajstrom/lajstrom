@@ -111,7 +111,7 @@ Columns: id, what to do, what must happen, issue. Priority is P0 unless the id c
 | C-07 | run the whole e2e suite, then `grep` the logs of both replicas for every password, token secret and `Authorization` value used | no match; every line has `requestId`; `X-Request-Id` sent by a client appears unchanged (max 128 chars, else replaced) | #23 |
 | C-08 | `GET /-/metrics` on `art.test`; `GET /metrics` on `127.0.0.1:9464` inside the container | 404 on the host; 200 with `lajstrom_build_info` and `lajstrom_http_request_duration_seconds` on the listener; no label value is a repo or package name | #23 |
 | C-09 | start a 500 MiB `curl -T` to replica A, send `SIGTERM` to A after 2 s | the upload completes with 201, new connections to A are refused meanwhile, A exits 0 within `shutdownTimeout` | #50 |
-| C-10 | `lajstrom migrate` on an empty Postgres, then again | first run creates the schema, second is a no-op; `migrate --to <n-1>` and back works on both engines | #10 |
+| C-10 | `lajstrom migrate` on an empty Postgres, then again | first run creates the schema, second is a no-op; there are no down migrations ([index-schema.md](spec/index-schema.md#upgrades)) | #10 |
 | C-11 (P1) | `lajstrom version --json` from the release binary | `version` is the git tag, `commit` the sha, `date` ISO 8601 UTC | #57 |
 
 ### 3.2 raw
