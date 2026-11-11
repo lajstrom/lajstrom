@@ -264,6 +264,43 @@ func TestDeployChecksums(t *testing.T) {
 	}
 }
 
+// TestDeployChecksumRefused: a jar whose bytes differ from what the client sent, its checksums
+// 400, as mvn sends it and goes on: the rest of the release and maven-metadata.xml, which is 400
+// naming the jar, and nothing is published. The jar uploaded again with its checksums, the same
+// maven-metadata.xml publishes the release.
+func TestDeployChecksumRefused(t *testing.T) {
+	e := newDeployEnv(t, nil)
+	files := release("1.2.0", "")
+	jar := files[0]
+	e.wantPut(jar.path, append(append([]byte{}, jar.body...), "changed on the way"...), http.StatusCreated)
+	for _, a := range []string{SHA1, MD5} {
+		rr := e.put("alice", jar.path+"."+a, []byte(sumsOf(jar.body)[a]))
+		if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "the deploy does not publish until "+jar.path+" is uploaded again") {
+			t.Errorf("PUT %s.%s: %d %s, want 400 saying the deploy does not publish", jar.path, a, rr.Code, rr.Body)
+		}
+	}
+	for _, f := range files[1:] {
+		e.wantPut(f.path, f.body, http.StatusCreated)
+		e.wantPut(f.path+".sha1", []byte(sumsOf(f.body)[SHA1]), http.StatusCreated)
+	}
+	pushed := len(e.fake.PushReferences())
+	rr := e.put("alice", metadataPath, metadataDoc("1.2.0"))
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "holds "+jar.path+", which was refused: the md5 of "+jar.path) {
+		t.Errorf("maven-metadata.xml: %d %s, want 400 naming the refused jar", rr.Code, rr.Body)
+	}
+	if vs := e.versions(); len(vs) != 0 || len(e.fake.PushReferences()) != pushed {
+		t.Fatalf("versions %+v, %d manifests pushed; want nothing published", vs, len(e.fake.PushReferences())-pushed)
+	}
+	e.wantPut(jar.path, jar.body, http.StatusCreated)
+	e.wantPut(jar.path+".sha1", []byte(sumsOf(jar.body)[SHA1]), http.StatusCreated)
+	if got := e.put("alice", metadataPath, metadataDoc("1.2.0")).Code; got != http.StatusCreated {
+		t.Fatalf("maven-metadata.xml after the jar again: %d, want 201", got)
+	}
+	if vs := e.versions(); len(vs) != 1 || len(e.manifest(vs[0]).Layers) != len(files)+1 {
+		t.Errorf("versions %+v, want 1.2.0 with %d files", vs, len(files))
+	}
+}
+
 // TestDeployMetadata: a maven-metadata.xml commits only a version with files in a session of
 // its principal; without one it is 200 for a version in the index and 400 otherwise; the
 // metadata of a group is taken and not kept; a document that is not one, or of another

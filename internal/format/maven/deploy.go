@@ -123,10 +123,12 @@ func (d *deployer) checkSpelling(r *http.Request, repo index.Repo, c Coordinates
 }
 
 // checksum checks the checksum file at path against the file it names in the principal's
-// session of that version: the checksums were computed when the file arrived. A checksum file
-// is never stored: the checksums Lajstrom serves are its own. The checksum of a
-// maven-metadata.xml is accepted unchecked, for the metadata Lajstrom serves is rendered from
-// the index, not the one the client sent.
+// session of that version: the checksums were computed while the file streamed in. A checksum
+// file is never stored: the checksums Lajstrom serves are its own. One that differs is 400, and
+// the session refuses the file (Sessions.Refuse): mvn logs the 400 of a checksum and goes on to
+// maven-metadata.xml, whose commit is then refused too, until the file is uploaded again. The
+// checksum of a maven-metadata.xml is accepted unchecked, for the metadata Lajstrom serves is
+// rendered from the index, not the one the client sent.
 func (d *deployer) checksum(r *http.Request, repo index.Repo, path string, body io.Reader) (int, error) {
 	target, algorithm, _ := ChecksumOf(path)
 	got, err := readChecksum(body, algorithm, path)
@@ -140,31 +142,32 @@ func (d *deployer) checksum(r *http.Request, repo index.Repo, path string, body 
 	if err != nil {
 		return 0, err
 	}
-	files, err := d.sessionFiles(r, repo, f.Coordinates)
+	s, ok, err := d.session(r, repo, f.Coordinates)
 	if err != nil {
 		return 0, err
+	}
+	var files []format.SessionFile
+	if ok {
+		if files, err = d.deps.Sessions.Files(r.Context(), s.ID); err != nil {
+			return 0, err
+		}
 	}
 	for _, sf := range files {
 		if sf.Name != target {
 			continue
 		}
 		if want := sf.Checksums[algorithm]; got != want {
-			return 0, fmt.Errorf("%w: the %s of %s is %s, %s says %s", format.ErrInvalid, algorithm, target, want, path, got)
+			reason := fmt.Sprintf("the %s of %s is %s, %s says %s", algorithm, target, want, path, got)
+			// A session that expired meanwhile publishes nothing anyway.
+			if err := d.deps.Sessions.Refuse(r.Context(), s.ID, target, reason); err != nil && !errors.Is(err, index.ErrNotFound) {
+				return 0, fmt.Errorf("maven: refuse %s: %w", target, err)
+			}
+			return 0, fmt.Errorf("%w: %s; the deploy does not publish until %s is uploaded again", format.ErrInvalid, reason, target)
 		}
 		return http.StatusCreated, nil
 	}
 	return 0, fmt.Errorf("%w: %s is the checksum of %s, which this deploy has not uploaded: upload a file before its checksums",
 		format.ErrInvalid, path, target)
-}
-
-// sessionFiles returns the files of the request principal's open session of the version c, and
-// none when there is no such session.
-func (d *deployer) sessionFiles(r *http.Request, repo index.Repo, c Coordinates) ([]format.SessionFile, error) {
-	s, ok, err := d.session(r, repo, c)
-	if err != nil || !ok {
-		return nil, err
-	}
-	return d.deps.Sessions.Files(r.Context(), s.ID)
 }
 
 // session returns the request principal's open session of the version c, and false when there

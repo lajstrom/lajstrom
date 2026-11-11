@@ -135,6 +135,14 @@ type Sessions interface {
 	// Files returns the files of the session in the order they were first added.
 	Files(ctx context.Context, sessionID int64) ([]SessionFile, error)
 
+	// Refuse marks the file name of the session as refused, for reason: Commit refuses the
+	// session (ErrInvalid naming the file and reason) until Add replaces the file. The maven
+	// frontend refuses a file whose checksum file disagrees with the checksums computed while it
+	// streamed in, for a client such as mvn goes on to its maven-metadata.xml after that 400.
+	// A session that is not open, has expired, or holds no file name is index.ErrNotFound; one
+	// being committed, index.ErrConflict.
+	Refuse(ctx context.Context, sessionID int64, name, reason string) error
+
 	// Commit publishes the files of the session as one version, through Publisher.Upload, and
 	// closes the session. It is the idempotent repeat when the version holds these files already
 	// (Published.Existed) and index.ErrConflict when it holds others, or when another Commit of

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"time"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -21,7 +22,9 @@ import (
 // in, and is recorded with the checksums computed on the way; Commit hands the recorded files
 // to Upload, whose Build reads what it needs back from the registry and whose pushBlobs finds
 // the files there. Nothing of a session is ever published but by Commit: a session that
-// expires is dropped, its blobs left to the registry's garbage collection.
+// expires is dropped, its blobs left to the registry's garbage collection. A file the frontend
+// refused after it arrived (Refuse: maven, a checksum file that disagrees) keeps Commit from
+// publishing the session until Add replaces it.
 //
 // Every change of a session's files is a transaction that starts with TouchSession, which
 // takes the row's lock on Postgres, so that two Adds at once (Gradle uploads in parallel) both
@@ -66,6 +69,9 @@ type sessionState struct {
 	Version string `json:"version"`
 	// Files are the files added, in the order they were first added.
 	Files []format.SessionFile `json:"files"`
+	// Refused are the files of Files that Refuse refused since Add added them last, with the
+	// reason, by name.
+	Refused map[string]string `json:"refused,omitempty"`
 	// Committing is when a Commit started, while it runs; zero otherwise.
 	Committing time.Time `json:"committing,omitzero"`
 }
@@ -154,7 +160,7 @@ func (p *Pipeline) openSession(ctx context.Context, repo index.Repo, key string)
 }
 
 // Add implements format.Sessions: the bytes stream into the registry (streamFile) and the file
-// is recorded, in place of a file of that name.
+// is recorded, in place of a file of that name, which it no longer refuses.
 func (p *Pipeline) Add(ctx context.Context, sessionID int64, name string, r io.Reader, size int64) (format.SessionFile, error) {
 	if name == "" {
 		return format.SessionFile{}, fmt.Errorf("%w: ingest: a file of session %d has no name", ErrInvalid, sessionID)
@@ -181,6 +187,7 @@ func (p *Pipeline) Add(ctx context.Context, sessionID int64, name string, r io.R
 		if !st.Committing.IsZero() {
 			return fmt.Errorf("%w: session %d is being committed; %s comes too late for it", ErrConflict, sessionID, name)
 		}
+		delete(st.Refused, name)
 		for i := range st.Files {
 			if st.Files[i].Name == name {
 				st.Files[i] = sf
@@ -223,6 +230,32 @@ func (p *Pipeline) streamFile(ctx context.Context, t *target, name string, r io.
 	return format.SessionFile{Name: name, Digest: t.streamed.desc.Digest, Size: f.Size, Checksums: f.Checksums}, nil
 }
 
+// Refuse implements format.Sessions: the file stays in the session, and Commit refuses the
+// session while the mark is on it.
+func (p *Pipeline) Refuse(ctx context.Context, sessionID int64, name, reason string) error {
+	s, _, err := p.liveSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	repo, err := p.index.GetRepoByID(ctx, s.RepoID)
+	if err != nil {
+		return fmt.Errorf("ingest: repo of session %d: %w", s.ID, err)
+	}
+	return p.changeSession(ctx, sessionID, p.timeoutOf(*repo), func(st *sessionState) error {
+		switch {
+		case !st.Committing.IsZero():
+			return fmt.Errorf("%w: session %d is being committed; the refusal of %s comes too late for it", ErrConflict, sessionID, name)
+		case !slices.ContainsFunc(st.Files, func(f format.SessionFile) bool { return f.Name == name }):
+			return fmt.Errorf("%w: session %d holds no file %s", index.ErrNotFound, sessionID, name)
+		}
+		if st.Refused == nil {
+			st.Refused = map[string]string{}
+		}
+		st.Refused[name] = reason
+		return nil
+	})
+}
+
 // Files implements format.Sessions.
 func (p *Pipeline) Files(ctx context.Context, sessionID int64) ([]format.SessionFile, error) {
 	s, err := p.index.GetSessionByID(ctx, sessionID)
@@ -238,7 +271,8 @@ func (p *Pipeline) Files(ctx context.Context, sessionID int64) ([]format.Session
 
 // Commit implements format.Sessions: it marks the session committing, publishes its files with
 // Upload, and closes it. When Upload fails the mark is taken off and the session stays open, so
-// that the client may commit again or add what was missing.
+// that the client may commit again or add what was missing. A session with a file that Refuse
+// refused is ErrInvalid, naming the first in the order of the files, and stays open as it is.
 func (p *Pipeline) Commit(ctx context.Context, sessionID int64) (*format.Published, error) {
 	s, st, err := p.liveSession(ctx, sessionID)
 	if err != nil {
@@ -255,6 +289,12 @@ func (p *Pipeline) Commit(ctx context.Context, sessionID int64) (*format.Publish
 	err = p.changeSession(ctx, sessionID, timeout, func(cur *sessionState) error {
 		if !cur.Committing.IsZero() && p.now().Sub(cur.Committing) < p.claimTTL {
 			return fmt.Errorf("%w: session %d of %s %s is being committed already", ErrConflict, sessionID, st.Name, st.Version)
+		}
+		for _, f := range cur.Files {
+			if reason, ok := cur.Refused[f.Name]; ok {
+				return fmt.Errorf("%w: the deploy of %s %s holds %s, which was refused: %s; it does not publish until %s is uploaded again",
+					ErrInvalid, st.Name, st.Version, f.Name, reason, f.Name)
+			}
 		}
 		cur.Committing = p.now()
 		*st = *cur

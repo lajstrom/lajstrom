@@ -128,13 +128,15 @@ type JournalOp struct {
 // Sessions are the publication sessions of a format whose upload is several requests (maven,
 // flow B); *ingest.Pipeline implements them (#53). A key, <name>:<version>, has one open session
 // in a repo, held by one principal. Add streams the file into the registry (ADR 0014) and
-// records it with its checksums; Commit publishes the files through Upload, once at a time; a
-// session whose time is up (30 minutes after its last request) is dropped, never published in
-// part.
+// records it with its checksums; Refuse marks a file the frontend refused after it arrived
+// (maven: a checksum file that disagrees), which keeps Commit from publishing until Add
+// replaces it; Commit publishes the files through Upload, once at a time; a session whose time
+// is up (30 minutes after its last request) is dropped, never published in part.
 type Sessions interface {
     Open(ctx context.Context, repo index.Repo, name, version string, principal auth.Principal) (*index.Session, error)
     Add(ctx context.Context, sessionID int64, name string, r io.Reader, size int64) (SessionFile, error)
     Files(ctx context.Context, sessionID int64) ([]SessionFile, error)
+    Refuse(ctx context.Context, sessionID int64, name, reason string) error
     Commit(ctx context.Context, sessionID int64) (*Published, error) // Existed: the idempotent repeat
     Abort(ctx context.Context, sessionID int64) error
 }
@@ -1070,11 +1072,11 @@ type Result struct {
     Existed  bool                           // idempotent repeat: nothing was written
 }
 
-// Pipeline implements format.Sessions (Open, Add, Files, Commit, Abort). The files column of a
-// session is {"name", "version", "files": [SessionFile…], "committing"}; Commit marks the session
-// committing before it publishes, so that one Commit runs at a time, and a mark older than
-// ClaimTTL is a Commit that died. ExpireSessions marks the open sessions of every kind whose time
-// is up; serve calls it every minute, and nothing depends on it.
+// Pipeline implements format.Sessions (Open, Add, Files, Refuse, Commit, Abort). The files
+// column of a session is {"name", "version", "files": [SessionFile…], "refused", "committing"};
+// Commit marks the session committing before it publishes, so that one Commit runs at a time,
+// and a mark older than ClaimTTL is a Commit that died. ExpireSessions marks the open sessions
+// of every kind whose time is up; serve calls it every minute, and nothing depends on it.
 func (p *Pipeline) ExpireSessions(ctx context.Context) (int, error)
 
 var ErrInvalid = format.ErrInvalid
