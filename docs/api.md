@@ -34,7 +34,7 @@ The OpenAPI 3.1 document of these endpoints is
 - **Audit.** Every change is one row of the audit log ([rbac.md](spec/rbac.md) §5): the
   principal, the action (`repo.create`, `repo.update`, `repo.delete`, `user.create`,
   `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete`,
-  `binding.create`, `binding.delete`, `token.create`, `token.revoke`), the repo, the client address and details: the change, its source (`api`,
+  `binding.create`, `binding.delete`, `token.create`, `token.revoke`, `repo.cache.purge`), the repo, the client address and details: the change, its source (`api`,
   `cli` or `config`) and the request id.
 - **Lists** that can be long are pages: `?limit=` (100 when absent, 1 to 1000) and `?cursor=`,
   the `next` of the page before, an opaque string; the last page has no `next`.
@@ -94,6 +94,24 @@ audit alike.
 | `upstream` | a proxy repo only, required there: `name`, one of `upstreams[].name` of the repo's format in the [configuration](configuration.md#upstreams), and `metadataTTL` (`"10m"`, `0s` to `168h`), `negativeTTL` (`"2m"`, `0s` to `24h`), `offline` (`false`), `allow` and `deny` (at most 256 name patterns each, `*` matching any run: `"@acme/*"`) ([proxy-and-group.md](spec/proxy-and-group.md) §2.2, §3). The resource shows every key; the upstream's URL and credentials are configuration and never part of the API, and a key the server does not know is `400` | see [proxy-and-group.md](spec/proxy-and-group.md) §2.2 |
 | `group` | a group only, required there: `members`, the names of 1 to 16 repos of the group's format, in the order they are read, each `hosted` or `proxy` and at most one `hosted`, and `merge` (at most 256 name patterns): the names whose versions are merged even when the hosted member holds them ([proxy-and-group.md](spec/proxy-and-group.md) §2.3, §8). The resource shows both keys | `members` by the admin role, `merge` by `manage` |
 | `createdAt`, `updatedAt` | set by the server | `updatedAt` on every change |
+
+A proxy repo of the upstream `npmjs` and a group of the hosted repo `npm/internal` and that
+proxy ([proxy-and-group.md](spec/proxy-and-group.md) §2.4):
+
+```json
+{"format": "npm", "name": "npmjs", "registry": "local", "kind": "proxy", "anonymousRead": false, "policy": null,
+ "upstream": {"name": "npmjs", "metadataTTL": "10m", "negativeTTL": "2m", "offline": false, "allow": [], "deny": ["@acme/*"]},
+ "createdAt": "2026-11-10T17:42:47Z", "updatedAt": "2026-11-10T17:42:47Z"}
+{"format": "npm", "name": "all", "kind": "group", "anonymousRead": false,
+ "group": {"members": ["internal", "npmjs"], "merge": []},
+ "createdAt": "2026-11-10T17:43:51Z", "updatedAt": "2026-11-10T17:43:51Z"}
+```
+
+A group holds nothing of its own: its routes read its members in order, a name its hosted member
+holds hiding the versions a proxy member has of it but for the names of `merge`, and its writes
+go to the hosted member, with the permission there ([proxy-and-group.md](spec/proxy-and-group.md)
+§8, [rbac.md](spec/rbac.md) §7). A binding on the group lets a user read every member through
+it.
 
 #### Policy
 
@@ -188,6 +206,22 @@ curl -s -X PATCH "$LAJSTROM/api/v1/repos/maven/releases" \
 {"maven":{"sessionTimeout":"2h"},"maxFileSize":104857600}
 ```
 
+```sh
+# a proxy that serves only what it holds, and fetches nothing of the scope @acme or @corp
+curl -s -X PATCH "$LAJSTROM/api/v1/repos/npm/npmjs" \
+  -H 'Content-Type: application/json' \
+  -d '{"upstream": {"offline": true, "deny": ["@acme/*", "@corp/*"]}}' | jq -c .upstream
+# the versions of lodash merged across the members, though the hosted repo has its own lodash
+curl -s -X PATCH "$LAJSTROM/api/v1/repos/npm/all" \
+  -H 'Content-Type: application/json' \
+  -d '{"group": {"merge": ["lodash"]}}' | jq -c .group
+```
+
+```json
+{"name":"npmjs","metadataTTL":"10m","negativeTTL":"2m","offline":true,"allow":[],"deny":["@acme/*","@corp/*"]}
+{"members":["internal","npmjs"],"merge":["lodash"]}
+```
+
 ### Delete: `DELETE /api/v1/repos/<format>/<name>`
 
 `204`. A repo that has versions is refused with `409` and their number
@@ -197,7 +231,9 @@ rendered indexes, deploy tokens, signing keys, publication sessions and tag clai
 artifacts stay in the registry, untouched;
 the audit row says how many versions the repo had. Role bindings name repos by mask and stay.
 `404` when there is no such repo. A repo that is a member of a group is `409` naming the groups,
-`force` or not: change the group's members first.
+`force` or not: change the group's members first. A proxy's cached documents of its upstream go
+with it, and what it fetched stays in the registry like a hosted repo's artifacts. A group has
+no versions: its delete needs no `force`, and its members stay as they are.
 
 ```sh
 curl -s -X DELETE "$LAJSTROM/api/v1/repos/raw/scratch?force=true"
@@ -231,7 +267,8 @@ run that covered the repo, its own or a run of every repo, with the repo's part 
 `state` is `running`, `done` (it went to the end, whatever the report lists), `failed` (the run's
 own error is in `error`) or `abandoned` (its heartbeat stopped, a later start closed it);
 `report` is `null` while it runs. Both need `manage` on the repo; `404` when there is no such
-repo, or, for `GET`, when no run has covered it.
+repo, or, for `GET`, when no run has covered it. A proxy repo is reindexed from what it fetched,
+as a hosted repo from what was published; a group holds nothing, and its report is empty.
 
 ```sh
 curl -s -X POST "$LAJSTROM/api/v1/repos/raw/assets/reindex" -d '{"prune": true}'
@@ -256,7 +293,9 @@ repo (the `maintainer` role); `404` when the repo, the package, the version or t
 not exist; `501 UNAVAILABLE` naming the registry when it cannot delete manifests
 (`capabilities.deleteManifest: false`, GHCR, distribution with deletes off), and nothing
 changed; `409 CONFLICT` when the registry refuses to delete this manifest alone. The variants
-deleted before an error stay deleted.
+deleted before an error stay deleted. On a proxy repo the version goes as on a hosted one, and
+the next request for it fetches it again; a group has no versions, `404`: the version is deleted
+in the member that holds it.
 
 ```sh
 curl -s -X DELETE "$LAJSTROM/api/v1/repos/pypi/libs/packages/requests/versions/2.32.0?variant=sdist"
@@ -490,8 +529,9 @@ The body has `name`, and optionally `scopes` (required for a deploy token) and t
 them at most. `201` with the resource and `secret`, and `Location` naming the token
 (`/api/v1/users/<name>/tokens/<id>`, the path of its `DELETE`); `400` for a field that breaks its
 rule, `expiresAt` over a year ahead or in the past, both `expiresAt` and `expiresIn`, or
-`delete` in the scopes of a deploy token; `404` for a user or repo that does not exist; `409`
-when the name is taken. The user need not be enabled. A personal access token is created with a
+`delete` in the scopes of a deploy token, or `write` in those of a group's (a write through a
+group is its hosted member's, which the group's token does not reach); `404` for a user or repo
+that does not exist; `409` when the name is taken. The user need not be enabled. A personal access token is created with a
 password only: with a personal access token as the credential, with scopes or without, the
 admin's too, or with a deploy token, `POST /api/v1/users/<name>/tokens` is `403` before the body
 is read ([auth.md](auth.md#rules)).

@@ -613,7 +613,9 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | Actions | Written by |
 | --- | --- |
 | `push`, `delete` | the frontends and the facade, through the ingest pipeline and the delete paths; the facade itself for a push to an `oci` repo |
-| `repo.create`, `repo.update`, `repo.delete`, `repo.reindex` | the API, the CLI and the repos of the configuration |
+| `npm.dist-tag`, `npm.deprecate` | an entry of an npm package's journal: `npm dist-tag`, `npm deprecate`, the dist-tag of a publish ([ADR 0012](adr/0012-npm-profile-routes-and-dist-tags-journal.md)) |
+| `proxy.fetch` | a proxy repo that published a file it fetched from its upstream, as the principal whose request missed ([proxy-and-group.md](spec/proxy-and-group.md) §5) |
+| `repo.create`, `repo.update`, `repo.delete`, `repo.reindex`, `repo.cache.purge` | the API, the CLI and the repos of the configuration; `repo.cache.purge` from `DELETE …/upstream-cache` |
 | `user.create`, `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete` | the API and `lajstrom admin user` |
 | `binding.create`, `binding.delete` | the API and `lajstrom admin binding` |
 | `token.create`, `token.revoke` | personal access tokens and deploy tokens, from the API and the CLI |
@@ -623,7 +625,8 @@ A row has the time, the principal (`user:<uid>`, `token:<id>`, `anonymous`) and,
 its name at the time (`principalName`, which stays when the user is renamed or deleted), the
 action, the repo, the subject (a package and version, the user or binding acted upon), the
 manifest digest, the client address and details: the change, its source (`api`, `cli`,
-`config`) and the request id. The client address is the one of the access log
+`config`) and the request id; a write or a fetch that came through a group is its member's row,
+with the group in `details.via` (`"via": "npm/all"`). The client address is the one of the access log
 ([ADR 0011](adr/0011-client-address-behind-a-proxy.md)): behind a proxy of
 `server.trustedProxies`, the client that `X-Forwarded-For` names, not the proxy. The rows of the
 ingest pipeline, a `push` through `/v2` or a frontend and a `delete`, read the address and the

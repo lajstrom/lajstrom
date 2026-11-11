@@ -252,8 +252,9 @@ The connections to an upstream go through the egress proxy of the environment, `
 through it belongs in `NO_PROXY`. A repo that names an upstream the file no longer has is served
 as if it were offline, with an error at every start naming the repo and the upstream.
 
-npmjs.org, a hosted npm repo and a proxy of npmjs.org that never asks it for the scope `@acme`
-([quickstart/npm.md](quickstart/npm.md) §9):
+npmjs.org, a hosted npm repo, a proxy of npmjs.org that never asks it for the scope `@acme`,
+and a group of both, the one URL of the clients ([quickstart/npm.md](quickstart/npm.md) §9 and
+§10):
 
 ```yaml
 upstreams:
@@ -263,6 +264,7 @@ upstreams:
 repos:
   - {name: internal, format: npm, registry: local}
   - {name: npmjs, format: npm, registry: local, kind: proxy, upstream: {name: npmjs, deny: ["@acme/*"]}}
+  - {name: all, format: npm, kind: group, group: {members: [internal, npmjs]}}
 ```
 
 ### ingest
@@ -336,9 +338,11 @@ index database:
   the policy: a repo whose format plugin is not compiled into the binary (`oci`, the
   pass-through format of the OCI facade, needs no plugin), or whose policy the API refuses,
   stops `serve` with an error naming the entry.
-- **Present:** it is left as it is. When its `registry`, `anonymousRead` or `policy` differ
-  from the database, a warning names the repo and the field: the database wins, and a change
-  goes through the API or `lajstrom admin repo`.
+- **Present:** it is left as it is. When its `registry`, `kind`, `anonymousRead`, `policy`,
+  `upstream` or `group` differ from the database, a warning names the repo and the field: the
+  database wins, and a change goes through the API or `lajstrom admin repo`. `upstream` and
+  `group` are compared with their defaults filled in: `{name: npmjs}` matches a proxy whose
+  `metadataTTL` is the default `10m`.
 
 The bootstrap never deletes a repo and never changes one: removing an entry from this list
 leaves the repo in place. Replicas that start together create each repo once; a replica whose
