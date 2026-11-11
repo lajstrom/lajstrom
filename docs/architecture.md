@@ -54,7 +54,7 @@ flowchart TB
     render["Index renderer<br/>Packages, Release · repodata<br/>maven-metadata · simple · packument<br/>cache + signing with the repo's GPG key"]
     proxy["Proxy fetcher*<br/>miss → upstream → wrap → push<br/>TTL metadata cache in the DB"]
     reindex["Reindex / reconcile<br/>listRepos → tags/list → manifests<br/>upsert from annotations, remove orphans<br/>catches writes that bypassed us"]
-    retention["Retention / delete*<br/>rules by age and count<br/>delete manifest/tag via provider<br/>blob GC is the registry's job"]
+    retention["Delete<br/>a version through the API, audited<br/>retention: an external scheduler runs<br/>lajstrom admin retention*<br/>blob GC is the registry's job"]
     keys["Keys · audit · events<br/>GPG key per repo, later KMS<br/>cosign signatures and SBOM via referrers<br/>audit log · webhooks*"]
     plugins["Format plugins, in-process Go<br/>apt · rpm* · maven · pypi · npm* · tf* · go* · cargo* · nuget* · raw · oci<br/>interface: Parse · Validate · RenderIndex · Routes · EscapeName; oci = passthrough, no index"]
   end
@@ -261,7 +261,7 @@ is reported as drift and never re-pointed (index-schema.md, Invariants).
 | Zone | What is inside | What it buys |
 | --- | --- | --- |
 | Backend registry | blobs, manifests, tags, referrers; GC, replication, HA, encryption, IAM, quotas, size limits | No filestore, no clustering, no content backups of our own. Cross-region replication is ECR configuration, not our feature. |
-| Our code | router, protocol frontends, OCI facade, ingest, index rendering and signing, RBAC and tokens, proxy and group, retention, UI, audit, registry provider | Everything about the meaning of bytes and about permissions. One Go binary plus a database. |
+| Our code | router, protocol frontends, OCI facade, ingest, index rendering and signing, RBAC and tokens, proxy and group, delete (retention is a client of it, #72), UI, audit, registry provider | Everything about the meaning of bytes and about permissions. One Go binary plus a database. |
 | Index DB | derived: packages, versions, files, index_cache, proxy metadata. Control plane: repos, users, tokens, bindings, sessions, audit | The derived part can be lost and rebuilt. The control plane is small, backed up, optionally snapshotted into the registry. |
 | Clients | apt, dnf, mvn, pip, npm, terraform, curl without plugins; helm, oras, tofu, cosign, flux through the facade | Nothing to install on clients. One `user:token` pair works across all protocols. |
 
@@ -382,7 +382,7 @@ Details on which this breaks, in decreasing importance:
   or an external token issuer. Clients talk only to the facade; the backend is closed by the
   network or trusts our issuer via `auth.token` with our certificate. The facade issues a standard
   docker bearer with scopes from our bindings, writes an audit record for every pull and push, and
-  adds immutability and retention the backend lacks. What SUSE Portus did, as part of a larger
+  adds the immutability the backend lacks. What SUSE Portus did, as part of a larger
   product.
 - **Platform from the config blob**, not from the tag suffix: `os`, `architecture`, `variant`.
   Suffixes `-{arch}`, `-{os}-{arch}`, `-{arch}{variant}` are configured per repo and only serve to
