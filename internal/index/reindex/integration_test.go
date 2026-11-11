@@ -24,6 +24,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/format/raw"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/index/postgres"
 	"github.com/lajstrom/lajstrom/internal/index/reindex"
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
@@ -134,6 +135,44 @@ func TestIntegration(t *testing.T) {
 	_, err = e.st.GetPackage(ctx, e.repo.ID, "docs/old.md")
 	if caps.DeleteManifest && err == nil {
 		t.Error("the rows of the deleted manifest are still there")
+	}
+}
+
+// TestIntegrationFormats is TestRebuildFormats against the registry at LAJSTROM_TEST_REGISTRY,
+// over SQLite and, when LAJSTROM_TEST_POSTGRES_DSN is set, over Postgres (a database or schema
+// the test may migrate and write a repo to: CI's is fresh; on the dev stack, give the DSN
+// search_path=<a schema of its own>): I-01 for apt, pypi and maven, each on a repo with a random
+// name.
+func TestIntegrationFormats(t *testing.T) {
+	addr := os.Getenv("LAJSTROM_TEST_REGISTRY")
+	if addr == "" {
+		t.Skip("set LAJSTROM_TEST_REGISTRY=host:port to run against a registry")
+	}
+	prov, err := generic.New(config.Registry{
+		Name: "local", Type: generic.Type, URL: "http://" + addr, Prefix: os.Getenv("LAJSTROM_TEST_REGISTRY_PREFIX"),
+		Auth: config.RegistryAuth{Username: os.Getenv("LAJSTROM_TEST_REGISTRY_USERNAME"), Password: os.Getenv("LAJSTROM_TEST_REGISTRY_PASSWORD")},
+	}, slog.New(slog.DiscardHandler))
+	must(t, err)
+	dsn := os.Getenv("LAJSTROM_TEST_POSTGRES_DSN")
+	for _, db := range []string{"sqlite", "postgres"} {
+		for name, c := range formatCases {
+			t.Run(db+"/"+name, func(t *testing.T) {
+				e := newEnv(t)
+				if db == "postgres" {
+					if dsn == "" {
+						t.Skip("set LAJSTROM_TEST_POSTGRES_DSN to run on Postgres")
+					}
+					st, err := postgres.Open(t.Context(), dsn)
+					must(t, err)
+					t.Cleanup(func() { _ = st.Close() })
+					must(t, st.Migrate(t.Context()))
+					e.st = st
+				}
+				e.useFormat(t, c.plugin, provider.Map{"local": prov})
+				t.Cleanup(func() { _ = e.st.DeleteRepo(context.Background(), e.repo.ID) })
+				rebuildFormat(t, e, c)
+			})
+		}
 	}
 }
 
