@@ -139,7 +139,11 @@ ends.
 keyword/value string, `host=db user=lajstrom dbname=lajstrom sslmode=require`, as pgx reads it
 (it also honours the `PG*` environment variables). `pool_max_conns=N` sizes the connection
 pool; the default is the number of CPUs, at least 4. Text columns use the `C` collation, so the
-database's own collation does not matter.
+database's own collation does not matter. Behind a connection pooler (PgBouncer, Odyssey, the
+Pooler of CloudNativePG) and on databases that speak the Postgres protocol,
+[deploy/databases.md](deploy/databases.md) has what works and what to set: in transaction mode
+without prepared statement support, `default_query_exec_mode=exec`; no `search_path` or
+`options` in the DSN; `pool_max_conns` for each replica.
 
 `lajstrom migrate` applies the migrations the database does not have yet and prints them, and
 `lajstrom serve` does the same on start; both take a lock, so replicas starting together are

@@ -9,6 +9,12 @@ Lajstrom runs behind an edge that terminates TLS: [reverse-proxy.md](reverse-pro
 the edge must do (`server.externalURL`, uploads, forwarded headers, timeouts) and the rate limits
 that belong there, with an nginx and a Caddy configuration.
 
+Its index on Postgres may sit behind a connection pooler or an operator such as CloudNativePG:
+[deploy/databases.md](deploy/databases.md) has what was measured behind PgBouncer and Odyssey,
+the pool sizes, the idle-in-transaction timeouts that must stay off for Lajstrom's users, how a
+restart and a failover look to clients, what YugabyteDB needs, and why CockroachDB does not
+work.
+
 ### What Lajstrom answers browsers
 
 Lajstrom's clients are package managers, but a person may open a URL of it in a browser, and a
@@ -372,7 +378,8 @@ While the database does not answer (Postgres stopped, restarting or refusing con
 SQLite locked past its busy timeout), a request that needs the index, its authentication with
 credentials included, is answered `503` with `Retry-After: 5` (on `/v2` and the API with the
 code `UNAVAILABLE`, which docker retries), and logged with the cause. The replicas serve again at
-the database's first answer, without a restart.
+the database's first answer, without a restart. Behind PgBouncer, its `server_login_retry` and
+`query_wait_timeout` decide how long that takes ([deploy/databases.md](deploy/databases.md#restarts-and-a-forced-primary-switch)).
 
 Where the check must run inside the container, as a Docker or Compose `healthcheck:` (the image
 has no shell and no HTTP client), `lajstrom healthcheck` is the client: one `GET` of
