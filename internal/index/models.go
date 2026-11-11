@@ -163,7 +163,7 @@ type Replica struct {
 // Sighting is a row of prune_sightings (operational state): the registry answered 404
 // MANIFEST_UNKNOWN to the digest of an index row's manifest (provider.ErrManifestUnknown).
 // Reindex removes the row only on another such answer at least 10 minutes after FirstAt
-// (docs/spec/index-schema.md, Coordination; guarantees.md, G-5).
+// (docs/spec/index-schema.md, Coordination; guarantees.md, INV-5).
 type Sighting struct {
 	RepoID  int64
 	Path    string        // the OCI repository, as oci_repos.path holds it
