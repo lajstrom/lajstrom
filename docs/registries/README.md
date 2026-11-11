@@ -51,12 +51,12 @@ job for Zot). `CI`: the
 integration job runs every test against it on every pull request that touches code. `manual`: a
 profile of the dev stack or a script, run by hand. `hosted`: a service, an account and a token.
 
-**Untested.** No cell of the matrix is about these; what is written for ECR was written from
-memory before the spikes and is kept as it was, not measured:
+**Untested.** No cell of the matrix is about these; what is written for ECR comes from AWS's
+documentation and from reports, not from a measurement ([ecr.md](ecr.md)):
 
 | Registry | Issue | Tier |
 | --- | --- | --- |
-| Amazon ECR | spike #19 (needs an AWS account; not run), adapter #36 ([ecr.md](ecr.md): tested against moto, the AWS mock, with distribution for `/v2`; live ECR pending #19) | `untested`. From memory: a repository is created on push only through a creation template with `CREATE_ON_PUSH`, otherwise by `CreateRepository` from the adapter; the OCI 1.1 referrers API since 2024-06, but pushing referrers with oras returned 405 (aws/containers-roadmap#2783); listing by `DescribeRepositories`, no `_catalog`; manifest delete yes; immutable tags a per-repository option that must be respected; blob `GET` a 307 to S3; an image count limit per repository and a 12-hour token |
+| Amazon ECR | spike #19 (needs an AWS account; not run), adapter #36 ([ecr.md](ecr.md): tested against moto, the AWS mock, with distribution for `/v2`; live ECR pending #19) | `untested`. A repository is created on push only through a creation template with `CREATE_ON_PUSH`, otherwise by `CreateRepository` from the adapter; the OCI 1.1 referrers API since 2024-06, but pushing referrers with oras returned 405 (aws/containers-roadmap#2783); listing by `DescribeRepositories`, and a `_catalog` reported; manifest delete to be measured; immutable tags a per-repository option that must be respected; layers served from S3; mounts only with `BLOB_MOUNTING`; 100,000 images a repository, referrers included, and a 12-hour token |
 | Quay | none | `untested` |
 | Azure Container Registry | none | `untested` |
 | Docker Hub | none | `untested` |

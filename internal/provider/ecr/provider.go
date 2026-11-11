@@ -164,7 +164,8 @@ func capabilities(o config.CapabilityOverrides, mutability types.ImageTagMutabil
 	// createOnPush: true says that something else does (a creation template with
 	// CREATE_ON_PUSH, or repositories created beforehand), and EnsureRepository asks nothing.
 	o.CreateOnPush = orDefault(o.CreateOnPush, false)
-	// ECR has no _catalog; DescribeRepositories is the catalog of ListRepositories.
+	// DescribeRepositories is the catalog of ListRepositories; ECR's own _catalog, reported
+	// but not documented by AWS, is not used (docs/registries/ecr.md).
 	o.Catalog = orDefault(o.Catalog, true)
 	// The repositories Lajstrom creates refuse to re-point a tag unless they are MUTABLE*; a
 	// repository created otherwise keeps its own setting.
