@@ -128,8 +128,8 @@ type MemberDocument struct {
 
 // Proxy is the core of proxy and group repos as the plugins' handlers see it; *proxy.Core
 // implements it (docs/spec/proxy-and-group.md §4 to §9.2). Document and File take a repo of kind
-// proxy, or of kind group of a format whose plugin is a Grouper, and Forward a repo of kind
-// proxy; another kind gives an error wrapping ErrUnsupported. Their errors wrap the sentinels
+// proxy, or of kind group of a format whose plugin is a Grouper, and Forward and Denies a repo
+// of kind proxy; another kind gives an error wrapping ErrUnsupported. Their errors wrap the sentinels
 // that StatusOf answers with the statuses of §6.
 type Proxy interface {
 	// Document returns the document of kind of name. Of a proxy: after the allow and deny lists
@@ -176,6 +176,12 @@ type Proxy interface {
 	// *UnavailableError; a timeout wraps ErrGatewayTimeout, anything else ErrBadGateway (§6).
 	// Nothing is cached and no audit row is written.
 	Forward(ctx context.Context, repo index.Repo, req ForwardRequest) (*http.Response, error)
+
+	// Denies reports whether the deny list of the proxy repo refuses name (§3), matched on
+	// Key(name), or on name as it is when the format does not allow it, and the pattern that
+	// does. A name it refuses never leaves the server: the handler leaves it out of what it
+	// sends with Forward (npm audit, docs/spec/http-routing.md). allow does not count here.
+	Denies(repo index.Repo, name string) (pattern string, denied bool, err error)
 }
 
 // ForwardRequest is what Proxy.Forward sends to an upstream: each part is chosen by the plugin,

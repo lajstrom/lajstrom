@@ -554,10 +554,10 @@ found 0 vulnerabilities
 ```
 
 npm sends the name and version of every package of the tree to the URL of `registry=`, those of
-other registries too: here `@acme/widgets` goes to npmjs.org. `deny` keeps a name from being
-fetched, not from being audited. A project with private packages audits through a group
-(section 10), which leaves out the names its hosted member holds, or sets `audit=false` in
-`.npmrc`.
+other registries too, here `@acme/widgets`. The proxy leaves out the names its `deny` refuses,
+which never reach npmjs.org, and asks nothing when no name is left. pnpm's audit sends npm 6's
+dependency tree, which cannot lose a package without what hangs below it: through this proxy it
+is `501` when the tree names an `@acme` package.
 
 ## 10. A group: one URL for both
 
@@ -765,7 +765,7 @@ Not there:
 - permissions per package name inside a repo;
 - `npm token`, `access`, `owner`, `team`, `star` and `profile`: `404`;
 - `npm publish --provenance`: refused;
-- `pnpm audit` through a group: `501` (through a proxy it is forwarded, with every name);
+- `pnpm audit` through a group: `501`, and through a proxy when it names a denied package;
 - `notify` webhooks, and plugins of any kind: the protocols are Lajstrom's own;
 - an import of Verdaccio's `storage`: publish the tarballs to the hosted repo again.
 

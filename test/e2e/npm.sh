@@ -31,6 +31,9 @@
 #     token pnpm's; every dist.tarball names the group, and nothing is fetched again. A public
 #     name ($NPM_E2E_HIDDEN, is-number) published to the hosted repo hides the upstream's
 #     versions in the group's packument, and group.merge brings them back;
+#   - npm audit through the proxy of a project of $NPM_E2E_VULNERABLE (minimist@1.2.0) and a
+#     scoped package of the hosted repo: the upstream's advisories come back; with deny on the
+#     proxy of the scope and of that name, none do, the names kept on the server (#514);
 #   - npm unpublish refused to the writer (E403: delete is the maintainer's), then, as maintainer,
 #     of one version (its dist-tag goes with it) and of the scoped package;
 #   - reindex restores the journal: npm dist-tag and npm deprecate through the group, then the
@@ -73,6 +76,7 @@ yarn_version="${NPM_E2E_YARN:-4.18.1}"
 upstream="${NPM_E2E_UPSTREAM-npmjs}"
 public="${NPM_E2E_PUBLIC:-chalk@4.1.2}"
 hidden="${NPM_E2E_HIDDEN:-is-number}" # a name of the upstream that the hosted repo takes over
+vulnerable="${NPM_E2E_VULNERABLE:-minimist@1.2.0}" # a version the upstream has advisories for
 registry="${NPM_E2E_REGISTRY:-local}"
 ids="$(id -u):$(id -g)"
 hostport="${base#*://}"
@@ -559,6 +563,25 @@ if [ -n "$upstream" ]; then
 	expect "the number of versions of $hidden through npm/$group with group.merge" "$((upstream_versions + 1))" "$(jq '.versions | length' "$work/body")"
 	expect "dist-tags.latest of $hidden through npm/$group with group.merge, the hosted repo's" 99.0.0 "$(jq -r '."dist-tags".latest' "$work/body")"
 	step "npm publish of $hidden 99.0.0 to npm/$repo: through npm/$group only 99.0.0, of $upstream's $upstream_versions versions none; with group.merge [$hidden] all $((upstream_versions + 1))"
+fi
+
+# --- npm audit through the proxy: what deny refuses stays on the server (#514) ------------------
+# A project of $vulnerable from the proxy and $yarn_scoped from the hosted repo, registry= the
+# proxy: npm audit sends both names there. Without a deny list the upstream's advisories for
+# $vulnerable come back, so its name went out; with deny [$scope/*, <its name>] none come back.
+if [ -n "$upstream" ]; then
+	project audit
+	printf 'registry=%s/\n//%s/npm/%s/:_authToken=%s\n%s:registry=%s/\n//%s/npm/%s/:_authToken=%s\n' \
+		"$base/npm/$proxy" "$hostport" "$proxy" "$(cat "$work/npm-token")" "$scope" "$url" "$hostport" "$repo" "$(cat "$work/npm-token")" >"$work/audit/.npmrc"
+	client npm audit-install.log "cd /w/audit && npm install --cache /w/audit-cache --loglevel=warn $vulnerable $yarn_scoped"
+	try npm audit-open.log "cd /w/audit && npm audit"
+	expect "npm audit through npm/$proxy without a deny list ($(tail -n 3 "$work/audit-open.log" | tr '\n' ' '))" 1 "$rc"
+	grep -q "^${vulnerable%@*} " "$work/audit-open.log" || fail "npm audit through npm/$proxy names no advisory of $vulnerable: $(cat "$work/audit-open.log")"
+	api PATCH "repos/npm/$proxy" "{\"upstream\":{\"deny\":[\"$scope/*\",\"${vulnerable%@*}\"]}}" 200
+	try npm audit-denied.log "cd /w/audit && npm audit"
+	expect "npm audit through npm/$proxy with deny [$scope/*, ${vulnerable%@*}] ($(cat "$work/audit-denied.log"))" 0 "$rc"
+	grep -qx 'found 0 vulnerabilities' "$work/audit-denied.log" || fail "npm audit with the names denied: $(cat "$work/audit-denied.log")"
+	step "npm audit through npm/$proxy of $vulnerable and $yarn_scoped: $upstream's advisories of ${vulnerable%@*}; with deny [$scope/*, ${vulnerable%@*}] none, both names kept on the server"
 fi
 
 # --- npm: unpublish ----------------------------------------------------------------------------

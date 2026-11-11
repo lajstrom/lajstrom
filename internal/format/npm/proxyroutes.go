@@ -5,9 +5,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/lajstrom/lajstrom/internal/format"
@@ -58,17 +61,125 @@ func (h *handlers) proxyTarball(ctx context.Context, repo index.Repo, name, file
 	return core.File(ctx, repo, name+"/-/"+file)
 }
 
-// proxyAudit forwards an audit request on route to the upstream of a proxy repo through the core
-// (format.Proxy.Forward): a POST of the same route below the upstream's URL, the body decoded.
-// The upstream's answer is the answer, its status and its body as it sent them, with
-// Content-Type application/json and its npm-notice, which npm prints, and no other header of
-// the upstream's (http-routing.md, npm). Nothing is kept.
+// proxyAudit forwards an audit request on route to the upstream of a proxy repo, without the
+// names that the repo's deny list refuses, which never leave the server (http-routing.md, npm,
+// Audit): the bulk request loses them (forwardBulk); npm 6's tree, the two other routes, cannot
+// lose a package without what hangs below it, and is forwarded whole when it names none and
+// 501 when it names one.
 func (h *handlers) proxyAudit(w http.ResponseWriter, r *http.Request, repo index.Repo, route string, body io.Reader) {
 	core, err := h.proxyCore(repo)
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
+	if route == auditBulk {
+		names, err := bulkNames(body)
+		if err != nil {
+			h.fail(w, r, err)
+			return
+		}
+		h.forwardBulk(w, r, core, repo, names)
+		return
+	}
+	tree, err := io.ReadAll(body)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	name, pattern, err := deniedInTree(core, repo, tree)
+	switch {
+	case err != nil:
+		h.fail(w, r, err)
+		return
+	case name != "":
+		h.fail(w, r, fmt.Errorf("%w: npm 6's audit through npm/%s names %q, which deny: %s keeps on the server: "+
+			"its tree would carry the name or lose what hangs below it", format.ErrUnsupported, repo.Name, name, pattern))
+		return
+	}
+	h.forwardAudit(w, r, core, repo, route, bytes.NewReader(tree))
+}
+
+// forwardBulk forwards the bulk audit names to the upstream of the proxy repo without the names
+// its deny list refuses; {} without a request when no name is left. The answer says nothing of
+// the names left out.
+func (h *handlers) forwardBulk(w http.ResponseWriter, r *http.Request, core format.Proxy, repo index.Repo, names map[string]json.RawMessage) {
+	for name := range names {
+		_, denied, err := core.Denies(repo, name)
+		if err != nil {
+			h.fail(w, r, err)
+			return
+		}
+		if denied {
+			delete(names, name)
+		}
+	}
+	if len(names) == 0 {
+		writeJSON(w, http.StatusOK, struct{}{})
+		return
+	}
+	h.forwardAudit(w, r, core, repo, auditBulk, bytes.NewReader(mustJSON(names)))
+}
+
+// bulkNames reads the bulk audit body, a JSON object of names: anything else wraps
+// format.ErrInvalid, and a body past the bound is the *http.MaxBytesError of auditBody (413).
+func bulkNames(body io.Reader) (map[string]json.RawMessage, error) {
+	var names map[string]json.RawMessage
+	if err := json.NewDecoder(body).Decode(&names); err != nil {
+		if errors.As(err, new(*http.MaxBytesError)) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: the audit body is not a JSON object of names: %w", format.ErrInvalid, err)
+	}
+	return names, nil
+}
+
+// auditNode is a node of npm 6's audit tree as far as its names go: the root, with the
+// project's name, and every dependency, with the names it requires and those below it.
+type auditNode struct {
+	Name         string                     `json:"name"`
+	Requires     map[string]json.RawMessage `json:"requires"`
+	Dependencies map[string]auditNode       `json:"dependencies"`
+}
+
+// deniedInTree returns the first name, in order, of npm 6's audit tree that the proxy repo's
+// deny list refuses, and the pattern; "" when it names none. A tree that does not read wraps
+// format.ErrInvalid.
+func deniedInTree(core format.Proxy, repo index.Repo, tree []byte) (name, pattern string, err error) {
+	var root auditNode
+	if err := json.Unmarshal(tree, &root); err != nil {
+		return "", "", fmt.Errorf("%w: the audit body is not npm 6's dependency tree: %w", format.ErrInvalid, err)
+	}
+	names := treeNames(root, []string{root.Name})
+	slices.Sort(names)
+	for _, n := range slices.Compact(names) {
+		if n == "" {
+			continue
+		}
+		pattern, denied, err := core.Denies(repo, n)
+		if err != nil || denied {
+			return n, pattern, err
+		}
+	}
+	return "", "", nil
+}
+
+// treeNames appends to names those that n requires and those of its dependencies, below it too.
+func treeNames(n auditNode, names []string) []string {
+	for req := range n.Requires {
+		names = append(names, req)
+	}
+	for dep, below := range n.Dependencies {
+		names = treeNames(below, append(names, dep))
+	}
+	return names
+}
+
+// forwardAudit sends an audit request on route to the upstream of a proxy repo through the
+// core (format.Proxy.Forward): a POST of the same route below the upstream's URL, the body
+// decoded. The upstream's answer is the answer, its status and its body as it sent them, with
+// Content-Type application/json and its npm-notice, which npm prints, and no other header of
+// the upstream's (http-routing.md, npm). Nothing is kept.
+func (h *handlers) forwardAudit(w http.ResponseWriter, r *http.Request, core format.Proxy, repo index.Repo, route string, body io.Reader) {
 	resp, err := core.Forward(r.Context(), repo, format.ForwardRequest{Method: http.MethodPost, Path: "-/" + route,
 		ContentType: "application/json", Accept: "application/json", Body: body})
 	if err != nil {

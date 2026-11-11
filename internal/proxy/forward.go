@@ -18,6 +18,27 @@ import (
 // in memory so that a retry and a redirect send it again.
 const maxForwardBody = 16 << 20
 
+// Denies reports whether a pattern of the deny list of the proxy repo repo matches name
+// (format.Proxy, docs/spec/proxy-and-group.md §3), and which: on the plugin's key of name, or
+// on name itself when the format does not allow it, so that no spelling of a denied name gets
+// past.
+func (c *Core) Denies(repo index.Repo, name string) (string, bool, error) {
+	p, err := c.resolve(repo)
+	if err != nil {
+		return "", false, err
+	}
+	key, err := p.hooks.Key(name)
+	if err != nil {
+		key = name
+	}
+	for _, pattern := range p.settings.Deny {
+		if Match(pattern, key) {
+			return pattern, true, nil
+		}
+	}
+	return "", false, nil
+}
+
 // Forward sends req to the upstream of the proxy repo repo and returns its answer
 // (format.Proxy, docs/spec/proxy-and-group.md §9.2): the core's own request, through the
 // upstream's client, with the parts of req and nothing else of the client's request. Nothing

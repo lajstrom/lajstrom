@@ -154,6 +154,12 @@ does not have the name (§8.1), so a name that no other member has is the group'
 lists say what a proxy mirrors; refusing a version for a reason, with `403`, is ADR 0008's rules, which are asked at
 the same point (§5, step 3).
 
+`deny` also bounds what a proxy forwards for a client (§9.2): a name it refuses never leaves the
+server (#514). The plugin asks the core (layout.md, `Proxy.Denies`) and leaves the name out of
+the request before it goes, and a request that cannot lose a name without losing others (npm
+6's audit tree) is refused when it names one (http-routing.md, npm, Audit). `allow` does not
+bound a forwarded request: a name outside it is not mirrored, and is not private either.
+
 ## 4. The metadata cache
 
 ### 4.1 The rows
@@ -375,9 +381,9 @@ chooses the upstream of a proxy repo and the members of a group; `manage` the re
 - **Forwarded requests**: a request that only the upstream can answer (npm audit,
   http-routing.md) is sent by the core as these rules say, below `upstreams[].url`, with what
   the plugin chose of the client's request (layout.md, `Proxy.Forward`): its body, at most
-  16 MiB, and a `Content-Type`, never a header the client sent. The answer is returned to
-  that client and kept nowhere, bounded by `maxMetadataSize`; an offline proxy (§4.4) sends
-  nothing.
+  16 MiB, without the names `deny` refuses (§3), and a `Content-Type`, never a header the
+  client sent. The answer is returned to that client and kept nowhere, bounded by
+  `maxMetadataSize`; an offline proxy (§4.4) sends nothing.
 
 ### 9.3 Logs and audit
 
