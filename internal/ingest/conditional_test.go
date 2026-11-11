@@ -1,9 +1,10 @@
 package ingest_test
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"math/rand/v2"
+	"math/big"
 	"slices"
 	"sync"
 	"testing"
@@ -53,24 +54,7 @@ func TestConditionalDelete(t *testing.T) {
 	ctx := t.Context()
 	e := newEnv(t)
 	d1 := publishRaw(t, e, "notes", "1.0", "first")
-
-	_, err := e.pipe.Delete(ctx, e.repo, conditional("notes", "1.0", d1, format.Condition{UnmodifiedSince: created.Add(-time.Second)}), alice)
-	young := wantRefused(t, err, format.RefusedYoung)
-	if !young.PublishedAt.Equal(created) {
-		t.Errorf("PublishedAt %v, want %v", young.PublishedAt, created)
-	}
-	_, err = e.pipe.Delete(ctx, e.repo, conditional("notes", "1.0", digest.FromString("another manifest"), format.Condition{}), alice)
-	changed := wantRefused(t, err, format.RefusedChanged)
-	if !slices.Equal(changed.Digests, []digest.Digest{d1}) {
-		t.Errorf("Digests %v, want %s", changed.Digests, d1)
-	}
-	_, err = e.pipe.Delete(ctx, e.repo, format.Deletion{Path: "notes", Reference: "1.0", Condition: &format.Condition{Version: "1.0"}}, alice)
-	if !errors.Is(err, format.ErrInvalid) {
-		t.Errorf("a conditional delete by tag: %v, want ErrInvalid", err)
-	}
-	if e.tagged(t, "raw/scratch/notes", "1.0") != d1 || len(e.rows(t).Versions) != 1 || len(e.rows(t).Audit) != 1 {
-		t.Fatalf("a refused delete changed something: %+v", e.rows(t))
-	}
+	wantConditionsRefused(t, e, d1)
 
 	cred := auth.WithCredential(ctx, auth.Credential{Kind: auth.CredPAT, TokenID: 7, UserID: 1})
 	del := conditional("notes", "1.0", d1, format.Condition{UnmodifiedSince: created})
@@ -91,6 +75,30 @@ func TestConditionalDelete(t *testing.T) {
 	}
 	if _, err := e.pipe.Delete(ctx, e.repo, conditional("notes", "1.0", d1, format.Condition{}), alice); !errors.Is(err, index.ErrNotFound) {
 		t.Errorf("the same delete again: %v, want ErrNotFound", err)
+	}
+}
+
+// wantConditionsRefused checks the refusals of the conditional delete of version 1.0 of notes,
+// d1: young, changed, by tag; none changes anything.
+func wantConditionsRefused(t *testing.T, e *env, d1 digest.Digest) {
+	t.Helper()
+	ctx := t.Context()
+	_, err := e.pipe.Delete(ctx, e.repo, conditional("notes", "1.0", d1, format.Condition{UnmodifiedSince: created.Add(-time.Second)}), alice)
+	young := wantRefused(t, err, format.RefusedYoung)
+	if !young.PublishedAt.Equal(created) {
+		t.Errorf("PublishedAt %v, want %v", young.PublishedAt, created)
+	}
+	_, err = e.pipe.Delete(ctx, e.repo, conditional("notes", "1.0", digest.FromString("another manifest"), format.Condition{}), alice)
+	changed := wantRefused(t, err, format.RefusedChanged)
+	if !slices.Equal(changed.Digests, []digest.Digest{d1}) {
+		t.Errorf("Digests %v, want %s", changed.Digests, d1)
+	}
+	_, err = e.pipe.Delete(ctx, e.repo, format.Deletion{Path: "notes", Reference: "1.0", Condition: &format.Condition{Version: "1.0"}}, alice)
+	if !errors.Is(err, format.ErrInvalid) {
+		t.Errorf("a conditional delete by tag: %v, want ErrInvalid", err)
+	}
+	if e.tagged(t, "raw/scratch/notes", "1.0") != d1 || len(e.rows(t).Versions) != 1 || len(e.rows(t).Audit) != 1 {
+		t.Fatalf("a refused delete changed something: %+v", e.rows(t))
 	}
 }
 
@@ -127,7 +135,12 @@ func TestConditionalDeletePointers(t *testing.T) {
 }
 
 // jitter sleeps up to 3 ms, so that the goroutines of a race start in either order.
-func jitter() { time.Sleep(time.Duration(rand.IntN(3000)) * time.Microsecond) }
+func jitter() {
+	n, err := rand.Int(rand.Reader, big.NewInt(3000))
+	if err == nil {
+		time.Sleep(time.Duration(n.Int64()) * time.Microsecond)
+	}
+}
 
 // TestConditionalDeleteDistTagRace races a dist-tag move onto a version against its
 // conditional delete, on fresh packages, with -race: one of the two wins, whole. Either the
@@ -161,7 +174,7 @@ func TestConditionalDeleteDistTagRace(t *testing.T) {
 		pointed := slices.ContainsFunc(e.state(t), func(s index.JournalState) bool { return s.Kind == index.JournalDistTag && s.Value == "1.0.0" })
 		switch {
 		case moveErr == nil && delErr != nil:
-			wantRefused(t, delErr, format.RefusedProtected)
+			_ = wantRefused(t, delErr, format.RefusedProtected)
 			if verr != nil || !pointed {
 				t.Fatalf("the move won, but the version is %v and named %v", verr, pointed)
 			}
