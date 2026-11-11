@@ -10,9 +10,9 @@ Lajstrom was run against, cell by cell; this page leans on it and on the vendors
 How to read it. **Measured**: run by Lajstrom, with the page or the date. A link to a vendor's
 documentation or source code: documented. A link to an issue or to a third party: reported. A
 trailing **?**: nobody here verified it. The research is of 2026-11-11, and so are the
-measurements of [section 2](#2-is-abc-one-repository-or-two), on Zot v2.1.23 and distribution
-3.1.2. Harbor was not run again for this page, for lack of disk on the machine: its cells come
-from [harbor.md](harbor.md) (v2.15.4, 2026-11-07) and from its sources.
+measurements of [section 2](#2-is-abc-one-repository-or-two), on Zot v2.1.23, distribution
+3.1.2 and Harbor v2.15.4. Harbor's other cells come from [harbor.md](harbor.md) (v2.15.4,
+2026-11-07) and from its sources.
 
 ## Summary
 
@@ -24,7 +24,7 @@ from [harbor.md](harbor.md) (v2.15.4, 2026-11-07) and from its sources.
 | Azure ACR | names with `/`, "managed independently, not as a hierarchy" | nothing; the last manifest's delete removes the repository | no count limit, a storage limit per SKU | not tried |
 | Google Artifact Registry | `PROJECT/REPOSITORY/IMAGE`: one GAR repository holds many images | the GAR repository (30 creations a minute a region) | not documented ? | not tried |
 | GitLab | `<namespace>/<project>` and **at most two levels more**; the project path is an image too | the project | 255 characters | yes, below a project; deeper, the token has no scope |
-| Harbor | `<project>/` and any depth | the project, never created on push | project 1–255 characters; the whole name 255 | any depth, measured; route words not measured |
+| Harbor | `<project>/` and any depth | the project, never created on push | project 1–255 characters; the whole name 255 | any depth, all served, listed and collected, measured; **below a component `manifests`, `referrers` or `tags/list`, a blob `HEAD` is 404 or 400 at random** (GET 200), measured |
 | GHCR | `<owner>/` and a name, which may hold `/` | the owner | lowercase | not tried |
 | Docker Hub | `namespace/repository`: **exactly two levels** | the namespace | repository 2–255 characters, no `.` | no third level at all |
 | Quay | `namespace/repository`; the repository may hold `/` (quay.io too) | the namespace | namespace 2–255, repository 255 characters | new names ending in `build` or `build/<x>` refused (master, 2026-11) |
@@ -192,8 +192,9 @@ Zot ([routes.go](https://github.com/project-zot/zot/blob/6a2e68c975a126ca90960cd
 Gitea and Forgejo route so (read), and so does Lajstrom's facade, which takes the fixed segments from
 the end ([route.go](../../internal/facade/route.go); `TestParseRoute` has
 `oci/images/blobs/blobs/uploads/0f`). What goes wrong is elsewhere: a storage layout that keeps a
-repository's files in the directory of its children, a rule that picks repositories by a prefix,
-and a product whose own URLs share the name space.
+repository's files in the directory of its children, a second reading of the path behind the
+router that matches the first pattern it tries (Harbor, below), a rule that picks repositories by
+a prefix, and a product whose own URLs share the name space.
 
 ### Measured on Zot and distribution
 
@@ -243,14 +244,16 @@ on the private Zot of the next section, every collector task named `quirks/x`, n
 `quirks/x/blobs`.
 Such a repository is served but not listed and never collected: npm's `@netlify/blobs`
 (`npm/<repo>/netlify/blobs` in Lajstrom), the pypi package `blobs`, a Maven group ending in
-`.sync`, every raw file below a directory `blobs/`. No Zot issue about it was found.
+`.sync`, every raw file below a directory `blobs/`. Reported as
+[zot#4694](https://github.com/project-zot/zot/issues/4694).
 
 ### Zot: `<x>/blobs` lives in `<x>`'s blob directory
 
 `quirks/x/blobs` keeps its `index.json` and `oci-layout` in `quirks/x/blobs/`, beside
 `quirks/x/blobs/sha256/`, where `quirks/x` keeps its blobs. Both serve. One level down, a
 repository `quirks/x/blobs/sha256` puts its `index.json`, `oci-layout`, `blobs/` and `.uploads/`
-among `quirks/x`'s blobs. On a private Zot of the same image (`gcDelay: 30s`, `gcInterval: 1m`;
+among `quirks/x`'s blobs ([zot#4695](https://github.com/project-zot/zot/issues/4695)). On a
+private Zot of the same image (`gcDelay: 30s`, `gcInterval: 1m`;
 not the shared one), with the three pushed, every collection of `quirks/x` failed:
 
 ```text
@@ -270,17 +273,74 @@ in `_manifests`, `_layers` and `_uploads`, names no component can have
 ([paths.go](https://github.com/distribution/distribution/blob/7ef76eb0e8331961ee1eaa7c70e809fe406a63ca/registry/storage/paths.go#L20-L60));
 its catalog skips those and descends into the rest, and listed every name above.
 
+### Measured on Harbor
+
+On 2026-11-11, Harbor v2.15.4 (`v2.15.4-d8841742`, its registry distribution
+`v2.8.3-55-gac7c4ced`) from [harbor.sh](../../deploy/compose/harbor/harbor.sh), as a compose
+project of its own, on the filesystem, with core's `GC_TIME_WINDOW_HOURS` at 0
+(`LAJSTROM_HARBOR_GC_TIME_WINDOW_HOURS=0`). A name is
+`<project>/<repository>`: the names of the Zot reports below the project `demo`, those of the
+table above below `quirks`. The same pushes under the tag `1`, as the admin with Basic auth (`/v2/`
+challenges with Bearer, but core takes Basic, and `_catalog` only Basic: an admin's token with
+`registry:catalog:*` is 401); in each repository one more blob that no manifest names; then a
+manual collection, and each blob read again:
+
+```sh
+A=admin:Harbor12345; R=http://localhost:5005
+curl -u $A -H 'Content-Type: application/json' -d '{"project_name":"demo"}' "$R/api/v2.0/projects"
+curl -u $A "$R/v2/_catalog?n=100000"; curl -u $A "$R/api/v2.0/projects/demo/repositories?page_size=100"
+curl -u $A "$R/api/v2.0/projects/demo/repositories/x%252Fblobs%252Fsha256/artifacts?with_tag=true"
+curl -u $A -H 'Content-Type: application/json' "$R/api/v2.0/system/gc/schedule" \
+  -d '{"schedule":{"type":"Manual"},"parameters":{"delete_untagged":true,"dry_run":false,"workers":1}}'
+curl -u $A "$R/api/v2.0/system/gc?page_size=1&sort=-creation_time"; curl -u $A "$R/api/v2.0/system/gc/<id>/log"
+```
+
+| Name | Pushed, read back | `_catalog`, REST API | Its layer: `HEAD`, `GET` | The orphan after the collection |
+| --- | --- | --- | --- | --- |
+| `demo/`: `plain`, `netlify/blobs`, `myblobs`, `my.uploads`, `my.sync`, `x`, `x/blobs`, `x/blobs/sha256` | 201, 200 | listed by both; the REST API shows the tag | 200, 200 | 404, collected; the image kept |
+| `quirks/`: `a/b/c`, `a/b`, `a`, `x/tags`, `x/uploads`, `v2/x`, `x/blobs`, `x/blobs/y`, `x/blobs/uploads`, `myblobs`, `myblobs/child`, `my.uploads`, `my.sync`, `x` | the same | the same | 200, 200 | the same |
+| `quirks/x/manifests/y`, `quirks/x/manifests`, `quirks/x/referrers/y` | the same | the same | **200 or 404 at random**: 404 in 13, 14 and 3 of 20; `GET` 200 | the same |
+| `quirks/x/tags/list` | the same; `GET /v2/quirks/x/tags/list/tags/list` 200 `{"name":"quirks/x/tags/list","tags":["1"]}` | the same | **200 or 400 at random**: 400 in 17 of 20; `GET` 200 | the same |
+
+Neither Zot report holds for Harbor. Its catalog is a query of its database, the repositories
+that hold an artifact ([catalog.go](https://github.com/goharbor/harbor/blob/v2.15.4/src/server/registry/catalog.go#L56-L69)).
+Its collector also takes its candidates from the database, the blobs no artifact refers to,
+and deletes them by digest through registryctl
+([garbage_collection.go](https://github.com/goharbor/harbor/blob/v2.15.4/src/jobservice/job/impl/gc/garbage_collection.go#L212-L240),
+[L429-L436](https://github.com/goharbor/harbor/blob/v2.15.4/src/jobservice/job/impl/gc/garbage_collection.go#L429-L436)).
+Neither walks the storage, so no name hides a repository from them. The job logged each orphan by
+digest, without a repository, "8 blobs and 0 manifests are actually deleted", and no error. The
+storage is distribution's: `repositories/demo/x/` holds `_layers`, `_manifests`, `_uploads` and
+`blobs`, the child. The REST API, with each `/` of a name encoded twice, listed every
+repository's artifact; `a/b` beside `a/b/c` is also in
+[harbor#21049](https://github.com/goharbor/harbor/issues/21049), and the UI of 2.15 answers 404
+for nested names ([harbor#24209](https://github.com/goharbor/harbor/issues/24209); not tried).
+
+An orphan needs time or a setting: the collector keeps every blob younger than core's
+`GC_TIME_WINDOW_HOURS`, 2 h by default, an environment variable "for testing/debugging"
+([systemconfig.go](https://github.com/goharbor/harbor/blob/v2.15.4/src/lib/config/systemconfig.go#L114-L124)).
+The request's `time_window` is ignored, and the collector runs only when started or on its
+schedule ([harbor.md](harbor.md#garbage-collection), 2026-11-07: at 2 h an orphan was kept).
+
+The route words break one request. Routing worked for every request: manifests, tag lists and
+`GET` of blobs answered for the right repository each time. Then core's artifactinfo middleware
+matches the path against five regular expressions kept in a Go map and takes the first that
+matches, in the map's random order
+([artifact_info.go](https://github.com/goharbor/harbor/blob/v2.15.4/src/server/middleware/artifactinfo/artifact_info.go#L42-L48),
+[L110-L140](https://github.com/goharbor/harbor/blob/v2.15.4/src/server/middleware/artifactinfo/artifact_info.go#L110-L140)).
+The manifest and referrers patterns end in `(?P<reference>.*)$`, and the tag list pattern is not
+anchored at its end ([patterns.go](https://github.com/goharbor/harbor/blob/v2.15.4/src/lib/patterns.go#L36-L46)).
+So `/v2/quirks/x/manifests/y/blobs/<digest>` also reads as the manifest `y/blobs/<digest>` of
+`quirks/x`, an invalid reference and 404, and `/v2/quirks/x/tags/list/blobs/<digest>` as the tag
+list of `quirks/x`, which leaves the blob `HEAD` handler without a digest: 400 (read). A client
+that asks `HEAD` before an upload sends the blob again; one that checks a blob after a push may
+find it missing.
+
 ### Elsewhere (read, not measured)
 
 - **GitLab.** A group and a project cannot share a path under one parent
   ([gitlab-foss#35100](https://gitlab.com/gitlab-org/gitlab-foss/-/issues/35100)), so among the
   three prefixes `path.rb` tries at most one is a project: no ambiguity, only the depth limit.
-- **Harbor.** The project is the first component and any depth follows; `a/b` beside `a/b/c`
-  appears in [harbor#21049](https://github.com/goharbor/harbor/issues/21049). Its core routes
-  `/v2/*/manifests/:reference` with beego wildcards ([route.go](https://github.com/goharbor/harbor/blob/v2.15.4/src/server/registry/route.go)),
-  which look greedy ?. Its REST API wants a `/` in a repository name encoded twice, `a%252Fb`
-  ([swagger](https://github.com/goharbor/harbor/blob/main/api/v2.0/swagger.yaml)), and the UI of
-  2.15 answers 404 for such names ([harbor#24209](https://github.com/goharbor/harbor/issues/24209)).
 - **Quay.** Since 2026-11-05 on master, not released, a new repository whose name ends in a
   `build` segment or has one segment after it (`foo/build`, `foo/build/bar`) is refused, because
   `org/foo/build/bar` reads as build `bar` of `org/foo` in Quay's web URLs
@@ -550,6 +610,11 @@ are escaped. A package's versions are tags in its repository.
 - **GitLab.com** refuses Lajstrom's manifests: its registry runs with the database and without
   the dynamic media types (measured on that variant, read in GitLab.com's values); and its
   256,000-byte manifest limit is below Lajstrom's `server.maxManifestSize` of 4 MiB.
+- **Harbor** answers a blob `HEAD` with 404 or 400 at random in a name with a component
+  `manifests` or `referrers`, or `tags/list` (measured, section 2): a raw file below a directory
+  `manifests/`, such as `k8s/manifests/app.yaml`. A check by `HEAD` misses the blob there: an
+  upload sends it again, a check after a push fails now and then (inference). ADR 0017 escapes
+  none of these words.
 - **GHCR** cannot delete: no unpublish, no retention. **Harbor** cannot delete one tag of
   several. **Nexus**'s `docker` format keeps a deleted manifest's tags.
 - **Tokens scale with packages.** A bearer token is scoped to repositories, so a run that touches
