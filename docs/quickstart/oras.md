@@ -213,7 +213,7 @@ manifest, and by digest every tag that names it:
 ```sh
 oras manifest delete --plain-http --force localhost:8080/raw/assets/docs/hello.txt:$v   # Deleted
 oras manifest delete --plain-http --force localhost:8080/oci/images/hello:1             # Deleted
-curl -s -o /dev/null -w '%{http_code}\n' -u "admin:$LAJSTROM_ADMIN_PASSWORD" http://localhost:8080/raw/assets/docs/hello.txt   # 404
+curl -s -o /dev/null -w '%{http_code}\n' -u "admin:$pw" http://localhost:8080/raw/assets/docs/hello.txt   # 404
 ```
 
 A registry that cannot delete manifests answers `405` and nothing changes.
