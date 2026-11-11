@@ -162,9 +162,10 @@ func (r refusingRepo) Delete(_ context.Context, desc ocispec.Descriptor) error {
 }
 
 // TestDeleteRefused: a backend that cannot delete manifests changes nothing. With
-// DeleteManifest false nothing is asked; one that refuses the first delete is asked a plain
-// delete first, the legacy signature (no subject: no tag-schema index is rewritten for it), and
-// nothing else.
+// DeleteManifest false nothing is asked, and no audit row is written; one that refuses the
+// first delete is asked a plain delete first, the legacy signature (no subject: no tag-schema
+// index is rewritten for it), and nothing else, and the delete has its audit row, failed with
+// the refusal (#473).
 func TestDeleteRefused(t *testing.T) {
 	t.Run("capability", func(t *testing.T) {
 		e, _, subject := referrerEnv(t, false)
@@ -189,7 +190,13 @@ func TestDeleteRefused(t *testing.T) {
 			t.Fatalf("Delete = %v, want ErrUnsupported", err)
 		}
 		same(t, "deletes asked", []digest.Digest{a.refs[0]}, deletes)
-		same(t, "rows", before, e.rows(t))
+		after := e.rows(t)
+		if ev := after.Audit[0]; ev.Action != "delete" || ev.Digest != subject.Digest || ev.State != index.AuditFailed ||
+			!strings.Contains(ev.Error, provider.ErrUnsupported.Error()) {
+			t.Errorf("the newest audit row %+v, want the delete of %s, failed with the refusal", ev, subject.Digest)
+		}
+		after.Audit = after.Audit[1:]
+		same(t, "rows", before, after)
 	})
 }
 
@@ -248,7 +255,8 @@ type failingTx struct{ index.Store }
 func (failingTx) Tx(context.Context, func(index.Writer) error) error { return errors.New("boom") }
 
 // TestDeleteRowsFail: when the index fails after the registry deleted the manifest, the error
-// has no sentinel (500, not a 404 of the index) and says so; reindex repairs the rows.
+// has no sentinel (500, not a 404 of the index) and says so, and the delete has its audit row,
+// failed with that error (#474); reindex repairs the rows.
 func TestDeleteRowsFail(t *testing.T) {
 	e, _, subject := referrerEnv(t, true)
 	opts := e.options(e.prov)
@@ -258,6 +266,9 @@ func TestDeleteRowsFail(t *testing.T) {
 		t.Errorf("Delete = %v", err)
 	}
 	gone(t, e, subject.Digest.String())
+	if ev := e.rows(t).Audit[0]; ev.Action != "delete" || ev.Digest != subject.Digest || ev.State != index.AuditFailed || ev.Error != err.Error() {
+		t.Errorf("the newest audit row %+v, want the delete of %s, failed with %q", ev, subject.Digest, err)
+	}
 }
 
 // TestDeleteKeepsPackage: a version that is not the last of its package leaves the package.

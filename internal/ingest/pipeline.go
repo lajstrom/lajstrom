@@ -132,15 +132,16 @@ type Result struct {
 //     fresh claim of another spelling, is ErrConflict naming it (#244); another digest
 //     already confirmed under the tag, or a fresh claim of another digest, is ErrConflict;
 //     the same digest confirmed is Existed and nothing is written;
-//  5. check the tag in the backend (another digest there is ErrConflict), then PUT the
-//     manifest with its tag in one request (provider.Repository.PushReference); a failure
-//     releases the claim on the tag;
+//  5. check the tag in the backend (another digest there is ErrConflict), write the audit row
+//     of the push, pending, in a transaction of its own, then PUT the manifest with its tag in
+//     one request (provider.Repository.PushReference); a failure releases the claim on the tag
+//     and marks the row failed;
 //  6. confirm in one index transaction, only after the registry accepted the manifest:
 //     package, version and files, the OCI repository, the invalidated index_cache, the audit
-//     event, and both claims released. When this fails the manifest stays for reindex to pick
-//     up and the error is a plain one (500), unless the index refused a conflict: the tag
-//     taken meanwhile, or the package path held by another spelling of the name that reindex
-//     found meanwhile (#97).
+//     row ok, and both claims released. When this fails the row is marked failed, the manifest
+//     stays for reindex to pick up and the error is a plain one (500), unless the index
+//     refused a conflict: the tag taken meanwhile, or the package path held by another
+//     spelling of the name that reindex found meanwhile (#97).
 //
 // Errors wrap ErrInvalid (steps 1 to 3), ErrConflict (steps 4 to 6, with an
 // *index.TagConflictError naming the existing digest when the conflict is a tag and the digest
@@ -287,6 +288,8 @@ type publish struct {
 	// pathClaim is the id of the claim on the package path, which the publishes of one
 	// spelling share: confirm releases it, a failure leaves it to go stale (claimPath).
 	pathClaim int64
+	// ev is the audit row of the push, pending from before it (intend).
+	ev index.AuditEvent
 
 	repeatOnFiles bool          // Upload: the same file layers under the tag are the idempotent repeat
 	existing      digest.Digest // the manifest the tag holds, when the publish is a repeat of it

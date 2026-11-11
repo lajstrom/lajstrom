@@ -319,7 +319,9 @@ func TestIngestPushFails(t *testing.T) {
 			case errors.Is(err, ingest.ErrConflict) != tt.conflict || errors.Is(err, ingest.ErrInvalid):
 				t.Errorf("Ingest: %v, ErrConflict %v and not ErrInvalid", err, tt.conflict)
 			}
-			if r := e.rows(t); len(r.Packages) != 0 || len(r.Versions) != 0 || len(r.Audit) != 0 {
+			// The push has its audit row, failed with the registry's error (#473).
+			if r := e.rows(t); len(r.Packages) != 0 || len(r.Versions) != 0 || len(r.Audit) != 1 ||
+				r.Audit[0].State != index.AuditFailed || !strings.Contains(r.Audit[0].Error, tt.fail.Error()) {
 				t.Errorf("rows after a failed push: %+v", r)
 			}
 			e.noClaim(t, readme, "1.0.0")
@@ -327,8 +329,9 @@ func TestIngestPushFails(t *testing.T) {
 			e.prov.FailPushReference = nil
 			res, err := e.ingest(t, built, raw, pkgPath)
 			must(t, err)
-			if res.Existed || len(e.rows(t).Versions) != 1 || len(e.prov.PushReferences()) != 1 {
-				t.Errorf("retry: %+v, rows %+v", res, e.rows(t))
+			if r := e.rows(t); res.Existed || len(r.Versions) != 1 || len(e.prov.PushReferences()) != 1 || len(r.Audit) != 2 ||
+				r.Audit[0].State != index.AuditOK {
+				t.Errorf("retry: %+v, rows %+v", res, r)
 			}
 		})
 	}
@@ -464,8 +467,19 @@ func TestIngestConcurrent(t *testing.T) {
 		}
 		e.noClaim(t, readme, tag)
 	}
-	if n := len(e.rows(t).Audit); n != 2*rounds {
-		t.Errorf("%d audit events, want one per tag (%d)", n, 2*rounds)
+	// One row per tag, ok; the loser of a race of the same bytes that pushed too has its own, ok
+	// with existed in its details.
+	n := 0
+	for _, ev := range e.rows(t).Audit {
+		if ev.State != index.AuditOK {
+			t.Errorf("audit row %+v, want ok", ev)
+		}
+		if !strings.Contains(string(ev.Details), `"existed":true`) {
+			n++
+		}
+	}
+	if n != 2*rounds {
+		t.Errorf("%d audit events that are no repeat, want one per tag (%d)", n, 2*rounds)
 	}
 }
 
