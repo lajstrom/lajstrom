@@ -406,31 +406,44 @@ func TestAuthenticateNil(t *testing.T) {
 }
 
 // TestAuthenticateFailure checks a failure to decide: 500 in the error format of the route's
-// family, without a challenge, the cause in the log with the request id, without the secret
-// and without the user name as typed.
+// family, or 503 UNAVAILABLE with Retry-After: 5 when the database does not answer, without a
+// challenge, the cause in the log with the request id, without the secret and without the
+// user name as typed.
 func TestAuthenticateFailure(t *testing.T) {
-	errDown := errors.New("index: database is gone")
-	tests := []struct{ path, body string }{
-		{"/test/x", "Internal Server Error\n"},
-		{"/v2/raw/scratch/x/tags/list", `{"errors":[{"code":"UNKNOWN","message":"Internal Server Error"}]}` + "\n"},
-		{"/api/v1/repos", `{"error":{"code":"INTERNAL","message":"Internal Server Error"}}` + "\n"},
+	errFails := errors.New("index: the users table is gone")
+	errDown := fmt.Errorf("%w: users: failed to connect: connection refused", index.ErrUnavailable)
+	tests := []struct {
+		err              error
+		path             string
+		status           int
+		body, retryAfter string
+	}{
+		{errFails, "/test/x", 500, "Internal Server Error\n", ""},
+		{errFails, "/v2/raw/scratch/x/tags/list", 500, `{"errors":[{"code":"UNKNOWN","message":"Internal Server Error"}]}` + "\n", ""},
+		{errFails, "/api/v1/repos", 500, `{"error":{"code":"INTERNAL","message":"Internal Server Error"}}` + "\n", ""},
+		{errDown, "/test/x", 503, "Service Unavailable\n", "5"},
+		{errDown, "/v2/raw/scratch/x/tags/list", 503, `{"errors":[{"code":"UNAVAILABLE","message":"Service Unavailable"}]}` + "\n", "5"},
+		{errDown, "/api/v1/repos", 503, `{"error":{"code":"UNAVAILABLE","message":"Service Unavailable"}}` + "\n", "5"},
 	}
 	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			s, sw, logs := authServer(t, usersReader{err: errDown})
+		t.Run(fmt.Sprint(tt.status, tt.path), func(t *testing.T) {
+			s, sw, logs := authServer(t, usersReader{err: tt.err})
 			r := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			r.Header.Set("Authorization", basic("alice", alicePassword))
 			r.Header.Set(requestIDHeader, "req-9")
 			rr := httptest.NewRecorder()
 			s.Handler().ServeHTTP(rr, r)
-			if rr.Code != http.StatusInternalServerError || rr.Body.String() != tt.body || sw.called {
-				t.Errorf("answer %d %q (handler called %v), want 500 %q", rr.Code, rr.Body, sw.called, tt.body)
+			if rr.Code != tt.status || rr.Body.String() != tt.body || sw.called {
+				t.Errorf("answer %d %q (handler called %v), want %d %q", rr.Code, rr.Body, sw.called, tt.status, tt.body)
 			}
 			if c := rr.Header().Get("WWW-Authenticate"); c != "" {
-				t.Errorf("a 500 has the challenge %q", c)
+				t.Errorf("a %d has the challenge %q", tt.status, c)
+			}
+			if got := rr.Header().Get("Retry-After"); got != tt.retryAfter {
+				t.Errorf("Retry-After %q, want %q", got, tt.retryAfter)
 			}
 			l := findLog(t, logs, "authentication failed")
-			if l["level"] != "ERROR" || l["requestId"] != "req-9" || !strings.Contains(fmt.Sprint(l["error"]), errDown.Error()) {
+			if l["level"] != "ERROR" || l["requestId"] != "req-9" || !strings.Contains(fmt.Sprint(l["error"]), tt.err.Error()) {
 				t.Errorf("log line = %v", l)
 			}
 			if _, ok := l["user"]; ok || strings.Contains(fmt.Sprint(l["error"]), "alice") {

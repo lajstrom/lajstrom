@@ -18,8 +18,8 @@ const basicChallenge = `Basic realm="lajstrom"`
 // X-Content-Type-Options: nosniff) and returns the status. 4xx bodies are err.Error()+"\n";
 // 5xx bodies are http.StatusText(status)+"\n" (the cause is for the log, not the client).
 // A 401 carries WWW-Authenticate: Basic realm="lajstrom", a 405 Allow: GET, HEAD, a 503 of
-// provider.ErrUnavailable or of an *UnavailableError Retry-After (SetRetryAfter). See StatusOf
-// for the mapping.
+// provider.ErrUnavailable, of index.ErrUnavailable or of an *UnavailableError Retry-After
+// (SetRetryAfter). See StatusOf for the mapping.
 func WriteError(w http.ResponseWriter, err error) int {
 	status := StatusOf(err)
 	msg := http.StatusText(status)
@@ -37,16 +37,24 @@ func WriteError(w http.ResponseWriter, err error) int {
 	return status
 }
 
+// indexRetryAfter is the Retry-After of index.ErrUnavailable: a database that restarts or
+// fails over takes seconds.
+const indexRetryAfter = 5 * time.Second
+
 // SetRetryAfter sets Retry-After in h when err says when to try again: a
 // provider.ErrUnavailable of an open circuit breaker, whose time left until its trial request
-// becomes whole seconds, at least 1, or an *UnavailableError of an upstream that asked to wait.
-// Every writer of error answers calls it (WriteError, the OCI facade, the management API), so
-// that the header is set wherever StatusOf answers 503.
+// becomes whole seconds, at least 1, an *UnavailableError of an upstream that asked to wait, or
+// index.ErrUnavailable, 5 seconds. Every writer of error answers calls it (WriteError, the OCI
+// facade, the management API, the authentication middleware), so that the header is set
+// wherever StatusOf answers 503.
 func SetRetryAfter(h http.Header, err error) {
 	after, ok := provider.RetryAfter(err)
 	var u *UnavailableError
 	if !ok && errors.As(err, &u) {
 		after, ok = u.RetryAfter, true
+	}
+	if !ok && errors.Is(err, index.ErrUnavailable) {
+		after, ok = indexRetryAfter, true
 	}
 	if !ok {
 		return
@@ -72,6 +80,8 @@ func SetRetryAfter(h http.Header, err error) {
 //	  *provider.RejectedError not busy           credentials, or what Lajstrom sent it, #494)
 //	provider.ErrUnavailable                    503 Service Unavailable, with Retry-After (SetRetryAfter):
 //	                                           an open circuit breaker, or the backend's 429 or 503
+//	index.ErrUnavailable                       503 Service Unavailable, with Retry-After: 5 (the database
+//	                                             did not answer)
 //	ErrBadGateway                              502 Bad Gateway (a proxy's upstream failed)
 //	ErrUnavailable                             503 Service Unavailable, with Retry-After (the upstream's)
 //	ErrGatewayTimeout                          504 Gateway Timeout
@@ -99,7 +109,7 @@ func StatusOf(err error) int {
 		return http.StatusNotImplemented
 	case errors.Is(err, provider.ErrUnauthorized), refusedBy(err, 0):
 		return http.StatusBadGateway
-	case errors.Is(err, provider.ErrUnavailable):
+	case errors.Is(err, provider.ErrUnavailable), errors.Is(err, index.ErrUnavailable):
 		return http.StatusServiceUnavailable
 	case errors.Is(err, ErrBadGateway):
 		return http.StatusBadGateway

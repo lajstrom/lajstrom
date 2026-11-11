@@ -112,7 +112,7 @@ func TestFileMigrate(t *testing.T) {
 
 // TestFileWriters checks a database file shared by two stores, as two replicas share it: each
 // sees the other's writes, and a writer waits for the other's transaction (busy timeout)
-// instead of failing, while a store without busy timeout fails.
+// instead of failing, while a store without busy timeout fails with index.ErrUnavailable.
 func TestFileWriters(t *testing.T) {
 	ctx := t.Context()
 	dsn := "file:" + filepath.Join(t.TempDir(), "lajstrom.db")
@@ -139,8 +139,11 @@ func TestFileWriters(t *testing.T) {
 			return err
 		}
 		close(locked)
-		if err := c.CreateRepo(ctx, &index.Repo{Format: "raw", Name: "impatient", Registry: "local", Kind: "hosted"}); err == nil {
+		switch err := c.CreateRepo(ctx, &index.Repo{Format: "raw", Name: "impatient", Registry: "local", Kind: "hosted"}); {
+		case err == nil:
 			return errors.New("a writer without busy timeout succeeded while another held the lock")
+		case !errors.Is(err, index.ErrUnavailable):
+			return fmt.Errorf("a writer without busy timeout: %w, want index.ErrUnavailable", err)
 		}
 		select {
 		case err := <-bDone:

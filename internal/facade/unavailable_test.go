@@ -3,6 +3,7 @@ package facade
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/opencontainers/go-digest"
 
 	"github.com/lajstrom/lajstrom/internal/config"
+	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/provider/generic"
 	"github.com/lajstrom/lajstrom/internal/provider/providertest"
@@ -88,5 +90,43 @@ func TestRegistryUnavailable(t *testing.T) {
 		if s, err := strconv.Atoi(rr.Header().Get("Retry-After")); err != nil || s < 1 || s > 30 {
 			t.Errorf("%s: Retry-After %q, want 1 to 30 seconds", what, rr.Header().Get("Retry-After"))
 		}
+	}
+}
+
+// downIndex is a store whose database does not answer: its repo lookups fail as the store's
+// do while Postgres is out.
+type downIndex struct{ index.Store }
+
+func (downIndex) GetRepo(context.Context, string, string) (*index.Repo, error) {
+	return nil, fmt.Errorf("%w: repos: failed to connect to `host=db`: dial tcp: connection refused", index.ErrUnavailable)
+}
+
+// TestIndexUnavailable sends requests to the facade while the database does not answer: a
+// read and an upload whose repo cannot be looked up, and a manifest push whose ingest fails so.
+// Each is 503 UNAVAILABLE, which docker retries, with Retry-After: 5, and is logged at warn.
+func TestIndexUnavailable(t *testing.T) {
+	down := fmt.Errorf("ingest: claim: %w: tag_claims: dial tcp: connection refused", index.ErrUnavailable)
+	e := newEnv(t, envOptions{ingest: stubIngester{down}})
+	h := New(Options{Index: downIndex{e.st}, Providers: provider.Map{"local": e.reg}, Tokens: e.tokens,
+		Log: slog.New(slog.NewTextHandler(e.logs, nil))})
+	f := e.newRawFile("docs/e.txt", "the database is out")
+	body, _ := f.body(t)
+	for _, tt := range []struct {
+		what string
+		rr   *httptest.ResponseRecorder
+	}{
+		{"manifest read", e.do(h, http.MethodGet, "/v2/oci/images/app/manifests/v1", nil)},
+		{"upload", e.do(h, http.MethodPost, uploads, nil)},
+		{"manifest push", e.put(f, "t1", body)},
+	} {
+		if msg := wantError(t, tt.what, tt.rr, http.StatusServiceUnavailable, codeUnavailable); msg != "Service Unavailable" {
+			t.Errorf("%s: message %q, want the status text only", tt.what, msg)
+		}
+		if got := tt.rr.Header().Get("Retry-After"); got != "5" {
+			t.Errorf("%s: Retry-After %q, want 5", tt.what, got)
+		}
+	}
+	if logs := e.logs.String(); strings.Count(logs, "facade: index unavailable") != 3 || strings.Contains(logs, "request failed") {
+		t.Errorf("want three warnings, no error:\n%s", logs)
 	}
 }

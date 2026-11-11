@@ -2,10 +2,14 @@ package postgres
 
 import (
 	"context"
+	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -35,13 +39,23 @@ const (
 	insufficientPrivilege = "42501"
 )
 
+// unavailableStates are the SQLSTATE codes of a server that ends or refuses connections, which
+// the store maps to index.ErrUnavailable, beside the class 08 (connection exception).
+var unavailableStates = map[string]bool{
+	"57P01": true, // admin_shutdown: terminating connection due to administrator command
+	"57P02": true, // crash_shutdown
+	"57P03": true, // cannot_connect_now: the database system is starting up or shutting down
+	"53300": true, // too_many_connections
+}
+
 var dialect = sqlstore.Dialect{
-	Name:         index.DialectPostgres,
-	Numbered:     true,
-	IsUnique:     func(err error) bool { return sqlState(err) == uniqueViolation },
-	IsForeignKey: func(err error) bool { return sqlState(err) == foreignKeyViolation },
-	XactLock:     "SELECT pg_advisory_xact_lock(?)",
-	Clock:        "SELECT clock_timestamp()",
+	Name:          index.DialectPostgres,
+	Numbered:      true,
+	IsUnique:      func(err error) bool { return sqlState(err) == uniqueViolation },
+	IsForeignKey:  func(err error) bool { return sqlState(err) == foreignKeyViolation },
+	IsUnavailable: isUnavailable,
+	XactLock:      "SELECT pg_advisory_xact_lock(?)",
+	Clock:         "SELECT clock_timestamp()",
 }
 
 // Open connects to the PostgreSQL database of dsn, a URL or a keyword/value string as pgx
@@ -97,6 +111,24 @@ func poolSize(cfg *pgx.ConnConfig) (int, error) {
 		return 0, fmt.Errorf("index: postgres: database.dsn: %s %q is not a positive integer", poolParam, v)
 	}
 	return n, nil
+}
+
+// isUnavailable reports whether err says that the database did not answer: a server error of
+// unavailableStates or of the class 08, also one that ended a connection attempt (the 57P03 of
+// a server that starts); a connection that could not be made (*pgconn.ConnectError: refused, a
+// host name that does not resolve, connect_timeout); one that broke (a network error, an
+// unexpected EOF); database/sql's driver.ErrBadConn, when every attempt found its connection
+// closed. Another server error, a wrong password included, is not: the server answered.
+func isUnavailable(err error) bool {
+	if state := sqlState(err); state != "" {
+		return unavailableStates[state] || strings.HasPrefix(state, "08")
+	}
+	var (
+		ce *pgconn.ConnectError
+		oe *net.OpError
+	)
+	return errors.As(err, &ce) || errors.As(err, &oe) || errors.Is(err, driver.ErrBadConn) ||
+		errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF)
 }
 
 // sqlState returns the SQLSTATE of a server error, or "".
