@@ -166,7 +166,8 @@ func TestTokenSignerRace(t *testing.T) {
 
 // TestRotateToken checks a rotation: the new key signs, both verify for the grace (the new one
 // first) and the old one not after it; the audit row; the keys of TokenVerifiers have no
-// private key. A rotation with drop: the old key verifies nothing from then on.
+// private key. A rotation with drop: the old key verifies nothing from then on, and neither
+// does the key of the rotation before, still in its grace: every outstanding token dies.
 func TestRotateToken(t *testing.T) {
 	e := newEnv(t, Options{})
 	tk := e.newTokens(TokenOptions{})
@@ -204,8 +205,13 @@ func TestRotateToken(t *testing.T) {
 	}
 
 	third := must2(tk.RotateToken(ctx, true))
-	if vs := must2(tk.TokenVerifiers(ctx)); !equal(tokenIDs(vs), []string{third.ID(), first.ID()}) {
-		t.Errorf("after a rotation with drop: verifiers %v, want the new key and the first, still in its grace", tokenIDs(vs))
+	if vs := must2(tk.TokenVerifiers(ctx)); !equal(tokenIDs(vs), []string{third.ID()}) {
+		t.Errorf("after a rotation with drop: verifiers %v, want the new key only, the first in its grace included", tokenIDs(vs))
+	}
+	for _, r := range must2(e.st.ListKeys(ctx, nil)) {
+		if r.ID != third.Key.ID && (r.RetiredAt == nil || !r.RetiredAt.Equal(e.now.Add(-TokenGrace))) {
+			t.Errorf("key %s after the drop: retired at %v, want one grace ago", r.Fingerprint, r.RetiredAt)
+		}
 	}
 	checkRotateAudit(t, e, []string{third.ID(), `{"retired":"` + second.ID() + `","dropped":true}`},
 		[]string{second.ID(), `{"retired":"` + first.ID() + `"}`})

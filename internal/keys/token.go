@@ -208,8 +208,9 @@ func (t *Tokens) TokenVerifiers(ctx context.Context) ([]*TokenKey, error) {
 // RotateToken makes a new token key, which signs from now on, and retires the active one, in
 // one transaction that also writes the audit row key.rotate (Repo empty, Subject the new
 // fingerprint, Details {"retired": "<the old one>"}). The retired key verifies for TokenGrace.
-// With drop it is retired one grace in the past, so that nothing it signed verifies any more:
-// every outstanding token dies, for a key that may have leaked, and Details also has
+// With drop it is retired one grace in the past, and so is every key that an earlier rotation
+// retired less than TokenGrace ago, so that nothing they signed verifies any more: every
+// outstanding token dies, for a key that may have leaked, and Details also has
 // {"dropped": true}. A rotation that loses to another at the same time is an error wrapping
 // index.ErrConflict.
 func (t *Tokens) RotateToken(ctx context.Context, drop bool) (*TokenKey, error) {
@@ -220,6 +221,11 @@ func (t *Tokens) RotateToken(ctx context.Context, drop bool) (*TokenKey, error) 
 	var retired string
 	err = t.st.Tx(ctx, func(tx index.Writer) error {
 		retired = ""
+		if drop {
+			if err := t.endGrace(ctx, tx); err != nil {
+				return err
+			}
+		}
 		old, err := tx.GetKey(ctx, nil, KindJWT)
 		switch {
 		case err == nil:
@@ -286,6 +292,24 @@ func (t *Tokens) ExportToken(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: k.Key.Public}), nil
+}
+
+// endGrace moves the RetiredAt of every token key retired less than TokenGrace ago to one grace
+// ago, so that the tokens it signed stop verifying with the rotation that drops.
+func (t *Tokens) endGrace(ctx context.Context, tx index.Writer) error {
+	all, err := tx.ListKeys(ctx, nil)
+	if err != nil {
+		return err
+	}
+	since := t.now().Add(-TokenGrace)
+	for _, k := range all {
+		if k.Kind == KindJWT && k.RetiredAt != nil && k.RetiredAt.After(since) {
+			if err := tx.RetireKey(ctx, k.ID, t.retireAt(true)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // retireAt is the RetiredAt of a key retired now: now, or one grace ago when it is dropped.
