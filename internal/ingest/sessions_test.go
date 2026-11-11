@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/opencontainers/go-digest"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/format/formattest"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/ingest"
 )
@@ -222,6 +224,47 @@ func TestSessionRules(t *testing.T) {
 		if !errors.Is(err, index.ErrNotFound) {
 			t.Errorf("%s = %v, want ErrNotFound", what, err)
 		}
+	}
+}
+
+// TestSessionAddStreams: with a TMPDIR that takes no file, Add streams a file of several chunks
+// into the registry and commits its blob with the checksums it computed; one whose body fails,
+// or is shorter than its size, stores no blob, leaves no session open in the registry and adds
+// no file to the session.
+func TestSessionAddStreams(t *testing.T) {
+	ctx := t.Context()
+	formattest.NoTempDir(t)
+	e, _ := sessionEnv(t)
+	e.prov.ChunkSize = 4
+	s, err := e.pipe.Open(ctx, e.repo, "lib", "1.0", alice)
+	must(t, err)
+	const content = "streamed in several chunks"
+	got := add(t, e, s.ID, "a.jar", content)
+	same(t, "the file", format.SessionFile{Name: "a.jar", Digest: sha256Digest(content), Size: int64(len(content)),
+		Checksums: checksums(content)}, got)
+	const refused = "refused part way"
+	for what, body := range map[string]struct {
+		r    io.Reader
+		size int64
+	}{
+		"a body that fails":            {iotest.TimeoutReader(strings.NewReader(refused)), -1},
+		"a body shorter than its size": {strings.NewReader(refused), int64(len(refused)) + 1},
+	} {
+		if _, err := e.pipe.Add(ctx, s.ID, "b.jar", body.r, body.size); err == nil {
+			t.Errorf("Add of %s = nil, want an error", what)
+		}
+	}
+	rr, err := e.prov.Repository(ctx, "raw/scratch/lib")
+	must(t, err)
+	for c, want := range map[string]bool{content: true, refused: false} {
+		if ok, err := rr.Exists(ctx, ocispec.Descriptor{Digest: sha256Digest(c), Size: int64(len(c))}); err != nil || ok != want {
+			t.Errorf("the registry holds %q: %v, %v; want %v", c, ok, err, want)
+		}
+	}
+	files, err := e.pipe.Files(ctx, s.ID)
+	must(t, err)
+	if len(files) != 1 || e.prov.OpenUploads() != 0 {
+		t.Errorf("the session holds %d files, %d upload sessions open; want 1 and none", len(files), e.prov.OpenUploads())
 	}
 }
 

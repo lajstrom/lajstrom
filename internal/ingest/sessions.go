@@ -2,20 +2,12 @@ package ingest
 
 import (
 	"context"
-	"crypto/md5"  //nolint:gosec // maven's .md5 of a file; not a security use
-	"crypto/sha1" //nolint:gosec // maven's .sha1 of a file; not a security use
-	"crypto/sha256"
-	"crypto/sha512"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash"
 	"io"
-	"os"
 	"time"
 
-	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
@@ -25,11 +17,11 @@ import (
 
 // Publication sessions (format.Sessions; docs/architecture.md, flow B). A session is a row of
 // sessions: its key is <name>:<version> (maven g:a:v), its files column a sessionState. Every
-// file is pushed to the registry by Add, into the OCI repository the version will be in, and
-// recorded with its checksums; Commit hands the recorded files to Upload, whose Build reads what
-// it needs back from the registry and whose pushBlobs finds the files there. Nothing of a
-// session is ever published but by Commit: a session that expires is dropped, its blobs left to
-// the registry's garbage collection.
+// file streams into the registry in Add (ADR 0014), into the OCI repository the version will be
+// in, and is recorded with the checksums computed on the way; Commit hands the recorded files
+// to Upload, whose Build reads what it needs back from the registry and whose pushBlobs finds
+// the files there. Nothing of a session is ever published but by Commit: a session that
+// expires is dropped, its blobs left to the registry's garbage collection.
 //
 // Every change of a session's files is a transaction that starts with TouchSession, which
 // takes the row's lock on Postgres, so that two Adds at once (Gradle uploads in parallel) both
@@ -161,8 +153,8 @@ func (p *Pipeline) openSession(ctx context.Context, repo index.Repo, key string)
 	return nil, fmt.Errorf("%w: session %d expired", index.ErrNotFound, s.ID)
 }
 
-// Add implements format.Sessions: the bytes are spooled and hashed, pushed unless the registry
-// has them, and recorded.
+// Add implements format.Sessions: the bytes stream into the registry (streamFile) and the file
+// is recorded, in place of a file of that name.
 func (p *Pipeline) Add(ctx context.Context, sessionID int64, name string, r io.Reader, size int64) (format.SessionFile, error) {
 	if name == "" {
 		return format.SessionFile{}, fmt.Errorf("%w: ingest: a file of session %d has no name", ErrInvalid, sessionID)
@@ -178,20 +170,11 @@ func (p *Pipeline) Add(ctx context.Context, sessionID int64, name string, r io.R
 	if err := st.room(t.repo, name); err != nil { // before the bytes are stored; again below, under the lock
 		return format.SessionFile{}, err
 	}
-	f, sf, err := spoolHashed(r, name, size)
-	if err != nil {
-		return format.SessionFile{}, err
-	}
-	defer func() { _ = f.Close(); _ = os.Remove(f.Name()) }()
 	if err := t.prov.EnsureRepository(ctx, t.name); err != nil {
 		return format.SessionFile{}, fmt.Errorf("ingest: ensure repository %s: %w", t.name, err)
 	}
-	if err := t.pushBlob(ctx, format.BlobSource{
-		Descriptor: ocispec.Descriptor{MediaType: sessionBlobType, Digest: sf.Digest, Size: sf.Size},
-		Open: func(context.Context) (io.ReadCloser, error) {
-			return io.NopCloser(io.NewSectionReader(f, 0, sf.Size)), nil
-		},
-	}); err != nil {
+	sf, err := p.streamFile(ctx, t, name, r, size)
+	if err != nil {
 		return format.SessionFile{}, err
 	}
 	err = p.changeSession(ctx, sessionID, p.timeoutOf(t.repo), func(st *sessionState) error {
@@ -214,6 +197,30 @@ func (p *Pipeline) Add(ctx context.Context, sessionID int64, name string, r io.R
 		return format.SessionFile{}, err
 	}
 	return sf, nil
+}
+
+// streamFile streams r into a new blob of t's repository while it computes the checksums of a
+// session file, md5, sha1, sha256 and sha512 (the read of UploadStream), and commits the blob
+// with its sha256 once the body ended whole: at the size the client declared, -1 when unknown,
+// and within the repo's maxFileSize, which the frontend's LimitBody cuts. A body that fails, or
+// a commit the registry refuses, cancels the upload session: nothing of the file is stored. A
+// blob the repository holds already is not committed again. Nothing touches the local disk.
+func (p *Pipeline) streamFile(ctx context.Context, t *target, name string, r io.Reader, size int64) (format.SessionFile, error) {
+	w, err := t.rr.OpenBlobWriter(ctx)
+	if err != nil {
+		return format.SessionFile{}, fmt.Errorf("ingest: open a blob upload in %s: %w", t.name, err)
+	}
+	t.streamed = &streamed{w: w}
+	defer p.cancelStreamed(ctx, t)
+	f, err := t.streamed.read(t.repo, format.StreamUpload{File: format.UploadedFile{Name: name, Size: size}, Body: r},
+		format.Inspection{Checksums: []string{"md5", "sha1", "sha512"}})
+	if err != nil {
+		return format.SessionFile{}, fmt.Errorf("ingest: %s into %s: %w", name, t.name, err)
+	}
+	if err := t.commit(ctx); err != nil {
+		return format.SessionFile{}, err
+	}
+	return format.SessionFile{Name: name, Digest: t.streamed.desc.Digest, Size: f.Size, Checksums: f.Checksums}, nil
 }
 
 // Files implements format.Sessions.
@@ -449,38 +456,4 @@ func decodeSession(s *index.Session) (*sessionState, error) {
 		return nil, fmt.Errorf("ingest: session %d: the files column is not a publication session's: %w", s.ID, err)
 	}
 	return &st, nil
-}
-
-// spoolHashed copies r to a temporary file while it computes the file's digest and checksums,
-// and returns the file, positioned anywhere, for the caller to close and remove. size is the
-// length the client declared, -1 when unknown; another length is ErrInvalid. It is a request
-// spool, never artifact storage (CLAUDE.md, code rules): the file lives as long as Add.
-func spoolHashed(r io.Reader, name string, size int64) (*os.File, format.SessionFile, error) {
-	f, err := os.CreateTemp("", "lajstrom-session-*")
-	if err != nil {
-		return nil, format.SessionFile{}, fmt.Errorf("ingest: spool %s: %w", name, err)
-	}
-	fail := func(err error) (*os.File, format.SessionFile, error) {
-		_ = f.Close()
-		_ = os.Remove(f.Name())
-		return nil, format.SessionFile{}, err
-	}
-	sums := map[string]hash.Hash{"md5": md5.New(), "sha1": sha1.New(), "sha256": sha256.New(), "sha512": sha512.New()} //nolint:gosec // maven's checksums
-	w := []io.Writer{f}
-	for _, h := range sums {
-		w = append(w, h)
-	}
-	n, err := io.Copy(io.MultiWriter(w...), r)
-	switch {
-	case err != nil:
-		return fail(fmt.Errorf("ingest: spool %s: %w", name, err))
-	case size >= 0 && n != size:
-		return fail(fmt.Errorf("%w: %s has %d bytes, Content-Length says %d", ErrInvalid, name, n, size))
-	}
-	sf := format.SessionFile{Name: name, Size: n, Checksums: map[string]string{}}
-	for alg, h := range sums {
-		sf.Checksums[alg] = hex.EncodeToString(h.Sum(nil))
-	}
-	sf.Digest = digest.NewDigestFromEncoded(digest.SHA256, sf.Checksums["sha256"])
-	return f, sf, nil
 }

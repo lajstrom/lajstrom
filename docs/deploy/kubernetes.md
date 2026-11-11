@@ -255,7 +255,7 @@ the Kubernetes API. That is the `restricted` Pod Security Standard: labelling th
 fixtures, Postgres and the registry, as violations.
 
 The only writable path is `/tmp`, an `emptyDir` of at most 4 GiB on the node's disk: an upload
-(pypi, maven) is spooled there for the length of its request and removed after; a raw or apt
+(pypi) is spooled there for the length of its request and removed after; a raw, apt or maven
 upload streams into the registry and takes none. Size
 it for the largest concurrent uploads of one replica, or the pod is evicted when it fills. To
 spool on a volume of its own instead, mount it and set `TMPDIR` to its path: Lajstrom spools
