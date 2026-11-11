@@ -225,6 +225,28 @@ func TestUploadStreamValidateFetch(t *testing.T) {
 	e.wantPublished(t, content, 1)
 }
 
+// TestUploadStreamClosesInspector: the inspector of a body that fails, or that it refuses, is
+// closed, so that it releases what it holds.
+func TestUploadStreamClosesInspector(t *testing.T) {
+	const content = "a body of a few chunks"
+	for _, tt := range []struct {
+		name string
+		insp *inspector
+		body io.Reader
+	}{
+		{"the body fails", &inspector{}, io.MultiReader(strings.NewReader(content[:9]), iotest.ErrReader(errors.New("reset")))},
+		{"the inspector refuses a write", &inspector{failWrite: errors.New("not a tarball")}, strings.NewReader(content)},
+	} {
+		e, sp := newStreamEnv(t)
+		sp.inspection = format.Inspection{Inspector: tt.insp}
+		up := streamUpload("1.0.0", content)
+		up.Body, up.File.Size = tt.body, -1
+		if _, err := e.pipe.UploadStream(t.Context(), e.repo, up, alice); err == nil || !tt.insp.closed {
+			t.Errorf("%s: UploadStream = %v, the inspector closed %v; want an error, closed", tt.name, err, tt.insp.closed)
+		}
+	}
+}
+
 // TestUploadStreamNotStreamer: a plugin that is not a Streamer is ErrUnsupported, and a name it
 // does not allow ErrInvalid, before anything reaches the registry.
 func TestUploadStreamNotStreamer(t *testing.T) {
