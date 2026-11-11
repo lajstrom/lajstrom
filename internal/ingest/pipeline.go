@@ -62,8 +62,8 @@ type Options struct {
 	// instead (docs/api.md). A session whose time is up is dropped (format.Sessions).
 	SessionTimeout time.Duration
 	// VisibilityTimeout is how long a publish reads back what it pushed before it confirms
-	// it (the visibility barrier, awaitVisible); a registry's consistencyBound raises it.
-	// Zero, or negative, means 30 seconds.
+	// it (the visibility barrier, awaitVisible), twice that for a referrer; a registry's
+	// consistencyBound raises it. Zero, or negative, means 30 seconds.
 	VisibilityTimeout time.Duration
 }
 

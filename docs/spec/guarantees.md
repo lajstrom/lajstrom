@@ -283,26 +283,34 @@ status is `holds on strongly consistent registries only` do not hold there.
 - **Scope.** Managed repos: version tags and the `_j<seq>` tags of npm's journal. Not `oci`
   repos, whose tags pass through and follow the backend's rules. Not writes straight to the
   backend: Lajstrom reports them (drift) and leaves them.
-- **Assumes.** Registry: **read-after-write** (**unchecked**) for the backstop below; **case-exact
-  tags** (on Gitea and Forgejo two versions that differ only in case are one tag, and the second
-  is a `409`: [#426](https://github.com/lajstrom/lajstrom/issues/426)). Database: as INV-6.
+- **Assumes.** Registry: **monotonic reads** (**unchecked**) and a lag shorter than
+  `ingest.claimTTL` for the backstop below; **case-exact tags** (on Gitea and Forgejo two
+  versions that differ only in case are one tag, and the second is a `409`:
+  [#426](https://github.com/lajstrom/lajstrom/issues/426)). Database: as INV-6.
 - **Mechanism.** The index and the claims (INV-6) decide; then `publish.pushManifest` resolves the
   tag in the backend before the push and refuses another digest there, which catches a tag the
   index lacks (a confirm that failed after the push, a write past Lajstrom, an index not yet
-  rebuilt); a backend with immutable tags refuses the push on its own.
-  `Writer.UpsertJournal` never rewrites an entry; the journal adopts a stray entry instead of
-  overwriting it (`ingest.journal.adopt`). Reindex reports drift (`scan.drift`) and keeps the
+  rebuilt); a backend with immutable tags refuses the push on its own. On a lagging registry
+  that read cannot miss Lajstrom's own pushes: a confirm runs only after the visibility barrier
+  saw the tag (INV-4), and a push the registry did not serve in time keeps its claim for
+  `ingest.claimTTL`, which refuses another digest meanwhile. `Writer.UpsertJournal` never
+  rewrites an entry; each entry is claimed in `tag_claims` before its push, the journal adopts a
+  stray entry instead of overwriting it (`ingest.journal.adopt`), and an entry an earlier append
+  claimed and the registry does not serve yet is read back, then waited for (`503`) until its
+  claim is stale (`ingest.journal.claimed`); on a `strong` registry a claimed entry it does not
+  serve was never pushed, and is taken over. Reindex reports drift (`scan.drift`) and keeps the
   index's digest.
 - **Tests.** `TestIngestConflict`, `TestIngestTagInBackend`, `TestIngestIndexFailsAfterPush`,
   `TestManifestHook`, `TestDrift`, `TestJournalAdopts`, the store conformance case `Journal`;
+  `TestVisibilityTimeout`, `TestVisibilityRetryRebuilt`, `TestJournalVisibility`,
+  `TestJournalClaimNotPushed`;
   `oras.sh` (another manifest under the tag: `409`), the conflicts of `raw.sh`, `pypi.sh`,
   `apt.sh`, `maven.sh` (acceptance.md E-01).
 - **When violated.** Reindex lists the tag as drift (`reindex --report`, `GET …/reindex`) with
   both digests; nothing repairs it, by design: whoever re-pointed it decides.
-- **Status.** `holds on strongly consistent registries only`: the index guards every tag it
-  knows on any registry; a tag it does not know is guarded by a read that a lagging registry can
-  answer `404`, and the push then re-points it on a registry with mutable tags
-  ([#446](https://github.com/lajstrom/lajstrom/issues/446)).
+- **Status.** `holds`. A lag longer than `ingest.claimTTL` (10 min) would let a stale claim's tag
+  be pushed again; none is reported for a registry's own region
+  ([registries/README.md](../registries/README.md#consistency)).
 
 ### INV-8. The same bytes again are an idempotent repeat
 
@@ -314,8 +322,12 @@ status is `holds on strongly consistent registries only` do not hold there.
   newest (http-routing.md, raw).
 - **Assumes.** Any.
 - **Mechanism.** `ingest.Pipeline.repeat` and `sameFiles` before the blobs are pushed, again under
-  the claims in `claimTag`; `confirm` reports `Existed`.
-- **Tests.** `TestUploadRepeat`, `TestUploadRepeatRace`, `TestIngest`, `TestSessionRepeat`; R-02 in
+  the claims in `claimTag`; `confirm` reports `Existed`. An upload whose tag a fresh claim of
+  another digest holds, and whose manifest the registry has with the same files, takes that
+  manifest over (`ingest.Pipeline.adoptClaimed`): the retry of a publish answered `503` by the
+  visibility barrier (INV-4), or a publish of the same files still on its way.
+- **Tests.** `TestUploadRepeat`, `TestUploadRepeatRace`, `TestIngest`, `TestSessionRepeat`,
+  `TestVisibilityRetryRebuilt`; R-02 in
   `raw.sh`, the repeats of `pypi.sh`, `apt.sh`, `maven.sh` and `oras.sh` (E-01).
 - **When violated.** Not observed.
 - **Status.** `holds`.
@@ -790,24 +802,29 @@ status is `holds on strongly consistent registries only` do not hold there.
   packument serves is the fold of the entries in `seq` order, which reindex replays to the same
   state.
 - **Scope.** Hosted npm repos. A proxy journals nothing: its dist-tags are the upstream's.
-- **Assumes.** Registry: **read-after-write** (**unchecked**): a writer that crashed after its
-  push leaves an entry the next append must see to adopt it, and a lagging registry hides it,
-  so the next append pushes its own entry under that tag. Database: **Postgres for replicas**
-  (on SQLite the journal lock is a lock of the process).
+- **Assumes.** Registry: **monotonic reads** (**unchecked**), and a lag shorter than
+  `ingest.claimTTL`: an entry a writer claimed and the registry does not serve after the claim
+  is stale counts as never pushed. Database: **Postgres for replicas** (on SQLite the journal
+  lock is a lock of the process).
 - **Mechanism.** `ingest.Pipeline.Journal`: under `Store.WithReferrersLock` (the package's OCI
   repository and the empty blob's digest), `journal.append` reads the last `seq`, `journal.adopt`
-  takes the entries the registry has after it, `journal.push`, `journal.record` (rows, the folded
-  state, the invalidation and the audit rows in one transaction); `profile.JournalState.Apply`
-  folds; `reindex.replay` replays and reports what breaks the rules.
+  takes the entries the registry has after it and `journal.claimed` the ones an earlier append
+  claimed in `tag_claims` that the registry does not serve yet (read back, else `503` until the
+  claim is stale), `journal.push` claims and pushes each entry, the visibility barrier reads them
+  back (INV-4), `journal.record` (rows, the folded state, the invalidation, the audit rows and the
+  claims released in one transaction); `profile.JournalState.Apply` folds; `reindex.replay`
+  replays and reports what breaks the rules.
 - **Tests.** `TestJournal`, `TestJournalConcurrent`, `TestJournalAdopts`, `TestJournalRefused`,
   `TestJournalDelete`, `TestIntegrationJournalReplicas`, the store conformance cases `Journal`,
   `JournalState`, `JournalCascades`, `JournalRace`, `TestJournalState` (profile),
-  `TestJournalReindex`, `TestJournalReindexLost`, `TestJournalReindexOrphans`, `TestDistTags`,
+  `TestJournalReindex`, `TestJournalReindexLost`, `TestJournalReindexOrphans`,
+  `TestJournalVisibility`, `TestJournalClaimNotPushed`, `TestDistTags`,
   `TestDeprecate`, `TestDeleteJournalEntry`; the dist-tag and deprecate steps of `npm.sh`.
 - **When violated.** Reindex reports an entry whose annotations, tag or name break the rules, a
   missing `seq`, and orphans (`orphanJournal`); an entry that breaks the rules stops the next
   append until the operator removes it.
-- **Status.** `holds on strongly consistent registries only` ([#446](https://github.com/lajstrom/lajstrom/issues/446)).
+- **Status.** `holds`. An append whose entries the registry does not serve in time is `503`; its
+  client's retry adopts them and appends its ops again, which folds to the same state.
 
 ### INV-30. The packument never says other than what the tarball installs
 
@@ -834,9 +851,9 @@ status is `holds on strongly consistent registries only` do not hold there.
   matches the downloaded bytes, and a file without a checksum is refused; one replica asks the
   upstream for one name's document once at a time.
 - **Scope.** Proxy repos (npm in M4), directly and through a group.
-- **Assumes.** Registry: **read-after-write** (**unchecked**) for the waiters, which look the
-  version up in the index and are then served from the registry. Database: **Postgres for
-  replicas**, **clocks agree**. The upstream's document and file come over the same channel: the
+- **Assumes.** Registry: **monotonic reads** (**unchecked**) for the waiters, which look the
+  version up in the index and are then served from the registry: the index has it only once the
+  registry served it (INV-4). Database: **Postgres for replicas**, **clocks agree**. The upstream's document and file come over the same channel: the
   checksum proves the transfer, not the upstream's honesty.
 - **Mechanism.** `proxy.flights.join` on a replica; `proxy.Core.claim` (`fetch_claims`),
   `Core.heartbeat`; `Core.download` with `strongest`; `Core.reject` writes `proxy.reject`.
@@ -1036,7 +1053,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-4 | a version in the index is readable | holds | unchecked; untested |
 | INV-5 | prune never removes what the registry holds | holds | unchecked (lag within the grace age); untested (ECR) |
 | INV-6 | one winner among concurrent publishes | holds | |
-| INV-7 | a tag is never re-pointed | strongly consistent only | unchecked |
+| INV-7 | a tag is never re-pointed | holds | unchecked |
 | INV-8 | the idempotent repeat | holds | |
 | INV-9 | a version whole or not at all | holds | |
 | INV-10 | case variants never squat | holds | |
@@ -1058,7 +1075,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-26 | replicas coordinate through the database | holds | unchecked (the CLI's clock) |
 | INV-27 | cached documents invalidated | holds | |
 | INV-28 | a migration applied once | holds | |
-| INV-29 | the npm journal's order and replay | strongly consistent only | unchecked |
+| INV-29 | the npm journal's order and replay | holds | unchecked |
 | INV-30 | packument agrees with the tarball | holds | |
 | INV-31 | proxy fetch once, checked | partly | unchecked |
 | INV-32 | a proxy reaches only what is configured | holds | |
@@ -1162,9 +1179,9 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 
 | Gap | Impact | Proposed fix | Issue |
 | --- | --- | --- | --- |
-| Read-after-write is assumed, never measured or tolerated (INV-3, INV-7, INV-13, INV-29, INV-31); INV-4 has the visibility barrier, INV-5 the grace age | on ECR: a false `MANIFEST_BLOB_UNKNOWN`, a deleted version re-added for an interval, a crashed writer's journal entry or a tag the index lacks re-pointed | a consistency model per registry, a visibility barrier on publish, read-back retries, a grace age and two observations before a removal; the probe measures the lag | [#446](https://github.com/lajstrom/lajstrom/issues/446), [#339](https://github.com/lajstrom/lajstrom/issues/339) |
+| Read-after-write is assumed, never measured or tolerated (INV-3, INV-13); INV-4, INV-7, INV-29 and INV-31 have the visibility barrier and the claims, INV-5 the grace age | on ECR: a false `MANIFEST_BLOB_UNKNOWN`, a deleted version re-added for an interval | a consistency model per registry, a visibility barrier on publish, read-back retries, a grace age and two observations before a removal; the probe measures the lag | [#446](https://github.com/lajstrom/lajstrom/issues/446), [#339](https://github.com/lajstrom/lajstrom/issues/339) |
 | No test with a registry that lags (INV-3); INV-4's tests have `providertest.Lag` | the gap above cannot regress visibly | a fake registry with configurable lag, as #446's criteria say | [#446](https://github.com/lajstrom/lajstrom/issues/446) |
-| **Monotonic reads** are assumed (INV-4) | behind an endpoint that picks a replica per request (ACR's global endpoint with geo-replication), a version the barrier saw on one replica can be `404` on the next | point `registries[].url` at one regional endpoint; measure it in the probe with reads from fresh connections | new issue |
+| **Monotonic reads** are assumed (INV-4, INV-7, INV-29, INV-31) | behind an endpoint that picks a replica per request (ACR's global endpoint with geo-replication), a version the barrier saw on one replica can be `404` on the next | point `registries[].url` at one regional endpoint; measure it in the probe with reads from fresh connections | new issue |
 | A durable `201` is assumed (INV-4) | a manifest the registry lost leaves the index silently at the next reconcile, counted among `removed` | report the removal of a row ingest confirmed as a finding of its own, with a metric | new issue |
 | Reindex equality is tested for raw, npm and an npm proxy only; I-01 is not in the end-to-end suite (INV-3) | a column of apt, pypi or maven that annotations cannot rebuild would be lost at the first reindex, unnoticed | an equality test per format (publish, drop the derived rows, reindex, compare), and I-01 as an end-to-end step | new issue |
 | Nothing machine-checks the one write path in plugins (INV-2) | a plugin could push a manifest past ingest: no claim, validation or audit row | a read-only provider view in `format.Deps`, or a lint rule against `Push`, `PushReference` and `Delete` outside `internal/ingest`, `internal/facade` and `internal/provider` (a `contract` change of `format`) | new issue |

@@ -115,7 +115,8 @@ rebuilt.
 | `replicas` | `id` text (a UUID v7 made at the start), `host` text (host name), `pid` int, `version` text (the binary's), `started_at` ts, `heartbeat_at` ts | primary key `id`; written by `serve` only. Migration `0018_replicas.sql` (#478) |
 | `prune_sightings` | `repo_id` → repos (`ON DELETE CASCADE`), `path` text (the OCI repository, as `oci_repos.path`), `digest` text (the manifest digest of an index row), `first_at` ts (the first answer since the row was cleared), `last_at` ts (the latest answer) | primary key `(repo_id, path, digest)`; written by reindex only |
 
-A `versions` row exists only after the registry accepted the manifest; the claims in
+A `versions` row exists only after the registry accepted the manifest and served it back (the
+visibility barrier, [registries/README.md](../registries/README.md#consistency)); the claims in
 `tag_claims` are the locks that serialise the writers of one OCI repository across replicas,
 and a claim older than `ingest.claimTTL` is stale: ingest takes it over, `reindex` and the
 reconcile loop delete it. A claim is keyed by the package path, as the registry keys the
@@ -133,7 +134,11 @@ publishes never wait on each other crosswise. A claim with the same digest is sh
 two replicas publishing the same bytes; on a package path, the publishes of one spelling. A
 fresh claim with another digest is a `409`: on a tag, other bytes; on a package path, another
 spelling being published. A package of the package path with another name is a `409` naming
-that name. A publish refused by a claim or by the package pushes no manifest.
+that name. A publish refused by a claim or by the package pushes no manifest. An upload of a
+frontend whose tag a fresh claim of another digest holds takes that claim's manifest over when
+the registry has it with the same name and file layers: the retry of a publish that the
+visibility barrier answered `503`, which keeps its claims, built again with another
+`org.opencontainers.image.created`.
 
 The transaction that writes the derived rows releases both claims; from then on the package
 row holds the package path. A publish that stops before that releases the claim on its tag and
@@ -253,6 +258,11 @@ of its versions, kept in the registry as a journal of manifests (manifest-profil
   invalidates its documents in one transaction, before it releases the package's journal lock:
   the referrers lock (Coordination) keyed by the package's OCI repository and the empty blob's
   digest, which no manifest has. The order of a package's entries is the order of that lock.
+  Each entry is claimed in `tag_claims` under its `_j<seq>` tag (the package path, the entry's
+  digest) before its push, and the transaction of its row releases the claim. An append that
+  finds a claim of the next entry, which the registry does not serve, reads it back and adopts
+  it, or answers `503` until the claim is stale; on a strongly consistent registry the entry was
+  never pushed and the claim is taken over.
 - Reindex marks and sweeps `journal` as it does `versions`: a `_j` tag that names the digest of
   its row is seen without a read, a row whose manifest the registry answers as unknown is
   deleted under the rule of `versions` (Invariants and rules).
