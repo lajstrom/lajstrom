@@ -141,6 +141,25 @@ replaces the draft and pushes the images again under the same tags, with a new d
 signs. Once a release is published, its tag stays: fix forward with the next version
 (`v0.1.0-rc.2`).
 
+### Migrations in the notes
+
+Operators upgrade with a rolling update, so the notes say what the release does to the index
+database ([index-schema.md](spec/index-schema.md#upgrades)). The new migrations are
+`git diff --name-only <previous tag> -- internal/index/migrations/postgres`, and the contract
+ones carry the line `-- lajstrom:requires NNNN`. Under a heading **Upgrade**, the notes of a
+release with migrations list each one, `NNNN_<name>`, with what it changes and whether it is
+expand or contract. Without a contract migration, one line: a rolling update from the release
+before, and a rollback to it, work. For each contract migration, the notes also say:
+
+- what it removes, and which release it requires: the first release that has migration NNNN.
+  An upgrade from an older release is refused by `serve` and `lajstrom migrate`; upgrade
+  through the required release, or stop every replica and run `lajstrom migrate
+  --allow-breaking`.
+- that a rollback goes no further back than the required release; before it, it is a restore of
+  the backup ([operations.md](operations.md#upgrades)).
+- how long it ran on the largest index you have measured, when it rewrites rows, and which
+  tables it locks while the old replicas serve.
+
 ## Verifying a release
 
 With cosign 3 (`brew install cosign`), Docker and Homebrew, on macOS arm64:

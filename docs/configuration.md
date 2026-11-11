@@ -135,7 +135,9 @@ database's own collation does not matter.
 
 `lajstrom migrate` applies the migrations the database does not have yet and prints them, and
 `lajstrom serve` does the same on start; both take a lock, so replicas starting together are
-safe. Lajstrom logs `database.driver`, never the DSN, and keeps the password out of its errors.
+safe. Which release runs on which schema during an upgrade is in
+[operations.md](operations.md#upgrades). Lajstrom logs `database.driver`, never the DSN, and
+keeps the password out of its errors.
 
 ### registries
 
