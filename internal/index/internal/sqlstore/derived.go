@@ -2,6 +2,8 @@ package sqlstore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"slices"
@@ -52,10 +54,21 @@ func (c *conn) GetPackageByNameOCI(ctx context.Context, repoID int64, nameOCI st
 // ON CONFLICT has no target, so both unique indexes are arbiters: with the target (repo_id,
 // name), Postgres raises the violation of (repo_id, name_oci) when two writers insert one new
 // package at once, and the second never gets to find the first's row.
+//
+// YugabyteDB takes the entries of the two indexes in no fixed order, so two writers of one new
+// package, which share both entries, can each hold one and wait for the other's: a deadlock,
+// which it breaks by aborting a transaction (40P01, #629). There the insert runs under
+// Dialect.PackageLock on the package path.
 func (c *conn) UpsertPackage(ctx context.Context, p *index.Package) error {
 	return c.withTx(ctx, func(c *conn) error {
 		existing, err := c.GetPackage(ctx, p.RepoID, p.Name)
 		if errors.Is(err, index.ErrNotFound) {
+			if c.d.PackageLock != "" {
+				if _, err := c.exec(ctx, fmt.Sprintf("the lock of the package path %q in repo %d", p.NameOCI, p.RepoID),
+					c.d.PackageLock, PackagePathLockKey(p.RepoID, p.NameOCI)); err != nil {
+					return err
+				}
+			}
 			inserted, err := c.insertID(ctx, fmt.Sprintf("packages %q in repo %d", p.Name, p.RepoID),
 				"INSERT INTO packages (repo_id, name, name_oci, created_at) VALUES (?, ?, ?, ?)"+
 					" ON CONFLICT DO NOTHING RETURNING id",
@@ -77,6 +90,13 @@ func (c *conn) UpsertPackage(ctx context.Context, p *index.Package) error {
 		*p = *existing
 		return nil
 	})
+}
+
+// PackagePathLockKey is the key of Dialect.PackageLock on the package path nameOCI of a repo:
+// the first eight bytes of a sha256 of both, as referrersLockKey.
+func PackagePathLockKey(repoID int64, nameOCI string) int64 {
+	sum := sha256.Sum256([]byte("packages\x00" + strconv.FormatInt(repoID, 10) + "\x00" + nameOCI))
+	return int64(binary.BigEndian.Uint64(sum[:8])) //nolint:gosec // a hash, any 64 bits do
 }
 
 // nameOCIConflict is the error of p, whose insert found p.NameOCI held by another name: OCI

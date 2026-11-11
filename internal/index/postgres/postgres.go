@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"fmt"
@@ -58,6 +59,25 @@ var dialect = sqlstore.Dialect{
 	Clock:         "SELECT clock_timestamp()",
 }
 
+// yugabyte is the dialect on YugabyteDB (docs/deploy/databases.md#yugabytedb), which Open tells
+// from Postgres by the server_version the server reports ("15.12-YB-2026.1.3.0-b0"): its
+// UpsertPackage inserts under a lock (sqlstore.Dialect.PackageLock, #629), and a transaction it
+// aborted to break a deadlock or a conflict that it could not retry itself (abortedStates) is
+// index.ErrUnavailable, for the same request again may pass. Postgres needs neither.
+var yugabyte = func() sqlstore.Dialect {
+	d := dialect
+	d.PackageLock = "SELECT pg_advisory_xact_lock(?)"
+	d.IsUnavailable = func(err error) bool { return isUnavailable(err) || abortedStates[sqlState(err)] }
+	return d
+}()
+
+// abortedStates are the SQLSTATE codes of a transaction that YugabyteDB aborted and that may
+// pass when run again.
+var abortedStates = map[string]bool{
+	"40001": true, // serialization_failure: a conflict, or a read that must restart
+	"40P01": true, // deadlock_detected
+}
+
 // Open connects to the PostgreSQL database of dsn, a URL or a keyword/value string as pgx
 // parses it (docs/configuration.md): postgres://lajstrom@db:5432/lajstrom?sslmode=require.
 // The pool holds pool_max_conns connections when the DSN sets it, else max(4, number of
@@ -79,11 +99,39 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	db := stdlib.OpenDB(*cfg)
 	db.SetMaxOpenConns(size)
 	db.SetMaxIdleConns(size)
-	if err := db.PingContext(ctx); err != nil {
+	d, err := dialectOf(ctx, db)
+	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("index: postgres: connect: %w", err)
 	}
-	return &Store{sqlstore.New(db, dialect)}, nil
+	return &Store{sqlstore.New(db, d)}, nil
+}
+
+// dialectOf pings db and returns its dialect: yugabyte when the server_version that the
+// server reported at the start of the connection says YugabyteDB, else dialect. No statement
+// runs but the ping.
+func dialectOf(ctx context.Context, db *sql.DB) (sqlstore.Dialect, error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return dialect, err
+	}
+	defer func() { _ = conn.Close() }()
+	if err := conn.PingContext(ctx); err != nil {
+		return dialect, err
+	}
+	var version string
+	if err := conn.Raw(func(c any) error {
+		if c, ok := c.(*stdlib.Conn); ok {
+			version = c.Conn().PgConn().ParameterStatus("server_version")
+		}
+		return nil
+	}); err != nil {
+		return dialect, err
+	}
+	if strings.Contains(version, "-YB-") {
+		return yugabyte, nil
+	}
+	return dialect, nil
 }
 
 // ApplyMigrations is index.ApplyMigrations on the store's database. A database user with data

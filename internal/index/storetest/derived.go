@@ -105,6 +105,52 @@ func testPackageNameOCIRace(t *testing.T, s index.Store) {
 	}
 }
 
+// testPackageRace runs concurrent first publishes of one package, as ingest writes them: each
+// writer upserts the package and a version of its own in one transaction, for a few rounds.
+// Every writer succeeds on the one package row, and every version is there; on YugabyteDB the
+// writers deadlocked without the package lock (#629).
+func testPackageRace(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "raw", "race")
+	const rounds, writers = 20, 16
+	for round := range rounds {
+		name := strconv.Itoa(round) + "/tool"
+		errs := make([]error, writers)
+		pkgIDs := make([]int64, writers)
+		var wg sync.WaitGroup
+		for i := range writers {
+			wg.Go(func() {
+				errs[i] = s.Tx(ctx, func(w index.Writer) error {
+					p := index.Package{RepoID: repo.ID, Name: name, NameOCI: name}
+					if err := w.UpsertPackage(ctx, &p); err != nil {
+						return err
+					}
+					pkgIDs[i] = p.ID
+					tag := strconv.Itoa(i)
+					return w.UpsertVersion(ctx, &index.Version{PackageID: p.ID, Version: tag, Tag: tag,
+						Digest: dg(name + tag), ArtifactType: "application/vnd.lajstrom.raw.v1"})
+				})
+			})
+		}
+		wg.Wait()
+		stored, err := s.GetPackage(ctx, repo.ID, name)
+		must(t, err)
+		for i, err := range errs {
+			switch {
+			case err != nil:
+				t.Errorf("round %d, writer %d: %v, want nil", round, i, err)
+			case pkgIDs[i] != stored.ID:
+				t.Errorf("round %d, writer %d: package %d, want the stored row %d", round, i, pkgIDs[i], stored.ID)
+			}
+		}
+		versions, err := s.ListVersions(ctx, stored.ID)
+		must(t, err)
+		if len(versions) != writers {
+			t.Errorf("round %d: %d versions, want %d", round, len(versions), writers)
+		}
+	}
+}
+
 func testPackages(t *testing.T, s index.Store) {
 	ctx := t.Context()
 	repo := newRepo(t, s, "raw", "a")

@@ -756,10 +756,10 @@ status is `holds on strongly consistent registries only` do not hold there.
   uploads (`facade` `uploadState`); `replicas` (`Writer.StartReplica`, which on SQLite refuses a
   second live replica, and the heartbeat of `serve`).
 - **Tests.** The store conformance cases `TagClaimRace`, `ReindexRunRace`, `FetchClaimRace`,
-  `KeyRace`, `SessionsConcurrent`, `JournalRace`, `PackageNameOCIRace`, `ReferrersLock`,
-  `Replicas`; `TestFileReplicas`, `TestReplicasCoexist`, `TestServeTwoReplicasOnSQLite`,
-  `TestServeAfterCrash`, `TestReplicaBeat`, `TestReplicaClock`, the conformance case
-  `DatabaseTime`;
+  `KeyRace`, `SessionsConcurrent`, `JournalRace`, `PackageNameOCIRace`, `PackageRace`,
+  `ReferrersLock`, `Replicas`; `TestFileReplicas`, `TestReplicasCoexist`,
+  `TestServeTwoReplicasOnSQLite`, `TestServeAfterCrash`, `TestReplicaBeat`, `TestReplicaClock`,
+  the conformance case `DatabaseTime`;
   `TestUploadAcrossReplicas`, `TestMonolithicUploadAbandoned`,
   `TestIntegrationUploadAcrossReplicas`, `TestSessionConcurrent`, `TestSessionCommitOnce`, `TestKeyForRace`, `TestTokenSignerRace`,
   `TestRuns`, `TestTakenOver`, `TestStaleFetchClaims`, `TestFileTwoReplicas`, `TestFileClaims`,
