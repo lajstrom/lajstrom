@@ -8,6 +8,9 @@
 # main and on a pull request that changes it, and keeps the archives, checksums and SBOMs as a
 # workflow artifact for testing.
 #
+# The preflight job checks the secrets below before the release job publishes anything; run by
+# hand (Run workflow), it checks them before a tag is pushed.
+#
 # Repository secrets of the release job; GITHUB_TOKEN covers the release and ghcr.io:
 #   DOCKERHUB_USERNAME, DOCKERHUB_TOKEN  a Docker Hub user and an access token with read and
 #                                        write on docker.io/lajstrom/lajstrom; without them
@@ -26,11 +29,12 @@ on:
       - .goreleaser.yaml
       - Dockerfile
       - .github/workflows/release.yml
+  workflow_dispatch: # the preflight job only
 
 permissions: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   # A release is never cancelled half-way; a newer push to main replaces its snapshot.
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
@@ -43,7 +47,7 @@ env:
 jobs:
   snapshot:
     name: snapshot
-    if: github.ref_type != 'tag'
+    if: github.ref_type != 'tag' && github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -89,8 +93,59 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # Before the release job, so that a missing or wrong secret stops the release before anything is
+  # published. A secret that is set must work; one that is not set is a warning.
+  preflight:
+    name: preflight
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check the Docker Hub and Homebrew tap secrets
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          failed=0
+          if [ -z "${DOCKERHUB_USERNAME}" ]; then
+            echo "::warning::DOCKERHUB_USERNAME is not set: the images are pushed to ghcr.io only, not to docker.io/lajstrom/lajstrom"
+          else
+            # The actions that Docker Hub's registry token grants on lajstrom/lajstrom; push also
+            # creates the repository at the first release if it does not exist.
+            actions="$(curl -fsS -u "${DOCKERHUB_USERNAME}:${DOCKERHUB_TOKEN}" \
+                'https://auth.docker.io/token?service=registry.docker.io&scope=repository:lajstrom/lajstrom:pull,push' |
+              jq -r '.token | split(".")[1] | gsub("-"; "+") | gsub("_"; "/") | . + ("=" * ((4 - length % 4) % 4))
+                | @base64d | fromjson | [.access[]? | select(.name == "lajstrom/lajstrom") | .actions[]] | join(",")')" ||
+              actions="login failed"
+            echo "Docker Hub grants ${DOCKERHUB_USERNAME} on lajstrom/lajstrom: ${actions:-nothing}"
+            case ",${actions}," in
+              *,push,*) ;;
+              *) echo "::error::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN cannot push docker.io/lajstrom/lajstrom: a user of the lajstrom namespace and an access token with Read & Write"
+                failed=1 ;;
+            esac
+          fi
+          if [ -z "${HOMEBREW_TAP_TOKEN}" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN is not set: the cask is not pushed to lajstrom/homebrew-tap"
+          else
+            # A blob that no commit names: the write goreleaser needs, without a change to the tap.
+            if curl -fsS -o /dev/null -X POST \
+                -H "Authorization: Bearer ${HOMEBREW_TAP_TOKEN}" -H "Accept: application/vnd.github+json" \
+                -d '{"content":"lajstrom release preflight\n","encoding":"utf-8"}' \
+                https://api.github.com/repos/lajstrom/homebrew-tap/git/blobs; then
+              echo "HOMEBREW_TAP_TOKEN can write to lajstrom/homebrew-tap"
+            else
+              echo "::error::HOMEBREW_TAP_TOKEN cannot write to lajstrom/homebrew-tap: a fine-grained token with Contents read and write on that repository"
+              failed=1
+            fi
+          fi
+          exit "${failed}"
+
   release:
     name: release
+    needs: preflight
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -132,16 +187,15 @@ jobs:
           registry: docker.io
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Optional targets
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      - name: The previous stable tag
+        id: previous
+        # The notes of v0.1.0 list the changes since v0.0.1, not since v0.1.0-rc.2, the tag that
+        # goreleaser would take. A pre-release keeps goreleaser's choice, the nearest tag.
+        if: ${{ !contains(github.ref_name, '-') }}
         run: |
-          if [ -z "${DOCKERHUB_USERNAME}" ]; then
-            echo "::warning::DOCKERHUB_USERNAME is not set: the images are pushed to ghcr.io only, not to docker.io/lajstrom/lajstrom"
-          fi
-          if [ -z "${HOMEBREW_TAP_TOKEN}" ]; then
-            echo "::warning::HOMEBREW_TAP_TOKEN is not set: the cask is not pushed to lajstrom/homebrew-tap"
-          fi
+          tag="$(git describe --tags --abbrev=0 --match 'v*' --exclude '*-*' "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+          echo "The notes list the changes since ${tag:-the first commit}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
       - name: goreleaser release
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
@@ -153,3 +207,5 @@ jobs:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           # The tag this run is for, not another one on the same commit.
           GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
+          # Empty on a pre-release: goreleaser finds the previous tag itself.
+          GORELEASER_PREVIOUS_TAG: ${{ steps.previous.outputs.tag }}
