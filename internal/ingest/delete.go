@@ -591,14 +591,7 @@ func (d *deletion) deleteOne(ctx context.Context, desc ocispec.Descriptor) error
 func (d *deletion) event(ctx context.Context, principal auth.Principal) index.AuditEvent {
 	ev := index.AuditEvent{At: d.p.now(), Principal: principal.String(), Action: "delete",
 		Repo: d.repo.Format + "/" + d.repo.Name, Digest: d.target.Digest, IP: d.del.ClientIP}
-	details := map[string]any{}
-	if d.del.Job != "" {
-		details["job"] = d.del.Job
-	}
-	if c := auth.CredentialFrom(ctx); c.Kind == auth.CredPAT || c.Kind == auth.CredDeploy {
-		details["token"] = "token:" + strconv.FormatInt(c.TokenID, 10)
-	}
-	withOrigin(ctx, &ev, details)
+	withOrigin(ctx, &ev, d.details(ctx))
 	switch {
 	case d.version != nil:
 		ev.Subject = d.pkg.Name + " " + d.version.Version
@@ -646,6 +639,20 @@ func (d *deletion) record(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// details are the details of the audit row of the delete when it is written pending: the
+// batch's job when there is one, and the request's token, token:<id>, when it came with one.
+// The referrers join them when the delete ends.
+func (d *deletion) details(ctx context.Context) map[string]any {
+	details := map[string]any{}
+	if d.del.Job != "" {
+		details["job"] = d.del.Job
+	}
+	if c := auth.CredentialFrom(ctx); c.Kind == auth.CredPAT || c.Kind == auth.CredDeploy {
+		details["token"] = "token:" + strconv.FormatInt(c.TokenID, 10)
+	}
+	return details
 }
 
 // deleteRows deletes the version's rows on w, found by the target's digest, its package's when

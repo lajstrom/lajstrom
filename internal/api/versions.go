@@ -139,8 +139,9 @@ func parseIfMatch(v string) ([]digest.Digest, error) {
 	var digests []digest.Digest
 	for _, tag := range strings.Split(v, ",") {
 		tag = strings.TrimSpace(tag)
-		unquoted, ok := strings.CutPrefix(tag, `"`)
-		if unquoted, ok = strings.CutSuffix(unquoted, `"`); !ok || unquoted == "" {
+		unquoted, prefixed := strings.CutPrefix(tag, `"`)
+		unquoted, suffixed := strings.CutSuffix(unquoted, `"`)
+		if !prefixed || !suffixed || unquoted == "" {
 			return nil, invalid(`If-Match: %q is not a list of quoted digests, like "sha256:…", "sha256:…"`, v)
 		}
 		d, err := digest.Parse(unquoted)
