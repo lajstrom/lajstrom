@@ -180,14 +180,14 @@ func TestUploadStreamRefused(t *testing.T) {
 			e, sp := newStreamEnv(t)
 			up := streamUpload("1.0.0", body)
 			tt.setup(t, e, sp, &up)
-			pushed := len(e.prov.PushReferences())
+			pushed, blobs := len(e.prov.PushReferences()), len(e.prov.Pushes())
 			_, err := e.pipe.UploadStream(t.Context(), e.repo, up, alice)
 			if err == nil || !tt.want(err) {
 				t.Fatalf("UploadStream = %v", err)
 			}
-			if e.stored(t, body) || e.prov.OpenUploads() != 0 || len(e.prov.PushReferences()) != pushed {
-				t.Errorf("stored %v, %d sessions open, %d manifests pushed; want nothing stored, none open, %d pushed",
-					e.stored(t, body), e.prov.OpenUploads(), len(e.prov.PushReferences()), pushed)
+			if e.stored(t, body) || e.prov.OpenUploads() != 0 || len(e.prov.PushReferences()) != pushed || len(e.prov.Pushes()) != blobs {
+				t.Errorf("stored %v, %d sessions open, %d manifests and %d blobs pushed; want nothing stored, none open, %d and %d pushed",
+					e.stored(t, body), e.prov.OpenUploads(), len(e.prov.PushReferences()), len(e.prov.Pushes()), pushed, blobs)
 			}
 			e.noClaim(t, "docs/notes.txt", "1.0.0")
 		})
