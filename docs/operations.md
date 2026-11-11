@@ -316,9 +316,10 @@ on the others, and nothing is mounted, generated per node or restarted to rotate
   every replica, and retires the old one, which still verifies for 21 minutes, the token
   lifetime and the clock skew, so that no token issued before the rotation is refused before it
   expires. Retired rows stay in the table, ignored once retired longer than that ago. The
-  replicas reload the keys at most once a second, so for up to a second every replica, the one
-  that made the key included, may refuse a token of the new key; a client that asks for
-  another after that gets one that passes. A rotation is an audit row
+  replicas reload the keys at most once a second. A token of the new key verifies at once on
+  the replica that issued it, which learns the key as it signs; for up to a second another
+  replica may refuse it, and a client that asks for another token after that gets one that
+  passes. A rotation is an audit row
   `key.rotate` without a repo, the new fingerprint as its subject, the retired one in its
   details. Rotate with the master key's rotation, when the algorithm changes, or at will:
   nothing else needs to happen.

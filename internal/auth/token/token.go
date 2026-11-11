@@ -49,6 +49,10 @@ type Keys interface {
 type Options struct {
 	// Keys are the token keys; required.
 	Keys Keys
+	// Verifier is the Verifier of the replica, for an Issuer: it learns each key the Issuer
+	// signs with at once, so that a token verifies on the replica that issued it without
+	// waiting for the next reload. Nil: none. A Verifier ignores it.
+	Verifier *Verifier
 	// Now is the clock of iat, exp and nbf, and of the reloads; nil is time.Now.
 	Now func() time.Time
 	// Log gets the reasons of the refusals at debug level, with the kid and never the token;
@@ -101,21 +105,28 @@ func (t *Token) LogValue() slog.Value {
 
 // Issuer signs tokens. Create it with NewIssuer; it may be used concurrently.
 type Issuer struct {
-	keys Keys
-	now  func() time.Time
+	keys     Keys
+	verifier *Verifier // nil: none learns the keys
+	now      func() time.Time
 }
 
-// NewIssuer returns an Issuer over o.Keys; it panics when o.Keys is nil.
+// NewIssuer returns an Issuer over o.Keys that tells o.Verifier, when set, the keys it signs
+// with; it panics when o.Keys is nil.
 func NewIssuer(o Options) *Issuer {
 	o = o.defaults()
-	return &Issuer{keys: o.Keys, now: o.Now}
+	return &Issuer{keys: o.Keys, verifier: o.Verifier, now: o.Now}
 }
 
 // Issue returns a token for p with access, for service: header alg the key's, kid its
 // fingerprint, typ JWT; claims iss and aud service, sub p's canonical form, iat and nbf now (to
 // the second), exp Lifetime later, jti 16 random bytes in base64url, and access sorted by type
-// and name. The key is the active one, read for every token (Keys.TokenSigner).
+// and name. The key is the active one, read for every token (Keys.TokenSigner), and the
+// Verifier of Options learns it before Issue returns.
 func (i *Issuer) Issue(ctx context.Context, p auth.Principal, service string, access []Access) (*Token, error) {
+	var read time.Time
+	if i.verifier != nil {
+		read = i.verifier.now() // before the key is read, on the verifier's clock: see learn
+	}
 	k, err := i.keys.TokenSigner(ctx)
 	if err != nil {
 		return nil, err
@@ -146,6 +157,9 @@ func (i *Issuer) Issue(ctx context.Context, p auth.Principal, service string, ac
 	raw, err := t.SignedString(k.Private)
 	if err != nil {
 		return nil, fmt.Errorf("token: sign with %s: %w", k, err)
+	}
+	if i.verifier != nil {
+		i.verifier.learn(k, read)
 	}
 	return &Token{Raw: raw, KeyID: k.ID(), IssuedAt: iat, ExpiresAt: exp}, nil
 }
@@ -189,7 +203,8 @@ func (g *Grant) Catalog() bool {
 // Verifier checks tokens. Create it with NewVerifier; it may be used concurrently. It keeps
 // the verification keys in memory, by kid, and reloads them (Keys.TokenVerifiers) when they
 // are older than a second at the time of a verification: a kid it lacks costs at most one
-// reload a second, and a key rotated or dropped elsewhere counts within a second.
+// reload a second, and a key rotated or dropped elsewhere counts within a second. The key the
+// Issuer of the same replica signs with (Options.Verifier) counts at once.
 type Verifier struct {
 	keys Keys
 	now  func() time.Time
@@ -294,6 +309,27 @@ func (v *Verifier) key(ctx context.Context, kid string) (*keys.TokenKey, error) 
 	}
 	v.byID = byID
 	return byID[kid], nil
+}
+
+// learn makes k, the key the Issuer of the replica just signed a token with, verify here at
+// once: a key made on this replica, or rotated in elsewhere, after the last load would
+// otherwise be refused until the next. read is the time on v's clock before the Issuer read k
+// as the active key. A load of before read is older than that read, and k joins its keys
+// until the next reload replaces them, at most a second after that load: a drop of k, which
+// came after the read, still counts within a second. A load of read or later may already
+// know k dropped, or not yet know it made; then the next lookup reloads, and the index says.
+func (v *Verifier) learn(k *keys.TokenKey, read time.Time) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	switch {
+	case v.byID == nil || v.byID[k.ID()] != nil: // the first load reads k, or k is known
+	case v.loaded.Before(read):
+		verify := *k
+		verify.Private = nil
+		v.byID[k.ID()] = &verify
+	default:
+		v.loaded = time.Time{}
+	}
 }
 
 // compareAccess orders access entries by type and name.

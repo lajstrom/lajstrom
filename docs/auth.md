@@ -513,8 +513,9 @@ A key that does not decrypt (a database restored under another master key) stops
 an error that names it: start with the right master key, or retire the key with
 `lajstrom admin key drop --token` and the next start makes a new one. Each replica keeps the
 verification keys in memory and reloads them at most once a second, so a key rotated or dropped
-on another node counts everywhere within a second; for that second a replica may refuse a token
-of the new key, which the client gets again. Rotation, drop and export are in
+on another node counts everywhere within a second. A token verifies at once on the replica that
+issued it; for that second another replica may refuse a token of the new key, which the client
+gets again. Rotation, drop and export are in
 [operations.md](operations.md#the-bearer-token-key).
 
 Without a master key (`keys.masterKeyEnv` empty, or the variable not set) `serve` signs with an
