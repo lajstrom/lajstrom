@@ -8,9 +8,12 @@
 #
 # A and B are reached past the edge on localhost:8091 and :8092, the backend on localhost:5007
 # (LAJSTROM_HA_PORT, LAJSTROM_HA_A_PORT, LAJSTROM_HA_B_PORT and LAJSTROM_HA_DISTRIBUTION_PORT
-# move them, as in compose.yaml). docker compose on deploy/compose/compose.yaml, in the project
-# of COMPOSE_PROJECT_NAME (lajstrom-dev by default), runs lajstrom admin in A and psql in
-# ha-postgres, reads the logs and restarts the replicas. The steps, with the ids they cover:
+# move them, as in compose.yaml). docker compose on deploy/compose/compose.yaml, or on the files
+# of COMPOSE_FILE when it is set, in the project of COMPOSE_PROJECT_NAME (lajstrom-dev by
+# default), runs lajstrom admin in A and psql in ha-postgres, reads the logs, kills, stops and
+# restarts the replicas, ha-postgres and ha-distribution. A project of its own, next to a shared
+# lajstrom-dev, needs other ports and an override with another subnet for the network ha; nginx's
+# address is read from its container. The steps, with the ids they cover:
 #
 #   - push through A, read through B: a raw PUT and GET, an oras push and pull; a repo created
 #     through B counts on A; a bearer token from A is accepted by B (H-12);
@@ -22,13 +25,22 @@
 #   - H-02, H-03 (20 times), H-04, H-09, H-13;
 #   - two cosign signatures of one subject through A and B at once, both listed afterwards (#28);
 #   - 200 requests to /v2/token at once from one address: 429 from nginx with Retry-After (#129);
+#   - H-05: A killed (SIGKILL) in a 500 MiB PUT; the PUT again through the edge; A started again;
+#   - H-06, H-07: ha-postgres, then ha-distribution, stopped for 3 s and started again while
+#     each replica is asked meanwhile and the requests of a pip install, raw PUTs and A's
+#     /-/readyz run in loops through the edge; the 500s that Lajstrom answers are a "gap" line,
+#     not a failure (docs/testing.md);
+#   - H-08: a maven deploy whose PUTs alternate between A and B;
+#   - H-11: a .deb uploaded through A, apt-get update through B within a second (A-09);
 #   - H-10: the requests of a pip install in a loop through the edge while A and then B restart;
 #   - H-01: the scenarios of test/e2e/ through the edge, as run.sh runs them; HA_SUITE='raw oras'
 #     runs those only, HA_SUITE=none none.
 #
-# The run's repo, users and files are named after the run; on exit the repo is deleted through
-# the API and the users are disabled; the backend keeps the bytes (make dev-down RESET=1). It
-# needs curl, jq and docker; oras on PATH, else its image; the images of cosign.sh and pypi.sh.
+# The run's repos (raw, maven and apt), users and files are named after the run; on exit the
+# repos are deleted through the API, the users are disabled, and a service the run stopped is
+# started again; the backend keeps the bytes (make dev-down RESET=1). It needs curl, jq and
+# docker; oras on PATH, else its image; the images of cosign.sh and pypi.sh, and $APT_E2E_IMAGE
+# (ubuntu:24.04 for linux/amd64) as apt.sh.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -39,8 +51,8 @@ b="http://localhost:${LAJSTROM_HA_B_PORT:-8092}"
 backend="http://localhost:${LAJSTROM_HA_DISTRIBUTION_PORT:-5007}"
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
-compose=(docker compose -f "$root/deploy/compose/compose.yaml")
-nginx_ip=172.31.226.10 # ha-nginx: server.trustedProxies of deploy/compose/ha/lajstrom.yaml
+compose=(docker compose -f "$root/deploy/compose/compose.yaml" --profile ha)
+[ -z "${COMPOSE_FILE:-}" ] || compose=(docker compose --profile ha)
 for tool in curl jq docker; do
 	command -v "$tool" >/dev/null || { echo "ha.sh: $tool is required" >&2; exit 2; }
 done
@@ -48,15 +60,26 @@ for u in "$edge" "$a" "$b"; do
 	curl -fsS -o /dev/null --max-time 5 "$u/-/readyz" 2>/dev/null ||
 		{ echo "ha.sh: $u/-/readyz is not 200: is the ha profile up (make dev-up PROFILES=ha)?" >&2; exit 2; }
 done
+# cid SERVICE prints the id of the container of SERVICE.
+cid() { "${compose[@]}" ps -q "$1"; }
+# ha-nginx's address: server.trustedProxies of deploy/compose/ha/lajstrom.yaml.
+nginx_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$(cid ha-nginx)")"
 
 work="$(mktemp -d)"
 run="ha-$(date -u +%Y%m%d%H%M%S)-$RANDOM"
 repo="$run"
+repos=("raw/$repo") # deleted on exit
 made=()
 logs=""
+down=""   # a service the run stopped or killed, started again on exit
+client="" # the container of apt-get (H-11)
 cleanup() {
 	[ -z "$logs" ] || kill "$logs" 2>/dev/null || true
-	[ -z "${E2E_CURLRC:-}" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$edge/api/v1/repos/raw/$repo?force=true" || true
+	[ -z "$down" ] || "${compose[@]}" start "$down" >/dev/null 2>&1 || true
+	[ -z "$client" ] || docker rm -f "$client" >/dev/null 2>&1 || true
+	if [ -n "${E2E_CURLRC:-}" ]; then
+		for r in "${repos[@]}"; do curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$edge/api/v1/repos/$r?force=true" || true; done
+	fi
 	for u in ${made[@]+"${made[@]}"}; do lajstrom admin user disable "$u" >/dev/null 2>&1 || true; done
 	rm -rf "$work"
 }
@@ -313,6 +336,230 @@ sleep 2
 assert_status 200 -o /dev/null "$edge/v2/token?service=$service"
 step "#129: 200 token requests at once: $passed reached the replicas, $limited answered 429 with Retry-After: 1 by nginx; 2 s later 200"
 
+# started prints when A and B started, to tell whether a step restarted them.
+started() { docker inspect -f '{{.State.StartedAt}}' "$(cid lajstrom-a)" "$(cid lajstrom-b)" | tr '\n' ' '; }
+# ready URL...: wait until each URL's /-/readyz is 200.
+ready() { for u in "$@"; do until curl -fsS -o /dev/null --max-time 1 "$u/-/readyz" 2>/dev/null; do sleep 0.2; done; done; }
+# whole WHAT PREFIX: every raw file of the run under PREFIX has one version, every version its
+# file rows, no tag claim of the repo is left, and a reindex of the repo with prune adds,
+# removes and degrades nothing and reports no drift and no error: nothing missing either way.
+whole() {
+	local q="FROM versions v JOIN packages p ON p.id = v.package_id JOIN repos r ON r.id = p.repo_id
+		WHERE r.format = 'raw' AND r.name = '$repo' AND p.name LIKE '$2%'"
+	assert_eq "" "$(psql "SELECT p.name $q GROUP BY p.name HAVING count(*) <> 1")" "$1: files of $2 with other than one version"
+	assert_eq 0 "$(psql "SELECT count(*) $q AND NOT EXISTS (SELECT 1 FROM files f WHERE f.version_id = v.id)")" "$1: versions without files"
+	assert_eq 0 "$(psql "SELECT count(*) FROM tag_claims c JOIN repos r ON r.id = c.repo_id WHERE r.format = 'raw' AND r.name = '$repo'")" \
+		"$1: tag claims left in raw/$repo"
+	lajstrom reindex --repo "raw/$repo" --prune --json >"$work/reindex.json" 2>"$work/reindex.log" ||
+		{ cat "$work/reindex.log" >&2; fail "$1: lajstrom reindex --repo raw/$repo --prune"; }
+	assert_eq "0 0 0 0 0" "$(jq -r '.repos[0] | [.added, .removed, .degraded, (.drift | length), (.errors | length)] | join(" ")' "$work/reindex.json")" \
+		"$1: the reindex of raw/$repo, added, removed, degraded, drift and errors"
+}
+
+# H-05: a 500 MiB PUT to A, and A killed with SIGKILL once 100 MiB are sent: --limit-rate makes
+# the upload last 10 s and the kill comes after 3. The same PUT through the edge, which sends it
+# to B; then A started again, with nothing of the upload in its /tmp, where it spools.
+head -c 524288000 /dev/urandom >"$work/huge"
+curl -sS -K "$E2E_CURLRC" -T "$work/huge" --limit-rate 50M -o /dev/null -w '%{http_code} %{size_upload}\n' "$a/raw/$repo/huge" \
+	>"$work/h05.out" 2>"$work/h05.err" &
+upload=$!
+sleep 3
+down=lajstrom-a
+"${compose[@]}" kill -s SIGKILL lajstrom-a >/dev/null 2>&1 || fail "docker compose kill -s SIGKILL lajstrom-a"
+rc=0
+wait "$upload" || rc=$?
+read -r code sent <"$work/h05.out"
+case "$rc" in 52 | 55 | 56) ;; *) cat "$work/h05.err" >&2; fail "H-05: the PUT to A: curl exit $rc, status $code, want a connection error" ;; esac
+[ "$sent" -ge 104857600 ] && [ "$sent" -lt 524288000 ] || fail "H-05: $sent bytes sent before the kill, want 100 MiB to 500 MiB"
+assert_status 201 -K "$E2E_CURLRC" -T "$work/huge" -o "$work/h05.json" "$edge/raw/$repo/huge"
+digest="$(jq -r .digest "$work/h05.json")"
+assert_eq "$digest" "$(version_digest huge "$(jq -r .version "$work/h05.json")")" "H-05: the index's digest of huge"
+assert_eq "sha256:$(sha256 "$work/huge")" "$(curl -fsS -H 'Accept: application/vnd.oci.image.manifest.v1+json' "$backend/v2/raw/$repo/huge/manifests/$digest" |
+	jq -r '.layers[] | select(.mediaType == "application/vnd.lajstrom.raw.file.v1") | .digest')" "H-05: the file layer of $digest in the backend"
+"${compose[@]}" start lajstrom-a >/dev/null 2>&1 || fail "docker compose start lajstrom-a"
+down=""
+ready "$a"
+assert_eq "" "$(docker cp "$(cid lajstrom-a):/tmp" - | tar -tf - | grep -v '^tmp/$' || true)" "H-05: the files in /tmp of A"
+whole H-05 huge
+rm "$work/huge"
+step "H-05: A killed $((sent / 1048576)) MiB into a 500 MiB PUT: curl exit $rc; the PUT again through the edge 201, $digest in the index and the backend; A started, its /tmp empty; one version, no claim, reindex finds nothing missing"
+
+# outage ID SERVICE STATUSES GAP: SERVICE stopped and started again, as docker restart does,
+# with the outage held open while each replica is asked, past the edge, for the wheel of H-13, a
+# raw PUT and its /-/readyz (the probes, $work/ID.probes); meanwhile three loops run until both
+# replicas serve again: the requests of a pip install through the edge (as H-10), raw PUTs of a
+# new file each through the edge, and A's /-/readyz (the loads, $work/ID.reads, .puts, .ready).
+# A probe of the wheel or a PUT must be answered one of STATUSES, a load 200 (201 for a PUT) or
+# one of STATUSES, and every load 200 or 201 once both replicas serve again. GAP is a status that
+# the acceptance check does not allow but Lajstrom answers today: it counts as one of STATUSES
+# and is printed in a gap line. Then: neither replica restarted, every PUT that failed is 201
+# again, and the index is whole.
+outage() {
+	local id="$1" svc="$2" ok="$3 $4" gap="$4" before t0 n_reads n_puts pids=() r f got seen
+	before="$(started)"
+	mkdir -p "$work/$id"
+	while [ ! -f "$work/$id.stop" ]; do
+		curl -s -o /dev/null -o /dev/null -K "$E2E_CURLRC" -w '%{http_code}\n' "$edge/pypi/e2e/simple/$project/" \
+			"$edge/pypi/e2e/files/$project/1.0/$wheel" || true
+		sleep 0.1
+	done >"$work/$id.reads" &
+	pids+=($!)
+	for i in $(seq 1 100000); do
+		[ ! -f "$work/$id.stop" ] || break
+		printf '%s %s %s\n' "$id" "$run" "$i" >"$work/$id/f$i"
+		printf 'f%s ' "$i"
+		curl -s -o /dev/null -K "$E2E_CURLRC" -T "$work/$id/f$i" -w '%{http_code}\n' "$edge/raw/$repo/$id/f$i" || true
+		sleep 0.1
+	done >"$work/$id.puts" &
+	pids+=($!)
+	while [ ! -f "$work/$id.stop" ]; do
+		curl -s -o /dev/null --max-time 1 -w '%{http_code}\n' "$a/-/readyz" || true
+		sleep 0.2
+	done >"$work/$id.ready" &
+	pids+=($!)
+	sleep 2
+	down="$svc"
+	"${compose[@]}" stop "$svc" >/dev/null 2>&1 || fail "$id: docker compose stop $svc"
+	sleep 1
+	for r in a b; do
+		eval "u=\$$r"
+		printf '%s %s %s\n' "$id" "$run" "p$r" >"$work/$id/p$r"
+		printf 'wheel-%s %s\n' "$r" "$(curl -s -o /dev/null -K "$E2E_CURLRC" --max-time 30 -w '%{http_code}' "$u/pypi/e2e/files/$project/1.0/$wheel" || true)"
+		printf 'p%s %s\n' "$r" "$(curl -s -o /dev/null -K "$E2E_CURLRC" --max-time 30 -T "$work/$id/p$r" -w '%{http_code}' "$u/raw/$repo/$id/p$r" || true)"
+		printf 'readyz-%s %s\n' "$r" "$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' "$u/-/readyz" || true)"
+	done >"$work/$id.probes"
+	sleep 1
+	"${compose[@]}" start "$svc" >/dev/null 2>&1 || fail "$id: docker compose start $svc"
+	down=""
+	t0=$SECONDS
+	# Both replicas ready and serving the wheel past the edge: a replica whose registry failed
+	# answers 503 at once while its circuit is open (30 s, docs/operations.md).
+	until [ "$(curl -s -o /dev/null -K "$E2E_CURLRC" -w '%{http_code}' "$a/pypi/e2e/files/$project/1.0/$wheel") $(curl -s -o /dev/null \
+		-K "$E2E_CURLRC" -w '%{http_code}' "$b/pypi/e2e/files/$project/1.0/$wheel")" = "200 200" ]; do
+		[ $((SECONDS - t0)) -lt 120 ] || fail "$id: A and B do not serve $wheel 120 s after $svc started"
+		sleep 0.5
+	done
+	t0=$((SECONDS - t0))
+	n_reads="$(wc -l <"$work/$id.reads")" n_puts="$(wc -l <"$work/$id.puts")"
+	sleep 2
+	touch "$work/$id.stop"
+	wait "${pids[@]}"
+	assert_eq "$before" "$(started)" "$id: when A and B started"
+	assert_eq "" "$(grep -v '^readyz-' "$work/$id.probes" | awk -v s=" $ok " 'index(s, " " $2 " ") == 0' | tr '\n' ' ')" \
+		"$id: the probes while $svc was out, other than $ok"
+	got="$(awk '{ print $NF }' "$work/$id.reads" "$work/$id.puts" | sort | uniq -c | awk '{ printf "%s%s×%s", sep, $2, $1; sep = " " }')"
+	seen="$(awk -v ok=" 200 201 $ok " '{ c = $NF } index(ok, " " c " ") == 0 { print c }' "$work/$id.reads" "$work/$id.puts" | sort -u | tr '\n' ' ')"
+	assert_eq "" "$seen" "$id: the loads, statuses other than 200, 201 and $ok (all: $got)"
+	f="$(awk -v g="$gap" '$NF == g { n++ } END { print n + 0 }' "$work/$id.reads" "$work/$id.puts" "$work/$id.probes")"
+	[ -z "$gap" ] || [ "$f" = 0 ] ||
+		printf 'gap  %s: %s requests answered %s while %s was out, where the acceptance check wants %s\n' "$id" "$f" "$gap" "$svc" "$3"
+	assert_eq "" "$(tail -n "+$((n_reads + 1))" "$work/$id.reads" | grep -v '^200$' | sort | uniq -c | tr '\n' ' ')" "$id: the reads once both replicas served again"
+	assert_eq "" "$(tail -n "+$((n_puts + 1))" "$work/$id.puts" | grep -v ' 201$' | tr '\n' ' ')" "$id: the PUTs once both replicas served again"
+	for f in $(awk '$1 !~ /^(wheel|readyz)-/ && $2 != 201 { print $1 }' "$work/$id.puts" "$work/$id.probes"); do
+		assert_status 201 -K "$E2E_CURLRC" -T "$work/$id/$f" -o /dev/null "$edge/raw/$repo/$id/$f"
+	done
+	whole "$id" "$id/"
+	outage_summary="probes $(grep -v '^readyz-' "$work/$id.probes" | tr '\n' ' ' | sed 's/ $//'), readyz $(awk '/^readyz-/ { printf "%s%s", sep, $2; sep = " " }' "$work/$id.probes"); loads: $(wc -l <"$work/$id.reads" | tr -d ' ') reads and $(wc -l <"$work/$id.puts" | tr -d ' ') PUTs ($got), A's readyz $(sort "$work/$id.ready" | uniq -c | awk '{ printf "%s%s×%s", sep, $2, $1; sep = " " }'); both served again $t0 s after the start"
+}
+
+# H-06: Postgres out under load: requests are 503 (500 today: the gap), and readyz is 503.
+outage H-06 ha-postgres 503 500
+assert_eq "readyz-a 503 readyz-b 503" "$(grep '^readyz-' "$work/H-06.probes" | tr '\n' ' ' | sed 's/ $//')" "H-06: readyz of A and B while ha-postgres was out"
+step "H-06: ha-postgres stopped and started: $outage_summary; no restart of A or B; the failed PUTs again 201; one version each, no claim, reindex finds nothing missing"
+
+# H-07: the registry out under load: 502 or 503 (500 today, before the circuit opens: the gap).
+outage H-07 ha-distribution '502 503' 500
+step "H-07: ha-distribution stopped and started: $outage_summary; no restart of A or B; the failed PUTs again 201; one version each, no claim, reindex finds nothing missing"
+
+# H-08: a maven deploy of com.example.ha:lib:1.0.0 to a maven repo of the run, in the order of
+# mvn deploy (M-01), each PUT to the other replica, as the round robin of the edge sends them:
+# the jar and its checksums, the pom and its checksums, then maven-metadata.xml, which commits.
+# Between the PUTs the session is a row of the database; a checksum is checked on the replica
+# that did not take its file; the replica that takes maven-metadata.xml commits.
+hexsum() { # hexsum ALGORITHM FILE: md5 or sha1
+	if command -v "${1}sum" >/dev/null; then "${1}sum" "$2"; elif [ "$1" = md5 ]; then md5 -r "$2"; else shasum -a 1 "$2"; fi | cut -d' ' -f1
+}
+repos+=("maven/$repo")
+assert_status 201 -K "$E2E_CURLRC" -o /dev/null -H 'Content-Type: application/json' -d "{\"format\":\"maven\",\"name\":\"$repo\",\"registry\":\"local\"}" "$b/api/v1/repos"
+mkdir -p "$work/maven"
+head -c 4096 /dev/urandom >"$work/maven/lib-1.0.0.jar"
+printf '<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>com.example.ha</groupId><artifactId>lib</artifactId><version>1.0.0</version><packaging>jar</packaging></project>\n' \
+	>"$work/maven/lib-1.0.0.pom"
+printf '<?xml version="1.0" encoding="UTF-8"?>\n<metadata><groupId>com.example.ha</groupId><artifactId>lib</artifactId><versioning><latest>1.0.0</latest><release>1.0.0</release><versions><version>1.0.0</version></versions><lastUpdated>20261111000000</lastUpdated></versioning></metadata>\n' \
+	>"$work/maven/maven-metadata.xml"
+for f in lib-1.0.0.jar lib-1.0.0.pom maven-metadata.xml; do
+	for alg in sha1 md5; do hexsum "$alg" "$work/maven/$f" >"$work/maven/$f.$alg"; done
+done
+session() { psql "SELECT s.state || ' ' || s.key FROM sessions s JOIN repos r ON r.id = s.repo_id WHERE r.format = 'maven' AND r.name = '$repo'"; }
+to=a
+for f in lib-1.0.0.jar lib-1.0.0.jar.sha1 lib-1.0.0.jar.md5 lib-1.0.0.pom lib-1.0.0.pom.sha1 lib-1.0.0.pom.md5 \
+	maven-metadata.xml maven-metadata.xml.sha1 maven-metadata.xml.md5; do
+	case "$f" in maven-metadata.xml*) path="com/example/ha/lib/$f" ;; *) path="com/example/ha/lib/1.0.0/$f" ;; esac
+	[ "$f" != maven-metadata.xml ] || { committer="$to"; assert_eq "open com.example.ha:lib:1.0.0" "$(session)" "H-08: the session before the commit"; }
+	eval "u=\$$to"
+	assert_status 201 -K "$E2E_CURLRC" -T "$work/maven/$f" -o /dev/null "$u/maven/$repo/$path"
+	if [ "$to" = a ]; then to=b; else to=a; fi
+done
+assert_eq "committed com.example.ha:lib:1.0.0" "$(session)" "H-08: the session after the commit"
+other=b
+[ "$committer" = a ] || other=a
+assert_eq 1 "$("${compose[@]}" logs --no-log-prefix "lajstrom-$committer" 2>/dev/null | grep -c "msg=\"maven: version deployed\" .* repo=maven/$repo ")" \
+	"H-08: the commits in the log of $committer"
+assert_eq 0 "$("${compose[@]}" logs --no-log-prefix "lajstrom-$other" 2>/dev/null | grep -c "msg=\"maven: version deployed\" .* repo=maven/$repo " || true)" \
+	"H-08: the commits in the log of $other"
+eval "u=\$$other"
+assert_status 200 -K "$E2E_CURLRC" -o "$work/maven/jar.out" "$u/maven/$repo/com/example/ha/lib/1.0.0/lib-1.0.0.jar"
+assert_eq "$(sha256 "$work/maven/lib-1.0.0.jar")" "$(sha256 "$work/maven/jar.out")" "H-08: the jar through $other"
+step "H-08: maven deploy of com.example.ha:lib:1.0.0, 9 PUTs alternating A and B, all 201: the session open in the database before maven-metadata.xml, committed by $(tr ab AB <<<"$committer"), which took it; the jar the same through $(tr ab AB <<<"$other")"
+
+# H-11 (A-09): an apt repo of the run, readable anonymously, and one apt-get client with B's
+# source and key. A .deb uploaded through A and apt-get update through B: listed; then a second
+# .deb through A and, within a second of its 201, apt-get update through B: listed too, though B
+# served the suite from its index_cache before. apt-get waits in the client for a file that the
+# script writes right after the 201, so that docker exec's start is not in the second; the second
+# is measured between the access log lines of the PUT on A and of the first GET of the suite on B.
+image="${APT_E2E_IMAGE:-ubuntu:24.04}"
+repos+=("apt/$repo")
+assert_status 201 -K "$E2E_CURLRC" -o /dev/null -H 'Content-Type: application/json' \
+	-d "{\"format\":\"apt\",\"name\":\"$repo\",\"registry\":\"local\",\"anonymousRead\":true}" "$b/api/v1/repos"
+mkdir -p "$work/apt"
+client="lajstrom-e2e-ha-apt-$run"
+docker run -d --name "$client" --network host --platform linux/amd64 -v "$work/apt:/w" "$image" sleep infinity >/dev/null
+for p in h11-one h11-two; do
+	docker exec -u "$(id -u):$(id -g)" "$client" bash -ec "umask 022 && cd /w && mkdir -p $p/DEBIAN $p/usr/share/$p && echo '$p $run' >$p/usr/share/$p/hello
+		printf 'Package: $p\nVersion: 1.0-1\nArchitecture: amd64\nMaintainer: ha.sh <e2e@lajstrom.dev>\nDescription: $p of $run\n' >$p/DEBIAN/control
+		dpkg-deb --root-owner-group --build $p ${p}_1.0-1_amd64.deb >/dev/null && rm -r $p" ||
+		fail "H-11: dpkg-deb --build $p in $image"
+done
+assert_status 200 -o "$work/apt/key.asc" "$b/apt/$repo/key.asc"
+deb_put() { assert_status 201 -o /dev/null -K "$E2E_CURLRC" -T "$work/apt/${1}_1.0-1_amd64.deb" "$a/apt/$repo/upload?suite=noble&component=main"; }
+deb_put h11-one
+docker exec "$client" bash -ec "rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*; install -D -m 0644 /w/key.asc /etc/apt/keyrings/ha.asc
+	echo 'deb [signed-by=/etc/apt/keyrings/ha.asc] $b/apt/$repo noble main' >/etc/apt/sources.list.d/ha.list
+	apt-get update && apt-cache policy h11-one" >"$work/h11-one.log" 2>&1 ||
+	{ cat "$work/h11-one.log" >&2; fail "H-11: apt-get update through B after h11-one"; }
+! grep -E '^(E|W): ' "$work/h11-one.log" >&2 || fail "H-11: apt-get update through B after h11-one: errors or warnings"
+grep -qxF '  Candidate: 1.0-1' "$work/h11-one.log" || { cat "$work/h11-one.log" >&2; fail "H-11: h11-one is not a candidate through B"; }
+docker exec "$client" bash -ec "until [ -f /w/go ]; do sleep 0.02; done
+	apt-get update && apt-cache policy h11-two" >"$work/h11-two.log" 2>&1 &
+update=$!
+sleep 1
+deb_put h11-two
+touch "$work/apt/go"
+wait "$update" || { cat "$work/h11-two.log" >&2; fail "H-11: apt-get update through B after h11-two"; }
+! grep -E '^(E|W): ' "$work/h11-two.log" >&2 || fail "H-11: apt-get update through B after h11-two: errors or warnings"
+grep -qxF '  Candidate: 1.0-1' "$work/h11-two.log" || { cat "$work/h11-two.log" >&2; fail "H-11: h11-two is not a candidate through B within a second"; }
+# ms LINE prints the milliseconds since midnight of the time= of an access log line.
+ms() { sed -n 's/^time=[0-9-]*T\([0-9]*\):\([0-9]*\):\([0-9.]*\)Z .*/\1 \2 \3/p' <<<"$1" | awk '{ printf "%d\n", (($1 * 60 + $2) * 60 + $3) * 1000 }'; }
+put="$("${compose[@]}" logs --no-log-prefix lajstrom-a 2>/dev/null | grep -E "msg=request method=PUT path=/apt/$repo/upload status=201 " | tail -n 1)"
+get="$("${compose[@]}" logs --no-log-prefix lajstrom-b 2>/dev/null | grep -E "msg=request method=GET path=/apt/$repo/dists/noble/" |
+	awk -v t="$(sed 's/ .*//' <<<"$put")" '$1 > t' | head -n 1)"
+[ -n "$put" ] && [ -n "$get" ] || fail "H-11: no PUT of h11-two in A's log, or no GET of the suite after it in B's"
+took=$(($(ms "$get") - $(ms "$put")))
+[ "$took" -ge 0 ] || took=$((took + 86400000))
+[ "$took" -lt 1000 ] || fail "H-11: B's first GET of the suite $took ms after the 201 of the upload on A, want under 1 s"
+step "H-11: $image: h11-one through A, apt-get update through B lists it; h11-two through A, apt-get update through B $took ms after its 201 lists it too"
+
 # H-10: the requests of a pip install, the simple page and the wheel, in a loop through the edge
 # while A restarts, and B once A is ready again: none may fail.
 loop() {
@@ -350,14 +597,14 @@ case "\$1 \$2 \$3" in "admin deb metadata")
 	[ ! -x '$root/bin/lajstrom' ] || exec '$root/bin/lajstrom' "\$@"
 	cd '$root' && exec go run ./cmd/lajstrom "\$@" ;;
 esac
-exec docker compose -f '$root/deploy/compose/compose.yaml' exec -T \${LAJSTROM_ADMIN_PASSWORD+-e LAJSTROM_ADMIN_PASSWORD} lajstrom-a /lajstrom "\$@"
+exec $(printf "'%s' " "${compose[@]}")exec -T \${LAJSTROM_ADMIN_PASSWORD+-e LAJSTROM_ADMIN_PASSWORD} lajstrom-a /lajstrom "\$@"
 EOF
 chmod +x "$work/bin/lajstrom"
 since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 "${compose[@]}" logs -f --no-log-prefix --since "$since" lajstrom-a lajstrom-b >"$work/server.log" 2>&1 &
 logs=$!
 unset LAJSTROM_E2E_FORWARDED LAJSTROM_CONFIG
-LAJSTROM_MASTER_KEY="$("${compose[@]}" --profile ha config --format json | jq -r '.services["lajstrom-a"].environment.LAJSTROM_MASTER_KEY')"
+LAJSTROM_MASTER_KEY="$("${compose[@]}" config --format json | jq -r '.services["lajstrom-a"].environment.LAJSTROM_MASTER_KEY')"
 export LAJSTROM_MASTER_KEY
 failed=""
 for n in $suite; do

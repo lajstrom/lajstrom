@@ -36,8 +36,10 @@ GORELEASER_RUN    = docker run --rm -v /var/run/docker.sock:/var/run/docker.sock
 	-e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
 	--entrypoint sh $(GORELEASER_IMAGE) -c
 
-COMPOSE_FILE := deploy/compose/compose.yaml
-COMPOSE      := docker compose -f $(COMPOSE_FILE)
+# Not COMPOSE_FILE: make would pass its value to every recipe in place of the caller's, which
+# test/e2e/ha.sh reads.
+DEV_COMPOSE_FILE := deploy/compose/compose.yaml
+COMPOSE          := docker compose -f $(DEV_COMPOSE_FILE)
 # PROFILES adds the services of compose profiles to dev-up, dev-ps and dev-logs:
 # make dev-up PROFILES=s3 also starts distribution on SeaweedFS, PROFILES=s3-minio the same on
 # MinIO, the fallback, PROFILES=gitlab the GitLab container registry, PROFILES=ha two replicas of
