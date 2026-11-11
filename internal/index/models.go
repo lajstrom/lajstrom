@@ -74,6 +74,16 @@ type Token struct {
 	RevokedAt  *time.Time
 }
 
+// BootstrapToken is the row of bootstrap_token (control plane): the one-time token that makes
+// the first admin, the same on every replica. The table has at most one row.
+type BootstrapToken struct {
+	Hash      string // hex sha256 of the secret; the secret is never stored
+	Replica   string // host name and process id of the serve that made it
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	UsedAt    *time.Time // when it made the admin; it is never valid again
+}
+
 // Binding is a row of bindings (control plane): a role on a repo mask (docs/spec/rbac.md §3).
 type Binding struct {
 	ID        int64

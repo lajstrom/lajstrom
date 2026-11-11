@@ -29,6 +29,8 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"Repos", testRepos},
 		{"Users", testUsers},
 		{"Tokens", testTokens},
+		{"BootstrapToken", testBootstrapToken},
+		{"BootstrapTokenRace", testBootstrapTokenRace},
 		{"Bindings", testBindings},
 		{"AuthVersion", testAuthVersion},
 		{"Keys", testKeys},

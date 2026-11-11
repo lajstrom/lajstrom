@@ -73,6 +73,10 @@ type Reader interface {
 	// every token.
 	ListTokens(ctx context.Context, userID, repoID *int64) ([]Token, error)
 
+	// GetBootstrapToken returns the bootstrap token, used and expired ones included; the caller
+	// checks UsedAt and ExpiresAt.
+	GetBootstrapToken(ctx context.Context) (*BootstrapToken, error)
+
 	// ListBindings returns the bindings of principal (canonical form, docs/spec/rbac.md §1),
 	// or every binding when principal is "".
 	ListBindings(ctx context.Context, principal string) ([]Binding, error)
@@ -197,6 +201,18 @@ type Writer interface {
 	RevokeToken(ctx context.Context, id int64, at time.Time) error
 	// TouchToken sets LastUsedAt of the token.
 	TouchToken(ctx context.Context, id int64, lastUsed time.Time) error
+
+	// PutBootstrapToken makes t the bootstrap token when the stored one is still the one whose
+	// hash is old: with old "" it inserts t when there is no row, otherwise it replaces the row
+	// whose hash is old, UsedAt cleared. When the row is another (a replica made or replaced it
+	// in between), nothing changes and the error wraps ErrConflict: of replicas that start
+	// together, one token is made. CreatedAt is now when zero.
+	PutBootstrapToken(ctx context.Context, t *BootstrapToken, old string) error
+	// UseBootstrapToken sets UsedAt of the bootstrap token to at when its hash is hash, it is
+	// not used and its ExpiresAt is after at; otherwise ErrNotFound. In a transaction it holds
+	// the row until the transaction ends, so that of two exchanges of the token one commits and
+	// the other finds it used.
+	UseBootstrapToken(ctx context.Context, hash string, at time.Time) error
 
 	// CreateBinding inserts b.
 	CreateBinding(ctx context.Context, b *Binding) error
