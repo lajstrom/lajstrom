@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -85,15 +86,16 @@ func (p *Pipeline) validate(ctx context.Context, pub *publish) error {
 
 // checkTarget compares the annotations with where the manifest was pushed: format, repo,
 // package path (§4.1) and tag (§4.2), and the artifactType with the plugin's. The package path
-// may be in the form of before ADR 0017 (§4.3, profile.LegacyPackagePath), which sets
-// pub.earlier: reindex reads both forms, and a publish writes to the one its package has.
+// may be in a form of before ADR 0017 or its amendment (§4.3, profile.EarlierPackagePaths),
+// which sets pub.earlier: reindex reads every form, and a publish writes to the one its package
+// has.
 func (pub *publish) checkTarget() error {
 	a := pub.parsed.Annotations
 	path, err := pub.plugin.EscapeName(a.Name)
 	if err != nil {
 		return invalid(fmt.Errorf("ingest: %s %q: %w", profile.AnnotationName, a.Name, err))
 	}
-	if pub.pkgPath != path && pub.pkgPath == profile.LegacyPackagePath(path) {
+	if pub.pkgPath != path && slices.Contains(profile.EarlierPackagePaths(path), pub.pkgPath) {
 		path, pub.earlier = pub.pkgPath, true
 	}
 	for _, c := range []struct{ what, got, want string }{
@@ -111,19 +113,19 @@ func (pub *publish) checkTarget() error {
 	return nil
 }
 
-// checkEarlier refuses a publish to the form of a package path of before ADR 0017 when the index
-// has no package there: that form is kept for the packages stored in it, and a new package is
-// written in the form of ADR 0017 (manifest-profile.md §4.3, §5).
+// checkEarlier refuses a publish to an earlier form of a package path (ADR 0017 and its
+// amendment) when the index has no package there: that form is kept for the packages stored in
+// it, and a new package is written in the newest form (manifest-profile.md §4.3, §5).
 func (p *Pipeline) checkEarlier(ctx context.Context, pub *publish) error {
 	if !pub.earlier || pub.readOnly {
-		return nil // the form of ADR 0017, or reindex, which reads both
+		return nil // the newest form, or reindex, which reads every form
 	}
 	_, err := p.index.GetPackageByNameOCI(ctx, pub.repo.ID, pub.pkgPath)
 	switch {
 	case errors.Is(err, index.ErrNotFound):
 		path, _ := pub.plugin.EscapeName(pub.parsed.Annotations.Name)
-		return fmt.Errorf("%w: %s is the package path of %q before ADR 0017, kept only for a package stored there; "+
-			"a new package goes to %s", ErrInvalid, pub.pkgPath, pub.parsed.Annotations.Name, path)
+		return fmt.Errorf("%w: %s is an earlier form of the package path of %q (ADR 0017), "+
+			"kept only for a package stored there; a new package goes to %s", ErrInvalid, pub.pkgPath, pub.parsed.Annotations.Name, path)
 	case err != nil:
 		return fmt.Errorf("ingest: the package at %s: %w", pub.name, err)
 	}

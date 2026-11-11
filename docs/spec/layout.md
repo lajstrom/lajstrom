@@ -861,9 +861,10 @@ type ReindexConflictError struct {          // errors.Is(err, ErrConflict) is tr
     Running ReindexRun                      // the live run that overlaps: replica, StartedAt
 }
 
-// PackageAt is GetPackageByNameOCI at the package path pkgPath (Plugin.EscapeName), or at its
-// form of before ADR 0017 (profile.LegacyPackagePath, manifest-profile.md §4.3): a package
-// keeps the OCI repository it was first written to. ErrNotFound when neither is.
+// PackageAt is GetPackageByNameOCI at the package path pkgPath (Plugin.EscapeName), or at each of
+// its earlier forms, of before ADR 0017 and its amendment (profile.EarlierPackagePaths,
+// manifest-profile.md §4.3): a package keeps the OCI repository it was first written to.
+// ErrNotFound when none is.
 func PackageAt(ctx context.Context, r Reader, repoID int64, pkgPath string) (*Package, error)
 
 // Migrations: migrations/<dialect>/NNNN_<name>.sql, embedded (index-schema.md, Migrations).

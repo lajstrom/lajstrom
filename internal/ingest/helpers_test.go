@@ -41,7 +41,8 @@ func newRawPlugin() *rawPlugin {
 	return &rawPlugin{Fake: formattest.Fake{FormatName: "raw", BuildFunc: buildRaw, ValidateFunc: validateRaw}}
 }
 
-// EscapeName escapes each component of a /-separated path with profile.EscapeComponent.
+// EscapeName escapes each component of a /-separated path with profile.EscapeComponent and joins
+// them with profile.PackagePath.
 func (*rawPlugin) EscapeName(name string) (string, error) { return escapeRaw(name) }
 
 func escapeRaw(name string) (string, error) {
@@ -52,7 +53,7 @@ func escapeRaw(name string) (string, error) {
 		}
 		parts[i] = profile.EscapeComponent(c)
 	}
-	return strings.Join(parts, "/"), nil
+	return profile.PackagePath(parts...), nil
 }
 
 // created is org.opencontainers.image.created of every manifest the plugin builds: fixed, so

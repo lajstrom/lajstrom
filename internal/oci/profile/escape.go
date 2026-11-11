@@ -36,10 +36,12 @@ var specComponentRE = regexp.MustCompile(`^[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+
 
 // reservedSuffixes end the path components that Zot's catalog and garbage collector skip, by
 // strings.HasSuffix on the path; reservedComponents are the files of Zot's image layout, which
-// a repository cannot share with a child repository of that name (ADR 0017).
+// a repository cannot share with a child repository of that name (ADR 0017); harborComponents
+// are the route words that Harbor finds anywhere in a URL (its amendment).
 var (
 	reservedSuffixes   = []string{"blobs", ".uploads", ".sync"}
 	reservedComponents = []string{"index.json", "oci-layout"}
+	harborComponents   = []string{"manifests", "referrers"}
 )
 
 // isSafe reports whether Escape copies the byte c (apart from a leading '.' or '-').
@@ -159,7 +161,8 @@ func unhex(c byte) (byte, bool) {
 // ReservedComponent, and is a name the components Escape writes cannot be, since Escape never
 // escapes a byte it copies. It is not injective: names that differ only in case share a
 // component. Before ADR 0017 a component was written without those escapes and hashed with the
-// prefix "h0__"; LegacyPackagePath and UnescapeComponent read that form too.
+// prefix "h0__", and before its amendment "manifests" and "referrers" as they are;
+// EarlierPackagePaths and UnescapeComponent read those forms too. PackagePath joins components.
 func EscapeComponent(s string) string { return EscapeComponentMax(s, 0) }
 
 // EscapeComponentMax is EscapeComponent, and hashes s as well when the Escape of its lower-cased
@@ -172,28 +175,34 @@ func EscapeComponentMax(s string, maxLen int) string {
 		sum := sha256.Sum256([]byte(s))
 		return hashedComponentPrefix + hex.EncodeToString(sum[:hashedComponentHexLen/2])
 	}
-	return markComponent(e)
+	return markComponent(e, true)
 }
 
-// ReservedComponent reports whether the path component c is a name that a registry's storage
-// layout keeps for itself (ADR 0017): it ends in "blobs", ".uploads" or ".sync", which Zot's
-// catalog and garbage collector skip, or it is "index.json" or "oci-layout", files of Zot's
-// image layout. EscapeComponent never writes one.
-func ReservedComponent(c string) bool {
+// ReservedComponent reports whether the path component c is a name that a registry keeps for
+// itself (ADR 0017): it ends in "blobs", ".uploads" or ".sync", which Zot's catalog and garbage
+// collector skip, or it is "index.json" or "oci-layout", files of Zot's image layout, or
+// "manifests" or "referrers", which Harbor's routes find anywhere in a URL (its amendment).
+// EscapeComponent never writes one.
+func ReservedComponent(c string) bool { return reserved(c, true) }
+
+// reserved is ReservedComponent, without Harbor's words unless harbor: as ADR 0017 had them before
+// its amendment.
+func reserved(c string, harbor bool) bool {
 	for _, s := range reservedSuffixes {
 		if strings.HasSuffix(c, s) {
 			return true
 		}
 	}
-	return slices.Contains(reservedComponents, c)
+	return slices.Contains(reservedComponents, c) || harbor && slices.Contains(harborComponents, c)
 }
 
 // markComponent returns e, an escaped component of the 1.1 grammar, with the escapes of ADR 0017:
-// each '-' of a run of two or more, and the last byte when e is a ReservedComponent. Neither
-// changes the other: a run of dashes lies between two letters or digits.
-func markComponent(e string) string {
-	reserved := ReservedComponent(e)
-	if !reserved && !strings.Contains(e, "--") {
+// each '-' of a run of two or more, and the last byte when e is a ReservedComponent, of Harbor's
+// words only with harbor (before the amendment, without). Neither changes the other: a run of
+// dashes lies between two letters or digits.
+func markComponent(e string, harbor bool) string {
+	last := reserved(e, harbor)
+	if !last && !strings.Contains(e, "--") {
 		return e
 	}
 	var b strings.Builder
@@ -201,7 +210,7 @@ func markComponent(e string) string {
 		c := e[i]
 		switch {
 		case c == '-' && (i > 0 && e[i-1] == '-' || i+1 < len(e) && e[i+1] == '-'),
-			reserved && i == len(e)-1:
+			last && i == len(e)-1:
 			writeEscape(&b, c)
 		default:
 			b.WriteByte(c)
@@ -234,31 +243,14 @@ func hashedComponentHex(c string) (string, bool) {
 	return rest, true
 }
 
-// LegacyPackagePath returns the package path that Lajstrom wrote before ADR 0017 for the name
-// whose package path EscapeComponent and Plugin.EscapeName write now: each hashed component with
-// the prefix "h0__", and the escapes of the reserved words and the dash runs decoded. It is p
-// itself for a name ADR 0017 left alone, and for a path in the earlier form. A package keeps the
-// OCI repository it was first written to, so a writer looks a package up at both paths, and
-// reindex takes a manifest found at either as the package of its annotations (written in the new
-// form, read in both). Components that neither form of any name is are left as they are.
-func LegacyPackagePath(p string) string {
-	if !strings.Contains(p, "_") { // every form ADR 0017 changed has one
-		return p
-	}
-	parts := strings.Split(p, "/")
-	for i, c := range parts {
-		parts[i] = legacyComponent(c)
-	}
-	return strings.Join(parts, "/")
-}
-
-// legacyComponent is LegacyPackagePath of one component: the component written before ADR 0017
-// when c is a component EscapeComponent writes now, else c.
-func legacyComponent(c string) string {
+// legacyComponent is the component written before ADR 0017 when c is a component that
+// EscapeComponent writes now (harbor) or wrote before the amendment of ADR 0017 (not harbor), else
+// c. Harbor's words were written as they are before the amendment, so harbor reads both.
+func legacyComponent(c string, harbor bool) string {
 	if h, ok := hashedComponentHex(c); ok {
 		return legacyHashedComponentPrefix + h
 	}
-	if u := unmark(c); u != c && specComponentRE.MatchString(u) && markComponent(u) == c {
+	if u := unmark(c); u != c && specComponentRE.MatchString(u) && markComponent(u, harbor) == c {
 		return u
 	}
 	return c
@@ -286,20 +278,21 @@ func unmark(c string) string {
 	return string(b)
 }
 
-// UnescapeComponent is the inverse of EscapeComponent for tooling and tests, in both forms:
-// the lower-cased name of a component that EscapeComponent writes, or wrote before ADR 0017,
-// so that a name decodes the same in either form. Errors wrap ErrInvalidEscape: a hashed
-// component (IsHashedComponent), whose name only the annotations hold, or a string that is
-// neither form of any name.
+// UnescapeComponent is the inverse of EscapeComponent for tooling and tests, in every form: the
+// lower-cased name of a component that EscapeComponent writes, or wrote before ADR 0017 or its
+// amendment, so that a name decodes the same in any form. Errors wrap ErrInvalidEscape: a hashed
+// component (IsHashedComponent), whose name only the annotations hold, or a string that is no
+// form of any name. The mark of "tags" depends on the next component: UnescapePackagePath
+// decodes it.
 func UnescapeComponent(c string) (string, error) {
 	if IsHashedComponent(c) {
 		return "", fmt.Errorf("%w: %q is a hashed path component", ErrInvalidEscape, c)
 	}
-	u, err := Unescape(legacyComponent(c))
+	u, err := Unescape(legacyComponent(c, true))
 	if err != nil {
 		return "", err
 	}
-	if e := EscapeComponent(u); e != c && legacyComponent(e) != c {
+	if e := EscapeComponent(u); e != c && legacyComponent(e, true) != c {
 		return "", fmt.Errorf("%w: %q is not a path component of %q", ErrInvalidEscape, c, u)
 	}
 	return u, nil

@@ -33,26 +33,41 @@ func (e *env) bypassAt(t *testing.T, name, path, content string) {
 		bytes.NewReader(b), built.Tag))
 }
 
-// earlierPaths are raw paths of every kind whose OCI name ADR 0017 changes.
-var earlierPaths = []string{".gitignore", "site/_config.yml", "netlify/blobs", "x/blobs/sha256/0f", "a--b.txt", "cache/my.sync", "x/index.json"}
-
-// TestRebuildEarlierNames: raw files that an earlier Lajstrom wrote at the OCI names of before
-// ADR 0017, one of each kind that it changes, pushed straight to the registry. A run finds each
-// as its package at that name; a new version through ingest lands in the same OCI repository;
-// and a run from an empty index finds both versions in one package, every row as ingest wrote
-// it (written in the new form, read in both).
-func TestRebuildEarlierNames(t *testing.T) {
-	e := newEnv(t)
-	ctx := t.Context()
+// bypassEarlier pushes version "one" of each of earlierPaths at an earlier form of its package
+// path, as an earlier Lajstrom wrote it, and returns the forms by path.
+func (e *env) bypassEarlier(t *testing.T) map[string]string {
+	t.Helper()
 	earlier := map[string]string{}
 	for _, p := range earlierPaths {
 		pkgPath, err := raw.Plugin{}.EscapeName(p)
 		must(t, err)
-		if earlier[p] = profile.LegacyPackagePath(pkgPath); earlier[p] == pkgPath {
+		forms := profile.EarlierPackagePaths(pkgPath)
+		if len(forms) == 0 {
 			t.Fatalf("%s: the package path %s has no earlier form", p, pkgPath)
+		}
+		earlier[p] = forms[len(forms)-1]
+		if p == "k8s/manifests/.gitignore" {
+			earlier[p] = forms[0]
 		}
 		e.bypassAt(t, "raw/scratch/"+earlier[p], p, "one "+p)
 	}
+	return earlier
+}
+
+// earlierPaths are raw paths of every kind whose OCI name ADR 0017 or its amendment changes. The
+// last two have two earlier forms; k8s/manifests/.gitignore is written in the newer of them.
+var earlierPaths = []string{".gitignore", "site/_config.yml", "netlify/blobs", "x/blobs/sha256/0f", "a--b.txt", "cache/my.sync",
+	"x/index.json", "k8s/manifests/app.yaml", "x/referrers/y", "x/tags/list", "y/manifests/.gitignore", "k8s/manifests/.gitignore"}
+
+// TestRebuildEarlierNames: raw files that an earlier Lajstrom wrote at the OCI names of before
+// ADR 0017 or before its amendment, one of each kind that they change, pushed straight to the
+// registry. A run finds each as its package at that name; a new version through ingest lands in
+// the same OCI repository; and a run from an empty index finds both versions in one package,
+// every row as ingest wrote it (written in the newest form, read in all).
+func TestRebuildEarlierNames(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	earlier := e.bypassEarlier(t)
 	if r := e.run(t, reindex.Request{}); r.Added != len(earlierPaths) || len(r.Errors) != 0 || len(r.Foreign) != 0 {
 		t.Fatalf("the run over the earlier names: %+v", *r)
 	}

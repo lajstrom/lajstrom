@@ -21,10 +21,10 @@ var RepoNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:[-._][a-z0-9]+)*$`)
 // MaxNameLen is the longest repo or registry name, in bytes (docs/spec/manifest-profile.md §4.1).
 const MaxNameLen = 64
 
-// ReservedRepoName says why a repo name that profile.ReservedComponent names is refused, after
-// the quoted name; the management API says the same.
-const ReservedRepoName = "ends in blobs, .uploads or .sync, or is index.json or oci-layout, " +
-	"names that Zot's storage keeps for itself (ADR 0017)"
+// ReservedRepoName says why a repo name that profile.ReservedRepoName names is refused, after the
+// quoted name; the management API says the same.
+const ReservedRepoName = "ends in blobs, .uploads or .sync, or is index.json, oci-layout, manifests, referrers or " +
+	"tags, names that Zot's storage or Harbor's routes keep for themselves (ADR 0017)"
 
 // Validate checks c and returns nil or one error per problem, joined with errors.Join. Each
 // error starts with the key it is about, e.g. "repos[0].registry: …". Errors never contain
@@ -419,7 +419,7 @@ func (e ECR) validateMutability(p *problems, key string) {
 
 func (r Repo) validate(p *problems, key string) {
 	validName(p, key+".name", r.Name)
-	if profile.ReservedComponent(r.Name) {
+	if profile.ReservedRepoName(r.Name) {
 		p.add(key+".name", "%q %s", r.Name, ReservedRepoName)
 	}
 	validName(p, key+".format", r.Format)

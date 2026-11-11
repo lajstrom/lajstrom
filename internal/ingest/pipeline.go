@@ -238,9 +238,10 @@ func (p *Pipeline) prepare(ctx context.Context, repo index.Repo, built *format.B
 }
 
 // storedPath returns the package path that a write to pkgPath, as Plugin.EscapeName computes
-// it, goes to: the NameOCI of the package when the index has it at pkgPath or at the form of
-// before ADR 0017 (index.PackageAt), else pkgPath. A package keeps the OCI repository it was
-// first written to; the form of ADR 0017 is for a package the index does not have.
+// it, goes to: the NameOCI of the package when the index has it at pkgPath or at an earlier
+// form, of before ADR 0017 or its amendment (index.PackageAt), else pkgPath. A package keeps the
+// OCI repository it was first written to; the newest form is for a package the index does not
+// have.
 func (p *Pipeline) storedPath(ctx context.Context, repo index.Repo, pkgPath string) (string, error) {
 	pkg, err := index.PackageAt(ctx, p.index, repo.ID, pkgPath)
 	switch {
@@ -330,7 +331,7 @@ type publish struct {
 	// origin is set on the proxy fetcher's upload: the origin annotations and proxy.fetch.
 	origin *format.Origin
 
-	earlier       bool // the package path is the form of before ADR 0017 (checkTarget)
+	earlier       bool // the package path is an earlier form, of before ADR 0017 or its amendment (checkTarget)
 	readOnly      bool // Inspect: nothing is pushed, not even the empty config
 	allowDegraded bool // Inspect: an unreadable metadata layer gives degraded rows
 	degraded      bool // the rows come from the annotations alone

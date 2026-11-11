@@ -196,5 +196,5 @@ func mavenPaths(groupID, artifactID, version, classifier, extension string) (str
 	}
 	name += "." + extension
 	repoPath := strings.Join([]string{strings.ReplaceAll(groupID, ".", "/"), artifactID, version, name}, "/")
-	return name, repoPath, profile.EscapeComponent(groupID) + "/" + profile.EscapeComponent(artifactID)
+	return name, repoPath, profile.PackagePath(profile.EscapeComponent(groupID), profile.EscapeComponent(artifactID))
 }

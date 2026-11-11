@@ -40,8 +40,8 @@ func (Plugin) Name() string { return Name }
 func (Plugin) ArtifactType() string { return profile.ArtifactType(Name) }
 
 // EscapeName returns the package path of a package name groupId:artifactId
-// (docs/spec/manifest-profile.md §4.1): profile.EscapeComponent of the groupId lowercased, "/",
-// profile.EscapeComponent of the artifactId; com.example:Lib-Core → com.example/lib-core. A name
+// (docs/spec/manifest-profile.md §4.1): profile.PackagePath of profile.EscapeComponent of the groupId
+// lowercased and of the artifactId; com.example:Lib-Core → com.example/lib-core. A name
 // that is not groupId:artifactId wraps format.ErrInvalid.
 func (Plugin) EscapeName(name string) (string, error) {
 	g, a, ok := strings.Cut(name, ":")
@@ -56,7 +56,7 @@ func (Plugin) EscapeName(name string) (string, error) {
 
 // packagePath returns the package path of well-formed coordinates.
 func packagePath(groupID, artifactID string) string {
-	return profile.EscapeComponent(strings.ToLower(groupID)) + "/" + profile.EscapeComponent(artifactID)
+	return profile.PackagePath(profile.EscapeComponent(strings.ToLower(groupID)), profile.EscapeComponent(artifactID))
 }
 
 // Routes mounts the maven frontend below /maven/: resolve (resolve.go) and deploy (deploy.go).

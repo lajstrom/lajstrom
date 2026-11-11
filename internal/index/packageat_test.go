@@ -30,7 +30,11 @@ func TestPackageAt(t *testing.T) {
 	old := &Package{Name: "@netlify/blobs", NameOCI: "netlify/blobs"}
 	now := &Package{Name: "@acme/blobs", NameOCI: "acme/blob_73"}
 	docs := &Package{Name: "docs", NameOCI: "docs"}
-	r := &byNameOCI{pkgs: map[string]*Package{old.NameOCI: old, now.NameOCI: now, docs.NameOCI: docs}}
+	// k8s/manifests/.gitignore: three forms, before ADR 0017, of it before its amendment, and now.
+	const hash = "bc37d034bad564583790a46f19d807ab"
+	v1 := &Package{Name: "k8s/manifests/.gitignore", NameOCI: "k8s/manifests/h0__" + hash}
+	v2 := &Package{Name: "x/manifests/.gitignore", NameOCI: "x/manifests/h0_h" + hash}
+	r := &byNameOCI{pkgs: map[string]*Package{old.NameOCI: old, now.NameOCI: now, docs.NameOCI: docs, v1.NameOCI: v1, v2.NameOCI: v2}}
 	for _, tc := range []struct {
 		pkgPath string
 		want    *Package
@@ -42,6 +46,9 @@ func TestPackageAt(t *testing.T) {
 		{"docs", docs, []string{"docs"}},
 		{"other/blob_73", nil, []string{"other/blob_73", "other/blobs"}},
 		{"other", nil, []string{"other"}},
+		{"k8s/manifest_73/h0_h" + hash, v1, []string{"k8s/manifest_73/h0_h" + hash, "k8s/manifests/h0_h" + hash, v1.NameOCI}},
+		{"x/manifest_73/h0_h" + hash, v2, []string{"x/manifest_73/h0_h" + hash, v2.NameOCI}},
+		{"x/tag_73/list", nil, []string{"x/tag_73/list", "x/tags/list"}},
 	} {
 		r.lookups = nil
 		got, err := PackageAt(t.Context(), r, 1, tc.pkgPath)
