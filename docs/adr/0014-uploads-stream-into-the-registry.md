@@ -1,6 +1,6 @@
 # 0014. Uploads stream into the registry: no request spool
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-10
 - Deciders: gecube
 
@@ -89,6 +89,8 @@ The order of the move: raw (nothing to parse), npm, apt, pypi sdist, pypi wheel,
 proxy fetch. Each format's move is one issue; the exact Go shapes (a streaming inspector per
 plugin, `UploadedFile` without `Open` or with it only for the read-back) are a `contract` PR of
 their own before the first format moves.
+
+Accepted by the lead on 2026-11-11.
 
 ## Consequences
 
