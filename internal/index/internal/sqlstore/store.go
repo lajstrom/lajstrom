@@ -58,7 +58,7 @@ func (s *Store) Tx(ctx context.Context, fn func(index.Writer) error) error {
 // Ping checks that the database answers.
 func (s *Store) Ping(ctx context.Context) error {
 	if err := s.db.PingContext(ctx); err != nil {
-		return fmt.Errorf("index: ping: %w", err)
+		return s.d.wrap(err, "ping")
 	}
 	return nil
 }
@@ -92,7 +92,7 @@ func (c *conn) withTx(ctx context.Context, fn func(*conn) error) (err error) {
 	}
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("index: begin: %w", err)
+		return c.d.wrap(err, "begin")
 	}
 	defer func() {
 		if p := recover(); p != nil {
@@ -105,7 +105,7 @@ func (c *conn) withTx(ctx context.Context, fn func(*conn) error) (err error) {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("index: commit: %w", err)
+		return c.d.wrap(err, "commit")
 	}
 	return nil
 }
@@ -116,7 +116,8 @@ func now() time.Time { return Normalize(time.Now()) }
 // fail wraps err, the error of a statement about what (a table and the key of the row, e.g.
 // "repos raw/scratch"): no row is index.ErrNotFound, a unique violation index.ErrConflict, a
 // missing referenced row index.ErrNotFound. The driver's message is dropped from those, so
-// it does not reach a client; any other error is wrapped unchanged.
+// it does not reach a client; any other error is wrapped unchanged, with
+// index.ErrUnavailable when the database did not answer (Dialect.IsUnavailable).
 func (c *conn) fail(err error, what string) error {
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -126,7 +127,7 @@ func (c *conn) fail(err error, what string) error {
 	case c.d.IsForeignKey(err):
 		return fmt.Errorf("%w: %s refers to a row that does not exist", index.ErrNotFound, what)
 	}
-	return fmt.Errorf("index: %s: %w", what, err)
+	return c.d.wrap(err, what)
 }
 
 // notFound returns an error wrapping index.ErrNotFound about what.

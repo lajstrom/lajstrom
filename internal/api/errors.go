@@ -80,7 +80,8 @@ const basicChallenge = `Basic realm="lajstrom"`
 // err.Error() for a 4xx and for a *clientError, whose message is written for the client (the
 // 501 of an endpoint that comes later); any other 5xx answers only its status text, and its
 // cause is logged with the request id. A 401 carries the Basic challenge, and a 503 of a
-// registry whose circuit breaker is open Retry-After (format.SetRetryAfter).
+// registry whose circuit breaker is open, or of a database that does not answer, Retry-After
+// (format.SetRetryAfter).
 func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	status := format.StatusOf(err)
 	msg := err.Error()

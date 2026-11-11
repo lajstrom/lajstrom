@@ -169,6 +169,8 @@ func (h *handler) checkLayers(ctx context.Context, t *target, blobs []ocispec.De
 //	                            that another spelling holds or is being published to, #244)
 //	format.ErrUnsupported       501 UNSUPPORTED
 //	provider.ErrUnauthorized    502 (the backend refused Lajstrom's credentials)
+//	index.ErrUnavailable,       503 UNAVAILABLE with Retry-After (format.StatusOf): the database
+//	provider.ErrUnavailable     or the registry takes no request now
 //	anything else               500, logged with the request id
 //
 // The messages of ingest name annotations, rules, digests and OCI names, never a backend URL.
@@ -197,6 +199,8 @@ func ingestError(t *target, m ocispec.Manifest, err error) error {
 		return &apiError{status: http.StatusNotImplemented, code: codeUnsupported, err: err}
 	case errors.Is(err, provider.ErrUnauthorized):
 		return &apiError{status: http.StatusBadGateway, err: err}
+	case errors.Is(err, index.ErrUnavailable), errors.Is(err, provider.ErrUnavailable):
+		return &apiError{err: err}
 	}
 	return &apiError{status: http.StatusInternalServerError, err: err}
 }

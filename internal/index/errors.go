@@ -21,6 +21,11 @@ var (
 	// so binaries serving on the schema would stop working, and it was not applied
 	// (ApplyMigrations, MigrateOptions.Breaking).
 	ErrBreakingMigration = errors.New("index: a pending migration would break the replicas serving on the schema")
+	// ErrUnavailable means the database did not answer, and may answer a later attempt: the
+	// store cannot connect to it, or it ended the connection or refuses new ones while it
+	// shuts down or starts (Postgres), or it stayed locked past the busy timeout or its file
+	// cannot be opened (SQLite). Every method may return it wrapped.
+	ErrUnavailable = errors.New("index: unavailable")
 )
 
 // TagConflictError is the error UpsertVersion returns, possibly wrapped, when the version's tag

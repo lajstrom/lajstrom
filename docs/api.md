@@ -58,6 +58,7 @@ Every error is answered with one envelope:
 | 413 | `INVALID` | the body is larger than 64 KiB |
 | 429 | `UNAVAILABLE` | too many failed logins: the password is not checked until the time in `Retry-After` has passed ([auth.md](auth.md#failed-logins)) |
 | 501 | `UNAVAILABLE` | the endpoint comes with a later issue; the message names it |
+| 503 | `UNAVAILABLE` | the index database does not answer, or a registry's circuit breaker is open; try again after `Retry-After` ([operations.md](operations.md#readiness)) |
 | 500 | `INTERNAL` | anything else; the message is the status text, the cause is in the server log with the request id (`X-Request-Id`) |
 
 ## Repos

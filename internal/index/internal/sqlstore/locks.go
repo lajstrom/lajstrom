@@ -28,11 +28,11 @@ func (s *Store) WithReferrersLock(ctx context.Context, name string, subject dige
 	}
 	tx, err := s.db.BeginTx(context.WithoutCancel(ctx), nil)
 	if err != nil {
-		return fmt.Errorf("index: begin: %w", err)
+		return s.d.wrap(err, "begin")
 	}
 	defer func() { _ = tx.Rollback() }() // nothing was written: the end of the transaction releases the lock
 	if _, err := tx.ExecContext(ctx, s.d.Rebind(s.d.XactLock), referrersLockKey(name, subject)); err != nil {
-		return fmt.Errorf("index: the referrers lock of %s: %w", what, err)
+		return s.d.wrap(err, "the referrers lock of "+what)
 	}
 	return fn(ctx)
 }

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lajstrom/lajstrom/internal/index"
 )
 
 // Dialect is what differs between the engines outside the migration files: placeholders, the
@@ -27,6 +29,10 @@ type Dialect struct {
 	// IsForeignKey reports whether err is a violation of a foreign key: the row refers to a
 	// row that does not exist.
 	IsForeignKey func(err error) bool
+	// IsUnavailable reports whether err says that the database did not answer
+	// (index.ErrUnavailable): a connection that failed or was ended, a database that is
+	// locked or cannot be opened. nil means never.
+	IsUnavailable func(err error) bool
 	// XactLock is the statement that takes a lock for the rest of the transaction, with the
 	// lock's key as its one parameter (Postgres: pg_advisory_xact_lock). Empty when every
 	// writing transaction holds the database's write lock from its start (SQLite, BEGIN
@@ -35,6 +41,15 @@ type Dialect struct {
 	// Clock is the query that returns the time of the database's clock, as a timestamp the
 	// store decodes (Postgres: clock_timestamp(); SQLite: 'now' as text, the host's clock).
 	Clock string
+}
+
+// wrap returns err, an error of the driver about what ("begin", "repos raw/scratch"), with
+// the context of the store: wrapping index.ErrUnavailable when IsUnavailable says so.
+func (d *Dialect) wrap(err error, what string) error {
+	if d.IsUnavailable != nil && d.IsUnavailable(err) {
+		return fmt.Errorf("%w: %s: %w", index.ErrUnavailable, what, err)
+	}
+	return fmt.Errorf("index: %s: %w", what, err)
 }
 
 // timeLayout is the text form of a timestamp on SQLite: fixed width, so that text order is

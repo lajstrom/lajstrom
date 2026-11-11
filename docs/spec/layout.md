@@ -301,12 +301,13 @@ func ViaFrom(ctx context.Context) (index.Repo, bool)
 
 // WriteError answers StatusOf(err) as text/plain (nosniff): err.Error() for 4xx, the status
 // text for 5xx; a 401 carries WWW-Authenticate: Basic realm="lajstrom", a 405 Allow: GET, HEAD,
-// a 503 of provider.ErrUnavailable or of an *UnavailableError Retry-After (SetRetryAfter).
+// a 503 of provider.ErrUnavailable, of index.ErrUnavailable or of an *UnavailableError
+// Retry-After (SetRetryAfter).
 func WriteError(w http.ResponseWriter, err error) int
 func StatusOf(err error) int
 // SetRetryAfter sets Retry-After from provider.RetryAfter(err), or from the *UnavailableError
-// err wraps: whole seconds, rounded up, at least 1; nothing for an error without one.
-// WriteError, the facade and the API call it.
+// err wraps: whole seconds, rounded up, at least 1; 5 for index.ErrUnavailable; nothing for an
+// error without one. WriteError, the facade, the API and the authentication middleware call it.
 func SetRetryAfter(h http.Header, err error)
 
 // CachedDocument returns the index_cache row of (repo, scope, kind), or renders the scope with
@@ -365,6 +366,7 @@ They are checked in this order:
 | `format.ErrUnsupported`, `provider.ErrUnsupported` | 501 |
 | `provider.ErrUnauthorized` (the backend rejected Lajstrom's own credentials) | 502 |
 | `provider.ErrUnavailable` (the circuit breaker of the registry is open, the request was not sent; or its host name does not resolve, #561) | 503, `Retry-After`: the seconds until the breaker's trial request, none for a name that does not resolve; under `/v2` the code `UNAVAILABLE`, on the API `UNAVAILABLE` |
+| `index.ErrUnavailable` (the database did not answer) | 503, `Retry-After: 5`; under `/v2` the code `UNAVAILABLE`, on the API `UNAVAILABLE`; the authentication middleware answers it so too |
 | `format.ErrBadGateway` | 502 |
 | `format.ErrUnavailable` (the upstream answered `429`) | 503, `Retry-After`: the `*format.UnavailableError`'s, whole seconds, at least 1 |
 | `format.ErrGatewayTimeout` | 504 |
@@ -850,6 +852,7 @@ type FetchClaim struct {                    // a row of fetch_claims
 }
 
 var ErrNotFound, ErrConflict error
+var ErrUnavailable error                    // the database did not answer: connect, 57P01/57P03, class 08; SQLite busy, cannot open
 type TagConflictError struct {              // errors.Is(err, ErrConflict) is true; UpsertVersion, ClaimTag
     Tag      string
     Existing digest.Digest
@@ -1159,7 +1162,11 @@ Where the merged shapes differ from the first sketch of this section, and why:
   errors, and the DDL of the migration files. Timestamps are truncated to microseconds and
   stored in UTC, so both engines return exactly what was written. Postgres text columns are
   `COLLATE "C"`, so order and comparison are SQLite's byte order. Unique violations wrap
-  `ErrConflict`; a row that refers to a missing row wraps `ErrNotFound`. `UpsertVersion`
+  `ErrConflict`; a row that refers to a missing row wraps `ErrNotFound`; a database that did
+  not answer wraps `ErrUnavailable`: on Postgres a connection that could not be made or broke,
+  and the SQLSTATEs of a server that ends or refuses connections (`57P01`, `57P02`, `57P03`,
+  `53300`, class `08`), on SQLite `SQLITE_BUSY` after the busy timeout and `SQLITE_CANTOPEN`
+  (#560). `UpsertVersion`
   resolves a race on a tag with `INSERT … ON CONFLICT DO NOTHING` and a second read, so the
   loser gets the `TagConflictError`. `serve` migrates on start under the same lock as
   `lajstrom migrate`.

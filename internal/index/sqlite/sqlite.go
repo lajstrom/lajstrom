@@ -47,11 +47,12 @@ var (
 )
 
 var dialect = sqlstore.Dialect{
-	Name:         index.DialectSQLite,
-	TimeText:     true,
-	IsUnique:     isUnique,
-	IsForeignKey: isForeignKey,
-	Clock:        "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", // the host's clock, in milliseconds
+	Name:          index.DialectSQLite,
+	TimeText:      true,
+	IsUnique:      isUnique,
+	IsForeignKey:  isForeignKey,
+	IsUnavailable: isUnavailable,
+	Clock:         "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", // the host's clock, in milliseconds
 }
 
 // Open opens the SQLite database of dsn, a file name or a file: URI (docs/configuration.md):
@@ -114,6 +115,15 @@ func isUnique(err error) bool {
 func isForeignKey(err error) bool {
 	code, ok := errorCode(err)
 	return ok && code == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY
+}
+
+// isUnavailable reports whether err is SQLITE_BUSY, the lock that _busy_timeout waited for
+// in vain, or SQLITE_CANTOPEN, a database file (or its journal) that cannot be opened, with
+// any extended code: the database did not answer, and a later attempt may pass.
+func isUnavailable(err error) bool {
+	code, ok := errorCode(err)
+	primary := code & 0xff
+	return ok && (primary == sqlite3.SQLITE_BUSY || primary == sqlite3.SQLITE_CANTOPEN)
 }
 
 // errorCode returns the extended result code of a driver error.
