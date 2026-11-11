@@ -61,8 +61,8 @@ docker run -d --name lajstrom -p 127.0.0.1:8080:8080 \
 curl -s localhost:8080/-/readyz     # ok
 ```
 
-A deployment has Postgres, a registry and the master key besides: the Compose and Kubernetes
-examples of #58 show both shapes.
+A deployment has Postgres, a registry and the master key besides: [Docker
+Compose](deploy/compose.md) and [Kubernetes](deploy/kubernetes.md) show both shapes.
 
 ## Binary archive
 
@@ -134,7 +134,8 @@ had the attribute. [release.md](release.md#verifying-a-release) installs the pub
 
 ## From source
 
-Go 1.27 or later, `git` and `make`:
+Go 1.27 or later (from [go.dev/dl](https://go.dev/dl/): a distribution's package is often
+older), `git` and `make`:
 
 ```sh
 git clone https://github.com/lajstrom/lajstrom.git

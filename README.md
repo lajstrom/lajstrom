@@ -22,11 +22,39 @@ rebuilt from the registry.
 
 *Lajstrom* is Hungarian for "register, inventory".
 
-## Status
-
-Building the MVP (November 2026): raw, pypi, apt and maven hosted repositories, OCI facade,
-reindex, local users and RBAC, v0.1.0 planned for 2026-12-04. See the [roadmap](docs/roadmap.md).
+Clients keep their own protocol: `pip`, `apt-get`, `mvn`, `npm` and `oras` talk to Lajstrom as
+to their usual repository, with no plugin. Each upload is checked, written to the registry and
+indexed in SQLite or Postgres; `lajstrom reindex` rebuilds that index from the registry alone.
+Users, tokens and per-repo roles live in Lajstrom; the registry only ever sees Lajstrom's
+credentials. v0.1.0 is planned for 2026-12-04 ([roadmap](docs/roadmap.md)).
 https://lajstrom.dev
+
+## Install
+
+```sh
+docker run --rm ghcr.io/lajstrom/lajstrom:v0.1.0 version
+```
+
+No release is out yet: until v0.1.0, build from source with Go 1.27 and `make build`. The
+archives with checksums and signatures, Homebrew, and the smallest configuration that starts are
+in [docs/install.md](docs/install.md).
+
+## What works
+
+What each format does today on main, each row run by its quick start and by an end-to-end test
+with the real clients (`test/e2e/`):
+
+| Format | Publish with | Install with | Also |
+| --- | --- | --- | --- |
+| [raw](docs/quickstart/raw.md) | `curl -T` | `curl`, `oras pull` | every version kept, `?digest=` pins one, `Range`, a JSON listing |
+| [pypi](docs/quickstart/pypi.md) | `twine upload`, `uv publish` | `pip`, `uv`, `poetry` | PEP 503 and PEP 691 indexes, PEP 658 metadata |
+| [apt](docs/quickstart/apt.md) | `curl -T` a `.deb`, `oras push` | `apt-get` on Debian and Ubuntu | signed `InRelease` and `Release.gpg`, `by-hash`, key rotation |
+| [maven](docs/quickstart/maven.md) | `mvn deploy`, Gradle `publish` | `mvn`, Gradle | md5, sha1, sha256 and sha512 checksums; a release appears whole or not at all; no SNAPSHOT versions yet |
+| [npm](docs/quickstart/npm.md) | `npm publish`, `pnpm publish`, `yarn npm publish` | `npm`, `pnpm`, `yarn` | dist-tags; a proxy of npmjs.org and groups |
+| [OCI](docs/quickstart/oras.md) | `oras push`, `cosign sign` | `oras pull`, `crane`, `cosign verify` | the `/v2` API with its token flow, referrers |
+
+rpm is planned. Every format shares local users, personal access and deploy tokens, roles
+bound to repos, and an audit log ([docs/auth.md](docs/auth.md)).
 
 ## Documentation
 
@@ -34,6 +62,7 @@ https://lajstrom.dev
 | --- | --- |
 | [Start here](docs/onboarding.md) | one hour from zero to a claimed issue |
 | [Install](docs/install.md) | the image, the archives with checksums and signatures, Homebrew, or `make build` |
+| [Configuration](docs/configuration.md) | every key of `lajstrom.yaml`, its default and its environment variable |
 | [Quick start: raw](docs/quickstart/raw.md) | `curl -T` a file in, `curl` it out, see the manifest in the registry |
 | [Quick start: apt](docs/quickstart/apt.md) | a `.deb` in with `curl -T` or `oras push`, out with `apt-get install` from a signed repo |
 | [Quick start: pypi](docs/quickstart/pypi.md) | `twine upload` or `uv publish` in, `pip install` or `uv pip install` out, with PEP 658 metadata |
@@ -42,9 +71,9 @@ https://lajstrom.dev
 | [Dev stack](docs/dev-stack.md) | `make dev-up`: Zot, distribution and Postgres for development and tests |
 | [Deploy with Compose](docs/deploy/compose.md) | one host for production: Lajstrom, Postgres and a registry with passwords, secrets in files, a backup |
 | [Testing](docs/testing.md) | the test levels and what each needs; `make e2e` and how to add a scenario |
-| [Authentication](docs/auth.md) | local users, argon2id passwords, HTTP Basic on every route, the first admin, `whoami` |
+| [Authentication](docs/auth.md) | local users, roles and bindings, the 401/404/403 rule, bearer tokens for `/v2`, personal access and deploy tokens, CI, `whoami` |
 | [Deploy on Kubernetes](docs/deploy/kubernetes.md) | plain manifests: two replicas on Postgres, probes, the restricted security context |
-| [Operations](docs/operations.md) | the master key, apt signing keys, `key.asc` for clients, key rotation |
+| [Operations](docs/operations.md) | users, the master key and key rotation, readiness, limits, metrics, audit, reindex, backup and restore |
 | [Behind a reverse proxy](docs/reverse-proxy.md) | TLS at the edge, `externalURL`, unbuffered uploads, rate limits on `/v2/token`; nginx and Caddy |
 | [Threat model](docs/security/threat-model.md) | what is protected and from whom, STRIDE over the flows, each threat with its mitigation or its issue, what the edge must do |
 | [Releasing](docs/release.md) | how a tag becomes binaries, images, SBOMs and signatures; verifying a release |
