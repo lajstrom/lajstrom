@@ -39,9 +39,10 @@ kubectl -n lajstrom create secret generic lajstrom \
   --from-literal=LAJSTROM_REGISTRY_PASSWORD="$reg"
 ```
 
-`$pg` and `$reg` are the passwords of the database user and of the registry user. The master
-key stays a variable here rather than `keys.masterKeyFile`: a Secret volume's files are root's,
-`0440` at best for the user 65532, which Lajstrom warns about
+`$pg` and `$reg` are the passwords of the database user and of the registry user, and
+`postgres:5432` is the database's host and port, here a Service `postgres` in the namespace.
+The master key stays a variable here rather than `keys.masterKeyFile`: a Secret volume's files
+are root's, `0440` at best for the user 65532, which Lajstrom warns about
 ([operations.md](../operations.md#the-master-key)). A managed
 Postgres wants `sslmode=require` (or `verify-full` with its CA). **Keep a copy of the master
 key outside the cluster and apart from the database backups**
@@ -59,38 +60,84 @@ Edit `configmap.yaml` (or patch it from an overlay of your own):
   (`ghcr.io/lajstrom/lajstrom:vX.Y.Z@sha256:…`), there or with `images:` in an overlay, as the
   run below did.
 
+The overlay of the run, `try/kustomization.yaml` in the clone, for a cluster on one machine
+with a port-forward instead of an ingress. A ConfigMap's file is one string, so the patch
+repeats the whole file. An `http` `externalURL` takes `insecureHTTP: true`; without it every
+replica stops at once (`server.externalURL: must be https`, `CrashLoopBackOff`). The image is
+one built by hand ([release.md](../release.md)): OrbStack and Docker Desktop see the local
+Docker's images, kind wants `kind load docker-image lajstrom:local` first.
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../deploy/kubernetes
+images:
+  - name: ghcr.io/lajstrom/lajstrom
+    newName: lajstrom
+    newTag: local
+patches:
+  - target: {kind: ConfigMap, name: lajstrom-config}
+    patch: |
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: lajstrom-config
+      data:
+        lajstrom.yaml: |
+          server:
+            listen: ":8080"
+            externalURL: "http://localhost:18790"   # the port-forward of section 5
+            insecureHTTP: true                      # http on a loopback host; never behind an ingress
+            metricsListen: "0.0.0.0:9464"
+          log:
+            format: json
+          database:
+            driver: postgres
+          registries:
+            - name: main
+              url: "http://registry:5000"            # a Service registry in the namespace
+              prefix: "lajstrom/"
+              auth:
+                username: lajstrom
+                passwordEnv: LAJSTROM_REGISTRY_PASSWORD
+          keys:
+            masterKeyEnv: LAJSTROM_MASTER_KEY
+```
+
 ## 3. Apply
 
 ```sh
-kubectl -n lajstrom apply -k deploy/kubernetes
+kubectl -n lajstrom apply -k deploy/kubernetes    # or -k try, the overlay above
 kubectl -n lajstrom rollout status deploy/lajstrom
 ```
 
-The run below was on kind v0.33.0 (Kubernetes 1.37.0, one node), in the namespace
-`lajstrom-docs`, with an overlay that set the snapshot image of the release build (#57), an
-in-cluster distribution 3.1.2 with htpasswd and Postgres 17.11 as the registry and the
-database, and `externalURL: "http://localhost:18790"` for a port-forward:
+The run below, on 2026-11-11, was on the Kubernetes of OrbStack 2.2.5 (1.36.5, one node), in
+the namespace `walkthrough`, with the overlay above (an image built from main), and two test
+fixtures that are not in the repository: Postgres 17.11 as the Service `postgres` and
+distribution 3.1.2 with htpasswd as the Service `registry`. An earlier run, on 2026-11-09, was
+on kind v0.33.0 (Kubernetes 1.37.0) with the snapshot image of the release build (#57).
 
 ```text
 configmap/lajstrom-config created
 service/lajstrom created
 deployment.apps/lajstrom created
 poddisruptionbudget.policy/lajstrom created
-Waiting for deployment "lajstrom" rollout to finish: 0 out of 2 new replicas have been updated...
 Waiting for deployment "lajstrom" rollout to finish: 0 of 2 updated replicas are available...
 Waiting for deployment "lajstrom" rollout to finish: 1 of 2 updated replicas are available...
 deployment "lajstrom" successfully rolled out
 ```
 
-Both replicas apply the migrations under one lock at start, and one bearer-token key in the
-database serves both (`kubectl -n lajstrom logs deploy/lajstrom`, one pod, a selection, without
-the times):
+Both replicas apply the migrations at start, each one under the migration lock, so between them
+they apply each once: here one applied 1 to 11 and the other 12 and 13. One bearer-token key in
+the database serves both (`kubectl -n lajstrom logs <pod>`, a selection, without the times):
 
 ```text
-{"level":"INFO","msg":"index migrations applied under the migration lock","database.driver":"postgres","applied":[1,2,3,4,5,6,7,8,9]}
-{"level":"INFO","msg":"token signing key made","fingerprint":"7a9638bea065f8a06456d321064f4d7396a73b3421b2fe6cab22146f7d8f1ba9","algorithm":"ES256"}
+{"level":"INFO","msg":"index migrations applied under the migration lock","database.driver":"postgres","applied":[1,2,3,4,5,6,7,8,9,10,11]}
+{"level":"INFO","msg":"index migrations applied under the migration lock","database.driver":"postgres","applied":[12,13]}
+{"level":"INFO","msg":"token signing key made","fingerprint":"e16202518b071f0a9e161d8acdf3cd560468bd2f141e37f28293182a333fc2f8","algorithm":"ES256"}
 {"level":"INFO","msg":"registry capabilities","registry":"main","vendor":"unknown","createOnPush":true,"referrers":false,"catalog":true,"deleteManifest":true,"immutableTags":false,"blobRedirect":true,"maxBlobSize":0}
-{"level":"INFO","msg":"listening","addr":"[::]:8080","externalURL":"http://localhost:18790"}
+{"level":"INFO","msg":"listening","addr":"[::]:8080","externalURL":"http://localhost:18790","tls":false}
 {"level":"INFO","msg":"metrics listening","addr":"[::]:9464","pprof":false}
 ```
 
@@ -121,6 +168,7 @@ Through the ingress, or a port-forward as in the run:
 
 ```sh
 kubectl -n lajstrom port-forward svc/lajstrom 18790:http &
+printf 'hello kubernetes\n' > hello.txt
 curl -s localhost:18790/-/readyz                                                                  # ok
 curl -s -u "admin:$LAJSTROM_ADMIN_PASSWORD" -o /dev/null -w '%{http_code}\n' -T hello.txt localhost:18790/raw/assets/hello.txt   # 201
 curl -s -u "admin:$LAJSTROM_ADMIN_PASSWORD" localhost:18790/raw/assets/hello.txt                  # hello kubernetes
@@ -132,12 +180,14 @@ oras pull --plain-http -o out localhost:18790/oci/images/hello:1
 ```text
 Login Succeeded
 ArtifactType: application/vnd.example.notes
-Digest: sha256:eba236d7b34af898e75dae44e9621be78f3d00cde74cf33ce6f9f60b82dd8533
-Digest: sha256:eba236d7b34af898e75dae44e9621be78f3d00cde74cf33ce6f9f60b82dd8533
+Digest: sha256:aaf0230765342b32740b96cbf849bbe37815b1762f7acc0ec614acfaf475a91d
+Digest: sha256:aaf0230765342b32740b96cbf849bbe37815b1762f7acc0ec614acfaf475a91d
 ```
 
 The metrics answer on the pod's port `metrics`, never on `http`
-([operations.md](../operations.md#metrics) has the ServiceMonitor):
+([operations.md](../operations.md#metrics) has the ServiceMonitor). Each replica counts its own:
+a port-forward to the Service picks one pod, the same one for both forwards in the run, so the
+upload above shows; through an ingress it may have gone to the other replica.
 
 ```sh
 kubectl -n lajstrom port-forward svc/lajstrom 18791:metrics &
@@ -145,7 +195,7 @@ curl -s localhost:18791/metrics | grep -E '^lajstrom_build_info|^lajstrom_ingest
 ```
 
 ```text
-lajstrom_build_info{commit="aa808b3",goversion="go1.27.3",version="v0.0.1-138-gaa808b3"} 1
+lajstrom_build_info{commit="533acf3",goversion="go1.27.3",version="v0.0.1-357-g533acf3"} 1
 lajstrom_ingest_total{format="raw",result="published"} 1
 ```
 
@@ -159,7 +209,9 @@ lajstrom_ingest_total{format="raw",result="published"} 1
 
 Tried by scaling the registry to zero at 17:29:25 and polling the ready flag and the restart
 count of both replicas every 5 seconds: they left the endpoints within 56 seconds and were not
-restarted; once the registry was back, they were ready again at the next poll but one.
+restarted; once the registry was back, they were ready again at the next poll but one. The run
+of 2026-11-11 on OrbStack: out of the endpoints after 65 seconds, ready again 20 seconds after
+the registry, no restart.
 
 ```text
 17:29:25
