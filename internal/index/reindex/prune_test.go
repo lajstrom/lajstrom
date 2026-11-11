@@ -17,12 +17,12 @@ import (
 
 // The answers of a registry to the manifest of a version by its digest, for TestPrune.
 var (
-	manifestUnknown = fmt.Errorf("HTTP 404, MANIFEST_UNKNOWN: %w: %w", provider.ErrManifestUnknown, provider.ErrNotFound)
-	nameUnknown     = fmt.Errorf("HTTP 404, NAME_UNKNOWN: %w", provider.ErrNotFound)
-	noCode          = fmt.Errorf("HTTP 404: %w", provider.ErrNotFound)
-	serverError     = errors.New("HTTP 503")
-	unauthorized    = fmt.Errorf("HTTP 403, DENIED: %w", provider.ErrUnauthorized)
-	timeout         = fmt.Errorf("stat manifest: %w", context.DeadlineExceeded)
+	errManifestUnknown = fmt.Errorf("HTTP 404, MANIFEST_UNKNOWN: %w: %w", provider.ErrManifestUnknown, provider.ErrNotFound)
+	errNameUnknown     = fmt.Errorf("HTTP 404, NAME_UNKNOWN: %w", provider.ErrNotFound)
+	errNoCode          = fmt.Errorf("HTTP 404: %w", provider.ErrNotFound)
+	errServer          = errors.New("HTTP 503")
+	errDenied          = fmt.Errorf("HTTP 403, DENIED: %w", provider.ErrUnauthorized)
+	errTimeout         = fmt.Errorf("stat manifest: %w", context.DeadlineExceeded)
 )
 
 // TestPrune is the prune of #446 on a registry that lags or fails: a version that the catalog
@@ -44,58 +44,58 @@ func TestPrune(t *testing.T) {
 		steps []step
 	}{
 		{name: "MANIFEST_UNKNOWN twice, 10 minutes apart", steps: []step{
-			{at: 2 * time.Hour, answer: manifestUnknown, pending: 1},
-			{at: 2*time.Hour + 10*time.Minute, answer: manifestUnknown, removed: 1},
+			{at: 2 * time.Hour, answer: errManifestUnknown, pending: 1},
+			{at: 2*time.Hour + 10*time.Minute, answer: errManifestUnknown, removed: 1},
 		}},
 		{name: "MANIFEST_UNKNOWN twice, 9 minutes apart, then a third", steps: []step{
-			{at: 2 * time.Hour, answer: manifestUnknown, pending: 1},
-			{at: 2*time.Hour + 9*time.Minute, answer: manifestUnknown, pending: 1},
-			{at: 2*time.Hour + 10*time.Minute, answer: manifestUnknown, removed: 1},
+			{at: 2 * time.Hour, answer: errManifestUnknown, pending: 1},
+			{at: 2*time.Hour + 9*time.Minute, answer: errManifestUnknown, pending: 1},
+			{at: 2*time.Hour + 10*time.Minute, answer: errManifestUnknown, removed: 1},
 		}},
 		{name: "MANIFEST_UNKNOWN once", steps: []step{
-			{at: 2 * time.Hour, answer: manifestUnknown, pending: 1},
+			{at: 2 * time.Hour, answer: errManifestUnknown, pending: 1},
 		}},
 		{name: "a version younger than the grace age", steps: []step{
-			{at: 10 * time.Minute, answer: manifestUnknown, pending: 1},
-			{at: 59 * time.Minute, answer: manifestUnknown, pending: 1},
-			{at: 61 * time.Minute, answer: manifestUnknown, removed: 1},
+			{at: 10 * time.Minute, answer: errManifestUnknown, pending: 1},
+			{at: 59 * time.Minute, answer: errManifestUnknown, pending: 1},
+			{at: 61 * time.Minute, answer: errManifestUnknown, removed: 1},
 		}},
 		{name: "a grace age of 24 hours", grace: 24 * time.Hour, steps: []step{
-			{at: 2 * time.Hour, answer: manifestUnknown, pending: 1},
-			{at: 23 * time.Hour, answer: manifestUnknown, pending: 1},
-			{at: 24*time.Hour + time.Minute, answer: manifestUnknown, removed: 1},
+			{at: 2 * time.Hour, answer: errManifestUnknown, pending: 1},
+			{at: 23 * time.Hour, answer: errManifestUnknown, pending: 1},
+			{at: 24*time.Hour + time.Minute, answer: errManifestUnknown, removed: 1},
 		}},
 		{name: "a lagging registry: the manifest in between", steps: []step{
-			{at: 2 * time.Hour, answer: manifestUnknown, pending: 1},
+			{at: 2 * time.Hour, answer: errManifestUnknown, pending: 1},
 			{at: 2*time.Hour + 30*time.Minute, answer: nil, errors: 1}, // seen: the grace age starts again
-			{at: 3*time.Hour + 20*time.Minute, answer: manifestUnknown, pending: 1},
-			{at: 3*time.Hour + 40*time.Minute, answer: manifestUnknown, removed: 1},
+			{at: 3*time.Hour + 20*time.Minute, answer: errManifestUnknown, pending: 1},
+			{at: 3*time.Hour + 40*time.Minute, answer: errManifestUnknown, removed: 1},
 		}},
 		{name: "a failure in between starts over", steps: []step{
-			{at: 2 * time.Hour, answer: manifestUnknown, pending: 1},
-			{at: 2*time.Hour + 5*time.Minute, answer: serverError, errors: 1},
-			{at: 2*time.Hour + 12*time.Minute, answer: manifestUnknown, pending: 1},
-			{at: 2*time.Hour + 22*time.Minute, answer: manifestUnknown, removed: 1},
+			{at: 2 * time.Hour, answer: errManifestUnknown, pending: 1},
+			{at: 2*time.Hour + 5*time.Minute, answer: errServer, errors: 1},
+			{at: 2*time.Hour + 12*time.Minute, answer: errManifestUnknown, pending: 1},
+			{at: 2*time.Hour + 22*time.Minute, answer: errManifestUnknown, removed: 1},
 		}},
 		{name: "NAME_UNKNOWN", steps: []step{
-			{at: 2 * time.Hour, answer: nameUnknown, errors: 1},
-			{at: 3 * time.Hour, answer: nameUnknown, errors: 1},
+			{at: 2 * time.Hour, answer: errNameUnknown, errors: 1},
+			{at: 3 * time.Hour, answer: errNameUnknown, errors: 1},
 		}},
 		{name: "a 404 without a code", steps: []step{
-			{at: 2 * time.Hour, answer: noCode, errors: 1},
-			{at: 3 * time.Hour, answer: noCode, errors: 1},
+			{at: 2 * time.Hour, answer: errNoCode, errors: 1},
+			{at: 3 * time.Hour, answer: errNoCode, errors: 1},
 		}},
 		{name: "a 5xx", steps: []step{
-			{at: 2 * time.Hour, answer: serverError, errors: 1},
-			{at: 3 * time.Hour, answer: serverError, errors: 1},
+			{at: 2 * time.Hour, answer: errServer, errors: 1},
+			{at: 3 * time.Hour, answer: errServer, errors: 1},
 		}},
 		{name: "a 403", steps: []step{
-			{at: 2 * time.Hour, answer: unauthorized, errors: 1},
-			{at: 3 * time.Hour, answer: unauthorized, errors: 1},
+			{at: 2 * time.Hour, answer: errDenied, errors: 1},
+			{at: 3 * time.Hour, answer: errDenied, errors: 1},
 		}},
 		{name: "a timeout", steps: []step{
-			{at: 2 * time.Hour, answer: timeout, errors: 1},
-			{at: 3 * time.Hour, answer: timeout, errors: 1},
+			{at: 2 * time.Hour, answer: errTimeout, errors: 1},
+			{at: 3 * time.Hour, answer: errTimeout, errors: 1},
 		}},
 	}
 	for _, tt := range tests {

@@ -16,14 +16,11 @@ import (
 
 // TestNoCatalog is #37 on a registry without a catalog (ListRepositories unsupported): a run
 // reads the OCI repositories that oci_repos records and checks each by its tag list. One whose
-// tag list fails keeps its row and its versions; one the registry no longer knows keeps its
-// versions, which only MANIFEST_UNKNOWN removes (#446), and its row for the grace age; one
-// pushed past Lajstrom is not read.
+// tag list fails keeps its row and its versions; one pushed past Lajstrom is not read.
 func TestNoCatalog(t *testing.T) {
-	ctx := t.Context()
 	e := newEnv(t)
 	e.prov.failList = fmt.Errorf("no catalog: %w", provider.ErrUnsupported)
-	gone := e.publish(t, "docs/gone.txt", "gone")
+	e.publish(t, "docs/gone.txt", "gone")
 	e.publish(t, "docs/kept.txt", "kept")
 	e.bypass(t, e.repo, "pushed.txt", "by oras")
 	both := []string{"raw/scratch/docs/gone.txt", "raw/scratch/docs/kept.txt"}
@@ -39,10 +36,20 @@ func TestNoCatalog(t *testing.T) {
 		t.Errorf("tag lists that fail: %+v", *r)
 	}
 	same(t, "oci_repos after tag lists that fail", both, e.derived(t).OCIRepos)
+}
 
-	e.prov.failTags = nil
+// TestNoCatalogRepositoryGone: on a registry without a catalog, an OCI repository the registry
+// no longer knows keeps its versions, which only MANIFEST_UNKNOWN removes, and its oci_repos row
+// for the grace age (#446).
+func TestNoCatalogRepositoryGone(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t)
+	e.prov.failList = fmt.Errorf("no catalog: %w", provider.ErrUnsupported)
+	gone := e.publish(t, "docs/gone.txt", "gone")
+	e.publish(t, "docs/kept.txt", "kept")
+	both := []string{"raw/scratch/docs/gone.txt", "raw/scratch/docs/kept.txt"}
 	must(t, e.fake.DeleteRepository(ctx, gone.RepoPath))
-	r = e.run(t, reindex.Request{Prune: true})
+	r := e.run(t, reindex.Request{Prune: true})
 	if r.Removed != 0 || r.Unchanged != 1 || len(r.Errors) != 1 || !strings.Contains(r.Errors[0].Error, "NAME_UNKNOWN") {
 		t.Errorf("a repository the registry does not know: %+v", *r)
 	}
