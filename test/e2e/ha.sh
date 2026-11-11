@@ -28,8 +28,8 @@
 #   - H-05: A killed (SIGKILL) in a 500 MiB PUT; the PUT again through the edge; A started again;
 #   - H-06, H-07: ha-postgres, then ha-distribution, stopped for 3 s and started again while
 #     each replica is asked meanwhile and the requests of a pip install, raw PUTs and A's
-#     /-/readyz run in loops through the edge; the 500s that Lajstrom answers are a "gap" line,
-#     not a failure (docs/testing.md);
+#     /-/readyz run in loops through the edge; the 500s that Lajstrom answers in H-07 are a
+#     "gap" line, not a failure (docs/testing.md);
 #   - H-08: a maven deploy whose PUTs alternate between A and B;
 #   - H-11: a .deb uploaded through A, apt-get update through B within a second (A-09);
 #   - H-10: the requests of a pip install in a loop through the edge while A and then B restart;
@@ -384,7 +384,7 @@ whole H-05 huge
 rm "$work/huge"
 step "H-05: A killed $((sent / 1048576)) MiB into a 500 MiB PUT: curl exit $rc; the PUT again through the edge 201, $digest in the index and the backend; A started, its /tmp empty; one version, no claim, reindex finds nothing missing"
 
-# outage ID SERVICE STATUSES GAP: SERVICE stopped and started again, as docker restart does,
+# outage ID SERVICE STATUSES [GAP]: SERVICE stopped and started again, as docker restart does,
 # with the outage held open while each replica is asked, past the edge, for the wheel of H-13, a
 # raw PUT and its /-/readyz (the probes, $work/ID.probes); meanwhile three loops run until both
 # replicas serve again: the requests of a pip install through the edge (as H-10), raw PUTs of a
@@ -395,7 +395,7 @@ step "H-05: A killed $((sent / 1048576)) MiB into a 500 MiB PUT: curl exit $rc; 
 # and is printed in a gap line. Then: neither replica restarted, every PUT that failed is 201
 # again, and the index is whole.
 outage() {
-	local id="$1" svc="$2" ok="$3 $4" gap="$4" before t0 n_reads n_puts pids=() r f got seen
+	local id="$1" svc="$2" ok="$3 ${4:-}" gap="${4:-}" before t0 n_reads n_puts pids=() r f got seen
 	before="$(started)"
 	mkdir -p "$work/$id"
 	while [ ! -f "$work/$id.stop" ]; do
@@ -462,8 +462,8 @@ outage() {
 	outage_summary="probes $(grep -v '^readyz-' "$work/$id.probes" | tr '\n' ' ' | sed 's/ $//'), readyz $(awk '/^readyz-/ { printf "%s%s", sep, $2; sep = " " }' "$work/$id.probes"); loads: $(wc -l <"$work/$id.reads" | tr -d ' ') reads and $(wc -l <"$work/$id.puts" | tr -d ' ') PUTs ($got), A's readyz $(sort "$work/$id.ready" | uniq -c | awk '{ printf "%s%s×%s", sep, $2, $1; sep = " " }'); both served again $t0 s after the start"
 }
 
-# H-06: Postgres out under load: requests are 503 (500 today: the gap), and readyz is 503.
-outage H-06 ha-postgres 503 500
+# H-06: Postgres out under load: requests are 503 (index.ErrUnavailable, #560), and readyz is 503.
+outage H-06 ha-postgres 503
 assert_eq "readyz-a 503 readyz-b 503" "$(grep '^readyz-' "$work/H-06.probes" | tr '\n' ' ' | sed 's/ $//')" "H-06: readyz of A and B while ha-postgres was out"
 step "H-06: ha-postgres stopped and started: $outage_summary; no restart of A or B; the failed PUTs again 201; one version each, no claim, reindex finds nothing missing"
 
