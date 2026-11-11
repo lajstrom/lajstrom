@@ -92,7 +92,7 @@ after bootstrap the GitHub issues are the live status.
 | P-06 | feat(auth): OIDC login, groups from claims, group bindings | none | L | p2 |  |
 | P-07 | feat(ui): read-only web UI: repos, packages, versions, files, referrers, audit | none | L | p2 |  |
 | P-08 | feat(facade): docker image passthrough with RBAC and audit; multi-arch stitching by hook | none | L | p2 |  |
-| P-09 | feat(core): retention rules: keep last N, max age, per repo; dry-run and report | none | L | p2 |  |
+| P-09 | feat(cli): retention by external means: lajstrom admin retention over the delete API, run by the operator's scheduler | none | M | p2 |  |
 | P-10 | feat(provider): Harbor adapter: projects, robot accounts, quotas, immutability rules | none | L | p2 |  |
 | P-11 | feat(provider): GHCR adapter: packages REST API for listing and delete | none | L | p2 |  |
 | P-12 | feat(server): FQDN mode: <repo>.<host> rewrite, wildcard TLS notes | none | L | p2 |  |
