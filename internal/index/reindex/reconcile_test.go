@@ -43,8 +43,7 @@ func TestReconcile(t *testing.T) {
 	pushRaw(t, l.fake, l.repo, "pushed.txt", "past Lajstrom")
 	l.tick(t)
 	l.wantPackage(t, "pushed.txt")
-	if ev := l.audit(t, SourceReconcile); len(ev) != 1 || ev[0].Repo != "raw/scratch" || !strings.Contains(string(ev[0].Details), `"added":1`) ||
-		!strings.Contains(string(ev[0].Details), `"repositoryUnknown":0`) {
+	if ev := l.audit(t, SourceReconcile); len(ev) != 1 || ev[0].Repo != "raw/scratch" || !hasDetails(ev[0], `"added":1`, `"repositoryUnknown":0`) {
 		t.Errorf("I-03: the reconcile events: %+v", ev)
 	}
 	if ev := l.audit(t, "repo.reindex"); len(ev) != 0 {
@@ -135,6 +134,16 @@ func (l *loop) audit(t *testing.T, action string) []index.AuditEvent {
 	events, err := l.st.ListAudit(t.Context(), index.AuditFilter{Action: action})
 	must(t, err)
 	return events
+}
+
+// hasDetails reports whether the details of ev have every member of want, such as `"added":1`.
+func hasDetails(ev index.AuditEvent, want ...string) bool {
+	for _, w := range want {
+		if !strings.Contains(string(ev.Details), w) {
+			return false
+		}
+	}
+	return true
 }
 
 // latest is the latest run of every repo.
