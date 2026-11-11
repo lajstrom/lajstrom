@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry/remote/auth"
@@ -49,8 +50,14 @@ func (e *credentialError) Error() string { return "credential: " + e.err.Error()
 
 func (e *credentialError) Unwrap() error { return e.err }
 
-// translate turns an error of oras-go or of a registry response into one that wraps a sentinel
-// of package provider where one applies:
+// translate is translateAs for the registry of p, with the wait it last asked for
+// (breaker.waitLeft).
+func (p *Provider) translate(op string, err error) error {
+	return translateAs(p.name, p.clients.breaker.waitLeft, op, err)
+}
+
+// translateAs turns an error of oras-go or of a registry response into one that wraps a
+// sentinel of package provider where one applies:
 //
 //   - errdef.ErrNotFound, HTTP 404, NAME_UNKNOWN, MANIFEST_UNKNOWN, BLOB_UNKNOWN,
 //     BLOB_UPLOAD_UNKNOWN: ErrNotFound;
@@ -59,13 +66,16 @@ func (e *credentialError) Unwrap() error { return e.err }
 //   - HTTP 401 and 403, UNAUTHORIZED, DENIED, and a Basic challenge without configured
 //     credentials: ErrUnauthorized, the registry rejected Lajstrom's own credentials;
 //   - a rotating credential that failed (Options.Credential): ErrUnauthorized, with the
-//     credential's error in the message instead of oras-go's, which names the URL.
+//     credential's error in the message instead of oras-go's, which names the URL;
+//   - any other 4xx, and a 503: a *provider.RejectedError of the registry named registry, with
+//     the first error code of the answer; one of a 429 or 503 is ErrUnavailable too and waits
+//     what wait returns, the Retry-After the registry last sent: oras-go's error has no header.
 //
 // A refused token realm (realmError) is wrapped without what net/http and oras-go put around
 // it, which names the request URL. Everything else, context errors included, is wrapped with
 // %w and the operation. nil stays nil. errdef.ErrAlreadyExists is not translated: the call
 // sites where it means success drop it.
-func translate(op string, err error) error {
+func translateAs(registry string, wait func() time.Duration, op string, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -81,6 +91,16 @@ func translate(op string, err error) error {
 	if errors.As(err, &resp) {
 		if kind := classifyResponse(resp); kind != nil {
 			return &backendError{op: op, kind: kind, detail: responseDetail(resp), cause: err}
+		}
+		if refused(resp.StatusCode) {
+			rej := &provider.RejectedError{Registry: registry, Status: resp.StatusCode}
+			if len(resp.Errors) > 0 {
+				rej.Code = resp.Errors[0].Code
+			}
+			if rej.Busy() {
+				rej.RetryAfter = wait()
+			}
+			return &backendError{op: op, kind: rej, cause: err}
 		}
 		return fmt.Errorf("generic: %s: %w", op, err)
 	}
@@ -114,20 +134,10 @@ func classifyResponse(resp *errcode.ErrorResponse) error {
 	return nil
 }
 
-// translateSession is translate for the answer resp of a request of an upload session, whose
-// error codes er holds: a 4xx or a 503 that no sentinel names is a *provider.RejectedError
-// with its first error code and the Retry-After of a 429 or 503, which the facade answers.
-func (p *Provider) translateSession(op string, resp *http.Response, er *errcode.ErrorResponse) error {
-	refused := er.StatusCode >= 400 && er.StatusCode <= 499 || er.StatusCode == http.StatusServiceUnavailable
-	if !refused || classifyResponse(er) != nil {
-		return translate(op, er)
-	}
-	rej := &provider.RejectedError{Registry: p.name, Status: er.StatusCode}
-	if len(er.Errors) > 0 {
-		rej.Code = er.Errors[0].Code
-	}
-	rej.RetryAfter, _ = retryAfter(resp)
-	return &backendError{op: op, kind: rej, cause: er}
+// refused reports whether a registry's status that no sentinel names is its refusal of the
+// request (provider.RejectedError): a 4xx, or a 503; any other 5xx is its failure.
+func refused(status int) bool {
+	return status >= 400 && status <= 499 || status == http.StatusServiceUnavailable
 }
 
 // hasCode reports whether one of the response's errors has one of codes.

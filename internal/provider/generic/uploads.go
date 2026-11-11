@@ -262,7 +262,7 @@ func (r *repository) send(ctx context.Context, op, method, target string, body i
 	}
 	resp, err := r.p.clients.follow.Do(req)
 	if err != nil {
-		return nil, translate(op, withoutURL(err))
+		return nil, r.p.translate(op, withoutURL(err))
 	}
 	if slices.Contains(want, resp.StatusCode) {
 		return resp, nil
@@ -274,7 +274,7 @@ func (r *repository) send(ctx context.Context, op, method, target string, body i
 		u.RawQuery = "" // distribution's upload state; the log never carries it
 		er.URL = &u
 	}
-	return nil, r.p.translateSession(op, resp, er)
+	return nil, r.p.translate(op, er)
 }
 
 // prime readies the auth client for a request with a streamed body to the session at loc.

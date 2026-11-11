@@ -65,10 +65,13 @@ func SetRetryAfter(h http.Header, err error) {
 //	ErrMethodNotAllowed                        405 Method Not Allowed, with Allow: GET, HEAD
 //	index.ErrNotFound, provider.ErrNotFound    404 Not Found
 //	index.ErrConflict, provider.ErrConflict    409 Conflict
-//	*http.MaxBytesError                        413 Content Too Large
+//	*http.MaxBytesError,                       413 Content Too Large
+//	  *provider.RejectedError of a 413           (the backend's: the file is too large for it)
 //	ErrUnsupported, provider.ErrUnsupported    501 Not Implemented
-//	provider.ErrUnauthorized                   502 Bad Gateway (the backend rejected our credentials)
-//	provider.ErrUnavailable                    503 Service Unavailable, with Retry-After (SetRetryAfter)
+//	provider.ErrUnauthorized,                  502 Bad Gateway (the backend rejected our
+//	  *provider.RejectedError not busy           credentials, or what Lajstrom sent it, #494)
+//	provider.ErrUnavailable                    503 Service Unavailable, with Retry-After (SetRetryAfter):
+//	                                           an open circuit breaker, or the backend's 429 or 503
 //	ErrBadGateway                              502 Bad Gateway (a proxy's upstream failed)
 //	ErrUnavailable                             503 Service Unavailable, with Retry-After (the upstream's)
 //	ErrGatewayTimeout                          504 Gateway Timeout
@@ -90,11 +93,11 @@ func StatusOf(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, index.ErrConflict), errors.Is(err, provider.ErrConflict):
 		return http.StatusConflict
-	case errors.As(err, &tooLarge):
+	case errors.As(err, &tooLarge), refusedBy(err, http.StatusRequestEntityTooLarge):
 		return http.StatusRequestEntityTooLarge
 	case errors.Is(err, ErrUnsupported), errors.Is(err, provider.ErrUnsupported):
 		return http.StatusNotImplemented
-	case errors.Is(err, provider.ErrUnauthorized):
+	case errors.Is(err, provider.ErrUnauthorized), refusedBy(err, 0):
 		return http.StatusBadGateway
 	case errors.Is(err, provider.ErrUnavailable):
 		return http.StatusServiceUnavailable
@@ -107,4 +110,12 @@ func StatusOf(err error) int {
 	default:
 		return http.StatusInternalServerError
 	}
+}
+
+// refusedBy reports whether err is the backend's refusal of what Lajstrom sent it, a
+// *provider.RejectedError of a backend that is not busy, with status, or with any when status
+// is 0 (#494). A frontend's client sent Lajstrom its file, not the request the backend refused.
+func refusedBy(err error, status int) bool {
+	var rej *provider.RejectedError
+	return errors.As(err, &rej) && !rej.Busy() && (status == 0 || rej.Status == status)
 }

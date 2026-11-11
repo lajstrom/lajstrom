@@ -110,7 +110,7 @@ func (p *Provider) probeOnce(ctx context.Context) (provider.Capabilities, error)
 	}
 	id, err := p.ping(ctx)
 	if err != nil {
-		return provider.Capabilities{}, translate("ping "+p.name, err)
+		return provider.Capabilities{}, p.translate("ping "+p.name, err)
 	}
 	v := detectVendor(id)
 	c, err := p.probe(ctx, vendorDefaults[v])
@@ -157,7 +157,7 @@ func (p *Provider) probeOnce(ctx context.Context) (provider.Capabilities, error)
 // challenge with the configured credentials. Errors wrap the sentinels of package provider.
 func (p *Provider) Ping(ctx context.Context) error {
 	_, err := p.ping(ctx)
-	return translate("ping", err)
+	return p.translate("ping", err)
 }
 
 var _ provider.Pinger = (*Provider)(nil)
@@ -188,7 +188,7 @@ func (p *Provider) probe(ctx context.Context, d config.CapabilityOverrides) (pro
 	var err error
 	if p.override.Catalog == nil && d.Catalog == nil {
 		if c.Catalog, err = p.probeCatalog(ctx); err != nil {
-			return provider.Capabilities{}, translate("probe catalog of "+p.name, err)
+			return provider.Capabilities{}, p.translate("probe catalog of "+p.name, err)
 		}
 	}
 	state := referrersUnknown
@@ -202,7 +202,7 @@ func (p *Provider) probe(ctx context.Context, d config.CapabilityOverrides) (pro
 		}
 	default:
 		if state, err = p.probeReferrers(ctx); err != nil {
-			return provider.Capabilities{}, translate("probe referrers of "+p.name, err)
+			return provider.Capabilities{}, p.translate("probe referrers of "+p.name, err)
 		}
 	}
 	c.Referrers = state == referrersSupported

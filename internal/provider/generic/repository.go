@@ -39,7 +39,7 @@ func (r *repository) op(verb, ref string) string {
 func (r *repository) Fetch(ctx context.Context, target ocispec.Descriptor) (io.ReadCloser, error) {
 	rc, err := r.Repository.Fetch(ctx, target)
 	if err != nil {
-		return nil, translate(r.op("fetch", target.Digest.String()), err)
+		return nil, r.p.translate(r.op("fetch", target.Digest.String()), err)
 	}
 	return rc, nil
 }
@@ -56,7 +56,7 @@ func (r *repository) Exists(ctx context.Context, target ocispec.Descriptor) (boo
 		return err == nil, err
 	}
 	ok, err := r.Repository.Exists(ctx, target)
-	return ok, translate(r.op("exists", target.Digest.String()), err)
+	return ok, r.p.translate(r.op("exists", target.Digest.String()), err)
 }
 
 // Push uploads the blob or manifest expected from content; a blob is streamed in one
@@ -76,7 +76,7 @@ func (r *repository) Push(ctx context.Context, expected ocispec.Descriptor, cont
 	if errors.Is(err, errdef.ErrAlreadyExists) {
 		return nil
 	}
-	return translate(r.op("push", expected.Digest.String()), r.pushed(ctx, err))
+	return r.p.translate(r.op("push", expected.Digest.String()), r.pushed(ctx, err))
 }
 
 // pushed is err of a manifest push, or nil when the push stored the manifest and the new
@@ -108,34 +108,34 @@ func (r *repository) Delete(ctx context.Context, target ocispec.Descriptor) erro
 	if err != nil && isManifest(target.MediaType) && refusesDelete(err) && !r.p.deleteRefused.Swap(true) {
 		r.p.log.WarnContext(ctx, "registry refuses manifest deletes; DeleteManifest is now false")
 	}
-	return translate(op, err)
+	return r.p.translate(op, err)
 }
 
 // Tag points the tag reference at the manifest desc.
 func (r *repository) Tag(ctx context.Context, desc ocispec.Descriptor, reference string) error {
-	return translate(r.op("tag", reference), r.Repository.Tag(ctx, desc, reference))
+	return r.p.translate(r.op("tag", reference), r.Repository.Tag(ctx, desc, reference))
 }
 
 // Resolve returns the descriptor of the manifest that reference, a tag or a digest, names.
 func (r *repository) Resolve(ctx context.Context, reference string) (ocispec.Descriptor, error) {
 	desc, err := r.Repository.Resolve(ctx, reference)
-	return desc, translate(r.op("resolve", reference), err)
+	return desc, r.p.translate(r.op("resolve", reference), err)
 }
 
 // PushReference uploads the manifest expected and tags it reference in one PUT.
 func (r *repository) PushReference(ctx context.Context, expected ocispec.Descriptor, content io.Reader, reference string) error {
-	return translate(r.op("push", reference), r.pushed(ctx, r.Repository.PushReference(ctx, expected, content, reference)))
+	return r.p.translate(r.op("push", reference), r.pushed(ctx, r.Repository.PushReference(ctx, expected, content, reference)))
 }
 
 // Tags calls fn with each page of the repository's tags, starting after last.
 func (r *repository) Tags(ctx context.Context, last string, fn func(tags []string) error) error {
-	return translate(r.op("tags", ""), r.Repository.Tags(ctx, last, fn))
+	return r.p.translate(r.op("tags", ""), r.Repository.Tags(ctx, last, fn))
 }
 
 // Referrers calls fn with the manifests whose subject is desc, of artifactType when it is not
 // empty, from the referrers API or the sha256-<digest> tag schema.
 func (r *repository) Referrers(ctx context.Context, desc ocispec.Descriptor, artifactType string, fn func(referrers []ocispec.Descriptor) error) error {
-	return translate(r.op("referrers", desc.Digest.String()), r.Repository.Referrers(ctx, desc, artifactType, fn))
+	return r.p.translate(r.op("referrers", desc.Digest.String()), r.Repository.Referrers(ctx, desc, artifactType, fn))
 }
 
 // manifestMediaTypes are the media types oras-go sends to the manifests endpoint by default.
