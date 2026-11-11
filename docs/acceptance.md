@@ -40,7 +40,9 @@ rows elsewhere are deferred as a block. Nothing else moves.
 Proxy and group repos, OIDC and groups, the web UI (its own repository, #70), docker image
 passthrough and multi-arch stitching, vulnerability scanning, scheduled cleanup (retention, #72),
 webhooks (#77), rpm, npm, terraform, FQDN mode, Harbor and GHCR adapters beyond the spikes, maven
-SNAPSHOT, apt source packages, pypi yank. A check that needs one of these is not in this page.
+SNAPSHOT, apt source packages, pypi yank. A check that needs one of these is not in this page,
+but for M4's npm with its proxy and group repos, which come after v0.1.0 and have their own rows
+outside its sign-off (§3.11).
 
 Scanning and cleanup are external jobs in the PoC, not server features: a cron container with
 `oras`, `crane` or `curl` against the public interfaces. The PoC keeps what such a job needs,
@@ -242,6 +244,29 @@ RBAC matrix for S-02, expected status on the raw frontend (`/v2` maps 401 to `UN
 | D-02 | `docker run ghcr.io/lajstrom/lajstrom:v0.1.0 version` | runs as a non-root uid, read-only root fs works, no shell required | #57 |
 | D-03 *manual* | the install guide on a fresh VM with a public DNS name, TLS in Lajstrom itself | `curl -T` round trip works from a laptop within 30 minutes of reading | #58 |
 | D-04 | `make dev-up STACK=single` and `STACK=ha` on macOS (OrbStack) and on the CI runner | both reach `readyz` 200 within 60 s | #15 |
+
+### 3.11 npm, proxy and group repos (M4)
+
+M4 comes after v0.1.0 ([roadmap.md](roadmap.md)): these rows are not part of the v0.1.0 sign-off
+(§1.2). They are the demo of M4. `test/e2e/npm.sh` prints each id at the step that checks it
+(`make e2e E2E=npm`). It runs in `node:26.13.0-slim` with npm 11, pnpm 10 and yarn 4, against a
+hosted repo, a proxy of registry.npmjs.org and a group of both, all made through the API.
+
+| Id | Steps | Expected | Issue |
+| --- | --- | --- | --- |
+| J-01 | `npm login` on a hosted repo with a user's password; `npm whoami` | a personal access token in `.npmrc`, listed for the user; `whoami` names the user | #308 |
+| J-02 | `npm publish` of an unscoped package (1.0.0, 1.1.0, and 2.0.0-beta.1 `--tag beta`) and of a scoped one; `npm install` of both into an empty project with an empty cache | dist-tags `beta` and `latest` (1.1.0); the install resolves `latest` and `require()` loads it | #305, #306 |
+| J-03 | `npm dist-tag add`, `ls`, an install by the tag, `rm`; `npm deprecate` and `npm deprecate ''` | the tag in the packument and in `ls`, gone after `rm`; the message in the packument and in `npm install`'s warning, gone after `''` | #307, #308 |
+| J-04 | pnpm with a deploy token as `_authToken`: `pnpm whoami`, `pnpm publish` of a package that depends on J-02's, `pnpm add` with an empty store | `token:<id>`; the dependency resolved from the repo (`^1.0.0` to 1.1.0) | #305, #306 |
+| J-05 | yarn 4: `yarn npm login`, `whoami`, `publish`, `tag add`, `list`, `remove`, `yarn add` with an empty cache | a token in `.yarnrc.yml`; the tags change in the packument; the packages of npm, pnpm and yarn installed | #305, #307, #308 |
+| J-06 | `npm install chalk@4.1.2` through a proxy of npmjs.org, twice, each with an empty cache | the first fetches each tarball once (one `proxy.fetch` row each) and holds it in the registry; the second fetches none | #309, #310 |
+| J-07 | npm, pnpm and yarn each publish through a group of the hosted repo and the proxy a scoped package that depends on `chalk@4.1.2`, with `registry=<group>` the one registry line, and install it with an empty cache (pnpm with the group's deploy token) | the versions land in the hosted repo, their `push` rows with `details.via`; `require()` loads `chalk@4.1.2`; every `dist.tarball` names the group; nothing is fetched again; a group's deploy token with `write` is 400 | #311 |
+| J-08 | publish a name of npmjs.org (`is-number`) to the hosted repo; read its packument through the group; then `group.merge` of the name | the hosted versions only; with `merge`, the upstream's versions too | #311 |
+| J-09 | `npm audit` through the proxy of a project with `minimist@1.2.0` and a scoped package of the hosted repo, first without a deny list, then with `deny` of the scope and of `minimist` | first npmjs.org's advisories of minimist; then none: the denied names never leave the server | #514 |
+| J-10 | `npm unpublish` of a version as a writer, then as a maintainer; `npm unpublish <scoped> --force` | E403 and nothing deleted; the version gone with its dist-tag; the package 404 | #308 |
+| J-11 | `npm dist-tag add` (`latest` below the highest release, a new tag) and `npm deprecate` through the group; delete the hosted repo, make it again, `POST …/reindex` | the delete is 409 while the repo is a member of the group; after the reindex every packument of the run is as before, dist-tags, deprecations and integrity; no orphan journal entry | #307, #311 |
+| J-12 | the package of J-10's `--force`, after J-11's reindex | still 404: its journal went with it | #307, #308 |
+| J-13 | `npm logout` | the token gone from `.npmrc` and revoked (401); the token of `yarn npm login` still valid | #308 |
 
 ## 4. High availability
 

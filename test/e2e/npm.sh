@@ -44,6 +44,8 @@
 #
 #   test/e2e/npm.sh [<base url>]     default: http://localhost:8080
 #
+# A step that checks a row of docs/acceptance.md §3.11 begins with its id, J-01 to J-13 (#515).
+#
 # It runs as $LAJSTROM_E2E_USER, a user with the admin binding (lib.sh, e2e_credentials; run.sh
 # makes one), creates the repos on the registry local ($NPM_E2E_REGISTRY names another), and on
 # exit revokes the deploy token, deletes the group and both repos (force: the versions leave the
@@ -312,7 +314,7 @@ expect "the tokens of $user after npm login" "npm login npm/$repo" \
 	"$(jq -r '[.tokens[] | select(.revokedAt == null) | .name | split(" ")[0:3] | join(" ")] | join(",")' "$work/body")"
 client npm npm-whoami.log 'npm whoami'
 expect "npm whoami" "$user" "$(tail -n 1 "$work/npm-whoami.log")"
-step "npm login with the password: a personal access token in .npmrc, listed for $user; npm whoami: $user"
+step "J-01 npm login with the password: a personal access token in .npmrc, listed for $user; npm whoami: $user"
 
 package pkg/plain "$plain" 1.0.0
 package pkg/scoped "$scoped" 1.0.0
@@ -326,13 +328,13 @@ expect "dist-tags of $plain" "beta=2.0.0-beta.1 latest=1.1.0" "$dist_tags"
 expect "versions of $plain" "1.0.0 1.1.0 2.0.0-beta.1" "$versions"
 tags "$scoped"
 expect "dist-tags of $scoped" "latest=1.0.0" "$dist_tags"
-step "npm publish of $plain 1.0.0, 1.1.0 and 2.0.0-beta.1 --tag beta, and of $scoped 1.0.0"
+step "J-02 npm publish of $plain 1.0.0, 1.1.0 and 2.0.0-beta.1 --tag beta, and of $scoped 1.0.0"
 
 project npm-install
 client npm npm-install.log "cd /w/npm-install && npm install --cache /w/npm-cache-1 --loglevel=warn $plain $scoped"
 required npm-install "$plain" "$scoped"
 expect "require() after npm install" "$plain@1.1.0 $scoped@1.0.0" "$exports"
-step "npm install of $plain and $scoped into an empty project with an empty cache: 1.1.0 and 1.0.0"
+step "J-02 npm install of $plain and $scoped into an empty project with an empty cache: 1.1.0 and 1.0.0"
 
 client npm npm-tag.log "npm dist-tag add $plain@1.0.0 stable && npm dist-tag ls $plain"
 grep -qx 'stable: 1.0.0' "$work/npm-tag.log" || fail "npm dist-tag ls $plain: $(cat "$work/npm-tag.log")"
@@ -346,7 +348,7 @@ client npm npm-tag.log "npm dist-tag rm $plain stable && npm dist-tag ls $plain"
 ! grep -q '^stable:' "$work/npm-tag.log" || fail "npm dist-tag ls $plain after rm: $(cat "$work/npm-tag.log")"
 tags "$plain"
 expect "dist-tags of $plain after npm dist-tag rm" "beta=2.0.0-beta.1 latest=1.1.0" "$dist_tags"
-step "npm dist-tag add $plain@1.0.0 stable, ls, npm install $plain@stable (1.0.0), rm"
+step "J-03 npm dist-tag add $plain@1.0.0 stable, ls, npm install $plain@stable (1.0.0), rm"
 
 message="use 1.1.0 ($run)"
 client npm npm-deprecate.log "npm deprecate $plain@1.0.0 '$message'"
@@ -359,7 +361,7 @@ grep -qF "deprecated $plain@1.0.0: $message" "$work/npm-install.log" || fail "np
 client npm npm-deprecate.log "npm deprecate $plain@1.0.0 ''"
 tags "$plain"
 expect "versions[1.0.0].deprecated of $plain after npm deprecate ''" "-" "$(jq -r '.versions["1.0.0"].deprecated // "-"' "$work/packument.json")"
-step "npm deprecate $plain@1.0.0: the message in the packument and in npm install's warning; cleared with ''"
+step "J-03 npm deprecate $plain@1.0.0: the message in the packument and in npm install's warning; cleared with ''"
 
 # --- pnpm: the deploy token as _authToken -------------------------------------------------------
 mkdir -p "$work/pnpm"
@@ -376,7 +378,7 @@ project pnpm-install
 client pnpm pnpm-install.log "cd /w/pnpm-install && pnpm add --store-dir /w/pnpm-store $pnpm_plain $pnpm_scoped $scoped"
 required pnpm-install "$pnpm_plain" "$pnpm_scoped" "$scoped"
 expect "require() after pnpm add" "$pnpm_plain@1.0.0 $pnpm_scoped@1.0.0 with $plain@1.1.0 $scoped@1.0.0" "$exports"
-step "pnpm with the deploy token: whoami token:$token_id; publish of $pnpm_plain and $pnpm_scoped; pnpm add from an empty store, $plain@1.1.0 for ^1.0.0"
+step "J-04 pnpm with the deploy token: whoami token:$token_id; publish of $pnpm_plain and $pnpm_scoped; pnpm add from an empty store, $plain@1.1.0 for ^1.0.0"
 
 # --- yarn 4: npm login, whoami, publish, tag, install -------------------------------------------
 mkdir -p "$work/yarn"
@@ -395,7 +397,7 @@ awk '/npmAuthToken:/ { print $2 }' "$work/yarn/.yarnrc.yml" | tr -d '"' >"$work/
 [ -s "$work/yarn-token" ] || fail "yarn npm login wrote no npmAuthToken into .yarnrc.yml"
 client yarn yarn-whoami.log 'cd /w/yarn-login && yarn npm whoami'
 grep -q "YN0000: $user\$" "$work/yarn-whoami.log" || fail "yarn npm whoami: $(cat "$work/yarn-whoami.log")"
-step "yarn npm login with the password: a token in .yarnrc.yml; yarn npm whoami: $user"
+step "J-05 yarn npm login with the password: a token in .yarnrc.yml; yarn npm whoami: $user"
 
 package pkg/yarn-plain "$yarn_plain" 1.0.0
 package pkg/yarn-scoped "$yarn_scoped" 1.0.0
@@ -411,7 +413,7 @@ expect "dist-tags of $yarn_scoped after yarn npm tag add" "latest=1.0.0 stable=1
 client yarn yarn-tag.log "cd /w/pkg/yarn-scoped && yarn npm tag remove $yarn_scoped stable"
 tags "$yarn_scoped"
 expect "dist-tags of $yarn_scoped after yarn npm tag remove" "latest=1.0.0" "$dist_tags"
-step "yarn npm publish of $yarn_plain and $yarn_scoped; yarn npm tag add, list and remove"
+step "J-05 yarn npm publish of $yarn_plain and $yarn_scoped; yarn npm tag add, list and remove"
 
 project yarn-install
 printf 'nodeLinker: node-modules\nenableGlobalCache: false\n' >"$work/yarn-install/.yarnrc.yml"
@@ -419,7 +421,7 @@ touch "$work/yarn-install/yarn.lock"
 client yarn yarn-install.log "cd /w/yarn-install && yarn add $yarn_plain $yarn_scoped $pnpm_scoped"
 required yarn-install "$yarn_plain" "$yarn_scoped" "$pnpm_scoped"
 expect "require() after yarn add" "$yarn_plain@1.0.0 $yarn_scoped@1.0.0 $pnpm_scoped@1.0.0 with $plain@1.1.0" "$exports"
-step "yarn add of $yarn_plain, $yarn_scoped and $pnpm_scoped into an empty project with an empty cache"
+step "J-05 yarn add of $yarn_plain, $yarn_scoped and $pnpm_scoped into an empty project with an empty cache"
 
 # --- The proxy of npmjs.org ---------------------------------------------------------------------
 if [ -n "$upstream" ]; then
@@ -437,10 +439,10 @@ if [ -n "$upstream" ]; then
 		fetched="$(jq '.events | length' "$work/body")"
 		if [ "$i" = 1 ]; then
 			expect "proxy.fetch rows of npm/$proxy after the first install of $public: one per package" "$installed" "$fetched"
-			step "npm install of $public through the proxy npm/$proxy, empty cache: $installed packages in $took s, each tarball fetched once from $upstream"
+			step "J-06 npm install of $public through the proxy npm/$proxy, empty cache: $installed packages in $took s, each tarball fetched once from $upstream"
 		else
 			expect "proxy.fetch rows of npm/$proxy after the second install of $public" "$before" "$fetched"
-			step "npm install of $public through npm/$proxy again, empty cache: $installed packages in $took s, none fetched"
+			step "J-06 npm install of $public through npm/$proxy again, empty cache: $installed packages in $took s, none fetched"
 		fi
 	done
 	name="${public%@*}"
@@ -451,7 +453,7 @@ if [ -n "$upstream" ]; then
 	req v2 GET "$base/v2/npm/$proxy/$name/tags/list"
 	expect "GET /v2/npm/$proxy/$name/tags/list ($(head -c 300 "$work/body"))" 200 "$status"
 	jq -e --arg v "${public##*@}" '.tags | index($v)' "$work/body" >/dev/null || fail "no tag ${public##*@} in npm/$proxy/$name: $(cat "$work/body")"
-	step "$public is in the registry: /v2/npm/$proxy/$name/tags/list $(jq -c .tags "$work/body")"
+	step "J-06 $public is in the registry: /v2/npm/$proxy/$name/tags/list $(jq -c .tags "$work/body")"
 else
 	echo "skip the proxy: NPM_E2E_UPSTREAM is empty"
 fi
@@ -473,7 +475,7 @@ jq -r .secret "$work/body" >"$work/group-token"
 group_token_id="$(jq -r .id "$work/body")"
 rm -f "$work/body"
 printf 'header = "Authorization: Bearer %s"\n' "$(cat "$work/group-token")" >"$work/group"
-step "POST /api/v1/repos npm/$group, a group of $members: 201; $user reader on it; its deploy token $group_token_id reads only (write: 400)"
+step "J-07 POST /api/v1/repos npm/$group, a group of $members: 201; $user reader on it; its deploy token $group_token_id reads only (write: 400)"
 
 # npm: login on the group, a publish through it, which lands in the hosted repo, and an install.
 mkdir -p "$work/npm-group"
@@ -487,7 +489,7 @@ project group-npm
 client npm-group group-npm.log "cd /w/pkg/npm-app && npm publish && cd /w/group-npm && npm install --cache /w/group-cache-npm --loglevel=warn $npm_app"
 required group-npm "$npm_app"
 expect "require() after npm install through npm/$group" "$npm_app@1.0.0$with" "$exports"
-step "npm login on npm/$group, registry=$group_url/ the one registry line; npm publish of $npm_app through it; npm install from an empty cache: $exports"
+step "J-07 npm login on npm/$group, registry=$group_url/ the one registry line; npm publish of $npm_app through it; npm install from an empty cache: $exports"
 
 # pnpm: npm's token of the group to publish, the group's deploy token in the project to install.
 mkdir -p "$work/pnpm-group"
@@ -499,7 +501,7 @@ client pnpm-group group-pnpm.log "cd /w/pkg/pnpm-app && pnpm publish --no-git-ch
 expect "pnpm whoami in the project with the group's deploy token" "token:$group_token_id" "$(tail -n 1 "$work/group-pnpm-whoami.log")"
 required group-pnpm "$pnpm_app" "$npm_app"
 expect "require() after pnpm add through npm/$group" "$pnpm_app@1.0.0$with $npm_app@1.0.0$with" "$exports"
-step "pnpm publish of $pnpm_app through npm/$group; pnpm add from an empty store with the group's deploy token (whoami token:$group_token_id): $exports"
+step "J-07 pnpm publish of $pnpm_app through npm/$group; pnpm add from an empty store with the group's deploy token (whoami token:$group_token_id): $exports"
 
 # yarn: yarn npm login on the group, a publish through it and an install of the three.
 mkdir -p "$work/yarn-group"
@@ -523,7 +525,7 @@ touch "$work/group-yarn/yarn.lock"
 client yarn-group group-yarn.log "cd /w/pkg/yarn-app && yarn install && yarn npm publish && cd /w/group-yarn && yarn add $yarn_app $pnpm_app $npm_app"
 required group-yarn "$yarn_app" "$pnpm_app" "$npm_app"
 expect "require() after yarn add through npm/$group" "$yarn_app@1.0.0$with $pnpm_app@1.0.0$with $npm_app@1.0.0$with" "$exports"
-step "yarn npm login on npm/$group; yarn npm publish of $yarn_app through it; yarn add of the three from an empty cache"
+step "J-07 yarn npm login on npm/$group; yarn npm publish of $yarn_app through it; yarn add of the three from an empty cache"
 
 # What the group answered, and where the writes went.
 for n in "$npm_app" "$pnpm_app" "$yarn_app"; do
@@ -544,7 +546,7 @@ if [ -n "$upstream" ]; then
 	api GET "audit?repo=npm/$proxy&action=proxy.fetch&limit=1000" "" 200
 	expect "proxy.fetch rows of npm/$proxy after the installs through npm/$group: those of the proxy's installs" "$fetched" "$(jq '.events | length' "$work/body")"
 fi
-step "the three packages in npm/$repo, each push with details.via npm/$group; every dist.tarball of ${links[*]} under $group_url/${upstream:+; nothing fetched again from $upstream}"
+step "J-07 the three packages in npm/$repo, each push with details.via npm/$group; every dist.tarball of ${links[*]} under $group_url/${upstream:+; nothing fetched again from $upstream}"
 
 # A name of the upstream that the hosted repo holds hides the upstream's versions of it, but for
 # the names of group.merge.
@@ -562,7 +564,7 @@ if [ -n "$upstream" ]; then
 	req group GET "$group_url/$hidden"
 	expect "the number of versions of $hidden through npm/$group with group.merge" "$((upstream_versions + 1))" "$(jq '.versions | length' "$work/body")"
 	expect "dist-tags.latest of $hidden through npm/$group with group.merge, the hosted repo's" 99.0.0 "$(jq -r '."dist-tags".latest' "$work/body")"
-	step "npm publish of $hidden 99.0.0 to npm/$repo: through npm/$group only 99.0.0, of $upstream's $upstream_versions versions none; with group.merge [$hidden] all $((upstream_versions + 1))"
+	step "J-08 npm publish of $hidden 99.0.0 to npm/$repo: through npm/$group only 99.0.0, of $upstream's $upstream_versions versions none; with group.merge [$hidden] all $((upstream_versions + 1))"
 fi
 
 # --- npm audit through the proxy: what deny refuses stays on the server (#514) ------------------
@@ -581,7 +583,7 @@ if [ -n "$upstream" ]; then
 	try npm audit-denied.log "cd /w/audit && npm audit"
 	expect "npm audit through npm/$proxy with deny [$scope/*, ${vulnerable%@*}] ($(cat "$work/audit-denied.log"))" 0 "$rc"
 	grep -qx 'found 0 vulnerabilities' "$work/audit-denied.log" || fail "npm audit with the names denied: $(cat "$work/audit-denied.log")"
-	step "npm audit through npm/$proxy of $vulnerable and $yarn_scoped: $upstream's advisories of ${vulnerable%@*}; with deny [$scope/*, ${vulnerable%@*}] none, both names kept on the server"
+	step "J-09 npm audit through npm/$proxy of $vulnerable and $yarn_scoped: $upstream's advisories of ${vulnerable%@*}; with deny [$scope/*, ${vulnerable%@*}] none, both names kept on the server"
 fi
 
 # --- npm: unpublish ----------------------------------------------------------------------------
@@ -591,7 +593,7 @@ grep -q 'E403' "$work/npm-unpublish.log" || fail "npm unpublish as a writer: $(t
 tags "$plain"
 expect "versions of $plain after the refused unpublish" "1.0.0 1.1.0 2.0.0-beta.1" "$versions"
 api POST bindings "{\"principal\":\"user:$user\",\"role\":\"maintainer\",\"repoMask\":\"npm/$repo\"}" 201
-step "npm unpublish as a writer: E403, nothing deleted; $user made maintainer of npm/$repo"
+step "J-10 npm unpublish as a writer: E403, nothing deleted; $user made maintainer of npm/$repo"
 client npm npm-unpublish.log "npm unpublish $plain@2.0.0-beta.1"
 tags "$plain"
 expect "versions of $plain after npm unpublish $plain@2.0.0-beta.1" "1.0.0 1.1.0" "$versions"
@@ -599,7 +601,7 @@ expect "dist-tags of $plain after the unpublish" "latest=1.1.0" "$dist_tags"
 client npm npm-unpublish.log "npm unpublish $scoped --force"
 packument "$scoped"
 expect "GET /npm/$repo/$(enc "$scoped") after npm unpublish --force" 404 "$status"
-step "npm unpublish $plain@2.0.0-beta.1, its tag beta with it; npm unpublish $scoped --force: 404"
+step "J-10 npm unpublish $plain@2.0.0-beta.1, its tag beta with it; npm unpublish $scoped --force: 404"
 
 # --- Reindex restores the journal ---------------------------------------------------------------
 # latest moved below the highest release, a tag and a deprecation, through the group: journal
@@ -611,7 +613,7 @@ expect "versions[1.0.0].deprecated of $plain after npm deprecate through npm/$gr
 names=("$plain" "$scoped" "$pnpm_plain" "$pnpm_scoped" "$yarn_plain" "$yarn_scoped" "$npm_app" "$pnpm_app" "$yarn_app")
 [ -z "$upstream" ] || names+=("$hidden")
 snapshot "$work/before.jsonl"
-step "npm dist-tag add $plain@1.0.0 latest and $plain@1.1.0 next, npm deprecate $plain@1.0.0, through npm/$group; ${#names[@]} packuments read"
+step "J-11 npm dist-tag add $plain@1.0.0 latest and $plain@1.1.0 next, npm deprecate $plain@1.0.0, through npm/$group; ${#names[@]} packuments read"
 
 api DELETE "repos/npm/$repo?force=true" "" 409
 api DELETE "repos/npm/$group" "" 204
@@ -634,7 +636,9 @@ report="$(jq -r '.report | "\(.manifests) manifests in \(.ociRepositories) OCI r
 snapshot "$work/after.jsonl"
 cmp -s "$work/before.jsonl" "$work/after.jsonl" ||
 	fail "the packuments of npm/$repo after reindex differ from before: $(diff "$work/before.jsonl" "$work/after.jsonl" | head -n 20)"
-step "DELETE npm/$repo: 409 while a member of npm/$group, then 204; made again, empty; reindex: $report; the ${#names[@]} packuments as before, $scoped still 404"
+step "J-11 DELETE npm/$repo: 409 while a member of npm/$group, then 204; made again, empty; reindex: $report; the ${#names[@]} packuments as before"
+expect "the line of $scoped in the packuments after the reindex" "{\"name\":\"$scoped\",\"status\":\"404\"}" "$(grep -F "\"name\":\"$scoped\"" "$work/after.jsonl")"
+step "J-12 $scoped, unpublished with --force before the reindex: still 404 after it"
 
 # --- npm: logout --------------------------------------------------------------------------------
 api GET "users/$user/tokens" "" 200
@@ -649,7 +653,7 @@ expect "GET /-/whoami with the token of npm login after npm logout" 401 "$status
 printf 'header = "Authorization: Bearer %s"\n' "$(cat "$work/yarn-token")" >"$work/yarn-bearer"
 req yarn-bearer GET "$url/-/whoami"
 expect "GET /-/whoami with the token of yarn npm login after npm logout" 200 "$status"
-step "npm logout: its token gone from .npmrc and revoked (401); yarn's still valid"
+step "J-13 npm logout: its token gone from .npmrc and revoked (401); yarn's still valid"
 
 if [ -n "${LAJSTROM_SERVER_LOG:-}" ] && [ -f "$LAJSTROM_SERVER_LOG" ]; then
 	no_secret "$LAJSTROM_SERVER_LOG"
