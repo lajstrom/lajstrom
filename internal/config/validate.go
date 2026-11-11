@@ -30,12 +30,7 @@ func (c *Config) Validate() error {
 	if c.Ingest.ClaimTTL < 0 {
 		p.add("ingest.claimTTL", "must not be negative")
 	}
-	if c.Reconcile.Interval < 0 {
-		p.add("reconcile.interval", "must not be negative")
-	}
-	if c.Reconcile.GraceAge < 0 {
-		p.add("reconcile.graceAge", "must not be negative")
-	}
+	c.Reconcile.validate(&p)
 	c.Auth.validate(&p)
 	c.Keys.validate(&p)
 	registries := map[string]int{}
@@ -205,6 +200,15 @@ func parsePrefix(s string) (netip.Prefix, error) {
 		pfx = netip.PrefixFrom(a.Unmap(), pfx.Bits()-96)
 	}
 	return pfx.Masked(), nil
+}
+
+func (r Reconcile) validate(p *problems) {
+	if r.Interval < 0 {
+		p.add("reconcile.interval", "must not be negative")
+	}
+	if r.GraceAge < 0 {
+		p.add("reconcile.graceAge", "must not be negative")
+	}
 }
 
 func (l Log) validate(p *problems) {

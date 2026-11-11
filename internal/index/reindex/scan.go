@@ -407,42 +407,11 @@ func (s *scan) sweep(ctx context.Context) {
 		if s.stopped(ctx) {
 			return
 		}
-		f := Finding{Repository: m.Package.NameOCI, Tag: m.Version.Tag, Digest: m.Version.Digest}
-		name := s.base + "/" + m.Package.NameOCI
-		rr, err := s.prov.Repository(ctx, name)
-		var desc ocispec.Descriptor
-		if err == nil {
-			desc, err = rr.Resolve(ctx, m.Version.Tag)
-		}
-		found := err == nil
-		switch {
-		case err == nil && desc.Digest == m.Version.Digest:
+		if s.recheck(ctx, m) {
 			keep = append(keep, m.Version.ID)
-		case err == nil:
-			s.drift(&m.Version, m.Package.Name, m.Version.Tag, desc.Digest)
-			keep = append(keep, m.Version.ID)
-		case errors.Is(err, provider.ErrNotFound):
-			switch s.lookup(ctx, name, f, m.Version.IndexedAt) {
-			case present:
-				keep, found = append(keep, m.Version.ID), true
-			case gone:
-				err := s.w.index.DeleteVersion(ctx, m.Version.ID)
-				if errors.Is(err, index.ErrNotFound) || !s.dbErr(err) {
-					s.mu.Lock()
-					s.rep.Removed++
-					s.mu.Unlock()
-				}
-			case pending, unchecked:
-			}
-		default:
-			f.Error = "look up the tag before removing its rows: " + err.Error()
-			s.failure(f)
-		}
-		if found && s.dbErr(s.w.index.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: s.repo.ID, Path: name, SeenAt: s.w.now()})) {
-			return
 		}
 	}
-	if s.dbErr(s.w.index.TouchVersions(ctx, keep, s.w.now())) {
+	if s.stopped(ctx) || s.dbErr(s.w.index.TouchVersions(ctx, keep, s.w.now())) {
 		return
 	}
 	if _, err := s.w.index.DeleteEmptyPackages(ctx, s.repo.ID); s.dbErr(err) {
@@ -453,6 +422,48 @@ func (s *scan) sweep(ctx context.Context) {
 	}
 	_, err = s.w.index.ClearSightings(ctx, s.repo.ID, s.start)
 	s.dbErr(err)
+}
+
+// recheck looks up one version the run did not see, for sweep, and reports whether the
+// registry has it: its tag names its digest, or another one (drift), or the tag does not resolve
+// and lookup finds the manifest. Then its OCI repository is recorded again. Otherwise lookup
+// decides: the version is removed, pending, or reported.
+func (s *scan) recheck(ctx context.Context, m index.VersionMatch) bool {
+	f := Finding{Repository: m.Package.NameOCI, Tag: m.Version.Tag, Digest: m.Version.Digest}
+	name := s.base + "/" + m.Package.NameOCI
+	rr, err := s.prov.Repository(ctx, name)
+	var desc ocispec.Descriptor
+	if err == nil {
+		desc, err = rr.Resolve(ctx, m.Version.Tag)
+	}
+	found := false
+	switch {
+	case err == nil:
+		if desc.Digest != m.Version.Digest {
+			s.drift(&m.Version, m.Package.Name, m.Version.Tag, desc.Digest)
+		}
+		found = true
+	case errors.Is(err, provider.ErrNotFound):
+		switch s.lookup(ctx, name, f, m.Version.IndexedAt) {
+		case present:
+			found = true
+		case gone:
+			err := s.w.index.DeleteVersion(ctx, m.Version.ID)
+			if errors.Is(err, index.ErrNotFound) || !s.dbErr(err) {
+				s.mu.Lock()
+				s.rep.Removed++
+				s.mu.Unlock()
+			}
+		case pending, unchecked:
+		}
+	default:
+		f.Error = "look up the tag before removing its rows: " + err.Error()
+		s.failure(f)
+	}
+	if found {
+		s.dbErr(s.w.index.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: s.repo.ID, Path: name, SeenAt: s.w.now()}))
+	}
+	return found
 }
 
 // see records a version row seen without being written; unchanged counts it.
