@@ -40,7 +40,7 @@ packages; CI runs it there (`integration (zot-pgbouncer)`, #613).
 | Odyssey 1.5.2, `pool "transaction"`, `pool_reserve_prepared_statement yes` | works | nothing |
 | Odyssey 1.5.2, `pool "transaction"`, `pool_reserve_prepared_statement no` | **breaks** as PgBouncer with 0 (`42P05`, `26000`) | `default_query_exec_mode=exec` or `simple_protocol` in the DSN |
 | CloudNativePG | Postgres with failover, the rows above | [below](#cloudnativepg) |
-| YugabyteDB 2026.1.3.0 (YSQL, PostgreSQL 15.12) | works on a new database with one migrator at a time; **breaks** on a migration that changes rows (`23502`: DDL in a transaction is not transactional by default) and with two migrators at once (`42710`, `40001`) | `ysql_yb_ddl_transaction_block_enabled=true`; `lajstrom migrate` alone before `serve`; [below](#yugabytedb) |
+| YugabyteDB 2026.1.3.0 (YSQL, PostgreSQL 15.12) | **experimental**: tested in a non-blocking CI cell, not guaranteed. Works with both conditions; without them **breaks** on a migration that changes rows (`23502`) and with two migrators at once (`42710`, `40001`) | `ysql_yb_ddl_transaction_block_enabled=true`; `lajstrom migrate` alone before `serve`; [below](#yugabytedb) |
 | CockroachDB v26.3.5 | **breaks**: `lajstrom migrate` fails on the first migration | none; [below](#cockroachdb) |
 
 Behind any pooler in transaction mode, three more rules hold, measured on PgBouncer and Odyssey:
@@ -215,6 +215,19 @@ installed for this page: what follows is its documentation and the measurements 
 
 ## YugabyteDB
 
+**Experimental: tested in a non-blocking CI cell; not guaranteed.** Lajstrom runs on YugabyteDB
+under two conditions, both measured below:
+
+1. The YB-TServer flag `ysql_yb_ddl_transaction_block_enabled=true`, so that a migration is
+   one transaction.
+2. One migrator at a time: `lajstrom migrate` alone (the Job of
+   [operations.md](../operations.md#several-replicas)) before any `serve` starts, at install
+   and at every upgrade, so that the replicas find nothing to apply.
+
+The cell `integration (zot-yugabyte)` of the YugabyteDB workflow (#624) runs the index's
+integration tests that way: nightly, on demand, and on pull requests that change
+`internal/index`. A failure there blocks no merge; it is a finding to look at.
+
 YugabyteDB 2026.1.3.0 (YSQL on PostgreSQL 15.12), one node started by `yugabyted` with its
 defaults: transactions are read committed (`yugabyted` turns `yb_enable_read_committed_isolation`
 on for new universes since 2025.2, [Read Committed](https://docs.yugabyte.com/stable/architecture/transactions/read-committed/)),
@@ -249,10 +262,7 @@ What breaks:
   migration's `COMMIT` waited more than six minutes (`RPCWait`, `TransactionCommit`) while the
   other migrators waited for the lock, until the run's timeout.
 
-To try it: set `ysql_yb_ddl_transaction_block_enabled=true`, run `lajstrom migrate` alone (the
-Job of [operations.md](../operations.md#several-replicas)) before any `serve` starts, and
-upgrade the same way. Not measured: a cluster of several nodes, a node failure, load. CI does
-not run on YugabyteDB.
+Not measured: a cluster of several nodes, a node failure, load.
 
 ## CockroachDB
 
