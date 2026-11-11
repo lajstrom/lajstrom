@@ -10,6 +10,8 @@ Two kinds of tables. **Derived** tables are rebuilt by `lajstrom reindex` from t
 may be dropped at any time. **Control plane** tables are small, authoritative and backed up. The
 **coordination** tables, `tag_claims`, `reindex_runs`, `fetch_claims` and `replicas`, are neither:
 their rows live for one publish, one reindex run, one fetch or one `serve` process.
+`prune_sightings` is neither too: the operational state of prune, whose rows live from one
+reindex run to a later one.
 SQLite and Postgres share one logical schema; dialect differences are confined to the migration
 files (`internal/index/migrations/{sqlite,postgres}/NNNN_*.sql`).
 
@@ -103,13 +105,15 @@ a backup of the database keeps it, and reindex neither reads nor writes it.
 ## Coordination
 
 Neither control plane nor derived: a row lives for one publish, one reindex run or one `serve`
-process, so it is neither backed up nor rebuilt.
+process, or, in `prune_sightings`, from one run to a later one, so it is neither backed up nor
+rebuilt.
 
 | Table | Columns | Notes |
 | --- | --- | --- |
 | `tag_claims` | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `package` text (the package path, `name_oci`), `tag` text (`''` in the claim on the package path), `digest` text (manifest digest being published; in the claim on the package path, the sha256 digest of the spelling, `lajstrom.name`), `principal` text, `claimed_at` ts | unique `(repo_id, package, tag)`; written by ingest only |
 | `reindex_runs` | `id`, `repo_id` → repos null (`ON DELETE CASCADE`; null: a run of every repo), `state` text (`running`, `done`, `failed`, `abandoned`), `source` text (`cli`, `api`, `reconcile`), `principal` text, `replica` text (host name and process id), `options` json (`prune`, `verify`), `started_at` ts, `heartbeat_at` ts, `finished_at` ts null, `report` json null (layout.md, `reindex.Report`), `error` text null | index `(COALESCE(repo_id, 0), started_at)`; written by reindex only |
 | `replicas` | `id` text (a UUID v7 made at the start), `host` text (host name), `pid` int, `version` text (the binary's), `started_at` ts, `heartbeat_at` ts | primary key `id`; written by `serve` only. Migration `0018_replicas.sql` (#478) |
+| `prune_sightings` | `repo_id` → repos (`ON DELETE CASCADE`), `path` text (the OCI repository, as `oci_repos.path`), `digest` text (the manifest digest of an index row), `first_at` ts (the first answer since the row was cleared), `last_at` ts (the latest answer) | primary key `(repo_id, path, digest)`; written by reindex only |
 
 A `versions` row exists only after the registry accepted the manifest; the claims in
 `tag_claims` are the locks that serialise the writers of one OCI repository across replicas,
@@ -167,6 +171,20 @@ deleted at its next beat and writes it again; on SQLite, while another replica's
 that is refused, and `/-/readyz` answers `503` until it is not. On Postgres the rows of every
 replica coexist. At its start and at every beat a replica also compares its clock with the
 database's (`DatabaseTime`; [operations.md](../operations.md#clocks)).
+
+A `prune_sightings` row is the registry's answer `404 MANIFEST_UNKNOWN` to the digest of an index
+row's manifest (`Provider.StatManifest`, `provider.ErrManifestUnknown`), which reindex waits on
+before it removes the row: it removes it only on another such answer at least 10 minutes after
+`first_at` (Invariants and rules; guarantees.md, G-5). A sweep records an answer
+(`Writer.RecordSighting`, which keeps `first_at`) and, once it has looked up every row it did not
+see, clears the repo's rows it did not record again (`Writer.ClearSightings`): a manifest that read
+back, a lookup that failed, a row that is gone. The table is operational state, not derived:
+reindex never rebuilds it and never needs it to rebuild the derived tables, `ResetDerived` leaves
+it, and it is not backed up. Losing it only delays a removal by one more answer. The rows are
+keyed by the registry's manifest, not by an index row, so that one answer counts for every
+replica: runs of one repo never overlap (`reindex_runs`), and the 10 minutes keep two runs of
+two replicas' loops that follow each other from counting as two answers. Approved by the lead on
+2026-11-11 (#446).
 
 The referrers lock has no table. The `sha256-<hex>` tag-schema index of a subject is a
 read-modify-write of one tag, and OCI has no compare-and-swap for manifests: two referrers
@@ -265,8 +283,8 @@ the control-plane and derived tables, `0002_tag_claims.sql` the coordination tab
 `0006_auth_version.sql` the table `auth_version` with its row and the unique index
 `bindings_unique` (a binding made twice before it is kept once, the first),
 `0014_schema_requires.sql` the column `schema_migrations.requires` ([Upgrades](#upgrades)),
-`0017_index_cache_generations.sql` the table `index_cache_generations`, and `0018_replicas.sql`
-the table `replicas`.
+`0017_index_cache_generations.sql` the table `index_cache_generations`, `0018_replicas.sql`
+the table `replicas`, and `0019_prune_sightings.sql` the table `prune_sightings`.
 The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the
