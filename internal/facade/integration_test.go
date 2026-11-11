@@ -239,6 +239,15 @@ func TestIntegrationPassThrough(t *testing.T) {
 		t.Errorf("tags/list: %d %s, want %s", resp.StatusCode, body, want)
 	}
 	resp, body = request(t, http.MethodGet, r.a.URL+"/v2/_catalog", nil, 0)
+	if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(resp.Header.Get("WWW-Authenticate"), `scope="registry:catalog:*"`) {
+		t.Errorf("_catalog without a token: %d %q", resp.StatusCode, resp.Header.Get("WWW-Authenticate"))
+	}
+	resp, body = request(t, http.MethodGet, r.b.URL+"/v2/token?scope=registry:catalog:*", nil, 0)
+	var tok struct{ Token string }
+	if err := json.Unmarshal(body, &tok); resp.StatusCode != http.StatusOK || err != nil || tok.Token == "" {
+		t.Fatalf("token for the catalog: %d %s", resp.StatusCode, body)
+	}
+	resp, body = request(t, http.MethodGet, r.a.URL+"/v2/_catalog", nil, 0, "Authorization", "Bearer "+tok.Token)
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"`+r.name+`"`) {
 		t.Errorf("_catalog: %d %s", resp.StatusCode, body)
 	}

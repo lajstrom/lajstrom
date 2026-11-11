@@ -480,7 +480,10 @@ log, and is decided by the token's `access`, not by the Authorizer:
   and otherwise the repositories the token grants `pull` on.
 
 A request without a bearer runs as on the other routes: as the Basic user or anonymous, decided
-by the bindings ([Authorization](#authorization)), except that its `401`s carry the bearer
+by the bindings ([Authorization](#authorization)). `GET /v2/_catalog` without one is `401` with
+the challenge of `registry:catalog:*` to the anonymous principal, as `GET /v2/` is: `oras repo
+ls` asks for a token only when it is challenged, and would otherwise list what anonymous may
+read, after `oras login` too. The `401`s of a request without a bearer carry the bearer
 challenge, with the scope the request needed: `pull` for `GET` and `HEAD`, `pull,push` for the
 uploads and a manifest `PUT`, `delete` for `DELETE`.
 
