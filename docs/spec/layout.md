@@ -286,8 +286,10 @@ func ServeDocument(w http.ResponseWriter, r *http.Request, c *index.Cache, conte
 // before any request; HEAD is Provider.StatBlob; GET is Provider.OpenBlob with the client's
 // Range when it is one byte range, a redirect answered 307 with Location, a body streamed with
 // the backend's status, Content-Length, Content-Range and Accept-Ranges. Errors before the
-// response go to opts.Fail (nil: WriteError); the error returned is a stream that broke after
-// the headers, for the caller's log.
+// response go to opts.Fail (nil: WriteError); the error returned is a stream with
+// Content-Length that broke after the headers, for the caller's log. A stream without
+// Content-Length that breaks, and a whole blob whose bytes are not d, abort the response: a
+// panic wrapping http.ErrAbortHandler, which callers let through to net/http (INV-40, #568).
 type ServeBlobOptions struct {
     ContentType    string                   // required
     ETag           string                   // "" means the blob digest, quoted

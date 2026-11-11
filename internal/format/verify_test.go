@@ -57,7 +57,7 @@ func TestServeBlobDigest(t *testing.T) {
 			}}
 			mismatches := func() float64 { return testutil.ToFloat64(metrics.DownloadDigestMismatches.WithLabelValues("fake")) }
 			before := mismatches()
-			srv, aborts := blobServer(t, p, d, tt.http2)
+			srv, outcome := blobServer(t, p, d, tt.http2)
 			proto, got, err := download(t, srv, tt.rng)
 			if tt.http2 && proto != 0 && proto != 2 {
 				t.Errorf("protocol HTTP/%d, want HTTP/2", proto)
@@ -66,6 +66,7 @@ func TestServeBlobDigest(t *testing.T) {
 				if err != nil || !bytes.Equal(got, tt.body) || mismatches() != before {
 					t.Errorf("got %d bytes, %v, %v more mismatches; want the %d bytes whole", len(got), err, mismatches()-before, len(tt.body))
 				}
+				wantReturned(t, outcome, nil)
 				return
 			}
 			if err == nil || len(got) >= len(tt.body) {
@@ -74,7 +75,7 @@ func TestServeBlobDigest(t *testing.T) {
 			if len(tt.body) == size && (proto == 0 || len(got) == 0) {
 				t.Errorf("the response did not start (%v): want a short body before the reset", err)
 			}
-			wantAbort(t, aborts)
+			wantAbort(t, outcome, "do not have the digest")
 			if n := mismatches() - before; n != 1 {
 				t.Errorf("%v more mismatches, want 1", n)
 			}
@@ -100,24 +101,26 @@ func download(t *testing.T, srv *httptest.Server, rng string) (int, []byte, erro
 	return resp.ProtoMajor, body, err
 }
 
-// blobServer serves ServeBlob of the blob d from p over HTTP/1, or HTTP/2 over TLS. A panic of
-// the handler goes on to aborts and, as the server's recovery does, on to net/http as
-// http.ErrAbortHandler.
+// blobServer serves ServeBlob of the blob d from p over HTTP/1, or HTTP/2 over TLS. How each
+// ServeBlob ended goes to the channel: the error it returned, nil included, or its panic, which
+// goes on, as the server's recovery does, to net/http as http.ErrAbortHandler.
 func blobServer(t *testing.T, p provider.Provider, d digest.Digest, http2 bool) (*httptest.Server, chan any) {
 	t.Helper()
-	aborts := make(chan any, 1)
+	outcome := make(chan any, 1)
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if v := recover(); v != nil {
 				select {
-				case aborts <- v:
+				case outcome <- v:
 				default:
 				}
 				panic(http.ErrAbortHandler)
 			}
 		}()
-		if err := format.ServeBlob(w, r, p, blobName, d, format.ServeBlobOptions{ContentType: "application/octet-stream"}); err != nil {
-			t.Errorf("ServeBlob returned %v", err)
+		err := format.ServeBlob(w, r, p, blobName, d, format.ServeBlobOptions{ContentType: "application/octet-stream"})
+		select {
+		case outcome <- err:
+		default:
 		}
 	}))
 	srv.EnableHTTP2 = http2
@@ -127,20 +130,81 @@ func blobServer(t *testing.T, p provider.Provider, d digest.Digest, http2 bool) 
 		srv.Start()
 	}
 	t.Cleanup(srv.Close)
-	return srv, aborts
+	return srv, outcome
+}
+
+// served returns how ServeBlob ended in a handler of blobServer (nil: it returned nil).
+func served(t *testing.T, outcome chan any) any {
+	t.Helper()
+	select {
+	case v := <-outcome:
+		return v
+	case <-time.After(10 * time.Second):
+		t.Fatal("ServeBlob did not end")
+		return nil
+	}
+}
+
+// wantReturned fails t unless ServeBlob returned an error that wraps want, or nil for nil.
+func wantReturned(t *testing.T, outcome chan any, want error) {
+	t.Helper()
+	v := served(t, outcome)
+	err, ok := v.(error)
+	if v != nil && (!ok || errors.Is(err, http.ErrAbortHandler)) || !errors.Is(err, want) {
+		t.Errorf("ServeBlob ended with %v, want %v returned", v, want)
+	}
 }
 
 // wantAbort fails t unless ServeBlob panicked with an error that wraps http.ErrAbortHandler
-// and says that the bytes do not have the digest.
-func wantAbort(t *testing.T, aborts chan any) {
+// and says why.
+func wantAbort(t *testing.T, outcome chan any, why string) {
 	t.Helper()
-	select {
-	case v := <-aborts:
-		err, _ := v.(error)
-		if !errors.Is(err, http.ErrAbortHandler) || !strings.Contains(fmt.Sprint(v), "do not have the digest") {
-			t.Errorf("ServeBlob panicked with %v, want the mismatch wrapping http.ErrAbortHandler", v)
-		}
-	case <-time.After(10 * time.Second):
-		t.Error("ServeBlob did not abort")
+	v := served(t, outcome)
+	err, _ := v.(error)
+	if !errors.Is(err, http.ErrAbortHandler) || !strings.Contains(fmt.Sprint(v), why) {
+		t.Errorf("ServeBlob ended with %v, want a panic wrapping http.ErrAbortHandler that says %q", v, why)
+	}
+}
+
+// TestServeBlobBrokenStream serves a blob from a fake registry that drops the stream halfway,
+// over real connections (#568). Of unknown size, it went out chunked (HTTP/1) or without
+// content-length (HTTP/2): ServeBlob aborts the response, and the client gets half the bytes
+// and an error, the connection closed or the stream reset, not a clean end that it would take
+// for the whole blob. With Content-Length, ServeBlob returns the error and net/http closes the
+// connection; the client sees the short body by the length.
+func TestServeBlobBrokenStream(t *testing.T) {
+	const size = 1 << 20
+	whole := bytes.Repeat([]byte("lajstrom"), size/8)
+	d := digest.FromBytes(whole)
+	for _, tt := range []struct {
+		name    string
+		size    int64 // the Size of the backend's answer; -1: unknown
+		http2   bool
+		aborted bool
+	}{
+		{name: "chunked", size: -1, aborted: true},
+		{name: "unknown size over HTTP/2", size: -1, http2: true, aborted: true},
+		{name: "with Content-Length", size: size},
+		{name: "with Content-Length over HTTP/2", size: size, http2: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &blobProvider{Fake: &providertest.Fake{}, open: func(context.Context, string, digest.Digest, string, bool) (provider.Blob, error) {
+				dropped := io.MultiReader(bytes.NewReader(whole[:size/2]), &brokenBody{err: io.ErrUnexpectedEOF})
+				return provider.Blob{Body: io.NopCloser(dropped), Size: tt.size, Digest: d}, nil
+			}}
+			srv, outcome := blobServer(t, p, d, tt.http2)
+			proto, got, err := download(t, srv, "")
+			if want := map[bool]int{false: 1, true: 2}[tt.http2]; proto != want {
+				t.Errorf("protocol HTTP/%d, want HTTP/%d", proto, want)
+			}
+			if err == nil || len(got) == 0 || len(got) > size/2 {
+				t.Errorf("got %d bytes, %v; want at most %d and an error, not a clean end", len(got), err, size/2)
+			}
+			if tt.aborted {
+				wantAbort(t, outcome, "no Content-Length, the response is aborted")
+				return
+			}
+			wantReturned(t, outcome, io.ErrUnexpectedEOF)
+		})
 	}
 }
