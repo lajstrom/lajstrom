@@ -24,9 +24,9 @@ import (
 // newReindexCmd returns reindex, which rebuilds the derived index tables from the manifests in
 // the registries (#29; docs/operations.md, Reindex). It runs in this process, under the lock
 // that keeps it apart from a run of the same repos on a replica, as the anonymous principal
-// with the source cli, like admin. It assumes that lajstrom migrate ran. The exit status is not
-// zero when the run failed or another run holds the lock; the manifests that could not be read
-// or checked are in the report.
+// with the source cli, like admin. It needs a migrated database (openMigrated). The exit status
+// is not zero when the run failed or another run holds the lock; the manifests that could not be
+// read or checked are in the report.
 func newReindexCmd(a *app) *cobra.Command {
 	var (
 		repoFlag    string
@@ -61,7 +61,7 @@ func newReindexCmd(a *app) *cobra.Command {
 					return err
 				}
 			}
-			st, err := openStore(ctx, c.Database)
+			st, err := openMigrated(ctx, c.Database)
 			if err != nil {
 				return err
 			}

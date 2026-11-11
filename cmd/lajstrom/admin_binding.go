@@ -106,7 +106,7 @@ func newBindingDeleteCmd(a *app) *cobra.Command {
 // withBindings opens the index database of the configuration, runs fn with the bindings service
 // over it, and closes the database.
 func (a *app) withBindings(ctx context.Context, fn func(context.Context, *auth.Bindings) error) (err error) {
-	st, err := openStore(ctx, a.cfg.Database)
+	st, err := openMigrated(ctx, a.cfg.Database)
 	if err != nil {
 		return err
 	}
