@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -21,6 +22,15 @@ type app struct {
 
 	cfg *config.Config // loaded only for the commands marked with needsConfig
 	log *slog.Logger
+	now func() time.Time // the clock checkClock compares with the database's; nil means time.Now
+}
+
+// clock returns the time of a.now.
+func (a *app) clock() time.Time {
+	if a.now == nil {
+		return time.Now()
+	}
+	return a.now()
 }
 
 // needsConfig marks a command whose PersistentPreRunE loads and validates the configuration.

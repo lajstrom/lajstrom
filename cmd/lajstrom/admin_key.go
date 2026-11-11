@@ -200,7 +200,7 @@ func (a *app) withMaster(ctx context.Context, hint string, fn func(context.Conte
 	if err != nil {
 		return fmt.Errorf("admin key needs the master key: %w", err)
 	}
-	st, err := openMigrated(ctx, a.cfg.Database)
+	st, err := a.openMigrated(ctx)
 	if err != nil {
 		return err
 	}

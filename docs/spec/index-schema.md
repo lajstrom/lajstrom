@@ -175,7 +175,8 @@ starts it then. A replica that stood still for that long finds its row
 deleted at its next beat and writes it again; on SQLite, while another replica's row is fresh,
 that is refused, and `/-/readyz` answers `503` until it is not. On Postgres the rows of every
 replica coexist. At its start and at every beat a replica also compares its clock with the
-database's (`DatabaseTime`; [operations.md](../operations.md#clocks)).
+database's (`DatabaseTime`; [operations.md](../operations.md#clocks)), as `reindex` and `admin`
+do before they run.
 
 A `prune_sightings` row is the registry's answer `404 MANIFEST_UNKNOWN` to the digest of an index
 row's manifest (`Provider.StatManifest`, `provider.ErrManifestUnknown`), which reindex waits on
