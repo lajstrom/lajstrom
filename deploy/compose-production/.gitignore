@@ -1,1 +1,5 @@
+# The secrets, the local .env (LAJSTROM_IMAGE, LAJSTROM_PORT) and the database dumps of
+# docs/deploy/compose.md.
 secrets/
+.env
+*.dump

@@ -14,8 +14,9 @@
 #   secrets/postgres-password     the password of the Postgres user lajstrom
 #   secrets/registry.htpasswd     the bcrypt htpasswd line of the registry user lajstrom
 #
-# A registry you already run (Zot, Harbor, ECR, GitLab): delete the registry service and its
-# volume, and point registries[0] of lajstrom.yaml at it (docs/registries/).
+# A registry you already run (Zot, Harbor, ECR, GitLab): delete the registry service, its
+# volume, its secret and the registry entry of depends_on below, and point registries[0] of
+# lajstrom.yaml at it (docs/registries/).
 
 name: lajstrom
 
