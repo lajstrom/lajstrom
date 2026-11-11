@@ -175,7 +175,7 @@ database's (`DatabaseTime`; [operations.md](../operations.md#clocks)).
 A `prune_sightings` row is the registry's answer `404 MANIFEST_UNKNOWN` to the digest of an index
 row's manifest (`Provider.StatManifest`, `provider.ErrManifestUnknown`), which reindex waits on
 before it removes the row: it removes it only on another such answer at least 10 minutes after
-`first_at` (Invariants and rules; guarantees.md, G-5). A sweep records an answer
+`first_at` (Invariants and rules; guarantees.md, INV-5). A sweep records an answer
 (`Writer.RecordSighting`, which keeps `first_at`) and, once it has looked up every row it did not
 see, clears the repo's rows it did not record again (`Writer.ClearSightings`): a manifest that read
 back, a lookup that failed, a row that is gone. The table is operational state, not derived:
