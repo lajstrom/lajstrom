@@ -42,7 +42,7 @@ func newBindingCreateCmd(a *app) *cobra.Command {
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return a.withBindings(cmd.Context(), func(ctx context.Context, bindings *auth.Bindings) error {
-				b, err := bindings.Create(ctx, principal, role, mask, auth.Origin{Source: api.SourceCLI})
+				b, err := bindings.Create(ctx, principal, role, mask, auth.Origin(cliOrigin()))
 				if err != nil {
 					return err
 				}
@@ -97,7 +97,7 @@ func newBindingDeleteCmd(a *app) *cobra.Command {
 				return fmt.Errorf("binding id %q: want the number of the ID column of admin binding list", args[0])
 			}
 			return a.withBindings(cmd.Context(), func(ctx context.Context, bindings *auth.Bindings) error {
-				return bindings.Delete(ctx, id, auth.Origin{Source: api.SourceCLI})
+				return bindings.Delete(ctx, id, auth.Origin(cliOrigin()))
 			})
 		},
 	}

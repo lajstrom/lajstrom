@@ -87,12 +87,12 @@ func wantPassword(t *testing.T, dsn, user, password string) {
 	}
 }
 
-// TestAdminUser runs the bootstrap and the life of a user: create with --admin from the
-// environment, a conflict, create from standard input, list, disable, enable, set-password;
-// the binding, the hashes and the audit events in the database.
+// TestAdminUser runs the bootstrap and the life of a user: create with --admin, a conflict,
+// create from standard input, list, disable, enable, set-password; the binding, the hashes and
+// the audit events in the database.
 func TestAdminUser(t *testing.T) {
 	cfg, dsn := writeRepoConfig(t, t.TempDir())
-	env := map[string]string{bootstrapEnv: "admin-password"}
+	stdin := []string{"--password-stdin"}
 	steps := []struct {
 		env     map[string]string
 		stdin   string
@@ -101,9 +101,9 @@ func TestAdminUser(t *testing.T) {
 		wantOut string
 	}{
 		{args: []string{"migrate"}, wantOut: "applied 0001"},
-		{env: env, args: []string{"admin", "user", "create", "--name", "admin", "--admin"},
+		{stdin: "admin-password", args: append([]string{"admin", "user", "create", "--name", "admin", "--admin"}, stdin...),
 			wantOut: `","name":"admin","kind":"local","disabled":false,"createdAt":"`},
-		{env: env, args: []string{"admin", "user", "create", "--name", "admin"}, wantErr: "user admin already exists"},
+		{args: []string{"admin", "user", "create", "--name", "admin"}, wantErr: "user admin already exists"},
 		{stdin: "alice-password\n", args: []string{"admin", "user", "create", "--name", "alice", "--password-stdin"},
 			wantOut: `","name":"alice","kind":"local","disabled":false,`},
 		{args: []string{"admin", "user", "disable", "alice"}},
@@ -115,16 +115,18 @@ func TestAdminUser(t *testing.T) {
 		{args: []string{"admin", "user", "list"}, wantOut: "\nalicia  0"},
 		{args: []string{"admin", "user", "rename", "alicia", "admin"}, wantErr: "user admin already exists"},
 		{args: []string{"admin", "user", "delete", "admin"}, wantErr: "the last enabled user with an admin binding"},
-		{env: map[string]string{bootstrapEnv: "new-alice-password"}, args: []string{"admin", "user", "set-password", "alicia"}},
+		{stdin: "new-alice-password\n", args: append([]string{"admin", "user", "set-password", "alicia"}, stdin...)},
 		{args: []string{"admin", "user", "rename", "alicia", "alice"}},
-		{env: map[string]string{bootstrapEnv: "new-alice-password"}, args: []string{"admin", "user", "set-password", "alice"}},
+		{stdin: "new-alice-password", args: append([]string{"admin", "user", "set-password", "alice"}, stdin...)},
 		{args: []string{"admin", "user", "disable", "nobody"}, wantErr: "user nobody does not exist"},
 		{args: []string{"admin", "user", "enable", "nobody"}, wantErr: "user nobody does not exist"},
-		{env: env, args: []string{"admin", "user", "set-password", "nobody"}, wantErr: "user nobody does not exist"},
-		{env: env, args: []string{"admin", "user", "create", "--name", "Bob"}, wantErr: `name: "Bob" must be lowercase`},
-		{env: map[string]string{bootstrapEnv: "short"}, args: []string{"admin", "user", "create", "--name", "bob"},
+		{args: []string{"admin", "user", "set-password", "nobody"}, wantErr: "user nobody does not exist"},
+		{args: []string{"admin", "user", "create", "--name", "Bob"}, wantErr: `name: "Bob" must be lowercase`},
+		{stdin: "short", args: append([]string{"admin", "user", "create", "--name", "bob"}, stdin...),
 			wantErr: "password: must be at least 8 bytes"},
-		{env: env, args: []string{"admin", "user", "create"}, wantErr: `required flag(s) "name" not set`},
+		{args: []string{"admin", "user", "create"}, wantErr: `required flag(s) "name" not set`},
+		{env: map[string]string{removedEnv: "admin-password"}, stdin: "bob-password", args: append([]string{"admin", "user", "create", "--name", "bob"}, stdin...),
+			wantErr: "LAJSTROM_ADMIN_PASSWORD is not read any more: pass the password on standard input with --password-stdin"},
 		{args: []string{"admin", "user", "disable"}, wantErr: "accepts 1 arg(s)"},
 	}
 	for _, s := range steps {
@@ -177,8 +179,8 @@ func (c userCLI) create(t *testing.T, env map[string]string, in io.Reader, name 
 	return stderr, err
 }
 
-// TestAdminUserPasswordStdin checks the environment and --password-stdin: the environment
-// first, then the whole of standard input without the trailing newline.
+// TestAdminUserPasswordStdin checks --password-stdin: the whole of standard input without the
+// trailing newline.
 func TestAdminUserPasswordStdin(t *testing.T) {
 	c := newUserCLI(t)
 	tests := []struct {
@@ -188,7 +190,7 @@ func TestAdminUserPasswordStdin(t *testing.T) {
 		stored  string // the password stored; "" when the create fails
 		wantErr string
 	}{
-		{name: "environment before stdin", env: map[string]string{bootstrapEnv: "env-password"}, in: strings.NewReader("stdin-password\n"), stored: "env-password"},
+		{name: "with a newline", in: strings.NewReader("stdin-password\n"), stored: "stdin-password"},
 		{name: "without CR LF", in: strings.NewReader("pass word with spaces\r\n"), stored: "pass word with spaces"},
 		{name: "without a newline", in: strings.NewReader("no-newline-at-all"), stored: "no-newline-at-all"},
 		{name: "inner newlines kept", in: strings.NewReader("two\nlines!\n"), stored: "two\nlines!"},
@@ -258,7 +260,7 @@ func TestAdminUserPrompt(t *testing.T) {
 }
 
 // TestAdminUserNoPassword checks the error when no source gives a password, which names the
-// three ways, and that an invalid or taken name is refused before any prompt.
+// two ways, and that an invalid or taken name is refused before any prompt.
 func TestAdminUserNoPassword(t *testing.T) {
 	c := newUserCLI(t)
 	for _, in := range []io.Reader{strings.NewReader("ignored-password\n"), ttyFile(t)} {
@@ -267,13 +269,13 @@ func TestAdminUserNoPassword(t *testing.T) {
 			t.Errorf("error = %v, want %v", err, errNoPassword)
 		}
 	}
-	for _, way := range []string{bootstrapEnv, "--password-stdin", "terminal"} {
+	for _, way := range []string{"--password-stdin", "terminal"} {
 		if !strings.Contains(errNoPassword.Error(), way) {
 			t.Errorf("%q does not name %s", errNoPassword, way)
 		}
 	}
 
-	if _, err := c.create(t, map[string]string{bootstrapEnv: "taken-password"}, nil, "taken"); err != nil {
+	if _, err := c.create(t, nil, strings.NewReader("taken-password"), "taken", "--password-stdin"); err != nil {
 		t.Fatal(err)
 	}
 	fakeTerminal(t, errors.New("prompted"))
@@ -302,4 +304,38 @@ func TestAdminUserWithoutMigrate(t *testing.T) {
 	if _, _, err := run(t, nil, "admin", "user", "list", "--config", filepath.Join(t.TempDir(), "missing.yaml")); err == nil {
 		t.Error("list without a configuration succeeded")
 	}
+}
+
+// TestAdminUserRecovery: with every admin disabled, nobody can manage the server over HTTP;
+// admin user create --admin against the database makes a new admin, and set-password gives a
+// disabled admin a new password, each audited with the source cli and this host (#440).
+func TestAdminUserRecovery(t *testing.T) {
+	c := newUserCLI(t)
+	for _, name := range []string{"lost", "gone"} {
+		if _, err := c.create(t, nil, strings.NewReader(name+"-password"), name, "--admin", "--password-stdin"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st := openTestStore(t, c.dsn)
+	for _, name := range []string{"lost", "gone"} { // past the guard of the last admin, as by hand in the database
+		u, err := st.GetUser(context.Background(), name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		u.Disabled = true
+		if err := st.UpdateUser(context.Background(), u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := c.create(t, nil, strings.NewReader("rescue-password"), "rescue", "--admin", "--password-stdin"); err != nil {
+		t.Fatalf("admin user create --admin with every admin disabled: %v", err)
+	}
+	if _, _, err := runIn(t, nil, strings.NewReader("found-password"), "admin", "user", "set-password", "lost", "--password-stdin",
+		"--config", c.cfg); err != nil {
+		t.Fatal(err)
+	}
+	wantPassword(t, c.dsn, "rescue", "rescue-password")
+	wantPassword(t, c.dsn, "lost", "found-password")
+	wantCLIAudit(t, c.dsn, auth.ActionUserCreate, 3)
+	wantCLIAudit(t, c.dsn, auth.ActionUserPassword, 1)
 }

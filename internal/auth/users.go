@@ -54,6 +54,9 @@ type Origin struct {
 	// RequestID is the id of the HTTP request; the audit details carry it as "requestId" when
 	// it is set.
 	RequestID string
+	// Host is the host name of the machine a CLI change ran on; the audit details carry it as
+	// "host" when it is set.
+	Host string
 }
 
 // Users manages the local users of the control plane (docs/spec/index-schema.md, users).
@@ -381,6 +384,9 @@ func recordAudit(ctx context.Context, w index.Writer, aw audit.Writer, ev index.
 	}
 	if o.RequestID != "" {
 		details["requestId"] = o.RequestID
+	}
+	if o.Host != "" {
+		details["host"] = o.Host
 	}
 	raw, err := json.Marshal(details)
 	if err != nil {

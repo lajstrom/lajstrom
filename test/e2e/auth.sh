@@ -83,8 +83,9 @@ credentials new "$user" "$pw2"
 credentials wrong "$user" "$pw1-wrong"
 printf 'auth e2e %s\n' "$user" >"$work/file"
 
-# The bootstrap command: a user from LAJSTROM_ADMIN_PASSWORD, printed as JSON without the hash.
-out="$(LAJSTROM_ADMIN_PASSWORD="$pw1" "${lajstrom[@]}" admin user create --name "$user")"
+# The command against the database: a user with the password of standard input, printed as JSON
+# without the hash.
+out="$(printf '%s' "$pw1" | "${lajstrom[@]}" admin user create --name "$user" --password-stdin)"
 expect "admin user create name" "$user" "$(jq -r .name <<<"$out")"
 expect "admin user create disabled" false "$(jq -r .disabled <<<"$out")"
 case "$out" in *argon2*) fail "admin user create printed the hash" ;; esac
@@ -116,7 +117,7 @@ ok "GET /api/v1/whoami with a wrong password: 401"
 x04="$user-x"
 client=(-H "X-Forwarded-For: 198.51.100.$((RANDOM % 100))")
 pwx="$(password)"
-out="$(LAJSTROM_ADMIN_PASSWORD="$pwx" "${lajstrom[@]}" admin user create --name "$x04")"
+out="$(printf '%s' "$pwx" | "${lajstrom[@]}" admin user create --name "$x04" --password-stdin)"
 uidx="$(jq -r .uid <<<"$out")"
 credentials x04 "$x04" "$pwx"
 credentials x04wrong "$x04" "$pwx-wrong"
@@ -177,7 +178,7 @@ put old
 expect "PUT after enable status" 201 "$status"
 ok "admin user enable $user; the same PUT: 201"
 
-LAJSTROM_ADMIN_PASSWORD="$pw2" "${lajstrom[@]}" admin user set-password "$user"
+printf '%s' "$pw2" | "${lajstrom[@]}" admin user set-password "$user" --password-stdin
 put old
 expect "PUT with the old password status" 401 "$status"
 ok "admin user set-password $user; the old password: 401"
@@ -207,7 +208,7 @@ ok "DELETE /raw/$repo/$path as $user: 204, the maintainer binding holds across t
 "${lajstrom[@]}" admin user delete "$user" >/dev/null
 req new GET "$base/api/v1/whoami"
 expect "whoami after the delete" 401 "$status"
-out="$(LAJSTROM_ADMIN_PASSWORD="$pw1" "${lajstrom[@]}" admin user create --name "$user")"
+out="$(printf '%s' "$pw1" | "${lajstrom[@]}" admin user create --name "$user" --password-stdin)"
 [ "$(jq -r .uid <<<"$out")" != "$uid" ] || fail "the name $user came back with the deleted user's uid $uid"
 ok "admin user delete $user: whoami 401; admin user create --name $user: a new uid $(jq -r .uid <<<"$out"), disabled on exit"
 echo "PASS auth e2e against $base as $was"

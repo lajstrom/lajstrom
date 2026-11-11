@@ -20,8 +20,8 @@ func tokenCLI(t *testing.T) (cfg, dsn string) {
 		{args: []string{"migrate"}},
 		{args: []string{"admin", "repo", "create", "raw/scratch", "--registry", "local"}},
 	})
-	env := map[string]string{bootstrapEnv: "alice-password"}
-	if _, _, err := runIn(t, env, strings.NewReader(""), "admin", "user", "create", "--name", "alice", "--config", cfg); err != nil {
+	if _, _, err := runIn(t, nil, strings.NewReader("alice-password"), "admin", "user", "create", "--name", "alice", "--password-stdin",
+		"--config", cfg); err != nil {
 		t.Fatal(err)
 	}
 	return cfg, dsn

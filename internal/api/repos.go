@@ -114,6 +114,9 @@ type Origin struct {
 	// RequestID is the id of the HTTP request (server.RequestID); the audit details carry it as
 	// "requestId" when it is set.
 	RequestID string
+	// Host is the host name of the machine lajstrom admin ran on; the audit details carry it as
+	// "host" when it is set.
+	Host string
 }
 
 // Audit actions of the repo changes (docs/spec/index-schema.md, audit).
@@ -704,6 +707,9 @@ func (s *Repos) record(ctx context.Context, w index.Writer, action string, row *
 	}
 	if o.RequestID != "" {
 		details["requestId"] = o.RequestID
+	}
+	if o.Host != "" {
+		details["host"] = o.Host
 	}
 	raw, err := json.Marshal(details)
 	if err != nil {
