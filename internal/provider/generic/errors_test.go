@@ -72,6 +72,10 @@ func TestTranslate(t *testing.T) {
 			want: provider.ErrUnavailable},
 		{name: "broken pipe", err: &url.Error{Op: "Put", URL: backend.String(), Err: &net.OpError{Op: "write", Net: "tcp", Err: os.NewSyscallError("write", syscall.EPIPE)}},
 			want: provider.ErrUnavailable},
+		{name: "a body written after the reset closed the connection",
+			err: &url.Error{Op: "Patch", URL: backend.String(), Err: &net.OpError{Op: "readfrom", Net: "tcp",
+				Err: &net.OpError{Op: "write", Net: "tcp", Err: net.ErrClosed}}},
+			want: provider.ErrUnavailable},
 		{name: "context canceled", err: context.Canceled},
 		{name: "plain error", err: errors.New("connection reset by peer")},
 	}
