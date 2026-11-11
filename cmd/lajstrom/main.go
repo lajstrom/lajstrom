@@ -5,13 +5,16 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 )
 
 func main() {
 	if err := newRootCmd(os.LookupEnv).ExecuteContext(context.Background()); err != nil {
-		fmt.Fprintln(os.Stderr, "lajstrom:", err)
+		if !errors.As(err, new(exitCode)) {
+			fmt.Fprintln(os.Stderr, "lajstrom:", err)
+		}
 		os.Exit(exitStatus(err))
 	}
 }
