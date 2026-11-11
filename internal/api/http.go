@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -390,7 +391,8 @@ func (b *patchBody) request() (UpdateRequest, error) {
 
 // decodeBody reads the JSON object of the request body into v: at most maxBody bytes, no field
 // that v does not have, nothing after the object. Its errors are for the client and name the
-// field when there is one; a body that is too large is a *http.MaxBytesError (413).
+// field when there is one; a body that is too large is a *http.MaxBytesError (413), one that
+// server.stallTimeout cut is os.ErrDeadlineExceeded (408).
 func decodeBody(w http.ResponseWriter, r *http.Request, v any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
 	dec.DisallowUnknownFields()
@@ -406,13 +408,17 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) error {
 	return invalid("body: must be one JSON object, with nothing after it")
 }
 
-// bodyError turns an error of decodeBody into one for the client.
+// bodyError turns an error of decodeBody into one for the client. A body that
+// server.stallTimeout cut keeps its cause, which format.StatusOf answers 408 (#576), with the
+// fixed message of format.ClientMessage: the cause names the connection's addresses (#639).
 func bodyError(err error) error {
 	var (
 		tooLarge *http.MaxBytesError
 		typeErr  *json.UnmarshalTypeError
 	)
 	switch {
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		return &clientError{msg: format.ClientMessage(err), err: err}
 	case errors.As(err, &tooLarge):
 		return &clientError{msg: fmt.Sprintf("body: larger than %d bytes", maxBody), err: err}
 	case errors.Is(err, io.EOF):

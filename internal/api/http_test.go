@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/format/formattest"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/server"
 )
@@ -136,6 +138,32 @@ func TestOversizedBody(t *testing.T) {
 	} {
 		wantError(t, f.do(tt.method, tt.target, big, auth.Principal{}), http.StatusRequestEntityTooLarge, codeInvalid,
 			"body: larger than 65536 bytes")
+	}
+}
+
+// TestStalledBody: a body that server.stallTimeout cuts is the client's doing, 408 INVALID with
+// the fixed message of format.ClientMessage, which does not name the connection (#639),
+// wherever the read stops: before the object, inside it, or after it, where decodeBody looks
+// for more.
+func TestStalledBody(t *testing.T) {
+	f := newFixture(t, Options{})
+	f.create(t, "raw", "scratch")
+	obj := `{"format":"raw","name":"stalled","registry":"local"}`
+	for _, sent := range []string{"", obj[:20], obj} {
+		for _, tt := range []struct{ method, target string }{
+			{http.MethodPost, "/api/v1/repos"},
+			{http.MethodPatch, "/api/v1/repos/raw/scratch"},
+		} {
+			rr := httptest.NewRecorder()
+			f.h.ServeHTTP(rr, httptest.NewRequest(tt.method, tt.target, formattest.Stalled(strings.NewReader(sent))))
+			wantError(t, rr, http.StatusRequestTimeout, codeInvalid, format.ClientMessage(formattest.ErrStalled))
+			if strings.Contains(rr.Body.String(), formattest.ErrStalled.Error()) {
+				t.Errorf("%s %s after %q: the message names the connection: %s", tt.method, tt.target, sent, rr.Body)
+			}
+		}
+	}
+	if repos, _ := f.st.ListRepos(context.Background(), ""); len(repos) != 1 {
+		t.Errorf("repos = %+v, want scratch alone", repos)
 	}
 }
 
@@ -494,7 +522,7 @@ func TestWriteJSONFailure(t *testing.T) {
 func TestCodeOf(t *testing.T) {
 	for status, want := range map[int]string{
 		400: codeInvalid, 401: codeUnauthenticated, 403: codeForbidden, 404: codeNotFound, 405: codeInvalid,
-		409: codeConflict, 412: codeConflict, 413: codeInvalid, 429: codeUnavailable, 500: codeInternal, 501: codeUnavailable,
+		408: codeInvalid, 409: codeConflict, 412: codeConflict, 413: codeInvalid, 429: codeUnavailable, 500: codeInternal, 501: codeUnavailable,
 		502: codeUnavailable, 503: codeUnavailable, 504: codeInternal,
 	} {
 		if got := codeOf(status); got != want {
