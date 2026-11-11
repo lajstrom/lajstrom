@@ -499,6 +499,43 @@ func TestTokenAcrossReplicas(t *testing.T) {
 		"Authorization", "Bearer "+raw), http.StatusUnauthorized)
 }
 
+// TestTokenOfANewKey checks #578: after lajstrom admin key rotates the token key, and after it
+// drops it and the replica makes the next, a token of the new key verifies at once on the
+// replica that issued it; another replica, which loaded the keys within the second, refuses it
+// until its next reload.
+func TestTokenOfANewKey(t *testing.T) {
+	e := newEnv(t, envOptions{})
+	e.seedPackage("hello", "v1")
+	m, err := keys.ParseMaster(strings.Repeat("0123456789abcdef", 4))
+	must(t, err)
+	tokens := func() *keys.Tokens {
+		tk, err := keys.NewTokens(keys.TokenOptions{Index: e.st, Master: m, Now: e.clock.Now, Log: slog.New(slog.DiscardHandler)})
+		must(t, err)
+		return tk
+	}
+	a, b, admin := e.replicaWith(tokens()), e.replicaWith(tokens()), tokens()
+	tags := func(h http.Handler, raw string) *httptest.ResponseRecorder {
+		return e.do(h, http.MethodGet, "/v2/raw/assets/hello/tags/list", nil, "Authorization", "Bearer "+raw)
+	}
+	raw := e.getToken(a, "alice", "repository:raw/assets/hello:pull")
+	wantStatus(t, "the first token on A", tags(a, raw), http.StatusOK)
+	wantStatus(t, "the first token on B", tags(b, raw), http.StatusOK)
+
+	_, err = admin.RotateToken(t.Context(), false)
+	must(t, err)
+	raw = e.getToken(a, "alice", "repository:raw/assets/hello:pull")
+	wantStatus(t, "a token of the rotated key on A at once", tags(a, raw), http.StatusOK)
+	wantStatus(t, "the token on B within the second of its load", tags(b, raw), http.StatusUnauthorized)
+	e.clock.advance(time.Second)
+	wantStatus(t, "the token on B a second later", tags(b, raw), http.StatusOK)
+	wantStatus(t, "the token on A a second later", tags(a, raw), http.StatusOK) // A loads now
+
+	_, err = admin.DropToken(t.Context())
+	must(t, err)
+	raw = e.getToken(a, "alice", "repository:raw/assets/hello:pull")
+	wantStatus(t, "a token of the key A made at once", tags(a, raw), http.StatusOK)
+}
+
 // TestRequestScope is the table of the scope of the challenge.
 func TestRequestScope(t *testing.T) {
 	for _, tt := range []struct{ method, target, want string }{

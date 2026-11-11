@@ -122,7 +122,8 @@ const apiVersionHeader = "Docker-Distribution-API-Version"
 // the OCI name <repo prefix>/<path>. Errors are the JSON of the distribution spec; a 401 has
 // the bearer challenge. Every route but /v2/token verifies the bearer a request carries, and
 // decides a request with one by its access claims. The handler keeps no state between
-// requests but the verification keys, reloaded from Tokens, and its count of the live upload
+// requests but the verification keys, reloaded from Tokens and told the key of each token it
+// issues, so that the token verifies here at once, and its count of the live upload
 // sessions (quota.go), which is per replica: an upload session is a row of the index, so any
 // replica continues it, and a token of one replica verifies on another. New panics when
 // o.Index or o.Tokens is nil.
@@ -154,9 +155,10 @@ func New(o Options) http.Handler {
 	if o.MaxCreatedBehind <= 0 {
 		o.MaxCreatedBehind = defaultMaxCreatedBehind
 	}
+	verifier := token.NewVerifier(token.Options{Keys: o.Tokens, Now: o.Now, Log: o.Log})
 	h := &handler{o: o, deps: format.Deps{Auth: o.Auth},
-		issuer:   token.NewIssuer(token.Options{Keys: o.Tokens, Now: o.Now, Log: o.Log}),
-		verifier: token.NewVerifier(token.Options{Keys: o.Tokens, Now: o.Now, Log: o.Log}),
+		issuer:   token.NewIssuer(token.Options{Keys: o.Tokens, Verifier: verifier, Now: o.Now, Log: o.Log}),
+		verifier: verifier,
 		uploads:  liveUploads{perRepo: o.UploadSessionsPerRepo, perPrincipal: o.UploadSessionsPerPrincipal}}
 	h.endpoints = map[routeKind]map[string]endpoint{
 		routeManifest: {

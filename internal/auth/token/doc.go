@@ -7,7 +7,9 @@
 // fingerprint as kid, iss and aud the service, sub the principal's canonical form, exp 20
 // minutes after iat, a random jti, and the access claims. The Verifier pins the algorithm of the
 // key the kid names before it verifies, so a token can name neither none nor HMAC nor another
-// key's algorithm, and keeps the keys in memory, reloaded at most once a second.
+// key's algorithm, and keeps the keys in memory, reloaded at most once a second; the Issuer of
+// the same replica hands it the key of each token it signs, so that the token verifies there
+// at once.
 //
 // internal/auth does not import this package; internal/facade and internal/server do.
 package token

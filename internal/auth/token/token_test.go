@@ -62,15 +62,20 @@ func must(t testing.TB, err error) {
 }
 
 // fakeKeys signs with signer and verifies with verifiers, and counts the loads; err fails them.
+// read, when set, runs as TokenSigner reads the signer, before it returns it.
 type fakeKeys struct {
 	mu        sync.Mutex
 	signer    *keys.TokenKey
 	verifiers []*keys.TokenKey
 	loads     int
 	err       error
+	read      func()
 }
 
 func (f *fakeKeys) TokenSigner(context.Context) (*keys.TokenKey, error) {
+	if f.read != nil {
+		f.read()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.signer, f.err
@@ -442,6 +447,122 @@ func TestVerifierLoadFails(t *testing.T) {
 	if _, err := fresh.Verify(t.Context(), tok.Raw, service); !errors.Is(err, errDown) || errors.Is(err, ErrInvalidToken) {
 		t.Errorf("no keys loaded yet and the load fails: %v, want the error of the keys", err)
 	}
+}
+
+// linked returns an Issuer that tells a Verifier its keys, as on one replica, both over k and
+// one clock at t0.
+func linked(k Keys) (*Issuer, *Verifier, *clock) {
+	c := &clock{now: t0}
+	v := NewVerifier(Options{Keys: k, Now: c.Now, Log: slog.New(slog.DiscardHandler)})
+	return NewIssuer(Options{Keys: k, Verifier: v, Now: c.Now}), v, c
+}
+
+// TestVerifierLearnsIssuedKey checks #578: a token of a key rotated in within the second of the
+// last load verifies at once on the replica that issued it, without a load when the load is
+// older than the issue and with one when it is not, while a replica that did not issue it
+// refuses it until its next reload, a second after its last.
+func TestVerifierLearnsIssuedKey(t *testing.T) {
+	old := newKey(t, keys.TokenES256)
+	fk := &fakeKeys{signer: old, verifiers: []*keys.TokenKey{old}}
+	issuer, verifier, c := linked(fk)
+	other := NewVerifier(Options{Keys: fk, Now: c.Now, Log: slog.New(slog.DiscardHandler)})
+	first, err := issuer.Issue(t.Context(), alice, service, nil)
+	must(t, err)
+	for _, v := range []*Verifier{verifier, other} {
+		_, err := v.Verify(t.Context(), first.Raw, service)
+		must(t, err)
+	}
+	if fk.loadCount() != 2 {
+		t.Fatalf("%d loads, want one per verifier", fk.loadCount())
+	}
+
+	rotated := newKey(t, keys.TokenES256)
+	fk.set(rotated, rotated, old)
+	tok, err := issuer.Issue(t.Context(), alice, service, nil) // at the time of the last load
+	must(t, err)
+	if _, err := verifier.Verify(t.Context(), tok.Raw, service); err != nil || fk.loadCount() != 3 {
+		t.Errorf("a key read at the time of the last load: %v, %d loads; want valid after one load", err, fk.loadCount())
+	}
+
+	c.set(t0.Add(100 * time.Millisecond))
+	again := newKey(t, keys.TokenEdDSA)
+	fk.set(again, again, rotated, old)
+	tok, err = issuer.Issue(t.Context(), alice, service, nil)
+	must(t, err)
+	if _, err := verifier.Verify(t.Context(), tok.Raw, service); err != nil || fk.loadCount() != 3 {
+		t.Errorf("a key read after the last load: %v, %d loads; want valid without a load", err, fk.loadCount())
+	}
+	if _, err := other.Verify(t.Context(), tok.Raw, service); !errors.Is(err, ErrInvalidToken) || fk.loadCount() != 3 {
+		t.Errorf("the token on another replica within the second of its load: %v, want refused without a load", err)
+	}
+
+	c.set(t0.Add(time.Second))
+	if _, err := other.Verify(t.Context(), tok.Raw, service); err != nil {
+		t.Errorf("the token on another replica a second after its load: %v", err)
+	}
+}
+
+// TestVerifierLearnsNoDroppedKey checks that a key the issuer read, then dropped before the
+// verifier loaded the keys again, does not come back: the token is refused.
+func TestVerifierLearnsNoDroppedKey(t *testing.T) {
+	old, dropped := newKey(t, keys.TokenES256), newKey(t, keys.TokenES256)
+	fk := &fakeKeys{signer: old, verifiers: []*keys.TokenKey{old}}
+	issuer, verifier, c := linked(fk)
+	first, err := issuer.Issue(t.Context(), alice, service, nil)
+	must(t, err)
+	_, err = verifier.Verify(t.Context(), first.Raw, service)
+	must(t, err)
+
+	c.set(t0.Add(2 * time.Second))
+	fk.set(dropped, dropped, old)
+	fk.read = func() { // the drop commits, and a verification loads, while the issuer reads the key
+		fk.read = nil
+		fk.mu.Lock()
+		fk.verifiers = []*keys.TokenKey{old}
+		fk.mu.Unlock()
+		if _, err := verifier.Verify(t.Context(), first.Raw, service); err != nil {
+			t.Errorf("the old token: %v", err)
+		}
+	}
+	tok, err := issuer.Issue(t.Context(), alice, service, nil)
+	must(t, err)
+	if _, err := verifier.Verify(t.Context(), tok.Raw, service); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("a token of a key dropped as it was read: %v, want refused", err)
+	}
+}
+
+// TestIssueVerifyConcurrent issues and verifies tokens from several goroutines on one replica
+// while the key rotates: each token verifies at once. Run with -race.
+func TestIssueVerifyConcurrent(t *testing.T) {
+	first := newKey(t, keys.TokenES256)
+	fk := &fakeKeys{signer: first, verifiers: []*keys.TokenKey{first}}
+	verifier := NewVerifier(Options{Keys: fk, Log: slog.New(slog.DiscardHandler)})
+	issuer := NewIssuer(Options{Keys: fk, Verifier: verifier})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		all := []*keys.TokenKey{first}
+		for range 20 {
+			k := newKey(t, keys.TokenES256)
+			all = append([]*keys.TokenKey{k}, all...)
+			fk.set(k, all...)
+		}
+	})
+	for range 8 {
+		wg.Go(func() {
+			for range 50 {
+				tok, err := issuer.Issue(t.Context(), alice, service, nil)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if _, err := verifier.Verify(t.Context(), tok.Raw, service); err != nil {
+					t.Errorf("%s at once on its replica: %v", tok, err)
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
 }
 
 // TestRotationGrace checks two keys of keys.Tokens over a database: after a rotation the old key
