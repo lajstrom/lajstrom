@@ -1158,19 +1158,24 @@ Where the merged shapes differ from the first sketch of this section, and why:
   path or tag that does not follow from its annotations.
 - **Repository embeds `registry.ReferencePusher`**: ingest puts manifest and tag in one PUT.
   `Delete` comes from `content.Deleter`.
-- **UploadedFile is re-openable via a request spool**: Build reads the file to parse and digest
-  it, ingest reads it again to push it. The spool lives for one request and is never served
-  from; artifact bytes live only in the registry.
+- **UploadedFile is re-openable** in `Upload`: Build reads the file to parse and digest it,
+  ingest reads it again to push it. A proxy fetch's file is a request spool, which lives for
+  one request and is never served from; a publication session's is read back from the
+  registry. Artifact bytes live only in the registry.
 - **A streamed upload has its own entry point**
-  ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)). A format moves to it by
-  becoming a `Streamer`; the others keep `Upload` and the spool until their move.
+  ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)). Every format that a client
+  uploads to is a `Streamer` (raw, apt, maven, pypi, npm); `Upload` stays for the proxy fetch
+  and for the files of a publication session, which it reads back from the registry.
   `UploadStream` takes the package name from the frontend, because a session belongs to an OCI
   repository. The file reaches `Build` without `Open`, with its checksums and its inspector.
   Ingest holds the session in the target and commits it between the backend's tag check and
   the manifest's `PUT`. A refused upload, and the idempotent repeat, cancel it.
   `Validate` cannot fetch the streamed blob, which is not committed yet; a plugin whose
-  `Validate` reads its file takes what it needs from its inspector when it moves. The read-back
-  of ADR 0014 step 5, for a wheel the inspector cannot follow, comes with the wheel's move.
+  `Validate` reads its file takes what it needs from its inspector (`format.ErrStreamed`). A
+  `Build` whose inspector did not hold all it needs, a wheel or a `.zip` sdist it could not
+  follow, returns `format.ErrReadBack`: ingest commits the session and calls `Build` again
+  with an `Open` that reads the file back from the registry by range requests (ADR 0014 step
+  5).
 - **The provider chunks a streamed blob, not ingest.** `BlobWriter` sends chunks of known size
   with `Content-Range`, which every registry measured takes after the first write (the
   streamed `PATCH` is refused there by Gitea and JFrog). It holds one chunk in memory, 8 MiB in

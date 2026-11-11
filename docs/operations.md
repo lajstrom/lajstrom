@@ -670,8 +670,9 @@ connection to the registry): only time in which no byte moves counts, and the ti
 waits for the registry or the index between two reads does not. A client behind a slow link
 keeps sending and passes; one that stops sending, or opens a download and stops reading, is cut
 off. The limit on uploads at once is per replica, 32 by default (#246): set it from what a replica
-can hold at once, the disk for the spooled files of the frontends and the connections to the
-registry; `0` lifts it. A request refused for it is in the access log with status `503`. How many requests a
+can hold at once: the memory of the frontend uploads (a chunk of 8 MiB each and the bounded
+metadata of [Performance](#performance)), the disk for the `/v2` chunks that
+`uploads.spoolUnknownLength` spools, and the connections to the registry; `0` lifts it. A request refused for it is in the access log with status `503`. How many requests a
 client may send is the edge's to limit.
 
 The bounds on live upload sessions count per replica too: a replica counts the sessions it has
@@ -721,14 +722,15 @@ network allow:
 | --- | --- |
 | a download: `GET /v2/…/blobs/<digest>`, `/raw/`, the apt pool, PyPI and Maven files | `format.ServeBlob`: one request to the registry, its body copied to the client through a fixed buffer, or a `307` to the registry's storage |
 | a `/v2` blob upload: `POST`, `PATCH`, `PUT` of a session | the client's body is the body of the request to the registry's session (`facade.requestBody`, the provider's `repository.send`); with [`registries[].uploads.spoolUnknownLength`](configuration.md#uploads) on, a chunk of unknown length into a session that holds bytes is spooled first to one temporary file of the chunk's size in `$TMPDIR`, unlinked as soon as it is made and closed when the request ends |
-| a raw `PUT`, an apt `PUT …/upload`, a Maven `PUT` of a file, a twine or uv upload, an npm publish | streamed into an upload session of the registry as it arrives (`ingest.Pipeline.UploadStream`, `ingest.Pipeline.Add`, [ADR 0014](adr/0014-uploads-stream-into-the-registry.md)): in chunks of 8 MiB, each a `PATCH`, one held in memory per upload, while sha256 is computed, and md5 and sha1 of a `.deb`, whose head, up to the end of its control member, is read first for the package name, or md5, sha1 and sha512 of a Maven file; the session is closed with that digest only once every check passed, and cancelled otherwise. No disk. A wheel's METADATA is read as it passes, from the end of the zip and the local entries that the inspector holds; a wheel whose METADATA it could not follow (data descriptors before it, a directory larger than the 4 MiB it holds) is read back from the registry by range requests once committed, and a refusal then leaves the blob to the registry's garbage collection |
-| what is read into memory | metadata only, each with a bound: a manifest (`server.maxManifestSize`, 4 MiB), a metadata layer (4 MiB), a POM (4 MiB), a deb's control archive (4 MiB unpacked) and the head of an apt upload up to it (4 MiB), `maven-metadata.xml` (1 MiB), a wheel's `METADATA` (4 MiB), the end of a wheel that streams (4 MiB) and its local entries that may be its `METADATA` (8 MiB), the `package.json` of an npm tarball (2 MiB) and the paths of its entries (16 MiB), and the blocks of a zip's directory that ingest reads at offsets (64 KiB each, at most 32 kept) |
+| a raw `PUT`, an apt `PUT …/upload`, a Maven `PUT` of a file, a twine or uv upload, an npm publish | streamed into an upload session of the registry as it arrives (`ingest.Pipeline.UploadStream`, `ingest.Pipeline.Add`, [ADR 0014](adr/0014-uploads-stream-into-the-registry.md)): in chunks of 8 MiB, each a `PATCH`, one held in memory per upload, while sha256 is computed, and md5 and sha1 of a `.deb`, whose head, up to the end of its control member, is read first for the package name, or md5, sha1 and sha512 of a Maven file; the session is closed with that digest only once every check passed, and cancelled otherwise. No disk. A wheel's METADATA, or a `.zip` sdist's PKG-INFO, is read as it passes, from the end of the zip and the local entries that the inspector holds; one that it could not follow (data descriptors before it, a directory larger than the 4 MiB it holds) is read back from the registry by range requests once committed, and a refusal then leaves the blob to the registry's garbage collection. An npm tarball is read as its base64 is decoded, and its session closed only once the rest of the publish body is read and checked |
+| what is read into memory | metadata only, each with a bound: a manifest (`server.maxManifestSize`, 4 MiB), a metadata layer (4 MiB), a POM (4 MiB), a deb's control archive (4 MiB unpacked) and the head of an apt upload up to it (4 MiB), `maven-metadata.xml` (1 MiB), a wheel's `METADATA` (4 MiB), the end of a wheel that streams (4 MiB) and its local entries that may be its `METADATA` (8 MiB), a zip's central directory as `zip.NewReader` reads it to find the core metadata (at most 2^18 entries, about 70 MiB; 4 MiB of directory, as much as the end held, is about 25 MiB), the `package.json` of an npm tarball (2 MiB) and the paths of its entries (16 MiB), the rest of an npm publish body (4 MiB), the fields of a twine upload (8 MiB), and the blocks of a zip's directory that ingest reads at offsets (64 KiB each, at most 32 kept) |
 
 No frontend upload takes disk: raw, apt, Maven, PyPI and npm uploads stream into the registry
 (ADR 0014), so `server.maxConcurrentUploads` and the repos' `policy.maxFileSize` no longer bound
 `$TMPDIR` for them.
 `/v2` uploads take no disk of Lajstrom's, but for the spooled chunks of a registry with
-`uploads.spoolUnknownLength` on.
+`uploads.spoolUnknownLength` on. A proxy repo's fetch is still spooled to `$TMPDIR` for its
+request, at most the repo's `policy.maxFileSize` a file ([proxy-and-group.md](spec/proxy-and-group.md) §5).
 
 The streaming audit of #62 read every `io.ReadAll`, `bytes.Buffer` and temporary file of
 `internal/` and `cmd/`: none is on a blob's path; each reads one of the bounded documents above,

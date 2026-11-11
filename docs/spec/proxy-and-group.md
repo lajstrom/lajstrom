@@ -229,7 +229,7 @@ A request for a file of a proxy repo, directly or through a group, runs these st
    request takes the claim, once), or the claim goes stale (it takes it over). The claim beats
    every 30 seconds and is stale 2 minutes after its last beat.
 7. **The download.** Each file the entry lists (npm: one tarball) is requested from the
-   upstream (§9.2) and spooled to `$TMPDIR` as an upload is, while sha256 and the algorithms of
+   upstream (§9.2) and spooled to `$TMPDIR` for the request, while sha256 and the algorithms of
    the upstream's checksums are computed. A `Content-Length`, or a body, above the repo's
    `policy.maxFileSize` or the registry's `capabilities.maxBlobSize` stops the fetch (`403`,
    §6; an audit row `proxy.reject`). An upstream `404` or `410` makes the name's row stale (§4.3).

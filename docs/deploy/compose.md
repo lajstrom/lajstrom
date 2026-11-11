@@ -8,7 +8,7 @@ and Lajstrom runs as a user without privileges on a read-only root filesystem.
 
 | Service | Image | Published | Keeps data in |
 | --- | --- | --- | --- |
-| `lajstrom` | `ghcr.io/lajstrom/lajstrom`, the release image (#57), user 65532, read-only root, all capabilities dropped | `127.0.0.1:8080` | nothing: `/tmp`, where an upload is spooled for one request, is a tmpfs |
+| `lajstrom` | `ghcr.io/lajstrom/lajstrom`, the release image (#57), user 65532, read-only root, all capabilities dropped | `127.0.0.1:8080` | nothing: `/tmp`, where a proxy fetch is spooled for one request, is a tmpfs |
 | `postgres` | `postgres:17.11-alpine` | no | the volume `postgres-data`: the index, the control plane with it ([index-schema.md](../spec/index-schema.md)) |
 | `registry` | `registry:3.1.2`, Basic auth with one user | no | the volume `registry-data`: every artifact |
 
