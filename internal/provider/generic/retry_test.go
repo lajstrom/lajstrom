@@ -198,13 +198,9 @@ type stubRegistry struct {
 	answers  []answer
 	attempts int
 	bodies   []string
-	sent     chan struct{} // receives after each attempt when not nil
 }
 
 func (s *stubRegistry) RoundTrip(r *http.Request) (*http.Response, error) {
-	if s.sent != nil {
-		defer func() { s.sent <- struct{}{} }()
-	}
 	if r.Body != nil {
 		b, _ := io.ReadAll(r.Body)
 		s.bodies = append(s.bodies, string(b))
@@ -279,28 +275,52 @@ func TestRetryTransportBody(t *testing.T) {
 }
 
 // TestRetryTransportContext checks that a cancelled context ends the wait between attempts.
+// The context is cancelled once the transport logs the retry, right before it waits: cancelled
+// as the first attempt returns, before the transport looks at the context, it gets the 503 as
+// the answer instead (#566).
 func TestRetryTransportContext(t *testing.T) {
 	defer func(w struct{ min, max time.Duration }) { retryWait = w }(retryWait)
 	retryWait.min, retryWait.max = time.Hour, time.Hour
 	ctx, cancel := context.WithCancel(t.Context())
-	stub := &stubRegistry{answers: []answer{{status: http.StatusServiceUnavailable}}, sent: make(chan struct{}, 4)}
-	log, _ := testLogger()
+	stub := &stubRegistry{answers: []answer{{status: http.StatusServiceUnavailable}}}
+	retried := make(chan struct{}, 4)
+	log := slog.New(signalHandler{msg: "registry request retried", c: retried})
 	done := make(chan error, 1)
 	go func() {
 		_, err := roundTrip(stub, log, tagsRequest(ctx))
 		done <- err
 	}()
-	<-stub.sent // the first attempt failed; the transport waits an hour now
+	<-retried // the first attempt failed; the transport waits an hour now
 	cancel()
 	select {
 	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("RoundTrip error = %v, want context.Canceled", err)
+		if !errors.Is(err, context.Canceled) || stub.attempts != 1 {
+			t.Errorf("RoundTrip error = %v after %d attempts, want context.Canceled after 1", err, stub.attempts)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("RoundTrip still waits after the context ended")
 	}
 }
+
+// signalHandler is a slog.Handler that sends on c for each record whose message is msg and
+// drops every record.
+type signalHandler struct {
+	msg string
+	c   chan<- struct{}
+}
+
+func (h signalHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h signalHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Message == h.msg {
+		h.c <- struct{}{}
+	}
+	return nil
+}
+
+func (h signalHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h signalHandler) WithGroup(string) slog.Handler { return h }
 
 // TestRetryAfter checks that a Retry-After within retryWait.max is waited and one above it is
 // not: the 429 is the answer then.
