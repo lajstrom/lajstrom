@@ -1,8 +1,10 @@
 package server
 
 import (
+	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -25,36 +27,56 @@ func (s *Server) stall(next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rc := http.NewResponseController(w)
+		var body *stallBody
 		if r.Body != nil && r.Body != http.NoBody {
-			r.Body = &stallBody{ReadCloser: r.Body, rc: rc, d: d}
+			body = &stallBody{ReadCloser: r.Body, rc: rc, d: d}
+			r.Body = body
 		}
 		sw := &stallWriter{ResponseWriter: w, rc: rc, d: d}
 		defer sw.disarm()
 		next.ServeHTTP(sw, r)
+		if body != nil && !body.ended {
+			// net/http reads what is left of a body the handler did not finish, up to 256 KiB,
+			// before it answers, to keep the connection; that read is bounded too.
+			_ = rc.SetReadDeadline(time.Now().Add(d))
+		}
 	})
 }
 
 // stallBody sets the read deadline of the connection before each read of a request body, and
 // clears it at the end of the body: net/http then reads on in the background to notice a
 // client that goes away, and a deadline left behind would cancel the request while the
-// handler still works.
+// handler still works. A read that misses the deadline leaves it in place, so that net/http,
+// which reads the rest of a small body before it answers, fails at once and closes the
+// connection instead of waiting for the client without a bound.
 type stallBody struct {
 	io.ReadCloser
-	rc *http.ResponseController
-	d  time.Duration
+	rc      *http.ResponseController
+	d       time.Duration
+	ended   bool // a read returned an error, io.EOF included
+	stalled bool // a read missed the deadline
 }
 
 func (b *stallBody) Read(p []byte) (int, error) {
+	if b.stalled {
+		return 0, os.ErrDeadlineExceeded
+	}
 	_ = b.rc.SetReadDeadline(time.Now().Add(b.d)) // ErrNotSupported: no deadline, as before
 	n, err := b.ReadCloser.Read(p)
-	if err != nil {
+	switch {
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		b.ended, b.stalled = true, true
+	case err != nil:
+		b.ended = true
 		_ = b.rc.SetReadDeadline(time.Time{})
 	}
 	return n, err
 }
 
 func (b *stallBody) Close() error {
-	_ = b.rc.SetReadDeadline(time.Time{})
+	if !b.stalled {
+		_ = b.rc.SetReadDeadline(time.Time{})
+	}
 	return b.ReadCloser.Close()
 }
 

@@ -69,7 +69,6 @@ func TestStallRequestBody(t *testing.T) {
 	t.Run("a client that stops sending is cut off", func(t *testing.T) {
 		got := make(chan error, 1)
 		c := rawRequest(t, stallServer(t, readBody(got, 0)), head+"abc")
-		_ = c
 		select {
 		case err := <-got:
 			if !errors.Is(err, os.ErrDeadlineExceeded) {
@@ -78,6 +77,15 @@ func TestStallRequestBody(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("the handler still waits for a body that stopped")
 		}
+		// net/http reads the rest of a small body before it answers; that must not wait for
+		// the client either.
+		wantClosed(t, c)
+	})
+	t.Run("a body the handler leaves unread does not hold the connection", func(t *testing.T) {
+		c := rawRequest(t, stallServer(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusAccepted)
+		}), head+"abc")
+		wantClosed(t, c)
 	})
 	t.Run("a slow client that keeps sending passes", func(t *testing.T) {
 		got := make(chan error, 1)
@@ -112,6 +120,19 @@ func wantStatus(t *testing.T, c net.Conn, want int) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != want {
 		t.Errorf("status %d, want %d", resp.StatusCode, want)
+	}
+}
+
+// wantClosed checks that the server answers on c and closes it within a few stall bounds.
+func wantClosed(t *testing.T, c net.Conn) {
+	t.Helper()
+	_ = c.SetReadDeadline(time.Now().Add(10 * stallBound))
+	b, err := io.ReadAll(c)
+	if err != nil {
+		t.Fatalf("connection still open after the stall: %v (read %q)", err, b)
+	}
+	if !strings.HasPrefix(string(b), "HTTP/1.1 ") {
+		t.Errorf("read %q before the close, want a response", b)
 	}
 }
 
