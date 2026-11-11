@@ -374,6 +374,7 @@ do not invent their own. What each call needs, in the actions of rbac.md §2 (de
 | creating a repo, and the system resources: users, bindings, audit, registries, every token | the admin role (rbac.md §2; a `maintainer` on `*/*` is not enough) |
 | the personal access tokens of a user | the user themself, within what the credential allows, or the admin role |
 | `GET /api/v1/whoami` | nothing |
+| `POST /api/v1/bootstrap` (#440) | nothing: the one-time bootstrap token in the body is the credential; `404` once an enabled user has an admin binding |
 
 | Resource | Endpoints |
 | --- | --- |
@@ -384,6 +385,7 @@ do not invent their own. What each call needs, in the actions of rbac.md §2 (de
 | bindings | `GET/POST /api/v1/bindings`, `DELETE /api/v1/bindings/<id>` |
 | audit | `GET /api/v1/audit?repo=&principal=&since=` |
 | whoami | `GET /api/v1/whoami` |
+| bootstrap | `POST /api/v1/bootstrap` |
 
 Errors: `{"error": {"code": "NOT_FOUND|CONFLICT|FORBIDDEN|INVALID|UNAVAILABLE|INTERNAL", "message": "…"}}`.
 A `429` (a throttle of failed logins, with `Retry-After`; #130) is `UNAVAILABLE`: try again

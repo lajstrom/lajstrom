@@ -39,6 +39,9 @@ type Options struct {
 	// Deleter deletes the versions of DELETE …/packages/{name}/versions/{version}: the ingest
 	// pipeline; nil answers it 501.
 	Deleter Deleter
+	// Bootstrap exchanges the bootstrap token of POST /api/v1/bootstrap for the first admin;
+	// nil answers it 404, as once an admin exists.
+	Bootstrap *auth.Bootstrap
 	// Log receives the causes of the 5xx answers, with the request id; nil means
 	// slog.Default().
 	Log *slog.Logger
@@ -76,6 +79,7 @@ const maxBody = 64 << 10
 //	DELETE /api/v1/bindings/{id}                       delete one
 //	GET    /api/v1/audit[?repo=&principal=&action=&since=&until=&limit=&cursor=]  the audit log, newest first
 //	GET    /api/v1/whoami                              the request's principal
+//	POST   /api/v1/bootstrap                           the first admin, for the bootstrap token; 404 once an admin exists
 //	GET    /api/v1/openapi.yaml                        the OpenAPI document of these routes
 //
 // Every other method and path under /api/ is a JSON NOT_FOUND. Answers are JSON;
@@ -85,7 +89,7 @@ func New(o Options) http.Handler {
 		panic("api: New: nil Options.Repos")
 	}
 	h := &handler{repos: o.Repos, tokens: o.Tokens, users: o.Users, bindings: o.Bindings, auth: o.Auth, reindex: o.Reindex,
-		deleter: o.Deleter, log: o.Log}
+		deleter: o.Deleter, boot: o.Bootstrap, log: o.Log}
 	if h.log == nil {
 		h.log = slog.Default()
 	}
@@ -143,6 +147,7 @@ func (h *handler) routes() []route {
 		{"DELETE /api/v1/bindings/{id}", h.deleteBinding},
 		{"GET /api/v1/audit", h.listAudit},
 		{"GET /api/v1/whoami", h.whoami},
+		{"POST /api/v1/bootstrap", h.bootstrap},
 	}
 }
 
@@ -155,6 +160,7 @@ type handler struct {
 	auth     auth.Authorizer
 	reindex  Reindexer
 	deleter  Deleter
+	boot     *auth.Bootstrap
 	log      *slog.Logger
 }
 

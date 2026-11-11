@@ -401,6 +401,26 @@ token with scopes and a deploy token never manage users.
 The same, straight against the database of the configuration: `create`, `list`, `rename`,
 `disable`, `enable`, `set-password`, `delete` ([auth.md](auth.md#local-users-and-passwords)).
 
+### The first admin: `POST /api/v1/bootstrap`
+
+The body has `token`, the one-time bootstrap token that `serve` made valid at start, `name` and
+`password` ([auth.md](auth.md#bootstrap-the-first-admin)). No credentials: the token is the
+credential, and no role is asked. `201` with the resource of the new user, bound to the admin
+role on `*/*`, and `Location: /api/v1/users/<name>`; the token is used. The audit event is
+`user.create` by `anonymous`, with the source `bootstrap`.
+
+| Answer | When |
+| --- | --- |
+| `404 NOT_FOUND` | an enabled user has an admin binding, whatever the body: the message is the one of a path that is no endpoint |
+| `403 FORBIDDEN` | the token is not the valid one; or it is, and it was used or expired, which the message says |
+| `429 UNAVAILABLE` | 10 wrong tokens from the client address within a minute; `Retry-After` says when to try again, the right token too |
+| `400 INVALID` | the name or the password breaks its rule; the token stays valid |
+| `409 CONFLICT` | a live user has the name; the token stays valid |
+
+`lajstrom admin bootstrap --name <name>` sends it: the token from `--token-file`, or a prompt;
+the password from standard input with `--password-stdin`, or a prompt; the server from
+`--server`, or `server.listen` of the configuration on loopback.
+
 ## Bindings
 
 A binding gives a user a role on the repos of a mask ([auth.md](auth.md#bindings),
