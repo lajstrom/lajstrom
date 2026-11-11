@@ -74,7 +74,7 @@ func (f *fakeRetentionAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(res)
 	default:
 		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error": {"code": "NOT_FOUND", "message": "repo npm/` + rest + ` does not exist"}}`))
+		_ = json.NewEncoder(w).Encode(map[string]map[string]string{"error": {"code": "NOT_FOUND", "message": "repo npm/" + rest + " does not exist"}})
 	}
 }
 
@@ -123,7 +123,15 @@ func TestAdminRetention(t *testing.T) {
 		t.Fatalf("a dry run sent %+v; Authorization %q", f.batches, f.auths[0])
 	}
 
-	out, _, err = run(t, env, append(args, "--apply")...)
+	wantRetentionApply(t, f, env, append(args, "--apply"))
+	wantRetentionJSON(t, f, env)
+}
+
+// wantRetentionApply runs args, admin retention --apply against f, and checks the batch it sent
+// and what it printed.
+func wantRetentionApply(t *testing.T, f *fakeRetentionAPI, env map[string]string, args []string) {
+	t.Helper()
+	out, _, err := run(t, env, args...)
 	if err != nil {
 		t.Fatalf("--apply: %v; %s", err, out)
 	}
@@ -142,8 +150,14 @@ func TestAdminRetention(t *testing.T) {
 		}
 	}
 
+}
+
+// wantRetentionJSON runs a dry run with --max-age, a glob and --output json against f, and
+// checks the report.
+func wantRetentionJSON(t *testing.T, f *fakeRetentionAPI, env map[string]string) {
+	t.Helper()
 	f.batches = nil
-	out, _, err = run(t, env, "admin", "retention", "--repo", "npm/internal", "--keep-last", "1", "--max-age", "150d",
+	out, _, err := run(t, env, "admin", "retention", "--repo", "npm/internal", "--keep-last", "1", "--max-age", "150d",
 		"--package", "@acme/*", "--output", "json")
 	if exitStatus(err) != 2 {
 		t.Fatalf("json dry run: %v", err)
@@ -202,7 +216,7 @@ func TestAdminRetentionArgs(t *testing.T) {
 			t.Errorf("%v: %v, want exit status 1 with %q", tt.args, err, tt.want)
 		}
 	}
-	_, _, err := run(t, map[string]string{envRetentionURL: env[envRetentionURL], envRetentionToken: "ljs_pat_env"}, "admin", "retention",
+	_, _, err := run(t, map[string]string{envRetentionURL: env[envRetentionURL], envRetentionToken: "ljs_pat_env"}, "admin", "retention", //nolint:gosec // a token of the test
 		"--repo", "npm/internal", "--keep-last", "1")
 	if err != nil || f.auths[len(f.auths)-1] != "Bearer ljs_pat_env" {
 		t.Errorf("the token of %s: %v, %q", envRetentionToken, err, f.auths[len(f.auths)-1])
