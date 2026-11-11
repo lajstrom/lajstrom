@@ -596,26 +596,32 @@ status is `holds on strongly consistent registries only` do not hold there.
 
 - **Statement.** No request makes a replica hold more than the documented bounds: a manifest of
   `server.maxManifestSize` (4 MiB) with at most 1 000 layers, a management body of 64 KiB, 100
-  repositories a token request, a frontend file of the repo's `policy.maxFileSize`, the npm
-  bounds of http-routing.md (a publish body besides its tarball 4 MiB, an audit body 16 MiB), an
-  upstream document of `upstreams[].maxMetadataSize`, `server.maxConcurrentUploads` uploads at
-  once, a body that stops moving for `server.stallTimeout`.
-- **Scope.** Every route; a `/v2` blob upload only as far as the list below says.
+  repositories a token request, a frontend file or a `/v2` blob of the repo's
+  `policy.maxFileSize` (by default its format's, npm 512 MiB to `oci` 16 GiB) or the registry's
+  `capabilities.maxBlobSize` when smaller, the npm bounds of http-routing.md (a publish body
+  besides its tarball 4 MiB, an audit body 16 MiB), an upstream document of
+  `upstreams[].maxMetadataSize`, `server.maxConcurrentUploads` uploads at once (32), a body that
+  stops moving for `server.stallTimeout`. A principal holds at most `server.uploadSessions` live
+  `/v2` upload sessions on a replica (256 in a repo, 1024 in all), and a Maven deploy stores at
+  most the repo's `policy.maven.maxSessionFiles` files (256) (#246).
+- **Scope.** Every route.
 - **Assumes.** Any.
 - **Mechanism.** `facade.readManifest`, `api` body limits, `token.Reduce`, `format.MaxFileSize`
-  and `format.LimitBody`, `server.Server.limitUploads`, `server.Server.stall`, npm's `readBody`,
-  `proxy.readDocument`.
+  and `format.LimitBody`, `facade.limitBlob` and `facade.blobLimit`, `facade.liveUploads`,
+  `ingest`'s `sessionState.room`, `server.Server.limitUploads`, `server.Server.stall`, npm's
+  `readBody`, `proxy.readDocument`.
 - **Tests.** `TestManifestHookSize`, `TestManifestLayersBound`, `TestOversizedBody`,
   `TestTokenScopesBound`, `TestIngestMaxFileSize`, `TestPutMaxFileSize`, `TestUploadMaxFileSize`
   (deb, facade), `TestManifestHookMaxFileSize`, `TestMaxFileSize`, `TestLimitBody`,
   `TestReadBodyBounded`, `TestDocumentLimits`, `TestForwardBounds`, `TestMaxUploads`,
-  `TestStallRequestBody`, `TestStallResponse`.
-- **When violated.** `413`, `400` naming the bound, or `503` with `Retry-After`.
-- **Status.** `partly`: a `/v2` blob is not bounded by `maxFileSize` or the registry's
-  `maxBlobSize`, open upload sessions and a maven session's files have no bound, and
-  `maxFileSize` and `maxConcurrentUploads` are unlimited by default (threat model U-3 to U-6;
-  [#246](https://github.com/lajstrom/lajstrom/issues/246)); the bytes of `$TMPDIR` a replica may
-  hold have no budget ([#427](https://github.com/lajstrom/lajstrom/issues/427)).
+  `TestStallRequestBody`, `TestStallResponse`, `TestUploadMaxBlobSize`,
+  `TestUploadDefaultMaxFileSize`, `TestUploadLiveSessions`, `TestLiveUploads`,
+  `TestDeploySessionFiles`, `TestDeploySessionFilesCounted`, `TestMaxConcurrentUploads`.
+- **When violated.** `413`, `400` naming the bound, `429` with `Retry-After` naming the bound and
+  its key, or `503` with `Retry-After`.
+- **Status.** `partly`: the bytes of `$TMPDIR` a replica may hold have no budget
+  ([#427](https://github.com/lajstrom/lajstrom/issues/427)); the bounds of #246 are per replica
+  and have their defaults (threat model U-3 to U-6).
 
 ### INV-24. A parser allocates in proportion to its input, within a fixed cap
 
@@ -1111,7 +1117,7 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | No frontend test of a denial with malformed input (INV-15) | a regression of the R-2 kind on a frontend goes unseen | a table test per frontend, as `TestDenialBeforeInput` does for `/v2` | new issue |
 | A typed user name and an unbounded `kid` at `debug` (INV-21, threat model L-3) | a mistyped password in a debug log | log the uid only, bound the `kid` | new issue |
 | Acceptance C-07 and S-09 are not automated (INV-14, INV-21) | a redaction or an audit regression goes unseen | after the suite, grep both replicas' logs for every secret used, and count the audit rows of its writes | new issue |
-| Upload quotas: `/v2` blob size, open sessions, maven session files, unlimited defaults (INV-23) | a writer fills the registry or `$TMPDIR`, or holds sessions | the three parts of #246 (pull requests #416, #419, #422); a spool budget | [#246](https://github.com/lajstrom/lajstrom/issues/246), [#427](https://github.com/lajstrom/lajstrom/issues/427) |
+| No budget for the bytes of `$TMPDIR` (INV-23) | 32 spooled uploads of a replica may need 256 GiB of disk | a spool budget, or no request spool (ADR 0014) | [#427](https://github.com/lajstrom/lajstrom/issues/427) |
 | One upstream request per document per replica (INV-31) | concurrent misses of a packument each ask the upstream | share the request on a replica (pull request #399) | [#383](https://github.com/lajstrom/lajstrom/issues/383) |
 | SQLite under several replicas is not detected (INV-26, INV-29, INV-35) | the process locks of SQLite exclude nothing across replicas | refuse to start a second replica on SQLite (a row naming the live replica) | new issue |
 | Replica clocks are assumed to agree, never checked (INV-19, INV-26) | a replica whose clock runs ahead takes over live claims and refuses valid tokens | compare the replica's clock with the database's at start and on the heartbeats; warn or refuse past a bound | new issue |
