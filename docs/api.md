@@ -54,6 +54,7 @@ Every error is answered with one envelope:
 | 401 | `UNAUTHENTICATED` | credentials are needed, or the ones sent were refused; with `WWW-Authenticate: Basic realm="lajstrom"` |
 | 403 | `FORBIDDEN` | the caller lacks the action: now by the scopes of its token, after #45 by its bindings too |
 | 404 | `NOT_FOUND` | no such repo, user, token or endpoint |
+| 408 | `INVALID` | the body stopped: no byte came within `server.stallTimeout` ([configuration.md](configuration.md#server)); the message is fixed, and the connection is closed |
 | 409 | `CONFLICT` | the repo exists, or has versions and the delete is not forced; a live token of the owner has the name; a pointer names the version to delete |
 | 412 | `CONFLICT` | a conditional delete found the version changed since the client read it, or published after the cut-off; nothing was deleted |
 | 413 | `INVALID` | the body is larger than 64 KiB |
