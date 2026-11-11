@@ -76,7 +76,23 @@ func TestAuditAPI(t *testing.T) {
 	var list AuditList
 	decodeJSON(t, f.do(http.MethodGet, "/api/v1/audit?principal=token:3", "", admin), http.StatusOK, &list)
 	wantJSON(t, "the event of token 3", list.Events, fmt.Sprintf(`[{"id": %d, "at": "2026-11-09T12:01:00Z", "principal": "token:3",
-		"action": "push", "repo": "raw/b", "ip": "192.0.2.1"}]`, list.Events[0].ID))
+		"action": "push", "repo": "raw/b", "ip": "192.0.2.1", "state": "ok"}]`, list.Events[0].ID))
+
+	// The rows of registry writes that did not end ok, by state (#473).
+	for _, ev := range []index.AuditEvent{
+		{At: t0, Principal: "token:3", Action: "delete", Repo: "raw/b", State: index.AuditFailed, Error: "ingest: index rows: boom"},
+		{At: t0, Principal: "token:3", Action: "push", Repo: "raw/b", State: index.AuditUnknown},
+	} {
+		if err := f.st.AppendAudit(context.Background(), &ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var failed AuditList
+	decodeJSON(t, f.do(http.MethodGet, "/api/v1/audit?state=failed", "", admin), http.StatusOK, &failed)
+	wantJSON(t, "the failed row", failed.Events, fmt.Sprintf(`[{"id": %d, "at": "2026-11-09T12:00:00Z", "principal": "token:3",
+		"action": "delete", "repo": "raw/b", "state": "failed", "error": "ingest: index rows: boom"}]`, failed.Events[0].ID))
+	got = f.actionsOf(t, "/api/v1/audit?state=unknown", 10, nil)
+	wantJSON(t, "the unknown row", got, `["push"]`)
 }
 
 // TestAuditAPIRefused checks the answers to a query the audit API refuses, and who may read it.
@@ -86,6 +102,7 @@ func TestAuditAPIRefused(t *testing.T) {
 		{"/api/v1/audit?since=yesterday", "since"},
 		{"/api/v1/audit?until=2026-11-09", "until"},
 		{"/api/v1/audit?principal=alice", "principal"},
+		{"/api/v1/audit?state=done", "state"},
 		{"/api/v1/audit?cursor=eA", "cursor"},
 		{"/api/v1/audit?limit=-1", "limit"},
 	} {

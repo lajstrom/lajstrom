@@ -59,8 +59,8 @@ type Options struct {
 	Log *slog.Logger
 	// Concurrency is how many manifests are read at once per registry; zero means 8.
 	Concurrency int
-	// ClaimTTL is ingest.claimTTL: tag claims older than that are deleted. Zero means 10
-	// minutes.
+	// ClaimTTL is ingest.claimTTL: tag claims older than that are deleted, and the audit rows of
+	// registry writes pending for longer are unknown. Zero means 10 minutes.
 	ClaimTTL time.Duration
 }
 
@@ -229,6 +229,14 @@ func (w *Worker) run(ctx context.Context, run *index.ReindexRun, req Request) (*
 	}
 	if _, err := w.index.ExpireTagClaims(ctx, w.now().Add(-w.claimTTL)); err != nil {
 		return report, fmt.Errorf("reindex: expire stale tag claims: %w", err)
+	}
+	// The audit rows of registry writes left pending as long: their writers stopped (#473).
+	unknown, err := w.index.ExpirePendingAudit(ctx, w.now().Add(-w.claimTTL))
+	if err != nil {
+		return report, fmt.Errorf("reindex: mark the stale pending audit rows unknown: %w", err)
+	}
+	if unknown > 0 {
+		w.log.WarnContext(ctx, "reindex: audit rows of registry writes whose writer stopped marked unknown", "rows", unknown)
 	}
 	if _, err := w.index.ExpireFetchClaims(ctx, w.now().Add(-fetchClaimStale)); err != nil {
 		return report, fmt.Errorf("reindex: expire stale fetch claims: %w", err)

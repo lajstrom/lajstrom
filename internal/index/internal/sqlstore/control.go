@@ -419,11 +419,11 @@ func (c *conn) ExpireSessions(ctx context.Context, before time.Time) (int, error
 		c.d.EncodeTime(now()), c.d.EncodeTime(before))
 }
 
-const auditCols = "id, at, principal, principal_name, action, repo, subject, digest, ip, details"
+const auditCols = "id, at, principal, principal_name, action, repo, subject, digest, ip, details, state, error"
 
 func auditDests(ev *index.AuditEvent) []any {
 	return []any{&ev.ID, timeDest{&ev.At}, &ev.Principal, textDest{&ev.PrincipalName}, &ev.Action, &ev.Repo, &ev.Subject,
-		textDest{(*string)(&ev.Digest)}, &ev.IP, rawDest{&ev.Details}}
+		textDest{(*string)(&ev.Digest)}, &ev.IP, rawDest{&ev.Details}, &ev.State, textDest{&ev.Error}}
 }
 
 // defaultAuditLimit is the page size of ListAudit when the filter has none.
@@ -432,7 +432,7 @@ const defaultAuditLimit = 100
 // ListAudit returns the events matching f, newest first. Since is inclusive, Until exclusive.
 func (c *conn) ListAudit(ctx context.Context, f index.AuditFilter) ([]index.AuditEvent, error) {
 	var w where
-	for _, eq := range []struct{ col, v string }{{"principal", f.Principal}, {"repo", f.Repo}, {"action", f.Action}} {
+	for _, eq := range []struct{ col, v string }{{"principal", f.Principal}, {"repo", f.Repo}, {"action", f.Action}, {"state", f.State}} {
 		if eq.v != "" {
 			w.add(eq.col+" = ?", eq.v)
 		}
@@ -452,17 +452,46 @@ func (c *conn) ListAudit(ctx context.Context, f index.AuditFilter) ([]index.Audi
 		"SELECT "+auditCols+" FROM audit"+w.clause()+" ORDER BY at DESC, id DESC LIMIT ? OFFSET ?", args...)
 }
 
-// AppendAudit inserts ev; At is set when zero.
+// AppendAudit inserts ev; At is set when zero, State to ok when empty.
 func (c *conn) AppendAudit(ctx context.Context, ev *index.AuditEvent) error {
 	var uid any // the uid of a user principal, whose name the row gets when it has none
 	if rest, ok := strings.CutPrefix(ev.Principal, "user:"); ok && index.IsUID(rest) {
 		uid = rest
 	}
+	if ev.State == "" {
+		ev.State = index.AuditOK
+	}
+	ev.Error = auditError(ev.Error)
 	return c.scanRow(ctx, "audit "+ev.Action,
-		"INSERT INTO audit (at, principal, principal_name, action, repo, subject, digest, ip, details)"+
-			" VALUES (?, ?, COALESCE(?, (SELECT COALESCE(deleted_name, name) FROM users WHERE CAST(uid AS TEXT) = ?)), ?, ?, ?, ?, ?, ?)"+
+		"INSERT INTO audit (at, principal, principal_name, action, repo, subject, digest, ip, details, state, error)"+
+			" VALUES (?, ?, COALESCE(?, (SELECT COALESCE(deleted_name, name) FROM users WHERE CAST(uid AS TEXT) = ?)), ?, ?, ?, ?, ?, ?, ?, ?)"+
 			" RETURNING id, principal_name",
 		[]any{c.d.EncodeTime(stamp(&ev.At, now())), ev.Principal, textArg(ev.PrincipalName), uid, ev.Action, ev.Repo, ev.Subject,
-			textArg(string(ev.Digest)), ev.IP, rawArg(ev.Details)},
+			textArg(string(ev.Digest)), ev.IP, rawArg(ev.Details), ev.State, textArg(ev.Error)},
 		&ev.ID, textDest{&ev.PrincipalName})
+}
+
+// CompleteAudit stores the state, the error and the details of a pending or unknown row.
+func (c *conn) CompleteAudit(ctx context.Context, ev *index.AuditEvent) error {
+	ev.Error = auditError(ev.Error)
+	return c.scanRow(ctx, fmt.Sprintf("pending audit id %d", ev.ID),
+		"UPDATE audit SET state = ?, error = ?, details = ? WHERE id = ? AND state IN ('pending', 'unknown') RETURNING "+auditCols,
+		[]any{ev.State, textArg(ev.Error), rawArg(ev.Details), ev.ID}, auditDests(ev)...)
+}
+
+// maxAuditError is how much of an error a row keeps: an error of the registry may quote a
+// whole answer.
+const maxAuditError = 1024
+
+// auditError is s cut to maxAuditError bytes, without a broken character at the end.
+func auditError(s string) string {
+	if len(s) <= maxAuditError {
+		return s
+	}
+	return strings.ToValidUTF8(s[:maxAuditError], "")
+}
+
+// ExpirePendingAudit sets the pending rows older than before to unknown.
+func (c *conn) ExpirePendingAudit(ctx context.Context, before time.Time) (int, error) {
+	return c.exec(ctx, "audit", "UPDATE audit SET state = 'unknown' WHERE state = 'pending' AND at < ?", c.d.EncodeTime(before))
 }

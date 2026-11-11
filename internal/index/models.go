@@ -194,7 +194,24 @@ type AuditEvent struct {
 	Digest        digest.Digest   // manifest digest, empty when none
 	IP            string          // client address
 	Details       json.RawMessage // anything else, e.g. the request id
+	// State is the outcome of the change (AuditOK, …); AppendAudit stores AuditOK when it is
+	// empty. Only the row of a registry write is ever another: pending before the write, then
+	// ok, failed or unknown (docs/spec/index-schema.md, audit).
+	State string
+	Error string // why a failed row failed; empty otherwise
 }
+
+// The states of an audit row. A change of the index alone is ok from its insert, in the
+// transaction of the change. A registry write has its row pending, in a transaction of its own
+// before the write, and the row is completed after it: ok in the transaction that indexes the
+// write, or failed with the error. A row that stays pending, because its writer stopped between
+// the two, is unknown once it is older than ingest.claimTTL (Writer.ExpirePendingAudit).
+const (
+	AuditPending = "pending" // the registry write is under way
+	AuditOK      = "ok"      // the change is done, and its answer was a success
+	AuditFailed  = "failed"  // the write was answered with an error: the registry's, or the index's after it
+	AuditUnknown = "unknown" // the writer stopped while pending: the registry may or may not have the write
+)
 
 // Package is a row of packages (derived).
 type Package struct {
@@ -330,6 +347,7 @@ type AuditFilter struct {
 	Principal string
 	Repo      string
 	Action    string
+	State     string
 	Since     time.Time
 	Until     time.Time
 	Limit     int

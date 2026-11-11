@@ -490,6 +490,7 @@ pages do not shift the pages after the first.
 | `repo` | `<format>/<name>` |
 | `principal` | `user:<name>` (the live user of that name, by its uid), `user:<uid>`, `token:<id>`, `anonymous` |
 | `action` | one action: `push`, `user.create`, … |
+| `state` | `ok`, `pending`, `failed` or `unknown` ([operations.md](operations.md#audit)) |
 | `since`, `until` | RFC 3339 times, `since` inclusive and `until` exclusive |
 
 ```json
@@ -501,11 +502,15 @@ pages do not shift the pages after the first.
   "action": "binding.create",
   "subject": "user:01a1c136-51a6-7883-a350-b1cf6000a23f",
   "ip": "127.0.0.1",
-  "details": {"id": 2, "role": "writer", "repoMask": "raw/*", "source": "api", "requestId": "…"}
+  "details": {"id": 2, "role": "writer", "repoMask": "raw/*", "source": "api", "requestId": "…"},
+  "state": "ok"
 }
 ```
 
-`repo`, `subject`, `digest`, `ip`, `details` and `principalName` are left out when empty.
+`state` is `ok` but for a write to the registry, whose row is `pending` while the write runs,
+then `ok`, `failed` with the `error` the client was answered, or `unknown` when its writer
+stopped in between. `repo`, `subject`, `digest`, `ip`, `details`, `principalName` and `error`
+are left out when empty.
 
 ## Tokens
 

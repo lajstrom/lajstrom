@@ -705,7 +705,11 @@ type Writer interface {
     TouchSession(ctx context.Context, id int64, at, expiresAt time.Time) (*Session, error)
     DeleteSession(ctx context.Context, id int64) error
     ExpireSessions(ctx context.Context, before time.Time) (int, error)
-    AppendAudit(ctx context.Context, ev *AuditEvent) error
+    AppendAudit(ctx context.Context, ev *AuditEvent) error // State "" is ok
+    // the row of a registry write: pending before it, then ok or failed once (pending or
+    // unknown rows only); unknown when still pending before before (index-schema.md, audit)
+    CompleteAudit(ctx context.Context, ev *AuditEvent) error
+    ExpirePendingAudit(ctx context.Context, before time.Time) (int, error)
     // coordination: same digest shares the claim, a stale one is taken over, a fresh one with
     // another digest is *TagConflictError
     ClaimTag(ctx context.Context, c *TagClaim, staleBefore time.Time) error

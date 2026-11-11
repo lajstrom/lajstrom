@@ -29,9 +29,41 @@ stored as RFC 3339 text in SQLite, `timestamptz` in Postgres; `json` = `text` in
 | `bindings` | `id`, `principal` text (`user:<uid>`; `group:<name>` after the MVP), `role` text (`reader`, `writer`, `maintainer`, `admin`), `repo_mask` text (`apt/*`, `*/payments`, `maven/releases`), `created_at` ts | unique `(principal, role, repo_mask)`: the same binding twice is `409`; rbac.md |
 | `keys` | `id`, `repo_id` → repos null (null = server key), `kind` text (`gpg`, `jwt`), `public` blob, `private_enc` blob (encrypted with the master key), `fingerprint` text, `created_at` ts, `retired_at` ts null | apt signing keys; JWT signing key. Unique `keys_active` on `(kind, COALESCE(repo_id, 0)) WHERE retired_at IS NULL`: one key that is not retired per kind and owner, so two replicas that make a repo's first key at once leave one (the second insert is a conflict, and that replica reads the first one's key). A `gpg` row: `public` the OpenPGP public key packets, `private_enc` nonce ‖ AES-256-GCM(private key packets) with the fingerprint (uppercase hex) as additional data |
 | `sessions` | `id`, `repo_id`, `key` text (`g:a:v`; `blob-upload:<id>` for an upload of the facade), `principal` text (`user:<uid>`, `token:<id>`), `state` text (`open`, `committed`, `aborted`, `expired`), `files` json (a publication session: `{"name", "version", "files": [{"name", "digest", "size", "checksums"}], "committing"}`; an upload: `{"name", "location", "id", "offset", "sha256", "hashed", "recheck"}`, the backend's session, the sha256 state of the bytes that passed so far and their count, and whether a chunk failed since), `created_at` ts, `updated_at` ts, `expires_at` ts | publication sessions (maven; later docker stitching) and the blob uploads of the facade. Unique `sessions_open_key` on `(repo_id, key) WHERE state = 'open'` (0007): two requests that open the session of one version at once end in one, and a change of its files is a transaction that starts with an `UPDATE` of the row, which holds it |
-| `audit` | `id`, `at` ts, `principal` text (`user:<uid>`, `token:<id>`, `anonymous`), `principal_name` text null (a user's name at the time of the event, written with the row), `action` text (`push`, `delete`, `repo.create`, `token.create`, …), `repo` text, `subject` text (package/version, or a user's `user:<uid>`), `digest` text null, `ip` text, `details` json | append-only; retention by age later. Rows written before 0008 carry the principal as it was then, `user:<name>`, and that name as `principal_name` |
+| `audit` | `id`, `at` ts, `principal` text (`user:<uid>`, `token:<id>`, `anonymous`), `principal_name` text null (a user's name at the time of the event, written with the row), `action` text (`push`, `delete`, `repo.create`, `token.create`, …), `repo` text, `subject` text (package/version, or a user's `user:<uid>`), `digest` text null, `ip` text, `details` json, `state` text (`ok`, `pending`, `failed`, `unknown`; [below](#the-audit-row-of-a-registry-write)), `error` text null (why a failed row failed, its first 1024 bytes) | rows are never deleted, and only the row of a registry write changes, its state and details, once (below); retention by age later. Rows written before 0008 carry the principal as it was then, `user:<name>`, and that name as `principal_name`; rows written before 0016 are `ok` |
 | `auth_version` | `id` int (always 1), `version` bigint, `updated_at` ts | one row, made by its migration; incremented in the transaction of every insert or delete of `bindings` and every insert, update or delete of `repos`. A replica reads it before it evaluates a request and reloads its snapshot of the bindings and of the repos' `anonymous_read` when it moved (rbac.md §3) |
 | `schema_migrations` | `version` int, `applied_at` ts, `requires` int (0014; `0` but for a contract migration) | one row per applied migration; [Upgrades](#upgrades) |
+
+### The audit row of a registry write
+
+No transaction spans the registry and the database (#473; [guarantees.md](guarantees.md)
+INV-14). A change of the index alone, or of the control plane, appends its row `ok` in its
+transaction. A write to the registry (a publish, a proxied ingest, a delete, a journal entry, a
+referrer, a push to an `oci` repo) has its row written twice:
+
+- **Before the write**, in a transaction of its own, `pending`: the principal, the action, the
+  repo, the subject, the digest, the client address and the request id. It comes after the
+  reads that may refuse the write (the claims, the tag in the backend, the other tags of a
+  manifest to delete) and before the first request that changes the registry. When it cannot
+  be written, the write is not made and the request fails.
+- **After the write**, completed: `ok` in the transaction that records the write in the index
+  (the version, the journal entries, the `oci_repos` row; a referrer, which has no index row, in
+  a transaction of its own), with the details the write learnt (the referrers a delete took,
+  `existed` for a publish that another replica confirmed first); or `failed`, in a transaction
+  of its own, with the error, when the registry refused or failed the write or the index
+  transaction after it failed. The state is the answer: `ok` was a success, `failed` an error.
+- **Unknown**: a row still `pending` whose `at` is older than `ingest.claimTTL` is a writer that
+  stopped between the two, or whose database failed both. Every reindex run, the reconcile
+  loop's included, sets it to `unknown` when it expires the stale tag claims: the registry may or
+  may not have the write, and reindex brings the index to what it has. A writer that ends after
+  that still completes its row.
+
+`audit` stays control plane: reindex neither reads it nor needs it, `ResetDerived` leaves it, a
+backup keeps it. `GET /api/v1/audit` answers the state of each row and selects by it
+(`?state=unknown`). Migration `0016_audit_state.sql` adds `state`, `NOT NULL DEFAULT 'ok'`,
+`error`, and the partial index `audit_pending` on `(at) WHERE state = 'pending'` of the sweep. It
+only adds: a replica of the release before it, during a rolling update, reads the table by
+named columns and appends its rows without a state, which are `ok`, as they were written in the
+transaction of their change.
 
 ## Proxy and group repos
 

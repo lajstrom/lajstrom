@@ -32,10 +32,15 @@ type AuditEntry struct {
 	Digest        string          `json:"digest,omitempty"`
 	IP            string          `json:"ip,omitempty"`
 	Details       json.RawMessage `json:"details,omitempty"`
+	// State is ok, or for a registry write pending, failed (Error says why) or unknown
+	// (docs/spec/index-schema.md, audit).
+	State string `json:"state"`
+	Error string `json:"error,omitempty"`
 }
 
-// listAudit answers a page of the audit events that match ?repo, ?principal, ?action, ?since
-// (inclusive) and ?until (exclusive), newest first: ?limit of them after the event of ?cursor.
+// listAudit answers a page of the audit events that match ?repo, ?principal, ?action, ?state,
+// ?since (inclusive) and ?until (exclusive), newest first: ?limit of them after the event of
+// ?cursor.
 func (h *handler) listAudit(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
@@ -61,7 +66,8 @@ func (h *handler) listAudit(_ http.ResponseWriter, r *http.Request) (int, any, e
 	list := AuditList{Events: make([]AuditEntry, len(evs))}
 	for i, ev := range evs {
 		list.Events[i] = AuditEntry{ID: ev.ID, At: ev.At.UTC(), Principal: ev.Principal, PrincipalName: ev.PrincipalName,
-			Action: ev.Action, Repo: ev.Repo, Subject: ev.Subject, Digest: string(ev.Digest), IP: ev.IP, Details: ev.Details}
+			Action: ev.Action, Repo: ev.Repo, Subject: ev.Subject, Digest: string(ev.Digest), IP: ev.IP, Details: ev.Details,
+			State: ev.State, Error: ev.Error}
 	}
 	if more {
 		last := evs[len(evs)-1]
@@ -74,7 +80,12 @@ func (h *handler) listAudit(_ http.ResponseWriter, r *http.Request) (int, any, e
 // user of that name, by its uid; ok is false when there is no such user, so no event.
 func (h *handler) auditFilter(r *http.Request) (f index.AuditFilter, ok bool, err error) {
 	q := r.URL.Query()
-	f = index.AuditFilter{Repo: q.Get("repo"), Action: q.Get("action")}
+	f = index.AuditFilter{Repo: q.Get("repo"), Action: q.Get("action"), State: q.Get("state")}
+	switch f.State {
+	case "", index.AuditOK, index.AuditPending, index.AuditFailed, index.AuditUnknown:
+	default:
+		return f, false, invalid("state: %q is not ok, pending, failed or unknown", f.State)
+	}
 	for _, t := range []struct {
 		key string
 		to  *time.Time
