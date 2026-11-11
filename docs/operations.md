@@ -543,6 +543,11 @@ closed. A `4xx` is an answer; a `429`, and a request whose client went away, cou
 refuses counts as unanswered, so a breaker that stays open for a minute turns
 [`/-/readyz`](#readiness) to `503`, as a registry that does not answer does.
 
+A registry whose host name does not resolve (its container stopped on a compose network, a
+DNS outage) is unavailable from the first request on: the client gets `503` without
+`Retry-After` (on `/v2` with the code `UNAVAILABLE`), and each such request counts as unanswered
+for the breaker, which opens after five as above.
+
 ### Requests from clients
 
 | Bound | Value | What happens |

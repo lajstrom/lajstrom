@@ -22,7 +22,8 @@ var (
 	// ErrUnavailable means the backend takes no request now: the provider did not send it,
 	// because the backend failed repeatedly and its circuit breaker is open (an
 	// *UnavailableError), or the backend answered 429 or 503 (a *RejectedError). Both say when
-	// to try again (RetryAfter).
+	// to try again (RetryAfter). It also means that the provider could not reach the backend
+	// because its host name does not resolve (#561), which says no time.
 	ErrUnavailable = errors.New("provider: unavailable")
 	// ErrRejected means the backend refused a request with a status that no other sentinel
 	// names: a 4xx such as 400 BLOB_UPLOAD_INVALID, MANIFEST_INVALID or SIZE_INVALID, 413 or
@@ -89,7 +90,8 @@ func (e *UnavailableError) Error() string {
 func (e *UnavailableError) Unwrap() error { return ErrUnavailable }
 
 // RetryAfter returns the RetryAfter of the *UnavailableError that err wraps, or of its
-// *RejectedError of a busy backend, and whether it wraps one: every ErrUnavailable says when.
+// *RejectedError of a busy backend, and whether it wraps one: every ErrUnavailable says when,
+// but a host name that does not resolve.
 func RetryAfter(err error) (time.Duration, bool) {
 	var u *UnavailableError
 	if errors.As(err, &u) {

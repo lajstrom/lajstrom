@@ -362,7 +362,7 @@ They are checked in this order:
 | `*http.MaxBytesError` | 413 |
 | `format.ErrUnsupported`, `provider.ErrUnsupported` | 501 |
 | `provider.ErrUnauthorized` (the backend rejected Lajstrom's own credentials) | 502 |
-| `provider.ErrUnavailable` (the circuit breaker of the registry is open, the request was not sent) | 503, `Retry-After`: the seconds until the breaker's trial request; under `/v2` the code `UNAVAILABLE`, on the API `UNAVAILABLE` |
+| `provider.ErrUnavailable` (the circuit breaker of the registry is open, the request was not sent; or its host name does not resolve, #561) | 503, `Retry-After`: the seconds until the breaker's trial request, none for a name that does not resolve; under `/v2` the code `UNAVAILABLE`, on the API `UNAVAILABLE` |
 | `format.ErrBadGateway` | 502 |
 | `format.ErrUnavailable` (the upstream answered `429`) | 503, `Retry-After`: the `*format.UnavailableError`'s, whole seconds, at least 1 |
 | `format.ErrGatewayTimeout` | 504 |
