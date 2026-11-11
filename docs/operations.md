@@ -356,11 +356,13 @@ the token commands fail and say that `serve` signs with an ephemeral key then.
 ## Readiness
 
 `/-/readyz` answers `200 ok` while the index database answers a ping, no other replica serves on
-it when it is SQLite, and every registry answered `GET /v2/`, with Lajstrom's credentials, within
+it when it is SQLite, the replica's clock is within 60 seconds of the database's
+([Clocks](#clocks)), and every registry answered `GET /v2/`, with Lajstrom's credentials, within
 the last minute; otherwise `503` with a line that names no host, user or registry (`index
-database is unreachable`, `another replica serves on this SQLite database`, `a registry has not
-answered for a minute`); the log has the cause, a registry's once per outage. `serve` pings every
-registry at start and every 20 seconds after, each ping bounded by 10 seconds, so a registry
+database is unreachable`, `another replica serves on this SQLite database`, `the clock of this
+replica is 1m15s ahead of the database's`, `a registry has not answered for a minute`); the log
+has the cause, a registry's once per outage. `serve` pings every registry at start and every 20
+seconds after, each ping bounded by 10 seconds, so a registry
 that stops answering takes the replicas out of the edge after about a minute, and they come
 back at the first answer. `/-/healthz` is only "the process is up": point the liveness probe
 there and the readiness probe at `/-/readyz`, so that an outage of the registry or the database
@@ -384,6 +386,40 @@ never the key. A certificate renewed on disk fails the check until serve is rest
 what loads it (`server.tls.certFile` in [configuration.md](configuration.md#server)), so the
 orchestrator's restart picks it up. [deploy/compose.md](deploy/compose.md#the-health-check)
 uses the check.
+
+## Clocks
+
+Claims on tags and fetches, reindex runs and bearer tokens compare times that other replicas
+wrote: a claim is stale after `ingest.claimTTL`, a fetch claim or a run 2 minutes after its last
+heartbeat, and a token is checked with 60 seconds of skew. So the clocks of the replicas must
+agree with each other and with the database's within 60 seconds
+([guarantees.md](spec/guarantees.md), clocks agree), and should agree within a second.
+
+Run NTP on every host that runs `serve`, the database and the CLI: chrony (`chronyc tracking`
+shows the offset, `chronyc sources` the servers), or systemd-timesyncd (`timedatectl
+timesync-status`). A container has the clock of its host, so on Kubernetes and Compose it is the
+nodes' that must be synchronised, and a managed database keeps its own.
+
+`serve` compares its clock with the database's when it starts and at every heartbeat of its
+row in `replicas`, every 30 seconds ([index-schema.md](spec/index-schema.md#coordination)).
+Past 10 seconds it logs a warning at every comparison, past 60 seconds an error, and
+[`/-/readyz`](#readiness) answers `503 the clock of this replica is 1m15s ahead of the
+database's` (or `behind`) until the next comparison within the bound: the edge takes the
+replica out, while its requests in flight and its background work (the reconcile loop) go on.
+The comparison is the replica's time at the middle of a `SELECT clock_timestamp()` minus the
+time it returns, so it is exact to half the round trip of the query.
+
+The metric `lajstrom_clock_skew_seconds` is the last comparison: this replica's clock minus the
+database's, in seconds, positive when the replica is ahead. Two replicas disagree by the
+difference of their values. An alert that fires before readiness does:
+
+```yaml
+- alert: LajstromClockSkew
+  expr: abs(lajstrom_clock_skew_seconds) > 10
+  for: 5m
+```
+
+On SQLite the database runs in the process, its clock is the host's, and the skew is 0.
 
 ## Shutdown
 
@@ -776,6 +812,7 @@ so the number of series is fixed by the code and the configuration.
 | `lajstrom_proxy_upstream_request_duration_seconds` | `upstream`, `operation`, `status` | requests of proxy repos to their upstreams ([proxy-and-group.md](spec/proxy-and-group.md)), to the response headers: `document`, `file` or `forward` (a client's request sent on: npm audit), the status or `error` |
 | `lajstrom_proxy_documents_total` | `upstream`, `result` | reads of upstream documents: `fresh` (the cache), `revalidated` (`304`), `refreshed` (`200`), `absent` (`404`, `410`), `stale` (the upstream failed, the cache or the held versions served), `offline`, `shared` (a miss that waited for the request another miss on this replica sent) |
 | `lajstrom_proxy_fetches_total` | `upstream`, `result` | file requests of proxy repos: `held` (a hit), `fetched` (a miss downloaded and published), `shared` (a miss another request or replica fetched), `missing`, `rejected` (checksum, size, `Validate`), `error` |
+| `lajstrom_clock_skew_seconds` | | this replica's clock minus the index database's at the last comparison, at the start and every 30 seconds; positive when the replica is ahead ([Clocks](#clocks)) |
 | `lajstrom_auth_throttled_total` | `throttle` | requests answered `429` by a throttle ([auth.md](auth.md#failed-logins)): `account` and `address` (failed logins), `token` (requests to `/v2/token`) |
 | `lajstrom_download_digest_mismatches_total` | `registry` | downloads aborted because the bytes the registry sent do not have their digest ([guarantees.md](spec/guarantees.md), INV-40): a blob streamed to a frontend's or `/v2`'s client, a manifest of `/v2`; the log line `response aborted` names it. Anything but 0 is a registry that serves other bytes than it stored |
 | `lajstrom_build_info` | `version`, `commit`, `goversion` | always 1 |

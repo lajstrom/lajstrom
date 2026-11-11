@@ -3,9 +3,27 @@ package storetest
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/index"
 )
+
+// testDatabaseTime checks that DatabaseTime reads a clock: the database's agrees with this
+// process's within 10 seconds on the test machines, and it moves forward.
+func testDatabaseTime(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	before, err := s.DatabaseTime(ctx)
+	must(t, err)
+	if d := time.Since(before); d < -10*time.Second || d > 10*time.Second {
+		t.Errorf("DatabaseTime = %v, %v from this process's clock", before, d)
+	}
+	time.Sleep(20 * time.Millisecond)
+	after, err := s.DatabaseTime(ctx)
+	must(t, err)
+	if !after.After(before) {
+		t.Errorf("DatabaseTime went from %v to %v in 20 ms", before, after)
+	}
+}
 
 // testReplicas checks the rows of replicas: a start fills the times and a heartbeat moves
 // HeartbeatAt; a second replica with a fresh heartbeat beside it is either refused, naming the

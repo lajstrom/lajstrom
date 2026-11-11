@@ -59,3 +59,10 @@ func (c *conn) HeartbeatReplica(ctx context.Context, id string, at time.Time) er
 func (c *conn) StopReplica(ctx context.Context, id string) error {
 	return c.execOne(ctx, fmt.Sprintf("replicas %q", id), "DELETE FROM replicas WHERE id = ?", id)
 }
+
+// DatabaseTime returns the time of the database's clock (Dialect.Clock).
+func (c *conn) DatabaseTime(ctx context.Context) (time.Time, error) {
+	var t time.Time
+	err := c.scanRow(ctx, "the database's clock", c.d.Clock, nil, timeDest{&t})
+	return t, err
+}
