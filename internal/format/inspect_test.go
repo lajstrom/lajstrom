@@ -85,3 +85,51 @@ func TestReadInspector(t *testing.T) {
 		<-exited
 	})
 }
+
+// TestReadInspectorPanic: a parser that panics, on its own goroutine, does not end the process:
+// the write that finds it, or Close, panics on the caller's goroutine with the parser's value and
+// stack, as a handler's recovery sees it, once; the goroutine has ended, and every call after
+// fails.
+func TestReadInspectorPanic(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		input string
+	}{
+		{"in a write", "a\nboom\n" + strings.Repeat("rest\n", 50_000)},
+		{"at Close", "a\nboom"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			exited := make(chan struct{})
+			insp := format.ReadInspector(func(r io.Reader) error {
+				defer close(exited)
+				sc := bufio.NewScanner(r)
+				for sc.Scan() {
+					if sc.Text() == "boom" {
+						panic("the parser's bug")
+					}
+				}
+				return nil
+			})
+			raised := func(f func() error) (v any, err error) {
+				defer func() { v = recover() }()
+				return nil, f()
+			}
+			var v any
+			var err error
+			for rest := tt.input; rest != "" && v == nil && err == nil; rest = rest[min(len(rest), 7):] {
+				v, err = raised(func() error { _, err := insp.Write([]byte(rest[:min(len(rest), 7)])); return err })
+			}
+			if v == nil && err == nil {
+				v, err = raised(insp.Close)
+			}
+			<-exited
+			perr, ok := v.(error)
+			if !ok || !strings.Contains(perr.Error(), "the parser's bug") || !strings.Contains(perr.Error(), "TestReadInspectorPanic") {
+				t.Fatalf("the caller's goroutine got the panic %v, error %v; want the parser's, with its stack", v, err)
+			}
+			if v, err := raised(insp.Close); v != nil || err == nil {
+				t.Errorf("Close after the panic: panic %v, error %v; want an error", v, err)
+			}
+		})
+	}
+}
