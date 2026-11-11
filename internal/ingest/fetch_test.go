@@ -40,7 +40,7 @@ func TestFetchedBlob(t *testing.T) {
 	}
 	for _, prov := range []provider.Provider{fake, wholeBody{fake}} {
 		pub := &publish{target: &target{name: "raw/x/blob", rr: rr, prov: prov}}
-		b := &fetchedBlob{ctx: ctx, pub: pub, desc: desc, blocks: map[int64][]byte{}}
+		b := &fetchedBlob{ctx: ctx, t: pub.target, desc: desc, blocks: map[int64][]byte{}}
 		before := len(fake.OpenBlobs())
 		for _, c := range []struct {
 			off  int64
@@ -71,13 +71,13 @@ func TestFetchedBlob(t *testing.T) {
 	}
 
 	pub := &publish{target: &target{name: "raw/x/blob", rr: rr, prov: fake}}
-	whole, err := io.ReadAll(&fetchedBlob{ctx: ctx, pub: pub, desc: desc, blocks: map[int64][]byte{}})
+	whole, err := io.ReadAll(&fetchedBlob{ctx: ctx, t: pub.target, desc: desc, blocks: map[int64][]byte{}})
 	if err != nil || !bytes.Equal(whole, data) {
 		t.Errorf("Read: %d bytes, %v", len(whole), err)
 	}
 	wrong := desc
 	wrong.Digest = digest.FromString("a blob the registry does not have")
-	if _, err := io.ReadAll(&fetchedBlob{ctx: ctx, pub: pub, desc: wrong, blocks: map[int64][]byte{}}); err == nil {
+	if _, err := io.ReadAll(&fetchedBlob{ctx: ctx, t: pub.target, desc: wrong, blocks: map[int64][]byte{}}); err == nil {
 		t.Error("Read of a blob the registry does not have: no error")
 	}
 }

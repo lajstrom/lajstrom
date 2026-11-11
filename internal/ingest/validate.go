@@ -239,7 +239,7 @@ func (pub *publish) fetcher() format.BlobFetcher {
 			}
 			return verifiedBlob{verifier: newVerifier(rc, desc), Closer: rc}, nil
 		}
-		return &fetchedBlob{ctx: ctx, pub: pub, desc: desc, blocks: map[int64][]byte{}}, nil
+		return &fetchedBlob{ctx: ctx, t: pub.target, desc: desc, blocks: map[int64][]byte{}}, nil
 	}
 }
 

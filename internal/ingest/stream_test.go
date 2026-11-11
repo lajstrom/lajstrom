@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 
@@ -268,6 +269,151 @@ func TestUploadStreamInspectorPanics(t *testing.T) {
 	}()
 	if e.stored(t, content) || e.prov.OpenUploads() != 0 {
 		t.Errorf("the file stored %v, %d sessions open; want nothing", e.stored(t, content), e.prov.OpenUploads())
+	}
+}
+
+// readBackPlugin is streamPlugin whose Build asks to read the file back (format.ErrReadBack)
+// when it has no Open, and otherwise reads it with ReadAt, keeps what it read, and is
+// streamPlugin's Build of the file without Open; with refuse, it fails then.
+type readBackPlugin struct {
+	*streamPlugin
+	again  bool  // ask to read back again
+	refuse error // what the Build that reads back returns
+	read   []string
+}
+
+func (p *readBackPlugin) Build(ctx context.Context, repo index.Repo, up format.Upload) (*format.Built, error) {
+	f := up.Files[0]
+	if f.Open == nil || p.again {
+		return nil, fmt.Errorf("the inspector held too little of %s: %w", f.Name, format.ErrReadBack)
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rc.Close() }()
+	ra, ok := rc.(io.ReaderAt)
+	if !ok {
+		return nil, errors.New("the file read back is no io.ReaderAt")
+	}
+	b := make([]byte, f.Size)
+	if _, err := ra.ReadAt(b, 0); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%w: read back: %w", format.ErrInvalid, err)
+	}
+	p.read = append(p.read, string(b))
+	if p.refuse != nil {
+		return nil, p.refuse
+	}
+	f.Open = nil
+	return p.streamPlugin.Build(ctx, repo, format.Upload{Files: []format.UploadedFile{f}, Params: up.Params, Origin: up.Origin})
+}
+
+// noRanges is the fake as a registry whose range reads of blobs fail with err.
+type noRanges struct {
+	*providertest.Fake
+	err error
+}
+
+func (n noRanges) OpenBlob(ctx context.Context, name string, d digest.Digest, rangeHeader string, redirect bool) (provider.Blob, error) {
+	if rangeHeader != "" {
+		return provider.Blob{}, n.err
+	}
+	return n.Fake.OpenBlob(ctx, name, d, rangeHeader, redirect)
+}
+
+// late is the fake as an eventually consistent registry whose Exists misses every blob the
+// first misses times it is asked.
+type late struct {
+	*providertest.Fake
+	misses atomic.Int32
+}
+
+func (l *late) Capabilities(ctx context.Context) (provider.Capabilities, error) {
+	c, err := l.Fake.Capabilities(ctx)
+	c.Consistency = provider.ConsistencyEventual
+	return c, err
+}
+
+func (l *late) Repository(ctx context.Context, name string) (provider.Repository, error) {
+	rr, err := l.Fake.Repository(ctx, name)
+	return lateRepo{Repository: rr, l: l}, err
+}
+
+type lateRepo struct {
+	provider.Repository
+	l *late
+}
+
+func (r lateRepo) Exists(ctx context.Context, desc ocispec.Descriptor) (bool, error) {
+	if r.l.misses.Add(-1) >= 0 {
+		return false, nil
+	}
+	return r.Repository.Exists(ctx, desc)
+}
+
+// TestUploadStreamReadBack is step 5 of ADR 0014: a Build that asks to read the streamed file
+// back gets it again once its session is committed, with Open reading the registry's blob by
+// range requests, and the publish goes through. A refusal of that Build pushes no manifest and
+// leaves no version and no claim, but the file stays, committed, for the registry's garbage
+// collection; a registry that fails the reads is no refusal (not ErrInvalid), nor is a plugin
+// that asks again.
+func TestUploadStreamReadBack(t *testing.T) {
+	const content = "a file whose directory is at its end"
+	for _, tt := range []struct {
+		name     string
+		registry func(*providertest.Fake) provider.Provider
+		refuse   error
+		again    bool
+		want     func(error) bool
+	}{
+		{name: "read back", want: func(err error) bool { return err == nil }},
+		{name: "read back from a registry that serves the file late", registry: func(f *providertest.Fake) provider.Provider {
+			l := &late{Fake: f}
+			l.misses.Store(3)
+			return l
+		}, want: func(err error) bool { return err == nil }},
+		{name: "refused after the read-back", refuse: fmt.Errorf("%w: the METADATA read back says another version", format.ErrInvalid),
+			want: isInvalid},
+		{name: "the registry fails the range reads", registry: func(f *providertest.Fake) provider.Provider {
+			return noRanges{f, errors.New("connection reset by the registry")}
+		}, want: func(err error) bool { return err != nil && !isInvalid(err) }},
+		{name: "the registry does not serve the file it took", registry: func(f *providertest.Fake) provider.Provider {
+			return noRanges{f, fmt.Errorf("providertest: open blob: %w", provider.ErrNotFound)}
+		}, want: func(err error) bool { return err != nil && !isInvalid(err) && !errors.Is(err, provider.ErrNotFound) }},
+		{name: "asked again", again: true, want: func(err error) bool { return err != nil && !isInvalid(err) }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e, sp := newStreamEnv(t)
+			rb := &readBackPlugin{streamPlugin: sp, refuse: tt.refuse}
+			var prov provider.Provider = e.prov
+			if tt.registry != nil {
+				prov = tt.registry(e.prov)
+			}
+			o := e.options(prov)
+			o.Plugins = func(name string) (format.Plugin, bool) {
+				rb.again = tt.again
+				return rb, name == "raw"
+			}
+			e.pipe = ingest.New(o)
+			_, err := e.pipe.UploadStream(t.Context(), e.repo, streamUpload("1.0.0", content), alice)
+			if !tt.want(err) {
+				t.Fatalf("UploadStream = %v", err)
+			}
+			if !e.stored(t, content) || e.prov.OpenUploads() != 0 {
+				t.Errorf("the file stored %v, %d sessions open; want it committed, none open", e.stored(t, content), e.prov.OpenUploads())
+			}
+			if err == nil {
+				if len(rb.read) != 1 || rb.read[0] != content {
+					t.Errorf("Build read back %q", rb.read)
+				}
+				e.wantPublished(t, content, 1)
+				return
+			}
+			if n, rows := len(e.pushRefs("1.0.0")), e.rows(t); n != 0 || len(rows.Versions) != 0 {
+				t.Errorf("%d manifests pushed, %d versions; want none", n, len(rows.Versions))
+			}
+			e.noClaim(t, "docs/notes.txt", "1.0.0")
+		})
 	}
 }
 

@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"sync"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -37,15 +39,17 @@ import (
 //     that ends at another size than File.Size is ErrInvalid;
 //  3. Build gets the file without Open, with its size, checksums and inspector; its manifest
 //     must be at the package path of up.Name and have a file layer of the streamed digest and
-//     size;
+//     size. A Build that returns format.ErrReadBack is called again once the file is committed,
+//     to read it back from the registry (readBack, ADR 0014 step 5);
 //  4. then the steps of Upload: the idempotent repeat, the checks of Ingest, the claims, the tag
 //     in the backend. The other blobs, Build's (the metadata layer) and the empty config, are
 //     held in memory meanwhile, and the plugin's Validate reads them there. Only then is the
 //     session closed with the sha256 that ingest computed (BlobWriter.Commit; a blob that the
 //     repository holds already is not sent again), the held blobs pushed, and the manifest;
 //  5. any failure before the commit, and the idempotent repeat, cancel the session, with ctx's
-//     values but not its cancellation: nothing of the upload is stored. A cancel that fails is
-//     logged, and the registry expires the session.
+//     values but not its cancellation: nothing of the upload is stored, but for the file that a
+//     read-back committed, which no manifest names then. A cancel that fails is logged, and the
+//     registry expires the session.
 func (p *Pipeline) UploadStream(ctx context.Context, repo index.Repo, up format.StreamUpload, principal auth.Principal) (_ *format.Published, err error) {
 	existed := false
 	defer func() { count(repo.Format, existed, err) }()
@@ -82,9 +86,9 @@ func (p *Pipeline) UploadStream(ctx context.Context, repo index.Repo, up format.
 	if err != nil {
 		return nil, fmt.Errorf("ingest: %s into %s: %w", up.File.Name, t.name, err)
 	}
-	built, err := plugin.Build(ctx, repo, format.Upload{Files: []format.UploadedFile{file}, Params: up.Params, Origin: up.Origin})
+	built, err := p.buildStreamed(ctx, t, format.Upload{Files: []format.UploadedFile{file}, Params: up.Params, Origin: up.Origin})
 	if err != nil {
-		return nil, buildError(repo, err)
+		return nil, err
 	}
 	builtPath, pub, err := p.prepare(ctx, repo, built, up.Origin, principal)
 	switch {
@@ -107,9 +111,10 @@ func (p *Pipeline) UploadStream(ctx context.Context, repo index.Repo, up format.
 // streamed is the file of UploadStream: its upload session holds the bytes until commit closes
 // it, after every check, or cancelStreamed drops it.
 type streamed struct {
-	w    provider.BlobWriter
-	desc ocispec.Descriptor // the sha256 digest and size of the bytes, once the body has ended
-	done bool               // committed, or found in the repository already
+	w      provider.BlobWriter
+	desc   ocispec.Descriptor // the sha256 digest and size of the bytes, once the body has ended
+	done   bool               // committed, or found in the repository already
+	pushed bool               // the held blobs pushed after it (commit)
 	// held are the other blobs of the upload, the empty config and Build's, which commit pushes
 	// after the file; until then the checks read them here (publish.open).
 	held []format.BlobSource
@@ -235,14 +240,32 @@ func (s *streamed) layerOf(m ocispec.Manifest) bool {
 	return false
 }
 
-// commit closes the session of t's streamed file with its digest, the last step before the
-// manifest's PUT, unless the repository holds the blob already: the session is then left to
-// cancelStreamed. Then it pushes the held blobs that the repository does not have: after the
-// file, so that a commit the registry refuses leaves none of them. Nothing to do without a
-// streamed file.
+// commit is the last step before the manifest's PUT: it commits t's streamed file
+// (commitFile), unless a read-back did, and then pushes the held blobs that the repository
+// does not have: after the file, so that a commit the registry refuses leaves none of them.
+// Nothing to do without a streamed file.
 func (t *target) commit(ctx context.Context) error {
 	s := t.streamed
-	if s == nil || s.done {
+	if s == nil || s.pushed {
+		return nil
+	}
+	if err := t.commitFile(ctx); err != nil {
+		return err
+	}
+	for _, b := range s.held {
+		if err := t.pushBlob(ctx, b); err != nil {
+			return err
+		}
+	}
+	s.pushed = true
+	return nil
+}
+
+// commitFile closes the session of t's streamed file with its digest, unless the repository
+// holds the blob already: the session is then left to cancelStreamed. Once.
+func (t *target) commitFile(ctx context.Context) error {
+	s := t.streamed
+	if s.done {
 		return nil
 	}
 	ok, err := t.rr.Exists(ctx, s.desc)
@@ -255,12 +278,110 @@ func (t *target) commit(ctx context.Context) error {
 		}
 	}
 	s.done = true
-	for _, b := range s.held {
-		if err := t.pushBlob(ctx, b); err != nil {
-			return err
-		}
-	}
 	return nil
+}
+
+// buildStreamed runs the plugin's Build of the streamed file of up, and readBack when it asks
+// for it.
+func (p *Pipeline) buildStreamed(ctx context.Context, t *target, up format.Upload) (*format.Built, error) {
+	built, err := t.plugin.Build(ctx, t.repo, up)
+	switch {
+	case errors.Is(err, format.ErrReadBack):
+		return p.readBack(ctx, t, up)
+	case err != nil:
+		return nil, buildError(t.repo, err)
+	}
+	return built, nil
+}
+
+// readBack is step 5 of ADR 0014, for a Build that returned format.ErrReadBack: the inspector of
+// the file did not hold all that Build needs of it. The session is committed, so that the
+// registry has the file; the blob is read until the registry serves it, for the visibility
+// timeout, as a layer pushed a moment ago (readBlob); and Build is called again with up's file
+// that Open reads back from the registry, an io.ReaderAt by range requests (fetchedBlob). The
+// file stays in the registry whatever follows: a refusal from here on pushes no manifest and
+// leaves the blob to the registry's garbage collection, an orphan without a manifest. A failure
+// to read the file back is the registry's, not a refusal of Build.
+func (p *Pipeline) readBack(ctx context.Context, t *target, up format.Upload) (*format.Built, error) {
+	s := t.streamed
+	if err := t.commitFile(ctx); err != nil {
+		return nil, err
+	}
+	var deadline time.Time
+	ok, err := t.rr.Exists(ctx, s.desc)
+	if err == nil && !ok {
+		ok, err = readBlob(ctx, t.prov, t.rr, s.desc, p.visibility, &deadline)
+	}
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("ingest: read back blob %s in %s: %w", s.desc.Digest, t.name, err)
+	case !ok:
+		return nil, fmt.Errorf("ingest: read back blob %s in %s: %w", s.desc.Digest, t.name, &provider.UnavailableError{
+			RetryAfter: visibilityRetryAfter,
+			Reason:     "the registry took the file and did not serve it within the visibility timeout; the same upload again completes it"})
+	}
+	failed := &readFailure{}
+	f := up.Files[0]
+	f.Open = func() (io.ReadCloser, error) {
+		return &readBackBlob{fetchedBlob: &fetchedBlob{ctx: ctx, t: t, desc: s.desc, blocks: map[int64][]byte{}}, failed: failed}, nil
+	}
+	up.Files = []format.UploadedFile{f}
+	built, err := t.plugin.Build(ctx, t.repo, up)
+	switch {
+	case err != nil && errors.Is(failed.get(), provider.ErrNotFound): // the registry's failure, not a 404 of the client's
+		return nil, fmt.Errorf("ingest: read back blob %s from %s: the registry does not serve the blob it took: %s", s.desc.Digest,
+			t.name, failed.get().Error())
+	case err != nil && failed.get() != nil:
+		return nil, fmt.Errorf("ingest: read back blob %s from %s: %w", s.desc.Digest, t.name, failed.get())
+	case errors.Is(err, format.ErrReadBack):
+		return nil, fmt.Errorf("ingest: the %s plugin asks to read back blob %s again", t.repo.Format, s.desc.Digest)
+	case err != nil:
+		return nil, buildError(t.repo, err)
+	}
+	return built, nil
+}
+
+// readBackBlob is the file of a read-back as Build reads it: a fetchedBlob whose first failure
+// to read, but the end of the blob, goes to failed.
+type readBackBlob struct {
+	*fetchedBlob
+	failed *readFailure
+}
+
+func (b *readBackBlob) Read(p []byte) (int, error) {
+	n, err := b.fetchedBlob.Read(p)
+	b.failed.keep(err)
+	return n, err
+}
+
+func (b *readBackBlob) ReadAt(p []byte, off int64) (int, error) {
+	n, err := b.fetchedBlob.ReadAt(p, off)
+	b.failed.keep(err)
+	return n, err
+}
+
+// readFailure is the first failure to read of the blobs of a read-back; ReadAt may be called
+// from several goroutines.
+type readFailure struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (r *readFailure) keep(err error) {
+	if err == nil || errors.Is(err, io.EOF) {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.err == nil {
+		r.err = err
+	}
+}
+
+func (r *readFailure) get() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.err
 }
 
 // cancelStreamed drops the session of t's streamed file unless commit closed it (Cancel after
