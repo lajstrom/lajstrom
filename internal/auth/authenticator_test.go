@@ -198,7 +198,8 @@ func (f *authFixture) wantRefused(t *testing.T, user, secret string, n int) {
 // unknown, disabled, without a password and with a wrong secret are ErrBadCredentials after
 // one verification each, against the dummy hash when the user's own is not to be used; a name
 // or a secret that no user can have is refused without the index and without argon2id. The log
-// names the user and the reason at debug level, and never the secret.
+// names the reason at debug level, and the user by its uid when it was read; never the name as
+// typed, never the secret.
 func TestAuthenticate(t *testing.T) {
 	tests := []struct {
 		name, user, secret string
@@ -243,9 +244,9 @@ func TestAuthenticate(t *testing.T) {
 				}
 				return
 			}
-			want := fmt.Sprintf(`"level":"DEBUG","msg":"authentication refused","user":%q,"reason":%q`, tt.user, tt.reason)
-			if CheckName(tt.user) != nil { // an invalid name is not logged
-				want = fmt.Sprintf(`"level":"DEBUG","msg":"authentication refused","reason":%q}`, tt.reason)
+			want := fmt.Sprintf(`"level":"DEBUG","msg":"authentication refused","reason":%q}`, tt.reason)
+			if u := f.users.byName(tt.user); tt.reads > 0 && u.UID != "" { // a user read is logged by its uid, a name as typed never
+				want = fmt.Sprintf(`"level":"DEBUG","msg":"authentication refused","user":%q,"reason":%q`, UserPrincipal(&u).String(), tt.reason)
 			}
 			if !strings.Contains(logs, want) {
 				t.Errorf("log %s does not have %s", logs, want)

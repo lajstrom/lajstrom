@@ -302,6 +302,60 @@ func TestBearerAccessLog(t *testing.T) {
 	}
 }
 
+// TestRefusalsLogNoSecret runs the server, the authenticator and the facade with every logger
+// at debug, and sends what threat model L-3 is about: a token pasted as the user name of Basic
+// credentials, with a password and with a token; a password typed as the user name; and a
+// bearer whose header has a kid of 4 KiB. Each is refused, and the logs hold neither the pasted
+// token, nor the typed password, nor the kid, of which the first 16 bytes and the length are
+// logged. A wrong password of a user that exists is logged with the user's uid
+// (docs/spec/guarantees.md, INV-21).
+func TestRefusalsLogNoSecret(t *testing.T) {
+	e := newEnv(t, envOptions{})
+	hash, err := auth.HashPassword("correct horse battery staple")
+	must(t, err)
+	must(t, e.st.CreateUser(t.Context(), &index.User{Name: "alice", PasswordHash: hash, Kind: auth.KindLocal}))
+	alice, err := e.st.GetUser(t.Context(), "alice")
+	must(t, err)
+	logs := &logBuffer{}
+	log := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	srv, err := server.New(server.Options{Listen: "127.0.0.1:0", Facade: e.h, Log: log,
+		Authenticator: auth.NewAuthenticator(auth.Options{Index: e.st, Log: log})})
+	must(t, err)
+
+	pasted := auth.PATPrefix + strings.Repeat("a1b2c3", 7) + "z" // a token's shape that is a valid user name too
+	other := auth.PATPrefix + strings.Repeat("z9y8x7", 7) + "w"
+	typed := "hunter2-correct-horse"
+	kid := strings.Repeat("0123456789abcdef", 256)
+	enc := base64.RawURLEncoding.EncodeToString
+	bearer := enc([]byte(`{"alg":"ES256","typ":"JWT","kid":"`+kid+`"}`)) + "." + enc([]byte(`{"sub":"user:x"}`)) + "." + enc([]byte("no signature"))
+	basic := func(user, secret string) string {
+		return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+secret))
+	}
+	for _, authorization := range []string{
+		basic(pasted, "a password"), basic(pasted, other), basic(typed, "a password"), basic("alice", "a wrong password"),
+		"Bearer " + bearer,
+	} {
+		r := httptest.NewRequest(http.MethodGet, "/v2/oci/images/app/tags/list", nil)
+		r.Header.Set("Authorization", authorization)
+		rr := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rr, r)
+		wantStatus(t, authorization[:min(len(authorization), 24)], rr, http.StatusUnauthorized)
+	}
+
+	text := logs.String() + e.logs.String()
+	for name, s := range map[string]string{"the pasted token": pasted, "the other token": other, "the typed password": typed, "the kid": kid} {
+		if strings.Contains(text, s) {
+			t.Errorf("the log holds %s:\n%s", name, text)
+		}
+	}
+	if want := `"user":"user:` + alice.UID + `","reason":"wrong password"`; !strings.Contains(logs.String(), want) {
+		t.Errorf("the log does not have %s:\n%s", want, logs)
+	}
+	if want := "kid=0123456789abcdef kidLength=4096"; !strings.Contains(e.logs.String(), want) {
+		t.Errorf("the log does not have %s:\n%s", want, e.logs)
+	}
+}
+
 // TestBearerMount checks a cross-repo mount with a bearer: a token without the source is 401
 // naming both repositories and insufficient_scope, so that the client gets a wider token,
 // whether the source exists or not; one with both mounts; one that names the source without

@@ -99,14 +99,12 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		var (
 			p    auth.Principal
 			cred auth.Credential
-			user string // for the log of a failure
 			err  error
 		)
 		switch {
 		case strings.EqualFold(scheme, "Basic"):
-			var secret string
-			var ok bool
-			if user, secret, ok = r.BasicAuth(); !ok {
+			user, secret, ok := r.BasicAuth()
+			if !ok {
 				s.log.DebugContext(r.Context(), "authentication refused", "reason", "credentials that do not decode",
 					"requestId", RequestID(r.Context()))
 				s.writeRefusal(w, r, http.StatusUnauthorized, msgBadCredentials)
@@ -128,11 +126,8 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			s.throttled(w, r, throttled, msgThrottled)
 			return
 		case err != nil:
-			attrs := []any{"error", err.Error(), "requestId", RequestID(r.Context())}
-			if user != "" {
-				attrs = append([]any{"user", user}, attrs...)
-			}
-			s.log.ErrorContext(r.Context(), "authentication failed", attrs...)
+			// Not the user name: as it was typed, it may be a password or a token (threat model L-3).
+			s.log.ErrorContext(r.Context(), "authentication failed", "error", err.Error(), "requestId", RequestID(r.Context()))
 			s.writeRefusal(w, r, http.StatusInternalServerError, msgAuthFailed)
 			return
 		}

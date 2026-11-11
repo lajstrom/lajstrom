@@ -244,9 +244,15 @@ func (v *Verifier) Verify(ctx context.Context, raw, service string) (*Grant, err
 	return &Grant{Principal: p, Access: c.Access}, nil
 }
 
-// refuse logs the reason of a refusal and returns ErrInvalidToken.
+// loggedKid is how many bytes of a kid a refusal logs: a kid of Lajstrom's is the 64 hex digits
+// of a key's fingerprint, which 16 tell apart, and the client's may be of any length (threat
+// model L-3).
+const loggedKid = 16
+
+// refuse logs the reason of a refusal, with the first loggedKid bytes of the kid of the token's
+// header and its length, and returns ErrInvalidToken.
 func (v *Verifier) refuse(ctx context.Context, kid, reason string) error {
-	v.log.DebugContext(ctx, "bearer token refused", "kid", kid, "reason", reason)
+	v.log.DebugContext(ctx, "bearer token refused", "kid", kid[:min(len(kid), loggedKid)], "kidLength", len(kid), "reason", reason)
 	return ErrInvalidToken
 }
 
