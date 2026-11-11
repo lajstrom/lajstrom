@@ -86,8 +86,9 @@ type errorEntry struct {
 // or the registry's 4xx when the cause is its refusal of the request (statusOf), or
 // format.StatusOf of the cause; the code follows the status where the status decides it
 // (401 UNAUTHORIZED with the challenge, 403 DENIED, 429 TOOMANYREQUESTS, 501 UNSUPPORTED, the
-// 503 of an open circuit breaker UNAVAILABLE with Retry-After, other 5xx UNKNOWN) and is the
-// handler's otherwise. The challenge of a 401 is the bearer challenge of
+// 503 of a registry that takes no request now UNAVAILABLE with Retry-After: an open circuit
+// breaker, or the registry's own 429 or 503, which throttles Lajstrom and not the client; other
+// 5xx UNKNOWN) and is the handler's otherwise. The challenge of a 401 is the bearer challenge of
 // the token flow (docs/spec/rbac.md §4) with the scope of the request (requestScope), and
 // error="insufficient_scope" when a valid bearer lacked it. A 5xx says only its status text,
 // without a detail, and its cause is logged with the request id: a backend error must not
@@ -135,14 +136,15 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 // statusOf returns the status of e, and the registry's refusal it answers: the apiError's own
-// status; else, when the cause is a *provider.RejectedError, the registry's 4xx, a client error
-// that stays one (#449); else format.StatusOf of the cause.
+// status; else, when the cause is a *provider.RejectedError of a registry that is not busy, the
+// registry's 4xx, a client error that stays one (#449); else format.StatusOf of the cause,
+// which answers a busy registry's 429 or 503 as provider.ErrUnavailable: 503.
 func (e *apiError) statusOf() (int, *provider.RejectedError) {
 	var rej *provider.RejectedError
 	switch {
 	case e.status != 0:
 		return e.status, nil
-	case errors.As(e.err, &rej) && rej.Status >= 400 && rej.Status <= 499:
+	case errors.As(e.err, &rej) && !rej.Busy() && rej.Status >= 400 && rej.Status <= 499:
 		return rej.Status, rej
 	}
 	return format.StatusOf(e.err), nil
@@ -151,7 +153,7 @@ func (e *apiError) statusOf() (int, *provider.RejectedError) {
 // rejectedCode is the code of the registry's refusal rej of a request for which the handler
 // chose code: the registry's own when it is a code of the spec that a blob upload is refused
 // with, so that the client acts on it as on the registry's; else SIZE_INVALID for a 413; else
-// the handler's, BLOB_UPLOAD_INVALID when it chose none. fail answers a 429 TOOMANYREQUESTS.
+// the handler's, BLOB_UPLOAD_INVALID when it chose none.
 func rejectedCode(rej *provider.RejectedError, code string) string {
 	switch {
 	case rej.Code == codeBlobUploadInvalid, rej.Code == codeDigestInvalid, rej.Code == codeNameInvalid,

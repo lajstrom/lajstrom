@@ -73,18 +73,22 @@ never visible to clients).
 A request of a blob upload (any of the upload rows above) that the registry refuses with a
 `4xx` that none of their errors names keeps that status for the client (#449): Gitea's
 `400 BLOB_UPLOAD_INVALID` for a chunk of unknown length after the first write, JFrog's `416`
-for it, a `413` of a proxy in front of the registry, a `429`. The code is the registry's when it
-is `BLOB_UPLOAD_INVALID`, `DIGEST_INVALID`, `NAME_INVALID` or `SIZE_INVALID`; else
-`SIZE_INVALID` for a `413`, `TOOMANYREQUESTS` for a `429`, `BLOB_UPLOAD_INVALID` for the rest. A
-`429` carries the registry's `Retry-After` when it sent one. The message names the registry by
-its `registries[].name`, with the status and the code, and nothing else of it: no URL, realm,
+for it, a `413` of a proxy in front of the registry. The code is the registry's when it is
+`BLOB_UPLOAD_INVALID`, `DIGEST_INVALID`, `NAME_INVALID` or `SIZE_INVALID`; else `SIZE_INVALID`
+for a `413`, `BLOB_UPLOAD_INVALID` for the rest. The message names the registry by its
+`registries[].name`, with the status and the code, and nothing else of it: no URL, realm,
 credential or message of the registry's own; when the vendor table knows the fix, a hint
 follows (`registries[].uploads.spoolUnknownLength` for Gitea, Forgejo and JFrog). The refusal
 is logged at warn. The session stays, as after any chunk that fails, except when the registry
 no longer knows it (`404`, or `BLOB_UPLOAD_UNKNOWN`: `404 BLOB_UPLOAD_UNKNOWN`) or refuses the
-digest (`400 DIGEST_INVALID`): then it ends. A registry that refuses Lajstrom's credentials
-(`401`, `403`, `UNAUTHORIZED`, `DENIED`) is `502`, and any `5xx` of the registry stays a `5xx`,
-with the status text only.
+digest (`400 DIGEST_INVALID`): then it ends. A `429` or `503` of the registry is
+`503 UNAVAILABLE` with the registry's `Retry-After`, `1` when it sent none, as an open circuit
+breaker is and as on the proxy routes: the registry throttles Lajstrom's own credential, which
+every client shares, not this client, and docker retries a `503`. Lajstrom's own bound of a
+principal, its open upload sessions (#246), is `429 TOOMANYREQUESTS`: there the client itself
+is over its limit. A registry that refuses Lajstrom's credentials (`401`, `403`,
+`UNAUTHORIZED`, `DENIED`) is `502`, and any other `5xx` of the registry stays a `5xx`, with the
+status text only.
 
 Mount of a package under a repo: the name after `/v2/` is split as `<format>/<repo>/<rest>`; the
 repo must exist in the control plane, else `404 NAME_UNKNOWN`. Auto-creation of repos on push is

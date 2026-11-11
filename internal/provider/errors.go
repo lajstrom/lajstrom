@@ -2,6 +2,7 @@ package provider
 
 import (
 	"errors"
+	"net/http"
 	"strconv"
 	"time"
 )
@@ -18,13 +19,15 @@ var (
 	ErrUnsupported = errors.New("provider: unsupported")
 	// ErrUnauthorized means the backend rejected Lajstrom's own credentials.
 	ErrUnauthorized = errors.New("provider: unauthorized")
-	// ErrUnavailable means the provider did not send the request: the backend failed
-	// repeatedly and its circuit breaker is open. An *UnavailableError says when it takes a
-	// request again (RetryAfter).
+	// ErrUnavailable means the backend takes no request now: the provider did not send it,
+	// because the backend failed repeatedly and its circuit breaker is open (an
+	// *UnavailableError), or the backend answered 429 or 503 (a *RejectedError). Both say when
+	// to try again (RetryAfter).
 	ErrUnavailable = errors.New("provider: unavailable")
 	// ErrRejected means the backend refused a request of a blob upload session (BlobUploader)
-	// with a 4xx that no other sentinel names: 400 BLOB_UPLOAD_INVALID or SIZE_INVALID, 413, 416,
-	// 429. A *RejectedError says how.
+	// with a status that no other sentinel names: a 4xx such as 400 BLOB_UPLOAD_INVALID or
+	// SIZE_INVALID, 413 or 416, and the 429 or 503 of a busy backend, which is ErrUnavailable
+	// too. A *RejectedError says how.
 	ErrRejected = errors.New("provider: rejected")
 )
 
@@ -34,11 +37,11 @@ var (
 type RejectedError struct {
 	// Registry is registries[].name.
 	Registry string
-	// Status is the backend's status, a 4xx.
+	// Status is the backend's status: a 4xx, or 503.
 	Status int
 	// Code is the first error code of the answer, "" when it had none.
 	Code string
-	// RetryAfter is the Retry-After of a 429, zero when it had none.
+	// RetryAfter is the Retry-After of a 429 or 503, zero when it had none.
 	RetryAfter time.Duration
 	// Hint is what the operator may change so that the request passes, when the provider knows
 	// it; "" otherwise.
@@ -56,8 +59,20 @@ func (e *RejectedError) Error() string {
 	return msg
 }
 
-// Unwrap returns ErrRejected, so that errors.Is matches the sentinel.
-func (e *RejectedError) Unwrap() error { return ErrRejected }
+// Unwrap returns ErrRejected, and ErrUnavailable for a busy backend (Busy), so that errors.Is
+// matches the sentinels.
+func (e *RejectedError) Unwrap() []error {
+	if e.Busy() {
+		return []error{ErrRejected, ErrUnavailable}
+	}
+	return []error{ErrRejected}
+}
+
+// Busy reports whether the backend refused the request because it takes none now: 429, 503.
+// It throttles or sheds Lajstrom, whose credential every client shares, not one client.
+func (e *RejectedError) Busy() bool {
+	return e.Status == http.StatusTooManyRequests || e.Status == http.StatusServiceUnavailable
+}
 
 // UnavailableError is an ErrUnavailable that says how long until the provider sends a request
 // to the backend again.
@@ -73,15 +88,15 @@ func (e *UnavailableError) Error() string {
 // Unwrap returns ErrUnavailable, so that errors.Is matches the sentinel.
 func (e *UnavailableError) Unwrap() error { return ErrUnavailable }
 
-// RetryAfter returns the RetryAfter of the *UnavailableError that err wraps, or of the
-// *RejectedError of a backend that asked to wait, and whether it wraps one.
+// RetryAfter returns the RetryAfter of the *UnavailableError that err wraps, or of its
+// *RejectedError of a busy backend, and whether it wraps one: every ErrUnavailable says when.
 func RetryAfter(err error) (time.Duration, bool) {
 	var u *UnavailableError
 	if errors.As(err, &u) {
 		return u.RetryAfter, true
 	}
 	var r *RejectedError
-	if errors.As(err, &r) && r.RetryAfter > 0 {
+	if errors.As(err, &r) && r.Busy() {
 		return r.RetryAfter, true
 	}
 	return 0, false

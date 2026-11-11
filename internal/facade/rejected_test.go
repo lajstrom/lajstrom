@@ -116,9 +116,10 @@ func wantRefusal(t *testing.T, what string, rr *httptest.ResponseRecorder, srv *
 }
 
 // TestRegistryRefusals is #449: a registry that refuses a request of a blob upload with a 4xx
-// gets the client a 4xx, with the registry's code where the spec has it for a blob upload, the
-// Retry-After of a 429, and nothing else of the registry's; a 5xx stays a 5xx, and so does a
-// refusal of Lajstrom's credentials. The client opens a session, sends a chunk, asks its status
+// gets the client a 4xx, with the registry's code where the spec has it for a blob upload, and
+// nothing else of the registry's; a busy registry's 429 or 503 is 503 UNAVAILABLE with its
+// Retry-After, 1 s when it sent none; another 5xx stays a 5xx, and a refusal of Lajstrom's
+// credentials is 502. The client opens a session, sends a chunk, asks its status
 // and closes it, or cancels it; or sends the blob in one POST. A session ends when the registry
 // no longer knows it, or refused its digest; otherwise it stays.
 func TestRegistryRefusals(t *testing.T) {
@@ -140,7 +141,9 @@ func TestRegistryRefusals(t *testing.T) {
 		{name: "a proxy's 413 without a body", refuse: http.MethodPatch, status: 413, want: 413, wantCode: codeSizeInvalid},
 		{name: "range, distribution's code", refuse: http.MethodPatch, status: 416, code: "RANGE_INVALID", want: 416, wantCode: codeBlobUploadInvalid},
 		{name: "a code of the vendor's own", refuse: http.MethodPatch, status: 400, code: "PROJECTPOLICYVIOLATION", want: 400, wantCode: codeBlobUploadInvalid},
-		{name: "chunk throttled", refuse: http.MethodPatch, status: 429, code: codeTooManyRequests, hdr: ra("7"), want: 429, wantCode: codeTooManyRequests, retryAfter: "7"},
+		{name: "chunk throttled", refuse: http.MethodPatch, status: 429, code: codeTooManyRequests, hdr: ra("7"), want: 503, wantCode: codeUnavailable, retryAfter: "7"},
+		{name: "registry busy", refuse: http.MethodPatch, status: 503, code: codeUnavailable, hdr: ra("3"), want: 503, wantCode: codeUnavailable, retryAfter: "3"},
+		{name: "registry busy, no Retry-After", refuse: http.MethodPatch, status: 503, want: 503, wantCode: codeUnavailable, retryAfter: "1"},
 		{name: "session gone", refuse: http.MethodPatch, status: 404, code: codeBlobUploadUnknown, want: 404, wantCode: codeBlobUploadUnknown, ends: true},
 		{name: "session gone, with a 400", refuse: http.MethodPatch, status: 400, code: codeBlobUploadUnknown, want: 404, wantCode: codeBlobUploadUnknown, ends: true},
 		{
@@ -150,8 +153,8 @@ func TestRegistryRefusals(t *testing.T) {
 		{name: "Lajstrom's credentials denied", refuse: http.MethodPatch, status: 403, code: codeDenied, want: 502, wantCode: codeUnknown},
 		{name: "registry fails", refuse: http.MethodPatch, status: 500, code: codeUnknown, want: 500, wantCode: codeUnknown},
 		{name: "name refused", refuse: http.MethodPost, status: 400, code: codeNameInvalid, want: 400, wantCode: codeNameInvalid},
-		{name: "start throttled", refuse: http.MethodPost, status: 429, code: codeTooManyRequests, hdr: ra("30"), want: 429, wantCode: codeTooManyRequests, retryAfter: "30"},
-		{name: "status throttled, no Retry-After", refuse: http.MethodGet, status: 429, want: 429, wantCode: codeTooManyRequests},
+		{name: "start throttled", refuse: http.MethodPost, status: 429, code: codeTooManyRequests, hdr: ra("30"), want: 503, wantCode: codeUnavailable, retryAfter: "30"},
+		{name: "status throttled, no Retry-After", refuse: http.MethodGet, status: 429, want: 503, wantCode: codeUnavailable, retryAfter: "1"},
 		{name: "close refused", refuse: http.MethodPut, status: 400, code: codeSizeInvalid, want: 400, wantCode: codeSizeInvalid},
 		{name: "digest refused", refuse: http.MethodPut, status: 400, code: codeDigestInvalid, want: 400, wantCode: codeDigestInvalid, ends: true},
 		{name: "cancel refused", refuse: http.MethodDelete, status: 400, code: codeBlobUploadInvalid, want: 400, wantCode: codeBlobUploadInvalid},
