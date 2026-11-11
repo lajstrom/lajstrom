@@ -1,6 +1,7 @@
 # Lajstrom, two replicas (docs/deploy/kubernetes.md). Every replica is the same: the state is in
 # Postgres and in the registry, so any number of them serve behind one Service. Needs the
-# ConfigMap lajstrom-config and the Secret lajstrom.
+# ConfigMap lajstrom-config and the Secret lajstrom; the Secret lajstrom-bootstrap until the first
+# admin exists.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -87,6 +88,9 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            - name: bootstrap
+              mountPath: /run/secrets/lajstrom-bootstrap
+              readOnly: true
       volumes:
         - name: config
           configMap:
@@ -96,3 +100,9 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 4Gi
+        # The one-time token of the first admin, the file of auth.bootstrap.tokenFile. Optional:
+        # deleted once the admin exists, and its file leaves the pods (docs/deploy/kubernetes.md).
+        - name: bootstrap
+          secret:
+            secretName: lajstrom-bootstrap
+            optional: true

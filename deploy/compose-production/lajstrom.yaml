@@ -27,6 +27,13 @@ registries:
       username: lajstrom
       passwordEnv: LAJSTROM_REGISTRY_PASSWORD
 
+auth:
+  # No admin password here or in secrets/: the one-time token of secrets/bootstrap-token, the
+  # Compose secret lajstrom-bootstrap-token, makes the first admin with lajstrom admin bootstrap
+  # (docs/deploy/compose.md, 4). Remove this once the admin exists.
+  bootstrap:
+    tokenFile: /run/secrets/lajstrom-bootstrap-token
+
 keys:
   # The Compose secret lajstrom-master-key of compose.yaml.
   masterKeyFile: /run/secrets/lajstrom-master-key

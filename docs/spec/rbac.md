@@ -205,9 +205,24 @@ client gets one for every pull and push, and what a token allows is audited itse
 
 ## 6. Bootstrap
 
-`lajstrom admin user create --name admin --admin` creates the first user and an `admin` binding
-from the command line (no HTTP), prompting for the password or reading
-`LAJSTROM_ADMIN_PASSWORD`. The bindings of other users are made with
+No admin password is read from the environment or the configuration (#440). The first admin
+is made in one of two ways, both with an `admin` binding on `*/*`:
+
+- **The bootstrap token.** The operator makes it and gives it as the file of
+  `auth.bootstrap.tokenFile`. While no enabled user has an admin binding, `serve` makes it valid
+  on every replica at start; it never makes a token and never logs one. The index keeps its
+  sha256 only (`bootstrap_token`, index-schema.md); it expires after `auth.bootstrap.ttl`. `POST /api/v1/bootstrap`
+  (`lajstrom admin bootstrap`) exchanges it once for the first admin, in the transaction that
+  marks it used, so that it makes one admin across replicas; the audit event is `user.create`
+  by `anonymous` with the source `bootstrap`. Once an enabled user has an admin binding, the
+  token is dead and the endpoint is `404`.
+- **The database.** `lajstrom admin user create --name admin --admin` creates the user and the
+  binding from the command line (no HTTP), with the password from standard input or a prompt.
+  It needs the database, which is the authority, and works whatever admins exist, disabled or
+  not: it is also the recovery of a lost admin, with `lajstrom admin user set-password`. Its
+  audit events have the source `cli` and the `host` the command ran on.
+
+The bindings of other users are made with
 `lajstrom admin binding create|list|delete` from the command line (#45), which needs the database
 and no credentials, or with `/api/v1/bindings` (#47). Everything else goes through `/api/v1`.
 

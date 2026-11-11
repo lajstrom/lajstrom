@@ -3,13 +3,14 @@
 # (deploy/compose, docs/dev-stack.md): every service has a password, nothing but Lajstrom is
 # published, and Lajstrom listens on loopback for the TLS edge in front of it.
 #
-#   docs/deploy/compose.md        make the secrets, start, create the first admin, back up
+#   docs/deploy/compose.md        make the secrets, start, make the first admin, back up
 #
 # Only Postgres and the registry keep data, each in a named volume. Lajstrom keeps nothing: its
 # root filesystem is read-only and /tmp, where an upload is spooled for one request, is a tmpfs.
 #
 # The secrets are files in ./secrets (git-ignored), made once with the commands of the doc:
 #   secrets/master-key            the master key, owned by the image's user 65532, mode 0600
+#   secrets/bootstrap-token       the one-time token of the first admin, owned likewise
 #   secrets/lajstrom.env          LAJSTROM_DATABASE_DSN, LAJSTROM_REGISTRY_PASSWORD
 #   secrets/postgres-password     the password of the Postgres user lajstrom
 #   secrets/registry.htpasswd     the bcrypt htpasswd line of the registry user lajstrom
@@ -30,7 +31,10 @@ services:
     # The master key as the file /run/secrets/lajstrom-master-key (keys.masterKeyFile). Compose
     # bind-mounts a file secret with the owner and mode of the host's file and ignores uid, gid
     # and mode, so the file itself must be readable by the image's user 65532.
-    secrets: [lajstrom-master-key]
+    # The one-time token of the first admin as the file /run/secrets/lajstrom-bootstrap-token
+    # (auth.bootstrap.tokenFile), owned and readable like the master key. Remove both entries of
+    # lajstrom-bootstrap-token once the admin exists (docs/deploy/compose.md, 4).
+    secrets: [lajstrom-master-key, lajstrom-bootstrap-token]
     volumes:
       - ./lajstrom.yaml:/etc/lajstrom/lajstrom.yaml:ro
     read_only: true
@@ -99,6 +103,8 @@ services:
     restart: unless-stopped
 
 secrets:
+  lajstrom-bootstrap-token:
+    file: ./secrets/bootstrap-token
   lajstrom-master-key:
     file: ./secrets/master-key
   postgres-password:

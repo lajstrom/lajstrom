@@ -21,7 +21,7 @@ takes no password, delete its `auth:` too.
 
 ## 1. Secrets
 
-Four files in `secrets/` (git-ignored), made once:
+Five files in `secrets/` (git-ignored), made once:
 
 ```sh
 cd deploy/compose-production
@@ -30,6 +30,7 @@ mkdir -p secrets
 pg=$(openssl rand -hex 24)
 reg=$(openssl rand -hex 24)
 openssl rand -hex 32 > secrets/master-key
+openssl rand -hex 32 > secrets/bootstrap-token   # the one-time token of the first admin (section 4)
 printf '%s' "$pg" > secrets/postgres-password
 docker run --rm --entrypoint htpasswd httpd:2.4.66-alpine -Bbn lajstrom "$reg" > secrets/registry.htpasswd   # bcrypt
 cat > secrets/lajstrom.env <<EOF
@@ -37,12 +38,13 @@ LAJSTROM_DATABASE_DSN=postgres://lajstrom:$pg@postgres:5432/lajstrom?sslmode=dis
 LAJSTROM_REGISTRY_PASSWORD=$reg
 EOF
 unset pg reg
-sudo chown 65532:65532 secrets/master-key   # on Linux: the image's user reads it (below)
+sudo chown 65532:65532 secrets/master-key secrets/bootstrap-token   # on Linux: the image's user reads them (below)
 ```
 
 | File | Read by | What |
 | --- | --- | --- |
 | `secrets/master-key` | `lajstrom`, as the Compose secret `lajstrom-master-key`, the file `/run/secrets/lajstrom-master-key` of `keys.masterKeyFile` | the [master key](../operations.md#the-master-key) |
+| `secrets/bootstrap-token` | `lajstrom`, as the Compose secret `lajstrom-bootstrap-token`, the file `/run/secrets/lajstrom-bootstrap-token` of `auth.bootstrap.tokenFile` | the one-time token that makes the first admin ([operations.md](../operations.md#the-first-admin)); removed once the admin exists |
 | `secrets/lajstrom.env` | Compose, into the environment of `lajstrom` | the DSN with the database password, the registry password |
 | `secrets/postgres-password` | `postgres`, as the Compose secret `POSTGRES_PASSWORD_FILE` names | the same database password |
 | `secrets/registry.htpasswd` | `registry`, as a Compose secret | the bcrypt line of the user `lajstrom` |
@@ -168,12 +170,17 @@ After `docker compose start registry` it was `healthy` again within 20 seconds.
 
 ## 4. The first admin and more repos
 
-The `admin` commands run in the container, against the same database, with the same
-environment; a function saves typing:
+No admin exists yet, so `serve` made the token of `secrets/bootstrap-token` valid at start
+([operations.md](../operations.md#the-first-admin)); it logged that, never the token.
+`lajstrom admin bootstrap` exchanges it for the admin: in the container it reads the token from
+the secret, asks the server of its configuration and prompts for the password. The other `admin`
+commands run in the container too, against the same database, with the same environment; a
+function saves typing:
 
 ```sh
+docker compose exec lajstrom /lajstrom --config /etc/lajstrom/lajstrom.yaml admin bootstrap --name admin \
+  --token-file /run/secrets/lajstrom-bootstrap-token
 lj() { docker compose exec -T lajstrom /lajstrom --config /etc/lajstrom/lajstrom.yaml "$@"; }
-printf '%s\n' "$LAJSTROM_ADMIN_PASSWORD" | lj admin user create --name admin --admin --password-stdin
 lj admin repo create oci/images --registry local
 ```
 
@@ -182,20 +189,27 @@ lj admin repo create oci/images --registry local
 {"format":"oci","name":"images","registry":"local","kind":"hosted","anonymousRead":false,"policy":null,"createdAt":"2026-11-09T17:22:38.363197Z","updatedAt":"2026-11-09T17:22:38.363197Z"}
 ```
 
-[auth.md](../auth.md) has the rest: users, bindings, tokens for CI.
+The token is dead now. Remove it: delete `secrets/bootstrap-token`, the two
+`lajstrom-bootstrap-token` entries of `compose.yaml` and `auth.bootstrap` of `lajstrom.yaml`, and
+`docker compose up -d`; until then every start warns that the token is set but no longer valid.
+`lj admin user create --name admin --admin --password-stdin` makes the admin without a token,
+straight in the database; it is also how a lost admin password is recovered
+([operations.md](../operations.md#a-lost-password)). [auth.md](../auth.md) has the rest: users,
+bindings, tokens for CI.
 
 ## 5. Push and pull
 
 Through the edge, with `https://art.example.com`; here to the loopback port, with the default
 `LAJSTROM_PORT` and `externalURL: "http://localhost:8080"` (section 2), hence `--plain-http`.
-The run had 18150 in both places:
+The run had 18150 in both places. `pw` holds the admin's password:
 
 ```sh
+read -rs pw
 printf 'hello compose\n' > hello.txt
-curl -s -u "admin:$LAJSTROM_ADMIN_PASSWORD" -o /dev/null -w '%{http_code}\n' -T hello.txt http://localhost:8080/raw/assets/docs/hello.txt   # 201
-curl -s -u "admin:$LAJSTROM_ADMIN_PASSWORD" http://localhost:8080/raw/assets/docs/hello.txt                                              # hello compose
+curl -s -u "admin:$pw" -o /dev/null -w '%{http_code}\n' -T hello.txt http://localhost:8080/raw/assets/docs/hello.txt   # 201
+curl -s -u "admin:$pw" http://localhost:8080/raw/assets/docs/hello.txt                                              # hello compose
 
-printf '%s\n' "$LAJSTROM_ADMIN_PASSWORD" | oras login --plain-http -u admin --password-stdin localhost:8080   # Login Succeeded
+printf '%s\n' "$pw" | oras login --plain-http -u admin --password-stdin localhost:8080   # Login Succeeded
 oras push --plain-http --artifact-type application/vnd.example.notes localhost:8080/oci/images/hello:1 hello.txt
 oras pull --plain-http -o out localhost:8080/oci/images/hello:1                                          # out/hello.txt
 ```

@@ -828,41 +828,138 @@ ok   apt-get update && apt-get install e2e-tokens-20261107230011-31449 in ubuntu
 
 ## Bootstrap: the first admin
 
-The first user is created from the command line, without HTTP, against the database of the
-configuration ([rbac.md](spec/rbac.md) §6). Run `lajstrom migrate` first, or start `serve` once:
+There is no admin password in the environment or in the configuration. A password there is
+applied once, on the first start (Grafana's `admin_password`, Harbor's `harbor_admin_password`,
+GitLab's `GITLAB_ROOT_PASSWORD`), and after the first change of the password the Secret keeps a
+value that looks real and is not. The first admin is made with a one-time token instead, which can
+never be mistaken for a live credential (decided on #440). There are two ways:
+
+- **Over HTTP, with the bootstrap token.** For an operator who reaches the server and not its
+  database: a Helm install, a laptop in front of a cluster.
+- **Against the database, with `lajstrom admin user create --admin`.** For an operator who runs
+  commands next to the database, with the server's configuration. It is also the recovery when
+  every admin is lost ([A lost password](operations.md#a-lost-password)).
+
+### The bootstrap token
+
+You make the token, 32 to 256 bytes without whitespace, and give it to `serve` as a file:
+`auth.bootstrap.tokenFile` (`LAJSTROM_BOOTSTRAP_TOKEN_FILE`), a Kubernetes Secret or a Compose
+secret mounted as a file.
 
 ```sh
-LAJSTROM_ADMIN_PASSWORD='…' lajstrom admin user create --name admin --admin --config lajstrom.yaml
+openssl rand -hex 32 > bootstrap-token
+```
+
+At start, while no enabled user has an admin binding, `serve` makes the token of the file valid
+on every replica, before it listens, and logs that it is valid, never the token:
+
+```text
+level=INFO msg="no admin yet: the bootstrap token of auth.bootstrap.tokenFile is valid; exchange it with lajstrom admin bootstrap" auth.bootstrap.tokenFile=/run/secrets/lajstrom-bootstrap-token madeBy=lajstrom-7d9c6b5f4-x2k8q:1 madeAt=2026-11-11T09:02:26.275Z expiresAt=2026-11-12T09:02:26.275Z
+```
+
+`serve` never makes a token and never logs one: logs go to central logging and live long, and
+whoever reads them within the token's lifetime could claim the first admin. Without the file
+(the key empty, or a file that does not exist) there is no token, and a warning says how to make
+the first admin:
+
+```text
+level=WARN msg="no admin yet, and no bootstrap token: auth.bootstrap.tokenFile is not set. Write a token of your own (openssl rand -hex 32) to a file, name it in auth.bootstrap.tokenFile, restart and run lajstrom admin bootstrap; or, with the database, run lajstrom admin user create --admin"
+```
+
+A file that cannot be read, or a token that is too short, too long or not one word, stops
+`serve`. The index keeps the sha256 of the token, never the token (`bootstrap_token`,
+[index-schema.md](spec/index-schema.md)). It is valid for `auth.bootstrap.ttl`, 24 hours by
+default; used or expired, it is not made valid again: write a new token to the file and restart.
+A new token in the file replaces the old one at the next start. Of replicas that start together,
+one stores the token.
+
+### Exchanging it
+
+```sh
+lajstrom admin bootstrap --server https://art.example.com --name admin
+```
+
+```text
+Bootstrap token:
+Password:
+Repeat the password:
+{"uid":"01a1c9a1-8909-7932-b435-6fc48e1e252b","name":"admin","kind":"local","disabled":false,"createdAt":"2026-11-11T08:02:49.225264Z"}
+```
+
+The command sends `POST /api/v1/bootstrap` ([api.md](api.md#the-first-admin-post-apiv1bootstrap)),
+which needs no credentials: the token is the credential. It needs no database either. The token
+comes from `--token-file`, else from a prompt without echo; the password from standard input with
+`--password-stdin`, else from a prompt, twice; the server from `--server`, else `server.listen`
+of the configuration on loopback, as for `lajstrom healthcheck`. Without a terminal:
+
+```sh
+printf '%s' "$PASSWORD" | lajstrom admin bootstrap --server https://art.example.com --name admin \
+  --token-file /run/secrets/bootstrap-token --password-stdin
+```
+
+The new user has the binding `(user:<uid>, admin, */*)`, made in the transaction that uses the
+token, so that the token makes one admin whichever replica gets it. Then:
+
+- every request to `POST /api/v1/bootstrap` is `404`, whatever its token; the command says that an
+  admin exists already;
+- a start while the file of `auth.bootstrap.tokenFile` exists logs a warning: `the bootstrap token
+  is set but no longer valid, an admin exists: remove auth.bootstrap.tokenFile and its file`.
+
+A wrong token is `403`; 10 wrong tokens from one client address within a minute make its next
+requests `429` with `Retry-After`, the right token too. The right token, used or expired, is `403`
+with a message that says so. A name or a password that breaks its rule, or a name that exists,
+leaves the token valid. The audit event is `user.create` by `anonymous` with the source
+`bootstrap`, the client address and the request id.
+
+### Against the database
+
+`lajstrom admin user create` works on the database of the configuration, without HTTP
+([rbac.md](spec/rbac.md) §6). Run `lajstrom migrate` first, or start `serve` once:
+
+```sh
+lajstrom admin user create --name admin --admin --config lajstrom.yaml
 ```
 
 ```json
-{"name":"admin","kind":"local","disabled":false,"createdAt":"2026-11-07T12:00:00Z"}
+{"uid":"01a1c155-57ca-7c43-a38e-9595784a4098","name":"admin","kind":"local","disabled":false,"createdAt":"2026-11-07T12:00:00Z"}
 ```
 
-`--admin` also creates the binding `(user:admin, admin, */*)`: everything on every repo, the
-system and the audit log ([Authorization](#authorization)). The password comes from, in this
-order:
+`--admin` also creates the binding `(user:<uid>, admin, */*)`: everything on every repo, the
+system and the audit log ([Authorization](#authorization)). An admin made this way before the
+first start of `serve` means that no bootstrap token is ever made. The password comes from:
 
-1. `LAJSTROM_ADMIN_PASSWORD`, when it is set;
-2. standard input with `--password-stdin`, the whole of it without the trailing newline
+1. standard input with `--password-stdin`, the whole of it without the trailing newline
    (`printf '%s\n' "$PASSWORD" | lajstrom admin user create --name ci --password-stdin`);
-3. a prompt without echo, twice, when standard input is a terminal.
+2. a prompt without echo, twice, when standard input is a terminal.
 
-With none of them the command fails and names the three. The other commands:
+With neither the command fails and names both. `LAJSTROM_ADMIN_PASSWORD` is not read: a command
+that finds it set fails and says to unset it. The other commands:
 
 ```sh
-lajstrom admin user list                    # NAME, KIND, DISABLED, CREATED
+lajstrom admin user list                    # NAME, UID, KIND, DISABLED, CREATED
 lajstrom admin user disable alice           # refused from the next request on
 lajstrom admin user enable alice
-lajstrom admin user set-password alice      # the same three password sources
+lajstrom admin user set-password alice      # the same two password sources
 ```
 
 A name that exists is refused (`user alice already exists`, exit status 1). Every change is an
 audit event ([rbac.md](spec/rbac.md) §5) with the user as its subject: `user.create` (its
 details say whether the user is an admin), `user.password`, `user.disable`, `user.enable`, by
-`anonymous` with the source `cli`. `disable` of a disabled user and `enable` of an enabled one
-change nothing and write no event. Everything after the bootstrap can go through `/api/v1`
-([api.md](api.md#users)).
+`anonymous` with the source `cli` and the host name of the machine the command ran on (`host`).
+`disable` of a disabled user and `enable` of an enabled one change nothing and write no event.
+Everything after the bootstrap can go through `/api/v1` ([api.md](api.md#users)).
+
+### How others do it
+
+| Product | First admin | Lost admin password |
+| --- | --- | --- |
+| Teleport | `tctl users add` prints a one-time invite URL, valid 1 hour by default, 48 at most ([tctl](https://goteleport.com/docs/reference/cli/tctl/)) | `tctl users reset` prints a reset URL, valid 8 hours by default |
+| Grafana | `admin_password`, "set once on first-run", `admin` by default ([configuration](https://grafana.com/docs/grafana/latest/setup-grafana/configure-grafana/)) | `grafana cli admin reset-admin-password` against the database ([CLI](https://grafana.com/docs/grafana/latest/administration/cli/)) |
+| GitLab | a random password in `/etc/gitlab/initial_root_password`, removed after 24 hours; `GITLAB_ROOT_PASSWORD` on the first install only ([install](https://docs.gitlab.com/install/package/ubuntu/)) | `gitlab-rake "gitlab:password:reset"` or the Rails console ([reset](https://docs.gitlab.com/security/reset_user_password/)) |
+| Gitea | `gitea admin user create --admin` ([CLI](https://docs.gitea.com/administration/command-line/)) | `gitea admin user change-password` |
+| Harbor | `harbor_admin_password`, used on the first start only ([harbor.yml](https://goharbor.io/docs/main/install-config/configure-yml-file/)) | no documented way; an admin may not reset its own password ([reset](https://goharbor.io/docs/main/administration/managing-users/reset-user-password/)) |
+| Vault | the root token of `vault operator init`, which does not expire ([tokens](https://developer.hashicorp.com/vault/docs/concepts/tokens)) | `vault operator generate-root` with a quorum of key holders and a one-time password ([generate-root](https://developer.hashicorp.com/vault/docs/commands/operator/generate-root)) |
+| Lajstrom | a one-time token that you make, from a file, exchanged with `lajstrom admin bootstrap`, never logged; or `admin user create --admin` against the database | `admin user set-password`, or `admin user create --admin`, against the database ([operations.md](operations.md#a-lost-password)) |
 
 ## whoami
 

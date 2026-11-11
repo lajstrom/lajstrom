@@ -27,5 +27,11 @@ data:
         auth:
           username: lajstrom
           passwordEnv: LAJSTROM_REGISTRY_PASSWORD
+    auth:
+      # No admin password here or in the Secret: the one-time token of the Secret
+      # lajstrom-bootstrap makes the first admin with lajstrom admin bootstrap
+      # (docs/deploy/kubernetes.md, 4). Without the file there is no token, and a warning.
+      bootstrap:
+        tokenFile: /run/secrets/lajstrom-bootstrap/token
     keys:
       masterKeyEnv: LAJSTROM_MASTER_KEY

@@ -36,25 +36,54 @@ without HTTP, and is audited with the source `cli`.
 
 ### The first admin
 
-After `lajstrom migrate` (or the first start of `serve`), on one replica:
+No admin password goes in the environment or the configuration ([auth.md](auth.md#bootstrap-the-first-admin)).
+The first admin is made with a one-time bootstrap token that you make; `serve` never makes or
+logs one:
 
-```sh
-LAJSTROM_ADMIN_PASSWORD='…' lajstrom admin user create --name admin --admin
-```
+1. **The token.** `openssl rand -hex 32`, in a secret mounted as a file (a Kubernetes Secret, a
+   Compose secret), named in `auth.bootstrap.tokenFile` (`LAJSTROM_BOOTSTRAP_TOKEN_FILE`). While
+   no enabled user has an admin binding, `serve` makes it valid at start on every replica, for
+   `auth.bootstrap.ttl` (24 hours). Without the file, a warning at start says what to do.
+2. **The exchange**, from anywhere that reaches the server:
 
-The user gets the `admin` binding on `*/*`. In Kubernetes, run it as a Job (or
-`kubectl exec` into a replica) with the variable from a Secret, as for the master key below;
-without the variable the password comes from standard input with `--password-stdin`, or from a
-prompt on a terminal. Check it with `curl -u admin https://art.example.com/api/v1/whoami`.
+   ```sh
+   lajstrom admin bootstrap --server https://art.example.com --name admin
+   ```
+
+   It prompts for the token and the password, or takes `--token-file` and `--password-stdin`.
+3. **After it**, the token is dead and `POST /api/v1/bootstrap` is `404`. Remove the secret: a
+   start warns while its file exists. Check the admin with `curl -u admin
+   https://art.example.com/api/v1/whoami`.
+
+With the database at hand there is no token to fetch: `lajstrom admin user create --name admin
+--admin`, with the server's configuration, makes the admin straight in the database, and an
+admin made so before the first start of `serve` means that no token is ever made. The password
+comes from standard input with `--password-stdin` or from a prompt on a terminal.
 
 ### A lost password
 
+The database is the authority: whoever can run `lajstrom admin` with the server's configuration
+can recover any account, with no password and no running server.
+
 ```sh
-lajstrom admin user set-password alice      # LAJSTROM_ADMIN_PASSWORD, --password-stdin, or the prompt
+lajstrom admin user set-password alice --config lajstrom.yaml       # a prompt, or --password-stdin
+lajstrom admin user create --name rescue --admin --config lajstrom.yaml
 ```
 
-The old password fails at the next request on every replica. A lost admin password is recovered
-the same way: the command needs the database, not a password.
+`set-password` works on a disabled user too; the old password fails at the next request on every
+replica. `create --admin` makes a new admin when every admin is lost, disabled, or forgotten
+together with its password. Each writes an audit row (`user.password`, `user.create`) by
+`anonymous` with the source `cli` and the host name of the machine it ran on, so that a recovery
+shows in `GET /api/v1/audit` afterwards. In Kubernetes, run the command in a pod with the
+configuration and the database DSN of the Deployment: the image has no shell, and `kubectl exec
+-i deploy/lajstrom -- /lajstrom --config /etc/lajstrom/lajstrom.yaml admin user set-password
+admin --password-stdin` runs the binary itself.
+
+The bootstrap token is not a way back in: it is valid only while no enabled user has an admin
+binding. This is the
+Gitea, GitLab and Grafana way (`gitea admin user change-password`, `gitlab-rake
+"gitlab:password:reset"`, `grafana cli admin reset-admin-password`, each against the database),
+not Vault's quorum of key holders: [auth.md](auth.md#how-others-do-it) compares them.
 
 ### Disabling a user
 
