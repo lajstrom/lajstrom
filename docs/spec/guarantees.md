@@ -100,7 +100,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | --- | --- |
 | **one database** | every replica uses the same database, and the same master key (`keys.masterKeyEnv` or `keys.masterKeyFile`) |
 | **Postgres for replicas** | more than one replica needs Postgres. SQLite serves one replica: its referrers and journal locks are locks of the process (index-schema.md, Coordination). A `serve` that finds another live one on the SQLite file refuses to start and names it (acceptance.md H-14); the CLI's commands are not counted |
-| **clocks agree** | the clocks of the replicas, and of the CLI, agree within 60 seconds: the skew a bearer token is checked with, and well inside the bounds that compare times written by other replicas (stale claims after `ingest.claimTTL`, 10 minutes; stale fetch claims and reindex runs after 2 minutes) |
+| **clocks agree** | the clocks of the replicas, and of the CLI, agree within 60 seconds: the skew a bearer token is checked with, and well inside the bounds that compare times written by other replicas (stale claims after `ingest.claimTTL`, 10 minutes; stale fetch claims and reindex runs after 2 minutes). `serve` compares its clock with the database's at its start and every 30 seconds: past 10 seconds it warns, past 60 seconds it is not ready (operations.md, Clocks). The CLI's clock is not compared |
 
 ## Storage and the index
 
@@ -537,7 +537,7 @@ status is `holds on strongly consistent registries only` do not hold there.
   audience is the request's `Host` (threat model T-2, [#248](https://github.com/lajstrom/lajstrom/issues/248)).
 - **Assumes.** Database: **one database** with one master key on every replica (without a master
   key each replica signs with an ephemeral key of its own, and says so at start); **clocks
-  agree**.
+  agree** (checked: a replica more than 60 s off the database's clock is not ready).
 - **Mechanism.** ADR 0010: the key is a `keys` row of kind `jwt` under the master key;
   `keys.Tokens.TokenVerifiers`; `token.Verifier.Verify` (`iss`, `aud`, `exp`, `nbf`, `iat`, the
   `kid`, the algorithm pinned per key, a reload at most once a second for an unknown `kid`).
@@ -685,7 +685,7 @@ status is `holds on strongly consistent registries only` do not hold there.
   active key per kind and owner.
 - **Scope.** Every replica of one deployment.
 - **Assumes.** Database: **one database**, **Postgres for replicas** (checked when `serve`
-  starts: H-14), **clocks agree** (**unchecked**).
+  starts: H-14), **clocks agree** (checked for `serve`; **unchecked** for the CLI).
 - **Mechanism.** `tag_claims` (`Writer.ClaimTag`), `reindex_runs` (`Writer.StartReindexRun` under
   `pg_advisory_xact_lock` or `BEGIN IMMEDIATE`), `fetch_claims` (`Writer.ClaimFetch`, a heartbeat
   every 30 s, stale after 2 minutes), `Store.WithReferrersLock` (the referrers, tag and journal
@@ -695,16 +695,19 @@ status is `holds on strongly consistent registries only` do not hold there.
 - **Tests.** The store conformance cases `TagClaimRace`, `ReindexRunRace`, `FetchClaimRace`,
   `KeyRace`, `SessionsConcurrent`, `JournalRace`, `PackageNameOCIRace`, `ReferrersLock`,
   `Replicas`; `TestFileReplicas`, `TestReplicasCoexist`, `TestServeTwoReplicasOnSQLite`,
-  `TestServeAfterCrash`, `TestReplicaBeat`;
+  `TestServeAfterCrash`, `TestReplicaBeat`, `TestReplicaClock`, the conformance case
+  `DatabaseTime`;
   `TestUploadAcrossReplicas`, `TestMonolithicUploadAbandoned`,
   `TestIntegrationUploadAcrossReplicas`, `TestSessionConcurrent`, `TestSessionCommitOnce`, `TestKeyForRace`, `TestTokenSignerRace`,
   `TestRuns`, `TestTakenOver`, `TestStaleFetchClaims`, `TestFileTwoReplicas`, `TestFileClaims`,
   `TestIntegrationReferrersConcurrent`, `TestIntegrationJournalReplicas`, `TestBootstrapReplicas`;
   `ha.sh` H-02, H-03, H-04, H-05, H-06, H-07, H-08, H-09, H-11, H-12, H-13 and the step of #28.
-- **When violated.** Clocks that disagree by more than the stale bounds can take over a live
-  claim; nothing reports it. A second replica on one SQLite file is refused when it starts; a
-  replica that stood still for 2 minutes while another started is not ready from its next
-  heartbeat on, and both run until the operator stops one.
+- **When violated.** A replica whose clock is more than 60 s off the database's is not ready,
+  so the edge sends it no new requests, but its work in flight and its reconcile loop go on and
+  can take over a live claim; the log and `lajstrom_clock_skew_seconds` say so from 10 s on. A
+  CLI whose clock disagrees can do the same, and nothing reports it. A second replica on one
+  SQLite file is refused when it starts; a replica that stood still for 2 minutes while another
+  started is not ready from its next heartbeat on, and both run until the operator stops one.
 - **Status.** `holds`.
 
 ### INV-27. A cached document is invalidated by every change it depends on
@@ -1025,7 +1028,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-23 | every request bounded in size | partly | |
 | INV-24 | parsers bounded | holds | |
 | INV-25 | memory independent of file size | holds | |
-| INV-26 | replicas coordinate through the database | holds | unchecked (clocks) |
+| INV-26 | replicas coordinate through the database | holds | unchecked (the CLI's clock) |
 | INV-27 | cached documents invalidated | holds | |
 | INV-28 | a migration applied once | holds | |
 | INV-29 | the npm journal's order and replay | strongly consistent only | unchecked |
@@ -1145,7 +1148,7 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | Acceptance C-07 and S-09 are not automated (INV-14, INV-21) | a redaction or an audit regression goes unseen | after the suite, grep both replicas' logs for every secret used, and count the audit rows of its writes | new issue |
 | No budget for the bytes of `$TMPDIR` (INV-23) | 32 spooled uploads of a replica may need 256 GiB of disk | a spool budget, or no request spool (ADR 0014) | [#427](https://github.com/lajstrom/lajstrom/issues/427) |
 | One upstream request per document per replica (INV-31) | concurrent misses of a packument each ask the upstream | share the request on a replica (pull request #399) | [#383](https://github.com/lajstrom/lajstrom/issues/383) |
-| Replica clocks are assumed to agree, never checked (INV-19, INV-26) | a replica whose clock runs ahead takes over live claims and refuses valid tokens | compare the replica's clock with the database's at start and on the heartbeats; warn or refuse past a bound | new issue |
+| The clock of the CLI is not compared with the database's (INV-26) | a `lajstrom reindex` on a host whose clock runs ahead closes a live run as abandoned or deletes live claims | compare it at the start of the commands that write, as `serve` does, and refuse past 60 s | new issue |
 | Registries that fold tag case (INV-7) | two versions that differ in case: the second is a `409` with an unclear message | `Capabilities.TagsFoldCase` | [#426](https://github.com/lajstrom/lajstrom/issues/426) |
 | The bearer audience without `server.externalURL` (INV-19) | a staging server restored from production's database accepts production's tokens | require `externalURL` | [#248](https://github.com/lajstrom/lajstrom/issues/248) |
 | Whether a migration is expand is reviewed, not tested; no test runs the previous release's binary on the next schema; pre-#244 claims (INV-6, INV-41) | a contract migration without its `requires` line breaks the replicas of the release before during a rolling update; a mixed fleet may not exclude publishes | after v0.1.0, CI runs the previous release's binary on a schema the new binary migrated | [#485](https://github.com/lajstrom/lajstrom/issues/485) |

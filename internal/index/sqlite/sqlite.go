@@ -51,6 +51,7 @@ var dialect = sqlstore.Dialect{
 	TimeText:     true,
 	IsUnique:     isUnique,
 	IsForeignKey: isForeignKey,
+	Clock:        "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", // the host's clock, in milliseconds
 }
 
 // Open opens the SQLite database of dsn, a file name or a file: URI (docs/configuration.md):

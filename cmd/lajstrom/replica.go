@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/version"
 )
 
@@ -21,7 +22,17 @@ const (
 	replicaStaleAfter = 2 * time.Minute
 )
 
-// replica is the row of this process and its heartbeat.
+// The bounds of the comparison of this replica's clock with the database's (docs/operations.md,
+// Clocks): past clockWarn every comparison logs a warning, past clockFail an error, and
+// /-/readyz answers 503. clockFail is the skew a bearer token is checked with
+// (docs/spec/guarantees.md, clocks agree).
+const (
+	clockWarn = 10 * time.Second
+	clockFail = 60 * time.Second
+)
+
+// replica is the row of this process, its heartbeat, and the comparison of this process's clock
+// with the database's that runs with it.
 type replica struct {
 	st    index.Store
 	log   *slog.Logger
@@ -30,11 +41,13 @@ type replica struct {
 	row   index.Replica
 
 	mu   sync.Mutex
-	lost error // set while another replica holds the database (SQLite)
+	lost error         // set while another replica holds the database (SQLite)
+	skew time.Duration // this process's clock minus the database's, at the last comparison
 }
 
-// startReplica writes the row of this process. On SQLite, which serves one replica, a row of
-// another replica with a fresh heartbeat is an error that names it.
+// startReplica writes the row of this process and compares its clock with the database's. On
+// SQLite, which serves one replica, a row of another replica with a fresh heartbeat is an error
+// that names it.
 func startReplica(ctx context.Context, st index.Store, log *slog.Logger, now func() time.Time) (*replica, error) {
 	host, err := os.Hostname()
 	if err != nil || host == "" {
@@ -47,6 +60,7 @@ func startReplica(ctx context.Context, st index.Store, log *slog.Logger, now fun
 		return nil, held(err)
 	}
 	log.Info("replica registered in the index", "replica", r.row.ID, "host", host, "pid", r.row.PID)
+	r.clock(ctx)
 	return r, nil
 }
 
@@ -78,10 +92,16 @@ func (r *replica) Run(ctx context.Context) {
 	}
 }
 
-// beat sets the heartbeat of the row. A row that is gone, deleted by a start elsewhere that found
-// it stale (this process stood still for replicaStaleAfter), is written again; on SQLite that is
-// refused while the other replica's row is fresh, and Err says so until it is not.
+// beat sets the heartbeat of the row, then compares the clocks.
 func (r *replica) beat(ctx context.Context) {
+	r.heartbeat(ctx)
+	r.clock(ctx)
+}
+
+// heartbeat sets the heartbeat of the row. A row that is gone, deleted by a start elsewhere that
+// found it stale (this process stood still for replicaStaleAfter), is written again; on SQLite
+// that is refused while the other replica's row is fresh, and Err says so until it is not.
+func (r *replica) heartbeat(ctx context.Context) {
 	at := r.now()
 	err := r.st.HeartbeatReplica(ctx, r.row.ID, at)
 	if errors.Is(err, index.ErrNotFound) {
@@ -107,11 +127,50 @@ func (r *replica) beat(ctx context.Context) {
 	}
 }
 
-// Err is the error of readiness while another replica serves on the database, nil otherwise.
+// clock compares this process's clock with the database's: the skew is this process's time at
+// the middle of the query minus the database's, exact to half the query's round trip. It sets
+// lajstrom_clock_skew_seconds, logs past clockWarn and keeps the skew for Err. A database that
+// does not answer leaves the last comparison as it was: readiness reports the database itself.
+func (r *replica) clock(ctx context.Context) {
+	before := r.now()
+	db, err := r.st.DatabaseTime(ctx)
+	after := r.now()
+	if err != nil {
+		if ctx.Err() == nil {
+			r.log.WarnContext(ctx, "the database's clock not read", "error", err.Error())
+		}
+		return
+	}
+	skew := before.Add(after.Sub(before) / 2).Sub(db)
+	metrics.ClockSkew.Set(skew.Seconds())
+	r.mu.Lock()
+	r.skew = skew
+	r.mu.Unlock()
+	attrs := []any{"skew", skew.Round(time.Millisecond).String(), "database", db.UTC().Format(time.RFC3339Nano)}
+	switch abs := skew.Abs(); {
+	case abs > clockFail:
+		r.log.ErrorContext(ctx, "not ready: the clock of this replica is more than 60s off the database's; run NTP", attrs...)
+	case abs > clockWarn:
+		r.log.WarnContext(ctx, "the clock of this replica is more than 10s off the database's; run NTP", attrs...)
+	}
+}
+
+// Err is the error of readiness while another replica serves on the database, or while the last
+// comparison of the clocks found them more than clockFail apart; nil otherwise.
 func (r *replica) Err() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.lost
+	if r.lost != nil {
+		return r.lost
+	}
+	if r.skew.Abs() <= clockFail {
+		return nil
+	}
+	side := "ahead of"
+	if r.skew < 0 {
+		side = "behind"
+	}
+	return fmt.Errorf("the clock of this replica is %s %s the database's", r.skew.Abs().Round(time.Second), side)
 }
 
 // Stop deletes the row of this process, so that a replica started after it need not wait for

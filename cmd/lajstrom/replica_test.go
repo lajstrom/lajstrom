@@ -15,8 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/sqlite"
+	"github.com/lajstrom/lajstrom/internal/metrics"
 )
 
 // serveConfig writes a configuration whose index database is a SQLite file in dir, served on a
@@ -204,7 +207,8 @@ func TestReplicaBeat(t *testing.T) {
 	st := openIndex(t, t.TempDir())
 	var logs bytes.Buffer
 	now := time.Now()
-	r, err := startReplica(ctx, st, slog.New(slog.NewTextHandler(&logs, nil)), func() time.Time { return now })
+	clock := func() time.Time { return now }
+	r, err := startReplica(ctx, inSync{st, clock}, slog.New(slog.NewTextHandler(&logs, nil)), clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,3 +247,67 @@ func TestReplicaBeat(t *testing.T) {
 		t.Errorf("replicas after Stop: %v, want none", ids)
 	}
 }
+
+// TestReplicaClock checks the comparison of this replica's clock with the database's past each
+// bound, with a clock of this process that runs off by skew: within 10 s nothing is logged and
+// the replica is ready; past it a warning; past 60 s an error, and readiness fails naming the
+// skew, ahead or behind; back within the bounds it is ready again. lajstrom_clock_skew_seconds
+// follows every measurement. The database is SQLite, whose clock is this host's.
+func TestReplicaClock(t *testing.T) {
+	ctx := t.Context()
+	st := openIndex(t, t.TempDir())
+	var logs bytes.Buffer
+	var skew time.Duration
+	r, err := startReplica(ctx, st, slog.New(slog.NewTextHandler(&logs, nil)), func() time.Time { return time.Now().Add(skew) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		skew     time.Duration
+		level    string // of the line logged, "" for none
+		readyErr string // "" when ready
+	}{
+		{0, "", ""},
+		{15 * time.Second, "WARN", ""},
+		{-15 * time.Second, "WARN", ""},
+		{75 * time.Second, "ERROR", "the clock of this replica is 1m15s ahead of the database's"},
+		{-75 * time.Second, "ERROR", "the clock of this replica is 1m15s behind the database's"},
+		{2 * time.Second, "", ""},
+	} {
+		logs.Reset()
+		skew = tt.skew
+		r.beat(ctx)
+		got := testutil.ToFloat64(metrics.ClockSkew)
+		if d := got - tt.skew.Seconds(); d < -1 || d > 1 {
+			t.Errorf("skew %s: lajstrom_clock_skew_seconds = %v", tt.skew, got)
+		}
+		if level := logLevel(logs.String()); level != tt.level {
+			t.Errorf("skew %s: logged %q, want a line of level %q:\n%s", tt.skew, level, tt.level, logs.String())
+		}
+		switch err := r.Err(); {
+		case tt.readyErr == "" && err != nil:
+			t.Errorf("skew %s: not ready: %v", tt.skew, err)
+		case tt.readyErr != "" && (err == nil || err.Error() != tt.readyErr):
+			t.Errorf("skew %s: readiness %v, want %q", tt.skew, err, tt.readyErr)
+		}
+	}
+}
+
+// logLevel returns the level of the first line of a text log, "" for none.
+func logLevel(log string) string {
+	_, rest, ok := strings.Cut(log, "level=")
+	if !ok {
+		return ""
+	}
+	level, _, _ := strings.Cut(rest, " ")
+	return level
+}
+
+// inSync is an index whose clock is now, the clock of the replica under test.
+type inSync struct {
+	index.Store
+	now func() time.Time
+}
+
+// DatabaseTime returns now().
+func (s inSync) DatabaseTime(context.Context) (time.Time, error) { return s.now(), nil }
