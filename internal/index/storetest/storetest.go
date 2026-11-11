@@ -58,6 +58,7 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"Cascades", testCascades},
 		{"ResetDerived", testResetDerived},
 		{"PackageCreatedAt", testPackageCreatedAt},
+		{"PackageCreatedAtRace", testPackageCreatedAtRace},
 		{"Degraded", testDegraded},
 		{"Sweep", testSweep},
 		{"ReindexRuns", testReindexRuns},

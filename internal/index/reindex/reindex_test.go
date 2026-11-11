@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -23,6 +25,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/format/raw"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/index/postgres"
 	"github.com/lajstrom/lajstrom/internal/index/reindex"
 	"github.com/lajstrom/lajstrom/internal/index/sqlite"
 	"github.com/lajstrom/lajstrom/internal/ingest"
@@ -206,6 +209,69 @@ func TestRebuild(t *testing.T) {
 	if _, err := e.st.GetIndexCache(ctx, e.repo.ID, cache.Scope, cache.Kind); !errors.Is(err, index.ErrNotFound) {
 		t.Errorf("index_cache after the run: %v, want ErrNotFound", err)
 	}
+}
+
+// TestRebuildPackageCreated is #570 and #582: versions of one package created a second apart,
+// pushed past Lajstrom in the reverse order, and rebuilt by a run, which writes the tags of a
+// package at once; over SQLite and, when LAJSTROM_TEST_POSTGRES_DSN is set, over Postgres (as
+// TestIntegrationFormats). The package has the CreatedAt of its earliest version.
+func TestRebuildPackageCreated(t *testing.T) {
+	for _, db := range []string{"sqlite", "postgres"} {
+		t.Run(db, func(t *testing.T) {
+			ctx := t.Context()
+			e := newEnv(t)
+			if db == "postgres" {
+				dsn := os.Getenv("LAJSTROM_TEST_POSTGRES_DSN")
+				if dsn == "" {
+					t.Skip("set LAJSTROM_TEST_POSTGRES_DSN to run on Postgres")
+				}
+				st, err := postgres.Open(ctx, dsn)
+				must(t, err)
+				t.Cleanup(func() { _ = st.Close() })
+				must(t, st.Migrate(ctx))
+				e.st = st
+			}
+			e.useFormat(t, raw.Plugin{}, e.providers)
+			t.Cleanup(func() { _ = e.st.DeleteRepo(context.Background(), e.repo.ID) })
+			const versions = 16
+			first := time.Date(2026, 11, 11, 10, 35, 36, 0, time.UTC)
+			for i := range versions {
+				e.bypassCreated(t, "tool", strconv.Itoa(i), first.Add(time.Duration(versions-1-i)*time.Second))
+			}
+			r := e.run(t, reindex.Request{Prune: true})
+			if r.Added != versions || len(r.Errors) != 0 {
+				t.Fatalf("the rebuild: %+v", *r)
+			}
+			pkg, err := e.st.GetPackage(ctx, e.repo.ID, "tool")
+			must(t, err)
+			same(t, "the package's CreatedAt", first, pkg.CreatedAt)
+		})
+	}
+}
+
+// bypassCreated is bypass of content at path in the env's repo with created as its
+// org.opencontainers.image.created.
+func (e *env) bypassCreated(t *testing.T, path, content string, created time.Time) {
+	t.Helper()
+	ctx := t.Context()
+	built, err := raw.Plugin{}.Build(ctx, e.repo, rawUpload(path, content))
+	must(t, err)
+	built.Manifest.Annotations[ocispec.AnnotationCreated] = created.Format(time.RFC3339)
+	rr, err := e.fake.Repository(ctx, built.RepoPath)
+	must(t, err)
+	for _, b := range built.Blobs {
+		if ok, err := rr.Exists(ctx, b.Descriptor); err == nil && ok {
+			continue // the empty config, pushed with another version
+		}
+		rc, err := b.Open(ctx)
+		must(t, err)
+		must(t, rr.Push(ctx, b.Descriptor, rc))
+		_ = rc.Close()
+	}
+	b, d, err := profile.Encode(built.Manifest)
+	must(t, err)
+	must(t, rr.PushReference(ctx, ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: d, Size: int64(len(b))},
+		bytes.NewReader(b), built.Tag))
 }
 
 // TestGroup: a group holds nothing, has no registry, and its report is empty, without an error

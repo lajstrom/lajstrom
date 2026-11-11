@@ -172,6 +172,9 @@ func (c *conn) UpsertVersion(ctx context.Context, v *index.Version) error {
 	stamp(&v.CreatedAt, ts)
 	stamp(&v.IndexedAt, ts)
 	return c.withTx(ctx, func(c *conn) error {
+		if err := c.lockPackage(ctx, fmt.Sprintf("packages id %d", v.PackageID), "id = ?", v.PackageID); err != nil {
+			return err
+		}
 		if found, err := c.refreshVersion(ctx, v); found || err != nil {
 			return c.packageCreated(ctx, v.PackageID, err)
 		}
@@ -212,9 +215,23 @@ func (c *conn) refreshVersion(ctx context.Context, v *index.Version) (bool, erro
 		v.Degraded, v.ID)
 }
 
+// lockPackage locks the package row that where selects, by its id or by the id of a version of
+// it, until the transaction ends. Every version write and delete takes it first, so that the
+// writers of one package's versions follow each other and packageCreated sees the versions of
+// the writers before it. On Postgres (read committed) a statement sees the rows committed when
+// it began: without the lock, a writer whose UPDATE of the package waited for another writer's
+// commit still wrote the earliest time of the versions it saw before, and reindex, which writes
+// the tags of a package at once, left a later time on the package than its earliest version's
+// (#570). On SQLite, whose writers hold the database from BEGIN IMMEDIATE, it changes nothing.
+// A missing row is no error: the version's own statement reports it.
+func (c *conn) lockPackage(ctx context.Context, what, where string, id int64) error {
+	_, err := c.exec(ctx, what, "UPDATE packages SET created_at = created_at WHERE "+where, id)
+	return err
+}
+
 // packageCreated sets CreatedAt of the package to the earliest CreatedAt of its versions after
 // a version write or delete whose error is err; a package without versions keeps its own. With
-// err set it only returns err: the transaction rolls back.
+// err set it only returns err: the transaction rolls back. The caller holds lockPackage.
 func (c *conn) packageCreated(ctx context.Context, packageID int64, err error) error {
 	if err != nil {
 		return err
@@ -254,9 +271,12 @@ const touchBatch = 500
 // the earliest CreatedAt of the versions left.
 func (c *conn) DeleteVersion(ctx context.Context, id int64) error {
 	return c.withTx(ctx, func(c *conn) error {
+		what := fmt.Sprintf("versions id %d", id)
+		if err := c.lockPackage(ctx, "the package of "+what, "id = (SELECT package_id FROM versions WHERE id = ?)", id); err != nil {
+			return err
+		}
 		var packageID int64
-		err := c.scanRow(ctx, fmt.Sprintf("versions id %d", id), "DELETE FROM versions WHERE id = ? RETURNING package_id",
-			[]any{id}, &packageID)
+		err := c.scanRow(ctx, what, "DELETE FROM versions WHERE id = ? RETURNING package_id", []any{id}, &packageID)
 		return c.packageCreated(ctx, packageID, err)
 	})
 }
