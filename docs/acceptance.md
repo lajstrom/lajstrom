@@ -334,7 +334,7 @@ signed. `test/e2e/security.sh` automates the ones with a command; the rest are r
 | E-08 | maven classifier `sources`, extension `pom` only (no jar), a version `1.0.0-rc.1` | all deploy and resolve; `maven-metadata.xml` lists `1.0.0-rc.1` and `release` is the newest non-prerelease | #52, #55 |
 | E-09 | a backend without the referrers API, without `_catalog`, without delete, without blob redirect (per the capability matrix) | tag-schema fallback (O-07), `oci_repos` listing, `DELETE` 501 with the index unchanged, streaming with `Range` | #37, #61, #27 |
 | E-10 | `org.opencontainers.image.created` 10 years ahead, 1970, with a `+03:00` offset | accepted, normalised to UTC in the index; `Last-Modified` follows it; the listing sorts by it | #8, #13 |
-| E-11 | a tag of 129 characters, a 300-character package name, a name of `_` only | hashed tag (`_h` + 40 hex), hashed component (`h0__` + 32 hex), `_5f`; everything round-trips through `reindex` | #8 |
+| E-11 | a tag of 129 characters, a 300-character package name, a name of `_` only | hashed tag (`_h` + 40 hex), hashed component (`h0_h` + 32 hex, ADR 0017), `_5f`; everything round-trips through `reindex` | #8 |
 | E-12 | 1 000 versions of one pypi project; 1 000 tags of one OCI repo | `simple/<project>/` renders under 200 ms from `index_cache`; `tags/list` pages; `reindex` restores all | #32, #24, #29 |
 | E-13 | delete a repo through the API while a client holds a bearer token for it; recreate it with the same name | the old token is refused (`NAME_UNKNOWN`), the new repo starts empty, the backend's old manifests are reported by `--report` under the old prefix | #14, #29 |
 | E-14 | `raw/foo` and `pypi/foo` | two resources; bindings on `*/foo` cover both, on `raw/foo` one | #45 |

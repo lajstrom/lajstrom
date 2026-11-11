@@ -261,6 +261,10 @@ not the shared one), with the three pushed, every collection of `quirks/x` faile
 Nothing was deleted, and nothing in `quirks/x` is collected while the other exists: the collector
 stops at the first entry of `blobs/sha256/` that is not a digest
 ([gc.go](https://github.com/project-zot/zot/blob/v2.1.23/pkg/storage/gc/gc.go#L1287-L1293)).
+The layout's files clash the same way (measured the same day, on the dev stack's Zot, below
+`names/probe/`): with `x` pushed, a blob upload to `x/index.json` or `x/oci-layout` is 404 and
+its manifest 500; with `y/index.json` pushed first, the manifest of `y` is 500, and `y` stays in
+the catalog without one.
 distribution keeps a repository below `docker/registry/v2/repositories/<name>/` and its own data
 in `_manifests`, `_layers` and `_uploads`, names no component can have
 ([paths.go](https://github.com/distribution/distribution/blob/7ef76eb0e8331961ee1eaa7c70e809fe406a63ca/registry/storage/paths.go#L20-L60));
@@ -513,8 +517,10 @@ is why Lajstrom writes the tag schema there (#37).
 Lajstrom names an OCI repository `<prefix><format>/<repo>/<package path>`
 ([manifest-profile.md](../spec/manifest-profile.md#41-repository-path), ADR 0004): a repository
 per package, three components or more below the prefix (maven four, a raw file one per directory
-of its path), lowercase, at most 255 bytes, a component that fails the grammar replaced by `h0__`
-and 32 hex digits. A package's versions are tags in its repository.
+of its path), lowercase, at most 255 bytes, in the 1.0 grammar and without the words of Zot's
+layout since [ADR 0017](../adr/0017-the-grammar-of-oci-names.md): a component that fails the
+grammar is replaced by `h0_h` and 32 hex digits, a run of `-` and the last byte of a reserved word
+are escaped. A package's versions are tags in its repository.
 
 ### Consequences, registry by registry
 
@@ -533,10 +539,12 @@ and 32 hex digits. A package's versions are tags in its repository.
   the catalog ([scan.go](../../internal/index/reindex/scan.go)), every package whose OCI name has
   a component ending in `blobs`, `.uploads` or `.sync`; a later run keeps their rows, since the
   sweep looks a version up by its tag before it removes it. A raw path `x/blobs/sha256/…` stops
-  the collection of `x`.
+  the collection of `x`. Since ADR 0017 Lajstrom writes no such component (`blobs` is
+  `blob_73`); a name written before keeps it (#597).
 - **Gitea and Forgejo** refuse `__` and `--` in a name: every hashed component (`h0__…`: a raw
   file `_config.yml` or `.gitignore`, a component over 64 bytes) and every `--` in a raw path
-  cannot be stored there (from the source, not run).
+  could not be stored there (from the source, not run). Since ADR 0017 a hashed component is
+  `h0_h…` and `--` is `_2d_2d` (#598).
 - **Quay**, once its 2026-11 change ships, refuses new names ending in `build` or `build/<x>`:
   a raw file `ci/build`.
 - **GitLab.com** refuses Lajstrom's manifests: its registry runs with the database and without

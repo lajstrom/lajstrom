@@ -1,9 +1,10 @@
 # Spec: Lajstrom manifest profile
 
-- Status: normative, v1 (2026-11-06). Changes need an issue labelled `contract` and, if the wire
-  format changes, an ADR.
+- Status: normative, v1 (2026-11-06; section 4.3 changed by ADR 0017 on 2026-11-11). Changes
+  need an issue labelled `contract` and, if the wire format changes, an ADR.
 - Implemented by: `internal/oci/profile` (pure Go, no I/O).
 - Related: [ADR 0005](../adr/0005-manifest-profile-and-immutable-tags.md),
+  [ADR 0017](../adr/0017-the-grammar-of-oci-names.md),
   [index-schema.md](index-schema.md).
 
 Every artifact Lajstrom stores is an OCI image manifest (OCI image-spec 1.1) in the backend
@@ -158,12 +159,12 @@ The OCI repository for a package is
 
 - `<prefix>` is the backend-registry prefix of the Lajstrom instance (e.g. `art/`), may be empty.
 - `<format>` and `<repo>` are already OCI-safe (repo names are validated on creation:
-  `^[a-z0-9]+(?:[-._][a-z0-9]+)*$`, max 64 chars).
+  `^[a-z0-9]+(?:[-._][a-z0-9]+)*$`, max 64 chars, and none that section 4.3 reserves).
 - `<package path>` is produced by the plugin's `EscapeName`:
 
 | Format | Package path |
 | --- | --- |
-| raw | each path component escaped with `EscapeComponent` (section 4.3), joined with `/`: `Docs/Readme.MD` → `docs/readme.md` (the original case is in `lajstrom.raw.path`). A component whose escaped form is longer than 64 bytes is replaced by `h0__` + the first 32 hex characters of `sha256(component)`, as in section 4.3 step 3: registries limit the OCI repository name to 255 characters, and `reindex` reads `lajstrom.raw.path`, so nothing decodes the path. A path whose OCI repository name is still longer than 255 bytes is refused with `400`. A raw path is unique without regard to case, since the OCI repository name is lowercase: the first spelling wins, and a path whose package path is taken by another spelling is a `409`. |
+| raw | each path component escaped with `EscapeComponent` (section 4.3), joined with `/`: `Docs/Readme.MD` → `docs/readme.md` (the original case is in `lajstrom.raw.path`). A component whose escaped form (section 4.3 step 2) is longer than 64 bytes is replaced by `h0_h` + the first 32 hex characters of `sha256(component)`, as in section 4.3 step 3 (`EscapeComponentMax`): registries limit the OCI repository name to 255 characters, and `reindex` reads `lajstrom.raw.path`, so nothing decodes the path. A path whose OCI repository name is still longer than 255 bytes is refused with `400`. A raw path is unique without regard to case, since the OCI repository name is lowercase: the first spelling wins, and a path whose package path is taken by another spelling is a `409`. |
 | pypi | `EscapeComponent(lajstrom.name)`, the normalized name: `Requests` → `requests` |
 | deb | `EscapeComponent(package)`: `libstdc++6` → `libstdc_2b_2b6` |
 | maven | `EscapeComponent(groupId lowercased)/EscapeComponent(artifactId)`: `com.example:Lib-Core` → `com.example/lib-core` |
@@ -239,20 +240,41 @@ followed by exactly two hex digits), so `Unescape` is unambiguous. Note the deli
 from the 2026-11-05 draft, which encoded `_` as `__`: that made the version/variant separator
 ambiguous (`a_` + `_b` vs `a` + `__b`). See ADR 0005.
 
-`EscapeComponent(s string) string`, for repository path components:
+`EscapeComponent(s string) string`, for repository path components
+([ADR 0017](../adr/0017-the-grammar-of-oci-names.md)):
 
 1. lower-case ASCII letters (the original spelling is kept in `lajstrom.name` / `lajstrom.raw.path`);
 2. apply `Escape`;
-3. if the result does not match the OCI path-component grammar
-   `^[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*$` (for example because it starts with `_` or
-   contains `.-`), replace it with `h0__` + first 32 hex characters of `sha256(s)`. `Escape`
-   never produces `__`, so a hashed component cannot collide with an escaped one.
+3. if the result does not match the path-component grammar of the distribution specification
+   1.1, `^[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*$` (for example because it starts with `_` or
+   contains `.-`), replace it with `h0_h` + first 32 hex characters of `sha256(s)`, and stop.
+   `Escape` writes `_` only before two hex digits and `h` is none, so a hashed component cannot
+   collide with an escaped one;
+4. write each `-` of a run of two or more as `_2d`: `a--b` → `a_2d_2db`;
+5. if the result ends in `blobs`, `.uploads` or `.sync`, or is `index.json` or `oci-layout`,
+   write its last byte as `_` and two lowercase hex digits: `blobs` → `blob_73`,
+   `my.uploads` → `my.upload_73`, `x.sync` → `x.syn_63`, `index.json` → `index.jso_6e`.
 
-Package names of the MVP formats are ASCII-restricted by their own specs, so step 3 is a safety
-net, not a normal path.
+The output matches the grammar of ADR 0017, `^[a-z0-9]+(?:[._-][a-z0-9]+)*$` (the distribution
+specification's 1.0 grammar, which Gitea and Forgejo check), and never ends in a word of steps 5,
+which Zot's storage keeps for itself. Steps 4 and 5 escape bytes that `Escape` copies, which
+`Escape` never does, so the component of every name that keeps to the grammar is unchanged and
+the encoding stays injective but for case. Package names of the MVP formats are
+ASCII-restricted by their own specs, so step 3 is a safety net, not a normal path; a raw path
+meets it with a leading `.` or `_` (`.gitignore`, `_config.yml`).
 
-`Unescape` is provided for tooling and tests; **no server code path depends on decoding a tag or
-a path**. Reindex reads `lajstrom.*` annotations.
+**Written in the new form, read in both.** Before ADR 0017, step 3 wrote `h0__` and steps 4
+and 5 did not exist. A package keeps the OCI repository it was first written to: a writer looks
+the package up in the index at its package path and at the path of that earlier form
+(`LegacyPackagePath`, `index.PackageAt`), and writes to the `name_oci` it finds; the new form is
+for a package the index does not have. Reindex, and validation on ingest (section 5), take either
+form as the package path of the annotations; a push to the earlier form is for a package the
+index has there only, and a push to the new form of a package the index has at the earlier one
+is a `409`.
+
+`Unescape` and `UnescapeComponent` (which decodes a component of either form to the same
+lower-cased name, and refuses a hashed one) are provided for tooling and tests; **no server code
+path depends on decoding a tag or a path**. Reindex reads `lajstrom.*` annotations.
 
 ## 5. Validation on ingest
 
@@ -263,7 +285,9 @@ The ingest pipeline rejects a manifest with `400` (facade: `MANIFEST_INVALID`) w
 - `config` is not the empty descriptor;
 - a required annotation is missing, or `lajstrom.format` / `lajstrom.repo` do not match the URL
   the manifest was pushed to;
-- the repository path computed from the annotations (section 4.1) differs from the path pushed to;
+- the repository path computed from the annotations (section 4.1) differs from the path pushed
+  to in both forms of section 4.3, or the path pushed to is the earlier form and the index has no
+  package there;
 - the tag computed from the annotations (section 4.2) differs from the tag pushed to;
 - a layer media type is not one of the format's roles, or a layer has no
   `org.opencontainers.image.title` (or a title with a directory, except for `raw`);
@@ -279,8 +303,9 @@ The ingest pipeline rejects a manifest with `400` (facade: `MANIFEST_INVALID`) w
   version's publish time, which retention reads; the frontends write the server's.
 
 `409 Conflict` (facade: `TAG_INVALID` with a message) when the tag exists with another digest,
-or when the package path is another spelling's, or is being published under another spelling
-(section 4.1). Both are found under the claims, before the registry write.
+when the index has the package at the earlier form of its path (section 4.3), or when the
+package path is another spelling's, or is being published under another spelling
+(section 4.1). They are found under the claims, before the registry write.
 Sizes: a file, and a blob of `/v2`, is bounded by the smaller of the repo's bound and the
 registry's `capabilities.maxBlobSize` (the configuration's, or the vendor table's: GHCR's
 10 GB a layer). The repo's bound is the `maxFileSize` of its policy in the control plane, on
