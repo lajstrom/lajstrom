@@ -78,8 +78,8 @@ linters:
           msg: use log/slog
         # The writing methods of the provider, which format.Deps.Providers hands the plugins for
         # reads. Only internal/format is held to it (exclusions below): ingest and the facade
-        # write through the provider.
-        - pattern: ^provider\.(Provider\.(EnsureRepository|DeleteRepository)|(Repository|BlobUploader)\.(Push|PushReference|Tag|Delete|StartBlobUpload|MountBlob|AppendBlobChunk|FinishBlobUpload|CancelBlobUpload))$
+        # write through the provider. A streamed upload's BlobWriter is ingest's too (ADR 0014).
+        - pattern: ^provider\.(Provider\.(EnsureRepository|DeleteRepository)|(Repository|BlobUploader)\.(Push|PushReference|Tag|Delete|StartBlobUpload|MountBlob|AppendBlobChunk|FinishBlobUpload|CancelBlobUpload)|(Repository|BlobStreamer)\.OpenBlobWriter|BlobWriter\.(Write|Commit|Cancel)|NewChunkedWriter)$
           pkg: ^github\.com/lajstrom/lajstrom/internal/provider$
           msg: one write path, plugins publish and delete through format.Deps.Ingest (CLAUDE.md invariants)
     gocyclo:
