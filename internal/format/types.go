@@ -3,7 +3,10 @@ package format
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"strings"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -216,6 +219,115 @@ type Deletion struct {
 	Reference string
 	// ClientIP is the client's address, for the audit row.
 	ClientIP string
+	// Condition, when not nil, makes the delete a compare-and-delete of a version: see
+	// Condition.
+	Condition *Condition
+	// Job is the id of the batch the delete is part of (POST …/versions:delete), for the audit
+	// row's details; empty outside a batch.
+	Job string
+}
+
+// Condition makes the delete of a version conditional (docs/api.md, Delete a version): ingest
+// checks it under the locks of the delete, which a move of a pointer to the version waits for
+// (docs/spec/index-schema.md, Coordination), and deletes nothing when it fails. Reference must
+// be the digest the client read. Under the locks:
+//
+//   - the package has no version Version with the variant Variant: index.ErrNotFound (gone);
+//   - it has, with another digest than Reference (deleted and published again): a
+//     *RefusedError, RefusedChanged;
+//   - UnmodifiedSince is not zero and the version's publish time (versions.created_at, in whole
+//     seconds) is after it: a *RefusedError, RefusedYoung;
+//   - Force is false and a pointer names the version (an npm dist-tag): a *RefusedError,
+//     RefusedProtected, naming the pointers.
+type Condition struct {
+	// Version and Variant are the version the client read; Variant is "" for a format without
+	// variants.
+	Version, Variant string
+	// UnmodifiedSince is the cut-off: a version published after it is refused. Zero: none.
+	UnmodifiedSince time.Time
+	// Force deletes a version that pointers name.
+	Force bool
+}
+
+// Refusal is why a conditional delete deleted nothing (Condition).
+type Refusal string
+
+// The refusals of a conditional delete; the batch delete of docs/api.md answers them as the
+// status of an item.
+const (
+	// RefusedChanged: the version has another digest than the one the client read (412).
+	RefusedChanged Refusal = "changed"
+	// RefusedYoung: the version was published after the cut-off (412).
+	RefusedYoung Refusal = "young"
+	// RefusedProtected: a pointer names the version (409).
+	RefusedProtected Refusal = "protected"
+)
+
+// Pointer names a version by its version string and can move to another: an npm dist-tag,
+// Kind "dist-tag" and Name its tag. A conditional delete refuses a version a pointer names,
+// unless it is forced.
+type Pointer struct {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+}
+
+// PointersOf returns the pointers among the state of a package (index.Reader.ListJournalState)
+// that name version: its npm dist-tags, in the order of the state, by kind and key.
+func PointersOf(state []index.JournalState, version string) []Pointer {
+	var out []Pointer
+	for _, s := range state {
+		if s.Kind == index.JournalDistTag && s.Value == version {
+			out = append(out, Pointer{Kind: index.JournalDistTag, Name: s.Key})
+		}
+	}
+	return out
+}
+
+// RefusedError is the error of a conditional delete whose Condition failed: nothing was
+// deleted. It wraps ErrPrecondition (412) for RefusedChanged and RefusedYoung, and
+// index.ErrConflict (409) for RefusedProtected.
+type RefusedError struct {
+	// Reason is the condition that failed.
+	Reason Refusal
+	// Subject names the version in the message: `version 1.0 of "requests" in pypi/libs`.
+	Subject string
+	// Digests are the digests of the version's variants now, for RefusedChanged.
+	Digests []digest.Digest
+	// PublishedAt is the publish time of the version's newest variant, for RefusedYoung.
+	PublishedAt time.Time
+	// Pointers are the pointers that name the version, for RefusedProtected, sorted.
+	Pointers []Pointer
+}
+
+func (e *RefusedError) Error() string {
+	switch e.Reason {
+	case RefusedChanged:
+		now := make([]string, len(e.Digests))
+		for i, d := range e.Digests {
+			now[i] = d.String()
+		}
+		return fmt.Sprintf("%s changed since it was read: its variants are %s now; nothing was deleted", e.Subject,
+			strings.Join(now, ", "))
+	case RefusedYoung:
+		return fmt.Sprintf("%s was published at %s, after the cut-off; nothing was deleted", e.Subject,
+			e.PublishedAt.UTC().Format(time.RFC3339))
+	case RefusedProtected:
+	}
+	names := make([]string, len(e.Pointers))
+	for i, p := range e.Pointers {
+		names[i] = p.Kind + " " + p.Name
+	}
+	return fmt.Sprintf("%s is what %s points to; move it, or force the delete; nothing was deleted", e.Subject,
+		strings.Join(names, ", "))
+}
+
+// Unwrap returns the sentinel of the status: index.ErrConflict for RefusedProtected,
+// ErrPrecondition otherwise.
+func (e *RefusedError) Unwrap() error {
+	if e.Reason == RefusedProtected {
+		return index.ErrConflict
+	}
+	return ErrPrecondition
 }
 
 // Deleted is what Publisher.Delete reports back.

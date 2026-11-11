@@ -381,9 +381,9 @@ do not invent their own. What each call needs, in the actions of rbac.md §2 (de
 
 | Calls | Needs |
 | --- | --- |
-| reading a repo's content: `GET /api/v1/repos` (lists only the repos the caller may read), `GET …/repos/<format>/<repo>`, and the read endpoints of packages, versions and search that #136 adds | `read` on the repo; a repo the caller may not read is `404`, as on the frontends (rbac.md §3) |
+| reading a repo's content: `GET /api/v1/repos` (lists only the repos the caller may read), `GET …/repos/<format>/<repo>`, `GET …/packages` and `GET …/packages/<name>/versions` (#72), and the search that #136 adds | `read` on the repo; a repo the caller may not read is `404`, as on the frontends (rbac.md §3) |
 | changing a repo: `PATCH`, `DELETE`, `POST …/reindex`, `GET …/reindex`, the deploy tokens of the repo | `manage` on the repo |
-| deleting a version: `DELETE …/repos/<format>/<repo>/packages/<name>/versions/<version>` (#61) | `delete` on the repo; a repo the caller may not read is `404` |
+| deleting versions: `DELETE …/repos/<format>/<repo>/packages/<name>/versions/<version>` (#61), `POST …/repos/<format>/<repo>/versions:delete` (#72) | `delete` on the repo, checked before the body is read; a repo the caller may not read is `404` |
 | creating a repo, and the system resources: users, bindings, audit, registries, every token | the admin role (rbac.md §2; a `maintainer` on `*/*` is not enough) |
 | the personal access tokens of a user | the user themself, within what the credential allows, or the admin role |
 | `GET /api/v1/whoami` | nothing |
@@ -392,7 +392,7 @@ do not invent their own. What each call needs, in the actions of rbac.md §2 (de
 | Resource | Endpoints |
 | --- | --- |
 | repos | `GET/POST /api/v1/repos`, `GET/PATCH/DELETE /api/v1/repos/<format>/<repo>`, `POST …/reindex`, `GET …/reindex` |
-| versions | `DELETE /api/v1/repos/<format>/<repo>/packages/<name>/versions/<version>[?variant=]`; the reads come with #136 |
+| packages, versions | `GET /api/v1/repos/<format>/<repo>/packages[?prefix=]`, `GET …/packages/<name>/versions`, `DELETE …/packages/<name>/versions/<version>[?variant=&force=]`, `POST /api/v1/repos/<format>/<repo>/versions:delete`; search comes with #136 |
 | users | `GET/POST /api/v1/users`, `GET/PATCH/DELETE /api/v1/users/<name>`, `POST …/password` |
 | tokens | `GET/POST /api/v1/users/<name>/tokens` (PAT), `DELETE …/tokens/<id>`; `GET/POST /api/v1/repos/<format>/<repo>/deploy-tokens`, `DELETE …/<id>` |
 | bindings | `GET/POST /api/v1/bindings`, `DELETE /api/v1/bindings/<id>` |
@@ -402,7 +402,17 @@ do not invent their own. What each call needs, in the actions of rbac.md §2 (de
 
 Errors: `{"error": {"code": "NOT_FOUND|CONFLICT|FORBIDDEN|INVALID|UNAVAILABLE|INTERNAL", "message": "…"}}`.
 A `429` (a throttle of failed logins, with `Retry-After`; #130) is `UNAVAILABLE`: try again
-later. There is no seventh code.
+later. A `412` (a conditional delete that found the version changed) is `CONFLICT`, as `409` is.
+There is no seventh code.
+
+Lists of a repo's content (`read`): `GET …/packages` pages the packages by name, `?prefix=`
+keeps those whose name starts with it; `GET …/packages/<name>/versions` pages the versions,
+newest first by the publish time of their first variant, each with its variants (`variant`,
+`tag`, manifest `digest`, `publishedAt`), `publishedAt` and `lastModified` (of the first and the
+newest variant) and its `pointers` (npm dist-tags). The publish time is
+`org.opencontainers.image.created`, `versions.created_at`, which reindex rebuilds. Both pages are
+`?limit=` and `?cursor=`; the cursor holds the place of the page's last row (a name; a time and a
+version), never an offset.
 
 Deleting a version (`delete`): `<name>` is the package name in the format's spelling, one path
 segment (a raw path escapes its `/` as `%2F`). Without `variant` every variant of the version
@@ -411,6 +421,26 @@ each manifest is deleted as the `DELETE` of §2 deletes it, its referrers first,
 of its own. `204`; `404 NOT_FOUND` when the repo has no such package, version or variant; a
 backend that cannot delete manifests is `501 UNAVAILABLE` naming the backend, and nothing
 changes. Versions deleted before a failure stay deleted.
+
+The delete is a compare-and-delete (#72): ingest checks its conditions under the locks the
+delete holds (index-schema.md, Coordination) and deletes nothing when one fails.
+`If-Match: "<digest>", …` lists the digests of the variants the client read; the variants the
+delete takes must have exactly them, else `412 CONFLICT` (deleted and published again, a variant
+added or removed). `If-Unmodified-Since: <HTTP-date>` is the cut-off; a variant published after
+it, in whole seconds, is `412 CONFLICT`. Both are checked, unlike RFC 9110's precedence, and a
+value that does not parse is `400`, never ignored. A version a pointer names (an npm dist-tag)
+is `409 CONFLICT` naming the pointers, with the headers or without, unless `?force=true`. Without
+the headers the client sets no condition of its own: an operator's delete does not wait for an
+age.
+
+`POST …/versions:delete` (`delete`, before the body is read) takes
+`{"items": [{"package", "version", "digests": […]}], "cutoff", "dryRun", "job"}` and deletes each
+item as the conditional `DELETE` above with its digests and the cut-off, never forced, each
+under its own locks; it is not all-or-nothing, and a rerun is idempotent. `200` with
+`{"job", "dryRun", "results": [{"package", "version", "status", …}]}`, a status per item:
+`deleted` (in a dry run: would be), `changed`, `protected`, `young`, `gone`, `error`. Every audit
+row of the batch has the job in `details.job`; every `delete` row has the request's token, when it
+came with one, in `details.token`.
 
 Reindex of one repo (`manage`): `POST …/reindex` with an optional body `{"prune": true,
 "verify": false}` starts the run on the replica that received it and answers `202` with the run

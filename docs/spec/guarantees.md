@@ -441,6 +441,38 @@ status is `holds on strongly consistent registries only` do not hold there.
   versions that fails does not name the versions deleted before the failure yet (each has its
   audit row) (new issue).
 
+### INV-42. A conditional delete never removes a version that changed after the client read it
+
+- **Statement.** A delete with conditions removes a manifest only while, under the locks the
+  delete holds, the version still has the digests the client read, was published no later than
+  the client's cut-off, and no pointer names it unless the delete is forced; when a condition
+  fails nothing is deleted and the answer says which (`412`, or `409` naming the pointers). A
+  variant published while the delete runs is not among the digests the client sent and stays.
+- **Scope.** `DELETE /api/v1/…/versions/<version>` with `If-Match` or `If-Unmodified-Since`, and
+  every item of `POST /api/v1/…/versions:delete` (http-routing.md §4); the pointers are npm's
+  dist-tags. Not `DELETE` on `/v2`, the raw frontend or npm's unpublish, which take no
+  condition. The publish time is the manifest's `org.opencontainers.image.created`: the
+  frontends write it from the server's clock, a client pushing on `/v2` writes its own, which
+  the cut-off trusts.
+- **Assumes.** Registry: a delete by digest removes that manifest only (any registry of the
+  matrix). Database: the referrers lock excludes across replicas (Postgres; SQLite serves one
+  replica, INV-26).
+- **Mechanism.** `ingest.Pipeline.Delete` with `format.Deletion.Condition`: `deletion.locked`
+  takes the package's journal lock, then the tag lock (index-schema.md, Coordination: one order),
+  `deletion.check` reads the version again by its digest, its `created_at` and the package's
+  `journal_state` under them, and `deletion.record` deletes the rows by digest before the locks
+  are released; a dist-tag move checks under the journal lock that its version exists
+  (`journal.checkVersions`). The API checks the same conditions for every variant before the
+  first delete (`api.handler.deleteVersion`, `api.handler.deleteVersions`).
+- **Tests.** `TestConditionalDelete`, `TestConditionalDeleteRepublishRace`,
+  `TestConditionalDeleteDistTagRace` (goroutines, `-race`), `TestDeleteVersionConditions`,
+  `TestBatchDelete`; `retention.sh`.
+- **When violated.** A delete that removed a version re-published or dist-tagged after the read
+  leaves the newer version's rows without a manifest, which reindex removes, or a dist-tag
+  naming a version that is gone, which the packument leaves out; nothing reports it.
+- **Status.** `not yet` ([#72](https://github.com/lajstrom/lajstrom/issues/72)): the mechanism and
+  the tests above are those of its pull requests.
+
 ## Audit
 
 ### INV-14. Every write has an audit row
@@ -1088,6 +1120,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-39 | encryption at rest | not yet (#114) | |
 | INV-40 | a streamed download has its digest | holds | |
 | INV-41 | a binary only on a schema it can run on | partly | untested (the previous release's binary) |
+| INV-42 | a conditional delete never removes a changed version | not yet (#72) | |
 
 ## Not guaranteed
 
@@ -1199,3 +1232,4 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | Whether a migration is expand is reviewed, not tested; no test runs the previous release's binary on the next schema; pre-#244 claims (INV-6, INV-41) | a contract migration without its `requires` line breaks the replicas of the release before during a rolling update; a mixed fleet may not exclude publishes | after v0.1.0, CI runs the previous release's binary on a schema the new binary migrated | [#485](https://github.com/lajstrom/lajstrom/issues/485) |
 | Groups (INV-34), policy (INV-38), encryption at rest (INV-39) | not built | as the issues say | [#311](https://github.com/lajstrom/lajstrom/issues/311), [#101](https://github.com/lajstrom/lajstrom/issues/101), [#114](https://github.com/lajstrom/lajstrom/issues/114) |
 | A streamed download is not hashed (INV-40) | a registry that serves other bytes than it stored reaches a client that checks nothing | hash in `format.ServeBlob`, hold the last byte back, abort the connection on a mismatch | new issue |
+| The cut-off of a retention job trusts `org.opencontainers.image.created` of a manifest pushed on `/v2`, which its client writes (INV-42) | a writer can make a version it pushes look older, so that the next run deletes it, or younger, so that age never deletes it | bound the time to the server's clock at ingest: refuse one that differs from it by more than a skew | new issue |

@@ -73,6 +73,7 @@ func SetRetryAfter(h http.Header, err error) {
 //	ErrMethodNotAllowed                        405 Method Not Allowed, with Allow: GET, HEAD
 //	index.ErrNotFound, provider.ErrNotFound    404 Not Found
 //	index.ErrConflict, provider.ErrConflict    409 Conflict
+//	ErrPrecondition                            412 Precondition Failed
 //	*http.MaxBytesError,                       413 Content Too Large
 //	  *provider.RejectedError of a 413           (the backend's: the file is too large for it)
 //	ErrUnsupported, provider.ErrUnsupported    501 Not Implemented
@@ -86,6 +87,8 @@ func SetRetryAfter(h http.Header, err error) {
 //	ErrUnavailable                             503 Service Unavailable, with Retry-After (the upstream's)
 //	ErrGatewayTimeout                          504 Gateway Timeout
 //	anything else, nil included                500 Internal Server Error
+//
+//nolint:gocyclo // one case per row of the table above, in its order
 func StatusOf(err error) int {
 	var tooLarge *http.MaxBytesError
 	switch {
@@ -103,6 +106,8 @@ func StatusOf(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, index.ErrConflict), errors.Is(err, provider.ErrConflict):
 		return http.StatusConflict
+	case errors.Is(err, ErrPrecondition):
+		return http.StatusPreconditionFailed
 	case errors.As(err, &tooLarge), refusedBy(err, http.StatusRequestEntityTooLarge):
 		return http.StatusRequestEntityTooLarge
 	case errors.Is(err, ErrUnsupported), errors.Is(err, provider.ErrUnsupported):
