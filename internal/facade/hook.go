@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -38,7 +39,8 @@ const unknownArtifactType = "application/vnd.unknown.artifact.v1"
 //     digest, the tag of the annotations (manifestTag).
 //  3. The manifest must satisfy the profile (profile.Validate), which needs no backend, else
 //     MANIFEST_INVALID as ingest answers it; readManifest has bounded the layers (maxLayers).
-//  4. Every layer must be in the backend, else MANIFEST_BLOB_UNKNOWN (checkLayers).
+//  4. Every layer must be in the backend, else MANIFEST_BLOB_UNKNOWN (checkLayers); on a
+//     registry not classified strong, a layer it does not serve is read again first.
 //  5. ingest.Ingest validates the manifest, claims the tag, pushes the manifest with it and
 //     indexes it; ingestError answers its errors.
 //
@@ -134,19 +136,25 @@ func manifestTag(ref string, refDigest digest.Digest, m ocispec.Manifest) (strin
 // is ingest.ErrInvalid, MANIFEST_INVALID: the second HEAD per layer is the price of the right
 // code without a new error in the ingest contract. A blob whose digest is malformed is left to
 // the profile check of ingest, or to the backend, which names it. Each digest is asked once, so
-// a manifest that names one blob many times costs one HEAD.
+// a manifest that names one blob many times costs one HEAD. A blob the backend does not serve
+// is read again (readBack) unless the registry is strongly consistent: a client uploads its
+// blobs right before the manifest, and on ECR a blob can be 404 for a moment after its 201.
 func (h *handler) checkLayers(ctx context.Context, t *target, blobs []ocispec.Descriptor) error {
 	rr, err := h.backend(ctx, t)
 	if err != nil {
 		return err
 	}
 	seen := make(map[digest.Digest]bool, len(blobs))
+	var deadline time.Time // of the read-back, from the first blob it reads again
 	for _, l := range blobs {
 		if seen[l.Digest] || l.Digest.Validate() != nil {
 			continue
 		}
 		seen[l.Digest] = true
 		ok, err := rr.Exists(ctx, l)
+		if err == nil && !ok {
+			ok, err = h.readBack(ctx, t, rr, l, &deadline)
+		}
 		switch {
 		case err != nil:
 			return fmt.Errorf("facade: layer %s of %s: %w", l.Digest, t.name, err)
@@ -156,6 +164,30 @@ func (h *handler) checkLayers(ctx context.Context, t *target, blobs []ocispec.De
 		}
 	}
 	return nil
+}
+
+// readBack reads the blob l of rr again, which the backend did not serve, until it does or
+// *deadline: the visibility timeout (Options.VisibilityTimeout, or the registry's
+// consistencyBound when longer) from the first blob of the manifest read again, so that the
+// blobs of one manifest share one wait. A strongly consistent registry is not asked again.
+func (h *handler) readBack(ctx context.Context, t *target, rr provider.Repository, l ocispec.Descriptor, deadline *time.Time) (bool, error) {
+	p, err := h.registry(t)
+	if err != nil {
+		return false, err
+	}
+	caps, err := p.Capabilities(ctx)
+	if err != nil {
+		return false, fmt.Errorf("facade: capabilities of the registry of %s: %w", t.name, err)
+	}
+	if caps.Consistency == provider.ConsistencyStrong {
+		return false, nil
+	}
+	if deadline.IsZero() {
+		*deadline = time.Now().Add(max(h.o.VisibilityTimeout, caps.ConsistencyBound))
+	}
+	return provider.ReadBack{Timeout: time.Until(*deadline)}.Await(ctx, func(ctx context.Context) (bool, error) {
+		return rr.Exists(ctx, l)
+	})
 }
 
 // ingestError is the error table of the manifest hook, the one place where the errors of

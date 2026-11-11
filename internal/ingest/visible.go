@@ -130,6 +130,25 @@ func (w pushed) reads(strong bool) map[string]func(context.Context) (bool, error
 	return reads
 }
 
+// readBlob reads the blob desc of rr again, which the backend did not serve, until it does or
+// *deadline: timeout, or the registry's consistencyBound when longer, from the first blob of a
+// manifest read again, so that the blobs of one manifest share one wait. A client, or Upload,
+// pushed the blob a moment before, and an eventually consistent registry can answer 404 for it
+// for a while (docs/registries/README.md, Consistency). A strongly consistent registry is not
+// asked again.
+func readBlob(ctx context.Context, prov provider.Provider, rr provider.Repository, desc ocispec.Descriptor, timeout time.Duration, deadline *time.Time) (bool, error) {
+	caps, err := prov.Capabilities(ctx)
+	if err != nil || caps.Consistency == provider.ConsistencyStrong {
+		return false, err
+	}
+	if deadline.IsZero() {
+		*deadline = time.Now().Add(max(timeout, caps.ConsistencyBound))
+	}
+	return provider.ReadBack{Timeout: time.Until(*deadline)}.Await(ctx, func(ctx context.Context) (bool, error) {
+		return rr.Exists(ctx, desc)
+	})
+}
+
 // published is what pub pushed, for awaitVisible.
 func (pub *publish) published() pushed {
 	return pushed{name: pub.name, rr: pub.rr, prov: pub.prov, tag: pub.tag,
