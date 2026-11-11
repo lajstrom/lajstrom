@@ -39,6 +39,7 @@ die() {
 	exit 2
 }
 
+git -C "$root" rev-parse --verify --quiet HEAD >/dev/null || die "$root is not a git checkout, or git is missing"
 from="${LAJSTROM_UPGRADE_FROM:-}"
 if [ -z "$from" ]; then
 	# Stable tags only, newest first; a v0.0.x is below the floor.
@@ -52,7 +53,7 @@ if [ -z "$from" ]; then
 	fi
 fi
 
-for tool in git make go psql; do
+for tool in make go psql; do
 	command -v "$tool" >/dev/null || die "$tool is required"
 done
 pg="${LAJSTROM_UPGRADE_POSTGRES_DSN:-}"
