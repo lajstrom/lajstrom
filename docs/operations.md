@@ -562,6 +562,7 @@ for the breaker, which opens after five as above.
 | a body of the management API | 64 KiB, fixed | `413` |
 | a file a frontend receives | the repo's `policy.maxFileSize` | `413` |
 | a blob of `/v2` | the repo's `policy.maxFileSize`, on an `oci` repo too, or the registry's `capabilities.maxBlobSize` when it is smaller | `413 SIZE_INVALID` naming the bound, before the blob streams when its size is declared (`Content-Length`, `Content-Range`), else where the bytes of the session pass the bound, counted across its `PATCH`es and the closing `PUT`; the session ends |
+| live `/v2` upload sessions of a principal | `server.uploadSessions.perRepo`, 256 in one repo, and `server.uploadSessions.perPrincipal`, 1024 in all repos, on each replica | `429 TOOMANYREQUESTS` with `Retry-After` for a new session, naming the bound and its key. A session counts while a request on it runs and for 5 minutes after the last one; an idle one stays resumable until it expires, an hour after its last request. Its `DELETE`, its closing `PUT` and an error that ends it free the slot at once |
 
 There is no bound on the whole length of a request or a response: a blob streams for as long as
 its size needs, which a fixed read or write timeout would cut off. `server.stallTimeout` bounds
@@ -573,6 +574,12 @@ off. The limit on uploads at once is per replica, and off by default: set it fro
 can hold at once, the disk for the spooled files of the frontends and the connections to the
 registry. A request refused for it is in the access log with status `503`. How many requests a
 client may send is the edge's to limit.
+
+The bounds on live upload sessions count per replica too: a replica counts the sessions it has
+answered a request of, so behind N replicas a principal may hold up to N times as many, and one
+replica may refuse a session while another has room. Raise `server.uploadSessions.perRepo` when
+more CI runners than about 50 push new layers into one repo with one credential at once; a
+refused session is in the access log with status `429`.
 
 ## Performance
 

@@ -59,6 +59,8 @@ type env struct {
 	extURL string // Options.ExternalURL
 	logs   *logBuffer
 	h      http.Handler // replica A
+
+	sessions [2]int // Options.UploadSessionsPerRepo and UploadSessionsPerPrincipal
 }
 
 // envOptions change what newEnv builds.
@@ -68,6 +70,8 @@ type envOptions struct {
 	ingest      Ingester                                   // replaces the real pipeline
 	maxManifest int64                                      // Options.MaxManifestSize
 	externalURL string                                     // Options.ExternalURL
+
+	sessions [2]int // Options.UploadSessionsPerRepo and UploadSessionsPerPrincipal
 }
 
 func newEnv(t *testing.T, o envOptions) *env {
@@ -79,7 +83,7 @@ func newEnv(t *testing.T, o envOptions) *env {
 	must(t, st.Migrate(ctx))
 	e := &env{t: t, st: st, prov: &providertest.Fake{RegistryName: "local"}, authz: o.authz, logs: &logBuffer{},
 		clock: &clock{now: time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC)}, ingest: o.ingest, max: o.maxManifest,
-		tokens: keys.NewEphemeralTokens(), extURL: o.externalURL}
+		tokens: keys.NewEphemeralTokens(), extURL: o.externalURL, sessions: o.sessions}
 	e.reg = e.prov
 	if o.registry != nil {
 		e.reg = o.registry(e.prov)
@@ -110,7 +114,8 @@ func (e *env) replica() http.Handler {
 func (e *env) replicaWith(k token.Keys) http.Handler {
 	h := New(Options{Index: e.st, Providers: provider.Map{"local": e.reg}, Auth: e.authz, Ingest: e.ingest,
 		MaxManifestSize: e.max, Log: slog.New(slog.NewTextHandler(e.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
-		Now: e.clock.Now, Tokens: k, ExternalURL: e.extURL})
+		Now: e.clock.Now, Tokens: k, ExternalURL: e.extURL,
+		UploadSessionsPerRepo: e.sessions[0], UploadSessionsPerPrincipal: e.sessions[1]})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if name := r.Header.Get(principalHeader); name != "" {
 			r = r.WithContext(auth.WithPrincipal(r.Context(), userP(name)))

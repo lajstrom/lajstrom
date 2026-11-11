@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth/token"
 	"github.com/lajstrom/lajstrom/internal/format"
@@ -43,7 +45,8 @@ const (
 // everywhere, but for the registry's refusal of a request: a push, a read), the
 // message for the client (empty: the cause's), the detail of the error entry (nil: none), and
 // the cause, for the status and the log. insufficient marks the 401 of a valid bearer that
-// lacks the repository: its challenge says error="insufficient_scope".
+// lacks the repository: its challenge says error="insufficient_scope". retryAfter, when
+// positive, is the answer's Retry-After.
 type apiError struct {
 	status       int
 	code         string
@@ -51,6 +54,7 @@ type apiError struct {
 	detail       any
 	err          error
 	insufficient bool
+	retryAfter   time.Duration
 }
 
 func (e *apiError) Error() string {
@@ -88,7 +92,8 @@ type errorEntry struct {
 // (401 UNAUTHORIZED with the challenge, 403 DENIED, 429 TOOMANYREQUESTS, 501 UNSUPPORTED, the
 // 503 of a registry that takes no request now UNAVAILABLE with Retry-After: an open circuit
 // breaker, or the registry's own 429 or 503, which throttles Lajstrom and not the client; other
-// 5xx UNKNOWN) and is the handler's otherwise. The challenge of a 401 is the bearer challenge of
+// 5xx UNKNOWN) and is the handler's otherwise; an apiError's retryAfter is the Retry-After, in
+// whole seconds. The challenge of a 401 is the bearer challenge of
 // the token flow (docs/spec/rbac.md §4) with the scope of the request (requestScope), and
 // error="insufficient_scope" when a valid bearer lacked it. A 5xx says only its status text,
 // without a detail, and its cause is logged with the request id: a backend error must not
@@ -110,6 +115,9 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		msg = ae.err.Error()
 	}
 	format.SetRetryAfter(w.Header(), err)
+	if ae.retryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.FormatInt(int64((ae.retryAfter+time.Second-1)/time.Second), 10))
+	}
 	switch {
 	case status == http.StatusServiceUnavailable && errors.Is(err, provider.ErrUnavailable):
 		code, msg, detail = codeUnavailable, http.StatusText(status), nil
