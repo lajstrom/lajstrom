@@ -6,11 +6,13 @@ deprecate` and `npm unpublish` change a package. Every version is one OCI artifa
 registry behind Lajstrom, its tarball and the version document npm sent as layers; dist-tags and
 deprecations are a journal of small manifests beside the versions, so that `lajstrom reindex`
 restores them. A proxy repo serves registry.npmjs.org and keeps every tarball it fetched in the
-registry too. The endpoints are specified in [http-routing.md](../spec/http-routing.md) §3 (npm)
-and §6, the format in [ADR 0012](../adr/0012-npm-profile-routes-and-dist-tags-journal.md), the
-proxy in [ADR 0013](../adr/0013-proxy-and-group-repos.md) and
-[proxy-and-group.md](../spec/proxy-and-group.md). The output shown is that of a run of this
-page; `test/e2e/npm.sh` runs the same steps with checks ([the end-to-end
+registry too, and a group repo serves both under one URL. The endpoints are specified in
+[http-routing.md](../spec/http-routing.md) §3 (npm) and §6, the format in
+[ADR 0012](../adr/0012-npm-profile-routes-and-dist-tags-journal.md), the proxy and the group in
+[ADR 0013](../adr/0013-proxy-and-group-repos.md) and
+[proxy-and-group.md](../spec/proxy-and-group.md). The output shown is that of one run of this
+page from top to bottom, with npm 11.20.0, pnpm 10.34.9 and yarn 4.18.1 (npm's notice of a newer
+npm left out); `test/e2e/npm.sh` runs the same steps with checks ([the end-to-end
 script](#the-end-to-end-script)).
 
 ## 1. Start the dev stack, make a repo and a user
@@ -239,6 +241,7 @@ npm unpublish @acme/widgets@2.0.0-beta.0
 ```text
 npm error code E403
 npm error 403 403 Forbidden - PUT http://localhost:8080/npm/internal/@acme%2fwidgets/-rev/7-28c9c352683c5a23206ce136e903ae4d - format: forbidden: delete on npm/internal
+npm error 403 In most cases, you or one of your dependencies are requesting a package version that is forbidden by your security policy, or on a server you do not have access to.
 ```
 
 On the host, alice becomes a maintainer of the repo:
@@ -305,6 +308,7 @@ npm whoami
 ```text
 npm error code ENEEDAUTH
 npm error need auth This command requires you to be logged in.
+npm error need auth You need to authorize this machine using `npm adduser`
 ```
 
 On the host:
@@ -492,7 +496,12 @@ registry=http://localhost:8080/npm/npmjs/
 //localhost:8080/npm/internal/:_authToken=ljs_pat_…
 @acme:registry=http://localhost:8080/npm/internal/
 
-added 7 packages in 533ms
+added 7 packages, and audited 8 packages in 586ms
+
+2 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
 app3@1.0.0 /app3
 +-- @acme/widgets@1.1.0
 `-- chalk@4.1.2
@@ -520,6 +529,7 @@ npm view @acme/widgets --@acme:registry=http://localhost:8080/npm/npmjs/
 ```text
 npm error code E403
 npm error 403 403 Forbidden - GET http://localhost:8080/npm/npmjs/@acme%2fwidgets - format: forbidden: npm/npmjs does not mirror "@acme/widgets": deny: @acme/*
+npm error 403 In most cases, you or one of your dependencies are requesting a package version that is forbidden by your security policy, or on a server you do not have access to.
 ```
 
 The repo's `upstream` settings change with `PATCH /api/v1/repos/npm/npmjs` ([api.md](../api.md#change-patch-apiv1reposformatname)):
@@ -530,19 +540,24 @@ the upstream, serve what is held), `allow` and `deny`; `DELETE
 The upstream's URL and credentials (`auth.tokenFile`, or `username` and `passwordFile`) are only
 in the configuration ([configuration.md](../configuration.md#upstreams)).
 
-`npm audit` through a proxy is not forwarded to npmjs.org yet (#384) and answers `501`:
+`npm audit`, and the audit that `npm install` runs, are forwarded to npmjs.org: the proxy sends
+the request on with its own credentials for the upstream, never the client's, and answers what
+npmjs.org answers ([http-routing.md](../spec/http-routing.md), npm, Audit). The answer is not
+cached.
 
 ```sh
 npm audit
 ```
 
 ```text
-npm warn audit 501 Not Implemented - POST http://localhost:8080/npm/npmjs/-/npm/v1/security/advisories/bulk - Not Implemented
-npm error audit endpoint returned an error
+found 0 vulnerabilities
 ```
 
-`npm install` skips its audit quietly when it fails; `audit=false` in `.npmrc` saves it the
-request.
+npm sends the name and version of every package of the tree to the URL of `registry=`, those of
+other registries too: here `@acme/widgets` goes to npmjs.org. `deny` keeps a name from being
+fetched, not from being audited. A project with private packages audits through a group
+(section 10), which leaves out the names its hosted member holds, or sets `audit=false` in
+`.npmrc`.
 
 ## 10. A group: one URL for both
 
@@ -558,8 +573,8 @@ bin/lajstrom admin binding create --principal user:alice --role reader --mask np
 ```
 
 ```json
-{"format":"npm","name":"all","kind":"group","anonymousRead":false,"group":{"members":["internal","npmjs"],"merge":[]},"createdAt":"2026-11-10T18:16:02.953062Z","updatedAt":"2026-11-10T18:16:02.953062Z"}
-{"id":3,"principal":"user:01a1c6ac-8cba-76ff-82c7-bbd3503fe0f0","name":"alice","role":"reader","repoMask":"npm/all","createdAt":"2026-11-10T18:16:02.965333Z"}
+{"format":"npm","name":"all","kind":"group","anonymousRead":false,"group":{"members":["internal","npmjs"],"merge":[]},"createdAt":"2026-11-10T17:43:51.774870Z","updatedAt":"2026-11-10T17:43:51.774870Z"}
+{"id":4,"principal":"user:01a1c68d-f8e4-7d05-8285-172d039ddc0b","name":"alice","role":"reader","repoMask":"npm/all","createdAt":"2026-11-10T17:43:51.877126Z"}
 ```
 
 `read` on the group is all a reader needs: through it, alice reads both members whatever her
@@ -586,22 +601,26 @@ Username: alice
 Password:
 Logged in on http://localhost:8080/npm/all/.
 registry=http://localhost:8080/npm/all/
+//localhost:8080/npm/npmjs/:_authToken=ljs_pat_…
 //localhost:8080/npm/internal/:_authToken=ljs_pat_…
 //localhost:8080/npm/all/:_authToken=ljs_pat_…
 
-added 7 packages, and audited 8 packages in 821ms
+added 7 packages, and audited 8 packages in 506ms
+
+2 packages are looking for funding
+  run `npm fund` for details
 
 found 0 vulnerabilities
 app4@1.0.0 /app4
-├── @acme/widgets@1.1.0
-└─┬ chalk@4.1.2
-  ├─┬ ansi-styles@4.3.0
-  │ └─┬ color-convert@2.0.1
-  │   └── color-name@1.1.4
-  └─┬ supports-color@7.2.0
-    └── has-flag@4.0.0
-dist-tags = { beta: '2.0.0-beta.0', latest: '1.1.0' }
-versions = [ '1.0.0', '1.1.0', '2.0.0-beta.0' ]
++-- @acme/widgets@1.1.0
+`-- chalk@4.1.2
+  +-- ansi-styles@4.3.0
+  | `-- color-convert@2.0.1
+  |   `-- color-name@1.1.4
+  `-- supports-color@7.2.0
+    `-- has-flag@4.0.0
+dist-tags = { latest: '1.1.0' }
+versions = [ '1.0.0', '1.1.0' ]
 http://localhost:8080/npm/all/chalk/-/chalk-4.1.2.tgz
 ```
 
@@ -610,7 +629,9 @@ fetches through the group what it does not hold yet, its audit row `proxy.fetch`
 `"via": "npm/all"`. The packument of a name is merged from the members that have it, the hosted
 member's versions and dist-tags first; nothing is cached for the group itself, so a publish to
 the hosted repo is seen at once. `npm audit` through the group goes to npmjs.org without the
-names the hosted repo holds, which never leave the server.
+names the hosted repo holds, which never leave the server. pnpm's audit is `501` through a
+group: it sends npm 6's dependency tree, and a private package cannot be cut out of a tree
+without the packages below it.
 
 A publish, `npm dist-tag`, `npm deprecate` and `npm unpublish` through the group are the hosted
 repo's:
@@ -629,7 +650,7 @@ npm notice package: @acme/widgets@1.2.0
 …
 npm notice Publishing to http://localhost:8080/npm/all/ with tag latest and default access
 + @acme/widgets@1.2.0
-{ beta: '2.0.0-beta.0', latest: '1.2.0' }
+{ latest: '1.2.0' }
 ```
 
 The audit rows are `npm/internal`'s, `push` and `npm.dist-tag`, with `"via": "npm/all"`. A group
@@ -654,6 +675,7 @@ crane ls localhost:5000/npm/npmjs/chalk
 ```text
 1.0.0
 1.1.0
+1.2.0
 _j00000001
 _j00000002
 _j00000003
@@ -662,6 +684,7 @@ _j00000005
 _j00000006
 _j00000007
 _j00000008
+_j00000009
 ```
 
 ```json
@@ -690,7 +713,7 @@ rebuilds the index of the repo from these manifests, the dist-tags and deprecati
 
 ## 12. Clean up
 
-In alice's container, as maintainer:
+In alice's container, as maintainer, through the group:
 
 ```sh
 npm unpublish @acme/widgets --force
@@ -742,19 +765,23 @@ Not there:
 - permissions per package name inside a repo;
 - `npm token`, `access`, `owner`, `team`, `star` and `profile`: `404`;
 - `npm publish --provenance`: refused;
-- `npm audit` through a proxy (#384);
+- `pnpm audit` through a group: `501` (through a proxy it is forwarded, with every name);
 - `notify` webhooks, and plugins of any kind: the protocols are Lajstrom's own;
 - an import of Verdaccio's `storage`: publish the tarballs to the hosted repo again.
 
 ## The end-to-end script
 
-`test/e2e/npm.sh` runs sections 2 to 9 with checks, in `node:26.13.0-slim` with pnpm 10.34.9 and
-yarn 4.18.1, against a repo, a user and a deploy token it makes through the API: `npm login`,
+`test/e2e/npm.sh` runs sections 2 to 11 with checks, in `node:26.13.0-slim` with pnpm 10.34.9
+and yarn 4.18.1, against repos, a user and deploy tokens it makes through the API: `npm login`,
 `whoami`, `publish` of an unscoped and a scoped package, `install` from an empty cache,
 `dist-tag add`, `ls` and `rm`, `deprecate`; pnpm with the deploy token as `_authToken`; `yarn npm
 login`, `publish`, `tag` and `add`; `npm install chalk@4.1.2` twice through a proxy repo, each
-tarball fetched once; `npm unpublish` refused to a writer, then done by a maintainer; `npm
-logout`. It needs a server whose configuration has the upstream `npmjs`, as `make e2e` writes one
+tarball fetched once; a group of both, through which npm, pnpm and yarn each publish a scoped
+package that depends on `chalk@4.1.2` and install it from an empty cache, a public name in the
+hosted repo hiding the upstream's versions, and `group.merge`; `npm unpublish` refused to a
+writer, then done by a maintainer; the hosted repo deleted, made again and reindexed, every
+dist-tag and deprecation back; `npm logout`. It is the demo of M4 ([roadmap.md](../roadmap.md)).
+It needs a server whose configuration has the upstream `npmjs`, as `make e2e` writes one
 ([testing.md](../testing.md#end-to-end)):
 
 ```sh
@@ -763,7 +790,8 @@ make e2e E2E=npm
 
 By hand against `make run`, it runs as an admin whose name and password are in
 `LAJSTROM_E2E_USER` and `LAJSTROM_E2E_PASSWORD`, and `NPM_E2E_UPSTREAM=` (empty) leaves the proxy
-out when the configuration has no upstream, as the example has none:
+out when the configuration has no upstream, as the example has none; the group then has the
+hosted repo only:
 
 ```sh
 LAJSTROM_E2E_USER=admin LAJSTROM_E2E_PASSWORD=… NPM_E2E_UPSTREAM= test/e2e/npm.sh http://localhost:8080
