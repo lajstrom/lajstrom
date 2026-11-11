@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -236,6 +237,25 @@ func TestFileRefused(t *testing.T) {
 	}
 	if pushes := e.reg.PushReferences(); len(pushes) != 0 {
 		t.Errorf("refused fetches pushed %+v", pushes)
+	}
+}
+
+// TestFileNameDepth: a file whose OCI repository is deeper than the registry's maxNameDepth is
+// 403 naming the limit and a proxy.reject row, asks the upstream for no file and pushes nothing
+// (#599).
+func TestFileNameDepth(t *testing.T) {
+	e := newEnv(t, `{"name": "up"}`)
+	e.reg.MaxNameDepth = 2 // raw/up/tool has 3 components
+	e.up.publish("tool", "1.0.0", "one", nil)
+	_, err := e.core(t, "r1", proxy.Options{}).File(asAlice(t), e.repo, fileOf("tool", "1.0.0"))
+	if status, _ := statusOf(err); status != http.StatusForbidden || !strings.Contains(err.Error(), "raw/up/tool has 3 components") {
+		t.Errorf("a name too deep: %v (%d), want 403 naming the limit", err, status)
+	}
+	if _, details := audits(t, e, "proxy.reject"); len(details) == 0 || details[0]["reason"] != "name" {
+		t.Errorf("proxy.reject details %v, want the reason name", details)
+	}
+	if n := e.up.fileCalls.Load(); n != 0 || len(e.reg.Pushes()) != 0 {
+		t.Errorf("%d files asked upstream and %d blobs pushed for a name the registry does not take", n, len(e.reg.Pushes()))
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"hash"
 	"io"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
@@ -46,6 +47,9 @@ func (d *downloaded) close() {
 // never served from; the caller closes them, which removes them. A refused file is a
 // proxy.reject audit row; an upstream 404 or 410 makes the name's row stale (§4.3).
 func (c *Core) download(ctx context.Context, p *proxied, a artifact, entry *format.UpstreamEntry, row *index.ProxyMeta) (_ *downloaded, err error) {
+	if err := c.checkName(ctx, p, a); err != nil {
+		return nil, err
+	}
 	limit, bound := c.limit(ctx, p)
 	d := &downloaded{}
 	defer func() {
@@ -122,6 +126,33 @@ func (c *Core) spool(ctx context.Context, p *proxied, a artifact, name string, t
 func (c *Core) tooLarge(ctx context.Context, p *proxied, a artifact, target *url.URL, limit int64, bound string) error {
 	c.reject(ctx, p, a, originURL(target), "size", map[string]any{"limit": limit, "bound": bound})
 	return fmt.Errorf("%w: proxy: %s: the file of %s is larger than %s, %d bytes", format.ErrForbidden, p.id(), a.subject(), bound, limit)
+}
+
+// checkName refuses the artifact with 403 naming the limit, and a proxy.reject row, when the
+// registry of the repo does not take the name of its OCI repository (provider.Capabilities.
+// CheckName: the depth of a name on Docker Hub or behind GitLab), before anything is
+// downloaded: ingest would not publish it, and the upstream is not at fault (#599).
+func (c *Core) checkName(ctx context.Context, p *proxied, a artifact) error {
+	if c.o.Providers == nil {
+		return nil
+	}
+	prov, ok := c.o.Providers.Provider(p.repo.Registry)
+	if !ok {
+		return nil
+	}
+	caps, err := prov.Capabilities(ctx)
+	if err != nil {
+		return nil //nolint:nilerr // the publish answers for the registry
+	}
+	base := strings.Trim(p.repo.Prefix, "/")
+	if base == "" {
+		base = p.repo.Format + "/" + p.repo.Name
+	}
+	if err := caps.CheckName(base + "/" + a.pkgPath); err != nil {
+		c.reject(ctx, p, a, "", "name", map[string]any{"error": err.Error()})
+		return fmt.Errorf("%w: proxy: %s: %s: %s", format.ErrForbidden, p.id(), a.subject(), err.Error())
+	}
+	return nil
 }
 
 // limit is the bound of a download, and what it is: the repo's maxFileSize, or the registry's

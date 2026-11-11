@@ -549,8 +549,9 @@ func (h *handler) limitBlob(w http.ResponseWriter, r *http.Request, t *target, o
 
 // checkName answers NAME_INVALID, with the limit, when the registry of t does not take its OCI
 // name (provider.Capabilities.CheckName: the depth of a name on Docker Hub or behind GitLab),
-// before a session is opened there: the registry would refuse the token's scope or answer 404
-// (#599). A registry whose capabilities cannot be read is not asked: its own answer will be.
+// before a blob upload or a manifest push goes there: the registry would refuse the token's
+// scope or answer 404 (#599). A registry whose capabilities cannot be read is not asked: its own
+// answer will be.
 func (h *handler) checkName(ctx context.Context, t *target) error {
 	p, err := h.registry(t)
 	if err != nil {
