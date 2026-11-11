@@ -258,7 +258,7 @@ run that covered the repo, its own or a run of every repo, with the repo's part 
   "startedAt": "2026-11-09T10:00:00Z", "heartbeatAt": "2026-11-09T10:00:30Z", "finishedAt": "2026-11-09T10:00:41Z",
   "report": {
     "repo": "raw/assets", "ociRepositories": 3, "manifests": 120, "added": 2, "updated": 0, "unchanged": 117,
-    "removed": 1, "degraded": 0, "referrers": 4,
+    "removed": 1, "pending": 0, "degraded": 0, "referrers": 4,
     "foreign": [{"repository": "charts/demo", "tag": "0.1.0", "digest": "sha256:…", "mediaType": "application/vnd.oci.image.manifest.v1+json"}],
     "orphanReferrers": [], "orphanJournal": [], "drift": [], "errors": [], "truncated": false
   }

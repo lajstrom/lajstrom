@@ -938,10 +938,13 @@ digest of its manifest.
   report lists both. Lajstrom never re-points a tag; whoever re-pointed it in the backend
   decides which one is right.
 - With `--prune` (the default for a run of every repo, off with `--repo` unless given), every row
-  the run did not see is looked up in the registry by its tag once more, and removed only when
-  the registry says the tag is unknown; a package left without versions goes with it. A
-  registry that answers with an error removes nothing, and a run that cannot list a repo's
-  repositories sweeps nothing in that repo.
+  the run did not see is looked up in the registry by its tag once more, and, when the tag does
+  not resolve, by its manifest's digest. A row goes only when the registry answered `404
+  MANIFEST_UNKNOWN` for that digest twice, at least 10 minutes apart, and the row is
+  `reconcile.graceAge` old ([On an eventually consistent
+  registry](#on-an-eventually-consistent-registry)); until then it is counted as `pending`. A
+  package left without versions goes with it. Any other answer removes nothing, and a run that
+  cannot list a repo's repositories sweeps nothing in that repo.
 - At the end the repo's cached indexes are dropped (the next `GET` renders them again), and tag
   claims older than `ingest.claimTTL` are deleted.
 
@@ -959,7 +962,7 @@ lajstrom reindex --repo raw/assets --attach raw-assets.txt        # a registry w
 ```
 
 The output is one line of counts per repo (manifests, added, updated, unchanged, removed,
-degraded, referrers, foreign, orphan referrers, drift, errors); `--report` adds the lists, at most
+pending, degraded, referrers, foreign, orphan referrers, drift, errors); `--report` adds the lists, at most
 1 000 entries each, and `--json` prints the whole report. The exit status is not zero when the
 run itself failed (the database or the context) or another run holds the lock; manifests that
 could not be read or checked are errors in the report and do not change it. `--concurrency`
@@ -993,7 +996,41 @@ interval. The next tick is counted from the end of a run. Its runs are `reindex_
 the source `reconcile` and show in `GET …/reindex`; they write no audit row when they change
 nothing and one row `reconcile` per repo they changed (its details have the counts). A run over
 known digests costs one `HEAD` per tag ([On a cloud registry](#on-a-cloud-registry)), so the
-default interval is cheap; drift is reported, never repaired by re-pointing a tag.
+default interval is cheap; drift is reported, never repaired by re-pointing a tag. A manifest
+deleted in the registry leaves the index at the first run that comes both 10 minutes after the
+first run that found it gone and `reconcile.graceAge` after the version was last seen: with the
+defaults, one to two hours after the delete.
+
+### On an eventually consistent registry
+
+Some registries answer a write before every read sees it: ECR can answer `404` for an image
+shortly after its push, Quay's tag lists lag up to two minutes, ACR's geo-replicas and ECR's
+replication and pull-through caches lag minutes to a day
+([#446](https://github.com/lajstrom/lajstrom/issues/446)). A run inside that lag would see a
+version just published as gone. Prune therefore removes a row only when all of these hold:
+
+- the registry answered `404` with the error code `MANIFEST_UNKNOWN` to the manifest of the row
+  by its digest (a `HEAD`, then a `GET` for the code). A tag that does not resolve, a tag list or
+  a catalog without it, `NAME_UNKNOWN`, a `404` without a code, a `5xx`, `401`, `403` or a timeout
+  never count;
+- it answered so twice, at least 10 minutes apart, with no run in between that found the
+  manifest or could not ask. The first answer is kept in the table `prune_sightings`, so the
+  runs of every replica count, and two replicas' runs a minute apart are one answer, not two;
+- the row is at least `reconcile.graceAge` old: ingest wrote it, or a run last saw its manifest,
+  that long ago (`versions.indexed_at`).
+
+What an operator sees: a version deleted in the registry's console, or by its lifecycle rules,
+stays listed for one to two hours with the defaults, its downloads `404`, and the reports count
+it as `pending`. Any other answer keeps it too, as an error of the report (`look up the manifest
+before removing its rows`). To remove a version at once, delete it through Lajstrom's API, which
+deletes the rows in the same request. For a whole OCI repository deleted in the registry, Zot
+answers `NAME_UNKNOWN`: its rows stay and every run reports them, so delete them through the
+API. distribution answers `MANIFEST_UNKNOWN` there, and its rows go as above (both measured by
+`TestIntegration` of `internal/provider/generic`).
+
+Set `reconcile.graceAge` ([configuration](configuration.md#reconcile)) to more than the
+registry's lag at the endpoint Lajstrom reads: the default `1h` when it reads the endpoint it
+writes to, `24h` or more when reads go through a replica or a cache.
 
 ### Without a catalog
 
@@ -1003,8 +1040,10 @@ administrators with Basic auth, GHCR's lists all of GHCR, ECR has none
 `capabilities.catalog: false` in the registry's configuration does. A run reads the OCI
 repositories that the index records in `oci_repos` instead: ingest records each one it writes
 to, and a run each one it reads. Each is checked by its tag list: one the registry no longer
-knows loses its row, and with prune its versions; one whose tag list fails keeps its row and is
-an error of the report.
+knows loses its row once no run has seen it for `reconcile.graceAge`, and its versions go only
+as every prune removes them ([On an eventually consistent
+registry](#on-an-eventually-consistent-registry)); one whose tag list fails keeps its row and is
+an error of the report. A run that finds a version by its tag records its repository again.
 
 What the index does not record, a run does not see: a push straight to the backend into a new
 OCI repository, and every repository once the derived tables are lost (a database lost without
@@ -1052,8 +1091,9 @@ because ECR serves layers from S3; across regions or to the internet it is the t
   name and registry, with the registry's `prefix` unchanged, then
   `lajstrom reindex` brings back every package. Users and tokens are created again; apt repos
   get new keys, and their clients need the new `key.asc`.
-- **The registry was restored from its own backup or a replica**: `lajstrom reindex` with prune;
-  rows of manifests the restored registry does not have are removed, drift is reported.
+- **The registry was restored from its own backup or a replica**: `lajstrom reindex` with prune,
+  and once more after 10 minutes; rows of manifests the restored registry does not have are
+  removed once they are `reconcile.graceAge` old, drift is reported.
 
 On a registry without a catalog a run finds only the OCI repositories that `oci_repos` holds:
 in the first three cases, name the others per repo with `--attach` ([Without a

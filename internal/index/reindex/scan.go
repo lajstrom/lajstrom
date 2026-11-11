@@ -391,9 +391,12 @@ func (s *scan) orphans(ctx context.Context) {
 }
 
 // sweep looks up, by its tag, every version of the repo the run did not see, keeps those whose
-// tag names their digest (written after the listing) or another one (drift), and deletes those
-// whose tag the registry does not know; then the packages without versions and the OCI
-// repositories not seen. A registry that does not answer deletes nothing.
+// tag names their digest (written after the listing) or another one (drift), and asks the
+// registry for the manifest of those whose tag it does not know (lookup): only the second
+// answer MANIFEST_UNKNOWN, unknownApart after the first, deletes a version older than the grace
+// age. A manifest found records its OCI repository again. Then go the packages without
+// versions, the OCI repositories not seen for the grace age, and the sightings the run did not
+// record again. A registry that does not answer deletes nothing.
 func (s *scan) sweep(ctx context.Context) {
 	unseen, err := s.w.index.ListUnseenVersions(ctx, s.repo.ID, s.start)
 	if s.dbErr(err) {
@@ -405,11 +408,13 @@ func (s *scan) sweep(ctx context.Context) {
 			return
 		}
 		f := Finding{Repository: m.Package.NameOCI, Tag: m.Version.Tag, Digest: m.Version.Digest}
-		rr, err := s.prov.Repository(ctx, s.base+"/"+m.Package.NameOCI)
+		name := s.base + "/" + m.Package.NameOCI
+		rr, err := s.prov.Repository(ctx, name)
 		var desc ocispec.Descriptor
 		if err == nil {
 			desc, err = rr.Resolve(ctx, m.Version.Tag)
 		}
+		found := err == nil
 		switch {
 		case err == nil && desc.Digest == m.Version.Digest:
 			keep = append(keep, m.Version.ID)
@@ -417,15 +422,24 @@ func (s *scan) sweep(ctx context.Context) {
 			s.drift(&m.Version, m.Package.Name, m.Version.Tag, desc.Digest)
 			keep = append(keep, m.Version.ID)
 		case errors.Is(err, provider.ErrNotFound):
-			err := s.w.index.DeleteVersion(ctx, m.Version.ID)
-			if errors.Is(err, index.ErrNotFound) || !s.dbErr(err) {
-				s.mu.Lock()
-				s.rep.Removed++
-				s.mu.Unlock()
+			switch s.lookup(ctx, name, f, m.Version.IndexedAt) {
+			case present:
+				keep, found = append(keep, m.Version.ID), true
+			case gone:
+				err := s.w.index.DeleteVersion(ctx, m.Version.ID)
+				if errors.Is(err, index.ErrNotFound) || !s.dbErr(err) {
+					s.mu.Lock()
+					s.rep.Removed++
+					s.mu.Unlock()
+				}
+			case pending, unchecked:
 			}
 		default:
 			f.Error = "look up the tag before removing its rows: " + err.Error()
 			s.failure(f)
+		}
+		if found && s.dbErr(s.w.index.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: s.repo.ID, Path: name, SeenAt: s.w.now()})) {
+			return
 		}
 	}
 	if s.dbErr(s.w.index.TouchVersions(ctx, keep, s.w.now())) {
@@ -434,7 +448,10 @@ func (s *scan) sweep(ctx context.Context) {
 	if _, err := s.w.index.DeleteEmptyPackages(ctx, s.repo.ID); s.dbErr(err) {
 		return
 	}
-	_, err = s.w.index.PruneOCIRepos(ctx, s.repo.ID, s.start)
+	if _, err := s.w.index.PruneOCIRepos(ctx, s.repo.ID, s.start.Add(-s.w.graceAge)); s.dbErr(err) {
+		return
+	}
+	_, err = s.w.index.ClearSightings(ctx, s.repo.ID, s.start)
 	s.dbErr(err)
 }
 

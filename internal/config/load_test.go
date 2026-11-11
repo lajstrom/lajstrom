@@ -58,7 +58,7 @@ func TestLoadDefaults(t *testing.T) {
 				Log:       Log{Level: "info", Format: "text"},
 				Database:  Database{Driver: "sqlite", DSN: "file:lajstrom.db"},
 				Ingest:    Ingest{ClaimTTL: 10 * time.Minute},
-				Reconcile: Reconcile{Interval: time.Hour},
+				Reconcile: Reconcile{Interval: time.Hour, GraceAge: time.Hour},
 				Auth:      Auth{Bootstrap: Bootstrap{TTL: 24 * time.Hour}},
 				Keys:      Keys{Algorithm: "ed25519", RetireGrace: 720 * time.Hour, TokenAlgorithm: "ES256"},
 			}
@@ -168,6 +168,7 @@ func TestLoadErrors(t *testing.T) {
 		{name: "negative claim TTL", file: minimal + "ingest: {claimTTL: -1m}\n", want: []string{"ingest.claimTTL: must not be negative"}},
 		{name: "negative reconcile interval", file: minimal + "reconcile: {interval: -1h}\n", want: []string{"reconcile.interval: must not be negative"}},
 		{name: "zero bootstrap ttl", file: minimal + "auth: {bootstrap: {ttl: 0s}}\n", want: []string{"auth.bootstrap.ttl: must be positive"}},
+		{name: "negative grace age", file: minimal + "reconcile: {graceAge: -24h}\n", want: []string{"reconcile.graceAge: must not be negative"}},
 		{name: "metrics listener", file: minimal[:len(minimal)-1] + "\n  metricsListen: \"9464\"\n", want: []string{`server.metricsListen: "9464" is not host:port`}},
 		{name: "metrics on the public listener", file: minimal[:len(minimal)-1] + "\n  metricsListen: \":8080\"\n",
 			want: []string{"server.metricsListen: must not be server.listen"}},

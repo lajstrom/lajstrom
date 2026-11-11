@@ -3,7 +3,8 @@
 // index is derived, the way to attach an existing prefix, and the repair of drift. A run marks
 // and sweeps: every row it writes or sees gets the time of the write, a known digest is seen
 // without being read again, and the rows a run did not see are looked up in the registry once
-// more before they go. A run holds the lock of its scope in reindex_runs while it beats.
+// more: one goes only after two answers MANIFEST_UNKNOWN, ten minutes apart, and its grace age
+// (prune.go). A run holds the lock of its scope in reindex_runs while it beats.
 package reindex
 
 import (
@@ -62,6 +63,9 @@ type Options struct {
 	// ClaimTTL is ingest.claimTTL: tag claims older than that are deleted, and the audit rows of
 	// registry writes pending for longer are unknown. Zero means 10 minutes.
 	ClaimTTL time.Duration
+	// GraceAge is reconcile.graceAge: a row that ingest wrote, or a run saw in the registry,
+	// less than this ago is never removed. Zero means one hour.
+	GraceAge time.Duration
 }
 
 // Inspector checks a manifest found in the registry and returns the rows to write; the ingest
@@ -82,6 +86,7 @@ type Worker struct {
 	log         *slog.Logger
 	concurrency int
 	claimTTL    time.Duration
+	graceAge    time.Duration
 	heartbeat   time.Duration                        // heartbeatEvery; shorter in the tests
 	after       func(time.Duration) <-chan time.Time // time.After; the tests' clock
 	jitter      func(time.Duration) time.Duration    // randomPart; the tests' choice
@@ -90,7 +95,8 @@ type Worker struct {
 // New returns a Worker with the defaults of Options applied.
 func New(o Options) *Worker {
 	w := &Worker{index: o.Index, providers: o.Providers, inspector: o.Inspector, audit: o.Audit, now: o.Now, log: o.Log,
-		concurrency: o.Concurrency, claimTTL: o.ClaimTTL, heartbeat: heartbeatEvery, after: time.After, jitter: randomPart}
+		concurrency: o.Concurrency, claimTTL: o.ClaimTTL, graceAge: o.GraceAge, heartbeat: heartbeatEvery, after: time.After,
+		jitter: randomPart}
 	if w.now == nil {
 		w.now = time.Now
 	}
@@ -102,6 +108,9 @@ func New(o Options) *Worker {
 	}
 	if w.claimTTL <= 0 {
 		w.claimTTL = defaultClaimTTL
+	}
+	if w.graceAge <= 0 {
+		w.graceAge = defaultGraceAge
 	}
 	return w
 }
