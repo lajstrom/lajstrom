@@ -3,9 +3,12 @@ package pypi
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"hash/crc32"
 	"io"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -154,4 +157,89 @@ func FuzzZipInspector(f *testing.F) {
 			t.Fatalf("the inspector read %q, %v; ReadWheelMetadata %q, %v", got, err, want, werr)
 		}
 	})
+}
+
+// localEntry returns a local header of name with the flags and the 32-bit sizes size32, and
+// the extra field extra, followed by data.
+func localEntry(name string, flags uint16, size32 uint32, extra []byte, data string) []byte {
+	h := make([]byte, localHeaderLen, localHeaderLen+len(name)+len(extra)+len(data))
+	binary.LittleEndian.PutUint32(h, localHeaderSig)
+	binary.LittleEndian.PutUint16(h[6:], flags)
+	binary.LittleEndian.PutUint32(h[18:], size32)
+	binary.LittleEndian.PutUint32(h[22:], size32)
+	binary.LittleEndian.PutUint16(h[26:], uint16(len(name)))  //nolint:gosec // the test's short names
+	binary.LittleEndian.PutUint16(h[28:], uint16(len(extra))) //nolint:gosec // and extra fields
+	return append(append(append(h, name...), extra...), data...)
+}
+
+// zip64Extra is the zip64 extra field of a local header, n bytes of length after its header of
+// four: both sizes, size.
+func zip64Extra(n uint16, size uint64) []byte {
+	e := make([]byte, 4+16)
+	binary.LittleEndian.PutUint16(e, zip64ExtraID)
+	binary.LittleEndian.PutUint16(e[2:], n)
+	binary.LittleEndian.PutUint64(e[4:], size)
+	binary.LittleEndian.PutUint64(e[12:], size)
+	return e[:4+min(int(n), 16)]
+}
+
+// TestLocalWalk: the walk follows local entries, also of zip64 sizes, and holds those whose name
+// is a candidate, header and data at the offset they came at, written in pieces of 7 bytes; it
+// stops at the central directory, at sizes that follow the data (a data descriptor), at a zip64
+// field it cannot read, and at a header that lies about its size, where the bytes after it are
+// no header; and it holds no entry above maxHeldEntry. What it holds are always the file's own
+// bytes at their offsets: the inspector reads nothing else.
+func TestLocalWalk(t *testing.T) {
+	const meta = "tool-1.0.dist-info/METADATA"
+	data, md := strings.Repeat("d", 100), metadata("1.0")
+	mdLen := uint32(len(md)) //nolint:gosec // a few bytes
+	// A header of the central directory, where the walk stops.
+	dir := append([]byte("PK\x01\x02"), make([]byte, 42)...)
+	for _, tt := range []struct {
+		name    string
+		entries [][]byte
+		held    []int // the entries held, by index
+	}{
+		{"sizes in the headers", [][]byte{localEntry("tool/data.bin", 0, 100, nil, data), localEntry(meta, 0, mdLen, nil, md)}, []int{1}},
+		{"zip64 sizes", [][]byte{localEntry("tool/data.bin", 0, 0xffffffff, zip64Extra(16, 100), data),
+			localEntry(meta, 0, 0xffffffff, zip64Extra(16, uint64(mdLen)), md)}, []int{1}},
+		{"a zip64 field too short", [][]byte{localEntry(meta, 0, 0xffffffff, zip64Extra(8, uint64(mdLen)), md)}, nil},
+		{"a data descriptor", [][]byte{localEntry("tool/data.bin", 0x8, 0, nil, data), localEntry(meta, 0, mdLen, nil, md)}, nil},
+		{"a header that says less than its data", [][]byte{localEntry("tool/data.bin", 0, 10, nil, data), localEntry(meta, 0, mdLen, nil, md)}, nil},
+		{"an entry above maxHeldEntry", [][]byte{localEntry(meta, 0, maxHeldEntry, nil, strings.Repeat("m", maxHeldEntry)),
+			localEntry(meta, 0, mdLen, nil, md)}, []int{1}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			file := append(bytes.Join(tt.entries, nil), dir...)
+			w := localWalk{candidate: isWheelMetadata}
+			for rest := file; len(rest) > 0; rest = rest[min(len(rest), 7):] {
+				w.write(rest[:min(len(rest), 7)])
+			}
+			var want []segment
+			off := 0
+			for i, e := range tt.entries {
+				if slices.Contains(tt.held, i) {
+					want = append(want, segment{off: int64(off), b: e})
+				}
+				off += len(e)
+			}
+			if !w.stopped || !reflect.DeepEqual(w.held, want) {
+				t.Errorf("stopped %v, held %d entries at %v; want stopped, %d at %v", w.stopped, len(w.held), offsets(w.held), len(want), offsets(want))
+			}
+			for _, s := range w.held {
+				if !bytes.Equal(s.b, file[s.off:s.off+int64(len(s.b))]) {
+					t.Errorf("the entry held at %d is not the file's bytes there", s.off)
+				}
+			}
+		})
+	}
+}
+
+// offsets returns the offsets of segs.
+func offsets(segs []segment) []int64 {
+	var out []int64
+	for _, s := range segs {
+		out = append(out, s.off)
+	}
+	return out
 }
