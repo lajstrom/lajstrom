@@ -6,9 +6,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"os"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +20,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/format/raw"
 	"github.com/lajstrom/lajstrom/internal/index/reindex"
 	"github.com/lajstrom/lajstrom/internal/ingest"
+	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/provider/generic"
 )
@@ -25,10 +29,12 @@ import (
 // LAJSTROM_TEST_REGISTRY_PREFIX, _USERNAME, _PASSWORD as TestIntegration reads them), on a raw
 // repo with a random name: files whose OCI names ADR 0017 changes, published through ingest,
 // netlify/blobs as npm's @netlify/blobs is stored, a file below a directory blobs/, the words
-// of Zot's layout and the names Gitea refuses in the earlier form. The catalog lists every OCI
-// repository, which Zot did not for a name that ends in blobs, .uploads or .sync; and a run
-// from an empty index brings every package back, every row as ingest wrote it. The manifests
-// are deleted at the end where the registry deletes manifests.
+// of Zot's layout and of Harbor's routes (k8s/manifests/app.yaml, x/tags/list; the amendment of ADR
+// 0017), and the names Gitea refuses in the earlier form. The catalog lists every OCI repository,
+// which Zot did not for a name that ends in blobs, .uploads or .sync, and none has a route word of
+// Harbor; a run from an empty index brings every package back, every row as ingest wrote it; and
+// each package path decodes to its name (UnescapePackagePath), but for a hashed one. The
+// manifests are deleted at the end where the registry deletes manifests.
 func TestIntegrationNames(t *testing.T) {
 	addr := os.Getenv("LAJSTROM_TEST_REGISTRY")
 	if addr == "" {
@@ -56,7 +62,8 @@ func TestIntegrationNames(t *testing.T) {
 	t.Cleanup(func() { deleteAll(context.Background(), t, prov, base+"/") })
 
 	paths := []string{"netlify/blobs", "x", "x/blobs/sha256/0f", "x/index.json", "x/oci-layout", "cache/my.uploads", "a.sync",
-		"myblobs/child", ".gitignore", "site/_config.yml", "a--b.txt"}
+		"myblobs/child", ".gitignore", "site/_config.yml", "a--b.txt", "k8s/manifests/app.yaml", "x/referrers/y", "x/tags/list",
+		"x/tags/listing.txt", "x/tags/other"}
 	want := make([]string, 0, len(paths))
 	for _, p := range paths {
 		want = append(want, e.publish(t, p, p+" in "+e.repo.Name).RepoPath)
@@ -67,6 +74,9 @@ func TestIntegrationNames(t *testing.T) {
 		if !slices.Contains(listed, name) {
 			t.Errorf("the catalog leaves out %s: %q", name, listed)
 		}
+		if harborRoute.MatchString(name) {
+			t.Errorf("%s has a route word of Harbor", name)
+		}
 	}
 
 	before := e.derived(t)
@@ -76,4 +86,21 @@ func TestIntegrationNames(t *testing.T) {
 		t.Fatalf("the run from an empty index: %+v", *r)
 	}
 	same(t, "the rows rebuilt", before, e.derived(t))
+	for _, p := range paths {
+		pkg, err := e.st.GetPackage(ctx, e.repo.ID, p)
+		must(t, err)
+		got, err := profile.UnescapePackagePath(pkg.NameOCI)
+		switch {
+		case strings.Contains(p, "/.") || strings.Contains(p, "/_") || p[0] == '.':
+			if !errors.Is(err, profile.ErrInvalidEscape) {
+				t.Errorf("UnescapePackagePath(%q), hashed, = %q, %v", pkg.NameOCI, got, err)
+			}
+		case err != nil || strings.Join(got, "/") != strings.ToLower(p):
+			t.Errorf("UnescapePackagePath(%q) = %q, %v, want %s", pkg.NameOCI, got, err, strings.ToLower(p))
+		}
+	}
 }
+
+// harborRoute matches an OCI name that Harbor v2.15.4 takes for another route than its own: a
+// component manifests or referrers, or tags before a component starting with list.
+var harborRoute = regexp.MustCompile(`(^|/)(manifests|referrers)(/|$)|(^|/)tags/list`)
