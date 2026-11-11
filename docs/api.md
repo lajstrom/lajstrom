@@ -348,9 +348,10 @@ repo (the `maintainer` role); `404` when the repo, the package, the version or t
 not exist; `501 UNAVAILABLE` naming the registry when it cannot delete manifests
 (`capabilities.deleteManifest: false`, GHCR, distribution with deletes off), and nothing
 changed; `409 CONFLICT` when the registry refuses to delete this manifest alone. The variants
-deleted before an error stay deleted. On a proxy repo the version goes as on a hosted one, and
-the next request for it fetches it again; a group has no versions, `404`: the version is deleted
-in the member that holds it.
+deleted before an error stay deleted, and the error's message names them, with their digests,
+whatever its status: `…; deleted before the failure, and still deleted: 1.0 sdist (sha256:…)`.
+On a proxy repo the version goes as on a hosted one, and the next request for it fetches it
+again; a group has no versions, `404`: the version is deleted in the member that holds it.
 
 **Conditions.** A client that read the version first (a retention job, a UI) makes the delete a
 compare-and-delete: the server checks each condition again under the locks that the delete

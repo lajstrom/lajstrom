@@ -126,7 +126,7 @@ registry's URL, realm or message.
 | `GET /raw/<repo>/<path…>` | newest version of the file at `<path>` (the most recently created), read as the blob `GET` of the facade (§2, `format.ServeBlob`): one request to the backend with the client's `Range`, `307` to the backend's storage when it redirects and `policy.blobRedirect` allows it, else the backend's `200`, `206` or `416` streamed. `ETag` is the blob digest (`If-None-Match` is `304` without a request), `Last-Modified` the version's `created`, `Docker-Content-Digest` the manifest digest. `?digest=sha256:…` pins a version. `Content-Type` from the metadata layer or sniffed. A `PUT` of bytes an older version already holds is the idempotent repeat of that version and does not make it the newest: to roll back, `DELETE` the newer version or pin `?digest=`. |
 | `HEAD` | same headers, from the backend's `HEAD`; no body, never a `307` |
 | `PUT /raw/<repo>/<path…>` | upload one file (body). Idempotent for identical bytes. Creates a new version (tag) for different bytes; the path now resolves to it. `201` with `Location` and `Docker-Content-Digest`. `409` when the path exists in another spelling (the message names it). |
-| `DELETE /raw/<repo>/<path…>` | requires `delete`; removes all versions of the path, each as the `DELETE` of its manifest on `/v2` deletes it, its referrers with it (after the MVP: one version). `204`; `501` when the backend cannot delete manifests |
+| `DELETE /raw/<repo>/<path…>` | requires `delete`; removes all versions of the path, each as the `DELETE` of its manifest on `/v2` deletes it, its referrers with it (after the MVP: one version). `204`; `501` when the backend cannot delete manifests; a failure after the first version names the versions deleted before it |
 | `GET /raw/<repo>/` and any directory prefix with trailing `/` | JSON listing (`{"entries":[{"path","size","digest","created"}]}`), recursive: one entry per version of every path below the prefix, at any depth, sorted by path and then `created`; `digest` is the manifest digest, the value `?digest=` takes. HTML after the MVP |
 
 Model: package = path, version = first 16 hex of the content sha256, variant none. `oras push`
@@ -202,7 +202,7 @@ without access, `403` without the action). Credentials: Basic as on every fronte
 | `GET /npm/<repo>/<name>/-/<file>`, `HEAD` | `read`. The tarball of the package's version whose tarball layer is titled `<file>` (`widgets-1.2.0.tgz`), read as the blob `GET` of the facade (§2, `format.ServeBlob`): `307` to the backend's storage when it redirects and `policy.blobRedirect` allows it, else the backend's `200`, `206` or `416` streamed. `ETag` the blob digest, `Last-Modified` the version's `created`, `Docker-Content-Digest` the manifest digest, `Content-Type: application/octet-stream`. `404` for a file no version has |
 | `PUT /npm/<repo>/<name>` with `_attachments` | publish, `write` (below). `201 {"ok": true}` |
 | `PUT /npm/<repo>/<name>` without `_attachments`, `PUT /npm/<repo>/<name>/-rev/<rev>` | a packument update: npm's `deprecate`, and the first step of its unpublish of a version (below). `201 {"ok": true}` |
-| `DELETE /npm/<repo>/<name>/-rev/<rev>` | unpublish of the package, `delete`. `<rev>` must be the current `_rev`, else `409`. Every version is deleted as the `DELETE` of its manifest on `/v2` deletes it (§2, #61: its referrers first, an audit row each), then every journal entry, under the journal lock (manifest-profile.md §8). `200 {"ok": true}`; a backend that cannot delete manifests is `501` and nothing changes; versions deleted before a failure stay deleted |
+| `DELETE /npm/<repo>/<name>/-rev/<rev>` | unpublish of the package, `delete`. `<rev>` must be the current `_rev`, else `409`. Every version is deleted as the `DELETE` of its manifest on `/v2` deletes it (§2, #61: its referrers first, an audit row each), then every journal entry, under the journal lock (manifest-profile.md §8). `200 {"ok": true}`; a backend that cannot delete manifests is `501` and nothing changes; versions deleted before a failure stay deleted, and the error names them |
 | `DELETE /npm/<repo>/<name>/-/<file>/-rev/<rev>` | the last step of npm's unpublish of a version, `delete`, at the path of `dist.tarball`: the version whose tarball is `<file>`, when it is still there, is deleted as on `/v2`. `200 {"ok": true}` either way; `<rev>` is not checked (npm read the packument again just before) |
 | `GET /npm/<repo>/-/package/<name>/dist-tags` | `read`. The packument's `dist-tags` |
 | `PUT /npm/<repo>/-/package/<name>/dist-tags/<tag>` | `write`. The body is a JSON string, a version of the package; a malformed tag (manifest-profile.md §8) or a version the package does not have is `400`. A journal `add`, none when the tag names the version already. `201 {"ok": true}` |
@@ -420,7 +420,8 @@ goes, with it the one variant (`""`, the empty value, is the variant of a format
 each manifest is deleted as the `DELETE` of §2 deletes it, its referrers first, with an audit row
 of its own. `204`; `404 NOT_FOUND` when the repo has no such package, version or variant; a
 backend that cannot delete manifests is `501 UNAVAILABLE` naming the backend, and nothing
-changes. Versions deleted before a failure stay deleted.
+changes. Versions deleted before a failure stay deleted, and the error's message names them
+with their digests, a `5xx` too (`format.PartialError`, #476).
 
 The delete is a compare-and-delete (#72): ingest checks its conditions under the locks the
 delete holds (index-schema.md, Coordination) and deletes nothing when one fails.

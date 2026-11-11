@@ -188,9 +188,11 @@ func diffDeprecations(cur, body packumentState) []format.JournalOp {
 }
 
 // deleteVersions deletes the versions of pkg as their manifests' DELETE on /v2 deletes them,
-// referrers first, an audit row each; a version gone meanwhile is no error.
+// referrers first, an audit row each; a version gone meanwhile is no error. A failure after the
+// first is a *format.PartialError naming the versions deleted before it.
 func (h *handlers) deleteVersions(r *http.Request, repo index.Repo, pkg *index.Package, versions []string) error {
 	ctx := r.Context()
+	var deleted []string
 	for _, v := range versions {
 		row, err := h.deps.Index.GetVersion(ctx, pkg.ID, v, "")
 		if errors.Is(err, index.ErrNotFound) {
@@ -200,8 +202,9 @@ func (h *handlers) deleteVersions(r *http.Request, repo index.Repo, pkg *index.P
 			err = h.deleteManifest(r, repo, pkg.NameOCI, row.Tag)
 		}
 		if err != nil {
-			return err
+			return format.Partial(err, deleted)
 		}
+		deleted = append(deleted, row.Version+" ("+row.Digest.String()+")")
 	}
 	return nil
 }
@@ -225,7 +228,8 @@ func (h *handlers) deleteManifest(r *http.Request, repo index.Repo, pkgPath, ref
 // rev must be the current one (409). Every version is deleted as on /v2, then every journal
 // entry, under the journal lock (ingest deletes a _j tag so): those the index has, and any the
 // registry has after them. 200 {"ok": true}; a backend that cannot delete manifests is 501 at the
-// first delete, and nothing changes; versions deleted before a failure stay deleted.
+// first delete, and nothing changes; versions deleted before a failure stay deleted, and the
+// answer names them (*format.PartialError).
 func (h *handlers) unpublishPackage(w http.ResponseWriter, r *http.Request, repo index.Repo, name, rev string) {
 	ctx := r.Context()
 	if err := format.Authorize(ctx, h.deps, auth.ActionDelete, repo); err != nil {
@@ -244,12 +248,16 @@ func (h *handlers) unpublishPackage(w http.ResponseWriter, r *http.Request, repo
 	if err == nil {
 		versions, err = h.deps.Index.ListVersions(ctx, pkg.ID)
 	}
+	var deleted []string
 	for i := 0; err == nil && i < len(versions); i++ {
-		err = h.deleteManifest(r, repo, pkg.NameOCI, versions[i].Tag)
+		if err = h.deleteManifest(r, repo, pkg.NameOCI, versions[i].Tag); err == nil {
+			deleted = append(deleted, versions[i].Version+" ("+versions[i].Digest.String()+")")
+		}
 	}
 	if err == nil {
 		err = h.deleteJournal(r, repo, pkg.NameOCI, rows)
 	}
+	err = format.Partial(err, deleted)
 	if err != nil {
 		h.fail(w, r, err)
 		return
