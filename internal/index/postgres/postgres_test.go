@@ -36,6 +36,12 @@ func testDSN(t *testing.T) string {
 // schema as its search_path: every test runs in a namespace of its own.
 func schemaDSN(t *testing.T, dsn string) string {
 	t.Helper()
+	return withSearchPath(dsn, newSchema(t, dsn))
+}
+
+// newSchema creates an empty schema, drops it when the test ends, and returns its name.
+func newSchema(t *testing.T, dsn string) string {
+	t.Helper()
 	schema := "lajstrom_test_" + strings.ToLower(rand.Text())
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -51,7 +57,7 @@ func schemaDSN(t *testing.T, dsn string) string {
 		}
 		_ = db.Close()
 	})
-	return withSearchPath(dsn, schema)
+	return schema
 }
 
 // withSearchPath returns dsn, a URL or a keyword/value string, with search_path set.

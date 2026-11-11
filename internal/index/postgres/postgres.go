@@ -27,10 +27,12 @@ var _ index.Store = (*Store)(nil)
 // poolParam is the DSN parameter that sizes the connection pool, as pgxpool spells it.
 const poolParam = "pool_max_conns"
 
-// SQLSTATE codes of the constraint violations the store maps to index errors.
+// SQLSTATE codes of the constraint violations the store maps to index errors, and of a
+// statement the database user has no right to run.
 const (
-	uniqueViolation     = "23505"
-	foreignKeyViolation = "23503"
+	uniqueViolation       = "23505"
+	foreignKeyViolation   = "23503"
+	insufficientPrivilege = "42501"
 )
 
 var dialect = sqlstore.Dialect{
@@ -67,6 +69,18 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		return nil, fmt.Errorf("index: postgres: connect: %w", err)
 	}
 	return &Store{sqlstore.New(db, dialect)}, nil
+}
+
+// ApplyMigrations is index.ApplyMigrations on the store's database. A database user with data
+// rights only runs it on a current schema, which it does not change; when a migration is
+// pending, the error says that the schema's owner must migrate first (docs/operations.md,
+// Upgrades).
+func (s *Store) ApplyMigrations(ctx context.Context, opts index.MigrateOptions) (index.MigrationReport, error) {
+	rep, err := s.Store.ApplyMigrations(ctx, opts)
+	if sqlState(err) == insufficientPrivilege {
+		err = fmt.Errorf("%w; this database user may not change the schema: run lajstrom migrate as its owner first", err)
+	}
+	return rep, err
 }
 
 // poolSize returns the pool size of cfg and removes pool_max_conns from the parameters that

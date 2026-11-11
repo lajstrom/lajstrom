@@ -457,6 +457,32 @@ follows the rollback above. The same holds for one replica on Postgres, such as 
 stack, except that `serve` on Postgres does not apply a contract migration that requires more
 than the schema has: run `lajstrom migrate --allow-breaking` once it is stopped.
 
+### A database user for serve
+
+On a current schema `serve` changes nothing in it, so on Postgres it can run as a user with data
+rights only, and `lajstrom migrate` as the owner of the schema: no replica can then drop or
+alter a table, and a replica of a new release whose migrations nobody ran refuses to start
+instead of migrating. As an administrator, make the user; then, as the owner (the user of the
+migration's `database.dsn`, here `lajstrom`, which owns the database), grant it the data:
+
+```sql
+-- as an administrator
+CREATE ROLE lajstrom_serve LOGIN PASSWORD '<a password>';
+-- as the owner, connected to the database
+GRANT USAGE ON SCHEMA public TO lajstrom_serve;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO lajstrom_serve;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO lajstrom_serve;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO lajstrom_serve;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO lajstrom_serve;
+```
+
+The first three cover the tables the migrations made so far, the last two the ones the owner's
+later migrations make. Before Postgres 15 every user may create tables in `public`: also
+`REVOKE CREATE ON SCHEMA public FROM PUBLIC`. Give `serve` (and `lajstrom admin`, `reindex`)
+a `database.dsn` with `lajstrom_serve`, and the migration's run the owner's. With a migration
+pending, `serve` exits with `permission denied for schema public (SQLSTATE 42501); this database
+user may not change the schema: run lajstrom migrate as its owner first`.
+
 ## Limits
 
 What bounds the work of one request, towards the registries and from the clients.
