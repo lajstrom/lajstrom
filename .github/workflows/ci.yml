@@ -69,9 +69,12 @@ jobs:
           fi
 
   integration:
-    # One cell per registry. The store suite runs on SQLite and on Postgres in both: the Postgres
-    # tests run whenever LAJSTROM_TEST_POSTGRES_DSN is set. Branch protection requires
-    # integration-result, not these cells (see there).
+    # One cell per registry. The store suite runs on SQLite and on Postgres in each: the Postgres
+    # tests run whenever LAJSTROM_TEST_POSTGRES_DSN is set. The cell zot-pgbouncer talks to Zot
+    # and to Postgres through PgBouncer in transaction mode, the most common production setup
+    # (docs/deploy/databases.md), with a database per test (LAJSTROM_TEST_POSTGRES_ISOLATION):
+    # a schema in the DSN's search_path does not survive a transaction pooler. Branch protection
+    # requires integration-result, not these cells (see there).
     name: integration (${{ matrix.registry }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -86,6 +89,10 @@ jobs:
             address: localhost:5000
           - registry: distribution
             address: localhost:5001
+          - registry: zot-pgbouncer
+            address: localhost:5000
+            dsn: "postgres://lajstrom:lajstrom@localhost:6432/lajstrom?sslmode=disable"
+            isolation: database
     # The images of deploy/compose/compose.yaml (#15), with the digests of their indexes: change
     # a tag here and there together. Every cell runs all three; the matrix picks the registry
     # the tests talk to.
@@ -129,13 +136,30 @@ jobs:
           --health-interval 2s
           --health-timeout 5s
           --health-retries 30
+      pgbouncer:
+        # PgBouncer 1.26.1 (edoburu/pgbouncer v1.26.1-p0), for the cell zot-pgbouncer: pool_mode
+        # transaction with its default max_prepared_statements (200); every database name goes
+        # to the service postgres, and auth_user lajstrom lets in the roles the tests create.
+        # sha256:488422e38cff912895d0d65d8963fcd306e6ac589a724398b6eb8e294e94d624
+        image: edoburu/pgbouncer:v1.26.1-p0
+        env:
+          DB_HOST: postgres
+          DB_USER: lajstrom
+          DB_PASSWORD: lajstrom
+          AUTH_TYPE: scram-sha-256
+          POOL_MODE: transaction
+          MAX_CLIENT_CONN: "1000"
+          DEFAULT_POOL_SIZE: "40"
+        ports:
+          - "6432:5432"
     env:
       LAJSTROM_TEST_REGISTRY: ${{ matrix.address }}
-      LAJSTROM_TEST_POSTGRES_DSN: "postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable"
+      LAJSTROM_TEST_POSTGRES_DSN: ${{ matrix.dsn || 'postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable' }}
+      LAJSTROM_TEST_POSTGRES_ISOLATION: ${{ matrix.isolation }}
     steps:
       - name: Wait for the services
-        # The steps start once distribution and Postgres pass their health checks; Zot has none.
-        # One probe per service, so that a failure names it.
+        # The steps start once distribution and Postgres pass their health checks; Zot and PgBouncer
+        # have none. One probe per service, so that a failure names it.
         timeout-minutes: 2
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
@@ -157,6 +181,7 @@ jobs:
           ready zot curl -fsS --max-time 2 http://localhost:5000/v2/
           ready distribution curl -fsS --max-time 2 http://localhost:5001/v2/
           ready postgres docker exec "${POSTGRES_CONTAINER}" pg_isready -h 127.0.0.1 -U lajstrom -d lajstrom
+          ready pgbouncer docker exec "${POSTGRES_CONTAINER}" pg_isready -h pgbouncer -p 5432 -U lajstrom -d lajstrom
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -170,7 +195,7 @@ jobs:
 
   integration-result:
     name: integration-result
-    # The required check for the integration tests: green when both cells passed, or when the
+    # The required check for the integration tests: green when every cell passed, or when the
     # changes job found no path that needs them. A matrix job skipped by its if reports a single
     # check with the unexpanded name, not integration (zot) and integration (distribution), so
     # the cells cannot be required themselves: a doc-only pull request would wait for them.
@@ -186,7 +211,7 @@ jobs:
         run: |
           echo "changes: ${CHANGES}, code: ${CODE:-unset}, integration: ${INTEGRATION}"
           case "${CHANGES}/${CODE}/${INTEGRATION}" in
-            success/true/success) echo "the integration tests passed on both registries" ;;
+            success/true/success) echo "the integration tests passed in every cell" ;;
             success/false/skipped) echo "no path that needs the integration tests changed" ;;
             *)
               echo "::error::the integration tests did not pass (changes: ${CHANGES}, integration: ${INTEGRATION})"
