@@ -853,7 +853,7 @@ type FetchClaim struct {                    // a row of fetch_claims
 }
 
 var ErrNotFound, ErrConflict error
-var ErrUnavailable error                    // the database did not answer: connect, 57P01/57P03, class 08; SQLite busy, cannot open
+var ErrUnavailable error                    // the database did not answer: connect, 57P01/57P03, class 08; SQLite busy, cannot open; YugabyteDB 40P01/40001
 type TagConflictError struct {              // errors.Is(err, ErrConflict) is true; UpsertVersion, ClaimTag
     Tag      string
     Existing digest.Digest
@@ -1184,7 +1184,12 @@ Where the merged shapes differ from the first sketch of this section, and why:
   (#560). `UpsertVersion`
   resolves a race on a tag with `INSERT … ON CONFLICT DO NOTHING` and a second read, so the
   loser gets the `TagConflictError`. `serve` migrates on start under the same lock as
-  `lajstrom migrate`.
+  `lajstrom migrate`. On YugabyteDB, which the Postgres driver tells by the `server_version`
+  it reports, the dialect differs in two things (#629): `UpsertPackage` takes
+  `pg_advisory_xact_lock` on the package path before it inserts a package, because YugabyteDB
+  takes the entries of the two unique indexes of `packages` in no fixed order and two writers
+  of one new package deadlock on them; and a transaction it aborted, a deadlock (`40P01`) or a
+  conflict it could not retry itself (`40001`), wraps `ErrUnavailable`.
 - **A tag claim is the lock on a tag across replicas, in a table of its own** (#12). Ingest
   inserts a `tag_claims` row in its own transaction before the registry write, then reads the
   version of the tag; another digest there, or a fresh claim of another digest, is the 409, and

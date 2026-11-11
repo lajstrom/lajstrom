@@ -40,6 +40,12 @@ type Dialect struct {
 	// pg_advisory_xact_lock). Empty when every writing transaction holds the database's write
 	// lock from its start (SQLite, BEGIN IMMEDIATE).
 	XactLock string
+	// PackageLock is the statement that takes a lock for the rest of the transaction, with the
+	// lock's key as its one parameter, which UpsertPackage takes on a package path before it
+	// inserts a package there, so that the writers of one new package insert one after the
+	// other (YugabyteDB: pg_advisory_xact_lock, #629). Empty when the database resolves two
+	// such inserts itself: Postgres with speculative insertion, SQLite with its write lock.
+	PackageLock string
 	// Clock is the query that returns the time of the database's clock, as a timestamp the
 	// store decodes (Postgres: clock_timestamp(); SQLite: 'now' as text, the host's clock).
 	Clock string
