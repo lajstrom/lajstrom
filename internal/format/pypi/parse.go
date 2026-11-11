@@ -260,8 +260,7 @@ func ReadWheelMetadata(r io.ReaderAt, size int64) ([]byte, error) {
 	}
 	var found *zip.File
 	for _, f := range zr.File {
-		dir, name := path.Split(f.Name)
-		if name != "METADATA" || strings.Count(dir, "/") != 1 || !strings.HasSuffix(dir, ".dist-info/") {
+		if !isWheelMetadata(f.Name) {
 			continue
 		}
 		if found != nil {
@@ -273,6 +272,13 @@ func ReadWheelMetadata(r io.ReaderAt, size int64) ([]byte, error) {
 		return nil, fmt.Errorf("%w: the wheel has no .dist-info/METADATA", format.ErrInvalid)
 	}
 	return readMember(found)
+}
+
+// isWheelMetadata reports whether the member name of a wheel is the METADATA of a *.dist-info
+// directory at its top.
+func isWheelMetadata(name string) bool {
+	dir, file := path.Split(name)
+	return file == "METADATA" && strings.Count(dir, "/") == 1 && strings.HasSuffix(dir, ".dist-info/")
 }
 
 // maxSdistUnpacked bounds the bytes a .tar.gz sdist unpacks to up to its PKG-INFO, as

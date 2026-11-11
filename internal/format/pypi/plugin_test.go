@@ -28,7 +28,7 @@ import (
 
 var repo = index.Repo{ID: 1, Format: Name, Name: "internal", Registry: "local", Prefix: "pypi/internal", Kind: "hosted"}
 
-func must(t *testing.T, err error) {
+func must(t testing.TB, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
