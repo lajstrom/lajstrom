@@ -195,14 +195,19 @@ func (h *handlers) signed(ctx context.Context, repo index.Repo, suite, kind stri
 }
 
 // errRenderedAgain is the error of storeSigned when the Release it signed is no longer the one
-// in index_cache.
+// in index_cache, or an invalidation came while it stored them.
 var errRenderedAgain = errors.New("deb: the Release was rendered again")
 
 // storeSigned stores the signed documents of the Release rel, by kind, in one transaction that
-// first checks that rel is still the Release in index_cache, and returns the one of kind.
+// first reads the repo's IndexCacheGeneration and checks that rel is still the Release in
+// index_cache, and returns the one of kind.
 func (h *handlers) storeSigned(ctx context.Context, rel *index.Cache, kind string, docs map[string][]byte) (*index.Cache, error) {
 	var found *index.Cache
 	err := h.deps.Index.Tx(ctx, func(tx index.Writer) error {
+		gen, err := tx.IndexCacheGeneration(ctx, rel.RepoID)
+		if err != nil {
+			return err
+		}
 		cur, err := tx.GetIndexCache(ctx, rel.RepoID, rel.Scope, kindRelease)
 		switch {
 		case errors.Is(err, index.ErrNotFound):
@@ -217,8 +222,11 @@ func (h *handlers) storeSigned(ctx context.Context, rel *index.Cache, kind strin
 			sum := sha256.Sum256(docs[k])
 			c := &index.Cache{RepoID: rel.RepoID, Scope: rel.Scope, Kind: k, Content: docs[k], SHA256: hex.EncodeToString(sum[:]),
 				RenderedAt: rel.RenderedAt, SignedAt: &signedAt}
-			if err := tx.PutIndexCache(ctx, c); err != nil {
+			switch stored, err := tx.PutIndexCache(ctx, c, gen); {
+			case err != nil:
 				return err
+			case !stored:
+				return errRenderedAgain
 			}
 			if k == kind {
 				found = c

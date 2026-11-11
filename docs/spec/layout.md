@@ -311,7 +311,9 @@ func SetRetryAfter(h http.Header, err error)
 
 // CachedDocument returns the index_cache row of (repo, scope, kind), or renders the scope with
 // p.RenderIndex, stores every document (SHA256, RenderedAt) and returns the one of kind; lookup,
-// render and store run in one st.Tx. index.ErrNotFound when no document of kind is rendered.
+// render and store run in one st.Tx, and the documents are stored only while the repo's
+// IndexCacheGeneration is the one read before the render. index.ErrNotFound when no document
+// of kind is rendered.
 func CachedDocument(ctx context.Context, st index.Store, p Plugin, repo index.Repo, scope IndexScope, kind string) (*index.Cache, error)
 // ServeDocument: http.ServeContent with ETag "<sha256>" and Last-Modified RenderedAt.
 func ServeDocument(w http.ResponseWriter, r *http.Request, c *index.Cache, contentType string)
@@ -667,6 +669,9 @@ type Reader interface {
     ListFiles(ctx context.Context, versionID int64) ([]File, error)
     FindFiles(ctx context.Context, repoID int64, name string) ([]FileMatch, error)
     GetIndexCache(ctx context.Context, repoID int64, scope, kind string) (*Cache, error)
+    // IndexCacheGeneration: 0 at first, incremented by every invalidation of the repo's
+    // index_cache; a render reads it first (index-schema.md, The generation of a repo's documents)
+    IndexCacheGeneration(ctx context.Context, repoID int64) (int64, error)
     ListOCIRepos(ctx context.Context, repoID int64) ([]OCIRepo, error)
     // a cache of the upstream (ADR 0013): the row of a proxy repo's name key and document kind
     GetProxyMeta(ctx context.Context, repoID int64, name, kind string) (*ProxyMeta, error)
@@ -743,7 +748,9 @@ type Writer interface {
     DeleteVersion(ctx context.Context, id int64) error
     DeletePackage(ctx context.Context, id int64) error
     DeleteEmptyPackages(ctx context.Context, repoID int64) (int, error) // packages without versions
-    PutIndexCache(ctx context.Context, c *Cache) error
+    // PutIndexCache stores c only while generation, read before the render, is the repo's, and
+    // says whether it did; InvalidateIndexCache increments the generation, then deletes
+    PutIndexCache(ctx context.Context, c *Cache, generation int64) (bool, error)
     InvalidateIndexCache(ctx context.Context, repoID int64, scope string) error
     UpsertOCIRepo(ctx context.Context, r *OCIRepo) error
     PruneOCIRepos(ctx context.Context, repoID int64, seenBefore time.Time) (int, error)

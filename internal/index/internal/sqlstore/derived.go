@@ -350,28 +350,77 @@ func (c *conn) GetIndexCache(ctx context.Context, repoID int64, scope, kind stri
 		"SELECT "+cacheCols+" FROM index_cache WHERE repo_id = ? AND scope = ? AND kind = ?", repoID, scope, kind)
 }
 
-// PutIndexCache inserts ca or replaces the row with the same (RepoID, Scope, Kind), keeping its
-// id. RenderedAt is set to now when zero.
-func (c *conn) PutIndexCache(ctx context.Context, ca *index.Cache) error {
-	ca.SignedAt = stampNull(ca.SignedAt)
-	return c.scanRow(ctx, fmt.Sprintf("index_cache %q %q in repo %d", ca.Scope, ca.Kind, ca.RepoID),
-		"INSERT INTO index_cache (repo_id, scope, kind, content, sha256, rendered_at, signed_at) VALUES (?, ?, ?, ?, ?, ?, ?)"+
-			" ON CONFLICT (repo_id, scope, kind) DO UPDATE SET content = excluded.content, sha256 = excluded.sha256,"+
-			" rendered_at = excluded.rendered_at, signed_at = excluded.signed_at RETURNING id",
-		[]any{ca.RepoID, ca.Scope, ca.Kind, blobArg(ca.Content), ca.SHA256,
-			c.d.EncodeTime(stamp(&ca.RenderedAt, now())), c.d.encodeNullTime(ca.SignedAt)},
-		&ca.ID)
+// IndexCacheGeneration returns the generation of a repo's rendered documents, 0 when the repo
+// has no row in index_cache_generations.
+func (c *conn) IndexCacheGeneration(ctx context.Context, repoID int64) (int64, error) {
+	var gen int64
+	err := c.scanRow(ctx, fmt.Sprintf("index_cache_generations of repo %d", repoID),
+		"SELECT generation FROM index_cache_generations WHERE repo_id = ?", []any{repoID}, &gen)
+	if errors.Is(err, index.ErrNotFound) {
+		return 0, nil
+	}
+	return gen, err
 }
 
-// InvalidateIndexCache removes the cached documents of a scope of a repo, or of every scope
-// when scope is "".
+// PutIndexCache inserts ca or replaces the row with the same (RepoID, Scope, Kind), keeping its
+// id, when generation is the repo's; RenderedAt is set to now when zero. It first writes the
+// repo's generation row as it is, which takes the row's lock: on Postgres the write waits for
+// an invalidation that holds it and then returns the generation that one committed, and an
+// invalidation that comes later waits for this transaction, whose rows its DELETE then sees.
+func (c *conn) PutIndexCache(ctx context.Context, ca *index.Cache, generation int64) (stored bool, err error) {
+	err = c.withTx(ctx, func(c *conn) error {
+		var cur int64
+		err := c.scanRow(ctx, fmt.Sprintf("index_cache_generations of repo %d", ca.RepoID),
+			"INSERT INTO index_cache_generations (repo_id, generation) VALUES (?, 0)"+
+				" ON CONFLICT (repo_id) DO UPDATE SET generation = index_cache_generations.generation RETURNING generation",
+			[]any{ca.RepoID}, &cur)
+		if err != nil || cur != generation {
+			return err
+		}
+		ca.SignedAt = stampNull(ca.SignedAt)
+		stored = true
+		return c.scanRow(ctx, fmt.Sprintf("index_cache %q %q in repo %d", ca.Scope, ca.Kind, ca.RepoID),
+			"INSERT INTO index_cache (repo_id, scope, kind, content, sha256, rendered_at, signed_at) VALUES (?, ?, ?, ?, ?, ?, ?)"+
+				" ON CONFLICT (repo_id, scope, kind) DO UPDATE SET content = excluded.content, sha256 = excluded.sha256,"+
+				" rendered_at = excluded.rendered_at, signed_at = excluded.signed_at RETURNING id",
+			[]any{ca.RepoID, ca.Scope, ca.Kind, blobArg(ca.Content), ca.SHA256,
+				c.d.EncodeTime(stamp(&ca.RenderedAt, now())), c.d.encodeNullTime(ca.SignedAt)},
+			&ca.ID)
+	})
+	return stored && err == nil, err
+}
+
+// InvalidateIndexCache increments the repo's generation, then removes the cached documents of
+// a scope of the repo, or of every scope when scope is "". In that order: the increment takes
+// the lock of the generation row, so on Postgres the DELETE runs after the puts that held it
+// have committed, and sees their rows.
 func (c *conn) InvalidateIndexCache(ctx context.Context, repoID int64, scope string) error {
+	return c.withTx(ctx, func(c *conn) error {
+		if err := c.nextGeneration(ctx, repoID); err != nil {
+			return err
+		}
+		var w where
+		w.add("repo_id = ?", repoID)
+		if scope != "" {
+			w.add("scope = ?", scope)
+		}
+		_, err := c.exec(ctx, fmt.Sprintf("index_cache of repo %d", repoID), "DELETE FROM index_cache"+w.clause(), w.args...)
+		return err
+	})
+}
+
+// nextGeneration increments the generation of a repo's rendered documents, or of every repo's
+// when repoID is 0; a repo without a row gets one at 1.
+func (c *conn) nextGeneration(ctx context.Context, repoID int64) error {
 	var w where
-	w.add("repo_id = ?", repoID)
-	if scope != "" {
-		w.add("scope = ?", scope)
+	if repoID != 0 {
+		w.add("id = ?", repoID)
+	} else {
+		w.add("true") // SQLite parses INSERT … SELECT … ON CONFLICT only after a WHERE
 	}
-	_, err := c.exec(ctx, fmt.Sprintf("index_cache of repo %d", repoID), "DELETE FROM index_cache"+w.clause(), w.args...)
+	_, err := c.exec(ctx, fmt.Sprintf("index_cache_generations of repo %d", repoID),
+		"INSERT INTO index_cache_generations (repo_id, generation) SELECT id, 1 FROM repos"+w.clause()+
+			" ON CONFLICT (repo_id) DO UPDATE SET generation = index_cache_generations.generation + 1", w.args...)
 	return err
 }
 
@@ -407,10 +456,14 @@ func (c *conn) PruneOCIRepos(ctx context.Context, repoID int64, seenBefore time.
 // versions and files.
 var derivedTables = []string{"packages", "index_cache", "oci_repos"}
 
-// ResetDerived removes the derived rows of a repo, or of every repo when repoID is 0.
-// Control-plane tables are not touched.
+// ResetDerived removes the derived rows of a repo, or of every repo when repoID is 0, after it
+// incremented their generations as InvalidateIndexCache does. Control-plane tables are not
+// touched.
 func (c *conn) ResetDerived(ctx context.Context, repoID int64) error {
 	return c.withTx(ctx, func(c *conn) error {
+		if err := c.nextGeneration(ctx, repoID); err != nil {
+			return err
+		}
 		var w where
 		if repoID != 0 {
 			w.add("repo_id = ?", repoID)

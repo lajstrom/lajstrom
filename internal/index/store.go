@@ -144,6 +144,10 @@ type Reader interface {
 
 	// GetIndexCache returns the cached document of kind for a scope of a repo.
 	GetIndexCache(ctx context.Context, repoID int64, scope, kind string) (*Cache, error)
+	// IndexCacheGeneration returns the generation of a repo's rendered documents: 0 at first,
+	// incremented by every InvalidateIndexCache and ResetDerived of the repo in its transaction.
+	// A render reads it before anything it renders from, and passes it to PutIndexCache.
+	IndexCacheGeneration(ctx context.Context, repoID int64) (int64, error)
 
 	// ListOCIRepos returns the OCI repositories recorded for a repo, ordered by path.
 	ListOCIRepos(ctx context.Context, repoID int64) ([]OCIRepo, error)
@@ -331,10 +335,15 @@ type Writer interface {
 	// many it removed.
 	DeleteEmptyPackages(ctx context.Context, repoID int64) (int, error)
 
-	// PutIndexCache inserts c or replaces the row with the same (RepoID, Scope, Kind).
-	PutIndexCache(ctx context.Context, c *Cache) error
-	// InvalidateIndexCache removes the cached documents of a scope of a repo, or of every
-	// scope when scope is "".
+	// PutIndexCache inserts c or replaces the row with the same (RepoID, Scope, Kind) when
+	// generation, the IndexCacheGeneration the render read before it began, is still the repo's,
+	// and reports whether it stored c. False means that an invalidation came after the render
+	// began: c may be of what it removed, and nothing changes. A put waits for an invalidation of
+	// the repo that is not committed yet, and an invalidation for a put that is not, so that a
+	// render never outlives the invalidation that follows it (docs/spec/guarantees.md, INV-27).
+	PutIndexCache(ctx context.Context, c *Cache, generation int64) (bool, error)
+	// InvalidateIndexCache increments the repo's IndexCacheGeneration and removes the cached
+	// documents of a scope of the repo, or of every scope when scope is "".
 	InvalidateIndexCache(ctx context.Context, repoID int64, scope string) error
 
 	// UpsertOCIRepo inserts r or sets SeenAt of the row with the same (RepoID, Path).
@@ -344,8 +353,9 @@ type Writer interface {
 	PruneOCIRepos(ctx context.Context, repoID int64, seenBefore time.Time) (int, error)
 
 	// ResetDerived removes every derived row of a repo, or of all repos when repoID is 0,
-	// before a reindex. It never touches control-plane tables, tag claims or proxy_meta, which
-	// is a cache of the upstream and not of the registry.
+	// before a reindex, and increments their IndexCacheGeneration. It never touches
+	// control-plane tables, tag claims or proxy_meta, which is a cache of the upstream and not
+	// of the registry.
 	ResetDerived(ctx context.Context, repoID int64) error
 
 	// A cache of the upstream (ADR 0013; docs/spec/proxy-and-group.md §4). A write of a row

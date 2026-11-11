@@ -306,7 +306,8 @@ func TestRotate(t *testing.T) {
 	must(t, err)
 	oldRing := keyring(t, must2(e.svc.PublicKeys(ctx, e.repo)))
 	oldIn := must2(e.svc.ClearSign(ctx, e.repo, []byte(release)))
-	must(t, e.st.PutIndexCache(ctx, &index.Cache{RepoID: e.repo.ID, Scope: "jammy", Kind: "InRelease", Content: oldIn, SHA256: "x"}))
+	must2(e.st.PutIndexCache(ctx, &index.Cache{RepoID: e.repo.ID, Scope: "jammy", Kind: "InRelease", Content: oldIn, SHA256: "x"},
+		must2(e.st.IndexCacheGeneration(ctx, e.repo.ID))))
 
 	e.now = e.now.Add(time.Hour)
 	rotated, err := e.svc.Rotate(ctx, e.repo)

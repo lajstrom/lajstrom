@@ -38,7 +38,7 @@ func TestIngest(t *testing.T) {
 	ctx := t.Context()
 	e := newEnv(t)
 	cache := index.Cache{RepoID: e.repo.ID, Scope: "simple/x", Kind: "simple", Content: []byte("old"), SHA256: "s"}
-	must(t, e.st.PutIndexCache(ctx, &cache))
+	putCache(t, e.st, &cache)
 	built, raw, pkgPath := e.prepare(t, upload(readme, "1.0.0", file{readme, "hello"}))
 	d := digest.FromBytes(raw)
 

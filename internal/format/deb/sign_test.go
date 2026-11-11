@@ -368,8 +368,11 @@ func TestRoutesSignedRenderedAgain(t *testing.T) {
 	e, _ := newSignedEnv(t, envOptions{})
 	fixtureSet(t, e.pipeline)
 	stale := []byte("an InRelease of an older render")
-	must(t, e.st.PutIndexCache(t.Context(), &index.Cache{RepoID: e.repo.ID, Scope: "jammy", Kind: kindInRelease, Content: stale,
-		SHA256: sha256Hex(stale), RenderedAt: renderedAt}))
+	gen, err := e.st.IndexCacheGeneration(t.Context(), e.repo.ID)
+	must(t, err)
+	_, err = e.st.PutIndexCache(t.Context(), &index.Cache{RepoID: e.repo.ID, Scope: "jammy", Kind: kindInRelease, Content: stale,
+		SHA256: sha256Hex(stale), RenderedAt: renderedAt}, gen)
+	must(t, err)
 	if got := e.get("dists/jammy/InRelease").Body.Bytes(); bytes.Equal(got, stale) {
 		t.Error("the InRelease of an older render is served")
 	}
@@ -399,11 +402,11 @@ type putFailingTx struct {
 	put string
 }
 
-func (w putFailingTx) PutIndexCache(ctx context.Context, c *index.Cache) error {
+func (w putFailingTx) PutIndexCache(ctx context.Context, c *index.Cache, generation int64) (bool, error) {
 	if c.Kind == w.put {
-		return errBoom
+		return false, errBoom
 	}
-	return w.Writer.PutIndexCache(ctx, c)
+	return w.Writer.PutIndexCache(ctx, c, generation)
 }
 
 // TestRoutesSignedIndexFails checks that an error of the index on the read or the store of a

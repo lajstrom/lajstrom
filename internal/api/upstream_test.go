@@ -34,7 +34,8 @@ func newUpstreamFixture(t *testing.T) (*fixture, *index.Repo) {
 	for _, name := range []string{"left-pad", "react"} {
 		must(t, f.st.PutProxyMeta(ctx, &index.ProxyMeta{RepoID: repo.ID, Name: name, Kind: "packument", State: index.ProxyMetaPresent,
 			Content: []byte("{}")}))
-		must(t, f.st.PutIndexCache(ctx, &index.Cache{RepoID: repo.ID, Scope: name, Kind: "packument", Content: []byte("{}"), SHA256: "s"}))
+		_, err := f.st.PutIndexCache(ctx, &index.Cache{RepoID: repo.ID, Scope: name, Kind: "packument", Content: []byte("{}"), SHA256: "s"}, 0)
+		must(t, err)
 	}
 	return f, repo
 }
