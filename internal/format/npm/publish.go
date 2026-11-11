@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime/debug"
 	"slices"
 	"strings"
 
@@ -58,9 +59,17 @@ func (h *handlers) publish(w http.ResponseWriter, r *http.Request, repo index.Re
 	}
 	principal := auth.PrincipalFrom(ctx)
 	var tarball *streamedTarball
+	defer func() {
+		if tarball != nil {
+			tarball.abort()
+		}
+	}()
 	body, err := readBody(r.Body, limit, repo.Format+"/"+repo.Name, func(file string, data io.Reader) error {
-		if rev != "" {
+		switch {
+		case rev != "":
 			return nil
+		case tarball != nil: // readBody refuses a second attachment before its data
+			return fmt.Errorf("%w: the publish body has a second tarball", format.ErrInvalid)
 		}
 		tarball = h.streamTarball(ctx, repo, name, file, principal)
 		return tarball.send(data)
@@ -122,17 +131,25 @@ func (h *handlers) published(w http.ResponseWriter, r *http.Request, repo index.
 // a goroutine of its own and reads the tarball from a pipe, which send fills with the data of
 // the attachment as readBody decodes it. The pipe ends with end, once the rest of the body is read
 // and checked, so that the upload is refused, and stores nothing, when the body is; until then
-// end may add the version document of the body to params, which Build reads after the end.
+// end may add the version document of the body to params, which Build reads after the end. A
+// panic of the upload, which no handler's recovery would see on its goroutine, is raised again
+// by end on the handler's.
 type streamedTarball struct {
-	pw     *io.PipeWriter
-	params map[string]string
-	done   chan struct{}
-	res    *format.Published
-	err    error
+	pw       *io.PipeWriter
+	params   map[string]string
+	done     chan struct{}
+	ended    bool // end was called
+	res      *format.Published
+	err      error
+	panicked error // what the upload panicked with, with its stack, once done is closed
 }
 
-// errUploadEnded is the error of a write of the tarball after its upload returned.
-var errUploadEnded = errors.New("npm: the upload of the tarball ended")
+// errUploadEnded is the error of a write of the tarball after its upload returned, and
+// errPublishEnded that of the upload's read when publish ended without ending it (a panic).
+var (
+	errUploadEnded  = errors.New("npm: the upload of the tarball ended")
+	errPublishEnded = errors.New("npm: the publish ended before its tarball")
+)
 
 // streamTarball starts the upload of the tarball file of the package name.
 func (h *handlers) streamTarball(ctx context.Context, repo index.Repo, name, file string, principal auth.Principal) *streamedTarball {
@@ -140,9 +157,14 @@ func (h *handlers) streamTarball(ctx context.Context, repo index.Repo, name, fil
 	t := &streamedTarball{pw: pw, params: map[string]string{ParamUploadedBy: principal.String()}, done: make(chan struct{})}
 	go func() {
 		defer close(t.done)
+		defer func() {
+			if v := recover(); v != nil {
+				t.panicked = fmt.Errorf("npm: the upload of the tarball panicked: %v\n%s", v, debug.Stack())
+			}
+			_ = pr.CloseWithError(errUploadEnded) // a PipeReader's CloseWithError is always nil
+		}()
 		t.res, t.err = h.deps.Ingest.UploadStream(ctx, repo, format.StreamUpload{Name: name,
 			File: format.UploadedFile{Name: file, Size: -1, ContentType: "application/octet-stream"}, Body: pr, Params: t.params}, principal)
-		_ = pr.CloseWithError(errUploadEnded) // a PipeReader's CloseWithError is always nil
 	}()
 	return t
 }
@@ -153,16 +175,34 @@ func (t *streamedTarball) send(data io.Reader) error {
 	return err
 }
 
-// end ends the tarball, with err when the body failed or was refused, and returns what the
-// upload returned.
+// end ends the tarball, with err when the body failed or was refused, waits for the upload and
+// returns what it returned; but err itself when the body failed or was refused on its own, not
+// because the upload ended first (errUploadEnded), so that the client reads the reason as
+// readBody or checkPublish gave it.
 func (t *streamedTarball) end(err error) (*format.Published, error) {
+	t.ended = true
 	if err != nil {
 		_ = t.pw.CloseWithError(err) // a PipeWriter's CloseWithError is always nil
 	} else {
 		_ = t.pw.Close()
 	}
 	<-t.done
+	if p := t.panicked; p != nil {
+		t.panicked = nil
+		panic(p)
+	}
+	if err != nil && (t.err == nil || !errors.Is(err, errUploadEnded)) {
+		return nil, err
+	}
 	return t.res, t.err
+}
+
+// abort ends the upload when end was not called, after a panic of publish: the goroutine of the
+// upload would wait on the pipe for ever otherwise, its session open.
+func (t *streamedTarball) abort() {
+	if !t.ended {
+		_, _ = t.end(errPublishEnded)
+	}
 }
 
 // checkPublish checks a publish body for the package name of the URL (docs/spec/http-routing.md,

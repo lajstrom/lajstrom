@@ -4,12 +4,16 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha1" //nolint:gosec // the dist.shasum of the fixture
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,8 +24,13 @@ import (
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
+	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/format/formattest"
+	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
+	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/testutil"
 )
 
@@ -96,17 +105,23 @@ func TestPublishRefusedStoresNothing(t *testing.T) {
 		edit    func(body, doc map[string]any)
 		setup   func(t *testing.T, p *pipeline)
 		status  int
+		says    string // the answer is checkPublish's own, which says this, and nothing of ingest's
 	}{
 		{name: "not a tarball", tarball: []byte(strings.Repeat("not gzip ", 200)), status: http.StatusBadRequest},
+		{name: "data that stops being base64 half way", edit: func(body, _ map[string]any) {
+			a := body["_attachments"].(map[string]any)["widgets-1.0.0.tgz"].(map[string]any)
+			data := a["data"].(string)
+			a["data"] = data[:len(data)/8*4] + "!!!!" + data[len(data)/8*4:]
+		}, status: http.StatusBadRequest, says: "base64"},
 		{name: "a package.json of another version", tarball: largeTarball(t, "2.0.0", 1000), status: http.StatusBadRequest},
 		{name: "a document after the attachment of another dependency", edit: func(_, doc map[string]any) {
 			doc["dependencies"] = map[string]any{"lodash": "^4.0.0", "evil": "*"}
 		}, status: http.StatusBadRequest},
 		{name: "another integrity", edit: func(_, doc map[string]any) {
 			doc["dist"].(map[string]any)["integrity"] = "sha512-" + base64.StdEncoding.EncodeToString(make([]byte, 64))
-		}, status: http.StatusBadRequest},
+		}, status: http.StatusBadRequest, says: "dist.integrity"},
 		{name: "a dist-tag of another version", edit: func(body, _ map[string]any) { body["dist-tags"] = map[string]any{"beta": "0.9.0"} },
-			status: http.StatusBadRequest},
+			status: http.StatusBadRequest, says: "0.9.0"},
 		{name: "the tag is taken in the registry", setup: func(t *testing.T, p *pipeline) { p.squat(t, "widgets", profile.Tag("1.0.0", "")) },
 			status: http.StatusConflict},
 	} {
@@ -131,8 +146,12 @@ func TestPublishRefusedStoresNothing(t *testing.T) {
 					tt.edit(body, doc)
 				}
 			})
-			if rr := do(p.routes(nil), http.MethodPut, "/npm/internal/widgets", body, false); rr.Code != tt.status {
-				t.Fatalf("publish = %d %s, want %d", rr.Code, rr.Body, tt.status)
+			answer := do(p.routes(nil), http.MethodPut, "/npm/internal/widgets", body, false)
+			if answer.Code != tt.status {
+				t.Fatalf("publish = %d %s, want %d", answer.Code, answer.Body, tt.status)
+			}
+			if msg := answer.Body.String(); tt.says != "" && (!strings.Contains(msg, tt.says) || strings.Contains(msg, "ingest")) {
+				t.Errorf("publish answered %s, want checkPublish's reason, %q", msg, tt.says)
 			}
 			rr, err := p.fake.Repository(t.Context(), "npm/internal/widgets")
 			must(t, err)
@@ -213,6 +232,49 @@ func TestPublishStreams(t *testing.T) {
 	t.Logf("peak heap in use: %d MiB", top>>20)
 	if top > formattest.HeapLimit {
 		t.Errorf("peak heap in use %d MiB, want under %d MiB", top>>20, formattest.HeapLimit>>20)
+	}
+}
+
+// panickingPublisher is the pipeline whose UploadStream reads a little of the tarball and then
+// panics, as a bug on the goroutine of the upload would.
+type panickingPublisher struct{ *ingest.Pipeline }
+
+func (panickingPublisher) UploadStream(_ context.Context, _ index.Repo, up format.StreamUpload, _ auth.Principal) (*format.Published, error) {
+	_, _ = io.ReadFull(up.Body, make([]byte, 16))
+	panic("the upload's bug")
+}
+
+// TestPublishUploadPanics: a panic on the goroutine of the tarball's upload does not end the
+// process: it is raised again on the handler's, where the server's recovery answers 500.
+func TestPublishUploadPanics(t *testing.T) {
+	p := newPipeline(t)
+	deps := format.Deps{Index: p.st, Ingest: panickingPublisher{p.pipe}, Providers: provider.Map{"local": p.fake}, Log: slog.New(slog.DiscardHandler)}
+	mux := http.NewServeMux()
+	Plugin{}.Routes(format.NewRouter(mux, Name, deps), deps)
+	b, info := testutil.NpmTarball(testutil.NpmOptions{})
+	defer func() {
+		if v := recover(); v == nil || !strings.Contains(fmt.Sprint(v), "the upload's bug") {
+			t.Errorf("the handler panicked with %v, want the upload's panic", v)
+		}
+	}()
+	rr := do(mux, http.MethodPut, "/npm/internal/widgets", npmBody(t, b, info, nil), false)
+	t.Errorf("publish = %d %s, want a panic", rr.Code, rr.Body)
+}
+
+// TestStreamedTarballAbort: a publish that returns without ending its tarball, as after a panic
+// of its own, ends the upload with it (abort): its goroutine returns, the session is cancelled.
+func TestStreamedTarballAbort(t *testing.T) {
+	p := newPipeline(t)
+	p.fake.ChunkSize = 64
+	h := &handlers{deps: format.Deps{Index: p.st, Ingest: p.pipe, Providers: provider.Map{"local": p.fake}, Log: slog.New(slog.DiscardHandler)}}
+	b, _ := testutil.NpmTarball(testutil.NpmOptions{})
+	tb := h.streamTarball(t.Context(), p.repo, "widgets", "widgets-1.0.0.tgz", alice)
+	must(t, tb.send(bytes.NewReader(b[:len(b)/2])))
+	tb.abort()
+	tb.abort() // once ended, nothing
+	<-tb.done
+	if !errors.Is(tb.err, errPublishEnded) || p.fake.OpenUploads() != 0 {
+		t.Errorf("the upload returned %v, %d sessions open; want errPublishEnded, none", tb.err, p.fake.OpenUploads())
 	}
 }
 
