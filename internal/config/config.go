@@ -284,6 +284,11 @@ type Ingest struct {
 	// (docs/spec/index-schema.md, Coordination). It must outlast a manifest PUT and one index
 	// transaction, not the blob uploads, which come before the claim. Must not be negative.
 	ClaimTTL time.Duration `yaml:"claimTTL"`
+	// VisibilityTimeout is how long a publish reads back what it pushed until the registry
+	// serves it, before it answers 503 (the visibility barrier, docs/registries/README.md,
+	// Consistency); a registry's capabilities.consistencyBound raises it. Must not be
+	// negative; zero means the default.
+	VisibilityTimeout time.Duration `yaml:"visibilityTimeout"`
 }
 
 // Reconcile configures the reconcile loop: a reindex of every repo with prune, run by serve
@@ -430,6 +435,10 @@ const (
 	DefaultUploadSessionsPerPrincipal = 1024
 )
 
+// DefaultIngestVisibilityTimeout is ingest.visibilityTimeout by default: it covers the lags
+// reported of ECR and GHCR.
+const DefaultIngestVisibilityTimeout = 30 * time.Second
+
 // The defaults of upstreams[] that Load applies to the keys an entry leaves out
 // (docs/spec/proxy-and-group.md §2.1).
 const (
@@ -446,7 +455,7 @@ func Default() *Config {
 			UploadSessions: UploadSessions{PerRepo: DefaultUploadSessionsPerRepo, PerPrincipal: DefaultUploadSessionsPerPrincipal}},
 		Log:       Log{Level: DefaultLogLevel, Format: DefaultLogFormat},
 		Database:  Database{Driver: DefaultDatabaseDriver, DSN: DefaultDatabaseDSN},
-		Ingest:    Ingest{ClaimTTL: DefaultIngestClaimTTL},
+		Ingest:    Ingest{ClaimTTL: DefaultIngestClaimTTL, VisibilityTimeout: DefaultIngestVisibilityTimeout},
 		Reconcile: Reconcile{Interval: DefaultReconcileInterval, GraceAge: DefaultReconcileGraceAge},
 		Auth:      Auth{Bootstrap: Bootstrap{TTL: DefaultBootstrapTTL}},
 		Keys:      Keys{Algorithm: DefaultKeysAlgorithm, RetireGrace: DefaultKeysRetireGrace, TokenAlgorithm: DefaultKeysTokenAlgorithm},

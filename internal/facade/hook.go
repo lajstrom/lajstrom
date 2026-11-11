@@ -170,7 +170,9 @@ func (h *handler) checkLayers(ctx context.Context, t *target, blobs []ocispec.De
 //	format.ErrUnsupported       501 UNSUPPORTED
 //	provider.ErrUnauthorized    502 (the backend refused Lajstrom's credentials)
 //	index.ErrUnavailable,       503 UNAVAILABLE with Retry-After (format.StatusOf): the database
-//	provider.ErrUnavailable     or the registry takes no request now
+//	provider.ErrUnavailable     or the registry takes no request now, or the registry took the
+//	                            manifest and did not serve it within the visibility timeout,
+//	                            which the same PUT again completes
 //	anything else               500, logged with the request id
 //
 // The messages of ingest name annotations, rules, digests and OCI names, never a backend URL.

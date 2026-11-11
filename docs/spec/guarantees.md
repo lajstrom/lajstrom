@@ -70,7 +70,8 @@ is not tested.
 
 | Name | The property | What is known |
 | --- | --- | --- |
-| **read-after-write** | after the registry answers `2xx` to a manifest push or delete, every later read sees it: `HEAD` and `GET` by tag and by digest, the tag list, the catalog | measured for no registry of the matrix; ECR is eventually consistent by design ([#446](https://github.com/lajstrom/lajstrom/issues/446)); `registry probe` will measure it ([#339](https://github.com/lajstrom/lajstrom/issues/339)) |
+| **read-after-write** | after the registry answers `2xx` to a manifest push or delete, every later read sees it: `HEAD` and `GET` by tag and by digest, the tag list, the catalog | `registry probe` measures the lag (the row "Read-after-write lag", [registries/README.md](../registries/README.md#consistency)): none seen on distribution, Zot and GitLab; ECR and GHCR are eventually consistent by users' reports, `capabilities.consistency: eventual` ([#446](https://github.com/lajstrom/lajstrom/issues/446)) |
+| **monotonic reads** | once a read of Lajstrom's sees a write, every later read through the same endpoint sees it too, until it is deleted | assumed everywhere; not measured. A registry behind DNS that picks a replica per request (ACR's global endpoint with geo-replication) can break it |
 | **durable 201** | what the registry acknowledged stays until it is deleted through the registry's API | assumed everywhere; never measured |
 | **complete listings** | the catalog and the tag list name every repository and tag written before the call, and none deleted before it | the matrix measures the catalog's limits and the tag lists' order, not their lag; Harbor, GHCR and ECR have no usable catalog, and Lajstrom reads `oci_repos` instead ([operations.md](../operations.md#without-a-catalog)) |
 | **digest check** | the registry refuses a blob whose bytes are not the digest it is closed with | every registry of the matrix but JFrog JCR 7.161 (it stores any bytes under any digest) |
@@ -185,20 +186,31 @@ status is `holds on strongly consistent registries only` do not hold there.
   tag, with the row's digest, and whose blobs it serves.
 - **Scope.** Managed repos, every kind that has rows (`hosted`, `proxy`); a proxy answers a miss
   from the registry right after its ingest, so the same holds for it.
-- **Assumes.** Registry: **read-after-write** (**unchecked**), **durable 201** (**unchecked**),
-  **GC keeps what is named**. Database: any.
-- **Mechanism.** A row is written only after the registry accepted the manifest
-  (`ingest.Pipeline.confirm`, after `publish.pushManifest`); a delete deletes in the registry
-  first (INV-13); the reconcile loop removes the rows of a tag the registry no longer knows (INV-5).
+- **Assumes.** Registry: **monotonic reads** (**unchecked**), **durable 201** (**unchecked**),
+  **GC keeps what is named**. Not **read-after-write**: the barrier below waits for the lag.
+  Database: any.
+- **Mechanism.** A row is written only after the registry accepted the manifest and served it
+  back: `publish.pushManifest`, then the visibility barrier `ingest.Pipeline.awaitVisible`, then
+  `ingest.Pipeline.confirm`. The barrier reads the manifest by digest; on a registry not
+  classified `strong` (`provider.Capabilities.Consistency`) also the tag, compared by digest,
+  and every blob, and reads again with backoff what it did not see, for
+  `ingest.visibilityTimeout` (30 s) or the registry's `consistencyBound` when longer. Past it
+  the publish is `503` with `Retry-After: 30`, the claims stay, and the same publish again
+  completes it. A delete deletes in the registry first (INV-13); the reconcile loop removes the
+  rows of a tag the registry no longer knows (INV-5).
 - **Tests.** `TestIngestPushFails`, `TestIngestIndexFailsAfterPush`, `TestBypassAndDelete`,
-  `TestDeleteThenReindex`.
+  `TestDeleteThenReindex`; `TestVisibilityBarrier`, `TestVisibilityTimeout`,
+  `TestVisibilityTimeoutIngest` (a registry that misses the first reads of a manifest and its
+  tag, or every read), `TestReadBack`, `TestManifestHookNotVisible` (`503 UNAVAILABLE` with
+  `Retry-After`).
 - **When violated.** A client gets `404` (`BLOB_UNKNOWN`, `MANIFEST_UNKNOWN`, the format's
-  `404`) for a version the index lists. On a lagging registry this lasts as long as the lag; a
-  manifest the registry lost goes from the index at the next reconcile, which counts it among
-  `removed` and says nothing more; a tag re-pointed in the backend is drift (INV-7), and on Gitea
-  the manifest it named is then deleted.
-- **Status.** `holds on strongly consistent registries only` ([#446](https://github.com/lajstrom/lajstrom/issues/446)).
-  **Untested:** no test runs against a registry with a read-after-write lag.
+  `404`) for a version the index lists: only where a registry stops serving what it served
+  once. A manifest the registry lost goes from the index at the next reconcile, which counts it
+  among `removed` and says nothing more; a tag re-pointed in the backend is drift (INV-7), and on
+  Gitea the manifest it named is then deleted. A publish that the registry did not serve in
+  time is a `503` and a warning `the registry took a push and does not serve it yet`.
+- **Status.** `holds`. **Untested:** no test runs against a registry that lags for real (ECR,
+  [#19](https://github.com/lajstrom/lajstrom/issues/19)).
 
 ### INV-5. Prune never removes what the registry still holds
 
@@ -1021,7 +1033,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-1 | artifact bytes only in the registry | holds | |
 | INV-2 | one write path | holds | untested (plugins could push) |
 | INV-3 | the index rebuildable from the registry | strongly consistent only | unchecked (listings); untested (apt, pypi, maven; I-01 e2e) |
-| INV-4 | a version in the index is readable | strongly consistent only | unchecked; untested |
+| INV-4 | a version in the index is readable | holds | unchecked; untested |
 | INV-5 | prune never removes what the registry holds | holds | unchecked (lag within the grace age); untested (ECR) |
 | INV-6 | one winner among concurrent publishes | holds | |
 | INV-7 | a tag is never re-pointed | strongly consistent only | unchecked |
@@ -1150,8 +1162,9 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 
 | Gap | Impact | Proposed fix | Issue |
 | --- | --- | --- | --- |
-| Read-after-write is assumed, never measured or tolerated (INV-3, INV-4, INV-5, INV-7, INV-13, INV-29, INV-31) | on ECR: a download `404` after a `201`, a false `MANIFEST_BLOB_UNKNOWN`, a version pruned for an interval after its publish, a deleted version re-added for an interval, a crashed writer's journal entry or a tag the index lacks re-pointed | a consistency model per registry, a visibility barrier on publish, read-back retries, a grace age and two observations before a removal; the probe measures the lag | [#446](https://github.com/lajstrom/lajstrom/issues/446), [#339](https://github.com/lajstrom/lajstrom/issues/339) |
-| No test with a registry that lags (INV-3, INV-4, INV-5) | the gap above cannot regress visibly | a fake registry with configurable lag, as #446's criteria say | [#446](https://github.com/lajstrom/lajstrom/issues/446) |
+| Read-after-write is assumed, never measured or tolerated (INV-3, INV-7, INV-13, INV-29, INV-31); INV-4 has the visibility barrier, INV-5 the grace age | on ECR: a false `MANIFEST_BLOB_UNKNOWN`, a deleted version re-added for an interval, a crashed writer's journal entry or a tag the index lacks re-pointed | a consistency model per registry, a visibility barrier on publish, read-back retries, a grace age and two observations before a removal; the probe measures the lag | [#446](https://github.com/lajstrom/lajstrom/issues/446), [#339](https://github.com/lajstrom/lajstrom/issues/339) |
+| No test with a registry that lags (INV-3); INV-4's tests have `providertest.Lag` | the gap above cannot regress visibly | a fake registry with configurable lag, as #446's criteria say | [#446](https://github.com/lajstrom/lajstrom/issues/446) |
+| **Monotonic reads** are assumed (INV-4) | behind an endpoint that picks a replica per request (ACR's global endpoint with geo-replication), a version the barrier saw on one replica can be `404` on the next | point `registries[].url` at one regional endpoint; measure it in the probe with reads from fresh connections | new issue |
 | A durable `201` is assumed (INV-4) | a manifest the registry lost leaves the index silently at the next reconcile, counted among `removed` | report the removal of a row ingest confirmed as a finding of its own, with a metric | new issue |
 | Reindex equality is tested for raw, npm and an npm proxy only; I-01 is not in the end-to-end suite (INV-3) | a column of apt, pypi or maven that annotations cannot rebuild would be lost at the first reindex, unnoticed | an equality test per format (publish, drop the derived rows, reindex, compare), and I-01 as an end-to-end step | new issue |
 | Nothing machine-checks the one write path in plugins (INV-2) | a plugin could push a manifest past ingest: no claim, validation or audit row | a read-only provider view in `format.Deps`, or a lint rule against `Push`, `PushReference` and `Delete` outside `internal/ingest`, `internal/facade` and `internal/provider` (a `contract` change of `format`) | new issue |
