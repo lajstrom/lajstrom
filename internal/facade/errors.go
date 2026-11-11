@@ -10,6 +10,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/auth/token"
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/server"
 )
@@ -90,10 +91,11 @@ type errorEntry struct {
 // or the registry's 4xx when the cause is its refusal of the request (statusOf), or
 // format.StatusOf of the cause; the code follows the status where the status decides it
 // (401 UNAUTHORIZED with the challenge, 403 DENIED, 429 TOOMANYREQUESTS, 501 UNSUPPORTED, the
-// 503 of a registry that takes no request now UNAVAILABLE with Retry-After: an open circuit
-// breaker, or the registry's own 429 or 503, which throttles Lajstrom and not the client; other
-// 5xx UNKNOWN) and is the handler's otherwise; an apiError's retryAfter is the Retry-After, in
-// whole seconds. The challenge of a 401 is the bearer challenge of
+// 503 of a registry that takes no request now, or of an index whose database does not
+// answer, UNAVAILABLE with Retry-After: an open circuit breaker, or the registry's own 429
+// or 503, which throttles Lajstrom and not the client; other 5xx UNKNOWN) and is the
+// handler's otherwise; an apiError's retryAfter is the Retry-After, in whole seconds. The
+// challenge of a 401 is the bearer challenge of
 // the token flow (docs/spec/rbac.md §4) with the scope of the request (requestScope), and
 // error="insufficient_scope" when a valid bearer lacked it. A 5xx says only its status text,
 // without a detail, and its cause is logged with the request id: a backend error must not
@@ -119,9 +121,9 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		w.Header().Set("Retry-After", strconv.FormatInt(int64((ae.retryAfter+time.Second-1)/time.Second), 10))
 	}
 	switch {
-	case status == http.StatusServiceUnavailable && errors.Is(err, provider.ErrUnavailable):
+	case status == http.StatusServiceUnavailable && unavailable(err) != "":
 		code, msg, detail = codeUnavailable, http.StatusText(status), nil
-		h.o.Log.WarnContext(r.Context(), "facade: registry unavailable", "method", r.Method, "path", r.URL.Path,
+		h.o.Log.WarnContext(r.Context(), "facade: "+unavailable(err)+" unavailable", "method", r.Method, "path", r.URL.Path,
 			"error", err.Error(), "requestId", server.RequestID(r.Context()))
 	case status >= http.StatusInternalServerError && status != http.StatusNotImplemented:
 		code, msg, detail = codeUnknown, http.StatusText(status), nil
@@ -181,6 +183,18 @@ func rejectedCode(rej *provider.RejectedError, code string) string {
 var clientCodes = map[string]bool{
 	codeBlobUploadInvalid: true, codeDigestInvalid: true, codeNameInvalid: true, codeSizeInvalid: true,
 	codeManifestInvalid: true, codeManifestBlobUnknown: true,
+}
+
+// unavailable names what takes no request now when err is a 503 of it: "registry" for
+// provider.ErrUnavailable, "index" for index.ErrUnavailable, "" for anything else.
+func unavailable(err error) string {
+	switch {
+	case errors.Is(err, provider.ErrUnavailable):
+		return "registry"
+	case errors.Is(err, index.ErrUnavailable):
+		return "index"
+	}
+	return ""
 }
 
 // codeOfStatus is the code of an error whose handler named none.

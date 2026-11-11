@@ -37,6 +37,8 @@ func TestWriteError(t *testing.T) {
 		{name: "backend rejected our credentials", err: fmt.Errorf("generic: %w", provider.ErrUnauthorized), status: 502},
 		{name: "circuit breaker open", err: fmt.Errorf("raw: push: %w", &provider.UnavailableError{RetryAfter: 12 * time.Second}), status: 503, retryAfter: "12"},
 		{name: "unavailable without a time", err: provider.ErrUnavailable, status: 503},
+		{name: "database unavailable", err: fmt.Errorf("raw: %w: repos raw/scratch: connection refused", index.ErrUnavailable),
+			status: 503, retryAfter: "5"},
 		{name: "a write to a proxy", err: fmt.Errorf("npm: publish: %w", format.ErrMethodNotAllowed), status: 405},
 		{name: "upstream failed", err: fmt.Errorf("proxy: upstream npmjs: %w", format.ErrBadGateway), status: 502},
 		{name: "upstream asked to wait", err: fmt.Errorf("proxy: %w", &format.UnavailableError{RetryAfter: 1500 * time.Millisecond}), status: 503, retryAfter: "2"},
@@ -100,6 +102,8 @@ func TestSetRetryAfter(t *testing.T) {
 		{&provider.UnavailableError{RetryAfter: 1200 * time.Millisecond}, "2"},
 		{fmt.Errorf("facade: %w", &provider.UnavailableError{RetryAfter: 30 * time.Second}), "30"},
 		{provider.ErrUnavailable, ""},
+		{fmt.Errorf("auth: authenticate alice: %w", index.ErrUnavailable), "5"},
+		{errors.Join(index.ErrUnavailable, &provider.UnavailableError{RetryAfter: 12 * time.Second}), "12"},
 		{errors.New("other"), ""},
 		{nil, ""},
 	}

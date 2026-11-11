@@ -368,6 +368,12 @@ back at the first answer. `/-/healthz` is only "the process is up": point the li
 there and the readiness probe at `/-/readyz`, so that an outage of the registry or the database
 does not restart the pods.
 
+While the database does not answer (Postgres stopped, restarting or refusing connections;
+SQLite locked past its busy timeout), a request that needs the index, its authentication with
+credentials included, is answered `503` with `Retry-After: 5` (on `/v2` and the API with the
+code `UNAVAILABLE`, which docker retries), and logged with the cause. The replicas serve again at
+the database's first answer, without a restart.
+
 Where the check must run inside the container, as a Docker or Compose `healthcheck:` (the image
 has no shell and no HTTP client), `lajstrom healthcheck` is the client: one `GET` of
 `/-/readyz`, or of `/-/healthz` with `--live`, exit status 0 on `200` and 1 otherwise, one line
