@@ -109,7 +109,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 
 - **Statement.** The bytes of a package file are stored in the registry and nowhere else: never in
   the database, and on a replica's disk only as a spool of one request, removed when it ends. A
-  raw upload is not on the disk at all ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)).
+  raw or apt upload is not on the disk at all ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)).
 - **Scope.** Every format and kind, both write paths (a frontend upload, a `/v2` blob upload) and
   the proxy fetch. The database keeps derived copies of metadata that reindex rebuilds or a cache
   may drop: `versions.metadata` (a metadata layer of at most 4 MiB), rendered documents in
@@ -118,13 +118,14 @@ status is `holds on strongly consistent registries only` do not hold there.
 - **Mechanism.** `format.Spool` (one temporary file per upload, mode 0600, unlinked at creation
   where the system allows, removed on `Close`), `ingest.spoolHashed`, the proxy's
   `proxy.Core.spool`; `/v2` uploads stream into the backend's session (`facade` uploads, the
-  provider's `BlobUploader`) and take no disk. A raw `PUT` streams into a session too
+  provider's `BlobUploader`) and take no disk. A raw `PUT` and an apt upload stream into a session too
   (`ingest.Pipeline.UploadStream`, the provider's `BlobWriter`), which is closed with the digest
   Lajstrom computed only once every check passed and cancelled otherwise, so a refused upload
   stores nothing.
 - **Tests.** `TestSpool`, `TestSpoolErrors`, `TestSpoolNoTempDir`, `TestUploadDoesNotHoldTheFile`,
   `TestStreamingMemory`, `TestUploadStreams` (pypi), `TestPutWritesNoTempFile` and
-  `TestPutRefusedStoresNothing` (raw), `TestUploadStreamRefused` (ingest); `ha.sh` H-05 (a
+  `TestPutRefusedStoresNothing` (raw), `TestUploadWritesNoTempFile` and `TestUploadRefusedStoresNothing`
+  (deb), `TestUploadStreamRefused` (ingest); `ha.sh` H-05 (a
   replica killed with `SIGKILL` in a 500 MiB upload: nothing left in its `/tmp`).
 - **When violated.** A spool that a `SIGKILL` leaves where the system cannot unlink at creation
   stays in `$TMPDIR` (threat model U-2); nothing serves from it.
@@ -722,14 +723,15 @@ status is `holds on strongly consistent registries only` do not hold there.
 
 - **Statement.** Uploads and downloads stream; only bounded metadata is read into memory, so a
   replica's heap does not grow with the size of a blob or the number of bytes in flight.
-- **Scope.** Every download (`format.ServeBlob`), `/v2` uploads, frontend uploads (raw holds one
-  chunk of 8 MiB; the others are spooled to disk, INV-1), the proxy fetch.
+- **Scope.** Every download (`format.ServeBlob`), `/v2` uploads, frontend uploads (raw and apt hold one
+  chunk of 8 MiB, apt the head of a `.deb` too; the others are spooled to disk, INV-1), the proxy fetch.
 - **Assumes.** Any.
 - **Mechanism.** `format.ServeBlob` through a fixed buffer, `facade` request bodies passed to the
   provider's session, the provider's `BlobWriter` (one chunk), `format.Spool`; the bounded reads
   of operations.md, Performance.
 - **Tests.** `TestStreamingMemory` (1 GiB up and down through `/v2`, heap under 64 MiB),
-  `TestPutStreams1GiB` (1 GiB through a raw `PUT`, heap under 64 MiB),
+  `TestPutStreams1GiB` (1 GiB through a raw `PUT`, heap under 64 MiB), `TestUploadStreams1GiB` (deb, the
+  same through an apt upload),
   `TestUploadDoesNotHoldTheFile`, `TestStream1GiB`; the load test (`make load`, acceptance.md
   N-01), nightly and not required.
 - **When violated.** Not observed.

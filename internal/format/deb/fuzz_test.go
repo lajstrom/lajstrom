@@ -51,6 +51,42 @@ func FuzzParse(f *testing.F) {
 	})
 }
 
+// FuzzInspector writes a .deb to the inspector of a streamed upload in pieces of step bytes, 1
+// to 512, as a body arrives over the network, and checks that it says what Parse says of the
+// whole, which writes it in pieces of 32 KiB: the same control file and md5sums, or the same
+// error. Run it locally with go test -fuzz=FuzzInspector -fuzztime=30s ./internal/format/deb/.
+func FuzzInspector(f *testing.F) {
+	for _, c := range []string{"gz", "xz", "zst", "none"} {
+		b, _ := testutil.Deb(testutil.DebOptions{ControlCompression: c})
+		end := controlEnd(f, b)
+		for _, step := range []uint16{0, 6, 59, 60, 61, 511} {
+			f.Add(b, step)
+			f.Add(b[:end], step)
+			f.Add(b[:end+30], step)
+			f.Add(b[:len(b)-1], step)
+		}
+	}
+	f.Add(arOf(arMember{"debian-binary", []byte("2.0\n\n")}), uint16(0))
+	f.Add([]byte(arMagic), uint16(3))
+	f.Fuzz(func(t *testing.T, b []byte, step uint16) {
+		want, wantErr := Parse(bytes.NewReader(b))
+		in := &inspector{}
+		var err error
+		for off, k := 0, int(step%512)+1; off < len(b) && err == nil; off += k {
+			_, err = in.Write(b[off:min(off+k, len(b))])
+		}
+		if err == nil {
+			err = in.Close()
+		}
+		switch {
+		case (err == nil) != (wantErr == nil), err != nil && err.Error() != wantErr.Error():
+			t.Fatalf("in pieces of %d: %v; Parse: %v", int(step%512)+1, err, wantErr)
+		case err == nil && (!maps.Equal(in.pkg.Control.Map(), want.Control.Map()) || !maps.Equal(in.pkg.MD5Sums, want.MD5Sums)):
+			t.Fatalf("in pieces of %d: another package than Parse's", int(step%512)+1)
+		}
+	})
+}
+
 // checkParsed checks what FuzzParse asks of a package that Parse accepted from b.
 func checkParsed(t *testing.T, b []byte, pkg *Package) {
 	t.Helper()

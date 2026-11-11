@@ -69,45 +69,22 @@ type Package struct {
 // debian-binary member, which must say 2.0, the control member (control.tar, .gz, .xz or .zst,
 // at most MaxControl bytes stored and uncompressed) with control and md5sums, and the
 // data.tar.* member, which it does not open; members after data.tar are ignored, as deb(5)
-// asks. Every byte goes through md5, sha1 and sha256 on the way. Errors about the bytes wrap
-// format.ErrInvalid and say what was wrong; a failure of r is returned as it is, wrapped.
+// asks. Every byte goes through md5, sha1 and sha256 on the way, and through the inspector of
+// a streamed upload, which does the checking. Errors about the bytes wrap format.ErrInvalid and
+// say what was wrong; a failure of r is returned as it is, wrapped.
 func Parse(r io.Reader) (*Package, error) {
 	src := &source{r: r}
 	sums := newSums(src)
-	pkg, err := parse(sums, MaxControl)
+	in := &inspector{}
+	_, err := io.Copy(in, sums)
+	if err == nil {
+		err = in.Close()
+	}
 	if err != nil {
 		return nil, src.blame(err)
 	}
+	pkg := in.pkg
 	pkg.Size, pkg.MD5, pkg.SHA1, pkg.SHA256 = sums.n, hexSum(sums.md5), hexSum(sums.sha1), hexSum(sums.sha256)
-	return pkg, nil
-}
-
-// parse reads the members of a .deb from r and drains what follows data.tar.
-func parse(r io.Reader, limit int64) (*Package, error) {
-	ar, err := newArReader(r)
-	if err != nil {
-		return nil, err
-	}
-	pkg, err := readControl(ar, limit)
-	if err != nil {
-		return nil, err
-	}
-	hdr, _, err := ar.next()
-	switch {
-	case errors.Is(err, io.EOF):
-		return nil, fmt.Errorf("%w: the archive ends after %s, before the data member", format.ErrInvalid, pkg.ControlMember)
-	case err != nil:
-		return nil, err
-	case !isDataMember(hdr.name):
-		return nil, fmt.Errorf("%w: the third member is %q, not data.tar with the extension of a compression dpkg reads",
-			format.ErrInvalid, hdr.name)
-	}
-	if err := ar.skip(); err != nil {
-		return nil, err
-	}
-	if _, err := io.Copy(io.Discard, r); err != nil {
-		return nil, fmt.Errorf("deb: read after %s: %w", hdr.name, err)
-	}
 	return pkg, nil
 }
 

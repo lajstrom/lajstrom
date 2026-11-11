@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -32,7 +33,8 @@ import (
 //     and the sha256 of the file layer, and its title as filename;
 //   - the control file and md5sums of the package itself, read through fetch with
 //     ParseControl, which reads the first KiB of the blob and not the rest, are the metadata's,
-//     field by field.
+//     field by field; but for the file of an upload that streams in (format.ErrStreamed), whose
+//     metadata Build made from what the inspector read of the same bytes.
 //
 // The md5 and sha1 of the metadata are the uploader's claim when present: checking them means
 // reading the whole blob, and a wrong one breaks apt-get for this one package only, which then
@@ -41,7 +43,7 @@ import (
 // to fetch or read a blob.
 //
 // Validate has no index, so an oras push does not meet the pool file name rule of the upload
-// route (checkPoolName): a manifest whose file layer has a pool file name that another version
+// route (poolHolders): a manifest whose file layer has a pool file name that another version
 // of the repo holds with another blob is accepted. The pool route answers 500 for that name,
 // logged, and reindex (#29) reports it.
 func (Plugin) Validate(ctx context.Context, _ index.Repo, m ocispec.Manifest, fetch format.BlobFetcher) (*format.Entry, error) {
@@ -209,7 +211,10 @@ func (md *metadataIn) checkFile(f profile.Layer) error {
 // control file and md5sums with the metadata, field by field.
 func checkPackage(ctx context.Context, fetch format.BlobFetcher, f profile.Layer, md *metadataIn) error {
 	rc, err := fetch(ctx, f.Digest)
-	if err != nil {
+	switch {
+	case errors.Is(err, format.ErrStreamed):
+		return nil
+	case err != nil:
 		return fmt.Errorf("deb: fetch the package %s: %w", f.Digest, err)
 	}
 	defer func() { _ = rc.Close() }()

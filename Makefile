@@ -56,6 +56,7 @@ FUZZ_TARGETS ?= \
 	./internal/oci/profile:FuzzUnescape \
 	./internal/oci/profile:FuzzValidate \
 	./internal/format/deb:FuzzParse \
+	./internal/format/deb:FuzzInspector \
 	./internal/format/deb:FuzzParseControl \
 	./internal/format/deb:FuzzParseAr \
 	./internal/format/pypi:FuzzWheelFilename \

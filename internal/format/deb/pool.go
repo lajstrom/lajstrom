@@ -73,7 +73,7 @@ func (h *handlers) pool(w http.ResponseWriter, r *http.Request) {
 // newest version, for Last-Modified and Docker-Content-Digest.
 //
 // The matches must agree on the blob: a Debian pool holds one content per file name, and the
-// upload route refuses another (checkPoolName), but an oras push cannot be checked (Validate
+// upload route refuses another (poolHolders), but an oras push cannot be checked (Validate
 // has no index) and two uploads at once both pass the check. Matches with two digests are
 // errTwoContents, logged at error level with both digests and versions: the answer is 500, and
 // the cause is the operator's to settle, which reindex (#29) reports.

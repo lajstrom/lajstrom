@@ -3,6 +3,7 @@ package deb
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -12,11 +13,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/opencontainers/go-digest"
-
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/format/formattest"
+	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/testutil"
 )
@@ -115,7 +115,7 @@ func TestUploadConflicts(t *testing.T) {
 		{"suite=noble&component=universe", other},
 		{"suite=jammy&component=main", epoch},
 	} {
-		if rr := e.put(c.query, c.deb); rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), poolRule) {
+		if rr := e.put(c.query, c.deb); rr.Code != http.StatusConflict || !strings.HasPrefix(rr.Body.String(), index.ErrConflict.Error()+": "+poolRule) {
 			t.Errorf("PUT ?%s = %d %s, want 409 with %q", c.query, rr.Code, rr.Body, poolRule)
 		}
 	}
@@ -157,7 +157,7 @@ func TestUploadRefuses(t *testing.T) {
 			t.Errorf("PUT ?%s = %d %s, want 400 with %q", c.query, rr.Code, rr.Body, c.want)
 		}
 	}
-	req := httptest.NewRequest(http.MethodPut, "/apt/ubuntu/upload?suite=jammy&component=main", bytes.NewReader(hello[:100]))
+	req := httptest.NewRequest(http.MethodPut, "/apt/ubuntu/upload?suite=jammy&component=main", bytes.NewReader(hello[:len(hello)-10]))
 	req.ContentLength = int64(len(hello))
 	rr := httptest.NewRecorder()
 	e.h.ServeHTTP(rr, req)
@@ -264,8 +264,8 @@ func (e *aptEnv) manifest(t *testing.T, d string) struct {
 	return m
 }
 
-// TestUploadFailures checks the 500s: no publisher, FindFiles failing; and checkPoolName on a
-// file that cannot be opened, or read for its digest.
+// TestUploadFailures checks the 500s: no publisher, FindFiles failing, a body that fails to
+// read after its head, through the pool file name check too.
 func TestUploadFailures(t *testing.T) {
 	e := newAptEnv(t, envOptions{})
 	hello, _ := testutil.Deb(testutil.DebOptions{})
@@ -278,42 +278,23 @@ func TestUploadFailures(t *testing.T) {
 		t.Errorf("PUT without a publisher = %d", rr.Code)
 	}
 
+	pkg, err := ParseControl(bytes.NewReader(hello), MaxControl)
+	must(t, err)
 	h := &handlers{deps: format.Deps{Index: findFailing{e.st}, Log: slog.New(slog.DiscardHandler)}}
-	if _, err := h.checkPoolName(t.Context(), e.repo, debFile(hello), "jammy", "main"); !errors.Is(err, errBoom) {
-		t.Errorf("checkPoolName with FindFiles failing = %v", err)
+	if _, err := h.poolHolders(t.Context(), e.repo, pkg, "jammy", "main"); !errors.Is(err, errBoom) {
+		t.Errorf("poolHolders with FindFiles failing = %v", err)
 	}
 
-	h = &handlers{deps: format.Deps{Index: e.st, Log: slog.New(slog.DiscardHandler)}}
-	unopenable := format.UploadedFile{Name: "x.deb", Size: -1, Open: func() (io.ReadCloser, error) { return nil, errBoom }}
-	if _, err := h.checkPoolName(t.Context(), e.repo, unopenable, "jammy", "main"); !errors.Is(err, errBoom) {
-		t.Errorf("checkPoolName of a file that cannot be opened = %v", err)
-	}
 	e.upload(t, hello, "jammy")
-	other, _ := testutil.Deb(testutil.DebOptions{Description: "another greeting"})
-	opens := 0
-	once := format.UploadedFile{Name: "x.deb", Size: int64(len(other)), Open: func() (io.ReadCloser, error) {
-		opens++
-		if opens > 1 {
-			return io.NopCloser(failAfter(other[:10])), nil
+	for _, suite := range []string{"jammy", "noble"} { // noble through poolCheck, for jammy holds the pool file name
+		rr := e.send(http.MethodPut, "upload?suite="+suite+"&component=main", failAfter(hello[:len(hello)-10]), "X-Test-User", "alice")
+		if rr.Code != http.StatusInternalServerError {
+			t.Errorf("PUT to %s of a body that fails after its head = %d %s", suite, rr.Code, rr.Body)
 		}
-		return io.NopCloser(bytes.NewReader(other)), nil
-	}}
-	if _, err := h.checkPoolName(t.Context(), e.repo, once, "noble", "main"); !errors.Is(err, errBoom) {
-		t.Errorf("checkPoolName of a file that cannot be read for its digest = %v", err)
 	}
-	opens = 0
-	once.Open = func() (io.ReadCloser, error) {
-		opens++
-		if opens > 1 {
-			return nil, errBoom
-		}
-		return io.NopCloser(bytes.NewReader(other)), nil
-	}
-	if _, err := h.checkPoolName(t.Context(), e.repo, once, "noble", "main"); !errors.Is(err, errBoom) {
-		t.Errorf("checkPoolName of a file that cannot be opened for its digest = %v", err)
-	}
-	if d, err := digestOf(debFile(hello)); err != nil || d != digest.FromBytes(hello) {
-		t.Errorf("digestOf = %s, %v", d, err)
+	c := &poolCheck{r: failAfter(hello[:10]), sum: sha256.New(), filename: "x.deb", held: []index.FileMatch{{}}}
+	if _, err := io.ReadAll(c); !errors.Is(err, errBoom) {
+		t.Errorf("poolCheck of a body that fails = %v", err)
 	}
 }
 
