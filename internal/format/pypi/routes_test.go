@@ -143,6 +143,7 @@ type env struct {
 	t    *testing.T
 	st   *sqlite.Store
 	fake *providertest.Fake
+	prov provider.Provider // the registry: fake, or what newEnvWith wrapped it in
 	pipe *ingest.Pipeline
 	repo index.Repo
 	h    http.Handler
@@ -165,6 +166,7 @@ func newEnvWith(t *testing.T, wrap func(*providertest.Fake) provider.Provider) *
 	if wrap != nil {
 		prov = wrap(e.fake)
 	}
+	e.prov = prov
 	log := slog.New(slog.DiscardHandler)
 	e.pipe = ingest.New(ingest.Options{Providers: provider.Map{"local": prov}, Index: st, Log: log,
 		Plugins: func(name string) (format.Plugin, bool) { return Plugin{}, name == Name }})

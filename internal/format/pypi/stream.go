@@ -9,7 +9,6 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
-	"github.com/lajstrom/lajstrom/internal/oci/profile"
 )
 
 var _ format.Streamer = Plugin{}
@@ -42,10 +41,6 @@ func (Plugin) Inspect(_ index.Repo, up format.StreamUpload) (format.Inspection, 
 	}
 	return format.Inspection{Inspector: newSdistInspector(up.File.Name, s)}, nil
 }
-
-// streams reports whether the upload handler streams the distribution d into the registry;
-// the others it spools for the request, and they go through format.Publisher.Upload.
-func streams(d dist) bool { return d.mediaType == profile.MediaTypePypiSdistTarGz }
 
 // inspector is the inspector of a distribution as Build reads it.
 type inspector interface {
