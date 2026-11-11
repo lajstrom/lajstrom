@@ -115,14 +115,16 @@ status is `holds on strongly consistent registries only` do not hold there.
   may drop: `versions.metadata` (a metadata layer of at most 4 MiB), rendered documents in
   `index_cache`, an upstream's documents in `proxy_meta`.
 - **Assumes.** Any.
-- **Mechanism.** `format.Spool` (one temporary file per upload, mode 0600, unlinked at creation
-  where the system allows, removed on `Close`), the proxy's
+- **Mechanism.** `format.Spool` (one temporary file per proxy fetch, mode 0600, unlinked at
+  creation where the system allows, removed on `Close`), the proxy's
   `proxy.Core.spool`; `/v2` uploads stream into the backend's session (`facade` uploads, the
-  provider's `BlobUploader`) and take no disk. A raw `PUT`, an apt, a twine and an npm upload, and a Maven file (`ingest.Pipeline.Add`), stream into a session too
+  provider's `BlobUploader`) and take no disk, but for a chunk of unknown length that
+  `uploads.spoolUnknownLength` spools (one temporary file of the chunk, unlinked when it is
+  made). A raw `PUT`, an apt, a twine and an npm upload, and a Maven file (`ingest.Pipeline.Add`), stream into a session too
   (`ingest.Pipeline.UploadStream`, the provider's `BlobWriter`), which is closed with the digest
   Lajstrom computed only once every check passed and cancelled otherwise, so a refused upload
-  stores nothing; but a wheel read back from the registry (ADR 0014 step 5), whose blob a refusal
-  leaves to the registry's garbage collection, without a manifest.
+  stores nothing; but a wheel or a `.zip` sdist read back from the registry (ADR 0014 step 5),
+  whose blob a refusal leaves to the registry's garbage collection, without a manifest.
 - **Tests.** `TestSpool`, `TestSpoolErrors`, `TestSpoolNoTempDir`, `TestUploadDoesNotHoldTheFile`,
   `TestStreamingMemory`, `TestPutWritesNoTempFile` and
   `TestPutRefusedStoresNothing` (raw), `TestUploadWritesNoTempFile` and `TestUploadRefusedStoresNothing`
@@ -1290,7 +1292,7 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | The garbage collectors of GitLab B and Nexus delete untagged referrers (INV-35) | signatures and SBOMs vanish | the tag schema as well on registries with the API (#326); for GitLab B and Nexus, a vendor-table warning or a tag per referrer | [#326](https://github.com/lajstrom/lajstrom/issues/326), new issue |
 | No frontend test of a denial with malformed input (INV-15) | a regression of the R-2 kind on a frontend goes unseen | a table test per frontend, as `TestDenialBeforeInput` does for `/v2` | new issue |
 | Acceptance C-07 and S-09 are not automated (INV-14, INV-21) | a redaction or an audit regression goes unseen | after the suite, grep both replicas' logs for every secret used, and count the audit rows of its writes | new issue |
-| No budget for the bytes of `$TMPDIR` (INV-23) | 32 spooled uploads of a replica may need 256 GiB of disk | a spool budget, or no request spool (ADR 0014) | [#427](https://github.com/lajstrom/lajstrom/issues/427) |
+| No budget for the bytes of `$TMPDIR` (INV-23) | frontend uploads stream (ADR 0014); what still spools has no byte budget: the proxy fetches of a replica, which `server.maxConcurrentUploads` does not count either, and the `/v2` chunks of `uploads.spoolUnknownLength` | a spool budget, or a proxy fetch that streams too (ADR 0014) | [#427](https://github.com/lajstrom/lajstrom/issues/427) |
 | One upstream request per document per replica (INV-31) | concurrent misses of a packument each ask the upstream | share the request on a replica (pull request #399) | [#383](https://github.com/lajstrom/lajstrom/issues/383) |
 | Registries that fold tag case (INV-7) | two versions that differ in case: the second is a `409` with an unclear message | `Capabilities.TagsFoldCase` | [#426](https://github.com/lajstrom/lajstrom/issues/426) |
 | The bearer audience without `server.externalURL` (INV-19) | a staging server restored from production's database accepts production's tokens | require `externalURL` | [#248](https://github.com/lajstrom/lajstrom/issues/248) |

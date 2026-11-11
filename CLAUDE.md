@@ -1,6 +1,6 @@
 # CLAUDE.md — working on Lajstrom with Claude Code
 
-Lajstrom is an artifact registry (raw, pypi, apt, maven; later rpm, npm, terraform) whose only
+Lajstrom is an artifact registry (raw, pypi, apt, maven, npm; later rpm, terraform) whose only
 storage is an OCI registry. Lajstrom owns the protocols, the index and the permissions, and not
 a single blob. Go, single binary, SQLite or Postgres as a derived index.
 
@@ -73,9 +73,9 @@ make e2e              # real clients (oras, pip, apt-get, mvn) against the stack
   `ErrUnsupported`); map to HTTP status in one place per package.
 - `context.Context` on every I/O call. Stream blobs when serving and when pushing to the
   registry; an upload streams into the registry (ADR 0014); a temporary file only where the
-  operator turns it on (#425). All five formats stream (raw, apt, maven, pypi, npm); a spool
-  that remains lasts one request, never kept, never served from. Artifact bytes live
-  only in the registry.
+  operator turns it on (#425). The uploads of all five formats stream (raw, apt, maven, pypi,
+  npm); a proxy fetch is still spooled for one request, never kept, never served from.
+  Artifact bytes live only in the registry.
 - `log/slog` for logs; never log secrets, tokens, passwords or Authorization headers.
 - Tests: table tests; fixtures built in-process with `internal/testutil` (make a `.deb`, a
   `.whl`, a `.jar` in memory). Do not vendor binary packages from distributions.
