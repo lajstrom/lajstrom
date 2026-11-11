@@ -237,18 +237,21 @@ func (h *handler) readBack(ctx context.Context, t *target, rr provider.Repositor
 //	                            that another spelling holds or is being published to, #244)
 //	format.ErrUnsupported       501 UNSUPPORTED
 //	provider.ErrUnauthorized    502 (the backend refused Lajstrom's credentials)
+//	*ingest.NotVisibleError     503 UNAVAILABLE with Retry-After: the registry took the manifest
+//	                            and did not serve it within the visibility timeout, which the
+//	                            same PUT again completes; the message and the detail name what
+//	                            it does not serve yet (notServed)
 //	index.ErrUnavailable,       503 UNAVAILABLE with Retry-After (format.StatusOf): the database
-//	provider.ErrUnavailable     or the registry takes no request now, or the registry took the
-//	                            manifest and did not serve it within the visibility timeout,
-//	                            which the same PUT again completes
+//	provider.ErrUnavailable     or the registry takes no request now
 //	anything else               500, logged with the request id
 //
 // The messages of ingest name annotations, rules, digests and OCI names, never a backend URL.
 // A manifest with oras's default artifactType gets the hint of the one it needs.
 func ingestError(t *target, m ocispec.Manifest, err error) error {
 	var (
-		conflict *index.TagConflictError
-		tooLarge *http.MaxBytesError
+		conflict   *index.TagConflictError
+		tooLarge   *http.MaxBytesError
+		notVisible *ingest.NotVisibleError
 	)
 	switch {
 	case errors.As(err, &tooLarge):
@@ -269,10 +272,42 @@ func ingestError(t *target, m ocispec.Manifest, err error) error {
 		return &apiError{status: http.StatusNotImplemented, code: codeUnsupported, err: err}
 	case errors.Is(err, provider.ErrUnauthorized):
 		return &apiError{status: http.StatusBadGateway, err: err}
+	case errors.As(err, &notVisible):
+		return notServed(t, notVisible, err)
 	case errors.Is(err, index.ErrUnavailable), errors.Is(err, provider.ErrUnavailable):
 		return &apiError{err: err}
 	}
 	return &apiError{status: http.StatusInternalServerError, err: err}
+}
+
+// notServed is the answer to a push that the registry took and does not serve yet, nv: 503
+// UNAVAILABLE with the Retry-After of nv's cause, whose message and detail name what the
+// registry does not serve, by the name the client pushed to (t.name, not the OCI name of the
+// backend) and the digests and the tag it pushed (docs/spec/http-routing.md §2, #565). A
+// client's log then tells a registry that lags from one that lost the push.
+func notServed(t *target, nv *ingest.NotVisibleError, err error) *apiError {
+	return &apiError{status: http.StatusServiceUnavailable, code: codeUnavailable, told: true, err: err,
+		msg: fmt.Sprintf("the registry took %s@%s and does not serve %s yet; the same push again completes it",
+			t.name, nv.Digest, strings.Join(nv.Missing(), ", ")),
+		detail: notServedDetail{Name: t.name, Digest: nv.Digest, Missing: missingDetail{Manifest: nv.Manifest, Tag: nv.Tag,
+			Blobs: nv.Blobs, ReferrersOf: nv.Subject}}}
+}
+
+// notServedDetail is the detail of notServed: the manifest pushed, and what of it the registry
+// does not serve yet.
+type notServedDetail struct {
+	Name    string        `json:"name"`
+	Digest  digest.Digest `json:"digest"`
+	Missing missingDetail `json:"missing"`
+}
+
+// missingDetail is what the registry does not serve yet of a push: each key only when it does
+// not serve it.
+type missingDetail struct {
+	Manifest    bool            `json:"manifest,omitempty"`    // the manifest, by its digest
+	Tag         string          `json:"tag,omitempty"`         // the tag, which does not name the manifest
+	Blobs       []digest.Digest `json:"blobs,omitempty"`       // the blobs the manifest names
+	ReferrersOf digest.Digest   `json:"referrersOf,omitempty"` // a referrer: the subject whose referrers do not list it
 }
 
 // artifactTypeOf is the artifactType of the repo format f: apt stores deb.

@@ -47,7 +47,9 @@ const (
 // message for the client (empty: the cause's), the detail of the error entry (nil: none), and
 // the cause, for the status and the log. insufficient marks the 401 of a valid bearer that
 // lacks the repository: its challenge says error="insufficient_scope". retryAfter, when
-// positive, is the answer's Retry-After.
+// positive, is the answer's Retry-After. told marks a 503 whose message and detail name only
+// what the client sent (notServed): fail answers them, where it answers any other 503 with its
+// status text alone.
 type apiError struct {
 	status       int
 	code         string
@@ -56,6 +58,7 @@ type apiError struct {
 	err          error
 	insufficient bool
 	retryAfter   time.Duration
+	told         bool
 }
 
 func (e *apiError) Error() string {
@@ -99,7 +102,8 @@ type errorEntry struct {
 // the token flow (docs/spec/rbac.md §4) with the scope of the request (requestScope), and
 // error="insufficient_scope" when a valid bearer lacked it. A 5xx says only its status text,
 // without a detail, and its cause is logged with the request id: a backend error must not
-// reach the client. A refusal of the registry is logged too, at warn: what it needs may be the
+// reach the client. The one exception is a told 503, a push the registry does not serve yet,
+// whose message and detail name only what the client pushed. A refusal of the registry is logged too, at warn: what it needs may be the
 // operator's to change.
 func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var ae *apiError
@@ -122,7 +126,10 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	switch {
 	case status == http.StatusServiceUnavailable && unavailable(err) != "":
-		code, msg, detail = codeUnavailable, http.StatusText(status), nil
+		code = codeUnavailable
+		if !ae.told {
+			msg, detail = http.StatusText(status), nil
+		}
 		h.o.Log.WarnContext(r.Context(), "facade: "+unavailable(err)+" unavailable", "method", r.Method, "path", r.URL.Path,
 			"error", err.Error(), "requestId", server.RequestID(r.Context()))
 	case status >= http.StatusInternalServerError && status != http.StatusNotImplemented:
