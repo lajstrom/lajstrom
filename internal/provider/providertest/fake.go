@@ -78,6 +78,9 @@ type Fake struct {
 	NoDeleteManifest bool
 	// FailPush fails Push before it reads the content.
 	FailPush error
+	// FailUpload fails StartBlobUpload, the POST that opens an upload session, so that a blob
+	// written through OpenBlobWriter is refused as FailPush refuses a Push.
+	FailUpload error
 	// FailPushReference fails PushReference before it reads the content.
 	FailPushReference error
 	// FailExists fails Exists.
