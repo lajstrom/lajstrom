@@ -12,6 +12,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/provider/providertest"
 )
 
 func TestFake(t *testing.T) {
@@ -178,6 +179,26 @@ func TestIndexCacheGeneration(t *testing.T) {
 		_, getErr := idx.GetIndexCache(ctx, 1, "a", "Packages")
 		if err != nil || ok != want || (getErr == nil) != want {
 			t.Errorf("PutIndexCache at generation %d of 2: %t, %v; stored %t, want %t", gen, ok, err, getErr == nil, want)
+		}
+	}
+}
+
+// TestRefusalApply: a refusal of Refusals that refuses a blob fails the Fake's pushes and its
+// upload sessions alike; one of UploadRefusals fails its upload sessions alone.
+func TestRefusalApply(t *testing.T) {
+	for _, r := range Refusals {
+		f := &providertest.Fake{}
+		r.Apply(f)
+		if !errors.Is(f.FailPush, r.Push) || !errors.Is(f.FailUpload, r.Push) || !errors.Is(f.FailPushReference, r.PushReference) {
+			t.Errorf("%s: FailPush %v, FailUpload %v, FailPushReference %v", r.Name, f.FailPush, f.FailUpload, f.FailPushReference)
+		}
+	}
+	for _, r := range UploadRefusals {
+		f := &providertest.Fake{}
+		r.Apply(f)
+		if r.Upload == nil || !errors.Is(f.FailUpload, r.Upload) || f.FailPush != nil || f.FailPushReference != nil {
+			t.Errorf("%s: FailPush %v, FailUpload %v, FailPushReference %v; want the upload sessions alone refused",
+				r.Name, f.FailPush, f.FailUpload, f.FailPushReference)
 		}
 	}
 }
