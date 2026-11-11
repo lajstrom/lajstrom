@@ -134,10 +134,11 @@ type Inspection struct {
 }
 
 // Inspector reads a file on its way into the registry, for what Build needs of it: every byte
-// goes through Write once, in order, and Close follows the last once the body ended; a body that
-// fails is not closed. It holds no more of the bytes than its format's bounds (#243) and parses
-// hostile input: an error of Write or Close refuses the upload, and its session is cancelled.
-// Build finds it in UploadedFile.Inspector.
+// goes through Write once, in order, and Close follows the last once the body ended. When the
+// body fails, ingest closes the inspector too and ignores its error, so that it releases what it
+// holds (the goroutine of ReadInspector). It holds no more of the bytes than its format's bounds
+// (#243) and parses hostile input: an error of Write or Close refuses the upload, and its
+// session is cancelled. Build finds it in UploadedFile.Inspector.
 type Inspector interface {
 	io.Writer
 	// Close says the file ended: what the inspector looks for must have been found by now.
