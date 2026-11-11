@@ -217,6 +217,9 @@ func (j *replay) sweep(ctx context.Context, r index.JournalEntry) error {
 			j.s.mu.Lock()
 			j.s.rep.Removed++
 			j.s.mu.Unlock()
+		case nameUnknown: // the tag list answered a moment before: a repository deleted meanwhile
+			j.s.failure(Finding{Repository: j.pkgPath, Tag: r.Tag, Digest: r.Digest,
+				Error: "the registry does not know the OCI repository of the journal entry: the row stays"})
 		case pending, unchecked:
 		}
 	default:

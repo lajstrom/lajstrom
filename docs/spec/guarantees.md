@@ -258,20 +258,26 @@ status is `holds on strongly consistent registries only` do not hold there.
   `Provider.StatManifest` and counts only `provider.ErrManifestUnknown`. The first answer is a
   `prune_sightings` row (`Writer.RecordSighting`), shared by every replica; the sweep clears the
   rows it did not record again (`Writer.ClearSightings`). `scan.list` sweeps nothing when the
-  listing failed, and runs of one repo never overlap (`reindex_runs`, INV-26).
+  listing failed, and runs of one repo never overlap (`reindex_runs`, INV-26). A `404` without
+  `MANIFEST_UNKNOWN` in an OCI repository whose tag list is a `404` (`reindex.scan.repoUnknown`)
+  is reported, not counted: `RepositoryUnknown` (#567).
 - **Tests.** `TestPrune` (`MANIFEST_UNKNOWN` once, twice 9 and 10 minutes apart, a version
   younger than the grace age, a grace age of 24 h, the manifest read back in between, a failure
   in between, `NAME_UNKNOWN`, a `404` without a code, a `5xx`, a `403`, a timeout),
   `TestPruneTwoReplicas`, `TestStatManifest`, the store conformance cases `Sightings`,
   `SightingRace` and `Sweep`, `TestSweepKeepsWhatItCannotCheck`, `TestBypassAndDelete`,
   `TestDrift`, `TestNoCatalog`, `TestNoCatalogRepositoryGone`, `TestNoCatalogRecordsAgain`, `TestJournalReindexLost`,
-  `TestReconcile`; `TestIntegration` of `internal/provider/generic` and of
-  `internal/index/reindex` against Zot and distribution.
+  `TestRepositoryUnknown`, `TestReconcile`; `TestIntegration` of `internal/provider/generic` and
+  of `internal/index/reindex`, and `TestIntegrationRepositoryUnknown`, against Zot and
+  distribution.
 - **When violated.** A registry that lags longer than the grace age and answers
   `MANIFEST_UNKNOWN` twice for a manifest it holds loses that version's rows until the next run
   lists it again and adds it back; the run's audit row `reconcile` counts the removal; nothing
   alerts. The other way round, a manifest the registry lost stays listed, its downloads `404`,
-  until both answers and the grace age: the report counts it as `pending`.
+  until both answers and the grace age: the report counts it as `pending`. A version whose whole
+  OCI repository the registry no longer knows (Zot answers `NAME_UNKNOWN`) stays until it is
+  deleted through the API: every run lists it under `repositoryUnknown`, with that request, and
+  warns.
 - **Status.** `holds`. **Unchecked:** the registry's lag against the grace age. **Untested:** no
   run against a registry that lags for real (ECR, [#19](https://github.com/lajstrom/lajstrom/issues/19)).
 

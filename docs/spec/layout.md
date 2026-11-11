@@ -953,6 +953,7 @@ type RepoReport struct {
     OrphanJournal   []Finding `json:"orphanJournal"`   // npm journal entries of a repository without versions
     Drift           []Drift   `json:"drift"`
     Split           []Split   `json:"split"`           // packages at two forms of their OCI name, one per other form
+    RepositoryUnknown []RepositoryUnknown `json:"repositoryUnknown"` // versions whose OCI repository the registry does not know
     Errors          []Finding `json:"errors"`
     Truncated       bool      `json:"truncated"`       // a list stopped at 1 000 entries
 }
@@ -977,6 +978,15 @@ type Split struct {                           // index-schema.md, Invariants; AD
     IndexedTags []string `json:"indexedTags"` // the tags of its versions in the index
     Other       string   `json:"other"`       // another form of it, below the repo's base
     OtherTags   []string `json:"otherTags"`   // the tags of the profile manifests there, not indexed
+}
+type RepositoryUnknown struct {               // index-schema.md, Invariants; #567
+    Repository string        `json:"repository"` // the OCI repository, below the repo's base
+    Package    string        `json:"package"`
+    Version    string        `json:"version"`
+    Variant    string        `json:"variant,omitempty"`
+    Tag        string        `json:"tag"`
+    Digest     digest.Digest `json:"digest"`
+    Delete     string        `json:"delete"`     // DELETE /api/v1/repos/<format>/<name>/packages/<package>/versions/<version>[?variant=]
 }
 ```
 

@@ -56,6 +56,8 @@ type scan struct {
 	fatal       error                      // the first error of the run's own: the database, the context
 	unsupported bool                       // no plugin for the repo's format: the scan stops, and nothing is swept
 	splits      map[[2]string]*Split       // packages found at another form than the index has, by name and form
+	listed      map[string]bool            // OCI repositories whose tag list answered: true, or false for a 404 (repoUnknown)
+	unknown     map[string]int             // the versions reported in RepositoryUnknown, by package path
 }
 
 // repo reindexes one repo. The error is the run's own; everything about the registry and the
@@ -63,7 +65,7 @@ type scan struct {
 func (w *Worker) repo(ctx context.Context, repo index.Repo, start time.Time, req Request) (RepoReport, error) {
 	s := &scan{w: w, repo: repo, base: repoBase(repo), req: req, start: start, began: w.now(),
 		sem: make(chan struct{}, w.concurrency), rep: newRepoReport(repo.Format + "/" + repo.Name),
-		referrers: map[digest.Digest]struct{}{}, splits: map[[2]string]*Split{}}
+		referrers: map[digest.Digest]struct{}{}, splits: map[[2]string]*Split{}, listed: map[string]bool{}, unknown: map[string]int{}}
 	prov, ok := w.providers.Provider(repo.Registry)
 	if !ok || prov == nil {
 		s.failure(Finding{Error: fmt.Sprintf("registry %q is not configured", repo.Registry)})
@@ -182,6 +184,7 @@ func (s *scan) ociRepo(ctx context.Context, name string) {
 		return nil
 	})
 	if errors.Is(err, provider.ErrNotFound) {
+		s.tagList(name, false)
 		return // gone: not seen, so its oci_repos row and its versions are swept
 	}
 	if err != nil {
@@ -193,6 +196,7 @@ func (s *scan) ociRepo(ctx context.Context, name string) {
 		s.failure(Finding{Repository: pkgPath, Error: "list the tags: " + err.Error()})
 		return
 	}
+	s.tagList(name, true)
 	if s.dbErr(s.w.index.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: s.repo.ID, Path: name, SeenAt: s.w.now()})) {
 		return
 	}
@@ -454,7 +458,8 @@ func (s *scan) orphans(ctx context.Context) {
 // answer MANIFEST_UNKNOWN, unknownApart after the first, deletes a version older than the grace
 // age. A manifest found records its OCI repository again. Then go the packages without
 // versions, the OCI repositories not seen for the grace age, and the sightings the run did not
-// record again. A registry that does not answer deletes nothing.
+// record again. A registry that does not answer deletes nothing, and nor does one that does not
+// know a version's OCI repository (RepositoryUnknown, logged once per repository).
 func (s *scan) sweep(ctx context.Context) {
 	unseen, err := s.w.index.ListUnseenVersions(ctx, s.repo.ID, s.start)
 	if s.dbErr(err) {
@@ -469,6 +474,7 @@ func (s *scan) sweep(ctx context.Context) {
 			keep = append(keep, m.Version.ID)
 		}
 	}
+	s.warnUnknown(ctx)
 	if s.stopped(ctx) || s.dbErr(s.w.index.TouchVersions(ctx, keep, s.w.now())) {
 		return
 	}
@@ -485,7 +491,8 @@ func (s *scan) sweep(ctx context.Context) {
 // recheck looks up one version the run did not see, for sweep, and reports whether the
 // registry has it: its tag names its digest, or another one (drift), or the tag does not resolve
 // and lookup finds the manifest. Then its OCI repository is recorded again. Otherwise lookup
-// decides: the version is removed, pending, or reported.
+// decides: the version is removed, pending, reported as an error, or reported in
+// RepositoryUnknown when the registry does not know its OCI repository.
 func (s *scan) recheck(ctx context.Context, m index.VersionMatch) bool {
 	f := Finding{Repository: m.Package.NameOCI, Tag: m.Version.Tag, Digest: m.Version.Digest}
 	name := s.base + "/" + m.Package.NameOCI
@@ -512,6 +519,8 @@ func (s *scan) recheck(ctx context.Context, m index.VersionMatch) bool {
 				s.rep.Removed++
 				s.mu.Unlock()
 			}
+		case nameUnknown:
+			s.unknownRepository(m)
 		case pending, unchecked:
 		}
 	default:
