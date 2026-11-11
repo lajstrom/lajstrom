@@ -65,8 +65,10 @@ lajstrom admin user enable alice
 
 A disabled user's credentials are refused with `401` from the next request on, on every
 replica: the user is read from the database on every request, and the cache of verified
-passwords never outlives a change. Users are not deleted in this version; `lajstrom admin user
-list` shows who is disabled. A disabled user's personal access tokens are refused too.
+passwords never outlives a change. `lajstrom admin user list` shows who is disabled. A disabled
+user's personal access tokens are refused too. To remove a user for good, `lajstrom admin user
+delete alice` (or `DELETE /api/v1/users/alice`) revokes its tokens, deletes its bindings and
+frees its name; it is not undone, and the audit rows keep the name.
 
 ### A credential for CI
 
@@ -195,11 +197,19 @@ replica whose insert loses reads the other's key.
 
 ### Clients
 
-A client pins the repo's `key.asc` and names it in its source:
+A client pins the repo's `key.asc` and names it in its source. Nothing is open by default, so
+the client reads with a deploy token of the repo with `read`, `APT_TOKEN` here (`lajstrom admin
+token create --repo apt/ubuntu-internal --name "apt clients" --scopes read`): apt takes it from
+`/etc/apt/auth.conf.d`, as the password of the login `deploy`, and `curl` with `-u`. Without it
+`curl -f` fails with `401` and leaves an empty keyring behind, and `apt-get update` fails with
+`401`. A repo with anonymous read needs neither.
 
 ```sh
+printf 'machine art.example.com/apt/ubuntu-internal\nlogin deploy\npassword %s\n' "$APT_TOKEN" |
+  sudo tee /etc/apt/auth.conf.d/ubuntu-internal.conf > /dev/null
+sudo chmod 600 /etc/apt/auth.conf.d/ubuntu-internal.conf
 sudo install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://art.example.com/apt/ubuntu-internal/key.asc | sudo tee /etc/apt/keyrings/ubuntu-internal.asc > /dev/null
+curl -fsSL -u "deploy:$APT_TOKEN" https://art.example.com/apt/ubuntu-internal/key.asc | sudo tee /etc/apt/keyrings/ubuntu-internal.asc > /dev/null
 echo "deb [signed-by=/etc/apt/keyrings/ubuntu-internal.asc] https://art.example.com/apt/ubuntu-internal jammy main" |
   sudo tee /etc/apt/sources.list.d/ubuntu-internal.list
 sudo apt-get update
@@ -207,9 +217,12 @@ sudo apt-get update
 
 The general form is
 `deb [signed-by=/etc/apt/keyrings/<repo>.asc] https://host/apt/<repo> <suite> <component>`.
+A `machine` without a scheme is used for `https` only; over plain `http` apt sends the
+credentials only to a `machine http://…` ([quickstart/apt.md](quickstart/apt.md#4-install-it-with-apt-get-a-04)
+runs this on `http://localhost:8080`).
 The apt of Ubuntu 22.04 and 24.04 and of Debian 12 reads the armored `.asc` in `signed-by` as
 it is (the integration tests run all three); for an older apt, `gpg --dearmor` makes the binary
-`.gpg` form. `key.asc` needs read on the repo like the rest of it. For configuration management, `lajstrom admin key export --repo apt/<repo>` prints
+`.gpg` form. For configuration management, `lajstrom admin key export --repo apt/<repo>` prints
 the same keyring.
 
 ### Rotation
@@ -230,8 +243,11 @@ still signs `InRelease` and `Release.gpg` beside the new one and stays in `key.a
 - an `InRelease` signed before the rotation, from a mirror or a cache, verifies against the new
   `key.asc`.
 
-When the grace ends the retired key no longer signs and leaves `key.asc`, and a client that
-still has only the old key fails `apt-get update` with `NO_PUBKEY`.
+When the grace ends the retired key leaves `key.asc`. It stops signing when the suite's indexes
+are rendered again, because the signed `InRelease` and `Release.gpg` are cached with them: at
+the next publish or delete in the repo, or at the next reindex, which the reconcile loop runs
+every `reconcile.interval` (default `1h`). From then on a client that still has only the old key
+fails `apt-get update` with `NO_PUBKEY`.
 
 The runbook:
 
@@ -243,8 +259,10 @@ The runbook:
 
 Rotate when the algorithm changes (`keys.algorithm` applies to keys made from then on), when a
 new master key replaces a lost one, and when a key may have leaked. For a leaked key, set
-`keys.retireGrace: 0s` first, so that the retired key stops signing and leaves `key.asc` at
-once, and accept that clients fail until they have the new `key.asc`.
+`keys.retireGrace: 0s` first and restart the replicas, which read it at start, then rotate: the
+retired key stops signing and leaves `key.asc` at once, and clients fail until they have the new
+`key.asc`. When the rotation came first, `lajstrom reindex --repo apt/<repo>` after the restart
+drops the indexes that the retired key signed.
 
 ### The bearer-token key
 
@@ -288,8 +306,8 @@ The keys of the server can be listed with
 
 ### `lajstrom admin key`
 
-Every subcommand needs the configuration, the master key in the variable `keys.masterKeyEnv`
-names, and a migrated database; none goes through HTTP.
+Every subcommand needs the configuration, the master key (in the variable `keys.masterKeyEnv`
+names, or in the file of `keys.masterKeyFile`), and a migrated database; none goes through HTTP.
 
 | Command | What it does |
 | --- | --- |
@@ -616,18 +634,21 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | `push`, `delete` | the frontends and the facade, through the ingest pipeline and the delete paths; the facade itself for a push to an `oci` repo |
 | `npm.dist-tag`, `npm.deprecate` | an entry of an npm package's journal: `npm dist-tag`, `npm deprecate`, the dist-tag of a publish ([ADR 0012](adr/0012-npm-profile-routes-and-dist-tags-journal.md)) |
 | `proxy.fetch` | a proxy repo that published a file it fetched from its upstream, as the principal whose request missed ([proxy-and-group.md](spec/proxy-and-group.md) §5) |
+| `proxy.reject` | a proxy repo that refused a file of its upstream for its bytes: a checksum, `Validate`, a bound ([rbac.md](spec/rbac.md) §7) |
 | `repo.create`, `repo.update`, `repo.delete`, `repo.reindex`, `repo.cache.purge` | the API, the CLI and the repos of the configuration; `repo.cache.purge` from `DELETE …/upstream-cache` |
 | `user.create`, `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete` | the API and `lajstrom admin user` |
 | `binding.create`, `binding.delete` | the API and `lajstrom admin binding` |
 | `token.create`, `token.revoke` | personal access tokens and deploy tokens, from the API and the CLI |
 | `key.rotate`, `key.drop` | `lajstrom admin key` |
+| `reconcile` | the [reconcile](#reconcile) loop of `serve`, one row per repo that a run changed |
 
 A row has the time, the principal (`user:<uid>`, `token:<id>`, `anonymous`) and, for a user,
 its name at the time (`principalName`, which stays when the user is renamed or deleted), the
 action, the repo, the subject (a package and version, the user or binding acted upon), the
-manifest digest, the client address and details: the change, its source (`api`, `cli`,
-`config`) and the request id; a write or a fetch that came through a group is its member's row,
-with the group in `details.via` (`"via": "npm/all"`). The client address is the one of the access log
+manifest digest, the client address and details: the change, the source of a change of the
+control plane (`api`, `cli`, `config`; the rows of `lajstrom admin key` have none) and the
+request id of a change made over HTTP; a write or a fetch that came through a group is its
+member's row, with the group in `details.via` (`"via": "npm/all"`). The client address is the one of the access log
 ([ADR 0011](adr/0011-client-address-behind-a-proxy.md)): behind a proxy of
 `server.trustedProxies`, the client that `X-Forwarded-For` names, not the proxy. The rows of the
 ingest pipeline, a `push` through `/v2` or a frontend and a `delete`, read the address and the
@@ -647,7 +668,7 @@ or oras client gets for every pull and push: a row each would be noise, and what
 allows is audited itself. Every request, with its principal, is in the access log.
 
 **Reading it:** `GET /api/v1/audit` as admin, newest first, by repo, principal, action and
-time, a page at a time ([api.md](api.md#audit)):
+time, a page at a time ([api.md](api.md#audit)), here with `LAJSTROM` the server's URL:
 
 ```sh
 curl -fsS -u admin "$LAJSTROM/api/v1/audit?repo=raw/scratch&since=2026-11-09T00:00:00Z&limit=50" | jq -c '.events[]'
@@ -696,7 +717,7 @@ digest of its manifest.
   claims older than `ingest.claimTTL` are deleted.
 
 A repo whose format has no plugin in this binary is listed with one error and left alone; a
-binary built from this repository has all four (raw, apt, pypi, maven). The manifests of an `oci` repo, which has
+binary built from this repository has all five (raw, apt, pypi, maven, npm). The manifests of an `oci` repo, which has
 no plugin by design, are listed as foreign and recorded in `oci_repos`.
 
 ### Running it
