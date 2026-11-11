@@ -23,6 +23,11 @@ var (
 	// ErrForbidden means Authorize denied a principal that can read the repo. Frontends answer
 	// 403; a principal without any access gets index.ErrNotFound (docs/spec/rbac.md §3).
 	ErrForbidden = errors.New("format: forbidden")
+
+	// ErrPrecondition means a conditional request found the resource changed since the client
+	// read it: a conditional delete of a version (Condition, RefusedError). The management API
+	// answers 412.
+	ErrPrecondition = errors.New("format: precondition failed")
 )
 
 // The errors of a proxy's upstream and of a repo that takes no writes (ADR 0013,

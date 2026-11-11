@@ -60,7 +60,11 @@ const maxBody = 64 << 10
 //	DELETE /api/v1/repos/{format}/{repo}[?force=true]  delete a repo
 //	POST   /api/v1/repos/{format}/{repo}/reindex       start a reindex of the repo: 202, 409 when one runs
 //	GET    /api/v1/repos/{format}/{repo}/reindex       the latest run that covered the repo, with its report
-//	DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}[?variant=]  delete a version, its referrers first
+//	GET    /api/v1/repos/{format}/{repo}/packages[?prefix=&limit=&cursor=]  the repo's packages by name, a page at a time
+//	GET    /api/v1/repos/{format}/{repo}/packages/{name}/versions[?limit=&cursor=]  the package's versions, newest first
+//	DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}[?variant=&force=]  delete a version, its referrers first;
+//	                                                   If-Match and If-Unmodified-Since make it conditional
+//	POST   /api/v1/repos/{format}/{repo}/versions:delete  delete versions in a batch, each conditional; dryRun
 //	DELETE /api/v1/repos/{format}/{repo}/upstream-cache[?name=]  drop a proxy's cache of its upstream, or of one name
 //	GET    /api/v1/repos/{format}/{repo}/deploy-tokens       the deploy tokens of a repo
 //	POST   /api/v1/repos/{format}/{repo}/deploy-tokens       create one; the answer has its secret
@@ -128,7 +132,10 @@ func (h *handler) routes() []route {
 		{"DELETE /api/v1/repos/{format}/{repo}", h.deleteRepo},
 		{"POST /api/v1/repos/{format}/{repo}/reindex", h.reindexRepo},
 		{"GET /api/v1/repos/{format}/{repo}/reindex", h.reindexStatus},
+		{"GET /api/v1/repos/{format}/{repo}/packages", h.listPackages},
+		{"GET /api/v1/repos/{format}/{repo}/packages/{name}/versions", h.listVersions},
 		{"DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}", h.deleteVersion},
+		{"POST /api/v1/repos/{format}/{repo}/versions:delete", h.deleteVersions},
 		{"DELETE /api/v1/repos/{format}/{repo}/upstream-cache", h.purgeUpstreamCache},
 		{"GET /api/v1/repos/{format}/{repo}/deploy-tokens", h.listDeployTokens},
 		{"POST /api/v1/repos/{format}/{repo}/deploy-tokens", h.createDeployToken},

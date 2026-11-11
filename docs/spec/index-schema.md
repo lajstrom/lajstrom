@@ -207,8 +207,24 @@ tags of the manifest and deletes it (http-routing.md §2, DELETE: a delete by ta
 that other tags name is refused), and a push by tag to an `oci` repo, which passes through to
 the backend, holds it for the push; both whether the backend has the referrers API or not. A tag
 pushed during a delete is then either counted by it or pushed after it. One operation takes one
-such lock, never two, since `WithReferrersLock` holds a connection of the pool. Approved by the
-maintainer on 2026-11-10 (#284).
+such lock, never two, since `WithReferrersLock` holds a connection of the pool, with the one
+exception below. Approved by the maintainer on 2026-11-10 (#284).
+
+A delete writes its rows in the index, and its audit row, before it releases its lock, so that
+the writer that takes the lock next reads the index without the version (#72). A conditional
+delete of an npm version (`format.Condition`, http-routing.md §4) takes two locks, in one order:
+first the package's journal lock (the lock keyed by its OCI repository and the empty blob's
+digest, [npm](#npm-the-journal-and-its-state-adr-0012) below), then, inside it, the tag lock of
+the manifest. Under the journal lock it reads the package's dist-tags, and a dist-tag move, which
+checks under the same lock that the version it names exists, comes either before the delete,
+which then refuses the version, or after its rows are gone, and is refused itself. **The order
+is the journal lock before a tag lock, never the other way**: nothing waits for a journal lock
+while it holds a tag lock. A journal append, the delete of a journal entry and reindex's journal
+pass take the journal lock alone; a referrer push, a push by tag and every other delete take a
+tag lock alone. So two operations never wait on each other crosswise. On Postgres the delete
+holds two connections of the pool for the locks and a third for the transaction of its rows, as
+a journal append holds one for its lock and one for its transaction: when the pool is
+exhausted, a delete that waits for a connection waits until one is free or its request ends.
 
 ## Derived (rebuilt by reindex)
 

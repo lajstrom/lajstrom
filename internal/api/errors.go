@@ -52,15 +52,16 @@ const (
 )
 
 // codeOf returns the envelope code of an error status. There is no code of its own for 401 in
-// this version: it is FORBIDDEN, told apart by the status and the Basic challenge. Every other
-// 4xx, 413 included, is INVALID; 501, 502 and 503 are UNAVAILABLE, any other 5xx INTERNAL.
+// this version: it is FORBIDDEN, told apart by the status and the Basic challenge. 412, a
+// conditional delete that found the version changed, is CONFLICT as 409 is. Every other 4xx,
+// 413 included, is INVALID; 501, 502 and 503 are UNAVAILABLE, any other 5xx INTERNAL.
 func codeOf(status int) string {
 	switch status {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return codeForbidden
 	case http.StatusNotFound:
 		return codeNotFound
-	case http.StatusConflict:
+	case http.StatusConflict, http.StatusPreconditionFailed:
 		return codeConflict
 	case http.StatusNotImplemented, http.StatusBadGateway, http.StatusServiceUnavailable:
 		return codeUnavailable
