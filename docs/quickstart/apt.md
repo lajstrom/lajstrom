@@ -19,9 +19,11 @@ export LAJSTROM_MASTER_KEY=$(openssl rand -hex 32) # keep it: the repo's signing
 make run                                          # serves deploy/compose/lajstrom.example.yaml on :8080
 ```
 
-In another terminal (export the same `LAJSTROM_MASTER_KEY` there too: `admin key` of section 8
-needs it), make the repo `apt/ubuntu` on the Zot of the stack, and the first user, an admin,
-with a password of your own (8 bytes at least):
+In another terminal, once `make run` has logged `listening` (`serve` creates the tables of
+`lajstrom.db`; before that, `admin` fails with `no such table`), and with the same
+`LAJSTROM_MASTER_KEY` exported there too (`admin key` of section 8 needs it), make the repo
+`apt/ubuntu` on the Zot of the stack, and the first user, an admin, with a password of your own
+(8 bytes at least):
 
 ```sh
 bin/lajstrom admin repo create apt/ubuntu --registry local --config deploy/compose/lajstrom.example.yaml
@@ -31,8 +33,8 @@ u="admin:$LAJSTROM_ADMIN_PASSWORD"
 ```
 
 ```json
-{"format":"apt","name":"ubuntu","registry":"local","kind":"hosted","anonymousRead":false,"policy":null,"createdAt":"2026-11-09T11:22:02.207106Z","updatedAt":"2026-11-09T11:22:02.207106Z"}
-{"name":"admin","kind":"local","disabled":false,"createdAt":"2026-11-09T11:22:02.234934Z"}
+{"format":"apt","name":"ubuntu","registry":"local","kind":"hosted","anonymousRead":false,"policy":null,"createdAt":"2026-11-11T07:27:10.414239Z","updatedAt":"2026-11-11T07:27:10.414239Z"}
+{"uid":"01a1c980-e66e-745c-8003-2f2d631dda41","name":"admin","kind":"local","disabled":false,"createdAt":"2026-11-11T07:27:10.446672Z"}
 ```
 
 The repo gets its signing key on first use, and from then on `serve` refuses to start without
@@ -58,6 +60,9 @@ docker run --rm --platform linux/amd64 -u "$(id -u):$(id -g)" -v "$PWD:/w" -w /w
 ```text
 dpkg-deb: building package 'hello' in 'hello_1.0.0-1_amd64.deb'.
 ```
+
+`dpkg-deb` records the times of the files, so your `.deb` differs from the one of this page by a
+few bytes: its size, its hashes and the digests below are your own.
 
 ## 3. Upload it (A-01)
 
@@ -123,7 +128,8 @@ In the container, give apt the token, pin the repo's key and add the source, as 
 ([operations.md](../operations.md#keys-and-apt-signing)). The token goes in
 `/etc/apt/auth.conf.d` as the password of the login `deploy`, under a machine written with
 `http://`: that is the only form for which apt sends credentials over plain http. The image has
-no `curl`, so apt's own `apt-helper` fetches `key.asc`, with the same `auth.conf`:
+no `curl`, so apt's own `apt-helper` fetches `key.asc`, with the same `auth.conf`. In a Debian
+image (`debian:13` was tried) the file to remove is `debian.sources`; the rest is the same:
 
 ```sh
 rm /etc/apt/sources.list.d/ubuntu.sources     # only the Lajstrom repo, for a short output
@@ -448,16 +454,23 @@ both without credentials, signed by `key.asc` (or `[trusted=yes]` when the serve
 and `apt-cache policy`; `anonymousRead` off, the anonymous `apt-get update` refused with a `401`,
 then the same with credentials in `auth.conf`, `apt-get download` and the hashes; a second
 `apt-get update` with `Acquire::By-Hash=no`; a copy of the suite with wrong hashes in its
-`Release`, which apt refuses with `Hash Sum mismatch`; the repeat and the two `409`s. It runs as
-the user of `LAJSTROM_E2E_USER` and `LAJSTROM_E2E_PASSWORD`, which needs `write` and `manage` on
-the repo, sets the repo's `anonymousRead` back as it was on exit, and needs the server's
-`auth.anonymousRead: true`. It needs `curl`, `jq` and Docker, runs `admin deb metadata` from
-`bin/lajstrom` (or `go run`), and builds and installs in `ubuntu:24.04`, or in the image
-`APT_E2E_IMAGE` names (`ubuntu:22.04` and `debian:12` pass too). Given the server's log file in
-`LAJSTROM_SERVER_LOG`, it also checks that apt asked for the `Packages` by-hash, and by name with
-`Acquire::By-Hash=no`:
+`Release`, which apt refuses with `Hash Sum mismatch`; the repeat and the two `409`s; last, both
+versions deleted through the API (#61), after which neither `Packages` nor apt has them. It runs
+as the user of `LAJSTROM_E2E_USER` and `LAJSTROM_E2E_PASSWORD`, which needs `write`, `manage` and
+`delete` on the repo, sets the repo's `anonymousRead` back as it was on exit, and needs the
+server's `auth.anonymousRead: true`. It needs `curl`, `jq` and Docker, runs `admin deb metadata`
+from `bin/lajstrom` (or `go run`), and builds and installs in `ubuntu:24.04`, or in the image
+`APT_E2E_IMAGE` names (`ubuntu:22.04`, `debian:12` and `debian:13` pass too). Given the server's
+log file in `LAJSTROM_SERVER_LOG`, it also checks that apt asked for the `Packages` by-hash, and
+by name with `Acquire::By-Hash=no`.
+
+`make e2e E2E=apt` runs it against a server of its own, which has `auth.anonymousRead: true`. The
+example configuration has it off, so against the server of this page the script fails at the
+anonymous step until the switch is on in a copy of the example, which `make run` prefers, and
+`make run` is started again, with the same `LAJSTROM_MASTER_KEY`:
 
 ```sh
+sed 's/^  anonymousRead: false/  anonymousRead: true/' deploy/compose/lajstrom.example.yaml > deploy/compose/lajstrom.yaml   # auth's, not the repos'
 LAJSTROM_E2E_USER=admin LAJSTROM_E2E_PASSWORD="$LAJSTROM_ADMIN_PASSWORD" test/e2e/apt.sh http://localhost:8080 ubuntu
 ```
 
@@ -477,14 +490,30 @@ ok   a copy of the suite whose Release has every SHA256 one digit off: apt-get u
 ok   PUT of the same bytes again: 201, the same digest sha256:0bfafbc6d84febf324cc9e55f1cc8580930864964cbc3e1c9bff32193fb8c248
 ok   PUT of other bytes as e2e-put-20261109161811-25900 1.0.0-1 amd64 to jammy/main: 409, index: tag "1.0.0-1__jammy_2fmain_2famd64" already points at sha256:0bfafbc6d84febf324cc9e55f1cc8580930864964cbc3e1c9bff32193fb8c248
 ok   PUT of other bytes as e2e-put-20261109161811-25900 1.0.0-1 amd64 to noble/main: 409, index: conflict: pool file name e2e-put-20261109161811-25900_1.0.0-1_amd64.deb is held by version 1.0.0-1 in jammy/main with another content; a Debian pool holds one content per file name
+ok   DELETE /api/v1/repos/apt/ubuntu/packages/{e2e-put-20261109161811-25900,e2e-oras-20261109161811-25900}/versions/1.0.0-1: 204; the Packages lists neither; purged, apt-get update, apt-cache show finds neither
 PASS apt e2e against http://localhost:8080/apt/ubuntu/
 ```
 
-apt versions cannot be deleted yet, so the packages of each run stay in the repo.
+A run that fails before its last step leaves its two packages in the repo.
 
 ## Clean up
+
+A version goes with `DELETE` on the API, every suite it is in at once
+([api.md](../api.md#delete-a-version-delete-apiv1reposformatnamepackagespackageversionsversion)):
+`204`, and the next `Packages` and `apt-get update` no longer have it:
+
+```sh
+curl -u "$u" -X DELETE http://localhost:8080/api/v1/repos/apt/ubuntu/packages/world/versions/2.0-1
+curl -u "$u" -X DELETE http://localhost:8080/api/v1/repos/apt/ubuntu/packages/hello/versions/1.0.0-1
+```
+
+Everything, the repo's keys included:
 
 ```sh
 make dev-down RESET=1   # the registries forget what they hold
 rm lajstrom.db          # the index, and with it the repo's keys
+rm -r hello other world hello_1.0.0-1_amd64.deb world_2.0-1_amd64.deb metadata.json apt-token .oras-auth.json
 ```
+
+The last line removes what this page made in the checkout; `deploy/compose/lajstrom.yaml` too, if
+you made it for the end-to-end script.
