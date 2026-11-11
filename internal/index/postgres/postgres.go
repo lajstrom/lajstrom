@@ -41,12 +41,24 @@ const (
 )
 
 // unavailableStates are the SQLSTATE codes of a server that ends or refuses connections, which
-// the store maps to index.ErrUnavailable, beside the class 08 (connection exception).
+// the store maps to index.ErrUnavailable, beside the class 08 (connection exception): it shuts
+// down or starts, it has no connection left, or a timeout of its own ended the session (#627).
 var unavailableStates = map[string]bool{
 	"57P01": true, // admin_shutdown: terminating connection due to administrator command
 	"57P02": true, // crash_shutdown
 	"57P03": true, // cannot_connect_now: the database system is starting up or shutting down
 	"53300": true, // too_many_connections
+	"25P03": true, // idle_in_transaction_session_timeout
+	"57P05": true, // idle_session_timeout
+	"25P04": true, // transaction_timeout (Postgres 17 and later)
+}
+
+// abortedStates are the SQLSTATE codes of a transaction that the database aborted and that may
+// pass when run again, which the store maps to index.ErrUnavailable too: a deadlock it broke, or
+// a conflict it could not serialize (on YugabyteDB also one it could not retry itself, #629).
+var abortedStates = map[string]bool{
+	"40001": true, // serialization_failure: a conflict, or a read that must restart
+	"40P01": true, // deadlock_detected
 }
 
 var dialect = sqlstore.Dialect{
@@ -61,22 +73,13 @@ var dialect = sqlstore.Dialect{
 
 // yugabyte is the dialect on YugabyteDB (docs/deploy/databases.md#yugabytedb), which Open tells
 // from Postgres by the server_version the server reports ("15.12-YB-2026.1.3.0-b0"): its
-// UpsertPackage inserts under a lock (sqlstore.Dialect.PackageLock, #629), and a transaction it
-// aborted to break a deadlock or a conflict that it could not retry itself (abortedStates) is
-// index.ErrUnavailable, for the same request again may pass. Postgres needs neither.
+// UpsertPackage inserts under a lock (sqlstore.Dialect.PackageLock, #629), which Postgres does
+// not need.
 var yugabyte = func() sqlstore.Dialect {
 	d := dialect
 	d.PackageLock = "SELECT pg_advisory_xact_lock(?)"
-	d.IsUnavailable = func(err error) bool { return isUnavailable(err) || abortedStates[sqlState(err)] }
 	return d
 }()
-
-// abortedStates are the SQLSTATE codes of a transaction that YugabyteDB aborted and that may
-// pass when run again.
-var abortedStates = map[string]bool{
-	"40001": true, // serialization_failure: a conflict, or a read that must restart
-	"40P01": true, // deadlock_detected
-}
 
 // Open connects to the PostgreSQL database of dsn, a URL or a keyword/value string as pgx
 // parses it (docs/configuration.md): postgres://lajstrom@db:5432/lajstrom?sslmode=require.
@@ -171,14 +174,15 @@ func poolSize(cfg *pgx.ConnConfig) (int, error) {
 }
 
 // isUnavailable reports whether err says that the database did not answer: a server error of
-// unavailableStates or of the class 08, also one that ended a connection attempt (the 57P03 of
-// a server that starts); a connection that could not be made (*pgconn.ConnectError: refused, a
-// host name that does not resolve, connect_timeout); one that broke (a network error, an
-// unexpected EOF); database/sql's driver.ErrBadConn, when every attempt found its connection
-// closed. Another server error, a wrong password included, is not: the server answered.
+// unavailableStates, of abortedStates or of the class 08, also one that ended a connection
+// attempt (the 57P03 of a server that starts); a connection that could not be made
+// (*pgconn.ConnectError: refused, a host name that does not resolve, connect_timeout); one that
+// broke (a network error, an unexpected EOF); database/sql's driver.ErrBadConn, when every
+// attempt found its connection closed. Another server error, a wrong password included, is not:
+// the server answered.
 func isUnavailable(err error) bool {
 	if state := sqlState(err); state != "" {
-		return unavailableStates[state] || strings.HasPrefix(state, "08")
+		return unavailableStates[state] || abortedStates[state] || strings.HasPrefix(state, "08")
 	}
 	var (
 		ce *pgconn.ConnectError
