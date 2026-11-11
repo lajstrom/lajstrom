@@ -63,12 +63,13 @@ type ServeBlobOptions struct {
 //     back until the hash is known.
 //
 // An error before the response started, the provider's among them (provider.ErrNotFound is
-// 404), is answered through opts.Fail. The error ServeBlob returns is a stream that broke
-// after the headers went out, which the caller logs: the client got a short body. A stream
-// that stops because the client went away (the request's context is done) is not an error.
-// A whole blob whose bytes do not have the digest d is not returned either: ServeBlob aborts
+// 404), is answered through opts.Fail. The error ServeBlob returns is a stream with a
+// Content-Length that broke after the headers went out, which the caller logs: the client got
+// a short body, and the length to see it by. A stream that stops because the client went away
+// (the request's context is done) is not an error. A whole blob whose bytes do not have the
+// digest d is not returned either, nor a stream of unknown size that broke: ServeBlob aborts
 // the response with a panic that wraps http.ErrAbortHandler, which the caller lets through to
-// net/http (docs/spec/guarantees.md, INV-40).
+// net/http (docs/spec/guarantees.md, INV-40; #568).
 func ServeBlob(w http.ResponseWriter, r *http.Request, prov provider.Provider, name string, d digest.Digest, opts ServeBlobOptions) error {
 	a := &blobAnswer{w: w, r: r, prov: prov, name: name, d: d, opts: opts, fail: opts.Fail}
 	if a.fail == nil {
@@ -157,6 +158,10 @@ func (a *blobAnswer) get() error {
 // the body has ended: it goes out when the bytes have the digest d, and otherwise the response
 // is aborted, so that no client gets all of a blob whose bytes are not its digest
 // (docs/spec/guarantees.md, INV-40). A range (206) is not the whole blob and is not hashed.
+// A stream of unknown size (b.Size -1, no Content-Length) that breaks is aborted the same way,
+// instead of returned (#568): the client could not tell the short body from the whole one. A
+// body with Content-Length that comes short is returned: net/http then closes the connection,
+// and the client has the length to see it.
 func (a *blobAnswer) copy(b provider.Blob) error {
 	var dst io.Writer = a.w
 	var dw *digestWriter
@@ -174,10 +179,17 @@ func (a *blobAnswer) copy(b provider.Blob) error {
 		}
 		err = dw.release()
 	}
-	if err != nil && a.r.Context().Err() == nil {
-		return fmt.Errorf("format: blob %s@%s: the stream failed after %d bytes: %w", a.name, a.d, n, err)
+	if err == nil || a.r.Context().Err() != nil {
+		return nil
 	}
-	return nil
+	err = fmt.Errorf("format: blob %s@%s: the stream failed after %d bytes: %w", a.name, a.d, n, err)
+	if b.Size < 0 {
+		// No Content-Length went out: if the handler returned, net/http would end the body
+		// cleanly (HTTP/1: the last chunk; HTTP/2: END_STREAM), and the client would take the
+		// short body for the whole blob.
+		panic(fmt.Errorf("%w; it had no Content-Length, the response is aborted: %w", err, http.ErrAbortHandler))
+	}
+	return err
 }
 
 // abort ends the answer of a blob whose n bytes from the registry do not have its digest:

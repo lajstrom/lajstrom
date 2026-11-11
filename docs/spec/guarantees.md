@@ -922,9 +922,13 @@ status is `holds on strongly consistent registries only` do not hold there.
   `facade.handler.streamManifest` through `facade.verifier`. The abort is a panic of an error
   that wraps `http.ErrAbortHandler`: net/http closes the connection (HTTP/1, without the rest of
   the body or the last chunk) or resets the stream (HTTP/2), and `server.Server.recovery` logs
-  the cause.
+  the cause. A stream from the registry that breaks halfway is aborted the same way when the
+  answer has no `Content-Length` (chunked, or HTTP/2 without `content-length`), since the
+  client could not tell its end from the blob's (#568); with `Content-Length`, net/http closes
+  the connection and the client has the length to see the short body by.
 - **Tests.** `TestServeBlobDigest` (with `Content-Length`, chunked, HTTP/2; a range not
-  hashed), `TestDownloadVerifiesDigest` (a 256 MiB blob and a manifest through the server, the
+  hashed), `TestServeBlobBrokenStream` (the registry drops the stream: chunked and HTTP/2
+  aborted, with `Content-Length` returned), `TestDownloadVerifiesDigest` (a 256 MiB blob and a manifest through the server, the
   heap under 64 MiB), `TestRecoveryAbortCause`, `TestStreamingMemory`.
 - **When violated.** Lajstrom notices: the client gets a short body and a broken connection,
   `lajstrom_download_digest_mismatches_total{registry}` counts it, and an `error` line
