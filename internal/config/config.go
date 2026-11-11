@@ -202,6 +202,9 @@ type CapabilityOverrides struct {
 	// write until every read sees it (lajstrom registry probe); 0 leaves it unset. Must not be
 	// negative, nor set with consistency strong.
 	ConsistencyBound time.Duration `yaml:"consistencyBound"`
+	// MaxNameDepth is the most components the backend takes in a repository name below the
+	// instance prefix; 0 leaves it unset. Must not be negative.
+	MaxNameDepth int `yaml:"maxNameDepth"`
 }
 
 // The models of registries[].capabilities.consistency.

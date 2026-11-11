@@ -25,6 +25,7 @@ const (
 	vendorGitea   vendor = "gitea" // Forgejo too: it answers alike
 	vendorJFrog   vendor = "jfrog"
 	vendorZot     vendor = "zot"
+	vendorDocker  vendor = "dockerhub"
 	// vendorDistribution is CNCF distribution, and whatever else answers GET /v2/ as it does,
 	// with Docker-Distribution-Api-Version and nothing the table knows, on a host that is not
 	// a hosted service's (hostedRegistries).
@@ -49,6 +50,18 @@ const (
 
 // ghcrMaxBlobSize is GHCR's largest layer, 10 GB.
 const ghcrMaxBlobSize = 10_000_000_000
+
+// The depths of a name below the instance prefix that the vendor table knows
+// (docs/registries/quirks.md, Names and repositories):
+//   - Docker Hub: a name is exactly <namespace>/<repository>, and the namespace is the prefix;
+//   - GitLab behind its token service, which grants a project path and at most two components
+//     more (lib/container_registry/path.rb, LEVELS_SUPPORTED = 3), with a project per Lajstrom
+//     repo, <prefix><format>/<repo> (docs/registries/gitlab.md, Behind GitLab). The registry
+//     alone takes any depth.
+const (
+	dockerHubNameDepth = 1
+	gitLabNameDepth    = 4
+)
 
 // hostedRegistries are the hosts, and the parents of hosts, of hosted registries that answer
 // GET /v2/ as distribution does and are not it, or not on storage that was measured: never
@@ -75,6 +88,9 @@ var vendorDefaults = map[vendor]config.CapabilityOverrides{
 	// docs/registries/README.md, Consistency). A layer is at most 10 GB (GitHub's documented
 	// limit), which no probe measures: the bound of a /v2 blob upload (#246).
 	vendorGHCR: {Catalog: new(false), DeleteManifest: new(false), Consistency: config.ConsistencyEventual, MaxBlobSize: ghcrMaxBlobSize},
+	// No name of Lajstrom's fits, three components or more below the prefix: the probe's log
+	// says so (docs/registries/quirks.md, Consequences).
+	vendorDocker: {MaxNameDepth: dockerHubNameDepth},
 	// The probe is right: the referrers API, and no catalog for a project robot
 	// (docs/registries/harbor.md).
 	vendorHarbor: {},
@@ -124,9 +140,20 @@ func afterProbe(v vendor, probed *provider.Capabilities, referrers bool) quirks 
 		probed.DeleteManifest = false
 	case vendorJFrog:
 		return quirks{blobExistsByGET: true}
-	case vendorUnknown, vendorGitLab, vendorGHCR, vendorHarbor, vendorGitea, vendorZot, vendorDistribution:
+	case vendorUnknown, vendorGitLab, vendorGHCR, vendorHarbor, vendorGitea, vendorZot, vendorDistribution, vendorDocker:
 	}
 	return quirks{}
+}
+
+// vendorOverrides is the vendor table's capabilities for the registry of vendor v that id
+// describes: vendorDefaults, and for GitLab behind GitLab's token service the depth the service
+// grants (gitLabNameDepth).
+func vendorOverrides(v vendor, id identity) config.CapabilityOverrides {
+	d := vendorDefaults[v]
+	if v == vendorGitLab && id.gitLabTokenService() {
+		d.MaxNameDepth = gitLabNameDepth
+	}
+	return d
 }
 
 // vendorRealmHosts is the vendor table's part for token realms: for a registry known by its host
@@ -159,8 +186,9 @@ type identity struct {
 
 // detectVendor names the vendor of the registry that id describes:
 //
-//   - GitLab: GET /v2/ answers Gitlab-Container-Registry-Version;
 //   - GHCR: the host is ghcr.io;
+//   - Docker Hub: the host is docker.io or below it;
+//   - GitLab: GET /v2/ answers Gitlab-Container-Registry-Version;
 //   - JFrog: GET /v2/ answers X-Jfrog-Version;
 //   - Nexus: GET /v2/ answers Server: Nexus/<version>, or challenges with Basic and
 //     realm="Sonatype Nexus Repository Manager";
@@ -175,11 +203,12 @@ type identity struct {
 // the auth client meets on the first request only: one whose first request was not the
 // probe's stays unknown, which changes the log line and nothing else.
 func detectVendor(id identity) vendor {
+	if v := vendorOfHost(id.host); v != vendorUnknown {
+		return v
+	}
 	switch {
 	case id.header.Get(headerGitLabVersion) != "":
 		return vendorGitLab
-	case isHost(id.host, "ghcr.io"):
-		return vendorGHCR
 	case id.header.Get(headerJFrogVersion) != "":
 		return vendorJFrog
 	case strings.HasPrefix(strings.ToLower(id.header.Get("Server")), nexusServer):
@@ -203,25 +232,45 @@ func detectVendor(id identity) vendor {
 	return vendorUnknown
 }
 
+// vendorOfHost names the vendor that the host of the registry URL tells alone, GHCR or Docker
+// Hub, else vendorUnknown.
+func vendorOfHost(hostport string) vendor {
+	switch {
+	case isHost(hostport, "ghcr.io"):
+		return vendorGHCR
+	case atOrBelow(hostport, "docker.io"):
+		return vendorDocker
+	}
+	return vendorUnknown
+}
+
 // hosted reports whether hostport is one of hostedRegistries or below one.
 func hosted(hostport string) bool {
+	return slices.ContainsFunc(hostedRegistries, func(h string) bool { return atOrBelow(hostport, h) })
+}
+
+// atOrBelow reports whether hostport, with or without a port, is the host name or below it.
+func atOrBelow(hostport, name string) bool {
 	host := hostport
 	if h, _, err := net.SplitHostPort(hostport); err == nil {
 		host = h
 	}
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	for _, h := range hostedRegistries {
-		if host == h || strings.HasSuffix(host, "."+h) {
-			return true
-		}
-	}
-	return false
+	return host == name || strings.HasSuffix(host, "."+name)
 }
 
 // gitLabDatabase reports whether a GitLab registry keeps its metadata in its database, as
 // GitLab.com does.
 func (id identity) gitLabDatabase() bool {
 	return strings.EqualFold(id.header.Get(headerGitLabDatabase), "true")
+}
+
+// gitLabTokenService reports whether the registry's bearer challenge has GitLab's token service
+// for its realm, <GitLab>/jwt/auth, as GitLab.com's and every registry's behind a GitLab.
+func (id identity) gitLabTokenService() bool {
+	scheme, realm := challengeParam(id.challenge, "realm")
+	u, err := url.Parse(realm)
+	return scheme == "bearer" && err == nil && strings.HasSuffix(u.Path, "/jwt/auth")
 }
 
 // isHost reports whether hostport, with or without a port, is the host name.

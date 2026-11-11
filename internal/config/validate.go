@@ -282,6 +282,9 @@ func (r Registry) validate(p *problems, key string) {
 	if r.Capabilities.MaxBlobSize < 0 {
 		p.add(key+".capabilities.maxBlobSize", "must not be negative")
 	}
+	if r.Capabilities.MaxNameDepth < 0 {
+		p.add(key+".capabilities.maxNameDepth", "must not be negative")
+	}
 	r.Capabilities.validateConsistency(p, key+".capabilities")
 	a := r.Auth
 	if (a.Username == "") != (a.PasswordEnv == "") {

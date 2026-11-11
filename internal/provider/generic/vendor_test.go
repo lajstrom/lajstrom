@@ -76,7 +76,9 @@ func TestDetectVendor(t *testing.T) {
 		{name: "GitLab.com's challenge without its header", id: identity{host: "registry.gitlab.com", challenge: gitLabComChallenge}, want: vendorUnknown},
 		{name: "distribution", id: identity{host: "localhost:5001", header: plainV2}, want: vendorDistribution},
 		{name: "distribution with htpasswd", id: identity{host: "localhost:55002", header: plainV2, challenge: distributionChallenge}, want: vendorDistribution},
-		{name: "Docker Hub", id: identity{host: "registry-1.docker.io", header: plainV2}, want: vendorUnknown},
+		{name: "Docker Hub", id: identity{host: "registry-1.docker.io", header: plainV2}, want: vendorDocker},
+		{name: "Docker Hub by its short name, with the port", id: identity{host: "docker.io:443"}, want: vendorDocker},
+		{name: "a host that ends in docker.io", id: identity{host: "notdocker.io"}, want: vendorUnknown},
 		{name: "ACR", id: identity{host: "example.azurecr.io:443", header: plainV2}, want: vendorUnknown},
 		{name: "Zot", id: identity{host: "localhost:5000", header: zotV2}, want: vendorZot},
 		{name: "a host that ends in ghcr.io", id: identity{host: "notghcr.io"}, want: vendorUnknown},
@@ -92,6 +94,35 @@ func TestDetectVendor(t *testing.T) {
 				t.Errorf("gitLabDatabase = %v, want %v", got, tt.gitLab)
 			}
 		})
+	}
+}
+
+// TestGitLabTokenService: a GitLab's registry gets the depth of GitLab's token service only when
+// its challenge names that service, <GitLab>/jwt/auth; the registry alone takes any depth.
+func TestGitLabTokenService(t *testing.T) {
+	tests := []struct {
+		challenge string
+		want      bool
+	}{
+		{gitLabComChallenge, true},
+		{`Bearer realm="https://git.example/gitlab/jwt/auth",service="container_registry"`, true},
+		{gitLabTestServerChallenge, false},
+		{`Basic realm="https://gitlab.com/jwt/auth"`, false},
+		{`Bearer realm="https://gitlab.com/jwt/authorize"`, false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		id := identity{host: "registry.example", header: gitLabB, challenge: tt.challenge}
+		if got := id.gitLabTokenService(); got != tt.want {
+			t.Errorf("gitLabTokenService of %q = %v, want %v", tt.challenge, got, tt.want)
+		}
+		want := map[bool]int{true: gitLabNameDepth}[tt.want]
+		if got := vendorOverrides(vendorGitLab, id).MaxNameDepth; got != want {
+			t.Errorf("the GitLab's maxNameDepth with %q = %d, want %d", tt.challenge, got, want)
+		}
+	}
+	if got := vendorOverrides(vendorHarbor, identity{challenge: gitLabComChallenge}).MaxNameDepth; got != 0 {
+		t.Errorf("another vendor with GitLab's challenge: maxNameDepth = %d, want 0", got)
 	}
 }
 
@@ -140,6 +171,8 @@ func TestVendorDefaults(t *testing.T) {
 		{vendorHarbor, probed},
 		{vendorGHCR, provider.Capabilities{CreateOnPush: true, Referrers: true, BlobRedirect: true, Consistency: provider.ConsistencyEventual,
 			MaxBlobSize: 10_000_000_000}},
+		{vendorDocker, provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true, DeleteManifest: true, BlobRedirect: true,
+			MaxNameDepth: 1}},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.vendor), func(t *testing.T) {
@@ -193,6 +226,8 @@ func TestCapabilitiesVendor(t *testing.T) {
 			}
 		}
 	}
+	gitLabDeep := strong
+	gitLabDeep.MaxNameDepth = gitLabNameDepth
 	tests := []struct {
 		name   string
 		setup  func(f *fakeRegistry)
@@ -208,6 +243,7 @@ func TestCapabilitiesVendor(t *testing.T) {
 		{name: "another registry", setup: headers(http.Header{}, true), vendor: vendorUnknown},
 		{name: "GitLab A", setup: headers(gitLabA, true), vendor: vendorGitLab, want: strong},
 		{name: "GitLab B", setup: headers(gitLabB, true), vendor: vendorGitLab, warn: true, want: strong},
+		{name: "GitLab behind its token service", setup: gitLabTokens, vendor: vendorGitLab, want: gitLabDeep},
 		{name: "Harbor", setup: challenge("bearer", "Bearer", `,service="harbor-registry"`, true), vendor: vendorHarbor},
 		{name: "Nexus, docker format", setup: headers(nexusV2, false), vendor: vendorNexus, want: nexusDocker},
 		{name: "Nexus, docker format, told by its challenge", setup: challenge("basic", "BASIC", "", false), vendor: vendorNexus, want: nexusDocker},
@@ -265,6 +301,24 @@ func TestCapabilitiesVendor(t *testing.T) {
 	}
 }
 
+// gitLabTokens makes the fake GitLab A behind GitLab's token service, whose realm is
+// <GitLab>/jwt/auth.
+func gitLabTokens(f *fakeRegistry) {
+	f.authMode, f.realm = "bearer", f.srv.URL+"/jwt/auth"
+	f.hook = func(w http.ResponseWriter, r *http.Request) bool {
+		switch r.URL.Path {
+		case "/jwt/auth":
+			f.serveToken(w, r)
+			return true
+		case "/v2/":
+			for k, v := range gitLabA {
+				w.Header()[k] = v
+			}
+		}
+		return false
+	}
+}
+
 // checkProbeLog checks the lines of a probe: the vendor on the capabilities line, the line of
 // the workarounds when there are, and the warning about GitLab's metadata database when warn.
 func checkProbeLog(t *testing.T, logs string, v vendor, workarounds, warn bool) {
@@ -309,6 +363,40 @@ func TestConsistencyLog(t *testing.T) {
 			}
 			if warned := strings.Contains(logs, `level=WARN msg="the registry is eventually consistent`); warned != tt.warns {
 				t.Errorf("warned: %v, want %v\n%s", warned, tt.warns, logs)
+			}
+		})
+	}
+}
+
+// TestNameDepthLog: the startup line says the depth of a name the registry takes, and a registry
+// that takes none of Lajstrom's, three components or more, is an error line (#599).
+func TestNameDepthLog(t *testing.T) {
+	tests := []struct {
+		depth int
+		line  string
+		err   bool
+	}{
+		{0, "maxNameDepth=0", false},
+		{1, "maxNameDepth=1", true},
+		{2, "maxNameDepth=2", true},
+		{3, "maxNameDepth=3", false},
+		{4, "maxNameDepth=4", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.line, func(t *testing.T) {
+			f := newFakeRegistry(t)
+			log, buf := testLogger()
+			p := f.provider(t, log, func(c *config.Registry) { c.Capabilities.MaxNameDepth = tt.depth })
+			c, err := p.Capabilities(context.Background())
+			if err != nil || c.MaxNameDepth != tt.depth {
+				t.Fatalf("Capabilities = %+v, %v; want maxNameDepth %d", c, err, tt.depth)
+			}
+			logs := buf.String()
+			if !strings.Contains(logs, `msg="registry capabilities"`) || !strings.Contains(logs, tt.line) {
+				t.Errorf("want %s on the capabilities line, got\n%s", tt.line, logs)
+			}
+			if logged := strings.Contains(logs, `level=ERROR msg="the registry takes no name of Lajstrom's`); logged != tt.err {
+				t.Errorf("the error line logged: %v, want %v\n%s", logged, tt.err, logs)
 			}
 		})
 	}

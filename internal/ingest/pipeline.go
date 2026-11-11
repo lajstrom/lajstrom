@@ -167,6 +167,9 @@ func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag str
 		return nil, err
 	}
 	t := &target{repo: repo, plugin: plugin, pkgPath: pkgPath, name: ociName(repo, pkgPath), prov: prov}
+	if err := checkName(ctx, prov, t.name); err != nil {
+		return nil, err
+	}
 	if t.rr, err = prov.Repository(ctx, t.name); err != nil {
 		return nil, fmt.Errorf("ingest: repository %s: %w", t.name, err)
 	}
@@ -256,6 +259,9 @@ func (p *Pipeline) storedPath(ctx context.Context, repo index.Repo, pkgPath stri
 // newTarget returns the target of the package path pkgPath of repo, its OCI repository ensured.
 func newTarget(ctx context.Context, repo index.Repo, plugin format.Plugin, prov provider.Provider, pkgPath string) (*target, error) {
 	t := &target{repo: repo, plugin: plugin, pkgPath: pkgPath, name: ociName(repo, pkgPath), prov: prov}
+	if err := checkName(ctx, prov, t.name); err != nil {
+		return nil, err
+	}
 	if err := prov.EnsureRepository(ctx, t.name); err != nil {
 		return nil, fmt.Errorf("ingest: ensure repository %s: %w", t.name, err)
 	}
@@ -264,6 +270,22 @@ func newTarget(ctx context.Context, repo index.Repo, plugin format.Plugin, prov 
 		return nil, fmt.Errorf("ingest: repository %s: %w", t.name, err)
 	}
 	return t, nil
+}
+
+// checkName refuses the OCI repository name of a package that the registry prov does not take
+// (provider.Capabilities.CheckName: the depth of a name on Docker Hub or behind GitLab), before
+// anything is pushed to it, with ErrInvalid that names the limit. The registry would refuse the
+// token's scope or answer 404 (#599). A registry whose capabilities cannot be read is not asked:
+// the push meets what failed.
+func checkName(ctx context.Context, prov provider.Provider, name string) error {
+	caps, err := prov.Capabilities(ctx)
+	if err != nil {
+		return nil //nolint:nilerr // the push answers for the registry
+	}
+	if err := caps.CheckName(name); err != nil {
+		return invalid(fmt.Errorf("ingest: %w", err))
+	}
+	return nil
 }
 
 // store pushes the blobs of built to t and ingests its manifest.

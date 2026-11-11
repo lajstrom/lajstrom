@@ -190,8 +190,9 @@ func TestLoadErrors(t *testing.T) {
 		{name: "env override is validated", file: minimal, env: map[string]string{"LAJSTROM_DATABASE_DRIVER": "mysql"}, want: []string{`database.driver: "mysql" is not sqlite or postgres`}},
 		{
 			name: "registry limits",
-			file: minimal + "registries:\n  - {name: local, url: \"http://zot:5000\", timeout: -1s, capabilities: {maxBlobSize: -1}}\n",
-			want: []string{"registries[0].timeout: must not be negative", "registries[0].capabilities.maxBlobSize: must not be negative"},
+			file: minimal + "registries:\n  - {name: local, url: \"http://zot:5000\", timeout: -1s, capabilities: {maxBlobSize: -1, maxNameDepth: -1}}\n",
+			want: []string{"registries[0].timeout: must not be negative", "registries[0].capabilities.maxBlobSize: must not be negative",
+				"registries[0].capabilities.maxNameDepth: must not be negative"},
 		},
 		{
 			name: "registry consistency",
@@ -319,7 +320,7 @@ registries:
     url: https://registry.example
     timeout: 5s
     retries: -1
-    capabilities: {referrers: false, catalog: false, deleteManifest: true, maxBlobSize: 1073741824, consistency: eventual, consistencyBound: 4s}
+    capabilities: {referrers: false, catalog: false, deleteManifest: true, maxBlobSize: 1073741824, consistency: eventual, consistencyBound: 4s, maxNameDepth: 4}
     tokenRealmHosts: [auth.registry.example, 10.0.0.5]
     uploads: {spoolUnknownLength: true}
 `
@@ -333,7 +334,7 @@ registries:
 		{
 			Name: "tuned", Type: "generic", URL: "https://registry.example", Timeout: 5 * time.Second, Retries: -1,
 			Capabilities: CapabilityOverrides{Referrers: &f, Catalog: &f, DeleteManifest: &tr, MaxBlobSize: 1 << 30,
-				Consistency: ConsistencyEventual, ConsistencyBound: 4 * time.Second},
+				Consistency: ConsistencyEventual, ConsistencyBound: 4 * time.Second, MaxNameDepth: 4},
 			TokenRealmHosts: []string{"auth.registry.example", "10.0.0.5"},
 			Uploads:         RegistryUploads{SpoolUnknownLength: true},
 		},

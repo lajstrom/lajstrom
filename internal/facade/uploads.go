@@ -76,6 +76,9 @@ func (h *handler) startUpload(w http.ResponseWriter, r *http.Request, t *target,
 	if err := h.authorize(ctx, auth.ActionWrite, t); err != nil {
 		return err
 	}
+	if err := h.checkName(ctx, t); err != nil {
+		return err
+	}
 	if n, err := h.o.Index.ExpireSessions(ctx, h.o.Now()); err != nil {
 		h.o.Log.WarnContext(ctx, "facade: expire sessions", "error", err.Error())
 	} else if n > 0 {
@@ -540,6 +543,25 @@ func (h *handler) limitBlob(w http.ResponseWriter, r *http.Request, t *target, o
 		return &apiError{status: http.StatusRequestEntityTooLarge, code: codeSizeInvalid, msg: msg}
 	case size < 0 && r.Body != nil:
 		r.Body = tooLargeBody{ReadCloser: http.MaxBytesReader(w, r.Body, limit-offset), msg: msg}
+	}
+	return nil
+}
+
+// checkName answers NAME_INVALID, with the limit, when the registry of t does not take its OCI
+// name (provider.Capabilities.CheckName: the depth of a name on Docker Hub or behind GitLab),
+// before a session is opened there: the registry would refuse the token's scope or answer 404
+// (#599). A registry whose capabilities cannot be read is not asked: its own answer will be.
+func (h *handler) checkName(ctx context.Context, t *target) error {
+	p, err := h.registry(t)
+	if err != nil {
+		return err
+	}
+	caps, err := p.Capabilities(ctx)
+	if err != nil {
+		return nil //nolint:nilerr // the session answers for the registry
+	}
+	if err := caps.CheckName(t.oci); err != nil {
+		return &apiError{status: http.StatusBadRequest, code: codeNameInvalid, msg: err.Error()}
 	}
 	return nil
 }
