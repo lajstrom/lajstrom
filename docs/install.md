@@ -160,7 +160,8 @@ machine.
 ## Next
 
 1. The configuration: [configuration.md](configuration.md); `lajstrom serve --config …`.
-2. The first admin: [operations.md](operations.md#the-first-admin).
+2. The first admin, with the one-time bootstrap token that `serve` makes at start:
+   [operations.md](operations.md#the-first-admin).
 3. Running it for good: [Docker Compose](deploy/compose.md), [Kubernetes](deploy/kubernetes.md),
    behind a [reverse proxy](reverse-proxy.md), and [backups](operations.md#backup-and-restore).
 4. A quick start per format: [raw](quickstart/raw.md), [apt](quickstart/apt.md),

@@ -7,7 +7,7 @@ same, since the state is in Postgres and in the registry.
 | File | What |
 | --- | --- |
 | `configmap.yaml` | `lajstrom-config`: the configuration file, mounted at `/etc/lajstrom/lajstrom.yaml` |
-| `deployment.yaml` | `lajstrom`: two replicas, probes, the non-root security context, `/tmp` as an `emptyDir` |
+| `deployment.yaml` | `lajstrom`: two replicas, probes, the non-root security context, `/tmp` as an `emptyDir`, the optional Secret `lajstrom-bootstrap` as a file |
 | `service.yaml` | the Service `lajstrom` (ports `http` 8080 and `metrics` 9464) and a PodDisruptionBudget |
 | `kustomization.yaml` | the three files, for `kubectl apply -k` |
 
@@ -37,12 +37,17 @@ kubectl -n lajstrom create secret generic lajstrom \
   --from-literal=LAJSTROM_MASTER_KEY="$(openssl rand -hex 32)" \
   --from-literal=LAJSTROM_DATABASE_DSN="postgres://lajstrom:$pg@postgres:5432/lajstrom?sslmode=disable" \
   --from-literal=LAJSTROM_REGISTRY_PASSWORD="$reg"
+kubectl -n lajstrom create secret generic lajstrom-bootstrap \
+  --from-literal=token="$(openssl rand -hex 32)"
 ```
 
 `$pg` and `$reg` are the passwords of the database user and of the registry user, and
 `postgres:5432` is the database's host and port, here a Service `postgres` in the namespace.
-The master key stays a variable here rather than `keys.masterKeyFile`: a Secret volume's files
-are root's, `0440` at best for the user 65532, which Lajstrom warns about
+The Secret `lajstrom-bootstrap` holds the one-time token that makes the first admin
+(section 4): the Deployment mounts it as `/run/secrets/lajstrom-bootstrap/token`, the file of
+`auth.bootstrap.tokenFile`, and you delete it once the admin exists. The master key stays a
+variable here rather than `keys.masterKeyFile`: a Secret volume's files are root's, `0440` at
+best for the user 65532, which Lajstrom warns about
 ([operations.md](../operations.md#the-master-key)). A managed
 Postgres wants `sslmode=require` (or `verify-full` with its CA). **Keep a copy of the master
 key outside the cluster and apart from the database backups**
@@ -143,12 +148,16 @@ the database serves both (`kubectl -n lajstrom logs <pod>`, a selection, without
 
 ## 4. The first admin and the repos
 
-The image has no shell; `kubectl exec` runs the binary itself, with the pod's environment and
-configuration:
+No admin exists yet, so the replicas made the token of the Secret `lajstrom-bootstrap` valid at
+start ([operations.md](../operations.md#the-first-admin)), on both, and logged that, never the
+token. The image has no shell; `kubectl exec` runs the binary itself, with the pod's environment,
+configuration and files: `admin bootstrap` reads the token from the mounted Secret, asks the
+server of the pod and prompts for the password. Then the token is dead, and the Secret goes:
 
 ```sh
-printf '%s\n' "$LAJSTROM_ADMIN_PASSWORD" | kubectl -n lajstrom exec -i deploy/lajstrom -- \
-  /lajstrom --config /etc/lajstrom/lajstrom.yaml admin user create --name admin --admin --password-stdin
+kubectl -n lajstrom exec -it deploy/lajstrom -- /lajstrom --config /etc/lajstrom/lajstrom.yaml admin bootstrap --name admin \
+  --token-file /run/secrets/lajstrom-bootstrap/token
+kubectl -n lajstrom delete secret lajstrom-bootstrap
 kubectl -n lajstrom exec deploy/lajstrom -- /lajstrom --config /etc/lajstrom/lajstrom.yaml admin repo create raw/assets --registry main
 kubectl -n lajstrom exec deploy/lajstrom -- /lajstrom --config /etc/lajstrom/lajstrom.yaml admin repo create oci/images --registry main
 ```
@@ -159,20 +168,29 @@ kubectl -n lajstrom exec deploy/lajstrom -- /lajstrom --config /etc/lajstrom/laj
 {"format":"oci","name":"images","registry":"main","kind":"hosted","anonymousRead":false,"policy":null,"createdAt":"2026-11-09T17:29:05.760261Z","updatedAt":"2026-11-09T17:29:05.760261Z"}
 ```
 
+From a machine outside the cluster, `lajstrom admin bootstrap --server https://art.example.com
+--name admin --token-file <(kubectl -n lajstrom get secret lajstrom-bootstrap -o
+jsonpath='{.data.token}' | base64 -d)` does the same through the ingress. The volume of the
+Secret is optional: without it, `serve` starts and warns that there is no bootstrap token, and
+once it is deleted the file leaves the pods. `admin user create --name admin --admin
+--password-stdin` through `kubectl exec -i` makes the admin straight in the database instead,
+and is how a lost admin password is recovered ([operations.md](../operations.md#a-lost-password)).
+
 Repos can also be listed in the ConfigMap (`repos:`, [configuration.md](../configuration.md#repos)),
 which creates them at the start of a replica when the database does not have them.
 
 ## 5. Check
 
-Through the ingress, or a port-forward as in the run:
+Through the ingress, or a port-forward as in the run; `pw` holds the admin's password:
 
 ```sh
+read -rs pw
 kubectl -n lajstrom port-forward svc/lajstrom 18790:http &
 printf 'hello kubernetes\n' > hello.txt
 curl -s localhost:18790/-/readyz                                                                  # ok
-curl -s -u "admin:$LAJSTROM_ADMIN_PASSWORD" -o /dev/null -w '%{http_code}\n' -T hello.txt localhost:18790/raw/assets/hello.txt   # 201
-curl -s -u "admin:$LAJSTROM_ADMIN_PASSWORD" localhost:18790/raw/assets/hello.txt                  # hello kubernetes
-printf '%s\n' "$LAJSTROM_ADMIN_PASSWORD" | oras login --plain-http -u admin --password-stdin localhost:18790
+curl -s -u "admin:$pw" -o /dev/null -w '%{http_code}\n' -T hello.txt localhost:18790/raw/assets/hello.txt   # 201
+curl -s -u "admin:$pw" localhost:18790/raw/assets/hello.txt                  # hello kubernetes
+printf '%s\n' "$pw" | oras login --plain-http -u admin --password-stdin localhost:18790
 oras push --plain-http --artifact-type application/vnd.example.notes localhost:18790/oci/images/hello:1 hello.txt
 oras pull --plain-http -o out localhost:18790/oci/images/hello:1
 ```

@@ -27,9 +27,9 @@ terminal, create the first user, an admin, with a password of your own (8 bytes 
 keep it for curl:
 
 ```sh
-export LAJSTROM_ADMIN_PASSWORD='a password of your own'
-bin/lajstrom admin user create --name admin --admin --config deploy/compose/lajstrom.example.yaml
-u="admin:$LAJSTROM_ADMIN_PASSWORD"
+pw='a password of your own'
+printf '%s' "$pw" | bin/lajstrom admin user create --name admin --admin --password-stdin --config deploy/compose/lajstrom.example.yaml
+u="admin:$pw"
 base=http://localhost:8080/raw/scratch
 curl -s -u "$u" $base/                                # {"entries":[]}
 printf 'hello raw\n' > file.txt
@@ -198,5 +198,5 @@ registry's garbage collection. A registry that cannot delete manifests (distribu
 user that may write and delete in it, and cleans up after itself:
 
 ```sh
-LAJSTROM_E2E_USER=admin LAJSTROM_E2E_PASSWORD="$LAJSTROM_ADMIN_PASSWORD" test/e2e/raw.sh http://localhost:8080 scratch
+LAJSTROM_E2E_USER=admin LAJSTROM_E2E_PASSWORD="$pw" test/e2e/raw.sh http://localhost:8080 scratch
 ```

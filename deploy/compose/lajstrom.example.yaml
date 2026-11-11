@@ -78,6 +78,9 @@ reconcile:
 
 auth:
   anonymousRead: false                # server-wide switch for anonymous read (RBAC, issue #45)
+  # bootstrap:                        # the one-time token of the first admin (docs/auth.md)
+  #   tokenFile: /run/secrets/bootstrap-token   # a token you made: openssl rand -hex 32
+  #   ttl: 24h
 
 keys:
   masterKeyEnv: LAJSTROM_MASTER_KEY   # environment variable with the key that encrypts the apt keys and the bearer-token key; unset: apt repos are unsigned, tokens use an ephemeral key

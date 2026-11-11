@@ -24,8 +24,8 @@ and the first user, an admin, with a password of your own (8 bytes at least):
 ```sh
 bin/lajstrom admin repo create oci/images --registry local --config deploy/compose/lajstrom.example.yaml
 bin/lajstrom admin repo create raw/assets --registry local --config deploy/compose/lajstrom.example.yaml
-export LAJSTROM_ADMIN_PASSWORD='a password of your own'
-bin/lajstrom admin user create --name admin --admin --config deploy/compose/lajstrom.example.yaml
+pw='a password of your own'
+printf '%s' "$pw" | bin/lajstrom admin user create --name admin --admin --password-stdin --config deploy/compose/lajstrom.example.yaml
 ```
 
 `oci` is not a plugin: it is the format of the pass-through repos, which hold any OCI artifact
@@ -37,7 +37,7 @@ the dev stack is plain HTTP, hence `--plain-http`:
 
 ```sh
 oras() { docker run --rm -i --network host -v "$PWD:/w" -w /w ghcr.io/oras-project/oras:v1.3.6 "$@" --registry-config /w/.oras-auth.json; }
-printf '%s\n' "$LAJSTROM_ADMIN_PASSWORD" | oras login --plain-http -u admin --password-stdin localhost:8080   # Login Succeeded
+printf '%s\n' "$pw" | oras login --plain-http -u admin --password-stdin localhost:8080   # Login Succeeded
 printf 'hello facade\n' > file.txt
 ```
 
@@ -45,7 +45,7 @@ Nothing is open: `GET /v2/` without credentials is `401` with a `Bearer` challen
 answers it with the login, which `/v2/token` exchanges for a token of 20 minutes with the
 actions the admin may do ([auth.md](../auth.md#bearer-tokens-on-v2)). The login lives in
 `.oras-auth.json` here; `rm .oras-auth.json` ends it. crane, if you use it, logs in once with
-`crane auth login localhost:8080 -u admin -p "$LAJSTROM_ADMIN_PASSWORD"`.
+`crane auth login localhost:8080 -u admin -p "$pw"`.
 
 ## 2. Push, pull, list on an `oci` repo
 
@@ -133,7 +133,7 @@ The manifest digest changes with the `created` time. The file is indexed now, th
 serves it, and its tags come from the index:
 
 ```sh
-curl -u "admin:$LAJSTROM_ADMIN_PASSWORD" http://localhost:8080/raw/assets/docs/hello.txt   # hello lajstrom
+curl -u "admin:$pw" http://localhost:8080/raw/assets/docs/hello.txt   # hello lajstrom
 oras repo tags --plain-http localhost:8080/raw/assets/docs/hello.txt       # ec5ba820a095a4d6
 oras pull --plain-http -o out localhost:8080/raw/assets/docs/hello.txt:$v  # writes out/docs/hello.txt
 ```

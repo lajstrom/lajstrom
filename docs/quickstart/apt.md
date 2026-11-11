@@ -27,9 +27,9 @@ In another terminal, once `make run` has logged `listening` (`serve` creates the
 
 ```sh
 bin/lajstrom admin repo create apt/ubuntu --registry local --config deploy/compose/lajstrom.example.yaml
-export LAJSTROM_ADMIN_PASSWORD='a password of your own'
-bin/lajstrom admin user create --name admin --admin --config deploy/compose/lajstrom.example.yaml
-u="admin:$LAJSTROM_ADMIN_PASSWORD"
+pw='a password of your own'
+printf '%s' "$pw" | bin/lajstrom admin user create --name admin --admin --password-stdin --config deploy/compose/lajstrom.example.yaml
+u="admin:$pw"
 ```
 
 ```json
@@ -309,7 +309,7 @@ oras from its image, as in [oras.md](oras.md), logged in as the admin (the login
 
 ```sh
 oras() { docker run --rm -i --network host -v "$PWD:/w" -w /w ghcr.io/oras-project/oras:v1.3.6 "$@" --registry-config /w/.oras-auth.json; }
-printf '%s\n' "$LAJSTROM_ADMIN_PASSWORD" | oras login --plain-http -u admin --password-stdin localhost:8080   # Login Succeeded
+printf '%s\n' "$pw" | oras login --plain-http -u admin --password-stdin localhost:8080   # Login Succeeded
 oras push --plain-http --artifact-type application/vnd.lajstrom.deb.v1 \
   --annotation lajstrom.schema=1 --annotation lajstrom.format=apt --annotation lajstrom.repo=ubuntu \
   --annotation lajstrom.name=world --annotation lajstrom.version=2.0-1 \
@@ -471,7 +471,7 @@ anonymous step until the switch is on in a copy of the example, which `make run`
 
 ```sh
 sed 's/^  anonymousRead: false/  anonymousRead: true/' deploy/compose/lajstrom.example.yaml > deploy/compose/lajstrom.yaml   # auth's, not the repos'
-LAJSTROM_E2E_USER=admin LAJSTROM_E2E_PASSWORD="$LAJSTROM_ADMIN_PASSWORD" test/e2e/apt.sh http://localhost:8080 ubuntu
+LAJSTROM_E2E_USER=admin LAJSTROM_E2E_PASSWORD="$pw" test/e2e/apt.sh http://localhost:8080 ubuntu
 ```
 
 ```text

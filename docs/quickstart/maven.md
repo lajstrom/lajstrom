@@ -27,7 +27,7 @@ In another terminal:
 ```sh
 cfg=deploy/compose/lajstrom.example.yaml
 bin/lajstrom admin repo create maven/releases --registry local --config $cfg
-bin/lajstrom admin user create --name alice --config $cfg     # asks for a password, or takes LAJSTROM_ADMIN_PASSWORD
+bin/lajstrom admin user create --name alice --config $cfg     # asks for a password, or takes it with --password-stdin
 bin/lajstrom admin binding create --principal user:alice --role writer --mask maven/releases --config $cfg
 ```
 
