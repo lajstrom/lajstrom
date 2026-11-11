@@ -13,8 +13,8 @@ import (
 func bindingCLI(t *testing.T) func(args ...string) (string, error) {
 	t.Helper()
 	cfg, _ := tokenCLI(t)
-	env := map[string]string{bootstrapEnv: "root-password"}
-	if _, _, err := runIn(t, env, strings.NewReader(""), "admin", "user", "create", "--name", "root", "--admin", "--config", cfg); err != nil {
+	if _, _, err := runIn(t, nil, strings.NewReader("root-password"), "admin", "user", "create", "--name", "root", "--admin", "--password-stdin",
+		"--config", cfg); err != nil {
 		t.Fatal(err)
 	}
 	return func(args ...string) (string, error) {

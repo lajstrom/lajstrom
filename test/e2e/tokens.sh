@@ -49,7 +49,6 @@ for tool in curl jq docker; do
 	command -v "$tool" >/dev/null || { echo "tokens.sh: $tool is required" >&2; exit 2; }
 done
 export LAJSTROM_CONFIG="${LAJSTROM_CONFIG:-deploy/compose/lajstrom.example.yaml}"
-unset LAJSTROM_ADMIN_PASSWORD # the password goes on standard input
 if [ -n "${LAJSTROM_BIN:-}" ]; then
 	lajstrom=("$LAJSTROM_BIN")
 elif [ -x bin/lajstrom ]; then

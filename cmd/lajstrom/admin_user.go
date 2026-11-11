@@ -14,14 +14,15 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/auth"
 )
 
-// bootstrapEnv is the variable admin user create and set-password read the password from
-// (docs/spec/rbac.md §6). Its name says what it is for, not what it holds: gosec (G101) takes a
-// constant named …password… for a credential.
-const bootstrapEnv = "LAJSTROM_ADMIN_PASSWORD"
+// removedEnv is the variable admin user create and set-password read the password from before
+// #440. A password in the environment outlives its first change and then looks real while it is
+// not, so it is gone; a command that finds it set fails and says what to do instead. Its name
+// says what it is for, not what it holds: gosec (G101) takes a constant named …password… for a
+// credential.
+const removedEnv = "LAJSTROM_ADMIN_PASSWORD"
 
 // terminal is how a password is prompted for; the tests replace it.
 var terminal = struct {
@@ -45,7 +46,7 @@ func newAdminUserCmd(a *app) *cobra.Command {
 }
 
 // passwordSources is the help of the password flags.
-const passwordSources = "the password comes from " + bootstrapEnv + " when it is set, else from standard input with --password-stdin, else from a prompt on the terminal"
+const passwordSources = "the password comes from standard input with --password-stdin, else from a prompt on the terminal"
 
 // newUserCreateCmd returns admin user create: create a local user, with --admin the admin
 // binding too (the bootstrap of docs/spec/rbac.md §6), and print it as JSON on one line.
@@ -72,7 +73,7 @@ func newUserCreateCmd(a *app) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				u, err := users.Create(ctx, name, password, admin, auth.Origin{Source: api.SourceCLI})
+				u, err := users.Create(ctx, name, password, admin, auth.Origin(cliOrigin()))
 				if err != nil {
 					return err
 				}
@@ -117,7 +118,7 @@ func newUserDisableCmd(a *app) *cobra.Command {
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
-				return users.Disable(ctx, args[0], auth.Origin{Source: api.SourceCLI})
+				return users.Disable(ctx, args[0], auth.Origin(cliOrigin()))
 			})
 		},
 	}
@@ -132,7 +133,7 @@ func newUserRenameCmd(a *app) *cobra.Command {
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
-				return users.Rename(ctx, args[0], args[1], auth.Origin{Source: api.SourceCLI})
+				return users.Rename(ctx, args[0], args[1], auth.Origin(cliOrigin()))
 			})
 		},
 	}
@@ -148,7 +149,7 @@ func newUserDeleteCmd(a *app) *cobra.Command {
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
-				return users.Delete(ctx, args[0], auth.Origin{Source: api.SourceCLI})
+				return users.Delete(ctx, args[0], auth.Origin(cliOrigin()))
 			})
 		},
 	}
@@ -163,7 +164,7 @@ func newUserEnableCmd(a *app) *cobra.Command {
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.withUsers(cmd.Context(), func(ctx context.Context, users *auth.Users) error {
-				return users.Enable(ctx, args[0], auth.Origin{Source: api.SourceCLI})
+				return users.Enable(ctx, args[0], auth.Origin(cliOrigin()))
 			})
 		},
 	}
@@ -187,7 +188,7 @@ func newUserSetPasswordCmd(a *app) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return users.SetPassword(ctx, args[0], password, auth.Origin{Source: api.SourceCLI})
+				return users.SetPassword(ctx, args[0], password, auth.Origin(cliOrigin()))
 			})
 		},
 	}
@@ -207,15 +208,20 @@ func (a *app) withUsers(ctx context.Context, fn func(context.Context, *auth.User
 }
 
 // errNoPassword is the error when no source gives a password.
-var errNoPassword = errors.New("no password: set " + bootstrapEnv + ", pass --password-stdin with the password on standard input, or run on a terminal to be prompted")
+var errNoPassword = errors.New("no password: pass --password-stdin with the password on standard input, or run on a terminal to be prompted")
 
-// readPassword returns the password of admin user create and set-password: the value of
-// bootstrapEnv when it is set; else, with --password-stdin, the whole of standard input
-// without the trailing newline; else a prompt without echo, twice, when standard input is a
-// terminal; else errNoPassword. The password is checked by the users service.
+// errRemovedEnv is the error of a command that finds removedEnv set.
+var errRemovedEnv = errors.New(removedEnv + " is not read any more: pass the password on standard input with --password-stdin, " +
+	"or at the prompt, and unset the variable (docs/auth.md, Bootstrap)")
+
+// readPassword returns the password of admin user create, set-password and admin bootstrap:
+// with --password-stdin, the whole of standard input without the trailing newline; else a
+// prompt without echo, twice, when standard input is a terminal; else errNoPassword. With
+// removedEnv set it is errRemovedEnv, whatever the variable holds. The password is checked by
+// the users service.
 func (a *app) readPassword(cmd *cobra.Command, useStdin bool) (string, error) {
-	if v, ok := a.lookupEnv(bootstrapEnv); ok {
-		return v, nil
+	if _, ok := a.lookupEnv(removedEnv); ok {
+		return "", errRemovedEnv
 	}
 	in := cmd.InOrStdin()
 	if useStdin {

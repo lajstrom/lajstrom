@@ -15,7 +15,9 @@
 #   LAJSTROM_SERVER_LOG    the server's log file
 #   LAJSTROM_E2E_REGISTRY  host:port of the registry `local`
 #   LAJSTROM_E2E_USER      a user with the admin binding, made for the run with a random password,
-#   LAJSTROM_E2E_PASSWORD  for the scenarios that need no user of their own (lib.sh, e2e_credentials)
+#   LAJSTROM_E2E_PASSWORD  for the scenarios that need no user of their own (lib.sh, e2e_credentials):
+#                          the first admin, made with the bootstrap token of auth.bootstrap.tokenFile
+#                          and lajstrom admin bootstrap, as an installation makes it (docs/auth.md)
 #   LAJSTROM_E2E_FORWARDED 1: the server trusts the X-Forwarded-For of 127.0.0.1
 #                          (server.trustedProxies), so that the per-address throttles are on
 #   LAJSTROM_E2E_REGISTRY_USER, LAJSTROM_E2E_REGISTRY_PASSWORD_FILE, LAJSTROM_E2E_REGISTRY_PREFIX
@@ -35,11 +37,13 @@
 # raw/scratch, apt/ubuntu, apt/e2e and pypi/e2e on it, none readable anonymously; the upstream
 # npmjs at $LAJSTROM_E2E_NPM_UPSTREAM (default https://registry.npmjs.org/), which npm.sh makes
 # a proxy repo of; and the user
-# $LAJSTROM_E2E_USER with the admin binding; auth.anonymousRead is true, so that a repo's own
-# anonymousRead decides (rbac.sh turns it on for a repo of its own); no metrics listener, no
-# reconcile loop. The LAJSTROM_SERVER_*, LAJSTROM_LOG_*
-# and LAJSTROM_DATABASE_* overrides of the caller's environment are unset, so that the server and
-# lajstrom admin both read the file. The port is one of free_port (lib.sh), below the ephemeral
+# $LAJSTROM_E2E_USER with the admin binding, made with the bootstrap token of the file
+# auth.bootstrap.tokenFile once the server is ready; auth.anonymousRead is true, so that a repo's
+# own anonymousRead decides (rbac.sh turns it on for a repo of its own); no metrics listener, no
+# reconcile loop. The LAJSTROM_SERVER_*, LAJSTROM_LOG_*, LAJSTROM_DATABASE_* and
+# LAJSTROM_BOOTSTRAP_TOKEN_FILE overrides of the caller's environment are unset, so that the server
+# and lajstrom admin both read the file, and so is LAJSTROM_ADMIN_PASSWORD, which lajstrom admin
+# refuses. The port is one of free_port (lib.sh), below the ephemeral
 # range. The server must answer /-/readyz within 30 s; when it does not, or exits before, run.sh
 # prints the last 50 lines of its log, whether it runs or its exit status, and what /-/readyz
 # answers, its status and body, or why it does not answer. A scenario that fails is reported
@@ -155,7 +159,8 @@ step "make build: $("$bin" version | head -1)"
 port="$(free_port)" || { echo "run.sh: no free port found on 127.0.0.1" >&2; exit 2; }
 base="http://127.0.0.1:$port"
 unset LAJSTROM_SERVER_LISTEN LAJSTROM_SERVER_EXTERNAL_URL LAJSTROM_SERVER_METRICS_LISTEN \
-	LAJSTROM_LOG_LEVEL LAJSTROM_LOG_FORMAT LAJSTROM_DATABASE_DRIVER LAJSTROM_DATABASE_DSN LAJSTROM_ADMIN_PASSWORD
+	LAJSTROM_LOG_LEVEL LAJSTROM_LOG_FORMAT LAJSTROM_DATABASE_DRIVER LAJSTROM_DATABASE_DSN LAJSTROM_ADMIN_PASSWORD \
+	LAJSTROM_BOOTSTRAP_TOKEN_FILE
 LAJSTROM_MASTER_KEY="$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
 LAJSTROM_CONFIG="$tmp/lajstrom.yaml"
 LAJSTROM_BIN="$bin"
@@ -197,6 +202,8 @@ keys:
   masterKeyEnv: LAJSTROM_MASTER_KEY
 auth:
   anonymousRead: true
+  bootstrap:
+    tokenFile: "$tmp/bootstrap-token"
 repos:
   - {name: scratch, format: raw, registry: local}
   - {name: ubuntu, format: apt, registry: local}
@@ -205,11 +212,7 @@ repos:
 EOF
 
 "$bin" migrate --config "$LAJSTROM_CONFIG" >"$tmp/migrate.log" 2>&1 || { cat "$tmp/migrate.log" >&2; echo "run.sh: lajstrom migrate failed" >&2; exit 2; }
-LAJSTROM_E2E_USER="e2e-admin"
-LAJSTROM_E2E_PASSWORD="$(head -c 24 /dev/urandom | base64 | tr -d '+/=\n')"
-export LAJSTROM_E2E_USER LAJSTROM_E2E_PASSWORD
-printf '%s' "$LAJSTROM_E2E_PASSWORD" | "$bin" admin user create --name "$LAJSTROM_E2E_USER" --admin --password-stdin \
-	--config "$LAJSTROM_CONFIG" >"$tmp/admin.log" 2>&1 || { cat "$tmp/admin.log" >&2; echo "run.sh: lajstrom admin user create failed" >&2; exit 2; }
+(umask 077 && od -An -tx1 -N32 /dev/urandom | tr -d ' \n' >"$tmp/bootstrap-token")
 "$bin" serve --config "$LAJSTROM_CONFIG" >"$LAJSTROM_SERVER_LOG" 2>&1 </dev/null &
 pid=$!
 served=$SECONDS
@@ -222,6 +225,13 @@ until curl -fsS -o /dev/null --max-time 2 "$base/-/readyz" 2>/dev/null; do
 	sleep 0.5
 done
 step "lajstrom serve on $base, index $tmp/lajstrom.db, registry local at $registry${registry_prefix:+, prefix $registry_prefix}${registry_user:+, user $registry_user}${LAJSTROM_E2E_CAPABILITIES:+ $LAJSTROM_E2E_CAPABILITIES}: ready after $((SECONDS - served)) s"
+LAJSTROM_E2E_USER="e2e-admin"
+LAJSTROM_E2E_PASSWORD="$(head -c 24 /dev/urandom | base64 | tr -d '+/=\n')"
+export LAJSTROM_E2E_USER LAJSTROM_E2E_PASSWORD
+printf '%s' "$LAJSTROM_E2E_PASSWORD" | "$bin" admin bootstrap --server "$base" --name "$LAJSTROM_E2E_USER" \
+	--token-file "$tmp/bootstrap-token" --password-stdin >"$tmp/admin.log" 2>&1 ||
+	{ cat "$tmp/admin.log" >&2; echo "run.sh: lajstrom admin bootstrap failed" >&2; exit 2; }
+step "lajstrom admin bootstrap --name $LAJSTROM_E2E_USER with auth.bootstrap.tokenFile: $(jq -c '{name, kind}' "$tmp/admin.log")"
 
 results=()
 failed=0

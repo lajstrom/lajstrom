@@ -161,10 +161,11 @@ func wantCLIAudit(t *testing.T, dsn, action string, n int) {
 	if err != nil || len(evs) != n {
 		t.Fatalf("%s events = %+v, %v; want %d", action, evs, err, n)
 	}
+	host, _ := os.Hostname()
 	for _, ev := range evs {
 		var details map[string]any
 		if err := json.Unmarshal(ev.Details, &details); err != nil || details["source"] != api.SourceCLI ||
-			ev.Principal != "anonymous" || ev.IP != "" {
+			details["host"] != host || ev.Principal != "anonymous" || ev.IP != "" {
 			t.Errorf("%s event = %+v, details %s", action, ev, ev.Details)
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -51,7 +52,7 @@ func newRepoCreateCmd(a *app) *cobra.Command {
 			}
 			req.Policy, req.Upstream, req.Group = json.RawMessage(policy), json.RawMessage(upstream), json.RawMessage(group)
 			return a.withRepos(cmd.Context(), func(ctx context.Context, repos *api.Repos) error {
-				repo, err := repos.Create(ctx, req, api.Origin{Source: api.SourceCLI})
+				repo, err := repos.Create(ctx, req, cliOrigin())
 				if err != nil {
 					return err
 				}
@@ -113,7 +114,7 @@ func newRepoDeleteCmd(a *app) *cobra.Command {
 				return err
 			}
 			return a.withRepos(cmd.Context(), func(ctx context.Context, repos *api.Repos) error {
-				return repos.Delete(ctx, formatName, name, force, api.Origin{Source: api.SourceCLI})
+				return repos.Delete(ctx, formatName, name, force, cliOrigin())
 			})
 		},
 	}
@@ -163,6 +164,14 @@ func splitRepo(arg string) (formatName, name string, err error) {
 		return "", "", fmt.Errorf("repo %q: want <format>/<name>, e.g. raw/scratch", arg)
 	}
 	return formatName, name, nil
+}
+
+// cliOrigin is the origin of a change that lajstrom admin makes against the database: the
+// source cli and the host name of the machine it runs on, which its audit event carries, so
+// that a recovery of a lost admin names where it ran (#440).
+func cliOrigin() api.Origin {
+	host, _ := os.Hostname()
+	return api.Origin{Source: api.SourceCLI, Host: host}
 }
 
 // writeJSONLine prints v as JSON on one line.

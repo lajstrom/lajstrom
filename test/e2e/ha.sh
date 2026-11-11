@@ -591,13 +591,13 @@ suite="${HA_SUITE-raw oras auth rbac oci-token cosign tokens apt pypi maven}"
 mkdir -p "$work/bin"
 cat >"$work/bin/lajstrom" <<EOF
 #!/bin/sh
-# lajstrom of the scenarios: in replica A, with LAJSTROM_ADMIN_PASSWORD when it is set; admin deb
-# metadata reads a file of this machine, so it runs here.
+# lajstrom of the scenarios: in replica A, standard input passed on; admin deb metadata reads a
+# file of this machine, so it runs here.
 case "\$1 \$2 \$3" in "admin deb metadata")
 	[ ! -x '$root/bin/lajstrom' ] || exec '$root/bin/lajstrom' "\$@"
 	cd '$root' && exec go run ./cmd/lajstrom "\$@" ;;
 esac
-exec $(printf "'%s' " "${compose[@]}")exec -T \${LAJSTROM_ADMIN_PASSWORD+-e LAJSTROM_ADMIN_PASSWORD} lajstrom-a /lajstrom "\$@"
+exec $(printf "'%s' " "${compose[@]}")exec -T lajstrom-a /lajstrom "\$@"
 EOF
 chmod +x "$work/bin/lajstrom"
 since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

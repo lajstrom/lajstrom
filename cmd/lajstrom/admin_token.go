@@ -13,7 +13,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/auth"
 )
 
@@ -60,7 +59,7 @@ func newTokenCreateCmd(a *app) *cobra.Command {
 				list = strings.Split(scopes, ",")
 			}
 			return a.withTokens(cmd.Context(), func(ctx context.Context, tokens *auth.Tokens) error {
-				o := auth.Origin{Source: api.SourceCLI}
+				o := auth.Origin(cliOrigin())
 				var (
 					t      *auth.Token
 					secret string
@@ -148,7 +147,7 @@ func newTokenRevokeCmd(a *app) *cobra.Command {
 				return fmt.Errorf("token id %q: want the number of the ID column of admin token list", args[0])
 			}
 			return a.withTokens(cmd.Context(), func(ctx context.Context, tokens *auth.Tokens) error {
-				return tokens.Revoke(ctx, id, auth.Origin{Source: api.SourceCLI})
+				return tokens.Revoke(ctx, id, auth.Origin(cliOrigin()))
 			})
 		},
 	}
