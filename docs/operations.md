@@ -1202,9 +1202,10 @@ writes to, `24h` or more when reads go through a replica or a cache.
 ### Without a catalog
 
 Some registries do not list their repositories to Lajstrom: Harbor's `_catalog` is for system
-administrators with Basic auth, GHCR's lists all of GHCR, ECR has none
-([registries](registries/README.md)). The probe or the vendor table then sets `catalog` false, as
-`capabilities.catalog: false` in the registry's configuration does. A run reads the OCI
+administrators with Basic auth, GHCR's lists all of GHCR ([registries](registries/README.md)).
+The probe or the vendor table then sets `catalog` false, as `capabilities.catalog: false` in the
+registry's configuration does. (ECR is not one of them: the type `ecr` lists with
+`DescribeRepositories`, [ecr.md](registries/ecr.md).) A run reads the OCI
 repositories that the index records in `oci_repos` instead: ingest records each one it writes
 to, and a run each one it reads. Each is checked by its tag list: one the registry no longer
 knows loses its row once no run has seen it for `reconcile.graceAge`, and its versions go only
