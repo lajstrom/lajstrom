@@ -222,7 +222,15 @@ type RegistryUploads struct {
 	// Lajstrom runs on ephemeral disks, and nothing on /v2 writes to disk unless the operator
 	// asks for it (#425).
 	SpoolUnknownLength bool `yaml:"spoolUnknownLength"`
+	// ChunkSize is the size of the chunks, each a PATCH, of the uploads that Lajstrom streams
+	// into the registry itself (ADR 0014); 0 takes the vendor table's: 4 MiB on GHCR, else
+	// 8 MiB. Must not be negative nor above MaxUploadChunkSize.
+	ChunkSize int `yaml:"chunkSize"`
 }
+
+// MaxUploadChunkSize bounds registries[].uploads.chunkSize, 256 MiB: what one upload holds in
+// memory at most (provider.NewChunkedWriter).
+const MaxUploadChunkSize = 256 << 20
 
 // RegistryAuth holds the credentials Lajstrom uses towards a registry. The password never
 // comes from the file: PasswordEnv names the environment variable that holds it, and Load

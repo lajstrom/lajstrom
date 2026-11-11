@@ -119,9 +119,14 @@ const ghcrMaxChunk = 4 << 20
 // known before any request (blobChunk).
 var vendorChunks = map[vendor]int{vendorGHCR: ghcrMaxChunk}
 
-// blobChunk is the size of the chunks of OpenBlobWriter for the registry on hostport: the vendor
-// table's, else streamChunk.
-func blobChunk(hostport string) int {
+// blobChunk is the size of the chunks of OpenBlobWriter for the registry on hostport: configured,
+// registries[].uploads.chunkSize, when it is set, else the vendor table's, else streamChunk. The
+// key is the way for a registry the table cannot tell by its host: GHCR behind another name,
+// or a proxy that takes less in one request.
+func blobChunk(hostport string, configured int) int {
+	if configured > 0 {
+		return configured
+	}
 	if c, ok := vendorChunks[detectVendor(identity{host: hostport})]; ok {
 		return c
 	}

@@ -140,7 +140,7 @@ func NewWithOptions(cfg config.Registry, log *slog.Logger, o Options) (*Provider
 		maxPages: maxPages,
 
 		spoolUnknown: cfg.Uploads.SpoolUnknownLength,
-		chunk:        blobChunk(u.Host),
+		chunk:        blobChunk(u.Host, cfg.Uploads.ChunkSize),
 	}
 	reg := &remote.Registry{RepositoryListPageSize: pageSize}
 	reg.Reference = registry.Reference{Registry: u.Host}

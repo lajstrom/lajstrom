@@ -393,43 +393,51 @@ func TestUploadTransportError(t *testing.T) {
 }
 
 // TestBlobChunk: the chunks of OpenBlobWriter are 4 MiB on GHCR, which refuses a larger PATCH,
-// and streamChunk elsewhere (#558).
+// and streamChunk elsewhere; registries[].uploads.chunkSize replaces either (#558).
 func TestBlobChunk(t *testing.T) {
 	for _, tt := range []struct {
-		url  string
-		want int
+		url        string
+		configured int
+		want       int
 	}{
-		{"https://ghcr.io", ghcrMaxChunk},
-		{"https://ghcr.io:443", ghcrMaxChunk},
-		{"https://GHCR.io.", ghcrMaxChunk},
-		{"https://notghcr.io", streamChunk},
-		{"https://ghcr.io.example.com", streamChunk},
-		{"http://localhost:5000", streamChunk},
-		{"https://registry.gitlab.com", streamChunk},
+		{"https://ghcr.io", 0, ghcrMaxChunk},
+		{"https://ghcr.io:443", 0, ghcrMaxChunk},
+		{"https://GHCR.io.", 0, ghcrMaxChunk},
+		{"https://notghcr.io", 0, streamChunk},
+		{"https://ghcr.io.example.com", 0, streamChunk},
+		{"http://localhost:5000", 0, streamChunk},
+		{"https://registry.gitlab.com", 0, streamChunk},
+		{"https://containers.github.example", 4 << 20, 4 << 20}, // GHCR on another host name
+		{"https://ghcr.io", 1 << 20, 1 << 20},
+		{"http://localhost:5000", 32 << 20, 32 << 20},
 	} {
-		p, err := New(config.Registry{Name: "r", Type: Type, URL: tt.url}, nil)
+		p, err := New(config.Registry{Name: "r", Type: Type, URL: tt.url, Uploads: config.RegistryUploads{ChunkSize: tt.configured}}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if p.chunk != tt.want {
-			t.Errorf("%s: chunk = %d, want %d", tt.url, p.chunk, tt.want)
+			t.Errorf("%s, chunkSize %d: chunk = %d, want %d", tt.url, tt.configured, p.chunk, tt.want)
 		}
 	}
 }
 
-// TestOpenBlobWriterGHCR: a streamed blob of two chunks and a bit goes to GHCR as PATCHes of
-// 4 MiB, each with its Content-Range, the rest as a PATCH of its own, and an empty PUT (#558).
-// GHCR is told by its host, so the fake gets GHCR's chunk size as the provider of ghcr.io has it.
+// TestOpenBlobWriterGHCR: a streamed blob of two chunks and a bit goes to a registry of GHCR's
+// chunk size as PATCHes of 4 MiB, each with its Content-Range, the rest as a PATCH of its own,
+// and an empty PUT (#558). GHCR is told by its host, so the fake gets the size by
+// registries[].uploads.chunkSize.
 func TestOpenBlobWriterGHCR(t *testing.T) {
 	ctx := t.Context()
 	var seen []string
-	f, repo := uploadRepo(t, func(f *fakeRegistry) {
-		f.hook = func(_ http.ResponseWriter, r *http.Request) bool {
-			seen = append(seen, fmt.Sprintf("%s range=%q length=%d", r.Method, r.Header.Get("Content-Range"), r.ContentLength))
-			return false
-		}
-	})
-	repo.(*repository).p.chunk = blobChunk("ghcr.io")
+	f := newFakeRegistry(t)
+	f.hook = func(_ http.ResponseWriter, r *http.Request) bool {
+		seen = append(seen, fmt.Sprintf("%s range=%q length=%d", r.Method, r.Header.Get("Content-Range"), r.ContentLength))
+		return false
+	}
+	log, _ := testLogger()
+	repo, err := f.provider(t, log, func(c *config.Registry) { c.Uploads.ChunkSize = ghcrMaxChunk }).Repository(ctx, "raw/scratch/notes")
+	if err != nil {
+		t.Fatal(err)
+	}
 	blob := bytes.Repeat([]byte("0123456789abcdef"), (2*ghcrMaxChunk+16)/16)
 	w, err := repo.OpenBlobWriter(ctx)
 	if err != nil {
