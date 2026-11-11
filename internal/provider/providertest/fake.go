@@ -86,6 +86,10 @@ type Fake struct {
 	FailFetch error
 	// ChunkSize is the chunk size of OpenBlobWriter; zero means DefaultChunkSize.
 	ChunkSize int
+	// FailStatManifest, when set, is asked first by StatManifest: an error it returns is the
+	// answer, nil asks the content. A lagging registry is one that answers
+	// provider.ErrManifestUnknown for a manifest it has.
+	FailStatManifest func(name string, d digest.Digest) error
 
 	mu             sync.Mutex
 	repos          map[string]*repoData
@@ -250,6 +254,30 @@ func (f *Fake) StatBlob(_ context.Context, name string, d digest.Digest) (provid
 		return provider.Blob{}, fmt.Errorf("providertest: stat blob %s@%s: %w", name, d, provider.ErrNotFound)
 	}
 	return provider.Blob{Status: http.StatusOK, Size: b.size, Digest: d, AcceptRanges: true}, nil
+}
+
+// StatManifest returns the descriptor of the manifest d the repository name has. One it does
+// not have is provider.ErrNotFound, wrapping provider.ErrManifestUnknown too when the
+// repository exists, as a registry answers MANIFEST_UNKNOWN there and NAME_UNKNOWN elsewhere.
+// FailStatManifest replaces the answer.
+func (f *Fake) StatManifest(_ context.Context, name string, d digest.Digest) (ocispec.Descriptor, error) {
+	op := fmt.Sprintf("providertest: stat manifest %s@%s", name, d)
+	if f.FailStatManifest != nil {
+		if err := f.FailStatManifest(name, d); err != nil {
+			return ocispec.Descriptor{}, fmt.Errorf("%s: %w", op, err)
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rd := f.repo(name, false)
+	if rd == nil {
+		return ocispec.Descriptor{}, fmt.Errorf("%s: NAME_UNKNOWN: %w", op, provider.ErrNotFound)
+	}
+	m, ok := rd.manifests[d]
+	if !ok {
+		return ocispec.Descriptor{}, fmt.Errorf("%s: %w: %w", op, provider.ErrManifestUnknown, provider.ErrNotFound)
+	}
+	return ocispec.Descriptor{MediaType: m.desc.MediaType, Digest: m.desc.Digest, Size: m.desc.Size}, nil
 }
 
 // blob returns the blob d of the repository name. The caller holds f.mu.
