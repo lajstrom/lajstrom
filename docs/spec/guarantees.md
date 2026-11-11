@@ -404,37 +404,53 @@ status is `holds on strongly consistent registries only` do not hold there.
 
 ## Audit
 
-### INV-14. Every change of the index has its audit row in its transaction
+### INV-14. Every write has an audit row
 
-- **Statement.** Every change of the index and of the control plane through Lajstrom has one audit
-  row, written in the transaction of the change, with the principal, the action, the repo, the
-  subject, the digest, the client address and the request id. A write to the registry (a push, a
-  delete, a journal entry, a proxied ingest) has its row in the transaction that records it in
-  the index; when that transaction fails after the registry write, or the row of a push to an
-  `oci` repo fails, the write has no row and the failure is logged at error.
+- **Statement.** Every write through Lajstrom (a push, a delete, a journal entry, a proxied
+  ingest) and every change of the control plane has one audit row, with the principal, the
+  action, the repo, the subject, the digest, the client address and the request id. A change of
+  the index or of the control plane writes its row in its transaction. A write to the registry,
+  which no transaction spans, has its row before the write, and the row says how the write
+  ended: `ok`, `failed` with the error, or `unknown` when its writer stopped in between.
 - **Scope.** As rbac.md §5 and §7; reads and the bearer tokens of `/v2/token` are not audited. A
   reindex writes one row when it starts (`repo.reindex`), the reconcile loop one row per repo it
-  changed (`reconcile`), not one per version.
+  changed (`reconcile`), not one per version. A write refused before the registry is asked to
+  change anything (a denial, an invalid upload, a conflict found in the index or by a read of
+  the registry) has no row; one the registry refuses or fails has a `failed` row.
 - **Assumes.** Database: any. The wiring of `serve`, which sets no `audit.Writer` (a test seam
-  that writes after the commit and only logs a failure).
-- **Mechanism.** `ingest.Pipeline.writeRows` (publish), `deletion.record`, `journal.record`,
-  `ingest.Pipeline.auditReferrer`, the `auth.Users`, `auth.Tokens` and `auth.Bindings` changes,
-  `api` repo changes, `facade.handler.recordPassThrough` for an `oci` repo (its own transaction
-  after the registry push; a failure is logged); the address and the request id through
-  `ingest.withOrigin`. A failed transaction after a registry write is an error without a
-  sentinel, which the frontends and the facade answer `500` and log at error.
-- **Tests.** `TestIngestAuditWriter`, `TestPushAuditOrigin`, `TestOCIPushAudit`,
-  `TestRequestIDInAudit`, `TestClientAddrInAudit`, `TestPrincipalInAudit`, `TestTokensAPIAudit`,
-  `TestTokensAuditWriter`, `TestTokensCreatedBy`, `TestUsersAuditWriter`,
-  `TestDeleteGoneAndAuditWriter`, `TestDeleteRowsFail`, `TestAuditAPI`, `TestReconcile`; the audit
-  rows checked by `oras.sh` (#245) and `npm.sh` (`proxy.fetch`).
-- **When violated.** A registry write without its row is the log line at error and nothing
-  else. Writes straight to the registry have no row by construction; the reconcile row counts
-  what they changed in the index.
-- **Status.** `holds`. Not built: an audit row of the intent before every registry write and one
-  of its result after it, so that no write to the registry lacks a row (new issue).
-  **Untested:** the error log of a push to an `oci` repo whose row fails; acceptance.md S-09 (one
-  row per write of the whole suite) is not automated.
+  that writes after the commit and only logs a failure). A write takes less than
+  `ingest.claimTTL` from its row to its index transaction; one that takes longer is `unknown`
+  for a while, then completes its row all the same.
+- **Mechanism.** Before the registry write, after the reads that may refuse it, a row
+  `pending` in a transaction of its own (`ingest.Pipeline.intend`,
+  `facade.handler.intendPassThrough`); when it cannot be written, the registry is not asked.
+  After the write the row is `ok` in the transaction that records it in the index
+  (`ingest.Pipeline.writeRows` (publish), `deletion.record`, `journal.record`,
+  `facade.handler.recordPassThrough` for an `oci` repo), in one of its own for a referrer
+  (`ingest.Pipeline.auditReferrer`); or `failed` with the error, in one of its own
+  (`ingest.Pipeline.fail`), when the write or that transaction failed. A row still `pending`
+  after `ingest.claimTTL` is `unknown` (`index.Writer.ExpirePendingAudit`, at the start of every
+  reindex run, the reconcile loop's included). The `auth.Users`, `auth.Tokens` and
+  `auth.Bindings` changes and the `api` repo changes append theirs `ok` in their transaction;
+  the address and the request id through `ingest.withOrigin`. `GET /api/v1/audit` answers the
+  state and selects by it (index-schema.md, The audit row of a registry write).
+- **Tests.** `TestAuditIntent` (SQLite) and `TestIntegrationAuditIntent` (Postgres): a publish
+  killed between the registry and the index, or whose database goes away then, leaves a
+  `pending` row that a reindex after `ingest.claimTTL` marks `unknown`; an index transaction
+  that fails after a publish or a delete (#474) leaves a `failed` row with the error; a delete
+  whose database goes away after the registry delete leaves `pending`, then `unknown`; the happy
+  path one `ok` row each. The store conformance case `AuditState`; `TestIngestPushFails`,
+  `TestIngestConcurrent`, `TestDeleteRowsFail`, `TestDeleteRefused`, `TestIngestAuditWriter`,
+  `TestPushAuditOrigin`, `TestOCIPushAudit`, `TestOCIPushAuditAlone`, `TestRequestIDInAudit`,
+  `TestClientAddrInAudit`, `TestPrincipalInAudit`, `TestTokensAPIAudit`, `TestTokensAuditWriter`,
+  `TestTokensCreatedBy`, `TestUsersAuditWriter`, `TestDeleteGoneAndAuditWriter`, `TestAuditAPI`,
+  `TestReconcile`; the audit rows checked by `oras.sh` (#245) and `npm.sh` (`proxy.fetch`).
+- **When violated.** A row that cannot be completed is logged at error and stays `pending`
+  until it is `unknown`: a write whose outcome only the registry knows, which reindex brings to
+  the index. Writes straight to the registry have no row by construction; the reconcile row
+  counts what they changed in the index.
+- **Status.** `holds`. **Untested:** acceptance.md S-09 (one row per write of the whole suite)
+  is not automated.
 
 ## Access
 

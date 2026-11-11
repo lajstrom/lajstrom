@@ -836,22 +836,33 @@ request id from the request that made them.
 
 **The row is written in the transaction of its change.** There is no change of the index
 without its row and no row without its change; when the database is down, the change fails with
-it, and nothing is buffered or dropped. No transaction spans the registry: a delete whose index
-transaction fails after the registry deleted the manifest, and a push to an `oci` repo whose row
-fails after the push, have no row, only a log line at error
-([guarantees.md](spec/guarantees.md) INV-14). #46 asked for an asynchronous queue that drops
-events when the database is down; with the row in the change's transaction there is nothing
-left for such a queue to save, so there is none.
+it, and nothing is buffered or dropped. #46 asked for an asynchronous queue that drops events
+when the database is down; with the row in the change's transaction there is nothing left for
+such a queue to save, so there is none.
+
+**A write to the registry has its row before it.** No transaction spans the registry, so a
+push, a delete, a journal entry or a proxied ingest writes its row `pending` before it asks the
+registry, and no write is made without it. The row then says how the write ended, its `state`:
+`ok`, written in the transaction that records the write in the index; `failed`, with the
+`error` the client was answered (the registry refused, or the index failed after the registry
+had the write, which reindex repairs); `unknown`, when the row is still pending after
+`ingest.claimTTL`: the process stopped, or the database failed, between the registry and the
+index, and the registry may or may not have the write. Reindex and the reconcile loop mark those
+rows `unknown` and bring the index to what the registry has
+([index-schema.md](spec/index-schema.md#the-audit-row-of-a-registry-write),
+[guarantees.md](spec/guarantees.md) INV-14). Every other row is `ok`.
 
 **Not audited:** reads (`pull`, `GET`), and the bearer tokens of `/v2/token`, which a docker
 or oras client gets for every pull and push: a row each would be noise, and what a token then
 allows is audited itself. Every request, with its principal, is in the access log.
 
-**Reading it:** `GET /api/v1/audit` as admin, newest first, by repo, principal, action and
-time, a page at a time ([api.md](api.md#audit)), here with `LAJSTROM` the server's URL:
+**Reading it:** `GET /api/v1/audit` as admin, newest first, by repo, principal, action, state
+and time, a page at a time ([api.md](api.md#audit)), here with `LAJSTROM` the server's URL:
 
 ```sh
 curl -fsS -u admin "$LAJSTROM/api/v1/audit?repo=raw/scratch&since=2026-11-09T00:00:00Z&limit=50" | jq -c '.events[]'
+# the writes whose outcome only the registry knows
+curl -fsS -u admin "$LAJSTROM/api/v1/audit?state=unknown" | jq -c '.events[] | {at, action, repo, subject, digest}'
 ```
 
 or SQL on the index. The table only grows in this version: no retention, no export; it is part

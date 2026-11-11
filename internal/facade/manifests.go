@@ -137,8 +137,9 @@ func manifestUnknown(err error) error {
 // whose mediaType field, when it has one, is the Content-Type. On a repo of format oci the
 // manifest then passes through: it is pushed with its tag (PushReference) or by its digest,
 // which must be the reference's (passThrough; a manifest with a subject goes through ingest),
-// oci_repos records the OCI name and the audit log the push of a manifest without a subject
-// (recordPassThrough); the answer is 201, with OCI-Subject for a manifest with a subject: the
+// and oci_repos records the OCI name (recordPassThrough); the audit row of the push of a
+// manifest without a subject is written pending before it and completed after it, ok or failed
+// (intendPassThrough); the answer is 201, with OCI-Subject for a manifest with a subject: the
 // facade serves the referrers API, and the provider writes the tag schema where the backend
 // has none. Every other format goes through the manifest hook into ingest
 // (putManaged).
@@ -158,54 +159,87 @@ func (h *handler) putManifest(w http.ResponseWriter, r *http.Request, t *target,
 	if t.repo.Format != ociFormat {
 		return h.putManaged(w, r, t, ref, refDigest, desc, body)
 	}
-	if err := h.passThrough(r, t, ref, refDigest, desc, body); err != nil {
-		return err
-	}
 	subject := subjectOf(body)
 	tag := ref
 	if refDigest != "" {
 		tag = ""
 	}
-	h.recordPassThrough(ctx, t, tag, desc.Digest, subject == nil)
+	var ev *index.AuditEvent // a manifest with a subject is ingest's to audit, as a referrer
+	if subject == nil {
+		if ev, err = h.intendPassThrough(ctx, t, tag, desc.Digest); err != nil {
+			return err
+		}
+	}
+	if err := h.passThrough(r, t, ref, refDigest, desc, body); err != nil {
+		h.completePassThrough(ctx, ev, err)
+		return err
+	}
+	h.recordPassThrough(ctx, t, desc.Digest, ev)
 	created(w, t, desc.Digest, subject)
 	return nil
 }
 
+// intendPassThrough writes the audit row of the push of the manifest d to t, an oci repo,
+// pending, before the push (docs/spec/rbac.md §5): the principal, the repo, the OCI name as the
+// subject, the digest, the client address (server.ClientAddr), and the tag, "" for a push by
+// digest, and the request id in the details. Every PUT writes one, the repeat of a manifest the
+// backend has too: no index row tells the facade that it was there, as a version does for a
+// managed repo. No push goes without its row, so a failure is the PUT's.
+func (h *handler) intendPassThrough(ctx context.Context, t *target, tag string, d digest.Digest) (*index.AuditEvent, error) {
+	details := map[string]string{}
+	if tag != "" {
+		details["tag"] = tag
+	}
+	if id := server.RequestID(ctx); id != "" {
+		details["requestId"] = id
+	}
+	ev := &index.AuditEvent{At: h.o.Now(), Principal: auth.PrincipalFrom(ctx).String(), Action: "push",
+		Repo: t.repo.Format + "/" + t.repo.Name, Subject: t.oci, Digest: d, IP: server.ClientAddr(ctx), State: index.AuditPending}
+	if len(details) > 0 {
+		ev.Details, _ = json.Marshal(details) // strings always marshal
+	}
+	if err := h.o.Index.AppendAudit(ctx, ev); err != nil {
+		return nil, fmt.Errorf("facade: the audit row of the push of %s before the push: %w", d, err)
+	}
+	return ev, nil
+}
+
+// completePassThrough marks the pending row ev ok, or failed with cause when cause is not nil,
+// in a transaction of its own; nil ev is no row. A failure is logged, and the row stays pending
+// until reindex or the reconcile loop marks it unknown.
+func (h *handler) completePassThrough(ctx context.Context, ev *index.AuditEvent, cause error) {
+	if ev == nil {
+		return
+	}
+	ev.State, ev.Error = index.AuditOK, ""
+	if cause != nil {
+		ev.State, ev.Error = index.AuditFailed, cause.Error()
+	}
+	if err := h.o.Index.CompleteAudit(context.WithoutCancel(ctx), ev); err != nil {
+		h.o.Log.ErrorContext(ctx, "facade: the audit row of a push not completed; it is unknown after ingest.claimTTL", "audit", ev.ID,
+			"digest", ev.Digest.String(), "state", ev.State, "error", err.Error(), "requestId", server.RequestID(ctx))
+	}
+}
+
 // recordPassThrough records the manifest d that passThrough stored in t, an oci repo, in one
-// transaction: oci_repos gets the OCI name, and the audit log a push row when audit is set
-// (docs/spec/rbac.md §5). audit is false for a manifest with a subject, which ingest audited as
-// a referrer. The row has the principal, the repo, the OCI name as the subject, the digest, the
-// client address (server.ClientAddr), and the tag, "" for a push by digest, and the request id
-// in the details. Every PUT writes one, the repeat of a manifest the backend has too: no index
-// row tells the facade that it was there, as a version does for a managed repo. The backend has
-// the manifest and is the truth, so a failure is logged: reindex records the repository, and
-// the log line is what is left of the push.
-func (h *handler) recordPassThrough(ctx context.Context, t *target, tag string, d digest.Digest, audit bool) {
-	now := h.o.Now()
+// transaction: oci_repos gets the OCI name, and the audit row ev, when there is one, is ok. The
+// backend has the manifest and is the truth, and the answer is 201, so a failure is logged and
+// the row is completed on its own: reindex records the repository.
+func (h *handler) recordPassThrough(ctx context.Context, t *target, d digest.Digest, ev *index.AuditEvent) {
 	err := h.o.Index.Tx(ctx, func(w index.Writer) error {
-		if err := w.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: t.repo.ID, Path: t.oci, SeenAt: now}); err != nil {
+		if err := w.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: t.repo.ID, Path: t.oci, SeenAt: h.o.Now()}); err != nil {
 			return err
 		}
-		if !audit {
+		if ev == nil {
 			return nil
 		}
-		details := map[string]string{}
-		if tag != "" {
-			details["tag"] = tag
-		}
-		if id := server.RequestID(ctx); id != "" {
-			details["requestId"] = id
-		}
-		ev := index.AuditEvent{At: now, Principal: auth.PrincipalFrom(ctx).String(), Action: "push",
-			Repo: t.repo.Format + "/" + t.repo.Name, Subject: t.oci, Digest: d, IP: server.ClientAddr(ctx)}
-		if len(details) > 0 {
-			ev.Details, _ = json.Marshal(details) // strings always marshal
-		}
-		return w.AppendAudit(ctx, &ev)
+		ev.State = index.AuditOK
+		return w.CompleteAudit(ctx, ev)
 	})
 	if err != nil {
 		h.o.Log.ErrorContext(ctx, "facade: record the OCI repository and the push in the audit log", "name", t.name,
 			"digest", d.String(), "principal", auth.PrincipalFrom(ctx).String(), "error", err.Error(), "requestId", server.RequestID(ctx))
+		h.completePassThrough(ctx, ev, nil)
 	}
 }
 

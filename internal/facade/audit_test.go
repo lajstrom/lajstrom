@@ -2,13 +2,16 @@ package facade
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/opencontainers/go-digest"
@@ -98,14 +101,15 @@ func TestPushAuditOrigin(t *testing.T) {
 type auditRow struct {
 	Principal, Repo, Subject string
 	Digest                   digest.Digest
-	IP, Details              string
+	IP, Details, State       string
 }
 
 // TestOCIPushAudit (#245): through the server behind a trusted proxy, a manifest pushed to an
-// oci repo writes one push row in the transaction of oci_repos: alice, the repo, the OCI name as
-// the subject, the digest, the forwarded address, the tag and the request id. The repeat of
-// the same manifest writes another; a push by digest has no tag; a referrer is audited by
-// ingest alone, once; a push the backend refuses writes none.
+// oci repo writes one push row, pending before the push and ok in the transaction of oci_repos
+// (#473): alice, the repo, the OCI name as the subject, the digest, the forwarded address, the
+// tag and the request id. The repeat of the same manifest writes another; a push by digest has
+// no tag; a referrer is audited by ingest alone, once; a push the backend refuses has its row,
+// failed with the backend's error.
 func TestOCIPushAudit(t *testing.T) {
 	e := newEnv(t, envOptions{})
 	put := e.viaServer([]netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")})
@@ -119,7 +123,7 @@ func TestOCIPushAudit(t *testing.T) {
 	sig, sigDigest := referrerOf(t, d, cosignBundle, "signature")
 	put("req-4", "oci/images/app", sigDigest.String(), sig)
 	e.prov.FailPushReference = fmt.Errorf("the tag is immutable: %w", provider.ErrConflict)
-	other, _ := manifest(t, []byte("layer"), "third")
+	other, d3 := manifest(t, []byte("layer"), "third")
 	wantError(t, "a push the backend refuses", e.do(e.h, http.MethodPut, "/v2/oci/images/app/manifests/v1", bytes.NewReader(other),
 		"Content-Type", ocispecManifest, principalHeader, "alice"), http.StatusConflict, codeTagInvalid)
 
@@ -127,15 +131,19 @@ func TestOCIPushAudit(t *testing.T) {
 	must(t, err)
 	got := make([]auditRow, len(evs))
 	for i, ev := range evs {
-		got[i] = auditRow{ev.Principal, ev.Repo, ev.Subject, ev.Digest, ev.IP, string(ev.Details)}
+		got[i] = auditRow{ev.Principal, ev.Repo, ev.Subject, ev.Digest, ev.IP, string(ev.Details), ev.State}
+		if ev.State == index.AuditFailed && !strings.Contains(ev.Error, "the tag is immutable") {
+			t.Errorf("the failed row's error %q, want the backend's", ev.Error)
+		}
 	}
 	alice := userP("alice").String()
 	want := []auditRow{
+		{alice, "oci/images", "oci/images/app", d3, "", `{"tag":"v1"}`, index.AuditFailed},
 		{alice, "oci/images", d.String(), sigDigest, "198.51.100.7",
-			`{"artifactType":"` + cosignBundle + `","kind":"attestation","requestId":"req-4"}`},
-		{alice, "oci/images", "oci/images/app", d2, "198.51.100.7", `{"requestId":"req-3"}`},
-		{alice, "oci/images", "oci/images/app", d, "198.51.100.7", `{"requestId":"req-2","tag":"v1"}`},
-		{alice, "oci/images", "oci/images/app", d, "198.51.100.7", `{"requestId":"req-1","tag":"v1"}`},
+			`{"artifactType":"` + cosignBundle + `","kind":"attestation","requestId":"req-4"}`, index.AuditOK},
+		{alice, "oci/images", "oci/images/app", d2, "198.51.100.7", `{"requestId":"req-3"}`, index.AuditOK},
+		{alice, "oci/images", "oci/images/app", d, "198.51.100.7", `{"requestId":"req-2","tag":"v1"}`, index.AuditOK},
+		{alice, "oci/images", "oci/images/app", d, "198.51.100.7", `{"requestId":"req-1","tag":"v1"}`, index.AuditOK},
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("push rows\n%+v\nwant\n%+v", got, want)
@@ -144,5 +152,32 @@ func TestOCIPushAudit(t *testing.T) {
 	must(t, err)
 	if len(ocis) != 1 || ocis[0].Path != "oci/images/app" {
 		t.Errorf("oci_repos = %+v, want oci/images/app", ocis)
+	}
+}
+
+// txFailing is the store whose transactions fail.
+type txFailing struct{ index.Store }
+
+func (txFailing) Tx(context.Context, func(index.Writer) error) error {
+	return errors.New("database is locked")
+}
+
+// TestOCIPushAuditAlone (#473): when the transaction of oci_repos fails after the backend took
+// a manifest of an oci repo, the answer is 201, since the backend has it, and the push's audit
+// row, pending before it, is completed ok on its own; the failure is logged.
+func TestOCIPushAuditAlone(t *testing.T) {
+	e := newEnv(t, envOptions{})
+	h := New(Options{Index: txFailing{e.st}, Providers: provider.Map{"local": e.reg}, Ingest: e.ingest,
+		Log: slog.New(slog.NewTextHandler(e.logs, nil)), Now: e.clock.Now, Tokens: e.tokens})
+	body, d := manifest(t, []byte("layer"), "first")
+	wantStatus(t, "PUT", e.do(h, http.MethodPut, "/v2/oci/images/app/manifests/v1", bytes.NewReader(body),
+		"Content-Type", ocispecManifest), http.StatusCreated)
+	evs, err := e.st.ListAudit(t.Context(), index.AuditFilter{Action: "push"})
+	must(t, err)
+	if len(evs) != 1 || evs[0].Digest != d || evs[0].State != index.AuditOK {
+		t.Errorf("push rows %+v, want one ok of %s", evs, d)
+	}
+	if !strings.Contains(e.logs.String(), "record the OCI repository") {
+		t.Error("the failed transaction is not logged")
 	}
 }
