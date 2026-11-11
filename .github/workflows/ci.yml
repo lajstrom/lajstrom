@@ -230,6 +230,23 @@ jobs:
           --health-cmd "wget -qO- http://127.0.0.1:5000/v2/"
           --health-interval 2s
           --health-timeout 5s
+      postgres:
+        # The Postgres of the integration job, for the two replicas of first-admin.sh (FA-07,
+        # FA-08, #440): each run creates a schema of its own and drops it. The steps start once
+        # it passes its health check.
+        # sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+        image: postgres:17.11-alpine
+        env:
+          POSTGRES_DB: lajstrom
+          POSTGRES_USER: lajstrom
+          POSTGRES_PASSWORD: lajstrom
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U lajstrom -d lajstrom"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
     steps:
       - name: Wait for Zot
         timeout-minutes: 1
@@ -294,6 +311,9 @@ jobs:
         timeout-minutes: 6
         env:
           LAJSTROM_E2E_REGISTRY: localhost:5000
+          # first-admin.sh runs two replicas on a schema of this database, with the psql of the
+          # runner image.
+          LAJSTROM_E2E_POSTGRES_DSN: "postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable"
           MAVEN_E2E_M2: ${{ runner.temp }}/maven-e2e/m2
           MAVEN_E2E_GRADLE_HOME: ${{ runner.temp }}/maven-e2e/gradle
         run: make e2e
