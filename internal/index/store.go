@@ -112,6 +112,9 @@ type Reader interface {
 	// LatestReindexRun returns the newest run that covered repoID, its own or a run of every
 	// repo; repoID 0 selects the runs of every repo only.
 	LatestReindexRun(ctx context.Context, repoID int64) (*ReindexRun, error)
+	// ListReplicas returns the rows of replicas ordered by StartedAt, then ID; a row whose
+	// HeartbeatAt is older than 2 minutes is of a replica that is gone.
+	ListReplicas(ctx context.Context) ([]Replica, error)
 
 	// Derived.
 
@@ -294,6 +297,21 @@ type Writer interface {
 	// ExpireFetchClaims removes the claims whose HeartbeatAt is before before, and returns how
 	// many it removed (reindex and the reconcile loop).
 	ExpireFetchClaims(ctx context.Context, before time.Time) (int, error)
+
+	// Coordination: replicas, a row per serve process on the database
+	// (docs/spec/index-schema.md, Coordination).
+
+	// StartReplica deletes the rows whose HeartbeatAt is before staleBefore and inserts r, in one
+	// transaction; StartedAt is now when zero, HeartbeatAt StartedAt when zero. On SQLite, which
+	// serves one replica, a row of another replica whose HeartbeatAt is at or after staleBefore
+	// is a *ReplicaConflictError naming it, and nothing changes; on Postgres the rows coexist. An
+	// ID that has a row is ErrConflict.
+	StartReplica(ctx context.Context, r *Replica, staleBefore time.Time) error
+	// HeartbeatReplica sets HeartbeatAt of the replica's row; ErrNotFound when the row is gone: a
+	// start that found it stale deleted it.
+	HeartbeatReplica(ctx context.Context, id string, at time.Time) error
+	// StopReplica deletes the replica's row.
+	StopReplica(ctx context.Context, id string) error
 
 	// Coordination: reindex runs (docs/spec/index-schema.md, Coordination).
 

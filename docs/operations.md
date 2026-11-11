@@ -355,10 +355,11 @@ the token commands fail and say that `serve` signs with an ephemeral key then.
 
 ## Readiness
 
-`/-/readyz` answers `200 ok` while the index database answers a ping and every registry answered
-`GET /v2/`, with Lajstrom's credentials, within the last minute; otherwise `503` with a line that
-names no host, user or registry (`index database is unreachable`, `a registry has not answered
-for a minute`); the log has the cause, a registry's once per outage. `serve` pings every
+`/-/readyz` answers `200 ok` while the index database answers a ping, no other replica serves on
+it when it is SQLite, and every registry answered `GET /v2/`, with Lajstrom's credentials, within
+the last minute; otherwise `503` with a line that names no host, user or registry (`index
+database is unreachable`, `another replica serves on this SQLite database`, `a registry has not
+answered for a minute`); the log has the cause, a registry's once per outage. `serve` pings every
 registry at start and every 20 seconds after, each ping bounded by 10 seconds, so a registry
 that stops answering takes the replicas out of the edge after about a minute, and they come
 back at the first answer. `/-/healthz` is only "the process is up": point the liveness probe

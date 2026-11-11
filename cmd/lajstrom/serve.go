@@ -33,7 +33,8 @@ const registryProbeTimeout = 10 * time.Second
 
 // newServeCmd returns serve: load and validate the configuration (in the root's
 // PersistentPreRunE), read the credential files of the upstreams (loadUpstreams), open the
-// index database and apply its pending migrations, create the
+// index database and apply its pending migrations, write this process's row of replicas and beat
+// it (startReplica: on SQLite a live row of another replica stops serve here), create the
 // repos of the configuration that the control plane does not have, load the master key, build
 // a provider for every registry and probe its capabilities, build the server and run it until
 // SIGINT or SIGTERM and the drain that follows (server.Run; a second signal stops the process
@@ -102,6 +103,12 @@ func newServeCmd(a *app) *cobra.Command {
 				a.log.Warn("the index schema is newer than this binary, and compatible with it",
 					"schema", mig.Version, "known", mig.Known)
 			}
+			rep, err := startReplica(ctx, st, a.log, time.Now)
+			if err != nil {
+				return err
+			}
+			// After the background work has ended, before the index closes.
+			defer rep.Stop(context.WithoutCancel(ctx))
 			repos := newRepos(c, st, a.log)
 			created, err := repos.Bootstrap(ctx, c.Repos)
 			if err != nil {
@@ -144,6 +151,7 @@ func newServeCmd(a *app) *cobra.Command {
 				a.log.Info("reconcile loop off (reconcile.interval is 0)")
 			}
 			runs.wg.Go(func() { expireSessions(ctx, pipe, a.log, sessionExpiryInterval) })
+			runs.wg.Go(func() { rep.Run(ctx) })
 			if err := checkProxyRepos(ctx, st, upstreams, a.log); err != nil {
 				return err
 			}
@@ -172,7 +180,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Log:             a.log,
 				Plugins:         servedPlugins(c.Server.ExternalURL, accounts{authn, &auth.Tokens{Index: st, Log: a.log}}),
 				Deps:            deps,
-				Ready:           ready(a.log, c.Database.Driver, st, health),
+				Ready:           ready(a.log, c.Database.Driver, st, health, rep),
 				API:             api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Deleter: pipe, Bootstrap: boot, Log: a.log}),
 				Facade:          v2,
 				Authenticator:   authn,
@@ -209,14 +217,18 @@ func probeRegistries(ctx context.Context, providers provider.Map, log *slog.Logg
 }
 
 // ready is the readiness check of serve (docs/spec/http-routing.md §5): the index database
-// answers, and every registry answered GET /v2/ within the last minute. A failure is logged with
-// its cause and answered without it: /-/readyz is public, and a driver error can name hosts and
-// users; the registry probe logs its own failures once per outage.
-func ready(log *slog.Logger, driver string, st store, health *registryHealth) func(context.Context) error {
+// answers, no other replica serves on it when it is SQLite, and every registry answered GET /v2/
+// within the last minute. A failure is logged with its cause and answered without it: /-/readyz
+// is public, and a driver error can name hosts and users; the registry probe and the heartbeat of
+// the replica log their own failures.
+func ready(log *slog.Logger, driver string, st store, health *registryHealth, rep *replica) func(context.Context) error {
 	return func(ctx context.Context) error {
 		if err := st.Ping(ctx); err != nil {
 			log.WarnContext(ctx, "index database ping failed", "database.driver", driver, "error", err.Error())
 			return errors.New("index database is unreachable")
+		}
+		if err := rep.Err(); err != nil {
+			return err
 		}
 		if stale := health.Stale(); len(stale) > 0 {
 			log.DebugContext(ctx, "not ready: registries without an answer for a minute", "registries", stale)

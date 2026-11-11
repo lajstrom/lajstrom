@@ -127,7 +127,9 @@ status, bytes, duration, request id and remote address.
 adds the connection parameters of `modernc.org/sqlite` itself: `_busy_timeout=5000` (a writer
 waits up to 5 s for the lock), `_journal_mode=WAL` and `_synchronous=NORMAL` unless the DSN sets
 them, and always `_foreign_keys=1` and `_txlock=immediate` (deletes cascade; a transaction takes
-the write lock when it begins). Tests use an in-memory database,
+the write lock when it begins). SQLite serves one replica: a `serve` that finds another live
+one on the file refuses to start and names it ([index-schema.md](spec/index-schema.md#coordination)).
+Tests use an in-memory database,
 `file:<name>?mode=memory&cache=shared`; it lives in one connection and is gone when the process
 ends.
 

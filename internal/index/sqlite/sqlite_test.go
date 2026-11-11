@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/storetest"
@@ -170,5 +172,37 @@ func TestOpenErrors(t *testing.T) {
 			_ = s.Close()
 			t.Errorf("Open(%q) succeeded", dsn)
 		}
+	}
+}
+
+// TestFileReplicas checks the rows of replicas on a database file shared by two stores, as two
+// serve processes share it: while the first one's heartbeat is fresh, the second is refused
+// with an error naming it, and nothing is written; once it is stale, the second starts and the
+// first one's row is gone.
+func TestFileReplicas(t *testing.T) {
+	ctx := t.Context()
+	dsn := "file:" + filepath.Join(t.TempDir(), "lajstrom.db")
+	a, b := openMigrated(t, dsn), openFile(t, dsn)
+	start := time.Now()
+	first := index.Replica{ID: "first", Host: "host-a", PID: 1, Version: "v0.1.0", StartedAt: start}
+	if err := a.StartReplica(ctx, &first, start.Add(-2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	second := index.Replica{ID: "second", Host: "host-b", PID: 2, Version: "v0.1.0", StartedAt: start.Add(time.Minute)}
+	var conflict *index.ReplicaConflictError
+	err := b.StartReplica(ctx, &second, second.StartedAt.Add(-2*time.Minute))
+	if !errors.As(err, &conflict) || conflict.Live.ID != first.ID || !strings.Contains(err.Error(), "host-a") {
+		t.Fatalf("the second replica while the first is fresh: %v, want a ReplicaConflictError naming the first", err)
+	}
+	second.StartedAt = start.Add(3 * time.Minute)
+	if err := b.StartReplica(ctx, &second, second.StartedAt.Add(-2*time.Minute)); err != nil {
+		t.Fatalf("the second replica once the first is stale: %v", err)
+	}
+	rows, err := a.ListReplicas(ctx)
+	if err != nil || len(rows) != 1 || rows[0].ID != second.ID {
+		t.Errorf("ListReplicas = %v, %v; want the second replica only", rows, err)
+	}
+	if err := a.HeartbeatReplica(ctx, first.ID, second.StartedAt); !errors.Is(err, index.ErrNotFound) {
+		t.Errorf("the first replica's heartbeat after its row went: %v, want ErrNotFound", err)
 	}
 }

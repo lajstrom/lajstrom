@@ -290,7 +290,7 @@ robin per request, so every multi-request protocol crosses replicas by construct
 | H-11 | upload a `.deb` through A, `apt-get update` through B within one second | the package is visible (A-09) | #40 |
 | H-12 | get a bearer token from A (`/v2/token`), use it on B | accepted: the signing key is in the database, not in a replica's memory or local file | #26 |
 | H-13 | the same `index_cache` scope requested on A and B at once after an invalidation | both answer the same bytes; one `index_cache` row | #11, #40 |
-| H-14 *note* | SQLite with two replicas | not supported and not detectable by the server: the install guide says Postgres for more than one replica, and the Helm chart (post-MVP) refuses `replicas > 1` with SQLite | #58 |
+| H-14 *note* | SQLite with two replicas | not supported, and detected: a second `serve` on the SQLite file of a live one exits with an error that names it (its row of `replicas`, [index-schema.md](spec/index-schema.md#coordination)), and a restart after a crash starts once the crashed one's heartbeat is 2 minutes old. The install guide says Postgres for more than one replica, and the Helm chart (post-MVP) refuses `replicas > 1` with SQLite | #58, #478 |
 
 ## 5. Security
 

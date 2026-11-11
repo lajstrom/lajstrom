@@ -35,7 +35,7 @@ func TestReadyFollowsTheRegistries(t *testing.T) {
 		slog.New(slog.DiscardHandler))
 	now := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
 	health.now = func() time.Time { return now }
-	check := ready(slog.New(slog.DiscardHandler), "sqlite", st, health)
+	check := ready(slog.New(slog.DiscardHandler), "sqlite", st, health, &replica{})
 
 	if err := check(t.Context()); err == nil {
 		t.Error("ready before the first ping")

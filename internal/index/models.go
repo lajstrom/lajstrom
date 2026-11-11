@@ -149,6 +149,17 @@ type FetchClaim struct {
 	HeartbeatAt time.Time // stale 2 minutes after the last beat
 }
 
+// Replica is a row of replicas (coordination): a serve process on the database, from its start
+// to its stop (docs/spec/index-schema.md, Coordination).
+type Replica struct {
+	ID          string // made at the start: a UUID v7 (NewUID)
+	Host        string // host name
+	PID         int
+	Version     string // the binary's version
+	StartedAt   time.Time
+	HeartbeatAt time.Time // stale 2 minutes after the last beat
+}
+
 // The states of a reindex run (docs/spec/index-schema.md, Coordination).
 const (
 	ReindexRunning   = "running"   // the lock of its scope while HeartbeatAt is fresh
