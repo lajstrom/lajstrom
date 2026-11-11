@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,34 @@ var scratch = index.Repo{ID: 1, Format: "raw", Name: "scratch", Registry: "local
 // hashed is the hashed form of a path component.
 func hashed(c string) string {
 	sum := sha256.Sum256([]byte(c))
-	return "h0__" + hex.EncodeToString(sum[:])[:32]
+	return "h0_h" + hex.EncodeToString(sum[:])[:32]
+}
+
+// giteaName is the name grammar of Gitea's and Forgejo's container registry, the distribution
+// specification's of 1.0 (docs/registries/quirks.md): no "__", no "--".
+var giteaName = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$`)
+
+// TestEscapeNameGrammar: the package paths of raw paths that a site or a repository holds keep
+// to ADR 0017, Gitea's grammar and no word that Zot's layout keeps, as raw/<repo>/<path>.
+func TestEscapeNameGrammar(t *testing.T) {
+	for _, p := range []string{
+		".gitignore", "_config.yml", "site/_config.yml", ".github/workflows/ci.yml", "a--b.txt", "netlify/blobs",
+		"x/blobs/sha256/0f", "my.uploads", "cache/.sync", "a.sync/f", "x/index.json", "x/oci-layout", "__init__.py",
+		"Docs/Readme.MD", "--", "-/-", "~user/.bashrc", "node_modules/.bin/tsc",
+	} {
+		pkgPath, err := Plugin{}.EscapeName(p)
+		if err != nil {
+			t.Fatalf("EscapeName(%q): %v", p, err)
+		}
+		if name := "raw/scratch/" + pkgPath; !giteaName.MatchString(name) {
+			t.Errorf("EscapeName(%q): %q does not match Gitea's grammar", p, name)
+		}
+		for c := range strings.SplitSeq(pkgPath, "/") {
+			if profile.ReservedComponent(c) {
+				t.Errorf("EscapeName(%q) = %q, whose component %q is reserved", p, pkgPath, c)
+			}
+		}
+	}
 }
 
 func TestEscapeName(t *testing.T) {
@@ -48,6 +76,14 @@ func TestEscapeName(t *testing.T) {
 		{"a" + strings.Repeat("_", 21), "a" + strings.Repeat("_5f", 21)},
 		{"a" + strings.Repeat("_", 22), hashed("a" + strings.Repeat("_", 22))},
 		{"h0__abc", "h0_5f_5fabc"}, // never a hashed component: Escape writes no "__"
+		{"h0_habc", "h0_5fhabc"},
+		// ADR 0017: a run of dashes and the words of Zot's layout.
+		{"a--b.txt", "a_2d_2db.txt"},
+		{"netlify/blobs", "netlify/blob_73"},
+		{"x/blobs/sha256/0f", "x/blob_73/sha256/0f"},
+		{"x/index.json", "x/index.jso_6e"},
+		{"cache/my.sync", "cache/my.syn_63"},
+		{".gitignore", hashed(".gitignore")},
 		{"x/" + strings.Repeat("y", maxPathLen-2), "x/" + hashed(strings.Repeat("y", maxPathLen-2))},
 	}
 	for _, tt := range tests {
