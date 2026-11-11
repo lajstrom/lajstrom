@@ -179,7 +179,7 @@ var alice = auth.Principal{Kind: auth.KindUser, Name: "alice"}
 // env is a pipeline over a fake provider and the real SQLite store in memory, with the repo
 // raw/scratch on the registry "local".
 type env struct {
-	st     *sqlite.Store
+	st     index.Store
 	prov   *providertest.Fake
 	plugin *rawPlugin
 	pipe   *ingest.Pipeline
@@ -191,13 +191,19 @@ var memoryDBs atomic.Int64
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	ctx := t.Context()
-	st, err := sqlite.Open(ctx, fmt.Sprintf("file:ingest-%d?mode=memory&cache=shared", memoryDBs.Add(1)))
+	st, err := sqlite.Open(t.Context(), fmt.Sprintf("file:ingest-%d?mode=memory&cache=shared", memoryDBs.Add(1)))
 	must(t, err)
 	t.Cleanup(func() { _ = st.Close() })
+	return newEnvOn(t, st, "scratch")
+}
+
+// newEnvOn is newEnv on the store st, with the repo raw/<repo>.
+func newEnvOn(t *testing.T, st index.Store, repo string) *env {
+	t.Helper()
+	ctx := t.Context()
 	must(t, st.Migrate(ctx))
 	e := &env{st: st, prov: &providertest.Fake{RegistryName: "local"}, plugin: newRawPlugin()}
-	e.repo = index.Repo{Format: "raw", Name: "scratch", Registry: "local", Prefix: "raw/scratch", Kind: "hosted"}
+	e.repo = index.Repo{Format: "raw", Name: repo, Registry: "local", Prefix: "raw/" + repo, Kind: "hosted"}
 	must(t, st.CreateRepo(ctx, &e.repo))
 	e.pipe = ingest.New(e.options(e.prov))
 	return e

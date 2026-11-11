@@ -39,9 +39,10 @@ var journalActions = map[string]string{
 //     op is pushed as the next entry.
 //  3. One index transaction, still under the lock: the journal rows of the adopted and the new
 //     entries, the package's journal_state folded from all its rows, the repo's index_cache
-//     invalidated, and an audit row per op (npm.dist-tag or npm.deprecate, with the entry's
-//     digest). When it fails the entries stay in the registry, and the next append or reindex
-//     adopts them; the error is a plain one (500).
+//     invalidated, and the audit row of each op ok (npm.dist-tag or npm.deprecate, with the
+//     entry's digest), written pending before the op's push. When it fails the entries stay in
+//     the registry, and the next append or reindex adopts them; the error is a plain one (500),
+//     and the rows of the ops are failed with it, as on a failed push.
 func (p *Pipeline) Journal(ctx context.Context, repo index.Repo, pkgPath string, ops []format.JournalOp, principal auth.Principal) ([]int64, error) {
 	if err := checkJournal(repo, ops); err != nil || len(ops) == 0 {
 		return []int64{}, err
@@ -55,6 +56,9 @@ func (p *Pipeline) Journal(ctx context.Context, repo index.Repo, pkgPath string,
 		return nil, fmt.Errorf("ingest: repository %s: %w", j.name, err)
 	}
 	if err := p.index.WithReferrersLock(ctx, j.name, profile.EmptyConfig.Digest, j.append); err != nil {
+		for i := range j.events {
+			p.fail(ctx, &j.events[i], err)
+		}
 		return nil, err
 	}
 	for _, e := range j.written[len(j.adopted):] {
@@ -231,12 +235,20 @@ func (j *journal) push(ctx context.Context, e profile.JournalEntry) error {
 		}
 		j.pushed = true
 	}
+	if err := j.intend(ctx, e, d); err != nil {
+		return err
+	}
 	tag := profile.JournalTag(e.Seq)
 	desc := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: d, Size: int64(len(raw))}
 	if err := j.rr.PushReference(ctx, desc, bytes.NewReader(raw), tag); err != nil {
 		return fmt.Errorf("ingest: push %s:%s: %w", j.name, tag, err)
 	}
 	j.digests[e.Seq] = d
+	return nil
+}
+
+// intend writes the pending audit row of the entry e, whose manifest is d, before its push.
+func (j *journal) intend(ctx context.Context, e profile.JournalEntry, d digest.Digest) error {
 	ev := index.AuditEvent{At: j.at, Principal: j.principal.String(), Action: journalActions[e.ArtifactType],
 		Repo: j.repo.Format + "/" + j.repo.Name, Subject: j.pkg.Name + " " + e.Version, Digest: d}
 	details := map[string]any{"seq": e.Seq, "op": e.Op}
@@ -247,13 +259,16 @@ func (j *journal) push(ctx context.Context, e profile.JournalEntry) error {
 		details["version"] = e.Version
 	}
 	withOrigin(ctx, &ev, details)
+	if err := j.p.intend(ctx, &ev); err != nil {
+		return err
+	}
 	j.events = append(j.events, ev)
 	return nil
 }
 
 // record writes the rows of the written entries, the package's state folded from all its rows,
-// the invalidated index_cache and the audit rows in one transaction, and the audit rows to the
-// audit.Writer after it when there is one.
+// the invalidated index_cache and the completed audit rows in one transaction, and the audit
+// rows to the audit.Writer after it when there is one.
 func (j *journal) record(ctx context.Context) error {
 	err := j.p.index.Tx(ctx, func(w index.Writer) error {
 		for _, e := range j.written {
@@ -274,10 +289,8 @@ func (j *journal) record(ctx context.Context) error {
 			return err
 		}
 		for i := range j.events {
-			if j.p.audit == nil {
-				if err := w.AppendAudit(ctx, &j.events[i]); err != nil {
-					return err
-				}
+			if err := j.p.complete(ctx, w, &j.events[i]); err != nil {
+				return err
 			}
 		}
 		return nil

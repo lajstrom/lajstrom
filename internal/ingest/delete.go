@@ -46,10 +46,13 @@ import (
 //     on its own, without the referrers API, has its subject's sha256-<hex> index deleted first
 //     and pushed again without it after. A manifest that is gone already is not an error.
 //  4. For a version, one index transaction deletes its rows, its package's when it was the last
-//     version, invalidates the repo's index_cache and appends the audit row; for a journal entry
-//     of a package the index still has, its row, the package's state folded again from the rows
-//     left and the invalidated index_cache with the audit row; for any other manifest the audit
-//     row alone is written. The row is a delete by principal with
+//     version, invalidates the repo's index_cache and completes the audit row; for a journal
+//     entry of a package the index still has, its row, the package's state folded again from
+//     the rows left and the invalidated index_cache with the audit row; for any other manifest
+//     the audit row alone. The row is written pending in step 3, in a transaction of its own
+//     after the tags are counted and before the first request that changes anything, and failed
+//     with the error when the rest of step 3 or this transaction fails. It is a delete by
+//     principal with
 //     del.ClientIP (the request's client address when it is empty), the version's subject (or
 //     the manifest's subject digest), the digest, and the number of referrers and the request
 //     id in the details.
@@ -87,10 +90,13 @@ func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Delet
 	if err := d.find(ctx); err != nil {
 		return nil, err
 	}
+	d.ev = d.event(ctx, principal)
 	if err := d.deleteInBackend(ctx); err != nil {
+		setDetail(&d.ev, "referrers", d.referrers)
+		p.fail(ctx, &d.ev, err)
 		return nil, err
 	}
-	if err := d.record(ctx, principal); err != nil {
+	if err := d.record(ctx); err != nil {
 		return nil, err
 	}
 	p.log.InfoContext(ctx, "ingest: deleted", "repo", repo.Format+"/"+repo.Name, "name", name, "digest", d.target.Digest.String(),
@@ -114,7 +120,8 @@ type deletion struct {
 	subject digest.Digest      // the subject of a manifest that is no version, when it has one
 	journal bool               // the reference is a journal tag of an npm package
 
-	referrers int // deleted before it, theirs included
+	referrers int              // deleted before it, theirs included
+	ev        index.AuditEvent // the audit row of the delete, pending from before it (intend)
 }
 
 // find resolves the reference: to a version of the index when it names one, else in the
@@ -222,6 +229,10 @@ func (d *deletion) deleteInBackend(ctx context.Context) error {
 	}
 	return d.p.index.WithReferrersLock(ctx, d.name, key, func(ctx context.Context) error {
 		if err := d.refuseTagged(ctx); err != nil {
+			return err
+		}
+		// The row before the first request that changes anything (#473).
+		if err := d.p.intend(ctx, &d.ev); err != nil {
 			return err
 		}
 		if d.subject != "" && !d.api {
@@ -474,15 +485,14 @@ func (d *deletion) deleteOne(ctx context.Context, desc ocispec.Descriptor) error
 	return nil
 }
 
-// record writes what the index holds of the delete: for a version, its rows go in one
-// transaction, the package's with its last version, the repo's index_cache is invalidated and
-// the audit row appended; for any other manifest the audit row alone. The audit row goes to
-// the audit.Writer after the commit when there is one. The backend has deleted already, so a
-// failure of the transaction is an error without a sentinel (500): reindex repairs the rows.
-func (d *deletion) record(ctx context.Context, principal auth.Principal) error {
+// event is the audit event of the delete, before it: a delete by principal with del.ClientIP
+// (the request's client address when it is empty), the version's subject (or the manifest's
+// subject digest, or the OCI repository), the digest and the request id. The number of
+// referrers joins its details when the delete ends.
+func (d *deletion) event(ctx context.Context, principal auth.Principal) index.AuditEvent {
 	ev := index.AuditEvent{At: d.p.now(), Principal: principal.String(), Action: "delete",
 		Repo: d.repo.Format + "/" + d.repo.Name, Digest: d.target.Digest, IP: d.del.ClientIP}
-	withOrigin(ctx, &ev, map[string]any{"referrers": d.referrers})
+	withOrigin(ctx, &ev, nil)
 	switch {
 	case d.version != nil:
 		ev.Subject = d.pkg.Name + " " + d.version.Version
@@ -494,6 +504,17 @@ func (d *deletion) record(ctx context.Context, principal auth.Principal) error {
 	default:
 		ev.Subject = d.name
 	}
+	return ev
+}
+
+// record writes what the index holds of the delete: for a version, its rows go in one
+// transaction, the package's with its last version, the repo's index_cache is invalidated and
+// the audit row is completed ok; for any other manifest the audit row alone. The audit row goes
+// to the audit.Writer after the commit when there is one. The backend has deleted already, so a
+// failure of the transaction is an error without a sentinel (500), and the row is failed with
+// it (#474): reindex repairs the rows.
+func (d *deletion) record(ctx context.Context) error {
+	setDetail(&d.ev, "referrers", d.referrers)
 	err := d.p.index.Tx(ctx, func(w index.Writer) error {
 		switch {
 		case d.version != nil:
@@ -505,18 +526,17 @@ func (d *deletion) record(ctx context.Context, principal auth.Principal) error {
 				return err
 			}
 		}
-		if d.p.audit == nil {
-			return w.AppendAudit(ctx, &ev)
-		}
-		return nil
+		return d.p.complete(ctx, w, &d.ev)
 	})
 	if err != nil {
-		return fmt.Errorf("ingest: index rows of %s after the registry deleted it: %s", d.target.Digest, err.Error())
+		err = fmt.Errorf("ingest: index rows of %s after the registry deleted it: %s", d.target.Digest, err.Error())
+		d.p.fail(ctx, &d.ev, err)
+		return err
 	}
 	if d.p.audit != nil {
-		if err := d.p.audit.Write(ctx, ev); err != nil {
-			d.p.log.ErrorContext(ctx, "ingest: audit event of a delete not written", "repo", ev.Repo, "subject", ev.Subject,
-				"digest", ev.Digest.String(), "error", err.Error())
+		if err := d.p.audit.Write(ctx, d.ev); err != nil {
+			d.p.log.ErrorContext(ctx, "ingest: audit event of a delete not written", "repo", d.ev.Repo, "subject", d.ev.Subject,
+				"digest", d.ev.Digest.String(), "error", err.Error())
 		}
 	}
 	return nil

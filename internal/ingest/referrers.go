@@ -43,10 +43,10 @@ type Referrer struct {
 // comes, as a registry does. When the backend has no referrers API (Capabilities.Referrers) and
 // the manifest has a subject, the push, which also rewrites the sha256-<hex> index of the
 // subject, runs under the referrers lock of the index (Store.WithReferrersLock); a push by tag to
-// an oci repo runs under it with the API too, the tag lock that a delete holds. After the push
-// one audit event is written: a push by principal whose subject is the subject's digest, with
-// the client address, and the referrer's kind and artifact type and the request id in the
-// details; a repeat writes another. Errors wrap
+// an oci repo runs under it with the API too, the tag lock that a delete holds. Its audit row,
+// a push by principal whose subject is the subject's digest, with the client address, and the
+// referrer's kind and artifact type and the request id in the details, is written pending
+// before the push and completed after it, ok or failed; a repeat writes another. Errors wrap
 // ErrInvalid (the checks) or ErrConflict (a tag the backend will not re-point).
 func (p *Pipeline) PutReferrer(ctx context.Context, repo index.Repo, r Referrer, principal auth.Principal) (digest.Digest, error) {
 	m, err := parseReferrer(r)
@@ -63,14 +63,21 @@ func (p *Pipeline) PutReferrer(ctx context.Context, repo index.Repo, r Referrer,
 			return "", err
 		}
 	}
-	if err := p.pushReferrer(ctx, prov, name, r, m.Subject != nil, repo.Format == ociFormat && r.Tag != ""); err != nil {
-		return "", err
-	}
 	kind := profile.ReferrerKind(r.Tag, m)
 	artifactType := cmp.Or(m.ArtifactType, m.Config.MediaType)
+	ev := index.AuditEvent{At: p.now(), Principal: principal.String(), Action: "push", Repo: repo.Format + "/" + repo.Name,
+		Subject: r.Subject.String(), Digest: r.Desc.Digest}
+	withOrigin(ctx, &ev, map[string]any{"kind": kind, "artifactType": artifactType})
+	if err := p.intend(ctx, &ev); err != nil {
+		return "", err
+	}
+	if err := p.pushReferrer(ctx, prov, name, r, m.Subject != nil, repo.Format == ociFormat && r.Tag != ""); err != nil {
+		p.fail(ctx, &ev, err)
+		return "", err
+	}
 	p.log.InfoContext(ctx, "ingest: referrer stored", "repo", repo.Format+"/"+repo.Name, "name", name, "digest", r.Desc.Digest.String(),
 		"subject", r.Subject.String(), "kind", kind, "artifactType", artifactType, "principal", principal.String())
-	p.auditReferrer(ctx, repo, r, kind, artifactType, principal)
+	p.auditReferrer(ctx, &ev)
 	return r.Desc.Digest, nil
 }
 
@@ -159,22 +166,20 @@ func (p *Pipeline) checkReferrer(ctx context.Context, prov provider.Provider, na
 	return nil
 }
 
-// auditReferrer writes the audit event of a referrer push, as confirm writes a publish's: to the
-// audit.Writer when there is one, else to the index. The referrer is stored whatever happens
-// here, so a failure is logged.
-func (p *Pipeline) auditReferrer(ctx context.Context, repo index.Repo, r Referrer, kind, artifactType string, principal auth.Principal) {
-	ev := index.AuditEvent{At: p.now(), Principal: principal.String(), Action: "push", Repo: repo.Format + "/" + repo.Name,
-		Subject: r.Subject.String(), Digest: r.Desc.Digest}
-	withOrigin(ctx, &ev, map[string]any{"kind": kind, "artifactType": artifactType})
+// auditReferrer completes the audit row of a referrer push, ok, in a transaction of its own:
+// no index row records a referrer. With an audit.Writer the event goes to it instead. The
+// referrer is stored whatever happens here, so a failure is logged, and the row stays pending
+// until it is unknown.
+func (p *Pipeline) auditReferrer(ctx context.Context, ev *index.AuditEvent) {
 	var err error
 	if p.audit != nil {
-		err = p.audit.Write(ctx, ev)
+		err = p.audit.Write(ctx, *ev)
 	} else {
-		err = p.index.AppendAudit(ctx, &ev)
+		err = p.complete(context.WithoutCancel(ctx), p.index, ev)
 	}
 	if err != nil {
 		p.log.ErrorContext(ctx, "ingest: audit event of a referrer push not written", "repo", ev.Repo, "subject", ev.Subject,
-			"digest", r.Desc.Digest.String(), "error", err.Error())
+			"digest", ev.Digest.String(), "error", err.Error())
 	}
 }
 

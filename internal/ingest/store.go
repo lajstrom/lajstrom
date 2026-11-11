@@ -189,21 +189,28 @@ func sameFiles(ctx context.Context, r index.Reader, versionID int64, layers []pr
 	return true, nil
 }
 
-// push puts the manifest and its tag in one request. On any error the claim is released.
+// push puts the manifest and its tag in one request, its audit row pending before the request
+// (intend). On any error the claim is released, and the row, when there is one, is failed.
 func (p *Pipeline) push(ctx context.Context, pub *publish) error {
-	err := pub.pushManifest(ctx)
+	err := pub.pushManifest(ctx, func(ctx context.Context) error {
+		pub.ev = pub.event(p.now())
+		withOrigin(ctx, &pub.ev, pub.auditDetails())
+		return p.intend(ctx, &pub.ev)
+	})
 	if err != nil {
+		p.fail(ctx, &pub.ev, err)
 		p.release(ctx, pub)
 	}
 	return err
 }
 
-// pushManifest checks the tag in the backend and pushes the manifest with it. The tag rule is
-// Lajstrom's, so a tag in the backend with another digest is a conflict even when the index
-// does not know it: a write that bypassed Lajstrom, or an index not yet rebuilt by reindex.
-// The same digest there is pushed again, which changes nothing, and confirmed. The streamed file
-// of UploadStream is committed between the two, after the last check.
-func (pub *publish) pushManifest(ctx context.Context) error {
+// pushManifest checks the tag in the backend, calls intend, and pushes the manifest with the
+// tag. The tag rule is Lajstrom's, so a tag in the backend with another digest is a conflict
+// even when the index does not know it: a write that bypassed Lajstrom, or an index not yet
+// rebuilt by reindex. The same digest there is pushed again, which changes nothing, and
+// confirmed. The streamed file of UploadStream is committed after intend, the first write to
+// the registry, and before the manifest.
+func (pub *publish) pushManifest(ctx context.Context, intend func(context.Context) error) error {
 	existing, err := pub.rr.Resolve(ctx, pub.tag)
 	switch {
 	case errors.Is(err, provider.ErrNotFound): // the tag is free in the backend
@@ -211,6 +218,9 @@ func (pub *publish) pushManifest(ctx context.Context) error {
 		return fmt.Errorf("ingest: resolve %s:%s: %w", pub.name, pub.tag, err)
 	case existing.Digest != pub.digest:
 		return &index.TagConflictError{Tag: pub.tag, Existing: existing.Digest}
+	}
+	if err := intend(ctx); err != nil {
+		return err
 	}
 	if err := pub.commit(ctx); err != nil {
 		return err
@@ -248,23 +258,23 @@ func (p *Pipeline) release(ctx context.Context, pub *publish) {
 // confirm writes the index rows of a manifest the registry has accepted, in one transaction,
 // and releases the claim. existed reports that the version was there already with the same
 // digest: another replica published the same bytes under the shared claim and confirmed
-// first, and nothing is written. A failure is logged and returned as a plain error (500),
-// except a conflict: a *index.TagConflictError is returned as it is, and another
-// index.ErrConflict, a package path that another spelling holds (#97), stays wrapped (409). The
-// manifest stays in the registry and reindex picks it up.
+// first, and nothing is written but the audit row, ok with existed in its details. A failure
+// is logged, fails the audit row, and is returned as a plain error (500), except a conflict: a
+// *index.TagConflictError is returned as it is, and another index.ErrConflict, a package path
+// that another spelling holds (#97), stays wrapped (409). The manifest stays in the registry
+// and reindex picks it up.
 func (p *Pipeline) confirm(ctx context.Context, pub *publish) (existed bool, err error) {
 	now := p.now()
-	ev := pub.event(now)
-	withOrigin(ctx, &ev, pub.auditDetails())
 	err = p.index.Tx(ctx, func(w index.Writer) error {
 		var err error
-		existed, err = p.writeRows(ctx, w, pub, &ev, now)
+		existed, err = p.writeRows(ctx, w, pub, now)
 		return err
 	})
 	if err != nil {
 		p.log.ErrorContext(ctx, "ingest: the registry accepted the manifest, the index write failed; reindex repairs the index",
 			"repo", pub.repo.Format+"/"+pub.repo.Name, "package", pub.claim.Package, "tag", pub.tag,
 			"digest", pub.digest.String(), "error", err.Error())
+		p.fail(ctx, &pub.ev, fmt.Errorf("index the manifest after the registry accepted it: %w", err))
 		p.release(ctx, pub)
 		var conflict *index.TagConflictError
 		switch {
@@ -280,8 +290,8 @@ func (p *Pipeline) confirm(ctx context.Context, pub *publish) (existed bool, err
 	// Post-ingest hooks go here, after the commit. apt signing needs none: the transaction
 	// dropped the repo's documents, signed ones included, and the next GET signs again (#41).
 	if !existed && p.audit != nil {
-		if err := p.audit.Write(ctx, ev); err != nil {
-			p.log.ErrorContext(ctx, "ingest: audit event of a publish not written", "repo", ev.Repo, "subject", ev.Subject,
+		if err := p.audit.Write(ctx, pub.ev); err != nil {
+			p.log.ErrorContext(ctx, "ingest: audit event of a publish not written", "repo", pub.ev.Repo, "subject", pub.ev.Subject,
 				"digest", pub.digest.String(), "error", err.Error())
 		}
 	}
@@ -289,9 +299,9 @@ func (p *Pipeline) confirm(ctx context.Context, pub *publish) (existed bool, err
 }
 
 // writeRows writes the rows of confirm on w: package, version, files, OCI repository, the
-// invalidated index_cache, the audit event when there is no audit.Writer, and the released
-// claim.
-func (p *Pipeline) writeRows(ctx context.Context, w index.Writer, pub *publish, ev *index.AuditEvent, now time.Time) (existed bool, err error) {
+// invalidated index_cache, the completed audit row when there is no audit.Writer, and the
+// released claim.
+func (p *Pipeline) writeRows(ctx context.Context, w index.Writer, pub *publish, now time.Time) (existed bool, err error) {
 	rows := pub.rows(now)
 	pkg := rows.Package
 	if err := w.UpsertPackage(ctx, &pkg); err != nil {
@@ -300,6 +310,12 @@ func (p *Pipeline) writeRows(ctx context.Context, w index.Writer, pub *publish, 
 	v, err := w.GetVersionByTag(ctx, pkg.ID, pub.tag)
 	switch {
 	case err == nil && v.Digest == pub.digest:
+		if pub.ev.ID != 0 {
+			setDetail(&pub.ev, "existed", true)
+			if err := p.complete(ctx, w, &pub.ev); err != nil {
+				return false, err
+			}
+		}
 		return true, pub.releaseClaims(ctx, w)
 	case err != nil && !errors.Is(err, index.ErrNotFound):
 		return false, err
@@ -312,10 +328,8 @@ func (p *Pipeline) writeRows(ctx context.Context, w index.Writer, pub *publish, 
 	if err := w.InvalidateIndexCache(ctx, pub.repo.ID, ""); err != nil {
 		return false, err
 	}
-	if p.audit == nil {
-		if err := w.AppendAudit(ctx, ev); err != nil {
-			return false, err
-		}
+	if err := p.complete(ctx, w, &pub.ev); err != nil {
+		return false, err
 	}
 	return false, pub.releaseClaims(ctx, w)
 }
@@ -356,7 +370,7 @@ func (pub *publish) files() []index.File {
 
 // event is the audit event of pub: a push by its principal, or the proxy.fetch of a proxied
 // artifact by the principal whose request caused it, the subject name, version and variant.
-// confirm adds the client address and the request id of the request (withOrigin).
+// push adds the client address and the request id of the request (withOrigin).
 func (pub *publish) event(now time.Time) index.AuditEvent {
 	a := pub.parsed.Annotations
 	subject := a.Name + " " + a.Version
