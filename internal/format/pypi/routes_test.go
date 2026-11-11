@@ -1,6 +1,7 @@
 package pypi
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -94,6 +96,45 @@ func TestRenderGolden(t *testing.T) {
 	docs, err := Plugin{}.RenderIndex(ctx, r, "simple/nothing-here", st)
 	if err != nil || docs != nil {
 		t.Errorf("a project that is not there: %v, %v", docs, err)
+	}
+}
+
+// TestRenderSameSecond renders the page of a project whose files were created in one second, as
+// a twine upload of several files makes them, from rows written in two orders, as ingest and
+// a reindex write them: the page is the same, the files by version and variant.
+func TestRenderSameSecond(t *testing.T) {
+	ctx := t.Context()
+	st, err := sqlite.Open(ctx, "file:pypi-"+t.Name()+"?mode=memory&cache=shared")
+	must(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	must(t, st.Migrate(ctx))
+	at := time.Date(2026, 11, 9, 10, 0, 0, 0, time.UTC)
+	files := [][2]string{{"1.0", VariantSdist}, {"1.0", "py3-none-any"}, {"1.1", "py3-none-any"}, {"1.0", "cp312-cp312-win_amd64"}}
+	var pages [][]byte
+	for _, name := range []string{"ingest", "reindex"} {
+		r := index.Repo{Format: Name, Name: name, Registry: "local", Kind: "hosted"}
+		must(t, st.CreateRepo(ctx, &r))
+		for _, f := range files {
+			filename := "my_pkg-" + f[0] + "-" + f[1] + ".whl"
+			rows := ingest.Rows{
+				Package: index.Package{RepoID: r.ID, Name: "my-pkg", NameOCI: "my-pkg"},
+				Version: index.Version{Version: f[0], Variant: f[1], Tag: f[0] + "__" + f[1], Digest: digest.FromString(filename),
+					ArtifactType: "application/vnd.lajstrom.pypi.v1", CreatedAt: at},
+				Files:   []index.File{{Name: filename, MediaType: "x", Digest: digest.FromString("file " + filename), Size: 100}},
+				OCIRepo: "pypi/" + name + "/my-pkg",
+			}
+			must(t, ingest.WriteRows(ctx, st, &rows, at))
+		}
+		docs, err := Plugin{}.RenderIndex(ctx, r, "simple/my-pkg", st)
+		must(t, err)
+		pages = append(pages, docs[0].Content)
+		slices.Reverse(files)
+	}
+	if string(pages[0]) != string(pages[1]) {
+		t.Errorf("the page from rows in another order:\n%s\nwant\n%s", pages[1], pages[0])
+	}
+	if i, j := bytes.Index(pages[0], []byte("my_pkg-1.0-cp312")), bytes.Index(pages[0], []byte("my_pkg-1.0-sdist")); i < 0 || j < 0 || i > j {
+		t.Errorf("the files are not by variant:\n%s", pages[0])
 	}
 }
 
