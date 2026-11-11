@@ -354,8 +354,8 @@ catalog. It is **eventually consistent** when a read can miss the write for a wh
 
 | Registry | Model | What is known |
 | --- | --- | --- |
-| distribution 3.1.2 on the filesystem, on SeaweedFS and on MinIO; Zot v2.1.23 | none seen | the probe, 2026-11-11: every read saw each write at once (below) |
-| GitLab A and B | none seen | the probe, 2026-11-11 |
+| distribution 3.1.2 on the filesystem, on SeaweedFS and on MinIO; Zot v2.1.23 | strong (the vendor table) | the probe, 2026-11-11: every read saw each write at once (below) |
+| GitLab A and B | strong (the vendor table) | the probe, 2026-11-11 |
 | Amazon ECR | eventual, no bound | 100 ms to several seconds, from reports only ([ecr.md](ecr.md#capabilities)); #19 measures it |
 | GHCR | eventual (the vendor table), no bound | users saw a tag `404` 0.2 s after its push, once in 30 runs; reads from another runner fail more often |
 | Docker Hub | none seen for manifests and blobs | its referrers list lagged up to about a minute behind a signature (cosign users' reports) |
@@ -363,8 +363,11 @@ catalog. It is **eventually consistent** when a read can miss the write for a wh
 | Azure Container Registry | per replica | geo-replicas are eventual, without a published bound; a push and its reads must use one regional endpoint |
 | Google Artifact Registry | none seen | a remote repository caches its tags for an hour |
 
-"None seen" is a measurement of a few writes, not a guarantee: the probe saw no lag, and nothing
-classifies these registries `strong` but the configuration. The reports behind the rows
+"Strong" for distribution, Zot and GitLab is the vendor table's reading of a measurement of a
+few writes, not a guarantee of theirs: the probe saw no lag, so a blob a manifest names and the
+registry does not serve is refused at once rather than after `ingest.visibilityTimeout`. A
+configuration that adds a lag (a CDN, a cache, a replica) sets `capabilities.consistency:
+eventual`. "None seen" elsewhere is reports, not a measurement. The reports behind the rows
 without a probe are in #446.
 
 The probe's row "Read-after-write lag" is three writes in the repository `lag` of the scratch

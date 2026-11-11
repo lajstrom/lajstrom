@@ -167,8 +167,8 @@ A list; each entry is one backend OCI registry. Repos refer to it by name.
 | `registries[].capabilities.immutableTags` | bool | probed | none | The registry itself refuses to re-point a tag. |
 | `registries[].capabilities.blobRedirect` | bool | probed | none | A blob download may be answered with a `307` to the URL the registry redirects it to (a presigned URL of its object storage), so that the bytes bypass Lajstrom. Each download is one request to the registry, whose answer decides: a redirect to another origin goes to the client, a `200` or `206` streams. `false` makes Lajstrom follow every redirect of the registry and stream the bytes itself: a client never gets a URL of the registry, for storage that clients cannot reach. Per repo, `policy.blobRedirect: "never"` does the same ([api.md](api.md)). |
 | `registries[].capabilities.maxBlobSize` | bytes | `0` | none | Largest blob the registry accepts; `0` means unknown. A `/v2` blob upload above it, or above the repo's `maxFileSize` when that is smaller, is `413 SIZE_INVALID` before it streams, on every repo, `oci` ones included (#246). The vendor table sets GHCR's, 10 GB. Must not be negative. |
-| `registries[].capabilities.consistency` | `strong`, `eventual` | the vendor table's: `eventual` for type `ecr` and for GHCR, unknown otherwise | none | When the registry's reads see a write it acknowledged ([registries/README.md](registries/README.md#consistency)). `strong`: at once. `eventual`: a manifest, a blob or a tag can be `404` for a while after its `201`, as on ECR. An `eventual` registry without `consistencyBound` gets a warning at startup. |
-| `registries[].capabilities.consistencyBound` | duration (`5s`) | `0s` | none | The longest lag measured on an `eventual` registry, from the `201` of a write until every read sees it; [`lajstrom registry probe`](registries/README.md#measuring-a-registry-lajstrom-registry-probe) measures it (the row "Read-after-write lag"). `0s` means unknown. Must not be negative, and not set with `consistency: strong`. |
+| `registries[].capabilities.consistency` | `strong`, `eventual` | the vendor table's: `eventual` for type `ecr` and for GHCR, `strong` for distribution, Zot and GitLab, unknown otherwise | none | When the registry's reads see a write it acknowledged ([registries/README.md](registries/README.md#consistency)). `strong`: at once. `eventual`: a manifest, a blob or a tag can be `404` for a while after its `201`, as on ECR. Every publish reads back what it pushed before the version is indexed ([`ingest.visibilityTimeout`](#ingest)): on a `strong` registry the manifest alone, once; on any other its tag and blobs too. An `eventual` registry without `consistencyBound` gets a warning at startup. |
+| `registries[].capabilities.consistencyBound` | duration (`5s`) | `0s` | none | The longest lag measured on an `eventual` registry, from the `201` of a write until every read sees it; [`lajstrom registry probe`](registries/README.md#measuring-a-registry-lajstrom-registry-probe) measures it (the row "Read-after-write lag"). `0s` means unknown. A bound longer than `ingest.visibilityTimeout` replaces it for this registry. Must not be negative, and not set with `consistency: strong`. |
 | `registries[].uploads.spoolUnknownLength` | bool | `false` | none | A `/v2` chunk of unknown length (chunked encoding, no `Content-Length`) into a session of the registry that already holds bytes is spooled to a temporary file in `$TMPDIR` for its one request, then sent with its `Content-Range`: for registries that refuse such a chunk streamed, Gitea and Forgejo with 400 "Stream uploads after first write are not allowed" ([gitea.md](registries/gitea.md#uploads)), JFrog with 416 ([jfrog-jcr.md](registries/jfrog-jcr.md#uploads-and-digests)). The file is bounded by the repo's `policy.maxFileSize` where it has one (a chunk past it is `413` and the session ends), unlinked as soon as it is made, closed when the request ends, whether it succeeded, failed or the client went away, and never served from. Off, every chunk streams, and such a chunk fails with the registry's 4xx; nothing is stored. The vendor table never turns it on; see [uploads](#uploads). |
 | `registries[].ecr.region` | AWS region | from the URL, else the SDK's | none | Type `ecr` only, as every `ecr` key. The region of the registry; empty takes the one in the URL's host (`<account>.dkr.ecr.<region>.amazonaws.com`), else the AWS SDK's (`AWS_REGION`, the profile). The credentials are the SDK's default chain: the environment, the shared profile, web identity (IRSA), the instance or task role; `auth` stays empty ([registries/ecr.md](registries/ecr.md)). |
 | `registries[].ecr.endpoint` | absolute `http(s)` URL | the SDK's | none | Endpoint of the ECR API instead of the SDK's for the region: a VPC endpoint, or the moto mock of the integration tests (`http://localhost:5010`). `url` stays the registry's `/v2` endpoint. |
@@ -200,7 +200,9 @@ GitLab container registry, the host `ghcr.io` is GHCR, a Bearer challenge with
 `service="harbor-registry"` on `GET /v2/` is Harbor, `X-Jfrog-Version` on it is JFrog's
 Artifactory or JCR, `Server: Nexus/…` or a Basic challenge with `realm="Sonatype Nexus Repository
 Manager"` is Nexus Repository, and a Bearer challenge with `service="container_registry"` and
-`scope="*"` is Gitea or Forgejo. GHCR gets `catalog: false` (its
+`scope="*"` is Gitea or Forgejo, `X-ZOT-API-CLIENT` in its `Access-Control-Allow-Headers` is
+Zot, and `Docker-Distribution-Api-Version` with none of these, on a host that is not Docker
+Hub's, Quay's, ACR's, Google's or AWS's, is distribution. GHCR gets `catalog: false` (its
 `_catalog` answers 200 with every repository of GHCR, which the probe cannot tell from a usable
 one) and `deleteManifest: false` (every delete through `/v2` is 405), without asking; GitLab,
 Harbor and Gitea need nothing, the probe is right for them. Nexus depends on the format of the
@@ -214,7 +216,7 @@ asks whether a blob exists with a `GET` of its first byte. A GitLab registry tha
 `Gitlab-Container-Registry-Database-Enabled: true` gets a warning at startup: with its database
 it refuses a manifest whose `artifactType` it does not know, every one Lajstrom writes, unless
 `REGISTRY_FF_DYNAMIC_MEDIA_TYPES` is on ([gitlab.md](registries/gitlab.md#media-types)). The
-startup line names the vendor, `vendor=gitlab`, `ghcr`, `harbor`, `nexus`, `gitea`, `jfrog` or
+startup line names the vendor, `vendor=gitlab`, `ghcr`, `harbor`, `nexus`, `gitea`, `jfrog`, `zot`, `distribution` or
 `unknown`, beside the capabilities, and a line `registry needs workarounds` says when blobs are
 read whole or their existence asked with `GET`. A registry the table does not know gets the probe alone.
 To see what a registry does before attaching it, beyond these answers, `lajstrom registry probe`
@@ -223,7 +225,9 @@ measures its row of the capability matrix in a scratch prefix and deletes what i
 
 Each registry is also strongly or eventually consistent, or unknown: the table says `eventual`
 for GHCR, whose tag was seen `404` a fraction of a second after its push, and the `ecr` type
-says it for ECR; nothing else is classified until it is measured. The startup line says
+says it for ECR; distribution, Zot and GitLab are `strong`, as `lajstrom registry probe` saw
+every write of theirs at once on 2026-11-11; nothing else is classified until it is measured.
+The startup line says
 `consistency=strong`, `eventual`, `eventual within <bound>` or `unknown`, and warns about an
 `eventual` registry without `capabilities.consistencyBound`.
 
@@ -294,6 +298,7 @@ repos:
 | Key | Type | Default | Env | Description |
 | --- | --- | --- | --- | --- |
 | `ingest.claimTTL` | duration (`10m`, `1h`) | `10m` | none | How long a publish's claim on a tag holds off a publish of other bytes to the same tag. Every publish claims its tag in the index before it writes the manifest to the registry and releases the claim once the index rows are written, so that two replicas cannot both write one tag ([index-schema.md](spec/index-schema.md), Coordination). A claim older than this, left by a replica that died mid-publish, is stale: the next publish of the tag takes it over, and `reindex` and the reconcile loop delete it. It must outlast one manifest `PUT` and one index transaction; blob uploads come before the claim and do not count. Must not be negative; `0s` means the default. |
+| `ingest.visibilityTimeout` | duration (`30s`) | `30s` | none | How long a publish reads back what it pushed until the registry serves it, before it answers `503` with `Retry-After: 30` ([operations.md](operations.md#an-eventually-consistent-registry)). The version is indexed only once the registry serves its manifest (and, on a registry not classified `strong` in `registries[].capabilities.consistency`, its tag and blobs); a registry that serves at once costs a `HEAD` or a few. A registry's `capabilities.consistencyBound` raises it. Must not be negative; `0s` means the default. |
 
 ### reconcile
 

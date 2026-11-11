@@ -136,7 +136,8 @@ func newServeCmd(a *app) *cobra.Command {
 			health := newRegistryHealth(providers, a.log)
 			health.Ping(ctx)
 			go health.Run(ctx)
-			pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL})
+			pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL,
+				VisibilityTimeout: c.Ingest.VisibilityTimeout})
 			runs := &backgroundReindex{ctx: ctx, log: a.log, w: reindex.New(reindex.Options{Index: st, Providers: providers,
 				Inspector: pipe, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL, GraceAge: c.Reconcile.GraceAge})}
 			// Before the index closes: a run the shutdown cancels finishes as failed. stop ends the

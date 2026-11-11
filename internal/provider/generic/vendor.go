@@ -24,6 +24,11 @@ const (
 	vendorNexus   vendor = "nexus"
 	vendorGitea   vendor = "gitea" // Forgejo too: it answers alike
 	vendorJFrog   vendor = "jfrog"
+	vendorZot     vendor = "zot"
+	// vendorDistribution is CNCF distribution, and whatever else answers GET /v2/ as it does,
+	// with Docker-Distribution-Api-Version and nothing the table knows, on a host that is not
+	// a hosted service's (hostedRegistries).
+	vendorDistribution vendor = "distribution"
 )
 
 // Headers of the GitLab container registry's answer to GET /v2/.
@@ -32,15 +37,23 @@ const (
 	headerGitLabDatabase = "Gitlab-Container-Registry-Database-Enabled"
 )
 
-// What Nexus Repository and JFrog's Artifactory say about themselves on GET /v2/.
+// What Nexus Repository, JFrog's Artifactory, Zot and distribution say about themselves on
+// GET /v2/.
 const (
 	headerJFrogVersion = "X-Jfrog-Version" // on every answer of Artifactory and JCR
 	nexusServer        = "nexus/"          // Server: Nexus/3.98.1-01 (COMMUNITY), lower-cased
 	nexusRealm         = "Sonatype Nexus Repository Manager"
+	zotClientHeader    = "x-zot-api-client" // in Zot's Access-Control-Allow-Headers, lower-cased
+	headerAPIVersion   = "Docker-Distribution-Api-Version"
 )
 
 // ghcrMaxBlobSize is GHCR's largest layer, 10 GB.
 const ghcrMaxBlobSize = 10_000_000_000
+
+// hostedRegistries are the hosts, and the parents of hosts, of hosted registries that answer
+// GET /v2/ as distribution does and are not it, or not on storage that was measured: never
+// vendorDistribution. ACR's geo-replicas and ECR are eventually consistent.
+var hostedRegistries = []string{"docker.io", "quay.io", "azurecr.io", "pkg.dev", "gcr.io", "amazonaws.com"}
 
 // vendorDefaults is the vendor table: what each vendor needs set that the probe cannot
 // measure. A capability set here replaces what the probe would find and is not probed;
@@ -48,8 +61,14 @@ const ghcrMaxBlobSize = 10_000_000_000
 var vendorDefaults = map[vendor]config.CapabilityOverrides{
 	// The probe is right for both variants (docs/registries/gitlab.md). With the metadata
 	// database the registry refuses unknown artifact types, which no probe sees without a
-	// push: the probe logs it.
-	vendorGitLab: {},
+	// push: the probe logs it. Both variants saw every write at once (lajstrom registry probe,
+	// 2026-11-11, docs/registries/README.md, Consistency).
+	vendorGitLab: {Consistency: config.ConsistencyStrong},
+	// The probe is right. Every write was seen at once, on the filesystem, SeaweedFS and MinIO
+	// for distribution (lajstrom registry probe, 2026-11-11): a blob a manifest names and the
+	// registry does not serve is missing, not late.
+	vendorZot:          {Consistency: config.ConsistencyStrong},
+	vendorDistribution: {Consistency: config.ConsistencyStrong},
 	// _catalog answers 200 with every repository of GHCR, which the probe cannot tell from a
 	// catalog Lajstrom can use, and every delete through /v2 is 405 (docs/registries/ghcr.md).
 	// A tag read a fraction of a second after its push is sometimes 404 (users' reports,
@@ -105,7 +124,7 @@ func afterProbe(v vendor, probed *provider.Capabilities, referrers bool) quirks 
 		probed.DeleteManifest = false
 	case vendorJFrog:
 		return quirks{blobExistsByGET: true}
-	case vendorUnknown, vendorGitLab, vendorGHCR, vendorHarbor, vendorGitea:
+	case vendorUnknown, vendorGitLab, vendorGHCR, vendorHarbor, vendorGitea, vendorZot, vendorDistribution:
 	}
 	return quirks{}
 }
@@ -147,7 +166,10 @@ type identity struct {
 //     realm="Sonatype Nexus Repository Manager";
 //   - Harbor: GET /v2/ challenges with Bearer and service="harbor-registry";
 //   - Gitea and Forgejo: GET /v2/ challenges with Bearer, service="container_registry" and
-//     scope="*" (GitLab's service has the same name, without the scope).
+//     scope="*" (GitLab's service has the same name, without the scope);
+//   - Zot: GET /v2/ answers Access-Control-Allow-Headers with X-ZOT-API-CLIENT;
+//   - distribution: GET /v2/ answers Docker-Distribution-Api-Version and none of the above
+//     tells, on a host that is not one of hostedRegistries.
 //
 // Anything else is vendorUnknown. Harbor and Gitea are told by their challenge alone, which
 // the auth client meets on the first request only: one whose first request was not the
@@ -162,6 +184,8 @@ func detectVendor(id identity) vendor {
 		return vendorJFrog
 	case strings.HasPrefix(strings.ToLower(id.header.Get("Server")), nexusServer):
 		return vendorNexus
+	case strings.Contains(strings.ToLower(id.header.Get("Access-Control-Allow-Headers")), zotClientHeader):
+		return vendorZot
 	}
 	scheme, realm := challengeParam(id.challenge, "realm")
 	_, service := challengeParam(id.challenge, "service")
@@ -173,8 +197,25 @@ func detectVendor(id identity) vendor {
 		return vendorHarbor
 	case scheme == "bearer" && service == "container_registry" && scope == "*":
 		return vendorGitea
+	case id.header.Get(headerAPIVersion) != "" && !hosted(id.host):
+		return vendorDistribution
 	}
 	return vendorUnknown
+}
+
+// hosted reports whether hostport is one of hostedRegistries or below one.
+func hosted(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	for _, h := range hostedRegistries {
+		if host == h || strings.HasSuffix(host, "."+h) {
+			return true
+		}
+	}
+	return false
 }
 
 // gitLabDatabase reports whether a GitLab registry keeps its metadata in its database, as

@@ -27,9 +27,7 @@ func (c *Config) Validate() error {
 	c.Server.validate(&p)
 	c.Log.validate(&p)
 	c.Database.validate(&p)
-	if c.Ingest.ClaimTTL < 0 {
-		p.add("ingest.claimTTL", "must not be negative")
-	}
+	c.Ingest.validate(&p)
 	c.Reconcile.validate(&p)
 	c.Auth.validate(&p)
 	c.Keys.validate(&p)
@@ -278,6 +276,15 @@ func (r Registry) validate(p *problems, key string) {
 	}
 	r.validateTokenRealmHosts(p, key)
 	r.validateECR(p, key)
+}
+
+func (i Ingest) validate(p *problems) {
+	if i.ClaimTTL < 0 {
+		p.add("ingest.claimTTL", "must not be negative")
+	}
+	if i.VisibilityTimeout < 0 {
+		p.add("ingest.visibilityTimeout", "must not be negative")
+	}
 }
 
 // validateConsistency checks consistency and consistencyBound below key.

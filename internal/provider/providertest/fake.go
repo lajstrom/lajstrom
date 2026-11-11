@@ -130,10 +130,12 @@ func (f *Fake) Name() string {
 }
 
 // Capabilities reports create-on-push, referrers, catalog and manifest deletes (unless
-// NoDeleteManifest), and blob redirects when RedirectURL is set (unless NoBlobRedirect).
+// NoDeleteManifest), blob redirects when RedirectURL is set (unless NoBlobRedirect), and
+// strong consistency: a write is read at once.
 func (f *Fake) Capabilities(context.Context) (provider.Capabilities, error) {
 	return provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true,
-		DeleteManifest: !f.NoDeleteManifest, BlobRedirect: f.RedirectURL != nil && !f.NoBlobRedirect}, nil
+		DeleteManifest: !f.NoDeleteManifest, BlobRedirect: f.RedirectURL != nil && !f.NoBlobRedirect,
+		Consistency: provider.ConsistencyStrong}, nil
 }
 
 // Repository returns the repository name; it exists once something is pushed to it.
