@@ -102,30 +102,31 @@ func (s Server) validate(p *problems) {
 			p.add("server.metricsListen", "must not be server.listen: the metrics are never on the public listener")
 		}
 	}
-	if s.MaxManifestSize < 0 {
-		p.add("server.maxManifestSize", "must not be negative")
-	}
-	if s.StallTimeout < 0 {
-		p.add("server.stallTimeout", "must not be negative")
-	}
-	if s.MaxCreatedAhead < 0 {
-		p.add("server.maxCreatedAhead", "must not be negative")
-	}
-	if s.MaxCreatedBehind < 0 {
-		p.add("server.maxCreatedBehind", "must not be negative")
-	}
-	if s.MaxConcurrentUploads < 0 {
-		p.add("server.maxConcurrentUploads", "must not be negative")
-	}
-	if s.UploadSessions.PerRepo < 0 {
-		p.add("server.uploadSessions.perRepo", "must not be negative")
-	}
-	if s.UploadSessions.PerPrincipal < 0 {
-		p.add("server.uploadSessions.perPrincipal", "must not be negative")
-	}
+	s.validateLimits(p)
 	for i, e := range s.TrustedProxies {
 		if _, err := parsePrefix(e); err != nil {
 			p.add(fmt.Sprintf("server.trustedProxies[%d]", i), "%q is not an address or a CIDR prefix", e)
+		}
+	}
+}
+
+// validateLimits checks the bounds of server: none may be negative, and zero means the default or
+// no bound, as configuration.md says of each.
+func (s Server) validateLimits(p *problems) {
+	for _, l := range []struct {
+		key      string
+		negative bool
+	}{
+		{"server.maxManifestSize", s.MaxManifestSize < 0},
+		{"server.stallTimeout", s.StallTimeout < 0},
+		{"server.maxCreatedAhead", s.MaxCreatedAhead < 0},
+		{"server.maxCreatedBehind", s.MaxCreatedBehind < 0},
+		{"server.maxConcurrentUploads", s.MaxConcurrentUploads < 0},
+		{"server.uploadSessions.perRepo", s.UploadSessions.PerRepo < 0},
+		{"server.uploadSessions.perPrincipal", s.UploadSessions.PerPrincipal < 0},
+	} {
+		if l.negative {
+			p.add(l.key, "must not be negative")
 		}
 	}
 }
