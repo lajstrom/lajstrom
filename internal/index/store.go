@@ -332,6 +332,17 @@ type Writer interface {
 	// beyond the ten newest. ErrNotFound when the run is not running.
 	FinishReindexRun(ctx context.Context, r *ReindexRun) error
 
+	// Operational: the sightings of prune (docs/spec/index-schema.md, Coordination), written by
+	// reindex only. ResetDerived does not touch them.
+
+	// RecordSighting inserts s or, when the row of (RepoID, Path, Digest) exists, sets its
+	// LastAt; either way it fills FirstAt from the row. LastAt is now when zero, and FirstAt of
+	// a new row is LastAt.
+	RecordSighting(ctx context.Context, s *Sighting) error
+	// ClearSightings removes the sightings of a repo whose LastAt is before before, and
+	// returns how many it removed: those a run did not record again.
+	ClearSightings(ctx context.Context, repoID int64, before time.Time) (int, error)
+
 	// Derived. Every version write and delete keeps packages.created_at the earliest CreatedAt
 	// of the package's versions.
 

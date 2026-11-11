@@ -160,6 +160,18 @@ type Replica struct {
 	HeartbeatAt time.Time // stale 2 minutes after the last beat
 }
 
+// Sighting is a row of prune_sightings (operational state): the registry answered 404
+// MANIFEST_UNKNOWN to the digest of an index row's manifest (provider.ErrManifestUnknown).
+// Reindex removes the row only on another such answer at least 10 minutes after FirstAt
+// (docs/spec/index-schema.md, Coordination; guarantees.md, G-5).
+type Sighting struct {
+	RepoID  int64
+	Path    string        // the OCI repository, as oci_repos.path holds it
+	Digest  digest.Digest // the manifest
+	FirstAt time.Time     // the first answer since the row was last cleared
+	LastAt  time.Time     // the latest answer
+}
+
 // The states of a reindex run (docs/spec/index-schema.md, Coordination).
 const (
 	ReindexRunning   = "running"   // the lock of its scope while HeartbeatAt is fresh
