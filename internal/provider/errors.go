@@ -32,7 +32,7 @@ var (
 	ErrRejected = errors.New("provider: rejected")
 	// ErrManifestUnknown means the registry answered 404 with the error code MANIFEST_UNKNOWN
 	// to a request for a manifest by its digest (Provider.StatManifest): the one answer that
-	// counts as "unknown" for prune (docs/spec/guarantees.md, G-5). An error that wraps it
+	// counts as "unknown" for prune (docs/spec/guarantees.md, INV-5). An error that wraps it
 	// wraps ErrNotFound too; a 404 without the code, NAME_UNKNOWN among them, wraps
 	// ErrNotFound alone.
 	ErrManifestUnknown = errors.New("provider: manifest unknown")
