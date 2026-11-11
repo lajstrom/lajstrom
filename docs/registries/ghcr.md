@@ -384,7 +384,9 @@ answer 401 with the Bearer challenge.
   - cancel is 405: unsupported, the session is left to expire;
   - chunks of at most 4 MiB, each with `Content-Range`: a client's larger chunk is split, and a
     chunk of unknown size is spooled first (one request's spool), because a `PATCH` without
-    `Content-Range` throws away what the session held;
+    `Content-Range` throws away what the session held. The uploads that Lajstrom streams itself,
+    a raw `PUT` (ADR 0014), go in chunks of 4 MiB on GHCR, by the vendor table (#558); the
+    facade passes a client's chunk on as it came;
   - 404 `BLOB_UPLOAD_INVALID` on the closing `PUT` is a digest mismatch here;
   - the 0-byte blob is never uploaded: GHCR already "has" it everywhere.
 - **No blob read before the first manifest**: in a repository without a manifest, `GET` of a

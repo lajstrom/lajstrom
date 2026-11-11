@@ -109,6 +109,25 @@ var vendorDefaults = map[vendor]config.CapabilityOverrides{
 // to allow (#425).
 func hintSpool(v vendor) bool { return v == vendorGitea || v == vendorJFrog }
 
+// ghcrMaxChunk is the largest PATCH GHCR takes, 4 MiB: one byte more is 416 "the request body is
+// too large and exceeds the maximum permissible limit of 4.00MiB" (docs/registries/ghcr.md,
+// Upload sessions).
+const ghcrMaxChunk = 4 << 20
+
+// vendorChunks is the vendor table's part for the chunks of OpenBlobWriter: the size for a
+// vendor that takes less than streamChunk in one PATCH. GHCR is told by its host, so the size is
+// known before any request (blobChunk).
+var vendorChunks = map[vendor]int{vendorGHCR: ghcrMaxChunk}
+
+// blobChunk is the size of the chunks of OpenBlobWriter for the registry on hostport: the vendor
+// table's, else streamChunk.
+func blobChunk(hostport string) int {
+	if c, ok := vendorChunks[detectVendor(identity{host: hostport})]; ok {
+		return c
+	}
+	return streamChunk
+}
+
 // quirks are what the provider does differently for a vendor beyond provider.Capabilities, as
 // the vendor table and the probe decide them (afterProbe).
 type quirks struct {
