@@ -83,7 +83,9 @@ func (p *Provider) translate(op string, err error) error {
 //     (#561). The message leaves out the name; errors.As still finds the *net.DNSError.
 //   - a connection that the registry (or its token realm, or a redirect's host) refused
 //     (ECONNREFUSED), or reset (ECONNRESET, or EPIPE on a write after the reset), after the
-//     retries: ErrUnavailable, without a wait (#593). errors.Is still finds the errno.
+//     retries: ErrUnavailable, without a wait (#593). So is net.ErrClosed, a write of the
+//     request body on a connection that net/http closed as its read met the reset first, the
+//     way an upload sees a reset. errors.Is still finds the cause.
 //
 // A refused token realm (realmError) is wrapped without what net/http and oras-go put around
 // it, which names the request URL. Everything else, context errors included, is wrapped with
@@ -118,7 +120,6 @@ func translateAs(registry string, wait func() time.Duration, op string, err erro
 		}
 		return fmt.Errorf("generic: %s: %w", op, err)
 	}
-	var dns *net.DNSError
 	switch {
 	case errors.Is(err, errdef.ErrNotFound):
 		return &backendError{op: op, kind: provider.ErrNotFound, cause: err}
@@ -126,14 +127,28 @@ func translateAs(registry string, wait func() time.Duration, op string, err erro
 		return &backendError{op: op, kind: provider.ErrUnsupported, cause: err}
 	case errors.Is(err, auth.ErrBasicCredentialNotFound):
 		return &backendError{op: op, kind: provider.ErrUnauthorized, detail: "no credentials configured", cause: err}
-	case errors.As(err, &dns):
-		return &backendError{op: op, kind: provider.ErrUnavailable, detail: "the host name does not resolve", cause: err}
-	case errors.Is(err, syscall.ECONNREFUSED):
-		return &backendError{op: op, kind: provider.ErrUnavailable, detail: "the connection was refused", cause: err}
-	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.EPIPE):
-		return &backendError{op: op, kind: provider.ErrUnavailable, detail: "the connection was reset", cause: err}
+	}
+	if detail := unreachable(err); detail != "" {
+		return &backendError{op: op, kind: provider.ErrUnavailable, detail: detail, cause: err}
 	}
 	return fmt.Errorf("generic: %s: %w", op, err)
+}
+
+// unreachable says why err did not reach the registry, a host name that does not resolve or a
+// connection refused or reset (translateAs), or returns "".
+func unreachable(err error) string {
+	var dns *net.DNSError
+	switch {
+	case errors.As(err, &dns):
+		return "the host name does not resolve"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "the connection was refused"
+	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.EPIPE):
+		return "the connection was reset"
+	case errors.Is(err, net.ErrClosed):
+		return "the connection broke during the request"
+	}
+	return ""
 }
 
 // classifyResponse returns the sentinel for a registry's error response, or nil. A conflict is

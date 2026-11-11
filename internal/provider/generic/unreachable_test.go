@@ -70,10 +70,12 @@ func TestUnreachableRegistry(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
 		addr   string
-		errnos []syscall.Errno // one of them; a write that meets the reset is EPIPE
+		causes []error // one of them
 	}{
-		{"refused", refusingAddr(t), []syscall.Errno{syscall.ECONNREFUSED}},
-		{"reset", reset, []syscall.Errno{syscall.ECONNRESET, syscall.EPIPE}},
+		{"refused", refusingAddr(t), []error{syscall.ECONNREFUSED}},
+		// A write that meets the reset is EPIPE; one after net/http's read met it first, and
+		// closed the connection, is net.ErrClosed (Linux, a body sent after the head).
+		{"reset", reset, []error{syscall.ECONNRESET, syscall.EPIPE, net.ErrClosed}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			const retries = 2
@@ -133,8 +135,8 @@ func TestUnreachableRegistry(t *testing.T) {
 			for _, pt := range paths {
 				err := pt.call()
 				switch {
-				case !errors.Is(err, provider.ErrUnavailable) || !slices.ContainsFunc(tt.errnos, func(e syscall.Errno) bool { return errors.Is(err, e) }):
-					t.Errorf("%s: %v, want provider.ErrUnavailable from one of %v", pt.name, err, tt.errnos)
+				case !errors.Is(err, provider.ErrUnavailable) || !slices.ContainsFunc(tt.causes, func(c error) bool { return errors.Is(err, c) }):
+					t.Errorf("%s: %v, want provider.ErrUnavailable from one of %v", pt.name, err, tt.causes)
 				case strings.Contains(err.Error(), tt.addr):
 					t.Errorf("%s: the message %q names the address", pt.name, err)
 				}
