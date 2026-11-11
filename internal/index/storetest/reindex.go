@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/index"
 )
@@ -63,6 +64,72 @@ func testPackageCreatedAt(t *testing.T, s index.Store) {
 		t.Fatalf("UpsertVersion of a tag with another digest: %v, want ErrConflict", err)
 	}
 	created("after a refused version", 10)
+}
+
+// testPackageCreatedAtRace is testPackageCreatedAt with two writers of one package at once, as
+// reindex writes the tags of an OCI repository (#570, #582): a transaction writes or deletes a
+// version and stays open, another writes a version a few seconds later meanwhile, and the
+// first commits. The package keeps the earliest CreatedAt of the versions both leave. On
+// Postgres (read committed) a statement sees the rows committed when it began: the second
+// writer must not take the earliest time from what it saw before the first one committed.
+func testPackageCreatedAtRace(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "raw", "created-race")
+	version := func(pkg index.Package, v string, sec int) index.Version {
+		return index.Version{PackageID: pkg.ID, Version: v, Tag: v, Digest: dg(pkg.Name + v), ArtifactType: "a", CreatedAt: at(sec)}
+	}
+	for _, tt := range []struct {
+		name   string
+		before []int // CreatedAt of the versions there before, in seconds
+		first  func(w index.Writer, pkg index.Package, before []index.Version) error
+		want   int // with the second writer's version at 20
+	}{
+		{"an earlier version", nil, func(w index.Writer, pkg index.Package, _ []index.Version) error {
+			v := version(pkg, "1.0", 10)
+			return w.UpsertVersion(ctx, &v)
+		}, 10},
+		{"the earliest version deleted", []int{5, 30}, func(w index.Writer, _ index.Package, before []index.Version) error {
+			return w.DeleteVersion(ctx, before[0].ID)
+		}, 20},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pkg := newPackage(t, s, repo.ID, strings.ReplaceAll(tt.name, " ", "-"))
+			var before []index.Version
+			for i, sec := range tt.before {
+				v := version(pkg, "0."+strconv.Itoa(i), sec)
+				must(t, s.UpsertVersion(ctx, &v))
+				before = append(before, v)
+			}
+			held, release, first := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+			go func() {
+				first <- s.Tx(ctx, func(w index.Writer) error {
+					if err := tt.first(w, pkg, before); err != nil {
+						return err
+					}
+					close(held)
+					<-release
+					return nil
+				})
+			}()
+			select {
+			case <-held:
+			case err := <-first:
+				t.Fatalf("the first writer: %v", err)
+			}
+			second := make(chan error, 1)
+			go func() {
+				v := version(pkg, "2.0", 20)
+				second <- s.UpsertVersion(ctx, &v)
+			}()
+			time.Sleep(100 * time.Millisecond) // the second writer gets to the package row, which the first holds
+			close(release)
+			must(t, <-first)
+			must(t, <-second)
+			got, err := s.GetPackage(ctx, repo.ID, pkg.Name)
+			must(t, err)
+			same(t, "the package's CreatedAt", at(tt.want), got.CreatedAt)
+		})
+	}
 }
 
 // testDegraded checks that Degraded is stored on insert and on a refresh.
