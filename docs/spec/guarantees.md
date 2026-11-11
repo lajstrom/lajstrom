@@ -225,7 +225,7 @@ status is `holds on strongly consistent registries only` do not hold there.
   `TestDeleteThenReindex`; `TestVisibilityBarrier`, `TestVisibilityTimeout`,
   `TestVisibilityTimeoutIngest` (a registry that misses the first reads of a manifest and its
   tag, or every read), `TestNotVisibleNames`, `TestReadBack`, `TestManifestHookNotVisible`
-  (`503 UNAVAILABLE` with `Retry-After`, naming what is not served).
+  and `TestReferrerNotServed` (`503 UNAVAILABLE` with `Retry-After`, naming what is not served).
 - **When violated.** A client gets `404` (`BLOB_UNKNOWN`, `MANIFEST_UNKNOWN`, the format's
   `404`) for a version the index lists: only where a registry stops serving what it served
   once. A manifest the registry lost goes from the index at the next reconcile, which counts it
