@@ -60,6 +60,8 @@ type Provider struct {
 	// spoolHint is set by the first probe that succeeded when the vendor table hints at
 	// spoolUnknownLength and it is off: a streamed chunk the registry refuses says so (hintSpool).
 	spoolHint atomic.Bool
+	// chunk is the size of the chunks of OpenBlobWriter (blobChunk).
+	chunk int
 
 	// mu serialises probing; probed is the answer of the first probe that succeeded.
 	mu     sync.Mutex
@@ -138,6 +140,7 @@ func NewWithOptions(cfg config.Registry, log *slog.Logger, o Options) (*Provider
 		maxPages: maxPages,
 
 		spoolUnknown: cfg.Uploads.SpoolUnknownLength,
+		chunk:        blobChunk(u.Host),
 	}
 	reg := &remote.Registry{RepositoryListPageSize: pageSize}
 	reg.Reference = registry.Reference{Registry: u.Host}

@@ -256,6 +256,10 @@ spooled. Turn it on for a Gitea, Forgejo or JFrog registry whose clients send se
 per such upload at once. When the vendor table names a registry `gitea` or `jfrog` and the key is
 off, `serve` logs a hint at start that names the key.
 
+The uploads that Lajstrom streams into the registry itself, a raw `PUT` ([ADR 0014](adr/0014-uploads-stream-into-the-registry.md)),
+go in chunks of 8 MiB, each a `PATCH` with its `Content-Range`; on GHCR, which refuses a `PATCH`
+over 4 MiB ([ghcr.md](registries/ghcr.md#upload-sessions)), the vendor table makes them 4 MiB.
+
 ### upstreams
 
 A list; each entry is a registry that [proxy repos](spec/proxy-and-group.md) of one format serve

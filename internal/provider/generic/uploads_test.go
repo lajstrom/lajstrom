@@ -392,6 +392,74 @@ func TestUploadTransportError(t *testing.T) {
 	}
 }
 
+// TestBlobChunk: the chunks of OpenBlobWriter are 4 MiB on GHCR, which refuses a larger PATCH,
+// and streamChunk elsewhere (#558).
+func TestBlobChunk(t *testing.T) {
+	for _, tt := range []struct {
+		url  string
+		want int
+	}{
+		{"https://ghcr.io", ghcrMaxChunk},
+		{"https://ghcr.io:443", ghcrMaxChunk},
+		{"https://GHCR.io.", ghcrMaxChunk},
+		{"https://notghcr.io", streamChunk},
+		{"https://ghcr.io.example.com", streamChunk},
+		{"http://localhost:5000", streamChunk},
+		{"https://registry.gitlab.com", streamChunk},
+	} {
+		p, err := New(config.Registry{Name: "r", Type: Type, URL: tt.url}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.chunk != tt.want {
+			t.Errorf("%s: chunk = %d, want %d", tt.url, p.chunk, tt.want)
+		}
+	}
+}
+
+// TestOpenBlobWriterGHCR: a streamed blob of two chunks and a bit goes to GHCR as PATCHes of
+// 4 MiB, each with its Content-Range, the rest as a PATCH of its own, and an empty PUT (#558).
+// GHCR is told by its host, so the fake gets GHCR's chunk size as the provider of ghcr.io has it.
+func TestOpenBlobWriterGHCR(t *testing.T) {
+	ctx := t.Context()
+	var seen []string
+	f, repo := uploadRepo(t, func(f *fakeRegistry) {
+		f.hook = func(_ http.ResponseWriter, r *http.Request) bool {
+			seen = append(seen, fmt.Sprintf("%s range=%q length=%d", r.Method, r.Header.Get("Content-Range"), r.ContentLength))
+			return false
+		}
+	})
+	repo.(*repository).p.chunk = blobChunk("ghcr.io")
+	blob := bytes.Repeat([]byte("0123456789abcdef"), (2*ghcrMaxChunk+16)/16)
+	w, err := repo.OpenBlobWriter(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(w, bytes.NewReader(blob)); err != nil {
+		t.Fatal(err)
+	}
+	d := digest.FromBytes(blob)
+	if desc, err := w.Commit(ctx, d); err != nil || desc.Digest != d || desc.Size != int64(len(blob)) {
+		t.Fatalf("Commit = %+v, %v", desc, err)
+	}
+	f.mu.Lock()
+	stored := bytes.Equal(f.blobs["art/raw/scratch/notes"][d], blob)
+	f.mu.Unlock()
+	if !stored {
+		t.Error("the registry does not hold the blob")
+	}
+	want := []string{
+		`POST range="" length=0`,
+		`PATCH range="0-4194303" length=4194304`,
+		`PATCH range="4194304-8388607" length=4194304`,
+		`PATCH range="8388608-8388623" length=16`,
+		`PUT range="" length=0`,
+	}
+	if !slices.Equal(seen, want) {
+		t.Errorf("requests\n%q\nwant\n%q", seen, want)
+	}
+}
+
 // TestOpenBlobWriter: a streamed blob of two chunks and a bit goes as chunks of streamChunk
 // bytes, each with its Content-Range, the rest as a PATCH of its own and an empty PUT with the
 // digest; one cancelled after a chunk is a DELETE, and leaves nothing.
