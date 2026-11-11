@@ -108,6 +108,12 @@ func (s Server) validate(p *problems) {
 	if s.StallTimeout < 0 {
 		p.add("server.stallTimeout", "must not be negative")
 	}
+	if s.MaxCreatedAhead < 0 {
+		p.add("server.maxCreatedAhead", "must not be negative")
+	}
+	if s.MaxCreatedBehind < 0 {
+		p.add("server.maxCreatedBehind", "must not be negative")
+	}
 	if s.MaxConcurrentUploads < 0 {
 		p.add("server.maxConcurrentUploads", "must not be negative")
 	}

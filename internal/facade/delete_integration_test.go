@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -54,7 +55,7 @@ func newDeleteSetup(t *testing.T, addr string, caps config.CapabilityOverrides) 
 	srv := httptest.NewServer(New(Options{Index: st, Providers: providers, Log: log, Tokens: keys.NewEphemeralTokens(),
 		Ingest: ingest.New(ingest.Options{Providers: providers, Index: st, Log: log})}))
 	t.Cleanup(srv.Close)
-	s.f = rawFileOf("it-"+randomHex(t)+"/delete.txt", "delete me "+randomHex(t)+"\n")
+	s.f = rawFileOf("it-"+randomHex(t)+"/delete.txt", "delete me "+randomHex(t)+"\n").at(time.Now())
 	s.name = srv.URL + "/v2/raw/assets/" + s.f.path
 	for _, b := range [][]byte{s.f.content, ocispec.DescriptorEmptyJSON.Data, []byte("signature"), []byte("attestation")} {
 		s.expect(t, "blob", http.MethodPost, "/blobs/uploads/?digest="+digest.FromBytes(b).String(), b, http.StatusCreated)

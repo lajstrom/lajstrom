@@ -317,9 +317,10 @@ package does not exist. `<package>` is one path segment, as for the delete below
 - **The publish time** of a variant is `org.opencontainers.image.created` of its manifest
   (`versions.created_at`), which reindex rebuilds: the frontends write it from the server's
   clock when they build the manifest; a manifest pushed on `/v2` carries the time its client
-  wrote. A version's `publishedAt` is that of its first variant and orders the list,
-  `lastModified` that of its newest variant: a wheel added to an old version makes it modified,
-  not newer.
+  wrote, which the server refuses when it is more than `server.maxCreatedAhead` (5 minutes)
+  after its clock or `server.maxCreatedBehind` (an hour) before it. A version's `publishedAt`
+  is that of its first variant and orders the list, `lastModified` that of its newest variant:
+  a wheel added to an old version makes it modified, not newer.
 - **The order** is `publishedAt` descending, then the version string descending (byte order). The
   cursor holds the place of the page's last version, `publishedAt` and version, so a version
   published while a client pages comes before the first page and shifts nothing: a job that

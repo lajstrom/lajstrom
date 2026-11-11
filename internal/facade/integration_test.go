@@ -370,7 +370,7 @@ func TestIntegrationRawPush(t *testing.T) {
 		Ingest: ingest.New(ingest.Options{Providers: providers, Index: st, Log: log})}))
 	t.Cleanup(srv.Close)
 
-	f := rawFileOf("it-"+randomHex(t)+"/hello.txt", "hello lajstrom "+randomHex(t)+"\n")
+	f := rawFileOf("it-"+randomHex(t)+"/hello.txt", "hello lajstrom "+randomHex(t)+"\n").at(time.Now())
 	name := srv.URL + "/v2/raw/assets/" + f.path
 	resp, body := request(t, http.MethodPost, name+"/blobs/uploads/?digest="+f.digest.String(), bytes.NewReader(f.content), int64(len(f.content)))
 	if resp.StatusCode != http.StatusCreated {
@@ -408,7 +408,7 @@ func TestIntegrationRawPush(t *testing.T) {
 		t.Errorf("referrers: %d %q, want %s", resp.StatusCode, got, sigDigest)
 	}
 
-	f.m.Annotations[ocispec.AnnotationCreated] = "2026-11-07T10:00:01Z"
+	f.at(time.Now().Add(time.Second))
 	m, _ = f.body(t)
 	resp, body = request(t, http.MethodPut, name+"/manifests/"+f.tag(), bytes.NewReader(m), int64(len(m)), "Content-Type", ocispecManifest)
 	if resp.StatusCode != http.StatusConflict || !strings.Contains(string(body), `"existing":"`+d.String()+`"`) {
@@ -502,7 +502,7 @@ func TestIntegrationS3Redirect(t *testing.T) {
 	raw := httptest.NewServer(rawRoutes(t, st, providers))
 	t.Cleanup(raw.Close)
 
-	f := rawFileOf("it-"+randomHex(t)+"/big.bin", strings.Repeat("s3 redirect "+randomHex(t)+"\n", 3000))
+	f := rawFileOf("it-"+randomHex(t)+"/big.bin", strings.Repeat("s3 redirect "+randomHex(t)+"\n", 3000)).at(time.Now())
 	name := srv.URL + "/v2/raw/assets/" + f.path
 	resp, body := request(t, http.MethodPost, name+"/blobs/uploads/?digest="+f.digest.String(), bytes.NewReader(f.content), int64(len(f.content)))
 	if resp.StatusCode != http.StatusCreated {

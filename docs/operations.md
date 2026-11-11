@@ -972,7 +972,9 @@ the newest version of its package, unless `--delete-newest`. At least one of `--
 (`path.Match`, where `*` does not match `/`: `@acme/*`, `nightly/*`), again for more; without it
 every package of the repo. The time is the server's, from the `Date` of its first answer, and
 the publish time that of the manifest (`org.opencontainers.image.created`), which the frontends
-write from the server's clock and a client pushing on `/v2` from its own.
+write from the server's clock and a client pushing on `/v2` from its own, within
+`server.maxCreatedAhead` and `server.maxCreatedBehind` of the server's
+([configuration.md](configuration.md)).
 
 **Dry run first.** Without `--apply` the job prints the versions it would delete and why, the
 rule, the age and the rank, and changes nothing; `--output json` prints the same as one JSON

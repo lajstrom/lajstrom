@@ -39,6 +39,7 @@ const unknownArtifactType = "application/vnd.unknown.artifact.v1"
 //     digest, the tag of the annotations (manifestTag).
 //  3. The manifest must satisfy the profile (profile.Validate), which needs no backend, else
 //     MANIFEST_INVALID as ingest answers it; readManifest has bounded the layers (maxLayers).
+//     Its created time must be near the server's clock, else MANIFEST_INVALID (checkCreated).
 //  4. Every layer must be in the backend, else MANIFEST_BLOB_UNKNOWN (checkLayers); on a
 //     registry not classified strong, a layer it does not serve is read again first.
 //  5. ingest.Ingest validates the manifest, claims the tag, pushes the manifest with it and
@@ -65,8 +66,12 @@ func (h *handler) putManaged(w http.ResponseWriter, r *http.Request, t *target, 
 	}
 	// The profile needs no backend: a manifest it refuses costs no request to the registry
 	// (threat model M-2). Ingest checks it again, as it does for every publish.
-	if _, err := profile.Validate(m); err != nil {
+	parsed, err := profile.Validate(m)
+	if err != nil {
 		return ingestError(t, m, fmt.Errorf("%w: %w", ingest.ErrInvalid, err))
+	}
+	if err := h.checkCreated(ctx, t, desc.Digest, parsed.Annotations.Created); err != nil {
+		return err
 	}
 	if err := h.checkLayers(ctx, t, m.Layers); err != nil {
 		return err
@@ -128,6 +133,37 @@ func manifestTag(ref string, refDigest digest.Digest, m ocispec.Manifest) (strin
 			msg: "a push by digest needs the " + profile.AnnotationVersion + " annotation; push with a tag"}
 	}
 	return profile.Tag(version, m.Annotations[profile.AnnotationVariant]), nil
+}
+
+// checkCreated answers MANIFEST_INVALID when created, org.opencontainers.image.created of the
+// manifest d, is more than Options.MaxCreatedAhead after the server's clock or more than
+// MaxCreatedBehind before it. It is a version's publish time, which the age rules and the
+// cut-off of retention read (docs/spec/guarantees.md, INV-41): the frontends write it from the
+// server's clock, a /v2 client from its own. The time is refused, not replaced: another time is
+// another digest, which a push by digest cannot have and which oras, checking
+// Docker-Content-Digest, takes for a failed push. A manifest that the repo has already passes
+// whatever its time: its repeat writes nothing.
+func (h *handler) checkCreated(ctx context.Context, t *target, d digest.Digest, created time.Time) error {
+	now := h.o.Now()
+	var off string
+	switch {
+	case created.After(now.Add(h.o.MaxCreatedAhead)):
+		off = created.Sub(now).String() + " ahead of"
+	case created.Before(now.Add(-h.o.MaxCreatedBehind)):
+		off = now.Sub(created).String() + " behind"
+	default:
+		return nil
+	}
+	switch _, err := h.o.Index.GetVersionByDigest(ctx, t.repo.ID, d); {
+	case err == nil:
+		return nil
+	case !errors.Is(err, index.ErrNotFound):
+		return fmt.Errorf("facade: version %s of %s: %w", d, t.name, err)
+	}
+	return &apiError{status: http.StatusBadRequest, code: codeManifestInvalid,
+		msg: fmt.Sprintf("%s %s is %s the server's clock, %s: it may be at most %s ahead and %s behind; push again, with the current time",
+			ocispec.AnnotationCreated, created.Format(time.RFC3339), off, now.UTC().Format(time.RFC3339),
+			h.o.MaxCreatedAhead, h.o.MaxCreatedBehind)}
 }
 
 // checkLayers answers MANIFEST_BLOB_UNKNOWN, naming the digest, when a blob of blobs (the

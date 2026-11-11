@@ -54,7 +54,8 @@ type env struct {
 	clock  *clock
 	authz  auth.Authorizer
 	ingest Ingester
-	max    int64 // Options.MaxManifestSize
+	max    int64         // Options.MaxManifestSize
+	behind time.Duration // Options.MaxCreatedBehind
 	tokens token.Keys
 	extURL string // Options.ExternalURL
 	logs   *logBuffer
@@ -69,6 +70,7 @@ type envOptions struct {
 	registry    func(*providertest.Fake) provider.Provider // wraps the fake as the registry "local"
 	ingest      Ingester                                   // replaces the real pipeline
 	maxManifest int64                                      // Options.MaxManifestSize
+	behind      time.Duration                              // Options.MaxCreatedBehind
 	externalURL string                                     // Options.ExternalURL
 
 	sessions [2]int // Options.UploadSessionsPerRepo and UploadSessionsPerPrincipal
@@ -82,7 +84,7 @@ func newEnv(t *testing.T, o envOptions) *env {
 	t.Cleanup(func() { _ = st.Close() })
 	must(t, st.Migrate(ctx))
 	e := &env{t: t, st: st, prov: &providertest.Fake{RegistryName: "local"}, authz: o.authz, logs: &logBuffer{},
-		clock: &clock{now: time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC)}, ingest: o.ingest, max: o.maxManifest,
+		clock: &clock{now: time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC)}, ingest: o.ingest, max: o.maxManifest, behind: o.behind,
 		tokens: keys.NewEphemeralTokens(), extURL: o.externalURL, sessions: o.sessions}
 	e.reg = e.prov
 	if o.registry != nil {
@@ -113,7 +115,7 @@ func (e *env) replica() http.Handler {
 // replicaWith returns a replica whose token keys are k.
 func (e *env) replicaWith(k token.Keys) http.Handler {
 	h := New(Options{Index: e.st, Providers: provider.Map{"local": e.reg}, Auth: e.authz, Ingest: e.ingest,
-		MaxManifestSize: e.max, Log: slog.New(slog.NewTextHandler(e.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		MaxManifestSize: e.max, MaxCreatedBehind: e.behind, Log: slog.New(slog.NewTextHandler(e.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Now: e.clock.Now, Tokens: k, ExternalURL: e.extURL,
 		UploadSessionsPerRepo: e.sessions[0], UploadSessionsPerPrincipal: e.sessions[1]})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
