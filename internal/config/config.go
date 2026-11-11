@@ -318,7 +318,7 @@ const (
 type Repo struct {
 	// Name is the repo name, unique within its format.
 	Name string `yaml:"name"`
-	// Format is the plugin name: raw, pypi, apt, maven.
+	// Format is the plugin name (raw, pypi, apt, maven, npm), or oci, which has none.
 	Format string `yaml:"format"`
 	// Registry is the name of the registry that stores the repo's artifacts; a group has none.
 	Registry string `yaml:"registry"`

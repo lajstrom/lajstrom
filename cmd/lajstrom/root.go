@@ -32,8 +32,8 @@ func newRootCmd(lookupEnv func(string) (string, bool)) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "lajstrom",
 		Short: "Artifact registry on top of any OCI registry",
-		Long: "Lajstrom serves raw, pypi, apt and maven repositories and stores every artifact in an\n" +
-			"OCI registry. See https://lajstrom.dev and docs/configuration.md.",
+		Long: "Lajstrom serves raw, pypi, apt, maven and npm repositories and stores every artifact in\n" +
+			"an OCI registry. See https://lajstrom.dev and docs/configuration.md.",
 		SilenceUsage:      true,
 		SilenceErrors:     true,
 		PersistentPreRunE: a.setup,
