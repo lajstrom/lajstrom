@@ -146,7 +146,8 @@ changelog:
       order: 999
   filters:
     exclude:
-      - '^(test|ci|chore)(\(.+\))?!?:'
+      - '^(test|ci|chore|style)(\(.+\))?!?:'
+      - '^Revert "(test|ci|chore|style)(\(.+\))?!?:'
 
 # A draft: a maintainer reads the notes and publishes it (docs/release.md). A tag with a
 # suffix, v0.1.0-rc.1, is marked as a pre-release.
@@ -157,13 +158,14 @@ release:
   footer: |
     ## Verify
 
-    `checksums.txt` and the images are signed keylessly by the release workflow:
+    `checksums.txt` and the images are signed keylessly by the release workflow; verify with
+    cosign 3:
 
     ```sh
     cosign verify-blob checksums.txt --bundle checksums.txt.sigstore.json \
       --certificate-identity 'https://github.com/lajstrom/lajstrom/.github/workflows/release.yml@refs/tags/{{ .Tag }}' \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com
-    sha256sum --ignore-missing -c checksums.txt
+    sha256sum --ignore-missing -c checksums.txt   # macOS: shasum -a 256 --ignore-missing -c checksums.txt
 
     cosign verify ghcr.io/lajstrom/lajstrom:{{ .Tag }} \
       --certificate-identity 'https://github.com/lajstrom/lajstrom/.github/workflows/release.yml@refs/tags/{{ .Tag }}' \
