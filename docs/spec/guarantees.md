@@ -186,7 +186,9 @@ status is `holds on strongly consistent registries only` do not hold there.
   `TestInspectIsIngest`, `TestJournalReindex`, `TestJournalReindexLost`, `TestPushReindex` (npm),
   `TestReindexProxied`, `TestNoCatalog`, `TestAttach`, `TestRebuildTagSchema`, `TestDegraded`,
   `TestKnownDigests`, `TestScale`, `TestRebuildEarlierNames` and `TestEarlierPackagePath` (the
-  OCI names of before ADR 0017); `cosign.sh` (the referrers found by `reindex --repo`).
+  OCI names of before ADR 0017), `TestIntegrationNames` (the names of ADR 0017 in Zot's
+  catalog); `cosign.sh` (the referrers found by `reindex --repo`), `oras.sh` (raw files at those
+  names, on Gitea too).
 - **When violated.** A column that is not derivable is lost silently at the first rebuild. A
   listing that lags misses the newest manifests until a later run.
 - **Status.** `holds on strongly consistent registries only`

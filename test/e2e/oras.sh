@@ -6,7 +6,8 @@
 # digest), another manifest under the tag (409 TAG_INVALID naming the first), the repo's policy
 # (#60: PATCH merges it; a file above maxFileSize is 413 through oras push and the raw PUT),
 # oras pull and the bytes, oras repo tags, oras manifest fetch, the raw frontend serving the
-# pushed file, then oras manifest delete through the facade (#61) and a 404. Last, an oci repo of
+# pushed file, raw files whose OCI names ADR 0017 changed (.gitignore, a--b.txt, blobs), then
+# oras manifest delete through the facade (#61) and a 404. Last, an oci repo of
 # the run's own (§2 of the quick start): oras push of an artifact twice, a push row each (#245),
 # and one manifest under two tags, whose delete by one tag is 409 DENIED naming the other, and by
 # its digest deletes both (#284).
@@ -47,11 +48,13 @@ name="raw/$repo/$path" # the OCI name of the file
 oci="oci/$run/notes"    # the OCI name of the oci step's artifact, in the oci repo of the run
 img="oci/$run/image"   # the OCI name of the image of #284, in the same oci repo
 pushed=""
+named="" # the raw file of the step of ADR 0017 that may be in the repo
 oci_pushed=""
 policy_set=""
 oci_made=""
 cleanup() {
 	[ -z "$pushed" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/raw/$repo/$path" || true
+	[ -z "$named" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/raw/$repo/$named" || true
 	[ -z "$oci_pushed" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/v2/$img/manifests/$img_digest" || true
 	[ -z "$policy_set" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X PATCH -H 'Content-Type: application/json' \
 		-d '{"policy": null}' "$base/api/v1/repos/raw/$repo" || true
@@ -182,6 +185,19 @@ step "oras manifest fetch: $digest, artifactType application/vnd.lajstrom.raw.v1
 assert_status 200 -K "$E2E_CURLRC" -o "$work/get" "$base/raw/$repo/$path"
 cmp -s "$work/$path" "$work/get" || fail "GET /raw/$repo/$path: not the pushed bytes"
 step "GET /raw/$repo/$path: 200, the pushed bytes"
+
+# ADR 0017 (#597, #598): raw files whose OCI names Gitea and Forgejo refused in the form of
+# before it (h0__… for .gitignore, a--b.txt), and one whose name Zot left out of its catalog
+# (blobs): PUT 201, GET the bytes, DELETE 204.
+for f in .gitignore a--b.txt blobs; do
+	named="$run/$f"
+	assert_status 201 -K "$E2E_CURLRC" -o /dev/null -T "$work/$path" "$base/raw/$repo/$named"
+	assert_status 200 -K "$E2E_CURLRC" -o "$work/get" "$base/raw/$repo/$named"
+	cmp -s "$work/$path" "$work/get" || fail "GET /raw/$repo/$named: not the pushed bytes"
+	assert_status 204 -K "$E2E_CURLRC" -o /dev/null -X DELETE "$base/raw/$repo/$named"
+	named=""
+done
+step "PUT, GET and DELETE /raw/$repo/$run/.gitignore, a--b.txt and blobs: 201, the bytes, 204"
 
 # #61, and the cleanup: oras manifest delete through the facade (202), then the version is gone
 # from the facade and from the raw frontend.
