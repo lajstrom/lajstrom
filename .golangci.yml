@@ -32,6 +32,17 @@ linters:
           deny:
             - pkg: oras.land/oras-go/v2/registry/remote
               desc: only internal/provider talks to the registry (CLAUDE.md invariants)
+        one-write-path:
+          # Plugins publish only through format.Deps.Ingest (CLAUDE.md, invariants): no oras-go,
+          # whose Copy, PushBytes and Tag would write to a provider.Repository; forbidigo below
+          # stops the writing methods of the provider itself.
+          list-mode: lax
+          files:
+            - "**/internal/format/**"
+            - "!**/*_test.go"
+          deny:
+            - pkg: oras.land/oras-go/v2
+              desc: one write path, plugins publish through format.Deps.Ingest (CLAUDE.md invariants)
         database:
           # Only internal/index talks to the database (CLAUDE.md, invariants).
           list-mode: lax
@@ -65,6 +76,12 @@ linters:
           msg: use log/slog, or cmd.OutOrStdout() in cmd/lajstrom
         - pattern: ^log\.(Print|Fatal|Panic).*$
           msg: use log/slog
+        # The writing methods of the provider, which format.Deps.Providers hands the plugins for
+        # reads. Only internal/format is held to it (exclusions below): ingest and the facade
+        # write through the provider.
+        - pattern: ^provider\.(Provider\.(EnsureRepository|DeleteRepository)|(Repository|BlobUploader)\.(Push|PushReference|Tag|Delete|StartBlobUpload|MountBlob|AppendBlobChunk|FinishBlobUpload|CancelBlobUpload))$
+          pkg: ^github\.com/lajstrom/lajstrom/internal/provider$
+          msg: one write path, plugins publish and delete through format.Deps.Ingest (CLAUDE.md invariants)
     gocyclo:
       min-complexity: 15
     importas:
@@ -79,6 +96,10 @@ linters:
       # Tests build requests with httptest.NewRequest and dial without a context.
       - path: _test\.go$
         linters: [noctx, forbidigo]
+      # One write path binds the plugins only.
+      - path-except: ^internal/format/
+        linters: [forbidigo]
+        text: one write path
 
 formatters:
   enable:
