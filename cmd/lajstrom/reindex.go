@@ -43,7 +43,9 @@ func newReindexCmd(a *app) *cobra.Command {
 		Long: "Rebuild the index from the manifests in the registries: every repo, or one with --repo.\n" +
 			"A manifest whose digest the index has is not read again unless --verify. With --prune (the\n" +
 			"default for every repo) the rows of manifests that are gone from the registry are removed.\n" +
-			"--report lists foreign manifests, orphan referrers, drift and errors; --json prints the report.\n" +
+			"--report lists foreign manifests, orphan referrers, drift, split packages and errors; --json prints\n" +
+			"the report. A split package is stored at two forms of its OCI name (ADR 0017): the versions at the\n" +
+			"form the index does not have are listed and not indexed.\n" +
 			"A registry without a catalog lists only the OCI repositories that the index records: --attach\n" +
 			"names others of --repo in a file, one per line, for the first attach of an existing prefix.",
 		Args:        cobra.NoArgs,
@@ -113,7 +115,7 @@ func newReindexCmd(a *app) *cobra.Command {
 		"e.g. raw/assets/docs/readme.md: the first attach on a registry without a catalog")
 	f.BoolVar(&prune, "prune", false, "remove the rows of manifests that are gone (default true without --repo)")
 	f.BoolVar(&verify, "verify", false, "read and check every manifest, also those whose digest the index has")
-	f.BoolVar(&report, "report", false, "list foreign manifests, orphan referrers, drift and errors")
+	f.BoolVar(&report, "report", false, "list foreign manifests, orphan referrers, drift, split packages and errors")
 	f.BoolVar(&asJSON, "json", false, "print the report as JSON")
 	f.IntVar(&concurrency, "concurrency", 0, "manifests read at once per registry (default 8)")
 	return cmd
@@ -156,10 +158,11 @@ func writeReport(out io.Writer, rep *reindex.Report, lists bool) error {
 	var buf bytes.Buffer
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 	// A bytes.Buffer does not fail.
-	_, _ = io.WriteString(tw, "REPO\tMANIFESTS\tADDED\tUPDATED\tUNCHANGED\tREMOVED\tPENDING\tDEGRADED\tREFERRERS\tFOREIGN\tORPHANS\tDRIFT\tERRORS\n")
+	_, _ = io.WriteString(tw, "REPO\tMANIFESTS\tADDED\tUPDATED\tUNCHANGED\tREMOVED\tPENDING\tDEGRADED\tREFERRERS\tFOREIGN\tORPHANS\tDRIFT\tSPLIT\tERRORS\n")
 	for _, r := range rep.Repos {
-		_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", r.Repo, r.Manifests, r.Added, r.Updated,
-			r.Unchanged, r.Removed, r.Pending, r.Degraded, r.Referrers, len(r.Foreign), len(r.OrphanReferrers), len(r.Drift), len(r.Errors))
+		_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", r.Repo, r.Manifests, r.Added, r.Updated,
+			r.Unchanged, r.Removed, r.Pending, r.Degraded, r.Referrers, len(r.Foreign), len(r.OrphanReferrers), len(r.Drift),
+			len(r.Split), len(r.Errors))
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -174,6 +177,10 @@ func writeReport(out io.Writer, rep *reindex.Report, lists bool) error {
 			}
 			for _, d := range r.Drift {
 				fmt.Fprintf(&buf, "%s: drift %s:%s index %s, registry %s\n", r.Repo, d.Package, d.Tag, d.Index, d.Registry)
+			}
+			for _, sp := range r.Split {
+				fmt.Fprintf(&buf, "%s: split %s indexed at %s [%s], not at %s [%s]\n", r.Repo, sp.Package, sp.Indexed,
+					strings.Join(sp.IndexedTags, " "), sp.Other, strings.Join(sp.OtherTags, " "))
 			}
 			for _, f := range r.Errors {
 				fmt.Fprintf(&buf, "%s: error %s:%s %s\n", r.Repo, f.Repository, f.Tag, f.Error)

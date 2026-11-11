@@ -71,3 +71,24 @@ func TestReindex(t *testing.T) {
 		t.Errorf("report: %+v", rep)
 	}
 }
+
+// TestWriteReportSplit: a split package is a count of the table and, with --report, a line with
+// both forms and the tags at each (#609).
+func TestWriteReportSplit(t *testing.T) {
+	rep := &reindex.Report{Repos: []reindex.RepoReport{{Repo: "raw/assets", Split: []reindex.Split{{Package: "netlify/blobs",
+		Indexed: "netlify/blob_73", IndexedTags: []string{"3fc4ccfe745870e2"}, Other: "netlify/blobs",
+		OtherTags: []string{"7692c3ad3540bb80", "9a0364b9e99bb480"}}}}}}
+	var out strings.Builder
+	if err := writeReport(&out, rep, true); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(out.String(), "\n")
+	if fields := strings.Fields(lines[1]); !strings.Contains(lines[0], "DRIFT  SPLIT  ERRORS") || len(fields) != 14 || fields[12] != "1" {
+		t.Errorf("the table: %q", lines[:2])
+	}
+	want := "raw/assets: split netlify/blobs indexed at netlify/blob_73 [3fc4ccfe745870e2], not at netlify/blobs " +
+		"[7692c3ad3540bb80 9a0364b9e99bb480]"
+	if lines[2] != want {
+		t.Errorf("the list: %q, want %q", lines[2], want)
+	}
+}

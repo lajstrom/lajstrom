@@ -1085,6 +1085,13 @@ digest of its manifest.
 - A tag that names another digest than its row is drift: the index keeps its digest and the
   report lists both. Lajstrom never re-points a tag; whoever re-pointed it in the backend
   decides which one is right.
+- A package stored at two forms of its OCI name (ADR 0017: a stand that took a publish in the
+  newest form before a reindex saw the earlier one) is a split. The index keeps one form, the one
+  it has or else the newest, and leaves out the versions at the other, whose downloads would
+  `404`; the report lists both forms and the tags at each, and every run warns. To serve those
+  versions, copy each tag of the other form into the indexed one (`oras cp`, through `/v2` or
+  straight to the backend, which the next run indexes), then delete the other form in the
+  backend; a tag at both forms with other bytes is yours to settle.
 - With `--prune` (the default for a run of every repo, off with `--repo` unless given), every row
   the run did not see is looked up in the registry by its tag once more, and, when the tag does
   not resolve, by its manifest's digest. A row goes only when the registry answered `404
@@ -1110,7 +1117,7 @@ lajstrom reindex --repo raw/assets --attach raw-assets.txt        # a registry w
 ```
 
 The output is one line of counts per repo (manifests, added, updated, unchanged, removed,
-pending, degraded, referrers, foreign, orphan referrers, drift, errors); `--report` adds the lists, at most
+pending, degraded, referrers, foreign, orphan referrers, drift, split, errors); `--report` adds the lists, at most
 1 000 entries each, and `--json` prints the whole report. The exit status is not zero when the
 run itself failed (the database or the context) or another run holds the lock; manifests that
 could not be read or checked are errors in the report and do not change it. `--concurrency`

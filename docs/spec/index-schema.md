@@ -455,6 +455,14 @@ release.
 - A tag that names another digest than the index row of that tag is drift: the index keeps its
   digest, the report lists both, nothing is re-pointed (the rule of the reconcile loop, #30).
   A drifted row is the one row whose manifest is not under its tag any more.
+- A package whose manifests are at two forms of its package path (ADR 0017: one written before
+  it, one after, while the index lacked the earlier) is a split. A package has one `name_oci`,
+  and every download and delete of its versions goes there, so the index keeps the form of its
+  row, or, for a package it does not have, the newest form found: the form ingest writes such a
+  package to (a run reads the newer forms first). The manifests at the other form are not
+  indexed; the report lists both forms and the tags at each (`split`), on every run until the
+  other form is gone. Nothing is copied or moved in the registry: manifests copied into the
+  indexed form are versions, through `/v2` at once, past Lajstrom at the next run (#609).
 - A repo of format `oci` (pass-through, http-routing.md §1) has rows in `oci_repos` only: the
   facade records the repository of every manifest pushed to it, and nothing else is indexed.
 - The control plane can be exported with `lajstrom admin export` (JSON) and, after the MVP,

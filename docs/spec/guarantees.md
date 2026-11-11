@@ -168,7 +168,9 @@ status is `holds on strongly consistent registries only` do not hold there.
   ([manifest-profile.md](manifest-profile.md#43-escape-and-escapecomponent) §4.3); on Zot an
   earlier name that ends in `blobs`, `.uploads` or `.sync` is not in the catalog, and only
   `oci_repos` or `--attach` finds it; on Harbor an earlier name with a component `manifests` or
-  `referrers`, or `tags/list…`, answers the check of its blobs at random.
+  `referrers`, or `tags/list…`, answers the check of its blobs at random. A package whose
+  manifests are at two forms of its name has the rows of one form; those at the other are
+  reported as a split, not indexed ([index-schema.md](index-schema.md#invariants-and-rules), #609).
 - **Assumes.** Registry: **complete listings** (**unchecked**) of the names in the grammar of
   ADR 0017 (Zot's catalog leaves out others, [quirks.md](../registries/quirks.md)); **durable 201**.
   Database: any.
@@ -179,6 +181,9 @@ status is `holds on strongly consistent registries only` do not hold there.
   indexed from its annotations and flagged `degraded`. A manifest at an earlier form of
   its OCI name is the package of its annotations (`ingest.publish.checkTarget`), which keeps that
   name: a writer looks it up at every form (`index.PackageAt`, `ingest.Pipeline.storedPath`).
+  A manifest whose package the index has at another form is not written (`reindex.scan.write`),
+  and a run reads the newer forms of a name first (`reindex.newestFirst`), so that a rebuild
+  keeps the form ingest wrote.
 - **Tests.** `TestRebuild` (I-01 on a raw repo), `TestRebuildFormats` (three more formats) and
   `TestRebuildPackageCreated` of `internal/index/reindex`, `TestIntegration` and
   `TestIntegrationFormats` of `internal/index/reindex` (I-01 against Zot and distribution, on
@@ -188,7 +193,8 @@ status is `holds on strongly consistent registries only` do not hold there.
   `TestReindexProxied`, `TestNoCatalog`, `TestAttach`, `TestRebuildTagSchema`, `TestDegraded`,
   `TestKnownDigests`, `TestScale`, `TestRebuildEarlierNames` and `TestEarlierPackagePath` (the
   OCI names of before ADR 0017), `TestIntegrationNames` (the names of ADR 0017 in Zot's
-  catalog); `cosign.sh` (the referrers found by `reindex --repo`), `oras.sh` (raw files at those
+  catalog), `TestRebuildSplit`, `TestSplitIndexedBefore` and `TestIntegrationSplit` (a package at
+  two forms, #609); `cosign.sh` (the referrers found by `reindex --repo`), `oras.sh` (raw files at those
   names, on Gitea too).
 - **When violated.** A column that is not derivable is lost silently at the first rebuild. A
   listing that lags misses the newest manifests until a later run.

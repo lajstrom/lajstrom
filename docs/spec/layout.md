@@ -948,6 +948,7 @@ type RepoReport struct {
     OrphanReferrers []Finding `json:"orphanReferrers"`
     OrphanJournal   []Finding `json:"orphanJournal"`   // npm journal entries of a repository without versions
     Drift           []Drift   `json:"drift"`
+    Split           []Split   `json:"split"`           // packages at two forms of their OCI name, one per other form
     Errors          []Finding `json:"errors"`
     Truncated       bool      `json:"truncated"`       // a list stopped at 1 000 entries
 }
@@ -965,6 +966,13 @@ type Drift struct {
     Tag      string        `json:"tag"`
     Index    digest.Digest `json:"index"`
     Registry digest.Digest `json:"registry"`
+}
+type Split struct {                           // index-schema.md, Invariants; ADR 0017
+    Package     string   `json:"package"`
+    Indexed     string   `json:"indexed"`     // the package's name_oci, below the repo's base
+    IndexedTags []string `json:"indexedTags"` // the tags of its versions in the index
+    Other       string   `json:"other"`       // another form of it, below the repo's base
+    OtherTags   []string `json:"otherTags"`   // the tags of the profile manifests there, not indexed
 }
 ```
 

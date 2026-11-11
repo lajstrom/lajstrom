@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -54,6 +55,7 @@ type scan struct {
 	subjects    []Finding                  // the referrers read, whose subjects orphans looks up
 	fatal       error                      // the first error of the run's own: the database, the context
 	unsupported bool                       // no plugin for the repo's format: the scan stops, and nothing is swept
+	splits      map[[2]string]*Split       // packages found at another form than the index has, by name and form
 }
 
 // repo reindexes one repo. The error is the run's own; everything about the registry and the
@@ -61,7 +63,7 @@ type scan struct {
 func (w *Worker) repo(ctx context.Context, repo index.Repo, start time.Time, req Request) (RepoReport, error) {
 	s := &scan{w: w, repo: repo, base: repoBase(repo), req: req, start: start, began: w.now(),
 		sem: make(chan struct{}, w.concurrency), rep: newRepoReport(repo.Format + "/" + repo.Name),
-		referrers: map[digest.Digest]struct{}{}}
+		referrers: map[digest.Digest]struct{}{}, splits: map[[2]string]*Split{}}
 	prov, ok := w.providers.Provider(repo.Registry)
 	if !ok || prov == nil {
 		s.failure(Finding{Error: fmt.Sprintf("registry %q is not configured", repo.Registry)})
@@ -70,13 +72,14 @@ func (w *Worker) repo(ctx context.Context, repo index.Repo, start time.Time, req
 	s.prov = prov
 	names, listed := s.list(ctx)
 	s.rep.OCIRepositories = len(names)
-	for _, name := range names {
+	for _, name := range newestFirst(s.base, names) {
 		if s.stopped(ctx) {
 			break
 		}
 		s.ociRepo(ctx, name)
 	}
 	s.orphans(ctx)
+	s.reportSplits(ctx)
 	if s.fatal == nil && ctx.Err() == nil {
 		s.dbErr(w.index.TouchVersions(ctx, s.seen, w.now()))
 	}
@@ -92,7 +95,8 @@ func (w *Worker) repo(ctx context.Context, repo index.Repo, start time.Time, req
 	r := s.rep
 	w.log.InfoContext(ctx, "reindex: repo done", "repo", r.Repo, "ociRepositories", r.OCIRepositories, "manifests", r.Manifests,
 		"added", r.Added, "updated", r.Updated, "unchanged", r.Unchanged, "removed", r.Removed, "degraded", r.Degraded,
-		"foreign", len(r.Foreign), "drift", len(r.Drift), "errors", len(r.Errors), "seconds", w.now().Sub(s.began).Seconds())
+		"foreign", len(r.Foreign), "drift", len(r.Drift), "split", len(r.Split), "errors", len(r.Errors),
+		"seconds", w.now().Sub(s.began).Seconds())
 	return r, s.fatal
 }
 
@@ -137,6 +141,31 @@ func (s *scan) recordedRepos(ctx context.Context) ([]string, bool) {
 			"name them with lajstrom reindex --repo <repo> --attach <file>", "repo", s.rep.Repo)
 	}
 	return names, true
+}
+
+// newestFirst orders the OCI repositories names, below base, so that a package path comes before
+// its earlier forms (profile.EarlierPackagePaths) when both are listed: of a package found at two
+// forms, a run without its row writes the newer, as ingest writes a package the index does not
+// have, and the other is a split (#609). The order is otherwise the listing's.
+func newestFirst(base string, names []string) []string {
+	listed := make(map[string]bool, len(names))
+	for _, name := range names {
+		listed[name] = true
+	}
+	newer := map[string]int{} // how many listed forms are newer than a name
+	for _, name := range names {
+		for _, earlier := range profile.EarlierPackagePaths(strings.TrimPrefix(name, base+"/")) {
+			if listed[base+"/"+earlier] {
+				newer[base+"/"+earlier]++
+			}
+		}
+	}
+	if len(newer) == 0 {
+		return names
+	}
+	names = slices.Clone(names)
+	slices.SortStableFunc(names, func(a, b string) int { return cmp.Compare(newer[a], newer[b]) })
+	return names
 }
 
 // ociRepo reads every tag of one OCI repository.
@@ -328,11 +357,40 @@ func (s *scan) classify(ctx context.Context, pkgPath, tag string, desc ocispec.D
 	s.write(ctx, rows, f, reread)
 }
 
-// write writes the rows of a profile manifest in one transaction.
+// splitError is the error of a manifest whose package the index has at another form of its OCI
+// name (ADR 0017): its rows would name that form's OCI repository, which does not hold the
+// manifest, so they are not written (#609).
+type splitError struct{ indexed string }
+
+func (e *splitError) Error() string {
+	return "reindex: the package is stored at " + e.indexed + ", another form of its OCI name"
+}
+
+// write writes the rows of a profile manifest in one transaction, unless the index has its
+// package at another form of the package path: a split, reported and not written.
 func (s *scan) write(ctx context.Context, rows *ingest.Rows, f Finding, reread bool) {
-	err := s.w.index.Tx(ctx, func(w index.Writer) error { return ingest.WriteRows(ctx, w, rows, s.w.now()) })
+	err := s.w.index.Tx(ctx, func(w index.Writer) error {
+		pkg, err := w.GetPackage(ctx, rows.Package.RepoID, rows.Package.Name)
+		switch {
+		case err == nil && pkg.NameOCI != f.Repository:
+			return &splitError{indexed: pkg.NameOCI}
+		case err != nil && !errors.Is(err, index.ErrNotFound):
+			return err
+		}
+		if err := ingest.WriteRows(ctx, w, rows, s.w.now()); err != nil {
+			return err
+		}
+		if rows.Package.NameOCI != f.Repository { // a writer created the package at another form meanwhile
+			return &splitError{indexed: rows.Package.NameOCI}
+		}
+		return nil
+	})
 	var conflict *index.TagConflictError
+	var split *splitError
 	switch {
+	case errors.As(err, &split):
+		s.split(rows.Package.Name, split.indexed, f.Repository, f.Tag)
+		return
 	case errors.As(err, &conflict): // the tag was written meanwhile with another digest
 		pkg, v, kerr := s.known(ctx, f.Repository, f.Tag)
 		if s.dbErr(kerr) || v == nil {
@@ -482,6 +540,65 @@ func (s *scan) drift(v *index.Version, pkgName, tag string, registry digest.Dige
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	add(&s.rep, &s.rep.Drift, Drift{Package: pkgName, Tag: tag, Index: v.Digest, Registry: registry})
+}
+
+// split records a manifest at the package path other, not indexed because the index has its
+// package at indexed, another form of it.
+func (s *scan) split(pkgName, indexed, other, tag string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := [2]string{pkgName, other}
+	if s.splits[key] == nil {
+		s.splits[key] = &Split{Package: pkgName, Indexed: indexed, IndexedTags: []string{}, Other: other}
+	}
+	s.splits[key].OtherTags = append(s.splits[key].OtherTags, tag)
+}
+
+// reportSplits lists the splits of the scan, with the tags of the versions the index has at the
+// indexed form, and logs a warning for each: the versions at the other form are not served
+// until they are copied to the indexed one.
+func (s *scan) reportSplits(ctx context.Context) {
+	for _, key := range slices.SortedFunc(maps.Keys(s.splits), func(a, b [2]string) int {
+		return cmp.Or(cmp.Compare(a[0], b[0]), cmp.Compare(a[1], b[1]))
+	}) {
+		if s.stopped(ctx) {
+			return
+		}
+		sp := s.splits[key]
+		pkg, err := s.w.index.GetPackage(ctx, s.repo.ID, sp.Package)
+		if errors.Is(err, index.ErrNotFound) || err == nil && pkg.NameOCI != sp.Indexed {
+			continue // deleted or written again meanwhile: the next run looks again
+		}
+		if s.dbErr(err) {
+			return
+		}
+		versions, err := s.w.index.ListVersions(ctx, pkg.ID)
+		if s.dbErr(err) {
+			return
+		}
+		for _, v := range versions {
+			sp.IndexedTags = append(sp.IndexedTags, v.Tag)
+		}
+		slices.Sort(sp.IndexedTags)
+		slices.Sort(sp.OtherTags)
+		s.mu.Lock()
+		sp.IndexedTags, sp.OtherTags = s.bounded(sp.IndexedTags), s.bounded(sp.OtherTags)
+		add(&s.rep, &s.rep.Split, *sp)
+		s.mu.Unlock()
+		s.w.log.WarnContext(ctx, "reindex: a package is stored at two forms of its OCI name (ADR 0017); the versions at the "+
+			"other form are not indexed until they are copied to the indexed one", "repo", s.rep.Repo, "package", sp.Package,
+			"indexed", sp.Indexed, "other", sp.Other, "otherTags", len(sp.OtherTags))
+	}
+}
+
+// bounded returns the first maxFindings tags, and marks the report truncated when there are more;
+// s.mu is held.
+func (s *scan) bounded(tags []string) []string {
+	if len(tags) <= maxFindings {
+		return tags
+	}
+	s.rep.Truncated = true
+	return tags[:maxFindings]
 }
 
 // foreign reports a manifest under a managed path that is not Lajstrom's.

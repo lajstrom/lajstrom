@@ -281,7 +281,8 @@ looks the package up in the index at its package path and at each earlier form o
 form is for a package the index does not have. Reindex, and validation on ingest (section 5),
 take any form as the package path of the annotations; a push to an earlier form is for a package
 the index has there only, and a push to the newest form of a package the index has at an earlier
-one is a `409`.
+one is a `409`. A package that is at two forms all the same keeps one, and reindex reports the
+other (index-schema.md, Invariants and rules).
 
 `Unescape`, `UnescapeComponent` (which decodes a component of any form to the same lower-cased
 name, and refuses a hashed one) and `UnescapePackagePath` (the same for a package path, with the
