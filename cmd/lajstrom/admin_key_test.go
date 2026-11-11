@@ -256,13 +256,12 @@ func pemFingerprint(t *testing.T, s string) string {
 // the master key: export makes the key and prints its public key as PEM, again the same;
 // rotate --token prints a new fingerprint, rotate --token --drop another, drop --token retires
 // the active key without a successor and a second drop has nothing to drop. The database then
-// holds three jwt rows without a repo: the first retired now (it verifies for the grace), the
-// other two one grace ago (dropped), the audit rows of each change, and no private key in the
-// clear.
+// holds three jwt rows without a repo, each retired one grace ago: the first, which the rotation
+// retired, was still in its grace at rotate --token --drop, which ends it too. And the audit
+// rows of each change, and no private key in the clear.
 func TestAdminKeyToken(t *testing.T) {
 	cfg, dsn := writeKeyConfig(t, t.TempDir())
 	env := map[string]string{"LAJSTROM_MASTER_KEY": testMasterKey}
-	start := time.Now()
 	outs := runEnv(t, cfg, env, []step{
 		{args: []string{"migrate"}},
 		{args: []string{"admin", "key", "export", "--token"}, wantOut: "-----BEGIN PUBLIC KEY-----\n"},
@@ -282,13 +281,12 @@ func TestAdminKeyToken(t *testing.T) {
 	if dropped := strings.TrimSpace(outs[5]); dropped != third {
 		t.Errorf("drop printed %q, want the active key %s", dropped, third)
 	}
-	checkTokenKeys(t, dsn, start, end, first, second, third)
+	checkTokenKeys(t, dsn, end, first, second, third)
 }
 
 // checkTokenKeys checks the database at dsn after TestAdminKeyToken, whose commands ran between
-// start and end: the three jwt rows, the first retired by the rotation, the others dropped, the
-// audit rows, and no private key in the clear.
-func checkTokenKeys(t *testing.T, dsn string, start, end time.Time, first, second, third string) {
+// end: the three jwt rows, each dropped, the audit rows, and no private key in the clear.
+func checkTokenKeys(t *testing.T, dsn string, end time.Time, first, second, third string) {
 	t.Helper()
 	st, err := sqlite.Open(t.Context(), dsn)
 	if err != nil {
@@ -304,9 +302,7 @@ func checkTokenKeys(t *testing.T, dsn string, start, end time.Time, first, secon
 		switch {
 		case k.Kind != keys.KindJWT || k.RepoID != nil || k.Fingerprint != fp || k.RetiredAt == nil:
 			t.Errorf("row %d: %s %v %s retired %v, want jwt, no repo, %s, retired", i, k.Kind, k.RepoID, k.Fingerprint, k.RetiredAt, fp)
-		case i == 0 && k.RetiredAt.Before(start.Add(-time.Second)):
-			t.Errorf("the rotated key was retired at %v, before the test started", k.RetiredAt)
-		case i > 0 && k.RetiredAt.After(end.Add(-keys.TokenGrace)):
+		case k.RetiredAt.After(end.Add(-keys.TokenGrace)):
 			t.Errorf("the dropped key %s was retired at %v, within the grace", fp, k.RetiredAt)
 		}
 		if _, err := x509.ParsePKCS8PrivateKey(k.PrivateEnc); err == nil {

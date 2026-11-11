@@ -287,22 +287,25 @@ on the others, and nothing is mounted, generated per node or restarted to rotate
   every replica, and retires the old one, which still verifies for 21 minutes, the token
   lifetime and the clock skew, so that no token issued before the rotation is refused before it
   expires. Retired rows stay in the table, ignored once retired longer than that ago. The
-  replicas reload the keys at most once a second, so for that second a replica may refuse a
-  token of the new key once; the client asks for another. A rotation is an audit row
+  replicas reload the keys at most once a second, so for up to a second every replica, the one
+  that made the key included, may refuse a token of the new key; a client that asks for
+  another after that gets one that passes. A rotation is an audit row
   `key.rotate` without a repo, the new fingerprint as its subject, the retired one in its
   details. Rotate with the master key's rotation, when the algorithm changes, or at will:
   nothing else needs to happen.
-- **Drop**: `lajstrom admin key rotate --token --drop` is the same with no grace: the old key
-  stops verifying within a second on every replica and every outstanding token dies, for a key
-  that may have leaked or when every token must go now (a user who must lose access to `/v2`
-  before their token expires). Clients get new tokens with their credentials at their next
-  request. Its audit row says `"dropped": true`.
+- **Drop**: `lajstrom admin key rotate --token --drop` is the same with no grace: the old key,
+  and a key that a rotation retired less than 21 minutes before, stop verifying within a second
+  on every replica and every outstanding token dies, for a key that may have leaked or when
+  every token must go now (a user who must lose access to `/v2` before their token expires).
+  Clients get new tokens with their credentials at their next request. Its audit row says
+  `"dropped": true`.
 - **Export**: `lajstrom admin key export --token` prints the public key as PEM, for a verifier
   that is not Lajstrom, should one ever be needed.
 
 The keys of the server can be listed with
 `sqlite3 lajstrom.db "SELECT id, fingerprint, created_at, retired_at FROM keys WHERE kind = 'jwt'"`
-(or the same query on Postgres).
+(or the same query on Postgres). The active key has no `retired_at`; a dropped key's is 21
+minutes before the drop, so that it verifies nothing.
 
 ### `lajstrom admin key`
 
@@ -315,7 +318,7 @@ names, or in the file of `keys.masterKeyFile`), and a migrated database; none go
 | `admin key rotate --repo apt/<repo>` | gives the repo a new key, retires the old one for `keys.retireGrace`, drops the repo's cached indexes; prints the new fingerprint |
 | `admin key export --token` | prints the public bearer-token key as PEM; makes the key when there is none |
 | `admin key rotate --token` | a new bearer-token key; the old one verifies for 21 minutes; prints the new fingerprint |
-| `admin key rotate --token --drop` | the same, and the old key verifies nothing from then on |
+| `admin key rotate --token --drop` | the same, and no old key verifies anything from then on, one still in its 21 minutes included |
 | `admin key drop --token` | retires the bearer-token key without a successor, whether it decrypts or not (the next token a replica issues, or the next start of `serve`, makes one); prints its fingerprint |
 
 `--repo` and `--token` exclude each other, and one of them is required. Without the master key

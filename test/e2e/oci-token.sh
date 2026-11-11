@@ -173,15 +173,18 @@ token "$work/t2" "repository:$name:pull"
 expect "the new token's kid" "$kid2" "$(claims "$work/t2" | jq -r .header.kid)"
 ok "admin key rotate --token: $kid2; the old token (kid ${kid1:0:16}…) still 200; a new token has kid ${kid2:0:16}…"
 
-# A rotation with drop: the token of the dropped key dies. The replicas reload their keys at
-# most once a second.
+# A rotation with drop: the token of the dropped key dies, and so does the token of the key the
+# rotation above retired, still in its grace. The replicas reload their keys at most once a
+# second.
 kid3="$("${lajstrom[@]}" --log-level warn admin key rotate --token --drop)"
 sleep 1.2
 req GET "$base/v2/$name/tags/list" -K "$work/t2.curl"
 expect "the token of a dropped key status" 401 "$status"
+req GET "$base/v2/$name/tags/list" -K "$work/t1.curl"
+expect "the token of the key in its grace after the drop status" 401 "$status"
 token "$work/t3" "repository:$name:pull"
 expect "the token after the drop's kid" "$kid3" "$(claims "$work/t3" | jq -r .header.kid)"
 req GET "$base/v2/$name/tags/list" -K "$work/t3.curl"
 expect "the token after the drop status" 200 "$status"
-ok "admin key rotate --token --drop: $kid3; the token of ${kid2:0:16}… is 401, a new one 200"
+ok "admin key rotate --token --drop: $kid3; the tokens of ${kid2:0:16}… and ${kid1:0:16}… are 401, a new one 200"
 echo "PASS oci-token e2e against $base as $user"
