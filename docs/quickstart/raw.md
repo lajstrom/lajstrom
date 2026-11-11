@@ -195,7 +195,11 @@ registry's garbage collection. A registry that cannot delete manifests (distribu
 ## The end-to-end script
 
 `test/e2e/raw.sh` runs all of the above with checks, against any Lajstrom with a raw repo, as a
-user that may write and delete in it, and cleans up after itself:
+user that may write and delete in it, and cleans up after itself. The rollback of section 4
+deletes the newest of three versions, so that the `DELETE` of section 8 still removes two; the
+cap of section 1 is on a repo of the run's own, made and deleted with `bin/lajstrom admin repo`
+against the configuration of `LAJSTROM_CONFIG` (the example by default), so it runs from the
+repository's root:
 
 ```sh
 LAJSTROM_E2E_USER=admin LAJSTROM_E2E_PASSWORD="$pw" test/e2e/raw.sh http://localhost:8080 scratch

@@ -177,9 +177,13 @@ those manifests ([operations.md](../operations.md#reindex)).
 `test/e2e/pypi.sh` runs sections 2 and 3 with checks, in `python:3.13` (or the image
 `PYPI_E2E_IMAGE` names): a project built with `python -m build`, a wheel and an sdist, uploaded
 with twine; the same files again (`200`); other bytes under the same file name (`409`, which
-twine reports); `pip install` from the simple index in a clean venv; `uv pip install`;
-`uv publish` of the next version, then `uv publish --check-url`, which skips the files that are
-there; and `pip install --upgrade`, which gets the next version. With `LAJSTROM_SERVER_LOG`
+twine reports); `poetry publish -r internal` of the same files (`200`); `pip install` from the
+simple index in a clean venv; `uv pip install`; the configurations of section 3, each client in a
+home of its own: `pip.conf` with the credentials in `~/.netrc`, `[[tool.uv.index]]` in a
+project's `pyproject.toml` for `uv add`, `[[index]]` in `uv.toml` for `uv pip install`, and
+`poetry source add` in a consumer project for `poetry add`; `uv publish` of the next version,
+then `uv publish --check-url`, which skips the files that are there; and
+`pip install --upgrade`, which gets the next version. With `LAJSTROM_SERVER_LOG`
 naming the server's log file, it also checks in the access log that pip read the core metadata
 (PEP 658) before the file. It creates the repo when it does not exist, and a user of its own
 with `writer` on it, with `bin/lajstrom admin` against the configuration of `LAJSTROM_CONFIG`
@@ -190,4 +194,4 @@ test/e2e/pypi.sh http://localhost:8080 internal
 ```
 
 It disables its user at the end; the distributions stay, since pypi files cannot be deleted yet.
-Poetry, `pip.conf` with `~/.netrc` and the `[[tool.uv.index]]` configuration are not in it.
+`poetry publish --build` (`409`) is not in it.

@@ -2,11 +2,16 @@
 # End-to-end test of a pypi repo with real clients against a running Lajstrom (#32, #33;
 # docs/quickstart/pypi.md): in python:3.13, a project built with python -m build (a wheel and an
 # sdist), uploaded with twine; the same files again (200: twine succeeds); other bytes under the
-# same file name (409, which twine reports); pip install from the simple index in a clean venv
-# and the module imported from site-packages; uv pip install; uv publish of the next version and
-# uv publish --check-url of the same files, which skips them; pip install --upgrade gets the
-# next version. The index reads of pip go through the core metadata of PEP 658 (.metadata
-# before the file), which the script checks in the server's access log when it has it.
+# same file name (409, which twine reports); poetry publish -r internal of the same files (200);
+# pip install from the simple index in a clean venv and the module imported from site-packages;
+# uv pip install; the client configurations of the quick start (#580), each in a home of its own
+# and naming the index without credentials: pip with pip.conf and the credentials in ~/.netrc,
+# uv add with [[tool.uv.index]] in pyproject.toml and UV_INDEX_INTERNAL_USERNAME and _PASSWORD,
+# uv pip install with [[index]] in uv.toml, poetry add in a project after poetry source add and
+# poetry config http-basic.internal; uv publish of the next version and uv publish --check-url
+# of the same files, which skips them; pip install --upgrade gets the next version. The index
+# reads of pip go through the core metadata of PEP 658 (.metadata before the file), which the
+# script checks in the server's access log when it has it.
 #
 #   test/e2e/pypi.sh [<base url> [<repo>]]     default: http://localhost:8080 e2e
 #
@@ -71,8 +76,11 @@ url="$BASE/pypi/$REPO"
 host="${BASE#*://}"
 scheme="${BASE%%://*}"
 index="$scheme://$user:$password@$host/pypi/$REPO/simple/"
+plain="$url/simple/" # the index without credentials, as the configurations of the quick start name it
 export TWINE_USERNAME="$user" TWINE_PASSWORD="$password"
-pip install -q --root-user-action=ignore build twine uv >/dev/null 2>&1
+pip install -q --root-user-action=ignore build twine uv poetry >/dev/null 2>&1
+# imports DIR: hello() of the module, imported with the Python of the environment DIR.
+imports() { "$1/bin/python" -c "import $MODULE; print($MODULE.hello())"; }
 mkdir -p /p/"$MODULE" && cd /p
 printf '[build-system]\nrequires = ["setuptools>=68"]\nbuild-backend = "setuptools.build_meta"\n[project]\nname = "%s"\nversion = "1.0"\nrequires-python = ">=3.9"\n' "$PROJECT" >pyproject.toml
 echo 'def hello(): return "v1"' >"$MODULE/__init__.py"
@@ -88,6 +96,13 @@ if out="$(twine upload --non-interactive --disable-progress-bar --repository-url
 	echo "FAIL: other bytes under a file name that exists were accepted" >&2; exit 1
 fi
 grep -q "409 Conflict" <<<"$out" || { echo "FAIL: twine said: $out" >&2; exit 1; }
+echo "poetry publish -r internal of the same files: 200"
+(
+	export HOME=/hp # Poetry's configuration, apart from the other clients'
+	poetry config -q repositories.internal "$url/"
+	poetry config -q http-basic.internal "$user" "$password"
+	out="$(poetry publish -n -r internal 2>&1)" || { echo "FAIL: poetry publish said: $out" >&2; exit 1; }
+)
 cd /
 echo "pip install from the simple index"
 python -m venv /v && /v/bin/pip install -q --index-url "$index" "$PROJECT" >/dev/null
@@ -96,6 +111,35 @@ case "$got" in "v1 /v/lib/"*) ;; *) echo "FAIL: imported $got" >&2; exit 1 ;; es
 echo "uv pip install"
 uv venv -q /u && VIRTUAL_ENV=/u uv pip install -q --index-url "$index" "$NORMALIZED" >/dev/null
 [ "$(/u/bin/python -c "import $MODULE; print($MODULE.hello())")" = v1 ] || { echo "FAIL: uv's install" >&2; exit 1; }
+echo "pip install with the index in pip.conf and the credentials in ~/.netrc"
+(
+	export HOME=/n # pip.conf and ~/.netrc only here: python -m build reads them too
+	mkdir -p /n/.config/pip
+	printf '[global]\nindex-url = %s\n' "$plain" >/n/.config/pip/pip.conf
+	printf 'machine %s login %s password %s\n' "${host%:*}" "$user" "$password" >/n/.netrc
+	python -m venv /n/v && /n/v/bin/pip install -q "$PROJECT" >/dev/null
+	[ "$(imports /n/v)" = v1 ] || { echo "FAIL: pip install with pip.conf and ~/.netrc" >&2; exit 1; }
+)
+echo "uv add with [[tool.uv.index]] in pyproject.toml; uv pip install with [[index]] in uv.toml"
+(
+	export HOME=/hu UV_INDEX_INTERNAL_USERNAME="$user" UV_INDEX_INTERNAL_PASSWORD="$password"
+	mkdir -p /hu/add /hu/pip && cd /hu/add && uv init -q --bare --name consumer
+	printf '\n[[tool.uv.index]]\nname = "internal"\nurl = "%s"\ndefault = true\n' "$plain" >>pyproject.toml
+	uv add -q "$PROJECT"
+	[ "$(imports .venv)" = v1 ] || { echo "FAIL: uv add" >&2; exit 1; }
+	cd /hu/pip && printf '[[index]]\nname = "internal"\nurl = "%s"\ndefault = true\n' "$plain" >uv.toml
+	uv venv -q && uv pip install -q "$PROJECT"
+	[ "$(imports .venv)" = v1 ] || { echo "FAIL: uv pip install with uv.toml" >&2; exit 1; }
+)
+echo "poetry add in a project with the source of poetry source add"
+(
+	export HOME=/hp
+	mkdir -p /hp && cd /hp && poetry new -n -q consumer && cd consumer
+	poetry source add -n -q --priority=primary internal "$plain"
+	poetry config -q http-basic.internal "$user" "$password"
+	out="$(poetry add -n "$PROJECT" 2>&1)" || { echo "FAIL: poetry add said: $out" >&2; exit 1; }
+	[ "$(imports "$(poetry env info -p)")" = v1 ] || { echo "FAIL: poetry add: not the module of 1.0" >&2; exit 1; }
+)
 echo "uv publish of 1.1, then --check-url skips the same files"
 cd /p && echo 'def hello(): return "v1.1"' >"$MODULE/__init__.py" && sed -i 's/version = "1.0"/version = "1.1"/' pyproject.toml
 rm -rf dist && python -m build -q . >/dev/null 2>&1
