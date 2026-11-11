@@ -118,11 +118,11 @@ status is `holds on strongly consistent registries only` do not hold there.
   `proxy.Core.spool`; `/v2` uploads stream into the backend's session (`facade` uploads, the
   provider's `BlobUploader`) and take no disk.
 - **Tests.** `TestSpool`, `TestSpoolErrors`, `TestSpoolNoTempDir`, `TestUploadDoesNotHoldTheFile`,
-  `TestStreamingMemory`, `TestUploadStreams` (pypi).
+  `TestStreamingMemory`, `TestUploadStreams` (pypi); `ha.sh` H-05 (a replica killed with `SIGKILL`
+  in a 500 MiB upload: nothing left in its `/tmp`).
 - **When violated.** A spool that a `SIGKILL` leaves where the system cannot unlink at creation
   stays in `$TMPDIR` (threat model U-2); nothing serves from it.
-- **Status.** `holds`. **Untested:** no test kills a replica during an upload (acceptance.md
-  H-05).
+- **Status.** `holds`.
 
 ### INV-2. One write path
 
@@ -665,12 +665,10 @@ status is `holds on strongly consistent registries only` do not hold there.
   `TestIntegrationUploadAcrossReplicas`, `TestSessionConcurrent`, `TestSessionCommitOnce`, `TestKeyForRace`, `TestTokenSignerRace`,
   `TestRuns`, `TestTakenOver`, `TestStaleFetchClaims`, `TestFileTwoReplicas`, `TestFileClaims`,
   `TestIntegrationReferrersConcurrent`, `TestIntegrationJournalReplicas`, `TestBootstrapReplicas`;
-  `ha.sh` H-02, H-03, H-04, H-09, H-12, H-13 and the step of #28.
+  `ha.sh` H-02, H-03, H-04, H-05, H-06, H-07, H-08, H-09, H-11, H-12, H-13 and the step of #28.
 - **When violated.** Two replicas on one SQLite file, or clocks that disagree by more than the
   stale bounds, can take over a live claim; nothing reports it.
-- **Status.** `holds`. **Untested:** acceptance.md H-05 to H-08 and H-11 (a replica killed in an
-  upload, Postgres and the registry restarted under load, a maven deploy across replicas, an apt
-  upload seen through the other replica within a second; testing.md, The ha stack).
+- **Status.** `holds`.
 
 ### INV-27. A cached document is invalidated by every change it depends on
 
@@ -687,14 +685,14 @@ status is `holds on strongly consistent registries only` do not hold there.
 - **Tests.** `TestCachedDocument`, `TestCachedDocumentErrors`, `TestRoutesCache`,
   `TestRoutesNewRender`, `TestRoutesSignedAfterPublish`, `TestPackumentCache`,
   `TestDeleteInvalidatesIndexes`, `TestIndexCache` (formattest), `TestDocumentCache`; `ha.sh`
-  H-13.
+  H-13, H-11 (A-09: a `.deb` uploaded through one replica, listed by `apt-get update` through the
+  other within a second).
 - **When violated.** On Postgres (read committed), a render that began before an invalidation
   can store its stale document after it, and the document is served until the next invalidation
   of the repo: the next change, or the next reconcile run (each run invalidates every repo it
   reads), which `reconcile.interval: 0` turns off.
 - **Status.** `partly`: holds on SQLite, whose fill and invalidation cannot interleave; on
-  Postgres the window above is open (`format.CachedDocument` says so). **Untested:** acceptance.md
-  A-09 and H-11 are not automated.
+  Postgres the window above is open (`format.CachedDocument` says so).
 
 ### INV-28. A migration is applied exactly once
 
@@ -861,9 +859,10 @@ status is `holds on strongly consistent registries only` do not hold there.
   (operations.md, Shutdown).
 - **Mechanism.** `server.Server.Run`, `server.Server.track`, `waitHandlers`.
 - **Tests.** `TestDrainCompletesUpload`, `TestDrainTimeoutAborts`, `TestDrainReadyz`,
-  `TestRunGracefulShutdown`, `TestRunShutdownTimeout`; `ha.sh` H-10.
+  `TestRunGracefulShutdown`, `TestRunShutdownTimeout`; `ha.sh` H-05 (a replica killed, not
+  stopped, in an upload: the client's retry through the edge succeeds on the other), H-10.
 - **When violated.** The client of an aborted request retries.
-- **Status.** `holds`. **Untested:** H-05 (a replica killed, not stopped, in an upload).
+- **Status.** `holds`.
 
 ### INV-37. Readiness says whether a replica can serve
 
@@ -926,7 +925,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 
 | Id | Guarantee | Status | Markers |
 | --- | --- | --- | --- |
-| INV-1 | artifact bytes only in the registry | holds | untested (H-05) |
+| INV-1 | artifact bytes only in the registry | holds | |
 | INV-2 | one write path | holds | untested (plugins could push) |
 | INV-3 | the index rebuildable from the registry | strongly consistent only | unchecked (listings); untested (apt, pypi, maven; I-01 e2e) |
 | INV-4 | a version in the index is readable | strongly consistent only | unchecked; untested |
@@ -951,8 +950,8 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-23 | every request bounded in size | partly | |
 | INV-24 | parsers bounded | holds | |
 | INV-25 | memory independent of file size | holds | |
-| INV-26 | replicas coordinate through the database | holds | unchecked (SQLite, clocks); untested (H-05 to H-08, H-11) |
-| INV-27 | cached documents invalidated | partly | untested (A-09, H-11) |
+| INV-26 | replicas coordinate through the database | holds | unchecked (SQLite, clocks) |
+| INV-27 | cached documents invalidated | partly | |
 | INV-28 | a migration applied once | holds | |
 | INV-29 | the npm journal's order and replay | strongly consistent only | unchecked |
 | INV-30 | packument agrees with the tarball | holds | |
@@ -961,7 +960,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-33 | a proxied artifact is ordinary | holds | |
 | INV-34 | hosted names hide the upstream in a group | not yet (#311) | |
 | INV-35 | referrers kept, none lost to a race | partly | unchecked (GC) |
-| INV-36 | drain on stop | holds | untested (H-05) |
+| INV-36 | drain on stop | holds | |
 | INV-37 | readiness | holds | |
 | INV-38 | denied versions kept out | not yet (#101) | |
 | INV-39 | encryption at rest | not yet (#114) | |
@@ -1073,7 +1072,6 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | One upstream request per document per replica (INV-31) | concurrent misses of a packument each ask the upstream | share the request on a replica (pull request #399) | [#383](https://github.com/lajstrom/lajstrom/issues/383) |
 | SQLite under several replicas is not detected (INV-26, INV-29, INV-35) | the process locks of SQLite exclude nothing across replicas | refuse to start a second replica on SQLite (a row naming the live replica) | new issue |
 | Replica clocks are assumed to agree, never checked (INV-19, INV-26) | a replica whose clock runs ahead takes over live claims and refuses valid tokens | compare the replica's clock with the database's at start and on the heartbeats; warn or refuse past a bound | new issue |
-| HA steps H-05 to H-08 and H-11 are not automated (INV-1, INV-26, INV-27, INV-36) | a fault during an upload, a restart of Postgres or the registry, a maven deploy across replicas are untested | the missing steps of `ha.sh` (testing.md, The ha stack) | new issue |
 | Registries that fold tag case (INV-7) | two versions that differ in case: the second is a `409` with an unclear message | `Capabilities.TagsFoldCase` | [#426](https://github.com/lajstrom/lajstrom/issues/426) |
 | The bearer audience without `server.externalURL` (INV-19) | a staging server restored from production's database accepts production's tokens | require `externalURL` | [#248](https://github.com/lajstrom/lajstrom/issues/248) |
 | Rolling upgrades: which binary runs against which schema; pre-#244 claims (INV-6, INV-28) | a mixed fleet may not exclude publishes | the rules of #225 | [#225](https://github.com/lajstrom/lajstrom/issues/225) |
