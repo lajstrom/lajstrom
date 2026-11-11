@@ -2,6 +2,8 @@ package main
 
 import (
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -31,5 +33,20 @@ func TestServeCannotListen(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatalf("serve has not returned 20 s after its listener on %s failed", addr)
+	}
+}
+
+// TestServeBootstrapTokenFile checks that serve reads auth.bootstrap.tokenFile at start while no
+// admin exists, and stops before it listens on a token it refuses.
+func TestServeBootstrapTokenFile(t *testing.T) {
+	dir := t.TempDir()
+	cfg := writeConfig(t, dir)
+	short := filepath.Join(dir, "token")
+	if err := os.WriteFile(short, []byte("too-short\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := run(t, map[string]string{"LAJSTROM_BOOTSTRAP_TOKEN_FILE": short}, "serve", "--config", cfg)
+	if err == nil || !strings.Contains(err.Error(), "auth.bootstrap.tokenFile "+short+": the token must be 32 to 256 bytes, it has 9") {
+		t.Fatalf("serve: %v, want the refusal of the token file", err)
 	}
 }

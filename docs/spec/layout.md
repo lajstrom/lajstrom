@@ -1285,6 +1285,9 @@ registries:
     auth: { username: "lajstrom", passwordEnv: "ZOT_PASSWORD" }
 auth:
   anonymousRead: false
+  bootstrap:                                # the one-time token of the first admin (#440)
+    tokenFile: /run/secrets/bootstrap-token # a token you made; empty: no token, a warning
+    ttl: 24h
 keys:
   masterKeyEnv: LAJSTROM_MASTER_KEY         # encrypts the apt keys and the bearer-token key at rest
   tokenAlgorithm: ES256                     # ES256 | EdDSA; the bearer-token key (ADR 0010)

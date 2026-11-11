@@ -33,6 +33,7 @@ func (c *Config) Validate() error {
 	if c.Reconcile.Interval < 0 {
 		p.add("reconcile.interval", "must not be negative")
 	}
+	c.Auth.validate(&p)
 	c.Keys.validate(&p)
 	registries := map[string]int{}
 	for i, r := range c.Registries {
@@ -557,4 +558,10 @@ func validHost(h string) bool {
 
 func isHTTP(u *url.URL) bool {
 	return (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+}
+
+func (a Auth) validate(p *problems) {
+	if a.Bootstrap.TTL <= 0 {
+		p.add("auth.bootstrap.ttl", "must be positive")
+	}
 }

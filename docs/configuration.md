@@ -303,6 +303,8 @@ The `ingest` and `reconcile` sections are additions to the shape in [layout.md](
 | Key | Type | Default | Env | Description |
 | --- | --- | --- | --- | --- |
 | `auth.anonymousRead` | bool | `false` | none | Server-wide switch for anonymous read. When `false`, no repo is readable without credentials, whatever `repos[].anonymousRead` says. Enforced by RBAC (issue #45, [rbac.md](spec/rbac.md)). |
+| `auth.bootstrap.tokenFile` | file path | empty | `LAJSTROM_BOOTSTRAP_TOKEN_FILE` | File that holds the bootstrap token, the one-time token that `lajstrom admin bootstrap` exchanges for the first admin ([auth.md](auth.md#bootstrap-the-first-admin)): 32 to 256 bytes without whitespace that you make, spaces and line breaks around it ignored, so `openssl rand -hex 32 > file` works; a Kubernetes Secret or a Compose secret mounted as a file. `serve` reads it at start while no enabled user has an admin binding, and stops on a file it cannot read or a token it refuses; once an admin exists it is not read, and while the file exists a warning at start says to remove it. Empty, or a file that does not exist: there is no token, and a warning at start says how to make the first admin. `serve` never makes a token and never logs one. |
+| `auth.bootstrap.ttl` | duration | `24h` | none | How long the token of the file is valid once `serve` made it valid. Used or expired, it is not made valid again: the file needs a new token. Must be positive. |
 
 There is no key file for the bearer tokens of `/v2`: their signing key lives in the database,
 encrypted with the master key ([ADR 0010](adr/0010-bearer-token-signing-key.md),

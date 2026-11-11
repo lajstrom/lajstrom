@@ -20,8 +20,9 @@ import (
 //     maxMetadataSize);
 //  3. the environment overrides LAJSTROM_SERVER_LISTEN, LAJSTROM_SERVER_EXTERNAL_URL,
 //     LAJSTROM_SERVER_METRICS_LISTEN, LAJSTROM_LOG_LEVEL, LAJSTROM_LOG_FORMAT,
-//     LAJSTROM_DATABASE_DRIVER, LAJSTROM_DATABASE_DSN and LAJSTROM_MASTER_KEY_FILE
-//     (keys.masterKeyFile); an empty variable counts as unset, and lists (registries, repos)
+//     LAJSTROM_DATABASE_DRIVER, LAJSTROM_DATABASE_DSN, LAJSTROM_MASTER_KEY_FILE
+//     (keys.masterKeyFile) and LAJSTROM_BOOTSTRAP_TOKEN_FILE (auth.bootstrap.tokenFile); an
+//     empty variable counts as unset, and lists (registries, repos)
 //     cannot be set from the environment;
 //  4. registries[].auth.passwordEnv, resolved into registries[].auth.password;
 //  5. Validate, and one check that needs the environment: keys.masterKeyFile and the variable
@@ -142,6 +143,7 @@ var envOverrides = []struct {
 	{"LAJSTROM_DATABASE_DSN", func(c *Config, v string) { c.Database.DSN = v }},
 	// The <variable>_FILE of the examples' LAJSTROM_MASTER_KEY, rather than LAJSTROM_KEYS_….
 	{"LAJSTROM_MASTER_KEY_FILE", func(c *Config, v string) { c.Keys.MasterKeyFile = v }},
+	{"LAJSTROM_BOOTSTRAP_TOKEN_FILE", func(c *Config, v string) { c.Auth.Bootstrap.TokenFile = v }},
 }
 
 func applyEnv(c *Config, lookupEnv func(string) (string, bool)) {

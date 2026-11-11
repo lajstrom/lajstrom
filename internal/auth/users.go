@@ -81,6 +81,12 @@ type Users struct {
 // (user:<uid>, admin, */*) is created in the same transaction: the bootstrap of
 // docs/spec/rbac.md §6.
 func (s *Users) Create(ctx context.Context, name, password string, admin bool, o Origin) (*User, error) {
+	return s.create(ctx, name, password, admin, o, nil)
+}
+
+// create is Create, with before, when it is not nil, run first in the transaction: an error of
+// it rolls the transaction back and is returned as it is.
+func (s *Users) create(ctx context.Context, name, password string, admin bool, o Origin, before func(index.Writer) error) (*User, error) {
 	if err := CheckName(name); err != nil {
 		return nil, err
 	}
@@ -91,6 +97,11 @@ func (s *Users) Create(ctx context.Context, name, password string, admin bool, o
 	row := index.User{Name: name, PasswordHash: hash, Kind: KindLocal, CreatedAt: s.now()}
 	var ev index.AuditEvent
 	err = s.Index.Tx(ctx, func(w index.Writer) (err error) {
+		if before != nil {
+			if err = before(w); err != nil {
+				return err
+			}
+		}
 		if err = w.CreateUser(ctx, &row); err != nil {
 			return err
 		}
