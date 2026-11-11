@@ -753,6 +753,10 @@ type Writer interface {
     StartReplica(ctx context.Context, r *Replica, staleBefore time.Time) error
     HeartbeatReplica(ctx context.Context, id string, at time.Time) error // ErrNotFound: deleted as stale
     StopReplica(ctx context.Context, id string) error
+    // operational: the answers 404 MANIFEST_UNKNOWN that a removal by reindex waits on
+    // (index-schema.md, Coordination); ResetDerived leaves them
+    RecordSighting(ctx context.Context, s *Sighting) error                     // insert, or set LastAt of the row; fills FirstAt from it
+    ClearSightings(ctx context.Context, repoID int64, before time.Time) (int, error) // the repo's rows with LastAt before before
     // derived (written only by ingest, reindex and delete); every version write and delete keeps
     // packages.created_at the earliest created_at of the package's versions
     UpsertPackage(ctx context.Context, p *Package) error
@@ -768,7 +772,7 @@ type Writer interface {
     InvalidateIndexCache(ctx context.Context, repoID int64, scope string) error
     UpsertOCIRepo(ctx context.Context, r *OCIRepo) error
     PruneOCIRepos(ctx context.Context, repoID int64, seenBefore time.Time) (int, error)
-    ResetDerived(ctx context.Context, repoID int64) error // leaves the claims of both kinds and proxy_meta
+    ResetDerived(ctx context.Context, repoID int64) error // leaves the claims of both kinds, prune_sightings and proxy_meta
     // proxy_meta, a cache of the upstream that reindex neither reads nor writes; the caller
     // invalidates the index_cache rows of scope Name in the same transaction (a 304: none)
     PutProxyMeta(ctx context.Context, m *ProxyMeta) error                         // insert, or replace the row of (RepoID, Name, Kind); fills ID
@@ -830,6 +834,12 @@ type JournalState struct {                  // a row of journal_state: the fold 
     Kind       string                       // JournalDistTag or JournalDeprecated
     Key, Value string                       // a dist-tag and its version; a version and its message
     Seq        int64                        // the entry that set it
+}
+type Sighting struct {                      // a row of prune_sightings
+    RepoID          int64
+    Path            string                  // the OCI repository, as oci_repos.path
+    Digest          digest.Digest           // the manifest
+    FirstAt, LastAt time.Time               // the first answer since the row was cleared, the latest
 }
 type FetchClaim struct {                    // a row of fetch_claims
     ID, RepoID             int64
