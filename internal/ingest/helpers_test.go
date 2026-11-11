@@ -336,6 +336,16 @@ func must(t *testing.T, err error) {
 	}
 }
 
+// putCache stores c in index_cache at the repo's current generation.
+func putCache(t *testing.T, st index.Store, c *index.Cache) {
+	t.Helper()
+	gen, err := st.IndexCacheGeneration(t.Context(), c.RepoID)
+	must(t, err)
+	if ok, err := st.PutIndexCache(t.Context(), c, gen); err != nil || !ok {
+		t.Fatalf("PutIndexCache: %t, %v", ok, err)
+	}
+}
+
 // same fails the test when got differs from want.
 func same(t *testing.T, what string, want, got any) {
 	t.Helper()

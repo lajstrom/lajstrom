@@ -97,7 +97,7 @@ func TestDeleteVersion(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			e, rec, subject := referrerEnv(t, tt.api)
 			a := attach(t, e, subject, tt.api)
-			must(t, e.st.PutIndexCache(t.Context(), &index.Cache{RepoID: e.repo.ID, Scope: "", Kind: "listing", Content: []byte("{}"), RenderedAt: now}))
+			putCache(t, e.st, &index.Cache{RepoID: e.repo.ID, Scope: "", Kind: "listing", Content: []byte("{}"), RenderedAt: now})
 			rec.locks = nil
 			got, err := e.pipe.Delete(t.Context(), e.repo, format.Deletion{Path: "notes", Reference: tt.ref(a), ClientIP: "192.0.2.7"}, alice)
 			must(t, err)

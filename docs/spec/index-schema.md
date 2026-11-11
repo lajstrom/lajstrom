@@ -178,9 +178,31 @@ maintainer on 2026-11-10 (#284).
 | `packages` | `id`, `repo_id` → repos, `name` text (format spelling), `name_oci` text (escaped path), `created_at` ts (the earliest `created_at` of its versions) | unique `(repo_id, name)`; unique `(repo_id, name_oci)`: one spelling per OCI repository |
 | `versions` | `id`, `package_id` → packages, `version` text, `variant` text (`''` when none), `tag` text, `digest` text (manifest digest), `artifact_type` text, `attrs` json (`lajstrom.<format>.*`), `metadata` json null (metadata layer, may be omitted for size), `created_at` ts (from `org.opencontainers.image.created`), `indexed_at` ts (when ingest or reindex last wrote or saw the row), `degraded` bool (written from the annotations alone, the metadata layer missing or unreadable: manifest-profile.md §2) | unique `(package_id, version, variant)`; unique `(package_id, tag)`. The store keeps `packages.created_at` the earliest `created_at` of the package's versions on every version write and delete. Ingest never writes a degraded row; reindex does, and reads it again on every run |
 | `files` | `id`, `version_id` → versions, `name` text, `media_type` text, `digest` text (layer), `size` int, `attrs` json (layer annotations) | index `(version_id, name)`; apt pool and maven lookups go by `(repo, name)` → add index on `name` |
-| `index_cache` | `id`, `repo_id`, `scope` text (`jammy/main/amd64`, `simple/requests`, `com.example/lib-core`), `kind` text (`Packages`, `Release`, `InRelease`, `simple`, `maven-metadata`), `content` blob, `sha256` text, `rendered_at` ts, `signed_at` ts null | invalidated by ingest, delete, reindex and a key rotation; rebuilt lazily on GET. A signed document (apt `InRelease`, `Release.gpg`) has the `rendered_at` of the document it signs and its own `signed_at` |
+| `index_cache` | `id`, `repo_id`, `scope` text (`jammy/main/amd64`, `simple/requests`, `com.example/lib-core`), `kind` text (`Packages`, `Release`, `InRelease`, `simple`, `maven-metadata`), `content` blob, `sha256` text, `rendered_at` ts, `signed_at` ts null | invalidated by ingest, delete, reindex and a key rotation; rebuilt lazily on GET, and stored only while the repo's generation is the one the render read ([below](#the-generation-of-a-repos-documents)). A signed document (apt `InRelease`, `Release.gpg`) has the `rendered_at` of the document it signs and its own `signed_at` |
+| `index_cache_generations` | `repo_id` → repos (primary key, `ON DELETE CASCADE`), `generation` bigint | the generation of the repo's `index_cache`; no row is generation 0. Not rebuilt: `ResetDerived` increments it, as every invalidation does. Migration `0014_index_cache_generations.sql` (#477) |
 | `oci_repos` | `id`, `repo_id`, `path` text (full OCI path incl. prefix), `seen_at` ts | repository list for backends without a catalog; reconcile source |
 | `proxy_meta` (later) | upstream metadata cache with TTL | after the MVP |
+
+### The generation of a repo's documents
+
+A document is rendered lazily, in a transaction that reads what it renders from and then stores
+it; an invalidation is part of the transaction of the change. On Postgres, in read committed,
+a render that began before an invalidation could store its document after it, and that stale
+document stayed until the next invalidation of the repo. So every invalidation of a repo's
+`index_cache` (`InvalidateIndexCache`, of one scope or of all, and `ResetDerived`) first
+increments the repo's row of `index_cache_generations`, then deletes the documents. A render
+reads the generation before anything it renders from (`IndexCacheGeneration`), and the store
+of its documents (`PutIndexCache`) first writes the generation row as it is, which takes the
+row's lock, and stores them only when the generation is still the one the render read;
+otherwise the render is answered and not stored. The row's lock orders the two: a store waits
+for an invalidation that holds it and then reads its generation, and an invalidation that comes
+after a store waits for it, so that its `DELETE` sees the stored rows. On SQLite every
+transaction holds the write lock from its start, and the two never interleave.
+
+The generation is per repo: an invalidation of one scope also refuses the store of a render of
+another scope that it overlapped, which renders again on the next request. During a rolling
+update from a release before 0017, the invalidations of the older replicas do not increment it,
+and their renders do not check it.
 
 ### npm: the journal and its state (ADR 0012)
 
@@ -225,8 +247,9 @@ the control-plane and derived tables, `0002_tag_claims.sql` the coordination tab
 `0005_reindex.sql` the table `reindex_runs`, the column `versions.degraded`, and
 `packages.created_at` set to the earliest `created_at` of each package's versions,
 `0006_auth_version.sql` the table `auth_version` with its row and the unique index
-`bindings_unique` (a binding made twice before it is kept once, the first), and
-`0014_schema_requires.sql` the column `schema_migrations.requires` ([Upgrades](#upgrades)).
+`bindings_unique` (a binding made twice before it is kept once, the first),
+`0014_schema_requires.sql` the column `schema_migrations.requires` ([Upgrades](#upgrades)),
+and `0017_index_cache_generations.sql` the table `index_cache_generations`.
 The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the

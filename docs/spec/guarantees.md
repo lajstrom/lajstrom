@@ -710,21 +710,27 @@ status is `holds on strongly consistent registries only` do not hold there.
 - **Scope.** `index_cache` (apt, pypi, maven, raw listings, npm packuments, a proxy's documents);
   the snapshot of the bindings (INV-17) and the cache of token keys (INV-19) have their own entries.
   A group caches nothing.
-- **Assumes.** Database: as below.
+- **Assumes.** Database: any.
 - **Mechanism.** Each change invalidates in its own transaction (`Writer.InvalidateIndexCache` in
   `ingest.Pipeline.writeRows`, `deletion.deleteRows`, `journal.record`, `reindex.Worker.repo`, the
-  `proxy_meta` writes); `format.CachedDocument` renders lazily, in one transaction with its read.
-- **Tests.** `TestCachedDocument`, `TestCachedDocumentErrors`, `TestRoutesCache`,
+  `proxy_meta` writes), and every invalidation first increments the repo's generation
+  (`index_cache_generations`; index-schema.md, The generation of a repo's documents).
+  `format.CachedDocument`, `proxy.Core.render` and the apt signatures
+  (`deb.handlers.storeSigned`) read the generation before they render, and
+  `Writer.PutIndexCache` stores a render only while it is current, under the lock of the
+  generation row: a render that an invalidation overtook on Postgres (read committed) is
+  answered and not stored.
+- **Tests.** The store conformance cases `IndexCache` and `IndexCacheRace` (an invalidation
+  committed during a render, and one not committed when the render stores);
+  `TestCachedDocument`, `TestCachedDocumentErrors`, `TestRoutesCache`,
   `TestRoutesNewRender`, `TestRoutesSignedAfterPublish`, `TestPackumentCache`,
   `TestDeleteInvalidatesIndexes`, `TestIndexCache` (formattest), `TestDocumentCache`; `ha.sh`
   H-13, H-11 (A-09: a `.deb` uploaded through one replica, listed by `apt-get update` through the
   other within a second).
-- **When violated.** On Postgres (read committed), a render that began before an invalidation
-  can store its stale document after it, and the document is served until the next invalidation
-  of the repo: the next change, or the next reconcile run (each run invalidates every repo it
-  reads), which `reconcile.interval: 0` turns off.
-- **Status.** `partly`: holds on SQLite, whose fill and invalidation cannot interleave; on
-  Postgres the window above is open (`format.CachedDocument` says so).
+- **When violated.** Not observed. A replica of a release before migration 0017 neither
+  increments nor checks the generation, so while one serves during a rolling update the window
+  is open on Postgres: a stale document stays until the next invalidation of the repo.
+- **Status.** `holds`.
 
 ### INV-28. A migration is applied exactly once
 
@@ -1015,7 +1021,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-24 | parsers bounded | holds | |
 | INV-25 | memory independent of file size | holds | |
 | INV-26 | replicas coordinate through the database | holds | unchecked (SQLite, clocks) |
-| INV-27 | cached documents invalidated | partly | |
+| INV-27 | cached documents invalidated | holds | |
 | INV-28 | a migration applied once | holds | |
 | INV-29 | the npm journal's order and replay | strongly consistent only | unchecked |
 | INV-30 | packument agrees with the tarball | holds | |
@@ -1128,7 +1134,6 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | Nothing machine-checks the one write path in plugins (INV-2) | a plugin could push a manifest past ingest: no claim, validation or audit row | a read-only provider view in `format.Deps`, or a lint rule against `Push`, `PushReference` and `Delete` outside `internal/ingest`, `internal/facade` and `internal/provider` (a `contract` change of `format`) | new issue |
 | A delete whose index transaction fails after the registry delete, and a push to an `oci` repo whose row fails after the push, have no audit row (INV-13, INV-14) | an unaudited write, of which only a log line at error is left | an audit row of the intent before the registry write, and one of its result after it | new issue |
 | The answer to a failed delete of several versions does not name those deleted before the failure (INV-13) | the client cannot tell what is left without listing the package again | name them in the error's message or a structured field | new issue |
-| A stale rendered document on Postgres when a render races an invalidation (INV-27) | a client sees an index without the newest publish, or with a deleted version, until the next change or reconcile; indefinitely with `reconcile.interval: 0` | a per-repo generation that the store checks before it keeps a render, or a lock of the repo's cache rows | new issue |
 | The garbage collectors of GitLab B and Nexus delete untagged referrers (INV-35) | signatures and SBOMs vanish | the tag schema as well on registries with the API (#326); for GitLab B and Nexus, a vendor-table warning or a tag per referrer | [#326](https://github.com/lajstrom/lajstrom/issues/326), new issue |
 | No frontend test of a denial with malformed input (INV-15) | a regression of the R-2 kind on a frontend goes unseen | a table test per frontend, as `TestDenialBeforeInput` does for `/v2` | new issue |
 | A typed user name and an unbounded `kid` at `debug` (INV-21, threat model L-3) | a mistyped password in a debug log | log the uid only, bound the `kid` | new issue |

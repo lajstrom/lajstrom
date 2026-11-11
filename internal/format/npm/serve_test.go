@@ -143,7 +143,10 @@ func TestPackumentCache(t *testing.T) {
 		t.Errorf("the abbreviated packument is not in index_cache: %v", err)
 	}
 	c.Content = []byte(`{"name": "widgets", "from": "the cache"}`)
-	must(t, p.st.PutIndexCache(t.Context(), c))
+	gen, err := p.st.IndexCacheGeneration(t.Context(), p.repo.ID)
+	must(t, err)
+	_, err = p.st.PutIndexCache(t.Context(), c, gen)
+	must(t, err)
 	if rr := get(h, "/npm/internal/widgets"); !strings.Contains(rr.Body.String(), "the cache") {
 		t.Errorf("the second GET did not come from index_cache: %s", rr.Body)
 	}

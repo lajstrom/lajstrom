@@ -11,10 +11,10 @@ import (
 )
 
 // Index is a partial index.Store for tests: GetRepo over Repos, and index_cache in memory
-// (GetIndexCache, PutIndexCache, InvalidateIndexCache). Tx runs fn with the Index itself, so a
-// rollback keeps what fn wrote. Every other method panics through the nil embedded Store; add
-// methods only when a test needs them. Use it as a pointer and set the fields before the first
-// call.
+// (GetIndexCache, IndexCacheGeneration, PutIndexCache, InvalidateIndexCache). Tx runs fn with
+// the Index itself, so a rollback keeps what fn wrote. Every other method panics through the nil
+// embedded Store; add methods only when a test needs them. Use it as a pointer and set the
+// fields before the first call.
 type Index struct {
 	// Store is nil; the methods Index does not implement panic on it.
 	index.Store
@@ -28,6 +28,7 @@ type Index struct {
 
 	mu    sync.Mutex
 	cache map[cacheKey]index.Cache
+	gens  map[int64]int64 // IndexCacheGeneration by repo id
 }
 
 // cacheKey is the unique key of index_cache.
@@ -62,24 +63,39 @@ func (i *Index) GetIndexCache(_ context.Context, repoID int64, scope, kind strin
 	return &c, nil
 }
 
-// PutIndexCache stores a copy of c, Content included, replacing the row with the same key.
-func (i *Index) PutIndexCache(_ context.Context, c *index.Cache) error {
+// IndexCacheGeneration returns how many times the documents of the repo were invalidated.
+func (i *Index) IndexCacheGeneration(_ context.Context, repoID int64) (int64, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	return i.gens[repoID], nil
+}
+
+// PutIndexCache stores a copy of c, Content included, replacing the row with the same key, when
+// generation is the repo's, and reports whether it did.
+func (i *Index) PutIndexCache(_ context.Context, c *index.Cache, generation int64) (bool, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if generation != i.gens[c.RepoID] {
+		return false, nil
+	}
 	if i.cache == nil {
 		i.cache = map[cacheKey]index.Cache{}
 	}
 	stored := *c
 	stored.Content = bytes.Clone(c.Content)
 	i.cache[cacheKey{c.RepoID, c.Scope, c.Kind}] = stored
-	return nil
+	return true, nil
 }
 
-// InvalidateIndexCache removes the documents of a scope of a repo, or of every scope when scope
-// is "".
+// InvalidateIndexCache increments the repo's generation and removes the documents of a scope of
+// the repo, or of every scope when scope is "".
 func (i *Index) InvalidateIndexCache(_ context.Context, repoID int64, scope string) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if i.gens == nil {
+		i.gens = map[int64]int64{}
+	}
+	i.gens[repoID]++
 	for k := range i.cache {
 		if k.repoID == repoID && (scope == "" || k.scope == scope) {
 			delete(i.cache, k)

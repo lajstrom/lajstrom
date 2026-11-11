@@ -55,6 +55,7 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"VersionTagRace", testVersionTagRace},
 		{"Files", testFiles},
 		{"IndexCache", testIndexCache},
+		{"IndexCacheRace", testIndexCacheRace},
 		{"OCIRepos", testOCIRepos},
 		{"MissingParent", testMissingParent},
 		{"Tx", testTx},
@@ -204,7 +205,7 @@ func populate(t *testing.T, s index.Writer, name string) fixture {
 	f.files = []index.File{{Name: name + ".bin", MediaType: "application/octet-stream", Digest: dg(name), Size: 1}}
 	must(t, s.ReplaceFiles(ctx, f.version.ID, f.files))
 	f.cache = index.Cache{RepoID: f.repo.ID, Scope: "simple/pkg", Kind: "simple", Content: []byte("<html>"), SHA256: "s"}
-	must(t, s.PutIndexCache(ctx, &f.cache))
+	must(t, second(s.PutIndexCache(ctx, &f.cache, 0)))
 	f.ociRepo = index.OCIRepo{RepoID: f.repo.ID, Path: "raw/" + name + "/pkg"}
 	must(t, s.UpsertOCIRepo(ctx, &f.ociRepo))
 	return f

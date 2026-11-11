@@ -79,7 +79,7 @@ func (e *npmEnv) entries(t *testing.T) []index.JournalEntry {
 func TestJournal(t *testing.T) {
 	ctx := t.Context()
 	e := newNpmEnv(t, "1.0.0", "1.1.0-beta.1")
-	must(t, e.st.PutIndexCache(ctx, &index.Cache{RepoID: e.npm.ID, Scope: "@acme/widgets", Kind: "packument", Content: []byte("{}")}))
+	putCache(t, e.st, &index.Cache{RepoID: e.npm.ID, Scope: "@acme/widgets", Kind: "packument", Content: []byte("{}")})
 
 	seqs, err := e.pipe.Journal(ctx, e.npm, widgetsPath, []format.JournalOp{opAdd("latest", "1.0.0"), opAdd("beta", "1.1.0-beta.1")}, alice)
 	must(t, err)

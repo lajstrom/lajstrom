@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/index"
 )
@@ -346,7 +347,9 @@ func testIndexCache(t *testing.T, s index.Store) {
 		{RepoID: other.ID, Scope: "jammy/main/amd64", Kind: "Packages", Content: []byte("other"), SHA256: "s4", RenderedAt: at(4)},
 	}
 	for i := range docs {
-		must(t, s.PutIndexCache(ctx, &docs[i]))
+		if ok, err := s.PutIndexCache(ctx, &docs[i], 0); err != nil || !ok {
+			t.Fatalf("PutIndexCache %s at generation 0: %t, %v", docs[i].Kind, ok, err)
+		}
 	}
 	get := func(c index.Cache) (index.Cache, error) {
 		got, err := s.GetIndexCache(ctx, c.RepoID, c.Scope, c.Kind)
@@ -363,7 +366,7 @@ func testIndexCache(t *testing.T, s index.Store) {
 
 	replaced := docs[0]
 	replaced.ID, replaced.Content, replaced.SHA256, replaced.RenderedAt = 0, []byte("Package: b\n"), "s5", at(5)
-	must(t, s.PutIndexCache(ctx, &replaced))
+	must(t, second(s.PutIndexCache(ctx, &replaced, 0)))
 	if replaced.ID != docs[0].ID {
 		t.Errorf("PutIndexCache of an existing key: ID %d, want %d", replaced.ID, docs[0].ID)
 	}
@@ -388,6 +391,106 @@ func testIndexCache(t *testing.T, s index.Store) {
 	check("after invalidating a scope", present(false, false, true, true))
 	must(t, s.InvalidateIndexCache(ctx, repo.ID, ""))
 	check("after invalidating the repo", present(false, false, false, true))
+
+	// Every invalidation moves the repo's generation, and a put of another generation stores
+	// nothing.
+	generation := func(repoID int64) int64 {
+		t.Helper()
+		gen, err := s.IndexCacheGeneration(ctx, repoID)
+		must(t, err)
+		return gen
+	}
+	same(t, "generations after two invalidations of one repo", []int64{2, 0}, []int64{generation(repo.ID), generation(other.ID)})
+	for _, gen := range []int64{0, 1, 3} {
+		stored, err := s.PutIndexCache(ctx, &docs[0], gen)
+		must(t, err)
+		if stored {
+			t.Errorf("PutIndexCache at generation %d of a repo at 2 stored the document", gen)
+		}
+	}
+	check("after puts of other generations", present(false, false, false, true))
+	if stored, err := s.PutIndexCache(ctx, &docs[0], 2); err != nil || !stored {
+		t.Errorf("PutIndexCache at the current generation: %t, %v", stored, err)
+	}
+	check("after a put of the current generation", present(true, false, false, true))
+	must(t, s.ResetDerived(ctx, repo.ID))
+	same(t, "generations after ResetDerived of one repo", []int64{3, 0}, []int64{generation(repo.ID), generation(other.ID)})
+	must(t, s.ResetDerived(ctx, 0))
+	same(t, "generations after ResetDerived of every repo", []int64{4, 1}, []int64{generation(repo.ID), generation(other.ID)})
+}
+
+// testIndexCacheRace checks a render against an invalidation that comes while it runs (INV-27).
+// The render is a transaction like format.CachedDocument's: the generation, a read of the
+// versions it renders, the store of the document. The invalidation is a transaction like a
+// publish's: a version and InvalidateIndexCache. It comes after the render's read, committed
+// before the store, or not yet committed when the render stores (it holds its transaction a
+// while after the invalidation). Either way no document without the new version is left in
+// index_cache. On SQLite every transaction holds the write lock from its start, so the
+// invalidation waits for the render, which goes on after a short wait; on Postgres (read
+// committed) the two interleave.
+func testIndexCacheRace(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "raw", "race")
+	pkg := newPackage(t, s, repo.ID, "pkg")
+	newVersion(t, s, pkg.ID, "1")
+	const wait = 200 * time.Millisecond // what the render waits for the invalidation
+	for i, committed := range []bool{true, false} {
+		version, when := strconv.Itoa(i+2), map[bool]string{true: "committed before", false: "not committed at"}[committed]
+		read, invalidated := make(chan struct{}), make(chan struct{})
+		done := make(chan error, 1)
+		go func() {
+			<-read
+			done <- s.Tx(ctx, func(w index.Writer) error {
+				v := index.Version{PackageID: pkg.ID, Version: version, Tag: version, Digest: dg(version), ArtifactType: "a"}
+				if err := w.UpsertVersion(ctx, &v); err != nil {
+					return err
+				}
+				if err := w.InvalidateIndexCache(ctx, repo.ID, ""); err != nil {
+					return err
+				}
+				if !committed {
+					close(invalidated)
+					time.Sleep(wait / 2)
+				}
+				return nil
+			})
+			if committed {
+				close(invalidated)
+			}
+		}()
+		err := s.Tx(ctx, func(w index.Writer) error {
+			gen, err := w.IndexCacheGeneration(ctx, repo.ID)
+			if err != nil {
+				return err
+			}
+			versions, err := w.ListVersions(ctx, pkg.ID)
+			if err != nil {
+				return err
+			}
+			close(read)
+			select {
+			case <-invalidated:
+			case <-time.After(wait):
+			}
+			var doc []string
+			for _, v := range versions {
+				doc = append(doc, v.Version)
+			}
+			c := index.Cache{RepoID: repo.ID, Scope: "", Kind: "listing", Content: []byte(strings.Join(doc, ",")), SHA256: "s"}
+			_, err = w.PutIndexCache(ctx, &c, gen)
+			return err
+		})
+		must(t, err)
+		must(t, <-done)
+		c, err := s.GetIndexCache(ctx, repo.ID, "", "listing")
+		switch {
+		case errors.Is(err, index.ErrNotFound):
+		case err != nil:
+			t.Fatal(err)
+		case !strings.Contains(string(c.Content), version):
+			t.Errorf("an invalidation %s the store: index_cache keeps %q, rendered before version %s", when, c.Content, version)
+		}
+	}
 }
 
 func testOCIRepos(t *testing.T, s index.Store) {
@@ -438,7 +541,7 @@ func testMissingParent(t *testing.T, s index.Store) {
 		{"CreateToken", s.CreateToken(ctx, &index.Token{Kind: "pat", UserID: ptr(missing), Hash: "h"})},
 		{"CreateKey", s.CreateKey(ctx, &index.Key{RepoID: ptr(missing), Kind: "gpg"})},
 		{"UpsertSession", s.UpsertSession(ctx, &index.Session{RepoID: missing, Key: "k", State: "open"})},
-		{"PutIndexCache", s.PutIndexCache(ctx, &index.Cache{RepoID: missing, Scope: "s", Kind: "k"})},
+		{"PutIndexCache", second(s.PutIndexCache(ctx, &index.Cache{RepoID: missing, Scope: "s", Kind: "k"}, 0))},
 		{"UpsertOCIRepo", s.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: missing, Path: "p"})},
 	} {
 		wantErr(t, tt.name, tt.err, index.ErrNotFound)

@@ -197,12 +197,17 @@ func (c *Core) absent(ctx context.Context, p *proxied, key, kind string, now tim
 
 // render answers the document from what is there after refresh, in one transaction, as
 // format.CachedDocument does for a hosted repo: an absent row is index.ErrNotFound; a present
-// one gives the cached document of index_cache, or one rendered from it and stored; no row
+// one gives the cached document of index_cache, or one rendered from it and stored while the
+// repo's IndexCacheGeneration, read before the row, is current; no row
 // gives the document of what the repo holds, not stored, or upErr, or index.ErrNotFound when
 // the repo holds nothing of the name.
 func (c *Core) render(ctx context.Context, p *proxied, name, key, kind string, upErr error) (*index.Cache, error) {
 	var out *index.Cache
 	err := c.o.Index.Tx(ctx, func(w index.Writer) error {
+		gen, err := w.IndexCacheGeneration(ctx, p.repo.ID)
+		if err != nil {
+			return err
+		}
 		row, err := metaRow(ctx, w, p.repo.ID, key, kind)
 		switch {
 		case err != nil:
@@ -219,7 +224,8 @@ func (c *Core) render(ctx context.Context, p *proxied, name, key, kind string, u
 			if out, err = c.renderOne(ctx, p, w, name, key, kind, row.Content); err != nil {
 				return err
 			}
-			return w.PutIndexCache(ctx, out)
+			_, err = w.PutIndexCache(ctx, out, gen)
+			return err
 		}
 		held, err := holds(ctx, w, p, name)
 		switch {

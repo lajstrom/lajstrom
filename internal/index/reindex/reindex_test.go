@@ -200,7 +200,11 @@ func TestRebuild(t *testing.T) {
 	// would, so that the run is what removes it.
 	must(t, e.st.ResetDerived(ctx, e.repo.ID))
 	cache := index.Cache{RepoID: e.repo.ID, Scope: "", Kind: "listing", Content: []byte("old"), SHA256: "s"}
-	must(t, e.st.PutIndexCache(ctx, &cache))
+	gen, err := e.st.IndexCacheGeneration(ctx, e.repo.ID)
+	must(t, err)
+	if stored, err := e.st.PutIndexCache(ctx, &cache, gen); err != nil || !stored {
+		t.Fatalf("PutIndexCache: %t, %v", stored, err)
+	}
 	r := e.run(t, reindex.Request{Prune: true})
 	if r.Added != 3 || r.Manifests != 3 || r.OCIRepositories != 2 || r.Removed != 0 || len(r.Errors) != 0 {
 		t.Errorf("report: %+v", *r)

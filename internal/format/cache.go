@@ -18,10 +18,10 @@ import (
 // returned (Cache.SHA256 = hex sha256 of Content, RenderedAt = now in UTC) and returns the one
 // asked for; index.ErrNotFound when the plugin renders no document of that kind (the others are
 // stored all the same). Lookup, render and store run in one st.Tx, whose Writer is the Reader
-// RenderIndex gets, so that on SQLite the fill cannot interleave with an invalidation by
-// ingest; on Postgres (read committed) a fill that started before an invalidation can store a
-// stale document until the next invalidation. The apt index issue (#40) decides whether that
-// window needs more. Errors of the store and of RenderIndex are returned as they are.
+// RenderIndex gets. The render reads the repo's IndexCacheGeneration first, and the documents
+// are stored only while it is current: a render that an invalidation overtook on Postgres (read
+// committed) is answered and not stored, so the next request renders again (INV-27). Errors of
+// the store and of RenderIndex are returned as they are.
 func CachedDocument(ctx context.Context, st index.Store, p Plugin, repo index.Repo, scope IndexScope, kind string) (*index.Cache, error) {
 	var found *index.Cache
 	err := st.Tx(ctx, func(tx index.Writer) error {
@@ -31,6 +31,10 @@ func CachedDocument(ctx context.Context, st index.Store, p Plugin, repo index.Re
 			return nil
 		}
 		if !errors.Is(err, index.ErrNotFound) {
+			return err
+		}
+		gen, err := tx.IndexCacheGeneration(ctx, repo.ID)
+		if err != nil {
 			return err
 		}
 		docs, err := p.RenderIndex(ctx, repo, scope, tx)
@@ -48,7 +52,7 @@ func CachedDocument(ctx context.Context, st index.Store, p Plugin, repo index.Re
 				SHA256:     hex.EncodeToString(sum[:]),
 				RenderedAt: now,
 			}
-			if err := tx.PutIndexCache(ctx, c); err != nil {
+			if _, err := tx.PutIndexCache(ctx, c, gen); err != nil {
 				return err
 			}
 			if d.Kind == kind {

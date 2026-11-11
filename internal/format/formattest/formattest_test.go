@@ -130,8 +130,8 @@ func TestIndexCache(t *testing.T) {
 	content := []byte("v1")
 	put := func(w index.Writer, scope, kind string) {
 		t.Helper()
-		if err := w.PutIndexCache(ctx, &index.Cache{RepoID: 1, Scope: scope, Kind: kind, Content: content}); err != nil {
-			t.Fatal(err)
+		if ok, err := w.PutIndexCache(ctx, &index.Cache{RepoID: 1, Scope: scope, Kind: kind, Content: content}, 0); err != nil || !ok {
+			t.Fatalf("PutIndexCache: %t, %v", ok, err)
 		}
 	}
 	err := idx.Tx(ctx, func(w index.Writer) error {
@@ -156,5 +156,28 @@ func TestIndexCache(t *testing.T) {
 	}
 	if err := idx.InvalidateIndexCache(ctx, 1, ""); err != nil || cached("b", "Packages") {
 		t.Errorf("InvalidateIndexCache(all): %v; b/Packages %v", err, cached("b", "Packages"))
+	}
+}
+
+// TestIndexCacheGeneration checks that every invalidation moves the repo's generation, and that a
+// put of another generation stores nothing.
+func TestIndexCacheGeneration(t *testing.T) {
+	ctx := context.Background()
+	idx := &Index{}
+	for range 2 {
+		if err := idx.InvalidateIndexCache(ctx, 1, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if gen, err := idx.IndexCacheGeneration(ctx, 1); err != nil || gen != 2 {
+		t.Errorf("IndexCacheGeneration after two invalidations = %d, %v; want 2", gen, err)
+	}
+	for _, gen := range []int64{1, 2} {
+		want := gen == 2
+		ok, err := idx.PutIndexCache(ctx, &index.Cache{RepoID: 1, Scope: "a", Kind: "Packages"}, gen)
+		_, getErr := idx.GetIndexCache(ctx, 1, "a", "Packages")
+		if err != nil || ok != want || (getErr == nil) != want {
+			t.Errorf("PutIndexCache at generation %d of 2: %t, %v; stored %t, want %t", gen, ok, err, getErr == nil, want)
+		}
 	}
 }
