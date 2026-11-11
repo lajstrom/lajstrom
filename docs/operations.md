@@ -946,6 +946,112 @@ curl -fsS -u admin "$LAJSTROM/api/v1/audit?state=unknown" | jq -c '.events[] | {
 or SQL on the index. The table only grows in this version: no retention, no export; it is part
 of the backup of the index.
 
+## Retention
+
+Lajstrom keeps every version until someone deletes it: no rule inside the server deletes
+versions (decided on [#72](https://github.com/lajstrom/lajstrom/issues/72)). A retention policy is
+a job that the operator's scheduler runs, a Kubernetes CronJob, a CI schedule or cron, with
+`lajstrom admin retention`, a client of the management API: it lists the packages and versions
+of a repo (`GET …/packages`, `GET …/packages/<package>/versions`), decides, and deletes through
+`POST …/versions:delete` ([api.md](api.md#delete-versions-in-a-batch-post-apiv1reposformatnameversionsdelete)).
+Every deletion has an audit row with the job's id and its token (`details.job`,
+`details.token`).
+
+```sh
+export LAJSTROM_URL=https://art.example.com LAJSTROM_TOKEN_FILE=/run/secrets/retention-token
+lajstrom admin retention --repo npm/internal --keep-last 10 --max-age 90d            # a dry run
+lajstrom admin retention --repo npm/internal --keep-last 10 --max-age 90d --apply    # deletes
+lajstrom admin retention --repo raw/builds --package 'nightly/*' --max-age 14d --output json
+```
+
+**The rules.** A version is kept when any rule keeps it: it is one of the `--keep-last N` newest of
+its package, by the publish time of its first variant; it is younger than `--max-age` (`90d`,
+`36h`), by its newest variant; a pointer names it, an npm dist-tag, `latest` included; or it is
+the newest version of its package, unless `--delete-newest`. At least one of `--keep-last` and
+`--max-age` is required. `--package` keeps the packages whose name matches the glob
+(`path.Match`, where `*` does not match `/`: `@acme/*`, `nightly/*`), again for more; without it
+every package of the repo. The time is the server's, from the `Date` of its first answer, and
+the publish time that of the manifest (`org.opencontainers.image.created`), which the frontends
+write from the server's clock and a client pushing on `/v2` from its own.
+
+**Dry run first.** Without `--apply` the job prints the versions it would delete and why, the
+rule, the age and the rank, and changes nothing; `--output json` prints the same as one JSON
+document. With `--apply` it sends them in batches of 100, one job, with the digests it read and
+the cut-off it decided on (now less `--max-age`, else now), and prints what the server did with
+each: `deleted`, or `changed` (published again, or a variant added, since the list), `protected`
+(a dist-tag moved onto it), `young`, `gone`, `error`. The server checks each version under the
+lock that a publish of its tag and a move of a dist-tag take, so a version that changed after
+the list is reported, never deleted ([guarantees.md](spec/guarantees.md), INV-41). A run that
+races a publish deletes fewer versions, never more; the next run picks up the rest.
+
+| Exit status | Meaning |
+| --- | --- |
+| 0 | nothing to delete, or `--apply` deleted or reported every version |
+| 2 | a dry run found versions to delete |
+| 1 | an error: the server unreachable, a credential refused, an item the server failed to delete |
+
+**The credential.** A user for the job with the `maintainer` role on the repos it cleans, and a
+personal access token of that user without scopes: a token with scopes never deletes, and a
+deploy token never does ([auth.md](auth.md#what-a-token-may-do)). The token is read from
+`--token-file` or `LAJSTROM_TOKEN_FILE`, else from `LAJSTROM_TOKEN`; the server from `--url` or
+`LAJSTROM_URL`. The job reads no configuration and needs no database.
+
+```sh
+lajstrom admin user create --name retention
+lajstrom admin binding create --principal user:retention --role maintainer --mask npm/internal
+lajstrom admin token create --user retention --name "retention $(date -u +%Y-%m)" --expires 365d
+```
+
+**A CronJob.** The image is Lajstrom's own; the token is a Secret mounted as a file.
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: lajstrom-retention-npm-internal
+spec:
+  schedule: "17 3 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: retention
+              image: ghcr.io/lajstrom/lajstrom:v0.1.0
+              args: [admin, retention, --repo, npm/internal, --keep-last, "10", --max-age, 90d, --apply]
+              env:
+                - {name: LAJSTROM_URL, value: "http://lajstrom.lajstrom.svc:8080"}
+                - {name: LAJSTROM_TOKEN_FILE, value: /run/secrets/retention/token}
+              volumeMounts:
+                - {name: token, mountPath: /run/secrets/retention, readOnly: true}
+          volumes:
+            - name: token
+              secret: {secretName: lajstrom-retention-token}
+```
+
+Run it once without `--apply` and read the list before you schedule it. The blobs of what it
+deletes go when the registry's garbage collection runs, as for every delete.
+
+**The registry's own rules.** A registry's lifecycle rules (ECR lifecycle policies, Harbor tag
+retention, GitLab cleanup policies) delete under Lajstrom, by tag and age, and know nothing of
+versions, dist-tags or signatures. Prefer `lajstrom admin retention`. Where a registry rule is
+needed anyway:
+
+- exclude the npm journal tags `_j<n>` of every package: they are the history of its dist-tags
+  and deprecations (manifest-profile.md §8), and a journal with a gap stops the package's next
+  dist-tag change;
+- exclude cosign's tags `sha256-<hex>`, `sha256-<hex>.sig`, `.att` and `.sbom` and keep untagged
+  manifests that have a subject: they are the signatures, attestations and SBOMs of versions
+  that stay (manifest-profile.md §6);
+- the index follows at the next reconcile, which removes the rows of a manifest the registry
+  answers as unknown; until then a client sees a version that is gone (`404` on its download),
+  and the delete has no audit row of Lajstrom's. The grace period of
+  [#446](https://github.com/lajstrom/lajstrom/issues/446) will keep a version a registry
+  briefly forgets.
+
 ## Reindex
 
 The index database holds two kinds of tables ([index-schema.md](spec/index-schema.md)): the
