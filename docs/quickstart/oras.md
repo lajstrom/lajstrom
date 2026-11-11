@@ -16,7 +16,9 @@ make dev-up                                           # Zot, distribution and Po
 make run                                              # serves deploy/compose/lajstrom.example.yaml on :8080
 ```
 
-In another terminal, make a repo `oci/images` and a repo `raw/assets` on the Zot of the stack,
+In another terminal, once `make run` has logged `listening` (`serve` creates the tables of
+`lajstrom.db`; before that, `admin` fails with `no such table`), make a repo `oci/images` and a
+repo `raw/assets` on the Zot of the stack,
 and the first user, an admin, with a password of your own (8 bytes at least):
 
 ```sh
@@ -52,6 +54,7 @@ oras push --plain-http --artifact-type application/vnd.example.notes localhost:8
 ```
 
 ```text
+Preparing file.txt
 Uploading 7f4b67b5c68d file.txt
 Uploading 44136fa355b3 application/vnd.oci.empty.v1+json
 Uploaded  7f4b67b5c68d file.txt
@@ -65,7 +68,9 @@ Digest: sha256:147b5c0b3273d42c5a4b50e99febafa877268f3bd0063bc5b5e025ddbe857feb
 
 The repository is `oci/images/hello` in Zot too: the OCI name below the registry's instance
 prefix is the name the client used. A second push of the same file finds the blobs (`Exists`)
-and uploads only the manifest.
+and uploads only the manifest, a new one by its `created` time, and the tag `1` moves to it: the
+tags of an `oci` repo are as mutable as the backend makes them
+([guarantees.md](../spec/guarantees.md)), unlike those of a managed repo (section 3).
 
 ```sh
 oras pull --plain-http -o out localhost:8080/oci/images/hello:1   # writes out/file.txt
@@ -186,11 +191,41 @@ single `POST ?digest=` with the whole blob works too, and so does a mount
 
 A blob `GET` passes a `Range` to the backend and answers `307` to the backend's object storage
 when it hands out a presigned URL (the `s3` profile of the dev stack; `policy.blobRedirect:
-never` on a repo always streams). Not yet: the referrers API (#28, `501`; a signature pushed
-to a managed repo is refused as an invalid artifact until then), deletes (#61, `405`).
+never` on a repo always streams).
 
-## 5. Clean up
+## 5. Referrers and deletes
+
+An artifact about another one, a signature, an SBOM or a note, names it as its `subject`, and
+`GET …/referrers/<digest>` lists them, on both kinds of repo: on a managed one any artifact type
+but `application/vnd.lajstrom.*`, pushed by digest, as `oras attach` does
+([http-routing.md](../spec/http-routing.md) §2):
+
+```sh
+printf 'a note\n' > note.txt
+oras attach --plain-http --artifact-type application/vnd.example.note localhost:8080/raw/assets/docs/hello.txt:$v note.txt
+oras discover --plain-http localhost:8080/raw/assets/docs/hello.txt:$v      # the note, below the manifest
+```
+
+A delete needs `delete` on the repo. On a managed repo it deletes the version, its referrers
+first, as `DELETE /api/v1/…/versions/<version>` does ([api.md](../api.md)); on an `oci` repo the
+manifest, and by digest every tag that names it:
+
+```sh
+oras manifest delete --plain-http --force localhost:8080/raw/assets/docs/hello.txt:$v   # Deleted
+oras manifest delete --plain-http --force localhost:8080/oci/images/hello:1             # Deleted
+curl -s -o /dev/null -w '%{http_code}\n' -u "admin:$LAJSTROM_ADMIN_PASSWORD" http://localhost:8080/raw/assets/docs/hello.txt   # 404
+```
+
+A registry that cannot delete manifests answers `405` and nothing changes.
+
+## 6. Clean up
 
 ```sh
 make dev-down          # RESET=1 also drops what the registries hold
+rm lajstrom.db         # the index: its repos and its admin
+rm -r file.txt out docs/hello.txt note.txt .oras-auth.json
 ```
+
+The last line removes what this page made in the checkout (`docs/hello.txt` beside the repo's
+own docs); `crane auth logout localhost:8080` removes crane's login from
+`~/.docker/config.json`.
