@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
@@ -127,7 +126,7 @@ func (h *handlers) release(w http.ResponseWriter, r *http.Request) {
 			h.fail(w, r, err)
 			return
 		}
-		format.ServeDocument(w, r, c, contentType(file))
+		format.ServeDocument(w, r, lastSigned(c), contentType(file))
 	default:
 		h.fail(w, r, notFound(repo, suite, file))
 	}
@@ -158,7 +157,9 @@ func (h *handlers) publicKeys(w http.ResponseWriter, r *http.Request) {
 // signed returns the InRelease or the Release.gpg of the suite, kind. Both are made from the
 // bytes of the Release of the suite in index_cache, rendered first when it is not there, and
 // stored beside it with its RenderedAt and SignedAt the time of signing; a signed document
-// whose RenderedAt is not that of the Release is of an older render and is made again. The
+// whose RenderedAt is not that of the Release is of an older render and is made again, and so
+// is one that the Signer no longer calls current: a key that signed it has stopped signing,
+// its grace (keys.retireGrace) over, which no write marks (#577). The
 // Signer signs outside any transaction of the index: it reads the repo's keys and makes the
 // first one, and in the transaction of format.CachedDocument that read would wait for the
 // connection the transaction holds (SQLite in memory has one) and the insert for its write
@@ -173,7 +174,13 @@ func (h *handlers) signed(ctx context.Context, repo index.Repo, suite, kind stri
 		c, err := h.deps.Index.GetIndexCache(ctx, repo.ID, suite, kind)
 		switch {
 		case err == nil && c.RenderedAt.Equal(rel.RenderedAt):
-			return c, nil
+			current, err := h.deps.Signer.Current(ctx, repo, c.Content)
+			if err != nil {
+				return nil, err
+			}
+			if current {
+				return c, nil
+			}
 		case err != nil && !errors.Is(err, index.ErrNotFound):
 			return nil, err
 		}
@@ -192,6 +199,18 @@ func (h *handlers) signed(ctx context.Context, repo index.Repo, suite, kind stri
 	}
 	return nil, fmt.Errorf("deb: apt/%s dists/%s/%s: the Release was rendered again while it was signed, %d times",
 		repo.Name, suite, kind, signRounds)
+}
+
+// lastSigned returns the signed document c with its SignedAt as its RenderedAt, the
+// Last-Modified of format.ServeDocument: a document signed again without a new render is newer
+// than the Release it signs, and apt, which asks with If-Modified-Since, fetches it.
+func lastSigned(c *index.Cache) *index.Cache {
+	if c.SignedAt == nil || !c.SignedAt.After(c.RenderedAt) {
+		return c
+	}
+	served := *c
+	served.RenderedAt = *c.SignedAt
+	return &served
 }
 
 // errRenderedAgain is the error of storeSigned when the Release it signed is no longer the one
@@ -217,7 +236,7 @@ func (h *handlers) storeSigned(ctx context.Context, rel *index.Cache, kind strin
 		case cur.SHA256 != rel.SHA256 || !cur.RenderedAt.Equal(rel.RenderedAt):
 			return errRenderedAgain
 		}
-		signedAt := time.Now().UTC()
+		signedAt := h.plugin.clock().UTC()
 		for _, k := range []string{kindInRelease, kindReleaseGPG} {
 			sum := sha256.Sum256(docs[k])
 			c := &index.Cache{RepoID: rel.RepoID, Scope: rel.Scope, Kind: k, Content: docs[k], SHA256: hex.EncodeToString(sum[:]),

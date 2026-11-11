@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
@@ -75,11 +76,17 @@ type envOptions struct {
 	providers provider.Set                    // nil means the fake of the pipeline as "local"
 	signer    func(index.Store) format.Signer // the Signer over the store of the pipeline; nil: none
 	log       *slog.Logger                    // nil discards
+	now       func() time.Time                // the clock of a Release's Date and its signatures; nil: time.Now
 }
 
 func newAptEnv(t *testing.T, o envOptions) *aptEnv {
 	t.Helper()
-	p := newPipeline(t)
+	return envOn(t, newPipeline(t), o)
+}
+
+// envOn returns an aptEnv over p: the routes of another replica when p is another aptEnv's.
+func envOn(t *testing.T, p *pipeline, o envOptions) *aptEnv {
+	t.Helper()
 	e := &aptEnv{pipeline: p, t: t, reads: &atomic.Int64{}}
 	if o.providers == nil {
 		o.providers = provider.Map{"local": p.prov}
@@ -93,7 +100,7 @@ func newAptEnv(t *testing.T, o envOptions) *aptEnv {
 		deps.Signer = o.signer(p.st)
 	}
 	mux := http.NewServeMux()
-	Plugin{}.Routes(format.NewRouter(mux, Name, deps), deps)
+	Plugin{svc: &services{now: o.now}}.Routes(format.NewRouter(mux, Name, deps), deps)
 	e.h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if name := r.Header.Get("X-Test-User"); name != "" {
 			r = r.WithContext(auth.WithPrincipal(r.Context(), auth.Principal{Kind: auth.KindUser, Name: name}))

@@ -243,6 +243,94 @@ func TestRoutesRotate(t *testing.T) {
 	}
 }
 
+// TestRoutesGraceEnds checks #577 on two replicas over one index, with no reconcile loop and no
+// write after a rotation with a grace of a minute. Up to the end of the grace both serve the
+// InRelease and the Release.gpg that the new and the retired key signed. A second later the
+// next GET, on the replica that did not rotate, signs them again with the new key alone,
+// without a render or an invalidation, and the other replica serves those. The InRelease
+// signed again has a newer Last-Modified, so a client that asks with If-Modified-Since, as apt
+// does, gets it.
+func TestRoutesGraceEnds(t *testing.T) {
+	ctx := t.Context()
+	now := time.Now().Add(time.Hour).Truncate(time.Second) // after every RenderedAt, which the store stamps
+	clock := func() time.Time { return now }
+	verify := &packet.Config{Time: clock} // the signatures are of the test's clock
+	m, err := keys.ParseMaster(strings.Repeat("0123456789abcdef", 4))
+	must(t, err)
+	service := func(st index.Store) *keys.Service {
+		svc, err := keys.New(keys.Options{Index: st, Master: m, RetireGrace: time.Minute, Now: clock, Log: slog.New(slog.DiscardHandler)})
+		must(t, err)
+		return svc
+	}
+	var svc *keys.Service
+	a := newAptEnv(t, envOptions{now: clock, signer: func(st index.Store) format.Signer { svc = service(st); return svc }})
+	b := envOn(t, a.pipeline, envOptions{now: clock, signer: func(st index.Store) format.Signer { return service(st) }})
+	fixtureSet(t, a.pipeline)
+	old, err := svc.KeyFor(ctx, a.repo)
+	must(t, err)
+	rotated, err := svc.Rotate(ctx, a.repo)
+	must(t, err)
+	release := a.get("dists/jammy/Release").Body.Bytes()
+	inGrace := a.get("dists/jammy/InRelease")
+	both := rotated.Key.Fingerprint + " " + old.Key.Fingerprint
+	if got := strings.Join(signedBy(t, inGrace.Body.Bytes()), " "); got != both {
+		t.Fatalf("InRelease after the rotation signed by %s, want %s", got, both)
+	}
+
+	now = now.Add(time.Minute)
+	for _, kind := range []string{kindInRelease, kindReleaseGPG} {
+		if got := strings.Join(signedBy(t, b.get("dists/jammy/"+kind).Body.Bytes()), " "); got != both {
+			t.Errorf("%s at the end of the grace signed by %s, want %s", kind, got, both)
+		}
+	}
+	gen, err := a.st.IndexCacheGeneration(ctx, a.repo.ID)
+	must(t, err)
+
+	now = now.Add(time.Second)
+	rr := b.get("dists/jammy/InRelease")
+	in := rr.Body.Bytes()
+	signedAlone(t, "InRelease after the grace", in, release, rotated, verify)
+	since := inGrace.Header().Get("Last-Modified")
+	if again := b.do(http.MethodGet, "dists/jammy/InRelease", "If-Modified-Since", since); again.Code != http.StatusOK {
+		t.Errorf("InRelease signed again, If-Modified-Since the one of the grace: %d, want 200", again.Code)
+	}
+	if got, want := rr.Header().Get("Last-Modified"), now.UTC().Format(http.TimeFormat); got != want {
+		t.Errorf("InRelease signed again: Last-Modified %s, want the time of signing %s", got, want)
+	}
+	signedAlone(t, "Release.gpg after the grace", a.get("dists/jammy/Release.gpg").Body.Bytes(), release, rotated, verify)
+	if again := a.get("dists/jammy/InRelease").Body.Bytes(); !bytes.Equal(again, in) {
+		t.Error("the other replica does not serve the InRelease signed again")
+	}
+	if after := a.get("dists/jammy/Release").Body.Bytes(); !bytes.Equal(after, release) {
+		t.Error("the Release was rendered again")
+	}
+	if after, err := a.st.IndexCacheGeneration(ctx, a.repo.ID); err != nil || after != gen {
+		t.Errorf("the generation went from %d to %d (%v): the documents were invalidated", gen, after, err)
+	}
+}
+
+// signedAlone checks that doc, an InRelease or a Release.gpg of release, is signed by k alone
+// and verifies against it at the time of cfg.
+func signedAlone(t *testing.T, name string, doc, release []byte, k *keys.Entity, cfg *packet.Config) {
+	t.Helper()
+	if got := signedBy(t, doc); len(got) != 1 || got[0] != k.Key.Fingerprint {
+		t.Fatalf("%s signed by %v, want %s alone", name, got, k)
+	}
+	kr := openpgp.EntityList{k.OpenPGP}
+	var err error
+	if b, _ := clearsign.Decode(doc); b != nil {
+		if string(b.Plaintext)+"\n" != string(release) {
+			t.Errorf("the cleartext of %s is not the Release", name)
+		}
+		_, err = openpgp.CheckDetachedSignature(kr, bytes.NewReader(b.Bytes), b.ArmoredSignature.Body, cfg)
+	} else {
+		_, err = openpgp.CheckArmoredDetachedSignature(kr, bytes.NewReader(release), bytes.NewReader(doc), cfg)
+	}
+	if err != nil {
+		t.Errorf("%s against %s: %v", name, k, err)
+	}
+}
+
 // TestRoutesSignedAuthorize checks that the signed documents and key.asc need read like the
 // rest: 401 to the anonymous principal, 404 to another user, and the documents to alice.
 func TestRoutesSignedAuthorize(t *testing.T) {

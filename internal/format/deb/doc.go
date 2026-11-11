@@ -26,8 +26,9 @@
 // (lajstrom.deb.suite, .component, .arch); packages of architecture all are in the index of
 // every architecture. The routes serve dists/ from the cache, by name and by hash; ingest and
 // delete invalidate it. With a format.Deps.Signer (internal/keys) the routes sign the bytes of
-// the cached Release into InRelease and Release.gpg, kept beside it, and serve the repo's
-// keyring at key.asc; without one the Release is unsigned and clients mark the source
+// the cached Release into InRelease and Release.gpg, kept beside it until the Signer no longer
+// calls them current, and serve the repo's keyring at key.asc; without one the Release is
+// unsigned and clients mark the source
 // [trusted=yes]. The plugin registers itself with format.Register when the package is
 // imported; the binary imports it in cmd/lajstrom/formats.go.
 package deb

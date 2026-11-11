@@ -6,8 +6,9 @@
 // keys.masterKeyEnv names, loaded once at start (LoadMaster). Service implements
 // format.Signer over the index: a repo's key is made on its first use (KeyFor), its private
 // key stored as nonce || AES-256-GCM with the fingerprint as additional data; ClearSign and
-// DetachSign make apt's InRelease and Release.gpg, PublicKeys its key.asc; Rotate retires the
-// active key.
+// DetachSign make apt's InRelease and Release.gpg, PublicKeys its key.asc, Current tells
+// whether a cached InRelease or Release.gpg is still signed by the keys that sign; Rotate
+// retires the active key.
 //
 // Tokens keeps the bearer-token key (issue #26): a row of kind jwt without a repo, an ECDSA
 // P-256 (ES256) or Ed25519 (EdDSA) key after keys.tokenAlgorithm, made on first use, sealed the

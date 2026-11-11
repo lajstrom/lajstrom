@@ -42,11 +42,12 @@ type Plugin struct {
 type services struct {
 	// providers resolves repo.Registry, for the metadata layers the index does not hold.
 	providers provider.Set
-	// now is the clock of the Date of a Release; nil is time.Now.
+	// now is the clock of the Date of a Release and of the SignedAt of its signatures; nil is
+	// time.Now.
 	now func() time.Time
 }
 
-// clock returns the time for the Date of a Release.
+// clock returns the time for the Date of a Release and the SignedAt of its signatures.
 func (p Plugin) clock() time.Time {
 	if p.svc != nil && p.svc.now != nil {
 		return p.svc.now()

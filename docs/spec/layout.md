@@ -150,6 +150,7 @@ type Signer interface {
     ClearSign(ctx context.Context, repo index.Repo, data []byte) ([]byte, error)  // InRelease
     DetachSign(ctx context.Context, repo index.Repo, data []byte) ([]byte, error) // Release.gpg, armored
     PublicKeys(ctx context.Context, repo index.Repo) ([]byte, error)              // key.asc: an armored keyring
+    Current(ctx context.Context, repo index.Repo, signed []byte) (bool, error)    // signed only by keys that still sign
 }
 
 type Deps struct {
@@ -1199,7 +1200,10 @@ Where the merged shapes differ from the first sketch of this section, and why:
   first checks that this `Release` is still the cached one; the `Signer` runs outside the
   transaction of `CachedDocument`, because it reads the repo's keys and inserts the first one,
   which inside that transaction would wait for the connection or the write lock it holds
-  (SQLite).
+  (SQLite). A cached `InRelease` or `Release.gpg` is served only while `Signer.Current` says
+  that its signatures are by the active key and by keys still in their grace; otherwise it is
+  signed again. The end of a retired key's grace is a time, not a write, so no invalidation
+  marks it (#577).
 - **Proxy repos plug in through `format.Proxier`** (ADR 0013, #309). It is the sketch of
   proxy-and-group.md §10 without `MergeGroup`, which comes with the groups of #311, and with
   three changes: `RenderProxy` reads the held versions through an `index.Reader`, as
