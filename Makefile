@@ -86,8 +86,10 @@ test: ## Unit tests with the race detector
 vet: ## go vet
 	$(GO) vet ./...
 
+# --allow-parallel-runners: golangci-lint takes a lock for the whole machine, and several
+# worktrees on one machine lint at once; its cache is keyed per directory.
 lint: ## golangci-lint at the version CI pins (configuration in .golangci.yml)
-	$(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run
+	$(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --allow-parallel-runners
 
 vulncheck: ## Known vulnerabilities in dependencies and the standard library
 	$(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
