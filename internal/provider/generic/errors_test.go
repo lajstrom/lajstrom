@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -28,7 +30,10 @@ func TestTranslate(t *testing.T) {
 	}
 	immutable := resp(http.StatusBadRequest, errcode.ErrorCodeDenied)
 	immutable.Errors[0].Message = "The tag v1 is Immutable and cannot be overwritten"
-	sentinels := []error{provider.ErrNotFound, provider.ErrConflict, provider.ErrUnsupported, provider.ErrUnauthorized}
+	sentinels := []error{provider.ErrNotFound, provider.ErrConflict, provider.ErrUnsupported, provider.ErrUnauthorized, provider.ErrUnavailable}
+	unresolved := func(dns *net.DNSError) error {
+		return &url.Error{Op: "Head", URL: backend.String(), Err: &net.OpError{Op: "dial", Net: "tcp", Err: dns}}
+	}
 
 	tests := []struct {
 		name string
@@ -53,6 +58,12 @@ func TestTranslate(t *testing.T) {
 		{name: "DENIED on an immutable tag", err: immutable, want: provider.ErrConflict},
 		{name: "500", err: resp(http.StatusInternalServerError, "UNKNOWN")},
 		{name: "400 MANIFEST_INVALID", err: resp(http.StatusBadRequest, errcode.ErrorCodeManifestInvalid)},
+		{name: "no such host", err: unresolved(&net.DNSError{Err: "no such host", Name: "zot.internal", IsNotFound: true}),
+			want: provider.ErrUnavailable},
+		{name: "temporary failure in name resolution",
+			err:  unresolved(&net.DNSError{Err: "Temporary failure in name resolution", Name: "zot.internal", IsTemporary: true}),
+			want: provider.ErrUnavailable},
+		{name: "connection refused", err: &url.Error{Op: "Head", URL: backend.String(), Err: &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}}},
 		{name: "context canceled", err: context.Canceled},
 		{name: "plain error", err: errors.New("connection reset by peer")},
 	}

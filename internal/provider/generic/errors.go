@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -27,7 +28,7 @@ const maxErrorBody = 8 << 10
 // sentinel, and errors.As still finds the *errcode.ErrorResponse or the oras-go error.
 type backendError struct {
 	op     string // "fetch raw/scratch/notes@sha256:…"
-	kind   error  // provider.ErrNotFound, ErrConflict, ErrUnsupported, ErrUnauthorized or a *RejectedError
+	kind   error  // provider.ErrNotFound, ErrConflict, ErrUnsupported, ErrUnauthorized, ErrUnavailable or a *RejectedError
 	detail string // "HTTP 404, MANIFEST_UNKNOWN"; empty when the cause was not an HTTP answer
 	cause  error
 }
@@ -69,7 +70,10 @@ func (p *Provider) translate(op string, err error) error {
 //     credential's error in the message instead of oras-go's, which names the URL;
 //   - any other 4xx, and a 503: a *provider.RejectedError of the registry named registry, with
 //     the first error code of the answer; one of a 429 or 503 is ErrUnavailable too and waits
-//     what wait returns, the Retry-After the registry last sent: oras-go's error has no header.
+//     what wait returns, the Retry-After the registry last sent: oras-go's error has no header;
+//   - a *net.DNSError, the registry's host name (or its token realm's, or a redirect's) that
+//     does not resolve, "no such host" or a temporary failure: ErrUnavailable, without a wait
+//     (#561). The message leaves out the name; errors.As still finds the *net.DNSError.
 //
 // A refused token realm (realmError) is wrapped without what net/http and oras-go put around
 // it, which names the request URL. Everything else, context errors included, is wrapped with
@@ -104,6 +108,7 @@ func translateAs(registry string, wait func() time.Duration, op string, err erro
 		}
 		return fmt.Errorf("generic: %s: %w", op, err)
 	}
+	var dns *net.DNSError
 	switch {
 	case errors.Is(err, errdef.ErrNotFound):
 		return &backendError{op: op, kind: provider.ErrNotFound, cause: err}
@@ -111,6 +116,8 @@ func translateAs(registry string, wait func() time.Duration, op string, err erro
 		return &backendError{op: op, kind: provider.ErrUnsupported, cause: err}
 	case errors.Is(err, auth.ErrBasicCredentialNotFound):
 		return &backendError{op: op, kind: provider.ErrUnauthorized, detail: "no credentials configured", cause: err}
+	case errors.As(err, &dns):
+		return &backendError{op: op, kind: provider.ErrUnavailable, detail: "the host name does not resolve", cause: err}
 	}
 	return fmt.Errorf("generic: %s: %w", op, err)
 }
