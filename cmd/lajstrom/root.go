@@ -94,9 +94,13 @@ type configError struct{ error }
 
 func (e configError) Unwrap() error { return e.error }
 
-// exitStatus is the exit status of the process for the error of a command.
+// exitStatus is the exit status of the process for the error of a command: an exitCode's own.
 func exitStatus(err error) int {
-	if errors.As(err, new(configError)) {
+	var code exitCode
+	switch {
+	case errors.As(err, &code):
+		return int(code)
+	case errors.As(err, new(configError)):
 		return 2
 	}
 	return 1

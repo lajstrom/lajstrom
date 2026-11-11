@@ -467,7 +467,7 @@ status is `holds on strongly consistent registries only` do not hold there.
   first delete (`api.conditions.check`), so that a refusal finds nothing deleted.
 - **Tests.** `TestConditionalDelete`, `TestConditionalDeletePointers` (the lock order),
   `TestConditionalDeleteRepublishRace`, `TestConditionalDeleteDistTagRace` (goroutines, `-race`),
-  `TestDeleteVersionConditions`, `TestBatchDelete`.
+  `TestDeleteVersionConditions`, `TestBatchDelete`, `TestAdminRetention`; `retention.sh`.
 - **When violated.** A delete that removed a version re-published or dist-tagged after the read
   leaves the newer version's rows without a manifest, which reindex removes, or a dist-tag
   naming a version that is gone, which the packument leaves out; nothing reports it.
