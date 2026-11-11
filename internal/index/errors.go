@@ -23,8 +23,9 @@ var (
 	ErrBreakingMigration = errors.New("index: a pending migration would break the replicas serving on the schema")
 	// ErrUnavailable means the database did not answer, and may answer a later attempt: the
 	// store cannot connect to it, or it ended the connection or refuses new ones while it
-	// shuts down or starts (Postgres), or it stayed locked past the busy timeout or its file
-	// cannot be opened (SQLite). Every method may return it wrapped.
+	// shuts down or starts (Postgres), or it ended the transaction of a referrers lock before
+	// the lock's function returned (Store.WithReferrersLock), or it stayed locked past the busy
+	// timeout or its file cannot be opened (SQLite). Every method may return it wrapped.
 	ErrUnavailable = errors.New("index: unavailable")
 )
 

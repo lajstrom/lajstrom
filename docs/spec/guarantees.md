@@ -937,17 +937,27 @@ status is `holds on strongly consistent registries only` do not hold there.
   referrers API.
 - **Assumes.** Registry: **GC keeps what is named** (**unchecked**): GitLab B deletes an untagged
   referrer 24 hours after its push, and Nexus's task "Delete unused manifests" deletes one.
-  Database: **Postgres for replicas** (on SQLite the referrers lock is a lock of the process).
+  Database: **Postgres for replicas** (on SQLite the referrers lock is a lock of the process),
+  and the lock's transaction lasts until its push returns (**unchecked**): no timeout that the
+  client cannot lift ends it, so PgBouncer's `idle_transaction_timeout` and Postgres's
+  `transaction_timeout` are 0 for Lajstrom's users (index-schema.md, Coordination).
 - **Mechanism.** `ingest.Pipeline.PutReferrer` (`checkReferrer`, `pushReferrer` under
   `Store.WithReferrersLock` without the API), the provider's tag-schema fallback
-  (`Repository.Referrers`).
+  (`Repository.Referrers`). The lock's transaction lifts `idle_in_transaction_session_timeout`
+  for itself, and its `COMMIT` is checked: a lock lost while the push ran is
+  `index.ErrUnavailable`, `503` with `Retry-After`, never a success (#615).
 - **Tests.** `TestPutReferrer`, `TestPutReferrerRefused`, `TestPutReferrerOCI`, `TestReferrers`,
   `TestReferrerPush`, `TestIntegrationReferrers`, `TestIntegrationReferrersConcurrent`,
-  `TestRebuildTagSchema`, `TestReferrerIndexDeleteRefused`; `cosign.sh` (on Zot and on
-  distribution), the step of #28 in `ha.sh`.
+  `TestRebuildTagSchema`, `TestReferrerIndexDeleteRefused`, `TestReferrersLockLost`,
+  `TestPutReferrerLockLost`; `cosign.sh` (on Zot and on distribution), the step of #28 in
+  `ha.sh`.
 - **When violated.** A referrer the registry collected is missing from the list; nothing reports
-  it.
-- **Status.** `partly`: no race loses one; a registry's garbage collector can.
+  it. A lock whose transaction ended while its push ran (a pooler's timeout, a terminated
+  backend, a failover) is a `503` for that push, whose retry lists its referrer; a referrer
+  that another writer pushed meanwhile, with success, can be missing from the list, and nothing
+  reports it.
+- **Status.** `partly`: no race loses one while the lock's transaction lasts; a lock lost to the
+  database can, and a registry's garbage collector can.
   [#326](https://github.com/lajstrom/lajstrom/issues/326) writes the tag schema as well on a
   registry with the API, as insurance.
 
@@ -1140,7 +1150,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-32 | a proxy reaches only what is configured | holds | |
 | INV-33 | a proxied artifact is ordinary | holds | |
 | INV-34 | hosted names hide the upstream in a group | not yet (#311) | |
-| INV-35 | referrers kept, none lost to a race | partly | unchecked (GC) |
+| INV-35 | referrers kept, none lost to a race | partly | unchecked (GC, the lock's transaction) |
 | INV-36 | drain on stop | holds | |
 | INV-37 | readiness | holds | |
 | INV-38 | denied versions kept out | not yet (#101) | |
@@ -1246,6 +1256,7 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | Reindex equality is tested for raw, npm and an npm proxy only; I-01 is not in the end-to-end suite (INV-3) | a column of apt, pypi or maven that annotations cannot rebuild would be lost at the first reindex, unnoticed | an equality test per format (publish, drop the derived rows, reindex, compare), and I-01 as an end-to-end step | new issue |
 | Nothing machine-checks the one write path in plugins (INV-2) | a plugin could push a manifest past ingest: no claim, validation or audit row | a read-only provider view in `format.Deps`, or a lint rule against `Push`, `PushReference` and `Delete` outside `internal/ingest`, `internal/facade` and `internal/provider` (a `contract` change of `format`) | new issue |
 | A delete whose index transaction fails after the registry delete, and a push to an `oci` repo whose row fails after the push, have no audit row (INV-13, INV-14) | an unaudited write, of which only a log line at error is left | an audit row of the intent before the registry write, and one of its result after it | new issue |
+| A timeout the client cannot lift, a terminated backend or a failover can end the referrers lock's transaction while its push runs (INV-35) | that push is `503` and its retry lists its referrer; a referrer that another writer pushed meanwhile can be missing from the `sha256-<hex>` index, and nothing reports it | keep PgBouncer's `idle_transaction_timeout` and Postgres's `transaction_timeout` 0 (index-schema.md, Coordination); reindex `--verify` could add back a referrer that the audit log has as pushed and the index lacks | new issue |
 | The garbage collectors of GitLab B and Nexus delete untagged referrers (INV-35) | signatures and SBOMs vanish | the tag schema as well on registries with the API (#326); for GitLab B and Nexus, a vendor-table warning or a tag per referrer | [#326](https://github.com/lajstrom/lajstrom/issues/326), new issue |
 | No frontend test of a denial with malformed input (INV-15) | a regression of the R-2 kind on a frontend goes unseen | a table test per frontend, as `TestDenialBeforeInput` does for `/v2` | new issue |
 | A typed user name and an unbounded `kid` at `debug` (INV-21, threat model L-3) | a mistyped password in a debug log | log the uid only, bound the `kid` | new issue |

@@ -29,8 +29,13 @@ type Store interface {
 	// (docs/spec/index-schema.md, Coordination). On Postgres the lock is pg_advisory_xact_lock
 	// on a key hashed from name and subject, in a transaction held until fn returns, even when
 	// ctx ends meanwhile: fn holds one connection of the pool and should not wait on the store.
-	// On SQLite, which serves one replica, it is a lock of the process. When ctx ends while the
-	// lock is awaited, fn is not called and the error wraps ctx's.
+	// The transaction lifts idle_in_transaction_session_timeout for itself; a timeout it cannot
+	// lift (a pooler's: PgBouncer's idle_transaction_timeout must be 0), a terminated backend or
+	// a failover still ends it, and the lock with it. So when fn returns nil, the transaction
+	// is committed, and when that fails the error wraps ErrUnavailable and says that the lock
+	// was lost: fn ran to its end, and another writer may have held the lock meanwhile. It is
+	// never nil then. On SQLite, which serves one replica, it is a lock of the process. When
+	// ctx ends while the lock is awaited, fn is not called and the error wraps ctx's.
 	WithReferrersLock(ctx context.Context, name string, subject digest.Digest, fn func(context.Context) error) error
 
 	// Close releases the database connection.

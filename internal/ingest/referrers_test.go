@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -40,6 +41,44 @@ func (s *lockRecorder) WithReferrersLock(ctx context.Context, name string, subje
 		defer func() { s.mu.Lock(); s.held = false; s.mu.Unlock() }()
 		return fn(ctx)
 	})
+}
+
+// lockLost is the store whose next lost referrers locks end after their function returned nil
+// with the error of a lock whose transaction the database ended meanwhile (#615).
+type lockLost struct {
+	index.Store
+	lost int
+}
+
+func (s *lockLost) WithReferrersLock(ctx context.Context, name string, subject digest.Digest, fn func(context.Context) error) error {
+	err := s.Store.WithReferrersLock(ctx, name, subject, fn)
+	if err == nil && s.lost > 0 {
+		s.lost--
+		return fmt.Errorf("%w: the referrers lock of %s@%s was lost before its function returned", index.ErrUnavailable, name, subject)
+	}
+	return err
+}
+
+// TestPutReferrerLockLost: a referrer pushed under a lock that was lost (#615) is
+// index.ErrUnavailable, a 503, with its audit row failed; the same push again stores it.
+func TestPutReferrerLockLost(t *testing.T) {
+	e, rec, subject := referrerEnv(t, false)
+	opts := e.options(registry{Fake: e.prov, rec: rec})
+	opts.Index = &lockLost{Store: rec, lost: 1}
+	e.pipe = ingest.New(opts)
+	r := signature(t, subject, "signature")
+	if _, err := e.pipe.PutReferrer(t.Context(), e.repo, r, alice); !errors.Is(err, index.ErrUnavailable) {
+		t.Fatalf("PutReferrer under a lost lock: %v, want index.ErrUnavailable", err)
+	}
+	if ev := e.rows(t).Audit[0]; ev.State != index.AuditFailed || !strings.Contains(ev.Error, "was lost") {
+		t.Errorf("the audit row of the push under a lost lock: %s %q", ev.State, ev.Error)
+	}
+	d, err := e.pipe.PutReferrer(t.Context(), e.repo, r, alice)
+	must(t, err)
+	if ev := e.rows(t).Audit[0]; ev.State != index.AuditOK || ev.Digest != d {
+		t.Errorf("the audit row of the retry: %s %s", ev.State, ev.Digest)
+	}
+	same(t, "locks", []string{"raw/scratch/notes@" + subject.Digest.String(), "raw/scratch/notes@" + subject.Digest.String()}, rec.locks)
 }
 
 // registry is the fake with the referrers API or without, whose repositories tell rec of each

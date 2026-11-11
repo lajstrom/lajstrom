@@ -201,6 +201,25 @@ from both, in a transaction held for the push; on SQLite, which serves one repli
 the process. With the referrers API the registry keeps the list, and no lock is taken. Approved
 by the maintainer on 2026-11-09 (#28).
 
+On Postgres the lock lasts as long as its transaction, and the transaction idles while the push
+talks to the registry. Whatever ends the transaction earlier ends the lock: another writer takes
+it while the push still runs (#615). So the statement that takes the lock also sets
+`idle_in_transaction_session_timeout` to 0 for the rest of the transaction
+(`set_config(…, true)`, in the same round trip), and the transaction ends with a `COMMIT` whose
+result is checked. When the transaction was ended before (a timeout the client cannot lift, a
+terminated backend, a failover), `WithReferrersLock` returns an error wrapping
+`index.ErrUnavailable`, never nil, and the client gets `503` with `Retry-After`. The error comes
+after the push: a writer that held the lock meanwhile may have written the index without this
+referrer, or this push the index without that writer's. The retry reads the index under the
+lock again and adds its own referrer when it is missing; the other writer's, which succeeded, is
+not restored, and nothing reports it. So no timeout that the client cannot lift may end
+Lajstrom's transactions: a pooler's (PgBouncer's `idle_transaction_timeout`) stays 0, its
+default, and so does Postgres's `transaction_timeout` (version 17 and later, which counts active
+time too) for Lajstrom's users. The migration and reindex locks hold their transactions across
+database statements only, and their commits are checked. Any lock held across work outside the
+database takes the same two steps, and its test runs with a short
+`idle_in_transaction_session_timeout` (`TestReferrersLockLost`).
+
 The same lock is the **tag lock** of a manifest: the referrers lock of its subject when it has
 one, else the lock keyed by its own digest. A delete through ingest holds it while it counts the
 tags of the manifest and deletes it (http-routing.md §2, DELETE: a delete by tag of a manifest
