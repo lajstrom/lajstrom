@@ -294,7 +294,7 @@ type Reconcile struct {
 	Interval time.Duration `yaml:"interval"`
 	// GraceAge is how long after ingest wrote a row, or a run last saw its manifest in the
 	// registry, prune keeps the row whatever the registry answers: the read-after-write lag of
-	// the registry and of what is between (docs/spec/guarantees.md, G-5). It holds for the
+	// the registry and of what is between (docs/spec/guarantees.md, INV-5). It holds for the
 	// loop, lajstrom reindex and the API's reindex. 0 means the default; must not be negative.
 	GraceAge time.Duration `yaml:"graceAge"`
 }
