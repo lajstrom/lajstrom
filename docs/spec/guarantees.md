@@ -1176,7 +1176,7 @@ promises part of it, the line says which part stays a promise.
   stated, so not guaranteed: the order of `tags/list` and `_catalog` beyond what `n`, `last` and
   `Link` need to continue a page, the keys of a packument's `versions` and `time`, the
   manifests of a referrers index, the suites, components and architectures of a `Release`.
-- **The wording of a message.** Statuses, the OCI error codes and the six codes of `/api/v1`
+- **The wording of a message.** Statuses, the OCI error codes and the seven codes of `/api/v1`
   (http-routing.md §4) are the contract, and so are the structured fields a spec names
   (`detail.existing` of a `409 TAG_INVALID`). Where a spec says that a message names something (a
   field, a digest, a bound, a backend), it does; the sentence around it may change in any

@@ -145,7 +145,7 @@ func TestDeleteVersionAccess(t *testing.T) {
 	wantError(t, f.do(http.MethodDelete, target, "", alice), http.StatusForbidden, codeForbidden)
 	wantError(t, f.do(http.MethodDelete, target, "", bob), http.StatusNotFound, codeNotFound)
 	wantError(t, f.do(http.MethodDelete, "/api/v1/repos/pypi/none/packages/requests/versions/1.0", "", bob), http.StatusNotFound, codeNotFound)
-	wantError(t, f.do(http.MethodDelete, target, "", auth.Principal{}), http.StatusUnauthorized, codeForbidden)
+	wantError(t, f.do(http.MethodDelete, target, "", auth.Principal{}), http.StatusUnauthorized, codeUnauthenticated)
 	if len(d.got) != 0 {
 		t.Errorf("deletions %+v", d.got)
 	}

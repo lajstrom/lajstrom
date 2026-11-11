@@ -5,7 +5,8 @@ info:
   description: >-
     The REST interface to Lajstrom's control plane: repos, users, bindings, tokens and the audit
     log. docs/api.md is the guide; this document is checked against the server's routes by
-    TestOpenAPIRoutes.
+    TestOpenAPIRoutes, and its error codes against the server's and docs/api.md's by
+    TestErrorCodes.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
@@ -725,7 +726,7 @@ components:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
     Unauthorized:
-      description: No credentials, or credentials that are refused.
+      description: No credentials, or credentials that are refused; code UNAUTHENTICATED.
       headers:
         WWW-Authenticate:
           description: Basic realm="lajstrom".
@@ -734,7 +735,7 @@ components:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
     Forbidden:
-      description: The caller may not do this.
+      description: The caller may not do this; code FORBIDDEN.
       content:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
@@ -771,7 +772,7 @@ components:
           properties:
             code:
               type: string
-              enum: [NOT_FOUND, CONFLICT, FORBIDDEN, INVALID, UNAVAILABLE, INTERNAL]
+              enum: [NOT_FOUND, CONFLICT, UNAUTHENTICATED, FORBIDDEN, INVALID, UNAVAILABLE, INTERNAL]
             message: {type: string}
     Repo:
       type: object

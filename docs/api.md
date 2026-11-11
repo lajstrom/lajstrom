@@ -51,7 +51,7 @@ Every error is answered with one envelope:
 | Status | Code | When |
 | --- | --- | --- |
 | 400 | `INVALID` | the request breaks a rule; the message starts with the field it is about |
-| 401 | `FORBIDDEN` | credentials are needed, or the ones sent were refused; with `WWW-Authenticate: Basic realm="lajstrom"` |
+| 401 | `UNAUTHENTICATED` | credentials are needed, or the ones sent were refused; with `WWW-Authenticate: Basic realm="lajstrom"` |
 | 403 | `FORBIDDEN` | the caller lacks the action: now by the scopes of its token, after #45 by its bindings too |
 | 404 | `NOT_FOUND` | no such repo, user, token or endpoint |
 | 409 | `CONFLICT` | the repo exists, or has versions and the delete is not forced; a live token of the owner has the name; a pointer names the version to delete |
