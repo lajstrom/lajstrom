@@ -54,9 +54,22 @@ type Server struct {
 	// one replica runs at once; the next one is answered 503 with Retry-After. Zero means no
 	// limit; negative is invalid.
 	MaxConcurrentUploads int `yaml:"maxConcurrentUploads"`
+	// UploadSessions bounds the live /v2 upload sessions of one principal on one replica.
+	UploadSessions UploadSessions `yaml:"uploadSessions"`
 	// TrustedProxies are the peers whose X-Forwarded-For is believed, as CIDR prefixes; a bare
 	// address is one host (ADR 0011). Empty: the peer of the connection is the client.
 	TrustedProxies []string `yaml:"trustedProxies"`
+}
+
+// UploadSessions bounds the live upload sessions of /v2 that one principal holds on one replica
+// (docs/spec/http-routing.md §2, #246): a session is live while a request on it runs and for 5
+// minutes after the last one ended. Load sets the defaults; zero in the file means no bound;
+// negative is invalid.
+type UploadSessions struct {
+	// PerRepo bounds the live sessions of a principal in one repo.
+	PerRepo int `yaml:"perRepo"`
+	// PerPrincipal bounds the live sessions of a principal in all repos.
+	PerPrincipal int `yaml:"perPrincipal"`
 }
 
 // TLS is the certificate of the listener when Lajstrom terminates TLS itself. Both files are
@@ -401,6 +414,13 @@ const (
 	DefaultKeysTokenAlgorithm = KeysTokenES256
 )
 
+// The defaults of server.uploadSessions (#246): a principal's live sessions of one repo, about 50
+// CI runners of one credential that send five blobs each at once, and of all its repos.
+const (
+	DefaultUploadSessionsPerRepo      = 256
+	DefaultUploadSessionsPerPrincipal = 1024
+)
+
 // The defaults of upstreams[] that Load applies to the keys an entry leaves out
 // (docs/spec/proxy-and-group.md §2.1).
 const (
@@ -413,7 +433,8 @@ const (
 func Default() *Config {
 	return &Config{
 		Server: Server{ShutdownTimeout: DefaultShutdownTimeout, MaxManifestSize: DefaultMaxManifestSize, MetricsListen: DefaultMetricsListen,
-			StallTimeout: DefaultStallTimeout},
+			StallTimeout:   DefaultStallTimeout,
+			UploadSessions: UploadSessions{PerRepo: DefaultUploadSessionsPerRepo, PerPrincipal: DefaultUploadSessionsPerPrincipal}},
 		Log:       Log{Level: DefaultLogLevel, Format: DefaultLogFormat},
 		Database:  Database{Driver: DefaultDatabaseDriver, DSN: DefaultDatabaseDSN},
 		Ingest:    Ingest{ClaimTTL: DefaultIngestClaimTTL},

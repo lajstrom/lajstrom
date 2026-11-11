@@ -45,6 +45,10 @@ type Options struct {
 	// MaxManifestSize is the largest manifest a PUT may carry, in bytes (server.maxManifestSize);
 	// zero or negative means 4 MiB, the least the distribution spec asks a registry to take.
 	MaxManifestSize int64
+	// UploadSessionsPerRepo is how many live upload sessions one principal may hold in one repo
+	// on this replica, and UploadSessionsPerPrincipal how many in all repos
+	// (server.uploadSessions, quota.go); zero or negative means no bound.
+	UploadSessionsPerRepo, UploadSessionsPerPrincipal int
 	// Log receives the causes of the 5xx answers, with the request id; nil means
 	// slog.Default().
 	Log *slog.Logger
@@ -96,9 +100,10 @@ const apiVersionHeader = "Docker-Distribution-API-Version"
 // the OCI name <repo prefix>/<path>. Errors are the JSON of the distribution spec; a 401 has
 // the bearer challenge. Every route but /v2/token verifies the bearer a request carries, and
 // decides a request with one by its access claims. The handler keeps no state between
-// requests but the verification keys, reloaded from Tokens: an upload session is a row of the
-// index, so any replica continues it, and a token of one replica verifies on another. New
-// panics when o.Index or o.Tokens is nil.
+// requests but the verification keys, reloaded from Tokens, and its count of the live upload
+// sessions (quota.go), which is per replica: an upload session is a row of the index, so any
+// replica continues it, and a token of one replica verifies on another. New panics when
+// o.Index or o.Tokens is nil.
 func New(o Options) http.Handler {
 	if o.Index == nil {
 		panic("facade: New: nil Options.Index")
@@ -120,7 +125,8 @@ func New(o Options) http.Handler {
 	}
 	h := &handler{o: o, deps: format.Deps{Auth: o.Auth},
 		issuer:   token.NewIssuer(token.Options{Keys: o.Tokens, Now: o.Now, Log: o.Log}),
-		verifier: token.NewVerifier(token.Options{Keys: o.Tokens, Now: o.Now, Log: o.Log})}
+		verifier: token.NewVerifier(token.Options{Keys: o.Tokens, Now: o.Now, Log: o.Log}),
+		uploads:  liveUploads{perRepo: o.UploadSessionsPerRepo, perPrincipal: o.UploadSessionsPerPrincipal}}
 	h.endpoints = map[routeKind]map[string]endpoint{
 		routeManifest: {
 			http.MethodGet: h.getManifest, http.MethodHead: h.getManifest,
@@ -147,6 +153,7 @@ type handler struct {
 	endpoints map[routeKind]map[string]endpoint
 	issuer    *token.Issuer
 	verifier  *token.Verifier
+	uploads   liveUploads // the live upload sessions of each principal (quota.go)
 }
 
 // endpoint serves one method of a route on the repository t; arg is the reference, the digest

@@ -54,7 +54,7 @@ func TestLoadDefaults(t *testing.T) {
 			}
 			want := &Config{
 				Server: Server{Listen: ":8080", ExternalURL: "https://art.example.com", ShutdownTimeout: 30 * time.Second, MaxManifestSize: 4 << 20, MetricsListen: "127.0.0.1:9464",
-					StallTimeout: time.Minute},
+					StallTimeout: time.Minute, UploadSessions: UploadSessions{PerRepo: 256, PerPrincipal: 1024}},
 				Log:       Log{Level: "info", Format: "text"},
 				Database:  Database{Driver: "sqlite", DSN: "file:lajstrom.db"},
 				Ingest:    Ingest{ClaimTTL: 10 * time.Minute},
@@ -66,6 +66,28 @@ func TestLoadDefaults(t *testing.T) {
 				t.Errorf("Load =\n%+v\nwant\n%+v", got, want)
 			}
 		})
+	}
+}
+
+// TestLoadUploadSessions: server.uploadSessions is 256 and 1024 by default, a key the file
+// sets replaces its default, and 0 turns a bound off (#246).
+func TestLoadUploadSessions(t *testing.T) {
+	tests := []struct {
+		file string
+		want UploadSessions
+	}{
+		{"", UploadSessions{PerRepo: 256, PerPrincipal: 1024}},
+		{"  uploadSessions: {perRepo: 0}\n", UploadSessions{PerRepo: 0, PerPrincipal: 1024}},
+		{"  uploadSessions: {perRepo: 64, perPrincipal: 0}\n", UploadSessions{PerRepo: 64, PerPrincipal: 0}},
+	}
+	for _, tt := range tests {
+		got, err := Load(writeConfig(t, minimal+tt.file), nil)
+		if err != nil {
+			t.Fatalf("%q: Load: %v", tt.file, err)
+		}
+		if got.Server.UploadSessions != tt.want {
+			t.Errorf("%q: %+v, want %+v", tt.file, got.Server.UploadSessions, tt.want)
+		}
 	}
 }
 
@@ -138,8 +160,9 @@ func TestLoadErrors(t *testing.T) {
 			want: []string{"server.metricsListen: must not be server.listen"}},
 		{name: "negative manifest size", file: minimal + "  maxManifestSize: -1\n", want: []string{"server.maxManifestSize: must not be negative"}},
 		{name: "half a TLS pair", file: minimal + "  tls: {certFile: /etc/lajstrom/tls.crt}\n", want: []string{"server.tls: certFile and keyFile must be set together"}},
-		{name: "negative limits", file: minimal + "  stallTimeout: -1s\n  maxConcurrentUploads: -1\n",
-			want: []string{"server.stallTimeout: must not be negative", "server.maxConcurrentUploads: must not be negative"}},
+		{name: "negative limits", file: minimal + "  stallTimeout: -1s\n  maxConcurrentUploads: -1\n  uploadSessions: {perRepo: -1, perPrincipal: -1}\n",
+			want: []string{"server.stallTimeout: must not be negative", "server.maxConcurrentUploads: must not be negative",
+				"server.uploadSessions.perRepo: must not be negative", "server.uploadSessions.perPrincipal: must not be negative"}},
 		{name: "trusted proxies", file: minimal + "  trustedProxies: [\"10.0.0.0/8\", \"proxy.local\", \"10.0.0.1/33\", \"::ffff:0:0/80\"]\n",
 			want: []string{`server.trustedProxies[1]: "proxy.local" is not an address`, `server.trustedProxies[2]: "10.0.0.1/33"`, `server.trustedProxies[3]`}},
 		{name: "keys", file: minimal + "keys: {algorithm: dsa, retireGrace: -1h}\n",

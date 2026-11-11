@@ -95,11 +95,15 @@ func (h *handler) startUpload(w http.ResponseWriter, r *http.Request, t *target,
 	if err := h.ensureRepository(ctx, t); err != nil {
 		return err
 	}
-	u, err := rr.StartBlobUpload(ctx)
-	if err != nil {
-		return &apiError{code: codeBlobUploadInvalid, err: err}
+	return h.openSession(w, r, t, rr, "", startSession(rr))
+}
+
+// startSession is the start of openSession for a new backend session of rr.
+func startSession(rr provider.Repository) func(context.Context) (bool, provider.Upload, error) {
+	return func(ctx context.Context) (bool, provider.Upload, error) {
+		u, err := rr.StartBlobUpload(ctx)
+		return false, u, err
 	}
-	return h.openSession(w, r, t, rr, u)
 }
 
 // ensureRepository creates the backend's repository of t where the backend does not create
@@ -168,21 +172,11 @@ func (h *handler) mount(w http.ResponseWriter, r *http.Request, t *target, rr pr
 		return err
 	}
 	if ok {
-		mounted, u, err := rr.MountBlob(ctx, d, src)
-		switch {
-		case err != nil:
-			return &apiError{code: codeBlobUploadInvalid, err: err}
-		case mounted:
-			answerBlob(w, t, d)
-			return nil
-		}
-		return h.openSession(w, r, t, rr, u)
+		return h.openSession(w, r, t, rr, d, func(ctx context.Context) (bool, provider.Upload, error) {
+			return rr.MountBlob(ctx, d, src)
+		})
 	}
-	u, err := rr.StartBlobUpload(ctx)
-	if err != nil {
-		return &apiError{code: codeBlobUploadInvalid, err: err}
-	}
-	return h.openSession(w, r, t, rr, u)
+	return h.openSession(w, r, t, rr, "", startSession(rr))
 }
 
 // mountSource returns the OCI name of the mount source from, and false when there is none to
@@ -220,20 +214,44 @@ func (h *handler) mountSource(ctx context.Context, t *target, from string) (stri
 	return src.oci, true, nil
 }
 
-// openSession writes the row of a new backend session u and answers 202 with its Location. A
-// row that cannot be written cancels the backend session.
-func (h *handler) openSession(w http.ResponseWriter, r *http.Request, t *target, rr provider.Repository, u provider.Upload) error {
+// openSession opens an upload session of t. It counts the new upload id among the principal's
+// live sessions first (admitUpload: 429 at a bound), then start opens the backend's session, or
+// mounts the blob d (not empty), which is answered 201 and opens nothing: at a bound a mount is
+// still tried, and only a session it answers instead is cancelled and refused. The row of the
+// session is written and the answer is 202 with its Location; a row that cannot be written
+// cancels the backend session.
+func (h *handler) openSession(w http.ResponseWriter, r *http.Request, t *target, rr provider.Repository, d digest.Digest,
+	start func(context.Context) (bool, provider.Upload, error)) error {
 	ctx := r.Context()
 	id, err := newUploadID()
 	if err != nil {
-		h.cancelBackend(ctx, rr, u)
 		return err
 	}
-	s := &index.Session{RepoID: t.repo.ID, Key: uploadKind + id, Principal: auth.PrincipalFrom(ctx).String(), State: "open"}
+	principal := auth.PrincipalFrom(ctx).String()
+	full := h.admitUpload(ctx, t, principal, id)
+	if full != nil && d == "" {
+		return full
+	}
+	mounted, u, err := start(ctx)
+	switch {
+	case err != nil:
+		h.uploads.release(principal, id)
+		return &apiError{code: codeBlobUploadInvalid, err: err}
+	case mounted:
+		h.uploads.release(principal, id)
+		answerBlob(w, t, d)
+		return nil
+	case full != nil:
+		h.cancelBackend(ctx, rr, u)
+		return full
+	}
+	s := &index.Session{RepoID: t.repo.ID, Key: uploadKind + id, Principal: principal, State: "open"}
 	if err := h.saveSession(ctx, s, uploadState{Name: t.name, Location: u.Location, ID: u.ID, Offset: u.Offset}); err != nil {
+		h.uploads.release(principal, id)
 		h.cancelBackend(ctx, rr, u)
 		return err
 	}
+	h.uploads.end(principal, id, h.o.Now())
 	answerSession(w, t, id, u, http.StatusAccepted)
 	return nil
 }
@@ -248,6 +266,7 @@ func (h *handler) patchUpload(w http.ResponseWriter, r *http.Request, t *target,
 	if err != nil {
 		return err
 	}
+	defer h.requestEnded(s)
 	size, err := chunkSize(w, r, t, id, st.Offset)
 	if err != nil {
 		return err
@@ -305,6 +324,7 @@ func (h *handler) putUpload(w http.ResponseWriter, r *http.Request, t *target, i
 	if err != nil {
 		return err
 	}
+	defer h.requestEnded(s)
 	d, err := parseDigest(r.URL.Query().Get("digest"))
 	if err != nil {
 		return err
@@ -361,6 +381,7 @@ func (h *handler) uploadStatus(w http.ResponseWriter, r *http.Request, t *target
 	if err != nil {
 		return err
 	}
+	defer h.requestEnded(s)
 	u, err := rr.BlobUploadStatus(ctx, st.upload())
 	if err != nil {
 		return h.sessionError(ctx, s, err, nil)
@@ -381,6 +402,7 @@ func (h *handler) cancelUpload(w http.ResponseWriter, r *http.Request, t *target
 	if err != nil {
 		return err
 	}
+	defer h.requestEnded(s)
 	if err := rr.CancelBlobUpload(ctx, st.upload()); err != nil && !errors.Is(err, provider.ErrNotFound) {
 		return &apiError{code: codeBlobUploadInvalid, err: err}
 	}
@@ -395,7 +417,8 @@ func (h *handler) cancelUpload(w http.ResponseWriter, r *http.Request, t *target
 var errUploadUnknown = &apiError{status: http.StatusNotFound, code: codeBlobUploadUnknown, msg: "blob upload unknown to registry"}
 
 // continueSession authorizes the write and loads the row of upload id: absent, expired, of
-// another repo, name or principal is BLOB_UPLOAD_UNKNOWN.
+// another repo, name or principal is BLOB_UPLOAD_UNKNOWN. The session then counts as live, with
+// a request running, until the caller's requestEnded.
 func (h *handler) continueSession(r *http.Request, t *target, id string) (*index.Session, uploadState, provider.Repository, error) {
 	ctx := r.Context()
 	var st uploadState
@@ -424,7 +447,13 @@ func (h *handler) continueSession(r *http.Request, t *target, id string) (*index
 	if err != nil {
 		return nil, st, nil, err
 	}
+	h.uploads.begin(s.Principal, s.RepoID, id, h.o.Now())
 	return s, st, rr, nil
+}
+
+// requestEnded records the end of a request on the upload session s that continueSession began.
+func (h *handler) requestEnded(s *index.Session) {
+	h.uploads.end(s.Principal, strings.TrimPrefix(s.Key, uploadKind), h.o.Now())
 }
 
 // saveSession writes the row s with the upload st, and moves its expiry uploadTTL from now.
@@ -440,8 +469,10 @@ func (h *handler) saveSession(ctx context.Context, s *index.Session, st uploadSt
 	return nil
 }
 
-// dropSession deletes the row s. A failure is logged: the row expires.
+// dropSession deletes the row s, and the session no longer counts among the principal's live
+// ones. A failure is logged: the row expires.
 func (h *handler) dropSession(ctx context.Context, s *index.Session) {
+	h.uploads.release(s.Principal, strings.TrimPrefix(s.Key, uploadKind))
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
 	if err := h.o.Index.DeleteSession(ctx, s.ID); err != nil && !errors.Is(err, index.ErrNotFound) {

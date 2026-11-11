@@ -26,6 +26,9 @@ server:
   pprof: false                        # /debug/pprof/ on the metrics listener
   stallTimeout: 1m                    # a body that moves no byte for this long is cut off; 0s: off
   maxConcurrentUploads: 0             # uploads at once per replica, the next one is 503; 0: no limit
+  uploadSessions:                     # live /v2 upload sessions of one principal on a replica; 0: no bound
+    perRepo: 256                      # in one repo; a new session beyond is 429 TOOMANYREQUESTS
+    perPrincipal: 1024                # in all repos
   trustedProxies: []                 # CIDRs of the edge whose X-Forwarded-For is believed; empty: the peer is the client
 
 log:

@@ -115,6 +115,12 @@ func (s Server) validate(p *problems) {
 	if s.MaxConcurrentUploads < 0 {
 		p.add("server.maxConcurrentUploads", "must not be negative")
 	}
+	if s.UploadSessions.PerRepo < 0 {
+		p.add("server.uploadSessions.perRepo", "must not be negative")
+	}
+	if s.UploadSessions.PerPrincipal < 0 {
+		p.add("server.uploadSessions.perPrincipal", "must not be negative")
+	}
 	for i, e := range s.TrustedProxies {
 		if _, err := parsePrefix(e); err != nil {
 			p.add(fmt.Sprintf("server.trustedProxies[%d]", i), "%q is not an address or a CIDR prefix", e)
