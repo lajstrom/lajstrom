@@ -341,6 +341,15 @@ list of `quirks/x`, which leaves the blob `HEAD` handler without a digest: 400 (
 that asks `HEAD` before an upload sends the blob again; one that checks a blob after a push may
 find it missing. Reported as [harbor#24363](https://github.com/goharbor/harbor/issues/24363).
 
+`lajstrom registry probe` (#623) measured the same on a fresh Harbor v2.15.4 the same day, under the
+prefix `hnprobe/`, its row "Routing words in a name":
+
+```text
+misroutes: blob HEAD in x/manifests/y 13×404, x/manifests 12×404, x/referrers/y 1×404,
+x/tags/list 15×400 of 20; GET 200
+x HEAD 20×200, GET 200 (the control name)
+```
+
 ### Elsewhere (read, not measured)
 
 - **GitLab.** A group and a project cannot share a path under one parent
