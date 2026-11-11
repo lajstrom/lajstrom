@@ -32,6 +32,8 @@ type Pipeline struct {
 	now       func() time.Time
 	log       *slog.Logger
 	claimTTL  time.Duration
+	// visibility bounds the read-back of a push (awaitVisible).
+	visibility time.Duration
 
 	sessionTimeout time.Duration
 }
@@ -59,6 +61,10 @@ type Options struct {
 	// negative, means 30 minutes. A repo whose policy has maven.sessionTimeout uses that
 	// instead (docs/api.md). A session whose time is up is dropped (format.Sessions).
 	SessionTimeout time.Duration
+	// VisibilityTimeout is how long a publish reads back what it pushed before it confirms
+	// it (the visibility barrier, awaitVisible); a registry's consistencyBound raises it.
+	// Zero, or negative, means 30 seconds.
+	VisibilityTimeout time.Duration
 }
 
 // defaultClaimTTL is ClaimTTL when Options leaves it zero.
@@ -75,6 +81,7 @@ func New(o Options) *Pipeline {
 		log:       o.Log,
 		claimTTL:  o.ClaimTTL,
 
+		visibility:     o.VisibilityTimeout,
 		sessionTimeout: o.SessionTimeout,
 	}
 	if p.plugins == nil {
@@ -91,6 +98,9 @@ func New(o Options) *Pipeline {
 	}
 	if p.sessionTimeout <= 0 {
 		p.sessionTimeout = defaultSessionTimeout
+	}
+	if p.visibility <= 0 {
+		p.visibility = defaultVisibilityTimeout
 	}
 	return p
 }
@@ -136,16 +146,20 @@ type Result struct {
 //     of the push, pending, in a transaction of its own, then PUT the manifest with its tag in
 //     one request (provider.Repository.PushReference); a failure releases the claim on the tag
 //     and marks the row failed;
-//  6. confirm in one index transaction, only after the registry accepted the manifest:
+//  6. read back what the push wrote until the registry serves it (the visibility barrier,
+//     awaitVisible): past Options.VisibilityTimeout the error wraps provider.ErrUnavailable
+//     (503 with Retry-After) and the row is marked failed, and the claims stay, so that the
+//     same publish again shares them;
+//  7. confirm in one index transaction, only after the registry served the manifest:
 //     package, version and files, the OCI repository, the invalidated index_cache, the audit
 //     row ok, and both claims released. When this fails the row is marked failed, the manifest
 //     stays for reindex to pick up and the error is a plain one (500), unless the index
 //     refused a conflict: the tag taken meanwhile, or the package path held by another
 //     spelling of the name that reindex found meanwhile (#97).
 //
-// Errors wrap ErrInvalid (steps 1 to 3), ErrConflict (steps 4 to 6, with an
+// Errors wrap ErrInvalid (steps 1 to 3), ErrConflict (steps 4 to 7, with an
 // *index.TagConflictError naming the existing digest when the conflict is a tag and the digest
-// is known), or neither.
+// is known), provider.ErrUnavailable (step 6), or neither.
 func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, principal auth.Principal) (res *Result, err error) {
 	defer func() { count(repo.Format, res != nil && res.Existed, err) }()
 	plugin, prov, err := p.lookup(repo)
@@ -341,6 +355,10 @@ func (p *Pipeline) ingest(ctx context.Context, pub *publish) (*Result, error) {
 	}
 	if !existed {
 		if err := p.push(ctx, pub); err != nil {
+			return nil, err
+		}
+		if err := p.awaitVisible(ctx, pub.published()); err != nil {
+			p.fail(ctx, &pub.ev, err) // the claims stay, for the same publish again
 			return nil, err
 		}
 		if existed, err = p.confirm(ctx, pub); err != nil {

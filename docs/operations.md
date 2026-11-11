@@ -591,6 +591,33 @@ DNS outage) is unavailable from the first request on: the client gets `503` with
 `Retry-After` (on `/v2` with the code `UNAVAILABLE`), and each such request counts as unanswered
 for the breaker, which opens after five as above.
 
+### An eventually consistent registry
+
+Some registries answer `201` to a push before every read sees it: ECR, by the reports of tool
+maintainers for 100 ms to several seconds, and GHCR now and then for a fraction of a second
+([registries/README.md](registries/README.md#consistency)). Lajstrom does not index a version
+until the registry serves it. After the manifest's `PUT` every publish reads the manifest back
+by digest; on a registry not classified `strong`, its tag and its blobs too. What it does not
+see it reads again, after 100 to 200 ms, then twice as long each time, at most 5 s a wait, for
+[`ingest.visibilityTimeout`](configuration.md#ingest) (30 s), or the registry's
+`capabilities.consistencyBound` when that is longer. On a registry that serves at once this
+costs one `HEAD` per publish on a `strong` one, and a `HEAD` per blob and the tag more on the
+others.
+
+What an operator of ECR sees:
+
+- At startup, `registry capabilities … consistency=eventual`, and a warning that no bound of the
+  lag is known until `registries[].capabilities.consistencyBound` is set. `lajstrom registry
+  probe` measures the lag of a registry of type `generic`; for ECR, #19 does.
+- A publish the registry served after more than a second: `ingest: the registry served a push
+  late` at info, with the time it took.
+- A publish the registry did not serve in time: the client gets `503` with `Retry-After: 30`
+  (on `/v2` the code `UNAVAILABLE`, which docker and oras retry), and the log has `ingest: the
+  registry took a push and does not serve it yet` at warning, naming what was missing. The
+  manifest stays in the registry and the index has no version. The claim on the tag stays as
+  well, for `ingest.claimTTL`: another digest under the tag is `409`, and the same publish
+  again completes it. A client that never retries leaves the manifest for reindex to index.
+
 ### Requests from clients
 
 | Bound | Value | What happens |

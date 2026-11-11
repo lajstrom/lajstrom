@@ -19,11 +19,13 @@ var (
 	ErrUnsupported = errors.New("provider: unsupported")
 	// ErrUnauthorized means the backend rejected Lajstrom's own credentials.
 	ErrUnauthorized = errors.New("provider: unauthorized")
-	// ErrUnavailable means the backend takes no request now: the provider did not send it,
-	// because the backend failed repeatedly and its circuit breaker is open (an
-	// *UnavailableError), or the backend answered 429 or 503 (a *RejectedError). Both say when
-	// to try again (RetryAfter). It also means that the provider could not reach the backend
-	// because its host name does not resolve (#561), which says no time.
+	// ErrUnavailable means the backend takes no request now, or does not serve yet a write it
+	// acknowledged: the provider did not send the request, because the backend failed
+	// repeatedly and its circuit breaker is open (an *UnavailableError); the backend answered
+	// 429 or 503 (a *RejectedError); or a push is not served after the read-back (an
+	// *UnavailableError with a Reason). Each says when to try again (RetryAfter). It also means
+	// that the provider could not reach the backend because its host name does not resolve
+	// (#561), which says no time.
 	ErrUnavailable = errors.New("provider: unavailable")
 	// ErrRejected means the backend refused a request with a status that no other sentinel
 	// names: a 4xx such as 400 BLOB_UPLOAD_INVALID, MANIFEST_INVALID or SIZE_INVALID, 413 or
@@ -82,13 +84,19 @@ func (e *RejectedError) Busy() bool {
 }
 
 // UnavailableError is an ErrUnavailable that says how long until the provider sends a request
-// to the backend again.
+// to the backend again, or until the backend serves what it did not yet: a push it acknowledged
+// and does not serve after the read-back (ReadBack), on an eventually consistent backend.
 type UnavailableError struct {
 	// RetryAfter is the time until then, zero when a request may go now.
 	RetryAfter time.Duration
+	// Reason says why, for the log; empty is an open circuit breaker.
+	Reason string
 }
 
 func (e *UnavailableError) Error() string {
+	if e.Reason != "" {
+		return "provider: unavailable: " + e.Reason
+	}
 	return "provider: unavailable: the registry failed repeatedly, requests fail at once for " + e.RetryAfter.Round(time.Second).String()
 }
 

@@ -34,7 +34,9 @@ var (
 		"Gitlab-Container-Registry-Features":         {"tag_delete"},
 		"Gitlab-Container-Registry-Database-Enabled": {"true"},
 	}
-	plainV2                   = http.Header{"Docker-Distribution-Api-Version": {"registry/2.0"}}
+	plainV2 = http.Header{"Docker-Distribution-Api-Version": {"registry/2.0"}}
+	zotV2   = http.Header{"Docker-Distribution-Api-Version": {"registry/2.0"},
+		"Access-Control-Allow-Headers": {"Authorization,content-type,X-ZOT-API-CLIENT"}}
 	nexusV2                   = http.Header{"Docker-Distribution-Api-Version": {"registry/2.0"}, "Server": {"Nexus/3.98.1-01 (COMMUNITY)"}}
 	jfrogV2                   = http.Header{"Docker-Distribution-Api-Version": {"registry/2.0"}, "X-Jfrog-Version": {"Artifactory/7.161.26 86126900"}, "X-Artifactory-Id": {"a1b2"}}
 	nexusChallenge            = `BASIC realm="Sonatype Nexus Repository Manager"`
@@ -72,8 +74,11 @@ func TestDetectVendor(t *testing.T) {
 		{name: "JFrog", id: identity{host: "localhost:5010", header: jfrogV2, challenge: `Bearer realm="http://localhost:5010/v2/token",service="localhost:5010"`}, want: vendorJFrog},
 		{name: "Gitea and Forgejo", id: identity{host: "localhost:5009", header: plainV2, challenge: giteaChallenge}, want: vendorGitea},
 		{name: "GitLab.com's challenge without its header", id: identity{host: "registry.gitlab.com", challenge: gitLabComChallenge}, want: vendorUnknown},
-		{name: "distribution", id: identity{host: "localhost:5001", header: plainV2}, want: vendorUnknown},
-		{name: "distribution with htpasswd", id: identity{host: "localhost:55002", header: plainV2, challenge: distributionChallenge}, want: vendorUnknown},
+		{name: "distribution", id: identity{host: "localhost:5001", header: plainV2}, want: vendorDistribution},
+		{name: "distribution with htpasswd", id: identity{host: "localhost:55002", header: plainV2, challenge: distributionChallenge}, want: vendorDistribution},
+		{name: "Docker Hub", id: identity{host: "registry-1.docker.io", header: plainV2}, want: vendorUnknown},
+		{name: "ACR", id: identity{host: "example.azurecr.io:443", header: plainV2}, want: vendorUnknown},
+		{name: "Zot", id: identity{host: "localhost:5000", header: zotV2}, want: vendorZot},
 		{name: "a host that ends in ghcr.io", id: identity{host: "notghcr.io"}, want: vendorUnknown},
 		{name: "a host below ghcr.io", id: identity{host: "ghcr.io.example.com"}, want: vendorUnknown},
 		{name: "nothing", want: vendorUnknown},
@@ -122,12 +127,16 @@ func TestChallengeParam(t *testing.T) {
 
 func TestVendorDefaults(t *testing.T) {
 	probed := provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true, DeleteManifest: true, BlobRedirect: true}
+	strong := probed
+	strong.Consistency = provider.ConsistencyStrong
 	tests := []struct {
 		vendor vendor
 		want   provider.Capabilities
 	}{
 		{vendorUnknown, probed},
-		{vendorGitLab, probed},
+		{vendorGitLab, strong},
+		{vendorZot, strong},
+		{vendorDistribution, strong},
 		{vendorHarbor, probed},
 		{vendorGHCR, provider.Capabilities{CreateOnPush: true, Referrers: true, BlobRedirect: true, Consistency: provider.ConsistencyEventual,
 			MaxBlobSize: 10_000_000_000}},
@@ -150,6 +159,8 @@ func TestCapabilitiesVendor(t *testing.T) {
 	defaults := provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true, DeleteManifest: true, BlobRedirect: true}
 	noReferrers := provider.Capabilities{CreateOnPush: true, Catalog: true, DeleteManifest: true, BlobRedirect: true}
 	nexusDocker := provider.Capabilities{CreateOnPush: true, Catalog: true, BlobRedirect: true}
+	strong := defaults
+	strong.Consistency = provider.ConsistencyStrong
 	headers := func(h http.Header, referrers bool) func(f *fakeRegistry) {
 		return func(f *fakeRegistry) {
 			f.referrers = referrers
@@ -192,9 +203,11 @@ func TestCapabilitiesVendor(t *testing.T) {
 		warn   bool
 		hint   bool // the hint at uploads.spoolUnknownLength
 	}{
-		{name: "distribution", setup: headers(plainV2, true), vendor: vendorUnknown},
-		{name: "GitLab A", setup: headers(gitLabA, true), vendor: vendorGitLab},
-		{name: "GitLab B", setup: headers(gitLabB, true), vendor: vendorGitLab, warn: true},
+		{name: "distribution", setup: headers(plainV2, true), vendor: vendorDistribution, want: strong},
+		{name: "Zot", setup: headers(zotV2, true), vendor: vendorZot, want: strong},
+		{name: "another registry", setup: headers(http.Header{}, true), vendor: vendorUnknown},
+		{name: "GitLab A", setup: headers(gitLabA, true), vendor: vendorGitLab, want: strong},
+		{name: "GitLab B", setup: headers(gitLabB, true), vendor: vendorGitLab, warn: true, want: strong},
 		{name: "Harbor", setup: challenge("bearer", "Bearer", `,service="harbor-registry"`, true), vendor: vendorHarbor},
 		{name: "Nexus, docker format", setup: headers(nexusV2, false), vendor: vendorNexus, want: nexusDocker},
 		{name: "Nexus, docker format, told by its challenge", setup: challenge("basic", "BASIC", "", false), vendor: vendorNexus, want: nexusDocker},
