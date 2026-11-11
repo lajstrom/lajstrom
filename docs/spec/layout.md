@@ -127,9 +127,10 @@ type JournalOp struct {
 
 // Sessions are the publication sessions of a format whose upload is several requests (maven,
 // flow B); *ingest.Pipeline implements them (#53). A key, <name>:<version>, has one open session
-// in a repo, held by one principal. Add pushes the file and records it with its checksums;
-// Commit publishes the files through Upload, once at a time; a session whose time is up (30
-// minutes after its last request) is dropped, never published in part.
+// in a repo, held by one principal. Add streams the file into the registry (ADR 0014) and
+// records it with its checksums; Commit publishes the files through Upload, once at a time; a
+// session whose time is up (30 minutes after its last request) is dropped, never published in
+// part.
 type Sessions interface {
     Open(ctx context.Context, repo index.Repo, name, version string, principal auth.Principal) (*index.Session, error)
     Add(ctx context.Context, sessionID int64, name string, r io.Reader, size int64) (SessionFile, error)

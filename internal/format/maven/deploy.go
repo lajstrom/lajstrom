@@ -28,9 +28,10 @@ type deployer struct {
 
 // deployRoutes mounts the deploy path (docs/spec/http-routing.md §3, maven): mvn deploy and
 // Gradle's maven-publish PUT every file of a version, each followed by its checksum files, and
-// then the artifact's maven-metadata.xml, which commits the version. The files go into the
-// publication session of the version (format.Sessions) as they arrive; nothing is published
-// before the commit, and a session that is not committed expires with its files.
+// then the artifact's maven-metadata.xml, which commits the version. The files stream into the
+// registry and the publication session of the version (format.Sessions) as they arrive (ADR
+// 0014), with nothing on a local disk; nothing is published before the commit, and a session
+// that is not committed expires with its files.
 func deployRoutes(r format.Router, deps format.Deps) {
 	d := &deployer{deps: deps}
 	r.HandleFunc("PUT /{repo}/{path...}", d.put)
@@ -79,7 +80,8 @@ func (d *deployer) put(w http.ResponseWriter, r *http.Request) {
 }
 
 // file adds the file at path to the session of its version, opened for the request's principal
-// when there is none.
+// when there is none: the body streams into the registry while the session computes its
+// checksums (Sessions.Add).
 func (d *deployer) file(r *http.Request, repo index.Repo, path string, body io.Reader) (int, error) {
 	ctx := r.Context()
 	f, err := ParsePath(path)

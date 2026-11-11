@@ -62,6 +62,13 @@ type deployEnv struct {
 
 func newDeployEnv(t *testing.T, authz auth.Authorizer) *deployEnv {
 	t.Helper()
+	return newDeployEnvOver(t, authz, nil)
+}
+
+// newDeployEnvOver is newDeployEnv with registry(fake) as the registry of the pipeline, the fake
+// when registry is nil.
+func newDeployEnvOver(t *testing.T, authz auth.Authorizer, registry func(*providertest.Fake) provider.Provider) *deployEnv {
+	t.Helper()
 	ctx := t.Context()
 	st, err := sqlite.Open(ctx, fmt.Sprintf("file:maven-deploy-%d?mode=memory&cache=shared", deployDBs.Add(1)))
 	must(t, err)
@@ -72,8 +79,12 @@ func newDeployEnv(t *testing.T, authz auth.Authorizer) *deployEnv {
 		clock: &deployClock{t: time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)}}
 	must(t, st.CreateRepo(ctx, &e.repo))
 	log := slog.New(slog.DiscardHandler)
+	var reg provider.Provider = e.fake
+	if registry != nil {
+		reg = registry(e.fake)
+	}
 	providers := provider.Map{"local": e.fake}
-	pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: log, Now: e.clock.now, SessionTimeout: time.Minute,
+	pipe := ingest.New(ingest.Options{Providers: provider.Map{"local": reg}, Index: st, Log: log, Now: e.clock.now, SessionTimeout: time.Minute,
 		Plugins: func(name string) (format.Plugin, bool) { return Plugin{}, name == Name }})
 	deps := format.Deps{Index: st, Ingest: pipe, Sessions: pipe, Providers: providers, Auth: authz, Log: log}
 	mux := http.NewServeMux()
