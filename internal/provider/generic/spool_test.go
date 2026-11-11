@@ -71,9 +71,9 @@ func TestSpoolOff(t *testing.T) {
 			u, _ := repo.StartBlobUpload(ctx)
 			u, _ = repo.AppendBlobChunk(ctx, u, strings.NewReader("abc"), 3)
 			_, err := repo.AppendBlobChunk(ctx, u, io.MultiReader(strings.NewReader("de")), -1)
-			wantErr(t, "a streamed chunk after the first", err, errAny)
-			if errors.Is(err, provider.ErrNotFound) || !strings.Contains(fmt.Sprint(err), fmt.Sprintf("response status code %d", refuse)) {
-				t.Errorf("error %v, want the registry's %d", err, refuse)
+			wantErr(t, "a streamed chunk after the first", err, provider.ErrRejected)
+			if rej := (*provider.RejectedError)(nil); !errors.As(err, &rej) || rej.Status != refuse || rej.Hint != "" {
+				t.Errorf("error %v, want the registry's %d without a hint: the fake is no vendor of the table", err, refuse)
 			}
 			if n := f.count("PATCH "); n != 2 {
 				t.Errorf("%d PATCHes, want the first write and the refused chunk", n)
@@ -84,6 +84,45 @@ func TestSpoolOff(t *testing.T) {
 				t.Errorf("BlobUploadStatus = %+v, %v; want the 3 bytes of the first write", got, err)
 			}
 			noSpoolLeft(t, dir)
+		})
+	}
+}
+
+// TestSpoolOffHint: when the vendor table knows the registry for refusing a chunk of unknown
+// size after the first write (JFrog here, told by its header) and the flag is off, the refusal
+// of such a chunk carries the hint that names the flag (#449); the refusal of a chunk of known
+// size out of order does not.
+func TestSpoolOffHint(t *testing.T) {
+	for _, refuse := range refusals {
+		t.Run(strconv.Itoa(refuse), func(t *testing.T) {
+			ctx := t.Context()
+			f := newFakeRegistry(t)
+			f.refuseStreamed = refuse
+			f.hook = func(w http.ResponseWriter, _ *http.Request) bool {
+				w.Header().Set("X-Jfrog-Version", "Artifactory/7.161.26 86126900")
+				return false
+			}
+			log, _ := testLogger()
+			p := f.provider(t, log, nil)
+			if _, err := p.Capabilities(ctx); err != nil {
+				t.Fatal(err)
+			}
+			repo, err := p.Repository(ctx, "raw/scratch/notes")
+			if err != nil {
+				t.Fatal(err)
+			}
+			u, _ := repo.StartBlobUpload(ctx)
+			u, _ = repo.AppendBlobChunk(ctx, u, strings.NewReader("abc"), 3)
+			_, err = repo.AppendBlobChunk(ctx, u, io.MultiReader(strings.NewReader("de")), -1)
+			rej := (*provider.RejectedError)(nil)
+			if !errors.As(err, &rej) || rej.Status != refuse || !strings.Contains(err.Error(), "hint: ") ||
+				!strings.Contains(rej.Hint, "registries[].uploads.spoolUnknownLength") {
+				t.Errorf("a streamed chunk after the first: %v, want the registry's %d with the hint", err, refuse)
+			}
+			_, err = repo.AppendBlobChunk(ctx, provider.Upload{Location: u.Location, ID: u.ID, Offset: 1}, strings.NewReader("x"), 1)
+			if !errors.As(err, &rej) || rej.Status != http.StatusRequestedRangeNotSatisfiable || rej.Hint != "" {
+				t.Errorf("a chunk out of order: %v, want the registry's 416 without a hint", err)
+			}
 		})
 	}
 }

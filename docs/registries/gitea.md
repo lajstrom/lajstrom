@@ -97,7 +97,9 @@ serve log of the e2e run). That is right; no override in `registries[].capabilit
    `registries[].uploads.spoolUnknownLength: true` the provider spools such a chunk to `$TMPDIR`
    for its request and sends it with `Content-Range`; the first chunk still streams. The flag is
    off by default, and the vendor table leaves it so: Lajstrom runs on ephemeral disks. With it
-   off, `serve` logs a hint at start (`vendor=gitea`), and such a chunk fails with the 400.
+   off, `serve` logs a hint at start (`vendor=gitea`), and such a chunk fails with the 400,
+   which the facade passes on as `400 BLOB_UPLOAD_INVALID` with a hint that names the flag
+   (#449).
 5. Read a size-limit refusal as one: over `[packages] LIMIT_SIZE_CONTAINER` the closing `PUT`
    is 403 with an empty body, which the provider makes `ErrUnauthorized` (bad credentials), as
    it does Harbor's quota (harbor.md, item 1): the same contract question.

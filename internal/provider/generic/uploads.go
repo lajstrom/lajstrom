@@ -32,6 +32,10 @@ import (
 // octetStream is the Content-Type of a chunk.
 const octetStream = "application/octet-stream"
 
+// spoolHintText is the hint of a streamed chunk that a registry of hintSpool refused.
+const spoolHintText = "the registry takes a chunk of unknown length only as the first write of an upload, " +
+	"and registries[].uploads.spoolUnknownLength sends such a chunk with its length"
+
 var _ provider.BlobUploader = (*repository)(nil)
 
 // StartBlobUpload opens a session: POST /v2/<name>/blobs/uploads/, 202 with the Location.
@@ -76,8 +80,9 @@ func (r *repository) MountBlob(ctx context.Context, d digest.Digest, from string
 // registry checks (416 when it does not hold that many bytes); one of unknown size goes out
 // with chunked encoding and no Content-Range, the streamed PATCH that docker sends. With
 // registries[].uploads.spoolUnknownLength on, a chunk of unknown size into a session that holds
-// bytes is spooled first and sent as one of known size (spool.go). A chunk of 0 bytes sends
-// nothing.
+// bytes is spooled first and sent as one of known size (spool.go); with it off, the refusal of
+// such a chunk may carry a hint that names the key (addSpoolHint). A chunk of 0 bytes
+// sends nothing.
 func (r *repository) AppendBlobChunk(ctx context.Context, u provider.Upload, body io.Reader, size int64) (provider.Upload, error) {
 	op := r.op("append to upload", u.ID)
 	loc, err := r.p.location(u.Location)
@@ -87,7 +92,8 @@ func (r *repository) AppendBlobChunk(ctx context.Context, u provider.Upload, bod
 	if size == 0 || body == nil {
 		return u, nil
 	}
-	if size < 0 && u.Offset > 0 && r.p.spoolUnknown {
+	streamed := size < 0 && u.Offset > 0 // what Gitea and JFrog refuse (hintSpool)
+	if streamed && r.p.spoolUnknown {
 		c, err := spoolChunk(body)
 		if err != nil {
 			return u, fmt.Errorf("generic: %s: %w", op, err)
@@ -110,6 +116,9 @@ func (r *repository) AppendBlobChunk(ctx context.Context, u provider.Upload, bod
 	cr := &countingReader{r: body}
 	resp, err := r.send(ctx, op, http.MethodPatch, loc.String(), cr, size, hdr, http.StatusAccepted)
 	if err != nil {
+		if streamed {
+			r.p.addSpoolHint(err)
+		}
 		return u, err
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -196,6 +205,17 @@ func (r *repository) CancelBlobUpload(ctx context.Context, u provider.Upload) er
 	return resp.Body.Close()
 }
 
+// addSpoolHint adds spoolHintText to err, the refusal of a chunk of unknown length into a session
+// that holds bytes, when the vendor table knows the registry for refusing it (spoolHint) and
+// the refusal is the 400 or 416 of hintSpool.
+func (p *Provider) addSpoolHint(err error) {
+	var rej *provider.RejectedError
+	if p.spoolHint.Load() && errors.As(err, &rej) &&
+		(rej.Status == http.StatusBadRequest || rej.Status == http.StatusRequestedRangeNotSatisfiable) {
+		rej.Hint = spoolHintText
+	}
+}
+
 // uploadsURL is the upload endpoint of the repository, with query q.
 func (r *repository) uploadsURL(q url.Values) string {
 	u := r.p.base + "/v2/" + r.p.repoName(r.name) + "/blobs/uploads/"
@@ -241,7 +261,7 @@ func (r *repository) send(ctx context.Context, op, method, target string, body i
 		u.RawQuery = "" // distribution's upload state; the log never carries it
 		er.URL = &u
 	}
-	return nil, translate(op, er)
+	return nil, r.p.translateSession(op, resp, er)
 }
 
 // prime readies the auth client for a request with a streamed body to the session at loc.
