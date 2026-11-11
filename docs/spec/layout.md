@@ -84,6 +84,14 @@ type Plugin interface {
     RenderIndex(ctx context.Context, repo index.Repo, scope IndexScope, st index.Reader) ([]Document, error)
 }
 
+// Streamer is a Plugin whose frontend uploads stream into the registry (ADR 0014): the frontend
+// calls Publisher.UploadStream, Build takes the file without Open. Formats move one by one.
+type Streamer interface {
+    Plugin
+    // the checksums Build needs besides sha256, and the inspector the bytes pass through
+    Inspect(repo index.Repo, up StreamUpload) (Inspection, error)
+}
+
 // Router takes ServeMux patterns relative to /<format>/, e.g. "GET /{repo}/simple/{project}/".
 type Router interface {                     // implementation: NewRouter
     Handle(pattern string, h http.Handler)
@@ -93,6 +101,10 @@ type Router interface {                     // implementation: NewRouter
 // Publisher is the write path as plugins see it; *ingest.Pipeline implements it.
 type Publisher interface {
     Upload(ctx context.Context, repo index.Repo, up Upload, principal auth.Principal) (*Published, error)
+    // UploadStream: one file of a Streamer's format, read once into a registry upload session,
+    // the hashes and the inspector; the session is closed with the digest ingest computed once
+    // Build and every check of Upload passed, cancelled otherwise (ADR 0014)
+    UploadStream(ctx context.Context, repo index.Repo, up StreamUpload, principal auth.Principal) (*Published, error)
     // Delete: the manifest del names, its referrers before it, then its rows and the repo's
     // rendered indexes, one audit row; ingest.Pipeline.Delete (#61)
     Delete(ctx context.Context, repo index.Repo, del Deletion, principal auth.Principal) (*Deleted, error)
@@ -181,11 +193,34 @@ type UploadedFile struct {
     Name        string                      // maven: the path below /maven/<repo>/
     Size        int64                       // -1 when unknown
     ContentType string
-    Open        func() (io.ReadCloser, error) // re-openable: Build reads it, ingest pushes it
+    Open        func() (io.ReadCloser, error) // re-openable: Build reads it, ingest pushes it; nil when streamed
     // Lowercase hex by md5, sha1, sha256, sha512, computed once as the bytes streamed in; nil
     // when none. All four and a known Size: the file is in the backend (a session pushed it,
-    // #53), Build need not open it and leaves it out of Built.Blobs.
+    // #53), Build need not open it and leaves it out of Built.Blobs. Without Open, the file
+    // streamed (UploadStream): sha256 and Inspection.Checksums, and Build describes its layer
+    // from them, leaving it out of Built.Blobs; ingest commits its session.
     Checksums   map[string]string
+    Inspector   Inspector                   // a streamed file's, closed, for Build to read; nil otherwise
+}
+// StreamUpload is one file that streams into the registry as it is read (ADR 0014). The
+// frontend knows the package before the first byte: raw from the path, npm from the URL, apt
+// from the control file it read ahead.
+type StreamUpload struct {
+    Name   string                           // the package name: EscapeName of it is the OCI repository
+    File   UploadedFile                     // Name, Size (-1 unknown) and ContentType; the rest is ingest's
+    Body   io.Reader                        // read once, to its end; bounded by the frontend (LimitBody, 413)
+    Params map[string]string
+    Origin *Origin
+}
+type Inspection struct {
+    Checksums []string                      // besides sha256: md5, sha1, sha512
+    Inspector Inspector                     // nil: Build needs nothing of the bytes but their checksums (raw)
+}
+// Inspector reads a file on its way into the registry: every byte through Write once, in order,
+// Close after the last; bounded (#243), hostile input; an error refuses the upload.
+type Inspector interface {
+    io.Writer
+    Close() error
 }
 type Built struct {
     Manifest ocispec.Manifest
@@ -1037,6 +1072,16 @@ Where the merged shapes differ from the first sketch of this section, and why:
 - **UploadedFile is re-openable via a request spool**: Build reads the file to parse and digest
   it, ingest reads it again to push it. The spool lives for one request and is never served
   from; artifact bytes live only in the registry.
+- **A streamed upload has its own entry point**
+  ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)). A format moves to it by
+  becoming a `Streamer`; the others keep `Upload` and the spool until their move.
+  `UploadStream` takes the package name from the frontend, because a session belongs to an OCI
+  repository. The file reaches `Build` without `Open`, with its checksums and its inspector.
+  Ingest holds the session in the target and commits it between the backend's tag check and
+  the manifest's `PUT`. A refused upload, and the idempotent repeat, cancel it.
+  `Validate` cannot fetch the streamed blob, which is not committed yet; a plugin whose
+  `Validate` reads its file takes what it needs from its inspector when it moves. The read-back
+  of ADR 0014 step 5, for a wheel the inspector cannot follow, comes with the wheel's move.
 - **The provider chunks a streamed blob, not ingest.** `BlobWriter` sends chunks of known size
   with `Content-Range`, which every registry measured takes after the first write (the
   streamed `PATCH` is refused there by Gitea and JFrog). It holds one chunk in memory, 8 MiB in

@@ -134,10 +134,11 @@ func (e *tooLarge) Unwrap() []error {
 
 // checkBlobs checks that every layer is in the backend, and pushes the empty config, which is
 // Lajstrom's own, when it is not; Inspect pushes nothing, and with allowDegraded leaves a missing
-// metadata layer to metadataUnreadable.
+// metadata layer to metadataUnreadable. The streamed file of UploadStream is in its session
+// until the push commits it.
 func (pub *publish) checkBlobs(ctx context.Context) error {
 	for _, l := range pub.manifest.Layers {
-		if pub.allowDegraded && pub.parsed.Metadata != nil && l.Digest == pub.parsed.Metadata.Digest {
+		if pub.allowDegraded && pub.parsed.Metadata != nil && l.Digest == pub.parsed.Metadata.Digest || pub.streamed.holds(l.Digest) {
 			continue
 		}
 		ok, err := pub.rr.Exists(ctx, l)
@@ -169,6 +170,10 @@ func (pub *publish) fetcher() format.BlobFetcher {
 		desc, ok := pub.descriptor(d)
 		if !ok {
 			return nil, fmt.Errorf("%w: the manifest names no blob %s", ErrInvalid, d)
+		}
+		if pub.streamed.holds(d) && !pub.streamed.done {
+			return nil, fmt.Errorf("ingest: blob %s streams into %s and is committed after Validate: "+
+				"a Streamer's Validate takes what it needs of it from the inspector", d, pub.name)
 		}
 		return &fetchedBlob{ctx: ctx, pub: pub, desc: desc, blocks: map[int64][]byte{}}, nil
 	}
@@ -245,17 +250,21 @@ func (pub *publish) readMetadata(ctx context.Context) (json.RawMessage, error) {
 
 // pushBlobs pushes the blobs of a Build that the backend does not have, each streamed from its
 // source and checked against its descriptor on the way. A layer of the manifest that is
-// neither among them nor in the backend is ErrInvalid.
+// neither among them nor in the backend is ErrInvalid, but for the streamed file of
+// UploadStream, which the push commits.
 func (t *target) pushBlobs(ctx context.Context, built *format.Built) error {
 	have := map[digest.Digest]bool{}
 	for _, b := range built.Blobs {
 		have[b.Descriptor.Digest] = true
+		if t.streamed.holds(b.Descriptor.Digest) {
+			continue
+		}
 		if err := t.pushBlob(ctx, b); err != nil {
 			return err
 		}
 	}
 	for _, l := range built.Manifest.Layers {
-		if have[l.Digest] {
+		if have[l.Digest] || t.streamed.holds(l.Digest) {
 			continue
 		}
 		ok, err := t.rr.Exists(ctx, l)

@@ -55,6 +55,18 @@ type Plugin interface {
 	RenderIndex(ctx context.Context, repo index.Repo, scope IndexScope, st index.Reader) ([]Document, error)
 }
 
+// Streamer is a Plugin whose frontend uploads stream into the registry (ADR 0014,
+// docs/adr/0014-uploads-stream-into-the-registry.md): the frontend calls
+// Publisher.UploadStream, and Build takes the file without Open. Each format moves to it on its
+// own; until then its uploads are spooled (Spool) and go through Publisher.Upload.
+type Streamer interface {
+	Plugin
+	// Inspect says how ingest reads the file of up on its way to repo: the checksums Build
+	// needs besides sha256, and the inspector its bytes pass through. An error refuses the upload
+	// before a byte is read, as Build's would.
+	Inspect(repo index.Repo, up StreamUpload) (Inspection, error)
+}
+
 // Router is what a plugin mounts its handlers on. Patterns are net/http ServeMux patterns
 // relative to /<format>/, for example "GET /{repo}/simple/{project}/"; the implementation,
 // NewRouter, prefixes them with the plugin name and resolves {repo}.
@@ -71,6 +83,11 @@ type Publisher interface {
 	// Upload builds the manifest with the plugin of repo's format, pushes the blobs and the
 	// manifest, and indexes the result. See ingest.Pipeline.Upload.
 	Upload(ctx context.Context, repo index.Repo, up Upload, principal auth.Principal) (*Published, error)
+	// UploadStream publishes one file that streams into the registry while it is read, for a
+	// plugin that is a Streamer (ADR 0014): its bytes go to an upload session, which is closed
+	// with their digest once Build and every check of Upload passed, and cancelled otherwise.
+	// See ingest.Pipeline.UploadStream.
+	UploadStream(ctx context.Context, repo index.Repo, up StreamUpload, principal auth.Principal) (*Published, error)
 	// Delete deletes the manifest that del names in the backend, its referrers before it, and
 	// then what the index holds of it: a version's rows, the repo's rendered indexes, one audit
 	// row. A backend that cannot delete manifests is provider.ErrUnsupported, and nothing
