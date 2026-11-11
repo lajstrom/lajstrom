@@ -85,6 +85,7 @@ func TestRegistryProbe(t *testing.T) {
 		{"unknown registry", []string{"registry", "probe", "--config", cfg, "--registry", "nope"}, `no registry "nope"`},
 		{"bad size", []string{"registry", "probe", "--url", srv.URL, "--max-blob-size", "8MB"}, "--max-blob-size"},
 		{"bad output", []string{"registry", "probe", "--url", srv.URL, "-o", "yaml"}, "--output"},
+		{"no routing heads", []string{"registry", "probe", "--url", srv.URL, "--routing-heads", "0"}, "--routing-heads"},
 		{"url, scratch taken", []string{"registry", "probe", "--url", srv.URL, "--username", "probe", "--password-file", password,
 			"--scratch", "lajstrom-probe-taken"}, "scratch prefix is not empty"},
 		{"configuration, scratch taken", []string{"registry", "probe", "--config", cfg, "--registry", "taken",

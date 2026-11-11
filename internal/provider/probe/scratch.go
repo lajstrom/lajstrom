@@ -20,7 +20,8 @@ const (
 
 // repositories are the repositories below the scratch prefix that the run pushes to and that
 // must not exist before it.
-var repositories = []string{"create", "ref", "ord", "tags", "lag", "del", "imm", "blob", "size", "profile", "up", "mount", "replica"}
+var repositories = append([]string{"create", "ref", "ord", "tags", "lag", "del", "imm", "blob", "size", "profile", "up", "mount", "replica"},
+	routingNames...)
 
 // checkScratch refuses a scratch prefix that already holds something: a repository below it
 // in the catalog, or a tag in one of the repositories the run pushes to.

@@ -230,6 +230,11 @@ Afterwards every manifest and blob was deleted (202). distribution keeps the emp
 in `_catalog`, having no repository delete; Zot drops them at a collection, but for those its
 collector never visits (below), whose empty directories stay.
 
+`lajstrom registry probe` asks every registry what Harbor gets wrong below (its row "Routing
+words in a name", [README](README.md#routing-words)). On 2026-11-11, on both, an image in
+`route/x`, `route/x/manifests/y`, `route/x/manifests`, `route/x/referrers/y` and
+`route/x/tags/list`, each layer 20 times by `HEAD` and once by `GET`: 200 every time, `ok`.
+
 ### Zot's catalog and collector skip names that end in `blobs`, `.uploads` or `.sync`
 
 Zot keeps each repository as an OCI image layout in a directory of its name (`index.json`,
