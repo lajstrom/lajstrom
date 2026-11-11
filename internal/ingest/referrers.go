@@ -46,8 +46,12 @@ type Referrer struct {
 // an oci repo runs under it with the API too, the tag lock that a delete holds. Its audit row,
 // a push by principal whose subject is the subject's digest, with the client address, and the
 // referrer's kind and artifact type and the request id in the details, is written pending
-// before the push and completed after it, ok or failed; a repeat writes another. Errors wrap
-// ErrInvalid (the checks) or ErrConflict (a tag the backend will not re-point).
+// before the push and completed after it, ok or failed; a repeat writes another. Before the
+// row is completed the referrer reads back until the registry serves it, among its subject's
+// referrers too (awaitVisible, for twice the visibility timeout). Errors wrap ErrInvalid (the
+// checks), ErrConflict (a tag the backend will not re-point) or provider.ErrUnavailable (the
+// registry did not serve the referrer in time: 503 with Retry-After; the push stays, and the
+// same push again completes it).
 func (p *Pipeline) PutReferrer(ctx context.Context, repo index.Repo, r Referrer, principal auth.Principal) (digest.Digest, error) {
 	m, err := parseReferrer(r)
 	if err != nil {
@@ -63,6 +67,7 @@ func (p *Pipeline) PutReferrer(ctx context.Context, repo index.Repo, r Referrer,
 			return "", err
 		}
 	}
+
 	kind := profile.ReferrerKind(r.Tag, m)
 	artifactType := cmp.Or(m.ArtifactType, m.Config.MediaType)
 	ev := index.AuditEvent{At: p.now(), Principal: principal.String(), Action: "push", Repo: repo.Format + "/" + repo.Name,
@@ -75,10 +80,25 @@ func (p *Pipeline) PutReferrer(ctx context.Context, repo index.Repo, r Referrer,
 		p.fail(ctx, &ev, err)
 		return "", err
 	}
+	if err := p.awaitReferrer(ctx, prov, name, r, m); err != nil {
+		p.fail(ctx, &ev, err)
+		return "", err
+	}
 	p.log.InfoContext(ctx, "ingest: referrer stored", "repo", repo.Format+"/"+repo.Name, "name", name, "digest", r.Desc.Digest.String(),
 		"subject", r.Subject.String(), "kind", kind, "artifactType", artifactType, "principal", principal.String())
 	p.auditReferrer(ctx, &ev)
 	return r.Desc.Digest, nil
+}
+
+// awaitReferrer reads the referrer r, whose manifest is m, back from the repository name of prov
+// until the registry serves it, among its subject's referrers too (awaitVisible).
+func (p *Pipeline) awaitReferrer(ctx context.Context, prov provider.Provider, name string, r Referrer, m ocispec.Manifest) error {
+	rr, err := prov.Repository(ctx, name)
+	if err != nil {
+		return fmt.Errorf("ingest: repository %s: %w", name, err)
+	}
+	return p.awaitVisible(ctx, pushed{name: name, rr: rr, prov: prov, manifest: r.Desc, tag: r.Tag,
+		blobs: append([]ocispec.Descriptor{m.Config}, m.Layers...), subject: m.Subject})
 }
 
 // parseReferrer returns the manifest of r, whose bytes must be its digest and whose subject,
