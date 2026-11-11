@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -16,16 +17,14 @@ const basicChallenge = `Basic realm="lajstrom"`
 
 // WriteError answers err with the status its sentinel maps to and a text/plain body (with
 // X-Content-Type-Options: nosniff) and returns the status. 4xx bodies are err.Error()+"\n";
-// 5xx bodies are http.StatusText(status)+"\n" (the cause is for the log, not the client).
+// 5xx bodies are http.StatusText(status)+"\n" (the cause is for the log, not the client), with
+// what a *PartialError deleted before it failed (ClientMessage).
 // A 401 carries WWW-Authenticate: Basic realm="lajstrom", a 405 Allow: GET, HEAD, a 503 of
 // provider.ErrUnavailable, of index.ErrUnavailable or of an *UnavailableError Retry-After
 // (SetRetryAfter). See StatusOf for the mapping.
 func WriteError(w http.ResponseWriter, err error) int {
 	status := StatusOf(err)
-	msg := http.StatusText(status)
-	if status < http.StatusInternalServerError {
-		msg = err.Error()
-	}
+	msg := ClientMessage(err)
 	switch status {
 	case http.StatusUnauthorized:
 		w.Header().Set("WWW-Authenticate", basicChallenge)
@@ -40,6 +39,54 @@ func WriteError(w http.ResponseWriter, err error) int {
 // indexRetryAfter is the Retry-After of index.ErrUnavailable: a database that restarts or
 // fails over takes seconds.
 const indexRetryAfter = 5 * time.Second
+
+// ClientMessage is the message an error answer gives the client: err.Error() for a 4xx, the
+// status text for a 5xx, whose cause is for the log, followed for a 5xx by what a
+// *PartialError in err deleted before it failed, so that a client learns it whatever the
+// status (docs/spec/guarantees.md, INV-13).
+func ClientMessage(err error) string {
+	status := StatusOf(err)
+	if status < http.StatusInternalServerError {
+		return err.Error()
+	}
+	msg := http.StatusText(status)
+	var p *PartialError
+	if errors.As(err, &p) {
+		msg += "; " + p.deleted()
+	}
+	return msg
+}
+
+// PartialError is the error of a delete of several manifests that failed part way: a raw path,
+// an npm package or the versions an npm packument update leaves out, a version with every
+// variant. Err is the failure, which decides the status; Deleted names what was deleted before
+// it, which stays deleted.
+type PartialError struct {
+	// Deleted names the versions or variants deleted before the failure, each with its
+	// manifest digest: "1.0.0 (sha256:…)".
+	Deleted []string
+	// Err is the failure.
+	Err error
+}
+
+func (e *PartialError) Error() string { return e.Err.Error() + "; " + e.deleted() }
+
+// Unwrap returns Err.
+func (e *PartialError) Unwrap() error { return e.Err }
+
+// deleted is the part of the message that names Deleted.
+func (e *PartialError) deleted() string {
+	return "deleted before the failure, and still deleted: " + strings.Join(e.Deleted, ", ")
+}
+
+// Partial returns err as a *PartialError naming deleted, or err itself when nothing was
+// deleted.
+func Partial(err error, deleted []string) error {
+	if err == nil || len(deleted) == 0 {
+		return err
+	}
+	return &PartialError{Deleted: deleted, Err: err}
+}
 
 // SetRetryAfter sets Retry-After in h when err says when to try again: a
 // provider.ErrUnavailable of an open circuit breaker, whose time left until its trial request

@@ -432,15 +432,15 @@ status is `holds on strongly consistent registries only` do not hold there.
 - **Tests.** `TestDeleteVersion`, `TestDeleteRefused`, `TestDeleteNotFound`, `TestDeleteRowsFail`,
   `TestDeleteThenReindex`, `TestDeleteKeepsPackage`, `TestDeleteReferrer`, `TestDeleteManifests`,
   `TestDeleteTagged`, `TestTagPushAndDelete`, `TestDeleteInvalidatesIndexes` (deb),
-  `TestDeleteGoneAndAuditWriter` (raw), `TestIntegrationDelete`,
+  `TestDeleteGoneAndAuditWriter` (raw), `TestDeletePartial` (raw), `TestDeleteVersionPartial`,
+  `TestPartial`, `TestIntegrationDelete`,
   `TestIntegrationDeleteUnsupported`, `TestIntegrationDeleteRefused`; R-07 in `raw.sh`, the deletes
   of `oras.sh` and the unpublishes of `npm.sh`.
 - **When violated.** No transaction spans the registry: when the transaction fails after the
   registry deleted the manifest, the client gets `500` saying so, the rows and the cached
   documents stay until reindex removes them, and the delete has no audit row (INV-14).
-- **Status.** `partly`: each version's removal holds as stated; the answer to a delete of several
-  versions that fails does not name the versions deleted before the failure yet (each has its
-  audit row) (new issue).
+- **Status.** `holds`: the answer to a delete of several versions that fails names those deleted
+  before the failure, a `5xx` too (`format.PartialError`, #476).
 
 ### INV-42. A conditional delete never removes a version that changed after the client read it
 
@@ -1091,7 +1091,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-10 | case variants never squat | holds | |
 | INV-11 | a blob stored only under its digest | holds | |
 | INV-12 | only manifests of the profile | holds | |
-| INV-13 | each version deleted at once from index, caches, audit | partly | unchecked |
+| INV-13 | each version deleted at once from index, caches, audit | holds | unchecked |
 | INV-14 | every change of the index has its audit row | holds | untested (`oci` row failure, S-09) |
 | INV-15 | denial before input | holds | untested (frontends) |
 | INV-16 | a denial hides existence | holds | |
@@ -1219,7 +1219,6 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | Reindex equality is tested for raw, npm and an npm proxy only; I-01 is not in the end-to-end suite (INV-3) | a column of apt, pypi or maven that annotations cannot rebuild would be lost at the first reindex, unnoticed | an equality test per format (publish, drop the derived rows, reindex, compare), and I-01 as an end-to-end step | new issue |
 | Nothing machine-checks the one write path in plugins (INV-2) | a plugin could push a manifest past ingest: no claim, validation or audit row | a read-only provider view in `format.Deps`, or a lint rule against `Push`, `PushReference` and `Delete` outside `internal/ingest`, `internal/facade` and `internal/provider` (a `contract` change of `format`) | new issue |
 | A delete whose index transaction fails after the registry delete, and a push to an `oci` repo whose row fails after the push, have no audit row (INV-13, INV-14) | an unaudited write, of which only a log line at error is left | an audit row of the intent before the registry write, and one of its result after it | new issue |
-| The answer to a failed delete of several versions does not name those deleted before the failure (INV-13) | the client cannot tell what is left without listing the package again | name them in the error's message or a structured field | new issue |
 | The garbage collectors of GitLab B and Nexus delete untagged referrers (INV-35) | signatures and SBOMs vanish | the tag schema as well on registries with the API (#326); for GitLab B and Nexus, a vendor-table warning or a tag per referrer | [#326](https://github.com/lajstrom/lajstrom/issues/326), new issue |
 | No frontend test of a denial with malformed input (INV-15) | a regression of the R-2 kind on a frontend goes unseen | a table test per frontend, as `TestDenialBeforeInput` does for `/v2` | new issue |
 | A typed user name and an unbounded `kid` at `debug` (INV-21, threat model L-3) | a mistyped password in a debug log | log the uid only, bound the `kid` | new issue |

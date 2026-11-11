@@ -197,10 +197,8 @@ func (h *handlers) put(w http.ResponseWriter, r *http.Request) {
 // format.WriteError does.
 func (h *handlers) fail(w http.ResponseWriter, r *http.Request, err error) {
 	status := format.StatusOf(err)
-	msg := http.StatusText(status)
-	if status < http.StatusInternalServerError {
-		msg = err.Error()
-	} else {
+	msg := format.ClientMessage(err)
+	if status >= http.StatusInternalServerError {
 		h.deps.Log.ErrorContext(r.Context(), "npm: request failed", "method", r.Method, "path", auth.RedactSecrets(r.URL.EscapedPath()),
 			"status", status, "error", err.Error())
 	}
