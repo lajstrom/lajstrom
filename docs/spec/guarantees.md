@@ -420,9 +420,9 @@ status is `holds on strongly consistent registries only` do not hold there.
   rendered documents, and writes the audit row; a backend that cannot delete changes nothing. A
   delete of several versions is not all-or-nothing: they are deleted one by one, those deleted
   before a failure stay deleted, and the answer names them.
-- **Scope.** `DELETE` on `/v2`, the raw frontend, `/api/v1` versions, npm's unpublish. Several
-  versions in one request: a raw path, an npm package, a version with every variant
-  (http-routing.md §4).
+- **Scope.** `DELETE` on `/v2`, the raw frontend, `/api/v1` versions and their batch, npm's
+  unpublish. Several versions in one request: a raw path, an npm package, a version with every
+  variant (http-routing.md §4); a batch answers what became of each of its versions.
 - **Assumes.** Registry: **read-after-write** (**unchecked**): a reconcile that lists a just-deleted
   tag adds its rows back until the next run. Database: any.
 - **Mechanism.** `ingest.Pipeline.Delete`: `deletion.find`, then under the tag lock
@@ -467,12 +467,11 @@ status is `holds on strongly consistent registries only` do not hold there.
   first delete (`api.conditions.check`), so that a refusal finds nothing deleted.
 - **Tests.** `TestConditionalDelete`, `TestConditionalDeletePointers` (the lock order),
   `TestConditionalDeleteRepublishRace`, `TestConditionalDeleteDistTagRace` (goroutines, `-race`),
-  `TestDeleteVersionConditions`.
+  `TestDeleteVersionConditions`, `TestBatchDelete`.
 - **When violated.** A delete that removed a version re-published or dist-tagged after the read
   leaves the newer version's rows without a manifest, which reindex removes, or a dist-tag
   naming a version that is gone, which the packument leaves out; nothing reports it.
-- **Status.** `partly`: the single `DELETE` holds; the batch comes with the next pull request of
-  [#72](https://github.com/lajstrom/lajstrom/issues/72).
+- **Status.** `holds`.
 
 ## Audit
 
@@ -1121,7 +1120,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-39 | encryption at rest | not yet (#114) | |
 | INV-40 | a streamed download has its digest | holds | |
 | INV-41 | a binary only on a schema it can run on | partly | untested (the previous release's binary) |
-| INV-42 | a conditional delete never removes a changed version | partly (#72: the batch) | |
+| INV-42 | a conditional delete never removes a changed version | holds | |
 
 ## Not guaranteed
 
