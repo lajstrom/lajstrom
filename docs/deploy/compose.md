@@ -12,9 +12,12 @@ and Lajstrom runs as a user without privileges on a read-only root filesystem.
 | `postgres` | `postgres:17.11-alpine` | no | the volume `postgres-data`: the index, the control plane with it ([index-schema.md](../spec/index-schema.md)) |
 | `registry` | `registry:3.1.2`, Basic auth with one user | no | the volume `registry-data`: every artifact |
 
-A registry you already run (Zot, Harbor, ECR, the GitLab registry): delete the `registry` service
-and its volume, and point `registries[0]` of `lajstrom.yaml` at it, with the configuration its
-page in [registries/](../registries/README.md) gives.
+A registry you already run (Zot, Harbor, ECR, the GitLab registry): delete the `registry` service,
+its volume `registry-data`, its secret `registry-htpasswd` and the `registry:` entry under
+`depends_on:` of `lajstrom` (without that, `docker compose` stops at `service "lajstrom" depends
+on undefined service "registry"`). Then point `registries[0]` of `lajstrom.yaml` at it, with the
+configuration its page in [registries/](../registries/README.md) gives; for a registry that
+takes no password, delete its `auth:` too.
 
 ## 1. Secrets
 
@@ -79,7 +82,9 @@ without it the signing keys in the database are ciphertext
 
 - `server.externalURL`: the public URL of the TLS edge, `https://art.example.com` in the file.
   The realm of the bearer challenge of `/v2` is built from it, so `docker login` and `oras login`
-  fail when it is wrong.
+  fail when it is wrong. To try the stack without an edge, on the loopback port, set
+  `externalURL: "http://localhost:8080"` and add `insecureHTTP: true` under `server:`; an `http`
+  URL without it stops the start (`server.externalURL: must be https`).
 - `server.metricsListen: "0.0.0.0:9464"`: Prometheus on the Compose network scrapes it; the port
   is not published.
 - `database.driver: postgres`; the DSN comes from `LAJSTROM_DATABASE_DSN`, since it carries the
@@ -92,7 +97,12 @@ without it the signing keys in the database are ciphertext
 
 The image is `ghcr.io/lajstrom/lajstrom:v0.1.0` unless `LAJSTROM_IMAGE` says otherwise; pin a
 digest there in production, `ghcr.io/lajstrom/lajstrom:vX.Y.Z@sha256:…`. `LAJSTROM_PORT`
-changes the loopback port (default 8080). Both can go into a `.env` beside `compose.yaml`.
+changes the loopback port (default 8080). Both can go into a `.env` beside `compose.yaml`
+(git-ignored, like `secrets/`).
+
+`lajstrom.yaml` is bind-mounted as a file. After a change, `docker compose up -d
+--force-recreate lajstrom` reads it again; a restart keeps seeing the old file when the editor
+replaced it rather than wrote into it (`sed -i` and many editors do).
 
 ## 3. Start
 
@@ -101,27 +111,29 @@ docker compose up -d --wait
 docker compose ps --format 'table {{.Service}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
 ```
 
-The run below used an image built from the branch of `lajstrom healthcheck` with the
-`Dockerfile`, the port 18780 and `externalURL: "http://localhost:18780"`, since no edge was in
-front. `up --wait` returned after 11 seconds, once Lajstrom's own health check passed:
+The run below, on 2026-11-11, used an image built from main with the `Dockerfile`
+([release.md](../release.md) shows the build by hand), `LAJSTROM_IMAGE=lajstrom:walkthrough`,
+`LAJSTROM_PORT=18150`, and `externalURL: "http://localhost:18150"` with `insecureHTTP: true`,
+since no edge was in front. `up --wait` returned after 37 seconds, once Lajstrom's own health
+check passed; each health check runs first 10 seconds after its container starts:
 
 ```text
 SERVICE    IMAGE                   STATUS                    PORTS
-lajstrom   lajstrom:docs-hc        Up 5 seconds (healthy)    127.0.0.1:18780->8080/tcp
-postgres   postgres:17.11-alpine   Up 11 seconds (healthy)   5432/tcp
-registry   registry:3.1.2          Up 11 seconds (healthy)   5000/tcp
+lajstrom   lajstrom:walkthrough    Up 6 seconds (healthy)    127.0.0.1:18150->8080/tcp
+postgres   postgres:17.11-alpine   Up 23 seconds (healthy)   5432/tcp
+registry   registry:3.1.2          Up 23 seconds (healthy)   5000/tcp
 ```
 
 Lajstrom starts once Postgres and the registry are healthy, applies the migrations, creates the
 repos of the file and the bearer-token key, asks the registry what it supports, and listens
-(`docker compose logs lajstrom`, JSON, without the times):
+(`docker compose logs lajstrom`, JSON, a selection, without the times):
 
 ```text
-{"level":"INFO","msg":"index migrations applied under the migration lock","database.driver":"postgres","applied":[1,2,3,4,5,6,7,8,9]}
+{"level":"INFO","msg":"index migrations applied under the migration lock","database.driver":"postgres","applied":[1,2,3,4,5,6,7,8,9,10,11,12,13]}
 {"level":"INFO","msg":"repo of the configuration created","repo":"raw/assets","registry":"local"}
-{"level":"INFO","msg":"token signing key made","fingerprint":"d45909810e5ed6333980a38b1725e5c8363898db0c028f2b2d823bb55a203313","algorithm":"ES256"}
+{"level":"INFO","msg":"token signing key made","fingerprint":"816b40ab693fd79a6fa6538130a7e8d6eca385631f0ec9c8a878dfa2152520db","algorithm":"ES256"}
 {"level":"INFO","msg":"registry capabilities","registry":"local","vendor":"unknown","createOnPush":true,"referrers":false,"catalog":true,"deleteManifest":true,"immutableTags":false,"blobRedirect":true,"maxBlobSize":0}
-{"level":"INFO","msg":"listening","addr":"[::]:8080","externalURL":"http://localhost:18780"}
+{"level":"INFO","msg":"listening","addr":"[::]:8080","externalURL":"http://localhost:18150","tls":false}
 {"level":"INFO","msg":"metrics listening","addr":"[::]:9464","pprof":false}
 ```
 
@@ -174,26 +186,27 @@ lj admin repo create oci/images --registry local
 
 ## 5. Push and pull
 
-Through the edge, with `https://art.example.com`; the run talked to the loopback port, hence
-`--plain-http`:
+Through the edge, with `https://art.example.com`; here to the loopback port, with the default
+`LAJSTROM_PORT` and `externalURL: "http://localhost:8080"` (section 2), hence `--plain-http`.
+The run had 18150 in both places:
 
 ```sh
 printf 'hello compose\n' > hello.txt
-curl -s -u "admin:$LAJSTROM_ADMIN_PASSWORD" -o /dev/null -w '%{http_code}\n' -T hello.txt http://localhost:18780/raw/assets/docs/hello.txt   # 201
-curl -s -u "admin:$LAJSTROM_ADMIN_PASSWORD" http://localhost:18780/raw/assets/docs/hello.txt                                              # hello compose
+curl -s -u "admin:$LAJSTROM_ADMIN_PASSWORD" -o /dev/null -w '%{http_code}\n' -T hello.txt http://localhost:8080/raw/assets/docs/hello.txt   # 201
+curl -s -u "admin:$LAJSTROM_ADMIN_PASSWORD" http://localhost:8080/raw/assets/docs/hello.txt                                              # hello compose
 
-printf '%s\n' "$LAJSTROM_ADMIN_PASSWORD" | oras login --plain-http -u admin --password-stdin localhost:18780   # Login Succeeded
-oras push --plain-http --artifact-type application/vnd.example.notes localhost:18780/oci/images/hello:1 hello.txt
-oras pull --plain-http -o out localhost:18780/oci/images/hello:1                                          # out/hello.txt
+printf '%s\n' "$LAJSTROM_ADMIN_PASSWORD" | oras login --plain-http -u admin --password-stdin localhost:8080   # Login Succeeded
+oras push --plain-http --artifact-type application/vnd.example.notes localhost:8080/oci/images/hello:1 hello.txt
+oras pull --plain-http -o out localhost:8080/oci/images/hello:1                                          # out/hello.txt
 ```
 
 ```text
-Pushed [registry] localhost:18780/oci/images/hello:1
+Pushed [registry] localhost:8080/oci/images/hello:1
 ArtifactType: application/vnd.example.notes
-Digest: sha256:fba0e544c5bc3b78f28c2eff6db63da06c81a557337e35f5221ce7c82d806b9c
+Digest: sha256:1dfc701d5c1ef2260ab925b42526f16f4b400e86f400769398a73cac0e6d1cd6
 …
-Pulled [registry] localhost:18780/oci/images/hello:1
-Digest: sha256:fba0e544c5bc3b78f28c2eff6db63da06c81a557337e35f5221ce7c82d806b9c
+Pulled [registry] localhost:8080/oci/images/hello:1
+Digest: sha256:1dfc701d5c1ef2260ab925b42526f16f4b400e86f400769398a73cac0e6d1cd6
 ```
 
 Both land in the registry under the prefix, and nowhere else:
@@ -214,19 +227,23 @@ docs
 
 What must be backed up is the database and the master key; the registry has its own backup, or
 none if its storage is replicated ([operations.md](../operations.md#disaster-recovery)). A
-dump of the running database, in Postgres's custom format:
+dump of the running database, in Postgres's custom format; it holds the password hashes, the
+token hashes and the encrypted keys, so only its owner reads it (`*.dump` is git-ignored here):
 
 ```sh
+umask 077
 docker compose exec -T postgres pg_dump -U lajstrom -d lajstrom --format=custom > "lajstrom-$(date -u +%Y%m%dT%H%M%SZ).dump"
 ```
 
 Restoring it into a new, empty database, then `migrate` and `reindex` before Lajstrom starts,
 was rehearsed on this stack. The volume is `<project>_postgres-data`: `lajstrom_postgres-data`
-with the name of `compose.yaml`; the run used the project name `lajstrom-docs-compose`. The
-`docker volume rm` deletes the database: read the dump first.
+with the name of `compose.yaml`; the run used the project name `walkthrough-compose`, so its
+volume was `walkthrough-compose_postgres-data`. The `docker volume rm` deletes the database:
+read the dump first. `reindex` reports the `oci` repo's manifests as foreign: they are listed,
+never indexed ([operations.md](../operations.md#what-a-run-does)).
 
 ```sh
-docker compose exec -T postgres pg_restore --list < lajstrom-….dump | grep -c 'TABLE DATA'   # 16 in the run
+docker compose exec -T postgres pg_restore --list < lajstrom-….dump | grep -c 'TABLE DATA'   # 21 in the run
 docker compose stop lajstrom
 docker compose rm -f -s postgres && docker volume rm lajstrom_postgres-data
 docker compose up -d --wait postgres
@@ -249,5 +266,7 @@ migrations of the new version on start. This has not been tried: there is no rel
 - A host other than macOS with OrbStack 2.2.5 (Docker 29.8.2, Compose 5.5.0): on Linux the
   secret files are bind-mounted with mode 0600 and read by root inside `postgres` and
   `registry`, which Docker's default allows; rootless Docker or user namespaces were not tried.
-- An external registry instead of the `registry` service; the registry pages list what was
+- An external registry instead of the `registry` service with a password: the run tried the
+  steps at the top of the page only with the dev stack's Zot, which takes none
+  (`url: "http://host.docker.internal:5000"`, no `auth:`). The registry pages list what was
   tested against each one.
