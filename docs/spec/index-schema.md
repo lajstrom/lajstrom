@@ -452,9 +452,10 @@ release.
   `MANIFEST_UNKNOWN` in an OCI repository whose tag list is a `404` too, which the registry does
   not know (deleted in its console: Zot's `NAME_UNKNOWN`), keeps the row and lists it under
   `repositoryUnknown`, with the request of the management API that deletes it, on every run
-  until then (#567). A run that cannot list the repo's OCI repositories sweeps nothing. An `oci_repos` row goes when no run has seen its repository
-  for `reconcile.graceAge`; a sweep that finds a version's manifest records its repository
-  again.
+  until then (#567); a run asks each OCI repository's tag list at most once. A run that cannot
+  list the repo's OCI repositories sweeps nothing. An `oci_repos` row goes when no run has seen
+  its repository for `reconcile.graceAge`; a sweep that finds a version's manifest records its
+  repository again.
 - A tag that names another digest than the index row of that tag is drift: the index keeps its
   digest, the report lists both, nothing is re-pointed (the rule of the reconcile loop, #30).
   A drifted row is the one row whose manifest is not under its tag any more.

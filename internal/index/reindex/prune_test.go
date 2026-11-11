@@ -160,7 +160,6 @@ func TestRepositoryUnknown(t *testing.T) {
 		want = append(want, reindex.RepositoryUnknown{Repository: "docs/gone.txt", Package: "docs/gone.txt", Version: p.Entry.Version,
 			Tag: p.Tag, Digest: p.Digest, Delete: "DELETE /api/v1/repos/raw/scratch/packages/docs%2Fgone.txt/versions/" + p.Entry.Version})
 	}
-	byTag := func(a, b reindex.RepositoryUnknown) int { return strings.Compare(a.Tag, b.Tag) }
 	slices.SortFunc(want, byTag)
 
 	if r := e.run(t, reindex.Request{}); len(r.RepositoryUnknown) != 0 || len(r.Errors) != 0 {
@@ -170,15 +169,7 @@ func TestRepositoryUnknown(t *testing.T) {
 		e.clock.later(later)
 		logs.Reset()
 		r := e.run(t, reindex.Request{Prune: true})
-		if r.Removed != 0 || r.Pending != 0 || len(r.Errors) != 0 || r.Unchanged != 1 {
-			t.Errorf("a run %s later: %+v; want the versions kept, neither pending nor errors", later, *r)
-		}
-		got := slices.SortedFunc(slices.Values(r.RepositoryUnknown), byTag)
-		same(t, "the versions of the repository the registry does not know", want, got)
-		if n := strings.Count(logs.String(), "the registry does not know the OCI repository"); n != 1 ||
-			!strings.Contains(logs.String(), "versions=2") {
-			t.Errorf("logged %d warnings, want one for the repository with its 2 versions:\n%s", n, logs.String())
-		}
+		wantUnknown(t, "a run "+later.String()+" later", r, want, logs.String())
 	}
 	if _, err := e.st.GetPackage(ctx, e.repo.ID, "docs/gone.txt"); err != nil {
 		t.Fatalf("the package after the runs: %v, want it kept", err)
@@ -194,6 +185,24 @@ func TestRepositoryUnknown(t *testing.T) {
 	}
 	if _, err := e.st.GetPackage(ctx, e.repo.ID, "docs/gone.txt"); !errors.Is(err, index.ErrNotFound) {
 		t.Errorf("the package after the deletes: %v, want ErrNotFound", err)
+	}
+}
+
+// byTag orders RepositoryUnknown entries by their tags.
+func byTag(a, b reindex.RepositoryUnknown) int { return strings.Compare(a.Tag, b.Tag) }
+
+// wantUnknown checks the run r with prune over the two versions of a repository the registry
+// does not know, for TestRepositoryUnknown: neither removed, pending nor an error, both listed
+// as want, and one warning for the repository in logs.
+func wantUnknown(t *testing.T, what string, r *reindex.RepoReport, want []reindex.RepositoryUnknown, logs string) {
+	t.Helper()
+	if r.Removed != 0 || r.Pending != 0 || len(r.Errors) != 0 || r.Unchanged != 1 {
+		t.Errorf("%s: %+v; want the versions kept, neither pending nor errors", what, *r)
+	}
+	got := slices.SortedFunc(slices.Values(r.RepositoryUnknown), byTag)
+	same(t, what+": the versions of the repository the registry does not know", want, got)
+	if n := strings.Count(logs, "the registry does not know the OCI repository"); n != 1 || !strings.Contains(logs, "versions=2") {
+		t.Errorf("%s: logged %d warnings, want one for the repository with its 2 versions:\n%s", what, n, logs)
 	}
 }
 
