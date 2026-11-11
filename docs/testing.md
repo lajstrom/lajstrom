@@ -234,9 +234,24 @@ HA_SUITE='raw oras' test/e2e/ha.sh   # H-01 with those two only
 ```
 
 It reaches A and B past the edge on ports 8091 and 8092, the backend on 5007, and the containers
-with `docker compose` in the project of `COMPOSE_PROJECT_NAME` (`lajstrom-dev` by default):
-`lajstrom admin` in A, `psql` in `ha-postgres`, the logs, the restarts. Its steps, each naming the
-ids it covers:
+with `docker compose` in the project of `COMPOSE_PROJECT_NAME` (`lajstrom-dev` by default), on
+the files of `COMPOSE_FILE` when it is set: `lajstrom admin` in A, `psql` in `ha-postgres`, the
+logs, the kills, stops and restarts of the replicas, `ha-postgres` and `ha-distribution`. On a
+machine where others share `lajstrom-dev`, run the profile in a project of its own: other ports
+(`LAJSTROM_HA_PORT`, `LAJSTROM_HA_A_PORT`, `LAJSTROM_HA_B_PORT`, `LAJSTROM_HA_DISTRIBUTION_PORT`)
+and an override file with another subnet for the network `ha`, the replicas' addresses on it,
+an image name of its own and a copy of
+[deploy/compose/ha/lajstrom.yaml](../deploy/compose/ha/lajstrom.yaml) whose `trustedProxies` is
+nginx's new address; `ha.sh` reads that address from nginx's container. For a project
+`ha-mine`, with `COMPOSE_FILE` naming compose.yaml and the override and the ports exported:
+
+```sh
+docker compose -p ha-mine --profile ha up -d --build --wait ha-nginx   # the profile's services only
+COMPOSE_PROJECT_NAME=ha-mine HA_SUITE=none make e2e E2E=ha
+docker compose -p ha-mine --profile ha down -v                          # that project only
+```
+
+Its steps, each naming the ids it covers:
 
 | Step | What it checks |
 | --- | --- |
@@ -250,14 +265,18 @@ ids it covers:
 | H-13 | a wheel uploaded through A; its simple page asked on A and B at once: the same bytes and `ETag`, one `index_cache` row |
 | #28 | two `cosign sign`, through A and B at once, of one subject on distribution, which has no referrers API: `oras discover` lists both, `cosign verify` passes with each key, the backend has the `sha256-<hex>` tag |
 | #129 | 200 requests to `/v2/token` at once from one address: nginx answers those over 20 a second (a burst of 40) 429 with `Retry-After: 1`, the replicas none |
+| H-05 | a 500 MiB `PUT` to A, and A killed with `SIGKILL` once 100 MiB are sent: curl's connection error; the same `PUT` through the edge 201, its digest in the index and its file in the backend; A started again with nothing in `/tmp`, where it spools; one version, no tag claim left, and a reindex of the repo with prune that adds, removes and reports nothing |
+| H-06 | `ha-postgres` stopped, and started again once each replica, past the edge, has been asked for the wheel of H-13, a raw `PUT` and `/-/readyz`: 503, 503 and 503; meanwhile three loops run: the requests of a `pip install` and raw `PUT`s of a new file each through the edge, and A's `/-/readyz`, each answered 200, 201 or 503, and 200 or 201 again once both replicas serve, without a restart of A or B; each failed `PUT` is 201 again, and the index is whole as in H-05 |
+| H-07 | the same with `ha-distribution`: 502 or 503 during the outage, `readyz` not checked (the registry answered within the last minute); the replicas serve again once the circuit of each has closed (30 s) |
+| H-08 | a maven deploy of a jar and a pom, each with `.sha1` and `.md5`, then `maven-metadata.xml` and its checksums, each `PUT` to the other replica: all 201; the session is an `open` row of the database before the metadata `PUT` and `committed` after it; the replica that took the metadata logged the commit, the other did not; the jar is the same through the other |
+| H-11 | an apt repo of the run; a `.deb` uploaded through A, `apt-get update` through B lists it; a second `.deb` through A, and `apt-get update` through B less than a second after the upload's 201 (the access log lines of both) lists it too (A-09) |
 | H-10 | the requests of a `pip install` (the simple page and the wheel) in a loop through the edge while A restarts, and then B: every one 200 |
 | H-01 | the scenarios of this page through the edge, with `lajstrom admin` in A and the logs of both replicas as the server log, and both replicas serving them; `auth.sh` goes to A past the edge, since the throttle of failed logins counts per replica ([auth.md](auth.md#failed-logins)) and the 11th wrong password of X-04 through the round robin is the 6th of either replica |
 
-Not covered yet: H-05 (a replica killed during an upload), H-06 and H-07 (Postgres and the
-registry restarted under load), H-08 as such (`maven.sh` through the edge deploys across
-replicas, but nothing checks which replica took the metadata `PUT`) and H-11 (an apt upload
-through A seen by `apt-get update` through B within a second; `apt.sh` through the edge runs
-across replicas without the timing).
+Two answers of H-06 and H-07 are not those of acceptance.md yet, and `ha.sh` takes them and
+prints a `gap` line with their number instead of failing: while Postgres is out, a request
+answers 500, not 503 (the index's connection errors are not mapped to 503); while the
+registry's name does not resolve, a `PUT` answers 500 until the circuit opens.
 
 ### A proxy of npmjs.org
 

@@ -50,8 +50,9 @@
 #
 # ha.sh is the exception: it runs against the ha profile of the dev stack (two replicas behind
 # nginx, make dev-up PROFILES=ha), at http://localhost:$LAJSTROM_HA_PORT (8090), not against
-# the server of this run, and only when docker compose shows that profile's ha-nginx running;
-# otherwise the summary has a SKIP line for it, which is not a failure.
+# the server of this run, and only when docker compose shows that profile's ha-nginx running, in
+# the project of COMPOSE_PROJECT_NAME and the files of COMPOSE_FILE when they are set, as ha.sh
+# reads them; otherwise the summary has a SKIP line for it, which is not a failure.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -95,10 +96,14 @@ else
 	[ ! -f "$here/ha.sh" ] || names+=(ha)
 fi
 
+# ha_compose: docker compose on compose.yaml, or on the files of COMPOSE_FILE when it is set, as
+# ha.sh runs it.
+ha_compose=(docker compose -f "$root/deploy/compose/compose.yaml")
+[ -z "${COMPOSE_FILE:-}" ] || ha_compose=(docker compose)
+
 # ha_up: the ha profile of the dev stack runs (its edge, ha-nginx).
 ha_up() {
-	command -v docker >/dev/null &&
-		[ -n "$(docker compose -f "$root/deploy/compose/compose.yaml" ps -q --status running ha-nginx 2>/dev/null)" ]
+	command -v docker >/dev/null && [ -n "$("${ha_compose[@]}" ps -q --status running ha-nginx 2>/dev/null)" ]
 }
 
 tmp="${TMPDIR:-/tmp}"
@@ -247,7 +252,7 @@ for n in "${names[@]}"; do
 		echo "--- $n.sh failed with exit $rc after $took s:"
 		grep -E '^(FAIL |  at |  in )' "$log" || echo "(no FAIL line: the last lines of its output are above)"
 		if [ "$n" = ha ]; then
-			echo "--- the logs of the ha profile: docker compose -f deploy/compose/compose.yaml logs lajstrom-a lajstrom-b ha-nginx"
+			echo "--- the logs of the ha profile: ${ha_compose[*]} logs lajstrom-a lajstrom-b ha-nginx"
 		else
 			echo "--- the last 50 lines of the server log:"
 			tail -n 50 "$LAJSTROM_SERVER_LOG"
