@@ -655,6 +655,7 @@ type Reader interface {
     // LatestReindexRun: the newest run that covered repoID, its own or a run of every repo;
     // repoID 0 selects the runs of every repo only
     LatestReindexRun(ctx context.Context, repoID int64) (*ReindexRun, error)
+    ListReplicas(ctx context.Context) ([]Replica, error) // by StartedAt; a heartbeat 2 minutes old is a replica gone
     // derived
     GetPackage(ctx context.Context, repoID int64, name string) (*Package, error)
     GetPackageByNameOCI(ctx context.Context, repoID int64, nameOCI string) (*Package, error)
@@ -739,6 +740,12 @@ type Writer interface {
     HeartbeatFetchClaim(ctx context.Context, id int64, at time.Time) error // ErrNotFound: released or taken over
     ReleaseFetchClaim(ctx context.Context, id int64) error
     ExpireFetchClaims(ctx context.Context, before time.Time) (int, error)  // HeartbeatAt before before; reindex, reconcile
+    // StartReplica deletes the rows whose HeartbeatAt is before staleBefore and inserts r, a
+    // serve process (index-schema.md, Coordination); on SQLite a fresh row of another replica
+    // is *ReplicaConflictError naming it and nothing changes, on Postgres the rows coexist
+    StartReplica(ctx context.Context, r *Replica, staleBefore time.Time) error
+    HeartbeatReplica(ctx context.Context, id string, at time.Time) error // ErrNotFound: deleted as stale
+    StopReplica(ctx context.Context, id string) error
     // derived (written only by ingest, reindex and delete); every version write and delete keeps
     // packages.created_at the earliest created_at of the package's versions
     UpsertPackage(ctx context.Context, p *Package) error
@@ -775,7 +782,7 @@ type Writer interface {
 
 // Models, one struct per table of index-schema.md (fields in internal/index/models.go):
 // control plane Repo, User, Token, Binding, Key, Session, AuditEvent; coordination TagClaim,
-// ReindexRun, FetchClaim; derived Package, Version, File, Cache (index_cache), OCIRepo,
+// ReindexRun, FetchClaim, Replica; derived Package, Version, File, Cache (index_cache), OCIRepo,
 // ProxyMeta, JournalEntry, JournalState; query types FileMatch (file + version + package),
 // VersionMatch (version + package) and AuditFilter. Ids are int64, timestamps UTC, nullable columns are pointers.
 

@@ -8,9 +8,11 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -182,5 +184,24 @@ func TestOpenDoesNotLeakTheDSN(t *testing.T) {
 		if err == nil || strings.Contains(err.Error(), "s3cret") {
 			t.Errorf("Open: %v, want an error without the password", err)
 		}
+	}
+}
+
+// TestReplicasCoexist checks that the rows of replicas of two stores on one database coexist on
+// Postgres, which serves many replicas.
+func TestReplicasCoexist(t *testing.T) {
+	ctx := t.Context()
+	dsn := schemaDSN(t, testDSN(t))
+	a, b := openMigrated(t, dsn), openMigrated(t, dsn)
+	start := time.Now()
+	for i, s := range []*Store{a, b} {
+		r := index.Replica{ID: strconv.Itoa(i), Host: "host-" + strconv.Itoa(i), PID: i, Version: "v0.1.0", StartedAt: start}
+		if err := s.StartReplica(ctx, &r, start.Add(-2*time.Minute)); err != nil {
+			t.Fatalf("replica %d: %v", i, err)
+		}
+	}
+	rows, err := a.ListReplicas(ctx)
+	if err != nil || len(rows) != 2 {
+		t.Errorf("ListReplicas = %v, %v; want both replicas", rows, err)
 	}
 }

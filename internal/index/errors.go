@@ -62,3 +62,21 @@ func (e *ReindexConflictError) Error() string {
 
 // Unwrap returns ErrConflict.
 func (e *ReindexConflictError) Unwrap() error { return ErrConflict }
+
+// ReplicaConflictError is the error StartReplica returns on SQLite when the row of another
+// replica has a fresh heartbeat: SQLite serves one replica, whose locks are its process's.
+// errors.Is(err, ErrConflict) reports true for it.
+type ReplicaConflictError struct {
+	// Live is the row of the replica that serves on the database.
+	Live Replica
+}
+
+// Error implements error.
+func (e *ReplicaConflictError) Error() string {
+	return fmt.Sprintf("index: replica %s (host %s, process %d, %s) serves on this database since %s, last heartbeat %s",
+		e.Live.ID, e.Live.Host, e.Live.PID, e.Live.Version, e.Live.StartedAt.Format(time.RFC3339),
+		e.Live.HeartbeatAt.Format(time.RFC3339))
+}
+
+// Unwrap returns ErrConflict.
+func (e *ReplicaConflictError) Unwrap() error { return ErrConflict }

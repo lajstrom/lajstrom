@@ -8,8 +8,8 @@
 
 Two kinds of tables. **Derived** tables are rebuilt by `lajstrom reindex` from the registry and
 may be dropped at any time. **Control plane** tables are small, authoritative and backed up. The
-**coordination** tables, `tag_claims`, `reindex_runs` and `fetch_claims`, are neither: their rows
-live for one publish, one reindex run or one fetch.
+**coordination** tables, `tag_claims`, `reindex_runs`, `fetch_claims` and `replicas`, are neither:
+their rows live for one publish, one reindex run, one fetch or one `serve` process.
 SQLite and Postgres share one logical schema; dialect differences are confined to the migration
 files (`internal/index/migrations/{sqlite,postgres}/NNNN_*.sql`).
 
@@ -102,13 +102,14 @@ a backup of the database keeps it, and reindex neither reads nor writes it.
 
 ## Coordination
 
-Neither control plane nor derived: a row lives for one publish or one reindex run, so it is
-neither backed up nor rebuilt.
+Neither control plane nor derived: a row lives for one publish, one reindex run or one `serve`
+process, so it is neither backed up nor rebuilt.
 
 | Table | Columns | Notes |
 | --- | --- | --- |
 | `tag_claims` | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `package` text (the package path, `name_oci`), `tag` text (`''` in the claim on the package path), `digest` text (manifest digest being published; in the claim on the package path, the sha256 digest of the spelling, `lajstrom.name`), `principal` text, `claimed_at` ts | unique `(repo_id, package, tag)`; written by ingest only |
 | `reindex_runs` | `id`, `repo_id` → repos null (`ON DELETE CASCADE`; null: a run of every repo), `state` text (`running`, `done`, `failed`, `abandoned`), `source` text (`cli`, `api`, `reconcile`), `principal` text, `replica` text (host name and process id), `options` json (`prune`, `verify`), `started_at` ts, `heartbeat_at` ts, `finished_at` ts null, `report` json null (layout.md, `reindex.Report`), `error` text null | index `(COALESCE(repo_id, 0), started_at)`; written by reindex only |
+| `replicas` | `id` text (a UUID v7 made at the start), `host` text (host name), `pid` int, `version` text (the binary's), `started_at` ts, `heartbeat_at` ts | primary key `id`; written by `serve` only. Migration `0018_replicas.sql` (#478) |
 
 A `versions` row exists only after the registry accepted the manifest; the claims in
 `tag_claims` are the locks that serialise the writers of one OCI repository across replicas,
@@ -151,6 +152,20 @@ and the new run starts. `done` is a run that went to the end, whatever its repor
 `failed` one that stopped on an error of its own (the registry or the database unreachable, the
 process shut down). Finishing a run deletes the finished runs of the same scope beyond the ten
 newest.
+
+A `replicas` row is a `serve` process on the database: written at its start, after the
+migrations, beaten every 30 seconds and deleted when it stops; a row whose `heartbeat_at` is
+older than 2 minutes is of a process that is gone, and the next start deletes it. The CLI's
+commands write none. On SQLite, which serves one replica (its referrers and journal locks are
+locks of the process), the start is a transaction that holds the write lock of the file, and a
+row of another replica with a fresh heartbeat refuses it: `serve` exits with an error that
+names that replica (id, host, process, version, start, last heartbeat) and when its row goes
+stale. A process that crashed leaves its row, so `serve` on the file is refused until the row
+is stale, 2 minutes after its last beat at most; an orchestrator that restarts it on failure
+starts it then. A replica that stood still for that long finds its row
+deleted at its next beat and writes it again; on SQLite, while another replica's row is fresh,
+that is refused, and `/-/readyz` answers `503` until it is not. On Postgres the rows of every
+replica coexist.
 
 The referrers lock has no table. The `sha256-<hex>` tag-schema index of a subject is a
 read-modify-write of one tag, and OCI has no compare-and-swap for manifests: two referrers
@@ -249,7 +264,8 @@ the control-plane and derived tables, `0002_tag_claims.sql` the coordination tab
 `0006_auth_version.sql` the table `auth_version` with its row and the unique index
 `bindings_unique` (a binding made twice before it is kept once, the first),
 `0014_schema_requires.sql` the column `schema_migrations.requires` ([Upgrades](#upgrades)),
-and `0017_index_cache_generations.sql` the table `index_cache_generations`.
+`0017_index_cache_generations.sql` the table `index_cache_generations`, and `0018_replicas.sql`
+the table `replicas`.
 The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the

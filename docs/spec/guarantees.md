@@ -99,7 +99,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | Name | The property |
 | --- | --- |
 | **one database** | every replica uses the same database, and the same master key (`keys.masterKeyEnv` or `keys.masterKeyFile`) |
-| **Postgres for replicas** | more than one replica needs Postgres. SQLite serves one replica: its referrers and journal locks are locks of the process (index-schema.md, Coordination). Two replicas on one SQLite file are not detected (acceptance.md H-14) |
+| **Postgres for replicas** | more than one replica needs Postgres. SQLite serves one replica: its referrers and journal locks are locks of the process (index-schema.md, Coordination). A `serve` that finds another live one on the SQLite file refuses to start and names it (acceptance.md H-14); the CLI's commands are not counted |
 | **clocks agree** | the clocks of the replicas, and of the CLI, agree within 60 seconds: the skew a bearer token is checked with, and well inside the bounds that compare times written by other replicas (stale claims after `ingest.claimTTL`, 10 minutes; stale fetch claims and reindex runs after 2 minutes) |
 
 ## Storage and the index
@@ -684,22 +684,27 @@ status is `holds on strongly consistent registries only` do not hold there.
   index or journal append at a time per subject or package, one open session per key, one
   active key per kind and owner.
 - **Scope.** Every replica of one deployment.
-- **Assumes.** Database: **one database**, **Postgres for replicas** (**unchecked**: H-14),
-  **clocks agree** (**unchecked**).
+- **Assumes.** Database: **one database**, **Postgres for replicas** (checked when `serve`
+  starts: H-14), **clocks agree** (**unchecked**).
 - **Mechanism.** `tag_claims` (`Writer.ClaimTag`), `reindex_runs` (`Writer.StartReindexRun` under
   `pg_advisory_xact_lock` or `BEGIN IMMEDIATE`), `fetch_claims` (`Writer.ClaimFetch`, a heartbeat
   every 30 s, stale after 2 minutes), `Store.WithReferrersLock` (the referrers, tag and journal
   locks), the unique indexes `sessions_open_key` and `keys_active`, the `sessions` rows of
-  uploads (`facade` `uploadState`).
+  uploads (`facade` `uploadState`); `replicas` (`Writer.StartReplica`, which on SQLite refuses a
+  second live replica, and the heartbeat of `serve`).
 - **Tests.** The store conformance cases `TagClaimRace`, `ReindexRunRace`, `FetchClaimRace`,
-  `KeyRace`, `SessionsConcurrent`, `JournalRace`, `PackageNameOCIRace`, `ReferrersLock`;
+  `KeyRace`, `SessionsConcurrent`, `JournalRace`, `PackageNameOCIRace`, `ReferrersLock`,
+  `Replicas`; `TestFileReplicas`, `TestReplicasCoexist`, `TestServeTwoReplicasOnSQLite`,
+  `TestServeAfterCrash`, `TestReplicaBeat`;
   `TestUploadAcrossReplicas`, `TestMonolithicUploadAbandoned`,
   `TestIntegrationUploadAcrossReplicas`, `TestSessionConcurrent`, `TestSessionCommitOnce`, `TestKeyForRace`, `TestTokenSignerRace`,
   `TestRuns`, `TestTakenOver`, `TestStaleFetchClaims`, `TestFileTwoReplicas`, `TestFileClaims`,
   `TestIntegrationReferrersConcurrent`, `TestIntegrationJournalReplicas`, `TestBootstrapReplicas`;
   `ha.sh` H-02, H-03, H-04, H-05, H-06, H-07, H-08, H-09, H-11, H-12, H-13 and the step of #28.
-- **When violated.** Two replicas on one SQLite file, or clocks that disagree by more than the
-  stale bounds, can take over a live claim; nothing reports it.
+- **When violated.** Clocks that disagree by more than the stale bounds can take over a live
+  claim; nothing reports it. A second replica on one SQLite file is refused when it starts; a
+  replica that stood still for 2 minutes while another started is not ready from its next
+  heartbeat on, and both run until the operator stops one.
 - **Status.** `holds`.
 
 ### INV-27. A cached document is invalidated by every change it depends on
@@ -1020,7 +1025,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-23 | every request bounded in size | partly | |
 | INV-24 | parsers bounded | holds | |
 | INV-25 | memory independent of file size | holds | |
-| INV-26 | replicas coordinate through the database | holds | unchecked (SQLite, clocks) |
+| INV-26 | replicas coordinate through the database | holds | unchecked (clocks) |
 | INV-27 | cached documents invalidated | holds | |
 | INV-28 | a migration applied once | holds | |
 | INV-29 | the npm journal's order and replay | strongly consistent only | unchecked |
@@ -1140,7 +1145,6 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | Acceptance C-07 and S-09 are not automated (INV-14, INV-21) | a redaction or an audit regression goes unseen | after the suite, grep both replicas' logs for every secret used, and count the audit rows of its writes | new issue |
 | No budget for the bytes of `$TMPDIR` (INV-23) | 32 spooled uploads of a replica may need 256 GiB of disk | a spool budget, or no request spool (ADR 0014) | [#427](https://github.com/lajstrom/lajstrom/issues/427) |
 | One upstream request per document per replica (INV-31) | concurrent misses of a packument each ask the upstream | share the request on a replica (pull request #399) | [#383](https://github.com/lajstrom/lajstrom/issues/383) |
-| SQLite under several replicas is not detected (INV-26, INV-29, INV-35) | the process locks of SQLite exclude nothing across replicas | refuse to start a second replica on SQLite (a row naming the live replica) | new issue |
 | Replica clocks are assumed to agree, never checked (INV-19, INV-26) | a replica whose clock runs ahead takes over live claims and refuses valid tokens | compare the replica's clock with the database's at start and on the heartbeats; warn or refuse past a bound | new issue |
 | Registries that fold tag case (INV-7) | two versions that differ in case: the second is a `409` with an unclear message | `Capabilities.TagsFoldCase` | [#426](https://github.com/lajstrom/lajstrom/issues/426) |
 | The bearer audience without `server.externalURL` (INV-19) | a staging server restored from production's database accepts production's tokens | require `externalURL` | [#248](https://github.com/lajstrom/lajstrom/issues/248) |

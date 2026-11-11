@@ -172,7 +172,7 @@ func TestReady(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	check := ready(slog.New(slog.DiscardHandler), "sqlite", st, newRegistryHealth(nil, slog.New(slog.DiscardHandler)))
+	check := ready(slog.New(slog.DiscardHandler), "sqlite", st, newRegistryHealth(nil, slog.New(slog.DiscardHandler)), &replica{})
 	if err := check(t.Context()); err != nil {
 		t.Errorf("ready with an open database: %v", err)
 	}
