@@ -186,6 +186,33 @@ func TestIntegrationUploads(t *testing.T) {
 			t.Errorf("cancel the session of the mount: %v", err)
 		}
 	})
+	step(t, "streamed writer", func(t *testing.T) {
+		big := bytes.Repeat([]byte(randomHex(t)), (2*streamChunk+100)/len(randomHex(t))+1)
+		w, err := a.OpenBlobWriter(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.Copy(w, bytes.NewReader(big)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Commit(ctx, digest.FromBytes(big)); err != nil {
+			t.Fatal(err)
+		}
+		wantBlob(ctx, t, b, big)
+		dropped := append([]byte("dropped "), big[:streamChunk]...)
+		if w, err = a.OpenBlobWriter(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(dropped); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Cancel(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := b.Exists(ctx, descriptor(octetStream, dropped)); err != nil || ok {
+			t.Errorf("Exists of the cancelled blob = %v, %v; want false", ok, err)
+		}
+	})
 }
 
 // wantBlob checks that repo holds want.

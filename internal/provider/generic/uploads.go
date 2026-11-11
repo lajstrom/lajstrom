@@ -216,6 +216,19 @@ func (p *Provider) addSpoolHint(err error) {
 	}
 }
 
+// streamChunk is the size of the chunks of OpenBlobWriter, a choice rather than a measurement:
+// larger than the 5 MiB smallest part of an S3 multipart upload, and what one upload holds in
+// memory. GHCR takes at most 4 MiB a PATCH (docs/registries/ghcr.md), and is not yet a registry
+// the frontends can publish to.
+const streamChunk = 8 << 20
+
+// OpenBlobWriter implements provider.BlobStreamer: the chunks of a provider.NewChunkedWriter
+// over this repository's session, streamChunk bytes each, each a PATCH with its Content-Range,
+// which every registry measured takes after the first write (docs/registries/README.md).
+func (r *repository) OpenBlobWriter(ctx context.Context) (provider.BlobWriter, error) {
+	return provider.NewChunkedWriter(ctx, r, streamChunk), nil
+}
+
 // uploadsURL is the upload endpoint of the repository, with query q.
 func (r *repository) uploadsURL(q url.Values) string {
 	u := r.p.base + "/v2/" + r.p.repoName(r.name) + "/blobs/uploads/"
