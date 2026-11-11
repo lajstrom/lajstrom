@@ -336,8 +336,9 @@ CI runs the same three images, on the same ports, as service containers of the `
 job ([CONTRIBUTING.md](../CONTRIBUTING.md#ci-overview)); Zot there runs on the configuration built
 into its image, since a service container cannot mount `config.json` from the checkout. CI does
 not run the s3 and s3-minio profiles (the tests that need them skip without
-`LAJSTROM_TEST_REGISTRY_S3`), nor the gitlab, ha and ecr profiles (the ECR test skips without
-`LAJSTROM_TEST_ECR_ENDPOINT` and `LAJSTROM_TEST_ECR_REGISTRY`).
+`LAJSTROM_TEST_REGISTRY_S3`), nor the gitlab and ecr profiles (the ECR test skips without
+`LAJSTROM_TEST_ECR_ENDPOINT` and `LAJSTROM_TEST_ECR_REGISTRY`). The ha profile runs in the HA
+workflow, on a runner of its own, with `ha.sh` ([testing.md](testing.md#the-ha-stack)).
 
 ## Docker on macOS and Linux
 

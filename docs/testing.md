@@ -11,7 +11,7 @@ says how to run each one, what it needs, and how to add an end-to-end scenario.
 | Integration | `make test-integration` with `LAJSTROM_TEST_REGISTRY` | the dev stack | `integration (zot)`, `integration (distribution)`, `integration (zot-pgbouncer)`; `integration (zot-yugabyte)` (the YugabyteDB workflow): nightly, on demand, and on a pull request that changes `internal/index`; not required |
 | OCI conformance | `test/conformance/run.sh` | a running Lajstrom, an `oci` repo | no |
 | Fuzz | `go test -fuzz=<name>` | Go | the seed corpus, as part of `make test` |
-| End-to-end | `make e2e` | the dev stack, Docker, `curl`, `jq` | `e2e` |
+| End-to-end | `make e2e` | the dev stack, Docker, `curl`, `jq` | `e2e`; `ha` (the HA workflow): `ha.sh` without H-01 on the ha profile, nightly, on demand, and on a pull request that changes ingest, the index, the facade, the profile or the scripts it runs; not required |
 | Load | `make load` | the dev stack, `oras`, `curl`, `jq`, `lsof`, 4 GiB of free disk (11 GiB with 8 uploads at once) | `load` (the Load workflow): nightly, on demand, and on a pull request that changes the load test; not required |
 
 `make check` runs what every pull request must pass without the stack: gofmt, build, vet, unit
@@ -247,6 +247,14 @@ test/e2e/ha.sh                       # every step
 HA_SUITE=none test/e2e/ha.sh         # without H-01, the scenarios of this page through the edge
 HA_SUITE='raw oras' test/e2e/ha.sh   # H-01 with those two only
 ```
+
+The `e2e` job of CI has no ha profile, so `ha.sh` is skipped there. The
+[HA workflow](../.github/workflows/ha.yml) runs it on a runner of its own, in about 6 to 8
+minutes: `make dev-up PROFILES=ha`, then `HA_SUITE=none make e2e E2E=ha`. It runs nightly, on
+demand, and on a pull request that changes `internal/ingest`, `internal/index`,
+`internal/facade`, the profile (`deploy/compose/compose.yaml`, `deploy/compose/ha/`,
+`deploy/nginx/`), `ha.sh`, `lib.sh`, `run.sh` or the workflow. It is not a required check; when
+it fails, the whole logs of the profile's services are kept as the artifact `ha-logs`.
 
 It reaches A and B past the edge on ports 8091 and 8092, the backend on 5007, and the containers
 with `docker compose` in the project of `COMPOSE_PROJECT_NAME` (`lajstrom-dev` by default), on
