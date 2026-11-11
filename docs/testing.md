@@ -8,7 +8,7 @@ says how to run each one, what it needs, and how to add an end-to-end scenario.
 | --- | --- | --- | --- |
 | Unit | `make test` | Go | `build-test` |
 | Store conformance | `make test`; on Postgres with `LAJSTROM_TEST_POSTGRES_DSN` | Go; Postgres for its half | `build-test` (SQLite), `integration` (both) |
-| Integration | `make test-integration` with `LAJSTROM_TEST_REGISTRY` | the dev stack | `integration (zot)`, `integration (distribution)`, `integration (zot-pgbouncer)` |
+| Integration | `make test-integration` with `LAJSTROM_TEST_REGISTRY` | the dev stack | `integration (zot)`, `integration (distribution)`, `integration (zot-pgbouncer)`; `integration (zot-yugabyte)` (the YugabyteDB workflow): nightly, on demand, and on a pull request that changes `internal/index`; not required |
 | OCI conformance | `test/conformance/run.sh` | a running Lajstrom, an `oci` repo | no |
 | Fuzz | `go test -fuzz=<name>` | Go | the seed corpus, as part of `make test` |
 | End-to-end | `make e2e` | the dev stack, Docker, `curl`, `jq` | `e2e` |
