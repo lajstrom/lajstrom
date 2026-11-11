@@ -128,6 +128,7 @@ func (p *Provider) probeOnce(ctx context.Context) (provider.Capabilities, error)
 			"blobsReadWhole", q.wholeBlobs, "blobExistsByGET", q.blobExistsByGET)
 	}
 	if hintSpool(v) && !p.spoolUnknown {
+		p.spoolHint.Store(true)
 		p.log.InfoContext(ctx, "hint: the registry refuses a /v2 chunk of unknown length after the first write, "+
 			"and such an upload fails with its 4xx; registries[].uploads.spoolUnknownLength spools that chunk to $TMPDIR",
 			"vendor", string(v))

@@ -57,6 +57,9 @@ type Provider struct {
 	// spoolUnknown is registries[].uploads.spoolUnknownLength: a chunk of unknown length into a
 	// session that holds bytes is spooled to learn its length (spool.go).
 	spoolUnknown bool
+	// spoolHint is set by the first probe that succeeded when the vendor table hints at
+	// spoolUnknownLength and it is off: a streamed chunk the registry refuses says so (hintSpool).
+	spoolHint atomic.Bool
 
 	// mu serialises probing; probed is the answer of the first probe that succeeded.
 	mu     sync.Mutex

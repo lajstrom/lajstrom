@@ -2,6 +2,7 @@ package provider
 
 import (
 	"errors"
+	"strconv"
 	"time"
 )
 
@@ -21,7 +22,42 @@ var (
 	// repeatedly and its circuit breaker is open. An *UnavailableError says when it takes a
 	// request again (RetryAfter).
 	ErrUnavailable = errors.New("provider: unavailable")
+	// ErrRejected means the backend refused a request of a blob upload session (BlobUploader)
+	// with a 4xx that no other sentinel names: 400 BLOB_UPLOAD_INVALID or SIZE_INVALID, 413, 416,
+	// 429. A *RejectedError says how.
+	ErrRejected = errors.New("provider: rejected")
 )
+
+// RejectedError is an ErrRejected with what the backend answered. Its message names the
+// registry by registries[].name and holds nothing else of the backend's: no URL, no instance
+// prefix, no message of the registry's own; the facade answers the client with it.
+type RejectedError struct {
+	// Registry is registries[].name.
+	Registry string
+	// Status is the backend's status, a 4xx.
+	Status int
+	// Code is the first error code of the answer, "" when it had none.
+	Code string
+	// RetryAfter is the Retry-After of a 429, zero when it had none.
+	RetryAfter time.Duration
+	// Hint is what the operator may change so that the request passes, when the provider knows
+	// it; "" otherwise.
+	Hint string
+}
+
+func (e *RejectedError) Error() string {
+	msg := "registry " + e.Registry + " refused the request: " + strconv.Itoa(e.Status)
+	if e.Code != "" {
+		msg += " " + e.Code
+	}
+	if e.Hint != "" {
+		msg += "; hint: " + e.Hint
+	}
+	return msg
+}
+
+// Unwrap returns ErrRejected, so that errors.Is matches the sentinel.
+func (e *RejectedError) Unwrap() error { return ErrRejected }
 
 // UnavailableError is an ErrUnavailable that says how long until the provider sends a request
 // to the backend again.
@@ -37,12 +73,16 @@ func (e *UnavailableError) Error() string {
 // Unwrap returns ErrUnavailable, so that errors.Is matches the sentinel.
 func (e *UnavailableError) Unwrap() error { return ErrUnavailable }
 
-// RetryAfter returns the RetryAfter of the *UnavailableError that err wraps, and whether it
-// wraps one.
+// RetryAfter returns the RetryAfter of the *UnavailableError that err wraps, or of the
+// *RejectedError of a backend that asked to wait, and whether it wraps one.
 func RetryAfter(err error) (time.Duration, bool) {
 	var u *UnavailableError
 	if errors.As(err, &u) {
 		return u.RetryAfter, true
+	}
+	var r *RejectedError
+	if errors.As(err, &r) && r.RetryAfter > 0 {
+		return r.RetryAfter, true
 	}
 	return 0, false
 }

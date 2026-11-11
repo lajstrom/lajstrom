@@ -70,6 +70,22 @@ never visible to clients).
 | `GET /v2/<name>/referrers/<digest>` | `read` on the repo, checked before the digest. The manifests whose `subject` is `<digest>`, as an image index (`Content-Type: application/vnd.oci.image.index.v1+json`), from `Repository.Referrers` of the provider: the backend's referrers API, or the `sha256-<hex>` tag schema where it has none (`Capabilities.Referrers`). `?artifactType=` keeps the referrers of that type and the answer carries `OCI-Filters-Applied: artifactType`. A subject without referrers, in a repository the backend does not have too, is `200` with an empty index, never `404`. A malformed digest is `400 DIGEST_INVALID`. |
 | `GET /v2/_catalog` | from the control plane, filtered by RBAC: the `oci_repos` of every repo the principal may read, as `<format>/<repo>/<path>`, with `n`, `last` and `Link` |
 
+A request of a blob upload (any of the upload rows above) that the registry refuses with a
+`4xx` that none of their errors names keeps that status for the client (#449): Gitea's
+`400 BLOB_UPLOAD_INVALID` for a chunk of unknown length after the first write, JFrog's `416`
+for it, a `413` of a proxy in front of the registry, a `429`. The code is the registry's when it
+is `BLOB_UPLOAD_INVALID`, `DIGEST_INVALID`, `NAME_INVALID` or `SIZE_INVALID`; else
+`SIZE_INVALID` for a `413`, `TOOMANYREQUESTS` for a `429`, `BLOB_UPLOAD_INVALID` for the rest. A
+`429` carries the registry's `Retry-After` when it sent one. The message names the registry by
+its `registries[].name`, with the status and the code, and nothing else of it: no URL, realm,
+credential or message of the registry's own; when the vendor table knows the fix, a hint
+follows (`registries[].uploads.spoolUnknownLength` for Gitea, Forgejo and JFrog). The refusal
+is logged at warn. The session stays, as after any chunk that fails, except when the registry
+no longer knows it (`404`, or `BLOB_UPLOAD_UNKNOWN`: `404 BLOB_UPLOAD_UNKNOWN`) or refuses the
+digest (`400 DIGEST_INVALID`): then it ends. A registry that refuses Lajstrom's credentials
+(`401`, `403`, `UNAUTHORIZED`, `DENIED`) is `502`, and any `5xx` of the registry stays a `5xx`,
+with the status text only.
+
 Mount of a package under a repo: the name after `/v2/` is split as `<format>/<repo>/<rest>`; the
 repo must exist in the control plane, else `404 NAME_UNKNOWN`. Auto-creation of repos on push is
 not supported (an explicit `POST /api/v1/repos` is one call).

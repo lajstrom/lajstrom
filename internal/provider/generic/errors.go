@@ -26,7 +26,7 @@ const maxErrorBody = 8 << 10
 // sentinel, and errors.As still finds the *errcode.ErrorResponse or the oras-go error.
 type backendError struct {
 	op     string // "fetch raw/scratch/notes@sha256:…"
-	kind   error  // provider.ErrNotFound, ErrConflict, ErrUnsupported or ErrUnauthorized
+	kind   error  // provider.ErrNotFound, ErrConflict, ErrUnsupported, ErrUnauthorized or a *RejectedError
 	detail string // "HTTP 404, MANIFEST_UNKNOWN"; empty when the cause was not an HTTP answer
 	cause  error
 }
@@ -52,7 +52,8 @@ func (e *credentialError) Unwrap() error { return e.err }
 // translate turns an error of oras-go or of a registry response into one that wraps a sentinel
 // of package provider where one applies:
 //
-//   - errdef.ErrNotFound, HTTP 404, NAME_UNKNOWN, MANIFEST_UNKNOWN, BLOB_UNKNOWN: ErrNotFound;
+//   - errdef.ErrNotFound, HTTP 404, NAME_UNKNOWN, MANIFEST_UNKNOWN, BLOB_UNKNOWN,
+//     BLOB_UPLOAD_UNKNOWN: ErrNotFound;
 //   - HTTP 409, TAG_INVALID, or an error whose message says the tag is immutable: ErrConflict;
 //   - HTTP 405, UNSUPPORTED, errdef.ErrUnsupported: ErrUnsupported;
 //   - HTTP 401 and 403, UNAUTHORIZED, DENIED, and a Basic challenge without configured
@@ -101,7 +102,8 @@ func classifyResponse(resp *errcode.ErrorResponse) error {
 	case resp.StatusCode == http.StatusConflict || hasCode(resp, "TAG_INVALID") || mentionsImmutable(resp):
 		return provider.ErrConflict
 	case resp.StatusCode == http.StatusNotFound,
-		hasCode(resp, errcode.ErrorCodeNameUnknown, errcode.ErrorCodeManifestUnknown, errcode.ErrorCodeBlobUnknown):
+		hasCode(resp, errcode.ErrorCodeNameUnknown, errcode.ErrorCodeManifestUnknown, errcode.ErrorCodeBlobUnknown,
+			errcode.ErrorCodeBlobUploadUnknown):
 		return provider.ErrNotFound
 	case resp.StatusCode == http.StatusMethodNotAllowed, hasCode(resp, errcode.ErrorCodeUnsupported):
 		return provider.ErrUnsupported
@@ -110,6 +112,21 @@ func classifyResponse(resp *errcode.ErrorResponse) error {
 		return provider.ErrUnauthorized
 	}
 	return nil
+}
+
+// translateSession is translate for the answer resp of a request of an upload session, whose
+// error codes er holds: a 4xx that no sentinel names is a *provider.RejectedError with its first
+// error code and the Retry-After of a 429, which the facade passes on to the client.
+func (p *Provider) translateSession(op string, resp *http.Response, er *errcode.ErrorResponse) error {
+	if er.StatusCode < 400 || er.StatusCode > 499 || classifyResponse(er) != nil {
+		return translate(op, er)
+	}
+	rej := &provider.RejectedError{Registry: p.name, Status: er.StatusCode}
+	if len(er.Errors) > 0 {
+		rej.Code = er.Errors[0].Code
+	}
+	rej.RetryAfter, _ = retryAfter(resp)
+	return &backendError{op: op, kind: rej, cause: er}
 }
 
 // hasCode reports whether one of the response's errors has one of codes.

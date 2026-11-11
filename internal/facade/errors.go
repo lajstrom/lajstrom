@@ -38,8 +38,9 @@ const (
 )
 
 // apiError is an error the facade answers in the distribution format: the code that the
-// handler chose for what it was doing, the status (zero: format.StatusOf of the cause, the one
-// error table of the frontends, so that index and provider errors map as everywhere), the
+// handler chose for what it was doing, the status (zero: statusOf, which is format.StatusOf of
+// the cause, the one error table of the frontends, so that index and provider errors map as
+// everywhere, but for the registry's refusal of a blob upload request), the
 // message for the client (empty: the cause's), the detail of the error entry (nil: none), and
 // the cause, for the status and the log. insufficient marks the 401 of a valid bearer that
 // lacks the repository: its challenge says error="insufficient_scope".
@@ -82,24 +83,28 @@ type errorEntry struct {
 }
 
 // fail answers err as the distribution spec's error document. The status is the apiError's,
-// or format.StatusOf of the cause; the code follows the status where the status decides it
+// or the registry's 4xx when the cause is its refusal of the request (statusOf), or
+// format.StatusOf of the cause; the code follows the status where the status decides it
 // (401 UNAUTHORIZED with the challenge, 403 DENIED, 429 TOOMANYREQUESTS, 501 UNSUPPORTED, the
 // 503 of an open circuit breaker UNAVAILABLE with Retry-After, other 5xx UNKNOWN) and is the
 // handler's otherwise. The challenge of a 401 is the bearer challenge of
 // the token flow (docs/spec/rbac.md §4) with the scope of the request (requestScope), and
 // error="insufficient_scope" when a valid bearer lacked it. A 5xx says only its status text,
 // without a detail, and its cause is logged with the request id: a backend error must not
-// reach the client.
+// reach the client. A refusal of the registry is logged too, at warn: what it needs may be the
+// operator's to change.
 func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var ae *apiError
 	if !errors.As(err, &ae) {
 		ae = &apiError{err: err}
 	}
-	status := ae.status
-	if status == 0 {
-		status = format.StatusOf(ae.err)
-	}
+	status, rej := ae.statusOf()
 	code, msg, detail := ae.code, ae.msg, ae.detail
+	if rej != nil {
+		code, msg = rejectedCode(rej, code), rej.Error()
+		h.o.Log.WarnContext(r.Context(), "facade: the registry refused the request", "method", r.Method, "path", r.URL.Path,
+			"status", status, "error", err.Error(), "requestId", server.RequestID(r.Context()))
+	}
 	if msg == "" && ae.err != nil {
 		msg = ae.err.Error()
 	}
@@ -127,6 +132,37 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		code = codeOfStatus(status)
 	}
 	writeJSON(w, status, errorBody{Errors: []errorEntry{{Code: code, Message: msg, Detail: detail}}})
+}
+
+// statusOf returns the status of e, and the registry's refusal it answers: the apiError's own
+// status; else, when the cause is a *provider.RejectedError, the registry's 4xx, a client error
+// that stays one (#449); else format.StatusOf of the cause.
+func (e *apiError) statusOf() (int, *provider.RejectedError) {
+	var rej *provider.RejectedError
+	switch {
+	case e.status != 0:
+		return e.status, nil
+	case errors.As(e.err, &rej) && rej.Status >= 400 && rej.Status <= 499:
+		return rej.Status, rej
+	}
+	return format.StatusOf(e.err), nil
+}
+
+// rejectedCode is the code of the registry's refusal rej of a request for which the handler
+// chose code: the registry's own when it is a code of the spec that a blob upload is refused
+// with, so that the client acts on it as on the registry's; else SIZE_INVALID for a 413; else
+// the handler's, BLOB_UPLOAD_INVALID when it chose none. fail answers a 429 TOOMANYREQUESTS.
+func rejectedCode(rej *provider.RejectedError, code string) string {
+	switch {
+	case rej.Code == codeBlobUploadInvalid, rej.Code == codeDigestInvalid, rej.Code == codeNameInvalid,
+		rej.Code == codeSizeInvalid:
+		return rej.Code
+	case rej.Status == http.StatusRequestEntityTooLarge:
+		return codeSizeInvalid
+	case code != "":
+		return code
+	}
+	return codeBlobUploadInvalid
 }
 
 // codeOfStatus is the code of an error whose handler named none.
