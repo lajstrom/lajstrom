@@ -2,9 +2,10 @@
 # End-to-end test of an apt repo with real clients against a running Lajstrom (#42, #48;
 # docs/acceptance.md A-01, A-02, A-03, A-04, A-06, A-07, E-07):
 #
-#   - two packages built with dpkg-deb, one uploaded with PUT …/upload, the other pushed with oras
-#     through the OCI facade with the deb profile (its metadata layer from lajstrom admin deb
-#     metadata);
+#   - two packages built with dpkg-deb, one uploaded with PUT …/upload, with 20 MiB of random
+#     bytes, so that it streams into the registry in several chunks (ADR 0014), the other pushed
+#     with oras through the OCI facade with the deb profile (its metadata layer from lajstrom
+#     admin deb metadata);
 #   - the repo's key.asc into /etc/apt/keyrings, the source signed-by it ([trusted=yes] when the
 #     server has no master key and key.asc is 404);
 #   - anonymousRead on, through PATCH /api/v1/repos/apt/<repo>: apt-get update without
@@ -19,6 +20,7 @@
 #     broken Release from the server would make the steps above fail with it;
 #   - the same bytes again (201, the same digest); other bytes under the same name, version and
 #     architecture in the same suite (409, the tag) and in another suite (409, the pool file name);
+#   - a .deb whose control member is over 4 MiB: 400 naming the bound;
 #   - both versions deleted through DELETE /api/v1/repos/apt/<repo>/packages/<name>/versions/<v>
 #     (#61): the next Packages and apt-get update have neither.
 #
@@ -116,13 +118,15 @@ put() {
 		"$base/apt/$repo/upload?suite=$2&component=main")"
 }
 
-# build DIR NAME GREETING: build NAME_1.0.0-1_amd64.deb in $work/DIR/ with dpkg-deb in a
-# container, and print its path: one file, /usr/share/NAME/greeting, that says GREETING.
+# build DIR NAME GREETING [MIB]: build NAME_1.0.0-1_amd64.deb in $work/DIR/ with dpkg-deb in a
+# container, and print its path: one file, /usr/share/NAME/greeting, that says GREETING, and with
+# MIB a second, /usr/share/NAME/random, of that many MiB of random bytes.
 build() {
-	local dir="$work/$1" name="$2" greeting="$3"
+	local dir="$work/$1" name="$2" greeting="$3" mib="${4:-0}"
 	mkdir -p "$dir"
 	docker run --rm --platform linux/amd64 -u "$(id -u):$(id -g)" -v "$dir:/w" -w /w "$image" bash -ec "
 		mkdir -p pkg/DEBIAN pkg/usr/share/$name && echo '$greeting' > pkg/usr/share/$name/greeting
+		if [ $mib -gt 0 ]; then head -c ${mib}M /dev/urandom > pkg/usr/share/$name/random; fi
 		printf 'Package: $name\nVersion: $version\nArchitecture: amd64\nMaintainer: Lajstrom e2e <e2e@lajstrom.dev>\nDescription: says $greeting\n' > pkg/DEBIAN/control
 		dpkg-deb --root-owner-group --build pkg ${name}_${version}_amd64.deb >/dev/null && rm -r pkg" >"$work/build.log" 2>&1 ||
 		{ cat "$work/build.log" >&2; fail "dpkg-deb --build $name"; }
@@ -188,7 +192,7 @@ fetched() {
 	printf '%s\n' "$got" | awk '{ p = $1; if (length(p) > 27) p = substr(p, 1, 27) "…"; printf "%sGET %s %s", (NR > 1 ? ", " : ""), p, $2 } END { print " as " who }' who="$2"
 }
 
-deb1="$(build one "$one" "hello from $one")"
+deb1="$(build one "$one" "hello from $one" 20)"
 deb2="$(build two "$two" "hello from $two")"
 other="$(build other "$one" "other bytes")" # the name, version and architecture of the first
 cmp -s "$deb1" "$other" && fail "the two builds of $one have the same bytes"
@@ -362,6 +366,20 @@ expect "PUT other bytes to noble status ($(cat "$work/body"))" 409 "$status"
 grep -qF "pool file name ${one}_${version}_amd64.deb is held by version $version in jammy/main" "$work/body" ||
 	fail "the 409 does not name the pool file name: $(cat "$work/body")"
 ok "PUT of other bytes as $one $version amd64 to noble/main: 409, $(tr -d '\n' <"$work/body")"
+
+# A control member over MaxControl, 4 MiB, does not fit the head the upload route reads for the
+# package name before the body streams: 400 from its header, and nothing published.
+over="$work/over.deb"
+{
+	printf '!<arch>\n%-16s%-12s%-6s%-6s%-8s%-10s`\n2.0\n' debian-binary 0 0 0 100644 4
+	printf '%-16s%-12s%-6s%-6s%-8s%-10s`\n' control.tar.xz 0 0 0 100644 4194306
+	head -c 4194306 /dev/zero
+} >"$over"
+put "$over" jammy
+expect "PUT of a control member over 4 MiB status ($(cat "$work/body"))" 400 "$status"
+grep -qF "the control member control.tar.xz has 4194306 bytes, at most 4194304" "$work/body" ||
+	fail "the 400 does not name the bound: $(cat "$work/body")"
+ok "PUT of a .deb whose control member has 4 MiB and 2 bytes: 400, $(tr -d '\n' <"$work/body")"
 
 # #61: both versions deleted through the API are gone from the next Packages and from apt.
 for p in "$one" "$two"; do

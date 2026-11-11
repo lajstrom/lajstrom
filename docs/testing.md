@@ -89,7 +89,7 @@ variables and what passes.
 ## Fuzz
 
 `FuzzEscape`, `FuzzUnescape` and `FuzzValidate` (`internal/oci/profile`), `FuzzParse`,
-`FuzzParseControl` and `FuzzParseAr` (`internal/format/deb`), `FuzzWheelFilename`,
+`FuzzInspector`, `FuzzParseControl` and `FuzzParseAr` (`internal/format/deb`), `FuzzWheelFilename`,
 `FuzzCoreMetadata` and `FuzzZipEntries` (`internal/format/pypi`), `FuzzPOM`
 (`internal/format/maven`), and `FuzzPackageJSON` (`internal/format/npm`). Each checks properties of what the parser accepts (round trips,
 idempotence), that what it refuses stays refused, and that what it allocates grows with the

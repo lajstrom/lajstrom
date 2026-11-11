@@ -14,8 +14,11 @@
 // control fields as written, md5sums, and the size, md5, sha1 and sha256 of the file, which
 // apt's Packages lists.
 //
-// Parse reads a .deb in one pass for Build; ParseControl reads only up to the end of the
-// control member, for Validate. Issue #39 is the parser, Build and Validate; #40 renders the
+// An upload streams into the registry (ADR 0014): the upload route reads the head of the body,
+// up to the end of the control member, for the package name, and the whole body passes the
+// inspector on its way, which checks the archive in one pass as Parse does (Parse is the
+// inspector over a reader); ParseControl reads only up to the end of the control member, for
+// the upload route and for Validate. Issue #39 is the parser, Build and Validate; #40 renders the
 // indexes, #41 signs them and #42 serves the pool and the upload route.
 //
 // The indexes of a suite are one render, so that the Release a client gets lists the hashes of

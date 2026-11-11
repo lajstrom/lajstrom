@@ -43,15 +43,17 @@ type metadata struct {
 	Size     int64             `json:"size"`
 }
 
-// Build makes the manifest of one uploaded .deb. in.Files holds exactly one file, read once by
-// Parse for the control file and the checksums together; in.Params has ParamSuite and
-// ParamComponent (distName each) and may have ParamArch, which must then be the Architecture of
-// the control file, and ParamUploadedBy. The manifest has the file layer titled with the pool
-// file name, the metadata layer, and the annotations name = Package, version = Version,
-// variant = <suite>/<component>/<Architecture> and lajstrom.deb.arch, .suite and .component;
-// the tag is profile.Tag(Version, variant), 1_3a1.18.0-6ubuntu14.4__jammy_2fmain_2famd64.
-// created is now, in whole seconds, as for raw. Errors wrap format.ErrInvalid, except a failure
-// to read the file.
+// Build makes the manifest of one uploaded .deb. in.Files holds exactly one file: one streamed
+// into the registry (no Open, ADR 0014) is described by what its inspector read and by its size
+// and checksums, and left out of Built.Blobs, for ingest commits its upload session; another is
+// read once by Parse for the control file and the checksums together. in.Params has ParamSuite
+// and ParamComponent (distName each) and may have ParamArch, which must then be the
+// Architecture of the control file, and ParamUploadedBy. The manifest has the file layer titled
+// with the pool file name, the metadata layer, and the annotations name = Package, version =
+// Version, variant = <suite>/<component>/<Architecture> and lajstrom.deb.arch, .suite and
+// .component; the tag is profile.Tag(Version, variant),
+// 1_3a1.18.0-6ubuntu14.4__jammy_2fmain_2famd64. created is now, in whole seconds, as for raw.
+// Errors wrap format.ErrInvalid, except a failure to read the file.
 //
 // The file name does not depend on the suite: the same .deb uploaded to jammy and to
 // jammy-updates is two manifests, two tags and two versions over one layer digest and one file
@@ -70,9 +72,8 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 	if err != nil {
 		return nil, err
 	}
-	if arch := in.Params[ParamArch]; arch != "" && arch != pkg.Architecture {
-		return nil, fmt.Errorf("%w: the upload is for architecture %q, the control file of %s says %q",
-			format.ErrInvalid, arch, pkg.Filename, pkg.Architecture)
+	if err := checkArch(in.Params, pkg); err != nil {
+		return nil, err
 	}
 	name := profile.RepositoryPath("", Name, repo.Name, profile.EscapeComponent(pkg.Name))
 	if len(name) > maxRepositoryLen {
@@ -96,13 +97,13 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", format.ErrInvalid, err)
 	}
+	blobs := []format.BlobSource{bytesBlob(profile.EmptyConfig, ocispec.DescriptorEmptyJSON.Data)}
+	if f.Open != nil {
+		blobs = append(blobs, format.BlobSource{Descriptor: m.Layers[0], Open: func(context.Context) (io.ReadCloser, error) { return f.Open() }})
+	}
 	return &format.Built{
 		Manifest: m,
-		Blobs: []format.BlobSource{
-			bytesBlob(profile.EmptyConfig, ocispec.DescriptorEmptyJSON.Data),
-			{Descriptor: m.Layers[0], Open: func(context.Context) (io.ReadCloser, error) { return f.Open() }},
-			bytesBlob(m.Layers[1], md),
-		},
+		Blobs:    append(blobs, bytesBlob(m.Layers[1], md)),
 		Entry: format.Entry{Name: pkg.Name, Version: pkg.Version, Variant: variant, Attrs: attrs, Metadata: md,
 			Files: []format.FileEntry{{Name: pkg.Filename, MediaType: file.MediaType, Digest: d, Size: pkg.Size}}},
 		Tag:      profile.Tag(pkg.Version, variant),
@@ -115,6 +116,16 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 // variant splits back into them.
 func variantOf(suite, component, arch string) string {
 	return suite + "/" + component + "/" + arch
+}
+
+// checkArch checks the ParamArch of an upload, when it has one, against the Architecture of
+// the control file of pkg.
+func checkArch(params map[string]string, pkg *Package) error {
+	if arch := params[ParamArch]; arch != "" && arch != pkg.Architecture {
+		return fmt.Errorf("%w: the upload is for architecture %q, the control file of %s says %q",
+			format.ErrInvalid, arch, pkg.Filename, pkg.Architecture)
+	}
+	return nil
 }
 
 // distParams returns the suite and the component of an upload, both required and distName.
@@ -141,9 +152,12 @@ func checkDistName(what, s string) error {
 	return nil
 }
 
-// parseFile reads f once with Parse. A size other than the one f declares wraps
-// format.ErrInvalid.
+// parseFile returns what f says about itself: of a streamed file, streamedPackage; of another,
+// what Parse reads from it. A size other than the one f declares wraps format.ErrInvalid.
 func parseFile(f format.UploadedFile) (*Package, error) {
+	if f.Open == nil {
+		return streamedPackage(f)
+	}
 	rc, err := f.Open()
 	if err != nil {
 		return nil, fmt.Errorf("deb: open %q: %w", f.Name, err)
