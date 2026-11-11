@@ -251,12 +251,28 @@ and `pg_advisory_xact_lock` blocks (`ysql_yb_enable_advisory_locks`, on by defau
 passes, on a new database and one migration at a time:
 
 - `lajstrom migrate` and the `serve` smoke (raw, oras with a referrer, `reindex --verify`);
-- the store conformance suite with `-parallel 1`: 60 tests in 994 s, most of it the 19
-  migrations of each test's new schema; `TestDataRole`, `TestTerminatedConnection`,
+- the store conformance suite with `-parallel 1`: 61 tests (60 of them took 994 s, most of it
+  the 19 migrations of each test's new schema); `TestDataRole`, `TestTerminatedConnection`,
   `TestReplicasCoexist`;
-- the integration tests of ingest, reindex and the facade, on a migrated database.
+- the integration tests of ingest, reindex and the facade, on a migrated database;
+- concurrent first publishes of one package, since
+  [#629](https://github.com/lajstrom/lajstrom/issues/629). YugabyteDB takes the entries of the
+  two unique indexes of `packages`, `(repo_id, name)` and `(repo_id, name_oci)`, in no fixed
+  order, so writers of one package path deadlocked (`40P01`, 9 of 40 rounds of 16 writers),
+  where Postgres lets them share the row. Lajstrom recognises YugabyteDB by the `server_version`
+  it reports when a connection starts and then takes `pg_advisory_xact_lock` on the package path
+  before it inserts a new package; Postgres runs the same statements as before. A `40P01` or
+  `40001` that remains is `503` with `Retry-After`. `PackageNameOCIRace` and `PackageRace` pass
+  10 of 10 runs.
 
 What breaks:
+
+- **A terminated session's advisory lock outlives it.** After `pg_terminate_backend` of the
+  session that holds `pg_advisory_xact_lock`, YugabyteDB had not released the lock a minute
+  later (`TestReferrersLockLost/terminated`); Postgres releases it at once. A replica that dies
+  while it holds a referrers, tag, journal or package lock blocks the other writers of that
+  subject or package until YugabyteDB expires the dead transaction
+  ([#640](https://github.com/lajstrom/lajstrom/issues/640)).
 
 - **DDL inside a transaction is not transactional** unless the YB-TServer flag
   `ysql_yb_ddl_transaction_block_enabled` is on (`yb_ddl_transaction_block_enabled = off` by
