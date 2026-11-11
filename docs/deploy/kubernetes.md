@@ -248,13 +248,16 @@ not load-tested.
 
 ## Upgrade
 
-Set the new image; the rolling update starts one new replica before it stops an old one
-(`maxUnavailable: 0`). The new replica applies the migrations at start, under the lock, while
-the old ones still serve. Not tried: there is no release yet.
+Back up the database, run `lajstrom migrate` of the new release once as a Job, then set the new
+image; the rolling update starts one new replica before it stops an old one
+(`maxUnavailable: 0`), and the old ones serve on the migrated schema meanwhile. Without the
+Job, the first new replica applies the migrations at start, under the lock. The Job, the
+rollback and the releases with a contract migration are in
+[operations.md](../operations.md#upgrades). Not tried: there is no release yet.
 
 ## What was not verified
 
 - An Ingress or a Gateway in front, TLS, and a multi-node cluster.
 - A managed Postgres, `sslmode=require`, and an external registry.
-- Upgrades, and whether an old replica works on the schema of the next version during the
-  rolling update.
+- Upgrades on a cluster, and the migration Job. The schema rules are tested on the migrations
+  alone (`TestUpgrade`), not with the binary of a previous release.

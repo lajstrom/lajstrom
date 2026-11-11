@@ -378,6 +378,85 @@ period of the orchestrator above it, or it kills the process before the drain en
 gets `SIGTERM`, not before: a `preStop` hook that sleeps a few seconds keeps the listener open
 until the edge has stopped sending new requests to it.
 
+## Upgrades
+
+A release may migrate the index database. Its migrations are expand or contract
+([index-schema.md](spec/index-schema.md#upgrades)): after an expand migration the release
+before still runs on the schema, so a rolling update and a rollback work; a contract migration
+removes what the release before it stopped using, and its release notes say so
+([release.md](release.md#migrations-in-the-notes)). Before every upgrade:
+
+- **Back up the database** ([Backing up](#backing-up)). Past a contract migration, the backup is
+  the only way back.
+- **Read the notes of every release you skip.** Skipping releases is fine while their
+  migrations are expand. A contract migration requires a release before it: from an older one,
+  `serve` and `lajstrom migrate` refuse with `a pending migration would break the replicas
+  serving on the schema`, apply nothing, and the old replicas keep serving. Upgrade through
+  the release it requires, or stop every replica and run `lajstrom migrate --allow-breaking`.
+
+### Several replicas
+
+Run `lajstrom migrate` of the new release once, then roll the replicas. The replicas of the
+release before keep serving on the migrated schema, and the new ones find nothing to apply.
+`serve` still migrates on start, under the same lock, so a replica that starts before the
+migration ran does it itself; a separate run is better for three reasons: a failing migration
+stops the upgrade before any replica changes, a long one is not killed by the startup probe
+(`deploy/kubernetes`: 30 tries, 2 s apart), and its output is in one place. On Kubernetes, as a
+Job, with the ConfigMap and the Secret of [deploy/kubernetes.md](deploy/kubernetes.md)
+(not tried on a cluster):
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: lajstrom-migrate-v0-2-0   # one per release
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532}
+      containers:
+        - name: migrate
+          image: ghcr.io/lajstrom/lajstrom:v0.2.0   # the new release
+          args: ["migrate", "--config", "/etc/lajstrom/lajstrom.yaml"]
+          envFrom: [{secretRef: {name: lajstrom}}]
+          volumeMounts: [{name: config, mountPath: /etc/lajstrom, readOnly: true}]
+      volumes: [{name: config, configMap: {name: lajstrom-config}}]
+```
+
+```sh
+kubectl apply -f migrate-job.yaml
+kubectl wait --for=condition=complete --timeout=30m job/lajstrom-migrate-v0-2-0
+kubectl set image deployment/lajstrom lajstrom=ghcr.io/lajstrom/lajstrom:v0.2.0
+```
+
+A Helm `pre-upgrade` hook or an Argo CD `PreSync` hook runs the same Job. Without either, an
+init container that runs `lajstrom migrate` before `serve` does the same in each new pod: the
+first applies the migrations, the others find nothing.
+
+During the update both releases serve. A request answered by the old release behaves as
+before; where the two differ in a way that matters (a lock one of them does not take, as the
+claims of #244 in [index-schema.md](spec/index-schema.md#coordination)), the notes say so.
+Finish one rolling update before the next.
+
+A rollback (`kubectl rollout undo`) runs the release before on the newer schema. After expand
+migrations it starts and logs `the index schema is newer than this binary, and compatible with
+it`. After a contract migration it refuses to start: `the schema is newer than this binary:
+schema version 0016 needs a binary that knows migration 0015, and this one knows up to 0014`.
+Roll forward, or restore the backup of before the upgrade ([Restoring](#restoring)), which
+loses the changes to users, tokens and bindings made since.
+
+### One node
+
+With SQLite there is one replica: stop it, back up the file, start the new release. `serve`
+applies every migration on start, contract ones included, since nothing else serves on the
+file; `lajstrom migrate` before it shows what is applied. Going back to the release before
+follows the rollback above. The same holds for one replica on Postgres, such as the Compose
+stack, except that `serve` on Postgres does not apply a contract migration that requires more
+than the schema has: run `lajstrom migrate --allow-breaking` once it is stopped.
+
 ## Limits
 
 What bounds the work of one request, towards the registries and from the clients.

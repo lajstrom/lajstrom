@@ -255,8 +255,10 @@ docker compose up -d --wait lajstrom
 
 ## 7. Upgrade and remove
 
-A new release: set `LAJSTROM_IMAGE` to it and `docker compose up -d`; `serve` applies the
-migrations of the new version on start. This has not been tried: there is no release yet.
+A new release: back up the database (section 6), set `LAJSTROM_IMAGE` to it and
+`docker compose up -d`; `serve` applies the migrations of the new version on start. A contract
+migration that requires a release you skipped is refused; [operations.md](../operations.md#one-node)
+says what to do. This has not been tried: there is no release yet.
 `docker compose down` stops and removes the containers and keeps the volumes;
 `docker compose down -v` deletes the index and every artifact.
 
