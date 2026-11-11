@@ -192,10 +192,12 @@ func TestRebuild(t *testing.T) {
 	e.publish(t, "docs/readme.md", "hello again")
 	e.publish(t, "bin/tool", "#!/bin/sh")
 	before := e.derived(t)
+
+	// ResetDerived drops index_cache too: the row is written after it, as a GET between the two
+	// would, so that the run is what removes it.
+	must(t, e.st.ResetDerived(ctx, e.repo.ID))
 	cache := index.Cache{RepoID: e.repo.ID, Scope: "", Kind: "listing", Content: []byte("old"), SHA256: "s"}
 	must(t, e.st.PutIndexCache(ctx, &cache))
-
-	must(t, e.st.ResetDerived(ctx, e.repo.ID))
 	r := e.run(t, reindex.Request{Prune: true})
 	if r.Added != 3 || r.Manifests != 3 || r.OCIRepositories != 2 || r.Removed != 0 || len(r.Errors) != 0 {
 		t.Errorf("report: %+v", *r)
