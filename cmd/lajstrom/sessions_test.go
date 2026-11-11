@@ -34,7 +34,9 @@ func (s *syncBuffer) String() string {
 }
 
 // TestExpireSessions: the loop of serve marks a session whose time is up as expired, says so,
-// and stops with its context.
+// and stops with its context. The test waits for the log line, not for the row (#637): a
+// context cancelled after the UPDATE but before the driver returns makes ExpireSessions
+// return the context's error and no count, and the loop says nothing.
 func TestExpireSessions(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -62,22 +64,19 @@ func TestExpireSessions(t *testing.T) {
 		close(done)
 	}()
 	deadline := time.Now().Add(5 * time.Second)
-	for {
-		got, err := st.GetSessionByID(ctx, s.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got.State == "expired" {
-			break
-		}
+	for !strings.Contains(logs.String(), `msg="sessions expired: their files are dropped" count=1`) {
 		if time.Now().After(deadline) {
-			t.Fatalf("the session is %q after 5 s, want expired", got.State)
+			t.Fatalf("the log does not say the session expired after 5 s:\n%s", logs.String())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	cancel()
 	<-done
-	if !strings.Contains(logs.String(), `msg="sessions expired: their files are dropped" count=1`) {
-		t.Errorf("the log does not say so:\n%s", logs.String())
+	got, err := st.GetSessionByID(t.Context(), s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "expired" {
+		t.Errorf("the session is %q, want expired", got.State)
 	}
 }

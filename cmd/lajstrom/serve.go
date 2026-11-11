@@ -269,7 +269,9 @@ const sessionExpiryInterval = time.Minute
 
 // expireSessions marks the sessions whose time is up as expired every interval until ctx ends
 // (ingest.Pipeline.ExpireSessions). The sessions do not depend on it, it keeps their rows true;
-// a failure is logged and the next tick tries again.
+// a failure is logged and the next tick tries again. A tick that ctx ends logs nothing: the
+// driver may answer a statement that ctx ended with ctx.Err() and no count even after it
+// committed (modernc.org/sqlite does, #637), so the rows are right and the count is unknown.
 func expireSessions(ctx context.Context, pipe *ingest.Pipeline, log *slog.Logger, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
