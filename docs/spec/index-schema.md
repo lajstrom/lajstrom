@@ -165,7 +165,8 @@ is stale, 2 minutes after its last beat at most; an orchestrator that restarts i
 starts it then. A replica that stood still for that long finds its row
 deleted at its next beat and writes it again; on SQLite, while another replica's row is fresh,
 that is refused, and `/-/readyz` answers `503` until it is not. On Postgres the rows of every
-replica coexist.
+replica coexist. At its start and at every beat a replica also compares its clock with the
+database's (`DatabaseTime`; [operations.md](../operations.md#clocks)).
 
 The referrers lock has no table. The `sha256-<hex>` tag-schema index of a subject is a
 read-modify-write of one tag, and OCI has no compare-and-swap for manifests: two referrers

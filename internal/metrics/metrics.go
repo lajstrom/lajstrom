@@ -94,6 +94,11 @@ var (
 	DownloadDigestMismatches = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "lajstrom_download_digest_mismatches_total", Help: "Downloads aborted because the registry's bytes did not have their digest, by registry.",
 	}, []string{"registry"})
+	// ClockSkew is this replica's clock minus the index database's, in seconds, as the last
+	// comparison measured it: at the start of serve and at every heartbeat of its replicas row.
+	ClockSkew = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "lajstrom_clock_skew_seconds", Help: "This replica's clock minus the index database's, at the last heartbeat.",
+	})
 	// buildInfo is 1 with the build in its labels.
 	buildInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "lajstrom_build_info", Help: "Always 1; the labels say which build runs.",
@@ -102,7 +107,7 @@ var (
 
 func init() {
 	registry.MustRegister(HTTPDuration, HTTPRequestSize, HTTPResponseSize, ProviderDuration, ProviderCircuitOpen, DBDuration, Ingest,
-		ProxyUpstreamDuration, ProxyDocuments, ProxyFetches, Throttled, DownloadDigestMismatches, buildInfo,
+		ProxyUpstreamDuration, ProxyDocuments, ProxyFetches, Throttled, DownloadDigestMismatches, ClockSkew, buildInfo,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 }
 

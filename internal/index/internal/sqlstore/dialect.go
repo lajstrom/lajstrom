@@ -32,6 +32,9 @@ type Dialect struct {
 	// writing transaction holds the database's write lock from its start (SQLite, BEGIN
 	// IMMEDIATE).
 	XactLock string
+	// Clock is the query that returns the time of the database's clock, as a timestamp the
+	// store decodes (Postgres: clock_timestamp(); SQLite: 'now' as text, the host's clock).
+	Clock string
 }
 
 // timeLayout is the text form of a timestamp on SQLite: fixed width, so that text order is

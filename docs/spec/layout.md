@@ -656,6 +656,7 @@ type Reader interface {
     // repoID 0 selects the runs of every repo only
     LatestReindexRun(ctx context.Context, repoID int64) (*ReindexRun, error)
     ListReplicas(ctx context.Context) ([]Replica, error) // by StartedAt; a heartbeat 2 minutes old is a replica gone
+    DatabaseTime(ctx context.Context) (time.Time, error) // the database's clock: clock_timestamp(); SQLite the host's
     // derived
     GetPackage(ctx context.Context, repoID int64, name string) (*Package, error)
     GetPackageByNameOCI(ctx context.Context, repoID int64, nameOCI string) (*Package, error)

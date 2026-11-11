@@ -115,6 +115,10 @@ type Reader interface {
 	// ListReplicas returns the rows of replicas ordered by StartedAt, then ID; a row whose
 	// HeartbeatAt is older than 2 minutes is of a replica that is gone.
 	ListReplicas(ctx context.Context) ([]Replica, error)
+	// DatabaseTime returns the time of the database's clock: the server's on Postgres
+	// (clock_timestamp()), the host's on SQLite, which runs in the process. A replica compares
+	// its own clock with it (docs/operations.md, Clocks).
+	DatabaseTime(ctx context.Context) (time.Time, error)
 
 	// Derived.
 

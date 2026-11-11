@@ -424,7 +424,8 @@ The run writes the audit event `repo.reindex` when it starts.
 ## 5. System endpoints
 
 `/-/healthz` (process up), `/-/readyz` (DB reachable, no other replica on it when it is SQLite
-([index-schema.md](index-schema.md#coordination)), every configured registry answered `/v2/`
+([index-schema.md](index-schema.md#coordination)), the replica's clock within 60 s of the DB's
+([operations.md](../operations.md#clocks)), every configured registry answered `/v2/`
 within the last minute), `/-/version` (JSON: version, commit, date).
 
 Prometheus metrics are not on the public host: `server.metricsListen` (default
