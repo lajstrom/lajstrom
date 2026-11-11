@@ -15,26 +15,22 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index/internal/sqlstore"
 )
 
-// TestYugabyteDialect checks what the YugabyteDB dialect changes: the transactions YugabyteDB
-// aborts are ErrUnavailable there and stay what they were on Postgres, and only it has the
-// package lock.
+// TestYugabyteDialect checks what the YugabyteDB dialect changes: only it has the package lock,
+// and the transactions YugabyteDB aborts are ErrUnavailable, as on Postgres (#627).
 func TestYugabyteDialect(t *testing.T) {
 	for _, tt := range []struct {
-		name               string
-		err                error
-		postgres, yugabyte bool
+		name string
+		err  error
+		want bool
 	}{
-		{"deadlock", fmt.Errorf("index: packages: %w", &pgconn.PgError{Code: "40P01"}), false, true},
-		{"serialization failure", &pgconn.PgError{Code: "40001"}, false, true},
-		{"admin shutdown", &pgconn.PgError{Code: "57P01"}, true, true},
-		{"unique violation", &pgconn.PgError{Code: "23505"}, false, false},
-		{"other", errors.New("boom"), false, false},
+		{"deadlock", fmt.Errorf("index: packages: %w", &pgconn.PgError{Code: "40P01"}), true},
+		{"serialization failure", &pgconn.PgError{Code: "40001"}, true},
+		{"admin shutdown", &pgconn.PgError{Code: "57P01"}, true},
+		{"unique violation", &pgconn.PgError{Code: "23505"}, false},
+		{"other", errors.New("boom"), false},
 	} {
-		if got := dialect.IsUnavailable(tt.err); got != tt.postgres {
-			t.Errorf("%s: IsUnavailable on Postgres = %v, want %v", tt.name, got, tt.postgres)
-		}
-		if got := yugabyte.IsUnavailable(tt.err); got != tt.yugabyte {
-			t.Errorf("%s: IsUnavailable on YugabyteDB = %v, want %v", tt.name, got, tt.yugabyte)
+		if got := yugabyte.IsUnavailable(tt.err); got != tt.want {
+			t.Errorf("%s: IsUnavailable on YugabyteDB = %v, want %v", tt.name, got, tt.want)
 		}
 	}
 	if dialect.PackageLock != "" || yugabyte.PackageLock == "" {
