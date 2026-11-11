@@ -40,7 +40,7 @@ const (
 // apiError is an error the facade answers in the distribution format: the code that the
 // handler chose for what it was doing, the status (zero: statusOf, which is format.StatusOf of
 // the cause, the one error table of the frontends, so that index and provider errors map as
-// everywhere, but for the registry's refusal of a blob upload request), the
+// everywhere, but for the registry's refusal of a request: a push, a read), the
 // message for the client (empty: the cause's), the detail of the error entry (nil: none), and
 // the cause, for the status and the log. insufficient marks the 401 of a valid bearer that
 // lacks the repository: its challenge says error="insufficient_scope".
@@ -137,7 +137,7 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 
 // statusOf returns the status of e, and the registry's refusal it answers: the apiError's own
 // status; else, when the cause is a *provider.RejectedError of a registry that is not busy, the
-// registry's 4xx, a client error that stays one (#449); else format.StatusOf of the cause,
+// registry's 4xx, a client error that stays one (#449, #495); else format.StatusOf of the cause,
 // which answers a busy registry's 429 or 503 as provider.ErrUnavailable: 503.
 func (e *apiError) statusOf() (int, *provider.RejectedError) {
 	var rej *provider.RejectedError
@@ -151,20 +151,28 @@ func (e *apiError) statusOf() (int, *provider.RejectedError) {
 }
 
 // rejectedCode is the code of the registry's refusal rej of a request for which the handler
-// chose code: the registry's own when it is a code of the spec that a blob upload is refused
-// with, so that the client acts on it as on the registry's; else SIZE_INVALID for a 413; else
-// the handler's, BLOB_UPLOAD_INVALID when it chose none.
+// chose code: the registry's own when it is a code of the spec for a client's mistake in a
+// push, so that the client acts on it as on the registry's (#449, #495); else SIZE_INVALID for
+// the 413 of a blob upload; else the handler's, BLOB_UPLOAD_INVALID when it chose none.
 func rejectedCode(rej *provider.RejectedError, code string) string {
-	switch {
-	case rej.Code == codeBlobUploadInvalid, rej.Code == codeDigestInvalid, rej.Code == codeNameInvalid,
-		rej.Code == codeSizeInvalid:
-		return rej.Code
-	case rej.Status == http.StatusRequestEntityTooLarge:
-		return codeSizeInvalid
-	case code != "":
-		return code
+	if code == "" {
+		code = codeBlobUploadInvalid
 	}
-	return codeBlobUploadInvalid
+	switch {
+	case clientCodes[rej.Code]:
+		return rej.Code
+	case rej.Status == http.StatusRequestEntityTooLarge && code == codeBlobUploadInvalid:
+		return codeSizeInvalid
+	}
+	return code
+}
+
+// clientCodes are the codes of the spec that a registry refuses a client's own mistake in a
+// push with: rejectedCode passes them on. The others are a sentinel's (NAME_UNKNOWN,
+// UNAUTHORIZED, …) or not the client's.
+var clientCodes = map[string]bool{
+	codeBlobUploadInvalid: true, codeDigestInvalid: true, codeNameInvalid: true, codeSizeInvalid: true,
+	codeManifestInvalid: true, codeManifestBlobUnknown: true,
 }
 
 // codeOfStatus is the code of an error whose handler named none.
