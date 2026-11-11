@@ -168,28 +168,54 @@ func TestUploadHeaders(t *testing.T) {
 
 // TestUploadLastChunkBreaks: a last chunk that breaks off while it streams, as the facade's
 // digest check breaks one off (#368), fails the finish, and no PUT closes a session that holds
-// bytes; in an empty one the PUT itself breaks off.
+// bytes; in an empty one the PUT itself breaks off. The PUTs are counted as the client sent
+// them, in the debug log of logTransport: a PUT that breaks off may end before the registry
+// reads its headers, and then the registry never sees it (#566).
 func TestUploadLastChunkBreaks(t *testing.T) {
 	ctx := t.Context()
-	f, repo := uploadRepo(t, nil)
-	for _, offset := range []int64{0, 3} {
+	f := newFakeRegistry(t)
+	log, buf := testLogger()
+	repo, err := f.provider(t, log, nil).Repository(ctx, "raw/scratch/notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		offset int64
+		puts   int
+	}{{0, 1}, {3, 0}} {
 		u, _ := repo.StartBlobUpload(ctx)
-		if offset > 0 {
+		if tt.offset > 0 {
 			u, _ = repo.AppendBlobChunk(ctx, u, strings.NewReader("abc"), 3)
 		}
+		before := sentPUTs(buf.String())
 		broken := io.MultiReader(strings.NewReader("de"), iotest.ErrReader(errors.New("not the digest")))
 		if _, err := repo.FinishBlobUpload(ctx, u, digest.FromString("abcdef"), broken, 3); err == nil {
-			t.Errorf("offset %d: FinishBlobUpload of a broken chunk succeeded", offset)
+			t.Errorf("offset %d: FinishBlobUpload of a broken chunk succeeded", tt.offset)
+		}
+		if n := sentPUTs(buf.String()) - before; n != tt.puts {
+			t.Errorf("offset %d: the client sent %d PUT requests, want %d", tt.offset, n, tt.puts)
 		}
 	}
-	if n := f.count("PUT "); n != 1 {
-		t.Errorf("%d PUT requests, want the monolithic one only, which broke off", n)
+	if n := f.count("PUT "); n > 1 {
+		t.Errorf("the registry got %d PUT requests, want the monolithic one at most, which broke off", n)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if n := len(f.blobs["art/raw/scratch/notes"]); n != 0 {
 		t.Errorf("the registry holds %d blobs, want none", n)
 	}
+}
+
+// sentPUTs counts the PUT requests in logs that logTransport logged, answered or failed.
+func sentPUTs(logs string) int {
+	n := 0
+	for line := range strings.Lines(logs) {
+		if strings.Contains(line, " method=PUT ") &&
+			(strings.Contains(line, `msg="registry request" `) || strings.Contains(line, `msg="registry request failed" `)) {
+			n++
+		}
+	}
+	return n
 }
 
 // TestUploadErrors covers the answers that are errors: a wrong digest, a chunk out of order, a
