@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # End-to-end test of oras through the OCI facade against a running Lajstrom
-# (docs/quickstart/oras.md §3; docs/acceptance.md O-01, O-02 and O-04): the challenge of
-# GET /v2/, oras login, oras push of a file to a raw repo with the raw profile and its audit row
-# (#283: the client address and the request id), the same manifest again (201, the same
-# digest), another manifest under the tag (409 TAG_INVALID naming the first), the repo's policy
+# (docs/quickstart/oras.md §3; docs/acceptance.md O-01, O-02, O-04 and the created time of
+# O-03): the challenge of GET /v2/, oras login, oras push of a file to a raw repo with the raw
+# profile and its audit row (#283: the client address and the request id), the same manifest
+# again (201, the same digest), a manifest created a year back (400 MANIFEST_INVALID, #551),
+# another manifest under the tag (409 TAG_INVALID naming the first), the repo's policy
 # (#60: PATCH merges it; a file above maxFileSize is 413 through oras push and the raw PUT),
 # oras pull and the bytes, oras repo tags, oras manifest fetch, the raw frontend serving the
 # pushed file, raw files whose OCI names ADR 0017 changed (.gitignore, a--b.txt, blobs), then
@@ -134,8 +135,8 @@ step "the audit row of the push: ip $ip, requestId $rid"
 push "$created" || { cat "$work/oras.log" >&2; fail "oras push of the same manifest again"; }
 assert_eq "$digest" "$(awk '$1 == "Digest:" { print $2 }' "$work/oras.log")" "the digest of the repeat"
 step "oras push of the same manifest again: the same digest"
-# #551: a created time a year back is refused before the tag is looked at; the bound is the
-# server's maxCreatedBehind, an hour by default.
+# O-03 (#551): a created time a year back is refused before the tag is looked at; the bound is
+# the server's maxCreatedBehind, an hour by default.
 if push "$(utc_at "$((now - 366 * 86400))")"; then fail "oras push of a manifest created a year back succeeded: $(cat "$work/oras.log")"; fi
 grep -qiE 'manifest[ _]invalid' "$work/oras.log" && grep -qF "behind the server's clock" "$work/oras.log" ||
 	{ cat "$work/oras.log" >&2; fail "the refusal of a manifest created a year back is not MANIFEST_INVALID naming the clock"; }
