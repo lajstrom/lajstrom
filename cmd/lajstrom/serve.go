@@ -164,7 +164,8 @@ func newServeCmd(a *app) *cobra.Command {
 				Proxy: proxyCore}
 			a.log.Info("authorization by the bindings of the index (RBAC)", "auth.anonymousRead", c.Auth.AnonymousRead)
 			v2 := facade.New(facade.Options{Index: st, Providers: providers, Auth: authz, Ingest: pipe,
-				Tokens: tokens, ExternalURL: c.Server.ExternalURL, MaxManifestSize: c.Server.MaxManifestSize, Log: a.log,
+				Tokens: tokens, ExternalURL: c.Server.ExternalURL, MaxManifestSize: c.Server.MaxManifestSize,
+				MaxCreatedAhead: c.Server.MaxCreatedAhead, MaxCreatedBehind: c.Server.MaxCreatedBehind, Log: a.log,
 				UploadSessionsPerRepo: c.Server.UploadSessions.PerRepo, UploadSessionsPerPrincipal: c.Server.UploadSessions.PerPrincipal,
 				VisibilityTimeout: c.Ingest.VisibilityTimeout})
 			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log})

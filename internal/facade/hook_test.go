@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
@@ -63,6 +64,13 @@ func rawFileOf(path, content string) *rawFile {
 			ocispec.AnnotationCreated: "2026-11-07T10:00:00Z",
 		},
 	}}
+}
+
+// at sets the created time of the file's manifest and returns f: a facade on the real clock
+// refuses the fixed time of rawFileOf (checkCreated).
+func (f *rawFile) at(created time.Time) *rawFile {
+	f.m.Annotations[ocispec.AnnotationCreated] = created.UTC().Format(time.RFC3339)
+	return f
 }
 
 // tag is the tag of the file: its version, the first 16 hex digits of its sha256.
@@ -368,6 +376,8 @@ func (e *env) mavenBuilt(repo index.Repo, group string) (*format.Built, []byte) 
 		_ = rc.Close()
 		e.pushBlob(built.RepoPath, b)
 	}
+	// The plugin writes the time of its own clock; a push on /v2 must be near the facade's.
+	built.Manifest.Annotations[ocispec.AnnotationCreated] = e.clock.Now().Format(time.RFC3339)
 	body, _, err := profile.Encode(built.Manifest)
 	must(e.t, err)
 	return built, body

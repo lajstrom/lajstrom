@@ -148,7 +148,7 @@ oras_push() {
 }
 mkdir -p "$work/signed" "$work/pulled"
 printf 'signed %s\n' "$run" >"$work/signed/signed.txt"
-oras_push signed "${a#http://}" signed.txt 2026-11-09T00:00:00Z || { cat "$work/signed.log" >&2; fail "oras push through A"; }
+oras_push signed "${a#http://}" signed.txt "$(utc_at "$(date -u +%s)")" || { cat "$work/signed.log" >&2; fail "oras push through A"; }
 subject="$(awk '$1 == "Digest:" { print $2 }' "$work/signed.log")"
 oras_in . pull -o pulled "${b#http://}/raw/$repo/signed.txt:$(sha256 "$work/signed/signed.txt" | cut -c1-16)" >"$work/oras.log" 2>&1 || { cat "$work/oras.log" >&2; fail "oras pull through B"; }
 assert_eq "$(sha256 "$work/signed/signed.txt")" "$(sha256 "$work/pulled/signed.txt")" "oras pull through B of the push through A"
@@ -212,9 +212,9 @@ mkdir -p "$work/ra" "$work/rb"
 for i in $(seq 1 20); do
 	printf 'race %s %s\n' "$run" "$i" | tee "$work/ra/race.txt" >"$work/rb/race.txt"
 	tag="$(sha256 "$work/ra/race.txt" | cut -c1-16)"
-	ra=0 rb=0
-	oras_push ra "${a#http://}" race.txt 2026-11-09T00:00:01Z & pa=$!
-	oras_push rb "${b#http://}" race.txt 2026-11-09T00:00:02Z & pb=$!
+	ra=0 rb=0 now="$(date -u +%s)" # the created times near the servers' clock (#551)
+	oras_push ra "${a#http://}" race.txt "$(utc_at "$now")" & pa=$!
+	oras_push rb "${b#http://}" race.txt "$(utc_at "$((now + 1))")" & pb=$!
 	wait "$pa" || ra=$?
 	wait "$pb" || rb=$?
 	if [ "$ra" = 0 ] && [ "$rb" != 0 ]; then win=ra lose=rb; elif [ "$rb" = 0 ] && [ "$ra" != 0 ]; then win=rb lose=ra; else

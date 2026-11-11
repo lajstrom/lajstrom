@@ -457,7 +457,9 @@ status is `holds on strongly consistent registries only` do not hold there.
   dist-tags. Not `DELETE` on `/v2`, the raw frontend or npm's unpublish, which take no
   condition. The publish time is the manifest's `org.opencontainers.image.created`: the
   frontends write it from the server's clock, a client pushing on `/v2` writes its own, which
-  the cut-off trusts.
+  the facade refuses when it is more than `server.maxCreatedAhead` (5 minutes) after the
+  server's clock or more than `server.maxCreatedBehind` (an hour) before it: a writer moves the
+  age of its version by that much at most.
 - **Assumes.** Registry: a delete by digest removes that manifest only (any registry of the
   matrix). Database: the referrers lock excludes across replicas (Postgres; SQLite serves one
   replica, INV-26).
@@ -467,10 +469,14 @@ status is `holds on strongly consistent registries only` do not hold there.
   `journal_state` under them, and `deletion.record` deletes the rows by digest before the locks
   are released; a dist-tag move checks under the journal lock that its version exists
   (`journal.checkVersions`). The API checks the same conditions for every variant before the
-  first delete (`api.conditions.check`), so that a refusal finds nothing deleted.
+  first delete (`api.conditions.check`), so that a refusal finds nothing deleted. The bound of a
+  `/v2` push's time is `facade.checkCreated`, before the facade asks the registry; the repeat of
+  a manifest the repo has passes, as it writes nothing.
 - **Tests.** `TestConditionalDelete`, `TestConditionalDeletePointers` (the lock order),
   `TestConditionalDeleteRepublishRace`, `TestConditionalDeleteDistTagRace` (goroutines, `-race`),
-  `TestDeleteVersionConditions`, `TestBatchDelete`, `TestAdminRetention`; `retention.sh`.
+  `TestDeleteVersionConditions`, `TestBatchDelete`, `TestAdminRetention`,
+  `TestManifestHookCreated`, `TestManifestHookCreatedRepeat`; `retention.sh`, and the push of a
+  manifest a year old in `oras.sh`.
 - **When violated.** A delete that removed a version re-published or dist-tagged after the read
   leaves the newer version's rows without a manifest, which reindex removes, or a dist-tag
   naming a version that is gone, which the packument leaves out; nothing reports it.
@@ -1234,4 +1240,3 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | Whether a migration is expand is reviewed, not tested; no test runs the previous release's binary on the next schema; pre-#244 claims (INV-6, INV-41) | a contract migration without its `requires` line breaks the replicas of the release before during a rolling update; a mixed fleet may not exclude publishes | after v0.1.0, CI runs the previous release's binary on a schema the new binary migrated | [#485](https://github.com/lajstrom/lajstrom/issues/485) |
 | Groups (INV-34), policy (INV-38), encryption at rest (INV-39) | not built | as the issues say | [#311](https://github.com/lajstrom/lajstrom/issues/311), [#101](https://github.com/lajstrom/lajstrom/issues/101), [#114](https://github.com/lajstrom/lajstrom/issues/114) |
 | A streamed download is not hashed (INV-40) | a registry that serves other bytes than it stored reaches a client that checks nothing | hash in `format.ServeBlob`, hold the last byte back, abort the connection on a mismatch | new issue |
-| The cut-off of a retention job trusts `org.opencontainers.image.created` of a manifest pushed on `/v2`, which its client writes (INV-42) | a writer can make a version it pushes look older, so that the next run deletes it, or younger, so that age never deletes it | bound the time to the server's clock at ingest: refuse one that differs from it by more than a skew | new issue |
