@@ -92,7 +92,7 @@ func TestIntegration(t *testing.T) {
 		if d, err := p.StatManifest(ctx, name, manifestDesc.Digest); err != nil || d.Digest != manifestDesc.Digest {
 			t.Errorf("StatManifest = %+v, %v; want %s", d, err, manifestDesc.Digest)
 		}
-		// What prune counts as unknown (guarantees.md, G-5): MANIFEST_UNKNOWN in a repository the
+		// What prune counts as unknown (guarantees.md, INV-5): MANIFEST_UNKNOWN in a repository the
 		// registry has, and not the NAME_UNKNOWN of one it does not.
 		if _, err := p.StatManifest(ctx, name, digest.FromString("never pushed "+run)); !errors.Is(err, provider.ErrManifestUnknown) {
 			t.Errorf("StatManifest of a manifest never pushed: %v, want ErrManifestUnknown", err)

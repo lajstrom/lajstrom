@@ -530,7 +530,7 @@ type Provider interface {
     StatBlob(ctx context.Context, name string, d digest.Digest) (Blob, error)
     // StatManifest: one HEAD of the manifest by its digest; on a 404 a GET too, for the error
     // code a HEAD has no body for. ErrManifestUnknown (and ErrNotFound) only for a 404 with
-    // MANIFEST_UNKNOWN: what prune counts as unknown (guarantees.md, G-5).
+    // MANIFEST_UNKNOWN: what prune counts as unknown (guarantees.md, INV-5).
     StatManifest(ctx context.Context, name string, d digest.Digest) (ocispec.Descriptor, error)
 }
 
