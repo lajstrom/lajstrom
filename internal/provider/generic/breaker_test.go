@@ -6,13 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
+	"github.com/opencontainers/go-digest"
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/lajstrom/lajstrom/internal/config"
@@ -232,5 +236,88 @@ func TestBreakerOneTrial(t *testing.T) {
 	b.done(t.Context(), true, 0) // the trial's caller went away
 	if trial, err := b.allow(get); err != nil || !trial {
 		t.Errorf("allow after a trial that counted neither way = %v, %v; want another trial", trial, err)
+	}
+}
+
+// failingBody gives "abc" and then fails with err.
+func failingBody(err error) io.Reader {
+	return io.MultiReader(strings.NewReader("abc"), iotest.ErrReader(err))
+}
+
+// TestBreakerBodyFails sends uploads whose body fails to read as it streams to the registry, as
+// the body of a /v2 client does that stalls past server.stallTimeout where net/http does not
+// cancel the request (HTTP/2), sends a broken chunked encoding, breaks off, or passes the
+// upload's bound (#638). Each counts neither way, so that one client cannot open the breaker for
+// all: a chunk or a closing PUT, threshold times in a row, leaves it closed. A registry that
+// drops the connection while the body streams still counts as a failure.
+func TestBreakerBodyFails(t *testing.T) {
+	stalled := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
+	tests := []struct {
+		name string
+		body func() io.Reader
+		drop bool // the registry closes the connection without an answer
+		open bool
+	}{
+		{name: "stalled", body: func() io.Reader { return failingBody(stalled) }},
+		{name: "broke off", body: func() io.Reader { return failingBody(io.ErrUnexpectedEOF) }},
+		{name: "broken chunked encoding", body: func() io.Reader { return failingBody(errors.New("invalid byte in chunk length")) }},
+		{name: "past the bound", body: func() io.Reader { return failingBody(&http.MaxBytesError{Limit: 3}) }},
+		{name: "the registry drops the connection", body: func() io.Reader { return strings.NewReader("abcdef") }, drop: true, open: true},
+	}
+	sends := []struct {
+		name string
+		call func(ctx context.Context, repo provider.Repository, u provider.Upload, body io.Reader) error
+	}{
+		{"chunk", func(ctx context.Context, repo provider.Repository, u provider.Upload, body io.Reader) error {
+			_, err := repo.AppendBlobChunk(ctx, u, body, -1)
+			return err
+		}},
+		{"closing PUT", func(ctx context.Context, repo provider.Repository, u provider.Upload, body io.Reader) error {
+			_, err := repo.FinishBlobUpload(ctx, u, digest.FromString("abcdef"), body, 6)
+			return err
+		}},
+	}
+	for i, tt := range tests {
+		for j, send := range sends {
+			t.Run(tt.name+"/"+send.name, func(t *testing.T) {
+				lowerBreaker(t, 3)
+				ctx := t.Context()
+				f := newFakeRegistry(t)
+				log, _ := testLogger()
+				p := f.provider(t, log, func(c *config.Registry) { c.Name, c.Retries = fmt.Sprintf("breaker-body-%d-%d", i, j), -1 })
+				repo, err := p.Repository(ctx, "raw/scratch/notes")
+				if err != nil {
+					t.Fatal(err)
+				}
+				var sessions []provider.Upload // opened first, so that no answer comes between the sends
+				for range breakerThreshold {
+					u, err := repo.StartBlobUpload(ctx)
+					if err != nil {
+						t.Fatal(err)
+					}
+					sessions = append(sessions, u)
+				}
+				if tt.drop {
+					f.hook = func(w http.ResponseWriter, r *http.Request) bool {
+						if r.Method != http.MethodPatch && r.Method != http.MethodPut {
+							return false
+						}
+						if c, _, err := http.NewResponseController(w).Hijack(); err == nil {
+							_ = c.Close()
+						}
+						return true
+					}
+				}
+				for _, u := range sessions {
+					if err := send.call(ctx, repo, u, tt.body()); err == nil || byBreaker(err) {
+						t.Fatalf("%s: %v, want it to fail as it streams", send.name, err)
+					}
+				}
+				_, err = repo.StartBlobUpload(ctx)
+				if got := byBreaker(err); got != tt.open {
+					t.Errorf("after %d failed sends: circuit open = %v (%v), want %v", breakerThreshold, got, err, tt.open)
+				}
+			})
+		}
 	}
 }
