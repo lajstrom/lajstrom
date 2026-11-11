@@ -397,7 +397,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 - **Scope.** `/v2` uploads (monolithic, chunked, a `POST ?digest=`), across replicas; the blobs
   ingest pushes for a frontend upload, a proxy fetch and a metadata layer. Not a mount and not a
   blob the registry already has: nothing streams, and they rely on the registry (**digest check**,
-  **scoped blobs**). What Lajstrom serves is not hashed on the way out yet (INV-40).
+  **scoped blobs**). What Lajstrom streams to a client is hashed on the way out (INV-40).
 - **Assumes.** Registry: none for what streams through Lajstrom. Database: **one database** for a
   chunked upload across replicas.
 - **Mechanism.** `facade.verifier` hashes a `/v2` upload as it streams and holds its last byte
@@ -1207,7 +1207,8 @@ promises part of it, the line says which part stays a promise.
   sends the client to bytes that do not pass through Lajstrom: the registry is trusted to serve
   what it stored, and the clients check (OCI clients the descriptor, apt the `Packages` hashes,
   pip `#sha256=`, npm `integrity`, Maven the checksum files). A download that streams through
-  Lajstrom is checked once INV-40 is built; until then it is unhashed too (threat model §1).
+  Lajstrom is hashed on its way to the client (INV-40); a `206` range, which is not the whole
+  blob, is not.
 - **The bytes of a rendered document across releases.** Its content, as the format's protocol
   defines it, is guaranteed; its whitespace and field order, and so its `ETag` and its
   `by-hash` name, may change in a release, and a reindex renders it again.
@@ -1272,7 +1273,6 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | A timeout the client cannot lift, a terminated backend or a failover can end the referrers lock's transaction while its push runs (INV-35) | that push is `503` and its retry lists its referrer; a referrer that another writer pushed meanwhile can be missing from the `sha256-<hex>` index, and nothing reports it | keep PgBouncer's `idle_transaction_timeout` and Postgres's `transaction_timeout` 0 (index-schema.md, Coordination); reindex `--verify` could add back a referrer that the audit log has as pushed and the index lacks | new issue |
 | The garbage collectors of GitLab B and Nexus delete untagged referrers (INV-35) | signatures and SBOMs vanish | the tag schema as well on registries with the API (#326); for GitLab B and Nexus, a vendor-table warning or a tag per referrer | [#326](https://github.com/lajstrom/lajstrom/issues/326), new issue |
 | No frontend test of a denial with malformed input (INV-15) | a regression of the R-2 kind on a frontend goes unseen | a table test per frontend, as `TestDenialBeforeInput` does for `/v2` | new issue |
-| A typed user name and an unbounded `kid` at `debug` (INV-21, threat model L-3) | a mistyped password in a debug log | log the uid only, bound the `kid` | new issue |
 | Acceptance C-07 and S-09 are not automated (INV-14, INV-21) | a redaction or an audit regression goes unseen | after the suite, grep both replicas' logs for every secret used, and count the audit rows of its writes | new issue |
 | No budget for the bytes of `$TMPDIR` (INV-23) | 32 spooled uploads of a replica may need 256 GiB of disk | a spool budget, or no request spool (ADR 0014) | [#427](https://github.com/lajstrom/lajstrom/issues/427) |
 | One upstream request per document per replica (INV-31) | concurrent misses of a packument each ask the upstream | share the request on a replica (pull request #399) | [#383](https://github.com/lajstrom/lajstrom/issues/383) |
@@ -1281,4 +1281,3 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | The bearer audience without `server.externalURL` (INV-19) | a staging server restored from production's database accepts production's tokens | require `externalURL` | [#248](https://github.com/lajstrom/lajstrom/issues/248) |
 | Whether a migration is expand is reviewed, not tested; no test runs the previous release's binary on the next schema; pre-#244 claims (INV-6, INV-41) | a contract migration without its `requires` line breaks the replicas of the release before during a rolling update; a mixed fleet may not exclude publishes | after v0.1.0, CI runs the previous release's binary on a schema the new binary migrated | [#485](https://github.com/lajstrom/lajstrom/issues/485) |
 | Groups (INV-34), policy (INV-38), encryption at rest (INV-39) | not built | as the issues say | [#311](https://github.com/lajstrom/lajstrom/issues/311), [#101](https://github.com/lajstrom/lajstrom/issues/101), [#114](https://github.com/lajstrom/lajstrom/issues/114) |
-| A streamed download is not hashed (INV-40) | a registry that serves other bytes than it stored reaches a client that checks nothing | hash in `format.ServeBlob`, hold the last byte back, abort the connection on a mismatch | new issue |
