@@ -45,6 +45,8 @@ type breaker struct {
 	failures int       // in a row, while closed
 	opened   time.Time // when it last opened
 	trial    bool      // a trial is in flight, while half-open
+	// waitUntil is when the wait ends that the registry last asked for (askedToWait).
+	waitUntil time.Time
 }
 
 func newBreaker(registry string, log *slog.Logger) *breaker {
@@ -142,5 +144,27 @@ func (t *breakerTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	resp, err := t.next.RoundTrip(req)
 	t.b.done(req.Context(), trial, outcome(req.Context(), resp, err))
+	if resp != nil {
+		if after, ok := retryAfter(resp); ok {
+			t.b.askedToWait(after)
+		}
+	}
 	return resp, err
+}
+
+// askedToWait records that the registry asked for a wait of d, with the Retry-After of a 429 or
+// 503: it throttles Lajstrom's credential, so the wait is the registry's, not one request's.
+func (b *breaker) askedToWait(d time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if until := b.now().Add(d); until.After(b.waitUntil) {
+		b.waitUntil = until
+	}
+}
+
+// waitLeft returns what is left of the wait the registry last asked for, zero when none.
+func (b *breaker) waitLeft() time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return max(b.waitUntil.Sub(b.now()), 0)
 }

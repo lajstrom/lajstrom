@@ -24,10 +24,10 @@ var (
 	// *UnavailableError), or the backend answered 429 or 503 (a *RejectedError). Both say when
 	// to try again (RetryAfter).
 	ErrUnavailable = errors.New("provider: unavailable")
-	// ErrRejected means the backend refused a request of a blob upload session (BlobUploader)
-	// with a status that no other sentinel names: a 4xx such as 400 BLOB_UPLOAD_INVALID or
-	// SIZE_INVALID, 413 or 416, and the 429 or 503 of a busy backend, which is ErrUnavailable
-	// too. A *RejectedError says how.
+	// ErrRejected means the backend refused a request with a status that no other sentinel
+	// names: a 4xx such as 400 BLOB_UPLOAD_INVALID, MANIFEST_INVALID or SIZE_INVALID, 413 or
+	// 416, and the 429 or 503 of a busy backend, which is ErrUnavailable too. A *RejectedError
+	// says how.
 	ErrRejected = errors.New("provider: rejected")
 )
 

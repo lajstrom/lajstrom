@@ -129,13 +129,20 @@ func wantCall(t *testing.T, f *fakeRegistry, what string, call func() error, ref
 	t.Helper()
 	before := len(f.log())
 	err := call()
-	if got := errors.Is(err, provider.ErrUnavailable); got != refused {
+	if got := byBreaker(err); got != refused {
 		t.Errorf("%s: %v; refused by the breaker: %v, want %v", what, err, got, refused)
 	}
 	if n := len(f.log()) - before; n != sent {
 		t.Errorf("%s: %d requests reached the registry, want %d", what, n, sent)
 	}
 	return err
+}
+
+// byBreaker reports whether err is the breaker's refusal, an *UnavailableError: the registry's
+// own 503 is an ErrUnavailable too, a *RejectedError.
+func byBreaker(err error) bool {
+	var u *provider.UnavailableError
+	return errors.As(err, &u)
 }
 
 // TestBreakerCounts checks what counts as a failure in a row: a retried request once, an
@@ -186,7 +193,7 @@ func TestBreakerCounts(t *testing.T) {
 				_, _ = listTags(ctx, repo)
 			}
 			_, err = listTags(t.Context(), repo)
-			if got := errors.Is(err, provider.ErrUnavailable); got != tt.open {
+			if got := byBreaker(err); got != tt.open {
 				t.Errorf("circuit open = %v (last error %v), want %v", got, err, tt.open)
 			}
 		})

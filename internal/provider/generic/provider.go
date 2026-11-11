@@ -179,7 +179,7 @@ func (p *Provider) Repository(ctx context.Context, name string) (provider.Reposi
 	}
 	r, err := p.registry.Repository(ctx, p.repoName(name))
 	if err != nil {
-		return nil, translate("repository "+name, err)
+		return nil, p.translate("repository "+name, err)
 	}
 	rr, ok := r.(*remote.Repository)
 	if !ok {
@@ -242,7 +242,7 @@ func (p *Provider) ListRepositories(ctx context.Context, prefix string) ([]strin
 		if resp, ok := catalogMissing(err); ok {
 			return nil, &backendError{op: op, kind: provider.ErrUnsupported, detail: responseDetail(resp), cause: err}
 		}
-		return nil, translate(op, err)
+		return nil, p.translate(op, err)
 	}
 	return slices.Sorted(maps.Keys(found)), nil
 }

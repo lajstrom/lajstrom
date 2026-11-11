@@ -106,6 +106,15 @@ Authentication on all frontend endpoints: HTTP Basic with a user password, a PAT
 token; the same credentials as `/v2/token`. Anonymous `GET` on repos with `anonymousRead: true`.
 Writes require `write` on `<format>/<repo>`.
 
+A request that Lajstrom sends the registry for a frontend and that the registry refuses with a
+status no other rule names (#494; `format.StatusOf` is the one table): a `413` stays `413`, the
+file is larger than the registry takes; a `429` or `503` is `503` with the registry's
+`Retry-After`, `1` when it sent none, as an open circuit breaker is: the registry throttles
+Lajstrom's own credential, which every client shares, not this client; any other `4xx`, such as
+a `400 MANIFEST_INVALID` for a manifest Lajstrom built, is `502`: the client sent its file, not
+the request the registry refused. A `5xx` says its status text only, and no answer carries the
+registry's URL, realm or message.
+
 ### raw
 
 | Method and path | Behaviour |

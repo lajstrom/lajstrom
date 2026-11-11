@@ -72,7 +72,7 @@ func (p *Provider) OpenBlob(ctx context.Context, name string, d digest.Digest, r
 		return b, err
 	default:
 		defer func() { _ = resp.Body.Close() }()
-		return provider.Blob{}, translate(op, parseErrorResponse(resp))
+		return provider.Blob{}, p.translate(op, parseErrorResponse(resp))
 	}
 }
 
@@ -92,7 +92,7 @@ func (p *Provider) StatBlob(ctx context.Context, name string, d digest.Digest) (
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return provider.Blob{}, translate(op, parseErrorResponse(resp))
+		return provider.Blob{}, p.translate(op, parseErrorResponse(resp))
 	}
 	b, err := headersOf(op, resp, d)
 	b.AcceptRanges = b.AcceptRanges && !q.wholeBlobs
@@ -112,7 +112,7 @@ func (p *Provider) statByGET(ctx context.Context, op, name string, d digest.Dige
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusPartialContent, http.StatusRequestedRangeNotSatisfiable:
 	default:
-		return provider.Blob{}, translate(op, parseErrorResponse(resp))
+		return provider.Blob{}, p.translate(op, parseErrorResponse(resp))
 	}
 	b, err := headersOf(op, resp, d)
 	if err != nil {
@@ -152,7 +152,7 @@ func (p *Provider) blobRequest(ctx context.Context, op, method, name string, d d
 	}
 	ref := registry.Reference{Registry: p.host, Repository: p.repoName(name), Reference: d.String()}
 	if err := ref.ValidateRepository(); err != nil {
-		return nil, nil, translate(op, err)
+		return nil, nil, p.translate(op, err)
 	}
 	ctx = auth.AppendRepositoryScope(ctx, ref, auth.ActionPull)
 	target := p.base + "/v2/" + ref.Repository + "/blobs/" + ref.Reference
@@ -167,7 +167,7 @@ func (p *Provider) blobRequest(ctx context.Context, op, method, name string, d d
 		}
 		resp, err := p.hop(req, left)
 		if err != nil {
-			return nil, nil, translate(op, err)
+			return nil, nil, p.translate(op, err)
 		}
 		if !isRedirect(resp.StatusCode) {
 			return resp, nil, nil

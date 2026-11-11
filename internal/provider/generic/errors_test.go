@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry/remote/auth"
@@ -57,7 +58,7 @@ func TestTranslate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := translate("fetch raw/scratch/notes@v1", tt.err)
+			got := translateAs("fake", noWait, "fetch raw/scratch/notes@v1", tt.err)
 			if got == nil {
 				t.Fatal("translate returned nil")
 			}
@@ -77,17 +78,65 @@ func TestTranslate(t *testing.T) {
 	}
 
 	t.Run("nil", func(t *testing.T) {
-		if err := translate("fetch", nil); err != nil {
+		if err := translateAs("fake", noWait, "fetch", nil); err != nil {
 			t.Errorf("translate(nil) = %v", err)
 		}
 	})
 	t.Run("detail", func(t *testing.T) {
-		got := translate("tags raw/x", resp(http.StatusNotFound, errcode.ErrorCodeNameUnknown)).Error()
+		got := translateAs("fake", noWait, "tags raw/x", resp(http.StatusNotFound, errcode.ErrorCodeNameUnknown)).Error()
 		if want := "generic: tags raw/x: provider: not found (HTTP 404, NAME_UNKNOWN)"; got != want {
 			t.Errorf("message = %q, want %q", got, want)
 		}
 	})
 }
+
+// TestTranslateRefusals: a status no sentinel names is the registry's refusal when it is a 4xx
+// or a 503 (#494), busy for a 429 or 503 with the wait the registry asked for; any other 5xx is
+// not.
+func TestTranslateRefusals(t *testing.T) {
+	backend, _ := url.Parse("http://zot.internal:5000/v2/art/raw/x/blobs/uploads/")
+	resp := func(status int, codes ...string) *errcode.ErrorResponse {
+		e := &errcode.ErrorResponse{Method: http.MethodPost, URL: backend, StatusCode: status}
+		for _, c := range codes {
+			e.Errors = append(e.Errors, errcode.Error{Code: c, Message: strings.ToLower(c) + " for art/raw/x"})
+		}
+		return e
+	}
+	for _, tt := range []struct {
+		err    *errcode.ErrorResponse
+		code   string
+		busy   bool
+		reject bool
+	}{
+		{err: resp(http.StatusBadRequest, errcode.ErrorCodeManifestInvalid), code: errcode.ErrorCodeManifestInvalid, reject: true},
+		{err: resp(http.StatusRequestEntityTooLarge), reject: true},
+		{err: resp(http.StatusTooManyRequests, "TOOMANYREQUESTS"), code: "TOOMANYREQUESTS", busy: true, reject: true},
+		{err: resp(http.StatusServiceUnavailable), busy: true, reject: true},
+		{err: resp(http.StatusBadGateway)},
+	} {
+		t.Run(fmt.Sprintf("refusal %d", tt.err.StatusCode), func(t *testing.T) {
+			got := translateAs("fake", func() time.Duration { return 7 * time.Second }, "push raw/x", tt.err)
+			var rej *provider.RejectedError
+			if errors.As(got, &rej) != tt.reject || errors.Is(got, provider.ErrUnavailable) != tt.busy {
+				t.Fatalf("%v: a refusal %v, busy %v; want %v, %v", got, rej != nil, errors.Is(got, provider.ErrUnavailable), tt.reject, tt.busy)
+			}
+			checkCause(t, got, tt.err)
+			if !tt.reject {
+				return
+			}
+			if rej.Registry != "fake" || rej.Status != tt.err.StatusCode || rej.Code != tt.code ||
+				rej.RetryAfter != map[bool]time.Duration{true: 7 * time.Second}[tt.busy] {
+				t.Errorf("refusal = %+v", rej)
+			}
+			if strings.Contains(got.Error(), "zot.internal") || strings.Contains(got.Error(), "art/") {
+				t.Errorf("message %q shows the backend URL or the instance prefix", got)
+			}
+		})
+	}
+}
+
+// noWait is the wait of a registry that asked for none.
+func noWait() time.Duration { return 0 }
 
 // checkCause fails t when the translated error got lost its cause: errors.Is must find the
 // cause and errors.As the *errcode.ErrorResponse in it.
