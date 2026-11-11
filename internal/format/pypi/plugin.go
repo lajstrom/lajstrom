@@ -294,9 +294,10 @@ func readMetadata(ctx context.Context, fetch format.BlobFetcher, l profile.Layer
 // the same string; lajstrom.name is the normalized name, lajstrom.version the version as the core
 // metadata writes it, lajstrom.variant the wheel's tag set or sdist, and a version that is not
 // PEP 440 is accepted and flagged lajstrom.pypi.nonstandard. created is now, in whole seconds.
-// A file that streamed into the registry, without Open, has its sha256 from ingest and its core
-// metadata from its inspector (Inspect), and its layer is not among the blobs. Errors wrap
-// format.ErrInvalid, except a failure to read the file.
+// A file that streamed into the registry, with an inspector (Inspect), has its sha256 from
+// ingest and its core metadata from the inspector, which may need the file read back
+// (format.ErrReadBack; Open then reads it), and its layer is not among the blobs. Errors wrap
+// format.ErrInvalid, but format.ErrReadBack and a failure to read the file.
 func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*format.Built, error) {
 	if len(in.Files) != 1 {
 		return nil, fmt.Errorf("%w: a pypi upload is one file, got %d", format.ErrInvalid, len(in.Files))
@@ -309,7 +310,7 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 	var sum digest.Digest
 	var size int64
 	var coreBytes []byte
-	if f.Open == nil {
+	if f.Inspector != nil {
 		sum, size, coreBytes, err = streamedUpload(f)
 	} else {
 		sum, size, coreBytes, err = readUpload(f, d)
@@ -349,7 +350,7 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 	}
 	pkgPath := profile.EscapeComponent(name)
 	blobs := []format.BlobSource{bytesBlob(profile.EmptyConfig, ocispec.DescriptorEmptyJSON.Data)}
-	if f.Open != nil { // a streamed file is in its upload session, which ingest commits
+	if f.Inspector == nil { // a streamed file is in its upload session, which ingest commits
 		blobs = append(blobs, format.BlobSource{Descriptor: m.Layers[0], Open: func(context.Context) (io.ReadCloser, error) { return f.Open() }})
 	}
 	return &format.Built{
