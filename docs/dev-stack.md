@@ -155,7 +155,7 @@ The profile shares nothing with the three services above: its own database, regi
 `ha` (`172.31.226.0/24`), with fixed addresses: nginx `.10`, the replicas `.11` and `.12`.
 
 - **The replicas** run the image of [deploy/compose/ha/Dockerfile](../deploy/compose/ha/Dockerfile):
-  `go build ./cmd/lajstrom` in `golang:1.27.3-alpine`, on the distroless base of the release image.
+  `go build ./cmd/lajstrom` in `golang:1.27.4-alpine`, on the distroless base of the release image.
   `pull_policy: build` rebuilds it on every `make dev-up`, so the stack always serves the working
   tree: `make dev-up PROFILES=ha` took 29 s the first time, with the images pulled and the Go
   modules still to download, and 7 s after a change of code, which recreates both replicas. Both
