@@ -127,16 +127,28 @@ func TestPutRefusedStoresNothing(t *testing.T) {
 }
 
 // nothingStored fails the test when the registry holds content as a blob of big/refused.txt,
-// a session is open, more manifests than pushed were pushed, or the path has a version.
+// or the empty config, or any blob pushed to it (the metadata layer, #559), a session is open,
+// more manifests than pushed were pushed, or the path has a version.
 func (e *env) nothingStored(t *testing.T, content string, pushed int) {
 	t.Helper()
-	rr, err := e.prov.Repository(t.Context(), "raw/scratch/big/refused.txt")
+	const name = "raw/scratch/big/refused.txt"
+	rr, err := e.prov.Repository(t.Context(), name)
 	must(t, err)
 	stored, err := rr.Exists(t.Context(), ocispec.Descriptor{Digest: digest.FromString(content), Size: int64(len(content))})
 	must(t, err)
-	if stored || e.prov.OpenUploads() != 0 || len(e.prov.PushReferences()) != pushed || len(e.versions("big/refused.txt")) != 0 {
-		t.Errorf("blob stored %v, %d sessions open, %d manifests pushed (%d before), %d versions; want nothing",
-			stored, e.prov.OpenUploads(), len(e.prov.PushReferences()), pushed, len(e.versions("big/refused.txt")))
+	config, err := rr.Exists(t.Context(), profile.EmptyConfig)
+	must(t, err)
+	var blobs []digest.Digest
+	for _, p := range e.prov.Pushes() {
+		if p.Name == name {
+			blobs = append(blobs, p.Digest)
+		}
+	}
+	if stored || config || len(blobs) != 0 || e.prov.OpenUploads() != 0 || len(e.prov.PushReferences()) != pushed ||
+		len(e.versions("big/refused.txt")) != 0 {
+		t.Errorf("file stored %v, empty config stored %v, blobs pushed %v, %d sessions open, %d manifests pushed (%d before), "+
+			"%d versions; want nothing", stored, config, blobs, e.prov.OpenUploads(), len(e.prov.PushReferences()), pushed,
+			len(e.versions("big/refused.txt")))
 	}
 }
 

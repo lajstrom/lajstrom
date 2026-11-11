@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"  //nolint:gosec // the .md5 of apt's and maven's indexes; not a security use
 	"crypto/sha1" //nolint:gosec // the .sha1 of apt's and maven's indexes; not a security use
@@ -37,12 +38,13 @@ import (
 //  3. Build gets the file without Open, with its size, checksums and inspector; its manifest
 //     must be at the package path of up.Name and have a file layer of the streamed digest and
 //     size;
-//  4. then the steps of Upload: the idempotent repeat, the other blobs, the checks of Ingest,
-//     the claims, the tag in the backend. Only then is the session closed with the sha256 that
-//     ingest computed (BlobWriter.Commit; a blob that the repository holds already is not sent
-//     again), and the manifest pushed;
+//  4. then the steps of Upload: the idempotent repeat, the checks of Ingest, the claims, the tag
+//     in the backend. The other blobs, Build's (the metadata layer) and the empty config, are
+//     held in memory meanwhile, and the plugin's Validate reads them there. Only then is the
+//     session closed with the sha256 that ingest computed (BlobWriter.Commit; a blob that the
+//     repository holds already is not sent again), the held blobs pushed, and the manifest;
 //  5. any failure before the commit, and the idempotent repeat, cancel the session, with ctx's
-//     values but not its cancellation: nothing of the file is stored. A cancel that fails is
+//     values but not its cancellation: nothing of the upload is stored. A cancel that fails is
 //     logged, and the registry expires the session.
 func (p *Pipeline) UploadStream(ctx context.Context, repo index.Repo, up format.StreamUpload, principal auth.Principal) (_ *format.Published, err error) {
 	existed := false
@@ -71,7 +73,7 @@ func (p *Pipeline) UploadStream(ctx context.Context, repo index.Repo, up format.
 	if err != nil {
 		return nil, fmt.Errorf("ingest: open a blob upload in %s: %w", t.name, err)
 	}
-	t.streamed = &streamed{w: w}
+	t.streamed = &streamed{w: w, held: []format.BlobSource{emptyConfig}}
 	defer p.cancelStreamed(ctx, t)
 	file, err := t.streamed.read(repo, up, in)
 	if err != nil {
@@ -105,6 +107,27 @@ type streamed struct {
 	w    provider.BlobWriter
 	desc ocispec.Descriptor // the sha256 digest and size of the bytes, once the body has ended
 	done bool               // committed, or found in the repository already
+	// held are the other blobs of the upload, the empty config and Build's, which commit pushes
+	// after the file; until then the checks read them here (publish.open).
+	held []format.BlobSource
+}
+
+// emptyConfig is the config of every manifest of the profile, as a blob to push.
+var emptyConfig = format.BlobSource{Descriptor: profile.EmptyConfig, Open: func(context.Context) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(ocispec.DescriptorEmptyJSON.Data)), nil
+}}
+
+// heldBlob returns the held blob of digest d; false without a streamed file or such a blob.
+func (s *streamed) heldBlob(d digest.Digest) (format.BlobSource, bool) {
+	if s == nil {
+		return format.BlobSource{}, false
+	}
+	for _, b := range s.held {
+		if b.Descriptor.Digest == d {
+			return b, true
+		}
+	}
+	return format.BlobSource{}, false
 }
 
 // read copies the body of up once into the writer, the hashes and the inspector of in, and
@@ -185,6 +208,13 @@ func (f *failing) Write(p []byte) (int, error) {
 // have before the commit; false without one.
 func (s *streamed) holds(d digest.Digest) bool { return s != nil && s.desc.Digest == d }
 
+// later reports whether d is a blob that the push stores after the checks (commit): the streamed
+// file or a held blob; false without a streamed file.
+func (s *streamed) later(d digest.Digest) bool {
+	_, held := s.heldBlob(d)
+	return held || s.holds(d)
+}
+
 // layerOf reports whether a layer of m is the streamed file, by digest and size.
 func (s *streamed) layerOf(m ocispec.Manifest) bool {
 	for _, l := range m.Layers {
@@ -197,7 +227,9 @@ func (s *streamed) layerOf(m ocispec.Manifest) bool {
 
 // commit closes the session of t's streamed file with its digest, the last step before the
 // manifest's PUT, unless the repository holds the blob already: the session is then left to
-// cancelStreamed. Nothing to do without a streamed file.
+// cancelStreamed. Then it pushes the held blobs that the repository does not have: after the
+// file, so that a commit the registry refuses leaves none of them. Nothing to do without a
+// streamed file.
 func (t *target) commit(ctx context.Context) error {
 	s := t.streamed
 	if s == nil || s.done {
@@ -213,6 +245,11 @@ func (t *target) commit(ctx context.Context) error {
 		}
 	}
 	s.done = true
+	for _, b := range s.held {
+		if err := t.pushBlob(ctx, b); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

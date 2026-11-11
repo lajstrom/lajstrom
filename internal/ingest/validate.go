@@ -134,11 +134,11 @@ func (e *tooLarge) Unwrap() []error {
 
 // checkBlobs checks that every layer is in the backend, and pushes the empty config, which is
 // Lajstrom's own, when it is not; Inspect pushes nothing, and with allowDegraded leaves a missing
-// metadata layer to metadataUnreadable. The streamed file of UploadStream is in its session
-// until the push commits it.
+// metadata layer to metadataUnreadable. The streamed file of UploadStream is in its session, and
+// its other blobs and the empty config are held, until the push commits them.
 func (pub *publish) checkBlobs(ctx context.Context) error {
 	for _, l := range pub.manifest.Layers {
-		if pub.allowDegraded && pub.parsed.Metadata != nil && l.Digest == pub.parsed.Metadata.Digest || pub.streamed.holds(l.Digest) {
+		if pub.allowDegraded && pub.parsed.Metadata != nil && l.Digest == pub.parsed.Metadata.Digest || pub.streamed.later(l.Digest) {
 			continue
 		}
 		ok, err := pub.rr.Exists(ctx, l)
@@ -148,6 +148,9 @@ func (pub *publish) checkBlobs(ctx context.Context) error {
 		if !ok {
 			return fmt.Errorf("%w: layer %s was not uploaded to %s", ErrInvalid, l.Digest, pub.name)
 		}
+	}
+	if pub.streamed.later(profile.EmptyConfig.Digest) {
+		return nil
 	}
 	ok, err := pub.rr.Exists(ctx, profile.EmptyConfig)
 	switch {
@@ -164,7 +167,8 @@ func (pub *publish) checkBlobs(ctx context.Context) error {
 
 // fetcher is the BlobFetcher of the plugin's Validate: it reads the config and the layers of
 // the manifest from the backend, and nothing else. Its reader is a fetchedBlob: Read streams the
-// whole blob checked against its descriptor, ReadAt reads parts with range requests.
+// whole blob checked against its descriptor, ReadAt reads parts with range requests. A blob that
+// UploadStream holds is read from the upload, checked against its descriptor likewise.
 func (pub *publish) fetcher() format.BlobFetcher {
 	return func(ctx context.Context, d digest.Digest) (io.ReadCloser, error) {
 		desc, ok := pub.descriptor(d)
@@ -175,8 +179,34 @@ func (pub *publish) fetcher() format.BlobFetcher {
 			return nil, fmt.Errorf("ingest: blob %s streams into %s and is committed after Validate: "+
 				"a Streamer's Validate takes what it needs of it from the inspector", d, pub.name)
 		}
+		if _, ok := pub.streamed.heldBlob(d); ok {
+			rc, err := pub.open(ctx, desc)
+			if err != nil {
+				return nil, err
+			}
+			return verifiedBlob{verifier: newVerifier(rc, desc), Closer: rc}, nil
+		}
 		return &fetchedBlob{ctx: ctx, pub: pub, desc: desc, blocks: map[int64][]byte{}}, nil
 	}
+}
+
+// open returns the bytes of the blob desc, unchecked: from the upload when UploadStream holds
+// it, else from the backend.
+func (pub *publish) open(ctx context.Context, desc ocispec.Descriptor) (io.ReadCloser, error) {
+	if b, ok := pub.streamed.heldBlob(desc.Digest); ok {
+		rc, err := b.Open(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("ingest: open blob %s: %w", desc.Digest, err)
+		}
+		return rc, nil
+	}
+	return pub.rr.Fetch(ctx, desc)
+}
+
+// verifiedBlob is a blob read through its verifier.
+type verifiedBlob struct {
+	*verifier
+	io.Closer
 }
 
 // descriptor returns the descriptor of the config or a layer of the manifest with digest d.
@@ -220,7 +250,8 @@ func (pub *publish) metadataUnreadable(ctx context.Context) (bool, error) {
 }
 
 // readMetadata returns the metadata for versions.metadata: the plugin's, else the metadata
-// layer read from the backend when it is at most maxMetadata bytes. It must be JSON.
+// layer read from the backend, or the upload that holds it, when it is at most maxMetadata
+// bytes. It must be JSON.
 func (pub *publish) readMetadata(ctx context.Context) (json.RawMessage, error) {
 	md := pub.entry.Metadata
 	if md == nil {
@@ -229,7 +260,7 @@ func (pub *publish) readMetadata(ctx context.Context) (json.RawMessage, error) {
 			return nil, nil
 		}
 		desc := ocispec.Descriptor{MediaType: l.MediaType, Digest: l.Digest, Size: l.Size}
-		rc, err := pub.rr.Fetch(ctx, desc)
+		rc, err := pub.open(ctx, desc)
 		if err != nil {
 			return nil, fmt.Errorf("ingest: fetch the metadata layer %s from %s: %w", l.Digest, pub.name, err)
 		}
@@ -251,16 +282,20 @@ func (pub *publish) readMetadata(ctx context.Context) (json.RawMessage, error) {
 // pushBlobs pushes the blobs of a Build that the backend does not have, each streamed from its
 // source and checked against its descriptor on the way. A layer of the manifest that is
 // neither among them nor in the backend is ErrInvalid, but for the streamed file of
-// UploadStream, which the push commits.
+// UploadStream, which the push commits. UploadStream's blobs are held instead, and pushed with
+// the file (commit): a refused upload stores none of them.
 func (t *target) pushBlobs(ctx context.Context, built *format.Built) error {
 	have := map[digest.Digest]bool{}
 	for _, b := range built.Blobs {
 		have[b.Descriptor.Digest] = true
-		if t.streamed.holds(b.Descriptor.Digest) {
-			continue
-		}
-		if err := t.pushBlob(ctx, b); err != nil {
-			return err
+		switch {
+		case t.streamed.holds(b.Descriptor.Digest):
+		case t.streamed != nil:
+			t.streamed.held = append(t.streamed.held, b)
+		default:
+			if err := t.pushBlob(ctx, b); err != nil {
+				return err
+			}
 		}
 	}
 	for _, l := range built.Manifest.Layers {
