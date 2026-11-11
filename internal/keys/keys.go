@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"slices"
 	"strings"
@@ -218,6 +219,66 @@ func (s *Service) Signing(ctx context.Context, repo index.Repo) ([]*Entity, erro
 	return out, nil
 }
 
+// Current reports whether signed, an InRelease or a Release.gpg that ClearSign or DetachSign
+// made for the repo, is signed by the active key, and otherwise only by keys retired within
+// the grace. A rotation drops the documents it changes, but the end of a retired key's grace
+// is a time, not a write, so nothing drops the documents that key signed: the routes that
+// serve them from index_cache ask Current on every read and sign again when it is false, on
+// whichever replica serves next, with or without the reconcile loop (#577). The signatures
+// name the keys that made them, so a grace shortened since counts too. A document without
+// signatures, or with one that does not name its issuer's fingerprint, is not current. It
+// reads the keys once and decrypts none.
+func (s *Service) Current(ctx context.Context, repo index.Repo, signed []byte) (bool, error) {
+	all, err := s.st.ListKeys(ctx, &repo.ID)
+	if err != nil {
+		return false, fmt.Errorf("keys: the keys of %s: %w", repoName(repo), err)
+	}
+	since := s.graceStart()
+	signing := make(map[string]bool, len(all)) // by fingerprint: true for the active key
+	for _, k := range all {
+		if k.Kind == KindGPG && (k.RetiredAt == nil || !k.RetiredAt.Before(since)) {
+			signing[k.Fingerprint] = k.RetiredAt == nil
+		}
+	}
+	active := false
+	for _, fp := range signers(signed) {
+		isActive, signs := signing[fp]
+		if !signs {
+			return false, nil
+		}
+		active = active || isActive
+	}
+	return active, nil
+}
+
+// signers returns the fingerprints of the issuers of the signatures in signed: the signature
+// block of a clearsigned document, or an armored signature block. It is nil when signed is
+// neither, or holds a packet that is not a signature or a signature without its issuer's
+// fingerprint, which ClearSign and DetachSign always write.
+func signers(signed []byte) []string {
+	var body io.Reader
+	if b, _ := clearsign.Decode(signed); b != nil {
+		body = b.ArmoredSignature.Body
+	} else if block, err := armor.Decode(bytes.NewReader(signed)); err == nil && block.Type == openpgp.SignatureType {
+		body = block.Body
+	} else {
+		return nil
+	}
+	var fps []string
+	r := packet.NewReader(body)
+	for {
+		p, err := r.Next()
+		if errors.Is(err, io.EOF) {
+			return fps
+		}
+		sig, ok := p.(*packet.Signature)
+		if err != nil || !ok || len(sig.IssuerFingerprint) == 0 {
+			return nil
+		}
+		fps = append(fps, strings.ToUpper(hex.EncodeToString(sig.IssuerFingerprint)))
+	}
+}
+
 // Rotate gives the repo a new active key and retires the one it had, in one transaction that
 // also drops the repo's index_cache, so that the next GET renders and signs again, and writes
 // the audit row key.rotate (Repo the repo, Subject the new fingerprint, Details the retired
@@ -306,9 +367,7 @@ func (s *Service) keyring(ctx context.Context, repo index.Repo) ([]index.Key, er
 	if err != nil {
 		return nil, fmt.Errorf("keys: the keys of %s: %w", repoName(repo), err)
 	}
-	// The store keeps timestamps to the microsecond; a clock with nanoseconds would put a
-	// key retired exactly one grace ago a few nanoseconds outside it.
-	since := s.now().Add(-s.grace).Truncate(time.Microsecond)
+	since := s.graceStart()
 	var active, retired []index.Key
 	for _, k := range all {
 		switch {
@@ -326,6 +385,13 @@ func (s *Service) keyring(ctx context.Context, repo index.Repo) ([]index.Key, er
 		return cmp.Or(b.RetiredAt.Compare(*a.RetiredAt), cmp.Compare(b.ID, a.ID))
 	})
 	return append(active, retired...), nil
+}
+
+// graceStart is the earliest RetiredAt of a retired key that still signs: one grace ago.
+func (s *Service) graceStart() time.Time {
+	// The store keeps timestamps to the microsecond; a clock with nanoseconds would put a
+	// key retired exactly one grace ago a few nanoseconds outside it.
+	return s.now().Add(-s.grace).Truncate(time.Microsecond)
 }
 
 // generate makes a new key for repo, as KeyFor describes, and returns its row, not yet stored,

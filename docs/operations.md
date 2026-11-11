@@ -272,11 +272,13 @@ still signs `InRelease` and `Release.gpg` beside the new one and stays in `key.a
 - an `InRelease` signed before the rotation, from a mirror or a cache, verifies against the new
   `key.asc`.
 
-When the grace ends the retired key leaves `key.asc`. It stops signing when the suite's indexes
-are rendered again, because the signed `InRelease` and `Release.gpg` are cached with them: at
-the next publish or delete in the repo, or at the next reindex, which the reconcile loop runs
-every `reconcile.interval` (default `1h`). From then on a client that still has only the old key
-fails `apt-get update` with `NO_PUBKEY`.
+When the grace ends the retired key leaves `key.asc` and stops signing. The signed `InRelease`
+and `Release.gpg` are cached, so every replica checks a cached one before it serves it: the next
+request after the end of the grace, on any replica, signs them again with the keys that still
+sign. Nothing else needs to happen: no publish, no reindex, no reconcile loop. The `Release` and
+the `Packages` stay as they are; the new `InRelease` has a newer `Last-Modified`, so `apt-get
+update` fetches it. From then on a client that still has only the old key fails `apt-get update`
+with `NO_PUBKEY`.
 
 The runbook:
 
@@ -290,8 +292,9 @@ Rotate when the algorithm changes (`keys.algorithm` applies to keys made from th
 new master key replaces a lost one, and when a key may have leaked. For a leaked key, set
 `keys.retireGrace: 0s` first and restart the replicas, which read it at start, then rotate: the
 retired key stops signing and leaves `key.asc` at once, and clients fail until they have the new
-`key.asc`. When the rotation came first, `lajstrom reindex --repo apt/<repo>` after the restart
-drops the indexes that the retired key signed.
+`key.asc`. When the rotation came first, the restart is enough: the grace of the retired key is
+over, and the next request for an `InRelease` or a `Release.gpg` signs it again without that
+key.
 
 ### The bearer-token key
 

@@ -170,6 +170,10 @@ type Signer interface {
 	DetachSign(ctx context.Context, repo index.Repo, data []byte) ([]byte, error)
 	// PublicKeys returns the armored keyring that verifies what the repo signs: apt's key.asc.
 	PublicKeys(ctx context.Context, repo index.Repo) ([]byte, error)
+	// Current reports whether signed, which ClearSign or DetachSign made for the repo, is
+	// signed only by keys that still sign the repo's documents. It is false once one of them
+	// has stopped, a retired key whose grace has ended, and a cached document is signed again.
+	Current(ctx context.Context, repo index.Repo, signed []byte) (bool, error)
 }
 
 // Deps are the services a plugin's routes use. The server builds one Deps and passes it to

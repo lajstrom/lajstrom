@@ -408,6 +408,62 @@ func TestPublicKeysGrace(t *testing.T) {
 	}
 }
 
+// TestCurrent checks which signed documents are current: those the active key signed, alone or
+// with keys retired within the grace, to the last instant of the grace, until the grace of a key
+// that signed them ends or a service with a shorter grace asks; not one without the active
+// key's signature, nor one without the signatures of the repo's keys.
+func TestCurrent(t *testing.T) {
+	e := newEnv(t, Options{RetireGrace: time.Hour})
+	ctx := t.Context()
+	current := func(svc *Service, doc []byte) bool {
+		t.Helper()
+		return must2(svc.Current(ctx, e.repo, doc))
+	}
+	before := must2(e.svc.ClearSign(ctx, e.repo, []byte(release)))
+	if !current(e.svc, before) {
+		t.Error("an InRelease of the active key is not current")
+	}
+	must2(e.svc.Rotate(ctx, e.repo))
+	if current(e.svc, before) {
+		t.Error("an InRelease of the retired key alone is current")
+	}
+	in := must2(e.svc.ClearSign(ctx, e.repo, []byte(release)))
+	sig := must2(e.svc.DetachSign(ctx, e.repo, []byte(release)))
+	e.now = e.now.Add(time.Hour)
+	for name, doc := range map[string][]byte{"InRelease": in, "Release.gpg": sig} {
+		if !current(e.svc, doc) {
+			t.Errorf("%s at the end of the grace is not current", name)
+		}
+	}
+	shorter, err := New(Options{Index: e.st, Master: e.svc.master, RetireGrace: time.Minute, Now: e.svc.now, Log: e.svc.log})
+	must(t, err)
+	if current(shorter, in) {
+		t.Error("an InRelease of a key retired an hour ago is current with a grace of a minute")
+	}
+
+	e.now = e.now.Add(time.Microsecond)
+	for name, doc := range map[string][]byte{"InRelease": in, "Release.gpg": sig} {
+		if current(e.svc, doc) {
+			t.Errorf("%s after the grace is current", name)
+		}
+	}
+	if !current(e.svc, must2(e.svc.ClearSign(ctx, e.repo, []byte(release)))) {
+		t.Error("an InRelease signed after the grace is not current")
+	}
+	other := index.Repo{Format: "apt", Name: "other", Registry: "local", Kind: "hosted"}
+	must(t, e.st.CreateRepo(ctx, &other))
+	for name, doc := range map[string][]byte{
+		"an InRelease of another repo": must2(e.svc.ClearSign(ctx, other, []byte(release))),
+		"no signature":                 []byte(release),
+		"a public key block":           must2(e.svc.PublicKeys(ctx, e.repo)),
+		"nothing":                      nil,
+	} {
+		if current(e.svc, doc) {
+			t.Errorf("%s is current", name)
+		}
+	}
+}
+
 // TestRotateNoGrace rotates with a grace of zero, for a key that must stop being trusted at
 // once: the retired key neither signs nor stays in key.asc.
 func TestRotateNoGrace(t *testing.T) {
@@ -632,6 +688,7 @@ func TestStoreFails(t *testing.T) {
 		{"ListKeys", e.repo, func(s *Service, r index.Repo) error { _, err := s.PublicKeys(ctx, r); return err }},
 		{"ListKeys", e.repo, func(s *Service, r index.Repo) error { _, err := s.ClearSign(ctx, r, nil); return err }},
 		{"ListKeys", e.repo, func(s *Service, r index.Repo) error { _, err := s.DetachSign(ctx, r, nil); return err }},
+		{"ListKeys", e.repo, func(s *Service, r index.Repo) error { _, err := s.Current(ctx, r, nil); return err }},
 		{"tx.GetKey", e.repo, func(s *Service, r index.Repo) error { _, err := s.Rotate(ctx, r); return err }},
 		{"tx.InvalidateIndexCache", e.repo, func(s *Service, r index.Repo) error { _, err := s.Rotate(ctx, r); return err }},
 		{"tx.AppendAudit", e.repo, func(s *Service, r index.Repo) error { _, err := s.Rotate(ctx, r); return err }},
