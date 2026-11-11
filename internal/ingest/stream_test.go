@@ -194,6 +194,37 @@ func TestUploadStreamRefused(t *testing.T) {
 	}
 }
 
+// TestUploadStreamValidateFetch: Validate's fetch of the streamed file, committed after it, is
+// format.ErrStreamed, which a plugin tells from a failure of the registry; the other blobs,
+// held in memory until the commit, read back as Build made them.
+func TestUploadStreamValidateFetch(t *testing.T) {
+	e, _ := newStreamEnv(t)
+	const content = "read by Validate"
+	var fileErr error
+	var held []string
+	e.plugin.ValidateFunc = func(ctx context.Context, repo index.Repo, m ocispec.Manifest, fetch format.BlobFetcher) (*format.Entry, error) {
+		for _, l := range append([]ocispec.Descriptor{m.Config}, m.Layers...) {
+			rc, err := fetch(ctx, l.Digest)
+			if l.Digest == digest.FromString(content) {
+				fileErr = err
+				continue
+			}
+			must(t, err)
+			b, err := io.ReadAll(rc)
+			_ = rc.Close()
+			must(t, err)
+			held = append(held, string(b))
+		}
+		return validateRaw(ctx, repo, m, fetch)
+	}
+	_, err := e.pipe.UploadStream(t.Context(), e.repo, streamUpload("1.0.0", content), alice)
+	must(t, err)
+	if !errors.Is(fileErr, format.ErrStreamed) || len(held) != 2 || held[0] != "{}" {
+		t.Errorf("Validate's fetch of the file = %v, of the others %q; want format.ErrStreamed, the config and the metadata", fileErr, held)
+	}
+	e.wantPublished(t, content, 1)
+}
+
 // TestUploadStreamNotStreamer: a plugin that is not a Streamer is ErrUnsupported, and a name it
 // does not allow ErrInvalid, before anything reaches the registry.
 func TestUploadStreamNotStreamer(t *testing.T) {

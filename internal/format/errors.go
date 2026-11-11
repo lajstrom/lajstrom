@@ -28,6 +28,12 @@ var (
 	// read it: a conditional delete of a version (Condition, RefusedError). The management API
 	// answers 412.
 	ErrPrecondition = errors.New("format: precondition failed")
+
+	// ErrStreamed is the error of a BlobFetcher asked, during Validate, for the file of the
+	// upload being validated, which streams into the registry and is committed after the checks
+	// (ADR 0014, Publisher.UploadStream): Build described it from what the plugin's inspector
+	// read of those bytes, and a Validate that would read the file takes that as checked.
+	ErrStreamed = errors.New("format: the blob streams in with this upload and is not committed yet")
 )
 
 // The errors of a proxy's upstream and of a repo that takes no writes (ADR 0013,
