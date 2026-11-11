@@ -20,9 +20,10 @@ const (
 	maxBlocks = 32
 )
 
-// fetchedBlob is the reader the fetcher of Validate returns (format.BlobFetcher). Read streams
-// the whole blob from the backend, opened at the first call and checked against the descriptor
-// as it is read (a wrong digest or size fails the read). ReadAt reads parts of the blob with a
+// fetchedBlob is the reader the fetcher of Validate returns (format.BlobFetcher), and the file
+// of a read-back (readBack). Read streams the whole blob from the backend, opened at the first
+// call and checked against the descriptor as it is read (a wrong digest or size fails the
+// read). ReadAt reads parts of the blob with a
 // Range of one block each (Provider.OpenBlob, redirects followed), and never the whole: a plugin
 // that reads an archive whose directory is at its end calls ReadAt and not Read. The bytes of
 // ReadAt are not checked against the digest, which only the whole blob can be. A backend that
@@ -30,7 +31,7 @@ const (
 // may be called from several goroutines; Read, from one.
 type fetchedBlob struct {
 	ctx  context.Context
-	pub  *publish
+	t    *target
 	desc ocispec.Descriptor
 
 	stream io.ReadCloser // opened by the first Read
@@ -44,9 +45,9 @@ type fetchedBlob struct {
 // Read implements io.Reader.
 func (b *fetchedBlob) Read(p []byte) (int, error) {
 	if b.stream == nil {
-		rc, err := b.pub.rr.Fetch(b.ctx, b.desc)
+		rc, err := b.t.rr.Fetch(b.ctx, b.desc)
 		if err != nil {
-			return 0, fmt.Errorf("ingest: fetch %s from %s: %w", b.desc.Digest, b.pub.name, err)
+			return 0, fmt.Errorf("ingest: fetch %s from %s: %w", b.desc.Digest, b.t.name, err)
 		}
 		b.stream, b.read = rc, newVerifier(rc, b.desc)
 	}
@@ -90,12 +91,12 @@ func (b *fetchedBlob) block(i int64) ([]byte, error) {
 	}
 	start := i * blockSize
 	end := min(start+blockSize, b.desc.Size) - 1
-	if b.pub.prov == nil {
+	if b.t.prov == nil {
 		return nil, fmt.Errorf("ingest: no registry for the range reads of %s", b.desc.Digest)
 	}
-	blob, err := b.pub.prov.OpenBlob(b.ctx, b.pub.name, b.desc.Digest, fmt.Sprintf("bytes=%d-%d", start, end), false)
+	blob, err := b.t.prov.OpenBlob(b.ctx, b.t.name, b.desc.Digest, fmt.Sprintf("bytes=%d-%d", start, end), false)
 	if err != nil {
-		return nil, fmt.Errorf("ingest: read bytes %d-%d of %s from %s: %w", start, end, b.desc.Digest, b.pub.name, err)
+		return nil, fmt.Errorf("ingest: read bytes %d-%d of %s from %s: %w", start, end, b.desc.Digest, b.t.name, err)
 	}
 	if blob.Body == nil {
 		return nil, fmt.Errorf("ingest: read bytes %d-%d of %s: the backend answered %d without a body", start, end, b.desc.Digest, blob.Status)
