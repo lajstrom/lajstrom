@@ -199,14 +199,14 @@ func (a *Authenticator) authenticatePassword(ctx context.Context, username, secr
 // the same refusals, the same throttles, the same argon2id work, every attempt verified.
 func (a *Authenticator) AuthenticatePassword(ctx context.Context, username, password string) (Principal, Credential, error) {
 	if strings.HasPrefix(password, PATPrefix) || strings.HasPrefix(password, DeployPrefix) {
-		return Principal{}, Credential{}, a.refuse(ctx, username, "a token in place of a password")
+		return Principal{}, Credential{}, a.refuse(ctx, nil, "a token in place of a password")
 	}
 	u, account, addr, err := a.loginUser(ctx, username, password)
 	if err != nil {
 		return Principal{}, Credential{}, err
 	}
 	defer a.lockLogin(addr, account)()
-	p, err := a.checkPassword(ctx, u, username, password, account, addr)
+	p, err := a.checkPassword(ctx, u, password, account, addr)
 	if err != nil {
 		return Principal{}, Credential{}, err
 	}
@@ -221,10 +221,10 @@ func (a *Authenticator) loginUser(ctx context.Context, username, secret string) 
 	if CheckName(username) != nil {
 		// No user has such a name: nothing about a user is told by refusing it at once. It is
 		// not logged, in case it is a password typed into the wrong field.
-		return nil, "", "", a.refuse(ctx, "", "malformed user name")
+		return nil, "", "", a.refuse(ctx, nil, "malformed user name")
 	}
 	if secret == "" || len(secret) > MaxPasswordLen {
-		return nil, "", "", a.refuse(ctx, username, "malformed password")
+		return nil, "", "", a.refuse(ctx, nil, "malformed password")
 	}
 	addr := throttleAddress(ctx)
 	if err := a.throttledLogin(addr, "", nil); err != nil {
@@ -235,7 +235,7 @@ func (a *Authenticator) loginUser(ctx context.Context, username, secret string) 
 	case errors.Is(err, index.ErrNotFound):
 		u = nil
 	case err != nil:
-		return nil, "", "", fmt.Errorf("auth: authenticate %s: %w", username, err)
+		return nil, "", "", fmt.Errorf("auth: authenticate: read the user: %w", err)
 	}
 	account := accountKey(u, username)
 	if err := a.throttledLogin("", account, u); err != nil {
@@ -256,7 +256,7 @@ func (a *Authenticator) verifyPassword(ctx context.Context, u *index.User, usern
 	if err := a.throttledLogin(addr, account, u); err == nil && unusable(u) == "" && a.cached(key, u.PasswordHash) {
 		return UserPrincipal(u), nil
 	}
-	p, err := a.checkPassword(ctx, u, username, secret, account, addr)
+	p, err := a.checkPassword(ctx, u, secret, account, addr)
 	if err == nil {
 		a.remember(key, u.PasswordHash)
 	}
@@ -266,22 +266,22 @@ func (a *Authenticator) verifyPassword(ctx context.Context, u *index.User, usern
 // checkPassword verifies secret against the password of u with argon2id, under the locks of
 // addr and account that the caller holds: the throttles are asked again, an unusable user costs
 // the work of a verification all the same, and a failure counts against account and addr.
-func (a *Authenticator) checkPassword(ctx context.Context, u *index.User, username, secret, account, addr string) (Principal, error) {
+func (a *Authenticator) checkPassword(ctx context.Context, u *index.User, secret, account, addr string) (Principal, error) {
 	if err := a.throttledLogin(addr, account, u); err != nil {
 		return Principal{}, err
 	}
 	if reason := unusable(u); reason != "" {
 		a.dummyVerify(secret)
 		a.failed(account, addr)
-		return Principal{}, a.refuse(ctx, username, reason)
+		return Principal{}, a.refuse(ctx, u, reason)
 	}
 	ok, err := a.verify(u.PasswordHash, secret)
 	switch {
 	case err != nil:
-		return Principal{}, fmt.Errorf("auth: authenticate %s: the stored password hash: %w", username, err)
+		return Principal{}, fmt.Errorf("auth: authenticate %s: the stored password hash: %w", UserPrincipal(u), err)
 	case !ok:
 		a.failed(account, addr)
-		return Principal{}, a.refuse(ctx, username, "wrong password")
+		return Principal{}, a.refuse(ctx, u, "wrong password")
 	}
 	return UserPrincipal(u), nil
 }
@@ -361,13 +361,14 @@ func accountKey(u *index.User, username string) string {
 	return UserPrincipal(u).String()
 }
 
-// refuse logs a refusal at debug level, with the user name unless it is empty, and returns
-// ErrBadCredentials.
-func (a *Authenticator) refuse(ctx context.Context, username, reason string) error {
-	if username == "" {
+// refuse logs a refusal at debug level, with the principal user:<uid> of the user u unless it
+// is nil, and returns ErrBadCredentials. A user name as it was typed is never logged: it may be
+// a password typed into the wrong field, or a token pasted there (threat model L-3).
+func (a *Authenticator) refuse(ctx context.Context, u *index.User, reason string) error {
+	if u == nil {
 		a.log.DebugContext(ctx, "authentication refused", "reason", reason)
 	} else {
-		a.log.DebugContext(ctx, "authentication refused", "user", username, "reason", reason)
+		a.log.DebugContext(ctx, "authentication refused", "user", UserPrincipal(u).String(), "reason", reason)
 	}
 	return ErrBadCredentials
 }

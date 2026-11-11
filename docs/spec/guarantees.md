@@ -558,15 +558,18 @@ status is `holds on strongly consistent registries only` do not hold there.
 - **Mechanism.** `server.Server.accessLog` (method, path, status, principal, addresses; never the
   query, a header or a body); the redacting `String` of `token.Token`, `keys.TokenKey`,
   `config.RegistryAuth`; the provider's `logTransport` and `withoutURL`; `postgres.Open`; the
-  proxy logs no body and no redirect target (threat model L-1 to L-4).
+  proxy logs no body and no redirect target; `auth.Authenticator.refuse` and `refuseToken` log
+  a user by its uid, and neither they nor `server.Server.authenticate` log a user name as typed;
+  `token.Verifier.refuse` logs the first 16 bytes of the `kid` and its length (threat model L-1
+  to L-4).
 - **Tests.** `TestTokensNeverLogged`, `TestRedactSecrets`, `TestTokenRedacted`,
   `TestTokenKeyRedacted`, `TestEntityRedacted`, `TestMasterRedacted`, `TestOpenDoesNotLeakTheDSN`,
-  `TestAccessLog`, `TestBearerAccessLog`, `TestRetryLog`.
+  `TestAccessLog`, `TestBearerAccessLog`, `TestRetryLog`, `TestRefusalsLogNoSecret` (a token
+  pasted as the user name, a password typed there and a 4 KiB `kid`, at `debug`),
+  `TestAuthenticateFailure`.
 - **When violated.** Not detected by Lajstrom.
-- **Status.** `partly`: at `debug`, a typed user name that may be a mistyped password is logged
-  for an unknown user, and the `kid` an attacker sends is logged without a length bound (threat
-  model L-3). **Untested:** acceptance.md C-07 (grep the logs of both replicas for every secret
-  the suite used) is not automated.
+- **Status.** `holds`. **Untested:** acceptance.md C-07 (grep the logs of both replicas for every
+  secret the suite used) is not automated.
 
 ### INV-22. The client address comes only from a trusted proxy
 
@@ -954,7 +957,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-18 | a credential never grants more | holds | |
 | INV-19 | bearer tokens across replicas, live keys only | holds | |
 | INV-20 | credentials go only where they belong | holds | unchecked (oras-go redirects) |
-| INV-21 | no secret logged | partly | untested (C-07) |
+| INV-21 | no secret logged | holds | untested (C-07) |
 | INV-22 | the client address from trusted proxies only | holds | |
 | INV-23 | every request bounded in size | partly | |
 | INV-24 | parsers bounded | holds | |

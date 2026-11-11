@@ -406,8 +406,8 @@ func TestAuthenticateNil(t *testing.T) {
 }
 
 // TestAuthenticateFailure checks a failure to decide: 500 in the error format of the route's
-// family, without a challenge, the cause in the log with the request id and without the
-// secret.
+// family, without a challenge, the cause in the log with the request id, without the secret
+// and without the user name as typed.
 func TestAuthenticateFailure(t *testing.T) {
 	errDown := errors.New("index: database is gone")
 	tests := []struct{ path, body string }{
@@ -430,8 +430,11 @@ func TestAuthenticateFailure(t *testing.T) {
 				t.Errorf("a 500 has the challenge %q", c)
 			}
 			l := findLog(t, logs, "authentication failed")
-			if l["level"] != "ERROR" || l["user"] != "alice" || l["requestId"] != "req-9" || !strings.Contains(fmt.Sprint(l["error"]), errDown.Error()) {
+			if l["level"] != "ERROR" || l["requestId"] != "req-9" || !strings.Contains(fmt.Sprint(l["error"]), errDown.Error()) {
 				t.Errorf("log line = %v", l)
+			}
+			if _, ok := l["user"]; ok || strings.Contains(fmt.Sprint(l["error"]), "alice") {
+				t.Errorf("the log line names the user as typed: %v", l)
 			}
 			if strings.Contains(logs.String(), alicePassword) {
 				t.Errorf("the log contains the password:\n%s", logs.String())

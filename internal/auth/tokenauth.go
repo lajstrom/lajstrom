@@ -22,10 +22,10 @@ import (
 // a miss as much as a hit, and no argon2id.
 func (a *Authenticator) authenticatePAT(ctx context.Context, username, secret string) (Principal, Credential, error) {
 	if CheckName(username) != nil {
-		return Principal{}, Credential{}, a.refuse(ctx, "", "malformed user name")
+		return Principal{}, Credential{}, a.refuse(ctx, nil, "malformed user name")
 	}
 	if !tokenShaped(secret, PATPrefix) {
-		return Principal{}, Credential{}, a.refuse(ctx, username, "malformed token")
+		return Principal{}, Credential{}, a.refuse(ctx, nil, "malformed token")
 	}
 	t, err := a.token(ctx, secret)
 	if err != nil {
@@ -36,7 +36,7 @@ func (a *Authenticator) authenticatePAT(ctx context.Context, username, secret st
 	case errors.Is(err, index.ErrNotFound):
 		u = nil
 	case err != nil:
-		return Principal{}, Credential{}, fmt.Errorf("auth: authenticate a token of %s: %w", username, err)
+		return Principal{}, Credential{}, fmt.Errorf("auth: authenticate a token: read its user: %w", err)
 	}
 	reason := a.dead(t, TokenPAT)
 	switch {
@@ -49,7 +49,7 @@ func (a *Authenticator) authenticatePAT(ctx context.Context, username, secret st
 		reason = "disabled"
 	}
 	if reason != "" {
-		return Principal{}, Credential{}, a.refuseToken(ctx, username, t, reason)
+		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, reason)
 	}
 	a.touch(ctx, t.ID)
 	return UserPrincipal(u), patCredential(t), nil
@@ -62,19 +62,19 @@ func (a *Authenticator) authenticatePAT(ctx context.Context, username, secret st
 // one GetRepoByID. A repo deleted takes its deploy tokens with it, so a token found has a repo.
 func (a *Authenticator) authenticateDeploy(ctx context.Context, secret string) (Principal, Credential, error) {
 	if !tokenShaped(secret, DeployPrefix) {
-		return Principal{}, Credential{}, a.refuse(ctx, "", "malformed token")
+		return Principal{}, Credential{}, a.refuse(ctx, nil, "malformed token")
 	}
 	t, err := a.token(ctx, secret)
 	if err != nil {
 		return Principal{}, Credential{}, err
 	}
 	if reason := a.dead(t, TokenDeploy); reason != "" {
-		return Principal{}, Credential{}, a.refuseToken(ctx, "", t, reason)
+		return Principal{}, Credential{}, a.refuseToken(ctx, nil, t, reason)
 	}
 	repo, err := a.index.GetRepoByID(ctx, *t.RepoID)
 	switch {
 	case errors.Is(err, index.ErrNotFound):
-		return Principal{}, Credential{}, a.refuseToken(ctx, "", t, "the repo is gone")
+		return Principal{}, Credential{}, a.refuseToken(ctx, nil, t, "the repo is gone")
 	case err != nil:
 		return Principal{}, Credential{}, fmt.Errorf("auth: authenticate token %d: its repo: %w", t.ID, err)
 	}
@@ -98,25 +98,25 @@ func (a *Authenticator) AuthenticateBearer(ctx context.Context, secret string) (
 	case strings.HasPrefix(secret, DeployPrefix):
 		return a.authenticateDeploy(ctx, secret)
 	case !tokenShaped(secret, PATPrefix):
-		return Principal{}, Credential{}, a.refuse(ctx, "", "malformed token")
+		return Principal{}, Credential{}, a.refuse(ctx, nil, "malformed token")
 	}
 	t, err := a.token(ctx, secret)
 	if err != nil {
 		return Principal{}, Credential{}, err
 	}
 	if reason := a.dead(t, TokenPAT); reason != "" {
-		return Principal{}, Credential{}, a.refuseToken(ctx, "", t, reason)
+		return Principal{}, Credential{}, a.refuseToken(ctx, nil, t, reason)
 	}
 	u, err := a.index.GetUserByID(ctx, *t.UserID)
 	switch {
 	case errors.Is(err, index.ErrNotFound):
-		return Principal{}, Credential{}, a.refuseToken(ctx, "", t, "unknown user")
+		return Principal{}, Credential{}, a.refuseToken(ctx, nil, t, "unknown user")
 	case err != nil:
 		return Principal{}, Credential{}, fmt.Errorf("auth: authenticate token %d: its owner: %w", t.ID, err)
 	case u.DeletedAt != nil:
-		return Principal{}, Credential{}, a.refuseToken(ctx, u.DeletedName, t, "deleted")
+		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, "deleted")
 	case u.Disabled:
-		return Principal{}, Credential{}, a.refuseToken(ctx, u.Name, t, "disabled")
+		return Principal{}, Credential{}, a.refuseToken(ctx, u, t, "disabled")
 	}
 	a.touch(ctx, t.ID)
 	return UserPrincipal(u), patCredential(t), nil
@@ -160,13 +160,13 @@ func (a *Authenticator) dead(t *index.Token, kind string) string {
 	return ""
 }
 
-// refuseToken logs the refusal of a token at debug level, with the user name unless it is
-// empty and the token's id when there is a token, never the secret or its hash, and returns
-// ErrBadCredentials.
-func (a *Authenticator) refuseToken(ctx context.Context, username string, t *index.Token, reason string) error {
+// refuseToken logs the refusal of a token at debug level, with the principal user:<uid> of
+// the user u unless it is nil and the token's id when there is a token, never a user name as
+// typed (refuse), the secret or its hash, and returns ErrBadCredentials.
+func (a *Authenticator) refuseToken(ctx context.Context, u *index.User, t *index.Token, reason string) error {
 	attrs := make([]any, 0, 6)
-	if username != "" {
-		attrs = append(attrs, "user", username)
+	if u != nil {
+		attrs = append(attrs, "user", UserPrincipal(u).String())
 	}
 	if t != nil {
 		attrs = append(attrs, "token", t.ID)
