@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"syscall"
 	"testing"
@@ -63,7 +64,14 @@ func TestTranslate(t *testing.T) {
 		{name: "temporary failure in name resolution",
 			err:  unresolved(&net.DNSError{Err: "Temporary failure in name resolution", Name: "zot.internal", IsTemporary: true}),
 			want: provider.ErrUnavailable},
-		{name: "connection refused", err: &url.Error{Op: "Head", URL: backend.String(), Err: &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}}},
+		{name: "connection refused", err: &url.Error{Op: "Head", URL: backend.String(), Err: &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}},
+			want: provider.ErrUnavailable},
+		{name: "connection reset",
+			err: &url.Error{Op: "Get", URL: backend.String(), Err: fmt.Errorf("net/http: HTTP/1.x transport connection broken: %w",
+				&net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)})},
+			want: provider.ErrUnavailable},
+		{name: "broken pipe", err: &url.Error{Op: "Put", URL: backend.String(), Err: &net.OpError{Op: "write", Net: "tcp", Err: os.NewSyscallError("write", syscall.EPIPE)}},
+			want: provider.ErrUnavailable},
 		{name: "context canceled", err: context.Canceled},
 		{name: "plain error", err: errors.New("connection reset by peer")},
 	}
