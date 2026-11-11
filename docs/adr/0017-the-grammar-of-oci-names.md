@@ -1,6 +1,6 @@
 # 0017. The grammar of OCI names
 
-- Status: accepted
+- Status: accepted; amended for Harbor's routes (below, Amendment)
 - Date: 2026-11-11
 - Deciders: gecube
 
@@ -107,3 +107,54 @@ It ships in v0.1.0, before any release, so there is nothing to migrate.
   earlier form is split into two OCI repositories: reindex such a stand before it takes writes.
 - Clients that push through `/v2` compute the new form (manifest-profile.md §4.3).
 - #599 is left with the depth limits and Quay's `build`, which change no encoding.
+
+## Amendment: Harbor's routes (2026-11-11)
+
+**Context.** Harbor v2.15.4 answers `HEAD /v2/<name>/blobs/<digest>` with `404` or `400` at random
+when `<name>` has a component `manifests` or `referrers`, or the components `tags/list`; the
+`GET` of the blob is always `200`. Measured by the lead, 20 tries each: `x/manifests/y` 13 times
+`404`, `x/manifests` 14, `x/referrers/y` 3, `x/tags/list` 17 times `400`; `x`, `x/tags`,
+`x/blobs`, `x/uploads` never. Its `artifactinfo` middleware tries the URL against its patterns
+in the order of a Go map, which is random
+([artifact_info.go](https://github.com/goharbor/harbor/blob/v2.15.4/src/server/middleware/artifactinfo/artifact_info.go#L42-L48),
+[L110-L140](https://github.com/goharbor/harbor/blob/v2.15.4/src/server/middleware/artifactinfo/artifact_info.go#L110-L140)).
+The manifest and referrers patterns end in `(?P<reference>.*)$`, so
+`/v2/x/manifests/y/blobs/<digest>` is also a manifest URL of `x`; the tag-list pattern is not
+anchored at the end, so `/v2/x/tags/list/blobs/<digest>`, and `/v2/x/tags/listing/…` as well, is
+also the tag list of `x` ([patterns.go](https://github.com/goharbor/harbor/blob/v2.15.4/src/lib/patterns.go#L35-L46),
+the same on main; [quirks.md](../registries/quirks.md#measured-on-harbor) section 2). Reported as
+[harbor#24363](https://github.com/goharbor/harbor/issues/24363). Kubernetes manifests kept in a
+raw repo (`k8s/manifests/app.yaml`) are common.
+
+**Decision.** Rule 2 also covers, for every registry:
+
+- a component `manifests` or `referrers`;
+- a component `tags` that a component starting with `list` follows.
+
+Each is written as Zot's words are, with its last byte escaped: `manifest_73`, `referrer_73`,
+`tag_73`. The mark of the pair goes on `tags`, not on the `list…` component: the tag-list pattern
+is not anchored, so escaping the last byte of `listing` (`listin_67`) would leave `/tags/list` in
+the URL, and escaping the byte of `list` that would break it is a mechanism of its own. Escaping
+`tags` breaks the pattern whatever follows, and reads back the same way as the other words. The
+rule looks at the next component, so it belongs to the package path (`profile.PackagePath`), not
+to `EscapeComponent`. The first component of a package path follows the repo name, which the
+escape does not see: a repo named `tags`, `manifests` or `referrers` is refused at creation, as
+the words of Zot's layout are.
+
+| Name | Package path before | Package path now |
+| --- | --- | --- |
+| raw `k8s/manifests/app.yaml` | `k8s/manifests/app.yaml` | `k8s/manifest_73/app.yaml` |
+| raw `x/referrers/y` | `x/referrers/y` | `x/referrer_73/y` |
+| raw `x/tags/list`, `x/tags/listing.txt` | `x/tags/list`, `x/tags/listing.txt` | `x/tag_73/list`, `x/tag_73/listing.txt` |
+| npm `@tags/list` | `tags/list` | `tag_73/list` |
+| raw `x/tags`, `x/tags/other`, `x/manifest` | the same | the same |
+
+A name now has up to three forms: before ADR 0017, of ADR 0017 before this amendment, and
+amended. Written in the newest, read in all: `profile.EarlierPackagePaths` lists the earlier forms
+of a package path, `index.PackageAt` looks at each, existing packages keep their `name_oci`, and
+reindex takes a manifest found at any of them.
+
+**Consequences.** These names change on every registry for the bug of one: an operator who
+browses Zot or distribution sees `manifest_73`. Harbor is not in CI; the integration test runs on
+Zot and distribution. The rule is revisited when Harbor ships the fix of harbor#24363: from then
+on new packages may be written without these escapes again, and the escaped forms stay readable.

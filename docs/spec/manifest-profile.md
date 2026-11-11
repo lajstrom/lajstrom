@@ -159,16 +159,17 @@ The OCI repository for a package is
 
 - `<prefix>` is the backend-registry prefix of the Lajstrom instance (e.g. `art/`), may be empty.
 - `<format>` and `<repo>` are already OCI-safe (repo names are validated on creation:
-  `^[a-z0-9]+(?:[-._][a-z0-9]+)*$`, max 64 chars, and none that section 4.3 reserves).
+  `^[a-z0-9]+(?:[-._][a-z0-9]+)*$`, max 64 chars, and none that section 4.3 reserves, nor
+  `tags`).
 - `<package path>` is produced by the plugin's `EscapeName`:
 
 | Format | Package path |
 | --- | --- |
-| raw | each path component escaped with `EscapeComponent` (section 4.3), joined with `/`: `Docs/Readme.MD` → `docs/readme.md` (the original case is in `lajstrom.raw.path`). A component whose escaped form (section 4.3 step 2) is longer than 64 bytes is replaced by `h0_h` + the first 32 hex characters of `sha256(component)`, as in section 4.3 step 3 (`EscapeComponentMax`): registries limit the OCI repository name to 255 characters, and `reindex` reads `lajstrom.raw.path`, so nothing decodes the path. A path whose OCI repository name is still longer than 255 bytes is refused with `400`. A raw path is unique without regard to case, since the OCI repository name is lowercase: the first spelling wins, and a path whose package path is taken by another spelling is a `409`. |
+| raw | each path component escaped with `EscapeComponent` (section 4.3), joined with `PackagePath`: `Docs/Readme.MD` → `docs/readme.md` (the original case is in `lajstrom.raw.path`). A component whose escaped form (section 4.3 step 2) is longer than 64 bytes is replaced by `h0_h` + the first 32 hex characters of `sha256(component)`, as in section 4.3 step 3 (`EscapeComponentMax`): registries limit the OCI repository name to 255 characters, and `reindex` reads `lajstrom.raw.path`, so nothing decodes the path. A path whose OCI repository name is still longer than 255 bytes is refused with `400`. A raw path is unique without regard to case, since the OCI repository name is lowercase: the first spelling wins, and a path whose package path is taken by another spelling is a `409`. |
 | pypi | `EscapeComponent(lajstrom.name)`, the normalized name: `Requests` → `requests` |
 | deb | `EscapeComponent(package)`: `libstdc++6` → `libstdc_2b_2b6` |
-| maven | `EscapeComponent(groupId lowercased)/EscapeComponent(artifactId)`: `com.example:Lib-Core` → `com.example/lib-core` |
-| npm | `EscapeComponent(name)`; a scoped name `@scope/name` is two components without the `@`, `EscapeComponent(scope)/EscapeComponent(name)`: `lodash` → `lodash`, `@acme/widgets` → `acme/widgets`, `@types/node` → `types/node`, `JSONStream` → `jsonstream` (an old npmjs.org name; the case stays in `lajstrom.name`). An unscoped name has no `/`, so a path of one component is an unscoped package and one of two a scoped one |
+| maven | `PackagePath(EscapeComponent(groupId lowercased), EscapeComponent(artifactId))`: `com.example:Lib-Core` → `com.example/lib-core` |
+| npm | `EscapeComponent(name)`; a scoped name `@scope/name` is two components without the `@`, `PackagePath(EscapeComponent(scope), EscapeComponent(name))`: `lodash` → `lodash`, `@acme/widgets` → `acme/widgets`, `@types/node` → `types/node`, `JSONStream` → `jsonstream` (an old npmjs.org name; the case stays in `lajstrom.name`). An unscoped name has no `/`, so a path of one component is an unscoped package and one of two a scoped one |
 
 Examples: `art/apt/ubuntu-internal/nginx`, `art/pypi/internal/requests`,
 `art/maven/releases/com.example/lib-core`, `art/raw/assets/docs/readme.md`,
@@ -251,29 +252,40 @@ ambiguous (`a_` + `_b` vs `a` + `__b`). See ADR 0005.
    `Escape` writes `_` only before two hex digits and `h` is none, so a hashed component cannot
    collide with an escaped one;
 4. write each `-` of a run of two or more as `_2d`: `a--b` → `a_2d_2db`;
-5. if the result ends in `blobs`, `.uploads` or `.sync`, or is `index.json` or `oci-layout`,
-   write its last byte as `_` and two lowercase hex digits: `blobs` → `blob_73`,
-   `my.uploads` → `my.upload_73`, `x.sync` → `x.syn_63`, `index.json` → `index.jso_6e`.
+5. if the result ends in `blobs`, `.uploads` or `.sync`, or is `index.json`, `oci-layout`,
+   `manifests` or `referrers`, write its last byte as `_` and two lowercase hex digits:
+   `blobs` → `blob_73`, `my.uploads` → `my.upload_73`, `x.sync` → `x.syn_63`,
+   `index.json` → `index.jso_6e`, `manifests` → `manifest_73`, `referrers` → `referrer_73`.
+
+`PackagePath(components ...string) string` joins escaped components into a package path with
+`/`, and writes the last byte of a component `tags` that a component starting with `list`
+follows as `_73`: `x/tags/list` → `x/tag_73/list`, `x/tags/listing.txt` →
+`x/tag_73/listing.txt` (the amendment of ADR 0017 for Harbor's routes; revisited when Harbor
+fixes them). The first component follows the repo name, which `PackagePath` does not see: repo
+names that step 5 reserves, and `tags`, are refused at creation.
 
 The output matches the grammar of ADR 0017, `^[a-z0-9]+(?:[._-][a-z0-9]+)*$` (the distribution
-specification's 1.0 grammar, which Gitea and Forgejo check), and never ends in a word of steps 5,
-which Zot's storage keeps for itself. Steps 4 and 5 escape bytes that `Escape` copies, which
+specification's 1.0 grammar, which Gitea and Forgejo check), and is no word of step 5, which
+Zot's storage and Harbor's routes keep for themselves; a package path has no `tags` before a
+`list…`. Steps 4 and 5 and `PackagePath` escape bytes that `Escape` copies, which
 `Escape` never does, so the component of every name that keeps to the grammar is unchanged and
 the encoding stays injective but for case. Package names of the MVP formats are
 ASCII-restricted by their own specs, so step 3 is a safety net, not a normal path; a raw path
 meets it with a leading `.` or `_` (`.gitignore`, `_config.yml`).
 
-**Written in the new form, read in both.** Before ADR 0017, step 3 wrote `h0__` and steps 4
-and 5 did not exist. A package keeps the OCI repository it was first written to: a writer looks
-the package up in the index at its package path and at the path of that earlier form
-(`LegacyPackagePath`, `index.PackageAt`), and writes to the `name_oci` it finds; the new form is
-for a package the index does not have. Reindex, and validation on ingest (section 5), take either
-form as the package path of the annotations; a push to the earlier form is for a package the
-index has there only, and a push to the new form of a package the index has at the earlier one
-is a `409`.
+**Written in the newest form, read in all.** Before ADR 0017, step 3 wrote `h0__` and steps 4
+and 5 did not exist; before its amendment, step 5 had no `manifests` and `referrers` and
+`PackagePath` no `tags`. A package keeps the OCI repository it was first written to: a writer
+looks the package up in the index at its package path and at each earlier form of it
+(`EarlierPackagePaths`, `index.PackageAt`), and writes to the `name_oci` it finds; the newest
+form is for a package the index does not have. Reindex, and validation on ingest (section 5),
+take any form as the package path of the annotations; a push to an earlier form is for a package
+the index has there only, and a push to the newest form of a package the index has at an earlier
+one is a `409`.
 
-`Unescape` and `UnescapeComponent` (which decodes a component of either form to the same
-lower-cased name, and refuses a hashed one) are provided for tooling and tests; **no server code
+`Unescape`, `UnescapeComponent` (which decodes a component of any form to the same lower-cased
+name, and refuses a hashed one) and `UnescapePackagePath` (the same for a package path, with the
+mark of `tags`) are provided for tooling and tests; **no server code
 path depends on decoding a tag or a path**. Reindex reads `lajstrom.*` annotations.
 
 ## 5. Validation on ingest
