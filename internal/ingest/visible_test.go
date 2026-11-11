@@ -158,6 +158,8 @@ func TestNotVisibleNames(t *testing.T) {
 	if !strings.Contains(published.Error(), strings.Join(missing, ", ")) {
 		t.Errorf("error %q does not name %q", published, missing)
 	}
+	// One made outside the package, as a frontend's test fakes it, is the same 503.
+	wantNotVisible(t, &ingest.NotVisibleError{Name: "raw/scratch/tool", Digest: refs[0].Digest, Tag: "1.0.0"})
 }
 
 // blobsLost is a lagging registry that stops serving blobs once a manifest is pushed: the checks

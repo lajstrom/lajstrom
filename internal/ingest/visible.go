@@ -99,17 +99,20 @@ type NotVisibleError struct {
 	Blobs    []digest.Digest // the blobs not served, sorted
 	Subject  digest.Digest   // of a referrer: the subject whose referrers do not list it yet; "" when they do, or none
 	Waited   time.Duration   // how long the barrier read
-
-	unavailable *provider.UnavailableError
 }
 
 func (e *NotVisibleError) Error() string {
-	return fmt.Sprintf("ingest: %s@%s: %s", e.Name, e.Digest, e.unavailable)
+	return fmt.Sprintf("ingest: %s@%s: %s", e.Name, e.Digest, e.Unwrap())
 }
 
-// Unwrap returns the *provider.UnavailableError, so that errors.Is matches
-// provider.ErrUnavailable and provider.RetryAfter finds its 30 s.
-func (e *NotVisibleError) Unwrap() error { return e.unavailable }
+// Unwrap returns the *provider.UnavailableError of 30 s, made from the fields, so that
+// errors.Is matches provider.ErrUnavailable and provider.RetryAfter finds its 30 s, also for a
+// NotVisibleError made outside this package.
+func (e *NotVisibleError) Unwrap() error {
+	return &provider.UnavailableError{RetryAfter: visibilityRetryAfter,
+		Reason: fmt.Sprintf("the registry took the push and did not serve %s within %s; the same publish again completes it",
+			strings.Join(e.Missing(), ", "), e.Waited)}
+}
 
 // Missing names what the registry does not serve yet, in this order: "the manifest", "the tag
 // <tag>", "the blob <digest>" for each, "the referrers of <digest>".
@@ -146,9 +149,6 @@ func notVisible(w pushed, left map[readback]func(context.Context) (bool, error),
 		}
 	}
 	slices.Sort(e.Blobs)
-	e.unavailable = &provider.UnavailableError{RetryAfter: visibilityRetryAfter,
-		Reason: fmt.Sprintf("the registry took the push and did not serve %s within %s; the same publish again completes it",
-			strings.Join(e.Missing(), ", "), waited)}
 	return e
 }
 
