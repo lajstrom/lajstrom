@@ -1116,8 +1116,8 @@ status is `holds on strongly consistent registries only` do not hold there.
 - **Tests.** `TestConditionalDelete`, `TestConditionalDeletePointers` (the lock order),
   `TestConditionalDeleteRepublishRace`, `TestConditionalDeleteDistTagRace` (goroutines, `-race`),
   `TestDeleteVersionConditions`, `TestBatchDelete`, `TestAdminRetention`,
-  `TestManifestHookCreated`, `TestManifestHookCreatedRepeat`; `retention.sh`, and the push of a
-  manifest a year old in `oras.sh`.
+  `TestManifestHookCreated`, `TestManifestHookCreatedRepeat`; `retention.sh`, and O-03 in
+  `oras.sh` (a manifest created a year back).
 - **When violated.** A delete that removed a version re-published or dist-tagged after the read
   leaves the newer version's rows without a manifest, which reindex removes, or a dist-tag
   naming a version that is gone, which the packument leaves out; nothing reports it.
