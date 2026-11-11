@@ -15,6 +15,11 @@ that was not measured says *not measured*. distribution's and Zot's measurements
 of each registry, and [Keeping the matrix current](#keeping-the-matrix-current) says when it
 changes. A registry that is not here is not tested.
 
+How registries differ beyond these cells, the untested ones too (ECR, ACR, Google Artifact
+Registry, Docker Hub, Quay): their repository models and names, whether `a/b` and `a/b/c` can
+both be repositories, uploads, deletes, retention rules that read tags, and what each means for
+Lajstrom, from the vendors' documentation and a few measurements: [quirks.md](quirks.md).
+
 What the provider makes of a registry, `provider.Capabilities`, comes from its probe and from
 a vendor table for what the probe cannot measure ([configuration.md](../configuration.md#registry-capabilities));
 the last rows of [Capabilities](#capabilities) say what the probe found and what the
