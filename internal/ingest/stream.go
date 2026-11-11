@@ -32,9 +32,9 @@ import (
 //     besides sha256 and which inspector the bytes pass through;
 //  2. the OCI repository of the package is ensured and a provider.BlobWriter opened in it; Body
 //     is read once, to its end, into the writer, the hashes and the inspector, which is closed
-//     after it. An error of the body is returned as it is, so the 413 of format.LimitBody stays
-//     a 413; one of the inspector is Build's (ErrInvalid); a body that ends at another size
-//     than File.Size is ErrInvalid;
+//     after it, and also when the body fails. An error of the body is returned as it is, so the
+//     413 of format.LimitBody stays a 413; one of the inspector is Build's (ErrInvalid); a body
+//     that ends at another size than File.Size is ErrInvalid;
 //  3. Build gets the file without Open, with its size, checksums and inspector; its manifest
 //     must be at the package path of up.Name and have a file layer of the streamed digest and
 //     size;
@@ -150,9 +150,15 @@ func (s *streamed) read(repo index.Repo, up format.StreamUpload, in format.Inspe
 		ws = append(ws, h)
 	}
 	var insp *failing
+	closed := false
 	if in.Inspector != nil {
 		insp = &failing{w: in.Inspector}
 		ws = append(ws, insp)
+		defer func() {
+			if !closed { // the body failed: the inspector releases what it holds
+				_ = in.Inspector.Close()
+			}
+		}()
 	}
 	n, err := io.Copy(io.MultiWriter(ws...), up.Body)
 	switch {
@@ -166,6 +172,7 @@ func (s *streamed) read(repo index.Repo, up format.StreamUpload, in format.Inspe
 		return format.UploadedFile{}, fmt.Errorf("%w: the body has %d bytes, Content-Length says %d", ErrInvalid, n, up.File.Size)
 	}
 	if in.Inspector != nil {
+		closed = true
 		if err := in.Inspector.Close(); err != nil {
 			return format.UploadedFile{}, invalid(fmt.Errorf("the %s plugin's inspector: %w", repo.Format, err))
 		}
