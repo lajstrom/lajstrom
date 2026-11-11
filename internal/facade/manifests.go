@@ -148,6 +148,9 @@ func (h *handler) putManifest(w http.ResponseWriter, r *http.Request, t *target,
 	if err := h.authorize(ctx, auth.ActionWrite, t); err != nil {
 		return err
 	}
+	if err := h.checkName(ctx, t); err != nil { // an oci repo's push goes to the backend from here
+		return err
+	}
 	refDigest, err := parseReference(ref)
 	if err != nil {
 		return err

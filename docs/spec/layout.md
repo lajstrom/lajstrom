@@ -615,7 +615,7 @@ type Capabilities struct {
     MaxBlobSize int64                       // 0 = unknown
     MaxNameDepth int                        // components of a name below the instance prefix; 0 = no limit
 }
-// CheckName: nil, or an error naming the limit of c that the name breaks; callers answer 400.
+// CheckName: nil, or an error naming the limit of c that the name breaks; callers answer 4xx before a write.
 func (c Capabilities) CheckName(name string) error
 
 var ErrNotFound, ErrConflict, ErrUnsupported, ErrUnauthorized error

@@ -59,8 +59,8 @@ var (
 // not finished or cancelled.
 //
 // The Fail fields inject errors: when one is set, every call of that method returns it,
-// wrapped with the operation. Set them, and RedirectURL, NoBlobRedirect and NoDeleteManifest,
-// before the calls they should affect; they are not guarded for changes during calls. Use a
+// wrapped with the operation. Set them, and RedirectURL, NoBlobRedirect, NoDeleteManifest and
+// MaxNameDepth, before the calls they should affect; they are not guarded for changes during calls. Use a
 // Fake as a pointer; it is safe for concurrent use.
 type Fake struct {
 	// RegistryName is Name; empty means "fake".
@@ -76,6 +76,9 @@ type Fake struct {
 	// NoDeleteManifest makes the Fake a registry that cannot delete manifests: Capabilities
 	// reports DeleteManifest false and Delete of a manifest returns provider.ErrUnsupported.
 	NoDeleteManifest bool
+	// MaxNameDepth is the registry's capabilities.maxNameDepth, which Capabilities reports;
+	// the Fake itself takes a name of any depth.
+	MaxNameDepth int
 	// FailPush fails Push before it reads the content.
 	FailPush error
 	// FailUpload fails StartBlobUpload, the POST that opens an upload session, so that a blob
@@ -138,7 +141,7 @@ func (f *Fake) Name() string {
 func (f *Fake) Capabilities(context.Context) (provider.Capabilities, error) {
 	return provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true,
 		DeleteManifest: !f.NoDeleteManifest, BlobRedirect: f.RedirectURL != nil && !f.NoBlobRedirect,
-		Consistency: provider.ConsistencyStrong}, nil
+		Consistency: provider.ConsistencyStrong, MaxNameDepth: f.MaxNameDepth}, nil
 }
 
 // Repository returns the repository name; it exists once something is pushed to it.

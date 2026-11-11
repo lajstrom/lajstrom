@@ -62,37 +62,42 @@ func TestUploadMaxBlobSize(t *testing.T) {
 	}
 }
 
-// depthRegistry is the fake with a capabilities.maxNameDepth.
-type depthRegistry struct {
-	*providertest.Fake
-	depth int
-}
-
-func (r depthRegistry) Capabilities(ctx context.Context) (provider.Capabilities, error) {
-	c, err := r.Fake.Capabilities(ctx)
-	c.MaxNameDepth = r.depth
-	return c, err
-}
-
-// TestUploadNameDepth: a /v2 blob upload into a name deeper than the registry's maxNameDepth is
-// 400 NAME_INVALID naming the limit, a session, a monolithic upload and a mount alike, and opens
-// nothing in the registry; a name within it uploads (#599).
+// TestUploadNameDepth: a /v2 blob upload or manifest push into a name deeper than the
+// registry's maxNameDepth is 400 NAME_INVALID naming the limit, a session, a monolithic upload,
+// a mount and a manifest of a managed or an oci repo alike, and nothing reaches the registry; a
+// name within it uploads (#599).
 func TestUploadNameDepth(t *testing.T) {
-	e := newEnv(t, envOptions{registry: func(f *providertest.Fake) provider.Provider { return depthRegistry{Fake: f, depth: 4} }})
+	e := newEnv(t, envOptions{})
+	e.prov.MaxNameDepth = 4
 	b := []byte("a few bytes")
 	d := digest.FromBytes(b).String()
+	body, _ := manifest(t, []byte("layer"), "deep")
 	const deep = "/v2/raw/assets/ci/build/app.tar/blobs/uploads/"
-	for _, query := range []string{"", "?digest=" + d, "?mount=" + d + "&from=raw/assets/x"} {
-		msg := wantError(t, "POST "+deep+query, e.do(e.h, http.MethodPost, deep+query, bytes.NewReader(b)), http.StatusBadRequest, codeNameInvalid)
-		if want := "raw/assets/ci/build/app.tar has 5 components, and the registry takes at most 4 below its prefix"; !strings.Contains(msg, want) {
-			t.Errorf("POST %s: message %q does not contain %q", query, msg, want)
+	for _, req := range []struct{ method, target, name string }{
+		{http.MethodPost, deep, "raw/assets/ci/build/app.tar"},
+		{http.MethodPost, deep + "?digest=" + d, "raw/assets/ci/build/app.tar"},
+		{http.MethodPost, deep + "?mount=" + d + "&from=raw/assets/x", "raw/assets/ci/build/app.tar"},
+		{http.MethodPut, "/v2/raw/assets/ci/build/app.tar/manifests/1.0.0", "raw/assets/ci/build/app.tar"},
+		{http.MethodPut, "/v2/oci/images/team/app/x/manifests/v1", "oci/images/team/app/x"},
+	} {
+		in := bytes.NewReader(b)
+		if req.method == http.MethodPut {
+			in = bytes.NewReader(body)
+		}
+		msg := wantError(t, req.method+" "+req.target, e.do(e.h, req.method, req.target, in, "Content-Type", ocispecManifest),
+			http.StatusBadRequest, codeNameInvalid)
+		if want := req.name + " has 5 components, and the registry takes at most 4 below its prefix"; !strings.Contains(msg, want) {
+			t.Errorf("%s %s: message %q does not contain %q", req.method, req.target, msg, want)
 		}
 	}
-	if n := e.prov.OpenUploads(); n != 0 || len(e.prov.Pushes()) != 0 {
-		t.Errorf("%d backend sessions open and %d blobs pushed for a name the registry does not take", n, len(e.prov.Pushes()))
+	if n := e.prov.OpenUploads(); n != 0 || len(e.prov.Pushes()) != 0 || len(e.prov.PushReferences()) != 0 {
+		t.Errorf("%d backend sessions open, %d blobs and %d manifests pushed for a name the registry does not take", n,
+			len(e.prov.Pushes()), len(e.prov.PushReferences()))
 	}
 	wantStatus(t, "a name of 4 components", e.do(e.h, http.MethodPost, "/v2/raw/assets/ci/app.tar/blobs/uploads/?digest="+d,
 		bytes.NewReader(b)), http.StatusCreated)
+	wantStatus(t, "an oci name of 4 components", e.do(e.h, http.MethodPut, "/v2/oci/images/team/app/manifests/v1",
+		bytes.NewReader(body), "Content-Type", ocispecManifest), http.StatusCreated)
 }
 
 // TestUploadDefaultMaxFileSize: a repo whose policy sets no maxFileSize is bounded by its
