@@ -65,7 +65,7 @@ func TestIngest(t *testing.T) {
 			Digest: digest.FromString("hello"), Size: 5}}},
 		OCIRepos: []index.OCIRepo{{ID: got.OCIRepos[0].ID, RepoID: e.repo.ID, Path: "raw/scratch/docs/readme.md", SeenAt: now}},
 		Audit: []index.AuditEvent{{ID: got.Audit[0].ID, At: now, Principal: "user:alice", Action: "push", Repo: "raw/scratch",
-			Subject: readme + " 1.0.0", Digest: d}},
+			Subject: readme + " 1.0.0", Digest: d, State: index.AuditOK}},
 	}, got)
 	if _, err := e.st.GetIndexCache(ctx, e.repo.ID, cache.Scope, cache.Kind); !errors.Is(err, index.ErrNotFound) {
 		t.Errorf("index_cache of the repo after ingest: %v, want ErrNotFound", err)

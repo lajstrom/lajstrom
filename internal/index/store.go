@@ -239,10 +239,21 @@ type Writer interface {
 	// and returns how many it changed.
 	ExpireSessions(ctx context.Context, before time.Time) (int, error)
 
-	// AppendAudit inserts ev; At is set when zero, and PrincipalName, when empty and Principal is
-	// user:<uid>, to that user's name at the time (the name it had when deleted, for a deleted
-	// user). Audit rows are never changed.
+	// AppendAudit inserts ev; At is set when zero, State to AuditOK when empty, and
+	// PrincipalName, when empty and Principal is user:<uid>, to that user's name at the time (the
+	// name it had when deleted, for a deleted user). Audit rows are never deleted, and only
+	// CompleteAudit and ExpirePendingAudit change one: its state.
 	AppendAudit(ctx context.Context, ev *AuditEvent) error
+	// CompleteAudit stores State, Error and Details of ev in the row ev.ID, the pending row of a
+	// registry write (AuditOK or AuditFailed), and fills ev from the row. A row keeps the first
+	// 1024 bytes of Error, here and in AppendAudit. A row that is not
+	// pending or unknown, or none, is ErrNotFound: a result is recorded once, and a writer that
+	// went on after ExpirePendingAudit gave up on it still records its own.
+	CompleteAudit(ctx context.Context, ev *AuditEvent) error
+	// ExpirePendingAudit sets the state of the pending rows whose At is before before to
+	// AuditUnknown, and returns how many it changed (reindex and the reconcile loop, with
+	// ingest.claimTTL).
+	ExpirePendingAudit(ctx context.Context, before time.Time) (int, error)
 
 	// Coordination: tag claims, the lock on a tag that ingest takes before the registry write
 	// (docs/spec/index-schema.md, Coordination).

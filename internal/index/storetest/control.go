@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -759,5 +760,67 @@ func testAuditDefaultLimit(t *testing.T, s index.Store) {
 	must(t, err)
 	if len(got) != 100 || !got[0].At.Equal(at(100)) {
 		t.Errorf("ListAudit without a limit: %d events, the first at %v; want 100, the newest first", len(got), got[0].At)
+	}
+}
+
+// testAuditState: the row of a registry write, pending before it, is completed once, ok in the
+// transaction that indexes the write (and not when that transaction rolls back) or failed with
+// the error; ExpirePendingAudit turns the pending rows older than its bound unknown, and the
+// writer can still complete an unknown row. ListAudit filters by state.
+func testAuditState(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	pending := func(i int) index.AuditEvent {
+		ev := index.AuditEvent{At: at(i), Principal: "user:alice", Action: "push", Repo: "raw/scratch", Subject: "pkg 1." + strconv.Itoa(i),
+			Digest: dg("m" + strconv.Itoa(i)), State: index.AuditPending, Details: json.RawMessage(`{"requestId":"r"}`)}
+		must(t, s.AppendAudit(ctx, &ev))
+		return ev
+	}
+	plain := index.AuditEvent{At: at(0), Principal: "user:alice", Action: "repo.create", Repo: "raw/scratch"}
+	must(t, s.AppendAudit(ctx, &plain))
+	if plain.State != index.AuditOK {
+		t.Errorf("AppendAudit without a state: %q, want ok", plain.State)
+	}
+	ok, failed, rolled, stale, late := pending(1), pending(2), pending(3), pending(4), pending(5)
+
+	ok.State, ok.Details = index.AuditOK, json.RawMessage(`{"referrers":2,"requestId":"r"}`)
+	must(t, s.Tx(ctx, func(w index.Writer) error { return w.CompleteAudit(ctx, &ok) }))
+	failed.State, failed.Error = index.AuditFailed, "index: commit: the database is gone"
+	must(t, s.CompleteAudit(ctx, &failed))
+	rolled.State = index.AuditOK
+	boom := errors.New("boom")
+	if err := s.Tx(ctx, func(w index.Writer) error { must(t, w.CompleteAudit(ctx, &rolled)); return boom }); !errors.Is(err, boom) {
+		t.Fatalf("Tx = %v", err)
+	}
+	if again := ok; !errors.Is(s.CompleteAudit(ctx, &again), index.ErrNotFound) {
+		t.Error("CompleteAudit of a completed row: want ErrNotFound")
+	}
+	if missing := (index.AuditEvent{ID: 1 << 40, State: index.AuditOK}); !errors.Is(s.CompleteAudit(ctx, &missing), index.ErrNotFound) {
+		t.Error("CompleteAudit of no row: want ErrNotFound")
+	}
+
+	n, err := s.ExpirePendingAudit(ctx, at(5))
+	must(t, err)
+	if n != 2 {
+		t.Errorf("ExpirePendingAudit(at(5)) = %d, want 2: the rolled back and the stale row", n)
+	}
+	late.State = index.AuditOK
+	must(t, s.CompleteAudit(ctx, &late))
+	stale.State = index.AuditOK
+	must(t, s.CompleteAudit(ctx, &stale)) // a writer that went on after the sweep records its own
+	rolled.State = index.AuditUnknown
+
+	for _, tt := range []struct {
+		state string
+		want  []index.AuditEvent
+	}{
+		{"", []index.AuditEvent{late, stale, rolled, failed, ok, plain}},
+		{index.AuditOK, []index.AuditEvent{late, stale, ok, plain}},
+		{index.AuditFailed, []index.AuditEvent{failed}},
+		{index.AuditUnknown, []index.AuditEvent{rolled}},
+		{index.AuditPending, []index.AuditEvent{}},
+	} {
+		got, err := s.ListAudit(ctx, index.AuditFilter{State: tt.state})
+		must(t, err)
+		same(t, "ListAudit of state "+tt.state, tt.want, got)
 	}
 }

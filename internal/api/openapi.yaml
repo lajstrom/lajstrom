@@ -483,6 +483,10 @@ paths:
         - name: action
           in: query
           schema: {type: string}
+        - name: state
+          in: query
+          description: The outcome; only the row of a registry write is ever another than ok.
+          schema: {type: string, enum: [ok, pending, failed, unknown]}
         - name: since
           in: query
           description: Inclusive.
@@ -971,7 +975,7 @@ components:
         repoMask: {type: string}
     AuditEntry:
       type: object
-      required: [id, at, principal, action]
+      required: [id, at, principal, action, state]
       properties:
         id: {type: integer, format: int64}
         at: {type: string, format: date-time}
@@ -983,6 +987,8 @@ components:
         digest: {type: string}
         ip: {type: string}
         details: {type: object}
+        state: {type: string, enum: [ok, pending, failed, unknown]}
+        error: {type: string, description: Why a failed row failed.}
     AuditList:
       type: object
       required: [events]
