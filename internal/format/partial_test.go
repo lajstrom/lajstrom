@@ -32,7 +32,8 @@ func TestPartial(t *testing.T) {
 			t.Errorf("WriteError = %d %q, want %d %q", got, rr.Body, tt.status, tt.body)
 		}
 	}
-	if err := errors.New("boom"); format.Partial(err, nil) != err || format.Partial(nil, deleted) != nil {
+	var p *format.PartialError
+	if err := errors.New("boom"); errors.As(format.Partial(err, nil), &p) || !errors.Is(format.Partial(err, nil), err) || format.Partial(nil, deleted) != nil {
 		t.Error("Partial of nothing deleted, or of no error, is not the error itself")
 	}
 }
