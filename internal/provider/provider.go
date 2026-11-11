@@ -97,6 +97,36 @@ type Repository interface {
 	registry.TagLister       // Tags
 	registry.ReferrerLister  // Referrers; falls back to the tag schema without Capabilities.Referrers
 	BlobUploader             // the backend's blob upload session, for the facade (#24)
+	BlobStreamer             // a blob Lajstrom streams in itself, for the frontends (ADR 0014)
+}
+
+// BlobStreamer opens the blob of a frontend's upload, which goes to the registry while ingest
+// hashes and inspects it, and is kept only once every check passed (ADR 0014,
+// docs/adr/0014-uploads-stream-into-the-registry.md).
+type BlobStreamer interface {
+	// OpenBlobWriter returns a writer of one new blob of the repository. It may defer the
+	// session's POST to the first chunk, so that a blob that is cancelled before then costs the
+	// backend nothing. The writer's requests use ctx.
+	OpenBlobWriter(ctx context.Context) (BlobWriter, error)
+}
+
+// BlobWriter is one blob on its way into the backend through an upload session. Write sends
+// the bytes in chunks of the provider's size, each a PATCH with its Content-Range, and holds at
+// most one chunk in memory; nothing is stored until Commit closes the session with the digest
+// the caller computed (PUT ?digest=). Cancel drops the session and what it holds (DELETE).
+// Either ends the writer: a Write after them fails, Cancel after Commit and a second Cancel do
+// nothing. A Write or Commit that failed leaves the session to Cancel. Not safe for concurrent
+// use.
+type BlobWriter interface {
+	io.Writer
+	// Size is the number of bytes written.
+	Size() int64
+	// Commit sends what is buffered and closes the session with d, the digest of every byte
+	// written. A digest the backend refuses wraps oras-go's content.ErrMismatchedDigest.
+	Commit(ctx context.Context, d digest.Digest) (ocispec.Descriptor, error)
+	// Cancel ends the session and drops its bytes. A backend that cannot cancel
+	// (ErrUnsupported) leaves the session to expire; it stores nothing either way.
+	Cancel(ctx context.Context) error
 }
 
 // BlobUploader drives the backend's blob upload session (distribution spec: POST, PATCH,

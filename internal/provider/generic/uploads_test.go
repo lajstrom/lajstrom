@@ -391,3 +391,60 @@ func TestUploadTransportError(t *testing.T) {
 		t.Errorf("error %q carries the upload URL", err)
 	}
 }
+
+// TestOpenBlobWriter: a streamed blob of two chunks and a bit goes as chunks of streamChunk
+// bytes, each with its Content-Range, the rest as a PATCH of its own and an empty PUT with the
+// digest; one cancelled after a chunk is a DELETE, and leaves nothing.
+func TestOpenBlobWriter(t *testing.T) {
+	ctx := t.Context()
+	var seen []string
+	f, repo := uploadRepo(t, func(f *fakeRegistry) {
+		f.hook = func(_ http.ResponseWriter, r *http.Request) bool {
+			seen = append(seen, fmt.Sprintf("%s range=%q length=%d", r.Method, r.Header.Get("Content-Range"), r.ContentLength))
+			return false
+		}
+	})
+	blob := bytes.Repeat([]byte("0123456789abcdef"), (2*streamChunk+16)/16)
+	w, err := repo.OpenBlobWriter(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(w, bytes.NewReader(blob)); err != nil {
+		t.Fatal(err)
+	}
+	d := digest.FromBytes(blob)
+	if desc, err := w.Commit(ctx, d); err != nil || desc.Digest != d || desc.Size != int64(len(blob)) {
+		t.Fatalf("Commit = %+v, %v", desc, err)
+	}
+	f.mu.Lock()
+	stored := bytes.Equal(f.blobs["art/raw/scratch/notes"][d], blob)
+	f.mu.Unlock()
+	if !stored {
+		t.Error("the registry does not hold the blob")
+	}
+	if w, err = repo.OpenBlobWriter(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(blob[:streamChunk+1]); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Cancel(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		`POST range="" length=0`,
+		`PATCH range="0-8388607" length=8388608`,
+		`PATCH range="8388608-16777215" length=8388608`,
+		`PATCH range="16777216-16777231" length=16`,
+		`PUT range="" length=0`,
+		`POST range="" length=0`,
+		`PATCH range="0-8388607" length=8388608`,
+		`DELETE range="" length=0`,
+	}
+	if !slices.Equal(seen, want) {
+		t.Errorf("requests\n%q\nwant\n%q", seen, want)
+	}
+	if f.openUploads() != 0 {
+		t.Errorf("%d sessions open, want none", f.openUploads())
+	}
+}

@@ -84,6 +84,8 @@ type Fake struct {
 	FailExists error
 	// FailFetch fails Fetch.
 	FailFetch error
+	// ChunkSize is the chunk size of OpenBlobWriter; zero means DefaultChunkSize.
+	ChunkSize int
 
 	mu             sync.Mutex
 	repos          map[string]*repoData

@@ -213,3 +213,16 @@ func (r *repository) CancelBlobUpload(_ context.Context, u provider.Upload) erro
 	r.f.mu.Unlock()
 	return nil
 }
+
+// DefaultChunkSize is the chunk size of OpenBlobWriter when Fake.ChunkSize is zero.
+const DefaultChunkSize = 64 << 10
+
+// OpenBlobWriter is a provider.NewChunkedWriter over the Fake's sessions, with chunks of
+// Fake.ChunkSize bytes.
+func (r *repository) OpenBlobWriter(ctx context.Context) (provider.BlobWriter, error) {
+	size := r.f.ChunkSize
+	if size <= 0 {
+		size = DefaultChunkSize
+	}
+	return provider.NewChunkedWriter(ctx, r, size), nil
+}

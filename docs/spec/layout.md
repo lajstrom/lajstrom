@@ -511,6 +511,7 @@ type Repository interface {
     registry.TagLister                      // Tags
     registry.ReferrerLister                 // Referrers (tag-schema fallback without the API)
     BlobUploader                            // the backend's upload session, for the facade (#24)
+    BlobStreamer                            // a blob Lajstrom streams in itself, for the frontends (ADR 0014)
 }
 
 // BlobUploader drives the backend's blob upload session chunk by chunk; an Upload is opaque and
@@ -529,6 +530,24 @@ type Upload struct {                        // location as the backend answered 
     ID       string
     Offset   int64
 }
+
+// BlobStreamer opens the blob of a frontend's upload, kept only once every check passed (ADR 0014).
+type BlobStreamer interface {
+    OpenBlobWriter(ctx context.Context) (BlobWriter, error) // the session's POST may wait for the first chunk
+}
+// BlobWriter: Write sends chunks of the provider's size, each a PATCH with Content-Range, at most
+// one chunk in memory; nothing is stored before Commit (PUT ?digest=); Cancel is the DELETE.
+// Either ends it; a failed Write or Commit leaves the session to Cancel.
+type BlobWriter interface {
+    io.Writer
+    Size() int64
+    Commit(ctx context.Context, d digest.Digest) (ocispec.Descriptor, error) // content.ErrMismatchedDigest when refused
+    Cancel(ctx context.Context) error
+}
+// NewChunkedWriter is the BlobWriter of a BlobUploader, chunks of chunkSize bytes; the generic
+// provider's are 8 MiB.
+func NewChunkedWriter(ctx context.Context, u BlobUploader, chunkSize int) BlobWriter
+var ErrWriterClosed error                   // Write or Commit after Commit or Cancel
 
 // Pinger is optional: a Provider that has it is pinged by serve for /-/readyz (GET /v2/ with the
 // configured credentials); one without it counts as answering (#23).
@@ -1007,6 +1026,14 @@ Where the merged shapes differ from the first sketch of this section, and why:
 - **UploadedFile is re-openable via a request spool**: Build reads the file to parse and digest
   it, ingest reads it again to push it. The spool lives for one request and is never served
   from; artifact bytes live only in the registry.
+- **The provider chunks a streamed blob, not ingest.** `BlobWriter` sends chunks of known size
+  with `Content-Range`, which every registry measured takes after the first write (the
+  streamed `PATCH` is refused there by Gitea and JFrog). It holds one chunk in memory, 8 MiB in
+  the generic provider. That size is a choice, not a measurement: larger than the 5 MiB
+  smallest part of an S3 multipart upload, and 64 MiB for eight uploads at once. GHCR takes at
+  most 4 MiB a `PATCH` ([ghcr.md](../registries/ghcr.md)); it needs a vendor entry once the
+  frontends can publish there. A blob that fits one chunk is one monolithic `PUT`, and one
+  cancelled before its first chunk never opens a session.
 - **Scopes and Attrs are typed** (`Token.Scopes []string`, `Version.Attrs` and `File.Attrs`
   `map[string]string`); the store marshals them. **`Cache`, not `IndexCache`**, because
   `index.IndexCache` stutters.
