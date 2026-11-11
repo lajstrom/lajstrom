@@ -266,11 +266,13 @@ func (id identity) gitLabDatabase() bool {
 }
 
 // gitLabTokenService reports whether the registry's bearer challenge has GitLab's token service
-// for its realm, <GitLab>/jwt/auth, as GitLab.com's and every registry's behind a GitLab.
+// for its realm, <GitLab>/jwt/auth, as GitLab.com's and every registry's behind a GitLab: on any
+// host and port, below a relative URL root, with a trailing slash too, which Rails routes alike.
+// A proxy that rewrites the realm to another path hides it: capabilities.maxNameDepth says it.
 func (id identity) gitLabTokenService() bool {
 	scheme, realm := challengeParam(id.challenge, "realm")
 	u, err := url.Parse(realm)
-	return scheme == "bearer" && err == nil && strings.HasSuffix(u.Path, "/jwt/auth")
+	return scheme == "bearer" && err == nil && strings.HasSuffix(strings.TrimSuffix(u.Path, "/"), "/jwt/auth")
 }
 
 // isHost reports whether hostport, with or without a port, is the host name.

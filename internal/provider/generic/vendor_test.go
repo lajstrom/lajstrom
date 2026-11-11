@@ -106,6 +106,9 @@ func TestGitLabTokenService(t *testing.T) {
 	}{
 		{gitLabComChallenge, true},
 		{`Bearer realm="https://git.example/gitlab/jwt/auth",service="container_registry"`, true},
+		{`Bearer realm="https://git.example:8443/jwt/auth/",service="container_registry"`, true},
+		{`Bearer realm="https://git.example/jwt/auth?x=1"`, true},
+		{`Bearer realm="https://proxy.example/token"`, false}, // a proxy that rewrote the realm
 		{gitLabTestServerChallenge, false},
 		{`Basic realm="https://gitlab.com/jwt/auth"`, false},
 		{`Bearer realm="https://gitlab.com/jwt/authorize"`, false},
