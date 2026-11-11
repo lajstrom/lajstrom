@@ -332,7 +332,8 @@ func TestServeBlobErrors(t *testing.T) {
 }
 
 // TestServeBlobStreamErrors checks that a stream that breaks after the headers is the error
-// ServeBlob returns, a body shorter than its size too, and a client that went away none.
+// ServeBlob returns, a body shorter than its size too, and a client that went away none. The
+// last byte read is held back: the client gets 2 of the 3 bytes.
 func TestServeBlobStreamErrors(t *testing.T) {
 	f, d := newBlobFake(t, "content")
 	boom := errors.New("boom")
@@ -349,8 +350,8 @@ func TestServeBlobStreamErrors(t *testing.T) {
 			return provider.Blob{Body: tt.body, Size: 10, Digest: d}, nil // Status 0 is 200
 		}}
 		rr, err := serveBlob(t, broken, d, opts, http.MethodGet)
-		if !errors.Is(err, tt.want) || rr.Code != http.StatusOK || rr.Body.Len() != 3 || rr.Header().Get("Content-Length") != "10" {
-			t.Errorf("%s: %d with %d bytes, %v; want 200 with 3 bytes and %v", tt.name, rr.Code, rr.Body.Len(), err, tt.want)
+		if !errors.Is(err, tt.want) || rr.Code != http.StatusOK || rr.Body.Len() != 2 || rr.Header().Get("Content-Length") != "10" {
+			t.Errorf("%s: %d with %d bytes, %v; want 200 with 2 bytes and %v", tt.name, rr.Code, rr.Body.Len(), err, tt.want)
 		}
 	}
 

@@ -15,8 +15,11 @@ import (
 // comes from the response header that the request id middleware set.
 //
 // http.ErrAbortHandler is re-panicked: it is how a handler asks net/http to abort the response.
-// When the response has already started, the status cannot change any more; the connection is
-// aborted the same way, so the client sees a truncated response rather than a complete one.
+// An error that wraps it says why (format.ServeBlob's blob whose bytes are not its digest): it
+// is logged at Error, in place of the access line that an aborted request does not get, and
+// net/http gets http.ErrAbortHandler itself, which it does not log. When the response has
+// already started, the status cannot change any more; the connection is aborted the same way,
+// so the client sees a truncated response rather than a complete one.
 func (s *Server) recovery(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := &recorder{ResponseWriter: w}
@@ -26,7 +29,12 @@ func (s *Server) recovery(next http.Handler) http.Handler {
 				return
 			}
 			if err, ok := v.(error); ok && errors.Is(err, http.ErrAbortHandler) {
-				panic(v)
+				if v != any(http.ErrAbortHandler) {
+					s.log.ErrorContext(r.Context(), "response aborted", "error", err.Error(),
+						"requestId", w.Header().Get(requestIDHeader), "method", r.Method,
+						"path", auth.RedactSecrets(r.URL.Path), "status", rec.statusCode(), "bytes", rec.bytes)
+				}
+				panic(http.ErrAbortHandler)
 			}
 			id := w.Header().Get(requestIDHeader)
 			s.log.ErrorContext(r.Context(), "panic",

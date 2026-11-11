@@ -1,0 +1,146 @@
+package format_test
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/opencontainers/go-digest"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/metrics"
+	"github.com/lajstrom/lajstrom/internal/provider"
+	"github.com/lajstrom/lajstrom/internal/provider/providertest"
+)
+
+// TestServeBlobDigest serves blobs over real connections from a fake registry that answers
+// bytes other than the blob's: the client gets a short body and then an error, the connection
+// closed (HTTP/1, with Content-Length or chunked) or the stream reset (HTTP/2), never the whole
+// body; the abort is counted, by registry, and its panic says why. The right bytes go out
+// whole, and a range (206) is not hashed (docs/spec/guarantees.md, INV-40).
+func TestServeBlobDigest(t *testing.T) {
+	const size = 1 << 20
+	right := bytes.Repeat([]byte("lajstrom"), size/8)
+	wrong := bytes.Clone(right)
+	wrong[size-1] ^= 1 // the last byte only: all the others go out
+	d := digest.FromBytes(right)
+	tests := []struct {
+		name    string
+		body    []byte
+		size    int64  // the Size of the backend's answer; -1: unknown, and the answer is chunked
+		status  int    // the backend's status; 0 is 200
+		rng     string // the client's Range
+		http2   bool
+		aborted bool
+	}{
+		{name: "wrong bytes with Content-Length", body: wrong, size: size, aborted: true},
+		{name: "wrong bytes chunked", body: wrong, size: -1, aborted: true},
+		{name: "wrong bytes over HTTP/2", body: wrong, size: size, http2: true, aborted: true},
+		{name: "a small blob of wrong bytes", body: []byte("not the blob"), size: 12, aborted: true},
+		{name: "the right bytes", body: right, size: size},
+		{name: "the right bytes chunked", body: right, size: -1},
+		{name: "the right bytes over HTTP/2", body: right, size: size, http2: true},
+		{name: "a range is not hashed", body: wrong[size-10:], size: 10, status: http.StatusPartialContent, rng: "bytes=-10"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &blobProvider{Fake: &providertest.Fake{}, open: func(context.Context, string, digest.Digest, string, bool) (provider.Blob, error) {
+				return provider.Blob{Status: tt.status, Body: io.NopCloser(bytes.NewReader(tt.body)), Size: tt.size, Digest: d}, nil
+			}}
+			mismatches := func() float64 { return testutil.ToFloat64(metrics.DownloadDigestMismatches.WithLabelValues("fake")) }
+			before := mismatches()
+			srv, aborts := blobServer(t, p, d, tt.http2)
+			proto, got, err := download(t, srv, tt.rng)
+			if tt.http2 && proto != 0 && proto != 2 {
+				t.Errorf("protocol HTTP/%d, want HTTP/2", proto)
+			}
+			if !tt.aborted {
+				if err != nil || !bytes.Equal(got, tt.body) || mismatches() != before {
+					t.Errorf("got %d bytes, %v, %v more mismatches; want the %d bytes whole", len(got), err, mismatches()-before, len(tt.body))
+				}
+				return
+			}
+			if err == nil || len(got) >= len(tt.body) {
+				t.Errorf("got %d bytes of %d, %v; want a short body and an error", len(got), len(tt.body), err)
+			}
+			if len(tt.body) == size && (proto == 0 || len(got) == 0) {
+				t.Errorf("the response did not start (%v): want a short body before the reset", err)
+			}
+			wantAbort(t, aborts)
+			if n := mismatches() - before; n != 1 {
+				t.Errorf("%v more mismatches, want 1", n)
+			}
+		})
+	}
+}
+
+// download sends GET with the Range rng ("" for none) to srv and returns the major version of
+// the response's protocol (0 when no response came), the body it got and the error that ended
+// it, nil for a whole body.
+func download(t *testing.T, srv *httptest.Server, rng string) (int, []byte, error) {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/raw/scratch/tool", nil)
+	if rng != "" {
+		req.Header.Set("Range", rng)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	return resp.ProtoMajor, body, err
+}
+
+// blobServer serves ServeBlob of the blob d from p over HTTP/1, or HTTP/2 over TLS. A panic of
+// the handler goes on to aborts and, as the server's recovery does, on to net/http as
+// http.ErrAbortHandler.
+func blobServer(t *testing.T, p provider.Provider, d digest.Digest, http2 bool) (*httptest.Server, chan any) {
+	t.Helper()
+	aborts := make(chan any, 1)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if v := recover(); v != nil {
+				select {
+				case aborts <- v:
+				default:
+				}
+				panic(http.ErrAbortHandler)
+			}
+		}()
+		if err := format.ServeBlob(w, r, p, blobName, d, format.ServeBlobOptions{ContentType: "application/octet-stream"}); err != nil {
+			t.Errorf("ServeBlob returned %v", err)
+		}
+	}))
+	srv.EnableHTTP2 = http2
+	if http2 {
+		srv.StartTLS()
+	} else {
+		srv.Start()
+	}
+	t.Cleanup(srv.Close)
+	return srv, aborts
+}
+
+// wantAbort fails t unless ServeBlob panicked with an error that wraps http.ErrAbortHandler
+// and says that the bytes do not have the digest.
+func wantAbort(t *testing.T, aborts chan any) {
+	t.Helper()
+	select {
+	case v := <-aborts:
+		err, _ := v.(error)
+		if !errors.Is(err, http.ErrAbortHandler) || !strings.Contains(fmt.Sprint(v), "do not have the digest") {
+			t.Errorf("ServeBlob panicked with %v, want the mismatch wrapping http.ErrAbortHandler", v)
+		}
+	case <-time.After(10 * time.Second):
+		t.Error("ServeBlob did not abort")
+	}
+}

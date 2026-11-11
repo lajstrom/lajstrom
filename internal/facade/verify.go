@@ -35,7 +35,8 @@ var errUnchecked = errors.New("facade: the registry holds bytes of this upload t
 // back until the body ends: it is released, and then the end, only when the hash h of the whole
 // blob is want. Otherwise the reader fails with errNotDigest one byte short, and the backend's
 // request breaks off short of its length, or of its chunked end, which no registry takes as a
-// blob. Nothing is buffered but that byte.
+// blob. Nothing is buffered but that byte. A manifest the facade serves passes one too, on
+// its way to the client (streamManifest).
 type verifier struct {
 	r       io.Reader
 	h       hash.Hash // the hash of the blob's bytes before r, and of r's as they are read

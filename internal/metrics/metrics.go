@@ -89,6 +89,11 @@ var (
 	Throttled = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "lajstrom_auth_throttled_total", Help: "Requests refused 429 by a throttle of internal/auth, by throttle.",
 	}, []string{"throttle"})
+	// DownloadDigestMismatches counts the downloads aborted because the bytes the registry sent
+	// do not have their digest (docs/spec/guarantees.md, INV-40), by registry name.
+	DownloadDigestMismatches = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "lajstrom_download_digest_mismatches_total", Help: "Downloads aborted because the registry's bytes did not have their digest, by registry.",
+	}, []string{"registry"})
 	// buildInfo is 1 with the build in its labels.
 	buildInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "lajstrom_build_info", Help: "Always 1; the labels say which build runs.",
@@ -97,7 +102,7 @@ var (
 
 func init() {
 	registry.MustRegister(HTTPDuration, HTTPRequestSize, HTTPResponseSize, ProviderDuration, ProviderCircuitOpen, DBDuration, Ingest,
-		ProxyUpstreamDuration, ProxyDocuments, ProxyFetches, Throttled, buildInfo,
+		ProxyUpstreamDuration, ProxyDocuments, ProxyFetches, Throttled, DownloadDigestMismatches, buildInfo,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 }
 

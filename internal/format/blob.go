@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io"
 	"mime"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/opencontainers/go-digest"
 
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -57,12 +59,16 @@ type ServeBlobOptions struct {
 //     A redirect is 307 with Location and Docker-Content-Digest. A body is answered with the
 //     backend's status (200, 206 or 416), Content-Length, Content-Range and Accept-Ranges,
 //     and Content-Type, ETag, Last-Modified, Docker-Content-Digest and Content-Disposition
-//     from opts, and streamed.
+//     from opts, and streamed. A whole blob (200) is hashed as it streams, its last byte held
+//     back until the hash is known.
 //
 // An error before the response started, the provider's among them (provider.ErrNotFound is
 // 404), is answered through opts.Fail. The error ServeBlob returns is a stream that broke
 // after the headers went out, which the caller logs: the client got a short body. A stream
 // that stops because the client went away (the request's context is done) is not an error.
+// A whole blob whose bytes do not have the digest d is not returned either: ServeBlob aborts
+// the response with a panic that wraps http.ErrAbortHandler, which the caller lets through to
+// net/http (docs/spec/guarantees.md, INV-40).
 func ServeBlob(w http.ResponseWriter, r *http.Request, prov provider.Provider, name string, d digest.Digest, opts ServeBlobOptions) error {
 	a := &blobAnswer{w: w, r: r, prov: prov, name: name, d: d, opts: opts, fail: opts.Fail}
 	if a.fail == nil {
@@ -147,16 +153,82 @@ func (a *blobAnswer) get() error {
 }
 
 // copy streams the body of b to the client. A short body is an error too, unless the client
-// went away.
+// went away. A whole blob (200) is hashed as it streams, and its last byte is held back until
+// the body has ended: it goes out when the bytes have the digest d, and otherwise the response
+// is aborted, so that no client gets all of a blob whose bytes are not its digest
+// (docs/spec/guarantees.md, INV-40). A range (206) is not the whole blob and is not hashed.
 func (a *blobAnswer) copy(b provider.Blob) error {
-	n, err := io.Copy(a.w, b.Body)
+	var dst io.Writer = a.w
+	var dw *digestWriter
+	if cmp.Or(b.Status, http.StatusOK) == http.StatusOK && a.d.Validate() == nil {
+		dw = &digestWriter{w: a.w, h: a.d.Algorithm().Hash()}
+		dst = dw
+	}
+	n, err := io.Copy(dst, b.Body)
 	if err == nil && b.Size >= 0 && n < b.Size {
 		err = io.ErrUnexpectedEOF
+	}
+	if err == nil && dw != nil {
+		if digest.NewDigest(a.d.Algorithm(), dw.h) != a.d {
+			a.abort(n)
+		}
+		err = dw.release()
 	}
 	if err != nil && a.r.Context().Err() == nil {
 		return fmt.Errorf("format: blob %s@%s: the stream failed after %d bytes: %w", a.name, a.d, n, err)
 	}
 	return nil
+}
+
+// abort ends the answer of a blob whose n bytes from the registry do not have its digest:
+// counted in lajstrom_download_digest_mismatches_total, then a panic of an error that wraps
+// http.ErrAbortHandler, which net/http answers by closing the connection (HTTP/1: without the
+// rest of the body, or the last chunk) or resetting the stream (HTTP/2), never by ending the
+// body. The server's recovery logs the error.
+func (a *blobAnswer) abort(n int64) {
+	metrics.DownloadDigestMismatches.WithLabelValues(a.prov.Name()).Inc()
+	panic(fmt.Errorf("format: blob %s@%s: the %d bytes from registry %s do not have the digest, the response is aborted: %w",
+		a.name, a.d, n, a.prov.Name(), http.ErrAbortHandler))
+}
+
+// digestWriter passes the bytes of a blob on to w and hashes them, and holds the last byte of
+// each write back until the next write or release: the last byte of a blob goes out only once
+// its hash is known. Nothing is buffered but that byte.
+type digestWriter struct {
+	w       io.Writer
+	h       hash.Hash
+	held    [1]byte
+	holding bool
+}
+
+func (dw *digestWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	_, _ = dw.h.Write(p) // a hash.Hash never fails
+	if dw.holding {
+		if _, err := dw.w.Write(dw.held[:]); err != nil {
+			return 0, err
+		}
+	}
+	last := len(p) - 1
+	if last > 0 {
+		if _, err := dw.w.Write(p[:last]); err != nil {
+			return 0, err
+		}
+	}
+	dw.held[0], dw.holding = p[last], true
+	return len(p), nil
+}
+
+// release writes the byte held back, if there is one.
+func (dw *digestWriter) release() error {
+	if !dw.holding {
+		return nil
+	}
+	dw.holding = false
+	_, err := dw.w.Write(dw.held[:])
+	return err
 }
 
 // setBlobHeaders sets the headers of a blob answer, a HEAD's or a GET's (200, 206, 416):
