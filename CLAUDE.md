@@ -23,7 +23,8 @@ a single blob. Go, single binary, SQLite or Postgres as a derived index.
   rebuildable from manifest annotations by `lajstrom reindex`. If a feature needs per-version
   data, put it in the manifest (annotation or metadata layer), not only in the DB.
 - One write path: every publish goes through `internal/ingest`. Frontends never push manifests
-  themselves.
+  themselves; `make lint` refuses a provider write or oras-go in `internal/format` (forbidigo,
+  depguard `one-write-path`).
 - Tags are immutable and append-only: never re-point a tag; collision with another digest is 409.
 - No client plugins: protocols are emulated on the server.
 - Only `internal/index/*` talks to the database. Only `internal/provider/*` talks to the registry.
