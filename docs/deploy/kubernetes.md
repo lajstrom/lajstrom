@@ -19,7 +19,8 @@ the container as environment variables (`envFrom`).
 
 - **Postgres**, reachable from the pods, with a database that Lajstrom's user owns (`serve` and
   `migrate` create and alter its tables): a managed one (RDS, Cloud SQL, Azure Database), an
-  operator's (CloudNativePG, Zalando), or one you run. The manifests do not ship one. Every replica shares it; SQLite does not work with more than
+  operator's (CloudNativePG, Zalando), or one you run, straight or behind a pooler
+  ([databases.md](databases.md)). The manifests do not ship one. Every replica shares it; SQLite does not work with more than
   one replica, and these manifests have no volume for it. The Postgres that Lajstrom is tested
   against is 17.11 ([dev-stack.md](../dev-stack.md)).
 - **A registry** for the bytes, with a user that may push, pull and delete under a prefix
