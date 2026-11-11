@@ -19,6 +19,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
+	"github.com/lajstrom/lajstrom/internal/format/formattest"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/provider/providertest"
@@ -124,6 +125,26 @@ func TestPutRefusedStoresNothing(t *testing.T) {
 			t.Errorf("%d manifests pushed, %d sessions open; want 1 and none", n, open)
 		}
 	})
+}
+
+// TestPutStalled: a client that stops sending part way, whose body server.stallTimeout cuts, is
+// 408 with a message that names neither connection, not a 500 at ERROR (#576); nothing is
+// stored. With its length and without.
+func TestPutStalled(t *testing.T) {
+	body := strings.Repeat("a file whose client stops sending part way. ", 8)
+	for _, length := range []int64{int64(len(body)), -1} {
+		e := newEnv(t, envOptions{})
+		e.prov.ChunkSize = 64
+		req := httptest.NewRequest(http.MethodPut, target("big/refused.txt"), formattest.Stalled(strings.NewReader(body[:200])))
+		req.ContentLength = length
+		rr := httptest.NewRecorder()
+		e.h.ServeHTTP(rr, req)
+		formattest.CheckStalled(t, rr)
+		if logs := e.logs.String(); strings.Contains(logs, "level=ERROR") {
+			t.Errorf("Content-Length %d: logged %s", length, logs)
+		}
+		e.nothingStored(t, body, 0)
+	}
 }
 
 // nothingStored fails the test when the registry holds content as a blob of big/refused.txt,

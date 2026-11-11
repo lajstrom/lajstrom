@@ -3,6 +3,7 @@ package format
 import (
 	"errors"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -16,8 +17,8 @@ import (
 const basicChallenge = `Basic realm="lajstrom"`
 
 // WriteError answers err with the status its sentinel maps to and a text/plain body (with
-// X-Content-Type-Options: nosniff) and returns the status. 4xx bodies are err.Error()+"\n";
-// 5xx bodies are http.StatusText(status)+"\n" (the cause is for the log, not the client), with
+// X-Content-Type-Options: nosniff) and returns the status. 4xx bodies are err.Error()+"\n", but
+// for the fixed message of a 408; 5xx bodies are http.StatusText(status)+"\n" (the cause is for the log, not the client), with
 // what a *PartialError deleted before it failed (ClientMessage).
 // A 401 carries WWW-Authenticate: Basic realm="lajstrom", a 405 Allow: GET, HEAD, a 503 of
 // provider.ErrUnavailable, of index.ErrUnavailable or of an *UnavailableError Retry-After
@@ -40,13 +41,20 @@ func WriteError(w http.ResponseWriter, err error) int {
 // fails over takes seconds.
 const indexRetryAfter = 5 * time.Second
 
-// ClientMessage is the message an error answer gives the client: err.Error() for a 4xx, the
-// status text for a 5xx, whose cause is for the log, followed for a 5xx by what a
-// *PartialError in err deleted before it failed, so that a client learns it whatever the
-// status (docs/spec/guarantees.md, INV-13).
+// stalledMessage is the message of a 408: the cause names the connection's addresses, and the
+// registry's URL when the body streamed into it.
+const stalledMessage = "the request body stopped: no byte came within the server's stall timeout"
+
+// ClientMessage is the message an error answer gives the client: err.Error() for a 4xx but a
+// 408, stalledMessage for a 408, the status text for a 5xx, whose cause is for the log,
+// followed for a 5xx by what a *PartialError in err deleted before it failed, so that a client
+// learns it whatever the status (docs/spec/guarantees.md, INV-13).
 func ClientMessage(err error) string {
 	status := StatusOf(err)
-	if status < http.StatusInternalServerError {
+	switch {
+	case status == http.StatusRequestTimeout:
+		return stalledMessage
+	case status < http.StatusInternalServerError:
 		return err.Error()
 	}
 	msg := http.StatusText(status)
@@ -114,6 +122,9 @@ func SetRetryAfter(h http.Header, err error) {
 // frontends; a plugin wraps these sentinels with %w and does not choose statuses itself.
 // The checks run in this order, with errors.Is and errors.As:
 //
+//	os.ErrDeadlineExceeded                     408 Request Timeout, with a fixed message: the client
+//	                                             sent no byte of the body within server.stallTimeout
+//	                                             (stalled), also where a plugin made it ErrInvalid
 //	ErrInvalid                                 400 Bad Request
 //	ErrUnauthenticated                         401 Unauthorized
 //	ErrForbidden                               403 Forbidden
@@ -148,6 +159,8 @@ func StatusOf(err error) int {
 func clientStatus(err error) (int, bool) {
 	var tooLarge *http.MaxBytesError
 	switch {
+	case stalled(err):
+		return http.StatusRequestTimeout, true
 	case errors.Is(err, ErrInvalid):
 		return http.StatusBadRequest, true
 	case errors.Is(err, ErrUnauthenticated):
@@ -166,6 +179,15 @@ func clientStatus(err error) (int, bool) {
 		return http.StatusRequestEntityTooLarge, true
 	}
 	return 0, false
+}
+
+// stalled reports whether err comes from a read of the request body that server.stallTimeout
+// cut: the read deadline of the client's connection passed (internal/server, stall), which is
+// the client's doing (RFC 9110 §15.5.9). Lajstrom sets a deadline on no other connection, so
+// os.ErrDeadlineExceeded is always the client's: a write deadline of the same bound is a client
+// that stopped reading the answer.
+func stalled(err error) bool {
+	return errors.Is(err, os.ErrDeadlineExceeded)
 }
 
 // serverStatus returns the 5xx of the table of StatusOf that err has, in its order, 500 when
