@@ -1130,7 +1130,8 @@ lajstrom reindex --repo raw/assets --attach raw-assets.txt        # a registry w
 ```
 
 The output is one line of counts per repo (manifests, added, updated, unchanged, removed,
-pending, degraded, referrers, foreign, orphan referrers, drift, split, errors); `--report` adds the lists, at most
+pending, degraded, referrers, foreign, orphan referrers, drift, split, versions of OCI repositories the registry does
+not know, errors); `--report` adds the lists, at most
 1 000 entries each, and `--json` prints the whole report. The exit status is not zero when the
 run itself failed (the database or the context) or another run holds the lock; manifests that
 could not be read or checked are errors in the report and do not change it. `--concurrency`
@@ -1192,9 +1193,14 @@ stays listed for one to two hours with the defaults, its downloads `404`, and th
 it as `pending`. Any other answer keeps it too, as an error of the report (`look up the manifest
 before removing its rows`). To remove a version at once, delete it through Lajstrom's API, which
 deletes the rows in the same request. For a whole OCI repository deleted in the registry, Zot
-answers `NAME_UNKNOWN`: its rows stay and every run reports them, so delete them through the
-API. distribution answers `MANIFEST_UNKNOWN` there, and its rows go as above (both measured by
-`TestIntegration` of `internal/provider/generic`).
+answers `NAME_UNKNOWN` to its manifests and to its tag list: its rows stay, and every run lists
+each of its versions under `repositoryUnknown` (the `NOREPO` column; a `--report` line `repository
+unknown <path>:<tag> <digest>, delete with: DELETE /api/v1/repos/…`) and warns once per
+repository. Prune never removes them, by the rule above: a repository that comes back, restored
+from a backup or replicated late, would have lost its versions. Send the `DELETE` each line
+names, or restore the repository. distribution answers `MANIFEST_UNKNOWN` there, and its rows go
+as above, counted as `pending` first (both measured by `TestIntegration` of
+`internal/provider/generic` and `TestIntegrationRepositoryUnknown`).
 
 Set `reconcile.graceAge` ([configuration](configuration.md#reconcile)) to more than the
 registry's lag at the endpoint Lajstrom reads: the default `1h` when it reads the endpoint it

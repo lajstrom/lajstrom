@@ -1,15 +1,19 @@
 package reindex_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/opencontainers/go-digest"
 
+	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/reindex"
 	"github.com/lajstrom/lajstrom/internal/provider"
@@ -122,7 +126,8 @@ func TestPrune(t *testing.T) {
 				e.clock.later(s.at - ahead)
 				ahead, answer = s.at, s.answer
 				r := e.run(t, reindex.Request{Prune: true})
-				if r.Removed != s.removed || r.Pending != s.pending || len(r.Errors) != s.errors || r.Unchanged != 1 {
+				if r.Removed != s.removed || r.Pending != s.pending || len(r.Errors) != s.errors || r.Unchanged != 1 ||
+					len(r.RepositoryUnknown) != 0 { // the repository's tag list answers: NAME_UNKNOWN alone does not make it unknown
 					t.Errorf("step %d, %s after the publish: %+v; want removed %d, pending %d, errors %d", i+1, s.at,
 						*r, s.removed, s.pending, s.errors)
 				}
@@ -132,6 +137,63 @@ func TestPrune(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRepositoryUnknown is #567: the versions of an OCI repository deleted in the registry
+// (Zot answers NAME_UNKNOWN to its manifests and its tag list, as the fake does) are not
+// removed by prune, past the grace age and on every run, and not reported as errors either: each
+// is listed in RepositoryUnknown with the request of the API that deletes it, and the run logs
+// one warning for the repository. Deleted through ingest, as that request does, they are gone,
+// and so is the report.
+func TestRepositoryUnknown(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t)
+	var logs bytes.Buffer
+	e.w = reindex.New(reindex.Options{Index: e.st, Providers: e.providers, Inspector: e.inspect,
+		Log: slog.New(slog.NewTextHandler(&logs, nil)), Now: e.clock.now})
+	one, two := e.publish(t, "docs/gone.txt", "one"), e.publish(t, "docs/gone.txt", "two")
+	e.publish(t, "docs/kept.txt", "kept")
+	must(t, e.fake.DeleteRepository(ctx, one.RepoPath))
+	want := []reindex.RepositoryUnknown{}
+	for _, p := range []*format.Published{one, two} {
+		want = append(want, reindex.RepositoryUnknown{Repository: "docs/gone.txt", Package: "docs/gone.txt", Version: p.Entry.Version,
+			Tag: p.Tag, Digest: p.Digest, Delete: "DELETE /api/v1/repos/raw/scratch/packages/docs%2Fgone.txt/versions/" + p.Entry.Version})
+	}
+	byTag := func(a, b reindex.RepositoryUnknown) int { return strings.Compare(a.Tag, b.Tag) }
+	slices.SortFunc(want, byTag)
+
+	if r := e.run(t, reindex.Request{}); len(r.RepositoryUnknown) != 0 || len(r.Errors) != 0 {
+		t.Errorf("a run without prune, which looks up nothing it did not see: %+v", *r)
+	}
+	for _, later := range []time.Duration{2 * time.Hour, time.Hour} {
+		e.clock.later(later)
+		logs.Reset()
+		r := e.run(t, reindex.Request{Prune: true})
+		if r.Removed != 0 || r.Pending != 0 || len(r.Errors) != 0 || r.Unchanged != 1 {
+			t.Errorf("a run %s later: %+v; want the versions kept, neither pending nor errors", later, *r)
+		}
+		got := slices.SortedFunc(slices.Values(r.RepositoryUnknown), byTag)
+		same(t, "the versions of the repository the registry does not know", want, got)
+		if n := strings.Count(logs.String(), "the registry does not know the OCI repository"); n != 1 ||
+			!strings.Contains(logs.String(), "versions=2") {
+			t.Errorf("logged %d warnings, want one for the repository with its 2 versions:\n%s", n, logs.String())
+		}
+	}
+	if _, err := e.st.GetPackage(ctx, e.repo.ID, "docs/gone.txt"); err != nil {
+		t.Fatalf("the package after the runs: %v, want it kept", err)
+	}
+
+	for _, p := range []*format.Published{one, two} {
+		_, err := e.pipe.Delete(ctx, e.repo, format.Deletion{Path: "docs/gone.txt", Reference: p.Digest.String(),
+			Condition: &format.Condition{Version: p.Entry.Version}}, alice) // as the API's DELETE of the version does
+		must(t, err)
+	}
+	if r := e.run(t, reindex.Request{Prune: true}); len(r.RepositoryUnknown) != 0 || len(r.Errors) != 0 || r.Unchanged != 1 {
+		t.Errorf("the run after the deletes: %+v", *r)
+	}
+	if _, err := e.st.GetPackage(ctx, e.repo.ID, "docs/gone.txt"); !errors.Is(err, index.ErrNotFound) {
+		t.Errorf("the package after the deletes: %v, want ErrNotFound", err)
 	}
 }
 

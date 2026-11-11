@@ -83,11 +83,35 @@ func TestWriteReportSplit(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(out.String(), "\n")
-	if fields := strings.Fields(lines[1]); !strings.Contains(lines[0], "DRIFT  SPLIT  ERRORS") || len(fields) != 14 || fields[12] != "1" {
+	if fields := strings.Fields(lines[1]); !strings.Contains(lines[0], "DRIFT  SPLIT  NOREPO  ERRORS") || len(fields) != 15 || fields[12] != "1" {
 		t.Errorf("the table: %q", lines[:2])
 	}
 	want := "raw/assets: split netlify/blobs indexed at netlify/blob_73 [3fc4ccfe745870e2], not at netlify/blobs " +
 		"[7692c3ad3540bb80 9a0364b9e99bb480]"
+	if lines[2] != want {
+		t.Errorf("the list: %q, want %q", lines[2], want)
+	}
+}
+
+// TestWriteReportRepositoryUnknown checks the CLI's table and --report line of a version whose
+// OCI repository the registry does not know (#567): the NOREPO column, and the request of the
+// API that deletes it.
+func TestWriteReportRepositoryUnknown(t *testing.T) {
+	rep := &reindex.Report{Repos: []reindex.RepoReport{{Repo: "raw/assets", RepositoryUnknown: []reindex.RepositoryUnknown{{
+		Repository: "docs/gone.txt", Package: "docs/gone.txt", Version: "0123456789abcdef", Tag: "0123456789abcdef",
+		Digest: "sha256:4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce",
+		Delete: "DELETE /api/v1/repos/raw/assets/packages/docs%2Fgone.txt/versions/0123456789abcdef"}}}}}
+	var out strings.Builder
+	if err := writeReport(&out, rep, true); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(out.String(), "\n")
+	if fields := strings.Fields(lines[1]); len(fields) != 15 || fields[13] != "1" || fields[14] != "0" {
+		t.Errorf("the table: %q", lines[:2])
+	}
+	want := "raw/assets: repository unknown docs/gone.txt:0123456789abcdef " +
+		"sha256:4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce, delete with: " +
+		"DELETE /api/v1/repos/raw/assets/packages/docs%2Fgone.txt/versions/0123456789abcdef"
 	if lines[2] != want {
 		t.Errorf("the list: %q, want %q", lines[2], want)
 	}

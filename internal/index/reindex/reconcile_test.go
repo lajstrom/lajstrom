@@ -43,7 +43,8 @@ func TestReconcile(t *testing.T) {
 	pushRaw(t, l.fake, l.repo, "pushed.txt", "past Lajstrom")
 	l.tick(t)
 	l.wantPackage(t, "pushed.txt")
-	if ev := l.audit(t, SourceReconcile); len(ev) != 1 || ev[0].Repo != "raw/scratch" || !strings.Contains(string(ev[0].Details), `"added":1`) {
+	if ev := l.audit(t, SourceReconcile); len(ev) != 1 || ev[0].Repo != "raw/scratch" || !strings.Contains(string(ev[0].Details), `"added":1`) ||
+		!strings.Contains(string(ev[0].Details), `"repositoryUnknown":0`) {
 		t.Errorf("I-03: the reconcile events: %+v", ev)
 	}
 	if ev := l.audit(t, "repo.reindex"); len(ev) != 0 {

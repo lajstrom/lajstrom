@@ -32,9 +32,12 @@ type RepoReport struct {
 	Drift         []Drift   `json:"drift"`
 	// Split are the packages found at two forms of their OCI name (ADR 0017), one entry per
 	// other form: the versions there are not indexed (#609).
-	Split     []Split   `json:"split"`
-	Errors    []Finding `json:"errors"`
-	Truncated bool      `json:"truncated"` // a list stopped at maxFindings entries
+	Split []Split `json:"split"`
+	// RepositoryUnknown are the versions of the index whose OCI repository the registry does
+	// not know: prune keeps their rows, and a delete through the API removes them (#567).
+	RepositoryUnknown []RepositoryUnknown `json:"repositoryUnknown"`
+	Errors            []Finding           `json:"errors"`
+	Truncated         bool                `json:"truncated"` // a list stopped at maxFindings entries
 }
 
 // Finding is a manifest, or a failure, that a RepoReport lists.
@@ -69,6 +72,25 @@ type Split struct {
 	OtherTags   []string `json:"otherTags"`   // the tags of the profile manifests there, not indexed
 }
 
+// RepositoryUnknown is a version of the index whose OCI repository the registry does not know:
+// its tag does not resolve, the manifest by its digest is a 404 without MANIFEST_UNKNOWN (Zot's
+// NAME_UNKNOWN), and the repository's tag list is a 404 too, as after a delete of the repository
+// in the registry's console. Prune counts only MANIFEST_UNKNOWN (docs/spec/guarantees.md,
+// INV-5), so the row stays, on every run, until it is deleted through the management API
+// (Delete) or the repository comes back. A run deletes nothing in the registry.
+type RepositoryUnknown struct {
+	Repository string        `json:"repository"` // the OCI repository, below the repo's base
+	Package    string        `json:"package"`
+	Version    string        `json:"version"`
+	Variant    string        `json:"variant,omitempty"`
+	Tag        string        `json:"tag"`
+	Digest     digest.Digest `json:"digest"`
+	// Delete is the request of the management API that deletes the version's rows, the variant
+	// alone when it has one: DELETE /api/v1/repos/<format>/<name>/packages/<package>/versions/<version>
+	// (docs/api.md), with the package and the version path-escaped.
+	Delete string `json:"delete"`
+}
+
 // add appends v to *list unless the list is full, and then marks the report truncated.
 func add[T any](r *RepoReport, list *[]T, v T) {
 	if len(*list) >= maxFindings {
@@ -82,5 +104,5 @@ func add[T any](r *RepoReport, list *[]T, v T) {
 // the JSON has [] for them.
 func newRepoReport(repo string) RepoReport {
 	return RepoReport{Repo: repo, Foreign: []Finding{}, OrphanReferrers: []Finding{}, OrphanJournal: []Finding{},
-		Drift: []Drift{}, Split: []Split{}, Errors: []Finding{}}
+		Drift: []Drift{}, Split: []Split{}, RepositoryUnknown: []RepositoryUnknown{}, Errors: []Finding{}}
 }

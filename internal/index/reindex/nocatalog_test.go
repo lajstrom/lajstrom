@@ -39,8 +39,9 @@ func TestNoCatalog(t *testing.T) {
 }
 
 // TestNoCatalogRepositoryGone: on a registry without a catalog, an OCI repository the registry
-// no longer knows keeps its versions, which only MANIFEST_UNKNOWN removes, and its oci_repos row
-// for the grace age (#446).
+// no longer knows keeps its versions, which only MANIFEST_UNKNOWN removes, reported on every run
+// as versions of a repository the registry does not know (#567), and its oci_repos row for the
+// grace age (#446).
 func TestNoCatalogRepositoryGone(t *testing.T) {
 	ctx := t.Context()
 	e := newEnv(t)
@@ -50,13 +51,14 @@ func TestNoCatalogRepositoryGone(t *testing.T) {
 	both := []string{"raw/scratch/docs/gone.txt", "raw/scratch/docs/kept.txt"}
 	must(t, e.fake.DeleteRepository(ctx, gone.RepoPath))
 	r := e.run(t, reindex.Request{Prune: true})
-	if r.Removed != 0 || r.Unchanged != 1 || len(r.Errors) != 1 || !strings.Contains(r.Errors[0].Error, "NAME_UNKNOWN") {
+	if r.Removed != 0 || r.Unchanged != 1 || len(r.Errors) != 0 || len(r.RepositoryUnknown) != 1 ||
+		r.RepositoryUnknown[0].Repository != "docs/gone.txt" {
 		t.Errorf("a repository the registry does not know: %+v", *r)
 	}
 	same(t, "oci_repos after it", both, e.derived(t).OCIRepos)
 	e.clock.later(2 * time.Hour)
 	r = e.run(t, reindex.Request{Prune: true})
-	if r.Removed != 0 || r.Unchanged != 1 || len(r.Errors) != 1 {
+	if r.Removed != 0 || r.Unchanged != 1 || len(r.Errors) != 0 || len(r.RepositoryUnknown) != 1 {
 		t.Errorf("a repository the registry does not know, two hours later: %+v", *r)
 	}
 	same(t, "oci_repos past the grace age", both[1:], e.derived(t).OCIRepos)
