@@ -1,7 +1,6 @@
 package pypi
 
 import (
-	"context"
 	"crypto/md5" //nolint:gosec // md5_digest of the legacy upload API, compared, not trusted
 	"crypto/sha256"
 	"encoding/base64"
@@ -28,13 +27,13 @@ const maxFields = 8 << 20
 // upload is the legacy upload API that twine and uv use (docs/spec/http-routing.md §3, pypi):
 // POST /pypi/{repo}/ with multipart/form-data, :action=file_upload, protocol_version=1, the file
 // in content, and the metadata fields. The file streams into the registry as it comes, with its
-// sha256, md5 and blake2b-256 (ADR 0014; a wheel and a .zip sdist are still spooled for the
-// request), and the rest of the form is read when it ends: the digests the client sent must be
-// the file's, and the name, version and filetype it sent what the file name says, or nothing is
-// stored. Build makes the metadata layer from the file's own METADATA or PKG-INFO, which must say
-// what the file name says. 200 on success and for the same bytes again; 400 with the reason; 409
-// "File already exists" for other bytes under the file name's version and variant, which twine
-// --skip-existing skips; 413 over policy.maxFileSize. It needs write on the repo.
+// sha256, md5 and blake2b-256 (ADR 0014), and the rest of the form is read when it ends: the
+// digests the client sent must be the file's, and the name, version and filetype it sent what
+// the file name says, or nothing is stored. Build makes the metadata layer from the file's own
+// METADATA or PKG-INFO, which must say what the file name says. 200 on success and for the same
+// bytes again; 400 with the reason; 409 "File already exists" for other bytes under the file
+// name's version and variant, which twine --skip-existing skips; 413 over policy.maxFileSize.
+// It needs write on the repo.
 func (h *handlers) upload(w http.ResponseWriter, r *http.Request) {
 	repo, ok := format.RepoFrom(r.Context())
 	if !ok {
@@ -74,15 +73,10 @@ func (h *handlers) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal := auth.PrincipalFrom(ctx)
-	params := map[string]string{ParamUploadedBy: principal.String()}
-	var pub *format.Published
-	if streams(d) {
-		pub, err = h.deps.Ingest.UploadStream(ctx, repo, format.StreamUpload{Name: d.name,
-			File: format.UploadedFile{Name: form.filename, Size: -1, ContentType: part.Header.Get("Content-Type")},
-			Body: &content{part: part, form: form}, Params: params}, principal)
-	} else {
-		pub, err = h.spooled(ctx, repo, form, part, params, principal)
-	}
+	pub, err := h.deps.Ingest.UploadStream(ctx, repo, format.StreamUpload{Name: d.name,
+		File:   format.UploadedFile{Name: form.filename, Size: -1, ContentType: part.Header.Get("Content-Type")},
+		Body:   &content{part: part, form: form},
+		Params: map[string]string{ParamUploadedBy: principal.String()}}, principal)
 	var conflict *index.TagConflictError
 	switch {
 	case errors.As(err, &conflict) || errors.Is(err, index.ErrConflict):
@@ -95,26 +89,6 @@ func (h *handlers) upload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Docker-Content-Digest", pub.Digest.String())
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = io.WriteString(w, "OK "+form.filename+" "+pub.Entry.Name+" "+pub.Entry.Version+"\n")
-}
-
-// spooled publishes the content part of a distribution that does not stream yet: spooled to a
-// temporary file with its digests, the rest of the form read and checked, then through
-// format.Publisher.Upload.
-func (h *handlers) spooled(ctx context.Context, repo index.Repo, form *uploadForm, part *multipart.Part, params map[string]string,
-	principal auth.Principal) (*format.Published, error) {
-	sp, err := format.Spool(io.TeeReader(part, form.digests), form.filename, part.Header.Get("Content-Type"), -1)
-	if err != nil {
-		return nil, bodyError(err)
-	}
-	defer func() {
-		if err := sp.Close(); err != nil {
-			h.deps.Log.WarnContext(ctx, "pypi: upload spool not removed", "error", err.Error())
-		}
-	}()
-	if err := form.finish(); err != nil {
-		return nil, err
-	}
-	return h.deps.Ingest.Upload(ctx, repo, format.Upload{Files: []format.UploadedFile{sp.File()}, Params: params}, principal)
 }
 
 // uploadForm is the multipart form of an upload as it streams: the fields in memory, at most

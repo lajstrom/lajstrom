@@ -79,7 +79,7 @@ GET big 200 104857600 bytes 0.525281s
 ```
 
 `proxy_request_buffering off` streams the body to Lajstrom as it arrives. Lajstrom then spools
-a pypi upload to its own `/tmp` for the length of the request and streams raw, apt and maven
+an npm upload to its own `/tmp` for the length of the request and streams raw, apt, maven and pypi
 uploads and `/v2` blob uploads to the registry; with buffering on, nginx would first write every upload to
 its own disk as well.
 
