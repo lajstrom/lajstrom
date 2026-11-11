@@ -364,8 +364,9 @@ func (p *Pipeline) release(ctx context.Context, pub *publish) {
 // first, and nothing is written but the audit row, ok with existed in its details. A failure
 // is logged, fails the audit row, and is returned as a plain error (500), except a conflict: a
 // *index.TagConflictError is returned as it is, and another index.ErrConflict, a package path
-// that another spelling holds (#97), stays wrapped (409). The manifest stays in the registry
-// and reindex picks it up.
+// that another spelling holds (#97), stays wrapped (409); and a database that did not answer:
+// index.ErrUnavailable stays wrapped (503 with Retry-After), for the same publish again
+// completes (#641). The manifest stays in the registry and reindex picks it up.
 func (p *Pipeline) confirm(ctx context.Context, pub *publish) (existed bool, err error) {
 	now := p.now()
 	err = p.index.Tx(ctx, func(w index.Writer) error {
@@ -383,7 +384,7 @@ func (p *Pipeline) confirm(ctx context.Context, pub *publish) (existed bool, err
 		switch {
 		case errors.As(err, &conflict):
 			return false, err
-		case errors.Is(err, index.ErrConflict):
+		case errors.Is(err, index.ErrConflict), errors.Is(err, index.ErrUnavailable):
 			return false, fmt.Errorf("ingest: index %s:%s after the registry accepted %s: %w", pub.name, pub.tag, pub.digest, err)
 		}
 		// The cause is in the message only: an index.ErrNotFound (the repo was deleted
