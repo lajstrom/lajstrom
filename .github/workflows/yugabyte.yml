@@ -1,0 +1,100 @@
+name: YugabyteDB
+
+# The integration tests of the index on YugabyteDB (docs/deploy/databases.md#yugabytedb):
+# experimental, not guaranteed, and never required. A workflow of its own, outside CI and its
+# integration-result, so that it blocks no merge and keeps the shared queue light: it runs on a
+# pull request that touches the index or its migrations (internal/index/**) or this file, every
+# night, and by hand.
+on:
+  pull_request:
+    paths:
+      - "internal/index/**"
+      - ".github/workflows/yugabyte.yml"
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    name: integration (zot-yugabyte)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Non-blocking: a failure marks this job and not the run, and no branch protection names it.
+    continue-on-error: true
+    services:
+      zot:
+        # Zot v2.1.23, the minimal build, as in ci.yml.
+        # sha256:59cb5740832970818903c5ce104425762664c7880835ee566506aad397cd3458
+        image: ghcr.io/project-zot/zot-minimal:v2.1.23
+        ports:
+          - "5000:5000"
+    env:
+      LAJSTROM_TEST_REGISTRY: localhost:5000
+      LAJSTROM_TEST_POSTGRES_DSN: "postgres://yugabyte@localhost:5433/lajstrom?sslmode=disable"
+    steps:
+      - name: Start YugabyteDB
+        # YugabyteDB 2026.1.3.0, one node. ysql_yb_ddl_transaction_block_enabled makes DDL
+        # inside a transaction transactional: without it each DDL statement of a migration
+        # commits on its own, and a migration that fills a column it adds fails (23502). A step,
+        # not a service: a service cannot be given yugabyted's command.
+        env:
+          IMAGE: yugabytedb/yugabyte:2026.1.3.0-b100@sha256:c1ddbf9c189f6ef33f03c648efadb1b1e82b5e7c8be472c56b1357c024221528
+        run: |
+          docker run -d --name yugabyte -p 5433:5433 "${IMAGE}" \
+            bin/yugabyted start --background=false --tserver_flags=ysql_yb_ddl_transaction_block_enabled=true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - name: Wait for the services
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          command -v psql > /dev/null || { sudo apt-get update -q && sudo apt-get install -yq postgresql-client; }
+          ready() { # name, then a command that succeeds once the service answers
+            local name=$1
+            shift
+            for _ in $(seq 1 120); do
+              if "$@" > /dev/null 2>&1; then
+                echo "ready: ${name}"
+                return 0
+              fi
+              sleep 2
+            done
+            echo "::error::${name} did not answer within 240 s: $*"
+            return 1
+          }
+          ready zot curl -fsS --max-time 2 http://localhost:5000/v2/
+          ready yugabyte psql "postgres://yugabyte@localhost:5433/yugabyte?sslmode=disable&connect_timeout=2" -c "SELECT 1"
+      - name: Migrate once
+        # Two migrators at once fail on YugabyteDB (42710, 40001): the database is migrated here,
+        # once, as the Job of operations.md would, before a test opens it.
+        run: |
+          set -euo pipefail
+          psql "postgres://yugabyte@localhost:5433/yugabyte?sslmode=disable" -c "CREATE DATABASE lajstrom"
+          go build -o "${RUNNER_TEMP}/lajstrom" ./cmd/lajstrom
+          printf 'server:\n  listen: "127.0.0.1:8080"\n  insecureHTTP: true\ndatabase:\n  driver: postgres\n' > "${RUNNER_TEMP}/lajstrom.yaml"
+          LAJSTROM_DATABASE_DSN="${LAJSTROM_TEST_POSTGRES_DSN}" "${RUNNER_TEMP}/lajstrom" migrate --config "${RUNNER_TEMP}/lajstrom.yaml"
+      - name: The tests that migrate, one at a time
+        # internal/index and internal/index/postgres migrate a new schema in each test, so one
+        # test runs at a time. Skipped: TestConcurrentMigrate, two migrators at once, which
+        # YugabyteDB does not take (docs); the conformance half of TestDataRole, the suite again
+        # as another user, another quarter of an hour.
+        run: >-
+          go test -race -tags integration -p 1 -parallel 1 -timeout 45m
+          -skip 'TestConcurrentMigrate|TestDataRole/conformance'
+          ./internal/index ./internal/index/postgres
+      - name: The tests on the migrated database
+        run: go test -race -tags integration ./internal/index/reindex/... ./internal/ingest/... ./internal/facade/...
+      - name: YugabyteDB's log
+        if: failure()
+        run: docker logs --tail 200 yugabyte
