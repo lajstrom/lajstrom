@@ -43,7 +43,7 @@ func (p *Provider) StatManifest(ctx context.Context, name string, d digest.Diges
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return ocispec.Descriptor{}, manifestUnknown(op, parseErrorResponse(resp))
+		return ocispec.Descriptor{}, p.manifestUnknown(op, parseErrorResponse(resp))
 	}
 	desc := ocispec.Descriptor{MediaType: resp.Header.Get("Content-Type"), Digest: d, Size: resp.ContentLength}
 	if v := resp.Header.Get("Docker-Content-Digest"); v != "" && v != d.String() {
@@ -60,7 +60,7 @@ func (p *Provider) manifestRequest(ctx context.Context, op, method, name string,
 	}
 	ref := registry.Reference{Registry: p.host, Repository: p.repoName(name), Reference: d.String()}
 	if err := ref.ValidateRepository(); err != nil {
-		return nil, translate(op, err)
+		return nil, p.translate(op, err)
 	}
 	ctx = auth.AppendRepositoryScope(ctx, ref, auth.ActionPull)
 	req, err := http.NewRequestWithContext(ctx, method, p.base+"/v2/"+ref.Repository+"/manifests/"+ref.Reference, nil)
@@ -70,15 +70,15 @@ func (p *Provider) manifestRequest(ctx context.Context, op, method, name string,
 	req.Header.Set("Accept", manifestAccept)
 	resp, err := p.clients.follow.Do(req)
 	if err != nil {
-		return nil, translate(op, err)
+		return nil, p.translate(op, err)
 	}
 	return resp, nil
 }
 
-// manifestUnknown is translate for the answer to StatManifest, and marks a 404 with
+// manifestUnknown is Provider.translate for the answer to StatManifest, and marks a 404 with
 // MANIFEST_UNKNOWN as provider.ErrManifestUnknown as well.
-func manifestUnknown(op string, resp *errcode.ErrorResponse) error {
-	err := translate(op, resp)
+func (p *Provider) manifestUnknown(op string, resp *errcode.ErrorResponse) error {
+	err := p.translate(op, resp)
 	var be *backendError
 	if errors.As(err, &be) && resp.StatusCode == http.StatusNotFound && hasCode(resp, errcode.ErrorCodeManifestUnknown) {
 		be.also = provider.ErrManifestUnknown
