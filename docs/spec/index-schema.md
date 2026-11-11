@@ -226,6 +226,17 @@ holds two connections of the pool for the locks and a third for the transaction 
 a journal append holds one for its lock and one for its transaction: when the pool is
 exhausted, a delete that waits for a connection waits until one is free or its request ends.
 
+The **package row** is the last lock of the order. Every version write and delete
+(`UpsertVersion`, `DeleteVersion`) locks its package's `packages` row first, in the transaction
+it runs in, until that transaction ends (#570): the version writes of one package follow each
+other, and `packages.created_at` sees what the writers before committed. A delete takes it in the
+transaction of its rows, inside its journal and tag locks; a publish takes it in the transaction
+that confirms the version, under no lock of this section; reindex in the transactions of the
+rows it writes. No transaction that holds a package row waits for a journal or a tag lock:
+`WithReferrersLock` is never called inside `Store.Tx`. So the order is the journal lock, then a
+tag lock, then the package row, and a conditional delete that holds the first two waits for the
+row only as long as another writer's transaction of the package runs.
+
 ## Derived (rebuilt by reindex)
 
 | Table | Columns | Notes |
