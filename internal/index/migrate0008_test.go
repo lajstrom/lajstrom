@@ -217,19 +217,25 @@ func seedVersion7(m *migrationDB) {
 	}
 }
 
-// postgresSchema opens the Postgres of dsn in a schema of its own, dropped when the test ends.
+// postgresSchema opens the Postgres of dsn in a schema of its own, dropped when the test ends;
+// with LAJSTROM_TEST_POSTGRES_ISOLATION=database, in a database of its own, as the tests
+// behind a pooler in transaction mode need (internal/index/postgres, isolationEnv).
 func postgresSchema(t *testing.T, dsn string) *sql.DB {
 	t.Helper()
-	schema := "lajstrom_test_" + strings.ToLower(rand.Text())
+	name := "lajstrom_test_" + strings.ToLower(rand.Text())
+	param, kind, force := "search_path", "SCHEMA", " CASCADE"
+	if os.Getenv("LAJSTROM_TEST_POSTGRES_ISOLATION") == "database" {
+		param, kind, force = "dbname", "DATABASE", " WITH (FORCE)"
+	}
 	admin, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.ExecContext(t.Context(), "CREATE SCHEMA "+schema); err != nil {
+	if _, err := admin.ExecContext(t.Context(), "CREATE "+kind+" "+name); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, _ = admin.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+		_, _ = admin.ExecContext(context.Background(), "DROP "+kind+" "+name+force)
 		_ = admin.Close()
 	})
 	u, err := url.Parse(dsn)
@@ -237,7 +243,7 @@ func postgresSchema(t *testing.T, dsn string) *sql.DB {
 		t.Fatal(err)
 	}
 	q := u.Query()
-	q.Set("search_path", schema)
+	q.Set(param, name)
 	u.RawQuery = q.Encode()
 	db, err := sql.Open("pgx", u.String())
 	if err != nil {
