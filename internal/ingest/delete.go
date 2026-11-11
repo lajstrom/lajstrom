@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -45,26 +47,38 @@ import (
 //     deletes refuses it, provider.ErrUnsupported, and nothing has changed: a referrer deleted
 //     on its own, without the referrers API, has its subject's sha256-<hex> index deleted first
 //     and pushed again without it after. A manifest that is gone already is not an error.
-//  4. For a version, one index transaction deletes its rows, its package's when it was the last
-//     version, invalidates the repo's index_cache and completes the audit row; for a journal
-//     entry of a package the index still has, its row, the package's state folded again from
-//     the rows left and the invalidated index_cache with the audit row; for any other manifest
-//     the audit row alone. The row is written pending in step 3, in a transaction of its own
-//     after the tags are counted and before the first request that changes anything, and failed
-//     with the error when the rest of step 3 or this transaction fails. It is a delete by
-//     principal with
-//     del.ClientIP (the request's client address when it is empty), the version's subject (or
-//     the manifest's subject digest), the digest, and the number of referrers and the request
-//     id in the details.
+//  4. Still under the lock, for a version, one index transaction deletes its rows (by its
+//     digest), its package's when it was the last version, invalidates the repo's index_cache
+//     and completes the audit row; for a journal entry of a package the index still has, its
+//     row, the package's state folded again from the rows left and the invalidated index_cache
+//     with the audit row; for any other manifest the audit row alone. The row is written pending
+//     in step 3, in a transaction of its own after the tags are counted and before the first
+//     request that changes anything, and failed with the error when the rest of step 3 or this
+//     transaction fails. It is a delete by principal with del.ClientIP (the request's client
+//     address when it is empty), the version's subject (or the manifest's subject digest), the
+//     digest, and in the details the number of referrers, the request id, del.Job as job when
+//     it is set, and the request's token as token, token:<id>, when it came with one.
+//
+// A delete with del.Condition is a compare-and-delete of a version (format.Condition): the
+// reference must be a digest, and a digest that is no version of the package's is refused, never
+// deleted as another manifest. An npm version's delete takes the package's journal lock before
+// the tag lock, so that no dist-tag moves onto it meanwhile (docs/spec/index-schema.md,
+// Coordination: the journal lock before a tag lock). Under the locks the version is read again
+// by its digest (deletion.check), and a condition that fails deletes nothing and writes no audit
+// row: it is refused before the row, as a delete by tag of a manifest other tags name is.
 //
 // Errors wrap provider.ErrUnsupported (the backend does not delete manifests), index.ErrNotFound
 // (nothing to delete), index.ErrConflict (other tags name the manifest: the error has a method
 // OtherTags() []string, which returns them sorted) or provider.ErrConflict (the backend refused
-// this one delete: Zot keeps a manifest that an image index lists), or none. Blobs are left to
-// the backend's garbage collection.
+// this one delete: Zot keeps a manifest that an image index lists), a *format.RefusedError (a
+// condition failed), or none. Blobs are left to the backend's garbage collection.
 func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Deletion, principal auth.Principal) (*format.Deleted, error) {
 	if del.Path == "" || del.Reference == "" {
 		return nil, invalid(fmt.Errorf("ingest: delete in %s/%s: a package path and a reference are required", repo.Format, repo.Name))
+	}
+	if _, err := digest.Parse(del.Reference); del.Condition != nil && err != nil {
+		return nil, invalid(fmt.Errorf("ingest: conditional delete in %s/%s: %q is not the digest of a manifest: %w", repo.Format, repo.Name,
+			del.Reference, err))
 	}
 	prov, err := p.registry(repo)
 	if err != nil {
@@ -91,12 +105,18 @@ func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Delet
 		return nil, err
 	}
 	d.ev = d.event(ctx, principal)
-	if err := d.deleteInBackend(ctx); err != nil {
-		setDetail(&d.ev, "referrers", d.referrers)
-		p.fail(ctx, &d.ev, err)
-		return nil, err
-	}
-	if err := d.record(ctx); err != nil {
+	err = d.locked(ctx, func(ctx context.Context) error {
+		if err := d.check(ctx); err != nil {
+			return err
+		}
+		if err := d.deleteInBackend(ctx); err != nil {
+			setDetail(&d.ev, "referrers", d.referrers)
+			p.fail(ctx, &d.ev, err)
+			return err
+		}
+		return d.record(ctx)
+	})
+	if err != nil {
 		return nil, err
 	}
 	p.log.InfoContext(ctx, "ingest: deleted", "repo", repo.Format+"/"+repo.Name, "name", name, "digest", d.target.Digest.String(),
@@ -129,6 +149,9 @@ type deletion struct {
 func (d *deletion) find(ctx context.Context) error {
 	if err := d.findVersion(ctx); err != nil || d.version != nil {
 		return err
+	}
+	if d.del.Condition != nil {
+		return d.missing(ctx)
 	}
 	desc, err := d.rr.Resolve(ctx, d.del.Reference)
 	switch {
@@ -214,12 +237,15 @@ func (d *deletion) subjectOf(ctx context.Context) (digest.Digest, error) {
 // facade takes manifests of 4 MiB by default.
 const maxManifestBytes = 16 << 20
 
-// deleteInBackend deletes the target with its referrers under its tag lock, one lock for the
-// whole delete: the referrers lock of the subject of a referrer, whose tag-schema index its
-// delete rewrites without the referrers API, else of the target, whose own index goes. A push by
-// tag to an oci repo holds the same lock, so a tag pushed meanwhile is either counted by
-// refuseTagged or pushed after the delete (docs/spec/index-schema.md, Coordination).
-func (d *deletion) deleteInBackend(ctx context.Context) error {
+// locked calls fn under the locks of the delete (docs/spec/index-schema.md, Coordination): the
+// tag lock of the target, one lock for the whole delete, its rows included. It is the referrers
+// lock of the subject of a referrer, whose tag-schema index its delete rewrites without the
+// referrers API, else of the target, whose own index goes; a journal entry's is the package's
+// journal lock. A push by tag to an oci repo holds the same lock, so a tag pushed meanwhile is
+// either counted by refuseTagged or pushed after the delete. A conditional delete of an npm
+// version takes the package's journal lock first, which every move of a dist-tag holds: the
+// journal lock before a tag lock, never the other way.
+func (d *deletion) locked(ctx context.Context, fn func(context.Context) error) error {
 	key := d.target.Digest
 	switch {
 	case d.journal:
@@ -227,19 +253,92 @@ func (d *deletion) deleteInBackend(ctx context.Context) error {
 	case d.subject != "":
 		key = d.subject
 	}
-	return d.p.index.WithReferrersLock(ctx, d.name, key, func(ctx context.Context) error {
-		if err := d.refuseTagged(ctx); err != nil {
-			return err
+	tagLocked := func(ctx context.Context) error { return d.p.index.WithReferrersLock(ctx, d.name, key, fn) }
+	if d.del.Condition != nil && d.repo.Format == "npm" && !d.journal {
+		return d.p.index.WithReferrersLock(ctx, d.name, profile.EmptyConfig.Digest, tagLocked)
+	}
+	return tagLocked(ctx)
+}
+
+// check checks the condition of a conditional delete under its locks (format.Condition): the
+// version is read again by its digest, which must still be the version and variant the client
+// read, published no later than the cut-off, and, unforced, named by no pointer of its package.
+// A delete without a condition passes.
+func (d *deletion) check(ctx context.Context) error {
+	c := d.del.Condition
+	if c == nil {
+		return nil
+	}
+	v, err := d.p.index.GetVersionByDigest(ctx, d.repo.ID, d.target.Digest)
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		return d.missing(ctx)
+	case err != nil:
+		return fmt.Errorf("ingest: version of %s: %w", d.target.Digest, err)
+	case v.PackageID != d.pkg.ID || v.Version != c.Version || v.Variant != c.Variant:
+		return d.missing(ctx)
+	}
+	d.version = v
+	if !c.UnmodifiedSince.IsZero() && v.CreatedAt.Truncate(time.Second).After(c.UnmodifiedSince) {
+		return &format.RefusedError{Reason: format.RefusedYoung, Subject: d.subjectOfCondition(), PublishedAt: v.CreatedAt}
+	}
+	if c.Force {
+		return nil
+	}
+	state, err := d.p.index.ListJournalState(ctx, d.pkg.ID)
+	if err != nil {
+		return fmt.Errorf("ingest: dist-tags of %s: %w", d.pkg.Name, err)
+	}
+	if pointers := format.PointersOf(state, v.Version); len(pointers) > 0 {
+		return &format.RefusedError{Reason: format.RefusedProtected, Subject: d.subjectOfCondition(), Pointers: pointers}
+	}
+	return nil
+}
+
+// missing is the refusal of a conditional delete whose digest is no version of the package (any
+// more): a *format.RefusedError, RefusedChanged, when the version and variant of the condition
+// have another digest now, else index.ErrNotFound.
+func (d *deletion) missing(ctx context.Context) error {
+	c := d.del.Condition
+	if d.pkg != nil {
+		v, err := d.p.index.GetVersion(ctx, d.pkg.ID, c.Version, c.Variant)
+		switch {
+		case err == nil:
+			return &format.RefusedError{Reason: format.RefusedChanged, Subject: d.subjectOfCondition(), Digests: []digest.Digest{v.Digest}}
+		case !errors.Is(err, index.ErrNotFound):
+			return fmt.Errorf("ingest: version %s of %s: %w", c.Version, d.pkg.Name, err)
 		}
-		// The row before the first request that changes anything (#473).
-		if err := d.p.intend(ctx, &d.ev); err != nil {
-			return err
-		}
-		if d.subject != "" && !d.api {
-			return d.deleteReferrer(ctx)
-		}
-		return d.deleteTarget(ctx)
-	})
+	}
+	return fmt.Errorf("%w: %s is not in the index (deleted meanwhile)", index.ErrNotFound, d.subjectOfCondition())
+}
+
+// subjectOfCondition names the version of the condition in an error.
+func (d *deletion) subjectOfCondition() string {
+	c, name := d.del.Condition, d.del.Path
+	if d.pkg != nil {
+		name = d.pkg.Name
+	}
+	version := c.Version
+	if c.Variant != "" {
+		version += " (" + c.Variant + ")"
+	}
+	return fmt.Sprintf("version %s of %q in %s/%s", version, name, d.repo.Format, d.repo.Name)
+}
+
+// deleteInBackend deletes the target with its referrers, under the locks of the delete. Its audit
+// row is written pending after the other tags are counted, before the first request that changes
+// anything (#473).
+func (d *deletion) deleteInBackend(ctx context.Context) error {
+	if err := d.refuseTagged(ctx); err != nil {
+		return err
+	}
+	if err := d.p.intend(ctx, &d.ev); err != nil {
+		return err
+	}
+	if d.subject != "" && !d.api {
+		return d.deleteReferrer(ctx)
+	}
+	return d.deleteTarget(ctx)
 }
 
 // tagResolvers bounds the resolves of refuseTagged that run at once.
@@ -492,7 +591,14 @@ func (d *deletion) deleteOne(ctx context.Context, desc ocispec.Descriptor) error
 func (d *deletion) event(ctx context.Context, principal auth.Principal) index.AuditEvent {
 	ev := index.AuditEvent{At: d.p.now(), Principal: principal.String(), Action: "delete",
 		Repo: d.repo.Format + "/" + d.repo.Name, Digest: d.target.Digest, IP: d.del.ClientIP}
-	withOrigin(ctx, &ev, nil)
+	details := map[string]any{}
+	if d.del.Job != "" {
+		details["job"] = d.del.Job
+	}
+	if c := auth.CredentialFrom(ctx); c.Kind == auth.CredPAT || c.Kind == auth.CredDeploy {
+		details["token"] = "token:" + strconv.FormatInt(c.TokenID, 10)
+	}
+	withOrigin(ctx, &ev, details)
 	switch {
 	case d.version != nil:
 		ev.Subject = d.pkg.Name + " " + d.version.Version
@@ -542,10 +648,18 @@ func (d *deletion) record(ctx context.Context) error {
 	return nil
 }
 
-// deleteRows deletes the version's rows on w, its package's when no version is left, and
-// invalidates the repo's index_cache. A row another delete took meanwhile is no error.
+// deleteRows deletes the version's rows on w, found by the target's digest, its package's when
+// no version is left, and invalidates the repo's index_cache. A row another delete took
+// meanwhile is no error; the id read before the lock is not used, since a version published
+// again after that delete may have a row of its own under it.
 func (d *deletion) deleteRows(ctx context.Context, w index.Writer) error {
-	if err := w.DeleteVersion(ctx, d.version.ID); err != nil && !errors.Is(err, index.ErrNotFound) {
+	v, err := w.GetVersionByDigest(ctx, d.repo.ID, d.target.Digest)
+	switch {
+	case err == nil && v.PackageID == d.pkg.ID:
+		if err := w.DeleteVersion(ctx, v.ID); err != nil && !errors.Is(err, index.ErrNotFound) {
+			return err
+		}
+	case err != nil && !errors.Is(err, index.ErrNotFound):
 		return err
 	}
 	rest, err := w.ListVersions(ctx, d.pkg.ID)
