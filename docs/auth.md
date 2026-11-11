@@ -44,8 +44,9 @@ never, so `user:<s>` is unambiguous.
 - `lajstrom admin user rename <name> <new name>` changes the name only: the user keeps its
   uid, its bindings and its tokens; the old name logs in no more from the next request.
 - `lajstrom admin user delete <name>` revokes the user's tokens, deletes its bindings and keeps
-  the row, disabled, under the name `~<uid>`, so that the audit log still names it. The name is
-  free again at once; a user created with it gets another uid and none of the old rights.
+  the row, disabled, under the name `~<uid>`, so that the audit log still names it; `admin user
+  list` and `GET /api/v1/users` show the live users only. The name is free again at once; a
+  user created with it gets another uid and none of the old rights.
 - Neither may take away the last admin binding of an enabled user.
 - `admin user list` shows NAME, UID, KIND, DISABLED, CREATED; `admin binding list` shows the
   principal with its USER name. `GET /api/v1/whoami` answers both: `{"principal": "user:<uid>",
@@ -169,8 +170,10 @@ Every route reads the `Authorization` header, the frontends (`/raw/`, `/pypi/`, 
 (`/-/healthz`, `/-/readyz`, `/-/version`) alike:
 
 - **No header**: the request goes on as `anonymous`, which may read a repo with `anonymousRead`
-  when `auth.anonymousRead` allows it, and nothing else: everywhere else it gets `401` with the
-  challenge, so that the client sends credentials ([Authorization](#authorization)).
+  when `auth.anonymousRead` allows it, and nothing else: the system endpoints answer it,
+  `GET /api/v1/repos` lists the repos it may read (none by default: `{"repos":[]}`), and
+  everywhere else it gets `401` with the challenge, so that the client sends credentials
+  ([Authorization](#authorization)).
 - **`Basic`** ([RFC 7617](https://www.rfc-editor.org/rfc/rfc7617); the first colon splits the
   user name from the password): the credentials are checked, and the request goes on as
   `user:<uid>`, or as `token:<id>` for a deploy token. The secret decides what is checked: one
@@ -229,7 +232,11 @@ union of its bindings. A deploy token has no bindings (its repo and scopes are i
 neither has `anonymous` (a repo's `anonymousRead` is).
 
 `lajstrom admin binding` manages them, straight against the database of the configuration, and
-`/api/v1/bindings` over HTTP ([api.md](api.md#bindings)):
+`/api/v1/bindings` over HTTP ([api.md](api.md#bindings)). Like every `lajstrom admin` command on
+this page, it reads the configuration of `--config`, else of `LAJSTROM_CONFIG`, else
+`lajstrom.yaml` in the current directory; on the dev stack, give it the file `make run` serves
+(`export LAJSTROM_CONFIG=deploy/compose/lajstrom.example.yaml`, or your copy
+`deploy/compose/lajstrom.yaml`):
 
 ```text
 $ lajstrom admin binding create --principal user:alice --role writer --mask 'raw/*'
@@ -310,39 +317,42 @@ a bearer on every `/v2` request. Lajstrom is its own token server: the realm is 
 ### The flow
 
 From a run against `bin/lajstrom serve` on the example configuration, with `server.listen` and
-`server.externalURL` moved to port 18080 and the master key set; the tokens are cut after their
-first characters (a run from before #182, when `sub` named the user by name; it is `user:<uid>`
-now, as in the e2e output below):
+`server.externalURL` moved to port 18140 and the master key set, after `alice`, a `writer` on
+`raw/*`, had uploaded two versions of `raw/scratch/hello`. `-u alice` asks for her password; the
+tokens are cut after their first characters, and the answers are shown without the headers every
+answer has (`Content-Length`, `Date`, `X-Request-Id` and the security headers):
 
 ```text
-$ curl -si http://localhost:18080/v2/
+$ curl -si http://localhost:18140/v2/
 HTTP/1.1 401 Unauthorized
 Content-Type: application/json
 Docker-Distribution-Api-Version: registry/2.0
-Www-Authenticate: Bearer realm="http://localhost:18080/v2/token",service="localhost:18080"
+Www-Authenticate: Bearer realm="http://localhost:18140/v2/token",service="localhost:18140"
 
 {"errors":[{"code":"UNAUTHORIZED","message":"authentication required: get a token from the realm of the challenge"}]}
 
-$ curl -s -u alice 'http://localhost:18080/v2/token?service=localhost:18080&scope=repository:raw/scratch/hello:pull,push'
-{"token":"eyJhbGciOiJFU…","access_token":"eyJhbGciOiJFU…","expires_in":1200,"issued_at":"2026-11-07T21:48:23Z"}
+$ curl -s -u alice 'http://localhost:18140/v2/token?service=localhost:18140&scope=repository:raw/scratch/hello:pull,push'
+{"token":"eyJhbGciOiJFUz…","access_token":"eyJhbGciOiJFUz…","expires_in":1200,"issued_at":"2026-11-11T07:42:32Z"}
 
+$ TOKEN=$(curl -s -u alice 'http://localhost:18140/v2/token?service=localhost:18140&scope=repository:raw/scratch/hello:pull,push' | jq -r .token)
+$ PULL_ONLY=$(curl -s -u alice 'http://localhost:18140/v2/token?service=localhost:18140&scope=repository:raw/scratch/hello:pull' | jq -r .token)
 $ jq -R 'split(".") | .[0:2] | map(gsub("-"; "+") | gsub("_"; "/") | @base64d | fromjson)' <<<"$TOKEN"
 [
   {
     "alg": "ES256",
-    "kid": "4f2155f3dddad8dc8682a11dc282cd36c70306478d4c3bf50c1e5761be4cfc79",
+    "kid": "b8fd560ff5782aa2d1fc6159e37462bf282f01c050b9745697e58881636910a9",
     "typ": "JWT"
   },
   {
-    "iss": "localhost:18080",
-    "sub": "user:alice",
+    "iss": "localhost:18140",
+    "sub": "user:01a1c980-f66c-7291-8415-5d7775f62732",
     "aud": [
-      "localhost:18080"
+      "localhost:18140"
     ],
-    "exp": 1794089303,
-    "nbf": 1794088103,
-    "iat": 1794088103,
-    "jti": "pkoI1THcQvFGXuIEYB50xw",
+    "exp": 1794384152,
+    "nbf": 1794382952,
+    "iat": 1794382952,
+    "jti": "STvrSMUNZ5mj8RZ_LWu4OQ",
     "access": [
       {
         "type": "repository",
@@ -356,29 +366,29 @@ $ jq -R 'split(".") | .[0:2] | map(gsub("-"; "+") | gsub("_"; "/") | @base64d | 
   }
 ]
 
-$ curl -si -H "Authorization: Bearer $TOKEN" http://localhost:18080/v2/raw/scratch/hello/tags/list
+$ curl -si -H "Authorization: Bearer $TOKEN" http://localhost:18140/v2/raw/scratch/hello/tags/list
 HTTP/1.1 200 OK
 Content-Type: application/json
 Docker-Distribution-Api-Version: registry/2.0
 
-{"name":"raw/scratch/hello","tags":["7ab1ebd2573ff075","d2c2335ae7f9acbc"]}
+{"name":"raw/scratch/hello","tags":["14282e94937ee86e","6a13a3f389e37acd"]}
 
-$ curl -si -X POST -H "Authorization: Bearer $PULL_ONLY" http://localhost:18080/v2/raw/scratch/hello/blobs/uploads/
+$ curl -si -X POST -H "Authorization: Bearer $PULL_ONLY" http://localhost:18140/v2/raw/scratch/hello/blobs/uploads/
 HTTP/1.1 403 Forbidden
 Content-Type: application/json
 Docker-Distribution-Api-Version: registry/2.0
 
 {"errors":[{"code":"DENIED","message":"the bearer token does not grant push on raw/scratch/hello"}]}
 
-$ curl -si -H "Authorization: Bearer $TOKEN" http://localhost:18080/v2/raw/scratch/other/tags/list
+$ curl -si -H "Authorization: Bearer $TOKEN" http://localhost:18140/v2/raw/scratch/other/tags/list
 HTTP/1.1 401 Unauthorized
 Content-Type: application/json
 Docker-Distribution-Api-Version: registry/2.0
-Www-Authenticate: Bearer realm="http://localhost:18080/v2/token",service="localhost:18080",scope="repository:raw/scratch/other:pull",error="insufficient_scope"
+Www-Authenticate: Bearer realm="http://localhost:18140/v2/token",service="localhost:18140",scope="repository:raw/scratch/other:pull",error="insufficient_scope"
 
 {"errors":[{"code":"UNAUTHORIZED","message":"the bearer token grants nothing on raw/scratch/other: get a token with its scope"}]}
 
-$ curl -si -u alice:wrong http://localhost:18080/v2/token
+$ curl -si -u alice:wrong http://localhost:18140/v2/token
 HTTP/1.1 401 Unauthorized
 Content-Type: application/json
 Www-Authenticate: Basic realm="lajstrom"
@@ -386,7 +396,8 @@ Www-Authenticate: Basic realm="lajstrom"
 {"errors":[{"code":"UNAUTHORIZED","message":"credentials are needed: the ones sent were refused"}]}
 ```
 
-`$PULL_ONLY` is a token asked for `scope=repository:raw/scratch/hello:pull`.
+`$PULL_ONLY` is a token asked for `scope=repository:raw/scratch/hello:pull`: the push it does not
+grant is `403`, while a repository the token does not name is `401` with the scope to ask for.
 
 ### The token endpoint
 
@@ -628,8 +639,8 @@ credential is a personal access token, with scopes or without, the admin's too, 
 token gets `403` on `POST /api/v1/users/<name>/tokens` before its body is read. A stolen token
 would otherwise mint tokens that last up to a year and outlive its revocation. Later an OIDC
 session will create them too (#69); `npm login` checks the password (#308), and
-`lajstrom admin token create` needs no credential, as it runs against the database. A token
-still lists and revokes its user's tokens. CI that wants a fresh personal access token asks
+`lajstrom admin token create` needs no credential, as it runs against the database. A personal
+access token without scopes still lists and revokes its user's tokens. CI that wants a fresh personal access token asks
 for it with a password, or gets a deploy token instead ([In CI](#in-ci)).
 
 A live token is neither revoked nor expired. A scope grants its action and nothing else:
@@ -665,9 +676,10 @@ The scopes narrow what the bindings give, on every route and at `/v2/token`:
 - **curl**: `curl -u alice:ljs_pat_… https://art.example.com/raw/scratch/file`, or the same in
   a config file, `curl -K` with `user = "alice:ljs_pat_…"`, to keep it off the command line. A
   deploy token: `-u deploy:ljs_dep_…`.
-- **The management API**: `Authorization: Bearer ljs_pat_…`, or Basic. A deploy token goes in
-  Basic only, `deploy:ljs_dep_…`.
-- **apt**: `/etc/apt/auth.conf.d/lajstrom.conf`, mode 0600, one line per repo:
+- **The management API**: `Authorization: Bearer ljs_pat_…` or `Bearer ljs_dep_…`, or Basic,
+  `alice:ljs_pat_…` and `deploy:ljs_dep_…`.
+- **apt**: `/etc/apt/auth.conf.d/lajstrom.conf`, mode 0600, one line per repo, with a personal
+  access token or with a deploy token (apt takes the first line whose `machine` matches):
 
   ```text
   machine art.example.com/apt/ubuntu-internal login alice password ljs_pat_…
@@ -675,7 +687,9 @@ The scopes narrow what the bindings give, on every route and at `/v2/token`:
   ```
 
   apt sends the credentials of a `machine` without a scheme over `https` only; for plain `http`
-  (the dev stack) write the scheme: `machine http://localhost:8080/apt/e2e`.
+  (the dev stack) write the scheme: `machine http://localhost:8080/apt/e2e`. Without it,
+  `apt-get update` warns `Credentials for localhost:8080/apt/e2e match, but the protocol is not
+  encrypted. Annotate with http:// to use.` and gets `401`.
 - **pip and twine**: `~/.pypirc` with `username = alice` and `password = ljs_pat_…`, or
   `username = __token__` (or any name) and a deploy token.
 - **oras, docker, helm**: `oras login -u alice --password-stdin art.example.com` with the token
@@ -764,7 +778,10 @@ in `auth.conf.d`, each token's `lastUsedAt` showing that apt sent it, and a toke
 exist refused; the deploy token's `404` and `403`; a deploy token with `write`; `oras login`
 and push with the PAT; a PAT with `read` refused a push on the frontend and through its `/v2`
 token; revocation, expiry and an expiry over a year. `twine upload` with a deploy token, the
-rest of #44's criterion, is not in the script: `test/e2e/pypi.sh` uploads with a password.
+rest of #44's criterion, is not in the script: `test/e2e/pypi.sh` uploads with a password. It
+was run by hand on 2026-11-11, twine 7.0.0 in `debian:13` with a deploy token with `write`:
+from `~/.pypirc` with `username = __token__`, and with `TWINE_USERNAME=deploy` and
+`TWINE_PASSWORD`, both uploaded; the same token is refused by `pip install`, which reads.
 
 From `E2E='auth tokens oci-token rbac' make e2e` on 2026-11-09, against the dev stack's Zot,
 after RBAC (#45) and the uid (#182):
@@ -854,7 +871,7 @@ curl -s -u admin http://localhost:8080/api/v1/whoami
 ```
 
 ```json
-{"principal":"user:admin","kind":"user","name":"admin"}
+{"principal":"user:01a1c980-f635-7729-bd3a-067fb89ea59f","kind":"user","name":"admin","uid":"01a1c980-f635-7729-bd3a-067fb89ea59f"}
 ```
 
 Without credentials it is `401` with the Basic challenge and
