@@ -3,6 +3,7 @@ package pypi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -117,7 +118,9 @@ type metadataIn struct {
 // (exactly), the variant (the wheel's tag set, or sdist), the file name, its sha256 and
 // packagetype, and lajstrom.pypi.nonstandard is true exactly when the version is not PEP 440.
 // The core_metadata of the layer must say the same name and version, and be, byte for byte, the
-// METADATA or PKG-INFO inside the distribution (checkArchive), which pip is told it is (PEP 658).
+// METADATA or PKG-INFO inside the distribution (checkArchive), which pip is told it is (PEP 658);
+// but for the file of an upload that streams in (format.ErrStreamed), whose core_metadata Build
+// took from what the inspector read of the same bytes.
 func (Plugin) Validate(ctx context.Context, _ index.Repo, m ocispec.Manifest, fetch format.BlobFetcher) (*format.Entry, error) {
 	parsed, err := profile.Validate(m)
 	if err != nil {
@@ -199,7 +202,10 @@ const maxSdistScan = 64 << 20
 // .tar.gz sdist is read as a stream until its PKG-INFO, at most maxSdistScan bytes of it.
 func checkArchive(ctx context.Context, fetch format.BlobFetcher, f profile.Layer, core string) error {
 	rc, err := fetch(ctx, f.Digest)
-	if err != nil {
+	switch {
+	case errors.Is(err, format.ErrStreamed):
+		return nil
+	case err != nil:
 		return fmt.Errorf("pypi: fetch %s: %w", f.Title, err)
 	}
 	defer func() { _ = rc.Close() }()
@@ -288,7 +294,9 @@ func readMetadata(ctx context.Context, fetch format.BlobFetcher, l profile.Layer
 // the same string; lajstrom.name is the normalized name, lajstrom.version the version as the core
 // metadata writes it, lajstrom.variant the wheel's tag set or sdist, and a version that is not
 // PEP 440 is accepted and flagged lajstrom.pypi.nonstandard. created is now, in whole seconds.
-// Errors wrap format.ErrInvalid, except a failure to read the file.
+// A file that streamed into the registry, without Open, has its sha256 from ingest and its core
+// metadata from its inspector (Inspect), and its layer is not among the blobs. Errors wrap
+// format.ErrInvalid, except a failure to read the file.
 func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*format.Built, error) {
 	if len(in.Files) != 1 {
 		return nil, fmt.Errorf("%w: a pypi upload is one file, got %d", format.ErrInvalid, len(in.Files))
@@ -298,7 +306,14 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 	if err != nil {
 		return nil, err
 	}
-	sum, size, coreBytes, err := readUpload(f, d)
+	var sum digest.Digest
+	var size int64
+	var coreBytes []byte
+	if f.Open == nil {
+		sum, size, coreBytes, err = streamedUpload(f)
+	} else {
+		sum, size, coreBytes, err = readUpload(f, d)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -333,13 +348,13 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 		return nil, fmt.Errorf("%w: %w", format.ErrInvalid, err)
 	}
 	pkgPath := profile.EscapeComponent(name)
+	blobs := []format.BlobSource{bytesBlob(profile.EmptyConfig, ocispec.DescriptorEmptyJSON.Data)}
+	if f.Open != nil { // a streamed file is in its upload session, which ingest commits
+		blobs = append(blobs, format.BlobSource{Descriptor: m.Layers[0], Open: func(context.Context) (io.ReadCloser, error) { return f.Open() }})
+	}
 	return &format.Built{
 		Manifest: m,
-		Blobs: []format.BlobSource{
-			bytesBlob(profile.EmptyConfig, ocispec.DescriptorEmptyJSON.Data),
-			{Descriptor: m.Layers[0], Open: func(context.Context) (io.ReadCloser, error) { return f.Open() }},
-			bytesBlob(m.Layers[1], md),
-		},
+		Blobs:    append(blobs, bytesBlob(m.Layers[1], md)),
 		Entry: format.Entry{Name: name, Version: core.Version, Variant: d.variant, Attrs: attrs, Metadata: md,
 			Files: []format.FileEntry{{Name: f.Name, MediaType: d.mediaType, Digest: sum, Size: size}}},
 		Tag:      profile.Tag(core.Version, d.variant),

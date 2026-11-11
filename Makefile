@@ -62,6 +62,7 @@ FUZZ_TARGETS ?= \
 	./internal/format/pypi:FuzzWheelFilename \
 	./internal/format/pypi:FuzzCoreMetadata \
 	./internal/format/pypi:FuzzZipEntries \
+	./internal/format/pypi:FuzzSdistInspector \
 	./internal/format/maven:FuzzPOM \
 	./internal/format/npm:FuzzPackageJSON
 # The registries make registry-matrix probes: the dev stack's Zot and distribution. Another

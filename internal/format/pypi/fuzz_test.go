@@ -1,10 +1,13 @@
 package pypi
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"reflect"
 	"regexp"
@@ -83,6 +86,47 @@ func checkWheel(t *testing.T, s string, w Wheel) {
 
 // FuzzCoreMetadata feeds ParseCoreMetadata a METADATA or PKG-INFO file;
 // testdata/fuzz/FuzzCoreMetadata has those of testutil and real-looking ones, which
+// FuzzSdistInspector writes a .tar.gz to the inspector of an sdist, as ingest does while it
+// streams (ADR 0014), in pieces of 1 to 256 bytes, and compares what it finds with
+// ReadSdistPKGInfo of the whole, as Validate reads it from the registry: the same PKG-INFO, or
+// an error both times, format.ErrInvalid, which is also that of a write the inspector refused.
+// The seeds are an sdist with PKG-INFO first, one with it last, one cut short, and a bomb of
+// entries and zeros.
+func FuzzSdistInspector(f *testing.F) {
+	tgz, _ := testutil.Sdist(testutil.SdistOptions{Name: "tool", Version: "1.0"})
+	var last bytes.Buffer
+	gz := gzip.NewWriter(&last)
+	tw := tar.NewWriter(gz)
+	for _, m := range [][2]string{{"tool/__init__.py", "x = 1\n"}, {"PKG-INFO", "Metadata-Version: 2.1\nName: tool\nVersion: 1.0\n"}} {
+		_ = tw.WriteHeader(&tar.Header{Name: "tool-1.0/" + m[0], Mode: 0o644, Size: int64(len(m[1]))})
+		_, _ = tw.Write([]byte(m[1]))
+	}
+	_ = tw.Close()
+	_ = gz.Close()
+	bomb, _ := testutil.SdistBomb(testutil.SdistOptions{Name: "tool", Version: "1.0"}, 1000, 1<<20)
+	for _, b := range [][]byte{tgz, last.Bytes(), tgz[:len(tgz)/2], bomb} {
+		f.Add(uint8(99), b)
+	}
+	s := Sdist{Name: "tool", Version: "1.0", Kind: SdistTarGz}
+	f.Fuzz(func(t *testing.T, piece uint8, b []byte) {
+		c := newSdistInspector("tool-1.0.tar.gz", s)
+		var werr error
+		for rest, n := b, int(piece)+1; len(rest) > 0 && werr == nil; rest = rest[min(n, len(rest)):] {
+			_, werr = c.Write(rest[:min(n, len(rest))])
+		}
+		cerr := c.Close()
+		want, err := ReadSdistPKGInfo(io.LimitReader(bytes.NewReader(b), maxSdistScan), -1, s)
+		switch {
+		case (err == nil) != (cerr == nil) || err == nil && !bytes.Equal(c.core, want):
+			t.Fatalf("the inspector found %q, %v; ReadSdistPKGInfo %q, %v", c.core, cerr, want, err)
+		case cerr != nil && !errors.Is(cerr, format.ErrInvalid):
+			t.Fatalf("the inspector: %v, want ErrInvalid", cerr)
+		case werr != nil && !errors.Is(cerr, werr):
+			t.Fatalf("a write failed with %v, Close with %v", werr, cerr)
+		}
+	})
+}
+
 // TestFuzzCorpus writes. Every error must be format.ErrInvalid, and what it allocates must grow
 // with the file. Line endings do not matter: a file with LF line endings gives with CRLF the
 // same metadata, or is refused too. (Not when a line ends with "\r" already: the scanner takes
