@@ -119,7 +119,9 @@ type StreamUpload struct {
 	// Body is the bytes of the file. Ingest reads it once, to its end; the frontend bounds it
 	// by the repo's maxFileSize (LimitBody), whose error ingest returns as it is (413).
 	Body io.Reader
-	// Params are protocol parameters, as Upload.Params.
+	// Params are protocol parameters, as Upload.Params. The frontend may add to them until Body
+	// ends, as npm's publish does with a version document that its body sends after the tarball:
+	// Build gets them after.
 	Params map[string]string
 	// Origin is set by the proxy fetcher only, as Upload.Origin.
 	Origin *Origin

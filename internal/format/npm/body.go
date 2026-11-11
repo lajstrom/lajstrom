@@ -25,51 +25,36 @@ const maxBody = 4 << 20
 const keyAttachments = "_attachments"
 
 // publishBody is npm's publish body as readBody read it: every member but _attachments as JSON,
-// and the attachments with their data decoded into spool files, nil for a body without
-// _attachments. Close removes the files.
+// and the attachments, nil for a body without _attachments.
 type publishBody struct {
 	fields      map[string]json.RawMessage
 	attachments []*attachment
 }
 
-// attachment is a member of _attachments: its name, its length as sent (nil when absent), its
-// data decoded into a spool file, and the digests of the data.
+// attachment is a member of _attachments: its name, its length as sent (nil when absent), and
+// the size and the digests of its data, decoded; data says it had data.
 type attachment struct {
 	name                 string
 	length               json.RawMessage
-	file                 *format.Spooled
+	data                 bool
+	size                 int64
 	sha256, sha512, sha1 []byte
-}
-
-// Close removes the spool files of the attachments.
-func (b *publishBody) Close() error {
-	var errs []error
-	for _, a := range b.attachments {
-		if a.file != nil {
-			errs = append(errs, a.file.Close())
-		}
-	}
-	return errors.Join(errs...)
 }
 
 // readBody reads npm's publish body from r as it streams: one JSON object whose members are
 // kept as JSON, at most maxBody bytes of them, but _attachments, whose one member's data, the
-// tarball in base64, is decoded into a spool file as it comes, never held whole, at most limit
-// bytes of it (the repo's maxFileSize; -1 for none). A second attachment is refused before its
-// data is read. Errors wrap format.ErrInvalid, or an *http.MaxBytesError over a bound (413),
-// naming it with what; on error no spool file is left.
-func readBody(r io.Reader, limit int64, what string) (_ *publishBody, err error) {
+// tarball in base64, is decoded as it comes and never held whole, at most limit bytes of it (the
+// repo's maxFileSize; -1 for none). consume gets the data, decoded, and reads it to its end, or
+// returns an error, which is readBody's as it is; nil, or what consume leaves, is read and
+// dropped. A second attachment is refused before its data is read. Errors wrap
+// format.ErrInvalid, or an *http.MaxBytesError over a bound (413), naming it with what.
+func readBody(r io.Reader, limit int64, what string, consume func(name string, data io.Reader) error) (*publishBody, error) {
 	s := &scanner{r: bufio.NewReaderSize(r, 64<<10), left: maxBody}
 	b := &publishBody{fields: map[string]json.RawMessage{}}
-	defer func() {
-		if err != nil {
-			_ = b.Close()
-		}
-	}()
 	if err := s.expect('{'); err != nil {
 		return nil, err
 	}
-	err = s.members(func(key string) error {
+	err := s.members(func(key string) error {
 		if key != keyAttachments {
 			v, err := s.value()
 			b.fields[key] = v
@@ -79,7 +64,7 @@ func readBody(r io.Reader, limit int64, what string) (_ *publishBody, err error)
 			return fmt.Errorf("%w: the publish body has %s twice", format.ErrInvalid, keyAttachments)
 		}
 		b.attachments = []*attachment{}
-		return s.attachments(b, limit, what)
+		return s.attachments(b, limit, what, consume)
 	})
 	if err != nil {
 		return nil, err
@@ -93,7 +78,7 @@ func readBody(r io.Reader, limit int64, what string) (_ *publishBody, err error)
 }
 
 // attachments reads the members of _attachments into b.
-func (s *scanner) attachments(b *publishBody, limit int64, what string) error {
+func (s *scanner) attachments(b *publishBody, limit int64, what string, consume func(string, io.Reader) error) error {
 	if err := s.expect('{'); err != nil {
 		return err
 	}
@@ -110,13 +95,13 @@ func (s *scanner) attachments(b *publishBody, limit int64, what string) error {
 		return s.members(func(key string) error {
 			switch key {
 			case "data":
-				if a.file != nil {
+				if a.data {
 					return fmt.Errorf("%w: the attachment %q has data twice", format.ErrInvalid, name)
 				}
 				if err := s.expect('"'); err != nil {
 					return err
 				}
-				return a.spool(s.r, limit, what)
+				return a.read(s.r, limit, what, consume)
 			case "length":
 				var err error
 				a.length, err = s.value()
@@ -129,16 +114,29 @@ func (s *scanner) attachments(b *publishBody, limit int64, what string) error {
 	})
 }
 
-// spool decodes the base64 of the JSON string that r is in, its opening quote read, into a spool
-// file, with its digests.
-func (a *attachment) spool(r *bufio.Reader, limit int64, what string) error {
+// read decodes the base64 of the JSON string that r is in, its opening quote read, for consume,
+// with its size and digests.
+func (a *attachment) read(r *bufio.Reader, limit int64, what string, consume func(string, io.Reader) error) error {
 	h256, h512, h1 := sha256.New(), sha512.New(), sha1.New() //nolint:gosec // see the import
 	data := io.Reader(base64.NewDecoder(base64.StdEncoding, &stringReader{r: r}))
 	if limit >= 0 {
 		data = &capped{r: data, left: limit, err: fmt.Errorf("the tarball is larger than the maxFileSize of %s, %d bytes: %w", what, limit,
 			&http.MaxBytesError{Limit: limit})}
 	}
-	sp, err := format.Spool(io.TeeReader(data, io.MultiWriter(h256, h512, h1)), a.name, "application/octet-stream", -1)
+	c := &dataReader{r: io.TeeReader(data, io.MultiWriter(h256, h512, h1))}
+	var err error
+	if consume != nil {
+		err = consume(a.name, c)
+	}
+	if err == nil {
+		_, err = io.Copy(io.Discard, c)
+	}
+	switch {
+	case c.err != nil: // the data failed to read, whatever consume made of it
+		err = c.err
+	case err != nil: // consume's own
+		return err
+	}
 	var corrupt base64.CorruptInputError
 	switch {
 	case errors.As(err, &corrupt):
@@ -146,8 +144,28 @@ func (a *attachment) spool(r *bufio.Reader, limit int64, what string) error {
 	case err != nil:
 		return bodyError(err)
 	}
-	a.file, a.sha256, a.sha512, a.sha1 = sp, h256.Sum(nil), h512.Sum(nil), h1.Sum(nil)
+	a.data, a.size, a.sha256, a.sha512, a.sha1 = true, c.n, h256.Sum(nil), h512.Sum(nil), h1.Sum(nil)
 	return nil
+}
+
+// dataReader counts the bytes of the data of an attachment, and keeps the error of its read
+// besides io.EOF, which consume may have taken for its own.
+type dataReader struct {
+	r   io.Reader
+	n   int64
+	err error
+}
+
+func (d *dataReader) Read(p []byte) (int, error) {
+	if d.err != nil {
+		return 0, d.err
+	}
+	n, err := d.r.Read(p)
+	d.n += int64(n)
+	if err != nil && !errors.Is(err, io.EOF) {
+		d.err = err
+	}
+	return n, err
 }
 
 // errEnd is the end of the body where a token could come.

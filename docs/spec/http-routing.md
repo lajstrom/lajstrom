@@ -247,8 +247,10 @@ both documents, scope the package name, kinds `packument` and `packument-abbrevi
   publish, delete and journal entry changes it, and every replica computes the same.
 
 **Publish.** npm's body (ADR 0012): `name`, `dist-tags`, `versions` with one version document,
-`_attachments` with its tarball in base64. The tarball is decoded as it streams into a spool
-file, never held whole in memory; the rest of the body is at most 4 MiB, and the repo's
+`_attachments` with its tarball in base64. The tarball is decoded as it streams into the
+registry (ADR 0014), never held whole in memory nor written to a disk, and its upload session
+is closed only once the rest of the body, whatever the order of its members, is read and
+checked: a body refused stores nothing. The rest of the body is at most 4 MiB, and the repo's
 `maxFileSize` applies to the tarball (`413` for either). `400`, naming the rule, for:
 
 - a body `name` that is not `<name>`; not exactly one version and one attachment (npm's

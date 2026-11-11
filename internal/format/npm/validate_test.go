@@ -55,6 +55,66 @@ func TestBuildValidate(t *testing.T) {
 	}
 }
 
+// streamedOf is the upload of the tarball b and the version document doc as ingest hands a
+// streamed tarball to Build: written to the inspector of Inspect a few bytes at a time and
+// closed, without Open, with its size and sha256.
+func streamedOf(t *testing.T, b []byte, doc string) format.Upload {
+	t.Helper()
+	in, err := Plugin{}.Inspect(repo, format.StreamUpload{Name: "x", File: format.UploadedFile{Name: "x.tgz", Size: -1}})
+	must(t, err)
+	for rest := b; len(rest) > 0; rest = rest[min(len(rest), 100):] {
+		_, err := in.Inspector.Write(rest[:min(len(rest), 100)])
+		must(t, err)
+	}
+	must(t, in.Inspector.Close())
+	return format.Upload{Params: map[string]string{ParamUploadedBy: "user:alice", ParamDocument: doc}, Files: []format.UploadedFile{{
+		Name: "x.tgz", Size: int64(len(b)), Inspector: in.Inspector, Checksums: map[string]string{"sha256": digest.FromBytes(b).Encoded()},
+	}}}
+}
+
+// TestBuildStreamed: Build takes a tarball that streamed through the inspector of Inspect,
+// without Open, and makes the entry it makes of the same tarball read whole, but for the tarball
+// among the blobs; Validate takes the manifest when the fetch of the tarball is
+// format.ErrStreamed, as ingest's is for the file of the upload, and not when the fetch fails
+// otherwise; the manifest-confusion check is Build's then: another dependency in the document is
+// refused there.
+func TestBuildStreamed(t *testing.T) {
+	ctx := t.Context()
+	b, info := testutil.NpmTarball(testutil.NpmOptions{Name: "@acme/widgets", Scripts: map[string]string{"install": "node x.js"}})
+	built, err := Plugin{}.Build(ctx, repo, streamedOf(t, b, document(t, info, nil)))
+	must(t, err)
+	whole, err := Plugin{}.Build(ctx, repo, upload(b, document(t, info, nil)))
+	must(t, err)
+	if d := cmp.Diff(whole.Entry, built.Entry); d != "" || len(built.Blobs) != 2 || built.Manifest.Layers[0].Digest != digest.FromBytes(b) {
+		t.Fatalf("%d blobs, the tarball layer %s; the entry (-read whole +streamed)\n%s", len(built.Blobs), built.Manifest.Layers[0].Digest, d)
+	}
+	served := fetcher(t, built)
+	for _, tt := range []struct {
+		err error
+		ok  bool
+	}{{fmt.Errorf("ingest: committed after Validate: %w", format.ErrStreamed), true}, {errors.New("connection reset"), false}} {
+		fetch := func(ctx context.Context, d digest.Digest) (io.ReadCloser, error) {
+			if d == built.Manifest.Layers[0].Digest {
+				return nil, tt.err
+			}
+			return served(ctx, d)
+		}
+		entry, err := Plugin{}.Validate(ctx, repo, built.Manifest, fetch)
+		switch {
+		case (err == nil) != tt.ok:
+			t.Errorf("Validate with the fetch of the tarball %v: %v", tt.err, err)
+		case err == nil:
+			if d := cmp.Diff(&built.Entry, entry); d != "" {
+				t.Errorf("(-Build +Validate)\n%s", d)
+			}
+		}
+	}
+	confused := document(t, info, func(doc map[string]any) { doc["dependencies"] = map[string]any{"evil": "*"} })
+	if _, err := (Plugin{}).Build(ctx, repo, streamedOf(t, b, confused)); !errors.Is(err, format.ErrInvalid) {
+		t.Errorf("Build of a document with another dependency: %v, want ErrInvalid", err)
+	}
+}
+
 // TestValidateRefuses changes one thing of a built manifest or of its metadata layer at a time:
 // each disagreement is ErrInvalid.
 func TestValidateRefuses(t *testing.T) {

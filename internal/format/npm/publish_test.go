@@ -135,6 +135,9 @@ func TestPublishRefuses(t *testing.T) {
 		{"an upper-case name", "/npm/internal/Widgets", "upper-case", 400, func(body, _ map[string]any) { body["name"] = "Widgets" }},
 		{"two versions", "", "one version", 400, func(body, doc map[string]any) { body["versions"].(map[string]any)["2.0.0"] = doc }},
 		{"no attachment", "", "one attachment", 400, func(body, _ map[string]any) { body["_attachments"] = map[string]any{} }},
+		{"an attachment without data", "", "has no data", 400, func(body, _ map[string]any) {
+			delete(body["_attachments"].(map[string]any)["widgets-1.0.0.tgz"].(map[string]any), "data")
+		}},
 		{"build metadata", "", "build metadata", 400, func(body, doc map[string]any) {
 			body["versions"] = map[string]any{"1.0.0+b": doc}
 		}},
@@ -153,7 +156,7 @@ func TestPublishRefuses(t *testing.T) {
 		}},
 		{"a readme of 3 MiB", "", "metadata", 413, func(_, doc map[string]any) { doc["readme"] = strings.Repeat("x", 3<<20) }},
 		{"a tarball over maxFileSize", "", "maxFileSize of npm/internal", 413, func(body, _ map[string]any) {
-			body["_attachments"].(map[string]any)["widgets-1.0.0.tgz"].(map[string]any)["data"] = base64.StdEncoding.EncodeToString(make([]byte, 5000))
+			body["_attachments"].(map[string]any)["widgets-1.0.0.tgz"].(map[string]any)["data"] = base64.StdEncoding.EncodeToString(largeTarball(t, "1.0.0", 5000))
 		}},
 	} {
 		path := tc.path
