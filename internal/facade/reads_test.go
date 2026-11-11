@@ -123,7 +123,7 @@ func TestBlobRedirect(t *testing.T) {
 
 // TestBlobReadFailures checks a backend error before the response (502 UNKNOWN, the cause
 // logged and not answered) and a stream that breaks after the headers (logged with the request
-// id).
+// id; the client gets the first byte, the second is held back for the digest).
 func TestBlobReadFailures(t *testing.T) {
 	e := newEnv(t, envOptions{registry: func(f *providertest.Fake) provider.Provider { return &brokenStream{Fake: f} }})
 	b := []byte("0123456789")
@@ -140,7 +140,7 @@ func TestBlobReadFailures(t *testing.T) {
 	}
 }
 
-// brokenStream is the fake whose blobs break after their first byte and whose StatBlob fails
+// brokenStream is the fake whose blobs break after their second byte and whose StatBlob fails
 // as a backend that rejects Lajstrom's credentials.
 type brokenStream struct{ *providertest.Fake }
 
@@ -152,7 +152,7 @@ func (p *brokenStream) OpenBlob(ctx context.Context, name string, d digest.Diges
 	b.Body = struct {
 		io.Reader
 		io.Closer
-	}{io.MultiReader(io.LimitReader(b.Body, 1), iotest.ErrReader(errors.New("connection reset"))), b.Body}
+	}{io.MultiReader(io.LimitReader(b.Body, 2), iotest.ErrReader(errors.New("connection reset"))), b.Body}
 	return b, nil
 }
 

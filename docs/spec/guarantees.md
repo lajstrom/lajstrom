@@ -912,15 +912,24 @@ status is `holds on strongly consistent registries only` do not hold there.
   connection is aborted, so that no client receives the whole of a blob whose bytes are not its
   digest. As on upload (INV-11).
 - **Scope.** Every download through `format.ServeBlob`: the frontends and the blob `GET` of
-  `/v2`. Not a `307` redirect to the backend's storage, whose bytes do not pass through
-  Lajstrom ([Not guaranteed](#not-guaranteed)), and not a `206` answer to a `Range` request,
-  which is not the whole blob.
+  `/v2`; and the manifest `GET` of `/v2`, whose bytes stream from the backend the same way.
+  Not a `307` redirect to the backend's storage, whose bytes do not pass through Lajstrom
+  ([Not guaranteed](#not-guaranteed)), and not a `206` answer to a `Range` request, which is
+  not the whole blob.
 - **Assumes.** Any.
-- **Mechanism.** None yet: a verifying writer in `format.ServeBlob`, like `facade.verifier`.
-- **Tests.** None.
-- **When violated.** Today: a client that checks nothing (`curl` on the raw frontend) gets the
-  bytes the registry sent.
-- **Status.** `not yet` (new issue).
+- **Mechanism.** `format.blobAnswer.copy` through `format.digestWriter`, and
+  `facade.handler.streamManifest` through `facade.verifier`. The abort is a panic of an error
+  that wraps `http.ErrAbortHandler`: net/http closes the connection (HTTP/1, without the rest of
+  the body or the last chunk) or resets the stream (HTTP/2), and `server.Server.recovery` logs
+  the cause.
+- **Tests.** `TestServeBlobDigest` (with `Content-Length`, chunked, HTTP/2; a range not
+  hashed), `TestDownloadVerifiesDigest` (a 256 MiB blob and a manifest through the server, the
+  heap under 64 MiB), `TestRecoveryAbortCause`, `TestStreamingMemory`.
+- **When violated.** Lajstrom notices: the client gets a short body and a broken connection,
+  `lajstrom_download_digest_mismatches_total{registry}` counts it, and an `error` line
+  `response aborted` names the repository, the digest and the registry. The registry holds the
+  only copy (INV-1): what repairs it is the registry's, or a new publish.
+- **Status.** `holds`.
 
 ## Summary
 
@@ -965,7 +974,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-37 | readiness | holds | |
 | INV-38 | denied versions kept out | not yet (#101) | |
 | INV-39 | encryption at rest | not yet (#114) | |
-| INV-40 | a streamed download has its digest | not yet | |
+| INV-40 | a streamed download has its digest | holds | |
 
 ## Not guaranteed
 

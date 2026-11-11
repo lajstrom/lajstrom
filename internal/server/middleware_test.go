@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -121,6 +122,33 @@ func TestRecovery(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRecoveryAbortCause checks an abort that says why: net/http gets http.ErrAbortHandler
+// itself, which it does not log, and the cause is logged at Error with the request id, the
+// status and the bytes written. A bare http.ErrAbortHandler logs nothing.
+func TestRecoveryAbortCause(t *testing.T) {
+	s, buf := newTestServer(t, Options{})
+	s.mux.HandleFunc("GET /test/abort-cause", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "partial")
+		panic(fmt.Errorf("the bytes are not the digest: %w", http.ErrAbortHandler))
+	})
+	s.mux.HandleFunc("GET /test/abort", func(http.ResponseWriter, *http.Request) { panic(http.ErrAbortHandler) })
+	for _, path := range []string{"/test/abort-cause", "/test/abort"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("X-Request-Id", "req-4")
+		if panicked := serve(s.Handler(), httptest.NewRecorder(), req); panicked != any(http.ErrAbortHandler) {
+			t.Fatalf("%s: panic = %v, want http.ErrAbortHandler itself", path, panicked)
+		}
+	}
+	l := findLog(t, buf, "response aborted")
+	if l["level"] != "ERROR" || l["requestId"] != "req-4" || l["path"] != "/test/abort-cause" || l["status"] != float64(200) ||
+		l["bytes"] != float64(len("partial")) || l["error"] != "the bytes are not the digest: "+http.ErrAbortHandler.Error() {
+		t.Errorf("abort log line = %v", l)
+	}
+	if n := strings.Count(buf.String(), `"msg":"response aborted"`); n != 1 {
+		t.Errorf("%d lines response aborted, want 1 (none for the bare abort):\n%s", n, buf)
 	}
 }
 

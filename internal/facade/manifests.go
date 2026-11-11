@@ -20,6 +20,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/server"
@@ -64,7 +65,8 @@ func parseReference(ref string) (digest.Digest, error) {
 // is not one names no manifest: 404 MANIFEST_UNKNOWN, as the conformance suite wants of a read;
 // a digest that is not one is 400 DIGEST_INVALID. The read is authorized before the reference
 // is parsed, so that a principal that may not read the repo gets the answer of a repo that
-// does not exist, whatever the reference (docs/spec/rbac.md §3).
+// does not exist, whatever the reference (docs/spec/rbac.md §3). The body is checked against
+// its digest as it streams (streamManifest).
 func (h *handler) getManifest(w http.ResponseWriter, r *http.Request, t *target, ref string) error {
 	ctx := r.Context()
 	if err := h.authorize(ctx, auth.ActionRead, t); err != nil {
@@ -96,14 +98,30 @@ func (h *handler) getManifest(w http.ResponseWriter, r *http.Request, t *target,
 	hdr.Set("Docker-Content-Digest", desc.Digest.String())
 	hdr.Set("Content-Length", strconv.FormatInt(desc.Size, 10))
 	w.WriteHeader(http.StatusOK)
-	if rc == nil {
-		return nil
+	if rc != nil {
+		h.streamManifest(ctx, w, t, desc, rc)
 	}
-	if _, err := io.Copy(w, rc); err != nil && ctx.Err() == nil {
+	return nil
+}
+
+// streamManifest copies the manifest desc from body to the client through a verifier: its last
+// byte goes out only when the bytes have the digest of desc, and otherwise the response is
+// aborted as format.ServeBlob aborts a blob's (docs/spec/guarantees.md, INV-40). A stream that
+// breaks is logged.
+func (h *handler) streamManifest(ctx context.Context, w io.Writer, t *target, desc ocispec.Descriptor, body io.Reader) {
+	if desc.Digest.Validate() == nil {
+		body = &verifier{r: body, h: desc.Digest.Algorithm().Hash(), want: desc.Digest}
+	}
+	_, err := io.Copy(w, body)
+	switch {
+	case errors.Is(err, errNotDigest):
+		metrics.DownloadDigestMismatches.WithLabelValues(t.repo.Registry).Inc()
+		panic(fmt.Errorf("facade: manifest %s@%s: the bytes from registry %s do not have the digest, the response is aborted: %w",
+			t.name, desc.Digest, t.repo.Registry, http.ErrAbortHandler))
+	case err != nil && ctx.Err() == nil:
 		h.o.Log.WarnContext(ctx, "facade: the manifest stream failed after the response started", "name", t.name,
 			"digest", desc.Digest.String(), "error", err.Error(), "requestId", server.RequestID(ctx))
 	}
-	return nil
 }
 
 // manifestUnknown is the answer to a failed resolve or fetch of a manifest.

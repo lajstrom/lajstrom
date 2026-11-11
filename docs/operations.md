@@ -578,6 +578,7 @@ so the number of series is fixed by the code and the configuration.
 | `lajstrom_proxy_documents_total` | `upstream`, `result` | reads of upstream documents: `fresh` (the cache), `revalidated` (`304`), `refreshed` (`200`), `absent` (`404`, `410`), `stale` (the upstream failed, the cache or the held versions served), `offline`, `shared` (a miss that waited for the request another miss on this replica sent) |
 | `lajstrom_proxy_fetches_total` | `upstream`, `result` | file requests of proxy repos: `held` (a hit), `fetched` (a miss downloaded and published), `shared` (a miss another request or replica fetched), `missing`, `rejected` (checksum, size, `Validate`), `error` |
 | `lajstrom_auth_throttled_total` | `throttle` | requests answered `429` by a throttle ([auth.md](auth.md#failed-logins)): `account` and `address` (failed logins), `token` (requests to `/v2/token`) |
+| `lajstrom_download_digest_mismatches_total` | `registry` | downloads aborted because the bytes the registry sent do not have their digest ([guarantees.md](spec/guarantees.md), INV-40): a blob streamed to a frontend's or `/v2`'s client, a manifest of `/v2`; the log line `response aborted` names it. Anything but 0 is a registry that serves other bytes than it stored |
 | `lajstrom_build_info` | `version`, `commit`, `goversion` | always 1 |
 
 ```yaml
