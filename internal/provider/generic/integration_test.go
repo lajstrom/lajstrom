@@ -88,6 +88,21 @@ func TestIntegration(t *testing.T) {
 			t.Errorf("Exists(manifest) = %v, %v", ok, err)
 		}
 	})
+	step(t, "stat manifest", func(t *testing.T) {
+		if d, err := p.StatManifest(ctx, name, manifestDesc.Digest); err != nil || d.Digest != manifestDesc.Digest {
+			t.Errorf("StatManifest = %+v, %v; want %s", d, err, manifestDesc.Digest)
+		}
+		// What prune counts as unknown (guarantees.md, G-5): MANIFEST_UNKNOWN in a repository the
+		// registry has, and not the NAME_UNKNOWN of one it does not.
+		if _, err := p.StatManifest(ctx, name, digest.FromString("never pushed "+run)); !errors.Is(err, provider.ErrManifestUnknown) {
+			t.Errorf("StatManifest of a manifest never pushed: %v, want ErrManifestUnknown", err)
+		}
+		_, err := p.StatManifest(ctx, base+"/no-such-repository", manifestDesc.Digest)
+		if !errors.Is(err, provider.ErrNotFound) {
+			t.Errorf("StatManifest in a repository never pushed to: %v, want ErrNotFound", err)
+		}
+		t.Logf("StatManifest in a repository never pushed to: %v", err)
+	})
 	step(t, "tags", func(t *testing.T) {
 		var tags []string
 		if err := repo.Tags(ctx, "", func(page []string) error {
@@ -265,6 +280,9 @@ func TestIntegration(t *testing.T) {
 		}
 		if _, err := repo.Resolve(ctx, manifestDesc.Digest.String()); !errors.Is(err, provider.ErrNotFound) {
 			t.Errorf("Resolve after Delete error = %v, want ErrNotFound", err)
+		}
+		if _, err := p.StatManifest(ctx, name, manifestDesc.Digest); !errors.Is(err, provider.ErrManifestUnknown) {
+			t.Errorf("StatManifest after Delete: %v, want ErrManifestUnknown", err)
 		}
 		if c, err := p.Capabilities(ctx); err != nil || !c.DeleteManifest {
 			t.Errorf("Capabilities after a successful delete = %+v, %v", c, err)

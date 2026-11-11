@@ -30,6 +30,12 @@ var (
 	// 416, and the 429 or 503 of a busy backend, which is ErrUnavailable too. A *RejectedError
 	// says how.
 	ErrRejected = errors.New("provider: rejected")
+	// ErrManifestUnknown means the registry answered 404 with the error code MANIFEST_UNKNOWN
+	// to a request for a manifest by its digest (Provider.StatManifest): the one answer that
+	// counts as "unknown" for prune (docs/spec/guarantees.md, G-5). An error that wraps it
+	// wraps ErrNotFound too; a 404 without the code, NAME_UNKNOWN among them, wraps
+	// ErrNotFound alone.
+	ErrManifestUnknown = errors.New("provider: manifest unknown")
 )
 
 // RejectedError is an ErrRejected with what the backend answered. Its message names the
