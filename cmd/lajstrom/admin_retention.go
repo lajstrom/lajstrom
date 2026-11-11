@@ -26,8 +26,8 @@ import (
 // them as a Secret.
 const (
 	envRetentionURL       = "LAJSTROM_URL"
-	envRetentionToken     = "LAJSTROM_TOKEN"
-	envRetentionTokenFile = "LAJSTROM_TOKEN_FILE"
+	envRetentionToken     = "LAJSTROM_TOKEN"      //nolint:gosec // the name of a variable, not a credential
+	envRetentionTokenFile = "LAJSTROM_TOKEN_FILE" //nolint:gosec // the name of a variable, not a credential
 )
 
 // retentionBatch is how many versions one request of --apply sends: the body of the batch is at
@@ -112,25 +112,10 @@ func newAdminRetentionCmd(a *app) *cobra.Command {
 				return fmt.Errorf("--output: %q is not text or json", output)
 			}
 			if cmd.Flags().Changed("keep-last") {
-				if keepLast < 0 {
-					return fmt.Errorf("--keep-last: %d is negative", keepLast)
-				}
 				rules.KeepLast = &keepLast
 			}
-			if maxAge != "" {
-				d, err := auth.ParseLifetime(maxAge)
-				if err != nil {
-					return fmt.Errorf("--max-age: %w", err)
-				}
-				rules.MaxAge, rules.maxAge = maxAge, d
-			}
-			if rules.KeepLast == nil && rules.maxAge == 0 {
-				return errors.New("name a rule: --keep-last, --max-age or both")
-			}
-			for _, g := range rules.Packages {
-				if _, err := path.Match(g, ""); err != nil {
-					return fmt.Errorf("--package: %q is not a glob: %w", g, err)
-				}
+			if err := rules.check(maxAge); err != nil {
+				return err
 			}
 			c, err := newRetentionClient(a.lookupEnv, base, tokenFile)
 			if err != nil {
@@ -152,6 +137,29 @@ func newAdminRetentionCmd(a *app) *cobra.Command {
 	fl.StringVar(&tokenFile, "token-file", "", "a file with a personal access token (env "+envRetentionTokenFile+", or the token in "+envRetentionToken+")")
 	_ = cmd.MarkFlagRequired("repo")
 	return cmd
+}
+
+// check checks the rules of the flags and sets the duration of maxAge, the flag --max-age.
+func (rules *retentionRules) check(maxAge string) error {
+	if rules.KeepLast != nil && *rules.KeepLast < 0 {
+		return fmt.Errorf("--keep-last: %d is negative", *rules.KeepLast)
+	}
+	if maxAge != "" {
+		d, err := auth.ParseLifetime(maxAge)
+		if err != nil {
+			return fmt.Errorf("--max-age: %w", err)
+		}
+		rules.MaxAge, rules.maxAge = maxAge, d
+	}
+	if rules.KeepLast == nil && rules.maxAge == 0 {
+		return errors.New("name a rule: --keep-last, --max-age or both")
+	}
+	for _, g := range rules.Packages {
+		if _, err := path.Match(g, ""); err != nil {
+			return fmt.Errorf("--package: %q is not a glob: %w", g, err)
+		}
+	}
+	return nil
 }
 
 // retentionClient is the HTTP client of admin retention.
