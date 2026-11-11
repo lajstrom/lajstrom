@@ -18,7 +18,9 @@ release configuration, is marked, and so is what could not.
 
 Signatures are keyless: the release workflow signs with a short-lived certificate for its own
 GitHub identity, logged in Rekor, so there is no public key to fetch. What `cosign` checks is
-that identity: the workflow `release.yml` of `lajstrom/lajstrom` at the tag.
+that identity: the workflow `release.yml` of `lajstrom/lajstrom` at the tag. Verify with
+cosign 3 (`brew install cosign`): the signatures are in the bundle format of cosign 3, which
+cosign 2 does not read by default.
 
 ## Container image
 
@@ -105,7 +107,30 @@ lajstrom version
 ```
 
 A cask, for macOS (it lists the Linux archives too); it removes the quarantine attribute after
-Homebrew has checked the archive's sha256. Not tried: the tap is written at the first release.
+Homebrew has checked the archive's sha256. Since Homebrew 6, a cask from a tap other than
+Homebrew's own needs trust. Installing it by its full name, as above, trusts this one cask.
+To install it as `brew install lajstrom`, run `brew trust --cask lajstrom/tap/lajstrom` first
+([Tap Trust](https://docs.brew.sh/Tap-Trust)).
+
+The tap gets its cask at the first release. So the snapshot's cask was installed instead, on
+2026-11-11, on macOS 27.0.1 arm64 with Homebrew 7.0.12. It came from a local tap, with its
+URLs changed to `file://` URLs of the snapshot's archives, because the release URLs work only
+once a release is published:
+
+```text
+$ brew install lajstromreleasetest/tap/lajstrom
+==> Fetching downloads for: lajstromreleasetest/tap/lajstrom
+✔︎ Cask lajstrom (0.0.2-snapshot.533acf3)
+==> Installing Cask lajstrom
+==> Linking Binary 'lajstrom' to '/opt/homebrew/bin/lajstrom'
+$ lajstrom version
+lajstrom v0.0.1-357-g533acf3 (533acf3, 2026-11-11T07:23:38Z)
+$ brew uninstall --cask lajstrom
+```
+
+After the install, the binary had no extended attributes. That run cannot show whether the
+step that removes the quarantine attribute worked, because a `file://` download may never have
+had the attribute. [release.md](release.md#verifying-a-release) installs the published cask.
 
 ## From source
 
