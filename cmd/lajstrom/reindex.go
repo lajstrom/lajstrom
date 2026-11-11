@@ -82,7 +82,7 @@ func newReindexCmd(a *app) *cobra.Command {
 			}
 			pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL})
 			w := reindex.New(reindex.Options{Index: st, Providers: providers, Inspector: pipe, Log: a.log,
-				Concurrency: concurrency, ClaimTTL: c.Ingest.ClaimTTL})
+				Concurrency: concurrency, ClaimTTL: c.Ingest.ClaimTTL, GraceAge: c.Reconcile.GraceAge})
 			run, err := w.Start(ctx, req)
 			var conflict *index.ReindexConflictError
 			if errors.As(err, &conflict) {
@@ -156,10 +156,10 @@ func writeReport(out io.Writer, rep *reindex.Report, lists bool) error {
 	var buf bytes.Buffer
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 	// A bytes.Buffer does not fail.
-	_, _ = io.WriteString(tw, "REPO\tMANIFESTS\tADDED\tUPDATED\tUNCHANGED\tREMOVED\tDEGRADED\tREFERRERS\tFOREIGN\tORPHANS\tDRIFT\tERRORS\n")
+	_, _ = io.WriteString(tw, "REPO\tMANIFESTS\tADDED\tUPDATED\tUNCHANGED\tREMOVED\tPENDING\tDEGRADED\tREFERRERS\tFOREIGN\tORPHANS\tDRIFT\tERRORS\n")
 	for _, r := range rep.Repos {
-		_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", r.Repo, r.Manifests, r.Added, r.Updated,
-			r.Unchanged, r.Removed, r.Degraded, r.Referrers, len(r.Foreign), len(r.OrphanReferrers), len(r.Drift), len(r.Errors))
+		_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", r.Repo, r.Manifests, r.Added, r.Updated,
+			r.Unchanged, r.Removed, r.Pending, r.Degraded, r.Referrers, len(r.Foreign), len(r.OrphanReferrers), len(r.Drift), len(r.Errors))
 	}
 	if err := tw.Flush(); err != nil {
 		return err

@@ -254,7 +254,8 @@ of its versions, kept in the registry as a journal of manifests (manifest-profil
   the referrers lock (Coordination) keyed by the package's OCI repository and the empty blob's
   digest, which no manifest has. The order of a package's entries is the order of that lock.
 - Reindex marks and sweeps `journal` as it does `versions`: a `_j` tag that names the digest of
-  its row is seen without a read, a row whose tag the registry answers as unknown is deleted.
+  its row is seen without a read, a row whose manifest the registry answers as unknown is
+  deleted under the rule of `versions` (Invariants and rules).
   Then it replaces the package's `journal_state` with the replay of its rows, in one transaction.
   The test of #307 drops both tables, runs reindex and compares.
 - The state is never a column of `versions`: a version row is its manifest's, the state is the
@@ -385,10 +386,16 @@ release.
   checked when it was written), unless the run verifies. At the end, each row of the repo not
   seen since the run started is looked up by its tag in the registry once more: a tag that
   names the row's digest keeps it (written after the listing, possibly by a replica whose clock
-  is behind), a tag that names another digest is drift (below), and only a tag the registry
-  answers as unknown deletes the row; packages left without versions go with it. Any other
-  answer (an error, a timeout) keeps the row and is an error of the report, and a run that cannot
-  list the repo's OCI repositories sweeps nothing.
+  is behind), a tag that names another digest is drift (below), and a tag the registry does not
+  resolve asks for the manifest by its digest (`Provider.StatManifest`). Only `404
+  MANIFEST_UNKNOWN` counts as unknown, and the row goes only on the second such answer at least
+  10 minutes after the first (`prune_sightings`, Coordination) and when its `indexed_at` is at
+  least `reconcile.graceAge` old (guarantees.md, G-5); packages left without versions go with
+  it. Any other answer (`NAME_UNKNOWN`, a `404` without the code, a `5xx`, `401`, `403`, a
+  timeout) keeps the row and is an error of the report, and a run that cannot list the repo's
+  OCI repositories sweeps nothing. An `oci_repos` row goes when no run has seen its repository
+  for `reconcile.graceAge`; a sweep that finds a version's manifest records its repository
+  again.
 - A tag that names another digest than the index row of that tag is drift: the index keeps its
   digest, the report lists both, nothing is re-pointed (the rule of the reconcile loop, #30).
   A drifted row is the one row whose manifest is not under its tag any more.

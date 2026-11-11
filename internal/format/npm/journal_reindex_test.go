@@ -2,6 +2,7 @@ package npm
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -92,9 +93,10 @@ func TestJournalReindex(t *testing.T) {
 	}
 }
 
-// TestJournalReindexLost: the registry loses entry 5, the move of latest to 1.1.0. Reindex
-// removes its row, reports the gap and replays the rest: latest is 1.0.0 again, as entry 1 set
-// it.
+// TestJournalReindexLost: the registry loses entry 5, the move of latest to 1.1.0. Reindex keeps
+// its row while it is younger than the grace age, then removes it once the registry answered
+// MANIFEST_UNKNOWN twice, reports the gap and replays the rest: latest is 1.0.0 again, as entry
+// 1 set it.
 func TestJournalReindexLost(t *testing.T) {
 	ctx := t.Context()
 	p := journalPipeline(t)
@@ -103,9 +105,12 @@ func TestJournalReindexLost(t *testing.T) {
 	desc, err := rr.Resolve(ctx, profile.JournalTag(5))
 	must(t, err)
 	must(t, rr.Delete(ctx, desc))
-	r := p.reindex(t)
+	if r := p.reindex(t); r.Removed != 0 || r.Pending != 1 || len(r.Errors) != 0 {
+		t.Errorf("reindex after a lost entry, younger than the grace age: %+v", r)
+	}
+	r := p.reindexAt(t, time.Now().Add(2*time.Hour))
 	if r.Removed != 1 || len(r.Errors) != 1 || r.Errors[0].Tag != profile.JournalTag(5) {
-		t.Errorf("reindex after a lost entry: %+v", r)
+		t.Errorf("reindex after a lost entry, two hours later: %+v", r)
 	}
 	_, state := p.journalOf(t, "@acme/widgets")
 	if want := (index.JournalState{Kind: index.JournalDistTag, Key: "latest", Value: "1.0.0", Seq: 1}); len(state) != 3 || state[2] != want {

@@ -39,8 +39,10 @@ import (
 //   - I-01: three raw files published through ingest, the derived rows dropped, a run: every
 //     column back but the ids and indexed_at;
 //   - drift: a profile manifest pushed past Lajstrom is indexed, a manifest deleted in the
-//     backend loses its rows (when the registry deletes manifests), a tag re-pointed in the
-//     backend is reported and keeps the index's digest (when tags are mutable);
+//     backend loses its rows (when the registry deletes manifests) once the registry answered
+//     MANIFEST_UNKNOWN twice and the version is older than the grace age (#446), a tag
+//     re-pointed in the backend is reported and keeps the index's digest (when tags are
+//     mutable);
 //   - I-02 and E-04: a Helm chart under the repo's path is foreign, in oci_repos and the report,
 //     never indexed; a signature with a subject is a referrer, not in the report.
 func TestIntegration(t *testing.T) {
@@ -67,7 +69,7 @@ func TestIntegration(t *testing.T) {
 	plugins := func(name string) (format.Plugin, bool) { return raw.Plugin{}, name == raw.Name }
 	log := slog.New(slog.DiscardHandler)
 	e.pipe = ingest.New(ingest.Options{Providers: provider.Map{"local": prov}, Index: e.st, Plugins: plugins, Log: log})
-	e.w = reindex.New(reindex.Options{Index: e.st, Providers: provider.Map{"local": prov}, Inspector: e.pipe, Log: log})
+	e.w = reindex.New(reindex.Options{Index: e.st, Providers: provider.Map{"local": prov}, Inspector: e.pipe, Log: log, Now: e.clock.now})
 	base := "raw/" + e.repo.Name
 
 	// I-01.
@@ -109,8 +111,15 @@ func TestIntegration(t *testing.T) {
 	}
 
 	r = e.run(t, reindex.Request{Prune: true})
-	if r.Added != 1 || r.Removed != wantRemoved || r.Referrers != 1 || len(r.OrphanReferrers) != 0 || len(r.Errors) != 0 {
+	if r.Added != 1 || r.Removed != 0 || r.Pending != wantRemoved || r.Referrers != 1 || len(r.OrphanReferrers) != 0 || len(r.Errors) != 0 {
 		t.Errorf("drift run: %+v", *r)
+	}
+	if _, err := e.st.GetPackage(ctx, e.repo.ID, "docs/old.md"); err != nil {
+		t.Errorf("the rows of the deleted manifest, younger than the grace age: %v", err)
+	}
+	e.clock.later(2 * time.Hour)
+	if again := e.run(t, reindex.Request{Prune: true}); again.Removed != wantRemoved || again.Pending != 0 || len(again.Errors) != 0 {
+		t.Errorf("the run two hours later: %+v", *again)
 	}
 	same(t, "I-02: the foreign manifest", []reindex.Finding{{Repository: "charts/demo", Tag: "0.1.0", Digest: chart,
 		MediaType: ocispec.MediaTypeImageManifest}}, r.Foreign)

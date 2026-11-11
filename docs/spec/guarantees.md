@@ -203,26 +203,41 @@ status is `holds on strongly consistent registries only` do not hold there.
 ### INV-5. Prune never removes what the registry still holds
 
 - **Statement.** Reindex and the reconcile loop delete a derived row only when the registry
-  answers that the row's tag is unknown, looked up again after the listing, on two consecutive
-  runs, and never the row of a version younger than `reconcile.graceAge`; an error, a timeout or
-  a listing that failed removes nothing.
-- **Scope.** `reindex` with `--prune` (the default for every repo), the reconcile loop, the npm
-  journal's rows.
-- **Assumes.** Registry: a read-after-write lag shorter than `reconcile.graceAge`
-  (**unchecked**); until the grace age is built, **read-after-write** (**unchecked**): a lagging
-  registry answers "unknown" for a tag it holds. Database: any.
-- **Mechanism.** `reindex.scan.sweep` (each unseen row resolved by its tag; only
-  `provider.ErrNotFound` deletes), `scan.list` (no sweep when the listing failed),
-  `reindex.replay.sweep` for the journal. The grace age and the second observation: none yet.
-- **Tests.** `TestSweepKeepsWhatItCannotCheck`, `TestBypassAndDelete`, `TestDrift`,
-  `TestNoCatalog`, the store conformance case `Sweep`, `TestReconcile`.
-- **When violated.** A version published shortly before a run, inside the registry's lag, loses
-  its rows: it is missing from every index and its files are `404` until the next run lists it
-  again and adds it back. The run's audit row `reconcile` counts the removal; nothing alerts.
-- **Status.** `not yet` ([#446](https://github.com/lajstrom/lajstrom/issues/446)): the grace age
-  and the second observation are not built. What holds today, on strongly consistent registries
-  only: a row goes at the first "unknown" of its lookup after the listing, and an error, a
-  timeout or a failed listing removes nothing. **Untested:** no test with a lagging registry.
+  answered `404 MANIFEST_UNKNOWN` to the row's manifest by its digest twice, at least 10 minutes
+  apart with no other answer between, and the row is at least `reconcile.graceAge` old (ingest
+  wrote it, or a run last saw its manifest, that long ago). A tag that does not resolve, a
+  listing that misses the row or failed, `NAME_UNKNOWN`, a `404` without the code, a `5xx`,
+  `401`, `403` and a timeout remove nothing.
+- **Scope.** `reindex` with `--prune` (the default for every repo), the API's reindex, the
+  reconcile loop; `versions` (with their `files`, and the packages left empty) and the npm
+  journal's rows. An `oci_repos` row goes when no run has seen its repository for
+  `reconcile.graceAge`. A delete through the API is not prune (INV-13).
+- **Assumes.** Registry: a manifest it holds reads back by its digest, at the endpoint Lajstrom
+  reads, within `reconcile.graceAge` of its write, and is not answered `MANIFEST_UNKNOWN` twice
+  10 minutes apart afterwards (**unchecked**; [operations.md](../operations.md#on-an-eventually-consistent-registry)
+  says how to set the grace age). Database: **one database**, **clocks agree**: the 10 minutes and
+  the grace age compare times other replicas wrote.
+- **Mechanism.** `reindex.scan.sweep` and `reindex.replay.sweep` resolve each row the run did
+  not see by its tag; a tag that does not resolve goes to `reindex.scan.lookup`, which asks
+  `Provider.StatManifest` and counts only `provider.ErrManifestUnknown`. The first answer is a
+  `prune_sightings` row (`Writer.RecordSighting`), shared by every replica; the sweep clears the
+  rows it did not record again (`Writer.ClearSightings`). `scan.list` sweeps nothing when the
+  listing failed, and runs of one repo never overlap (`reindex_runs`, INV-26).
+- **Tests.** `TestPrune` (`MANIFEST_UNKNOWN` once, twice 9 and 10 minutes apart, a version
+  younger than the grace age, a grace age of 24 h, the manifest read back in between, a failure
+  in between, `NAME_UNKNOWN`, a `404` without a code, a `5xx`, a `403`, a timeout),
+  `TestPruneTwoReplicas`, `TestStatManifest`, the store conformance cases `Sightings`,
+  `SightingRace` and `Sweep`, `TestSweepKeepsWhatItCannotCheck`, `TestBypassAndDelete`,
+  `TestDrift`, `TestNoCatalog`, `TestNoCatalogRepositoryGone`, `TestNoCatalogRecordsAgain`, `TestJournalReindexLost`,
+  `TestReconcile`; `TestIntegration` of `internal/provider/generic` and of
+  `internal/index/reindex` against Zot and distribution.
+- **When violated.** A registry that lags longer than the grace age and answers
+  `MANIFEST_UNKNOWN` twice for a manifest it holds loses that version's rows until the next run
+  lists it again and adds it back; the run's audit row `reconcile` counts the removal; nothing
+  alerts. The other way round, a manifest the registry lost stays listed, its downloads `404`,
+  until both answers and the grace age: the report counts it as `pending`.
+- **Status.** `holds`. **Unchecked:** the registry's lag against the grace age. **Untested:** no
+  run against a registry that lags for real (ECR, [#19](https://github.com/lajstrom/lajstrom/issues/19)).
 
 ## Publishing and tags
 
@@ -1007,7 +1022,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-2 | one write path | holds | untested (plugins could push) |
 | INV-3 | the index rebuildable from the registry | strongly consistent only | unchecked (listings); untested (apt, pypi, maven; I-01 e2e) |
 | INV-4 | a version in the index is readable | strongly consistent only | unchecked; untested |
-| INV-5 | prune never removes what the registry holds | not yet (#446) | unchecked; untested |
+| INV-5 | prune never removes what the registry holds | holds | unchecked (lag within the grace age); untested (ECR) |
 | INV-6 | one winner among concurrent publishes | holds | |
 | INV-7 | a tag is never re-pointed | strongly consistent only | unchecked |
 | INV-8 | the idempotent repeat | holds | |

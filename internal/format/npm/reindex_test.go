@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -120,7 +121,17 @@ func (p *pipeline) checkScoped(t *testing.T, res *ingest.Result, info testutil.N
 // reindex runs a reindex of the repo with prune and returns its report.
 func (p *pipeline) reindex(t *testing.T) reindex.RepoReport {
 	t.Helper()
-	w := reindex.New(reindex.Options{Index: p.st, Providers: provider.Map{"local": p.fake}, Inspector: p.pipe, Log: slog.New(slog.DiscardHandler)})
+	return p.reindexAt(t, time.Time{})
+}
+
+// reindexAt is reindex on a clock at at; the zero time is the real clock.
+func (p *pipeline) reindexAt(t *testing.T, at time.Time) reindex.RepoReport {
+	t.Helper()
+	o := reindex.Options{Index: p.st, Providers: provider.Map{"local": p.fake}, Inspector: p.pipe, Log: slog.New(slog.DiscardHandler)}
+	if !at.IsZero() {
+		o.Now = func() time.Time { return at }
+	}
+	w := reindex.New(o)
 	req := reindex.Request{Repo: &p.repo, Prune: true, Source: "cli", Principal: "user:admin"}
 	run, err := w.Start(t.Context(), req)
 	must(t, err)

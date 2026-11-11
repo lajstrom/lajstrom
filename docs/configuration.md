@@ -300,6 +300,7 @@ repos:
 | Key | Type | Default | Env | Description |
 | --- | --- | --- | --- | --- |
 | `reconcile.interval` | duration (`1h`, `30m`) | `1h` | none | How often each replica runs a reindex of every repo with prune, so that writes that went past Lajstrom (a push straight to the backend, a delete in the registry's console) reach the index ([operations.md](operations.md#reconcile)). The first run comes after a random part of the interval; a run that overlaps a run elsewhere waits for the next tick. `0s` turns the loop off. Must not be negative. |
+| `reconcile.graceAge` | duration (`1h`, `24h`) | `1h` | none | How long prune keeps a row whatever the registry answers: a version published, or seen in the registry by a run, less than this ago is never removed. It holds for the loop, `lajstrom reindex` and the API's reindex. A row goes only once it is this old and the registry answered `404 MANIFEST_UNKNOWN` to its manifest twice, at least 10 minutes apart ([operations.md](operations.md#on-an-eventually-consistent-registry)). Keep the default when Lajstrom reads the registry at the endpoint it writes to; set `24h` or more when reads go through a replica or a cache (ECR replication, a pull-through cache, ACR geo-replicas). `0s` means the default. Must not be negative. |
 
 The `ingest` and `reconcile` sections are additions to the shape in [layout.md](spec/layout.md)
 §6.
