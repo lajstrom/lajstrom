@@ -1,6 +1,7 @@
 package pypi
 
 import (
+	"context"
 	"crypto/md5" //nolint:gosec // md5_digest of the legacy upload API, compared, not trusted
 	"crypto/sha256"
 	"encoding/base64"
@@ -26,13 +27,14 @@ const maxFields = 8 << 20
 
 // upload is the legacy upload API that twine and uv use (docs/spec/http-routing.md §3, pypi):
 // POST /pypi/{repo}/ with multipart/form-data, :action=file_upload, protocol_version=1, the file
-// in content, and the metadata fields. The file is spooled to disk as it streams in, with its
-// sha256, md5 and blake2b-256, and those the client sent must match, as must the name, version
-// and filetype it sent with what the file name says, all before anything is published; Build
-// makes the metadata layer from the file's own METADATA or PKG-INFO, which must say what the file
-// name says. 200 on success and for the same bytes again; 400 with the reason;
-// 409 "File already exists" for other bytes under the file name's version and variant, which
-// twine --skip-existing skips; 413 over policy.maxFileSize. It needs write on the repo.
+// in content, and the metadata fields. The file streams into the registry as it comes, with its
+// sha256, md5 and blake2b-256 (ADR 0014; a wheel and a .zip sdist are still spooled for the
+// request), and the rest of the form is read when it ends: the digests the client sent must be
+// the file's, and the name, version and filetype it sent what the file name says, or nothing is
+// stored. Build makes the metadata layer from the file's own METADATA or PKG-INFO, which must say
+// what the file name says. 200 on success and for the same bytes again; 400 with the reason; 409
+// "File already exists" for other bytes under the file name's version and variant, which twine
+// --skip-existing skips; 413 over policy.maxFileSize. It needs write on the repo.
 func (h *handlers) upload(w http.ResponseWriter, r *http.Request) {
 	repo, ok := format.RepoFrom(r.Context())
 	if !ok {
@@ -54,29 +56,37 @@ func (h *handlers) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = io.NopCloser(body)
-	form, err := readForm(r)
-	if form != nil && form.file != nil {
-		defer func() {
-			if err := form.file.Close(); err != nil {
-				h.deps.Log.WarnContext(ctx, "pypi: upload spool not removed", "error", err.Error())
-			}
-		}()
-	}
+	form, err := newForm(r)
+	var part *multipart.Part
 	if err == nil {
+		part, err = form.next()
+	}
+	var d dist
+	switch {
+	case err != nil:
+	case part == nil:
 		err = form.check()
+	default:
+		d, err = describe(form.filename, "")
 	}
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
 	principal := auth.PrincipalFrom(ctx)
-	file := form.file.File()
-	pub, err := h.deps.Ingest.Upload(ctx, repo, format.Upload{Files: []format.UploadedFile{file},
-		Params: map[string]string{ParamUploadedBy: principal.String()}}, principal)
+	params := map[string]string{ParamUploadedBy: principal.String()}
+	var pub *format.Published
+	if streams(d) {
+		pub, err = h.deps.Ingest.UploadStream(ctx, repo, format.StreamUpload{Name: d.name,
+			File: format.UploadedFile{Name: form.filename, Size: -1, ContentType: part.Header.Get("Content-Type")},
+			Body: &content{part: part, form: form}, Params: params}, principal)
+	} else {
+		pub, err = h.spooled(ctx, repo, form, part, params, principal)
+	}
 	var conflict *index.TagConflictError
 	switch {
 	case errors.As(err, &conflict) || errors.Is(err, index.ErrConflict):
-		http.Error(w, "409 File already exists: "+file.Name+" is in the repository with other bytes ("+err.Error()+")", http.StatusConflict)
+		http.Error(w, "409 File already exists: "+form.filename+" is in the repository with other bytes ("+err.Error()+")", http.StatusConflict)
 		return
 	case err != nil:
 		h.fail(w, r, err)
@@ -84,71 +94,128 @@ func (h *handlers) upload(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Docker-Content-Digest", pub.Digest.String())
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = io.WriteString(w, "OK "+file.Name+" "+pub.Entry.Name+" "+pub.Entry.Version+"\n")
+	_, _ = io.WriteString(w, "OK "+form.filename+" "+pub.Entry.Name+" "+pub.Entry.Version+"\n")
 }
 
-// uploadForm is what readForm read of an upload.
+// spooled publishes the content part of a distribution that does not stream yet: spooled to a
+// temporary file with its digests, the rest of the form read and checked, then through
+// format.Publisher.Upload.
+func (h *handlers) spooled(ctx context.Context, repo index.Repo, form *uploadForm, part *multipart.Part, params map[string]string,
+	principal auth.Principal) (*format.Published, error) {
+	sp, err := format.Spool(io.TeeReader(part, form.digests), form.filename, part.Header.Get("Content-Type"), -1)
+	if err != nil {
+		return nil, bodyError(err)
+	}
+	defer func() {
+		if err := sp.Close(); err != nil {
+			h.deps.Log.WarnContext(ctx, "pypi: upload spool not removed", "error", err.Error())
+		}
+	}()
+	if err := form.finish(); err != nil {
+		return nil, err
+	}
+	return h.deps.Ingest.Upload(ctx, repo, format.Upload{Files: []format.UploadedFile{sp.File()}, Params: params}, principal)
+}
+
+// uploadForm is the multipart form of an upload as it streams: the fields in memory, at most
+// maxFields bytes together, and the digests of the content part, which comes once.
 type uploadForm struct {
-	fields              map[string]string
-	file                *format.Spooled
-	sha256, md5, blake2 []byte
+	mr       *multipart.Reader
+	fields   map[string]string
+	budget   int64
+	filename string // the file name of the content part, once it came
+	digests  *digests
 }
 
-// readForm reads the multipart form of an upload as it streams: the fields in memory, at most
-// maxFields bytes together, the content part spooled to disk and digested on the way. Errors
-// wrap format.ErrInvalid, except a body over the size limit (413) and a failure to spool.
-func readForm(r *http.Request) (*uploadForm, error) {
+// newForm returns the form of the upload r. Errors wrap format.ErrInvalid.
+func newForm(r *http.Request) (*uploadForm, error) {
 	mr, err := r.MultipartReader()
 	if err != nil {
 		return nil, fmt.Errorf("%w: the upload is not multipart/form-data: %w", format.ErrInvalid, err)
 	}
-	form := &uploadForm{fields: map[string]string{}}
-	budget := int64(maxFields)
+	return &uploadForm{mr: mr, fields: map[string]string{}, budget: maxFields, digests: newDigests()}, nil
+}
+
+// next reads the fields up to the content part and returns it, nil at the end of the form; a
+// second content part is ErrInvalid, as is one without a plain file name. Errors wrap
+// format.ErrInvalid, except a body over the size limit (413).
+func (f *uploadForm) next() (*multipart.Part, error) {
 	for {
-		part, err := mr.NextPart()
+		part, err := f.mr.NextPart()
 		if errors.Is(err, io.EOF) {
-			return form, nil
+			return nil, nil
 		}
 		if err != nil {
-			return form, bodyError(err)
+			return nil, bodyError(err)
 		}
 		name := part.FormName()
 		if name == "content" {
-			if form.file != nil {
-				return form, fmt.Errorf("%w: the upload has two files; one file is one upload", format.ErrInvalid)
+			filename := part.FileName()
+			switch {
+			case f.filename != "":
+				return nil, fmt.Errorf("%w: the upload has two files; one file is one upload", format.ErrInvalid)
+			case filename == "" || strings.ContainsAny(filename, "/\\"):
+				return nil, fmt.Errorf("%w: the content part has no plain file name: %q", format.ErrInvalid, filename)
 			}
-			if err := form.spool(part); err != nil {
-				return form, err
-			}
-			continue
+			f.filename = filename
+			return part, nil
 		}
-		b, err := io.ReadAll(io.LimitReader(part, budget+1))
+		b, err := io.ReadAll(io.LimitReader(part, f.budget+1))
 		if err != nil {
-			return form, bodyError(err)
+			return nil, bodyError(err)
 		}
-		if budget -= int64(len(b)); budget < 0 {
-			return form, fmt.Errorf("%w: the form fields are more than %d bytes", format.ErrInvalid, maxFields)
+		if f.budget -= int64(len(b)); f.budget < 0 {
+			return nil, fmt.Errorf("%w: the form fields are more than %d bytes", format.ErrInvalid, maxFields)
 		}
-		if _, repeated := form.fields[name]; !repeated { // classifiers and the like repeat; the first is enough here
-			form.fields[name] = string(b)
+		if _, repeated := f.fields[name]; !repeated { // classifiers and the like repeat; the first is enough here
+			f.fields[name] = string(b)
 		}
 	}
 }
 
-// spool copies the content part to a temporary file with its digests.
-func (f *uploadForm) spool(part *multipart.Part) error {
-	filename := part.FileName()
-	if filename == "" || strings.ContainsAny(filename, "/\\") {
-		return fmt.Errorf("%w: the content part has no plain file name: %q", format.ErrInvalid, filename)
+// finish reads the rest of the form once the content part has been read, and checks it.
+func (f *uploadForm) finish() error {
+	if _, err := f.next(); err != nil {
+		return err
 	}
-	s, m, b := sha256.New(), md5.New(), mustBlake2() //nolint:gosec // see the import
-	sp, err := format.Spool(io.TeeReader(part, io.MultiWriter(s, m, b)), filename, part.Header.Get("Content-Type"), -1)
-	if err != nil {
-		return bodyError(err)
-	}
-	f.file, f.sha256, f.md5, f.blake2 = sp, s.Sum(nil), m.Sum(nil), b.Sum(nil)
-	return nil
+	return f.check()
 }
+
+// content is the content part of a form as the body of a streamed upload: its bytes, digested
+// on the way; when they end, the rest of the form is read and checked (finish), and a form that
+// fails is the error of the read that ends the body, so that nothing of the upload is stored.
+type content struct {
+	part *multipart.Part
+	form *uploadForm
+}
+
+func (c *content) Read(p []byte) (int, error) {
+	n, err := c.part.Read(p)
+	_, _ = c.form.digests.Write(p[:n])
+	switch {
+	case errors.Is(err, io.EOF):
+		if ferr := c.form.finish(); ferr != nil {
+			return n, ferr
+		}
+	case err != nil:
+		return n, bodyError(err)
+	}
+	return n, err
+}
+
+// digests are the digests of a file that a client may send: sha256, md5 and blake2b-256.
+type digests struct {
+	sha256, md5, blake2 hash.Hash
+	w                   io.Writer
+}
+
+func newDigests() *digests {
+	d := &digests{sha256: sha256.New(), md5: md5.New(), blake2: mustBlake2()} //nolint:gosec // see the import
+	d.w = io.MultiWriter(d.sha256, d.md5, d.blake2)
+	return d
+}
+
+func (d *digests) Write(p []byte) (int, error) { return d.w.Write(p) }
 
 // mustBlake2 returns BLAKE2b-256 without a key, which cannot fail.
 func mustBlake2() hash.Hash {
@@ -175,10 +242,10 @@ func (f *uploadForm) check() error {
 	if v, ok := f.fields["protocol_version"]; ok && v != "1" {
 		return fmt.Errorf("%w: protocol_version is %q, not 1", format.ErrInvalid, v)
 	}
-	if f.file == nil {
+	if f.filename == "" {
 		return fmt.Errorf("%w: the upload has no content", format.ErrInvalid)
 	}
-	d, err := describe(f.file.File().Name, "")
+	d, err := describe(f.filename, "")
 	if err != nil {
 		return err
 	}
@@ -188,13 +255,13 @@ func (f *uploadForm) check() error {
 		{"filetype", f.fields["filetype"], d.packagetype},
 	} {
 		if f.fields[c.field] != "" && c.got != c.want {
-			return fmt.Errorf("%w: the field %s is %q, the file %s says %q", format.ErrInvalid, c.field, f.fields[c.field], f.file.File().Name, c.want)
+			return fmt.Errorf("%w: the field %s is %q, the file %s says %q", format.ErrInvalid, c.field, f.fields[c.field], f.filename, c.want)
 		}
 	}
 	for _, d := range []struct {
 		field string
 		got   []byte
-	}{{"sha256_digest", f.sha256}, {"md5_digest", f.md5}, {"blake2_256_digest", f.blake2}} {
+	}{{"sha256_digest", f.digests.sha256.Sum(nil)}, {"md5_digest", f.digests.md5.Sum(nil)}, {"blake2_256_digest", f.digests.blake2.Sum(nil)}} {
 		sent := strings.TrimSpace(f.fields[d.field])
 		if sent == "" {
 			continue
