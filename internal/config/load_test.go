@@ -256,6 +256,7 @@ repos:
   - {name: scratch, format: raw, registry: x}
   - {name: scratch, format: raw, registry: local}
   - {name: "", format: "", registry: ""}
+  - {name: my.uploads, format: raw, registry: local}
 `,
 			want: []string{
 				"server.listen: must not be empty",
@@ -276,6 +277,7 @@ repos:
 				"repos[2].name: must not be empty",
 				"repos[2].format: must not be empty",
 				"repos[2].registry: must not be empty",
+				`repos[3].name: "my.uploads" ends in blobs, .uploads or .sync`,
 			},
 		},
 	}

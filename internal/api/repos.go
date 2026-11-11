@@ -15,6 +15,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/proxy"
 )
 
@@ -595,6 +596,8 @@ func checkName(name string) error {
 	case len(name) > config.MaxNameLen || !config.RepoNamePattern.MatchString(name):
 		return invalid("name: %q must be lowercase letters and digits separated by single '.', '_' or '-', at most %d characters",
 			name, config.MaxNameLen)
+	case profile.ReservedComponent(name):
+		return invalid("name: %q %s", name, config.ReservedRepoName)
 	}
 	return nil
 }

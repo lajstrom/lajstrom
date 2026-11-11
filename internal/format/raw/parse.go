@@ -3,8 +3,6 @@ package raw
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,10 +26,6 @@ const (
 	maxComponentLen = 64
 	// maxRepositoryLen is the longest OCI repository name registries accept.
 	maxRepositoryLen = 255
-	// hashedPrefix and hashedHexLen make a hashed component as profile.EscapeComponent does
-	// (§4.3, step 3): "h0__" and the first 32 hex digits of the sha256 of the component.
-	hashedPrefix = "h0__"
-	hashedHexLen = 32
 	// versionLen is the number of hex digits of the content sha256 that make the version.
 	versionLen = 16
 	// maxMetadata is the largest metadata layer Validate reads. A raw metadata layer holds a
@@ -86,18 +80,12 @@ func checkPath(p string) error {
 }
 
 // escapePath returns the package path of a raw path (docs/spec/manifest-profile.md §4.1): each
-// component escaped with profile.EscapeComponent, a component whose escaped form is longer than
-// maxComponentLen bytes replaced by "h0__" and the first 32 hex digits of its sha256, joined
-// with "/". p must pass checkPath.
+// component escaped with profile.EscapeComponentMax, which hashes as well a component whose
+// escaped form is longer than maxComponentLen bytes, joined with "/". p must pass checkPath.
 func escapePath(p string) string {
 	parts := strings.Split(p, "/")
 	for i, c := range parts {
-		e := profile.EscapeComponent(c)
-		if len(e) > maxComponentLen {
-			sum := sha256.Sum256([]byte(c))
-			e = hashedPrefix + hex.EncodeToString(sum[:hashedHexLen/2])
-		}
-		parts[i] = e
+		parts[i] = profile.EscapeComponentMax(c, maxComponentLen)
 	}
 	return strings.Join(parts, "/")
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -19,15 +20,27 @@ const (
 	hashedTagPrefix = "_h"
 	// hashedTagHexLen is the number of hex digits of sha256 in a hashed tag.
 	hashedTagHexLen = 40
-	// hashedComponentPrefix starts a hashed repository path component (§4.3); Escape never
-	// produces "__", so no escaped value starts with it.
-	hashedComponentPrefix = "h0__"
+	// hashedComponentPrefix starts a hashed repository path component (§4.3, ADR 0017): Escape
+	// writes '_' only before two hex digits, and 'h' is none, so no escaped value contains "_h".
+	hashedComponentPrefix = "h0_h"
+	// legacyHashedComponentPrefix started a hashed component before ADR 0017; reads accept it.
+	legacyHashedComponentPrefix = "h0__"
 	// hashedComponentHexLen is the number of hex digits of sha256 in a hashed component.
 	hashedComponentHexLen = 32
 )
 
-// componentRE is the OCI distribution grammar of one repository path component.
-var componentRE = regexp.MustCompile(`^[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*$`)
+// specComponentRE is the path-component grammar of the OCI distribution specification 1.1.
+// EscapeComponent hashes a name whose escaped form does not match it, as it did before ADR 0017,
+// so that a name is hashed in both forms or in neither.
+var specComponentRE = regexp.MustCompile(`^[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*$`)
+
+// reservedSuffixes end the path components that Zot's catalog and garbage collector skip, by
+// strings.HasSuffix on the path; reservedComponents are the files of Zot's image layout, which
+// a repository cannot share with a child repository of that name (ADR 0017).
+var (
+	reservedSuffixes   = []string{"blobs", ".uploads", ".sync"}
+	reservedComponents = []string{"index.json", "oci-layout"}
+)
 
 // isSafe reports whether Escape copies the byte c (apart from a leading '.' or '-').
 func isSafe(c byte) bool {
@@ -62,11 +75,16 @@ func Escape(s string) string {
 			b.WriteByte(c)
 			continue
 		}
-		b.WriteByte('_')
-		b.WriteByte(hexDigits[c>>4])
-		b.WriteByte(hexDigits[c&0x0f])
+		writeEscape(&b, c)
 	}
 	return b.String()
+}
+
+// writeEscape writes c as '_' and two lowercase hex digits.
+func writeEscape(b *strings.Builder, c byte) {
+	b.WriteByte('_')
+	b.WriteByte(hexDigits[c>>4])
+	b.WriteByte(hexDigits[c&0x0f])
 }
 
 // Unescape is the inverse of Escape, for tooling and tests: no server code path decodes a tag
@@ -74,8 +92,8 @@ func Escape(s string) string {
 // strings Escape produces, so Escape(Unescape(t)) == t whenever it succeeds. Errors wrap
 // ErrInvalidEscape: a '_' not followed by two lowercase hex digits, a hashed tag ("_h…"), a
 // byte Escape never writes, a leading '.' or '-', or an escape of a byte Escape copies. A hashed
-// path component ("h0__…", see EscapeComponent) contains "__", which Escape never produces, and
-// fails like any other string Escape cannot produce.
+// path component ("h0_h…", or "h0__…" before ADR 0017) fails like any other string Escape cannot
+// produce; UnescapeComponent decodes path components.
 func Unescape(s string) (string, error) {
 	if strings.HasPrefix(s, hashedTagPrefix) {
 		return "", fmt.Errorf("%w: %q is a hashed tag", ErrInvalidEscape, s)
@@ -130,19 +148,161 @@ func unhex(c byte) (byte, bool) {
 	return 0, false
 }
 
-// EscapeComponent encodes s as one OCI repository path component (§4.3): ASCII letters are
-// lower-cased (the original spelling stays in the annotations), the result is escaped with
-// Escape, and when that does not match the path-component grammar
-// ^[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*$ (empty, a leading '_', ".-", a trailing '.', …) it is
-// replaced by "h0__" and the first 32 hex digits of sha256(s); Escape never produces "__", so
-// a hashed component cannot collide with an escaped one. The output always matches the
-// grammar. It is not injective: names that differ only in case share a component.
-func EscapeComponent(s string) string {
-	if e := Escape(lowerASCII(s)); componentRE.MatchString(e) {
+// EscapeComponent encodes s as one OCI repository path component (§4.3, ADR 0017): ASCII
+// letters are lower-cased (the original spelling stays in the annotations) and the result is
+// escaped with Escape. When that does not match the path-component grammar of the distribution
+// specification 1.1, ^[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*$ (empty, a leading '_', ".-", a
+// trailing '.', …), it is replaced by "h0_h" and the first 32 hex digits of sha256(s), which no
+// escaped value contains. Otherwise each '-' of a run of two or more is escaped, and so is the
+// last byte of a component that ReservedComponent names: "a--b" is "a_2d_2db", "blobs" is
+// "blob_73". The output matches the 1.0 grammar ^[a-z0-9]+(?:[._-][a-z0-9]+)*$, is no
+// ReservedComponent, and is a name the components Escape writes cannot be, since Escape never
+// escapes a byte it copies. It is not injective: names that differ only in case share a
+// component. Before ADR 0017 a component was written without those escapes and hashed with the
+// prefix "h0__"; LegacyPackagePath and UnescapeComponent read that form too.
+func EscapeComponent(s string) string { return EscapeComponentMax(s, 0) }
+
+// EscapeComponentMax is EscapeComponent, and hashes s as well when the Escape of its lower-cased
+// form is longer than maxLen bytes, if maxLen is positive: the 64-byte limit of a raw path's
+// components (§4.1). The escapes of the reserved words and the dash runs come after the limit,
+// so a component it keeps may be longer by those.
+func EscapeComponentMax(s string, maxLen int) string {
+	e := Escape(lowerASCII(s))
+	if !specComponentRE.MatchString(e) || maxLen > 0 && len(e) > maxLen {
+		sum := sha256.Sum256([]byte(s))
+		return hashedComponentPrefix + hex.EncodeToString(sum[:hashedComponentHexLen/2])
+	}
+	return markComponent(e)
+}
+
+// ReservedComponent reports whether the path component c is a name that a registry's storage
+// layout keeps for itself (ADR 0017): it ends in "blobs", ".uploads" or ".sync", which Zot's
+// catalog and garbage collector skip, or it is "index.json" or "oci-layout", files of Zot's
+// image layout. EscapeComponent never writes one.
+func ReservedComponent(c string) bool {
+	for _, s := range reservedSuffixes {
+		if strings.HasSuffix(c, s) {
+			return true
+		}
+	}
+	return slices.Contains(reservedComponents, c)
+}
+
+// markComponent returns e, an escaped component of the 1.1 grammar, with the escapes of ADR 0017:
+// each '-' of a run of two or more, and the last byte when e is a ReservedComponent. Neither
+// changes the other: a run of dashes lies between two letters or digits.
+func markComponent(e string) string {
+	reserved := ReservedComponent(e)
+	if !reserved && !strings.Contains(e, "--") {
 		return e
 	}
-	sum := sha256.Sum256([]byte(s))
-	return hashedComponentPrefix + hex.EncodeToString(sum[:hashedComponentHexLen/2])
+	var b strings.Builder
+	for i := range len(e) {
+		c := e[i]
+		switch {
+		case c == '-' && (i > 0 && e[i-1] == '-' || i+1 < len(e) && e[i+1] == '-'),
+			reserved && i == len(e)-1:
+			writeEscape(&b, c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// IsHashedComponent reports whether c is a hashed path component: "h0_h", or "h0__" as before
+// ADR 0017, and 32 lowercase hex digits.
+func IsHashedComponent(c string) bool {
+	_, ok := hashedComponentHex(c)
+	return ok
+}
+
+// hashedComponentHex returns the hex digits of a hashed path component of either form.
+func hashedComponentHex(c string) (string, bool) {
+	rest, ok := strings.CutPrefix(c, hashedComponentPrefix)
+	if !ok {
+		rest, ok = strings.CutPrefix(c, legacyHashedComponentPrefix)
+	}
+	if !ok || len(rest) != hashedComponentHexLen {
+		return "", false
+	}
+	for i := range len(rest) {
+		if _, ok := unhex(rest[i]); !ok {
+			return "", false
+		}
+	}
+	return rest, true
+}
+
+// LegacyPackagePath returns the package path that Lajstrom wrote before ADR 0017 for the name
+// whose package path EscapeComponent and Plugin.EscapeName write now: each hashed component with
+// the prefix "h0__", and the escapes of the reserved words and the dash runs decoded. It is p
+// itself for a name ADR 0017 left alone, and for a path in the earlier form. A package keeps the
+// OCI repository it was first written to, so a writer looks a package up at both paths, and
+// reindex takes a manifest found at either as the package of its annotations (written in the new
+// form, read in both). Components that neither form of any name is are left as they are.
+func LegacyPackagePath(p string) string {
+	if !strings.Contains(p, "_") { // every form ADR 0017 changed has one
+		return p
+	}
+	parts := strings.Split(p, "/")
+	for i, c := range parts {
+		parts[i] = legacyComponent(c)
+	}
+	return strings.Join(parts, "/")
+}
+
+// legacyComponent is LegacyPackagePath of one component: the component written before ADR 0017
+// when c is a component EscapeComponent writes now, else c.
+func legacyComponent(c string) string {
+	if h, ok := hashedComponentHex(c); ok {
+		return legacyHashedComponentPrefix + h
+	}
+	if u := unmark(c); u != c && specComponentRE.MatchString(u) && markComponent(u) == c {
+		return u
+	}
+	return c
+}
+
+// unmark decodes each escape in c, after the first byte, of a byte that Escape copies: the
+// escapes that markComponent writes, and only those when c is its output.
+func unmark(c string) string {
+	if !strings.Contains(c, "_") {
+		return c
+	}
+	b := make([]byte, 0, len(c))
+	for i := 0; i < len(c); i++ {
+		if c[i] == '_' && i > 0 && i+2 < len(c) {
+			hi, ok1 := unhex(c[i+1])
+			lo, ok2 := unhex(c[i+2])
+			if x := hi<<4 | lo; ok1 && ok2 && isSafe(x) {
+				b = append(b, x)
+				i += 2
+				continue
+			}
+		}
+		b = append(b, c[i])
+	}
+	return string(b)
+}
+
+// UnescapeComponent is the inverse of EscapeComponent for tooling and tests, in both forms:
+// the lower-cased name of a component that EscapeComponent writes, or wrote before ADR 0017,
+// so that a name decodes the same in either form. Errors wrap ErrInvalidEscape: a hashed
+// component (IsHashedComponent), whose name only the annotations hold, or a string that is
+// neither form of any name.
+func UnescapeComponent(c string) (string, error) {
+	if IsHashedComponent(c) {
+		return "", fmt.Errorf("%w: %q is a hashed path component", ErrInvalidEscape, c)
+	}
+	u, err := Unescape(legacyComponent(c))
+	if err != nil {
+		return "", err
+	}
+	if e := EscapeComponent(u); e != c && legacyComponent(e) != c {
+		return "", fmt.Errorf("%w: %q is not a path component of %q", ErrInvalidEscape, c, u)
+	}
+	return u, nil
 }
 
 // lowerASCII lower-cases A-Z and leaves every other byte alone.

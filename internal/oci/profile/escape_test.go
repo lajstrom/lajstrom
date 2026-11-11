@@ -17,14 +17,42 @@ var (
 	escapedGrammar = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
 	// ociTagGrammar is the OCI distribution tag grammar.
 	ociTagGrammar = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$`)
-	// componentGrammar is the OCI distribution path-component grammar.
-	componentGrammar = regexp.MustCompile(`^[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*$`)
+	// specComponentGrammar is the path-component grammar of the OCI distribution specification 1.1.
+	specComponentGrammar = regexp.MustCompile(`^[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*$`)
+	// componentGrammar is the grammar of ADR 0017, the 1.0 grammar that Gitea and Forgejo check.
+	componentGrammar = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
 )
 
-// hashedComponent is the §4.3 fallback: "h0__" + first 32 hex digits of sha256(s).
+// hashedComponent is the §4.3 fallback: "h0_h" + first 32 hex digits of sha256(s).
 func hashedComponent(s string) string {
 	sum := sha256.Sum256([]byte(s))
+	return "h0_h" + hex.EncodeToString(sum[:])[:32]
+}
+
+// v1Component is EscapeComponent before ADR 0017, written out: Escape of the lower-cased name,
+// or "h0__" and 32 hex digits when that is not of the 1.1 grammar.
+func v1Component(s string) string {
+	if e := Escape(lowerASCII(s)); specComponentGrammar.MatchString(e) {
+		return e
+	}
+	sum := sha256.Sum256([]byte(s))
 	return "h0__" + hex.EncodeToString(sum[:])[:32]
+}
+
+// checkComponent fails unless c keeps to ADR 0017: the 1.0 grammar, and no reserved word.
+func checkComponent(t *testing.T, s, c string) {
+	t.Helper()
+	if !componentGrammar.MatchString(c) {
+		t.Fatalf("EscapeComponent(%q) = %q does not match the 1.0 component grammar", s, c)
+	}
+	for _, w := range []string{"blobs", ".uploads", ".sync"} {
+		if strings.HasSuffix(c, w) {
+			t.Fatalf("EscapeComponent(%q) = %q ends in %q", s, c, w)
+		}
+	}
+	if c == "index.json" || c == "oci-layout" {
+		t.Fatalf("EscapeComponent(%q) = %q", s, c)
+	}
 }
 
 // hashedTag is the §4.2 fallback: "_h" + first 40 hex digits of sha256 of the unhashed tag.
@@ -100,28 +128,188 @@ func TestEscapeComponent(t *testing.T) {
 		{"Lib-Core", "lib-core"},
 		{"com.example", "com.example"},
 		{"a_b", "a_5fb"},
-		{"a--b", "a--b"},
-		// §4.3, step 3: the hash fallback.
+		{"h0__abc", "h0_5f_5fabc"},
+		// §4.3, step 3: the hash fallback, "h0_h" since ADR 0017.
 		{"_private", hashedComponent("_private")},
+		{"_config.yml", hashedComponent("_config.yml")},
+		{".gitignore", hashedComponent(".gitignore")},
 		{"-x", hashedComponent("-x")},
-		{".hidden", hashedComponent(".hidden")},
 		{"Пакет", hashedComponent("Пакет")},
 		{"a.-b", hashedComponent("a.-b")},
 		{"a..b", hashedComponent("a..b")},
+		{"a--.b", hashedComponent("a--.b")},
 		{"trailing.", hashedComponent("trailing.")},
+		{".uploads", hashedComponent(".uploads")},
 		{"", hashedComponent("")},
+		// Step 4: a run of dashes.
+		{"a--b", "a_2d_2db"},
+		{"A---B-c", "a_2d_2d_2db-c"},
+		{"x-y--z", "x-y_2d_2dz"},
+		// Step 5: the reserved words.
+		{"blobs", "blob_73"},
+		{"Blobs", "blob_73"},
+		{"myblobs", "myblob_73"},
+		{"netlify-blobs", "netlify-blob_73"},
+		{"a--blobs", "a_2d_2dblob_73"},
+		{"my.uploads", "my.upload_73"},
+		{"x.sync", "x.syn_63"},
+		{"index.json", "index.jso_6e"},
+		{"oci-layout", "oci-layou_74"},
+		// Not reserved.
+		{"blob", "blob"},
+		{"blobsx", "blobsx"},
+		{"uploads", "uploads"},
+		{"sync", "sync"},
+		{"x_2esync", "x_5f2esync"},
+		{"index.jsonl", "index.jsonl"},
+		{"sha256", "sha256"},
 	} {
 		got := EscapeComponent(tc.in)
 		if got != tc.want {
 			t.Errorf("EscapeComponent(%q) = %q, want %q", tc.in, got, tc.want)
 		}
-		if !componentGrammar.MatchString(got) {
-			t.Errorf("EscapeComponent(%q) = %q does not match the component grammar", tc.in, got)
-		}
+		checkComponent(t, tc.in, got)
 	}
 	// The hash input is the original spelling, not the lower-cased one.
 	if EscapeComponent("_A") == EscapeComponent("_a") {
 		t.Error(`EscapeComponent("_A") == EscapeComponent("_a"), want sha256 of the original`)
+	}
+}
+
+func TestEscapeComponentMax(t *testing.T) {
+	long := strings.Repeat("a", 64)
+	for _, tc := range []struct {
+		in   string
+		max  int
+		want string
+	}{
+		{long, 64, long},
+		{long + "b", 64, hashedComponent(long + "b")},
+		{long + "b", 0, long + "b"},
+		{strings.Repeat("~", 22), 64, hashedComponent(strings.Repeat("~", 22))}, // 66 bytes escaped
+		// The limit applies before the escapes of ADR 0017, as the hash did before it.
+		{strings.Repeat("a", 57) + "--blobs", 64, strings.Repeat("a", 57) + "_2d_2dblob_73"},
+		{".x", 64, hashedComponent(".x")},
+	} {
+		if got := EscapeComponentMax(tc.in, tc.max); got != tc.want {
+			t.Errorf("EscapeComponentMax(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
+		}
+	}
+}
+
+func TestReservedComponent(t *testing.T) {
+	for c, want := range map[string]bool{
+		"blobs": true, "myblobs": true, "x.uploads": true, ".uploads": true, "a.sync": true, "index.json": true,
+		"oci-layout": true, "blob": false, "uploads": false, "xsync": false, "index.json5": false, "oci-layouts": false,
+		"blob_73": false, "h0_h0123": false,
+	} {
+		if got := ReservedComponent(c); got != want {
+			t.Errorf("ReservedComponent(%q) = %v", c, got)
+		}
+	}
+}
+
+// TestLegacyPackagePath: every kind of name that ADR 0017 changes, with the component it had
+// before. Reads accept the earlier form beside the new one; a path in it maps to itself.
+func TestLegacyPackagePath(t *testing.T) {
+	for _, tc := range []struct{ name, now, before string }{
+		{".gitignore", hashedComponent(".gitignore"), "h0__" + hashedComponent(".gitignore")[4:]},
+		{"_config.yml", hashedComponent("_config.yml"), "h0__" + hashedComponent("_config.yml")[4:]},
+		{"a--b", "a_2d_2db", "a--b"},
+		{"blobs", "blob_73", "blobs"},
+		{"a--blobs", "a_2d_2dblob_73", "a--blobs"},
+		{"my.uploads", "my.upload_73", "my.uploads"},
+		{"x.sync", "x.syn_63", "x.sync"},
+		{"index.json", "index.jso_6e", "index.json"},
+		{"oci-layout", "oci-layou_74", "oci-layout"},
+		{"libstdc++6", "libstdc_2b_2b6", "libstdc_2b_2b6"},
+		{"docs", "docs", "docs"},
+	} {
+		if got := EscapeComponent(tc.name); got != tc.now {
+			t.Errorf("EscapeComponent(%q) = %q, want %q", tc.name, got, tc.now)
+		}
+		if got := v1Component(tc.name); got != tc.before {
+			t.Errorf("v1Component(%q) = %q, want %q", tc.name, got, tc.before)
+		}
+		for _, p := range []string{tc.now, tc.before} {
+			if got := LegacyPackagePath(p); got != tc.before {
+				t.Errorf("LegacyPackagePath(%q) = %q, want %q", p, got, tc.before)
+			}
+		}
+	}
+	// A path, component by component.
+	now := "netlify/" + EscapeComponent("blobs") + "/" + EscapeComponent(".gitignore")
+	if got, want := LegacyPackagePath(now), "netlify/blobs/"+v1Component(".gitignore"); got != want {
+		t.Errorf("LegacyPackagePath(%q) = %q, want %q", now, got, want)
+	}
+	// Strings that no writer produces stay as they are.
+	for _, p := range []string{"a_2db", "blo_62s", "_2d_2d", "blob_73x", "h0_h0123", "h0_h" + strings.Repeat("g", 32), "a_5f"} {
+		if got := LegacyPackagePath(p); got != p {
+			t.Errorf("LegacyPackagePath(%q) = %q, want it unchanged", p, got)
+		}
+	}
+}
+
+// TestUnescapeComponent: a name decodes the same from the component it has now and from the
+// one it had before ADR 0017, and a hashed component of either form does not decode.
+func TestUnescapeComponent(t *testing.T) {
+	for _, name := range []string{"docs", "libstdc++6", "a_b", "a--b", "A---B-c", "blobs", "Blobs", "a--blobs", "my.uploads",
+		"x.sync", "index.json", "oci-layout", "h0__abc", "com.example"} {
+		for _, c := range []string{EscapeComponent(name), v1Component(name)} {
+			if got, err := UnescapeComponent(c); err != nil || got != lowerASCII(name) {
+				t.Errorf("UnescapeComponent(%q) = %q, %v, want %q", c, got, err, lowerASCII(name))
+			}
+		}
+	}
+	for _, c := range []string{
+		hashedComponent(".gitignore"), v1Component(".gitignore"), // hashed, in both forms
+		"_2ex",                       // Escape(".x"), which is hashed
+		"a_2db", "blo_62s", "a-_2db", // escapes that no writer writes
+		"Docs", "a:b", "_5f", "", "a__b",
+	} {
+		if got, err := UnescapeComponent(c); !errors.Is(err, ErrInvalidEscape) {
+			t.Errorf("UnescapeComponent(%q) = %q, %v, want ErrInvalidEscape", c, got, err)
+		}
+	}
+	for c, want := range map[string]bool{
+		hashedComponent("x"): true, v1Component(".x"): true, "h0_h0": false, strings.ToUpper(hashedComponent("x")): false,
+		"h0_x" + hashedComponent("x")[4:]: false,
+	} {
+		if IsHashedComponent(c) != want {
+			t.Errorf("IsHashedComponent(%q) = %v", c, !want)
+		}
+	}
+}
+
+// TestEscapeComponentInjective: over every string of up to 5 bytes of an alphabet that meets
+// the rules of ADR 0017, no component, of either form, belongs to two names. Names that differ
+// only in case share their component unless it is hashed, whose input is the original spelling.
+func TestEscapeComponentInjective(t *testing.T) {
+	const alphabet = "a-._Bs"
+	seen := map[string]string{}
+	add := func(c, name string) {
+		if other, ok := seen[c]; ok && other != name {
+			t.Errorf("%q is a component of %q and of %q", c, other, name)
+		}
+		seen[c] = name
+	}
+	names, level := []string{"blobs", "x.sync", "a.uploads", "index.json", "oci-layout", "a--blobs"}, []string{""}
+	for range 5 {
+		var next []string
+		for _, s := range level {
+			for i := range len(alphabet) {
+				next = append(next, s+alphabet[i:i+1])
+			}
+		}
+		names, level = append(names, next...), next
+	}
+	for _, s := range names {
+		c, key := EscapeComponent(s), lowerASCII(s)
+		if IsHashedComponent(c) {
+			key = s
+		}
+		add(c, key)
+		add(v1Component(s), key)
 	}
 }
 
@@ -203,12 +391,31 @@ func checkEscape(t *testing.T, s string) {
 	if u, err := Unescape(e); err != nil || u != s {
 		t.Fatalf("Unescape(Escape(%q)) = %q, %v", s, u, err)
 	}
-	c := EscapeComponent(s)
-	if !componentGrammar.MatchString(c) {
-		t.Fatalf("EscapeComponent(%q) = %q does not match the component grammar", s, c)
+	checkEscapeComponent(t, s)
+}
+
+// checkEscapeComponent asserts the properties of EscapeComponent for one input: the grammar of
+// ADR 0017, the round trip, and the form before it, which decodes the same.
+func checkEscapeComponent(t *testing.T, s string) {
+	t.Helper()
+	c, old := EscapeComponent(s), v1Component(s)
+	checkComponent(t, s, c)
+	switch u, err := UnescapeComponent(c); {
+	case c == hashedComponent(s):
+		if old != "h0__"+c[4:] {
+			t.Fatalf("EscapeComponent(%q) = %q, but %q before ADR 0017", s, c, old)
+		}
+	case err != nil || u != lowerASCII(s):
+		t.Fatalf("UnescapeComponent(EscapeComponent(%q) = %q) = %q, %v: neither the name nor the hash form", s, c, u, err)
+	case IsHashedComponent(old):
+		t.Fatalf("EscapeComponent(%q) = %q, but %q before ADR 0017", s, c, old)
+	default:
+		if u, err := UnescapeComponent(old); err != nil || u != lowerASCII(s) {
+			t.Fatalf("UnescapeComponent(%q), the form of %q before ADR 0017, = %q, %v", old, s, u, err)
+		}
 	}
-	if u, err := Unescape(c); c != hashedComponent(s) && (err != nil || u != lowerASCII(s)) {
-		t.Fatalf("EscapeComponent(%q) = %q is neither Escape(lower(s)) nor the hash form", s, c)
+	if LegacyPackagePath(c) != old || LegacyPackagePath(old) != old {
+		t.Fatalf("LegacyPackagePath of %q = %q, of %q = %q, want %q", c, LegacyPackagePath(c), old, LegacyPackagePath(old), old)
 	}
 }
 
@@ -333,13 +540,16 @@ func FuzzEscape(f *testing.F) {
 // FuzzUnescape checks that Unescape accepts exactly what Escape produces. A string it decodes is
 // Escape of the result, which is no longer than it. A string it refuses, with ErrInvalidEscape,
 // is Escape of nothing: Escape(u) decodes escape by escape to u, so a string that does not
-// escape back to itself so decoded is no Escape(u).
+// escape back to itself so decoded is no Escape(u). It checks the same of UnescapeComponent
+// (checkUnescapeComponent), whose other half is checkEscape's round trip.
 func FuzzUnescape(f *testing.F) {
 	for _, s := range []string{"", "a", "_5f", "_2e", "_2E", "_2ex", "_h", "_h00", "a_", "a_5", "_61", "-x", "a-", ".a", "a.",
-		"h0__0123", "_2d1", "_5f_5f", "a__b", "_ff_00", "_c3_a9"} {
+		"h0__0123", "_2d1", "_5f_5f", "a__b", "_ff_00", "_c3_a9", "a_2d_2db", "blob_73", "blobs", "a--b", "a_2db", "x.syn_63",
+		"h0_h0123456789abcdef0123456789abcdef", "h0__0123456789abcdef0123456789abcdef", "a/blob_73/b"} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
+		checkUnescapeComponent(t, s)
 		u, err := Unescape(s)
 		if err == nil {
 			if Escape(u) != s || len(u) > len(s) {
@@ -354,6 +564,24 @@ func FuzzUnescape(f *testing.F) {
 			t.Fatalf("Unescape(%q) refused Escape(%q)", s, d)
 		}
 	})
+}
+
+// checkUnescapeComponent checks that UnescapeComponent decodes a component of either form, and
+// nothing else: a string it decodes to u is EscapeComponent(u) or the component of u before ADR
+// 0017, so no component belongs to two names; any other is ErrInvalidEscape. LegacyPackagePath
+// gives a path that it leaves as it is.
+func checkUnescapeComponent(t *testing.T, s string) {
+	t.Helper()
+	u, err := UnescapeComponent(s)
+	switch {
+	case err == nil && s != EscapeComponent(u) && s != v1Component(u):
+		t.Fatalf("UnescapeComponent(%q) = %q, whose components are %q and %q", s, u, EscapeComponent(u), v1Component(u))
+	case err != nil && !errors.Is(err, ErrInvalidEscape):
+		t.Fatalf("UnescapeComponent(%q) = %v, want ErrInvalidEscape", s, err)
+	}
+	if l := LegacyPackagePath(s); LegacyPackagePath(l) != l {
+		t.Fatalf("LegacyPackagePath(%q) = %q, of which it is %q", s, l, LegacyPackagePath(l))
+	}
 }
 
 // decodeEach decodes every '_' and the two hex digits after it, in either case, and copies every
