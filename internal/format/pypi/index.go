@@ -2,6 +2,7 @@ package pypi
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"html"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/lajstrom/lajstrom/internal/format"
@@ -82,13 +84,19 @@ type projectFile struct {
 }
 
 // projectFiles reads the files of every version of pkg, oldest first, and the distinct
-// versions in that order. The file of a version whose metadata the index left out (degraded,
-// or more than ingest keeps) has no core-metadata, so pip downloads the file for it.
+// versions in that order. Versions created in the same second, as the files of one twine
+// upload are, go by version and variant, not by the order of their rows, which reindex does not
+// keep: the page is a function of the rows, the same after a rebuild. The file of a version
+// whose metadata the index left out (degraded, or more than ingest keeps) has no core-metadata,
+// so pip downloads the file for it.
 func projectFiles(ctx context.Context, st index.Reader, pkg index.Package) ([]projectFile, []string, error) {
 	vs, err := st.ListVersions(ctx, pkg.ID)
 	if err != nil {
 		return nil, nil, err
 	}
+	slices.SortStableFunc(vs, func(a, b index.Version) int {
+		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), strings.Compare(a.Version, b.Version), strings.Compare(a.Variant, b.Variant))
+	})
 	var files []projectFile
 	versions, seen := []string{}, map[string]bool{}
 	for _, v := range vs {
