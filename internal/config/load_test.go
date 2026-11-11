@@ -459,8 +459,6 @@ func TestLoadNestedPrefixes(t *testing.T) {
 	}
 }
 
-// TestLoadRepoPolicy: repos[].policy is read as JSON-shaped values, which the bootstrap passes to
-// the API's checks as they are.
 // TestLoadPrefixGrammar: every OCI name on a registry starts with its prefix, so each component
 // of the prefix keeps to the grammar of ADR 0017 and is none of its reserved words (#610).
 func TestLoadPrefixGrammar(t *testing.T) {
@@ -505,6 +503,8 @@ func TestLoadPrefixGrammar(t *testing.T) {
 	}
 }
 
+// TestLoadRepoPolicy: repos[].policy is read as JSON-shaped values, which the bootstrap passes to
+// the API's checks as they are.
 func TestLoadRepoPolicy(t *testing.T) {
 	file := minimal + `
 registries:
