@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -57,7 +58,7 @@ func (p *Pipeline) validate(ctx context.Context, pub *publish) error {
 	// The blobs before the plugin: a missing layer is named here, rather than surfacing as
 	// whatever the plugin makes of a failed fetch, and a HEAD is cheaper than the GETs of
 	// Validate.
-	if err := pub.checkBlobs(ctx); err != nil {
+	if err := pub.checkBlobs(ctx, p.visibility); err != nil {
 		return err
 	}
 	if pub.allowDegraded && pub.parsed.Metadata != nil {
@@ -145,13 +146,19 @@ func (e *tooLarge) Unwrap() []error {
 // checkBlobs checks that every layer is in the backend, and pushes the empty config, which is
 // Lajstrom's own, when it is not; Inspect pushes nothing, and with allowDegraded leaves a missing
 // metadata layer to metadataUnreadable. The streamed file of UploadStream is in its session, and
-// its other blobs and the empty config are held, until the push commits them.
-func (pub *publish) checkBlobs(ctx context.Context) error {
+// its other blobs and the empty config are held, until the push commits them. On a publish a
+// layer the backend does not serve is read again (readBlob) for the visibility timeout: it may
+// have been pushed a moment ago.
+func (pub *publish) checkBlobs(ctx context.Context, visibility time.Duration) error {
+	var deadline time.Time
 	for _, l := range pub.manifest.Layers {
 		if pub.allowDegraded && pub.parsed.Metadata != nil && l.Digest == pub.parsed.Metadata.Digest || pub.streamed.later(l.Digest) {
 			continue
 		}
 		ok, err := pub.rr.Exists(ctx, l)
+		if err == nil && !ok && !pub.readOnly {
+			ok, err = readBlob(ctx, pub.prov, pub.rr, l, visibility, &deadline)
+		}
 		if err != nil {
 			return fmt.Errorf("ingest: layer %s in %s: %w", l.Digest, pub.name, err)
 		}
@@ -162,6 +169,12 @@ func (pub *publish) checkBlobs(ctx context.Context) error {
 	if pub.streamed.later(profile.EmptyConfig.Digest) {
 		return nil
 	}
+	return pub.checkConfig(ctx)
+}
+
+// checkConfig pushes the empty config, which is Lajstrom's own, when the backend does not have
+// it; for Inspect, which pushes nothing, it is ErrInvalid.
+func (pub *publish) checkConfig(ctx context.Context) error {
 	ok, err := pub.rr.Exists(ctx, profile.EmptyConfig)
 	switch {
 	case err == nil && !ok && pub.readOnly:
