@@ -56,7 +56,7 @@ type scan struct {
 	fatal       error                      // the first error of the run's own: the database, the context
 	unsupported bool                       // no plugin for the repo's format: the scan stops, and nothing is swept
 	splits      map[[2]string]*Split       // packages found at another form than the index has, by name and form
-	listed      map[string]bool            // OCI repositories whose tag list answered: true, or false for a 404 (repoUnknown)
+	listed      map[string]bool            // OCI repositories whose tag list was asked: false for a 404, true otherwise (repoUnknown)
 	unknown     map[string]int             // the versions reported in RepositoryUnknown, by package path
 }
 

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -550,6 +551,10 @@ type wrapped struct {
 	failResolve error
 	resolveIn   string // when set, failResolve fails the Resolve of this repository only
 	failTags    error
+	tagsIn      string // when set, failTags fails the tag list of this repository only
+
+	mu       sync.Mutex
+	tagLists map[string]int // the tag lists asked, by repository
 }
 
 func (w *wrapped) ListRepositories(ctx context.Context, prefix string) ([]string, error) {
@@ -579,7 +584,13 @@ func (r *resolving) Resolve(ctx context.Context, reference string) (ocispec.Desc
 }
 
 func (r *resolving) Tags(ctx context.Context, last string, fn func(tags []string) error) error {
-	if r.w.failTags != nil {
+	r.w.mu.Lock()
+	if r.w.tagLists == nil {
+		r.w.tagLists = map[string]int{}
+	}
+	r.w.tagLists[r.name]++
+	r.w.mu.Unlock()
+	if r.w.failTags != nil && (r.w.tagsIn == "" || r.w.tagsIn == r.name) {
 		return r.w.failTags
 	}
 	return r.Repository.Tags(ctx, last, fn)

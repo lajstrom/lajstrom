@@ -73,8 +73,9 @@ var errListed = errors.New("reindex: the tag list answered")
 
 // repoUnknown reports whether the registry does not know the OCI repository name: its tag list
 // answered 404 (NAME_UNKNOWN on Zot and distribution's filesystem storage), in this run's
-// ociRepo or now. Each repository is asked once a run; an answer that is neither a list nor a
-// 404 is not kept and is not unknown.
+// ociRepo or now. Each repository is asked at most once a run, whatever it answers: an answer
+// that is neither a list nor a 404 is not unknown, and is kept as well, so that a registry that
+// fails is not asked again for every version of the repository.
 func (s *scan) repoUnknown(ctx context.Context, name string) bool {
 	s.mu.Lock()
 	known, asked := s.listed[name]
@@ -86,18 +87,15 @@ func (s *scan) repoUnknown(ctx context.Context, name string) bool {
 	if err == nil {
 		err = rr.Tags(ctx, "", func([]string) error { return errListed })
 	}
-	switch {
-	case err == nil, errors.Is(err, errListed):
-		s.tagList(name, true)
-		return false
-	case errors.Is(err, provider.ErrNotFound):
-		s.tagList(name, false)
-		return true
+	unknown := errors.Is(err, provider.ErrNotFound)
+	if ctx.Err() == nil {
+		s.tagList(name, !unknown)
 	}
-	return false
+	return unknown
 }
 
-// tagList records the answer of the tag list of the OCI repository name: known, or a 404.
+// tagList records the answer of the tag list of the OCI repository name: a 404 (known false),
+// or any other.
 func (s *scan) tagList(name string, known bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
