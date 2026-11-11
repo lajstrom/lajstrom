@@ -20,7 +20,7 @@ type RepoReport struct {
 	Unchanged       int    `json:"unchanged"`
 	Removed         int    `json:"removed"`
 	// Pending are the rows whose manifest the registry answered unknown and that stay until
-	// a second answer unknownApart later and their grace age (docs/spec/guarantees.md, G-5).
+	// a second answer unknownApart later and their grace age (docs/spec/guarantees.md, INV-5).
 	Pending         int       `json:"pending"`
 	Degraded        int       `json:"degraded"`
 	Referrers       int       `json:"referrers"`

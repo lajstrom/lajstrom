@@ -10,7 +10,7 @@ import (
 )
 
 // unknownApart is how long after the registry's first answer MANIFEST_UNKNOWN for a manifest
-// the answer that removes its row comes at the earliest (docs/spec/guarantees.md, G-5): the
+// the answer that removes its row comes at the earliest (docs/spec/guarantees.md, INV-5): the
 // runs of two replicas' loops that follow each other are not two answers.
 const unknownApart = 10 * time.Minute
 
