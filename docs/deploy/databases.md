@@ -10,7 +10,8 @@ Postgres protocol, what matters is what it asks of the server:
 - **Transaction-scoped advisory locks only**, `pg_advisory_xact_lock`: the migration lock, the
   reindex lock, the referrers and tag lock, the npm journal lock. No session lock, no
   `LISTEN`/`NOTIFY`, no session `SET`. The referrers lock (`Store.WithReferrersLock`) keeps its
-  transaction open, idle, while Lajstrom talks to the registry: seconds.
+  transaction open, idle, while Lajstrom talks to the registry: seconds. It lifts
+  `idle_in_transaction_session_timeout` for that transaction only (`set_config(…, true)`).
 - **Read committed**, the default isolation: the index cache generations (INV-27) and the tag
   claims rely on a statement seeing what committed before it; a version write first locks its
   package row with an `UPDATE` (#584). `clock_timestamp()` reads the database's clock.
@@ -106,7 +107,7 @@ registry takes.
 [pgbouncer]
 pool_mode = transaction
 max_prepared_statements = 200   ; the default since 1.24.0
-idle_transaction_timeout = 0    ; the default; see the referrers lock below
+idle_transaction_timeout = 0    ; the default, and it must stay 0: see the referrers lock below
 server_login_retry = 2          ; default 15: see restarts below
 query_wait_timeout = 10         ; default 120: see restarts below
 default_pool_size = 20
@@ -131,28 +132,43 @@ measured under emulation.
 
 ### Postgres
 
-`idle_in_transaction_session_timeout` must be 0 (the default) for Lajstrom's users, or longer
-than any referrers lock is held; see the next section.
+`idle_in_transaction_session_timeout` may have any value: Lajstrom lifts it for the
+transactions of its referrers locks, and its other transactions do not idle. `transaction_timeout`
+(Postgres 17 and later) must be 0, the default, for Lajstrom's users; see the next section.
 
 ## The referrers lock and idle-in-transaction timeouts
 
 `WithReferrersLock` begins a transaction, takes `pg_advisory_xact_lock`, and keeps the
-transaction open and idle while its function writes to the registry. A timeout that ends idle
-transactions ends the lock with it. Measured with a function that works 6 seconds and a second
-writer that asks for the same lock at 0.5 s:
+transaction open and idle while its function writes to the registry. A timeout that ends the
+transaction ends the lock with it. Measured before the fix of
+[#615](https://github.com/lajstrom/lajstrom/issues/615), which no release contains, with a
+function that works 6 seconds and a second writer that asks for the same lock at 0.5 s:
 
 | Timeout | The second writer got the lock | The first one's `WithReferrersLock` |
 | --- | --- | --- |
 | Postgres `idle_in_transaction_session_timeout = '2s'`, on the database | at 2.0 s, while the first still ran | returned nil at 6 s |
 | PgBouncer `idle_transaction_timeout = 3`, transaction mode | at 3.2 s (PgBouncer logged `pooler error: idle transaction timeout`) | returned nil at 6 s |
 
-The lock is lost without an error, and two writers of one subject's referrers index overlap:
-one may write the index without the other's referrer. Keep both timeouts at 0 (their
-defaults) for Lajstrom's users; where the server sets one for everyone, lift it for them:
+The lock was lost without an error, and two writers of one subject's referrers index
+overlapped: one could write the index without the other's referrer. Since the fix:
+
+- **Postgres's `idle_in_transaction_session_timeout`** no longer ends the lock: the statement
+  that takes it sets the timeout to 0 for the rest of its transaction. With a timeout of 1 s on
+  the role, the second writer waits until the first commits (`TestReferrersLockLost`).
+- **A timeout Lajstrom cannot lift** (PgBouncer's `idle_transaction_timeout`, Postgres 17's
+  `transaction_timeout`), a terminated backend or a failover still ends the lock, but no longer
+  silently: the transaction ends with a checked `COMMIT`, and `WithReferrersLock` returns
+  `index.ErrUnavailable`, so the push answers `503` with `Retry-After` and the client retries.
+  The overlap itself still happens, and the referrer of the other writer, which succeeded, can
+  be missing from the index without a report (docs/spec/index-schema.md, Coordination).
+
+So keep PgBouncer's `idle_transaction_timeout` and Postgres's `transaction_timeout` at 0, their
+defaults, for Lajstrom's users; where the server sets `transaction_timeout` for everyone, lift
+it for them:
 
 ```sql
-ALTER ROLE lajstrom SET idle_in_transaction_session_timeout = 0;
-ALTER ROLE lajstrom_serve SET idle_in_transaction_session_timeout = 0;
+ALTER ROLE lajstrom SET transaction_timeout = 0;
+ALTER ROLE lajstrom_serve SET transaction_timeout = 0;
 ```
 
 A function under the lock is bounded by the registry's timeouts (`registries[].timeout`, 30 s
@@ -210,8 +226,8 @@ installed for this page: what follows is its documentation and the measurements 
   set them as in [PgBouncer](#pgbouncer). The image is CloudNativePG's PgBouncer build; at 1.24.0 or
   later `max_prepared_statements` is 200 without setting it, and before 1.21.0 the DSN needs
   `default_query_exec_mode=exec`.
-- CloudNativePG does not set `idle_in_transaction_session_timeout`; if your
-  `spec.postgresql.parameters` do, lift it for Lajstrom's users as above.
+- CloudNativePG does not set `transaction_timeout`; if your `spec.postgresql.parameters` do,
+  lift it for Lajstrom's users as above.
 
 ## YugabyteDB
 
