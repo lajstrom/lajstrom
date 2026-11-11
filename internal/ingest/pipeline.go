@@ -185,41 +185,66 @@ func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload
 	if err != nil {
 		return nil, buildError(repo, err)
 	}
-	if up.Origin != nil {
-		setOrigin(&built.Manifest, up.Origin)
+	pkgPath, pub, err := p.prepare(ctx, repo, built, up.Origin, principal)
+	if err != nil || pub != nil {
+		existed = pub != nil
+		return pub, err
+	}
+	t, err := newTarget(ctx, repo, plugin, prov, pkgPath)
+	if err != nil {
+		return nil, err
+	}
+	pub, err = p.store(ctx, t, built, up.Origin, principal)
+	existed = pub != nil && pub.Existed
+	return pub, err
+}
+
+// prepare runs the steps of an upload between Build and the registry: the origin annotations,
+// the package path of built, and the idempotent repeat, whose Published it returns.
+func (p *Pipeline) prepare(ctx context.Context, repo index.Repo, built *format.Built, origin *format.Origin, principal auth.Principal) (string, *format.Published, error) {
+	if origin != nil {
+		setOrigin(&built.Manifest, origin)
 	}
 	pkgPath, ok := strings.CutPrefix(built.RepoPath, repoBase(repo)+"/")
 	if !ok || pkgPath == "" {
-		return nil, fmt.Errorf("ingest: the %s plugin built %q, which is not a package path below %s", repo.Format, built.RepoPath, repoBase(repo))
+		return "", nil, fmt.Errorf("ingest: the %s plugin built %q, which is not a package path below %s", repo.Format, built.RepoPath, repoBase(repo))
 	}
-	if v, err := p.repeat(ctx, repo, pkgPath, built); err != nil {
-		return nil, err
-	} else if v != nil {
-		p.log.InfoContext(ctx, "ingest: the tag already holds these files; nothing written", "repo", repo.Format+"/"+repo.Name,
-			"package", built.Entry.Name, "tag", built.Tag, "digest", v.Digest.String(), "principal", principal.String())
-		existed = true
-		return &format.Published{Digest: v.Digest, Tag: built.Tag, RepoPath: built.RepoPath, Entry: built.Entry, Existed: true}, nil
+	v, err := p.repeat(ctx, repo, pkgPath, built)
+	if err != nil || v == nil {
+		return pkgPath, nil, err
 	}
-	raw, _, err := profile.Encode(built.Manifest)
-	if err != nil {
-		return nil, fmt.Errorf("ingest: %w", err)
-	}
+	p.log.InfoContext(ctx, "ingest: the tag already holds these files; nothing written", "repo", repo.Format+"/"+repo.Name,
+		"package", built.Entry.Name, "tag", built.Tag, "digest", v.Digest.String(), "principal", principal.String())
+	return pkgPath, &format.Published{Digest: v.Digest, Tag: built.Tag, RepoPath: built.RepoPath, Entry: built.Entry, Existed: true}, nil
+}
+
+// newTarget returns the target of the package path pkgPath of repo, its OCI repository ensured.
+func newTarget(ctx context.Context, repo index.Repo, plugin format.Plugin, prov provider.Provider, pkgPath string) (*target, error) {
 	t := &target{repo: repo, plugin: plugin, pkgPath: pkgPath, name: ociName(repo, pkgPath), prov: prov}
 	if err := prov.EnsureRepository(ctx, t.name); err != nil {
 		return nil, fmt.Errorf("ingest: ensure repository %s: %w", t.name, err)
 	}
+	var err error
 	if t.rr, err = prov.Repository(ctx, t.name); err != nil {
 		return nil, fmt.Errorf("ingest: repository %s: %w", t.name, err)
+	}
+	return t, nil
+}
+
+// store pushes the blobs of built to t and ingests its manifest.
+func (p *Pipeline) store(ctx context.Context, t *target, built *format.Built, origin *format.Origin, principal auth.Principal) (*format.Published, error) {
+	raw, _, err := profile.Encode(built.Manifest)
+	if err != nil {
+		return nil, fmt.Errorf("ingest: %w", err)
 	}
 	if err := t.pushBlobs(ctx, built); err != nil {
 		return nil, err
 	}
 	res, err := p.ingest(ctx, &publish{target: t, tag: built.Tag, manifest: built.Manifest, raw: raw, principal: principal,
-		repeatOnFiles: true, origin: up.Origin})
+		repeatOnFiles: true, origin: origin})
 	if err != nil {
 		return nil, err
 	}
-	existed = res.Existed
 	return &format.Published{Digest: res.Digest, Tag: res.Tag, RepoPath: res.RepoPath, Entry: res.Entry, Existed: res.Existed}, nil
 }
 
@@ -241,6 +266,9 @@ type target struct {
 	name    string              // <format>/<repo>/<pkgPath>, the repository as the provider names it
 	rr      provider.Repository // the data path to name
 	prov    provider.Provider   // the registry, for the range reads of the fetcher
+	// streamed is the file of UploadStream, held in an upload session until the push commits
+	// it; nil for every other publish.
+	streamed *streamed
 }
 
 // publish is one manifest on its way through the pipeline; the steps fill it in.

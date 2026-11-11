@@ -201,7 +201,8 @@ func (p *Pipeline) push(ctx context.Context, pub *publish) error {
 // pushManifest checks the tag in the backend and pushes the manifest with it. The tag rule is
 // Lajstrom's, so a tag in the backend with another digest is a conflict even when the index
 // does not know it: a write that bypassed Lajstrom, or an index not yet rebuilt by reindex.
-// The same digest there is pushed again, which changes nothing, and confirmed.
+// The same digest there is pushed again, which changes nothing, and confirmed. The streamed file
+// of UploadStream is committed between the two, after the last check.
 func (pub *publish) pushManifest(ctx context.Context) error {
 	existing, err := pub.rr.Resolve(ctx, pub.tag)
 	switch {
@@ -210,6 +211,9 @@ func (pub *publish) pushManifest(ctx context.Context) error {
 		return fmt.Errorf("ingest: resolve %s:%s: %w", pub.name, pub.tag, err)
 	case existing.Digest != pub.digest:
 		return &index.TagConflictError{Tag: pub.tag, Existing: existing.Digest}
+	}
+	if err := pub.commit(ctx); err != nil {
+		return err
 	}
 	desc := ocispec.Descriptor{MediaType: pub.manifest.MediaType, Digest: pub.digest, Size: int64(len(pub.raw))}
 	err = pub.rr.PushReference(ctx, desc, bytes.NewReader(pub.raw), pub.tag)

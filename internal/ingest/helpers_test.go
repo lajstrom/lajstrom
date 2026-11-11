@@ -81,6 +81,12 @@ func buildRaw(ctx context.Context, repo index.Repo, up format.Upload) (*format.B
 		meta   rawMetadata
 	)
 	for _, f := range up.Files {
+		if f.Open == nil { // streamed (UploadStream): described by its checksum, not in Blobs
+			d := digest.NewDigestFromEncoded(digest.SHA256, f.Checksums["sha256"])
+			layers = append(layers, profile.Layer{MediaType: profile.MediaTypeRawFile, Digest: d, Size: f.Size, Title: f.Name})
+			meta.Files = append(meta.Files, rawMetadataFile{Name: f.Name, Size: f.Size})
+			continue
+		}
 		d, size, err := digestFile(f)
 		if err != nil {
 			return nil, err
