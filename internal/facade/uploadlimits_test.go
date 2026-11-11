@@ -62,6 +62,39 @@ func TestUploadMaxBlobSize(t *testing.T) {
 	}
 }
 
+// depthRegistry is the fake with a capabilities.maxNameDepth.
+type depthRegistry struct {
+	*providertest.Fake
+	depth int
+}
+
+func (r depthRegistry) Capabilities(ctx context.Context) (provider.Capabilities, error) {
+	c, err := r.Fake.Capabilities(ctx)
+	c.MaxNameDepth = r.depth
+	return c, err
+}
+
+// TestUploadNameDepth: a /v2 blob upload into a name deeper than the registry's maxNameDepth is
+// 400 NAME_INVALID naming the limit, a session, a monolithic upload and a mount alike, and opens
+// nothing in the registry; a name within it uploads (#599).
+func TestUploadNameDepth(t *testing.T) {
+	e := newEnv(t, envOptions{registry: func(f *providertest.Fake) provider.Provider { return depthRegistry{Fake: f, depth: 4} }})
+	b := []byte("a few bytes")
+	d := digest.FromBytes(b).String()
+	const deep = "/v2/raw/assets/ci/build/app.tar/blobs/uploads/"
+	for _, query := range []string{"", "?digest=" + d, "?mount=" + d + "&from=raw/assets/x"} {
+		msg := wantError(t, "POST "+deep+query, e.do(e.h, http.MethodPost, deep+query, bytes.NewReader(b)), http.StatusBadRequest, codeNameInvalid)
+		if want := "raw/assets/ci/build/app.tar has 5 components, and the registry takes at most 4 below its prefix"; !strings.Contains(msg, want) {
+			t.Errorf("POST %s: message %q does not contain %q", query, msg, want)
+		}
+	}
+	if n := e.prov.OpenUploads(); n != 0 || len(e.prov.Pushes()) != 0 {
+		t.Errorf("%d backend sessions open and %d blobs pushed for a name the registry does not take", n, len(e.prov.Pushes()))
+	}
+	wantStatus(t, "a name of 4 components", e.do(e.h, http.MethodPost, "/v2/raw/assets/ci/app.tar/blobs/uploads/?digest="+d,
+		bytes.NewReader(b)), http.StatusCreated)
+}
+
 // TestUploadDefaultMaxFileSize: a repo whose policy sets no maxFileSize is bounded by its
 // format's default on /v2 too, 8 GiB for raw and 16 GiB for oci (#246): a blob that declares one
 // byte more is 413 before anything streams.

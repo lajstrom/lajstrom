@@ -610,7 +610,10 @@ type Capabilities struct {
     CreateOnPush, Referrers, Catalog, DeleteManifest, ImmutableTags bool
     BlobRedirect bool                       // the operator's switch (capabilities.blobRedirect): false, OpenBlob never returns a URL
     MaxBlobSize int64                       // 0 = unknown
+    MaxNameDepth int                        // components of a name below the instance prefix; 0 = no limit
 }
+// CheckName: nil, or an error naming the limit of c that the name breaks; callers answer 400.
+func (c Capabilities) CheckName(name string) error
 
 var ErrNotFound, ErrConflict, ErrUnsupported, ErrUnauthorized error
 // ErrUnavailable: the provider did not send the request, its registry's circuit breaker is

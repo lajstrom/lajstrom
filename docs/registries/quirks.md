@@ -610,6 +610,9 @@ amendment: a component that fails the grammar is replaced by `h0_h` and 32 hex d
   `com.example`. A **GitLab** project cannot hold them below itself: a project per Lajstrom repo,
   `<group>/<format>/<repo>` with `prefix: <group>/`, leaves two levels, enough for pypi, deb, npm
   and maven, not for a raw path deeper than two ([gitlab.md](gitlab.md#behind-gitlab-read-not-measured)).
+  Since #599 the vendor table knows both depths (`capabilities.maxNameDepth`): a publish into a
+  deeper name is a `400` that names the limit, not the registry's `insufficient_scope`, and a
+  registry that takes no name of Lajstrom's, Docker Hub, is an error at startup.
 - **Zot** leaves out of its catalog, and so out of `reindex` from an empty database, which lists
   the catalog ([scan.go](../../internal/index/reindex/scan.go)), every package whose OCI name has
   a component ending in `blobs`, `.uploads` or `.sync`; a later run keeps their rows, since the

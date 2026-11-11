@@ -26,6 +26,9 @@ const (
 	zeroDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 	// maxCatalogProbeBody bounds how much of the catalog probe's answer, one entry, is read.
 	maxCatalogProbeBody = 64 << 10
+	// minNameDepth is the depth of the shortest name Lajstrom writes below the prefix,
+	// <format>/<repo>/<package> (docs/spec/manifest-profile.md §4.1).
+	minNameDepth = 3
 )
 
 // Capabilities probes the registry on the first call and caches the answer; a probe that
@@ -95,6 +98,9 @@ func apply(c *provider.Capabilities, o config.CapabilityOverrides) {
 	if o.ConsistencyBound > 0 {
 		c.ConsistencyBound = o.ConsistencyBound
 	}
+	if o.MaxNameDepth > 0 {
+		c.MaxNameDepth = o.MaxNameDepth
+	}
 }
 
 // probeOnce returns the cached probe, or probes and caches a successful answer. Concurrent
@@ -113,7 +119,7 @@ func (p *Provider) probeOnce(ctx context.Context) (provider.Capabilities, error)
 		return provider.Capabilities{}, p.translate("ping "+p.name, err)
 	}
 	v := detectVendor(id)
-	c, err := p.probe(ctx, vendorDefaults[v])
+	c, err := p.probe(ctx, vendorOverrides(v, id))
 	if err != nil {
 		return provider.Capabilities{}, err
 	}
@@ -131,7 +137,12 @@ func (p *Provider) probeOnce(ctx context.Context) (provider.Capabilities, error)
 		"blobRedirect", e.BlobRedirect,
 		"maxBlobSize", e.MaxBlobSize,
 		"consistency", consistencyText(e),
+		"maxNameDepth", e.MaxNameDepth,
 	)
+	if e.MaxNameDepth > 0 && e.MaxNameDepth < minNameDepth {
+		p.log.ErrorContext(ctx, "the registry takes no name of Lajstrom's: every one has 3 components or more below the prefix, "+
+			"<format>/<repo>/<package>, and a publish to the registry is refused", "vendor", string(v), "maxNameDepth", e.MaxNameDepth)
+	}
 	if e.Consistency == provider.ConsistencyEventual && e.ConsistencyBound == 0 {
 		p.log.WarnContext(ctx, "the registry is eventually consistent and no bound of its lag is known: every publish waits "+
 			"until the registry serves it, and answers 503 past the wait; `lajstrom registry probe` measures the lag, "+
