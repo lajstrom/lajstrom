@@ -2,13 +2,13 @@ package main
 
 import "github.com/spf13/cobra"
 
-// newAdminCmd returns the admin group: repo, key, deb, user, token and binding.
+// newAdminCmd returns the admin group: repo, key, deb, user, token, binding and bootstrap.
 func newAdminCmd(a *app) *cobra.Command {
 	admin := &cobra.Command{
 		Use:   "admin",
 		Short: "Manage repos, signing keys, users, tokens and bindings",
 	}
 	admin.AddCommand(newAdminRepoCmd(a), newAdminKeyCmd(a), newAdminDebCmd(), newAdminUserCmd(a), newAdminTokenCmd(a),
-		newAdminBindingCmd(a))
+		newAdminBindingCmd(a), newAdminBootstrapCmd(a))
 	return admin
 }

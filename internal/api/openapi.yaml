@@ -518,6 +518,47 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/Whoami"}
         "401": {$ref: "#/components/responses/Unauthorized"}
+  /api/v1/bootstrap:
+    post:
+      tags: [users]
+      operationId: bootstrap
+      summary: The first admin, for the bootstrap token; 404 once an admin exists.
+      description: >-
+        Creates the first admin, with the admin binding on */*, for the one-time bootstrap token
+        that serve made valid at start while no enabled user had an admin binding. The token is
+        the credential: no other is needed. Once an admin exists, every request is 404.
+      security:
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/BootstrapRequest"}
+      responses:
+        "201":
+          description: The admin.
+          headers:
+            Location: {$ref: "#/components/headers/Location"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/User"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "403":
+          description: The token is refused, or it is the token and it was used or expired.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "429":
+          description: Too many wrong tokens from the client address; try again after Retry-After.
+          headers:
+            Retry-After:
+              description: Seconds to wait.
+              schema: {type: integer}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
   /api/v1/openapi.yaml:
     get:
       tags: [meta]
@@ -871,6 +912,14 @@ components:
         name: {type: string}
         password: {type: string, minLength: 8}
         admin: {type: boolean}
+    BootstrapRequest:
+      type: object
+      required: [token, name, password]
+      additionalProperties: false
+      properties:
+        token: {type: string}
+        name: {type: string}
+        password: {type: string, minLength: 8}
     UserPatch:
       type: object
       additionalProperties: false

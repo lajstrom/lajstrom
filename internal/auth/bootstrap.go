@@ -145,6 +145,15 @@ func (b *Bootstrap) arm(ctx context.Context, tokenFile, secret string) (done boo
 	return true, nil
 }
 
+// Open reports whether the exchange is open: no enabled user has an admin binding.
+func (b *Bootstrap) Open(ctx context.Context) (bool, error) {
+	admin, err := anyAdmin(ctx, b.Index)
+	if err != nil {
+		return false, fmt.Errorf("auth: bootstrap: %w", err)
+	}
+	return !admin, nil
+}
+
 // ReadBootstrapToken reads the token of auth.bootstrap.tokenFile: the file without the
 // whitespace around it, MinBootstrapTokenLen to MaxBootstrapTokenLen bytes without whitespace.
 // Errors name the file and never contain the token.
@@ -170,8 +179,8 @@ func ReadBootstrapToken(path string) (string, error) {
 //
 //   - a client address with BootstrapFailures wrong tokens in its window: a *ThrottledError;
 //   - an enabled user with an admin binding: ErrBootstrapClosed, whatever the token;
-//   - a token that is not the one stored, compared in constant time: ErrBootstrapToken, and it
-//     counts as a failure of the address;
+//   - a token that is not the one stored, compared in constant time: an error wrapping
+//     ErrBootstrapToken, and it counts as a failure of the address;
 //   - the right token, used or expired: an error wrapping ErrBootstrapToken that says so;
 //   - then the name and the password are checked (ErrInvalid), and a name that exists is
 //     index.ErrConflict, the token left valid.
@@ -197,7 +206,7 @@ func (b *Bootstrap) Exchange(ctx context.Context, secret, name, password string,
 	if cur == nil || subtle.ConstantTimeCompare([]byte(hash), []byte(cur.Hash)) != 1 {
 		b.throttle().add(addr)
 		b.log().InfoContext(ctx, "bootstrap token refused: not the token", "address", addr)
-		return nil, ErrBootstrapToken
+		return nil, &authError{msg: "the bootstrap token is refused", err: ErrBootstrapToken}
 	}
 	now := b.now()
 	if err := tokenValid(cur, now); err != nil {
