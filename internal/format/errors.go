@@ -34,6 +34,14 @@ var (
 	// (ADR 0014, Publisher.UploadStream): Build described it from what the plugin's inspector
 	// read of those bytes, and a Validate that would read the file takes that as checked.
 	ErrStreamed = errors.New("format: the blob streams in with this upload and is not committed yet")
+
+	// ErrReadBack is what Build returns, wrapped, for a file that streamed into the registry
+	// (Publisher.UploadStream) when its inspector did not hold all it needs of the bytes as they
+	// passed: a wheel whose METADATA it did not keep (ADR 0014, step 5). Ingest then closes the
+	// upload session, so that the registry has the file, and calls Build again with the file's
+	// Open reading it back from there; Validate's fetch of the file then reads it too, and is no
+	// ErrStreamed. It is never a client's answer.
+	ErrReadBack = errors.New("format: the file is to be read back from the registry")
 )
 
 // The errors of a proxy's upstream and of a repo that takes no writes (ADR 0013,

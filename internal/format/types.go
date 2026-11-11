@@ -78,7 +78,7 @@ type Origin struct {
 // The file of a StreamUpload has no Open (ADR 0014): its bytes passed once, into an upload
 // session of the registry, through the hashes and the Inspector, before Build. Build describes
 // its layer from Checksums and Size and leaves it out of Built.Blobs; ingest closes the session
-// once every check passed.
+// once every check passed, or, when Build returns ErrReadBack, before them, to read it back.
 type UploadedFile struct {
 	// Name is the file name as the client sent it; for maven, the path of the file below
 	// /maven/<repo>/, com/example/lib-core/1.2.0/lib-core-1.2.0.jar.
@@ -87,7 +87,9 @@ type UploadedFile struct {
 	Size int64
 	// ContentType is the Content-Type the client sent, if any.
 	ContentType string
-	// Open returns a new reader positioned at the start of the file; nil for a streamed file.
+	// Open returns a new reader positioned at the start of the file; nil for a streamed file,
+	// but in the Build that ingest calls again after ErrReadBack, where it reads the file back
+	// from the registry and the reader is an io.ReaderAt by range requests, as BlobFetcher's.
 	Open func() (io.ReadCloser, error)
 	// Checksums are the digests of the whole file that the receiver computed once, while the
 	// bytes streamed in, as lowercase hex by algorithm: the keys are md5, sha1, sha256 and
