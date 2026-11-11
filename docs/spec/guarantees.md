@@ -164,10 +164,11 @@ status is `holds on strongly consistent registries only` do not hold there.
   ([operations.md](../operations.md#backup-and-restore)). On a registry without a catalog, only the
   OCI repositories that `oci_repos` records or `--attach` names. The manifests at OCI names in the
   grammar of [ADR 0017](../adr/0017-the-grammar-of-oci-names.md), which Lajstrom writes, and at
-  the earlier form of those names, which it reads
+  the earlier forms of those names, which it reads
   ([manifest-profile.md](manifest-profile.md#43-escape-and-escapecomponent) §4.3); on Zot an
   earlier name that ends in `blobs`, `.uploads` or `.sync` is not in the catalog, and only
-  `oci_repos` or `--attach` finds it.
+  `oci_repos` or `--attach` finds it; on Harbor an earlier name with a component `manifests` or
+  `referrers`, or `tags/list…`, answers the check of its blobs at random.
 - **Assumes.** Registry: **complete listings** (**unchecked**) of the names in the grammar of
   ADR 0017 (Zot's catalog leaves out others, [quirks.md](../registries/quirks.md)); **durable 201**.
   Database: any.
@@ -175,9 +176,9 @@ status is `holds on strongly consistent registries only` do not hold there.
   read-only steps of ingest, and `ingest.WriteRows` writes what ingest writes; the
   `reindex.Worker` lists (`scan.list`, `scan.ociRepo`), marks and sweeps; the journal is
   replayed in `seq` order (`reindex.replay.run`). A manifest whose metadata layer is missing is
-  indexed from its annotations and flagged `degraded`. A manifest at the earlier form of
+  indexed from its annotations and flagged `degraded`. A manifest at an earlier form of
   its OCI name is the package of its annotations (`ingest.publish.checkTarget`), which keeps that
-  name: a writer looks it up at both forms (`index.PackageAt`, `ingest.Pipeline.storedPath`).
+  name: a writer looks it up at every form (`index.PackageAt`, `ingest.Pipeline.storedPath`).
 - **Tests.** `TestRebuild` (I-01 on a raw repo), `TestRebuildFormats` (three more formats) and
   `TestRebuildPackageCreated` of `internal/index/reindex`, `TestIntegration` and
   `TestIntegrationFormats` of `internal/index/reindex` (I-01 against Zot and distribution, on

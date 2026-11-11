@@ -334,7 +334,7 @@ So `/v2/quirks/x/manifests/y/blobs/<digest>` also reads as the manifest `y/blobs
 `quirks/x`, an invalid reference and 404, and `/v2/quirks/x/tags/list/blobs/<digest>` as the tag
 list of `quirks/x`, which leaves the blob `HEAD` handler without a digest: 400 (read). A client
 that asks `HEAD` before an upload sends the blob again; one that checks a blob after a push may
-find it missing.
+find it missing. Reported as [harbor#24363](https://github.com/goharbor/harbor/issues/24363).
 
 ### Elsewhere (read, not measured)
 
@@ -578,9 +578,10 @@ Lajstrom names an OCI repository `<prefix><format>/<repo>/<package path>`
 ([manifest-profile.md](../spec/manifest-profile.md#41-repository-path), ADR 0004): a repository
 per package, three components or more below the prefix (maven four, a raw file one per directory
 of its path), lowercase, at most 255 bytes, in the 1.0 grammar and without the words of Zot's
-layout since [ADR 0017](../adr/0017-the-grammar-of-oci-names.md): a component that fails the
-grammar is replaced by `h0_h` and 32 hex digits, a run of `-` and the last byte of a reserved word
-are escaped. A package's versions are tags in its repository.
+layout and Harbor's routes since [ADR 0017](../adr/0017-the-grammar-of-oci-names.md) and its
+amendment: a component that fails the grammar is replaced by `h0_h` and 32 hex digits, a run of
+`-` and the last byte of a reserved word are escaped, and so is the last byte of `tags` before a
+`list…`. A package's versions are tags in its repository.
 
 ### Consequences, registry by registry
 
@@ -613,8 +614,10 @@ are escaped. A package's versions are tags in its repository.
 - **Harbor** answers a blob `HEAD` with 404 or 400 at random in a name with a component
   `manifests` or `referrers`, or `tags/list` (measured, section 2): a raw file below a directory
   `manifests/`, such as `k8s/manifests/app.yaml`. A check by `HEAD` misses the blob there: an
-  upload sends it again, a check after a push fails now and then (inference). ADR 0017 escapes
-  none of these words.
+  upload sends it again, a check after a push fails now and then (inference). Since the amendment
+  of ADR 0017 these are `manifest_73`, `referrer_73` and `tag_73/list…` on every registry, until
+  Harbor fixes [harbor#24363](https://github.com/goharbor/harbor/issues/24363); a name written
+  before keeps its form.
 - **GHCR** cannot delete: no unpublish, no retention. **Harbor** cannot delete one tag of
   several. **Nexus**'s `docker` format keeps a deleted manifest's tags.
 - **Tokens scale with packages.** A bearer token is scoped to repositories, so a run that touches
@@ -658,8 +661,9 @@ disappears from its clients without an audit record.
 2. **Depth and name grammar vary**: two levels on Docker Hub, project and two on GitLab, the 1.0
    grammar on Gitea, route words on Quay. Lajstrom finds out at the first push, with an error
    that names a token or a 404.
-3. **Storage layouts reserve words the grammar allows**: `blobs` on Zot, tag folders on JFrog.
-   Lajstrom's escaping makes a name valid for the grammar, not safe from these.
+3. **Storage layouts and routers reserve words the grammar allows**: `blobs` on Zot, `manifests`,
+   `referrers` and `tags/list` on Harbor, tag folders on JFrog. ADR 0017 escapes the words of Zot
+   and Harbor; a word found on another registry is another amendment.
 4. **Backend rules read Lajstrom's tags and untagged manifests**, and their patterns cannot tell
    a version from a journal entry or a referrer index.
 5. **Reindex trusts the catalog**, which is partial on Zot, everyone's on GHCR, an
