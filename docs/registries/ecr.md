@@ -118,6 +118,18 @@ AWS SDK; the live check is #19.
 | Immutable tags | yes unless `MUTABLE*` | follows `ecr.imageTagMutability`; a repository created otherwise keeps its own setting |
 | Blob redirect | yes | from memory, a 307 to S3: to be measured by #19 |
 | Max blob size | 52,000 MiB | the layer size quota of the AWS service quotas page: to be measured by #19 |
+| Consistency | eventual, no bound | from users' and tool maintainers' reports (below); `consistencyBound` once #19 measures one |
+
+**Consistency.** AWS documents no read-after-write guarantee for ECR, and none against it.
+Practitioners and tool maintainers have met a manifest or a blob answered `404` right after its
+push, for 100 ms to several seconds and more under concurrent pushes:
+[ocync's commit gate](https://github.com/clowdhaus/ocync/pull/104) for the blobs before the
+manifest, [docker/github-builder#30](https://github.com/docker/github-builder/issues/30) (ECR
+Public) and its [5 s wait for ECR](https://github.com/docker/github-builder/commit/0396b4ecfb)
+before attestations. Replication to other regions takes minutes ("the majority within 30
+minutes") and a pull-through cache checks its upstream every 24 hours: a Lajstrom that reads a
+replica or a cache sees them later still. The type `ecr` says `consistency: eventual`, and
+without `consistencyBound` the start warns ([Consistency](README.md#consistency)).
 
 ## Tested against moto
 

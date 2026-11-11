@@ -254,6 +254,7 @@ func (r Registry) validate(p *problems, key string) {
 	if r.Capabilities.MaxBlobSize < 0 {
 		p.add(key+".capabilities.maxBlobSize", "must not be negative")
 	}
+	r.Capabilities.validateConsistency(p, key+".capabilities")
 	a := r.Auth
 	if (a.Username == "") != (a.PasswordEnv == "") {
 		p.add(key+".auth", "username and passwordEnv must be set together")
@@ -263,6 +264,21 @@ func (r Registry) validate(p *problems, key string) {
 	}
 	r.validateTokenRealmHosts(p, key)
 	r.validateECR(p, key)
+}
+
+// validateConsistency checks consistency and consistencyBound below key.
+func (o CapabilityOverrides) validateConsistency(p *problems, key string) {
+	switch o.Consistency {
+	case "", ConsistencyStrong, ConsistencyEventual:
+	default:
+		p.add(key+".consistency", "%q is not %s or %s", o.Consistency, ConsistencyStrong, ConsistencyEventual)
+	}
+	switch {
+	case o.ConsistencyBound < 0:
+		p.add(key+".consistencyBound", "must not be negative")
+	case o.ConsistencyBound > 0 && o.Consistency == ConsistencyStrong:
+		p.add(key+".consistencyBound", "a strongly consistent registry has no lag: leave it out, or set consistency: eventual")
+	}
 }
 
 // validateNesting refuses two registries on one URL, the same scheme, host and port, whose

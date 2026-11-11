@@ -17,6 +17,7 @@ var Rows = []struct{ Key, Title string }{
 	{"catalog", "Catalog (`_catalog`) and its limits"},
 	{"listingAPI", "A listing API of its own"},
 	{"tags", "Tag list order and pagination"},
+	{"consistency", "Read-after-write lag"},
 	{"deleteDigest", "Delete a manifest by digest"},
 	{"deleteTag", "Delete by tag"},
 	{"deleteRepository", "Delete a repository"},
@@ -82,6 +83,10 @@ type Capabilities struct {
 	ImmutableTags  bool  `json:"immutableTags"`
 	BlobRedirect   bool  `json:"blobRedirect"`
 	MaxBlobSize    int64 `json:"maxBlobSize"`
+	// Consistency is strong or eventual, empty when unknown; ConsistencyBound is a duration
+	// ("2s"), empty when unknown.
+	Consistency      string `json:"consistency,omitempty"`
+	ConsistencyBound string `json:"consistencyBound,omitempty"`
 }
 
 // Cell returns the report's cell of key, nil for an unknown key.

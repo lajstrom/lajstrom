@@ -49,7 +49,9 @@ var vendorDefaults = map[vendor]config.CapabilityOverrides{
 	vendorGitLab: {},
 	// _catalog answers 200 with every repository of GHCR, which the probe cannot tell from a
 	// catalog Lajstrom can use, and every delete through /v2 is 405 (docs/registries/ghcr.md).
-	vendorGHCR: {Catalog: new(false), DeleteManifest: new(false)},
+	// A tag read a fraction of a second after its push is sometimes 404 (users' reports,
+	// docs/registries/README.md, Consistency).
+	vendorGHCR: {Catalog: new(false), DeleteManifest: new(false), Consistency: config.ConsistencyEventual},
 	// The probe is right: the referrers API, and no catalog for a project robot
 	// (docs/registries/harbor.md).
 	vendorHarbor: {},

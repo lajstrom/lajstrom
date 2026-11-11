@@ -42,16 +42,18 @@ const (
 //     image index is true, any other 200 and a 404 without NAME_UNKNOWN are false, and so is
 //     an answer that does not tell (404 NAME_UNKNOWN, 401, 403), in which case oras-go decides
 //     per repository on first use;
-//   - CreateOnPush, DeleteManifest and BlobRedirect are true, ImmutableTags is false and
-//     MaxBlobSize is 0 (unknown) without a request; DeleteManifest turns false when the
-//     registry answers a manifest delete with 405 UNSUPPORTED or a 405 without DENIED.
+//   - CreateOnPush, DeleteManifest and BlobRedirect are true, ImmutableTags is false,
+//     MaxBlobSize is 0 (unknown) and Consistency unknown without a request; DeleteManifest
+//     turns false when the registry answers a manifest delete with 405 UNSUPPORTED or a 405
+//     without DENIED.
 //
 // A capability that the vendor table or the configuration sets is not probed. What the vendor
 // table decides from the probe's answer (afterProbe) comes before the configuration's overrides,
 // with the vendor's quirks: the blob reads of Nexus's oci format and JFrog's blob HEAD. The
 // first successful probe logs the result and the vendor at info, hints at
 // registries[].uploads.spoolUnknownLength for Gitea and JFrog when it is off, and warns about a
-// GitLab registry with its metadata database, which refuses artifact types it does not know.
+// GitLab registry with its metadata database, which refuses artifact types it does not know,
+// and about an eventually consistent registry whose lag has no bound in the configuration.
 func (p *Provider) Capabilities(ctx context.Context) (provider.Capabilities, error) {
 	c, err := p.probeOnce(ctx)
 	if err != nil {
@@ -86,6 +88,12 @@ func apply(c *provider.Capabilities, o config.CapabilityOverrides) {
 	set(&c.BlobRedirect, o.BlobRedirect)
 	if o.MaxBlobSize > 0 {
 		c.MaxBlobSize = o.MaxBlobSize
+	}
+	if o.Consistency != "" {
+		c.Consistency = provider.Consistency(o.Consistency)
+	}
+	if o.ConsistencyBound > 0 {
+		c.ConsistencyBound = o.ConsistencyBound
 	}
 }
 
@@ -122,7 +130,13 @@ func (p *Provider) probeOnce(ctx context.Context) (provider.Capabilities, error)
 		"immutableTags", e.ImmutableTags,
 		"blobRedirect", e.BlobRedirect,
 		"maxBlobSize", e.MaxBlobSize,
+		"consistency", consistencyText(e),
 	)
+	if e.Consistency == provider.ConsistencyEventual && e.ConsistencyBound == 0 {
+		p.log.WarnContext(ctx, "the registry is eventually consistent and no bound of its lag is known: every publish waits "+
+			"until the registry serves it, and answers 503 past the wait; `lajstrom registry probe` measures the lag, "+
+			"registries[].capabilities.consistencyBound records it", "vendor", string(v))
+	}
 	if q != (quirks{}) {
 		p.log.InfoContext(ctx, "registry needs workarounds", "vendor", string(v),
 			"blobsReadWhole", q.wholeBlobs, "blobExistsByGET", q.blobExistsByGET)
@@ -245,6 +259,18 @@ func (p *Provider) probeReferrers(ctx context.Context) (int32, error) {
 	default:
 		return referrersUnknown, parseErrorResponse(resp)
 	}
+}
+
+// consistencyText is the consistency of c as the startup line says it: strong, eventual (with
+// its bound when one is known) or unknown.
+func consistencyText(c provider.Capabilities) string {
+	switch {
+	case c.Consistency == provider.ConsistencyUnknown:
+		return "unknown"
+	case c.ConsistencyBound > 0:
+		return string(c.Consistency) + " within " + c.ConsistencyBound.String()
+	}
+	return string(c.Consistency)
 }
 
 // get sends a GET through the client that follows redirects. The caller closes the body.

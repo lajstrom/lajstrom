@@ -73,6 +73,7 @@ Gitea's column holds for Forgejo too, but where a cell names Forgejo.
 | Catalog (`_catalog`) and its limits | [yes, `n`/`last`/`Link`: 100 a page, `n` at most 1000; the order depends on the driver](distribution.md#catalog) | [yes, `n`/`last`/`Link`, component by component (`/` first), no largest `n`](zot.md#catalog) | [yes, `n`/`last`/`Link`, `n` at most 1000; `/` first](gitlab.md#lajstrom-registry-probe) | [yes, `n`/`last`/`Link`, `n` at most 1000; lexical](gitlab.md#lajstrom-registry-probe) | [200 with all of GHCR, 1000 a page](ghcr.md#catalog) | [system admins with Basic only](harbor.md#catalog-and-listing) | [yes, `n`/`last`/`Link` (absolute), no largest `n`](nexus.md#catalog) | [yes, `n` and a `cursor` in `Link`; **`last` ignored**](nexus.md#catalog) | [yes, `n`/`last`/`Link`, lexical, no largest `n`; the user's view](gitea.md#catalog) |
 | A listing API of its own | [none](distribution.md#catalog) | [none in the minimal build](zot.md#catalog) | [none: its `/gitlab/v1/` tag list is 404](gitlab.md#referrers) | [`/gitlab/v1/`: tag lists with referrers](gitlab.md#referrers) | [packages REST API, per organisation](ghcr.md#catalog) | [REST API per project, `page_size` at most 100](harbor.md#catalog-and-listing) | [REST API `search`: a component per tag](nexus.md#delete) | *not measured* | [REST API: the owner's packages, a version per tag or untagged digest](gitea.md#catalog) |
 | Tag list order and pagination | [lexical, byte by byte; `n`/`last`/`Link`, `n` clamped at 1000; on S3 a missing repository is 200 `[]`](distribution.md#tags) | [lexical; `n`/`last`/`Link`](zot.md#tags) | [lexical; **`n` and `last` ignored**: every tag, no `Link`](gitlab.md#lajstrom-registry-probe) | [lexical; `n`/`last`/`Link`](gitlab.md#lajstrom-registry-probe) | [**creation order; `last` a position**](ghcr.md#tags) | [`n`/`last`/`Link`, as distribution](harbor.md#catalog-and-listing) | [byte order, case kept; `n`/`last`/`Link` (absolute)](nexus.md#tags) | [byte order, case kept; `n`/`last`/`Link` (absolute)](nexus.md#tags) | [**lower-cased, case-insensitive**; lexical; `n`/`last`/`Link`](gitea.md#tags) |
+| Read-after-write lag | [none seen in 3 writes, on S3 too](#consistency) | [none seen in 3 writes](#consistency) | [none seen in 3 writes](#consistency) | [none seen in 3 writes](#consistency) | *not measured*; [`eventual` by the vendor table](#consistency) | *not measured* | *not measured* | *not measured* | *not measured* |
 | Delete a manifest by digest | [yes, 202, with its tags; 405 `UNSUPPORTED` with deletes disabled; its referrers stay](distribution.md#delete) | [yes, 202; **405** for a manifest an index lists](zot.md#delete) | [yes, 202, with its tags; its referrers stay](gitlab.md#lajstrom-registry-probe) | [yes, 202, with its tags; **a manifest with a referrer: 500**; one an index lists: 409 `MANIFEST_REFERENCED`](gitlab.md#lajstrom-registry-probe) | [no: 405 `UNSUPPORTED`](ghcr.md#delete) | [yes; its referrers go with it](harbor.md#delete) | [**202, but its tags stay and serve it**](nexus.md#delete) | [yes, 202, with its tags](nexus.md#delete) | [yes, 202, with its tags and the blobs only it used](gitea.md#delete) |
 | Delete by tag | [yes: the manifest stays; 405 with deletes disabled](distribution.md#delete) | [yes: the manifest stays, untagged](zot.md#delete) | [yes: the manifest stays, untagged](gitlab.md#delete) | [yes: the manifest stays, untagged](gitlab.md#delete) | [no: 405](ghcr.md#delete) | [400 through `/v2`; the REST API does](harbor.md#delete) | [yes: the manifest stays](nexus.md#delete) | [yes: the manifest stays](nexus.md#delete) | [the tag; **the manifest too**, when it was pushed by that tag only](gitea.md#delete) |
 | Delete a repository | [no API; on S3 it leaves `_catalog` with its last manifest](distribution.md#delete) | [no API; an empty one goes with the collector](zot.md#delete) | [no API; it stays in `_catalog`](gitlab.md#lajstrom-registry-probe) | [no API; it leaves `_catalog` with its last manifest](gitlab.md#lajstrom-registry-probe) | [REST API: the package](ghcr.md#packages-left-in-lajstrom-extras) | [REST API](harbor.md#delete) | [no `/v2` API; it goes with its last tag](nexus.md#delete) | [no `/v2` API; it goes with its last manifest](nexus.md#delete) | [no `/v2` API; it leaves `_catalog` with its last manifest; the REST API not measured](gitea.md#delete) |
@@ -117,6 +118,7 @@ in its compose file re-runs [Commands](jfrog-jcr.md#commands).
 | Catalog (`_catalog`) and its limits | [**200 with an empty body**; per key at `/v2/<repo-key>/_catalog`, `n`/`last`/`Link`, lexical](jfrog-jcr.md#catalog-and-tags) |
 | A listing API of its own | [Artifactory's Docker and storage APIs](jfrog-jcr.md#catalog-and-tags) |
 | Tag list order and pagination | [lexical; `n`/`last`/`Link`](jfrog-jcr.md#catalog-and-tags) |
+| Read-after-write lag | *not measured* |
 | Delete a manifest by digest | [yes, 202, with its tags; its referrers stay](jfrog-jcr.md#delete) |
 | Delete by tag | [yes: the manifest stays](jfrog-jcr.md#delete) |
 | Delete a repository | [Artifactory's REST API](jfrog-jcr.md#delete) |
@@ -159,6 +161,7 @@ distribution 3.1.2 on its `s3` storage driver, the profiles `s3` and `s3-minio` 
 | `storage.redirect.disable: true` | no redirect: 200 with the bytes, a range 206 | the same | *not measured* |
 | The driver's `redirectendpoint` | redirects signed for `localhost:9000` while distribution talks to `seaweedfs:9000`: followed, 200 | the same, `localhost:9001` and `minio:9001` | *not measured* |
 | Largest blob measured | 1 GiB in one `PUT` | 1 GiB in one `PUT` | *not measured* |
+| Read-after-write lag | [none seen in 3 writes](#consistency); a blob `HEAD` is the 307 | the same | *not measured* |
 | `HEAD` | 307; the provider follows it, 200 (`StatBlob`) | 307; the provider follows it, 200 | *not measured* |
 | Cancel of an upload session after a refused digest | 500 `s3aws: append to zero-size path … unsupported`; its status `GET` 500 too | the same 500s: distribution's s3 driver, not the store | *not measured* |
 | Tests | `TestIntegrationS3Redirect`, `TestIntegration` with and without the prefix, `TestAptGetInstall/s3`: pass; `TestIntegrationUploads` but for the cancel | the same | *not measured* |
@@ -340,6 +343,40 @@ registries:
       passwordEnv: LAJSTROM_GITEA_TOKEN # an access token with the scope write:package
 ```
 
+## Consistency
+
+A registry is **strongly consistent** when every read after the `201` of a write sees it: a
+`HEAD` or `GET` of the manifest by digest and by tag, of each blob, the tag list and the
+catalog. It is **eventually consistent** when a read can miss the write for a while, its
+**lag**; the longest lag known is its **bound**. `provider.Capabilities.Consistency` and
+`ConsistencyBound` say which ([configuration.md](../configuration.md#registry-capabilities):
+`capabilities.consistency`, `capabilities.consistencyBound`).
+
+| Registry | Model | What is known |
+| --- | --- | --- |
+| distribution 3.1.2 on the filesystem, on SeaweedFS and on MinIO; Zot v2.1.23 | none seen | the probe, 2026-11-11: every read saw each write at once (below) |
+| GitLab A and B | none seen | the probe, 2026-11-11 |
+| Amazon ECR | eventual, no bound | 100 ms to several seconds, from reports only ([ecr.md](ecr.md#capabilities)); #19 measures it |
+| GHCR | eventual (the vendor table), no bound | users saw a tag `404` 0.2 s after its push, once in 30 runs; reads from another runner fail more often |
+| Docker Hub | none seen for manifests and blobs | its referrers list lagged up to about a minute behind a signature (cosign users' reports) |
+| Quay | immediate by its code for manifests and blobs | the tag list is cached up to 120 s, the catalog up to 60 s |
+| Azure Container Registry | per replica | geo-replicas are eventual, without a published bound; a push and its reads must use one regional endpoint |
+| Google Artifact Registry | none seen | a remote repository caches its tags for an hour |
+
+"None seen" is a measurement of a few writes, not a guarantee: the probe saw no lag, and nothing
+classifies these registries `strong` but the configuration. The reports behind the rows
+without a probe are in #446.
+
+The probe's row "Read-after-write lag" is three writes in the repository `lag` of the scratch
+prefix: a new blob, read with `HEAD` until it answers 200; then a manifest that has it as its
+layer, under a new tag, read until `HEAD` by digest answers 200, `HEAD` by tag answers its
+digest, the tag list names the tag and, when the registry has a catalog Lajstrom uses, the
+catalog names the repository. A read that misses is asked again after 25 ms, then twice as long
+each time up to 2 s, for at most 2 minutes, past the 120 s of Quay's tag-list cache. The cell
+is `none: …` when every read saw every write at the first ask, otherwise each read's worst
+time; "Overrides needed" then names `consistency: eventual` and a `consistencyBound` in whole
+seconds above the worst.
+
 ## Measuring a registry: `lajstrom registry probe`
 
 `lajstrom registry probe` (#339) is the method of the spikes as one run: it measures a registry's
@@ -371,6 +408,7 @@ written. How each row is measured, in requests:
 | Referrers API, `OCI-Subject` | a subject tagged `v1`, two referrers by digest with artifact types of their own (one of the empty type where the registry refuses unknown ones); `referrers/<subject>`, with `?artifactType=`; whether a `sha256-<subject>` tag appeared |
 | Catalog | `_catalog?n=1`; five repositories `pre`, `pre/sub`, `pre-x`, `pre.y`, `prea` and their order; a page of two after the first by `last` and its `Link`; `n=1000`, `n=1001`, `n=100000`; the page without `n` |
 | Tag list | one manifest under seven tags pushed out of order (`b`, `A`, `1.10`, `_x`, `1.2`, `Z`, `a`); the list, a page of two by `last`, the list of a repository never pushed |
+| Read-after-write lag | three blobs and three manifests, each read back until every read sees it ([Consistency](#consistency)) |
 | Deletes | a manifest under two tags deleted by digest, then its tags and the blob only it used; a subject with a referrer; a manifest an image index lists; a tag of a manifest pushed by tag only, and of one pushed by digest first. "Delete a repository": what stays after the cleanup |
 | Immutable tags | `A` under `v1`, `A` again, `B` under `v1`, then `A` by digest |
 | Blob redirect, `Range` | a 64 KiB blob by `GET` and `HEAD`, redirects not followed; then whole, `bytes=0-9` and a range past its end, after the redirect when there is one |
