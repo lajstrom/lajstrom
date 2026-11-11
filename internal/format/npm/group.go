@@ -121,7 +121,7 @@ func (h *handlers) dropHeld(ctx context.Context, hosted index.Repo, names map[st
 		if err != nil {
 			continue // a name npm cannot have is no package of the repo, and the upstream answers it
 		}
-		_, err = h.deps.Index.GetPackageByNameOCI(ctx, hosted.ID, pkgPath)
+		_, err = index.PackageAt(ctx, h.deps.Index, hosted.ID, pkgPath)
 		switch {
 		case err == nil:
 			delete(names, name)

@@ -215,7 +215,7 @@ func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload
 }
 
 // prepare runs the steps of an upload between Build and the registry: the origin annotations,
-// the package path of built, and the idempotent repeat, whose Published it returns.
+// the package path of built (storedPath), and the idempotent repeat, whose Published it returns.
 func (p *Pipeline) prepare(ctx context.Context, repo index.Repo, built *format.Built, origin *format.Origin, principal auth.Principal) (string, *format.Published, error) {
 	if origin != nil {
 		setOrigin(&built.Manifest, origin)
@@ -224,13 +224,32 @@ func (p *Pipeline) prepare(ctx context.Context, repo index.Repo, built *format.B
 	if !ok || pkgPath == "" {
 		return "", nil, fmt.Errorf("ingest: the %s plugin built %q, which is not a package path below %s", repo.Format, built.RepoPath, repoBase(repo))
 	}
+	pkgPath, err := p.storedPath(ctx, repo, pkgPath)
+	if err != nil {
+		return "", nil, err
+	}
 	v, err := p.repeat(ctx, repo, pkgPath, built)
 	if err != nil || v == nil {
 		return pkgPath, nil, err
 	}
 	p.log.InfoContext(ctx, "ingest: the tag already holds these files; nothing written", "repo", repo.Format+"/"+repo.Name,
 		"package", built.Entry.Name, "tag", built.Tag, "digest", v.Digest.String(), "principal", principal.String())
-	return pkgPath, &format.Published{Digest: v.Digest, Tag: built.Tag, RepoPath: built.RepoPath, Entry: built.Entry, Existed: true}, nil
+	return pkgPath, &format.Published{Digest: v.Digest, Tag: built.Tag, RepoPath: ociName(repo, pkgPath), Entry: built.Entry, Existed: true}, nil
+}
+
+// storedPath returns the package path that a write to pkgPath, as Plugin.EscapeName computes
+// it, goes to: the NameOCI of the package when the index has it at pkgPath or at the form of
+// before ADR 0017 (index.PackageAt), else pkgPath. A package keeps the OCI repository it was
+// first written to; the form of ADR 0017 is for a package the index does not have.
+func (p *Pipeline) storedPath(ctx context.Context, repo index.Repo, pkgPath string) (string, error) {
+	pkg, err := index.PackageAt(ctx, p.index, repo.ID, pkgPath)
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		return pkgPath, nil
+	case err != nil:
+		return "", fmt.Errorf("ingest: the package at %s: %w", ociName(repo, pkgPath), err)
+	}
+	return pkg.NameOCI, nil
 }
 
 // newTarget returns the target of the package path pkgPath of repo, its OCI repository ensured.
@@ -311,6 +330,7 @@ type publish struct {
 	// origin is set on the proxy fetcher's upload: the origin annotations and proxy.fetch.
 	origin *format.Origin
 
+	earlier       bool // the package path is the form of before ADR 0017 (checkTarget)
 	readOnly      bool // Inspect: nothing is pushed, not even the empty config
 	allowDegraded bool // Inspect: an unreadable metadata layer gives degraded rows
 	degraded      bool // the rows come from the annotations alone

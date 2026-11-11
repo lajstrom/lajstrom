@@ -60,7 +60,7 @@ func (g *grouped) hides(ctx context.Context, r index.Reader, name, key string) (
 	if err != nil {
 		return false, nil //nolint:nilerr // a name the format cannot escape is held by no repo
 	}
-	_, err = r.GetPackageByNameOCI(ctx, g.hosted.ID, pkgPath)
+	_, err = index.PackageAt(ctx, r, g.hosted.ID, pkgPath)
 	switch {
 	case errors.Is(err, index.ErrNotFound):
 		return false, nil

@@ -107,7 +107,7 @@ func (d *deployer) file(r *http.Request, repo index.Repo, path string, body io.R
 // once both pass it; ingest settles that race under its claims before either manifest is pushed
 // (#244).
 func (d *deployer) checkSpelling(r *http.Request, repo index.Repo, c Coordinates) error {
-	pkg, err := d.deps.Index.GetPackageByNameOCI(r.Context(), repo.ID, packagePath(c.GroupID, c.ArtifactID))
+	pkg, err := index.PackageAt(r.Context(), d.deps.Index, repo.ID, packagePath(c.GroupID, c.ArtifactID))
 	switch {
 	case errors.Is(err, index.ErrNotFound):
 		return nil

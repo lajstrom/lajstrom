@@ -861,6 +861,11 @@ type ReindexConflictError struct {          // errors.Is(err, ErrConflict) is tr
     Running ReindexRun                      // the live run that overlaps: replica, StartedAt
 }
 
+// PackageAt is GetPackageByNameOCI at the package path pkgPath (Plugin.EscapeName), or at its
+// form of before ADR 0017 (profile.LegacyPackagePath, manifest-profile.md §4.3): a package
+// keeps the OCI repository it was first written to. ErrNotFound when neither is.
+func PackageAt(ctx context.Context, r Reader, repoID int64, pkgPath string) (*Package, error)
+
 // Migrations: migrations/<dialect>/NNNN_<name>.sql, embedded (index-schema.md, Migrations).
 const DialectSQLite, DialectPostgres = "sqlite", "postgres"
 func MigrationVersions(dialect string) ([]int, error)                 // embedded, ascending

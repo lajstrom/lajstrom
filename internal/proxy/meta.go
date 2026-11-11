@@ -259,7 +259,7 @@ func holds(ctx context.Context, r index.Reader, p *proxied, name string) (bool, 
 	if err != nil {
 		return false, nil //nolint:nilerr // a name the format cannot escape is not held
 	}
-	pkg, err := r.GetPackageByNameOCI(ctx, p.repo.ID, pkgPath)
+	pkg, err := index.PackageAt(ctx, r, p.repo.ID, pkgPath)
 	switch {
 	case errors.Is(err, index.ErrNotFound):
 		return false, nil
