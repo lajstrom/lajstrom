@@ -32,14 +32,16 @@ bin/lajstrom admin binding create --principal user:alice --role writer --mask ma
 ```
 
 ```json
-{"format":"maven","name":"releases","registry":"local","kind":"hosted","anonymousRead":false,"policy":null,"createdAt":"2026-11-09T16:06:58.472918Z","updatedAt":"2026-11-09T16:06:58.472918Z"}
-{"name":"alice","kind":"local","disabled":false,"createdAt":"2026-11-09T16:06:58.519285Z"}
-{"id":1,"principal":"user:alice","role":"writer","repoMask":"maven/releases","createdAt":"2026-11-09T16:06:58.531689Z"}
+{"format":"maven","name":"releases","registry":"local","kind":"hosted","anonymousRead":false,"policy":null,"createdAt":"2026-11-11T07:27:03.283794Z","updatedAt":"2026-11-11T07:27:03.283794Z"}
+{"uid":"01a1c980-ca9b-7277-be2a-20bffb835b38","name":"alice","kind":"local","disabled":false,"createdAt":"2026-11-11T07:27:03.323657Z"}
+{"id":1,"principal":"user:01a1c980-ca9b-7277-be2a-20bffb835b38","name":"alice","role":"writer","repoMask":"maven/releases","createdAt":"2026-11-11T07:27:03.338382Z"}
 ```
 
-The binding lets alice deploy to `maven/releases` and resolve from it: the role `writer` is
-`read` and `write` on the repos its mask names. Without it the repo answers her `404`, as a repo
-that does not exist would; a user who only resolves gets `reader`. Nothing is open: without
+The binding holds alice's uid, not her name, so it stays hers when she is renamed
+([auth.md](../auth.md#the-uid-and-the-name)). It lets alice deploy to `maven/releases` and
+resolve from it: the role `writer` is `read` and `write` on the repos its mask names. Without it
+the repo answers her `404`, as a repo that does not exist would; a user who only resolves gets
+`reader`. Nothing is open: without
 credentials every request is `401`, and Maven and Gradle send theirs when they get it.
 
 ## 2. Credentials: a deploy token or a personal access token
@@ -136,19 +138,19 @@ The end of the output, after the build and the tests:
 [INFO] --- deploy:3.1.2:deploy (default-deploy) @ lib-core ---
 [INFO] Using alternate deployment repository lajstrom::http://localhost:8080/maven/releases
 [INFO] Uploading to lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0.pom
-[INFO] Uploaded to lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0.pom (3.1 kB at 107 kB/s)
+[INFO] Uploaded to lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0.pom (3.1 kB at 31 kB/s)
 [INFO] Uploading to lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0.jar
 [INFO] Uploading to lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0-sources.jar
-[INFO] Uploaded to lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0.jar (2.5 kB at 255 kB/s)
-[INFO] Uploaded to lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0-sources.jar (2.3 kB at 179 kB/s)
+[INFO] Uploaded to lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0.jar (2.5 kB at 39 kB/s)
+[INFO] Uploaded to lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0-sources.jar (2.3 kB at 21 kB/s)
 [INFO] Downloading from lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/maven-metadata.xml
 [INFO] Uploading to lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/maven-metadata.xml
-[INFO] Uploaded to lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/maven-metadata.xml (299 B at 12 kB/s)
+[INFO] Uploaded to lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/maven-metadata.xml (299 B at 3.4 kB/s)
 [INFO] ------------------------------------------------------------------------
 [INFO] BUILD SUCCESS
 [INFO] ------------------------------------------------------------------------
-[INFO] Total time:  7.110 s
-[INFO] Finished at: 2026-11-09T16:08:54Z
+[INFO] Total time:  7.832 s
+[INFO] Finished at: 2026-11-11T07:27:42Z
 [INFO] ------------------------------------------------------------------------
 ```
 
@@ -182,16 +184,16 @@ repositories of `-DremoteRepositories`; and the JUnit BOM, which `lib-core`'s PO
 [INFO] --- dependency:3.7.0:get (default-cli) @ standalone-pom ---
 [INFO] Resolving com.example:lib-core:jar:1.2.0 with transitive dependencies
 [INFO] Downloading from lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0.pom
-[INFO] Downloaded from lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0.pom (3.1 kB at 182 kB/s)
+[INFO] Downloaded from lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0.pom (3.1 kB at 75 kB/s)
 [INFO] Downloading from lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0.jar
-[INFO] Downloaded from lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0.jar (2.5 kB at 637 kB/s)
+[INFO] Downloaded from lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0.jar (2.5 kB at 364 kB/s)
 [INFO] ------------------------------------------------------------------------
 [INFO] BUILD SUCCESS
 ...
 [INFO] --- dependency:3.7.0:get (default-cli) @ standalone-pom ---
 [INFO] Resolving com.example:lib-core:jar:sources:1.2.0 with transitive dependencies
 [INFO] Downloading from lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0-sources.jar
-[INFO] Downloaded from lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0-sources.jar (2.3 kB at 129 kB/s)
+[INFO] Downloaded from lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0-sources.jar (2.3 kB at 116 kB/s)
 [INFO] ------------------------------------------------------------------------
 [INFO] BUILD SUCCESS
 ```
@@ -200,8 +202,9 @@ Maven checks each download against its `.sha1` from the repo, which it keeps bes
 `/tmp/m2-clean/com/example/lib-core/1.2.0/`.
 
 A dependency on a version range is resolved through the artifact's `maven-metadata.xml`, which
-lists its versions in Maven's order. A second project, with the `<repositories>` of section 3 and
-this in its `<dependencies>`:
+lists its versions in Maven's order. A second project, with the `<repositories>` of section 3
+(anywhere in `<project>`, before `<build>` for example) and this dependency in the project's
+`<dependencies>`, the one after `<dependencyManagement>`, not the one inside it:
 
 ```sh
 mvn -B archetype:generate -DarchetypeArtifactId=maven-archetype-quickstart -DarchetypeVersion=1.5 \
@@ -226,9 +229,7 @@ mvn -B dependency:tree -Dmaven.repo.local=/tmp/m2-clean
 [INFO]   from pom.xml
 [INFO] --------------------------------[ jar ]---------------------------------
 [INFO] Downloading from lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/maven-metadata.xml
-[INFO] Downloaded from lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/maven-metadata.xml (326 B at 6.7 kB/s)
-[INFO] Downloading from lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0.pom
-[INFO] Downloaded from lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0.pom (3.1 kB at 386 kB/s)
+[INFO] Downloaded from lajstrom: http://localhost:8080/maven/releases/com/example/lib-core/maven-metadata.xml (326 B at 4.6 kB/s)
 [INFO] Downloading from lajstrom: http://localhost:8080/maven/releases/org/junit/jupiter/junit-jupiter-api/5.11.0/junit-jupiter-api-5.11.0.pom
 [INFO] Downloading from lajstrom: http://localhost:8080/maven/releases/org/opentest4j/opentest4j/1.3.0/opentest4j-1.3.0.pom
 [INFO] Downloading from lajstrom: http://localhost:8080/maven/releases/org/junit/platform/junit-platform-commons/1.11.0/junit-platform-commons-1.11.0.pom
@@ -247,7 +248,8 @@ mvn -B dependency:tree -Dmaven.repo.local=/tmp/m2-clean
 [INFO] BUILD SUCCESS
 ```
 
-The range resolved to `1.2.0`, the only version in `maven-metadata.xml`. A repository of the
+The range resolved to `1.2.0`, the only version in `maven-metadata.xml`; its POM is not
+downloaded again, `dependency:get` put it into `/tmp/m2-clean`. A repository of the
 POM comes before Maven Central, so Maven asks Lajstrom first for every dependency of the
 project, the JUnit test dependencies too: they are not there (`404`) and come from Maven
 Central, in the lines left out.
@@ -355,7 +357,7 @@ runtimeClasspath - Runtime classpath of source set 'main'.
 
 A web-based, searchable dependency report is available by adding the --scan option.
 
-BUILD SUCCESSFUL in 12s
+BUILD SUCCESSFUL in 14s
 6 actionable tasks: 6 executed
 ```
 
@@ -389,10 +391,10 @@ curl -s -u "$t" http://localhost:8080/maven/releases/com/example/lib-core/maven-
     <versions>
       <version>1.2.0</version>
     </versions>
-    <lastUpdated>20261109160854</lastUpdated>
+    <lastUpdated>20261111072742</lastUpdated>
   </versioning>
 </metadata>
-adc2ef20738dcaa99090754f798371a0a41c832c
+dfb3ee6937e1ed465b2e39c93332dae1e840c2e4
 ```
 
 `maven-metadata.xml` lists the versions in Maven's order; `latest` is the greatest of them and
@@ -409,8 +411,11 @@ curl -s -u "$t" http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/
 ```
 
 ```text
-1ed008b7723abd3206d625edc7b4fdd098ee2c174c94942495fb22306305f450e895d7c0c3cf1280d95a3fb0575a1aeefb9d658df1fc58ae38742702254d2e93
+6023165726facf779f5c87601866e80d90b35f811f0caa8cfbaca2890efa484b8fdcb335e8e3be71e3da856619e9c0b77e58a703747723e094f5c37b90c96b9e
 ```
+
+Your run gives other hashes: the jar holds the time it was built, and `maven-metadata.xml` the
+time of the deploy.
 
 ```sh
 curl -sI -u "$t" http://localhost:8080/maven/releases/com/example/lib-core/1.2.0/lib-core-1.2.0.pom
@@ -420,12 +425,15 @@ curl -sI -u "$t" http://localhost:8080/maven/releases/com/example/lib-core/1.2.0
 HTTP/1.1 200 OK
 Accept-Ranges: bytes
 Content-Length: 3092
+Content-Security-Policy: default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
 Content-Type: application/xml
-Docker-Content-Digest: sha256:7ba132d8aa45c97f2c1c3136c90075d7ef6b8fbb296113ea4639193168be3eb9
+Docker-Content-Digest: sha256:a870ceeb1afdf35695dfe08b437f15504ff3346bb7c407b7950b5c908489d6a0
 Etag: "sha256:99496f5c1a0f56d6297a0780f5ce434528b34f3d17384168b7d22516bde276f1"
-Last-Modified: Mon, 09 Nov 2026 16:08:54 GMT
-X-Request-Id: 60941c3bc5497d59270826070c61ad62
-Date: Mon, 09 Nov 2026 16:11:31 GMT
+Last-Modified: Wed, 11 Nov 2026 07:27:42 GMT
+Referrer-Policy: no-referrer
+X-Content-Type-Options: nosniff
+X-Request-Id: 2158586bf297f6c5b4f4b2ca468f6b12
+Date: Wed, 11 Nov 2026 07:30:26 GMT
 ```
 
 `Docker-Content-Digest` is the digest of the version's manifest, `Etag` the sha256 of the file.
@@ -449,7 +457,7 @@ crane manifest localhost:5000/maven/releases/com.example/lib-core:1.2.0 | jq '.a
   "lajstrom.schema": "1",
   "lajstrom.uploaded-by": "token:1",
   "lajstrom.version": "1.2.0",
-  "org.opencontainers.image.created": "2026-11-09T16:08:54Z"
+  "org.opencontainers.image.created": "2026-11-11T07:27:42Z"
 }
 [
   {
@@ -473,10 +481,13 @@ crane manifest localhost:5000/maven/releases/com.example/lib-core:1.2.0 | jq '.a
 `lajstrom.uploaded-by` is the deploy token of section 2 (`token:1`, its id). The checksums are
 not layers: they are in the metadata layer, last.
 
-`lajstrom reindex --repo maven/releases` rebuilds the index of the repo from those manifests
-([operations.md](../operations.md#reindex)).
+`bin/lajstrom reindex --repo maven/releases --config $cfg` rebuilds the index of the repo from
+those manifests ([operations.md](../operations.md#reindex)).
 
 ## 8. Clean up
+
+Leave the Maven container (`exit`) and stop `make run` (Ctrl-C) first: on its way out the server
+folds `lajstrom.db-wal` back into `lajstrom.db`, so one file is left to remove.
 
 ```sh
 rm maven-token alice-pat lib-core-1.2.0.jar   # the tokens are secrets
@@ -487,3 +498,25 @@ rm lajstrom.db                                 # the index, with the users and t
 
 `bin/lajstrom admin token revoke <id> --config $cfg` ends a token without the rest
 (`admin token list --repo maven/releases` shows the ids).
+
+## The end-to-end script
+
+`test/e2e/maven.sh` runs the same clients in the same images with checks: `mvn deploy` of two
+versions, `dependency:get`, a range, the idempotent repeat and the `409`, Gradle's `publish` and
+a Gradle build that resolves. It makes a repo and a deploy token of its own and removes them at
+the end. With the dev stack up, `make e2e` serves a Lajstrom of its own on a free port, with an
+admin for the run, and reads the statuses of the clients' requests from its log:
+
+```sh
+make e2e E2E=maven                 # PASS maven.sh, in about a minute once the plugins are cached
+```
+
+Against a Lajstrom that is running, the script takes the base URL and an admin
+([operations.md](../operations.md#the-first-admin)):
+
+```sh
+LAJSTROM_E2E_USER=admin LAJSTROM_E2E_PASSWORD='<the admin password>' test/e2e/maven.sh http://localhost:8080
+```
+
+It keeps the plugins it downloads in the Docker volumes `lajstrom-e2e-m2` and
+`lajstrom-e2e-gradle` for the next run; `docker volume rm` removes them.
