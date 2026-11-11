@@ -127,9 +127,7 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case status == http.StatusServiceUnavailable && unavailable(err) != "":
 		code = codeUnavailable
-		if !ae.told {
-			msg, detail = http.StatusText(status), nil
-		}
+		msg, detail = ae.unavailableBody()
 		h.o.Log.WarnContext(r.Context(), "facade: "+unavailable(err)+" unavailable", "method", r.Method, "path", r.URL.Path,
 			"error", err.Error(), "requestId", server.RequestID(r.Context()))
 	case status >= http.StatusInternalServerError && status != http.StatusNotImplemented:
@@ -150,6 +148,16 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		code = codeOfStatus(status)
 	}
 	writeJSON(w, status, errorBody{Errors: []errorEntry{{Code: code, Message: msg, Detail: detail}}})
+}
+
+// unavailableBody is the message and the detail of e answered as 503 UNAVAILABLE: the status
+// text and none, but for a told e, whose message and detail name only what the client pushed
+// (notServed).
+func (e *apiError) unavailableBody() (string, any) {
+	if e.told {
+		return e.msg, e.detail
+	}
+	return http.StatusText(http.StatusServiceUnavailable), nil
 }
 
 // statusOf returns the status of e, and the registry's refusal it answers: the apiError's own
