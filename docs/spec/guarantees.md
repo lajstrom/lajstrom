@@ -740,7 +740,9 @@ status is `holds on strongly consistent registries only` do not hold there.
   active key per kind and owner.
 - **Scope.** Every replica of one deployment.
 - **Assumes.** Database: **one database**, **Postgres for replicas** (checked when `serve`
-  starts: H-14), **clocks agree** (checked for `serve`; **unchecked** for the CLI).
+  starts: H-14), **clocks agree** (checked for `serve`; **unchecked** for the CLI), and the
+  transaction of `Store.WithReferrersLock` lasts until its function returns (**unchecked**; as
+  in INV-35, a lock lost earlier is `index.ErrUnavailable`, not a success).
 - **Mechanism.** `tag_claims` (`Writer.ClaimTag`), `reindex_runs` (`Writer.StartReindexRun` under
   `pg_advisory_xact_lock` or `BEGIN IMMEDIATE`), `fetch_claims` (`Writer.ClaimFetch`, a heartbeat
   every 30 s, stale after 2 minutes), `Store.WithReferrersLock` (the referrers, tag and journal
