@@ -175,7 +175,9 @@ status is `holds on strongly consistent registries only` do not hold there.
   read-only steps of ingest, and `ingest.WriteRows` writes what ingest writes; the
   `reindex.Worker` lists (`scan.list`, `scan.ociRepo`), marks and sweeps; the journal is
   replayed in `seq` order (`reindex.replay.run`). A manifest whose metadata layer is missing is
-  indexed from its annotations and flagged `degraded`.
+  indexed from its annotations and flagged `degraded`. A manifest at the earlier form of
+  its OCI name is the package of its annotations (`ingest.publish.checkTarget`), which keeps that
+  name: a writer looks it up at both forms (`index.PackageAt`, `ingest.Pipeline.storedPath`).
 - **Tests.** `TestRebuild` (I-01 on a raw repo), `TestRebuildFormats` (three more formats) and
   `TestRebuildPackageCreated` of `internal/index/reindex`, `TestIntegration` and
   `TestIntegrationFormats` of `internal/index/reindex` (I-01 against Zot and distribution, on
@@ -183,7 +185,8 @@ status is `holds on strongly consistent registries only` do not hold there.
   case `PackageCreatedAtRace` (writers of one package at once keep its earliest time, #584),
   `TestInspectIsIngest`, `TestJournalReindex`, `TestJournalReindexLost`, `TestPushReindex` (npm),
   `TestReindexProxied`, `TestNoCatalog`, `TestAttach`, `TestRebuildTagSchema`, `TestDegraded`,
-  `TestKnownDigests`, `TestScale`; `cosign.sh` (the referrers found by `reindex --repo`).
+  `TestKnownDigests`, `TestScale`, `TestRebuildEarlierNames` and `TestEarlierPackagePath` (the
+  OCI names of before ADR 0017); `cosign.sh` (the referrers found by `reindex --repo`).
 - **When violated.** A column that is not derivable is lost silently at the first rebuild. A
   listing that lags misses the newest manifests until a later run.
 - **Status.** `holds on strongly consistent registries only`

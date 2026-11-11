@@ -145,7 +145,7 @@ func checkSpelling(ctx context.Context, st index.Reader, repo index.Repo, p stri
 	if err != nil {
 		return err
 	}
-	pkg, err := st.GetPackageByNameOCI(ctx, repo.ID, pkgPath)
+	pkg, err := index.PackageAt(ctx, st, repo.ID, pkgPath)
 	switch {
 	case errors.Is(err, index.ErrNotFound):
 		return nil

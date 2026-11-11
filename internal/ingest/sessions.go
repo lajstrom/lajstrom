@@ -432,6 +432,9 @@ func (p *Pipeline) sessionTarget(ctx context.Context, s *index.Session, st *sess
 	if err != nil {
 		return nil, invalid(fmt.Errorf("ingest: session %d of %s: %w", s.ID, st.Name, err))
 	}
+	if pkgPath, err = p.storedPath(ctx, *repo, pkgPath); err != nil {
+		return nil, err
+	}
 	t := &target{repo: *repo, plugin: plugin, pkgPath: pkgPath, name: ociName(*repo, pkgPath), prov: prov}
 	if t.rr, err = prov.Repository(ctx, t.name); err != nil {
 		return nil, fmt.Errorf("ingest: repository %s: %w", t.name, err)

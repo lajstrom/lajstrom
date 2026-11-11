@@ -16,6 +16,7 @@ import (
 	"oras.land/oras-go/v2/content"
 
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
@@ -50,6 +51,9 @@ func (p *Pipeline) validate(ctx context.Context, pub *publish) error {
 	if err := pub.checkTarget(); err != nil {
 		return err
 	}
+	if err := p.checkEarlier(ctx, pub); err != nil {
+		return err
+	}
 	if !pub.readOnly {
 		if err := pub.checkSizes(ctx); err != nil {
 			return err
@@ -80,12 +84,17 @@ func (p *Pipeline) validate(ctx context.Context, pub *publish) error {
 }
 
 // checkTarget compares the annotations with where the manifest was pushed: format, repo,
-// package path (§4.1) and tag (§4.2), and the artifactType with the plugin's.
+// package path (§4.1) and tag (§4.2), and the artifactType with the plugin's. The package path
+// may be in the form of before ADR 0017 (§4.3, profile.LegacyPackagePath), which sets
+// pub.earlier: reindex reads both forms, and a publish writes to the one its package has.
 func (pub *publish) checkTarget() error {
 	a := pub.parsed.Annotations
 	path, err := pub.plugin.EscapeName(a.Name)
 	if err != nil {
 		return invalid(fmt.Errorf("ingest: %s %q: %w", profile.AnnotationName, a.Name, err))
+	}
+	if pub.pkgPath != path && pub.pkgPath == profile.LegacyPackagePath(path) {
+		path, pub.earlier = pub.pkgPath, true
 	}
 	for _, c := range []struct{ what, got, want string }{
 		{profile.AnnotationFormat + " does not match the repo's format", a.Format, pub.repo.Format},
@@ -98,6 +107,25 @@ func (pub *publish) checkTarget() error {
 		if c.got != c.want {
 			return fmt.Errorf("%w: %s: %q, want %q", ErrInvalid, c.what, c.got, c.want)
 		}
+	}
+	return nil
+}
+
+// checkEarlier refuses a publish to the form of a package path of before ADR 0017 when the index
+// has no package there: that form is kept for the packages stored in it, and a new package is
+// written in the form of ADR 0017 (manifest-profile.md §4.3, §5).
+func (p *Pipeline) checkEarlier(ctx context.Context, pub *publish) error {
+	if !pub.earlier || pub.readOnly {
+		return nil // the form of ADR 0017, or reindex, which reads both
+	}
+	_, err := p.index.GetPackageByNameOCI(ctx, pub.repo.ID, pub.pkgPath)
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		path, _ := pub.plugin.EscapeName(pub.parsed.Annotations.Name)
+		return fmt.Errorf("%w: %s is the package path of %q before ADR 0017, kept only for a package stored there; "+
+			"a new package goes to %s", ErrInvalid, pub.pkgPath, pub.parsed.Annotations.Name, path)
+	case err != nil:
+		return fmt.Errorf("ingest: the package at %s: %w", pub.name, err)
 	}
 	return nil
 }

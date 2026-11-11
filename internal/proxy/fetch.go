@@ -130,7 +130,7 @@ func (c *Core) held(ctx context.Context, p *proxied, a artifact) (*index.FileMat
 // heldFile returns the file of the artifact that repo holds in the index r, nil when it does not
 // hold the version, and index.ErrNotFound when it holds the version without the file.
 func heldFile(ctx context.Context, r index.Reader, repo index.Repo, a artifact) (*index.FileMatch, error) {
-	pkg, err := r.GetPackageByNameOCI(ctx, repo.ID, a.pkgPath)
+	pkg, err := index.PackageAt(ctx, r, repo.ID, a.pkgPath)
 	if errors.Is(err, index.ErrNotFound) {
 		return nil, nil
 	}

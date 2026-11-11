@@ -61,6 +61,9 @@ func (p *Pipeline) UploadStream(ctx context.Context, repo index.Repo, up format.
 	if err != nil {
 		return nil, invalid(fmt.Errorf("ingest: %s %q: %w", profile.AnnotationName, up.Name, err))
 	}
+	if pkgPath, err = p.storedPath(ctx, repo, pkgPath); err != nil {
+		return nil, err
+	}
 	in, err := streamer.Inspect(repo, up)
 	if err != nil {
 		return nil, buildError(repo, err)
