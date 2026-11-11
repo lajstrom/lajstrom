@@ -167,9 +167,3 @@ func TestListErrors(t *testing.T) {
 		wantStatus(t, f.do(http.MethodGet, target, "", admin), http.StatusOK)
 	}
 }
-
-// TestBatchDeleteLater: the batch delete of #72 answers 501 naming the issue until it comes.
-func TestBatchDeleteLater(t *testing.T) {
-	f := newFixture(t, Options{})
-	wantError(t, f.do(http.MethodPost, "/api/v1/repos/raw/files/versions:delete", "", admin), http.StatusNotImplemented, codeUnavailable, "comes with #72")
-}
