@@ -925,8 +925,8 @@ lajstrom admin user create --name admin --admin --config lajstrom.yaml
 ```
 
 `--admin` also creates the binding `(user:<uid>, admin, */*)`: everything on every repo, the
-system and the audit log ([Authorization](#authorization)). An admin made this way before the
-first start of `serve` means that no bootstrap token is ever made. The password comes from:
+system and the audit log ([Authorization](#authorization)). It works before or after the first
+start of `serve`, and needs no bootstrap token. The password comes from:
 
 1. standard input with `--password-stdin`, the whole of it without the trailing newline
    (`printf '%s\n' "$PASSWORD" | lajstrom admin user create --name ci --password-stdin`);

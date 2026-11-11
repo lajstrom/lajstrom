@@ -55,10 +55,10 @@ logs one:
    start warns while its file exists. Check the admin with `curl -u admin
    https://art.example.com/api/v1/whoami`.
 
-With the database at hand there is no token to fetch: `lajstrom admin user create --name admin
---admin`, with the server's configuration, makes the admin straight in the database, and an
-admin made so before the first start of `serve` means that no token is ever made. The password
-comes from standard input with `--password-stdin` or from a prompt on a terminal.
+With the database at hand no token is needed: `lajstrom admin user create --name admin --admin`,
+with the server's configuration, makes the admin straight in the database, before or after the
+first start of `serve`. The password comes from standard input with `--password-stdin` or from a
+prompt on a terminal.
 
 ### A lost password
 
@@ -80,10 +80,10 @@ configuration and the database DSN of the Deployment: the image has no shell, an
 admin --password-stdin` runs the binary itself.
 
 The bootstrap token is not a way back in: it is valid only while no enabled user has an admin
-binding. This is the
-Gitea, GitLab and Grafana way (`gitea admin user change-password`, `gitlab-rake
-"gitlab:password:reset"`, `grafana cli admin reset-admin-password`, each against the database),
-not Vault's quorum of key holders: [auth.md](auth.md#how-others-do-it) compares them.
+binding. This is the Gitea, GitLab and Grafana way (`gitea admin user change-password`,
+`gitlab-rake "gitlab:password:reset"`, `grafana cli admin reset-admin-password`, each against
+the database), not Vault's quorum of key holders: [auth.md](auth.md#how-others-do-it) compares
+them.
 
 ### Disabling a user
 
