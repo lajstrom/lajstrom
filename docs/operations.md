@@ -426,6 +426,12 @@ replica out, while its requests in flight and its background work (the reconcile
 The comparison is the replica's time at the middle of a `SELECT clock_timestamp()` minus the
 time it returns, so it is exact to half the round trip of the query.
 
+`lajstrom reindex` and the `admin` commands that open the database compare the clock of their
+host the same way before they run: past 10 seconds they log a warning, past 60 seconds they
+write nothing and exit with status 1, `the clock of this host is 1m15s ahead of the database's;
+the CLI and the replicas must agree within 60s: …`. Fix the clock of whichever host is off; if
+it is the database's, every replica is not ready as well. `lajstrom migrate` does not compare.
+
 The metric `lajstrom_clock_skew_seconds` is the last comparison: this replica's clock minus the
 database's, in seconds, positive when the replica is ahead. Two replicas disagree by the
 difference of their values. An alert that fires before readiness does:

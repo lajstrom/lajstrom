@@ -1,15 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
@@ -112,4 +118,87 @@ func emptyPostgres(t *testing.T) (string, bool) {
 	q.Set("search_path", schema)
 	u.RawQuery = q.Encode()
 	return u.String(), true
+}
+
+// fakeClock is a database whose clock reads at, or fails with err.
+type fakeClock struct {
+	at  time.Time
+	err error
+}
+
+func (f fakeClock) DatabaseTime(context.Context) (time.Time, error) { return f.at, f.err }
+
+// TestCheckClock checks the comparison of the CLI's clock with the database's, with a clock of
+// this host that runs off by skew: within 10 s nothing is logged; past it a warning; past 60 s
+// the command is refused, naming the skew, ahead or behind. A clock that cannot be read is an
+// error.
+func TestCheckClock(t *testing.T) {
+	db := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	down := fmt.Errorf("index: the database's clock: %w", index.ErrUnavailable)
+	for _, tt := range []struct {
+		name    string
+		skew    time.Duration
+		err     error  // of DatabaseTime
+		level   string // of the line logged, "" for none
+		wantErr string // a prefix; "" for none
+	}{
+		{name: "in sync"},
+		{name: "10s ahead", skew: 10 * time.Second},
+		{name: "15s ahead", skew: 15 * time.Second, level: "WARN"},
+		{name: "15s behind", skew: -15 * time.Second, level: "WARN"},
+		{name: "60s ahead", skew: 60 * time.Second, level: "WARN"},
+		{name: "75s ahead", skew: 75 * time.Second, wantErr: "the clock of this host is 1m15s ahead of the database's; " +
+			"the CLI and the replicas must agree within 60s: run NTP on this host and the database's, then run the command again"},
+		{name: "75s behind", skew: -75 * time.Second, wantErr: "the clock of this host is 1m15s behind the database's; "},
+		{name: "unreadable", err: down, wantErr: "read the database's clock: "},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			err := checkClock(t.Context(), fakeClock{at: db, err: tt.err}, func() time.Time { return db.Add(tt.skew) },
+				slog.New(slog.NewTextHandler(&logs, nil)))
+			switch {
+			case tt.wantErr == "" && err != nil:
+				t.Errorf("refused: %v", err)
+			case tt.wantErr != "" && (err == nil || !strings.HasPrefix(err.Error(), tt.wantErr)):
+				t.Errorf("error = %v, want it to start with %q", err, tt.wantErr)
+			case tt.err != nil && !errors.Is(err, tt.err):
+				t.Errorf("error = %v, want it to wrap %v", err, tt.err)
+			}
+			if level := logLevel(logs.String()); level != tt.level {
+				t.Errorf("logged %q, want a line of level %q:\n%s", level, tt.level, logs.String())
+			}
+		})
+	}
+}
+
+// TestOpenMigratedClock checks that the commands of the CLI that work on the index compare the
+// clocks first: with this host's clock 75 s off the database's (SQLite, whose clock is the
+// host's), admin refuses before its function runs, so nothing is written; in sync it runs.
+func TestOpenMigratedClock(t *testing.T) {
+	dir := t.TempDir()
+	openIndex(t, dir) // migrated
+	var skew time.Duration
+	a := &app{cfg: &config.Config{Database: config.Database{Driver: index.DialectSQLite, DSN: "file:" + filepath.Join(dir, "lajstrom.db")}},
+		log: slog.New(slog.DiscardHandler), now: func() time.Time { return time.Now().Add(skew) }}
+	for _, tt := range []struct {
+		skew    time.Duration
+		wantErr string // a prefix; "" when the command runs
+	}{
+		{75 * time.Second, "the clock of this host is 1m15s ahead of the database's"},
+		{-75 * time.Second, "the clock of this host is 1m15s behind the database's"},
+		{0, ""},
+	} {
+		skew = tt.skew
+		ran := false
+		err := a.withUsers(t.Context(), func(context.Context, *auth.Users) error {
+			ran = true
+			return nil
+		})
+		switch {
+		case tt.wantErr == "" && (err != nil || !ran):
+			t.Errorf("skew %s: %v, ran %v; want it to run", tt.skew, err, ran)
+		case tt.wantErr != "" && (err == nil || !strings.HasPrefix(err.Error(), tt.wantErr) || ran):
+			t.Errorf("skew %s: %v, ran %v; want %q and not to run", tt.skew, err, ran, tt.wantErr)
+		}
+	}
 }

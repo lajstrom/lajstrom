@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -40,18 +42,44 @@ func openStore(ctx context.Context, cfg config.Database) (store, error) {
 	return nil, fmt.Errorf("database.driver %q is not sqlite or postgres", cfg.Driver)
 }
 
-// openMigrated is openStore for the commands that need the schema and do not migrate it, admin
-// and reindex: on a database that lacks a migration of this binary it fails with the command
-// that applies it, instead of a query's "no such table" (#575).
-func openMigrated(ctx context.Context, cfg config.Database) (store, error) {
-	st, err := openStore(ctx, cfg)
+// openMigrated is openStore of the configuration for the commands that need the schema and do
+// not migrate it, admin and reindex: on a database that lacks a migration of this binary it
+// fails with the command that applies it, instead of a query's "no such table" (#575); on a
+// host whose clock is too far off the database's it fails too (checkClock).
+func (a *app) openMigrated(ctx context.Context) (store, error) {
+	st, err := openStore(ctx, a.cfg.Database)
 	if err != nil {
 		return nil, err
 	}
-	if err := checkSchema(ctx, st, cfg.Driver); err != nil {
+	if err := checkSchema(ctx, st, a.cfg.Database.Driver); err != nil {
+		return nil, errors.Join(err, st.Close())
+	}
+	if err := checkClock(ctx, st, a.clock, a.log); err != nil {
 		return nil, errors.Join(err, st.Close())
 	}
 	return st, nil
+}
+
+// checkClock compares the clock of this host with the database's (skewOf) before a command of
+// the CLI works on the index: its claims, reindex runs and tokens are compared with times that
+// the replicas wrote, so its clock must agree with theirs as a replica's does
+// (docs/spec/guarantees.md, clocks agree; docs/operations.md, Clocks). Past clockWarn it logs a
+// warning; past clockFail it refuses, before anything is written, with an error that names the
+// skew. A database whose clock it cannot read is an error too.
+func checkClock(ctx context.Context, st clockReader, now func() time.Time, log *slog.Logger) error {
+	skew, db, err := skewOf(ctx, st, now)
+	if err != nil {
+		return fmt.Errorf("read the database's clock: %w", err)
+	}
+	switch abs := skew.Abs(); {
+	case abs > clockFail:
+		return fmt.Errorf("the clock of this host is %s the database's; the CLI and the replicas must agree within %ds: "+
+			"run NTP on this host and the database's, then run the command again", offBy(skew), clockFail/time.Second)
+	case abs > clockWarn:
+		log.WarnContext(ctx, "the clock of this host is more than 10s off the database's; run NTP",
+			"skew", skew.Round(time.Millisecond).String(), "database", db.UTC().Format(time.RFC3339Nano))
+	}
+	return nil
 }
 
 // migrateHint is what to do about a database without the schema of this binary.

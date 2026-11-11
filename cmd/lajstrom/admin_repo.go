@@ -126,7 +126,7 @@ func newRepoDeleteCmd(a *app) *cobra.Command {
 // withRepos opens the index database of the configuration, runs fn with the repo service over
 // it, and closes the database.
 func (a *app) withRepos(ctx context.Context, fn func(context.Context, *api.Repos) error) (err error) {
-	st, err := openMigrated(ctx, a.cfg.Database)
+	st, err := a.openMigrated(ctx)
 	if err != nil {
 		return err
 	}

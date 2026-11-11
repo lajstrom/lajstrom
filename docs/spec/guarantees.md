@@ -101,7 +101,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | --- | --- |
 | **one database** | every replica uses the same database, and the same master key (`keys.masterKeyEnv` or `keys.masterKeyFile`) |
 | **Postgres for replicas** | more than one replica needs Postgres. SQLite serves one replica: its referrers and journal locks are locks of the process (index-schema.md, Coordination). A `serve` that finds another live one on the SQLite file refuses to start and names it (acceptance.md H-14); the CLI's commands are not counted |
-| **clocks agree** | the clocks of the replicas, and of the CLI, agree within 60 seconds: the skew a bearer token is checked with, and well inside the bounds that compare times written by other replicas (stale claims after `ingest.claimTTL`, 10 minutes; stale fetch claims and reindex runs after 2 minutes). `serve` compares its clock with the database's at its start and every 30 seconds: past 10 seconds it warns, past 60 seconds it is not ready (operations.md, Clocks). The CLI's clock is not compared |
+| **clocks agree** | the clocks of the replicas, and of the CLI, agree within 60 seconds: the skew a bearer token is checked with, and well inside the bounds that compare times written by other replicas (stale claims after `ingest.claimTTL`, 10 minutes; stale fetch claims and reindex runs after 2 minutes). `serve` compares its clock with the database's at its start and every 30 seconds: past 10 seconds it warns, past 60 seconds it is not ready (operations.md, Clocks). `lajstrom reindex` and the `admin` commands that open the database compare their host's clock with it before they run: past 10 seconds they warn, past 60 seconds they refuse and write nothing |
 
 ## Storage and the index
 
@@ -748,7 +748,8 @@ status is `holds on strongly consistent registries only` do not hold there.
   active key per kind and owner.
 - **Scope.** Every replica of one deployment.
 - **Assumes.** Database: **one database**, **Postgres for replicas** (checked when `serve`
-  starts: H-14), **clocks agree** (checked for `serve`; **unchecked** for the CLI), and the
+  starts: H-14), **clocks agree** (checked: by `serve` at its start and every 30 seconds, by
+  `reindex` and `admin` before they run), and the
   transaction of `Store.WithReferrersLock` lasts until its function returns (**unchecked**; as
   in INV-35, a lock lost earlier is `index.ErrUnavailable`, not a success).
 - **Mechanism.** `tag_claims` (`Writer.ClaimTag`), `reindex_runs` (`Writer.StartReindexRun` under
@@ -756,12 +757,13 @@ status is `holds on strongly consistent registries only` do not hold there.
   every 30 s, stale after 2 minutes), `Store.WithReferrersLock` (the referrers, tag and journal
   locks), the unique indexes `sessions_open_key` and `keys_active`, the `sessions` rows of
   uploads (`facade` `uploadState`); `replicas` (`Writer.StartReplica`, which on SQLite refuses a
-  second live replica, and the heartbeat of `serve`).
+  second live replica, and the heartbeat of `serve`, which compares the clocks); the CLI's
+  `checkClock`, before `reindex` and `admin` open the index (#563).
 - **Tests.** The store conformance cases `TagClaimRace`, `ReindexRunRace`, `FetchClaimRace`,
   `KeyRace`, `SessionsConcurrent`, `JournalRace`, `PackageNameOCIRace`, `PackageRace`,
   `ReferrersLock`, `Replicas`; `TestFileReplicas`, `TestReplicasCoexist`,
   `TestServeTwoReplicasOnSQLite`, `TestServeAfterCrash`, `TestReplicaBeat`, `TestReplicaClock`,
-  the conformance case `DatabaseTime`;
+  `TestCheckClock`, `TestOpenMigratedClock`, the conformance case `DatabaseTime`;
   `TestUploadAcrossReplicas`, `TestMonolithicUploadAbandoned`,
   `TestIntegrationUploadAcrossReplicas`, `TestSessionConcurrent`, `TestSessionCommitOnce`, `TestKeyForRace`, `TestTokenSignerRace`,
   `TestRuns`, `TestTakenOver`, `TestStaleFetchClaims`, `TestFileTwoReplicas`, `TestFileClaims`,
@@ -769,8 +771,9 @@ status is `holds on strongly consistent registries only` do not hold there.
   `ha.sh` H-02, H-03, H-04, H-05, H-06, H-07, H-08, H-09, H-11, H-12, H-13 and the step of #28.
 - **When violated.** A replica whose clock is more than 60 s off the database's is not ready,
   so the edge sends it no new requests, but its work in flight and its reconcile loop go on and
-  can take over a live claim; the log and `lajstrom_clock_skew_seconds` say so from 10 s on. A
-  CLI whose clock disagrees can do the same, and nothing reports it. A second replica on one
+  can take over a live claim; the log and `lajstrom_clock_skew_seconds` say so from 10 s on.
+  `reindex` and `admin` on a host more than 60 s off refuse to run, naming the skew; a clock
+  that moves away during a long run is not compared again until the next command. A second replica on one
   SQLite file is refused when it starts; a replica that stood still for 2 minutes while another
   started is not ready from its next heartbeat on, and both run until the operator stops one.
 - **Status.** `holds`.
@@ -1154,7 +1157,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-23 | every request bounded in size | partly | |
 | INV-24 | parsers bounded | holds | |
 | INV-25 | memory independent of file size | holds | |
-| INV-26 | replicas coordinate through the database | holds | unchecked (the CLI's clock) |
+| INV-26 | replicas coordinate through the database | holds | unchecked (the referrers lock's transaction) |
 | INV-27 | cached documents invalidated | holds | |
 | INV-28 | a migration applied once | holds | |
 | INV-29 | the npm journal's order and replay | holds | unchecked |
@@ -1269,14 +1272,13 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | Reindex equality is tested for raw, npm and an npm proxy only; I-01 is not in the end-to-end suite (INV-3) | a column of apt, pypi or maven that annotations cannot rebuild would be lost at the first reindex, unnoticed | an equality test per format (publish, drop the derived rows, reindex, compare), and I-01 as an end-to-end step | new issue |
 | Nothing machine-checks the one write path in plugins (INV-2) | a plugin could push a manifest past ingest: no claim, validation or audit row | a read-only provider view in `format.Deps`, or a lint rule against `Push`, `PushReference` and `Delete` outside `internal/ingest`, `internal/facade` and `internal/provider` (a `contract` change of `format`) | new issue |
 | A delete whose index transaction fails after the registry delete, and a push to an `oci` repo whose row fails after the push, have no audit row (INV-13, INV-14) | an unaudited write, of which only a log line at error is left | an audit row of the intent before the registry write, and one of its result after it | new issue |
-| A timeout the client cannot lift, a terminated backend or a failover can end the referrers lock's transaction while its push runs (INV-35) | that push is `503` and its retry lists its referrer; a referrer that another writer pushed meanwhile can be missing from the `sha256-<hex>` index, and nothing reports it | keep PgBouncer's `idle_transaction_timeout` and Postgres's `transaction_timeout` 0 (index-schema.md, Coordination); reindex `--verify` could add back a referrer that the audit log has as pushed and the index lacks | new issue |
+| A timeout the client cannot lift, a terminated backend or a failover can end the referrers lock's transaction while its push runs (INV-26, INV-35) | that push is `503` and its retry lists its referrer; a referrer that another writer pushed meanwhile can be missing from the `sha256-<hex>` index, and nothing reports it | keep PgBouncer's `idle_transaction_timeout` and Postgres's `transaction_timeout` 0 (index-schema.md, Coordination); reindex `--verify` could add back a referrer that the audit log has as pushed and the index lacks | new issue |
 | The garbage collectors of GitLab B and Nexus delete untagged referrers (INV-35) | signatures and SBOMs vanish | the tag schema as well on registries with the API (#326); for GitLab B and Nexus, a vendor-table warning or a tag per referrer | [#326](https://github.com/lajstrom/lajstrom/issues/326), new issue |
 | No frontend test of a denial with malformed input (INV-15) | a regression of the R-2 kind on a frontend goes unseen | a table test per frontend, as `TestDenialBeforeInput` does for `/v2` | new issue |
 | A typed user name and an unbounded `kid` at `debug` (INV-21, threat model L-3) | a mistyped password in a debug log | log the uid only, bound the `kid` | new issue |
 | Acceptance C-07 and S-09 are not automated (INV-14, INV-21) | a redaction or an audit regression goes unseen | after the suite, grep both replicas' logs for every secret used, and count the audit rows of its writes | new issue |
 | No budget for the bytes of `$TMPDIR` (INV-23) | 32 spooled uploads of a replica may need 256 GiB of disk | a spool budget, or no request spool (ADR 0014) | [#427](https://github.com/lajstrom/lajstrom/issues/427) |
 | One upstream request per document per replica (INV-31) | concurrent misses of a packument each ask the upstream | share the request on a replica (pull request #399) | [#383](https://github.com/lajstrom/lajstrom/issues/383) |
-| The clock of the CLI is not compared with the database's (INV-26) | a `lajstrom reindex` on a host whose clock runs ahead closes a live run as abandoned or deletes live claims | compare it at the start of the commands that write, as `serve` does, and refuse past 60 s | new issue |
 | Registries that fold tag case (INV-7) | two versions that differ in case: the second is a `409` with an unclear message | `Capabilities.TagsFoldCase` | [#426](https://github.com/lajstrom/lajstrom/issues/426) |
 | The bearer audience without `server.externalURL` (INV-19) | a staging server restored from production's database accepts production's tokens | require `externalURL` | [#248](https://github.com/lajstrom/lajstrom/issues/248) |
 | Whether a migration is expand is reviewed, not tested; no test runs the previous release's binary on the next schema; pre-#244 claims (INV-6, INV-41) | a contract migration without its `requires` line breaks the replicas of the release before during a rolling update; a mixed fleet may not exclude publishes | after v0.1.0, CI runs the previous release's binary on a schema the new binary migrated | [#485](https://github.com/lajstrom/lajstrom/issues/485) |

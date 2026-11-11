@@ -63,7 +63,7 @@ func newReindexCmd(a *app) *cobra.Command {
 					return err
 				}
 			}
-			st, err := openMigrated(ctx, c.Database)
+			st, err := a.openMigrated(ctx)
 			if err != nil {
 				return err
 			}

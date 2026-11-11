@@ -127,21 +127,44 @@ func (r *replica) heartbeat(ctx context.Context) {
 	}
 }
 
-// clock compares this process's clock with the database's: the skew is this process's time at
-// the middle of the query minus the database's, exact to half the query's round trip. It sets
+// clockReader is the part of index.Store that skewOf reads.
+type clockReader interface {
+	DatabaseTime(ctx context.Context) (time.Time, error)
+}
+
+// skewOf compares the clock now with the database's: the skew is the time of now at the middle
+// of the query minus the database's, exact to half the query's round trip. It returns the
+// database's time too.
+func skewOf(ctx context.Context, st clockReader, now func() time.Time) (skew time.Duration, db time.Time, err error) {
+	before := now()
+	db, err = st.DatabaseTime(ctx)
+	after := now()
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+	return before.Add(after.Sub(before) / 2).Sub(db), db, nil
+}
+
+// offBy says how far a clock skew off the database's is, and on which side: "1m15s ahead of".
+func offBy(skew time.Duration) string {
+	side := "ahead of"
+	if skew < 0 {
+		side = "behind"
+	}
+	return skew.Abs().Round(time.Second).String() + " " + side
+}
+
+// clock compares this process's clock with the database's (skewOf). It sets
 // lajstrom_clock_skew_seconds, logs past clockWarn and keeps the skew for Err. A database that
 // does not answer leaves the last comparison as it was: readiness reports the database itself.
 func (r *replica) clock(ctx context.Context) {
-	before := r.now()
-	db, err := r.st.DatabaseTime(ctx)
-	after := r.now()
+	skew, db, err := skewOf(ctx, r.st, r.now)
 	if err != nil {
 		if ctx.Err() == nil {
 			r.log.WarnContext(ctx, "the database's clock not read", "error", err.Error())
 		}
 		return
 	}
-	skew := before.Add(after.Sub(before) / 2).Sub(db)
 	metrics.ClockSkew.Set(skew.Seconds())
 	r.mu.Lock()
 	r.skew = skew
@@ -166,11 +189,7 @@ func (r *replica) Err() error {
 	if r.skew.Abs() <= clockFail {
 		return nil
 	}
-	side := "ahead of"
-	if r.skew < 0 {
-		side = "behind"
-	}
-	return fmt.Errorf("the clock of this replica is %s %s the database's", r.skew.Abs().Round(time.Second), side)
+	return errors.New("the clock of this replica is " + offBy(r.skew) + " the database's")
 }
 
 // Stop deletes the row of this process, so that a replica started after it need not wait for

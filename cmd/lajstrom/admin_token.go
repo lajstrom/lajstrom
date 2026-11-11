@@ -156,7 +156,7 @@ func newTokenRevokeCmd(a *app) *cobra.Command {
 // withTokens opens the index database of the configuration, runs fn with the tokens service
 // over it, and closes the database.
 func (a *app) withTokens(ctx context.Context, fn func(context.Context, *auth.Tokens) error) (err error) {
-	st, err := openMigrated(ctx, a.cfg.Database)
+	st, err := a.openMigrated(ctx)
 	if err != nil {
 		return err
 	}

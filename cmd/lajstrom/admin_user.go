@@ -199,7 +199,7 @@ func newUserSetPasswordCmd(a *app) *cobra.Command {
 // withUsers opens the index database of the configuration, runs fn with the users service over
 // it, and closes the database.
 func (a *app) withUsers(ctx context.Context, fn func(context.Context, *auth.Users) error) (err error) {
-	st, err := openMigrated(ctx, a.cfg.Database)
+	st, err := a.openMigrated(ctx)
 	if err != nil {
 		return err
 	}
