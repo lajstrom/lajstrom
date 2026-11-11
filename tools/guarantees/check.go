@@ -9,14 +9,10 @@ import (
 )
 
 // awaitingIssue are the entries whose status is not holds and names no issue yet, because the
-// issue is proposed and not opened (each says "new issue"). An entry leaves the list in the
-// pull request that links its issue; the check fails while one is listed and links one.
-var awaitingIssue = map[string]bool{
-	"INV-13": true, // the answer to a failed delete of several versions names what went
-	"INV-21": true, // a typed user name and an unbounded kid at debug
-	"INV-27": true, // a stale rendered document on Postgres
-	"INV-40": true, // a streamed download hashed
-}
+// issue is proposed and not opened (each says "new issue"); empty while every one is filed. An
+// entry leaves the list in the pull request that links its issue; the check fails while one is
+// listed and links one.
+var awaitingIssue = map[string]bool{}
 
 var (
 	scriptRE  = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*\.sh$`)
