@@ -267,12 +267,36 @@ passes, on a new database and one migration at a time:
 
 What breaks:
 
-- **A terminated session's advisory lock outlives it.** After `pg_terminate_backend` of the
-  session that holds `pg_advisory_xact_lock`, YugabyteDB had not released the lock a minute
-  later (`TestReferrersLockLost/terminated`); Postgres releases it at once. A replica that dies
-  while it holds a referrers, tag, journal or package lock blocks the other writers of that
-  subject or package until YugabyteDB expires the dead transaction
+- **A terminated backend's advisory lock can outlive it by a minute.** A backend that
+  `pg_terminate_backend` ends inside a transaction sends the abort of that transaction as it
+  exits, and the abort can lose the race with the shutdown of the backend's connection to the
+  YB-TServer ([yugabyte-db#31866](https://github.com/yugabyte/yugabyte-db/issues/31866), open).
+  The YB-TServer then aborts the transaction, and so releases its `pg_advisory_xact_lock`, when
+  it expires the backend's session: at once when the backend's process is gone 50 ms after
+  that connection closed
+  ([`CheckSessionShutdown`](https://github.com/yugabyte/yugabyte-db/blob/2026.1.3.0-b100/src/yb/tserver/pg_client_service.cc#L956-L981)),
+  else [`pg_client_session_expiration_ms`](https://docs.yugabyte.com/stable/reference/configuration/all-flags-yb-tserver/#pg-client-session-expiration-ms)
+  later, 60 s by default. Postgres releases it at once. Measured on 2026.1.3.0, one node: in one
+  run all 6 terminations released the lock within 0.25 s, in another all 6 waited for the
+  expiry, 60.1 s with the default; `TestReferrersLockLost/terminated` once gave up after
+  56 s. A backend whose client closed the connection, with a Terminate message or without,
+  aborts its transaction itself: the lock went within 0.1 s, 12 of 12. So a replica that dies,
+  whose kernel closes its connections, frees its locks at once; a backend terminated while it
+  holds a referrers, tag, journal or package lock blocks the other writers of that subject or
+  package for up to a minute. On YugabyteDB `TestReferrersLockLost/terminated` waits for that
   ([#640](https://github.com/lajstrom/lajstrom/issues/640)).
+
+  What to do: stop or restart a replica rather than terminate its backends. To shorten the
+  wait, lower `pg_client_session_expiration_ms` on every YB-TServer (a restart), and keep it at
+  least three times
+  [`pg_client_heartbeat_interval_ms`](https://docs.yugabyte.com/stable/reference/configuration/all-flags-yb-tserver/#pg-client-heartbeat-interval-ms)
+  (10 s by default), the interval at which a live backend renews its session: a session not
+  renewed within the expiry is ended, and its transaction aborted. Measured:
+  `pg_client_session_expiration_ms=30000` released the lock after 30.1–30.2 s, and `=10000`
+  with `pg_client_heartbeat_interval_ms=3000` after 10.1 s; with either, a transaction that
+  held the lock idle for 60 s and a connection idle for 60 s kept working.
+  `yb_cancel_transaction()` frees the lock at once, but it needs the transaction's id, which
+  neither `pg_locks` nor `yb_lock_status()` shows for an advisory lock.
 
 - **DDL inside a transaction is not transactional** unless the YB-TServer flag
   `ysql_yb_ddl_transaction_block_enabled` is on (`yb_ddl_transaction_block_enabled = off` by

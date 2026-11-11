@@ -107,17 +107,29 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	return &Store{sqlstore.New(db, d)}, nil
 }
 
-// dialectOf pings db and returns its dialect: yugabyte when the server_version that the
-// server reported at the start of the connection says YugabyteDB, else dialect. No statement
-// runs but the ping.
+// dialectOf pings db and returns its dialect: yugabyte on YugabyteDB (isYugabyte), else
+// dialect.
 func dialectOf(ctx context.Context, db *sql.DB) (sqlstore.Dialect, error) {
-	conn, err := db.Conn(ctx)
+	yb, err := isYugabyte(ctx, db)
 	if err != nil {
 		return dialect, err
 	}
+	if yb {
+		return yugabyte, nil
+	}
+	return dialect, nil
+}
+
+// isYugabyte pings db and reports whether the server_version that the server reported at the
+// start of the connection says YugabyteDB. No statement runs but the ping.
+func isYugabyte(ctx context.Context, db *sql.DB) (bool, error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return false, err
+	}
 	defer func() { _ = conn.Close() }()
 	if err := conn.PingContext(ctx); err != nil {
-		return dialect, err
+		return false, err
 	}
 	var version string
 	if err := conn.Raw(func(c any) error {
@@ -126,12 +138,9 @@ func dialectOf(ctx context.Context, db *sql.DB) (sqlstore.Dialect, error) {
 		}
 		return nil
 	}); err != nil {
-		return dialect, err
+		return false, err
 	}
-	if strings.Contains(version, "-YB-") {
-		return yugabyte, nil
-	}
-	return dialect, nil
+	return strings.Contains(version, "-YB-"), nil
 }
 
 // ApplyMigrations is index.ApplyMigrations on the store's database. A database user with data
