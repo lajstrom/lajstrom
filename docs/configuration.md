@@ -2,7 +2,9 @@
 
 Lajstrom reads one YAML file. `serve`, `migrate`, `reindex` and the `admin` commands (`repo`,
 `user`, `binding`, `token`, `key`) load and validate it before they do anything else; `version`
-and `admin deb metadata` do not need it.
+and `admin deb metadata` do not need it. `healthcheck` reads `server.listen` and `server.tls`
+from it and nothing else, and does not open it with `--url`
+([operations.md](operations.md#readiness)); `registry probe` loads it for `--registry` only.
 
 ```sh
 lajstrom serve --config /etc/lajstrom/lajstrom.yaml
@@ -39,7 +41,8 @@ Later steps win:
    ```
 
    A configuration that cannot be read or is invalid ends every command with exit status `2`;
-   other errors with `1`.
+   other errors with `1`. `healthcheck` is the exception: it exits `1` on every failure, since
+   Docker reserves `2` in a health check.
 
 The `--log-level` and `--log-format` flags override `log.level` and `log.format` for one run.
 
@@ -66,9 +69,12 @@ server:
 current directory), applies its pending migrations and creates the [repos](#repos) of the file
 that the database does not have, all before it listens; `/-/readyz` answers 503 while the
 database does not. It also contacts the registries: at startup it asks each one
-what it supports (see [capabilities](#registry-capabilities)) and logs the answer at info. A
-registry that does not answer within 10 s is logged at error and `serve` starts anyway, so that
-one backend down does not keep a replica from starting.
+what it supports (see [capabilities](#registry-capabilities)) and logs the answer at info, then
+pings each one for readiness. A registry that does not answer is logged at error and `serve`
+starts anyway, so that one backend down does not keep a replica from starting; the question
+and the ping wait up to 10 s each, one after the other, so the listener opens up to 20 s late,
+and `/-/readyz` answers `503` until every registry has answered
+([operations.md](operations.md#readiness)).
 
 An upload is spooled to a temporary file for the length of its request, then pushed to the
 registry and removed. The file goes to `$TMPDIR` when it is set, `/tmp` otherwise; there is no
@@ -351,7 +357,7 @@ create loses to another's counts the repo as present.
 | Key | Type | Default | Env | Description |
 | --- | --- | --- | --- | --- |
 | `repos[].name` | name | none, required | none | Repo name, unique within its format; same rule as registry names ([manifest-profile.md](spec/manifest-profile.md) §4.1). Example: `scratch`. |
-| `repos[].format` | name | none, required | none | Plugin name: `raw`, `pypi`, `apt`, `maven`, `npm`. |
+| `repos[].format` | name | none, required | none | Plugin name: `raw`, `pypi`, `apt`, `maven`, `npm`; or `oci`, the pass-through format of the OCI facade, which has no plugin ([quickstart/oras.md](quickstart/oras.md)). Another name stops `serve`: `repos[0]: format: "rpm" is not a format this server has`. |
 | `repos[].registry` | name | none, required but on a group | none | One of `registries[].name`. A group has none. |
 | `repos[].kind` | `hosted`, `proxy`, `group` | `hosted` | none | What the repo serves ([proxy-and-group.md](spec/proxy-and-group.md) §1): what is published to it, what it fetched from an upstream, or its members under one URL. Set at creation and never changed. A proxy and a group need a format whose plugin has them (npm). |
 | `repos[].upstream` | map | none | none | A proxy repo's upstream, with the keys of the management API ([proxy-and-group.md](spec/proxy-and-group.md) §2.2): `name`, one of `upstreams[].name` of the repo's format (required), `metadataTTL` (`10m`), `negativeTTL` (`2m`), `offline` (`false`), `allow` and `deny` (lists of name patterns). Required on a proxy repo, refused on another kind. Example: `{name: npmjs, deny: ["@acme/*"]}`. |
