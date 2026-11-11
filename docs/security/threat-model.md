@@ -43,7 +43,7 @@ A function is named by its package and name: `facade.resolve` is `resolve` in
 | holder of a deploy token | read and/or write on one repo | the token's scopes |
 | holder of a stolen bearer JWT | its `access` for up to 20 minutes, from anywhere | the token's claims |
 | the edge | sets `X-Forwarded-For` | only when its address is in `server.trustedProxies` ([ADR 0011](../adr/0011-client-address-behind-a-proxy.md)) |
-| the registry | stores and answers | trusted to store and serve content. Clients check the digests they are given: OCI clients the descriptor, apt the `Packages` hashes, pip the `#sha256=`. Ingest checks what it reads back. The facade hashes a blob that a client uploads as it streams (P-9), not one it serves. Its redirects and token realm are checked before its credentials follow them (P-2, P-3) |
+| the registry | stores and answers | trusted to store and serve content. Clients check the digests they are given: OCI clients the descriptor, apt the `Packages` hashes, pip the `#sha256=`. Ingest checks what it reads back. The facade hashes a blob that a client uploads as it streams (P-9). A whole blob or a manifest that streams to a client is hashed too, and the response is aborted on a mismatch ([guarantees.md](../spec/guarantees.md) INV-40, #475); a `307` redirect and a `206` range are not hashed. Its redirects and token realm are checked before its credentials follow them (P-2, P-3) |
 | the operator: configuration, CLI, database | everything | trusted; out of scope, as [SECURITY.md](../../SECURITY.md) has it |
 
 ### What the backend trusts
@@ -186,7 +186,7 @@ The table summarises; the IDs point to §3.
 | --- | --- | --- | --- |
 | L-1 | **The access log.** | `server.accessLog` writes the method, path, status, principal and addresses: never the query, a header or a body. | mitigated |
 | L-2 | **Credentials and tokens in values that are logged.** | `token.Token`, `keys.TokenKey` and `config.RegistryAuth` print redacted. `Verifier.Verify` logs the `kid` and the reason, never the token. The throttle logs the account's uid, never the typed name. The provider logs paths only (`logTransport`); `withoutURL` strips URLs from errors, and the query of error responses is cleared. `postgres.Open` leaves the DSN out of its errors. `recovery` logs the panic value, the path and the stack. | mitigated |
-| L-3 | **A typed user name that may be a mistyped password**, logged at debug for an unknown user (`Authenticator.refuse`) and at error when the index fails (`Server.authenticate`). The `kid`, which an attacker controls, is logged at debug without a length bound. | Debug is off by default. | open, low; recorded here, no issue |
+| L-3 | **A typed user name that may be a mistyped password**, logged at debug for an unknown user (`Authenticator.refuse`) and at error when the index fails (`Server.authenticate`). The `kid`, which an attacker controls, logged at debug at any length. | `Authenticator.refuse` and `refuseToken` log a user by its uid, and only a user that exists; `Server.authenticate` logs no user name. `token.Verifier.refuse` logs the first 16 bytes of the `kid` and its length. Test: `TestRefusalsLogNoSecret` (a token and a password typed as the user name, a 4 KiB `kid`, at debug). | mitigated (#482) |
 | L-4 | **The master key and the configuration.** | The key is read from `keys.masterKeyEnv` or `keys.masterKeyFile` and never logged; the startup log names the variable, not its value. | mitigated |
 
 ### SSRF through configuration
