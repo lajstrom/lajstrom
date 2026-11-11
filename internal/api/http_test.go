@@ -86,6 +86,8 @@ func TestCreateInvalid(t *testing.T) {
 		{"name with a double separator", `{"format":"raw","name":"a--b","registry":"local"}`, `name: "a--b"`},
 		{"name too long", `{"format":"raw","name":"` + long + `","registry":"local"}`, "name: "},
 		{"name of a word of Zot's layout", `{"format":"raw","name":"team-blobs","registry":"local"}`, `name: "team-blobs" ends in blobs`},
+		{"name of a word of Harbor's routes", `{"format":"raw","name":"manifests","registry":"local"}`, `name: "manifests" ends in blobs`},
+		{"name tags", `{"format":"raw","name":"tags","registry":"local"}`, `name: "tags" ends in blobs`},
 		{"no registry", `{"format":"raw","name":"scratch"}`, "registry: must not be empty"},
 		{"unknown registry", `{"format":"raw","name":"scratch","registry":"zot"}`, `registry: "zot" is not a configured registry`},
 		{"kind proxy of a format without", `{"format":"raw","name":"scratch","registry":"local","kind":"proxy"}`, "kind: format raw has no proxy repos"},

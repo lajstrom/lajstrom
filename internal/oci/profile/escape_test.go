@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"testing/quick"
@@ -50,7 +51,7 @@ func checkComponent(t *testing.T, s, c string) {
 			t.Fatalf("EscapeComponent(%q) = %q ends in %q", s, c, w)
 		}
 	}
-	if c == "index.json" || c == "oci-layout" {
+	if slices.Contains([]string{"index.json", "oci-layout", "manifests", "referrers"}, c) {
 		t.Fatalf("EscapeComponent(%q) = %q", s, c)
 	}
 }
@@ -155,6 +156,14 @@ func TestEscapeComponent(t *testing.T) {
 		{"x.sync", "x.syn_63"},
 		{"index.json", "index.jso_6e"},
 		{"oci-layout", "oci-layou_74"},
+		// The amendment: Harbor's route words.
+		{"manifests", "manifest_73"},
+		{"Referrers", "referrer_73"},
+		{"manifest", "manifest"},
+		{"manifests.yaml", "manifests.yaml"},
+		{"k8s-manifests", "k8s-manifests"},
+		{"tags", "tags"},
+		{"list", "list"},
 		// Not reserved.
 		{"blob", "blob"},
 		{"blobsx", "blobsx"},
@@ -200,7 +209,8 @@ func TestEscapeComponentMax(t *testing.T) {
 func TestReservedComponent(t *testing.T) {
 	for c, want := range map[string]bool{
 		"blobs": true, "myblobs": true, "x.uploads": true, ".uploads": true, "a.sync": true, "index.json": true,
-		"oci-layout": true, "blob": false, "uploads": false, "xsync": false, "index.json5": false, "oci-layouts": false,
+		"oci-layout": true, "manifests": true, "referrers": true, "manifest": false, "tags": false, "blob": false,
+		"uploads": false, "xsync": false, "index.json5": false, "oci-layouts": false,
 		"blob_73": false, "h0_h0123": false,
 	} {
 		if got := ReservedComponent(c); got != want {
@@ -392,6 +402,7 @@ func checkEscape(t *testing.T, s string) {
 		t.Fatalf("Unescape(Escape(%q)) = %q, %v", s, u, err)
 	}
 	checkEscapeComponent(t, s)
+	checkPackagePath(t, s)
 }
 
 // checkEscapeComponent asserts the properties of EscapeComponent for one input: the grammar of
@@ -498,16 +509,18 @@ func TestTagInjective(t *testing.T) {
 	}
 }
 
-// FuzzEscape checks the properties of Escape and EscapeComponent (checkEscape), that Escape
-// copies a string with nothing to escape and makes any other at most three times as long, and
-// that Tag of a non-empty string is an OCI tag, hashed exactly when the unhashed tag would be
-// longer than 128 characters. testdata/fuzz/FuzzEscape has the versions, names, variants and
-// paths of the testutil fixtures, which TestFuzzCorpus writes.
+// FuzzEscape checks the properties of Escape, EscapeComponent and, over the input split at '/',
+// PackagePath (checkEscape), that Escape copies a string with nothing to escape and makes any
+// other at most three times as long, and that Tag of a non-empty string is an OCI tag, hashed
+// exactly when the unhashed tag would be longer than 128 characters. testdata/fuzz/FuzzEscape
+// has the versions, names, variants and paths of the testutil fixtures, which TestFuzzCorpus
+// writes.
 func FuzzEscape(f *testing.F) {
 	for _, s := range []string{
 		"", "_", ":", "+", "~", "/", " ", ".hidden", "-x", "1:1.18.0-6ubuntu14.4", "manylinux_2_17",
 		"Docs", "Readme.MD", "libstdc++6", "Lib-Core", "com.example", "Пакет", "_h00", "h0_ab", "_2e",
-		strings.Repeat("~", 43),
+		strings.Repeat("~", 43), "k8s/manifests/app.yaml", "x/referrers/y", "X/Tags/Listing.TXT", "tags/tags/list",
+		"a--b/tags/list.sync", "netlify/blobs",
 	} {
 		f.Add(s)
 	}
@@ -541,15 +554,18 @@ func FuzzEscape(f *testing.F) {
 // Escape of the result, which is no longer than it. A string it refuses, with ErrInvalidEscape,
 // is Escape of nothing: Escape(u) decodes escape by escape to u, so a string that does not
 // escape back to itself so decoded is no Escape(u). It checks the same of UnescapeComponent
-// (checkUnescapeComponent), whose other half is checkEscape's round trip.
+// and UnescapePackagePath (checkUnescapeComponent, checkUnescapePackagePath), whose other half is
+// checkEscape's round trip.
 func FuzzUnescape(f *testing.F) {
 	for _, s := range []string{"", "a", "_5f", "_2e", "_2E", "_2ex", "_h", "_h00", "a_", "a_5", "_61", "-x", "a-", ".a", "a.",
 		"h0__0123", "_2d1", "_5f_5f", "a__b", "_ff_00", "_c3_a9", "a_2d_2db", "blob_73", "blobs", "a--b", "a_2db", "x.syn_63",
-		"h0_h0123456789abcdef0123456789abcdef", "h0__0123456789abcdef0123456789abcdef", "a/blob_73/b"} {
+		"h0_h0123456789abcdef0123456789abcdef", "h0__0123456789abcdef0123456789abcdef", "a/blob_73/b",
+		"k8s/manifest_73/app.yaml", "x/tag_73/list", "x/tags/list", "x/tag_73/other", "manifest_73"} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
 		checkUnescapeComponent(t, s)
+		checkUnescapePackagePath(t, s)
 		u, err := Unescape(s)
 		if err == nil {
 			if Escape(u) != s || len(u) > len(s) {

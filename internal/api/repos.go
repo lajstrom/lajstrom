@@ -596,7 +596,7 @@ func checkName(name string) error {
 	case len(name) > config.MaxNameLen || !config.RepoNamePattern.MatchString(name):
 		return invalid("name: %q must be lowercase letters and digits separated by single '.', '_' or '-', at most %d characters",
 			name, config.MaxNameLen)
-	case profile.ReservedComponent(name):
+	case profile.ReservedRepoName(name):
 		return invalid("name: %q %s", name, config.ReservedRepoName)
 	}
 	return nil

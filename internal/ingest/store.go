@@ -218,7 +218,7 @@ func (p *Pipeline) claimPath(ctx context.Context, w index.Writer, pub *publish, 
 // packageOf returns the package of a repo whose package path is pkgPath, or nil when there is
 // none. A package of another name there is ErrConflict naming it: names that differ only in
 // case share the package path, and the first spelling published holds it (#244). So is a
-// package at the form of pkgPath of before ADR 0017 (index.PackageAt), which keeps its OCI
+// package at an earlier form of pkgPath (ADR 0017, index.PackageAt), which keeps its OCI
 // repository: a publish to pkgPath would split it.
 func packageOf(ctx context.Context, r index.Reader, repoID int64, pkgPath, name string) (*index.Package, error) {
 	pkg, err := index.PackageAt(ctx, r, repoID, pkgPath)
@@ -231,7 +231,7 @@ func packageOf(ctx context.Context, r index.Reader, repoID int64, pkgPath, name 
 		return nil, fmt.Errorf("%w: %q exists as %q: names that differ only in case share the package path %s, "+
 			"which the first spelling published holds", ErrConflict, name, pkg.Name, pkg.NameOCI)
 	case pkg.NameOCI != pkgPath:
-		return nil, fmt.Errorf("%w: %q is stored at the package path %s, its form of before ADR 0017, and keeps it; "+
+		return nil, fmt.Errorf("%w: %q is stored at the package path %s, an earlier form (ADR 0017), and keeps it; "+
 			"publish there, not to %s", ErrConflict, name, pkg.NameOCI, pkgPath)
 	}
 	return pkg, nil

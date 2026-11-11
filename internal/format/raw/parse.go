@@ -81,13 +81,14 @@ func checkPath(p string) error {
 
 // escapePath returns the package path of a raw path (docs/spec/manifest-profile.md §4.1): each
 // component escaped with profile.EscapeComponentMax, which hashes as well a component whose
-// escaped form is longer than maxComponentLen bytes, joined with "/". p must pass checkPath.
+// escaped form is longer than maxComponentLen bytes, joined by profile.PackagePath. p must pass
+// checkPath.
 func escapePath(p string) string {
 	parts := strings.Split(p, "/")
 	for i, c := range parts {
 		parts[i] = profile.EscapeComponentMax(c, maxComponentLen)
 	}
-	return strings.Join(parts, "/")
+	return profile.PackagePath(parts...)
 }
 
 // EscapeName returns the package path of the raw path name: the path rules of checkPath, then

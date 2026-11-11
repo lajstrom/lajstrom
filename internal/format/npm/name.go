@@ -88,13 +88,14 @@ func CheckNewName(name string) error {
 }
 
 // packagePath returns the package path of a name CheckName takes (docs/spec/manifest-profile.md
-// §4.1): EscapeComponent of the name, or for @scope/name EscapeComponent(scope)/EscapeComponent(name).
+// §4.1): EscapeComponent of the name, or for @scope/name PackagePath of EscapeComponent of scope and
+// of name.
 func packagePath(name string) string {
 	scope, base, _ := splitName(name)
 	if scope == "" {
 		return profile.EscapeComponent(base)
 	}
-	return profile.EscapeComponent(scope) + "/" + profile.EscapeComponent(base)
+	return profile.PackagePath(profile.EscapeComponent(scope), profile.EscapeComponent(base))
 }
 
 // Filename returns the file name npm serves the tarball of a version under: the name without

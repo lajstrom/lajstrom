@@ -36,30 +36,33 @@ func (e *env) pushAt(t *testing.T, up format.Upload, pkgPath string) (*format.Bu
 	return built, raw
 }
 
-// TestEarlierPackagePath: a package stored at the form of its package path of before ADR 0017,
-// one of each kind that ADR 0017 changes, keeps that OCI repository (manifest-profile.md §4.3).
-// Inspect reads the earlier form; a new version through Upload and through Ingest goes there; a
-// push of it to the new form is the 409 naming the earlier, before the registry sees a manifest;
-// and a new package at an earlier form is a 400.
+// TestEarlierPackagePath: a package stored at an earlier form of its package path, of before ADR
+// 0017 or of before its amendment, each form of one of each kind of name that they change, keeps
+// that OCI repository (manifest-profile.md §4.3). Inspect reads the earlier form; a new version
+// through Upload and through Ingest goes there; a push of it to the newest form is the 409 naming
+// the earlier, before the registry sees a manifest; and a new package at an earlier form is a 400.
 func TestEarlierPackagePath(t *testing.T) {
-	for _, name := range []string{"site/.gitignore", "netlify/blobs", "a--b.txt", "x/index.json"} {
-		t.Run(name, func(t *testing.T) {
-			e := newEnv(t)
-			newPath, err := escapeRaw(name)
-			must(t, err)
-			earlier := profile.LegacyPackagePath(newPath)
-			if earlier == newPath {
-				t.Fatalf("%s: the package path %s has no earlier form", name, newPath)
-			}
-			e.earlierNewPackage(t, name, earlier)
-			e.earlierInspect(t, name, earlier)
-			e.earlierUpload(t, name, earlier)
-			e.earlierIngest(t, name, newPath, earlier)
-			r := e.rows(t)
-			if len(r.Packages) != 1 || r.Packages[0].NameOCI != earlier || len(r.Versions) != 3 || len(r.OCIRepos) != 1 {
-				t.Errorf("rows: %d packages %+v, %d versions, OCI repositories %+v", len(r.Packages), r.Packages, len(r.Versions), r.OCIRepos)
-			}
-		})
+	for _, name := range []string{"site/.gitignore", "netlify/blobs", "a--b.txt", "x/index.json", "k8s/manifests/app.yaml",
+		"x/referrers/y", "x/tags/list", "k8s/manifests/.gitignore"} {
+		newPath, err := escapeRaw(name)
+		must(t, err)
+		forms := profile.EarlierPackagePaths(newPath)
+		if len(forms) == 0 {
+			t.Fatalf("%s: the package path %s has no earlier form", name, newPath)
+		}
+		for _, earlier := range forms {
+			t.Run(name+" at "+earlier, func(t *testing.T) {
+				e := newEnv(t)
+				e.earlierNewPackage(t, name, earlier)
+				e.earlierInspect(t, name, earlier)
+				e.earlierUpload(t, name, earlier)
+				e.earlierIngest(t, name, newPath, earlier)
+				r := e.rows(t)
+				if len(r.Packages) != 1 || r.Packages[0].NameOCI != earlier || len(r.Versions) != 3 || len(r.OCIRepos) != 1 {
+					t.Errorf("rows: %d packages %+v, %d versions, OCI repositories %+v", len(r.Packages), r.Packages, len(r.Versions), r.OCIRepos)
+				}
+			})
+		}
 	}
 }
 
@@ -68,7 +71,7 @@ func (e *env) earlierNewPackage(t *testing.T, name, earlier string) {
 	t.Helper()
 	built, raw := e.pushAt(t, upload(name, "0.1.0", file{"f", "new"}), earlier)
 	_, err := e.ingest(t, built, raw, earlier)
-	if !errors.Is(err, ingest.ErrInvalid) || !strings.Contains(err.Error(), "before ADR 0017") {
+	if !errors.Is(err, ingest.ErrInvalid) || !strings.Contains(err.Error(), "an earlier form") {
 		t.Errorf("Ingest of a new package at %s: %v, want ErrInvalid", earlier, err)
 	}
 }

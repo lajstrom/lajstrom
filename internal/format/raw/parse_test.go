@@ -35,12 +35,14 @@ func hashed(c string) string {
 var giteaName = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$`)
 
 // TestEscapeNameGrammar: the package paths of raw paths that a site or a repository holds keep
-// to ADR 0017, Gitea's grammar and no word that Zot's layout keeps, as raw/<repo>/<path>.
+// to ADR 0017, Gitea's grammar and no word that Zot's layout or Harbor's routes keep, as
+// raw/<repo>/<path>.
 func TestEscapeNameGrammar(t *testing.T) {
 	for _, p := range []string{
 		".gitignore", "_config.yml", "site/_config.yml", ".github/workflows/ci.yml", "a--b.txt", "netlify/blobs",
 		"x/blobs/sha256/0f", "my.uploads", "cache/.sync", "a.sync/f", "x/index.json", "x/oci-layout", "__init__.py",
-		"Docs/Readme.MD", "--", "-/-", "~user/.bashrc", "node_modules/.bin/tsc",
+		"Docs/Readme.MD", "--", "-/-", "~user/.bashrc", "node_modules/.bin/tsc", "k8s/manifests/app.yaml", "manifests",
+		"x/referrers/y", "x/tags/list", "tags/Listing.TXT", "tags/tags/list", "x/tags/list/tags/list-1",
 	} {
 		pkgPath, err := Plugin{}.EscapeName(p)
 		if err != nil {
@@ -48,6 +50,9 @@ func TestEscapeNameGrammar(t *testing.T) {
 		}
 		if name := "raw/scratch/" + pkgPath; !giteaName.MatchString(name) {
 			t.Errorf("EscapeName(%q): %q does not match Gitea's grammar", p, name)
+		}
+		if strings.Contains("/"+pkgPath, "/tags/list") {
+			t.Errorf("EscapeName(%q) = %q, which Harbor takes for a tag list", p, pkgPath)
 		}
 		for c := range strings.SplitSeq(pkgPath, "/") {
 			if profile.ReservedComponent(c) {
@@ -83,6 +88,12 @@ func TestEscapeName(t *testing.T) {
 		{"x/blobs/sha256/0f", "x/blob_73/sha256/0f"},
 		{"x/index.json", "x/index.jso_6e"},
 		{"cache/my.sync", "cache/my.syn_63"},
+		// The amendment of ADR 0017: Harbor's routes.
+		{"k8s/manifests/app.yaml", "k8s/manifest_73/app.yaml"},
+		{"x/referrers/y", "x/referrer_73/y"},
+		{"x/tags/list", "x/tag_73/list"},
+		{"x/tags/listing.txt", "x/tag_73/listing.txt"},
+		{"x/tags/other", "x/tags/other"},
 		{".gitignore", hashed(".gitignore")},
 		{"x/" + strings.Repeat("y", maxPathLen-2), "x/" + hashed(strings.Repeat("y", maxPathLen-2))},
 	}
