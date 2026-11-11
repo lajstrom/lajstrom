@@ -38,7 +38,7 @@ measurements of [section 2](#2-is-abc-one-repository-or-two), on Zot v2.1.23, di
 
 | Registry | Uploads | Deletes through `/v2` | Immutable tags | Referrers API | `_catalog` | Largest blob | Auth | Rules that read tags |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Amazon ECR | parts of 5 MB at least, but the last | by digest | per repository, with exclusions | yes; oras's referrer push 405 | yes, paged by a token | 52,000 MiB | Basic, a 12-hour password | lifecycle policies |
+| Amazon ECR | `OCI-Chunk-Min-Length` 10 MiB; a part's minimum on `/v2` unverified | by digest | per repository, with exclusions | yes; oras's referrer push 405 | yes, paged by a token | 52,000 MiB; 200 GB by Docker push since 2026-08 | Basic, a 12-hour password | lifecycle policies |
 | Azure ACR | chunked and monolithic | by digest only | locks per repository, tag, digest | yes, not with customer-managed keys | not for scope-map tokens | 195 GiB | OAuth exchange, about 3 h | `acr purge`, retention |
 | Google Artifact Registry | **monolithic only** | ? | per repository; tagged images undeletable | yes | ? | 5 TB an artifact | OAuth token, 60 min | cleanup policies |
 | GitLab | any | yes; **none under any protection rule** | GitLab's rules | no | GitLab admins | none documented | Bearer from GitLab, 5 min | cleanup policies; untagged gone in 24 h |
@@ -382,9 +382,11 @@ layer without a length. distribution-spec 1.1.1 defines the first two; Docker pu
   uploads" ([Docker API](https://docs.cloud.google.com/artifact-registry/docs/reference/docker-api)),
   a second `PATCH` is 405 ([reported](https://github.com/greenticai/greentic-deployer/pull/616)),
   and its upload `Location` is outside `/v2/` ([ocync, GAR](https://clowdhaus.github.io/ocync/registries/gar)).
-- **ECR** sends `OCI-Chunk-Min-Length: 10485760`, refuses a part under 5 MB but the last, answers
+- **ECR** sends `OCI-Chunk-Min-Length: 10485760`, answers
   a `PATCH` with 201 instead of 202, and its `Range` stopped advancing after the first chunk until
   a fix of 2026-07 ([aws/containers-roadmap#2831](https://github.com/aws/containers-roadmap/issues/2831));
+  AWS's 5 MiB minimum part is documented for its API only, so a part's minimum on `/v2` is
+  unverified ([ecr.md](ecr.md#what-the-provider-does));
   one `PUT` was cut off above about 300 MiB ([reported](https://github.com/alienplatform/alien/pull/1418)).
 - **GHCR** takes 4 MiB a `PATCH` and answers 416 above, with no header to say so; the `GET` of a
   session is a 303 to a web page; the empty blob cannot be pushed (measured, [ghcr.md](ghcr.md#upload-sessions)).
@@ -501,7 +503,7 @@ Docker Hub not at all (401 `insufficient_scope`); JFrog with an empty body at th
 catalog per key; Nexus's `oci` format pages with an opaque cursor and ignores `last` (measured,
 [matrix](README.md#capabilities)). **ECR has one**, paged by an opaque token in `Link`, and a
 repository name as `last` is 405 `UNSUPPORTED` ([zot#4528](https://github.com/project-zot/zot/pull/4528));
-[ecr.md](ecr.md) says it has none, and Lajstrom's adapter lists with `DescribeRepositories`.
+Lajstrom's adapter lists with `DescribeRepositories` ([ecr.md](ecr.md)).
 ACR's needs `registry:catalog:*`, which a scope-map token cannot have
 ([tokens](https://learn.microsoft.com/en-us/azure/container-registry/container-registry-token-based-repository-permissions));
 GAR's Docker listing is incomplete above 10,000 images or tags in a repository
@@ -513,7 +515,8 @@ Zot's leaves names out ([section 2](#zots-catalog-and-collector-skip-names-that-
 
 Largest layer: GHCR 10 GB and 10 minutes an upload
 ([GHCR](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry));
-ECR 52,000 MiB ([quotas](https://docs.aws.amazon.com/AmazonECR/latest/userguide/service-quotas.html));
+ECR 52,000 MiB ([quotas](https://docs.aws.amazon.com/AmazonECR/latest/userguide/service-quotas.html)),
+200 GB by Docker push since 2026-08-03 ([announcement](https://aws.amazon.com/about-aws/whats-new/2026/08/amazon-ecr-image-layers/));
 ACR 195 GiB ([SKUs](https://learn.microsoft.com/en-us/azure/container-registry/container-registry-skus));
 GAR 5 TB an artifact ([pushing](https://docs.cloud.google.com/artifact-registry/docs/docker/pushing-and-pulling));
 Quay 20 GB by default, `MAXIMUM_LAYER_SIZE` ([config.py](https://github.com/quay/quay/blob/master/config.py));
