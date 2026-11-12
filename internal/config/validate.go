@@ -130,6 +130,7 @@ func (s Server) validateLimits(p *problems) {
 		{"server.maxCreatedAhead", s.MaxCreatedAhead < 0},
 		{"server.maxCreatedBehind", s.MaxCreatedBehind < 0},
 		{"server.maxConcurrentUploads", s.MaxConcurrentUploads < 0},
+		{"server.spoolBudget", s.SpoolBudget < 0},
 		{"server.uploadSessions.perRepo", s.UploadSessions.PerRepo < 0},
 		{"server.uploadSessions.perPrincipal", s.UploadSessions.PerPrincipal < 0},
 	} {

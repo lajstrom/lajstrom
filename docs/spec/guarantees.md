@@ -740,8 +740,9 @@ longer than `reconcile.graceAge` is outside them
   `policy.maxFileSize` (by default its format's, npm 512 MiB to `oci` 16 GiB) or the registry's
   `capabilities.maxBlobSize` when smaller, the npm bounds of http-routing.md (a publish body
   besides its tarball 4 MiB, an audit body 16 MiB), an upstream document of
-  `upstreams[].maxMetadataSize`, `server.maxConcurrentUploads` uploads at once (32), a body that
-  stops moving for `server.stallTimeout`. A principal holds at most `server.uploadSessions` live
+  `upstreams[].maxMetadataSize`, `server.maxConcurrentUploads` uploads at once (32), the bytes of
+  the spooled `/v2` chunks of `uploads.spoolUnknownLength` at once (`server.spoolBudget`, when it
+  is set), a body that stops moving for `server.stallTimeout`. A principal holds at most `server.uploadSessions` live
   `/v2` upload sessions on a replica (256 in a repo, 1024 in all), and a Maven deploy stores at
   most the repo's `policy.maven.maxSessionFiles` files (256) (#246).
 - **Scope.** Every route. The bounds of #246 are per replica and have their defaults (threat
@@ -750,18 +751,21 @@ longer than `reconcile.graceAge` is outside them
 - **Mechanism.** `facade.readManifest`, `api` body limits, `facade.handler.issueToken`,
   `format.MaxFileSize` and `format.LimitBody`, `facade.handler.limitBlob` and
   `facade.handler.blobLimit`, `facade.liveUploads`, `ingest.sessionState.room`,
-  `server.Server.limitUploads`, `server.Server.stall`, npm's `readBody`, `proxy.readDocument`.
+  `server.Server.limitUploads`, `server.Server.stall`, npm's `readBody`, `proxy.readDocument`,
+  the generic provider's `takeSpool`.
 - **Tests.** `TestManifestHookSize`, `TestManifestLayersBound`, `TestOversizedBody`,
   `TestTokenScopesBound`, `TestIngestMaxFileSize`, `TestPutMaxFileSize`, `TestUploadMaxFileSize`
   (deb, facade), `TestManifestHookMaxFileSize`, `TestMaxFileSize`, `TestLimitBody`,
   `TestReadBodyBounded`, `TestDocumentLimits`, `TestForwardBounds`, `TestMaxUploads`,
   `TestStallRequestBody`, `TestStallResponse`, `TestUploadMaxBlobSize`,
   `TestUploadDefaultMaxFileSize`, `TestUploadLiveSessions`, `TestLiveUploads`,
-  `TestDeploySessionFiles`, `TestDeploySessionFilesCounted`, `TestMaxConcurrentUploads`.
+  `TestDeploySessionFiles`, `TestDeploySessionFilesCounted`, `TestMaxConcurrentUploads`,
+  `TestSpoolBudget` (generic provider, config).
 - **When violated.** `413`, `400` naming the bound, `429` with `Retry-After` naming the bound and
   its key, or `503` with `Retry-After`.
-- **Status.** `partly`: the bytes of `$TMPDIR` a replica may hold have no budget
-  ([#427](https://github.com/lajstrom/lajstrom/issues/427)).
+- **Status.** `partly`: the bytes of `$TMPDIR` a replica may hold have a budget only when
+  `server.spoolBudget` is set, which has no default ([#427](https://github.com/lajstrom/lajstrom/issues/427));
+  the bounds of #246 are per replica and have their defaults (threat model U-3 to U-6).
 
 ### INV-24. A parser allocates in proportion to its input, within a fixed cap
 
@@ -1396,7 +1400,7 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | No frontend test of a denial with malformed input (INV-15) | a regression of the R-2 kind on a frontend goes unseen | a table test per frontend, as `TestDenialBeforeInput` does for `/v2` | new issue |
 | oras-go's `auth.Client`, which the provider's requests but a blob's `GET` and `HEAD` go through (manifests, tag lists, upload sessions), is relied on to drop `Authorization` on a redirect that leaves the registry's origin (INV-20) | an oras-go release that stopped doing so would send the registry's credentials to another origin, unseen | a test of ours: a manifest `GET` redirected to another origin arrives there without `Authorization` | new issue |
 | Acceptance C-07 and S-09 are not automated (INV-14, INV-21) | a redaction or an audit regression goes unseen | after the suite, grep both replicas' logs for every secret used, and count the audit rows of its writes | new issue |
-| No budget for the bytes of `$TMPDIR` (INV-23) | frontend uploads and proxy fetches stream (ADR 0014); what still spools has no byte budget: the `/v2` chunks of `uploads.spoolUnknownLength`, off by default | a spool budget | [#427](https://github.com/lajstrom/lajstrom/issues/427) |
+| No default budget for the bytes of `$TMPDIR` (INV-23) | frontend uploads and proxy fetches stream (ADR 0014); what still spools, the `/v2` chunks of `uploads.spoolUnknownLength`, off by default, is bounded only where `server.spoolBudget` is set | the operator sets it below the room of `$TMPDIR`, as the Kubernetes manifests do | [#427](https://github.com/lajstrom/lajstrom/issues/427) |
 | Registries that fold tag case (INV-7) | two versions that differ in case: the second is a `409` with an unclear message | `Capabilities.TagsFoldCase` | [#426](https://github.com/lajstrom/lajstrom/issues/426) |
 | Whether a migration is expand is reviewed, not tested; the job `upgrade`, which runs the previous release's binary on the next schema, is skipped until there is a release; pre-#244 claims (INV-6, INV-41) | a contract migration without its `requires` line breaks the replicas of the release before during a rolling update; a mixed fleet may not exclude publishes | tag v0.1.0: from then on the job `upgrade` (`test/upgrade/run.sh`, [#485](https://github.com/lajstrom/lajstrom/issues/485)) runs on every pull request that changes a migration | [#59](https://github.com/lajstrom/lajstrom/issues/59) |
 | Policy (INV-38), encryption at rest (INV-39) | not built | as the issues say | [#101](https://github.com/lajstrom/lajstrom/issues/101), [#114](https://github.com/lajstrom/lajstrom/issues/114) |

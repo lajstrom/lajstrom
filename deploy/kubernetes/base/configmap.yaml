@@ -23,6 +23,10 @@ data:
       # trustedProxies: ["<the range your edge connects from>"]
       # Prometheus scrapes the pod's port metrics; no Ingress or route names it.
       metricsListen: "0.0.0.0:9464"
+      # The bytes the /v2 chunks of registries[].uploads.spoolUnknownLength may hold in /tmp at
+      # once, 3 GiB: below the 4Gi sizeLimit of its emptyDir (deployment.yaml), so that a full
+      # disk answers 503 to a chunk instead of evicting the pod (docs/deploy/kubernetes.md).
+      spoolBudget: 3221225472
     log:
       format: json
     database:

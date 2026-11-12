@@ -345,8 +345,11 @@ fixtures, Postgres and the registry, as violations; those of `try/` meet it too.
 The only writable path is `/tmp`, an `emptyDir` of at most 4 GiB on the node's disk. A frontend
 upload (raw, apt, maven, pypi, npm) and a proxy repo's fetch stream into the registry and take
 none; what is spooled there is a `/v2` chunk of a registry with `uploads.spoolUnknownLength`
-on. Size it for those of one replica at once, or the pod is evicted when it fills. To
-spool on a volume of its own instead, mount it and set `TMPDIR` to its path: Lajstrom spools
+on. A full `emptyDir` evicts the pod with every request it serves, so the configuration sets
+`server.spoolBudget` to 3 GiB, below the 4 GiB `sizeLimit`: a chunk that would pass it is
+answered `503` with `Retry-After`, nothing of it reaches the registry, and the client sends it
+again. Keep the budget below the `sizeLimit` when you change either. To spool on a volume of its
+own instead, mount it, set `TMPDIR` to its path and the budget below its size: Lajstrom spools
 into `$TMPDIR` when it is set, `/tmp` otherwise.
 
 Memory: after a 100 MiB raw upload and its download through one replica, `crictl stats` on the

@@ -120,6 +120,15 @@ var (
 	ClockSkew = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "lajstrom_clock_skew_seconds", Help: "This replica's clock minus the index database's, at the last heartbeat.",
 	})
+	// SpoolBytes is the bytes that the spooled /v2 chunks of registries[].uploads.spoolUnknownLength
+	// hold in $TMPDIR now, which server.spoolBudget bounds (#427).
+	SpoolBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "lajstrom_spool_bytes", Help: "Bytes the spooled /v2 chunks of unknown length hold in $TMPDIR now.",
+	})
+	// SpoolRefusals counts the chunks refused because they would pass server.spoolBudget.
+	SpoolRefusals = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "lajstrom_spool_refusals_total", Help: "Chunks of unknown length refused with 503 because they would pass server.spoolBudget.",
+	})
 	// buildInfo is 1 with the build in its labels.
 	buildInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "lajstrom_build_info", Help: "Always 1; the labels say which build runs.",
@@ -128,7 +137,8 @@ var (
 
 func init() {
 	registry.MustRegister(HTTPDuration, HTTPRequestSize, HTTPResponseSize, ProviderDuration, ProviderCircuitOpen, DBDuration, Ingest,
-		ProxyUpstreamDuration, ProxyDocuments, ProxyFetches, Throttled, UploadSessionsRefused, UploadSessionsLive, DownloadDigestMismatches, ClockSkew, buildInfo,
+		ProxyUpstreamDuration, ProxyDocuments, ProxyFetches, Throttled, UploadSessionsRefused, UploadSessionsLive, DownloadDigestMismatches, ClockSkew,
+		SpoolBytes, SpoolRefusals, buildInfo,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 }
 

@@ -697,6 +697,7 @@ What an operator of ECR sees:
 | idle keep-alive connection | 120 s, fixed | the connection is closed |
 | a body that stops moving | `server.stallTimeout`, `1m` | each read of a request body and each write of a response must move within it, or the connection is closed. An upload whose body stops is answered `408 Request Timeout` (`BLOB_UPLOAD_INVALID` or `MANIFEST_INVALID` on `/v2`) and logged at info, `request body stalled` with the bytes read: the client stopped, not Lajstrom |
 | uploads at once | `server.maxConcurrentUploads`, 32 | `503` with `Retry-After: 5`, before the body is read |
+| the bytes of the spooled `/v2` chunks of `uploads.spoolUnknownLength` | `server.spoolBudget`, no budget by default, per replica | `503 UNAVAILABLE` with `Retry-After: 5` for the chunk that would pass it, before a byte of it reaches the registry; the session keeps its offset |
 | a manifest | `server.maxManifestSize`, 4 MiB | `413` |
 | the layers of a manifest | 1 000, fixed | `400 MANIFEST_INVALID` naming the bound, on every repo, before Lajstrom asks the registry about any layer |
 | a body of the management API | 64 KiB, fixed | `413` |
@@ -714,7 +715,8 @@ keeps sending and passes; one that stops sending, or opens a download and stops 
 off. The limit on uploads at once is per replica, 32 by default (#246): set it from what a replica
 can hold at once: the memory of the frontend uploads (a chunk of 8 MiB each and the bounded
 metadata of [Performance](#performance)), the disk for the `/v2` chunks that
-`uploads.spoolUnknownLength` spools, and the connections to the registry; `0` lifts it. A request refused for it is in the access log with status `503`. How many requests a
+`uploads.spoolUnknownLength` spools, which `server.spoolBudget` bounds on its own, and the
+connections to the registry; `0` lifts it. A request refused for it is in the access log with status `503`. How many requests a
 client may send is the edge's to limit.
 
 A request whose client went away while it ran, and which the handler then answered with a `5xx`
@@ -804,7 +806,8 @@ A proxy repo's fetch streams the upstream's file into the registry the same way,
 against the upstream's checksum before the session is closed, and takes no disk either
 ([proxy-and-group.md](spec/proxy-and-group.md) §5).
 `/v2` uploads take no disk of Lajstrom's, but for the spooled chunks of a registry with
-`uploads.spoolUnknownLength` on: that is the only temporary file left on a blob's path.
+`uploads.spoolUnknownLength` on: that is the only temporary file left on a blob's path, and
+`server.spoolBudget` bounds the bytes those chunks hold at once on a replica.
 
 The streaming audit of #62 read every `io.ReadAll`, `bytes.Buffer` and temporary file of
 `internal/` and `cmd/`: none is on a blob's path; each reads one of the bounded documents above,
@@ -955,6 +958,8 @@ so the number of series is fixed by the code and the configuration.
 | `lajstrom_proxy_upstream_request_duration_seconds` | `upstream`, `operation`, `status` | requests of proxy repos to their upstreams ([proxy-and-group.md](spec/proxy-and-group.md)), to the response headers: `document`, `file` or `forward` (a client's request sent on: npm audit), the status or `error` |
 | `lajstrom_proxy_documents_total` | `upstream`, `result` | reads of upstream documents: `fresh` (the cache), `revalidated` (`304`), `refreshed` (`200`), `absent` (`404`, `410`), `stale` (the upstream failed, the cache or the held versions served), `offline`, `shared` (a miss that waited for the request another miss on this replica sent) |
 | `lajstrom_proxy_fetches_total` | `upstream`, `result` | file requests of proxy repos: `held` (a hit), `fetched` (a miss downloaded and published), `shared` (a miss another request or replica fetched), `missing`, `rejected` (checksum, size, `Validate`), `error` |
+| `lajstrom_spool_bytes` | | the bytes the spooled `/v2` chunks of `uploads.spoolUnknownLength` hold in `$TMPDIR` now, which `server.spoolBudget` bounds |
+| `lajstrom_spool_refusals_total` | | chunks answered `503` because they would pass `server.spoolBudget` |
 | `lajstrom_clock_skew_seconds` | | this replica's clock minus the index database's at the last comparison, at the start and every 30 seconds; positive when the replica is ahead ([Clocks](#clocks)) |
 | `lajstrom_auth_throttled_total` | `throttle` | requests answered `429` by a throttle ([auth.md](auth.md#failed-logins)): `account` and `address` (failed logins), `token` (requests to `/v2/token`) |
 | `lajstrom_upload_sessions_refused_total` | `limit` | new `/v2` upload sessions answered `429` at a bound of `server.uploadSessions` on this replica ([Requests from clients](#requests-from-clients)): `repo` (`perRepo`), `principal` (`perPrincipal`) |
