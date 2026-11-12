@@ -113,7 +113,7 @@ longer than `reconcile.graceAge` is outside them
 
 - **Statement.** The bytes of a package file are stored in the registry and nowhere else: never in
   the database, and on a replica's disk only as a spool of one request, removed when it ends. A
-  raw, apt, Maven, PyPI or npm upload, and a proxy fetch, is not on the disk at all
+  raw, apt, Maven, PyPI, npm or rpm upload, and a proxy fetch, is not on the disk at all
   ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)).
 - **Scope.** Every format and kind, both write paths (a frontend upload, a `/v2` blob upload) and
   the proxy fetch. The database keeps derived copies of metadata that reindex rebuilds or a cache
@@ -123,9 +123,9 @@ longer than `reconcile.graceAge` is outside them
 - **Mechanism.** `/v2` uploads stream into the backend's session (`facade` uploads, the
   provider's `BlobUploader`) and take no disk, but for a chunk of unknown length that
   `uploads.spoolUnknownLength` spools (one temporary file of the chunk, unlinked when it is
-  made). A raw `PUT`, an apt, a twine and an npm upload, a Maven file (`ingest.Pipeline.Add`),
-  and the file of a proxy fetch (`proxy.Core.download`, its checksum checked before the end of
-  the body), stream into a session too
+  made). A raw `PUT`, an apt, a twine, an npm and an rpm upload, a Maven file
+  (`ingest.Pipeline.Add`), and the file of a proxy fetch (`proxy.Core.download`, its checksum
+  checked before the end of the body), stream into a session too
   (`ingest.Pipeline.UploadStream`, the provider's `BlobWriter`), which is closed with the digest
   Lajstrom computed only once every check passed and cancelled otherwise, so a refused upload
   stores nothing. The exception is a wheel or a `.zip` sdist that is read back from the registry
@@ -137,8 +137,9 @@ longer than `reconcile.graceAge` is outside them
   (deb), `TestDeployWritesNoTempFile` and `TestDeployRefusedStoresNothing` (maven), `TestSessionAddStreams`
   (ingest), `TestUploadWheelWritesNoTempFile`, `TestUploadWheelRefused` and
   `TestUploadSdistRefusedStoresNothing` (pypi), `TestPublishWritesNoTempFile` and
-  `TestPublishRefusedStoresNothing` (npm), `TestUploadStreamRefused` (ingest),
-  `TestFileWritesNoTempFile`, `TestFileChecksum` and `TestFileCutShort` (proxy); `ha.sh` H-05 (a
+  `TestPublishRefusedStoresNothing` (npm), `TestUploadStreams1GiB` and `TestUploadRefuses` (rpm),
+  `TestUploadStreamRefused` (ingest), `TestFileWritesNoTempFile`, `TestFileChecksum` and
+  `TestFileCutShort` (proxy); `ha.sh` H-05 (a
   replica killed with `SIGKILL` in a 500 MiB upload: nothing left in its `/tmp`).
 - **When violated.** A spool that a `SIGKILL` leaves where the system cannot unlink at creation
   stays in `$TMPDIR` (threat model U-2); nothing serves from it.
@@ -792,8 +793,9 @@ longer than `reconcile.graceAge` is outside them
 
 - **Statement.** Uploads and downloads stream; only bounded metadata is read into memory, so a
   replica's heap does not grow with the size of a blob or the number of bytes in flight.
-- **Scope.** Every download (`format.ServeBlob`), `/v2` uploads, frontend uploads (raw, apt, maven, pypi and npm hold one
-  chunk of 8 MiB, apt the head of a `.deb` too, pypi the end of a zip, npm the `package.json` of its tarball), the proxy fetch.
+- **Scope.** Every download (`format.ServeBlob`), `/v2` uploads, frontend uploads (raw, apt, maven, pypi, npm and rpm hold one
+  chunk of 8 MiB, apt the head of a `.deb` too, rpm the head of an `.rpm` (at most 32 MiB), pypi the end of a zip, npm the
+  `package.json` of its tarball), the proxy fetch.
 - **Assumes.** Any.
 - **Mechanism.** `format.ServeBlob` through a fixed buffer, `facade` request bodies passed to the
   provider's session, the provider's `BlobWriter` (one chunk); the bounded reads
@@ -801,7 +803,8 @@ longer than `reconcile.graceAge` is outside them
 - **Tests.** `TestStreamingMemory` (1 GiB up and down through `/v2`, heap under 64 MiB),
   `TestPutStreams1GiB` (1 GiB through a raw `PUT`, heap under 64 MiB), `TestUploadStreams1GiB` (deb, the
   same through an apt upload), `TestDeployStreams1GiB` (maven, a jar of 1 GiB), `TestUploadWheelStreams` and
-  `TestUploadSdistStreams` (pypi, 256 MiB), `TestPublishStreams` (npm, 160 MiB),
+  `TestUploadSdistStreams` (pypi, 256 MiB), `TestPublishStreams` (npm, 160 MiB), `TestUploadStreams1GiB` (rpm,
+  an `.rpm` with a payload of 1 GiB),
   `TestUploadDoesNotHoldTheFile`, `TestStream1GiB`; the load test (`make load`, acceptance.md
   N-01), nightly and not required.
 - **When violated.** Not observed.
