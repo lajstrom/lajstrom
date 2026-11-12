@@ -47,7 +47,8 @@ never, so `user:<s>` is unambiguous.
   the row, disabled, under the name `~<uid>`, so that the audit log still names it; `admin user
   list` and `GET /api/v1/users` show the live users only. The name is free again at once; a
   user created with it gets another uid and none of the old rights.
-- Neither may take away the last admin binding of an enabled user.
+- `delete` and `disable` refuse the last enabled user with an admin binding (exit status 1;
+  `409` over the API), so that somebody can still manage the server.
 - `admin user list` shows NAME, UID, KIND, DISABLED, CREATED; `admin binding list` shows the
   principal with its USER name. `GET /api/v1/whoami` answers both: `{"principal": "user:<uid>",
   "kind": "user", "name": "<name>", "uid": "<uid>"}`.
@@ -166,8 +167,8 @@ password) and the client `address`, and counted in `lajstrom_auth_throttled_tota
 ## HTTP Basic on every route
 
 Every route reads the `Authorization` header, the frontends (`/raw/`, `/pypi/`, `/apt/`,
-`/maven/`), the OCI facade (`/v2/`), the management API (`/api/`) and the system endpoints
-(`/-/healthz`, `/-/readyz`, `/-/version`) alike:
+`/maven/`, `/npm/`), the OCI facade (`/v2/`), the management API (`/api/`) and the system
+endpoints (`/-/healthz`, `/-/readyz`, `/-/version`) alike:
 
 - **No header**: the request goes on as `anonymous`, which may read a repo with `anonymousRead`
   when `auth.anonymousRead` allows it, and nothing else: the system endpoints answer it,
@@ -180,17 +181,20 @@ Every route reads the `Authorization` header, the frontends (`/raw/`, `/pypi/`, 
   that starts with `ljs_pat_` is a personal access token of the user, one that starts with
   `ljs_dep_` a deploy token, anything else the user's password ([Tokens](#tokens)). Credentials
   that are refused (an unknown user, a disabled one, a wrong password, a token unknown, revoked,
-  expired or of another user) or that do not decode are answered at once with `401`, whatever
-  the route: a client that sends credentials learns at once that they are wrong. The challenge
-  is `WWW-Authenticate: Basic realm="lajstrom"`, except under `/v2/`, where it is the bearer
-  challenge of the token flow (below) and the client learns it at `/v2/token`, which itself
-  answers with the Basic challenge.
+  expired or of another user) or that do not decode are answered at once with `401`, on every
+  route but npm's legacy login (below): a client that sends credentials learns at once that they
+  are wrong. The challenge is `WWW-Authenticate: Basic realm="lajstrom"`, except under `/v2/`,
+  where it is the bearer challenge of the token flow (below) and the client learns it at
+  `/v2/token`, which itself answers with the Basic challenge.
 - **`Bearer ljs_pat_…`** and **`Bearer ljs_dep_…`** on every route but `/v2`: a personal access
   token or a deploy token, checked as in Basic credentials, and refused the same way. npm sends
   its `_authToken` so, and yarn its `npmAuthToken` ([ADR 0012](adr/0012-npm-profile-routes-and-dist-tags-journal.md)).
 - **Any other `Bearer`**, any bearer under `/v2`, and any other scheme: the request goes on as
   anonymous with the header untouched. The OCI facade verifies the bearer of `/v2`, which is
   its own JWT and nothing else ([below](#bearer-tokens-on-v2)).
+- **npm's legacy login**, `PUT /npm/<repo>/-/user/org.couchdb.user:<name>`, whatever its
+  header: the request goes on as anonymous with the header untouched, and the npm frontend
+  checks the user name and the password of its body ([Tokens](#tokens)).
 
 The body of the `401` follows the route:
 
@@ -269,10 +273,11 @@ subject and the id, role and mask in the details.
 
 For the principal of the request and an action on `<format>/<repo>`, in this order:
 
-1. an `admin` binding allows everything;
-2. a deploy token reaches its own repo, with the actions of its scopes, never `delete` or
+1. the credential first: a personal access token with scopes keeps only those actions, an
+   admin's too, so that an admin's `read` token does not write;
+2. an `admin` binding allows everything;
+3. a deploy token reaches its own repo, with the actions of its scopes, never `delete` or
    `manage`;
-3. a personal access token with scopes keeps only those actions, an admin's too;
 4. the bindings whose mask matches the repo allow the actions of their roles;
 5. `anonymous`, and a user its bindings do not allow, may `read` a repo whose `anonymousRead` is
    on, when `auth.anonymousRead` is on too: both switches, and they are off by default (a
@@ -454,10 +459,11 @@ implemented (`405`), and the clients above use `GET`.
 | `jti` | 16 random bytes, base64url |
 | `access` | `[{"type": "repository", "name": "<format>/<repo>/<path>", "actions": [...]}]`, sorted by type and name |
 
-The realm and the service come from `server.externalURL` when it is set: the realm is
+The realm and the service come from `server.externalURL`: the realm is
 `<externalURL>/v2/token`, the service its host, with the port when it has one
-(`https://art.example.com` gives `art.example.com`). Without it they come from the request's
-`Host` over `http://`, which is what the dev stack runs; production sets `server.externalURL`.
+(`https://art.example.com` gives `art.example.com`). `server.externalURL` is required (#248) but
+for the dev stack (`server.insecureHTTP: true`), where without it they come from the request's
+`Host`, over `https://` for a request that came over TLS and `http://` otherwise.
 Replicas behind one edge share one `Host` anyway, so a token one of them issues is for the
 service of the others (H-12).
 
@@ -518,11 +524,12 @@ issued it; for that second another replica may refuse a token of the new key, wh
 gets again. Rotation, drop and export are in
 [operations.md](operations.md#the-bearer-token-key).
 
-Without a master key (`keys.masterKeyEnv` empty, or the variable not set) `serve` signs with an
-ephemeral key in memory and says so at startup:
+Without a master key (neither `keys.masterKeyFile` nor `keys.masterKeyEnv` set, or the variable
+not set) `serve` signs with an ephemeral key in memory and says so at startup, with the key's
+fingerprint and the reason:
 
 ```text
-level=WARN msg="bearer tokens are signed with an ephemeral key: they do not survive a restart and are not shared between replicas; set keys.masterKeyEnv"
+level=WARN msg="bearer tokens are signed with an ephemeral key: they do not survive a restart and are not shared between replicas; set keys.masterKeyEnv or keys.masterKeyFile" fingerprint=1e61d8cdea41763d44aa1bd5e91ae2b396d1943e90efc605d8c9d78cc24dbd9d algorithm=ES256 reason="keys: no master key: keys.masterKeyEnv is not set"
 ```
 
 That is enough for one process, the dev stack and the quick starts, which need no new variable;
@@ -704,9 +711,12 @@ The scopes narrow what the bindings give, on every route and at `/v2/token`:
 
 ### In CI
 
-A pipeline gets a deploy token of its repo, with `write` and nothing else, from a secret of the
-CI system (a GitHub Actions secret, a masked and protected GitLab CI/CD variable), and hands it
-to curl on standard input, so that it is neither in the job's command lines nor in its log:
+A pipeline gets a deploy token of its repo with `write`, plus `read` when its client reads
+before it writes: an oras or docker push through `/v2`, which asks for its blobs first, and a
+Maven deploy, which reads `maven-metadata.xml` first; curl and twine need `write` only. It gets
+the token from a secret of the CI system (a GitHub Actions secret, a masked and protected GitLab
+CI/CD variable), and hands it to curl on standard input, so that it is neither in the job's
+command lines nor in its log:
 
 ```yaml
 # GitHub Actions
@@ -788,7 +798,9 @@ from `~/.pypirc` with `username = __token__`, and with `TWINE_USERNAME=deploy` a
 `TWINE_PASSWORD`, both uploaded; the same token is refused by `pip install`, which reads.
 
 From `E2E='auth tokens oci-token rbac' make e2e` on 2026-11-09, against the dev stack's Zot,
-after RBAC (#45) and the uid (#182):
+after RBAC (#45) and the uid (#182). The `whoami` line shows the principal and the name that the
+script checks, not the whole answer, which has `kind` and `uid` too
+([The uid and the name](#the-uid-and-the-name)):
 
 ```text
 ok   admin user create --name e2e-tokens-20261109162333-19002 --admin --password-stdin
@@ -891,7 +903,9 @@ The command sends `POST /api/v1/bootstrap` ([api.md](api.md#the-first-admin-post
 which needs no credentials: the token is the credential. It needs no database either. The token
 comes from `--token-file`, else from a prompt without echo; the password from standard input with
 `--password-stdin`, else from a prompt, twice; the server from `--server`, else `server.listen`
-of the configuration on loopback, as for `lajstrom healthcheck`. Without a terminal:
+of the configuration on loopback, as for `lajstrom healthcheck`. `--password-stdin` needs
+`--token-file`: standard input holds the password, so the token cannot be prompted for. Without a
+terminal:
 
 ```sh
 printf '%s' "$PASSWORD" | lajstrom admin bootstrap --server https://art.example.com --name admin \
@@ -907,10 +921,14 @@ token, so that the token makes one admin whichever replica gets it. Then:
   is set but no longer valid, an admin exists: remove auth.bootstrap.tokenFile and its file`.
 
 A wrong token is `403`; 10 wrong tokens from one client address within a minute make its next
-requests `429` with `Retry-After`, the right token too. The right token, used or expired, is `403`
-with a message that says so. A name or a password that breaks its rule, or a name that exists,
-leaves the token valid. The audit event is `user.create` by `anonymous` with the source
-`bootstrap`, the client address and the request id.
+requests `429` with `Retry-After`, the right token too. The count is per replica, like the
+throttles of [Failed logins](#failed-logins), and keyed by the client address only with
+`server.trustedProxies` or `server.tls`. Without either, no address reaches it and every client
+counts as one: 10 wrong tokens from anyone within a minute make every exchange on that replica
+`429` until the minute has passed, the operator's right token too. The right token, used or
+expired, is `403` with a message that says so. A name or a password that breaks its rule, or a
+name that exists, leaves the token valid. The audit event is `user.create` by `anonymous` with
+the source `bootstrap`, the client address and the request id.
 
 ### Against the database
 
