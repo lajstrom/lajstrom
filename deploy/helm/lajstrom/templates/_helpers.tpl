@@ -66,6 +66,11 @@ app.kubernetes.io/component: server
 {{- .Values.bootstrap.existingSecret | default (printf "%s-bootstrap" (include "lajstrom.fullname" .)) -}}
 {{- end -}}
 
+{{/* The host name of config.server.externalURL, for the Ingress and the HTTPRoute. */}}
+{{- define "lajstrom.host" -}}
+{{- (urlParse (.Values.config.server.externalURL | default "")).hostname -}}
+{{- end -}}
+
 {{/* Where the Secret of bootstrap is mounted, and the file auth.bootstrap.tokenFile names. */}}
 {{- define "lajstrom.bootstrapDir" -}}/run/secrets/lajstrom-bootstrap{{- end -}}
 
