@@ -509,6 +509,7 @@ Management API (§4), in addition:
 | `PATCH` of `upstream.name` or of `group.members` | the admin role |
 | `PATCH` of the other keys of `upstream` and `group`, and of `anonymousRead` | `manage` on the repo |
 | `DELETE /api/v1/repos/<format>/<repo>/upstream-cache[?name=<name>]` | `manage` on a proxy repo: drops its `proxy_meta` rows, or the rows of one name, and their rendered documents; `204`, `400` on a repo that is not a proxy; audit `repo.cache.purge` |
+| `POST /api/v1/repos/<format>/<repo>/prefetch` | `manage` on a proxy repo: fetches the versions of 1 to 100 names before a client asks, `{"names": […], "allVersions": false}` (proxy-and-group.md §5.1); `200` with a result per version, `400` on a repo that is not a proxy or a format without the hook, `409` on an offline one; each fetch audited `proxy.fetch` as a miss's |
 | `DELETE /api/v1/repos/<format>/<repo>` of a repo that is a member of a group | `409 CONFLICT` naming the groups, `force` or not |
 
 The repo resource has `kind` and, by kind, `upstream` or `group` (proxy-and-group.md §2.4),

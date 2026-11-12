@@ -253,6 +253,39 @@ shutdown, so that a client that disconnects does not cancel it for the requests 
 it. It counts as an upload for `server.maxConcurrentUploads`: it holds a temporary file and a
 connection to the registry.
 
+### 5.1 Prefetch
+
+A prefetch fetches the versions of a list of names into a proxy repo before a client asks for
+them, through the steps of §5. It is how packages move from another registry (#441): a proxy
+repo whose upstream is the old registry, a prefetch of its names, and then the upstream switched
+off (§4.4). It is `POST /api/v1/repos/<format>/<repo>/prefetch` (http-routing.md §6) with
+`manage` on the repo (rbac.md §7), of a format whose plugin has the hook of §10
+(`format.Prefetcher`; npm).
+
+1. A repo that is not a proxy is `400`, and so is a format without the hook. An offline repo
+   (§4.4) is `409`: it asks its upstream nothing.
+2. For each name: the lists (§3), then the document of the hook's kind (npm: the full
+   packument), read as §4.2 reads it: used while fresh, else asked again. A name the lists
+   refuse, one the upstream does not have, one whose document lists no version, and one whose
+   document cannot be had, is one `failed` result with the status of §6. The other names go on.
+3. The versions it takes: with `allVersions`, every entry of the document. Without it, the
+   entries of the versions that the document's pointers name (npm: the targets of its
+   dist-tags); when they name none of the listed versions, the newest entry by publish time.
+4. Each entry runs §5 from step 3, as a miss of its first file would. A version the repo holds
+   is `held`, and nothing else happens. Otherwise come the claim, the download, the check and
+   the ingest, with the principal of the request, its audit rows `proxy.fetch` and
+   `proxy.reject`, and its statuses. One request fetches at most 4 entries at a time.
+5. The answer is `200` with one result per entry, and one per name that failed before its
+   entries, in the order of the names: `fetched`; `held`; `shared`, fetched meanwhile by
+   another request or replica; or `failed`, with the status a request of the file would have
+   had and its message. A request whose client goes away fetches no further entry; a fetch that
+   has started ends (§5).
+
+A prefetch is idempotent. Run again, it finds held what it fetched, at the cost of an index
+lookup per entry, and it fetches again what failed. It takes 1 to 100 names a request; a client
+sends a long list in batches (`lajstrom admin repo prefetch`). It reads no list of every name of
+the upstream: npm has no standard one, and the operator makes the list (docs/migrating.md).
+
 ## 6. Errors
 
 | The upstream, or the fetch | A document | A file |
@@ -444,3 +477,19 @@ The same contract step adds: `Upload.Origin` (the URL and the verified checksum)
 ingest writes the origin annotations and the audit row `proxy.fetch`; the index methods of
 `proxy_meta`, `fetch_claims`, `group_members` and the new `repos` columns; and the sentinels
 for `405`, `502`, `503` and `504` in `format.StatusOf`.
+
+A prefetch (§5.1, #441) adds `format.Prefetcher`, a `Proxier` with two methods; a format whose
+plugin lacks it has no prefetch, and its proxies still serve misses:
+
+```go
+// Prefetcher: a Proxier whose proxy repos take a prefetch.
+type Prefetcher interface {
+    Proxier
+    // PrefetchKind is the kind of the document whose entries a prefetch reads (npm: the full
+    // packument).
+    PrefetchKind() string
+    // Pointed returns the versions that the pointers of a document of kind of name, as
+    // ParseMetadata kept it, name (npm: the targets of its dist-tags).
+    Pointed(name, kind string, kept []byte) ([]string, error)
+}
+```
