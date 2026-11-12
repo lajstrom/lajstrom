@@ -10,12 +10,13 @@
 | local user | `user:<uid>` (below); password (argon2id) | yes |
 | personal access token (PAT) | acts as its user, optionally narrowed by `scopes`; expiry mandatory (max 1 year, default 90 days); created with a password, never with a token (§3) | yes |
 | deploy token | `token:<id>`; bound to exactly one repo; scopes `read` and/or `write`; expiry optional | yes |
-| anonymous | `anonymous`; only ever gets `read`, and only on repos with `anonymousRead: true` | yes |
+| anonymous | `anonymous`; only ever gets `read`, and only on repos with `anonymousRead: true` while the server-wide `auth.anonymousRead` (off by default) is on | yes |
 | group | `group:<name>`; from OIDC claims | after the MVP |
 | OIDC user | `user:<uid>`, of the user its IdP's `sub` maps to | after the MVP |
 
 One credential works on every protocol: HTTP Basic on the frontends and on `/v2/token`
-(`user:password`, `user:PAT`, or `deploy:<token>`), and the resulting bearer on `/v2`. Outside
+(`user:password`, `user:PAT`, or `deploy:<token>`), and the resulting bearer on `/v2`, where
+Basic is taken too and evaluated on each request (§4). Outside
 `/v2`, `Authorization: Bearer <secret>` with a personal access token or a deploy token counts
 as its Basic form does: npm sends `_authToken` so, and yarn `npmAuthToken` (ADR 0012).
 `npm login` is a way to get a personal access token: the user's password, checked and throttled
@@ -25,7 +26,9 @@ Passwords and token secrets are never logged; tokens are stored hashed (sha256) 
 Failed password checks are throttled per account (by uid; a name that no user has, by the
 name) and per client address, where Lajstrom knows the client: with `server.trustedProxies`
 behind an edge, or with `server.tls`, when the peer is the client (#248); a throttled request is
-`429` with `Retry-After`, whatever its password. Tokens are not throttled (docs/auth.md, #130).
+`429` with `Retry-After`, whatever its password. Failed token secrets are not throttled
+(docs/auth.md, #130). The token endpoint `/v2/token` is rate-limited per client address, where
+Lajstrom knows it: 100 requests a second, then `429` with `Retry-After`.
 
 ### Users: the uid and the name
 
@@ -60,7 +63,7 @@ are after the MVP. Two system-level resources, which only the `admin` role reach
 | `read` | GET/HEAD on the frontend; `pull` scope on `/v2`; list in `/api/v1/repos` |
 | `write` | PUT/POST on the frontend; `push` scope on `/v2`; create versions |
 | `delete` | DELETE versions/manifests; `delete` scope on `/v2` |
-| `manage` | change the repo (policy, anonymous read, deploy tokens), reindex it |
+| `manage` | change the repo (policy, anonymous read, deploy tokens) or delete it; reindex it and read its latest run (`GET …/reindex`); purge a proxy's upstream cache (§7) |
 
 On npm's routes (http-routing.md, npm), changing a package's dist-tags or deprecations is
 `write`, the `DELETE` of a dist-tag included, and an unpublish is `delete`, a version that a
@@ -95,11 +98,13 @@ A binding is refused with `400`, naming the field, when:
 - its role is `admin` and its mask is not `*/*`: the mask of an admin binding is ignored, and
   `*/*` says so.
 
-The same `(principal, role, repo_mask)` twice is `409`, and so is deleting the last `admin`
-binding of an enabled user: nobody could manage the server through `/api/v1` after it.
+The same `(principal, role, repo_mask)` twice is `409`, and so is deleting an `admin` binding
+of an enabled user when no enabled user would keep one: nobody could manage the server through
+`/api/v1` after it.
 `lajstrom admin binding create` on the command line can always make one (§6).
 
-Evaluation of `allowed(principal, action, format/repo)`:
+Evaluation of `allowed(principal, action, format/repo)`. Steps 2 and 3 depend on the
+credential, not on the bindings, and are checked first: a PAT's scopes narrow an `admin` too.
 
 1. `admin` binding → allow.
 2. Deploy token → allow iff the token's repo matches and `action` is in its scopes
@@ -122,12 +127,15 @@ configuration: it changes with a restart.
 
 A denial on `<format>/<repo>` must not reveal whether the repo exists:
 
-- the `anonymous` principal gets `401` with a Basic challenge, on a repo it may not read and on
-  a repo that does not exist alike, so that clients send credentials;
+- the `anonymous` principal gets `401` with a challenge (the bearer challenge under `/v2/`,
+  Basic elsewhere and on `/v2/token`), on a repo it may not read and on a repo that does not
+  exist alike, so that clients send credentials;
 - an authenticated principal with no access to the repo at all (not even `read`) gets `404`,
   the same answer as for a repo that does not exist;
 - `403` is only for a principal that can read the repo but lacks the action (`write`, `delete`,
-  `manage`): it already knows that the repo exists.
+  `manage`): it already knows that the repo exists. A deploy token on its own repo gets `403`
+  for an action outside its scopes, `read` included for a `write`-only one: it is bound to the
+  repo and knows it.
 
 Every other route that could tell whether a repo exists keeps the rule too, and how is part of
 this spec, so that a review need not find it in the code:
@@ -145,9 +153,10 @@ this spec, so that a review need not find it in the code:
   (later an OIDC session) as the request's credential, besides the user's own or the `admin`
   role. A personal access token, with scopes or without, the admin's too, and a deploy token
   get `403` before the body is read, whoever's tokens they name: a stolen token must not mint
-  tokens that outlive its revocation (decided on #249, 2026-11-10). A token still lists and
-  revokes its user's tokens. The command line (`lajstrom admin token create`) has no
-  credential and is the operator's.
+  tokens that outlive its revocation (decided on #249, 2026-11-10). A personal access token
+  without scopes still lists and revokes its user's tokens; one with scopes and a deploy token
+  get `403`. The command line (`lajstrom admin token create`) has no credential and is the
+  operator's.
 - **Lists** (`GET /api/v1/repos`, `/v2/_catalog`) show only the repos the principal may read.
 - **`/v2` with a bearer**: the token names every repository asked for, with no action on one
   that does not exist or may not be read alike, and the facade asks the token before it looks
@@ -161,18 +170,25 @@ MVP.
 
 `GET /v2/token?service=<host>&scope=repository:<format>/<repo>/<pkg>:pull,push&scope=…`
 
-- Authenticates with Basic (or none for anonymous).
+- `GET` only (the OAuth2 `POST` form is `405`). Authenticates with Basic (or none for
+  anonymous). The service is the server's own: a `service` that names another is ignored.
 - For each requested scope the facade keeps the actions the principal is allowed on
   `<format>/<repo>` (`pull`↔`read`, `push`↔`write`, `delete`↔`delete`). A scope with no allowed
   action stays in the token with `actions: []`, and so does the scope of a repo that does not
   exist: the client can read the token, and it names every repository asked for without telling
   which exist (§3). Asking for what one may not have is not an error of the token endpoint, as
-  in the distribution token spec.
-- Issues a JWT (`ES256`, key from `keys`), `exp` 20 minutes, claims: `sub` (the principal,
-  `user:<uid>` for a user), `access: [{type: repository, name, actions}]`, `aud` = service,
-  `jti`. Also returns `refresh_token` = none (clients re-authenticate with Basic). A token whose
-  `sub` names a user by name, issued before the uid (#182), is refused like any token that does
-  not verify: `401`, and the client gets another.
+  in the distribution token spec. More than 100 scopes in one request is `400`. The scope
+  `registry:catalog:*`, which clients ask for to list `/v2/_catalog`, is kept as asked, but for
+  a personal access token whose scopes do not read; any other scope that is not a repository
+  is dropped.
+- Issues a JWT signed with the current token key (`keys`; `ES256` by default, `EdDSA` with
+  `keys.tokenAlgorithm`), `exp` 20 minutes after `iat`, verified with 60 s of clock skew;
+  claims: `iss` and `aud` = the service, `sub` (the principal, `user:<uid>` for a user),
+  `access: [{type, name, actions}]`, `iat`, `nbf`, `jti`. The answer is `token` and
+  `access_token` (the same JWT), `expires_in` and `issued_at`; there is no `refresh_token`
+  (clients re-authenticate with Basic). A token whose `sub` names a user by name, issued before
+  the uid (#182), is refused like any token that does not verify: `401`, and the client gets
+  another.
 - The facade validates the bearer on every `/v2` request and enforces the actions, by the token
   before it looks the repo up, so that the answers keep §3: a repository the token does not name
   is `401` with `error="insufficient_scope"`, whether its repo exists or not; one it names with
@@ -181,11 +197,14 @@ MVP.
   A cross-repo mount from a source the token names with no action is a plain upload session.
   The backend registry is never exposed to clients and trusts only Lajstrom (network policy or
   the backend's own credentials held by the provider).
-- A token is trusted until its `exp`, and the facade does not evaluate the bindings again on
-  `/v2`. The bindings, a disabled user, a revoked or expired personal access or deploy token,
-  and a repo's `anonymousRead` count when a token is issued: on `/v2` a change takes effect at
-  the client's next `/v2/token`, at most 20 minutes later for a token issued before it. A repo
-  deleted is unknown at once (`NAME_UNKNOWN`): the token names repositories by name.
+- A token is trusted until its `exp`, and the facade does not evaluate the bindings again for
+  a request it decides by the token. The bindings, a disabled user, a revoked or expired
+  personal access or deploy token, and a repo's `anonymousRead` count when a token is issued:
+  on `/v2` a change takes effect at the client's next `/v2/token`, at most 20 minutes later for
+  a token issued before it. A repo deleted is unknown at once (`NAME_UNKNOWN`): the token names
+  repositories by name. Two requests are evaluated when they come, as on every other route: one
+  with Basic credentials instead of a bearer, and `/v2/_catalog` with a token that holds
+  `registry:catalog:*`, which lists the repos the token's principal may read at that moment.
 - To end every token now, `lajstrom admin key rotate --token --drop` (operations.md): within a
   second no replica accepts a token of the old key, and clients get new tokens with their
   credentials, under the bindings of that moment.
@@ -278,7 +297,7 @@ of an upstream and its credentials are configuration; no action sets them.
 | Action | When | Principal and fields |
 | --- | --- | --- |
 | `proxy.fetch` | a proxied ingest: the fetcher pushed an artifact | the principal of the request whose miss or prefetch caused it (a user, a token, `anonymous`), through a group too; `repo` the proxy, `subject` the version, `digest` the manifest's, `ip` the client's; `details` `{"upstream", "url", "checksum", "size"}` and `via`, the group, when there was one |
-| `proxy.reject` | a fetch refused for its bytes: a checksum that differs, an artifact that `Validate` refuses, a file above a bound | as `proxy.fetch`, without `digest`; `details.reason` (`checksum`, `invalid`, `size`) and, for a checksum, both values |
+| `proxy.reject` | a fetch refused for its bytes: a checksum that differs, an artifact that `Validate` refuses, a file above a bound; or, before any download, a name the registry does not take (#599) | as `proxy.fetch`, without `digest`; `details.reason` (`checksum`, `invalid`, `size`, `name`) and, for a checksum, both values |
 | `repo.cache.purge` | `DELETE …/upstream-cache` (http-routing.md §6) | the caller; `details.name` when one name was purged |
 | `repo.convert` | a proxy became a hosted repo (proxy-and-group.md §2.6) | the admin; `details` `{"from": "proxy", "to": "hosted", "upstream", "packages", "ops", "skipped"}`: the upstream it had, the packages it held, the journal ops planned and what was left out |
 

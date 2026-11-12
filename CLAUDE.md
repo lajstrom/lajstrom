@@ -19,9 +19,10 @@ a single blob. Go, single binary, SQLite or Postgres as a derived index.
 
 - The OCI registry is the single source of truth. Never store artifact bytes anywhere else
   (no local files, no DB blobs). Only `internal/provider/*` talks to the registry.
-- Derived tables (`packages`, `versions`, `files`, `index_cache`, `oci_repos`) must be
-  rebuildable from manifest annotations by `lajstrom reindex`. If a feature needs per-version
-  data, put it in the manifest (annotation or metadata layer), not only in the DB.
+- Derived tables (`packages`, `versions`, `files`, `journal`, `journal_state`, `index_cache`,
+  `oci_repos`; index-schema.md lists them) must be rebuildable from manifest annotations by
+  `lajstrom reindex`. If a feature needs per-version data, put it in the manifest (annotation
+  or metadata layer), not only in the DB.
 - One write path: every publish goes through `internal/ingest`. Frontends never push manifests
   themselves; `make lint` refuses a provider write or oras-go in `internal/format` (forbidigo,
   depguard `one-write-path`).
@@ -39,15 +40,16 @@ one, stop, explain why in the issue, and wait for the lead. Do not "just extend 
 ## Layout (details in docs/spec/layout.md)
 
 ```
-cmd/lajstrom            CLI: serve, reindex, migrate, version, admin, healthcheck
+cmd/lajstrom            CLI: serve, reindex, migrate, version, admin, healthcheck, registry
 internal/server         router (net/http ServeMux), middleware
 internal/facade         OCI distribution API /v2 proxy + token + manifest hook
-internal/format/<fmt>   one package per format: parse.go (pure), routes.go (HTTP), index.go (render)
+internal/format/<fmt>   one package per format: parsing pure (parse.go where there is one), HTTP, render
 internal/oci/profile    media types, annotations, Escape/EscapeComponent, manifest build/validate
 internal/ingest         pipeline + publication sessions
+internal/proxy          proxy and group repos: the format-independent core
 internal/provider       Provider interface; generic (oras-go), ecr
-internal/index          Store interface, models, migrations; sqlite, postgres
-internal/auth, api, keys, audit, config, testutil, version
+internal/index          Store interface, models, migrations; sqlite, postgres; reindex
+internal/auth, api, keys, audit, config, metrics, testutil, version
 deploy/compose          dev stack (zot, distribution, postgres)
 docs/                   architecture, spec, adr, plan, registries
 ```
@@ -58,10 +60,10 @@ docs/                   architecture, spec, adr, plan, registries
 make build            # bin/lajstrom
 make test             # go test -race ./...
 make lint             # golangci-lint, pinned version
-make check            # everything CI runs: run this before every push
+make check            # the CI jobs that need no stack: run this before every push
 make dev-up           # Zot + distribution + Postgres in containers
-make test-integration # needs dev-up; real registry and Postgres
-make e2e              # real clients (oras, pip, apt-get, mvn) against the stack
+make test-integration # needs dev-up, LAJSTROM_TEST_REGISTRY; Postgres with LAJSTROM_TEST_POSTGRES_DSN
+make e2e              # real clients (oras, pip, apt-get, mvn, npm, cosign) against the stack
 ```
 
 ## Code rules
@@ -90,7 +92,8 @@ make e2e              # real clients (oras, pip, apt-get, mvn) against the stack
 - Conventional Commits subject: `feat(pypi): serve PEP 691 JSON simple index`. Types: feat, fix,
   docs, test, refactor, perf, build, ci, chore, revert. Scope = package or area.
 - Every commit: `Signed-off-by:` (`git commit -s`) and, for commits you helped write,
-  `Assisted-by: Claude Code`. Both are checked.
+  `Assisted-by: Claude Code`. CI's `dco` job checks the first; CONTRIBUTING.md requires the
+  second, and no job checks it.
 - The PR description is written by the human: what, why, how tested, demo command. Tick the
   issue's acceptance criteria in it.
 - Never push to `main`; never force-push a shared branch; never merge. A maintainer merges, with
@@ -110,5 +113,6 @@ make e2e              # real clients (oras, pip, apt-get, mvn) against the stack
 - Adding a column to a derived table without a corresponding annotation: breaks reindex.
 - Re-tagging on conflict "to be helpful": breaks immutability and signatures.
 - Calling the registry from a frontend handler "just for this file": breaks the provider boundary.
-- Auto-creating repos on push: a decision was made not to (ADR 0004).
+- Auto-creating repos on push: a decision was made not to (http-routing.md §2; roadmap.md,
+  decisions).
 - Decoding a tag to find the version: tags are keys; read annotations or the index.

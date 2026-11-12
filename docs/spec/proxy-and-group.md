@@ -1,7 +1,7 @@
 # Spec: proxy and group repos
 
-- Status: normative once [ADR 0013](../adr/0013-proxy-and-group-repos.md) is accepted
-  (2026-11-10). Changes need an issue labelled `contract`.
+- Status: normative ([ADR 0013](../adr/0013-proxy-and-group-repos.md), accepted 2026-11-10).
+  Changes need an issue labelled `contract`.
 - Implemented by: `internal/proxy` (the fetcher, the metadata cache and the resolution of
   groups; format-independent), the plugins of the formats that have the kinds (npm first,
   ADR 0012; pypi and maven with #67, #68), `internal/api` and `internal/config` for the
@@ -59,7 +59,7 @@ as it does with a registry that does not answer.
 
 ### 2.2 A proxy repo: `upstream`
 
-The repo resource of `/api/v1/repos` gains `upstream`, an object, on a proxy repo only:
+The repo resource of `/api/v1/repos` has `upstream`, an object, on a proxy repo only:
 
 | Key | Values | Absent | Changes |
 | --- | --- | --- | --- |
@@ -116,7 +116,7 @@ repos:
   - { name: all, format: npm, kind: group, group: { members: [internal, npmjs] } }
 ```
 
-`POST /api/v1/repos` takes `kind`, `upstream` and `group` beside the fields it takes today. The
+`POST /api/v1/repos` takes `kind`, `upstream` and `group` beside the fields of a hosted repo. The
 resource shows the upstream's name, never its URL or credentials. The `repos` section of the
 configuration takes the same keys, `repos[].kind`, `repos[].upstream` and `repos[].group`, with
 the same checks; the bootstrap creates the hosted and proxy repos of the list before its groups,
@@ -197,10 +197,10 @@ characters, `/` and `:` included, and every other character matches itself: `@ac
 A proxy fetches a name when `allow` is empty or a pattern of it matches, and no pattern of
 `deny` matches; `deny` wins. A name it does not fetch is `403 DENIED` naming the list and the
 pattern that refused it (`deny: @acme/*`, or `allow` when no pattern of it matches), as ADR
-0008's rules answer, and no request goes to the upstream for it; through a group, the member
-does not have the name (§8.1), so a name that no other member has is the group's `404`. The
-lists say what a proxy mirrors; refusing a version for a reason, with `403`, is ADR 0008's rules, which are asked at
-the same point (§5, step 3).
+0008's rules will answer, and no request goes to the upstream for it; through a group, the
+member does not have the name (§8.1), so a name that no other member has is the group's `404`.
+The lists say what a proxy mirrors; refusing a version for a reason, with `403`, is ADR 0008's
+rules, which will be asked at the same point (§5, step 3) once they are implemented (#101).
 
 `deny` also bounds what a proxy forwards for a client (§9.2): a name it refuses never leaves the
 server (#514). The plugin asks the core (layout.md, `Proxy.Denies`) and leaves the name out of
@@ -265,7 +265,7 @@ A request for a file of a proxy repo, directly or through a group, runs these st
 2. A name outside the lists (§3): `403` (through a group: the member does not have it).
 3. The index has the version, with the file: it is served as a hosted file is
    (`format.ServeBlob`), and nothing else happens. This is where ADR 0008's `policy.Decider`
-   will be asked, before step 4, for a held version and a fetch alike.
+   will be asked (#101), before step 4, for a held version and a fetch alike.
 4. Offline (§4.4): `404`.
 5. The name's document (§4.2) lists the version and the file: their URL and the upstream's
    checksums. A version it does not list, or a name it does not have, is `404`.
@@ -276,11 +276,15 @@ A request for a file of a proxy repo, directly or through a group, runs these st
    most 2 s apart, until the version appears (step 3), the claim is gone without it (this
    request takes the claim, once), or the claim goes stale (it takes it over). The claim beats
    every 30 seconds and is stale 2 minutes after its last beat.
-7. **The download.** Each file the entry lists (npm: one tarball) is requested from the
-   upstream (§9.2) and spooled to `$TMPDIR` for the request, while sha256 and the algorithms of
-   the upstream's checksums are computed. A `Content-Length`, or a body, above the repo's
-   `policy.maxFileSize` or the registry's `capabilities.maxBlobSize` stops the fetch (`403`,
-   §6; an audit row `proxy.reject`). An upstream `404` or `410` makes the name's row stale (§4.3).
+7. **The download.** First, a name the registry does not take (`provider.Capabilities.CheckName`:
+   the depth or the length of its OCI repository) stops the fetch before any request (`403`
+   naming the limit, §6; an audit row `proxy.reject`, #599): ingest would not publish it, and
+   the upstream is not at fault. Each file the entry lists (npm: one tarball) is requested from
+   the upstream (§9.2) and spooled to `$TMPDIR` for the request, while sha256 and the algorithms
+   of the upstream's checksums are computed. A `Content-Length`, or a body, above the repo's
+   `policy.maxFileSize` (else its format's default, `format.MaxFileSize`) or the registry's
+   `capabilities.maxBlobSize` stops the fetch (`403`, §6; an audit row `proxy.reject`). An
+   upstream `404` or `410` makes the name's row stale (§4.3).
 8. **The check.** The strongest checksum the entry gives (sha512, then sha256, then sha1) must
    match the spool. A mismatch refuses the fetch: nothing is pushed, an audit row
    `proxy.reject` and a warning name both values. An entry without a checksum is refused the
@@ -298,8 +302,9 @@ A request for a file of a proxy repo, directly or through a group, runs these st
 
 The fetch runs on a context of its own, bounded by the upstream's timeouts and the server's
 shutdown, so that a client that disconnects does not cancel it for the requests that wait on
-it. It counts as an upload for `server.maxConcurrentUploads`: it holds a temporary file and a
-connection to the registry.
+it. It does not count toward `server.maxConcurrentUploads`, which counts the requests that
+upload (`POST`, `PUT`, `PATCH`), and the request that causes a fetch is a read; nothing bounds
+the bytes of the fetch spools yet (#427; guarantees.md, Gaps).
 
 ### 5.1 Prefetch
 
@@ -350,7 +355,8 @@ the upstream: npm has no standard one, and the operator makes the list (docs/mig
 | `429` | the cached row, else the held versions, else `503` with `Retry-After` (the upstream's, at most 60 s; 5 s without one) | `503` with `Retry-After` |
 | `5xx`, a connection or TLS error, a refused redirect (§9.2), a document too large or unparsable | the cached row, else the held versions, else `502` | `502` |
 | a timeout (§2.1) | as above, `504` | `504` |
-| a file above `maxFileSize` or `maxBlobSize` | | `403`, naming the bound; `proxy.reject` |
+| a name the registry does not take (`Capabilities.CheckName`, #599) | | `403`, naming the limit, before any download; `proxy.reject` |
+| a file above `maxFileSize` (else the format's default) or `maxBlobSize` | | `403`, naming the bound; `proxy.reject` |
 | a checksum mismatch; an artifact Validate refuses | | `502`; `proxy.reject` |
 | the registry or the index during the ingest | | as for an upload (layout.md, `StatusOf`) |
 
@@ -525,7 +531,7 @@ part in a group. The plugin's handlers ask the core for a document or a file of 
 kind and do not branch on the kind; a write asks the core for its target repo (the repo itself,
 a group's hosted member, or `405`).
 
-The same contract step adds: `Upload.Origin` (the URL and the verified checksum), from which
+The same contract step added: `Upload.Origin` (the URL and the verified checksum), from which
 ingest writes the origin annotations and the audit row `proxy.fetch`; the index methods of
 `proxy_meta`, `fetch_claims`, `group_members` and the new `repos` columns; and the sentinels
 for `405`, `502`, `503` and `504` in `format.StatusOf`.
