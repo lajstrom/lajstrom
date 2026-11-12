@@ -71,7 +71,7 @@ func (c *Core) OCIManifest(ctx context.Context, repo index.Repo, path, ref strin
 	}
 	desc, raw, err := c.ociDocument(ctx, p, want, ref)
 	if err == nil && want.MediaType != "" && p.up != nil {
-		c.ociTagPushed(ctx, p, ref, desc)
+		c.ociTagLater(ctx, p, ref, false)
 	}
 	return desc, raw, err
 }
@@ -202,7 +202,13 @@ func (c *Core) ociRevalidateTag(ctx context.Context, p *ociProxied, tag string) 
 		return err
 	case row != nil && row.State == index.ProxyMetaPresent && row.ETag == desc.Digest.String():
 		ociCountDoc(p, docRevalidated)
-		return c.o.Index.TouchProxyMeta(ctx, row.ID, now)
+		if err := c.o.Index.TouchProxyMeta(ctx, row.ID, now); err != nil {
+			return err
+		}
+		if ociVerifyDue(row, now) {
+			c.ociTagLater(ctx, p, tag, true)
+		}
+		return nil
 	}
 	ociCountDoc(p, docRefreshed)
 	content, _ := json.Marshal(ociTagRow{Digest: desc.Digest, MediaType: desc.MediaType, Size: desc.Size}) // always marshals
@@ -411,19 +417,24 @@ func (c *Core) ociCache(ctx context.Context, p *ociProxied, desc ocispec.Descrip
 	return err
 }
 
-// ociBackstop pushes the cached manifest or index d when everything it lists is held, on a
-// context of its own: a completion that a concurrent write lost, or one whose blobs another
-// manifest fetched (§11.4, step 4). A failure is logged and the cached bytes are served.
+// ociBackstop pushes the cached manifest or index d when everything it lists is held, with the
+// tags that name it: a completion that a concurrent write lost, or one whose blobs another
+// manifest fetched (§11.4, step 4). It runs in the background, once per replica, on a context of
+// its own, and the cached bytes are served meanwhile: the push of a tag waits for the tag's lock
+// (ociTagLock), which no client's request does (#879). A failure is logged.
 func (c *Core) ociBackstop(ctx context.Context, p *ociProxied, d digest.Digest) {
 	if c.o.Mirror == nil || p.up == nil {
 		return
 	}
-	fctx, cancel := c.detach(ctx)
-	defer cancel()
-	if _, err := c.ociPushComplete(fctx, p, d); err != nil {
-		c.o.Log.WarnContext(ctx, "proxy: a complete manifest not pushed; it is served from the cache", "repo", p.id(), "path", p.path,
-			"digest", d.String(), "error", err.Error())
-	}
+	c.flights.join(fmt.Sprintf("ocibackstop:%d:%s:%s", p.repo.ID, p.path, d), func() (bool, error) {
+		fctx, cancel := c.detach(ctx)
+		defer cancel()
+		if _, err := c.ociPushComplete(fctx, p, d); err != nil {
+			c.o.Log.WarnContext(fctx, "proxy: a complete manifest not pushed; it is served from the cache", "repo", p.id(), "path", p.path,
+				"digest", d.String(), "error", err.Error())
+		}
+		return false, nil
+	})
 }
 
 // listedBy returns what the manifest or index raw lists: its config and layers, or its

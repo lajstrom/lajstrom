@@ -31,8 +31,9 @@ import (
 // hub is a registry of the distribution API with Docker Hub's ways (docs/spec/proxy-and-group.md
 // §11.7): anonymous bearer tokens from a realm on its own host, a 401 after the token for a
 // repository it does not have, the ratelimit-* headers on every answer, a 429 with Retry-After
-// when tooMany is set, and multi-arch indexes. It logs its requests to /v2/ that carry the
-// token: the challenges of the token flow are not reads.
+// when tooMany is set, a 503 for every request when down is set, and multi-arch indexes. It
+// logs its requests to /v2/ that carry the token: the challenges of the token flow are not
+// reads.
 type hub struct {
 	srv       *httptest.Server
 	mu        sync.Mutex
@@ -40,6 +41,7 @@ type hub struct {
 	blobs     map[string]map[digest.Digest][]byte
 	requests  []string // "HEAD /v2/library/nginx/manifests/1.27"
 	tooMany   atomic.Bool
+	down      atomic.Bool
 	corrupted map[digest.Digest]bool          // manifests answered with other bytes
 	gates     map[digest.Digest]chan struct{} // blobs answered by half, the rest once the gate closes
 	// hook answers a read that carries the token instead of the hub when it returns true: the
@@ -62,6 +64,10 @@ func newHub(t *testing.T) *hub {
 }
 
 func (h *hub) serve(w http.ResponseWriter, r *http.Request) {
+	if h.down.Load() {
+		hubError(w, http.StatusServiceUnavailable, "UNAVAILABLE")
+		return
+	}
 	if r.URL.Path == "/token" {
 		_ = json.NewEncoder(w).Encode(map[string]string{"token": "anon"})
 		return
