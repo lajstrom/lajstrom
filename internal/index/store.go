@@ -201,6 +201,12 @@ type Writer interface {
 	// group_members rows included. A repo that is a member of a group is ErrConflict, and
 	// nothing is deleted.
 	DeleteRepo(ctx context.Context, id int64) error
+	// ConvertRepo makes the proxy repo id a hosted one (docs/spec/proxy-and-group.md §2.6):
+	// Kind KindHosted, Upstream NULL, UpdatedAt now, and AuthVersion incremented. It is the one
+	// change of a kind; UpdateRepo makes none. A repo of another kind, or with a fetch claim that
+	// beat at or after staleBefore (a fetch running), is ErrConflict, and nothing changes; no repo
+	// is ErrNotFound.
+	ConvertRepo(ctx context.Context, id int64, staleBefore time.Time) error
 	// SetGroupMembers makes the group_members rows of the group groupID exactly memberIDs, in
 	// that order. An id that is no repo is ErrNotFound, an id named twice ErrConflict. The caller
 	// writes the group's repos row in the same transaction, so that AuthVersion moves with it.
