@@ -107,7 +107,8 @@ Once. What exists on 2026-11-11 is marked; the preflight checks the rest.
 
 1. `main` is green. For a stable version, the release candidate passed the e2e suite and the
    quickstarts, `CHANGELOG.md` has the version and its date instead of `[Unreleased]`, and
-   `docs/releases/vX.Y.Z.md` is final.
+   `docs/releases/vX.Y.Z.md` is final. For a release with migrations, the Upgrade workflow
+   passed on the commit ([below](#migrations-in-the-notes)).
 2. Tag the commit and push the tag:
 
    ```sh
@@ -159,6 +160,23 @@ before, and a rollback to it, work. For each contract migration, the notes also 
   the backup ([operations.md](operations.md#upgrades)).
 - how long it ran on the largest index you have measured, when it rewrites rows, and which
   tables it locks while the old replicas serve.
+
+The notes promise only what the Upgrade workflow showed: the previous release's binary and its
+end-to-end suite on a Postgres schema that the new binary migrated
+([testing.md](testing.md#upgrade)). It runs on each pull request that changes a migration, but
+it is not required, so before tagging a release with migrations run it on the commit and wait
+for it to pass:
+
+```sh
+gh workflow run upgrade.yml --repo lajstrom/lajstrom --ref main
+gh run watch --repo lajstrom/lajstrom \
+  "$(gh run list --repo lajstrom/lajstrom --workflow upgrade.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId')"
+```
+
+A failure is a migration that the release before does not run on, or a contract migration that
+requires a migration of the release being cut; fix it before the tag, while no release has the
+file. Until a release from v0.1.0 on exists, the run passes with a notice that there is nothing
+to upgrade from, and `TestUpgrade`, which simulates the releases, is the only check.
 
 ## Verifying a release
 
