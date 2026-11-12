@@ -1026,9 +1026,12 @@ longer than `reconcile.graceAge` is outside them
 
 - **Statement.** A referrer pushed through Lajstrom is stored unchanged and listed by
   `GET /v2/<name>/referrers/<digest>`; two referrers of one subject pushed at once, through one
-  replica or two, are both listed, also on a registry without the referrers API.
+  replica or two, are both listed, also on a registry without the referrers API. On a managed
+  repo a referrer is stored only for a subject the repository has: one pushed while its subject
+  is deleted is either deleted with it or refused, `400 MANIFEST_INVALID` (#806).
 - **Scope.** Managed and `oci` repos; the tag schema `sha256-<hex>` where the registry has no
-  referrers API.
+  referrers API. The subject rule: managed repos, a referrer whose subject has no subject itself
+  (a version's manifest); not a referrer of a referrer.
 - **Assumes.** Registry: **GC keeps what is named** (**unchecked**): GitLab B deletes an untagged
   referrer 24 hours after its push, and Nexus's task "Delete unused manifests" deletes one.
   Database: **Postgres for replicas** (on SQLite the referrers lock is a lock of the process),
@@ -1036,8 +1039,11 @@ longer than `reconcile.graceAge` is outside them
   client cannot lift ends it, so PgBouncer's `idle_transaction_timeout` and Postgres's
   `transaction_timeout` are 0 for Lajstrom's users (index-schema.md, Coordination).
 - **Mechanism.** `ingest.Pipeline.PutReferrer` (`checkReferrer`, `pushReferrer` under
-  `Store.WithReferrersLock` without the API), the provider's tag-schema fallback
-  (`Repository.Referrers`). The lock's transaction lifts `idle_in_transaction_session_timeout`
+  `Store.WithReferrersLock` without the API, and on a managed repo with the API too), the
+  provider's tag-schema fallback (`Repository.Referrers`). On a managed repo `pushReferrer`
+  resolves the subject again under the subject's lock (`resolveSubject`), the tag lock that
+  `deletion.locked` holds for the whole delete of the version, so a push and that delete follow
+  each other (#806). The lock's transaction lifts `idle_in_transaction_session_timeout`
   for itself, and its `COMMIT` is checked: a lock lost while the push ran is
   `index.ErrUnavailable`, `503` with `Retry-After`, never a success (#615). The delete of one
   referrer without the API (`deletion.deleteReferrer`) pushes its subject's index again without
@@ -1052,7 +1058,8 @@ longer than `reconcile.graceAge` is outside them
   with an audit row `referrers.repair`), and the report lists each index pushed
   (`repairedReferrers`; #628).
 - **Tests.** `TestPutReferrer`, `TestPutReferrerRefused`, `TestPutReferrerOCI`, `TestReferrers`,
-  `TestReferrerPush`, `TestIntegrationReferrers`, `TestIntegrationReferrersConcurrent`,
+  `TestPutReferrerSubjectDeleted`, `TestIntegrationPutReferrerSubjectDeleted` (on Zot and on
+  distribution), `TestReferrerPush`, `TestIntegrationReferrers`, `TestIntegrationReferrersConcurrent`,
   `TestRebuildTagSchema`, `TestReferrerIndexDeleteRefused`, `TestReferrersLockLost`,
   `TestPutReferrerLockLost`, `TestDeleteReferrerIndexNotPushed`, `TestDeleteReferrerRepairsIndex`,
   `TestDeleteReferrerGone`, `TestIntegrationDeleteReferrerIndexRepair`, `TestRepairReferrers` (of
@@ -1062,7 +1069,8 @@ longer than `reconcile.graceAge` is outside them
   it. A lock whose transaction ended while its push ran (a pooler's timeout, a terminated
   backend, a failover) is a `503` for that push, whose retry lists its referrer; a referrer
   that another writer pushed meanwhile, with success, can be missing from the list, and nothing
-  reports it.
+  reports it. A referrer of a referrer pushed while its subject is deleted can stay, under a
+  subject that is gone.
 - **Status.** `partly`: no race loses one while the lock's transaction lasts; a lock lost to the
   database can, and a registry's garbage collector can.
   [#326](https://github.com/lajstrom/lajstrom/issues/326) writes the tag schema as well on a

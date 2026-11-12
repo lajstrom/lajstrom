@@ -1281,8 +1281,10 @@ func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload
 // PutReferrer stores a referrer (a signature, an SBOM, an attestation: profile.IsReferrer, or a
 // manifest with a subject on an oci repo) as it came, and indexes nothing. On a managed repo the
 // subject must be a manifest of the repository, the blobs in the backend, a tag cosign's
-// (ErrInvalid otherwise). Without Capabilities.Referrers the push runs under
-// Store.WithReferrersLock of the subject. One audit event: push, Subject the subject's digest,
+// (ErrInvalid otherwise). On a managed repo the push runs under Store.WithReferrersLock of the
+// subject, with Capabilities.Referrers or without, and the subject is resolved again under it
+// (ErrInvalid when it was deleted meanwhile, #806); on an oci repo without
+// Capabilities.Referrers. One audit event: push, Subject the subject's digest,
 // Details {"kind", "artifactType"}. Approved by the maintainer on 2026-11-09 (#28).
 func (p *Pipeline) PutReferrer(ctx context.Context, repo index.Repo, r Referrer, principal auth.Principal) (digest.Digest, error)
 type Referrer struct {
