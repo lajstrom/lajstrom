@@ -486,7 +486,8 @@ status is `holds on strongly consistent registries only` do not hold there.
   of `oras.sh` and the unpublishes of `npm.sh`.
 - **When violated.** No transaction spans the registry: when the transaction fails after the
   registry deleted the manifest, the client gets `500` saying so, the rows and the cached
-  documents stay until reindex removes them, and the delete has no audit row (INV-14).
+  documents stay until reindex removes them, and the delete's audit row is `failed` with the
+  error (INV-14).
 - **Status.** `holds`: the answer to a delete of several versions that fails names those deleted
   before the failure, a `5xx` too (`format.PartialError`, #476).
 
@@ -619,8 +620,9 @@ status is `holds on strongly consistent registries only` do not hold there.
   or retired within the token lifetime plus 60 seconds of skew; it verifies nowhere once its key
   is dropped, within a second; the verifier accepts only the algorithm of the key the `kid`
   names.
-- **Scope.** `/v2/token` and the bearer of `/v2`, with `server.externalURL` set: without it the
-  audience is the request's `Host` (threat model T-2, [#248](https://github.com/lajstrom/lajstrom/issues/248)).
+- **Scope.** `/v2/token` and the bearer of `/v2`, with `server.externalURL` set, which the
+  configuration requires but for the dev stack (`server.insecureHTTP`), where the audience is
+  the request's `Host` (threat model T-2, [#248](https://github.com/lajstrom/lajstrom/issues/248)).
 - **Assumes.** Database: **one database** with one master key on every replica (without a master
   key each replica signs with an ephemeral key of its own, and says so at start); **clocks
   agree** (checked: a replica more than 60 s off the database's clock is not ready).
@@ -629,8 +631,8 @@ status is `holds on strongly consistent registries only` do not hold there.
   `kid`, the algorithm pinned per key, a reload at most once a second for an unknown `kid`).
 - **Tests.** `TestTokenAcrossReplicas`, `TestIntegrationTokenAcrossReplicas`, `TestVerifierReload`,
   `TestVerifierFlood`, `TestVerifyRefusals`, `TestVerifyTimes`, `TestRotationGrace`,
-  `TestRotateToken`, `TestDropToken`, `TestTokenUndecryptable`, `TestEphemeralTokens`;
-  `oci-token.sh`, `ha.sh` H-12.
+  `TestRotateToken`, `TestDropToken`, `TestTokenUndecryptable`, `TestEphemeralTokens`,
+  `TestExternalURL`; `oci-token.sh`, `ha.sh` H-12.
 - **When violated.** `401` and a new token from the client's credentials.
 - **Status.** `holds`.
 
@@ -964,14 +966,18 @@ status is `holds on strongly consistent registries only` do not hold there.
 - **Statement.** When a group's hosted member has a package of a name's package path, no proxy
   member's version or file of that name is served through the group and no upstream request is
   made for it, unless the name matches `group.merge`.
-- **Scope.** Group repos (proxy-and-group.md §8). The rule holds only while the hosted member has
-  the name; `deny` on the proxy protects names that are not published yet.
+- **Scope.** Group repos (proxy-and-group.md §8), of the formats whose plugin has them
+  (`format.Grouper`: npm). The rule holds only while the hosted member has the name; `deny` on
+  the proxy protects names that are not published yet.
 - **Assumes.** Database: any.
-- **Mechanism.** Not merged: the group repos of [#311](https://github.com/lajstrom/lajstrom/issues/311)
-  are draft pull requests.
-- **Tests.** None yet; `npm.sh` has a marked place for the group.
-- **When violated.** Dependency confusion (ADR 0013).
-- **Status.** `not yet` ([#311](https://github.com/lajstrom/lajstrom/issues/311)).
+- **Mechanism.** `proxy.grouped.hides` (the hosted member's `index.PackageAt` of the name's
+  package path, unless `proxy.Merged` matches it), asked before any proxy member by
+  `proxy.Core.groupDocument` and `proxy.Core.groupFile` (§8.2).
+- **Tests.** `TestGroupDocument`, `TestGroupFile` (`internal/proxy`), `TestGroupDependencyConfusion`
+  (npm); J-08 in `npm.sh`.
+- **When violated.** A proxy member's version of a hosted name reaches the group's clients: the
+  dependency confusion of ADR 0013. Nothing reports it.
+- **Status.** `holds`.
 
 ## Referrers
 
@@ -1178,7 +1184,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | --- | --- | --- | --- |
 | INV-1 | artifact bytes only in the registry | holds | |
 | INV-2 | one write path | holds | untested (plugins could push) |
-| INV-3 | the index rebuildable from the registry | strongly consistent only | unchecked (listings); untested (apt, pypi, maven; I-01 e2e) |
+| INV-3 | the index rebuildable from the registry | strongly consistent only | unchecked (listings); untested (I-01 e2e) |
 | INV-4 | a version in the index is readable | holds | unchecked; untested |
 | INV-5 | prune never removes what the registry holds | holds | unchecked (lag within the grace age); untested (ECR) |
 | INV-6 | one winner among concurrent publishes | holds | |
@@ -1189,7 +1195,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-11 | a blob stored only under its digest | holds | |
 | INV-12 | only manifests of the profile | holds | |
 | INV-13 | each version deleted at once from index, caches, audit | holds | unchecked |
-| INV-14 | every change of the index has its audit row | holds | untested (`oci` row failure, S-09) |
+| INV-14 | every change of the index has its audit row | holds | untested (S-09) |
 | INV-15 | denial before input | holds | untested (frontends) |
 | INV-16 | a denial hides existence | holds | |
 | INV-17 | authorization changes count at once | holds | |
@@ -1209,7 +1215,7 @@ status is `holds on strongly consistent registries only` do not hold there.
 | INV-31 | proxy fetch once, checked | partly | unchecked |
 | INV-32 | a proxy reaches only what is configured | holds | |
 | INV-33 | a proxied artifact is ordinary | holds | |
-| INV-34 | hosted names hide the upstream in a group | not yet (#311) | |
+| INV-34 | hosted names hide the upstream in a group | holds | |
 | INV-35 | referrers kept, none lost to a race | partly | unchecked (GC, the lock's transaction) |
 | INV-36 | drain on stop | holds | |
 | INV-37 | readiness | holds | |
@@ -1314,9 +1320,8 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | No test with a registry that lags (INV-3); INV-4's tests have `providertest.Lag` | the gap above cannot regress visibly | a fake registry with configurable lag, as #446's criteria say | [#446](https://github.com/lajstrom/lajstrom/issues/446) |
 | **Monotonic reads** are assumed (INV-4, INV-7, INV-29, INV-31) | behind an endpoint that picks a replica per request (ACR's global endpoint with geo-replication), a version the barrier saw on one replica can be `404` on the next | point `registries[].url` at one regional endpoint; measure it in the probe with reads from fresh connections | new issue |
 | A durable `201` is assumed (INV-4) | a manifest the registry lost leaves the index silently at the next reconcile, counted among `removed` | report the removal of a row ingest confirmed as a finding of its own, with a metric | new issue |
-| Reindex equality is tested for raw, npm and an npm proxy only; I-01 is not in the end-to-end suite (INV-3) | a column of apt, pypi or maven that annotations cannot rebuild would be lost at the first reindex, unnoticed | an equality test per format (publish, drop the derived rows, reindex, compare), and I-01 as an end-to-end step | new issue |
+| I-01 is not in the end-to-end suite (INV-3); the equality tests (`TestRebuild`, `TestRebuildFormats`, npm's) publish through the frontends in-process, not with the real clients | a column that only a real client's upload fills, and that annotations cannot rebuild, would be lost at the first reindex, unnoticed | I-01 as an end-to-end step: publish with every client, dump the derived rows, reindex, compare | new issue |
 | Nothing machine-checks the one write path in plugins (INV-2) | a plugin could push a manifest past ingest: no claim, validation or audit row | a read-only provider view in `format.Deps`, or a lint rule against `Push`, `PushReference` and `Delete` outside `internal/ingest`, `internal/facade` and `internal/provider` (a `contract` change of `format`) | new issue |
-| A delete whose index transaction fails after the registry delete, and a push to an `oci` repo whose row fails after the push, have no audit row (INV-13, INV-14) | an unaudited write, of which only a log line at error is left | an audit row of the intent before the registry write, and one of its result after it | new issue |
 | A timeout the client cannot lift, a terminated backend or a failover can end the referrers lock's transaction while its push runs (INV-26, INV-35) | that push is `503` and its retry lists its referrer; a referrer that another writer pushed meanwhile can be missing from the `sha256-<hex>` index, and nothing reports it | keep PgBouncer's `idle_transaction_timeout` and Postgres's `transaction_timeout` 0 (index-schema.md, Coordination); reindex `--verify` could add back a referrer that the audit log has as pushed and the index lacks | new issue |
 | The garbage collectors of GitLab B and Nexus delete untagged referrers (INV-35) | signatures and SBOMs vanish | the tag schema as well on registries with the API (#326); for GitLab B and Nexus, a vendor-table warning or a tag per referrer | [#326](https://github.com/lajstrom/lajstrom/issues/326), new issue |
 | No frontend test of a denial with malformed input (INV-15) | a regression of the R-2 kind on a frontend goes unseen | a table test per frontend, as `TestDenialBeforeInput` does for `/v2` | new issue |
@@ -1324,6 +1329,5 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | No budget for the bytes of `$TMPDIR` (INV-23) | frontend uploads stream (ADR 0014); what still spools has no byte budget: the proxy fetches of a replica, which `server.maxConcurrentUploads` does not count either, and the `/v2` chunks of `uploads.spoolUnknownLength` | a spool budget, or a proxy fetch that streams too (ADR 0014) | [#427](https://github.com/lajstrom/lajstrom/issues/427) |
 | One upstream request per document per replica (INV-31) | concurrent misses of a packument each ask the upstream | share the request on a replica (pull request #399) | [#383](https://github.com/lajstrom/lajstrom/issues/383) |
 | Registries that fold tag case (INV-7) | two versions that differ in case: the second is a `409` with an unclear message | `Capabilities.TagsFoldCase` | [#426](https://github.com/lajstrom/lajstrom/issues/426) |
-| The bearer audience without `server.externalURL` (INV-19) | a staging server restored from production's database accepts production's tokens | require `externalURL` | [#248](https://github.com/lajstrom/lajstrom/issues/248) |
 | Whether a migration is expand is reviewed, not tested; the job `upgrade`, which runs the previous release's binary on the next schema, is skipped until there is a release; pre-#244 claims (INV-6, INV-41) | a contract migration without its `requires` line breaks the replicas of the release before during a rolling update; a mixed fleet may not exclude publishes | tag v0.1.0: from then on the job `upgrade` (`test/upgrade/run.sh`) runs on every pull request that changes a migration | [#485](https://github.com/lajstrom/lajstrom/issues/485) |
-| Groups (INV-34), policy (INV-38), encryption at rest (INV-39) | not built | as the issues say | [#311](https://github.com/lajstrom/lajstrom/issues/311), [#101](https://github.com/lajstrom/lajstrom/issues/101), [#114](https://github.com/lajstrom/lajstrom/issues/114) |
+| Policy (INV-38), encryption at rest (INV-39) | not built | as the issues say | [#101](https://github.com/lajstrom/lajstrom/issues/101), [#114](https://github.com/lajstrom/lajstrom/issues/114) |
