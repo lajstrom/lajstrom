@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/opencontainers/go-digest"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/proxy"
 )
@@ -22,6 +24,11 @@ func await(t *testing.T, what string, cond func() bool) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// fetches is the count of result of lajstrom_proxy_fetches_total for the upstream of ociEnv.
+func fetches(result string) float64 {
+	return testutil.ToFloat64(metrics.ProxyFetches.WithLabelValues("hub", result))
 }
 
 // keepTagged waits for the keep-tag of d at path in the backend.
@@ -42,11 +49,15 @@ func TestOCICompleteShared(t *testing.T) {
 	c := e.core("a", proxy.Options{CompleteQuiet: -1})
 	pull(t, e, c, kcm, "v1.37.1", a, 0)
 	pullOwn(t, e, c, kas, "v1.37.1", b, 0)
+	mounted := fetches("mounted")
 	c.OCIComplete(t.Context(), e.repo, kas, b.manifests[0])
 	e.keepTagged(t, kas, b.manifests[0].Digest)
 	await(t, "v1.37.1, its index of one platform, in the backend", func() bool { return e.tagged(t, kas, "v1.37.1") == b.index.Digest })
 	if n := e.blobGETs(kas, b.blobs[0][1:3]...); n != 0 {
 		t.Errorf("the upstream was asked %d times for the layers kube-apiserver shares, want none", n)
+	}
+	if n := fetches("mounted") - mounted; n != 2 {
+		t.Errorf("lajstrom_proxy_fetches_total{result=\"mounted\"} rose by %v, want 2: the shared layers", n)
 	}
 	off := e.repo
 	off.Upstream = json.RawMessage(`{"name": "hub", "offline": true}`)
