@@ -1,6 +1,6 @@
 # 0018. An oci proxy repo pulls through from any OCI registry
 
-- Status: accepted
+- Status: accepted; amended by #876 (below, Amendment)
 - Date: 2026-11-12
 - Deciders: gecube
 
@@ -289,3 +289,26 @@ Docker Hub key) to this record; CLAUDE.md and INV-7 change with the first tag mo
   for Talos (#340), with no code since the client is generic; Quay's build rule in the vendor table
   (#662), so that it is refused before the upstream is asked; the threat model's rows for upstream
   realms and blob redirects; cloud-specific upstream authentication.
+
+## Amendment: a platform a client got is held whole (#876, 2026-11-12)
+
+Point 1 rejected option C, prefetching a platform manifest's blobs when it is served, because of
+what a `GET` that is not a pull would copy. A Talos boot through the proxy then showed what A alone
+costs (#876):
+- A client asks only for the layers it does not hold, and containerd keeps layers by digest across
+  images.
+- kube-apiserver and kube-scheduler took 14 of their 15 layers from kube-controller-manager, so they
+  never asked for those layers at their own paths, and their manifests were never pushed.
+- So their copy in the backend stayed incomplete, an offline repo could not serve them, and a node
+  with an empty store fetched those layers from the upstream again.
+
+Point 3 of the Decision gains two rules:
+- **Mount before fetch.** A blob the backend holds at another path of the repo is mounted, not
+  fetched (proxy-and-group.md §11.5, step 2). This holds offline too.
+- **A platform a client got is held whole.** Once a client got a platform's manifest, every blob the
+  manifest lists is made held at the path, in the background and never before the answer. Each is
+  mounted where the backend holds it, and fetched under its claim otherwise (§11.5, step 5).
+
+Option C is thus taken for the platform a client asked for, never for an index's other platforms. A
+`GET` that is not a pull now copies that platform's layers: point 1's cost, accepted for one
+platform so that what a client pulled is whole in the backend.
