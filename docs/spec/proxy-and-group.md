@@ -47,6 +47,7 @@ it by name. The API never takes a URL or a file path (§9). Keys, for configurat
 | `upstreams[].dockerHub` | bool | `true` on `registry-1.docker.io` and `docker.io`, else `false` | An `oci` upstream's: it is Docker Hub or a mirror of it, and a path of one component is `library/<path>` (§11.7). |
 | `upstreams[].timeout` | duration | `30s` | Bounds the wait for the response headers (connecting and TLS at most 10 s each) and every wait for the next bytes of a body. `0s` means the default. |
 | `upstreams[].retries` | integer | `2` | Retries of a request, as `registries[].retries` defines them: `429`, `5xx` but `501` and `505`, timeouts, connections refused or reset; backoff from 250 ms, at most 3 s. On an `oci` upstream, also the resumes in a row of a blob's body that get no byte (§11.5). `0` means the default, a negative value none. |
+| `upstreams[].revalidateTimeout` | duration | `5s` | An `oci` upstream's: bounds, whole, the `HEAD` that revalidates a tag whose row expired, sent once without retries; on a failure or no answer within it the row is served (§11.4). A tag without a row keeps `timeout` and `retries`. `0s` means the default; refused on another format. |
 | `upstreams[].maxMetadataSize` | bytes | `67108864` (64 MiB) | Largest document the upstream may answer for one name; a larger one is not cached (§6). `0` means the default. |
 
 A credential file is read when `serve` starts, as `keys.masterKeyFile` is: missing, unreadable
@@ -597,8 +598,9 @@ digest the client asked for (manifest-profile.md §3.1 does not apply).
 ### 11.1 The upstream
 
 `upstreams[].format: oci` names a registry by the root URL of its API (§2.1). Lajstrom asks it
-through the generic provider's client, read-only: its retries and its circuit breaker, no
-instance prefix, no capability probe. Its authentication is the upstream's own:
+through the generic provider's client, read-only: its retries (but for the revalidation of a
+tag with a row, §11.4) and its circuit breaker, no instance prefix, no capability probe. Its
+authentication is the upstream's own:
 
 - none: anonymous, with an anonymous bearer token where the registry asks for one;
 - `auth.username` with `auth.passwordFile` or `auth.passwordEnv`: Basic where the registry asks
@@ -653,12 +655,16 @@ never a wrong answer, since a blob is mounted only from a path that answers its 
 1. **A tag** is the digest of its `oci.tag` row while the row is fresh, with no request. An
    expired row, or none, is revalidated with a `HEAD` of the tag upstream: the same digest moves
    `checked_at`, another replaces the row, and a tag the upstream does not have is an `absent`
-   row and `404 MANIFEST_UNKNOWN`. A tag of the keep-tag form (§11.6) is `404`.
-2. **When the upstream does not answer**, or answers `429` or `5xx` (§6), the row is used however
-   old. Without a row, the tag the backend holds answers, unless the repository has an
-   `oci.fixed-tags` row: its backend tags are stale. Without either, the status of §6: `503`
-   with `Retry-After` for a `429`, `502`, `504`. Offline (§4.4): the row whatever its age, else
-   the backend's tag with the same exception, else `404`.
+   row and `404 MANIFEST_UNKNOWN`. The `HEAD` of a tag that has a row is sent once, without
+   retries, within `upstreams[].revalidateTimeout` (5 s by default) for the whole of it, its
+   token round trip included; the `HEAD` of a tag without one has the upstream's `timeout` and
+   `retries`. A tag of the keep-tag form (§11.6) is `404`.
+2. **When the upstream fails or does not answer within the budget** of step 1 (no answer,
+   `429`, `5xx`, §6), the row is used however old: containerd, which waits 30 s for the
+   response headers, gets it in time. Without a row, the tag the backend holds answers, unless
+   the repository has an `oci.fixed-tags` row: its backend tags are stale. Without either, the
+   status of §6: `503` with `Retry-After` for a `429`, `502`, `504`. Offline (§4.4): the row
+   whatever its age, else the backend's tag with the same exception, else `404`.
 3. **The digest** is answered from the backend when it holds the manifest; else from its
    `oci.manifest` row; else, unless offline, it is fetched: a `GET` of the digest upstream, under
    the claim (repo, path, digest) of §5 and once per replica. The bytes must have the digest and
@@ -669,7 +675,10 @@ never a wrong answer, since a blob is mounted only from a path that answers its 
 4. **The answer** carries the manifest's own media type, `Docker-Content-Digest` and
    `Content-Length`, and on a `GET` its bytes. A child of an index is fetched when it is asked for,
    so a pull of one platform fetches that platform alone. When every blob of a cached manifest is
-   held, the read pushes it (§11.5, step 3), as a completion lost to a concurrent write is caught.
+   held, the read pushes it (§11.5, step 3), as a completion lost to a concurrent write is caught;
+   and when the backend holds what a tag's row names and the row is not `pushed`, the read pushes
+   the tag (§11.6). Both run in the background after the answer, once per replica: no client's
+   request waits for a push.
    A `GET` of a platform's manifest answered from its row mounts the blobs it lists that the
    backend holds at another path of the repo, and fetches nothing (§11.5, step 5); a `HEAD` does
    not, nor does a `GET` of an index.
@@ -774,11 +783,25 @@ yet, is fetched again on its next miss.
   characters: written once, never moved, never shown by `tags/list`, clear of the referrers tag
   schema `sha256-<hex>` (manifest-profile.md §6). The collection of untagged manifests leaves it,
   so a digest that clients pin stays when an upstream tag moves on.
-- **Live tags.** Where the backend lets tags move, the upstream's tag is pushed, under the tag
-  lock of its digest (index-schema.md, Coordination), once what it names is held: the manifest,
-  or the index with every child. When the upstream moves the tag and the new manifest or index is
-  held, it is pushed again. A tag whose index is not complete stays in `proxy_meta` only, until
-  it is.
+- **Live tags.** Where the backend lets tags move, the upstream's tag is pushed once what it
+  names is held: the manifest, or the index with every child. When the upstream moves the tag and
+  the new manifest or index is held, it is pushed again. A tag whose index is not complete stays
+  in `proxy_meta` only, until it is.
+- **The lock of a tag.** Every push of an upstream tag holds the lock of (repo, path, tag)
+  across replicas, the referrers lock (index-schema.md, Coordination) of the path's OCI
+  repository and of the digest of `oci.tag:<tag>`, and inside it the tag lock of the digest it
+  pushes; a replica holds one such lock at a time. Under it the `oci.tag` row is read again: the
+  tag is pushed only while the row names the digest and is not `pushed`, and `pushed` is then set
+  on the row as it is, only while it still names the digest, its `checked_at` kept. No replica
+  writes back a copy of the row read before its push, so two replicas that push one tag to two
+  digests leave the backend and the row on the digest the row names last.
+- **Repair.** A row marked `pushed` can still disagree with the backend: a push that landed
+  after its replica lost the lock, a replica that died between its push and its record, or a tag
+  moved behind Lajstrom's back. A revalidation that finds the same digest on a `pushed` row asks
+  the backend for the tag, one `HEAD`, when the row's previous revalidation was in an earlier
+  window of 10 minutes, and pushes the tag again under its lock when the backend names another
+  digest or none; a tag that clients read is so checked about once per window, by the replica
+  that revalidates it first, with no state but `checked_at`.
 - **Backends whose tags do not move.** Lajstrom tells them by `Capabilities.ImmutableTags` (the
   vendor table, the probe, `registries[].capabilities.immutableTags`; on ECR an
   `imageTagMutability` of `IMMUTABLE*`), and otherwise by trying: a tag push that the backend
