@@ -72,7 +72,7 @@ func TestPatchUpstream(t *testing.T) {
 		t.Errorf("audit details %v, want the settings as the merge left them", ev.details)
 	}
 
-	wantError(t, f.do(http.MethodPatch, "/api/v1/repos/npm/npmjs", `{"upstream": {"name": "npmjs"}}`, carol),
+	wantError(t, f.do(http.MethodPatch, "/api/v1/repos/npm/npmjs", `{"upstream": {"name": "npmjs2"}}`, carol),
 		http.StatusForbidden, codeForbidden, "upstream.name: only the admin role")
 	wantError(t, f.do(http.MethodPatch, "/api/v1/repos/npm/npmjs", `{"upstream": {"name": "mirror"}}`, admin),
 		http.StatusBadRequest, codeInvalid, `upstream.name: "mirror" is not a configured upstream`)
@@ -84,6 +84,61 @@ func TestPatchUpstream(t *testing.T) {
 		if meta, doc := cached(t, f.st, repo.ID, name); meta || doc {
 			t.Errorf("%s after a change of the upstream: row %t, document %t; want neither", name, meta, doc)
 		}
+	}
+}
+
+// TestPatchUpstreamName: the admin role is asked for a change of upstream.name, not for the
+// key: a maintainer who sends back the name the repo has, as a read-modify-write of the
+// resource of GET does, changes the other fields; a maintainer who sends another name is 403
+// with nothing of the body applied, before the name is checked against the configuration
+// (docs/spec/proxy-and-group.md §2.2, rbac.md §7, #778).
+func TestPatchUpstreamName(t *testing.T) {
+	const stored = `{"name":"npmjs","metadataTTL":"10m","negativeTTL":"2m","offline":false,"allow":[],"deny":["@acme/*"]}`
+	tests := []struct {
+		name     string
+		p        auth.Principal
+		body     string
+		status   int
+		upstream string // the settings after the PATCH
+		policy   string // the policy after the PATCH
+		events   int    // repo.update events
+	}{
+		{"the resource of GET sent back with changes", carol,
+			`{"anonymousRead": false, "policy": {"maxFileSize": 1048576}, "upstream": {"name": "npmjs", "metadataTTL": "1h",
+			  "negativeTTL": "2m", "offline": false, "allow": [], "deny": ["@acme/*"]}}`,
+			http.StatusOK,
+			`{"name":"npmjs","metadataTTL":"1h","negativeTTL":"2m","offline":false,"allow":[],"deny":["@acme/*"]}`,
+			`{"maxFileSize":1048576}`, 1},
+		{"the name the repo has, escaped", carol, `{"upstream": {"name": "npmjs"}}`, http.StatusOK, stored, "null", 0},
+		{"another name", carol, `{"upstream": {"name": "npmjs2"}}`, http.StatusForbidden, stored, "null", 0},
+		{"another name with other changes", carol, `{"policy": {"maxFileSize": 1048576}, "upstream": {"name": "npmjs2", "offline": true}}`,
+			http.StatusForbidden, stored, "null", 0},
+		{"a name not configured", carol, `{"upstream": {"name": "mirror"}}`, http.StatusForbidden, stored, "null", 0},
+		{"the name with a space", carol, `{"upstream": {"name": "npmjs "}}`, http.StatusForbidden, stored, "null", 0},
+		{"another name by the admin", admin, `{"upstream": {"name": "npmjs2"}}`, http.StatusOK,
+			`{"name":"npmjs2","metadataTTL":"10m","negativeTTL":"2m","offline":false,"allow":[],"deny":["@acme/*"]}`, "null", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f, repo := newUpstreamFixture(t)
+			rr := f.do(http.MethodPatch, "/api/v1/repos/npm/npmjs", tt.body, tt.p)
+			if tt.status == http.StatusForbidden {
+				wantError(t, rr, tt.status, codeForbidden, "upstream.name: only the admin role chooses the upstream")
+			} else {
+				wantStatus(t, rr, tt.status)
+			}
+			var got Repo
+			decodeJSON(t, f.do(http.MethodGet, "/api/v1/repos/npm/npmjs", "", admin), http.StatusOK, &got)
+			wantJSON(t, "upstream", got.Upstream, tt.upstream)
+			wantJSON(t, "policy", got.Policy, tt.policy)
+			if n := len(auditOf(t, f.st, "repo.update")); n != tt.events {
+				t.Errorf("%d repo.update events, want %d", n, tt.events)
+			}
+			renamed := tt.p == admin && tt.status == http.StatusOK
+			if meta, doc := cached(t, f.st, repo.ID, "left-pad"); meta == renamed || doc == renamed {
+				t.Errorf("the cache after the PATCH: row %t, document %t; want both %t", meta, doc, !renamed)
+			}
+		})
 	}
 }
 

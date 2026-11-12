@@ -150,6 +150,55 @@ func TestPatchGroup(t *testing.T) {
 	}
 }
 
+// TestPatchGroupMembers: the admin role is asked for a change of group.members, not for the
+// key: a maintainer who sends back the members the group has, as a read-modify-write of the
+// resource of GET does, changes merge; another list, the same members in another order
+// included, since a group reads its members in order (docs/spec/proxy-and-group.md §8), is 403
+// with nothing of the body applied, before the members are looked up, so that the answer does
+// not tell which repos exist (§2.3, rbac.md §3, §7, #778).
+func TestPatchGroupMembers(t *testing.T) {
+	const stored = `{"members":["internal","npmjs"],"merge":[]}`
+	tests := []struct {
+		name   string
+		p      auth.Principal
+		body   string
+		status int
+		group  string // the settings after the PATCH
+		events int    // repo.update events
+	}{
+		{"the resource of GET sent back with changes", dave,
+			`{"anonymousRead": false, "group": {"members": ["internal", "npmjs"], "merge": ["@types/*"]}}`,
+			http.StatusOK, `{"members":["internal","npmjs"],"merge":["@types/*"]}`, 1},
+		{"the members the group has", dave, `{"group": {"members": ["internal", "npmjs"]}}`, http.StatusOK, stored, 0},
+		{"the members in another order", dave, `{"group": {"members": ["npmjs", "internal"]}}`, http.StatusForbidden, stored, 0},
+		{"a member less", dave, `{"group": {"members": ["npmjs"]}}`, http.StatusForbidden, stored, 0},
+		{"a member more with other changes", dave, `{"group": {"members": ["internal", "npmjs", "mirror"], "merge": ["@types/*"]}}`,
+			http.StatusForbidden, stored, 0},
+		{"a member that does not exist", dave, `{"group": {"members": ["internal", "verdaccio"]}}`, http.StatusForbidden, stored, 0},
+		{"another order by the admin", admin, `{"group": {"members": ["npmjs", "internal"]}}`, http.StatusOK,
+			`{"members":["npmjs","internal"],"merge":[]}`, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newGroupFixture(t)
+			wantStatus(t, f.do(http.MethodPost, "/api/v1/repos",
+				`{"format": "npm", "name": "all", "kind": "group", "group": {"members": ["internal", "npmjs"]}}`, admin), http.StatusCreated)
+			rr := f.do(http.MethodPatch, "/api/v1/repos/npm/all", tt.body, tt.p)
+			if tt.status == http.StatusForbidden {
+				wantError(t, rr, tt.status, codeForbidden, "group.members: only the admin role chooses the members")
+			} else {
+				wantStatus(t, rr, tt.status)
+			}
+			var got Repo
+			decodeJSON(t, f.do(http.MethodGet, "/api/v1/repos/npm/all", "", admin), http.StatusOK, &got)
+			wantJSON(t, "group", got.Group, tt.group)
+			if n := len(auditOf(t, f.st, "repo.update")); n != tt.events {
+				t.Errorf("%d repo.update events, want %d", n, tt.events)
+			}
+		})
+	}
+}
+
 // TestDeleteMember: a repo that is a member of a group is not deleted, force or not, and the
 // 409 names the groups; once the group is gone it is (docs/spec/proxy-and-group.md §2.5).
 func TestDeleteMember(t *testing.T) {

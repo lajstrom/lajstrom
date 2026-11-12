@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/proxy"
 )
@@ -14,11 +15,18 @@ import (
 // actionCachePurge is the audit action of DELETE …/upstream-cache (docs/spec/rbac.md §7).
 const actionCachePurge = "repo.cache.purge"
 
+// errUpstreamName refuses a change of upstream.name to a principal without the admin role.
+var errUpstreamName = &clientError{msg: "upstream.name: only the admin role chooses the upstream of a proxy repo", err: format.ErrForbidden}
+
 // applyUpstream merges patch into the settings of the proxy row as an RFC 7396 merge patch, as
-// a policy is merged, checks the result whole (checkUpstream) and records it in changed when it
-// differs. renamed reports a change of the upstream's name, whose cache the caller drops. The
-// settings of a proxy cannot be removed, and only a proxy has them.
-func (s *Repos) applyUpstream(row *index.Repo, patch json.RawMessage, changed map[string]any) (renamed bool, err error) {
+// a policy is merged, checks the result whole (parseUpstream, checkUpstreamName) and records it
+// in changed when it differs. renamed reports a change of the upstream's name, whose cache the
+// caller drops. The settings of a proxy cannot be removed, and only a proxy has them.
+//
+// A name that differs from the row's, both decoded from JSON and compared as they are, is
+// errUpstreamName unless admin is set, refused before the name is looked up in the
+// configuration; the name the row has, sent back, is no change (docs/spec/rbac.md §7).
+func (s *Repos) applyUpstream(row *index.Repo, patch json.RawMessage, admin bool, changed map[string]any) (renamed bool, err error) {
 	if row.Kind != index.KindProxy {
 		return false, invalid("upstream: only a proxy repo has one, not a %s repo", row.Kind)
 	}
@@ -33,12 +41,19 @@ func (s *Repos) applyUpstream(row *index.Repo, patch json.RawMessage, changed ma
 	if err != nil || base == nil { // settings that do not read are replaced
 		base = policyObject{}
 	}
+	stored, _ := base["name"].(string) // before the merge, which changes base
 	merged, err := json.Marshal(mergeObject(base, obj))
 	if err != nil { // the values are what json decoded
 		return false, invalid("upstream: %s", err.Error())
 	}
-	settings, err := s.checkUpstream(row.Format, merged)
+	settings, err := parseUpstream(merged)
 	if err != nil {
+		return false, err
+	}
+	if settings.Upstream != stored && !admin {
+		return false, errUpstreamName
+	}
+	if err := s.checkUpstreamName(row.Format, settings); err != nil {
 		return false, err
 	}
 	next := settings.JSON()
@@ -113,9 +128,10 @@ func (h *handler) purgeUpstreamCache(_ http.ResponseWriter, r *http.Request) (in
 	return http.StatusNoContent, nil, nil
 }
 
-// hasKey reports whether a member of a PATCH, an object, has key: upstream.name and
-// group.members change what every reader of a proxy or a group gets, which only the admin role
-// does (docs/spec/rbac.md §7).
+// hasKey reports whether a member of a PATCH, an object, has key: a body with upstream.name or
+// group.members may change what every reader of a proxy or a group gets, which only the admin
+// role does (docs/spec/rbac.md §7), and the handler asks for the role then. Whether the value is
+// a change, Update decides against the stored one.
 func hasKey(patch json.RawMessage, key string) bool {
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(patch, &obj) != nil {

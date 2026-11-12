@@ -93,6 +93,10 @@ type UpdateRequest struct {
 	// Group is merged into a group's settings, {"members", "merge"}, the same way; each list is
 	// replaced whole. Only a group has them.
 	Group json.RawMessage `json:"group"`
+	// Admin says that the principal has the admin role, which alone changes a proxy's
+	// upstream.name and a group's members (docs/spec/rbac.md §7). Without it, Update refuses a
+	// change of either, while the value the repo has, sent back, is no change. Not of the body.
+	Admin bool `json:"-"`
 }
 
 // Sources of a change, the "source" of its audit details.
@@ -255,9 +259,12 @@ func (s *Repos) List(ctx context.Context, formatName string) ([]Repo, error) {
 // changes nothing writes nothing and returns the repo as it is. The policy of req is merged
 // into the repo's (mergePolicy) and the result checked as a whole; so is the upstream of a
 // proxy, and a change of its name drops the repo's cache of the old upstream (proxy_meta) and
-// its rendered documents in the same transaction (docs/spec/proxy-and-group.md §2.2). Errors
-// wrap format.ErrInvalid (a policy or an upstream that is not an object, a merge that is
-// refused, an upstream on a repo that is not a proxy) or index.ErrNotFound.
+// its rendered documents in the same transaction (docs/spec/proxy-and-group.md §2.2). A change
+// of upstream.name or of group.members without req.Admin is refused with an error wrapping
+// format.ErrForbidden: the result of the merge is compared with the row that the transaction
+// of the write read, so that what was compared is what is written. Other errors wrap
+// format.ErrInvalid (a policy or an upstream that is not an object, a merge that is refused, an
+// upstream on a repo that is not a proxy) or index.ErrNotFound.
 func (s *Repos) Update(ctx context.Context, formatName, name string, req UpdateRequest, o Origin) (*Repo, error) {
 	if _, err := decodePolicy(req.Policy); err != nil {
 		return nil, err
@@ -302,13 +309,13 @@ func (s *Repos) change(ctx context.Context, w index.Writer, row *index.Repo, req
 	}
 	renamed := false
 	if req.Upstream != nil {
-		if renamed, err = s.applyUpstream(row, req.Upstream, changed); err != nil {
+		if renamed, err = s.applyUpstream(row, req.Upstream, req.Admin, changed); err != nil {
 			return nil, err
 		}
 	}
 	var members []int64
 	if req.Group != nil {
-		if members, err = applyGroup(ctx, w, row, req.Group, changed); err != nil {
+		if members, err = applyGroup(ctx, w, row, req.Group, req.Admin, changed); err != nil {
 			return nil, err
 		}
 	}
@@ -651,10 +658,24 @@ func (s *Repos) checkKind(req CreateRequest) (string, json.RawMessage, error) {
 // configured upstream of that format. The API never takes the upstream's URL: the settings have
 // no key for it.
 func (s *Repos) checkUpstream(formatName string, raw json.RawMessage) (proxy.Settings, error) {
+	settings, err := parseUpstream(raw)
+	if err != nil {
+		return proxy.Settings{}, err
+	}
+	return settings, s.checkUpstreamName(formatName, settings)
+}
+
+// parseUpstream reads the settings of a proxy repo, with an error for the client.
+func parseUpstream(raw json.RawMessage) (proxy.Settings, error) {
 	settings, err := proxy.ParseSettings(raw)
 	if err != nil {
 		return proxy.Settings{}, &clientError{msg: err.Error(), err: err} // the message names the field
 	}
+	return settings, nil
+}
+
+// checkUpstreamName checks that settings name a configured upstream of formatName.
+func (s *Repos) checkUpstreamName(formatName string, settings proxy.Settings) error {
 	var upstreamFormat string
 	ok := false
 	if s.Upstreams != nil {
@@ -662,11 +683,11 @@ func (s *Repos) checkUpstream(formatName string, raw json.RawMessage) (proxy.Set
 	}
 	switch {
 	case !ok:
-		return proxy.Settings{}, invalid("upstream.name: %q is not a configured upstream", settings.Upstream)
+		return invalid("upstream.name: %q is not a configured upstream", settings.Upstream)
 	case upstreamFormat != formatName:
-		return proxy.Settings{}, invalid("upstream.name: %q serves %s, not %s", settings.Upstream, upstreamFormat, formatName)
+		return invalid("upstream.name: %q serves %s, not %s", settings.Upstream, upstreamFormat, formatName)
 	}
-	return settings, nil
+	return nil
 }
 
 // proxier returns the proxy hooks of the plugin of formatName, when it has proxy repos.
