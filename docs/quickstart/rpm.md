@@ -184,7 +184,7 @@ docker run --rm -it --network host --platform linux/amd64 -e RPM_TOKEN="$(cat rp
 
 ```sh
 printf 'username=deploy\npassword=%s\n' "$RPM_TOKEN" > /etc/zypp/credentials.d/lajstrom
-zypper -n addrepo --gpgcheck-allow-unsigned-rpm 'http://localhost:8080/rpm/el9/?credentials=lajstrom' lajstrom-el9
+zypper -n addrepo --gpgcheck-allow-unsigned-package 'http://localhost:8080/rpm/el9/?credentials=lajstrom' lajstrom-el9
 zypper -n --gpg-auto-import-keys refresh lajstrom-el9
 zypper -n install hello
 ```
