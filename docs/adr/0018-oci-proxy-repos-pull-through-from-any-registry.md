@@ -1,6 +1,6 @@
 # 0018. An oci proxy repo pulls through from any OCI registry
 
-- Status: accepted; amended by #876 (below, Amendment)
+- Status: accepted; amended by #876, #875 (below, Amendments)
 - Date: 2026-11-12
 - Deciders: gecube
 
@@ -318,3 +318,40 @@ manifest and maybe its config, never a layer, so it costs mounts only, and point
 apply to it. A layer the backend holds nowhere and no client asks for, because the nodes got it
 from outside Lajstrom, waits for a client's request for a layer of that platform, or for a
 prefetch (#886).
+
+## Amendment: a request that does not hold the claim gets a transit (#875, 2026-11-12)
+
+The Context named one client timeout, the CRI's `image_pull_progress_timeout` of 5 minutes without
+a byte. There is a shorter one before it: containerd's HTTP transport waits
+`ResponseHeaderTimeout: 30 * time.Second` for the headers of every answer
+(`core/remotes/docker/registry.go:267`, v2.3.4), and `hosts.toml` cannot change it; an ingress in
+front of Lajstrom usually gives up after 60 s. Rule 4 of point 6 answered every request but the
+claim holder from the backend once the blob is held, with no headers before it. #875 measured what
+that costs: on kind with two nodes and a 2 GiB layer from an upstream at 2.8 MB/s, the node that
+held the claim pulled through the tee in 12 min 29 s, and the other failed after 31 s with
+`timeout awaiting response headers`. So did a request on another replica waiting on the claim, and
+the claim holder's own retry after the tee dropped it. A DaemonSet, or a Deployment spread over
+nodes, of an image with large layers (CUDA, PyTorch: 2–5 GB) fails on every node but one for as
+long as the copy takes.
+
+Option 3B said its rules avoid three things distribution's proxy does; the third, "each concurrent
+miss fetches from the remote", is now taken on purpose, as distribution's `ServeBlob` serves a blob
+in flight "from the remote store directly". Headers first (an immediate `200` and the body from the
+backend after the commit) was considered and not taken alone: containerd then waits under the CRI's
+5 minutes, so a copy longer than that still fails those nodes.
+
+Rule 4 of point 6 becomes:
+
+4. **Only the claim holder tees; the other requests get a transit.** While the claim's copy runs,
+   on this replica or another, a `GET` without `Range` that does not hold the claim opens a `GET`
+   of its own from the upstream, with the fetch's redirect, credential and digest rules and its
+   resumes (proxy-and-group.md §11.5), and streams it to its client. Its last byte is held until
+   the bytes have the digest; other bytes abort the connection and write `proxy.reject`. It writes
+   nothing anywhere: the backend gets the claim holder's one copy. `upstreams[].maxConcurrentTransits`
+   caps the transits of one blob on a replica (unset or `-1`: no cap, the default; `0`: none); a
+   request beyond the cap, a `Range` request, and every request once the blob is held are served
+   from the backend.
+
+INV-31 changes for `oci` proxy repos from "fetched from the upstream once across replicas" to
+"stored once": while a copy runs, the concurrent clients cost one more transfer from the upstream
+each (egress; Docker Hub does not count blob `GET`s), within the cap.
