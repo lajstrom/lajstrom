@@ -225,9 +225,10 @@ jobs:
     # pnpm and yarn in containers with --network host; then apt.sh again in the other apt clients
     # of #48, cosign.sh against distribution, a registry without the referrers API (#28), and
     # npm.sh against distribution (#312). npm.sh reaches registry.npmjs.org: it installs pnpm and
-    # yarn from there, and its proxy repo fetches a public package through it. The same paths as
-    # the integration cells decide whether it runs. Not a matrix, so a skipped run reports the
-    # check e2e itself.
+    # yarn from there, and its proxy repo fetches a public package through it. migrate-npm.sh
+    # moves packages from the Verdaccio of the dev stack's verdaccio profile (#854). The same
+    # paths as the integration cells decide whether it runs. Not a matrix, so a skipped run
+    # reports the check e2e itself.
     name: e2e
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -296,11 +297,14 @@ jobs:
         # The images the scenarios run (test/e2e/*.sh headers), pulled once here, four at a
         # time, so that the budgets of the next steps are the scenarios'. oras is not installed:
         # oras.sh uses the image too. ubuntu:22.04 and debian:12 are for the apt step below.
-        # The runner is linux/amd64, the platform apt.sh asks for.
+        # The runner is linux/amd64, the platform apt.sh asks for. Verdaccio, the upstream of
+        # migrate-npm.sh, comes from the verdaccio profile of deploy/compose/compose.yaml, which
+        # pins it by digest.
         id: images
         timeout-minutes: 4
         run: |
           set -euo pipefail
+          docker compose -f deploy/compose/compose.yaml --profile verdaccio pull --quiet verdaccio
           images=(
             ubuntu:24.04                    # apt.sh, tokens.sh
             ubuntu:22.04                    # apt.sh, below
@@ -313,6 +317,15 @@ jobs:
             node:26.13.0-slim               # npm.sh
           )
           printf '%s\n' "${images[@]}" | xargs -n 1 -P 4 docker pull --quiet --platform linux/amd64
+      - name: Start Verdaccio
+        # #854: the verdaccio profile of the dev stack, its image and its configuration, healthy on
+        # localhost:4873, where run.sh finds it, so that make e2e runs migrate-npm.sh instead of
+        # printing a SKIP line. A step and not a service: services start before the checkout, and
+        # the configuration is a file of the repository. MIGRATE_E2E_VERDACCIO_CONTAINER stays
+        # unset: the scenario does not stop Verdaccio, and offline mode alone keeps the server
+        # from it, which the unit tests of proxy-and-group.md §4.4 cover.
+        timeout-minutes: 2
+        run: docker compose -f deploy/compose/compose.yaml --profile verdaccio up --detach --wait --wait-timeout 60 verdaccio
       - name: Cache of the maven and gradle clients
         # maven.sh's local repository and GRADLE_USER_HOME, the plugins and dependencies that mvn
         # and gradle download from Maven Central: host directories here (MAVEN_E2E_M2 and
@@ -390,6 +403,9 @@ jobs:
         env:
           LAJSTROM_E2E_REGISTRY: localhost:5001
         run: test/e2e/run.sh npm
+      - name: Verdaccio's log
+        if: failure()
+        run: docker compose -f deploy/compose/compose.yaml --profile verdaccio logs --tail 200 verdaccio
 
   e2e-gitea:
     # #353: the scenarios of test/e2e/ against Gitea's container registry, a backend with

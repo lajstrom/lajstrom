@@ -38,8 +38,9 @@
 # digest of its image index is in the comment above it. Change a tag and its digest together;
 # for a registry, re-run the integration tests and update docs/registries/README.md. The
 # integration job of .github/workflows/ci.yml runs the same images, and its e2e job the same Zot:
-# change them there too. CI does not run the s3, s3-minio, gitlab, ecr and verdaccio profiles; the HA
-# workflow (.github/workflows/ha.yml) runs the ha profile with test/e2e/ha.sh.
+# change them there too. Its e2e job also starts the verdaccio profile from this file (#854). CI
+# does not run the s3, s3-minio, gitlab and ecr profiles; the HA workflow
+# (.github/workflows/ha.yml) runs the ha profile with test/e2e/ha.sh.
 
 name: lajstrom-dev
 
@@ -403,7 +404,7 @@ services:
   # registry with private packages, the old registry that test/e2e/migrate-npm.sh moves into
   # Lajstrom through a proxy repo and a prefetch. Users register themselves (verdaccio/config.yaml)
   # and every package needs one; run.sh logs its user in and hands the token to the upstream
-  # verdaccio of its configuration. Not run in CI.
+  # verdaccio of its configuration. The e2e job of CI starts it (#854).
   verdaccio:
     profiles: [verdaccio]
     # Verdaccio 6.11.1, linux/amd64 and arm64; pinned by the digest of its image index.
