@@ -143,6 +143,7 @@ func bytesBlob(d ocispec.Descriptor, b []byte) format.BlobSource {
 type upstreamDoc struct {
 	Name     string            `json:"name"`
 	Versions []upstreamVersion `json:"versions"`
+	Tags     map[string]string `json:"tags,omitempty"` // tag → version: the pointers (Pointed)
 }
 
 type upstreamVersion struct {
@@ -152,6 +153,7 @@ type upstreamVersion struct {
 	SHA512  string `json:"sha512,omitempty"`
 	SHA256  string `json:"sha256,omitempty"`
 	SHA1    string `json:"sha1,omitempty"`
+	Time    string `json:"time,omitempty"` // RFC 3339: the entry's Published
 }
 
 // Key is the name in lower case.
@@ -181,7 +183,8 @@ func (p *pkgPlugin) ParseMetadata(name, _ string, body []byte) (*format.Upstream
 				sums[alg] = s
 			}
 		}
-		out.Entries = append(out.Entries, format.UpstreamEntry{Version: v.Version,
+		published, _ := time.Parse(time.RFC3339, v.Time)
+		out.Entries = append(out.Entries, format.UpstreamEntry{Version: v.Version, Published: published,
 			Files:  []format.UpstreamFile{{Name: v.File, URL: v.URL, Checksums: sums}},
 			Params: map[string]string{"name": name, "version": v.Version}})
 	}
@@ -269,7 +272,26 @@ func (p *pkgPlugin) MergeGroup(_ context.Context, _ index.Repo, name, _ string, 
 	return format.Document{Kind: docKind, Path: name, ContentType: "application/json", Content: b}, err
 }
 
-var _ format.Grouper = (*pkgPlugin)(nil)
+// PrefetchKind is the one kind of the plugin.
+func (*pkgPlugin) PrefetchKind() string { return docKind }
+
+// Pointed returns the versions of the document's tags.
+func (*pkgPlugin) Pointed(_, _ string, kept []byte) ([]string, error) {
+	var d upstreamDoc
+	if err := json.Unmarshal(kept, &d); err != nil {
+		return nil, fmt.Errorf("%w: %w", format.ErrInvalid, err)
+	}
+	var out []string
+	for _, v := range d.Tags {
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+var (
+	_ format.Grouper    = (*pkgPlugin)(nil)
+	_ format.Prefetcher = (*pkgPlugin)(nil)
+)
 
 // fakeUpstream is the upstream of these tests: meta/<name> answers the document of the name
 // with an ETag and 304 for it, files/<file> its bytes. Status, when set, answers every request.
@@ -336,6 +358,17 @@ func (u *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Length", fmt.Sprint(len(b)))
 	_, _ = w.Write(b)
+}
+
+// tag points tag of name at version on the upstream.
+func (u *fakeUpstream) tag(name, tag, version string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	d := u.docs[name]
+	if d.Tags == nil {
+		d.Tags = map[string]string{}
+	}
+	d.Tags[tag] = version
 }
 
 // publish puts version of name on the upstream with content and its checksums; sums changes
@@ -411,13 +444,16 @@ func (e *env) upstream(t *testing.T, maxMetadataSize int64) *proxy.Upstream {
 }
 
 // core returns a Core over the env, a replica of its own name, with o's knobs; the upstream
-// "up" unless o has upstreams.
+// "up" unless o has upstreams, and the env's plugin unless o has plugins.
 func (e *env) core(t *testing.T, replica string, o proxy.Options) *proxy.Core {
 	t.Helper()
 	if o.Upstreams == nil {
 		o.Upstreams = map[string]*proxy.Upstream{"up": e.upstream(t, 0)}
 	}
-	o.Index, o.Ingest, o.Providers, o.Plugins = e.st, e.pipe, provider.Map{"local": e.reg}, e.plugins
+	if o.Plugins == nil {
+		o.Plugins = e.plugins
+	}
+	o.Index, o.Ingest, o.Providers = e.st, e.pipe, provider.Map{"local": e.reg}
 	o.ExternalURL, o.Replica = "https://art.test", replica
 	if o.Now == nil {
 		o.Now = e.clock

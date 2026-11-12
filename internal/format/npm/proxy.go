@@ -184,3 +184,32 @@ func (Plugin) FileRequest(p string) (format.ArtifactRef, error) {
 	}
 	return format.ArtifactRef{Name: t.name, Version: v, File: file, Kind: kindPackument}, nil
 }
+
+// npm's proxy repos take a prefetch (docs/spec/proxy-and-group.md §5.1).
+var _ format.Prefetcher = Plugin{}
+
+// PrefetchKind is the full packument, which lists every version with its time.
+func (Plugin) PrefetchKind() string { return kindPackument }
+
+// Pointed returns the targets of the dist-tags of a packument of name as ParseMetadata kept it,
+// sorted, each once; a target that is not a string is left out. A body that is not a JSON
+// object, or a kind npm does not have, wraps format.ErrInvalid.
+func (Plugin) Pointed(name, kind string, kept []byte) ([]string, error) {
+	if _, err := contentTypeOf(kind); err != nil {
+		return nil, err
+	}
+	var doc struct {
+		DistTags map[string]json.RawMessage `json:"dist-tags"`
+	}
+	if err := json.Unmarshal(kept, &doc); err != nil {
+		return nil, fmt.Errorf("%w: the packument of %s: %w", format.ErrInvalid, name, err)
+	}
+	targets := map[string]bool{}
+	for _, raw := range doc.DistTags {
+		var v string
+		if json.Unmarshal(raw, &v) == nil && v != "" {
+			targets[v] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(targets)), nil
+}
