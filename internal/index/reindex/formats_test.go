@@ -15,6 +15,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +26,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/format/deb"
 	"github.com/lajstrom/lajstrom/internal/format/maven"
 	"github.com/lajstrom/lajstrom/internal/format/pypi"
+	"github.com/lajstrom/lajstrom/internal/format/rpm"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/reindex"
 	"github.com/lajstrom/lajstrom/internal/ingest"
@@ -46,6 +49,9 @@ type formatCase struct {
 	// Accept of the GET. signed are the signed documents, whose signature and Date differ at
 	// each render: served before and after, not compared.
 	docs, signed []string
+	// listed returns more paths of docs, read from the documents the frontend serves: the
+	// repodata of rpm, named by their checksums. Nil when the format has none.
+	listed func(t *testing.T, f *frontend) []string
 	// cached are the index_cache rows the GETs of docs and signed fill, as scope and kind.
 	cached [][2]string
 }
@@ -78,9 +84,16 @@ var formatCases = map[string]formatCase{
 		cached: [][2]string{{"com.example/lib-core", "maven-metadata"}, {"com.example/lib-core", "maven-metadata.sha512"},
 			{"com.example/lib-api", "maven-metadata"}},
 	},
+	"rpm": {
+		plugin: rpm.Plugin{}, publish: publishRpm, versions: 4,
+		docs: []string{"Packages/hello-1.1.0-1.el9.x86_64.rpm", "Packages/hello-1.1.0-1.el9.src.rpm",
+			"Packages/hello-doc-2.0-1.noarch.rpm"},
+		listed: rpmRepodata,
+		cached: [][2]string{{"repodata", "repomd.xml"}},
+	},
 }
 
-// TestRebuildFormats is I-01 for apt, pypi and maven on the fake registry: a representative set
+// TestRebuildFormats is I-01 for apt, pypi, maven and rpm on the fake registry: a representative set
 // of each format published through its frontend, the routes over the real ingest pipeline, and
 // one version as oras push and the facade do, a version deleted through the write path; then
 // the derived rows dropped and rebuilt by a run, equal in every column but the ids and
@@ -220,7 +233,11 @@ func (f *frontend) do(t *testing.T, method, p string, body []byte, want int, hdr
 func (f *frontend) documents(t *testing.T, c formatCase) map[string]string {
 	t.Helper()
 	out := map[string]string{}
-	for _, doc := range c.docs {
+	docs := c.docs
+	if c.listed != nil {
+		docs = append(slices.Clone(docs), c.listed(t, f)...)
+	}
+	for _, doc := range docs {
 		p, accept, _ := strings.Cut(doc, " ")
 		out[doc] = f.do(t, http.MethodGet, p, nil, http.StatusOK, "Accept", accept).Body.String()
 	}
@@ -314,6 +331,36 @@ func publishApt(t *testing.T, f *frontend) {
 		Params: map[string]string{deb.ParamSuite: "jammy", deb.ParamComponent: "main"}})
 	f.deleteVersion(t, "hello", "1.0.0-1", "jammy/main/amd64")
 	f.deleteVersion(t, "goodbye", "1.0-1", "jammy/main/amd64")
+}
+
+// publishRpm uploads to an rpm repo hello 1.0.0 and 1.1.0 for x86_64, the source package of
+// 1.1.0 and hello-doc 1:2.0-1 noarch, pushes bonjour as oras push does, then deletes hello
+// 1.0.0.
+func publishRpm(t *testing.T, f *frontend) {
+	for _, o := range []testutil.RPMOptions{
+		{}, {Version: "1.1.0"}, {Version: "1.1.0", Source: true},
+		{Name: "hello-doc", Epoch: "1", Version: "2.0", Release: "1", Arch: "noarch"},
+	} {
+		b, _ := testutil.RPM(o)
+		f.do(t, http.MethodPut, "upload", b, http.StatusCreated)
+	}
+	bonjour, info := testutil.RPM(testutil.RPMOptions{Name: "bonjour", Arch: "aarch64"})
+	f.push(t, format.Upload{Files: []format.UploadedFile{file(info.Filename, bonjour)}})
+	f.deleteVersion(t, "hello", "1.0.0-1.el9", "x86_64")
+}
+
+// rpmRepodata returns the repodata/repomd.xml of the repo and the documents it lists.
+func rpmRepodata(t *testing.T, f *frontend) []string {
+	t.Helper()
+	md := f.do(t, http.MethodGet, "repodata/repomd.xml", nil, http.StatusOK).Body.String()
+	var out []string
+	for _, m := range regexp.MustCompile(`<location href="(repodata/[^"]+)"/>`).FindAllStringSubmatch(md, -1) {
+		out = append(out, m[1])
+	}
+	if len(out) != 3 {
+		t.Errorf("repomd.xml lists %d documents:\n%s", len(out), md)
+	}
+	return out
 }
 
 // publishPypi uploads to a pypi repo as twine does, with the sha256 and md5 of each file:

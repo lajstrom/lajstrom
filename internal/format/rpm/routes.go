@@ -16,11 +16,15 @@ import (
 // Routes mounts the routes of the rpm frontend below /rpm/ (docs/spec/http-routing.md §3, rpm):
 // a GET (and so a HEAD) that needs read on the repo, or the PUT of an upload, which needs write:
 //
+//	GET /{repo}/repodata/repomd.xml     the repodata, and the documents it lists by location
 //	GET /{repo}/Packages/{filename}     a package, through format.ServeBlob
 //	PUT /{repo}/upload                  one .rpm, published through deps.Ingest
 //
-// A package reaches an rpm repo through the upload route or by oras push through the facade,
-// whose hook runs Validate. The handlers keep the providers of deps and the clock of p.
+// The documents come from index_cache through format.CachedDocument and are served with
+// format.ServeDocument (ETag, Last-Modified, If-None-Match, Range). A package reaches an rpm repo
+// through the upload route or by oras push through the facade, whose hook runs Validate; ingest
+// invalidates the repo's documents either way, and the next GET renders the repodata again. The handlers render with a Plugin that keeps the providers of
+// deps (RenderIndex reads a metadata layer the index left out) and the clock of p.
 func (p Plugin) Routes(r format.Router, deps format.Deps) {
 	if deps.Log == nil {
 		deps.Log = slog.Default().With("format", Name)
@@ -30,6 +34,7 @@ func (p Plugin) Routes(r format.Router, deps format.Deps) {
 		svc.now = p.svc.now
 	}
 	h := &handlers{deps: deps, plugin: Plugin{svc: svc}}
+	r.HandleFunc("GET /{repo}/repodata/{file}", h.repodata)
 	r.HandleFunc("GET /{repo}/Packages/{filename}", h.packageFile)
 	r.HandleFunc("PUT /{repo}/upload", h.upload)
 }
