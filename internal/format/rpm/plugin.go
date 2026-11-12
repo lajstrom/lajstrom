@@ -35,6 +35,14 @@ type services struct {
 	now func() time.Time
 }
 
+// clock returns the time for a render and for a signature.
+func (p Plugin) clock() time.Time {
+	if p.svc != nil && p.svc.now != nil {
+		return p.svc.now()
+	}
+	return time.Now()
+}
+
 var _ format.Plugin = Plugin{}
 
 func init() { format.Register(Plugin{}) }
