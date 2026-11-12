@@ -19,7 +19,13 @@ import (
 // over. The claim taken beats every ClaimHeartbeat until release, which removes it; a claim
 // that another replica took over ends ctx's work: release is then all that is left to call.
 func (c *Core) ociClaim(ctx context.Context, p *ociProxied, ref string, done func(context.Context) (bool, error)) (release func(), shared bool, err error) {
-	cl := index.FetchClaim{RepoID: p.repo.ID, Package: p.path, Tag: ref, Principal: auth.PrincipalFrom(ctx).String(), Replica: c.o.Replica}
+	return c.ociClaimAt(ctx, p, p.path, ref, done)
+}
+
+// ociClaimAt is ociClaim of the claim (repo, pkg, ref): "" for pkg is the repo's claim of a
+// digest, which the completions at every path of the repo take (ociCompleteFetch).
+func (c *Core) ociClaimAt(ctx context.Context, p *ociProxied, pkg, ref string, done func(context.Context) (bool, error)) (release func(), shared bool, err error) {
+	cl := index.FetchClaim{RepoID: p.repo.ID, Package: pkg, Tag: ref, Principal: auth.PrincipalFrom(ctx).String(), Replica: c.o.Replica}
 	w := claimWait{next: c.o.WaitFirst}
 	for {
 		now := c.o.Now()
@@ -31,7 +37,7 @@ func (c *Core) ociClaim(ctx context.Context, p *ociProxied, ref string, done fun
 		if !errors.Is(err, index.ErrConflict) {
 			return nil, false, err
 		}
-		if shared, err := c.ociWait(ctx, p, ref, done, &w); shared || err != nil {
+		if shared, err := c.ociWait(ctx, p, pkg, ref, done, &w); shared || err != nil {
 			return nil, shared, err
 		}
 	}
@@ -52,9 +58,9 @@ type claimWait struct {
 	retried bool
 }
 
-// ociWait waits while another replica holds the claim of ref at p's path: shared when done
+// ociWait waits while another replica holds the claim (repo, pkg, ref): shared when done
 // reports its result, nil when the claim is gone (once) or stale and may be taken.
-func (c *Core) ociWait(ctx context.Context, p *ociProxied, ref string, done func(context.Context) (bool, error), w *claimWait) (shared bool, err error) {
+func (c *Core) ociWait(ctx context.Context, p *ociProxied, pkg, ref string, done func(context.Context) (bool, error), w *claimWait) (shared bool, err error) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -65,7 +71,7 @@ func (c *Core) ociWait(ctx context.Context, p *ociProxied, ref string, done func
 		if ok, err := done(ctx); ok || err != nil {
 			return ok, err
 		}
-		other, err := c.o.Index.GetFetchClaim(ctx, p.repo.ID, p.path, ref)
+		other, err := c.o.Index.GetFetchClaim(ctx, p.repo.ID, pkg, ref)
 		switch {
 		case errors.Is(err, index.ErrNotFound) && w.retried:
 			return false, fmt.Errorf("%w: proxy: %s: the fetch of %s@%s by another replica ended without it", format.ErrBadGateway,

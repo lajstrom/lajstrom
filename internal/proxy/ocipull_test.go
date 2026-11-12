@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -71,6 +72,92 @@ func TestOCICompleteShared(t *testing.T) {
 	}
 	if n := e.hub.count("") - asked; n != 0 {
 		t.Errorf("the offline repo sent the upstream %d requests", n)
+	}
+}
+
+// ksched is the third image of the control plane's static pods.
+const ksched = "k8s/kube-scheduler"
+
+// sharedFetched counts the upstream's GETs of the layer d across the three paths.
+func (e *ociEnv) sharedFetched(d ocispec.Descriptor) int {
+	return e.blobGETs(kcm, d) + e.blobGETs(kas, d) + e.blobGETs(ksched, d)
+}
+
+// TestOCICompleteSharedLater is the second Talos boot of #876: the completions of
+// kube-apiserver and kube-scheduler start at the GET of their manifests and wait for their
+// paths to be quiet; kube-controller-manager's completion fetches the shared layers meanwhile.
+// When the wait ends they mount the shared layers from kube-controller-manager instead of
+// fetching them again.
+func TestOCICompleteSharedLater(t *testing.T) {
+	e := newOCIEnv(t, ociSettings)
+	imgs := map[string]image{}
+	for _, path := range []string{kcm, kas, ksched} {
+		imgs[path] = e.hub.sharedImage(t, path, "v1.37.1", k8sShared, "arm64")
+	}
+	waiting := e.core("a", proxy.Options{CompleteQuiet: 20 * time.Millisecond})
+	var pulled []func()
+	for _, path := range []string{kas, ksched} {
+		m, _, err := waiting.OCIManifest(t.Context(), e.repo, path, imgs[path].manifests[0].Digest.String())
+		must(t, err)
+		pulled = append(pulled, waiting.OCIPulling(e.repo, path)) // a client pulls the path until kube-controller-manager is held
+		waiting.OCIComplete(t.Context(), e.repo, path, m)
+	}
+	c := e.core("b", proxy.Options{CompleteQuiet: -1})
+	m, _, err := c.OCIManifest(t.Context(), e.repo, kcm, imgs[kcm].manifests[0].Digest.String())
+	must(t, err)
+	c.OCIComplete(t.Context(), e.repo, kcm, m)
+	e.keepTagged(t, kcm, m.Digest)
+	mounted := fetches("mounted")
+	for _, done := range pulled {
+		done() // the paths' last requests end: the waits run out
+	}
+	for _, path := range []string{kas, ksched} {
+		e.keepTagged(t, path, imgs[path].manifests[0].Digest)
+	}
+	for _, d := range imgs[kas].blobs[0][1:3] {
+		if n := e.sharedFetched(d); n != 1 {
+			t.Errorf("the shared layer %s was fetched %d times, want once", d.Digest, n)
+		}
+	}
+	if n := fetches("mounted") - mounted; n != 4 {
+		t.Errorf("lajstrom_proxy_fetches_total{result=\"mounted\"} rose by %v, want 4: two layers at two paths", n)
+	}
+}
+
+// TestOCICompleteSharedConcurrent: completions at three paths that share layers, on two
+// replicas at once, fetch each shared layer once, under the repo's claim of its digest; the
+// others wait and mount it.
+func TestOCICompleteSharedConcurrent(t *testing.T) {
+	e := newOCIEnv(t, ociSettings)
+	imgs := map[string]image{}
+	for _, path := range []string{kcm, kas, ksched} {
+		imgs[path] = e.hub.sharedImage(t, path, "v1.37.1", k8sShared, "arm64")
+	}
+	gated := imgs[kcm].blobs[0][1]
+	gate := make(chan struct{})
+	e.hub.mu.Lock()
+	e.hub.gates[gated.Digest] = gate
+	e.hub.mu.Unlock()
+	cores := []*proxy.Core{e.core("a", proxy.Options{CompleteQuiet: -1}), e.core("b", proxy.Options{CompleteQuiet: -1})}
+	mounted := fetches("mounted")
+	for i, path := range []string{kcm, kas, ksched} {
+		m, _, err := cores[i%2].OCIManifest(t.Context(), e.repo, path, imgs[path].manifests[0].Digest.String())
+		must(t, err)
+		cores[i%2].OCIComplete(t.Context(), e.repo, path, m)
+	}
+	await(t, "a GET of the gated layer", func() bool { return e.sharedFetched(gated) > 0 })
+	time.Sleep(200 * time.Millisecond) // the other completions reach the layer meanwhile
+	close(gate)
+	for _, path := range []string{kcm, kas, ksched} {
+		e.keepTagged(t, path, imgs[path].manifests[0].Digest)
+	}
+	for _, d := range imgs[kcm].blobs[0][1:3] {
+		if n := e.sharedFetched(d); n != 1 {
+			t.Errorf("the shared layer %s was fetched %d times, want once", d.Digest, n)
+		}
+	}
+	if n := fetches("mounted") - mounted; n != 4 {
+		t.Errorf("lajstrom_proxy_fetches_total{result=\"mounted\"} rose by %v, want 4: two layers at two paths", n)
 	}
 }
 
