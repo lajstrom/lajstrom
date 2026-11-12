@@ -64,12 +64,13 @@ used.
 
 The probe reports `vendor=unknown createOnPush=true referrers=false catalog=true
 deleteManifest=true immutableTags=false blobRedirect=true maxBlobSize=0` (the test log and the
-serve log of the e2e run). That is right; no override in `registries[].capabilities` is needed.
+serve log of the e2e run, before #352). That is right; no override in
+`registries[].capabilities` is needed. Since #352 it is `vendor=gitea` (item 6).
 
 ## What the provider must do differently
 
-1. **Done in this PR:** keep the primed token when the challenge names extra scopes. Gitea's
-   challenge always says `scope="*"`, which oras-go's auth client adds to the key of the token
+1. **Done in #342**, the spike of #120: keep the primed token when the challenge names extra
+   scopes. Gitea's challenge always says `scope="*"`, which oras-go's auth client adds to the key of the token
    it caches, but not to the key it looks a request up by before it is challenged. The token
    that `prime` (the bodyless `GET` before a streamed body) fetched was never found, the
    streamed `PATCH` or `PUT` went out without it, got the 401 and could not be sent again:
@@ -248,7 +249,8 @@ garbage. The re-pointing of `5.4.final` above deleted `a` the same way.
   there, until a mount (`POST ?mount=&from=` from that image, and `?mount=` alone) answers 201
   and the blob 200 in its new image (`lajstrom registry probe` and curl, 2026-11-10; this page
   said 202, a session, before).
-- 256 MiB and 512 MiB in one monolithic `PUT`: 201 in about 1 s each; Gitea sets no limit by
+- 256 MiB and 512 MiB in one monolithic `PUT`: 201 in about 1 s each, and 512 MiB in one
+  `PATCH` (`lajstrom registry probe`, 2026-11-10); Gitea sets no limit by
   default (`[packages] LIMIT_SIZE_CONTAINER = -1`). Larger blobs were not tried: the machine's
   disk was nearly full. With `LIMIT_SIZE_CONTAINER=1M` a monolithic `PUT` of 2 MiB is 403
   with an empty body, while `PATCH`es past the limit are 202.
@@ -327,10 +329,10 @@ run apt-get in `ubuntu:22.04`, `ubuntu:24.04` and `debian:12`.
 
 Every other package of the suite passed against Gitea, the Postgres tests included.
 
-**The end-to-end scenarios** (`test/e2e/run.sh`, against Gitea with the fix): `run.sh` has no
-registry credentials or prefix, so a copy of it with `prefix:` and `auth:` in its
-configuration ran (`$TMPDIR/spike-e2e/run.sh`; worth an option of its own in `run.sh`, a
-follow-up). `oras`, `auth`, `rbac`, `oci-token`, `tokens`, `apt`, `pypi`, `maven`: pass.
+**The end-to-end scenarios** (`test/e2e/run.sh`, against Gitea with the fix): `run.sh` had no
+registry credentials or prefix then, so a copy of it with `prefix:` and `auth:` in its
+configuration ran (`$TMPDIR/spike-e2e/run.sh`); since #353 `run.sh` takes them (below).
+`oras`, `auth`, `rbac`, `oci-token`, `tokens`, `apt`, `pypi`, `maven`: pass.
 `raw.sh`: **fail** at the range (`got '200', want '206'`), the steps after it do not run.
 `cosign.sh`: sign, verify and `oras discover` through Lajstrom pass; it fails at its last step,
 which asks the backend for the tag schema without credentials or prefix (401): the script's
@@ -345,7 +347,9 @@ The failures, by owner:
   the backend. Both done in #353: `run.sh` takes the user, a file with its token and the prefix
   ([testing.md](../testing.md#a-registry-with-credentials-and-a-prefix)), and `cosign.sh` asks
   the backend below the prefix with them. On 2026-11-10 `oras`, `auth`, `rbac`, `oci-token`,
-  `cosign` and `tokens` passed against Gitea 1.27.3 so, the stock `run.sh`.
+  `cosign` and `tokens` passed against Gitea 1.27.3 so, the stock `run.sh`. CI runs these six
+  against the Gitea of `gitea.sh` on every pull request that touches code: the job
+  `e2e (gitea)` of [ci.yml](../../.github/workflows/ci.yml), not required (#353).
 
 The conformance suite was not run.
 

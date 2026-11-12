@@ -75,14 +75,15 @@ distribution-s3 does in the dev stack, so that the presigned URLs they sign for
 | Upload continued by another replica | [works (the test)](#our-tests-against-it) |
 | Garbage collector and an untagged referrer (#37) | [kept, with or without its subject; an untagged manifest goes after `gcDelay`](#garbage-collection) |
 | What the probe finds | [`referrers=true catalog=true`](#the-row) |
-| Overrides needed | [none; `immutableTags: true` behind a policy without `update`](#configuration) |
+| Overrides needed | [none; `immutableTags: true` describes a Zot behind a policy without `update`, but nothing in Lajstrom acts on it](#configuration) |
 
 `lajstrom registry probe` measures every row of this table but the listing API, auth, rate
 limits and the garbage collector, which still need a person;
 [README.md](README.md#measuring-a-registry-lajstrom-registry-probe) says how.
 
 The probe logged the same line against all four Zots the suite ran on (the dev stack, the dev
-configuration without a prefix, S3 with redirects, htpasswd without `update`):
+configuration without a prefix, S3 with redirects, htpasswd without `update`), on 2026-11-09,
+before the vendor table knew Zot:
 
 ```text
 level=INFO msg="registry capabilities" registry=integration vendor=unknown createOnPush=true referrers=true catalog=true deleteManifest=true immutableTags=false blobRedirect=true maxBlobSize=0
@@ -95,11 +96,14 @@ Against what was measured:
   manifest that an image index lists, though every other delete works, and the provider reads
   that 405 as a refusal of the one delete, `provider.ErrConflict` (#153, item 1 below).
 - `immutableTags=false` is right for the default configuration and wrong behind an access
-  control policy without `update`, which the probe cannot see: set it in the configuration.
+  control policy without `update`, which the probe cannot see: the configuration can say so,
+  though nothing in Lajstrom acts on it yet but the startup line and the reindex test's drift
+  step.
 - `blobRedirect=true` is the operator's switch, not a finding: Zot redirects only on S3 with
   `redirectBlobURL`, and never a `HEAD` or a range; where it does not, the provider streams.
-- `vendor=unknown`: Zot sends nothing that names it but `X-ZOT-API-CLIENT` in
-  `Access-Control-Allow-Headers` of every answer.
+- `vendor=unknown` then. Zot sends nothing that names it but `X-ZOT-API-CLIENT` in
+  `Access-Control-Allow-Headers` of every answer, and since #446 the vendor table reads that
+  header: `vendor=zot`, with `consistency: strong`.
 
 ## What the provider must do differently
 
@@ -112,14 +116,15 @@ Against what was measured:
    refused every delete until a restart. Now a 405 `DENIED` (without `UNSUPPORTED`) is
    `provider.ErrConflict`, 409 at `/raw/`, and changes nothing else; `UNSUPPORTED` and a 405
    without `DENIED` still turn `DeleteManifest` false.
-2. Nothing else in the code. The rest is configuration: `capabilities: {immutableTags: true}`
-   behind a policy without `update`, whose 403 `DENIED` the provider reads as bad credentials
-   (`provider: unauthorized`) and nothing in Lajstrom but the reindex test's drift meets
-   ([Immutable tags](#immutable-tags)); `redirectBlobURL` on S3 for redirects
-   ([Blob redirect](#blob-redirect)). Referrers of a deleted manifest stay on Zot, listed under
+2. Nothing else in the code. The rest is configuration: `redirectBlobURL` on S3 for redirects
+   ([Blob redirect](#blob-redirect)). Behind a policy without `update`, whose 403 `DENIED` the
+   provider reads as bad credentials (`provider: unauthorized`) and nothing in Lajstrom but the
+   reindex test's drift step meets, `capabilities: {immutableTags: true}` describes the
+   registry; nothing acts on it yet but the startup line and that drift step
+   ([Immutable tags](#immutable-tags)). Referrers of a deleted manifest stay on Zot, listed under
    its digest, unless a retention policy says `deleteReferrers`
-   ([Garbage collection](#garbage-collection)): whoever deletes a version with signatures
-   deletes them first, as the integration test does.
+   ([Garbage collection](#garbage-collection)): Lajstrom's deletes take the referrers first
+   (`internal/ingest`); a delete straight at Zot leaves them.
 
 ## Create on push
 
@@ -340,8 +345,9 @@ and Harbor; Lajstrom's ingest resolves the tag first and writes nothing on a rep
 carries no reason, and the provider reads it as `provider: unauthorized`. With `delete` granted
 (Lajstrom's raw deletes need it) a tag can still be deleted and pushed again: the policy stops a
 re-point, not a delete and a create. Zot v2.1.23 also has CEL `conditions` on a policy (its
-example: `req.referenceType == "digest"`), not tried. The probe sees none of this:
-`immutableTags: true` goes in the configuration ([Configuration](#configuration)).
+example: `req.referenceType == "digest"`), not tried. The provider's probe sees none of this:
+`immutableTags: true` in the configuration describes it, though nothing in Lajstrom acts on it
+yet ([Configuration](#configuration)).
 
 ## Blob redirect
 
@@ -558,7 +564,7 @@ registries:
     type: generic
     url: http://localhost:5000          # the dev stack's Zot
     # auth: {username: lajstrom, passwordEnv: LAJSTROM_REGISTRY_PASSWORD}   # behind htpasswd
-    # capabilities: {immutableTags: true}   # behind a policy without update: the probe cannot see it
+    # capabilities: {immutableTags: true}   # behind a policy without update: descriptive, nothing acts on it yet
     # capabilities: {blobRedirect: false}   # on S3 with redirectBlobURL, when clients cannot reach the store
 ```
 

@@ -60,8 +60,10 @@ limits and the garbage collector, which still need a person;
 
 The probe reports `vendor=unknown createOnPush=true referrers=false catalog=true
 deleteManifest=true immutableTags=false blobRedirect=true maxBlobSize=0` for the docker format
-and the same with `referrers=true` for the OCI format (the test log). That is right but for
-the docker format's `deleteManifest`, which says true while a delete leaves the tags.
+and the same with `referrers=true` for the OCI format (the test log, before #352). That is
+right but for the docker format's `deleteManifest`, which says true while a delete leaves the
+tags. Since #352 it is `vendor=nexus`, with `deleteManifest=false` on the docker format and the
+blobs of the OCI format read whole (items 2, 3 and 5); not run against Nexus again.
 
 ## What the provider must do differently
 
@@ -308,9 +310,10 @@ integration -run 'TestIntegration|TestAptGet' ./internal/...`. The apt tests run
 | facade: delete referrer, pass-through, raw push, referrers, uploads and tokens across replicas, abandoned monolithic | pass | pass |
 | `TestAptGet`, `TestAptGetInstall/registry`, `TestAptGetSigned` | pass | pass |
 
-**The end-to-end scenarios** (`test/e2e/run.sh` against each, with the fix): `run.sh` has no
-registry credentials, so a copy of it with `auth:` in its configuration ran
-(`$TMPDIR/spike-e2e/run.sh`; worth an option of its own in `run.sh`, a follow-up).
+**The end-to-end scenarios** (`test/e2e/run.sh` against each, with the fix): `run.sh` had no
+registry credentials then, so a copy of it with `auth:` in its configuration ran
+(`$TMPDIR/spike-e2e/run.sh`). Since #353 `run.sh` takes them
+([testing.md](../testing.md#a-registry-with-credentials-and-a-prefix)); not run against Nexus.
 
 | Scenario | docker | OCI |
 | --- | --- | --- |
@@ -327,7 +330,7 @@ The failures, by owner:
 - **Nexus's, the OCI format:** the 500 to every range (item 3).
 - **Ours, the provider:** the gzip offer, fixed here (item 1).
 - **Ours, the harness:** `run.sh` without registry credentials, `cosign.sh`'s anonymous check of
-  the backend.
+  the backend; both done in #353.
 
 The conformance suite was not run.
 
