@@ -34,7 +34,7 @@ func (Plugin) Inspect(_ index.Repo, up format.StreamUpload) (format.Inspection, 
 	}
 	if s.Kind == SdistZip {
 		want := s.Root() + "/PKG-INFO"
-		return format.Inspection{Inspector: newZipInspector(up.File.Name, func(name string) bool { return name == want },
+		return format.Inspection{Inspector: newZipInspector(up.File.Name, func(name []byte) bool { return string(name) == want },
 			func(r io.ReaderAt, size int64) ([]byte, error) {
 				return ReadSdistPKGInfo(io.NewSectionReader(r, 0, size), size, s)
 			})}, nil

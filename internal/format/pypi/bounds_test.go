@@ -3,7 +3,9 @@ package pypi
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/binary"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -11,8 +13,8 @@ import (
 	"github.com/lajstrom/lajstrom/internal/testutil"
 )
 
-// TestZipEntries counts the headers that zip.NewReader reads, which the end record states or
-// not, and refuses an archive with no directory to find.
+// TestZipEntries counts with scanZip the headers that zip.NewReader reads, which the end record
+// states or not, and refuses an archive with no directory to find.
 func TestZipEntries(t *testing.T) {
 	whl, _ := testutil.Wheel(testutil.WheelOptions{})
 	var commented bytes.Buffer
@@ -36,15 +38,15 @@ func TestZipEntries(t *testing.T) {
 		{"a zip64 end record", testutil.ZipDirectoryBomb(5, 1<<16+5), 1 << 17, 5},
 		{"an end record that says 1", testutil.ZipDirectoryBomb(1<<16+1, 1), 1 << 17, 1<<16 + 1},
 	} {
-		n, err := zipEntries(bytes.NewReader(tc.b), int64(len(tc.b)), tc.limit)
-		if err != nil || n != tc.want {
-			t.Errorf("%s: %d, %v; want %d", tc.name, n, err, tc.want)
+		s, err := scanZip(bytes.NewReader(tc.b), int64(len(tc.b)), tc.limit, nil, 0)
+		if err != nil || s.headers != tc.want {
+			t.Errorf("%s: %d, %v; want %d", tc.name, s.headers, err, tc.want)
 		}
-		if n > tc.limit {
+		if s.headers > tc.limit {
 			continue
 		}
-		if zr, err := zip.NewReader(bytes.NewReader(tc.b), int64(len(tc.b))); err != nil || len(zr.File) != n {
-			t.Errorf("%s: zip.NewReader = %v; zipEntries counted %d", tc.name, err, n)
+		if zr, err := zip.NewReader(bytes.NewReader(tc.b), int64(len(tc.b))); err != nil || len(zr.File) != s.headers {
+			t.Errorf("%s: zip.NewReader = %v; scanZip counted %d", tc.name, err, s.headers)
 		}
 	}
 	// The last signature of an end record is the end record, though in a comment, as for
@@ -57,7 +59,7 @@ func TestZipEntries(t *testing.T) {
 		"not a zip": []byte("not a zip, but longer than an end record"), "empty": nil,
 		"a comment cut short": commented.Bytes()[:commented.Len()-1], "a signature in the comment": signed.Bytes(),
 	} {
-		if _, err := zipEntries(bytes.NewReader(b), int64(len(b)), 10); !errors.Is(err, errNoDirectory) {
+		if _, err := scanZip(bytes.NewReader(b), int64(len(b)), 10, nil, 0); !errors.Is(err, errNoDirectory) {
 			t.Errorf("%s: %v, want errNoDirectory", name, err)
 		}
 	}
@@ -65,8 +67,8 @@ func TestZipEntries(t *testing.T) {
 
 // TestZipBombs reads the bombs of #243 through ReadWheelMetadata and ReadSdistPKGInfo: a
 // directory of maxEntries+1 headers, which zip.NewReader would hold in 70 MiB, and one of
-// 4*65 536+1 whose end record says 1, which zip.NewReader reads all the same. Each is refused
-// before zip.NewReader, allocating no more than the reads. maxEntries are not.
+// 4*65 536+1 whose end record says 1, which zip.NewReader reads all the same. Each is refused,
+// allocating no more than the reads. maxEntries are not (TestZipDirectoryMemory).
 func TestZipBombs(t *testing.T) {
 	for _, b := range [][]byte{testutil.ZipDirectoryBomb(maxEntries+1, maxEntries+1), testutil.ZipDirectoryBomb(4<<16+1, 1)} {
 		var err error
@@ -79,9 +81,49 @@ func TestZipBombs(t *testing.T) {
 			t.Errorf("a zip sdist of %d bytes: %v", len(b), err)
 		}
 	}
-	b := testutil.ZipDirectoryBomb(maxEntries, maxEntries)
-	if err := checkZipEntries(bytes.NewReader(b), int64(len(b)), "wheel"); err != nil {
-		t.Errorf("%d entries: %v", maxEntries, err)
+}
+
+// manyEntries returns a wheel of tool 1.0 whose central directory has n headers: its METADATA,
+// stored, and n-1 of ZipDirectoryBomb, empty members without local headers. The end record says
+// n modulo 65 536, as zip.NewReader compares it, without zip64.
+func manyEntries(t testing.TB, n int) []byte {
+	t.Helper()
+	whl := storedZip(t, false, "tool-1.0.dist-info/METADATA", metadata("1.0"))
+	end := slices.Clone(whl[len(whl)-zipEndLen:])
+	bomb := testutil.ZipDirectoryBomb(n-1, 0)
+	headers := bomb[:len(bomb)-zipEndLen]
+	records, dirSize := uint16(n), uint32(len(headers)) //nolint:gosec // n modulo 65 536 on purpose; 12 MiB
+	binary.LittleEndian.PutUint16(end[8:], records)
+	binary.LittleEndian.PutUint16(end[10:], records)
+	binary.LittleEndian.PutUint32(end[12:], binary.LittleEndian.Uint32(end[12:])+dirSize)
+	return append(append(whl[:len(whl)-zipEndLen:len(whl)-zipEndLen], headers...), end...)
+}
+
+// TestZipDirectoryMemory (#696): ReadWheelMetadata reads the METADATA of a wheel whose directory
+// has maxEntries headers, 12 MiB, allocating less than a MiB: it keeps of the directory only
+// what may be the METADATA, where zip.NewReader held a File of each header, 70 MiB.
+func TestZipDirectoryMemory(t *testing.T) {
+	whl := manyEntries(t, maxEntries)
+	if zr, err := zip.NewReader(bytes.NewReader(whl), int64(len(whl))); err != nil || len(zr.File) != maxEntries {
+		t.Fatalf("zip.NewReader: %v", err)
+	}
+	var core []byte
+	var err error
+	testutil.CheckAllocated(t, "ReadWheelMetadata", testutil.AllocSlack, func() { core, err = ReadWheelMetadata(bytes.NewReader(whl), int64(len(whl))) })
+	if err != nil || string(core) != metadata("1.0") {
+		t.Errorf("%q, %v", core, err)
+	}
+}
+
+// BenchmarkReadWheelMetadata reads the METADATA of a wheel whose directory has maxEntries
+// headers (#696).
+func BenchmarkReadWheelMetadata(b *testing.B) {
+	whl := manyEntries(b, maxEntries)
+	b.ReportAllocs()
+	for b.Loop() {
+		if core, err := ReadWheelMetadata(bytes.NewReader(whl), int64(len(whl))); err != nil || string(core) != metadata("1.0") {
+			b.Fatalf("%q, %v", core, err)
+		}
 	}
 }
 

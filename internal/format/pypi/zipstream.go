@@ -59,7 +59,7 @@ type zipInspector struct {
 
 // newZipInspector returns the inspector of the zip filename: read reads its core metadata, and
 // candidate says which local entries may be it.
-func newZipInspector(filename string, candidate func(name string) bool, read func(io.ReaderAt, int64) ([]byte, error)) *zipInspector {
+func newZipInspector(filename string, candidate func(name []byte) bool, read func(io.ReaderAt, int64) ([]byte, error)) *zipInspector {
 	return &zipInspector{filename: filename, read: read, walk: localWalk{candidate: candidate}, tailSize: heldTail}
 }
 
@@ -112,9 +112,10 @@ func (z *zipInspector) Close() error {
 }
 
 // tooManyEntries reports whether the walk counted more than maxEntries headers of the central
-// directory where the end record held says it starts: checkZipEntries counts the same headers
-// from there and refuses the zip, but would read them back when the directory is larger than
-// the end held. A directory the walk did not reach, or that starts elsewhere, is left to it.
+// directory where the end record held says it starts: scanZip counts the same headers from
+// there and checkZipEntries refuses the zip, but would read them back when the directory is
+// larger than the end held. A directory the walk did not reach, or that starts elsewhere, is
+// left to it.
 func (z *zipInspector) tooManyEntries() bool {
 	if !z.walk.inDir || z.walk.dirCount <= maxEntries {
 		return false
@@ -157,9 +158,9 @@ type segment struct {
 // central directory, or an archive with something before its first entry), and at an entry
 // whose sizes follow its data (a data descriptor, flag bit 3), whose end it cannot find. What it
 // did not hold is read back. When the record it stops at is a central directory header, it
-// goes on counting the headers from there as zipHeaders does, up to maxEntries+1.
+// goes on counting the headers from there as scanZip does, up to maxEntries+1.
 type localWalk struct {
-	candidate func(string) bool
+	candidate func([]byte) bool
 	off       int64 // the offset of the next byte
 	stopped   bool
 	hdr       []byte    // the header being read
@@ -231,7 +232,7 @@ func (w *localWalk) header() {
 		w.stopped = true
 		return
 	}
-	if n := int64(len(h)) + int64(size); w.candidate(string(h[localHeaderLen:localHeaderLen+nameLen])) &&
+	if n := int64(len(h)) + int64(size); w.candidate(h[localHeaderLen:localHeaderLen+nameLen]) &&
 		n <= maxHeldEntry && int64(w.heldBytes)+n <= maxHeldEntries {
 		w.keep = &segment{off: w.off - int64(len(h)), b: append(make([]byte, 0, n), h...)}
 	}
@@ -242,7 +243,7 @@ func (w *localWalk) header() {
 }
 
 // dirHeader reads the central directory header in hdr: its name, extra field and comment are
-// skipped, and it counts once they have passed, as in zipHeaders.
+// skipped, and it counts once they have passed, as scanZip does.
 func (w *localWalk) dirHeader() {
 	h := w.hdr
 	if binary.LittleEndian.Uint32(h) != zipHeaderSig {

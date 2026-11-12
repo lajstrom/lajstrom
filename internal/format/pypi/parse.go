@@ -2,7 +2,6 @@ package pypi
 
 import (
 	"archive/tar"
-	"archive/zip"
 	"bufio"
 	"bytes"
 	"compress/gzip"
@@ -267,34 +266,22 @@ func str(v any) string {
 // *.dist-info directory at the top of the archive, which has at most maxEntries entries.
 // Errors wrap format.ErrInvalid, except a failure to read.
 func ReadWheelMetadata(r io.ReaderAt, size int64) ([]byte, error) {
-	if err := checkZipEntries(r, size, "wheel"); err != nil {
+	found, err := checkZipEntries(r, size, "wheel", isWheelMetadata, 2)
+	switch {
+	case err != nil:
 		return nil, err
-	}
-	zr, err := zip.NewReader(r, size)
-	if err != nil {
-		return nil, fmt.Errorf("%w: the wheel is not a zip archive: %w", format.ErrInvalid, err)
-	}
-	var found *zip.File
-	for _, f := range zr.File {
-		if !isWheelMetadata(f.Name) {
-			continue
-		}
-		if found != nil {
-			return nil, fmt.Errorf("%w: the wheel has two .dist-info directories: %s and %s", format.ErrInvalid, found.Name, f.Name)
-		}
-		found = f
-	}
-	if found == nil {
+	case len(found) == 0:
 		return nil, fmt.Errorf("%w: the wheel has no .dist-info/METADATA", format.ErrInvalid)
+	case len(found) > 1:
+		return nil, fmt.Errorf("%w: the wheel has two .dist-info directories: %s and %s", format.ErrInvalid, found[0].name, found[1].name)
 	}
-	return readMember(found)
+	return readMember(r, found[0])
 }
 
 // isWheelMetadata reports whether the member name of a wheel is the METADATA of a *.dist-info
-// directory at its top.
-func isWheelMetadata(name string) bool {
-	dir, file := path.Split(name)
-	return file == "METADATA" && strings.Count(dir, "/") == 1 && strings.HasSuffix(dir, ".dist-info/")
+// directory at its top: <dir>.dist-info/METADATA, without another '/'.
+func isWheelMetadata(name []byte) bool {
+	return bytes.HasSuffix(name, []byte(".dist-info/METADATA")) && bytes.Count(name, []byte("/")) == 1
 }
 
 // maxSdistUnpacked bounds the bytes a .tar.gz sdist unpacks to up to its PKG-INFO, as
@@ -319,19 +306,14 @@ func ReadSdistPKGInfo(r io.Reader, size int64, s Sdist) ([]byte, error) {
 		if !ok {
 			return nil, errors.New("pypi: a zip sdist needs random access")
 		}
-		if err := checkZipEntries(ra, size, "sdist"); err != nil {
+		found, err := checkZipEntries(ra, size, "sdist", func(name []byte) bool { return string(name) == want }, 1)
+		switch {
+		case err != nil:
 			return nil, err
+		case len(found) == 0:
+			return nil, fmt.Errorf("%w: the sdist has no %s", format.ErrInvalid, want)
 		}
-		zr, err := zip.NewReader(ra, size)
-		if err != nil {
-			return nil, fmt.Errorf("%w: the sdist is not a zip archive: %w", format.ErrInvalid, err)
-		}
-		for _, f := range zr.File {
-			if f.Name == want {
-				return readMember(f)
-			}
-		}
-		return nil, fmt.Errorf("%w: the sdist has no %s", format.ErrInvalid, want)
+		return readMember(ra, found[0])
 	}
 	return readTarGzFile(r, want, maxSdistUnpacked, maxEntries)
 }
@@ -384,19 +366,6 @@ func (u *unpacked) Read(p []byte) (int, error) {
 	n, err := u.r.Read(p)
 	u.left -= int64(n)
 	return n, err
-}
-
-// readMember returns the bytes of a zip member, at most maxCoreMetadata.
-func readMember(f *zip.File) ([]byte, error) {
-	if f.UncompressedSize64 > maxCoreMetadata {
-		return nil, fmt.Errorf("%w: %s is %d bytes, more than %d", format.ErrInvalid, f.Name, f.UncompressedSize64, maxCoreMetadata)
-	}
-	rc, err := f.Open()
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s: %w", format.ErrInvalid, f.Name, err)
-	}
-	defer func() { _ = rc.Close() }()
-	return readLimited(rc, int64(f.UncompressedSize64))
 }
 
 // readLimited reads r, which says it holds size bytes, refusing more than maxCoreMetadata.

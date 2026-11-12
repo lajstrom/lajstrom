@@ -95,8 +95,9 @@ variables and what passes.
 `FuzzCoreMetadata`, `FuzzZipEntries`, `FuzzSdistInspector` and `FuzzZipInspector` (`internal/format/pypi`), `FuzzPOM`
 (`internal/format/maven`), and `FuzzPackageJSON` and `FuzzTarballInspector` (`internal/format/npm`). Each checks properties of what the parser accepts (round trips,
 idempotence), that what it refuses stays refused, and that what it allocates grows with the
-input (`testutil.CheckAllocated`); `FuzzZipEntries`, that the count of a zip directory that
-bounds it (#243) is never below what `zip.NewReader` reads.
+input (`testutil.CheckAllocated`); `FuzzZipEntries`, that the scan of a zip directory refuses
+what `zip.NewReader` refuses, that its count, which bounds it (#243), is never below what
+`zip.NewReader` reads, and that it reads the members as `File.Open` does (#696).
 `go test` runs their seed corpus with the unit tests; `make fuzz` fuzzes each for 30 s, one
 after another. The [Fuzz workflow](../.github/workflows/fuzz.yml) fuzzes each of its targets for
 10 minutes every Sunday and on demand, and keeps a crasher as the artifact
