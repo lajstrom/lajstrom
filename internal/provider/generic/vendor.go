@@ -178,6 +178,11 @@ type quirks struct {
 	// HEAD. JFrog answers HEAD 200 in any image path of the repository key once a manifest
 	// anywhere names the blob, while GET there is 404 (docs/registries/jfrog-jcr.md, item 4).
 	blobExistsByGET bool
+	// pushForDelete: a token is asked for push where oras-go asks it for delete
+	// (deleteScopeTransport). Quay's token service knows the actions pull, push and * only and
+	// answers delete 400 INVALID_REQUEST, so that no DELETE was ever sent; its DELETE wants
+	// write, which a push token carries (docs/registries/quay.md, Tokens and the delete action).
+	pushForDelete bool
 }
 
 // afterProbe is the part of the vendor table that depends on what the probe found: it changes
@@ -187,7 +192,8 @@ type quirks struct {
 //   - Nexus: the docker format has no referrers API, and a manifest delete by digest leaves
 //     every tag that names it (docs/registries/nexus.md, item 2), so DeleteManifest is false;
 //     the oci format has it, and fails every range (wholeBlobs);
-//   - JFrog: blobExistsByGET.
+//   - JFrog: blobExistsByGET;
+//   - Quay: pushForDelete.
 func afterProbe(v vendor, probed *provider.Capabilities, referrers bool) quirks {
 	switch v {
 	case vendorNexus:
@@ -197,7 +203,9 @@ func afterProbe(v vendor, probed *provider.Capabilities, referrers bool) quirks 
 		probed.DeleteManifest = false
 	case vendorJFrog:
 		return quirks{blobExistsByGET: true}
-	case vendorUnknown, vendorGitLab, vendorGHCR, vendorHarbor, vendorGitea, vendorZot, vendorDistribution, vendorDocker, vendorQuay:
+	case vendorQuay:
+		return quirks{pushForDelete: true}
+	case vendorUnknown, vendorGitLab, vendorGHCR, vendorHarbor, vendorGitea, vendorZot, vendorDistribution, vendorDocker:
 	}
 	return quirks{}
 }

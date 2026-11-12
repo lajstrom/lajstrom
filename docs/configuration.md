@@ -244,13 +244,16 @@ repository, which the referrers probe tells: the `docker` format, without the re
 with 500, so Lajstrom asks it for whole blobs and serves a client's range with the whole blob
 (`200`, no `Accept-Ranges`). JFrog answers `HEAD` of a blob with 200 in an image path where
 `GET` is 404 ([jfrog-jcr.md](registries/jfrog-jcr.md#blob-reads-head-and-get)), so Lajstrom
-asks whether a blob exists with a `GET` of its first byte. A GitLab registry that answers
+asks whether a blob exists with a `GET` of its first byte. Quay's token service refuses the
+action `delete` with 400 and lets a `push` token delete
+([quay.md](registries/quay.md#tokens-and-the-delete-action)), so Lajstrom asks it for `push`
+where it would ask `delete`; every other registry is asked for `delete`. A GitLab registry that answers
 `Gitlab-Container-Registry-Database-Enabled: true` gets a warning at startup: with its database
 it refuses a manifest whose `artifactType` it does not know, every one Lajstrom writes, unless
 `REGISTRY_FF_DYNAMIC_MEDIA_TYPES` is on ([gitlab.md](registries/gitlab.md#media-types)). The
 startup line names the vendor, `vendor=gitlab`, `ghcr`, `dockerhub`, `harbor`, `nexus`, `gitea`, `jfrog`, `zot`, `quay`, `distribution` or
 `unknown`, beside the capabilities, and a line `registry needs workarounds` says when blobs are
-read whole or their existence asked with `GET`. A registry the table does not know gets the probe alone.
+read whole, their existence asked with `GET`, or a delete's token asked with `push`. A registry the table does not know gets the probe alone.
 To see what a registry does before attaching it, beyond these answers, `lajstrom registry probe`
 measures its row of the capability matrix in a scratch prefix and deletes what it pushed
 ([registries/README.md](registries/README.md#measuring-a-registry-lajstrom-registry-probe)).
