@@ -82,7 +82,7 @@ their implementation issue.
 | `repos` | control plane | `upstream` json null: a proxy's `{"name", "metadataTTL", "negativeTTL", "offline", "allow", "deny"}`; `group` json null: a group's `{"merge"}` | `kind` is set on insert; its one update is `proxy` to `hosted`, by `ConvertRepo`, which sets `upstream` NULL in the same statement (proxy-and-group.md §2.6). `upstream` only on a proxy, `group` only on a group; a group's `registry` is `''` and its `policy` NULL. The upstream's URL and credentials are in the configuration, never in a row |
 | `group_members` | control plane | `group_id` → repos (`ON DELETE CASCADE`), `member_id` → repos (`ON DELETE RESTRICT`), `position` int (from 0, the member order) | primary key `(group_id, position)`, unique `(group_id, member_id)`, index `group_members_member` on `(member_id)` (`ListGroupsOf`). Written in the transaction that updates the group's `repos` row, so `auth_version` moves with it; a repo that is a member is not deleted (`409` naming its groups). Migration `0013_groups.sql`, with the column `repos.group` |
 | `fetch_claims` | coordination | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `package` text (the package path; an `oci` proxy's path), `tag` text (the profile's tag; an `oci` proxy's reference, a tag or a digest), `principal` text, `replica` text (host name and process id), `claimed_at` ts, `heartbeat_at` ts | unique `(repo_id, package, tag)`; written by the proxy fetcher only. Migration `0011_fetch_claims.sql` |
-| `proxy_meta` | derived, a cache | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `name` text (the plugin's key of the name; an `oci` proxy's path), `kind` text (the plugin's document kind, npm `packument`; an `oci` proxy's `oci.tag:<tag>`, `oci.manifest:<digest>`, `oci.ref:<digest>`, `oci.held:<digest>`, `oci.fixed-tags`), `state` text (`present`, `absent`), `content` blob null, `content_type` text null, `sha256` text null, `etag` text null, `last_modified` text null (the upstream's validators), `checked_at` ts | unique `(repo_id, name, kind)`; listed in the Derived table too. Migration `0010_proxy_meta.sql`, with the column `repos.upstream` |
+| `proxy_meta` | derived, a cache | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `name` text (the plugin's key of the name; an `oci` proxy's path, `""` for its `oci.holders` rows, which are the repo's), `kind` text (the plugin's document kind, npm `packument`; an `oci` proxy's `oci.tag:<tag>`, `oci.manifest:<digest>`, `oci.ref:<digest>`, `oci.held:<digest>`, `oci.holders:<digest>`, `oci.fixed-tags`), `state` text (`present`, `absent`), `content` blob null, `content_type` text null, `sha256` text null, `etag` text null, `last_modified` text null (the upstream's validators), `checked_at` ts | unique `(repo_id, name, kind)`; listed in the Derived table too. Migration `0010_proxy_meta.sql`, with the column `repos.upstream` |
 
 A `fetch_claims` row is the lock that keeps two replicas from downloading one artifact: the
 fetcher inserts it before the download and deletes it after the ingest, or after a failure, in
@@ -101,11 +101,12 @@ Expired `absent` rows are deleted once a minute, with the expired sessions.
 
 An `oci` proxy's rows (proxy-and-group.md §11.3) keep the upstream's tags, the exact bytes of the
 manifests and indexes it fetched (until and after the backend holds them), what each lists, what
-the backend holds and whether its tags move. Its `oci.ref`, `oci.held` and `oci.fixed-tags` rows
-are present and have no TTL; a write of one does not invalidate `index_cache`, which an `oci`
-proxy does not have. Their loss costs a `HEAD` per tag and a counted `GET` per manifest or index
-the backend does not hold, and makes the tags of a backend whose tags do not move answer until a
-push is refused again.
+the backend holds, at which paths it holds each blob, and whether its tags move. Its `oci.ref`,
+`oci.held`, `oci.holders` and `oci.fixed-tags` rows are present and have no TTL; a write of one
+does not invalidate `index_cache`, which an `oci` proxy does not have. Their loss costs a `HEAD`
+per tag and a counted `GET` per manifest or index the backend does not hold, a fetch of each blob
+that the backend held at another path only, and makes the tags of a backend whose tags do not
+move answer until a push is refused again.
 
 A proxy repo has `packages`, `versions`, `files`, `index_cache` and `oci_repos` rows as a hosted
 repo has, rebuilt by reindex from its manifests; the `attrs` of a proxied version hold its
