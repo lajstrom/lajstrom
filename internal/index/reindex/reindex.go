@@ -147,8 +147,8 @@ type Request struct {
 	// Repositories are OCI repositories of Repo that the run reads besides those the registry
 	// lists: the first attach of a prefix on a registry without a catalog, whose oci_repos has
 	// no row of them yet (#37). They are names below the registry's instance prefix and under
-	// the repo's path, as oci_repos.path holds them. One the run reads is recorded in oci_repos,
-	// so later runs and the reconcile loop find it without the list. They need Repo.
+	// the repo's path, as oci_repos.path holds them. One the run finds a tag in is recorded in
+	// oci_repos, so later runs and the reconcile loop find it without the list. They need Repo.
 	Repositories []string
 }
 

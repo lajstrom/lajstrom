@@ -572,6 +572,26 @@ func testOCIRepos(t *testing.T, s index.Store) {
 	list, err = s.ListOCIRepos(ctx, other.ID)
 	must(t, err)
 	same(t, "ListOCIRepos of the other repo", []index.OCIRepo{oci[3]}, list)
+
+	// DeleteOCIRepo removes the one row of its repo and path: the other repo's row of the same
+	// path stays.
+	twin := index.OCIRepo{RepoID: other.ID, Path: oci[2].Path, SeenAt: at(4)}
+	must(t, s.UpsertOCIRepo(ctx, &twin))
+	must(t, s.DeleteOCIRepo(ctx, repo.ID, oci[2].Path))
+	list, err = s.ListOCIRepos(ctx, repo.ID)
+	must(t, err)
+	same(t, "ListOCIRepos after DeleteOCIRepo", []index.OCIRepo{seen}, list)
+	list, err = s.ListOCIRepos(ctx, other.ID)
+	must(t, err)
+	same(t, "ListOCIRepos of the other repo after DeleteOCIRepo", []index.OCIRepo{twin, oci[3]}, list)
+	wantErr(t, "DeleteOCIRepo of a path without a row", s.DeleteOCIRepo(ctx, repo.ID, oci[2].Path), index.ErrNotFound)
+	wantErr(t, "DeleteOCIRepo in a missing repo", s.DeleteOCIRepo(ctx, 999999, seen.Path), index.ErrNotFound)
+	// The upsert after it, a push's, records the repository again.
+	again := index.OCIRepo{RepoID: repo.ID, Path: oci[2].Path, SeenAt: at(5)}
+	must(t, s.UpsertOCIRepo(ctx, &again))
+	list, err = s.ListOCIRepos(ctx, repo.ID)
+	must(t, err)
+	same(t, "ListOCIRepos after an upsert of the deleted path", []index.OCIRepo{again, seen}, list)
 }
 
 // testMissingParent checks that a row referring to a missing row is index.ErrNotFound.

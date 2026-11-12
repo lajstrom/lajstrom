@@ -270,7 +270,7 @@ row only as long as another writer's transaction of the package runs.
 | `files` | `id`, `version_id` → versions, `name` text, `media_type` text, `digest` text (layer), `size` int, `attrs` json (layer annotations) | index `(version_id, name)`; apt pool and maven lookups go by `(repo, name)` → add index on `name` |
 | `index_cache` | `id`, `repo_id`, `scope` text (`jammy/main/amd64`, `simple/requests`, `com.example/lib-core`), `kind` text (`Packages`, `Release`, `InRelease`, `simple`, `maven-metadata`), `content` blob, `sha256` text, `rendered_at` ts, `signed_at` ts null | invalidated by ingest, delete, reindex and a key rotation; rebuilt lazily on GET, and stored only while the repo's generation is the one the render read ([below](#the-generation-of-a-repos-documents)). A signed document (apt `InRelease`, `Release.gpg`) has the `rendered_at` of the document it signs and its own `signed_at` |
 | `index_cache_generations` | `repo_id` → repos (primary key, `ON DELETE CASCADE`), `generation` bigint | the generation of the repo's `index_cache`; no row is generation 0. Not rebuilt: `ResetDerived` increments it, as every invalidation does. Migration `0017_index_cache_generations.sql` (#477) |
-| `oci_repos` | `id`, `repo_id`, `path` text (full OCI path incl. prefix), `seen_at` ts | repository list for backends without a catalog; reconcile source |
+| `oci_repos` | `id`, `repo_id`, `path` text (full OCI path incl. prefix), `seen_at` ts | repository list for backends without a catalog; reconcile source. Of an `oci` repo, only the repositories that hold a tag: its catalog lists them ([below](#invariants-and-rules), #748) |
 | `proxy_meta` | the upstream's documents of a proxy repo, [above](#proxy-and-group-repos) | a cache of the upstream, not of the registry: not rebuilt, and `ResetDerived` leaves it. Migration `0010_proxy_meta.sql` |
 
 ### The generation of a repo's documents
@@ -460,8 +460,8 @@ release.
   `repositoryUnknown`, with the request of the management API that deletes it, on every run
   until then (#567); a run asks each OCI repository's tag list at most once. A run that cannot
   list the repo's OCI repositories sweeps nothing. An `oci_repos` row goes when no run has seen
-  its repository for `reconcile.graceAge`; a sweep that finds a version's manifest records its
-  repository again.
+  its repository for `reconcile.graceAge`, an `oci` repo's at once when its tag list has no tag
+  (below); a sweep that finds a version's manifest records its repository again.
 - A tag that names another digest than the index row of that tag is drift: the index keeps its
   digest, the report lists both, nothing is re-pointed (the rule of the reconcile loop, #30).
   A drifted row is the one row whose manifest is not under its tag any more.
@@ -474,6 +474,16 @@ release.
   other form is gone. Nothing is copied or moved in the registry: manifests copied into the
   indexed form are versions, through `/v2` at once, past Lajstrom at the next run (#609).
 - A repo of format `oci` (pass-through, http-routing.md §1) has rows in `oci_repos` only: the
-  facade records the repository of every manifest pushed to it, and nothing else is indexed.
+  facade records the repository of every manifest pushed to it, after the registry took the
+  manifest, and nothing else is indexed. Its `oci_repos` records only the repositories that hold
+  a tag, which its catalog lists (#748): Zot keeps a repository whose manifests are all deleted,
+  and its tag list answers `200` with no tag. A delete that leaves the repository without a tag
+  (an empty tag list, or `404`) drops its row (`Store.DeleteOCIRepo`), and so does reindex when
+  the repository's tag list is empty. A push into the repository may race the drop, so the row
+  goes first and the tags are listed once more after it, without a lock: a tag pushed before the
+  row went is in that listing, and the repository is recorded again, as it is when that listing
+  fails; a push after it records the row itself, after its manifest. Meanwhile the catalog may
+  miss the repository for one tag list's time. A managed repo's rows stay the registry's
+  repositories, as its delete leaves them; its catalog lists its packages.
 - The control plane can be exported with `lajstrom admin export` (JSON) and, after the MVP,
   snapshotted into the registry as `<prefix>_meta/config`.

@@ -466,6 +466,12 @@ func (c *conn) UpsertOCIRepo(ctx context.Context, r *index.OCIRepo) error {
 		&r.ID)
 }
 
+// DeleteOCIRepo removes the row of (repoID, path); index.ErrNotFound when there is none.
+func (c *conn) DeleteOCIRepo(ctx context.Context, repoID int64, path string) error {
+	return c.execOne(ctx, fmt.Sprintf("oci_repos %q in repo %d", path, repoID),
+		"DELETE FROM oci_repos WHERE repo_id = ? AND path = ?", repoID, path)
+}
+
 // PruneOCIRepos removes the OCI repositories of a repo not seen since seenBefore.
 func (c *conn) PruneOCIRepos(ctx context.Context, repoID int64, seenBefore time.Time) (int, error) {
 	return c.exec(ctx, fmt.Sprintf("oci_repos of repo %d", repoID),

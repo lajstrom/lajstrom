@@ -558,6 +558,9 @@ type wrapped struct {
 
 	mu       sync.Mutex
 	tagLists map[string]int // the tag lists asked, by repository
+	// afterTags, when set, is called once, after the next tag list is read and before it is
+	// answered: a push that lands between a run's tag list and what the run does next.
+	afterTags func()
 }
 
 func (w *wrapped) Capabilities(ctx context.Context) (provider.Capabilities, error) {
@@ -598,11 +601,25 @@ func (r *resolving) Tags(ctx context.Context, last string, fn func(tags []string
 		r.w.tagLists = map[string]int{}
 	}
 	r.w.tagLists[r.name]++
+	after := r.w.afterTags
+	r.w.afterTags = nil
 	r.w.mu.Unlock()
 	if r.w.failTags != nil && (r.w.tagsIn == "" || r.w.tagsIn == r.name) {
 		return r.w.failTags
 	}
-	return r.Repository.Tags(ctx, last, fn)
+	if after == nil {
+		return r.Repository.Tags(ctx, last, fn)
+	}
+	var tags []string
+	err := r.Repository.Tags(ctx, last, func(page []string) error {
+		tags = append(tags, page...)
+		return nil
+	})
+	after()
+	if err != nil {
+		return err
+	}
+	return fn(tags)
 }
 
 func must(t *testing.T, err error) {

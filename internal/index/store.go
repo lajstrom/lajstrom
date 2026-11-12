@@ -387,6 +387,12 @@ type Writer interface {
 
 	// UpsertOCIRepo inserts r or sets SeenAt of the row with the same (RepoID, Path).
 	UpsertOCIRepo(ctx context.Context, r *OCIRepo) error
+	// DeleteOCIRepo removes the row of (repoID, path): a repository that holds no tag any more
+	// (docs/spec/index-schema.md, oci_repos). ErrNotFound when there is none. The caller lists
+	// the repository's tags again after it, and records it again when one is there: a push
+	// records its repository after its manifest PUT, so either the push comes after the delete
+	// or its tag is in that listing.
+	DeleteOCIRepo(ctx context.Context, repoID int64, path string) error
 	// PruneOCIRepos removes the OCI repositories of a repo not seen since seenBefore and
 	// returns how many it removed.
 	PruneOCIRepos(ctx context.Context, repoID int64, seenBefore time.Time) (int, error)
