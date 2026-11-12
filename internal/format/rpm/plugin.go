@@ -2,9 +2,11 @@ package rpm
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
+	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
 const (
@@ -16,9 +18,22 @@ const (
 	ParamUploadedBy = "uploaded-by"
 )
 
-// Plugin is the rpm format plugin. It is stateless: Build, Validate and EscapeName need no
-// services.
-type Plugin struct{}
+// Plugin is the rpm format plugin. The value format.Register holds has no services: Build,
+// Validate and EscapeName need none. Routes makes the value its handlers render with, which
+// keeps the providers of format.Deps, so that RenderIndex can read from the registry a metadata
+// layer the index left out. A Plugin is comparable; it holds a pointer, not the services.
+type Plugin struct {
+	svc *services
+}
+
+// services are what the handlers and RenderIndex need beyond the index.
+type services struct {
+	// providers resolves repo.Registry, for the metadata layers the index does not hold.
+	providers provider.Set
+	// now is the clock of the revision of a repomd.xml and of the SignedAt of its signature;
+	// nil is time.Now.
+	now func() time.Time
+}
 
 var _ format.Plugin = Plugin{}
 

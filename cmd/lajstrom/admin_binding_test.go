@@ -44,7 +44,7 @@ func TestAdminBindingCreate(t *testing.T) {
 		{[]string{"create", "--principal", "user:alice", "--role", "writer", "--mask", "raw/*"}, "exists already"},
 		{[]string{"create", "--principal", "anonymous", "--role", "reader", "--mask", "raw/*"}, "principal: anonymous cannot be bound"},
 		{[]string{"create", "--principal", "user:bob", "--role", "reader", "--mask", "raw/*"}, "principal: user bob does not exist"},
-		{[]string{"create", "--principal", "user:alice", "--role", "reader", "--mask", "rpm/*"}, `"rpm" is not a format of this server`},
+		{[]string{"create", "--principal", "user:alice", "--role", "reader", "--mask", "cargo/*"}, `"cargo" is not a format of this server`},
 		{[]string{"create", "--principal", "user:alice", "--role", "reader", "--mask", "oci/*"}, ""},
 		{[]string{"create", "--principal", "user:alice", "--role", "reader"}, `required flag(s) "mask" not set`},
 		{[]string{"delete", "x"}, `binding id "x"`},
