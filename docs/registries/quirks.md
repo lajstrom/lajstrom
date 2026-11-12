@@ -382,7 +382,7 @@ layer without a length. distribution-spec 1.1.1 defines the first two; Docker pu
   uploads" ([Docker API](https://docs.cloud.google.com/artifact-registry/docs/reference/docker-api)),
   a second `PATCH` is 405 ([reported](https://github.com/greenticai/greentic-deployer/pull/616)),
   and its upload `Location` is outside `/v2/` ([ocync, GAR](https://clowdhaus.github.io/ocync/registries/gar)).
-- **ECR** sends `OCI-Chunk-Min-Length: 10485760`, answers
+- **ECR** sends `OCI-Chunk-Min-Length: 10485760` (the facade passes it on to the client), answers
   a `PATCH` with 201 instead of 202, and its `Range` stopped advancing after the first chunk until
   a fix of 2026-07 ([aws/containers-roadmap#2831](https://github.com/aws/containers-roadmap/issues/2831));
   AWS's 5 MiB minimum part is documented for its API only, so a part's minimum on `/v2` is

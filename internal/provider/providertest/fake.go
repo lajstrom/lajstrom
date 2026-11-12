@@ -92,6 +92,9 @@ type Fake struct {
 	FailFetch error
 	// ChunkSize is the chunk size of OpenBlobWriter; zero means DefaultChunkSize.
 	ChunkSize int
+	// ChunkMinLength is the OCI-Chunk-Min-Length the Fake's upload sessions answer with, in
+	// provider.Upload; zero means none. The Fake takes chunks of any size.
+	ChunkMinLength int64
 	// FailStatManifest, when set, is asked first by StatManifest: an error it returns is the
 	// answer, nil asks the content. A lagging registry is one that answers
 	// provider.ErrManifestUnknown for a manifest it has.

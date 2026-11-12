@@ -683,11 +683,14 @@ func parseContentRange(s string) (first, last int64, ok bool) {
 
 // answerSession answers status for the upload id with the facade's Location for it, the Range
 // of the bytes the backend holds and Docker-Upload-UUID. The backend's location never reaches
-// the client. OCI-Chunk-Min-Length is not sent: provider.Upload does not carry the backend's.
+// the client. The backend's OCI-Chunk-Min-Length goes on as it came, and none when it sent none.
 func answerSession(w http.ResponseWriter, t *target, id string, u provider.Upload, status int) {
 	w.Header().Set("Location", uploadLocation(t, id))
 	w.Header().Set("Range", rangeOf(u.Offset))
 	w.Header().Set("Docker-Upload-UUID", id)
+	if u.ChunkMinLength > 0 {
+		w.Header().Set("OCI-Chunk-Min-Length", strconv.FormatInt(u.ChunkMinLength, 10))
+	}
 	w.Header().Set("Content-Length", "0")
 	w.WriteHeader(status)
 }

@@ -95,9 +95,10 @@ func (r *repository) upload(verb string, u provider.Upload) (*partial, error) {
 	return p, nil
 }
 
-// at returns the session u with the offset of p. The caller holds p.mu.
-func at(u provider.Upload, p *partial) provider.Upload {
-	return provider.Upload{Location: u.Location, ID: u.ID, Offset: p.size}
+// at returns the session u with the offset of p and the Fake's ChunkMinLength. The caller
+// holds p.mu.
+func (r *repository) at(u provider.Upload, p *partial) provider.Upload {
+	return provider.Upload{Location: u.Location, ID: u.ID, Offset: p.size, ChunkMinLength: r.f.ChunkMinLength}
 }
 
 // StartBlobUpload opens a session; its ID is the key of the Fake's partial blobs.
@@ -113,7 +114,7 @@ func (r *repository) StartBlobUpload(context.Context) (provider.Upload, error) {
 	r.f.uploadSeq++
 	id := fmt.Sprintf("upload-%d", r.f.uploadSeq)
 	r.f.uploads[id] = &partial{name: r.name}
-	return provider.Upload{Location: "/v2/" + r.name + "/blobs/uploads/" + id, ID: id}, nil
+	return provider.Upload{Location: "/v2/" + r.name + "/blobs/uploads/" + id, ID: id, ChunkMinLength: r.f.ChunkMinLength}, nil
 }
 
 // MountBlob copies the blob d from the repository from when that repository has it, kept or
@@ -149,12 +150,12 @@ func (r *repository) AppendBlobChunk(_ context.Context, u provider.Upload, rd io
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if u.Offset != p.size {
-		return at(u, p), fmt.Errorf("%s: chunk at offset %d, the session holds %d bytes", r.op("append", u.ID), u.Offset, p.size)
+		return r.at(u, p), fmt.Errorf("%s: chunk at offset %d, the session holds %d bytes", r.op("append", u.ID), u.Offset, p.size)
 	}
 	if err := p.append(rd, size); err != nil {
-		return at(u, p), fmt.Errorf("%s: %w", r.op("append", u.ID), err)
+		return r.at(u, p), fmt.Errorf("%s: %w", r.op("append", u.ID), err)
 	}
-	return at(u, p), nil
+	return r.at(u, p), nil
 }
 
 // FinishBlobUpload appends the last chunk r, checks the session's bytes against d and stores
@@ -203,7 +204,7 @@ func (r *repository) BlobUploadStatus(_ context.Context, u provider.Upload) (pro
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return at(u, p), nil
+	return r.at(u, p), nil
 }
 
 // CancelBlobUpload drops the session and its bytes.

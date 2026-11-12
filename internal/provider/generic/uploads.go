@@ -349,7 +349,18 @@ func (r *repository) session(op string, resp *http.Response, prev provider.Uploa
 		u.ID = path.Base(loc.Path)
 	}
 	u.Offset = offsetOf(resp.Header.Get("Range"), counted)
+	u.ChunkMinLength = chunkMinLength(resp.Header.Get("OCI-Chunk-Min-Length"))
 	return u, nil
+}
+
+// chunkMinLength returns the size of an OCI-Chunk-Min-Length header: 0 when it is missing or
+// is not a positive number.
+func chunkMinLength(h string) int64 {
+	n, err := strconv.ParseInt(strings.TrimSpace(h), 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 // location resolves an upload location against the registry URL. A location on another host,

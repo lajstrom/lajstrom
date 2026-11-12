@@ -102,6 +102,26 @@ func TestUploadPostPut(t *testing.T) {
 	wantError(t, "second PUT", e.do(e.h, http.MethodPut, uploads+id+"?digest="+d.String(), nil), http.StatusNotFound, codeBlobUploadUnknown)
 }
 
+// TestUploadChunkMinLength checks that the backend's OCI-Chunk-Min-Length reaches the client
+// on the answers of POST and PATCH, and that none is made up when the backend sends none (#664).
+func TestUploadChunkMinLength(t *testing.T) {
+	for _, tc := range []struct {
+		backend int64
+		want    string
+	}{{0, ""}, {10485760, "10485760"}} {
+		t.Run(tc.want, func(t *testing.T) {
+			e := newEnv(t, envOptions{})
+			e.prov.ChunkMinLength = tc.backend
+			rr := e.do(e.h, http.MethodPost, uploads, nil)
+			wantStatus(t, "POST", rr, http.StatusAccepted)
+			wantHeader(t, "POST", rr, "OCI-Chunk-Min-Length", tc.want)
+			rr = e.do(e.h, http.MethodPatch, uploads+uploadID(t, rr), strings.NewReader("abc"), "Content-Type", octetStream)
+			wantStatus(t, "PATCH", rr, http.StatusAccepted)
+			wantHeader(t, "PATCH", rr, "OCI-Chunk-Min-Length", tc.want)
+		})
+	}
+}
+
 func TestUploadChunked(t *testing.T) {
 	e := newEnv(t, envOptions{})
 	id := e.start(e.h)
