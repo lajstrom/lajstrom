@@ -539,6 +539,27 @@ lajstrom admin repo delete raw/scratch [--force]
 `create` prints the resource as JSON on one line, `list` a table (`--json`: the document of
 `GET /api/v1/repos`), `delete` nothing. An error goes to standard error with exit status 1.
 
+`prefetch` is the exception: a client of the server's API, `POST …/prefetch` above, since only
+the server reaches the upstream with its credentials. It reads no configuration; the server
+and the token are those of `lajstrom admin retention`, `--url` or `LAJSTROM_URL`, and
+`--token-file`, `LAJSTROM_TOKEN_FILE` or `LAJSTROM_TOKEN`, a token with `manage` on the repo.
+
+```sh
+lajstrom admin repo prefetch npm/legacy --from-file names.txt [--all-versions] [--batch 20] [--report report.json]
+lajstrom admin repo prefetch npm/legacy --from-file report.json --failed --report report.json
+```
+
+The names file has one package name a line; blank lines and what follows `#` are skipped, and a
+name listed twice goes once; `-` reads standard input. The names go in batches of `--batch` (1 to
+100, default 20), each request bounded by `--timeout` (default `30m`). A line is printed per
+version as each batch is answered, `fetched`, `held`, `shared` or `failed` with the status and
+the message, then the counts; `--report` writes the results as JSON. `--failed` reads such a
+report instead of a list and sends again the names of its failed results, so that a run is
+resumed where it failed. A request that fails (the server down, a token without `manage`) fails
+its names and stops the run, as do `SIGINT`, `SIGTERM` and `SIGHUP`: the names left are failed,
+not attempted, and the report says so. Exit status 0 when every version was fetched, held or
+shared, 1 when one failed or the run stopped, 2 on a usage error.
+
 ## Users
 
 Local users, managed by the admin role; what a user is, its uid and its name, is in
