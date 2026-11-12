@@ -24,6 +24,7 @@ internal/format/pypi/         pypi plugin: wheel/sdist metadata, simple index, u
 internal/format/deb/          deb/apt plugin: control parsing, Packages/Release rendering, GPG, pool routes
 internal/format/maven/        maven plugin: coordinates, POM, sessions, maven-metadata.xml, checksums
 internal/format/npm/          npm plugin: packuments, publish, dist-tags journal, proxy and group hooks, audit
+internal/format/rpm/          rpm plugin: header parsing, repodata (repomd, primary, filelists, other), signed repomd, Packages routes
 internal/format/formattest/   test doubles: Fake plugin, partial index.Store; imported only by tests
 internal/oci/profile/         media types, annotations, Escape/EscapeComponent, manifest build+validate (pure)
 internal/ingest/              pipeline (validate → parse → push → index), publication sessions
@@ -43,10 +44,10 @@ internal/proxy/               proxy repos (ADR 0013): the settings, the upstream
 internal/auth/                principals, password hashing, PAT/deploy tokens, RBAC evaluation
 internal/auth/token/          the bearer JWT of /v2: scopes, issue, verify
 internal/api/                 /api/v1 management REST (repos, users, tokens, bindings), JSON
-internal/keys/                server signing key, per-repo GPG keys (apt), encryption at rest
+internal/keys/                server signing key, per-repo GPG keys (apt, rpm), encryption at rest
 internal/audit/               audit log writer
 internal/metrics/             the Prometheus collectors (fixed labels) and the handler of the metrics listener
-internal/testutil/            fixture builders, in memory: .deb, .whl/sdist, .jar + POM, npm tarball, archives, bombs, fuzz seeds
+internal/testutil/            fixture builders, in memory: .deb, .rpm, .whl/sdist, .jar + POM, npm tarball, archives, bombs, fuzz seeds
 internal/version/             build information (version, commit, date), set with -ldflags; /-/version
 deploy/compose/               dev stack: zot, distribution, postgres; lajstrom.example.yaml
 docs/                         architecture, specs, ADRs, plan, registries (spike results), quickstarts

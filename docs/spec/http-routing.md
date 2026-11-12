@@ -394,6 +394,45 @@ in `.npmrc`, or `npm login --registry=https://host/npm/<repo>/`; yarn 4: `npmReg
 anonymous read and the repo's scopes in `npmPreapprovedPackages`, or yarn holds a new version
 back for a day.
 
+### rpm (M6, #64)
+
+Implements the repodata of a yum repository (`repomd.xml` and the `primary`, `filelists` and
+`other` documents) that dnf, yum and zypper read, for binary and source packages. One repo is
+one repository: its `baseurl` is `https://host/rpm/<repo>/`, every architecture in one repodata
+(clients pick theirs), and a distribution release (el8, el9, fc41) is a repo of its own.
+Modularity (`modules.yaml`), comps groups, `updateinfo`, deltarpms, zchunk and the sqlite
+databases are not served. Lajstrom never signs a package: an rpm's own signature is part of its
+bytes, so a client checks it with the key of whoever signed it (`gpgcheck`), and the repodata
+with the repo's key (`repo_gpgcheck`).
+
+| Method and path | Behaviour |
+| --- | --- |
+| `GET /rpm/<repo>/repodata/repomd.xml` | rendered with `primary.xml.gz`, `filelists.xml.gz` and `other.xml.gz` in one render on the first `GET` after a publish or a delete (both invalidate the repo's documents) and kept with them in `index_cache` (scope `repodata`), so its checksums are those of the files served. One `<data>` per document, `type` `primary`, `filelists` and `other`, with `checksum` and `open-checksum` (`sha256` of the compressed and of the uncompressed document), `location href="repodata/<checksum>-<type>.xml.gz"`, `timestamp`, `size` and `open-size`; `<revision>` is the time of the render. A repo without versions has the three documents empty, never `404`: dnf fails on a repo whose `repomd.xml` it cannot read (`skip_if_unavailable=False`). `Content-Type: application/xml` |
+| `GET /rpm/<repo>/repodata/repomd.xml.asc` | the armored detached signatures of the bytes of the same render's `repomd.xml`, one per key that signs (the repo's active key and, for `keys.retireGrace` after a rotation, the retired one), made on the first `GET` after the render and kept beside it; signed again when the `Signer` no longer calls them current, as apt's `InRelease`. `application/pgp-signature`. `404` without a master key (`keys.masterKeyEnv`): clients set `repo_gpgcheck=0` then |
+| `GET /rpm/<repo>/repodata/repomd.xml.key`, `GET /rpm/<repo>/key.asc` | the ASCII-armored keyring of the repo, as apt's `key.asc`: the active key, made on the first request when the repo has none, and the keys retired within `keys.retireGrace`; `application/pgp-keys`, not cached. zypper fetches `repomd.xml.key` beside a `repomd.xml.asc` by itself; dnf takes either as `gpgkey=`. `404` without a master key |
+| `GET /rpm/<repo>/repodata/<checksum>-<type>.xml.gz` | a document the current `repomd.xml` lists, by its `location`; any other name, one of an older render among them, is `404`, without a render. `application/gzip`. `primary.xml` has a `<package type="rpm">` per version, sorted by name, version and arch: `name`, `arch`, `version` (`epoch`, `ver`, `rel`; `epoch="0"` without one), `checksum type="sha256" pkgid="YES"` (the file's sha256), `summary`, `description`, `packager`, `url`, `time file` (the version's publish time, `org.opencontainers.image.created`) and `build`, `size package` (the file), `installed` and `archive`, `location href="Packages/<filename>"`, and `format`: `rpm:license`, `rpm:vendor`, `rpm:group`, `rpm:buildhost`, `rpm:sourcerpm`, `rpm:header-range`, the `rpm:provides`, `rpm:requires`, `rpm:conflicts`, `rpm:obsoletes`, `rpm:recommends`, `rpm:suggests`, `rpm:supplements` and `rpm:enhances` entries (`name`, `flags` `EQ`, `LT`, `LE`, `GT` or `GE`, `epoch`, `ver`, `rel`, and on a requirement of the install scripts `pre="1"`), the `rpmlib(…)` requirements and repeated entries left out, and the files of the package below `/etc/`, in a directory whose name ends in `bin`, and `/usr/lib/sendmail`, which dnf resolves without `filelists` (dnf5 does not fetch it by default). `filelists.xml` lists every file of each version, `type="dir"` for a directory and `type="ghost"` for a `%ghost`; `other.xml` its changelog entries (`author`, `date`, the text), as the package has them |
+| `GET /rpm/<repo>/Packages/<filename>` | the package, its `location` in `primary.xml`, `<name>-<version>-<release>.<arch>.rpm` (manifest-profile.md §2). Resolved by file name: the version of the repo that holds the file (else `404`), read as the blob `GET` of the facade (§2, `format.ServeBlob`): `307` or stream, `Range`, `ETag` the blob digest, `Last-Modified` and `Docker-Content-Digest` those of the version, `Content-Type: application/x-rpm`; `HEAD` from the backend's `HEAD`. The file name has no epoch, so two versions that differ only in it share one: the upload refuses that (below), and versions that hold one file name with two blobs, which an `oras push` cannot be checked for, are `500`, logged with both digests for the operator |
+| `PUT /rpm/<repo>/upload` | one `.rpm` (body), binary or source. Equivalent to `oras push` with the rpm profile: the rpm plugin builds the manifest from the header. A body above the repo's `maxFileSize` is `413`, one that is not an rpm (a lead, a signature header and a header of rpm v3 or v4, with `NAME`, `VERSION`, `RELEASE` and `ARCH`) `400`. The body streams into the registry ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)): its head, up to the end of the header, is read first for the package name, so a header over 32 MiB is `400` before the rest is read; a refused upload stores nothing. `201` with `Location` (the file below `Packages/`), `Docker-Content-Digest` (the manifest digest) and a JSON body `{"name", "epoch", "version", "release", "arch", "filename", "digest", "tag"}`. The same bytes again are the idempotent repeat, `201` with the same digest. `409` for other bytes under the same name, version and arch (the tag holds another manifest), and for other bytes under a file name that a version with another epoch holds, naming that version |
+
+A version is deleted as any other: `DELETE /api/v1/repos/rpm/<repo>/packages/<name>/versions/<version>`
+(`?variant=<arch>` for one architecture) or the `DELETE` of its manifest on `/v2`; the next
+`repomd.xml` is rendered without it. `oras push` to `/v2/rpm/<repo>/<package path>:<tag>` with the
+rpm profile works too; `lajstrom admin rpm metadata <file.rpm>` prints its metadata layer.
+
+Client config, `/etc/yum.repos.d/<repo>.repo`:
+
+```ini
+[<repo>]
+name=<repo>
+baseurl=https://host/rpm/<repo>/
+repo_gpgcheck=1
+gpgkey=https://host/rpm/<repo>/repodata/repomd.xml.key
+gpgcheck=0
+```
+
+with `username=` and `password=` for a repo without anonymous read, and `gpgcheck=1` with the
+packager's key in `gpgkey=` for signed packages. zypper: `zypper addrepo https://host/rpm/<repo>/ <repo>`.
+
 ## 4. Management API `/api/v1`
 
 JSON, bearer (PAT) or Basic. Shapes are in [api.md](../api.md) and `internal/api/openapi.yaml`;
