@@ -1,0 +1,27 @@
+# The route of Lajstrom (docs/deploy/kubernetes.md, Gateway API; docs/reverse-proxy.md, Gateway
+# API): the whole host, without a path prefix or a rewrite, to the port http of the Service. OCI
+# clients always ask /v2/ of the host (docs/spec/http-routing.md §1). The port metrics is never
+# routed.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: lajstrom
+  labels:
+    app.kubernetes.io/name: lajstrom
+spec:
+  parentRefs:
+    - name: lajstrom
+      sectionName: https
+  hostnames:
+    - art.example.com
+  rules:
+    # No matches: every path of the host.
+    - backendRefs:
+        - name: lajstrom
+          port: 8080
+      # No bound on a whole request (GEP-1742: 0s disables it): a push or a pull of gigabytes
+      # takes what it takes, and a stalled one is cut by the stream idle timeout and by
+      # server.stallTimeout. Without it, Envoy Gateway and Cilium leave Envoy's default, 15 s
+      # from the end of the request to the end of the response, which cuts a long download.
+      timeouts:
+        request: 0s

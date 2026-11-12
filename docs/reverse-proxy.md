@@ -14,7 +14,8 @@ htpasswd), over TLS. nginx is also the edge of the dev stack's `ha` profile, two
 Postgres and distribution over plain HTTP on loopback
 ([dev-stack.md](dev-stack.md#the-ha-profile)), and `test/e2e/ha.sh` runs through it
 ([testing.md](testing.md#the-ha-stack)). Traefik and Envoy each ran in a container on the network
-of that profile, in front of the same two replicas.
+of that profile, in front of the same two replicas. On Kubernetes the edge is a Gateway:
+[Gateway API](#gateway-api) has the manifests, run with Envoy Gateway on 2026-11-12.
 
 | Edge | Version | Configuration |
 | --- | --- | --- |
@@ -22,6 +23,7 @@ of that profile, in front of the same two replicas.
 | Caddy | `caddy:2.11.9-alpine` | [deploy/caddy/Caddyfile](../deploy/caddy/Caddyfile) |
 | Traefik | `traefik:v3.7.17` | [below](#traefik) |
 | Envoy | `envoyproxy/envoy:v1.40.2` | [below](#envoy) |
+| Envoy Gateway | v1.10.0 (Envoy 1.40.2) | [deploy/kubernetes/gateway/](../deploy/kubernetes/gateway/), [below](#gateway-api) |
 
 Through nginx and Caddy in front of the Compose example: a raw file and an `oras` artifact of 100 MiB pushed and pulled with the same
 sha256; through nginx also an `oras` artifact of 30 layers, and the token limit below. The tests
@@ -183,6 +185,76 @@ and kube-proxy take a stopping pod out, and the delay covers their lag
 takes a stopping replica out at its first check after the signal, so the delay should cover the
 check's interval, or the edge should retry; Caddy's file checks every 10 s and does not retry.
 Only nginx was tried.
+
+### Gateway API
+
+On Kubernetes the edge is a Gateway and an HTTPRoute, in
+[deploy/kubernetes/gateway/](../deploy/kubernetes/gateway/)
+([deploy/kubernetes.md](deploy/kubernetes.md#gateway-api)), not an Ingress with ingress-nginx's
+annotations. ingress-nginx is retired: best-effort maintenance ended in March 2026, and since
+then there have been no releases, fixes or security patches
+([Kubernetes blog, 2025-11-11](https://kubernetes.io/blog/2025/11/11/ingress-nginx-retirement/)).
+Its last release is `controller-v1.15.1` of 2026-03-19, and
+[kubernetes/ingress-nginx](https://github.com/kubernetes/ingress-nginx) is archived; its README
+tells new users to pick a Gateway API implementation instead. The repository never shipped an
+Ingress. The second column is what an ingress-nginx Ingress would have carried for the settings
+of the table above, for anyone moving off one:
+
+| What | ingress-nginx | Gateway API | Envoy Gateway ([envoy-gateway.yaml](../deploy/kubernetes/gateway/envoy-gateway.yaml)) |
+| --- | --- | --- | --- |
+| Terminate TLS | `spec.tls`, `ssl-redirect` | a Gateway listener `HTTPS`, `tls.mode: Terminate` | |
+| The whole host, no prefix or rewrite | `path: /`, `pathType: Prefix` | `hostnames`, a rule without `matches` | |
+| Bodies of any size, unbuffered | `proxy-body-size: "0"`, `proxy-request-buffering: "off"` | **no field** | the default; a BackendTrafficPolicy's `requestBuffer` would buffer and limit |
+| Stream responses | `proxy-buffering: "off"` | **no field** | the default |
+| No bound on a whole transfer | nginx has none | a rule's `timeouts.request: 0s` (Standard since v1.2.0) | honoured; without it Envoy's route timeout, 15 s, cuts a download |
+| Time out a stalled transfer | `proxy-read-timeout`, `proxy-send-timeout: "600"`; `client-body-timeout` in the ConfigMap | **no field** | ClientTrafficPolicy `timeout.http.streamIdleTimeout: 600s`; default 5 min |
+| Close idle connections to a replica before its 120 s | `upstream-keepalive-timeout` in the ConfigMap (60 s) | **no field** | BackendTrafficPolicy `timeout.http.connectionIdleTimeout: 60s`; default 1 h |
+| Pass `X-Forwarded-For` | the default | **no field** | the default; ClientTrafficPolicy `clientIPDetection` behind an L7 balancer |
+| Send what a stopping replica refuses to another | `proxy-next-upstream: "error timeout"`, `proxy-next-upstream-tries: "2"` | a rule's `retry` (Standard since v1.7.0) | BackendTrafficPolicy `retry` on `connect-failure`, `reset-before-request` |
+| The path as the client sent it | the default | **no field** | ClientTrafficPolicy `path.escapedSlashesAction: KeepUnchanged`; default `UnescapeAndRedirect` |
+| A limit on `/v2/token` ([part 2](#part-2-rate-limits-at-the-edge)) | `limit-rps`, `limit-burst-multiplier` | **no field** | BackendTrafficPolicy `rateLimit`, not set |
+
+The health check needs nothing: Envoy Gateway takes the endpoints from the EndpointSlices, which
+follow the readiness probe, and the metrics port is not in the route. The retry uses Envoy
+Gateway's policy rather than the rule's `retry`, which the Gateway API CRDs of v1.6 and earlier
+reject outside the experimental channel.
+
+The run on 2026-11-12 used OrbStack's Kubernetes 1.36.5 and Envoy Gateway v1.10.0 from its Helm
+chart, with the Gateway API v1.6.1 CRDs the chart installs. Lajstrom ran as two replicas with
+Postgres and distribution in the namespace, `externalURL: https://art.lajstrom.test`, and
+`trustedProxies` set to the pod CIDR. The files of `deploy/kubernetes/gateway/` were applied,
+with that host and a certificate of a local CA, and reached at the Gateway's LoadBalancer
+address. The HTTPRoute and both policies were `Accepted`. Envoy's `config_dump` showed
+`stream_idle_timeout: 600s`, `KEEP_UNCHANGED`, a route `timeout: 0s`, an upstream
+`idle_timeout: 60s` and the retry. Through it:
+
+```text
+readyz ok over HTTP/2; /v2/ 401, realm="https://art.lajstrom.test/v2/token"; /metrics 404
+PUT 200 MiB 201 209715200 bytes 1.030376 s
+GET 200 MiB 200 209715200 bytes 0.702733 s                       the same sha256
+PUT 40 MiB at 1 MB/s 201 41943040 bytes 40.101437 s
+GET 40 MiB at 1 MB/s 200 41943040 bytes 39.944802 s              the same sha256
+GET 40 MiB at 1 MB/s, no timeouts: 200 18016326 bytes 17.171601 s   curl: (92) … INTERNAL_ERROR
+GET /npm/internal/@acme%2fwidgets: 404
+GET /npm/internal/@acme%2fwidgets, no path settings: 307 → /npm/internal/@acme/widgets
+```
+
+The two lines with "no" are the route's `timeouts` and then the ClientTrafficPolicy's `path`
+removed for one request, then put back. `oras login`, `push` and `pull` worked through the
+Gateway too. Lajstrom's log named the client as Envoy saw it,
+`"remoteAddr":"192.168.194.1"`, with the Envoy pod as `"proxy":"192.168.194.17:41626"`. In four
+rolling restarts of Lajstrom, with a `GET` every 250 ms through the Gateway, no request failed:
+74 and 76 with the retry, 72 and 58 without it. Envoy follows the EndpointSlices faster than
+`server.shutdownDelay`, so the retry is there for a replica that dies without one.
+
+Two other implementations were read, not run. **Cilium** 1.20 also honours `timeouts`, and it
+too leaves Envoy's 15 s when neither field is set. Its stream idle timeout (300 s) and its
+upstream idle timeout (60 s) are Helm values for the whole cluster,
+`envoy.streamIdleTimeoutDurationSeconds` and `envoy.idleTimeoutDurationSeconds`, and
+`envoy-gateway.yaml` does not apply. **Traefik** 3.7 ignores `timeouts`, and its entry point
+reads a request for 60 s at most ([Traefik](#traefik) above): set the entry point's
+`transport.respondingTimeouts.readTimeout` to 0. Traefik 3.8, a release candidate on
+2026-11-12, reads `timeouts.request: 0s` as lifting that deadline for the route.
 
 ## Part 2: rate limits at the edge
 
@@ -451,5 +523,5 @@ not the client: `/v2` answers it `503` with the code `UNAVAILABLE` and `Retry-Af
 - The Kubernetes roads of [the client address](#the-client-address), and Istio's `EnvoyFilter`:
   no cluster and no mesh.
 - How each OCI client handles a `429` of the token endpoint.
-- ingress-nginx annotations: ingress-nginx is retired upstream, and the Kubernetes edge is the
-  Gateway API instead (#224).
+- A Gateway of Cilium or Traefik, a Gateway on more than one node, and a rate limit at a
+  Gateway (Envoy Gateway's `rateLimit`).
