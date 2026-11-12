@@ -689,7 +689,13 @@ func (u Upstream) validateOCI(p *problems, key string) {
 		if u.RevalidateTimeout != 0 {
 			p.add(key+".revalidateTimeout", "only an upstream of format %s has it", FormatOCI)
 		}
+		if u.MaxConcurrentTransits != nil {
+			p.add(key+".maxConcurrentTransits", "only an upstream of format %s has it", FormatOCI)
+		}
 		return
+	}
+	if n := u.MaxConcurrentTransits; n != nil && *n < -1 {
+		p.add(key+".maxConcurrentTransits", "must be -1 (no cap), 0 (no transit) or more")
 	}
 	if v, err := url.Parse(u.URL); err == nil && isHTTP(v) && strings.Trim(v.Path, "/") != "" {
 		p.add(key+".url", "an upstream of format %s is the registry's root, without a path: the API is at /v2/ of the host", FormatOCI)
