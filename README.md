@@ -60,6 +60,7 @@ with the real clients (`test/e2e/`):
 | [maven](docs/quickstart/maven.md) | `mvn deploy`, Gradle `publish` | `mvn`, Gradle | md5, sha1, sha256 and sha512 checksums; a release appears whole or not at all; no SNAPSHOT versions yet |
 | [npm](docs/quickstart/npm.md) | `npm publish`, `pnpm publish`, `yarn npm publish` | `npm`, `pnpm`, `yarn` | dist-tags; a proxy of npmjs.org and groups |
 | [OCI](docs/quickstart/oras.md) | `oras push`, `cosign sign` | `oras pull`, `crane`, `cosign verify` | the `/v2` API with its token flow, referrers; cosign is run by [test/e2e/cosign.sh](test/e2e/cosign.sh), not by the quick start |
+| [docker images](docs/quickstart/docker.md) | `docker push`, `docker buildx build --push`, `crane index append`, `cosign sign` | `docker pull`, `crane`, `cosign verify` | `oci` repos pass images through, multi-arch indexes included; roles and the audit of pushes; run by [test/e2e/docker.sh](test/e2e/docker.sh) |
 
 rpm is planned. Every format shares local users, personal access and deploy tokens, roles
 bound to repos, and an audit log ([docs/auth.md](docs/auth.md)).
@@ -77,6 +78,7 @@ bound to repos, and an audit log ([docs/auth.md](docs/auth.md)).
 | [Quick start: maven](docs/quickstart/maven.md) | `mvn deploy` or Gradle's `publish` in, `mvn dependency:get` or a Gradle build out, with all four checksums |
 | [Quick start: npm](docs/quickstart/npm.md) | `npm publish`, `pnpm` and `yarn npm publish` in, `npm install` out, dist-tags, tokens, a proxy of npmjs.org, coming from Verdaccio |
 | [Quick start: OCI with oras](docs/quickstart/oras.md) | `oras push` and `oras pull` through `/v2`, a raw file through ingest, referrers, deletes |
+| [Quick start: docker](docs/quickstart/docker.md) | `docker push` and `docker pull` through an `oci` repo, multi-arch images made by buildx or crane, cosign, a reader |
 | [Management API](docs/api.md) | `/api/v1`: repos, users, bindings, tokens, deletes, the audit log |
 | [Dev stack](docs/dev-stack.md) | `make dev-up`: Zot, distribution and Postgres for development and tests |
 | [Deploy with Compose](docs/deploy/compose.md) | one host for production: Lajstrom, Postgres and a registry with passwords, secrets in files, a backup |
