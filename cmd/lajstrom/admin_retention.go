@@ -101,8 +101,9 @@ type retentionReport struct {
 // (unless --delete-newest). By default it is a dry run that prints the versions it would delete
 // and why; --apply sends them as batches of one job, POST …/versions:delete, with the digests it
 // read and the cut-off it decided on, and the server deletes each only if it has not changed
-// meanwhile; the text output has the results of each batch as the server answers it. SIGINT or
-// SIGTERM stops the run, which then prints what the server answered. The server is --url or
+// meanwhile; the text output has the results of each batch as the server answers it. SIGINT,
+// SIGTERM or SIGHUP (its terminal closed) stops the run, which then prints what the server
+// answered. The server is --url or
 // LAJSTROM_URL, the credential a personal access token from --token-file, LAJSTROM_TOKEN_FILE
 // or LAJSTROM_TOKEN; the configuration is not read. The time is the server's, from the Date of
 // its first answer. Exit status 0: nothing to delete, or deleted; 2: a dry run found versions
@@ -137,10 +138,8 @@ func newAdminRetentionCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			ctx, stop := retentionContext(cmd.Context())
 			defer stop()
-			// The first signal stops the run, which prints what it has; a second one the process.
-			context.AfterFunc(ctx, stop)
 			r := &retention{client: c, format: f, name: name, rules: rules, out: cmd.OutOrStdout(), json: output == "json"}
 			return r.run(ctx, apply)
 		},
@@ -157,6 +156,15 @@ func newAdminRetentionCmd(a *app) *cobra.Command {
 	fl.StringVar(&tokenFile, "token-file", "", "a file with a personal access token (env "+envRetentionTokenFile+", or the token in "+envRetentionToken+")")
 	_ = cmd.MarkFlagRequired("repo")
 	return cmd
+}
+
+// retentionContext is the context of a retention run: SIGINT, SIGTERM or SIGHUP (its terminal or
+// SSH session closed, #763) ends it. The first signal stops the run, which prints what it has; a
+// second one the process.
+func retentionContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	context.AfterFunc(ctx, stop)
+	return ctx, stop
 }
 
 // check checks the rules of the flags and sets the duration of maxAge, the flag --max-age.

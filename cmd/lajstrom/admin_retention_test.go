@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -264,8 +265,8 @@ func TestAdminRetentionSlowBatches(t *testing.T) {
 }
 
 // TestAdminRetentionStopped checks an --apply that stops at its second batch (#712): the server
-// fails it, it has no answer within the bound of its versions, or the run is interrupted (SIGINT
-// and SIGTERM end its context). The results of the first batch are printed with their counts,
+// fails it, it has no answer within the bound of its versions, or the run is interrupted (SIGINT,
+// SIGTERM and SIGHUP end its context, TestRetentionContext). The results of the first batch are printed with their counts,
 // or are in the JSON document with the error; the error names the batch and what was not sent;
 // the exit status is 1.
 func TestAdminRetentionStopped(t *testing.T) {
@@ -319,6 +320,25 @@ func TestAdminRetentionStopped(t *testing.T) {
 			}
 			if n := strings.Count(out, "\ndeleted   @acme/widgets 1.0."); n != 10 || !strings.Contains(out, "deleted 10, changed 0") {
 				t.Errorf("%d results printed, want the 10 of the first batch and the counts:\n%s", n, out)
+			}
+		})
+	}
+}
+
+// TestRetentionContext checks that each of SIGINT, SIGTERM and SIGHUP (a closed terminal, #763)
+// ends the context of a retention run instead of killing the process.
+func TestRetentionContext(t *testing.T) {
+	for _, sig := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP} {
+		t.Run(sig.String(), func(t *testing.T) {
+			ctx, stop := retentionContext(t.Context())
+			defer stop()
+			if err := syscall.Kill(os.Getpid(), sig); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(5 * time.Second):
+				t.Fatalf("%v did not end the context", sig)
 			}
 		})
 	}
