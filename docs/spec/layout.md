@@ -473,7 +473,7 @@ What a plugin provides for proxy and group repos of its format, and what its han
 core (proxy-and-group.md §10). A format has the kind `proxy` when its plugin implements
 `Proxier`, and the kind `group` when it implements `Grouper`; creating a repo of a kind the
 format does not have is `400`. The core, `internal/proxy`, does everything else: the allow and
-deny lists, `proxy_meta` and its TTLs, the fetch claims, the upstream client, the spool and the
+deny lists, `proxy_meta` and its TTLs, the fetch claims, the upstream client, the stream and the
 checksum, the ingest call, the statuses of §6, a group's members and which of them take part. A
 handler asks the core for a document or a file of a proxy or a group alike, and for a write
 asks `WriteTarget` where it goes.
@@ -1433,14 +1433,13 @@ Where the merged shapes differ from the first sketch of this section, and why:
 - **Repository embeds `registry.ReferencePusher`**: ingest puts manifest and tag in one PUT.
   `Delete` comes from `content.Deleter`.
 - **UploadedFile is re-openable** in `Upload`: Build reads the file to parse and digest it,
-  ingest reads it again to push it. A proxy fetch's file is a request spool, which lives for
-  one request and is never served from; a publication session's is read back from the
+  ingest reads it again to push it. A publication session's file is read back from the
   registry. Artifact bytes live only in the registry.
 - **A streamed upload has its own entry point**
-  ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)). raw, apt, pypi and npm are
-  `Streamer`s; maven's files stream through `Sessions.Add`, and `Upload` publishes them at
-  `Commit`, reading them back from the registry. `Upload` stays for the proxy fetch and for
-  those files of a publication session.
+  ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)). Every format that a client
+  uploads to is a `Streamer` (raw, apt, maven, pypi, npm), and the proxy fetch streams the
+  upstream's file through it too (#694); `Upload` stays for the files of a publication session,
+  which it reads back from the registry.
   `UploadStream` takes the package name from the frontend, because a session belongs to an OCI
   repository. The file reaches `Build` without `Open`, with its checksums and its inspector.
   Ingest holds the session in the target and commits it between the backend's tag check and
