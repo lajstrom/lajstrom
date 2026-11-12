@@ -455,9 +455,10 @@ type MemberDocument struct {
 // Prefetcher is implemented by a Proxier whose proxy repos take a prefetch (§5.1, #441).
 type Prefetcher interface {
     Proxier
-    // PrefetchKind is the kind of the document whose entries a prefetch reads: npm the full
-    // packument.
-    PrefetchKind() string
+    // PrefetchKinds are the kinds of the documents a prefetch reads, at least one: the first
+    // lists the entries it fetches (npm: the full packument); the others it reads so that an
+    // offline proxy keeps them (npm: the abbreviated packument, which npm install asks for).
+    PrefetchKinds() []string
     // Pointed returns the versions that the pointers of a document of kind of name name, read
     // from kept as ParseMetadata kept it (npm: the targets of its dist-tags). A prefetch without
     // allVersions takes their entries. A body it cannot read wraps ErrInvalid.
@@ -1363,8 +1364,9 @@ Where the merged shapes differ from the first sketch of this section, and why:
   to a hosted scope; a format whose hosted scope differs adds one with its groups.
 - **A prefetch plugs in through `format.Prefetcher`** (#441), a `Proxier` with two methods,
   rather than more methods of `Proxier`: the core reads a name's entries as a miss does, and
-  needs of the plugin only which document lists them and which versions its pointers name, the
-  default of a prefetch. A format without it has no prefetch; its proxies serve misses as before.
+  needs of the plugin only which documents to read (the one that lists the entries first, and
+  those a client asks for, so that the repo serves them once offline) and which versions the
+  pointers name, the default of a prefetch. A format without it has no prefetch; its proxies serve misses as before.
 - **`format.Proxy` serves groups with `Document` and `File`.** A handler asks it for a proxy's
   document or a group's alike. `File` keeps its `*index.FileMatch`, whose `Package.RepoID`
   names the member that holds the file: the handler looks that repo up (`GetRepoByID`, one

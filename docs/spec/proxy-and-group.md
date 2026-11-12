@@ -264,10 +264,14 @@ off (§4.4). It is `POST /api/v1/repos/<format>/<repo>/prefetch` (http-routing.m
 
 1. A repo that is not a proxy is `400`, and so is a format without the hook. An offline repo
    (§4.4) is `409`: it asks its upstream nothing.
-2. For each name: the lists (§3), then the document of the hook's kind (npm: the full
-   packument), read as §4.2 reads it: used while fresh, else asked again. A name the lists
-   refuse, one the upstream does not have, one whose document lists no version, and one whose
-   document cannot be had, is one `failed` result with the status of §6. The other names go on.
+2. For each name: the lists (§3), then the documents of the hook's kinds, read as §4.2 reads
+   them: used while fresh, else asked again. The first kind lists the entries (npm: the full
+   packument); the others are read so that the repo keeps them when it goes offline (npm: the
+   abbreviated packument, which `npm install` asks for). A name the lists refuse, one the
+   upstream does not have, one whose first document lists no version, and one whose first
+   document cannot be had, is one `failed` result with the status of §6. Another kind that
+   cannot be had is a `failed` result of the name too, after its entries. The other names go
+   on.
 3. The versions it takes: with `allVersions`, every entry of the document. Without it, the
    entries of the versions that the document's pointers name (npm: the targets of its
    dist-tags); when they name none of the listed versions, the newest entry by publish time.
@@ -485,9 +489,10 @@ plugin lacks it has no prefetch, and its proxies still serve misses:
 // Prefetcher: a Proxier whose proxy repos take a prefetch.
 type Prefetcher interface {
     Proxier
-    // PrefetchKind is the kind of the document whose entries a prefetch reads (npm: the full
-    // packument).
-    PrefetchKind() string
+    // PrefetchKinds are the kinds of the documents a prefetch reads: the first lists the
+    // entries it fetches (npm: the full packument), the others it keeps for offline (npm: the
+    // abbreviated packument).
+    PrefetchKinds() []string
     // Pointed returns the versions that the pointers of a document of kind of name, as
     // ParseMetadata kept it, name (npm: the targets of its dist-tags).
     Pointed(name, kind string, kept []byte) ([]string, error)
