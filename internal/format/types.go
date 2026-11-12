@@ -183,8 +183,9 @@ type BlobSource struct {
 type BlobFetcher func(ctx context.Context, d digest.Digest) (io.ReadCloser, error)
 
 // IndexScope names the part of a repo an index document covers, in the format's own terms:
-// "jammy/main/amd64" (apt suite/component/arch), "simple/requests" (pypi project),
-// "com.example/lib-core" (maven groupId/artifactId). It is the scope column of index_cache.
+// "jammy" (apt suite), "simple/requests" (pypi project), "com.example/lib-core" (maven
+// groupId/artifactId), "@acme/widgets" (npm package), a directory prefix (raw). It is the scope
+// column of index_cache.
 type IndexScope string
 
 // Document is one rendered index document, for example an apt Packages file or a pypi simple
