@@ -921,11 +921,14 @@ token, so that the token makes one admin whichever replica gets it. Then:
   is set but no longer valid, an admin exists: remove auth.bootstrap.tokenFile and its file`.
 
 A wrong token is `403`; 10 wrong tokens from one client address within a minute make its next
-requests `429` with `Retry-After`, the right token too. The count is per replica, like the
-throttles of [Failed logins](#failed-logins), and keyed by the client address only with
-`server.trustedProxies` or `server.tls`. Without either, no address reaches it and every client
-counts as one: 10 wrong tokens from anyone within a minute make every exchange on that replica
-`429` until the minute has passed, the operator's right token too. The right token, used or
+requests `429` with `Retry-After`, the right token too, and leave the other addresses alone. The
+count is per replica and per client address, like the per-address throttles of
+[Failed logins](#failed-logins), and like them it is off without `server.trustedProxies` or
+`server.tls`: no address reaches it, and one count for every client would let anyone's 10 wrong
+tokens a minute refuse the operator's right one. Wrong tokens are then `403` however many come,
+and the right one is never refused for them. That bounds no guessing, which a random token of
+32 bytes or more, as `openssl rand` makes, does not need; the edge's request limit is the bound
+that holds ([operations.md](operations.md#failed-logins-and-the-edge)). The right token, used or
 expired, is `403` with a message that says so. A name or a password that breaks its rule, or a
 name that exists, leaves the token valid. The audit event is `user.create` by `anonymous` with
 the source `bootstrap`, the client address and the request id.

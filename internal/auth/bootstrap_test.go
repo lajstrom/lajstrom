@@ -2,6 +2,7 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -292,6 +293,46 @@ func TestBootstrapRefusals(t *testing.T) {
 		t.Errorf("the right token from another address: %v", err)
 	}
 	noSecret(t, secret, logs...)
+}
+
+// TestBootstrapThrottleAddress: wrong tokens count against the client address of the context
+// only. With one, its BootstrapFailures-th failure throttles it, the right token too. Without
+// one, as without server.trustedProxies and server.tls, they count in no throttle: anyone's
+// wrong tokens never keep the right one out (#761).
+func TestBootstrapThrottleAddress(t *testing.T) {
+	ctx := t.Context()
+	for _, tt := range []struct {
+		name      string
+		ctx       context.Context
+		throttled bool
+	}{
+		{"an address", WithClientAddress(ctx, "203.0.113.9"), true},
+		{"no address", ctx, false},
+		{"the empty address", WithClientAddress(ctx, ""), false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			bs, logs, _, _ := newBootstrap(t, 1)
+			b := bs[0]
+			secret := strings.Repeat("s", 40)
+			arm(t, b, secret)
+			var te *ThrottledError
+			for i := range 3 * BootstrapFailures {
+				_, err := b.Exchange(tt.ctx, secret+"x", "root", "root-password", Origin{})
+				want := tt.throttled && i >= BootstrapFailures
+				if got := errors.As(err, &te); got != want || !got && !errors.Is(err, ErrBootstrapToken) {
+					t.Fatalf("wrong token %d: %v, want throttled %v", i, err, want)
+				}
+			}
+			_, err := b.Exchange(tt.ctx, secret, "root", "root-password", Origin{})
+			switch {
+			case tt.throttled && (!errors.As(err, &te) || te.Throttle != "bootstrap"):
+				t.Errorf("the right token: %v, want the throttle bootstrap", err)
+			case !tt.throttled && err != nil:
+				t.Errorf("the right token after %d wrong ones: %v, want the admin", 3*BootstrapFailures, err)
+			}
+			noSecret(t, secret, logs...)
+		})
+	}
 }
 
 func TestReadBootstrapToken(t *testing.T) {

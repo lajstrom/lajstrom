@@ -65,8 +65,8 @@ func (e *ThrottledError) Is(target error) bool { return target == ErrThrottled }
 type addressKey struct{}
 
 // WithClientAddress returns a copy of ctx in which addr, the client address of the request,
-// counts in the per-address throttles: the failed logins (AddressFailures) and the token
-// requests (TokenRequests). Without it, or with "", the request counts in no per-address
+// counts in the per-address throttles: the failed logins (AddressFailures), the token
+// requests (TokenRequests) and the wrong bootstrap tokens (BootstrapFailures). Without it, or with "", the request counts in no per-address
 // throttle: the server leaves it out when it cannot tell clients apart (ADR 0011).
 func WithClientAddress(ctx context.Context, addr string) context.Context {
 	return context.WithValue(ctx, addressKey{}, addr)
