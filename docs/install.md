@@ -169,4 +169,4 @@ machine.
    behind a [reverse proxy](reverse-proxy.md), and [backups](operations.md#backup-and-restore).
 4. A quick start per format: [raw](quickstart/raw.md), [apt](quickstart/apt.md),
    [pypi](quickstart/pypi.md), [maven](quickstart/maven.md), [npm](quickstart/npm.md),
-   [OCI with oras](quickstart/oras.md), [docker images](quickstart/docker.md).
+   [rpm](quickstart/rpm.md), [OCI with oras](quickstart/oras.md), [docker images](quickstart/docker.md).
