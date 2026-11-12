@@ -714,12 +714,20 @@ never a wrong answer, since a blob is mounted only from a path that answers its 
    every blob that manifest lists is made held at the path, whatever the client asks for, in
    the background and never before the answer:
    - each blob the backend does not hold at the path is mounted as step 2 says, offline too;
-   - then, unless the repo is offline, each one still missing is fetched as step 2 fetches it,
-     under its claim, so that the replicas fetch it once between them (INV-31); a client that
-     asks for it meanwhile waits on that fetch as on any other;
-   - a replica fetches at most 4 such blobs at once, and only once none of its clients asked for
-     a blob of the path for 10 seconds, at the latest 5 minutes after the `GET` of the manifest:
-     a client's own requests take their claims first and get the tee (§11.8);
+   - then, unless the repo is offline, each one still missing waits: a replica fetches at most 4
+     such blobs at once, and only once none of its clients asked for a blob of the path for 10
+     seconds, at the latest 5 minutes after the `GET` of the manifest, so that a client's own
+     requests take their claims first and get the tee (§11.8);
+   - right before its fetch, the blob is looked at again, since a client or the completion at
+     another path may have made the backend hold it meanwhile: held at the path, or mounted as
+     step 2 says, it is not fetched;
+   - otherwise the completion takes the repo's claim of the digest, (repo, `""`, digest), then
+     fetches the blob as step 2 does, under its claim (repo, path, digest). The completions at
+     two paths that share a blob, on one replica or several, thus fetch it once: the one that
+     waits on the repo's claim mounts the blob once the other's copy is committed. The replicas
+     fetch a blob of one path once between them (INV-31), and a client that asks for it
+     meanwhile waits on that fetch as on any other. A client's miss does not take the repo's
+     claim;
    - a blob above the repo's `policy.maxFileSize` or the backend's `maxBlobSize` is left out,
      with no `proxy.reject`, and the manifest stays incomplete;
    - each blob held pushes what became complete (step 3); each one fetched is the result
