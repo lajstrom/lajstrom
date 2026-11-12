@@ -17,13 +17,18 @@ import (
 // a GET (and so a HEAD) that needs read on the repo, or the PUT of an upload, which needs write:
 //
 //	GET /{repo}/repodata/repomd.xml     the repodata, and the documents it lists by location
+//	GET /{repo}/repodata/repomd.xml.asc the detached signature of repomd.xml, with the repo's keys
+//	GET /{repo}/repodata/repomd.xml.key the keyring of the repo, as zypper fetches it
+//	GET /{repo}/key.asc                 the same keyring, for gpgkey=
 //	GET /{repo}/Packages/{filename}     a package, through format.ServeBlob
 //	PUT /{repo}/upload                  one .rpm, published through deps.Ingest
 //
 // The documents come from index_cache through format.CachedDocument and are served with
-// format.ServeDocument (ETag, Last-Modified, If-None-Match, Range). A package reaches an rpm repo
-// through the upload route or by oras push through the facade, whose hook runs Validate; ingest
-// invalidates the repo's documents either way, and the next GET renders the repodata again. The handlers render with a Plugin that keeps the providers of
+// format.ServeDocument (ETag, Last-Modified, If-None-Match, Range). deps.Signer signs; when it
+// is nil (the server has no master key) the signature and the keyring are 404. A package
+// reaches an rpm repo through the upload route or by oras push through the facade, whose hook
+// runs Validate; ingest invalidates the repo's documents either way, and the next GET renders
+// and signs the repodata again. The handlers render with a Plugin that keeps the providers of
 // deps (RenderIndex reads a metadata layer the index left out) and the clock of p.
 func (p Plugin) Routes(r format.Router, deps format.Deps) {
 	if deps.Log == nil {
@@ -35,6 +40,7 @@ func (p Plugin) Routes(r format.Router, deps format.Deps) {
 	}
 	h := &handlers{deps: deps, plugin: Plugin{svc: svc}}
 	r.HandleFunc("GET /{repo}/repodata/{file}", h.repodata)
+	r.HandleFunc("GET /{repo}/key.asc", h.keyring)
 	r.HandleFunc("GET /{repo}/Packages/{filename}", h.packageFile)
 	r.HandleFunc("PUT /{repo}/upload", h.upload)
 }

@@ -15,8 +15,9 @@ import (
 	"github.com/lajstrom/lajstrom/internal/keys"
 )
 
-// aptFormat is the format whose repos have signing keys: the apt plugin (internal/format/deb).
-const aptFormat = "apt"
+// signedFormats are the formats whose repos have signing keys: apt (internal/format/deb), whose
+// Release they sign, and rpm (internal/format/rpm), whose repomd.xml they sign.
+var signedFormats = map[string]bool{"apt": true, "rpm": true}
 
 // ephemeralTokens says what a server without a master key does with bearer tokens.
 const ephemeralTokens = "bearer tokens are signed with an ephemeral key: they do not survive a restart and are not " +
@@ -30,7 +31,7 @@ const ephemeralTokens = "bearer tokens are signed with an ephemeral key: they do
 func newAdminKeyCmd(a *app) *cobra.Command {
 	key := &cobra.Command{
 		Use:   "key",
-		Short: "Export, rotate and drop the signing keys of apt repos and of bearer tokens",
+		Short: "Export, rotate and drop the signing keys of apt and rpm repos and of bearer tokens",
 	}
 	key.AddCommand(newKeyExportCmd(a), newKeyRotateCmd(a), newKeyDropCmd(a))
 	return key
@@ -38,7 +39,7 @@ func newAdminKeyCmd(a *app) *cobra.Command {
 
 // keyFlags adds --repo and --token to cmd, one of them required and not both.
 func keyFlags(cmd *cobra.Command, repo *string, tok *bool) {
-	cmd.Flags().StringVar(repo, "repo", "", "the apt repo, apt/<name>")
+	cmd.Flags().StringVar(repo, "repo", "", "the apt or rpm repo, apt/<name> or rpm/<name>")
 	cmd.Flags().BoolVar(tok, "token", false, "the key that signs the bearer tokens of /v2")
 	cmd.MarkFlagsMutuallyExclusive("repo", "token")
 	cmd.MarkFlagsOneRequired("repo", "token")
@@ -53,7 +54,7 @@ func newKeyExportCmd(a *app) *cobra.Command {
 	var tok bool
 	cmd := &cobra.Command{
 		Use:         "export (--repo apt/<name> | --token)",
-		Short:       "Print the armored keyring of an apt repo (signed-by=), or the public bearer-token key as PEM",
+		Short:       "Print the armored keyring of an apt or rpm repo (signed-by=, gpgkey=), or the public bearer-token key as PEM",
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -91,7 +92,7 @@ func newKeyRotateCmd(a *app) *cobra.Command {
 	var tok, drop bool
 	cmd := &cobra.Command{
 		Use:         "rotate (--repo apt/<name> | --token [--drop])",
-		Short:       "Give an apt repo, or the bearer tokens, a new signing key and print its fingerprint",
+		Short:       "Give an apt or rpm repo, or the bearer tokens, a new signing key and print its fingerprint",
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -158,8 +159,8 @@ func (a *app) withKeys(ctx context.Context, arg string, fn func(context.Context,
 	if err != nil {
 		return err
 	}
-	if formatName != aptFormat {
-		return fmt.Errorf("repo %q: only apt repos have signing keys", arg)
+	if !signedFormats[formatName] {
+		return fmt.Errorf("repo %q: only apt and rpm repos have signing keys", arg)
 	}
 	return a.withMaster(ctx, "", func(ctx context.Context, m *keys.Master, st store) error {
 		repo, err := st.GetRepo(ctx, formatName, name)
@@ -284,7 +285,7 @@ func signingOff(ctx context.Context, st index.Store, cause error, log *slog.Logg
 		return err
 	}
 	held := 0
-	var apt []string
+	var unsigned []index.Repo
 	for _, r := range repos {
 		ks, err := st.ListKeys(ctx, &r.ID)
 		if err != nil {
@@ -295,17 +296,17 @@ func signingOff(ctx context.Context, st index.Store, cause error, log *slog.Logg
 				held++
 			}
 		}
-		if r.Format == aptFormat {
-			apt = append(apt, aptFormat+"/"+r.Name)
+		if signedFormats[r.Format] {
+			unsigned = append(unsigned, r)
 		}
 	}
 	if held > 0 {
 		return fmt.Errorf("%w, and the index holds %d signing keys that only the master key decrypts", cause, held)
 	}
-	for _, name := range apt {
-		log.WarnContext(ctx, "apt repo is unsigned: no master key", "repo", name, "reason", cause.Error())
+	for _, r := range unsigned {
+		log.WarnContext(ctx, r.Format+" repo is unsigned: no master key", "repo", r.Format+"/"+r.Name, "reason", cause.Error())
 	}
-	if len(apt) == 0 {
+	if len(unsigned) == 0 {
 		log.InfoContext(ctx, "apt signing is off: no master key", "reason", cause.Error())
 	}
 	return nil
