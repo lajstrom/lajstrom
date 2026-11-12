@@ -100,10 +100,16 @@ func (e *env) publish(t *testing.T, path, content string) *format.Published {
 // without Lajstrom: blobs, then the manifest under its tag. skip names blobs not to push.
 func (e *env) bypass(t *testing.T, repo index.Repo, path, content string, skip ...digest.Digest) ocispec.Descriptor {
 	t.Helper()
+	return e.bypassTo(t, e.fake, repo, path, content, skip...)
+}
+
+// bypassTo is bypass through prov, a registry over e.fake.
+func (e *env) bypassTo(t *testing.T, prov provider.Provider, repo index.Repo, path, content string, skip ...digest.Digest) ocispec.Descriptor {
+	t.Helper()
 	ctx := t.Context()
 	built, err := raw.Plugin{}.Build(ctx, repo, rawUpload(path, content))
 	must(t, err)
-	rr, err := e.fake.Repository(ctx, built.RepoPath)
+	rr, err := prov.Repository(ctx, built.RepoPath)
 	must(t, err)
 	for _, b := range built.Blobs {
 		if slices.Contains(skip, b.Descriptor.Digest) {
