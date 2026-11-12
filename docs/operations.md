@@ -694,7 +694,11 @@ An `oci` proxy repo ([quickstart/oci-proxy.md](quickstart/oci-proxy.md),
 [proxy-and-group.md](spec/proxy-and-group.md) §11) asks its upstream through the generic
 provider's client, so its requests carry `upstreams[].timeout` and `upstreams[].retries` as a
 registry's do, and its circuit breaker; they are counted in the `lajstrom_provider_*` series
-under the upstream's name.
+under the upstream's name. Unlike a registry's, an upstream's open breaker answers `502` at once,
+without `Retry-After`. Its timeout bounds the wait for headers, not a blob whose bytes stop
+coming ([#883](https://github.com/lajstrom/lajstrom/issues/883)). The guide's
+[§5](quickstart/oci-proxy.md#5-a-poor-link-to-the-upstream) has what a blocked, slow, dropping
+or hanging upstream does, as measured, the hosts to allow, and what to do.
 
 **Docker Hub's pull limit.** A pull is a manifest `GET`; a `HEAD` does not count, and a
 multi-arch image counts once per platform pulled. Lajstrom revalidates tags with `HEAD` and never
