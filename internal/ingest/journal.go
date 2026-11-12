@@ -46,7 +46,9 @@ var journalActions = map[string]string{
 //     invalidated, and the audit row of each op ok (npm.dist-tag or npm.deprecate, with the
 //     entry's digest), written pending before the op's push. When it fails the entries stay in
 //     the registry, and the next append or reindex adopts them; the error is a plain one (500),
-//     and the rows of the ops are failed with it, as on a failed push.
+//     but for a database that did not answer: index.ErrUnavailable stays wrapped (503 with
+//     Retry-After), for the client's retry adopts the entries and appends its ops again, which
+//     folds to the same state (#668). The rows of the ops are failed with it, as on a failed push.
 //
 // When the database ended the lock's transaction before step 4 returned (index.ErrUnavailable,
 // the lock lost, #615), the entries are recorded and their audit rows stay ok, and the error is
@@ -171,7 +173,9 @@ func (j *journal) append(ctx context.Context) error {
 
 // adopt reads the entries the registry has after the index's last, n, and keeps them: their
 // writer pushed them and stopped before its index write. An entry that breaks the rules of §8
-// stops the journal, which cannot skip a seq nor re-point a tag: the operator removes it.
+// stops the journal, which cannot skip a seq nor re-point a tag: the operator removes it. An
+// entry the registry does not hand over now, provider.ErrUnavailable, is that error (503 with
+// Retry-After), not a broken entry (#668).
 func (j *journal) adopt(ctx context.Context, n int64) error {
 	for seq := n + 1; ; seq++ {
 		tag := profile.JournalTag(seq)
@@ -187,6 +191,8 @@ func (j *journal) adopt(ctx context.Context, n int64) error {
 		}
 		e, err := j.read(ctx, desc)
 		switch {
+		case errors.Is(err, provider.ErrUnavailable):
+			return fmt.Errorf("ingest: read %s:%s, an entry to adopt: %w", j.name, tag, err)
 		case err == nil && (e.Seq != seq || e.Repo != j.repo.Name || e.Name != j.pkg.Name):
 			err = fmt.Errorf("it is entry %d of %s in %s", e.Seq, e.Name, e.Repo)
 		case err == nil:
@@ -351,7 +357,8 @@ func (j *journal) intend(ctx context.Context, e profile.JournalEntry, d digest.D
 // record writes the rows of the written entries, the package's state folded from all its rows,
 // the invalidated index_cache and the completed audit rows, and releases the claims of the
 // written entries, in one transaction; then the audit rows to the audit.Writer when there is
-// one.
+// one. A failure of the transaction is a plain error (500), but index.ErrUnavailable stays
+// wrapped (503).
 func (j *journal) record(ctx context.Context) error {
 	err := j.p.index.Tx(ctx, func(w index.Writer) error {
 		for _, e := range j.written {
@@ -384,6 +391,9 @@ func (j *journal) record(ctx context.Context) error {
 	if err != nil {
 		j.p.log.ErrorContext(ctx, "ingest: the registry has the journal entries, the index write failed; the next append or reindex adopts them",
 			"name", j.name, "entries", len(j.written), "error", err.Error())
+		if errors.Is(err, index.ErrUnavailable) {
+			return fmt.Errorf("ingest: index the journal of %s after the registry took it: %w", j.name, err)
+		}
 		return fmt.Errorf("ingest: index the journal of %s after the registry took it: %s", j.name, err.Error())
 	}
 	j.recorded = true
