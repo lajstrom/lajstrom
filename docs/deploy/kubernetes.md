@@ -1,8 +1,8 @@
 # Deploy on Kubernetes
 
 Plain manifests in [deploy/kubernetes/](../../deploy/kubernetes/), applied with `kubectl apply
--k`; the Helm chart is #82. Two replicas of Lajstrom behind one Service; every replica is the
-same, since the state is in Postgres and in the registry.
+-k`; the Helm chart renders the same ([helm.md](helm.md)). Two replicas of Lajstrom behind one
+Service; every replica is the same, since the state is in Postgres and in the registry.
 
 | File | What |
 | --- | --- |

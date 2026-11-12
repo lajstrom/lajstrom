@@ -535,7 +535,8 @@ A Job that fails (`kubectl wait --for=condition=failed`) applied nothing of the 
 failed, and the replicas keep their image; its log says why. The run on a cluster, with the
 outputs, is in [deploy/kubernetes.md](deploy/kubernetes.md#upgrade).
 
-A Helm `pre-upgrade` hook or an Argo CD `PreSync` hook runs the same Job. Without either, an
+A Helm `pre-upgrade` hook or an Argo CD `PreSync` hook runs the same Job; the Helm chart does
+([deploy/helm.md](deploy/helm.md#upgrades)). Without either, an
 init container that runs `lajstrom migrate` before `serve` does the same in each new pod: the
 first applies the migrations, the others find nothing.
 
@@ -962,7 +963,8 @@ scrape_configs:
 ```
 
 On Kubernetes, with `server.metricsListen: "0.0.0.0:9464"`, a port `metrics` on the pod that no
-Ingress names, and the Prometheus operator, the shape the Helm chart (#82) will render:
+Ingress names, and the Prometheus operator, the shape the Helm chart renders with
+`metrics.serviceMonitor.enabled` ([deploy/helm.md](deploy/helm.md#metrics)):
 
 ```yaml
 apiVersion: monitoring.coreos.com/v1

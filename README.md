@@ -85,6 +85,7 @@ bound to repos, and an audit log ([docs/auth.md](docs/auth.md)).
 | [Testing](docs/testing.md) | the test levels and what each needs; `make e2e` and how to add a scenario |
 | [Authentication](docs/auth.md) | local users, roles and bindings, the 401/404/403 rule, bearer tokens for `/v2`, personal access and deploy tokens, CI, `whoami` |
 | [Deploy on Kubernetes](docs/deploy/kubernetes.md) | plain manifests: two replicas on Postgres, probes, the restricted security context |
+| [Install with Helm](docs/deploy/helm.md) | the same as a chart: secrets from Secrets, the migration Job before each upgrade, HTTPRoute or Ingress, ServiceMonitor, HPA; the values |
 | [Operations](docs/operations.md) | users, the master key and key rotation, readiness, limits, metrics, audit, reindex, backup and restore |
 | [Behind a reverse proxy](docs/reverse-proxy.md) | TLS at the edge, `externalURL`, unbuffered uploads, rate limits on `/v2/token`; nginx and Caddy |
 | [Guarantees](docs/spec/guarantees.md) | what Lajstrom guarantees, and the test for each |
