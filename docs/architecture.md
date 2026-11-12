@@ -34,39 +34,39 @@ flowchart TB
     direction LR
     proto["Protocol clients, no plugins<br/>apt · dnf · mvn/gradle · pip/twine · npm · terraform · curl"]
     native["OCI-native clients<br/>helm · oras · tofu · cosign · flux"]
-    ui["UI · CLI · CI jobs"]
+    ui["lajstrom-ui* (separate repo, static bundle, any origin) · CLI · CI jobs"]
   end
 
-  router["Edge router · https://host · one endpoint, optionally repo.host<br/>/&lt;format&gt;/&lt;repo&gt;/… → frontends · /v2/… → OCI facade · /.well-known/terraform.json · /api/v1 · /ui"]
+  router["Edge router · https://host · one endpoint, optionally repo.host*<br/>/&lt;format&gt;/&lt;repo&gt;/… → frontends · /v2/… → OCI facade · /.well-known/terraform.json* · /api/v1"]
 
   subgraph front["Protocol frontends (read-mostly emulation)"]
     direction LR
-    fe["apt · rpm* · maven · pypi · npm* · tf* · go* · cargo* · nuget* · raw<br/>GET: index from cache, file by digest from the registry<br/>PUT (mvn deploy, twine, curl -T): the same ingest as oras push"]
+    fe["apt · rpm* · maven · pypi · npm · tf* · go* · cargo* · nuget* · raw<br/>GET: index from cache, file by digest from the registry<br/>PUT (mvn deploy, twine, curl -T): the same ingest as oras push"]
   end
   facade["OCI facade · /v2/<br/>token endpoint: bearer with scopes from RBAC<br/>manifest/blob: proxy to the backend registry<br/>PUT manifest → hook → format plugin<br/>blob GET → 307 to the registry's presigned URL"]
-  api["API · UI<br/>/api/v1 REST · /ui SPA · SSO · audit"]
+  api["API<br/>/api/v1 REST · SSO* · audit"]
 
   subgraph core["Core: protocols, meaning of bytes, permissions"]
     direction LR
-    repomgr["Repo manager<br/>hosted · proxy* · group*<br/>format, backing registry, prefix"]
-    auth["AuthN / AuthZ<br/>OIDC*, local users, groups from claims<br/>tokens: PAT with expiry, deploy tokens per repo<br/>RBAC: binding = role × repo mask"]
-    ingest["Ingest pipeline<br/>validate → parse → push → index → sign<br/>publication sessions (maven, pypi)<br/>dedup by digest, 409 on tag collision"]
+    repomgr["Repo manager<br/>hosted · proxy · group<br/>format, backing registry, prefix"]
+    auth["AuthN / AuthZ<br/>OIDC*, local users, groups from claims*<br/>tokens: PAT with expiry, deploy tokens per repo<br/>RBAC: binding = role × repo mask"]
+    ingest["Ingest pipeline<br/>validate → claim the tag → push → read back → index<br/>publication sessions (maven)<br/>dedup by digest, 409 on tag collision"]
     render["Index renderer<br/>Packages, Release · repodata<br/>maven-metadata · simple · packument<br/>cache + signing with the repo's GPG key"]
-    proxy["Proxy fetcher*<br/>miss → upstream → wrap → push<br/>TTL metadata cache in the DB"]
+    proxy["Proxy fetcher, npm only<br/>miss → claim → upstream → spool, check → ingest<br/>TTL metadata cache in the DB"]
     reindex["Reindex / reconcile<br/>listRepos → tags/list → manifests<br/>upsert from annotations, remove orphans<br/>catches writes that bypassed us"]
-    retention["Delete<br/>a version through the API, audited<br/>retention: an external scheduler runs<br/>lajstrom admin retention*<br/>blob GC is the registry's job"]
+    retention["Delete<br/>a version through the API, audited<br/>retention: an external scheduler runs<br/>lajstrom admin retention<br/>blob GC is the registry's job"]
     keys["Keys · audit · events<br/>GPG key per repo, later KMS<br/>cosign signatures and SBOM via referrers<br/>audit log · webhooks*"]
-    plugins["Format plugins, in-process Go<br/>apt · rpm* · maven · pypi · npm* · tf* · go* · cargo* · nuget* · raw · oci<br/>interface: Parse · Validate · RenderIndex · Routes · EscapeName; oci = passthrough, no index"]
+    plugins["Format plugins, in-process Go<br/>apt · rpm* · maven · pypi · npm · tf* · go* · cargo* · nuget* · raw<br/>interface: Name · ArtifactType · EscapeName · Validate · Build · Routes · RenderIndex<br/>oci repos: pass-through in the facade, no plugin, no index"]
   end
 
-  upstream["Upstream (external)*<br/>Maven Central · PyPI · npmjs · deb/rpm mirrors · registry.terraform.io"]
-  db[("Index DB · Postgres / SQLite<br/>derived, rebuilt by reindex: packages · versions · files · index_cache<br/>control plane, small, backed up: repos · users · tokens · bindings · audit")]
+  upstream["Upstream (external)<br/>npmjs · Maven Central* · PyPI* · deb/rpm mirrors* · registry.terraform.io*"]
+  db[("Index DB · Postgres / SQLite<br/>derived, rebuilt by reindex: packages · versions · files · index_cache · oci_repos · journal · journal_state<br/>control plane, small, backed up: repos · users · tokens · bindings · audit")]
   provider["Registry provider · oras-go + per-registry adapter<br/>data path: OCI distribution spec, shared by all registries<br/>lifecycle: ensureRepo · listRepos · deleteRepo · creds · capabilities<br/>adapters: ECR · distribution · Harbor · Zot · GHCR<br/>capabilities: referrers, catalog, delete, immutable tags, blob redirect"]
   registry[("Any OCI registry · truth for content<br/>blobs · manifests · tags · referrers · content-addressed, dedup<br/>GC · replication · HA · encryption · IAM are the registry's concern<br/>blob 307 → the client downloads from S3/CDN directly")]
 
   proto -->|"GET index and files · PUT: mvn deploy, twine"| router
   native -->|"push / pull · bearer"| router
-  ui -->|"REST · SSO"| router
+  ui -->|"REST · SSO*"| router
   router --> front
   router --> facade
   router --> api
@@ -89,17 +89,17 @@ component talks to it: the registry provider.
 
 | Product model | In the registry (source of truth) | In the index DB (filled by ingest and reindex) |
 | --- | --- | --- |
-| **Repo** `apt/ubuntu-internal` · hosted · backing `ecr-prod` · prefix `art/` · anonymous read | **OCI repository** `art/apt/ubuntu-internal/nginx` (lowercase) | `repos` (control plane): name · format · backing · prefix · policy |
+| **Repo** `apt/ubuntu-internal` · hosted · backing `ecr-prod` · prefix `art/` · anonymous read | **OCI repository** `art/apt/ubuntu-internal/nginx` (lowercase) | `repos` (control plane): format · name · registry · prefix · kind · policy |
 | **Package** `nginx` · name as the format spells it, original case kept in an annotation | | `packages`: repo_id · name · name_oci |
-| **Version** `1:1.18.0-6ubuntu14.4` · `amd64` · suite `jammy` · component `main` (upload metadata, not a separate repo; the variant is `jammy/main/amd64`) | **Tag** `1_3a1.18.0-6ubuntu14.4__jammy_2fmain_2famd64` (`Escape(version)__Escape(variant)`; every byte outside `[A-Za-z0-9.-]` becomes `_xx` hex: `:`→`_3a`, `+`→`_2b`, `~`→`_7e`, `_`→`_5f`, `/`→`_2f`) | `versions`: package_id · version · tag · digest · arch · suite · component · annotations |
-| | **Manifest** (OCI image manifest 1.1): `artifactType application/vnd.lajstrom.deb.v1`; annotations `format=apt`, `repo=ubuntu-internal`, `name=nginx`, `version=1:1.18.0-6ubuntu14.4`, `arch=amd64`, `suite=jammy`, `component=main`; `layers[0] vnd.lajstrom.deb.package.v1`, `layers[1] vnd.lajstrom.deb.metadata.v1+json`; `config application/vnd.oci.empty.v1+json` | `index_cache`: repo · suite · component · arch · blob · signed_at |
-| **Files** `nginx_1.18.0-6ubuntu14.4_amd64.deb` 1.2 MiB, `metadata.json` (control, md5sums); file size limit = the registry's blob limit | **Referrers** (subject = this manifest): cosign signature · SBOM · SLSA attestation, the same for every format. **Blobs**: content-addressed, deduplicated across repos and formats | `files`: version_id · filename · layer_digest · size · media_type |
+| **Version** `1:1.18.0-6ubuntu14.4` · `amd64` · suite `jammy` · component `main` (upload metadata, not a separate repo; the variant is `jammy/main/amd64`) | **Tag** `1_3a1.18.0-6ubuntu14.4__jammy_2fmain_2famd64` (`Escape(version)__Escape(variant)`; every byte outside `[A-Za-z0-9.-]` becomes `_xx` hex: `:`→`_3a`, `+`→`_2b`, `~`→`_7e`, `_`→`_5f`, `/`→`_2f`) | `versions`: package_id · version · variant · tag · digest · artifact_type · attrs (arch, suite, component) · metadata · created_at |
+| | **Manifest** (OCI image manifest 1.1): `artifactType application/vnd.lajstrom.deb.v1`; annotations `format=apt`, `repo=ubuntu-internal`, `name=nginx`, `version=1:1.18.0-6ubuntu14.4`, `arch=amd64`, `suite=jammy`, `component=main`; `layers[0] vnd.lajstrom.deb.package.v1`, `layers[1] vnd.lajstrom.deb.metadata.v1+json`; `config application/vnd.oci.empty.v1+json` | `index_cache`: repo_id · scope · kind · content · sha256 · rendered_at · signed_at |
+| **Files** `nginx_1.18.0-6ubuntu14.4_amd64.deb` 1.2 MiB, `metadata.json` (control, md5sums); file size limit: the repo's `policy.maxFileSize` (a default per format), capped by the registry's `maxBlobSize` | **Referrers** (subject = this manifest): cosign signature · SBOM · SLSA attestation, the same for every format. **Blobs**: content-addressed, deduplicated across repos and formats | `files`: version_id · name · media_type · digest · size · attrs |
 
 Invariant: every row of `packages`, `versions`, `files` and `index_cache` can be recovered from the
 tag and the manifest annotations. Annotations carry only search keys, prefixed `lajstrom.`. Large
 metadata (control, POM, package.json) lives in the metadata layer. The control plane (repos, users,
-bindings) is not derived: it is small, backed up and optionally snapshotted into the registry as
-`art/_meta/config`.
+bindings) is not derived: it is small and backed up; after the MVP it may also be snapshotted
+into the registry as `<prefix>_meta/config`.
 
 The tag is a lookup key, not the truth. The truth is in the manifest annotations, so reindex does
 not depend on the escaping scheme and survives repository renames. A tag collision on ingest
@@ -134,8 +134,10 @@ sequenceDiagram
   F->>P: validate layers, parse control
   P-->>F: ok, index entry
   F->>D: claim tag
+  F->>D: audit row, pending
   F->>R: PUT manifest + tag
-  F->>D: confirm (versions, files; invalidate index_cache; release claim)
+  F->>R: read back until the registry serves it (visibility barrier)
+  F->>D: confirm (versions, files, invalidate index_cache, audit row ok, release claim)
   F-->>C: 201 Created
 ```
 
@@ -166,7 +168,7 @@ sequenceDiagram
   FE->>S: + files
   M->>FE: PUT maven-metadata.xml (commit)
   FE->>R: PUT manifest, tag 1.2.0, all layers
-  FE->>D: upsert; maven-metadata.xml is rendered from the DB
+  FE->>D: upsert, maven-metadata.xml is rendered from the DB
   Note over S: timeout without commit: the files are dropped
 ```
 
@@ -194,33 +196,56 @@ sequenceDiagram
   FE-->>U: 307 to S3, otherwise proxied stream
 ```
 
-### D. Proxy repo: pip cache miss (after the MVP)
+### D. Proxy repo: npm cache miss
 
-A miss is wrapped into an artifact and pushed to the registry; the second request never touches
-the upstream. Upstream metadata is cached in the DB with a TTL.
+A proxy repo serves an upstream and keeps what it fetched. A file it does not hold is fetched
+once across replicas, spooled for that one request, checked against the upstream's checksum and
+published through ingest like an upload; the client then gets it from the registry, never from
+the spool, and the next request for it does not touch the upstream. The upstream's documents are
+cached in the DB (`proxy_meta`) with a TTL. npm is the only format with a proxy so far; pypi has
+none yet ([proxy-and-group.md](spec/proxy-and-group.md) §4 and §5).
 
 ```mermaid
 sequenceDiagram
-  participant U as pip install
-  participant FE as pypi frontend
-  participant UP as pypi.org
+  participant U as npm install
+  participant FE as npm frontend
+  participant PX as Proxy core
+  participant UP as registry.npmjs.org
+  participant I as Ingest
   participant R as Registry
   participant D as Index DB
-  U->>FE: GET /pypi/proxy-pypi/simple/requests/
-  FE->>D: metadata cache, TTL?
-  D-->>FE: miss
-  FE->>UP: GET simple/requests/
-  FE->>D: cache, links rewritten to us
-  FE-->>U: simple index
-  U->>FE: GET requests-2.32.3-py3-none-any.whl
-  FE->>D: version present?
-  D-->>FE: no
-  FE->>UP: GET wheel
-  FE->>R: push as an artifact, tag 2.32.3
-  FE->>D: upsert
-  FE-->>U: wheel, streamed
+  U->>FE: GET /npm/npmjs/lodash
+  FE->>PX: packument of lodash
+  PX->>D: proxy_meta row, fresh within metadataTTL?
+  D-->>PX: miss
+  PX->>UP: GET /lodash
+  PX->>D: write the row, drop the name's index_cache
+  PX-->>FE: packument rendered, tarball links to this repo
+  FE-->>U: packument
+  U->>FE: GET /npm/npmjs/lodash/-/lodash-4.17.21.tgz
+  FE->>PX: tarball
+  PX->>D: version 4.17.21 held?
+  D-->>PX: no
+  PX->>D: claim the fetch (fetch_claims: repo, package path, tag)
+  PX->>UP: GET the tarball
+  PX->>PX: spool it for this request, check sha512 of dist.integrity
+  PX->>I: Upload with lajstrom.origin.*: Build, Validate
+  I->>D: claim tag 4.17.21, audit row proxy.fetch pending
+  I->>R: push blobs, manifest + tag, read back until served
+  I->>D: confirm (versions, files, audit row ok)
+  PX->>D: release the claim
+  PX->>PX: remove the spool
+  FE->>R: GET blobs/sha256:…
+  R-->>FE: 307 presigned URL, or a stream
+  FE-->>U: 307 to S3, otherwise proxied stream
   Note over R: the next request is served from the registry
 ```
+
+Concurrent misses of one artifact share its fetch: on one replica in memory, across replicas
+through the claim, while the others look the version up in the index until it appears. The fetch
+runs on a context of its own, so a client that leaves does not cancel it for the requests that
+wait on it. A file that fails its checksum or its size bound, or that Validate refuses, is never
+published: it is a `proxy.reject` audit row (proxy-and-group.md §6).
 
 ### E. Reindex
 
@@ -242,12 +267,14 @@ sequenceDiagram
     alt digest already in the index
       W->>D: mark the row seen
     else new digest
-      W->>R: GET manifest, cached by digest; the blobs the plugin checks
+      W->>R: GET manifest, cached by digest, and the blobs the plugin checks
       W->>D: upsert packages, versions, files from annotations
     end
   end
-  W->>R: HEAD the tags of the rows not seen; HEAD (then GET) the manifest of a tag not found
-  W->>D: record MANIFEST_UNKNOWN; delete a row on the second, 10 min later, past its grace age
+  opt with prune (the default for a run of every repo and for reconcile, not of one repo)
+    W->>R: HEAD the tags of the rows not seen, HEAD (then GET) the manifest of a tag not found
+    W->>D: record MANIFEST_UNKNOWN, delete a row on the second, 10 min later, past its grace age
+  end
   W->>D: reset index_cache, finish the run with its report
 ```
 
@@ -264,8 +291,8 @@ that lacks referrers the audit log has as pushed (#628).
 | Zone | What is inside | What it buys |
 | --- | --- | --- |
 | Backend registry | blobs, manifests, tags, referrers; GC, replication, HA, encryption, IAM, quotas, size limits | No filestore, no clustering, no content backups of our own. Cross-region replication is ECR configuration, not our feature. |
-| Our code | router, protocol frontends, OCI facade, ingest, index rendering and signing, RBAC and tokens, proxy and group, delete (retention is a client of it, #72), UI, audit, registry provider | Everything about the meaning of bytes and about permissions. One Go binary plus a database. |
-| Index DB | derived: packages, versions, files, index_cache, proxy metadata. Control plane: repos, users, tokens, bindings, sessions, audit | The derived part can be lost and rebuilt. The control plane is small, backed up, optionally snapshotted into the registry. |
+| Our code | router, protocol frontends, OCI facade, ingest, index rendering and signing, RBAC and tokens, proxy and group, delete (retention is a client of it, #72), audit, registry provider; the UI is a separate repo, lajstrom-ui | Everything about the meaning of bytes and about permissions. One Go binary plus a database. |
+| Index DB | derived: packages, versions, files, index_cache, proxy metadata. Control plane: repos, users, tokens, bindings, sessions, audit | The derived part can be lost and rebuilt. The control plane is small and backed up; a snapshot into the registry comes after the MVP. |
 | Clients | apt, dnf, mvn, pip, npm, terraform, curl without plugins; helm, oras, tofu, cosign, flux through the facade | Nothing to install on clients. One `user:token` pair works across all protocols. |
 
 ## 5. Registry capabilities
@@ -338,9 +365,9 @@ later means overwriting the tag. So we take the third option: one immutable tag 
 | config | `application/vnd.oci.empty.v1+json` | as OCI 1.1 prescribes; no logic in config, everything in annotations and the metadata layer |
 | file layer | `application/vnd.lajstrom.<format>.<role>.v1[+suffix]`: `…deb.package.v1`, `…rpm.package.v1`, `…maven.artifact.v1` (with `extension` and `classifier` annotations), `…maven.pom.v1+xml`, `…pypi.wheel.v1+zip`, `…pypi.sdist.v1.tar+gzip`, `…npm.tarball.v1.tar+gzip`, `…raw.file.v1` | role in the type, like Helm and conda: UI and policies filter by type without parsing file names |
 | metadata layer | `application/vnd.lajstrom.<format>.metadata.v1+json`: control, POM, package.json, METADATA | UI, search and reindex read it without unpacking the package; like the second layer of CUE and the info layer of conda |
-| manifest annotations | `lajstrom.schema=1`, `lajstrom.format`, `lajstrom.repo`, `lajstrom.name`, `lajstrom.version`, format-specific keys such as `lajstrom.deb.arch|suite|component`, plus `org.opencontainers.image.created|source|revision` | enough for reindex without the metadata layer; standard keys are understood by other UIs |
+| manifest annotations | `lajstrom.schema=1`, `lajstrom.format`, `lajstrom.repo`, `lajstrom.name`, `lajstrom.version`, `lajstrom.variant`, format-specific keys such as `lajstrom.deb.arch|suite|component`, plus `org.opencontainers.image.created|source|revision` | enough for reindex without the metadata layer; standard keys are understood by other UIs |
 | layer annotation | `org.opencontainers.image.title` = file name | `oras pull` without our software writes the original file to disk; exactly what apt-transport-oci requires |
-| tag | `Escape(version)[__Escape(variant)]`; variant = the format's platform discriminator: suite/component/arch for deb, arch for rpm, wheel tag for pypi, none for maven, npm, tf. Escape: bytes outside `[A-Za-z0-9.-]` become `_xx` (`:`→`_3a`, `+`→`_2b`, `~`→`_7e`, `_`→`_5f`); the 2026-11-05 draft's `_`→`__` was dropped because it made the separator ambiguous (ADR 0005) | tags are immutable and append-only: a new architecture is a new tag, not an overwritten index. Compatible with ECR immutability |
+| tag | `Escape(version)[__Escape(variant)]`; variant = the format's platform discriminator: suite/component/arch for deb, arch for rpm, the build tag (if any) and tag set of a wheel or `sdist` for pypi, none for maven, npm, tf. Escape: bytes outside `[A-Za-z0-9.-]` become `_xx` (`:`→`_3a`, `+`→`_2b`, `~`→`_7e`, `_`→`_5f`); the 2026-11-05 draft's `_`→`__` was dropped because it made the separator ambiguous (ADR 0005) | tags are immutable and append-only: a new architecture is a new tag, not an overwritten index. Compatible with ECR immutability |
 | referrers | cosign, notation, SBOM, SLSA as they are, `subject` = our manifest | nothing of our own for the supply chain |
 | passthrough | helm, opentofu, flux, timoni, cue, wasm, modelpack and unknown artifactTypes through a repo of type `oci` | recognised for the UI by the table above; bytes untouched |
 | bit-compatibility | conda: as conda-oci-mirror; apt: snapshot export in the apt-transport-oci layout | pixi and apt-with-plugin can read us directly, without our server |
