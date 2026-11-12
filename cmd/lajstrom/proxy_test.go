@@ -42,22 +42,22 @@ func TestLoadUpstreams(t *testing.T) {
 	}
 	log := slog.New(slog.DiscardHandler)
 	c := &config.Config{Upstreams: []config.Upstream{{Name: "npmjs", Format: "npm", URL: "https://registry.npmjs.org/",
-		Auth: config.UpstreamAuth{TokenFile: token}}}}
-	ups, err := loadUpstreams(c, plugins, log)
-	if err != nil || ups["npmjs"] == nil || ups["npmjs"].Format() != "npm" {
-		t.Fatalf("loadUpstreams = %v, %v", ups, err)
+		Auth: config.UpstreamAuth{TokenFile: token}}, {Name: "hub", Format: config.FormatOCI, URL: "https://registry-1.docker.io"}}}
+	ups, oci, err := loadUpstreams(c, plugins, log)
+	if err != nil || ups["npmjs"] == nil || ups["npmjs"].Format() != "npm" || len(ups) != 1 || len(oci) != 1 || oci["hub"] == nil {
+		t.Fatalf("loadUpstreams = %v, %v, %v", ups, oci, err)
 	}
 	for _, tt := range []struct{ format, want string }{
 		{"raw", `upstreams[0].format: "raw" is not a format of this build that has proxy repos`},
 		{"nope", `upstreams[0].format: "nope" is not a format`},
 	} {
 		c.Upstreams[0].Format = tt.format
-		if _, err := loadUpstreams(c, plugins, log); err == nil || !strings.HasPrefix(err.Error(), tt.want) {
+		if _, _, err := loadUpstreams(c, plugins, log); err == nil || !strings.HasPrefix(err.Error(), tt.want) {
 			t.Errorf("format %s: %v, want %q", tt.format, err, tt.want)
 		}
 	}
 	c.Upstreams[0].Format, c.Upstreams[0].Auth.TokenFile = "npm", filepath.Join(t.TempDir(), "missing")
-	if _, err := loadUpstreams(c, plugins, log); err == nil || !strings.HasPrefix(err.Error(), "upstreams[0].auth.tokenFile: the file does not exist") {
+	if _, _, err := loadUpstreams(c, plugins, log); err == nil || !strings.HasPrefix(err.Error(), "upstreams[0].auth.tokenFile: the file does not exist") {
 		t.Errorf("a missing token file: %v", err)
 	}
 }
@@ -87,7 +87,7 @@ func TestCheckProxyRepos(t *testing.T) {
 	var logs syncBuffer
 	log := slog.New(slog.NewTextHandler(&logs, nil))
 	ups := map[string]*proxy.Upstream{"npmjs": nil}
-	if err := checkProxyRepos(ctx, st, ups, log); err != nil {
+	if err := checkProxyRepos(ctx, st, ups, map[string]*proxy.OCIUpstream{"hub": nil}, log); err != nil {
 		t.Fatal(err)
 	}
 	if got := logs.String(); strings.Count(got, "level=ERROR") != 1 || !strings.Contains(got, "repo=npm/old upstream=verdaccio") {
