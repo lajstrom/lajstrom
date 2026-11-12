@@ -90,8 +90,9 @@ func (p *Provider) translate(op string, err error) error {
 //     retries, a request that timed out (the dial, the TLS handshake, the wait for the response
 //     headers) or met an EOF (the registry closed the connection without an answer) and that
 //     the breaker counted as the registry's failure (*noAnswerError): ErrUnavailable, without a
-//     wait (#670). A timeout or an EOF of the caller's context, of a client's body (#643), or
-//     of an answer's body is not the registry's and stays as it is.
+//     wait (#670). A timeout or an EOF of the caller's context, of a client's body (#643), of
+//     a request that waited on a client's body (#648), or of an answer's body is not the
+//     registry's and stays as it is.
 //
 // A refused token realm (realmError) is wrapped without what net/http and oras-go put around
 // it, which names the request URL. Everything else, context errors included, is wrapped with

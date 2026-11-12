@@ -622,9 +622,10 @@ gets `503` with `Retry-After`, the seconds until the trial below (on `/v2` with 
 the registry's name. Then the next `GET` or `HEAD` goes through as a trial, normally the readiness ping of `serve`; an
 answer closes the breaker (`registry answers again: circuit closed`), a failure opens it for
 another 30 s. A request with a body is never the trial, and fails at once until the breaker is
-closed. A `4xx` is an answer; a `429`, a request whose client went away, and an upload whose
-client's body stalled or broke off as it streamed through to the registry, count neither way,
-unless the registry gave up on the body first ([below](#requests-from-clients)).
+closed. A `4xx` is an answer; a `429`, a request whose client went away, an upload whose
+client's body stalled or broke off as it streamed through to the registry, and one that the
+registry dropped while Lajstrom had waited a second or more on the client's body
+([below](#requests-from-clients)), count neither way.
 `lajstrom_provider_circuit_open{registry}` is `1` while the breaker is open. The ping that it
 refuses counts as unanswered, so a breaker that stays open for a minute turns
 [`/-/readyz`](#readiness) to `503`, as a registry that does not answer does.
@@ -636,7 +637,9 @@ does not answer within `registries[].timeout` (it hangs), is unavailable from th
 on: the client gets `503` without `Retry-After` (on `/v2` with the code `UNAVAILABLE`), and each
 such request counts as unanswered for the breaker, which opens after five as above. A request
 that ends because its client went away, or because the client's body stalled or broke off, is
-not one of them: that is the client's doing.
+not one of them: that is the client's doing. Nor does an upload that the registry dropped
+while Lajstrom waited on the client's body count ([below](#requests-from-clients)), though it
+fails all the same.
 
 ### An eventually consistent registry
 
@@ -708,13 +711,21 @@ The registry, and any proxy in front of it, must wait longer for a request body 
 does: their body timeout above `server.stallTimeout`. A `/v2` upload streams through to the
 registry, so a client that pauses pauses the registry's request too. Within
 `server.stallTimeout` Lajstrom keeps waiting; a registry that gives up first closes the
-connection while no read of the client's body has failed, and Lajstrom counts that as a
-registry failure: five such uploads in a row open the [circuit breaker](#requests-to-the-registries)
-for 30 s, for every client (#648). nginx's `client_body_timeout` is 60 s between two reads by
-default ([nginx](https://nginx.org/en/docs/http/ngx_http_core_module.html#client_body_timeout)),
+connection while no read of the client's body has failed, and the upload fails though the
+client kept within Lajstrom's bound. nginx's `client_body_timeout` is 60 s between
+two reads by default ([nginx](https://nginx.org/en/docs/http/ngx_http_core_module.html#client_body_timeout)),
 the default `server.stallTimeout`, so the two race. Raise the registry's and its proxy's (600 s,
 as [reverse-proxy.md](reverse-proxy.md) sets for the edge), or set `server.stallTimeout` below
-them; with `0s` Lajstrom never cuts, and every stall the registry cuts counts.
+them; with `0s` Lajstrom never cuts, and every pause the registry cuts fails the upload.
+
+Such a failure does not count toward the [circuit breaker](#requests-to-the-registries) (#648):
+when the registry drops a request while Lajstrom has waited a second or more on the client's
+body, the request counts neither way, and the log has `registry dropped a request that waited
+on its body` at info, with the method, the path and the wait. A line like it now and then is a
+client that paused; many of them say that a body timeout is below `server.stallTimeout`. A
+registry that drops a request while its body moves, or once the body came whole, still counts:
+that registry is down, and a request that counts neither way does not reset the count, so its
+readiness pings and the other requests that fail open the breaker as before.
 
 The bounds on live upload sessions count per replica too: a replica counts the sessions it has
 answered a request of, so behind N replicas a principal may hold up to N times as many, and one

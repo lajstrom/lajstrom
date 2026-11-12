@@ -8,7 +8,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -251,20 +253,26 @@ func failingBody(err error) io.Reader {
 // all: a chunk or a closing PUT, threshold times in a row, leaves it closed; and none is
 // provider.ErrUnavailable, though a stall is a timeout and a body that breaks off an EOF (#670).
 // A registry that drops the connection while the body streams still counts as a failure, and is
-// provider.ErrUnavailable.
+// provider.ErrUnavailable. One that closes it on its own body timeout while the client paused
+// is provider.ErrUnavailable too, but counts neither way (#648).
 func TestBreakerBodyFails(t *testing.T) {
+	lowerClientWait(t, 50*time.Millisecond)
 	stalled := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
 	tests := []struct {
-		name string
-		body func() io.Reader
-		drop bool // the registry closes the connection without an answer
-		open bool
+		name    string
+		body    func() io.Reader
+		drop    bool          // the registry closes the connection without an answer
+		timeout time.Duration // the registry's body timeout: it closes the connection when no byte came for that long
+		open    bool
 	}{
 		{name: "stalled", body: func() io.Reader { return failingBody(stalled) }},
 		{name: "broke off", body: func() io.Reader { return failingBody(io.ErrUnexpectedEOF) }},
 		{name: "broken chunked encoding", body: func() io.Reader { return failingBody(errors.New("invalid byte in chunk length")) }},
 		{name: "past the bound", body: func() io.Reader { return failingBody(&http.MaxBytesError{Limit: 3}) }},
 		{name: "the registry drops the connection", body: func() io.Reader { return strings.NewReader("abcdef") }, drop: true, open: true},
+		{name: "the client pauses past the registry's body timeout", body: func() io.Reader {
+			return &pausingBody{steps: []pause{{0, "abc"}, {150 * time.Millisecond, "def"}}}
+		}, timeout: 60 * time.Millisecond},
 	}
 	sends := []struct {
 		name string
@@ -299,26 +307,21 @@ func TestBreakerBodyFails(t *testing.T) {
 					}
 					sessions = append(sessions, u)
 				}
-				if tt.drop {
-					f.hook = func(w http.ResponseWriter, r *http.Request) bool {
-						if r.Method != http.MethodPatch && r.Method != http.MethodPut {
-							return false
-						}
-						if c, _, err := http.NewResponseController(w).Hijack(); err == nil {
-							_ = c.Close()
-						}
-						return true
-					}
+				dropped := tt.drop || tt.timeout > 0
+				if dropped {
+					f.hook = dropUploads(tt.timeout)
 				}
 				for _, u := range sessions {
 					err := send.call(ctx, repo, u, tt.body())
 					if err == nil || byBreaker(err) {
 						t.Fatalf("%s: %v, want it to fail as it streams", send.name, err)
 					}
-					// The registry that dropped the connection is unavailable (#670); a body
-					// that stalled or broke off is the client's, never the registry's.
-					if got := errors.Is(err, provider.ErrUnavailable); got != tt.open {
-						t.Errorf("%s: %v; provider.ErrUnavailable = %v, want %v", send.name, err, got, tt.open)
+					// The registry that dropped the connection is unavailable (#670); after a
+					// pause, the write of the next bytes meets the closed connection, as after a
+					// reset (#593). A body that stalled or broke off is the client's, never the
+					// registry's.
+					if got := errors.Is(err, provider.ErrUnavailable); got != dropped {
+						t.Errorf("%s: %v; provider.ErrUnavailable = %v, want %v", send.name, err, got, dropped)
 					}
 				}
 				_, err = repo.StartBlobUpload(ctx)
@@ -328,4 +331,190 @@ func TestBreakerBodyFails(t *testing.T) {
 			})
 		}
 	}
+}
+
+// lowerClientWait sets clientWait to d for the test.
+func lowerClientWait(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := clientWait
+	clientWait = d
+	t.Cleanup(func() { clientWait = old })
+}
+
+// pause is one step of a client's body: wait, then data in one read.
+type pause struct {
+	wait time.Duration
+	data string
+}
+
+// pausingBody is a client's body that waits before each of its steps.
+type pausingBody struct{ steps []pause }
+
+func (b *pausingBody) Read(p []byte) (int, error) {
+	if len(b.steps) == 0 {
+		return 0, io.EOF
+	}
+	s := &b.steps[0]
+	if s.wait > 0 {
+		time.Sleep(s.wait)
+		s.wait = 0
+	}
+	n := copy(p, s.data)
+	if s.data = s.data[n:]; s.data == "" {
+		b.steps = b.steps[1:]
+	}
+	return n, nil
+}
+
+// TestBreakerClientWait sends uploads straight through breakerTransport to a registry over
+// HTTP/1.1 and HTTP/2, chunked and with a Content-Length, and drops them there (#648). A
+// registry, or a proxy in front of it, whose body timeout is shorter than server.stallTimeout
+// drops the upload of a client that paused while Lajstrom still waits for that client: no read
+// of the body fails, and net/http returns the failure once the client sends again. That counts
+// neither way, so threshold such uploads leave the breaker closed. A registry that drops an
+// upload while its body moves is a failure, also when the client paused earlier in the same
+// body and when each read waits a little, as for a client behind a slow link; so is one that
+// drops it a while after the whole body came, though the client paused before its end:
+// threshold of them open the breaker, the outage that slow uploads must not hide.
+func TestBreakerClientWait(t *testing.T) {
+	lowerBreaker(t, 3)
+	lowerClientWait(t, 50*time.Millisecond)
+	const paused = 150 * time.Millisecond
+	tests := []struct {
+		name     string
+		body     []pause
+		registry droppingRegistry
+		open     bool
+	}{
+		{name: "the client pauses past the registry's body timeout", body: []pause{{0, "abc"}, {paused, "def"}},
+			registry: droppingRegistry{timeout: 60 * time.Millisecond}},
+		{name: "a fast client", body: []pause{{0, "abcdef"}}, registry: droppingRegistry{dropAt: 3}, open: true},
+		{name: "a client whose reads wait a little", body: []pause{{0, "abc"}, {2 * time.Millisecond, "d"},
+			{2 * time.Millisecond, "e"}, {2 * time.Millisecond, "f"}}, registry: droppingRegistry{dropAt: 4}, open: true},
+		{name: "the client paused earlier", body: []pause{{0, "abc"}, {paused, "d"}, {2 * time.Millisecond, "e"},
+			{2 * time.Millisecond, "f"}}, registry: droppingRegistry{timeout: time.Second, dropAt: 5}, open: true},
+		{name: "the registry drops after the body", body: []pause{{0, "abc"}, {paused, "def"}},
+			registry: droppingRegistry{timeout: time.Second, dropAfter: paused}, open: true},
+	}
+	for _, proto := range []string{"HTTP/1.1", "HTTP/2.0"} {
+		for _, size := range []int64{-1, 6} {
+			for i, tt := range tests {
+				t.Run(fmt.Sprintf("%s/size %d/%s", proto, size, tt.name), func(t *testing.T) {
+					srv := startRegistry(t, proto, tt.registry)
+					log, buf := testLogger()
+					b := newBreaker(fmt.Sprintf("breaker-wait-%s-%d-%d", proto, size, i), log)
+					rt := &breakerTransport{b: b, next: srv.Client().Transport}
+					var wg sync.WaitGroup // threshold clients at once
+					for range breakerThreshold {
+						wg.Go(func() {
+							req, err := http.NewRequestWithContext(t.Context(), http.MethodPatch, srv.URL+"/v2/x/blobs/uploads/1",
+								&pausingBody{steps: slices.Clone(tt.body)})
+							if err != nil {
+								t.Error(err)
+								return
+							}
+							req.ContentLength = size
+							if resp, err := rt.RoundTrip(req); err == nil {
+								_ = resp.Body.Close()
+								t.Errorf("the upload got %s, want it dropped", resp.Status)
+							}
+						})
+					}
+					wg.Wait()
+					get, _ := http.NewRequest(http.MethodGet, srv.URL+"/v2/", nil)
+					_, err := b.allow(get)
+					if got := byBreaker(err); got != tt.open {
+						t.Errorf("after %d dropped uploads: circuit open = %v, want %v", breakerThreshold, got, tt.open)
+					}
+					if logged := strings.Contains(buf.String(), "waited on its body"); logged == tt.open {
+						t.Errorf("logged that a request waited on its body: %v, want %v\n%s", logged, !tt.open, buf)
+					}
+				})
+			}
+		}
+	}
+}
+
+// droppingRegistry answers no upload: it drops the request once it read dropAt bytes of the
+// body (0: no such bound), when no byte came within timeout, its body timeout between two reads
+// (0: none), and else dropAfter after the end of the body.
+type droppingRegistry struct {
+	timeout   time.Duration
+	dropAt    int
+	dropAfter time.Duration
+}
+
+func (d droppingRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	rc := http.NewResponseController(w)
+	buf := make([]byte, 64)
+	for read := 0; ; {
+		if d.timeout > 0 {
+			_ = rc.SetReadDeadline(time.Now().Add(d.timeout))
+		}
+		n, err := r.Body.Read(buf)
+		read += n
+		switch {
+		case d.dropAt > 0 && read >= d.dropAt, err != nil && !errors.Is(err, io.EOF):
+			dropRequest(w, r)
+			return
+		case err != nil:
+			time.Sleep(d.dropAfter)
+			dropRequest(w, r)
+			return
+		}
+	}
+}
+
+// startRegistry serves h over proto, HTTP/1.1, or HTTP/2.0 with TLS, and checks that each
+// request comes over it.
+func startRegistry(t *testing.T, proto string, h http.Handler) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Proto != proto {
+			t.Errorf("the registry got %s, want %s", r.Proto, proto)
+		}
+		h.ServeHTTP(w, r)
+	}))
+	if proto == "HTTP/2.0" {
+		srv.EnableHTTP2 = true
+		srv.StartTLS()
+	} else {
+		srv.Start()
+	}
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// dropUploads is a hook of the fake that drops every PATCH and PUT without an answer: at once,
+// or, with a body timeout, once no byte of the body came for that long.
+func dropUploads(timeout time.Duration) func(http.ResponseWriter, *http.Request) bool {
+	return func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method != http.MethodPatch && r.Method != http.MethodPut {
+			return false
+		}
+		rc := http.NewResponseController(w)
+		for buf := make([]byte, 64); timeout > 0; {
+			_ = rc.SetReadDeadline(time.Now().Add(timeout))
+			if _, err := r.Body.Read(buf); err != nil {
+				break
+			}
+		}
+		if c, _, err := rc.Hijack(); err == nil {
+			_ = c.Close()
+		}
+		return true
+	}
+}
+
+// dropRequest ends a request without an answer: it closes the connection of an HTTP/1.1
+// request and resets the stream of an HTTP/2 one, the way nginx ends a request whose body
+// timed out.
+func dropRequest(w http.ResponseWriter, r *http.Request) {
+	if r.ProtoMajor == 1 {
+		if c, _, err := http.NewResponseController(w).Hijack(); err == nil {
+			_ = c.Close()
+			return
+		}
+	}
+	panic(http.ErrAbortHandler)
 }
