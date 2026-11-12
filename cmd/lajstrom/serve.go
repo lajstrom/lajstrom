@@ -186,6 +186,8 @@ func newServeCmd(a *app) *cobra.Command {
 				return err
 			}
 
+			mgmt := api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Deleter: pipe, Prefetcher: proxyCore, Bootstrap: boot,
+				Log: a.log})
 			srv, err := server.New(server.Options{
 				Listen:          c.Server.Listen,
 				ExternalURL:     c.Server.ExternalURL,
@@ -198,7 +200,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Plugins:         servedPlugins(c.Server.ExternalURL, accounts{authn, &auth.Tokens{Index: st, Log: a.log}}),
 				Deps:            deps,
 				Ready:           ready(a.log, c.Database.Driver, st, health, rep),
-				API:             api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Deleter: pipe, Bootstrap: boot, Log: a.log}),
+				API:             mgmt,
 				Facade:          v2,
 				Authenticator:   authn,
 				MetricsListen:   c.Server.MetricsListen,
