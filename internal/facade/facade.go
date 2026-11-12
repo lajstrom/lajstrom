@@ -18,6 +18,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/ingest"
+	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -125,8 +126,9 @@ const apiVersionHeader = "Docker-Distribution-API-Version"
 // requests but the verification keys, reloaded from Tokens and told the key of each token it
 // issues, so that the token verifies here at once, and its count of the live upload
 // sessions (quota.go), which is per replica: an upload session is a row of the index, so any
-// replica continues it, and a token of one replica verifies on another. New panics when
-// o.Index or o.Tokens is nil.
+// replica continues it, and a token of one replica verifies on another; New hands that count to
+// lajstrom_upload_sessions_live (metrics.CountUploadSessions). New panics when o.Index or
+// o.Tokens is nil.
 func New(o Options) http.Handler {
 	if o.Index == nil {
 		panic("facade: New: nil Options.Index")
@@ -160,6 +162,7 @@ func New(o Options) http.Handler {
 		issuer:   token.NewIssuer(token.Options{Keys: o.Tokens, Verifier: verifier, Now: o.Now, Log: o.Log}),
 		verifier: verifier,
 		uploads:  liveUploads{perRepo: o.UploadSessionsPerRepo, perPrincipal: o.UploadSessionsPerPrincipal}}
+	metrics.CountUploadSessions(func() int { return h.uploads.count(o.Now()) })
 	h.endpoints = map[routeKind]map[string]endpoint{
 		routeManifest: {
 			http.MethodGet: h.getManifest, http.MethodHead: h.getManifest,

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/metrics"
 )
 
 // The live upload sessions of a principal (U-4 of the threat model, #246). Each session holds a
@@ -159,6 +160,21 @@ func (q *liveUploads) sweep(now time.Time) bool {
 	return len(q.held) < maxUploadPrincipals
 }
 
+// count returns how many sessions of all principals count at now: lajstrom_upload_sessions_live.
+func (q *liveUploads) count(now time.Time) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	n := 0
+	for _, ids := range q.held {
+		for _, u := range ids {
+			if u.live(now) {
+				n++
+			}
+		}
+	}
+	return n
+}
+
 // begin counts a request on the upload id of principal in repoID as running, until end.
 func (q *liveUploads) begin(principal string, repoID int64, id string, now time.Time) {
 	if q.off() {
@@ -274,6 +290,11 @@ func (h *handler) admitUpload(ctx context.Context, t *target, principal, id stri
 	if full == nil {
 		return nil
 	}
+	limit := "principal"
+	if full.perRepo {
+		limit = "repo"
+	}
+	metrics.UploadSessionsRefused.WithLabelValues(limit).Inc()
 	return errTooManyUploads(t, full)
 }
 
