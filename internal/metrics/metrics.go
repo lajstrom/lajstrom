@@ -12,6 +12,7 @@ import (
 	"net/http/pprof"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -22,6 +23,9 @@ import (
 var sizeBuckets = prometheus.ExponentialBuckets(256, 4, 13)
 
 var registry = prometheus.NewRegistry()
+
+// liveUploadSessions counts the live upload sessions for UploadSessionsLive.
+var liveUploadSessions atomic.Pointer[func() int]
 
 var (
 	// HTTPDuration is the time of a request on the main listener, from the first middleware to
@@ -89,6 +93,23 @@ var (
 	Throttled = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "lajstrom_auth_throttled_total", Help: "Requests refused 429 by a throttle of internal/auth, by throttle.",
 	}, []string{"throttle"})
+	// UploadSessionsRefused counts the new upload sessions of /v2 refused 429 because the
+	// principal held as many live sessions as a bound of server.uploadSessions allows on this
+	// replica, by limit: repo (perRepo) and principal (perPrincipal).
+	UploadSessionsRefused = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "lajstrom_upload_sessions_refused_total", Help: "New /v2 upload sessions refused 429 at a bound of server.uploadSessions, by limit.",
+	}, []string{"limit"})
+	// UploadSessionsLive is the number of live upload sessions of /v2 that this replica counts
+	// toward server.uploadSessions, of all principals, read at each scrape from the function
+	// that CountUploadSessions set; 0 before.
+	UploadSessionsLive = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "lajstrom_upload_sessions_live", Help: "Live /v2 upload sessions this replica counts toward server.uploadSessions.",
+	}, func() float64 {
+		if f := liveUploadSessions.Load(); f != nil {
+			return float64((*f)())
+		}
+		return 0
+	})
 	// DownloadDigestMismatches counts the downloads aborted because the bytes the registry sent
 	// do not have their digest (docs/spec/guarantees.md, INV-40), by registry name.
 	DownloadDigestMismatches = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -107,7 +128,7 @@ var (
 
 func init() {
 	registry.MustRegister(HTTPDuration, HTTPRequestSize, HTTPResponseSize, ProviderDuration, ProviderCircuitOpen, DBDuration, Ingest,
-		ProxyUpstreamDuration, ProxyDocuments, ProxyFetches, Throttled, DownloadDigestMismatches, ClockSkew, buildInfo,
+		ProxyUpstreamDuration, ProxyDocuments, ProxyFetches, Throttled, UploadSessionsRefused, UploadSessionsLive, DownloadDigestMismatches, ClockSkew, buildInfo,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 }
 
@@ -116,6 +137,11 @@ func SetBuild(version, commit string) {
 	buildInfo.Reset()
 	buildInfo.WithLabelValues(version, commit, runtime.Version()).Set(1)
 }
+
+// CountUploadSessions sets the function that lajstrom_upload_sessions_live reads at each
+// scrape: the /v2 handler's count of its live upload sessions. The last one set wins; serve
+// makes one handler.
+func CountUploadSessions(count func() int) { liveUploadSessions.Store(&count) }
 
 // Handler serves the metrics listener: GET /metrics, and /debug/pprof/ when withPprof. Every
 // other path is 404.
