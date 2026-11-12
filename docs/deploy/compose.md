@@ -87,6 +87,20 @@ without it the signing keys in the database are ciphertext
   fail when it is wrong. To try the stack without an edge, on the loopback port, set
   `externalURL: "http://localhost:8080"` and add `insecureHTTP: true` under `server:`; an `http`
   URL without it stops the start (`server.externalURL: must be https`).
+- `server.trustedProxies`, commented out in the file: the address the edge's connections come
+  from, as Lajstrom sees them. While it is empty, Lajstrom takes the edge for the client: the
+  per-address throttles of failed logins and of `/v2/token` are off, the startup log says so,
+  and the access and audit logs record the edge's address ([auth.md](../auth.md#failed-logins)).
+  It is not `127.0.0.1`: Docker passes a connection to the published port on from an address of
+  its own, usually the gateway of the Compose network (`docker network inspect lajstrom_default
+  --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}'` with the name of `compose.yaml`), and an
+  edge in a container on that network connects from its own address there. So find it once the
+  stack is up (section 3): send one request through the edge, read `remoteAddr` of its
+  `request` line in `docker compose logs lajstrom`, list that address without its port, and
+  recreate the container (below). Compose may give the network another subnet when it makes it again after
+  `docker compose down`, so check it then. Every process on the host that connects to the
+  loopback port comes from that address too, and could name any client
+  ([reverse-proxy.md](../reverse-proxy.md#the-client-address)).
 - `server.metricsListen: "0.0.0.0:9464"`: Prometheus on the Compose network scrapes it; the port
   is not published.
 - `database.driver: postgres`; the DSN comes from `LAJSTROM_DATABASE_DSN`, since it carries the
@@ -134,10 +148,14 @@ repos of the file and the bearer-token key, asks the registry what it supports, 
 {"level":"INFO","msg":"index migrations applied under the migration lock","database.driver":"postgres","applied":[1,2,3,4,5,6,7,8,9,10,11,12,13]}
 {"level":"INFO","msg":"repo of the configuration created","repo":"raw/assets","registry":"local"}
 {"level":"INFO","msg":"token signing key made","fingerprint":"816b40ab693fd79a6fa6538130a7e8d6eca385631f0ec9c8a878dfa2152520db","algorithm":"ES256"}
-{"level":"INFO","msg":"registry capabilities","registry":"local","vendor":"unknown","createOnPush":true,"referrers":false,"catalog":true,"deleteManifest":true,"immutableTags":false,"blobRedirect":true,"maxBlobSize":0}
+{"level":"INFO","msg":"registry capabilities","registry":"local","vendor":"distribution","createOnPush":true,"referrers":false,"catalog":true,"deleteManifest":true,"immutableTags":false,"blobRedirect":true,"maxBlobSize":0,"consistency":"strong","maxNameDepth":0}
 {"level":"INFO","msg":"listening","addr":"[::]:8080","externalURL":"http://localhost:18150","tls":false}
 {"level":"INFO","msg":"metrics listening","addr":"[::]:9464","pprof":false}
 ```
+
+The `registry capabilities` line is from main at `c3deee75`, on 2026-11-12, against the
+distribution 3.1.2 of the dev stack: the image of the run was older, and its line named the
+vendor `unknown` and had neither `consistency` nor `maxNameDepth`.
 
 ### The health check
 
@@ -278,7 +296,11 @@ says what to do. This has not been tried: there is no release yet.
 
 ## What was not verified
 
-- An edge in front, TLS and `externalURL` with `https`: #129 describes the edge.
+- An edge in front, TLS and `externalURL` with `https`, in the run of this page; nginx and Caddy
+  ran over TLS in front of this stack for [reverse-proxy.md](../reverse-proxy.md).
+- The address of `server.trustedProxies` for an edge on the host: under OrbStack a request to a
+  published port of the dev stack came from the gateway of its network (2026-11-12), and this
+  stack was not tried with the key set; Docker on Linux was not tried.
 - A host other than macOS with OrbStack 2.2.5 (Docker 29.8.2, Compose 5.5.0): on Linux the
   secret files are bind-mounted with mode 0600 and read by root inside `postgres` and
   `registry`, which Docker's default allows; rootless Docker or user namespaces were not tried.

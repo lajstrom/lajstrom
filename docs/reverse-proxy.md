@@ -1,11 +1,11 @@
 # Lajstrom behind a reverse proxy
 
-Lajstrom listens on plain HTTP and expects an edge in front of it, an nginx, a Caddy, an
-ingress or a Gateway, that terminates TLS for one public host
-([http-routing.md](spec/http-routing.md) §1). Part 1 is what the edge must do for the
-protocols to work; part 2 is how to limit request rates there, where volume limits belong by
-decision ([ADR 0011](adr/0011-client-address-behind-a-proxy.md)): Lajstrom itself only
-throttles what the edge cannot see, failed logins and the token endpoint (#130,
+Lajstrom listens on plain HTTP unless `server.tls` is set, and this page is about the other
+way: an edge in front of it, an nginx, a Caddy, an ingress or a Gateway, that terminates TLS for
+one public host ([http-routing.md](spec/http-routing.md) §1). Part 1 is what the edge must do
+for the protocols to work; part 2 is how to limit request rates there, where volume limits
+belong by decision ([ADR 0011](adr/0011-client-address-behind-a-proxy.md)): Lajstrom itself
+only throttles what the edge cannot see, failed logins and the token endpoint (#130,
 [auth.md](auth.md#failed-logins)).
 
 Every configuration here was run on macOS with OrbStack, on 2026-11-09. nginx and Caddy stood in
@@ -33,7 +33,7 @@ used `https://localhost:<port>` with a certificate of a local CA (Caddy's intern
 
 | What | Why | nginx | Caddy |
 | --- | --- | --- | --- |
-| Terminate TLS, and reach Lajstrom over plain HTTP on a network only the edge can reach | Lajstrom has no TLS of its own yet (`server.tls.*` and `server.insecureHTTP` are #50); docker, pip and Maven want HTTPS | `listen 443 ssl` | automatic |
+| Terminate TLS, and reach Lajstrom over plain HTTP on a network only the edge can reach | docker, pip and Maven want HTTPS; TLS ends at the edge here, and `server.tls` is for a single host without an edge ([configuration.md](configuration.md#server)) | `listen 443 ssl` | automatic |
 | Route the whole host, without a path prefix or rewriting | OCI clients always ask `https://<host>/v2/…`; Lajstrom owns the tree | `location /` | `reverse_proxy` |
 | Set `server.externalURL` to the public URL, with the port if it is not 443 | the realm of the bearer challenge of `/v2` is `<externalURL>/v2/token` | | |
 | Pass bodies of any size, unbuffered | a layer is gigabytes; nginx refuses more than 1 MiB by default and spools bodies to its disk | `client_max_body_size 0`, `proxy_request_buffering off` | the default |
@@ -41,16 +41,19 @@ used `https://localhost:<port>` with a certificate of a local CA (Caddy's intern
 | Time out a stalled transfer, not a long one | Lajstrom bounds no whole transfer, only a body that moves no byte for `server.stallTimeout` (1 min), the headers (10 s) and idle connections (120 s) | `proxy_send_timeout`, `proxy_read_timeout`, `client_body_timeout`, `send_timeout`: 600 s between two reads or writes | no timeout set in the file |
 | Leave `Location` and `WWW-Authenticate` as they are | upload sessions and the challenge carry them | `proxy_redirect off` | the default |
 | HTTP/1.1 and keep-alive to the upstream, idle connections closed before Lajstrom's 120 s | no new connection per request, and no request sent on a connection Lajstrom is closing | `proxy_http_version 1.1`, `Connection ""`, `keepalive` (idle 60 s by default) | `transport http { keepalive 60s }` |
-| Pass `Host`, `X-Forwarded-For`, `X-Forwarded-Proto` | `X-Forwarded-For` names the client when the edge is in `server.trustedProxies` ([below](#the-client-address)) | `proxy_set_header` | the default |
+| Pass `X-Forwarded-For` | it names the client when the edge is in `server.trustedProxies` ([below](#the-client-address)); Lajstrom reads no other forwarded header, so the `X-Forwarded-Proto` both files send is unused, and `Host` matters only without `server.externalURL`, the dev stack | `proxy_set_header` | the default |
 | Never route the metrics listener | `/metrics` and `/debug/pprof/` are on `server.metricsListen`, another port; through both edges `/metrics` was `404` | | |
 | Health check on `/-/readyz` | `503` while the database or a registry is down ([operations.md](operations.md#readiness)), and while a replica stops | (nginx Plus or an external check) | `health_uri /-/readyz` |
 | Restart a replica without an error: send what it refuses to another, and leave it out shorter than `server.shutdownDelay` (5 s) minus a second | a stopping replica serves on for the delay, then closes its listener ([below](#restarts)) | `proxy_next_upstream error timeout`, `proxy_next_upstream_tries 2`, `max_fails=1 fail_timeout=3s` | not set in the file |
 
 ### `server.externalURL`
 
-Today it makes the realm and the service of the bearer challenge, and nothing else: the
-`Location` of an upload or a raw publish is a path, the file links of the PyPI simple index are
-relative, and a blob's `307` is the registry's own URL. Without it the realm is
+It makes the realm and the service of the bearer challenge, and with them the issuer and the
+audience of the tokens, and the base of npm's `dist.tarball`, an absolute URL; a new
+`externalURL` needs npm's documents reset with `lajstrom reindex`
+([http-routing.md](spec/http-routing.md) §3, npm). Nothing else: the `Location` of an upload or
+a raw publish is a path, the file links of the PyPI simple index are relative, and a blob's
+`307` is the registry's own URL. Without it the realm is
 `http://<Host>/v2/token`, plain HTTP behind a TLS edge, which clients refuse or should:
 
 ```text
@@ -133,7 +136,9 @@ send one request from a known address and read the remote address of its access 
 above. When the chain cannot be made honest, leave `trustedProxies` empty and limit by address at
 the edge. Only the single-host network of the `ha` profile was tried, no cluster;
 `test/e2e/auth.sh` exercises the header with `trustedProxies: ["127.0.0.1/32"]` and made-up
-client addresses.
+client addresses. The configurations of [deploy/compose.md](deploy/compose.md#2-configuration)
+and [deploy/kubernetes.md](deploy/kubernetes.md#2-the-configuration) carry the key commented
+out, for the address of their edge.
 
 ### Restarts
 
@@ -396,6 +401,20 @@ registry, which for gigabytes takes longer than 15 s, so `timeout: 0s` leaves th
  154 429 retry-after=1
 ```
 
+The idle connections of part 1 are not set in the file: Envoy's documentation gives an upstream
+connection an idle timeout of an hour by default, longer than Lajstrom's 120 s, so Envoy may send
+a request on a connection Lajstrom is closing. The cluster takes a shorter one:
+
+```yaml
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config: {http_protocol_options: {}}
+          common_http_protocol_options: {idle_timeout: 60s}
+```
+
+That was not tried.
+
 In Istio the same filter goes into the sidecar of Lajstrom's pods with an `EnvoyFilter` (the
 `typed_per_filter_config` above on the route of `/v2/token`); then each pod has its buckets, and
 the client address is what the sidecar sees, which [ADR 0011](adr/0011-client-address-behind-a-proxy.md)
@@ -414,8 +433,9 @@ profile, at `172.31.226.50` and `.51`, sent 100 token requests each in the same 
 
 With the route's bucket of Envoy at 40, as a first try had it, the two got 40 together.
 
-When Lajstrom throttles a login or `/v2/token` (#130), and when a registry behind it answers
-`429`, `/v2` answers `429` with the code `TOOMANYREQUESTS`, as the nginx file does at the edge.
+When Lajstrom throttles a login or `/v2/token` (#130), `/v2` answers `429` with the code
+`TOOMANYREQUESTS`, as the nginx file does at the edge. A registry's own `429` throttles Lajstrom,
+not the client: `/v2` answers it `503` with the code `UNAVAILABLE` and `Retry-After`.
 
 ## What was not verified
 

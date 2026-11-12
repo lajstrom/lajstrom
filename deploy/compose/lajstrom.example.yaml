@@ -3,8 +3,8 @@
 # Environment variables LAJSTROM_SERVER_LISTEN, LAJSTROM_SERVER_EXTERNAL_URL,
 # LAJSTROM_SERVER_METRICS_LISTEN, LAJSTROM_LOG_LEVEL, LAJSTROM_LOG_FORMAT, LAJSTROM_DATABASE_DRIVER
 # and LAJSTROM_DATABASE_DSN override the scalar keys of the same name, LAJSTROM_MASTER_KEY_FILE
-# overrides keys.masterKeyFile. Secrets never go into this file: name the environment variable
-# that holds them (*Env keys).
+# overrides keys.masterKeyFile and LAJSTROM_BOOTSTRAP_TOKEN_FILE auth.bootstrap.tokenFile. Secrets
+# never go into this file: name the environment variable that holds them (*Env keys).
 #
 # The index stays SQLite so that make run works without Docker. The Postgres of the dev stack is
 # one line away:
@@ -28,7 +28,7 @@ server:
   metricsListen: "127.0.0.1:9464"     # GET /metrics for Prometheus; never the public host; empty: off
   pprof: false                        # /debug/pprof/ on the metrics listener
   stallTimeout: 1m                    # a body that moves no byte for this long is cut off; 0s: off
-  maxConcurrentUploads: 0             # uploads at once per replica, the next one is 503; 0: no limit
+  maxConcurrentUploads: 32            # uploads at once per replica, the next one is 503; 0: no limit
   uploadSessions:                     # live /v2 upload sessions of one principal on a replica; 0: no bound
     perRepo: 256                      # in one repo; a new session beyond is 429 TOOMANYREQUESTS
     perPrincipal: 1024                # in all repos
@@ -44,7 +44,7 @@ database:
 
 registries:
   - name: local                       # referred to by repos[].registry
-    type: generic                     # generic (distribution, Zot, Harbor, GHCR) | ecr
+    type: generic                     # generic (every registry of docs/registries/ but ECR) | ecr
     url: "http://localhost:5000"      # Zot from the dev stack (make dev-up)
     prefix: ""                        # instance prefix of every OCI repository, e.g. "art/"; empty for none
     auth:

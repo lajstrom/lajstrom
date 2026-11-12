@@ -8,6 +8,14 @@ server:
   # The public URL that clients use, the TLS edge's (docs/configuration.md, server.externalURL):
   # the realm of the bearer challenge of /v2 is <externalURL>/v2/token.
   externalURL: "https://art.example.com"
+  # The peers whose X-Forwarded-For names the client: the address the edge's connections come
+  # from, as Lajstrom sees them (docs/configuration.md, server.trustedProxies). While it is
+  # empty, Lajstrom takes the edge for the client: the per-address throttles of failed logins
+  # and /v2/token are off, and the logs record the edge's address. It is not 127.0.0.1: Docker
+  # passes a connection to the published port on from an address of its own, usually the
+  # gateway of the compose network. Send one request through the edge, read the remoteAddr of
+  # its line in docker compose logs lajstrom, and list that address (docs/deploy/compose.md, 2).
+  # trustedProxies: ["<the edge's address, as the access log shows it>"]
   # Prometheus scrapes it inside the compose network; the port is not published.
   metricsListen: "0.0.0.0:9464"
 

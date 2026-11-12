@@ -28,7 +28,8 @@ the container as environment variables (`envFrom`).
 - **An ingress or a Gateway** that terminates TLS for the public host and routes the whole host,
   without a path prefix, to the port `http` of the Service, with unlimited and unbuffered
   request bodies ([http-routing.md](../spec/http-routing.md) §1). What the edge must do in detail
-  is #129; no Ingress is in the manifests, since its annotations depend on the controller.
+  is in [reverse-proxy.md](../reverse-proxy.md); no Ingress is in the manifests, since its
+  annotations depend on the controller.
 
 ## 1. The Secret
 
@@ -61,6 +62,18 @@ Edit `configmap.yaml` (or patch it from an overlay of your own):
 
 - `server.externalURL`: the public URL of the ingress, `https://art.example.com` in the file.
   The realm of the bearer challenge of `/v2` is built from it.
+- `server.trustedProxies`, commented out in the file: the addresses the ingress or the Gateway
+  connects to the pods from. While it is empty, Lajstrom takes the edge for the client: the
+  per-address throttles of failed logins and of `/v2/token` are off, the startup log says so,
+  and the access and audit logs record the edge's address ([auth.md](../auth.md#failed-logins)).
+  No address fits every cluster, so find yours: apply with the list empty, send one request
+  through the edge, and read `remoteAddr` of its `request` line in `kubectl -n lajstrom logs`,
+  an address and a port. Then list the range that address comes from, not the address itself: a controller's pod gets a
+  new one from the pod CIDR when it is rescheduled, and a node address, an Istio sidecar or a
+  cloud balancer are other cases. Every peer in the range can name any client, so a wide range
+  wants a NetworkPolicy that admits only the edge
+  ([reverse-proxy.md](../reverse-proxy.md#the-client-address) has the cases, and when to leave
+  the list empty).
 - `registries[0].url`, `prefix`, `auth.username`: your registry.
 - The image: `ghcr.io/lajstrom/lajstrom:v0.1.0` in `deployment.yaml`; pin a digest
   (`ghcr.io/lajstrom/lajstrom:vX.Y.Z@sha256:…`), there or with `images:` in an overlay, as the
@@ -142,10 +155,14 @@ the database serves both (`kubectl -n lajstrom logs <pod>`, a selection, without
 {"level":"INFO","msg":"index migrations applied under the migration lock","database.driver":"postgres","applied":[1,2,3,4,5,6,7,8,9,10,11]}
 {"level":"INFO","msg":"index migrations applied under the migration lock","database.driver":"postgres","applied":[12,13]}
 {"level":"INFO","msg":"token signing key made","fingerprint":"e16202518b071f0a9e161d8acdf3cd560468bd2f141e37f28293182a333fc2f8","algorithm":"ES256"}
-{"level":"INFO","msg":"registry capabilities","registry":"main","vendor":"unknown","createOnPush":true,"referrers":false,"catalog":true,"deleteManifest":true,"immutableTags":false,"blobRedirect":true,"maxBlobSize":0}
+{"level":"INFO","msg":"registry capabilities","registry":"main","vendor":"distribution","createOnPush":true,"referrers":false,"catalog":true,"deleteManifest":true,"immutableTags":false,"blobRedirect":true,"maxBlobSize":0,"consistency":"strong","maxNameDepth":0}
 {"level":"INFO","msg":"listening","addr":"[::]:8080","externalURL":"http://localhost:18790","tls":false}
 {"level":"INFO","msg":"metrics listening","addr":"[::]:9464","pprof":false}
 ```
+
+The `registry capabilities` line is from main at `c3deee75`, on 2026-11-12, against the
+distribution 3.1.2 of the dev stack: the image of the run was older, and its line named the
+vendor `unknown` and had neither `consistency` nor `maxNameDepth`.
 
 ## 4. The first admin and the repos
 
@@ -222,7 +239,7 @@ lajstrom_ingest_total{format="raw",result="published"} 1
 
 | Probe | Path | Why |
 | --- | --- | --- |
-| startup | `/-/healthz`, every 2 s, 30 tries | `serve` applies the migrations before it listens; a long migration must not count against liveness |
+| startup | `/-/healthz`, every 2 s, 30 tries | `serve` applies the migrations and asks the registries before it listens, and liveness must not count that. The start gets about a minute, up to 20 s of it for a registry that does not answer ([configuration.md](../configuration.md#what-serve-needs)), before the kubelet restarts the container: run a long migration as the Job of [Upgrade](#upgrade), or raise `failureThreshold` |
 | liveness | `/-/healthz`, every 10 s | only "the process answers": an outage of the database or the registry must not restart the pods |
 | readiness | `/-/readyz`, every 5 s | `503` while the database does not answer or a registry has not answered `GET /v2/` for a minute ([operations.md](../operations.md#readiness)), and from `SIGTERM` on |
 

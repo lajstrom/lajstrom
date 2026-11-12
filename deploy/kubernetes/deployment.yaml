@@ -50,7 +50,8 @@ spec:
           # No preStop hook: the endpoint of a stopping pod goes while the pod gets SIGTERM, not
           # before, and serve keeps its listener open server.shutdownDelay (5s) after SIGTERM, so
           # that no request of a rollout finds it closed (docs/deploy/kubernetes.md, Upgrade).
-          # serve applies the migrations before it listens: give the first start a minute.
+          # serve applies the migrations and asks the registries (up to 20 s when one does not
+          # answer) before it listens: give the start a minute (docs/deploy/kubernetes.md, Probes).
           startupProbe:
             httpGet: {path: /-/healthz, port: http}
             periodSeconds: 2
