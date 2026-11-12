@@ -32,8 +32,10 @@ printf '%s' "$pw" | bin/lajstrom admin user create --name admin --admin --passwo
 as it is pushed and index nothing beyond the repository. `raw` is a format Lajstrom manages: its
 manifests follow the [manifest profile](../spec/manifest-profile.md) and are indexed.
 
-oras from its image, on OrbStack or Linux, where `--network host` reaches `localhost:8080`;
-the dev stack is plain HTTP, hence `--plain-http`:
+oras from its image, on OrbStack or Linux, where `--network host` reaches `localhost:8080`
+(Docker Desktop is not tested, and its `--network host` needs Settings, Resources, Network,
+Enable host networking; an oras installed on the host needs none of it); the dev stack is plain
+HTTP, hence `--plain-http`:
 
 ```sh
 oras() { docker run --rm -i --network host -v "$PWD:/w" -w /w ghcr.io/oras-project/oras:v1.3.6 "$@" --registry-config /w/.oras-auth.json; }

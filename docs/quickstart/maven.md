@@ -22,7 +22,10 @@ make dev-up                        # Zot, distribution and Postgres: docs/dev-st
 make run                           # serves deploy/compose/lajstrom.example.yaml on 127.0.0.1:8080
 ```
 
-In another terminal:
+The steps assume a fresh `lajstrom.db`: after another quick start, stop `make run`, remove
+`lajstrom.db` and start it again, or the commands below exit 1 with `user alice already exists`.
+In another terminal, once `make run` has logged `listening` (`serve` creates the tables of
+`lajstrom.db`; before that, `admin` fails with `no database at …/lajstrom.db`):
 
 ```sh
 cfg=deploy/compose/lajstrom.example.yaml
@@ -66,8 +69,9 @@ you are done (section 8).
 
 ## 3. Maven: settings.xml and the repository
 
-A container on the host's network, where `localhost:8080` is Lajstrom (Linux and OrbStack), with
-the token in its environment:
+A container on the host's network, where `localhost:8080` is Lajstrom (Linux and OrbStack;
+Docker Desktop is not tested, and its `--network host` needs Settings, Resources, Network, Enable
+host networking), with the token in its environment:
 
 ```sh
 docker run --rm -it --network host -e LAJSTROM_TOKEN="$(cat maven-token)" \
@@ -258,7 +262,7 @@ Central, in the lines left out.
 
 A library `lib-extra` built with Gradle, which depends on `lib-core` through a range: Gradle
 resolves `lib-core` from the repo and publishes `lib-extra` to it. On the host, in the directory
-of `maven-token` (the repository's root, after section 1):
+of `maven-token` (the repository's root, after section 2):
 
 ```sh
 mkdir -p lib-extra/src/main/java/com/example/extra && cd lib-extra
@@ -512,10 +516,13 @@ make e2e E2E=maven                 # PASS maven.sh, in about a minute once the p
 ```
 
 Against a Lajstrom that is running, the script takes the base URL and an admin
-([operations.md](../operations.md#the-first-admin)):
+([operations.md](../operations.md#the-first-admin)). This page made no admin; against `make run`
+the first line makes one, with a password of your own (8 bytes at least):
 
 ```sh
-LAJSTROM_E2E_USER=admin LAJSTROM_E2E_PASSWORD='<the admin password>' test/e2e/maven.sh http://localhost:8080
+pw='a password of your own'
+printf '%s' "$pw" | bin/lajstrom admin user create --name admin --admin --password-stdin --config $cfg
+LAJSTROM_E2E_USER=admin LAJSTROM_E2E_PASSWORD="$pw" test/e2e/maven.sh http://localhost:8080
 ```
 
 It keeps the plugins it downloads in the Docker volumes `lajstrom-e2e-m2` and

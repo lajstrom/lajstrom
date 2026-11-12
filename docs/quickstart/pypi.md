@@ -19,7 +19,11 @@ make run                           # serves deploy/compose/lajstrom.example.yaml
 ```
 
 `make run` serves your copy, `deploy/compose/lajstrom.yaml`, instead when there is one; then set
-`cfg` below to that file. In another terminal, from the repository's root:
+`cfg` below to that file. The steps assume a fresh `lajstrom.db`: after another quick start, stop
+`make run`, remove `lajstrom.db` and start it again, or the commands below exit 1 with
+`user alice already exists`. In another terminal, from the repository's root, once `make run`
+has logged `listening` (`serve` creates the tables of `lajstrom.db`; before that, `admin` fails
+with `no database at …/lajstrom.db`):
 
 ```sh
 cfg=deploy/compose/lajstrom.example.yaml
@@ -34,9 +38,10 @@ that does not exist would; a user who only installs gets `reader`, and a build m
 token of the repo ([auth.md](../auth.md)). Nothing is open: without credentials every request is
 `401`.
 
-twine, uv publish and poetry publish always send credentials; a user's password or one of their
-[personal access tokens](../auth.md) both work, with any user name for a token. twine and uv ask
-for the password; `TWINE_PASSWORD` and `UV_PUBLISH_PASSWORD` give it without a prompt, in CI
+twine, uv publish and poetry publish always send credentials: the user's own name with their
+password or one of their [personal access tokens](../auth.md) (any other name is `401`), or a
+deploy token of the repo with any user name, `__token__` for example. twine and uv ask for the
+password; `TWINE_PASSWORD` and `UV_PUBLISH_PASSWORD` give it without a prompt, in CI
 for example.
 
 ## 2. Publish
@@ -59,7 +64,8 @@ EOF
 ```
 
 The clients run in `python:3.13` on the host's network, where `localhost:8080` is Lajstrom
-(Linux and OrbStack), with the project's directory as `/w`:
+(Linux and OrbStack; Docker Desktop is not tested, and its `--network host` needs Settings,
+Resources, Network, Enable host networking), with the project's directory as `/w`:
 
 ```sh
 docker run --rm -it --network host -v "$PWD:/w" -w /w python:3.13 bash
@@ -175,6 +181,27 @@ crane manifest localhost:5000/pypi/internal/my-pkg:1.0__py3-none-any | jq .annot
 `bin/lajstrom reindex --repo pypi/internal --config $cfg` rebuilds the index of the repo from
 those manifests ([operations.md](../operations.md#reindex)).
 
+## 5. Clean up
+
+A version goes with `DELETE` on the API: every file of the version, or with `?variant=` one of
+them, `sdist` or the wheel's tag set
+([api.md](../api.md#delete-a-version-delete-apiv1reposformatnamepackagespackageversionsversion)).
+It needs `delete` on the repo, which alice's `writer` does not have: the `maintainer` role, or an
+admin ([operations.md](../operations.md#the-first-admin)):
+
+```sh
+curl -u admin -X DELETE "http://localhost:8080/api/v1/repos/pypi/internal/packages/my-pkg/versions/1.0?variant=sdist"   # 204
+```
+
+Everything: leave the container (`exit`) and stop `make run` (Ctrl-C) first, so that the server
+folds `lajstrom.db-wal` back into `lajstrom.db`.
+
+```sh
+make dev-down RESET=1   # the registries forget what they hold
+rm lajstrom.db          # the index, with the repo and alice
+rm -r ~/my-pkg          # the project; sudo on Linux: the container wrote dist/ as root
+```
+
 ## The end-to-end script
 
 `test/e2e/pypi.sh` runs sections 2 and 3 with checks, in `python:3.13` (or the image
@@ -196,5 +223,5 @@ with `writer` on it, with `bin/lajstrom admin` against the configuration of `LAJ
 test/e2e/pypi.sh http://localhost:8080 internal
 ```
 
-It disables its user at the end; the distributions stay, since pypi files cannot be deleted yet.
+It disables its user at the end and deletes nothing: the distributions stay.
 `poetry publish --build` (`409`) is not in it.

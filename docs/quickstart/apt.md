@@ -118,7 +118,8 @@ curl -s -u "$u" -H 'Content-Type: application/json' -d '{"name": "apt clients", 
 ```
 
 A clean `ubuntu:24.04` on the host's network, where `localhost:8080` is Lajstrom (Linux and
-OrbStack), with the secret in its environment:
+OrbStack; Docker Desktop is not tested, and its `--network host` needs Settings, Resources,
+Network, Enable host networking), with the secret in its environment:
 
 ```sh
 docker run --rm -it --network host --platform linux/amd64 -e APT_TOKEN="$(cat apt-token)" ubuntu:24.04 bash

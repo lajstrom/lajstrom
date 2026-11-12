@@ -22,9 +22,13 @@ pass that file to the `--config` of the commands below. The example configuratio
 (see [api.md](../api.md)). A repo can cap the file size with the policy `{"maxFileSize": <bytes>}`,
 `--policy '{"maxFileSize": 1048576}'` on that call; a larger upload is `413`.
 
+The steps assume a fresh `lajstrom.db`: after another quick start, stop `make run`, remove
+`lajstrom.db` and start it again, or the commands below exit 1 with `user admin already exists`.
+
 Nothing is open, on the dev stack either: a request without credentials is `401`. In another
-terminal, create the first user, an admin, with a password of your own (8 bytes at least), and
-keep it for curl:
+terminal, once `make run` has logged `listening` (`serve` creates the tables of `lajstrom.db`;
+before that, `admin` fails with `no database at …/lajstrom.db`), create the first user, an admin,
+with a password of your own (8 bytes at least), and keep it for curl:
 
 ```sh
 pw='a password of your own'
@@ -122,15 +126,15 @@ curl -u "$u" -s $base/docs/ | jq .
 ```json
 {
   "entries": [
-    {"path": "docs/file.txt", "size": 10, "digest": "sha256:9c1e…", "created": "2026-11-07T10:00:00Z"},
-    {"path": "docs/file.txt", "size": 12, "digest": "sha256:5be0…", "created": "2026-11-07T10:01:00Z"}
+    {"path": "docs/file.txt", "size": 10, "digest": "sha256:9c1e…", "created": "2026-11-07T10:00:00Z"}
   ]
 }
 ```
 
 A path that ends with `/` is a listing of everything below it, at any depth: one entry per
-version, sorted by path and then `created`, with the manifest digest that `?digest=` takes. A
-prefix that holds no file is `404`.
+version, sorted by path and then `created`, with the manifest digest that `?digest=` takes. One
+entry here, after the rollback of section 4; without it, `hello again` would be a second entry,
+size 12. A prefix that holds no file is `404`.
 
 ## 6. An empty file (R-10)
 
@@ -191,6 +195,19 @@ curl -u "$u" -i $base/docs/file.txt               # 404
 The manifests are deleted in the registry first, then the index rows; the blobs are left to the
 registry's garbage collection. A registry that cannot delete manifests (distribution without
 `REGISTRY_STORAGE_DELETE_ENABLED=true`) answers `501` and nothing changes.
+
+## 9. Clean up
+
+Stop `make run` (Ctrl-C) first: on its way out the server folds `lajstrom.db-wal` back into
+`lajstrom.db`, so one file is left to remove.
+
+```sh
+make dev-down RESET=1   # the registries forget what they hold, the empty file of section 6 too
+rm lajstrom.db          # the index, with the admin and alice
+rm file.txt empty       # what this page made in the checkout
+```
+
+The `oras pull` of section 7, if you ran it, also wrote `docs/file.txt` and `metadata.json`.
 
 ## The end-to-end script
 

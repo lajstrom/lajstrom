@@ -31,13 +31,21 @@ https://lajstrom.dev
 
 ## Install
 
+No release is out yet. Until v0.1.0 (due 2026-12-04), build from source with Go 1.27:
+
+```sh
+git clone https://github.com/lajstrom/lajstrom.git && cd lajstrom
+make build && bin/lajstrom version
+```
+
+From v0.1.0 on, the image:
+
 ```sh
 docker run --rm ghcr.io/lajstrom/lajstrom:v0.1.0 version
 ```
 
-No release is out yet: until v0.1.0, build from source with Go 1.27 and `make build`. The
-archives with checksums and signatures, Homebrew, and the smallest configuration that starts are
-in [docs/install.md](docs/install.md).
+The archives with checksums and signatures, Homebrew, and the smallest configuration that starts
+are in [docs/install.md](docs/install.md).
 
 ## What works
 
@@ -51,7 +59,7 @@ with the real clients (`test/e2e/`):
 | [apt](docs/quickstart/apt.md) | `curl -T` a `.deb`, `oras push` | `apt-get` on Debian and Ubuntu | signed `InRelease` and `Release.gpg`, `by-hash`, key rotation |
 | [maven](docs/quickstart/maven.md) | `mvn deploy`, Gradle `publish` | `mvn`, Gradle | md5, sha1, sha256 and sha512 checksums; a release appears whole or not at all; no SNAPSHOT versions yet |
 | [npm](docs/quickstart/npm.md) | `npm publish`, `pnpm publish`, `yarn npm publish` | `npm`, `pnpm`, `yarn` | dist-tags; a proxy of npmjs.org and groups |
-| [OCI](docs/quickstart/oras.md) | `oras push`, `cosign sign` | `oras pull`, `crane`, `cosign verify` | the `/v2` API with its token flow, referrers |
+| [OCI](docs/quickstart/oras.md) | `oras push`, `cosign sign` | `oras pull`, `crane`, `cosign verify` | the `/v2` API with its token flow, referrers; cosign is run by [test/e2e/cosign.sh](test/e2e/cosign.sh), not by the quick start |
 
 rpm is planned. Every format shares local users, personal access and deploy tokens, roles
 bound to repos, and an audit log ([docs/auth.md](docs/auth.md)).
@@ -68,6 +76,8 @@ bound to repos, and an audit log ([docs/auth.md](docs/auth.md)).
 | [Quick start: pypi](docs/quickstart/pypi.md) | `twine upload` or `uv publish` in, `pip install` or `uv pip install` out, with PEP 658 metadata |
 | [Quick start: maven](docs/quickstart/maven.md) | `mvn deploy` or Gradle's `publish` in, `mvn dependency:get` or a Gradle build out, with all four checksums |
 | [Quick start: npm](docs/quickstart/npm.md) | `npm publish`, `pnpm` and `yarn npm publish` in, `npm install` out, dist-tags, tokens, a proxy of npmjs.org, coming from Verdaccio |
+| [Quick start: OCI with oras](docs/quickstart/oras.md) | `oras push` and `oras pull` through `/v2`, a raw file through ingest, referrers, deletes |
+| [Management API](docs/api.md) | `/api/v1`: repos, users, bindings, tokens, deletes, the audit log |
 | [Dev stack](docs/dev-stack.md) | `make dev-up`: Zot, distribution and Postgres for development and tests |
 | [Deploy with Compose](docs/deploy/compose.md) | one host for production: Lajstrom, Postgres and a registry with passwords, secrets in files, a backup |
 | [Testing](docs/testing.md) | the test levels and what each needs; `make e2e` and how to add a scenario |

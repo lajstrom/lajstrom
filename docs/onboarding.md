@@ -16,7 +16,8 @@ hour and ends with you working on an issue.
 | 7 | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | DCO sign-off, CLA, `Assisted-by` trailer, license allowlist |
 
 Skim later, as needed: `docs/spec/http-routing.md`, `docs/spec/index-schema.md`,
-`docs/spec/rbac.md`, the ADRs in `docs/adr/`.
+`docs/spec/rbac.md`, `docs/spec/guarantees.md` (the invariants Lajstrom promises), the ADRs in
+`docs/adr/`.
 
 ## 2. Set up (15 minutes)
 
@@ -35,7 +36,8 @@ make check            # build, vet, test, lint, vulncheck, licenses: what CI run
 [docs/dev-stack.md](dev-stack.md) has the ports, how to run Lajstrom and the integration tests
 against the stack, and how to reset it.
 
-Set the commit trailers once so you never forget them:
+Set your identity once; `git commit -s` signs off with it. The trailers themselves are added
+per commit, by you:
 
 ```sh
 git config user.name "Your Name"
@@ -47,9 +49,14 @@ git config user.email "you@example.com"
 ## 3. Pick an issue (5 minutes)
 
 ```sh
-gh issue list --milestone "M0 — Skeleton and raw end-to-end" --label "good first issue"
-gh issue list --milestone "M0 — Skeleton and raw end-to-end" --label "lane/formats" --state open
+gh issue list --state open --label "good first issue"
+gh issue list --state open --search "no:assignee -linked:pr -label:blocked -label:contract -label:post-mvp sort:created-asc"
 ```
+
+The first list is the issues marked for newcomers, and may be empty. The second is every open
+issue that nobody has taken and no pull request covers, without the `blocked` ones, those that
+change a contract and those after the MVP; `--label size/S` keeps the small ones, and
+`--milestone "<its title>"` the current milestone's ([roadmap.md](roadmap.md)).
 
 Pick one that is not assigned and has no open `Depends on` items, assign yourself
 (`gh issue edit <n> --add-assignee @me`), and say hello in the issue with a five-line plan if it

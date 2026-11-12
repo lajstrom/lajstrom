@@ -26,7 +26,10 @@ make dev-up                        # Zot, distribution and Postgres: docs/dev-st
 make run                           # serves deploy/compose/lajstrom.example.yaml on 127.0.0.1:8080
 ```
 
-In another terminal:
+The steps assume a fresh `lajstrom.db`: after another quick start, stop `make run`, remove
+`lajstrom.db` and start it again, or the commands below exit 1 with `user alice already exists`.
+In another terminal, once `make run` has logged `listening` (`serve` creates the tables of
+`lajstrom.db`; before that, `admin` fails with `no database at …/lajstrom.db`):
 
 ```sh
 cfg=deploy/compose/lajstrom.example.yaml
@@ -49,7 +52,9 @@ credentials every request is `401`.
 
 ## 2. npm login and `.npmrc`
 
-A container on the host's network, where `localhost:8080` is Lajstrom (Linux and OrbStack):
+A container on the host's network, where `localhost:8080` is Lajstrom (Linux and OrbStack;
+Docker Desktop is not tested, and its `--network host` needs Settings, Resources, Network, Enable
+host networking):
 
 ```sh
 docker run --rm -it --network host node:26.13.0-slim bash
@@ -791,8 +796,11 @@ make e2e E2E=npm
 By hand against `make run`, it runs as an admin whose name and password are in
 `LAJSTROM_E2E_USER` and `LAJSTROM_E2E_PASSWORD`, and `NPM_E2E_UPSTREAM=` (empty) leaves the proxy
 out when the configuration has no upstream, as the example has none; the group then has the
-hosted repo only:
+hosted repo only. This page made no admin; the first line makes one, with a password of your own
+(8 bytes at least):
 
 ```sh
-LAJSTROM_E2E_USER=admin LAJSTROM_E2E_PASSWORD=… NPM_E2E_UPSTREAM= test/e2e/npm.sh http://localhost:8080
+pw='a password of your own'
+printf '%s' "$pw" | bin/lajstrom admin user create --name admin --admin --password-stdin --config $cfg
+LAJSTROM_E2E_USER=admin LAJSTROM_E2E_PASSWORD="$pw" NPM_E2E_UPSTREAM= test/e2e/npm.sh http://localhost:8080
 ```

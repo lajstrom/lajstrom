@@ -160,7 +160,9 @@ machine.
 ## Next
 
 1. The configuration: [configuration.md](configuration.md); `lajstrom serve --config …`.
-2. The first admin, with the one-time bootstrap token that `serve` makes at start:
+2. The first admin: a one-time bootstrap token that you make (`openssl rand -hex 32`), named in
+   `auth.bootstrap.tokenFile` and exchanged with `lajstrom admin bootstrap`, or
+   `lajstrom admin user create --admin` against the database; `serve` never makes a token:
    [operations.md](operations.md#the-first-admin).
 3. Running it for good: [Docker Compose](deploy/compose.md), [Kubernetes](deploy/kubernetes.md),
    behind a [reverse proxy](reverse-proxy.md), and [backups](operations.md#backup-and-restore).
