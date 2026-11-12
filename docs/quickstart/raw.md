@@ -11,7 +11,7 @@ You need Go, Docker, `curl` and `jq`; `crane` (or `oras`) to look into the regis
 
 ```sh
 make dev-up                                           # Zot, distribution and Postgres: docs/dev-stack.md
-make run                                              # builds bin/lajstrom, serves deploy/compose/lajstrom.example.yaml on :8080
+make run                                              # builds bin/lajstrom, serves deploy/compose/lajstrom.example.yaml on 127.0.0.1:8080
 ```
 
 `make run` serves your copy, `deploy/compose/lajstrom.yaml`, instead when there is one; then

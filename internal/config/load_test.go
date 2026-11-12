@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -840,6 +841,11 @@ func TestExampleFile(t *testing.T) {
 	}
 	if len(c.Registries) != 2 || len(c.Repos) != 1 {
 		t.Errorf("example has %d registries and %d repos, want 2 and 1", len(c.Registries), len(c.Repos))
+	}
+	// Plain HTTP carries the quickstarts' passwords in Basic auth: on loopback only (#722).
+	if host, _, err := net.SplitHostPort(c.Server.Listen); err != nil || !c.Server.InsecureHTTP || !isLoopback(host) {
+		t.Errorf("example listens on %q with insecureHTTP %v, want a loopback address with insecureHTTP",
+			c.Server.Listen, c.Server.InsecureHTTP)
 	}
 }
 

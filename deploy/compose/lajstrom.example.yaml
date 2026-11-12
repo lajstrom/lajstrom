@@ -14,7 +14,7 @@
 # make run prefers deploy/compose/lajstrom.yaml, your edited copy of this file (not committed).
 
 server:
-  listen: ":8080"                     # host:port to listen on
+  listen: "127.0.0.1:8080"            # host:port to listen on; loopback only, as the HTTP is plain; ":8080" is every interface
   externalURL: "http://localhost:8080" # base of every absolute URL Lajstrom renders; https://<host> outside the dev stack
   insecureHTTP: true                  # allows the http externalURL above, on loopback only; never in production
   tls:                                # TLS in Lajstrom itself, for a single host; empty: TLS at the edge
