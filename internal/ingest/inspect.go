@@ -37,7 +37,7 @@ type Rows struct {
 }
 
 // Inspect runs the steps of Ingest that only read (1 to 3) on a manifest found in the registry
-// at <repo base>/<pkgPath>:<tag> and returns the rows that step 6 writes. Nothing is pushed or
+// at <repo base>/<pkgPath>:<tag> and returns the rows that step 7 writes. Nothing is pushed or
 // claimed: a layer the backend does not have is ErrInvalid, the empty config included. raw is
 // the manifest as the registry serves it and defines the digest. Reindex calls it for every
 // manifest whose digest the index does not have; the errors are those of Ingest's steps 1 to 3.
