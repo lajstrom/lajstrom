@@ -30,7 +30,7 @@ measurements of [section 2](#2-is-abc-one-repository-or-two), on Zot v2.1.23, di
 | Quay | `namespace/repository`; the repository may hold `/` (quay.io too) | the namespace | namespace 2–255, repository 255 characters | any depth, measured on 3.18.2; **on master, new names ending in `build` or `build/<x>` refused**, measured with its commit applied ([quay.md](quay.md#the-build-rule)) |
 | Zot | any name, a directory each | nothing: the first upload session creates it | a component over 255 bytes is 500 | **names ending in `blobs`, `.uploads`, `.sync` are served but neither listed nor collected**, measured |
 | distribution | any name | nothing: the first manifest | 255 characters, 400 `NAME_INVALID` | all served and listed, measured |
-| Gitea, Forgejo | `<owner>/` and any depth | the owner | **the 1.0 grammar: no `__`, no `--`** | `a/b/c` and deeper, measured |
+| Gitea, Forgejo | `<owner>/` and any depth | the owner | **the 1.0 grammar: no `__`, no `--`**, measured on Forgejo | `a/b/c` and deeper, measured |
 | Nexus | any name inside one hosted repository, on its connector or path | the Nexus repository | the `oci` format: **the 1.0 grammar, no `__`, no `--`**, measured | any depth, measured |
 | JFrog Artifactory, JCR | `<repo-key>/` and any depth, stored as folders | the repository key | key at most 63 characters | image `a/b` with tag `c` and image `a/b/c` are one folder ? |
 
@@ -48,7 +48,8 @@ measurements of [section 2](#2-is-abc-one-repository-or-two), on Zot v2.1.23, di
 | Quay | any; **the status one byte ahead**, measured | with a `push` token; **the action `delete` refused**, measured | 3.17, organisations | yes; 400 for a missing subject | the caller's view, **empty without credentials**, cached 60 s | 20 GB by default | Bearer, 1 h, no `delete` | auto-prune, expiry labels |
 | Zot | any | yes; 405 if an index lists it | none; a policy without `update` | yes | yes, but see above | none met at 1 GiB | none, htpasswd, more | retention policies |
 | distribution | any | yes, if enabled | none | no | yes | the storage driver's | none, htpasswd, token | none (offline collector) |
-| Gitea, Forgejo | **no chunk of unknown length after the first** | yes; a re-pointed tag deletes its manifest | none | no | yes | `LIMIT_SIZE_CONTAINER` | Bearer, `scope="*"`, 24 h | cleanup rules |
+| Gitea | **no chunk of unknown length after the first** | yes; a re-pointed tag deletes its manifest | none | no | yes | `LIMIT_SIZE_CONTAINER` | Bearer, `scope="*"`, 24 h | cleanup rules |
+| Forgejo | **no chunk of unknown length after the first**; **the status one byte ahead**, measured | yes; a re-pointed tag deletes its manifest | none | no | yes | `LIMIT_SIZE_CONTAINER` | Bearer, `scope="*"`, 24 h | cleanup rules |
 | Nexus | any | `docker` format: **its tags stay** | `writePolicy: allow_once` | `oci` format only | yes | none set | Basic | cleanup policies |
 | JFrog | **no chunk of unknown length after the first** | yes | the overwrite permission | yes | per repository key | upload limit on SaaS | Bearer or Basic | cleanup policies, Max Unique Tags |
 
@@ -153,6 +154,8 @@ December 2025 nothing created one on push.
   is the specification's 1.0 grammar, `[._-]` between alphanumerics, so `a__b` and `a--b` are
   refused ([Gitea](https://github.com/go-gitea/gitea/blob/a61ef7aa1426a6207b970d88bff13ed1b0302360/routers/api/packages/container/container.go#L48),
   [Forgejo](https://codeberg.org/forgejo/forgejo/src/commit/d72fc0095164974d35318ca477927057e6c549d1/routers/api/packages/container/container.go#L32)).
+  On Forgejo 17.0.1 `a--b`, `a---b` and `a__b` are 400 `NAME_INVALID` (measured on 2026-11-12,
+  [forgejo.md](forgejo.md#what-the-provider-must-do-differently), item 4); Gitea's is read.
 - **Nexus.** A `docker` or `oci` hosted repository answers `/v2/` on a connector port, on a
   subdomain (Pro), or since 3.83.0 on a path, `host/<repository>/<image>`
   ([routing](https://help.sonatype.com/en/ssl-and-repository-connector-configuration.html));
@@ -420,6 +423,11 @@ layer without a length. distribution-spec 1.1.1 defines the first two; Docker pu
 - **Gitea, Forgejo and JFrog refuse a chunk of unknown length into a session that holds bytes**,
   400 "Stream uploads after first write are not allowed" and 416; `registries[].uploads.spoolUnknownLength`
   spools it (measured, [gitea.md](gitea.md#uploads), [jfrog-jcr.md](jfrog-jcr.md#uploads-and-digests)).
+- **Forgejo and Quay answer the `GET` of a session one byte ahead**: `Range: 0-5` after 5 bytes,
+  Quay `bytes=0-5`, while their `PATCH` answers `0-4`. A replica that continues from the status
+  sends its next chunk one byte late and gets 416. Gitea answers right (measured,
+  [forgejo.md](forgejo.md#uploads), [quay.md](quay.md#uploads)). PR #814 (#804) measures it
+  per provider and reads such a status one byte back.
 - **Harbor appends a chunk at the end of the session whatever its `Content-Range` says**, and
   JFrog stores a blob under whatever digest it is told (measured, [harbor.md](harbor.md#uploads),
   [jfrog-jcr.md](jfrog-jcr.md#uploads-and-digests)). distribution, Zot and ACR take all three
@@ -439,7 +447,7 @@ lifetime not measured ?; ACR redirects to `*.blob.core.windows.net` or its data 
 ([geo-replication](https://learn.microsoft.com/en-us/azure/container-registry/container-registry-geo-replication));
 GAR's `Location` is relative, `/artifacts-downloads/…` ([nexus-public#1061](https://github.com/sonatype/nexus-public/issues/1061)).
 A `Range` is 500 on Nexus's `oci` format, whose blobs Lajstrom therefore reads whole since
-#352, and ignored by Gitea, which sends the whole blob (measured, [matrix](README.md#capabilities)).
+#352, and ignored by Gitea, which sends the whole blob; Forgejo answers 206 (measured, [matrix](README.md#capabilities)).
 
 ### Deletes
 
@@ -453,8 +461,9 @@ A `Range` is 500 on Nexus's `oci` format, whose blobs Lajstrom therefore reads w
 - **On GitLab, any protection or immutability rule in a project, matching or not, refuses every
   digest delete through `/v2`**, 401 `PROTECTED_MANIFEST` (measured with a token server playing
   GitLab, [gitlab.md](gitlab.md#immutable-tags); [immutable tags](https://docs.gitlab.com/user/packages/container_registry/immutable_container_tags/)).
-- **Gitea deletes the manifest a tag named when the tag is deleted or re-pointed** and nothing
-  else holds it (measured, [gitea.md](gitea.md#immutable-tags)).
+- **Gitea and Forgejo delete the manifest a tag named when the tag is deleted or re-pointed** and
+  nothing else holds it, and a digest delete takes the blobs only that manifest used (measured,
+  [gitea.md](gitea.md#immutable-tags), [forgejo.md](forgejo.md#what-the-provider-must-do-differently)).
 - distribution deletes only with `storage.delete.enabled`, false by default
   ([configuration](https://github.com/distribution/distribution/blob/v3.1.2/docs/content/about/configuration.md#delete));
   the `registry:3` image enables it (measured). Zot refuses (405) a manifest an image index lists,
@@ -468,7 +477,7 @@ A `Range` is 500 on Nexus's `oci` format, whose blobs Lajstrom therefore reads w
   with its soft delete on, a deleted digest cannot be pushed again
   ([soft delete](https://learn.microsoft.com/en-us/azure/container-registry/container-registry-soft-delete-policy)).
 - No registry deletes a repository through `/v2`. distribution on a filesystem and GitLab A
-  keep an emptied one in `_catalog`; distribution on S3, GitLab B, Nexus and Gitea drop it with
+  keep an emptied one in `_catalog`; distribution on S3, GitLab B, Nexus, Gitea and Forgejo drop it with
   its last manifest (Nexus's `docker` format with its last tag), Zot at a collection (measured,
   [matrix](README.md#capabilities)), ACR with its last manifest; ECR, Harbor, GHCR and JFrog have
   a REST call.
@@ -555,7 +564,7 @@ Harbor 128 GiB a request ([harbor#19578](https://github.com/goharbor/harbor/pull
 distribution on S3 about 97.7 GiB, 10,000 parts of the default 10 MiB `chunksize`
 ([s3 driver](https://distribution.github.io/distribution/storage-drivers/s3/)); Docker Hub,
 GitLab, Zot and Nexus document none. Largest manifest: 4 MiB nearly everywhere (distribution 400,
-Zot and Harbor 413, measured), 10 MiB on Nexus and Gitea (measured), and **256,000 bytes and 200
+Zot and Harbor 413, measured), 10 MiB on Nexus, Gitea and Forgejo (measured), and **256,000 bytes and 200
 references on GitLab.com** (`validation.manifests.payloadsizelimit`, [production values](https://gitlab.com/gitlab-com/gl-infra/k8s-workloads/gitlab-com/-/blob/master/releases/gitlab/values/gprd.yaml.gotmpl)).
 
 ### Auth
@@ -569,7 +578,7 @@ and an OAuth token of 60 minutes ([auth](https://docs.cloud.google.com/artifact-
 Docker Hub's realm is `auth.docker.io`, its anonymous token 300 s (curl, 2026-11-11);
 GitLab.com's is `gitlab.com/jwt/auth`, its token 15 minutes, 5 by default elsewhere
 ([GitLab.com](https://docs.gitlab.com/user/gitlab_com/#container-registry));
-Harbor's lives 30 minutes, Quay's an hour, Gitea's a day with `scope="*"` whatever was asked, and
+Harbor's lives 30 minutes, Quay's an hour, Gitea's and Forgejo's a day with `scope="*"` whatever was asked, and
 GHCR's is the personal access token in base64 (measured, [matrix](README.md#capabilities)). Quay's
 token endpoint knows no `delete` action ([v2auth.py](https://github.com/quay/quay/blob/master/endpoints/v2/v2auth.py)).
 Nexus answers a user 429 for about 30 s after three wrong passwords, the right one too
@@ -608,7 +617,7 @@ that signs through the facade. On a registry with the API, Lajstrom's referrers 
 | Harbor | the collector deletes untagged artifacts if asked; a referrer is an accessory and follows its subject ([accessories](https://goharbor.io/docs/main/working-with-projects/working-with-images/sign-images/)) | retention rules, doublestar on repository and tag; nested repositories misbehave ([harbor#21049](https://github.com/goharbor/harbor/issues/21049)) |
 | Quay | referrers kept by hidden tags ([commit 1452d1a](https://github.com/quay/quay/commit/1452d1aed0)) | auto-prune by count or age with a tag regex, off on quay.io; a `quay.expires-after` label expires a tag ([docs](https://github.com/quay/quay-docs/blob/master/modules/setting-tag-expiration-annotation.adoc)) |
 | Zot | retention's `deleteUntagged`, on by default once a policy exists; referrers kept while their subject is ([retention](https://zotregistry.dev/v2.1.23/articles/retention/)) | `keepTags` patterns, unanchored regexes: `v1` keeps `v10`; a tag no pattern keeps goes ([matcher.go](https://github.com/project-zot/zot/blob/6a2e68c975a126ca90960cd0663628b69ebf7e59/pkg/retention/matcher.go#L33-L40)) |
-| Gitea | kept; an unused blob goes after 24 h (measured, [gitea.md](gitea.md#cleanup)) | cleanup rules: keep N, keep and remove regexes, anchored and case-insensitive ([storage](https://docs.gitea.com/usage/packages/storage)) |
+| Gitea, Forgejo | kept; an unused blob goes after 24 h (measured, [gitea.md](gitea.md#cleanup); on Forgejo the unused blob, [forgejo.md](forgejo.md#lajstrom-registry-probe)) | cleanup rules: keep N, keep and remove regexes, anchored and case-insensitive ([storage](https://docs.gitea.com/usage/packages/storage)) |
 | Nexus `docker` | "Delete unused manifests and images" deletes an untagged referrer (measured, [nexus.md](nexus.md#garbage-collection)) | cleanup policies by age, last download and an asset regex; "only evaluates tagged manifests for Docker" ([cleanup](https://help.sonatype.com/en/cleanup-policies.html)) |
 | JFrog | not measured | cleanup policies (Enterprise+), wildcards at the ends only; a package goes when any file in it qualifies ([cleanup](https://docs.jfrog.com/administration/docs/cleanup-policies)); a repository's "Max Unique Tags" deletes the oldest tags |
 | distribution | `garbage-collect --delete-untagged`, offline, run by hand | none |
@@ -657,7 +666,8 @@ amendment: a component that fails the grammar is replaced by `h0_h` and 32 hex d
 - **Gitea and Forgejo** refuse `__` and `--` in a name, and so does Nexus's `oci` format
   (measured on 2026-11-12, [nexus.md](nexus.md#again-after-352)): every hashed component
   (`h0__…`: a raw file `_config.yml` or `.gitignore`, a component over 64 bytes) and every `--`
-  in a raw path could not be stored there (Gitea from the source, not run). Since ADR 0017 a
+  in a raw path could not be stored there (measured on Forgejo on 2026-11-12,
+  [forgejo.md](forgejo.md#what-the-provider-must-do-differently); Gitea from the source, not run). Since ADR 0017 a
   hashed component is `h0_h…` and `--` is `_2d_2d` (#598).
 - **Quay**, once its 2026-11 change ships, refuses new names ending in `build`, `build/<x>` or
   `build/<x>/logs|status` (measured with the change applied, section 2): the PyPI package
