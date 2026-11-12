@@ -1,12 +1,17 @@
 # Threat model
 
 - Status: first pass, 2026-11-09, at `129dc47` (#63). It is for the first public release
-  (v0.1.0). Review it again when a surface changes: a new endpoint, a new credential, a proxy
-  repo, OIDC.
+  (v0.1.0). Updated on 2026-11-12, at `c3deee75`, for what changed since in its subject: U-7
+  (#60), the fuzz targets (#51), and the proxy and group repos with npm (ADR 0013): the scope,
+  flow D, S-1 and the rows O-1 to O-7, from the code and
+  [proxy-and-group.md](../spec/proxy-and-group.md) §9. The other rows were not checked again.
+  Review it again when a surface changes: a new endpoint, a new credential, a proxy of another
+  format (pypi #67, maven #68), OIDC.
 - Scope: the server of this repository. This means the OCI facade `/v2` and its token
-  endpoint, the frontends (raw, apt, pypi, maven), the management API `/api/v1`, the ingest
-  pipeline, the provider towards the registries, the index, and the logs. The registries,
-  the database server and the edge are in scope only for what Lajstrom expects of them.
+  endpoint, the frontends (raw, apt, pypi, maven, npm), the proxy and group repos and their
+  requests to upstreams, the management API `/api/v1`, the ingest pipeline, the provider
+  towards the registries, the index, and the logs. The registries, the upstreams, the database
+  server and the edge are in scope only for what Lajstrom expects of them.
 - Method: STRIDE over the flows of [architecture.md](../architecture.md) §3. For every threat
   below, the code that stops it was found and read. Where it helped, a throwaway test or a
   probe against the dev stack confirmed it. Where nothing stops it, the threat is **open**, with
@@ -18,7 +23,8 @@ Each threat has an ID and one of these statuses:
 - **fixed in this pass**: with the pull request;
 - **by the backend**: the registry's job, with how it was checked;
 - **accepted**: a decision, with where it is written;
-- **open**: with the issue that tracks it.
+- **open**: with the issue that tracks it;
+- **not assessed**: what exists is stated, and no verdict was made yet.
 
 A function is named by its package and name: `facade.resolve` is `resolve` in
 `internal/facade`, `generic.Provider.location` is the method in `internal/provider/generic`,
@@ -31,6 +37,7 @@ A function is named by its package and name: `facade.resolve` is `resolve` in
 | Artifact bytes and their integrity | the registry only ([ADR 0001](../adr/0001-oci-registry-as-sole-storage.md)) | a client installs what an attacker chose |
 | Tags: immutable, append-only ([ADR 0005](../adr/0005-manifest-profile-and-immutable-tags.md)) | the registry; claims in the index | a version silently changes under its name |
 | The registry's credentials | `registries[].auth` in the configuration, held by the provider | every repository of the instance prefix, read and write, around RBAC |
+| An upstream's credentials | the files of `upstreams[].auth`, held by the proxy core | the upstream account, such as a private npm registry's |
 | The control plane: users (argon2id hashes), tokens (sha256), bindings, audit | the index database | anyone becomes admin; the audit log lies |
 | The master key, and the keys it encrypts (apt GPG keys, the bearer-token key) | `keys.masterKeyEnv` or `keys.masterKeyFile`; `keys` rows | forged `Release` signatures; forged bearer tokens for every repo |
 | Availability | every replica | a CI fleet stops |
@@ -44,6 +51,7 @@ A function is named by its package and name: `facade.resolve` is `resolve` in
 | holder of a stolen bearer JWT | its `access` for up to 20 minutes, from anywhere | the token's claims |
 | the edge | sets `X-Forwarded-For` | only when its address is in `server.trustedProxies` ([ADR 0011](../adr/0011-client-address-behind-a-proxy.md)) |
 | the registry | stores and answers | trusted to store and serve content. Clients check the digests they are given: OCI clients the descriptor, apt the `Packages` hashes, pip the `#sha256=`. Ingest checks what it reads back. The facade hashes a blob that a client uploads as it streams (P-9). A whole blob or a manifest that streams to a client is hashed too, and the response is aborted on a mismatch ([guarantees.md](../spec/guarantees.md) INV-40, #475); a `307` redirect and a `206` range are not hashed. Its redirects and token realm are checked before its credentials follow them (P-2, P-3) |
+| an upstream (registry.npmjs.org) | answers a proxy repo's requests for documents and files | trusted for what it publishes, as the operator chose it (O-4). Its URLs and redirects are checked before Lajstrom follows them (O-2), its files against its own checksums (O-3) |
 | the operator: configuration, CLI, database | everything | trusted; out of scope, as [SECURITY.md](../../SECURITY.md) has it |
 
 ### What the backend trusts
@@ -66,7 +74,8 @@ The table summarises; the IDs point to §3.
 | --- | --- | --- | --- | --- | --- | --- |
 | A. `oras push` through `/v2` | T-3, T-5, A-1 | P-1, P-9, M-1, M-3, F-5 | A-3 | R-1, R-2, P-5 | M-2, U-3, U-4, T-7 | T-1, P-7, T-9 |
 | B. `mvn deploy`, twine, raw and apt `PUT` | A-1, A-5 | F-1, F-2, F-5, U-5 | A-4 | R-4 | F-4, U-5, U-6 | R-4 |
-| C. reads: apt, pip, maven, raw, `/v2` | T-3 | P-2 | none (reads are not audited, rbac.md §5) | R-1, R-2, P-5, B-1 | U-6 | none |
+| C. reads: apt, pip, maven, raw, npm, `/v2` | T-3 | P-2 | none (reads are not audited, rbac.md §5) | R-1, R-2, P-5, B-1 | U-6 | none |
+| D. proxy repo: a miss fetched from the upstream; a group | O-3 | O-3, O-4, O-5, F-4 | none (a fetch is the `proxy.fetch` row of the reader whose miss caused it, rbac.md §7) | O-1, O-6 | O-7, F-4 | O-2, O-5 |
 | Token flow `/v2/token` | T-2, T-3, T-5 | none | none (tokens are not audited, rbac.md §5) | T-9 | T-7, A-1 | T-1, T-6, T-8 |
 | Management API `/api/v1` | A-1, B-2 | B-2 | A-4 | R-5 | A-1 | B-2, T-8 |
 | E. reindex, reconcile | none | F-4, F-5 | none | none | F-4 | none |
@@ -122,7 +131,7 @@ The table summarises; the IDs point to §3.
 | U-4 | **Open upload sessions without a bound.** Each holds a backend session and a row for an hour. | `facade.openSession` counts a new session of a principal before the backend's session is opened (`admitUpload`, `liveUploads`): beyond `server.uploadSessions.perRepo` live sessions in the repo, 256 by default, or `perPrincipal` in all repos, 1024, it is `429 TOOMANYREQUESTS` with `Retry-After` and nothing opens; a mount that mounts holds none. A session is live while a request on it runs and for 5 minutes after (`liveWindow`): clients leave the sessions of a failed push, and an idle one takes no slot. `DELETE`, the closing `PUT` and an error that ends a session free its slot (`dropSession`). The count is per replica, as the throttles are (A-1): a session ended on another replica is forgotten at the bound, once the index says it is gone. At most 10 000 principals are counted; beyond, a new one passes uncounted. Tests: `TestUploadLiveSessions`, `TestUploadSessionsOfAnotherReplica`, `TestLiveUploads`, `TestLiveUploadsPrincipals`. | mitigated (#246); per replica |
 | U-5 | **Maven sessions:** no bound on their files, and a writer who opens a version's session first holds it (`409` for the real deploy). | `ingest.Pipeline.Add` refuses a file past the repo's `maven.maxSessionFiles` in a session, 256 by default and at most 999 (`maxFilesOf`, `sessionState.room`), before it is stored and again under the session's lock: `400` naming the bound and the key; so every `Add` writes at most that many entries. Checksum files and `maven-metadata.xml` never reach a session. `maven.sessionTimeout` (#60) ends an idle session. Tests: `TestDeploySessionFiles`, `TestDeploySessionFilesCounted`, `TestSessionFilesPolicy`. The hold stays: a writer of the repo can keep the session of a version open, but can as well publish the version first, which a tag makes final; a hold takes nothing a writer does not have. | mitigated (#246); the hold accepted |
 | U-6 | **`$TMPDIR` filled by frontend uploads.** `maxFileSize` was unlimited and `maxConcurrentUploads` off by default; `stallTimeout` does not stop a body that keeps moving. | Both have a default now: `policy.maxFileSize` by format, npm 512 MiB, pypi and maven 4 GiB, apt and raw 8 GiB, oci 16 GiB (`format.MaxFileSize`), and `server.maxConcurrentUploads` 32 (`config.DefaultMaxConcurrentUploads`), and frontend uploads stream into the registry and take no disk (ADR 0014); what still spools is a `/v2` chunk of unknown length with `uploads.spoolUnknownLength` on, 32 at once at most, and a proxy fetch; [operations.md](../operations.md#limits) has every bound and how to size `$TMPDIR`. Tests: `TestMaxFileSize`, `TestMaxConcurrentUploads`. | mitigated (#246) |
-| U-7 | **A repo's policy set to something that breaks it.** `checkPolicy` accepts any object, and `PATCH` needs `manage`: a non-numeric `maxFileSize` makes every upload a `500`, and a manager can lift the cap. | none yet | open: #60 (typed, validated policy) |
+| U-7 | **A repo's policy set to something that breaks it.** `checkPolicy` accepted any object, and `PATCH` needs `manage`: a non-numeric `maxFileSize` made every upload a `500`, and a manager can lift the cap. | `api.checkPolicy` and `checkPolicyKeys` refuse a key the policy does not have, `400` naming it and the keys there are, and check each value: `maxFileSize` an integer of at least 1, `blobRedirect` `auto` or `never`, `maven.sessionTimeout` a duration from 1m to 24h, `maven.maxSessionFiles` an integer from 1 to 999, `maven` on a maven repo only. A manager can still raise `maxFileSize` without an upper bound: that is what `manage` is for (rbac.md §2, "change the repo (policy, …)"); a `/v2` blob stays under the registry's `maxBlobSize` (U-3). | mitigated (#60); raising the cap accepted (rbac.md §2) |
 
 ### Manifests
 
@@ -140,6 +149,18 @@ The table summarises; the IDs point to §3.
 | X-2 | **Two pushes of referrers of one subject lose one**, on a registry without the referrers API, where the provider rewrites the `sha256-<hex>` index. | The referrers lock of the subject in the index ([index-schema.md](../spec/index-schema.md), Coordination); tested across two replicas over Postgres. | mitigated |
 | X-3 | **An `oci` repo takes any referrer.** | By design ([http-routing.md](../spec/http-routing.md) §2): no subject check, the registry's. | accepted |
 | X-4 | **Reading the referrers of a repo one may not read.** | `facade.referrers` authorises `read` before it parses the digest. A subject without referrers is an empty index, never `404`. | mitigated |
+
+### Proxy and group repos: the upstream ([ADR 0013](../adr/0013-proxy-and-group-repos.md))
+
+| ID | Threat | Mitigation | Status |
+| --- | --- | --- | --- |
+| O-1 | **An upstream's credentials sent elsewhere, or a client's sent to the upstream.** | `proxy.Upstream.authorize` removes `Authorization` from every request to an upstream and sets the upstream's only on the origin (scheme, host and port) of `upstreams[].url` (`sameOrigin`), on each hop of a redirect too (`checkRedirect`). The request is the fetcher's own: `Upstream.Get` and `Core.Forward` send their own headers only (`Accept`, the validators, `Content-Type`, `User-Agent`), never the client's `Authorization` or cookies. The credentials are files of the configuration, read at start (`proxy.LoadUpstreams`); no API call sets them (S-1). An `http` upstream is used with a warning at start. Tests: `TestRedirects`, `TestLoadUpstreams`. | mitigated |
+| O-2 | **SSRF through the upstream: a URL of its document or a redirect** that names loopback, a private network or the cloud metadata endpoint. | The upstream's own host is the operator's choice and may be internal. Any other host, from a document or a redirect, must be `https`, and an address literal must be public (`proxy.Upstream.checkTarget`); a name of another host is resolved when the connection is made, and refused when one of its addresses is loopback, private, link-local, CGNAT, unspecified, multicast or broadcast (`Upstream.dialFunc`, `public`). At most 5 redirects, never from `https` to `http` (`checkRedirect`). With an egress proxy Lajstrom does not resolve the target: it refuses an address literal of those ranges, and the egress proxy enforces the rest. A forwarded request goes below `upstreams[].url` only (`Upstream.below`). Tests: `TestRedirects`, `TestPublic`, `TestEgressProxy`, `TestForwardErrors`. What is left: a URL on the upstream's own host name is followed on any port and scheme (`checkTarget`), without the credentials when its origin differs. | mitigated; the upstream's own host on another port not assessed |
+| O-3 | **Bytes the upstream did not publish**: a files host, a CDN or a redirect target that serves other bytes, or bytes changed on the way. | `proxy.Core.download` checks the strongest checksum the upstream's document gives, sha512, then sha256, then sha1 (`strongest`), against the spooled bytes; a mismatch, or an entry without a checksum, pushes nothing and is a `proxy.reject` audit row and a warning naming both values (`Core.reject`). The files then pass Build and Validate as an upload does (F-4). An entry with only a sha1 is checked with sha1. Tests: `TestFileChecksum`, `TestFileRefused`. | mitigated |
+| O-4 | **A hostile or compromised upstream** serves a malicious version, with a document whose checksums match it. | Lajstrom fetches what the upstream publishes. What exists: the `allow` and `deny` lists of names (proxy-and-group.md §3, `Core.checkName`); a tag that holds other bytes keeps them, so a version changed upstream does not change what the proxy holds (ADR 0005), and the change is logged at warn; `lajstrom.origin.url` and `lajstrom.origin.checksum` on each manifest and the `proxy.fetch` row say where an artifact came from and whose read caused the fetch. ADR 0008's policy (quarantine, verdicts), the place for more, is not built. | not assessed |
+| O-5 | **Dependency confusion in a group**: an upstream version of an internal name installed through the group. | A name that the group's hosted member holds hides every proxy member's versions of that name (`proxy.grouped.hides`, ADR 0013), unless a pattern of the group's `group.merge` matches it. In [rbac.md](../spec/rbac.md) §7: `manage` on the group sets `group.merge`; the admin alone changes a proxy's `upstream.name` and a group's `members`; a write through a group needs `read` on the group and the action on its hosted member; and read on the group is read of every member's content through it, by design. Tests: `TestGroupDocument`, `TestGroupDependencyConfusion`, e2e `npm.sh` (J-07, J-08). | mitigated (ADR 0013); read through a group accepted (rbac.md §7) |
+| O-6 | **Private names sent to the upstream** by a request only the upstream can answer: `npm audit`. | `proxy.Core.Denies`: the npm plugin leaves the names `deny` refuses out of the forwarded body before it goes, and refuses an npm 6 audit tree that names one (#514). The body is at most 16 MiB (`readForwardBody`), the answer at most `maxMetadataSize`, and nothing of it is kept. A name outside `deny` is sent: `allow` does not bound a forwarded request (proxy-and-group.md §3). Tests: `TestForward`, `TestDenies`, `TestForwardBounds`, `TestProxyAuditDeny`, e2e `npm.sh` (J-09). | mitigated (#514); names outside `deny` accepted (proxy-and-group.md §3) |
+| O-7 | **Resources through the upstream**: a large or slow document or file, or many misses at once. | A document above `upstreams[].maxMetadataSize` (64 MiB) is not cached, and the repo answers from its cache or what it holds, else `502` (proxy-and-group.md §6); a file above the repo's `maxFileSize` or the registry's `maxBlobSize` stops its fetch (`Core.limit`, `bounded`); every wait for bytes is bounded by `upstreams[].timeout` (`stallBody`); concurrent misses of one artifact share one fetch on a replica, and across replicas through a claim in the index (proxy-and-group.md §5). The spool is removed whatever the outcome and never served from. What is not bounded: the number of fetches at once. `server.maxConcurrentUploads` counts `POST`, `PUT` and `PATCH` (`server.limitUploads`), and a fetch is caused by a `GET`, though proxy-and-group.md §5 counts it as an upload; so `$TMPDIR` holds up to one `maxFileSize` per distinct miss in flight. Nor the total a proxy keeps: a reader, anonymous where the repo allows it, makes it fetch and hold any version that the lists allow. Tests: `TestDocumentLimits`, `TestFileRefused`, `TestFileOneFetch`, `TestFileTwoReplicas`, `TestGetTimeouts`. | the bounds mitigated; fetches at once and the total kept not assessed |
 
 ### Frontends and parsers
 
@@ -165,12 +186,12 @@ The table summarises; the IDs point to §3.
 
 | ID | Threat | Mitigation | Status |
 | --- | --- | --- | --- |
-| A-1 | **Password guessing.** | argon2id ([auth.md](../auth.md)). Per account, `Authenticator.authenticatePassword` and `verifyPassword` allow 10 failures a minute, checked before the cache and argon2id. Per address, with `trustedProxies` or `server.tls` (N-2), they allow 30 failures a minute, checked before the user is read. `/v2/token` takes 100 requests a second per address (`AllowTokenRequest`, checked before Basic). Each throttle and the cache hold at most 10 000 keys. Tests: `TestLoginThrottle`, `TestLoginThrottleAlike`, `TestLoginThrottleParallel`, `TestAddressThrottle`, `TestAllowTokenRequest`, `TestThrottled`, `TestTokenThrottle`, and e2e `auth.sh` (X-04). Tokens are 256 random bits and are not throttled. The budgets are per replica; across replicas the bound is the edge's. | mitigated |
+| A-1 | **Password guessing.** | argon2id ([auth.md](../auth.md)). Per account, `Authenticator.authenticatePassword` and `verifyPassword` allow 10 failures a minute, checked before the cache and argon2id. Per address, with `trustedProxies` or `server.tls` (N-2), they allow 30 failures a minute, checked before the user is read. `/v2/token` takes 100 requests a second per address (`AllowTokenRequest`, checked before Basic). Each throttle and the cache hold at most 10 000 keys. Tests: `TestLoginThrottle`, `TestLoginThrottleAlike`, `TestLoginThrottleParallel`, `TestAddressThrottle`, `TestAllowTokenRequest`, `TestThrottled`, `TestTokenThrottle`, and e2e `auth.sh` (X-04). Tokens are 256 random bits and are not throttled. The budgets are per replica; across replicas the bound is the edge's, and a throttle shared by the replicas waits for a decision (#282). | mitigated; per replica (#282) |
 | A-2 | **The throttle's memory bound evicts a throttled account.** Failures of 10 000 other names pushed out its full window, which `throttle.wait` reads without refreshing. | `throttle.makeRoom` gives a new key the place of a window that has closed, else of the open window opened first that is under its budget, and never of a full open window. When all 10 000 are open and full, the new key goes untracked (fail open), which takes 100 000 failed logins a minute on one replica; the choice is in [auth.md](../auth.md#failed-logins), Per replica (#251). Tests: `TestThrottleEviction`, `TestLoginThrottleFlood` (alice stays throttled through a failure of each of 10 000 unknown names). | mitigated |
 | A-3 | **A push to an `oci` repo leaves no audit row** (`facade.passThrough`), against rbac.md §5. | `facade.recordPassThrough` writes a `push` row in the transaction that records `oci_repos`: the principal, the repo, the OCI name as the subject, the digest, the client address, the tag and the request id. Every PUT writes one, the repeat of a manifest too (#245). Referrers (`ingest.Pipeline.auditReferrer`) and managed repos are audited by ingest, with the client address (`ingest.withOrigin`, #283). Tests: `TestOCIPushAudit`, `TestPushAuditOrigin`. | mitigated |
 | A-4 | **An audit row lost or forged.** | The row is written in the transaction of its change; a write to the registry, which no transaction spans, has its row before the write and completes it after, or the row is `unknown` (#473, [operations.md](../operations.md#audit)). The address is the client behind a trusted proxy (`server.ClientAddr`, 129dc47). The audit API is admin only. | mitigated |
 | A-5 | **Basic parsing and timing.** | `r.BasicAuth` splits at the first colon, and `CheckName` forbids `:` and the name `deploy`. The secret's prefix picks the kind of credential. `VerifyPassword` compares in constant time. An unknown, disabled or password-less user costs `dummyVerify`. The verification cache key is a sha256 of name and secret, valid while the stored hash is the same (`keyOf`). | mitigated |
-| A-6 | **Claiming the first admin.** Someone reaches a new installation before its operator and makes the first admin, or reads a token from the logs. | There is no admin password in the environment or the configuration, and no token in a log: the bootstrap token is the operator's, from the file of `auth.bootstrap.tokenFile`; the index keeps its sha256 (`auth.Bootstrap.Arm`). `POST /api/v1/bootstrap` compares it in constant time, allows 10 wrong tokens a minute per address, uses the token in the transaction that makes the admin, and is `404` once an enabled admin exists (`auth.Bootstrap.Exchange`); the token expires after `auth.bootstrap.ttl`. Tests: `TestBootstrapTokenFile`, `TestBootstrapReplicas`, `TestBootstrapRefusals`, `TestBootstrapExpiry`, the conformance `BootstrapTokenRace`, and e2e `first-admin.sh`. | mitigated |
+| A-6 | **Claiming the first admin.** Someone reaches a new installation before its operator and makes the first admin, or reads a token from the logs. | There is no admin password in the environment or the configuration, and no token in a log: the bootstrap token is the operator's, from the file of `auth.bootstrap.tokenFile`; the index keeps its sha256 (`auth.Bootstrap.Arm`). `POST /api/v1/bootstrap` compares it in constant time, allows 10 wrong tokens a minute per address, uses the token in the transaction that makes the admin, and is `404` once an enabled admin exists (`auth.Bootstrap.Exchange`); the token expires after `auth.bootstrap.ttl`. Tests: `TestBootstrapTokenFile`, `TestBootstrapReplicas`, `TestBootstrapRefusals`, `TestBootstrapExpiry`, the conformance `BootstrapTokenRace`, and e2e `first-admin.sh`. | mitigated; #440 stays open for the Helm chart's part, with #82 |
 
 ### The client address ([ADR 0011](../adr/0011-client-address-behind-a-proxy.md))
 
@@ -193,7 +214,7 @@ The table summarises; the IDs point to §3.
 
 | ID | Threat | Mitigation | Status |
 | --- | --- | --- | --- |
-| S-1 | **A URL that a non-admin controls.** | None exists. The API names registries by name only (`Repos.checkRegistry`); `PATCH` refuses `registry`; the prefix is fixed; there are no proxy repos, so no upstream URL. `registries[].url` is the operator's. The backend's own redirects and realm: P-2, P-3. | mitigated |
+| S-1 | **A URL that a non-admin controls.** | None exists. The API names registries and upstreams by name only (`Repos.checkRegistry`, `Repos.checkUpstream`: a proxy repo's settings have no key for a URL); `PATCH` refuses `registry`; the prefix is fixed. `registries[].url`, `upstreams[].url` and an upstream's credentials are the operator's ([proxy-and-group.md](../spec/proxy-and-group.md) §9.1). The backend's own redirects and realm: P-2, P-3. The URLs of an upstream's documents and redirects: O-2. | mitigated |
 
 ## 4. What the edge must do
 
@@ -215,19 +236,21 @@ configuration, part 1 and part 2. In terms of this document:
 
 ## 5. Open items
 
-| Issue | Threats | Priority |
-| --- | --- | --- |
-| [#60](https://github.com/lajstrom/lajstrom/issues/60) typed, validated repo policy | U-7 | (its own) |
+None of the first pass is open: the last, U-7, was closed by #60 (typed, validated repo policy).
+What the update of 2026-11-12 left **not assessed** is in the rows that say so: O-4, and parts of
+O-2 and O-7.
 
-None is critical: they need a writer,
-an operator's mistake or a hostile registry. Two findings would let a writer's upload, or any
-web page, act with an admin's browser credentials. Both are fixed in this pass: stored XSS
-(B-1) and CSRF (B-2).
+The first pass found nothing critical: what it left open needed a writer, an operator's mistake
+or a hostile registry. Two findings would let a writer's upload, or any web page, act with an
+admin's browser credentials. Both were fixed in that pass: stored XSS (B-1) and CSRF (B-2).
 
 ## 6. What this pass did not do
 
-- **No fuzzing.** #51 adds fuzz targets for the parsers; F-4 was found by reading and by
-  measuring.
+- **No fuzzing.** F-4 was found by reading and by measuring. Fuzzing came after this pass
+  (#51): the parsers of F-4 have fuzz targets ([testing.md](../testing.md#fuzz)).
+- **The proxy and group repos and the npm frontend** were read, not attacked or probed: the O
+  rows come from the code and proxy-and-group.md §9. npm's names in paths, its dist-tag journal
+  and `npm login` were not reviewed beyond F-4's tarball.
 - **The dependencies.** These were not reviewed beyond `govulncheck`, which runs in
   `make check`. At `129dc47` it found no vulnerability that the code calls, and one in a
   required module that the code does not call.
