@@ -28,103 +28,165 @@ var checksumOrder = []string{"sha512", "sha256", "sha1"}
 // errTooLarge is a download that went past its bound.
 var errTooLarge = errors.New("proxy: the file is larger than its bound")
 
-// downloaded are the spooled files of one artifact and its origin.
-type downloaded struct {
-	spools []*format.Spooled
-	files  []format.UploadedFile
-	origin *format.Origin
-}
-
-func (d *downloaded) close() {
-	for _, s := range d.spools {
-		_ = s.Close()
-	}
-}
-
-// download requests each file of the entry from the upstream into a spool, as an upload is
-// spooled, bounded by the repo's maxFileSize and the registry's maxBlobSize, and checks the
-// strongest checksum the entry gives against the bytes (§5, steps 7 and 8). The spools are
-// never served from; the caller closes them, which removes them. A refused file is a
-// proxy.reject audit row; an upstream 404 or 410 makes the name's row stale (§4.3).
-func (c *Core) download(ctx context.Context, p *proxied, a artifact, entry *format.UpstreamEntry, row *index.ProxyMeta) (_ *downloaded, err error) {
+// download asks the upstream for the file of the entry (npm: the tarball) and returns its body
+// as UploadStream reads it into the registry (§5, steps 7 and 8; ADR 0014): bounded by the
+// repo's maxFileSize and the registry's maxBlobSize, and checked against the strongest checksum
+// the entry gives when it ends. Nothing of it is written to disk; the caller closes the body. A
+// file refused before a byte is read is a proxy.reject audit row, and an upstream 404 or 410
+// makes the name's row stale (§4.3).
+func (c *Core) download(ctx context.Context, p *proxied, a artifact, entry *format.UpstreamEntry, row *index.ProxyMeta) (*checked, error) {
 	if err := c.checkName(ctx, p, a); err != nil {
 		return nil, err
 	}
-	limit, bound := c.limit(ctx, p)
-	d := &downloaded{}
-	defer func() {
-		if err != nil {
-			d.close()
-		}
-	}()
-	for i, f := range entry.Files {
-		target, err := p.up.Resolve(f.URL)
-		if err != nil {
-			return nil, err
-		}
-		asked := originURL(target)
-		alg, want := strongest(f.Checksums)
-		if alg == "" {
-			c.reject(ctx, p, a, asked, "checksum", map[string]any{"error": "the upstream gives no checksum"})
-			return nil, fmt.Errorf("%w: proxy: %s: upstream %s gives no checksum of %s", format.ErrBadGateway, p.id(), p.settings.Upstream, f.Name)
-		}
-		sp, got, err := c.spool(ctx, p, a, f.Name, target, alg, limit, bound, row)
-		if err != nil {
-			return nil, err
-		}
-		d.spools = append(d.spools, sp)
-		d.files = append(d.files, sp.File())
-		if got != want {
-			c.reject(ctx, p, a, asked, "checksum", map[string]any{"algorithm": alg, "expected": want, "actual": got})
-			c.o.Log.WarnContext(ctx, "proxy: a file of the upstream does not match its checksum; refused", "repo", p.id(),
-				"upstream", p.settings.Upstream, "artifact", a.subject(), "file", f.Name, "algorithm", alg, "expected", want, "actual", got)
-			return nil, fmt.Errorf("%w: proxy: %s: %s of upstream %s does not match its %s", format.ErrBadGateway, p.id(), f.Name,
-				p.settings.Upstream, alg)
-		}
-		if i == 0 {
-			d.origin = &format.Origin{Upstream: p.settings.Upstream, URL: asked, Checksum: alg + ":" + want}
-		}
+	if len(entry.Files) != 1 {
+		return nil, fmt.Errorf("proxy: %s: the entry of %s lists %d files; a fetch streams one into the registry", p.id(), a.subject(),
+			len(entry.Files))
 	}
-	return d, nil
-}
-
-// spool downloads one file into a spool and returns it with the checksum alg of its bytes.
-func (c *Core) spool(ctx context.Context, p *proxied, a artifact, name string, target *url.URL, alg string, limit int64, bound string,
-	row *index.ProxyMeta) (*format.Spooled, string, error) {
+	f := entry.Files[0]
+	target, err := p.up.Resolve(f.URL)
+	if err != nil {
+		return nil, err
+	}
+	asked := originURL(target)
+	alg, want := strongest(f.Checksums)
+	if alg == "" {
+		c.reject(ctx, p, a, asked, "checksum", map[string]any{"error": "the upstream gives no checksum"})
+		return nil, fmt.Errorf("%w: proxy: %s: upstream %s gives no checksum of %s", format.ErrBadGateway, p.id(), p.settings.Upstream, f.Name)
+	}
+	limit, bound := c.limit(ctx, p)
 	resp, err := p.up.Get(ctx, "file", target, "", "", "")
 	switch {
 	case errors.Is(err, errMissing):
 		c.stale(ctx, p, row)
 		countFetch(p, fetchMissing)
-		return nil, "", fmt.Errorf("%w: proxy: %s: upstream %s does not have %s", index.ErrNotFound, p.id(), p.settings.Upstream, name)
+		return nil, fmt.Errorf("%w: proxy: %s: upstream %s does not have %s", index.ErrNotFound, p.id(), p.settings.Upstream, f.Name)
 	case err != nil:
 		countFetch(p, fetchError)
-		return nil, "", err
+		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
 	if limit >= 0 && resp.ContentLength > limit {
-		return nil, "", c.tooLarge(ctx, p, a, target, limit, bound)
+		_ = resp.Body.Close()
+		return nil, c.tooLarge(ctx, p, a, asked, limit, bound)
 	}
-	sums := map[string]hash.Hash{"sha512": sha512.New(), "sha256": sha256.New(), "sha1": sha1.New()} //nolint:gosec // see the import
-	writers := make([]io.Writer, 0, len(sums))
-	for _, h := range sums {
-		writers = append(writers, h)
+	return &checked{body: resp.Body, r: &bounded{r: resp.Body, left: limit}, h: newHash(alg), name: f.Name, limit: limit, bound: bound,
+		origin: &format.Origin{Upstream: p.settings.Upstream, URL: asked, Checksum: alg + ":" + want}, alg: alg, want: want}, nil
+}
+
+// checked is the body of a file on its way from the upstream into the registry. It hashes the
+// bytes with the algorithm of the upstream's strongest checksum and, at their end, fails in
+// place of io.EOF when they do not match it (a *mismatch), so that UploadStream cancels the
+// upload session and commits nothing (§5, step 8). A body past its bound fails with errTooLarge;
+// one the upstream cuts short, with an *upstreamError.
+type checked struct {
+	body      io.Closer
+	r         io.Reader // the bounded body
+	h         hash.Hash
+	name      string // the file's name, UploadedFile.Name
+	limit     int64  // the bound, -1 for none, and what it is
+	bound     string
+	origin    *format.Origin
+	alg, want string
+	ended     bool   // the body ended whole
+	got       string // the checksum alg of the bytes, once ended
+}
+
+// mismatch is a file whose bytes do not match the upstream's checksum.
+type mismatch struct{ alg, want, got string }
+
+func (m *mismatch) Error() string {
+	return fmt.Sprintf("proxy: the bytes have %s %s, the upstream says %s", m.alg, m.got, m.want)
+}
+
+// upstreamError is a failure to read the body of the upstream's answer: a connection cut, a
+// body shorter than its Content-Length, a stall.
+type upstreamError struct{ err error }
+
+func (e *upstreamError) Error() string { return "proxy: the upstream's body: " + e.err.Error() }
+func (e *upstreamError) Unwrap() error { return e.err }
+
+func (c *checked) Read(p []byte) (int, error) {
+	if c.ended {
+		return 0, c.end()
 	}
-	body := io.TeeReader(&bounded{r: resp.Body, left: limit}, io.MultiWriter(writers...))
-	sp, err := format.Spool(body, name, "", -1)
+	n, err := c.r.Read(p)
+	c.h.Write(p[:n])
 	switch {
-	case errors.Is(err, errTooLarge):
-		return nil, "", c.tooLarge(ctx, p, a, target, limit, bound)
-	case err != nil:
-		countFetch(p, fetchError)
-		return nil, "", p.up.transportError(ctx, err)
+	case errors.Is(err, io.EOF):
+		c.ended, c.got = true, hex.EncodeToString(c.h.Sum(nil))
+		return n, c.end()
+	case err != nil && !errors.Is(err, errTooLarge):
+		return n, &upstreamError{err: err}
 	}
-	return sp, hex.EncodeToString(sums[alg].Sum(nil)), nil
+	return n, err
+}
+
+// end is what a read of the ended body returns: io.EOF, or a *mismatch.
+func (c *checked) end() error {
+	if c.got != c.want {
+		return &mismatch{alg: c.alg, want: c.want, got: c.got}
+	}
+	return io.EOF
+}
+
+// finish reads the rest of a body that the format refused, which may have stopped before its
+// end, and returns the *mismatch it ends with, nil otherwise: bytes that are not the upstream's
+// are refused for their checksum, as when the whole file was checked before the ingest.
+func (c *checked) finish() *mismatch {
+	var m *mismatch
+	if _, err := io.Copy(io.Discard, c); errors.As(err, &m) {
+		return m
+	}
+	return nil
+}
+
+func (c *checked) close() { _ = c.body.Close() }
+
+// newHash returns the hash of an upstream's checksum algorithm of checksumOrder.
+func newHash(alg string) hash.Hash {
+	switch alg {
+	case "sha512":
+		return sha512.New()
+	case "sha256":
+		return sha256.New()
+	}
+	return sha1.New() //nolint:gosec // see the import
+}
+
+// refused turns the error of the ingest of a fetched file into the fetch's (§5, §6): bytes that
+// do not match the upstream's checksum and an artifact the format refuses are 502 and a
+// proxy.reject row, a file past its bound 403 and a proxy.reject row, a body the upstream cut
+// short the upstream's error. UploadStream committed nothing for any of them.
+func (c *Core) refused(ctx context.Context, p *proxied, a artifact, body *checked, err error) error {
+	if errors.Is(err, format.ErrInvalid) {
+		if m := body.finish(); m != nil {
+			err = m
+		}
+	}
+	var m *mismatch
+	var up *upstreamError
+	switch {
+	case errors.As(err, &m):
+		c.reject(ctx, p, a, body.origin.URL, "checksum", map[string]any{"algorithm": m.alg, "expected": m.want, "actual": m.got})
+		c.o.Log.WarnContext(ctx, "proxy: a file of the upstream does not match its checksum; refused", "repo", p.id(),
+			"upstream", p.settings.Upstream, "artifact", a.subject(), "file", body.name, "algorithm", m.alg, "expected", m.want, "actual", m.got)
+		return fmt.Errorf("%w: proxy: %s: %s of upstream %s does not match its %s", format.ErrBadGateway, p.id(), body.name,
+			p.settings.Upstream, m.alg)
+	case errors.Is(err, errTooLarge):
+		return c.tooLarge(ctx, p, a, body.origin.URL, body.limit, body.bound)
+	case errors.As(err, &up):
+		countFetch(p, fetchError)
+		return p.up.transportError(ctx, up.err)
+	case errors.Is(err, format.ErrInvalid):
+		c.reject(ctx, p, a, body.origin.URL, "invalid", map[string]any{"error": err.Error()})
+		return fmt.Errorf("%w: proxy: %s: upstream %s served %s, which the format refuses: %s", format.ErrBadGateway,
+			p.id(), p.settings.Upstream, a.subject(), err.Error())
+	}
+	return err
 }
 
 // tooLarge refuses a file above its bound with 403 naming the bound, and a proxy.reject row.
-func (c *Core) tooLarge(ctx context.Context, p *proxied, a artifact, target *url.URL, limit int64, bound string) error {
-	c.reject(ctx, p, a, originURL(target), "size", map[string]any{"limit": limit, "bound": bound})
+func (c *Core) tooLarge(ctx context.Context, p *proxied, a artifact, asked string, limit int64, bound string) error {
+	c.reject(ctx, p, a, asked, "size", map[string]any{"limit": limit, "bound": bound})
 	return fmt.Errorf("%w: proxy: %s: the file of %s is larger than %s, %d bytes", format.ErrForbidden, p.id(), a.subject(), bound, limit)
 }
 

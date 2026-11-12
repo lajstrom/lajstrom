@@ -15,6 +15,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/format/formattest"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/proxy"
@@ -157,8 +158,10 @@ func (p *proxyRepo) packument(t *testing.T, path, accept string) proxied {
 // the upstream's versions and dist-tags and the tarballs under the repo's URL, asked of the
 // upstream once in their TTL; each tarball fetched on its first request, checked, held and
 // served, and served again without a request to the upstream; a scoped package at both
-// spellings, through the abbreviated packument.
+// spellings, through the abbreviated packument. A tarball streams from the upstream into the
+// registry: no temporary file (#694).
 func TestProxyInstall(t *testing.T) {
+	formattest.NoTempDir(t)
 	p := newProxyRepo(t, "https://registry.example")
 	want := p.up.publish(t, "is-number", "7.0.0", false)
 	doc := p.packument(t, "is-number", acceptNpm)
@@ -224,6 +227,16 @@ func TestProxyRefuses(t *testing.T) {
 		}
 	}
 	expect(t, "tarball requests", p.up.files.Load(), int32(2))
+	expect(t, "manifests pushed and upload sessions left open for a tarball that fails its integrity",
+		[]int{len(p.fake.PushReferences()), p.fake.OpenUploads()}, []int{0, 0})
+	rejects, err := p.st.ListAudit(t.Context(), index.AuditFilter{Action: "proxy.reject"})
+	must(t, err)
+	for _, ev := range rejects {
+		if !strings.Contains(string(ev.Details), `"reason":"checksum"`) || !strings.Contains(string(ev.Details), `"algorithm":"sha512"`) {
+			t.Errorf("proxy.reject of a tarball that fails its integrity: %s, want the reason checksum by sha512", ev.Details)
+		}
+	}
+	expect(t, "proxy.reject rows", len(rejects), 2)
 	for path, code := range map[string]int{"is-number/-/is-number-99.0.0.tgz": http.StatusNotFound, "left-pad": http.StatusNotFound,
 		"left-pad/-/left-pad-1.3.0.tgz": http.StatusNotFound} {
 		if rr := get(p.h, "/npm/npmjs/"+path); rr.Code != code {

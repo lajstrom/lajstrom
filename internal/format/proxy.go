@@ -13,7 +13,7 @@ import (
 // docs/spec/proxy-and-group.md §10): a format has the kind proxy when its plugin implements it,
 // and creating a proxy repo of another format is refused. The core, internal/proxy, does
 // everything else: the allow and deny lists, proxy_meta and its TTLs, the fetch claims, the
-// upstream client, the spool and the checksum, the ingest call, the statuses.
+// upstream client, the stream into the registry and the checksum, the ingest call, the statuses.
 //
 // One kind names a document throughout: the proxy_meta row, the upstream request, the parse,
 // the rendered document and its index_cache row, whose scope in a proxy repo is Key(name).

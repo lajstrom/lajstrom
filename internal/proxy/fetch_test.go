@@ -14,9 +14,12 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/format/formattest"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/reindex"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
@@ -80,6 +83,57 @@ func TestFileMiss(t *testing.T) {
 	}
 }
 
+// stored reports whether the registry holds the bytes of content in raw/up/tool.
+func stored(t *testing.T, e *env, content string) bool {
+	t.Helper()
+	rr, err := e.reg.Repository(t.Context(), "raw/up/tool")
+	must(t, err)
+	ok, err := rr.Exists(t.Context(), ocispec.Descriptor{Digest: digest.FromString(content), Size: int64(len(content))})
+	must(t, err)
+	return ok
+}
+
+// storesNothing fails the test when the registry has a manifest, the bytes of content, or an
+// open upload session after what.
+func storesNothing(t *testing.T, e *env, what, content string) {
+	t.Helper()
+	if pushes := e.reg.PushReferences(); len(pushes) != 0 || stored(t, e, content) || e.reg.OpenUploads() != 0 {
+		t.Errorf("%s pushed %+v, stored the bytes %v, left %d upload sessions open; want nothing", what, pushes, stored(t, e, content),
+			e.reg.OpenUploads())
+	}
+}
+
+// TestFileWritesNoTempFile: with a TMPDIR that takes no file, a fetch streams the upstream's
+// file into the registry in several chunks, with a Content-Length and without, checked on its
+// way, and the file is served from the registry; no upload session is left open (ADR 0014,
+// #694).
+func TestFileWritesNoTempFile(t *testing.T) {
+	formattest.NoTempDir(t)
+	e := newEnv(t, `{"name": "up"}`)
+	e.reg.ChunkSize = 4
+	const content = "streamed in several chunks"
+	e.up.publish("tool", "1.0.0", content, nil)
+	e.up.publish("tool", "2.0.0", content+", without a length", nil)
+	c := e.core(t, "r1", proxy.Options{})
+	for _, tt := range []struct {
+		version, content string
+		chunked          bool
+	}{
+		{"1.0.0", content, false},
+		{"2.0.0", content + ", without a length", true},
+	} {
+		e.up.chunked.Store(tt.chunked)
+		m, err := c.File(asAlice(t), e.repo, fileOf("tool", tt.version))
+		must(t, err)
+		if m.File.Digest != digest.FromString(tt.content) || m.File.Size != int64(len(tt.content)) || !stored(t, e, tt.content) {
+			t.Errorf("%s: file %+v, stored %v; want the upstream's bytes in the registry", tt.version, m.File, stored(t, e, tt.content))
+		}
+	}
+	if n := e.reg.OpenUploads(); n != 0 {
+		t.Errorf("%d upload sessions open after the fetches, want none", n)
+	}
+}
+
 // TestFileHit: a file the repo holds is served without the upstream; a version the upstream
 // does not list and a path that names no file are 404.
 func TestFileHit(t *testing.T) {
@@ -103,6 +157,7 @@ func TestFileHit(t *testing.T) {
 
 // TestFileOneFetch: the requests of one replica that miss one artifact at once share one fetch.
 func TestFileOneFetch(t *testing.T) {
+	formattest.NoTempDir(t)
 	e := newEnv(t, `{"name": "up"}`)
 	e.up.publish("tool", "1.0.0", "hello", nil)
 	e.up.fileDelay.Store(int64(100 * time.Millisecond))
@@ -118,14 +173,15 @@ func TestFileOneFetch(t *testing.T) {
 			t.Errorf("request %d: %v", i, err)
 		}
 	}
-	if n := e.up.fileCalls.Load(); n != 1 {
-		t.Errorf("%d downloads, want 1", n)
+	if n := e.up.fileCalls.Load(); n != 1 || len(e.reg.PushReferences()) != 1 {
+		t.Errorf("%d downloads, %d manifests pushed; want 1 and 1", n, len(e.reg.PushReferences()))
 	}
 }
 
 // TestFileTwoReplicas: two replicas that miss one artifact at once download it once: the fetch
 // claim in the index, the real store's lock, holds the second off until the version is there.
 func TestFileTwoReplicas(t *testing.T) {
+	formattest.NoTempDir(t)
 	e := newEnv(t, `{"name": "up"}`)
 	e.up.publish("tool", "1.0.0", "hello", nil)
 	e.up.fileDelay.Store(int64(300 * time.Millisecond))
@@ -182,26 +238,29 @@ func TestFileClaims(t *testing.T) {
 
 // TestFileChecksum: the strongest checksum the upstream gives must match the bytes; a mismatch,
 // or an entry without a checksum, is refused, 502 and a proxy.reject row naming both values,
-// and nothing is pushed (§5, step 8).
+// and nothing is stored: the bytes streamed into an upload session, which is cancelled, not
+// committed (§5, step 8). Bytes the format refuses before their end are read to it, and refused
+// for their checksum when it does not match.
 func TestFileChecksum(t *testing.T) {
 	e := newEnv(t, `{"name": "up"}`)
-	e.up.publish("tool", "1.0.0", "hello", func(v *upstreamVersion) { v.SHA512 = hex.EncodeToString(make([]byte, 64)) })
+	zeros := hex.EncodeToString(make([]byte, 64))
+	e.up.publish("tool", "1.0.0", "hello", func(v *upstreamVersion) { v.SHA512 = zeros })
 	e.up.publish("tool", "2.0.0", "hello", func(v *upstreamVersion) { v.SHA512, v.SHA256, v.SHA1 = "", "", "" })
 	e.up.publish("tool", "3.0.0", "hello", func(v *upstreamVersion) { v.SHA512, v.SHA256 = "", "" })
+	e.up.publish("tool", "4.0.0", "evil, and not what the upstream says", func(v *upstreamVersion) { v.SHA512 = zeros })
 	c := e.core(t, "r1", proxy.Options{})
 
-	for _, version := range []string{"1.0.0", "2.0.0"} {
+	for _, version := range []string{"1.0.0", "2.0.0", "4.0.0"} {
 		_, err := c.File(asAlice(t), e.repo, fileOf("tool", version))
 		if status, _ := statusOf(err); status != http.StatusBadGateway {
 			t.Errorf("%s: %v (%d), want 502", version, err, status)
 		}
 	}
-	if pushes := e.reg.PushReferences(); len(pushes) != 0 {
-		t.Errorf("refused fetches pushed %+v", pushes)
-	}
+	storesNothing(t, e, "refused fetches", "hello")
 	evs, details := audits(t, e, "proxy.reject")
-	if len(evs) != 2 || evs[1].Principal != alice.String() || details[1]["reason"] != "checksum" || details[1]["algorithm"] != "sha512" ||
-		details[1]["expected"] != hex.EncodeToString(make([]byte, 64)) || details[1]["actual"] == "" || details[0]["reason"] != "checksum" {
+	if len(evs) != 3 || evs[2].Principal != alice.String() || details[2]["reason"] != "checksum" || details[2]["algorithm"] != "sha512" ||
+		details[2]["expected"] != zeros || details[2]["actual"] == "" || details[1]["reason"] != "checksum" ||
+		details[0]["reason"] != "checksum" || details[0]["expected"] != zeros {
 		t.Errorf("proxy.reject rows %+v, details %v", evs, details)
 	}
 	m, err := c.File(asAlice(t), e.repo, fileOf("tool", "3.0.0"))
@@ -210,23 +269,28 @@ func TestFileChecksum(t *testing.T) {
 	}
 }
 
-// TestFileRefused: a file above maxFileSize is 403 naming the bound, one that Validate refuses
-// 502; each is a proxy.reject row, and nothing is pushed.
+// TestFileRefused: a file above maxFileSize is 403 naming the bound, by its Content-Length or,
+// without one, once its bytes pass the bound; one that the format refuses is 502; each is a
+// proxy.reject row, and nothing is stored nor left open in the registry.
 func TestFileRefused(t *testing.T) {
 	e := newEnv(t, `{"name": "up"}`)
 	e.repo.Policy = json.RawMessage(`{"maxFileSize": 8}`)
 	must(t, e.st.UpdateRepo(t.Context(), &e.repo))
 	e.up.publish("tool", "1.0.0", "more than eight bytes", nil)
 	e.up.publish("tool", "2.0.0", "evil", nil)
+	e.up.publish("tool", "3.0.0", "more than eight, no length", nil)
 	c := e.core(t, "r1", proxy.Options{})
 	for _, tt := range []struct {
 		version string
+		chunked bool
 		status  int
 		reason  string
 	}{
-		{"1.0.0", http.StatusForbidden, "size"},
-		{"2.0.0", http.StatusBadGateway, "invalid"},
+		{"1.0.0", false, http.StatusForbidden, "size"},
+		{"2.0.0", false, http.StatusBadGateway, "invalid"},
+		{"3.0.0", true, http.StatusForbidden, "size"},
 	} {
+		e.up.chunked.Store(tt.chunked)
 		_, err := c.File(asAlice(t), e.repo, fileOf("tool", tt.version))
 		if status, _ := statusOf(err); status != tt.status {
 			t.Errorf("%s: %v (%d), want %d", tt.version, err, status, tt.status)
@@ -235,8 +299,34 @@ func TestFileRefused(t *testing.T) {
 			t.Errorf("%s: proxy.reject details %v, want the reason %s", tt.version, details, tt.reason)
 		}
 	}
-	if pushes := e.reg.PushReferences(); len(pushes) != 0 {
-		t.Errorf("refused fetches pushed %+v", pushes)
+	storesNothing(t, e, "refused fetches", "evil")
+}
+
+// TestFileCutShort: a file whose body the upstream cuts short of its Content-Length is 502, and
+// stores nothing: its upload session is cancelled, and the claim released, so that the next
+// request fetches it whole.
+func TestFileCutShort(t *testing.T) {
+	formattest.NoTempDir(t)
+	e := newEnv(t, `{"name": "up"}`)
+	const content = "the whole of the file"
+	e.up.publish("tool", "1.0.0", content, nil)
+	e.up.cut.Store(true)
+	c := e.core(t, "r1", proxy.Options{})
+	_, err := c.File(asAlice(t), e.repo, fileOf("tool", "1.0.0"))
+	if status, _ := statusOf(err); status != http.StatusBadGateway {
+		t.Errorf("a body cut short: %v (%d), want 502", err, status)
+	}
+	if len(e.reg.PushReferences()) != 0 || e.reg.OpenUploads() != 0 || len(e.reg.Pushes()) != 0 {
+		t.Errorf("a body cut short pushed %d manifests and %d blobs, left %d upload sessions open; want nothing",
+			len(e.reg.PushReferences()), len(e.reg.Pushes()), e.reg.OpenUploads())
+	}
+	if _, err := e.st.GetFetchClaim(t.Context(), e.repo.ID, "tool", "1.0.0"); !errors.Is(err, index.ErrNotFound) {
+		t.Errorf("the fetch claim after a body cut short: %v, want it released", err)
+	}
+	e.up.cut.Store(false)
+	m, err := c.File(asAlice(t), e.repo, fileOf("tool", "1.0.0"))
+	if err != nil || m.File.Digest != digest.FromString(content) {
+		t.Errorf("the fetch after: %v, %v; want the whole file", m, err)
 	}
 }
 
