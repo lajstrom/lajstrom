@@ -66,9 +66,20 @@ type Wheel struct {
 	Python, ABI, Platform string
 }
 
-// Variant returns the lajstrom.variant of the wheel, its compressed tag set:
-// py3-none-any, cp311-cp311-manylinux_2_17_x86_64.
-func (w Wheel) Variant() string { return w.Python + "-" + w.ABI + "-" + w.Platform }
+// Variant returns the lajstrom.variant of the wheel: its build tag, when the file name has one,
+// and its compressed tag set, joined with '-' as the file name joins them: py3-none-any,
+// 1-py3-none-any, cp311-cp311-manylinux_2_17_x86_64. No part has a '-', so the variant of a
+// wheel with a build tag is never that of one without (#726).
+func (w Wheel) Variant() string {
+	if w.Build == "" {
+		return w.TagSet()
+	}
+	return w.Build + "-" + w.TagSet()
+}
+
+// TagSet returns the compressed tag set of the wheel, py3-none-any: its variant without the
+// build tag.
+func (w Wheel) TagSet() string { return w.Python + "-" + w.ABI + "-" + w.Platform }
 
 // wheelPart is a component of a wheel file name: letters, digits, '_', '.' and '+' (a local
 // version), as PEP 427 escapes them.

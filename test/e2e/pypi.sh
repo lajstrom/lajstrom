@@ -11,7 +11,8 @@
 # poetry config http-basic.internal; uv publish of the next version and uv publish --check-url
 # of the same files, which skips them; pip install --upgrade gets the next version. The index
 # reads of pip go through the core metadata of PEP 658 (.metadata before the file), which the
-# script checks in the server's access log when it has it.
+# script checks in the server's access log when it has it. Last, a wheel of the next version with
+# the build tag 1 goes beside its wheel (#726), and pip install --force-reinstall takes it.
 #
 #   test/e2e/pypi.sh [<base url> [<repo>]]     default: http://localhost:8080 e2e
 #
@@ -150,16 +151,24 @@ cd /
 echo "pip install --upgrade gets 1.1"
 /v/bin/pip install -q --upgrade --index-url "$index" "$PROJECT" >/dev/null
 [ "$(/v/bin/python -c "import $MODULE; print($MODULE.hello())")" = v1.1 ] || { echo "FAIL: the upgrade" >&2; exit 1; }
+echo "twine upload of a wheel of 1.1 with the build tag 1; pip install --force-reinstall takes it"
+cd /p && echo 'def hello(): return "v1.1-1"' >"$MODULE/__init__.py"
+python -m build -q --wheel -C--build-option=--build-number=1 --outdir /b . >/dev/null 2>&1
+twine upload --non-interactive --disable-progress-bar --repository-url "$url/" /b/*-1.1-1-py3-none-any.whl >/dev/null
+cd /
+/v/bin/pip install -q --force-reinstall --no-deps --index-url "$index" "$PROJECT==1.1" >/dev/null
+[ "$(/v/bin/python -c "import $MODULE; print($MODULE.hello())")" = v1.1-1 ] || { echo "FAIL: pip did not take the wheel with the build tag" >&2; exit 1; }
 CLIENT
 
 step "the clients in $image"
 docker run --rm --network host -e BASE="$base" -e REPO="$repo" -e PROJECT="$project" -e NORMALIZED="$normalized" -e MODULE="$module" \
 	-v "$work:/w:ro" "$image" bash /w/client.sh || fail "the clients"
 
-step "the page of $normalized lists four files with their core metadata"
+step "the page of $normalized lists five files with their core metadata, one with a build tag"
 page="$(curl -fsS -u "$user:$password" -H 'Accept: application/vnd.pypi.simple.v1+json' "$base/pypi/$repo/simple/$normalized/")"
-[ "$(jq '.files | length' <<<"$page")" = 4 ] || fail "files: $(jq -c '[.files[].filename]' <<<"$page")"
-[ "$(jq '[.files[] | select(.["core-metadata"] | type == "object")] | length' <<<"$page")" = 4 ] || fail "core-metadata missing"
+[ "$(jq '.files | length' <<<"$page")" = 5 ] || fail "files: $(jq -c '[.files[].filename]' <<<"$page")"
+[ "$(jq '[.files[] | select(.filename | endswith("-1.1-1-py3-none-any.whl"))] | length' <<<"$page")" = 1 ] || fail "no wheel with the build tag"
+[ "$(jq '[.files[] | select(.["core-metadata"] | type == "object")] | length' <<<"$page")" = 5 ] || fail "core-metadata missing"
 [ "$(jq -c .versions <<<"$page")" = '["1.0","1.1"]' ] || fail "versions: $(jq -c .versions <<<"$page")"
 
 if [ -n "${LAJSTROM_SERVER_LOG:-}" ] && [ -f "$LAJSTROM_SERVER_LOG" ]; then

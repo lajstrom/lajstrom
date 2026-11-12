@@ -63,8 +63,9 @@ func TestParseWheelFilename(t *testing.T) {
 		{"pydantic_core-2.23.4-cp311-cp311-macosx_10_12_universal2.whl",
 			Wheel{Name: "pydantic_core", Version: "2.23.4", Python: "cp311", ABI: "cp311", Platform: "macosx_10_12_universal2"}, "cp311-cp311-macosx_10_12_universal2"},
 		{"pywin32-308-cp312-cp312-win_amd64.whl", Wheel{Name: "pywin32", Version: "308", Python: "cp312", ABI: "cp312", Platform: "win_amd64"}, "cp312-cp312-win_amd64"},
-		{"tool-1.0-2-py3-none-any.whl", Wheel{Name: "tool", Version: "1.0", Build: "2", Python: "py3", ABI: "none", Platform: "any"}, "py3-none-any"},
-		{"tool-1.0-1b-py3-none-any.whl", Wheel{Name: "tool", Version: "1.0", Build: "1b", Python: "py3", ABI: "none", Platform: "any"}, "py3-none-any"},
+		{"tool-1.0-2-py3-none-any.whl", Wheel{Name: "tool", Version: "1.0", Build: "2", Python: "py3", ABI: "none", Platform: "any"}, "2-py3-none-any"},
+		{"tool-1.0-1b-py3-none-any.whl", Wheel{Name: "tool", Version: "1.0", Build: "1b", Python: "py3", ABI: "none", Platform: "any"}, "1b-py3-none-any"},
+		{"foo_bar-1.1.0-1-py3-none-any.whl", Wheel{Name: "foo_bar", Version: "1.1.0", Build: "1", Python: "py3", ABI: "none", Platform: "any"}, "1-py3-none-any"},
 		{"epoch-1!2.0-py3-none-any.whl", Wheel{Name: "epoch", Version: "1!2.0", Python: "py3", ABI: "none", Platform: "any"}, "py3-none-any"},
 		{"torch-2.5.1+cpu-cp311-cp311-linux_x86_64.whl",
 			Wheel{Name: "torch", Version: "2.5.1+cpu", Python: "cp311", ABI: "cp311", Platform: "linux_x86_64"}, "cp311-cp311-linux_x86_64"},
@@ -80,6 +81,9 @@ func TestParseWheelFilename(t *testing.T) {
 		}
 		if got.Variant() != tt.variant {
 			t.Errorf("%s: variant %q, want %q", tt.filename, got.Variant(), tt.variant)
+		}
+		if tagSet := got.Python + "-" + got.ABI + "-" + got.Platform; got.TagSet() != tagSet {
+			t.Errorf("%s: tag set %q, want %q", tt.filename, got.TagSet(), tagSet)
 		}
 	}
 	for _, bad := range []string{

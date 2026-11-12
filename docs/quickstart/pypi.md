@@ -87,7 +87,9 @@ poetry publish -r internal                          # the same files again: 200
 same file names, so `409` here.
 
 - One upload is one file and one manifest; the wheel's tag set (`py3-none-any`,
-  `cp311-cp311-manylinux_2_17_x86_64`) or `sdist` tells the files of a version apart.
+  `cp311-cp311-manylinux_2_17_x86_64`), with its build tag when it has one (`1-py3-none-any`:
+  a rebuilt wheel of the same version, which pip prefers), or `sdist` tells the files of a
+  version apart.
 - The file is the truth: the server reads its `METADATA` (`PKG-INFO` for an sdist), and the name
   and version of the file name, of the core metadata and of the form must agree, or the upload
   is `400` with the reason. The digests twine sends (`sha256_digest`, `md5_digest`,

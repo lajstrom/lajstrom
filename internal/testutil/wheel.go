@@ -29,6 +29,9 @@ type WheelOptions struct {
 	PythonTag   string
 	AbiTag      string
 	PlatformTag string
+	// Build is the build tag of the file name (PEP 427), which starts with a digit, and the Build
+	// line of WHEEL; none by default.
+	Build string
 	// RequiresPython is the Requires-Python field; default ">=3.9".
 	RequiresPython string
 	// RequiresDist are the Requires-Dist fields, one each; none by default.
@@ -55,8 +58,11 @@ type WheelInfo struct {
 	PythonTag   string
 	AbiTag      string
 	PlatformTag string
-	// Variant is the compressed tag set py3-none-any, the lajstrom.variant of the wheel
-	// (docs/spec/manifest-profile.md §3).
+	// Build is the build tag, "" when the file name has none.
+	Build string
+	// Variant is the lajstrom.variant of the wheel (docs/spec/manifest-profile.md §3): the
+	// compressed tag set py3-none-any, after the build tag and '-' when there is one,
+	// 1-py3-none-any.
 	Variant string
 	// Tags are the expanded tags, one per Tag line of WHEEL, in that order.
 	Tags []string
@@ -73,8 +79,8 @@ type WheelInfo struct {
 }
 
 // Wheel returns a wheel, a zip archive with <module>/__init__.py and then the .dist-info
-// directory with METADATA (Metadata-Version 2.1), WHEEL (Wheel-Version 1.0, a Tag line per
-// expanded tag) and RECORD last (every other member with sha256=<urlsafe base64 without
+// directory with METADATA (Metadata-Version 2.1), WHEEL (Wheel-Version 1.0, the Build line of a
+// build tag, a Tag line per expanded tag) and RECORD last (every other member with sha256=<urlsafe base64 without
 // padding> and its size, and the RECORD line itself with neither, as PEP 376 has it), and the
 // facts a parser finds in it. The same options give the same bytes: every member is dated
 // 2026-01-01 00:00 UTC.
@@ -87,6 +93,7 @@ func Wheel(opts WheelOptions) ([]byte, WheelInfo) {
 		PythonTag:      o.PythonTag,
 		AbiTag:         o.AbiTag,
 		PlatformTag:    o.PlatformTag,
+		Build:          o.Build,
 		Variant:        o.PythonTag + "-" + o.AbiTag + "-" + o.PlatformTag,
 		Summary:        o.Summary,
 		RequiresPython: o.RequiresPython,
@@ -95,6 +102,9 @@ func Wheel(opts WheelOptions) ([]byte, WheelInfo) {
 	escaped, version := strings.ReplaceAll(info.Normalized, "-", "_"), strings.ReplaceAll(o.Version, "-", "_")
 	info.Module = escaped
 	info.DistInfo = escaped + "-" + version + ".dist-info"
+	if o.Build != "" {
+		info.Variant = o.Build + "-" + info.Variant
+	}
 	info.Filename = escaped + "-" + version + "-" + info.Variant + ".whl"
 
 	var md strings.Builder
@@ -107,6 +117,9 @@ func Wheel(opts WheelOptions) ([]byte, WheelInfo) {
 
 	var wheel strings.Builder
 	fmt.Fprintf(&wheel, "Wheel-Version: 1.0\nGenerator: lajstrom-testutil\nRoot-Is-Purelib: %t\n", o.PlatformTag == "any")
+	if o.Build != "" {
+		fmt.Fprintf(&wheel, "Build: %s\n", o.Build)
+	}
 	for _, py := range strings.Split(o.PythonTag, ".") {
 		for _, abi := range strings.Split(o.AbiTag, ".") {
 			for _, plat := range strings.Split(o.PlatformTag, ".") {

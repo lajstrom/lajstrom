@@ -1,6 +1,7 @@
 package pypi
 
 import (
+	"context"
 	"crypto/md5" //nolint:gosec // md5_digest of the legacy upload API, compared, not trusted
 	"crypto/sha256"
 	"encoding/base64"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"slices"
 	"strings"
 
 	"golang.org/x/crypto/blake2b"
@@ -33,7 +35,8 @@ const maxFields = 8 << 20
 // METADATA or PKG-INFO, which must say what the file name says. 200 on success and for the same
 // bytes again; 400 with the reason; 409 "File already exists" for other bytes under the file
 // name's version and variant, which twine --skip-existing skips; 413 over policy.maxFileSize.
-// It needs write on the repo.
+// A wheel with a build tag that the index has under the earlier form of its variant goes to that
+// tag (ParamVariant). It needs write on the repo.
 func (h *handlers) upload(w http.ResponseWriter, r *http.Request) {
 	repo, ok := format.RepoFrom(r.Context())
 	if !ok {
@@ -73,14 +76,25 @@ func (h *handlers) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal := auth.PrincipalFrom(ctx)
+	params := map[string]string{ParamUploadedBy: principal.String()}
+	if d.earlier != "" {
+		earlier, err := h.atEarlierVariant(ctx, repo, d, form.filename)
+		if err != nil {
+			h.fail(w, r, err)
+			return
+		}
+		if earlier {
+			params[ParamVariant] = d.earlier
+		}
+	}
 	pub, err := h.deps.Ingest.UploadStream(ctx, repo, format.StreamUpload{Name: d.name,
 		File:   format.UploadedFile{Name: form.filename, Size: -1, ContentType: part.Header.Get("Content-Type")},
 		Body:   &content{part: part, form: form},
-		Params: map[string]string{ParamUploadedBy: principal.String()}}, principal)
+		Params: params}, principal)
 	var conflict *index.TagConflictError
 	switch {
 	case errors.As(err, &conflict) || errors.Is(err, index.ErrConflict):
-		http.Error(w, "409 File already exists: "+form.filename+" is in the repository with other bytes ("+err.Error()+")", http.StatusConflict)
+		http.Error(w, h.conflictMessage(ctx, repo, form.filename, conflict, err), http.StatusConflict)
 		return
 	case err != nil:
 		h.fail(w, r, err)
@@ -89,6 +103,39 @@ func (h *handlers) upload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Docker-Content-Digest", pub.Digest.String())
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = io.WriteString(w, "OK "+form.filename+" "+pub.Entry.Name+" "+pub.Entry.Version+"\n")
+}
+
+// atEarlierVariant reports whether the index has filename, a wheel with a build tag, in the
+// version of d whose variant is the earlier form, the tag set alone, as uploads wrote it before
+// #726.
+func (h *handlers) atEarlierVariant(ctx context.Context, repo index.Repo, d dist, filename string) (bool, error) {
+	matches, err := h.deps.Index.FindFiles(ctx, repo.ID, filename)
+	if err != nil {
+		return false, fmt.Errorf("pypi: find %s: %w", filename, err)
+	}
+	return slices.ContainsFunc(matches, func(m index.FileMatch) bool {
+		return m.Package.Name == Normalize(d.name) && m.Version.Version == d.version && m.Version.Variant == d.earlier
+	}), nil
+}
+
+// conflictMessage is the body of the 409 of an upload of filename: "File already exists", which
+// twine --skip-existing looks for, naming the file the tag holds, which the index has under the
+// digest of the conflict; that is filename, but for a wheel with a build tag written before #726,
+// whose tag is the one of the same file name without it.
+func (h *handlers) conflictMessage(ctx context.Context, repo index.Repo, filename string, conflict *index.TagConflictError, err error) string {
+	held := filename
+	if conflict != nil {
+		if v, verr := h.deps.Index.GetVersionByDigest(ctx, repo.ID, conflict.Existing); verr == nil {
+			if files, ferr := h.deps.Index.ListFiles(ctx, v.ID); ferr == nil && len(files) > 0 {
+				held = files[0].Name
+			}
+		}
+	}
+	if held == filename {
+		return "409 File already exists: " + filename + " is in the repository with other bytes (" + err.Error() + ")"
+	}
+	return "409 File already exists: " + held + " is in the repository under the version and tags of " + filename +
+		", which cannot be stored beside it (" + err.Error() + ")"
 }
 
 // uploadForm is the multipart form of an upload as it streams: the fields in memory, at most
