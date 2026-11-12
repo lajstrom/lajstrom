@@ -271,6 +271,9 @@ func (c *Core) ociFetchDocument(ctx context.Context, p *ociProxied, want ocispec
 		return shared, err
 	}
 	defer release()
+	if ok, err := cached(ctx); ok || err != nil { // another replica's fetch ended before this claim
+		return ok, err
+	}
 	desc, err := c.ociListed(ctx, p, want)
 	if err != nil {
 		return false, err
