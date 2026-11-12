@@ -12,6 +12,7 @@ https://<host>/v2/...                   OCI facade (distribution API)
 https://<host>/v2/token                 token endpoint (docker bearer flow)
 https://<host>/api/v1/...               management REST
 https://<host>/-/healthz  /-/readyz  /-/version
+https://<host>/-/oidc/...               OIDC login: browser and device flows (§7, M6)
 http://<metricsListen>/metrics        Prometheus, a separate listener, never on the public host
 https://<host>/.well-known/terraform.json   (after the MVP)
 https://<host>/ui/...                   (after the MVP)
@@ -456,9 +457,9 @@ listed here so frontends do not invent their own. What each call needs, in the a
 | packages, versions | `GET /api/v1/repos/<format>/<repo>/packages[?prefix=&limit=&cursor=]`, `GET …/packages/<name>/versions[?limit=&cursor=]`, `GET …/packages/<name>/versions/<version>[?variant=]`, `DELETE …/packages/<name>/versions/<version>[?variant=&force=]`, `POST /api/v1/repos/<format>/<repo>/versions:delete`; search after the MVP (#956) |
 | users | `GET /api/v1/users[?limit=&cursor=]`, `POST /api/v1/users`, `GET/PATCH/DELETE /api/v1/users/<name>`, `POST …/password` |
 | tokens | `GET/POST /api/v1/users/<name>/tokens` (PAT), `DELETE …/tokens/<id>`; `GET/POST /api/v1/repos/<format>/<repo>/deploy-tokens`, `DELETE …/<id>` |
-| bindings | `GET /api/v1/bindings[?principal=&limit=&cursor=]`, `POST /api/v1/bindings`, `DELETE /api/v1/bindings/<id>` |
+| bindings | `GET /api/v1/bindings[?principal=&limit=&cursor=]`, `POST /api/v1/bindings`, `DELETE /api/v1/bindings/<id>`; a binding's principal is `user:<name>`, `user:<uid>` or `group:<name>` (rbac.md §3, §8) |
 | audit | `GET /api/v1/audit[?repo=&principal=&action=&state=&since=&until=&limit=&cursor=]` |
-| whoami | `GET /api/v1/whoami` |
+| whoami | `GET /api/v1/whoami`; for a user, its current groups too (rbac.md §8) |
 | bootstrap | `POST /api/v1/bootstrap` |
 | the API's description | `GET /api/v1/openapi.yaml` |
 
@@ -631,3 +632,24 @@ Management API (§4), in addition:
 
 The repo resource has `kind` and, by kind, `upstream` or `group` (proxy-and-group.md §2.4),
 with the upstream's name only, never its URL or its credentials.
+
+## 7. OIDC login `/-/oidc` (M6, #69)
+
+The routes of rbac.md §8, served only while `auth.oidc.issuer` is set; without it every one is
+`404`. They are not under `/api/` because a browser follows them: the login and its callback
+answer redirects and HTML pages. The device routes answer JSON in the shape of RFC 8628 and of
+OAuth 2.0 (RFC 6749 §5.2), not the envelope of §4: `lajstrom login` is an OAuth client. None
+takes a credential; a request's `Authorization` header is ignored on them.
+
+| Method and path | Behaviour |
+| --- | --- |
+| `GET /-/oidc/login[?user_code=]` | starts the authorization code flow: `302` to the IdP with `state`, `nonce` and the PKCE challenge, and the cookie `lajstrom_oidc` (rbac.md §8). With `user_code`, the login approves that device request: one that is unknown, expired or approved is `400` with the page of `/-/oidc/device`. `503` when the IdP's discovery does not answer, `Retry-After: 30` |
+| `GET /-/oidc/callback?code=&state=` | the IdP's redirect: one redemption of the state, the code exchange, the ID token checks, the user and its groups. `200` with the page that shows the new personal access token once (`Cache-Control: no-store`, `Referrer-Policy: no-referrer`), or, for a device request, the page that says to return to the terminal. `400` with a page for every refusal of rbac.md §8; `503` when the IdP does not answer the exchange |
+| `GET /-/oidc/device[?user_code=]` | the page where the person types or confirms the user code; its form is a `GET` of `/-/oidc/login?user_code=` |
+| `POST /-/oidc/device/code` | starts a device request (RFC 8628 §3.1, `application/x-www-form-urlencoded`, its `client_id` and `scope` ignored): `200` `{"device_code", "user_code", "verification_uri", "verification_uri_complete", "expires_in", "interval"}`; `429` with `Retry-After` beyond the throttle |
+| `POST /-/oidc/token` | `grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=` (RFC 8628 §3.4): `200` `{"access_token", "token_type": "Bearer", "expires_in", "user"}` once the device request is approved, the personal access token minted then; else `400` `{"error", "error_description"}` with `authorization_pending`, `slow_down`, `expired_token`, `access_denied` or `invalid_grant`; another `grant_type` is `400` `unsupported_grant_type` |
+
+Every answer of these routes has `Cache-Control: no-store`. The pages are HTML of Lajstrom's own,
+with no script and `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'` (no `form-action`: the
+device page's form ends in a redirect to the IdP),
+and say nothing the IdP said beyond the reason in Lajstrom's words.

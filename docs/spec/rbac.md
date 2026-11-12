@@ -1,6 +1,7 @@
 # Spec: authentication, tokens and RBAC
 
-- Status: normative for the MVP (2026-11-06). Owned by `internal/auth`.
+- Status: normative for the MVP (2026-11-06); OIDC, groups and group bindings (§8) for M6 (#69).
+  Owned by `internal/auth`.
 - Related: [ADR 0007](../adr/0007-rbac-model.md), [http-routing.md](http-routing.md).
 
 ## 1. Principals
@@ -8,11 +9,11 @@
 | Principal | Form | MVP |
 | --- | --- | --- |
 | local user | `user:<uid>` (below); password (argon2id) | yes |
-| personal access token (PAT) | acts as its user, optionally narrowed by `scopes`; expiry mandatory (max 1 year, default 90 days); created with a password, never with a token (§3) | yes |
+| personal access token (PAT) | acts as its user, optionally narrowed by `scopes`; expiry mandatory (max 1 year, default 90 days); created with a password or by an OIDC login (§8), never with a token (§3) | yes |
 | deploy token | `token:<id>`; bound to exactly one repo; scopes `read` and/or `write`; expiry optional | yes |
 | anonymous | `anonymous`; only ever gets `read`, and only on repos with `anonymousRead: true` while the server-wide `auth.anonymousRead` (off by default) is on | yes |
-| group | `group:<name>`; from OIDC claims | after the MVP |
-| OIDC user | `user:<uid>`, of the user its IdP's `sub` maps to | after the MVP |
+| group | `group:<name>`; the groups claim of a user's latest OIDC login (§8) | M6 |
+| OIDC user | `user:<uid>`, of the user its identity, the `iss` and `sub` of its ID token, maps to; made at its first login, without a password (§8) | M6 |
 
 One credential works on every protocol: HTTP Basic on the frontends and on `/v2/token`
 (`user:password`, `user:PAT`, or `deploy:<token>`), and the resulting bearer on `/v2`, where
@@ -21,7 +22,8 @@ Basic is taken too and evaluated on each request (§4). Outside
 as its Basic form does: npm sends `_authToken` so, and yarn `npmAuthToken` (ADR 0012).
 `npm login` is a way to get a personal access token: the user's password, checked and throttled
 as in Basic, buys a new one with the default expiry (http-routing.md, npm); nobody signs up
-that way.
+that way. An OIDC login is another (§8): it ends in a personal access token, and no token of
+the IdP is ever a credential of Lajstrom.
 Passwords and token secrets are never logged; tokens are stored hashed (sha256) and shown once.
 Failed password checks are throttled per account (by uid; a name that no user has, by the
 name) and per client address, where Lajstrom knows the client: with `server.trustedProxies`
@@ -87,10 +89,11 @@ A principal may have many bindings; the effective permission on a repo is the un
 
 A binding is refused with `400`, naming the field, when:
 
-- its principal is not a live user, `user:<name>` (stored as the user's `user:<uid>`) or
-  `user:<uid>`. `group:<name>` comes with OIDC, after the MVP. `anonymous` reads through a repo's `anonymousRead` and gets nothing else, and a
-  deploy token `token:<id>` gets its repo and its scopes and nothing else, so neither has
-  bindings;
+- its principal is neither a live user, `user:<name>` (stored as the user's `user:<uid>`) or
+  `user:<uid>`, nor a group, `group:<name>` with a name of §8. A group need not have members:
+  a binding may come before anyone logs in with the group, as before its repo. `anonymous`
+  reads through a repo's `anonymousRead` and gets nothing else, and a deploy token
+  `token:<id>` gets its repo and its scopes and nothing else, so neither has bindings;
 - its role is not one of the four;
 - its mask is not two segments `<format>/<repo>`, each `*` or a name: a format of this build,
   and a repo name by manifest-profile.md §4.1. The repo need not exist: a binding may come
@@ -100,7 +103,8 @@ A binding is refused with `400`, naming the field, when:
 
 The same `(principal, role, repo_mask)` twice is `409`, and so is deleting an `admin` binding
 of an enabled user when no enabled user would keep one: nobody could manage the server through
-`/api/v1` after it.
+`/api/v1` after it. A group's `admin` binding does not count for this rule nor for the bootstrap
+(§6): a group lapses without a change of the bindings (§8).
 `lajstrom admin binding create` on the command line can always make one (§6).
 
 Evaluation of `allowed(principal, action, format/repo)`. Steps 2 and 3 depend on the
@@ -110,7 +114,9 @@ credential, not on the bindings, and are checked first: a PAT's scopes narrow an
 2. Deploy token → allow iff the token's repo matches and `action` is in its scopes
    (`read`/`write`); never `delete`/`manage`.
 3. PAT → compute as for its user, then intersect with the PAT's scopes if set.
-4. User/group → any binding whose mask matches the repo and whose role includes the action.
+4. User → any binding of the user, or of a group the user is in now (§8), whose mask matches
+   the repo and whose role includes the action. A group is not a principal of a request: it
+   reaches a repo only through its members.
 5. Otherwise, if `action == read`, the repo has `anonymousRead`, and the server-wide switch
    `auth.anonymousRead` is on → allow (also for the `anonymous` principal).
 6. Deny.
@@ -120,9 +126,11 @@ nothing else, on every server.
 
 A change of the bindings, or of a repo (created, deleted, its `anonymousRead` changed), counts
 from the next request on, on every replica, as a user disabled does. Each replica evaluates in
-memory, from a snapshot of the bindings and of the repos' `anonymousRead`; before it evaluates a
-request it reads the counter `auth_version` (index-schema.md), which every such change moves in
-its own transaction, and reloads the snapshot when the counter moved. `auth.anonymousRead` is
+memory, from a snapshot of the bindings, of the repos' `anonymousRead` and of the users' groups
+(§8); before it evaluates a request it reads the counter `auth_version` (index-schema.md), which
+every such change moves in its own transaction, the groups of a login included, and reloads the
+snapshot when the counter moved. A user's groups lapse at their time (§8) without a change: the
+snapshot keeps that time, and the evaluation compares it with the clock. `auth.anonymousRead` is
 configuration: it changes with a restart.
 
 A denial on `<format>/<repo>` must not reveal whether the repo exists:
@@ -150,8 +158,8 @@ this spec, so that a review need not find it in the code:
   answers of this rule.
 - **A personal access token's scopes** are actions; they name no repo.
 - **Creating a personal access token** (`POST /api/v1/users/<name>/tokens`) takes a password
-  (later an OIDC session) as the request's credential, besides the user's own or the `admin`
-  role. A personal access token, with scopes or without, the admin's too, and a deploy token
+  as the request's credential, besides the user's own or the `admin` role; an OIDC login mints
+  one itself (§8), and is no credential of this route. A personal access token, with scopes or without, the admin's too, and a deploy token
   get `403` before the body is read, whoever's tokens they name: a stolen token must not mint
   tokens that outlive its revocation (decided on #249, 2026-11-10). A personal access token
   without scopes still lists and revokes its user's tokens; one with scopes and a deploy token
@@ -220,8 +228,8 @@ before the write, `pending`, in a transaction of its own, and the row says how t
 `unknown`, when it is still pending after `ingest.claimTTL` and its writer stopped in between
 ([index-schema.md](index-schema.md#the-audit-row-of-a-registry-write),
 [guarantees.md](guarantees.md) INV-14). The creation's row also
-names the credential that created the token, `createdBy` in its details: `password`, or
-`token:<id>` for a token. Reads are not audited in the MVP (a per-repo option later). The
+names the credential that created the token, `createdBy` in its details: `password`,
+`token:<id>` for a token, or `oidc` for the token of an OIDC login (§8). Reads are not audited in the MVP (a per-repo option later). The
 short-lived bearer tokens of `/v2/token` are not audited either (decided on #46, 2026-11-09): a
 client gets one for every pull and push, and what a token allows is audited itself.
 
@@ -304,3 +312,100 @@ of an upstream and its credentials are configuration; no action sets them.
 The principal of `proxy.fetch` is who brought the artifact in, not who may publish: it was
 checked for `read` only. Requests for an upstream's metadata are reads and are not audited,
 negative entries included.
+
+## 8. OIDC: login, groups, group bindings (M6, #69)
+
+One OpenID Connect provider, `auth.oidc` (configuration.md), logs people in; OIDC is off while
+`auth.oidc.issuer` is empty. Lajstrom is its relying party, a confidential client whose redirect
+URI is `<server.externalURL>/-/oidc/callback`. A login ends in a personal access token (§1),
+never in a token of the IdP: the clients send what they send today, and no request but a login
+asks the IdP anything. Token exchange for CI (a CI provider's OIDC token for a short-lived
+token) and joining an existing user to an identity are not in this section (decisions on #69).
+
+**The identity.** An identity is the pair (`iss`, `sub`) of a verified ID token
+(index-schema.md, `identities`), and maps to one user. The first login of an identity creates
+the user, `kind` `oidc`, without a password, named by the claim `auth.oidc.usernameClaim`
+(default `preferred_username`), which must pass the rule of a user name (§1); a claim that is
+missing or breaks the rule refuses the login, naming the claim. A name that a live user has
+already refuses it too, naming the name: an identity is never joined to an existing user by
+its name. Later logins find the user by the identity and keep its name, which a rename (§1)
+may change. A disabled user is refused at login as on every request. A deleted user lets its
+identity go: the next login creates a new user with a new uid, which inherits nothing; it is
+disabling, not deleting, that keeps a person out.
+
+**Groups.** The claim `auth.oidc.groupsClaim` (default `groups`; empty: no groups) is a list
+of strings. Each that is 1 to 256 bytes of printable UTF-8, without a space at either end, is a
+group, the principal `group:<name>`; any other is dropped and logged at debug level, as is the
+claim when it is not a list. Each login replaces the groups of its identity, in the transaction
+that moves `auth_version`, and they count until the login's `auth.oidc.tokenLifetime` has
+passed (`identities.groups_expire_at`). So a group removed at the IdP grants nothing from the
+user's next login on, on every replica, and no group grants beyond the lifetime of the token
+its login minted. A group exists only through the identities that name it.
+
+**Group bindings.** `group:<name>` takes every role and mask of §3. The permission of a user
+is the union of its own bindings and the bindings of its current groups, and a personal access
+token's scopes narrow that union as they narrow the user's own. A group's `admin` binding makes
+its members admins; it is not "an admin" for the last-admin rule (§3) nor for the bootstrap
+(§6).
+
+**The login: authorization code flow with PKCE.** `GET /-/oidc/login` makes a login request
+of 10 minutes (index-schema.md, `oidc_logins`): a `state` and a `nonce` of 256 random bits each
+and a PKCE verifier (RFC 7636, `S256`). It answers `302` to the IdP's `authorization_endpoint`
+with `response_type=code`, `client_id`, the redirect URI, the scopes of `auth.oidc.scopes`
+(`openid` always), the state, the nonce and the code challenge, and sets a cookie of 256
+random bits that binds the request to the browser: `lajstrom_oidc`, `HttpOnly`,
+`SameSite=Lax`, path `/-/oidc/`, `Secure` unless `server.insecureHTTP`. The request keeps the
+sha256 of the state and of the cookie, never either. `GET /-/oidc/callback?code=&state=` takes
+the request of that state, pending, not expired and with that cookie, and marks it used in one
+transaction, so that a state is redeemed once, on any replica. It then exchanges the code at
+the `token_endpoint` with the verifier and the client's credentials (`client_secret_basic`),
+and verifies the ID token:
+
+- its signature, by the key of its `kid` in the IdP's JWKS, with an asymmetric algorithm that
+  is the key's (`RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`,
+  `ES512`, `EdDSA`), never `none` nor an HMAC;
+- `iss` equal to `auth.oidc.issuer`, which discovery (`<issuer>/.well-known/openid-configuration`)
+  must answer, exactly, as its `issuer`;
+- `aud` containing `auth.oidc.clientID`, and `azp`, when present, equal to it;
+- `exp` present and passed by no more than 60 s, `iat` and `nbf` not more than 60 s ahead
+  (the leeway of §4);
+- `nonce` equal to the request's.
+
+The JWKS is cached: a `kid` it does not have fetches it again, at most once every 30 s, and it
+is fetched again hourly; while the IdP does not answer, the last set that loaded stays. Then,
+in one transaction with the audit rows, the identity's user is found or created and its groups
+replaced: `user.create` for a first login (`details.source` `oidc`), and `user.login`
+(`details`: `issuer`, `subject`, `groups`). The browser's login mints a personal access token
+of the user without scopes, named `oidc <time>`, which expires after `auth.oidc.tokenLifetime`
+(24h by default, at most a year), with its `token.create` row (`createdBy` `oidc`), and answers
+it once, on a page with `Cache-Control: no-store`. A refusal at the IdP (`error=`), a state that
+is unknown, used, expired or of another browser, a code the IdP refuses, an ID token that does
+not verify and a refused identity are `400` with a page that says to log in again and why in
+Lajstrom's words, never the IdP's message; each is logged at info with its reason. No code,
+state, verifier, cookie, IdP token or personal access token is logged, audited, or put in a URL
+that Lajstrom renders.
+
+**The device flow (RFC 8628), for `lajstrom login`.** `POST /-/oidc/device/code` makes a
+device request of 10 minutes: a device code of 256 random bits, kept as its sha256, and a user
+code of 8 letters of `BCDFGHJKLMNPQRSTVWXZ`, shown `XXXX-XXXX`. It answers `200` with
+`device_code`, `user_code`, `verification_uri` (`<server.externalURL>/-/oidc/device`),
+`verification_uri_complete` (with `?user_code=`), `expires_in` and `interval` (5). `GET
+/-/oidc/device[?user_code=]` is a page where the person types or confirms the code (RFC 8628
+§5.4); confirming it starts the code flow above for the device request, and the callback, once
+the login verified, approves the device request for the user, mints nothing, and says to return
+to the terminal. The CLI polls `POST /-/oidc/token` with
+`grant_type=urn:ietf:params:oauth:grant-type:device_code` and the device code, and gets the
+errors of RFC 8628 §3.5 as `400` with `{"error"}`: `authorization_pending` until the device is
+approved, `slow_down` when it polls sooner than `interval` after its last poll,
+`expired_token` after the 10 minutes, `access_denied` when the login was refused, and
+`invalid_grant` for a device code that is unknown or redeemed. Once approved, the poll mints the
+personal access token of the login as the browser's login does, with its `token.create` row, in
+the transaction that marks the device request redeemed, and answers `200` with `access_token`,
+`token_type` `Bearer`, `expires_in` and `user`, the user's name. A user code that is unknown,
+expired or approved is a page that asks again; the pages and the start of a device request are
+throttled per client address as the failed logins are (§1).
+
+**What OIDC does not change.** Local users, their passwords, personal access tokens, deploy
+tokens, anonymous read and the bearer tokens of §4 stay as they are. An OIDC user has no
+password, so it cannot create a personal access token with the API (§3); it gets its tokens by
+logging in, and may list and revoke them as any user.
