@@ -195,8 +195,9 @@ is. `policy` is merged into the repo's policy as a JSON merge patch
 ([RFC 7396](https://www.rfc-editor.org/rfc/rfc7396)): a key it has is set, a key whose value is
 `null` is removed, `maven` is merged key by key, and the keys it does not name stay; the
 policy that results is checked as a whole ([Policy](#policy)), and when it is refused nothing
-changes. `"policy": null` removes the whole policy. `format`, `name`, `registry` and `kind`
-cannot change and are `400`: moving a repo to another registry would orphan its artifacts.
+changes. `"policy": null` removes the whole policy. `format`, `name` and `registry` cannot
+change and are `400`: moving a repo to another registry would orphan its artifacts. `kind`
+changes once, from a proxy to a hosted repo, in a body of its own ([below](#a-proxy-becomes-a-hosted-repo)).
 On a proxy repo, `upstream` is merged into its settings the same way (`allow` and `deny` are
 replaced whole) and checked whole; it cannot be removed. Changing `upstream.name` needs the admin
 role, since it changes what every reader of the repo gets, and drops the repo's cache of the old
@@ -238,6 +239,36 @@ curl -s -X PATCH "$LAJSTROM/api/v1/repos/npm/all" \
 ```json
 {"name":"npmjs","metadataTTL":"10m","negativeTTL":"2m","offline":true,"allow":[],"deny":["@acme/*","@corp/*"]}
 {"members":["internal","npmjs"],"merge":["lodash"]}
+```
+
+#### A proxy becomes a hosted repo
+
+`{"kind": "hosted"}`, alone in the body, by the admin role, turns a proxy repo into a hosted one
+that keeps every version it holds ([proxy-and-group.md](spec/proxy-and-group.md) §2.6): the end of
+a move from another registry ([migrating.md](migrating.md)). npm only, until pypi and maven have
+proxies. The dist-tags and deprecations of the upstream's packuments that the proxy kept become
+entries of the repo's journal, through the one write path, as `npm dist-tag` and `npm deprecate`
+would write them, with an audit row each by the admin: from then on they live in the registry and
+survive a reindex. A dist-tag of a version the repo does not hold is left out. The versions do not
+move, keep their `lajstrom.origin.*` annotations and, when the upstream gave their publish time,
+their date. The repo then takes publishes, and its upstream settings and cached documents are
+gone. One audit row `repo.convert` has the upstream it had, the packages it held, the journal ops
+written and what was left out.
+
+`200` with the resource, now `hosted`. `400` on a group, beside another key, or for another kind;
+`409` while a fetch from the upstream runs, and when the repo is a member of a group that has a
+hosted member already (a group has one). A failure after the kind changed (the registry during the
+journal) leaves a hosted repo with the documents not yet written: the same request resumes it. On a
+hosted repo with nothing left to write it changes nothing. A hosted repo never becomes a proxy.
+
+```sh
+curl -s -X PATCH "$LAJSTROM/api/v1/repos/npm/legacy" -H 'Content-Type: application/json' -d '{"kind": "hosted"}' | jq -c '{kind, upstream}'
+curl -s "$LAJSTROM/api/v1/audit?repo=npm/legacy&action=repo.convert" | jq -c '.events[0].details'
+```
+
+```json
+{"kind":"hosted","upstream":null}
+{"from":"proxy","ops":5,"packages":3,"requestId":"9d7bd4da…","skipped":[],"source":"api","to":"hosted","upstream":"verdaccio"}
 ```
 
 ### Delete: `DELETE /api/v1/repos/<format>/<name>`
