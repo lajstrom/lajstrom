@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
@@ -14,23 +15,25 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
-// The completion of a platform's manifest that a client got (docs/spec/proxy-and-group.md
-// §11.5, step 5). containerd asks only for the layers it does not hold, and keeps them by digest
-// across images: the layers an image shares with another one are never asked for at its path,
-// and without the completion it would never be held whole in the backend (#876).
+// The completion of a platform that a client got or pulled (docs/spec/proxy-and-group.md §11.5,
+// step 5). containerd asks only for the layers it does not hold, and keeps them by digest across
+// images: the layers an image shares with another one are never asked for at its path, and
+// without the completion it would never be held whole in the backend (#876). The GET of its
+// manifest mounts what the backend holds at another path; a client's GET of one of its layers
+// fetches the rest.
 
 const (
 	// defaultCompleteQuiet is Options.CompleteQuiet when it is zero.
 	defaultCompleteQuiet = 10 * time.Second
 	// ociCompleteQuietMost is the longest a completion waits for the quiet of a path, from the
-	// GET of the manifest; then it fetches while clients still pull.
+	// GET of the layer that started its fetches; then it fetches while clients still pull.
 	ociCompleteQuietMost = 5 * time.Minute
 	// ociCompleteFetches is how many blobs the completions of a replica fetch at once.
 	ociCompleteFetches = 4
 )
 
 // fetchCompleted is the result of lajstrom_proxy_fetches_total of a blob that no client asked
-// for at the path, fetched by the completion of a manifest a client got.
+// for at the path, fetched by the completion of a platform a client pulled.
 const fetchCompleted = "completed"
 
 // imageManifestTypes are the media types of a platform's manifest, the only documents that are
@@ -39,51 +42,102 @@ var imageManifestTypes = map[string]bool{
 	ocispec.MediaTypeImageManifest: true, "application/vnd.docker.distribution.manifest.v2+json": true,
 }
 
-// OCIComplete starts the completion of the platform's manifest desc, which a client got at path
-// in the oci proxy repo repo from its cached row, and returns at once (§11.5, step 5): in the
-// background, on a context of its own, each blob it lists that the backend does not hold at the
-// path is mounted from another path of the repo that holds it, offline too; then, unless the repo
-// is offline, each one still missing and within the repo's maxFileSize and the registry's
-// maxBlobSize is fetched under its claim, as a client's miss is, once no client of this replica
-// asked for a blob of the path for Options.CompleteQuiet, and at most ociCompleteFetches at once
-// on the replica. Each blob held pushes what became complete. An index, a HEAD (the caller does
-// not call it) and a manifest the backend holds start nothing; concurrent calls for one manifest
-// share one completion on a replica.
+// OCIComplete starts the mounts of the platform's manifest desc, which a client got at path in
+// the oci proxy repo repo from its cached row, and returns at once (§11.5, step 5): in the
+// background, on a context of its own, each blob it lists within the repo's maxFileSize and the
+// registry's maxBlobSize that the backend does not hold at the path is mounted from another path
+// of the repo that holds it, offline too, and what became complete is pushed. Nothing is fetched:
+// a GET of a manifest is not a pull (Renovate, crane manifest), and the fetches wait for a client's
+// GET of a layer (OCIPulling). An index, a HEAD (the caller does not call it) and a manifest the
+// backend holds start nothing; concurrent calls for one manifest share its mounts on a replica.
 func (c *Core) OCIComplete(ctx context.Context, repo index.Repo, path string, desc ocispec.Descriptor) {
 	if c.o.Mirror == nil || !imageManifestTypes[desc.MediaType] {
 		return
 	}
 	key := pullKey(repo, path)
 	c.pulls.touch(key) // the client's blob requests follow its manifest's
-	start := time.Now()
-	c.flights.join(fmt.Sprintf("ocicomplete:%s:%s", key, desc.Digest), func() (bool, error) {
+	c.flights.join(fmt.Sprintf("ocimounts:%s:%s", key, desc.Digest), func() (bool, error) {
 		fctx, cancel := c.detach(ctx)
 		defer cancel()
 		p, err := c.resolveOCI(fctx, repo, path)
 		if err != nil {
 			return false, err
 		}
-		c.ociCompleteImage(fctx, p, desc.Digest, start)
+		c.ociMountImage(fctx, p, desc.Digest)
 		return false, nil
 	})
 }
 
-// OCIPulling records a client's GET of a blob at path in the oci proxy repo repo until done is
-// called: the completions of this replica fetch no blob of the path while one runs, nor until
+// OCIPulling records a client's GET of the blob d at path in the oci proxy repo repo until done
+// is called: the completions of this replica fetch no blob of the path while one runs, nor until
 // Options.CompleteQuiet after the last, so that a client's own requests hold their blobs' claims
-// and get the tee (§11.8).
-func (c *Core) OCIPulling(repo index.Repo, path string) (done func()) {
-	return c.pulls.begin(pullKey(repo, path))
+// and get the tee (§11.8). A GET of a layer of the one manifest cached at the path that lists the
+// blob starts, in the background, the fetch of what the backend still misses of that manifest
+// (ociLayerAsked).
+func (c *Core) OCIPulling(ctx context.Context, repo index.Repo, path string, d digest.Digest) (done func()) {
+	key := pullKey(repo, path)
+	done = c.pulls.begin(key)
+	if c.o.Mirror == nil {
+		return done
+	}
+	start := time.Now()
+	c.flights.join(fmt.Sprintf("ocilayer:%s:%s", key, d), func() (bool, error) {
+		fctx, cancel := c.detach(ctx)
+		defer cancel()
+		p, err := c.resolveOCI(fctx, repo, path)
+		if err != nil {
+			return false, err
+		}
+		c.ociLayerAsked(fctx, p, d, start)
+		return false, nil
+	})
+	return done
 }
 
-// ociCompleteImage completes the manifest m at p's path, cached as a row, from the GET of it
-// at start: what the backend holds at another path is mounted, then, unless offline, what is
-// still missing is fetched.
-func (c *Core) ociCompleteImage(ctx context.Context, p *ociProxied, m digest.Digest, start time.Time) {
-	listed := c.ociToComplete(ctx, p, m)
-	if len(listed) == 0 {
+// ociMountImage mounts each blob of the manifest m at p's path, cached as a row, that the
+// backend holds at another path of the repo, and pushes what became complete.
+func (c *Core) ociMountImage(ctx context.Context, p *ociProxied, m digest.Digest) {
+	listed, _ := c.ociToComplete(ctx, p, m)
+	limit, _ := c.ociLimit(ctx, p)
+	for _, l := range listed {
+		if (limit < 0 || l.Size <= limit) && !c.ociHeldAt(ctx, p, l) {
+			c.ociMount(ctx, p, l)
+		}
+	}
+	if len(listed) > 0 {
+		c.ociPushUp(ctx, p, m)
+	}
+}
+
+// ociLayerAsked starts, on a context of its own, the fetches of the completion of the manifest
+// at p's path of which a client asked for the layer d at start. Only a layer tells a pull: a GET
+// that is not one reads a manifest, maybe its config, never a layer. And only a layer that one
+// manifest cached at the path lists tells which manifest is pulled: a layer that two versions
+// share starts neither, the layers of the pulled one's own do.
+func (c *Core) ociLayerAsked(ctx context.Context, p *ociProxied, d digest.Digest, start time.Time) {
+	if p.up == nil {
 		return
 	}
+	ref, err := c.ociRef(ctx, p, d)
+	if err != nil || len(ref.Parents) != 1 {
+		return
+	}
+	m := ref.Parents[0]
+	if _, layers := c.ociToComplete(ctx, p, m); !slices.ContainsFunc(layers, func(l ocispec.Descriptor) bool { return l.Digest == d }) {
+		return // a config, or a manifest held or not cached
+	}
+	c.flights.join(fmt.Sprintf("ocicomplete:%s:%s", pullKey(p.repo, p.path), m), func() (bool, error) {
+		fctx, cancel := c.detach(ctx) // not ended with the lookup's flight
+		defer cancel()
+		c.ociFetchImage(fctx, p, m, start)
+		return false, nil
+	})
+}
+
+// ociFetchImage fetches, under the claims, what the backend still misses of the manifest m at
+// p's path, of which a client asked for a layer at start, and pushes what became complete.
+func (c *Core) ociFetchImage(ctx context.Context, p *ociProxied, m digest.Digest, start time.Time) {
+	listed, _ := c.ociToComplete(ctx, p, m)
 	limit, bound := c.ociLimit(ctx, p)
 	var missing []ocispec.Descriptor
 	for _, l := range listed {
@@ -91,32 +145,38 @@ func (c *Core) ociCompleteImage(ctx context.Context, p *ociProxied, m digest.Dig
 		case limit >= 0 && l.Size > limit:
 			c.o.Log.InfoContext(ctx, "proxy: a blob above the bound is left out of a completion; the manifest stays incomplete", "repo", p.id(),
 				"path", p.path, "manifest", m.String(), "digest", l.Digest.String(), "size", l.Size, "bound", bound, "limit", limit)
-		case !c.ociHeldAt(ctx, p, l) && !c.ociMount(ctx, p, l):
-			missing = append(missing, l)
+		case !c.ociHeldAt(ctx, p, l):
+			missing = append(missing, l) // mounted, if it can be, right before its fetch
 		}
 	}
-	c.ociPushUp(ctx, p, m)
-	if len(missing) > 0 && p.up != nil {
+	if len(listed) > 0 {
+		c.ociPushUp(ctx, p, m)
+	}
+	if len(missing) > 0 {
 		c.ociFetchMissing(ctx, p, m, missing, start)
 	}
 }
 
-// ociToComplete returns the blobs the manifest m at p's path lists, from its cached row; none
-// when the backend holds m, when there is no row, or when m is an index after all, whose
-// platforms are not completed.
-func (c *Core) ociToComplete(ctx context.Context, p *ociProxied, m digest.Digest) []ocispec.Descriptor {
+// ociToComplete returns the blobs the manifest m at p's path lists, its config and layers, and
+// its layers alone, from its cached row; none when the backend holds m, when there is no row, or
+// when m is an index after all, whose platforms are not completed.
+func (c *Core) ociToComplete(ctx context.Context, p *ociProxied, m digest.Digest) (listed, layers []ocispec.Descriptor) {
 	if held, err := c.isHeld(ctx, p, m); held || err != nil {
-		return nil
+		return nil, nil
 	}
 	row, err := metaRow(ctx, c.o.Index, p.repo.ID, p.path, metaKey(kindOCIManifest, m))
 	if err != nil || row == nil || row.State != index.ProxyMetaPresent {
-		return nil
+		return nil, nil
 	}
-	listed, err := listedBy(row.Content)
+	listed, err = listedBy(row.Content)
 	if err != nil || slices.ContainsFunc(listed, func(l ocispec.Descriptor) bool { return manifestTypes[l.MediaType] }) {
-		return nil
+		return nil, nil
 	}
-	return listed
+	var doc struct {
+		Layers []ocispec.Descriptor `json:"layers"`
+	}
+	_ = json.Unmarshal(row.Content, &doc) // listedBy read it
+	return listed, doc.Layers
 }
 
 // ociFetchMissing fetches the blobs missing of the manifest m at p's path for its completion,

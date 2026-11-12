@@ -96,7 +96,7 @@ func (s *stubProxy) OCIComplete(_ context.Context, _ index.Repo, path string, de
 	s.calls = append(s.calls, "complete "+path+"@"+desc.Digest.String())
 }
 
-func (s *stubProxy) OCIPulling(_ index.Repo, path string) func() {
+func (s *stubProxy) OCIPulling(_ context.Context, _ index.Repo, path string, _ digest.Digest) func() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, "pulling "+path)

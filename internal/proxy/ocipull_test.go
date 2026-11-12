@@ -2,11 +2,13 @@ package proxy_test
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
@@ -38,11 +40,22 @@ func (e *ociEnv) keepTagged(t *testing.T, path string, d digest.Digest) {
 	await(t, "the keep-tag of "+d.String()+" at "+path, func() bool { return e.tagged(t, path, profile.KeepTag(d)) == d })
 }
 
+// asked is a client's GET of the blob d at path through c, as the facade reports it: it begins
+// and ends at once.
+func (e *ociEnv) asked(t *testing.T, c *proxy.Core, path string, d ocispec.Descriptor) {
+	c.OCIPulling(t.Context(), e.repo, path, d.Digest)()
+}
+
+// own is the layer of img's platform i of its own, the last.
+func own(img image, i int) ocispec.Descriptor {
+	return img.blobs[i][len(img.blobs[i])-1]
+}
+
 // TestOCICompleteShared is #876: a client that holds kube-controller-manager's layers gets
-// kube-apiserver's manifest and only its own layer; the completion of that manifest mounts the
-// layers the two share, with no request to the upstream, and kube-apiserver is held whole
-// under its keep-tag; an offline repo then serves every layer of it to a node with an empty
-// store (docs/spec/proxy-and-group.md §11.5, step 5).
+// kube-apiserver's manifest and only its config and its own layer; the GET of the manifest
+// mounts the layers the two share, with no request to the upstream, and kube-apiserver is held
+// whole under its keep-tag; an offline repo then serves every layer of it to a node with an
+// empty store (docs/spec/proxy-and-group.md §11.5, step 5).
 func TestOCICompleteShared(t *testing.T) {
 	e := newOCIEnv(t, ociSettings)
 	a := e.hub.sharedImage(t, kcm, "v1.37.1", k8sShared, "arm64")
@@ -75,6 +88,101 @@ func TestOCICompleteShared(t *testing.T) {
 	}
 }
 
+// TestOCICompleteNotPulled: a GET of a manifest and of its config that no GET of a layer follows,
+// as Renovate reads an image's labels, mounts what the backend holds at another path and fetches
+// nothing else.
+func TestOCICompleteNotPulled(t *testing.T) {
+	e := newOCIEnv(t, ociSettings)
+	a := e.hub.sharedImage(t, kcm, "v1.37.1", k8sShared, "arm64")
+	b := e.hub.sharedImage(t, kas, "v1.37.1", k8sShared, "arm64")
+	c := e.core("a", proxy.Options{CompleteQuiet: -1})
+	pull(t, e, c, kcm, "v1.37.1", a, 0)
+	mounted, completed := fetches("mounted"), fetches("completed")
+	_, _, err := c.OCIManifest(t.Context(), e.repo, kas, "v1.37.1")
+	must(t, err)
+	m, _, err := c.OCIManifest(t.Context(), e.repo, kas, b.manifests[0].Digest.String())
+	must(t, err)
+	c.OCIComplete(t.Context(), e.repo, kas, m)
+	config := b.blobs[0][0]
+	e.asked(t, c, kas, config)
+	_, _, err = c.OCIBlob(t.Context(), e.repo, kas, config.Digest, true, false)
+	must(t, err)
+	await(t, "the shared layers mounted", func() bool { return fetches("mounted")-mounted == 2 })
+	time.Sleep(200 * time.Millisecond) // a fetch, were one started, would run now
+	if n := e.blobGETs(kas, b.blobs[0][1:]...); n != 0 {
+		t.Errorf("the upstream was asked %d times for layers, want none: no client asked for one", n)
+	}
+	if n := fetches("completed") - completed; n != 0 {
+		t.Errorf("the completion fetched %v blobs, want none", n)
+	}
+	if got := e.tagged(t, kas, profile.KeepTag(m.Digest)); got != "" {
+		t.Errorf("kube-apiserver is in the backend without its own layer: %s", got)
+	}
+}
+
+// TestOCICompleteLayerAsked: a GET of the manifest and of one layer completes the rest: the
+// blobs no client asked for and the backend does not hold anywhere are fetched.
+func TestOCICompleteLayerAsked(t *testing.T) {
+	e := newOCIEnv(t, ociSettings)
+	b := e.hub.sharedImage(t, kas, "v1.37.1", k8sShared, "arm64")
+	c := e.core("a", proxy.Options{CompleteQuiet: -1})
+	m, _, err := c.OCIManifest(t.Context(), e.repo, kas, b.manifests[0].Digest.String())
+	must(t, err)
+	c.OCIComplete(t.Context(), e.repo, kas, m)
+	completed := fetches("completed")
+	layer := own(b, 0)
+	_, _, err = c.OCIBlob(t.Context(), e.repo, kas, layer.Digest, true, false)
+	must(t, err)
+	e.asked(t, c, kas, layer)
+	e.keepTagged(t, kas, m.Digest)
+	for _, bl := range b.blobs[0] {
+		if n := e.blobGETs(kas, bl); n != 1 {
+			t.Errorf("the upstream was asked %d times for %s, want once", n, bl.Digest)
+		}
+	}
+	// counted once each fetch's flight ended, after the push the last one made
+	await(t, `lajstrom_proxy_fetches_total{result="completed"} up by 3: the config and the shared layers`, func() bool {
+		return fetches("completed")-completed == 3
+	})
+}
+
+// TestOCICompleteAmbiguousLayer: a GET of a layer that two manifests cached at the path list
+// does not tell which one a client pulls, and starts neither; a GET of a layer of one's own
+// completes that one alone.
+func TestOCICompleteAmbiguousLayer(t *testing.T) {
+	e := newOCIEnv(t, ociSettings)
+	const path = "library/app"
+	shared := e.hub.blob(path, ocispec.MediaTypeImageLayerGzip, []byte(strings.Repeat("base ", 200)))
+	var ms [2]ocispec.Descriptor
+	var owns [2]ocispec.Descriptor
+	for i, v := range []string{"1.0", "2.0"} {
+		config := e.hub.blob(path, ocispec.MediaTypeImageConfig, []byte(`{"version":"`+v+`"}`))
+		owns[i] = e.hub.blob(path, ocispec.MediaTypeImageLayerGzip, []byte(strings.Repeat("app "+v, 100)))
+		raw, err := json.Marshal(ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageManifest,
+			Config: config, Layers: []ocispec.Descriptor{shared, owns[i]}})
+		must(t, err)
+		ms[i] = e.hub.put(path, ocispec.MediaTypeImageManifest, raw, v)
+	}
+	c := e.core("a", proxy.Options{CompleteQuiet: -1})
+	for _, m := range ms {
+		_, _, err := c.OCIManifest(t.Context(), e.repo, path, m.Digest.String())
+		must(t, err)
+	}
+	e.asked(t, c, path, shared)
+	time.Sleep(200 * time.Millisecond) // a fetch, were one started, would run now
+	if n := e.hub.count("GET /v2/" + path + "/blobs/"); n != 0 {
+		t.Fatalf("a GET of the layer both versions list fetched %d blobs, want none", n)
+	}
+	e.asked(t, c, path, owns[0])
+	e.keepTagged(t, path, ms[0].Digest)
+	if n := e.blobGETs(path, owns[1]); n != 0 {
+		t.Errorf("the layer of 2.0's own was fetched %d times, want none: no client pulled 2.0", n)
+	}
+	if got := e.tagged(t, path, profile.KeepTag(ms[1].Digest)); got != "" {
+		t.Errorf("2.0 is in the backend: %s", got)
+	}
+}
+
 // ksched is the third image of the control plane's static pods.
 const ksched = "k8s/kube-scheduler"
 
@@ -83,31 +191,33 @@ func (e *ociEnv) sharedFetched(d ocispec.Descriptor) int {
 	return e.blobGETs(kcm, d) + e.blobGETs(kas, d) + e.blobGETs(ksched, d)
 }
 
-// TestOCICompleteSharedLater is the second Talos boot of #876: the completions of
-// kube-apiserver and kube-scheduler start at the GET of their manifests and wait for their
-// paths to be quiet; kube-controller-manager's completion fetches the shared layers meanwhile.
-// When the wait ends they mount the shared layers from kube-controller-manager instead of
-// fetching them again.
+// TestOCICompleteSharedLater is the second Talos boot of #876: the clients of kube-apiserver and
+// kube-scheduler ask for a layer while kube-controller-manager's shared layers are not held
+// yet; their completions wait for the paths to be quiet, and kube-controller-manager's fetches
+// the shared layers meanwhile. When the wait ends they mount the shared layers from
+// kube-controller-manager instead of fetching them again.
 func TestOCICompleteSharedLater(t *testing.T) {
 	e := newOCIEnv(t, ociSettings)
 	imgs := map[string]image{}
 	for _, path := range []string{kcm, kas, ksched} {
 		imgs[path] = e.hub.sharedImage(t, path, "v1.37.1", k8sShared, "arm64")
 	}
+	mounted := fetches("mounted")
 	waiting := e.core("a", proxy.Options{CompleteQuiet: 20 * time.Millisecond})
 	var pulled []func()
 	for _, path := range []string{kas, ksched} {
 		m, _, err := waiting.OCIManifest(t.Context(), e.repo, path, imgs[path].manifests[0].Digest.String())
 		must(t, err)
-		pulled = append(pulled, waiting.OCIPulling(e.repo, path)) // a client pulls the path until kube-controller-manager is held
 		waiting.OCIComplete(t.Context(), e.repo, path, m)
+		// the client's GET of its own layer runs until kube-controller-manager is held
+		pulled = append(pulled, waiting.OCIPulling(t.Context(), e.repo, path, own(imgs[path], 0).Digest))
 	}
 	c := e.core("b", proxy.Options{CompleteQuiet: -1})
 	m, _, err := c.OCIManifest(t.Context(), e.repo, kcm, imgs[kcm].manifests[0].Digest.String())
 	must(t, err)
 	c.OCIComplete(t.Context(), e.repo, kcm, m)
+	e.asked(t, c, kcm, own(imgs[kcm], 0))
 	e.keepTagged(t, kcm, m.Digest)
-	mounted := fetches("mounted")
 	for _, done := range pulled {
 		done() // the paths' last requests end: the waits run out
 	}
@@ -144,6 +254,7 @@ func TestOCICompleteSharedConcurrent(t *testing.T) {
 		m, _, err := cores[i%2].OCIManifest(t.Context(), e.repo, path, imgs[path].manifests[0].Digest.String())
 		must(t, err)
 		cores[i%2].OCIComplete(t.Context(), e.repo, path, m)
+		e.asked(t, cores[i%2], path, own(imgs[path], 0))
 	}
 	await(t, "a GET of the gated layer", func() bool { return e.sharedFetched(gated) > 0 })
 	time.Sleep(200 * time.Millisecond) // the other completions reach the layer meanwhile
@@ -161,8 +272,8 @@ func TestOCICompleteSharedConcurrent(t *testing.T) {
 	}
 }
 
-// TestOCICompleteFetches: on a backend that does not mount, the completion fetches the shared
-// layers in the background, each once.
+// TestOCICompleteFetches: on a backend that does not mount, the client's GET of a layer starts
+// the fetch of the shared layers in the background, each once.
 func TestOCICompleteFetches(t *testing.T) {
 	e := newOCIEnv(t, ociSettings)
 	a := e.hub.sharedImage(t, kcm, "v1.37.1", k8sShared, "arm64")
@@ -171,6 +282,7 @@ func TestOCICompleteFetches(t *testing.T) {
 	pull(t, e, c, kcm, "v1.37.1", a, 0)
 	pullOwn(t, e, c, kas, "v1.37.1", b, 0)
 	c.OCIComplete(t.Context(), e.repo, kas, b.manifests[0])
+	e.asked(t, c, kas, own(b, 0))
 	e.keepTagged(t, kas, b.manifests[0].Digest)
 	for _, bl := range b.blobs[0] {
 		if n := e.blobGETs(kas, bl); n != 1 {
@@ -182,8 +294,8 @@ func TestOCICompleteFetches(t *testing.T) {
 	}
 }
 
-// TestOCICompletePlatform: the completion of a platform's manifest leaves the other platforms of
-// its index alone, and a GET of an index completes nothing.
+// TestOCICompletePlatform: the completion of a platform leaves the other platforms of its index
+// alone, and a GET of an index completes nothing.
 func TestOCICompletePlatform(t *testing.T) {
 	e := newOCIEnv(t, ociSettings)
 	img := e.hub.image(t, "library/nginx", "1.27", "amd64", "arm64")
@@ -194,6 +306,7 @@ func TestOCICompletePlatform(t *testing.T) {
 	must(t, err)
 	c.OCIComplete(t.Context(), e.repo, "library/nginx", idx)
 	c.OCIComplete(t.Context(), e.repo, "library/nginx", arm)
+	e.asked(t, c, "library/nginx", own(img, 1))
 	e.keepTagged(t, "library/nginx", arm.Digest)
 	if n := e.blobGETs("library/nginx", img.blobs[0]...); n != 0 {
 		t.Errorf("the upstream was asked %d times for the blobs of amd64, which no client got", n)
@@ -212,7 +325,7 @@ func TestOCICompleteOnce(t *testing.T) {
 	must(t, err)
 	var wg sync.WaitGroup
 	for i := range 6 {
-		wg.Go(func() { cores[i%2].OCIComplete(t.Context(), e.repo, "library/nginx", m) })
+		wg.Go(func() { e.asked(t, cores[i%2], "library/nginx", own(img, 0)) })
 	}
 	wg.Wait()
 	e.keepTagged(t, "library/nginx", m.Digest)
@@ -233,8 +346,9 @@ func TestOCICompleteBound(t *testing.T) {
 	must(t, err)
 	repo := e.repo
 	repo.Policy = []byte(`{"maxFileSize": 100}`) // the config's 35 bytes, not the layer's 900
-	c.OCIComplete(t.Context(), repo, "library/nginx", m)
 	config, layer := img.blobs[0][0], img.blobs[0][1]
+	c.OCIComplete(t.Context(), repo, "library/nginx", m)
+	c.OCIPulling(t.Context(), repo, "library/nginx", layer.Digest)()
 	await(t, "the config held", func() bool { return e.row(t, "library/nginx", "oci.held:"+config.Digest.String()) != nil })
 	if n := e.blobGETs("library/nginx", layer); n != 0 {
 		t.Errorf("the layer above maxFileSize was fetched %d times", n)
@@ -255,8 +369,8 @@ func TestOCICompleteWaits(t *testing.T) {
 	c := e.core("a", proxy.Options{CompleteQuiet: 50 * time.Millisecond})
 	m, _, err := c.OCIManifest(t.Context(), e.repo, "library/nginx", img.manifests[0].Digest.String())
 	must(t, err)
-	done := c.OCIPulling(e.repo, "library/nginx")
 	c.OCIComplete(t.Context(), e.repo, "library/nginx", m)
+	done := c.OCIPulling(t.Context(), e.repo, "library/nginx", own(img, 0).Digest)
 	time.Sleep(300 * time.Millisecond)
 	if n := e.blobGETs("library/nginx", img.blobs[0]...); n != 0 {
 		t.Fatalf("the completion fetched %d blobs while a client pulled", n)
