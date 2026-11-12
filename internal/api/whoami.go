@@ -8,13 +8,16 @@ import (
 )
 
 // Whoami is the answer of GET /api/v1/whoami: the request's principal in its canonical form
-// (docs/spec/rbac.md §1), its kind and its name: a user's name, with its uid; a deploy token's
-// id.
+// (docs/spec/rbac.md §1), its kind and its name: a user's name, with its uid and its groups; a
+// deploy token's id.
 type Whoami struct {
 	Principal string `json:"principal"`
 	Kind      string `json:"kind"`
 	Name      string `json:"name"`
 	UID       string `json:"uid,omitempty"`
+	// Groups are a user's groups that count now, from its latest OIDC login
+	// (docs/spec/rbac.md §8); empty for a local user, absent for a deploy token.
+	Groups []string `json:"groups,omitempty"`
 }
 
 // whoami answers the request's principal. No authorizer is asked: every principal may ask who
@@ -42,6 +45,9 @@ func (h *handler) whoamiOf(r *http.Request, p auth.Principal) (Whoami, error) {
 			return Whoami{}, err
 		}
 		w.Name, w.UID = u.Name, u.UID
+		if w.Groups, err = auth.UserGroups(r.Context(), h.tokens.Index, u, h.repos.now()); err != nil {
+			return Whoami{}, err
+		}
 	}
 	return w, nil
 }

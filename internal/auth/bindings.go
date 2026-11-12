@@ -22,8 +22,8 @@ const (
 // Binding is a binding as the CLI prints it and the bindings API (#47) answers it.
 type Binding struct {
 	ID int64 `json:"id"`
-	// Principal is user:<uid>; Name is that user's name now (the name it had, for a user since
-	// deleted), for people.
+	// Principal is user:<uid> or group:<name>; Name is a user's name now (the name it had, for a
+	// user since deleted), for people, and empty for a group.
 	Principal string    `json:"principal"`
 	Name      string    `json:"name,omitempty"`
 	Role      string    `json:"role"`
@@ -57,7 +57,8 @@ type Bindings struct {
 
 // Create checks the binding (principal, role, mask) by docs/spec/rbac.md §3 and creates it,
 // with one binding.create audit event. principal is user:<name> or user:<uid> of a live user,
-// stored as its user:<uid>. It counts from the next request on, on every replica.
+// stored as its user:<uid>, or group:<name> with a name of CheckGroupName, which need not have
+// members (docs/spec/rbac.md §8). It counts from the next request on, on every replica.
 func (s *Bindings) Create(ctx context.Context, principal, role, mask string, o Origin) (*Binding, error) {
 	p, err := s.check(principal, role, mask)
 	if err != nil {
@@ -67,13 +68,16 @@ func (s *Bindings) Create(ctx context.Context, principal, role, mask string, o O
 	name := ""
 	var ev index.AuditEvent
 	err = s.Index.Tx(ctx, func(w index.Writer) (err error) {
-		u, err := LookupUser(ctx, w, p)
-		if errors.Is(err, index.ErrNotFound) {
-			return invalidf("principal: user %s does not exist", p.Name)
-		} else if err != nil {
-			return err
+		row.Principal = p.String() // a group need not have members (docs/spec/rbac.md §3)
+		if p.Kind == KindUser {
+			u, err := LookupUser(ctx, w, p)
+			if errors.Is(err, index.ErrNotFound) {
+				return invalidf("principal: user %s does not exist", p.Name)
+			} else if err != nil {
+				return err
+			}
+			row.Principal, name = UserPrincipal(u).String(), u.Name
 		}
-		row.Principal, name = UserPrincipal(u).String(), u.Name
 		if err = w.CreateBinding(ctx, &row); err != nil {
 			return err
 		}
@@ -205,14 +209,9 @@ func lastAdmin(ctx context.Context, w index.Writer, gone index.Binding) error {
 // check returns the principal of a binding that keeps docs/spec/rbac.md §3, or an error wrapping
 // ErrInvalid that names the field. Whether the user exists is checked in the transaction.
 func (s *Bindings) check(principal, role, mask string) (Principal, error) {
-	p, err := ParsePrincipal(principal)
+	p, err := bindable(principal)
 	if err != nil {
-		return Principal{}, invalidf("principal: %s", err.Error())
-	}
-	if p.Kind != KindUser {
-		return Principal{}, invalidf("principal: %s cannot be bound: a binding is for user:<name>; "+
-			"anonymous reads through a repo's anonymousRead, a deploy token gets its repo and scopes, "+
-			"groups come after the MVP", principal)
+		return Principal{}, err
 	}
 	if !IsRole(role) {
 		return Principal{}, invalidf("role: %q is not reader, writer, maintainer or admin", role)
@@ -229,6 +228,26 @@ func (s *Bindings) check(principal, role, mask string) (Principal, error) {
 	}
 	if role == RoleAdmin && mask != MaskAll {
 		return Principal{}, invalidf("repoMask: an admin binding is on %s: the admin role is every repo and the system", MaskAll)
+	}
+	return p, nil
+}
+
+// bindable returns the principal of a binding, user:<name>, user:<uid> or group:<name> with a
+// name of CheckGroupName, or an error wrapping ErrInvalid that names the field.
+func bindable(principal string) (Principal, error) {
+	p, err := ParsePrincipal(principal)
+	if err != nil {
+		return Principal{}, invalidf("principal: %s", err.Error())
+	}
+	switch p.Kind {
+	case KindUser:
+	case KindGroup:
+		if err := CheckGroupName(p.Name); err != nil {
+			return Principal{}, invalidf("principal: %s", err.Error())
+		}
+	case KindToken, KindAnonymous:
+		return Principal{}, invalidf("principal: %s cannot be bound: a binding is for user:<name> or group:<name>; "+
+			"anonymous reads through a repo's anonymousRead, a deploy token gets its repo and scopes", principal)
 	}
 	return p, nil
 }

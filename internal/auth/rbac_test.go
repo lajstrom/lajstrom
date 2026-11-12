@@ -51,6 +51,9 @@ func bind(t testing.TB, st index.Writer, principal, role, mask string) index.Bin
 
 func user(name string) Principal { return Principal{Kind: KindUser, Name: name} }
 
+// longGroup is a group name one byte too long: its binding grants nothing.
+var longGroup = strings.Repeat("g", MaxGroupNameLen+1)
+
 // The credentials of the table: deploy tokens 7 (raw/private, read and write) and 8
 // (raw/public, read), and personal access tokens.
 var (
@@ -88,7 +91,7 @@ func rbacFixture(t *testing.T) *sqlite.Store {
 		// Granting nothing: not user:<name>, an unknown role, a mask of one segment.
 		{"anonymous", "reader", "*/*"},
 		{"token:8", "writer", "*/*"},
-		{"group:dev", "reader", "*/*"},
+		{"group:" + longGroup, "reader", "*/*"},
 		{"user:frank", "owner", "raw/private"},
 		{"user:frank", "reader", "raw"},
 	} {
@@ -164,7 +167,7 @@ func TestRBACRules(t *testing.T) {
 		{"reader everywhere: not the system", user("dave"), password, []Action{ActionRead}, "*/*", false, false},
 		{"no binding: nothing", user("zoe"), password, allActions, "raw/private", false, false},
 		{"unknown role and one-segment mask: nothing", user("frank"), password, allActions, "raw/private", false, false},
-		{"group binding: nothing in the MVP", Principal{Kind: KindGroup, Name: "dev"}, Credential{}, allActions, "raw/private", false, false},
+		{"a group is no principal of a request", Principal{Kind: KindGroup, Name: "dev"}, Credential{}, allActions, "raw/private", false, false},
 		{"unknown action", user("root"), password, []Action{"approve"}, "raw/private", false, false},
 
 		// 5. anonymous read.
@@ -197,7 +200,7 @@ func TestRBACRules(t *testing.T) {
 			}
 		})
 	}
-	for _, principal := range []string{"anonymous", "token:8", "group:dev", "user:frank"} {
+	for _, principal := range []string{"anonymous", "token:8", "group:" + longGroup, "user:frank"} {
 		if !strings.Contains(logs.String(), "binding grants nothing") || !strings.Contains(logs.String(), "principal="+principal) {
 			t.Errorf("no warning about the binding of %s:\n%s", principal, logs.String())
 		}

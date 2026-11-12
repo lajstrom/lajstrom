@@ -36,7 +36,7 @@ func newAdminBindingCmd(a *app) *cobra.Command {
 func newBindingCreateCmd(a *app) *cobra.Command {
 	var principal, role, mask string
 	cmd := &cobra.Command{
-		Use:         "create --principal user:<name> --role reader|writer|maintainer|admin --mask <format>/<repo>",
+		Use:         "create --principal user:<name>|group:<name> --role reader|writer|maintainer|admin --mask <format>/<repo>",
 		Short:       "Give a user a role on the repos a mask matches, and print the binding as JSON",
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
@@ -51,7 +51,7 @@ func newBindingCreateCmd(a *app) *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&principal, "principal", "", "who: user:<name> of an existing user")
+	f.StringVar(&principal, "principal", "", "who: user:<name> of an existing user, or group:<name> of an OIDC group (docs/spec/rbac.md §8)")
 	f.StringVar(&role, "role", "", "reader (read), writer (and write), maintainer (and delete, manage) or admin (everything, and the system)")
 	f.StringVar(&mask, "mask", "", "which repos: apt/ubuntu, apt/* (a format), */payments (a name in every format), */* (all); admin is on */*")
 	for _, name := range []string{"principal", "role", "mask"} {
@@ -65,7 +65,7 @@ func newBindingCreateCmd(a *app) *cobra.Command {
 func newBindingListCmd(a *app) *cobra.Command {
 	var principal string
 	cmd := &cobra.Command{
-		Use:         "list [--principal user:<name>]",
+		Use:         "list [--principal user:<name>|group:<name>]",
 		Short:       "List the bindings, or those of one principal",
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
