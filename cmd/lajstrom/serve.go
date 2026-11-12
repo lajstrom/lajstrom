@@ -90,7 +90,7 @@ func newServeCmd(a *app) *cobra.Command {
 				"repos", len(c.Repos),
 			)
 			warnPlainHTTP(c.Server, a.log)
-			upstreams, err := loadUpstreams(c, format.Lookup, a.log)
+			upstreams, ociUpstreams, err := loadUpstreams(c, format.Lookup, a.log)
 			if err != nil {
 				return err
 			}
@@ -164,7 +164,7 @@ func newServeCmd(a *app) *cobra.Command {
 			}
 			runs.wg.Go(func() { expireSessions(ctx, pipe, a.log, sessionExpiryInterval) })
 			runs.wg.Go(func() { rep.Run(ctx) })
-			if err := checkProxyRepos(ctx, st, upstreams, a.log); err != nil {
+			if err := checkProxyRepos(ctx, st, upstreams, ociUpstreams, a.log); err != nil {
 				return err
 			}
 			// The fetches of proxy repos outlive their requests. They end when the listener closes,
@@ -172,7 +172,8 @@ func newServeCmd(a *app) *cobra.Command {
 			fetches, endFetches := context.WithCancel(context.WithoutCancel(ctx))
 			defer endFetches()
 			proxyCore := proxy.New(proxy.Options{Index: st, Ingest: pipe, Providers: providers, Upstreams: upstreams,
-				Plugins: lookupIn(servedPlugins(c.Server.ExternalURL, nil)), ExternalURL: c.Server.ExternalURL, Context: fetches, Log: a.log})
+				Plugins: lookupIn(servedPlugins(c.Server.ExternalURL, nil)), ExternalURL: c.Server.ExternalURL, Context: fetches, Log: a.log,
+				OCIUpstreams: ociUpstreams, Mirror: pipe, MaxManifestSize: c.Server.MaxManifestSize})
 			runs.wg.Go(func() { sweepProxyMeta(ctx, proxyCore, a.log, proxySweepInterval) })
 			authz := auth.NewRBAC(auth.RBACOptions{Index: st, AnonymousRead: c.Auth.AnonymousRead, Log: a.log})
 			deps := format.Deps{Index: st, Providers: providers, Auth: authz, Ingest: pipe, Signer: signer, Sessions: pipe,
@@ -182,7 +183,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Tokens: tokens, ExternalURL: c.Server.ExternalURL, MaxManifestSize: c.Server.MaxManifestSize,
 				MaxCreatedAhead: c.Server.MaxCreatedAhead, MaxCreatedBehind: c.Server.MaxCreatedBehind, Log: a.log,
 				UploadSessionsPerRepo: c.Server.UploadSessions.PerRepo, UploadSessionsPerPrincipal: c.Server.UploadSessions.PerPrincipal,
-				VisibilityTimeout: c.Ingest.VisibilityTimeout})
+				VisibilityTimeout: c.Ingest.VisibilityTimeout, OCIProxy: proxyCore})
 			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log})
 			repos := newRepos(c, st, a.log, setCapabilities(providers))
 			login, proxies, err := edgeInputs(c, st, a.log)

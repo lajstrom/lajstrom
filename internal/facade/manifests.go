@@ -78,6 +78,9 @@ func (h *handler) getManifest(w http.ResponseWriter, r *http.Request, t *target,
 	} else if err != nil {
 		return err
 	}
+	if h.ociProxy(t) {
+		return h.getProxyManifest(w, r, t, ref)
+	}
 	rr, err := h.backend(ctx, t)
 	if err != nil {
 		return err
@@ -163,6 +166,9 @@ func (h *handler) putManifest(w http.ResponseWriter, r *http.Request, t *target,
 		return h.putManaged(w, r, t, ref, refDigest, desc, body)
 	}
 	subject := subjectOf(body)
+	if subject == nil && t.repo.Kind == index.KindProxy {
+		return refuseProxyPush(t)
+	}
 	tag := ref
 	if refDigest != "" {
 		tag = ""

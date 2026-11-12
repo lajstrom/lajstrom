@@ -91,8 +91,11 @@ func (s *Repos) PurgeUpstreamCache(ctx context.Context, formatName, name, pkg st
 		if row.Kind != index.KindProxy {
 			return invalid("repo %s/%s is a %s repo: only a proxy repo has an upstream cache", formatName, name, row.Kind)
 		}
-		key, details := "", map[string]any{}
+		key, details := pkg, map[string]any{}
 		if pkg != "" {
+			details["name"] = pkg
+		}
+		if pkg != "" && formatName != formatOCI { // an oci proxy's rows are named by the path
 			px, ok := s.proxier(formatName)
 			if !ok {
 				return fmt.Errorf("api: the proxy repo %s/%s has a format without proxy hooks", formatName, name)
@@ -100,7 +103,6 @@ func (s *Repos) PurgeUpstreamCache(ctx context.Context, formatName, name, pkg st
 			if key, err = px.Key(pkg); err != nil {
 				return invalid("name: %q is not a name of format %s", pkg, formatName)
 			}
-			details["name"] = pkg
 		}
 		if err := dropUpstreamCache(ctx, w, row.ID, key); err != nil {
 			return err

@@ -7,7 +7,6 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/provider"
-	"github.com/lajstrom/lajstrom/internal/server"
 )
 
 // octetStream is the Content-Type of a blob.
@@ -33,14 +32,30 @@ func (h *handler) getBlob(w http.ResponseWriter, r *http.Request, t *target, arg
 	if err != nil {
 		return err
 	}
-	err = format.ServeBlob(w, r, p, t.oci, d, format.ServeBlobOptions{
-		ContentType: octetStream,
-		Redirect:    format.BlobRedirect(t.repo),
-		Fail:        func(w http.ResponseWriter, err error) { h.fail(w, r, blobError(err)) },
+	serve := func(miss func(error) bool) {
+		err := format.ServeBlob(w, r, p, t.oci, d, format.ServeBlobOptions{
+			ContentType: octetStream,
+			Redirect:    format.BlobRedirect(t.repo),
+			Fail: func(w http.ResponseWriter, err error) {
+				if !miss(err) {
+					h.fail(w, r, blobError(err))
+				}
+			},
+		})
+		if err != nil {
+			h.logProxy(ctx, t, d, err)
+		}
+	}
+	missed := false
+	serve(func(err error) bool {
+		missed = h.ociProxy(t) && errors.Is(err, provider.ErrNotFound) // the core fetches it (§11.5)
+		return missed
 	})
-	if err != nil {
-		h.o.Log.WarnContext(ctx, "facade: the blob stream failed after the response started", "name", t.name,
-			"digest", d.String(), "error", err.Error(), "requestId", server.RequestID(ctx))
+	if missed {
+		return h.getProxyBlob(w, r, t, d, func() error {
+			serve(func(error) bool { return false })
+			return nil
+		})
 	}
 	return nil
 }

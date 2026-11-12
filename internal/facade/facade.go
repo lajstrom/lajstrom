@@ -67,6 +67,9 @@ type Options struct {
 	// classified strong (ingest.visibilityTimeout); a registry's consistencyBound raises it.
 	// Zero or negative means 30 seconds.
 	VisibilityTimeout time.Duration
+	// OCIProxy serves the reads of oci proxy repos (proxy-and-group.md §11): *proxy.Core. Nil
+	// serves an oci proxy repo as a hosted one, from what the backend holds.
+	OCIProxy OCIProxy
 }
 
 // Ingester stores a manifest that a client pushed to a managed repo, and a referrer pushed to
@@ -312,6 +315,9 @@ func (h *handler) resolve(ctx context.Context, name string) (*target, error) {
 		return nil, h.repoUnknown(ctx, name)
 	case err != nil:
 		return nil, fmt.Errorf("facade: repo of %s: %w", name, err)
+	}
+	if h.o.OCIProxy != nil && repo.Format == ociFormat && repo.Kind == index.KindProxy {
+		path = h.o.OCIProxy.OCIPath(*repo, path) // library/ of Docker Hub, on every route (§11.7)
 	}
 	return &target{repo: *repo, name: name, path: path, oci: ociName(*repo, path)}, nil
 }
