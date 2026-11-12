@@ -27,19 +27,23 @@ import (
 // defaultMaxManifestSize is Options.MaxManifestSize when it is zero: server.maxManifestSize's.
 const defaultMaxManifestSize = 4 << 20
 
-// ociTagRow is the content of an oci.tag row: what the upstream's tag names.
+// ociTagRow is the content of an oci.tag row: what the upstream's tag names, and whether the
+// tag was pushed to the backend at that digest.
 type ociTagRow struct {
 	Digest    digest.Digest `json:"digest"`
 	MediaType string        `json:"mediaType"`
 	Size      int64         `json:"size"`
+	Pushed    bool          `json:"pushed,omitempty"`
 }
 
 // ociRefRow is the content of an oci.ref row: what a manifest or an index at the path says of a
-// blob or a child it lists, and the digests of those that list it.
+// blob or a child it lists, and the digests of those that list it; and the upstream's tags that
+// were seen naming it, whose push follows its own.
 type ociRefRow struct {
 	MediaType string          `json:"mediaType"`
 	Size      int64           `json:"size"`
 	Parents   []digest.Digest `json:"parents"`
+	Tags      []string        `json:"tags,omitempty"`
 }
 
 // OCIManifest returns the manifest that ref, a tag or a digest, names at path in the oci proxy
@@ -65,7 +69,11 @@ func (c *Core) OCIManifest(ctx context.Context, repo index.Repo, path, ref strin
 	} else if want, err = c.ociTag(ctx, p, ref); err != nil {
 		return ocispec.Descriptor{}, nil, err
 	}
-	return c.ociDocument(ctx, p, want, ref)
+	desc, raw, err := c.ociDocument(ctx, p, want, ref)
+	if err == nil && want.MediaType != "" && p.up != nil {
+		c.ociTagPushed(ctx, p, ref, desc)
+	}
+	return desc, raw, err
 }
 
 // ociTag returns what the tag names at p's path (§11.4, steps 1 and 2).
@@ -198,7 +206,35 @@ func (c *Core) ociRevalidateTag(ctx context.Context, p *ociProxied, tag string) 
 	}
 	ociCountDoc(p, docRefreshed)
 	content, _ := json.Marshal(ociTagRow{Digest: desc.Digest, MediaType: desc.MediaType, Size: desc.Size}) // always marshals
-	return c.o.Index.PutProxyMeta(ctx, presentRow(p, kind, content, "application/json", desc.Digest.String(), now))
+	return c.o.Index.Tx(ctx, func(w index.Writer) error {
+		if err := w.PutProxyMeta(ctx, presentRow(p, kind, content, "application/json", desc.Digest.String(), now)); err != nil {
+			return err
+		}
+		return c.addRef(ctx, w, p, desc, "", tag, now)
+	})
+}
+
+// addRef adds parent (unless "") and tag (unless "") to the oci.ref row of desc at p's path,
+// whose media type and size desc gives, on w.
+func (c *Core) addRef(ctx context.Context, w index.Writer, p *ociProxied, desc ocispec.Descriptor, parent digest.Digest, tag string, now time.Time) error {
+	kind := metaKey(kindOCIRef, desc.Digest)
+	row, err := metaRow(ctx, w, p.repo.ID, p.path, kind)
+	if err != nil {
+		return err
+	}
+	var ref ociRefRow
+	if row != nil {
+		_ = json.Unmarshal(row.Content, &ref) // a row that does not read is replaced
+	}
+	ref.MediaType, ref.Size = desc.MediaType, desc.Size
+	if parent != "" && !slices.Contains(ref.Parents, parent) {
+		ref.Parents = append(ref.Parents, parent)
+	}
+	if tag != "" && !slices.Contains(ref.Tags, tag) {
+		ref.Tags = append(ref.Tags, tag)
+	}
+	content, _ := json.Marshal(ref) // always marshals
+	return w.PutProxyMeta(ctx, presentRow(p, kind, content, "application/json", "", now))
 }
 
 // presentRow is a present proxy_meta row of p's path.
@@ -230,6 +266,7 @@ func (c *Core) ociDocument(ctx context.Context, p *ociProxied, want ocispec.Desc
 	case err != nil:
 		return ocispec.Descriptor{}, nil, err
 	case row != nil && row.State == index.ProxyMetaPresent:
+		c.ociBackstop(ctx, p, d)
 		return ocispec.Descriptor{MediaType: row.ContentType, Digest: d, Size: int64(len(row.Content))}, row.Content, nil
 	case p.up == nil, row != nil && p.fresh(row, c.o.Now()):
 		return ocispec.Descriptor{}, nil, ociManifestUnknown(p, ref)
@@ -360,28 +397,33 @@ func (c *Core) ociCache(ctx context.Context, p *ociProxied, desc ocispec.Descrip
 			p.upstreamName(), desc.Digest, err.Error())
 	}
 	now := c.o.Now()
-	return c.o.Index.Tx(ctx, func(w index.Writer) error {
+	err = c.o.Index.Tx(ctx, func(w index.Writer) error {
 		for _, l := range listed {
-			kind := metaKey(kindOCIRef, l.Digest)
-			row, err := metaRow(ctx, w, p.repo.ID, p.path, kind)
-			if err != nil {
-				return err
-			}
-			ref := ociRefRow{MediaType: l.MediaType, Size: l.Size}
-			if row != nil {
-				_ = json.Unmarshal(row.Content, &ref) // a row that does not read is replaced
-				ref.MediaType, ref.Size = l.MediaType, l.Size
-			}
-			if !slices.Contains(ref.Parents, desc.Digest) {
-				ref.Parents = append(ref.Parents, desc.Digest)
-			}
-			content, _ := json.Marshal(ref) // always marshals
-			if err := w.PutProxyMeta(ctx, presentRow(p, kind, content, "application/json", "", now)); err != nil {
+			if err := c.addRef(ctx, w, p, l, desc.Digest, "", now); err != nil {
 				return err
 			}
 		}
 		return w.PutProxyMeta(ctx, presentRow(p, metaKey(kindOCIManifest, desc.Digest), raw, desc.MediaType, desc.Digest.String(), now))
 	})
+	if err == nil {
+		c.ociBackstop(ctx, p, desc.Digest) // its blobs may be held already: a layer another tag shares
+	}
+	return err
+}
+
+// ociBackstop pushes the cached manifest or index d when everything it lists is held, on a
+// context of its own: a completion that a concurrent write lost, or one whose blobs another
+// manifest fetched (§11.4, step 4). A failure is logged and the cached bytes are served.
+func (c *Core) ociBackstop(ctx context.Context, p *ociProxied, d digest.Digest) {
+	if c.o.Mirror == nil || p.up == nil {
+		return
+	}
+	fctx, cancel := c.detach(ctx)
+	defer cancel()
+	if _, err := c.ociPushComplete(fctx, p, d); err != nil {
+		c.o.Log.WarnContext(ctx, "proxy: a complete manifest not pushed; it is served from the cache", "repo", p.id(), "path", p.path,
+			"digest", d.String(), "error", err.Error())
+	}
 }
 
 // listedBy returns what the manifest or index raw lists: its config and layers, or its

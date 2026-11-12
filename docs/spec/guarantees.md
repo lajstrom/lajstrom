@@ -348,7 +348,11 @@ longer than `reconcile.graceAge` is outside them
   Lajstrom re-points a tag on conflict, on reindex or on drift.
 - **Scope.** Managed repos: version tags and the `_j<seq>` tags of npm's journal. Not `oci`
   repos, whose tags pass through and follow the backend's rules. Not writes straight to the
-  backend: Lajstrom reports them (drift) and leaves them.
+  backend: Lajstrom reports them (drift) and leaves them. Not the upstream's tags of an `oci`
+  proxy repo: the one exception of [ADR 0018](../adr/0018-oci-proxy-repos-pull-through-from-any-registry.md)
+  ([proxy-and-group.md](proxy-and-group.md) §11.6), where Lajstrom moves such a tag, in
+  `ingest.Pipeline.MirrorManifest` only, to a digest the upstream named for it and the backend
+  holds, on a backend that lets tags move; its keep-tags never move.
 - **Assumes.** Registry: **monotonic reads** (**unchecked**) and a lag shorter than
   `ingest.claimTTL` for the backstop below; **case-exact tags** (on Gitea and Forgejo two
   versions that differ only in case are one tag, and the second is a `409`:
@@ -372,7 +376,9 @@ longer than `reconcile.graceAge` is outside them
   `TestUploadRetryUnconfirmed`, `TestManifestHook`, `TestDrift`, `TestJournalAdopts`, the store
   conformance case `Journal`;
   `TestVisibilityTimeout`, `TestVisibilityRetryRebuilt`, `TestJournalVisibility`,
-  `TestJournalClaimNotPushed`;
+  `TestJournalClaimNotPushed`; the exception's bounds: `TestMirrorManifestRepoint`,
+  `TestMirrorManifestTagRefused`, `TestMirrorManifestRefused` (ingest), `TestOCITagsFollow`,
+  `TestOCITagsFixed` (proxy);
   `oras.sh` (another manifest under the tag: `409`), the conflicts of `raw.sh`, `pypi.sh`,
   `apt.sh`, `maven.sh` (acceptance.md E-01).
 - **When violated.** Reindex lists the tag as drift (`reindex --report`, `GET …/reindex`) with
@@ -985,10 +991,12 @@ longer than `reconcile.graceAge` is outside them
   the checksum does not match, so that `UploadStream` cancels the session; `Core.reject` writes
   `proxy.reject`. A document's misses on a replica share one upstream request (`Core.refresh`,
   through `flights.join`).
-- **Tests.** `TestFileOneFetch`, `TestFileTwoReplicas`, `TestFileClaims`, `TestFileChecksum`,
-  `TestFileRefused`, `TestFileCutShort`, `TestFileMiss`, `TestDocumentOneRequest`, the store
-  conformance case `FetchClaimRace`; `npm.sh` (each tarball fetched once, `proxy.fetch` in the
-  audit log).
+- **Tests.** `TestOCIManifestOnce`, `TestOCIBlobOnce`, `TestOCIManifestDigestMismatch`,
+  `TestOCIBlobRefused`, `TestOCIBlobNotListed`, `TestMirrorBlob` (the `oci` proxy:
+  `proxy.Core.ociClaim`, `ingest.Pipeline.MirrorBlob`); `TestFileOneFetch`, `TestFileTwoReplicas`,
+  `TestFileClaims`, `TestFileChecksum`, `TestFileRefused`, `TestFileCutShort`, `TestFileMiss`,
+  `TestDocumentOneRequest`, the store conformance case `FetchClaimRace`; `npm.sh` (each tarball
+  fetched once, `proxy.fetch` in the audit log).
 - **When violated.** A checksum mismatch is `502`, an audit row `proxy.reject` and a warning
   naming both values.
 - **Status.** `holds`.
@@ -1026,7 +1034,8 @@ longer than `reconcile.graceAge` is outside them
 - **Mechanism.** The fetcher publishes through `format.Publisher.Upload` with an `Origin`
   (`ingest.setOrigin`); reindex neither reads nor writes `proxy_meta`, and
   `index.Writer.ResetDerived` leaves it.
-- **Tests.** `TestReindexProxied`, `TestUploadWithOrigin`, `TestFileUpstreamDown`,
+- **Tests.** `TestOCIBlobPull`, `TestOCITagsFollow` (an `oci` proxy's keep-tags and live tags);
+  `TestReindexProxied`, `TestUploadWithOrigin`, `TestFileUpstreamDown`,
   `TestDocumentUpstreamDown`, `TestDocumentCache`; the proxy steps of `npm.sh`.
 - **When violated.** As INV-3.
 - **Status.** `holds`.
