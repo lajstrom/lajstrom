@@ -116,6 +116,11 @@ func ParseWheelFilename(filename string) (Wheel, error) {
 	return w, nil
 }
 
+// isWheel reports whether filename is the name of a wheel (.whl). Only a wheel's core metadata
+// is announced and served for PEP 658: a build may change an sdist's PKG-INFO (PEP 643 Dynamic),
+// so pip must not resolve from it.
+func isWheel(filename string) bool { return strings.HasSuffix(filename, ".whl") }
+
 // Sdist kinds: the extensions of a source distribution Lajstrom stores.
 const (
 	SdistTarGz = ".tar.gz"

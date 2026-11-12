@@ -140,9 +140,9 @@ metadata files, and the legacy upload API that `twine` uses.
 | Method and path | Behaviour |
 | --- | --- |
 | `GET /pypi/<repo>/simple/` | project list |
-| `GET /pypi/<repo>/simple/<project>/` | file list of the project (normalised name; non-normalised redirects `301`). Links point to `/pypi/<repo>/files/…` with `#sha256=`; `data-requires-python`, `data-dist-info-metadata`/`data-core-metadata` set. |
+| `GET /pypi/<repo>/simple/<project>/` | file list of the project (normalised name; non-normalised redirects `301`). Links point to `/pypi/<repo>/files/…` with `#sha256=`; `data-requires-python` set, and `data-dist-info-metadata`/`data-core-metadata` (in JSON `core-metadata`/`dist-info-metadata`) on a wheel only: a build may change an sdist's `PKG-INFO` (PEP 643 `Dynamic`), and PEP 658 is for metadata the processing does not modify, as PyPI does. |
 | `GET /pypi/<repo>/files/<project>/<version>/<filename>` | the distribution file (`307` or stream) |
-| `GET /pypi/<repo>/files/<project>/<version>/<filename>.metadata` | the core metadata (PEP 658), from the metadata layer |
+| `GET /pypi/<repo>/files/<project>/<version>/<filename>.metadata` | the core metadata of a wheel (PEP 658), from the metadata layer; `404` for an sdist |
 | `POST /pypi/<repo>/` | legacy upload: `multipart/form-data` with `:action=file_upload`, `protocol_version=1`, `content`, metadata fields. One file = one manifest (variant = the wheel's build tag, when it has one, and tag set, or `sdist`: manifest-profile.md §4.2). `200` on success; `400` on validation errors; `409` if the file name exists with a different digest, or another file holds its version and variant (a wheel with a build tag uploaded before #726, in the earlier form of its variant), with `File already exists` and the name of the file there. |
 
 Client config: `pip install --index-url https://host/pypi/<repo>/simple/ …`,

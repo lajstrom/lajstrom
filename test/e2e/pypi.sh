@@ -165,11 +165,12 @@ step "the clients in $image"
 docker run --rm --network host -e BASE="$base" -e REPO="$repo" -e PROJECT="$project" -e NORMALIZED="$normalized" -e MODULE="$module" \
 	-v "$work:/w:ro" "$image" bash /w/client.sh || fail "the clients"
 
-step "the page of $normalized lists five files with their core metadata, one with a build tag"
+step "the page of $normalized lists five files, the wheels with their core metadata, one with a build tag"
 page="$(curl -fsS -u "$user:$password" -H 'Accept: application/vnd.pypi.simple.v1+json' "$base/pypi/$repo/simple/$normalized/")"
 [ "$(jq '.files | length' <<<"$page")" = 5 ] || fail "files: $(jq -c '[.files[].filename]' <<<"$page")"
 [ "$(jq '[.files[] | select(.filename | endswith("-1.1-1-py3-none-any.whl"))] | length' <<<"$page")" = 1 ] || fail "no wheel with the build tag"
-[ "$(jq '[.files[] | select(.["core-metadata"] | type == "object")] | length' <<<"$page")" = 5 ] || fail "core-metadata missing"
+[ "$(jq '[.files[] | select((.["core-metadata"] | type == "object") == (.filename | endswith(".whl")))] | length' <<<"$page")" = 5 ] ||
+	fail "core-metadata on a wheel missing or on an sdist: $(jq -c '[.files[] | [.filename, .["core-metadata"]]]' <<<"$page")"
 [ "$(jq -c .versions <<<"$page")" = '["1.0","1.1"]' ] || fail "versions: $(jq -c .versions <<<"$page")"
 
 step "Accept latest+json and latest+html are served as v1 (PEP 691)"

@@ -88,7 +88,8 @@ type projectFile struct {
 // upload are, go by version and variant, not by the order of their rows, which reindex does not
 // keep: the page is a function of the rows, the same after a rebuild. The file of a version
 // whose metadata the index left out (degraded, or more than ingest keeps) has no core-metadata,
-// so pip downloads the file for it.
+// so pip downloads the file for it; nor has an sdist, whose PKG-INFO a build may change (PEP 658
+// is for metadata the processing of the file does not modify; PyPI announces wheels only).
 func projectFiles(ctx context.Context, st index.Reader, pkg index.Package) ([]projectFile, []string, error) {
 	vs, err := st.ListVersions(ctx, pkg.ID)
 	if err != nil {
@@ -120,7 +121,7 @@ func projectFiles(ctx context.Context, st index.Reader, pkg index.Package) ([]pr
 				RequiresPython: md.RequiresPython, CoreMetadata: false, DistInfo: false, Size: f.Size,
 				UploadTime: v.CreatedAt.UTC().Format("2006-01-02T15:04:05.000000Z"),
 			}
-			if md.CoreMetadata != "" {
+			if md.CoreMetadata != "" && isWheel(f.Name) {
 				sum := sha256.Sum256([]byte(md.CoreMetadata))
 				pf.coreSHA256 = hex.EncodeToString(sum[:])
 				pf.CoreMetadata = map[string]string{"sha256": pf.coreSHA256}

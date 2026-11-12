@@ -230,7 +230,7 @@ type jsonPage struct {
 		URL            string            `json:"url"`
 		Hashes         map[string]string `json:"hashes"`
 		RequiresPython string            `json:"requires-python"`
-		CoreMetadata   map[string]string `json:"core-metadata"`
+		CoreMetadata   any               `json:"core-metadata"` // {"sha256": …} for a wheel, false for an sdist
 		Size           int64             `json:"size"`
 	} `json:"files"`
 }
@@ -254,9 +254,16 @@ func TestRoutesPages(t *testing.T) {
 		}
 	}
 	rr = e.do(http.MethodGet, "simple/my-pkg/")
-	want := `<a href="../../files/my-pkg/1.0/` + e.pure + `#sha256=` + digest.FromBytes(e.bodies[e.pure]).Encoded() + `" data-requires-python="&gt;=3.9"`
+	core := sha256.Sum256(e.cores[e.pure])
+	want := `<a href="../../files/my-pkg/1.0/` + e.pure + `#sha256=` + digest.FromBytes(e.bodies[e.pure]).Encoded() + `" data-requires-python="&gt;=3.9"` +
+		` data-dist-info-metadata="sha256=` + hex.EncodeToString(core[:]) + `" data-core-metadata="sha256=` + hex.EncodeToString(core[:]) + `">`
 	if !strings.Contains(rr.Body.String(), want) {
 		t.Errorf("the HTML page has no %s:\n%s", want, rr.Body)
+	}
+	// An sdist's PKG-INFO is not announced (#724): a build may change it, pip would trust it.
+	sdist := `<a href="../../files/my-pkg/1.0/my_pkg-1.0.tar.gz#sha256=` + digest.FromBytes(e.bodies["my_pkg-1.0.tar.gz"]).Encoded() + `">`
+	if !strings.Contains(rr.Body.String(), sdist) {
+		t.Errorf("the HTML page has no %s:\n%s", sdist, rr.Body)
 	}
 }
 
@@ -274,7 +281,7 @@ func TestRoutesFiles(t *testing.T) {
 		t.Fatalf("page: %+v", page)
 	}
 	for _, f := range page.Files {
-		e.checkFile(t, f.Filename, f.URL, f.Hashes["sha256"], f.CoreMetadata["sha256"], f.Size)
+		e.checkFile(t, f.Filename, f.URL, f.Hashes["sha256"], f.CoreMetadata, f.Size)
 	}
 }
 
@@ -294,8 +301,9 @@ func TestRoutesLatest(t *testing.T) {
 }
 
 // checkFile checks one file of the JSON page against what was published: its URL, sha256 and
-// size, the bytes of its download, and its core metadata with the sha256 the page announced.
-func (e *published) checkFile(t *testing.T, filename, url, sum, coreSum string, size int64) {
+// size, the bytes of its download, and for a wheel its core metadata with the sha256 the page
+// announced; an sdist has core-metadata false and its .metadata is 404 (#724).
+func (e *published) checkFile(t *testing.T, filename, url, sum string, coreMetadata any, size int64) {
 	t.Helper()
 	want := e.bodies[filename]
 	if sum != digest.FromBytes(want).Encoded() || size != int64(len(want)) || url != "../../files/my-pkg/1.0/"+filename {
@@ -305,6 +313,14 @@ func (e *published) checkFile(t *testing.T, filename, url, sum, coreSum string, 
 		t.Errorf("GET %s: %d, %d bytes", filename, rr.Code, rr.Body.Len())
 	}
 	rr := e.do(http.MethodGet, "files/my-pkg/1.0/"+filename+".metadata")
+	if !strings.HasSuffix(filename, ".whl") {
+		if coreMetadata != false || rr.Code != http.StatusNotFound {
+			t.Errorf("the sdist %s: core-metadata %v, GET .metadata %d, want false and 404", filename, coreMetadata, rr.Code)
+		}
+		return
+	}
+	core, _ := coreMetadata.(map[string]any)
+	coreSum, _ := core["sha256"].(string)
 	got := sha256.Sum256(rr.Body.Bytes())
 	if rr.Code != http.StatusOK || rr.Body.String() != string(e.cores[filename]) || hex.EncodeToString(got[:]) != coreSum {
 		t.Errorf("GET %s.metadata: %d, the announced sha256 %s, the body's %x", filename, rr.Code, coreSum, got)
