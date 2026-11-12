@@ -366,8 +366,9 @@ status is `holds on strongly consistent registries only` do not hold there.
   another digest holds, or the backend holds with a manifest the index lacks (`checkTag`), takes
   that manifest over when the registry has it with the same name and files
   (`ingest.Pipeline.adopt`), and confirms it: the retry of a publish answered `503` by the
-  visibility barrier (INV-4) or by a database that did not answer at confirm (#641), a publish of
-  the same files still on its way, or one that stopped after its push and whose claim went stale.
+  visibility barrier (INV-4), or whose confirm failed after its push (a database that did not
+  answer, #641; a client gone, #709), a publish of the same files still on its way, or one that
+  stopped after its push and whose claim went stale.
 - **Tests.** `TestUploadRepeat`, `TestUploadRepeatRace`, `TestIngest`, `TestSessionRepeat`,
   `TestVisibilityRetryRebuilt`, `TestUploadRetryUnconfirmed`, `TestSessionCommitUnavailable`,
   `TestIndexUnavailableAtConfirm` (raw), `TestUploadIndexUnavailableAtConfirm` (pypi); R-02 in

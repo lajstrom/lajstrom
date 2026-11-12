@@ -277,9 +277,11 @@ func (r hookedRepository) PushReference(ctx context.Context, desc ocispec.Descri
 
 // confirmDown is a store whose first transaction that writes a package, the confirm of a
 // publish after the registry took its manifest, fails as a database that dropped out does,
-// with index.ErrUnavailable.
+// with index.ErrUnavailable; or, with gone, as the request of a client that went away: gone
+// cancels its context, and the write fails with the context's error.
 type confirmDown struct {
 	index.Store
+	gone context.CancelFunc
 	done atomic.Bool
 }
 
@@ -293,7 +295,12 @@ type confirmDownWriter struct {
 }
 
 func (w confirmDownWriter) UpsertPackage(ctx context.Context, p *index.Package) error {
-	if w.s.done.CompareAndSwap(false, true) {
+	switch {
+	case !w.s.done.CompareAndSwap(false, true):
+	case w.s.gone != nil:
+		w.s.gone()
+		return fmt.Errorf("packages: %w", ctx.Err())
+	default:
 		return fmt.Errorf("%w: packages: %w", index.ErrUnavailable, errDown)
 	}
 	return w.Writer.UpsertPackage(ctx, p)
@@ -394,10 +401,11 @@ func TestIngestIndexUnavailableAfterPush(t *testing.T) {
 // retried after the 503, built again with another org.opencontainers.image.created and so
 // another digest. The tag in the backend holds the first manifest, which the index lacks: the
 // retry takes it over and confirms it, and pushes the same digest under the tag again, rather
-// than a 409 from that tag (#641). The first publish failed at confirm, the database out, and
-// released its claim; or the registry did not serve its push in time and it left its claim,
-// which the retry, after ingest's claim TTL, takes over. Before the retry, an upload of other
-// files is still 409, naming the manifest under the tag.
+// than a 409 from that tag until the reconcile loop indexes the first (#709, #641). The first
+// publish failed at confirm, the database out (503) or its client gone (500), and released its
+// claim; or the registry did not serve its push in time and it left its claim, which the retry,
+// after ingest's claim TTL, takes over. Before the retry, an upload of other files is still
+// 409, naming the manifest under the tag.
 func TestUploadRetryUnconfirmed(t *testing.T) {
 	up := upload("tool", "1.0.0", file{"tool", "linux binary"})
 	for _, tt := range []struct {
@@ -414,6 +422,17 @@ func TestUploadRetryUnconfirmed(t *testing.T) {
 			}
 			e.noClaim(t, "tool", "1.0.0")
 		}, 5 * time.Second},
+		{"client gone at confirm", func(t *testing.T, e *env) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			o := e.options(e.prov)
+			o.Index = &confirmDown{Store: e.st, gone: cancel}
+			e.pipe = ingest.New(o)
+			if _, err := e.pipe.Upload(ctx, e.repo, up, alice); err == nil || format.StatusOf(err) != http.StatusInternalServerError {
+				t.Fatalf("Upload whose client went away at confirm: %v (status %d), want a 500", err, format.StatusOf(err))
+			}
+			e.noClaim(t, "tool", "1.0.0")
+		}, 2 * time.Second},
 		{"stale claim", func(t *testing.T, e *env) {
 			e.lagging(-1, 100*time.Millisecond)
 			_, err := e.pipe.Upload(t.Context(), e.repo, up, alice)
