@@ -289,6 +289,12 @@ type Upstream struct {
 	// Retries is the number of retries of a request, as for a registry. Load sets
 	// DefaultUpstreamRetries when it is zero; negative disables retries.
 	Retries int `yaml:"retries"`
+	// RevalidateTimeout bounds, whole, the HEAD with which an oci upstream is asked for a tag
+	// whose cached row expired: one attempt, no retries, and on a failure or no answer within
+	// it the row is served as it is (docs/spec/proxy-and-group.md §11.4). A tag without a row
+	// keeps Timeout and Retries. Load sets DefaultUpstreamRevalidateTimeout on an oci upstream
+	// when it is zero; negative is invalid, and refused on another format.
+	RevalidateTimeout time.Duration `yaml:"revalidateTimeout"`
 	// MaxMetadataSize is the largest document the upstream may answer for one name, in bytes;
 	// a larger one is not cached. Load sets DefaultUpstreamMaxMetadataSize when it is zero;
 	// negative is invalid.
@@ -564,6 +570,11 @@ const (
 	DefaultUpstreamTimeout         = 30 * time.Second
 	DefaultUpstreamRetries         = 2
 	DefaultUpstreamMaxMetadataSize = 64 << 20
+	// DefaultUpstreamRevalidateTimeout is a sixth of the 30 s that containerd waits for the
+	// headers of a manifest (#888): an expired tag is answered from its row well within that,
+	// and it covers a cold TLS handshake and a token round trip to Docker Hub on a link of
+	// 500 ms round trips.
+	DefaultUpstreamRevalidateTimeout = 5 * time.Second
 )
 
 // Default returns the configuration before the file is read. server.listen has no default.

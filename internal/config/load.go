@@ -136,6 +136,9 @@ func (u *Upstream) applyDefaults() {
 	if u.Retries == 0 {
 		u.Retries = DefaultUpstreamRetries
 	}
+	if u.RevalidateTimeout == 0 && u.Format == FormatOCI {
+		u.RevalidateTimeout = DefaultUpstreamRevalidateTimeout
+	}
 	if u.MaxMetadataSize == 0 {
 		u.MaxMetadataSize = DefaultUpstreamMaxMetadataSize
 	}
