@@ -14,13 +14,18 @@ Postgres protocol, what matters is what it asks of the server:
   `idle_in_transaction_session_timeout` for that transaction only (`set_config(…, true)`).
 - **Read committed**, the default isolation: the index cache generations (INV-27) and the tag
   claims rely on a statement seeing what committed before it; a version write first locks its
-  package row with an `UPDATE` (#584). `clock_timestamp()` reads the database's clock.
+  package row with an `UPDATE` (#584). `clock_timestamp()` reads the database's clock. One
+  transaction is **repeatable read**: the update of a repo (`PATCH /api/v1/repos/…`), which
+  reads the repo and writes it back whole. When another transaction changed the repo, or
+  `auth_version`, after it read them, the database aborts it (`40001`) rather than let it
+  undo that change, and Lajstrom runs it again from the start, up to four times in all (#791).
 - **Migrations** run DDL and DML in one transaction each, under the migration lock.
 - **Errors by SQLSTATE**: `23505` is a conflict, `23503` a missing row, `42501` a user without
   the right to migrate; `57P01`, `57P02`, `57P03`, `53300`, the class `08`, and the timeouts
   that end a session, `25P03`, `57P05` and `25P04`, mean the database did not answer, and a
   deadlock or a serialization failure, `40P01` or `40001`, is a transaction it aborted that may
-  pass when sent again: for all of them the request gets `503` with `Retry-After: 5`
+  pass when sent again (Lajstrom sends the update of a repo again itself, up to four times in
+  all, before it answers): for all of them the request gets `503` with `Retry-After: 5`
   ([operations.md](../operations.md#readiness)).
 
 Everything below was measured on 2026-11-11 with Lajstrom at `4ab2f4e` (pgx v5.12.0, Go 1.27.4),

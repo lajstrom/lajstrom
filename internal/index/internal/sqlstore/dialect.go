@@ -29,6 +29,12 @@ type Dialect struct {
 	// IsForeignKey reports whether err is a violation of a foreign key: the row refers to a
 	// row that does not exist.
 	IsForeignKey func(err error) bool
+	// IsAborted reports whether err says that the database aborted a transaction that may
+	// pass when run again, which Store.Tx then runs again under index.WithRepeatableRead, at
+	// repeatable read (Postgres: a serialization failure or a deadlock, 40001 or 40P01). nil
+	// when every writing transaction holds the database's write lock from its start (SQLite,
+	// BEGIN IMMEDIATE): such a Tx runs as any other, once.
+	IsAborted func(err error) bool
 	// IsUnavailable reports whether err says that the database did not answer
 	// (index.ErrUnavailable): a connection that failed or was ended, a database that is
 	// locked or cannot be opened. nil means never.
