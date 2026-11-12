@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -35,8 +38,8 @@ func TestWhoami(t *testing.T) {
 			}
 			var got Whoami
 			decodeJSON(t, f.do(http.MethodGet, "/api/v1/whoami", "", tt.p), http.StatusOK, &got)
-			if got != tt.want {
-				t.Errorf("whoami = %+v, want %+v", got, tt.want)
+			if d := cmp.Diff(tt.want, got); d != "" {
+				t.Errorf("whoami: (-want +got)\n%s", d)
 			}
 		})
 	}
@@ -47,6 +50,45 @@ func TestWhoami(t *testing.T) {
 		if c := rr.Header().Get("WWW-Authenticate"); c != basicChallenge {
 			t.Errorf("WWW-Authenticate = %q, want %q", c, basicChallenge)
 		}
+	}
+}
+
+// TestWhoamiGroups: a user's groups are those of its identity's latest login while they count
+// (docs/spec/rbac.md §8); a local user has none.
+func TestWhoamiGroups(t *testing.T) {
+	f := newFixture(t, Options{})
+	f.addUsers(t, "alice", "bob")
+	ctx := context.Background()
+	u, err := f.st.GetUser(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := index.Identity{UserID: u.ID, Issuer: "https://idp", Subject: "a"}
+	if err := f.st.CreateIdentity(ctx, &id); err != nil {
+		t.Fatal(err)
+	}
+	now := testNow // the fixture's clock
+	for _, tt := range []struct {
+		name   string
+		expiry time.Time
+		want   []string
+	}{
+		{"groups of a login that counts", now.Add(time.Hour), []string{"dev", "ops"}},
+		{"groups of a login that lapsed", now.Add(-time.Minute), nil},
+	} {
+		if err := f.st.SetIdentityGroups(ctx, id.ID, []string{"ops", "dev"}, now, tt.expiry); err != nil {
+			t.Fatal(err)
+		}
+		var got Whoami
+		decodeJSON(t, f.do(http.MethodGet, "/api/v1/whoami", "", alice), http.StatusOK, &got)
+		if d := cmp.Diff(tt.want, got.Groups); d != "" {
+			t.Errorf("%s: groups (-want +got)\n%s", tt.name, d)
+		}
+	}
+	var got Whoami
+	decodeJSON(t, f.do(http.MethodGet, "/api/v1/whoami", "", bob), http.StatusOK, &got)
+	if got.Groups != nil {
+		t.Errorf("a local user's groups = %q, want none", got.Groups)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -80,7 +81,7 @@ func TestInfo(t *testing.T) {
 			if !slices.Equal(got.AuthModes, []string{"password", "token"}) {
 				t.Errorf("authModes = %q, want password and token", got.AuthModes)
 			}
-			if got.Caller != tt.want {
+			if !reflect.DeepEqual(got.Caller, tt.want) {
 				t.Errorf("caller = %+v, want %+v", got.Caller, tt.want)
 			}
 		})

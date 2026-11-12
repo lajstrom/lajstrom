@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/index"
 )
@@ -89,13 +90,15 @@ func ParseMask(mask string) (format, repo string, err error) {
 //
 // The credential of the request (CredentialFrom) narrows the principal as in steps 2 and 3: a
 // deploy token reaches its own repo with its scopes, a personal access token with scopes keeps
-// those actions only. A binding that is not valid by §3 (a principal other than user:<name>, an
-// unknown role, a mask that is not two segments) grants nothing and is logged at warn when the
-// snapshot loads. Errors are reserved for an index that does not answer.
+// those actions only. A user also has the bindings of its groups (docs/spec/rbac.md §8) until
+// they lapse, by the clock at each evaluation. A binding that is not valid by §3 (a principal
+// other than user:<name> or group:<name>, an unknown role, a mask that is not two segments)
+// grants nothing and is logged at warn when the snapshot loads. Errors are reserved for an index that does not answer.
 type RBAC struct {
 	idx           index.Reader
 	anonymousRead bool
 	log           *slog.Logger
+	now           func() time.Time
 
 	mu   sync.Mutex // one reload at a time
 	snap atomic.Pointer[snapshot]
@@ -113,6 +116,9 @@ type RBACOptions struct {
 	// Log receives the reloads at debug and the bindings that grant nothing at warn; nil means
 	// slog.Default().
 	Log *slog.Logger
+	// Now is the clock that a user's groups lapse by (docs/spec/rbac.md §8); nil means
+	// time.Now.
+	Now func() time.Time
 }
 
 // NewRBAC returns the evaluator over o.Index. It reads nothing before the first evaluation.
@@ -121,35 +127,47 @@ func NewRBAC(o RBACOptions) *RBAC {
 	if o.Index == nil {
 		panic("auth: NewRBAC: nil Options.Index")
 	}
-	r := &RBAC{idx: o.Index, anonymousRead: o.AnonymousRead, log: o.Log}
+	r := &RBAC{idx: o.Index, anonymousRead: o.AnonymousRead, log: o.Log, now: o.Now}
 	if r.log == nil {
 		r.log = slog.Default()
+	}
+	if r.now == nil {
+		r.now = time.Now
 	}
 	return r
 }
 
 // Allowed reports whether p may perform a on format/repo, by the snapshot that is current for
-// ctx and the credential of ctx.
+// ctx, the credential of ctx and, for a user, its groups that have not lapsed.
 func (r *RBAC) Allowed(ctx context.Context, p Principal, a Action, format, repo string) (bool, error) {
 	s, err := r.current(ctx)
 	if err != nil {
 		return false, err
 	}
-	return s.allowed(p, a, repoKey{format, repo}, CredentialFrom(ctx)), nil
+	return s.allowed(p, a, repoKey{format, repo}, CredentialFrom(ctx), r.now()), nil
 }
 
-// snapshot is what RBAC evaluates from: the bindings and the repos with anonymous_read as of
-// auth_version version.
+// snapshot is what RBAC evaluates from: the bindings, the repos with anonymous_read and the
+// users' groups as of auth_version version.
 type snapshot struct {
 	version       int64
 	anonymousRead bool                                // auth.anonymousRead
-	admins        map[Principal]bool                  // the principals with an admin binding
+	admins        map[Principal]bool                  // the principals with an admin binding, users and groups
 	grants        map[Principal]map[repoKey]actionSet // the other bindings, by principal and mask
 	anon          map[repoKey]bool                    // the repos with anonymous_read
+	groups        map[Principal][]membership          // the groups of each user, user:<uid>
 }
 
-// allowed is the evaluation of docs/spec/rbac.md §3 for p, narrowed by the credential c.
-func (s *snapshot) allowed(p Principal, a Action, repo repoKey, c Credential) bool {
+// membership is a group of a user and when it lapses: the end of the login that brought it
+// (docs/spec/rbac.md §8). A nil until never counts: the index always stores one with groups.
+type membership struct {
+	group Principal
+	until *time.Time
+}
+
+// allowed is the evaluation of docs/spec/rbac.md §3 for p, narrowed by the credential c, with
+// the groups of a user that have not lapsed at now.
+func (s *snapshot) allowed(p Principal, a Action, repo repoKey, c Credential, now time.Time) bool {
 	if actionBit(a) == 0 {
 		return false
 	}
@@ -160,23 +178,34 @@ func (s *snapshot) allowed(p Principal, a Action, repo repoKey, c Credential) bo
 		return !system && c.Kind == CredDeploy && strconv.FormatInt(c.TokenID, 10) == p.Name &&
 			c.Limit(a, index.Repo{Format: repo.format, Name: repo.name}) == nil
 	case KindUser:
-		if allow, decided := s.user(p, a, repo, system, c); decided {
+		if allow, decided := s.user(p, a, repo, system, c, now); decided {
 			return allow
 		}
 	case KindGroup, KindAnonymous:
+		// A group is a principal of bindings, never of a request: it reaches a repo through its
+		// members (step 4).
 	}
 	// Step 5, for every principal that got here; step 6.
 	return !system && a == ActionRead && s.anonymousRead && s.anon[repo]
 }
 
-// user is steps 1, 3 and 4 for the user p: decided is false when they leave a to step 5.
-func (s *snapshot) user(p Principal, a Action, repo repoKey, system bool, c Credential) (allow, decided bool) {
+// user is steps 1, 3 and 4 for the user p, its own bindings and those of its groups that have
+// not lapsed at now: decided is false when they leave a to step 5.
+func (s *snapshot) user(p Principal, a Action, repo repoKey, system bool, c Credential, now time.Time) (allow, decided bool) {
 	// Step 3: a personal access token with scopes keeps those actions, admin's included.
 	if c.Kind == CredPAT && c.Limit(a, index.Repo{Format: repo.format, Name: repo.name}) != nil {
 		return false, true
 	}
-	if s.admins[p] || (!system && s.granted(p, repo)&actionBit(a) != 0) { // steps 1 and 4
+	grants := func(q Principal) bool { // steps 1 and 4 for one principal
+		return s.admins[q] || (!system && s.granted(q, repo)&actionBit(a) != 0)
+	}
+	if grants(p) {
 		return true, true
+	}
+	for _, m := range s.groups[p] {
+		if m.until != nil && now.Before(*m.until) && grants(m.group) {
+			return true, true
+		}
 	}
 	return false, false
 }
@@ -253,8 +282,9 @@ func (r *RBAC) fresh(ctx context.Context) (*snapshot, error) {
 	return s, nil
 }
 
-// load reads a snapshot: auth_version first, then the bindings and the repos, so that the
-// snapshot is never older than the version it is kept under (index.Reader.AuthVersion).
+// load reads a snapshot: auth_version first, then the bindings, the repos and the users'
+// groups, so that the snapshot is never older than the version it is kept under
+// (index.Reader.AuthVersion).
 func (r *RBAC) load(ctx context.Context) (*snapshot, error) {
 	v, err := r.idx.AuthVersion(ctx)
 	if err != nil {
@@ -268,12 +298,21 @@ func (r *RBAC) load(ctx context.Context) (*snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
+	members, err := r.idx.ListIdentityGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
 	s := &snapshot{
 		version:       v,
 		anonymousRead: r.anonymousRead,
 		admins:        map[Principal]bool{},
 		grants:        map[Principal]map[repoKey]actionSet{},
 		anon:          map[repoKey]bool{},
+		groups:        map[Principal][]membership{},
+	}
+	for _, m := range members {
+		u := Principal{Kind: KindUser, Name: m.UID}
+		s.groups[u] = append(s.groups[u], membership{group: Principal{Kind: KindGroup, Name: m.Name}, until: m.ExpiresAt})
 	}
 	for _, b := range bindings {
 		if err := s.add(b); err != nil {
@@ -287,7 +326,7 @@ func (r *RBAC) load(ctx context.Context) (*snapshot, error) {
 		}
 	}
 	r.log.DebugContext(ctx, "rbac snapshot loaded", "authVersion", v, "bindings", len(bindings),
-		"anonymousRepos", len(s.anon))
+		"anonymousRepos", len(s.anon), "groupMembers", len(members))
 	return s, nil
 }
 
@@ -300,8 +339,12 @@ func (s *snapshot) add(b index.Binding) error {
 	switch {
 	case err != nil:
 		return err
+	case p.Kind == KindGroup:
+		if err := CheckGroupName(p.Name); err != nil {
+			return fmt.Errorf("%w: %w", errBinding, err)
+		}
 	case p.Kind != KindUser:
-		return fmt.Errorf("%w: the principal of a binding is user:<name>", errBinding)
+		return fmt.Errorf("%w: the principal of a binding is user:<name> or group:<name>", errBinding)
 	}
 	actions, ok := roleActions[b.Role]
 	if !ok {

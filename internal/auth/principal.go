@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/lajstrom/lajstrom/internal/index"
 )
@@ -21,7 +23,8 @@ const (
 	KindUser Kind = "user"
 	// KindToken is a deploy token, a principal of its own bound to one repo.
 	KindToken Kind = "token"
-	// KindGroup is a group from OIDC claims (after the MVP).
+	// KindGroup is a group from the claims of an OIDC login (docs/spec/rbac.md §8): a principal
+	// of bindings, never of a request; it reaches a repo through its members.
 	KindGroup Kind = "group"
 	// KindAnonymous is a caller without credentials.
 	KindAnonymous Kind = "anonymous"
@@ -59,6 +62,28 @@ func LookupUser(ctx context.Context, r index.Reader, p Principal) (*index.User, 
 		return nil, fmt.Errorf("%w: user %s is deleted", index.ErrNotFound, p.Name)
 	}
 	return u, nil
+}
+
+// MaxGroupNameLen bounds the name of a group, in bytes (docs/spec/rbac.md §8).
+const MaxGroupNameLen = 256
+
+// CheckGroupName returns nil when name is the name of a group by docs/spec/rbac.md §8: 1 to
+// MaxGroupNameLen bytes of printable UTF-8, without a space at either end. Groups come from an
+// IdP as it spells them (GitHub's org:team, Keycloak's /path/group, an Azure object id); a name
+// outside the rule is dropped from a login and refused in a binding. Errors wrap
+// ErrInvalidPrincipal and do not quote the name, which may be long.
+func CheckGroupName(name string) error {
+	switch {
+	case name == "":
+		return fmt.Errorf("%w: a group name must not be empty", ErrInvalidPrincipal)
+	case len(name) > MaxGroupNameLen:
+		return fmt.Errorf("%w: a group name is at most %d bytes", ErrInvalidPrincipal, MaxGroupNameLen)
+	case !utf8.ValidString(name) || strings.IndexFunc(name, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0:
+		return fmt.Errorf("%w: a group name is printable UTF-8", ErrInvalidPrincipal)
+	case strings.TrimSpace(name) != name:
+		return fmt.Errorf("%w: a group name has no space at either end", ErrInvalidPrincipal)
+	}
+	return nil
 }
 
 // Anonymous is the principal of requests without credentials.
