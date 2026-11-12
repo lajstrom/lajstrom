@@ -129,6 +129,12 @@ func TestCatalog(t *testing.T) {
 	e := newEnv(t, envOptions{authz: z})
 	e.seedPackage("hello", "1")
 	e.seedPackage("docs/readme.md", "1")
+	// Repositories of the raw repo that oci_repos records and that hold no version: one whose
+	// versions were all deleted, which the registry keeps (Zot), sorting between the others, and
+	// a foreign one. Neither is listed, nor counted in a page (#728).
+	for _, path := range []string{"raw/assets/docs/gone", "raw/assets/foreign"} {
+		must(t, e.st.UpsertOCIRepo(t.Context(), &index.OCIRepo{RepoID: e.raw.ID, Path: path, SeenAt: e.clock.Now()}))
+	}
 	for _, name := range []string{"app", "base/tools"} {
 		body, _ := manifest(t, []byte(name), name)
 		rr := e.do(e.h, http.MethodPut, "/v2/oci/images/"+name+"/manifests/1", bytes.NewReader(body),
