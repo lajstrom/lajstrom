@@ -163,7 +163,9 @@ The profile shares nothing with the three services above: its own database, regi
   [deploy/compose/ha/lajstrom.yaml](../deploy/compose/ha/lajstrom.yaml): Postgres, the registry,
   `externalURL` `http://localhost:8090` with `insecureHTTP: true` (loopback,
   [configuration.md](configuration.md#server)), `trustedProxies: ["172.31.226.10/32"]`, nginx, text
-  logs, no reconcile loop, the repos of `test/e2e/run.sh`, and a fixed master key, the hex of
+  logs, no reconcile loop and the repos of `test/e2e/run.sh`. `compose.yaml` adds the
+  environment: `LAJSTROM_SERVER_EXTERNAL_URL`, which follows `LAJSTROM_HA_PORT` and wins over the
+  file's URL, and a fixed master key in `LAJSTROM_MASTER_KEY`, the hex of
   `lajstrom-ha-dev-stack-not-secret`. `LAJSTROM_CONFIG` names the file, so `lajstrom admin` in a
   replica works on the same database. Both start at once on an empty database: one applies the
   migrations under the migration lock, and the other logs `repo of the configuration was created
@@ -211,10 +213,10 @@ make dev-ps            # the services, their health and ports
 make dev-logs          # follow the logs (Ctrl-C stops following, not the stack)
 make dev-down          # stop and remove the containers, of every profile; the volumes stay
 make dev-down RESET=1  # the same, and remove the volumes
-make dev-up PROFILES=s3  # the three, and distribution on SeaweedFS (below)
-make dev-up PROFILES=s3-minio  # the three, and distribution on MinIO, the fallback (below)
-make dev-up PROFILES=gitlab  # the three, and the GitLab container registry (below)
-make dev-up PROFILES=ha  # the three, and two replicas of Lajstrom behind nginx (below)
+make dev-up PROFILES=s3  # the three, and distribution on SeaweedFS (above)
+make dev-up PROFILES=s3-minio  # the three, and distribution on MinIO, the fallback (above)
+make dev-up PROFILES=gitlab  # the three, and the GitLab container registry (above)
+make dev-up PROFILES=ha  # the three, and two replicas of Lajstrom behind nginx (above)
 make dev-up PROFILES=ecr  # the three, and moto with a distribution for the ECR provider (registries/ecr.md)
 ```
 

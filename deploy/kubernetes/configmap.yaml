@@ -13,6 +13,14 @@ data:
       listen: ":8080"
       # The public URL of the ingress: the realm of the bearer challenge of /v2 is built from it.
       externalURL: "https://art.example.com"
+      # The peers whose X-Forwarded-For names the client: the addresses the ingress or the
+      # Gateway connects to the pods from (docs/configuration.md, server.trustedProxies). While
+      # it is empty, Lajstrom takes the edge for the client: the per-address throttles of failed
+      # logins and /v2/token are off, and the logs record the edge's address. No range fits every
+      # cluster: send one request through the edge, read the remoteAddr of its line in
+      # kubectl logs, and list the range it comes from, such as the pod CIDR of the ingress
+      # controller (docs/deploy/kubernetes.md, 2; docs/reverse-proxy.md, The client address).
+      # trustedProxies: ["<the range your edge connects from>"]
       # Prometheus scrapes the pod's port metrics; no Ingress or route names it.
       metricsListen: "0.0.0.0:9464"
     log:

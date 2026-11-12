@@ -17,8 +17,10 @@ Postgres protocol, what matters is what it asks of the server:
   package row with an `UPDATE` (#584). `clock_timestamp()` reads the database's clock.
 - **Migrations** run DDL and DML in one transaction each, under the migration lock.
 - **Errors by SQLSTATE**: `23505` is a conflict, `23503` a missing row, `42501` a user without
-  the right to migrate; `57P01`, `57P02`, `57P03`, `53300` and the class `08` mean the database
-  did not answer, and the request gets `503` with `Retry-After: 5`
+  the right to migrate; `57P01`, `57P02`, `57P03`, `53300`, the class `08`, and the timeouts
+  that end a session, `25P03`, `57P05` and `25P04`, mean the database did not answer, and a
+  deadlock or a serialization failure, `40P01` or `40001`, is a transaction it aborted that may
+  pass when sent again: for all of them the request gets `503` with `Retry-After: 5`
   ([operations.md](../operations.md#readiness)).
 
 Everything below was measured on 2026-11-11 with Lajstrom at `4ab2f4e` (pgx v5.12.0, Go 1.27.4),
