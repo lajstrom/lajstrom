@@ -71,7 +71,7 @@ blobs of the OCI format read whole (items 2, 3 and 5), as the start logged on 20
 
 ## What the provider must do differently
 
-1. **Done in this PR:** ask for a blob's own bytes. Go's transport offers `Accept-Encoding:
+1. **Done in #341:** ask for a blob's own bytes. Go's transport offers `Accept-Encoding:
    gzip`, and the docker format takes the offer for a blob that looks like text
    (`Content-Encoding: gzip`, chunked); the transport unzips and the size is lost. The facade
    then served such blobs without `Content-Length` (`TestIntegrationBlobReads`). The
