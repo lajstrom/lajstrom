@@ -39,7 +39,8 @@ type hub struct {
 	blobs     map[string]map[digest.Digest][]byte
 	requests  []string // "HEAD /v2/library/nginx/manifests/1.27"
 	tooMany   atomic.Bool
-	corrupted map[digest.Digest]bool // manifests answered with other bytes
+	corrupted map[digest.Digest]bool          // manifests answered with other bytes
+	gates     map[digest.Digest]chan struct{} // blobs answered by half, the rest once the gate closes
 }
 
 type hubDoc struct {
@@ -49,7 +50,8 @@ type hubDoc struct {
 
 func newHub(t *testing.T) *hub {
 	t.Helper()
-	h := &hub{docs: map[string]map[string]hubDoc{}, blobs: map[string]map[digest.Digest][]byte{}, corrupted: map[digest.Digest]bool{}}
+	h := &hub{docs: map[string]map[string]hubDoc{}, blobs: map[string]map[digest.Digest][]byte{}, corrupted: map[digest.Digest]bool{},
+		gates: map[digest.Digest]chan struct{}{}}
 	h.srv = httptest.NewServer(http.HandlerFunc(h.serve))
 	t.Cleanup(h.srv.Close)
 	return h
@@ -117,6 +119,7 @@ func (h *hub) serveDoc(w http.ResponseWriter, r *http.Request, repo, ref string)
 func (h *hub) serveBlob(w http.ResponseWriter, r *http.Request, repo string, d digest.Digest) {
 	h.mu.Lock()
 	b, ok := h.blobs[repo][d]
+	gate := h.gates[d]
 	h.mu.Unlock()
 	if !ok {
 		hubError(w, http.StatusNotFound, "BLOB_UNKNOWN")
@@ -124,9 +127,20 @@ func (h *hub) serveBlob(w http.ResponseWriter, r *http.Request, repo string, d d
 	}
 	w.Header().Set("Content-Length", strconv.Itoa(len(b)))
 	w.Header().Set("Docker-Content-Digest", d.String())
-	if r.Method == http.MethodGet {
-		_, _ = w.Write(b)
+	if r.Method != http.MethodGet {
+		return
 	}
+	if gate != nil {
+		_, _ = w.Write(b[:len(b)/2])
+		w.(http.Flusher).Flush()
+		select {
+		case <-gate:
+		case <-r.Context().Done():
+			return
+		}
+		b = b[len(b)/2:]
+	}
+	_, _ = w.Write(b)
 }
 
 func hubError(w http.ResponseWriter, status int, code string) {

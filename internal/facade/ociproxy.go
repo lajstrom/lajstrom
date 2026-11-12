@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -25,8 +26,9 @@ type OCIProxy interface {
 	// backend does not hold it (nil: read it from the backend by the digest).
 	OCIManifest(ctx context.Context, repo index.Repo, path, ref string) (ocispec.Descriptor, []byte, error)
 	// OCIBlob returns the blob d at path as the manifest that lists it gives it, and with fetch
-	// makes the backend hold it.
-	OCIBlob(ctx context.Context, repo index.Repo, path string, d digest.Digest, fetch bool) (ocispec.Descriptor, error)
+	// makes the backend hold it; with stream, rc is the verified tee of the copy when this
+	// request holds the blob's claim, nil otherwise (read the blob from the backend).
+	OCIBlob(ctx context.Context, repo index.Repo, path string, d digest.Digest, fetch, stream bool) (ocispec.Descriptor, io.ReadCloser, error)
 }
 
 // ociProxy reports whether t is an oci proxy repo that the facade asks Options.OCIProxy about.
@@ -71,14 +73,20 @@ func (h *handler) getProxyManifest(w http.ResponseWriter, r *http.Request, t *ta
 }
 
 // getProxyBlob answers HEAD and GET of a blob of an oci proxy repo that the backend does not
-// hold (ServeBlob answered 404): a HEAD from what the manifest that lists it says, a GET once the
-// core made the backend hold it, served from the backend.
+// hold (ServeBlob answered 404): a HEAD from what the manifest that lists it says; a GET without
+// Range by the request that holds the blob's claim from the verified tee of the copy (§11.8),
+// any other GET once the core made the backend hold it, served from the backend.
 func (h *handler) getProxyBlob(w http.ResponseWriter, r *http.Request, t *target, d digest.Digest, serve func() error) error {
-	desc, err := h.o.OCIProxy.OCIBlob(r.Context(), t.repo, t.path, d, r.Method == http.MethodGet)
+	get := r.Method == http.MethodGet
+	desc, rc, err := h.o.OCIProxy.OCIBlob(r.Context(), t.repo, t.path, d, get, get && r.Header.Get("Range") == "")
 	if err != nil {
 		return proxyError(codeBlobUnknown, err)
 	}
-	if r.Method == http.MethodGet {
+	if rc != nil {
+		h.teeBlob(w, r, t, desc, rc)
+		return nil
+	}
+	if get {
 		return serve()
 	}
 	hdr := w.Header()
@@ -88,6 +96,24 @@ func (h *handler) getProxyBlob(w http.ResponseWriter, r *http.Request, t *target
 	hdr.Set("Content-Length", strconv.FormatInt(desc.Size, 10))
 	w.WriteHeader(http.StatusOK)
 	return nil
+}
+
+// teeBlob copies the verified tee rc of the blob desc to the client: the headers of a whole blob,
+// then the bytes as they go into the backend. The tee holds the last byte until the backend
+// committed the blob; an error of it aborts the response, so that the client never completes a
+// blob the backend does not hold (§11.8, rule 2).
+func (h *handler) teeBlob(w http.ResponseWriter, r *http.Request, t *target, desc ocispec.Descriptor, rc io.ReadCloser) {
+	defer func() { _ = rc.Close() }()
+	hdr := w.Header()
+	hdr.Set("Content-Type", octetStream)
+	hdr.Set("Docker-Content-Digest", desc.Digest.String())
+	hdr.Set("ETag", `"`+desc.Digest.String()+`"`)
+	hdr.Set("Content-Length", strconv.FormatInt(desc.Size, 10))
+	w.WriteHeader(http.StatusOK)
+	if _, err := io.Copy(w, rc); err != nil && r.Context().Err() == nil {
+		h.logProxy(r.Context(), t, desc.Digest, err)
+		panic(fmt.Errorf("facade: the tee of %s@%s, the response is aborted: %w", t.name, desc.Digest, http.ErrAbortHandler))
+	}
 }
 
 // proxyError is the answer to an error of the core on a read of an oci proxy repo, with code for
