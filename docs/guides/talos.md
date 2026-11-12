@@ -17,13 +17,17 @@ What was used, on 2026-11-12:
 - `talosctl` v1.14.5, crane 0.22.1, oras 1.3.6 and curl 8.7, on macOS with OrbStack;
 - registry:3.1.2 as the backend;
 - for the `oci` passthrough and `raw` repos, Lajstrom main (a7aa4d3e);
-- for the `oci` proxy repos, the head of the #442 stack with the #876 fixes (#881, 531e1f00). The
-  proxy repos are not on main yet: [the oci proxy guide](../quickstart/oci-proxy.md).
+- for the `oci` proxy repos:
+  - the head of the #442 stack with the #876 fixes (#881, 531e1f00);
+  - for the boot with a token on 2026-11-13, the top of the blob-fix stack (`fix/875-oci-transit`,
+    fc1a6be5).
+
+  The proxy repos are not on main yet: [the oci proxy guide](../quickstart/oci-proxy.md).
 
 | What | Repo | State |
 | --- | --- | --- |
 | Installer and extension images | `oci` passthrough, copied in | measured: digests unchanged (§2) |
-| Images the nodes pull | `oci` proxy of ghcr.io and registry.k8s.io | measured: a cluster booted with anonymous read. With a token: the token flow measured, the boot not run (§3) |
+| Images the nodes pull | `oci` proxy of ghcr.io and registry.k8s.io | measured, with a token: every image of the boot came through Lajstrom. Nodes and coredns Ready not seen: the run was stopped for disk (§3) |
 | The installer, fetched on demand | `oci` proxy of factory.talos.dev | measured: manifests and config blobs (§6.3) |
 | ISO, disk image, PXE kernel and initramfs | `raw` | measured: `Range`, Basic after a `401`, anonymous read (§4) |
 | `talosctl upgrade` from Lajstrom | | not run: needs qemu with KVM (§5) |
@@ -206,22 +210,43 @@ machine:
   control plane and one worker, with the `machine.registries` mirrors above and
   `anonymousRead: true` repos, at the head of #869 (91a980a9), as reported on #340. That boot
   found [#876](https://github.com/lajstrom/lajstrom/issues/876).
-- **With the token:** containerd's token flow, made with curl against repos without anonymous
-  read, the user and token of §1, at 531e1f00:
+- **With the token**, on 2026-11-13, at fc1a6be5, with a fresh index and a fresh registry:3
+  backend. The repos had no anonymous read, and `skipFallback` was on. Two nodes booted with the
+  commands below, the token of §1, and both patches. `machine.registries` covered the proxies,
+  and the documents `factory.talos.dev`. Both patches also pass
+  `talosctl validate --mode container` together.
+  - **Every image of the boot came through Lajstrom with the token,** principal `talos-node`:
+    etcd, kube-apiserver, kube-controller-manager, kube-scheduler, kube-proxy, coredns and pause
+    from `oci/k8s`; kubelet and flannel from `oci/ghcr`. Both nodes pulled coredns, so the
+    scheduler had placed its pods.
+  - Anonymous requests got only the `401` challenge.
+  - containerd's token flow, as #908 describes it, ran 32 times. Each time, a `POST /v2/token`
+    got `405`, then a `GET` with Basic got `200`:
 
-  ```text
-  GET  /v2/oci/k8s/pause/manifests/3.10.2  401  anonymous   Bearer realm="http://<Host>/v2/token"
-  POST /v2/token                            405  anonymous   grant_type=password: containerd's first try
-  GET  /v2/token                            200  user:…      Basic talos-node:<PAT>: containerd's fallback
-  GET  /v2/oci/k8s/pause/manifests/3.10.2  200  user:…
-  ```
+    ```text
+    HEAD /v2/oci/k8s/etcd/manifests/v3.7.3  401  anonymous   Bearer realm="http://<Host>/v2/token"
+    POST /v2/token                           405  anonymous   grant_type=password: containerd's first try
+    GET  /v2/token                           200  user:…      Basic talos-node:<PAT>: containerd's fallback
+    HEAD /v2/oci/k8s/etcd/manifests/v3.7.3  200  user:…
+    ```
 
-  Both patches pass `talosctl validate --mode container`, together: `machine.registries` for
-  the proxies, and the documents for `factory.talos.dev`.
+  - containerd abandoned its first pull of etcd mid-way. Two of its blob requests were logged as
+    `500` with `context canceled` ([#877](https://github.com/lajstrom/lajstrom/issues/877)). It
+    went on with `Range` (`206`) and the pull completed.
+  - Talos reported the boot sequence done on both nodes. etcd and kubelet were healthy, and the
+    control-plane static pods, kube-proxy and flannel were running.
+  - **Not seen:** nodes and coredns `Ready`. About four minutes in, free disk on the shared
+    machine fell under 4.5 GB, so the cluster was destroyed. `talosctl` was then still at
+    `waiting for all k8s nodes to report`.
+  - [#876](https://github.com/lajstrom/lajstrom/issues/876) is fixed at this commit:
+    - all nine images got their keep-tag in the backend, kube-apiserver and kube-scheduler
+      included. The nodes had asked for only 2 of kube-apiserver's blobs at its own path; the
+      rest was mounted;
+    - `lajstrom_proxy_fetches_total` read `fetched` 61 (k8s 46, ghcr 15), `mounted` 38,
+      `transit` 5 and `shared` 2;
+    - 63 blobs were fetched from the upstreams, none at more than one path.
 
-**Not run: a cluster booted through repos without anonymous read.** It was ready, but no
-cluster could be started that night: the shared machine had less than 6 GB of free disk. The
-commands, with `secrets/patch-registries.yaml` and `secrets/patch-factory.yaml` holding the
+The commands, with `secrets/patch-registries.yaml` and `secrets/patch-factory.yaml` holding the
 snippets above, the endpoints at `http://host.docker.internal:<port>/v2/oci/<repo>`, and the
 token:
 
@@ -408,15 +433,19 @@ the installer if the factory has not built it yet, and keep it in the backend.
 
 ## 7. What is missing
 
-- **A cluster booted through repos without anonymous read** (§3), a real iPXE (§4) and the
-  upgrade (§5) were not run.
+- Not seen: nodes and coredns `Ready` in the cluster booted through repos without anonymous
+  read. Every image came through, but the run was stopped for disk (§3).
+- Not run: a real iPXE (§4) and the upgrade (§5).
 - [#908](https://github.com/lajstrom/lajstrom/issues/908): `POST /v2/token`. containerd wastes
   one round trip per token, and an `identityToken` alone fails.
 - [#911](https://github.com/lajstrom/lajstrom/issues/911): a node credential over several repos
   that need not expire within a year.
 - [#876](https://github.com/lajstrom/lajstrom/issues/876), fixed in #880 and #881 on top of #869:
-  images whose layers a node already holds were never completed in the backend. The control
-  plane images share most of their layers.
+  images whose layers a node already held were never completed in the backend, and the control
+  plane images share most of their layers. At fc1a6be5, all nine images of the boot were
+  complete (§3).
+- [#877](https://github.com/lajstrom/lajstrom/issues/877): a request that containerd abandons
+  is logged as a `500` at ERROR. It happened twice during the boot.
 - [#875](https://github.com/lajstrom/lajstrom/issues/875): nodes that pull a layer while
   another node's fetch of it runs give up after 30 s. A fleet booting at once does exactly
   that.
