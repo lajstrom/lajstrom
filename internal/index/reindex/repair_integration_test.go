@@ -31,7 +31,9 @@ import (
 // the subject's tag-schema index for three signatures pushed through ingest. With the index then
 // deleted by hand, nothing lists them, and a run of the reconcile loop pushes it again: the
 // provider lists the three, and the next run pushes nothing. A registry with the API lists
-// referrers itself, and the test is skipped there.
+// referrers itself, and the test is skipped there; so is a registry whose manifests Lajstrom does
+// not delete (Nexus's docker format), where the index cannot be deleted by hand: a delete by
+// digest leaves its tag (docs/registries/nexus.md, item 2; #800).
 func TestIntegrationRepairReferrers(t *testing.T) {
 	addr := os.Getenv("LAJSTROM_TEST_REGISTRY")
 	if addr == "" {
@@ -44,8 +46,12 @@ func TestIntegrationRepairReferrers(t *testing.T) {
 		Auth: config.RegistryAuth{Username: os.Getenv("LAJSTROM_TEST_REGISTRY_USERNAME"), Password: os.Getenv("LAJSTROM_TEST_REGISTRY_PASSWORD")},
 	}, slog.New(slog.DiscardHandler))
 	must(t, err)
-	if caps, err := prov.Capabilities(ctx); err != nil || caps.Referrers {
+	caps, err := prov.Capabilities(ctx)
+	if err != nil || caps.Referrers {
 		t.Skipf("the registry has the referrers API (%v): there is no tag-schema index to repair", err)
+	}
+	if !caps.DeleteManifest {
+		t.Skip("the registry does not delete manifests (Capabilities.DeleteManifest false): the index cannot be lost by hand")
 	}
 	e := newEnv(t)
 	suffix := make([]byte, 4)

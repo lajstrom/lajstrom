@@ -168,6 +168,21 @@ func TestIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if p.quirk().wholeBlobs {
+			// A vendor that fails ranges (Nexus's oci format, the vendor table) is asked for the
+			// whole blob on purpose: a range is answered 200 with every byte, past the end too,
+			// and nothing says Accept-Ranges (#352, #800).
+			if b.AcceptRanges {
+				t.Error("Accept-Ranges on a registry whose blobs are read whole")
+			}
+			wantBlobBody(t, b, http.StatusOK, blob)
+			b, err = p.OpenBlob(ctx, name, blobDesc.Digest, fmt.Sprintf("bytes=%d-", len(blob)), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantBlobBody(t, b, http.StatusOK, blob)
+			return
+		}
 		wantBlobBody(t, b, http.StatusPartialContent, blob[6:14])
 		if want := fmt.Sprintf("bytes 6-13/%d", len(blob)); b.ContentRange != want {
 			t.Errorf("Content-Range %q, want %q", b.ContentRange, want)

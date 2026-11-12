@@ -29,7 +29,8 @@ import (
 // TestIntegrationCatalogAfterDelete is #728 and #748 on a real registry: a raw path whose one
 // version is deleted through /v2 leaves the catalog, while the path beside it stays; so does an
 // oci repository whose one manifest is deleted, though Zot keeps it with an empty tag list, while
-// the oci repository beside it stays.
+// the oci repository beside it stays. It is skipped on a registry whose manifests Lajstrom does
+// not delete (Nexus's docker format), where the deletes are refused on purpose (#352, #800).
 func TestIntegrationCatalogAfterDelete(t *testing.T) {
 	addr := os.Getenv("LAJSTROM_TEST_REGISTRY")
 	if addr == "" {
@@ -51,6 +52,9 @@ func TestIntegrationCatalogAfterDelete(t *testing.T) {
 	p, err := generic.New(config.Registry{Name: "it", Type: generic.Type, URL: "http://" + addr, Prefix: os.Getenv("LAJSTROM_TEST_REGISTRY_PREFIX"),
 		Auth: config.RegistryAuth{Username: os.Getenv("LAJSTROM_TEST_REGISTRY_USERNAME"), Password: os.Getenv("LAJSTROM_TEST_REGISTRY_PASSWORD")}}, log)
 	must(t, err)
+	if c, err := p.Capabilities(ctx); err != nil || !c.DeleteManifest {
+		t.Skipf("the registry does not delete manifests (Capabilities.DeleteManifest false, %v): Lajstrom refuses the deletes on purpose", err)
+	}
 	providers := provider.Map{"it": p}
 	srv := httptest.NewServer(New(Options{Index: st, Providers: providers, Log: log, Tokens: keys.NewEphemeralTokens(),
 		Ingest: ingest.New(ingest.Options{Providers: providers, Index: st, Log: log})}))

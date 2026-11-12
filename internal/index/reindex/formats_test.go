@@ -131,7 +131,9 @@ func rebuildFormat(t *testing.T, e *env, c formatCase) {
 		len(r.Drift) != 0 || len(r.OrphanReferrers) != 0 {
 		t.Errorf("the rebuild: %+v", *r)
 	}
-	same(t, "the rebuilt rows", before, e.derived(t))
+	after := e.derived(t)
+	before.OCIRepos = e.withoutEmptied(before, after)
+	same(t, "the rebuilt rows", before, after)
 	same(t, "the documents after the rebuild", docs, f.documents(t, c))
 
 	r = e.run(t, reindex.Request{Prune: true})
@@ -144,6 +146,28 @@ func rebuildFormat(t *testing.T, e *env, c formatCase) {
 		}
 	}
 	same(t, "the rows after a second run", before, e.derived(t))
+}
+
+// withoutEmptied is before's oci_repos less the repositories that hold no version of before and
+// that the rebuild, after, did not find. A repository whose versions were all deleted is found
+// again only when the registry's catalog still lists it: the fake's, Zot's and distribution's
+// do, Nexus's oci format's and Forgejo's do not, and the row would go after
+// reconcile.graceAge anyway (index-schema.md). Every other repository must be found (#800).
+func (e *env) withoutEmptied(before, after derived) []string {
+	held, found := map[string]bool{}, map[string]bool{}
+	for _, p := range before.Packages {
+		held[e.repo.Prefix+"/"+p.NameOCI] = true
+	}
+	for _, r := range after.OCIRepos {
+		found[r] = true
+	}
+	out := []string{}
+	for _, r := range before.OCIRepos {
+		if held[r] || found[r] {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // frontend is the routes of one plugin over the env's index and pipeline, the server's
