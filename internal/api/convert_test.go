@@ -101,39 +101,8 @@ func newConvertFixture(t *testing.T, j Journaler, proxy string) (*fixture, *inde
 func TestConvertProxy(t *testing.T) {
 	j := &fakeJournal{}
 	f, repo := newConvertFixture(t, j, "legacy")
-	ctx := context.Background()
 	const target = "/api/v1/repos/npm/legacy"
-	f.create(t, "npm", "internal")
-	wantStatus(t, f.do(http.MethodPost, "/api/v1/repos", `{"format": "npm", "name": "both", "kind": "group",
-		"group": {"members": ["internal", "legacy"]}}`, admin), http.StatusCreated)
-	claim := index.FetchClaim{RepoID: repo.ID, Package: "a", Tag: "3.0.0", Principal: "anonymous", Replica: "r:1",
-		ClaimedAt: time.Now(), HeartbeatAt: time.Now()}
-	must(t, f.st.ClaimFetch(ctx, &claim, time.Now().Add(-time.Hour)))
-
-	for _, tc := range []struct {
-		name, target, body string
-		p                  auth.Principal
-		status             int
-		code, msg          string
-	}{
-		{"a maintainer", target, `{"kind": "hosted"}`, carol, http.StatusForbidden, codeForbidden, ""},
-		{"with another key", target, `{"kind": "hosted", "anonymousRead": true}`, admin, http.StatusBadRequest, codeInvalid,
-			"kind: changes alone"},
-		{"another kind", target, `{"kind": "group"}`, admin, http.StatusBadRequest, codeInvalid, `the one change of a kind`},
-		{"a group", "/api/v1/repos/npm/both", `{"kind": "hosted"}`, admin, http.StatusBadRequest, codeInvalid, "is a group"},
-		{"a group with a hosted member", target, `{"kind": "hosted"}`, admin, http.StatusConflict, codeConflict,
-			"member of the group npm/both, which has the hosted member internal"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			wantError(t, f.do(http.MethodPatch, tc.target, tc.body, tc.p), tc.status, tc.code, tc.msg)
-		})
-	}
-	wantStatus(t, f.do(http.MethodDelete, "/api/v1/repos/npm/both", "", admin), http.StatusNoContent)
-	wantError(t, f.do(http.MethodPatch, target, `{"kind": "hosted"}`, admin), http.StatusConflict, codeConflict, "running")
-	must(t, f.st.ReleaseFetchClaim(ctx, claim.ID))
-	if row, err := f.st.GetRepo(ctx, "npm", "legacy"); err != nil || row.Kind != index.KindProxy || len(j.calls) != 0 {
-		t.Fatalf("after the refusals: %+v, %v, journal %v; want the proxy as it was", row, err, j.calls)
-	}
+	wantConvertRefused(t, f, repo, j)
 
 	var got Repo
 	decodeJSON(t, f.do(http.MethodPatch, target, `{"kind": "hosted"}`, admin), http.StatusOK, &got)
@@ -187,4 +156,43 @@ func TestConvertResume(t *testing.T) {
 	off, _ := newConvertFixture(t, nil, "other")
 	wantError(t, off.do(http.MethodPatch, "/api/v1/repos/npm/other", `{"kind": "hosted"}`, admin), http.StatusNotImplemented,
 		codeUnavailable, "not enabled")
+}
+
+// wantConvertRefused checks the refusals of the conversion of npm/legacy, the proxy repo, and
+// that it is still the proxy it was after them, its journal not written.
+func wantConvertRefused(t *testing.T, f *fixture, repo *index.Repo, j *fakeJournal) {
+	t.Helper()
+	ctx := context.Background()
+	const target = "/api/v1/repos/npm/legacy"
+	f.create(t, "npm", "internal")
+	wantStatus(t, f.do(http.MethodPost, "/api/v1/repos", `{"format": "npm", "name": "both", "kind": "group",
+		"group": {"members": ["internal", "legacy"]}}`, admin), http.StatusCreated)
+	claim := index.FetchClaim{RepoID: repo.ID, Package: "a", Tag: "3.0.0", Principal: "anonymous", Replica: "r:1",
+		ClaimedAt: time.Now(), HeartbeatAt: time.Now()}
+	must(t, f.st.ClaimFetch(ctx, &claim, time.Now().Add(-time.Hour)))
+
+	for _, tc := range []struct {
+		name, target, body string
+		p                  auth.Principal
+		status             int
+		code, msg          string
+	}{
+		{"a maintainer", target, `{"kind": "hosted"}`, carol, http.StatusForbidden, codeForbidden, ""},
+		{"with another key", target, `{"kind": "hosted", "anonymousRead": true}`, admin, http.StatusBadRequest, codeInvalid,
+			"kind: changes alone"},
+		{"another kind", target, `{"kind": "group"}`, admin, http.StatusBadRequest, codeInvalid, `the one change of a kind`},
+		{"a group", "/api/v1/repos/npm/both", `{"kind": "hosted"}`, admin, http.StatusBadRequest, codeInvalid, "is a group"},
+		{"a group with a hosted member", target, `{"kind": "hosted"}`, admin, http.StatusConflict, codeConflict,
+			"member of the group npm/both, which has the hosted member internal"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wantError(t, f.do(http.MethodPatch, tc.target, tc.body, tc.p), tc.status, tc.code, tc.msg)
+		})
+	}
+	wantStatus(t, f.do(http.MethodDelete, "/api/v1/repos/npm/both", "", admin), http.StatusNoContent)
+	wantError(t, f.do(http.MethodPatch, target, `{"kind": "hosted"}`, admin), http.StatusConflict, codeConflict, "running")
+	must(t, f.st.ReleaseFetchClaim(ctx, claim.ID))
+	if row, err := f.st.GetRepo(ctx, "npm", "legacy"); err != nil || row.Kind != index.KindProxy || len(j.calls) != 0 {
+		t.Fatalf("after the refusals: %+v, %v, journal %v; want the proxy as it was", row, err, j.calls)
+	}
 }
