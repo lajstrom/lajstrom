@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/provider"
@@ -47,7 +48,8 @@ func TestOCIBlobBroken(t *testing.T) {
 	must(t, err)
 	layer := img.blobs[0][1]
 	blob := e.hub.bytesOf("library/nginx", layer.Digest)
-	e.hub.breakBlob(layer.Digest, blob, &breaking{cut: func(int) int { return len(blob) / 2 }, whole: true})
+	f := &breaking{cut: func(int) int { return len(blob) / 2 }, whole: true, hold: make(chan struct{})}
+	e.hub.breakBlob(layer.Digest, blob, f)
 	failed, fetched := fetches("error"), fetches("fetched")
 
 	_, rc, err := c.OCIBlob(t.Context(), e.repo, "library/nginx", layer.Digest, true, true)
@@ -60,6 +62,8 @@ func TestOCIBlobBroken(t *testing.T) {
 		_, _, err := c.OCIBlob(t.Context(), e.repo, "library/nginx", layer.Digest, true, false)
 		waited <- err
 	}()
+	time.Sleep(100 * time.Millisecond) // the request joins the fetch, which the resume holds
+	close(f.hold)
 	if got, err := io.ReadAll(rc); err == nil || len(got) >= len(blob) {
 		t.Errorf("the tee of a broken body: %d bytes, %v; want an error before the end", len(got), err)
 	}
