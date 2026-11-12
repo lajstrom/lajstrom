@@ -82,10 +82,6 @@ func TestRegistryUnreachable(t *testing.T) {
 	}()
 	for name, addr := range map[string]string{"refused": refused.Addr().String(), "reset": resetting.Addr().String()} {
 		t.Run(name, func(t *testing.T) {
-			reg, err := generic.New(config.Registry{Name: "local", Type: generic.Type, URL: "http://" + addr, Retries: -1},
-				slog.New(slog.DiscardHandler))
-			must(t, err)
-			e := newEnv(t, envOptions{registry: func(*providertest.Fake) provider.Provider { return reg }})
 			blob := "/v2/oci/images/app/blobs/" + digest.FromString("blob").String()
 			body, _ := manifest(t, []byte("layer"), "unreachable")
 			for _, tt := range []struct {
@@ -98,6 +94,13 @@ func TestRegistryUnreachable(t *testing.T) {
 				{http.MethodGet, blob, nil},
 				{http.MethodPost, uploads, nil},
 			} {
+				// A provider of its own per request: the failures of the requests before, and of
+				// a capabilities probe on the way, would open its circuit breaker, whose 503 has a
+				// Retry-After (openCircuit); this test is about each path's own answer.
+				reg, err := generic.New(config.Registry{Name: "local", Type: generic.Type, URL: "http://" + addr, Retries: -1},
+					slog.New(slog.DiscardHandler))
+				must(t, err)
+				e := newEnv(t, envOptions{registry: func(*providertest.Fake) provider.Provider { return reg }})
 				what := tt.method + " " + tt.target
 				rr := e.do(e.h, tt.method, tt.target, bytes.NewReader(tt.body), "Content-Type", ocispecManifest)
 				if msg := wantError(t, what, rr, http.StatusServiceUnavailable, codeUnavailable); msg != "Service Unavailable" {
@@ -106,9 +109,9 @@ func TestRegistryUnreachable(t *testing.T) {
 				if ra := rr.Header().Get("Retry-After"); ra != "" {
 					t.Errorf("%s: Retry-After %q, want none", what, ra)
 				}
-			}
-			if logs := e.logs.String(); strings.Count(logs, "facade: registry unavailable") != 5 || strings.Contains(logs, "request failed") {
-				t.Errorf("want five warnings, no error:\n%s", logs)
+				if logs := e.logs.String(); strings.Count(logs, "facade: registry unavailable") != 1 || strings.Contains(logs, "request failed") {
+					t.Errorf("%s: want one warning, no error:\n%s", what, logs)
+				}
 			}
 		})
 	}
