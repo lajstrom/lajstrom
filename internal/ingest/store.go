@@ -328,7 +328,7 @@ func sameFiles(ctx context.Context, r index.Reader, versionID int64, layers []pr
 func (p *Pipeline) push(ctx context.Context, pub *publish) (existed bool, err error) {
 	existed, err = p.checkTag(ctx, pub)
 	if err == nil && !existed {
-		err = pub.pushManifest(ctx, func(ctx context.Context) error {
+		err = pub.pushManifest(ctx, p.visibility, func(ctx context.Context) error {
 			pub.ev = pub.event(p.now())
 			withOrigin(ctx, &pub.ev, pub.auditDetails())
 			return p.intend(ctx, &pub.ev)
@@ -371,9 +371,10 @@ func (p *Pipeline) checkTag(ctx context.Context, pub *publish) (existed bool, er
 }
 
 // pushManifest calls intend and pushes the manifest with its tag in one request, after
-// checkTag. The streamed file of UploadStream is committed after intend, the first write to the
-// registry, and before the manifest.
-func (pub *publish) pushManifest(ctx context.Context, intend func(context.Context) error) error {
+// checkTag, and again while a registry not classified strong answers MANIFEST_BLOB_UNKNOWN, for
+// visibility (retryBlobsLag). The streamed file of UploadStream is committed after intend, the
+// first write to the registry, and before the manifest.
+func (pub *publish) pushManifest(ctx context.Context, visibility time.Duration, intend func(context.Context) error) error {
 	if err := intend(ctx); err != nil {
 		return err
 	}
@@ -381,7 +382,9 @@ func (pub *publish) pushManifest(ctx context.Context, intend func(context.Contex
 		return err
 	}
 	desc := ocispec.Descriptor{MediaType: pub.manifest.MediaType, Digest: pub.digest, Size: int64(len(pub.raw))}
-	err := pub.rr.PushReference(ctx, desc, bytes.NewReader(pub.raw), pub.tag)
+	err := retryBlobsLag(ctx, pub.prov, visibility, func(ctx context.Context) error {
+		return pub.rr.PushReference(ctx, desc, bytes.NewReader(pub.raw), pub.tag)
+	})
 	switch {
 	case err == nil:
 		return nil

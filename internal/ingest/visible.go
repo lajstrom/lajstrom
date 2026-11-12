@@ -84,6 +84,41 @@ func (p *Pipeline) awaitVisible(ctx context.Context, w pushed) error {
 	return nil
 }
 
+// codeManifestBlobUnknown is the registry's error code for a manifest PUT that names a blob it
+// does not have.
+const codeManifestBlobUnknown = "MANIFEST_BLOB_UNKNOWN"
+
+// retryBlobsLag sends a manifest with push, and again while the registry answers
+// MANIFEST_BLOB_UNKNOWN, on a registry not classified strong, with the backoff of a read-back,
+// for timeout or the registry's consistencyBound when that is longer. Ingest read every blob the
+// manifest names before (Validate, the commit of a streamed file), so a registry that does not
+// find one at the PUT lags, as ECR does for a moment after a blob's 201 (#446). A strong
+// registry's refusal is the answer at once, and so is any other error.
+func retryBlobsLag(ctx context.Context, prov provider.Provider, timeout time.Duration, push func(context.Context) error) error {
+	err := push(ctx)
+	var rej *provider.RejectedError
+	if !errors.As(err, &rej) || rej.Code != codeManifestBlobUnknown {
+		return err
+	}
+	caps, cerr := prov.Capabilities(ctx)
+	if cerr != nil || caps.Consistency == provider.ConsistencyStrong {
+		return err
+	}
+	again := false
+	_, werr := provider.ReadBack{Timeout: max(timeout, caps.ConsistencyBound)}.Await(ctx, func(ctx context.Context) (bool, error) {
+		if !again { // the first answer is the push above: wait before the next
+			again = true
+			return false, nil
+		}
+		err = push(ctx)
+		return !errors.As(err, &rej) || rej.Code != codeManifestBlobUnknown, nil
+	})
+	if werr != nil {
+		return werr
+	}
+	return err
+}
+
 // NotVisibleError is the error of a push that the registry took and did not serve within the
 // visibility barrier's bound (awaitVisible): what it did not serve yet, by the digests and the
 // tag that were pushed, so that an answer can name them and a client tell a registry that lags
