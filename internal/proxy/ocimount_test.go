@@ -72,7 +72,11 @@ func TestOCIBlobMount(t *testing.T) {
 	b := e.hub.sharedImage(t, kas, "v1.37.1", k8sShared, "arm64")
 	c := e.core("a", proxy.Options{})
 	pull(t, e, c, kcm, "v1.37.1", a, 0)
+	mounted := fetches("mounted")
 	pull(t, e, c, kas, "v1.37.1", b, 0)
+	if n := fetches("mounted") - mounted; n != 2 {
+		t.Errorf("lajstrom_proxy_fetches_total{result=\"mounted\"} rose by %v, want 2", n)
+	}
 	shared, own := b.blobs[0][1:3], []ocispec.Descriptor{b.blobs[0][0], b.blobs[0][3]}
 	if n := e.blobGETs(kas, shared...); n != 0 {
 		t.Errorf("the upstream was asked %d times for the layers kube-apiserver shares, want none: they are mounted", n)

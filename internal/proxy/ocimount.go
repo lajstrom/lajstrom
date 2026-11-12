@@ -89,23 +89,19 @@ func (c *Core) ociHolder(ctx context.Context, p *ociProxied, desc ocispec.Descri
 }
 
 // ociHeldOrMounted reports whether the backend holds the blob desc at p's path, already or once
-// mounted from another path of the repo, which counts as the result mounted.
+// mounted from another path of the repo.
 func (c *Core) ociHeldOrMounted(ctx context.Context, p *ociProxied, desc ocispec.Descriptor) (bool, error) {
 	if held, err := c.ociHasBlob(ctx, p, desc); held || err != nil {
 		return held, err
 	}
-	if c.ociMount(ctx, p, desc) {
-		ociCountFetch(p, fetchMounted)
-		return true, nil
-	}
-	return false, nil
+	return c.ociMount(ctx, p, desc), nil
 }
 
 // ociMount makes the backend hold the blob desc at p's path by a mount from another path of the
-// repo where it holds it (§11.5, step 2), on a context of its own, and pushes what became
-// complete; it reports whether the backend mounted it. Nothing is asked of the upstream, so an
-// offline repo mounts too. A backend that does not mount, or fails, leaves the blob to the
-// caller: a fetch from the upstream, or a 404 offline.
+// repo where it holds it (§11.5, step 2), on a context of its own, counts it as the result
+// mounted, and pushes what became complete; it reports whether the backend mounted it. Nothing
+// is asked of the upstream, so an offline repo mounts too. A backend that does not mount, or
+// fails, leaves the blob to the caller: a fetch from the upstream, or a 404 offline.
 func (c *Core) ociMount(ctx context.Context, p *ociProxied, desc ocispec.Descriptor) bool {
 	if c.o.Mirror == nil {
 		return false
@@ -127,6 +123,7 @@ func (c *Core) ociMount(ctx context.Context, p *ociProxied, desc ocispec.Descrip
 			"registry", p.repo.Registry, "path", p.path, "from", from, "digest", desc.Digest.String())
 		return false
 	}
+	ociCountFetch(p, fetchMounted)
 	c.o.Log.InfoContext(ctx, "proxy: a blob mounted from another path of the repo", "repo", p.id(), "path", p.path, "from", from,
 		"digest", desc.Digest.String(), "size", desc.Size, "principal", auth.PrincipalFrom(ctx).String())
 	if err := c.ociHeldBlob(fctx, p, desc.Digest); err != nil {
