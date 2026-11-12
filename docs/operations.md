@@ -62,9 +62,10 @@ logs one:
    https://art.example.com/api/v1/whoami`.
 
 With the database at hand no token is needed: `lajstrom admin user create --name admin --admin`,
-with the server's configuration, makes the admin straight in the database, before or after the
-first start of `serve`. The password comes from standard input with `--password-stdin` or from a
-prompt on a terminal.
+with the server's configuration, makes the admin straight in the database, after
+`lajstrom migrate` or the first start of `serve`; on a database that is not migrated yet it
+fails, exit status 1, saying so. The password comes from standard input with `--password-stdin`
+or from a prompt on a terminal.
 
 ### A lost password
 
