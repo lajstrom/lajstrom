@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -66,7 +67,36 @@ func newRootCmd(lookupEnv func(string) (string, bool)) *cobra.Command {
 		newHealthcheckCmd(a),
 		newRegistryCmd(a),
 	)
+	for _, c := range root.Commands() {
+		refuseUnknown(c)
+	}
 	return root
+}
+
+// refuseUnknown gives c and every group below it that has no Run of its own unknownSubcommand:
+// cobra prints the help of such a group and returns nil, so `admin token revok 2` exited 0 and
+// revoked nothing (#716). The root refuses an unknown command by itself.
+func refuseUnknown(c *cobra.Command) {
+	if c.HasSubCommands() && !c.Runnable() {
+		c.RunE = unknownSubcommand
+	}
+	for _, sub := range c.Commands() {
+		refuseUnknown(sub)
+	}
+}
+
+// unknownSubcommand is the RunE of a group: without an argument it prints the help, as before;
+// an argument names a subcommand the group does not have, an error (exit 1) with cobra's
+// suggestions.
+func unknownSubcommand(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return cmd.Help()
+	}
+	msg := fmt.Sprintf("unknown command %q for %q", args[0], cmd.CommandPath())
+	if s := cmd.SuggestionsFor(args[0]); len(s) > 0 {
+		msg += "\n\nDid you mean this?\n\t" + strings.Join(s, "\n\t")
+	}
+	return errors.New(msg)
 }
 
 // setup loads the configuration for the commands that need it, then builds the logger from

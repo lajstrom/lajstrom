@@ -189,3 +189,41 @@ func TestOpenStoreUnknownDriver(t *testing.T) {
 		t.Error("openStore accepted the driver mysql")
 	}
 }
+
+// TestUnknownSubcommand: a typo in a subcommand of any group is exit 1 naming it, with the
+// suggestion, not the group's help and 0 (#716); the group alone still prints its help.
+func TestUnknownSubcommand(t *testing.T) {
+	groups := 0
+	root := newRootCmd(func(string) (string, bool) { return "", false })
+	var visit func(path []string)
+	visit = func(path []string) {
+		c, _, err := root.Find(path)
+		if err != nil {
+			t.Fatalf("find %v: %v", path, err)
+		}
+		for _, sub := range c.Commands() {
+			if sub.HasSubCommands() {
+				visit(append(append([]string{}, path...), sub.Name()))
+			}
+		}
+		if len(path) == 0 {
+			return
+		}
+		groups++
+		first := c.Commands()[0].Name()
+		typo := first[:len(first)-1]
+		_, _, err = run(t, nil, append(append([]string{}, path...), typo, "2")...)
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("unknown command %q for %q", typo, "lajstrom "+strings.Join(path, " "))) ||
+			!strings.Contains(err.Error(), "Did you mean this?\n\t"+first) || exitStatus(err) != 1 {
+			t.Errorf("%v %s 2: %v (exit %d), want unknown command with the suggestion %s, exit 1", path, typo, err, exitStatus(err), first)
+		}
+		out, _, err := run(t, nil, path...)
+		if err != nil || !strings.Contains(out, "Available Commands:") {
+			t.Errorf("%v: %v, stdout %q; want the help", path, err, out)
+		}
+	}
+	visit(nil)
+	if groups < 8 {
+		t.Errorf("%d groups, want admin, its six groups and registry", groups)
+	}
+}
