@@ -33,7 +33,7 @@ const (
 //	GET /{repo}/simple/                                      the project list
 //	GET /{repo}/simple/{project}/                            the files of a project; another spelling is 301 to the normalized one
 //	GET /{repo}/files/{project}/{version}/{filename}         a distribution, through format.ServeBlob
-//	GET /{repo}/files/{project}/{version}/{filename}.metadata its core metadata (PEP 658), from the index
+//	GET /{repo}/files/{project}/{version}/{filename}.metadata a wheel's core metadata (PEP 658), from the index
 //	POST /{repo}/                                            the legacy upload API (upload.go)
 //
 // The pages come from index_cache through format.CachedDocument, in the form the Accept header
@@ -263,10 +263,14 @@ func (h *handlers) file(w http.ResponseWriter, r *http.Request) {
 
 // metadata serves the core metadata of a file (PEP 658) from the metadata the index holds: the
 // bytes whose sha256 the page announced as data-core-metadata. A version whose metadata the
-// index left out has no core-metadata on the page, and is 404 here.
+// index left out, and an sdist, have no core-metadata on the page, and are 404 here.
 func (h *handlers) metadata(w http.ResponseWriter, r *http.Request, m *index.FileMatch) {
 	var md struct {
 		CoreMetadata string `json:"core_metadata"`
+	}
+	if !isWheel(m.File.Name) {
+		h.fail(w, r, fmt.Errorf("%w: %s is not a wheel: an sdist has no core metadata file (PEP 658)", index.ErrNotFound, m.File.Name))
+		return
 	}
 	if m.Version.Metadata == nil || json.Unmarshal(m.Version.Metadata, &md) != nil || md.CoreMetadata == "" {
 		h.fail(w, r, fmt.Errorf("%w: the index has no core metadata of %s", index.ErrNotFound, m.File.Name))

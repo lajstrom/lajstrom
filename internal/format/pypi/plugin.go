@@ -89,7 +89,7 @@ type dist struct {
 // (.tar.gz, .zip). mediaType, when not empty, must be the one the name has.
 func describe(filename, mediaType string) (dist, error) {
 	var d dist
-	if strings.HasSuffix(filename, ".whl") {
+	if isWheel(filename) {
 		w, err := ParseWheelFilename(filename)
 		if err != nil {
 			return dist{}, err

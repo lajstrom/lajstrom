@@ -147,11 +147,12 @@ poetry add my-pkg
 ```
 
 The index serves what pip and uv need to resolve without downloading: `data-requires-python`,
-and the core metadata of each file (PEP 658, 714) at `<file URL>.metadata`, announced with its
+and the core metadata of each wheel (PEP 658, 714) at `<file URL>.metadata`, announced with its
 sha256 as `data-core-metadata`, so `pip install` reads a few kilobytes per candidate and
-downloads only the files it installs. A file whose core metadata the index does not hold (it
-was over the size ingest keeps, or the manifest is degraded) has no `data-core-metadata`, and
-pip downloads it to read it. The pages are cached in the index database and rendered again
+downloads only the files it installs. An sdist has no `data-core-metadata`, as on PyPI: a
+build may change its `PKG-INFO`, so pip builds it to read its dependencies. Nor has a wheel
+whose core metadata the index does not hold (it was over the size ingest keeps, or the
+manifest is degraded), and pip downloads it to read it. The pages are cached in the index database and rendered again
 after every publish; they answer `If-None-Match` with `304`.
 
 ```sh
