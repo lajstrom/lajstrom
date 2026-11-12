@@ -86,14 +86,15 @@ const basicChallenge = `Basic realm="lajstrom"`
 // err.Error() for a 4xx and for a *clientError, whose message is written for the client (the
 // 501 of an endpoint that comes later); any other 5xx answers its status text and what a
 // *format.PartialError deleted before it failed (format.ClientMessage), and its cause is logged
-// with the request id. A 401 carries the Basic challenge, and a 503 of a registry whose circuit
-// breaker is open, or of a database that does not answer, Retry-After (format.SetRetryAfter).
+// with the request id, at debug when the client went away (server.FailLevel). A 401 carries the
+// Basic challenge, and a 503 of a registry whose circuit breaker is open, or of a database that
+// does not answer, Retry-After (format.SetRetryAfter).
 func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	status := format.StatusOf(err)
 	msg := clientMessage(err)
 	var ce *clientError
 	if status >= http.StatusInternalServerError && !errors.As(err, &ce) {
-		h.log.ErrorContext(r.Context(), "api: request failed", "method", r.Method, "path", r.URL.Path,
+		h.log.Log(r.Context(), server.FailLevel(r), "api: request failed", "method", r.Method, "path", r.URL.Path,
 			"status", status, "requestId", server.RequestID(r.Context()), "error", err.Error())
 	}
 	if status == http.StatusUnauthorized {

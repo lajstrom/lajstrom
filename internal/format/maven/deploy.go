@@ -12,6 +12,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/server"
 )
 
 // maxMetadataXML bounds the maven-metadata.xml a client PUTs: it lists the versions of one
@@ -362,7 +363,7 @@ func hexLen(algorithm string) int {
 // fail answers err with format.WriteError and logs a 5xx, whose cause the client does not see.
 func (d *deployer) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if status := format.WriteError(w, err); status >= http.StatusInternalServerError {
-		d.deps.Log.ErrorContext(r.Context(), "maven: request failed", "method", r.Method, "path", r.URL.EscapedPath(),
+		d.deps.Log.Log(r.Context(), server.FailLevel(r), "maven: request failed", "method", r.Method, "path", r.URL.EscapedPath(),
 			"status", status, "error", err.Error())
 	}
 }
