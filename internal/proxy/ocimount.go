@@ -3,6 +3,8 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"slices"
 
 	"github.com/opencontainers/go-digest"
@@ -97,22 +99,47 @@ func (c *Core) ociHeldOrMounted(ctx context.Context, p *ociProxied, desc ocispec
 	return c.ociMount(ctx, p, desc), nil
 }
 
+// errNotMounted ends the flight of a mount that did not make the backend hold the blob.
+var errNotMounted = errors.New("proxy: the blob was not mounted")
+
 // ociMount makes the backend hold the blob desc at p's path by a mount from another path of the
 // repo where it holds it (§11.5, step 2), on a context of its own, counts it as the result
-// mounted, and pushes what became complete; it reports whether the backend mounted it. Nothing
-// is asked of the upstream, so an offline repo mounts too. A backend that does not mount, or
-// fails, leaves the blob to the caller: a fetch from the upstream, or a 404 offline.
+// mounted, and pushes what became complete; it reports whether the backend holds the blob at
+// the path now. Nothing is asked of the upstream, so an offline repo mounts too. A backend that
+// does not mount, or fails, leaves the blob to the caller: a fetch from the upstream, or a 404
+// offline. The mounts of one blob at one path on this replica share one flight, and a blob the
+// backend holds at the path by then is not mounted again: a client's miss, the mounts of a
+// manifest's GET and the recheck before a completion's fetch may ask at once.
 func (c *Core) ociMount(ctx context.Context, p *ociProxied, desc ocispec.Descriptor) bool {
 	if c.o.Mirror == nil {
 		return false
 	}
-	fctx, cancel := c.detach(ctx)
-	defer cancel()
-	from := c.ociHolder(fctx, p, desc)
+	fl, _ := c.flights.join(fmt.Sprintf("ocimount:%d:%s:%s", p.repo.ID, p.path, desc.Digest), func() (bool, error) {
+		fctx, cancel := c.detach(ctx)
+		defer cancel()
+		if held, err := c.ociHasBlob(fctx, p, desc); held || err != nil {
+			return false, err // held: mounted, or fetched, since the caller looked
+		}
+		if !c.ociMountOnce(fctx, p, desc) {
+			return false, errNotMounted
+		}
+		return false, nil
+	})
+	select {
+	case <-fl.done:
+	case <-ctx.Done():
+		return false
+	}
+	return fl.err == nil
+}
+
+// ociMountOnce is the mount of ociMount, on its flight's context.
+func (c *Core) ociMountOnce(ctx context.Context, p *ociProxied, desc ocispec.Descriptor) bool {
+	from := c.ociHolder(ctx, p, desc)
 	if from == "" {
 		return false
 	}
-	mounted, err := c.o.Mirror.MirrorMount(fctx, p.repo, p.path, from, desc)
+	mounted, err := c.o.Mirror.MirrorMount(ctx, p.repo, p.path, from, desc)
 	switch {
 	case err != nil:
 		c.o.Log.WarnContext(ctx, "proxy: a blob not mounted from another path of the repo; it is fetched", "repo", p.id(), "path", p.path,
@@ -126,11 +153,11 @@ func (c *Core) ociMount(ctx context.Context, p *ociProxied, desc ocispec.Descrip
 	ociCountFetch(p, fetchMounted)
 	c.o.Log.InfoContext(ctx, "proxy: a blob mounted from another path of the repo", "repo", p.id(), "path", p.path, "from", from,
 		"digest", desc.Digest.String(), "size", desc.Size, "principal", auth.PrincipalFrom(ctx).String())
-	if err := c.ociHeldBlob(fctx, p, desc.Digest); err != nil {
+	if err := c.ociHeldBlob(ctx, p, desc.Digest); err != nil {
 		c.o.Log.WarnContext(ctx, "proxy: a mounted blob not recorded as held", "repo", p.id(), "path", p.path, "digest",
 			desc.Digest.String(), "error", err.Error())
 		return true
 	}
-	c.ociComplete(fctx, p, desc.Digest)
+	c.ociComplete(ctx, p, desc.Digest)
 	return true
 }
