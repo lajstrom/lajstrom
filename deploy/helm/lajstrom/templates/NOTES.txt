@@ -20,7 +20,16 @@ The first admin, from a machine that reaches {{ $url }}, with the token of the S
   lajstrom admin bootstrap --server {{ $url }} --name admin \
     --token-file <(kubectl -n {{ $ns }} get secret {{ $boot }} -o jsonpath='{.data.{{ .Values.bootstrap.key }}}' | base64 -d)
 
+{{- if .Values.bootstrap.generate }}
+Then the token is dead: helm -n {{ $ns }} upgrade {{ .Release.Name }} <chart> --reuse-values --set bootstrap.enabled=false
+{{- else }}
 Then the token is dead: kubectl -n {{ $ns }} delete secret {{ $boot }}
+{{- end }}
+{{- end }}
+{{- if .Values.migrate.enabled }}
+
+Each helm upgrade runs lajstrom migrate of the new image first, as the Job {{ $full }}-migrate;
+a migration that runs long needs a helm --timeout that covers it.
 {{- end }}
 {{- if not (dig "server" "trustedProxies" list .Values.config) }}
 

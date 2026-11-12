@@ -72,6 +72,43 @@ bootstrap:
   # The Secret; empty is <full name>-bootstrap.
   existingSecret: ""
   key: token
+  # true: the chart makes <full name>-bootstrap with a random token (#440) and keeps it across
+  # upgrades with lookup. Not for tools that render with helm template, such as Argo CD: they
+  # cannot look it up and make a new token on every render. Once the admin exists, set
+  # bootstrap.enabled to false, which removes the Secret and its file.
+  generate: false
+
+# lajstrom migrate of the new release, as a pre-upgrade hook Job, before the Deployment gets the
+# new image (docs/operations.md, Several replicas): a migration that fails, or one that would break
+# the replicas serving, fails helm upgrade, and the old replicas keep serving. It reads the new
+# configuration from a hook ConfigMap of its own. Not on helm rollback: the release before runs on
+# the newer schema as kubectl rollout undo does. Without the Job, serve migrates at start, under
+# the migration lock.
+migrate:
+  enabled: true
+  # Also before the first install. Postgres must answer by then: an install that brings up its
+  # database beside the chart fails.
+  onInstall: false
+  # The DSN of the Job, when serve runs as a database user with data rights only and the Job as
+  # the schema's owner (docs/operations.md, A database user for serve); empty takes database's.
+  database:
+    existingSecret: ""
+    key: ""
+  # A migration that fails rolls back; read its log before running it again.
+  backoffLimit: 0
+  # A long migration takes what it takes: give helm upgrade a --timeout that covers it (5m by
+  # default). activeDeadlineSeconds bounds the Job itself.
+  activeDeadlineSeconds: null
+  # Empty: the namespace's default ServiceAccount. The Job needs no identity, and a hook runs
+  # before the chart's ServiceAccount exists on a first sync of Argo CD.
+  serviceAccountName: ""
+  podAnnotations: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
 
 # Every replica is the same: the state is in Postgres and in the registry.
 replicaCount: 2
