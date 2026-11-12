@@ -747,7 +747,11 @@ The bounds on live upload sessions count per replica too: a replica counts the s
 answered a request of, so behind N replicas a principal may hold up to N times as many, and one
 replica may refuse a session while another has room. Raise `server.uploadSessions.perRepo` when
 more CI runners than about 50 push new layers into one repo with one credential at once; a
-refused session is in the access log with status `429`.
+refused session is in the access log with status `429`, and counted in
+`lajstrom_upload_sessions_refused_total` by the bound it met, `limit="repo"` (`perRepo`) or
+`limit="principal"` (`perPrincipal`). `lajstrom_upload_sessions_live` is how many sessions the
+replica counts at the scrape, of all principals: a refusal count that keeps rising while that
+gauge sits near a bound times the principals that push is the sign to raise the bound.
 
 ### Large blobs: ML models
 
@@ -951,6 +955,8 @@ so the number of series is fixed by the code and the configuration.
 | `lajstrom_proxy_fetches_total` | `upstream`, `result` | file requests of proxy repos: `held` (a hit), `fetched` (a miss downloaded and published), `shared` (a miss another request or replica fetched), `missing`, `rejected` (checksum, size, `Validate`), `error` |
 | `lajstrom_clock_skew_seconds` | | this replica's clock minus the index database's at the last comparison, at the start and every 30 seconds; positive when the replica is ahead ([Clocks](#clocks)) |
 | `lajstrom_auth_throttled_total` | `throttle` | requests answered `429` by a throttle ([auth.md](auth.md#failed-logins)): `account` and `address` (failed logins), `token` (requests to `/v2/token`) |
+| `lajstrom_upload_sessions_refused_total` | `limit` | new `/v2` upload sessions answered `429` at a bound of `server.uploadSessions` on this replica ([Requests from clients](#requests-from-clients)): `repo` (`perRepo`), `principal` (`perPrincipal`) |
+| `lajstrom_upload_sessions_live` | | the live `/v2` upload sessions this replica counts toward `server.uploadSessions`, of all principals, at the scrape: a session counts while a request on it runs and for 5 minutes after the last one. Always `0` while both bounds are `0`, which count nothing |
 | `lajstrom_download_digest_mismatches_total` | `registry` | downloads aborted because the bytes the registry sent do not have their digest ([guarantees.md](spec/guarantees.md), INV-40): a blob streamed to a frontend's or `/v2`'s client, a manifest of `/v2`; the log line `response aborted` names it. Anything but 0 is a registry that serves other bytes than it stored |
 | `lajstrom_build_info` | `version`, `commit`, `goversion` | always 1 |
 

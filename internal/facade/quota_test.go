@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/opencontainers/go-digest"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/metrics"
 )
 
 // TestUploadLiveSessions: a principal holds at most UploadSessionsPerRepo live upload sessions
@@ -89,6 +91,50 @@ func TestUploadLiveSessions(t *testing.T) {
 	e.clock.advance(recheckAfter)
 	opened("POST once the index says the session closed elsewhere is gone", e.h, uploads)
 	opened("another replica", e.replica(), uploads)
+}
+
+// TestUploadSessionsMetrics: lajstrom_upload_sessions_refused_total counts each new session
+// refused at a bound, by limit, and lajstrom_upload_sessions_live is the sessions the replica
+// counts at the scrape, of all principals, without those idle for liveWindow (#574).
+func TestUploadSessionsMetrics(t *testing.T) {
+	z := authorizer{
+		"alice": {"oci/images": {auth.ActionWrite}, "raw/assets": {auth.ActionWrite}},
+		"bob":   {"oci/images": {auth.ActionWrite}},
+	}
+	e := newEnv(t, envOptions{authz: z, sessions: [2]int{2, 3}})
+	const assets = "/v2/raw/assets/x/blobs/uploads/"
+	refused := func(limit string) float64 {
+		return testutil.ToFloat64(metrics.UploadSessionsRefused.WithLabelValues(limit))
+	}
+	live := func() float64 { return testutil.ToFloat64(metrics.UploadSessionsLive) }
+	repo0, principal0 := refused("repo"), refused("principal")
+	post := func(target, who string, want int) {
+		t.Helper()
+		wantStatus(t, "POST "+target+" by "+who, e.do(e.h, http.MethodPost, target, nil, principalHeader, who), want)
+	}
+	if n := live(); n != 0 {
+		t.Errorf("live sessions before any: %v, want 0", n)
+	}
+	post(uploads, "alice", http.StatusAccepted)
+	post(uploads, "alice", http.StatusAccepted)
+	post(uploads, "alice", http.StatusTooManyRequests)
+	post(assets, "alice", http.StatusAccepted)
+	post(assets, "alice", http.StatusTooManyRequests)
+	post(assets, "alice", http.StatusTooManyRequests)
+	post(uploads, "bob", http.StatusAccepted)
+	if d := refused("repo") - repo0; d != 1 {
+		t.Errorf("refused at the repo's bound: %v more, want 1", d)
+	}
+	if d := refused("principal") - principal0; d != 2 {
+		t.Errorf("refused at the principal's bound: %v more, want 2", d)
+	}
+	if n := live(); n != 4 {
+		t.Errorf("live sessions: %v, want 4", n)
+	}
+	e.clock.advance(liveWindow)
+	if n := live(); n != 0 {
+		t.Errorf("live sessions once all are idle for %s: %v, want 0", liveWindow, n)
+	}
 }
 
 // TestUploadSessionsOfAnotherReplica: a session another replica opened counts on this one once
