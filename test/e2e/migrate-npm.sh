@@ -23,6 +23,11 @@
 #      proxy repo with the user's token: the versions resolved through the dist-tags (b's a
 #      ^1.0.0 is latest, 1.0.0, not the highest), the integrity of the lockfile Verdaccio's, the
 #      deprecation warned.
+#   7. The conversion (§2.6): PATCH {"kind": "hosted"} as the admin; repo.convert plans 5 journal
+#      ops (4 dist-tags, a deprecation) and skips nothing; every packument has Verdaccio's
+#      dist-tags, deprecations, integrity, and publish times to the second.
+#   8. The repo deleted (force), made again empty and reindexed: the same, from the registry.
+#   9. A publish to the converted repo: latest moves to it, next stays.
 #
 #   test/e2e/migrate-npm.sh [<base url>]     default: http://localhost:8080
 #
@@ -83,9 +88,16 @@ trap cleanup EXIT
 enc() { printf '%s' "${1/\//%2f}"; }
 
 # vpublish NAME VERSION TAG [DEPENDENCY RANGE]: VERSION of NAME published to Verdaccio under
-# TAG, as npm publish sends it: the packument of the version with dist.integrity (sha512) and
-# dist.shasum (sha1) of the tarball, and the tarball as its attachment.
-vpublish() {
+# TAG (publish).
+vpublish() { publish "$verdaccio" "$work/verdaccio.curlrc" "$@"; }
+
+# publish REGISTRY CURLRC NAME VERSION TAG [DEPENDENCY RANGE]: VERSION of NAME published to the
+# registry at REGISTRY with the curl configuration CURLRC under TAG, as npm publish sends it: the
+# packument of the version with dist.integrity (sha512) and dist.shasum (sha1) of the tarball,
+# and the tarball as its attachment.
+publish() {
+	local registry="$1" curlrc="$2"
+	shift 2
 	local name="$1" v="$2" tag="$3" dep="${4:-}" range="${5:-}" dir="$work/pub/$1/$2"
 	mkdir -p "$dir/package"
 	if [ -n "$dep" ]; then
@@ -99,13 +111,13 @@ vpublish() {
 	local integrity shasum
 	integrity="sha512-$(openssl dgst -sha512 -binary "$dir/pkg.tgz" | base64 | tr -d '\n')"
 	shasum="$(openssl dgst -sha1 -r "$dir/pkg.tgz" | cut -d' ' -f1)"
-	jq -n --slurpfile pj "$dir/package/package.json" --arg tag "$tag" --arg v "$v" --arg tarball "$verdaccio/$name/-/$name-$v.tgz" \
+	jq -n --slurpfile pj "$dir/package/package.json" --arg tag "$tag" --arg v "$v" --arg tarball "$registry/$name/-/$name-$v.tgz" \
 		--arg integrity "$integrity" --arg shasum "$shasum" --arg data "$(base64 <"$dir/pkg.tgz" | tr -d '\n')" \
 		--argjson length "$(wc -c <"$dir/pkg.tgz")" \
 		'$pj[0] as $p | {_id: $p.name, name: $p.name, "dist-tags": {($tag): $v},
 		  versions: {($v): ($p + {_id: "\($p.name)@\($v)", dist: {tarball: $tarball, integrity: $integrity, shasum: $shasum}})},
 		  _attachments: {("\($p.name)-\($v).tgz"): {content_type: "application/octet-stream", data: $data, length: $length}}}' >"$dir/body.json"
-	assert_status 201 -K "$work/verdaccio.curlrc" -X PUT -H 'Content-Type: application/json' --data-binary "@$dir/body.json" "$verdaccio/$(enc "$name")"
+	assert_status 201 -K "$curlrc" -X PUT -H 'Content-Type: application/json' --data-binary "@$dir/body.json" "$registry/$(enc "$name")"
 }
 
 # 1. The packages in Verdaccio.
@@ -177,6 +189,7 @@ step "audit: 7 proxy.fetch rows, by $user"
 for name in "${names[@]}"; do
 	assert_status 200 -K "$work/verdaccio.curlrc" "$verdaccio/$(enc "$name")"
 	printf '%s' "$E2E_BODY" >"$work/v.json"
+	cp "$work/v.json" "$work/v-${name##*/}.json" # Verdaccio's packument, for after the conversion
 	assert_status 200 -K "$work/bearer.curlrc" "$base/npm/$repo/$(enc "$name")"
 	printf '%s' "$E2E_BODY" >"$work/l.json"
 	expect "the dist-tags of $name" "$(jq -S -c '.["dist-tags"]' "$work/v.json")" "$(jq -S -c '.["dist-tags"]' "$work/l.json")"
@@ -232,3 +245,50 @@ for entry in a "b/node_modules/$scope/a" b c; do
 done
 grep -q "deprecated" "$work/install.log" || fail "npm did not warn that $scope/c@0.1.0 is deprecated: $(cat "$work/install.log")"
 step "npm install $scope/b $scope/a@next $scope/c@0.1.0 from npm/$repo with Verdaccio off: a 2.0.0-rc.1, b 1.0.1 with a 1.0.0 (latest, not the highest), c 0.1.0 (deprecated), Verdaccio's integrity"
+
+# 7. The conversion: the proxy becomes a hosted repo, its dist-tags and deprecations written to
+# its journal (proxy-and-group.md §2.6).
+
+# same_as_verdaccio WHAT: the packuments of the repo, read as its maintainer, have Verdaccio's
+# dist-tags, deprecations, integrity, and publish times to the second.
+same_as_verdaccio() {
+	local name v
+	for name in "${names[@]}"; do
+		assert_status 200 -K "$work/bearer.curlrc" "$base/npm/$repo/$(enc "$name")"
+		printf '%s' "$E2E_BODY" >"$work/l.json"
+		v="$work/v-${name##*/}.json"
+		expect "$1: the dist-tags of $name" "$(jq -S -c '.["dist-tags"]' "$v")" "$(jq -S -c '.["dist-tags"]' "$work/l.json")"
+		expect "$1: the deprecations and integrity of $name" \
+			"$(jq -S -c '[.versions[] | {version, deprecated, integrity: .dist.integrity}]' "$v")" \
+			"$(jq -S -c '[.versions[] | {version, deprecated, integrity: .dist.integrity}]' "$work/l.json")"
+		expect "$1: the publish times of $name" \
+			"$(jq -c '[.time | to_entries[] | select(.key != "created" and .key != "modified") | "\(.key) \(.value[:19])"] | sort' "$v")" \
+			"$(jq -c '[.time | to_entries[] | select(.key != "created" and .key != "modified") | "\(.key) \(.value[:19])"] | sort' "$work/l.json")"
+	done
+}
+
+assert_status 200 -K "$E2E_CURLRC" -X PATCH -H 'Content-Type: application/json' -d '{"kind": "hosted"}' "$base/api/v1/repos/npm/$repo"
+expect "the kind after the conversion" "hosted null" "$(jq -r '"\(.kind) \(.upstream)"' <<<"$E2E_BODY")"
+assert_status 200 -K "$E2E_CURLRC" "$base/api/v1/audit?repo=npm/$repo&action=repo.convert"
+expect "repo.convert: packages ops skipped" "3 5 0" "$(jq -r '.events[0].details | "\(.packages) \(.ops) \(.skipped | length)"' <<<"$E2E_BODY")"
+same_as_verdaccio "converted"
+step "PATCH {\"kind\": \"hosted\"}: npm/$repo hosted, 5 journal ops (4 dist-tags, 1 deprecation); dist-tags, deprecations, integrity and times Verdaccio's"
+
+# 8. The journal survives the index: the repo deleted, made again empty, and reindexed.
+assert_status 204 -K "$E2E_CURLRC" -X DELETE "$base/api/v1/repos/npm/$repo?force=true"
+assert_status 201 -K "$E2E_CURLRC" -X POST "$base/api/v1/repos" -d "{\"format\": \"npm\", \"name\": \"$repo\", \"registry\": \"local\"}"
+assert_status 202 -K "$E2E_CURLRC" -X POST "$base/api/v1/repos/npm/$repo/reindex"
+for _ in $(seq 1 120); do
+	assert_status 200 -K "$E2E_CURLRC" "$base/api/v1/repos/npm/$repo/reindex"
+	[ "$(jq -r .state <<<"$E2E_BODY")" = running ] || break
+	sleep 0.5
+done
+expect "the state of the reindex ($(head -c 300 <<<"$E2E_BODY"))" done "$(jq -r .state <<<"$E2E_BODY")"
+same_as_verdaccio "reindexed"
+step "npm/$repo deleted (force), made again empty and reindexed: the same dist-tags, deprecations, integrity and times"
+
+# 9. The hosted repo takes a publish; latest moves to it, next stays.
+publish "$base/npm/$repo" "$work/bearer.curlrc" "$scope/a" 1.2.0 latest
+assert_status 200 -K "$work/bearer.curlrc" "$base/npm/$repo/$(enc "$scope/a")"
+expect "the dist-tags of $scope/a after a publish" '{"latest":"1.2.0","next":"2.0.0-rc.1"}' "$(jq -S -c '.["dist-tags"]' <<<"$E2E_BODY")"
+step "a publish of $scope/a 1.2.0 to the converted repo: 201, latest 1.2.0, next kept"
