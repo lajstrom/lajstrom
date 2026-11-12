@@ -69,6 +69,7 @@ func TestRecovery(t *testing.T) {
 		{name: "panic before writing", path: "/test/panic", clientID: "req-1", wantStatus: 500, wantLog: true},
 		{name: "panic with a generated id", path: "/test/panic", wantStatus: 500, wantLog: true},
 		{name: "panic under /api/ answers the envelope", path: "/api/v1/test/panic", clientID: "req-api", wantStatus: 500, wantLog: true},
+		{name: "panic under /v2/ answers the error document", path: "/v2/test/panic", clientID: "req-v2", wantStatus: 500, wantLog: true},
 		{name: "panic after writing aborts", path: "/test/panic-after-write", clientID: "req-2", wantPanic: http.ErrAbortHandler, wantLog: true},
 		{name: "ErrAbortHandler is not swallowed", path: "/test/abort", clientID: "req-3", wantPanic: http.ErrAbortHandler},
 	}
@@ -81,6 +82,7 @@ func TestRecovery(t *testing.T) {
 			}
 			s.mux.HandleFunc("GET /test/panic", boom)
 			s.mux.HandleFunc("GET /api/v1/test/panic", boom)
+			s.mux.HandleFunc("GET /v2/test/panic", boom)
 			s.mux.HandleFunc("GET /test/panic-after-write", func(w http.ResponseWriter, _ *http.Request) {
 				_, _ = io.WriteString(w, "partial")
 				panic("boom")
@@ -162,8 +164,9 @@ func serve(h http.Handler, w http.ResponseWriter, r *http.Request) (panicked any
 	return nil
 }
 
-// checkInternalError checks the 500 of a panic on path: the envelope of the management API under
-// /api/ (docs/api.md, Errors), the error and the request id elsewhere.
+// checkInternalError checks the 500 of a panic on path: the error document of the distribution
+// spec under /v2/ (#747), the envelope of the management API under /api/ (docs/api.md, Errors),
+// the error and the request id elsewhere.
 func checkInternalError(t *testing.T, rr *httptest.ResponseRecorder, status int, path string) {
 	t.Helper()
 	if rr.Code != status {
@@ -175,15 +178,16 @@ func checkInternalError(t *testing.T, rr *httptest.ResponseRecorder, status int,
 	if cl := rr.Header().Get("Content-Length"); cl != "" {
 		t.Errorf("Content-Length %q set by the handler survived", cl)
 	}
-	if strings.HasPrefix(path, "/api/") {
-		var env struct {
-			Error struct {
-				Code, Message string
-			} `json:"error"`
-		}
-		if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil || env.Error.Code != "INTERNAL" ||
-			env.Error.Message != "Internal Server Error" {
-			t.Errorf("body %q (%v), want the envelope with INTERNAL", rr.Body, err)
+	family := ""
+	switch {
+	case strings.HasPrefix(path, "/v2/"):
+		family = `{"errors":[{"code":"UNKNOWN","message":"Internal Server Error"}]}` + "\n"
+	case strings.HasPrefix(path, "/api/"):
+		family = `{"error":{"code":"INTERNAL","message":"Internal Server Error"}}` + "\n"
+	}
+	if family != "" {
+		if got := rr.Body.String(); got != family {
+			t.Errorf("body %q, want %q", got, family)
 		}
 		return
 	}
