@@ -741,7 +741,8 @@ deleted as a hosted repo's are, with `delete` on the proxy repo
 
 ## Coming from Verdaccio
 
-What a Verdaccio `config.yaml` says, and where it goes:
+What a Verdaccio `config.yaml` says, and where it goes; the packages themselves move through a
+proxy repo on Verdaccio and a prefetch ([migrating.md](../migrating.md)):
 
 | Verdaccio | Lajstrom |
 | --- | --- |
