@@ -238,7 +238,7 @@ ok "dnf install $two ($signed): $one came with it, both commands run"
 
 # R-06: zypper, which fetches repomd.xml.key beside repomd.xml.asc.
 if [ -n "$zypper_image" ]; then
-	gpg_opts="--gpgcheck-allow-unsigned-rpm"
+	gpg_opts="--gpgcheck-allow-unsigned-package" # the repodata checked, the packages unsigned
 	[ -n "$key" ] || gpg_opts="--no-gpgcheck"
 	(umask 077 && printf 'username=%s\npassword=%s\n' "$E2E_USER" "$E2E_PASSWORD" >"$work/client/zypp.credentials")
 	docker run -d --name "$zclient" --network host --platform linux/amd64 -v "$work/client:/w" "$zypper_image" sleep infinity >/dev/null
