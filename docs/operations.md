@@ -1124,6 +1124,18 @@ documentation):
 Google Artifact Registry's `keepCount` and ACR's `acr purge`, whose tag regex is not anchored,
 are in [quirks.md](registries/quirks.md#garbage-collection-and-rules-that-read-tags).
 
+Without the referrers API (distribution among them), a referrer survives a collector of untagged
+manifests only while its subject's `sha256-<hex>` index lists it. The delete of one referrer
+pushes that index again without it before it deletes the referrer; when the registry does not
+take that push, the index is pushed back as it was, nothing is deleted, and the delete answers
+`503`. Only when the push back fails too does no index list the subject's referrers: the log
+then has the error "the referrers index of a subject was not pushed back", with the subject and
+the referrers (`unlisted`). Before the next collection (distribution's `registry
+garbage-collect --delete-untagged`), retry each such `DELETE`: the retry pushes the subject's
+index again with every referrer that the audit log has as pushed and the registry still has,
+then deletes. The same retry repairs the index that a failed delete of an earlier Lajstrom
+left, which deleted the referrer before the index was back.
+
 When a registry's rule deletes a version anyway, the index follows at the next reconcile, which
 removes the rows of a manifest the registry answers as unknown
 ([Reconcile](#reconcile)). Until then a client sees a version that is gone (`404` on its

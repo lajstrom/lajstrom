@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
@@ -36,7 +37,10 @@ import (
 //     backend; one that names nothing is index.ErrNotFound. A version whose manifest the backend
 //     does not have any more, or a journal tag of an npm package that the backend does not have
 //     and the index does, is gone: its rows go all the same, so that the retry of a delete whose
-//     index transaction failed after the backend deleted deletes them (#668).
+//     index transaction failed after the backend deleted deletes them (#668). Without the
+//     referrers API, so is a referrer the backend does not have whose last delete in the audit
+//     log did not go through, while its subject is still there: its retry repairs the subject's
+//     index (#711).
 //  3. Under the tag lock of the manifest (Store.WithReferrersLock, keyed by its subject when it
 //     has one, else by its own digest; a journal tag _j<seq> of an npm package under the
 //     package's journal lock instead, keyed by the empty blob's digest, docs/spec/
@@ -49,7 +53,11 @@ import (
 //     The first request that changes anything is a plain delete, so a backend that refuses
 //     deletes refuses it, provider.ErrUnsupported, and nothing has changed: a referrer deleted
 //     on its own, without the referrers API, has its subject's sha256-<hex> index deleted first
-//     and pushed again without it after. A manifest that is gone already is not an error.
+//     and pushed again without it at once, before the referrer goes; when that push fails, the
+//     index is pushed back as it was, the referrer stays, and the error is
+//     provider.ErrUnavailable (503 with Retry-After). An index that lacks referrers the audit
+//     log has as pushed and the backend has is pushed with them before, a repair (#711). A
+//     manifest that is gone already is not an error.
 //  4. Still under the lock, for a version, one index transaction deletes its rows (by its
 //     digest), its package's when it was the last version, invalidates the repo's index_cache
 //     and completes the audit row; for a journal entry of a package the index still has, its
@@ -78,8 +86,10 @@ import (
 // Errors wrap provider.ErrUnsupported (the backend does not delete manifests), index.ErrNotFound
 // (nothing to delete), index.ErrConflict (other tags name the manifest: the error has a method
 // OtherTags() []string, which returns them sorted) or provider.ErrConflict (the backend refused
-// this one delete: Zot keeps a manifest that an image index lists), a *format.RefusedError (a
-// condition failed), or none. Blobs are left to the backend's garbage collection.
+// this one delete: Zot keeps a manifest that an image index lists), provider.ErrUnavailable (the
+// registry did not take a referrer's subject index, and the referrer stays), a
+// *format.RefusedError (a condition failed), or none. Blobs are left to the backend's garbage
+// collection.
 func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Deletion, principal auth.Principal) (*format.Deleted, error) {
 	if del.Path == "" || del.Reference == "" {
 		return nil, invalid(fmt.Errorf("ingest: delete in %s/%s: a package path and a reference are required", repo.Format, repo.Name))
@@ -165,7 +175,7 @@ func (d *deletion) find(ctx context.Context) error {
 	case errors.Is(err, provider.ErrNotFound) && d.journal && d.pkg != nil:
 		return d.findEntry(ctx)
 	case errors.Is(err, provider.ErrNotFound):
-		return fmt.Errorf("%w: no manifest %s in %s", index.ErrNotFound, d.del.Reference, d.name)
+		return d.findReferrer(ctx)
 	case err != nil:
 		return fmt.Errorf("ingest: resolve %s in %s: %w", d.del.Reference, d.name, err)
 	}
@@ -198,6 +208,42 @@ func (d *deletion) findEntry(ctx context.Context) error {
 		return fmt.Errorf("%w: no manifest %s in %s", index.ErrNotFound, d.del.Reference, d.name)
 	}
 	d.target, d.gone = ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: rows[i].Digest}, true
+	return nil
+}
+
+// findReferrer sets the target to the referrer whose digest the reference is, which the backend
+// does not have, when the backend has no referrers API and the audit log's last delete of the
+// digest in the repo did not go through, while its subject is still in the repository: a delete
+// of a referrer before #711's fix could take it and fail to push its subject's index again. The
+// retry repairs the index (deleteReferrer) and records the delete. Anything else, a delete that
+// went through among it, is index.ErrNotFound.
+func (d *deletion) findReferrer(ctx context.Context) error {
+	notFound := fmt.Errorf("%w: no manifest %s in %s", index.ErrNotFound, d.del.Reference, d.name)
+	dg, err := digest.Parse(d.del.Reference)
+	if err != nil || d.api || d.p.audit != nil {
+		return notFound
+	}
+	var last *index.AuditEvent
+	err = d.p.eachAudit(ctx, d.repo, "delete", func(ev index.AuditEvent) bool {
+		if ev.Digest == dg {
+			last = &ev
+		}
+		return last == nil
+	})
+	if err != nil {
+		return fmt.Errorf("ingest: the audit rows of %s in %s: %w", dg, d.repo.Format+"/"+d.repo.Name, err)
+	}
+	if last == nil || last.State == index.AuditOK {
+		return notFound
+	}
+	subject, err := digest.Parse(last.Subject)
+	if err != nil {
+		return notFound // the delete of a version, or of a manifest without a subject
+	}
+	if desc, err := d.resolveTag(ctx, subject.String()); err != nil || desc == nil {
+		return cmp.Or(err, notFound)
+	}
+	d.target, d.gone, d.subject = ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: dg}, true, subject
 	return nil
 }
 
@@ -457,66 +503,226 @@ func (d *deletion) deleteTarget(ctx context.Context) error {
 	return err
 }
 
-// deleteReferrer deletes the target, a referrer, on a backend without the referrers API. Its
-// subject's sha256-<hex> index goes first, a plain delete, so that oras-go rewrites no index
-// before the delete of the referrer, which a backend that refuses deletes would leave out of the
-// index; then the referrer with its own; then the index is pushed again with the referrers it
-// listed but this one, or with all of them when the delete failed.
+// referrersRetryAfter is the Retry-After of the delete of a referrer whose subject's
+// sha256-<hex> index the registry did not take: nothing was deleted, and the retry deletes.
+const referrersRetryAfter = 30 * time.Second
+
+// deleteReferrer deletes the target, a referrer, on a backend without the referrers API, and
+// keeps its subject's other referrers listed by the subject's sha256-<hex> index (#711). The
+// index it starts from is the registry's, repaired first when it lacks referrers the audit log
+// knows (subjectIndex). An index that does not list the referrer stays as it is. Else the index
+// goes first, a plain delete, so that oras-go rewrites no index before the delete of the
+// referrer, which a backend that refuses deletes would leave out of the index; it is pushed
+// again at once without the referrer, and only then does the referrer go, with its own. When
+// that push fails, the index is pushed back as it was and the referrer stays: the error is
+// provider.ErrUnavailable, a 503 whose retry deletes again. When the referrer's delete fails,
+// the index is pushed back as it was too, and the error is the delete's.
 func (d *deletion) deleteReferrer(ctx context.Context) error {
 	tag := "sha256-" + d.subject.Encoded()
-	idx, err := d.resolveTag(ctx, tag)
+	old, err := d.subjectIndex(ctx, tag)
 	if err != nil {
 		return err
 	}
-	if idx == nil {
+	isTarget := func(m ocispec.Descriptor) bool { return m.Digest == d.target.Digest }
+	if old == nil || !slices.ContainsFunc(old.idx.Manifests, isTarget) {
 		return d.deleteTarget(ctx)
 	}
-	listed, err := d.fetchIndex(ctx, *idx)
-	if err != nil {
+	if err := d.deleteOne(ctx, old.desc); err != nil {
 		return err
 	}
-	if err := d.deleteOne(ctx, *idx); err != nil {
+	rest := old.idx
+	rest.Manifests = slices.DeleteFunc(slices.Clone(old.idx.Manifests), isTarget)
+	if len(rest.Manifests) > 0 {
+		if _, err := d.pushIndex(ctx, tag, rest); err != nil {
+			state := "it is pushed back as it was, and the referrer is not deleted"
+			if !d.pushBack(ctx, tag, old, old.idx.Manifests) {
+				state = "it could not be pushed back either: no index lists the subject's referrers until the delete is tried again"
+			}
+			return fmt.Errorf("ingest: delete %s in %s: the referrers index %s without it was not pushed (%s); %s: %w", d.target.Digest,
+				d.name, tag, err.Error(), state, d.notTaken())
+		}
+	}
+	if err := d.deleteTarget(ctx); err != nil {
+		d.pushBack(ctx, tag, old, []ocispec.Descriptor{d.target})
 		return err
 	}
-	err = d.deleteTarget(ctx)
-	if err == nil {
-		listed.Manifests = slices.DeleteFunc(listed.Manifests, func(m ocispec.Descriptor) bool { return m.Digest == d.target.Digest })
-	}
-	if len(listed.Manifests) == 0 {
-		return err
-	}
-	if perr := d.pushIndex(ctx, tag, listed); perr != nil {
-		d.p.log.ErrorContext(ctx, "ingest: the referrers index of a subject was not pushed again; its referrers are not listed",
-			"name", d.name, "subject", d.subject.String(), "referrers", len(listed.Manifests), "error", perr.Error())
-		return cmp.Or(err, perr)
-	}
-	return err
+	return nil
 }
 
-// fetchIndex reads the image index desc.
-func (d *deletion) fetchIndex(ctx context.Context, desc ocispec.Descriptor) (ocispec.Index, error) {
-	var idx ocispec.Index
-	b, err := d.fetch(ctx, desc)
-	if err == nil {
-		err = json.Unmarshal(b, &idx)
-	}
-	if err != nil {
-		return idx, fmt.Errorf("ingest: referrers index %s in %s: %w", desc.Digest, d.name, err)
-	}
-	return idx, nil
+// notTaken is the error of a subject's index that the registry did not take: provider.ErrUnavailable,
+// a 503 whose Retry-After is referrersRetryAfter. Its cause is in the message of the error that
+// wraps it, never wrapped: a 4xx of the registry's would make the answer that 4xx.
+func (d *deletion) notTaken() error {
+	return &provider.UnavailableError{RetryAfter: referrersRetryAfter,
+		Reason: "the registry did not take the referrers index of " + d.subject.String()}
 }
 
-// pushIndex pushes idx under tag.
-func (d *deletion) pushIndex(ctx context.Context, tag string, idx ocispec.Index) error {
+// pushBack pushes the subject's index old back under tag, as it was, and reports whether the
+// registry took it. When it did not, the referrers it lists that no index lists now, unlisted,
+// are logged at error with the subject: a retry of the delete adds back those the audit log
+// knows (subjectIndex).
+func (d *deletion) pushBack(ctx context.Context, tag string, old *subjectIndex, unlisted []ocispec.Descriptor) bool {
+	err := d.rr.PushReference(ctx, old.desc, bytes.NewReader(old.raw), tag)
+	if err == nil {
+		return true
+	}
+	digests := make([]string, 0, len(unlisted))
+	for _, m := range unlisted {
+		digests = append(digests, m.Digest.String())
+	}
+	d.p.log.ErrorContext(ctx, "ingest: the referrers index of a subject was not pushed back; no index lists these referrers",
+		"name", d.name, "subject", d.subject.String(), "unlisted", strings.Join(digests, ","), "error", err.Error())
+	return false
+}
+
+// subjectIndex is a subject's sha256-<hex> index: its descriptor, its bytes, and the index.
+type subjectIndex struct {
+	desc ocispec.Descriptor
+	raw  []byte
+	idx  ocispec.Index
+}
+
+// subjectIndex returns the subject's index under tag, nil when the registry has none and the
+// audit log knows no referrer to list. An index that lacks referrers which the audit log has as
+// pushed and the registry still has (unlisted), or that is missing while there are such, is
+// repaired first: pushed with them after those it lists, and returned as pushed. A delete
+// whose push of the index failed before #711 left them so, and so does a lost referrers lock
+// (#628). The registry that does not take the repair is provider.ErrUnavailable, and nothing
+// has changed.
+func (d *deletion) subjectIndex(ctx context.Context, tag string) (*subjectIndex, error) {
+	desc, err := d.resolveTag(ctx, tag)
+	if err != nil {
+		return nil, err
+	}
+	var old *subjectIndex
+	idx := ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex}
+	if desc != nil {
+		raw, err := d.fetch(ctx, *desc)
+		if err == nil {
+			err = json.Unmarshal(raw, &idx)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("ingest: referrers index %s in %s: %w", desc.Digest, d.name, err)
+		}
+		old = &subjectIndex{desc: *desc, raw: raw, idx: idx}
+	}
+	missing, err := d.unlisted(ctx, idx.Manifests)
+	if err != nil || len(missing) == 0 {
+		return old, err
+	}
+	idx.Manifests = append(slices.Clone(idx.Manifests), missing...)
+	repaired, err := d.pushIndex(ctx, tag, idx)
+	if err != nil {
+		return nil, fmt.Errorf("ingest: delete %s in %s: the referrers index %s with the %d referrers it lacks was not pushed (%s); nothing was deleted: %w",
+			d.target.Digest, d.name, tag, len(missing), err.Error(), d.notTaken())
+	}
+	d.p.log.WarnContext(ctx, "ingest: the referrers index of a subject lacked referrers the audit log has as pushed; pushed with them",
+		"name", d.name, "subject", d.subject.String(), "added", len(missing), "listed", len(idx.Manifests))
+	return repaired, nil
+}
+
+// auditPage is how many audit rows one read of the audit log asks for.
+const auditPage = 500
+
+// unlisted returns the referrers of the subject that listed lacks, which the audit log has as
+// pushed to the repo and the repository still has (listing), in the order of their pushes. The
+// audit log names no referrer when its rows go to an audit.Writer: none is found then. An audit
+// row names no OCI repository, and a filter selects no subject: every push row of the repo is
+// read.
+func (d *deletion) unlisted(ctx context.Context, listed []ocispec.Descriptor) ([]ocispec.Descriptor, error) {
+	if d.p.audit != nil {
+		return nil, nil
+	}
+	seen := map[digest.Digest]bool{}
+	for _, m := range listed {
+		seen[m.Digest] = true
+	}
+	var pushed []digest.Digest // newest first
+	err := d.p.eachAudit(ctx, d.repo, "push", func(ev index.AuditEvent) bool {
+		if ev.Subject == d.subject.String() && ev.Digest != "" && !seen[ev.Digest] {
+			seen[ev.Digest] = true
+			pushed = append(pushed, ev.Digest)
+		}
+		return true
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ingest: the audit rows of the referrers of %s: %w", d.subject, err)
+	}
+	var out []ocispec.Descriptor
+	for _, dg := range slices.Backward(pushed) {
+		desc, err := d.listing(ctx, dg)
+		if err != nil {
+			return nil, err
+		}
+		if desc != nil {
+			out = append(out, *desc)
+		}
+	}
+	return out, nil
+}
+
+// listing returns the descriptor the subject's index lists the manifest dg with, as oras-go
+// writes it: the media type, digest and size the registry resolves, and the manifest's artifact
+// type (its config's media type when it has none) and annotations. It is nil when the
+// repository does not have dg, or dg is no referrer of the subject: cosign's legacy manifest
+// under a tag has no subject.
+func (d *deletion) listing(ctx context.Context, dg digest.Digest) (*ocispec.Descriptor, error) {
+	desc, err := d.resolveTag(ctx, dg.String())
+	if err != nil || desc == nil {
+		return nil, err
+	}
+	b, err := d.fetch(ctx, *desc)
+	if err != nil {
+		return nil, err
+	}
+	var m struct {
+		ArtifactType string              `json:"artifactType"`
+		Config       ocispec.Descriptor  `json:"config"`
+		Subject      *ocispec.Descriptor `json:"subject"`
+		Annotations  map[string]string   `json:"annotations"`
+	}
+	if json.Unmarshal(b, &m) != nil || m.Subject == nil || m.Subject.Digest != d.subject {
+		return nil, nil
+	}
+	if m.ArtifactType == "" && desc.MediaType == ocispec.MediaTypeImageManifest {
+		m.ArtifactType = m.Config.MediaType
+	}
+	return &ocispec.Descriptor{MediaType: desc.MediaType, Digest: desc.Digest, Size: desc.Size,
+		ArtifactType: m.ArtifactType, Annotations: m.Annotations}, nil
+}
+
+// eachAudit calls fn with the audit rows of action in repo, newest first, until fn returns
+// false or none is left.
+func (p *Pipeline) eachAudit(ctx context.Context, repo index.Repo, action string, fn func(index.AuditEvent) bool) error {
+	f := index.AuditFilter{Repo: repo.Format + "/" + repo.Name, Action: action, Limit: auditPage}
+	for {
+		rows, err := p.index.ListAudit(ctx, f)
+		if err != nil {
+			return err
+		}
+		for _, ev := range rows {
+			if !fn(ev) {
+				return nil
+			}
+		}
+		if len(rows) < auditPage {
+			return nil
+		}
+		f.Offset += len(rows) // rows only ever join at the top: a page read again repeats, never skips
+	}
+}
+
+// pushIndex pushes idx under tag and returns it as pushed.
+func (d *deletion) pushIndex(ctx context.Context, tag string, idx ocispec.Index) (*subjectIndex, error) {
 	b, err := json.Marshal(idx)
 	if err != nil {
-		return fmt.Errorf("ingest: referrers index %s: %w", tag, err)
+		return nil, fmt.Errorf("ingest: referrers index %s: %w", tag, err)
 	}
 	desc := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageIndex, Digest: digest.FromBytes(b), Size: int64(len(b))}
 	if err := d.rr.PushReference(ctx, desc, bytes.NewReader(b), tag); err != nil {
-		return fmt.Errorf("ingest: push %s in %s: %w", tag, d.name, err)
+		return nil, fmt.Errorf("ingest: push %s in %s: %w", tag, d.name, err)
 	}
-	return nil
+	return &subjectIndex{desc: desc, raw: b, idx: idx}, nil
 }
 
 // fetch reads the manifest desc, at most maxManifestBytes.
