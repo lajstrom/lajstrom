@@ -260,7 +260,7 @@ type BlobSource struct {
 // Read streams the whole blob, checked against its digest; the reader may also be an io.ReaderAt
 // that reads parts with range requests, never the whole, and unchecked (ingest's is, #161).
 type BlobFetcher func(ctx context.Context, d digest.Digest) (io.ReadCloser, error)
-type IndexScope string                      // jammy/main/amd64, simple/requests, com.example/lib-core
+type IndexScope string                      // jammy (apt suite), simple/requests, com.example/lib-core, @acme/widgets
 type Document struct {
     Kind, Path, ContentType string          // Path relative to /<format>/<repo>/
     Content                 []byte
@@ -1676,7 +1676,7 @@ OCI conformance, upgrade and load, and the commands, needs and CI jobs of all ei
 ```yaml
 server:
   listen: ":8080"
-  externalURL: "https://art.example.com"   # used in tokens, redirects, rendered indexes
+  externalURL: "https://art.example.com"   # the token realm, iss and aud; npm's dist.tarball
   shutdownTimeout: 30s                      # graceful shutdown bound
 log:
   level: info                               # debug | info | warn | error

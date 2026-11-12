@@ -107,7 +107,12 @@ status text only.
 
 Mount of a package under a repo: the name after `/v2/` is split as `<format>/<repo>/<rest>`; the
 repo must exist in the control plane, else `404 NAME_UNKNOWN`. Auto-creation of repos on push is
-not supported (an explicit `POST /api/v1/repos` is one call).
+not supported (an explicit `POST /api/v1/repos` is one call). A manifest `PUT` and the `POST` that
+starts a blob upload are `400 NAME_INVALID` when the registry does not take the OCI repository
+name, before anything goes to it (`provider.Capabilities.CheckName`): a name with more components
+below the instance prefix than `capabilities.maxNameDepth` (#599), or longer than the registry
+takes, 255 bytes with the instance prefix on distribution and most registries, 256 on ECR
+(`MaxNameLength`, #661). The message names the limit, not the prefix.
 
 An `oci` repo takes any manifest and blob as they come, within the bounds of the rows above (a
 manifest's length and layers, a blob's size), and indexes nothing beyond its repository (the OCI
