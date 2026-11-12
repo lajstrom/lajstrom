@@ -50,7 +50,7 @@ func TestIntegrationUpdateRace(t *testing.T) {
 	attempts := 0
 	maintainer := repos(readHook{Store: st, hook: func() {
 		if attempts++; attempts == 1 {
-			_, err := admin.Update(ctx, "npm", name, UpdateRequest{Upstream: json.RawMessage(`{"name": "npmjs2"}`)}, Origin{})
+			_, err := admin.Update(ctx, "npm", name, UpdateRequest{Upstream: json.RawMessage(`{"name": "npmjs2"}`), Admin: true}, Origin{})
 			must(t, err)
 		}
 	}})
