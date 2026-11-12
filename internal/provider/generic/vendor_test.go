@@ -5,10 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -522,54 +520,27 @@ func TestPingNotFound(t *testing.T) {
 }
 
 // TestWholeBlobs: on Nexus's oci format, which answers every ranged GET with 500, OpenBlob asks
-// for the whole blob and says it takes no ranges, once the probe named the vendor and format.
+// for the whole blob and says it takes no ranges, from the first request of a provider that has
+// not probed yet: the read probes first (#797).
 func TestWholeBlobs(t *testing.T) {
 	ctx := context.Background()
-	const repo = "art/raw/scratch/notes"
-	data := []byte("0123456789")
-	d := digest.FromBytes(data)
 	f := newFakeRegistry(t)
-	var ranged atomic.Int32
-	f.hook = func(w http.ResponseWriter, r *http.Request) bool {
-		w.Header().Set("Server", "Nexus/3.98.1-01 (COMMUNITY)")
-		if r.Header.Get("Range") == "" {
-			return false
-		}
-		ranged.Add(1)
-		writeErr(w, http.StatusInternalServerError, "UNKNOWN", "IllegalArgumentException: Paths must start with a slash")
-		return true
-	}
-	f.blobs[repo] = map[digest.Digest][]byte{d: data}
+	ranged := nexusOCI(f, nil)
 	log, _ := testLogger()
 	p := f.provider(t, log, func(c *config.Registry) { c.Retries = -1 })
-	if _, err := p.OpenBlob(ctx, "raw/scratch/notes", d, "bytes=2-4", false); err == nil {
-		t.Fatal("OpenBlob with a range before the probe succeeded; the fake answers 500")
-	}
-	if _, err := p.Capabilities(ctx); err != nil {
-		t.Fatal(err)
-	}
-	ranged.Store(0)
-	b, err := p.OpenBlob(ctx, "raw/scratch/notes", d, "bytes=2-4", false)
-	if err != nil {
-		t.Fatalf("OpenBlob: %v", err)
-	}
-	got, err := io.ReadAll(b.Body)
-	_ = b.Body.Close()
-	if err != nil || b.Status != http.StatusOK || !bytes.Equal(got, data) || b.Size != int64(len(data)) || b.ContentRange != "" || b.AcceptRanges {
-		t.Errorf("OpenBlob = %+v, %q, %v; want the whole blob, 200, without ranges", b, got, err)
-	}
-	st, err := p.StatBlob(ctx, "raw/scratch/notes", d)
-	if err != nil || st.Size != int64(len(data)) || st.AcceptRanges {
+	openWhole(ctx, t, p)
+	st, err := p.StatBlob(ctx, quirkName, digest.FromBytes(quirkData))
+	if err != nil || st.Size != int64(len(quirkData)) || st.AcceptRanges {
 		t.Errorf("StatBlob = %+v, %v; want the size without ranges", st, err)
 	}
 	if n := ranged.Load(); n != 0 {
-		t.Errorf("%d requests with a Range after the probe", n)
+		t.Errorf("%d requests with a Range", n)
 	}
 }
 
 // TestBlobExistsByGET: on JFrog, whose HEAD answers 200 for a blob that GET answers 404 in the
-// image path, StatBlob and a blob's Exists ask GET of the first byte; a manifest's Exists still
-// asks HEAD.
+// image path, StatBlob and a blob's Exists ask GET of the first byte, from the first request of a
+// provider that has not probed yet (#797); a manifest's Exists still asks HEAD.
 func TestBlobExistsByGET(t *testing.T) {
 	ctx := context.Background()
 	const name = "raw/scratch/notes"
@@ -588,9 +559,6 @@ func TestBlobExistsByGET(t *testing.T) {
 	f.blobs["art/"+name] = map[digest.Digest][]byte{present: data, empty: {}}
 	log, _ := testLogger()
 	p := f.provider(t, log, nil)
-	if _, err := p.Capabilities(ctx); err != nil {
-		t.Fatal(err)
-	}
 	rr, err := p.Repository(ctx, name)
 	if err != nil {
 		t.Fatal(err)

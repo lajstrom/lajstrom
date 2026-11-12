@@ -38,17 +38,26 @@ const maxRedirects = 5
 // A Docker-Content-Digest that does not parse, or names another digest than d, is an error
 // that wraps content.ErrMismatchedDigest: the bytes are not the blob asked for. A registry
 // whose vendor fails ranges (quirks.wholeBlobs) is asked without rangeHeader: the answer is
-// the whole blob, 200, without AcceptRanges.
+// the whole blob, 200, without AcceptRanges; the vendor is known before the first request
+// (readQuirks).
 func (p *Provider) OpenBlob(ctx context.Context, name string, d digest.Digest, rangeHeader string, redirect bool) (provider.Blob, error) {
 	op := "open blob " + name + "@" + d.String()
+	ref, err := p.blobRef(op, name, d)
+	if err != nil {
+		return provider.Blob{}, err
+	}
 	if o := p.override.BlobRedirect; o != nil && !*o {
 		redirect = false
 	}
-	whole := p.quirk().wholeBlobs
+	q, err := p.readQuirks(ctx)
+	if err != nil {
+		return provider.Blob{}, err
+	}
+	whole := q.wholeBlobs
 	if whole {
 		rangeHeader = ""
 	}
-	resp, loc, err := p.blobRequest(ctx, op, http.MethodGet, name, d, rangeHeader, redirect)
+	resp, loc, err := p.blobRequest(ctx, op, http.MethodGet, ref, rangeHeader, redirect)
 	if err != nil {
 		return provider.Blob{}, err
 	}
@@ -79,14 +88,31 @@ func (p *Provider) OpenBlob(ctx context.Context, name string, d digest.Digest, r
 // StatBlob sends one HEAD of the blob and follows every redirect (up to maxRedirects, as
 // OpenBlob does): Status 200 with Size, Digest and AcceptRanges; 404 is provider.ErrNotFound.
 // A registry whose HEAD says a blob exists where GET does not (quirks.blobExistsByGET) is asked
-// with a GET of the first byte instead (statByGET).
+// with a GET of the first byte instead (statByGET); the vendor is known before the first
+// request (readQuirks).
 func (p *Provider) StatBlob(ctx context.Context, name string, d digest.Digest) (provider.Blob, error) {
+	return p.statBlob(ctx, name, d, nil)
+}
+
+// statBlob is StatBlob with the vendor's quirks q, or, for nil, readQuirks' once the name and
+// the digest are valid.
+func (p *Provider) statBlob(ctx context.Context, name string, d digest.Digest, q *quirks) (provider.Blob, error) {
 	op := "stat blob " + name + "@" + d.String()
-	q := p.quirk()
-	if q.blobExistsByGET {
-		return p.statByGET(ctx, op, name, d)
+	ref, err := p.blobRef(op, name, d)
+	if err != nil {
+		return provider.Blob{}, err
 	}
-	resp, _, err := p.blobRequest(ctx, op, http.MethodHead, name, d, "", false)
+	if q == nil {
+		read, err := p.readQuirks(ctx)
+		if err != nil {
+			return provider.Blob{}, err
+		}
+		q = &read
+	}
+	if q.blobExistsByGET {
+		return p.statByGET(ctx, op, ref, d)
+	}
+	resp, _, err := p.blobRequest(ctx, op, http.MethodHead, ref, "", false)
 	if err != nil {
 		return provider.Blob{}, err
 	}
@@ -103,8 +129,8 @@ func (p *Provider) StatBlob(ctx context.Context, name string, d digest.Digest) (
 // body is closed unread. The size is the complete length of the 206's Content-Range, or of a
 // 416's (an empty blob), or the Content-Length of a 200 that ignored the range; -1 when the
 // answer does not say.
-func (p *Provider) statByGET(ctx context.Context, op, name string, d digest.Digest) (provider.Blob, error) {
-	resp, _, err := p.blobRequest(ctx, op, http.MethodGet, name, d, "bytes=0-0", false)
+func (p *Provider) statByGET(ctx context.Context, op string, ref registry.Reference, d digest.Digest) (provider.Blob, error) {
+	resp, _, err := p.blobRequest(ctx, op, http.MethodGet, ref, "bytes=0-0", false)
 	if err != nil {
 		return provider.Blob{}, err
 	}
@@ -136,7 +162,20 @@ func completeLength(contentRange string) int64 {
 	return n
 }
 
-// blobRequest sends method to the blob d of name and follows the redirects it gets itself,
+// blobRef is the reference of the blob d of name, for blobRequest: an error, before any
+// request, when the digest or the repository name is invalid.
+func (p *Provider) blobRef(op, name string, d digest.Digest) (registry.Reference, error) {
+	if err := d.Validate(); err != nil {
+		return registry.Reference{}, fmt.Errorf("generic: %s: %w", op, err)
+	}
+	ref := registry.Reference{Registry: p.host, Repository: p.repoName(name), Reference: d.String()}
+	if err := ref.ValidateRepository(); err != nil {
+		return registry.Reference{}, p.translate(op, err)
+	}
+	return ref, nil
+}
+
+// blobRequest sends method to the blob of ref (blobRef) and follows the redirects it gets itself,
 // each a new request with the Range. With returnRedirect a redirect to another origin ends
 // the chain: its response is closed and the Location returned. Otherwise the response is
 // returned open, whatever its status.
@@ -146,14 +185,7 @@ func completeLength(contentRange string) int64 {
 // the same host would carry them in clear text, and such a hop is refused. Once a hop leaves
 // the origin, the chain goes on without credentials, even back to the origin, as oras-go's
 // own redirects do.
-func (p *Provider) blobRequest(ctx context.Context, op, method, name string, d digest.Digest, rangeHeader string, returnRedirect bool) (*http.Response, *url.URL, error) {
-	if err := d.Validate(); err != nil {
-		return nil, nil, fmt.Errorf("generic: %s: %w", op, err)
-	}
-	ref := registry.Reference{Registry: p.host, Repository: p.repoName(name), Reference: d.String()}
-	if err := ref.ValidateRepository(); err != nil {
-		return nil, nil, p.translate(op, err)
-	}
+func (p *Provider) blobRequest(ctx context.Context, op, method string, ref registry.Reference, rangeHeader string, returnRedirect bool) (*http.Response, *url.URL, error) {
 	ctx = auth.AppendRepositoryScope(ctx, ref, auth.ActionPull)
 	target := p.base + "/v2/" + ref.Repository + "/blobs/" + ref.Reference
 	left := false // a hop has left the registry's origin

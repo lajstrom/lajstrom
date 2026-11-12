@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/errdef"
@@ -36,9 +37,10 @@ const (
 )
 
 // Capabilities probes the registry on the first call and caches the answer; a probe that
-// fails is not cached, so the next call probes again. The vendor table (vendor.go) sets what
-// the probe cannot measure, and capabilities: from the configuration replace both. The probe
-// is:
+// fails is not cached, so the next call probes again. Concurrent calls, and the blob reads
+// that probe before the provider's first request (readQuirks), wait for one probe. The vendor
+// table (vendor.go) sets what the probe cannot measure, and capabilities: from the
+// configuration replace both. The probe is:
 //
 //   - reachability: GET /v2/; a failure is the error of Capabilities. Its headers, the
 //     challenge of a 401 the auth client answered on the way, and the host of the URL name
@@ -116,21 +118,116 @@ func apply(c *provider.Capabilities, o config.CapabilityOverrides) {
 	}
 }
 
+// probeBackoff is how long after a probe of its own that failed, though the registry answered
+// its ping, the read path goes without probing (readQuirks); a variable so that tests can
+// change it.
+var probeBackoff = 10 * time.Second
+
+// errProbeBackoff is probeShared's answer to the read path within probeBackoff of a probe of
+// its own that failed: no new probe.
+var errProbeBackoff = errors.New("generic: a probe before a read failed a moment ago")
+
+// probeFlight is a probe under way; the callers that come while it runs wait for its answer.
+type probeFlight struct {
+	done chan struct{} // closed when the probe has ended
+	err  error         // the probe's error; nil when it succeeded
+	// unanswered: the registry did not answer the ping, provider.ErrUnavailable.
+	unanswered bool
+	// abandoned: the probe ended because the context of the caller that ran it did, not
+	// with the registry's answer; a caller still waiting probes again.
+	abandoned bool
+}
+
 // probeOnce returns the cached probe, or probes and caches a successful answer. Concurrent
-// first calls wait for one probe.
+// first calls wait for one probe and share its answer, a failure too; a call after a failure
+// probes again.
 func (p *Provider) probeOnce(ctx context.Context) (provider.Capabilities, error) {
-	if c := p.probed.Load(); c != nil {
-		return *c, nil
+	c, _, err := p.probeShared(ctx, 0, false)
+	return c, err
+}
+
+// probeShared is probeOnce for a caller that waits at most wait for the probe, without a bound
+// for 0, and that, with backoff, starts no probe within probeBackoff of one of its kind that
+// failed (errProbeBackoff), but waits for one under way. A caller stops waiting when its
+// context ends; when it ran the probe, a caller still waiting runs it again. unanswered says
+// that the error is the ping's, which the registry did not answer.
+func (p *Provider) probeShared(ctx context.Context, wait time.Duration, backoff bool) (c provider.Capabilities, unanswered bool, err error) {
+	var deadline time.Time
+	var expired <-chan time.Time
+	if wait > 0 {
+		deadline = time.Now().Add(wait)
+		t := time.NewTimer(wait)
+		defer t.Stop()
+		expired = t.C
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if c := p.probed.Load(); c != nil {
-		return *c, nil
+	for {
+		if c := p.probed.Load(); c != nil {
+			return *c, false, nil
+		}
+		p.mu.Lock()
+		f := p.flight
+		if f == nil {
+			if c := p.probed.Load(); c != nil { // a probe ended since the load above
+				p.mu.Unlock()
+				return *c, false, nil
+			}
+			if backoff && time.Since(p.failedAt) < probeBackoff {
+				p.mu.Unlock()
+				return provider.Capabilities{}, false, errProbeBackoff
+			}
+			f = &probeFlight{done: make(chan struct{})}
+			p.flight = f
+			p.mu.Unlock()
+			c, err := p.lead(ctx, f, deadline, backoff)
+			return c, f.unanswered, err
+		}
+		p.mu.Unlock()
+		select {
+		case <-f.done:
+		case <-ctx.Done():
+			return provider.Capabilities{}, false, p.translate("wait for the probe of "+p.name, ctx.Err())
+		case <-expired:
+			return provider.Capabilities{}, false, fmt.Errorf("generic: wait for the probe of %s: not done within %s", p.name, wait)
+		}
+		if f.err != nil && !f.abandoned {
+			return provider.Capabilities{}, f.unanswered, f.err
+		}
 	}
+}
+
+// lead runs the probe of f under ctx, cut at deadline unless it is zero, and ends f with its
+// answer. For a caller with backoff, a failure sets failedAt unless it is ctx's own or the
+// unanswered ping's: running out of the wait is the registry's doing.
+func (p *Provider) lead(ctx context.Context, f *probeFlight, deadline time.Time, backoff bool) (c provider.Capabilities, err error) {
+	answered := false
+	defer func() {
+		p.mu.Lock()
+		f.err, f.abandoned = err, err != nil && ctx.Err() != nil
+		f.unanswered = err != nil && !answered && !f.abandoned && errors.Is(err, provider.ErrUnavailable)
+		if backoff && err != nil && !f.abandoned && !f.unanswered {
+			p.failedAt = time.Now()
+		}
+		p.flight = nil
+		p.mu.Unlock()
+		close(f.done)
+	}()
+	pctx := ctx
+	if !deadline.IsZero() {
+		var cancel context.CancelFunc
+		pctx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
+	}
+	return p.probeNow(pctx, &answered)
+}
+
+// probeNow probes, and caches a successful answer with the vendor's quirks; probeShared runs
+// one at a time. It sets answered once the registry answered the ping.
+func (p *Provider) probeNow(ctx context.Context, answered *bool) (provider.Capabilities, error) {
 	id, err := p.ping(ctx)
 	if err != nil {
 		return provider.Capabilities{}, p.translate("ping "+p.name, err)
 	}
+	*answered = true
 	v := detectVendor(id)
 	c, err := p.probe(ctx, vendorOverrides(v, id))
 	if err != nil {
