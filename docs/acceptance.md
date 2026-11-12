@@ -10,8 +10,10 @@ The proof of concept is v0.1.0 as the roadmap defines it. This page turns that d
 checks with an id, steps, an expected result and the issue that implements it. A check passes when
 the expected result is observed on the reference environment of §2. v0.1.0 is accepted when every
 check marked **P0** passes and every failed **P1** has an issue and a line in the roadmap's
-decision log. Every check is automated in `test/e2e/` (#34) unless marked *manual*; the Friday
-demos are these scripts.
+decision log. A check is automated when a script of `test/e2e/` (#34) runs it, or the suite its
+row names (the store suite, the OCI conformance suite, the load test); §9 says which script covers
+which ids. A check that no script covers yet is run by hand at the sign-off (§8). The Friday demos
+are these scripts.
 
 The cut line: if the week-1 review (2026-11-13) moves maven (M3) after the MVP, §3.6 and the maven
 rows elsewhere are deferred as a block. Nothing else moves.
@@ -58,41 +60,53 @@ the registry and acts idempotently, so a missed run or a crashed job loses nothi
 
 ## 2. Reference environment
 
-Two compose stacks in `deploy/compose/` (#15, extended by #34):
+The dev stack of `deploy/compose/` ([dev-stack.md](dev-stack.md), #15, #226), and the servers that
+the scripts of `test/e2e/` start on it:
 
 | Stack | Lajstrom | Edge | Database | Registry | Use |
 | --- | --- | --- | --- | --- | --- |
-| `single` | 1 replica, `lajstrom serve` | none, `server.insecureHTTP: true` on loopback | SQLite | Zot | development, unit and integration tests |
-| `ha` | 2 replicas, `lajstrom-a` and `lajstrom-b`, the release image | nginx with TLS from a local CA, round robin per request, `proxy_request_buffering off`, `client_max_body_size 0`, health check on `/-/readyz` | Postgres 16 | docker distribution v3 with S3 storage on SeaweedFS (blob redirect), plus Zot as the second registry | acceptance, HA, security |
+| `make dev-up` | 1 process on the host, built from the working tree: `test/e2e/run.sh` serves `bin/lajstrom` on a free port of `127.0.0.1` with a configuration of its own, `server.insecureHTTP: true` on loopback ([testing.md](testing.md#end-to-end)) | none | SQLite, a new file per run; Postgres with `LAJSTROM_E2E_INDEX_DSN` | Zot (`localhost:5000`); distribution (`localhost:5001`) with `LAJSTROM_E2E_REGISTRY` | development, integration and end-to-end tests: §3, §5, §6 |
+| `make dev-up PROFILES=ha` | 2 replicas, `lajstrom-a` and `lajstrom-b`, the image `lajstrom-dev-ha` built from the working tree | nginx with [deploy/nginx/lajstrom.conf](../deploy/nginx/lajstrom.conf) on plain HTTP at `localhost:8090`, round robin per request, bodies unbuffered; the replicas past it on `localhost:8091` and `:8092` | Postgres 17.11 | distribution 3.1.2 on local disk (`localhost:5007`), no referrers API | HA: §4 |
+| `make dev-up PROFILES=s3` | as with `make dev-up` | none | as with `make dev-up` | distribution on SeaweedFS (`localhost:5002`), whose blob `GET`s answer `307` | the `307` of R-05 and O-10 |
 
-Fixed names: host `art.test` (in `/etc/hosts` of the runner and of every client container), the
-CA from `mkcert` installed in the client images, metrics on `127.0.0.1:9464` of each replica and
-nowhere else.
+The rows of §3 to §7 write the server as `https://art.test`. On the dev stack it is the base URL
+of the run, which `run.sh` prints, or the edge, `http://localhost:8090`. The checks were written
+for an environment that the stacks do not have yet: TLS at the edge, a metrics listener
+(`metricsListen` is empty in the configurations of `run.sh` and of the `ha` profile; C-08 and
+N-01 need one), S3 storage and a second registry behind the `ha` replicas (R-05 and O-10 on the
+`ha` stack), and the release image (the replicas are built from the working tree). A check that
+needs one of these fails on §2 until it is there (§8).
 
-Client containers, pinned by digest in `test/e2e/clients.env`: `ghcr.io/oras-project/oras`,
-`gcr.io/go-containerregistry/crane`, `gcr.io/projectsigstore/cosign`, `python:3.13` (pip, twine,
-uv), `ubuntu:24.04`, `debian:12`, `maven:3.9-eclipse-temurin-21`, `gradle:8-jdk21`.
+Client images, pinned by tag in the header of each script and pulled once by the `e2e` job of
+CI ([testing.md](testing.md#end-to-end) has the list): `ghcr.io/oras-project/oras:v1.3.6`,
+`ghcr.io/sigstore/cosign/cosign:v3.1.4`, `python:3.13` (pip, twine, uv, poetry), `ubuntu:24.04`,
+with `ubuntu:22.04` and `debian:12` for apt, `maven:3.9.16-eclipse-temurin-21`,
+`gradle:8.14.6-jdk21` and `node:26.13.0-slim` (npm, pnpm, yarn).
 
-Bootstrap, run by `test/e2e/bootstrap.sh` and repeated by hand for the manual checks:
+`run.sh` sets a run up: it writes the configuration with the repos `raw/scratch`, `apt/ubuntu`,
+`apt/e2e` and `pypi/e2e` and the upstream `npmjs`, runs `lajstrom migrate`, writes a bootstrap
+token into `auth.bootstrap.tokenFile`, starts `lajstrom serve`, and once it is ready makes the
+first admin, `e2e-admin`, with `lajstrom admin bootstrap`. Each scenario makes the users,
+bindings, tokens and other repos it needs, named after the run. By hand, for the checks that no
+script covers, on the `ha` profile (its configuration has one registry, `local`):
 
 ```sh
-make build && make dev-up STACK=ha
-bin/lajstrom admin user create --name admin --admin          # a prompt for the password
+make dev-up PROFILES=ha
+docker compose -f deploy/compose/compose.yaml exec -T lajstrom-a /lajstrom admin user create --name admin --admin --password-stdin <<<"$password"
 # repos: one per format, one public
-curl -u admin:… -X POST https://art.test/api/v1/repos -d '{"name":"assets","format":"raw","registry":"dist"}'
-curl -u admin:… -X POST https://art.test/api/v1/repos -d '{"name":"public","format":"raw","registry":"dist","anonymousRead":true}'
-curl -u admin:… -X POST https://art.test/api/v1/repos -d '{"name":"internal","format":"pypi","registry":"dist"}'
-curl -u admin:… -X POST https://art.test/api/v1/repos -d '{"name":"ubuntu-internal","format":"apt","registry":"zot"}'
-curl -u admin:… -X POST https://art.test/api/v1/repos -d '{"name":"releases","format":"maven","registry":"dist"}'
+curl -u "admin:$password" -X POST http://localhost:8090/api/v1/repos -d '{"name":"assets","format":"raw","registry":"local"}'
+curl -u "admin:$password" -X POST http://localhost:8090/api/v1/repos -d '{"name":"public","format":"raw","registry":"local","anonymousRead":true}'
+curl -u "admin:$password" -X POST http://localhost:8090/api/v1/repos -d '{"name":"internal","format":"pypi","registry":"local"}'
+curl -u "admin:$password" -X POST http://localhost:8090/api/v1/repos -d '{"name":"ubuntu-internal","format":"apt","registry":"local"}'
+curl -u "admin:$password" -X POST http://localhost:8090/api/v1/repos -d '{"name":"releases","format":"maven","registry":"local"}'
 # principals: alice writer on */*, bob reader on pypi/*, a deploy token with write on raw/assets
 ```
 
-Fixtures are built in process by `internal/testutil` (#22): a `.deb`, a wheel and an sdist, a jar
-with its POM. Nothing binary is vendored.
+Fixtures are built in process by `internal/testutil` (#22) for the unit and integration tests;
+the scripts build their packages in the client containers. Nothing binary is vendored.
 
-Preconditions before any check: `GET https://art.test/-/readyz` is 200 on both replicas (the edge
-exposes `/-/readyz` of each replica on `art.test:8443` and `:8444` for the HA checks), and
-`curl http://127.0.0.1:9464/metrics` works from inside the replica's network namespace only.
+Preconditions before a check on the `ha` stack: `GET /-/readyz` is 200 through the edge and on
+each replica past it (`make dev-up` waits for the health checks, which ask the same).
 
 ## 3. Functional checks
 
@@ -224,6 +238,22 @@ RBAC matrix for S-02, expected status on the raw frontend (`/v2` maps 401 to `UN
 | admin | 200 | 201 | 204 | 404 |
 | user with no binding on the repo | 404 | 404 | 404 | 404 |
 
+The first admin made with the bootstrap token, S-01's second path, in detail. `test/e2e/first-admin.sh`
+prints these ids; it starts servers of its own on new indexes, since the server of `run.sh` has
+its admin already. FA-07 and FA-08 need a Postgres database (`LAJSTROM_E2E_POSTGRES_DSN`) and
+`psql`, and are skipped without them.
+
+| Id | Steps | Expected | Issue |
+| --- | --- | --- | --- |
+| FA-01 | `serve` on a new SQLite index without `auth.bootstrap.tokenFile` | a warning, without a secret, says how to make the first admin; there is no token, and a made-up one is 403 | #440 |
+| FA-02 | `serve` with `LAJSTROM_BOOTSTRAP_TOKEN_FILE`, a token made for the run | the index files hold its sha256, never the token, and no log line has it | #440 |
+| FA-03 | a wrong token; then wrong tokens from one client address | 403; the 11th wrong one is 429 with `Retry-After`, and so is the right token | #440 |
+| FA-04 | `lajstrom admin bootstrap` with the token | the admin is made and may read the audit log: `user.create` with the source `bootstrap` | #440 |
+| FA-05 | a second exchange | 404; the command says that an admin exists | #440 |
+| FA-06 | a restart with the file still set | a warning to remove it; no log line of any start has the token | #440 |
+| FA-07 | two replicas with one token file on one new Postgres schema, started together | they store one token, made by one of them | #440 |
+| FA-08 | `lajstrom admin bootstrap` on both replicas at once | one admin; the other is refused | #440 |
+
 ### 3.9 Management API and CLI
 
 | Id | Steps | Expected | Issue |
@@ -234,16 +264,16 @@ RBAC matrix for S-02, expected status on the raw frontend (`/v2` maps 401 to `UN
 | G-04 | `DELETE …/repos/raw/assets` as bob (reader), as a maintainer of that repo | 403, 204 (`manage` covers it, http-routing.md §4); afterwards `GET /raw/assets/…` is 404 and a bearer token issued before is rejected on that repo | #14, #45 |
 | G-05 | `POST …/repos/raw/assets/reindex` | 202, the reindex of that repo runs, the audit log has it | #14, #29 |
 | G-06 | every error of `/api/v1` | `{"error":{"code","message"}}` with the seven codes of http-routing.md §4 only | #14, #47, #579 |
-| G-07 (P1) | `lajstrom admin export` | JSON of the control plane without secrets (token hashes yes, passwords no, private keys as ciphertext) | #47 |
+| G-07 (P1) | `lajstrom admin export` | JSON of the control plane without secrets (token hashes yes, passwords no, private keys as ciphertext); not built: there is no `admin export`, and the export of the control plane is #76, after the PoC | #47, #76 |
 
 ### 3.10 Delivery
 
 | Id | Steps | Expected | Issue |
 | --- | --- | --- | --- |
-| D-01 | `goreleaser release --snapshot` | linux/amd64 and arm64 binaries, darwin, the two images, an SBOM, a cosign signature that `cosign verify` accepts with the published key | #57 |
+| D-01 | `make snapshot` (`goreleaser release --snapshot`, without publishing or signing); on the tag, the Release workflow | the snapshot: linux and darwin archives for amd64 and arm64, the images, an SBOM of each archive, no signature; on the tag: `cosign verify` of the image and `cosign verify-blob` of `checksums.txt` pass with the identity of the release workflow at that tag, keyless ([release.md](release.md#verifying-a-release)) | #57 |
 | D-02 | `docker run ghcr.io/lajstrom/lajstrom:v0.1.0 version` | runs as a non-root uid, read-only root fs works, no shell required | #57 |
 | D-03 *manual* | the install guide on a fresh VM with a public DNS name, TLS in Lajstrom itself | `curl -T` round trip works from a laptop within 30 minutes of reading | #58 |
-| D-04 | `make dev-up STACK=single` and `STACK=ha` on macOS (OrbStack) and on the CI runner | both reach `readyz` 200 within 60 s | #15 |
+| D-04 | `make dev-up` and `make dev-up PROFILES=ha` on macOS (OrbStack) and on the CI runner | every service healthy within 60 s (`make dev-up` waits for it); on `ha`, `GET /-/readyz` through the edge 200 | #15, #226 |
 
 ### 3.11 npm, proxy and group repos (M4)
 
@@ -283,7 +313,7 @@ robin per request, so every multi-request protocol crosses replicas by construct
 | H-04 | a chunked upload: `POST` on A, `PATCH` chunks on B, final `PUT` on A, by script | 201; the digest matches | #24 |
 | H-05 | `curl -T` 500 MiB to replica A; `docker kill lajstrom-a` after 100 MiB; retry the same `PUT` through the edge | the first fails with a connection error, the retry is 201; no version with a wrong digest in the index; no claim older than the TTL left after `ingest.claimTTL`; after `docker start lajstrom-a` its `/tmp` has no spool files | #12, #24 |
 | H-06 | a loop of `pip install` every second; `docker restart postgres` | requests during the outage are 503 and `readyz` is 503, the loop recovers without restarting Lajstrom, no duplicate versions and no half-indexed version afterwards | #23, #10 |
-| H-07 | the same loop; `docker restart registry` | 502 during the outage (`provider.ErrUnauthorized` or connection errors map to 502/503), recovery; the next reconcile reports nothing missing | #9, #30 |
+| H-07 | the same loop; `docker restart registry` | 502 or 503 during the outage (a registry that does not answer, or whose name does not resolve, is `provider.ErrUnavailable`, 503, #561), recovery; the next reconcile reports nothing missing | #9, #30, #561 |
 | H-08 | maven deploy with the edge alternating replicas on every `PUT` (M-01 on the `ha` stack) | the session lives in the database; the commit on whichever replica sees the metadata `PUT` | #53 |
 | H-09 | `POST …/reindex` on A and on B at once | one runs, the other answers 409 `CONFLICT` "already running" (advisory lock); the result equals I-01 | #29 |
 | H-10 | the `pip install` loop; `docker restart lajstrom-a`, wait for `readyz`, then `lajstrom-b` | zero failed requests: a stopping replica serves on for `server.shutdownDelay`, nginx sends a request a replica refuses to the other and leaves the refusing one out for `fail_timeout`, and shutdown drains in-flight requests | #50, #707 |
@@ -295,7 +325,8 @@ robin per request, so every multi-request protocol crosses replicas by construct
 ## 5. Security
 
 The threat model (#63) is the written argument; these are the checks that must hold before it is
-signed. `test/e2e/security.sh` automates the ones with a command; the rest are reviews.
+signed. No script is for this section alone: the scripts of §9 cover X-03, X-04, X-05 and X-14;
+the other rows with a command are run by hand at the sign-off, and the rest are reviews.
 
 | Id | Steps | Expected | Issue |
 | --- | --- | --- | --- |
@@ -313,9 +344,9 @@ signed. `test/e2e/security.sh` automates the ones with a command; the rest are r
 | X-12 | 200 idle connections sending one header byte per 5 s; a 2 MiB request header | the connections are closed after `ReadHeaderTimeout` (10 s), 431 for the header; a parallel 1 GiB transfer is unaffected | #50 |
 | X-13 | `OPTIONS` with `Origin: https://evil.test` on `/api/v1/repos` | no `Access-Control-Allow-Origin` header (CORS is off until #70 adds the allowlist) | #70 |
 | X-14 | a deploy token used for `DELETE` and for `PATCH /api/v1/repos/…`; a PAT with `scopes: [read]` used for push | 403, 403, 403: deploy tokens never get `delete` or `manage`, PAT scopes only narrow | #44, #45 |
-| X-15 | `DELETE /api/v1/audit/1`, `PATCH` on an audit row | 405: the audit log has no write API; `admin export` includes it | #46 |
+| X-15 | `DELETE /api/v1/audit/1`, `PATCH` on an audit row | 405: the audit log has no write API; an export of the control plane that includes it is #76, after the PoC (G-07) | #46 |
 | X-16 | `govulncheck`, `go-licenses`, CodeQL, the snippet scan, on the release commit | all clean; the allowlist of CONTRIBUTING.md holds | #57 |
-| X-17 | D-02; `docker inspect` of the image | non-root, no setuid binaries, `readOnlyRootFilesystem` works with `/tmp` as the only writable mount (the request spool) | #57 |
+| X-17 | D-02; `docker inspect` of the image | non-root, no setuid binaries, `readOnlyRootFilesystem` works with `/tmp` as the only writable mount (uploads stream, ADR 0014: `/tmp` holds the opt-in spool of a `/v2` chunk, #425, and a proxy fetch) | #57 |
 | X-18 | `SELECT * FROM keys`; `GET …/key.asc`; `tcpdump` between the edge and a client during R-05 | GPG private keys are ciphertext under `masterKeyEnv`; `key.asc` is the public key only; backend credentials never reach a client; the presigned URL expires | #41, #27 |
 | X-19 | the config file world-readable; `LAJSTROM_MASTER_KEY` unset with keys present | a warning at start for the file mode; exit 2 for the missing master key, naming the variable only | #41, #50 |
 | X-20 *review* | `docs/security/threat-model.md` | every high finding fixed or tracked; `SECURITY.md` has the supported-versions table and a contact | #63 |
@@ -362,17 +393,26 @@ signed. `test/e2e/security.sh` automates the ones with a command; the rest are r
 
 The release issue (#59) carries this list with links to the runs. Steps, in order:
 
-1. Tag the release candidate from `main` (`v0.1.0-rc.1`); `goreleaser` builds the images (D-01).
-2. `make dev-up STACK=ha IMAGE=ghcr.io/lajstrom/lajstrom:v0.1.0-rc.1`; wait for both `readyz`.
-3. `test/e2e/bootstrap.sh` creates the users, repos, tokens and bindings of §2.
-4. `make e2e STACK=ha`: every script of §3 (`core.sh`, `raw.sh`, `pypi.sh`, `apt.sh`, `maven.sh` unless cut, `oras.sh`, `index.sh`, `auth.sh`, `api.sh`). A failure stops here.
-5. `test/e2e/ha.sh`: H-01 to H-13, twenty iterations of H-03.
-6. `test/e2e/security.sh`: the automated rows of §5; then the manual and review rows (X-20, D-03) with the names of who did them.
-7. `test/e2e/corner.sh`: §6.
-8. `test/load/run.sh`: §7, numbers pasted into `docs/operations.md`.
-9. `make dev-down && make dev-up STACK=single` and `make e2e STACK=single`: the single-node path with SQLite and Zot.
-10. The lead fills the table in #59: every P0 green; every red P1 has an issue and a line in the roadmap decision log; the threat model is merged.
-11. Tag `v0.1.0`, release notes, announcement.
+1. Tag the release candidate from `main` (`v0.1.0-rc.1`); the Release workflow builds, signs and
+   publishes the archives and the images (D-01, [release.md](release.md)).
+2. On the commit of the tag, `make dev-up PROFILES=ha` (`make dev-up` waits for every health
+   check). The replicas are built from that working tree, not pulled; the release image itself
+   is checked by D-02, X-17 and the install guide (D-03).
+3. `make e2e`: `test/e2e/run.sh` builds `bin/lajstrom`, makes its first admin, runs every
+   scenario of `test/e2e/` against a server of its own on the Zot of the stack with a new SQLite
+   index (the single-node path), then `ha.sh` against the `ha` profile: H-01 to H-13, twenty
+   rounds of H-03, and the scenarios again through the edge. Then the other runs of the `e2e` job
+   of CI: `apt.sh` with `APT_E2E_IMAGE` `ubuntu:22.04` and `debian:12`, `cosign.sh` and `npm.sh`
+   against distribution (`LAJSTROM_E2E_REGISTRY=localhost:5001`; [testing.md](testing.md#end-to-end)).
+   A failure stops here.
+4. `test/conformance/run.sh` against an `oci` repo: O-11.
+5. The rows that no script covers (§9), by hand on the stacks of §2, `make dev-up PROFILES=s3`
+   for the `307` of R-05 and O-10; then the manual and review rows (X-20, D-03). Each with the
+   name of who ran it.
+6. `make load` (`test/load/run.sh`): §7 as far as it measures, the numbers in
+   [operations.md](operations.md#performance).
+7. The lead fills the table in #59: every P0 green; every red P1 has an issue and a line in the roadmap decision log; the threat model is merged.
+8. Tag `v0.1.0`, release notes, announcement.
 
 A check that cannot be run because the environment is missing something is a failure of §2, not
 a skipped check.
@@ -381,5 +421,30 @@ a skipped check.
 
 Every id above names its issue in the last column; the issue's acceptance criteria are the
 implementation-level detail, this page is the user-level behaviour. When an issue is cut or moved,
-the rows that name it get the same label in this page's next revision. Scripts live in
-`test/e2e/` and print the ids they cover, so a run's log is the filled checklist.
+the rows that name it get the same label in this page's next revision.
+
+The scripts of `test/e2e/` cover the ids below, and all but `cosign.sh` and `pypi.sh` name them in
+their header. Some also print the id at the step that checks it, so their log is that part of the
+checklist filled; for the others the header maps a step to its id.
+
+| Script | Ids it covers | Prints them |
+| --- | --- | --- |
+| `raw.sh` | R-01 to R-04, R-07, R-09, R-10; the range of R-06, not named | yes, but R-06 |
+| `oras.sh` | O-01, O-02, O-04, the created time of O-03 | no |
+| `oci-token.sh` | O-01, O-12, H-12, as far as #26 goes | no |
+| `cosign.sh` | O-07, not named | no |
+| `auth.sh` | S-01 for the part of #43, X-04 | no |
+| `rbac.sh` | S-02, S-04, S-07, S-08, X-05 | S-07 |
+| `tokens.sh` | S-03 to S-06, X-03, X-14, as far as #44 goes | no |
+| `first-admin.sh` | FA-01 to FA-08 | yes |
+| `apt.sh` | A-01 to A-04, A-06, A-07, E-07 | no |
+| `pypi.sh` | P-06; P-01, P-02, P-03 and P-05 in part; none named | no |
+| `maven.sh` | M-01 to M-05, M-07; H-08 when its base URL is the edge of the `ha` stack | the M ids |
+| `npm.sh` | J-01 to J-13 | yes |
+| `retention.sh` | none: retention is #72, after the PoC | no |
+| `ha.sh` | H-01 to H-13; S-07, G-02 and A-09 across the replicas | the H ids |
+
+At other levels ([testing.md](testing.md)): O-11 is `test/conformance/run.sh`; I-06 the store
+suite, in `make test` on SQLite and in the `integration` job on Postgres; N-01 `test/load/run.sh`,
+against one server on the Zot of the dev stack, not the `ha` stack. The other ids are not
+automated yet.
