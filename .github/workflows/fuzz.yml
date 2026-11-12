@@ -34,8 +34,11 @@ jobs:
           - { package: ./internal/format/pypi, target: FuzzWheelFilename }
           - { package: ./internal/format/pypi, target: FuzzCoreMetadata }
           - { package: ./internal/format/pypi, target: FuzzZipEntries }
+          - { package: ./internal/format/pypi, target: FuzzSdistInspector }
+          - { package: ./internal/format/pypi, target: FuzzZipInspector }
           - { package: ./internal/format/maven, target: FuzzPOM }
           - { package: ./internal/format/npm, target: FuzzPackageJSON }
+          - { package: ./internal/format/npm, target: FuzzTarballInspector }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
