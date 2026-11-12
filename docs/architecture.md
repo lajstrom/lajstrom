@@ -150,26 +150,43 @@ from the registry (manifest-profile.md §6).
 
 ### B. Publish with `mvn deploy`
 
-Maven uploads files one by one, while in OCI a version is one manifest. A publication session
-accumulates layers; the commit is the `PUT maven-metadata.xml`.
+Maven uploads files one by one, while in OCI a version is one manifest. A publication session of
+ingest (`format.Sessions`, a row of the index per `g:a:v`) gathers the files: each one streams
+into the registry as it arrives and is recorded with its checksums; nothing is published before
+the commit, the `PUT maven-metadata.xml`, which hands the files to ingest's upload, as any other
+publish.
 
 ```mermaid
 sequenceDiagram
   participant M as mvn deploy
   participant FE as maven frontend
-  participant S as Session (DB)
+  participant I as Ingest
   participant R as Registry
   participant D as Index DB
   M->>FE: PUT lib-1.2.0.jar
-  FE->>R: upload blob
-  FE->>S: session {g,a,v}: + jar
-  M->>FE: PUT .pom, .sha1, .md5, -sources.jar
-  FE->>R: upload blobs
-  FE->>S: + files
+  FE->>I: Sessions.Open g:a:1.2.0 for the principal, Sessions.Add the jar
+  I->>D: session row, open
+  I->>R: stream the blob, md5, sha1, sha256 and sha512 computed on the way
+  I->>D: session row: + jar, its checksums
+  FE-->>M: 201 Created
+  M->>FE: PUT lib-1.2.0.jar.sha1
+  FE->>I: Sessions.Files: the sha1 recorded for the jar
+  FE-->>M: 201, or 400 and Sessions.Refuse when it differs
+  M->>FE: PUT .pom, -sources.jar and their checksums
+  FE->>I: Sessions.Add, file by file
+  I->>R: stream the blobs
+  I->>D: session row: + files
   M->>FE: PUT maven-metadata.xml (commit)
-  FE->>R: PUT manifest, tag 1.2.0, all layers
-  FE->>D: upsert, maven-metadata.xml is rendered from the DB
-  Note over S: timeout without commit: the files are dropped
+  FE->>I: Sessions.Commit
+  I->>D: mark the session committing
+  I->>R: Upload, Build: read the POM back, the other files are there already
+  I->>I: Validate
+  I->>D: claim tag 1.2.0, audit row pending
+  I->>R: push the metadata layer, manifest + tag, read back until served
+  I->>D: confirm (versions, files, invalidate index_cache, audit row ok), session committed
+  FE-->>M: 201 Created
+  Note over D: maven-metadata.xml is rendered from the index, not the one mvn sent
+  Note over I: a session not committed in time expires, its blobs left to the registry's GC
 ```
 
 ### C. Read: `apt-get update` and `install`

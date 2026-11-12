@@ -23,11 +23,13 @@
 # LAJSTROM_DATABASE_* overrides. The binary is $LAJSTROM_BIN, else bin/lajstrom, else go run
 # ./cmd/lajstrom. $LAJSTROM_SERVER_LOG, the server's log file, adds the check of PEP 658. Each
 # run uses a project and a user of its own, with the writer role on the repo (lajstrom admin
-# binding create), and disables the user at the end; the distributions
-# stay (pypi files cannot be deleted yet). The password goes to lajstrom on standard input and
-# into the container in a file. It needs curl, jq and docker (python:3.13, or $PYPI_E2E_IMAGE,
-# with --network host, which reaches the base URL on Linux and under OrbStack), prints one line
-# per step and exits non-zero at the first failure.
+# binding create), and disables the user at the end. The distributions stay, under the run's
+# own project name: DELETE /api/v1/repos/pypi/<repo>/packages/<name>/versions/<v> deletes them
+# (with ?variant=sdist or a wheel's tag set, one file; docs/api.md), but it needs delete on the
+# repo, a maintainer's or an admin's, which the writer has not. The password goes to lajstrom on
+# standard input and into the container in a file. It needs curl, jq and docker (python:3.13, or
+# $PYPI_E2E_IMAGE, with --network host, which reaches the base URL on Linux and under OrbStack),
+# prints one line per step and exits non-zero at the first failure.
 set -euo pipefail
 umask 077
 
