@@ -21,9 +21,10 @@ The [summary column](README.md#capabilities) is in the README; this page has the
   arm, arm64). The binary says `forgejo version 17.0.1+gitea-1.22.0 (release name 17.0.1)
   built with … go1.26.10`; `/api/v1/version` and `/api/forgejo/v1/version` say
   `17.0.1+gitea-1.22.0`. SQLite, packages on local storage (`/var/lib/gitea/packages`).
-- The same index is published as `data.forgejo.org/forgejo/forgejo`. On 2026-11-12 Codeberg
-  answered the pull `403 Codeberg is under load`, so the image was pulled from there by its
-  digest. They are the same bytes.
+- The same index is published as `data.forgejo.org/forgejo/forgejo`, Forgejo's own registry.
+  On 2026-11-12 Codeberg answered the pull `403 Codeberg is under load`, here and on CI's
+  runners, so the image was pulled from there by its digest; the bytes are the same. PR #826
+  moves the pin of compose.yaml to `data.forgejo.org` for that reason.
 - On macOS with OrbStack, arm64; the tests with Go 1.27.3, at a7aa4d3e (main) and at 5d9e5328
   (the branch of PR #814).
 
@@ -134,7 +135,8 @@ ran (as on Gitea, [gitea.md, Cleanup](gitea.md#cleanup)). With
    200 carries only `Docker-Distribution-Api-Version`. So Forgejo is `vendor=gitea`. Forgejo
    alone answers `GET /api/forgejo/v1/version` (200, `{"version":"17.0.1+gitea-1.22.0"}`), and
    its `/api/v1/version` has `+gitea-` in the version. Telling the two apart lets a quirk
-   apply to one only; that is item 3 of #816.
+   apply to one only. PR #829 asks that endpoint when `GET /v2/` says Gitea, and names Forgejo
+   `vendor=forgejo`, with Gitea's entry; it logged so against this Forgejo.
 
 Nothing else: the token service, the tag schema, the catalog, tags, deletes, mounts, the
 monolithic `POST`, the cancel, the digest check and ranges work as the provider expects.
@@ -204,6 +206,10 @@ packages on the branch of PR #814.
 [testing.md](../testing.md#a-registry-with-credentials-and-a-prefix) for Forgejo. All eight
 pass, `raw.sh` too: its range step got 206 here, where Gitea fails it. `pypi`, `maven` and
 `npm` were not run (the machine's disk was nearly full). `ha.sh` was skipped.
+
+**In CI**, PR #826 adds the job `e2e (forgejo)` beside `e2e (gitea)`, not required. It runs
+these scenarios but apt, and the provider's integration tests with the spool flag, without the
+two steps of `TestIntegrationUploads` that read the status until #804 is fixed.
 
 The failures, by owner:
 
