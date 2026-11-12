@@ -213,14 +213,29 @@ func (p *Provider) blobRequest(ctx context.Context, op, method string, ref regis
 			return nil, nil, fmt.Errorf("generic: %s: a redirect without a usable Location: %w", op, err)
 		case returnRedirect && !p.sameOrigin(loc):
 			return nil, loc, nil
-		case hops == maxRedirects:
-			return nil, nil, fmt.Errorf("generic: %s: more than %d redirects", op, maxRedirects)
-		case req.URL.Scheme == "https" && loc.Scheme != "https":
-			return nil, nil, fmt.Errorf("generic: %s: a redirect from https to %s refused", op, loc.Scheme)
+		}
+		if err := p.checkHop(op, req.URL, loc, hops); err != nil {
+			return nil, nil, err
 		}
 		left = left || !p.sameOrigin(loc)
 		target = loc.String()
 	}
+}
+
+// checkHop refuses the redirect from to loc, the hops-th of a chain: past maxRedirects, from
+// https to another scheme, or to a URL the guard does not allow (Options.PublicRedirects).
+func (p *Provider) checkHop(op string, from, loc *url.URL, hops int) error {
+	switch {
+	case hops == maxRedirects:
+		return fmt.Errorf("generic: %s: more than %d redirects", op, maxRedirects)
+	case from.Scheme == "https" && loc.Scheme != "https":
+		return fmt.Errorf("generic: %s: a redirect from https to %s refused", op, loc.Scheme)
+	case p.guard != nil:
+		if err := p.guard.CheckURL(loc); err != nil {
+			return fmt.Errorf("generic: %s: a redirect: %w", op, err)
+		}
+	}
+	return nil
 }
 
 // hop sends one request of a blob's redirect chain, without redirects: through the auth

@@ -17,6 +17,7 @@ import (
 	"oras.land/oras-go/v2/registry/remote/auth"
 
 	"github.com/lajstrom/lajstrom/internal/config"
+	"github.com/lajstrom/lajstrom/internal/egress"
 	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/version"
 )
@@ -66,15 +67,17 @@ type clients struct {
 // A non-nil rotating replaces the username and password (Options.Credential). A bearer
 // challenge whose realm realmTransport refuses is an error instead. While pushForDelete
 // reports true, a token is asked for push where oras-go asks it for delete
-// (deleteScopeTransport).
-func newClients(cfg config.Registry, base *url.URL, log *slog.Logger, rotating auth.CredentialFunc, pushForDelete func() bool) clients {
+// (deleteScopeTransport). A non-nil guard dials the hosts it does not trust at public addresses
+// only and checks every redirect the follow client takes (Options.PublicRedirects).
+func newClients(cfg config.Registry, base *url.URL, log *slog.Logger, rotating auth.CredentialFunc, pushForDelete func() bool,
+	guard *egress.Guard) clients {
 	timeout := timeoutOf(cfg)
 	// The retry transport resends an idempotent request whose body can be replayed; a blob
 	// upload is retried as a whole by Push (pushRetry). The breaker above it counts a request
 	// once however often it was tried. Above both, the probe's ping sees the challenges.
 	br := newBreaker(cfg.Name, log)
 	rt := &deleteScopeTransport{on: pushForDelete, next: &realmTransport{registry: cfg.Name, base: base, hosts: realmHosts(cfg, base), next: &challengeTransport{next: &breakerTransport{b: br, next: &retryTransport{
-		next:    &logTransport{next: &metricsTransport{next: newTransport(timeout), registry: cfg.Name}, log: log},
+		next:    &logTransport{next: &metricsTransport{next: newTransport(timeout, guard), registry: cfg.Name}, log: log},
 		retries: retries(cfg),
 		log:     log,
 	}}}}}
@@ -100,9 +103,13 @@ func newClients(cfg config.Registry, base *url.URL, log *slog.Logger, rotating a
 			return http.ErrUseLastResponse
 		},
 	}
+	follow := &http.Client{Transport: rt}
+	if guard != nil {
+		follow.CheckRedirect = guardedRedirect(guard)
+	}
 	return clients{
 		follow: &auth.Client{
-			Client:     &http.Client{Transport: rt},
+			Client:     follow,
 			Header:     header,
 			Credential: cred,
 			Cache:      cache,
@@ -165,10 +172,27 @@ func (c *rotatingCache) GetToken(ctx context.Context, registry string, scheme au
 	return base64.StdEncoding.EncodeToString([]byte(cred.Username + ":" + cred.Password)), nil
 }
 
+// guardedRedirect is the redirect rule of the follow client of a guarded registry
+// (Options.PublicRedirects): at most maxRedirects, never from https to http, and to a URL the
+// guard allows.
+func guardedRedirect(guard *egress.Guard) func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		switch {
+		case len(via) > maxRedirects:
+			return fmt.Errorf("%w: more than %d redirects", egress.ErrRefused, maxRedirects)
+		case strings.EqualFold(via[len(via)-1].URL.Scheme, "https") && !strings.EqualFold(req.URL.Scheme, "https"):
+			return fmt.Errorf("%w: a redirect from https to %s", egress.ErrRefused, req.URL.Scheme)
+		}
+		return guard.CheckURL(req.URL)
+	}
+}
+
 // newTransport is the default transport of net/http with timeout as the bound on the wait for
 // response headers, and on dialing and the TLS handshake when it is shorter than
-// maxDialTimeout. A response body streams for as long as it takes.
-func newTransport(timeout time.Duration) *http.Transport {
+// maxDialTimeout. A response body streams for as long as it takes. A non-nil guard dials the
+// hosts it does not trust at public addresses only, and trusts the egress proxies the
+// environment chooses.
+func newTransport(timeout time.Duration, guard *egress.Guard) *http.Transport {
 	var t *http.Transport
 	if d, ok := http.DefaultTransport.(*http.Transport); ok {
 		t = d.Clone()
@@ -176,7 +200,14 @@ func newTransport(timeout time.Duration) *http.Transport {
 		t = &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true}
 	}
 	dial := min(timeout, maxDialTimeout)
-	t.DialContext = (&net.Dialer{Timeout: dial, KeepAlive: 30 * time.Second}).DialContext
+	dialer := &net.Dialer{Timeout: dial, KeepAlive: 30 * time.Second}
+	t.DialContext = dialer.DialContext
+	if guard != nil {
+		t.DialContext = guard.DialContext(dialer)
+		if t.Proxy != nil {
+			t.Proxy = guard.Proxy(t.Proxy)
+		}
+	}
 	t.TLSHandshakeTimeout = dial
 	t.ResponseHeaderTimeout = timeout
 	t.MaxIdleConnsPerHost = maxIdleConnsPerHost
