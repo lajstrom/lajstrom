@@ -455,7 +455,8 @@ func public(ip net.IP) bool {
 var errStalled = errors.New("proxy: the upstream sent nothing within its timeout")
 
 // stallBody bounds every wait for the next bytes of a body by the timeout: a read that waits
-// longer cancels the request. Close releases the request.
+// longer cancels the request. The time between reads is not a wait: a proxy fetch spends it on
+// the registry, whose pace is not the upstream's (#694). Close releases the request.
 type stallBody struct {
 	rc      io.ReadCloser
 	timer   *time.Timer
@@ -466,19 +467,22 @@ type stallBody struct {
 
 func newStallBody(rc io.ReadCloser, timeout time.Duration, cancel context.CancelFunc) *stallBody {
 	b := &stallBody{rc: rc, timeout: timeout, cancel: cancel, stalled: make(chan struct{})}
+	var once sync.Once
 	b.timer = time.AfterFunc(timeout, func() {
-		close(b.stalled)
-		cancel()
+		once.Do(func() {
+			close(b.stalled)
+			cancel()
+		})
 	})
+	b.timer.Stop() // the first read starts it
 	return b
 }
 
-// Read reads the body and moves the bound on every byte that came.
+// Read reads the body with the bound running while it waits.
 func (b *stallBody) Read(p []byte) (int, error) {
+	b.timer.Reset(b.timeout)
 	n, err := b.rc.Read(p)
-	if n > 0 {
-		b.timer.Reset(b.timeout)
-	}
+	b.timer.Stop()
 	if err != nil && !errors.Is(err, io.EOF) {
 		select {
 		case <-b.stalled:
