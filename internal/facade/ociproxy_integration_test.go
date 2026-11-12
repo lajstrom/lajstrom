@@ -5,6 +5,7 @@ package facade
 import (
 	"bytes"
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -168,6 +169,88 @@ func TestIntegrationOCIProxy(t *testing.T) {
 	if n := count.blobGET("/v2/" + up + "/kube-apiserver/blobs/" + kas.blobs[0][1].Digest.String()); n != 0 {
 		t.Errorf("the upstream was asked %d times for the layer kube-apiserver shares, want none: the backend mounts it", n)
 	}
+
+	// #876 the way containerd pulls, on a backend that mounts and on one that does not.
+	for _, mounts := range []bool{true, false} {
+		t.Run(fmt.Sprintf("completed, mounts %t", mounts), func(t *testing.T) {
+			ociCompleted(t, st, backend, seed, proxy.NewOCIUpstream("up", client, false), count, mounts)
+		})
+	}
+}
+
+// ociCompleted: a client that holds kube-controller-manager's layers gets kube-apiserver's
+// manifest and asks only for its config and its own layer. The completion of the manifest makes
+// the backend hold kube-apiserver whole under its keep-tag: the shared layer is mounted, or
+// fetched in the background when the backend does not mount; an offline repo then serves every
+// layer of it (docs/spec/proxy-and-group.md §11.5, step 5).
+func ociCompleted(t *testing.T, st index.Store, backend, seed provider.Provider, upstream *proxy.OCIUpstream, count *counter, mounts bool) {
+	ctx := t.Context()
+	name := fmt.Sprintf("k8s-%t", mounts)
+	repo := index.Repo{Format: "oci", Name: name, Registry: "it", Prefix: "oci/" + name, Kind: index.KindProxy,
+		Upstream: json.RawMessage(`{"name": "up"}`)}
+	must(t, st.CreateRepo(ctx, &repo))
+	reg := backend
+	if !mounts {
+		reg = noMount{backend}
+	}
+	providers := provider.Map{"it": reg}
+	log := slog.New(slog.NewTextHandler(&logBuffer{}, nil))
+	pipeline := ingest.New(ingest.Options{Providers: providers, Index: st, Log: log})
+	serve := func(upstreams map[string]*proxy.OCIUpstream) string {
+		core := proxy.New(proxy.Options{Index: st, Providers: providers, Mirror: pipeline, Log: log, Context: ctx, OCIUpstreams: upstreams,
+			CompleteQuiet: 100 * time.Millisecond})
+		srv := httptest.NewServer(New(Options{Index: st, Providers: providers, Log: log, Tokens: keys.NewEphemeralTokens(), Ingest: pipeline,
+			OCIProxy: core}))
+		t.Cleanup(srv.Close)
+		return srv.URL + "/v2/oci/" + name + "/"
+	}
+	online, offline := serve(map[string]*proxy.OCIUpstream{"up": upstream}), serve(nil)
+
+	up := "it-upstream-" + randomHex(t)
+	shared := [][]byte{[]byte(strings.Repeat("base "+randomHex(t)+"\n", 2000))}
+	kcm := seedSharedImage(t, seed, up+"/kube-controller-manager", "v1.37.1", shared)
+	kas := seedSharedImage(t, seed, up+"/kube-apiserver", "v1.37.1", shared)
+	pullPlatform(t, online+up+"/kube-controller-manager", "v1.37.1", kcm, 0)
+	blobs := kas.blobs[0]
+	pullBlobs(t, online+up+"/kube-apiserver", "v1.37.1", kas, 0, blobs[0], blobs[len(blobs)-1])
+	m := kas.manifests[0].Digest
+	rr, err := backend.Repository(ctx, "oci/"+name+"/"+up+"/kube-apiserver")
+	must(t, err)
+	var got digest.Digest
+	for range 100 {
+		if desc, err := rr.Resolve(ctx, profile.KeepTag(m)); err == nil {
+			got = desc.Digest
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if got != m {
+		t.Fatalf("kube-apiserver's keep-tag names %q in the backend after 10 s, want its manifest", got)
+	}
+	want := 0
+	if !mounts {
+		want = 1
+	}
+	if n := count.blobGET("/v2/" + up + "/kube-apiserver/blobs/" + blobs[1].Digest.String()); n != want {
+		t.Errorf("the upstream was asked %d times for the layer kube-apiserver shares, want %d", n, want)
+	}
+	pullPlatform(t, offline+up+"/kube-apiserver", "v1.37.1", kas, 0)
+}
+
+// noMount is a backend that opens an upload session instead of a mount (202), as Nexus's
+// docker format and JFrog do.
+type noMount struct{ provider.Provider }
+
+func (n noMount) Repository(ctx context.Context, name string) (provider.Repository, error) {
+	rr, err := n.Provider.Repository(ctx, name)
+	return noMountRepository{rr}, err
+}
+
+type noMountRepository struct{ provider.Repository }
+
+func (r noMountRepository) MountBlob(ctx context.Context, _ digest.Digest, _ string) (bool, provider.Upload, error) {
+	u, err := r.StartBlobUpload(ctx)
+	return false, u, err
 }
 
 // blobGET is how many GETs of the blob at urlPath the counter passed on.
@@ -249,8 +332,15 @@ func seedImage(t *testing.T, p provider.Provider, path, tag string, platforms ..
 }
 
 // pullPlatform pulls the platform i of img from base as docker does, checking every body
-// against its digest: the tag, the platform's manifest, its config and layer.
+// against its digest: the tag, the platform's manifest, its config and layers.
 func pullPlatform(t *testing.T, base, tag string, img itImage, i int) {
+	t.Helper()
+	pullBlobs(t, base, tag, img, i, img.blobs[i]...)
+}
+
+// pullBlobs is pullPlatform that asks for blobs only, as containerd asks only for the blobs it
+// does not hold.
+func pullBlobs(t *testing.T, base, tag string, img itImage, i int, blobs ...ocispec.Descriptor) {
 	t.Helper()
 	accept := strings.Join([]string{ocispec.MediaTypeImageIndex, ocispec.MediaTypeImageManifest}, ", ")
 	get := func(what, url string, want digest.Digest) {
@@ -262,7 +352,7 @@ func pullPlatform(t *testing.T, base, tag string, img itImage, i int) {
 	}
 	get("the tag", base+"/manifests/"+tag, img.index.Digest)
 	get("the platform's manifest", base+"/manifests/"+img.manifests[i].Digest.String(), img.manifests[i].Digest)
-	for _, b := range img.blobs[i] {
+	for _, b := range blobs {
 		get("a blob", base+"/blobs/"+b.Digest.String(), b.Digest)
 	}
 }

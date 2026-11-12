@@ -29,6 +29,12 @@ type OCIProxy interface {
 	// makes the backend hold it; with stream, rc is the verified tee of the copy when this
 	// request holds the blob's claim, nil otherwise (read the blob from the backend).
 	OCIBlob(ctx context.Context, repo index.Repo, path string, d digest.Digest, fetch, stream bool) (ocispec.Descriptor, io.ReadCloser, error)
+	// OCIComplete starts, in the background, making the backend hold every blob of the
+	// platform's manifest desc that a client got at path from the cache, and returns at once.
+	OCIComplete(ctx context.Context, repo index.Repo, path string, desc ocispec.Descriptor)
+	// OCIPulling records a client's GET of a blob at path until done is called; the completions
+	// fetch nothing of the path meanwhile.
+	OCIPulling(repo index.Repo, path string) (done func())
 }
 
 // ociProxy reports whether t is an oci proxy repo that the facade asks Options.OCIProxy about.
@@ -38,7 +44,9 @@ func (h *handler) ociProxy(t *target) bool {
 
 // getProxyManifest answers HEAD and GET …/manifests/<ref> of an oci proxy repo from the core: the
 // manifest's media type, digest and length, and its bytes from the cache or, when the backend
-// holds it, from the backend, checked against the digest as they stream.
+// holds it, from the backend, checked against the digest as they stream. After a GET answered
+// from the cache, the core completes the manifest in the backend (proxy-and-group.md §11.5,
+// step 5).
 func (h *handler) getProxyManifest(w http.ResponseWriter, r *http.Request, t *target, ref string) error {
 	ctx := r.Context()
 	desc, raw, err := h.o.OCIProxy.OCIManifest(ctx, t.repo, t.path, ref)
@@ -56,6 +64,7 @@ func (h *handler) getProxyManifest(w http.ResponseWriter, r *http.Request, t *ta
 	if raw != nil {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(raw)
+		h.o.OCIProxy.OCIComplete(ctx, t.repo, t.path, desc)
 		return nil
 	}
 	rr, err := h.backend(ctx, t)

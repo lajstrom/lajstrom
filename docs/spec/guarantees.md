@@ -991,7 +991,7 @@ longer than `reconcile.graceAge` is outside them
   the checksum does not match, so that `UploadStream` cancels the session; `Core.reject` writes
   `proxy.reject`. A document's misses on a replica share one upstream request (`Core.refresh`,
   through `flights.join`).
-- **Tests.** `TestOCIManifestOnce`, `TestOCIBlobOnce`, `TestOCIManifestDigestMismatch`,
+- **Tests.** `TestOCIManifestOnce`, `TestOCIBlobOnce`, `TestOCICompleteOnce`, `TestOCIManifestDigestMismatch`,
   `TestOCIBlobRefused`, `TestOCIBlobNotListed`, `TestMirrorBlob` (the `oci` proxy:
   `proxy.Core.ociClaim`, `ingest.Pipeline.MirrorBlob`); `TestFileOneFetch`, `TestFileTwoReplicas`,
   `TestFileClaims`, `TestFileChecksum`, `TestFileRefused`, `TestFileCutShort`, `TestFileMiss`,
