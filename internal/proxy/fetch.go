@@ -259,6 +259,9 @@ func (c *Core) claim(ctx context.Context, p *proxied, a artifact, cl *index.Fetc
 		now := c.o.Now()
 		cl.ClaimedAt, cl.HeartbeatAt = now, now
 		err := c.o.Index.ClaimFetch(ctx, cl, now.Add(-c.o.ClaimStale))
+		if err == nil {
+			return c.claimed(ctx, p, a, cl)
+		}
 		if !errors.Is(err, index.ErrConflict) {
 			return false, err
 		}
@@ -289,6 +292,21 @@ func (c *Core) claim(ctx context.Context, p *proxied, a artifact, cl *index.Fetc
 			}
 		}
 	}
+}
+
+// claimed looks the version up once more after its claim was taken: another replica's fetch may
+// have recorded it and released its claim between this request's look-up and its claim, and
+// the version is in the index before its claim goes (fetch). Found, the claim is released at
+// once and shared is true; nothing is downloaded twice.
+func (c *Core) claimed(ctx context.Context, p *proxied, a artifact, cl *index.FetchClaim) (shared bool, err error) {
+	m, err := c.held(ctx, p, a)
+	if m == nil && err == nil {
+		return false, nil
+	}
+	if rerr := c.o.Index.ReleaseFetchClaim(context.WithoutCancel(ctx), cl.ID); rerr != nil && !errors.Is(rerr, index.ErrNotFound) {
+		c.o.Log.WarnContext(ctx, "proxy: a fetch claim not released; it goes stale", "repo", p.id(), "artifact", a.subject(), "error", rerr.Error())
+	}
+	return m != nil, err
 }
 
 // heartbeat beats the claim every ClaimHeartbeat until stop is called. A claim that is gone,
