@@ -29,7 +29,8 @@ import (
 //     streams in (format.ErrStreamed), whose metadata Build made from what the inspector read of
 //     the same bytes.
 //
-// Validate returns the entry with the metadata bytes as they are in the registry. Errors wrap
+// Validate returns the entry with the metadata bytes as they are in the registry, or none when
+// they are more than maxIndexedMetadata, which the index leaves out. Errors wrap
 // format.ErrInvalid, except a failure to fetch or read a blob.
 //
 // Validate has no index, so an oras push does not meet the file name rule of the upload route
@@ -65,7 +66,7 @@ func (Plugin) Validate(ctx context.Context, _ index.Repo, m ocispec.Manifest, fe
 	if err := checkPackage(ctx, fetch, f, md); err != nil {
 		return nil, err
 	}
-	return &format.Entry{Name: a.Name, Version: a.Version, Variant: a.Variant, Attrs: a.Attrs, Metadata: raw,
+	return &format.Entry{Name: a.Name, Version: a.Version, Variant: a.Variant, Attrs: a.Attrs, Metadata: indexed(raw),
 		Files: []format.FileEntry{{Name: f.Title, MediaType: f.MediaType, Digest: f.Digest, Size: f.Size, Attrs: f.Annotations}}}, nil
 }
 

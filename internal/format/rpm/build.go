@@ -20,6 +20,19 @@ import (
 // list and the changelog are its bulk.
 const maxMetadata = 16 << 20
 
+// maxIndexedMetadata is the largest metadata layer the entry gives the index for
+// versions.metadata: 4 MiB, the bound of a metadata layer in the database (guarantees.md,
+// INV-1). A larger one is left out of the row, and the renderer reads it from the registry.
+const maxIndexedMetadata = 4 << 20
+
+// indexed returns md for versions.metadata, nil when it is larger than maxIndexedMetadata.
+func indexed(md []byte) json.RawMessage {
+	if len(md) > maxIndexedMetadata {
+		return nil
+	}
+	return md
+}
+
 // metadata is the content of the rpm metadata layer (docs/spec/manifest-profile.md §2): what the
 // repodata of a version needs, read from the header, and the file name, size and sha256 of the
 // file. Build writes it and Validate reads it; Validate refuses one that is not what the header
@@ -165,7 +178,7 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 	return &format.Built{
 		Manifest: m,
 		Blobs:    append(blobs, bytesBlob(m.Layers[1], md)),
-		Entry: format.Entry{Name: pkg.Name, Version: version, Variant: pkg.Arch, Metadata: md,
+		Entry: format.Entry{Name: pkg.Name, Version: version, Variant: pkg.Arch, Metadata: indexed(md),
 			Files: []format.FileEntry{{Name: pkg.Filename, MediaType: layer.MediaType, Digest: d, Size: pkg.Size}}},
 		Tag:      profile.Tag(version, pkg.Arch),
 		RepoPath: profile.RepositoryPath("", Name, repo.Name, profile.EscapeComponent(pkg.Name)),
