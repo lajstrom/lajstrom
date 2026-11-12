@@ -60,7 +60,10 @@ What happens on the first pull of a tag:
    `linux/arm64`.
 3. Each layer streams into the backend and, at the same time, to the client that asked first;
    its last byte waits until the backend has committed bytes of the right digest. Other clients
-   that ask for it meanwhile wait and are served from the backend.
+   that ask for it meanwhile wait and are served from the backend. A layer the backend holds
+   under another repository of the repo (`kube-apiserver` and `kube-controller-manager` share
+   most of theirs) is mounted instead, with no request to the upstream, even when the repo is
+   offline; a backend that does not mount (Nexus's `docker` format, JFrog) gets it fetched.
 4. Once a platform's layers are held, its manifest is pushed to the backend under a keep-tag
    `_keep.sha256.<hex>`, which `tags/list` does not show and garbage collection leaves alone;
    once every platform is held, the index too, and the upstream's tag where the backend lets

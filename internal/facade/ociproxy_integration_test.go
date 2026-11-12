@@ -156,6 +156,57 @@ func TestIntegrationOCIProxy(t *testing.T) {
 	if n := count.blobGETs(); n != 4 {
 		t.Errorf("%d upstream blob GETs in all, want one per blob, 4", n)
 	}
+
+	// #876: kube-apiserver shares its base layer with kube-controller-manager, which the backend
+	// holds; it is mounted into kube-apiserver, not fetched.
+	up := strings.TrimSuffix(path, "/img")
+	shared := [][]byte{[]byte(strings.Repeat("base "+randomHex(t)+"\n", 2000))}
+	kcm := seedSharedImage(t, seed, up+"/kube-controller-manager", "v1.37.1", shared)
+	kas := seedSharedImage(t, seed, up+"/kube-apiserver", "v1.37.1", shared)
+	pullPlatform(t, srv.URL+"/v2/oci/hub/"+up+"/kube-controller-manager", "v1.37.1", kcm, 0)
+	pullPlatform(t, srv.URL+"/v2/oci/hub/"+up+"/kube-apiserver", "v1.37.1", kas, 0)
+	if n := count.blobGET("/v2/" + up + "/kube-apiserver/blobs/" + kas.blobs[0][1].Digest.String()); n != 0 {
+		t.Errorf("the upstream was asked %d times for the layer kube-apiserver shares, want none: the backend mounts it", n)
+	}
+}
+
+// blobGET is how many GETs of the blob at urlPath the counter passed on.
+func (c *counter) blobGET(urlPath string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.blobs[urlPath]
+}
+
+// seedSharedImage pushes to the repository path of p an index of one platform, linux/arm64,
+// whose manifest lists a config, the layers shared and a layer of its own, in that order.
+func seedSharedImage(t *testing.T, p provider.Provider, path, tag string, shared [][]byte) itImage {
+	t.Helper()
+	ctx := t.Context()
+	rr, err := p.Repository(ctx, path)
+	must(t, err)
+	push := func(mediaType string, b []byte) ocispec.Descriptor {
+		desc := ocispec.Descriptor{MediaType: mediaType, Digest: digest.FromBytes(b), Size: int64(len(b))}
+		must(t, rr.Push(ctx, desc, bytes.NewReader(b)))
+		return desc
+	}
+	blobs := []ocispec.Descriptor{push(ocispec.MediaTypeImageConfig, []byte(`{"architecture":"arm64","os":"linux","image":"`+path+`"}`))}
+	for _, b := range shared {
+		blobs = append(blobs, push(ocispec.MediaTypeImageLayerGzip, b))
+	}
+	blobs = append(blobs, push(ocispec.MediaTypeImageLayerGzip, []byte(strings.Repeat(path+" "+randomHex(t)+"\n", 2000))))
+	raw, err := json.Marshal(ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageManifest,
+		Config: blobs[0], Layers: blobs[1:]})
+	must(t, err)
+	m := push(ocispec.MediaTypeImageManifest, raw)
+	child := m
+	child.Platform = &ocispec.Platform{OS: "linux", Architecture: "arm64"}
+	raw, err = json.Marshal(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex,
+		Manifests: []ocispec.Descriptor{child}})
+	must(t, err)
+	img := itImage{index: ocispec.Descriptor{MediaType: ocispec.MediaTypeImageIndex, Digest: digest.FromBytes(raw), Size: int64(len(raw))},
+		manifests: []ocispec.Descriptor{m}, blobs: [][]ocispec.Descriptor{blobs}}
+	must(t, rr.PushReference(ctx, img.index, bytes.NewReader(raw), tag))
+	return img
 }
 
 // itImage is an index of one manifest per platform and their blobs.

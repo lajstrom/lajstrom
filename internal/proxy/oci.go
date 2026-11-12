@@ -19,14 +19,15 @@ import (
 	"github.com/lajstrom/lajstrom/internal/provider/generic"
 )
 
-// The proxy_meta kinds of an oci proxy repo, whose rows are named by the path
-// (docs/spec/proxy-and-group.md §11.3, index-schema.md).
+// The proxy_meta kinds of an oci proxy repo, whose rows are named by the path, but for
+// oci.holders, which is the repo's (docs/spec/proxy-and-group.md §11.3, index-schema.md).
 const (
 	kindOCITag       = "oci.tag:"      // + tag: what the upstream's tag names (ociTagRow)
 	kindOCIManifest  = "oci.manifest:" // + digest: a manifest's or an index's exact bytes
 	kindOCIRef       = "oci.ref:"      // + digest: what lists a blob or a child (ociRefRow)
 	kindOCIHeld      = "oci.held:"     // + digest: the backend holds it
 	kindOCIFixedTags = "oci.fixed-tags"
+	kindOCIHolders   = "oci.holders:" // + digest, named "", the repo's: where the backend holds a blob (ociHoldersRow)
 )
 
 // ociFormat is the format of an oci proxy repo, which has no plugin.
