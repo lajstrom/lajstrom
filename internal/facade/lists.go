@@ -172,9 +172,9 @@ type catalogList struct {
 	Repositories []string `json:"repositories"`
 }
 
-// catalog answers GET /v2/_catalog?n=&last=: the OCI repositories that oci_repos records for
-// every repo the principal may read, as <format>/<repo>/<path>, sorted and paginated with n
-// and a Link. oci repos are there too: their manifest PUT records the repository. With a
+// catalog answers GET /v2/_catalog?n=&last=: the OCI repositories of every repo the principal
+// may read (repositories), as <format>/<repo>/<path>, sorted and paginated with n and a Link.
+// oci repos are there too: their manifest PUT records the repository. With a
 // bearer that grants registry:catalog:*, the scope catalog clients ask for, the repos are those
 // the token's principal may read; with any other bearer, the token's view: the repositories it
 // grants pull on. The anonymous principal without a bearer gets 401 with the challenge of that
@@ -223,7 +223,7 @@ func (h *handler) catalogNames(ctx context.Context, g *token.Grant, tokenView bo
 				return nil, fmt.Errorf("facade: catalog: %w", err)
 			}
 		}
-		ocis, err := h.ociNames(ctx, repo)
+		ocis, err := h.repositories(ctx, repo)
 		if err != nil {
 			return nil, err
 		}
@@ -236,9 +236,24 @@ func (h *handler) catalogNames(ctx context.Context, g *token.Grant, tokenView bo
 	return names, nil
 }
 
-// ociNames returns the names, <format>/<repo>/<path>, of the OCI repositories that oci_repos
-// records for repo.
-func (h *handler) ociNames(ctx context.Context, repo index.Repo) ([]string, error) {
+// repositories returns the names, <format>/<repo>/<path>, of the OCI repositories of repo that
+// the catalog lists. For a managed repo they are the package paths of its packages, each of
+// which has a version (a package goes with its last one), the repositories whose tags/list is
+// not empty: a repository whose versions are all deleted, which the registry may keep and
+// oci_repos with it, is not listed (#728). An oci repo indexes no tags: its repositories are
+// those oci_repos records, the registry's.
+func (h *handler) repositories(ctx context.Context, repo index.Repo) ([]string, error) {
+	if repo.Format != ociFormat {
+		pkgs, err := h.o.Index.ListPackages(ctx, repo.ID, "")
+		if err != nil {
+			return nil, fmt.Errorf("facade: catalog: %w", err)
+		}
+		names := make([]string, 0, len(pkgs))
+		for _, p := range pkgs {
+			names = append(names, repo.Format+"/"+repo.Name+"/"+p.NameOCI)
+		}
+		return names, nil
+	}
 	ocis, err := h.o.Index.ListOCIRepos(ctx, repo.ID)
 	if err != nil {
 		return nil, fmt.Errorf("facade: catalog: %w", err)
