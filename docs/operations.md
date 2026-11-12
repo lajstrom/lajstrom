@@ -606,10 +606,13 @@ refuses counts as unanswered, so a breaker that stays open for a minute turns
 [`/-/readyz`](#readiness) to `503`, as a registry that does not answer does.
 
 A registry whose host name does not resolve (its container stopped on a compose network, a
-DNS outage), or that refuses or resets connections after the retries (it is stopped or
-restarting), is unavailable from the first request on: the client gets `503` without
-`Retry-After` (on `/v2` with the code `UNAVAILABLE`), and each such request counts as unanswered
-for the breaker, which opens after five as above.
+DNS outage), whose host or network cannot be reached (no route), or that after the retries
+refuses or resets connections, closes them without an answer (it is stopped or restarting) or
+does not answer within `registries[].timeout` (it hangs), is unavailable from the first request
+on: the client gets `503` without `Retry-After` (on `/v2` with the code `UNAVAILABLE`), and each
+such request counts as unanswered for the breaker, which opens after five as above. A request
+that ends because its client went away, or because the client's body stalled or broke off, is
+not one of them: that is the client's doing.
 
 ### An eventually consistent registry
 

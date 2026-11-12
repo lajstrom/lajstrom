@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -135,7 +136,8 @@ func (b *breaker) open(ctx context.Context) {
 // request is one outcome however often it was tried. It watches the reads of the request's
 // body: the facade streams a client's upload into the registry, and a client that stalls past
 // server.stallTimeout, breaks off or sends a broken chunked encoding fails the request to the
-// registry as a registry that does not answer would (#638).
+// registry as a registry that does not answer would (#638). A timeout or an EOF that it counts
+// as the registry's failure comes back as a *noAnswerError.
 type breakerTransport struct {
 	next http.RoundTripper
 	b    *breaker
@@ -158,13 +160,51 @@ func (t *breakerTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		req = &watched
 	}
 	resp, err := t.next.RoundTrip(req)
-	t.b.done(req.Context(), trial, outcome(req.Context(), resp, err, body.failed()))
+	result := outcome(req.Context(), resp, err, body.failed())
+	t.b.done(req.Context(), trial, result)
+	if result < 0 && err != nil && quiet(err) {
+		err = &noAnswerError{err: err}
+	}
 	if resp != nil {
 		if after, ok := retryAfter(resp); ok {
 			t.b.askedToWait(after)
 		}
 	}
 	return resp, err
+}
+
+// quiet reports whether err, the failure of a request, is a timeout or an EOF: the registry did
+// not answer in time, or closed the connection without an answer. Both also end what is not
+// the registry's doing (a caller's deadline, a client's body that stalls or breaks off, #643),
+// so only breakerTransport, which tells these apart (outcome), marks the registry's.
+func quiet(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout() || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+// noAnswerError is the error of a request that timed out or met an EOF (quiet), and that
+// breakerTransport counted as the registry's failure: neither the caller's context nor the
+// request's body was the cause. translateAs makes it provider.ErrUnavailable (#670). Its
+// message is the error's.
+type noAnswerError struct{ err error }
+
+func (e *noAnswerError) Error() string { return e.err.Error() }
+
+func (e *noAnswerError) Unwrap() error { return e.err }
+
+// Timeout reports whether the error is a timeout: the *url.Error that net/http puts around it
+// asks, and a timed-out blob push is tried again on that (transientPush).
+func (e *noAnswerError) Timeout() bool {
+	var ne net.Error
+	return errors.As(e.err, &ne) && ne.Timeout()
+}
+
+// detail says how the registry did not answer, for the message of the provider.ErrUnavailable.
+func (e *noAnswerError) detail() string {
+	if e.Timeout() {
+		return "the registry did not answer in time"
+	}
+	return "the connection closed without an answer"
 }
 
 // watchedBody is the body of a request through breakerTransport: it records a read that failed
