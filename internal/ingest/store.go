@@ -32,64 +32,48 @@ var errExisted = errors.New("ingest: the tag already holds this manifest")
 // *index.TagConflictError. Both are returned as they are. For an Upload (repeatOnFiles) a
 // version with the same file layers is the repeat instead, and pub.existing names its manifest;
 // and a fresh claim of another digest whose manifest the registry has, with the same files, is
-// the publish that pub repeats: pub takes over that manifest (adoptClaimed) and its claim.
+// the publish that pub repeats: pub takes over that manifest and shares its claim (takeOver).
+// A claim pub gets is the tag's in the index only: checkTag reads the tag in the backend next.
 func (p *Pipeline) claimTag(ctx context.Context, pub *publish) (existed bool, err error) {
-	existed, claimed, err := p.claimOnce(ctx, pub)
+	existed, claimed, err := p.claimOnce(ctx, pub, 0)
 	if claimed == "" {
 		return existed, err
 	}
-	adopted, aerr := p.adoptClaimed(ctx, pub, claimed)
-	switch {
-	case aerr != nil:
-		return false, aerr
-	case !adopted:
-		return false, err
-	}
-	existed, _, err = p.claimOnce(ctx, pub)
-	return existed, err
+	return p.takeOver(ctx, pub, claimed, 0, err)
 }
 
 // claimOnce is one claim transaction of claimTag. claimed is the digest of the fresh claim of
 // another digest that refused an Upload's claim, which claimTag may adopt; err is the
-// *index.TagConflictError then.
-func (p *Pipeline) claimOnce(ctx context.Context, pub *publish) (existed bool, claimed digest.Digest, err error) {
+// *index.TagConflictError then. replace, when not zero, is the id of pub's own claim on the tag,
+// of the digest it built, which the transaction releases before it claims the tag for
+// pub.digest, the manifest pub took over: another publish never finds the tag unclaimed in
+// between. pub.claim is set when the transaction commits, so a claim that it did not move
+// stays pub's.
+func (p *Pipeline) claimOnce(ctx context.Context, pub *publish, replace int64) (existed bool, claimed digest.Digest, err error) {
 	now := p.now()
-	pub.claim = index.TagClaim{RepoID: pub.repo.ID, Package: pub.pkgPath, Tag: pub.tag,
+	claim := index.TagClaim{RepoID: pub.repo.ID, Package: pub.pkgPath, Tag: pub.tag,
 		Digest: pub.digest, Principal: pub.principal.String(), ClaimedAt: now}
 	err = p.index.Tx(ctx, func(w index.Writer) error {
+		if replace != 0 {
+			if err := w.ReleaseTagClaim(ctx, replace); err != nil && !errors.Is(err, index.ErrNotFound) {
+				return err
+			}
+		}
 		if err := p.claimPath(ctx, w, pub, now); err != nil {
 			return err
 		}
-		if err := w.ClaimTag(ctx, &pub.claim, now.Add(-p.claimTTL)); err != nil {
+		if err := w.ClaimTag(ctx, &claim, now.Add(-p.claimTTL)); err != nil {
 			var conflict *index.TagConflictError
 			if pub.repeatOnFiles && errors.As(err, &conflict) {
 				claimed = conflict.Existing
 			}
 			return err
 		}
-		v, err := versionByTag(ctx, w, pub.repo.ID, pub.pkgPath, pub.parsed.Annotations.Name, pub.tag)
-		switch {
-		case err != nil:
-			return err
-		case v == nil:
-			return nil
-		case v.Digest == pub.digest:
-			return errExisted
-		}
-		if pub.repeatOnFiles {
-			same, err := sameFiles(ctx, w, v.ID, pub.parsed.Files)
-			if err != nil {
-				return err
-			}
-			if same {
-				pub.existing = v.Digest
-				return errExisted
-			}
-		}
-		return &index.TagConflictError{Tag: pub.tag, Existing: v.Digest}
+		return pub.checkVersion(ctx, w)
 	})
 	switch {
 	case err == nil:
+		pub.claim = claim
 		return false, "", nil
 	case errors.Is(err, errExisted):
 		return true, "", nil
@@ -99,15 +83,60 @@ func (p *Pipeline) claimOnce(ctx context.Context, pub *publish) (existed bool, c
 	return false, "", fmt.Errorf("ingest: claim %s:%s: %w", pub.name, pub.tag, err)
 }
 
-// adoptClaimed makes pub the publish of the manifest d, which a fresh claim on pub's tag holds,
-// when the registry has it with the same name and the same file layers: a publish of the same
-// files that pushed it and did not confirm it, a frontend's upload answered 503 by the
-// visibility barrier or one still on its way. A frontend builds the manifest again for a retry,
-// with another org.opencontainers.image.created and so another digest, and would get 409 from
-// the claim of its own first attempt. pub then validates d as it validated its own build, and
-// pushes and confirms it. adopted is false when the registry does not serve d within the
-// visibility timeout (a strongly consistent one is read once) or d is another artifact.
-func (p *Pipeline) adoptClaimed(ctx context.Context, pub *publish, d digest.Digest) (adopted bool, err error) {
+// checkVersion reads the version of pub's tag on w, under pub's claims: none is nil; the same
+// digest, or for an Upload the same file layers (pub.existing names its manifest then), is
+// errExisted; another digest is the *index.TagConflictError.
+func (pub *publish) checkVersion(ctx context.Context, w index.Writer) error {
+	v, err := versionByTag(ctx, w, pub.repo.ID, pub.pkgPath, pub.parsed.Annotations.Name, pub.tag)
+	switch {
+	case err != nil:
+		return err
+	case v == nil:
+		return nil
+	case v.Digest == pub.digest:
+		return errExisted
+	}
+	if pub.repeatOnFiles {
+		same, err := sameFiles(ctx, w, v.ID, pub.parsed.Files)
+		if err != nil {
+			return err
+		}
+		if same {
+			pub.existing = v.Digest
+			return errExisted
+		}
+	}
+	return &index.TagConflictError{Tag: pub.tag, Existing: v.Digest}
+}
+
+// takeOver makes pub, an Upload, the publish of the manifest d (adopt) and claims pub's tag
+// again, for d (claimOnce, which moves pub's own claim replace when there is one). refused is
+// the conflict that named d, a claim's or the tag's in the backend; it stands when pub does not
+// adopt d.
+func (p *Pipeline) takeOver(ctx context.Context, pub *publish, d digest.Digest, replace int64, refused error) (existed bool, err error) {
+	adopted, err := p.adopt(ctx, pub, d)
+	switch {
+	case err != nil:
+		return false, err
+	case !adopted:
+		return false, refused
+	}
+	existed, _, err = p.claimOnce(ctx, pub, replace)
+	return existed, err
+}
+
+// adopt makes pub the publish of the manifest d when the registry has it with the same name and
+// the same file layers: a publish of the same files that pushed it and did not confirm it. d is
+// what a fresh claim on pub's tag holds (claimTag): a frontend's upload answered 503 by the
+// visibility barrier, which keeps its claims, or one still on its way. Or d is what pub's tag
+// holds in the backend while the index has no version under it (checkTag): an upload whose
+// confirm failed, the database out (503, #641), or whose claim went stale. A frontend builds the
+// manifest again for a retry, with another org.opencontainers.image.created and so another
+// digest, and would get 409 from its own first attempt. pub then validates d as it validated
+// its own build, and pushes and confirms it; the tag keeps d. adopted is false when the
+// registry does not serve d within the visibility timeout (a strongly consistent one is read
+// once) or d is another artifact.
+func (p *Pipeline) adopt(ctx context.Context, pub *publish, d digest.Digest) (adopted bool, err error) {
 	caps, err := pub.prov.Capabilities(ctx)
 	if err != nil {
 		return false, fmt.Errorf("ingest: capabilities of the registry of %s: %w", pub.name, err)
@@ -292,36 +321,59 @@ func sameFiles(ctx context.Context, r index.Reader, versionID int64, layers []pr
 	return sameLayers(had, layers), nil
 }
 
-// push puts the manifest and its tag in one request, its audit row pending before the request
-// (intend). On any error the claim is released, and the row, when there is one, is failed.
-func (p *Pipeline) push(ctx context.Context, pub *publish) error {
-	err := pub.pushManifest(ctx, func(ctx context.Context) error {
-		pub.ev = pub.event(p.now())
-		withOrigin(ctx, &pub.ev, pub.auditDetails())
-		return p.intend(ctx, &pub.ev)
-	})
+// push checks the tag in the backend (checkTag), then puts the manifest and its tag in one
+// request, its audit row pending before the request (pushManifest). existed reports that
+// checkTag found the manifest it took over in the index already: nothing is pushed. On any
+// error, and when existed, the claim is released, and the row, when there is one, is failed.
+func (p *Pipeline) push(ctx context.Context, pub *publish) (existed bool, err error) {
+	existed, err = p.checkTag(ctx, pub)
+	if err == nil && !existed {
+		err = pub.pushManifest(ctx, func(ctx context.Context) error {
+			pub.ev = pub.event(p.now())
+			withOrigin(ctx, &pub.ev, pub.auditDetails())
+			return p.intend(ctx, &pub.ev)
+		})
+	}
 	if err != nil {
 		p.fail(ctx, &pub.ev, err)
+	}
+	if err != nil || existed {
 		p.release(ctx, pub)
 	}
-	return err
+	return existed, err
 }
 
-// pushManifest checks the tag in the backend, calls intend, and pushes the manifest with the
-// tag. The tag rule is Lajstrom's, so a tag in the backend with another digest is a conflict
-// even when the index does not know it: a write that bypassed Lajstrom, or an index not yet
-// rebuilt by reindex. The same digest there is pushed again, which changes nothing, and
-// confirmed. The streamed file of UploadStream is committed after intend, the first write to
-// the registry, and before the manifest.
-func (pub *publish) pushManifest(ctx context.Context, intend func(context.Context) error) error {
-	existing, err := pub.rr.Resolve(ctx, pub.tag)
+// checkTag resolves pub's tag in the backend, under pub's claims and before anything is
+// written. The tag rule is Lajstrom's, so a tag in the backend with another digest is a
+// conflict even when the index does not know it: a write that bypassed Lajstrom, or an index
+// not yet rebuilt by reindex. For an Upload (repeatOnFiles) that digest is first the publish
+// that pub repeats when its manifest has the same files (adopt): one that pushed and did not
+// confirm, so that the index, which claimTag read under the claim, has no version under the
+// tag. pub takes it over and moves its claim to it (takeOver); existed reports that the index
+// has it meanwhile. Nothing re-points the tag: pub pushes the digest the tag holds. A manifest
+// of other files there is the conflict. The same digest there is pushed again too, which
+// changes nothing, and confirmed.
+func (p *Pipeline) checkTag(ctx context.Context, pub *publish) (existed bool, err error) {
+	desc, err := pub.rr.Resolve(ctx, pub.tag)
 	switch {
 	case errors.Is(err, provider.ErrNotFound): // the tag is free in the backend
+		return false, nil
 	case err != nil:
-		return fmt.Errorf("ingest: resolve %s:%s: %w", pub.name, pub.tag, err)
-	case existing.Digest != pub.digest:
-		return &index.TagConflictError{Tag: pub.tag, Existing: existing.Digest}
+		return false, fmt.Errorf("ingest: resolve %s:%s: %w", pub.name, pub.tag, err)
+	case desc.Digest == pub.digest:
+		return false, nil
 	}
+	conflict := &index.TagConflictError{Tag: pub.tag, Existing: desc.Digest}
+	if !pub.repeatOnFiles {
+		return false, conflict
+	}
+	return p.takeOver(ctx, pub, desc.Digest, pub.claim.ID, conflict)
+}
+
+// pushManifest calls intend and pushes the manifest with its tag in one request, after
+// checkTag. The streamed file of UploadStream is committed after intend, the first write to the
+// registry, and before the manifest.
+func (pub *publish) pushManifest(ctx context.Context, intend func(context.Context) error) error {
 	if err := intend(ctx); err != nil {
 		return err
 	}
@@ -329,7 +381,7 @@ func (pub *publish) pushManifest(ctx context.Context, intend func(context.Contex
 		return err
 	}
 	desc := ocispec.Descriptor{MediaType: pub.manifest.MediaType, Digest: pub.digest, Size: int64(len(pub.raw))}
-	err = pub.rr.PushReference(ctx, desc, bytes.NewReader(pub.raw), pub.tag)
+	err := pub.rr.PushReference(ctx, desc, bytes.NewReader(pub.raw), pub.tag)
 	switch {
 	case err == nil:
 		return nil
@@ -366,7 +418,9 @@ func (p *Pipeline) release(ctx context.Context, pub *publish) {
 // *index.TagConflictError is returned as it is, and another index.ErrConflict, a package path
 // that another spelling holds (#97), stays wrapped (409); and a database that did not answer:
 // index.ErrUnavailable stays wrapped (503 with Retry-After), for the same publish again
-// completes (#641). The manifest stays in the registry and reindex picks it up.
+// completes (#641): the claim is released and the manifest stays under its tag, where a
+// frontend's retry, built again with another digest, takes it over (checkTag). The manifest
+// stays in the registry and reindex picks it up.
 func (p *Pipeline) confirm(ctx context.Context, pub *publish) (existed bool, err error) {
 	now := p.now()
 	err = p.index.Tx(ctx, func(w index.Writer) error {

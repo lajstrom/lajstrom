@@ -189,9 +189,12 @@ func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag str
 //
 // An upload of the same files under a tag that holds them already is the idempotent repeat,
 // whatever org.opencontainers.image.created the new build carries: nothing is written, the
-// manifest in the registry stays the first, and Published.Digest is its digest. Other files
-// under the tag are ErrConflict, and so is another spelling of the name of the package at the
-// package path, found before any blob is pushed.
+// manifest in the registry stays the first, and Published.Digest is its digest. The retry of an
+// upload of the same files that pushed and did not confirm (a 503 of the visibility barrier, or
+// of a database out at confirm) confirms the manifest that the claim or the tag in the backend
+// holds, not its own build, and Published.Digest is that one's. Other files under the tag are
+// ErrConflict, and so is another spelling of the name of the package at the package path, found
+// before any blob is pushed.
 func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload, principal auth.Principal) (_ *format.Published, err error) {
 	existed := false
 	defer func() { count(repo.Format, existed, err) }()
@@ -397,9 +400,11 @@ func (p *Pipeline) ingest(ctx context.Context, pub *publish) (*Result, error) {
 		return nil, err
 	}
 	if !existed {
-		if err := p.push(ctx, pub); err != nil {
+		if existed, err = p.push(ctx, pub); err != nil {
 			return nil, err
 		}
+	}
+	if !existed {
 		if err := p.awaitVisible(ctx, pub.published()); err != nil {
 			p.fail(ctx, &pub.ev, err) // the claims stay, for the same publish again
 			return nil, err

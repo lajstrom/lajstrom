@@ -390,6 +390,100 @@ func TestIngestIndexUnavailableAfterPush(t *testing.T) {
 	}
 }
 
+// TestUploadRetryUnconfirmed: an upload that pushed its manifest and did not confirm it is
+// retried after the 503, built again with another org.opencontainers.image.created and so
+// another digest. The tag in the backend holds the first manifest, which the index lacks: the
+// retry takes it over and confirms it, and pushes the same digest under the tag again, rather
+// than a 409 from that tag (#641). The first publish failed at confirm, the database out, and
+// released its claim; or the registry did not serve its push in time and it left its claim,
+// which the retry, after ingest's claim TTL, takes over. Before the retry, an upload of other
+// files is still 409, naming the manifest under the tag.
+func TestUploadRetryUnconfirmed(t *testing.T) {
+	up := upload("tool", "1.0.0", file{"tool", "linux binary"})
+	for _, tt := range []struct {
+		name  string
+		first func(t *testing.T, e *env) // pushes the manifest of up and does not confirm it
+		after time.Duration              // from the first publish to the retry
+	}{
+		{"confirm unavailable", func(t *testing.T, e *env) {
+			o := e.options(e.prov)
+			o.Index = &confirmDown{Store: e.st}
+			e.pipe = ingest.New(o)
+			if _, err := e.pipe.Upload(t.Context(), e.repo, up, alice); !errors.Is(err, index.ErrUnavailable) {
+				t.Fatalf("Upload while the index is out: %v, want index.ErrUnavailable", err)
+			}
+			e.noClaim(t, "tool", "1.0.0")
+		}, 5 * time.Second},
+		{"stale claim", func(t *testing.T, e *env) {
+			e.lagging(-1, 100*time.Millisecond)
+			_, err := e.pipe.Upload(t.Context(), e.repo, up, alice)
+			wantNotVisible(t, err)
+		}, 11 * time.Minute},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			e := newEnv(t)
+			tt.first(t, e)
+			first := e.pushRefs("1.0.0")[0].Digest
+			e.pipe = ingest.New(e.options(e.prov))
+			_, err := e.pipe.Upload(ctx, e.repo, upload("tool", "1.0.0", file{"tool", "other bytes"}), alice)
+			wantTagConflict(t, err, first)
+
+			o := e.options(e.prov)
+			o.Now = func() time.Time { return now.Add(tt.after) }
+			e.pipe = ingest.New(o)
+			e.plugin.BuildFunc = buildRawAt(created.Add(tt.after))
+			pub, err := e.pipe.Upload(ctx, e.repo, up, alice)
+			must(t, err)
+			if pub.Digest != first || pub.Existed {
+				t.Errorf("the retry: %s, Existed %v; want the first manifest, %s, confirmed now", pub.Digest, pub.Existed, first)
+			}
+			if refs := e.pushRefs("1.0.0"); len(refs) != 2 || refs[1].Digest != first {
+				t.Errorf("pushes under the tag %+v, want the first manifest twice", refs)
+			}
+			r := e.rows(t)
+			if len(r.Versions) != 1 || r.Versions[0].Digest != first || len(r.Audit) != 2 || r.Audit[0].State != index.AuditOK ||
+				r.Audit[0].Digest != first || r.Audit[1].State != index.AuditFailed {
+				t.Errorf("rows %+v, want one version of %s, the retry's audit row ok and the first one's failed", r, first)
+			}
+			e.noClaim(t, "tool", "1.0.0")
+			e.noClaim(t, "tool", "")
+		})
+	}
+}
+
+// TestSessionCommitUnavailable: a commit whose confirm finds the database out (#641) is 503 and
+// leaves the session open; the commit again, maven's retry, builds the manifest again, with
+// another org.opencontainers.image.created, and confirms the manifest the registry has from the
+// first, rather than a 409, which would abort the session.
+func TestSessionCommitUnavailable(t *testing.T) {
+	ctx := t.Context()
+	e, c := sessionEnv(t)
+	o := e.options(e.prov)
+	o.Now, o.SessionTimeout, o.Index = c.Now, time.Minute, &confirmDown{Store: e.st}
+	e.pipe = ingest.New(o)
+	s, err := e.pipe.Open(ctx, e.repo, "lib", "1.0", alice)
+	must(t, err)
+	add(t, e, s.ID, "lib-1.0.jar", "jar")
+	if _, err := e.pipe.Commit(ctx, s.ID); !errors.Is(err, index.ErrUnavailable) {
+		t.Fatalf("Commit while the index is out: %v, want index.ErrUnavailable", err)
+	}
+	if st := e.state(t, s.ID); st != "open" {
+		t.Fatalf("session state %q after the 503, want open", st)
+	}
+	first := e.pushRefs("1.0")[0].Digest
+	c.add(5 * time.Second)
+	e.plugin.BuildFunc = buildRawAt(created.Add(5 * time.Second))
+	pub, err := e.pipe.Commit(ctx, s.ID)
+	must(t, err)
+	if pub.Digest != first || pub.Existed {
+		t.Errorf("the commit again: %s, Existed %v; want the first manifest, %s, confirmed now", pub.Digest, pub.Existed, first)
+	}
+	if st := e.state(t, s.ID); st != "committed" {
+		t.Errorf("session state %q, want committed", st)
+	}
+}
+
 // TestIngestIndexFailsAfterPush checks a confirm that fails after the registry accepted the
 // manifest: the error is returned (a 500, or ErrConflict when the index refused a conflict: a
 // tag, or the package path of another spelling), the manifest stays in the registry for

@@ -82,6 +82,43 @@ func TestIntegration(t *testing.T) {
 	}
 }
 
+// TestIntegrationRetryUnconfirmed runs TestUploadRetryUnconfirmed's first case against the
+// registry of TestIntegration: an upload whose confirm finds the database out is 503, other files
+// under the tag are then ErrConflict, and the upload again, built a minute later, confirms the
+// manifest the tag holds, which it keeps.
+func TestIntegrationRetryUnconfirmed(t *testing.T) {
+	addr := os.Getenv("LAJSTROM_TEST_REGISTRY")
+	if addr == "" {
+		t.Skip("set LAJSTROM_TEST_REGISTRY=host:port to run against a registry")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	e, prov := integrationEnv(t, addr)
+	o := e.options(prov)
+	o.Index = &confirmDown{Store: e.st}
+	e.pipe = ingest.New(o)
+	up := upload("tool", "1.0.0", file{"tool", "linux binary " + e.repo.Name})
+	if _, err := e.pipe.Upload(ctx, e.repo, up, alice); !errors.Is(err, index.ErrUnavailable) {
+		t.Fatalf("Upload while the index is out: %v, want index.ErrUnavailable", err)
+	}
+	rr, err := prov.Repository(ctx, "raw/"+e.repo.Name+"/tool")
+	must(t, err)
+	first := tagDigest(ctx, rr, "1.0.0")
+	_, err = e.pipe.Upload(ctx, e.repo, upload("tool", "1.0.0", file{"tool", "other bytes " + e.repo.Name}), alice)
+	wantTagConflict(t, err, first)
+
+	e.plugin.BuildFunc = buildRawAt(created.Add(time.Minute))
+	pub, err := e.pipe.Upload(ctx, e.repo, up, alice)
+	must(t, err)
+	if pub.Digest != first || pub.Existed || tagDigest(ctx, rr, "1.0.0") != first {
+		t.Errorf("the retry: %s, Existed %v, the tag on %s; want the first manifest, %s, confirmed now",
+			pub.Digest, pub.Existed, tagDigest(ctx, rr, "1.0.0"), first)
+	}
+	if r := e.rows(t); len(r.Versions) != 1 || r.Versions[0].Digest != first {
+		t.Errorf("versions %+v, want the first manifest's", r.Versions)
+	}
+}
+
 // integrationEnv returns an env whose pipeline uses the generic provider for addr, and a repo
 // with a random name.
 func integrationEnv(t *testing.T, addr string) (*env, provider.Provider) {

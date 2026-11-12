@@ -15,6 +15,7 @@ import (
 	"github.com/opencontainers/go-digest"
 
 	"github.com/lajstrom/lajstrom/internal/config"
+	"github.com/lajstrom/lajstrom/internal/format/formattest"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider/generic"
@@ -47,9 +48,11 @@ func TestRegistryUnavailable(t *testing.T) {
 
 // TestIndexUnavailableAtConfirm uploads a file whose index write fails after the registry took
 // its manifest, the database out (#641): 503 with Retry-After: 5 and the status text only, not
-// a 500 nor the database's error; the claim is released, and the same PUT again is 201.
+// a 500 nor the database's error; the claim is released, and the same PUT again is 201. The
+// PUT again builds its manifest a second later, as a client's retry after Retry-After does, so
+// with another digest: it confirms the manifest the registry has, which its tag keeps.
 func TestIndexUnavailableAtConfirm(t *testing.T) {
-	e := newEnv(t, envOptions{ingested: downAtConfirm})
+	e := newEnv(t, envOptions{ingested: downAtConfirm, plugin: &formattest.Rebuilding{Streamer: Plugin{}}})
 	rr := e.do(http.MethodPut, target("dir/file.txt"), strings.NewReader("content"))
 	if rr.Code != http.StatusServiceUnavailable || rr.Body.String() != "Service Unavailable\n" || rr.Header().Get("Retry-After") != "5" {
 		t.Fatalf("PUT while the index is out = %d %q, Retry-After %q; want 503 Service Unavailable, 5",
@@ -64,9 +67,10 @@ func TestIndexUnavailableAtConfirm(t *testing.T) {
 	if c, err := e.st.GetTagClaim(t.Context(), e.repo.ID, pkgPath, tag); !errors.Is(err, index.ErrNotFound) {
 		t.Errorf("the claim on the tag %s: %+v, %v; want it released", tag, c, err)
 	}
+	first := e.prov.PushReferences()[0].Digest
 	e.put("dir/file.txt", "content")
-	if vs := e.versions("dir/file.txt"); len(vs) != 1 {
-		t.Errorf("versions after the same PUT again: %+v, want one", vs)
+	if vs := e.versions("dir/file.txt"); len(vs) != 1 || vs[0].Digest != first {
+		t.Errorf("versions after the same PUT again: %+v, want one, of the first manifest %s", vs, first)
 	}
 }
 

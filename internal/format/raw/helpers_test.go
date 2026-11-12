@@ -89,6 +89,7 @@ type envOptions struct {
 	registry provider.Provider             // the registry "local"; nil means the fake (env.prov)
 	store    func(index.Store) index.Store // wraps the store the routes read; ingest writes to the store itself
 	ingested func(index.Store) index.Store // wraps the store ingest writes to
+	plugin   format.Plugin                 // the plugin ingest builds with; nil means Plugin{}
 }
 
 func newEnv(t *testing.T, o envOptions) *env {
@@ -103,8 +104,12 @@ func newEnv(t *testing.T, o envOptions) *env {
 	if o.ingested != nil {
 		ingestIndex = o.ingested(st)
 	}
+	var plugin format.Plugin = Plugin{}
+	if o.plugin != nil {
+		plugin = o.plugin
+	}
 	pipe := ingest.New(ingest.Options{Providers: providers, Index: ingestIndex, Audit: o.audit, Log: slog.New(slog.DiscardHandler),
-		Plugins: func(name string) (format.Plugin, bool) { return Plugin{}, name == Name }})
+		Plugins: func(name string) (format.Plugin, bool) { return plugin, name == Name }})
 	var routeIndex index.Store = st
 	if o.store != nil {
 		routeIndex = o.store(st)
