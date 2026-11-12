@@ -132,6 +132,34 @@ func TestParseMetadataEntries(t *testing.T) {
 	}
 }
 
+// TestPrefetchHooks: a prefetch reads the full packument, and without allVersions takes the
+// targets of its dist-tags, each once, sorted; a target that is not a string is left out, and
+// a body that is not a packument or a kind npm lacks is ErrInvalid.
+func TestPrefetchHooks(t *testing.T) {
+	if got := (Plugin{}).PrefetchKind(); got != kindPackument {
+		t.Errorf("PrefetchKind = %q, want %q", got, kindPackument)
+	}
+	got, err := Plugin{}.Pointed("is-number", kindPackument, captured(t, capturedIsNumber, false))
+	must(t, err)
+	if diff := cmp.Diff([]string{"7.0.0"}, got); diff != "" {
+		t.Errorf("Pointed of is-number (-want +got):\n%s", diff)
+	}
+	body := `{"name": "@acme/w", "dist-tags": {"latest": "1.0.0", "next": "2.0.0-rc.1", "stable": "1.0.0", "odd": 3, "empty": ""}}`
+	got, err = Plugin{}.Pointed("@acme/w", kindAbbreviated, []byte(body))
+	must(t, err)
+	if diff := cmp.Diff([]string{"1.0.0", "2.0.0-rc.1"}, got); diff != "" {
+		t.Errorf("Pointed (-want +got):\n%s", diff)
+	}
+	if got, err := (Plugin{}).Pointed("@acme/w", kindPackument, []byte(`{"name": "@acme/w"}`)); err != nil || len(got) != 0 {
+		t.Errorf("Pointed without dist-tags = %v, %v; want none", got, err)
+	}
+	for _, c := range []struct{ kind, body string }{{kindPackument, `[1]`}, {kindPackument, `{`}, {"other", `{}`}} {
+		if _, err := (Plugin{}).Pointed("@acme/w", c.kind, []byte(c.body)); !errors.Is(err, format.ErrInvalid) {
+			t.Errorf("Pointed(%s, %s) = %v, want ErrInvalid", c.kind, c.body, err)
+		}
+	}
+}
+
 // TestFileRequest maps the tarball paths npm, pnpm and yarn ask to the version; any other
 // path is index.ErrNotFound.
 func TestFileRequest(t *testing.T) {

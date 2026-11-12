@@ -118,6 +118,22 @@ type Grouper interface {
 	MergeGroup(ctx context.Context, group index.Repo, name, kind string, docs []MemberDocument, base string) (Document, error)
 }
 
+// Prefetcher is implemented by a plugin whose proxy repos take a prefetch (docs/spec/
+// proxy-and-group.md §5.1, #441): the core fetches the entries of a list of names before a
+// client asks for them, as a miss would. A format whose plugin lacks it has no prefetch.
+type Prefetcher interface {
+	Proxier
+
+	// PrefetchKind is the kind of the document whose entries a prefetch reads: npm the full
+	// packument.
+	PrefetchKind() string
+
+	// Pointed returns the versions that the pointers of a document of kind of name name, read
+	// from kept as ParseMetadata kept it (npm: the targets of its dist-tags). A prefetch without
+	// allVersions takes their entries. A body it cannot read gives an error wrapping ErrInvalid.
+	Pointed(name, kind string, kept []byte) ([]string, error)
+}
+
 // MemberDocument is the document of one member of a group, as the member serves it.
 type MemberDocument struct {
 	// Repo is the member; its Kind tells the hosted member from a proxy.

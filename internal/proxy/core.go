@@ -47,6 +47,9 @@ type Options struct {
 	// WaitFirst and WaitLongest are the first and the longest wait of a request whose artifact
 	// another replica fetches (proxy-and-group.md §5, step 6: 250 ms, 2 s, the defaults).
 	WaitFirst, WaitLongest time.Duration
+	// PrefetchConcurrency is how many entries one Prefetch fetches at a time (proxy-and-group.md
+	// §5.1: 4, the default).
+	PrefetchConcurrency int
 }
 
 // The defaults of the claims (docs/spec/index-schema.md, Proxy and group repos) and of the
@@ -96,6 +99,9 @@ func New(o Options) *Core {
 		if *d.v <= 0 {
 			*d.v = d.def
 		}
+	}
+	if o.PrefetchConcurrency <= 0 {
+		o.PrefetchConcurrency = defaultPrefetchConcurrency
 	}
 	return &Core{o: o}
 }
