@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -31,45 +32,70 @@ var _ Mirrorer = (*ingest.Pipeline)(nil)
 // (docs/spec/proxy-and-group.md §11.5): unless the backend holds it already or the repo is
 // offline, it is fetched from the upstream once across replicas, streamed into the backend
 // through the one write path, checked against its size and digest, and what became complete is
-// pushed. The caller serves it from the backend. A digest that no manifest held or cached at
-// the path lists is index.ErrNotFound, with no request to the upstream; a size above the
-// repo's maxFileSize or the registry's maxBlobSize is format.ErrForbidden and proxy.reject;
-// bytes that are not the blob are format.ErrBadGateway and proxy.reject.
-func (c *Core) OCIBlob(ctx context.Context, repo index.Repo, path string, d digest.Digest, fetch bool) (ocispec.Descriptor, error) {
+// pushed. The caller serves it from the backend, but with stream when this request holds the
+// blob's claim: then rc is the verified tee of the copy (§11.8), which the caller copies to its
+// client and aborts the connection on an error of; every other request waits for the copy. A
+// digest that no manifest held or cached at the path lists is index.ErrNotFound, with no request
+// to the upstream; a size above the repo's maxFileSize or the registry's maxBlobSize is
+// format.ErrForbidden and proxy.reject; bytes that are not the blob are format.ErrBadGateway and
+// proxy.reject.
+func (c *Core) OCIBlob(ctx context.Context, repo index.Repo, path string, d digest.Digest, fetch, stream bool) (ocispec.Descriptor, io.ReadCloser, error) {
 	p, err := c.resolveOCI(ctx, repo, path)
 	if err != nil {
-		return ocispec.Descriptor{}, err
+		return ocispec.Descriptor{}, nil, err
 	}
 	desc, err := c.ociListedBlob(ctx, p, d)
 	if err != nil || !fetch {
-		return desc, err
+		return desc, nil, err
 	}
 	if held, err := c.ociHasBlob(ctx, p, desc); held || err != nil {
-		return desc, err
+		return desc, nil, err
 	}
 	if p.up == nil {
-		return ocispec.Descriptor{}, fmt.Errorf("%w: proxy: %s is offline and does not hold %s@%s", index.ErrNotFound, p.id(), p.path, d)
+		return ocispec.Descriptor{}, nil, fmt.Errorf("%w: proxy: %s is offline and does not hold %s@%s", index.ErrNotFound, p.id(), p.path, d)
+	}
+	var t *tee
+	if stream && c.o.TeeBuffer >= 0 {
+		t = newTee(desc.Size, int64(cmp.Or(c.o.TeeBuffer, defaultTeeBuffer)))
 	}
 	fl, joined := c.flights.join(fmt.Sprintf("ociblob:%d:%s:%s", p.repo.ID, p.path, d), func() (bool, error) {
 		fctx, cancel := c.detach(ctx)
 		defer cancel()
-		return c.ociFetchBlob(fctx, p, desc)
+		return c.ociFetchBlob(fctx, p, desc, t)
 	})
+	if !joined && t != nil {
+		select {
+		case <-t.started: // this request's fetch holds the claim, and streams
+			if !t.endedBefore() {
+				ociCountFetch(p, fetchFetched)
+				return desc, t.reader(ctx), nil
+			}
+		case <-fl.done:
+		case <-ctx.Done():
+			return ocispec.Descriptor{}, nil, ctx.Err()
+		}
+	}
+	return desc, nil, c.ociAwait(ctx, p, fl, joined)
+}
+
+// ociAwait waits for the fetch fl of a blob, which this request started or joined, and counts
+// its outcome.
+func (c *Core) ociAwait(ctx context.Context, p *ociProxied, fl *flight, joined bool) error {
 	select {
 	case <-fl.done:
 	case <-ctx.Done():
-		return ocispec.Descriptor{}, ctx.Err()
+		return ctx.Err()
 	}
 	switch {
 	case fl.err != nil:
 		ociCountFetch(p, fetchError)
-		return ocispec.Descriptor{}, fl.err
+		return fl.err
 	case joined || fl.shared:
 		ociCountFetch(p, fetchShared)
 	default:
 		ociCountFetch(p, fetchFetched)
 	}
-	return desc, nil
+	return nil
 }
 
 // ociListedBlob returns the blob d at p's path as the manifest that lists it gives it (its
@@ -122,8 +148,12 @@ func (c *Core) ociHasBlob(ctx context.Context, p *ociProxied, desc ocispec.Descr
 }
 
 // ociFetchBlob fetches the blob desc under its claim (repo, path, digest) into the backend and
-// pushes what became complete. shared reports that another replica fetched it.
-func (c *Core) ociFetchBlob(ctx context.Context, p *ociProxied, desc ocispec.Descriptor) (shared bool, err error) {
+// pushes what became complete; with t, the claim holder's request reads the bytes as they go
+// (§11.8). shared reports that another replica fetched it.
+func (c *Core) ociFetchBlob(ctx context.Context, p *ociProxied, desc ocispec.Descriptor, t *tee) (shared bool, err error) {
+	if t != nil {
+		defer func() { t.finish(cmp.Or(err, errNotFetched(shared))) }()
+	}
 	held := func(ctx context.Context) (bool, error) { return c.ociHasBlob(ctx, p, desc) }
 	release, shared, err := c.ociClaim(ctx, p, desc.Digest.String(), held)
 	if shared || err != nil {
@@ -138,7 +168,12 @@ func (c *Core) ociFetchBlob(ctx context.Context, p *ociProxied, desc ocispec.Des
 		return false, err
 	}
 	defer func() { _ = body.Close() }()
-	err = c.o.Mirror.MirrorBlob(ctx, p.repo, p.path, desc, body)
+	var src io.Reader = body
+	if t != nil {
+		t.begin()
+		src = io.TeeReader(body, t)
+	}
+	err = c.o.Mirror.MirrorBlob(ctx, p.repo, p.path, desc, src)
 	switch {
 	case errors.Is(err, ingest.ErrInvalid):
 		c.ociReject(ctx, p, desc.Digest, "checksum", map[string]any{"error": err.Error()})
@@ -152,8 +187,20 @@ func (c *Core) ociFetchBlob(ctx context.Context, p *ociProxied, desc ocispec.Des
 	if err := c.ociHeld(ctx, p, desc.Digest); err != nil {
 		return false, err
 	}
+	if t != nil {
+		t.finish(nil) // the claim holder completes the blob before the pushes of what it completes
+	}
 	c.ociComplete(ctx, p, desc.Digest)
 	return false, nil
+}
+
+// errNotFetched is the end of a tee whose fetch did not stream: another replica fetched the blob
+// (shared), or it was held when the claim was taken.
+func errNotFetched(shared bool) error {
+	if shared {
+		return errors.New("proxy: another replica fetched the blob")
+	}
+	return errors.New("proxy: the blob was held when the claim was taken")
 }
 
 // open asks the upstream for the blob desc, following its redirects (to public addresses only,

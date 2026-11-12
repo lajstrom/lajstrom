@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +22,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider/providertest"
+	"github.com/lajstrom/lajstrom/internal/server"
 )
 
 // stubProxy is the core of an oci proxy repo for the facade's tests: manifests by path and
@@ -30,6 +35,7 @@ type stubProxy struct {
 	blobs     map[digest.Digest][]byte
 	calls     []string
 	err       error
+	tee       func(b []byte) io.ReadCloser // the claim holder's stream of a blob, when set
 }
 
 type stubDoc struct {
@@ -58,7 +64,7 @@ func (s *stubProxy) OCIManifest(_ context.Context, _ index.Repo, path, ref strin
 	return d.desc, d.raw, nil
 }
 
-func (s *stubProxy) OCIBlob(ctx context.Context, _ index.Repo, path string, d digest.Digest, fetch bool) (ocispec.Descriptor, error) {
+func (s *stubProxy) OCIBlob(ctx context.Context, _ index.Repo, path string, d digest.Digest, fetch, stream bool) (ocispec.Descriptor, io.ReadCloser, error) {
 	s.mu.Lock()
 	s.calls = append(s.calls, fmt.Sprintf("blob %s %t", path, fetch))
 	b, ok := s.blobs[d]
@@ -66,18 +72,21 @@ func (s *stubProxy) OCIBlob(ctx context.Context, _ index.Repo, path string, d di
 	s.mu.Unlock()
 	switch {
 	case err != nil:
-		return ocispec.Descriptor{}, err
+		return ocispec.Descriptor{}, nil, err
 	case !ok:
-		return ocispec.Descriptor{}, fmt.Errorf("%w: %s", index.ErrNotFound, d)
+		return ocispec.Descriptor{}, nil, fmt.Errorf("%w: %s", index.ErrNotFound, d)
 	}
 	desc := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageLayerGzip, Digest: d, Size: int64(len(b))}
+	if stream && s.tee != nil {
+		return desc, s.tee(b), nil
+	}
 	if fetch {
 		rr, _ := s.reg.Repository(ctx, "oci/hub/"+path)
 		if err := rr.Push(ctx, desc, bytes.NewReader(b)); err != nil {
-			return ocispec.Descriptor{}, err
+			return ocispec.Descriptor{}, nil, err
 		}
 	}
-	return desc, nil
+	return desc, nil, nil
 }
 
 // proxyEnv is an env with the oci proxy repo oci/hub served by a stubProxy.
@@ -191,5 +200,47 @@ func TestOCIProxyPutRefused(t *testing.T) {
 	wantError(t, "PUT of a manifest", rr, http.StatusMethodNotAllowed, codeUnsupported)
 	if n := len(e.prov.PushReferences()) + len(e.prov.Pushes()); n != 0 {
 		t.Errorf("%d pushes, want none", n)
+	}
+}
+
+// brokenTee is a tee whose copy failed before its last byte.
+type brokenTee struct{ r io.Reader }
+
+func (b brokenTee) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if err == io.EOF {
+		return n, errors.New("the registry refused the digest")
+	}
+	return n, err
+}
+
+func (brokenTee) Close() error { return nil }
+
+// TestOCIProxyTee: the claim holder gets the blob from the core's tee with the headers of a whole
+// blob; a tee that fails aborts the response, so that the client never completes the blob
+// (proxy-and-group.md §11.8, rule 2).
+func TestOCIProxyTee(t *testing.T) {
+	e, s := proxyEnv(t)
+	layer := bytes.Repeat([]byte("layer "), 1000)
+	d := digest.FromBytes(layer)
+	s.blobs[d] = layer
+	srv, err := server.New(server.Options{Listen: "127.0.0.1:0", Facade: e.h, Log: slog.New(slog.DiscardHandler)})
+	must(t, err)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	url := ts.URL + "/v2/oci/hub/library/nginx/blobs/" + d.String()
+
+	s.tee = func(b []byte) io.ReadCloser { return io.NopCloser(bytes.NewReader(b)) }
+	n, err := get(t, client, url)
+	if err != nil || n != int64(len(layer)) {
+		t.Fatalf("GET through the tee: %d bytes, %v", n, err)
+	}
+	s.tee = func(b []byte) io.ReadCloser { return brokenTee{bytes.NewReader(b[:len(b)-1])} }
+	d2 := digest.FromString("another layer")
+	s.blobs[d2] = []byte("another layer")
+	n, err = get(t, client, ts.URL+"/v2/oci/hub/library/nginx/blobs/"+d2.String())
+	if err == nil || n >= int64(len("another layer")) {
+		t.Fatalf("GET through a tee that failed: %d bytes, %v; want a short body and an error", n, err)
 	}
 }

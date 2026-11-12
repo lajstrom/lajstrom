@@ -1194,7 +1194,8 @@ longer than `reconcile.graceAge` is outside them
   `/v2`; and the manifest `GET` of `/v2`, whose bytes stream from the backend the same way.
   Not a `307` redirect to the backend's storage, whose bytes do not pass through Lajstrom
   ([Not guaranteed](#not-guaranteed)), and not a `206` answer to a `Range` request, which is
-  not the whole blob.
+  not the whole blob. The verified tee of an `oci` proxy (proxy-and-group.md §11.8) holds the
+  last byte longer: until the bytes have the digest and the backend committed the blob.
 - **Assumes.** Any.
 - **Mechanism.** `format.blobAnswer.copy` through `format.digestWriter`, and
   `facade.handler.streamManifest` through `facade.verifier`. The abort is a panic of an error
@@ -1203,8 +1204,11 @@ longer than `reconcile.graceAge` is outside them
   the cause. A stream from the registry that breaks halfway is aborted the same way when the
   answer has no `Content-Length` (chunked, or HTTP/2 without `content-length`), since the
   client could not tell its end from the blob's (#568); with `Content-Length`, net/http closes
-  the connection and the client has the length to see the short body by.
-- **Tests.** `TestServeBlobDigest` (with `Content-Length`, chunked, HTTP/2; a range not
+  the connection and the client has the length to see the short body by. The tee:
+  `proxy.teeReader.Read`, fed by `proxy.Core.ociFetchBlob` through `ingest.Pipeline.MirrorBlob`,
+  and `facade.handler.teeBlob`, which aborts the same way.
+- **Tests.** `TestTeeLastByte`, `TestTeeNeverWaits`, `TestOCITee`, `TestOCITeeRefused`, `TestOCITeeClientLeaves` (proxy),
+  `TestOCIProxyTee` (facade); `TestServeBlobDigest` (with `Content-Length`, chunked, HTTP/2; a range not
   hashed), `TestServeBlobBrokenStream` (the registry drops the stream: chunked and HTTP/2
   aborted, with `Content-Length` returned), `TestDownloadVerifiesDigest` (a 256 MiB blob and a manifest through the server, the
   heap under 64 MiB), `TestRecoveryAbortCause`, `TestStreamingMemory`.

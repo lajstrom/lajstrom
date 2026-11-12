@@ -88,14 +88,19 @@ index="$(crane digest --insecure "$up:1.0")"
 lj="127.0.0.1:$port/oci/up-$run/oci-proxy-up-$run/img"
 back="$registry/oci/up-$run/oci-proxy-up-$run/img"
 fetched() { grep -c "a blob fetched from the upstream" "$tmp/server.log" || true; }
+# eventually waits up to 5 s for a command to succeed: the client's last byte comes with the
+# commit of the blob, before the push of what it completed (§11.8).
+eventually() { for _ in $(seq 1 50); do "$@" && return 0; sleep 0.1; done; return 1; }
+keep_tag() { crane ls --insecure "$back" | grep -q '^_keep\.sha256\.'; }
+tag_is() { [ "$(crane digest --insecure "$back:1.0" 2>/dev/null)" = "$1" ]; }
 crane pull --insecure --platform linux/arm64 "$lj:1.0" "$tmp/arm64.oci" 2>/dev/null
 expect "blobs fetched by the first platform" 2 "$(fetched)"
-crane ls --insecure "$back" | grep -q '^_keep\.sha256\.' || fail "no keep-tag in the backend"
+eventually keep_tag || fail "no keep-tag in the backend"
 crane ls --insecure "$back" | grep -qx '1.0' && fail "1.0 is in the backend before its index is complete"
 ok "linux/arm64: two blobs fetched, its manifest kept, the tag waits for the index"
 crane pull --insecure --platform linux/amd64 "$lj:1.0" "$tmp/amd64.oci" 2>/dev/null
 expect "blobs fetched by both platforms" 4 "$(fetched)"
-expect "1.0 in the backend" "$index" "$(crane digest --insecure "$back:1.0")"
+eventually tag_is "$index" || fail "1.0 does not name the index $index in the backend"
 ok "linux/amd64: two more blobs, and 1.0 names the index in the backend"
 crane pull --insecure --platform linux/arm64 "$lj:1.0" "$tmp/arm64b.oci" 2>/dev/null
 crane pull --insecure --platform linux/amd64 "$lj:1.0" "$tmp/amd64b.oci" 2>/dev/null
