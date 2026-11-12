@@ -121,7 +121,7 @@ status, bytes, duration, request id and remote address.
 | Key | Type | Default | Env | Description |
 | --- | --- | --- | --- | --- |
 | `database.driver` | `sqlite`, `postgres` | `sqlite` | `LAJSTROM_DATABASE_DRIVER` | Engine of the index database ([index-schema.md](spec/index-schema.md)). |
-| `database.dsn` | string | `file:lajstrom.db` | `LAJSTROM_DATABASE_DSN` | Data source name. SQLite: `file:/var/lib/lajstrom/lajstrom.db`. Postgres: `postgres://lajstrom@db:5432/lajstrom?sslmode=require`. A DSN with a password belongs in `LAJSTROM_DATABASE_DSN`, not in the file. The forms are below. |
+| `database.dsn` | string | `file:lajstrom.db` with `sqlite`; none with `postgres`, required | `LAJSTROM_DATABASE_DSN` | Data source name. SQLite: `file:/var/lib/lajstrom/lajstrom.db`. Postgres: `postgres://lajstrom@db:5432/lajstrom?sslmode=require`. A DSN with a password belongs in `LAJSTROM_DATABASE_DSN`, not in the file. The forms are below; a DSN in the form of the other driver's is a configuration error: a `postgres://` or `postgresql://` URL, or `host=…` pairs, with `sqlite`; a `file:` DSN, `:memory:` or a file name with `postgres`. With `postgres` and no DSN, as when `LAJSTROM_DATABASE_DSN` is unset, every command that loads the configuration stops with `database.dsn: must be set with database.driver postgres`. |
 
 **SQLite DSN.** A file name or a `file:` URI, e.g. `file:/var/lib/lajstrom/lajstrom.db`. Lajstrom
 adds the connection parameters of `modernc.org/sqlite` itself: `_busy_timeout=5000` (a writer

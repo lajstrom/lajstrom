@@ -234,14 +234,48 @@ func (l Log) validate(p *problems) {
 	}
 }
 
+// validate checks the driver, and that the DSN has the form of the driver's
+// (docs/configuration.md): a DSN of the other engine reaches the driver as a file name or a
+// parse error that names neither key (#718). The DSN is never quoted: it can hold a password.
 func (d Database) validate(p *problems) {
-	if d.Driver != "sqlite" && d.Driver != "postgres" {
+	const key = "database.dsn"
+	switch d.Driver {
+	case "sqlite":
+		switch {
+		case d.DSN == "":
+			p.add(key, "must not be empty")
+		case postgresURL(d.DSN) || postgresKeywords.MatchString(d.DSN):
+			p.add(key, "is a Postgres DSN, and database.driver is sqlite: set database.driver: postgres (LAJSTROM_DATABASE_DRIVER), "+
+				"or a SQLite file, file:/var/lib/lajstrom/lajstrom.db")
+		}
+	case "postgres":
+		switch {
+		case d.DSN == "":
+			p.add(key, "must be set with database.driver postgres, which has no default: a postgres:// URL or host=… dbname=…, "+
+				"best in LAJSTROM_DATABASE_DSN, which keeps the password out of the file")
+		case strings.HasPrefix(d.DSN, "file:") || d.DSN == ":memory:":
+			p.add(key, "is a SQLite DSN, and database.driver is postgres: set a postgres:// URL (LAJSTROM_DATABASE_DSN), "+
+				"or database.driver: sqlite")
+		case !postgresURL(d.DSN) && !strings.Contains(d.DSN, "="):
+			p.add(key, "is neither a postgres:// URL nor keyword/value pairs, host=db dbname=lajstrom, as database.driver postgres needs; "+
+				"a SQLite file needs database.driver: sqlite")
+		}
+	default:
 		p.add("database.driver", "%q is not sqlite or postgres", d.Driver)
-	}
-	if d.DSN == "" {
-		p.add("database.dsn", "must not be empty")
+		if d.DSN == "" {
+			p.add(key, "must not be empty")
+		}
 	}
 }
+
+// postgresURL reports whether dsn is a URL that pgx reads, postgres:// or postgresql://.
+func postgresURL(dsn string) bool {
+	return strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://")
+}
+
+// postgresKeywords matches a DSN of keyword/value pairs that starts with one of the connection
+// keywords of libpq, host=db dbname=lajstrom: never the name of a SQLite file one means.
+var postgresKeywords = regexp.MustCompile(`^\s*(host|hostaddr|port|dbname|user|password|sslmode|service|connect_timeout)\s*=`)
 
 // validate checks the keys section. The master key itself is not read here: serve and admin
 // key read the file of keys.masterKeyFile or the variable keys.masterKeyEnv names; Load checks

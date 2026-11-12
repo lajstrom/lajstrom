@@ -23,7 +23,8 @@ import (
 //     LAJSTROM_DATABASE_DRIVER, LAJSTROM_DATABASE_DSN, LAJSTROM_MASTER_KEY_FILE
 //     (keys.masterKeyFile) and LAJSTROM_BOOTSTRAP_TOKEN_FILE (auth.bootstrap.tokenFile); an
 //     empty variable counts as unset, and lists (registries, repos)
-//     cannot be set from the environment;
+//     cannot be set from the environment; then database.dsn gets DefaultDatabaseDSN when the
+//     driver is sqlite and the DSN is still empty;
 //  4. registries[].auth.passwordEnv, resolved into registries[].auth.password;
 //  5. Validate, and one check that needs the environment: keys.masterKeyFile and the variable
 //     keys.masterKeyEnv names must not both be set (whether the variable is set is all Load
@@ -46,6 +47,7 @@ func Load(path string, lookupEnv func(string) (string, bool)) (*Config, error) {
 		c.Upstreams[i].applyDefaults()
 	}
 	applyEnv(c, lookupEnv)
+	c.Database.applyDefaults()
 	resolveSecrets(c, lookupEnv)
 	if err := errors.Join(c.Validate(), masterKeyTwice(c.Keys, lookupEnv)); err != nil {
 		return nil, fmt.Errorf("config: %s: invalid:\n%w", path, err)
@@ -101,6 +103,15 @@ func setsTokenKeyFile(b []byte) bool {
 	}
 	_, ok := doc.Auth["tokenSigningKeyFile"]
 	return ok
+}
+
+// applyDefaults sets DefaultDatabaseDSN, a file in the working directory, when the driver is
+// sqlite and neither the file nor the environment set a DSN. A postgres DSN has no default: a
+// file there would only be pgx's parse error, and Validate names the key instead (#718).
+func (d *Database) applyDefaults() {
+	if d.Driver == DefaultDatabaseDriver && d.DSN == "" {
+		d.DSN = DefaultDatabaseDSN
+	}
 }
 
 // applyDefaults fills the keys of r that the file left at their zero value.

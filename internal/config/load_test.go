@@ -121,23 +121,29 @@ database:
 		env  string
 		val  string
 		want func(*Config) string
-		exp  string // expected value of want(c)
+		exp  string            // expected value of want(c)
+		also map[string]string // more of the environment
 	}{
-		{"LAJSTROM_SERVER_LISTEN", "127.0.0.1:9090", func(c *Config) string { return c.Server.Listen }, "127.0.0.1:9090"},
-		{"LAJSTROM_SERVER_EXTERNAL_URL", "https://env.example", func(c *Config) string { return c.Server.ExternalURL }, "https://env.example"},
-		{"LAJSTROM_LOG_LEVEL", "debug", func(c *Config) string { return c.Log.Level }, "debug"},
-		{"LAJSTROM_LOG_FORMAT", "json", func(c *Config) string { return c.Log.Format }, "json"},
-		{"LAJSTROM_DATABASE_DRIVER", "postgres", func(c *Config) string { return c.Database.Driver }, "postgres"},
-		{"LAJSTROM_DATABASE_DSN", "postgres://db/lajstrom", func(c *Config) string { return c.Database.DSN }, "postgres://db/lajstrom"},
-		{"LAJSTROM_MASTER_KEY_FILE", "/run/secrets/master-key", func(c *Config) string { return c.Keys.MasterKeyFile }, "/run/secrets/master-key"},
-		{"LAJSTROM_BOOTSTRAP_TOKEN_FILE", "/run/secrets/bootstrap", func(c *Config) string { return c.Auth.Bootstrap.TokenFile }, "/run/secrets/bootstrap"},
-		{"LAJSTROM_SERVER_LISTEN", "", func(c *Config) string { return c.Server.Listen }, ":8080"}, // empty = unset
-		{"LAJSTROM_UNRELATED", "x", func(c *Config) string { return c.Database.DSN }, "file:file.db"},
+		{"LAJSTROM_SERVER_LISTEN", "127.0.0.1:9090", func(c *Config) string { return c.Server.Listen }, "127.0.0.1:9090", nil},
+		{"LAJSTROM_SERVER_EXTERNAL_URL", "https://env.example", func(c *Config) string { return c.Server.ExternalURL }, "https://env.example", nil},
+		{"LAJSTROM_LOG_LEVEL", "debug", func(c *Config) string { return c.Log.Level }, "debug", nil},
+		{"LAJSTROM_LOG_FORMAT", "json", func(c *Config) string { return c.Log.Format }, "json", nil},
+		{"LAJSTROM_DATABASE_DRIVER", "postgres", func(c *Config) string { return c.Database.Driver }, "postgres",
+			map[string]string{"LAJSTROM_DATABASE_DSN": "postgres://db/lajstrom"}},
+		{"LAJSTROM_DATABASE_DSN", "file:/var/lib/lajstrom/env.db", func(c *Config) string { return c.Database.DSN }, "file:/var/lib/lajstrom/env.db", nil},
+		{"LAJSTROM_MASTER_KEY_FILE", "/run/secrets/master-key", func(c *Config) string { return c.Keys.MasterKeyFile }, "/run/secrets/master-key", nil},
+		{"LAJSTROM_BOOTSTRAP_TOKEN_FILE", "/run/secrets/bootstrap", func(c *Config) string { return c.Auth.Bootstrap.TokenFile }, "/run/secrets/bootstrap", nil},
+		{"LAJSTROM_SERVER_LISTEN", "", func(c *Config) string { return c.Server.Listen }, ":8080", nil}, // empty = unset
+		{"LAJSTROM_UNRELATED", "x", func(c *Config) string { return c.Database.DSN }, "file:file.db", nil},
 	}
 	path := writeConfig(t, file)
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%s=%q", tt.env, tt.val), func(t *testing.T) {
-			c, err := Load(path, env(map[string]string{tt.env: tt.val}))
+			m := map[string]string{tt.env: tt.val}
+			for k, v := range tt.also {
+				m[k] = v
+			}
+			c, err := Load(path, env(m))
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
@@ -145,6 +151,87 @@ database:
 				t.Errorf("got %q, want %q", got, tt.exp)
 			}
 		})
+	}
+}
+
+// TestDatabaseDSN: sqlite has the default DSN file:lajstrom.db, postgres none; a DSN in the form
+// of the other engine's is refused, from the file or the environment, naming database.dsn and
+// never showing the DSN (#718).
+func TestDatabaseDSN(t *testing.T) {
+	const (
+		required  = "database.dsn: must be set with database.driver postgres, which has no default"
+		sqliteDSN = "database.dsn: is a SQLite DSN, and database.driver is postgres"
+		notPG     = "database.dsn: is neither a postgres:// URL nor keyword/value pairs"
+		pgDSN     = "database.dsn: is a Postgres DSN, and database.driver is sqlite"
+	)
+	tests := []struct {
+		name     string
+		database string            // the database section of the file
+		env      map[string]string // LAJSTROM_DATABASE_*
+		want     string            // the DSN Load sets, or with wantErr the error
+		wantErr  bool
+	}{
+		{name: "sqlite default", database: "{driver: sqlite}", want: "file:lajstrom.db"},
+		{name: "sqlite, empty DSN", database: `{driver: sqlite, dsn: ""}`, want: "file:lajstrom.db"},
+		{name: "sqlite file name", database: "{dsn: lajstrom.db}", want: "lajstrom.db"},
+		{name: "sqlite file URI", database: `{dsn: "file:/var/lib/lajstrom/lajstrom.db?_busy_timeout=1000"}`,
+			want: "file:/var/lib/lajstrom/lajstrom.db?_busy_timeout=1000"},
+		{name: "sqlite in memory", database: `{dsn: "file:test?mode=memory&cache=shared"}`, want: "file:test?mode=memory&cache=shared"},
+		{name: "sqlite file named like a keyword", database: "{dsn: hostname.db}", want: "hostname.db"},
+		{name: "postgres without DSN", database: "{driver: postgres}", want: required, wantErr: true},
+		{name: "postgres from the environment without DSN", env: map[string]string{"LAJSTROM_DATABASE_DRIVER": "postgres"},
+			want: required, wantErr: true},
+		{name: "postgres URL", database: "{driver: postgres}", env: map[string]string{"LAJSTROM_DATABASE_DSN": "postgres://db:5432/lajstrom"},
+			want: "postgres://db:5432/lajstrom"},
+		{name: "postgresql URL", database: "{driver: postgres, dsn: \"postgresql://db/lajstrom\"}", want: "postgresql://db/lajstrom"},
+		{name: "postgres keyword/value", database: "{driver: postgres, dsn: \"host=db dbname=lajstrom sslmode=require\"}",
+			want: "host=db dbname=lajstrom sslmode=require"},
+		{name: "postgres, SQLite's default from the file", database: "{dsn: \"file:lajstrom.db\"}",
+			env: map[string]string{"LAJSTROM_DATABASE_DRIVER": "postgres"}, want: sqliteDSN, wantErr: true},
+		{name: "postgres, SQLite in memory", database: "{driver: postgres, dsn: \"file::memory:?cache=shared\"}", want: sqliteDSN, wantErr: true},
+		{name: "postgres, :memory:", database: "{driver: postgres, dsn: \":memory:\"}", want: sqliteDSN, wantErr: true},
+		{name: "postgres, a file name", database: "{driver: postgres, dsn: /var/lib/lajstrom/lajstrom.db}", want: notPG, wantErr: true},
+		{name: "sqlite, postgres URL", env: map[string]string{"LAJSTROM_DATABASE_DSN": "postgres://lajstrom:s3cret@db/lajstrom"}, //nolint:gosec // a fake password the error must not show
+			want: pgDSN, wantErr: true},
+		{name: "sqlite, postgresql URL", database: "{driver: sqlite, dsn: \"postgresql://db/lajstrom\"}", want: pgDSN, wantErr: true},
+		{name: "sqlite, keyword/value", database: "{dsn: \"host=db user=lajstrom password=s3cret\"}", want: pgDSN, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file := minimal
+			if tt.database != "" {
+				file += "database: " + tt.database + "\n"
+			}
+			c, err := Load(writeConfig(t, file), env(tt.env))
+			switch {
+			case tt.wantErr && (err == nil || !strings.Contains(err.Error(), "\n"+tt.want)):
+				t.Errorf("Load: %v; want %q", err, tt.want)
+			case !tt.wantErr && err != nil:
+				t.Errorf("Load: %v", err)
+			case !tt.wantErr && c.Database.DSN != tt.want:
+				t.Errorf("database.dsn = %q, want %q", c.Database.DSN, tt.want)
+			}
+			if err != nil && strings.Contains(err.Error(), "s3cret") {
+				t.Errorf("the error shows the DSN: %v", err)
+			}
+		})
+	}
+}
+
+// TestProductionDatabase loads the configuration of deploy/compose-production, whose DSN comes
+// from LAJSTROM_DATABASE_DSN alone: without it, the problem names the key and the variable
+// (#718), not a parse error of pgx at serve.
+func TestProductionDatabase(t *testing.T) {
+	path := filepath.Join("..", "..", "deploy", "compose-production", "lajstrom.yaml")
+	environ := map[string]string{"LAJSTROM_REGISTRY_PASSWORD": "x"}
+	_, err := Load(path, env(environ))
+	if err == nil || !strings.HasSuffix(err.Error(), "\ndatabase.dsn: must be set with database.driver postgres, which has no default: "+
+		"a postgres:// URL or host=… dbname=…, best in LAJSTROM_DATABASE_DSN, which keeps the password out of the file") {
+		t.Errorf("Load without LAJSTROM_DATABASE_DSN: %v; want database.dsn and the variable, alone", err)
+	}
+	environ["LAJSTROM_DATABASE_DSN"] = "postgres://lajstrom@db:5432/lajstrom?sslmode=disable"
+	if c, err := Load(path, env(environ)); err != nil || c.Database.DSN != environ["LAJSTROM_DATABASE_DSN"] {
+		t.Errorf("Load with LAJSTROM_DATABASE_DSN: %v", err)
 	}
 }
 
