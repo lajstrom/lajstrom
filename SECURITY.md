@@ -27,7 +27,8 @@ Do not open a public issue, pull request or discussion for a suspected vulnerabi
 In scope:
 
 - The code in this repository: the server, protocol emulation for the supported package formats,
-  pass-through of container images, the index and control plane, RBAC and audit logging.
+  the OCI facade `/v2`, including `oci` repos that pass images through, proxy and group repos, the
+  index and control plane, RBAC and audit logging.
 - Issues that let a client bypass Lajstrom's authorization or audit, read or modify artifacts it
   should not have access to, or corrupt the index or the backing registry.
 - The build, CI and release configuration in this repository (supply-chain issues).
@@ -37,7 +38,9 @@ Out of scope:
 - Vulnerabilities in the OCI registries that Lajstrom uses as storage, or in third-party
   dependencies, unless Lajstrom's use of them makes it exploitable; please report those to the
   respective upstream project. Tell us as well if Lajstrom is affected.
-- Findings that require an already compromised host, registry or administrator account.
+- Findings that require an already compromised host, registry or administrator account, unless
+  the [threat model](docs/security/threat-model.md) says that Lajstrom defends against it: the
+  registry's redirects, token realm and digests, for example (P-2, P-3, P-9).
 - Volumetric denial of service, social engineering and physical attacks.
 
 ## Supported versions

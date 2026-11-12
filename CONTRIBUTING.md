@@ -143,12 +143,15 @@ open an issue and ask.
 You need Go (the current stable release is what CI uses) and Git.
 
 ```sh
-make check   # the CI job list below: build-test, lint, vulncheck, licenses (plus gofmt)
+make check   # gofmt, build, vet, test, lint, api-lint, vulncheck, licenses
 make         # lists every target
 ```
 
-`make check` runs the same commands as CI, with the same tool versions. The raw commands, if you
-want to run one step on its own:
+`make check` runs the CI jobs that need no stack, `build-test`, `lint` with its `api-lint` step,
+`vulncheck` and `licenses`, plus gofmt, with the pinned tool versions; CI's `vulncheck` job
+installs the latest govulncheck (below). It does not run the integration and end-to-end tests,
+the snippet scan or the DCO check of the list below. The raw commands, if you want to run one
+step on its own:
 
 ```sh
 go build ./...
@@ -173,7 +176,8 @@ go run github.com/google/go-licenses@v1.6.0 check ./... \
 ```
 
 The integration tests are not part of `make check`: they need the dev stack
-([docs/dev-stack.md](docs/dev-stack.md)), and CI runs them against both registries:
+([docs/dev-stack.md](docs/dev-stack.md)), and CI runs them in three cells, against Zot, against
+distribution, and against Zot with Postgres behind PgBouncer (`zot-pgbouncer`):
 
 ```sh
 make dev-up
@@ -203,14 +207,19 @@ scanoss-py inspect undeclared --input /tmp/scanoss-results.json
 | `integration (zot)`, `integration (distribution)`, `integration (zot-pgbouncer)` | `go test -race -tags integration ./...` against Zot or distribution, the store suite on SQLite and Postgres; the dev stack's images as service containers; `zot-pgbouncer` reaches Postgres through PgBouncer in transaction mode, a database per test |
 | `integration-result` | every integration cell passed, or nothing needed them; the required check for the integration tests |
 | `integration (zot-yugabyte)` | the YugabyteDB workflow, experimental: the index's integration tests on YugabyteDB 2026.1.3.0, migrated once, the tests that migrate one at a time ([docs/deploy/databases.md](docs/deploy/databases.md#yugabytedb)); nightly, on demand, and on a pull request that changes `internal/index`; `continue-on-error`, not required |
-| `e2e` | `make e2e`: the end-to-end scenarios with real clients against Zot as a service container, in 6 minutes at most ([docs/testing.md](docs/testing.md)), the client images pulled once beforehand and the maven and gradle caches of `maven.sh` kept between runs (actions/cache); then `apt.sh` again with `APT_E2E_IMAGE` `ubuntu:22.04` and `debian:12`, in 3 minutes at most, and `cosign.sh` against distribution, a registry without the referrers API (#28) |
+| `e2e` | `make e2e`: the end-to-end scenarios with real clients against Zot as a service container, in 6 minutes at most ([docs/testing.md](docs/testing.md)), the client images pulled once beforehand and the maven and gradle caches of `maven.sh` kept between runs (actions/cache); then `apt.sh` again with `APT_E2E_IMAGE` `ubuntu:22.04` and `debian:12`, in 3 minutes at most, `cosign.sh` against distribution, a registry without the referrers API (#28), and again with `capabilities.catalog: false` (#37), and `npm.sh` against distribution (#312) |
+| `e2e (gitea)` | `test/e2e/run.sh oras auth rbac oci-token cosign tokens` against Gitea's container registry, a backend with credentials and an instance prefix (#353, [docs/testing.md](docs/testing.md#a-registry-with-credentials-and-a-prefix)); on the same paths as `e2e`; not required |
 | `ha` | the HA workflow: `make dev-up PROFILES=ha` and `HA_SUITE=none make e2e E2E=ha`, the steps of `ha.sh` but H-01 against two replicas behind nginx ([docs/testing.md](docs/testing.md#the-ha-stack)); nightly, on demand, and on a pull request that changes `internal/ingest`, `internal/index`, `internal/facade`, the ha profile or the scripts it runs; not required |
+| `upgrade` | the Upgrade workflow: `test/upgrade/run.sh`, the previous release's binary and end-to-end suite on a schema this commit migrated; on a pull request that changes a migration, and on demand; passes with a notice until v0.1.0; not required |
+| `load` | the Load workflow: `make load` with 8 uploads at once, failing when the server's resident set passes 256 MiB ([docs/operations.md](docs/operations.md#performance)); nightly, on demand, and on a pull request that changes the load test; not required |
+| `fuzz (<target>)` | the Fuzz workflow: each fuzz target for 10 minutes, a crasher kept as an artifact ([docs/testing.md](docs/testing.md#fuzz)); weekly and on demand; not required |
 | `lint` | golangci-lint; `make api-lint`, vacuum on the OpenAPI document of the management API |
 | `vulncheck` | govulncheck |
 | `licenses` | dependency licenses against the allowlist |
 | `snippet-scan` | ScanOSS match against public open source code, in 10 minutes at most; the client from PyPI (three bounded attempts, a pip cache), and an API that is unavailable or gives no result within 4 minutes makes a warning, not a failure |
 | `dco` | `Signed-off-by:` on every commit of the pull request |
 | `codeql` | CodeQL static analysis (separate workflow) |
+| `scorecard` | OpenSSF Scorecard of the repository, its results in code scanning (separate workflow); on `main`, weekly and on demand |
 | `CLAAssistant` | CLA signature (separate workflow) |
 | `snapshot` | `goreleaser release --snapshot` without publishing, on pushes to `main` and on pull requests that change the release configuration (Release workflow, [docs/release.md](docs/release.md)) |
 
