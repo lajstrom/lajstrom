@@ -1032,15 +1032,17 @@ longer than `reconcile.graceAge` is outside them
 - **Scope.** Managed and `oci` repos; the tag schema `sha256-<hex>` where the registry has no
   referrers API. The subject rule: managed repos, a referrer whose subject has no subject itself
   (a version's manifest); not a referrer of a referrer.
-- **Assumes.** Registry: **GC keeps what is named** (**unchecked**): GitLab B deletes an untagged
-  referrer 24 hours after its push, and Nexus's task "Delete unused manifests" deletes one.
+- **Assumes.** Registry: **GC keeps what is named** (**unchecked**): only on a registry with the
+  referrers API and a collector of untagged manifests, which would delete the referrers Lajstrom
+  pushes there (#326); GitLab B's and Nexus's collectors delete an untagged referrer, but neither
+  registry has the API, and a referrer that their `sha256-<hex>` index lists stays (#666).
   Database: **Postgres for replicas** (on SQLite the referrers lock is a lock of the process),
   and the lock's transaction lasts until its push returns (**unchecked**): no timeout that the
   client cannot lift ends it, so PgBouncer's `idle_transaction_timeout` and Postgres's
   `transaction_timeout` are 0 for Lajstrom's users (index-schema.md, Coordination).
 - **Mechanism.** `ingest.Pipeline.PutReferrer` (`checkReferrer`, `pushReferrer` under
-  `Store.WithReferrersLock` without the API, and on a managed repo with the API too), the
-  provider's tag-schema fallback (`Repository.Referrers`). On a managed repo `pushReferrer`
+  `index.Store.WithReferrersLock` without the API, and on a managed repo with the API too), the
+  provider's tag-schema fallback (`provider.Repository.Referrers`). On a managed repo `pushReferrer`
   resolves the subject again under the subject's lock (`resolveSubject`), the tag lock that
   `deletion.locked` holds for the whole delete of the version, so a push and that delete follow
   each other (#806). The lock's transaction lifts `idle_in_transaction_session_timeout`
@@ -1073,8 +1075,8 @@ longer than `reconcile.graceAge` is outside them
   subject that is gone.
 - **Status.** `partly`: no race loses one while the lock's transaction lasts; a lock lost to the
   database can, and a registry's garbage collector can.
-  [#326](https://github.com/lajstrom/lajstrom/issues/326) writes the tag schema as well on a
-  registry with the API, as insurance.
+  [#326](https://github.com/lajstrom/lajstrom/issues/326) (open) would write the tag schema as
+  well on a registry with the API, as insurance.
 
 ## Operations
 
