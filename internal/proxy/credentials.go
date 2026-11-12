@@ -49,7 +49,8 @@ func LoadUpstreams(cfg []config.Upstream, o UpstreamOptions) (map[string]*Upstre
 }
 
 // authorization returns the Authorization header of an upstream's credentials: Basic of the
-// user and the password file, Bearer of the token file, "" for none.
+// user and the password file or the password of its variable (resolved by config.Load), Bearer
+// of the token file, "" for none.
 func authorization(key string, a config.UpstreamAuth, log *slog.Logger) (string, error) {
 	switch {
 	case a.TokenFile != "":
@@ -64,6 +65,8 @@ func authorization(key string, a config.UpstreamAuth, log *slog.Logger) (string,
 			return "", err
 		}
 		return "Basic " + base64.StdEncoding.EncodeToString([]byte(a.Username+":"+password)), nil
+	case a.PasswordEnv != "":
+		return "Basic " + base64.StdEncoding.EncodeToString([]byte(a.Username+":"+a.Password)), nil
 	}
 	return "", nil
 }

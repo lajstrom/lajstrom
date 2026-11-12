@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -291,19 +293,64 @@ type Upstream struct {
 	// a larger one is not cached. Load sets DefaultUpstreamMaxMetadataSize when it is zero;
 	// negative is invalid.
 	MaxMetadataSize int64 `yaml:"maxMetadataSize"`
+	// TokenRealmHosts are an oci upstream's host names, besides its own, that the realm of its
+	// bearer challenge may be on, over https, as Registry.TokenRealmHosts
+	// (docs/spec/proxy-and-group.md §11.1). Refused on another format.
+	TokenRealmHosts []string `yaml:"tokenRealmHosts"`
+	// DockerHub says that an oci upstream is Docker Hub or a mirror of it: a path of one
+	// component is library/<path> (§11.7). Nil means DockerHubHost of the URL; see
+	// IsDockerHub. Refused on another format.
+	DockerHub *bool `yaml:"dockerHub"`
 }
 
-// UpstreamAuth names the files that hold Lajstrom's credentials for an upstream: HTTP Basic
-// with Username and PasswordFile, or a bearer token with TokenFile. Load does not read them;
-// serve does, at start, as it reads keys.masterKeyFile.
+// FormatOCI is the format of an upstream that oci proxy repos pull through from: a registry of
+// the distribution API (ADR 0018), which no plugin serves.
+const FormatOCI = "oci"
+
+// DockerHubHost reports whether host is Docker Hub's registry: registry-1.docker.io or
+// docker.io, the hosts of the vendor table's realm auth.docker.io.
+func DockerHubHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	return host == "registry-1.docker.io" || host == "docker.io"
+}
+
+// IsDockerHub reports whether the oci upstream u is Docker Hub or a mirror of it: DockerHub
+// when it is set, else whether the URL's host is Docker Hub's.
+func (u Upstream) IsDockerHub() bool {
+	if u.DockerHub != nil {
+		return *u.DockerHub
+	}
+	v, err := url.Parse(u.URL)
+	return err == nil && u.Format == FormatOCI && DockerHubHost(v.Hostname())
+}
+
+// UpstreamAuth names where Lajstrom's credentials for an upstream are: HTTP Basic with
+// Username and PasswordFile or PasswordEnv, or a bearer token with TokenFile. Load resolves
+// PasswordEnv; serve reads the files, at start, as it reads keys.masterKeyFile.
 type UpstreamAuth struct {
-	// Username is the user of HTTP Basic, with PasswordFile.
+	// Username is the user of HTTP Basic, with PasswordFile or PasswordEnv.
 	Username string `yaml:"username"`
 	// PasswordFile is the file that holds the password of Username.
 	PasswordFile string `yaml:"passwordFile"`
+	// PasswordEnv is the name of the environment variable that holds the password of Username.
+	PasswordEnv string `yaml:"passwordEnv"`
+	// Password is the resolved value of PasswordEnv. It cannot be set in the file.
+	Password string `yaml:"-"`
 	// TokenFile is the file that holds a bearer token (Authorization: Bearer), npm's
 	// _authToken. Not with Username.
 	TokenFile string `yaml:"tokenFile"`
+}
+
+// String describes a without the password.
+func (a UpstreamAuth) String() string {
+	return fmt.Sprintf("{username: %q, passwordFile: %q, passwordEnv: %q, tokenFile: %q}", a.Username, a.PasswordFile, a.PasswordEnv,
+		a.TokenFile)
+}
+
+// GoString implements fmt.GoStringer for %#v, without the password.
+func (a UpstreamAuth) GoString() string {
+	return fmt.Sprintf("config.UpstreamAuth{Username:%q, PasswordFile:%q, PasswordEnv:%q, TokenFile:%q}", a.Username, a.PasswordFile,
+		a.PasswordEnv, a.TokenFile)
 }
 
 // Ingest configures the write path (internal/ingest).
