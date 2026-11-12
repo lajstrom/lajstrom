@@ -77,7 +77,7 @@ func newEnv(t *testing.T) *env {
 	log := slog.New(slog.DiscardHandler)
 	e.pipe = ingest.New(ingest.Options{Providers: e.providers, Index: st, Plugins: plugins, Log: log})
 	e.inspect = &counting{Inspector: e.pipe}
-	e.w = reindex.New(reindex.Options{Index: st, Providers: e.providers, Inspector: e.inspect, Log: log, Now: e.clock.now})
+	e.w = reindex.New(reindex.Options{Index: st, Providers: e.providers, Inspector: e.inspect, Repairer: e.pipe, Log: log, Now: e.clock.now})
 	return e
 }
 
@@ -552,9 +552,18 @@ type wrapped struct {
 	resolveIn   string // when set, failResolve fails the Resolve of this repository only
 	failTags    error
 	tagsIn      string // when set, failTags fails the tag list of this repository only
+	// noReferrersAPI makes it a registry without the referrers API, whose referrers the
+	// sha256-<hex> index lists.
+	noReferrersAPI bool
 
 	mu       sync.Mutex
 	tagLists map[string]int // the tag lists asked, by repository
+}
+
+func (w *wrapped) Capabilities(ctx context.Context) (provider.Capabilities, error) {
+	c, err := w.Fake.Capabilities(ctx)
+	c.Referrers = c.Referrers && !w.noReferrersAPI
+	return c, err
 }
 
 func (w *wrapped) ListRepositories(ctx context.Context, prefix string) ([]string, error) {

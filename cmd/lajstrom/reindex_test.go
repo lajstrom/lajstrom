@@ -7,8 +7,29 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/opencontainers/go-digest"
+
 	"github.com/lajstrom/lajstrom/internal/index/reindex"
 )
+
+// TestWriteReportRepairedReferrers: a sha256-<hex> index that ingest pushed again for the run
+// (#628) is a count of the table and, with --report, a line with the index and how many it added.
+func TestWriteReportRepairedReferrers(t *testing.T) {
+	subject, idx := digest.FromString("subject"), digest.FromString("index")
+	rep := &reindex.Report{Repos: []reindex.RepoReport{{Repo: "raw/assets", RepairedReferrers: []reindex.RepairedIndex{{
+		Repository: "notes", Subject: subject, Index: idx, Added: []digest.Digest{digest.FromString("a"), digest.FromString("b")}}}}}}
+	var out strings.Builder
+	if err := writeReport(&out, rep, true); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(out.String(), "\n")
+	if fields := strings.Fields(lines[1]); !strings.Contains(lines[0], "REFERRERS  REPAIRED") || len(fields) != 16 || fields[9] != "1" {
+		t.Errorf("the table: %q", lines[:2])
+	}
+	if want := "raw/assets: repaired referrers index notes:sha256-" + subject.Encoded() + " " + idx.String() + ", added 2"; lines[2] != want {
+		t.Errorf("the list: %q, want %q", lines[2], want)
+	}
+}
 
 // TestReindexAttach runs reindex --attach against a registry that does not answer: it needs
 // --repo, a file that names an OCI repository, and names below the repo's path; then the run
@@ -83,7 +104,7 @@ func TestWriteReportSplit(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(out.String(), "\n")
-	if fields := strings.Fields(lines[1]); !strings.Contains(lines[0], "DRIFT  SPLIT  NOREPO  ERRORS") || len(fields) != 15 || fields[12] != "1" {
+	if fields := strings.Fields(lines[1]); !strings.Contains(lines[0], "DRIFT  SPLIT  NOREPO  ERRORS") || len(fields) != 16 || fields[13] != "1" {
 		t.Errorf("the table: %q", lines[:2])
 	}
 	want := "raw/assets: split netlify/blobs indexed at netlify/blob_73 [3fc4ccfe745870e2], not at netlify/blobs " +
@@ -106,7 +127,7 @@ func TestWriteReportRepositoryUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(out.String(), "\n")
-	if fields := strings.Fields(lines[1]); len(fields) != 15 || fields[13] != "1" || fields[14] != "0" {
+	if fields := strings.Fields(lines[1]); len(fields) != 16 || fields[14] != "1" || fields[15] != "0" {
 		t.Errorf("the table: %q", lines[:2])
 	}
 	want := "raw/assets: repository unknown docs/gone.txt:0123456789abcdef " +

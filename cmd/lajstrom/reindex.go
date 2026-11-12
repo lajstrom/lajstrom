@@ -85,7 +85,7 @@ func newReindexCmd(a *app) *cobra.Command {
 				return err
 			}
 			pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL})
-			w := reindex.New(reindex.Options{Index: st, Providers: providers, Inspector: pipe, Log: a.log,
+			w := reindex.New(reindex.Options{Index: st, Providers: providers, Inspector: pipe, Repairer: pipe, Log: a.log,
 				Concurrency: concurrency, ClaimTTL: c.Ingest.ClaimTTL, GraceAge: c.Reconcile.GraceAge})
 			run, err := w.Start(ctx, req)
 			var conflict *index.ReindexConflictError
@@ -116,9 +116,10 @@ func newReindexCmd(a *app) *cobra.Command {
 	f.StringVar(&attach, "attach", "", "a file of OCI repositories of --repo to read besides the registry's listing, one per line, "+
 		"e.g. raw/assets/docs/readme.md: the first attach on a registry without a catalog")
 	f.BoolVar(&prune, "prune", false, "remove the rows of manifests that are gone (default true without --repo)")
-	f.BoolVar(&verify, "verify", false, "read and check every manifest, also those whose digest the index has")
+	f.BoolVar(&verify, "verify", false, "read and check every manifest, also those whose digest the index has; without the "+
+		"referrers API, push again a sha256-<hex> index that lacks referrers the audit log has as pushed")
 	f.BoolVar(&report, "report", false, "list foreign manifests, orphan referrers, drift, split packages, versions of unknown "+
-		"OCI repositories and errors")
+		"OCI repositories, repaired referrers indexes and errors")
 	f.BoolVar(&asJSON, "json", false, "print the report as JSON")
 	f.IntVar(&concurrency, "concurrency", 0, "manifests read at once per registry (default 8)")
 	return cmd
@@ -161,11 +162,11 @@ func writeReport(out io.Writer, rep *reindex.Report, lists bool) error {
 	var buf bytes.Buffer
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 	// A bytes.Buffer does not fail.
-	_, _ = io.WriteString(tw, "REPO\tMANIFESTS\tADDED\tUPDATED\tUNCHANGED\tREMOVED\tPENDING\tDEGRADED\tREFERRERS\tFOREIGN\tORPHANS\tDRIFT\tSPLIT\tNOREPO\tERRORS\n")
+	_, _ = io.WriteString(tw, "REPO\tMANIFESTS\tADDED\tUPDATED\tUNCHANGED\tREMOVED\tPENDING\tDEGRADED\tREFERRERS\tREPAIRED\tFOREIGN\tORPHANS\tDRIFT\tSPLIT\tNOREPO\tERRORS\n")
 	for _, r := range rep.Repos {
-		_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", r.Repo, r.Manifests, r.Added, r.Updated,
-			r.Unchanged, r.Removed, r.Pending, r.Degraded, r.Referrers, len(r.Foreign), len(r.OrphanReferrers), len(r.Drift),
-			len(r.Split), len(r.RepositoryUnknown), len(r.Errors))
+		_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", r.Repo, r.Manifests, r.Added, r.Updated,
+			r.Unchanged, r.Removed, r.Pending, r.Degraded, r.Referrers, len(r.RepairedReferrers), len(r.Foreign), len(r.OrphanReferrers),
+			len(r.Drift), len(r.Split), len(r.RepositoryUnknown), len(r.Errors))
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -187,6 +188,10 @@ func writeReport(out io.Writer, rep *reindex.Report, lists bool) error {
 			}
 			for _, u := range r.RepositoryUnknown {
 				fmt.Fprintf(&buf, "%s: repository unknown %s:%s %s, delete with: %s\n", r.Repo, u.Repository, u.Tag, u.Digest, u.Delete)
+			}
+			for _, x := range r.RepairedReferrers {
+				fmt.Fprintf(&buf, "%s: repaired referrers index %s:sha256-%s %s, added %d\n", r.Repo, x.Repository, x.Subject.Encoded(),
+					x.Index, len(x.Added))
 			}
 			for _, f := range r.Errors {
 				fmt.Fprintf(&buf, "%s: error %s:%s %s\n", r.Repo, f.Repository, f.Tag, f.Error)

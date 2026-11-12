@@ -949,6 +949,7 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | `token.create`, `token.revoke` | personal access tokens and deploy tokens, from the API and the CLI |
 | `key.rotate`, `key.drop` | `lajstrom admin key` |
 | `reconcile` | the [reconcile](#reconcile) loop of `serve`, one row per repo that a run changed |
+| `referrers.repair` | a reindex run of the reconcile loop or with verify (CLI or API) that pushed a subject's `sha256-<hex>` index again with the referrers it lacked, as the principal of the run ([Reindex](#what-a-run-does)) |
 
 A row has the time, the principal (`user:<uid>`, `token:<id>`, `anonymous`) and, for a user,
 its name at the time (`principalName`, which stays when the user is renamed or deleted), the
@@ -1152,11 +1153,15 @@ pushes that index again without it before it deletes the referrer; when the regi
 take that push, the index is pushed back as it was, nothing is deleted, and the delete answers
 `503`. Only when the push back fails too does no index list the subject's referrers: the log
 then has the error "the referrers index of a subject was not pushed back", with the subject and
-the referrers (`unlisted`). Before the next collection (distribution's `registry
-garbage-collect --delete-untagged`), retry each such `DELETE`: the retry pushes the subject's
-index again with every referrer that the audit log has as pushed and the registry still has,
-then deletes. The same retry repairs the index that a failed delete of an earlier Lajstrom
-left, which deleted the referrer before the index was back.
+the referrers (`unlisted`). The next run of the [reconcile](#reconcile) loop pushes the subject's
+index again with every referrer that the audit log has as pushed and the registry still has
+(so does `lajstrom reindex --verify`, and so does a retry of the `DELETE`, which then deletes);
+the report lists it under `repairedReferrers`. The same repair covers the index that a failed
+delete of an earlier Lajstrom left, which deleted the referrer before the index was back, and a
+referrer that a lost referrers lock left out. So let a reconcile run finish between such an
+error and the next collection (distribution's `registry garbage-collect --delete-untagged`), or
+run `lajstrom reindex --verify` before it: `GET …/reindex` shows the latest run of a repo and
+whether it listed the subject.
 
 When a registry's rule deletes a version anyway, the index follows at the next reconcile, which
 removes the rows of a manifest the registry answers as unknown
@@ -1190,7 +1195,13 @@ digest of its manifest.
   metadata layer is missing or unreadable is indexed from its annotations and flagged
   `degraded`; the next run reads it again. A manifest with a `subject`, or under a
   `sha256-<hex>` tag (the referrers tag schema, cosign's `.sig`, `.att`, `.sbom`), is a referrer:
-  counted, and listed as an orphan when no version has its subject's digest. Anything else under
+  counted, and listed as an orphan when no version has its subject's digest. On a registry
+  without the referrers API, a run of the reconcile loop or with `--verify` then compares each
+  subject's `sha256-<hex>` index with the referrers that the audit log has as pushed to the repo:
+  an index that lacks some the registry still has, or that is missing, is pushed again with them
+  by the ingest pipeline, under the subject's referrers lock, with an audit row
+  `referrers.repair`, and listed under `repairedReferrers` (#628). This is the only write a run
+  makes to the registry. Anything else under
   a repo's path, a Helm chart for instance, is foreign: recorded in `oci_repos`, listed, never
   indexed, never served.
 - A tag that names another digest than its row is drift: the index keeps its digest and the
@@ -1228,8 +1239,8 @@ lajstrom reindex --repo raw/assets --attach raw-assets.txt        # a registry w
 ```
 
 The output is one line of counts per repo (manifests, added, updated, unchanged, removed,
-pending, degraded, referrers, foreign, orphan referrers, drift, split, versions of OCI repositories the registry does
-not know, errors); `--report` adds the lists, at most
+pending, degraded, referrers, repaired referrers indexes, foreign, orphan referrers, drift, split, versions of OCI
+repositories the registry does not know, errors); `--report` adds the lists, at most
 1 000 entries each, and `--json` prints the whole report. The exit status is not zero when the
 run itself failed (the database or the context) or another run holds the lock; manifests that
 could not be read or checked are errors in the report and do not change it. `--concurrency`
@@ -1263,7 +1274,11 @@ interval. The next tick is counted from the end of a run. Its runs are `reindex_
 the source `reconcile` and show in `GET …/reindex`; they write no audit row when they change
 nothing and one row `reconcile` per repo they changed (its details have the counts). A run over
 known digests costs one `HEAD` per tag ([On a cloud registry](#on-a-cloud-registry)), so the
-default interval is cheap; drift is reported, never repaired by re-pointing a tag. A manifest
+default interval is cheap; drift is reported, never repaired by re-pointing a tag. On a registry
+without the referrers API it also pushes again a `sha256-<hex>` index that lacks referrers
+([What a run does](#what-a-run-does)): it reads the repo's `push` audit rows once per run, and
+per subject with referrers in them, the index and each referrer that the index does not list
+(one more `HEAD` per run for a referrer deleted since). A manifest
 deleted in the registry leaves the index at the first run that comes both 10 minutes after the
 first run that found it gone and `reconcile.graceAge` after the version was last seen: with the
 defaults, one to two hours after the delete.

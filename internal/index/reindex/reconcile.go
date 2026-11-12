@@ -67,7 +67,7 @@ func (w *Worker) reconcileOnce(ctx context.Context) {
 			Subject: "run " + itoa(run.ID)}
 		ev.Details, _ = json.Marshal(map[string]any{"run": run.ID, "added": r.Added, "updated": r.Updated,
 			"removed": r.Removed, "drift": len(r.Drift), "split": len(r.Split), "repositoryUnknown": len(r.RepositoryUnknown),
-			"errors": len(r.Errors)})
+			"repairedReferrers": len(r.RepairedReferrers), "errors": len(r.Errors)})
 		w.writeAudit(context.WithoutCancel(ctx), ev)
 	}
 }

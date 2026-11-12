@@ -909,6 +909,7 @@ type Options struct {
     Index       index.Store
     Providers   provider.Set
     Inspector   Inspector                     // *ingest.Pipeline
+    Repairer    Repairer                      // *ingest.Pipeline; nil: a run writes nothing to the registry
     Audit       audit.Writer
     Now         func() time.Time              // nil: time.Now
     Log         *slog.Logger                  // nil: slog.Default()
@@ -918,6 +919,12 @@ type Options struct {
 }
 type Inspector interface {
     Inspect(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, o ingest.InspectOptions) (*ingest.Rows, error)
+}
+// Repairer pushes a subject's sha256-<hex> index again with the referrers it lacks, through the
+// one write path (#628); found maps the digest of each manifest a run read (under a tag, or
+// listed by a sha256-<hex> index) to the package paths of its OCI repositories.
+type Repairer interface {
+    RepairReferrers(ctx context.Context, repo index.Repo, found map[digest.Digest][]string, principal auth.Principal) ([]ingest.ReferrersRepair, error)
 }
 func New(o Options) *Worker
 
@@ -930,7 +937,11 @@ type Request struct {
 }
 // Start takes the lock (StartReindexRun) and writes repo.reindex; *index.ReindexConflictError
 // when a run overlaps. Run reads the registry, beats, and finishes the run whatever happens; its
-// error is the run's own (Report.Repos[].Errors hold the manifests that failed).
+// error is the run's own (Report.Repos[].Errors hold the manifests that failed). It writes
+// nothing to the registry itself: a run of the reconcile loop or with Verify, on a registry
+// without the referrers API, asks ingest to repair the repo's sha256-<hex> indexes
+// (Repairer, once per repo after its tags are read) and reports what ingest pushed
+// (RepoReport.RepairedReferrers) and what failed (Errors).
 func (w *Worker) Start(ctx context.Context, req Request) (*index.ReindexRun, error)
 func (w *Worker) Run(ctx context.Context, run *index.ReindexRun, req Request) (*Report, error)
 // Reconcile runs Start and Run for every repo with prune every interval until ctx ends (#30):
@@ -959,8 +970,15 @@ type RepoReport struct {
     Drift           []Drift   `json:"drift"`
     Split           []Split   `json:"split"`           // packages at two forms of their OCI name, one per other form
     RepositoryUnknown []RepositoryUnknown `json:"repositoryUnknown"` // versions whose OCI repository the registry does not know
+    RepairedReferrers []RepairedIndex `json:"repairedReferrers"` // sha256-<hex> indexes ingest pushed again (#628)
     Errors          []Finding `json:"errors"`
     Truncated       bool      `json:"truncated"`       // a list stopped at 1 000 entries
+}
+type RepairedIndex struct {                   // guarantees.md INV-35; #628
+    Repository string          `json:"repository"` // the subject's OCI repository, below the repo's base
+    Subject    digest.Digest   `json:"subject"`
+    Index      digest.Digest   `json:"index"`      // the index pushed
+    Added      []digest.Digest `json:"added"`      // the referrers it lacked, in the order of their pushes
 }
 type Finding struct {
     Repository   string        `json:"repository"`    // OCI repository below the repo's base
@@ -1072,6 +1090,27 @@ type Referrer struct {
 // the audit row (delete, Details {"referrers": n}). Errors wrap provider.ErrUnsupported,
 // index.ErrNotFound or provider.ErrConflict (the backend refused this one delete).
 func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Deletion, principal auth.Principal) (*format.Deleted, error)
+
+// RepairReferrers is how reindex repairs the registry (#628; guarantees.md INV-35): on a backend
+// without Capabilities.Referrers, it pushes again the sha256-<hex> index of each subject of found
+// (manifest digest → package paths of the OCI repositories a run found it in) that lacks
+// referrers the audit log has as pushed to repo (the push rows whose subject is a digest, read
+// once) and the registry still has with that subject, or that is missing while there are such:
+// read again under Store.WithReferrersLock of the subject, which must still be in the
+// repository, then pushed with them after those it lists, as Delete's repair does. One audit
+// event per index pushed: referrers.repair by principal, Subject the subject's digest, Digest the
+// index's, Details {"path", "added"}, pending before the push and completed after it. A backend
+// with the API, or an Options.Audit writer, repairs nothing. One entry per index found lacking:
+// pushed, or Err (a read or the push failed, the index is as it was); the error is the audit
+// log's or the capabilities'.
+func (p *Pipeline) RepairReferrers(ctx context.Context, repo index.Repo, found map[digest.Digest][]string, principal auth.Principal) ([]ReferrersRepair, error)
+type ReferrersRepair struct {
+    Path    string                          // the subject's OCI repository, below the repo's base
+    Subject digest.Digest
+    Index   digest.Digest                   // the index pushed; "" with Err
+    Added   []digest.Digest                 // the referrers it lacked, in the order of their pushes
+    Err     error
+}
 
 // Inspect runs the steps of Ingest that only read (1 to 3) on a manifest found in the registry
 // at <repo base>/<pkgPath>:<tag> and returns the rows step 6 writes; nothing is pushed or

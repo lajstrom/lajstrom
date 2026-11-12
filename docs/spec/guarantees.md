@@ -1005,12 +1005,17 @@ status is `holds on strongly consistent registries only` do not hold there.
   An index that lacks referrers the audit log has as pushed and the registry has, or that is
   missing, is pushed with them first (`deletion.subjectIndex`), so the retry of such a delete
   lists them again, also after a delete whose referrer went before its index came back
-  (`deletion.findReferrer`; #711).
+  (`deletion.findReferrer`; #711). Without a client's retry, every run of the reconcile loop and
+  every `reindex --verify` does the same repair (`ingest.Pipeline.RepairReferrers`, which the
+  reindex worker asks once per repo after it read its tags: under the subject's referrers lock,
+  with an audit row `referrers.repair`), and the report lists each index pushed
+  (`repairedReferrers`; #628).
 - **Tests.** `TestPutReferrer`, `TestPutReferrerRefused`, `TestPutReferrerOCI`, `TestReferrers`,
   `TestReferrerPush`, `TestIntegrationReferrers`, `TestIntegrationReferrersConcurrent`,
   `TestRebuildTagSchema`, `TestReferrerIndexDeleteRefused`, `TestReferrersLockLost`,
   `TestPutReferrerLockLost`, `TestDeleteReferrerIndexNotPushed`, `TestDeleteReferrerRepairsIndex`,
-  `TestDeleteReferrerGone`, `TestIntegrationDeleteReferrerIndexRepair`; `cosign.sh` (on Zot and on
+  `TestDeleteReferrerGone`, `TestIntegrationDeleteReferrerIndexRepair`, `TestRepairReferrers` (of
+  ingest and of reindex), `TestIntegrationRepairReferrers`; `cosign.sh` (on Zot and on
   distribution), the step of #28 in `ha.sh`.
 - **When violated.** A referrer the registry collected is missing from the list; nothing reports
   it. A lock whose transaction ended while its push ran (a pooler's timeout, a terminated
@@ -1322,7 +1327,7 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | A durable `201` is assumed (INV-4) | a manifest the registry lost leaves the index silently at the next reconcile, counted among `removed` | report the removal of a row ingest confirmed as a finding of its own, with a metric | new issue |
 | I-01 is not in the end-to-end suite (INV-3); the equality tests (`TestRebuild`, `TestRebuildFormats`, npm's) publish through the frontends in-process, not with the real clients | a column that only a real client's upload fills, and that annotations cannot rebuild, would be lost at the first reindex, unnoticed | I-01 as an end-to-end step: publish with every client, dump the derived rows, reindex, compare | new issue |
 | Nothing machine-checks the one write path in plugins (INV-2) | a plugin could push a manifest past ingest: no claim, validation or audit row | a read-only provider view in `format.Deps`, or a lint rule against `Push`, `PushReference` and `Delete` outside `internal/ingest`, `internal/facade` and `internal/provider` (a `contract` change of `format`) | new issue |
-| A timeout the client cannot lift, a terminated backend or a failover can end the referrers lock's transaction while its push runs (INV-26, INV-35) | that push is `503` and its retry lists its referrer; a referrer that another writer pushed meanwhile can be missing from the `sha256-<hex>` index, and nothing reports it | keep PgBouncer's `idle_transaction_timeout` and Postgres's `transaction_timeout` 0 (index-schema.md, Coordination); reindex `--verify` could add back a referrer that the audit log has as pushed and the index lacks | new issue |
+| A timeout the client cannot lift, a terminated backend or a failover can end the referrers lock's transaction while its push runs (INV-26, INV-35) | that push is `503` and its retry lists its referrer; a referrer that another writer pushed meanwhile can be missing from the `sha256-<hex>` index, and nothing reports it | keep PgBouncer's `idle_transaction_timeout` and Postgres's `transaction_timeout` 0 (index-schema.md, Coordination); without the referrers API, the reconcile loop and reindex `--verify` add back a referrer that the audit log has as pushed and the index lacks, and report it | [#628](https://github.com/lajstrom/lajstrom/issues/628), new issue |
 | The garbage collectors of GitLab B and Nexus delete untagged referrers (INV-35) | signatures and SBOMs vanish | the tag schema as well on registries with the API (#326); for GitLab B and Nexus, a vendor-table warning or a tag per referrer | [#326](https://github.com/lajstrom/lajstrom/issues/326), new issue |
 | No frontend test of a denial with malformed input (INV-15) | a regression of the R-2 kind on a frontend goes unseen | a table test per frontend, as `TestDenialBeforeInput` does for `/v2` | new issue |
 | Acceptance C-07 and S-09 are not automated (INV-14, INV-21) | a redaction or an audit regression goes unseen | after the suite, grep both replicas' logs for every secret used, and count the audit rows of its writes | new issue |

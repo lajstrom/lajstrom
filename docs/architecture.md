@@ -254,7 +254,10 @@ sequenceDiagram
 Reindex marks and sweeps instead of emptying the tables first, so the frontends keep serving
 during a run, and it reads a manifest only when its digest is new: a digest names the same
 bytes, which were checked when they were written. A tag that names another digest than the index
-is reported as drift and never re-pointed (index-schema.md, Invariants).
+is reported as drift and never re-pointed (index-schema.md, Invariants). The worker writes
+nothing to the registry itself: on a registry without the referrers API, a reconcile run or one
+with `--verify` asks ingest, the one write path, to push again a subject's `sha256-<hex>` index
+that lacks referrers the audit log has as pushed (#628).
 
 ## 4. Boundaries of responsibility
 
