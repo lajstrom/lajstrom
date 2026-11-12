@@ -185,7 +185,7 @@ func TestVendorDefaults(t *testing.T) {
 			MaxBlobSize: 10_000_000_000}},
 		{vendorDocker, provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true, DeleteManifest: true, BlobRedirect: true,
 			MaxNameDepth: 1}},
-		{vendorQuay, provider.Capabilities{CreateOnPush: true, Referrers: true, DeleteManifest: true, BlobRedirect: true,
+		{vendorQuay, provider.Capabilities{CreateOnPush: true, DeleteManifest: true, BlobRedirect: true,
 			Consistency: provider.ConsistencyEventual, ConsistencyBound: 130 * time.Second}},
 	}
 	for _, tt := range tests {
@@ -243,7 +243,7 @@ func TestCapabilitiesVendor(t *testing.T) {
 	}
 	gitLabDeep := strong
 	gitLabDeep.MaxNameDepth = gitLabNameDepth
-	quay := provider.Capabilities{CreateOnPush: true, Referrers: true, DeleteManifest: true, BlobRedirect: true, MaxNameLength: 251,
+	quay := provider.Capabilities{CreateOnPush: true, DeleteManifest: true, BlobRedirect: true, MaxNameLength: 251,
 		Consistency: provider.ConsistencyEventual, ConsistencyBound: 130 * time.Second}
 	tests := []struct {
 		name   string
@@ -279,8 +279,8 @@ func TestCapabilitiesVendor(t *testing.T) {
 			edit: func(c *config.Registry) { c.Uploads.SpoolUnknownLength = true },
 		},
 		{name: "JFrog", setup: headers(jfrogV2, true), vendor: vendorJFrog, quirks: quirks{blobExistsByGET: true}, hint: true},
-		// The fake's referrers API is off: the table's referrers: true is not probed.
-		{name: "Quay", setup: headers(quayV2, false), vendor: vendorQuay, want: quay},
+		// The fake has a catalog and the referrers API: the table's catalog and referrers win.
+		{name: "Quay", setup: headers(quayV2, true), vendor: vendorQuay, want: quay},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -455,7 +455,7 @@ func TestVendorDefaultsInTheProbe(t *testing.T) {
 			// The fake has a catalog and the referrers API; the table's answers win unasked.
 			name:     "Quay",
 			defaults: vendorDefaults[vendorQuay],
-			want: provider.Capabilities{CreateOnPush: true, Referrers: true, DeleteManifest: true, BlobRedirect: true,
+			want: provider.Capabilities{CreateOnPush: true, DeleteManifest: true, BlobRedirect: true,
 				Consistency: provider.ConsistencyEventual, ConsistencyBound: 130 * time.Second},
 			noProbe: []string{"GET /v2/_catalog", "GET /v2/art/lajstrom-probe/referrers/"},
 		},

@@ -117,12 +117,16 @@ var vendorDefaults = map[vendor]config.CapabilityOverrides{
 	vendorJFrog: {},
 	// Quay answers _catalog without credentials with 200 and no repositories, which the probe
 	// takes for a catalog and oras-go never authenticates: reindex would find nothing (#802).
-	// It has the referrers API, but the probe's repository does not exist and is 404
-	// NAME_UNKNOWN, so the probe cannot tell. Lists are cached: quayConsistencyBound. Measured on
-	// Project Quay 3.18.2; quay.io answered GET /v2/, the anonymous catalog, the token endpoint
-	// and the referrers API alike on 2026-11-12, its cache times not measured
-	// (docs/registries/quay.md).
-	vendorQuay: {Catalog: new(false), Referrers: new(true), Consistency: config.ConsistencyEventual, ConsistencyBound: quayConsistencyBound},
+	// It has the referrers API, which the probe cannot tell (its repository does not exist, 404
+	// NAME_UNKNOWN), but the tag schema answers right where the API does not: the API answers
+	// a subject that does not exist 400 MANIFEST_INVALID, a client's listing after a version's
+	// delete; it keeps listing a referrer Lajstrom deleted, since Quay answers the DELETE of a
+	// manifest pushed by digest 404 and keeps it; and it is cached 60 s. The tag-schema index is
+	// a tag, read fresh and written again without the deleted referrer. Lists are cached:
+	// quayConsistencyBound. Measured on Project Quay 3.18.2; quay.io answered GET /v2/, the
+	// anonymous catalog, the token endpoint and the referrers API alike on 2026-11-12, its
+	// cache times not measured (docs/registries/quay.md).
+	vendorQuay: {Catalog: new(false), Referrers: new(false), Consistency: config.ConsistencyEventual, ConsistencyBound: quayConsistencyBound},
 }
 
 // hintSpool reports whether the start hints at registries[].uploads.spoolUnknownLength for v:
