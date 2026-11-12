@@ -202,6 +202,9 @@ step "OI-04: alice is of kind oidc; audit user.create, user.login and token.crea
 
 # OI-05: alice leaves platform; the next login revokes the group's binding, for every token.
 dex dev
+# Dex on memory storage made new signing keys at its restart: the server reads the JWKS again for
+# an unknown kid at most every 30 s (rbac.md §8), so the second login waits that long.
+sleep 31
 browser "$work/jar2" "$base/-/oidc/login"
 assert_eq 200 "$page_status" "the second login's status"
 token2="$(token_of "$work/page.html")"
