@@ -74,6 +74,66 @@ type Token struct {
 	RevokedAt  *time.Time
 }
 
+// Identity is a row of identities (control plane): an OIDC identity, the iss and sub of an ID
+// token, and the user it maps to (docs/spec/rbac.md §8).
+type Identity struct {
+	ID        int64
+	UserID    int64
+	Issuer    string
+	Subject   string
+	CreatedAt time.Time
+	// LoginAt is the identity's latest login; GroupsExpireAt is when the groups of that login
+	// stop counting, nil until SetIdentityGroups first stores it.
+	LoginAt        time.Time
+	GroupsExpireAt *time.Time
+}
+
+// IdentityGroup is a row of identity_groups with what the RBAC snapshot needs of its identity
+// and user (ListIdentityGroups).
+type IdentityGroup struct {
+	IdentityID int64
+	UserID     int64
+	UID        string     // the user's uid
+	Name       string     // the group
+	ExpiresAt  *time.Time // the identity's GroupsExpireAt
+}
+
+// Kinds and statuses of oidc_logins (docs/spec/index-schema.md).
+const (
+	// OIDCLoginCode is a login of the authorization code flow, OIDCLoginDevice a device request.
+	OIDCLoginCode   = "code"
+	OIDCLoginDevice = "device"
+
+	// OIDCPending is a row that waits: for its callback, or for its login.
+	OIDCPending = "pending"
+	// OIDCUsed is a code login whose state was redeemed.
+	OIDCUsed = "used"
+	// OIDCApproved, OIDCDenied and OIDCRedeemed are a device request whose login succeeded,
+	// whose login was refused, and whose token was given out.
+	OIDCApproved = "approved"
+	OIDCDenied   = "denied"
+	OIDCRedeemed = "redeemed"
+)
+
+// OIDCLogin is a row of oidc_logins (coordination): a login of the code flow or a device
+// request, which lives ten minutes (docs/spec/rbac.md §8). State, Binding and DeviceCode are
+// hex sha256 of the secrets, never the secrets; an empty string is NULL.
+type OIDCLogin struct {
+	ID   int64
+	Kind string // OIDCLoginCode or OIDCLoginDevice
+	// A code login: the hashes of its state and of the browser's cookie, its nonce and its PKCE
+	// verifier, and the device request it approves, if any.
+	State, Binding, Nonce, Verifier string
+	DeviceID                        *int64
+	// A device request: the hash of its device code, its user code without the hyphen, the
+	// user it was approved for and its latest poll.
+	DeviceCode, UserCode string
+	Status               string
+	UserID               *int64
+	PolledAt             *time.Time
+	CreatedAt, ExpiresAt time.Time
+}
+
 // BootstrapToken is the row of bootstrap_token (control plane): the one-time token that makes
 // the first admin, the same on every replica. The table has at most one row.
 type BootstrapToken struct {
