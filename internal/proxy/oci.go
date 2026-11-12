@@ -46,6 +46,10 @@ type OCIUpstream struct {
 	client    provider.Provider
 	dockerHub bool
 	retries   int // upstreams[].retries: the resumes in a row of a blob's body that get no byte
+	// revalidate is the client of the HEAD that revalidates an expired tag with a row to fall
+	// back on, and revalidateTimeout bounds that HEAD whole (revalidateTag).
+	revalidate        provider.Provider
+	revalidateTimeout time.Duration
 }
 
 // OCIUpstreamOption sets what an OCIUpstream takes from its configuration.
@@ -68,11 +72,24 @@ func OCIRetries(n int) OCIUpstreamOption {
 
 // NewOCIUpstream returns the upstream name served by client, a read-only provider of the
 // registry (generic.NewUpstream); dockerHub turns the library/ rule on (§11.7). Without opts,
-// its retries are config.DefaultUpstreamRetries.
+// its retries are config.DefaultUpstreamRetries. An expired tag is revalidated with client
+// within config.DefaultUpstreamRevalidateTimeout until WithRevalidate says otherwise.
 func NewOCIUpstream(name string, client provider.Provider, dockerHub bool, opts ...OCIUpstreamOption) *OCIUpstream {
-	u := &OCIUpstream{name: name, client: client, dockerHub: dockerHub, retries: config.DefaultUpstreamRetries}
+	u := &OCIUpstream{name: name, client: client, dockerHub: dockerHub, retries: config.DefaultUpstreamRetries,
+		revalidate: client, revalidateTimeout: config.DefaultUpstreamRevalidateTimeout}
 	for _, o := range opts {
 		o(u)
+	}
+	return u
+}
+
+// WithRevalidate sets the client and the deadline of the HEAD that revalidates an expired tag
+// with a row (§11.4, step 2): client, which LoadOCIUpstreams builds without retries, within
+// timeout (upstreams[].revalidateTimeout; zero keeps the default). It returns u.
+func (u *OCIUpstream) WithRevalidate(client provider.Provider, timeout time.Duration) *OCIUpstream {
+	u.revalidate = client
+	if timeout > 0 {
+		u.revalidateTimeout = timeout
 	}
 	return u
 }
@@ -105,7 +122,13 @@ func LoadOCIUpstreams(cfg []config.Upstream, log *slog.Logger) (map[string]*OCIU
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", key, err)
 		}
-		out[c.Name] = NewOCIUpstream(c.Name, client, c.IsDockerHub(), OCIRetries(c.Retries))
+		once := c
+		once.Retries = -1
+		revalidate, err := generic.NewUpstream(once, cred, log)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", key, err)
+		}
+		out[c.Name] = NewOCIUpstream(c.Name, client, c.IsDockerHub(), OCIRetries(c.Retries)).WithRevalidate(revalidate, c.RevalidateTimeout)
 	}
 	return out, nil
 }
@@ -218,7 +241,27 @@ func (p *ociProxied) fresh(row *index.ProxyMeta, now time.Time) bool {
 
 // resolve asks the upstream what ref names at path, with a HEAD, which Docker Hub does not count.
 func (u *OCIUpstream) resolve(ctx context.Context, path, ref string) (ocispec.Descriptor, error) {
-	rr, err := u.client.Repository(ctx, path)
+	return u.resolveWith(ctx, u.client, path, ref)
+}
+
+// revalidateTag is resolve of an expired tag that has a row to fall back on (§11.4, step 2):
+// once, without retries, and within revalidateTimeout, after which it is
+// format.ErrGatewayTimeout. The row is then served as it is, and containerd, which waits 30 s for
+// the headers, gets it in time; the full timeout and retries cost 90 s by default (#888).
+func (u *OCIUpstream) revalidateTag(ctx context.Context, path, tag string) (ocispec.Descriptor, error) {
+	rctx, cancel := context.WithTimeout(ctx, u.revalidateTimeout)
+	defer cancel()
+	desc, err := u.resolveWith(rctx, u.revalidate, path, tag)
+	if err != nil && ctx.Err() == nil && errors.Is(rctx.Err(), context.DeadlineExceeded) {
+		return desc, fmt.Errorf("%w: upstream %s did not answer for the tag %s within revalidateTimeout %s", format.ErrGatewayTimeout,
+			u.name, tag, u.revalidateTimeout)
+	}
+	return desc, err
+}
+
+// resolveWith is resolve with client.
+func (u *OCIUpstream) resolveWith(ctx context.Context, client provider.Provider, path, ref string) (ocispec.Descriptor, error) {
+	rr, err := client.Repository(ctx, path)
 	if err != nil {
 		return ocispec.Descriptor{}, u.classify(ctx, err)
 	}

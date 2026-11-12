@@ -50,7 +50,8 @@ type ociRefRow struct {
 // repo repo (docs/spec/proxy-and-group.md §11.4): its descriptor, and its exact bytes when the
 // backend does not hold it, nil when it does (the caller reads them from the backend by the
 // digest). A tag is its proxy_meta row while fresh, else asked of the upstream with a HEAD; when
-// the upstream fails the row is used however old, and without one the backend's tag, unless the
+// the upstream fails, or does not answer within revalidateTimeout, the row is used however old,
+// and without one (asked with the full timeout and retries) the backend's tag, unless the
 // repository's tags do not move there. A digest is the backend's, else its cached row, else,
 // unless the repo is offline, fetched from the upstream once across replicas. Errors wrap
 // index.ErrNotFound (404), format.ErrForbidden (the lists), format.ErrInvalid (a name the
@@ -179,7 +180,8 @@ func (c *Core) ociRefreshTag(ctx context.Context, p *ociProxied, tag string) err
 // ociRevalidateTag resolves the tag upstream with a HEAD and writes what it found: the same
 // digest moves checked_at, another replaces the row, and a tag the upstream does not have is an
 // absent row and errMissing. It reads the row again first: a refresh that ended meanwhile may
-// have made it fresh.
+// have made it fresh. A tag with a row is asked once within revalidateTimeout (revalidateTag),
+// one without with the upstream's timeout and retries.
 func (c *Core) ociRevalidateTag(ctx context.Context, p *ociProxied, tag string) error {
 	kind := kindOCITag + tag
 	row, err := metaRow(ctx, c.o.Index, p.repo.ID, p.path, kind)
@@ -193,7 +195,11 @@ func (c *Core) ociRevalidateTag(ctx context.Context, p *ociProxied, tag string) 
 		}
 		return nil
 	}
-	desc, err := p.up.resolve(ctx, p.path, tag)
+	resolve := p.up.resolve
+	if row != nil {
+		resolve = p.up.revalidateTag
+	}
+	desc, err := resolve(ctx, p.path, tag)
 	switch {
 	case errors.Is(err, index.ErrNotFound):
 		ociCountDoc(p, docAbsent)
