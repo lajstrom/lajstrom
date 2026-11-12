@@ -184,6 +184,7 @@ server:
   externalURL: "$base"
   insecureHTTP: true
   shutdownTimeout: 5s
+  shutdownDelay: 0s # no edge in front to stop sending
   metricsListen: ""
   trustedProxies: ["127.0.0.1/32"]
 log:

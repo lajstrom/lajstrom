@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -165,4 +167,136 @@ func TestDrainReadyz(t *testing.T) {
 			t.Errorf("draining %v: /-/readyz = %d %q, want %d", draining, rec.Code, rec.Body, want)
 		}
 	}
+}
+
+// TestDrainDelay stops a server with a ShutdownDelay: for the delay /-/readyz answers 503 and
+// requests are still served, each answered with Connection: close, the one in flight on a
+// keep-alive connection at the signal too; the listener closes and OnShutdown runs only after
+// the delay, and Run returns nil.
+func TestDrainDelay(t *testing.T) {
+	const delay = 2 * time.Second
+	entered, release := make(chan struct{}), make(chan struct{})
+	var shut atomic.Bool
+	s, err := New(Options{Listen: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler), ShutdownDelay: delay,
+		OnShutdown: func() { shut.Store(true) },
+		Facade: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v2/slow" {
+				close(entered)
+				<-release
+			}
+			_, _ = io.WriteString(w, "served\n")
+		})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, cancel, done := start(t, s)
+	served, closing := answer{http.StatusOK, false, "served\n"}, answer{http.StatusOK, true, "served\n"}
+
+	// A keep-alive connection: the first answer leaves it open, the second request on it is in
+	// flight when the signal comes.
+	kept, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = kept.Close() }()
+	br := bufio.NewReader(kept)
+	send(t, kept, "/v2/fast")
+	if got := receive(t, br, "/v2/fast"); got != served {
+		t.Fatalf("before the signal: GET /v2/fast = %+v, want %+v", got, served)
+	}
+	send(t, kept, "/v2/slow")
+	<-entered
+	signalled := time.Now()
+	cancel()
+
+	waitNotReady(t, addr)
+	if got := ask(t, addr, "/v2/fast"); got != closing {
+		t.Errorf("a new request in the delay = %+v, want %+v", got, closing)
+	}
+	close(release)
+	if got := receive(t, br, "/v2/slow"); got != closing {
+		t.Errorf("the request in flight on the kept connection = %+v, want %+v", got, closing)
+	}
+	if _, err := br.ReadByte(); !errors.Is(err, io.EOF) {
+		t.Errorf("the kept connection after its answer: read = %v, want EOF", err)
+	}
+	if shut.Load() {
+		t.Error("OnShutdown ran in the delay")
+	}
+	if took := time.Since(signalled); took >= delay {
+		t.Fatalf("the checks in the delay took %v, longer than the delay %v", took, delay)
+	}
+
+	if err := <-done; err != nil {
+		t.Errorf("Run = %v, want nil after the delay and the drain", err)
+	}
+	if took := time.Since(signalled); took < delay || !shut.Load() {
+		t.Errorf("Run returned %v after the signal, OnShutdown run %v; want after the delay %v, and run", took, shut.Load(), delay)
+	}
+	if c, err := net.DialTimeout("tcp", addr, time.Second); err == nil {
+		_ = c.Close()
+		t.Errorf("connection to %s accepted after the drain", addr)
+	}
+}
+
+// answer is what a test reads of a response: its status, whether it closes the connection
+// (Connection: close), and its body.
+type answer struct {
+	status int
+	close  bool
+	body   string
+}
+
+// waitNotReady waits up to a second for /-/readyz on addr to answer 503, and checks that the
+// answer says shutting down and closes the connection.
+func waitNotReady(t *testing.T, addr string) {
+	t.Helper()
+	want := answer{http.StatusServiceUnavailable, true, "shutting down\n"}
+	for deadline := time.Now().Add(time.Second); ; time.Sleep(5 * time.Millisecond) {
+		got := ask(t, addr, "/-/readyz")
+		if got.status == want.status {
+			if got != want {
+				t.Errorf("/-/readyz in the delay = %+v, want %+v", got, want)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("/-/readyz = %+v a second after the signal, want %+v", got, want)
+		}
+	}
+}
+
+// ask sends a GET of path to addr on a connection of its own and returns the answer.
+func ask(t *testing.T, addr, path string) answer {
+	t.Helper()
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	defer func() { _ = c.Close() }()
+	send(t, c, path)
+	return receive(t, bufio.NewReader(c), path)
+}
+
+// send writes a GET of path on c.
+func send(t *testing.T, c net.Conn, path string) {
+	t.Helper()
+	if _, err := io.WriteString(c, "GET "+path+" HTTP/1.1\r\nHost: x\r\n\r\n"); err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+}
+
+// receive reads the answer to the GET of path from br.
+func receive(t *testing.T, br *bufio.Reader, path string) answer {
+	t.Helper()
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("GET %s: body: %v", path, err)
+	}
+	return answer{resp.StatusCode, resp.Close, string(b)}
 }

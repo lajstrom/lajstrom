@@ -21,6 +21,7 @@ server:
     certFile: ""                      # PEM certificate chain
     keyFile: ""                       # PEM private key
   shutdownTimeout: 30s                # how long in-flight requests get on SIGTERM
+  shutdownDelay: 5s                   # before that, still serving while the edge stops sending; /-/readyz 503
   maxManifestSize: 4194304            # bytes; the largest manifest a PUT to /v2 may carry
   maxCreatedAhead: 5m                 # how far a /v2 push's org.opencontainers.image.created may be after the clock
   maxCreatedBehind: 1h                # and before it: oras writes it before it uploads the files

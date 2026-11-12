@@ -43,6 +43,13 @@ type Options struct {
 	TLSCertFile, TLSKeyFile string
 	// ShutdownTimeout bounds the graceful shutdown; zero means DefaultShutdownTimeout.
 	ShutdownTimeout time.Duration
+	// ShutdownDelay is how long the server keeps serving once Run's context ends, with
+	// /-/readyz answering 503 and every connection closed after its next response, before the
+	// listener closes and the drain of ShutdownTimeout begins: the time an edge needs to stop
+	// sending it new requests. Zero closes the listener at once.
+	ShutdownDelay time.Duration
+	// OnShutdown is called when the listener closes, after ShutdownDelay; nil means nothing.
+	OnShutdown func()
 	// Log receives the access log and the server's own events; nil means slog.Default().
 	Log *slog.Logger
 	// Plugins are the format plugins to serve, normally format.All(). Their names must pass
@@ -146,6 +153,9 @@ func New(o Options) (*Server, error) {
 		ErrorLog:          slog.NewLogLogger(o.Log.Handler(), slog.LevelWarn),
 		TLSConfig:         tlsConfig,
 	}
+	if o.OnShutdown != nil {
+		s.srv.RegisterOnShutdown(o.OnShutdown)
+	}
 	return s, nil
 }
 
@@ -183,13 +193,13 @@ func (s *Server) MetricsAddr() net.Addr {
 }
 
 // Run listens on Options.Listen and serves until ctx is cancelled. Then it drains: /-/readyz
-// answers 503, the listener closes, and in-flight requests, uploads included, get up to
-// ShutdownTimeout to finish; idle connections are closed at once, the others after their
-// response. Requests still running at the deadline are aborted: their contexts are cancelled
-// and their connections closed, and Run waits up to abortGrace for their handlers to return,
-// so that what serve closes after Run (the index) is not closed under them. It returns nil
-// after a clean stop, and an error when it cannot listen, when serving fails, or when requests
-// were aborted. Run may be called once.
+// answers 503, idle connections are closed and the others after their next response, and it
+// keeps serving for ShutdownDelay; then the listener closes, and in-flight requests, uploads
+// included, get up to ShutdownTimeout to finish. Requests still running at the deadline are
+// aborted: their contexts are cancelled and their connections closed, and Run waits up to
+// abortGrace for their handlers to return, so that what serve closes after Run (the index) is
+// not closed under them. It returns nil after a clean stop, and an error when it cannot listen,
+// when serving fails, or when requests were aborted. Run may be called once.
 func (s *Server) Run(ctx context.Context) error {
 	if !s.running.CompareAndSwap(false, true) {
 		return errors.New("server: Run called twice")
@@ -243,8 +253,21 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("server: %w", err)
 	case <-ctx.Done():
 	}
+	return s.shutdown(ctx, served)
+}
 
+// shutdown is Run's drain once its context ended; served delivers the error of Serve.
+func (s *Server) shutdown(ctx context.Context, served <-chan error) error {
 	s.draining.Store(true)
+	s.srv.SetKeepAlivesEnabled(false)
+	if d := s.opts.ShutdownDelay; d > 0 {
+		s.log.Info("shutting down: not ready, serving until the delay ends", "delay", d, "inflight", s.inflight.Load())
+		select {
+		case err := <-served:
+			return fmt.Errorf("server: %w", err)
+		case <-time.After(d):
+		}
+	}
 	s.log.Info("shutting down: not ready, draining in-flight requests",
 		"timeout", s.opts.ShutdownTimeout, "inflight", s.inflight.Load())
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.opts.ShutdownTimeout)

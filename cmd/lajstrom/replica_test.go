@@ -26,8 +26,8 @@ import (
 )
 
 // serveConfig writes a configuration whose index database is a SQLite file in dir, served on a
-// free loopback port and without the metrics listener, and returns its path and the server's
-// address.
+// free loopback port, without the metrics listener and without the shutdown delay, and returns
+// its path and the server's address.
 func serveConfig(t *testing.T, dir string) (cfg, addr string) {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -37,7 +37,7 @@ func serveConfig(t *testing.T, dir string) (cfg, addr string) {
 	addr = l.Addr().String()
 	_ = l.Close()
 	cfg = filepath.Join(dir, "lajstrom.yaml")
-	body := "server:\n  listen: \"" + addr + "\"\n  metricsListen: \"\"\n  externalURL: https://art.example.com\n" +
+	body := "server:\n  listen: \"" + addr + "\"\n  metricsListen: \"\"\n  shutdownDelay: 0s\n  externalURL: https://art.example.com\n" +
 		"database:\n  driver: sqlite\n  dsn: \"file:" + filepath.Join(dir, "lajstrom.db") + "\"\n"
 	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
 		t.Fatal(err)

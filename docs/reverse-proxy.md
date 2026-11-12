@@ -43,7 +43,8 @@ used `https://localhost:<port>` with a certificate of a local CA (Caddy's intern
 | HTTP/1.1 and keep-alive to the upstream, idle connections closed before Lajstrom's 120 s | no new connection per request, and no request sent on a connection Lajstrom is closing | `proxy_http_version 1.1`, `Connection ""`, `keepalive` (idle 60 s by default) | `transport http { keepalive 60s }` |
 | Pass `Host`, `X-Forwarded-For`, `X-Forwarded-Proto` | `X-Forwarded-For` names the client when the edge is in `server.trustedProxies` ([below](#the-client-address)) | `proxy_set_header` | the default |
 | Never route the metrics listener | `/metrics` and `/debug/pprof/` are on `server.metricsListen`, another port; through both edges `/metrics` was `404` | | |
-| Health check on `/-/readyz` | `503` while the database or a registry is down ([operations.md](operations.md#readiness)) | (nginx Plus or an external check) | `health_uri /-/readyz` |
+| Health check on `/-/readyz` | `503` while the database or a registry is down ([operations.md](operations.md#readiness)), and while a replica stops | (nginx Plus or an external check) | `health_uri /-/readyz` |
+| Restart a replica without an error: send what it refuses to another, and leave it out shorter than `server.shutdownDelay` (5 s) minus a second | a stopping replica serves on for the delay, then closes its listener ([below](#restarts)) | `proxy_next_upstream error timeout`, `proxy_next_upstream_tries 2`, `max_fails=1 fail_timeout=3s` | not set in the file |
 
 ### `server.externalURL`
 
@@ -133,6 +134,43 @@ above. When the chain cannot be made honest, leave `trustedProxies` empty and li
 the edge. Only the single-host network of the `ha` profile was tried, no cluster;
 `test/e2e/auth.sh` exercises the header with `trustedProxies: ["127.0.0.1/32"]` and made-up
 client addresses.
+
+### Restarts
+
+On `SIGTERM` a replica answers `/-/readyz` with `503` at once and closes each connection after
+its response, keeps its listener open for `server.shutdownDelay` (5 s), then closes it and
+drains ([operations.md](operations.md#shutdown)). Open-source nginx does not ask `/-/readyz`: it
+learns that a replica is gone when a connection to it is refused, sends that request to the next
+replica (`proxy_next_upstream error timeout`, one more try with `proxy_next_upstream_tries 2`),
+and leaves the refusing one out for `fail_timeout` (`max_fails=1`). nginx counts that time in
+whole seconds, so a replica is out for up to a second longer. A restarted replica is back within
+a second, but if the next one closes its listener while nginx still leaves the first out, nginx
+has no replica left and answers `502` itself, `no live upstreams` in its error log. In a rolling
+restart the next replica closes its listener at least `server.shutdownDelay` after the previous
+one is back, so `fail_timeout` and a second must be shorter than the delay: 3 s against 5 s in
+[the file](../deploy/nginx/lajstrom.conf).
+
+nginx resends a `GET`, `HEAD`, `PUT` or `DELETE`, and a `POST` or `PATCH` it has not sent yet; it
+never resends a `POST` or `PATCH` it has sent (`non_idempotent` stays off), nor a request whose
+body it has begun to stream (`proxy_request_buffering off`): that client gets the `502` and
+retries. `http_502` is left out on purpose: Lajstrom answers `502` when the registry refuses it,
+the same on every replica, and nginx would count it as the replica's failure, so two such answers
+within `fail_timeout` would leave no replica in for anybody. nginx closes an idle upstream
+connection after 60 s (`keepalive_timeout`), before Lajstrom does after 120 s; the idle ones a
+stopping replica closes at the signal, nginx may still pick, and it resends that request.
+
+In the `ha` workflow before #707, H-10 got 29, 46 and 64 `502`s of about 550 requests (runs
+43160810022, 43160049883 and 43159402783). Each replica closed its listener within milliseconds
+of `SIGTERM` and was back 0.4 s later; nginx resent the requests A refused to B, every one `200`,
+and left A out for the default `fail_timeout` of 10 s. `ha.sh` restarted B 1.7 s after A, and
+the workers of nginx that had left A out had no replica for the rest of the loop.
+
+On Kubernetes an edge in front of a Service sees one address, not the replicas: the endpoints
+and kube-proxy take a stopping pod out, and the delay covers their lag
+([deploy/kubernetes.md](deploy/kubernetes.md#probes)). An edge that checks `/-/readyz` itself
+takes a stopping replica out at its first check after the signal, so the delay should cover the
+check's interval, or the edge should retry; Caddy's file checks every 10 s and does not retry.
+Only nginx was tried.
 
 ## Part 2: rate limits at the edge
 

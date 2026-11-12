@@ -64,7 +64,7 @@ services:
       retries: 3
       start_period: 30s
     restart: unless-stopped
-    stop_grace_period: 40s # server.shutdownTimeout (30s) and some
+    stop_grace_period: 40s # server.shutdownDelay (5s), server.shutdownTimeout (30s) and some
 
   postgres:
     # The Postgres of the dev stack and of CI, the one Lajstrom is tested against (17.11).

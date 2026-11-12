@@ -24,7 +24,8 @@ spec:
         app.kubernetes.io/name: lajstrom
     spec:
       automountServiceAccountToken: false # Lajstrom never talks to the Kubernetes API
-      # The preStop sleep (5s), then server.shutdownTimeout (30s) for in-flight requests, and some.
+      # server.shutdownDelay (5s), then server.shutdownTimeout (30s) for in-flight requests, and
+      # some: it must exceed the two.
       terminationGracePeriodSeconds: 40
       securityContext:
         # The nonroot user of the distroless image (65532); the image has no shell.
@@ -46,13 +47,9 @@ spec:
             # LAJSTROM_MASTER_KEY, LAJSTROM_DATABASE_DSN, LAJSTROM_REGISTRY_PASSWORD
             - secretRef:
                 name: lajstrom
-          # The endpoint of a stopping pod goes while the pod gets SIGTERM, not before: the
-          # listener stays open 5 seconds more, so that no request of a rollout finds it closed
-          # (docs/deploy/kubernetes.md, Upgrade). The sleep action needs Kubernetes 1.30; the image
-          # has no shell for a sleep command.
-          lifecycle:
-            preStop:
-              sleep: {seconds: 5}
+          # No preStop hook: the endpoint of a stopping pod goes while the pod gets SIGTERM, not
+          # before, and serve keeps its listener open server.shutdownDelay (5s) after SIGTERM, so
+          # that no request of a rollout finds it closed (docs/deploy/kubernetes.md, Upgrade).
           # serve applies the migrations before it listens: give the first start a minute.
           startupProbe:
             httpGet: {path: /-/healthz, port: http}

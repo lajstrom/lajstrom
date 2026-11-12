@@ -7,7 +7,8 @@ server:
   listen: ":8080"
   externalURL: "http://localhost:8090" # the edge, ha-nginx; LAJSTROM_SERVER_EXTERNAL_URL follows LAJSTROM_HA_PORT
   insecureHTTP: true                   # an http externalURL on loopback: the dev stack
-  shutdownTimeout: 10s                 # less than the stop_grace_period of compose.yaml
+  shutdownDelay: 5s                    # the default: longer than nginx's fail_timeout (3s) and a second
+  shutdownTimeout: 10s                 # with the delay, less than the stop_grace_period of compose.yaml
   metricsListen: ""
   trustedProxies: ["172.31.226.10/32"] # ha-nginx, at its fixed address on the network ha
 
