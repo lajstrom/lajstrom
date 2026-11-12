@@ -458,11 +458,16 @@ jobs:
           go-version: stable
       - name: Pull the images
         # Forgejo, pinned by digest in the compose file, and the clients of the scenarios below
-        # (test/e2e/*.sh headers), four at a time.
-        timeout-minutes: 4
+        # (test/e2e/*.sh headers), four at a time. data.forgejo.org answered a pull 502 once
+        # (2026-11-12, its referrers API), and Codeberg 403 "under load": Forgejo gets four tries.
+        timeout-minutes: 5
         run: |
           set -euo pipefail
-          docker compose -f deploy/compose/gitea/compose.yaml --profile forgejo pull --quiet forgejo
+          for try in 1 2 3 4; do
+            docker compose -f deploy/compose/gitea/compose.yaml --profile forgejo pull --quiet forgejo && break
+            if [ "${try}" = 4 ]; then exit 1; fi
+            sleep $((try * 15))
+          done
           images=(
             ubuntu:24.04                    # tokens.sh
             ghcr.io/oras-project/oras:v1.3.6
