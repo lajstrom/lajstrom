@@ -32,6 +32,9 @@ func (h *handler) getBlob(w http.ResponseWriter, r *http.Request, t *target, arg
 	if err != nil {
 		return err
 	}
+	if h.ociProxy(t) && r.Method == http.MethodGet { // a client's pull, which the completions let go first (§11.5)
+		defer h.o.OCIProxy.OCIPulling(t.repo, t.path)()
+	}
 	serve := func(miss func(error) bool) {
 		err := format.ServeBlob(w, r, p, t.oci, d, format.ServeBlobOptions{
 			ContentType: octetStream,
