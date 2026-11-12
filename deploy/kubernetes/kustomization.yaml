@@ -1,8 +1,7 @@
-# kubectl apply -k deploy/kubernetes (docs/deploy/kubernetes.md). The Secret lajstrom is not
-# here: create it from the commands of the doc, or from your secret store.
+# kubectl apply -k deploy/kubernetes (docs/deploy/kubernetes.md): the manifests of base/. They
+# are in a directory of their own so that an overlay below this one, such as try/, can build on
+# them: kustomize refuses a base that contains the overlay.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - configmap.yaml
-  - deployment.yaml
-  - service.yaml
+  - base

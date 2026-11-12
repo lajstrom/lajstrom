@@ -1,0 +1,9 @@
+# The manifests of Lajstrom, which deploy/kubernetes/kustomization.yaml applies and the overlays
+# (try/, your own) build on (docs/deploy/kubernetes.md). The Secret lajstrom is not here: create
+# it from the commands of the doc, or from your secret store.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - configmap.yaml
+  - deployment.yaml
+  - service.yaml

@@ -6,21 +6,88 @@ same, since the state is in Postgres and in the registry.
 
 | File | What |
 | --- | --- |
-| `configmap.yaml` | `lajstrom-config`: the configuration file, mounted at `/etc/lajstrom/lajstrom.yaml` |
-| `deployment.yaml` | `lajstrom`: two replicas, probes, the non-root security context, `/tmp` as an `emptyDir`, the optional Secret `lajstrom-bootstrap` as a file |
-| `service.yaml` | the Service `lajstrom` (ports `http` 8080 and `metrics` 9464) and a PodDisruptionBudget |
-| `kustomization.yaml` | the three files, for `kubectl apply -k` |
+| `base/configmap.yaml` | `lajstrom-config`: the configuration file, mounted at `/etc/lajstrom/lajstrom.yaml` |
+| `base/deployment.yaml` | `lajstrom`: two replicas, probes, the non-root security context, `/tmp` as an `emptyDir`, the optional Secret `lajstrom-bootstrap` as a file |
+| `base/service.yaml` | the Service `lajstrom` (ports `http` 8080 and `metrics` 9464) and a PodDisruptionBudget |
+| `base/kustomization.yaml` | the three files, the base of an overlay |
+| `kustomization.yaml` | `base`, for `kubectl apply -k deploy/kubernetes` |
+| `migrate-job.yaml` | the Job of [Upgrade](#upgrade), applied on its own |
+| `try/` | not for production: an overlay with a Postgres and a registry in the namespace ([Try it on a local cluster](#try-it-on-a-local-cluster)) |
 
 The Secret `lajstrom` is not among them: it is made from the commands below or by your secret
 store (External Secrets, Sealed Secrets, Vault), with three keys that the Deployment passes to
-the container as environment variables (`envFrom`).
+the container as environment variables (`envFrom`). The manifests are in `base/` so that an
+overlay inside `deploy/kubernetes/` can build on them: kustomize refuses a base that contains the
+overlay (`cycle detected`).
+
+## Try it on a local cluster
+
+**Not for production.** [deploy/kubernetes/try/](../../deploy/kubernetes/try/) replaces what the
+manifests assume with fixtures in the namespace, for a cluster on one machine (OrbStack, Docker
+Desktop, kind, minikube) and a port-forward instead of an ingress:
+
+| File | What |
+| --- | --- |
+| `kustomization.yaml` | `../base`, the two fixtures, `lajstrom.yaml` in place of the file of `base/configmap.yaml` (`configMapGenerator`, `behavior: replace`), the image `lajstrom:local` |
+| `lajstrom.yaml` | `externalURL` `http://localhost:18790` with `insecureHTTP: true`, the Service `postgres`, the Service `registry` without auth, the repos `raw/assets` and `oci/images` |
+| `postgres.yaml` | Postgres 17.11 with a 1 GiB PersistentVolumeClaim; the password is the key `password` of the Secret `postgres` |
+| `registry.yaml` | distribution 3.1.2 with a 5 GiB PersistentVolumeClaim |
+
+It is not for production because each fixture is one replica on a volume of the cluster's default
+StorageClass, without a backup; anything in the cluster that reaches the registry may push and
+delete there; Postgres has no TLS; and Lajstrom answers plain HTTP for `localhost`. The fixtures
+are pinned by digest and, like Lajstrom, meet the `restricted` Pod Security Standard. No release
+is published yet, so the image is `lajstrom:local`, built from the clone
+([release.md](../release.md)): OrbStack and Docker Desktop see the local Docker's images, kind
+wants `kind load docker-image lajstrom:local` first; for a release, the comment in
+`kustomization.yaml` names it by digest.
+
+```sh
+pg=$(openssl rand -hex 16)
+kubectl create namespace lajstrom-try
+kubectl -n lajstrom-try create secret generic postgres --from-literal=password="$pg"
+kubectl -n lajstrom-try create secret generic lajstrom \
+  --from-literal=LAJSTROM_MASTER_KEY="$(openssl rand -hex 32)" \
+  --from-literal=LAJSTROM_DATABASE_DSN="postgres://lajstrom:$pg@postgres:5432/lajstrom?sslmode=disable"
+kubectl -n lajstrom-try create secret generic lajstrom-bootstrap --from-literal=token="$(openssl rand -hex 32)"
+kubectl -n lajstrom-try apply -k deploy/kubernetes/try
+kubectl -n lajstrom-try rollout status deploy/lajstrom
+```
+
+The replicas of Lajstrom stop until Postgres answers (`postgres: connect: … connection
+refused`) and the kubelet starts them again. Then the first admin as in
+[section 4](#4-the-first-admin-and-the-repos), without the repos, which `lajstrom.yaml` lists,
+and the check of [section 5](#5-check), in the namespace `lajstrom-try`. To remove everything,
+the volumes with it: `kubectl delete namespace lajstrom-try`.
+
+The run on 2026-11-12 was on the Kubernetes of OrbStack (1.36.5, one node), with an image built
+from main at `a7aa4d3e`: the commands above, then section 4 with `--password-stdin` and
+section 5, and a 32 MiB file up and down. Postgres was ready 7 seconds after `apply`; each
+replica stopped twice, and `rollout status` returned 21 seconds after `apply`. One replica
+applied the migrations 1 to 20 and made the repos, the other found them done:
+
+```text
+{"uid":"01a1d051-326f-7352-880a-bf2a4fc9be29","name":"admin","kind":"local","disabled":false,"createdAt":"2026-11-12T15:12:24.687916Z"}
+ok                                       # /-/readyz
+201                                      # the upload of hello.txt; 401 without credentials
+hello kubernetes
+Login Succeeded
+Digest: sha256:4ab97eff8f8f811b374ca60f55cdf27d2190dfc3d52bbecf35cfe905f5bcd4d4
+{"repositories":["lajstrom/oci/images/hello","lajstrom/raw/assets/big.bin","lajstrom/raw/assets/hello.txt"]}
+```
+
+The last line is the registry's catalog (`kubectl -n lajstrom-try exec deploy/registry -- wget
+-qO- http://127.0.0.1:5000/v2/_catalog`), the same after a `rollout restart` of both fixtures,
+as was the admin in Postgres. `kubectl label --dry-run=server ns lajstrom-try
+pod-security.kubernetes.io/enforce=restricted` named no pod.
 
 ## What the manifests assume
 
 - **Postgres**, reachable from the pods, with a database that Lajstrom's user owns (`serve` and
   `migrate` create and alter its tables): a managed one (RDS, Cloud SQL, Azure Database), an
   operator's (CloudNativePG, Zalando), or one you run, straight or behind a pooler
-  ([databases.md](databases.md)). The manifests do not ship one. Every replica shares it; SQLite does not work with more than
+  ([databases.md](databases.md)). The manifests do not ship one, but for the fixture of
+  [`try/`](#try-it-on-a-local-cluster). Every replica shares it; SQLite does not work with more than
   one replica, and these manifests have no volume for it. The Postgres that Lajstrom is tested
   against is 17.11 ([dev-stack.md](../dev-stack.md)).
 - **A registry** for the bytes, with a user that may push, pull and delete under a prefix
@@ -58,7 +125,7 @@ jsonpath='{.data.LAJSTROM_MASTER_KEY}' | base64 -d`.
 
 ## 2. The configuration
 
-Edit `configmap.yaml` (or patch it from an overlay of your own):
+Edit `base/configmap.yaml`, or replace its file from an overlay of your own as `try/` does:
 
 - `server.externalURL`: the public URL of the ingress, `https://art.example.com` in the file.
   The realm of the bearer challenge of `/v2` is built from it.
@@ -75,65 +142,24 @@ Edit `configmap.yaml` (or patch it from an overlay of your own):
   ([reverse-proxy.md](../reverse-proxy.md#the-client-address) has the cases, and when to leave
   the list empty).
 - `registries[0].url`, `prefix`, `auth.username`: your registry.
-- The image: `ghcr.io/lajstrom/lajstrom:v0.1.0` in `deployment.yaml`; pin a digest
-  (`ghcr.io/lajstrom/lajstrom:vX.Y.Z@sha256:…`), there or with `images:` in an overlay, as the
-  run below did.
+- The image: `ghcr.io/lajstrom/lajstrom:v0.1.0` in `base/deployment.yaml`; pin a digest
+  (`ghcr.io/lajstrom/lajstrom:vX.Y.Z@sha256:…`), there or with `images:` in an overlay.
 
-The overlay of the run, `try/kustomization.yaml` in the clone, for a cluster on one machine
-with a port-forward instead of an ingress. A ConfigMap's file is one string, so the patch
-repeats the whole file. An `http` `externalURL` takes `insecureHTTP: true`; without it every
-replica stops at once (`server.externalURL: must be https`, `CrashLoopBackOff`). The image is
-one built by hand ([release.md](../release.md)): OrbStack and Docker Desktop see the local
-Docker's images, kind wants `kind load docker-image lajstrom:local` first.
-
-```yaml
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-  - ../deploy/kubernetes
-images:
-  - name: ghcr.io/lajstrom/lajstrom
-    newName: lajstrom
-    newTag: local
-patches:
-  - target: {kind: ConfigMap, name: lajstrom-config}
-    patch: |
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: lajstrom-config
-      data:
-        lajstrom.yaml: |
-          server:
-            listen: ":8080"
-            externalURL: "http://localhost:18790"   # the port-forward of section 5
-            insecureHTTP: true                      # http on a loopback host; never behind an ingress
-            metricsListen: "0.0.0.0:9464"
-          log:
-            format: json
-          database:
-            driver: postgres
-          registries:
-            - name: main
-              url: "http://registry:5000"            # a Service registry in the namespace
-              prefix: "lajstrom/"
-              auth:
-                username: lajstrom
-                passwordEnv: LAJSTROM_REGISTRY_PASSWORD
-          keys:
-            masterKeyEnv: LAJSTROM_MASTER_KEY
-```
+A ConfigMap's file is one string, so an overlay replaces it whole: `try/kustomization.yaml` does
+it with a `configMapGenerator` of `behavior: replace` and a file next to it, `try/lajstrom.yaml`.
+An `http` `externalURL` takes `insecureHTTP: true`, as that file has; without it every replica
+stops at once (`server.externalURL: must be https`, `CrashLoopBackOff`).
 
 ## 3. Apply
 
 ```sh
-kubectl -n lajstrom apply -k deploy/kubernetes    # or -k try, the overlay above
+kubectl -n lajstrom apply -k deploy/kubernetes
 kubectl -n lajstrom rollout status deploy/lajstrom
 ```
 
 The run below, on 2026-11-11, was on the Kubernetes of OrbStack 2.2.5 (1.36.5, one node), in
-the namespace `walkthrough`, with the overlay above (an image built from main), and two test
-fixtures that are not in the repository: Postgres 17.11 as the Service `postgres` and
+the namespace `walkthrough`, with an overlay that `try/` comes from (an image built from main),
+and two test fixtures then outside the repository: Postgres 17.11 as the Service `postgres` and
 distribution 3.1.2 with htpasswd as the Service `registry`. An earlier run, on 2026-11-09, was
 on kind v0.33.0 (Kubernetes 1.37.0) with the snapshot image of the release build (#57).
 
@@ -248,7 +274,7 @@ whatever the readiness probe says, and the Service and the ingress take a few se
 `serve` keeps its listener open for `server.shutdownDelay` (5 s) after the signal, answering
 `/-/readyz` with `503` and closing each connection after its response, then drains for
 `server.shutdownTimeout` (30 s). `terminationGracePeriodSeconds` must exceed the two together:
-`deployment.yaml` sets 40. A `preStop` sleep, which needs Kubernetes 1.30 for the `sleep` action
+`base/deployment.yaml` sets 40. A `preStop` sleep, which needs Kubernetes 1.30 for the `sleep` action
 (the image has no shell), adds to the delay and to what the grace period must cover.
 
 Tried by scaling the registry to zero at 17:29:25 and polling the ready flag and the restart
@@ -277,7 +303,7 @@ The pod runs as the image's user `nonroot` (65532:65532) with `runAsNonRoot`, th
 read-only root filesystem; it does not mount a service account token, since it never talks to
 the Kubernetes API. That is the `restricted` Pod Security Standard: labelling the namespace
 `pod-security.kubernetes.io/enforce=restricted` (a server dry run) listed only the two test
-fixtures, Postgres and the registry, as violations.
+fixtures, Postgres and the registry, as violations; those of `try/` meet it too.
 
 The only writable path is `/tmp`, an `emptyDir` of at most 4 GiB on the node's disk. A frontend
 upload (raw, apt, maven, pypi, npm) streams into the registry and takes none; what is spooled

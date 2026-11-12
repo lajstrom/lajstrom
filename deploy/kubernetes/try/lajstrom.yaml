@@ -1,0 +1,28 @@
+# The configuration of the try overlay (kustomization.yaml): base/configmap.yaml with the
+# in-namespace fixtures and a port-forward instead of an ingress. Not for production.
+server:
+  listen: ":8080"
+  # The port-forward of docs/deploy/kubernetes.md. An http externalURL takes insecureHTTP, which
+  # only a loopback host passes; behind an ingress, use base/configmap.yaml's https URL instead.
+  externalURL: "http://localhost:18790"
+  insecureHTTP: true
+  metricsListen: "0.0.0.0:9464"
+log:
+  format: json
+database:
+  # The Service postgres of postgres.yaml; the DSN is LAJSTROM_DATABASE_DSN of the Secret lajstrom.
+  driver: postgres
+registries:
+  # The Service registry of registry.yaml, anonymous: no auth, no LAJSTROM_REGISTRY_PASSWORD.
+  - name: main
+    url: "http://registry:5000"
+    prefix: "lajstrom/"
+# Made at the start of a replica when the database does not have them.
+repos:
+  - {name: assets, format: raw, registry: main}
+  - {name: images, format: oci, registry: main}
+auth:
+  bootstrap:
+    tokenFile: /run/secrets/lajstrom-bootstrap/token
+keys:
+  masterKeyEnv: LAJSTROM_MASTER_KEY

@@ -1,0 +1,33 @@
+# NOT FOR PRODUCTION. Lajstrom with a Postgres and a registry of its own, for trying it on a
+# cluster on one machine (OrbStack, Docker Desktop, kind, minikube) through a port-forward, in a
+# namespace of its own (docs/deploy/kubernetes.md, Try it on a local cluster):
+#
+#   kubectl -n lajstrom-try apply -k deploy/kubernetes/try
+#
+# The two fixtures are one replica each, on a volume of the cluster's default StorageClass, with
+# no backup; the registry takes anonymous pushes from anything in the cluster that reaches it,
+# and Lajstrom listens on plain HTTP for http://localhost:18790. The Secrets lajstrom, postgres
+# and lajstrom-bootstrap are made by the commands of the doc, not here.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+  - postgres.yaml
+  - registry.yaml
+# lajstrom.yaml replaces the file of base/configmap.yaml, under the same name. serve reads it at
+# start: after an edit, apply and kubectl -n lajstrom-try rollout restart deploy/lajstrom.
+configMapGenerator:
+  - name: lajstrom-config
+    behavior: replace
+    files:
+      - lajstrom.yaml
+# No release is published yet: the image is one built by hand from the clone (docs/release.md),
+# which OrbStack and Docker Desktop find in the local Docker and kind after kind load
+# docker-image lajstrom:local. For a release, pin it instead:
+#   newName: ghcr.io/lajstrom/lajstrom
+#   newTag: vX.Y.Z
+#   digest: sha256:…
+images:
+  - name: ghcr.io/lajstrom/lajstrom
+    newName: lajstrom
+    newTag: local
