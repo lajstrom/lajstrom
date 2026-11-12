@@ -161,10 +161,10 @@ func writeReport(out io.Writer, rep *reindex.Report, lists bool) error {
 	var buf bytes.Buffer
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 	// A bytes.Buffer does not fail.
-	_, _ = io.WriteString(tw, "REPO\tMANIFESTS\tADDED\tUPDATED\tUNCHANGED\tREMOVED\tPENDING\tDEGRADED\tREFERRERS\tREPAIRED\tFOREIGN\tORPHANS\tDRIFT\tSPLIT\tNOREPO\tERRORS\n")
+	_, _ = io.WriteString(tw, "REPO\tMANIFESTS\tADDED\tUPDATED\tUNCHANGED\tREMOVED\tPENDING\tDELETED\tDEGRADED\tREFERRERS\tREPAIRED\tFOREIGN\tORPHANS\tDRIFT\tSPLIT\tNOREPO\tERRORS\n")
 	for _, r := range rep.Repos {
-		_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", r.Repo, r.Manifests, r.Added, r.Updated,
-			r.Unchanged, r.Removed, r.Pending, r.Degraded, r.Referrers, len(r.RepairedReferrers), len(r.Foreign), len(r.OrphanReferrers),
+		_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", r.Repo, r.Manifests, r.Added, r.Updated,
+			r.Unchanged, r.Removed, r.Pending, r.DeletedPending, r.Degraded, r.Referrers, len(r.RepairedReferrers), len(r.Foreign), len(r.OrphanReferrers),
 			len(r.Drift), len(r.Split), len(r.RepositoryUnknown), len(r.Errors))
 	}
 	if err := tw.Flush(); err != nil {
