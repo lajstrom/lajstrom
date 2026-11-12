@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
@@ -124,5 +125,43 @@ func TestOriginRefused(t *testing.T) {
 	}
 	if r := e.rows(t); len(r.Versions) != 0 || len(r.Audit) != 0 {
 		t.Errorf("rows after the refusals: %+v", r)
+	}
+}
+
+// TestUploadWithOriginPublished: the upstream's publish time of a proxied artifact is
+// org.opencontainers.image.created of its manifest, in whole seconds, and the version's
+// CreatedAt (docs/spec/manifest-profile.md §3.1); without one the plugin's time stays.
+func TestUploadWithOriginPublished(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t)
+	o := *origin
+	o.Published = time.Date(2024, 3, 1, 8, 30, 15, 700_000_000, time.FixedZone("CET", 3600))
+	up := upload("tool", "1.0.0", file{"tool.tgz", "bytes"})
+	up.Origin = &o
+	pub, err := e.pipe.Upload(ctx, e.repo, up, alice)
+	must(t, err)
+	rr, err := e.prov.Repository(ctx, pub.RepoPath)
+	must(t, err)
+	rc, err := rr.Fetch(ctx, ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: pub.Digest})
+	must(t, err)
+	var m ocispec.Manifest
+	must(t, json.NewDecoder(rc).Decode(&m))
+	_ = rc.Close()
+	want := time.Date(2024, 3, 1, 7, 30, 15, 0, time.UTC)
+	if got := m.Annotations[ocispec.AnnotationCreated]; got != want.Format(time.RFC3339) {
+		t.Errorf("created %q, want %s", got, want.Format(time.RFC3339))
+	}
+	if got := e.rows(t).Versions[0].CreatedAt; !got.Equal(want) {
+		t.Errorf("CreatedAt %s, want %s", got, want)
+	}
+
+	up = upload("tool", "2.0.0", file{"tool.tgz", "other"})
+	up.Origin = origin
+	_, err = e.pipe.Upload(ctx, e.repo, up, alice)
+	must(t, err)
+	for _, v := range e.rows(t).Versions {
+		if v.Version == "2.0.0" && v.CreatedAt.Equal(want) {
+			t.Errorf("2.0.0 without a publish time: CreatedAt %s, want the plugin's", v.CreatedAt)
+		}
 	}
 }
