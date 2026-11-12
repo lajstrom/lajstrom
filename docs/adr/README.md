@@ -65,4 +65,4 @@ request labelled `contract`. Typos and broken links may be fixed in place.
 | [0015](0015-declarative-management-one-owner-per-object.md) | Declarative management: one owner per object | accepted |
 | [0016](0016-go-the-language-of-the-network-os.md) | Go: the language of the network operating system | accepted |
 | [0017](0017-the-grammar-of-oci-names.md) | The grammar of OCI names | accepted; amended for Harbor's routes |
-| [0018](0018-oci-proxy-repos-pull-through-from-any-registry.md) | An oci proxy repo pulls through from any OCI registry | proposed |
+| [0018](0018-oci-proxy-repos-pull-through-from-any-registry.md) | An oci proxy repo pulls through from any OCI registry | accepted |
