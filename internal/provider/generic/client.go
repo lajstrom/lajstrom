@@ -66,10 +66,7 @@ type clients struct {
 // A non-nil rotating replaces the username and password (Options.Credential). A bearer
 // challenge whose realm realmTransport refuses is an error instead.
 func newClients(cfg config.Registry, base *url.URL, log *slog.Logger, rotating auth.CredentialFunc) clients {
-	timeout := cfg.Timeout
-	if timeout <= 0 {
-		timeout = config.DefaultRegistryTimeout
-	}
+	timeout := timeoutOf(cfg)
 	// The retry transport resends an idempotent request whose body can be replayed; a blob
 	// upload is retried as a whole by Push (pushRetry). The breaker above it counts a request
 	// once however often it was tried. Above both, the probe's ping sees the challenges.
@@ -121,6 +118,14 @@ func newClients(cfg config.Registry, base *url.URL, log *slog.Logger, rotating a
 		retries:     retries(cfg),
 		breaker:     br,
 	}
+}
+
+// timeoutOf is registries[].timeout with its default, DefaultRegistryTimeout for 0.
+func timeoutOf(cfg config.Registry) time.Duration {
+	if cfg.Timeout <= 0 {
+		return config.DefaultRegistryTimeout
+	}
+	return cfg.Timeout
 }
 
 // retries is registries[].retries with its default: DefaultRegistryRetries for 0, none for a

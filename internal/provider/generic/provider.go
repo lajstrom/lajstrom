@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"oras.land/oras-go/v2/registry"
 	"oras.land/oras-go/v2/registry/remote"
@@ -65,9 +66,15 @@ type Provider struct {
 	// bound is the largest PATCH the registry takes, 0 for no bound (chunkBound).
 	bound int
 
-	// mu serialises probing; probed is the answer of the first probe that succeeded.
-	mu     sync.Mutex
-	probed atomic.Pointer[provider.Capabilities]
+	// timeout is registries[].timeout with its default: how long a read waits for a probe
+	// (readQuirks).
+	timeout time.Duration
+
+	// mu guards flight and failedAt; probed is the answer of the first probe that succeeded.
+	mu       sync.Mutex
+	flight   *probeFlight // the probe under way, nil when none
+	failedAt time.Time    // when the last probe that the read path ran failed (probeBackoff)
+	probed   atomic.Pointer[provider.Capabilities]
 	// referrers is what the probe learnt about the referrers API, for the repositories that
 	// Repository hands out.
 	referrers atomic.Int32
@@ -78,12 +85,38 @@ type Provider struct {
 	quirks atomic.Pointer[quirks]
 }
 
-// quirk returns the vendor's quirks, none before the probe.
+// quirk returns the vendor's quirks, none before the probe. A request that depends on them
+// asks readQuirks, which probes first.
 func (p *Provider) quirk() quirks {
 	if q := p.quirks.Load(); q != nil {
 		return *q
 	}
 	return quirks{}
+}
+
+// readQuirks returns the vendor's quirks for one request of the read path, which does not call
+// Capabilities: OpenBlob, StatBlob and a blob's Exists. Before the first probe that succeeded,
+// it probes, or waits for the probe under way, at most registries[].timeout, so that the
+// workarounds apply from the provider's first request on, also when the probe at start found
+// the registry down (#797). The caller asks once and keeps the answer for the request.
+//
+// A ping the registry did not answer (provider.ErrUnavailable: no answer, refused, 503, the
+// circuit open) is the error, and the read sends nothing more: it costs what the read's own
+// request would have, in time and toward the circuit breaker, and the next read probes again.
+// Any other failure, or a probe that does not end in time, leaves the request without the
+// quirks, as before #797, and the read path does not probe again for probeBackoff.
+func (p *Provider) readQuirks(ctx context.Context) (quirks, error) {
+	if q := p.quirks.Load(); q != nil {
+		return *q, nil
+	}
+	_, unanswered, err := p.probeShared(ctx, p.timeout, true)
+	switch {
+	case unanswered:
+		return quirks{}, err
+	case err != nil && !errors.Is(err, errProbeBackoff):
+		p.log.DebugContext(ctx, "the probe before a blob read failed; the read goes without the vendor's workarounds", "error", err.Error())
+	}
+	return p.quirk(), nil
 }
 
 // Referrers API support as the probe found it.
@@ -140,6 +173,7 @@ func NewWithOptions(cfg config.Registry, log *slog.Logger, o Options) (*Provider
 		log:      log,
 		clients:  newClients(cfg, u, log, o.Credential),
 		maxPages: maxPages,
+		timeout:  timeoutOf(cfg),
 
 		spoolUnknown: cfg.Uploads.SpoolUnknownLength,
 		chunk:        blobChunk(u.Host, cfg.Uploads.ChunkSize),

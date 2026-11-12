@@ -123,8 +123,9 @@ func TestPrefix(t *testing.T) {
 					t.Errorf("no request %q in\n%s", want, strings.Join(f.log(), "\n"))
 				}
 			}
+			probe := "GET /v2/" + strings.TrimSuffix(tt.want, "raw/scratch/notes") + probeRepository + "/referrers/" + zeroDigest
 			for _, r := range f.log() {
-				if strings.HasPrefix(r, "GET /v2/_catalog") || r == "GET /v2/" {
+				if strings.HasPrefix(r, "GET /v2/_catalog") || r == "GET /v2/" || r == probe {
 					continue
 				}
 				if !strings.Contains(r, " /v2/"+tt.want+"/") {

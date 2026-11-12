@@ -110,6 +110,14 @@ func (f *fakeRegistry) log() []string {
 	return slices.Clone(f.requests)
 }
 
+// blobLog returns the requests so far but the probe's, which the first read of a provider sends
+// too (readQuirks): the ping, the catalog probe and the referrers probe.
+func (f *fakeRegistry) blobLog() []string {
+	return slices.DeleteFunc(f.log(), func(r string) bool {
+		return r == "GET /v2/" || r == "GET /v2/_catalog?n=1" || strings.HasSuffix(r, "/"+probeRepository+"/referrers/"+zeroDigest)
+	})
+}
+
 // count returns how many requests of the log start with prefix.
 func (f *fakeRegistry) count(prefix string) int {
 	n := 0

@@ -270,12 +270,18 @@ func checkOpenBlob(t *testing.T, f *fakeRegistry, store *objectStore, got provid
 	checkRequests(t, f, store, w)
 }
 
-// checkRequests fails t unless the registry got w.registry GETs and the object store the
-// requests w.store.
+// checkRequests fails t unless the registry got w.registry GETs besides the probe's and the
+// object store the requests w.store.
 func checkRequests(t *testing.T, f *fakeRegistry, store *objectStore, w openWant) {
 	t.Helper()
-	if n := f.count("GET "); n != w.registry {
-		t.Errorf("%d GETs to the registry, want %d:\n%s", n, w.registry, strings.Join(f.log(), "\n"))
+	gets := 0
+	for _, r := range f.blobLog() {
+		if strings.HasPrefix(r, "GET ") {
+			gets++
+		}
+	}
+	if gets != w.registry {
+		t.Errorf("%d GETs to the registry besides the probe's, want %d:\n%s", gets, w.registry, strings.Join(f.log(), "\n"))
 	}
 	if s := store.log(); !slices.Equal(s, w.store) {
 		t.Errorf("object store requests %q, want %q", s, w.store)
@@ -343,8 +349,8 @@ func TestStatBlob(t *testing.T) {
 	if got, err := p.StatBlob(ctx, name, d); err != nil || got != want {
 		t.Errorf("StatBlob = %+v, %v; want %+v", got, err, want)
 	}
-	if got := f.log(); !slices.Equal(got, []string{"HEAD /v2/" + repo + "/blobs/" + d.String()}) {
-		t.Errorf("requests %q, want one HEAD", got)
+	if got := f.blobLog(); !slices.Equal(got, []string{"HEAD /v2/" + repo + "/blobs/" + d.String()}) {
+		t.Errorf("requests %q besides the probe's, want one HEAD", got)
 	}
 	if _, err := p.StatBlob(ctx, name, digest.FromString("missing")); !errors.Is(err, provider.ErrNotFound) {
 		t.Errorf("StatBlob of a missing blob: %v, want ErrNotFound", err)

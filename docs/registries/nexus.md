@@ -102,8 +102,9 @@ blobs of the OCI format read whole (items 2, 3 and 5), as the start logged on 20
    blobs: no `Range` goes out, a client's range is answered with the whole blob (200) and no
    blob says `Accept-Ranges`, and ingest's `ReadAt` reads up to its block, as on Gitea. The
    unit tests answer as Nexus did. Measured on 2026-11-12: a range through the facade and
-   `/raw/` is 200 with the whole blob, and `pypi.sh` passes; but only on a provider that has
-   probed, #797 ([Again after #352](#again-after-352)).
+   `/raw/` is 200 with the whole blob, and `pypi.sh` passes; but only on a provider that had
+   probed, #797 ([Again after #352](#again-after-352)). Since #797 a blob read probes before
+   its first request; not measured against Nexus again.
 4. Expect 429 for a wrong password, and for the right one after it. Three failed logins of a
    user make Nexus answer that user 429 "Too many authentication attempts" with
    `Retry-After: 29`, the right password included, until it expires. The provider retries a
@@ -399,7 +400,10 @@ before the probe: OpenBlob with a Range = … response status code 500: unknown:
 after the probe:  OpenBlob with a Range = status 200, size 2800, acceptRanges false
 ```
 
-Ours: #797.
+Ours: #797. Since its fix `OpenBlob`, `StatBlob` and a blob's `Exists` probe before the
+provider's first request, or wait for the probe under way, at most `registries[].timeout`; the
+unit tests answer as Nexus did, and a fresh provider's first read with a `Range` is the whole
+blob, 200. Not measured against Nexus again.
 
 **New since the first run**, from the probe, which had not been run against Nexus, and the
 tests:
@@ -456,7 +460,7 @@ The failures, by owner:
 - **Nexus's:** the 500 to a `PATCH` of a cancelled session (docker), the 500 to every range
   (OCI, worked around), the names (OCI), the blobs refused for their content (docker, a
   setting), `BLOB_REFERENCED`.
-- **Ours, the code:** the quirks before the first probe, #797.
+- **Ours, the code:** the quirks before the first probe, #797 (fixed since, not measured again).
 - **Ours, the tests:** the tests that delete, and those that want a 206, assume a registry that
   deletes and serves ranges. On these formats Lajstrom refuses deletes (docker) and answers a
   range with the whole blob (OCI) on purpose, so they fail where they could skip or take the
