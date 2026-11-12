@@ -199,9 +199,12 @@ func (p *Provider) blobRequest(ctx context.Context, op, method string, ref regis
 		}
 		resp, err := p.hop(req, left)
 		if err != nil {
-			return nil, nil, p.translate(op, err)
+			return nil, nil, p.viaRedirect(req.URL, p.translate(op, err))
 		}
 		if !isRedirect(resp.StatusCode) {
+			if !p.sameOrigin(req.URL) {
+				resp.Body = &redirectBody{ReadCloser: resp.Body, host: req.URL.Host}
+			}
 			return resp, nil, nil
 		}
 		loc, err := resp.Location()
