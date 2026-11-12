@@ -93,7 +93,8 @@ variables and what passes.
 `FuzzEscape`, `FuzzUnescape` and `FuzzValidate` (`internal/oci/profile`), `FuzzParse`,
 `FuzzInspector`, `FuzzParseControl` and `FuzzParseAr` (`internal/format/deb`), `FuzzWheelFilename`,
 `FuzzCoreMetadata`, `FuzzZipEntries`, `FuzzSdistInspector` and `FuzzZipInspector` (`internal/format/pypi`), `FuzzPOM`
-(`internal/format/maven`), and `FuzzPackageJSON` and `FuzzTarballInspector` (`internal/format/npm`). Each checks properties of what the parser accepts (round trips,
+(`internal/format/maven`), `FuzzPackageJSON` and `FuzzTarballInspector` (`internal/format/npm`), and `FuzzParse` and
+`FuzzInspector` (`internal/format/rpm`). Each checks properties of what the parser accepts (round trips,
 idempotence), that what it refuses stays refused, and that what it allocates grows with the
 input (`testutil.CheckAllocated`); `FuzzZipEntries`, that the scan of a zip directory refuses
 what `zip.NewReader` refuses, that its count, which bounds it (#243), is never below what
@@ -101,8 +102,8 @@ what `zip.NewReader` refuses, that its count, which bounds it (#243), is never b
 `go test` runs their seed corpus with the unit tests; `make fuzz` fuzzes each for 30 s, one
 after another. The [Fuzz workflow](../.github/workflows/fuzz.yml) fuzzes each of its targets for
 10 minutes every Sunday and on demand, and keeps a crasher as the artifact
-`crasher-<target>`; it lists twelve of the fifteen, not yet `FuzzSdistInspector`,
-`FuzzZipInspector` and `FuzzTarballInspector`. It is not a required check.
+`crasher-<target>`; it lists fifteen of the seventeen, not yet the two of rpm. It is not a
+required check.
 
 ```sh
 make fuzz                                                    # every target, 30 s each
