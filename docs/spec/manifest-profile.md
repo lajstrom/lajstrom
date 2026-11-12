@@ -143,6 +143,11 @@ without `lajstrom.uploaded-by`:
 | `lajstrom.origin.url` | the URL the file was asked for, before any redirect, without userinfo, query or fragment: `https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz`. For an artifact of several files, the URL of the first file layer |
 | `lajstrom.origin.checksum` | the upstream's checksum that was verified before the ingest, `<algorithm>:<lowercase hex>`: `sha512:…`, `sha256:…`, `sha1:…` |
 
+`org.opencontainers.image.created` of such a manifest is the upstream's publish time of the
+version when the upstream's document gives one (npm: the packument's `time`; #441), and the time
+of the fetch otherwise: a version keeps its date when its proxy becomes a hosted repo
+(proxy-and-group.md §2.6), and two fetches of the same bytes build the same manifest.
+
 Only the fetcher writes them: a manifest that a client pushes or uploads with a key that starts
 with `lajstrom.origin.` is rejected with `400` (section 5) on every manifest Lajstrom manages, a
 version's manifest and a referrer (section 6), on a hosted repo and on a proxy one alike. An

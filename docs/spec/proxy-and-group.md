@@ -19,7 +19,8 @@
 | `proxy` | what it fetched from its upstream, as ordinary manifests | the upstream's documents, cached (§4); files from the registry, fetched on a miss (§5) | none from clients but the delete of a held version and referrers on `/v2` (http-routing.md §6) |
 | `group` | nothing | its members' documents merged, files from the member that has them (§8) | sent to its hosted member (§8.4) |
 
-The kind is set when the repo is created and never changes. A repo of any kind has the routes
+The kind is set when the repo is created; the one change is a proxy that becomes a hosted repo
+(§2.6), once and one way. A repo of any kind has the routes
 of its format: a client cannot tell a proxy or a group from a hosted repo. A format has the
 kinds `proxy` and `group` when its plugin provides the hooks of §10; in M4 that is npm.
 `oci` repos are `hosted` only.
@@ -138,6 +139,51 @@ Each is `400` on the API, naming the field first, and a configuration error at s
 - on a group, a `registry` or a `policy`.
 
 Deleting a repo that is a member of a group is `409` naming the groups, `force` or not.
+
+### 2.6 A proxy becomes a hosted repo
+
+`PATCH /api/v1/repos/<format>/<repo>` with `{"kind": "hosted"}`, alone in the body, by the admin
+role (rbac.md §7), turns a proxy repo into a hosted one that keeps everything it holds (#441,
+ADR 0013 point 1). It is the end of a move from another registry (§5.1): the repo then takes
+publishes, and its format's state that a proxy reads from its upstream's documents lives in its
+own journal in the registry (npm: the dist-tags and the deprecations, manifest-profile.md §8),
+where it survives the loss of the database.
+
+1. **Refused:** a repo that is a group (`400`); a format whose plugin cannot adopt a proxy's
+   documents (§10, `format.Adopter`; `400`); a proxy with a fetch claim that is not stale, a
+   fetch running (`409`); a proxy that is a member of a group that has a hosted member already
+   (`409` naming the group: a group has at most one hosted member, §2.3).
+2. **The ops.** For each package the repo holds, the plugin turns the document the proxy kept of
+   it (`proxy_meta`, the kind of `Adopter.AdoptKind`; npm the full packument) into journal ops
+   (`Adopter.AdoptOps`): npm adds each dist-tag whose version the repo holds, and the
+   deprecation of each held version that has one. A dist-tag of a version the repo does not hold
+   is left out and reported. A package without a kept document gets no op: its packument is then
+   what a hosted repo renders of its versions, `latest` the highest.
+3. **The flip,** in one transaction: `kind` becomes `hosted` and `upstream` NULL
+   (`index.Store.ConvertRepo`, which refuses a live fetch claim under the same lock), the
+   repo's rendered documents are invalidated, and the audit row `repo.convert` is written with
+   the counts and what was left out. From the next request on, every replica serves the repo as
+   a hosted one; a group that has it as a member has it as its hosted member.
+4. **The journal.** The ops of each package go through the one write path
+   (`Publisher.Journal`: the package's journal lock, the claims, the `_j<seq>` tags, the
+   visibility barrier, an audit row per op by the admin). Then the proxy's cached documents of
+   the repo are deleted, and so is the rest of `proxy_meta` of it.
+5. **Nothing moves in the registry.** A version's OCI repository is `<format>/<repo>/<package
+   path>` whatever the kind, and the versions keep their `lajstrom.origin.*` annotations
+   (manifest-profile.md §3.1): they say where the bytes came from, and the hosted repo serves
+   them as its own.
+
+The answer is `200` with the repo's resource, now `hosted`, without `upstream`. A failure after
+the flip (the registry or the index during step 4) leaves a hosted repo whose journal lacks the
+ops of some packages and that still has their cached documents: the same `PATCH` on it, a hosted
+repo, resumes from those documents, since ops written twice fold to the same state (INV-29). On
+a hosted repo without cached documents it changes nothing and answers `200`. A converted repo
+cannot become a proxy again.
+
+The times: the packument of a hosted repo dates each version by
+`org.opencontainers.image.created` (`versions.created_at`), which a proxied ingest sets to the
+upstream's publish time when the upstream gives one (manifest-profile.md §3.1, #441), so the
+dates survive the conversion; a version fetched before that change keeps the time of its fetch.
 
 ## 3. Names: allow, deny and merge
 
@@ -481,6 +527,21 @@ The same contract step adds: `Upload.Origin` (the URL and the verified checksum)
 ingest writes the origin annotations and the audit row `proxy.fetch`; the index methods of
 `proxy_meta`, `fetch_claims`, `group_members` and the new `repos` columns; and the sentinels
 for `405`, `502`, `503` and `504` in `format.StatusOf`.
+
+The conversion of a proxy (§2.6, #441) adds `format.Adopter`, a `Proxier` with two methods; a
+format whose plugin lacks it has proxies that stay proxies:
+
+```go
+// Adopter: a Proxier whose proxy repos may become hosted repos.
+type Adopter interface {
+    Proxier
+    // AdoptKind is the kind of the kept document AdoptOps reads (npm: the full packument).
+    AdoptKind() string
+    // AdoptOps returns the journal ops that give a hosted repo holding the versions held of
+    // name the pointers and the deprecations of kept, and describes what it left out.
+    AdoptOps(name string, kept []byte, held []string) (ops []JournalOp, skipped []string, err error)
+}
+```
 
 A prefetch (§5.1, #441) adds `format.Prefetcher`, a `Proxier` with two methods; a format whose
 plugin lacks it has no prefetch, and its proxies still serve misses:

@@ -192,6 +192,7 @@ type Origin struct {
     Upstream string                         // upstreams[].name, details.upstream of the audit row
     URL      string                         // the first file's URL as asked, before redirects, without userinfo, query, fragment
     Checksum string                         // <algorithm>:<lowercase hex>, the upstream's checksum that was verified
+    Published time.Time                     // the upstream's publish time of the version, org.opencontainers.image.created; zero: the time of the fetch
 }
 type UploadedFile struct {
     Name        string                      // maven: the path below /maven/<repo>/
@@ -450,6 +451,20 @@ type Grouper interface {
 type MemberDocument struct {
     Repo    index.Repo                       // the member; its Kind tells the hosted member from a proxy
     Content []byte                           // its document of the kind, as it serves it
+}
+
+// Adopter is implemented by a Proxier whose proxy repos may become hosted repos (§2.6, #441).
+type Adopter interface {
+    Proxier
+    // AdoptKind is the kind of the kept document AdoptOps reads: npm the full packument.
+    AdoptKind() string
+    // AdoptOps returns the journal ops (Publisher.Journal) that give a hosted repo, which
+    // holds the versions held of name, the pointers and the deprecations of kept, the proxy's
+    // document of AdoptKind as ParseMetadata kept it; npm: a dist-tag add per dist-tag whose
+    // version is held, a deprecate per held version with a message. What it leaves out (a
+    // dist-tag of a version not held) is described in skipped. A body it cannot read wraps
+    // ErrInvalid.
+    AdoptOps(name string, kept []byte, held []string) (ops []JournalOp, skipped []string, err error)
 }
 
 // Prefetcher is implemented by a Proxier whose proxy repos take a prefetch (§5.1, #441).
@@ -729,6 +744,11 @@ type Writer interface {
     // caller writes the group's repos row in the same transaction (CreateRepo, UpdateRepo), so
     // that auth_version moves with the members
     SetGroupMembers(ctx context.Context, groupID int64, memberIDs []int64) error
+    // ConvertRepo makes the proxy repo id a hosted one (proxy-and-group.md §2.6): kind hosted,
+    // upstream NULL, UpdatedAt now, auth_version incremented. A repo that is not a proxy, or
+    // has a fetch claim that beat at or after staleBefore, wraps ErrConflict; no repo
+    // ErrNotFound. The one change of a kind
+    ConvertRepo(ctx context.Context, id int64, staleBefore time.Time) error
     CreateUser(ctx context.Context, u *User) error
     UpdateUser(ctx context.Context, u *User) error
     CreateToken(ctx context.Context, t *Token) error
@@ -1362,6 +1382,14 @@ Where the merged shapes differ from the first sketch of this section, and why:
   they serve them, links under their own bases, and writes every link under the group's. The
   hosted member's document is its `index_cache` row of scope `Key(name)`, so no hook maps a name
   to a hosted scope; a format whose hosted scope differs adds one with its groups.
+- **A proxy becomes hosted through `format.Adopter`** (#441), a `Proxier` with two methods.
+  The core reads the kept document of each held package and needs of the plugin only which kind
+  to read and the journal ops it means: a proxy's dist-tags are its upstream's, in a cache, and a
+  hosted repo's are its journal, so the conversion writes them as ops through
+  `Publisher.Journal`, as a client's `npm dist-tag` would, and nothing new reaches the registry
+  by another path. `index.Store.ConvertRepo` is a method of its own, not a looser `UpdateRepo`:
+  it is the one change of a kind, it checks the fetch claims in the statement that flips it,
+  and `UpdateRepo` keeps refusing every other change of a kind.
 - **A prefetch plugs in through `format.Prefetcher`** (#441), a `Proxier` with two methods,
   rather than more methods of `Proxier`: the core reads a name's entries as a miss does, and
   needs of the plugin only which documents to read (the one that lists the entries first, and

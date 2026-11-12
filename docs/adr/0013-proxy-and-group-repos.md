@@ -85,9 +85,12 @@ Normative text: [proxy-and-group.md](../spec/proxy-and-group.md), with the table
 [http-routing.md](../spec/http-routing.md) §6, the permissions in [rbac.md](../spec/rbac.md) §7
 and the annotations in [manifest-profile.md](../spec/manifest-profile.md) §3.1.
 
-1. **Kinds.** `repos.kind` is `hosted`, `proxy` or `group`, set at creation and never changed.
-   A proxy and a group have the routes of their format, so a client cannot tell the kinds
-   apart. A format supports a kind when its plugin provides the hooks of point 9; npm does in
+1. **Kinds.** `repos.kind` is `hosted`, `proxy` or `group`, set at creation. One change is
+   allowed, once and one way: a proxy becomes a hosted repo, keeping what it holds, so that the
+   packages moved from another registry through a proxy end in a repo that takes publishes and
+   keeps its dist-tags in the registry (amended for #441, proxy-and-group.md §2.6). Nothing
+   else changes a kind. A proxy and a group have the routes of their format, so a client cannot
+   tell the kinds apart. A format supports a kind when its plugin provides the hooks of point 9; npm does in
    M4. `oci` repos stay hosted.
 2. **Upstreams belong to the operator.** The configuration names them (`upstreams[]`: name,
    format, URL, credentials as file paths, timeout, retries, metadata size bound). A proxy repo

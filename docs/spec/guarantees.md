@@ -891,7 +891,10 @@ longer than `reconcile.graceAge` is outside them
   without gaps in the order of the package's journal lock, never rewritten, and the state the
   packument serves is the fold of the entries in `seq` order, which reindex replays to the same
   state.
-- **Scope.** Hosted npm repos. A proxy journals nothing: its dist-tags are the upstream's.
+- **Scope.** Hosted npm repos. A proxy journals nothing: its dist-tags are the upstream's. A
+  proxy that became hosted (proxy-and-group.md §2.6) has a journal from then on, whose first
+  entries are the dist-tags and deprecations it had of its upstream, written through
+  `Publisher.Journal` as any other.
 - **Assumes.** Registry: **monotonic reads** (**unchecked**), and a lag shorter than
   `ingest.claimTTL`: an entry a writer claimed and the registry does not serve after the claim
   is stale counts as never pushed. Database: **Postgres for replicas** (on SQLite the journal
@@ -976,7 +979,8 @@ longer than `reconcile.graceAge` is outside them
 - **Statement.** What a proxy fetched is a manifest of the profile in the registry, with its
   origin in annotations, so it survives the loss of the database and of the upstream, and
   reindex rebuilds it; `proxy_meta` is a cache whose loss costs upstream requests only.
-- **Scope.** Proxy repos.
+- **Scope.** Proxy repos, and a hosted repo that was one (proxy-and-group.md §2.6): its versions
+  keep their origin annotations, and nothing in the registry moves when the kind changes.
 - **Assumes.** As INV-3.
 - **Mechanism.** The fetcher publishes through `Publisher.Upload` with an `Origin`
   (`ingest.setOrigin`); reindex neither reads nor writes `proxy_meta`, and `ResetDerived` leaves
