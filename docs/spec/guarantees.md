@@ -772,14 +772,17 @@ longer than `reconcile.graceAge` is outside them
 - **Statement.** No package a client uploads, and no document an upstream serves, makes a parser
   allocate or work beyond the caps of threat model F-4: archive bombs, entry floods, entity
   expansion and oversized metadata are refused within seconds.
-- **Scope.** The parsers of deb, pypi, maven and npm, the profile's `Validate`, the proxy's
+- **Scope.** The parsers of deb, pypi, maven, npm and rpm, the profile's `Validate`, the proxy's
   documents.
 - **Assumes.** Any.
 - **Mechanism.** deb `capReader` and `xzReader.startBlock`, `pypi.checkZipEntries`,
   `pypi.readTarGzFile`, `npm.ReadTarball`, the size caps of POM, `maven-metadata.xml`, wheel
-  `METADATA` and checksum files; `encoding/xml` expands no entities.
+  `METADATA` and checksum files; `encoding/xml` expands no entities; rpm `MaxHeader` (32 MiB,
+  refused from the intros before the bytes are read) and the budget of what one header decodes
+  to (`maxDecoded`, counted before each allocation, the joined file paths among it).
 - **Tests.** `TestXZBlocks`, `TestSdistBombs`, `TestZipBombs`, `TestTarballBombs`,
-  `TestParsePOMExpansionBounded`, `TestParseControlLimit`, `TestMetadataTooLarge`, and the fuzz
+  `TestParsePOMExpansionBounded`, `TestParseControlLimit`, `TestMetadataTooLarge`,
+  `TestParseHeadBound` and `TestParseDecodeBound` (rpm), and the fuzz
   targets of testing.md (`FuzzZipEntries`, `FuzzPackageJSON`, `FuzzParse`, `FuzzPOM`, …), which
   check that allocation grows with the input (`testutil.CheckAllocated`).
 - **When violated.** `400` or `413` naming the bound.
