@@ -84,22 +84,28 @@ func readReport(t *testing.T, path string) prefetchReport {
 	return rep
 }
 
-// TestAdminPrefetch: the names of the file, once each and without comments, go in batches of
-// --batch, with --all-versions; a line per version and the counts are printed, and --report has
-// the results; a failure exits 1, and --failed with the report sends its failed names again, and
-// exits 0 once nothing fails. A batch the server refuses fails its names and stops the run: the
-// names after it are not attempted.
-func TestAdminPrefetch(t *testing.T) {
-	f := &fakePrefetchAPI{held: map[string]bool{"lib": true}, broken: map[string]bool{"bad": true}}
+// newPrefetchRun serves f and returns the environment of admin repo prefetch against it, with
+// a token in a file, a names file of five names with comments and a repeat, and the path of a
+// report.
+func newPrefetchRun(t *testing.T, f *fakePrefetchAPI) (env map[string]string, names, report string) {
+	t.Helper()
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	dir := t.TempDir()
 	token := filepath.Join(dir, "token")
 	must(t, os.WriteFile(token, []byte("ljs_pat_secret\n"), 0o600))
-	env := map[string]string{envRetentionURL: srv.URL, envRetentionTokenFile: token}
-	names := filepath.Join(dir, "names")
+	names = filepath.Join(dir, "names")
 	must(t, os.WriteFile(names, []byte("# the private scope\n@acme/a\n@acme/b  # two\n\nlib\nbad\n@acme/a\ntool\n"), 0o600))
-	report := filepath.Join(dir, "report.json")
+	return map[string]string{envRetentionURL: srv.URL, envRetentionTokenFile: token}, names, filepath.Join(dir, "report.json")
+}
+
+// TestAdminPrefetch: the names of the file, once each and without comments, go in batches of
+// --batch, with --all-versions; a line per version and the counts are printed, and --report has
+// the results; a failure exits 1, and --failed with the report sends its failed names again, and
+// exits 0 once nothing fails.
+func TestAdminPrefetch(t *testing.T) {
+	f := &fakePrefetchAPI{held: map[string]bool{"lib": true}, broken: map[string]bool{"bad": true}}
+	env, names, report := newPrefetchRun(t, f)
 
 	out, _, err := run(t, env, "admin", "repo", "prefetch", "npm/legacy", "--from-file", names, "--batch", "2", "--all-versions",
 		"--report", report)
@@ -128,13 +134,18 @@ func TestAdminPrefetch(t *testing.T) {
 	if rep := readReport(t, report); rep.Names != 1 || rep.Counts[proxy.PrefetchFailed] != 0 {
 		t.Errorf("the report of --failed: %+v", rep)
 	}
+}
 
-	f.refuse = map[int]int{1: http.StatusForbidden}
-	out, _, err = run(t, env, "admin", "repo", "prefetch", "npm/legacy", "--from-file", names, "--batch", "2", "--report", report)
+// TestAdminPrefetchRefused: a batch the server refuses fails its names and stops the run: the
+// names after it are not attempted, and the report says why of each.
+func TestAdminPrefetchRefused(t *testing.T) {
+	f := &fakePrefetchAPI{held: map[string]bool{}, refuse: map[int]int{1: http.StatusForbidden}}
+	env, names, report := newPrefetchRun(t, f)
+	out, _, err := run(t, env, "admin", "repo", "prefetch", "npm/legacy", "--from-file", names, "--batch", "2", "--report", report)
 	if exitStatus(err) != 1 || len(f.sent()) != 2 {
 		t.Errorf("a refused batch: %v, want exit status 1 after 2 requests; out %s", err, out)
 	}
-	rep = readReport(t, report)
+	rep := readReport(t, report)
 	want := []string{"", "", "403 Forbidden: FORBIDDEN: manage on npm/legacy", "403 Forbidden: FORBIDDEN: manage on npm/legacy",
 		"not attempted: an earlier request failed"}
 	for i, r := range rep.Results {
@@ -167,7 +178,7 @@ func TestAdminPrefetchUsage(t *testing.T) {
 		{env, []string{"npm/legacy", "--from-file", names, "--failed"}, "not a report"},
 		{env, []string{"npm/legacy", "--from-file", names, "--batch", "101"}, "--batch: 101"},
 		{env, []string{"npm/legacy", "--from-file", names, "--timeout", "0s"}, "--timeout"},
-		{map[string]string{envRetentionToken: "ljs_pat_secret"}, []string{"npm/legacy", "--from-file", names}, "not an http or https URL"},
+		{map[string]string{envRetentionToken: env[envRetentionToken]}, []string{"npm/legacy", "--from-file", names}, "not an http or https URL"},
 	} {
 		_, _, err := run(t, tt.env, append([]string{"admin", "repo", "prefetch"}, tt.args...)...)
 		if exitStatus(err) != 2 || !strings.Contains(err.Error(), tt.want) {
