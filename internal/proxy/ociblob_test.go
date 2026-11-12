@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -255,5 +256,26 @@ func TestOCITagsFixed(t *testing.T) {
 	pushes := slices.IndexFunc(e2.reg.PushReferences(), func(r providertest.PushRecord) bool { return r.Tag == "3" && r.Digest == second.index.Digest })
 	if pushes >= 0 {
 		t.Error("the refused tag was pushed")
+	}
+}
+
+// TestOCIBlobBackendRefuses: a backend that refuses the push by a rule of its own (Quay's build
+// rule answers the token request 400 NAME_INVALID) is its 4xx and an audit row proxy.reject,
+// never a 500 (docs/spec/proxy-and-group.md §11.2).
+func TestOCIBlobBackendRefuses(t *testing.T) {
+	e := newOCIEnv(t, ociSettings)
+	img := e.hub.image(t, "paketobuildpacks/build", "base", "amd64")
+	c := e.core("a", proxy.Options{})
+	_, _, err := c.OCIManifest(t.Context(), e.repo, "paketobuildpacks/build", img.manifests[0].Digest.String())
+	must(t, err)
+	e.reg.FailUpload = &provider.RejectedError{Registry: "local", Status: 400, Code: "NAME_INVALID"}
+	_, _, err = c.OCIBlob(t.Context(), e.repo, "paketobuildpacks/build", img.blobs[0][1].Digest, true, false)
+	var rej *provider.RejectedError
+	if !errors.As(err, &rej) || rej.Status != 400 {
+		t.Fatalf("a push the backend refuses: %v, want its 400", err)
+	}
+	evs, err := e.st.ListAudit(t.Context(), index.AuditFilter{Action: "proxy.reject"})
+	if err != nil || len(evs) != 1 || !strings.Contains(string(evs[0].Details), `"reason":"backend"`) {
+		t.Errorf("proxy.reject rows = %+v, %v", evs, err)
 	}
 }
