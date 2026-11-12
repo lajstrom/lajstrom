@@ -46,6 +46,8 @@ func TestAdminBindingCreate(t *testing.T) {
 		{[]string{"create", "--principal", "user:bob", "--role", "reader", "--mask", "raw/*"}, "principal: user bob does not exist"},
 		{[]string{"create", "--principal", "user:alice", "--role", "reader", "--mask", "cargo/*"}, `"cargo" is not a format of this server`},
 		{[]string{"create", "--principal", "user:alice", "--role", "reader", "--mask", "oci/*"}, ""},
+		{[]string{"create", "--principal", "group:platform", "--role", "maintainer", "--mask", "*/*"}, ""},
+		{[]string{"create", "--principal", "group: platform", "--role", "reader", "--mask", "*/*"}, "a group name has no space at either end"},
 		{[]string{"create", "--principal", "user:alice", "--role", "reader"}, `required flag(s) "mask" not set`},
 		{[]string{"delete", "x"}, `binding id "x"`},
 		{[]string{"delete", "999"}, "binding 999 does not exist"},

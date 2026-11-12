@@ -77,7 +77,9 @@ func TestBindingsRules(t *testing.T) {
 	}{
 		{"anonymous", RoleReader, "raw/*", "principal: anonymous cannot be bound"},
 		{"token:5", RoleWriter, "raw/assets", "principal: token:5 cannot be bound"},
-		{"group:dev", RoleReader, "*/*", "principal: group:dev cannot be bound"},
+		{"group: dev", RoleReader, "*/*", "principal: auth: invalid principal: a group name has no space at either end"},
+		{"group:" + strings.Repeat("g", MaxGroupNameLen+1), RoleReader, "*/*", "principal: auth: invalid principal: a group name is at most 256 bytes"},
+		{"group:a\tb", RoleReader, "*/*", "principal: auth: invalid principal: a group name is printable UTF-8"},
 		{"alice", RoleReader, "*/*", "principal: "},
 		{"user:bob", RoleReader, "raw/*", "principal: user bob does not exist"},
 		{"user:alice", "owner", "raw/*", `role: "owner" is not reader, writer, maintainer or admin`},
