@@ -37,6 +37,8 @@ var (
 		"Access-Control-Allow-Headers": {"Authorization,content-type,X-ZOT-API-CLIENT"}}
 	nexusV2                   = http.Header{"Docker-Distribution-Api-Version": {"registry/2.0"}, "Server": {"Nexus/3.98.1-01 (COMMUNITY)"}}
 	jfrogV2                   = http.Header{"Docker-Distribution-Api-Version": {"registry/2.0"}, "X-Jfrog-Version": {"Artifactory/7.161.26 86126900"}, "X-Artifactory-Id": {"a1b2"}}
+	quayV2                    = http.Header{"Docker-Distribution-Api-Version": {"registry/2.0"}, "X-Sparse-Manifest-Support": {"false"}}
+	quayChallenge             = `Bearer realm="http://localhost:5012/v2/auth",service="localhost:5012"`
 	nexusChallenge            = `BASIC realm="Sonatype Nexus Repository Manager"`
 	giteaChallenge            = `Bearer realm="http://localhost:5009/v2/token",service="container_registry",scope="*"`
 	gitLabComChallenge        = `Bearer realm="https://gitlab.com/jwt/auth",service="container_registry"`
@@ -81,6 +83,15 @@ func TestDetectVendor(t *testing.T) {
 		{name: "Zot", id: identity{host: "localhost:5000", header: zotV2}, want: vendorZot},
 		{name: "a host that ends in ghcr.io", id: identity{host: "notghcr.io"}, want: vendorUnknown},
 		{name: "a host below ghcr.io", id: identity{host: "ghcr.io.example.com"}, want: vendorUnknown},
+		{name: "Quay", id: identity{host: "localhost:5012", header: quayV2, challenge: quayChallenge}, want: vendorQuay},
+		{name: "Quay with sparse manifests on, behind another name", id: identity{host: "registry.example:443",
+			header: http.Header{"X-Sparse-Manifest-Support": {"true"}}}, want: vendorQuay},
+		{name: "Quay's challenge without its header", id: identity{host: "localhost:5012", header: plainV2, challenge: quayChallenge}, want: vendorDistribution},
+		{name: "quay.io", id: identity{host: "quay.io", header: http.Header{
+			"Docker-Distribution-Api-Version": {"registry/2.0"}, "X-Sparse-Manifest-Support": {"false"},
+			"Www-Authenticate": {`Bearer realm="https://quay.io/v2/auth",service="quay.io"`}}}, want: vendorQuay},
+		{name: "quay.io before a ping, with the port", id: identity{host: "QUAY.io:443"}, want: vendorQuay},
+		{name: "a host below quay.io", id: identity{host: "cdn01.quay.io", header: plainV2}, want: vendorUnknown},
 		{name: "nothing", want: vendorUnknown},
 	}
 	for _, tt := range tests {
@@ -174,6 +185,8 @@ func TestVendorDefaults(t *testing.T) {
 			MaxBlobSize: 10_000_000_000}},
 		{vendorDocker, provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true, DeleteManifest: true, BlobRedirect: true,
 			MaxNameDepth: 1}},
+		{vendorQuay, provider.Capabilities{CreateOnPush: true, Referrers: true, DeleteManifest: true, BlobRedirect: true,
+			Consistency: provider.ConsistencyEventual, ConsistencyBound: 130 * time.Second}},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.vendor), func(t *testing.T) {
@@ -230,6 +243,8 @@ func TestCapabilitiesVendor(t *testing.T) {
 	}
 	gitLabDeep := strong
 	gitLabDeep.MaxNameDepth = gitLabNameDepth
+	quay := provider.Capabilities{CreateOnPush: true, Referrers: true, DeleteManifest: true, BlobRedirect: true, MaxNameLength: 251,
+		Consistency: provider.ConsistencyEventual, ConsistencyBound: 130 * time.Second}
 	tests := []struct {
 		name   string
 		setup  func(f *fakeRegistry)
@@ -264,6 +279,8 @@ func TestCapabilitiesVendor(t *testing.T) {
 			edit: func(c *config.Registry) { c.Uploads.SpoolUnknownLength = true },
 		},
 		{name: "JFrog", setup: headers(jfrogV2, true), vendor: vendorJFrog, quirks: quirks{blobExistsByGET: true}, hint: true},
+		// The fake's referrers API is off: the table's referrers: true is not probed.
+		{name: "Quay", setup: headers(quayV2, false), vendor: vendorQuay, want: quay},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -435,6 +452,14 @@ func TestVendorDefaultsInTheProbe(t *testing.T) {
 			noProbe: []string{"GET /v2/_catalog"},
 		},
 		{
+			// The fake has a catalog and the referrers API; the table's answers win unasked.
+			name:     "Quay",
+			defaults: vendorDefaults[vendorQuay],
+			want: provider.Capabilities{CreateOnPush: true, Referrers: true, DeleteManifest: true, BlobRedirect: true,
+				Consistency: provider.ConsistencyEventual, ConsistencyBound: 130 * time.Second},
+			noProbe: []string{"GET /v2/_catalog", "GET /v2/art/lajstrom-probe/referrers/"},
+		},
+		{
 			name:     "a vendor without referrers",
 			defaults: config.CapabilityOverrides{Referrers: new(false)},
 			want:     provider.Capabilities{CreateOnPush: true, Catalog: true, DeleteManifest: true, BlobRedirect: true},
@@ -482,12 +507,12 @@ func TestVendorDefaultsInTheProbe(t *testing.T) {
 	}
 }
 
-// TestCatalogBeforeTheProbe: the host names GHCR before any request, so ListRepositories does
-// not walk GHCR's catalog even when the probe has not run.
+// TestCatalogBeforeTheProbe: the host names GHCR or quay.io before any request, so
+// ListRepositories does not walk their catalog even when the probe has not run.
 func TestCatalogBeforeTheProbe(t *testing.T) {
 	ctx := context.Background()
 	log, _ := testLogger()
-	for _, u := range []string{"https://ghcr.io", "https://ghcr.io:443"} {
+	for _, u := range []string{"https://ghcr.io", "https://ghcr.io:443", "https://quay.io"} {
 		p, err := New(config.Registry{Name: "ghcr", Type: Type, URL: u, Prefix: "lajstrom-extras/"}, log)
 		if err != nil {
 			t.Fatal(err)

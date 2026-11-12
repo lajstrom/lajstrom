@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/provider"
@@ -26,6 +27,7 @@ const (
 	vendorJFrog   vendor = "jfrog"
 	vendorZot     vendor = "zot"
 	vendorDocker  vendor = "dockerhub"
+	vendorQuay    vendor = "quay" // Project Quay, Red Hat Quay and quay.io
 	// vendorDistribution is CNCF distribution, and whatever else answers GET /v2/ as it does,
 	// with Docker-Distribution-Api-Version and nothing the table knows, on a host that is not
 	// a hosted service's (hostedRegistries).
@@ -48,8 +50,19 @@ const (
 	headerAPIVersion   = "Docker-Distribution-Api-Version"
 )
 
+// headerQuaySparse is Quay's, true or false as its FEATURE_SPARSE_INDEX is, on the 401 and the
+// 200 of GET /v2/: Project Quay 3.18.2 and quay.io sent it (docs/registries/quay.md, Tokens and
+// the delete action), no other registry measured does.
+const headerQuaySparse = "X-Sparse-Manifest-Support"
+
 // ghcrMaxBlobSize is GHCR's largest layer, 10 GB.
 const ghcrMaxBlobSize = 10_000_000_000
+
+// quayConsistencyBound is Quay's lag: it caches a repository's tag list for 120 s, and a catalog
+// page and a subject's referrers for 60 s (data/cache/cache_key.py, its defaults), so a list
+// read before a write can miss the write that long; 10 s more for the clocks. Manifests and
+// blobs were seen at once (docs/registries/quay.md, Consistency).
+const quayConsistencyBound = 130 * time.Second
 
 // The depths of a name below the instance prefix that the vendor table knows
 // (docs/registries/quirks.md, Names and repositories):
@@ -65,7 +78,8 @@ const (
 
 // hostedRegistries are the hosts, and the parents of hosts, of hosted registries that answer
 // GET /v2/ as distribution does and are not it, or not on storage that was measured: never
-// vendorDistribution. ACR's geo-replicas and ECR are eventually consistent.
+// vendorDistribution. ACR's geo-replicas and ECR are eventually consistent. quay.io itself is
+// vendorQuay (vendorOfHost); a host below it is not its registry.
 var hostedRegistries = []string{"docker.io", "quay.io", "azurecr.io", "pkg.dev", "gcr.io", "amazonaws.com"}
 
 // vendorDefaults is the vendor table: what each vendor needs set that the probe cannot
@@ -101,6 +115,14 @@ var vendorDefaults = map[vendor]config.CapabilityOverrides{
 	vendorGitea: {},
 	// The probe is right since it wants a catalog in the 200; HEAD lies: afterProbe.
 	vendorJFrog: {},
+	// Quay answers _catalog without credentials with 200 and no repositories, which the probe
+	// takes for a catalog and oras-go never authenticates: reindex would find nothing (#802).
+	// It has the referrers API, but the probe's repository does not exist and is 404
+	// NAME_UNKNOWN, so the probe cannot tell. Lists are cached: quayConsistencyBound. Measured on
+	// Project Quay 3.18.2; quay.io answered GET /v2/, the anonymous catalog, the token endpoint
+	// and the referrers API alike on 2026-11-12, its cache times not measured
+	// (docs/registries/quay.md).
+	vendorQuay: {Catalog: new(false), Referrers: new(true), Consistency: config.ConsistencyEventual, ConsistencyBound: quayConsistencyBound},
 }
 
 // hintSpool reports whether the start hints at registries[].uploads.spoolUnknownLength for v:
@@ -171,7 +193,7 @@ func afterProbe(v vendor, probed *provider.Capabilities, referrers bool) quirks 
 		probed.DeleteManifest = false
 	case vendorJFrog:
 		return quirks{blobExistsByGET: true}
-	case vendorUnknown, vendorGitLab, vendorGHCR, vendorHarbor, vendorGitea, vendorZot, vendorDistribution, vendorDocker:
+	case vendorUnknown, vendorGitLab, vendorGHCR, vendorHarbor, vendorGitea, vendorZot, vendorDistribution, vendorDocker, vendorQuay:
 	}
 	return quirks{}
 }
@@ -219,6 +241,7 @@ type identity struct {
 //
 //   - GHCR: the host is ghcr.io;
 //   - Docker Hub: the host is docker.io or below it;
+//   - Quay: the host is quay.io, or GET /v2/ answers X-Sparse-Manifest-Support;
 //   - GitLab: GET /v2/ answers Gitlab-Container-Registry-Version;
 //   - JFrog: GET /v2/ answers X-Jfrog-Version;
 //   - Nexus: GET /v2/ answers Server: Nexus/<version>, or challenges with Basic and
@@ -237,15 +260,8 @@ func detectVendor(id identity) vendor {
 	if v := vendorOfHost(id.host); v != vendorUnknown {
 		return v
 	}
-	switch {
-	case id.header.Get(headerGitLabVersion) != "":
-		return vendorGitLab
-	case id.header.Get(headerJFrogVersion) != "":
-		return vendorJFrog
-	case strings.HasPrefix(strings.ToLower(id.header.Get("Server")), nexusServer):
-		return vendorNexus
-	case strings.Contains(strings.ToLower(id.header.Get("Access-Control-Allow-Headers")), zotClientHeader):
-		return vendorZot
+	if v := vendorOfHeader(id.header); v != vendorUnknown {
+		return v
 	}
 	scheme, realm := challengeParam(id.challenge, "realm")
 	_, service := challengeParam(id.challenge, "service")
@@ -263,14 +279,34 @@ func detectVendor(id identity) vendor {
 	return vendorUnknown
 }
 
-// vendorOfHost names the vendor that the host of the registry URL tells alone, GHCR or Docker
-// Hub, else vendorUnknown.
+// vendorOfHeader names the vendor that a header of the 200 to GET /v2/ tells alone: GitLab,
+// JFrog, Quay, Nexus or Zot (detectVendor), else vendorUnknown.
+func vendorOfHeader(h http.Header) vendor {
+	switch {
+	case h.Get(headerGitLabVersion) != "":
+		return vendorGitLab
+	case h.Get(headerJFrogVersion) != "":
+		return vendorJFrog
+	case len(h.Values(headerQuaySparse)) > 0:
+		return vendorQuay
+	case strings.HasPrefix(strings.ToLower(h.Get("Server")), nexusServer):
+		return vendorNexus
+	case strings.Contains(strings.ToLower(h.Get("Access-Control-Allow-Headers")), zotClientHeader):
+		return vendorZot
+	}
+	return vendorUnknown
+}
+
+// vendorOfHost names the vendor that the host of the registry URL tells alone, GHCR, Docker Hub
+// or quay.io, else vendorUnknown.
 func vendorOfHost(hostport string) vendor {
 	switch {
 	case isHost(hostport, "ghcr.io"):
 		return vendorGHCR
 	case atOrBelow(hostport, "docker.io"):
 		return vendorDocker
+	case isHost(hostport, "quay.io"):
+		return vendorQuay
 	}
 	return vendorUnknown
 }
