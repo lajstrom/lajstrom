@@ -130,7 +130,7 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		msg, detail = ae.unavailableBody()
 		h.o.Log.WarnContext(r.Context(), "facade: "+unavailable(err)+" unavailable", "method", r.Method, "path", r.URL.Path,
 			"error", err.Error(), "requestId", server.RequestID(r.Context()))
-	case status >= http.StatusInternalServerError && status != http.StatusNotImplemented:
+	case hides(status, ae):
 		code, msg, detail = codeUnknown, http.StatusText(status), nil
 		h.o.Log.Log(r.Context(), server.FailLevel(r), "facade: request failed", "method", r.Method, "path", r.URL.Path,
 			"status", status, "error", err.Error(), "requestId", server.RequestID(r.Context()))
@@ -148,6 +148,16 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		code = codeOfStatus(status)
 	}
 	writeJSON(w, status, errorBody{Errors: []errorEntry{{Code: code, Message: msg, Detail: detail}}})
+}
+
+// hides reports whether the answer of e with status says its status text alone: a 5xx but 501,
+// and but a told 503 TOOMANYREQUESTS, an upstream's 429 (proxyError), whose message names only
+// the wait the upstream asks for.
+func hides(status int, e *apiError) bool {
+	if status == http.StatusServiceUnavailable && e.code == codeTooManyRequests && e.told {
+		return false
+	}
+	return status >= http.StatusInternalServerError && status != http.StatusNotImplemented
 }
 
 // unavailableBody is the message and the detail of e answered as 503 UNAVAILABLE: the status

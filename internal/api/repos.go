@@ -690,7 +690,7 @@ func (s *Repos) checkKind(req CreateRequest) (string, json.RawMessage, error) {
 	case kind == index.KindGroup:
 		return index.KindGroup, nil, nil
 	}
-	if _, ok := s.proxier(req.Format); !ok {
+	if _, ok := s.proxier(req.Format); !ok && req.Format != formatOCI { // an oci proxy has no plugin (ADR 0018)
 		return "", nil, invalid("kind: format %s has no proxy repos", req.Format)
 	}
 	if isNull(req.Upstream) {

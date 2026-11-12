@@ -14,6 +14,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth/token"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -162,6 +163,9 @@ func (h *handler) backendTags(ctx context.Context, t *target, p page) ([]string,
 		return nil, &apiError{code: codeNameUnknown, msg: fmt.Sprintf("repository name %s not known to registry", t.name), err: err}
 	case err != nil && !errors.Is(err, errEnoughTags):
 		return nil, &apiError{code: codeNameUnknown, err: err}
+	}
+	if h.ociProxy(t) { // the keep-tags of an oci proxy are its own (proxy-and-group.md §11.6)
+		tags = slices.DeleteFunc(tags, profile.IsKeepTag)
 	}
 	slices.Sort(tags)
 	return tags, nil

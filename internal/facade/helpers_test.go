@@ -61,6 +61,7 @@ type env struct {
 	extURL string // Options.ExternalURL
 	logs   *logBuffer
 	h      http.Handler // replica A
+	proxy  OCIProxy     // Options.OCIProxy
 
 	sessions [2]int // Options.UploadSessionsPerRepo and UploadSessionsPerPrincipal
 }
@@ -74,6 +75,7 @@ type envOptions struct {
 	maxManifest int64                                      // Options.MaxManifestSize
 	behind      time.Duration                              // Options.MaxCreatedBehind
 	externalURL string                                     // Options.ExternalURL
+	ociProxy    OCIProxy                                   // Options.OCIProxy
 
 	sessions [2]int // Options.UploadSessionsPerRepo and UploadSessionsPerPrincipal
 }
@@ -87,7 +89,7 @@ func newEnv(t *testing.T, o envOptions) *env {
 	must(t, st.Migrate(ctx))
 	e := &env{t: t, st: st, prov: &providertest.Fake{RegistryName: "local"}, authz: o.authz, logs: &logBuffer{},
 		clock: &clock{now: time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC)}, ingest: o.ingest, max: o.maxManifest, behind: o.behind,
-		tokens: keys.NewEphemeralTokens(), extURL: o.externalURL, sessions: o.sessions}
+		tokens: keys.NewEphemeralTokens(), extURL: o.externalURL, sessions: o.sessions, proxy: o.ociProxy}
 	e.reg, e.idx = e.prov, st
 	if o.registry != nil {
 		e.reg = o.registry(e.prov)
@@ -122,7 +124,7 @@ func (e *env) replicaWith(k token.Keys) http.Handler {
 	h := New(Options{Index: e.idx, Providers: provider.Map{"local": e.reg}, Auth: e.authz, Ingest: e.ingest,
 		MaxManifestSize: e.max, MaxCreatedBehind: e.behind, Log: slog.New(slog.NewTextHandler(e.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Now: e.clock.Now, Tokens: k, ExternalURL: e.extURL,
-		UploadSessionsPerRepo: e.sessions[0], UploadSessionsPerPrincipal: e.sessions[1]})
+		UploadSessionsPerRepo: e.sessions[0], UploadSessionsPerPrincipal: e.sessions[1], OCIProxy: e.proxy})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if name := r.Header.Get(principalHeader); name != "" {
 			r = r.WithContext(auth.WithPrincipal(r.Context(), userP(name)))

@@ -45,7 +45,7 @@ func withProxies(f *fixture) {
 	f.repos.Formats = oneOf("raw", "pypi", "npm")
 	f.repos.Proxiers = func(name string) (format.Proxier, bool) { return stubProxier{}, name == "npm" }
 	f.repos.Upstreams = func(name string) (string, bool) {
-		formatName, ok := map[string]string{"npmjs": "npm", "npmjs2": "npm", "pypi": "pypi"}[name]
+		formatName, ok := map[string]string{"npmjs": "npm", "npmjs2": "npm", "pypi": "pypi", "dockerhub": "oci"}[name]
 		return formatName, ok
 	}
 }
@@ -77,6 +77,22 @@ func TestCreateProxy(t *testing.T) {
 	}
 }
 
+// TestCreateOCIProxy: an oci repo may be a proxy of an oci upstream (ADR 0018), and a purge of
+// one path drops the rows of that path.
+func TestCreateOCIProxy(t *testing.T) {
+	f := newProxyFixture(t)
+	body := `{"format": "oci", "name": "hub", "registry": "local", "kind": "proxy", "upstream": {"name": "dockerhub", "metadataTTL": "1h"}}`
+	var got Repo
+	decodeJSON(t, f.do(http.MethodPost, "/api/v1/repos", body, auth.Principal{}), http.StatusCreated, &got)
+	if got.Kind != "proxy" || !strings.Contains(string(got.Upstream), `"name":"dockerhub"`) {
+		t.Fatalf("the created oci proxy = %+v", got)
+	}
+	rr := f.do(http.MethodDelete, "/api/v1/repos/oci/hub/upstream-cache?name=library/nginx", "", auth.Principal{})
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("purge of a path: %d %s", rr.Code, rr.Body)
+	}
+}
+
 func TestCreateProxyInvalid(t *testing.T) {
 	const proxy = `{"format": "npm", "name": "npmjs", "registry": "local", "kind": "proxy"`
 	tests := []struct{ name, body, want string }{
@@ -91,8 +107,8 @@ func TestCreateProxyInvalid(t *testing.T) {
 		{"a pattern with a space", proxy + `, "upstream": {"name": "npmjs", "allow": ["a b"]}}`, "upstream.allow[0]: "},
 		{"a format without proxy repos", `{"format": "pypi", "name": "pypi", "registry": "local", "kind": "proxy", "upstream": {"name": "pypi"}}`,
 			"kind: format pypi has no proxy repos"},
-		{"oci", `{"format": "oci", "name": "hub", "registry": "local", "kind": "proxy", "upstream": {"name": "npmjs"}}`,
-			"kind: format oci has no proxy repos"},
+		{"an oci proxy of an npm upstream", `{"format": "oci", "name": "hub", "registry": "local", "kind": "proxy", "upstream": {"name": "npmjs"}}`,
+			`upstream.name: "npmjs" serves npm, not oci`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
