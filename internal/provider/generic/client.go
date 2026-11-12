@@ -64,20 +64,22 @@ type clients struct {
 // newClients builds the clients for the registry at base (its URL: scheme and host:port) from
 // cfg. Every request carries User-Agent lajstrom/<version>; with a username, the registry's
 // Basic or bearer challenge is answered with the username and password, and tokens are cached.
-// A non-nil rotating replaces the username and password (Options.Credential). A bearer
-// challenge whose realm realmTransport refuses is an error instead. While pushForDelete
-// reports true, a token is asked for push where oras-go asks it for delete
-// (deleteScopeTransport). A non-nil guard dials the hosts it does not trust at public addresses
-// only and checks every redirect the follow client takes (Options.PublicRedirects).
-func newClients(cfg config.Registry, base *url.URL, log *slog.Logger, rotating auth.CredentialFunc, pushForDelete func() bool,
+// A non-nil o.Credential replaces the username and password. A bearer challenge whose realm
+// realmTransport refuses is an error instead. While pushForDelete reports true, a token is asked
+// for push where oras-go asks it for delete (deleteScopeTransport). A non-nil guard dials the
+// hosts it does not trust at public addresses only and checks every redirect the follow client
+// takes (Options.PublicRedirects). An upstream's answers feed its rate-limit gauges
+// (rateLimitTransport).
+func newClients(cfg config.Registry, base *url.URL, log *slog.Logger, o Options, pushForDelete func() bool,
 	guard *egress.Guard) clients {
+	rotating := o.Credential
 	timeout := timeoutOf(cfg)
 	// The retry transport resends an idempotent request whose body can be replayed; a blob
 	// upload is retried as a whole by Push (pushRetry). The breaker above it counts a request
 	// once however often it was tried. Above both, the probe's ping sees the challenges.
 	br := newBreaker(cfg.Name, log)
 	rt := &deleteScopeTransport{on: pushForDelete, next: &realmTransport{registry: cfg.Name, base: base, hosts: realmHosts(cfg, base), next: &challengeTransport{next: &breakerTransport{b: br, next: &retryTransport{
-		next:    &logTransport{next: &metricsTransport{next: newTransport(timeout, guard), registry: cfg.Name}, log: log},
+		next:    &logTransport{next: &metricsTransport{next: innermost(o, newTransport(timeout, guard), cfg.Name, log), registry: cfg.Name}, log: log},
 		retries: retries(cfg),
 		log:     log,
 	}}}}}
@@ -170,6 +172,14 @@ func (c *rotatingCache) GetToken(ctx context.Context, registry string, scheme au
 		return "", auth.ErrBasicCredentialNotFound
 	}
 	return base64.StdEncoding.EncodeToString([]byte(cred.Username + ":" + cred.Password)), nil
+}
+
+// innermost is the innermost transport of the clients: t, under an upstream's rateLimitTransport.
+func innermost(o Options, t http.RoundTripper, name string, log *slog.Logger) http.RoundTripper {
+	if !o.upstream {
+		return t
+	}
+	return &rateLimitTransport{next: t, upstream: name, log: log}
 }
 
 // guardedRedirect is the redirect rule of the follow client of a guarded registry

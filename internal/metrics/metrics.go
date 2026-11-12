@@ -87,7 +87,23 @@ var (
 	ProxyFetches = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "lajstrom_proxy_fetches_total", Help: "File requests of proxy repos, by upstream and result.",
 	}, []string{"upstream", "result"})
-	// Throttled counts the requests refused 429 by a throttle of internal/auth: account and
+	// ProxyRateLimit is what an upstream last said of its rate limit in ratelimit-limit
+	// (Docker Hub: 100;w=21600), by upstream: the requests of its window
+	// (docs/spec/proxy-and-group.md §11.7).
+	ProxyRateLimit = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "lajstrom_proxy_upstream_ratelimit_limit", Help: "The requests an upstream allows in its window, as it last said.",
+	}, []string{"upstream"})
+	// ProxyRateRemaining is the requests left in an upstream's window, as its
+	// ratelimit-remaining last said, by upstream.
+	ProxyRateRemaining = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "lajstrom_proxy_upstream_ratelimit_remaining", Help: "The requests left in an upstream's window, as it last said.",
+	}, []string{"upstream"})
+	// ProxyRateWindow is the window of an upstream's rate limit in seconds, from the w= of its
+	// ratelimit-limit, never assumed, by upstream.
+	ProxyRateWindow = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "lajstrom_proxy_upstream_ratelimit_window_seconds", Help: "The window of an upstream's rate limit, as it last said.",
+	}, []string{"upstream"})
+	// Throttled counts) the requests refused 429 by a throttle of internal/auth: account and
 	// address (the failed logins of an account, of a client address), token (the requests to
 	// /v2/token of a client address).
 	Throttled = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -137,8 +153,8 @@ var (
 
 func init() {
 	registry.MustRegister(HTTPDuration, HTTPRequestSize, HTTPResponseSize, ProviderDuration, ProviderCircuitOpen, DBDuration, Ingest,
-		ProxyUpstreamDuration, ProxyDocuments, ProxyFetches, Throttled, UploadSessionsRefused, UploadSessionsLive, DownloadDigestMismatches, ClockSkew,
-		SpoolBytes, SpoolRefusals, buildInfo,
+		ProxyUpstreamDuration, ProxyDocuments, ProxyFetches, ProxyRateLimit, ProxyRateRemaining, ProxyRateWindow, Throttled,
+		UploadSessionsRefused, UploadSessionsLive, DownloadDigestMismatches, ClockSkew, SpoolBytes, SpoolRefusals, buildInfo,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 }
 

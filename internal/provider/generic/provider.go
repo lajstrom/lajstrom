@@ -91,6 +91,9 @@ type Provider struct {
 	// guard checks the hosts of redirects (Options.PublicRedirects); nil follows them as a
 	// backend's are.
 	guard *egress.Guard
+	// upstream and anonymous are NewUpstream's: the error rule of an upstream (upstreamError),
+	// and whether it has no credentials.
+	upstream, anonymous bool
 }
 
 // quirk returns the vendor's quirks, none before the probe. A request that depends on them
@@ -157,6 +160,8 @@ type Options struct {
 	// https and only to public addresses (egress.Guard), with an egress proxy only to a host that
 	// is not an address literal of a private range.
 	PublicRedirects bool
+	// upstream is NewUpstream's: the answers' rate-limit headers feed the gauges.
+	upstream bool
 }
 
 // NewWithOptions is New with the changes of o.
@@ -197,7 +202,7 @@ func NewWithOptions(cfg config.Registry, log *slog.Logger, o Options) (*Provider
 		chunk:        blobChunk(u.Host, cfg.Uploads.ChunkSize),
 		bound:        chunkBound(u.Host, cfg.Uploads.ChunkSize),
 	}
-	p.clients = newClients(cfg, u, log, o.Credential, func() bool { return p.quirk().pushForDelete }, guard)
+	p.clients = newClients(cfg, u, log, o, func() bool { return p.quirk().pushForDelete }, guard)
 	reg := &remote.Registry{RepositoryListPageSize: pageSize}
 	reg.Reference = registry.Reference{Registry: u.Host}
 	if err := reg.Reference.ValidateRegistry(); err != nil {
