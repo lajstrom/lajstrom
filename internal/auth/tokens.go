@@ -135,7 +135,8 @@ func (s *Tokens) CreatePAT(ctx context.Context, user, name string, scopes []stri
 }
 
 // MayCreatePAT returns nil when the credential of ctx may create a personal access token: a
-// password, or none, as from the command line, which the operator runs. A personal access
+// password, an OIDC login (docs/spec/rbac.md §8), or none, as from the command line, which the
+// operator runs. A personal access
 // token, with scopes or without, and a deploy token may not, an error wrapping ErrScope: a
 // stolen token would otherwise mint tokens that outlive its revocation (decided on #249,
 // docs/auth.md, Rules).
@@ -143,17 +144,17 @@ func MayCreatePAT(ctx context.Context) error {
 	switch CredentialFrom(ctx).Kind {
 	case CredPAT, CredDeploy:
 		return &authError{msg: "a personal access token is created with a password, not with a token", err: ErrScope}
-	case CredPassword:
+	case CredPassword, CredOIDC:
 	}
 	return nil
 }
 
-// createdBy is the credential c as the createdBy of a token.create event: password, or
+// createdBy is the credential c as the createdBy of a token.create event: password, oidc, or
 // token:<id> for a token; "" for none.
 func createdBy(c Credential) string {
 	switch c.Kind {
-	case CredPassword:
-		return string(CredPassword)
+	case CredPassword, CredOIDC:
+		return string(c.Kind)
 	case CredPAT, CredDeploy:
 		return "token:" + strconv.FormatInt(c.TokenID, 10)
 	}
