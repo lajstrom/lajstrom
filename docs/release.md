@@ -220,8 +220,9 @@ of that commit, in another worktree, replaces them.
 The Release workflow runs the same snapshot on every push to `main` and on a pull request that
 changes the release configuration. It runs the linux/amd64 binary and image. It checks that
 the binary was built by the Go of setup-go, and that govulncheck finds no vulnerable function
-of the standard library in the binary. It keeps `dist/` as the `lajstrom-snapshot` artifact
-for 14 days:
+of the standard library in the binary. It keeps the archives, the SBOMs, `checksums.txt`, the
+cask and `metadata.json` of `dist/` as the `lajstrom-snapshot` artifact for 14 days; not the
+unpacked binaries, and not the images:
 
 ```sh
 gh run download --repo lajstrom/lajstrom --name lajstrom-snapshot \

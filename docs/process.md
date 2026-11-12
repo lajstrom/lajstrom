@@ -8,7 +8,7 @@
 
 | Thing | Place |
 | --- | --- |
-| Tasks, status, assignment | GitHub Issues with milestones M0–M3 and the labels below. Nothing is "in progress" unless an issue says so. |
+| Tasks, status, assignment | GitHub Issues with milestones (M0 onward; [roadmap.md](roadmap.md) has the plan) and the labels below. Nothing is "in progress" unless an issue says so. |
 | Board | GitHub Project "Lajstrom MVP" (https://github.com/orgs/lajstrom/projects/1), columns below, auto-synced from issues and pull requests |
 | Design truth | `docs/architecture.md`, `docs/spec/*.md`, `docs/adr/*.md` |
 | Plan | `docs/roadmap.md` (narrative), milestones (dates), `docs/plan/` (issue sources) |
