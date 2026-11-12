@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -85,6 +86,57 @@ func TestBatchDelete(t *testing.T) {
 	slices.Sort(want)
 	if !slices.Equal(refs, want) {
 		t.Errorf("deleted %v, want %v", refs, want)
+	}
+}
+
+// cancellingDeleter is a scriptedDeleter that ends the request after its first deletion, as a
+// client that goes away does.
+type cancellingDeleter struct {
+	scriptedDeleter
+	cancel context.CancelFunc
+}
+
+func (d *cancellingDeleter) Delete(ctx context.Context, repo index.Repo, del format.Deletion, p auth.Principal) (*format.Deleted, error) {
+	d.cancel()
+	return d.scriptedDeleter.Delete(ctx, repo, del, p)
+}
+
+// TestBatchDeleteClientGone: once the request ends (#750), the item in flight finishes and the
+// rest are not attempted: nothing more is asked of the Deleter, the answer says "not attempted"
+// for each, and the log has one warning with the count, not an error per item.
+func TestBatchDeleteClientGone(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	d := &cancellingDeleter{scriptedDeleter: scriptedDeleter{errs: map[string]error{}}, cancel: cancel}
+	f := newFixture(t, Options{Deleter: d})
+	repo := f.create(t, "pypi", "libs")
+	dg := func(s string) string { return digest.FromString(s).String() }
+	var items []string
+	for _, v := range []string{"1.0", "1.1", "1.2", "1.3"} {
+		publish(t, f.st, repo.ID, "requests", v, testNow.Add(-time.Hour))
+		items = append(items, `{"package": "requests", "version": "`+v+`", "digests": ["`+dg("requests"+v)+`"]}`)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/repos/pypi/libs/versions:delete", strings.NewReader(`{"items": [`+strings.Join(items, ",")+`]}`))
+	r = r.WithContext(auth.WithPrincipal(ctx, f.asStored(admin)))
+	rr := httptest.NewRecorder()
+	f.h.ServeHTTP(rr, r)
+	var res BatchDeleteResult
+	decodeJSON(t, rr, http.StatusOK, &res)
+	if got := statuses(res); got != "deleted error error error" {
+		t.Fatalf("statuses %s", got)
+	}
+	for _, it := range res.Results[1:] {
+		if it.Message != notAttemptedMessage {
+			t.Errorf("%s: message %q", it.Version, it.Message)
+		}
+	}
+	if len(d.got) != 1 {
+		t.Errorf("%d deletions, want the one in flight", len(d.got))
+	}
+	logs := f.logs.String()
+	if strings.Contains(logs, `"level":"ERROR"`) || strings.Count(logs, "a batch delete stopped") != 1 ||
+		!strings.Contains(logs, `"attempted":1,"notAttempted":3`) {
+		t.Errorf("logs:\n%s", logs)
 	}
 }
 
