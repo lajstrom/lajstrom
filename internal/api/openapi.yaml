@@ -970,6 +970,27 @@ components:
         report:
           description: The repo's part of the run's report; null while the run is running.
           type: [object, "null"]
+          properties:
+            repairedReferrers:
+              description: >-
+                The sha256-<hex> indexes that lacked referrers the audit log has as pushed and the
+                registry still has, or were missing, and that Lajstrom pushed again with them: runs of
+                the reconcile loop and with verify, on a registry without the referrers API. null in
+                the report of a run of a release before it.
+              type: [array, "null"]
+              items: {$ref: "#/components/schemas/RepairedReferrersIndex"}
+    RepairedReferrersIndex:
+      description: A subject's sha256-<hex> index that a reindex run pushed again with the referrers it lacked.
+      type: object
+      required: [repository, subject, index, added]
+      properties:
+        repository: {type: string, description: The OCI repository of the subject, below the repo's base.}
+        subject: {type: string}
+        index: {type: string, description: The digest of the index pushed.}
+        added:
+          description: The referrers it lacked, in the order of their pushes.
+          type: array
+          items: {type: string}
     Token:
       type: object
       required: [id, kind, name, scopes, expiresAt, lastUsedAt, createdAt, revokedAt, hashPrefix]

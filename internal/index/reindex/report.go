@@ -36,8 +36,21 @@ type RepoReport struct {
 	// RepositoryUnknown are the versions of the index whose OCI repository the registry does
 	// not know: prune keeps their rows, and a delete through the API removes them (#567).
 	RepositoryUnknown []RepositoryUnknown `json:"repositoryUnknown"`
-	Errors            []Finding           `json:"errors"`
-	Truncated         bool                `json:"truncated"` // a list stopped at maxFindings entries
+	// RepairedReferrers are the sha256-<hex> indexes that lacked referrers the audit log has as
+	// pushed and the registry still has, or were missing, and that ingest pushed again with them
+	// (#628): runs of the reconcile loop and with Verify, on a registry without the referrers API.
+	RepairedReferrers []RepairedIndex `json:"repairedReferrers"`
+	Errors            []Finding       `json:"errors"`
+	Truncated         bool            `json:"truncated"` // a list stopped at maxFindings entries
+}
+
+// RepairedIndex is a subject's sha256-<hex> index that ingest pushed again for a run, with the
+// referrers it lacked (ingest.Pipeline.RepairReferrers).
+type RepairedIndex struct {
+	Repository string          `json:"repository"` // the OCI repository, below the repo's base
+	Subject    digest.Digest   `json:"subject"`
+	Index      digest.Digest   `json:"index"` // the index pushed
+	Added      []digest.Digest `json:"added"` // the referrers it lacked, in the order of their pushes
 }
 
 // Finding is a manifest, or a failure, that a RepoReport lists.
@@ -104,5 +117,6 @@ func add[T any](r *RepoReport, list *[]T, v T) {
 // the JSON has [] for them.
 func newRepoReport(repo string) RepoReport {
 	return RepoReport{Repo: repo, Foreign: []Finding{}, OrphanReferrers: []Finding{}, OrphanJournal: []Finding{},
-		Drift: []Drift{}, Split: []Split{}, RepositoryUnknown: []RepositoryUnknown{}, Errors: []Finding{}}
+		Drift: []Drift{}, Split: []Split{}, RepositoryUnknown: []RepositoryUnknown{}, RepairedReferrers: []RepairedIndex{},
+		Errors: []Finding{}}
 }

@@ -158,6 +158,8 @@ type deletion struct {
 
 	referrers int              // deleted before it, theirs included
 	ev        index.AuditEvent // the audit row of the delete, pending from before it (intend)
+
+	pushed []digest.Digest // the subject's referrers the audit log has as pushed, when known (pushedReferrers)
 }
 
 // find resolves the reference: to a version of the index when it names one, else in the
@@ -584,33 +586,17 @@ type subjectIndex struct {
 
 // subjectIndex returns the subject's index under tag, nil when the registry has none and the
 // audit log knows no referrer to list. An index that lacks referrers which the audit log has as
-// pushed and the registry still has (unlisted), or that is missing while there are such, is
+// pushed and the registry still has (lacking), or that is missing while there are such, is
 // repaired first: pushed with them after those it lists, and returned as pushed. A delete
 // whose push of the index failed before #711 left them so, and so does a lost referrers lock
 // (#628). The registry that does not take the repair is provider.ErrUnavailable, and nothing
 // has changed.
 func (d *deletion) subjectIndex(ctx context.Context, tag string) (*subjectIndex, error) {
-	desc, err := d.resolveTag(ctx, tag)
-	if err != nil {
-		return nil, err
-	}
-	var old *subjectIndex
-	idx := ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex}
-	if desc != nil {
-		raw, err := d.fetch(ctx, *desc)
-		if err == nil {
-			err = json.Unmarshal(raw, &idx)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("ingest: referrers index %s in %s: %w", desc.Digest, d.name, err)
-		}
-		old = &subjectIndex{desc: *desc, raw: raw, idx: idx}
-	}
-	missing, err := d.unlisted(ctx, idx.Manifests)
+	old, missing, err := d.lacking(ctx, tag)
 	if err != nil || len(missing) == 0 {
 		return old, err
 	}
-	idx.Manifests = append(slices.Clone(idx.Manifests), missing...)
+	idx := withReferrers(old, missing)
 	repaired, err := d.pushIndex(ctx, tag, idx)
 	if err != nil {
 		return nil, fmt.Errorf("ingest: delete %s in %s: the referrers index %s with the %d referrers it lacks was not pushed (%s); nothing was deleted: %w",
@@ -621,35 +607,62 @@ func (d *deletion) subjectIndex(ctx context.Context, tag string) (*subjectIndex,
 	return repaired, nil
 }
 
+// lacking returns the subject's index under tag, nil when the registry has none, and the
+// referrers it lacks (unlisted).
+func (d *deletion) lacking(ctx context.Context, tag string) (*subjectIndex, []ocispec.Descriptor, error) {
+	desc, err := d.resolveTag(ctx, tag)
+	if err != nil {
+		return nil, nil, err
+	}
+	var old *subjectIndex
+	var listed []ocispec.Descriptor
+	if desc != nil {
+		idx := ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex}
+		raw, err := d.fetch(ctx, *desc)
+		if err == nil {
+			err = json.Unmarshal(raw, &idx)
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("ingest: referrers index %s in %s: %w", desc.Digest, d.name, err)
+		}
+		old, listed = &subjectIndex{desc: *desc, raw: raw, idx: idx}, idx.Manifests
+	}
+	missing, err := d.unlisted(ctx, listed)
+	return old, missing, err
+}
+
+// withReferrers returns the index of old, a new one when old is nil, listing missing after what
+// it lists.
+func withReferrers(old *subjectIndex, missing []ocispec.Descriptor) ocispec.Index {
+	idx := ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex}
+	if old != nil {
+		idx = old.idx
+	}
+	idx.Manifests = append(slices.Clone(idx.Manifests), missing...)
+	return idx
+}
+
 // auditPage is how many audit rows one read of the audit log asks for.
 const auditPage = 500
 
 // unlisted returns the referrers of the subject that listed lacks, which the audit log has as
-// pushed to the repo and the repository still has (listing), in the order of their pushes. The
-// audit log names no referrer when its rows go to an audit.Writer: none is found then. An audit
-// row names no OCI repository, and a filter selects no subject: every push row of the repo is
-// read.
+// pushed to the repo (pushedReferrers) and the repository still has (listing), in the order of
+// their pushes.
 func (d *deletion) unlisted(ctx context.Context, listed []ocispec.Descriptor) ([]ocispec.Descriptor, error) {
-	if d.p.audit != nil {
-		return nil, nil
+	pushed, err := d.pushedReferrers(ctx)
+	if err != nil {
+		return nil, err
 	}
 	seen := map[digest.Digest]bool{}
 	for _, m := range listed {
 		seen[m.Digest] = true
 	}
-	var pushed []digest.Digest // newest first
-	err := d.p.eachAudit(ctx, d.repo, "push", func(ev index.AuditEvent) bool {
-		if ev.Subject == d.subject.String() && ev.Digest != "" && !seen[ev.Digest] {
-			seen[ev.Digest] = true
-			pushed = append(pushed, ev.Digest)
-		}
-		return true
-	})
-	if err != nil {
-		return nil, fmt.Errorf("ingest: the audit rows of the referrers of %s: %w", d.subject, err)
-	}
 	var out []ocispec.Descriptor
-	for _, dg := range slices.Backward(pushed) {
+	for _, dg := range pushed {
+		if seen[dg] {
+			continue
+		}
+		seen[dg] = true
 		desc, err := d.listing(ctx, dg)
 		if err != nil {
 			return nil, err
@@ -659,6 +672,43 @@ func (d *deletion) unlisted(ctx context.Context, listed []ocispec.Descriptor) ([
 		}
 	}
 	return out, nil
+}
+
+// pushedReferrers returns the referrers of the subject that the audit log has as pushed to the
+// repo, oldest first: d.pushed when it is set (RepairReferrers reads the log once for every
+// subject), else from the repo's push rows. An audit row names no OCI repository, and a filter
+// selects no subject: every push row of the repo is read. The audit log names no referrer when
+// its rows go to an audit.Writer: none is found then.
+func (d *deletion) pushedReferrers(ctx context.Context) ([]digest.Digest, error) {
+	if d.pushed != nil || d.p.audit != nil {
+		return d.pushed, nil
+	}
+	pushed, err := d.p.pushedReferrers(ctx, d.repo, func(s digest.Digest) bool { return s == d.subject })
+	if err != nil {
+		return nil, fmt.Errorf("ingest: the audit rows of the referrers of %s: %w", d.subject, err)
+	}
+	return pushed[d.subject], nil
+}
+
+// pushedReferrers returns the referrers that the audit log has as pushed to repo, by subject,
+// each subject's oldest first, of the subjects that want keeps: the digests of the push rows
+// whose subject is a digest, which PutReferrer writes.
+func (p *Pipeline) pushedReferrers(ctx context.Context, repo index.Repo, want func(digest.Digest) bool) (map[digest.Digest][]digest.Digest, error) {
+	pushed := map[digest.Digest][]digest.Digest{} // newest first until the end
+	seen := map[[2]digest.Digest]bool{}
+	err := p.eachAudit(ctx, repo, actionPush, func(ev index.AuditEvent) bool {
+		subject, err := digest.Parse(ev.Subject)
+		key := [2]digest.Digest{subject, ev.Digest}
+		if err == nil && ev.Digest != "" && want(subject) && !seen[key] {
+			seen[key] = true
+			pushed[subject] = append(pushed[subject], ev.Digest)
+		}
+		return true
+	})
+	for _, refs := range pushed {
+		slices.Reverse(refs)
+	}
+	return pushed, err
 }
 
 // listing returns the descriptor the subject's index lists the manifest dg with, as oras-go
@@ -714,14 +764,23 @@ func (p *Pipeline) eachAudit(ctx context.Context, repo index.Repo, action string
 
 // pushIndex pushes idx under tag and returns it as pushed.
 func (d *deletion) pushIndex(ctx context.Context, tag string, idx ocispec.Index) (*subjectIndex, error) {
+	s, err := encodeIndex(tag, idx)
+	if err != nil {
+		return nil, err
+	}
+	if err := d.rr.PushReference(ctx, s.desc, bytes.NewReader(s.raw), tag); err != nil {
+		return nil, fmt.Errorf("ingest: push %s in %s: %w", tag, d.name, err)
+	}
+	return s, nil
+}
+
+// encodeIndex returns idx, the index to push under tag, with its bytes and descriptor.
+func encodeIndex(tag string, idx ocispec.Index) (*subjectIndex, error) {
 	b, err := json.Marshal(idx)
 	if err != nil {
 		return nil, fmt.Errorf("ingest: referrers index %s: %w", tag, err)
 	}
 	desc := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageIndex, Digest: digest.FromBytes(b), Size: int64(len(b))}
-	if err := d.rr.PushReference(ctx, desc, bytes.NewReader(b), tag); err != nil {
-		return nil, fmt.Errorf("ingest: push %s in %s: %w", tag, d.name, err)
-	}
 	return &subjectIndex{desc: desc, raw: b, idx: idx}, nil
 }
 

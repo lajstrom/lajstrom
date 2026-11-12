@@ -264,11 +264,16 @@ every repo, with the repo's part of the report:
     "repo": "raw/assets", "ociRepositories": 3, "manifests": 120, "added": 2, "updated": 0, "unchanged": 117,
     "removed": 1, "pending": 0, "degraded": 0, "referrers": 4,
     "foreign": [{"repository": "charts/demo", "tag": "0.1.0", "digest": "sha256:…", "mediaType": "application/vnd.oci.image.manifest.v1+json"}],
-    "orphanReferrers": [], "orphanJournal": [], "drift": [], "split": [], "repositoryUnknown": [], "errors": [],
-    "truncated": false
+    "orphanReferrers": [], "orphanJournal": [], "drift": [], "split": [], "repositoryUnknown": [],
+    "repairedReferrers": [], "errors": [], "truncated": false
   }
 }
 ```
+
+`repairedReferrers` lists, for a run of the reconcile loop or with `verify` on a registry without
+the referrers API, each `sha256-<hex>` index that Lajstrom pushed again with the referrers it
+lacked: `{"repository", "subject", "index", "added": [digests]}`
+([operations.md](operations.md#what-a-run-does)).
 
 `state` is `running`, `done` (it went to the end, whatever the report lists), `failed` (the run's
 own error is in `error`) or `abandoned` (its heartbeat stopped, a later start closed it);

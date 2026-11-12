@@ -18,9 +18,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/audit"
+	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/provider"
@@ -52,6 +54,10 @@ type Options struct {
 	Providers provider.Set
 	// Inspector checks a manifest and returns its rows: the ingest pipeline.
 	Inspector Inspector
+	// Repairer pushes again the sha256-<hex> index of a subject that lacks referrers, for the runs
+	// of the reconcile loop and those with Verify (#628): the ingest pipeline. nil means a run
+	// writes nothing to the registry.
+	Repairer Repairer
 	// Audit records the start of a run; nil means the event goes to the index.
 	Audit audit.Writer
 	// Now is the clock; nil means time.Now.
@@ -76,11 +82,22 @@ type Inspector interface {
 
 var _ Inspector = (*ingest.Pipeline)(nil)
 
+// Repairer pushes again, on a registry without the referrers API, the sha256-<hex> index of each
+// subject of found, the manifests a run found in repo by their digests with the package paths of
+// their OCI repositories, that lacks referrers the audit log has as pushed and the registry still
+// has; the ingest pipeline implements it (ingest.Pipeline.RepairReferrers), the one write path.
+type Repairer interface {
+	RepairReferrers(ctx context.Context, repo index.Repo, found map[digest.Digest][]string, principal auth.Principal) ([]ingest.ReferrersRepair, error)
+}
+
+var _ Repairer = (*ingest.Pipeline)(nil)
+
 // Worker runs reindex.
 type Worker struct {
 	index       index.Store
 	providers   provider.Set
 	inspector   Inspector
+	repairer    Repairer
 	audit       audit.Writer
 	now         func() time.Time
 	log         *slog.Logger
@@ -94,7 +111,7 @@ type Worker struct {
 
 // New returns a Worker with the defaults of Options applied.
 func New(o Options) *Worker {
-	w := &Worker{index: o.Index, providers: o.Providers, inspector: o.Inspector, audit: o.Audit, now: o.Now, log: o.Log,
+	w := &Worker{index: o.Index, providers: o.Providers, inspector: o.Inspector, repairer: o.Repairer, audit: o.Audit, now: o.Now, log: o.Log,
 		concurrency: o.Concurrency, claimTTL: o.ClaimTTL, graceAge: o.GraceAge, heartbeat: heartbeatEvery, after: time.After,
 		jitter: randomPart}
 	if w.now == nil {
@@ -209,7 +226,10 @@ func itoa(id int64) string { return strconv.FormatInt(id, 10) }
 // Run reads the registry for the run that Start returned, beats while it runs, and finishes
 // the run whatever happens: done when it went to the end, failed on an error of its own (the
 // database, the context), and nothing when another start took it over. The error is the run's
-// own; the manifests that failed are in the report.
+// own; the manifests that failed are in the report. A run of the reconcile loop or with Verify,
+// on a registry without the referrers API, asks the Repairer to repair each repo's
+// sha256-<hex> indexes once its tags are read (#628): the only write of a run to the registry,
+// and it goes through ingest.
 func (w *Worker) Run(ctx context.Context, run *index.ReindexRun, req Request) (*Report, error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)

@@ -17,6 +17,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
+	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/ingest"
@@ -58,6 +59,7 @@ type scan struct {
 	splits      map[[2]string]*Split       // packages found at another form than the index has, by name and form
 	listed      map[string]bool            // OCI repositories whose tag list was asked: false for a 404, true otherwise (repoUnknown)
 	unknown     map[string]int             // the versions reported in RepositoryUnknown, by package path
+	found       map[digest.Digest][]string // the manifests read, tagged or listed by a sha256-<hex> index, by digest: their package paths; nil unless repairing (prepareRepair)
 }
 
 // repo reindexes one repo. The error is the run's own; everything about the registry and the
@@ -72,6 +74,7 @@ func (w *Worker) repo(ctx context.Context, repo index.Repo, start time.Time, req
 		return s.rep, nil
 	}
 	s.prov = prov
+	s.prepareRepair(ctx)
 	names, listed := s.list(ctx)
 	s.rep.OCIRepositories = len(names)
 	for _, name := range newestFirst(s.base, names) {
@@ -81,6 +84,7 @@ func (w *Worker) repo(ctx context.Context, repo index.Repo, start time.Time, req
 		s.ociRepo(ctx, name)
 	}
 	s.orphans(ctx)
+	s.repairReferrers(ctx)
 	s.reportSplits(ctx)
 	if s.fatal == nil && ctx.Err() == nil {
 		s.dbErr(w.index.TouchVersions(ctx, s.seen, w.now()))
@@ -233,6 +237,7 @@ func (s *scan) tag(ctx context.Context, rr provider.Repository, cache *manifests
 		s.failure(Finding{Repository: pkgPath, Tag: tag, Error: err.Error()})
 		return
 	}
+	s.locate(pkgPath, desc.Digest)
 	var pkg *index.Package
 	var known *index.Version
 	if pkgPath != "" {
@@ -333,6 +338,7 @@ func (s *scan) classify(ctx context.Context, pkgPath, tag string, desc ocispec.D
 		}
 		f.Subject = digest.Digest("sha256:" + m[1])
 		s.referrer(listed, f)
+		s.locate(pkgPath, listed...)
 		return
 	case p.Subject != nil:
 		f.Subject = p.Subject.Digest
@@ -449,6 +455,63 @@ func (s *scan) orphans(ctx context.Context) {
 		case s.dbErr(err):
 			return
 		}
+	}
+}
+
+// prepareRepair makes the scan record where it finds each manifest (locate) when it has ingest
+// repair the sha256-<hex> indexes of the repo (#628): a run of the reconcile loop or with
+// Verify, with a Repairer, on a registry without the referrers API, which lists referrers itself.
+func (s *scan) prepareRepair(ctx context.Context) {
+	if s.w.repairer == nil || !s.req.Verify && s.req.Source != SourceReconcile {
+		return
+	}
+	caps, err := s.prov.Capabilities(ctx)
+	switch {
+	case err != nil:
+		s.failure(Finding{Error: "the capabilities of the registry: " + err.Error()})
+	case !caps.Referrers:
+		s.found = map[digest.Digest][]string{}
+	}
+}
+
+// locate records that the OCI repository of pkgPath has the manifests digests, when repairing.
+func (s *scan) locate(pkgPath string, digests ...digest.Digest) {
+	if s.found == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, d := range digests {
+		if !slices.Contains(s.found[d], pkgPath) {
+			s.found[d] = append(s.found[d], pkgPath)
+		}
+	}
+}
+
+// repairReferrers asks the Repairer, once every tag is read, to push again the sha256-<hex> index
+// of each subject found that lacks referrers the audit log has as pushed and the registry still
+// has, and reports what it pushed, and what failed among the errors.
+func (s *scan) repairReferrers(ctx context.Context) {
+	if len(s.found) == 0 || s.stopped(ctx) {
+		return
+	}
+	principal, err := auth.ParsePrincipal(s.req.Principal)
+	if err != nil {
+		principal = auth.Anonymous
+	}
+	repairs, err := s.w.repairer.RepairReferrers(ctx, s.repo, s.found, principal)
+	if err != nil {
+		s.failure(Finding{Error: "repair the referrers indexes: " + err.Error()})
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range repairs {
+		if r.Err != nil {
+			add(&s.rep, &s.rep.Errors, Finding{Repository: r.Path, Tag: "sha256-" + r.Subject.Encoded(), Subject: r.Subject,
+				Error: "repair the referrers index: " + r.Err.Error()})
+			continue
+		}
+		add(&s.rep, &s.rep.RepairedReferrers, RepairedIndex{Repository: r.Path, Subject: r.Subject, Index: r.Index, Added: r.Added})
 	}
 }
 
