@@ -198,7 +198,9 @@ again.
    too. **Since #352** the provider asks a JFrog registry with a `GET` of the blob's first byte (`Range: bytes=0-0`) for `StatBlob` and a
    blob's `Exists`, never `HEAD`: ingest uploads what this path does not serve, and the facade
    answers a client's `HEAD`, and checks a manifest's layers, as `GET` would. The unit tests
-   answer as JCR did; not run against JCR again.
+   answer as JCR did; not run against JCR again. The quirk is set by the provider's first probe
+   that succeeds, so a provider that has not probed yet still asks `HEAD` (#797: measured with
+   Nexus's quirk on 2026-11-12; for JCR read in the code).
 5. **Hold the token for the repository's scope however the challenge spells it.** The challenge
    names the image without the key; #342 (Gitea's `scope="*"`) caches the token under the
    request's own scopes as well, and with it the facade's uploads pass on JCR but for item 2.

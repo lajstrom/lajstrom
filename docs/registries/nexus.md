@@ -5,7 +5,9 @@ measured with `curl`, `oras`, the integration tests and the end-to-end scenarios
 Nexus serves a registry from a hosted repository on an HTTP connector port of its own. 3.98.1
 has two formats for that: `docker`, the one the issue names, and `oci`, which is newer and
 has the referrers API. Both were run; they differ enough to be two columns. The
-[summary columns](README.md#capabilities) are in the README; this page has the details.
+[summary columns](README.md#capabilities) are in the README; this page has the details. Both
+were measured again on 2026-11-12 with the vendor table of #352 (#781):
+[Again after #352](#again-after-352).
 
 ## Version tested
 
@@ -19,7 +21,8 @@ has the referrers API. Both were run; they differ enough to be two columns. The
   1 GiB (the image's default is 2.7 GiB).
 - On macOS with OrbStack, arm64; the tests with Go 1.27.3 at 6b3b7b7 and the provider fix of
   this page ([What the provider must do differently](#what-the-provider-must-do-differently),
-  item 1).
+  item 1). Again on 2026-11-12, the same image on a new volume, at d44b112e
+  ([Again after #352](#again-after-352)).
 
 ## Run it
 
@@ -63,7 +66,8 @@ deleteManifest=true immutableTags=false blobRedirect=true maxBlobSize=0` for the
 and the same with `referrers=true` for the OCI format (the test log, before #352). That is
 right but for the docker format's `deleteManifest`, which says true while a delete leaves the
 tags. Since #352 it is `vendor=nexus`, with `deleteManifest=false` on the docker format and the
-blobs of the OCI format read whole (items 2, 3 and 5); not run against Nexus again.
+blobs of the OCI format read whole (items 2, 3 and 5), as the start logged on 2026-11-12
+([Again after #352](#again-after-352)).
 
 ## What the provider must do differently
 
@@ -83,7 +87,9 @@ blobs of the OCI format read whole (items 2, 3 and 5); not run against Nexus aga
    which `Repository.Delete` by descriptor does not carry: a contract question. The OCI
    format deletes the tags with the digest, as the spec says. **Since #352** the vendor
    table sets `deleteManifest: false` for a Nexus without the referrers API, the docker
-   format: Lajstrom refuses a delete there instead of leaving the tags.
+   format: Lajstrom refuses a delete there instead of leaving the tags. Measured on
+   2026-11-12: the facade answers 405 `UNSUPPORTED`, `/raw/` and the management API 501, and
+   nothing is deleted ([Again after #352](#again-after-352)).
 3. On the OCI format, survive a 500 to a ranged `GET`. Every `GET` of a blob with `Range`
    (one range, an open range, a suffix, two ranges, past the end) is 500 `UNKNOWN`
    (`IllegalArgumentException: Paths must start with a slash` in Nexus's log), though `HEAD`
@@ -95,7 +101,9 @@ blobs of the OCI format read whole (items 2, 3 and 5); not run against Nexus aga
    **Since #352** the provider asks a Nexus with the referrers API, the OCI format, for whole
    blobs: no `Range` goes out, a client's range is answered with the whole blob (200) and no
    blob says `Accept-Ranges`, and ingest's `ReadAt` reads up to its block, as on Gitea. The
-   unit tests answer as Nexus did; not run against Nexus again.
+   unit tests answer as Nexus did. Measured on 2026-11-12: a range through the facade and
+   `/raw/` is 200 with the whole blob, and `pypi.sh` passes; but only on a provider that has
+   probed, #797 ([Again after #352](#again-after-352)).
 4. Expect 429 for a wrong password, and for the right one after it. Three failed logins of a
    user make Nexus answer that user 429 "Too many authentication attempts" with
    `Retry-After: 29`, the right password included, until it expires. The provider retries a
@@ -237,7 +245,9 @@ the configuration says so, but nothing in Lajstrom reads it yet.
   `Accept-Encoding: gzip` a text-like blob comes back `Content-Encoding: gzip`, chunked; a
   random one does not (item 1). `Range: bytes=0-4` 206 `Content-Range: bytes 0-4/32`; past the
   end 416 `bytes */32` with a JSON `UNKNOWN` body; `HEAD` has `Accept-Ranges: bytes`. A mount
-  answers 202 (a session); a blob of the repository is readable under any image name.
+  answers 202 (a session); a blob of the repository is readable under any image name. Under
+  `strictContentTypeValidation: true` a blob whose content type Nexus cannot tell is 400
+  `BLOB_UPLOAD_INVALID` (2026-11-12, [Again after #352](#again-after-352)).
 - **OCI format:** `GET` 200, `Content-Type: application/octet-stream`, `Content-Length`,
   never gzip; every `Range` 500 (item 3). A mount answers 201 with the blob's `Location`.
 - No redirect on either: the blob store is on the file system. An S3 blob store was not run.
@@ -296,7 +306,9 @@ tried.
 `LAJSTROM_TEST_REGISTRY_USERNAME=lajstrom`, `LAJSTROM_TEST_REGISTRY_PASSWORD=lajstrom`, no
 prefix, `LAJSTROM_TEST_POSTGRES_DSN` of the dev stack, `go test -race -count=1 -tags
 integration -run 'TestIntegration|TestAptGet' ./internal/...`. The apt tests run apt-get in
-`ubuntu:22.04`, `ubuntu:24.04` and `debian:12`.
+`ubuntu:22.04`, `ubuntu:24.04` and `debian:12`. The tables of this section are the run of
+2026-11-10, before #352, kept as they were; the run of 2026-11-12 is in
+[Again after #352](#again-after-352).
 
 | Test | docker | OCI |
 | --- | --- | --- |
@@ -313,7 +325,8 @@ integration -run 'TestIntegration|TestAptGet' ./internal/...`. The apt tests run
 **The end-to-end scenarios** (`test/e2e/run.sh` against each, with the fix): `run.sh` had no
 registry credentials then, so a copy of it with `auth:` in its configuration ran
 (`$TMPDIR/spike-e2e/run.sh`). Since #353 `run.sh` takes them
-([testing.md](../testing.md#a-registry-with-credentials-and-a-prefix)); not run against Nexus.
+([testing.md](../testing.md#a-registry-with-credentials-and-a-prefix)), and the stock `run.sh`
+ran against Nexus on 2026-11-12 ([Again after #352](#again-after-352)).
 
 | Scenario | docker | OCI |
 | --- | --- | --- |
@@ -333,6 +346,122 @@ The failures, by owner:
   the backend; both done in #353.
 
 The conformance suite was not run.
+
+## Again after #352
+
+Measured on 2026-11-12 for #781: the same image and `nexus.sh` (`Nexus/3.98.1-01 (COMMUNITY)`,
+`writePolicy: allow`), Lajstrom at d44b112e with the vendor table of #352; the probe against
+both connectors, the integration tests of [Our tests against it](#our-tests-against-it), the
+stock `test/e2e/run.sh` with `LAJSTROM_E2E_REGISTRY_USER` and `_PASSWORD_FILE` (#353), and a
+`serve` with an `oci` and a `raw` repo on each format. The start logs what the vendor table
+made of each connector:
+
+```text
+registry capabilities registry=nxd vendor=nexus createOnPush=true referrers=false catalog=true deleteManifest=false …
+registry capabilities registry=nxo vendor=nexus createOnPush=true referrers=true catalog=true deleteManifest=true …
+registry needs workarounds registry=nxo vendor=nexus blobsReadWhole=true blobExistsByGET=false
+```
+
+**The docker format: deletes are refused, and nothing changes** (item 2). Through Lajstrom:
+
+```text
+DELETE /v2/raw/assets/<path>/manifests/<tag>           405 {"errors":[{"code":"UNSUPPORTED","message":"the registry \"it\" of raw/assets does not delete manifests; nothing was deleted"}]}
+DELETE /raw/nxd/<path>                                 501 Not Implemented; a GET afterwards 200
+DELETE /api/v1/repos/raw/scratch/packages/…/versions/… 501 {"error":{"code":"UNAVAILABLE","message":"the registry \"local\" of raw/scratch does not delete manifests; nothing was deleted"}}
+```
+
+No tag is left serving a deleted manifest any more; a version leaves this format only when it
+is deleted in Nexus itself, and then reindex's prune decides about its rows (not measured).
+
+**The OCI format: blobs are read whole** (item 3). Through a `serve` whose probe at start
+succeeded, a blob of 2500 bytes:
+
+```text
+                                  /v2/oci/nxo/reads/blobs/<digest>                        /raw/nxo/<path>
+GET                               200, 2500 bytes                                         200, 2500 bytes
+GET, Range: bytes=1000-1999       200, 2500 bytes, no Content-Range, no Accept-Ranges     200, 2500 bytes
+GET, Range: bytes=2500-           200, 2500 bytes                                         200, 2500 bytes
+GET, Range: bytes=-10             200, 2500 bytes
+HEAD                              200, Content-Length 2500, no Accept-Ranges
+```
+
+The docker format through the same `serve`: 206 `bytes 1000-1999/2500`, 416 past the end, 206
+for the suffix. Nexus still answers every `Range` 500 itself (the probe: "500 to a `Range`"), but
+Lajstrom no longer sends one, and `pypi.sh` passes: twine uploads, which were 400, take.
+
+**Only once the provider has probed.** The quirk is set by the provider's first probe that
+succeeds, and the read path never probes. A provider that has not, the second replica of the
+facade's `TestIntegrationBlobReads`, which only reads, or a `serve` whose probe at start found
+Nexus down, sends the client's `Range` and answers 500. One provider, one blob:
+
+```text
+before the probe: OpenBlob with a Range = … response status code 500: unknown: unknown
+after the probe:  OpenBlob with a Range = status 200, size 2800, acceptRanges false
+```
+
+Ours: #797.
+
+**New since the first run**, from the probe, which had not been run against Nexus, and the
+tests:
+
+- **The docker format refuses some blobs by their content.** With `strictContentTypeValidation:
+  true`, nexus.sh's setting, a blob that starts with eight zero bytes followed by random ones is
+  400 `BLOB_UPLOAD_INVALID` "Content type could not be determined"; random bytes alone, zeros
+  alone, text and gzip are 201. The probe's blobs start so (a block index of eight bytes), so it
+  measured no blob read, blob size or chunk size on this format. Through Lajstrom such a raw
+  file is 502 (`registry nxd refused the request: 400 BLOB_UPLOAD_INVALID` in the log). With
+  the setting off the same push is 201 (set back to true afterwards). The OCI format took
+  every one of them with the setting on. For Lajstrom on the docker format, turn
+  `strictContentTypeValidation` off.
+- **The OCI format refuses names the specification allows.** A component with `--`, `---` or
+  `__` is 400 `NAME_INVALID` "Repository name does not match OCI grammar" (`a--b.txt`,
+  `h0__bc37`, `a__b__c`; `a-b.txt`, `a_b` and `a.b` are 201): the 1.0 grammar, as on Gitea. The
+  docker format takes all seven. Since ADR 0017 Lajstrom writes neither (`h0_h…`, `_2d_2d`);
+  names written before it cannot be stored on this format (reindex's `TestIntegrationSplit`,
+  which writes them).
+- **A blob a manifest uses is 409 `BLOB_REFERENCED`** to its delete, on both formats (the
+  probe's cleanup of the empty blob): another code outside the spec's list.
+- The probe's other cells agree with this page and fill rows it had left: the routing words
+  are ok (20 blob `HEAD`s in each name, all 200), no read-after-write lag in three writes, and
+  on the OCI format 8 MiB in one `PUT` and in one `PATCH`. An emptied repository's tag list is
+  404 `NAME_UNKNOWN`, as [Delete](#delete) says, but it stays in `_catalog`.
+
+The integration tests, `-run 'TestIntegration|TestAptGet' ./internal/...`:
+
+| Test | docker | OCI |
+| --- | --- | --- |
+| provider `TestIntegration` | pass; the delete steps skip (`deleteManifest=false`) | **fail**, one step: open blob with a range is 200 with the whole blob, as #352 meant, and the test wants 206; the steps after it pass |
+| provider `TestIntegrationUploads` | **fail**: cancel, a `PATCH` after it 500 | pass |
+| ingest | **fail**: `TestIntegrationDeleteReferrerIndexRepair` and `…ClientGone`, the delete refused | pass |
+| raw `TestIntegration` | pass | **fail**: a range is 200 with the whole blob; the test wants 206 |
+| reindex `TestIntegration` | pass | pass |
+| reindex, the others | **fail**: `TestIntegrationRepositoryUnknown` (a repository Nexus never had answers `MANIFEST_UNKNOWN`, and the delete of the version is refused), `TestIntegrationRepairReferrers` (the test deletes the `sha256-<hex>` index by digest, and its tag stays) | **fail**: `TestIntegrationSplit` (`NAME_INVALID`), `TestIntegrationFormats/apt` (the rebuild finds no OCI repository for the package whose only version was deleted; the index had one). Zot passes both |
+| facade `TestIntegrationDelete`, `…DeleteReferrer`, `…CatalogAfterDelete` | **fail**: 405 `UNSUPPORTED`, the refusal of #352 | pass |
+| facade `TestIntegrationBlobReads` | pass (item 1) | **fail**: 500 to a range, on the replica that never probed (#797) |
+| facade, the rest | pass | pass |
+| the apt tests | pass | pass |
+| probe `TestIntegrationRun` | **fail**: the blobs refused for their content; blobs left behind, 409 `BLOB_REFERENCED` | **fail**: blobs left behind, 409 `BLOB_REFERENCED` |
+
+The e2e scenarios:
+
+| Scenario | docker | OCI |
+| --- | --- | --- |
+| `raw.sh` | **fail** at the version delete through the API: 501 | **fail**: a range is 200, want 206 |
+| `oras.sh` | **fail** at the delete through `/raw/`: 501 | pass |
+| `cosign.sh` | sign, verify, discover, the tag schema in the backend and reindex pass; **fail** at its delete: 501 | pass |
+| `pypi.sh` | pass | **pass** (400 on 2026-11-10) |
+
+The failures, by owner:
+
+- **Nexus's:** the 500 to a `PATCH` of a cancelled session (docker), the 500 to every range
+  (OCI, worked around), the names (OCI), the blobs refused for their content (docker, a
+  setting), `BLOB_REFERENCED`.
+- **Ours, the code:** the quirks before the first probe, #797.
+- **Ours, the tests:** the tests that delete, and those that want a 206, assume a registry that
+  deletes and serves ranges. On these formats Lajstrom refuses deletes (docker) and answers a
+  range with the whole blob (OCI) on purpose, so they fail where they could skip or take the
+  200; so does `TestIntegrationRepositoryUnknown` on a registry that answers `MANIFEST_UNKNOWN`
+  for a repository it never had and cannot delete.
 
 ## Commands
 
@@ -358,4 +487,13 @@ The tests:
 LAJSTROM_TEST_REGISTRY=localhost:5015 LAJSTROM_TEST_REGISTRY_USERNAME=lajstrom LAJSTROM_TEST_REGISTRY_PASSWORD=lajstrom \
   LAJSTROM_TEST_POSTGRES_DSN='postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable' \
   go test -race -count=1 -tags integration -run 'TestIntegration|TestAptGet' ./internal/...
+```
+
+The probe and the e2e scenarios of [Again after #352](#again-after-352), the password in a file:
+
+```sh
+printf lajstrom > nexus.pw
+bin/lajstrom registry probe --url http://localhost:5008 --url http://localhost:5015 --username lajstrom --password-file nexus.pw
+LAJSTROM_E2E_REGISTRY=localhost:5015 LAJSTROM_E2E_REGISTRY_USER=lajstrom LAJSTROM_E2E_REGISTRY_PASSWORD_FILE=nexus.pw \
+  test/e2e/run.sh raw oras cosign pypi
 ```

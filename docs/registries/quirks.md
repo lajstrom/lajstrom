@@ -31,7 +31,7 @@ measurements of [section 2](#2-is-abc-one-repository-or-two), on Zot v2.1.23, di
 | Zot | any name, a directory each | nothing: the first upload session creates it | a component over 255 bytes is 500 | **names ending in `blobs`, `.uploads`, `.sync` are served but neither listed nor collected**, measured |
 | distribution | any name | nothing: the first manifest | 255 characters, 400 `NAME_INVALID` | all served and listed, measured |
 | Gitea, Forgejo | `<owner>/` and any depth | the owner | **the 1.0 grammar: no `__`, no `--`** | `a/b/c` and deeper, measured |
-| Nexus | any name inside one hosted repository, on its connector or path | the Nexus repository | | any depth, measured |
+| Nexus | any name inside one hosted repository, on its connector or path | the Nexus repository | the `oci` format: **the 1.0 grammar, no `__`, no `--`**, measured | any depth, measured |
 | JFrog Artifactory, JCR | `<repo-key>/` and any depth, stored as folders | the repository key | key at most 63 characters | image `a/b` with tag `c` and image `a/b/c` are one folder ? |
 
 ### Protocol and lifecycle
@@ -157,6 +157,8 @@ December 2025 nothing created one on push.
   subdomain (Pro), or since 3.83.0 on a path, `host/<repository>/<image>`
   ([routing](https://help.sonatype.com/en/ssl-and-repository-connector-configuration.html));
   inside it, any name at any depth (measured, [nexus.md](nexus.md#connectors-and-create-on-push)).
+  The `oci` format checks the 1.0 grammar, as Gitea: `a--b` and `a__b` are 400 `NAME_INVALID`
+  (measured on 2026-11-12, [nexus.md](nexus.md#again-after-352)); the `docker` format takes them.
 - **JFrog.** The first component is the repository key, which must exist (404 "Repository 'raw'
   not found"); below it, any depth; an image is a folder, each tag a folder in it with a
   `manifest.json` (measured, [jfrog-jcr.md](jfrog-jcr.md#the-repository-model-and-lajstroms-prefix);
@@ -412,8 +414,8 @@ Zot does on S3 with `redirectBlobURL`. ECR serves layers from presigned S3 URLs,
 lifetime not measured ?; ACR redirects to `*.blob.core.windows.net` or its data endpoint
 ([geo-replication](https://learn.microsoft.com/en-us/azure/container-registry/container-registry-geo-replication));
 GAR's `Location` is relative, `/artifacts-downloads/…` ([nexus-public#1061](https://github.com/sonatype/nexus-public/issues/1061)).
-A `Range` is 500 on Nexus's `oci` format and ignored by Gitea, which sends the whole blob
-(measured, [matrix](README.md#capabilities)).
+A `Range` is 500 on Nexus's `oci` format, whose blobs Lajstrom therefore reads whole since
+#352, and ignored by Gitea, which sends the whole blob (measured, [matrix](README.md#capabilities)).
 
 ### Deletes
 
@@ -432,7 +434,9 @@ A `Range` is 500 on Nexus's `oci` format and ignored by Gitea, which sends the w
 - distribution deletes only with `storage.delete.enabled`, false by default
   ([configuration](https://github.com/distribution/distribution/blob/v3.1.2/docs/content/about/configuration.md#delete));
   the `registry:3` image enables it (measured). Zot refuses (405) a manifest an image index lists,
-  GitLab with its database a manifest a referrer names (500) (measured). Docker Hub deletes by
+  GitLab with its database a manifest a referrer names (500) (measured; Lajstrom deletes the
+  referrers first, through `/v2` too, and meets it only for a referrer outside the tag schema,
+  [gitlab.md](gitlab.md#a-delete-through-lajstroms-v2)). Docker Hub deletes by
   digest only, 403 while a tag or an image refers to it ([API](https://docs.docker.com/reference/api/registry/latest/operations/DeleteImageManifest/)).
   ACR deletes a manifest by digest only, a tag through `/acr/v1/<name>/_tags/<tag>`, and a subject
   with its referrers ([REST spec](https://github.com/Azure/azure-rest-api-specs/blob/main/specification/containerregistry/data-plane/Registry/stable/2021-07-01/containerregistry.json),
@@ -626,10 +630,11 @@ amendment: a component that fails the grammar is replaced by `h0_h` and 32 hex d
   sweep looks a version up by its tag before it removes it. A raw path `x/blobs/sha256/…` stops
   the collection of `x`. Since ADR 0017 Lajstrom writes no such component (`blobs` is
   `blob_73`); a name written before keeps it (#597).
-- **Gitea and Forgejo** refuse `__` and `--` in a name: every hashed component (`h0__…`: a raw
-  file `_config.yml` or `.gitignore`, a component over 64 bytes) and every `--` in a raw path
-  could not be stored there (from the source, not run). Since ADR 0017 a hashed component is
-  `h0_h…` and `--` is `_2d_2d` (#598).
+- **Gitea and Forgejo** refuse `__` and `--` in a name, and so does Nexus's `oci` format
+  (measured on 2026-11-12, [nexus.md](nexus.md#again-after-352)): every hashed component
+  (`h0__…`: a raw file `_config.yml` or `.gitignore`, a component over 64 bytes) and every `--`
+  in a raw path could not be stored there (Gitea from the source, not run). Since ADR 0017 a
+  hashed component is `h0_h…` and `--` is `_2d_2d` (#598).
 - **Quay**, once its 2026-11 change ships, refuses new names ending in `build` or `build/<x>`:
   a raw file `ci/build`.
 - **GitLab.com** refuses Lajstrom's manifests: its registry runs with the database and without
@@ -674,7 +679,7 @@ disappears from its clients without an audit record.
 | Harbor | `<project>/` | a project and a robot with push, pull and delete; a quota; no retention rule | none |
 | GHCR | `<org>/` | a classic PAT with `write:packages` | none: the vendor table sets `catalog`, `deleteManifest`, `maxBlobSize` |
 | Gitea, Forgejo | `<owner>/` | a token with `write:package`; no cleanup rule | `uploads.spoolUnknownLength: true` when clients stream more than one chunk |
-| Nexus | `<repository>/` with path routing, else none | `writePolicy: allow_once`; the `oci` format, whose blobs the vendor table reads whole (#352, not run against Nexus again); on `docker` Lajstrom refuses deletes | none: the vendor table sets `deleteManifest: false` on `docker` and reads `oci` blobs whole |
+| Nexus | `<repository>/` with path routing, else none | `writePolicy: allow_once`; the `oci` format, whose blobs the vendor table reads whole (#352, measured on 2026-11-12; a provider that has not probed yet still sends ranges, #797); on `docker` Lajstrom refuses deletes, and `strictContentTypeValidation: false` lets every blob in ([nexus.md](nexus.md#again-after-352)) | none: the vendor table sets `deleteManifest: false` on `docker` and reads `oci` blobs whole |
 | ACR, GAR, Quay | | not measured ([matrix](README.md#versions-tested)); GAR needs monolithic uploads | |
 | Docker Hub | | not a backend: two levels | |
 | JFrog | `<repo-key>/` | a local Docker repository; measured before the workarounds of #352 and #368, not run again with them: for trying Lajstrom ([jfrog-jcr.md](jfrog-jcr.md)) | `uploads.spoolUnknownLength: true` when clients stream more than one chunk |
