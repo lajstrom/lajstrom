@@ -27,7 +27,10 @@
 // checksums of the documents it gets: RenderIndex with the scope repodata returns repomd.xml
 // and primary.xml.gz, filelists.xml.gz and other.xml.gz, each named by its checksum, which
 // format.CachedDocument keeps together in index_cache; ingest and delete invalidate them, and
-// the routes serve a document only while the current repomd.xml lists it. The plugin
+// the routes serve a document only while the current repomd.xml lists it. With a
+// format.Deps.Signer (internal/keys) the routes sign the bytes of the cached repomd.xml into
+// repomd.xml.asc, kept beside it until the Signer no longer calls it current, and serve the
+// repo's keyring at repodata/repomd.xml.key and key.asc. The plugin
 // registers itself with format.Register when the package is imported; the binary imports it in
 // cmd/lajstrom/formats.go.
 package rpm

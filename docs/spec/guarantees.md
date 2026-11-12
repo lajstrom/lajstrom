@@ -858,9 +858,10 @@ longer than `reconcile.graceAge` is outside them
 
 - **Statement.** After a publish, a delete, a journal append, a reindex, a key rotation or a
   write of an upstream's document commits, no replica serves a rendered document of the repo
-  that predates it. Once the grace of a retired apt key ends, no replica serves a signature
-  that key made.
-- **Scope.** `index_cache` (apt, pypi, maven, raw listings, npm packuments, a proxy's documents);
+  that predates it. Once the grace of a retired apt or rpm key ends, no replica serves a
+  signature that key made.
+- **Scope.** `index_cache` (apt, pypi, maven, raw listings, npm packuments, rpm repodata, a proxy's
+  documents);
   the snapshot of the bindings (INV-17) and the cache of token keys (INV-19) have their own entries.
   A group caches nothing.
 - **Assumes.** Database: any. For the end of the grace, **clocks agree**.
@@ -869,18 +870,20 @@ longer than `reconcile.graceAge` is outside them
   `journal.record`, `reindex.Worker.repo`, the `proxy_meta` writes), and every invalidation
   first increments the repo's generation
   (`index_cache_generations`; index-schema.md, The generation of a repo's documents).
-  `format.CachedDocument`, `proxy.Core.render` and the apt signatures
-  (`deb.handlers.storeSigned`) read the generation before they render, and
+  `format.CachedDocument`, `proxy.Core.render` and the apt and rpm signatures
+  (`deb.handlers.storeSigned`, `rpm.handlers.storeSigned`) read the generation before they render, and
   `Writer.PutIndexCache` stores a render only while it is current, under the lock of the
   generation row: a render that an invalidation overtook on Postgres (read committed) is
   answered and not stored. The end of a grace is a time, not a write, so the apt routes check a
-  cached `InRelease` or `Release.gpg` on every read (`keys.Service.Current`): when a key that
-  signed it no longer signs, they sign it again (`deb.handlers.signed`, #577).
+  cached `InRelease` or `Release.gpg` on every read (`keys.Service.Current`), and the rpm routes a
+  cached `repomd.xml.asc`: when a key that signed it no longer signs, they sign it again
+  (`deb.handlers.signed`, `rpm.handlers.signed`, #577).
 - **Tests.** The store conformance cases `IndexCache` and `IndexCacheRace` (an invalidation
   committed during a render, and one not committed when the render stores);
   `TestCachedDocument`, `TestCachedDocumentErrors`, `TestRoutesCache`,
   `TestRoutesNewRender`, `TestRoutesSignedAfterPublish`, `TestRoutesGraceEnds`, `TestCurrent`,
   `TestPackumentCache`, `TestDeleteInvalidatesIndexes`, `TestIndexCache` (formattest),
+  `TestRepodataChanges` and `TestSigned` (rpm),
   `TestDocumentCache`; `ha.sh` H-13, H-11 (A-09: a `.deb` uploaded through one replica, listed by
   `apt-get update` through the other within a second).
 - **When violated.** Not observed. A replica of a release before migration 0017 neither

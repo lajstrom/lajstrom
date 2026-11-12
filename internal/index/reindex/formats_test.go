@@ -88,8 +88,9 @@ var formatCases = map[string]formatCase{
 		plugin: rpm.Plugin{}, publish: publishRpm, versions: 4,
 		docs: []string{"Packages/hello-1.1.0-1.el9.x86_64.rpm", "Packages/hello-1.1.0-1.el9.src.rpm",
 			"Packages/hello-doc-2.0-1.noarch.rpm"},
+		signed: []string{"repodata/repomd.xml.asc"},
 		listed: rpmRepodata,
-		cached: [][2]string{{"repodata", "repomd.xml"}},
+		cached: [][2]string{{"repodata", "repomd.xml"}, {"repodata", "repomd.xml.asc"}},
 	},
 }
 
