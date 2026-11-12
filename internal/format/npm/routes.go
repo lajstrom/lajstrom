@@ -11,6 +11,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/server"
 )
 
 // Routes mounts the npm frontend below /npm/ (docs/spec/http-routing.md, npm). A package name is
@@ -199,7 +200,7 @@ func (h *handlers) fail(w http.ResponseWriter, r *http.Request, err error) {
 	status := format.StatusOf(err)
 	msg := format.ClientMessage(err)
 	if status >= http.StatusInternalServerError {
-		h.deps.Log.ErrorContext(r.Context(), "npm: request failed", "method", r.Method, "path", auth.RedactSecrets(r.URL.EscapedPath()),
+		h.deps.Log.Log(r.Context(), server.FailLevel(r), "npm: request failed", "method", r.Method, "path", auth.RedactSecrets(r.URL.EscapedPath()),
 			"status", status, "error", err.Error())
 	}
 	switch status {

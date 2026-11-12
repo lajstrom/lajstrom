@@ -101,9 +101,9 @@ type errorEntry struct {
 // challenge of a 401 is the bearer challenge of
 // the token flow (docs/spec/rbac.md §4) with the scope of the request (requestScope), and
 // error="insufficient_scope" when a valid bearer lacked it. A 5xx says only its status text,
-// without a detail, and its cause is logged with the request id: a backend error must not
-// reach the client. The one exception is a told 503, a push the registry does not serve yet,
-// whose message and detail name only what the client pushed. A refusal of the registry is logged too, at warn: what it needs may be the
+// without a detail, and its cause is logged with the request id, at debug when the client went
+// away (server.FailLevel): a backend error must not reach the client. The one exception is a
+// told 503, a push the registry does not serve yet, whose message and detail name only what the client pushed. A refusal of the registry is logged too, at warn: what it needs may be the
 // operator's to change.
 func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var ae *apiError
@@ -132,7 +132,7 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 			"error", err.Error(), "requestId", server.RequestID(r.Context()))
 	case status >= http.StatusInternalServerError && status != http.StatusNotImplemented:
 		code, msg, detail = codeUnknown, http.StatusText(status), nil
-		h.o.Log.ErrorContext(r.Context(), "facade: request failed", "method", r.Method, "path", r.URL.Path,
+		h.o.Log.Log(r.Context(), server.FailLevel(r), "facade: request failed", "method", r.Method, "path", r.URL.Path,
 			"status", status, "error", err.Error(), "requestId", server.RequestID(r.Context()))
 	case status == http.StatusUnauthorized:
 		code = codeUnauthorized

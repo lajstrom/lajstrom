@@ -105,8 +105,8 @@ type Server struct {
 	running     atomic.Bool
 	draining    atomic.Bool  // set when Run's context ends; /-/readyz answers 503 from then on
 	inflight    atomic.Int64 // handlers running
-	abort       context.CancelFunc
-	baseCtx     context.Context // the parent of every request's context; abort cancels it
+	abort       context.CancelCauseFunc
+	baseCtx     context.Context // the parent of every request's context; abort cancels it (errAborted)
 	bound       chan struct{}   // closed when Run has bound the listeners, or failed to
 	mu          sync.Mutex
 	addr        net.Addr
@@ -138,7 +138,7 @@ func New(o Options) (*Server, error) {
 	}
 	s := &Server{opts: o, log: o.Log, mux: http.NewServeMux(), bound: make(chan struct{}),
 		byAddress: len(o.TrustedProxies) > 0 || tlsConfig != nil}
-	s.baseCtx, s.abort = context.WithCancel(context.Background())
+	s.baseCtx, s.abort = context.WithCancelCause(context.Background())
 	s.routes()
 	s.handler = s.track(s.securityHeaders(s.recovery(requestID(s.clientAddress(s.accessLog(s.crossOrigin(s.authenticate(s.limitUploads(s.stall(s.mux))))))))))
 	s.srv = &http.Server{
@@ -202,7 +202,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if !s.running.CompareAndSwap(false, true) {
 		return errors.New("server: Run called twice")
 	}
-	defer s.abort()
+	defer s.abort(errAborted)
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", s.opts.Listen)
 	if err != nil {
@@ -279,7 +279,7 @@ func (s *Server) shutdown(ctx context.Context, served <-chan error) error {
 	defer cancel()
 	if err := s.srv.Shutdown(sctx); err != nil {
 		s.log.Warn("shutdown timeout: aborting in-flight requests", "inflight", s.inflight.Load())
-		s.abort()
+		s.abort(errAborted) // before Close, whose closed connections cancel without a cause
 		_ = s.srv.Close()
 		if !s.waitHandlers(abortGrace) {
 			s.log.Error("handlers still running after the abort", "inflight", s.inflight.Load())

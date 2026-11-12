@@ -63,7 +63,7 @@ func (h *handlers) start(w http.ResponseWriter, r *http.Request, a auth.Action) 
 // client does not see.
 func (h *handlers) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if status := format.WriteError(w, err); status >= http.StatusInternalServerError {
-		h.deps.Log.ErrorContext(r.Context(), "raw: request failed", "method", r.Method, "path", r.URL.EscapedPath(),
+		h.deps.Log.Log(r.Context(), server.FailLevel(r), "raw: request failed", "method", r.Method, "path", r.URL.EscapedPath(),
 			"status", status, "error", err.Error())
 	}
 }

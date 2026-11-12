@@ -16,6 +16,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/provider"
+	"github.com/lajstrom/lajstrom/internal/server"
 )
 
 // Content types of the files a client downloads.
@@ -77,7 +78,7 @@ func (h *handlers) start(w http.ResponseWriter, r *http.Request) (index.Repo, bo
 // fail answers err with format.WriteError and logs a 5xx, whose cause the client does not see.
 func (h *handlers) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if status := format.WriteError(w, err); status >= http.StatusInternalServerError {
-		h.deps.Log.ErrorContext(r.Context(), "pypi: request failed", "method", r.Method, "path", r.URL.EscapedPath(),
+		h.deps.Log.Log(r.Context(), server.FailLevel(r), "pypi: request failed", "method", r.Method, "path", r.URL.EscapedPath(),
 			"status", status, "error", err.Error())
 	}
 }

@@ -18,18 +18,20 @@ import (
 // context, anonymous when it settled on none, the requests it refused included. A request
 // whose handler panics has no access line; the recovery's error line replaces it. The same
 // place records the HTTP metrics, by the route pattern the request matched ("unmatched" for
-// none), never by its path.
+// none), never by its path. A request whose client went away has the status of outcome, and
+// aborted=true when its body was cut short.
 func (s *Server) accessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &recorder{ResponseWriter: w}
 		ctx, held := withPrincipalHolder(r.Context())
 		next.ServeHTTP(rec, r.WithContext(ctx))
-		s.observe(r, rec, time.Since(start))
+		status, aborted := outcome(r, rec)
+		s.observe(r, status, rec, time.Since(start))
 		attrs := []slog.Attr{
 			slog.String("method", r.Method),
 			slog.String("path", auth.RedactSecrets(r.URL.Path)),
-			slog.Int("status", rec.statusCode()),
+			slog.Int("status", status),
 			slog.Int64("bytes", rec.bytes),
 			slog.Duration("duration", time.Since(start)),
 			slog.String("requestId", RequestID(r.Context())),
@@ -40,17 +42,36 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 			attrs[6] = slog.String("remoteAddr", c.addr)
 			attrs = append(attrs, slog.String("proxy", r.RemoteAddr))
 		}
+		if aborted {
+			attrs = append(attrs, slog.Bool("aborted", true))
+		}
 		s.log.LogAttrs(r.Context(), slog.LevelInfo, "request", attrs...)
 	})
 }
 
-// observe records a request in the HTTP metrics.
-func (s *Server) observe(r *http.Request, rec *recorder, took time.Duration) {
+// outcome returns the status of a request's access line and metrics, and whether its response
+// was cut short. When the client went away (ClientGone) and the handler answered a 5xx or
+// nothing, the status is StatusClientClosedRequest: nobody received that answer, and it is no
+// server error. A status below 500 written before the client left stays, and the response was
+// cut short when its body is (recorder.short); one the client got whole before it closed the
+// connection was not.
+func outcome(r *http.Request, rec *recorder) (status int, aborted bool) {
+	if !ClientGone(r) {
+		return rec.statusCode(), false
+	}
+	if rec.status == 0 || rec.status >= http.StatusInternalServerError {
+		return StatusClientClosedRequest, false
+	}
+	return rec.status, rec.short(r.Method)
+}
+
+// observe records a request in the HTTP metrics, with the status of outcome.
+func (s *Server) observe(r *http.Request, status int, rec *recorder, took time.Duration) {
 	_, route := s.mux.Handler(r)
 	if route == "" {
 		route = "unmatched"
 	}
-	labels := []string{r.Method, route, metrics.Status(rec.statusCode())}
+	labels := []string{r.Method, route, metrics.Status(status)}
 	metrics.HTTPDuration.WithLabelValues(labels...).Observe(took.Seconds())
 	metrics.HTTPResponseSize.WithLabelValues(labels...).Observe(float64(rec.bytes))
 	if r.ContentLength >= 0 {

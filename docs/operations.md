@@ -716,6 +716,12 @@ metadata of [Performance](#performance)), the disk for the `/v2` chunks that
 `uploads.spoolUnknownLength` spools, and the connections to the registry; `0` lifts it. A request refused for it is in the access log with status `503`. How many requests a
 client may send is the edge's to limit.
 
+A request whose client went away while it ran, and which the handler then answered with a `5xx`
+or not at all, is in the access log and the HTTP metrics with status `499` (nginx's), its cause
+logged at debug rather than as `request failed` at error; one whose client left after a lower
+status was sent keeps it, with `aborted=true` when the body came short. Lajstrom's own timeouts
+and the abort at the end of the [shutdown](#shutdown) stay `5xx`.
+
 The registry, and any proxy in front of it, must wait longer for a request body than Lajstrom
 does: their body timeout above `server.stallTimeout`. A `/v2` upload streams through to the
 registry, so a client that pauses pauses the registry's request too. Within
@@ -933,7 +939,7 @@ so the number of series is fixed by the code and the configuration.
 
 | Series | Labels | What |
 | --- | --- | --- |
-| `lajstrom_http_request_duration_seconds` | `method`, `route`, `status` | time to answer a request, by the route pattern it matched (`unmatched` for none) |
+| `lajstrom_http_request_duration_seconds` | `method`, `route`, `status` | time to answer a request, by the route pattern it matched (`unmatched` for none); `status` is `499` when the client went away and the answer was a `5xx` or none, as in the access log ([Requests from clients](#requests-from-clients)) |
 | `lajstrom_http_request_size_bytes`, `lajstrom_http_response_size_bytes` | the same | the declared request body, the bytes written back |
 | `lajstrom_provider_request_duration_seconds` | `registry`, `operation`, `method`, `status` | a request to a backend registry, each retry its own, to its response headers; `operation` is `ping`, `catalog`, `manifest`, `blob`, `upload`, `tags`, `referrers` or `other` (a token realm, a redirect to the storage); `status` is `error` without an answer |
 | `lajstrom_provider_circuit_open` | `registry` | `1` while the [circuit breaker](#requests-to-the-registries) of the registry is open, its requests failing at once; `0` otherwise |
