@@ -93,6 +93,14 @@ type Reader interface {
 	// more.
 	AuthVersion(ctx context.Context) (int64, error)
 
+	// GetIdentity returns the OIDC identity of issuer and subject, the iss and sub of an ID
+	// token (docs/spec/rbac.md §8).
+	GetIdentity(ctx context.Context, issuer, subject string) (*Identity, error)
+	// ListIdentityGroups returns the groups of every identity, with its user's id and uid and
+	// its GroupsExpireAt, ordered by uid and name, expired or not: the RBAC snapshot compares
+	// the time at each evaluation.
+	ListIdentityGroups(ctx context.Context) ([]IdentityGroup, error)
+
 	// GetKey returns the key of kind that is not retired; repoID nil selects the server key.
 	GetKey(ctx context.Context, repoID *int64, kind string) (*Key, error)
 	// ListKeys returns the keys of a repo, retired ones included; repoID nil selects the
@@ -115,6 +123,15 @@ type Reader interface {
 	GetFetchClaim(ctx context.Context, repoID int64, pkg, tag string) (*FetchClaim, error)
 	// GetReindexRun returns the reindex run with the given id.
 	GetReindexRun(ctx context.Context, id int64) (*ReindexRun, error)
+	// GetOIDCLogin returns the row of oidc_logins with the given id (docs/spec/rbac.md §8).
+	GetOIDCLogin(ctx context.Context, id int64) (*OIDCLogin, error)
+	// GetOIDCLoginByState returns the code login whose state hashes to state (hex sha256).
+	GetOIDCLoginByState(ctx context.Context, state string) (*OIDCLogin, error)
+	// GetOIDCLoginByDeviceCode returns the device request whose device code hashes to
+	// deviceCode (hex sha256).
+	GetOIDCLoginByDeviceCode(ctx context.Context, deviceCode string) (*OIDCLogin, error)
+	// GetOIDCLoginByUserCode returns the device request of the user code, without its hyphen.
+	GetOIDCLoginByUserCode(ctx context.Context, userCode string) (*OIDCLogin, error)
 	// LatestReindexRun returns the newest run that covered repoID, its own or a run of every
 	// repo; repoID 0 selects the runs of every repo only.
 	LatestReindexRun(ctx context.Context, repoID int64) (*ReindexRun, error)
@@ -251,6 +268,16 @@ type Writer interface {
 	// DeleteBinding removes the binding.
 	DeleteBinding(ctx context.Context, id int64) error
 
+	// CreateIdentity inserts i and fills ID, and CreatedAt and LoginAt when zero; an identity
+	// of the same Issuer and Subject wraps ErrConflict.
+	CreateIdentity(ctx context.Context, i *Identity) error
+	// DeleteIdentity removes the identity and its groups.
+	DeleteIdentity(ctx context.Context, id int64) error
+	// SetIdentityGroups makes the identity_groups rows of the identity exactly names, stores
+	// loginAt and groupsExpireAt, and increments AuthVersion, in one transaction; a name given
+	// twice wraps ErrConflict.
+	SetIdentityGroups(ctx context.Context, id int64, names []string, loginAt, groupsExpireAt time.Time) error
+
 	// CreateKey inserts k.
 	CreateKey(ctx context.Context, k *Key) error
 	// RetireKey sets RetiredAt of the key.
@@ -319,6 +346,16 @@ type Writer interface {
 	HeartbeatFetchClaim(ctx context.Context, id int64, at time.Time) error
 	// ReleaseFetchClaim removes the claim.
 	ReleaseFetchClaim(ctx context.Context, id int64) error
+
+	// CreateOIDCLogin inserts l and fills ID, and CreatedAt when zero; a state, device code or
+	// user code that another row has wraps ErrConflict.
+	CreateOIDCLogin(ctx context.Context, l *OIDCLogin) error
+	// UpdateOIDCLogin stores Status, UserID and PolledAt of l while the row's status is from;
+	// a row whose status is not from wraps ErrConflict and nothing changes, so that a state,
+	// an approval and a device code are each used once.
+	UpdateOIDCLogin(ctx context.Context, l *OIDCLogin, from string) error
+	// ExpireOIDCLogins deletes the rows whose ExpiresAt is before before, and returns how many.
+	ExpireOIDCLogins(ctx context.Context, before time.Time) (int, error)
 	// ExpireFetchClaims removes the claims whose HeartbeatAt is before before, and returns how
 	// many it removed (reindex and the reconcile loop).
 	ExpireFetchClaims(ctx context.Context, before time.Time) (int, error)

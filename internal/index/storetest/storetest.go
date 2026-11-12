@@ -84,6 +84,9 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"JournalRace", testJournalRace},
 		{"Sightings", testSightings},
 		{"SightingRace", testSightingRace},
+		{"Identities", testIdentities},
+		{"OIDCLogins", testOIDCLogins},
+		{"OIDCLoginRace", testOIDCLoginRace},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
