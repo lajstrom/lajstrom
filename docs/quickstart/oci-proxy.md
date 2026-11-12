@@ -164,16 +164,20 @@ measurements are of 2026-11-12, on the head of #869 (91a980a9), with the default
   a proxy that injects faults;
 - curl and crane as the clients.
 
+The rows the fixes of [#875], [#883], [#884], [#885] and [#889] changed were measured again on the
+same stand with those fixes (pull requests #891, #899, #915, #917 and #924, on top of #881), and
+say what happens with them.
+
 | The link | What happens | What to do |
 | --- | --- | --- |
-| **Slow** (1.57 MB/s) | Measured. The first client streams through the tee (§2, point 3) in 70.1 s, against 66.9 s straight from nginx; the upstream gets one `GET`. A client that asked 10 s later got its headers when the copy was committed, after 60.1 s, and then the layer from the backend in 0.1 s. A client that waits 30 s for headers gets nothing, as containerd does ([#875]). | Warm the cache before the rollout (§5.1). |
-| **Drops mid-blob** (a TCP reset 20 s into the body, at 2 MB/s) | Measured. The client that held the claim got `200` and 40.0 of 104.9 MB, then its connection closed. Clients that waited on the claim, and one that sent `Range`, got `500` ([#884]). The claim was gone within a second; the backend's upload session was cancelled, with no bytes left. The next request fetched from byte 0, without `Range`: four attempts got 40.0 MB each, and none completed ([#885]). With a reset every 60 s, the layer came in 52.5 s. On a link that drops every N s at R bytes/s, a layer above N × R never comes. | Warm the cache over a link that holds (§5.1), or send Lajstrom's egress through a proxy on a stable line (§5.3). |
-| **Sends part of a blob, then nothing**, the connection open | Measured. Unbounded: the fetch and its claim stayed until the upstream's side closed the connection, 292 s later. The claim kept beating, so another replica waits as long, and later requests for the blob wait until their client gives up. `timeout: 5s` does not change it: the timeout bounds the wait for headers, not a body that stops ([#883]). When the upstream's host was stopped mid-blob behind nginx, nginx's `proxy_read_timeout` (60 s) ended the wait, and the rest went as in the row above. | A proxy in the path with a read timeout; otherwise restart the replica. |
+| **Slow** (1.57 MB/s; with the fixes, 2 MB/s) | Measured. The first client streams through the tee (§2, point 3) in 70.1 s, against 66.9 s straight from nginx. With the fixes, a client that asks while the copy runs gets a transit ([#875]): its first byte after 0.006 s (47.5 s before, past containerd's 30 s wait for headers), and the whole layer from a `GET` of its own, checked against the digest and stored nowhere. The upstream sends the layer once per such client; the backend gets one copy. A `Range` request still waits for the copy (45.4 s). | Warm the cache before the rollout (§5.1). `upstreams[].maxConcurrentTransits` caps the extra transfers per blob and replica; `0` makes clients wait for the copy, as before. |
+| **Drops mid-blob** (a TCP reset 20 s into the body, at 2 MB/s) | Measured. The fetch resumes with `Range` from the byte it reached ([#885]): the 104.9 MB layer came in 52.5 s after two resumes, each a log line at info, 105 MB from the upstream in all. The claim holder got the whole layer in one response; a client that waited, and one that sent `Range`, were served from the backend once it was committed. Without the fix, every attempt got 40.0 MB and none completed. A fetch that cannot resume (the upstream answers the `Range` with `200`, or refuses the connection) ends: the waiting clients get `502` ([#884]), the claim holder's connection is aborted, and one warn line names the bytes it got. | Nothing while the upstream answers `Range`: the four public CDNs of §5.2 do (`206`). Otherwise warm the cache over a link that holds (§5.1), or send Lajstrom's egress through a proxy on a stable line (§5.3). |
+| **Sends part of a blob, then nothing**, the connection open | Measured. A read that gets no byte for `timeout` ends the body ([#883]), and the fetch resumes with `Range` as on a drop. When the resume gets nothing either, the fetch ends with `504` and the claim is released: with `timeout: 5s, retries: -1`, the claim holder's connection was aborted at 5.1 s, and a client that waited got `504` 5 s after the fetch began; with the default `30s`, at 30.1 s. Without the fix, the fetch and its claim stayed until the upstream closed the connection, 292 s later. | Nothing; `timeout` sets how long a silent upstream is given. |
 | **Accepts the connection, never answers** | Measured. A blob, or a tag never seen, is `504` after `timeout` × (`retries` + 1): 90.5 s for either with the defaults, 5.0 s for a tag with `timeout: 5s, retries: -1`. The claim is held meanwhile, and a client that asks meanwhile gets the same `504`. A cached tag whose row expired is served from the row, but only after the same 90.6 s, longer than containerd waits for headers. | Keep `timeout` × (`retries` + 1) under 30 s, and a longer `metadataTTL` (§5.4). |
 | **Blocked, packets dropped** (no route, a firewall that drops) | Measured. `504` after 30.7 s: three connects of 10 s. | Allow the hosts (§5.2), or use an egress proxy (§5.3). |
 | **Blocked, refused, or the name does not resolve** | Measured. `502` after 0.6 s (refused, three attempts) or 0.04 s (DNS, not retried). | The same. |
-| **The blob CDN blocked, the registry reachable** | Measured on registry.k8s.io, with an egress proxy that resets every `CONNECT` to `cdn.registry.k8s.io`. Tags and manifests answer; every blob is `502` after 0.5 to 0.8 s (three attempts). The log says `upstream k8s: … (the connection was reset)` and does not name the CDN's host. The circuit breaker stayed closed: in the code, the registry's redirect, each blob's first request, counts as an answer. | Allow the CDN's hosts (§5.2); the egress proxy's log names the host. |
-| **Down entirely** | Measured, the upstream refusing connections. What the backend holds is served, and a tag from its row: at once while the row is fresh, and with `proxy: the upstream did not answer for a tag; the cached digest is served` at warn once it has expired. A blob that is listed but not held, and a tag never seen, are `502` (`504` on timeouts). After five failed requests, `502` at once for 30 s (§5.4). | Warm what the rollout needs; `offline: true` while the upstream is gone (§5.4). |
+| **The blob CDN blocked, the registry reachable** | Measured on registry.k8s.io, with an egress proxy that resets every `CONNECT` to `cdn.registry.k8s.io`. Tags and manifests answer; every blob is `502` after 0.5 to 0.8 s (three attempts). The warn line `proxy: a blob not fetched from the upstream` names the CDN: `host=cdn.registry.k8s.io redirected=true`, and the error ends with `(at cdn.registry.k8s.io, where the upstream redirected the blob)` ([#889]). The circuit breaker stayed closed: in the code, the registry's redirect, each blob's first request, counts as an answer. | Allow the host the warn line names (§5.2). |
+| **Down entirely** | Measured, the upstream refusing connections. What the backend holds is served, and a tag from its row: at once while the row is fresh, and with `proxy: the upstream did not answer for a tag; the cached digest is served` at warn once it has expired. A blob that is listed but not held, and a tag never seen, are `502` (`504` on timeouts). After five failed requests, `503` at once with `Retry-After` (30 at first, measured), until the circuit breaker lets a trial through (§5.4, [#889]). | Warm what the rollout needs; `offline: true` while the upstream is gone (§5.4). |
 
 ### 5.1 Warm the cache before a rollout
 
@@ -194,8 +198,8 @@ done < images.txt
 - Warm with crane, which keeps no layers between runs. docker and containerd skip the layers they
   hold already, and an image whose layers were skipped is never completed in the backend
   ([#876]).
-- Each layer comes in one upstream `GET`. On a link that drops, run a failed pull again: it
-  starts that layer from byte 0 ([#885]).
+- Each layer comes in one upstream `GET`, resumed with `Range` when the link drops ([#885]). Run
+  a failed pull again only when the upstream does not answer `Range`, or the resumes got nothing.
 - On Docker Hub, a cold image costs a counted pull for its index and one for each platform
   ([operations.md](../operations.md#upstreams-of-oci-proxy-repos)).
 - Through the rollout, a longer `metadataTTL`, or `offline: true`, keeps the tags off the
@@ -250,26 +254,28 @@ env:
   loopback addresses, so put the backend's host name in `NO_PROXY`. Without it, the same run
   sent 34 requests to the backend through the proxy (the backend was on http, so they went
   through `HTTP_PROXY`).
-- **A read timeout** on the proxy bounds a blob whose bytes stop coming ([#883]). nginx's
-  `proxy_read_timeout` did so as a reverse proxy; an egress proxy's idle timeout on a `CONNECT`
-  tunnel was not measured.
+- **A read timeout** on the proxy is not needed for a blob whose bytes stop coming: Lajstrom cuts
+  it after `upstreams[].timeout` ([#883]).
 
 ### 5.4 Timeouts, retries and the TTLs
 
-- **`upstreams[].timeout`** (default `30s`) bounds each attempt: connecting (at most 10 s) and the
-  wait for response headers.
+- **`upstreams[].timeout`** (default `30s`) bounds each attempt: connecting (at most 10 s), the
+  wait for response headers, and every wait for the next bytes of a body ([#883]).
 - **`upstreams[].retries`** (default `2`) tries again after a timeout, a refused or reset
   connection, one closed without an answer, a `5xx` other than `501` and `505`, or a `429`. A
-  name that does not resolve is not retried (measured).
+  name that does not resolve is not retried (measured). On a blob whose body breaks, it also
+  bounds the resumes in a row that get no byte; a resume after progress is not counted ([#885]).
 - **The total.** A hung or blocked upstream therefore costs up to `timeout` × (`retries` + 1),
   plus less than a second of backoff. Measured: 90.5 s with the defaults, 30.7 s when the
   connects time out, and 5.0 s with `timeout: 5s, retries: -1`.
 - **containerd waits 30 s for response headers** ([#875]): on a link that hangs, keep the total
   under that. A short timeout costs only an upstream that is slow to send its headers: a blob
   that keeps moving is never cut.
-- **A body that stops** is not bounded by the timeout ([#883]).
+- **A body that stops** is cut after `timeout` without a byte, and resumed with `Range` ([#883],
+  [#885]).
 - **The circuit breaker** opens after five failed requests in a row (measured):
-  - for 30 s, everything asked of the upstream is `502` at once (0.05 s), without `Retry-After`;
+  - for 30 s, everything asked of the upstream is `503` at once with `Retry-After`, the seconds
+    until the trial (measured: 30); before [#889] it was `502` without one;
   - expired tags are served from their rows at once;
   - then one request is the trial and waits the whole total. Another tag asked during the trial
     got `502` at once.
@@ -290,6 +296,7 @@ env:
 [#884]: https://github.com/lajstrom/lajstrom/issues/884
 [#885]: https://github.com/lajstrom/lajstrom/issues/885
 [#886]: https://github.com/lajstrom/lajstrom/issues/886
+[#889]: https://github.com/lajstrom/lajstrom/issues/889
 
 Groups of `oci` repos, one URL for a hosted and a proxy repo, are not in this version
 ([#848](https://github.com/lajstrom/lajstrom/issues/848)).
