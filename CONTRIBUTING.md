@@ -134,9 +134,11 @@ open an issue and ask.
   `perf`, `build`, `ci`, `chore` or `revert`. Use the imperative mood and keep it under 72
   characters. Mark breaking changes with `!` (for example `feat(api)!: ...`).
 - **Description.** Fill in the pull request template: what changes, why, and how it was tested.
-- **History.** Branch protection requires a linear history; maintainers squash or rebase on merge.
-  Rebase on `main` instead of merging `main` into your branch.
-- **Review.** At least one maintainer approval and green CI are required to merge.
+- **History.** Branch protection requires a linear history; the maintainer who merges squashes or
+  rebases. Rebase on `main` instead of merging `main` into your branch.
+- **Review and merge.** One approval by a maintainer and green CI are required to merge; a pull
+  request labelled `contract` needs the lead's approval. A maintainer merges it: the author does
+  not merge their own pull request, and AI assistants (Claude Code or any other) never merge.
 
 ## Building and testing locally
 
