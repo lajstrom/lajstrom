@@ -48,18 +48,21 @@ func (s *Server) recovery(next http.Handler) http.Handler {
 			if rec.started() {
 				panic(http.ErrAbortHandler)
 			}
-			writeInternalError(w, r, id)
+			s.writeInternalError(w, r, id)
 		}()
 		next.ServeHTTP(rec, r)
 	})
 }
 
-// writeInternalError answers 500: under /api/ with the envelope of the management API,
-// {"error":{"code":"INTERNAL","message":"Internal Server Error"}}, as internal/api answers a 500
-// (docs/api.md, Errors); elsewhere with {"error":"internal server error","requestId":id}.
-// Headers the handler set before it failed are dropped, except the request id; the security
-// headers are set again.
-func writeInternalError(w http.ResponseWriter, r *http.Request, id string) {
+// writeInternalError answers 500 in the error format of the route's family (writeRefusal): under
+// /v2/ the error document of the distribution spec, {"errors":[{"code":"UNKNOWN","message":
+// "Internal Server Error"}]}, as internal/facade answers a 500 (#747); under /api/ the envelope
+// of the management API, {"error":{"code":"INTERNAL","message":"Internal Server Error"}}, as
+// internal/api answers a 500 (docs/api.md, Errors); elsewhere {"error":"internal server
+// error","requestId":id}. Headers the handler set before it failed are dropped, except the
+// request id, which names the panic's log line in every family; the security headers are set
+// again.
+func (s *Server) writeInternalError(w http.ResponseWriter, r *http.Request, id string) {
 	h := w.Header()
 	for k := range h {
 		if k != requestIDHeader {
@@ -67,14 +70,14 @@ func writeInternalError(w http.ResponseWriter, r *http.Request, id string) {
 		}
 	}
 	setSecurityHeaders(h)
-	var v any = struct {
+	if p := r.URL.Path; p == "/v2" || strings.HasPrefix(p, "/v2/") || strings.HasPrefix(p, "/api/") {
+		s.writeRefusal(w, r, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
+		return
+	}
+	body, _ := json.Marshal(struct {
 		Error     string `json:"error"`
 		RequestID string `json:"requestId"`
-	}{"internal server error", id}
-	if strings.HasPrefix(r.URL.Path, "/api/") {
-		v = map[string]any{"error": map[string]string{"code": "INTERNAL", "message": http.StatusText(http.StatusInternalServerError)}}
-	}
-	body, _ := json.Marshal(v) // strings always encode
+	}{"internal server error", id}) // strings always encode
 	h.Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusInternalServerError)
 	_, _ = w.Write(append(body, '\n'))
