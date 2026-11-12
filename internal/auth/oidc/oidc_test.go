@@ -205,7 +205,7 @@ func TestExchange(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := Identity{Issuer: p.srv.URL, Subject: "user-1", Username: "alice", Groups: []string{"dev", "ops"}, Dropped: 2}
+			want := Identity{Issuer: p.srv.URL, Subject: "user-1", Username: "alice", Groups: []string{"dev", "ops"}}
 			if fmt.Sprint(*id) != fmt.Sprint(want) {
 				t.Errorf("Exchange = %+v, want %+v", *id, want)
 			}

@@ -54,9 +54,9 @@ type Identity struct {
 	// Username is the claim Config.UsernameClaim, a string, unchecked; "" when missing.
 	Username string
 	// Groups are the strings of the claim Config.GroupsClaim that are names of groups by
-	// docs/spec/rbac.md §8, in the IdP's order without repeats; Dropped counts the others.
-	Groups  []string
-	Dropped int
+	// docs/spec/rbac.md §8, in the IdP's order without repeats; the others are dropped and
+	// counted in a debug line.
+	Groups []string
 }
 
 // Config configures a Client: the keys of auth.oidc and how to reach the IdP.
