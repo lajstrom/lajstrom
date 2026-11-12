@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
@@ -162,7 +163,7 @@ func (r refusingRepo) Delete(_ context.Context, desc ocispec.Descriptor) error {
 }
 
 // TestDeleteRefused: a backend that cannot delete manifests changes nothing. With
-// DeleteManifest false nothing is asked, and no audit row is written; one that refuses the
+// DeleteManifest false no delete is asked, and no audit row is written; one that refuses the
 // first delete is asked a plain delete first, the legacy signature (no subject: no tag-schema
 // index is rewritten for it), and nothing else, and the delete has its audit row, failed with
 // the refusal (#473).
@@ -197,6 +198,74 @@ func TestDeleteRefused(t *testing.T) {
 		}
 		after.Audit = after.Audit[1:]
 		same(t, "rows", before, after)
+	})
+}
+
+// orphanEnv is referrerEnv on a backend that cannot delete manifests, which has lost the
+// version's OCI repository (repoGone) or the version's manifest alone.
+func orphanEnv(t *testing.T, repoGone bool) (*env, *lockRecorder, ocispec.Descriptor) {
+	t.Helper()
+	e, rec, subject := referrerEnv(t, false)
+	if repoGone {
+		must(t, e.prov.DeleteRepository(t.Context(), "raw/scratch/notes"))
+	} else {
+		rr, err := e.prov.Repository(t.Context(), "raw/scratch/notes")
+		must(t, err)
+		must(t, rr.Delete(t.Context(), subject)) // the blobs keep the repository
+	}
+	e.prov.NoDeleteManifest = true
+	rec.locks = nil
+	return e, rec, subject
+}
+
+// TestDeleteOrphan: on a backend that cannot delete manifests, a version whose OCI repository
+// the backend does not know any more (reindex's RepositoryUnknown) goes from the index, under
+// the tag lock of its manifest, with its audit row, and nothing is written to the backend (#692).
+func TestDeleteOrphan(t *testing.T) {
+	e, rec, subject := orphanEnv(t, true)
+	putCache(t, e.st, &index.Cache{RepoID: e.repo.ID, Scope: "", Kind: "listing", Content: []byte("{}"), RenderedAt: now})
+	got, err := e.pipe.Delete(t.Context(), e.repo, format.Deletion{Path: "notes", Reference: subject.Digest.String()}, alice)
+	must(t, err)
+	if got.Digest != subject.Digest || got.Version == nil || got.Version.Version != "1.0" || got.Referrers != 0 {
+		t.Errorf("Deleted = %+v, want %s, version 1.0, no referrers", got, subject.Digest)
+	}
+	rows := e.rows(t)
+	if len(rows.Packages) != 0 || len(rows.Versions) != 0 {
+		t.Errorf("rows left: %+v", rows)
+	}
+	if c, err := e.st.GetIndexCache(t.Context(), e.repo.ID, "", "listing"); !errors.Is(err, index.ErrNotFound) {
+		t.Errorf("index_cache kept %+v, %v", c, err)
+	}
+	if ev := rows.Audit[0]; ev.Action != "delete" || ev.Digest != subject.Digest || ev.State != index.AuditOK {
+		t.Errorf("audit event %+v, want the delete of %s, ok", ev, subject.Digest)
+	}
+	same(t, "locks", []string{"raw/scratch/notes@" + subject.Digest.String()}, rec.locks)
+	if names, err := e.prov.ListRepositories(t.Context(), ""); err != nil || len(names) != 0 || len(rec.pushes) != 0 {
+		t.Errorf("the backend was written: repositories %v (%v), pushes %v", names, err, rec.pushes)
+	}
+}
+
+// TestDeleteOrphanRefused: on a backend that cannot delete manifests, a version whose manifest
+// alone is gone, in a repository the backend knows, is refused, and so is the delete of an
+// orphan whose condition fails; nothing changes.
+func TestDeleteOrphanRefused(t *testing.T) {
+	t.Run("manifest unknown", func(t *testing.T) {
+		e, _, subject := orphanEnv(t, false)
+		before := e.rows(t)
+		_, err := e.pipe.Delete(t.Context(), e.repo, format.Deletion{Path: "notes", Reference: subject.Digest.String()}, alice)
+		if !errors.Is(err, provider.ErrUnsupported) {
+			t.Fatalf("Delete = %v, want ErrUnsupported", err)
+		}
+		same(t, "rows", before, e.rows(t))
+	})
+	t.Run("condition", func(t *testing.T) {
+		e, _, subject := orphanEnv(t, true)
+		before := e.rows(t)
+		created := before.Versions[0].CreatedAt
+		_, err := e.pipe.Delete(t.Context(), e.repo, conditional("notes", "1.0", subject.Digest,
+			format.Condition{UnmodifiedSince: created.Add(-time.Second)}), alice)
+		_ = wantRefused(t, err, format.RefusedYoung)
+		same(t, "rows", before, e.rows(t))
 	})
 }
 

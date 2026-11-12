@@ -1319,7 +1319,10 @@ each of its versions under `repositoryUnknown` (the `NOREPO` column; a `--report
 unknown <path>:<tag> <digest>, delete with: DELETE /api/v1/repos/…`) and warns once per
 repository. Prune never removes them, by the rule above: a repository that comes back, restored
 from a backup or replicated late, would have lost its versions. Send the `DELETE` each line
-names, or restore the repository. distribution answers `MANIFEST_UNKNOWN` there, and its rows go
+names, or restore the repository; the `DELETE` removes the rows also on a registry that cannot
+delete manifests (`capabilities.deleteManifest: false`), since there is nothing left in it to
+delete: it checks first that the manifest and the tag list still answer `404` without
+`MANIFEST_UNKNOWN`, and writes nothing to the registry. distribution answers `MANIFEST_UNKNOWN` there, and its rows go
 as above, counted as `pending` first (both measured by `TestIntegration` of
 `internal/provider/generic` and `TestIntegrationRepositoryUnknown`).
 

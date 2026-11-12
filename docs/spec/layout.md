@@ -1075,7 +1075,10 @@ type Referrer struct {
 
 // Delete deletes the manifest that del.Reference (a tag or a digest) names in the OCI repository
 // of del.Path, what refers to it, and what the index holds of it (http-routing.md §2, DELETE;
-// #61). Capabilities.DeleteManifest false is provider.ErrUnsupported and changes nothing. On a
+// #61). Capabilities.DeleteManifest false is provider.ErrUnsupported and changes nothing, but
+// for a version whose OCI repository the backend does not know (a 404 without MANIFEST_UNKNOWN
+// for the manifest and for the tag list): its rows go, and nothing is written to the backend
+// (#692). On a
 // managed repo a reference that names a version (its tag, or its digest in the package) deletes
 // the version; anything else is resolved in the backend. A journal tag (_j…) of an npm package
 // is deleted under the package's journal lock, not its tag lock (manifest-profile.md §8, the

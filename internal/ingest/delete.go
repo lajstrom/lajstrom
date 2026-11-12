@@ -31,7 +31,9 @@ import (
 // a deleted manifest is repaired by reindex, a manifest without its row would come back with it.
 //
 //  1. A backend that cannot delete manifests (Capabilities.DeleteManifest false) is
-//     provider.ErrUnsupported, and nothing changes.
+//     provider.ErrUnsupported, and nothing changes, but for a version whose OCI repository the
+//     backend does not know any more, as reindex tells it (RepositoryUnknown): its rows go, and
+//     nothing is asked of the backend but the lookups (#692).
 //  2. The reference, a tag or a digest, is resolved: on a managed repo to a version of the index
 //     when it names one (by its tag, or by its digest in the package of del.Path), else in the
 //     backend; one that names nothing is index.ErrNotFound. A version whose manifest the backend
@@ -107,23 +109,25 @@ func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Delet
 		return nil, fmt.Errorf("ingest: capabilities of registry %s: %w", repo.Registry, err)
 	}
 	name := ociName(repo, del.Path)
-	if !caps.DeleteManifest {
-		return nil, fmt.Errorf("ingest: delete %s:%s: the registry %s does not delete manifests; nothing was deleted: %w",
-			name, del.Reference, repo.Registry, provider.ErrUnsupported)
-	}
 	rr, err := prov.Repository(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("ingest: repository %s: %w", name, err)
 	}
-	d := &deletion{p: p, repo: repo, del: del, name: name, rr: rr, api: caps.Referrers}
-	if _, entry := profile.JournalSeq(del.Reference); entry && repo.Format == "npm" {
-		d.journal = true
+	_, entry := profile.JournalSeq(del.Reference)
+	d := &deletion{p: p, repo: repo, del: del, name: name, prov: prov, rr: rr, api: caps.Referrers,
+		journal: entry && repo.Format == "npm"}
+	find := d.find
+	if !caps.DeleteManifest {
+		find = d.findOrphan
 	}
-	if err := d.find(ctx); err != nil {
+	if err := find(ctx); err != nil {
 		return nil, err
 	}
 	d.ev = d.event(ctx, principal)
 	err = d.locked(ctx, func(ctx context.Context) error {
+		if err := d.repositoryUnknown(ctx); err != nil {
+			return err
+		}
 		if err := d.check(ctx); err != nil {
 			return err
 		}
@@ -136,7 +140,7 @@ func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Delet
 		return nil, err
 	}
 	p.log.InfoContext(ctx, "ingest: deleted", "repo", repo.Format+"/"+repo.Name, "name", name, "digest", d.target.Digest.String(),
-		"version", d.version != nil, "referrers", d.referrers, "principal", principal.String())
+		"version", d.version != nil, "referrers", d.referrers, "orphan", d.orphan, "principal", principal.String())
 	return &format.Deleted{Digest: d.target.Digest, Version: d.version, Referrers: d.referrers}, nil
 }
 
@@ -146,6 +150,7 @@ type deletion struct {
 	repo index.Repo
 	del  format.Deletion
 	name string              // the OCI repository, without the instance prefix
+	prov provider.Provider   // the backend
 	rr   provider.Repository // its data path
 	api  bool                // the backend has the referrers API
 
@@ -155,6 +160,7 @@ type deletion struct {
 	pkg     *index.Package     // the version's package
 	subject digest.Digest      // the subject of a manifest that is no version, when it has one
 	journal bool               // the reference is a journal tag of an npm package
+	orphan  bool               // a version the backend, which cannot delete manifests, does not resolve: its rows alone go (findOrphan)
 
 	referrers int              // deleted before it, theirs included
 	ev        index.AuditEvent // the audit row of the delete, pending from before it (intend)
@@ -194,6 +200,47 @@ func (d *deletion) find(ctx context.Context) error {
 	}
 	d.subject, err = d.subjectOf(ctx)
 	return err
+}
+
+// findOrphan resolves the reference of a delete on a backend that cannot delete manifests, in
+// place of find: a version of the index whose manifest the backend does not resolve is an
+// orphan, whose rows go once repositoryUnknown finds, under the locks, that the backend does not
+// know its repository (#692). Anything else is refused (unsupported).
+func (d *deletion) findOrphan(ctx context.Context) error {
+	if err := d.findVersion(ctx); err != nil {
+		return err
+	}
+	if d.version == nil || !d.gone {
+		return d.unsupported()
+	}
+	d.orphan = true
+	return nil
+}
+
+// unsupported is the refusal of a delete by a backend that cannot delete manifests.
+func (d *deletion) unsupported() error {
+	return fmt.Errorf("ingest: delete %s:%s: the registry %s does not delete manifests; nothing was deleted: %w",
+		d.name, d.del.Reference, d.repo.Registry, provider.ErrUnsupported)
+}
+
+// errTagsAnswered stops the read of a tag list at its first page: repositoryUnknown needs only
+// its status.
+var errTagsAnswered = errors.New("ingest: the tag list answered")
+
+// repositoryUnknown refuses the delete of an orphan (unsupported) unless the backend does not
+// know its OCI repository, as reindex tells it (internal/index/reindex, RepositoryUnknown): the
+// manifest answers 404 without MANIFEST_UNKNOWN, and the tag list 404. Any other delete passes.
+func (d *deletion) repositoryUnknown(ctx context.Context) error {
+	if !d.orphan {
+		return nil
+	}
+	_, err := d.prov.StatManifest(ctx, d.name, d.target.Digest)
+	if errors.Is(err, provider.ErrNotFound) && !errors.Is(err, provider.ErrManifestUnknown) {
+		if err = d.rr.Tags(ctx, "", func([]string) error { return errTagsAnswered }); errors.Is(err, provider.ErrNotFound) {
+			return nil
+		}
+	}
+	return d.unsupported()
 }
 
 // findEntry sets the target to the journal entry under the reference, which the backend does
@@ -424,8 +471,12 @@ func (d *deletion) finish(ctx context.Context) error {
 	return d.record(ctx)
 }
 
-// deleteInBackend deletes the target with its referrers.
+// deleteInBackend deletes the target with its referrers; nothing for an orphan, whose
+// repository the backend does not know.
 func (d *deletion) deleteInBackend(ctx context.Context) error {
+	if d.orphan {
+		return nil
+	}
 	if d.subject != "" && !d.api {
 		return d.deleteReferrer(ctx)
 	}
