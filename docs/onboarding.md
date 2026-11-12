@@ -22,7 +22,7 @@ Skim later, as needed: `docs/spec/http-routing.md`, `docs/spec/index-schema.md`,
 
 ```sh
 # tools
-go version            # current stable (CI uses "stable"); 1.23+ works
+go version            # go.mod's, 1.27 or later (CI uses "stable")
 docker compose version
 oras version          # https://oras.land, for pushing test artifacts
 gh --version          # GitHub CLI, for issues and pull requests

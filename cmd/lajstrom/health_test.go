@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,5 +65,41 @@ func TestReadyFollowsTheRegistries(t *testing.T) {
 	health.Ping(t.Context())
 	if err := check(t.Context()); err != nil {
 		t.Errorf("ready once it answers again: %v", err)
+	}
+}
+
+// TestReadyRefusedCredentials: a registry that answers GET /v2/ with 401 answers; its WARN line
+// and /-/readyz say that it refuses the credentials, not that it does not answer, and a ping
+// that then finds no answer says so in a line of its own (#723).
+func TestReadyRefusedCredentials(t *testing.T) {
+	st, err := openStore(t.Context(), config.Database{Driver: "sqlite", DSN: "file:" + filepath.Join(t.TempDir(), "x.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	var logs bytes.Buffer
+	zot := &pinging{Fake: &providertest.Fake{RegistryName: "zot"},
+		err: fmt.Errorf("generic: ping: %w (HTTP 401, UNAUTHORIZED)", provider.ErrUnauthorized)}
+	health := newRegistryHealth(provider.Map{"zot": zot}, slog.New(slog.NewTextHandler(&logs, nil)))
+	now := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+	health.now = func() time.Time { return now }
+	check := ready(slog.New(slog.DiscardHandler), "sqlite", st, health, &replica{})
+
+	health.Ping(t.Context())
+	health.Ping(t.Context())
+	if err := check(t.Context()); err == nil || err.Error() != "a registry has refused Lajstrom's credentials for a minute" {
+		t.Errorf("readiness with a registry that answers 401: %v", err)
+	}
+	if n := strings.Count(logs.String(), `msg="registry refuses Lajstrom's credentials at GET /v2/"`); n != 1 ||
+		!strings.Contains(logs.String(), "HTTP 401") || strings.Contains(logs.String(), "does not answer") {
+		t.Errorf("the log of two pings answered 401, want one line that names the 401:\n%s", &logs)
+	}
+	zot.err = errors.New("connection refused")
+	health.Ping(t.Context())
+	if err := check(t.Context()); err == nil || err.Error() != "a registry has not answered for a minute" {
+		t.Errorf("readiness once it does not answer: %v", err)
+	}
+	if !strings.Contains(logs.String(), `msg="registry does not answer GET /v2/"`) {
+		t.Errorf("no line for the registry that stopped answering:\n%s", &logs)
 	}
 }

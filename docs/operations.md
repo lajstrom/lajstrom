@@ -370,10 +370,11 @@ it when it is SQLite, the replica's clock is within 60 seconds of the database's
 ([Clocks](#clocks)), and every registry answered `GET /v2/`, with Lajstrom's credentials, within
 the last minute; otherwise `503` with a line that names no host, user or registry (`index
 database is unreachable`, `another replica serves on this SQLite database`, `the clock of this
-replica is 1m15s ahead of the database's`, `a registry has not answered for a minute`); the log
-has the cause, a registry's once per outage. `serve` pings every registry at start and every 20
-seconds after, each ping bounded by 10 seconds, so a registry
-that stops answering takes the replicas out of the edge after about a minute, and they come
+replica is 1m15s ahead of the database's`, `a registry has not answered for a minute`, or
+`a registry has refused Lajstrom's credentials for a minute` when it answered `401` or `403`);
+the log has the cause, a registry's once per outage, with the status it answered. `serve` pings
+every registry at start and every 20 seconds after, each ping bounded by 10 seconds, so a
+registry that stops answering takes the replicas out of the edge after about a minute, and they come
 back at the first answer. `/-/healthz` is only "the process is up": point the liveness probe
 there and the readiness probe at `/-/readyz`, so that an outage of the registry or the database
 does not restart the pods.

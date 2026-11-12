@@ -95,8 +95,10 @@ spec:
         - name: config
           configMap:
             name: lajstrom-config
-        # An upload is spooled here for the length of one request: size it for the largest
-        # concurrent uploads of one replica. Node disk, gone with the pod.
+        # Uploads stream into the registry (ADR 0014) and take none of it. A proxy repo's fetch,
+        # and a /v2 chunk of a registry with uploads.spoolUnknownLength, are spooled here for one
+        # request: size it for the largest of those at once on one replica. Node disk, gone with
+        # the pod.
         - name: tmp
           emptyDir:
             sizeLimit: 4Gi

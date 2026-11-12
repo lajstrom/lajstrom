@@ -221,9 +221,10 @@ func probeRegistries(ctx context.Context, providers provider.Map, log *slog.Logg
 
 // ready is the readiness check of serve (docs/spec/http-routing.md §5): the index database
 // answers, no other replica serves on it when it is SQLite, this replica's clock is within
-// clockFail of the database's, and every registry answered GET /v2/ within the last minute. A failure is logged with its cause and answered without it: /-/readyz
-// is public, and a driver error can name hosts and users; the registry probe and the heartbeat of
-// the replica log their own failures.
+// clockFail of the database's, and every registry answered GET /v2/ within the last minute; one
+// that refused the credentials is answered as such. A failure is logged with its cause and
+// answered without it: /-/readyz is public, and a driver error can name hosts and users; the
+// registry probe and the heartbeat of the replica log their own failures.
 func ready(log *slog.Logger, driver string, st store, health *registryHealth, rep *replica) func(context.Context) error {
 	return func(ctx context.Context) error {
 		if err := st.Ping(ctx); err != nil {
@@ -235,6 +236,9 @@ func ready(log *slog.Logger, driver string, st store, health *registryHealth, re
 		}
 		if stale := health.Stale(); len(stale) > 0 {
 			log.DebugContext(ctx, "not ready: registries without an answer for a minute", "registries", stale)
+			if health.Refused(stale) {
+				return errors.New("a registry has refused Lajstrom's credentials for a minute")
+			}
 			return errors.New("a registry has not answered for a minute")
 		}
 		return nil
