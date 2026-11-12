@@ -992,12 +992,20 @@ status is `holds on strongly consistent registries only` do not hold there.
   `Store.WithReferrersLock` without the API), the provider's tag-schema fallback
   (`Repository.Referrers`). The lock's transaction lifts `idle_in_transaction_session_timeout`
   for itself, and its `COMMIT` is checked: a lock lost while the push ran is
-  `index.ErrUnavailable`, `503` with `Retry-After`, never a success (#615).
+  `index.ErrUnavailable`, `503` with `Retry-After`, never a success (#615). The delete of one
+  referrer without the API (`deletion.deleteReferrer`) pushes its subject's index again without
+  it right after the index's delete and before the referrer's; when the registry does not take
+  that push, the index goes back as it was and the referrer stays (`503` with `Retry-After`).
+  An index that lacks referrers the audit log has as pushed and the registry has, or that is
+  missing, is pushed with them first (`deletion.subjectIndex`), so the retry of such a delete
+  lists them again, also after a delete whose referrer went before its index came back
+  (`deletion.findReferrer`; #711).
 - **Tests.** `TestPutReferrer`, `TestPutReferrerRefused`, `TestPutReferrerOCI`, `TestReferrers`,
   `TestReferrerPush`, `TestIntegrationReferrers`, `TestIntegrationReferrersConcurrent`,
   `TestRebuildTagSchema`, `TestReferrerIndexDeleteRefused`, `TestReferrersLockLost`,
-  `TestPutReferrerLockLost`; `cosign.sh` (on Zot and on distribution), the step of #28 in
-  `ha.sh`.
+  `TestPutReferrerLockLost`, `TestDeleteReferrerIndexNotPushed`, `TestDeleteReferrerRepairsIndex`,
+  `TestDeleteReferrerGone`, `TestIntegrationDeleteReferrerIndexRepair`; `cosign.sh` (on Zot and on
+  distribution), the step of #28 in `ha.sh`.
 - **When violated.** A referrer the registry collected is missing from the list; nothing reports
   it. A lock whose transaction ended while its push ran (a pooler's timeout, a terminated
   backend, a failover) is a `503` for that push, whose retry lists its referrer; a referrer
