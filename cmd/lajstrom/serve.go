@@ -185,7 +185,7 @@ func newServeCmd(a *app) *cobra.Command {
 				VisibilityTimeout: c.Ingest.VisibilityTimeout})
 			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log})
 			repos := newRepos(c, st, a.log, setCapabilities(providers))
-			proxies, err := c.Server.TrustedPrefixes()
+			login, proxies, err := edgeInputs(c, st, a.log)
 			if err != nil {
 				return err
 			}
@@ -208,6 +208,7 @@ func newServeCmd(a *app) *cobra.Command {
 				Ready:           ready(a.log, c.Database.Driver, st, health, rep),
 				API:             mgmt,
 				Facade:          v2,
+				OIDC:            login,
 				Authenticator:   authn,
 				MetricsListen:   c.Server.MetricsListen,
 				Pprof:           c.Server.Pprof,

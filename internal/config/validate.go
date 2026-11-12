@@ -36,7 +36,7 @@ func (c *Config) Validate() error {
 	c.Database.validate(&p)
 	c.Ingest.validate(&p)
 	c.Reconcile.validate(&p)
-	c.Auth.validate(&p)
+	c.Auth.validate(&p, c.Server)
 	c.Keys.validate(&p)
 	registries := map[string]int{}
 	for i, r := range c.Registries {
@@ -710,8 +710,41 @@ func isHTTP(u *url.URL) bool {
 	return (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
-func (a Auth) validate(p *problems) {
+func (a Auth) validate(p *problems, s Server) {
 	if a.Bootstrap.TTL <= 0 {
 		p.add("auth.bootstrap.ttl", "must be positive")
+	}
+	a.OIDC.validate(p, s)
+}
+
+// validate checks auth.oidc when its issuer is set (docs/spec/rbac.md §8): an absolute issuer
+// without a query, https unless server.insecureHTTP; a client id and the file of its secret;
+// server.externalURL, the base of the redirect URI; a user name claim; a lifetime of at most a
+// year.
+func (o OIDC) validate(p *problems, s Server) {
+	if o.Issuer == "" {
+		return
+	}
+	u, err := url.Parse(o.Issuer)
+	switch {
+	case err != nil || !isHTTP(u) || u.RawQuery != "" || u.Fragment != "":
+		p.add("auth.oidc.issuer", "must be an absolute http(s) URL without a query")
+	case u.Scheme != "https" && !s.InsecureHTTP:
+		p.add("auth.oidc.issuer", "must be https (http only with server.insecureHTTP)")
+	}
+	if o.ClientID == "" {
+		p.add("auth.oidc.clientID", "must be set when auth.oidc.issuer is")
+	}
+	if o.ClientSecretFile == "" {
+		p.add("auth.oidc.clientSecretFile", "must be set when auth.oidc.issuer is")
+	}
+	if s.ExternalURL == "" {
+		p.add("server.externalURL", "must be set for auth.oidc: the redirect URI is <externalURL>/-/oidc/callback")
+	}
+	if o.UsernameClaim == "" {
+		p.add("auth.oidc.usernameClaim", "must not be empty")
+	}
+	if o.TokenLifetime <= 0 || o.TokenLifetime > MaxOIDCTokenLifetime {
+		p.add("auth.oidc.tokenLifetime", "must be positive and at most 8760h (a year)")
 	}
 }

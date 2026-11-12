@@ -97,12 +97,12 @@ func checkEndpoint(s string, allowHTTP bool) error {
 // getJSON reads the JSON document at u into v. Any failure is an error wrapping ErrUnavailable
 // that names the URL, which holds no secret.
 func (c *Client) getJSON(ctx context.Context, u string, v any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil) //nolint:gosec // the configured issuer, or its discovery document's endpoints
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrUnavailable, u, err)
 	}
 	req.Header.Set("Accept", "application/json")
-	resp, err := c.cfg.HTTPClient.Do(req)
+	resp, err := c.cfg.HTTPClient.Do(req) //nolint:gosec // the configured issuer, or its discovery document's endpoints
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrUnavailable, u, err)
 	}
