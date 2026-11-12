@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # docker and crane pull a multi-arch image through an oci proxy repo (#442, ADR 0018,
 # docs/spec/proxy-and-group.md §11). A manual scenario: make e2e does not run it (run.sh runs
-# test/e2e/*.sh only), and with OCI_PROXY_DOCKERHUB=1 it asks Docker Hub, whose anonymous pulls
-# are limited (100 per hour per address, ratelimit-limit says).
+# test/e2e/*.sh only; test/e2e/ociproxy.sh is its crane part there, with containerd, #873), and
+# with OCI_PROXY_DOCKERHUB=1 it asks Docker Hub, whose anonymous pulls are limited (100 per hour
+# per address, ratelimit-limit says).
 #
 #   test/e2e/manual/ociproxy.sh
 #

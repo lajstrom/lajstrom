@@ -41,7 +41,9 @@
 # for a registry without a catalog (#37), and the repos
 # raw/scratch, apt/ubuntu, apt/e2e and pypi/e2e on it, none readable anonymously; the upstream
 # npmjs at $LAJSTROM_E2E_NPM_UPSTREAM (default https://registry.npmjs.org/), which npm.sh makes
-# a proxy repo of; and the user
+# a proxy repo of; the upstream e2e-oci of format oci at http://$LAJSTROM_E2E_OCI_UPSTREAM
+# (default the registry local's host:port, exported), without credentials, which ociproxy.sh
+# seeds with crane and makes an oci proxy repo of; and the user
 # $LAJSTROM_E2E_USER with the admin binding, made with the bootstrap token of the file
 # auth.bootstrap.tokenFile once the server is ready; auth.anonymousRead is true, so that a repo's
 # own anonymousRead decides (rbac.sh turns it on for a repo of its own); no metrics listener, no
@@ -77,6 +79,8 @@ order="raw oras auth rbac oci-token cosign tokens apt rpm pypi maven npm" # the 
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 registry="${LAJSTROM_E2E_REGISTRY:-localhost:5000}"
+LAJSTROM_E2E_OCI_UPSTREAM="${LAJSTROM_E2E_OCI_UPSTREAM:-$registry}"
+export LAJSTROM_E2E_OCI_UPSTREAM
 registry_user="${LAJSTROM_E2E_REGISTRY_USER:-}"
 registry_prefix="${LAJSTROM_E2E_REGISTRY_PREFIX:-}"
 if [ -n "$registry_user" ]; then
@@ -238,6 +242,9 @@ upstreams:
   - name: npmjs
     format: npm
     url: "${LAJSTROM_E2E_NPM_UPSTREAM:-https://registry.npmjs.org/}"
+  - name: e2e-oci
+    format: oci
+    url: "http://$LAJSTROM_E2E_OCI_UPSTREAM"
 ${verdaccio_token:+  - name: verdaccio
     format: npm
     url: "$verdaccio/"

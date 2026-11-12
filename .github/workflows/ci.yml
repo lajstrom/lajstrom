@@ -222,12 +222,13 @@ jobs:
   e2e:
     # make e2e (#34, docs/testing.md): bin/lajstrom on the runner against Zot, and the scenarios
     # of test/e2e/ with real clients, curl on the runner and oras, apt-get, pip, mvn, gradle, npm,
-    # pnpm and yarn in containers with --network host; then apt.sh again in the other apt clients
-    # of #48, cosign.sh against distribution, a registry without the referrers API (#28), and
-    # npm.sh against distribution (#312). npm.sh reaches registry.npmjs.org: it installs pnpm and
-    # yarn from there, and its proxy repo fetches a public package through it. migrate-npm.sh
-    # moves packages from the Verdaccio of the dev stack's verdaccio profile (#854). The same
-    # paths as the integration cells decide whether it runs. Not a matrix, so a skipped run
+    # pnpm, yarn, crane and containerd in containers with --network host; then apt.sh again in
+    # the other apt clients of #48, cosign.sh against distribution, a registry without the
+    # referrers API (#28), and npm.sh against distribution (#312). npm.sh reaches
+    # registry.npmjs.org: it installs pnpm and yarn from there, and its proxy repo fetches a
+    # public package through it; ociproxy.sh downloads containerd's release from GitHub.
+    # migrate-npm.sh moves packages from the Verdaccio of the dev stack's verdaccio profile
+    # (#854). The same paths as the integration cells decide whether it runs. Not a matrix, so a skipped run
     # reports the check e2e itself.
     name: e2e
     needs: changes
@@ -308,8 +309,9 @@ jobs:
           images=(
             ubuntu:24.04                    # apt.sh, tokens.sh
             ubuntu:22.04                    # apt.sh, below
-            debian:12                       # apt.sh, below
+            debian:12                       # apt.sh, below; ociproxy.sh runs containerd in it
             ghcr.io/oras-project/oras:v1.3.6
+            gcr.io/go-containerregistry/crane:v0.22.1@sha256:1f968817b95790bed063f71175aa6b8ff879fa17064020415f3e18bb6e6a36e1 # ociproxy.sh
             python:3.13                     # pypi.sh
             maven:3.9.16-eclipse-temurin-21 # maven.sh
             gradle:8.14.6-jdk21             # maven.sh
@@ -349,6 +351,9 @@ jobs:
         timeout-minutes: 6
         env:
           LAJSTROM_E2E_REGISTRY: localhost:5000
+          # The upstream of ociproxy.sh's oci proxy repo (#873): distribution, which crane seeds,
+          # so that the proxy copies from one registry into another.
+          LAJSTROM_E2E_OCI_UPSTREAM: localhost:5001
           # first-admin.sh runs two replicas on a schema of this database, with the psql of the
           # runner image.
           LAJSTROM_E2E_POSTGRES_DSN: "postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable"
