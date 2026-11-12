@@ -1,0 +1,13 @@
+# An Ingress in front of the defaults, with TLS from a Secret; make helm-lint renders it. The
+# annotations are the controller's: here Traefik's, whose entry point also needs its readTimeout
+# at 0 for long uploads (docs/reverse-proxy.md, Traefik).
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+  tls:
+    - secretName: lajstrom-tls
+      hosts: [art.example.com]
+metrics:
+  enabled: false
