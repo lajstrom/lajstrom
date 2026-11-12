@@ -979,7 +979,9 @@ longer than `reconcile.graceAge` is outside them
   upstream for one name's document once at a time. On an `oci` proxy the digest is the
   checksum: a manifest, an index or a blob is kept only when its bytes have the digest that its
   reference or the manifest listing it names, and a blob no held or cached manifest lists is
-  never fetched.
+  never fetched. The completion of a platform a client got ([proxy-and-group.md](proxy-and-group.md)
+  §11.5, step 5) fetches under the same claims, and a blob the backend mounts from another path
+  of the repo is not fetched at all.
 - **Scope.** Proxy repos (npm in M4), directly and through a group; `oci` proxy repos
   ([proxy-and-group.md](proxy-and-group.md) §11), with [#442](https://github.com/lajstrom/lajstrom/issues/442).
 - **Assumes.** Registry: **monotonic reads** (**unchecked**) for the waiters, which look the
