@@ -206,9 +206,9 @@ func (c *Core) entry(ctx context.Context, p *proxied, a artifact) (*format.Upstr
 	return nil, nil, fmt.Errorf("%w: proxy: %s: upstream %s does not list %s", index.ErrNotFound, p.id(), p.settings.Upstream, a.ref.File)
 }
 
-// fetch takes the artifact's claim, downloads its files, checks them and ingests them (§5,
-// steps 6 to 10), on its own context. shared reports that another replica fetched it while
-// this one waited.
+// fetch takes the artifact's claim and streams its file from the upstream into the registry
+// through the one write path, checked on its way (§5, steps 6 to 10), on its own context. shared
+// reports that another replica fetched it while this one waited.
 func (c *Core) fetch(ctx context.Context, p *proxied, a artifact, entry *format.UpstreamEntry, row *index.ProxyMeta) (shared bool, err error) {
 	principal := auth.PrincipalFrom(ctx)
 	cl := index.FetchClaim{RepoID: p.repo.ID, Package: a.pkgPath, Tag: a.tag, Principal: principal.String(), Replica: c.o.Replica}
@@ -224,25 +224,22 @@ func (c *Core) fetch(ctx context.Context, p *proxied, a artifact, entry *format.
 			c.o.Log.WarnContext(ctx, "proxy: a fetch claim not released; it goes stale", "repo", p.id(), "artifact", a.subject(), "error", err.Error())
 		}
 	}()
-	d, err := c.download(ctx, p, a, entry, row)
+	body, err := c.download(ctx, p, a, entry, row)
 	if err != nil {
 		return false, err
 	}
-	defer d.close()
-	up := format.Upload{Files: d.files, Params: entry.Params, Origin: d.origin}
-	pub, err := c.o.Ingest.Upload(ctx, p.repo, up, principal)
+	defer body.close()
+	up := format.StreamUpload{Name: a.ref.Name, File: format.UploadedFile{Name: body.name, Size: -1}, Body: body,
+		Params: entry.Params, Origin: body.origin}
+	pub, err := c.o.Ingest.UploadStream(ctx, p.repo, up, principal)
 	switch {
-	case errors.Is(err, format.ErrInvalid):
-		c.reject(ctx, p, a, d.origin.URL, "invalid", map[string]any{"error": err.Error()})
-		return false, fmt.Errorf("%w: proxy: %s: upstream %s served %s, which the format refuses: %s", format.ErrBadGateway,
-			p.id(), p.settings.Upstream, a.subject(), err.Error())
 	case errors.Is(err, index.ErrConflict):
 		// The tag holds other bytes: the repo serves what it holds (ADR 0005).
 		c.o.Log.WarnContext(ctx, "proxy: the upstream serves other bytes than the repo holds under the tag; the repo's are served",
 			"repo", p.id(), "upstream", p.settings.Upstream, "artifact", a.subject(), "error", err.Error())
 		return false, nil
 	case err != nil:
-		return false, err
+		return false, c.refused(ctx, p, a, body, err)
 	}
 	c.o.Log.InfoContext(ctx, "proxy: fetched from the upstream and published", "repo", p.id(), "upstream", p.settings.Upstream,
 		"artifact", a.subject(), "digest", pub.Digest.String(), "principal", principal.String())

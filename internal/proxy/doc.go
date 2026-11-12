@@ -7,5 +7,5 @@
 // The format's plugin provides the hooks (format.Proxier); this package does the rest: the
 // settings of a proxy repo and its allow and deny lists, the client of an upstream, the
 // metadata cache with its TTLs, negative entries and offline mode, and the fetch on a miss with
-// its claim across replicas, spool, checksum and ingest.
+// its claim across replicas, its stream into the registry, checksum and ingest.
 package proxy
