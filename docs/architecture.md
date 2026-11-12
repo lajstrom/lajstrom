@@ -52,7 +52,7 @@ flowchart TB
     auth["AuthN / AuthZ<br/>OIDC*, local users, groups from claims*<br/>tokens: PAT with expiry, deploy tokens per repo<br/>RBAC: binding = role × repo mask"]
     ingest["Ingest pipeline<br/>validate → claim the tag → push → read back → index<br/>publication sessions (maven)<br/>dedup by digest, 409 on tag collision"]
     render["Index renderer<br/>Packages, Release · repodata<br/>maven-metadata · simple · packument<br/>cache + signing with the repo's GPG key"]
-    proxy["Proxy fetcher, npm only<br/>miss → claim → upstream → spool, check → ingest<br/>TTL metadata cache in the DB"]
+    proxy["Proxy fetcher, npm only<br/>miss → claim → upstream → stream, check → ingest<br/>TTL metadata cache in the DB"]
     reindex["Reindex / reconcile<br/>listRepos → tags/list → manifests<br/>upsert from annotations, remove orphans<br/>catches writes that bypassed us"]
     retention["Delete<br/>a version through the API, audited<br/>retention: an external scheduler runs<br/>lajstrom admin retention<br/>blob GC is the registry's job"]
     keys["Keys · audit · events<br/>GPG key per repo, later KMS<br/>cosign signatures and SBOM via referrers<br/>audit log · webhooks*"]
@@ -217,9 +217,9 @@ sequenceDiagram
 ### D. Proxy repo: npm cache miss
 
 A proxy repo serves an upstream and keeps what it fetched. A file it does not hold is fetched
-once across replicas, spooled for that one request, checked against the upstream's checksum and
-published through ingest like an upload; the client then gets it from the registry, never from
-the spool, and the next request for it does not touch the upstream. The upstream's documents are
+once across replicas, streamed into the registry through ingest like an upload and checked
+against the upstream's checksum before it is committed; the client then gets it from the
+registry, and the next request for it does not touch the upstream. The upstream's documents are
 cached in the DB (`proxy_meta`) with a TTL. npm is the only format with a proxy so far; pypi has
 none yet ([proxy-and-group.md](spec/proxy-and-group.md) §4 and §5).
 
@@ -246,13 +246,14 @@ sequenceDiagram
   D-->>PX: no
   PX->>D: claim the fetch (fetch_claims: repo, package path, tag)
   PX->>UP: GET the tarball
-  PX->>PX: spool it for this request, check sha512 of dist.integrity
-  PX->>I: Upload with lajstrom.origin.*: Build, Validate
+  PX->>I: UploadStream with lajstrom.origin.*, the body of the answer
+  I->>R: open an upload session, PATCH the tarball as it arrives
+  PX->>PX: at its end, check sha512 of dist.integrity (else the session is cancelled)
+  I->>I: Build, Validate
   I->>D: claim tag 4.17.21, audit row proxy.fetch pending
-  I->>R: push blobs, manifest + tag, read back until served
+  I->>R: close the session with its digest, push manifest + tag, read back until served
   I->>D: confirm (versions, files, audit row ok)
   PX->>D: release the claim
-  PX->>PX: remove the spool
   FE->>R: GET blobs/sha256:…
   R-->>FE: 307 presigned URL, or a stream
   FE-->>U: 307 to S3, otherwise proxied stream

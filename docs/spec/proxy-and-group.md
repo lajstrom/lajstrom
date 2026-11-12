@@ -279,32 +279,41 @@ A request for a file of a proxy repo, directly or through a group, runs these st
 7. **The download.** First, a name the registry does not take (`provider.Capabilities.CheckName`:
    the depth or the length of its OCI repository) stops the fetch before any request (`403`
    naming the limit, §6; an audit row `proxy.reject`, #599): ingest would not publish it, and
-   the upstream is not at fault. Each file the entry lists (npm: one tarball) is requested from
-   the upstream (§9.2) and spooled to `$TMPDIR` for the request, while sha256 and the algorithms
-   of the upstream's checksums are computed. A `Content-Length`, or a body, above the repo's
-   `policy.maxFileSize` (else its format's default, `format.MaxFileSize`) or the registry's
+   the upstream is not at fault. The file the entry lists (npm: the tarball; an entry lists one) is
+   requested from the upstream (§9.2), and its body streams into an upload session of the
+   registry through the one write path, as a client's upload does (`Publisher.UploadStream`,
+   [ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)): ingest computes sha256 and the
+   checksums the plugin needs, the plugin's inspector reads it as it passes, and the fetcher
+   hashes it with the algorithm of step 8. Nothing of it is written to a disk. A
+   `Content-Length`, or a body, above the repo's `policy.maxFileSize` or the registry's
    `capabilities.maxBlobSize` stops the fetch (`403`, §6; an audit row `proxy.reject`). An
    upstream `404` or `410` makes the name's row stale (§4.3).
 8. **The check.** The strongest checksum the entry gives (sha512, then sha256, then sha1) must
-   match the spool. A mismatch refuses the fetch: nothing is pushed, an audit row
-   `proxy.reject` and a warning name both values. An entry without a checksum is refused the
-   same way, unless the format's ADR says that its upstream publishes none.
-9. **The ingest.** The plugin builds the upload from the spooled files as it would a client's
-   (`Plugin.Build`), with `Upload.Origin` set (§10), and the fetcher calls `Publisher.Upload`
-   with the principal of the request: Build, Validate, the tag claims, the push, the index rows,
-   the audit row `proxy.fetch` instead of `push`, as for any upload. The manifest carries
+   match the bytes, which the fetcher knows when the body ends, before the session is closed.
+   A mismatch refuses the fetch: the session is cancelled and nothing is stored, an audit row
+   `proxy.reject` and a warning name both values. A body that the plugin's inspector refuses
+   before its end is read to it, so that bytes other than the upstream's are refused for their
+   checksum. An entry without a checksum is refused the same way, before the file is asked,
+   unless the format's ADR says that its upstream publishes none.
+9. **The ingest.** The plugin builds the upload from the streamed file as it would a client's
+   (`Plugin.Build`, from what its inspector read), with `StreamUpload.Origin` set (§10), and
+   `Publisher.UploadStream` runs with the principal of the request: Build, Validate, the tag
+   claims, the close of the session, the push of the manifest, the index rows, the audit row
+   `proxy.fetch` instead of `push`, as for any upload. The manifest carries
    `lajstrom.origin.url` and `lajstrom.origin.checksum` and no `lajstrom.uploaded-by`
    (manifest-profile.md §3.1). An artifact that Validate refuses is `proxy.reject` and `502`:
    the upstream served it, the client did nothing wrong. A tag that holds other bytes keeps
    them (ADR 0005): the repo serves what it holds, and the change upstream is logged at warn.
-10. The claim is released and the spool removed, whatever the outcome; on success the file is
-    served from the registry as in step 3. The spool is never served from.
+   A refusal, a body the upstream cuts short, and a failure of the registry cancel the session:
+   nothing of the fetch is stored.
+10. The claim is released whatever the outcome; on success the file is served from the
+    registry as in step 3.
 
 The fetch runs on a context of its own, bounded by the upstream's timeouts and the server's
 shutdown, so that a client that disconnects does not cancel it for the requests that wait on
-it. It does not count toward `server.maxConcurrentUploads`, which counts the requests that
-upload (`POST`, `PUT`, `PATCH`), and the request that causes a fetch is a read; nothing bounds
-the bytes of the fetch spools yet (#427; guarantees.md, Gaps).
+it. It holds a connection to the upstream and an upload session of the registry, and no
+temporary file; `server.maxConcurrentUploads`, which counts the requests that upload, does not
+count it.
 
 ### 5.1 Prefetch
 
@@ -526,7 +535,7 @@ type UpstreamFile struct {
 ```
 
 The rest is the core's and no plugin repeats it: the lists, the cache and its TTLs, the claims,
-the upstream client, the spool and the check, the ingest call, the statuses, which members take
+the upstream client, the stream and the check, the ingest call, the statuses, which members take
 part in a group. The plugin's handlers ask the core for a document or a file of a repo of any
 kind and do not branch on the kind; a write asks the core for its target repo (the repo itself,
 a group's hosted member, or `405`).
