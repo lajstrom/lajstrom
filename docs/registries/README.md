@@ -158,10 +158,11 @@ in its compose file re-runs [Commands](jfrog-jcr.md#commands).
 
 Project Quay 3.18.2, the upstream of Red Hat Quay ([quay.md](quay.md)), measured on 2026-11-12
 with an organisation as Lajstrom's prefix and a robot that administers it, row for row as the
-table above. It takes Lajstrom's manifests, but every delete through Lajstrom fails (its token
-endpoint refuses the action `delete`, #801) and the catalog Lajstrom reads is empty (#802, which
-the vendor table works around with `catalog: false` since #803, `vendor=quay`): a backend for
-trying Lajstrom, not for data, until those are fixed. Its build rule, on master and not released, is
+table above. It takes Lajstrom's manifests, but every delete through Lajstrom failed (its token
+endpoint refuses the action `delete`; since #801 the provider asks `push` instead) and the
+catalog Lajstrom reads is empty (#802, which the vendor table works around with `catalog: false`
+since #803, `vendor=quay`): a backend for trying Lajstrom, not for data, until those are fixed.
+Its build rule, on master and not released, is
 [measured before and after](quay.md#the-build-rule).
 
 | | Quay 3.18.2 |
@@ -175,7 +176,7 @@ trying Lajstrom, not for data, until those are fixed. Its build rule, on master 
 | A listing API of its own | [REST API, per namespace](quay.md#catalog) |
 | Tag list order and pagination | [lexical; `n`/`last`/`Link`; **cached 120 s**](quay.md#tags) |
 | Read-after-write lag | [none for manifests and blobs; a tag list read before a write up to 120 s, the catalog 60 s](quay.md#consistency) |
-| Delete a manifest by digest | [yes, 202, with its tags, with a `push` token; **oras-go's `delete` scope is 400 at the token endpoint**](quay.md#delete) |
+| Delete a manifest by digest | [yes, 202, with its tags, with a `push` token; **oras-go's `delete` scope is 400 at the token endpoint**](quay.md#delete), so the provider asks `push` (#801) |
 | Delete by tag | [yes; the manifest goes with its last tag](quay.md#delete) |
 | Delete a referrer pushed by digest | [**404, and it stays**: its hidden tag holds it](quay.md#delete) |
 | Delete a repository | [no `/v2` API; REST API](quay.md#delete) |
@@ -410,7 +411,7 @@ registries:
     # uploads: {spoolUnknownLength: true}   # for clients that stream more than one chunk (gitea.md, item 4)
 ```
 
-Project Quay ([quay.md](quay.md#configuration)); deletes fail whatever is set (#801):
+Project Quay ([quay.md](quay.md#configuration)):
 
 ```yaml
 server:
