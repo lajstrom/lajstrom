@@ -227,6 +227,8 @@ func (r *repository) FinishBlobUpload(ctx context.Context, u provider.Upload, d 
 }
 
 // BlobUploadStatus asks for the session's offset: GET <location>, 204 with Range and Location.
+// A Range one byte ahead of the bytes the session holds, as Quay's and Forgejo's, is read one
+// byte back once the provider has measured that the registry answers so (statusOffset).
 func (r *repository) BlobUploadStatus(ctx context.Context, u provider.Upload) (provider.Upload, error) {
 	op := r.op("upload status", u.ID)
 	loc, err := r.p.location(u.Location)
@@ -237,8 +239,13 @@ func (r *repository) BlobUploadStatus(ctx context.Context, u provider.Upload) (p
 	if err != nil {
 		return u, err
 	}
-	defer func() { _ = resp.Body.Close() }()
-	return r.session(op, resp, u, u.Offset)
+	_ = resp.Body.Close()
+	next, err := r.session(op, resp, u, u.Offset)
+	if err != nil {
+		return u, err
+	}
+	next.Offset = r.statusOffset(ctx, u, resp.Header.Get("Range"), next.Offset)
+	return next, nil
 }
 
 // CancelBlobUpload ends the session: DELETE <location>, 204.
@@ -459,15 +466,25 @@ func contentRange(offset, size int64) string {
 // too): last+1. Registries answer an empty session and one of one byte both with 0-0, so 0-0
 // is counted when that is 0 or 1; a header that is missing or does not parse is counted.
 func offsetOf(rng string, counted int64) int64 {
-	first, last, ok := strings.Cut(strings.TrimPrefix(strings.TrimSpace(rng), "bytes="), "-")
-	n, err := strconv.ParseInt(last, 10, 64)
+	n, ok := rangeLast(rng)
 	switch {
-	case !ok || first != "0" || err != nil || n < 0:
+	case !ok:
 		return counted
 	case n == 0:
 		return min(counted, 1)
 	}
 	return n + 1
+}
+
+// rangeLast returns <last> of a Range header 0-<last> (bytes=0-<last> too); false when the
+// header is missing or does not parse.
+func rangeLast(rng string) (int64, bool) {
+	first, last, ok := strings.Cut(strings.TrimPrefix(strings.TrimSpace(rng), "bytes="), "-")
+	n, err := strconv.ParseInt(last, 10, 64)
+	if !ok || first != "0" || err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // withoutURL drops the URL that net/http puts in its errors: an upload URL carries the

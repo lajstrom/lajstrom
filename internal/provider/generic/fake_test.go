@@ -43,6 +43,7 @@ type fakeRegistry struct {
 	stateful       bool   // upload Locations are absolute and carry a _state that changes with every chunk and must come back, as distribution's
 	refuseStreamed int    // answer a chunk without a known length and Content-Range into a session that holds bytes with this status, as Gitea (400) and JFrog (416); 0 takes it
 	chunkLimit     int    // as GHCR: a PATCH with Content-Range of more than chunkLimit bytes is 416, and one without Content-Range starts the session over; 0 takes any
+	statusAhead    string // the Range of a session's GET, of the bytes it holds, one byte ahead: "0-%d" as Forgejo, "bytes=0-%d" as Quay; "": the spec's
 	authMode       string // "", "basic" or "bearer"
 	challengeScope string // the scope parameter of the bearer challenge; Gitea sends "*" whatever the request
 	user, pass     string // the credentials auth accepts
@@ -470,6 +471,9 @@ func (f *fakeRegistry) answerSession(w http.ResponseWriter, id string, up *fakeU
 	}
 	w.Header().Set("Location", loc)
 	w.Header().Set("Range", fmt.Sprintf("0-%d", max(len(up.data)-1, 0)))
+	if status == http.StatusNoContent && f.statusAhead != "" { // a GET of the session
+		w.Header().Set("Range", fmt.Sprintf(f.statusAhead, len(up.data)))
+	}
 	w.WriteHeader(status)
 }
 

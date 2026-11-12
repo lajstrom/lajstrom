@@ -76,6 +76,10 @@ type Provider struct {
 	deleteRefused atomic.Bool
 	// quirks are the vendor's, set by the first probe that succeeded; none before it.
 	quirks atomic.Pointer[quirks]
+	// statusConv is how the registry's upload status reads, measured on the first status that
+	// disagreed with its session (statusOffset); statusMu serialises the measurement.
+	statusMu   sync.Mutex
+	statusConv atomic.Int32
 }
 
 // quirk returns the vendor's quirks, none before the probe.
