@@ -33,7 +33,8 @@ func statuses(results []proxy.PrefetchResult) []proxy.PrefetchResult {
 
 // TestPrefetch: a prefetch fetches the versions the upstream's pointers name, or the newest
 // when they name none, every version with all, through the fetch of a miss with its audit rows;
-// what the repo holds is held, and a name or an entry that fails is failed with the status of a
+// the other kinds of document are kept for offline; what the repo holds is held, and a name, an
+// entry or another kind that fails is failed with the status of a
 // request, while the others go on (docs/spec/proxy-and-group.md §5.1).
 func TestPrefetch(t *testing.T) {
 	e := newEnv(t, `{"name": "up", "deny": ["secret*"]}`)
@@ -46,6 +47,7 @@ func TestPrefetch(t *testing.T) {
 	e.up.publish("lib", "0.10.0", "new", at("2026-02-01T00:00:00Z"))
 	e.up.publish("lib", "0.8.0", "older", at("2025-12-01T00:00:00Z"))
 	e.up.publish("bad", "1.0.0", "bytes", func(v *upstreamVersion) { v.SHA512 = fmt.Sprintf("%0128x", 1) })
+	e.up.noOther = map[string]bool{"lib": true}
 	c := e.core(t, "r1", proxy.Options{})
 
 	names := []string{"tool", "lib", "gone", "secret-sauce", "bad"}
@@ -55,6 +57,7 @@ func TestPrefetch(t *testing.T) {
 		{Name: "tool", Version: "1.1.0", Status: "fetched"},
 		{Name: "tool", Version: "2.0.0-rc.1", Status: "fetched"},
 		{Name: "lib", Version: "0.10.0", Status: "fetched"},
+		{Name: "lib", Status: proxy.PrefetchFailed, HTTPStatus: http.StatusNotFound},
 		{Name: "gone", Status: proxy.PrefetchFailed, HTTPStatus: http.StatusNotFound},
 		{Name: "secret-sauce", Status: proxy.PrefetchFailed, HTTPStatus: http.StatusForbidden},
 		{Name: "bad", Version: "1.0.0", Status: proxy.PrefetchFailed, HTTPStatus: http.StatusBadGateway},
@@ -67,6 +70,11 @@ func TestPrefetch(t *testing.T) {
 			t.Errorf("%s %s failed without a message", r.Name, r.Version)
 		}
 	}
+	for _, name := range []string{"tool", "bad"} {
+		if _, err := e.st.GetProxyMeta(t.Context(), e.repo.ID, name, "other"); err != nil {
+			t.Errorf("the document of the second kind of %s: %v, want it kept for offline", name, err)
+		}
+	}
 	if evs, _ := audits(t, e, "proxy.fetch"); len(evs) != 3 || evs[0].Principal != alice.String() {
 		t.Errorf("proxy.fetch rows %+v, want 3 by alice", evs)
 	}
@@ -75,6 +83,8 @@ func TestPrefetch(t *testing.T) {
 	}
 
 	downloads := e.up.fileCalls.Load()
+	e.up.noOther = nil
+	e.advance(3 * time.Minute) // past the negativeTTL of the absent row of lib's second kind
 	got, err = c.Prefetch(asAlice(t), e.repo, []string{"tool", "lib"}, false)
 	must(t, err)
 	want = []proxy.PrefetchResult{
