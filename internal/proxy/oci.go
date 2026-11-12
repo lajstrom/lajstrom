@@ -50,6 +50,18 @@ type OCIUpstream struct {
 	// back on, and revalidateTimeout bounds that HEAD whole (revalidateTag).
 	revalidate        provider.Provider
 	revalidateTimeout time.Duration
+	transits          int // upstreams[].maxConcurrentTransits: of one blob on the replica, -1 for no cap
+}
+
+// OCITransits is upstreams[].maxConcurrentTransits: how many requests of one blob the replica
+// streams from the upstream at once while the blob's copy runs (§11.8, #875); nil or -1 is no
+// cap, 0 none.
+func OCITransits(n *int) OCIUpstreamOption {
+	return func(u *OCIUpstream) {
+		if n != nil {
+			u.transits = max(*n, -1)
+		}
+	}
 }
 
 // OCIUpstreamOption sets what an OCIUpstream takes from its configuration.
@@ -72,10 +84,11 @@ func OCIRetries(n int) OCIUpstreamOption {
 
 // NewOCIUpstream returns the upstream name served by client, a read-only provider of the
 // registry (generic.NewUpstream); dockerHub turns the library/ rule on (§11.7). Without opts,
-// its retries are config.DefaultUpstreamRetries. An expired tag is revalidated with client
-// within config.DefaultUpstreamRevalidateTimeout until WithRevalidate says otherwise.
+// its retries are config.DefaultUpstreamRetries and its transits have no cap. An expired tag is
+// revalidated with client within config.DefaultUpstreamRevalidateTimeout until WithRevalidate
+// says otherwise.
 func NewOCIUpstream(name string, client provider.Provider, dockerHub bool, opts ...OCIUpstreamOption) *OCIUpstream {
-	u := &OCIUpstream{name: name, client: client, dockerHub: dockerHub, retries: config.DefaultUpstreamRetries,
+	u := &OCIUpstream{name: name, client: client, dockerHub: dockerHub, retries: config.DefaultUpstreamRetries, transits: -1,
 		revalidate: client, revalidateTimeout: config.DefaultUpstreamRevalidateTimeout}
 	for _, o := range opts {
 		o(u)
@@ -128,7 +141,7 @@ func LoadOCIUpstreams(cfg []config.Upstream, log *slog.Logger) (map[string]*OCIU
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", key, err)
 		}
-		out[c.Name] = NewOCIUpstream(c.Name, client, c.IsDockerHub(), OCIRetries(c.Retries)).WithRevalidate(revalidate, c.RevalidateTimeout)
+		out[c.Name] = NewOCIUpstream(c.Name, client, c.IsDockerHub(), OCIRetries(c.Retries), OCITransits(c.MaxConcurrentTransits)).WithRevalidate(revalidate, c.RevalidateTimeout)
 	}
 	return out, nil
 }

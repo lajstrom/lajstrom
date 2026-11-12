@@ -60,7 +60,10 @@ What happens on the first pull of a tag:
    `linux/arm64`.
 3. Each layer streams into the backend and, at the same time, to the client that asked first;
    its last byte waits until the backend has committed bytes of the right digest. Other clients
-   that ask for it meanwhile wait and are served from the backend. A layer the backend holds
+   that ask for it meanwhile, on any replica, get a stream of their own from the upstream, with
+   the same check of the digest, and nothing of it is stored: containerd gives up on a response
+   whose headers take 30 s. `upstreams[].maxConcurrentTransits` caps those streams per blob and
+   replica; `0` makes them wait for the copy and be served from the backend. A layer the backend holds
    under another repository of the repo (`kube-apiserver` and `kube-controller-manager` share
    most of theirs) is mounted instead, with no request to the upstream, even when the repo is
    offline; a backend that does not mount (Nexus's `docker` format, JFrog) gets it fetched.

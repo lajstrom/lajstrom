@@ -65,18 +65,35 @@ func (c *Core) OCIBlob(ctx context.Context, repo index.Repo, path string, d dige
 		defer cancel()
 		return c.ociFetchBlob(fctx, p, desc, t)
 	})
-	if !joined && t != nil {
-		select {
-		case <-t.started: // this request's fetch holds the claim, and streams
-			if t.serve(func(err error) { ociCountFetch(p, fetchOutcome(err)) }) {
-				return desc, t.reader(ctx), nil
-			}
-		case <-fl.done:
-		case <-ctx.Done():
-			return ocispec.Descriptor{}, nil, ctx.Err()
-		}
+	if rc, err := c.ociStream(ctx, p, desc, t, fl, joined, stream); rc != nil || err != nil {
+		return desc, rc, err
 	}
 	return desc, nil, c.ociAwait(ctx, p, fl, joined)
+}
+
+// ociStream returns the stream that answers a request of the blob desc with stream, nil when
+// the request waits for the copy: the tee t when its flight fl holds the claim (§11.8); a
+// transit when the copy runs under a claim the request does not hold, the flight it joined or
+// another replica's (ociTransit, #875).
+func (c *Core) ociStream(ctx context.Context, p *ociProxied, desc ocispec.Descriptor, t *tee, fl *flight, joined, stream bool) (io.ReadCloser, error) {
+	switch {
+	case joined && stream:
+		return c.ociTransit(ctx, p, desc), nil
+	case joined || t == nil:
+		return nil, nil
+	}
+	select {
+	case <-t.started: // this request's fetch holds the claim, and streams
+		if t.serve(func(err error) { ociCountFetch(p, fetchOutcome(err)) }) {
+			return t.reader(ctx), nil
+		}
+	case <-t.elsewhere: // another replica holds the claim, and copies
+		return c.ociTransit(ctx, p, desc), nil
+	case <-fl.done:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return nil, nil
 }
 
 // blobFlight is the key of the flight of the blob d at p's path, which a client's miss and a
@@ -162,7 +179,14 @@ func (c *Core) ociFetchBlob(ctx context.Context, p *ociProxied, desc ocispec.Des
 		defer func() { t.finish(cmp.Or(err, errNotFetched(shared))) }()
 	}
 	held := func(ctx context.Context) (bool, error) { return c.ociHasBlob(ctx, p, desc) }
-	release, shared, err := c.ociClaim(ctx, p, desc.Digest.String(), held)
+	waiting := held // ociClaim asks it only while another replica holds the claim
+	if t != nil {
+		waiting = func(ctx context.Context) (bool, error) {
+			t.waits()
+			return held(ctx)
+		}
+	}
+	release, shared, err := c.ociClaim(ctx, p, desc.Digest.String(), waiting)
 	if shared || err != nil {
 		return shared, err
 	}

@@ -27,6 +27,8 @@ type tee struct {
 	size, limit int64
 	started     chan struct{}
 	start       sync.Once
+	elsewhere   chan struct{} // closed once the fetch waits on another replica's claim (away)
+	away        sync.Once
 
 	mu      sync.Mutex
 	cond    *sync.Cond
@@ -40,13 +42,17 @@ type tee struct {
 
 // newTee returns the tee of a blob of size bytes whose reader may fall limit bytes behind.
 func newTee(size, limit int64) *tee {
-	t := &tee{size: size, limit: limit, started: make(chan struct{})}
+	t := &tee{size: size, limit: limit, started: make(chan struct{}), elsewhere: make(chan struct{})}
 	t.cond = sync.NewCond(&t.mu)
 	return t
 }
 
 // begin says that the fetch holds the claim and streams: the request may read from now on.
 func (t *tee) begin() { t.start.Do(func() { close(t.started) }) }
+
+// waits says that the fetch waits on the claim of another replica, whose copy runs: the request
+// may be answered by a transit meanwhile (#875).
+func (t *tee) waits() { t.away.Do(func() { close(t.elsewhere) }) }
 
 // Write takes the upstream's bytes as they go into the backend; it never blocks and never fails.
 func (t *tee) Write(p []byte) (int, error) {

@@ -64,7 +64,7 @@ upstreams:
     auth: {username: acme, passwordEnv: HUB_TOKEN}
   - {name: mirror, format: oci, url: "https://mirror.internal", tokenRealmHosts: [auth.internal], dockerHub: true}
   - {name: ghcr, format: oci, url: "https://ghcr.io", revalidateTimeout: 2s}
-  - {name: off, format: oci, url: "https://docker.io", dockerHub: false}
+  - {name: off, format: oci, url: "https://docker.io", dockerHub: false, maxConcurrentTransits: 0}
 `
 	env := func(k string) (string, bool) { //nolint:gosec // a fake token, which the test checks is never shown
 		return map[string]string{"HUB_TOKEN": "dckr_pat_x"}[k], k == "HUB_TOKEN"
@@ -88,6 +88,9 @@ upstreams:
 		if got := c.Upstreams[i].RevalidateTimeout; got != want {
 			t.Errorf("upstreams[%d].revalidateTimeout = %s, want %s", i, got, want)
 		}
+	}
+	if n := c.Upstreams[3].MaxConcurrentTransits; n == nil || *n != 0 || c.Upstreams[2].MaxConcurrentTransits != nil {
+		t.Errorf("maxConcurrentTransits = %v and %v, want 0 and unset", n, c.Upstreams[2].MaxConcurrentTransits)
 	}
 }
 
@@ -136,8 +139,8 @@ func TestLoadUpstreamErrors(t *testing.T) {
 			file: `upstreams:
   - {name: a, format: oci, url: "https://ghcr.io/owner"}
   - {name: b, format: oci, url: "https://ghcr.io", tokenRealmHosts: ["https://auth.example", "*.example"]}
-  - {name: c, format: npm, url: "https://c.example", tokenRealmHosts: [auth.example], dockerHub: true, revalidateTimeout: 2s}
-  - {name: d, format: oci, url: "https://quay.io", revalidateTimeout: -1s}
+  - {name: c, format: npm, url: "https://c.example", tokenRealmHosts: [auth.example], dockerHub: true, revalidateTimeout: 2s, maxConcurrentTransits: 2}
+  - {name: d, format: oci, url: "https://quay.io", revalidateTimeout: -1s, maxConcurrentTransits: -2}
 `,
 			want: []string{
 				"upstreams[0].url: an upstream of format oci is the registry's root, without a path",
@@ -146,7 +149,9 @@ func TestLoadUpstreamErrors(t *testing.T) {
 				"upstreams[2].tokenRealmHosts: only an upstream of format oci has them",
 				"upstreams[2].dockerHub: only an upstream of format oci has it",
 				"upstreams[2].revalidateTimeout: only an upstream of format oci has it",
+				"upstreams[2].maxConcurrentTransits: only an upstream of format oci has it",
 				"upstreams[3].revalidateTimeout: must not be negative",
+				"upstreams[3].maxConcurrentTransits: must be -1 (no cap), 0 (no transit) or more",
 			},
 		},
 		{

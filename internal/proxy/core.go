@@ -92,6 +92,9 @@ type Core struct {
 	// tagLocks holds the one lock of an upstream tag this replica may hold at a time
 	// (ociTagLock).
 	tagLocks chan struct{}
+	// transits are the requests of oci proxy repos streamed from the upstream while their
+	// blob's copy runs, by blob (ocitransit.go).
+	transits transits
 }
 
 var _ format.Proxy = (*Core)(nil)
