@@ -26,7 +26,7 @@ import (
 //     empty variable counts as unset, and lists (registries, repos)
 //     cannot be set from the environment; then database.dsn gets DefaultDatabaseDSN when the
 //     driver is sqlite and the DSN is still empty;
-//  4. registries[].auth.passwordEnv, resolved into registries[].auth.password;
+//  4. registries[].auth.passwordEnv and upstreams[].auth.passwordEnv, resolved into their password;
 //  5. Validate, and one check that needs the environment: keys.masterKeyFile and the variable
 //     keys.masterKeyEnv names must not both be set (whether the variable is set is all Load
 //     reads of it).
@@ -167,11 +167,17 @@ func applyEnv(c *Config, lookupEnv func(string) (string, bool)) {
 	}
 }
 
-// resolveSecrets copies the value of each registry's passwordEnv into its password. A missing
-// variable leaves the password empty; Validate reports it.
+// resolveSecrets copies the value of each registry's and each upstream's passwordEnv into its
+// password. A missing variable leaves the password empty; Validate reports it.
 func resolveSecrets(c *Config, lookupEnv func(string) (string, bool)) {
 	for i := range c.Registries {
 		a := &c.Registries[i].Auth
+		if a.PasswordEnv != "" {
+			a.Password, _ = lookupEnv(a.PasswordEnv)
+		}
+	}
+	for i := range c.Upstreams {
+		a := &c.Upstreams[i].Auth
 		if a.PasswordEnv != "" {
 			a.Password, _ = lookupEnv(a.PasswordEnv)
 		}

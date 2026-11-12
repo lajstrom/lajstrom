@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -52,6 +53,39 @@ repos:
 	}
 }
 
+// TestLoadOCIUpstreams: an oci upstream, its password from the environment, its realm hosts, and
+// the Docker Hub rule by host or by the key (docs/spec/proxy-and-group.md §11).
+func TestLoadOCIUpstreams(t *testing.T) {
+	file := minimal + `
+upstreams:
+  - name: dockerhub
+    format: oci
+    url: "https://registry-1.docker.io/"
+    auth: {username: acme, passwordEnv: HUB_TOKEN}
+  - {name: mirror, format: oci, url: "https://mirror.internal", tokenRealmHosts: [auth.internal], dockerHub: true}
+  - {name: ghcr, format: oci, url: "https://ghcr.io"}
+  - {name: off, format: oci, url: "https://docker.io", dockerHub: false}
+`
+	env := func(k string) (string, bool) { //nolint:gosec // a fake token, which the test checks is never shown
+		return map[string]string{"HUB_TOKEN": "dckr_pat_x"}[k], k == "HUB_TOKEN"
+	}
+	c, err := Load(writeConfig(t, file), env)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if a := c.Upstreams[0].Auth; a.Password != "dckr_pat_x" || strings.Contains(fmt.Sprint(a), "dckr") || strings.Contains(fmt.Sprintf("%#v", a), "dckr") {
+		t.Errorf("auth = %v: the password is not resolved, or it is shown", a)
+	}
+	if got := c.Upstreams[1].TokenRealmHosts; !reflect.DeepEqual(got, []string{"auth.internal"}) {
+		t.Errorf("tokenRealmHosts = %q", got)
+	}
+	for i, want := range []bool{true, true, false, false} {
+		if got := c.Upstreams[i].IsDockerHub(); got != want {
+			t.Errorf("upstreams[%d].IsDockerHub() = %t, want %t", i, got, want)
+		}
+	}
+}
+
 func TestLoadUpstreamErrors(t *testing.T) {
 	const registries = "registries:\n  - {name: local, url: \"http://zot:5000\"}\n"
 	tests := []struct {
@@ -81,11 +115,30 @@ func TestLoadUpstreamErrors(t *testing.T) {
   - {name: a, format: npm, url: "https://a.example", auth: {username: u}}
   - {name: b, format: npm, url: "https://b.example", auth: {passwordFile: /p}}
   - {name: c, format: npm, url: "https://c.example", auth: {username: u, passwordFile: /p, tokenFile: /t}}
+  - {name: d, format: npm, url: "https://d.example", auth: {username: u, passwordFile: /p, passwordEnv: P}}
+  - {name: e, format: npm, url: "https://e.example", auth: {username: u, passwordEnv: UNSET_PASSWORD}}
 `,
 			want: []string{
-				"upstreams[0].auth: username and passwordFile must be set together",
-				"upstreams[1].auth: username and passwordFile must be set together",
-				"upstreams[2].auth: tokenFile is a bearer token: not with username and passwordFile",
+				"upstreams[0].auth: username and passwordFile or passwordEnv must be set together",
+				"upstreams[1].auth: username and passwordFile or passwordEnv must be set together",
+				"upstreams[2].auth: tokenFile is a bearer token: not with username, passwordFile or passwordEnv",
+				"upstreams[3].auth: passwordFile and passwordEnv are two places for one password",
+				`upstreams[4].auth.passwordEnv: environment variable "UNSET_PASSWORD" is not set or empty`,
+			},
+		},
+		{
+			name: "oci upstreams",
+			file: `upstreams:
+  - {name: a, format: oci, url: "https://ghcr.io/owner"}
+  - {name: b, format: oci, url: "https://ghcr.io", tokenRealmHosts: ["https://auth.example", "*.example"]}
+  - {name: c, format: npm, url: "https://c.example", tokenRealmHosts: [auth.example], dockerHub: true}
+`,
+			want: []string{
+				"upstreams[0].url: an upstream of format oci is the registry's root, without a path",
+				`upstreams[1].tokenRealmHosts[0]: "https://auth.example" is not a host name`,
+				`upstreams[1].tokenRealmHosts[1]: "*.example" is not a host name`,
+				"upstreams[2].tokenRealmHosts: only an upstream of format oci has them",
+				"upstreams[2].dockerHub: only an upstream of format oci has it",
 			},
 		},
 		{

@@ -651,12 +651,46 @@ func (u Upstream) validate(p *problems, key string) {
 	if u.MaxMetadataSize < 0 {
 		p.add(key+".maxMetadataSize", "must not be negative")
 	}
+	u.validateAuth(p, key)
+	u.validateOCI(p, key)
+}
+
+// validateAuth checks the credentials of an upstream: a token file alone, or a username with
+// one of passwordFile and passwordEnv, whose variable must be set.
+func (u Upstream) validateAuth(p *problems, key string) {
 	a := u.Auth
+	password := a.PasswordFile != "" || a.PasswordEnv != ""
 	switch {
-	case a.TokenFile != "" && (a.Username != "" || a.PasswordFile != ""):
-		p.add(key+".auth", "tokenFile is a bearer token: not with username and passwordFile")
-	case (a.Username == "") != (a.PasswordFile == ""):
-		p.add(key+".auth", "username and passwordFile must be set together")
+	case a.TokenFile != "" && (a.Username != "" || password):
+		p.add(key+".auth", "tokenFile is a bearer token: not with username, passwordFile or passwordEnv")
+	case a.PasswordFile != "" && a.PasswordEnv != "":
+		p.add(key+".auth", "passwordFile and passwordEnv are two places for one password: set one")
+	case (a.Username == "") == password:
+		p.add(key+".auth", "username and passwordFile or passwordEnv must be set together")
+	case a.PasswordEnv != "" && a.Password == "":
+		p.add(key+".auth.passwordEnv", "environment variable %q is not set or empty", a.PasswordEnv)
+	}
+}
+
+// validateOCI checks what only an oci upstream has: a URL without a path, the registry's root,
+// and its tokenRealmHosts; another format has neither those nor dockerHub.
+func (u Upstream) validateOCI(p *problems, key string) {
+	if u.Format != FormatOCI {
+		if len(u.TokenRealmHosts) > 0 {
+			p.add(key+".tokenRealmHosts", "only an upstream of format %s has them", FormatOCI)
+		}
+		if u.DockerHub != nil {
+			p.add(key+".dockerHub", "only an upstream of format %s has it", FormatOCI)
+		}
+		return
+	}
+	if v, err := url.Parse(u.URL); err == nil && isHTTP(v) && strings.Trim(v.Path, "/") != "" {
+		p.add(key+".url", "an upstream of format %s is the registry's root, without a path: the API is at /v2/ of the host", FormatOCI)
+	}
+	for i, h := range u.TokenRealmHosts {
+		if !validHost(h) {
+			p.add(fmt.Sprintf("%s.tokenRealmHosts[%d]", key, i), "%q is not a host name or an IP address: no scheme, port, path or wildcard", h)
+		}
 	}
 }
 
