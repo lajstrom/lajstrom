@@ -10,9 +10,10 @@
 #         logs in (lajstrom admin);
 #   OI-02 the browser's login, with curl as the browser: /-/oidc/login, Dex's login form, the
 #         callback's page with a personal access token, shown once;
-#   OI-03 the token: whoami is alice of kind oidc with the groups dev and platform; a raw PUT and
+#   OI-03 the token: whoami is alice with the groups dev and platform; a raw PUT and
 #         GET through the group's binding; /v2/token with it as Basic grants pull and push;
-#   OI-04 the audit log has user.create, user.login and token.create with createdBy oidc; no
+#   OI-04 alice is a user of kind oidc; the audit log has user.create, user.login and
+#         token.create with createdBy oidc; no
 #         log line has the token;
 #   OI-05 alice leaves platform in Dex (Dex restarted with her groups dev only); the next login
 #         replaces her groups: a PUT with the new token and with the first one is 404, as for a
@@ -172,7 +173,7 @@ step "OI-02: /-/oidc/login, Dex's form, the callback's page with a personal acce
 # OI-03: the token on every route.
 as "$token1"
 assert_status 200 -K "$work/alice.curlrc" "$base/api/v1/whoami"
-assert_eq "alice oidc" "$(jq -r '"\(.name) \(.kind)"' <<<"$E2E_BODY")" "whoami"
+assert_eq "alice user" "$(jq -r '"\(.name) \(.kind)"' <<<"$E2E_BODY")" "whoami"
 assert_eq "dev,platform" "$(jq -r '.groups | sort | join(",")' <<<"$E2E_BODY")" "whoami's groups"
 printf 'hello from an OIDC login\n' >"$work/hello.txt"
 assert_status 201 -K "$work/alice.curlrc" -T "$work/hello.txt" "$base/raw/oidc/e2e/1.0/hello-$$.txt"
@@ -183,7 +184,7 @@ jwt="$(jq -r .token <<<"$E2E_BODY")"
 payload="$(cut -d. -f2 <<<"$jwt" | tr '_-' '/+')"
 while [ $((${#payload} % 4)) -ne 0 ]; do payload="$payload="; done
 assert_eq "pull,push" "$(base64 -d <<<"$payload" 2>/dev/null | jq -r '.access[0].actions | sort | join(",")')" "the /v2 token's actions"
-step "OI-03: whoami alice (oidc) in dev and platform; raw PUT 201 and GET through group:platform; /v2/token grants pull,push"
+step "OI-03: whoami alice in dev and platform; raw PUT 201 and GET through group:platform; /v2/token grants pull,push"
 
 # OI-04: the audit log and the server's log.
 "$bin" admin user create --name root --admin --password-stdin --config "$work/lajstrom.yaml" <<<"root-password-$$" >/dev/null
@@ -194,8 +195,10 @@ for action in user.create user.login token.create; do
 		fail "no $action event of the source oidc: $E2E_BODY"
 done
 assert_eq oidc "$(jq -r '.events[0].details.createdBy' <<<"$E2E_BODY")" "token.create's createdBy"
+assert_status 200 -K "$work/root.curlrc" "$base/api/v1/users/alice"
+assert_eq oidc "$(jq -r .kind <<<"$E2E_BODY")" "alice's kind"
 ! grep -q "$token1" "$work/server.log" || fail "the server's log has the token"
-step "OI-04: audit user.create, user.login and token.create (createdBy oidc); the log has no token"
+step "OI-04: alice is of kind oidc; audit user.create, user.login and token.create (createdBy oidc); the log has no token"
 
 # OI-05: alice leaves platform; the next login revokes the group's binding, for every token.
 dex dev
