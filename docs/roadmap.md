@@ -1,19 +1,20 @@
 # Roadmap: the first month (2026-11-06 → 2026-12-06)
 
 - Owner: @gecube. Updated when a milestone closes; dates move only by a decision recorded here.
-- Tracking: GitHub milestones M0–M4 and the issues in [`docs/plan/`](plan/). This page is the
+- Tracking: GitHub milestones M0–M6 and the issues in [`docs/plan/`](plan/). This page is the
   narrative; the issues are the truth for status.
 
 ## Goal
 
-**v0.1.0 by Friday 2026-12-04**: a single Go binary that serves hosted repositories for four
-formats (raw, pypi, apt, maven) on top of an OCI registry (Zot and docker distribution verified;
-ECR adapter if the spike allows), with local users, tokens and RBAC, retention as a scheduled
-`lajstrom admin retention` over a conditional delete API (#72), a reindex command that is
-proven to rebuild the index from the registry, an OCI facade that `oras` and `cosign` can use,
-end-to-end tests with the real clients, a container image and installation docs. It runs as
-two replicas behind one edge with Postgres (SQLite is for a single node) and the e2e suite
-proves it: concurrent pushes to different replicas, a replica killed mid-upload.
+**v0.1.0 by Friday 2026-12-04**: a single Go binary that serves hosted repositories for five
+formats (raw, pypi, apt, maven and, ahead of M4, npm) on top of an OCI registry (Zot and docker
+distribution verified; ECR adapter if the spike allows), with local users, tokens and RBAC,
+retention as a scheduled `lajstrom admin retention` over a conditional delete API (#72), a
+reindex command that is proven to rebuild the index from the registry, an OCI facade that
+`oras` and `cosign` can use, end-to-end tests with the real clients, a container image and
+installation docs. It runs as two replicas behind one edge with Postgres (SQLite is for a
+single node) and the e2e suite proves it: concurrent pushes to different replicas, a replica
+killed mid-upload.
 
 Not this month (post-MVP, tracked as `post-mvp` issues): rpm, terraform, proxy and group repos
 beyond npm (M4, below), OIDC, UI, docker passthrough and multi-arch stitching, Harbor and GHCR
@@ -98,6 +99,10 @@ decides on Friday and records the change in this page's decision log.
 The Friday review of week 1 (2026-11-13) decides which reading applies and whether M3 maven
 stays in v0.1.0 or becomes the first post-MVP milestone.
 
+**Status, 2026-11-12.** maven and npm are both on `main` already, npm with its proxy and group
+repos (M4, above), so neither reading cuts a format: v0.1.0 serves raw, pypi, apt, maven and npm
+([releases/v0.1.0.md](releases/v0.1.0.md)).
+
 ## Risks and what we do about them
 
 | Risk | Mitigation |
@@ -133,13 +138,16 @@ stays in v0.1.0 or becomes the first post-MVP milestone.
 
 ## After v0.1.0 (preview, not committed)
 
-**M4 status, 2026-11-11: ahead of its date.** The npm plugin, the dist-tags journal, the npm
-CLI routes, and proxy and group repos are merged (#302 to #311). The demo is one script,
-`make e2e E2E=npm` ([test/e2e/npm.sh](../test/e2e/npm.sh), #312), and CI runs it against Zot
-and distribution. The docs are [quickstart/npm.md](quickstart/npm.md), with "Coming from
-Verdaccio", and the proxy and group parts of [api.md](api.md) and
-[configuration.md](configuration.md) (#313). One check is left before the milestone closes:
 M4 (above, decided on 2026-11-10) is npm with its proxy and group repos. Month 2 candidates after
 it, in rough order: docker passthrough with RBAC, proxy repos for pypi and maven on M4's core
 (#67), rpm and OIDC (M6), UI read-only ([lajstrom-ui](https://github.com/lajstrom/lajstrom-ui)),
 Harbor adapter, apt-transport-oci export.
+
+Two milestones after M4 are open on GitHub:
+
+- **M5 — Docker and Kubernetes**, due 2027-01-15: docker images with RBAC and audit (#71), a
+  pull-through cache of Docker Hub, ghcr.io and quay.io as an `oci` proxy repo (#442), a Helm
+  chart (#82), moving in from another registry (#441), Talos nodes that pull only from Lajstrom
+  (#340).
+- **M6 — rpm and OIDC**, after M5, no date yet: rpm hosted repos with a GPG-signed `repomd`
+  (#64), OIDC login with groups from claims bound to roles (#69).

@@ -1,6 +1,7 @@
 # Lajstrom compared with other artifact repositories
 
-- Checked on 2026-11-10: Lajstrom against `main` at `1f4adca` and its open pull requests; every
+- Checked on 2026-11-10: Lajstrom against `main` at `1f4adca` and its open pull requests, with
+  group repos, `lajstrom registry probe` and retention brought up to `main` on 2026-11-12; every
   other product against its own documentation, pricing page, release list or source, read on
   2026-11-10 and listed under [Sources](#sources).
 - For people choosing an artifact repository: what Lajstrom does today, what it does not do,
@@ -22,8 +23,8 @@ each format's own protocol on the server, so `pip`, `apt-get`, `mvn`, `npm` and 
 plugin ([ADR 0002](adr/0002-server-side-protocol-emulation.md)). Today it serves hosted repos of
 raw files, pypi, apt, maven and npm ([configuration.md](configuration.md#repos)), `oci` repos
 for any OCI artifact or image through `/v2` with its RBAC and audit
-([manifest-profile.md](spec/manifest-profile.md) §7), and a proxy repo of npmjs.org
-([ADR 0013](adr/0013-proxy-and-group-repos.md)). It rests on three things.
+([manifest-profile.md](spec/manifest-profile.md) §7), a proxy repo of npmjs.org and a group of
+both ([ADR 0013](adr/0013-proxy-and-group-repos.md)). It rests on three things.
 
 **Your OCI registry is the only storage, and the index is rebuildable.** Each version of a
 package, or each variant of it (an apt architecture, a wheel), is one OCI 1.1 manifest under one
@@ -68,8 +69,8 @@ the packages stay readable with `oras` or `crane` without Lajstrom
   [capability matrix](registries/README.md#capabilities) records 27 behaviours of distribution,
   Zot, the GitLab container registry, GHCR, Harbor, Nexus and Gitea/Forgejo. Lajstrom probes each
   registry at startup ([configuration.md](configuration.md#registry-capabilities)), and
-  `lajstrom registry probe`, which measures a registry's column for you, is in review
-  ([#339], pull requests [#428]–[#435]).
+  `lajstrom registry probe` measures a registry's column for you
+  ([registries/README.md](registries/README.md#measuring-a-registry-lajstrom-registry-probe)).
 
 ## 2. Feature matrix
 
@@ -118,7 +119,7 @@ alternative ([registries/README.md](registries/README.md)).
 
 | Product | Proxy and cache | Groups, virtual repos | Signing; OCI referrers | GitOps, declarative | Footprint |
 | --- | --- | --- | --- | --- | --- |
-| **Lajstrom** | npm only (npmjs.org): allow and deny name patterns, metadata TTLs, an offline mode, one upstream fetch per file across replicas, `npm audit` forwarded ([proxy-and-group.md](spec/proxy-and-group.md)) | in review ([#311]) | cosign, notation, SBOMs and attestations as referrers of any package, with a tag-schema fallback; apt metadata GPG-signed | a YAML bootstrap that creates repos and never changes or deletes one ([configuration.md](configuration.md#repos)); REST API; `lajstrom admin` CLI; Kubernetes manifests | one Go binary, about 65 MiB resident idle and 66 MiB with 8 × 1 GiB uploads in flight ([operations.md](operations.md#the-load-test)); Postgres or SQLite; your registry |
+| **Lajstrom** | npm only (npmjs.org): allow and deny name patterns, metadata TTLs, an offline mode, one upstream fetch per file across replicas, `npm audit` forwarded ([proxy-and-group.md](spec/proxy-and-group.md)) | npm only: the hosted repo and a proxy under one URL; a name the hosted repo holds hides the upstream's versions ([proxy-and-group.md](spec/proxy-and-group.md) §8) | cosign, notation, SBOMs and attestations as referrers of any package, with a tag-schema fallback; apt metadata GPG-signed | a YAML bootstrap that creates repos and never changes or deletes one ([configuration.md](configuration.md#repos)); REST API; `lajstrom admin` CLI; Kubernetes manifests | one Go binary, about 65 MiB resident idle and 66 MiB with 8 × 1 GiB uploads in flight ([operations.md](operations.md#the-load-test)); Postgres or SQLite; your registry |
 | [Artifact Keeper](#artifact-keeper) | remote repos with freshness rules | virtual repos | GPG, RSA or ed25519 signing of rpm, deb, apk, pacman and conda metadata; stores cosign signatures; referrers API | export and apply of repository settings; Helm chart, Argo CD | Rust backend with Postgres, OpenSearch and optional scanners; a 2 GiB limit in its chart |
 | [NORA](#nora) | most formats, with curation: block and allow lists, a minimum age, quarantine, OSV | no | rpm and deb indexes signed with OpenPGP; no referrers API | a config file, and curation rules as files in git; hot reload | one static binary of about 23 MB, about 15 MB resident idle; no database |
 | [OpenArtifact](#openartifact) | 22 of its 23 formats | yes | apt and rpm metadata GPG-signed; referrers: a route exists in its code, ? | `oa apply`, `oa diff`, `oa export --prune` over users, groups, repos, permissions, SSO | one Go binary and Postgres |
@@ -264,7 +265,8 @@ the others compare. Not every point is unique to Lajstrom, and each says so wher
   17.0.1 were measured by hand on the dates the matrix gives.
 - **Check it.** [registries/README.md](registries/README.md#versions-tested); the startup probe
   and the vendor table in [configuration.md](configuration.md#registry-capabilities);
-  `lajstrom registry probe` in review ([#339], [#428]–[#435]).
+  `lajstrom registry probe`, which measures a registry's column
+  ([registries/README.md](registries/README.md#measuring-a-registry-lajstrom-registry-probe)).
 - **The others.** None of the pages under [Sources](#sources) documents how a product behaves
   on particular OCI registries. The one product that can use a registry, OpenArtifact, uses only
   the blob endpoints of `/v2` ([`internal/storage/oci.go`][oa-oci]).
@@ -293,10 +295,10 @@ the others compare. Not every point is unique to Lajstrom, and each says so wher
 - **You need a web UI.** There is none yet. A read-only UI is being built in its own repository,
   [lajstrom-ui](https://github.com/lajstrom/lajstrom-ui) ([#70]).
 - **You need SSO.** Local users and tokens only: no OIDC ([#69]), LDAP or SAML.
-- **You need a pull-through cache for everything.** The only proxy is npm's. Group repos are in
-  review ([#311]); pypi and maven proxies come after them ([#67]); a pull-through cache of Docker
-  Hub, ghcr.io and quay.io is planned for M5, due 2027-01-15 ([#442]). Nexus, Artifactory, NORA,
-  and Harbor for images, do this today.
+- **You need a pull-through cache for everything.** The only proxy is npm's, and group repos
+  exist for npm only; pypi and maven proxies and groups come after them ([#67], [#68]); a
+  pull-through cache of Docker Hub, ghcr.io and quay.io is planned for M5, due 2027-01-15
+  ([#442]). Nexus, Artifactory, NORA, and Harbor for images, do this today.
 - **You need a released, settled product.** The repository was created on 2026-11-05 and has
   no release: v0.1.0 is due on 2026-12-04 ([roadmap.md](roadmap.md)). While it is 0.x, the
   HTTP API, the configuration and the CLI may change between versions (README, "Our promise to
@@ -331,9 +333,10 @@ the others compare. Not every point is unique to Lajstrom, and each says so wher
 - **You want the smallest possible single-node cache.** Lajstrom needs a registry and Postgres
   (or SQLite). NORA is one binary without a database; for npm alone, Verdaccio.
 
-## 5. By design, not in the core: retention and vulnerability scanning
+## 5. By design, not in the server: retention rules and vulnerability scanning
 
-Lajstrom has no retention rules and no vulnerability scanner of its own, on purpose:
+The server has no retention rules and no vulnerability scanner of its own, on purpose. Retention
+is a job outside it that Lajstrom ships, `lajstrom admin retention` (below):
 
 - **The registry owns the bytes, so it owns their lifecycle.** Freeing space is the registry's
   garbage collection, never Lajstrom's ([ADR 0001](adr/0001-oci-registry-as-sole-storage.md),
@@ -351,12 +354,18 @@ Lajstrom has no retention rules and no vulnerability scanner of its own, on purp
 
 How to do each today:
 
-- **Retention through Lajstrom's delete API.** `DELETE
-  /api/v1/repos/<format>/<name>/packages/<package>/versions/<version>` deletes a version's
-  referrers first, then its manifests, its rows and the rendered indexes, and writes an audit row
-  per manifest; it needs the `maintainer` role ([api.md](api.md)). A scheduled job that decides
-  what to drop and calls it is a retention policy with an audit trail. On a registry that cannot
-  delete manifests (GHCR, distribution with deletes off) it answers `501` and changes nothing.
+- **Retention with `lajstrom admin retention`.** Keep the last N versions of each package, drop
+  those older than a maximum age, per repo and package pattern; a dry run unless `--apply`. It
+  is a client of the management API that a CronJob, a CI schedule or cron runs, and deletes
+  through the conditional batch delete, `POST …/versions:delete`, so a version that changed
+  after the job read it is not deleted; each deletion has an audit row with the job's id
+  ([operations.md](operations.md#retention)).
+- **Retention through Lajstrom's delete API.** The building block of that job, for a policy of
+  your own: `DELETE /api/v1/repos/<format>/<name>/packages/<package>/versions/<version>` deletes
+  a version's referrers first, then its manifests, its rows and the rendered indexes, and writes
+  an audit row per manifest; it needs the `maintainer` role ([api.md](api.md)). On a registry
+  that cannot delete manifests (GHCR, distribution with deletes off) it answers `501` and
+  changes nothing.
 - **Retention through the registry's own rules.** For example ECR lifecycle policies, by count
   or age and by tag pattern, which also expire the referrers of a deleted image
   ([ECR lifecycle policies][ecr-lifecycle]), or Harbor's tag retention rules, by count, days and
@@ -377,12 +386,11 @@ How to do each today:
 
 ## 6. Planned
 
-As of 2026-11-10. The issues are the truth for status ([roadmap.md](roadmap.md)).
+As of 2026-11-10, less group repos and `lajstrom registry probe`, which have merged since. The
+issues are the truth for status ([roadmap.md](roadmap.md)).
 
 | What | State | Tracking |
 | --- | --- | --- |
-| Group repos, npm first: one URL for the hosted packages and npmjs.org | in review, pull requests [#417]–[#421], [#437], [#438] | [#311], M4, due 2026-12-18 |
-| `lajstrom registry probe`: measure your registry's column of the matrix | in review, pull requests [#428]–[#435] | [#339] |
 | Read-only web UI | in progress in [lajstrom-ui](https://github.com/lajstrom/lajstrom-ui) | [#70] |
 | OIDC login, groups from claims | planned after v0.1.0 | [#69] |
 | rpm, the next format | planned after v0.1.0 | [#64] |
@@ -539,20 +547,13 @@ because the live page answered `429`: unverified.
 [#19]: https://github.com/lajstrom/lajstrom/issues/19
 [#64]: https://github.com/lajstrom/lajstrom/issues/64
 [#67]: https://github.com/lajstrom/lajstrom/issues/67
+[#68]: https://github.com/lajstrom/lajstrom/issues/68
 [#69]: https://github.com/lajstrom/lajstrom/issues/69
 [#70]: https://github.com/lajstrom/lajstrom/issues/70
 [#77]: https://github.com/lajstrom/lajstrom/issues/77
 [#82]: https://github.com/lajstrom/lajstrom/issues/82
 [#114]: https://github.com/lajstrom/lajstrom/issues/114
-[#311]: https://github.com/lajstrom/lajstrom/issues/311
-[#339]: https://github.com/lajstrom/lajstrom/issues/339
 [#442]: https://github.com/lajstrom/lajstrom/issues/442
-[#417]: https://github.com/lajstrom/lajstrom/pull/417
-[#421]: https://github.com/lajstrom/lajstrom/pull/421
-[#428]: https://github.com/lajstrom/lajstrom/pull/428
-[#435]: https://github.com/lajstrom/lajstrom/pull/435
-[#437]: https://github.com/lajstrom/lajstrom/pull/437
-[#438]: https://github.com/lajstrom/lajstrom/pull/438
 [e2e-cosign]: ../test/e2e/cosign.sh
 [e2e-oras]: ../test/e2e/oras.sh
 [e2e-ha]: ../test/e2e/ha.sh
