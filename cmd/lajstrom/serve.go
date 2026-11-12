@@ -14,6 +14,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/facade"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -36,8 +37,9 @@ const registryProbeTimeout = 10 * time.Second
 var drainSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
 
 // newServeCmd returns serve: load and validate the configuration (in the root's
-// PersistentPreRunE), read the credential files of the upstreams (loadUpstreams), open the
-// index database and apply its pending migrations, write this process's row of replicas and beat
+// PersistentPreRunE), warn of plain HTTP beyond loopback (warnPlainHTTP), read the credential
+// files of the upstreams (loadUpstreams), open the index database and apply its pending
+// migrations, write this process's row of replicas and beat
 // it (startReplica: on SQLite a live row of another replica stops serve here), create the
 // repos of the configuration that the control plane does not have, load the master key, build
 // a provider for every registry and probe its capabilities, build the server and run it until
@@ -87,6 +89,7 @@ func newServeCmd(a *app) *cobra.Command {
 				"registries", len(c.Registries),
 				"repos", len(c.Repos),
 			)
+			warnPlainHTTP(c.Server, a.log)
 			upstreams, err := loadUpstreams(c, format.Lookup, a.log)
 			if err != nil {
 				return err
@@ -209,6 +212,17 @@ func newServeCmd(a *app) *cobra.Command {
 			}
 			return srv.Run(ctx)
 		},
+	}
+}
+
+// warnPlainHTTP warns when server.insecureHTTP is on and server.listen takes plain HTTP from
+// beyond loopback (#746). It cannot refuse: a container listens on :8080 behind a port
+// published on loopback.
+func warnPlainHTTP(s config.Server, log *slog.Logger) {
+	if s.PlainHTTPBeyondLoopback() {
+		log.Warn("server.insecureHTTP serves plain HTTP beyond loopback: passwords in Basic auth cross the network "+
+			"in clear text; listen on 127.0.0.1, or publish the port of a container on loopback only",
+			"server.listen", s.Listen)
 	}
 }
 

@@ -895,6 +895,37 @@ func TestExternalURL(t *testing.T) {
 	}
 }
 
+// TestPlainHTTPBeyondLoopback checks when serve warns that server.insecureHTTP serves Basic
+// credentials in clear text beyond the host (#746): plain HTTP, insecureHTTP on, and a listen
+// host that is not loopback. An empty host is every interface.
+func TestPlainHTTPBeyondLoopback(t *testing.T) {
+	tls := TLS{CertFile: "cert.pem", KeyFile: "key.pem"}
+	tests := []struct {
+		s    Server
+		want bool
+	}{
+		{Server{Listen: ":8080", InsecureHTTP: true}, true},
+		{Server{Listen: "0.0.0.0:8080", InsecureHTTP: true}, true},
+		{Server{Listen: "[::]:8080", InsecureHTTP: true}, true},
+		{Server{Listen: "192.0.2.7:8080", InsecureHTTP: true}, true},
+		{Server{Listen: "art.example.com:8080", InsecureHTTP: true}, true},
+		{Server{Listen: "127.0.0.1:8080", InsecureHTTP: true}, false},
+		{Server{Listen: "127.3.4.5:8080", InsecureHTTP: true}, false},
+		{Server{Listen: "[::1]:8080", InsecureHTTP: true}, false},
+		{Server{Listen: "localhost:8080", InsecureHTTP: true}, false},
+		{Server{Listen: "LocalHost:8080", InsecureHTTP: true}, false},
+		{Server{Listen: ":8080"}, false},                               // behind a TLS edge: no warning
+		{Server{Listen: ":8443", InsecureHTTP: true, TLS: tls}, false}, // TLS in Lajstrom: nothing in clear text
+		{Server{Listen: "8080", InsecureHTTP: true}, false},            // Validate refuses it
+	}
+	for _, tt := range tests {
+		if got := tt.s.PlainHTTPBeyondLoopback(); got != tt.want {
+			t.Errorf("PlainHTTPBeyondLoopback(listen %q, insecureHTTP %v, tls %v) = %v, want %v",
+				tt.s.Listen, tt.s.InsecureHTTP, tt.s.TLS.CertFile != "", got, tt.want)
+		}
+	}
+}
+
 func TestTrustedPrefixes(t *testing.T) {
 	tests := []struct {
 		in   []string
