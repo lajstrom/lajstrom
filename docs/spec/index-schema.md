@@ -6,10 +6,12 @@
 - Related: [ADR 0001](../adr/0001-oci-registry-as-sole-storage.md),
   [ADR 0006](../adr/0006-derived-index-and-control-plane.md).
 
-Two kinds of tables. **Derived** tables are rebuilt by `lajstrom reindex` from the registry and
-may be dropped at any time. **Control plane** tables are small, authoritative and backed up. The
-**coordination** tables, `tag_claims`, `reindex_runs`, `fetch_claims` and `replicas`, are neither:
-their rows live for one publish, one reindex run, one fetch or one `serve` process.
+Two kinds of tables. **Derived** tables are rebuilt by `lajstrom reindex` from the registry, but
+two that need no rebuild ([Derived](#derived)), and may be dropped at any time. **Control plane**
+tables are small, authoritative and backed up. The **coordination** tables, `tag_claims`,
+`reindex_runs`, `fetch_claims` and `replicas`, are neither: their rows live for one publish, one
+fetch or one `serve` process, and a `reindex_runs` row is the lock of its run while it runs, then
+its record (the ten newest finished runs of a scope are kept).
 `prune_sightings` is neither too: the operational state of prune, whose rows live from one
 reindex run to a later one.
 SQLite and Postgres share one logical schema; dialect differences are confined to the migration
@@ -26,7 +28,7 @@ stored as RFC 3339 text in SQLite, `timestamptz` in Postgres; `json` = `text` in
 | --- | --- | --- |
 | `repos` | `id`, `format` text, `name` text, `registry` text (config name), `prefix` text, `kind` text (`hosted`, `proxy`, `group`; [below](#proxy-and-group-repos)), `anonymous_read` bool, `policy` json (`maxFileSize`, `maven.sessionTimeout`, …), `upstream` json null, `group` json null, `created_at` ts, `updated_at` ts | unique `(format, name)` |
 | `users` | `id`, `uid` (a UUID v7; `uuid` on Postgres, text on SQLite), `name` text unique, `password_hash` text null, `kind` text (`local`; `oidc` later), `disabled` bool, `created_at` ts, `deleted_at` ts null, `deleted_name` text null | the first admin is created through the bootstrap token (`bootstrap_token`) or by `lajstrom admin user create --admin`. `uid` is unique and never changes (0008). A deleted user keeps its row (rbac.md §1): its `name` becomes `~<uid>`, which no user name can be, so that the name is free for a live user, and the name it had goes to `deleted_name`. (SQLite cannot drop the unique constraint of a column without rebuilding the table, and a rebuild would cascade into `tokens`; this way both dialects keep it.) |
-| `tokens` | `id`, `kind` text (`pat`, `deploy`), `user_id` → users null, `repo_id` → repos null, `name` text, `hash` text (sha256 of the secret), `scopes` json (`["read","write"]`), `expires_at` ts null, `last_used_at` ts null, `created_at` ts, `revoked_at` ts null | a PAT acts as its user; a deploy token is a principal of its own bound to one repo |
+| `tokens` | `id`, `kind` text (`pat`, `deploy`), `user_id` → users null, `repo_id` → repos null, `name` text, `hash` text (sha256 of the secret), `scopes` json (`["read","write"]`), `expires_at` ts null, `last_used_at` ts null, `created_at` ts, `revoked_at` ts null | unique `hash` (a secret is looked up by its hash). A PAT acts as its user; a deploy token is a principal of its own bound to one repo |
 | `bootstrap_token` | `id` int (always 1), `hash` text (sha256 of the secret), `replica` text (host name and process id of the `serve` that made it), `created_at` ts, `expires_at` ts, `used_at` ts null | at most one row (0015): the token that makes the first admin, the same on every replica ([auth.md](../auth.md#bootstrap-the-first-admin)). `serve` makes or replaces it at start while no enabled user has an admin binding, by its old hash only, so that of replicas that start together one makes it; the exchange sets `used_at` in the transaction that creates the admin, by its hash, unused and before `expires_at`, so that it is used once |
 | `bindings` | `id`, `principal` text (`user:<uid>`; `group:<name>` after the MVP), `role` text (`reader`, `writer`, `maintainer`, `admin`), `repo_mask` text (`apt/*`, `*/payments`, `maven/releases`), `created_at` ts | unique `(principal, role, repo_mask)`: the same binding twice is `409`; rbac.md |
 | `keys` | `id`, `repo_id` → repos null (null = server key), `kind` text (`gpg`, `jwt`), `public` blob, `private_enc` blob (encrypted with the master key), `fingerprint` text, `created_at` ts, `retired_at` ts null | apt signing keys; JWT signing key. Unique `keys_active` on `(kind, COALESCE(repo_id, 0)) WHERE retired_at IS NULL`: one key that is not retired per kind and owner, so two replicas that make a repo's first key at once leave one (the second insert is a conflict, and that replica reads the first one's key). A `gpg` row: `public` the OpenPGP public key packets, `private_enc` nonce ‖ AES-256-GCM(private key packets) with the fingerprint (uppercase hex) as additional data |
@@ -77,7 +79,7 @@ their implementation issue.
 | --- | --- | --- | --- |
 | `repos` | control plane | `upstream` json null: a proxy's `{"name", "metadataTTL", "negativeTTL", "offline", "allow", "deny"}`; `group` json null: a group's `{"merge"}` | `kind` is set on insert; its one update is `proxy` to `hosted`, by `ConvertRepo`, which sets `upstream` NULL in the same statement (proxy-and-group.md §2.6). `upstream` only on a proxy, `group` only on a group; a group's `registry` is `''` and its `policy` NULL. The upstream's URL and credentials are in the configuration, never in a row |
 | `group_members` | control plane | `group_id` → repos (`ON DELETE CASCADE`), `member_id` → repos (`ON DELETE RESTRICT`), `position` int (from 0, the member order) | primary key `(group_id, position)`, unique `(group_id, member_id)`, index `group_members_member` on `(member_id)` (`ListGroupsOf`). Written in the transaction that updates the group's `repos` row, so `auth_version` moves with it; a repo that is a member is not deleted (`409` naming its groups). Migration `0013_groups.sql`, with the column `repos.group` |
-| `fetch_claims` | coordination | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `package` text (the package path), `tag` text, `principal` text, `replica` text (host name and process id), `claimed_at` ts, `heartbeat_at` ts | unique `(repo_id, package, tag)`; written by the proxy fetcher only |
+| `fetch_claims` | coordination | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `package` text (the package path), `tag` text, `principal` text, `replica` text (host name and process id), `claimed_at` ts, `heartbeat_at` ts | unique `(repo_id, package, tag)`; written by the proxy fetcher only. Migration `0011_fetch_claims.sql` |
 | `proxy_meta` | derived, a cache | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `name` text (the plugin's key of the name), `kind` text (the plugin's document kind, npm `packument`), `state` text (`present`, `absent`), `content` blob null, `content_type` text null, `sha256` text null, `etag` text null, `last_modified` text null (the upstream's validators), `checked_at` ts | unique `(repo_id, name, kind)`; listed in the Derived table too. Migration `0010_proxy_meta.sql`, with the column `repos.upstream` |
 
 A `fetch_claims` row is the lock that keeps two replicas from downloading one artifact: the
@@ -89,11 +91,11 @@ ingest inside the fetch takes its tag claims as every publish does. `ResetDerive
 it.
 
 `proxy_meta` is a cache of the upstream, not of the registry: reindex neither reads nor writes
-it, `ResetDerived` leaves it, it is not backed up, and dropping it costs upstream requests and
-nothing else. A row's expiry is not stored: it is `checked_at` plus the repo's TTL of its
-state, read when the row is. A write of a row invalidates the repo's `index_cache` rows of the
-name in the same transaction. Expired `absent` rows are deleted once a minute, with the expired
-sessions.
+it, `ResetDerived` leaves it, it needs no backup (a backup of the database holds it, stale after
+a restore), and dropping it costs upstream requests and nothing else. A row's expiry is not
+stored: it is `checked_at` plus the repo's TTL of its state, read when the row is. A write of a
+row invalidates the repo's `index_cache` rows of the name in the same transaction.
+Expired `absent` rows are deleted once a minute, with the expired sessions.
 
 A proxy repo has `packages`, `versions`, `files`, `index_cache` and `oci_repos` rows as a hosted
 repo has, rebuilt by reindex from its manifests; the `attrs` of a proxied version hold its
@@ -104,9 +106,10 @@ a backup of the database keeps it, and reindex neither reads nor writes it.
 
 ## Coordination
 
-Neither control plane nor derived: a row lives for one publish, one reindex run or one `serve`
-process, or, in `prune_sightings`, from one run to a later one, so it is neither backed up nor
-rebuilt.
+Neither control plane nor derived: a row lives for one publish, one fetch or one `serve`
+process, a `reindex_runs` row while its run runs and then as its record, until ten newer runs of
+its scope have finished, or, in `prune_sightings`, from one run to a later one. None is rebuilt,
+and none needs a backup: a backup of the database holds them, and after a restore they are stale.
 
 | Table | Columns | Notes |
 | --- | --- | --- |
@@ -190,7 +193,7 @@ before it removes the row: it removes it only on another such answer at least 10
 see, clears the repo's rows it did not record again (`Writer.ClearSightings`): a manifest that read
 back, a lookup that failed, a row that is gone. The table is operational state, not derived:
 reindex never rebuilds it and never needs it to rebuild the derived tables, `ResetDerived` leaves
-it, and it is not backed up. Losing it only delays a removal by one more answer. The rows are
+it, and it needs no backup. Losing it only delays a removal by one more answer. The rows are
 keyed by the registry's manifest, not by an index row, so that one answer counts for every
 replica: runs of one repo never overlap (`reindex_runs`), and the 10 minutes keep two runs of
 two replicas' loops that follow each other from counting as two answers. Approved by the lead on
@@ -261,16 +264,18 @@ rows it writes. No transaction that holds a package row waits for a journal or a
 tag lock, then the package row, and a conditional delete that holds the first two waits for the
 row only as long as another writer's transaction of the package runs.
 
-## Derived (rebuilt by reindex)
+## Derived
+
+Rebuilt by reindex, all but `index_cache_generations` and `proxy_meta`, whose rows say why.
 
 | Table | Columns | Notes |
 | --- | --- | --- |
 | `packages` | `id`, `repo_id` → repos, `name` text (format spelling), `name_oci` text (escaped path), `created_at` ts (the earliest `created_at` of its versions) | unique `(repo_id, name)`; unique `(repo_id, name_oci)`: one spelling per OCI repository |
-| `versions` | `id`, `package_id` → packages, `version` text, `variant` text (`''` when none), `tag` text, `digest` text (manifest digest), `artifact_type` text, `attrs` json (`lajstrom.<format>.*`), `metadata` json null (metadata layer, may be omitted for size), `created_at` ts (from `org.opencontainers.image.created`), `indexed_at` ts (when ingest or reindex last wrote or saw the row), `degraded` bool (written from the annotations alone, the metadata layer missing or unreadable: manifest-profile.md §2) | unique `(package_id, version, variant)`; unique `(package_id, tag)`. The store keeps `packages.created_at` the earliest `created_at` of the package's versions on every version write and delete. Ingest never writes a degraded row; reindex does, and reads it again on every run |
-| `files` | `id`, `version_id` → versions, `name` text, `media_type` text, `digest` text (layer), `size` int, `attrs` json (layer annotations) | index `(version_id, name)`; apt pool and maven lookups go by `(repo, name)` → add index on `name` |
-| `index_cache` | `id`, `repo_id`, `scope` text (`jammy/main/amd64`, `simple/requests`, `com.example/lib-core`), `kind` text (`Packages`, `Release`, `InRelease`, `simple`, `maven-metadata`), `content` blob, `sha256` text, `rendered_at` ts, `signed_at` ts null | invalidated by ingest, delete, reindex and a key rotation; rebuilt lazily on GET, and stored only while the repo's generation is the one the render read ([below](#the-generation-of-a-repos-documents)). A signed document (apt `InRelease`, `Release.gpg`) has the `rendered_at` of the document it signs and its own `signed_at` |
+| `versions` | `id`, `package_id` → packages, `version` text, `variant` text (`''` when none), `tag` text, `digest` text (manifest digest), `artifact_type` text, `attrs` json (every `lajstrom.*` annotation without a field of its own, all but `schema`, `format`, `repo`, `name`, `version`, `variant` and `uploaded-by`: `lajstrom.deb.*`, `lajstrom.raw.path`, `lajstrom.origin.*`, …), `metadata` json null (metadata layer, may be omitted for size), `created_at` ts (from `org.opencontainers.image.created`), `indexed_at` ts (when ingest or reindex last wrote or saw the row), `degraded` bool (written from the annotations alone, the metadata layer missing or unreadable: manifest-profile.md §2) | unique `(package_id, version, variant)`; unique `(package_id, tag)`. The store keeps `packages.created_at` the earliest `created_at` of the package's versions on every version write and delete. Ingest never writes a degraded row; reindex does, and reads it again on every run |
+| `files` | `id`, `version_id` → versions, `name` text, `media_type` text, `digest` text (layer), `size` int, `attrs` json (layer annotations) | indexes `(version_id, name)` and `files_name` on `(name)`: apt pool and maven lookups go by `(repo, name)` |
+| `index_cache` | `id`, `repo_id`, `scope` text (apt the suite, `jammy`; pypi `simple` or `simple/<project>`; maven `<groupId>/<artifactId>`; npm the package name; raw the directory prefix), `kind` text (apt the path below `dists/<suite>/`: `Release`, `InRelease`, `Release.gpg`, `main/binary-amd64/Packages.gz`; pypi `simple.html`, `simple.json`; maven `maven-metadata`, `maven-metadata.sha1`; npm `packument`, `packument-abbreviated`; raw `listing`), `content` blob, `sha256` text, `rendered_at` ts, `signed_at` ts null | unique `(repo_id, scope, kind)`; invalidated by ingest, delete, reindex and a key rotation; rebuilt lazily on GET, and stored only while the repo's generation is the one the render read ([below](#the-generation-of-a-repos-documents)). A signed document (apt `InRelease`, `Release.gpg`) has the `rendered_at` of the document it signs and its own `signed_at` |
 | `index_cache_generations` | `repo_id` → repos (primary key, `ON DELETE CASCADE`), `generation` bigint | the generation of the repo's `index_cache`; no row is generation 0. Not rebuilt: `ResetDerived` increments it, as every invalidation does. Migration `0017_index_cache_generations.sql` (#477) |
-| `oci_repos` | `id`, `repo_id`, `path` text (full OCI path incl. prefix), `seen_at` ts | repository list for backends without a catalog; reconcile source. Of an `oci` repo, only the repositories that hold a tag: its catalog lists them ([below](#invariants-and-rules), #748) |
+| `oci_repos` | `id`, `repo_id`, `path` text (full OCI path incl. prefix), `seen_at` ts | unique `(repo_id, path)`; repository list for backends without a catalog; reconcile source. Of an `oci` repo, only the repositories that hold a tag: its catalog lists them ([below](#invariants-and-rules), #748) |
 | `proxy_meta` | the upstream's documents of a proxy repo, [above](#proxy-and-group-repos) | a cache of the upstream, not of the registry: not rebuilt, and `ResetDerived` leaves it. Migration `0010_proxy_meta.sql` |
 
 ### The generation of a repo's documents
@@ -326,7 +331,7 @@ of its versions, kept in the registry as a journal of manifests (manifest-profil
   `DeletePackage`, `DeleteEmptyPackages` and `ResetDerived` take them, and reindex rebuilds
   them. When its last version is deleted outside an unpublish of the package, its entries stay
   in the registry as orphans, which reindex reports (`orphanJournal`) and the next append to
-  that name adopts. Both tables come with the migration of #307.
+  that name adopts. Both tables come with the migration of #307, `0012_journal.sql`.
 - `index_cache` holds two documents per npm package: scope the package name (`@acme/widgets`),
   kinds `packument` and `packument-abbreviated`, rendered together. A publish or a delete of a
   version of the package, each journal append and reindex invalidate them: at least the
@@ -336,7 +341,8 @@ of its versions, kept in the registry as a journal of manifests (manifest-profil
 ## Migrations
 
 The migrations are `internal/index/migrations/{sqlite,postgres}/NNNN_<name>.sql`, embedded in
-the binary; both directories have the same versions (a test asserts it), `0001_init.sql` creates
+the binary; both directories have the same versions (a test asserts it). Among them,
+`0001_init.sql` creates
 the control-plane and derived tables, `0002_tag_claims.sql` the coordination table,
 `0003_packages_name_oci.sql` the unique index on `packages (repo_id, name_oci)`,
 `0004_keys_active.sql` the unique index `keys_active` (one key not retired per kind and owner),
@@ -344,11 +350,13 @@ the control-plane and derived tables, `0002_tag_claims.sql` the coordination tab
 `packages.created_at` set to the earliest `created_at` of each package's versions,
 `0006_auth_version.sql` the table `auth_version` with its row and the unique index
 `bindings_unique` (a binding made twice before it is kept once, the first),
-`0014_schema_requires.sql` the column `schema_migrations.requires` ([Upgrades](#upgrades)),
+`0011_fetch_claims.sql` the table `fetch_claims`, `0012_journal.sql` the tables `journal` and
+`journal_state`, `0014_schema_requires.sql` the column `schema_migrations.requires`
+([Upgrades](#upgrades)),
 `0017_index_cache_generations.sql` the table `index_cache_generations`, `0018_replicas.sql`
 the table `replicas`, `0019_prune_sightings.sql` the table `prune_sightings`, and
-`0020_replicas_process.sql` the column `replicas.process`.
-The runner,
+`0020_replicas_process.sql` the column `replicas.process`; the others are named with their
+tables above. The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the
 migration lock, `pg_advisory_xact_lock` on Postgres and `BEGIN IMMEDIATE` on SQLite, and reads
@@ -417,9 +425,9 @@ N writes during the update:
 
 There are no down migrations: a rollback is the binary of the release before on the newer
 schema, which expand migrations allow; to a release older than the one a contract migration
-requires, it is a restore of the backup taken before the upgrade. The migrations 0001 to 0014
-require nothing; binaries built before 0014 do not check the schema. `serve` migrating on start
-is the default, enough for one node; with several replicas, `lajstrom migrate` of the new
+requires, it is a restore of the backup taken before the upgrade. Every migration so far, 0001
+to 0020, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
+on start is the default, enough for one node; with several replicas, `lajstrom migrate` of the new
 release runs once before the rolling update ([operations.md](../operations.md#upgrades)). A release with a
 contract migration says so in its notes ([release.md](../release.md#migrations-in-the-notes)).
 `TestUpgrade` runs the migrations of four releases against one database on both engines: an
@@ -429,9 +437,15 @@ release.
 ## Invariants and rules
 
 - Every row in `packages`, `versions`, `files` corresponds to a manifest that exists in the
-  registry with a tag; reindex removes rows whose manifest is gone and adds rows for manifests it
-  finds. `index_cache` is dropped entirely at the end of a full reindex.
-- Writes to derived tables happen only in `ingest`, `reindex`, and `delete`. Frontends read.
+  registry with a tag; reindex adds rows for manifests it finds and, when the run prunes, removes
+  rows whose manifest is gone. Every run drops the whole `index_cache` of each repo it scanned to
+  the end, pruning or not.
+- `packages`, `versions`, `files`, `journal` and `journal_state` are written only by `ingest` (a
+  publish, a journal append, a delete) and `reindex`; frontends read them. `index_cache` is stored
+  by the render of a `GET` (a frontend, the proxy core) and invalidated by the writers above, a key
+  rotation, a write of `proxy_meta` and the purge of a proxy's cache. `oci_repos` is written by
+  ingest, reindex and the facade, for a push to an `oci` repo; `proxy_meta` by the proxy core and
+  the purge of a proxy's cache ([above](#proxy-and-group-repos)).
   Ingest claims the package path and the tag in `tag_claims` before the registry write, and
   writes the derived rows after the registry accepted the manifest, in one transaction that
   also releases both claims.
@@ -445,10 +459,11 @@ release.
 - Reindex never starts from `ResetDerived`: it marks and sweeps. Every row it writes or sees gets
   the run's time in `indexed_at`; a tag whose manifest has the digest of the index row, in a row
   that is not degraded, is seen without being read again (the same digest is the same bytes,
-  checked when it was written), unless the run verifies. At the end, each row of the repo not
-  seen since the run started is looked up by its tag in the registry once more: a tag that
-  names the row's digest keeps it (written after the listing, possibly by a replica whose clock
-  is behind), a tag that names another digest is drift (below), and a tag the registry does not
+  checked when it was written), unless the run verifies. At the end, when the run prunes (the
+  sweep), each row of the repo not seen since the run started is looked up by its tag in the
+  registry once more: a tag that names the row's digest keeps it (written after the listing,
+  possibly by a replica whose clock is behind), a tag that names another digest is drift (below),
+  and a tag the registry does not
   resolve asks for the manifest by its digest (`Provider.StatManifest`). Only `404
   MANIFEST_UNKNOWN` counts as unknown, and the row goes only on the second such answer at least
   10 minutes after the first (`prune_sightings`, Coordination) and when its `indexed_at` is at
@@ -459,9 +474,10 @@ release.
   not know (deleted in its console: Zot's `NAME_UNKNOWN`), keeps the row and lists it under
   `repositoryUnknown`, with the request of the management API that deletes it, on every run
   until then (#567); a run asks each OCI repository's tag list at most once. A run that cannot
-  list the repo's OCI repositories sweeps nothing. An `oci_repos` row goes when no run has seen
-  its repository for `reconcile.graceAge`, an `oci` repo's at once when its tag list has no tag
-  (below); a sweep that finds a version's manifest records its repository again.
+  list the repo's OCI repositories sweeps nothing. The sweep drops an `oci_repos` row when no
+  run has seen its repository for `reconcile.graceAge`, and every run drops an `oci` repo's at
+  once when its tag list has no tag (below); a sweep that finds a version's manifest records its
+  repository again.
 - A tag that names another digest than the index row of that tag is drift: the index keeps its
   digest, the report lists both, nothing is re-pointed (the rule of the reconcile loop, #30).
   A drifted row is the one row whose manifest is not under its tag any more.
@@ -485,5 +501,7 @@ release.
   fails; a push after it records the row itself, after its manifest. Meanwhile the catalog may
   miss the repository for one tag list's time. A managed repo's rows stay the registry's
   repositories, as its delete leaves them; its catalog lists its packages.
-- The control plane can be exported with `lajstrom admin export` (JSON) and, after the MVP,
-  snapshotted into the registry as `<prefix>_meta/config`.
+- The control plane is backed up with the database
+  ([operations.md](../operations.md#backup-and-restore)). There is no JSON export (`lajstrom
+  admin export`, acceptance.md G-07, is not built); a snapshot into the registry as
+  `<prefix>_meta/config` is #76, after the MVP.

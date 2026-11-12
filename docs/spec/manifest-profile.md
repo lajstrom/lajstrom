@@ -61,9 +61,9 @@ Rules:
 | Element | Rule |
 | --- | --- |
 | `mediaType` | always `application/vnd.oci.image.manifest.v1+json`. Image indexes are never used for a package version (they are mutable). |
-| `artifactType` | `application/vnd.lajstrom.<format>.v1`. `<format>` is the plugin name: `raw`, `pypi`, `deb`, `maven` in the MVP; `npm` in M4 (ADR 0012); `rpm`, `nuget`, `cargo`, `go` later. It selects the plugin and filters referrers. Note: the apt *protocol* stores `deb` *packages*; the artifactType is `deb`, the annotation `lajstrom.format` is `apt` (the repo format). An npm package's OCI repository also holds the journal of its dist-tags, manifests of their own types (section 8). |
+| `artifactType` | `application/vnd.lajstrom.<type>.v1`. `<type>` is the profile type of the repo's format, the format's name but `deb` for apt: `raw`, `pypi`, `deb`, `maven` in the MVP; `npm` in M4 (ADR 0012); `rpm`, `nuget`, `cargo`, `go` later. It selects the plugin and filters referrers. Note: the apt *protocol* stores `deb` *packages*; the artifactType is `deb`, the annotation `lajstrom.format` is `apt` (the repo format). An npm package's OCI repository also holds the journal of its dist-tags, manifests of their own types (section 8). |
 | `config` | always the OCI empty descriptor (`application/vnd.oci.empty.v1+json`, the 2-byte blob `{}`). No logic in config. |
-| `layers` | one or more file layers plus at most one metadata layer. Order: file layers first, metadata layer last. Every layer carries `org.opencontainers.image.title` with the exact file name (no directories, except for `raw`, whose title is the original `/`-separated path, section 4.1). |
+| `layers` | one or more file layers (exactly one for `raw` and `npm`) plus at most one metadata layer. Order: file layers first, metadata layer last. Every layer carries `org.opencontainers.image.title` with the exact file name (no directories, except for `raw`, whose title is the original `/`-separated path, section 4.1). |
 | `subject` | not set by Lajstrom. Referrers (signatures, SBOMs) set `subject` to our manifest. |
 | `annotations` | the search keys listed in section 3. Anything large goes to the metadata layer. |
 
@@ -71,8 +71,9 @@ Rules:
 
 ### File layers
 
-`application/vnd.lajstrom.<format>.<role>.v1[+suffix]`. The role says what the file is; the
-suffix follows the OCI convention for the encoding of the bytes.
+`application/vnd.lajstrom.<type>.<role>.v1[.tar][+suffix]`, `<type>` that of the `artifactType`.
+The role says what the file is; the suffix follows the OCI convention for the encoding of the
+bytes.
 
 | Format | Role media type | File |
 | --- | --- | --- |
@@ -88,7 +89,7 @@ suffix follows the OCI convention for the encoding of the bytes.
 
 ### Metadata layer
 
-`application/vnd.lajstrom.<format>.metadata.v1+json`, file name `metadata.json`. One JSON object
+`application/vnd.lajstrom.<type>.metadata.v1+json`, file name `metadata.json`. One JSON object
 whose content is defined per format:
 
 | Format | Content of `metadata.json` |
@@ -99,15 +100,20 @@ whose content is defined per format:
 | maven | `{"groupId", "artifactId", "version", "packaging", "files": [{"name", "extension", "classifier", "sha1", "md5", "sha256", "sha512", "size"}], "pom": {<parsed essentials: parent, dependencies>}}`; one entry per file layer, the POM included; the four checksums are of the whole file, computed at ingest, and are what the `.md5`, `.sha1`, `.sha256` and `.sha512` files serve (Gradle asks for `.sha512`) |
 | npm | `{"name", "version", "manifest": {<the version document>}, "readme", "filename", "size", "integrity", "shasum", "sha256", "hasShrinkwrap", "hasInstallScript"}`; `manifest` is the version object of the publish body (http-routing.md, npm) without `dist`, `readme` and every key that begins with `_` (`_id`, `_resolved`, `_from`, `_nodeVersion`, …): what the packument serves in `versions`, with the `dist`, `_id` and `deprecated` it renders; an `oras push` writes the tarball's `package.json` there. `readme` is the version document's, or the body's top-level one (yarn), absent for npm's placeholder `ERROR: No README data found!`. `size` and the checksums are of the tarball. `hasShrinkwrap`: the tarball has `npm-shrinkwrap.json` in its top directory (`package/`); `hasInstallScript`: its `package.json` has a `preinstall`, `install` or `postinstall` script, or the top directory has `binding.gyp` (npm runs `node-gyp rebuild`); both are read from the tarball, never from the body. `Validate` checks `name`, `version`, `filename`, `size` and the checksums against the annotations and the tarball layer, and the tarball's `package.json` for the name and version. At most 2 MiB (a publish above it is `413`) |
 
-The metadata layer is optional for `raw` and mandatory for every other format. UI, search and
-reindex read it without unpacking the package. Reindex must work from annotations alone when the
-metadata layer is missing or unreadable (degraded rows are flagged, not dropped).
+The metadata layer is optional for `raw` and mandatory for every other format: a manifest of
+another format without one is refused on ingest (`400`), and reindex does not index it (the
+report lists it in `errors`). Reindex reads the layer without unpacking the package. When a
+manifest lists it and the registry does not have its blob, or its bytes are not JSON, reindex
+writes the row from the annotations alone, without the plugin's `Validate`: a degraded row
+(`versions.degraded`), flagged, not dropped; ingest refuses such a manifest.
 
 ## 3. Annotations
 
 All keys are prefixed `lajstrom.`. Values are strings. Keys marked **R** are required on every
-manifest of a version; reindex rejects manifests without them (they are listed as "foreign" in
-the UI and skipped). The journal manifests of npm have a set of their own (section 8).
+manifest of a version, and reindex indexes no manifest without them: one without
+`lajstrom.schema` (or that is no image manifest) is foreign, listed in the report's `foreign` and
+skipped; one with `lajstrom.schema` that lacks another is listed in the report's `errors` and
+skipped. The journal manifests of npm have a set of their own (section 8).
 
 | Key | R | Value |
 | --- | --- | --- |
@@ -115,13 +121,13 @@ the UI and skipped). The journal manifests of npm have a set of their own (secti
 | `lajstrom.format` | R | repo format: `raw`, `pypi`, `apt`, `maven`, … (the *protocol*, matches the first URL segment) |
 | `lajstrom.repo` | R | repo name as created in the control plane, e.g. `ubuntu-internal` |
 | `lajstrom.name` | R | package name in the format's own spelling (original case): `nginx`, `com.example:lib-core` (maven `groupId:artifactId`), raw: the full path; for pypi the PEP 503 normalized name, `requests` for `Requests`, so that every spelling of a project is one package (the original spelling is the `name` of the metadata layer; decided on #31) |
-| `lajstrom.version` | R | version string exactly as the format spells it: `1:1.18.0-6ubuntu14.4`, `2.32.3`, `1.2.0` |
+| `lajstrom.version` | R | version string exactly as the format spells it: `1:1.18.0-6ubuntu14.4`, `2.32.3`, `1.2.0`; raw: the first 16 hex digits of the sha256 of its file, whose layer digest is sha256 |
 | `lajstrom.variant` | | platform discriminator, present when the format has one: deb `<suite>/<component>/<arch>`, the values of `lajstrom.deb.suite`, `.component` and `.arch` joined with `/` (`jammy/main/amd64`, `bookworm/main/all`); rpm arch (later); pypi: the wheel's compressed tag set (`py3-none-any`, `cp311-cp311-manylinux_2_17_x86_64`), after its PEP 427 build tag and `-` when the file name has one (`1-py3-none-any`, section 4.2), or `sdist`. Absent for maven, npm, raw. |
 | `lajstrom.deb.arch`, `lajstrom.deb.suite`, `lajstrom.deb.component` | deb | upload metadata and the three parts of `lajstrom.variant`, kept as annotations (and in `versions.attrs`) so that the apt indexes group by them without parsing the variant; `arch` is the control file's `Architecture`. Suite and component are properties of the upload, not separate repos: the same `.deb` in two suites is two manifests over the same blobs |
 | `lajstrom.pypi.nonstandard` | pypi | `true` when the version is not a PEP 440 version: accepted and kept as written; pip 22 and later ignore such versions |
 | `lajstrom.maven.groupId`, `lajstrom.maven.artifactId`, `lajstrom.maven.packaging` | maven | coordinates |
 | `lajstrom.npm.*` | npm | on a version, none beyond the layer annotations of section 2; `lajstrom.name` is the name as npm writes it, `@acme/widgets` with its scope. The journal's keys are in section 8 |
-| `lajstrom.raw.path` | raw | original path, case preserved, `/`-separated |
+| `lajstrom.raw.path` | raw | original path, case preserved, `/`-separated; the same as `lajstrom.name` and as the `org.opencontainers.image.title` of the file layer |
 | `lajstrom.uploaded-by` | | the principal that performed the ingest, in its canonical form: `user:<uid>`, `token:<id>` (informational, not trusted for authz; a user's name is looked up by its uid, rbac.md §1) |
 | `org.opencontainers.image.created` | R | RFC 3339 UTC time of ingest |
 | `org.opencontainers.image.source`, `org.opencontainers.image.revision` | | passed through from the client if present (CI provenance) |
@@ -174,7 +180,7 @@ The OCI repository for a package is
 
 | Format | Package path |
 | --- | --- |
-| raw | each path component escaped with `EscapeComponent` (section 4.3), joined with `PackagePath`: `Docs/Readme.MD` → `docs/readme.md` (the original case is in `lajstrom.raw.path`). A component whose escaped form (section 4.3 step 2) is longer than 64 bytes is replaced by `h0_h` + the first 32 hex characters of `sha256(component)`, as in section 4.3 step 3 (`EscapeComponentMax`): registries limit the OCI repository name to 255 characters, and `reindex` reads `lajstrom.raw.path`, so nothing decodes the path. A path whose OCI repository name is still longer than 255 bytes is refused with `400`. A raw path is unique without regard to case, since the OCI repository name is lowercase: the first spelling wins, and a path whose package path is taken by another spelling is a `409`. |
+| raw | each path component escaped with `EscapeComponent` (section 4.3), joined with `PackagePath`: `Docs/Readme.MD` → `docs/readme.md` (the original case is in `lajstrom.raw.path`). A component whose escaped form (section 4.3 step 2) is longer than 64 bytes is replaced by `h0_h` + the first 32 hex characters of `sha256(component)`, as in section 4.3 step 3 (`EscapeComponentMax`): registries limit the OCI repository name to 255 characters, and `reindex` reads `lajstrom.raw.path`, so nothing decodes the path. A path whose OCI repository name is still longer than the registry takes is refused with `400`: 255 bytes with the instance prefix on distribution and most registries, 256 on ECR (`provider.Capabilities.MaxNameLength`). A raw path is unique without regard to case, since the OCI repository name is lowercase: the first spelling wins, and a path whose package path is taken by another spelling is a `409`. |
 | pypi | `EscapeComponent(lajstrom.name)`, the normalized name: `Requests` → `requests` |
 | deb | `EscapeComponent(package)`: `libstdc++6` → `libstdc_2b_2b6` |
 | maven | `PackagePath(EscapeComponent(groupId lowercased), EscapeComponent(artifactId))`: `com.example:Lib-Core` → `com.example/lib-core` |
@@ -185,11 +191,11 @@ Examples: `art/apt/ubuntu-internal/nginx`, `art/pypi/internal/requests`,
 `art/npm/internal/acme/widgets`.
 
 Names that differ only in ASCII case have one package path, unless a component is replaced by
-its hash (section 4.3 step 3, or a long raw component), which is of the original spelling: a raw
-path, and a maven groupId and artifactId, keep their case in `lajstrom.name`; pypi and deb
-names are lowercase already. The first spelling published holds the package path, and a
-publish of another spelling is a `409` naming the first, refused before its manifest is pushed
-(index-schema.md, Coordination; #244).
+its hash (section 4.3 step 3, or a long raw component), which is of the original spelling but
+for a maven groupId, lower-cased first: a raw path, a maven artifactId and an npm name keep
+their case in `lajstrom.name` and in the hash; pypi and deb names are lowercase already. The
+first spelling published holds the package path, and a publish of another spelling is a `409`
+naming the first, refused before its manifest is pushed (index-schema.md, Coordination; #244).
 
 ### 4.2 Tag
 
@@ -200,7 +206,8 @@ tag = Escape(version) [ "__" Escape(variant) ]
 - Tags are **immutable and append-only**. A new architecture, a new suite or component of a
   `.deb`, or a new wheel is a new tag. A tag
   is never re-pointed. Ingest of a tag that exists with a different digest is a `409 Conflict`;
-  with the same digest it is idempotent (`201`). A frontend upload of the same files under a tag
+  with the same digest it is idempotent, answered with the route's success (`201` on `/v2`;
+  http-routing.md §3 has each frontend's). A frontend upload of the same files under a tag
   that holds them is the idempotent repeat as well, whatever `org.opencontainers.image.created`
   the new build carries: two builds of one file differ in nothing but that, so the file layers
   decide, and the manifest in the registry stays the first. Through the OCI facade another
@@ -288,9 +295,10 @@ names that step 5 reserves, and `tags`, are refused at creation.
 The output matches the grammar of ADR 0017, `^[a-z0-9]+(?:[._-][a-z0-9]+)*$` (the distribution
 specification's 1.0 grammar, which Gitea and Forgejo check), and is no word of step 5, which
 Zot's storage and Harbor's routes keep for themselves; a package path has no `tags` before a
-`list…`. Steps 4 and 5 and `PackagePath` escape bytes that `Escape` copies, which
-`Escape` never does, so the component of every name that keeps to the grammar is unchanged and
-the encoding stays injective but for case. Package names of the MVP formats are
+`list…`. Steps 4 and 5 and `PackagePath` write `_` and two hex digits for a byte that `Escape`
+copies, a form `Escape` never writes, so the encoding stays injective but for case; the
+component of a name that keeps to the grammar is that name, unless step 5 reserves it or it is a
+`tags` before a `list…`. Package names of the MVP formats are
 ASCII-restricted by their own specs, so step 3 is a safety net, not a normal path; a raw path
 meets it with a leading `.` or `_` (`.gitignore`, `_config.yml`).
 
@@ -314,8 +322,8 @@ path depends on decoding a tag or a path**. Reindex reads `lajstrom.*` annotatio
 
 The ingest pipeline rejects a manifest with `400` (facade: `MANIFEST_INVALID`) when:
 
-- `artifactType` is not `application/vnd.lajstrom.<format>.v1` for a plugin that is enabled on
-  the target repo (repos of type `oci` accept anything and index nothing);
+- `artifactType` is not `application/vnd.lajstrom.<type>.v1` of the target repo's format
+  (section 1; repos of type `oci` accept anything and index nothing);
 - `config` is not the empty descriptor;
 - a required annotation is missing, or `lajstrom.format` / `lajstrom.repo` do not match the URL
   the manifest was pushed to;
@@ -323,7 +331,7 @@ The ingest pipeline rejects a manifest with `400` (facade: `MANIFEST_INVALID`) w
   manifest (section 3.1): a version's manifest or a referrer (section 6), on a hosted or a proxy
   repo; an `oci` repo's manifests are not checked;
 - the repository path computed from the annotations (section 4.1) differs from the path pushed
-  to in both forms of section 4.3, or the path pushed to is the earlier form and the index has no
+  to in every form of section 4.3, or the path pushed to is an earlier form and the index has no
   package there;
 - the tag computed from the annotations (section 4.2) differs from the tag pushed to;
 - a layer media type is not one of the format's roles, or a layer has no
@@ -333,15 +341,15 @@ The ingest pipeline rejects a manifest with `400` (facade: `MANIFEST_INVALID`) w
 - the plugin's `Validate` finds the bytes and the annotations disagree (deb control vs
   annotations, wheel file name vs version/variant in either form of section 4.2, POM
   coordinates vs path);
-- a layer referenced by the manifest has not been uploaded (the facade checks blob existence in
-  the backend before `PUT manifest`);
+- a layer referenced by the manifest has not been uploaded; on `/v2` the facade checks blob
+  existence in the backend first and answers `400 MANIFEST_BLOB_UNKNOWN` naming the digest;
 - pushed on `/v2`, `org.opencontainers.image.created` is more than `server.maxCreatedAhead`
   (5 minutes) after the server's clock or more than `server.maxCreatedBehind` (an hour) before
   it, and the repo does not have the manifest already (the facade checks it first). It is a
   version's publish time, which retention reads; the frontends write the server's.
 
 `409 Conflict` (facade: `TAG_INVALID` with a message) when the tag exists with another digest,
-when the index has the package at the earlier form of its path (section 4.3), or when the
+when the index has the package at an earlier form of its path (section 4.3), or when the
 package path is another spelling's, or is being published under another spelling
 (section 4.1). They are found under the claims, before the registry write.
 Sizes: a file, and a blob of `/v2`, is bounded by the smaller of the repo's bound and the
@@ -359,14 +367,18 @@ Signatures and attestations attach with `subject` = our manifest and are passed 
 backend unchanged, by the referrer path of ingest (`PutReferrer`), which indexes nothing; so is
 a manifest under cosign's legacy tag `sha256-<hex>.sig`, `.att` or `.sbom`. Lajstrom lists referrers with the referrers API when the provider has it, and
 with the `sha256-<digest>` tag schema otherwise (`Capabilities.Referrers`). Lajstrom never
-rewrites a referrer. Artifact types the UI recognises: cosign (`application/vnd.dev.cosign.*`),
-notation (`application/vnd.cncf.notary.signature`), SPDX, CycloneDX, in-toto/DSSE.
+rewrites a referrer. `profile.ReferrerKind` tells a referrer's kind, `signature`, `sbom`,
+`attestation` or `other`, for the `kind` of its audit row (and the attachments of #89 later):
+from its predicate type, cosign's legacy tag, or the media types it knows, cosign
+(`application/vnd.dev.cosign.*`), notation (`application/vnd.cncf.notary.signature`), SPDX,
+CycloneDX, the sigstore bundle, in-toto/DSSE.
 
-## 7. Repos of type `oci` (passthrough; after the MVP)
+## 7. Repos of type `oci` (passthrough)
 
-Anything pushed to `/v2/oci/<repo>/…` is proxied as-is. Known conventions (Helm, OpenTofu, Flux,
-Timoni, CUE, Wasm, ModelPack, Docker images) are recognised by artifactType/config media type for
-the UI only. No annotations are required, nothing is indexed beyond repository, tag and digest.
+Anything pushed to `/v2/oci/<repo>/…` is passed to the backend as-is (http-routing.md §2). No
+annotations are required, and nothing is indexed but the repository, in `oci_repos`; its tags and
+digests are the backend's. Recognising known conventions (Helm, OpenTofu, Flux, Timoni, CUE, Wasm,
+ModelPack, Docker images) by artifactType or config media type is for the UI, after the MVP.
 
 ## 8. The npm journal: dist-tags and deprecations (ADR 0012)
 
