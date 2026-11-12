@@ -48,7 +48,8 @@ type Options struct {
 	// listener closes and the drain of ShutdownTimeout begins: the time an edge needs to stop
 	// sending it new requests. Zero closes the listener at once.
 	ShutdownDelay time.Duration
-	// OnShutdown is called when the listener closes, after ShutdownDelay; nil means nothing.
+	// OnShutdown is called when the listener closes, after ShutdownDelay, and returns before Run
+	// waits for the requests in flight; nil means nothing.
 	OnShutdown func()
 	// Log receives the access log and the server's own events; nil means slog.Default().
 	Log *slog.Logger
@@ -152,9 +153,6 @@ func New(o Options) (*Server, error) {
 		MaxHeaderBytes:    maxHeaderBytes,
 		ErrorLog:          slog.NewLogLogger(o.Log.Handler(), slog.LevelWarn),
 		TLSConfig:         tlsConfig,
-	}
-	if o.OnShutdown != nil {
-		s.srv.RegisterOnShutdown(o.OnShutdown)
 	}
 	return s, nil
 }
@@ -270,6 +268,11 @@ func (s *Server) shutdown(ctx context.Context, served <-chan error) error {
 	}
 	s.log.Info("shutting down: not ready, draining in-flight requests",
 		"timeout", s.opts.ShutdownTimeout, "inflight", s.inflight.Load())
+	// Not http.Server.RegisterOnShutdown: it runs the hook in a goroutine of its own, so Run
+	// could return before the hook did.
+	if s.opts.OnShutdown != nil {
+		s.opts.OnShutdown()
+	}
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.opts.ShutdownTimeout)
 	defer cancel()
 	if err := s.srv.Shutdown(sctx); err != nil {
