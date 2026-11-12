@@ -143,7 +143,7 @@ func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Delet
 	}
 	d.dropUntagged(ctx)
 	p.log.InfoContext(ctx, "ingest: deleted", "repo", repo.Format+"/"+repo.Name, "name", name, "digest", d.target.Digest.String(),
-		"version", d.version != nil, "referrers", d.referrers, "orphan", d.orphan, "principal", principal.String())
+		"version", d.version != nil, "referrers", d.referrers, "kept", len(d.kept), "orphan", d.orphan, "principal", principal.String())
 	return &format.Deleted{Digest: d.target.Digest, Version: d.version, Referrers: d.referrers}, nil
 }
 
@@ -166,6 +166,7 @@ type deletion struct {
 	orphan  bool               // a version the backend, which cannot delete manifests, does not resolve: its rows alone go (findOrphan)
 
 	referrers int              // deleted before it, theirs included
+	kept      []digest.Digest  // manifests whose delete was a 404 that the backend still serves (deleteOne)
 	ev        index.AuditEvent // the audit row of the delete, pending from before it (intend)
 
 	pushed []digest.Digest // the subject's referrers the audit log has as pushed, when known (pushedReferrers)
@@ -467,7 +468,7 @@ func (d *deletion) finish(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), d.p.claimTTL)
 	defer cancel()
 	if err := d.deleteInBackend(ctx); err != nil {
-		setDetail(&d.ev, "referrers", d.referrers)
+		d.setOutcome()
 		d.p.fail(ctx, &d.ev, err)
 		return err
 	}
@@ -890,7 +891,9 @@ func (d *deletion) deleteTree(ctx context.Context, desc ocispec.Descriptor, self
 			if n += k; err != nil {
 				return err
 			}
-			n++
+			if !d.wasKept(r.Digest) {
+				n++
+			}
 		}
 		return nil
 	}
@@ -938,12 +941,40 @@ func (d *deletion) resolveTag(ctx context.Context, tag string) (*ocispec.Descrip
 	return &desc, nil
 }
 
-// deleteOne deletes the manifest desc; one that is gone already is not an error.
+// deleteOne deletes the manifest desc; one that is gone already is not an error. A 404 is asked
+// again by digest: a manifest the backend still serves was not deleted, as Quay answers for a
+// referrer pushed by digest (#817). It is not an error either, since the backend keeps it
+// whatever Lajstrom asks, but it goes to d.kept, which the audit row and the log name, and a
+// referrer kept is not counted as deleted. A manifest the backend does not serve any more, or
+// one it cannot tell about, is gone: a retry after an earlier attempt deleted it (#668).
 func (d *deletion) deleteOne(ctx context.Context, desc ocispec.Descriptor) error {
-	if err := d.rr.Delete(ctx, desc); err != nil && !errors.Is(err, provider.ErrNotFound) {
+	err := d.rr.Delete(ctx, desc)
+	switch {
+	case err == nil:
+		return nil
+	case !errors.Is(err, provider.ErrNotFound):
 		return fmt.Errorf("ingest: delete %s in %s: %w", desc.Digest, d.name, err)
 	}
+	if served, err := d.rr.Exists(ctx, desc); err != nil || !served {
+		return nil
+	}
+	d.kept = append(d.kept, desc.Digest)
+	d.p.log.WarnContext(ctx, "ingest: the registry answered 404 to the delete of a manifest it still serves: it keeps the manifest, "+
+		"which stays fetchable by digest until it is deleted in the registry itself",
+		"repo", d.repo.Format+"/"+d.repo.Name, "name", d.name, "digest", desc.Digest.String(), "registry", d.repo.Registry)
 	return nil
+}
+
+// wasKept reports whether deleteOne found the manifest dgst kept by the backend.
+func (d *deletion) wasKept(dgst digest.Digest) bool { return slices.Contains(d.kept, dgst) }
+
+// setOutcome sets the details of the audit row that say what the backend deleted: the number of
+// referrers, and the manifests it kept, when there are.
+func (d *deletion) setOutcome() {
+	setDetail(&d.ev, "referrers", d.referrers)
+	if len(d.kept) > 0 {
+		setDetail(&d.ev, "kept", d.kept)
+	}
 }
 
 // event is the audit event of the delete, before it: a delete by principal with del.ClientIP
@@ -977,7 +1008,7 @@ func (d *deletion) event(ctx context.Context, principal auth.Principal) index.Au
 // index.ErrUnavailable stays wrapped (503 with Retry-After), and the retry, which finds the rows
 // with the manifest gone (find), deletes them (#668).
 func (d *deletion) record(ctx context.Context) error {
-	setDetail(&d.ev, "referrers", d.referrers)
+	d.setOutcome()
 	err := d.p.index.Tx(ctx, func(w index.Writer) error {
 		switch {
 		case d.version != nil:
