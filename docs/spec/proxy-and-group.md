@@ -625,7 +625,8 @@ audit row `proxy.reject`, never a `500`.
 
 ### 11.3 What is kept, and where
 
-Every `proxy_meta` row of an `oci` proxy has the path as its name (index-schema.md):
+Every `proxy_meta` row of an `oci` proxy has the path as its name, but `oci.holders`, which is
+the repo's and named `""` (index-schema.md):
 
 | Kind | Content | Written when |
 | --- | --- | --- |
@@ -633,13 +634,17 @@ Every `proxy_meta` row of an `oci` proxy has the path as its name (index-schema.
 | `oci.manifest:<digest>` | the exact bytes of a manifest or an index, checked against the digest; `absent` for a digest the upstream does not have | it is fetched (§11.4) |
 | `oci.ref:<digest>` | `{"mediaType", "size", "parents", "tags"}`: what a manifest or an index at the path says of a blob or a child it lists, the digests of the manifests and indexes that list it, and the upstream's tags seen naming it, whose push follows its own | a manifest or an index that lists it is fetched; a tag that names it is resolved |
 | `oci.held:<digest>` | empty | the backend holds the blob, or the manifest or index under its keep-tag (§11.5) |
+| `oci.holders:<digest>`, named `""` | `{"paths"}`: up to 8 paths of the repo where the backend holds the blob, the newest last | the blob becomes held at a path (§11.5, step 2) |
 | `oci.fixed-tags` | empty | the backend refused to move a tag of the OCI repository (§11.6) |
 
-The backend holds the blobs that were asked for, each manifest whose blobs it holds and each
-index whose children it holds, every one under its keep-tag (§11.6), and the upstream's tags
-where it lets tags move. A row is fresh for `metadataTTL`, an `absent` one for `negativeTTL`
-(§4.1); `present` rows stay until replaced or purged (§4.3). The `oci.ref`, `oci.held` and
-`oci.fixed-tags` rows have no TTL: they say what was listed, held or refused.
+The backend holds the blobs that were asked for, the blobs of each platform's manifest that a
+client got (§11.5, step 5), each manifest whose blobs it holds and each index whose children it
+holds, every one under its keep-tag (§11.6), and the upstream's tags where it lets tags move. A
+row is fresh for `metadataTTL`, an `absent` one for `negativeTTL` (§4.1); `present` rows stay
+until replaced or purged (§4.3). The `oci.ref`, `oci.held`, `oci.holders` and `oci.fixed-tags`
+rows have no TTL: they say what was listed, held or refused. An `oci.holders` row is read and
+replaced without a lock, so two replicas may each lose the other's path: that costs a fetch,
+never a wrong answer, since a blob is mounted only from a path that answers its `HEAD`.
 
 ### 11.4 A manifest
 
@@ -665,6 +670,8 @@ where it lets tags move. A row is fresh for `metadataTTL`, an `absent` one for `
    `Content-Length`, and on a `GET` its bytes. A child of an index is fetched when it is asked for,
    so a pull of one platform fetches that platform alone. When every blob of a cached manifest is
    held, the read pushes it (§11.5, step 3), as a completion lost to a concurrent write is caught.
+   A `GET` of a platform's manifest answered from its row makes the backend hold that platform
+   whole (§11.5, step 5); a `HEAD` does not, nor does a `GET` of an index.
 
 ### 11.5 A blob, and the push
 
@@ -674,12 +681,25 @@ where it lets tags move. A row is fresh for `metadataTTL`, an `absent` one for `
    cached at the path lists is `404 BLOB_UNKNOWN`, with no request to the upstream. A size above
    the repo's `policy.maxFileSize` or the backend's `maxBlobSize` is `403` naming the bound and
    `proxy.reject`, before the download. A `HEAD` is answered from the row, without a fetch.
-2. Under the claim (repo, path, digest), the blob is asked of the upstream and streamed into a
-   backend upload session, hashed on the way, and committed with its digest
+2. **A mount, else a fetch.** A client keeps layers by digest across images (containerd does)
+   and asks only for those it does not hold, so a layer two images share is often held at the
+   other image's path only. The repo's `oci.holders` row lists where the backend holds the blob:
+   the newest path but this one whose OCI repository answers a `HEAD` of it is the source of a
+   mount through `internal/ingest`, `POST …/blobs/uploads/?mount=<digest>&from=<source>`, with
+   no byte moved, read back as a commit is. It asks nothing of the upstream, so an offline repo
+   mounts too (§4.4 sends no request to the upstream; the backend is not one). A backend that
+   opens a session instead, which is cancelled (`202`: Nexus's `docker` format, JFrog, ECR
+   without `BLOB_MOUNTING`, [quirks.md](../registries/quirks.md)), or that fails, gets the blob
+   fetched; offline, it is `404 BLOB_UNKNOWN`. A mount is the result `mounted` of
+   `lajstrom_proxy_fetches_total` and a log line that names its source; like a fetched blob, it
+   has no audit row of its own.
+
+   The fetch: under the claim (repo, path, digest), the blob is asked of the upstream and
+   streamed into a backend upload session, hashed on the way, and committed with its digest
    ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)); nothing is spooled. Bytes
    whose digest or size differ are not committed: `502`, `proxy.reject`. The `oci.held` row
-   follows the commit. Other requests for the blob wait as §5, step 6, says, and are served from
-   the backend.
+   follows the commit or the mount, and the path joins the blob's `oci.holders` row. Other
+   requests for the blob wait as §5, step 6, says, and are served from the backend.
 3. **The completion.** Each manifest of the blob's `oci.ref` parents whose every blob is held is
    pushed by digest under its keep-tag; then each index that lists such a manifest, once every
    child is held; then the upstream's tags that name what was pushed (§11.6). Every push goes
@@ -688,6 +708,28 @@ where it lets tags move. A row is fresh for `metadataTTL`, an `absent` one for `
    (the digest, and the tag of a tag push).
 4. The claim holder is answered from the stream as it goes into the backend (§11.8); every other
    request from the backend.
+5. **A platform a client got is held whole.** Since a client asks only for the layers it does
+   not hold, an image whose layers it holds from another image would never be held whole at its
+   path. So once a `GET` of a platform's manifest was answered from its row (§11.4, step 4),
+   every blob that manifest lists is made held at the path, whatever the client asks for, in
+   the background and never before the answer:
+   - each blob the backend does not hold at the path is mounted as step 2 says, offline too;
+   - then, unless the repo is offline, each one still missing is fetched as step 2 fetches it,
+     under its claim, so that the replicas fetch it once between them (INV-31); a client that
+     asks for it meanwhile waits on that fetch as on any other;
+   - a replica fetches at most 4 such blobs at once, and only once none of its clients asked for
+     a blob of the path for 10 seconds, at the latest 5 minutes after the `GET` of the manifest:
+     a client's own requests take their claims first and get the tee (§11.8);
+   - a blob above the repo's `policy.maxFileSize` or the backend's `maxBlobSize` is left out,
+     with no `proxy.reject`, and the manifest stays incomplete;
+   - each blob held pushes what became complete (step 3); each one fetched is the result
+     `completed` of `lajstrom_proxy_fetches_total`.
+
+   It is never done for the other platforms of an index, nor on a `HEAD`. It is what a pull
+   costs: for each platform whose manifest a client got, every layer of that platform, though
+   no client asked for some of them. A `GET` of a platform's manifest that is not a pull
+   (`crane manifest`, Renovate reading an image's labels) copies its layers too: point 1, option
+   C of ADR 0018, rejected there for that cost, is taken for the platform asked for (#876).
 
 A blob that the backend held and lost, to a garbage collection of a blob no pushed manifest named
 yet, is fetched again on its next miss.
