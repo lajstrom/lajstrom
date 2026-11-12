@@ -637,6 +637,7 @@ type Store interface {
     Reader
     Writer
     Migrate(ctx context.Context) error
+    // Tx: one transaction for fn; with a ctx of WithRepeatableRead, fn may run more than once
     Tx(ctx context.Context, fn func(Writer) error) error
     // WithReferrersLock calls fn holding the lock on the referrers of subject in the OCI
     // repository name: pg_advisory_xact_lock on Postgres, a process lock on SQLite
@@ -875,6 +876,17 @@ type ReindexConflictError struct {          // errors.Is(err, ErrConflict) is tr
 // manifest-profile.md §4.3): a package keeps the OCI repository it was first written to.
 // ErrNotFound when none is.
 func PackageAt(ctx context.Context, r Reader, repoID int64, pkgPath string) (*Package, error)
+
+// WithRepeatableRead returns ctx for a Store.Tx that does not lose a concurrent update (#791):
+// fn reads one snapshot, and when a row it writes was changed by a transaction that committed
+// after that snapshot, the database aborts the transaction and Tx runs fn again from the start,
+// up to four times in all; the last error wraps ErrUnavailable. fn must start from what it
+// reads on its Writer and leave nothing outside the transaction. Postgres and YugabyteDB:
+// REPEATABLE READ, run again on 40001 and 40P01; SQLite serializes its writes, and fn runs
+// once. Without it Tx is read committed on Postgres and runs fn once. The update of a repo
+// uses it. IsRepeatableRead reports it, for the implementations of Tx.
+func WithRepeatableRead(ctx context.Context) context.Context
+func IsRepeatableRead(ctx context.Context) bool
 
 // Migrations: migrations/<dialect>/NNNN_<name>.sql, embedded (index-schema.md, Migrations).
 const DialectSQLite, DialectPostgres = "sqlite", "postgres"

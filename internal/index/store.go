@@ -20,7 +20,8 @@ type Store interface {
 	Migrate(ctx context.Context) error
 
 	// Tx runs fn in one transaction. It commits when fn returns nil and rolls back otherwise,
-	// returning fn's error. The Writer must not be used after fn returns.
+	// returning fn's error. The Writer must not be used after fn returns. With a ctx of
+	// WithRepeatableRead, fn may run more than once, each time in a new transaction.
 	Tx(ctx context.Context, fn func(Writer) error) error
 
 	// WithReferrersLock calls fn holding the lock on the referrers of subject in the OCI

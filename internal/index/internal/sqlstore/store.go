@@ -49,10 +49,26 @@ func (s *Store) AppliedMigrations(ctx context.Context) ([]int, error) {
 	return index.AppliedMigrations(ctx, s.db)
 }
 
+// TxAttempts is how many times in all Tx runs fn under index.WithRepeatableRead when the
+// database aborts each of its transactions.
+const TxAttempts = 4
+
 // Tx runs fn in one transaction: it commits when fn returns nil and otherwise rolls back and
-// returns fn's error unchanged.
+// returns fn's error unchanged. Under index.WithRepeatableRead, on an engine with
+// Dialect.IsAborted, the transaction is repeatable read, and one that the database aborts, in
+// fn or at the commit, is run again from the start, up to TxAttempts times in all.
 func (s *Store) Tx(ctx context.Context, fn func(index.Writer) error) error {
-	return s.withTx(ctx, func(c *conn) error { return fn(c) })
+	run := func(c *conn) error { return fn(c) }
+	if !index.IsRepeatableRead(ctx) || s.d.IsAborted == nil {
+		return s.withTx(ctx, run)
+	}
+	opts := &sql.TxOptions{Isolation: sql.LevelRepeatableRead}
+	for attempt := 1; ; attempt++ {
+		err := s.begin(ctx, opts, run)
+		if err == nil || attempt == TxAttempts || !s.d.IsAborted(err) || ctx.Err() != nil {
+			return err
+		}
+	}
 }
 
 // Ping checks that the database answers.
@@ -86,11 +102,17 @@ var _ index.Writer = (*conn)(nil)
 // withTx runs fn in a transaction. On the pool it begins one, commits when fn returns nil and
 // rolls back otherwise; inside a transaction it runs fn on it, without a savepoint: the outer
 // transaction is what makes the writes atomic.
-func (c *conn) withTx(ctx context.Context, fn func(*conn) error) (err error) {
+func (c *conn) withTx(ctx context.Context, fn func(*conn) error) error {
 	if c.db == nil {
 		return fn(c)
 	}
-	tx, err := c.db.BeginTx(ctx, nil)
+	return c.begin(ctx, nil, fn)
+}
+
+// begin runs fn in a transaction that it begins on the pool with opts (nil: the database's
+// defaults), commits when fn returns nil and rolls back otherwise.
+func (c *conn) begin(ctx context.Context, opts *sql.TxOptions, fn func(*conn) error) error {
+	tx, err := c.db.BeginTx(ctx, opts)
 	if err != nil {
 		return c.d.wrap(err, "begin")
 	}

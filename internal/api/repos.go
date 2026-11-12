@@ -266,7 +266,12 @@ func (s *Repos) Update(ctx context.Context, formatName, name string, req UpdateR
 		row *index.Repo
 		ev  *index.AuditEvent
 	)
-	err := s.Index.Tx(ctx, func(w index.Writer) (err error) {
+	// A repeatable read, so that this update does not write back over a concurrent one what
+	// it read before that one committed (#791): when the database finds the row changed under
+	// it, the transaction runs again from here, on the row as it is now, and the audit event
+	// is the one of the attempt that committed.
+	err := s.Index.Tx(index.WithRepeatableRead(ctx), func(w index.Writer) (err error) {
+		ev = nil
 		if row, err = w.GetRepo(ctx, formatName, name); err != nil {
 			return err
 		}
