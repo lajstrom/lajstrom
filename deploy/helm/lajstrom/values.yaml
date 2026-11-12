@@ -195,11 +195,62 @@ service:
   port: 8080
   annotations: {}
 
+# An HTTPRoute of the Gateway API, the edge the docs run (docs/reverse-proxy.md, Gateway API): the
+# whole host, without a path prefix or a rewrite, to the port http. The Gateway is the cluster's
+# or one of your own, such as deploy/kubernetes/gateway/gateway.yaml; what Gateway API has no
+# field for (body limits, idle timeouts, the path as sent) its implementation sets, e.g. Envoy
+# Gateway's policies in extraObjects.
+httpRoute:
+  enabled: false
+  annotations: {}
+  labels: {}
+  # The Gateway's listener, which must admit routes from this namespace; required.
+  parentRefs: []
+  #  - name: lajstrom
+  #    sectionName: https
+  # Empty: the host of config.server.externalURL.
+  hostnames: []
+  # No bound on a whole request (Standard since Gateway API v1.2.0): without it Envoy-based
+  # implementations cut a response 15 s after the request, a long download among them.
+  timeouts:
+    request: 0s
+
+# An Ingress, for a controller of your choice. Its annotations must let bodies of any size
+# through unbuffered and leave long transfers alone (docs/reverse-proxy.md); ingress-nginx, whose
+# annotations most examples show, is retired.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # Empty: the host of config.server.externalURL.
+  host: ""
+  tls: []
+  #  - secretName: lajstrom-tls
+  #    hosts: [art.example.com]
+
 # The metrics listener, server.metricsListen on 0.0.0.0, and the port metrics of the pods and
 # the Service. No edge routes it.
 metrics:
   enabled: true
   port: 9464
+  # A ServiceMonitor of the Prometheus operator for the port metrics (docs/operations.md,
+  # Metrics); needs its CRD. Each replica counts its own series.
+  serviceMonitor:
+    enabled: false
+    # The labels your Prometheus selects ServiceMonitors by, e.g. release: kube-prometheus-stack.
+    labels: {}
+    interval: 30s
+    scrapeTimeout: ""
+
+# A HorizontalPodAutoscaler in place of replicaCount: every replica is the same, so CPU is a fair
+# signal. Keep minReplicas at 2 or more for the PodDisruptionBudget to leave one serving.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: null
+  behavior: {}
 
 # Spread the replicas, e.g. over kubernetes.io/hostname. A constraint without a labelSelector
 # gets the pods' own.
@@ -215,3 +266,8 @@ extraEnv: []
 extraEnvFrom: []
 extraVolumes: []
 extraVolumeMounts: []
+
+# More objects released with the chart, as maps or as strings, each rendered with tpl: the
+# policies of a Gateway implementation, a NetworkPolicy that admits only the edge, an
+# ExternalSecret.
+extraObjects: []

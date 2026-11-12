@@ -42,3 +42,51 @@ resources:
     memory: 256Mi
   limits:
     memory: 1Gi
+
+# Three to six replicas by CPU, in place of replicaCount.
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+# The route on the Gateway of deploy/kubernetes/gateway (#834), whose proxies run in
+# envoy-gateway-system.
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: lajstrom
+      sectionName: https
+
+metrics:
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack
+
+# Only the Gateway's proxies reach the port http, so that nothing else in trustedProxies' range
+# can name a client; Prometheus reaches metrics.
+extraObjects:
+  - apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: '{{ include "lajstrom.fullname" . }}'
+    spec:
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/instance: '{{ .Release.Name }}'
+          app.kubernetes.io/component: server
+      policyTypes: [Ingress]
+      ingress:
+        - from:
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: envoy-gateway-system
+          ports:
+            - port: http
+        - from:
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: monitoring
+          ports:
+            - port: metrics
