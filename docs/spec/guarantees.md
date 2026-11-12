@@ -470,11 +470,14 @@ status is `holds on strongly consistent registries only` do not hold there.
 - **Assumes.** Registry: **read-after-write** (**unchecked**): a reconcile that lists a just-deleted
   tag adds its rows back until the next run. Database: any.
 - **Mechanism.** `ingest.Pipeline.Delete`: `deletion.find`, then under the tag lock
-  (`deletion.locked`) `deletion.deleteInBackend` (the first request a plain delete so that a
-  refusal changes nothing, after the audit row is written pending) and `deletion.record` (the
-  rows by the manifest's digest, `InvalidateIndexCache` and the audit row completed in one
-  `Store.Tx`, before the lock is released).
+  (`deletion.locked`) `deletion.begin` (the other tags counted, the audit row written pending),
+  then `deletion.finish` on a context detached from the request and bounded by
+  `ingest.claimTTL`, so that a client that goes away does not stop it half-way (#710):
+  `deletion.deleteInBackend` (the first request a plain delete so that a refusal changes
+  nothing) and `deletion.record` (the rows by the manifest's digest, `InvalidateIndexCache` and
+  the audit row completed in one `Store.Tx`, before the lock is released).
 - **Tests.** `TestDeleteVersion`, `TestDeleteRefused`, `TestDeleteNotFound`, `TestDeleteRowsFail`,
+  `TestDeleteClientGone`, `TestDeleteReferrerClientGone`, `TestIntegrationDeleteReferrerClientGone`,
   `TestDeleteThenReindex`, `TestDeleteKeepsPackage`, `TestDeleteReferrer`, `TestDeleteManifests`,
   `TestDeleteTagged`, `TestTagPushAndDelete`, `TestDeleteInvalidatesIndexes` (deb),
   `TestDeleteGoneAndAuditWriter` (raw), `TestDeletePartial` (raw), `TestDeleteVersionPartial`,

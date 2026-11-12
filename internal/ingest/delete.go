@@ -57,7 +57,9 @@ import (
 //     with the audit row; for any other manifest the audit row alone. The row is written pending
 //     in step 3, in a transaction of its own after the tags are counted and before the first
 //     request that changes anything, and failed with the error when the rest of step 3 or this
-//     transaction fails. This transaction's failure is a plain error (500), but a database that
+//     transaction fails. From the pending row on, the rest of step 3 and this step run on a
+//     context of their own, bounded by ingest.claimTTL: a client that goes away does not stop the
+//     delete half-way (#710). This transaction's failure is a plain error (500), but a database that
 //     did not answer: index.ErrUnavailable stays wrapped (503 with Retry-After), for the retry
 //     finds the rows gone in the backend (step 2) and deletes them. It is a delete by principal
 //     with del.ClientIP (the request's client address when it is empty), the version's subject
@@ -115,12 +117,10 @@ func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Delet
 		if err := d.check(ctx); err != nil {
 			return err
 		}
-		if err := d.deleteInBackend(ctx); err != nil {
-			setDetail(&d.ev, "referrers", d.referrers)
-			p.fail(ctx, &d.ev, err)
+		if err := d.begin(ctx); err != nil {
 			return err
 		}
-		return d.record(ctx)
+		return d.finish(ctx)
 	})
 	if err != nil {
 		return nil, err
@@ -351,16 +351,33 @@ func (d *deletion) subjectOfCondition() string {
 	return fmt.Sprintf("version %s of %q in %s/%s", version, name, d.repo.Format, d.repo.Name)
 }
 
-// deleteInBackend deletes the target with its referrers, under the locks of the delete. Its audit
-// row is written pending after the other tags are counted, before the first request that changes
-// anything (#473).
-func (d *deletion) deleteInBackend(ctx context.Context) error {
+// begin is what comes before the first request that changes anything, under the locks of the
+// delete: the other tags are counted, then the audit row is written pending (#473).
+func (d *deletion) begin(ctx context.Context) error {
 	if err := d.refuseTagged(ctx); err != nil {
 		return err
 	}
-	if err := d.p.intend(ctx, &d.ev); err != nil {
+	return d.p.intend(ctx, &d.ev)
+}
+
+// finish deletes in the backend and records the delete, under its locks, on a context of its
+// own: a client that goes away once the registry starts to change does not stop the delete
+// half-way, which would leave the rows of a manifest the registry deleted (#710), or a subject's
+// tag-schema index deleted and not pushed again (#711). The context keeps the request's values
+// and is bounded by ingest.claimTTL, the age at which the pending audit row is unknown.
+func (d *deletion) finish(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), d.p.claimTTL)
+	defer cancel()
+	if err := d.deleteInBackend(ctx); err != nil {
+		setDetail(&d.ev, "referrers", d.referrers)
+		d.p.fail(ctx, &d.ev, err)
 		return err
 	}
+	return d.record(ctx)
+}
+
+// deleteInBackend deletes the target with its referrers.
+func (d *deletion) deleteInBackend(ctx context.Context) error {
 	if d.subject != "" && !d.api {
 		return d.deleteReferrer(ctx)
 	}
