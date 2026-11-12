@@ -292,8 +292,8 @@ type FileMatch struct {
 type Cache struct {
 	ID         int64
 	RepoID     int64
-	Scope      string // jammy/main/amd64, simple/requests, com.example/lib-core
-	Kind       string // Packages, Release, InRelease, simple, maven-metadata
+	Scope      string // jammy (apt suite), simple/requests, com.example/lib-core, @acme/widgets
+	Kind       string // Release, main/binary-amd64/Packages.gz, simple.html, maven-metadata, packument
 	Content    []byte
 	SHA256     string // hex sha256 of Content
 	RenderedAt time.Time
