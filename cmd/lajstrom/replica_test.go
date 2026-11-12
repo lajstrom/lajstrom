@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -70,11 +73,24 @@ func startServe(t *testing.T, cfg, addr string) (stop func() error) {
 		}
 	}
 	t.Cleanup(func() { _ = stop() })
-	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+	awaitHealthz(t, addr, func() error {
 		select {
 		case err := <-done:
-			t.Fatalf("serve returned at start: %v", err)
+			return fmt.Errorf("serve returned at start: %w", err)
 		default:
+			return nil
+		}
+	})
+	return stop
+}
+
+// awaitHealthz waits until a serve answers /-/healthz on addr, and stops the test when it does
+// not within 20 s, or when ended, asked between the tries, says that serve has ended.
+func awaitHealthz(t *testing.T, addr string, ended func() error) {
+	t.Helper()
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if err := ended(); err != nil {
+			t.Fatal(err)
 		}
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/-/healthz", nil)
 		if err != nil {
@@ -83,13 +99,80 @@ func startServe(t *testing.T, cfg, addr string) (stop func() error) {
 		if resp, err := http.DefaultClient.Do(req); err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return stop
+				return
 			}
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("serve does not answer on %s after 20 s", addr)
 		}
 	}
+}
+
+// envServeProcess names the configuration of serve in the process of startServeProcess.
+const envServeProcess = "LAJSTROM_TEST_SERVE_CONFIG"
+
+// TestServeProcess is serve in the child process of startServeProcess, with the configuration
+// of LAJSTROM_TEST_SERVE_CONFIG; without it, it is skipped.
+func TestServeProcess(t *testing.T) {
+	cfg := os.Getenv(envServeProcess)
+	if cfg == "" {
+		t.Skip("the child process of startServeProcess")
+	}
+	cmd := newRootCmd(func(string) (string, bool) { return "", false })
+	cmd.SetArgs([]string{"serve", "--config", cfg})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// startServeProcess runs serve with the configuration cfg in a child process of its own
+// (TestServeProcess), so that the test can signal it, and waits until it answers /-/healthz on
+// addr. wait returns the end of the process (exec.Cmd.Wait) with its output; the test's end
+// kills it.
+func startServeProcess(t *testing.T, cfg, addr string) (p *os.Process, wait func() error) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestServeProcess$") //nolint:gosec // the test binary
+	cmd.Env = append(os.Environ(), envServeProcess+"="+cfg)
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan struct{})
+	var werr error
+	go func() { werr = cmd.Wait(); close(exited) }()
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-exited })
+	wait = func() error {
+		select {
+		case <-exited:
+			if werr != nil {
+				return fmt.Errorf("%w; its output:\n%s", werr, out.String())
+			}
+			return nil
+		case <-time.After(30 * time.Second):
+			return errors.New("serve has not ended 30 s after the signal")
+		}
+	}
+	awaitHealthz(t, addr, func() error {
+		select {
+		case <-exited:
+			return fmt.Errorf("serve ended at start: %w; its output:\n%s", werr, out.String())
+		default:
+			return nil
+		}
+	})
+	return cmd.Process, wait
+}
+
+// deadPID returns the PID of a process of this host that has ended: a child that ran no test
+// and was waited for.
+func deadPID(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^$") //nolint:gosec // the test binary
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	return cmd.Process.Pid
 }
 
 // openIndex opens the SQLite index of the configuration serveConfig wrote in dir.
@@ -153,6 +236,58 @@ func TestServeTwoReplicasOnSQLite(t *testing.T) {
 	}
 	if ids := replicaIDs(t, st); len(ids) != 0 {
 		t.Errorf("replicas after the first serve stopped: %v, want none", ids)
+	}
+}
+
+// TestServeHangup checks that serve drains on SIGHUP, which closing its terminal or an SSH
+// session sends, as it does on SIGTERM: it exits 0 and deletes its row, so the next start need
+// not wait (#720).
+func TestServeHangup(t *testing.T) {
+	dir := t.TempDir()
+	cfg, addr := serveConfig(t, dir)
+	p, wait := startServeProcess(t, cfg, addr)
+	st := openIndex(t, dir)
+	if row := oneReplica(t, st); row.PID != p.Pid {
+		t.Fatalf("the row of serve: %+v, want PID %d", row, p.Pid)
+	}
+	if err := p.Signal(syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	if err := wait(); err != nil {
+		t.Fatalf("serve after SIGHUP: %v, want exit status 0", err)
+	}
+	if ids := replicaIDs(t, st); len(ids) != 0 {
+		t.Errorf("replicas after SIGHUP: %v, want none", ids)
+	}
+}
+
+// TestServeKilled checks a start on the SQLite file of a serve of this host that was killed
+// (SIGKILL, as by the OOM killer) and left its row with a fresh heartbeat: the row's process
+// is gone, so the start deletes the row and serves at once (#720).
+func TestServeKilled(t *testing.T) {
+	if processScope() == "" {
+		t.Skip("this operating system does not tell Lajstrom whether a process is gone")
+	}
+	dir := t.TempDir()
+	cfg, addr := serveConfig(t, dir)
+	p, wait := startServeProcess(t, cfg, addr)
+	st := openIndex(t, dir)
+	killed := oneReplica(t, st)
+	if err := p.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := wait(); err == nil {
+		t.Fatal("serve after SIGKILL: exit status 0")
+	}
+	if row := oneReplica(t, st); row.ID != killed.ID {
+		t.Fatalf("replicas after SIGKILL: %+v, want the killed one's row", row)
+	}
+	stop := startServe(t, cfg, addr)
+	if ids := replicaIDs(t, st); len(ids) != 1 || ids[0] == killed.ID {
+		t.Errorf("replicas: %v, want the row of the new serve only", ids)
+	}
+	if err := stop(); err != nil {
+		t.Errorf("serve: %v", err)
 	}
 }
 
@@ -245,6 +380,34 @@ func TestReplicaBeat(t *testing.T) {
 	r.Stop(ctx)
 	if ids := replicaIDs(t, st); len(ids) != 0 {
 		t.Errorf("replicas after Stop: %v, want none", ids)
+	}
+}
+
+// TestReplicaBeatGone checks a beat that finds the row of this replica deleted and a fresh row
+// of a process of this host that is gone: it deletes that row and writes this one's again.
+func TestReplicaBeatGone(t *testing.T) {
+	if processScope() == "" {
+		t.Skip("this operating system does not tell Lajstrom whether a process is gone")
+	}
+	ctx := t.Context()
+	st := openIndex(t, t.TempDir())
+	now := time.Now()
+	clock := func() time.Time { return now }
+	r, err := startReplica(ctx, inSync{st, clock}, slog.New(slog.DiscardHandler), clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.StopReplica(ctx, r.row.ID); err != nil {
+		t.Fatal(err)
+	}
+	gone := index.Replica{ID: "gone", Host: r.row.Host, PID: deadPID(t), Process: r.row.Process, Version: "v0.1.0", StartedAt: now}
+	if err := st.StartReplica(ctx, &gone, now.Add(-replicaStaleAfter)); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(replicaBeatEvery)
+	r.beat(ctx)
+	if ids := replicaIDs(t, st); len(ids) != 1 || ids[0] != r.row.ID || r.Err() != nil {
+		t.Errorf("after the beat: %v, %v; want this one's row only", ids, r.Err())
 	}
 }
 

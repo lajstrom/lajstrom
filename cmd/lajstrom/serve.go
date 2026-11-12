@@ -37,9 +37,9 @@ const registryProbeTimeout = 10 * time.Second
 // it (startReplica: on SQLite a live row of another replica stops serve here), create the
 // repos of the configuration that the control plane does not have, load the master key, build
 // a provider for every registry and probe its capabilities, build the server and run it until
-// SIGINT or SIGTERM and the drain that follows (server.Run; a second signal stops the process
-// at once), then stop the background work and close the database. A server that cannot listen
-// returns its error at once.
+// SIGINT, SIGTERM or SIGHUP (the terminal closed) and the drain that follows (server.Run; a
+// second signal stops the process at once), then stop the background work, delete the row and
+// close the database. A server that cannot listen returns its error at once.
 //
 // Migrating on start takes the same lock as lajstrom migrate, so replicas that start together
 // apply each migration once. Serve does not start on a schema that requires a newer binary, nor,
@@ -67,7 +67,7 @@ func newServeCmd(a *app) *cobra.Command {
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, _ []string) (err error) {
-			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 			defer stop()
 			// The first signal starts the drain; a second one stops the process at once.
 			context.AfterFunc(ctx, stop)

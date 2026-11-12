@@ -779,12 +779,15 @@ status is `holds on strongly consistent registries only` do not hold there.
   every 30 s, stale after 2 minutes), `Store.WithReferrersLock` (the referrers, tag and journal
   locks), the unique indexes `sessions_open_key` and `keys_active`, the `sessions` rows of
   uploads (`facade` `uploadState`); `replicas` (`Writer.StartReplica`, which on SQLite refuses a
-  second live replica, and the heartbeat of `serve`, which compares the clocks); the CLI's
-  `checkClock`, before `reindex` and `admin` open the index (#563).
+  second live replica, and the heartbeat of `serve`, which compares the clocks); on SQLite a
+  start deletes a refusing row first when its process was of the same host, boot and PID
+  namespace and the kernel says it is gone (`processGone`: no process has its PID, or one that
+  started at another time; #720); the CLI's `checkClock`, before `reindex` and `admin` open the index (#563).
 - **Tests.** The store conformance cases `TagClaimRace`, `ReindexRunRace`, `FetchClaimRace`,
   `KeyRace`, `SessionsConcurrent`, `JournalRace`, `PackageNameOCIRace`, `PackageRace`,
   `ReferrersLock`, `Replicas`; `TestFileReplicas`, `TestReplicasCoexist`,
-  `TestServeTwoReplicasOnSQLite`, `TestServeAfterCrash`, `TestReplicaBeat`, `TestReplicaClock`,
+  `TestServeTwoReplicasOnSQLite`, `TestServeAfterCrash`, `TestServeHangup`, `TestServeKilled`,
+  `TestProcessGone`, `TestReplicaBeat`, `TestReplicaBeatGone`, `TestReplicaClock`,
   `TestCheckClock`, `TestOpenMigratedClock`, the conformance case `DatabaseTime`;
   `TestUploadAcrossReplicas`, `TestMonolithicUploadAbandoned`,
   `TestIntegrationUploadAcrossReplicas`, `TestSessionConcurrent`, `TestSessionCommitOnce`, `TestKeyForRace`, `TestTokenSignerRace`,
@@ -796,8 +799,11 @@ status is `holds on strongly consistent registries only` do not hold there.
   can take over a live claim; the log and `lajstrom_clock_skew_seconds` say so from 10 s on.
   `reindex` and `admin` on a host more than 60 s off refuse to run, naming the skew; a clock
   that moves away during a long run is not compared again until the next command. A second replica on one
-  SQLite file is refused when it starts; a replica that stood still for 2 minutes while another
-  started is not ready from its next heartbeat on, and both run until the operator stops one.
+  SQLite file is refused when it starts, unless the kernel says its process is gone; a row the
+  kernel cannot say that of (another host, a container restarted in a new PID namespace) refuses
+  starts until it is stale, 2 minutes after its last beat. A replica that stood still for 2
+  minutes while another started is not ready from its next heartbeat on, and both run until the
+  operator stops one.
 - **Status.** `holds`.
 
 ### INV-27. A cached document is invalidated by every change it depends on

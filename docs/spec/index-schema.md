@@ -112,7 +112,7 @@ rebuilt.
 | --- | --- | --- |
 | `tag_claims` | `id`, `repo_id` → repos (`ON DELETE CASCADE`), `package` text (the package path, `name_oci`), `tag` text (`''` in the claim on the package path), `digest` text (manifest digest being published; in the claim on the package path, the sha256 digest of the spelling, `lajstrom.name`), `principal` text, `claimed_at` ts | unique `(repo_id, package, tag)`; written by ingest only |
 | `reindex_runs` | `id`, `repo_id` → repos null (`ON DELETE CASCADE`; null: a run of every repo), `state` text (`running`, `done`, `failed`, `abandoned`), `source` text (`cli`, `api`, `reconcile`), `principal` text, `replica` text (host name and process id), `options` json (`prune`, `verify`), `started_at` ts, `heartbeat_at` ts, `finished_at` ts null, `report` json null (layout.md, `reindex.Report`), `error` text null | index `(COALESCE(repo_id, 0), started_at)`; written by reindex only |
-| `replicas` | `id` text (a UUID v7 made at the start), `host` text (host name), `pid` int, `version` text (the binary's), `started_at` ts, `heartbeat_at` ts | primary key `id`; written by `serve` only. Migration `0018_replicas.sql` (#478) |
+| `replicas` | `id` text (a UUID v7 made at the start), `host` text (host name), `pid` int, `process` text (the boot, the PID namespace and the start of the process, as its operating system tells them; `''` where it tells nothing), `version` text (the binary's), `started_at` ts, `heartbeat_at` ts | primary key `id`; written by `serve` only. Migrations `0018_replicas.sql` (#478), `0020_replicas_process.sql` (#720) |
 | `prune_sightings` | `repo_id` → repos (`ON DELETE CASCADE`), `path` text (the OCI repository, as `oci_repos.path`), `digest` text (the manifest digest of an index row), `first_at` ts (the first answer since the row was cleared), `last_at` ts (the latest answer) | primary key `(repo_id, path, digest)`; written by reindex only |
 
 A `versions` row exists only after the registry accepted the manifest and served it back (the
@@ -169,10 +169,14 @@ commands write none. On SQLite, which serves one replica (its referrers and jour
 locks of the process), the start is a transaction that holds the write lock of the file, and a
 row of another replica with a fresh heartbeat refuses it: `serve` exits with an error that
 names that replica (id, host, process, version, start, last heartbeat) and when its row goes
-stale. A process that crashed leaves its row, so `serve` on the file is refused until the row
-is stale, 2 minutes after its last beat at most; an orchestrator that restarts it on failure
-starts it then. A replica that stood still for that long finds its row
-deleted at its next beat and writes it again; on SQLite, while another replica's row is fresh,
+stale. A process that crashed or was killed leaves its row. When the row is of the starting
+process's host and of its scope, the boot and the PID namespace in `process` (Linux: the
+`boot_id` and the PID and time namespaces; macOS: `kern.bootsessionuuid`), and its PID names no
+process or one that started at another time (Linux), the process is gone: the start deletes the
+row and goes on. Otherwise (another host, a container restarted in a new PID namespace, a row
+with no `process`) `serve` on the file is refused until the row is stale, 2 minutes after its
+last beat at most; an orchestrator that restarts it on failure starts it then. A replica that
+stood still for that long finds its row deleted at its next beat and writes it again; on SQLite, while another replica's row is fresh,
 that is refused, and `/-/readyz` answers `503` until it is not. On Postgres the rows of every
 replica coexist. At its start and at every beat a replica also compares its clock with the
 database's (`DatabaseTime`; [operations.md](../operations.md#clocks)), as `reindex` and `admin`
@@ -342,7 +346,8 @@ the control-plane and derived tables, `0002_tag_claims.sql` the coordination tab
 `bindings_unique` (a binding made twice before it is kept once, the first),
 `0014_schema_requires.sql` the column `schema_migrations.requires` ([Upgrades](#upgrades)),
 `0017_index_cache_generations.sql` the table `index_cache_generations`, `0018_replicas.sql`
-the table `replicas`, and `0019_prune_sightings.sql` the table `prune_sightings`.
+the table `replicas`, `0019_prune_sightings.sql` the table `prune_sightings`, and
+`0020_replicas_process.sql` the column `replicas.process`.
 The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the

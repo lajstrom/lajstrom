@@ -446,7 +446,8 @@ On SQLite the database runs in the process, its clock is the host's, and the ske
 
 ## Shutdown
 
-On `SIGTERM` or `SIGINT`, `serve` drains: `/-/readyz` answers `503 shutting down`, the listener
+On `SIGTERM`, `SIGINT` or `SIGHUP` (its terminal or SSH session closed; there is no reload),
+`serve` drains: `/-/readyz` answers `503 shutting down`, the listener
 closes, so new connections are refused, and idle keep-alive connections are closed. Requests in
 flight, uploads included, get `server.shutdownTimeout` (default `30s`) to finish and are answered
 as usual, each on a connection that closes after its response; the process exits `0` once the
@@ -459,6 +460,15 @@ or starts over on another replica; a publish cut off before its manifest is in t
 published nothing, and one cut off after it is indexed by the next reconcile; a claim on a tag
 expires after `ingest.claimTTL`. A reindex run in the background is cancelled at the
 signal and finishes as failed. A second signal stops the process at once, without the drain.
+
+On SQLite, a `serve` that ends without the drain (`SIGKILL`, the OOM killer, a crash) leaves its
+row of `replicas`, and the next start on the file finds it. When the next start runs on the same
+host, boot and PID namespace and the kernel says that process is gone, it deletes the row and
+starts. Otherwise it is refused with an error that names the row, until the row is 2 minutes
+old; an orchestrator that restarts it on failure starts it then. A container that its restart
+policy restarts runs in a new PID namespace: its start deletes the row only when the kernel gave
+the new namespace the number of the old one, which is gone, and otherwise exits, and the next
+restart tries again ([index-schema.md](spec/index-schema.md#coordination)).
 
 Set `server.shutdownTimeout` from the longest upload a replica should finish, and the grace
 period of the orchestrator above it, or it kills the process before the drain ends:
