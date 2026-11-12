@@ -247,6 +247,20 @@ LAJSTROM_E2E_REGISTRY=localhost:5009 LAJSTROM_E2E_REGISTRY_USER=lajstrom \
 deploy/compose/gitea/gitea.sh down
 ```
 
+Forgejo, Gitea's fork, is the profile `forgejo` of the same compose file, on `localhost:5014`
+([registries/forgejo.md](registries/forgejo.md)). It serves ranges, so `raw.sh` passes there
+too. CI runs these seven against it as the job `e2e (forgejo)`, not required (#816). The job
+then runs the provider's integration tests against Forgejo with
+`LAJSTROM_TEST_REGISTRY_SPOOL_UNKNOWN_LENGTH=1`, without the two upload steps that read the
+session's status, which Forgejo answers one byte ahead (#804):
+
+```sh
+deploy/compose/gitea/gitea.sh up forgejo
+LAJSTROM_E2E_REGISTRY=localhost:5014 LAJSTROM_E2E_REGISTRY_USER=lajstrom \
+  LAJSTROM_E2E_REGISTRY_PASSWORD_FILE=deploy/compose/gitea/.work/forgejo.token \
+  LAJSTROM_E2E_REGISTRY_PREFIX=lajstrom-it/ test/e2e/run.sh oras auth rbac oci-token cosign tokens raw
+```
+
 ### The ha stack
 
 `ha.sh` runs the scenarios of [acceptance.md](acceptance.md) §4 against the `ha` profile of the
