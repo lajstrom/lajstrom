@@ -3,10 +3,13 @@ package facade
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +67,76 @@ func TestReferrerNotServed(t *testing.T) {
 		t.Errorf("message %q, want %q", msg, want)
 	}
 	wantNotServed(t, rr, notServedDetail{Name: "oci/images/app", Digest: d, Missing: missingDetail{ReferrersOf: subject}})
+}
+
+// TestNotServedBounded: the answer to a push the registry does not serve yet names at most
+// maxNamedBlobs of the blobs it does not serve, in the message and in the detail, and counts
+// the rest, so that a manifest at the layer bound gets a small answer, not every digest twice
+// (#693); a push with fewer blobs missing is answered as before, each named.
+func TestNotServedBounded(t *testing.T) {
+	blobs := func(n int) []digest.Digest {
+		ds := make([]digest.Digest, n)
+		for i := range ds {
+			ds[i] = digest.FromString(fmt.Sprint("layer ", i))
+		}
+		slices.Sort(ds)
+		return ds
+	}
+	named := func(ds []digest.Digest) string {
+		var b strings.Builder
+		for _, d := range ds {
+			b.WriteString(", the blob " + d.String())
+		}
+		return b.String()
+	}
+	few, many := blobs(3), blobs(maxLayers+1) // a manifest at the layer bound, and its config
+	rest := len(many) - maxNamedBlobs
+	subject := digest.FromString("an image")
+	tests := []struct {
+		name    string
+		nv      ingest.NotVisibleError
+		missing string // what the message names after "does not serve "
+		detail  missingDetail
+	}{
+		{name: "few blobs", nv: ingest.NotVisibleError{Manifest: true, Tag: "t1", Blobs: few},
+			missing: "the manifest, the tag t1" + named(few),
+			detail:  missingDetail{Manifest: true, Tag: "t1", Blobs: few}},
+		{name: "as many as are named", nv: ingest.NotVisibleError{Blobs: many[:maxNamedBlobs]},
+			missing: strings.TrimPrefix(named(many[:maxNamedBlobs]), ", "),
+			detail:  missingDetail{Blobs: many[:maxNamedBlobs]}},
+		{name: "one more", nv: ingest.NotVisibleError{Tag: "t1", Blobs: many[:maxNamedBlobs+1]},
+			missing: "the tag t1" + named(many[:maxNamedBlobs]) + ", 1 more blob",
+			detail:  missingDetail{Tag: "t1", Blobs: many[:maxNamedBlobs], MoreBlobs: 1}},
+		{name: "a manifest at the layer bound", nv: ingest.NotVisibleError{Manifest: true, Tag: "t1", Blobs: many},
+			missing: "the manifest, the tag t1" + named(many[:maxNamedBlobs]) + fmt.Sprintf(", %d more blobs", rest),
+			detail:  missingDetail{Manifest: true, Tag: "t1", Blobs: many[:maxNamedBlobs], MoreBlobs: rest}},
+		{name: "a referrer", nv: ingest.NotVisibleError{Blobs: many, Subject: subject},
+			missing: strings.TrimPrefix(named(many[:maxNamedBlobs]), ", ") + fmt.Sprintf(", %d more blobs, the referrers of %s", rest, subject),
+			detail:  missingDetail{Blobs: many[:maxNamedBlobs], MoreBlobs: rest, ReferrersOf: subject}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nv := tt.nv
+			nv.Name, nv.Digest, nv.Waited = "backend-base/docs/e.txt", digest.FromString("the manifest"), time.Minute
+			e := newEnv(t, envOptions{ingest: stubIngester{fmt.Errorf("ingest: push: %w", &nv)}})
+			f := e.newRawFile("docs/e.txt", "not served yet")
+			body, _ := f.body(t)
+			rr := e.put(f, "t1", body)
+			msg := wantError(t, tt.name, rr, http.StatusServiceUnavailable, codeUnavailable)
+			wantHeader(t, "the 503", rr, "Retry-After", "30")
+			if want := "the registry took raw/assets/docs/e.txt@" + nv.Digest.String() + " and does not serve " + tt.missing +
+				" yet; the same push again completes it"; msg != want {
+				t.Errorf("message %q, want %q", msg, want)
+			}
+			wantNotServed(t, rr, notServedDetail{Name: "raw/assets/docs/e.txt", Digest: nv.Digest, Missing: tt.detail})
+			if more := strings.Contains(rr.Body.String(), `"moreBlobs"`); more != (tt.detail.MoreBlobs > 0) {
+				t.Errorf("moreBlobs in the answer: %v, want %v: %s", more, tt.detail.MoreBlobs > 0, rr.Body)
+			}
+			if rr.Body.Len() > 4<<10 {
+				t.Errorf("the answer has %d bytes, want at most 4 KiB", rr.Body.Len())
+			}
+		})
+	}
 }
 
 // wantNotServed checks that the answer rr has one error whose detail is want (notServed).
