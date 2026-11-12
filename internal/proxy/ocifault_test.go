@@ -41,12 +41,15 @@ func (e *ociEnv) upstream(t *testing.T, edit func(*config.Upstream)) {
 // i-th answer, from 0, sends cut(i) bytes of what it serves, or all of it when cut(i) is
 // negative, and then closes the connection, or with stall holds it until the client leaves. A
 // Range bytes=<n>- is answered 206 from n; with whole, 200 with the blob; with shift, a 206 that
-// starts a byte later. ranges records the Range of each GET, "" for none.
+// starts a byte later. The answers after the first wait until hold is closed, when it is set,
+// so that a request can join the fetch before it ends. ranges records the Range of each GET, ""
+// for none.
 type breaking struct {
 	cut   func(i int) int
 	stall bool
 	whole bool
 	shift bool
+	hold  chan struct{}
 
 	mu     sync.Mutex
 	ranges []string
@@ -72,6 +75,13 @@ func (h *hub) breakBlob(d digest.Digest, b []byte, f *breaking) {
 		i := len(f.ranges)
 		f.ranges = append(f.ranges, rng)
 		f.mu.Unlock()
+		if i > 0 && f.hold != nil {
+			select {
+			case <-f.hold:
+			case <-r.Context().Done():
+				return true
+			}
+		}
 		w.Header().Set("Docker-Content-Digest", d.String())
 		body, status := b, http.StatusOK
 		if from, ok := strings.CutPrefix(rng, "bytes="); ok && !f.whole {
@@ -138,7 +148,7 @@ func TestOCIBlobResume(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newOCIEnv(t, ociSettings)
-			e.upstream(t, func(u *config.Upstream) { u.Retries, u.Timeout = tc.retries, 200*time.Millisecond })
+			e.upstream(t, func(u *config.Upstream) { u.Retries, u.Timeout = tc.retries, 500*time.Millisecond })
 			img := e.hub.image(t, "library/nginx", "1.27", "amd64")
 			c := e.core("a", proxy.Options{})
 			_, _, err := c.OCIManifest(t.Context(), e.repo, "library/nginx", img.manifests[0].Digest.String())
@@ -146,6 +156,7 @@ func TestOCIBlobResume(t *testing.T) {
 			layer := img.blobs[0][1]
 			blob := e.hub.bytesOf("library/nginx", layer.Digest)
 			f := tc.f(len(blob))
+			f.hold = make(chan struct{})
 			e.hub.breakBlob(layer.Digest, blob, f)
 
 			_, rc, err := c.OCIBlob(t.Context(), e.repo, "library/nginx", layer.Digest, true, true)
@@ -158,6 +169,8 @@ func TestOCIBlobResume(t *testing.T) {
 				_, _, err := c.OCIBlob(t.Context(), e.repo, "library/nginx", layer.Digest, true, false)
 				waited <- err
 			}()
+			time.Sleep(100 * time.Millisecond) // the request joins the fetch, which the first resume holds
+			close(f.hold)
 			got, err := io.ReadAll(rc)
 			werr := <-waited
 			if want := tc.ranges(len(blob)); !slices.Equal(f.seen(), want) {
