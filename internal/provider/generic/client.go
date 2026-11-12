@@ -79,7 +79,7 @@ func newClients(cfg config.Registry, base *url.URL, log *slog.Logger, o Options,
 	// once however often it was tried. Above both, the probe's ping sees the challenges.
 	br := newBreaker(cfg.Name, log)
 	rt := &deleteScopeTransport{on: pushForDelete, next: &realmTransport{registry: cfg.Name, base: base, hosts: realmHosts(cfg, base), next: &challengeTransport{next: &breakerTransport{b: br, next: &retryTransport{
-		next:    &logTransport{next: &metricsTransport{next: innermost(o, newTransport(timeout, guard), cfg.Name, log), registry: cfg.Name}, log: log},
+		next:    &logTransport{next: &metricsTransport{next: innermost(o, newTransport(timeout, guard), cfg.Name, timeout, log), registry: cfg.Name}, log: log},
 		retries: retries(cfg),
 		log:     log,
 	}}}}}
@@ -174,12 +174,14 @@ func (c *rotatingCache) GetToken(ctx context.Context, registry string, scheme au
 	return base64.StdEncoding.EncodeToString([]byte(cred.Username + ":" + cred.Password)), nil
 }
 
-// innermost is the innermost transport of the clients: t, under an upstream's rateLimitTransport.
-func innermost(o Options, t http.RoundTripper, name string, log *slog.Logger) http.RoundTripper {
+// innermost is the innermost transport of the clients: t, under an upstream's
+// rateLimitTransport and stallTransport, which bounds every wait for the next bytes of its
+// bodies by timeout.
+func innermost(o Options, t http.RoundTripper, name string, timeout time.Duration, log *slog.Logger) http.RoundTripper {
 	if !o.upstream {
 		return t
 	}
-	return &rateLimitTransport{next: t, upstream: name, log: log}
+	return &rateLimitTransport{next: &stallTransport{next: t, timeout: timeout}, upstream: name, log: log}
 }
 
 // guardedRedirect is the redirect rule of the follow client of a guarded registry
@@ -199,7 +201,8 @@ func guardedRedirect(guard *egress.Guard) func(*http.Request, []*http.Request) e
 
 // newTransport is the default transport of net/http with timeout as the bound on the wait for
 // response headers, and on dialing and the TLS handshake when it is shorter than
-// maxDialTimeout. A response body streams for as long as it takes. A non-nil guard dials the
+// maxDialTimeout. A registry's response body streams for as long as it takes; an upstream's
+// is bounded by stallTransport (innermost). A non-nil guard dials the
 // hosts it does not trust at public addresses only, and trusts the egress proxies the
 // environment chooses.
 func newTransport(timeout time.Duration, guard *egress.Guard) *http.Transport {
