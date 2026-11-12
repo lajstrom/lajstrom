@@ -30,6 +30,9 @@ type Options struct {
 	// oci proxy repos pull through from (ADR 0018); one whose upstream is not among them is
 	// served as if it were offline.
 	OCIUpstreams map[string]*OCIUpstream
+	// Mirror is the write path of oci proxy repos, *ingest.Pipeline; without it they push
+	// nothing into the backend.
+	Mirror Mirrorer
 	// MaxManifestSize is the largest manifest an oci proxy repo takes from its upstream, in bytes
 	// (server.maxManifestSize); zero or negative means 4 MiB.
 	MaxManifestSize int64

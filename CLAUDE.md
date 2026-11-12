@@ -27,6 +27,10 @@ a single blob. Go, single binary, SQLite or Postgres as a derived index.
   themselves; `make lint` refuses a provider write or oras-go in `internal/format` (forbidigo,
   depguard `one-write-path`).
 - Tags are immutable and append-only: never re-point a tag; collision with another digest is 409.
+  The one exception (ADR 0018): an `oci` proxy repo moves one of its upstream's tags, in
+  `ingest.Pipeline.MirrorManifest` only, to a digest the upstream named for it and the backend
+  holds; never a keep-tag, a tag of a hosted or managed repo, or a tag on a conflict with a
+  client's push.
 - No client plugins: protocols are emulated on the server.
 - Only `internal/index/*` talks to the database. Only `internal/provider/*` talks to the registry.
   `make lint` enforces both (depguard) and rejects `fmt.Print*` and the std `log` outside `cmd/`.
