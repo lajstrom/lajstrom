@@ -151,6 +151,10 @@ func (f probeFlags) urlRegistry(raw string) (config.Registry, error) {
 	if err != nil || u.Host == "" {
 		return config.Registry{}, fmt.Errorf("--url %q is not an absolute URL", raw)
 	}
+	if strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return config.Registry{}, errors.New("--url must be the registry's base URL, http(s)://<host>[:port], with no path, " +
+			"query or fragment: the API is at /v2/ of the host, and a project or an owner goes in --registry-prefix")
+	}
 	r := config.Registry{Name: u.Host, Type: generic.Type, URL: raw, Prefix: f.prefix}
 	if f.username != "" {
 		if f.passwordFile == "" {
