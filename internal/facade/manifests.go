@@ -142,7 +142,7 @@ func manifestUnknown(err error) error {
 // (intendPassThrough); the answer is 201, with OCI-Subject for a manifest with a subject: the
 // facade serves the referrers API, and the provider writes the tag schema where the backend
 // has none. Every other format goes through the manifest hook into ingest
-// (putManaged).
+// (putManaged), which takes only referrers on a proxy repo.
 func (h *handler) putManifest(w http.ResponseWriter, r *http.Request, t *target, ref string) error {
 	ctx := r.Context()
 	if err := h.authorize(ctx, auth.ActionWrite, t); err != nil {
