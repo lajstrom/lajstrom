@@ -162,8 +162,9 @@ Lint, vulnerability and license checks, as run in CI:
 # golangci-lint (configuration in .golangci.yml)
 go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run
 
-# known vulnerabilities in dependencies and the standard library
-go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+# known vulnerabilities in dependencies and the standard library, at the version of make
+# vulncheck and release.yml (CI's vulncheck job, govulncheck-action, installs the latest)
+go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
 # dependency licenses against the allowlist
 go run github.com/google/go-licenses@v1.6.0 check ./... \

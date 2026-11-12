@@ -7,10 +7,12 @@ GO      ?= go
 BIN     := bin/lajstrom
 PKG     := github.com/lajstrom/lajstrom
 
-# Tool versions: the same as .github/workflows/ci.yml.
+# Tool versions: the same as .github/workflows/ci.yml. govulncheck's is release.yml's
+# GOVULNCHECK_VERSION, and Renovate updates both (renovate.json, customManagers).
 GOLANGCI_LINT_VERSION ?= v2.15.0
 GO_LICENSES_VERSION   ?= v1.6.0
 VACUUM_VERSION        ?= v0.39.3
+GOVULNCHECK_VERSION   ?= v1.9.0
 ALLOWED_LICENSES      := Apache-2.0,MIT,BSD-2-Clause,BSD-3-Clause,ISC,MPL-2.0,Unlicense,CC0-1.0,0BSD
 # Modules whose license was verified by hand because go-licenses cannot classify the text
 # (CONTRIBUTING.md, dependency license policy): modernc.org/mathutil is BSD-3-Clause.
@@ -101,7 +103,7 @@ lint: ## golangci-lint at the version CI pins (configuration in .golangci.yml)
 	$(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --allow-parallel-runners
 
 vulncheck: ## Known vulnerabilities in dependencies and the standard library
-	$(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	$(GO) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 api-lint: ## Lint the OpenAPI document of the management API (internal/api/openapi.yaml) with vacuum, at the version pinned above
 	$(GO) run github.com/daveshanley/vacuum@$(VACUUM_VERSION) lint -d internal/api/openapi.yaml
