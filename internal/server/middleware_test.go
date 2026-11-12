@@ -68,16 +68,19 @@ func TestRecovery(t *testing.T) {
 	}{
 		{name: "panic before writing", path: "/test/panic", clientID: "req-1", wantStatus: 500, wantLog: true},
 		{name: "panic with a generated id", path: "/test/panic", wantStatus: 500, wantLog: true},
+		{name: "panic under /api/ answers the envelope", path: "/api/v1/test/panic", clientID: "req-api", wantStatus: 500, wantLog: true},
 		{name: "panic after writing aborts", path: "/test/panic-after-write", clientID: "req-2", wantPanic: http.ErrAbortHandler, wantLog: true},
 		{name: "ErrAbortHandler is not swallowed", path: "/test/abort", clientID: "req-3", wantPanic: http.ErrAbortHandler},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s, buf := newTestServer(t, Options{})
-			s.mux.HandleFunc("GET /test/panic", func(w http.ResponseWriter, _ *http.Request) {
+			boom := func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Length", "9999")
 				panic("boom")
-			})
+			}
+			s.mux.HandleFunc("GET /test/panic", boom)
+			s.mux.HandleFunc("GET /api/v1/test/panic", boom)
 			s.mux.HandleFunc("GET /test/panic-after-write", func(w http.ResponseWriter, _ *http.Request) {
 				_, _ = io.WriteString(w, "partial")
 				panic("boom")
@@ -101,7 +104,7 @@ func TestRecovery(t *testing.T) {
 				if panicked != nil {
 					t.Fatalf("handler panic escaped: %v", panicked)
 				}
-				checkInternalError(t, rr, tt.wantStatus)
+				checkInternalError(t, rr, tt.wantStatus, tt.path)
 			}
 
 			id := rr.Header().Get("X-Request-Id")
@@ -159,7 +162,9 @@ func serve(h http.Handler, w http.ResponseWriter, r *http.Request) (panicked any
 	return nil
 }
 
-func checkInternalError(t *testing.T, rr *httptest.ResponseRecorder, status int) {
+// checkInternalError checks the 500 of a panic on path: the envelope of the management API under
+// /api/ (docs/api.md, Errors), the error and the request id elsewhere.
+func checkInternalError(t *testing.T, rr *httptest.ResponseRecorder, status int, path string) {
 	t.Helper()
 	if rr.Code != status {
 		t.Errorf("status = %d, want %d", rr.Code, status)
@@ -169,6 +174,18 @@ func checkInternalError(t *testing.T, rr *httptest.ResponseRecorder, status int)
 	}
 	if cl := rr.Header().Get("Content-Length"); cl != "" {
 		t.Errorf("Content-Length %q set by the handler survived", cl)
+	}
+	if strings.HasPrefix(path, "/api/") {
+		var env struct {
+			Error struct {
+				Code, Message string
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil || env.Error.Code != "INTERNAL" ||
+			env.Error.Message != "Internal Server Error" {
+			t.Errorf("body %q (%v), want the envelope with INTERNAL", rr.Body, err)
+		}
+		return
 	}
 	var body struct {
 		Error     string `json:"error"`

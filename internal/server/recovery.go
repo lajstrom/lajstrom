@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"runtime/debug"
+	"strings"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
 )
 
-// recovery turns a panic in a handler into a 500 JSON response with the request id, and logs
+// recovery turns a panic in a handler into a 500 JSON response (writeInternalError), and logs
 // the panic value and the stack at Error. It is the outermost middleware, so the request id
 // comes from the response header that the request id middleware set.
 //
@@ -47,16 +48,18 @@ func (s *Server) recovery(next http.Handler) http.Handler {
 			if rec.started() {
 				panic(http.ErrAbortHandler)
 			}
-			writeInternalError(w, id)
+			writeInternalError(w, r, id)
 		}()
 		next.ServeHTTP(rec, r)
 	})
 }
 
-// writeInternalError answers 500 with {"error":"internal server error","requestId":id}. Headers
-// the handler set before it failed are dropped, except the request id; the security headers
-// are set again.
-func writeInternalError(w http.ResponseWriter, id string) {
+// writeInternalError answers 500: under /api/ with the envelope of the management API,
+// {"error":{"code":"INTERNAL","message":"Internal Server Error"}}, as internal/api answers a 500
+// (docs/api.md, Errors); elsewhere with {"error":"internal server error","requestId":id}.
+// Headers the handler set before it failed are dropped, except the request id; the security
+// headers are set again.
+func writeInternalError(w http.ResponseWriter, r *http.Request, id string) {
 	h := w.Header()
 	for k := range h {
 		if k != requestIDHeader {
@@ -64,10 +67,14 @@ func writeInternalError(w http.ResponseWriter, id string) {
 		}
 	}
 	setSecurityHeaders(h)
-	body, _ := json.Marshal(struct {
+	var v any = struct {
 		Error     string `json:"error"`
 		RequestID string `json:"requestId"`
-	}{"internal server error", id})
+	}{"internal server error", id}
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		v = map[string]any{"error": map[string]string{"code": "INTERNAL", "message": http.StatusText(http.StatusInternalServerError)}}
+	}
+	body, _ := json.Marshal(v) // strings always encode
 	h.Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusInternalServerError)
 	_, _ = w.Write(append(body, '\n'))

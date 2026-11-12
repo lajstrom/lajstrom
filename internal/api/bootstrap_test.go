@@ -26,7 +26,7 @@ func bootstrapFixture(t *testing.T) (*fixture, string) {
 	if err := boot.Arm(t.Context(), path); err != nil {
 		t.Fatal(err)
 	}
-	f.h = New(Options{Repos: f.repos, Bootstrap: boot})
+	f.h = recordStatuses(New(Options{Repos: f.repos, Bootstrap: boot}))
 	return f, token
 }
 
