@@ -329,6 +329,13 @@ POST ?mount=&from= (pull on from)      201, and the blob 200 in the new reposito
 
 ## The build rule
 
+An `oci` proxy repo on a Quay backend with this rule cannot hold Docker Hub's
+`<namespace>/build` images: the push of their first manifest is refused at the token request,
+and the pull fails with a `4xx` that names the backend's refusal and an audit row
+`proxy.reject` ([proxy-and-group.md](../spec/proxy-and-group.md) §11.2;
+[#662](https://github.com/lajstrom/lajstrom/issues/662) puts the rule in the vendor table, so
+that it is refused before the upstream is asked).
+
 Quay's commit [77b369a](https://github.com/quay/quay/commit/77b369a411) (quay/quay#7858,
 PROJQUAY-11582, on master since 2026-11-05, in no release) refuses a **new** repository whose
 name, without the namespace, has a component `build` after a non-empty prefix followed by
