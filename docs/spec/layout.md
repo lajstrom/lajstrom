@@ -10,7 +10,8 @@
 ## 1. Layout
 
 ```
-cmd/lajstrom/                 main; subcommands: serve, reindex, migrate, version, admin (user/token/repo/binding), healthcheck
+cmd/lajstrom/                 main; subcommands: serve, reindex, migrate, version, healthcheck, registry (probe),
+                              admin (repo/user/token/binding/key/bootstrap/retention/deb)
 internal/config/              config file (YAML) + env overrides; validation; example in deploy/
 internal/server/              http.Server, routing (net/http ServeMux, Go 1.22 patterns), middleware:
                               request id, logging, metrics, auth, panic recovery; mounts formats, facade, api
@@ -20,12 +21,15 @@ internal/format/raw/          raw plugin: parse, routes, index
 internal/format/pypi/         pypi plugin: wheel/sdist metadata, simple index, upload API
 internal/format/deb/          deb/apt plugin: control parsing, Packages/Release rendering, GPG, pool routes
 internal/format/maven/        maven plugin: coordinates, POM, sessions, maven-metadata.xml, checksums
+internal/format/npm/          npm plugin: packuments, publish, dist-tags journal, proxy and group hooks, audit
 internal/format/formattest/   test doubles: Fake plugin, partial index.Store; imported only by tests
 internal/oci/profile/         media types, annotations, Escape/EscapeComponent, manifest build+validate (pure)
 internal/ingest/              pipeline (validate → parse → push → index), publication sessions
 internal/provider/            Provider interface, Capabilities, errors
 internal/provider/generic/    oras-go based provider for distribution, Zot, Harbor, GHCR (+ small adapters)
 internal/provider/ecr/        ECR adapter: auth token, CreateRepository, DescribeRepositories
+internal/provider/probe/      lajstrom registry probe: measures a registry's capabilities (docs/registries)
+internal/provider/providertest/ test doubles: an in-memory Provider; imported only by tests
 internal/index/               Store interface, models, migrations (embedded SQL) and their runner
 internal/index/reindex/       reindex worker: walk the registry, mark and sweep, runs, the report
 internal/index/migrations/    <dialect>/NNNN_<name>.sql for sqlite and postgres, embedded; the same versions in both
@@ -34,45 +38,56 @@ internal/index/sqlite/        modernc.org/sqlite implementation
 internal/index/postgres/      pgx implementation
 internal/index/storetest/     conformance suite of index.Store, run by both engines; imported only by tests
 internal/proxy/               proxy repos (ADR 0013): the settings, the upstream client, the metadata cache, fetch on miss
-internal/auth/                principals, password hashing, PAT/deploy tokens, RBAC evaluation, bearer JWT
+internal/auth/                principals, password hashing, PAT/deploy tokens, RBAC evaluation
+internal/auth/token/          the bearer JWT of /v2: scopes, issue, verify
 internal/api/                 /api/v1 management REST (repos, users, tokens, bindings), JSON
 internal/keys/                server signing key, per-repo GPG keys (apt), encryption at rest
 internal/audit/               audit log writer
 internal/metrics/             the Prometheus collectors (fixed labels) and the handler of the metrics listener
-internal/testutil/            registry/DB fixtures, fixture builders (make a .deb / .whl / .jar in-process)
+internal/testutil/            fixture builders, in memory: .deb, .whl/sdist, .jar + POM, npm tarball, archives, bombs, fuzz seeds
 internal/version/             build information (version, commit, date), set with -ldflags; /-/version
 deploy/compose/               dev stack: zot, distribution, postgres; lajstrom.example.yaml
 docs/                         architecture, specs, ADRs, plan, registries (spike results), quickstarts
-tools/                        bootstrap scripts, dev helpers
+test/                         e2e/, conformance/, upgrade/, load/: the levels that run a server (§4, docs/testing.md)
+tools/                        bootstrap/ (bootstrap.py), guarantees/ (the check of guarantees.md, run by make test)
 ```
 
 Conventions:
 
 - `internal/` only; nothing is a public Go API in v0.x.
-- A format plugin never imports another format plugin. Plugins import `oci/profile`, `format`,
-  `index` (read), `ingest` (write). Frontend HTTP handlers live inside the plugin package
-  (`routes.go`); parsing lives in `parse.go` and is pure (no I/O beyond the reader passed in).
+- A format plugin never imports another format plugin, nor `ingest`: plugins import
+  `oci/profile`, `format`, `index` (read), `auth` and `provider` (reads; `make lint` refuses a
+  write), and raw and npm `server`; they publish through `format.Deps.Ingest`. Frontend HTTP
+  handlers live inside the plugin package (`routes.go`; maven's `deploy.go` and `resolve.go`);
+  parsing is pure (no I/O beyond the reader passed in), in `parse.go` where the format has one.
 - Only `provider/*` talks to the backend registry. Only `index/*` talks to the database.
 - Errors: wrap with `%w`, sentinel errors per package (`ErrNotFound`, `ErrConflict`,
   `ErrUnsupported`). HTTP handlers map sentinel errors to status codes in one place per package.
-- Context everywhere; no global state except the plugin registry, and no state in process
-  memory that outlives one request: several replicas serve the same registry and the same
-  database, so anything that must be coordinated across requests (tag claims, upload sessions,
-  background jobs) goes through the database, never through memory or local files.
+- Context everywhere; no global state except the registries of plugins and of provider types,
+  and no state in memory that must agree across replicas: several replicas serve the same
+  registry and the same database, so anything that must be coordinated across requests (tag
+  claims, upload sessions, background jobs) goes through the database, never through memory or
+  local files. A replica keeps per-replica state across requests only where a stale or missing
+  entry cannot break a guarantee: the RBAC snapshot (reloaded when `auth_version` moves), the
+  login and token throttles, the upload slots, the proxy's single flight, ECR tokens.
 - Logging with `log/slog`; metrics with Prometheus client; no other observability deps in the MVP.
 
 ## 2. Contracts
 
-The exported shapes as merged with issue #7 (M0-01) and, for the format helpers, issue #11,
-grouped by package. Signatures are exact; comments are shortened. The doc comments in the code
-are the full contract (`go doc -all ./internal/<package>`).
+The exported shapes, grouped by package, first merged with issue #7 (M0-01) and, for the format
+helpers, issue #11, and kept in step with the code since. Of `internal/format`,
+`internal/provider`, `internal/index` and `internal/ingest` every exported identifier is here
+but the fields of the index models (`internal/index/models.go`) and the `Error` and `Unwrap`
+methods of error types; the sections of other packages show what the contract packages use of
+them. Signatures are exact; comments are shortened. The doc comments in the code are the full
+contract (`go doc -all ./internal/<package>`).
 
 ### Format plugin (`internal/format`)
 
 ```go
 // Plugin is one package format. Implementations are stateless; dependencies come in via Deps.
 type Plugin interface {
-    Name() string                           // first URL segment and lajstrom.format: raw, pypi, apt, maven
+    Name() string                           // first URL segment and lajstrom.format: raw, pypi, apt, maven, npm
     ArtifactType() string                   // application/vnd.lajstrom.<type>.v1 ("deb" for apt)
     EscapeName(name string) (string, error) // package name → package path below <format>/<repo>/
     // Validate inspects a manifest about to be stored, reads blobs through fetch, returns the
@@ -85,7 +100,8 @@ type Plugin interface {
 }
 
 // Streamer is a Plugin whose frontend uploads stream into the registry (ADR 0014): the frontend
-// calls Publisher.UploadStream, Build takes the file without Open. Formats move one by one.
+// calls Publisher.UploadStream, Build takes the file without Open. raw, apt, pypi and npm are
+// Streamers; maven's files stream through Sessions.Add instead.
 type Streamer interface {
     Plugin
     // the checksums Build needs besides sha256, and the inspector the bytes pass through
@@ -131,7 +147,8 @@ type JournalOp struct {
 // records it with its checksums; Refuse marks a file the frontend refused after it arrived
 // (maven: a checksum file that disagrees), which keeps Commit from publishing until Add
 // replaces it; Commit publishes the files through Upload, once at a time; a session whose time
-// is up (30 minutes after its last request) is dropped, never published in part.
+// is up (30 minutes after its last request, or the repo's maven.sessionTimeout) is dropped,
+// never published in part.
 type Sessions interface {
     Open(ctx context.Context, repo index.Repo, name, version string, principal auth.Principal) (*index.Session, error)
     Add(ctx context.Context, sessionID int64, name string, r io.Reader, size int64) (SessionFile, error)
@@ -208,8 +225,8 @@ type UploadedFile struct {
     Inspector   Inspector                   // a streamed file's, closed, for Build to read; nil otherwise
 }
 // StreamUpload is one file that streams into the registry as it is read (ADR 0014). The
-// frontend knows the package before the first byte: raw from the path, npm from the URL, apt
-// from the control file it read ahead.
+// frontend knows the package before the first byte: raw from the path, npm from the URL, pypi
+// from the file name of the distribution, apt from the control file it read ahead.
 type StreamUpload struct {
     Name   string                           // the package name: EscapeName of it is the OCI repository
     File   UploadedFile                     // Name, Size (-1 unknown) and ContentType; the rest is ingest's
@@ -257,7 +274,51 @@ type Deletion struct {                      // the principal is a parameter of P
     Path      string                        // package path below <format>/<repo>/ (Package.NameOCI)
     Reference string                        // a tag or a digest
     ClientIP  string                        // for the audit row
+    Condition *Condition                    // not nil: a compare-and-delete of a version
+    Job       string                        // the batch (POST …/versions:delete) the delete is part of, for the audit row; "" outside one
 }
+// Condition makes the delete of a version conditional (docs/api.md, Delete a version); ingest
+// checks it under the locks of the delete, Reference must be the digest the client read, and a
+// failed condition deletes nothing: the version gone is index.ErrNotFound, another digest
+// RefusedChanged, published after UnmodifiedSince RefusedYoung, named by a pointer without
+// Force RefusedProtected.
+type Condition struct {
+    Version, Variant string                 // the version the client read; Variant "" without variants
+    UnmodifiedSince  time.Time              // a version published after it is refused; zero: none
+    Force            bool                   // delete a version that pointers name
+}
+type Refusal string                         // why a conditional delete deleted nothing
+const (
+    RefusedChanged   Refusal = "changed"    // another digest than the client read (412)
+    RefusedYoung     Refusal = "young"      // published after the cut-off (412)
+    RefusedProtected Refusal = "protected"  // a pointer names the version (409)
+)
+// RefusedError: a Condition failed and nothing was deleted. Unwrap: ErrPrecondition (412) for
+// RefusedChanged and RefusedYoung, index.ErrConflict (409) for RefusedProtected.
+type RefusedError struct {
+    Reason      Refusal
+    Subject     string                      // the version, in the message: `version 1.0 of "requests" in pypi/libs`
+    Digests     []digest.Digest             // the version's variants now, for RefusedChanged
+    PublishedAt time.Time                   // the newest variant's publish time, for RefusedYoung
+    Pointers    []Pointer                   // the pointers that name the version, for RefusedProtected, sorted
+}
+// Pointer names a version and can move to another: an npm dist-tag, Kind "dist-tag".
+type Pointer struct {
+    Kind string `json:"kind"`
+    Name string `json:"name"`
+}
+// PointersOf: the pointers among a package's state (index.Reader.ListJournalState) that name
+// version, in the order of the state.
+func PointersOf(state []index.JournalState, version string) []Pointer
+// PartialError is a delete of several manifests that failed part way (a raw path, an npm
+// package, a version with every variant): Err decides the status, Deleted stays deleted, and
+// ClientMessage names it for a 5xx too (guarantees.md, INV-13). Partial returns err as one, or
+// err itself when nothing was deleted.
+type PartialError struct {
+    Deleted []string                        // "1.0.0 (sha256:…)"
+    Err     error                           // Unwrap
+}
+func Partial(err error, deleted []string) error
 type Deleted struct {
     Digest    digest.Digest
     Version   *index.Version                // the version it was; nil for a manifest that was none
@@ -304,12 +365,15 @@ func WriteTarget(ctx context.Context, deps Deps, repo index.Repo) (context.Conte
 func WithVia(ctx context.Context, group index.Repo) context.Context
 func ViaFrom(ctx context.Context) (index.Repo, bool)
 
-// WriteError answers StatusOf(err) as text/plain (nosniff): err.Error() for 4xx, the status
-// text for 5xx; a 401 carries WWW-Authenticate: Basic realm="lajstrom", a 405 Allow: GET, HEAD,
-// a 503 of provider.ErrUnavailable, of index.ErrUnavailable or of an *UnavailableError
-// Retry-After (SetRetryAfter).
+// WriteError answers StatusOf(err) as text/plain (nosniff) with ClientMessage(err); a 401
+// carries WWW-Authenticate: Basic realm="lajstrom", a 405 Allow: GET, HEAD, a 503 of
+// provider.ErrUnavailable, of index.ErrUnavailable or of an *UnavailableError Retry-After
+// (SetRetryAfter).
 func WriteError(w http.ResponseWriter, err error) int
 func StatusOf(err error) int
+// ClientMessage: err.Error() for a 4xx but a 408, a fixed message for a 408, the status text for
+// a 5xx followed by what a *PartialError in err deleted before it failed.
+func ClientMessage(err error) string
 // SetRetryAfter sets Retry-After from provider.RetryAfter(err), or from the *UnavailableError
 // err wraps: whole seconds, rounded up, at least 1; 5 for index.ErrUnavailable; nothing for an
 // error without one. WriteError, the facade, the API and the authentication middleware call it.
@@ -346,7 +410,29 @@ func ServeBlob(w http.ResponseWriter, r *http.Request, prov provider.Provider, n
 // BlobRedirect reads policy.blobRedirect of the repo: "never" is false, anything else true.
 func BlobRedirect(repo index.Repo) bool
 
+// MaxFileSize: policy.maxFileSize of the repo, else its format's default (npm 512 MiB, pypi and
+// maven 4 GiB, apt, raw and any other 8 GiB, oci 16 GiB); a value that is no non-negative
+// integer is an error (500). LimitBody bounds an upload's body by it (http.MaxBytesReader): a
+// Content-Length above it is refused before a read, and past it the reader fails wrapping the
+// *http.MaxBytesError (413).
+func MaxFileSize(repo index.Repo) (int64, error)
+func LimitBody(w http.ResponseWriter, r *http.Request, repo index.Repo) (io.Reader, error)
+// Spool copies r to a temporary file of $TMPDIR for one request, so that it can be read more
+// than once: a request spool, never served from; Close removes it. size -1 is unknown; a body
+// of another length than a known size wraps ErrInvalid. Uploads stream (ADR 0014); the proxy
+// fetch spools its download with it (proxy-and-group.md §5).
+type Spooled struct{ /* unexported */ }
+func Spool(r io.Reader, name, contentType string, size int64) (*Spooled, error)
+func (s *Spooled) File() UploadedFile       // re-openable, with name, size and content type
+func (s *Spooled) Close() error
+// ReadInspector is the Inspector of a parser that reads the file (gzip, tar): read runs on a
+// goroutine of its own from the first Write, Close waits for it and returns its error.
+func ReadInspector(read func(r io.Reader) error) Inspector
+
 var ErrInvalid, ErrUnsupported, ErrUnauthenticated, ErrForbidden error
+var ErrPrecondition error                   // a conditional delete's condition failed (RefusedError): 412
+var ErrStreamed error                       // a BlobFetcher asked, in Validate, for the file that streams in with this upload
+var ErrReadBack error                       // Build of a streamed file whose inspector did not keep what it needs: ingest commits and builds again, reading it back
 // The statuses of a proxy's upstream and of a repo that takes no writes (ADR 0013,
 // proxy-and-group.md §6).
 var ErrMethodNotAllowed error               // a write route of a proxy, or of a group without a hosted member
@@ -361,16 +447,18 @@ They are checked in this order:
 
 | Error (`errors.Is`, `errors.As`) | Status |
 | --- | --- |
+| `os.ErrDeadlineExceeded` (the client sent no byte of the body within `server.stallTimeout`, also where a plugin made it `ErrInvalid`) | 408, a fixed message |
 | `format.ErrInvalid` | 400 |
 | `format.ErrUnauthenticated` | 401, `WWW-Authenticate: Basic realm="lajstrom"` |
 | `format.ErrForbidden` | 403 |
 | `format.ErrMethodNotAllowed` | 405, `Allow: GET, HEAD` |
 | `index.ErrNotFound`, `provider.ErrNotFound` | 404 |
 | `index.ErrConflict`, `provider.ErrConflict` | 409 |
-| `*http.MaxBytesError` | 413 |
+| `format.ErrPrecondition` (a conditional delete) | 412 |
+| `*http.MaxBytesError`; a `*provider.RejectedError` of a `413` (the file is too large for the backend) | 413 |
 | `format.ErrUnsupported`, `provider.ErrUnsupported` | 501 |
-| `provider.ErrUnauthorized` (the backend rejected Lajstrom's own credentials) | 502 |
-| `provider.ErrUnavailable` (the circuit breaker of the registry is open, the request was not sent; or its host name does not resolve, #561; or it refused or reset the connection, #593; or its host or network cannot be reached, `EHOSTUNREACH`, `ENETUNREACH`; or, after the retries, a request timed out or its connection closed without an answer, and the breaker counted that as the registry's failure, #670. A deadline or cancel of the caller's context, and a client's body that stalls or breaks off as it streams to the registry, are not the registry's: they are not `provider.ErrUnavailable` and keep their own error) | 503, `Retry-After`: the seconds until the breaker's trial request, none for a registry that could not be reached or did not answer; under `/v2` the code `UNAVAILABLE`, on the API `UNAVAILABLE` |
+| `provider.ErrUnauthorized` (the backend rejected Lajstrom's own credentials); a `*provider.RejectedError` that is not busy (the backend refused what Lajstrom sent it, #494) | 502 |
+| `provider.ErrUnavailable` (the backend answered `429` or `503`, a busy `*provider.RejectedError`; a push the registry does not serve after the read-back, `*ingest.NotVisibleError`; the circuit breaker of the registry is open, the request was not sent; or its host name does not resolve, #561; or it refused or reset the connection, #593; or its host or network cannot be reached, `EHOSTUNREACH`, `ENETUNREACH`; or, after the retries, a request timed out or its connection closed without an answer, and the breaker counted that as the registry's failure, #670. A deadline or cancel of the caller's context, and a client's body that stalls or breaks off as it streams to the registry, are not the registry's: they are not `provider.ErrUnavailable` and keep their own error) | 503, `Retry-After`: the backend's for a `429` or `503` (1 without one), 30 s for a push not served, the seconds until the breaker's trial request, none for a registry that could not be reached or did not answer; under `/v2` the code `UNAVAILABLE`, on the API `UNAVAILABLE` |
 | `index.ErrUnavailable` (the database did not answer) | 503, `Retry-After: 5`; under `/v2` the code `UNAVAILABLE`, on the API `UNAVAILABLE`; the authentication middleware answers it so too |
 | `format.ErrBadGateway` | 502 |
 | `format.ErrUnavailable` (the upstream answered `429`) | 503, `Retry-After`: the `*format.UnavailableError`'s, whole seconds, at least 1 |
@@ -603,9 +691,10 @@ type BlobUploader interface {
     CancelBlobUpload(ctx context.Context, u Upload) error                                                // DELETE
 }
 type Upload struct {                        // location as the backend answered it, backend id, bytes held
-    Location string
-    ID       string
-    Offset   int64
+    Location       string
+    ID             string
+    Offset         int64
+    ChunkMinLength int64                    // the backend's last OCI-Chunk-Min-Length; 0 when none (the facade passes it on)
 }
 
 // BlobStreamer opens the blob of a frontend's upload, kept only once every check passed (ADR 0014).
@@ -622,7 +711,8 @@ type BlobWriter interface {
     Cancel(ctx context.Context) error
 }
 // NewChunkedWriter is the BlobWriter of a BlobUploader, chunks of chunkSize bytes, bounded to
-// 1 byte to 256 MiB; the generic provider's are 8 MiB.
+// 1 byte to 256 MiB; the generic provider's are registries[].uploads.chunkSize, else the vendor
+// table's (GHCR 4 MiB), else 8 MiB.
 func NewChunkedWriter(ctx context.Context, u BlobUploader, chunkSize int) BlobWriter
 var ErrWriterClosed error                   // Write or Commit after Commit or Cancel
 
@@ -637,24 +727,66 @@ type Set interface {
 }
 type Map map[string]Provider                // implements Set
 
+// The implementations Register a Constructor per registries[].type from init (generic, ecr);
+// New builds the Provider of one registry with it, NewSet every registry of the configuration
+// (the errors of all, joined); Types lists the registered types, sorted.
+type Constructor func(cfg config.Registry, log *slog.Logger) (Provider, error)
+func Register(typ string, c Constructor)   // panics on an empty or duplicate type, a nil constructor
+func New(cfg config.Registry, log *slog.Logger) (Provider, error) // nil log: slog.Default()
+func NewSet(cfgs []config.Registry, log *slog.Logger) (Map, error)
+func Types() []string
+
 type Capabilities struct {
     CreateOnPush, Referrers, Catalog, DeleteManifest, ImmutableTags bool
     BlobRedirect bool                       // the operator's switch (capabilities.blobRedirect): false, OpenBlob never returns a URL
     MaxBlobSize int64                       // 0 = unknown
+    Consistency Consistency                 // when reads see an acknowledged write: the vendor table's or capabilities.consistency
+    ConsistencyBound time.Duration          // the longest lag known of an eventual backend (capabilities.consistencyBound); 0 = none known
     MaxNameDepth int                        // components of a name below the instance prefix; 0 = no limit
     MaxNameLength int                       // bytes of a name below the instance prefix; 0 = no limit
 }
 // CheckName: nil, or an error naming the limit of c that the name breaks; callers answer 4xx before a write.
 func (c Capabilities) CheckName(name string) error
+type Consistency string                     // docs/registries/README.md, Consistency
+const (
+    ConsistencyUnknown  Consistency = ""         // nobody classified the backend
+    ConsistencyStrong   Consistency = "strong"   // every read after the 2xx of a write sees it
+    ConsistencyEventual Consistency = "eventual" // a read may miss an acknowledged write for a while (ECR, GHCR)
+)
+// ReadBack reads again a backend that does not serve yet what it acknowledged: ingest's
+// visibility barrier, and a blob a client says it uploaded. Await calls seen until it reports
+// true, waiting 100 to 200 ms at first, then twice as long with jitter, at most 5 s a wait;
+// false when the next wait would end past Timeout (zero: one read).
+type ReadBack struct{ Timeout time.Duration }
+func (b ReadBack) Await(ctx context.Context, seen func(context.Context) (bool, error)) (bool, error)
 
 var ErrNotFound, ErrConflict, ErrUnsupported, ErrUnauthorized error
-// ErrUnavailable: the provider did not send the request, its registry's circuit breaker is
-// open. An *UnavailableError wraps it with the time until the breaker's trial request. It is
-// also a registry that could not be reached or did not answer (StatusOf's table above: #561,
-// #593, #670), with no time.
+// ErrUnavailable: the backend takes no request now, or does not serve yet a write it
+// acknowledged: its registry's circuit breaker is open and the request was not sent (an
+// *UnavailableError with the time until the trial request); the backend answered 429 or 503
+// (a busy *RejectedError); a push not served after the read-back (an *UnavailableError with a
+// Reason). It is also a registry that could not be reached or did not answer (StatusOf's
+// table above: #561, #593, #670), with no time.
 var ErrUnavailable error
-type UnavailableError struct{ RetryAfter time.Duration }
-func RetryAfter(err error) (time.Duration, bool) // of the *UnavailableError err wraps
+type UnavailableError struct {
+    RetryAfter time.Duration
+    Reason     string                       // for the log; "" is an open circuit breaker
+}
+// RetryAfter: of the *UnavailableError err wraps, or of its busy *RejectedError.
+func RetryAfter(err error) (time.Duration, bool)
+// ErrRejected: the backend refused a request with a status no other sentinel names (400
+// BLOB_UPLOAD_INVALID, MANIFEST_INVALID, SIZE_INVALID, 413, 416), and a busy backend's 429 or
+// 503. A *RejectedError says how; its message names the registry by registries[].name and
+// holds nothing else of the backend's. Unwrap: ErrRejected, and ErrUnavailable when Busy.
+var ErrRejected error
+type RejectedError struct {
+    Registry   string                       // registries[].name
+    Status     int                          // a 4xx, or 503
+    Code       string                       // the answer's first error code; "" when none
+    RetryAfter time.Duration                // of a 429 or 503; zero when none
+    Hint       string                       // what the operator may change, when the provider knows it
+}
+func (e *RejectedError) Busy() bool         // 429, 503: the backend throttles Lajstrom, not one client
 // ErrManifestUnknown: a 404 with MANIFEST_UNKNOWN to StatManifest; the error wraps ErrNotFound too.
 var ErrManifestUnknown error
 ```
@@ -686,10 +818,16 @@ type Reader interface {
     ListGroupMembers(ctx context.Context, groupID int64) ([]Repo, error)
     ListGroupsOf(ctx context.Context, memberID int64) ([]Repo, error)
     GetUser(ctx context.Context, name string) (*User, error)
+    GetUserByUID(ctx context.Context, uid string) (*User, error) // live or deleted
+    GetUserByID(ctx context.Context, id int64) (*User, error)    // live or deleted: a token's owner
     ListUsers(ctx context.Context) ([]User, error)
     GetTokenByHash(ctx context.Context, hash string) (*Token, error)
     ListTokens(ctx context.Context, userID, repoID *int64) ([]Token, error)
+    GetBootstrapToken(ctx context.Context) (*BootstrapToken, error) // used and expired too; the caller checks
     ListBindings(ctx context.Context, principal string) ([]Binding, error)
+    // AuthVersion: the counter of auth_version, which every write of bindings and repos
+    // increments in its transaction (rbac.md §3); an evaluator reads it before its snapshot
+    AuthVersion(ctx context.Context) (int64, error)
     GetKey(ctx context.Context, repoID *int64, kind string) (*Key, error)
     ListKeys(ctx context.Context, repoID *int64) ([]Key, error)
     GetSession(ctx context.Context, repoID int64, key string) (*Session, error)
@@ -754,6 +892,12 @@ type Writer interface {
     CreateToken(ctx context.Context, t *Token) error
     RevokeToken(ctx context.Context, id int64, at time.Time) error
     TouchToken(ctx context.Context, id int64, lastUsed time.Time) error
+    // PutBootstrapToken makes t the bootstrap token while the stored one is the one of hash old
+    // ("": none), UsedAt cleared; another row there wraps ErrConflict, so that replicas that
+    // start together make one. UseBootstrapToken sets UsedAt when hash matches, it is unused
+    // and not expired at at, else ErrNotFound, holding the row until the transaction ends
+    PutBootstrapToken(ctx context.Context, t *BootstrapToken, old string) error
+    UseBootstrapToken(ctx context.Context, hash string, at time.Time) error
     CreateBinding(ctx context.Context, b *Binding) error
     DeleteBinding(ctx context.Context, id int64) error
     CreateKey(ctx context.Context, k *Key) error
@@ -842,10 +986,24 @@ type Writer interface {
 }
 
 // Models, one struct per table of index-schema.md (fields in internal/index/models.go):
-// control plane Repo, User, Token, Binding, Key, Session, AuditEvent; coordination TagClaim,
-// ReindexRun, FetchClaim, Replica; derived Package, Version, File, Cache (index_cache), OCIRepo,
-// ProxyMeta, JournalEntry, JournalState; query types FileMatch (file + version + package),
-// VersionMatch (version + package) and AuditFilter. Ids are int64, timestamps UTC, nullable columns are pointers.
+// control plane Repo, User, Token, BootstrapToken, Binding, Key, Session, AuditEvent;
+// coordination TagClaim, ReindexRun, FetchClaim, Replica; derived Package, Version, File, Cache
+// (index_cache), OCIRepo, ProxyMeta, JournalEntry, JournalState; query types FileMatch (file +
+// version + package), VersionMatch (version + package) and AuditFilter. Ids are int64,
+// timestamps UTC, nullable columns are pointers.
+const ReindexRunning, ReindexDone, ReindexFailed, ReindexAbandoned = "running", "done", "failed", "abandoned" // ReindexRun.State
+type ReindexOptions struct {                // reindex_runs.options: what the run was started with
+    Prune  bool `json:"prune,omitempty"`
+    Verify bool `json:"verify,omitempty"`
+}
+// AuditEvent.State: a change of the index alone is ok from its insert; a registry write is
+// pending before the write, then ok or failed, and unknown once still pending after
+// ingest.claimTTL (ExpirePendingAudit).
+const AuditPending, AuditOK, AuditFailed, AuditUnknown = "pending", "ok", "failed", "unknown"
+// NewUID: a user's uid (rbac.md §1), a UUID v7 in canonical lowercase text, its first 48 bits
+// the milliseconds of at. IsUID: s has the form of a uid, of any version.
+func NewUID(at time.Time) string
+func IsUID(s string) bool
 
 // Repo, for ADR 0013 (repos.upstream, repos.group):
 //     Kind     string                         // KindHosted, KindProxy or KindGroup
@@ -900,13 +1058,16 @@ type FetchClaim struct {                    // a row of fetch_claims
 }
 
 var ErrNotFound, ErrConflict error
-var ErrUnavailable error                    // the database did not answer: connect, 57P01/57P03, class 08, timeouts 25P03/57P05/25P04, aborts 40P01/40001; SQLite busy, cannot open
+var ErrUnavailable error                    // the database did not answer: connect, 57P01/57P02/57P03/53300, class 08, timeouts 25P03/57P05/25P04, aborts 40P01/40001, a referrers lock's transaction it ended (#615); SQLite busy, cannot open
 type TagConflictError struct {              // errors.Is(err, ErrConflict) is true; UpsertVersion, ClaimTag
     Tag      string
     Existing digest.Digest
 }
 type ReindexConflictError struct {          // errors.Is(err, ErrConflict) is true; StartReindexRun
     Running ReindexRun                      // the live run that overlaps: replica, StartedAt
+}
+type ReplicaConflictError struct {          // errors.Is(err, ErrConflict) is true; StartReplica on SQLite
+    Live Replica                            // the replica that serves on the database
 }
 
 // PackageAt is GetPackageByNameOCI at the package path pkgPath (Plugin.EscapeName), or at each of
@@ -980,10 +1141,14 @@ func New(o Options) *Worker
 
 type Request struct {
     Repo      *index.Repo                     // nil: every repo
-    Prune     bool                            // sweep rows not seen (default on for a run of every repo)
+    Prune     bool                            // sweep rows not seen (the CLI's default for a run of every repo)
     Verify    bool                            // read and check every manifest, known digests too
     Source    string                          // cli, api, reconcile
     Principal string
+    // Repositories: OCI repositories of Repo read besides those the registry lists, the first
+    // attach of a prefix on a registry without a catalog (#37); one with a tag is recorded in
+    // oci_repos. Names below the instance prefix; they need Repo.
+    Repositories []string
 }
 // Start takes the lock (StartReindexRun) and writes repo.reindex; *index.ReindexConflictError
 // when a run overlaps. Run reads the registry, beats, and finishes the run whatever happens; its
@@ -1033,7 +1198,7 @@ type RepairedIndex struct {                   // guarantees.md INV-35; #628
 type Finding struct {
     Repository   string        `json:"repository"`    // OCI repository below the repo's base
     Tag          string        `json:"tag,omitempty"`
-    Digest       digest.Digest `json:"digest"`
+    Digest       digest.Digest `json:"digest,omitempty"`
     MediaType    string        `json:"mediaType,omitempty"`
     ArtifactType string        `json:"artifactType,omitempty"`
     Subject      digest.Digest `json:"subject,omitempty"`
@@ -1074,8 +1239,11 @@ type Options struct {
     Now       func() time.Time                         // nil: time.Now
     Log       *slog.Logger                             // nil: slog.Default()
     ClaimTTL  time.Duration                            // zero: 10 minutes (ingest.claimTTL)
-    SessionTimeout time.Duration                       // zero: 30 minutes after a session's last request
+    SessionTimeout time.Duration                       // zero: 30 minutes after a session's last request; a repo's maven.sessionTimeout wins
+    VisibilityTimeout time.Duration                    // the read-back of a push (step 6 of Ingest), twice for a referrer, raised by a registry's consistencyBound; zero: 30 s (ingest.visibilityTimeout)
 }
+// New returns a Pipeline, which implements format.Publisher (Upload, UploadStream, Delete,
+// Journal) and format.Sessions.
 func New(o Options) *Pipeline
 
 // Ingest stores a manifest the facade received for <format>/<repo>/<pkgPath>:<tag>; raw defines
@@ -1140,8 +1308,14 @@ type Referrer struct {
 // delete, so a backend that refuses deletes changes nothing (a referrer deleted on its own: its
 // subject's sha256-<hex> index goes first and is pushed again without it). Then the manifest, then one index
 // transaction: the version's rows, its package's when it was the last, index_cache of the repo,
-// the audit row (delete, Details {"referrers": n}). Errors wrap provider.ErrUnsupported,
-// index.ErrNotFound or provider.ErrConflict (the backend refused this one delete).
+// the audit row (delete, Details {"referrers": n}). On an oci repo a delete by tag of a manifest
+// that other tags also name is refused before any request. With del.Condition it is a
+// compare-and-delete of a version (format.Condition), checked under the locks: a failed one
+// deletes nothing and writes no audit row. Errors wrap provider.ErrUnsupported,
+// index.ErrNotFound, index.ErrConflict (other tags name the manifest; the error's OtherTags()
+// []string lists them, #284), provider.ErrConflict (the backend refused this one delete),
+// provider.ErrUnavailable (the registry did not take a referrer's subject index again, and the
+// referrer stays), or a *format.RefusedError (a condition failed).
 func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Deletion, principal auth.Principal) (*format.Deleted, error)
 
 // RepairReferrers is how reindex repairs the registry (#628; guarantees.md INV-35): on a backend
@@ -1166,7 +1340,7 @@ type ReferrersRepair struct {
 }
 
 // Inspect runs the steps of Ingest that only read (1 to 3) on a manifest found in the registry
-// at <repo base>/<pkgPath>:<tag> and returns the rows step 6 writes; nothing is pushed or
+// at <repo base>/<pkgPath>:<tag> and returns the rows step 7 writes; nothing is pushed or
 // claimed, and a missing blob is ErrInvalid. With AllowDegraded, a metadata layer that is missing
 // or unreadable gives rows from the annotations alone (Version.Degraded, no plugin Validate);
 // any other failure is the error Ingest would return.
@@ -1204,7 +1378,7 @@ func (p *Pipeline) ExpireSessions(ctx context.Context) (int, error)
 
 var ErrInvalid = format.ErrInvalid
 var ErrConflict = index.ErrConflict
-var ErrNotImplemented error                 // until issue #12
+var ErrNotImplemented error                 // unused since #12
 ```
 
 ### Auth and audit (`internal/auth`, `internal/audit`)
@@ -1213,14 +1387,16 @@ var ErrNotImplemented error                 // until issue #12
 type Kind string                            // KindUser, KindToken, KindGroup, KindAnonymous
 type Principal struct {
     Kind Kind
-    Name string                             // user or group name, deploy-token id; empty for anonymous
+    Name string                             // a user's uid (index.NewUID), a group's name, a deploy token's id; empty for anonymous
 }
-func (p Principal) String() string          // user:<name>, token:<id>, group:<name>, anonymous
+func (p Principal) String() string          // user:<uid>, token:<id>, group:<name>, anonymous; user:<name> parses too, as input
 func ParsePrincipal(s string) (Principal, error) // errors wrap ErrInvalidPrincipal
 var Anonymous Principal
 var ErrInvalidPrincipal error
 
-// The request's principal; the authentication middleware (#43 Basic, #26 bearer) stores it.
+// The request's principal: the authentication middleware of internal/server stores it from
+// Basic credentials and token secrets on every route (#43), the facade from the bearer of /v2
+// (#26); a request without credentials is anonymous.
 func WithPrincipal(ctx context.Context, p Principal) context.Context
 func PrincipalFrom(ctx context.Context) Principal // Anonymous when nothing was stored
 
@@ -1257,9 +1433,10 @@ Where the merged shapes differ from the first sketch of this section, and why:
   one request and is never served from; a publication session's is read back from the
   registry. Artifact bytes live only in the registry.
 - **A streamed upload has its own entry point**
-  ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)). Every format that a client
-  uploads to is a `Streamer` (raw, apt, maven, pypi, npm); `Upload` stays for the proxy fetch
-  and for the files of a publication session, which it reads back from the registry.
+  ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)). raw, apt, pypi and npm are
+  `Streamer`s; maven's files stream through `Sessions.Add`, and `Upload` publishes them at
+  `Commit`, reading them back from the registry. `Upload` stays for the proxy fetch and for
+  those files of a publication session.
   `UploadStream` takes the package name from the frontend, because a session belongs to an OCI
   repository. The file reaches `Build` without `Open`, with its checksums and its inspector.
   Ingest holds the session in the target and commits it between the backend's tag check and
@@ -1273,11 +1450,11 @@ Where the merged shapes differ from the first sketch of this section, and why:
 - **The provider chunks a streamed blob, not ingest.** `BlobWriter` sends chunks of known size
   with `Content-Range`, which every registry measured takes after the first write (the
   streamed `PATCH` is refused there by Gitea and JFrog). It holds one chunk in memory, 8 MiB in
-  the generic provider. That size is a choice, not a measurement: larger than the 5 MiB
-  smallest part of an S3 multipart upload, and 64 MiB for eight uploads at once. GHCR takes at
-  most 4 MiB a `PATCH` ([ghcr.md](../registries/ghcr.md)); it needs a vendor entry once the
-  frontends can publish there. A blob that fits one chunk is one monolithic `PUT`, and one
-  cancelled before its first chunk never opens a session.
+  the generic provider by default. That size is a choice, not a measurement: larger than the
+  5 MiB smallest part of an S3 multipart upload, and 64 MiB for eight uploads at once. GHCR
+  takes at most 4 MiB a `PATCH` ([ghcr.md](../registries/ghcr.md)), which its vendor entry
+  says; `registries[].uploads.chunkSize` overrides both. A blob that fits one chunk is one
+  monolithic `PUT`, and one cancelled before its first chunk never opens a session.
 - **Scopes and Attrs are typed** (`Token.Scopes []string`, `Version.Attrs` and `File.Attrs`
   `map[string]string`); the store marshals them. **`Cache`, not `IndexCache`**, because
   `index.IndexCache` stutters.
@@ -1290,9 +1467,11 @@ Where the merged shapes differ from the first sketch of this section, and why:
 - **The Router resolves `{repo}` once per request and does not cache.** One `GetRepo` per
   request is the cost of a primary-key lookup; a cache across requests would keep serving a
   deleted repo.
-- **The principal comes from the context, not from a header parser.** Until the
-  authentication middleware stores one with `auth.WithPrincipal` (#43 Basic, #26 bearer), every
-  request is anonymous: parsing Basic credentials without verifying them would be a hole. A nil
+- **The principal comes from the context, not from a header parser.** The authentication
+  middleware of `internal/server` verifies the credentials and stores the principal with
+  `auth.WithPrincipal` (#43), the facade the bearer's (#26); a request without credentials is
+  anonymous, and a handler never parses a header itself: credentials parsed without being
+  verified would be a hole. A nil
   `Deps.Auth` allows everything the credential allows, for the tests; `serve` always sets
   `auth.RBAC` (rbac.md §3).
 - **A denial does not reveal whether the repo exists** (rbac.md §3). `Authorize` answers 401
@@ -1313,8 +1492,9 @@ Where the merged shapes differ from the first sketch of this section, and why:
   and the SQLSTATEs of a server that ends or refuses connections (`57P01`, `57P02`, `57P03`,
   `53300`, class `08`) or ends a session on a timeout (`25P03`, `57P05`, `25P04`), and of a
   transaction it aborted that may pass when run again, a deadlock (`40P01`) or a conflict it
-  could not serialize (`40001`) (#627); on SQLite `SQLITE_BUSY` after the busy timeout and
-  `SQLITE_CANTOPEN` (#560). `UpsertVersion`
+  could not serialize (`40001`) (#627), and a referrers lock whose transaction the database
+  ended before the lock's function returned (#615); on SQLite `SQLITE_BUSY` after the busy
+  timeout and `SQLITE_CANTOPEN` (#560). `UpsertVersion`
   resolves a race on a tag with `INSERT … ON CONFLICT DO NOTHING` and a second read, so the
   loser gets the `TagConflictError`. `serve` migrates on start under the same lock as
   `lajstrom migrate`. On YugabyteDB, which the Postgres driver tells by the `server_version`
@@ -1350,7 +1530,8 @@ Where the merged shapes differ from the first sketch of this section, and why:
   signed again. The end of a retired key's grace is a time, not a write, so no invalidation
   marks it (#577).
 - **Proxy repos plug in through `format.Proxier`** (ADR 0013, #309). It is the sketch of
-  proxy-and-group.md §10 without `MergeGroup`, which comes with the groups of #311, and with
+  proxy-and-group.md §10 without `MergeGroup`, which came with the groups of #311 (`Grouper`,
+  below), and with
   three changes: `RenderProxy` reads the held versions through an `index.Reader`, as
   `RenderIndex` does, rather than taking them, so that it reads their files and metadata as it
   needs; an `UpstreamEntry` carries the `Params` that `Build` takes, so that the core builds the
@@ -1375,7 +1556,8 @@ Where the merged shapes differ from the first sketch of this section, and why:
   plugin decodes it to bound it and a group's (#311) to read it. The answer streams back,
   bounded by `maxMetadataSize` rather than a key of its own. The upstream's error statuses are
   classified as a document's (proxy-and-group.md §6), its `400`, `413`, `415` and `422` being
-  the client's `400`, and its error body is never passed on. A group's forward is #311's.
+  the client's `400`, and its error body is never passed on. A group forwards to its first
+  proxy member, without the names its hosted member holds (#311; http-routing.md, npm, Audit).
 - **Groups plug in through `format.Grouper`** (#311), a `Proxier` with `MergeGroup`, rather
   than a sixth method of `Proxier`: a format may have proxies before groups (#67, #68), and
   the implementers of `Proxier` keep compiling. `MergeGroup` takes the members' documents as
@@ -1434,11 +1616,11 @@ license policy). Prefer the standard library.
 | Config | `gopkg.in/yaml.v3` | MIT / Apache-2.0 |
 | CLI | `github.com/spf13/cobra` | Apache-2.0 |
 | JWT (bearer tokens) | `github.com/golang-jwt/jwt/v5` | MIT |
-| Passwords | `golang.org/x/crypto` (argon2id) | BSD-3 |
+| Passwords | `golang.org/x/crypto` (argon2id), `golang.org/x/term` (the CLI's password prompt) | BSD-3 |
 | OpenPGP (apt signing) | `github.com/ProtonMail/go-crypto` | BSD-3 |
 | Compression | `github.com/klauspost/compress` (zstd, gzip), `github.com/ulikunitz/xz` | BSD-3 / Apache-2.0 |
-| AWS (ECR adapter) | `github.com/aws/aws-sdk-go-v2` (`ecr` only) | Apache-2.0 |
-| Metrics | `github.com/prometheus/client_golang` | Apache-2.0 |
+| AWS (ECR adapter) | `github.com/aws/aws-sdk-go-v2` (`ecr`, and `config` for the credential chain), `github.com/aws/smithy-go` (its API errors) | Apache-2.0 |
+| Metrics | `github.com/prometheus/client_golang`; `github.com/prometheus/client_model` in tests | Apache-2.0 |
 | Tests | `testing` + `github.com/google/go-cmp`; `github.com/stretchr/testify` acceptable | BSD-3 / MIT |
 
 Not approved without discussion: ORMs, chi/gin/echo, testcontainers (we use compose and CI
@@ -1451,11 +1633,12 @@ service containers), any GPL/LGPL/AGPL/SSPL/BSL dependency, cgo.
 | Unit | next to the code | `go test ./...`, always | pure functions, table tests, fixtures built in-process (`internal/testutil` builds a `.deb`, a `.whl`, a `.jar` + POM in memory; no vendored binaries from distributions) |
 | Store conformance | `internal/index/storetest` | always for SQLite; Postgres when `LAJSTROM_TEST_POSTGRES_DSN` is set | same suite, both engines |
 | Integration | `//go:build integration` | `make test-integration`; CI job with service containers | real registry (Zot and distribution) via `LAJSTROM_TEST_REGISTRY=host:port`; provider, facade, ingest, reindex |
-| End-to-end | `test/e2e/` | `make e2e`; CI job | compose stack + real clients in containers: `oras`, `pip`/`twine`, `apt-get`, `mvn`. One script per format, exit code = pass/fail |
-| Fuzz | `FuzzEscape`, `FuzzParseControl`, … | `go test -fuzz` locally, short corpus run in CI | parsers and escapers |
+| End-to-end | `test/e2e/` | `make e2e`; CI job | `bin/lajstrom` served on the host against the dev stack's registry, and real clients: `oras`, `pip`/`twine`, `apt-get`, `mvn`, `npm`, `cosign`, most in containers. One script per scenario, exit code = pass/fail |
+| Fuzz | `FuzzEscape`, `FuzzParseControl`, … | the seed corpus in `make test`; `make fuzz` or `go test -fuzz` locally; each target for 10 minutes in the weekly Fuzz workflow | parsers and escapers |
 
 Integration and e2e tests must be runnable locally with `make dev-up` first. Flaky tests are
-disabled with an issue, not retried.
+disabled with an issue, not retried. [docs/testing.md](../testing.md) has three more levels,
+OCI conformance, upgrade and load, and the commands, needs and CI jobs of all eight.
 
 ## 5. Make targets
 
@@ -1463,19 +1646,25 @@ disabled with an issue, not retried.
 
 | Target | Does |
 | --- | --- |
-| `make build` | `go build ./...`, then `go build -ldflags "-X …/internal/version.{Version,Commit,Date}=…" -o bin/lajstrom ./cmd/lajstrom` (from `git describe`, `git rev-parse`, `date -u`) |
-| `make test` | `go test -race ./...` |
+| `make build` | `go build ./...`, then `go build -trimpath -ldflags "-X …/internal/version.{Version,Commit,Date}=…" -o bin/lajstrom ./cmd/lajstrom` (from `git describe`, `git rev-parse`, `date -u`) |
+| `make test` | `go test -race ./...`; it includes the check of guarantees.md (`tools/guarantees`) and the fuzz seed corpus |
+| `make guarantees` | what each guarantee of guarantees.md proves, as a Markdown table |
 | `make vet` | `go vet ./...` |
 | `make lint` | golangci-lint at the version CI pins (`GOLANGCI_LINT_VERSION`, v2.15.0) |
+| `make api-lint` | vacuum on `internal/api/openapi.yaml`, at the pinned version |
 | `make vulncheck` | govulncheck |
 | `make licenses` | go-licenses v1.6.0 against the allowlist of CONTRIBUTING.md |
 | `make fmt-check` | fails when `gofmt -l .` lists a file |
-| `make check` | fmt-check, build, vet, test, lint, vulncheck, licenses: exactly what CI runs; run before every pull request |
-| `make dev-up` / `make dev-down` / `make dev-logs` | compose stack in `deploy/compose/compose.yaml` (issue #15) |
+| `make check` | fmt-check, build, vet, test, lint, api-lint, vulncheck, licenses: the CI jobs that need no stack (`build-test`, `lint`, `vulncheck`, `licenses`), plus gofmt, at the pinned tool versions; run before every pull request. `integration`, `e2e`, `snippet-scan` and `dco` run in CI only |
+| `make fuzz` | each fuzz target for `FUZZTIME` (30s), or those of `FUZZ_TARGETS` |
+| `make dev-up` / `make dev-down` / `make dev-ps` / `make dev-logs` | compose stack in `deploy/compose/compose.yaml` (issue #15); `PROFILES=` adds a profile (s3, s3-minio, gitlab, ha) |
 | `make test-integration` | `go test -race -tags integration ./...` against the dev stack; needs `LAJSTROM_TEST_REGISTRY` |
 | `make e2e` | `test/e2e/run.sh`: builds the binary, starts `serve` on a configuration of its own against the registry `$LAJSTROM_E2E_REGISTRY` (default the Zot of `make dev-up`) and runs every scenario of `test/e2e/`, or those of `E2E='raw oras'` (docs/testing.md) |
+| `make load` | `test/load/run.sh`: 1 GiB through raw and `/v2` against the dev stack, the server's memory sampled; not part of e2e |
+| `make registry-matrix` | `lajstrom registry probe` against the dev stack's registries (docs/registries/README.md) |
 | `make run` | build, then `lajstrom serve --config deploy/compose/lajstrom.yaml` (the example file when that does not exist) |
-| `make clean` | removes `bin/` |
+| `make snapshot` / `make release-check` | the release without publishing or signing, in `dist/`; `goreleaser check` of `.goreleaser.yaml` |
+| `make clean` | removes `bin/` and `dist/` |
 
 
 ## 6. Configuration (shape; every key in [docs/configuration.md](../configuration.md))
@@ -1507,9 +1696,14 @@ keys:
   tokenAlgorithm: ES256                     # ES256 | EdDSA; the bearer-token key (ADR 0010)
   algorithm: ed25519                        # ed25519 | rsa4096 (apt before 2.0)
   retireGrace: 720h                         # a retired key still signs and stays in key.asc this long
-repos:                                      # optional declarative bootstrap, merged into the control plane
+repos:                                      # optional declarative bootstrap: created when missing, never changed
   - { name: ubuntu-internal, format: apt, registry: local, anonymousRead: false }
 ```
 
-Precedence: defaults < file < `LAJSTROM_*` environment variables (scalar keys only). Secrets
-never go into the file: `passwordEnv` and `masterKeyEnv` name environment variables.
+The shape is a sketch: later keys and sections (`upstreams`, `ingest`, `reconcile`,
+`server.tls`, …) are in configuration.md, which has every key.
+
+Precedence: defaults < file < the nine `LAJSTROM_*` variables of configuration.md's Env column.
+Secrets never go into the file: `passwordEnv` and `masterKeyEnv` name environment variables,
+and `keys.masterKeyFile`, `upstreams[].auth.passwordFile` and `tokenFile` and
+`auth.bootstrap.tokenFile` name files.
