@@ -210,6 +210,40 @@ func (p *Pipeline) MirrorBlob(ctx context.Context, repo index.Repo, path string,
 		_ = w.Cancel(context.WithoutCancel(ctx))
 		return fmt.Errorf("ingest: blob %s of %s: %w", desc.Digest, name, err)
 	}
+	return p.awaitBlob(ctx, prov, rr, name, desc)
+}
+
+// MirrorMount mounts the blob desc into path of repo, an oci proxy repo, from the path from of
+// the same repo, where the backend holds it: POST …/blobs/uploads/?mount=&from=, and no byte
+// moves (proxy-and-group.md §11.5). mounted is false, with no error, when the backend opened a
+// session instead (202: Nexus's docker format, JFrog, ECR without BLOB_MOUNTING, a source that
+// does not hold the blob), which is cancelled; then the caller fetches the blob. A mounted blob
+// is read back as MirrorBlob reads one back. MirrorMount writes no index row and no audit row.
+func (p *Pipeline) MirrorMount(ctx context.Context, repo index.Repo, path, from string, desc ocispec.Descriptor) (mounted bool, err error) {
+	if err := desc.Digest.Validate(); err != nil || desc.Size < 0 || from == path {
+		return false, invalid(fmt.Errorf("a mount of %q of %d bytes from %q into %q", desc.Digest, desc.Size, from, path))
+	}
+	prov, rr, name, err := p.mirrorTarget(ctx, repo, path)
+	if err != nil {
+		return false, err
+	}
+	mounted, u, err := rr.MountBlob(ctx, desc.Digest, ociName(repo, from))
+	switch {
+	case err != nil:
+		return false, fmt.Errorf("ingest: mount the blob %s into %s: %w", desc.Digest, name, err)
+	case !mounted:
+		if err := rr.CancelBlobUpload(context.WithoutCancel(ctx), u); err != nil && !errors.Is(err, provider.ErrUnsupported) {
+			p.log.DebugContext(ctx, "ingest: the session the registry opened instead of a mount not cancelled; it expires", "name", name,
+				"error", err.Error())
+		}
+		return false, nil
+	}
+	return true, p.awaitBlob(ctx, prov, rr, name, desc)
+}
+
+// awaitBlob reads the blob desc, committed or mounted at name, back until the registry serves
+// it, on a registry that is not strongly consistent.
+func (p *Pipeline) awaitBlob(ctx context.Context, prov provider.Provider, rr provider.Repository, name string, desc ocispec.Descriptor) error {
 	caps, err := prov.Capabilities(ctx)
 	if err != nil || caps.Consistency == provider.ConsistencyStrong {
 		return nil //nolint:nilerr // committed; the push of the manifest meets a registry that does not answer

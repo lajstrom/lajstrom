@@ -1,6 +1,7 @@
 package proxy_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -216,6 +217,51 @@ func (h *hub) image(t *testing.T, repo, tag string, platforms ...string) image {
 	must(t, err)
 	img.index = h.put(repo, ocispec.MediaTypeImageIndex, raw, tag)
 	return img
+}
+
+// sharedImage is image whose manifests list, between the config and the layer of their own,
+// the layers shared, stored at repo too: the kube-* images of a Kubernetes release share most
+// of their layers (#876).
+func (h *hub) sharedImage(t *testing.T, repo, tag string, shared [][]byte, platforms ...string) image {
+	t.Helper()
+	var img image
+	var children []ocispec.Descriptor
+	for _, arch := range platforms {
+		config := h.blob(repo, ocispec.MediaTypeImageConfig, []byte(`{"architecture":"`+arch+`","image":"`+repo+`"}`))
+		blobs := []ocispec.Descriptor{config}
+		for _, b := range shared {
+			blobs = append(blobs, h.blob(repo, ocispec.MediaTypeImageLayerGzip, append([]byte(arch), b...)))
+		}
+		blobs = append(blobs, h.blob(repo, ocispec.MediaTypeImageLayerGzip, []byte(strings.Repeat(arch+repo, 100))))
+		raw, err := json.Marshal(ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageManifest,
+			Config: config, Layers: blobs[1:]})
+		must(t, err)
+		m := h.put(repo, ocispec.MediaTypeImageManifest, raw)
+		img.manifests, img.blobs = append(img.manifests, m), append(img.blobs, blobs)
+		child := m
+		child.Platform = &ocispec.Platform{OS: "linux", Architecture: arch}
+		children = append(children, child)
+	}
+	raw, err := json.Marshal(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex, Manifests: children})
+	must(t, err)
+	img.index = h.put(repo, ocispec.MediaTypeImageIndex, raw, tag)
+	return img
+}
+
+// noMount is a backend that opens an upload session instead of a mount (202), as Nexus's
+// docker format and JFrog do (docs/registries/quirks.md).
+type noMount struct{ *providertest.Fake }
+
+func (n noMount) Repository(ctx context.Context, name string) (provider.Repository, error) {
+	rr, err := n.Fake.Repository(ctx, name)
+	return noMountRepository{rr}, err
+}
+
+type noMountRepository struct{ provider.Repository }
+
+func (r noMountRepository) MountBlob(ctx context.Context, _ digest.Digest, _ string) (bool, provider.Upload, error) {
+	u, err := r.StartBlobUpload(ctx)
+	return false, u, err
 }
 
 // ociEnv is an oci proxy repo, oci/hub, of the upstream hub on a fake backend, with a clock.
