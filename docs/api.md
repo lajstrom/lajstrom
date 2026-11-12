@@ -436,7 +436,7 @@ the order of the request:
 | `protected` | a pointer names it; `pointers` has them |
 | `young` | was published after the cut-off; `lastModified` says when |
 | `gone` | does not exist, or its package does not: deleted meanwhile, or by an earlier run |
-| `error` | failed otherwise, `message` says why; the other items go on. A registry that cannot delete manifests fails every item so |
+| `error` | failed otherwise, `message` says why; the other items go on. A registry that cannot delete manifests fails every item so. When the request ends (its client went away), the item in flight finishes and the items after it are not attempted: `error`, with the message `not attempted`, and one warning in the server's log with their count |
 
 When a variant's delete is refused after another variant of the item was deleted (a race under
 the lock), the item has the refusal's status and its message names the variants deleted.

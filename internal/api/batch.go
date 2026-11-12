@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"regexp"
@@ -65,8 +66,9 @@ var jobPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 // deleteVersions answers POST /api/v1/repos/{format}/{repo}/versions:delete: each item is
 // deleted as the conditional DELETE of one version is (deleteVersion), with its digests as
 // If-Match and the batch's cutoff as If-Unmodified-Since, never forced, each variant under its
-// own locks; the batch is not all-or-nothing. delete on the repo is checked before the body is
-// read. 200 with a result per item.
+// own locks; the batch is not all-or-nothing, and it stops once the request ends
+// (notAttempted). delete on the repo is checked before the body is read. 200 with a result per
+// item.
 func (h *handler) deleteVersions(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	f, name := r.PathValue("format"), r.PathValue("repo")
 	if err := h.allow(r, auth.ActionDelete, f, name); err != nil {
@@ -94,10 +96,29 @@ func (h *handler) deleteVersions(w http.ResponseWriter, r *http.Request) (int, a
 	c := conditions{since: cutoff}
 	res := BatchDeleteResult{Job: req.Job, DryRun: req.DryRun, Results: make([]BatchItemResult, len(items))}
 	for i, it := range items {
+		if ctx.Err() != nil {
+			h.notAttempted(r, repo, req, res.Results, i)
+			break
+		}
 		c.digests = it.digests
 		res.Results[i] = h.deleteItem(r, repo, req.Items[i], c, req.DryRun, req.Job)
 	}
 	return http.StatusOK, res, nil
+}
+
+// notAttemptedMessage is the message of an item of a batch that its request ended before.
+const notAttemptedMessage = "not attempted: the request ended before this item"
+
+// notAttempted fills the results from the item i on, once the request has ended (its client
+// went away, #750): the item in flight has finished, its delete detached from the request
+// (ingest), and the rest are not attempted. They are errors in the answer, if anyone reads it,
+// and one warning in the log, not an error each.
+func (h *handler) notAttempted(r *http.Request, repo *index.Repo, req BatchDeleteRequest, results []BatchItemResult, i int) {
+	for j := i; j < len(results); j++ {
+		results[j] = BatchItemResult{Package: req.Items[j].Package, Version: req.Items[j].Version, Status: statusError, Message: notAttemptedMessage}
+	}
+	h.log.WarnContext(r.Context(), "api: a batch delete stopped, its request ended", "repo", repo.Format+"/"+repo.Name, "job", req.Job,
+		"attempted", i, "notAttempted", len(results)-i, "error", context.Cause(r.Context()).Error())
 }
 
 // batchItem is an item with its digests parsed.
