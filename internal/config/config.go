@@ -66,6 +66,10 @@ type Server struct {
 	// one replica runs at once; the next one is answered 503 with Retry-After. Load sets
 	// DefaultMaxConcurrentUploads; zero in the file means no limit; negative is invalid.
 	MaxConcurrentUploads int `yaml:"maxConcurrentUploads"`
+	// SpoolBudget is how many bytes the spooled /v2 chunks of registries[].uploads.
+	// spoolUnknownLength may hold at once on one replica, of every registry; a chunk that would
+	// pass it is answered 503 with Retry-After (#427). Zero means no budget; negative is invalid.
+	SpoolBudget int64 `yaml:"spoolBudget"`
 	// UploadSessions bounds the live /v2 upload sessions of one principal on one replica.
 	UploadSessions UploadSessions `yaml:"uploadSessions"`
 	// TrustedProxies are the peers whose X-Forwarded-For is believed, as CIDR prefixes; a bare
