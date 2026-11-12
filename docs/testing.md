@@ -149,9 +149,9 @@ password, which the scenarios get as `LAJSTROM_E2E_USER` and `LAJSTROM_E2E_PASSW
 runs every `test/e2e/<name>.sh` but `lib.sh` and `run.sh`, the known ones in a fixed order, any
 other after them and `ha.sh` last, against the ha profile when it is up
 ([below](#the-ha-stack)), and prints a line per scenario. The sample is from a run before
-`npm.sh`, `first-admin.sh` and `retention.sh` existed; a whole run now has fourteen lines,
-`npm.sh` after `maven.sh`, then `first-admin.sh` and `retention.sh`, which `order` in `run.sh`
-does not name, and `ha.sh` last:
+`npm.sh`, `docker.sh`, `first-admin.sh` and `retention.sh` existed; a whole run now has fifteen
+lines, `npm.sh` after `maven.sh`, then `docker.sh`, `first-admin.sh` and `retention.sh`, which
+`order` in `run.sh` does not name, and `ha.sh` last:
 
 ```text
 === summary
@@ -199,6 +199,7 @@ file: `run.sh` migrates it and leaves it on exit ([Upgrade](#upgrade) sets it).
 | `rbac.sh` | the S-02 matrix of the six principals on the raw frontend and on `/v2` (the tokens' actions included), a repo that may not be read answering as one that does not exist (S-08, X-05), the reader's `oras push` refused and the writer's through, a deploy token held to its repo (S-04), a binding and a repo's `anonymousRead` counting from the next request (S-07), creating a repo with a taken name | curl, oras on `PATH`, else its image, `lajstrom admin user` and `binding` |
 | `oci-token.sh` | the docker bearer flow, oras login, push and pull, token key rotations | curl, oras image, `lajstrom admin key` |
 | `cosign.sh` | a raw file pushed with oras and signed with `cosign sign --key` (a key pair of the run, no transparency log): `cosign verify`, `oras discover` and the referrers API with `artifactType` list the signature; cosign's legacy `sha256-<hex>.sig` signed and verified; another key refused; a reader verifies and its `cosign sign` is `DENIED`; with `LAJSTROM_E2E_REGISTRY=localhost:5001` (distribution, no referrers API) it checks the `sha256-<hex>` tag schema the provider wrote (#28); `lajstrom reindex --repo` finds the signatures as referrers, also with `LAJSTROM_E2E_CAPABILITIES='{catalog: false}'` (#37) | `ghcr.io/sigstore/cosign/cosign:v3.1.4`, oras on `PATH`, else its image, `lajstrom admin user` and `binding` |
+| `docker.sh` | docker images on an `oci` repo of the run's own (#71): `docker login` as the writer and as a reader of the repo; two single-platform images from `docker import --platform`, pushed with `docker push`; `crane index append` into one multi-arch tag, an OCI index whose bytes the backend holds under its digest; `docker pull --platform` of each platform, and the file of that platform in the image; `docker buildx build --platform linux/amd64,linux/arm64 --push` with provenance, an index of both platforms and their attestation manifests, where the builder can push several platforms (the containerd image store, or a builder with another driver than `docker`), else skipped and said; `cosign sign` and `verify` of the index by its digest, and the referrers API listing the signature; the reader's pull through, its `docker push` and `crane tag` refused, a pull without credentials refused; a push row per tag in the audit log, by the writer, none by the reader | the docker CLI and daemon, with a configuration directory of the run's own; crane on `PATH`, else `gcr.io/go-containerregistry/crane:v0.22.1`; `ghcr.io/sigstore/cosign/cosign:v3.1.4`; `lajstrom admin user` and `binding` |
 | `tokens.sh` | personal access tokens and deploy tokens on raw, apt (`auth.conf`) and `/v2` | curl, `ubuntu:24.04`, oras image |
 | `first-admin.sh` | the bootstrap token of the first admin (#440), on servers of its own with new indexes: without a token file a warning and no token; with one, only its sha256 in the index and no log line with it, a wrong token `403`, the throttle `429`, `lajstrom admin bootstrap` and its audit event, `404` after it, a restart with the file warning; with `LAJSTROM_E2E_POSTGRES_DSN` and `psql`, two replicas on one new schema make one token and one admin, else that part is skipped | curl, jq, `lajstrom admin bootstrap`; `psql` for the replicas |
 | `apt.sh` | a `.deb` by PUT and one by oras; the repo's `anonymousRead` on: `key.asc` into `/etc/apt/keyrings`, `apt-get update` (the `Packages` by-hash), `install` and `apt-cache policy` without credentials; off: the anonymous `apt-get update` fails with apt's 401, then with credentials in `/etc/apt/auth.conf.d` `update`, `install`, `download` and the sha256 of the files; a second `update` with `Acquire::By-Hash=no` (the `Packages` by name); a copy of the suite whose `Release` hashes are wrong fails `apt-get update` with apt's `Hash Sum mismatch`; the conflicts | `ubuntu:24.04` (`linux/amd64`), or the image of `APT_E2E_IMAGE`; oras image |
@@ -211,7 +212,8 @@ file: `run.sh` migrates it and leaves it on exit ([Upgrade](#upgrade) sets it).
 
 The images are `ubuntu:24.04` for `linux/amd64`, emulated on Apple silicon,
 `ghcr.io/oras-project/oras:v1.3.6`, `ghcr.io/sigstore/cosign/cosign:v3.1.4`, `python:3.13`,
-`maven:3.9.16-eclipse-temurin-21`, `gradle:8.14.6-jdk21` and `node:26.13.0-slim`; the first run pulls them. `apt.sh` and `tokens.sh` take their apt client
+`maven:3.9.16-eclipse-temurin-21`, `gradle:8.14.6-jdk21`, `node:26.13.0-slim` and, without a crane
+on `PATH`, `gcr.io/go-containerregistry/crane:v0.22.1`; the first run pulls them. `apt.sh` and `tokens.sh` take their apt client
 from `APT_E2E_IMAGE` when it is set; `apt.sh` passes in `ubuntu:22.04`, `ubuntu:24.04` and
 `debian:12`:
 
@@ -224,7 +226,9 @@ and as whom; run by hand without `LAJSTROM_SERVER_LOG` it leaves those checks ou
 It turns the `anonymousRead` of its repo on and off through the API, and sets it back on exit.
 
 The containers use `--network host`, which reaches the server's `127.0.0.1` on Linux and under
-OrbStack; Docker Desktop is not measured (its host networking is a setting of its own). The
+OrbStack; Docker Desktop is not measured (its host networking is a setting of its own).
+`docker.sh` needs the daemon itself to reach the server's `127.0.0.1`, which it does on Linux and
+under OrbStack, and the daemon takes plain HTTP from `127.0.0.0/8` without configuration. The
 scenarios run under whatever `bash` is first on `PATH`; the bash 3.2 of macOS is enough.
 
 ### A registry with credentials and a prefix
