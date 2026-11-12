@@ -1,6 +1,7 @@
 # Spec: Lajstrom manifest profile
 
-- Status: normative, v1 (2026-11-06; section 4.3 changed by ADR 0017 on 2026-11-11). Changes
+- Status: normative, v1 (2026-11-06; section 4.3 changed by ADR 0017 on 2026-11-11; the pypi
+  variant of a wheel with a build tag, sections 3 and 4.2, on 2026-11-12, #726). Changes
   need an issue labelled `contract` and, if the wire format changes, an ADR.
 - Implemented by: `internal/oci/profile` (pure Go, no I/O).
 - Related: [ADR 0005](../adr/0005-manifest-profile-and-immutable-tags.md),
@@ -115,7 +116,7 @@ the UI and skipped). The journal manifests of npm have a set of their own (secti
 | `lajstrom.repo` | R | repo name as created in the control plane, e.g. `ubuntu-internal` |
 | `lajstrom.name` | R | package name in the format's own spelling (original case): `nginx`, `com.example:lib-core` (maven `groupId:artifactId`), raw: the full path; for pypi the PEP 503 normalized name, `requests` for `Requests`, so that every spelling of a project is one package (the original spelling is the `name` of the metadata layer; decided on #31) |
 | `lajstrom.version` | R | version string exactly as the format spells it: `1:1.18.0-6ubuntu14.4`, `2.32.3`, `1.2.0` |
-| `lajstrom.variant` | | platform discriminator, present when the format has one: deb `<suite>/<component>/<arch>`, the values of `lajstrom.deb.suite`, `.component` and `.arch` joined with `/` (`jammy/main/amd64`, `bookworm/main/all`); rpm arch (later); pypi wheel tag (`py3-none-any`, `cp311-cp311-manylinux_2_17_x86_64`) or `sdist`. Absent for maven, npm, raw. |
+| `lajstrom.variant` | | platform discriminator, present when the format has one: deb `<suite>/<component>/<arch>`, the values of `lajstrom.deb.suite`, `.component` and `.arch` joined with `/` (`jammy/main/amd64`, `bookworm/main/all`); rpm arch (later); pypi: the wheel's compressed tag set (`py3-none-any`, `cp311-cp311-manylinux_2_17_x86_64`), after its PEP 427 build tag and `-` when the file name has one (`1-py3-none-any`, section 4.2), or `sdist`. Absent for maven, npm, raw. |
 | `lajstrom.deb.arch`, `lajstrom.deb.suite`, `lajstrom.deb.component` | deb | upload metadata and the three parts of `lajstrom.variant`, kept as annotations (and in `versions.attrs`) so that the apt indexes group by them without parsing the variant; `arch` is the control file's `Architecture`. Suite and component are properties of the upload, not separate repos: the same `.deb` in two suites is two manifests over the same blobs |
 | `lajstrom.pypi.nonstandard` | pypi | `true` when the version is not a PEP 440 version: accepted and kept as written; pip 22 and later ignore such versions |
 | `lajstrom.maven.groupId`, `lajstrom.maven.artifactId`, `lajstrom.maven.packaging` | maven | coordinates |
@@ -211,6 +212,7 @@ Examples:
 | --- | --- | --- |
 | `1:1.18.0-6ubuntu14.4` | `jammy/main/amd64` | `1_3a1.18.0-6ubuntu14.4__jammy_2fmain_2famd64` |
 | `2.32.3` | `py3-none-any` | `2.32.3__py3-none-any` |
+| `2.32.3` | `1-py3-none-any` (build tag `1`) | `2.32.3__1-py3-none-any` |
 | `2.32.3` | `sdist` | `2.32.3__sdist` |
 | `1.2.0` | | `1.2.0` |
 | `1.0.0+build.7` | | `1.0.0_2bbuild.7` |
@@ -221,6 +223,17 @@ The deb tag is `Escape(version)__Escape(suite/component/arch)`: the `/` of the v
 `_2f`, and the same `.deb` in `jammy` and `jammy-updates` is two tags,
 `1.0.0-1__jammy_2fmain_2famd64` and `1.0.0-1__jammy-updates_2fmain_2famd64`, over one file
 layer with one file name. A deb tag longer than 128 characters is hashed like any other.
+
+The pypi variant of a wheel is the file name's parts after the version: the build tag, when
+there is one, and the tag set. `foo_bar-1.1.0-1-py3-none-any.whl` is `1.1.0__1-py3-none-any`,
+beside `1.1.0__py3-none-any` of `foo_bar-1.1.0-py3-none-any.whl`: a build tag re-releases a fixed
+wheel of a version, and pip prefers the higher build (PEP 427). A build tag starts with a digit
+and no part of a wheel file name has a `-`, so the variant of a wheel with a build tag is never
+that of a wheel without one. Before #726 the variant was the tag set alone, so a wheel with a
+build tag uploaded then keeps the tag of its tag set: written in the newest form, read in all.
+Validation takes both forms for such a file name, an upload of a file the index has in the
+earlier form goes to its tag (the same bytes are the idempotent repeat, other bytes `409`), and
+the wheel of the same version and tag set without a build tag is a `409` that names it.
 
 The npm tag is `Escape(version)` (`1.2.0`, `2.0.0-rc.1`); npm has no variant. The tags `_j…`
 of an npm package's OCI repository are its journal (section 8): every `_` that `Escape` writes
@@ -307,7 +320,8 @@ The ingest pipeline rejects a manifest with `400` (facade: `MANIFEST_INVALID`) w
 - a layer descriptor is malformed: the digest is not `<algorithm>:<encoded>` of a known
   algorithm, or the size is negative;
 - the plugin's `Validate` finds the bytes and the annotations disagree (deb control vs
-  annotations, wheel file name vs version/variant, POM coordinates vs path);
+  annotations, wheel file name vs version/variant in either form of section 4.2, POM
+  coordinates vs path);
 - a layer referenced by the manifest has not been uploaded (the facade checks blob existence in
   the backend before `PUT manifest`);
 - pushed on `/v2`, `org.opencontainers.image.created` is more than `server.maxCreatedAhead`

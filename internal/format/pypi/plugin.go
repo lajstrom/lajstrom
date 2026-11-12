@@ -26,6 +26,13 @@ const Name = "pypi"
 // lajstrom.uploaded-by.
 const ParamUploadedBy = "uploaded-by"
 
+// ParamVariant is the upload parameter with the earlier form of the variant of a wheel with a
+// build tag, its tag set without the build tag, which the variant was before #726: the upload
+// handler sets it when the index has the file under that form, so that the same file again
+// goes to its tag (the idempotent repeat, or 409 for other bytes) rather than to a second one.
+// Build takes no other value from it.
+const ParamVariant = "variant"
+
 // The keys of the metadata layer besides the core metadata (docs/spec/manifest-profile.md §2).
 const (
 	FieldFilename     = "filename"
@@ -71,9 +78,11 @@ func (Plugin) EscapeName(name string) (string, error) {
 	return profile.EscapeComponent(Normalize(name)), nil
 }
 
-// dist is a distribution file as its name and media type say: wheel or sdist.
+// dist is a distribution file as its name and media type say: wheel or sdist. earlier is the
+// variant of a wheel with a build tag as it was written before #726, its tag set; "" for the
+// others, whose variant has one form.
 type dist struct {
-	name, version, variant, packagetype, mediaType string
+	name, version, variant, earlier, packagetype, mediaType string
 }
 
 // describe reads the file name of a distribution: a wheel (.whl) or a source distribution
@@ -86,6 +95,9 @@ func describe(filename, mediaType string) (dist, error) {
 			return dist{}, err
 		}
 		d = dist{name: w.Name, version: w.Version, variant: w.Variant(), packagetype: PackagetypeWheel, mediaType: profile.MediaTypePypiWheel}
+		if w.Build != "" {
+			d.earlier = w.TagSet()
+		}
 	} else {
 		s, err := ParseSdistFilename(filename)
 		if err != nil {
@@ -115,7 +127,8 @@ type metadataIn struct {
 // Validate checks a pypi manifest (docs/spec/manifest-profile.md): one file layer, a wheel or
 // a source distribution, and the metadata layer; the annotations, the file name and the
 // metadata layer agree: the name (lajstrom.name is the normalized name of both), the version
-// (exactly), the variant (the wheel's tag set, or sdist), the file name, its sha256 and
+// (exactly), the variant (the wheel's build tag and tag set, or sdist; a wheel with a build tag
+// written before #726 has its tag set alone, which is read too), the file name, its sha256 and
 // packagetype, and lajstrom.pypi.nonstandard is true exactly when the version is not PEP 440.
 // The core_metadata of the layer must say the same name and version, and be, byte for byte, the
 // METADATA or PKG-INFO inside the distribution (checkArchive), which pip is told it is (PEP 658);
@@ -162,6 +175,10 @@ func check(a profile.Annotations, f profile.Layer, d dist, md *metadataIn) error
 	if !IsPEP440(a.Version) {
 		nonstandard = "true"
 	}
+	variant := d.variant
+	if d.earlier != "" && a.Variant == d.earlier { // a wheel with a build tag written before #726
+		variant = d.earlier
+	}
 	for _, c := range []struct{ what, got, want string }{
 		{profile.AnnotationName + " is not the normalized name", a.Name, Normalize(a.Name)},
 		{"the name of the file name", Normalize(d.name), a.Name},
@@ -170,7 +187,7 @@ func check(a profile.Annotations, f profile.Layer, d dist, md *metadataIn) error
 		{"the version of the file name", d.version, a.Version},
 		{"the version of the metadata layer", md.Version, a.Version},
 		{"the version of core_metadata", core.Version, md.Version},
-		{profile.AnnotationVariant, a.Variant, d.variant},
+		{profile.AnnotationVariant, a.Variant, variant},
 		{"the filename of the metadata layer", md.Filename, f.Title},
 		{"the sha256 of the metadata layer", md.SHA256, f.Digest.Encoded()},
 		{"the packagetype of the metadata layer", md.Packagetype, d.packagetype},
@@ -292,8 +309,9 @@ func readMetadata(ctx context.Context, fetch format.BlobFetcher, l profile.Layer
 // or PKG-INFO in the JSON form of PEP 566 with filename, sha256, packagetype and core_metadata.
 // The name of the file name and of the core metadata must be one project (PEP 503), the versions
 // the same string; lajstrom.name is the normalized name, lajstrom.version the version as the core
-// metadata writes it, lajstrom.variant the wheel's tag set or sdist, and a version that is not
-// PEP 440 is accepted and flagged lajstrom.pypi.nonstandard. created is now, in whole seconds.
+// metadata writes it, lajstrom.variant the wheel's build tag and tag set or sdist (the earlier
+// form of ParamVariant when the upload has it), and a version that is not PEP 440 is accepted
+// and flagged lajstrom.pypi.nonstandard. created is now, in whole seconds.
 // A file that streamed into the registry, with an inspector (Inspect), has its sha256 from
 // ingest and its core metadata from the inspector, which may need the file read back
 // (format.ErrReadBack; Open then reads it), and its layer is not among the blobs. Errors wrap
@@ -306,6 +324,9 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 	d, err := describe(f.Name, "")
 	if err != nil {
 		return nil, err
+	}
+	if d.earlier != "" && in.Params[ParamVariant] == d.earlier {
+		d.variant = d.earlier
 	}
 	var sum digest.Digest
 	var size int64

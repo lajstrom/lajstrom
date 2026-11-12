@@ -81,6 +81,14 @@ func TestWheel(t *testing.T) {
 			purelib:    "false",
 		},
 		{
+			name:       "a build tag",
+			opts:       WheelOptions{Name: "foo.bar", Version: "1.1.0", Build: "1"},
+			filename:   "foo_bar-1.1.0-1-py3-none-any.whl",
+			normalized: "foo-bar",
+			tags:       []string{"py3-none-any"},
+			purelib:    "true",
+		},
+		{
 			name:       "two python tags, a dash in the version",
 			opts:       WheelOptions{Name: "a_b", Version: "1.0-1", PythonTag: "py2.py3"},
 			filename:   "a_b-1.0_1-py2.py3-none-any.whl",
@@ -97,7 +105,11 @@ func TestWheel(t *testing.T) {
 			if !slices.Equal(want.Tags, tc.tags) {
 				t.Errorf("Tags = %q, want %q", want.Tags, tc.tags)
 			}
-			if variant := want.PythonTag + "-" + want.AbiTag + "-" + want.PlatformTag; want.Variant != variant ||
+			variant := want.PythonTag + "-" + want.AbiTag + "-" + want.PlatformTag
+			if want.Build != "" {
+				variant = want.Build + "-" + variant
+			}
+			if want.Variant != variant || want.Build != tc.opts.Build ||
 				!strings.HasSuffix(want.Filename, "-"+variant+".whl") {
 				t.Errorf("Variant = %q, file name %q, tags %s", want.Variant, want.Filename, variant)
 			}
@@ -118,7 +130,7 @@ func TestWheel(t *testing.T) {
 			if got := wheel["Tag"]; !slices.Equal(got, tc.tags) {
 				t.Errorf("WHEEL Tag lines %q, want %q", got, tc.tags)
 			}
-			for name, value := range map[string]string{"Wheel-Version": "1.0", "Root-Is-Purelib": tc.purelib} {
+			for name, value := range map[string]string{"Wheel-Version": "1.0", "Root-Is-Purelib": tc.purelib, "Build": tc.opts.Build} {
 				if got := wheel.Get(name); got != value {
 					t.Errorf("WHEEL %s = %q, want %q", name, got, value)
 				}

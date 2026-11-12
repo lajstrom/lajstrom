@@ -143,7 +143,7 @@ metadata files, and the legacy upload API that `twine` uses.
 | `GET /pypi/<repo>/simple/<project>/` | file list of the project (normalised name; non-normalised redirects `301`). Links point to `/pypi/<repo>/files/…` with `#sha256=`; `data-requires-python`, `data-dist-info-metadata`/`data-core-metadata` set. |
 | `GET /pypi/<repo>/files/<project>/<version>/<filename>` | the distribution file (`307` or stream) |
 | `GET /pypi/<repo>/files/<project>/<version>/<filename>.metadata` | the core metadata (PEP 658), from the metadata layer |
-| `POST /pypi/<repo>/` | legacy upload: `multipart/form-data` with `:action=file_upload`, `protocol_version=1`, `content`, metadata fields. One file = one manifest (variant = wheel tag or `sdist`). `200` on success; `400` on validation errors; `409` if the file name exists with a different digest. |
+| `POST /pypi/<repo>/` | legacy upload: `multipart/form-data` with `:action=file_upload`, `protocol_version=1`, `content`, metadata fields. One file = one manifest (variant = the wheel's build tag, when it has one, and tag set, or `sdist`: manifest-profile.md §4.2). `200` on success; `400` on validation errors; `409` if the file name exists with a different digest, or another file holds its version and variant (a wheel with a build tag uploaded before #726, in the earlier form of its variant), with `File already exists` and the name of the file there. |
 
 Client config: `pip install --index-url https://host/pypi/<repo>/simple/ …`,
 `twine upload --repository-url https://host/pypi/<repo>/ dist/*`.

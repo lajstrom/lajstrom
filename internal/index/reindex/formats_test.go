@@ -62,9 +62,11 @@ var formatCases = map[string]formatCase{
 			{"jammy-updates", "Release.gpg"}},
 	},
 	"pypi": {
-		plugin: pypi.Plugin{}, publish: publishPypi, versions: 6,
+		plugin: pypi.Plugin{}, publish: publishPypi, versions: 8,
 		docs: []string{"simple/", "simple/my-pkg/", "simple/other-lib/", "simple/my-pkg/ application/vnd.pypi.simple.v1+json",
-			"files/my-pkg/1.1.0/my_pkg-1.1.0-py3-none-any.whl.metadata", "files/other-lib/0.2/other_lib-0.2-py3-none-any.whl"},
+			"files/my-pkg/1.1.0/my_pkg-1.1.0-py3-none-any.whl.metadata", "files/other-lib/0.2/other_lib-0.2-py3-none-any.whl",
+			"files/my-pkg/1.1.0/my_pkg-1.1.0-1-py3-none-any.whl", "files/other-lib/0.3/other_lib-0.3-1-py3-none-any.whl.metadata",
+			"simple/other-lib/ application/vnd.pypi.simple.v1+json"},
 		cached: [][2]string{{"simple", "simple.html"}, {"simple/my-pkg", "simple.json"}, {"simple/other-lib", "simple.html"}},
 	},
 	"maven": {
@@ -291,10 +293,12 @@ func publishApt(t *testing.T, f *frontend) {
 }
 
 // publishPypi uploads to a pypi repo as twine does, with the sha256 and md5 of each file:
-// my-pkg 1.0.0 as a wheel and an sdist, 1.1.0 as a pure wheel with its dependencies and a wheel
-// for CPython 3.12 on manylinux, 1.2.0.dev.local, a version that is not PEP 440, and Other_Lib
-// 0.1 as an sdist; Other_Lib 0.2 by oras push; then the sdist of my-pkg 1.0.0 goes. The upload
-// keeps no signature: a gpg_signature part is a form field it ignores.
+// my-pkg 1.0.0 as a wheel and an sdist, 1.1.0 as a pure wheel with its dependencies, the same
+// with the build tag 1 and a wheel for CPython 3.12 on manylinux, 1.2.0.dev.local, a version that
+// is not PEP 440, and Other_Lib 0.1 as an sdist; Other_Lib 0.2 by oras push, and 0.3 with the
+// build tag 1 too, in the form of its variant before #726, the tag set alone; then the sdist of
+// my-pkg 1.0.0 goes. The upload keeps no signature: a gpg_signature part is a form field it
+// ignores.
 func publishPypi(t *testing.T, f *frontend) {
 	type dist struct {
 		b        []byte
@@ -307,6 +311,8 @@ func publishPypi(t *testing.T, f *frontend) {
 	s, si := testutil.Sdist(testutil.SdistOptions{})
 	add(s, si.Filename)
 	w, wi = testutil.Wheel(testutil.WheelOptions{Version: "1.1.0", RequiresDist: []string{"requests>=2.31", "idna; extra == 'idna'"}})
+	add(w, wi.Filename)
+	w, wi = testutil.Wheel(testutil.WheelOptions{Version: "1.1.0", Build: "1", RequiresDist: []string{"requests>=2.32"}})
 	add(w, wi.Filename)
 	w, wi = testutil.Wheel(testutil.WheelOptions{Version: "1.1.0", PythonTag: "cp312", AbiTag: "cp312",
 		PlatformTag: "manylinux_2_17_x86_64.manylinux2014_x86_64"})
@@ -321,6 +327,8 @@ func publishPypi(t *testing.T, f *frontend) {
 	}
 	w, wi = testutil.Wheel(testutil.WheelOptions{Name: "Other_Lib", Version: "0.2"})
 	f.push(t, format.Upload{Files: []format.UploadedFile{file(wi.Filename, w)}})
+	w, wi = testutil.Wheel(testutil.WheelOptions{Name: "Other_Lib", Version: "0.3", Build: "1"})
+	f.push(t, format.Upload{Files: []format.UploadedFile{file(wi.Filename, w)}, Params: map[string]string{pypi.ParamVariant: "py3-none-any"}})
 	f.deleteVersion(t, "my-pkg", "1.0.0", "sdist")
 }
 
