@@ -43,7 +43,7 @@ deploy/compose/quay/quay.sh down    # with the volumes and the token files
 | Superuser | `quayadmin`, the first user, by `POST /api/v1/user/initialize` with `access_token: true`; its OAuth token, given once, in `deploy/compose/quay/.work/admin.token` (ignored by git) |
 | Organisation | `lajstrom-it`, by `POST /api/v1/organization/` |
 | Robot | `lajstrom-it+lajstrom`, by `PUT /api/v1/organization/lajstrom-it/robots/lajstrom`, in a team `lajstrom` with the role `admin`; its token in `.work/robot.token` |
-| Lajstrom | `prefix: lajstrom-it/`, `auth.username: lajstrom-it+lajstrom`, the robot's token in the variable `passwordEnv` names; `capabilities: {catalog: false}` and `server.maxManifestSize: 1048576` ([Configuration](#configuration)) |
+| Lajstrom | `prefix: lajstrom-it/`, `auth.username: lajstrom-it+lajstrom`, the robot's token in the variable `passwordEnv` names; `server.maxManifestSize: 1048576`; no `capabilities`, which the vendor table sets since #803 ([Configuration](#configuration)) |
 
 The team's role matters. With `creator` the robot may create repositories and administers what
 it creates, but a repository that does not exist is 401 `UNAUTHORIZED` to it, not 404
@@ -98,14 +98,19 @@ were measured by curl below. Its run left
 2. **Do not trust an anonymous catalog** ([#802](https://github.com/lajstrom/lajstrom/issues/802)).
    `_catalog` without credentials is `200 {"repositories":[]}`, no challenge, so oras-go never
    authenticates it, the probe says `catalog=true`, and `ListRepositories` returns nothing:
-   reindex from an empty index finds no repository. Until then `capabilities: {catalog: false}`
-   (reindex reads `oci_repos`, which passed: `TestIntegrationNoCatalog/config`).
-3. **Name the vendor** ([#803](https://github.com/lajstrom/lajstrom/issues/803)). Quay is
-   `vendor=distribution` today, and so `consistency: strong`, which it is not: it caches a tag
-   list for 120 s and a catalog page for 60 s ([Consistency](#consistency)). It tells itself by
-   `X-Sparse-Manifest-Support` on `GET /v2/`. The entry carries items 1 and 2, `referrers: true`
-   (the probe's repository does not exist, so the probe cannot tell) and the build rule of
-   [#662](https://github.com/lajstrom/lajstrom/issues/662).
+   reindex from an empty index finds no repository. Until then the vendor table sets
+   `catalog: false` for Quay (item 3; reindex reads `oci_repos`, which passed:
+   `TestIntegrationNoCatalog/config`).
+3. **Name the vendor**: done by [#803](https://github.com/lajstrom/lajstrom/issues/803). Quay was
+   `vendor=distribution`, and so `consistency: strong`, which it is not: it caches a tag list
+   for 120 s and a catalog page for 60 s ([Consistency](#consistency)). The provider tells it by
+   `X-Sparse-Manifest-Support` on `GET /v2/`, which Quay sends on the 401 and on the 200, and
+   quay.io by its host too, and calls it `vendor=quay`. Its entry in the vendor table sets
+   `catalog: false` (item 2), `referrers: true` (the probe's repository does not exist, so the
+   probe cannot tell) and `consistency: eventual` within `130s`. Items 1 and 7 hang on it.
+   quay.io answered `GET /v2/`, the anonymous catalog, the token endpoint (`delete` 400) and
+   the referrers API (200, and 400 for a subject that does not exist) alike on 2026-11-12;
+   its cache times were not measured.
 4. **Keep its own offset of an upload session** ([#804](https://github.com/lajstrom/lajstrom/issues/804)).
    `GET` of a session answers one byte ahead (`Range: bytes=0-5` after `0-4`), as Forgejo
    does ([gitea.md](gitea.md#forgejo)); a replica that continues from it sends its chunk one
@@ -227,7 +232,9 @@ A manifest by digest and by tag, a blob, and a tag list never read before were s
 (the probe's three writes). A tag list read before a write is not, for up to 120 s
 ([Tags](#tags)), and a catalog page for up to 60 s; the referrers list is cached 60 s too
 (`data/cache/cache_key.py`). `consistency: eventual` with `consistencyBound: 130s` describes
-it, which the vendor table should say ([#803](https://github.com/lajstrom/lajstrom/issues/803)).
+it, which the vendor table says since [#803](https://github.com/lajstrom/lajstrom/issues/803):
+every publish reads its tag, its blobs and, for a referrer, its subject's referrers back, for
+up to 130 s (260 s for a referrer) where `ingest.visibilityTimeout` is shorter.
 
 ## Delete
 
@@ -398,12 +405,12 @@ registries:
     auth:
       username: lajstrom-it+lajstrom    # a robot in a team with the role admin
       passwordEnv: LAJSTROM_QUAY_ROBOT_TOKEN
-    capabilities:
-      catalog: false                    # until #802: the catalog Lajstrom reads is empty
-      consistency: eventual             # until #803: tag lists cached 120 s
-      consistencyBound: 130s
-    # Deletes fail until #801, whatever is set here.
+    # No capabilities: the vendor table sets catalog: false (until #802), referrers: true and
+    # consistency: eventual within 130s (#803). Deletes fail until #801, whatever is set here.
 ```
+
+The startup line then says `vendor=quay … referrers=true catalog=false … consistency="eventual
+within 2m10s"`.
 
 ## Commands
 
