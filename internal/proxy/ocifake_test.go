@@ -42,6 +42,9 @@ type hub struct {
 	tooMany   atomic.Bool
 	corrupted map[digest.Digest]bool          // manifests answered with other bytes
 	gates     map[digest.Digest]chan struct{} // blobs answered by half, the rest once the gate closes
+	// hook answers a read that carries the token instead of the hub when it returns true: the
+	// faults of a poor link (ocifault_test.go).
+	hook func(w http.ResponseWriter, r *http.Request) bool
 }
 
 type hubDoc struct {
@@ -72,7 +75,11 @@ func (h *hub) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	h.mu.Lock()
 	h.requests = append(h.requests, r.Method+" "+r.URL.Path)
+	hook := h.hook
 	h.mu.Unlock()
+	if hook != nil && hook(w, r) {
+		return
+	}
 	if h.tooMany.Load() {
 		w.Header().Set("Retry-After", "7")
 		hubError(w, http.StatusTooManyRequests, "TOOMANYREQUESTS")

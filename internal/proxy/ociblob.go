@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -175,23 +176,14 @@ func (c *Core) ociFetchBlob(ctx context.Context, p *ociProxied, desc ocispec.Des
 	if err != nil {
 		return false, err
 	}
-	defer func() { _ = body.Close() }()
-	var src io.Reader = body
+	up := &upstreamBody{rc: body}
+	defer func() { _ = up.rc.Close() }()
+	var src io.Reader = up
 	if t != nil {
 		t.begin()
-		src = io.TeeReader(body, t)
+		src = io.TeeReader(up, t)
 	}
-	err = c.o.Mirror.MirrorBlob(ctx, p.repo, p.path, desc, src)
-	switch {
-	case errors.Is(err, ingest.ErrInvalid):
-		c.ociReject(ctx, p, desc.Digest, "checksum", map[string]any{"error": err.Error()})
-		return false, fmt.Errorf("%w: proxy: %s: upstream %s served other bytes for %s: %s", format.ErrBadGateway, p.id(), p.upstreamName(),
-			desc.Digest, err.Error())
-	case errors.Is(err, provider.ErrRejected) && !errors.Is(err, provider.ErrUnavailable):
-		// a rule of the backend's, Quay's build rule among them (§11.2): its 4xx names it
-		c.ociReject(ctx, p, desc.Digest, "backend", map[string]any{"registry": p.repo.Registry, "error": err.Error()})
-		return false, err
-	case err != nil:
+	if err := c.ociCopyFailed(ctx, p, desc, up, c.o.Mirror.MirrorBlob(ctx, p.repo, p.path, desc, src)); err != nil {
 		return false, err
 	}
 	c.o.Log.InfoContext(ctx, "proxy: a blob fetched from the upstream", "repo", p.id(), "upstream", p.upstreamName(), "path", p.path,
@@ -204,6 +196,30 @@ func (c *Core) ociFetchBlob(ctx context.Context, p *ociProxied, desc ocispec.Des
 	}
 	c.ociComplete(ctx, p, desc.Digest)
 	return false, nil
+}
+
+// ociCopyFailed returns what a fetch answers for err, the end of the copy of the blob desc from
+// the upstream's body up into the backend, nil when it was committed: a body that stopped
+// moving for upstreams[].timeout is format.ErrGatewayTimeout (§2.1, #883); bytes that are not the
+// blob are format.ErrBadGateway and proxy.reject; a backend's refusal by a rule of its own is
+// proxy.reject too.
+func (c *Core) ociCopyFailed(ctx context.Context, p *ociProxied, desc ocispec.Descriptor, up *upstreamBody, err error) error {
+	var ne net.Error
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(up.err, &ne) && ne.Timeout() && ctx.Err() == nil:
+		return fmt.Errorf("%w: proxy: %s: upstream %s sent no byte of the blob %s within its timeout, after %d bytes", format.ErrGatewayTimeout,
+			p.id(), p.upstreamName(), desc.Digest, up.n)
+	case errors.Is(err, ingest.ErrInvalid):
+		c.ociReject(ctx, p, desc.Digest, "checksum", map[string]any{"error": err.Error()})
+		return fmt.Errorf("%w: proxy: %s: upstream %s served other bytes for %s: %s", format.ErrBadGateway, p.id(), p.upstreamName(),
+			desc.Digest, err.Error())
+	case errors.Is(err, provider.ErrRejected) && !errors.Is(err, provider.ErrUnavailable):
+		// a rule of the backend's, Quay's build rule among them (§11.2): its 4xx names it
+		c.ociReject(ctx, p, desc.Digest, "backend", map[string]any{"registry": p.repo.Registry, "error": err.Error()})
+	}
+	return err
 }
 
 // errNotFetched is the end of a tee whose fetch did not stream: another replica fetched the blob
@@ -230,6 +246,24 @@ func (u *OCIUpstream) open(ctx context.Context, path string, desc ocispec.Descri
 			b.Size, desc.Size)
 	}
 	return b.Body, nil
+}
+
+// upstreamBody is the upstream's body of a blob as the fetch reads it: the bytes read, and the
+// error of the read that failed, so that the fetch tells the upstream's failure from the
+// backend's.
+type upstreamBody struct {
+	rc  io.ReadCloser
+	n   int64 // the bytes read
+	err error // the first read that failed, but for io.EOF
+}
+
+func (b *upstreamBody) Read(p []byte) (int, error) {
+	n, err := b.rc.Read(p)
+	b.n += int64(n)
+	if err != nil && !errors.Is(err, io.EOF) && b.err == nil {
+		b.err = err
+	}
+	return n, err
 }
 
 // ociHeld records that the backend holds d at p's path.
