@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"time"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/errdef"
@@ -68,16 +69,19 @@ func (r *repository) Exists(ctx context.Context, target ocispec.Descriptor) (boo
 
 // Push uploads the blob or manifest expected from content; a blob is streamed in one
 // monolithic upload, which is done again from the start when it fails transiently and content
-// can be rewound (pushRetry); a manifest PUT is retried by the transport. Content that
-// already exists is success, and so is a referrer whose old referrers index the registry would
-// not delete (pushed).
+// can be rewound (pushRetry), and while a registry not classified strong answers its PUT
+// BLOB_UPLOAD_UNKNOWN for the session its POST opened (sendFresh); a manifest PUT is retried
+// by the transport. Content that already exists is success, and so is a referrer whose old
+// referrers index the registry would not delete (pushed).
 func (r *repository) Push(ctx context.Context, expected ocispec.Descriptor, content io.Reader) error {
 	var err error
 	if isManifest(expected.MediaType) {
 		err = r.Repository.Push(ctx, expected, content)
 	} else {
-		err = pushRetry(ctx, r.p.clients.retries, r.p.log, content, func(c io.Reader) error {
-			return r.Repository.Push(ctx, expected, c)
+		err = r.sendFresh(ctx, time.Now(), content, func() error {
+			return pushRetry(ctx, r.p.clients.retries, r.p.log, content, func(c io.Reader) error {
+				return r.Repository.Push(ctx, expected, c)
+			})
 		})
 	}
 	if errors.Is(err, errdef.ErrAlreadyExists) {

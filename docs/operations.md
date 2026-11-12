@@ -661,6 +661,11 @@ What an operator of ECR sees:
   probe` measures the lag of a registry of type `generic`; for ECR, #19 does.
 - A publish the registry served after more than a second: `ingest: the registry served a push
   late` at info, with the time it took.
+- The first write to an upload session that the registry answers `BLOB_UPLOAD_UNKNOWN` within
+  30 s (or `consistencyBound`) of the `POST` that opened it is sent again, with the same backoff,
+  when Lajstrom holds the bytes: a frontend's upload, a config or a metadata layer. A client's
+  own upload through `/v2` streams, so it is not sent twice: the client gets
+  `BLOB_UPLOAD_UNKNOWN` and starts the blob again, as docker and oras do.
 - A publish the registry did not serve in time: the client gets `503` with `Retry-After: 30`
   (on `/v2` the code `UNAVAILABLE`, which docker and oras retry, with a message and a `detail`
   that name what the registry does not serve yet: the manifest, the tag, the first 20 blobs and

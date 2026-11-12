@@ -283,9 +283,10 @@ const streamChunk = 8 << 20
 // OpenBlobWriter implements provider.BlobStreamer: the chunks of a provider.NewChunkedWriter
 // over this repository's session, of the provider's chunk size (blobChunk) each, each a PATCH
 // with its Content-Range, which every registry measured takes after the first write
-// (docs/registries/README.md).
+// (docs/registries/README.md). The first write to the session is sent again while a registry
+// not classified strong does not know the session yet (freshUploads).
 func (r *repository) OpenBlobWriter(ctx context.Context) (provider.BlobWriter, error) {
-	return provider.NewChunkedWriter(ctx, r, r.p.chunk), nil
+	return provider.NewChunkedWriter(ctx, &freshUploads{repository: r}, r.p.chunk), nil
 }
 
 // uploadsURL is the upload endpoint of the repository, with query q.
