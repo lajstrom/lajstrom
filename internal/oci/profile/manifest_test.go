@@ -139,9 +139,9 @@ func TestBuild(t *testing.T) {
 	}
 
 	a := debAnnotations()
-	a.Format = "rpm"
+	a.Format = "cargo"
 	if _, err := Build(a, []Layer{f}, md); !errors.Is(err, ErrArtifactType) {
-		t.Errorf("Build with format rpm: %v, want ErrArtifactType", err)
+		t.Errorf("Build with format cargo: %v, want ErrArtifactType", err)
 	}
 	if _, err := Build(debAnnotations(), nil, md); !errors.Is(err, ErrNoLayers) {
 		t.Errorf("Build without files: %v, want ErrNoLayers", err)
@@ -176,7 +176,7 @@ func TestValidate(t *testing.T) {
 		{"media type index", false, func(m *ocispec.Manifest) { m.MediaType = ocispec.MediaTypeImageIndex }, ErrMediaType},
 		{"media type empty", false, func(m *ocispec.Manifest) { m.MediaType = "" }, ErrMediaType},
 		{"schemaVersion 1", false, func(m *ocispec.Manifest) { m.SchemaVersion = 1 }, ErrMediaType},
-		{"artifactType unknown", false, func(m *ocispec.Manifest) { m.ArtifactType = ArtifactType("rpm") }, ErrArtifactType},
+		{"artifactType unknown", false, func(m *ocispec.Manifest) { m.ArtifactType = ArtifactType("cargo") }, ErrArtifactType},
 		{"artifactType foreign", false, func(m *ocispec.Manifest) { m.ArtifactType = "application/vnd.cncf.helm.config.v1+json" }, ErrArtifactType},
 		{"artifactType empty", false, func(m *ocispec.Manifest) { m.ArtifactType = "" }, ErrArtifactType},
 		{"config image config", false, func(m *ocispec.Manifest) { m.Config.MediaType = ocispec.MediaTypeImageConfig }, ErrConfig},

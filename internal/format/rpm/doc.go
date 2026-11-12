@@ -15,4 +15,13 @@
 // and nothing after it, for Validate; Parse reads the whole file through the inspector of a
 // streamed upload, which also checks the size the signature header gives and the payload digest
 // of the header, without opening the payload.
+//
+// Build makes the manifest of an upload and Validate checks one pushed with oras: the metadata
+// layer holds what the repodata needs, read from the header, and Validate refuses one that is
+// not what the header of the file layer says, key by key. An upload streams into the registry
+// (ADR 0014): the upload route reads the head of the body for the NAME, and the whole body
+// passes the inspector on its way. The Packages route serves a file by its name, which has no
+// epoch: the upload refuses another content under a name another version holds. The plugin
+// registers itself with format.Register when the package is imported; the binary imports it in
+// cmd/lajstrom/formats.go.
 package rpm

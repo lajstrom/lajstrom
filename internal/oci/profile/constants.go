@@ -37,6 +37,8 @@ const (
 	MediaTypeMavenPom = "application/vnd.lajstrom.maven.pom.v1+xml"
 	// MediaTypeNpmTarball is an npm package tarball, <name without the scope>-<version>.tgz.
 	MediaTypeNpmTarball = "application/vnd.lajstrom.npm.tarball.v1.tar+gzip"
+	// MediaTypeRpmPackage is an rpm package, <name>-<version>-<release>.<arch>.rpm.
+	MediaTypeRpmPackage = "application/vnd.lajstrom.rpm.package.v1"
 )
 
 // Annotation keys (docs/spec/manifest-profile.md §3). The OCI keys are used from ocispec:
@@ -187,9 +189,10 @@ var types = []Type{
 		FileMediaTypes: []string{MediaTypeMavenArtifact, MediaTypeMavenPom},
 	},
 	{Name: "npm", Format: "npm", FileMediaTypes: []string{MediaTypeNpmTarball}, MetadataRequired: true},
+	{Name: "rpm", Format: "rpm", FileMediaTypes: []string{MediaTypeRpmPackage}, MetadataRequired: true},
 }
 
-// Types returns every known type: raw, pypi, deb, maven, npm. The result is a copy.
+// Types returns every known type: raw, pypi, deb, maven, npm, rpm. The result is a copy.
 func Types() []Type {
 	out := make([]Type, len(types))
 	for i, t := range types {
