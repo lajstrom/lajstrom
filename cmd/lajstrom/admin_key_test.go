@@ -159,7 +159,7 @@ func TestAdminKeyErrors(t *testing.T) {
 	plain, _ := writeRepoConfig(t, t.TempDir())
 	runEnv(t, plain, env, []step{{args: []string{"admin", "key", "export", "--repo", "apt/ubuntu"}, wantErr: "keys.masterKeyEnv is not set"}})
 	runEnv(t, cfg, env, []step{
-		{args: []string{"admin", "key", "export", "--repo", "raw/scratch"}, wantErr: `repo "raw/scratch": only apt repos have signing keys`},
+		{args: []string{"admin", "key", "export", "--repo", "raw/scratch"}, wantErr: `repo "raw/scratch": only apt and rpm repos have signing keys`},
 		{args: []string{"admin", "key", "rotate", "--repo", "apt/nope"}, wantErr: "repo apt/nope does not exist"},
 		{args: []string{"admin", "key", "export", "--repo", "ubuntu"}, wantErr: "want <format>/<name>"},
 		{args: []string{"admin", "key", "export"}, wantErr: "at least one of the flags in the group [repo token] is required"},
