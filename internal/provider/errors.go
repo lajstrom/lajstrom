@@ -24,8 +24,14 @@ var (
 	// repeatedly and its circuit breaker is open (an *UnavailableError); the backend answered
 	// 429 or 503 (a *RejectedError); or a push is not served after the read-back (an
 	// *UnavailableError with a Reason). Each says when to try again (RetryAfter). It also means
-	// that the provider could not reach the backend: its host name does not resolve (#561), or
-	// it refused or reset the connection (#593); these say no time.
+	// that the provider could not reach the backend: its host name does not resolve (#561), it
+	// refused or reset the connection (#593), or its host or network cannot be reached
+	// (EHOSTUNREACH, ENETUNREACH); or that the backend did not answer: after the retries, a
+	// request timed out or its connection closed without an answer, and the provider's circuit
+	// breaker counted that as the backend's failure (#670). These say no time. A deadline or
+	// cancel of the caller's context, and a client's body that stalls or breaks off as it
+	// streams to the backend, are not the backend's failure: they are not ErrUnavailable and
+	// keep their own error.
 	ErrUnavailable = errors.New("provider: unavailable")
 	// ErrRejected means the backend refused a request with a status that no other sentinel
 	// names: a 4xx such as 400 BLOB_UPLOAD_INVALID, MANIFEST_INVALID or SIZE_INVALID, 413 or
@@ -106,7 +112,8 @@ func (e *UnavailableError) Unwrap() error { return ErrUnavailable }
 // RetryAfter returns the RetryAfter of the *UnavailableError that err wraps, or of its
 // *RejectedError of a busy backend, and whether it wraps one: every ErrUnavailable says when,
 // but a backend that could not be reached (a host name that does not resolve, a connection
-// refused or reset).
+// refused or reset, a host or network that cannot be reached) or did not answer (a timeout, a
+// connection closed without an answer).
 func RetryAfter(err error) (time.Duration, bool) {
 	var u *UnavailableError
 	if errors.As(err, &u) {

@@ -369,7 +369,7 @@ They are checked in this order:
 | `*http.MaxBytesError` | 413 |
 | `format.ErrUnsupported`, `provider.ErrUnsupported` | 501 |
 | `provider.ErrUnauthorized` (the backend rejected Lajstrom's own credentials) | 502 |
-| `provider.ErrUnavailable` (the circuit breaker of the registry is open, the request was not sent; or its host name does not resolve, #561; or it refused or reset the connection, #593) | 503, `Retry-After`: the seconds until the breaker's trial request, none for a registry that could not be reached; under `/v2` the code `UNAVAILABLE`, on the API `UNAVAILABLE` |
+| `provider.ErrUnavailable` (the circuit breaker of the registry is open, the request was not sent; or its host name does not resolve, #561; or it refused or reset the connection, #593; or its host or network cannot be reached, `EHOSTUNREACH`, `ENETUNREACH`; or, after the retries, a request timed out or its connection closed without an answer, and the breaker counted that as the registry's failure, #670. A deadline or cancel of the caller's context, and a client's body that stalls or breaks off as it streams to the registry, are not the registry's: they are not `provider.ErrUnavailable` and keep their own error) | 503, `Retry-After`: the seconds until the breaker's trial request, none for a registry that could not be reached or did not answer; under `/v2` the code `UNAVAILABLE`, on the API `UNAVAILABLE` |
 | `index.ErrUnavailable` (the database did not answer) | 503, `Retry-After: 5`; under `/v2` the code `UNAVAILABLE`, on the API `UNAVAILABLE`; the authentication middleware answers it so too |
 | `format.ErrBadGateway` | 502 |
 | `format.ErrUnavailable` (the upstream answered `429`) | 503, `Retry-After`: the `*format.UnavailableError`'s, whole seconds, at least 1 |
@@ -620,7 +620,9 @@ func (c Capabilities) CheckName(name string) error
 
 var ErrNotFound, ErrConflict, ErrUnsupported, ErrUnauthorized error
 // ErrUnavailable: the provider did not send the request, its registry's circuit breaker is
-// open. An *UnavailableError wraps it with the time until the breaker's trial request.
+// open. An *UnavailableError wraps it with the time until the breaker's trial request. It is
+// also a registry that could not be reached or did not answer (StatusOf's table above: #561,
+// #593, #670), with no time.
 var ErrUnavailable error
 type UnavailableError struct{ RetryAfter time.Duration }
 func RetryAfter(err error) (time.Duration, bool) // of the *UnavailableError err wraps
