@@ -69,9 +69,11 @@ marked *unverified*.
   `POST` of a session answers `OCI-Chunk-Min-Length: 10485760`; a `PATCH` is answered `201`
   where the distribution specification says `202`; the `Range` of later `PATCH`es stayed at the
   first chunk until a fix deployed on 2026-07-13. That every part but the last must be at least
-  5 MB is in neither source and is unverified. The facade does not pass `OCI-Chunk-Min-Length`
-  on to the client (`facade.answerSession`), so a client's chunks reach ECR as the client cut
-  them. #19 measures whether small chunks pass.
+  5 MB is in neither source and is unverified. The facade passes the backend's
+  `OCI-Chunk-Min-Length` on to the client in its answers for a session (`facade.answerSession`,
+  #664), and sends none when the backend sends none. It does not merge chunks: a client that
+  ignores the header sends its chunks to ECR as it cut them. #19 measures whether small chunks
+  pass.
 - **Mounts**: ECR mounts a blob from another repository only when the registry setting
   `BLOB_MOUNTING` is `ENABLED` (`aws ecr put-account-setting --name BLOB_MOUNTING --value
   ENABLED`, per region). Both repositories must be in one account and region, with the same

@@ -121,6 +121,34 @@ func wantStored(t *testing.T, f *fakeRegistry, d digest.Digest, blob []byte) {
 	}
 }
 
+// TestUploadChunkMinLength checks that the session's ChunkMinLength is the registry's
+// OCI-Chunk-Min-Length of the last answer, and 0 when that has none or one that is no size.
+func TestUploadChunkMinLength(t *testing.T) {
+	ctx := t.Context()
+	answer := "10485760"
+	_, repo := uploadRepo(t, func(f *fakeRegistry) {
+		f.hook = func(w http.ResponseWriter, r *http.Request) bool {
+			if answer != "" && (r.Method == http.MethodPost || r.Method == http.MethodPatch) {
+				w.Header().Set("OCI-Chunk-Min-Length", answer)
+			}
+			return false
+		}
+	})
+	u, err := repo.StartBlobUpload(ctx)
+	if err != nil || u.ChunkMinLength != 10485760 {
+		t.Fatalf("StartBlobUpload = %+v, %v; want ChunkMinLength 10485760", u, err)
+	}
+	for _, tc := range []struct {
+		answer string
+		want   int64
+	}{{" 5242880 ", 5242880}, {"", 0}, {"ten", 0}, {"-1", 0}} {
+		answer = tc.answer
+		if u, err = repo.AppendBlobChunk(ctx, u, strings.NewReader("a"), 1); err != nil || u.ChunkMinLength != tc.want {
+			t.Errorf("PATCH answered OCI-Chunk-Min-Length %q: %+v, %v; want ChunkMinLength %d", tc.answer, u, err, tc.want)
+		}
+	}
+}
+
 // TestUploadHeaders checks Content-Range and Content-Length of every chunk. The closing PUT
 // carries the last chunk only when the session is empty and the chunk's size known; otherwise
 // the chunk goes first as a PATCH (JFrog drops the body of a closing PUT after a PATCH).

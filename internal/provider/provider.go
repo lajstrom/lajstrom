@@ -173,6 +173,10 @@ type Upload struct {
 	Location string
 	ID       string
 	Offset   int64
+	// ChunkMinLength is the OCI-Chunk-Min-Length of the backend's last answer for the
+	// session, the smallest chunk but the last that it takes, in bytes; 0 when it sent none.
+	// The facade passes it on to the client.
+	ChunkMinLength int64
 }
 
 // Pinger is a Provider that can say whether its registry answers now, with Lajstrom's
