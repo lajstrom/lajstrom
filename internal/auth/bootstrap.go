@@ -26,7 +26,10 @@ const (
 	MaxBootstrapTokenLen = 256
 	// BootstrapFailures is how many exchanges with a wrong token a client address may make
 	// within LoginWindow. Beyond it, its exchanges are refused with a *ThrottledError of the
-	// throttle "bootstrap", the right token too, until the window has passed.
+	// throttle "bootstrap", the right token too, until the window has passed. A context
+	// without a client address (WithClientAddress) counts in no throttle, as for failed logins:
+	// one budget for every client would let anyone's wrong tokens refuse the right one (#761),
+	// and a token of MinBootstrapTokenLen bytes or more is not guessed one request at a time.
 	BootstrapFailures = 10
 )
 
@@ -178,16 +181,17 @@ func ReadBootstrapToken(path string) (string, error) {
 // admin, on any replica. The audit event is user.create with o's source. In this order:
 //
 //   - a client address with BootstrapFailures wrong tokens in its window: a *ThrottledError;
+//     a context without an address is never throttled;
 //   - an enabled user with an admin binding: ErrBootstrapClosed, whatever the token;
 //   - a token that is not the one stored, compared in constant time: an error wrapping
-//     ErrBootstrapToken, and it counts as a failure of the address;
+//     ErrBootstrapToken, and it counts as a failure of the address, when there is one;
 //   - the right token, used or expired: an error wrapping ErrBootstrapToken that says so;
 //   - then the name and the password are checked (ErrInvalid), and a name that exists is
 //     index.ErrConflict, the token left valid.
 func (b *Bootstrap) Exchange(ctx context.Context, secret, name, password string, o Origin) (*User, error) {
 	addr := throttleAddress(ctx)
-	if wait := b.throttle().wait(addr); wait > 0 {
-		return nil, &ThrottledError{Throttle: "bootstrap", RetryAfter: wait}
+	if err := b.throttled(addr); err != nil {
+		return nil, err
 	}
 	admin, err := anyAdmin(ctx, b.Index)
 	switch {
@@ -204,7 +208,7 @@ func (b *Bootstrap) Exchange(ctx context.Context, secret, name, password string,
 		return nil, fmt.Errorf("auth: bootstrap: %w", err)
 	}
 	if cur == nil || subtle.ConstantTimeCompare([]byte(hash), []byte(cur.Hash)) != 1 {
-		b.throttle().add(addr)
+		b.failed(addr)
 		b.log().InfoContext(ctx, "bootstrap token refused: not the token", "address", addr)
 		return nil, &authError{msg: "the bootstrap token is refused", err: ErrBootstrapToken}
 	}
@@ -245,6 +249,22 @@ func tokenValid(t *index.BootstrapToken, now time.Time) error {
 			err: ErrBootstrapToken}
 	}
 	return nil
+}
+
+// throttled returns the *ThrottledError of the client address addr, or nil when it has fewer
+// than BootstrapFailures wrong tokens in its window or is "", which no throttle counts (#761).
+func (b *Bootstrap) throttled(addr string) error {
+	if wait := b.throttle().wait(addr); addr != "" && wait > 0 {
+		return &ThrottledError{Throttle: "bootstrap", RetryAfter: wait}
+	}
+	return nil
+}
+
+// failed counts a wrong token against the client address addr, unless it is "".
+func (b *Bootstrap) failed(addr string) {
+	if addr != "" {
+		b.throttle().add(addr)
+	}
 }
 
 func (b *Bootstrap) throttle() *throttle {

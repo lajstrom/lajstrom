@@ -88,6 +88,18 @@ func TestBootstrapEndpointThrottled(t *testing.T) {
 	}
 }
 
+// TestBootstrapEndpointNoAddress: without a client address in the request's context, as without
+// server.trustedProxies and server.tls, wrong tokens are not counted: after more than
+// BootstrapFailures of them, from anyone, the right token is 201 (#761).
+func TestBootstrapEndpointNoAddress(t *testing.T) {
+	f, token := bootstrapFixture(t)
+	anon := auth.Principal{}
+	for range 3 * auth.BootstrapFailures {
+		wantStatus(t, f.do("POST", "/api/v1/bootstrap", bootstrapBody("wrong", "root", "root-password"), anon), http.StatusForbidden)
+	}
+	wantStatus(t, f.do("POST", "/api/v1/bootstrap", bootstrapBody(token, "root", "root-password"), anon), http.StatusCreated)
+}
+
 // TestBootstrapEndpointOff: without a bootstrap the path is no endpoint.
 func TestBootstrapEndpointOff(t *testing.T) {
 	f := newFixture(t, Options{})

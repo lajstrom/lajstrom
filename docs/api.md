@@ -570,7 +570,7 @@ role on `*/*`, and `Location: /api/v1/users/<name>`; the token is used. The audi
 | --- | --- |
 | `404 NOT_FOUND` | an enabled user has an admin binding, whatever the body: the message is the one of a path that is no endpoint |
 | `403 FORBIDDEN` | the token is not the valid one; or it is, and it was used or expired, which the message says |
-| `429 UNAVAILABLE` | 10 wrong tokens from the client address within a minute; `Retry-After` says when to try again, the right token too |
+| `429 UNAVAILABLE` | 10 wrong tokens from the client address within a minute; `Retry-After` says when to try again, the right token too. Only with `server.trustedProxies` or `server.tls`, which give the server a client address: without either, wrong tokens are not counted and never refuse the right one ([auth.md](auth.md#bootstrap-the-first-admin)) |
 | `400 INVALID` | the name or the password breaks its rule; the token stays valid |
 | `409 CONFLICT` | a live user has the name; the token stays valid |
 
