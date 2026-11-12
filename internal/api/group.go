@@ -90,10 +90,18 @@ func groupOf(ctx context.Context, r index.Reader, row *index.Repo) (proxy.GroupS
 	return g, nil
 }
 
+// errMembers refuses a change of group.members to a principal without the admin role.
+var errMembers = &clientError{msg: "group.members: only the admin role chooses the members of a group", err: format.ErrForbidden}
+
 // applyGroup merges patch into the settings of the group row as an RFC 7396 merge patch, each
 // list replaced whole, checks the result whole and records it in changed when it differs. It
 // returns the ids of the members when they change, for SetGroupMembers, and nil when they do not.
-func applyGroup(ctx context.Context, w index.Writer, row *index.Repo, patch json.RawMessage, changed map[string]any) ([]int64, error) {
+//
+// Members that differ from the row's, the same names in another order included, since a group
+// reads its members in order (docs/spec/proxy-and-group.md §8), are errMembers unless admin is
+// set, refused before they are looked up, so that the answer does not tell which repos exist
+// (docs/spec/rbac.md §3); the members the row has, sent back, are no change (§7).
+func applyGroup(ctx context.Context, w index.Writer, row *index.Repo, patch json.RawMessage, admin bool, changed map[string]any) ([]int64, error) {
 	if row.Kind != index.KindGroup {
 		return nil, invalid("group: only a group repo has one, not a %s repo", row.Kind)
 	}
@@ -122,6 +130,9 @@ func applyGroup(ctx context.Context, w index.Writer, row *index.Repo, patch json
 	}
 	var ids []int64
 	if !slices.Equal(next.Members, current.Members) {
+		if !admin {
+			return nil, errMembers
+		}
 		if ids, err = checkMembers(ctx, w, row.Format, next.Members); err != nil {
 			return nil, err
 		}

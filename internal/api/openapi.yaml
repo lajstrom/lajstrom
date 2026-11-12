@@ -91,7 +91,8 @@ paths:
       operationId: updateRepo
       summary: >-
         Change anonymousRead, policy, a proxy's upstream and a group's group (manage);
-        upstream.name and group.members need the admin role whenever the body has them.
+        changing upstream.name or group.members needs the admin role, sending back the
+        value the repo has does not.
       requestBody:
         required: true
         content:
@@ -948,14 +949,15 @@ components:
           description: >-
             A proxy repo only: an RFC 7396 merge patch of its settings (the keys of Upstream),
             checked whole after the merge; allow and deny are replaced whole. Changing name needs
-            the admin role and drops the repo's cache of the old upstream; the other keys need
-            manage.
+            the admin role and drops the repo's cache of the old upstream; the name the repo
+            has, sent back, is no change. The other keys need manage.
         group:
           type: object
           description: >-
             A group only: an RFC 7396 merge patch of its settings (the keys of Group), checked
-            whole after the merge; each list is replaced whole. Changing members needs the admin
-            role; merge needs manage.
+            whole after the merge; each list is replaced whole. Changing members, their order
+            included, needs the admin role; the members the group has, sent back, are no
+            change. merge needs manage.
     ReindexRequest:
       type: object
       additionalProperties: false

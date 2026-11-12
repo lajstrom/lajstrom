@@ -274,21 +274,16 @@ func (h *handler) updateRepo(w http.ResponseWriter, r *http.Request) (int, any, 
 	if err != nil {
 		return 0, nil, err
 	}
-	for _, admin := range []struct {
-		patch json.RawMessage
-		key   string
-		msg   string
-	}{
-		{req.Upstream, "name", "upstream.name: only the admin role chooses the upstream of a proxy repo"},
-		{req.Group, "members", "group.members: only the admin role chooses the members of a group"},
-	} {
-		if admin.patch == nil || !hasKey(admin.patch, admin.key) {
-			continue
-		}
+	// Only the admin role changes upstream.name and group.members (docs/spec/rbac.md §7).
+	// The role is asked here, outside the transaction of Update, and only when the body has
+	// one of them; Update compares the value with the stored one in its transaction and
+	// refuses a change without the role, so that sending back the value the repo has is not
+	// one.
+	if hasKey(req.Upstream, "name") || hasKey(req.Group, "members") {
 		switch err := h.allow(r, auth.ActionManage, auth.System, auth.System); {
-		case denied(err):
-			return 0, nil, &clientError{msg: admin.msg, err: format.ErrForbidden}
-		case err != nil:
+		case err == nil:
+			req.Admin = true
+		case !denied(err):
 			return 0, nil, err
 		}
 	}

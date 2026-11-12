@@ -196,9 +196,11 @@ replaced whole) and checked whole; it cannot be removed. Changing `upstream.name
 role, since it changes what every reader of the repo gets, and drops the repo's cache of the old
 upstream; the other keys need `manage` ([rbac.md](spec/rbac.md) §7). On a group, `group` is
 merged the same way, each list replaced whole; changing `members` needs the admin role, `merge`
-needs `manage`, and the members are checked as on a create. The admin role is asked whenever the
-body has `upstream.name` or `group.members`, even with the value the repo has: a caller with
-`manage` alone leaves the key out, and a body that sends back what `GET` answered is `403` for it.
+needs `manage`, and the members are checked as on a create. The admin role is asked for a change,
+not for the key: a body that sends back the `upstream.name` or the `group.members` the repo has,
+as a body that sends back what `GET` answered does, needs `manage` alone. Another name, or other
+members, the same members in another order included, since a group reads its members in order,
+is `403` for a caller without the admin role, and nothing of the body changes.
 `200` with the resource as it is now; a body that changes nothing changes nothing, not even
 `updatedAt`. The audit row has the policy as the merge left it.
 
