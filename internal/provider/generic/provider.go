@@ -175,7 +175,6 @@ func NewWithOptions(cfg config.Registry, log *slog.Logger, o Options) (*Provider
 		prefix:   normalisePrefix(cfg.Prefix),
 		override: cfg.Capabilities,
 		log:      log,
-		clients:  newClients(cfg, u, log, o.Credential),
 		maxPages: maxPages,
 		timeout:  timeoutOf(cfg),
 
@@ -183,6 +182,7 @@ func NewWithOptions(cfg config.Registry, log *slog.Logger, o Options) (*Provider
 		chunk:        blobChunk(u.Host, cfg.Uploads.ChunkSize),
 		bound:        chunkBound(u.Host, cfg.Uploads.ChunkSize),
 	}
+	p.clients = newClients(cfg, u, log, o.Credential, func() bool { return p.quirk().pushForDelete })
 	reg := &remote.Registry{RepositoryListPageSize: pageSize}
 	reg.Reference = registry.Reference{Registry: u.Host}
 	if err := reg.Reference.ValidateRegistry(); err != nil {

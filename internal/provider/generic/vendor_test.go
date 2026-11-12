@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"oras.land/oras-go/v2/registry/remote/auth"
 
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/provider"
@@ -280,7 +283,7 @@ func TestCapabilitiesVendor(t *testing.T) {
 		},
 		{name: "JFrog", setup: headers(jfrogV2, true), vendor: vendorJFrog, quirks: quirks{blobExistsByGET: true}, hint: true},
 		// The fake has a catalog and the referrers API: the table's catalog and referrers win.
-		{name: "Quay", setup: headers(quayV2, true), vendor: vendorQuay, want: quay},
+		{name: "Quay", setup: headers(quayV2, true), vendor: vendorQuay, want: quay, quirks: quirks{pushForDelete: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -619,5 +622,170 @@ func checkStat(t *testing.T, p *Provider, rr provider.Repository, name string, d
 	ok, err := rr.Exists(ctx, ocispec.Descriptor{MediaType: "application/octet-stream", Digest: d, Size: max(size, 0)})
 	if ok != (size >= 0) || err != nil {
 		t.Errorf("Exists(%s) = %v, %v; want %v", d, ok, err, size >= 0)
+	}
+}
+
+// quayTokens makes the fake's token service answer as Quay 3.18.2's did: it knows the actions
+// pull, push and * only, and any other in a scope is 400 INVALID_REQUEST (docs/registries/quay.md,
+// Tokens and the delete action). With header, GET /v2/ answers X-Sparse-Manifest-Support, by
+// which the table tells Quay; without, the registry is another one with such a token service.
+func quayTokens(header bool) func(f *fakeRegistry) {
+	return func(f *fakeRegistry) {
+		f.authMode = "bearer"
+		f.hook = func(w http.ResponseWriter, r *http.Request) bool {
+			switch r.URL.Path {
+			case "/v2/":
+				if header {
+					w.Header().Set("X-Sparse-Manifest-Support", "false")
+				}
+			case "/token":
+				for _, s := range r.URL.Query()["scope"] {
+					for a := range strings.SplitSeq(s[strings.LastIndex(s, ":")+1:], ",") {
+						if a != "pull" && a != "push" && a != "*" {
+							writeErr(w, http.StatusBadRequest, "INVALID_REQUEST", "Unable to decode repository and actions: "+s)
+							return true
+						}
+					}
+				}
+			}
+			return false
+		}
+	}
+}
+
+// tokenScopes returns the scopes of every token request the fake got, in order.
+func tokenScopes(t *testing.T, f *fakeRegistry) []string {
+	t.Helper()
+	var scopes []string
+	for _, r := range f.log() {
+		query, ok := strings.CutPrefix(r, "GET /token?")
+		if !ok {
+			continue
+		}
+		q, err := url.ParseQuery(query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scopes = append(scopes, q["scope"]...)
+	}
+	return scopes
+}
+
+// asksDelete reports whether the actions of scope have delete.
+func asksDelete(scope string) bool {
+	return slices.Contains(strings.Split(scope[strings.LastIndex(scope, ":")+1:], ","), auth.ActionDelete)
+}
+
+// scopeDeletes is what deleteThroughTokens did: the deletes' errors, the scopes of the token
+// requests they made and the DELETEs that reached the fake.
+type scopeDeletes struct {
+	f                       *fakeRegistry
+	repo                    provider.Repository
+	subject, referrer       ocispec.Descriptor
+	errReferrer, errSubject error
+	asked                   []string
+	deletes                 int
+}
+
+// scopeRepo is the repository of deleteThroughTokens.
+const scopeRepo = "raw/scratch/notes"
+
+// deleteThroughTokens pushes a subject and a referrer of it to the fake behind Quay's token
+// service (quayTokens), with or without Quay's header, on the tag schema, whose clean-up oras-go
+// does on a delete; then it deletes the referrer and the subject.
+func deleteThroughTokens(t *testing.T, header bool) scopeDeletes {
+	t.Helper()
+	ctx := context.Background()
+	f := newFakeRegistry(t)
+	quayTokens(header)(f)
+	log, _ := testLogger()
+	p := f.provider(t, log, func(c *config.Registry) {
+		c.Auth = config.RegistryAuth{Username: f.user, Password: f.pass}
+		c.Capabilities.Referrers = new(false)
+	})
+	if _, err := p.Capabilities(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := p.Repository(ctx, scopeRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := scopeDeletes{f: f, repo: repo, subject: pushManifest(t, repo, "v1", nil)}
+	d.referrer = pushManifest(t, repo, "sig", &d.subject)
+	before := len(tokenScopes(t, f))
+	d.errReferrer, d.errSubject = repo.Delete(ctx, d.referrer), repo.Delete(ctx, d.subject)
+	d.asked = tokenScopes(t, f)[before:]
+	d.deletes = f.count("DELETE /v2/art/" + scopeRepo + "/manifests/")
+	return d
+}
+
+// TestDeleteScopeQuay: oras-go asks a token with the action delete for every DELETE, and
+// pull,delete for the reads of a referrer's delete that cleans the tag schema up; Quay's token
+// service refuses both (#801). Once the probe named Quay, the provider asks push instead, and the
+// referrer, its referrers index and the subject are deleted.
+func TestDeleteScopeQuay(t *testing.T) {
+	ctx := context.Background()
+	d := deleteThroughTokens(t, true)
+	if d.errReferrer != nil || d.errSubject != nil {
+		t.Fatalf("Delete of the referrer, the subject = %v, %v", d.errReferrer, d.errSubject)
+	}
+	// The referrer, the referrers index it was the last of, and the subject.
+	if d.deletes != 3 {
+		t.Errorf("%d DELETEs sent, want 3:\n%s", d.deletes, strings.Join(d.f.log(), "\n"))
+	}
+	if want := "repository:art/" + scopeRepo + ":pull,push"; slices.ContainsFunc(d.asked, asksDelete) || !slices.Contains(d.asked, want) {
+		t.Errorf("scopes asked for the deletes %q; want none with delete, %q among them", d.asked, want)
+	}
+	for _, desc := range []ocispec.Descriptor{d.referrer, d.subject} {
+		if ok, err := d.repo.Exists(ctx, desc); ok || err != nil {
+			t.Errorf("Exists(%s) after its Delete = %v, %v; want false", desc.Digest, ok, err)
+		}
+	}
+	if _, err := d.repo.Resolve(ctx, strings.Replace(d.subject.Digest.String(), ":", "-", 1)); !errors.Is(err, provider.ErrNotFound) {
+		t.Errorf("the referrers index of the subject after the referrer's delete: %v, want ErrNotFound", err)
+	}
+}
+
+// TestDeleteScopeOther: a registry the table does not take for Quay is asked delete, as oras-go
+// asks it, even behind the same token service: the provider widens no scope for a registry it
+// does not know, and the token service's 400 is the delete's error.
+func TestDeleteScopeOther(t *testing.T) {
+	d := deleteThroughTokens(t, false)
+	var rej *provider.RejectedError
+	if !errors.As(d.errReferrer, &rej) || rej.Status != http.StatusBadRequest || d.errSubject == nil {
+		t.Errorf("Delete = %v, %v; want the token service's 400 for both", d.errReferrer, d.errSubject)
+	}
+	if !slices.ContainsFunc(d.asked, asksDelete) || d.deletes != 0 {
+		t.Errorf("scopes asked %q and %d DELETEs sent; want delete asked as oras-go asks it, and no DELETE", d.asked, d.deletes)
+	}
+}
+
+// TestPushForDelete: the action delete of a repository scope becomes push, merged as oras-go
+// merges scopes; anything else stays as it was asked.
+func TestPushForDelete(t *testing.T) {
+	tests := []struct {
+		scopes, want []string
+		changed      bool
+	}{
+		{[]string{"repository:art/raw/a/b:delete"}, []string{"repository:art/raw/a/b:push"}, true},
+		{[]string{"repository:art/raw/a/b:delete,pull"}, []string{"repository:art/raw/a/b:pull,push"}, true},
+		{[]string{"repository:art/raw/a/b:delete,pull,push"}, []string{"repository:art/raw/a/b:pull,push"}, true},
+		{[]string{"repository:art/raw/a/b:delete,*"}, []string{"repository:art/raw/a/b:*"}, true},
+		{
+			[]string{"repository:art/raw/a/b:delete", "repository:art/raw/c/d:pull"},
+			[]string{"repository:art/raw/a/b:push", "repository:art/raw/c/d:pull"}, true,
+		},
+		{[]string{"repository:art/raw/a/b:pull,push"}, []string{"repository:art/raw/a/b:pull,push"}, false},
+		{[]string{"repository:art/raw/a/deleted:pull"}, []string{"repository:art/raw/a/deleted:pull"}, false},
+		{[]string{"registry:catalog:*"}, []string{"registry:catalog:*"}, false},
+		{[]string{"other:x:delete"}, []string{"other:x:delete"}, false},
+		{[]string{"delete"}, []string{"delete"}, false},
+		{nil, nil, false},
+	}
+	for _, tt := range tests {
+		got, changed := pushForDelete(tt.scopes)
+		if !slices.Equal(got, tt.want) || changed != tt.changed {
+			t.Errorf("pushForDelete(%q) = %q, %v; want %q, %v", tt.scopes, got, changed, tt.want, tt.changed)
+		}
 	}
 }

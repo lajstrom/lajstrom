@@ -664,7 +664,8 @@ amendment: a component that fails the grammar is replaced by `h0_h` and 32 hex d
   `build`, npm's `@<scope>/build`, a raw file in a directory `build/` or named `build`, a Maven
   artifactId or a Debian package `build`, and an `oci` repository mirroring Docker Hub's
   `paketobuildpacks/build` or `tensorflow/build`. Quay 3.18.2 also refuses the token action
-  `delete`, so no delete through Lajstrom works there (#801), and its catalog is empty to a
+  `delete`, so no delete through Lajstrom worked there until the provider asked `push` in its
+  place (#801), and its catalog is empty to a
   client that sends no credentials unasked (#802) ([quay.md](quay.md#what-the-provider-must-do-differently)).
 - **GitLab.com** refuses Lajstrom's manifests: its registry runs with the database and without
   the dynamic media types (measured on that variant, read in GitLab.com's values); and its
@@ -709,7 +710,7 @@ disappears from its clients without an audit record.
 | GHCR | `<org>/` | a classic PAT with `write:packages` | none: the vendor table sets `catalog`, `deleteManifest`, `maxBlobSize` |
 | Gitea, Forgejo | `<owner>/` | a token with `write:package`; no cleanup rule | `uploads.spoolUnknownLength: true` when clients stream more than one chunk |
 | Nexus | `<repository>/` with path routing, else none | `writePolicy: allow_once`; the `oci` format, whose blobs the vendor table reads whole (#352, measured on 2026-11-12; a provider that had not probed yet still sent ranges, until #797); on `docker` Lajstrom refuses deletes, and `strictContentTypeValidation: false` lets every blob in ([nexus.md](nexus.md#again-after-352)) | none: the vendor table sets `deleteManifest: false` on `docker` and reads `oci` blobs whole |
-| Quay | `<organisation>/` | a robot in a team with the role admin; a policy that leaves `sha256-*` mutable; measured on 3.18.2, for trying Lajstrom: no delete works (#801) ([quay.md](quay.md#configuration)) | `server.maxManifestSize: 1048576`; the vendor table sets `catalog`, `referrers` and `consistency` (#803) |
+| Quay | `<organisation>/` | a robot in a team with the role admin; a policy that leaves `sha256-*` mutable; measured on 3.18.2, for trying Lajstrom; a delete's token asks `push`, which Quay takes in place of `delete` (#801), but a referrer pushed by digest stays, its `DELETE` 404 ([quay.md](quay.md#delete)) | `server.maxManifestSize: 1048576`; the vendor table sets `catalog`, `referrers` and `consistency` (#803) |
 | ACR, GAR | | not measured ([matrix](README.md#versions-tested)); GAR needs monolithic uploads | |
 | Docker Hub | | not a backend: two levels | |
 | JFrog | `<repo-key>/` | a local Docker repository; measured before the workarounds of #352 and #368, not run again with them: for trying Lajstrom ([jfrog-jcr.md](jfrog-jcr.md)) | `uploads.spoolUnknownLength: true` when clients stream more than one chunk |

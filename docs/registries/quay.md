@@ -89,12 +89,22 @@ were measured by curl below. Its run left
 
 ## What the provider must do differently
 
-1. **Ask `push` where oras-go asks `delete`** ([#801](https://github.com/lajstrom/lajstrom/issues/801)).
+1. **Ask `push` where oras-go asks `delete`**: done by [#801](https://github.com/lajstrom/lajstrom/issues/801).
    Quay's token endpoint knows the actions `pull`, `push` and `*`; `delete` in a scope is
    `400 INVALID_REQUEST` "Unable to decode repository and actions", and oras-go puts it in the
-   scope of every `DELETE`. Every delete through Lajstrom fails: a version, a referrer, the
+   scope of every `DELETE`. Every delete through Lajstrom failed: a version, a referrer, the
    facade's `DELETE` (400 `BLOB_UPLOAD_INVALID` to the client, a code about uploads), raw's
-   (502), the upload cancel. With a `push` token Quay deletes ([Delete](#delete)).
+   (502), the upload cancel. With a `push` token Quay deletes ([Delete](#delete)). Once the
+   probe named Quay (item 3), the provider's token requests ask `push` where oras-go asks
+   `delete`, and `pull,push` for its `pull,delete`, the scope Quay's own challenge to a
+   `DELETE` names; the token is cached under the scope oras-go asked. Other registries are
+   asked as oras-go asks. A fallback for every registry, `push` again after a token
+   endpoint's 400 to `delete`, was not chosen: it would ask token services the table does not
+   know for an action oras-go did not, which some grant apart from `delete`; it would read every
+   400 of a token endpoint as this one (the build rule's `NAME_INVALID` is one too) and send a
+   second token request; and a `push` scope creates the repository it names on Quay. That last
+   holds here too: a delete in a repository that does not exist creates it, empty and private;
+   Lajstrom deletes what its index lists.
 2. **Do not trust an anonymous catalog** ([#802](https://github.com/lajstrom/lajstrom/issues/802)).
    `_catalog` without credentials is `200 {"repositories":[]}`, no challenge, so oras-go never
    authenticates it, the probe says `catalog=true`, and `ListRepositories` returns nothing:
@@ -161,7 +171,8 @@ GET /v2/ with Basic (the robot's token)                                         
 A user's password and `$oauthtoken` with an OAuth token work in place of the robot on the
 token endpoint. Quay's 401 to a `DELETE` names `scope="repository:<name>:pull,push"`; oras-go
 adds its `delete` to it. Quay's `DELETE` handlers want write permission, which `push` grants
-(`require_repo_write` in `endpoints/v2/manifest.py`).
+(`require_repo_write` in `endpoints/v2/manifest.py`). Since #801 the provider asks `push` in its
+place for Quay (item 1).
 
 ## Organisations, robots and create on push
 
@@ -247,7 +258,8 @@ tag-schema index, a tag) back, for up to 130 s (260 s for a referrer) where
 
 ## Delete
 
-With a `pull,push` token (oras-go cannot get one for a `DELETE`, item 1):
+With a `pull,push` token (oras-go alone cannot get one for a `DELETE`; the provider asks it since
+#801, item 1):
 
 ```text
 a under v1 and t2; DELETE manifests/sha256:<a>     202   v1 404, t2 404, a 404; its layer 200
@@ -407,6 +419,20 @@ login, push, repeat, the refused old and conflicting manifests, the size policy,
 manifest fetch, and fails at the raw `DELETE` (502, item 1). The other scenarios and the
 conformance suite were not run.
 
+**Again with #801 and #803** (2026-11-12, the same stack, `quayadmin`, an administrator of
+`lajstrom-it`, in place of the robot; SQLite only), the delete tests: deletes reach Quay.
+A signed and attested version deleted through the facade is 202, and its tag, its digest, its
+tag-schema index and cosign's tag are 404 after it (`ingest: deleted … referrers=3`).
+`TestIntegrationDeleteReferrer` and `TestIntegrationCatalogAfterDelete` pass. Still failing:
+
+| Cause | Tests that fail |
+| --- | --- |
+| A referrer pushed by digest stays, its `DELETE` 404 ([Delete](#delete)) | facade `TestIntegrationDelete` (the bundle 200 by digest after the delete), `TestIntegrationDeleteInterleaved` (the same in an `oci` repo, and manifests pushed by digest there); ingest `TestIntegrationDeleteReferrerIndexRepair` ("the deleted signature resolves"); `TestIntegrationDeleteReferrerClientGone` too, its message not read |
+| The catalog (item 2): a rebuild from an empty index finds no repository | reindex `TestIntegrationFormats` (apt, pypi, maven), past their deletes now |
+
+reindex `TestIntegrationRepairReferrers` reported no failure. The e2e scenarios, the probe and
+the Postgres cells were not run again.
+
 ## Configuration
 
 ```yaml
@@ -421,12 +447,12 @@ registries:
       username: lajstrom-it+lajstrom    # a robot in a team with the role admin
       passwordEnv: LAJSTROM_QUAY_ROBOT_TOKEN
     # No capabilities: the vendor table sets catalog: false (until #802), referrers: false and
-    # consistency: eventual within 130s (#803). Deletes fail until #801, whatever is set here.
+    # consistency: eventual within 130s (#803), and a delete's token asks push (#801).
 ```
 
 The startup line then says (2026-11-12, against the compose stack): `vendor=quay
 createOnPush=true referrers=false catalog=false deleteManifest=true … consistency="eventual
-within 2m10s"`.
+within 2m10s"`, and `registry needs workarounds vendor=quay … pushForDelete=true`.
 
 ## Commands
 

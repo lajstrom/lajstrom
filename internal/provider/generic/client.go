@@ -64,18 +64,20 @@ type clients struct {
 // cfg. Every request carries User-Agent lajstrom/<version>; with a username, the registry's
 // Basic or bearer challenge is answered with the username and password, and tokens are cached.
 // A non-nil rotating replaces the username and password (Options.Credential). A bearer
-// challenge whose realm realmTransport refuses is an error instead.
-func newClients(cfg config.Registry, base *url.URL, log *slog.Logger, rotating auth.CredentialFunc) clients {
+// challenge whose realm realmTransport refuses is an error instead. While pushForDelete
+// reports true, a token is asked for push where oras-go asks it for delete
+// (deleteScopeTransport).
+func newClients(cfg config.Registry, base *url.URL, log *slog.Logger, rotating auth.CredentialFunc, pushForDelete func() bool) clients {
 	timeout := timeoutOf(cfg)
 	// The retry transport resends an idempotent request whose body can be replayed; a blob
 	// upload is retried as a whole by Push (pushRetry). The breaker above it counts a request
 	// once however often it was tried. Above both, the probe's ping sees the challenges.
 	br := newBreaker(cfg.Name, log)
-	rt := &realmTransport{registry: cfg.Name, base: base, hosts: realmHosts(cfg, base), next: &challengeTransport{next: &breakerTransport{b: br, next: &retryTransport{
+	rt := &deleteScopeTransport{on: pushForDelete, next: &realmTransport{registry: cfg.Name, base: base, hosts: realmHosts(cfg, base), next: &challengeTransport{next: &breakerTransport{b: br, next: &retryTransport{
 		next:    &logTransport{next: &metricsTransport{next: newTransport(timeout), registry: cfg.Name}, log: log},
 		retries: retries(cfg),
 		log:     log,
-	}}}}
+	}}}}}
 	var cred auth.CredentialFunc
 	cache := auth.NewCache()
 	switch {
@@ -282,6 +284,77 @@ type realmError struct{ registry, reason string }
 
 func (e *realmError) Error() string {
 	return fmt.Sprintf("registry %q: %s; its credentials are not sent there", e.registry, e.reason)
+}
+
+// deleteScopeTransport asks a token for push where oras-go asks it for delete, while on reports
+// true: the vendor's quirk (quirks.pushForDelete), Quay's. oras-go adds delete to the scope of
+// every DELETE, of a manifest and of a referrers index it replaces, and pull,delete to the
+// reads of a delete that cleans the tag schema up; Quay's token service knows pull, push and *
+// only and answers any other action 400 INVALID_REQUEST, so that no token was issued and no
+// DELETE sent. Its DELETE wants write, which push grants, and its own challenge to a DELETE
+// names pull,push. A token request is told by its scope parameters, one per scope, which oras-go
+// sends to the realm with a GET (fetchDistributionToken); no request of the distribution API
+// has them, and Lajstrom sends no OAuth2 token request, which would POST them. The token is
+// cached under the scopes oras-go asked. Every other registry gets the scopes as oras-go asks
+// them: a token service that grants delete apart from push is not asked for more.
+type deleteScopeTransport struct {
+	next http.RoundTripper
+	on   func() bool
+}
+
+// RoundTrip implements http.RoundTripper.
+func (t *deleteScopeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method != http.MethodGet || !t.on() {
+		return t.next.RoundTrip(req)
+	}
+	q := req.URL.Query()
+	scopes := q["scope"]
+	asked, changed := pushForDelete(scopes)
+	if !changed {
+		return t.next.RoundTrip(req)
+	}
+	q["scope"] = asked
+	r := req.Clone(req.Context())
+	r.URL.RawQuery = q.Encode()
+	return t.next.RoundTrip(r)
+}
+
+// pushForDelete returns scopes with the action delete of each repository scope replaced by push,
+// merged as oras-go merges scopes (auth.CleanScopes), and whether any had delete.
+func pushForDelete(scopes []string) ([]string, bool) {
+	out := slices.Clone(scopes)
+	changed := false
+	for i, s := range out {
+		resource, actions, ok := cutActions(s)
+		if !ok || !strings.HasPrefix(resource, "repository:") {
+			continue
+		}
+		list := strings.Split(actions, ",")
+		if !slices.Contains(list, auth.ActionDelete) {
+			continue
+		}
+		for j, a := range list {
+			if a == auth.ActionDelete {
+				list[j] = auth.ActionPush
+			}
+		}
+		out[i] = resource + ":" + strings.Join(list, ",")
+		changed = true
+	}
+	if !changed {
+		return scopes, false
+	}
+	return auth.CleanScopes(out), true
+}
+
+// cutActions splits a scope, <type>:<name>:<actions>, before its actions; ok is false for one
+// without a name and actions.
+func cutActions(scope string) (resource, actions string, ok bool) {
+	i := strings.LastIndex(scope, ":")
+	if i < 0 || !strings.Contains(scope[:i], ":") {
+		return "", "", false
+	}
+	return scope[:i], scope[i+1:], true
 }
 
 // logTransport logs every attempt of a request to the registry at debug level: method, path,
