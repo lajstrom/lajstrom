@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -240,6 +241,27 @@ func TestOCITransitRefused(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Error("the backend does not hold the blob after the claim holder's copy")
+}
+
+// TestOCITransitResumed: a transit whose upstream connection breaks is resumed with Range from the
+// byte it reached, as a fetch is (#885), and its client gets every byte once.
+func TestOCITransitResumed(t *testing.T) {
+	te := newTransitEnv(t, nil, nil) // the claim holder's GET holds the slow copy's hook
+	f := &breaking{cut: func(int) int { return len(te.blob)/3 + 1 }}
+	te.hub.breakBlob(te.layer.Digest, te.blob, f) // the GETs after it break after a third
+	_, rc, err := te.c.OCIBlob(t.Context(), te.repo, "library/nginx", te.layer.Digest, true, true)
+	if err != nil || rc == nil {
+		t.Fatalf("a request that joined: %v, %v; want a transit", rc, err)
+	}
+	defer func() { _ = rc.Close() }()
+	got, err := io.ReadAll(rc)
+	if err != nil || !bytes.Equal(got, te.blob) {
+		t.Fatalf("a transit resumed: %d of %d bytes, %v; want the blob once", len(got), len(te.blob), err)
+	}
+	c := len(te.blob)/3 + 1
+	if want := []string{"", "bytes=" + strconv.Itoa(c) + "-", "bytes=" + strconv.Itoa(2*c) + "-"}; !slices.Equal(f.seen(), want) {
+		t.Errorf("the transit's GETs: %q, want %q", f.seen(), want)
+	}
 }
 
 // TestOCITransitOtherReplica: a request on a replica whose fetch waits on another replica's claim
