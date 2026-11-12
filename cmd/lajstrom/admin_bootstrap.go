@@ -79,7 +79,8 @@ func newAdminBootstrapCmd(a *app) *cobra.Command {
 
 // bootstrapServer returns the base URL of the server, base when it is set, and the TLS of the
 // request: nil for the system's roots, or the pin of server.tls.certFile for the server of
-// the configuration (pinnedTLS).
+// the configuration (pinnedTLS). A configuration that cannot be read or is invalid is a
+// configError, exit status 2, as for the other commands; healthcheck alone exits 1 for it.
 func (a *app) bootstrapServer(base string) (string, *tls.Config, error) {
 	if base != "" {
 		u, err := url.Parse(base)
@@ -91,10 +92,10 @@ func (a *app) bootstrapServer(base string) (string, *tls.Config, error) {
 	}
 	listen, files, err := config.ServerListen(a.configPath, a.lookupEnv)
 	if errors.Is(err, fs.ErrNotExist) {
-		return "", nil, fmt.Errorf("%w (name the server with --server, or the configuration with --config)", err)
+		return "", nil, configError{fmt.Errorf("%w (name the server with --server, or the configuration with --config)", err)}
 	}
 	if err != nil {
-		return "", nil, err
+		return "", nil, configError{err}
 	}
 	if files.CertFile == "" {
 		return listenURL(listen, false), nil, nil

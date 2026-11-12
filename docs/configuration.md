@@ -44,8 +44,7 @@ Later steps win:
    ```
 
    A configuration that cannot be read or is invalid ends every command with exit status `2`;
-   other errors with `1`. `healthcheck` and `admin bootstrap`, which read only `server.listen`
-   and `server.tls`, are the exceptions: they exit `1` on every failure, `healthcheck` since
+   other errors with `1`. `healthcheck` is the exception: it exits `1` on every failure, since
    Docker reserves `2` in a health check.
 
 The `--log-level` and `--log-format` flags override `log.level` and `log.format` for one run.
