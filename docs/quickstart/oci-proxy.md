@@ -102,7 +102,8 @@ server = "https://registry-1.docker.io"
 ```
 
 Talos takes the same in its machine configuration, one mirror per upstream registry
-([#340](https://github.com/lajstrom/lajstrom/issues/340) tracks booting a cluster through it):
+([the Talos guide](../guides/talos.md) has the rest: credentials, `skipFallback`, installers and
+boot assets):
 
 ```yaml
 machine:
@@ -120,8 +121,9 @@ machine:
 ```
 
 A repo with `anonymousRead: true` (and `auth.anonymousRead: true`) needs no credentials on the
-nodes; otherwise give containerd a token of a user with `read` on the repo
-(`machine.registries.config.<host>.auth`).
+nodes; otherwise give containerd a username and a token of a user with `read` on the repo
+(`machine.registries.config.<host>.auth`), not an `identityToken` alone
+([#908](https://github.com/lajstrom/lajstrom/issues/908)).
 
 ## 4. What to watch
 
