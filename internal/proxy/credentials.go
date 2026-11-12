@@ -29,6 +29,9 @@ func LoadUpstreams(cfg []config.Upstream, o UpstreamOptions) (map[string]*Upstre
 	}
 	out := make(map[string]*Upstream, len(cfg))
 	for i, c := range cfg {
+		if c.Format == config.FormatOCI {
+			continue // LoadOCIUpstreams's
+		}
 		key := fmt.Sprintf("upstreams[%d]", i)
 		auth, err := authorization(key, c.Auth, log)
 		if err != nil {

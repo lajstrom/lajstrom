@@ -26,6 +26,13 @@ type Options struct {
 	// Upstreams are the configured upstreams by name (LoadUpstreams). A proxy repo whose
 	// upstream is not among them is served as if it were offline.
 	Upstreams map[string]*Upstream
+	// OCIUpstreams are the configured upstreams of format oci by name (LoadOCIUpstreams), which
+	// oci proxy repos pull through from (ADR 0018); one whose upstream is not among them is
+	// served as if it were offline.
+	OCIUpstreams map[string]*OCIUpstream
+	// MaxManifestSize is the largest manifest an oci proxy repo takes from its upstream, in bytes
+	// (server.maxManifestSize); zero or negative means 4 MiB.
+	MaxManifestSize int64
 	// Plugins looks up the plugin of a repo's format; nil means format.Lookup.
 	Plugins func(name string) (format.Plugin, bool)
 	// Audit records the refused fetches (proxy.reject); nil means the index's audit table.
