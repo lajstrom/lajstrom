@@ -43,8 +43,9 @@ const (
 //   - reachability: GET /v2/; a failure is the error of Capabilities. Its headers, the
 //     challenge of a 401 the auth client answered on the way, and the host of the URL name
 //     the vendor (detectVendor);
-//   - catalog: GET /v2/_catalog?n=1; 200 with a catalog (a JSON object with repositories)
-//     is true; a 200 without one, 401, 403, 404 and 405 are false;
+//   - catalog: GET /v2/_catalog?n=1, with the credentials (catalogClient); 200 with a
+//     catalog (a JSON object with repositories) is true; a 200 without one, 401, 403, 404 and
+//     405 are false;
 //   - referrers: GET /v2/<prefix>lajstrom-probe/referrers/<zero digest>; 200 with an OCI
 //     image index is true, any other 200 and a 404 without NAME_UNKNOWN are false, and so is
 //     an answer that does not tell (404 NAME_UNKNOWN, 401, 403), in which case oras-go decides
@@ -235,12 +236,17 @@ func (p *Provider) probe(ctx context.Context, d config.CapabilityOverrides) (pro
 	return c, nil
 }
 
-// probeCatalog asks for one entry of the catalog. A 200 counts only with a catalog in its
-// body, a JSON object with repositories: JFrog's router answers 200 with an empty body, which
-// ListRepositories cannot read.
+// probeCatalog asks for one entry of the catalog, with the credentials as ListRepositories asks
+// (catalogClient): an anonymous 200 is not the catalog of the credentials (#802). A 200 counts
+// only with a catalog in its body, a JSON object with repositories: JFrog's router answers 200
+// with an empty body, which ListRepositories cannot read.
 func (p *Provider) probeCatalog(ctx context.Context) (bool, error) {
 	ctx = auth.AppendScopesForHost(ctx, p.host, auth.ScopeRegistryCatalog)
-	resp, err := p.get(ctx, p.base+"/v2/_catalog?n=1")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.base+"/v2/_catalog?n=1", nil)
+	if err != nil {
+		return false, fmt.Errorf("build request: %w", err)
+	}
+	resp, err := catalogClient{p: p}.Do(req)
 	if err != nil {
 		return false, err
 	}
