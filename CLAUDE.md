@@ -93,7 +93,9 @@ make e2e              # real clients (oras, pip, apt-get, mvn) against the stack
   `Assisted-by: Claude Code`. Both are checked.
 - The PR description is written by the human: what, why, how tested, demo command. Tick the
   issue's acceptance criteria in it.
-- Never push to `main`; never force-push a shared branch; do not merge, the human does.
+- Never push to `main`; never force-push a shared branch; never merge. A maintainer merges, with
+  squash or rebase, after one maintainer's approval (the lead's for a `contract` pull request);
+  the author does not merge their own pull request.
 
 ## How to work an issue
 
