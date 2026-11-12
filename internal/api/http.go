@@ -41,6 +41,9 @@ type Options struct {
 	// Deleter deletes the versions of DELETE …/packages/{name}/versions/{version}: the ingest
 	// pipeline; nil answers it 501.
 	Deleter Deleter
+	// Prefetcher fetches the versions of POST …/prefetch into a proxy repo: the proxy core; nil
+	// answers it 501.
+	Prefetcher Prefetcher
 	// Bootstrap exchanges the bootstrap token of POST /api/v1/bootstrap for the first admin;
 	// nil answers it 404, as once an admin exists.
 	Bootstrap *auth.Bootstrap
@@ -68,6 +71,7 @@ const maxBody = 64 << 10
 //	                                                   If-Match and If-Unmodified-Since make it conditional
 //	POST   /api/v1/repos/{format}/{repo}/versions:delete  delete versions in a batch, each conditional; dryRun
 //	DELETE /api/v1/repos/{format}/{repo}/upstream-cache[?name=]  drop a proxy's cache of its upstream, or of one name
+//	POST   /api/v1/repos/{format}/{repo}/prefetch      fetch versions of 1 to 100 names into a proxy repo, a result each
 //	GET    /api/v1/repos/{format}/{repo}/deploy-tokens       the deploy tokens of a repo
 //	POST   /api/v1/repos/{format}/{repo}/deploy-tokens       create one; the answer has its secret
 //	DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}  revoke one
@@ -95,7 +99,7 @@ func New(o Options) http.Handler {
 		panic("api: New: nil Options.Repos")
 	}
 	h := &handler{repos: o.Repos, tokens: o.Tokens, users: o.Users, bindings: o.Bindings, auth: o.Auth, reindex: o.Reindex,
-		deleter: o.Deleter, boot: o.Bootstrap, log: o.Log}
+		deleter: o.Deleter, prefetcher: o.Prefetcher, boot: o.Bootstrap, log: o.Log}
 	if h.log == nil {
 		h.log = slog.Default()
 	}
@@ -139,6 +143,7 @@ func (h *handler) routes() []route {
 		{"DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}", h.deleteVersion},
 		{"POST /api/v1/repos/{format}/{repo}/versions:delete", h.deleteVersions},
 		{"DELETE /api/v1/repos/{format}/{repo}/upstream-cache", h.purgeUpstreamCache},
+		{"POST /api/v1/repos/{format}/{repo}/prefetch", h.prefetch},
 		{"GET /api/v1/repos/{format}/{repo}/deploy-tokens", h.listDeployTokens},
 		{"POST /api/v1/repos/{format}/{repo}/deploy-tokens", h.createDeployToken},
 		{"DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}", h.revokeDeployToken},
@@ -170,7 +175,9 @@ type handler struct {
 	reindex  Reindexer
 	deleter  Deleter
 	boot     *auth.Bootstrap
-	log      *slog.Logger
+	// prefetcher is Options.Prefetcher.
+	prefetcher Prefetcher
+	log        *slog.Logger
 }
 
 // endpoint is a handler that returns its answer: the status and the value to encode as JSON

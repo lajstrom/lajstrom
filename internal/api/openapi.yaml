@@ -315,6 +315,33 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/repos/{format}/{repo}/prefetch:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+    post:
+      tags: [repos]
+      operationId: prefetch
+      summary: >-
+        Fetch versions of a list of names into a proxy repo before a client asks for them
+        (manage), each as a miss would; what the repo holds is held, and a rerun is idempotent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PrefetchRequest"}
+      responses:
+        "200":
+          description: A result per version, and per name that failed before its versions, in the order of the names.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PrefetchResult"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "501": {$ref: "#/components/responses/Unavailable"}
   /api/v1/repos/{format}/{repo}/deploy-tokens:
     parameters:
       - $ref: "#/components/parameters/format"
@@ -1275,6 +1302,46 @@ components:
           type: array
           description: What names the version, for protected.
           items: {$ref: "#/components/schemas/Pointer"}
+    PrefetchRequest:
+      type: object
+      required: [names]
+      additionalProperties: false
+      properties:
+        names:
+          type: array
+          minItems: 1
+          maxItems: 100
+          description: Package names in the format's spelling.
+          items: {type: string, minLength: 1}
+        allVersions:
+          type: boolean
+          description: >-
+            Every version the upstream lists; without it the versions its pointers name (npm's
+            dist-tags), or the newest when they name none.
+    PrefetchResult:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items: {$ref: "#/components/schemas/PrefetchItemResult"}
+    PrefetchItemResult:
+      type: object
+      required: [name, status]
+      properties:
+        name: {type: string}
+        version: {type: string, description: Absent for a name that failed before its versions.}
+        variant: {type: string}
+        status:
+          type: string
+          enum: [fetched, held, shared, failed]
+          description: >-
+            fetched by this request; held already; shared, fetched meanwhile by another request
+            or replica; failed.
+        httpStatus:
+          type: integer
+          description: For failed, the status a request of the file would have had.
+        message: {type: string, description: Why, for failed.}
     Whoami:
       type: object
       required: [principal, kind, name]

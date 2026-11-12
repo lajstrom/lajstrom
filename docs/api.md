@@ -479,6 +479,49 @@ was purged.
 curl -s -X DELETE "$LAJSTROM/api/v1/repos/npm/npmjs/upstream-cache?name=left-pad"
 ```
 
+### Prefetch a proxy repo: `POST /api/v1/repos/<format>/<name>/prefetch`
+
+Fetches versions of a list of package names into a proxy repo before a client asks for them,
+each as a client's miss would fetch it ([proxy-and-group.md](spec/proxy-and-group.md) §5.1):
+the upstream's document, the claim, the download, the checksum, the ingest, and an audit row
+`proxy.fetch` per version with the caller as the principal (`proxy.reject` for one refused). It
+is how packages move from another registry (#441). `manage` on the repo, checked before the body
+is read; npm only, until pypi and maven have proxies (#67, #68).
+
+```json
+{"names": ["@acme/widgets", "left-pad"], "allVersions": false}
+```
+
+`names` is 1 to 100 package names in the format's spelling. Without `allVersions` the versions
+are those the upstream's dist-tags name, or its newest when it has none; with it, every version
+the upstream lists. The answer is `200` with a result per version, and one per name that failed
+before its versions, in the order of the names:
+
+```json
+{"results": [
+  {"name": "@acme/widgets", "version": "2.1.0", "status": "fetched"},
+  {"name": "@acme/widgets", "version": "3.0.0-rc.1", "status": "held"},
+  {"name": "left-pad", "status": "failed", "httpStatus": 403, "message": "… does not mirror \"left-pad\": deny: left-*"}
+]}
+```
+
+| Status | The version |
+| --- | --- |
+| `fetched` | was fetched by this request and is now held |
+| `held` | the repo held it already: nothing was asked of the upstream for it |
+| `shared` | another request or replica fetched it meanwhile |
+| `failed` | `httpStatus` is the status a request of its file would have had (`404` not upstream, `403` refused by `allow` or `deny` or above a size bound, `502` a checksum that differs or an upstream that failed, `504` a timeout), and `message` says why; the other versions go on |
+
+A rerun is idempotent: what the repo holds is `held`, and what failed is tried again. `400` on a
+repo that is not a proxy or for a bad `names`, `409` on an offline proxy (it asks its upstream
+nothing), `404` when the repo does not exist. One request fetches at most 4 versions at a time
+and answers when every version has ended; a long list goes in batches, as
+`lajstrom admin repo prefetch` sends it.
+
+```sh
+curl -s -X POST "$LAJSTROM/api/v1/repos/npm/legacy/prefetch" -d '{"names": ["@acme/widgets"], "allVersions": true}'
+```
+
 ## `lajstrom admin repo`
 
 The same operations from the command line, straight against the index database of the
