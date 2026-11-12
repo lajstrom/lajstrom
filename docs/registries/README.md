@@ -195,7 +195,7 @@ those are fixed. Its build rule, on master and not released, is
 | Upload continued by another replica | [**fails**: the status one byte ahead (#804)](quay.md#our-tests-against-it) |
 | Garbage collector and an untagged referrer (#37) | *not measured*; [kept by its hidden tag (read)](quay.md#referrers) |
 | What the probe finds | [`referrers=false catalog=true`, `vendor=distribution`; both wrong](quay.md#the-row) |
-| Overrides needed | [`catalog: false`; `consistency: eventual`; `server.maxManifestSize: 1MiB`](quay.md#configuration) |
+| Overrides needed | [`catalog: false`; `consistency: eventual`; `server.maxManifestSize: 1048576`](quay.md#configuration) |
 
 ## Object stores behind distribution
 
