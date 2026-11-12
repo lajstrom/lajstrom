@@ -117,3 +117,42 @@ func TestAdminBootstrapServerOfConfig(t *testing.T) {
 		t.Errorf("admin bootstrap with the server of the configuration: %q, %v", out, err)
 	}
 }
+
+// TestAdminBootstrapExitStatus: a configuration that cannot be read or is invalid exits 2, as
+// for every command but healthcheck (docs/configuration.md); a server that refuses or cannot
+// be reached exits 1.
+func TestAdminBootstrapExitStatus(t *testing.T) {
+	url, file := bootstrapServer(t)
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	wrong := write("wrong", strings.Repeat("w", 40))
+	down := httptest.NewServer(nil)
+	down.Close()
+	for _, tt := range []struct {
+		name   string
+		args   []string
+		want   string
+		status int
+	}{
+		{"a missing configuration", []string{"--config", filepath.Join(dir, "missing.yaml"), "--token-file", file},
+			"name the server with --server, or the configuration with --config", 2},
+		{"server.listen that is not host:port", []string{"--config", write("listen.yaml", "server:\n  listen: \"8080\"\n"), "--token-file", file},
+			`server.listen: "8080" is not host:port`, 2},
+		{"an unknown key", []string{"--config", write("typo.yaml", "server:\n  lisen: \":8080\"\n"), "--token-file", file},
+			"lisen", 2},
+		{"a refused token", []string{"--server", url, "--token-file", wrong}, "403 the bootstrap token is refused", 1},
+		{"a server that is down", []string{"--server", down.URL, "--token-file", file}, "bootstrap: ", 1},
+	} {
+		args := append([]string{"admin", "bootstrap", "--name", "root", "--password-stdin"}, tt.args...)
+		_, _, err := runIn(t, nil, strings.NewReader("root-password\n"), args...)
+		if err == nil || !strings.Contains(err.Error(), tt.want) || exitStatus(err) != tt.status {
+			t.Errorf("%s: %v (exit %d), want %q, exit %d", tt.name, err, exitStatus(err), tt.want, tt.status)
+		}
+	}
+}
