@@ -1002,3 +1002,7 @@ curl -s -u alice "$LAJSTROM/api/v1/whoami"
 ```json
 {"principal": "user:01a1c136-51a6-7883-a350-b1cf6000a23f", "kind": "user", "name": "alice", "uid": "01a1c136-51a6-7883-a350-b1cf6000a23f"}
 ```
+
+A user of an OIDC login also has `groups`, its groups that count now, those of its latest login
+([auth.md](auth.md#groups-and-group-bindings)). A binding's `principal` may be `group:<name>`; its
+`name` is then absent.

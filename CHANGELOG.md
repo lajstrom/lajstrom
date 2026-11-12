@@ -15,6 +15,12 @@ covers `main` of 2026-11-11.
 
 ### Added
 
+- **OIDC login and group bindings** (#69, M6): one OpenID Connect provider (`auth.oidc`) logs
+  people in through the browser (`/-/oidc/login`, authorization code flow with PKCE) or the
+  terminal (`lajstrom login`, a device flow Lajstrom serves itself); a login creates the user at
+  first and mints a personal access token that every client uses; the IdP's groups become
+  `group:<name>` principals that bindings name, replaced at each login and lapsing with the
+  login's token.
 - **Formats**, hosted repositories with Lajstrom's own protocols on the server, no client plugins:
   - raw files: `curl -T` in, `curl` out, `DELETE` of a path; every upload a version, addressed by its digest;
   - pypi: `twine upload` and `uv publish`; the simple index as PEP 503 HTML and PEP 691 JSON, with PEP 658 metadata;

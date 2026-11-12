@@ -19,7 +19,8 @@ audit log, in publication sessions and in the access log ([rbac.md](spec/rbac.md
 | anonymous | `anonymous` | a request without credentials |
 
 A personal access token acts as its user: its principal is the user's, narrowed by the token's
-scopes. OIDC users and groups come after the MVP.
+scopes. A user may come from an OIDC login, and its groups from the login's claims
+([OIDC login and groups](#oidc-login-and-groups)).
 
 There are no users in the configuration file, by decision: users live in the index database
 with the rest of the control plane, are created with `lajstrom admin user` and with the users
@@ -229,7 +230,8 @@ A `maintainer` on `*/*` has every repo but not the system; the system needs the 
 ### Bindings
 
 A binding is `(principal, role, mask)`. The principal is `user:<name>` or `user:<uid>` of an
-existing user, stored as `user:<uid>`; the mask is `<format>/<repo>`, each segment a name or `*`: `raw/assets` exactly, `raw/*` every raw
+existing user, stored as `user:<uid>`, or `group:<name>`, a group of OIDC logins, which need not
+have members ([Groups and group bindings](#groups-and-group-bindings)); the mask is `<format>/<repo>`, each segment a name or `*`: `raw/assets` exactly, `raw/*` every raw
 repo, `*/payments` the repo `payments` of every format, `*/*` everything. The repo need not
 exist: a binding may come before its repo, and outlives it. The rights of a principal are the
 union of its bindings. A deploy token has no bindings (its repo and scopes are its rights), and
@@ -255,7 +257,7 @@ ID  USER   PRINCIPAL                                  ROLE    MASK        CREATE
 $ lajstrom admin binding create --principal user:alice --role admin --mask 'raw/*'
 lajstrom: repoMask: an admin binding is on */*: the admin role is every repo and the system
 $ lajstrom admin binding create --principal token:3 --role writer --mask raw/assets
-lajstrom: principal: token:3 cannot be bound: a binding is for user:<name>; anonymous reads through a repo's anonymousRead, a deploy token gets its repo and scopes, groups come after the MVP
+lajstrom: principal: token:3 cannot be bound: a binding is for user:<name> or group:<name>; anonymous reads through a repo's anonymousRead, a deploy token gets its repo and scopes
 $ lajstrom admin binding create --principal user:alice --role writer --mask 'raw/*'
 lajstrom: binding user:alice writer on raw/* exists already
 $ lajstrom admin binding delete 1
@@ -648,8 +650,8 @@ miss costing what a hit costs.
 **A personal access token is created with a password**, never with a token: a request whose
 credential is a personal access token, with scopes or without, the admin's too, or a deploy
 token gets `403` on `POST /api/v1/users/<name>/tokens` before its body is read. A stolen token
-would otherwise mint tokens that last up to a year and outlive its revocation. Later an OIDC
-session will create them too (#69); `npm login` checks the password (#308), and
+would otherwise mint tokens that last up to a year and outlive its revocation. An OIDC login
+mints one itself ([OIDC login and groups](#oidc-login-and-groups)); `npm login` checks the password (#308), and
 `lajstrom admin token create` needs no credential, as it runs against the database. A personal
 access token without scopes still lists and revokes its user's tokens. CI that wants a fresh personal access token asks
 for it with a password, or gets a deploy token instead ([In CI](#in-ci)).
@@ -1001,6 +1003,122 @@ Without credentials it is `401` with the Basic challenge and
 token it is the token's user; with a deploy token,
 `{"principal":"token:3","kind":"token","name":"3"}`.
 
+## OIDC login and groups
+
+One OpenID Connect identity provider (IdP) can log people in: Keycloak, Dex, Okta, Entra ID,
+Google, GitLab, any IdP with the authorization code flow ([rbac.md](spec/rbac.md) §8). A login
+ends in a [personal access token](#tokens) of the person's user, so every client keeps working
+as it does with any other token: docker, pip, npm, mvn and apt cannot run a browser flow, and
+they never see a token of the IdP. The IdP's groups become principals, `group:<name>`, which
+bindings can name.
+
+### Setting it up
+
+At the IdP, register a confidential client (OAuth 2.0 client with a secret) whose redirect URI
+is `<server.externalURL>/-/oidc/callback`, with the scopes `openid`, `profile`, and the scope
+that puts the groups in the ID token (`groups` for Dex and Keycloak's group mapper; Entra ID
+and Okta name theirs). Then:
+
+```yaml
+server:
+  externalURL: https://art.example.com
+auth:
+  oidc:
+    issuer: https://idp.example.com/realms/main
+    clientID: lajstrom
+    clientSecretFile: /run/secrets/oidc-client-secret
+    # scopes: [openid, profile, email, groups]   the default
+    # usernameClaim: preferred_username           the default
+    # groupsClaim: groups                         the default; "" reads no groups
+    # tokenLifetime: 24h                          the default
+```
+
+The keys are in [configuration.md](configuration.md#auth). `serve` logs `OIDC login on` with the
+issuer and the client ID at start, and reads nothing from the IdP until the first login, so it
+starts while the IdP is down. The issuer must be https, but with `server.insecureHTTP`, the dev
+stack.
+
+### Logging in
+
+In a browser, open `https://art.example.com/-/oidc/login`. After the IdP's login, the page shows
+a personal access token once, with how to use it:
+
+```sh
+docker login art.example.com -u alice              # the token as the password
+pip install --index-url https://alice:<token>@art.example.com/pypi/internal/simple/ requests
+```
+
+From a terminal, or on a machine without a browser, `lajstrom login` runs the device flow: it
+prints a page and a code, you open the page in a browser on any machine, confirm the code and log
+in, and it prints the token:
+
+```sh
+$ lajstrom login --server https://art.example.com --output token | docker login art.example.com -u alice --password-stdin
+To log in, open this page in a browser and confirm the code BCDF-GHJK:
+
+    https://art.example.com/-/oidc/device?user_code=BCDF-GHJK
+
+Waiting for the login (10 minutes)...
+Logged in to art.example.com as alice; the token expires at 2026-11-13T22:00:00Z.
+```
+
+Without `--output token` it prints one JSON line with the server, the user, the token and its
+expiry. It writes no file: the token goes where you put it.
+
+The first login of a person creates their user, of kind `oidc` and without a password, named by
+the claim `usernameClaim`. The user is the identity's, the `iss` and `sub` of its ID token, not
+the name's: a later login keeps the user and its name even if the claim changed, and a name that
+another user has already refuses the first login (`the name alice is taken by another user`):
+an admin renames or deletes that user. An identity is never joined to an existing local user by
+its name, so that whoever holds a name at the IdP does not take over the local user of that
+name, the first admin included.
+
+The token of a login expires after `tokenLifetime`, 24 hours by default, and has no scopes: it
+is its user. An OIDC user has no password, so it cannot create tokens with the API; it logs in
+again for a new one, and lists and revokes its tokens as any user.
+
+To keep a person out, **disable** their user (`lajstrom admin user disable alice`): their tokens
+stop at the next request, and their logins are refused. Deleting the user lets the identity go,
+and the next login makes a new user.
+
+### Groups and group bindings
+
+Each login replaces the user's groups with those of the claim `groupsClaim`, and they count
+until the token of that login expires. A group removed at the IdP therefore stops granting at
+the person's next login, on every replica, for every token of the user, and at the latest when
+the login's token expires. A name that is not 1 to 256 bytes of printable text is dropped.
+
+A binding names a group as it names a user, and the group need not have members yet:
+
+```console
+$ lajstrom admin binding create --principal group:platform --role maintainer --mask '*/*'
+$ lajstrom admin binding create --principal group:payments-dev --role writer --mask '*/payments'
+$ curl -s -u alice:<token> https://art.example.com/api/v1/whoami
+{"principal":"user:01a1…","kind":"user","name":"alice","uid":"01a1…","groups":["payments-dev","platform"]}
+```
+
+A user's rights are its own bindings plus those of its current groups; a token's scopes narrow
+both. A group's `admin` binding makes its members admins, but it is not "an admin" for the rule
+that keeps the last admin binding of an enabled user (`409`), nor for the bootstrap: a group can
+lapse without anyone changing a binding.
+
+### What is checked
+
+The login uses the authorization code flow with PKCE (S256) and a nonce; its state is single
+use, ten minutes, kept as a hash in the index so that any replica finishes it, and bound to the
+browser by a cookie, so that a link to someone else's callback logs nobody in. The ID token must
+be signed with an asymmetric key of the IdP's JWKS, by an algorithm of that key (never `none` or
+an HMAC), be issued by the configured issuer to this client (`iss`, `aud`, `azp`), and be valid
+within 60 s of skew. The keys are cached; a new `kid` reloads them at most every 30 seconds. No
+code, state, ID token or personal access token is logged. Every login writes `user.login` to the
+audit log with the issuer, the subject and the groups, a first login `user.create`, and the token
+`token.create` with `createdBy: oidc`. The [threat model](security/threat-model.md) has the flows.
+
+Not yet: token exchange for CI (a GitHub Actions or GitLab OIDC token for a short-lived token,
+proposed on #69; meanwhile a pipeline uses a [deploy token](#in-ci)), and joining an existing
+local user to an identity.
+
 ## What comes next
 
-OIDC login and groups (#69). Nothing else of authentication is open for v0.1.0.
+Token exchange for CI and linking a local user to an identity (#69). Nothing else of
+authentication is open.
