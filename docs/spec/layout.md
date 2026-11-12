@@ -2,8 +2,10 @@
 
 - Status: normative for the MVP (2026-11-06). The Go interfaces in §2 are the shapes merged with
   the skeleton (issue #7, M0-01) and are contracts: changing an exported interface in
-  `internal/{format,provider,index,ingest}` needs an issue labelled `contract` and a
-  maintainer's approval.
+  `internal/{format,provider,index,ingest}`, `internal/index/reindex` included, needs an issue
+  labelled `contract` and a maintainer's approval. The sections on `internal/auth` and
+  `internal/audit` are informative: they describe those packages and are kept current, and a
+  change to them needs no contract issue.
 - Why this exists: two people work in parallel with AI assistants. Agreed package boundaries
   and interfaces are what keeps their pull requests from colliding.
 
