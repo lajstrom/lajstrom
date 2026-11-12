@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -89,6 +90,23 @@ func (s *stubProxy) OCIBlob(ctx context.Context, _ index.Repo, path string, d di
 	return desc, nil, nil
 }
 
+func (s *stubProxy) OCIComplete(_ context.Context, _ index.Repo, path string, desc ocispec.Descriptor) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, "complete "+path+"@"+desc.Digest.String())
+}
+
+func (s *stubProxy) OCIPulling(_ index.Repo, path string) func() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, "pulling "+path)
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.calls = append(s.calls, "pulled "+path)
+	}
+}
+
 // proxyEnv is an env with the oci proxy repo oci/hub served by a stubProxy.
 func proxyEnv(t *testing.T) (*env, *stubProxy) {
 	t.Helper()
@@ -136,13 +154,16 @@ func TestOCIProxyPull(t *testing.T) {
 	}
 	rr = e.do(e.h, http.MethodGet, "/v2/oci/hub/nginx/blobs/"+d.String(), nil)
 	wantStatus(t, "GET of a blob held", rr, http.StatusOK)
-	want := []string{"manifest library/nginx@1.27", "manifest library/nginx@1.27", "blob library/nginx false", "blob library/nginx true"}
+	want := []string{"manifest library/nginx@1.27", "complete library/nginx@" + desc.Digest.String(), "manifest library/nginx@1.27",
+		"blob library/nginx false", "pulling library/nginx", "blob library/nginx true", "pulled library/nginx", "pulling library/nginx",
+		"pulled library/nginx"}
 	if strings.Join(s.calls, "|") != strings.Join(want, "|") {
 		t.Errorf("the core was asked %q, want %q", s.calls, want)
 	}
 }
 
-// TestOCIProxyHeld: a manifest the backend holds is read from it, checked against its digest.
+// TestOCIProxyHeld: a manifest the backend holds is read from it, checked against its digest,
+// and starts no completion: it is complete.
 func TestOCIProxyHeld(t *testing.T) {
 	e, s := proxyEnv(t)
 	raw := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","layers":[]}`)
@@ -156,6 +177,9 @@ func TestOCIProxyHeld(t *testing.T) {
 	wantStatus(t, "GET of a held manifest", rr, http.StatusOK)
 	if !bytes.Equal(rr.Body.Bytes(), raw) {
 		t.Errorf("body = %s", rr.Body)
+	}
+	if want := []string{"manifest library/alpine@3"}; !slices.Equal(s.calls, want) {
+		t.Errorf("the core was asked %q, want %q", s.calls, want)
 	}
 	rr = e.do(e.h, http.MethodGet, "/v2/oci/hub/alpine/tags/list", nil)
 	wantStatus(t, "tags/list", rr, http.StatusOK)

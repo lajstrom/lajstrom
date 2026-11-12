@@ -64,6 +64,10 @@ type Options struct {
 	// PrefetchConcurrency is how many entries one Prefetch fetches at a time (proxy-and-group.md
 	// §5.1: 4, the default).
 	PrefetchConcurrency int
+	// CompleteQuiet is how long no client of this replica must have asked for a blob of an oci
+	// proxy's path before the completion of a manifest there fetches one (proxy-and-group.md
+	// §11.5, step 5); zero means 10 s, and a negative value does not wait.
+	CompleteQuiet time.Duration
 }
 
 // The defaults of the claims (docs/spec/index-schema.md, Proxy and group repos) and of the
@@ -81,6 +85,10 @@ const (
 type Core struct {
 	o       Options
 	flights flights
+	// pulls are the blob GETs of clients of oci proxy repos, and completing bounds the fetches
+	// of their completions (ocipull.go).
+	pulls      pulls
+	completing chan struct{}
 }
 
 var _ format.Proxy = (*Core)(nil)
@@ -117,7 +125,10 @@ func New(o Options) *Core {
 	if o.PrefetchConcurrency <= 0 {
 		o.PrefetchConcurrency = defaultPrefetchConcurrency
 	}
-	return &Core{o: o}
+	if o.CompleteQuiet == 0 {
+		o.CompleteQuiet = defaultCompleteQuiet
+	}
+	return &Core{o: o, completing: make(chan struct{}, ociCompleteFetches)}
 }
 
 // proxied is a proxy repo with what serving it takes: its plugin and hooks, its settings, and

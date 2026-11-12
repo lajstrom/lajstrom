@@ -64,7 +64,15 @@ What happens on the first pull of a tag:
    under another repository of the repo (`kube-apiserver` and `kube-controller-manager` share
    most of theirs) is mounted instead, with no request to the upstream, even when the repo is
    offline; a backend that does not mount (Nexus's `docker` format, JFrog) gets it fetched.
-4. Once a platform's layers are held, its manifest is pushed to the backend under a keep-tag
+4. Once a client got a platform's manifest, the backend is made to hold all of that platform's
+   layers, whatever the client asks for: containerd asks only for the layers it does not hold,
+   so an image whose layers it has from another image would otherwise never be held whole. In
+   the background, layers held under another repository of the repo are mounted at once, offline
+   too; the others are fetched once no client of the replica has asked for a layer of that
+   repository for 10 seconds, at most 4 at a time per replica, within `maxFileSize`. So a `GET`
+   of a platform's manifest, `crane manifest` too, costs that platform's layers; a `HEAD`, and
+   the other platforms of an index, cost nothing.
+5. Once a platform's layers are held, its manifest is pushed to the backend under a keep-tag
    `_keep.sha256.<hex>`, which `tags/list` does not show and garbage collection leaves alone;
    once every platform is held, the index too, and the upstream's tag where the backend lets
    tags move (on ECR's `IMMUTABLE` repositories, Quay or Harbor with tag immutability, or Zot
@@ -123,6 +131,9 @@ nodes; otherwise give containerd a token of a user with `read` on the repo
 - **A repository that does not exist** upstream is a `404`, remembered for `negativeTTL`
   (default `2m`): Docker Hub answers it `401`, which Lajstrom reads as "not there". A credential
   that lost access to a private repository looks the same.
+- **What a pull cost.** `lajstrom_proxy_fetches_total` counts by `result` the layers fetched for
+  a client (`fetched`), mounted from another repository of the repo (`mounted`), and fetched to
+  hold a platform whole though no client asked for them (`completed`).
 - **The audit log** has a `proxy.fetch` row for each manifest pushed to the backend, with the
   upstream, the digest and the tag, and a `proxy.reject` row for bytes that did not have their
   digest or a layer above `maxFileSize`.

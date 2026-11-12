@@ -60,7 +60,7 @@ func (c *Core) OCIBlob(ctx context.Context, repo index.Repo, path string, d dige
 	if stream && c.o.TeeBuffer >= 0 {
 		t = newTee(desc.Size, int64(cmp.Or(c.o.TeeBuffer, defaultTeeBuffer)))
 	}
-	fl, joined := c.flights.join(fmt.Sprintf("ociblob:%d:%s:%s", p.repo.ID, p.path, d), func() (bool, error) {
+	fl, joined := c.flights.join(blobFlight(p, d), func() (bool, error) {
 		fctx, cancel := c.detach(ctx)
 		defer cancel()
 		return c.ociFetchBlob(fctx, p, desc, t)
@@ -78,6 +78,12 @@ func (c *Core) OCIBlob(ctx context.Context, repo index.Repo, path string, d dige
 		}
 	}
 	return desc, nil, c.ociAwait(ctx, p, fl, joined)
+}
+
+// blobFlight is the key of the flight of the blob d at p's path, which a client's miss and a
+// completion share.
+func blobFlight(p *ociProxied, d digest.Digest) string {
+	return fmt.Sprintf("ociblob:%d:%s:%s", p.repo.ID, p.path, d)
 }
 
 // ociAwait waits for the fetch fl of a blob, which this request started or joined, and counts
