@@ -63,18 +63,29 @@ func (c *Core) proxyFile(ctx context.Context, repo index.Repo, path string) (*in
 	if err != nil {
 		return nil, err
 	}
+	m, _, err := c.proxyArtifact(ctx, p, a, nil, nil)
+	return m, err
+}
+
+// proxyArtifact returns the file of the artifact a of a proxy repo, held or fetched (§5 from
+// step 3), and how it came: fetchHeld, fetchFetched or fetchShared. entry and row are the
+// artifact's entry in the name's document and that document's row when the caller has read
+// them (a prefetch); nil looks them up (§5, step 5) once the artifact is found missing.
+func (c *Core) proxyArtifact(ctx context.Context, p *proxied, a artifact, entry *format.UpstreamEntry, row *index.ProxyMeta) (*index.FileMatch, string, error) {
 	if m, err := c.held(ctx, p, a); m != nil || err != nil {
 		if m != nil {
 			countFetch(p, fetchHeld)
 		}
-		return m, err
+		return m, fetchHeld, err
 	}
 	if p.up == nil {
-		return nil, fmt.Errorf("%w: proxy: %s is offline and does not hold %s", index.ErrNotFound, p.id(), a.ref.File)
+		return nil, "", fmt.Errorf("%w: proxy: %s is offline and does not hold %s", index.ErrNotFound, p.id(), a.ref.File)
 	}
-	entry, row, err := c.entry(ctx, p, a)
-	if err != nil {
-		return nil, err
+	if entry == nil {
+		var err error
+		if entry, row, err = c.entry(ctx, p, a); err != nil {
+			return nil, "", err
+		}
 	}
 	fl, joined := c.flights.join(fmt.Sprintf("%d/%s:%s", p.repo.ID, a.pkgPath, a.tag), func() (bool, error) {
 		fctx, cancel := c.detach(ctx)
@@ -84,24 +95,24 @@ func (c *Core) proxyFile(ctx context.Context, repo index.Repo, path string) (*in
 	select {
 	case <-fl.done:
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, "", ctx.Err()
 	}
 	if fl.err != nil {
-		return nil, fl.err
+		return nil, "", fl.err
 	}
 	m, err := c.held(ctx, p, a)
 	switch {
 	case err != nil:
-		return nil, err
+		return nil, "", err
 	case m == nil:
 		countFetch(p, fetchError)
-		return nil, fmt.Errorf("%w: proxy: %s: %s was fetched and is not in the index", format.ErrBadGateway, p.id(), a.subject())
+		return nil, "", fmt.Errorf("%w: proxy: %s: %s was fetched and is not in the index", format.ErrBadGateway, p.id(), a.subject())
 	case joined || fl.shared:
 		countFetch(p, fetchShared)
-	default:
-		countFetch(p, fetchFetched)
+		return m, fetchShared, nil
 	}
-	return m, nil
+	countFetch(p, fetchFetched)
+	return m, fetchFetched, nil
 }
 
 // artifact maps a request path to the artifact, after the lists.
@@ -110,6 +121,12 @@ func (p *proxied) artifact(path string) (artifact, error) {
 	if err != nil {
 		return artifact{}, err
 	}
+	return p.artifactOf(ref)
+}
+
+// artifactOf is the artifact that ref names, after the lists: a request path's, or an entry of
+// a name's document with its first file (a prefetch).
+func (p *proxied) artifactOf(ref format.ArtifactRef) (artifact, error) {
 	key, err := p.key(ref.Name)
 	if err != nil {
 		return artifact{}, err
