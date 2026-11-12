@@ -1,6 +1,7 @@
 # 0013. Proxy and group repos: fetch on miss into the one write path, hosted names hide the upstream
 
-- Status: accepted
+- Status: accepted; "`oci` repos stay hosted" (point 1), and point 3 for `oci` repos, superseded by
+  [0018](0018-oci-proxy-repos-pull-through-from-any-registry.md)
 - Date: 2026-11-10
 - Deciders: gecube
 
