@@ -271,13 +271,27 @@ func (u *OCIUpstream) resolveWith(ctx context.Context, client provider.Provider,
 
 // classify maps an error of the upstream's client to what a proxy answers (§6, §11.7): a
 // repository, manifest or blob it does not have is errMissing; its 429 is a
-// *format.UnavailableError with its Retry-After, at most a minute, 5 s without one; a timeout is
+// *format.UnavailableError with its Retry-After, at most a minute, 5 s without one; an open
+// circuit breaker, which sent no request, is its *provider.UnavailableError, a 503 whose
+// Retry-After is the time until the breaker lets a trial through (layout.md, #889); a timeout is
 // format.ErrGatewayTimeout; refused credentials, a refused realm or redirect, and every other
-// failure are format.ErrBadGateway. The end of ctx stays as it is.
+// failure are format.ErrBadGateway. An error of a hop that the upstream redirected a blob to, or
+// of its body, names the hop's host (redirectHost). The end of ctx stays as it is.
 func (u *OCIUpstream) classify(ctx context.Context, err error) error {
+	out := u.classifyAs(ctx, err)
+	var hop *generic.RedirectError
+	if out != nil && ctx.Err() == nil && errors.As(err, &hop) {
+		return &redirectedError{err: out, host: hop.Host}
+	}
+	return out
+}
+
+// classifyAs is classify without the redirect's host.
+func (u *OCIUpstream) classifyAs(ctx context.Context, err error) error {
 	var (
-		rej *provider.RejectedError
-		ne  net.Error
+		rej  *provider.RejectedError
+		open *provider.UnavailableError
+		ne   net.Error
 	)
 	switch {
 	case err == nil:
@@ -292,10 +306,36 @@ func (u *OCIUpstream) classify(ctx context.Context, err error) error {
 			wait = ociRetryAfterNone
 		}
 		return fmt.Errorf("upstream %s answered 429: %w", u.name, &format.UnavailableError{RetryAfter: min(wait, ociRetryAfterMost)})
+	case errors.As(err, &open) && open.Reason == "":
+		return fmt.Errorf("upstream %s: %w", u.name, open)
 	case errors.As(err, &ne) && ne.Timeout():
 		return fmt.Errorf("%w: upstream %s did not answer in time", format.ErrGatewayTimeout, u.name)
 	}
 	return fmt.Errorf("%w: upstream %s: %s", format.ErrBadGateway, u.name, err.Error())
+}
+
+// redirectedError is what classify made of an error of a hop that the upstream redirected a blob
+// to (a CDN, object storage), or of its body: its message names the hop's host, which an
+// operator behind an egress filter must allow (#889).
+type redirectedError struct {
+	err  error
+	host string
+}
+
+func (e *redirectedError) Error() string {
+	return e.err.Error() + " (at " + e.host + ", where the upstream redirected the blob)"
+}
+
+// Unwrap returns what classify made of the error.
+func (e *redirectedError) Unwrap() error { return e.err }
+
+// redirectHost returns the host of the redirect hop whose failure err is, "" for none.
+func redirectHost(err error) string {
+	var re *redirectedError
+	if errors.As(err, &re) {
+		return re.host
+	}
+	return ""
 }
 
 // upstreamFailed reports whether err is the upstream's failure, after which what is cached or

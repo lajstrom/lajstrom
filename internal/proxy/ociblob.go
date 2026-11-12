@@ -175,8 +175,12 @@ func (c *Core) ociFetchBlob(ctx context.Context, p *ociProxied, desc ocispec.Des
 		err = c.ociHeldBlob(ctx, p, desc.Digest)
 	}
 	if err != nil {
-		c.o.Log.WarnContext(ctx, "proxy: a blob not fetched from the upstream", "repo", p.id(), "upstream", p.upstreamName(), "path", p.path,
-			"digest", desc.Digest.String(), "size", desc.Size, "got", got, "error", err.Error())
+		attrs := []any{"repo", p.id(), "upstream", p.upstreamName(), "path", p.path, "digest", desc.Digest.String(), "size", desc.Size,
+			"got", got}
+		if host := redirectHost(err); host != "" { // the CDN that an egress filter must allow (#889)
+			attrs = append(attrs, "host", host, "redirected", true)
+		}
+		c.o.Log.WarnContext(ctx, "proxy: a blob not fetched from the upstream", append(attrs, "error", err.Error())...)
 		return false, err
 	}
 	if t != nil {
