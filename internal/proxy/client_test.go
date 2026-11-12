@@ -151,8 +151,12 @@ func TestGetRetries(t *testing.T) {
 func TestGetTimeouts(t *testing.T) {
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/slow-headers" {
+		switch r.URL.Path {
+		case "/slow-headers":
 			<-release
+			return
+		case "/whole":
+			_, _ = io.WriteString(w, strings.Repeat("all of it at once ", 1000))
 			return
 		}
 		_, _ = io.WriteString(w, "first bytes")
@@ -173,6 +177,28 @@ func TestGetTimeouts(t *testing.T) {
 	_, err = io.ReadAll(resp.Body)
 	if !errors.Is(err, errStalled) || !errors.Is(u.transportError(t.Context(), err), format.ErrGatewayTimeout) {
 		t.Errorf("stalled body: %v, want errStalled, a timeout", err)
+	}
+	// A reader busy elsewhere between its reads, as a proxy fetch is with its PATCH to the
+	// registry, does not stall the body: the bound is on the waits for bytes (#694).
+	whole, err := get(t, u, "whole")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = whole.Body.Close() }()
+	n := 0
+	for buf := make([]byte, 4096); ; {
+		k, err := whole.Body.Read(buf)
+		n += k
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("a body read with pauses longer than the timeout between the reads: %v after %d bytes", err, n)
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	if n != len("all of it at once ")*1000 {
+		t.Errorf("read %d bytes, want %d", n, len("all of it at once ")*1000)
 	}
 }
 
