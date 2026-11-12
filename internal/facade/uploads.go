@@ -32,8 +32,9 @@ import (
 // a chunk (Recheck before it streams, the new state after) are cheap at the chunk sizes clients
 // use. Every body streams from the client to the backend; nothing is spooled here, and the
 // provider spools only a chunk of unknown length that a registry with
-// uploads.spoolUnknownLength refuses streamed (#425), as limitBlob cuts it. The row also keeps
-// the hash of the bytes that passed (verify.go).
+// uploads.spoolUnknownLength refuses streamed (#425), as limitBlob cuts it. On a registry with a
+// chunk bound the provider sends a chunk as several PATCHes (#697), and the Upload it returns
+// holds all of it, as of one. The row also keeps the hash of the bytes that passed (verify.go).
 
 const (
 	// uploadTTL is how long an upload session lives after its last request. The backends keep

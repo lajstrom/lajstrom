@@ -22,7 +22,8 @@ import (
 // LAJSTROM_TEST_REGISTRY: a session that a second provider (another replica, with a token
 // cache of its own) continues, the monolithic shape, a last chunk of unknown size, chunks of
 // unknown size spooled, a wrong digest, a chunk out of order, the cancel, the mount, the empty
-// blob, and the download of a blob by its digest alone (OpenBlob, on the second provider).
+// blob, the download of a blob by its digest alone (OpenBlob, on the second provider), and
+// client chunks above a chunk bound, split (#697).
 // LAJSTROM_TEST_REGISTRY_SPOOL_UNKNOWN_LENGTH=1 turns uploads.spoolUnknownLength on for every
 // step, which Gitea and JFrog need for the steps with a chunk of unknown size after a write.
 func TestIntegrationUploads(t *testing.T) {
@@ -185,6 +186,36 @@ func TestIntegrationUploads(t *testing.T) {
 		if err := other.CancelBlobUpload(ctx, u); err != nil {
 			t.Errorf("cancel the session of the mount: %v", err)
 		}
+	})
+	step(t, "client chunks split", func(t *testing.T) { // #697, with a chunk bound of 1 MiB
+		pc, cc := integrationProvider(ctx, t, func(c *config.Registry) { c.Uploads.ChunkSize = 1 << 20 })
+		c, err := pc.Repository(ctx, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 5<<20 + 123
+		big := bytes.Repeat([]byte(randomHex(t)), n/8+1)[:n]
+		u, err := c.StartBlobUpload(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, cut := range [][2]int{{0, 5 << 19}, {5 << 19, 4 << 20}} {
+			if u, err = c.AppendBlobChunk(ctx, u, bytes.NewReader(big[cut[0]:cut[1]]), int64(cut[1]-cut[0])); err != nil || u.Offset != int64(cut[1]) {
+				t.Fatalf("chunk %d-%d = %+v, %v; want offset %d", cut[0], cut[1], u, err, cut[1])
+			}
+		}
+		got, err := c.AppendBlobChunk(ctx, u, strings.NewReader("x"), -1)
+		if spool := cc.Uploads.SpoolUnknownLength; spool != (err == nil) || !spool && (!errors.Is(err, provider.ErrRejected) || got != u) {
+			t.Fatalf("chunk of unknown size, spoolUnknownLength=%v: %+v, %v", spool, got, err)
+		}
+		if err == nil { // spooled: start over with what the session holds
+			big = append(big[:4<<20:4<<20], append([]byte("x"), big[4<<20:]...)...)
+			u = got
+		}
+		if _, err := c.FinishBlobUpload(ctx, u, digest.FromBytes(big), bytes.NewReader(big[u.Offset:]), int64(len(big))-u.Offset); err != nil {
+			t.Fatal(err)
+		}
+		wantBlob(ctx, t, b, big)
 	})
 	step(t, "streamed writer", func(t *testing.T) {
 		big := bytes.Repeat([]byte(randomHex(t)), (2*streamChunk+100)/len(randomHex(t))+1)

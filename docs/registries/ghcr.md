@@ -382,12 +382,17 @@ answer 401 with the Bearer challenge.
     or send bodies that can be replayed;
   - there is no status: the offset comes from the session Lajstrom keeps, not from GHCR;
   - cancel is 405: unsupported, the session is left to expire;
-  - chunks of at most 4 MiB, each with `Content-Range`: a client's larger chunk is split, and a
-    chunk of unknown size is spooled first (one request's spool), because a `PATCH` without
-    `Content-Range` throws away what the session held. The uploads that Lajstrom streams itself,
-    a raw `PUT`, an apt upload, a Maven file (ADR 0014), go in chunks of 4 MiB on GHCR, by the
-    vendor table, or of `registries[].uploads.chunkSize` (#558); the facade passes a client's
-    chunk on as it came, and a monolithic `POST ?digest=` is not held to 4 MiB (100 MiB, above);
+  - chunks of at most 4 MiB, each with `Content-Range`, because a `PATCH` without
+    `Content-Range` throws away what the session held: done. The uploads that Lajstrom streams
+    itself, a raw `PUT`, an apt upload, a Maven file (ADR 0014), go in chunks of 4 MiB on GHCR,
+    by the vendor table, or of `registries[].uploads.chunkSize` (#558). A client's `/v2` chunk
+    above that is split into `PATCH`es of that size, sent one after the other, and the client
+    sees one chunk (#697). A chunk of unknown size after the first write is spooled first with
+    `registries[].uploads.spoolUnknownLength`, and refused without it before anything is sent:
+    `400 BLOB_UPLOAD_INVALID` with a hint that names the key, as Gitea answers. Docker's one
+    streamed `PATCH` into an empty session goes as it came, which GHCR takes whole (8 MiB,
+    above), and a monolithic `POST ?digest=` is not held to 4 MiB (100 MiB, above). Checked on
+    a fake with GHCR's limit, not against GHCR;
   - 404 `BLOB_UPLOAD_INVALID` on the closing `PUT` is a digest mismatch here;
   - the 0-byte blob is never uploaded: GHCR already "has" it everywhere.
 - **No blob read before the first manifest**: in a repository without a manifest, `GET` of a

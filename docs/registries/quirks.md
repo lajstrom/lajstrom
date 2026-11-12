@@ -388,7 +388,8 @@ layer without a length. distribution-spec 1.1.1 defines the first two; Docker pu
   AWS's 5 MiB minimum part is documented for its API only, so a part's minimum on `/v2` is
   unverified ([ecr.md](ecr.md#what-the-provider-does));
   one `PUT` was cut off above about 300 MiB ([reported](https://github.com/alienplatform/alien/pull/1418)).
-- **GHCR** takes 4 MiB a `PATCH` and answers 416 above, with no header to say so; the `GET` of a
+- **GHCR** takes 4 MiB a `PATCH` and answers 416 above, with no header to say so (the provider
+  splits a client's larger chunk, #697); the `GET` of a
   session is a 303 to a web page; the empty blob cannot be pushed (measured, [ghcr.md](ghcr.md#upload-sessions)).
 - **Gitea, Forgejo and JFrog refuse a chunk of unknown length into a session that holds bytes**,
   400 "Stream uploads after first write are not allowed" and 416; `registries[].uploads.spoolUnknownLength`

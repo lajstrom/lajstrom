@@ -81,8 +81,12 @@ func (r *repository) MountBlob(ctx context.Context, d digest.Digest, from string
 // with chunked encoding and no Content-Range, the streamed PATCH that docker sends. With
 // registries[].uploads.spoolUnknownLength on, a chunk of unknown size into a session that holds
 // bytes is spooled first and sent as one of known size (spool.go); with it off, the refusal of
-// such a chunk may carry a hint that names the key (addSpoolHint). A chunk of 0 bytes
-// sends nothing.
+// such a chunk may carry a hint that names the key (addSpoolHint). On a registry with a chunk
+// bound (chunkBound: GHCR's 4 MiB, or registries[].uploads.chunkSize), a chunk of known size
+// above it goes as several PATCHes (appendSplit), and one of unknown size into a session that
+// holds bytes is spooled when the key is on, refused before anything is sent when it is off
+// (refuseStreamed); the first write of unknown size streams as it came, which GHCR takes
+// whole. A chunk of 0 bytes sends nothing.
 func (r *repository) AppendBlobChunk(ctx context.Context, u provider.Upload, body io.Reader, size int64) (provider.Upload, error) {
 	op := r.op("append to upload", u.ID)
 	loc, err := r.p.location(u.Location)
@@ -108,6 +112,9 @@ func (r *repository) AppendBlobChunk(ctx context.Context, u provider.Upload, bod
 		}
 		body, size = c.reader(), c.size
 	}
+	if r.p.overBound(size, streamed) {
+		return r.appendSplit(ctx, op, u, body, size)
+	}
 	r.prime(ctx, loc)
 	var hdr http.Header
 	if size > 0 {
@@ -123,6 +130,50 @@ func (r *repository) AppendBlobChunk(ctx context.Context, u provider.Upload, bod
 	}
 	defer func() { _ = resp.Body.Close() }()
 	return r.session(op, resp, u, u.Offset+cr.n)
+}
+
+// overBound reports whether a chunk of size bytes (-1: unknown) cannot go as one PATCH to a
+// registry with a chunk bound (chunkBound): it is larger, or of unknown size into a session that
+// holds bytes (streamed).
+func (p *Provider) overBound(size int64, streamed bool) bool {
+	b := int64(p.bound)
+	return b > 0 && (size > b || streamed && size < 0)
+}
+
+// appendSplit sends a chunk of size bytes, more than the registry's chunkBound, as PATCHes of at
+// most the bound, each with its Content-Range, streamed from body one after the other: GHCR
+// answers a larger PATCH with 416 (docs/registries/ghcr.md, Upload sessions). The client sees
+// one chunk: the session returned is the last answer's, which holds all of it; on a failure,
+// the one after the last piece the registry took, with the error. A chunk of unknown size is
+// refused (refuseStreamed).
+func (r *repository) appendSplit(ctx context.Context, op string, u provider.Upload, body io.Reader, size int64) (provider.Upload, error) {
+	if size < 0 {
+		return u, r.p.refuseStreamed(op)
+	}
+	bound := int64(r.p.bound)
+	for size > 0 {
+		n := min(size, bound)
+		next, err := r.AppendBlobChunk(ctx, u, io.LimitReader(body, n), n)
+		if err != nil {
+			return u, err
+		}
+		u, size = next, size-n
+	}
+	return u, nil
+}
+
+// refuseStreamed is the refusal of a chunk of unknown length into a session that holds bytes,
+// on a registry with a chunk bound, before anything is sent: a PATCH there must carry its
+// length and at most the bound, and GHCR starts its session over with a PATCH without
+// Content-Range (docs/registries/ghcr.md, Upload sessions). Splitting it as it streams would
+// hold a piece of the blob in memory, which a /v2 upload does not (docs/spec/http-routing.md,
+// INV-25); spoolUnknownLength sends it with its length. The refusal is the one Gitea answers
+// such a chunk with, 400 BLOB_UPLOAD_INVALID, with a hint that names the key.
+func (p *Provider) refuseStreamed(op string) error {
+	rej := &provider.RejectedError{Registry: p.name, Status: http.StatusBadRequest, Code: errcode.ErrorCodeBlobUploadInvalid,
+		Hint: fmt.Sprintf("the registry takes a chunk after the first write of an upload only with its length, at most %d bytes "+
+			"a request, so this one was not sent; registries[].uploads.spoolUnknownLength sends it with its length", p.bound)}
+	return &backendError{op: op, kind: rej, detail: "a chunk of unknown length, not sent"}
 }
 
 // FinishBlobUpload closes the session: PUT <location>?digest=<d>, 201. The last chunk is the

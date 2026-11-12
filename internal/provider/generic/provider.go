@@ -62,6 +62,8 @@ type Provider struct {
 	spoolHint atomic.Bool
 	// chunk is the size of the chunks of OpenBlobWriter (blobChunk).
 	chunk int
+	// bound is the largest PATCH the registry takes, 0 for no bound (chunkBound).
+	bound int
 
 	// mu serialises probing; probed is the answer of the first probe that succeeded.
 	mu     sync.Mutex
@@ -141,6 +143,7 @@ func NewWithOptions(cfg config.Registry, log *slog.Logger, o Options) (*Provider
 
 		spoolUnknown: cfg.Uploads.SpoolUnknownLength,
 		chunk:        blobChunk(u.Host, cfg.Uploads.ChunkSize),
+		bound:        chunkBound(u.Host, cfg.Uploads.ChunkSize),
 	}
 	reg := &remote.Registry{RepositoryListPageSize: pageSize}
 	reg.Reference = registry.Reference{Registry: u.Host}
