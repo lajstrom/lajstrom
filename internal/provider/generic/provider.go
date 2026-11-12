@@ -18,6 +18,7 @@ import (
 	"oras.land/oras-go/v2/registry/remote/auth"
 
 	"github.com/lajstrom/lajstrom/internal/config"
+	"github.com/lajstrom/lajstrom/internal/egress"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -87,6 +88,9 @@ type Provider struct {
 	// disagreed with its session (statusOffset); statusMu serialises the measurement.
 	statusMu   sync.Mutex
 	statusConv atomic.Int32
+	// guard checks the hosts of redirects (Options.PublicRedirects); nil follows them as a
+	// backend's are.
+	guard *egress.Guard
 }
 
 // quirk returns the vendor's quirks, none before the probe. A request that depends on them
@@ -147,6 +151,12 @@ type Options struct {
 	// the first challenge got, so a replaced credential is sent from the next request on, not
 	// after a 401. A Credential that fails fails the request with provider.ErrUnauthorized.
 	Credential auth.CredentialFunc
+	// PublicRedirects holds a registry that Lajstrom does not run, the upstream of an oci proxy
+	// repo (ADR 0018), to what proxy-and-group.md §9.2 allows an upstream: a manifest or a blob
+	// that it redirects to another host than its own and its token realms' is followed only over
+	// https and only to public addresses (egress.Guard), with an egress proxy only to a host that
+	// is not an address literal of a private range.
+	PublicRedirects bool
 }
 
 // NewWithOptions is New with the changes of o.
@@ -168,6 +178,10 @@ func NewWithOptions(cfg config.Registry, log *slog.Logger, o Options) (*Provider
 		log = slog.Default()
 	}
 	log = log.With("registry", cfg.Name)
+	var guard *egress.Guard
+	if o.PublicRedirects {
+		guard = egress.NewGuard(append([]string{u.Hostname()}, realmHosts(cfg, u)...)...)
+	}
 	p := &Provider{
 		name:     cfg.Name,
 		host:     u.Host,
@@ -175,6 +189,7 @@ func NewWithOptions(cfg config.Registry, log *slog.Logger, o Options) (*Provider
 		prefix:   normalisePrefix(cfg.Prefix),
 		override: cfg.Capabilities,
 		log:      log,
+		guard:    guard,
 		maxPages: maxPages,
 		timeout:  timeoutOf(cfg),
 
@@ -182,7 +197,7 @@ func NewWithOptions(cfg config.Registry, log *slog.Logger, o Options) (*Provider
 		chunk:        blobChunk(u.Host, cfg.Uploads.ChunkSize),
 		bound:        chunkBound(u.Host, cfg.Uploads.ChunkSize),
 	}
-	p.clients = newClients(cfg, u, log, o.Credential, func() bool { return p.quirk().pushForDelete })
+	p.clients = newClients(cfg, u, log, o.Credential, func() bool { return p.quirk().pushForDelete }, guard)
 	reg := &remote.Registry{RepositoryListPageSize: pageSize}
 	reg.Reference = registry.Reference{Registry: u.Host}
 	if err := reg.Reference.ValidateRegistry(); err != nil {

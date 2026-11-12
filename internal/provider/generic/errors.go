@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"syscall"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"oras.land/oras-go/v2/registry/remote/auth"
 	"oras.land/oras-go/v2/registry/remote/errcode"
 
+	"github.com/lajstrom/lajstrom/internal/egress"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -94,8 +96,9 @@ func (p *Provider) translate(op string, err error) error {
 //     a request that waited on a client's body (#648), or of an answer's body is not the
 //     registry's and stays as it is.
 //
-// A refused token realm (realmError) is wrapped without what net/http and oras-go put around
-// it, which names the request URL. Everything else, context errors included, is wrapped with
+// A refused token realm (realmError), and a redirect or a dial that a guard refused
+// (egress.ErrRefused, Options.PublicRedirects), are wrapped without what net/http and oras-go
+// put around them, which names the request URL. Everything else, context errors included, is wrapped with
 // %w and the operation. nil stays nil. errdef.ErrAlreadyExists is not translated: the call
 // sites where it means success drop it.
 func translateAs(registry string, wait func() time.Duration, op string, err error) error {
@@ -105,6 +108,13 @@ func translateAs(registry string, wait func() time.Duration, op string, err erro
 	var realm *realmError
 	if errors.As(err, &realm) {
 		return fmt.Errorf("generic: %s: %w", op, realm)
+	}
+	if errors.Is(err, egress.ErrRefused) {
+		var ue *url.Error // names the URL, which may be presigned: never in an error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return fmt.Errorf("generic: %s: %w", op, err)
 	}
 	var ce *credentialError
 	if errors.As(err, &ce) {
