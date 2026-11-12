@@ -1,14 +1,22 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 
+	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/index/reindex"
 )
 
@@ -90,6 +98,83 @@ func TestReindex(t *testing.T) {
 	if len(rep.Repos) != 1 || rep.Repos[0].Repo != "raw/assets" || len(rep.Repos[0].Errors) != 1 ||
 		!strings.Contains(rep.Repos[0].Errors[0].Error, "list the OCI repositories") || rep.Repos[0].Removed != 0 {
 		t.Errorf("report: %+v", rep)
+	}
+}
+
+// envReindexProcess names the configuration of reindex in the child process of TestReindexHangup.
+const envReindexProcess = "LAJSTROM_TEST_REINDEX_CONFIG"
+
+// TestReindexProcess is reindex in the child process of TestReindexHangup, with the
+// configuration of LAJSTROM_TEST_REINDEX_CONFIG; without it, it is skipped.
+func TestReindexProcess(t *testing.T) {
+	cfg := os.Getenv(envReindexProcess)
+	if cfg == "" {
+		t.Skip("the child process of TestReindexHangup")
+	}
+	cmd := newRootCmd(func(string) (string, bool) { return "", false })
+	cmd.SetArgs([]string{"reindex", "--config", cfg})
+	_ = cmd.ExecuteContext(context.Background()) // a drained run is an error of its own
+}
+
+// TestReindexHangup checks that reindex drains on SIGHUP, which closing its terminal or an SSH
+// session sends, as it does on SIGTERM: the run row ends, not left running to block the next
+// run of its scope until it goes stale (#751). The registry answers no request, so the run
+// waits on it until the signal.
+func TestReindexHangup(t *testing.T) {
+	waiting := make(chan struct{}, 1)
+	reg := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case waiting <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+	}))
+	defer reg.Close()
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "lajstrom.yaml")
+	body := "server:\n  listen: \":8080\"\n  externalURL: https://art.example.com\ndatabase:\n  driver: sqlite\n  dsn: \"file:" + filepath.Join(dir, "lajstrom.db") + "\"\n" +
+		"registries:\n  - name: local\n    url: \"" + reg.URL + "\"\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runSteps(t, cfg, []step{
+		{args: []string{"migrate"}, wantOut: "applied 0001"},
+		{args: []string{"admin", "repo", "create", "raw/assets", "--registry", "local"}},
+	})
+	cmd := exec.Command(os.Args[0], "-test.run=^TestReindexProcess$") //nolint:gosec // the test binary
+	cmd.Env = append(os.Environ(), envReindexProcess+"="+cfg)
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	defer func() { _ = cmd.Process.Kill() }()
+	select {
+	case <-waiting:
+	case err := <-exited:
+		t.Fatalf("reindex ended before the registry: %v; its output:\n%s", err, out.String())
+	case <-time.After(20 * time.Second):
+		t.Fatalf("reindex has not asked the registry after 20 s; its output:\n%s", out.String())
+	}
+	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-exited:
+		if err != nil { // TestReindexProcess ignores the error of the drained run: a kill is left
+			t.Errorf("reindex after SIGHUP: %v, want it drained, not killed", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatalf("reindex has not ended 30 s after SIGHUP; its output:\n%s", out.String())
+	}
+	run, err := openIndex(t, dir).GetReindexRun(t.Context(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.State == index.ReindexRunning || run.FinishedAt == nil {
+		t.Errorf("the run after SIGHUP: %s, finished %v, want it ended; its output:\n%s", run.State, run.FinishedAt, out.String())
 	}
 }
 

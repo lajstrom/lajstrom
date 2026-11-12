@@ -31,6 +31,10 @@ import (
 // registryProbeTimeout bounds the capability probe of each registry at startup.
 const registryProbeTimeout = 10 * time.Second
 
+// drainSignals end serve and reindex with a drain: SIGINT, SIGTERM and SIGHUP, which closing the
+// terminal or an SSH session sends (#720, #751).
+var drainSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
+
 // newServeCmd returns serve: load and validate the configuration (in the root's
 // PersistentPreRunE), read the credential files of the upstreams (loadUpstreams), open the
 // index database and apply its pending migrations, write this process's row of replicas and beat
@@ -67,7 +71,7 @@ func newServeCmd(a *app) *cobra.Command {
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, _ []string) (err error) {
-			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+			ctx, stop := signal.NotifyContext(cmd.Context(), drainSignals...)
 			defer stop()
 			// The first signal starts the drain; a second one stops the process at once.
 			context.AfterFunc(ctx, stop)
