@@ -15,6 +15,7 @@ import (
 	"github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
+	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
@@ -158,8 +159,8 @@ func signature(t *testing.T, subject ocispec.Descriptor, layer string) ingest.Re
 }
 
 // TestPutReferrer: a referrer is pushed, written to no derived table, and audited once with
-// its kind and artifact type; under the referrers lock of its subject when the backend has no
-// referrers API, and without one when it has.
+// its kind and artifact type; under the referrers lock of its subject, its subject's tag lock,
+// with the referrers API or without (#806).
 func TestPutReferrer(t *testing.T) {
 	for _, api := range []bool{true, false} {
 		e, rec, subject := referrerEnv(t, api)
@@ -180,12 +181,8 @@ func TestPutReferrer(t *testing.T) {
 		ev := after.Audit[0]
 		before.Audit, after.Audit = nil, nil
 		same(t, "derived rows", before, after)
-		wantLocks := []string{"raw/scratch/notes@" + subject.Digest.String()}
-		if api {
-			wantLocks = nil
-		}
-		same(t, "locks", wantLocks, rec.locks)
-		same(t, "manifest pushes under the lock", []bool{!api}, rec.pushes)
+		same(t, "locks", []string{"raw/scratch/notes@" + subject.Digest.String()}, rec.locks)
+		same(t, "manifest pushes under the lock", []bool{true}, rec.pushes)
 		if ev.Action != "push" || ev.Subject != subject.Digest.String() || ev.Digest != d || ev.Principal != alice.String() || ev.Repo != "raw/scratch" {
 			t.Errorf("api %t: audit event %+v", api, ev)
 		}
@@ -298,5 +295,87 @@ func TestPutReferrerOrigin(t *testing.T) {
 	r.Path = "app"
 	if _, err := e.pipe.PutReferrer(t.Context(), ociRepo(t, e), r, alice); err != nil {
 		t.Errorf("a referrer with %s on an oci repo: %v, want it stored as it came", profile.AnnotationOriginURL, err)
+	}
+}
+
+// existsGate is a registry whose first blob Exists waits: it closes in, and goes on once open
+// is closed. checkReferrer asks it right after it resolved the subject (#806).
+type existsGate struct {
+	provider.Provider
+	once     *sync.Once
+	in, open chan struct{}
+}
+
+func newExistsGate(p provider.Provider) existsGate {
+	return existsGate{Provider: p, once: &sync.Once{}, in: make(chan struct{}), open: make(chan struct{})}
+}
+
+func (g existsGate) Repository(ctx context.Context, name string) (provider.Repository, error) {
+	rr, err := g.Provider.Repository(ctx, name)
+	return existsRepo{rr, g}, err
+}
+
+type existsRepo struct {
+	provider.Repository
+	g existsGate
+}
+
+func (r existsRepo) Exists(ctx context.Context, d ocispec.Descriptor) (bool, error) {
+	r.g.once.Do(func() { close(r.g.in); <-r.g.open })
+	return r.Repository.Exists(ctx, d)
+}
+
+// raceSubjectDelete pushes r to the repo of e through pipe, over g, and while the push waits at
+// its first blob check, after it resolved the subject, deletes the version of subject through
+// pipe. It returns the push's error.
+func raceSubjectDelete(ctx context.Context, t *testing.T, e *env, pipe *ingest.Pipeline, g existsGate, r ingest.Referrer, subject digest.Digest) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { _, err := pipe.PutReferrer(context.WithoutCancel(ctx), e.repo, r, alice); done <- err }()
+	select {
+	case <-g.in:
+	case err := <-done:
+		t.Fatalf("PutReferrer returned before its blob check: %v", err)
+	}
+	_, err := pipe.Delete(ctx, e.repo, format.Deletion{Path: "notes", Reference: subject.String()}, alice)
+	close(g.open)
+	must(t, err)
+	return <-done
+}
+
+// TestPutReferrerSubjectDeleted (#806): a referrer of a managed repo whose subject is deleted
+// after the checks resolved it and before the push is refused, with the referrers API and
+// without: the push resolves its subject again under the subject's tag lock, which the delete
+// held, and is ErrInvalid naming it; nothing is pushed, no tag-schema index comes back, and its
+// audit row is failed. A referrer pushed before the delete went with the subject.
+func TestPutReferrerSubjectDeleted(t *testing.T) {
+	for _, api := range []bool{true, false} {
+		e, rec, subject := referrerEnv(t, api)
+		early := signature(t, subject, "signature")
+		_, err := e.pipe.PutReferrer(t.Context(), e.repo, early, alice)
+		must(t, err)
+		rr, err := e.prov.Repository(t.Context(), "raw/scratch/notes")
+		must(t, err)
+		must(t, rr.Push(t.Context(), ocispec.Descriptor{MediaType: "application/octet-stream", Digest: digest.FromString("late"), Size: 4},
+			strings.NewReader("late")))
+		g := newExistsGate(registry{Fake: e.prov, api: api, rec: rec})
+		opts := e.options(g)
+		opts.Index = rec
+		r := signature(t, subject, "late")
+		rec.locks, rec.pushes = nil, nil
+		err = raceSubjectDelete(t.Context(), t, e, ingest.New(opts), g, r, subject.Digest)
+		if !errors.Is(err, ingest.ErrInvalid) || !strings.Contains(err.Error(), subject.Digest.String()) {
+			t.Errorf("api %t: PutReferrer after its subject's delete: %v, want ErrInvalid naming %s", api, err, subject.Digest)
+		}
+		gone(t, e, subject.Digest.String(), early.Desc.Digest.String(), r.Desc.Digest.String(), "sha256-"+subject.Digest.Encoded())
+		var listed []ocispec.Descriptor
+		must(t, rr.Referrers(t.Context(), subject, "", func(page []ocispec.Descriptor) error { listed = append(listed, page...); return nil }))
+		same(t, "referrers listed after the delete", []ocispec.Descriptor(nil), listed)
+		lock := "raw/scratch/notes@" + subject.Digest.String()
+		same(t, "locks: the delete's, then the push's", []string{lock, lock}, rec.locks)
+		same(t, "manifest pushes", []bool(nil), rec.pushes)
+		if ev := e.rows(t).Audit[0]; ev.Action != "push" || ev.Digest != r.Desc.Digest || ev.State != index.AuditFailed {
+			t.Errorf("api %t: the audit row of the refused push: %s %s %s", api, ev.Action, ev.Digest, ev.State)
+		}
 	}
 }

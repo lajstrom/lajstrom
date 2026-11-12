@@ -206,8 +206,9 @@ the referrers lock of (OCI repository, subject) for the push of a referrer when 
 no referrers API (`Capabilities.Referrers` false), and everything the push does to the index
 happens under it (`Store.WithReferrersLock`): on Postgres `pg_advisory_xact_lock` on a key hashed
 from both, in a transaction held for the push; on SQLite, which serves one replica, a lock of
-the process. With the referrers API the registry keeps the list, and no lock is taken. Approved
-by the maintainer on 2026-11-09 (#28).
+the process. With the referrers API the registry keeps the list, and a referrer pushed to an
+`oci` repo by digest takes no lock; a referrer of a managed repo takes it all the same (below).
+Approved by the maintainer on 2026-11-09 (#28).
 
 On Postgres the lock lasts as long as its transaction, and the transaction idles while the push
 talks to the registry. Whatever ends the transaction earlier ends the lock: another writer takes
@@ -252,6 +253,20 @@ tag lock alone. So two operations never wait on each other crosswise. On Postgre
 holds two connections of the pool for the locks and a third for the transaction of its rows, as
 a journal append holds one for its lock and one for its transaction: when the pool is
 exhausted, a delete that waits for a connection waits until one is free or its request ends.
+
+On a managed repo a referrer's subject must be a manifest of the repository (http-routing.md §2,
+PUT). Ingest checks it before any lock, then pushes the referrer under the referrers lock of its
+subject, with the referrers API or without, and resolves the subject again under the lock before
+the push: refused, `400 MANIFEST_INVALID`, when the backend does not have it any more. That lock
+is the tag lock of the subject when the subject has no subject itself, a version's manifest, and
+the delete of the version holds it while it lists and deletes the referrers, the manifest and
+its rows. A referrer pushed during the delete of its subject is then either deleted with it or
+refused after it, and never stored for a version that is gone, nor its `sha256-<hex>` index
+written again (#806). So the referrer pushes of one subject follow each other with the API too;
+an `oci` repo, which takes a referrer whose subject does not exist (the distribution spec),
+keeps the rules above. A referrer of a referrer (a countersignature) is not covered: its push
+takes the lock of its own subject, and the delete of that subject, or of the version above it,
+holds the version's.
 
 The **package row** is the last lock of the order. Every version write and delete
 (`UpsertVersion`, `DeleteVersion`) locks its package's `packages` row first, in the transaction

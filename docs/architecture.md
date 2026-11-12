@@ -144,9 +144,10 @@ sequenceDiagram
 A signature or an SBOM of the version (a manifest with `subject`, or cosign's legacy
 `sha256-<hex>.sig`) takes the same `PUT manifest` into the pipeline's referrer path instead:
 the subject and the blobs are checked, the manifest is pushed as it came (under the referrers
-lock of the subject when the registry has no referrers API, since the push rewrites the
-`sha256-<hex>` index), an audit event is written, and no derived row: the referrers are listed
-from the registry (manifest-profile.md §6).
+lock of the subject, the tag lock a delete of the version holds, where the subject is checked
+again; without a referrers API the push also rewrites the `sha256-<hex>` index under it), an
+audit event is written, and no derived row: the referrers are listed from the registry
+(manifest-profile.md §6).
 
 ### B. Publish with `mvn deploy`
 

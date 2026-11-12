@@ -41,11 +41,14 @@ type Referrer struct {
 // nothing: no derived table holds referrers before #89 (docs/spec/index-schema.md). On a
 // managed repo, hosted or proxy, the manifest must carry no lajstrom.origin.* key, the subject
 // must be a manifest of the repository, the config and the layers must be in the backend, and
-// a tag must be cosign's; an oci repo takes the referrer as it comes, as a registry does. When
-// the backend has no referrers API (Capabilities.Referrers) and the manifest has a subject, the
-// push, which also rewrites the sha256-<hex> index of the subject, runs under the referrers lock
-// of the index (Store.WithReferrersLock); a push by tag to an oci repo runs under it with the
-// API too, the tag lock that a delete holds. Its audit row, a push by principal whose subject
+// a tag must be cosign's; an oci repo takes the referrer as it comes, as a registry does. On a
+// managed repo the push runs under the referrers lock of the subject (Store.WithReferrersLock),
+// the tag lock that the delete of the subject holds, with the referrers API or without, and the
+// subject is resolved again under it: a subject deleted since the checks is ErrInvalid, and
+// nothing is pushed (#806). On an oci repo the push runs under that lock when the backend has no
+// referrers API (Capabilities.Referrers) and the manifest has a subject, for the push also
+// rewrites the sha256-<hex> index of the subject, and a push by tag with the API too, the tag
+// lock that a delete holds. Its audit row, a push by principal whose subject
 // is the subject's digest, with the client address, and the referrer's kind and artifact type
 // and the request id in the details, is written pending before the push and completed after
 // it, ok or failed; a repeat writes another. Before the row is completed the referrer reads
@@ -77,7 +80,7 @@ func (p *Pipeline) PutReferrer(ctx context.Context, repo index.Repo, r Referrer,
 	if err := p.intend(ctx, &ev); err != nil {
 		return "", err
 	}
-	if err := p.pushReferrer(ctx, prov, name, r, m.Subject != nil, repo.Format == ociFormat && r.Tag != ""); err != nil {
+	if err := p.pushReferrer(ctx, prov, name, r, m.Subject != nil, repo.Format != ociFormat); err != nil {
 		p.fail(ctx, &ev, err)
 		return "", err
 	}
@@ -118,37 +121,55 @@ func parseReferrer(r Referrer) (ocispec.Manifest, error) {
 	return m, nil
 }
 
-// pushReferrer pushes r to the repository name, by digest or under its tag. When the manifest
-// has a subject and the backend no referrers API, the provider's push also rewrites the
-// sha256-<hex> index of the subject, and the whole push, the repository included, runs under the
-// referrers lock of the subject. A push by tag to an oci repo (tagLock) holds the tag lock of the
-// manifest with the API too, which a delete holds while it counts the tags: the lock of its
-// subject, else of its own digest (docs/spec/index-schema.md, Coordination).
-func (p *Pipeline) pushReferrer(ctx context.Context, prov provider.Provider, name string, r Referrer, hasSubject, tagLock bool) error {
+// pushReferrer pushes r to the repository name, by digest or under its tag. A referrer of a
+// managed repo (managed) is pushed under the referrers lock of its subject, the subject's tag
+// lock, which the delete of the subject holds while it lists and deletes its referrers, then
+// the subject and its rows (deletion.locked), with the referrers API or without, and its
+// subject is resolved again under it first: a delete that ran
+// since checkReferrer is either done, and the push is ErrInvalid, or waits for the push and
+// deletes the referrer with its subject (#806). On an oci repo, which takes a referrer whose
+// subject does not exist, the push runs under that lock when the manifest has a subject and the
+// backend no referrers API, for the provider's push also rewrites the sha256-<hex> index of the
+// subject; a push by tag holds the tag lock of the manifest with the API too, which a delete
+// holds while it counts the tags: the lock of its subject, else of its own digest
+// (docs/spec/index-schema.md, Coordination). The whole push, the repository included, runs
+// under the lock.
+func (p *Pipeline) pushReferrer(ctx context.Context, prov provider.Provider, name string, r Referrer, hasSubject, managed bool) error {
 	push := func(ctx context.Context) error {
 		rr, err := prov.Repository(ctx, name)
 		if err != nil {
 			return fmt.Errorf("ingest: repository %s: %w", name, err)
+		}
+		if managed {
+			if err := resolveSubject(ctx, rr, name, r.Subject); err != nil {
+				return err
+			}
 		}
 		if r.Tag != "" {
 			return rr.PushReference(ctx, r.Desc, bytes.NewReader(r.Manifest), r.Tag)
 		}
 		return rr.Push(ctx, r.Desc, bytes.NewReader(r.Manifest))
 	}
-	caps, err := prov.Capabilities(ctx)
-	if err != nil {
-		return fmt.Errorf("ingest: capabilities of the registry of %s: %w", name, err)
-	}
-	key := r.Subject
-	if !hasSubject {
+	key, lock := r.Subject, managed || r.Tag != ""
+	if !hasSubject && !managed {
 		key = r.Desc.Digest
 	}
-	if (hasSubject && !caps.Referrers) || tagLock {
+	if !lock && hasSubject {
+		caps, err := prov.Capabilities(ctx)
+		if err != nil {
+			return fmt.Errorf("ingest: capabilities of the registry of %s: %w", name, err)
+		}
+		lock = !caps.Referrers
+	}
+	var err error
+	if lock {
 		err = p.index.WithReferrersLock(ctx, name, key, push)
 	} else {
 		err = push(ctx)
 	}
 	switch {
+	case errors.Is(err, ErrInvalid):
+		return err
 	case errors.Is(err, provider.ErrConflict):
 		return fmt.Errorf("ingest: referrer %s under %s:%s: %w: %w", r.Desc.Digest, name, r.Tag, ErrConflict, err)
 	case err != nil:
@@ -174,10 +195,8 @@ func (p *Pipeline) checkReferrer(ctx context.Context, prov provider.Provider, na
 	if err != nil {
 		return fmt.Errorf("ingest: repository %s: %w", name, err)
 	}
-	if _, err := rr.Resolve(ctx, r.Subject.String()); errors.Is(err, provider.ErrNotFound) {
-		return invalid(fmt.Errorf("the subject %s is not a manifest of %s: push the artifact before what refers to it", r.Subject, name))
-	} else if err != nil {
-		return fmt.Errorf("ingest: subject %s of %s: %w", r.Subject, name, err)
+	if err := resolveSubject(ctx, rr, name, r.Subject); err != nil {
+		return err
 	}
 	var deadline time.Time
 	for _, b := range append([]ocispec.Descriptor{m.Config}, m.Layers...) {
@@ -191,6 +210,17 @@ func (p *Pipeline) checkReferrer(ctx context.Context, prov provider.Provider, na
 		case !ok:
 			return invalid(fmt.Errorf("blob %s was not uploaded to %s", b.Digest, name))
 		}
+	}
+	return nil
+}
+
+// resolveSubject checks that subject is a manifest of the repository name, whose data path is
+// rr: ErrInvalid when the backend does not have it.
+func resolveSubject(ctx context.Context, rr provider.Repository, name string, subject digest.Digest) error {
+	if _, err := rr.Resolve(ctx, subject.String()); errors.Is(err, provider.ErrNotFound) {
+		return invalid(fmt.Errorf("the subject %s is not a manifest of %s: push the artifact before what refers to it", subject, name))
+	} else if err != nil {
+		return fmt.Errorf("ingest: subject %s of %s: %w", subject, name, err)
 	}
 	return nil
 }
