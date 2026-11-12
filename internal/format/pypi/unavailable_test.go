@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/format/formattest"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/provider"
@@ -19,12 +20,14 @@ import (
 // TestUploadIndexUnavailableAtConfirm uploads a wheel whose index write fails after the
 // registry took its manifest, the database out (#641): 503 with Retry-After: 5 and the status
 // text only, which twine retries, not a 500; the same upload again is 200 and the wheel is on
-// the page.
+// the page. The upload again builds its manifest a second later, as twine's retry does, so
+// with another digest: it confirms the manifest the registry has, which its tag keeps.
 func TestUploadIndexUnavailableAtConfirm(t *testing.T) {
 	e := newEnv(t)
 	log := slog.New(slog.DiscardHandler)
+	rebuilt := &formattest.Rebuilding{Streamer: Plugin{}}
 	e.pipe = ingest.New(ingest.Options{Providers: provider.Map{"local": e.fake}, Index: downAtConfirm(e.st), Log: log,
-		Plugins: func(name string) (format.Plugin, bool) { return Plugin{}, name == Name }})
+		Plugins: func(name string) (format.Plugin, bool) { return rebuilt, name == Name }})
 	deps := format.Deps{Index: e.st, Ingest: e.pipe, Providers: provider.Map{"local": e.fake}, Log: log}
 	mux := http.NewServeMux()
 	Plugin{}.Routes(format.NewRouter(mux, Name, deps), deps)
@@ -42,6 +45,9 @@ func TestUploadIndexUnavailableAtConfirm(t *testing.T) {
 	}
 	if rr := e.post(t, f); rr.Code != http.StatusOK {
 		t.Fatalf("the same upload again: %d %s", rr.Code, rr.Body)
+	}
+	if refs := e.fake.PushReferences(); len(refs) != 2 || refs[1].Digest != refs[0].Digest {
+		t.Errorf("manifest pushes %+v, want the first manifest pushed again", refs)
 	}
 	if page := e.do(http.MethodGet, "simple/tool/").Body.String(); !strings.Contains(page, wi.Filename) {
 		t.Errorf("the page after the upload again:\n%s", page)

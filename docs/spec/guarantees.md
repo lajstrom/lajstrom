@@ -324,10 +324,12 @@ status is `holds on strongly consistent registries only` do not hold there.
   `ingest.claimTTL` for the backstop below; **case-exact tags** (on Gitea and Forgejo two
   versions that differ only in case are one tag, and the second is a `409`:
   [#426](https://github.com/lajstrom/lajstrom/issues/426)). Database: as INV-6.
-- **Mechanism.** The index and the claims (INV-6) decide; then `publish.pushManifest` resolves the
-  tag in the backend before the push and refuses another digest there, which catches a tag the
-  index lacks (a confirm that failed after the push, a write past Lajstrom, an index not yet
-  rebuilt); a backend with immutable tags refuses the push on its own. On a lagging registry
+- **Mechanism.** The index and the claims (INV-6) decide; then `ingest.Pipeline.checkTag` resolves
+  the tag in the backend before the push and refuses another digest there, which catches a tag
+  the index lacks (a write past Lajstrom, an index not yet rebuilt, a confirm that failed after
+  the push); a frontend upload of the same files as the manifest there takes that manifest over
+  instead and pushes its digest again, so the tag keeps it (INV-8); a backend with immutable
+  tags refuses the push on its own. On a lagging registry
   that read cannot miss Lajstrom's own pushes: a confirm runs only after the visibility barrier
   saw the tag (INV-4), and a push the registry did not serve in time keeps its claim for
   `ingest.claimTTL`, which refuses another digest meanwhile. `Writer.UpsertJournal` never
@@ -338,7 +340,8 @@ status is `holds on strongly consistent registries only` do not hold there.
   serve was never pushed, and is taken over. Reindex reports drift (`scan.drift`) and keeps the
   index's digest.
 - **Tests.** `TestIngestConflict`, `TestIngestTagInBackend`, `TestIngestIndexFailsAfterPush`,
-  `TestManifestHook`, `TestDrift`, `TestJournalAdopts`, the store conformance case `Journal`;
+  `TestUploadRetryUnconfirmed`, `TestManifestHook`, `TestDrift`, `TestJournalAdopts`, the store
+  conformance case `Journal`;
   `TestVisibilityTimeout`, `TestVisibilityRetryRebuilt`, `TestJournalVisibility`,
   `TestJournalClaimNotPushed`;
   `oras.sh` (another manifest under the tag: `409`), the conflicts of `raw.sh`, `pypi.sh`,
@@ -360,11 +363,14 @@ status is `holds on strongly consistent registries only` do not hold there.
 - **Assumes.** Any.
 - **Mechanism.** `ingest.Pipeline.repeat` and `sameFiles` before the blobs are pushed, again under
   the claims in `claimTag`; `confirm` reports `Existed`. An upload whose tag a fresh claim of
-  another digest holds, and whose manifest the registry has with the same files, takes that
-  manifest over (`ingest.Pipeline.adoptClaimed`): the retry of a publish answered `503` by the
-  visibility barrier (INV-4), or a publish of the same files still on its way.
+  another digest holds, or the backend holds with a manifest the index lacks (`checkTag`), takes
+  that manifest over when the registry has it with the same name and files
+  (`ingest.Pipeline.adopt`), and confirms it: the retry of a publish answered `503` by the
+  visibility barrier (INV-4) or by a database that did not answer at confirm (#641), a publish of
+  the same files still on its way, or one that stopped after its push and whose claim went stale.
 - **Tests.** `TestUploadRepeat`, `TestUploadRepeatRace`, `TestIngest`, `TestSessionRepeat`,
-  `TestVisibilityRetryRebuilt`; R-02 in
+  `TestVisibilityRetryRebuilt`, `TestUploadRetryUnconfirmed`, `TestSessionCommitUnavailable`,
+  `TestIndexUnavailableAtConfirm` (raw), `TestUploadIndexUnavailableAtConfirm` (pypi); R-02 in
   `raw.sh`, the repeats of `pypi.sh`, `apt.sh`, `maven.sh` and `oras.sh` (acceptance.md E-01).
 - **When violated.** Not observed.
 - **Status.** `holds`.
