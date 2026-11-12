@@ -48,7 +48,7 @@ func TestTypes(t *testing.T) {
 			t.Errorf("type %s: MetadataRequired = %v", typ.Name, typ.MetadataRequired)
 		}
 	}
-	if want := []string{"raw", "pypi", "deb", "maven", "npm"}; !slices.Equal(names, want) {
+	if want := []string{"raw", "pypi", "deb", "maven", "npm", "rpm"}; !slices.Equal(names, want) {
 		t.Errorf("Types() = %v, want %v", names, want)
 	}
 	if typ, ok := TypeByFormat("apt"); !ok || typ.Name != "deb" {
@@ -60,8 +60,8 @@ func TestTypes(t *testing.T) {
 	if _, ok := TypeByFormat("deb"); ok {
 		t.Error("TypeByFormat(deb) found a type; deb is a type name, the format is apt")
 	}
-	if _, ok := TypeByName("rpm"); ok {
-		t.Error("TypeByName(rpm) found a type")
+	if _, ok := TypeByName("cargo"); ok {
+		t.Error("TypeByName(cargo) found a type")
 	}
 	// The results are copies.
 	Types()[0].FileMediaTypes[0] = "x"
