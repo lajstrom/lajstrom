@@ -34,8 +34,10 @@ a single blob. Go, single binary, SQLite or Postgres as a derived index.
 ## Contracts: do not change without an issue labelled `contract`
 
 `docs/spec/*.md`, `docs/adr/*.md`, this file, and the exported interfaces of `internal/format`,
-`internal/provider`, `internal/index`, `internal/ingest`. If your task seems to require changing
-one, stop, explain why in the issue, and wait for the lead. Do not "just extend the interface".
+`internal/provider`, `internal/index` (`internal/index/reindex` included), `internal/ingest`.
+layout.md's sections on `internal/auth` and `internal/audit` describe, they do not bind. If your
+task seems to require changing one, stop, explain why in the issue, and wait for the lead. Do
+not "just extend the interface".
 
 ## Layout (details in docs/spec/layout.md)
 
