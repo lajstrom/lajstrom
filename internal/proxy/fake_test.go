@@ -308,11 +308,12 @@ type fakeUpstream struct {
 	docs      map[string]*upstreamDoc
 	files     map[string][]byte
 	status    atomic.Int32
-	fileDelay atomic.Int64    // nanoseconds before a file's body
-	metaDelay atomic.Int64    // nanoseconds before a document's answer
-	noOther   map[string]bool // names whose document of otherKind is 404
+	fileDelay atomic.Int64 // nanoseconds before a file's body
+	metaDelay atomic.Int64 // nanoseconds before a document's answer
 	metaCalls atomic.Int32
 	fileCalls atomic.Int32
+	// noOther are the names whose document of otherKind is 404.
+	noOther map[string]bool
 }
 
 func newFakeUpstream(t *testing.T) *fakeUpstream {
