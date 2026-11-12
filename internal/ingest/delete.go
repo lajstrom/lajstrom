@@ -33,7 +33,10 @@ import (
 //     provider.ErrUnsupported, and nothing changes.
 //  2. The reference, a tag or a digest, is resolved: on a managed repo to a version of the index
 //     when it names one (by its tag, or by its digest in the package of del.Path), else in the
-//     backend; one that names nothing is index.ErrNotFound.
+//     backend; one that names nothing is index.ErrNotFound. A version whose manifest the backend
+//     does not have any more, or a journal tag of an npm package that the backend does not have
+//     and the index does, is gone: its rows go all the same, so that the retry of a delete whose
+//     index transaction failed after the backend deleted deletes them (#668).
 //  3. Under the tag lock of the manifest (Store.WithReferrersLock, keyed by its subject when it
 //     has one, else by its own digest; a journal tag _j<seq> of an npm package under the
 //     package's journal lock instead, keyed by the empty blob's digest, docs/spec/
@@ -54,10 +57,13 @@ import (
 //     with the audit row; for any other manifest the audit row alone. The row is written pending
 //     in step 3, in a transaction of its own after the tags are counted and before the first
 //     request that changes anything, and failed with the error when the rest of step 3 or this
-//     transaction fails. It is a delete by principal with del.ClientIP (the request's client
-//     address when it is empty), the version's subject (or the manifest's subject digest), the
-//     digest, and in the details the number of referrers, the request id, del.Job as job when
-//     it is set, and the request's token as token, token:<id>, when it came with one.
+//     transaction fails. This transaction's failure is a plain error (500), but a database that
+//     did not answer: index.ErrUnavailable stays wrapped (503 with Retry-After), for the retry
+//     finds the rows gone in the backend (step 2) and deletes them. It is a delete by principal
+//     with del.ClientIP (the request's client address when it is empty), the version's subject
+//     (or the manifest's subject digest), the digest, and in the details the number of
+//     referrers, the request id, del.Job as job when it is set, and the request's token as
+//     token, token:<id>, when it came with one.
 //
 // A delete with del.Condition is a compare-and-delete of a version (format.Condition): the
 // reference must be a digest, and a digest that is no version of the package's is refused, never
@@ -134,7 +140,7 @@ type deletion struct {
 	api  bool                // the backend has the referrers API
 
 	target  ocispec.Descriptor // the manifest to delete
-	gone    bool               // the backend does not have it any more: its rows and referrers go all the same
+	gone    bool               // the backend does not have it any more (a version's, a journal entry's): its rows and referrers go all the same
 	version *index.Version     // the version it is; nil for a manifest that is none
 	pkg     *index.Package     // the version's package
 	subject digest.Digest      // the subject of a manifest that is no version, when it has one
@@ -145,7 +151,8 @@ type deletion struct {
 }
 
 // find resolves the reference: to a version of the index when it names one, else in the
-// backend, where a digest that a version holds still makes it that version.
+// backend, where a digest that a version holds still makes it that version; a journal tag the
+// backend does not have, to the entry the index has under it (findEntry).
 func (d *deletion) find(ctx context.Context) error {
 	if err := d.findVersion(ctx); err != nil || d.version != nil {
 		return err
@@ -155,6 +162,8 @@ func (d *deletion) find(ctx context.Context) error {
 	}
 	desc, err := d.rr.Resolve(ctx, d.del.Reference)
 	switch {
+	case errors.Is(err, provider.ErrNotFound) && d.journal && d.pkg != nil:
+		return d.findEntry(ctx)
 	case errors.Is(err, provider.ErrNotFound):
 		return fmt.Errorf("%w: no manifest %s in %s", index.ErrNotFound, d.del.Reference, d.name)
 	case err != nil:
@@ -173,6 +182,23 @@ func (d *deletion) find(ctx context.Context) error {
 	}
 	d.subject, err = d.subjectOf(ctx)
 	return err
+}
+
+// findEntry sets the target to the journal entry under the reference, which the backend does
+// not have, when the index still has its row: a delete whose index transaction failed after the
+// backend deleted the entry left it (#668), and its retry deletes the row and folds the state
+// again, as the delete of a version that is gone does. Without a row it is index.ErrNotFound.
+func (d *deletion) findEntry(ctx context.Context) error {
+	rows, err := d.p.index.ListJournal(ctx, d.pkg.ID)
+	if err != nil {
+		return fmt.Errorf("ingest: journal of %s: %w", d.name, err)
+	}
+	i := slices.IndexFunc(rows, func(e index.JournalEntry) bool { return e.Tag == d.del.Reference })
+	if i < 0 {
+		return fmt.Errorf("%w: no manifest %s in %s", index.ErrNotFound, d.del.Reference, d.name)
+	}
+	d.target, d.gone = ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: rows[i].Digest}, true
+	return nil
 }
 
 // findVersion sets the version the reference names in the package of del.Path, by its digest
@@ -611,7 +637,9 @@ func (d *deletion) event(ctx context.Context, principal auth.Principal) index.Au
 // the audit row is completed ok; for any other manifest the audit row alone. The audit row goes
 // to the audit.Writer after the commit when there is one. The backend has deleted already, so a
 // failure of the transaction is an error without a sentinel (500), and the row is failed with
-// it (#474): reindex repairs the rows.
+// it (#474): reindex repairs the rows. A database that did not answer is the exception:
+// index.ErrUnavailable stays wrapped (503 with Retry-After), and the retry, which finds the rows
+// with the manifest gone (find), deletes them (#668).
 func (d *deletion) record(ctx context.Context) error {
 	setDetail(&d.ev, "referrers", d.referrers)
 	err := d.p.index.Tx(ctx, func(w index.Writer) error {
@@ -628,7 +656,11 @@ func (d *deletion) record(ctx context.Context) error {
 		return d.p.complete(ctx, w, &d.ev)
 	})
 	if err != nil {
-		err = fmt.Errorf("ingest: index rows of %s after the registry deleted it: %s", d.target.Digest, err.Error())
+		if errors.Is(err, index.ErrUnavailable) {
+			err = fmt.Errorf("ingest: index rows of %s after the registry deleted it: %w", d.target.Digest, err)
+		} else {
+			err = fmt.Errorf("ingest: index rows of %s after the registry deleted it: %s", d.target.Digest, err.Error())
+		}
 		d.p.fail(ctx, &d.ev, err)
 		return err
 	}
