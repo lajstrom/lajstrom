@@ -143,12 +143,27 @@ func (h *handlers) page(w http.ResponseWriter, r *http.Request, repo index.Repo,
 	format.ServeDocument(w, r, c, contentType)
 }
 
+// The meta version latest of PEP 691: the newest version of the API the server has, served
+// with that version's own content type.
+const (
+	contentTypeLatestJSON = "application/vnd.pypi.simple.latest+json"
+	contentTypeLatestHTML = "application/vnd.pypi.simple.latest+html"
+)
+
+// offer is a form a page can be served as: the media types an Accept header names it by, the
+// kind of document and the Content-Type it is served with.
+type offer struct {
+	mediaTypes        []string
+	kind, contentType string
+}
+
 // offers are what a page can be served as (PEP 691), in the order a tie is broken: the JSON
-// form, its HTML form, text/html. A range, */* or text/*, means text/html, the default.
-var offers = []struct{ mediaType, kind, contentType string }{
-	{contentTypeJSON, kindJSON, contentTypeJSON},
-	{contentTypeHTML, kindHTML, contentTypeHTML},
-	{"text/html", kindHTML, contentTypeText},
+// form, its HTML form, text/html. latest is version 1, and a range, */* or text/*, means
+// text/html, the default.
+var offers = []offer{
+	{[]string{contentTypeJSON, contentTypeLatestJSON}, kindJSON, contentTypeJSON},
+	{[]string{contentTypeHTML, contentTypeLatestHTML}, kindHTML, contentTypeHTML},
+	{[]string{"text/html", "text/*", "*/*"}, kindHTML, contentTypeText},
 }
 
 // negotiate picks the kind of a page and its Content-Type from the Accept header (PEP 691): the
@@ -160,10 +175,7 @@ func negotiate(accept []string) (kind, contentType string, ok bool) {
 	}
 	best, bestQ := -1, 0.0
 	for _, a := range accepted(accept) {
-		i := slices.IndexFunc(offers, func(o struct{ mediaType, kind, contentType string }) bool { return o.mediaType == a.mediaType })
-		if a.mediaType == "*/*" || a.mediaType == "text/*" {
-			i = 2
-		}
+		i := slices.IndexFunc(offers, func(o offer) bool { return slices.Contains(o.mediaTypes, a.mediaType) })
 		if i >= 0 && a.q > 0 && (a.q > bestQ || (a.q == bestQ && i < best)) {
 			best, bestQ = i, a.q
 		}

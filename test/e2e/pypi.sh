@@ -9,7 +9,8 @@
 # uv add with [[tool.uv.index]] in pyproject.toml and UV_INDEX_INTERNAL_USERNAME and _PASSWORD,
 # uv pip install with [[index]] in uv.toml, poetry add in a project after poetry source add and
 # poetry config http-basic.internal; uv publish of the next version and uv publish --check-url
-# of the same files, which skips them; pip install --upgrade gets the next version. The index
+# of the same files, which skips them; pip install --upgrade gets the next version; the page
+# asked for as the meta version latest of PEP 691, JSON and HTML, is version 1's. The index
 # reads of pip go through the core metadata of PEP 658 (.metadata before the file), which the
 # script checks in the server's access log when it has it.
 #
@@ -161,6 +162,12 @@ page="$(curl -fsS -u "$user:$password" -H 'Accept: application/vnd.pypi.simple.v
 [ "$(jq '.files | length' <<<"$page")" = 4 ] || fail "files: $(jq -c '[.files[].filename]' <<<"$page")"
 [ "$(jq '[.files[] | select(.["core-metadata"] | type == "object")] | length' <<<"$page")" = 4 ] || fail "core-metadata missing"
 [ "$(jq -c .versions <<<"$page")" = '["1.0","1.1"]' ] || fail "versions: $(jq -c .versions <<<"$page")"
+
+step "Accept latest+json and latest+html are served as v1 (PEP 691)"
+for kind in json html; do
+	ctype="$(curl -fsS -o /dev/null -w '%{content_type}' -u "$user:$password" -H "Accept: application/vnd.pypi.simple.latest+$kind" "$base/pypi/$repo/simple/$normalized/")"
+	[ "$ctype" = "application/vnd.pypi.simple.v1+$kind" ] || fail "latest+$kind: Content-Type $ctype"
+done
 
 if [ -n "${LAJSTROM_SERVER_LOG:-}" ] && [ -f "$LAJSTROM_SERVER_LOG" ]; then
 	step "pip read the core metadata (PEP 658) before the wheel"
