@@ -78,8 +78,8 @@ lajstrom admin user create --name rescue --admin --config lajstrom.yaml
 ```
 
 `set-password` works on a disabled user too; the old password fails at the next request on every
-replica. `create --admin` makes a new admin when every admin is lost, disabled, or forgotten
-together with its password. Each writes an audit row (`user.password`, `user.create`) by
+replica. `create --admin` makes a new admin when every admin is lost or its password
+forgotten. Each writes an audit row (`user.password`, `user.create`) by
 `anonymous` with the source `cli` and the host name of the machine it ran on, so that a recovery
 shows in `GET /api/v1/audit` afterwards. In Kubernetes, run the command in a pod with the
 configuration and the database DSN of the Deployment: the image has no shell, and `kubectl exec
@@ -104,7 +104,9 @@ replica: the user is read from the database on every request, and the cache of v
 passwords never outlives a change. `lajstrom admin user list` shows who is disabled. A disabled
 user's personal access tokens are refused too. To remove a user for good, `lajstrom admin user
 delete alice` (or `DELETE /api/v1/users/alice`) revokes its tokens, deletes its bindings and
-frees its name; it is not undone, and the audit rows keep the name.
+frees its name; it is not undone, and the audit rows keep the name. The last enabled user with
+an admin binding cannot be disabled or deleted (exit status 1, `409` over the API): create
+another admin first.
 
 ### A credential for CI
 
@@ -318,7 +320,8 @@ on the others, and nothing is mounted, generated per node or restarted to rotate
   of the keys made from then on; a key keeps its own, so a change of algorithm is a rotation.
 - **Without a master key**: `serve` signs with an ephemeral key in memory and warns that tokens
   do not survive a restart and are not shared between replicas. That is fine for one process;
-  set `keys.masterKeyEnv` for anything with replicas or restarts that clients should not notice.
+  set `keys.masterKeyFile` or `keys.masterKeyEnv` for anything with replicas or restarts that
+  clients should not notice.
 - **A key that does not decrypt** (a database restored under another master key) stops `serve`
   with an error that names it. Start with the right master key, or retire it with
   `lajstrom admin key drop --token` and start again: a new key is made.
@@ -812,6 +815,10 @@ check: a failed run is a regression to look into, not a gate on other pull reque
 
 #### On Linux, 8 uploads and 8 downloads at once
 
+Measured before raw uploads streamed ([ADR 0014](adr/0014-uploads-stream-into-the-registry.md)):
+a raw `PUT` then wrote its whole body to a spool in `$TMPDIR` before it sent it, which the
+temporary files of its rows show. A raw `PUT` now holds no temporary file.
+
 On 2026-11-10, the Load workflow on its own pull request (#287,
 [run 42778572674](https://github.com/lajstrom/lajstrom/actions/runs/42778572674), three
 attempts), Lajstrom built from `f45dffb`, the merge of #287 into #286 (the code of main at
@@ -845,12 +852,16 @@ The three attempts:
 
 So the bound of #62 holds with 8 transfers of 1 GiB at once in each direction, raw and `/v2`:
 the peak resident set was 66 MiB, during the 8 raw `PUT`s, one MiB above the idle process,
-and the heap in use peaked at 39 MiB there, with 8 GiB of bodies in flight. The raw `PUT`s are
-the slowest phase: each body is written twice on the runner's one disk, to Lajstrom's spool and
-then to Zot's upload area, where a `/v2` push writes it once, and the 4 vCPUs are shared by the
-8 clients, Lajstrom and Zot. The times vary from one attempt to the next with the runner's host.
+and the heap in use peaked at 39 MiB there, with 8 GiB of bodies in flight. The raw `PUT`s were
+the slowest phase: each body was written twice on the runner's one disk, to the spool of that
+time and then to Zot's upload area, where a `/v2` push writes it once, and the 4 vCPUs are
+shared by the 8 clients, Lajstrom and Zot. The times vary from one attempt to the next with the
+runner's host.
 
 #### On macOS, 1 upload at a time
+
+Measured before raw uploads streamed (ADR 0014), like the run above: the temporary file of the
+raw `PUT` is the spool of that time.
 
 On 2026-11-09, Lajstrom at `129dc47`, an Apple M4 Pro with 14 cores and 24 GiB, macOS 27.0.1,
 Zot v2.1.23 of the dev stack in OrbStack, client and server on the same machine:
@@ -879,12 +890,13 @@ Four runs that day, the others with the same script while other jobs used the ma
 
 The resident set of a transfer never passed what the idle process held after its start, and
 the heap grew by 10 MiB over 18 GiB moved: nothing scales with the size of a body or the number
-of downloads. A raw `PUT` takes longer than a `/v2` push of the same bytes because it writes
-the spool first (about 1 GiB/s here) and then streams it to the registry. The download
+of downloads. A raw `PUT` took longer than a `/v2` push of the same bytes because it wrote
+the spool first (about 1 GiB/s here) and then streamed it to the registry. The download
 throughput is the sum of 8 clients that each hash what they get, on the machine that also runs
 Lajstrom and Zot: it is the throughput of the whole setup, not a bound of Lajstrom's.
 
-The uploads ran one at a time there: 8 at once need 18 GiB of free disk and the machine had 6.
+The uploads ran one at a time there: 8 at once needed 18 GiB of free disk with the spool (11 GiB
+now, [above](#the-load-test)) and the machine had 6.
 
 Not measured: a registry behind object storage, where a download is a `307` and does not pass
 through Lajstrom at all; a registry on another machine, where the network and not the disk
@@ -952,9 +964,9 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | `proxy.fetch` | a proxy repo that published a file it fetched from its upstream, as the principal whose request missed ([proxy-and-group.md](spec/proxy-and-group.md) §5) |
 | `proxy.reject` | a proxy repo that refused a file of its upstream for its bytes: a checksum, `Validate`, a bound ([rbac.md](spec/rbac.md) §7) |
 | `repo.create`, `repo.update`, `repo.delete`, `repo.reindex`, `repo.cache.purge` | the API, the CLI and the repos of the configuration; `repo.cache.purge` from `DELETE …/upstream-cache` |
-| `user.create`, `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete` | the API and `lajstrom admin user` |
+| `user.create`, `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete` | the API and `lajstrom admin user`; `user.create` also `POST /api/v1/bootstrap`, for the first admin |
 | `binding.create`, `binding.delete` | the API and `lajstrom admin binding` |
-| `token.create`, `token.revoke` | personal access tokens and deploy tokens, from the API and the CLI |
+| `token.create`, `token.revoke` | personal access tokens and deploy tokens, from the API and the CLI; a personal access token also from `npm login` and `npm logout` |
 | `key.rotate`, `key.drop` | `lajstrom admin key` |
 | `reconcile` | the [reconcile](#reconcile) loop of `serve`, one row per repo that a run changed |
 | `referrers.repair` | a reindex run of the reconcile loop or with verify (CLI or API) that pushed a subject's `sha256-<hex>` index again with the referrers it lacked, as the principal of the run ([Reindex](#what-a-run-does)) |
@@ -963,7 +975,8 @@ A row has the time, the principal (`user:<uid>`, `token:<id>`, `anonymous`) and,
 its name at the time (`principalName`, which stays when the user is renamed or deleted), the
 action, the repo, the subject (a package and version, the user or binding acted upon), the
 manifest digest, the client address and details: the change, the source of a change of the
-control plane (`api`, `cli`, `config`; the rows of `lajstrom admin key` have none) and the
+control plane (`api`, `cli`, `config`, `bootstrap` for the first admin, `npm` for the token of
+`npm login` and `npm logout`; the rows of `lajstrom admin key` have none) and the
 request id of a change made over HTTP; a write or a fetch that came through a group is its
 member's row, with the group in `details.via` (`"via": "npm/all"`). The client address is the one of the access log
 ([ADR 0011](adr/0011-client-address-behind-a-proxy.md)): behind a proxy of
@@ -1027,10 +1040,10 @@ lajstrom admin retention --repo raw/builds --package 'nightly/*' --max-age 14d -
 its package, by the publish time of its first variant; it is younger than `--max-age` (`90d`,
 `36h`), by its newest variant; a pointer names it, an npm dist-tag, `latest` included; or it is
 the newest version of its package, unless `--delete-newest`. At least one of `--keep-last` and
-`--max-age` is required. `--package` keeps the packages whose name matches the glob
-(`path.Match`, where `*` does not match `/`: `@acme/*`, `nightly/*`), again for more; without it
-every package of the repo. The time is the server's, from the `Date` of its first answer, and
-the publish time that of the manifest (`org.opencontainers.image.created`), which the frontends
+`--max-age` is required. `--package` limits the run to the packages whose name matches the glob
+(`path.Match`, where `*` does not match `/`: `@acme/*`, `nightly/*`); give it again for more.
+Without it the run covers every package of the repo. The time is the server's, from the `Date`
+of its first answer, and the publish time that of the manifest (`org.opencontainers.image.created`), which the frontends
 write from the server's clock and a client pushing on `/v2` from its own, within
 `server.maxCreatedAhead` and `server.maxCreatedBehind` of the server's
 ([configuration.md](configuration.md)).
@@ -1171,12 +1184,12 @@ error and the next collection (distribution's `registry garbage-collect --delete
 run `lajstrom reindex --verify` before it: `GET …/reindex` shows the latest run of a repo and
 whether it listed the subject.
 
-When a registry's rule deletes a version anyway, the index follows at the next reconcile, which
-removes the rows of a manifest the registry answers as unknown
-([Reconcile](#reconcile)). Until then a client sees a version that is gone (`404` on its
-download), and the delete has no audit row of Lajstrom's. The grace period of
-[#446](https://github.com/lajstrom/lajstrom/issues/446) will keep a version a registry briefly
-forgets.
+When a registry's rule deletes a version anyway, prune removes its rows once the registry has
+answered `MANIFEST_UNKNOWN` for it twice, 10 minutes apart, and the row is `reconcile.graceAge`
+old: with the defaults, one to two hours after the delete ([Reconcile](#reconcile),
+[On an eventually consistent registry](#on-an-eventually-consistent-registry)). Until then a
+client sees a version that is gone (`404` on its download), and the delete has no audit row of
+Lajstrom's.
 
 ## Reindex
 
@@ -1249,7 +1262,8 @@ lajstrom reindex --repo raw/assets --attach raw-assets.txt        # a registry w
 The output is one line of counts per repo (manifests, added, updated, unchanged, removed,
 pending, degraded, referrers, repaired referrers indexes, foreign, orphan referrers, drift, split, versions of OCI
 repositories the registry does not know, errors); `--report` adds the lists, at most
-1 000 entries each, and `--json` prints the whole report. The exit status is not zero when the
+1 000 entries each, and `--json` prints the report as JSON, with the same lists, also at most
+1 000 entries each (the counts stay exact). The exit status is not zero when the
 run itself failed (the database or the context) or another run holds the lock; manifests that
 could not be read or checked are errors in the report and do not change it. `--concurrency`
 (default 8) is how many manifests are read at once per registry. Progress is logged every 1 000
@@ -1443,7 +1457,10 @@ bindings and repos created since are gone, and **what was revoked, disabled or d
 comes back**, since the dump has the rows as they were: revoke those tokens and disable those
 users again ([below](#a-rehearsal), a revoked deploy token works again after the restore). A key rotation since is
 undone: rotate again and distribute `key.asc` again. Artifacts are not lost: `reindex` adds what
-was published after the backup and removes what was deleted.
+was published after the backup, and prune removes what was deleted by its usual rule
+([On an eventually consistent registry](#on-an-eventually-consistent-registry)): the first run
+lists such a version as pending, and a run at least 10 minutes later removes it, once its row is
+`reconcile.graceAge` old.
 
 ### Restoring
 
@@ -1503,6 +1520,11 @@ oci/images  1          0      0        0          0        0         0          
 raw/assets  3          1      0        2          1        0         0          0        0        0      0
 oci/images: foreign hello:1 sha256:9054279e24be9b8e39ede5221cfe7a7a6e9b8f7d5fac4af0c98c43d5e2acabb2 application/vnd.oci.image.manifest.v1+json
 ```
+
+That is the output of that snapshot: it had no PENDING, REPAIRED, SPLIT and NOREPO columns, and
+its prune removed a deleted version at the first run. Today this run would list `gone.txt` as
+pending, and a later run, of the reconcile loop or the CLI, would remove it
+([On an eventually consistent registry](#on-an-eventually-consistent-registry)).
 
 `after.txt` was added and `gone.txt` removed. The checks:
 
