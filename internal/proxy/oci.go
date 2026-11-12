@@ -45,12 +45,36 @@ type OCIUpstream struct {
 	name      string
 	client    provider.Provider
 	dockerHub bool
+	retries   int // upstreams[].retries: the resumes in a row of a blob's body that get no byte
+}
+
+// OCIUpstreamOption sets what an OCIUpstream takes from its configuration.
+type OCIUpstreamOption func(*OCIUpstream)
+
+// OCIRetries is upstreams[].retries: how many resumes in a row of a blob's body may get no
+// byte (§11.5, #885); 0 means config.DefaultUpstreamRetries, a negative value none.
+func OCIRetries(n int) OCIUpstreamOption {
+	return func(u *OCIUpstream) {
+		switch {
+		case n == 0:
+			u.retries = config.DefaultUpstreamRetries
+		case n < 0:
+			u.retries = 0
+		default:
+			u.retries = n
+		}
+	}
 }
 
 // NewOCIUpstream returns the upstream name served by client, a read-only provider of the
-// registry (generic.NewUpstream); dockerHub turns the library/ rule on (§11.7).
-func NewOCIUpstream(name string, client provider.Provider, dockerHub bool) *OCIUpstream {
-	return &OCIUpstream{name: name, client: client, dockerHub: dockerHub}
+// registry (generic.NewUpstream); dockerHub turns the library/ rule on (§11.7). Without opts,
+// its retries are config.DefaultUpstreamRetries.
+func NewOCIUpstream(name string, client provider.Provider, dockerHub bool, opts ...OCIUpstreamOption) *OCIUpstream {
+	u := &OCIUpstream{name: name, client: client, dockerHub: dockerHub, retries: config.DefaultUpstreamRetries}
+	for _, o := range opts {
+		o(u)
+	}
+	return u
 }
 
 // Name is the upstream's name in the configuration.
@@ -81,7 +105,7 @@ func LoadOCIUpstreams(cfg []config.Upstream, log *slog.Logger) (map[string]*OCIU
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", key, err)
 		}
-		out[c.Name] = NewOCIUpstream(c.Name, client, c.IsDockerHub())
+		out[c.Name] = NewOCIUpstream(c.Name, client, c.IsDockerHub(), OCIRetries(c.Retries))
 	}
 	return out, nil
 }

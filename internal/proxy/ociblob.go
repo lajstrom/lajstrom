@@ -176,8 +176,8 @@ func (c *Core) ociFetchBlob(ctx context.Context, p *ociProxied, desc ocispec.Des
 	if err != nil {
 		return false, err
 	}
-	up := &upstreamBody{rc: body}
-	defer func() { _ = up.rc.Close() }()
+	up := c.resumable(ctx, p, desc, body)
+	defer up.Close()
 	var src io.Reader = up
 	if t != nil {
 		t.begin()
@@ -200,7 +200,8 @@ func (c *Core) ociFetchBlob(ctx context.Context, p *ociProxied, desc ocispec.Des
 
 // ociCopyFailed returns what a fetch answers for err, the end of the copy of the blob desc from
 // the upstream's body up into the backend, nil when it was committed: a body that stopped
-// moving for upstreams[].timeout is format.ErrGatewayTimeout (§2.1, #883); bytes that are not the
+// moving for upstreams[].timeout, and was not resumed, is format.ErrGatewayTimeout (§2.1, #883);
+// bytes that are not the
 // blob are format.ErrBadGateway and proxy.reject; a backend's refusal by a rule of its own is
 // proxy.reject too.
 func (c *Core) ociCopyFailed(ctx context.Context, p *ociProxied, desc ocispec.Descriptor, up *upstreamBody, err error) error {
@@ -246,24 +247,6 @@ func (u *OCIUpstream) open(ctx context.Context, path string, desc ocispec.Descri
 			b.Size, desc.Size)
 	}
 	return b.Body, nil
-}
-
-// upstreamBody is the upstream's body of a blob as the fetch reads it: the bytes read, and the
-// error of the read that failed, so that the fetch tells the upstream's failure from the
-// backend's.
-type upstreamBody struct {
-	rc  io.ReadCloser
-	n   int64 // the bytes read
-	err error // the first read that failed, but for io.EOF
-}
-
-func (b *upstreamBody) Read(p []byte) (int, error) {
-	n, err := b.rc.Read(p)
-	b.n += int64(n)
-	if err != nil && !errors.Is(err, io.EOF) && b.err == nil {
-		b.err = err
-	}
-	return n, err
 }
 
 // ociHeld records that the backend holds d at p's path.
