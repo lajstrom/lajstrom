@@ -1,8 +1,8 @@
 # Gitea container registry
 
 What the container registry built into Gitea answered on 2026-11-10, measured with `curl`,
-`oras`, the integration tests and the end-to-end scenarios (issue #120); Forgejo, the fork, was
-run with the same setup and differs in three places ([Forgejo](#forgejo)). The registry is a
+`oras`, the integration tests and the end-to-end scenarios (issue #120). Forgejo, the fork, was
+run with the same setup and has a page of its own, [forgejo.md](forgejo.md). The registry is a
 part of Gitea's package registry: `/v2/` on Gitea's own port, a repository is an image of an
 owner (a user or an organisation), and every tag is a package version in Gitea's database. The
 [summary column](README.md#capabilities) is in the README; this page has the details.
@@ -13,9 +13,6 @@ owner (a user or an organisation), and every tag is a package version in Gitea's
   `sha256:1c17ecaead42eb3b5391553d8708103a4beb0e86edf5b9ebc1eb269c318845f2` (linux/amd64,
   arm64, riscv64; built 2026-08-29). The binary says `gitea version 1.27.3 built with
   go1.26.7`. SQLite, packages on local storage (`/var/lib/gitea/packages`).
-- Forgejo **17.0.1**, `codeberg.org/forgejo/forgejo:17.0.1-rootless`, index
-  `sha256:5ef02fbcf22beef56b8c844952ffad58cfe177b6f98e46e6abb5df90b88dc8d3` (built
-  2026-10-26); `/api/v1/version` says `17.0.1+gitea-1.22.0`.
 - On macOS with OrbStack, arm64; the tests with Go 1.27.3 at 6b3b7b7 and the provider fix of
   this page ([What the provider must do differently](#what-the-provider-must-do-differently),
   item 1).
@@ -29,7 +26,7 @@ never the UI:
 
 ```sh
 deploy/compose/gitea/gitea.sh up            # Gitea on http://localhost:5009, set up
-deploy/compose/gitea/gitea.sh up forgejo    # the same with Forgejo on http://localhost:5014
+deploy/compose/gitea/gitea.sh up forgejo    # the same with Forgejo on http://localhost:5014 (forgejo.md)
 deploy/compose/gitea/gitea.sh down          # both, with their volumes and the token files
 ```
 
@@ -52,7 +49,6 @@ for the [cleanup](#cleanup) experiment.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Gitea | 1.27.3, local storage, `prefix: lajstrom-it/` (an organisation) | Bearer from `/v2/token` with the token; Basic straight on `/v2/` works too | yes, below an existing owner the user may write, at any depth; another owner 401, a missing one 404 | **no**: `/referrers/` is a plain-text 404; the `sha256-<digest>` tag schema | yes, `n`/`last`/`Link`, lexical; the user's view | yes, by digest, with every tag; by tag the tag, and the manifest with its last tag when it was pushed by tag only | **none**; tags are **case-insensitive and lower-cased** | none on local storage | pass but for ranges (Gitea serves none) and a streamed `PATCH` after the first chunk, with the fix of item 1; that `PATCH` passes with `uploads.spoolUnknownLength` (item 4) |
 | Gitea | the same, no prefix | — | **no**: every repository needs an owner; `raw/…` is the owner `raw`, 404 | — | — | — | — | — | fail: nothing can be written |
-| Forgejo | 17.0.1, the same setup | the same | the same | the same: a 404 with an empty body | the same | the same | the same | none | as Gitea, but ranges work and the upload status is off by one byte |
 
 `lajstrom registry probe` measures every row of this table but the listing API, auth, rate
 limits and the garbage collector, which still need a person;
@@ -86,10 +82,11 @@ serve log of the e2e run, before #352). That is right; no override in
    (read, not run). Maven versions (`-SNAPSHOT`, `.Final`, `-RC1`) carry capitals; pypi
    normalises to lower case. A vendor-table capability ("tags fold case") would let ingest
    refuse with a clear message; a contract question.
-3. Expect no ranges from Gitea (Forgejo has them). A `Range` on a blob is answered 200 with
-   the whole blob and no `Accept-Ranges`; the facade and `/raw/` pass that on, which RFC 9110
-   allows, but a client that resumes a download starts over. Nothing to change unless Lajstrom
-   should serve the range itself.
+3. Expect no ranges from Gitea (Forgejo has them,
+   [forgejo.md](forgejo.md#where-it-differs-from-gitea)). A `Range` on a blob is answered 200
+   with the whole blob and no `Accept-Ranges`; the facade and `/raw/` pass that on, which RFC
+   9110 allows, but a client that resumes a download starts over. Nothing to change unless
+   Lajstrom should serve the range itself.
 4. Do not stream a chunk of unknown size into a session that already holds bytes: Gitea and
    Forgejo answer 400 `BLOB_UPLOAD_INVALID` "Stream uploads after first write are not allowed".
    The provider does it for `FinishBlobUpload` with a last chunk of unknown size
@@ -106,8 +103,8 @@ serve log of the e2e run, before #352). That is right; no override in
    it does Harbor's quota (harbor.md, item 1): the same contract question.
 6. **Done in #352:** name the vendor. `GET /v2/` challenges `Bearer
    realm="<ROOT_URL>v2/token",service="container_registry",scope="*"`, which makes it
-   `vendor=gitea`, Forgejo too. The entry changes nothing else: the probe is right, and item 2
-   is still a contract question.
+   `vendor=gitea`, Forgejo too ([forgejo.md, item 6](forgejo.md#what-the-provider-must-do-differently)).
+   The entry changes nothing else: the probe is right, and item 2 is still a contract question.
 
 Nothing else: the token service, the tag schema, catalog, tags, delete, mounts, the monolithic
 `POST`, the cancel and the digest check work as the provider expects.
@@ -293,39 +290,29 @@ tried.
 
 ## Forgejo
 
-The same compose file (profile `forgejo`) and `gitea.sh up forgejo`; every command of this page
-was run against it. Where it differs:
-
-- **Ranges work:** `Range: bytes=0-4` is 206 with `Content-Range: bytes 0-4/32`; past the end
-  416 `bytes */32`. `TestIntegration` of the provider passes whole.
-- **The upload status is off by one byte:** after `PATCH 0-4` answered `Range: 0-4`, `GET`
-  of the session answers `Range: 0-5` (the facade's `TestIntegrationUploadAcrossReplicas`: `GET
-  on B: 204, Range "0-38"` for 38 bytes). A client that resumes from it sends a chunk one byte
-  late and gets 416.
-- `POST` of a session answers `Range: 0-0`; the referrers 404 has an empty body.
-
-Everything else measured the same: the token and its claims, owners, case-folded tags, the
-deletes, re-pointing, media types, catalog, the manifest size limit, the streamed `PATCH`.
+Forgejo has a page of its own since #816: [forgejo.md](forgejo.md), with [where it differs from
+Gitea](forgejo.md#where-it-differs-from-gitea) (ranges work, the upload status is one byte
+ahead) and its tests.
 
 ## Our tests against it
 
 `LAJSTROM_TEST_REGISTRY=localhost:5009`, `LAJSTROM_TEST_REGISTRY_USERNAME=lajstrom`, the token
 in `LAJSTROM_TEST_REGISTRY_PASSWORD`, `LAJSTROM_TEST_REGISTRY_PREFIX=lajstrom-it/`,
 `LAJSTROM_TEST_POSTGRES_DSN` of the dev stack, `go test -race -count=1 -tags integration`: the
-whole suite against Gitea, before and after the fix of item 1, and `-run
-'TestIntegration|TestAptGet' ./internal/...` against Forgejo (`localhost:5014`). The apt tests
-run apt-get in `ubuntu:22.04`, `ubuntu:24.04` and `debian:12`.
+whole suite against Gitea, before and after the fix of item 1 (2026-11-10). The apt tests run
+apt-get in `ubuntu:22.04`, `ubuntu:24.04` and `debian:12`. Forgejo's results are on
+[forgejo.md](forgejo.md#our-tests-against-it).
 
-| Test | Gitea, without the fix | Gitea, with the fix | Forgejo, with the fix |
-| --- | --- | --- | --- |
-| provider `TestIntegration` | **fail**: open blob with a range, 200 for 206 (the steps after it do not run) | the same | pass |
-| provider `TestIntegrationUploads` | **fail**: session across providers, `request body is not rewindable` | **fail**: the same step, the chunk of unknown size: 400 "Stream uploads after first write are not allowed"; **pass** with `uploads.spoolUnknownLength` (#425, 2026-11-10) | the same as Gitea (not run with the flag) |
-| ingest `TestIntegration` | pass | pass | pass |
-| raw `TestIntegration` | **fail**: the range, 200 | **fail**: the range | pass |
-| reindex `TestIntegration` | pass | pass | pass |
-| facade: delete, delete referrer, pass-through, raw push, referrers, uploads across replicas, tokens across replicas, abandoned monolithic | **fail**: every blob upload 500, not rewindable | pass | pass but uploads across replicas: the status `Range` |
-| facade `TestIntegrationBlobReads` | **fail** (the upload) | **fail**: the range | pass |
-| `TestAptGet`, `TestAptGetInstall/registry`, `TestAptGetSigned` | pass | pass | pass |
+| Test | Gitea, without the fix | Gitea, with the fix |
+| --- | --- | --- |
+| provider `TestIntegration` | **fail**: open blob with a range, 200 for 206 (the steps after it do not run) | the same |
+| provider `TestIntegrationUploads` | **fail**: session across providers, `request body is not rewindable` | **fail**: the same step, the chunk of unknown size: 400 "Stream uploads after first write are not allowed"; **pass** with `uploads.spoolUnknownLength` (#425, 2026-11-10) |
+| ingest `TestIntegration` | pass | pass |
+| raw `TestIntegration` | **fail**: the range, 200 | **fail**: the range |
+| reindex `TestIntegration` | pass | pass |
+| facade: delete, delete referrer, pass-through, raw push, referrers, uploads across replicas, tokens across replicas, abandoned monolithic | **fail**: every blob upload 500, not rewindable | pass |
+| facade `TestIntegrationBlobReads` | **fail** (the upload) | **fail**: the range |
+| `TestAptGet`, `TestAptGetInstall/registry`, `TestAptGetSigned` | pass | pass |
 
 Every other package of the suite passed against Gitea, the Postgres tests included.
 
@@ -340,8 +327,7 @@ limit, not Gitea's. `ha.sh` skipped.
 
 The failures, by owner:
 
-- **Gitea's:** no ranges (item 3), the streamed `PATCH` after the first write (item 4);
-  Forgejo's status offset.
+- **Gitea's:** no ranges (item 3), the streamed `PATCH` after the first write (item 4).
 - **Ours, the provider:** the challenge scope, fixed here (item 1).
 - **Ours, the harness:** `run.sh` without registry credentials, `cosign.sh`'s anonymous check of
   the backend. Both done in #353: `run.sh` takes the user, a file with its token and the prefix

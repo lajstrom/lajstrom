@@ -131,7 +131,7 @@ were measured by curl below. Its run left
    passes, and the referrers of a deleted version are an empty list.
 4. **Keep its own offset of an upload session** ([#804](https://github.com/lajstrom/lajstrom/issues/804)).
    `GET` of a session answers one byte ahead (`Range: bytes=0-5` after `0-4`), as Forgejo
-   does ([gitea.md](gitea.md#forgejo)); a replica that continues from it sends its chunk one
+   does ([forgejo.md](forgejo.md#uploads)); a replica that continues from it sends its chunk one
    byte late and gets 416.
 5. Expect no ranges: a `Range` is 200 with the whole blob and no `Accept-Ranges`, as on Gitea
    ([gitea.md](gitea.md#what-the-provider-must-do-differently), item 3). RFC 9110 allows it;
