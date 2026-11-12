@@ -218,6 +218,7 @@ make dev-up PROFILES=s3-minio  # the three, and distribution on MinIO, the fallb
 make dev-up PROFILES=gitlab  # the three, and the GitLab container registry (above)
 make dev-up PROFILES=ha  # the three, and two replicas of Lajstrom behind nginx (above)
 make dev-up PROFILES=ecr  # the three, and moto with a distribution for the ECR provider (registries/ecr.md)
+make dev-up PROFILES=verdaccio  # the three, and a Verdaccio on localhost:4873 to move packages from (test/e2e/migrate-npm.sh, migrating.md)
 ```
 
 `make dev-up` returns when the health checks pass (`docker compose up -d --wait`): in 2 to 3 s

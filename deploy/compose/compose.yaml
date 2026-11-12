@@ -8,6 +8,7 @@
 #   make dev-up PROFILES=gitlab  the same, and the GitLab container registry, two variants (the gitlab profile, #117)
 #   make dev-up PROFILES=ha  the same, and two replicas of Lajstrom behind nginx (the ha profile, #226)
 #   make dev-up PROFILES=ecr  the same, and moto with a distribution for the ECR provider (the ecr profile, #36)
+#   make dev-up PROFILES=verdaccio  the same, and a Verdaccio to move packages from (the verdaccio profile, #441)
 #   make dev-ps            what runs, with its health
 #   make dev-logs          follow the logs
 #   make dev-down          stop and remove the containers of every profile; the volumes stay
@@ -31,12 +32,13 @@
 #   ha-distribution  localhost:5007  LAJSTROM_HA_DISTRIBUTION_PORT  ha profile: the registry of both replicas
 #   moto             localhost:5010  LAJSTROM_MOTO_PORT             ecr profile: the ECR API (registries[].ecr.endpoint)
 #   ecr-distribution localhost:5011  LAJSTROM_ECR_DISTRIBUTION_PORT ecr profile: /v2, user AWS, moto's token
+#   verdaccio        localhost:4873  LAJSTROM_VERDACCIO_PORT        verdaccio profile: an npm registry, the upstream of test/e2e/migrate-npm.sh
 #
 # Every image is pinned to a full version whose tag serves linux/amd64 and linux/arm64; the
 # digest of its image index is in the comment above it. Change a tag and its digest together;
 # for a registry, re-run the integration tests and update docs/registries/README.md. The
 # integration job of .github/workflows/ci.yml runs the same images, and its e2e job the same Zot:
-# change them there too. CI does not run the s3, s3-minio, gitlab and ecr profiles; the HA
+# change them there too. CI does not run the s3, s3-minio, gitlab, ecr and verdaccio profiles; the HA
 # workflow (.github/workflows/ha.yml) runs the ha profile with test/e2e/ha.sh.
 
 name: lajstrom-dev
@@ -397,6 +399,24 @@ services:
       <<: *healthcheck
       test: ["CMD", "wget", "-qO-", "http://AWS:123456789012-auth-token@127.0.0.1:5000/v2/"]
 
+  # The verdaccio profile (make dev-up PROFILES=verdaccio, #441, docs/migrating.md): an npm
+  # registry with private packages, the old registry that test/e2e/migrate-npm.sh moves into
+  # Lajstrom through a proxy repo and a prefetch. Users register themselves (verdaccio/config.yaml)
+  # and every package needs one; run.sh logs its user in and hands the token to the upstream
+  # verdaccio of its configuration. Not run in CI.
+  verdaccio:
+    profiles: [verdaccio]
+    # Verdaccio 6.11.1, linux/amd64 and arm64; pinned by the digest of its image index.
+    image: verdaccio/verdaccio:6.11.1@sha256:82f4decaf1c9eff885bf7a1227335f78581ff715288d5f38898e67e28b3bfbdd
+    volumes:
+      - ./verdaccio/config.yaml:/verdaccio/conf/config.yaml:ro
+      - verdaccio-data:/verdaccio/storage
+    ports:
+      - "127.0.0.1:${LAJSTROM_VERDACCIO_PORT:-4873}:4873"
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4873/-/ping"]
+
   postgres:
     # PostgreSQL 17.11 on Alpine.
     # sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
@@ -427,6 +447,7 @@ volumes:
   ha-postgres-data:
   ha-distribution-data:
   ecr-distribution-data:
+  verdaccio-data:
 
 networks:
   ha:
