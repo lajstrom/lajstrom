@@ -1,0 +1,94 @@
+# NOT FOR PRODUCTION. The registry of the try overlay: distribution, one replica, filesystem
+# storage on a volume, no TLS and no auth: anything in the cluster that reaches the Service
+# registry may push, pull and delete under any name. In production, use a registry with a user
+# for Lajstrom (docs/registries/README.md).
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry
+  labels:
+    app.kubernetes.io/name: registry
+    app.kubernetes.io/part-of: lajstrom-try
+spec:
+  selector:
+    app.kubernetes.io/name: registry
+  ports:
+    - name: http
+      port: 5000
+      targetPort: http
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: registry
+  labels:
+    app.kubernetes.io/name: registry
+    app.kubernetes.io/part-of: lajstrom-try
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+  labels:
+    app.kubernetes.io/name: registry
+    app.kubernetes.io/part-of: lajstrom-try
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: registry
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: registry
+        app.kubernetes.io/part-of: lajstrom-try
+    spec:
+      automountServiceAccountToken: false
+      # The image runs as root by default; distribution needs no privilege.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: registry
+          # distribution 3.1.2, the registry of the dev stack (deploy/compose/compose.yaml).
+          image: registry:3.1.2@sha256:38907510915c3f1604c7e83d6ab602ab3020d092f73bdaed8696773693ff768c
+          env:
+            - name: REGISTRY_STORAGE_DELETE_ENABLED # the image's default too; distribution's own is false
+              value: "true"
+            - name: REGISTRY_LOG_LEVEL # the image's default is debug
+              value: info
+          ports:
+            - name: http
+              containerPort: 5000
+          readinessProbe:
+            httpGet: {path: /v2/, port: http}
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/registry
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: registry
