@@ -42,7 +42,8 @@ type adoption struct {
 // invalidates the repo's documents and writes the audit row repo.convert; the ops go through j
 // by principal; and the repo's proxy_meta rows are dropped. On a hosted repo it resumes a
 // conversion that failed after its flip, from the proxy_meta rows left, and changes nothing
-// without them. A group, or a format without the hook, wraps format.ErrInvalid.
+// without them. A group, or a format without the hook, wraps format.ErrInvalid; a nil j
+// format.ErrUnsupported.
 func (s *Repos) Convert(ctx context.Context, formatName, name string, j Journaler, principal auth.Principal, o Origin) (Repo, error) {
 	row, err := s.Index.GetRepo(ctx, formatName, name)
 	if err != nil {
@@ -55,6 +56,9 @@ func (s *Repos) Convert(ctx context.Context, formatName, name string, j Journale
 	adopter, ok := s.adopter(formatName)
 	if !ok {
 		return Repo{}, invalid("kind: format %s cannot turn a proxy repo into a hosted one", formatName)
+	}
+	if j == nil {
+		return Repo{}, &clientError{msg: "converting a proxy repo is not enabled in this server", err: format.ErrUnsupported}
 	}
 	plan, skipped, err := s.adoptions(ctx, row, adopter)
 	if err != nil {
@@ -212,9 +216,6 @@ func (h *handler) convertRepo(r *http.Request, f, name string, body patchBody) (
 	}
 	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
-	}
-	if h.journal == nil {
-		return 0, nil, &clientError{msg: "converting a proxy repo is not enabled in this server", err: format.ErrUnsupported}
 	}
 	repo, err := h.repos.Convert(r.Context(), f, name, h.journal, auth.PrincipalFrom(r.Context()), origin(r))
 	if err != nil {

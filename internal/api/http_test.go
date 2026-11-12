@@ -303,7 +303,9 @@ func TestUpdateInvalid(t *testing.T) {
 		{"name", `{"name":"other"}`, "name: cannot change"},
 		{"registry", `{"registry":"other"}`, "registry: cannot change"},
 		{"registry null", `{"registry":null}`, "registry: cannot change"},
-		{"kind", `{"kind":"hosted"}`, "kind: cannot change"},
+		{"kind", `{"kind":"proxy"}`, `kind: "proxy"; the one change of a kind is a proxy repo to "hosted"`},
+		{"kind hosted of a format without the hook", `{"kind":"hosted"}`, "kind: format raw cannot turn a proxy repo into a hosted one"},
+		{"kind with another key", `{"kind":"hosted","anonymousRead":true}`, "kind: changes alone"},
 		{"policy string", `{"policy":"x"}`, "policy: must be a JSON object or null"},
 		{"policy blobRedirect", `{"policy":{"blobRedirect":"sometimes"}}`, `policy.blobRedirect: must be "auto" or "never"`},
 		// A manager could otherwise make every upload of the repo a 500 (threat model U-7).
