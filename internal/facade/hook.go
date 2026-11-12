@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -280,17 +281,43 @@ func ingestError(t *target, m ocispec.Manifest, err error) error {
 	return &apiError{status: http.StatusInternalServerError, err: err}
 }
 
+// maxNamedBlobs is the most blobs that the answer to a push the registry does not serve yet
+// names (notServed); it counts the rest. A manifest names up to maxLayers blobs and its config,
+// and the answer would name each twice, in the message and in the detail (#693).
+const maxNamedBlobs = 20
+
 // notServed is the answer to a push that the registry took and does not serve yet, nv: 503
 // UNAVAILABLE with the Retry-After of nv's cause, whose message and detail name what the
 // registry does not serve, by the name the client pushed to (t.name, not the OCI name of the
-// backend) and the digests and the tag it pushed (docs/spec/http-routing.md §2, #565). A
-// client's log then tells a registry that lags from one that lost the push.
+// backend) and the digests and the tag it pushed (docs/spec/http-routing.md §2, #565): of the
+// blobs, the first maxNamedBlobs, and how many more. A client's log then tells a registry that
+// lags from one that lost the push.
 func notServed(t *target, nv *ingest.NotVisibleError, err error) *apiError {
+	named := *nv
+	named.Blobs = nv.Blobs[:min(len(nv.Blobs), maxNamedBlobs)]
+	more := len(nv.Blobs) - len(named.Blobs)
+	missing := named.Missing()
+	if more > 0 {
+		// After the blobs named: Missing ends in the subject's referrers, when they are missing.
+		at := len(missing)
+		if nv.Subject != "" {
+			at--
+		}
+		missing = slices.Insert(missing, at, moreBlobs(more))
+	}
 	return &apiError{status: http.StatusServiceUnavailable, code: codeUnavailable, told: true, err: err,
 		msg: fmt.Sprintf("the registry took %s@%s and does not serve %s yet; the same push again completes it",
-			t.name, nv.Digest, strings.Join(nv.Missing(), ", ")),
+			t.name, nv.Digest, strings.Join(missing, ", ")),
 		detail: notServedDetail{Name: t.name, Digest: nv.Digest, Missing: missingDetail{Manifest: nv.Manifest, Tag: nv.Tag,
-			Blobs: nv.Blobs, ReferrersOf: nv.Subject}}}
+			Blobs: named.Blobs, MoreBlobs: more, ReferrersOf: nv.Subject}}}
+}
+
+// moreBlobs is "1 more blob", "n more blobs": the blobs notServed counts and does not name.
+func moreBlobs(n int) string {
+	if n == 1 {
+		return "1 more blob"
+	}
+	return fmt.Sprintf("%d more blobs", n)
 }
 
 // notServedDetail is the detail of notServed: the manifest pushed, and what of it the registry
@@ -306,7 +333,8 @@ type notServedDetail struct {
 type missingDetail struct {
 	Manifest    bool            `json:"manifest,omitempty"`    // the manifest, by its digest
 	Tag         string          `json:"tag,omitempty"`         // the tag, which does not name the manifest
-	Blobs       []digest.Digest `json:"blobs,omitempty"`       // the blobs the manifest names
+	Blobs       []digest.Digest `json:"blobs,omitempty"`       // the blobs the manifest names, the first maxNamedBlobs
+	MoreBlobs   int             `json:"moreBlobs,omitempty"`   // how many more blobs, past those Blobs names
 	ReferrersOf digest.Digest   `json:"referrersOf,omitempty"` // a referrer: the subject whose referrers do not list it
 }
 
