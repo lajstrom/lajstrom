@@ -397,10 +397,10 @@ type Writer interface {
 	// returns how many it removed.
 	PruneOCIRepos(ctx context.Context, repoID int64, seenBefore time.Time) (int, error)
 
-	// ResetDerived removes every derived row of a repo, or of all repos when repoID is 0,
-	// before a reindex, and increments their IndexCacheGeneration. It never touches
-	// control-plane tables, tag claims or proxy_meta, which is a cache of the upstream and not
-	// of the registry.
+	// ResetDerived removes every derived row of a repo, or of all repos when repoID is 0, and
+	// increments their IndexCacheGeneration; reindex never starts from it, it marks and sweeps
+	// (docs/spec/index-schema.md). It never touches control-plane tables, tag claims or
+	// proxy_meta, which is a cache of the upstream and not of the registry.
 	ResetDerived(ctx context.Context, repoID int64) error
 
 	// A cache of the upstream (ADR 0013; docs/spec/proxy-and-group.md §4). A write of a row
