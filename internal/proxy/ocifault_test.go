@@ -27,14 +27,14 @@ import (
 // The faults of a poor link to an oci upstream (docs/quickstart/oci-proxy.md §5), on the hub.
 
 // upstream replaces the env's upstream by one of cfg as edit changes it: its timeout, its
-// retries. Cores made after it use it.
+// retries, its cap of transits. Cores made after it use it.
 func (e *ociEnv) upstream(t *testing.T, edit func(*config.Upstream)) {
 	t.Helper()
 	cfg := config.Upstream{Name: "hub", Format: config.FormatOCI, URL: e.hub.srv.URL, Retries: -1}
 	edit(&cfg)
 	client, err := generic.NewUpstream(cfg, generic.Credential{}, slog.New(slog.DiscardHandler))
 	must(t, err)
-	e.up = proxy.NewOCIUpstream("hub", client, true, proxy.OCIRetries(cfg.Retries))
+	e.up = proxy.NewOCIUpstream("hub", client, true, proxy.OCIRetries(cfg.Retries), proxy.OCITransits(cfg.MaxConcurrentTransits))
 }
 
 // breaking is how the hub answers the GETs of a blob on a link that breaks (breakBlob): the

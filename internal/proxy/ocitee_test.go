@@ -8,14 +8,17 @@ import (
 
 	"github.com/opencontainers/go-digest"
 
+	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/proxy"
 )
 
 // TestOCITee: the request that holds a blob's claim reads the upstream's bytes as they go into
-// the backend, before the copy ends; a request that joins the fetch waits for it and is served
-// from the backend (docs/spec/proxy-and-group.md §11.8).
+// the backend, before the copy ends; with transit off (maxConcurrentTransits 0), a request that
+// joins the fetch waits for it and is served from the backend (docs/spec/proxy-and-group.md
+// §11.8).
 func TestOCITee(t *testing.T) {
 	e := newOCIEnv(t, ociSettings)
+	e.upstream(t, func(u *config.Upstream) { u.MaxConcurrentTransits = new(int) })
 	img := e.hub.image(t, "library/nginx", "1.27", "amd64")
 	c := e.core("a", proxy.Options{})
 	_, _, err := c.OCIManifest(t.Context(), e.repo, "library/nginx", img.manifests[0].Digest.String())

@@ -307,6 +307,11 @@ type Upstream struct {
 	// component is library/<path> (§11.7). Nil means DockerHubHost of the URL; see
 	// IsDockerHub. Refused on another format.
 	DockerHub *bool `yaml:"dockerHub"`
+	// MaxConcurrentTransits caps an oci upstream's transits of one blob on a replica: the
+	// requests that do not hold the blob's claim, streamed from the upstream to their client
+	// while its copy into the backend runs (§11.8). Nil or -1 is no cap, 0 turns transit off;
+	// below -1 is invalid. Refused on another format.
+	MaxConcurrentTransits *int `yaml:"maxConcurrentTransits"`
 }
 
 // FormatOCI is the format of an upstream that oci proxy repos pull through from: a registry of

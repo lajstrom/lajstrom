@@ -79,6 +79,10 @@ func TestOCIBreakerRetryAfter(t *testing.T) {
 	c := e.core("a", proxy.Options{})
 	_, _, err := c.OCIManifest(t.Context(), e.repo, "library/nginx", img.manifests[0].Digest.String())
 	must(t, err)
+	// The config blob first: the client of the blobs has asked the upstream once, its ping
+	// included, before the upstream fails, so each failure below is one request.
+	_, _, err = c.OCIBlob(t.Context(), e.repo, "library/nginx", img.blobs[0][0].Digest, true, false)
+	must(t, err)
 	layer := img.blobs[0][1]
 	e.hub.mu.Lock()
 	e.hub.hook = func(w http.ResponseWriter, _ *http.Request) bool {
