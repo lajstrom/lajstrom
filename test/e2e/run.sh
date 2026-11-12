@@ -73,7 +73,7 @@
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-order="raw oras auth rbac oci-token cosign tokens apt pypi maven npm" # the quick ones first; pypi and npm install their clients, maven builds with mvn and gradle
+order="raw oras auth rbac oci-token cosign tokens apt rpm pypi maven npm" # the quick ones first; pypi and npm install their clients, maven builds with mvn and gradle
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 registry="${LAJSTROM_E2E_REGISTRY:-localhost:5000}"
