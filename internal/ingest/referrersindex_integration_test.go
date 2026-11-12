@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -101,4 +102,50 @@ func skipWithoutDeletes(t *testing.T, caps provider.Capabilities) {
 	if !caps.DeleteManifest {
 		t.Skip("the registry does not delete manifests (Capabilities.DeleteManifest false): Lajstrom refuses the delete on purpose")
 	}
+}
+
+// TestIntegrationPutReferrerSubjectDeleted is TestPutReferrerSubjectDeleted against the registry
+// of TestIntegration, with the referrers API (Zot) or without (distribution, where the provider
+// writes the subject's tag-schema index): a signature pushed before the delete goes with its
+// subject, and one whose push waited across the delete after its checks is ErrInvalid; nothing
+// of either is left, the sha256-<hex> index included (#806).
+func TestIntegrationPutReferrerSubjectDeleted(t *testing.T) {
+	addr := os.Getenv("LAJSTROM_TEST_REGISTRY")
+	if addr == "" {
+		t.Skip("set LAJSTROM_TEST_REGISTRY=host:port to run against a registry")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	e, prov := integrationEnv(t, addr)
+	pub, err := e.pipe.Upload(ctx, e.repo, upload("notes", "1.0", file{"notes", "the subject of " + e.repo.Name}), alice)
+	must(t, err)
+	rr, err := prov.Repository(ctx, "raw/"+e.repo.Name+"/notes")
+	must(t, err)
+	subject, err := rr.Resolve(ctx, pub.Digest.String())
+	must(t, err)
+	for _, layer := range []string{"signature", "late"} {
+		must(t, rr.Push(ctx, ocispec.Descriptor{MediaType: "application/octet-stream", Digest: digest.FromString(layer), Size: int64(len(layer))},
+			bytes.NewReader([]byte(layer))))
+	}
+	early := signature(t, subject, "signature")
+	_, err = e.pipe.PutReferrer(ctx, e.repo, early, alice)
+	must(t, err)
+
+	g := newExistsGate(prov)
+	late := signature(t, subject, "late")
+	err = raceSubjectDelete(ctx, t, e, ingest.New(e.options(g)), g, late, subject.Digest)
+	if !errors.Is(err, ingest.ErrInvalid) || !strings.Contains(err.Error(), subject.Digest.String()) {
+		t.Errorf("PutReferrer after its subject's delete: %v, want ErrInvalid naming %s", err, subject.Digest)
+	}
+	for _, ref := range []string{subject.Digest.String(), early.Desc.Digest.String(), late.Desc.Digest.String(), "sha256-" + subject.Digest.Encoded()} {
+		if _, err := rr.Resolve(ctx, ref); !errors.Is(err, provider.ErrNotFound) {
+			t.Errorf("the registry has %s after the delete: %v", ref, err)
+		}
+	}
+	var listed []ocispec.Descriptor
+	err = rr.Referrers(ctx, subject, "", func(page []ocispec.Descriptor) error { listed = append(listed, page...); return nil })
+	if err != nil && !errors.Is(err, provider.ErrNotFound) {
+		t.Fatal(err)
+	}
+	same(t, "the referrers listed after the delete", []ocispec.Descriptor(nil), listed)
 }
