@@ -21,7 +21,13 @@
 // not what the header of the file layer says, key by key. An upload streams into the registry
 // (ADR 0014): the upload route reads the head of the body for the NAME, and the whole body
 // passes the inspector on its way. The Packages route serves a file by its name, which has no
-// epoch: the upload refuses another content under a name another version holds. The plugin
+// epoch: the upload refuses another content under a name another version holds.
+//
+// The repodata of a repo is one render, so that the repomd.xml a client gets lists the
+// checksums of the documents it gets: RenderIndex with the scope repodata returns repomd.xml
+// and primary.xml.gz, filelists.xml.gz and other.xml.gz, each named by its checksum, which
+// format.CachedDocument keeps together in index_cache; ingest and delete invalidate them, and
+// the routes serve a document only while the current repomd.xml lists it. The plugin
 // registers itself with format.Register when the package is imported; the binary imports it in
 // cmd/lajstrom/formats.go.
 package rpm
