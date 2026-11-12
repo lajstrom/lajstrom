@@ -10,7 +10,8 @@ Every cell links to the section that measured it, on the registry's page: distri
 ([gitlab.md](gitlab.md)), GHCR ([ghcr.md](ghcr.md)), Harbor ([harbor.md](harbor.md)), Nexus
 Repository ([nexus.md](nexus.md)), Gitea's container registry, with Forgejo's
 ([gitea.md](gitea.md)), and JFrog Container Registry ([jfrog-jcr.md](jfrog-jcr.md)), whose
-cells are a [table of their own](#jfrog-container-registry). A cell
+cells are a [table of their own](#jfrog-container-registry), as Project Quay's are
+([quay.md](quay.md), [Project Quay](#project-quay), 2026-11-12). A cell
 that was not measured says *not measured*. distribution's and Zot's measurements were made on
 2026-11-09, Nexus's, Gitea's and JCR's on 2026-11-10, the others' on 2026-11-07, and
 `lajstrom registry probe` measured some of them again later; GitLab's delete through Lajstrom's
@@ -19,7 +20,7 @@ of each registry, and [Keeping the matrix current](#keeping-the-matrix-current) 
 changes. A registry that is not here is not tested.
 
 How registries differ beyond these cells, the untested ones too (ECR, ACR, Google Artifact
-Registry, Docker Hub, Quay): their repository models and names, whether `a/b` and `a/b/c` can
+Registry, Docker Hub): their repository models and names, whether `a/b` and `a/b/c` can
 both be repositories, uploads, deletes, retention rules that read tags, and what each means for
 Lajstrom, from the vendors' documentation and a few measurements: [quirks.md](quirks.md).
 
@@ -42,6 +43,7 @@ configuration has to add.
 | Nexus Repository 3.98.1, Community Edition, a `docker` and an `oci` hosted repository | `sonatype/nexus3:3.98.1`, index `sha256:91a9af44af777c353db11a5ee73850c7eb24b03c997ff4cc62a3500ad38a1332` | `nexus/compose.yaml`, set up by `nexus.sh` | 2026-11-10; again after #352, with the probe, 2026-11-12 ([nexus.md](nexus.md#again-after-352)) | `manual` |
 | Gitea 1.27.3, its container registry | `gitea/gitea:1.27.3-rootless`, index `sha256:1c17ecaead42eb3b5391553d8708103a4beb0e86edf5b9ebc1eb269c318845f2` | `gitea/compose.yaml`, set up by `gitea.sh` | 2026-11-10, by hand and by the probe | `manual`; the e2e scenarios `oras`, `auth`, `rbac`, `oci-token`, `cosign` and `tokens` in CI (the job `e2e (gitea)`, not required, #353) |
 | Forgejo 17.0.1, its container registry | `codeberg.org/forgejo/forgejo:17.0.1-rootless`, index `sha256:5ef02fbcf22beef56b8c844952ffad58cfe177b6f98e46e6abb5df90b88dc8d3` | `gitea/compose.yaml` (profile `forgejo`), set up by `gitea.sh up forgejo` | 2026-11-10 | `manual`; where it differs from Gitea, on gitea.md |
+| Project Quay 3.18.2, its Postgres and Redis | `quay.io/projectquay/quay:3.18.2`, index `sha256:4456201ca6bfdc0bbe78ca7cfe262887df41147ddbf452dd8d51f8d330a41acb`, `postgres:17.11-alpine`, `redis:7-alpine` (7.4.12) | [`quay/compose.yaml`](../../deploy/compose/quay/compose.yaml), set up by `quay.sh` | 2026-11-12, by the probe and by hand | `manual` |
 | MinIO 2025-07-23, behind distribution | `bitnamilegacy/minio:2025.7.23-debian-12-r5`, index `sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20` | `compose.yaml` (`minio`, profile `s3-minio`) | 2026-11-09 | `manual` |
 | SeaweedFS 4.52, behind distribution | `chrislusf/seaweedfs:4.52`, index `sha256:57877e32bb90073b37dc109b438ba66e84fd5ed9ced5f5c04f56444ef243ce59` | `compose.yaml` (`seaweedfs`, `seaweedfs-bucket`, profile `s3`) | 2026-11-09 | `manual` |
 
@@ -61,7 +63,6 @@ documentation and from reports, not from a measurement ([ecr.md](ecr.md)):
 | Registry | Issue | Tier |
 | --- | --- | --- |
 | Amazon ECR | spike #19 (needs an AWS account; not run), adapter #36 ([ecr.md](ecr.md): tested against moto, the AWS mock, with distribution for `/v2`; live ECR pending #19) | `untested`. A repository is created on push only through a creation template with `CREATE_ON_PUSH`, otherwise by `CreateRepository` from the adapter; the OCI 1.1 referrers API since 2024-06, but pushing referrers with oras returned 405 (aws/containers-roadmap#2783); listing by `DescribeRepositories`, and a `_catalog` reported; manifest delete to be measured; immutable tags a per-repository option that must be respected; layers served from S3; mounts only with `BLOB_MOUNTING`; 100,000 images a repository, referrers included, and a 12-hour token |
-| Quay | none | `untested` |
 | Azure Container Registry | none | `untested` |
 | Docker Hub | none | `untested` |
 
@@ -153,6 +154,49 @@ in its compose file re-runs [Commands](jfrog-jcr.md#commands).
 | What the probe finds | [`referrers=true catalog=false`, since the probe wants a catalog in the 200 (#338); before that `catalog=true`, wrong](jfrog-jcr.md#what-the-provider-must-do-differently) |
 | Overrides needed | [none; `prefix: <repo-key>/`](jfrog-jcr.md#configuration) |
 
+### Project Quay
+
+Project Quay 3.18.2, the upstream of Red Hat Quay ([quay.md](quay.md)), measured on 2026-11-12
+with an organisation as Lajstrom's prefix and a robot that administers it, row for row as the
+table above. It takes Lajstrom's manifests, but every delete through Lajstrom fails (its token
+endpoint refuses the action `delete`, #801), the catalog Lajstrom reads is empty (#802), and
+it is `vendor=distribution` today (#803): a backend for trying Lajstrom, not for data, until
+those are fixed. Its build rule, on master and not released, is
+[measured before and after](quay.md#the-build-rule).
+
+| | Quay 3.18.2 |
+| --- | --- |
+| Create on push | [yes, at the token request for `push`, inside an existing organisation](quay.md#organisations-robots-and-create-on-push) |
+| Where a repository may be created | [below `<organisation>/`, at any depth; on master, not released, **no new name ending in `build` or `build/<x>`**](quay.md#the-build-rule) |
+| Routing words in a name (`manifests`, `referrers`, `tags/list`) | [ok](quay.md#the-row) |
+| Referrers API | [yes, with the `artifactType` filter; **400 `MANIFEST_INVALID` for a subject that does not exist**](quay.md#referrers) |
+| `OCI-Subject` on a push with `subject` | [no](quay.md#referrers) |
+| Catalog (`_catalog`) and its limits | [**200 and an empty list without credentials**; with a token, creation order, 100 a page, **`last` ignored**](quay.md#catalog) |
+| A listing API of its own | [REST API, per namespace](quay.md#catalog) |
+| Tag list order and pagination | [lexical; `n`/`last`/`Link`; **cached 120 s**](quay.md#tags) |
+| Read-after-write lag | [none for manifests and blobs; a tag list read before a write up to 120 s, the catalog 60 s](quay.md#consistency) |
+| Delete a manifest by digest | [yes, 202, with its tags, with a `push` token; **oras-go's `delete` scope is 400 at the token endpoint**](quay.md#delete) |
+| Delete by tag | [yes; the manifest goes with its last tag](quay.md#delete) |
+| Delete a repository | [no `/v2` API; REST API](quay.md#delete) |
+| Immutable tags, where the rule lives | [none by default; organisation and repository policies: 409 `TAG_IMMUTABLE`, the same manifest too](quay.md#immutable-tags) |
+| Blob redirect | [none on local storage; S3 not run](quay.md#blob-reads-ranges-sizes) |
+| `Range` and `Accept-Ranges` | [**none: 200 with the whole blob**](quay.md#blob-reads-ranges-sizes) |
+| Largest blob measured | [256 MiB in one `PUT` and in one `PATCH`](quay.md#blob-reads-ranges-sizes) |
+| Manifest size limit | [1 MiB; one byte more is an HTML 413](quay.md#blob-reads-ranges-sizes) |
+| Lajstrom's manifest profile (`artifactType`, empty config, own media types) | [accepted](quay.md#media-types) |
+| Auth | [Bearer from `/v2/auth`, 1 h, actions `pull`, `push`, `*` only; a robot's token](quay.md#tokens-and-the-delete-action) |
+| Rate limits seen | none |
+| Upload: chunk out of order | [416, an empty body](quay.md#uploads) |
+| Upload: chunk size limit | [none met: 256 MiB in one `PATCH`](quay.md#uploads) |
+| Upload: session status (`GET`) | [204, **`Range: bytes=0-<n+1>`, one byte ahead**](quay.md#uploads) |
+| Upload: cancel (`DELETE`) | [works with a `push` token](quay.md#uploads) |
+| Upload: mount (`POST ?mount=&from=`) | [201](quay.md#uploads) |
+| Upload: wrong digest, empty blob | [400 `BLOB_UPLOAD_INVALID`, the session ends; stored](quay.md#uploads) |
+| Upload continued by another replica | [**fails**: the status one byte ahead (#804)](quay.md#our-tests-against-it) |
+| Garbage collector and an untagged referrer (#37) | *not measured*; [kept by its hidden tag (read)](quay.md#referrers) |
+| What the probe finds | [`referrers=false catalog=true`, `vendor=distribution`; both wrong](quay.md#the-row) |
+| Overrides needed | [`catalog: false`; `consistency: eventual`; `server.maxManifestSize: 1MiB`](quay.md#configuration) |
+
 ## Object stores behind distribution
 
 distribution 3.1.2 on its `s3` storage driver, the profiles `s3` and `s3-minio` of the
@@ -221,6 +265,8 @@ reported it yet.
 | Gitea 1.27.3, Forgejo 17.0.1 | Tags are lower-cased when pushed and resolved without case: `5.4.Final` is listed as `5.4.final`, and a push to `5.4.final` re-points it ([gitea.md](gitea.md#tags)) | Pulling manifests: a tag "MUST match the following regular expression: `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}`", case included; Listing Tags returns the tags of the repository, not others | Two versions that differ only in case are one tag (the second is a 409 through Lajstrom); `tags/list` gives other tags than Lajstrom wrote | none (gitea.md, item 2) | [go-gitea/gitea](https://github.com/go-gitea/gitea/issues), [Forgejo](https://codeberg.org/forgejo/forgejo/issues): to file |
 | Forgejo 17.0.1 | `GET` of an upload session answers `Range: 0-5` after 5 bytes (`0-4` in the `PATCH`'s answer) ([gitea.md](gitea.md#forgejo)) | Pushing a blob in chunks: "The `<end-of-range>` value is the position of the last uploaded byte" | A client that resumes from the status sends its next chunk one byte late, 416; `TestIntegrationUploadAcrossReplicas` fails | none: the facade passes the backend's `Range` | [Forgejo](https://codeberg.org/forgejo/forgejo/issues): to file |
 | distribution 3.1.2 | A repository name over 255 characters is 400 `NAME_INVALID` with the error object written twice: two JSON documents in one `application/json` body of 845 bytes ([distribution.md](distribution.md#create-on-push)) | Error Codes: "If the response body is in JSON format, it MUST have the following format", one object with `errors` | None: the provider decodes the first object, and Lajstrom's names are at most 255 characters | nothing needed | [distribution/distribution](https://github.com/distribution/distribution/issues): to file |
+| Project Quay 3.18.2 | The referrers API answers a subject that does not exist `400 MANIFEST_INVALID`, and a push with `subject` gets no `OCI-Subject`, though the API is there ([quay.md](quay.md#referrers)) | Listing Referrers: "Assuming a repository is found, this request MUST return a `200 OK` response code", 400 only for an invalid request; Pushing Manifests with Subject: a registry that supports the referrers API "MUST respond with the response header `OCI-Subject`" | The probe's request cannot tell (its repository does not exist); oras-go writes the tag schema beside the API | the tag schema, through oras-go; `referrers: true` in the vendor entry (#803) | [PROJQUAY](https://redhat.atlassian.net/jira/software/c/projects/PROJQUAY/issues): to file |
+| Project Quay 3.18.2 | `GET` of an upload session answers `Range: bytes=0-5` after `PATCH` `0-4` answered `0-4`: one byte ahead, with a `bytes=` prefix ([quay.md](quay.md#uploads)) | Pushing a blob in chunks: "The `<end-of-range>` value is the position of the last uploaded byte", in `Range: 0-<end-of-range>` | A session continued on another replica sends its next chunk one byte late, 416 (`TestIntegrationUploadAcrossReplicas`) | none: the facade passes the backend's `Range` (#804) | [PROJQUAY](https://redhat.atlassian.net/jira/software/c/projects/PROJQUAY/issues): to file |
 
 **Not deviations**: measured, and allowed by the spec or outside it. Some are still worth a
 word upstream, and the row says so; where one costs Lajstrom something, the row says that too.
@@ -363,6 +409,25 @@ registries:
     # uploads: {spoolUnknownLength: true}   # for clients that stream more than one chunk (gitea.md, item 4)
 ```
 
+Project Quay ([quay.md](quay.md#configuration)); deletes fail whatever is set (#801):
+
+```yaml
+server:
+  maxManifestSize: 1048576              # Quay's nginx refuses a manifest over 1 MiB
+registries:
+  - name: quay
+    type: generic
+    url: http://localhost:5012          # Quay's SERVER_HOSTNAME: its bearer realm is built from it
+    prefix: <organisation>/             # required: repositories exist only inside a namespace
+    auth:
+      username: <organisation>+<robot>  # a robot in a team with the role admin
+      passwordEnv: LAJSTROM_QUAY_ROBOT_TOKEN
+    capabilities:
+      catalog: false                    # until #802: the catalog Lajstrom reads is empty
+      consistency: eventual             # until #803: tag lists cached 120 s
+      consistencyBound: 130s
+```
+
 ## Consistency
 
 A registry is **strongly consistent** when every read after the `201` of a write sees it: a
@@ -379,7 +444,7 @@ catalog. It is **eventually consistent** when a read can miss the write for a wh
 | Amazon ECR | eventual, no bound | 100 ms to several seconds, from reports only ([ecr.md](ecr.md#capabilities)); #19 measures it |
 | GHCR | eventual (the vendor table), no bound | users saw a tag `404` 0.2 s after its push, once in 30 runs; reads from another runner fail more often |
 | Docker Hub | none seen for manifests and blobs | its referrers list lagged up to about a minute behind a signature (cosign users' reports) |
-| Quay | immediate by its code for manifests and blobs | the tag list is cached up to 120 s, the catalog up to 60 s |
+| Project Quay 3.18.2 | eventual for lists; `strong` by the vendor table today, wrongly (#803) | measured 2026-11-12: manifests and blobs at once; a tag list read before a push stays stale up to 120 s, a catalog page 60 s ([quay.md](quay.md#consistency)) |
 | Azure Container Registry | per replica | geo-replicas are eventual, without a published bound; a push and its reads must use one regional endpoint |
 | Google Artifact Registry | none seen | a remote repository caches its tags for an hour |
 
@@ -509,11 +574,12 @@ a miss there likelier to show.
 
 ## Keeping the matrix current
 
-The versions are pinned in six places: `deploy/compose/compose.yaml` (distribution, Zot, the
+The versions are pinned in seven places: `deploy/compose/compose.yaml` (distribution, Zot, the
 GitLab container registry and its Postgres, SeaweedFS, MinIO), `deploy/compose/harbor/harbor.sh`
 (Harbor's version and the installer's sha256), `deploy/compose/nexus/compose.yaml` (Nexus's
 image by digest), `deploy/compose/gitea/compose.yaml` (Gitea's and Forgejo's images by digest),
-`deploy/compose/jfrog-jcr/compose.yaml` (JCR's image by digest)
+`deploy/compose/jfrog-jcr/compose.yaml` (JCR's image by digest),
+`deploy/compose/quay/compose.yaml` (Quay's, its Postgres's and its Redis's images by digest)
 and `.github/workflows/ci.yml` (distribution and
 Zot of the integration job and of the e2e job, the same as in `compose.yaml`). **Whoever changes a pin re-runs the
 commands of that registry's page, updates the cells that changed and the "last verified" date,
@@ -555,6 +621,10 @@ The commands per registry:
 - [ ] **JFrog Container Registry** (`jfrog-jcr/compose.yaml`; a new image is a new digest):
       [jfrog-jcr.md, Commands](jfrog-jcr.md#commands): `jcr.sh up`, the curl probes, the tests
       and the e2e scenarios with the prefix; then `jcr.sh down`.
+- [ ] **Project Quay** (`quay/compose.yaml`; a new image is a new digest):
+      [quay.md, Commands](quay.md#commands): `quay.sh up`, the probe, the curl probes, the
+      tests and `raw`, `oras` with the prefix, [the build rule](quay.md#the-build-rule) on a
+      release that has it; then `quay.sh stop`.
 - [ ] **GHCR** (no pin; quarterly, or when the page stops being true):
       [ghcr.md, Measurements](ghcr.md#measurements) and [Our tests](ghcr.md#our-tests) in
       `lajstrom-extras`, then the deletion of the packages it leaves.
@@ -585,7 +655,7 @@ cannot delete. The runs by hand are on the pages: [distribution.md](distribution
 [zot.md](zot.md#our-tests-against-it), [gitlab.md](gitlab.md#our-tests-against-it),
 [ghcr.md](ghcr.md#our-tests), [harbor.md](harbor.md#our-tests-against-it),
 [nexus.md](nexus.md#our-tests-against-it), [gitea.md](gitea.md#our-tests-against-it),
-[jfrog-jcr.md](jfrog-jcr.md#our-tests-against-it).
+[jfrog-jcr.md](jfrog-jcr.md#our-tests-against-it), [quay.md](quay.md#our-tests-against-it).
 
 ### Upload sessions
 
@@ -622,7 +692,9 @@ own, `lajstrom-gitea`, on `localhost:5009` and `localhost:5014`, set up by
 `deploy/compose/gitea/gitea.sh up` (`up forgejo`). JFrog Container Registry is a compose
 project of its own, `lajstrom-jcr`, on `localhost:5010`, set up by
 `deploy/compose/jfrog-jcr/jcr.sh up`; moto of the `ecr` profile takes the same port by default,
-so to run both one moves (`LAJSTROM_JCR_PORT` or `LAJSTROM_MOTO_PORT`). The packages the GHCR tests left in `lajstrom-extras`, and their deletion,
+so to run both one moves (`LAJSTROM_JCR_PORT` or `LAJSTROM_MOTO_PORT`). Project Quay is a
+compose project of its own, `lajstrom-quay`, on `localhost:5012`, set up by
+`deploy/compose/quay/quay.sh up`. The packages the GHCR tests left in `lajstrom-extras`, and their deletion,
 are in [ghcr.md](ghcr.md#packages-left-in-lajstrom-extras). The ECR provider's stand-in, moto
 for the API and a distribution for `/v2`, is the `ecr` profile on `localhost:5010` and
 `localhost:5011` ([ecr.md](ecr.md#tested-against-moto)).

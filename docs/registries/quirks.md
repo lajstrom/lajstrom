@@ -27,7 +27,7 @@ measurements of [section 2](#2-is-abc-one-repository-or-two), on Zot v2.1.23, di
 | Harbor | `<project>/` and any depth | the project, never created on push | project 1–255 characters; the whole name 255 | any depth, all served, listed and collected, measured; **below a component `manifests`, `referrers` or `tags/list`, a blob `HEAD` is 404 or 400 at random** (GET 200), measured |
 | GHCR | `<owner>/` and a name, which may hold `/` | the owner | lowercase | not tried |
 | Docker Hub | `namespace/repository`: **exactly two levels** | the namespace | repository 2–255 characters, no `.` | no third level at all |
-| Quay | `namespace/repository`; the repository may hold `/` (quay.io too) | the namespace | namespace 2–255, repository 255 characters | new names ending in `build` or `build/<x>` refused (master, 2026-11) |
+| Quay | `namespace/repository`; the repository may hold `/` (quay.io too) | the namespace | namespace 2–255, repository 255 characters | any depth, measured on 3.18.2; **on master, new names ending in `build` or `build/<x>` refused**, measured with its commit applied ([quay.md](quay.md#the-build-rule)) |
 | Zot | any name, a directory each | nothing: the first upload session creates it | a component over 255 bytes is 500 | **names ending in `blobs`, `.uploads`, `.sync` are served but neither listed nor collected**, measured |
 | distribution | any name | nothing: the first manifest | 255 characters, 400 `NAME_INVALID` | all served and listed, measured |
 | Gitea, Forgejo | `<owner>/` and any depth | the owner | **the 1.0 grammar: no `__`, no `--`** | `a/b/c` and deeper, measured |
@@ -45,7 +45,7 @@ measurements of [section 2](#2-is-abc-one-repository-or-two), on Zot v2.1.23, di
 | Harbor | out-of-order chunks appended | by digest; no tag delete | project rules | yes | system admins | 128 GiB a request | Bearer, 30 min | retention rules |
 | GHCR | 4 MiB a `PATCH` | **none** | none | no | all of GHCR | 10 GB, 10 min an upload | the PAT in base64 | none |
 | Docker Hub | ? | by digest only | per repository, RE2 patterns | undocumented; 200 with an empty index | none | none documented | Bearer from `auth.docker.io`, 300 s | none documented |
-| Quay | ? | yes | 3.17, organisations | yes | the caller's view, cached 60 s | 20 GB by default | Bearer, 1 h, no `delete` | auto-prune, expiry labels |
+| Quay | any; **the status one byte ahead**, measured | with a `push` token; **the action `delete` refused**, measured | 3.17, organisations | yes; 400 for a missing subject | the caller's view, **empty without credentials**, cached 60 s | 20 GB by default | Bearer, 1 h, no `delete` | auto-prune, expiry labels |
 | Zot | any | yes; 405 if an index lists it | none; a policy without `update` | yes | yes, but see above | none met at 1 GiB | none, htpasswd, more | retention policies |
 | distribution | any | yes, if enabled | none | no | yes | the storage driver's | none, htpasswd, token | none (offline collector) |
 | Gitea, Forgejo | **no chunk of unknown length after the first** | yes; a re-pointed tag deletes its manifest | none | no | yes | `LIMIT_SIZE_CONTAINER` | Bearer, `scope="*"`, 24 h | cleanup rules |
@@ -364,15 +364,27 @@ x/tags/list 15×400 of 20; GET 200
 x HEAD 20×200, GET 200 (the control name)
 ```
 
+### Measured on Quay
+
+Since 2026-11-05 on master, not released, Quay refuses a new repository whose name, without
+the namespace, ends in a `build` component or has one component after it, or that and `logs` or
+`status` (`foo/build`, `foo/build/bar`, `foo/build/bar/logs`), because `org/foo/build/bar` reads
+as build `bar` of `org/foo` in Quay's web URLs
+([commit 77b369a](https://github.com/quay/quay/commit/77b369a411)). Measured on 2026-11-12
+([quay.md](quay.md#the-build-rule)): the released 3.18.2 takes all of them, at any depth; 3.18.2
+with the commit's sources applied refuses each at the token request of a push, `400
+NAME_INVALID` "Repository name conflicts with a build route", and the REST API's create too,
+while `build/foo`, `foo/building/bar` and `foo/build/bar/extra` pass. A pull through a proxy
+cache of docker.io of `paketobuildpacks/build` or `tensorflow/build` is **500**, not a refusal;
+repositories created before keep working. Lajstrom's names that end so cannot be created on
+such a Quay ([Consequences](#consequences-registry-by-registry)). Reported as
+[quay/quay#8070](https://github.com/quay/quay/issues/8070).
+
 ### Elsewhere (read, not measured)
 
 - **GitLab.** A group and a project cannot share a path under one parent
   ([gitlab-foss#35100](https://gitlab.com/gitlab-org/gitlab-foss/-/issues/35100)), so among the
   three prefixes `path.rb` tries at most one is a project: no ambiguity, only the depth limit.
-- **Quay.** Since 2026-11-05 on master, not released, a new repository whose name ends in a
-  `build` segment or has one segment after it (`foo/build`, `foo/build/bar`) is refused, because
-  `org/foo/build/bar` reads as build `bar` of `org/foo` in Quay's web URLs
-  ([commit 77b369a](https://github.com/quay/quay/commit/77b369a411)).
 - **JFrog.** A tag is a folder in the image's folder, so image `a/b` with tag `c` and image
   `a/b/c` are both `a/b/c/`; no JFrog document or report says what happens then ?. Pushes by
   digest go to `<image>/sha256:<hex>/` ([reported](https://github.com/weaveplatform/artifactweave/issues/387)).
@@ -478,7 +490,7 @@ different places and refuse with different answers:
 | GitLab | protected tags (17.11) and immutable tags (18.10, Ultimate), in GitLab, carried in its tokens | 401 `IMMUTABLE_TAG`, measured with a stand-in token server |
 | Nexus | the repository's `writePolicy: allow_once` | 409 `REDEPLOY_DISABLED`, measured |
 | Zot | an access-control policy without `update` | 403 `DENIED`, measured |
-| Quay | 3.17, organisations: per tag, a regex policy or the `quay.immutable` label ([docs](https://github.com/quay/quay-docs/blob/master/modules/immutable-tag-overview.adoc)) | ? |
+| Quay | 3.17, organisations: per tag, a regex policy or the `quay.immutable` label ([docs](https://github.com/quay/quay-docs/blob/master/modules/immutable-tag-overview.adoc)) | 409 `TAG_IMMUTABLE`, the same manifest too, measured |
 
 ### Referrers and OCI 1.1 artifacts
 
@@ -647,8 +659,13 @@ amendment: a component that fails the grammar is replaced by `h0_h` and 32 hex d
   (`h0__…`: a raw file `_config.yml` or `.gitignore`, a component over 64 bytes) and every `--`
   in a raw path could not be stored there (Gitea from the source, not run). Since ADR 0017 a
   hashed component is `h0_h…` and `--` is `_2d_2d` (#598).
-- **Quay**, once its 2026-11 change ships, refuses new names ending in `build` or `build/<x>`:
-  a raw file `ci/build`.
+- **Quay**, once its 2026-11 change ships, refuses new names ending in `build`, `build/<x>` or
+  `build/<x>/logs|status` (measured with the change applied, section 2): the PyPI package
+  `build`, npm's `@<scope>/build`, a raw file in a directory `build/` or named `build`, a Maven
+  artifactId or a Debian package `build`, and an `oci` repository mirroring Docker Hub's
+  `paketobuildpacks/build` or `tensorflow/build`. Quay 3.18.2 also refuses the token action
+  `delete`, so no delete through Lajstrom works there (#801), and its catalog is empty to a
+  client that sends no credentials unasked (#802) ([quay.md](quay.md#what-the-provider-must-do-differently)).
 - **GitLab.com** refuses Lajstrom's manifests: its registry runs with the database and without
   the dynamic media types (measured on that variant, read in GitLab.com's values); and its
   256,000-byte manifest limit is below Lajstrom's `server.maxManifestSize` of 4 MiB.
@@ -692,7 +709,8 @@ disappears from its clients without an audit record.
 | GHCR | `<org>/` | a classic PAT with `write:packages` | none: the vendor table sets `catalog`, `deleteManifest`, `maxBlobSize` |
 | Gitea, Forgejo | `<owner>/` | a token with `write:package`; no cleanup rule | `uploads.spoolUnknownLength: true` when clients stream more than one chunk |
 | Nexus | `<repository>/` with path routing, else none | `writePolicy: allow_once`; the `oci` format, whose blobs the vendor table reads whole (#352, measured on 2026-11-12; a provider that has not probed yet still sends ranges, #797); on `docker` Lajstrom refuses deletes, and `strictContentTypeValidation: false` lets every blob in ([nexus.md](nexus.md#again-after-352)) | none: the vendor table sets `deleteManifest: false` on `docker` and reads `oci` blobs whole |
-| ACR, GAR, Quay | | not measured ([matrix](README.md#versions-tested)); GAR needs monolithic uploads | |
+| Quay | `<organisation>/` | a robot in a team with the role admin; a policy that leaves `sha256-*` mutable; measured on 3.18.2, for trying Lajstrom: no delete works (#801) ([quay.md](quay.md#configuration)) | `capabilities: {catalog: false, consistency: eventual}`; `server.maxManifestSize: 1MiB` |
+| ACR, GAR | | not measured ([matrix](README.md#versions-tested)); GAR needs monolithic uploads | |
 | Docker Hub | | not a backend: two levels | |
 | JFrog | `<repo-key>/` | a local Docker repository; measured before the workarounds of #352 and #368, not run again with them: for trying Lajstrom ([jfrog-jcr.md](jfrog-jcr.md)) | `uploads.spoolUnknownLength: true` when clients stream more than one chunk |
 

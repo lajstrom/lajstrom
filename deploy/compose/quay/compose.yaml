@@ -1,0 +1,78 @@
+# Project Quay, the open-source upstream of Red Hat Quay, as a backend registry for the
+# capability matrix (docs/registries/quay.md): a compose project of its own, "lajstrom-quay",
+# beside the dev stack and not part of it (make dev-down does not touch it). Quay, its own
+# Postgres and its own Redis; blobs on local storage. For development only: plain HTTP, the
+# secret keys of config.yaml and the passwords of quay.sh.
+#
+#   deploy/compose/quay/quay.sh up      start it, wait, and set it up (superuser, organisation, robot)
+#   deploy/compose/quay/quay.sh stop    stop the containers, keep the volumes
+#   deploy/compose/quay/quay.sh down    remove the containers and the volumes
+#
+# Published on 127.0.0.1 only; the web UI, the REST API and the registry's /v2/ share the port,
+# which must be the one in config.yaml's SERVER_HOSTNAME: the bearer realm is built from it.
+#
+#   quay    localhost:5012  LAJSTROM_QUAY_PORT
+
+name: lajstrom-quay
+
+services:
+  quay:
+    # Project Quay 3.18.2 (2026-10-20), linux/amd64, arm64, ppc64le and s390x; the digest of the
+    # image index is the pin.
+    image: quay.io/projectquay/quay:3.18.2@sha256:4456201ca6bfdc0bbe78ca7cfe262887df41147ddbf452dd8d51f8d330a41acb
+    depends_on:
+      quay-postgres:
+        condition: service_healthy
+      quay-redis:
+        condition: service_healthy
+    volumes:
+      - ./config.yaml:/conf/stack/config.yaml:ro
+      - quay-storage:/datastorage
+    ports:
+      - "127.0.0.1:${LAJSTROM_QUAY_PORT:-5012}:8080"
+    healthcheck:
+      # Not /health/instance: it asks SERVER_HOSTNAME, the published port, which is not this
+      # container's.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/_internal_ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+  quay-postgres:
+    # The Postgres of the dev stack's GitLab profile: no other image to pull.
+    image: postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    environment:
+      POSTGRES_USER: quay
+      POSTGRES_PASSWORD: quay
+      POSTGRES_DB: quay
+    # Quay's schema needs the pg_trgm extension; the init script creates it in the new
+    # database, before Quay's first migration.
+    configs:
+      - source: pg-trgm
+        target: /docker-entrypoint-initdb.d/pg_trgm.sql
+    volumes:
+      - quay-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "quay", "-d", "quay"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  quay-redis:
+    # Redis 7.4.12, for Quay's build logs and user events (nothing of Lajstrom's).
+    image: redis:7-alpine@sha256:7b1753b4c5ad8458906c272a8132b8c15f5557b000379eb115fb239706a384b7
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+configs:
+  pg-trgm:
+    content: |
+      CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+volumes:
+  quay-storage:
+  quay-postgres:
