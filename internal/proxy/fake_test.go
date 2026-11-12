@@ -36,10 +36,11 @@ import (
 	"github.com/lajstrom/lajstrom/internal/proxy"
 )
 
-// pkgPlugin is the format of these tests, a plugin with the hooks of a proxy (format.Proxier).
-// Its manifests are of the profile's raw type, named by the parameters name and version as an
-// upload carries them, one file layer per file; Validate refuses a file whose bytes start with
-// "evil". Its upstream's document of a name is {"name", "versions": [{"version", "file", "url",
+// pkgPlugin is the format of these tests, a plugin with the hooks of a proxy (format.Proxier)
+// whose uploads stream (format.Streamer, ADR 0014). Its manifests are of the profile's raw type,
+// named by the parameters name and version as an upload carries them, one file layer per file;
+// Build and Validate refuse a file whose bytes start with "evil", Build from what its inspector
+// read of a streamed file. Its upstream's document of a name is {"name", "versions": [{"version", "file", "url",
 // "sha512", "sha256", "sha1"}]}, and a file is <name>/-/<name>-<version>.tgz below the repo.
 type pkgPlugin struct {
 	formattest.Fake
@@ -75,6 +76,14 @@ func (p *pkgPlugin) build(_ context.Context, repo index.Repo, up format.Upload) 
 	blobs := []format.BlobSource{bytesBlob(profile.EmptyConfig, ocispec.DescriptorEmptyJSON.Data)}
 	var layers []profile.Layer
 	for _, f := range up.Files {
+		if f.Open == nil { // streamed: in its upload session, which ingest commits
+			if head, _ := f.Inspector.(*headInspector); head == nil || head.String() == "evil" {
+				return nil, fmt.Errorf("%w: %s is not a package", format.ErrInvalid, f.Name)
+			}
+			layers = append(layers, profile.Layer{MediaType: profile.MediaTypeRawFile, Size: f.Size, Title: f.Name,
+				Digest: digest.NewDigestFromEncoded(digest.SHA256, f.Checksums["sha256"])})
+			continue
+		}
 		rc, err := f.Open()
 		if err != nil {
 			return nil, err
@@ -108,6 +117,9 @@ func (p *pkgPlugin) validate(ctx context.Context, _ index.Repo, m ocispec.Manife
 	}
 	for _, f := range entry.Files {
 		rc, err := fetch(ctx, f.Digest)
+		if errors.Is(err, format.ErrStreamed) {
+			continue // Build read it
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -120,6 +132,29 @@ func (p *pkgPlugin) validate(ctx context.Context, _ index.Repo, m ocispec.Manife
 	}
 	return entry, nil
 }
+
+// Inspect implements format.Streamer: the inspector keeps the first four bytes.
+func (*pkgPlugin) Inspect(index.Repo, format.StreamUpload) (format.Inspection, error) {
+	return format.Inspection{Inspector: &headInspector{}}, nil
+}
+
+// headInspector keeps the first four bytes of a file, and refuses the file as soon as they are
+// "evil", before its end.
+type headInspector struct{ head []byte }
+
+func (h *headInspector) Write(p []byte) (int, error) {
+	h.head = append(h.head, p[:min(len(p), 4-len(h.head))]...)
+	if h.String() == "evil" {
+		return 0, errors.New("not a package")
+	}
+	return len(p), nil
+}
+
+func (*headInspector) Close() error { return nil }
+
+func (h *headInspector) String() string { return string(h.head) }
+
+var _ format.Streamer = (*pkgPlugin)(nil)
 
 func entryOf(m ocispec.Manifest) (*format.Entry, error) {
 	parsed, err := profile.Validate(m)
@@ -309,6 +344,8 @@ type fakeUpstream struct {
 	files     map[string][]byte
 	status    atomic.Int32
 	fileDelay atomic.Int64 // nanoseconds before a file's body
+	cut       atomic.Bool  // a file's body ends half way, short of its Content-Length
+	chunked   atomic.Bool  // a file's body has no Content-Length
 	metaDelay atomic.Int64 // nanoseconds before a document's answer
 	metaCalls atomic.Int32
 	fileCalls atomic.Int32
@@ -365,8 +402,20 @@ func (u *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(d)
 		u.mu.Lock()
 	}
-	w.Header().Set("Content-Length", fmt.Sprint(len(b)))
-	_, _ = w.Write(b)
+	switch {
+	case u.chunked.Load():
+		_, _ = w.Write(b[:len(b)/2])
+		w.(http.Flusher).Flush()
+		_, _ = w.Write(b[len(b)/2:])
+	case u.cut.Load():
+		w.Header().Set("Content-Length", fmt.Sprint(len(b)))
+		_, _ = w.Write(b[:len(b)/2])
+		w.(http.Flusher).Flush()
+		panic(http.ErrAbortHandler) // the connection is closed
+	default:
+		w.Header().Set("Content-Length", fmt.Sprint(len(b)))
+		_, _ = w.Write(b)
+	}
 }
 
 // tag points tag of name at version on the upstream.
