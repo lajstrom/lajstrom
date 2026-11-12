@@ -177,6 +177,19 @@ func isLoopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// PlainHTTPBeyondLoopback reports whether server.insecureHTTP is on while server.listen takes
+// plain HTTP from beyond the host: no server.tls, and a listen host that is not loopback (an
+// empty host is every interface; a name other than localhost counts as not loopback). Basic
+// credentials then cross the network in clear text, so serve warns (#746). Validate cannot
+// refuse it: a container listens on :8080 behind a port published on loopback.
+func (s Server) PlainHTTPBeyondLoopback() bool {
+	if !s.InsecureHTTP || s.TLS.CertFile != "" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(s.Listen)
+	return err == nil && !isLoopback(host)
+}
+
 // TrustedPrefixes returns server.trustedProxies as prefixes, a bare address as /32 or /128,
 // IPv4-mapped IPv6 as IPv4 (ADR 0011). It fails on an entry that Validate refuses.
 func (s Server) TrustedPrefixes() ([]netip.Prefix, error) {
