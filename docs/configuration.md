@@ -123,7 +123,14 @@ status, bytes, duration, request id and remote address.
 | `database.driver` | `sqlite`, `postgres` | `sqlite` | `LAJSTROM_DATABASE_DRIVER` | Engine of the index database ([index-schema.md](spec/index-schema.md)). |
 | `database.dsn` | string | `file:lajstrom.db` with `sqlite`; none with `postgres`, required | `LAJSTROM_DATABASE_DSN` | Data source name. SQLite: `file:/var/lib/lajstrom/lajstrom.db`. Postgres: `postgres://lajstrom@db:5432/lajstrom?sslmode=require`. A DSN with a password belongs in `LAJSTROM_DATABASE_DSN`, not in the file. The forms are below; a DSN in the form of the other driver's is a configuration error: a `postgres://` or `postgresql://` URL, or `host=…` pairs, with `sqlite`; a `file:` DSN, `:memory:` or a file name with `postgres`. With `postgres` and no DSN, as when `LAJSTROM_DATABASE_DSN` is unset, every command that loads the configuration stops with `database.dsn: must be set with database.driver postgres`. |
 
-**SQLite DSN.** A file name or a `file:` URI, e.g. `file:/var/lib/lajstrom/lajstrom.db`. Lajstrom
+**SQLite DSN.** A file name or a `file:` URI, e.g. `file:/var/lib/lajstrom/lajstrom.db`. A
+relative name, such as the default `file:lajstrom.db`, is resolved against the working directory
+of the process, as SQLite resolves it, not against the directory of the configuration file: run
+`lajstrom admin` and `reindex` where `serve` runs, or give an absolute path. An error opening the
+file and the first line of `serve` (`database.file`) name the absolute path. `admin` and
+`reindex` do not create a file that does not exist; they stop with `no database at <path>
+(database.dsn): run lajstrom migrate there, or point --config/database.dsn at the server's`.
+`migrate` and `serve` create it. Lajstrom
 adds the connection parameters of `modernc.org/sqlite` itself: `_busy_timeout=5000` (a writer
 waits up to 5 s for the lock), `_journal_mode=WAL` and `_synchronous=NORMAL` unless the DSN sets
 them, and always `_foreign_keys=1` and `_txlock=immediate` (deletes cascade; a transaction takes
@@ -146,8 +153,8 @@ without prepared statement support, `default_query_exec_mode=exec`; no `search_p
 `lajstrom migrate` applies the migrations the database does not have yet and prints them, and
 `lajstrom serve` does the same on start; both take a lock, so replicas starting together are
 safe. Which release runs on which schema during an upgrade is in
-[operations.md](operations.md#upgrades). Lajstrom logs `database.driver`, never the DSN, and
-keeps the password out of its errors.
+[operations.md](operations.md#upgrades). Lajstrom logs `database.driver`, and the file of a SQLite
+DSN, never the DSN, and keeps the password out of its errors.
 
 ### registries
 

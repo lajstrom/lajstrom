@@ -39,7 +39,7 @@ func newMigrateCmd(a *app) *cobra.Command {
 			}
 			switch {
 			case err != nil:
-				return migrationHint(err)
+				return migrationHint(inFile(a.cfg.Database, err))
 			case len(rep.Applied) > 0:
 				return nil
 			case rep.Version > rep.Known:
