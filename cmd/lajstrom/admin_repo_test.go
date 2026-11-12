@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,12 +19,23 @@ import (
 )
 
 // writeRepoConfig writes a configuration whose index database is a SQLite file in dir, with
-// one registry, local, and returns its path and the database's DSN.
+// two registries on an empty registry of the test, which answers the probe of admin repo
+// create: local, and hub, which takes names of one component like Docker Hub; it returns its
+// path and the database's DSN.
 func writeRepoConfig(t *testing.T, dir string) (cfg, dsn string) {
 	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/" {
+			_, _ = io.WriteString(w, "{}")
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
 	cfg, dsn = filepath.Join(dir, "lajstrom.yaml"), "file:"+filepath.Join(dir, "lajstrom.db")
 	body := "server:\n  listen: \":8080\"\n  externalURL: https://art.example.com\ndatabase:\n  driver: sqlite\n  dsn: \"" + dsn + "\"\n" +
-		"registries:\n  - name: local\n    url: \"http://localhost:5000\"\n"
+		"registries:\n  - name: local\n    url: \"" + srv.URL + "\"\n    prefix: local/\n" +
+		"  - name: hub\n    url: \"" + srv.URL + "\"\n    prefix: hub/\n    capabilities: {maxNameDepth: 1}\n"
 	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -64,6 +78,8 @@ func TestAdminRepo(t *testing.T) {
 		{args: []string{"admin", "repo", "create", "raw/docs", "--registry", "local", "--anonymous-read", "--policy", `{ "maxFileSize": 1 }`},
 			wantOut: `"anonymousRead":true,"policy":{"maxFileSize":1}`},
 		{args: []string{"admin", "repo", "create", "raw/bad", "--registry", "zot"}, wantErr: `registry: "zot" is not a configured registry`},
+		{args: []string{"admin", "repo", "create", "raw/bad", "--registry", "hub"},
+			wantErr: `registry: "hub" takes names of depth 1 at most below its prefix (capabilities.maxNameDepth)`},
 		{args: []string{"admin", "repo", "create", "raw/bad", "--registry", "local", "--policy", "[]"}, wantErr: "policy: must be a JSON object"},
 		{args: []string{"admin", "repo", "create", "nope/bad", "--registry", "local"}, wantErr: `format: "nope" is not a format this server has`},
 		{args: []string{"admin", "repo", "create", "raw/bad"}, wantErr: "registry: must not be empty"},
