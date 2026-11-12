@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
@@ -119,23 +120,31 @@ func TestIntegrationOCIProxy(t *testing.T) {
 	base := srv.URL + "/v2/oci/hub/" + path
 
 	pullPlatform(t, base, "1.0", img, 1)
-	held := func(tag string) digest.Digest {
+	// held is what tag names in the backend, waiting a little for want: the claim holder's tee
+	// ends with the commit of the blob, before the push of what it completed (§11.8).
+	held := func(tag string, want digest.Digest) digest.Digest {
 		rr, err := backend.Repository(ctx, "oci/hub/"+path)
 		must(t, err)
-		desc, err := rr.Resolve(ctx, tag)
-		if err != nil {
-			return ""
+		var got digest.Digest
+		for range 50 {
+			if desc, err := rr.Resolve(ctx, tag); err == nil {
+				got = desc.Digest
+			}
+			if got == want {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
 		}
-		return desc.Digest
+		return got
 	}
-	if got := held(profile.KeepTag(img.manifests[1].Digest)); got != img.manifests[1].Digest {
+	if got := held(profile.KeepTag(img.manifests[1].Digest), img.manifests[1].Digest); got != img.manifests[1].Digest {
 		t.Fatalf("the arm64 manifest's keep-tag names %q in the backend", got)
 	}
-	if got := held("1.0"); got != "" {
+	if got := held("1.0", ""); got != "" {
 		t.Fatalf("1.0 is in the backend before its index is complete: %s", got)
 	}
 	pullPlatform(t, base, "1.0", img, 0)
-	if got := held("1.0"); got != img.index.Digest {
+	if got := held("1.0", img.index.Digest); got != img.index.Digest {
 		t.Errorf("1.0 names %q in the backend once both platforms are held, want the index %s", got, img.index.Digest)
 	}
 	before := count.blobGETs()

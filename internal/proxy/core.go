@@ -33,6 +33,10 @@ type Options struct {
 	// Mirror is the write path of oci proxy repos, *ingest.Pipeline; without it they push
 	// nothing into the backend.
 	Mirror Mirrorer
+	// TeeBuffer is how many bytes the request that holds a blob's claim may fall behind the copy
+	// into the backend before it is dropped (proxy-and-group.md §11.8); zero means 4 MiB, and a
+	// negative value turns the tee off: that request waits for the copy as the others do.
+	TeeBuffer int
 	// MaxManifestSize is the largest manifest an oci proxy repo takes from its upstream, in bytes
 	// (server.maxManifestSize); zero or negative means 4 MiB.
 	MaxManifestSize int64

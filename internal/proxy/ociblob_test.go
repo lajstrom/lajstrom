@@ -30,7 +30,7 @@ func pull(t *testing.T, e *ociEnv, c *proxy.Core, path, tag string, img image, i
 	_, _, err = c.OCIManifest(ctx, e.repo, path, img.manifests[i].Digest.String())
 	must(t, err)
 	for _, b := range img.blobs[i] {
-		if _, err := c.OCIBlob(ctx, e.repo, path, b.Digest, true); err != nil {
+		if _, _, err := c.OCIBlob(ctx, e.repo, path, b.Digest, true, false); err != nil {
 			t.Fatalf("OCIBlob %s: %v", b.Digest, err)
 		}
 	}
@@ -74,7 +74,7 @@ func TestOCIBlobPull(t *testing.T) {
 	before := e.hub.count("GET /v2/library/nginx/blobs/")
 	for i := range 2 {
 		for _, b := range img.blobs[i] {
-			if _, err := c.OCIBlob(t.Context(), e.repo, "library/nginx", b.Digest, true); err != nil {
+			if _, _, err := c.OCIBlob(t.Context(), e.repo, "library/nginx", b.Digest, true, false); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -93,13 +93,13 @@ func TestOCIBlobNotListed(t *testing.T) {
 	e := newOCIEnv(t, ociSettings)
 	img := e.hub.image(t, "library/nginx", "1.27", "amd64")
 	c := e.core("a", proxy.Options{})
-	if _, err := c.OCIBlob(t.Context(), e.repo, "library/nginx", img.blobs[0][1].Digest, true); !errors.Is(err, index.ErrNotFound) {
+	if _, _, err := c.OCIBlob(t.Context(), e.repo, "library/nginx", img.blobs[0][1].Digest, true, false); !errors.Is(err, index.ErrNotFound) {
 		t.Fatalf("a blob nothing lists: %v, want index.ErrNotFound", err)
 	}
 	pull(t, e, c, "library/nginx", "1.27", img, 0)
 	_, _, err := c.OCIManifest(t.Context(), e.repo, "library/nginx", img.manifests[0].Digest.String())
 	must(t, err)
-	if _, err := c.OCIBlob(t.Context(), e.repo, "library/nginx", img.manifests[0].Digest, true); !errors.Is(err, index.ErrNotFound) {
+	if _, _, err := c.OCIBlob(t.Context(), e.repo, "library/nginx", img.manifests[0].Digest, true, false); !errors.Is(err, index.ErrNotFound) {
 		t.Errorf("a manifest's digest as a blob: %v, want index.ErrNotFound", err)
 	}
 	other := e.hub.image(t, "library/nginx", "1.28", "amd64")
@@ -107,7 +107,7 @@ func TestOCIBlobNotListed(t *testing.T) {
 	must(t, err)
 	_, _, err = c.OCIManifest(t.Context(), e.repo, "library/nginx", other.manifests[0].Digest.String())
 	must(t, err)
-	desc, err := c.OCIBlob(t.Context(), e.repo, "library/nginx", other.blobs[0][1].Digest, false)
+	desc, _, err := c.OCIBlob(t.Context(), e.repo, "library/nginx", other.blobs[0][1].Digest, false, false)
 	if err != nil || desc.Size != other.blobs[0][1].Size {
 		t.Fatalf("a HEAD: %+v, %v", desc, err)
 	}
@@ -128,7 +128,7 @@ func TestOCIBlobOnce(t *testing.T) {
 	errs := make(chan error, 8)
 	for i := range 8 {
 		wg.Go(func() {
-			_, err := cores[i%2].OCIBlob(t.Context(), e.repo, "library/nginx", layer.Digest, true)
+			_, _, err := cores[i%2].OCIBlob(t.Context(), e.repo, "library/nginx", layer.Digest, true, false)
 			errs <- err
 		})
 	}
@@ -155,14 +155,14 @@ func TestOCIBlobRefused(t *testing.T) {
 	b := e.hub.blobs["library/nginx"][layer.Digest]
 	e.hub.blobs["library/nginx"][layer.Digest] = append([]byte("X"), b[1:]...)
 	e.hub.mu.Unlock()
-	if _, err := c.OCIBlob(t.Context(), e.repo, "library/nginx", layer.Digest, true); !errors.Is(err, format.ErrBadGateway) {
+	if _, _, err := c.OCIBlob(t.Context(), e.repo, "library/nginx", layer.Digest, true, false); !errors.Is(err, format.ErrBadGateway) {
 		t.Fatalf("other bytes: %v, want format.ErrBadGateway", err)
 	}
 	if _, err := e.reg.StatBlob(t.Context(), "oci/hub/library/nginx", layer.Digest); !errors.Is(err, provider.ErrNotFound) {
 		t.Errorf("the backend holds the refused bytes: %v", err)
 	}
 	e.repo.Policy = []byte(`{"maxFileSize": 10}`)
-	if _, err := c.OCIBlob(t.Context(), e.repo, "library/nginx", layer.Digest, true); !errors.Is(err, format.ErrForbidden) {
+	if _, _, err := c.OCIBlob(t.Context(), e.repo, "library/nginx", layer.Digest, true, false); !errors.Is(err, format.ErrForbidden) {
 		t.Fatalf("above maxFileSize: %v, want format.ErrForbidden", err)
 	}
 	evs, err := e.st.ListAudit(t.Context(), index.AuditFilter{Action: "proxy.reject"})
