@@ -5,7 +5,7 @@
 - Owned by: the lead. Every pull request that changes a mechanism or a test named here updates
   the entry.
 - Related: [ADR 0001](../adr/0001-oci-registry-as-sole-storage.md) to
-  [ADR 0013](../adr/0013-proxy-and-group-repos.md), every spec of this directory,
+  [ADR 0017](../adr/0017-the-grammar-of-oci-names.md), every spec of this directory,
   [threat-model.md](../security/threat-model.md), [registries/README.md](../registries/README.md)
   (the matrix), [acceptance.md](../acceptance.md), [testing.md](../testing.md).
 
@@ -51,7 +51,7 @@ Each guarantee has:
 | Statement | one sentence that a test can check |
 | Scope | the formats, repo kinds (`hosted`, `proxy`, `group`, and `oci`, the pass-through format) and paths it covers; what is outside it is not guaranteed |
 | Assumes | what it needs of the registry and of the database, by the names of the next section; "any" means it needs none of them |
-| Mechanism | the code that makes it hold: `package.Function` or `package.Type.Method`, as the threat model names them (`ingest.Pipeline.claimTag` is the method in `internal/ingest`) |
+| Mechanism | the code that makes it hold: `package.Function` or `package.Type.Method`, as the threat model names them (`ingest.Pipeline.claimTag` is the method in `internal/ingest`); after the entry has named a package, or the sentence a type, a name of it may leave them out (`deletion.find` after `ingest.Pipeline.Delete`, `claimPath` after `ingest.Pipeline.claimTag`), and the CLI's names are those of `cmd/lajstrom` (`checkClock`) |
 | Tests | the tests that prove it, by name, and the steps of the end-to-end scripts (`test/e2e/<script>`, with the acceptance id they cover) |
 | When violated | whether Lajstrom notices, where it says so, and what repairs it |
 | Status | `holds`; `holds on strongly consistent registries only`; `partly` (the entry says which part does not hold); `not yet` (with its issue) |
@@ -77,7 +77,7 @@ is not tested.
 | **digest check** | the registry refuses a blob whose bytes are not the digest it is closed with | every registry of the matrix but JFrog JCR 7.161 (it stores any bytes under any digest) |
 | **scoped blobs** | a blob is readable only in a repository that holds it | measured on Zot only (threat model P-5) |
 | **case-exact tags** | two tags that differ in case are two tags | not on Gitea and Forgejo, which fold tag case ([#426](https://github.com/lajstrom/lajstrom/issues/426)) |
-| **GC keeps what is named** | the garbage collector keeps a manifest a tag names and a referrer whose subject exists | GitLab B deletes an untagged referrer 24 h after its push; Nexus's task "Delete unused manifests" deletes one; Gitea deletes the manifest a re-pointed tag named |
+| **GC keeps what is named** | the garbage collector keeps a manifest a tag names and a referrer whose subject exists | GitLab B deletes an untagged referrer 24 h after its push, and Nexus's task "Delete unused manifests" one pushed by digest; on both, one that a `sha256-<hex>` index lists stays ([gitlab.md](../registries/gitlab.md#garbage-collection), [nexus.md](../registries/nexus.md#garbage-collection)); Gitea deletes the manifest a re-pointed tag named |
 
 **Where the guarantees hold**, by the tiers of the matrix
 ([Versions tested](../registries/README.md#versions-tested)):
@@ -127,8 +127,9 @@ longer than `reconcile.graceAge` is outside them
   made). A raw `PUT`, an apt, a twine and an npm upload, and a Maven file (`ingest.Pipeline.Add`), stream into a session too
   (`ingest.Pipeline.UploadStream`, the provider's `BlobWriter`), which is closed with the digest
   Lajstrom computed only once every check passed and cancelled otherwise, so a refused upload
-  stores nothing; but a wheel or a `.zip` sdist read back from the registry (ADR 0014 step 5),
-  whose blob a refusal leaves to the registry's garbage collection, without a manifest.
+  stores nothing. The exception is a wheel or a `.zip` sdist that is read back from the registry
+  (ADR 0014 step 5): its blob is closed before that check, and a refusal leaves it, without a
+  manifest, to the registry's garbage collection.
 - **Tests.** `TestSpool`, `TestSpoolErrors`, `TestSpoolNoTempDir`, `TestUploadDoesNotHoldTheFile`,
   `TestStreamingMemory`, `TestPutWritesNoTempFile` and
   `TestPutRefusedStoresNothing` (raw), `TestUploadWritesNoTempFile` and `TestUploadRefusedStoresNothing`
@@ -154,15 +155,18 @@ longer than `reconcile.graceAge` is outside them
   by `ingest.Pipeline`); the manifest hook hands `/v2` pushes to ingest
   (`facade.handler.putManaged`); the proxy fetcher calls `Publisher.Upload`. `make lint`
   (depguard, rule `registry-client`) keeps the registry client out of every package but
-  `internal/provider`.
+  `internal/provider`, and keeps the plugins (`internal/format`) from writing to the registry:
+  depguard's rule `one-write-path` refuses oras-go there, and forbidigo every writing method of
+  the provider (`Push`, `PushReference`, `Tag`, `Delete`, the blob uploads, `EnsureRepository`,
+  `DeleteRepository`).
 - **Tests.** `TestManifestHook`, `TestReferrerHandOff`, `TestUploadWithOrigin`, `TestFileMiss`
   (proxy), and per format the upload tests that assert the published rows (`TestUpload` of deb
   and pypi, `TestPutGetHead` of raw, `TestDeploy` of maven, `TestPublish` of npm).
 - **When violated.** A manifest written past ingest has no claim, no validation and no audit row;
   reindex finds it later as a publish past Lajstrom (INV-3).
-- **Status.** `holds`. **Untested:** nothing machine-checks that a plugin does not push:
-  `format.Deps.Providers` gives plugins the provider for reads, and its `Repository` has `Push`
-  and `PushReference`; lint stops only the import of the registry client.
+- **Status.** `holds`. **Untested:** the lint binds `internal/format` only: nothing
+  machine-checks that the other packages that hold the providers for reads (`internal/proxy`,
+  `internal/index/reindex`, `cmd/lajstrom`) do not push.
 
 ### INV-3. The index is rebuildable from the registry
 
@@ -226,8 +230,9 @@ longer than `reconcile.graceAge` is outside them
   **GC keeps what is named**. Not **read-after-write**: the barrier below waits for the lag.
   Database: any.
 - **Mechanism.** A row is written only after the registry accepted the manifest and served it
-  back: `publish.pushManifest`, then the visibility barrier `ingest.Pipeline.awaitVisible`, then
-  `ingest.Pipeline.confirm`. The barrier reads the manifest by digest; on a registry not
+  back: `ingest.publish.pushManifest`, then the visibility barrier
+  `ingest.Pipeline.awaitVisible`, then `ingest.Pipeline.confirm`. The barrier reads the manifest
+  by digest; on a registry not
   classified `strong` (`provider.Capabilities.Consistency`) also the tag, compared by digest,
   and every blob, and reads again with backoff what it did not see, for
   `ingest.visibilityTimeout` (30 s) or the registry's `consistencyBound` when longer. Past it
@@ -267,9 +272,10 @@ longer than `reconcile.graceAge` is outside them
   wrote it, or a run last saw its manifest, that long ago). A tag that does not resolve, a
   listing that misses the row or failed, `NAME_UNKNOWN`, a `404` without the code, a `5xx`,
   `401`, `403` and a timeout remove nothing.
-- **Scope.** `reindex` with `--prune` (the default for every repo), the API's reindex, the
-  reconcile loop; `versions` (with their `files`, and the packages left empty) and the npm
-  journal's rows. An `oci_repos` row goes when no run has seen its repository for
+- **Scope.** `reindex` with `--prune` (the default for a run of every repo, off with `--repo`
+  unless given), the API's reindex with `prune` (off unless the body sets it), the reconcile
+  loop; `versions` (with their `files`, and the packages left empty) and the npm journal's rows.
+  An `oci_repos` row goes when no run has seen its repository for
   `reconcile.graceAge`, an `oci` repo's when a run finds its tag list empty, which is no derived
   row of a manifest ([index-schema.md](index-schema.md#invariants-and-rules), #748). A delete
   through the API is not prune (INV-13).
@@ -280,12 +286,12 @@ longer than `reconcile.graceAge` is outside them
   the grace age compare times other replicas wrote.
 - **Mechanism.** `reindex.scan.sweep` and `reindex.replay.sweep` resolve each row the run did
   not see by its tag; a tag that does not resolve goes to `reindex.scan.lookup`, which asks
-  `Provider.StatManifest` and counts only `provider.ErrManifestUnknown`. The first answer is a
-  `prune_sightings` row (`Writer.RecordSighting`), shared by every replica; the sweep clears the
-  rows it did not record again (`Writer.ClearSightings`). `scan.list` sweeps nothing when the
-  listing failed, and runs of one repo never overlap (`reindex_runs`, INV-26). A `404` without
-  `MANIFEST_UNKNOWN` in an OCI repository whose tag list is a `404` (`reindex.scan.repoUnknown`)
-  is reported, not counted: `RepositoryUnknown` (#567).
+  `provider.Provider.StatManifest` and counts only `provider.ErrManifestUnknown`. The first
+  answer is a `prune_sightings` row (`index.Writer.RecordSighting`), shared by every replica; the
+  sweep clears the rows it did not record again (`Writer.ClearSightings`). `scan.list` sweeps
+  nothing when the listing failed, and runs of one repo never overlap (`reindex_runs`, INV-26). A
+  `404` without `MANIFEST_UNKNOWN` in an OCI repository whose tag list is a `404`
+  (`reindex.scan.repoUnknown`) is reported, not counted: `RepositoryUnknown` (#567).
 - **Tests.** `TestPrune` (`MANIFEST_UNKNOWN` once, twice 9 and 10 minutes apart, a version
   younger than the grace age, a grace age of 24 h, the manifest read back in between, a failure
   in between, `NAME_UNKNOWN`, a `404` without a code, a `5xx`, a `403`, a timeout),
@@ -317,7 +323,7 @@ longer than `reconcile.graceAge` is outside them
 - **Assumes.** Registry: any. Database: **one database**, **Postgres for replicas**, **clocks
   agree** (a claim older than `ingest.claimTTL` is taken over).
 - **Mechanism.** `ingest.Pipeline.claimTag`: in one transaction, the claim on the package path
-  (`claimPath`), then on the tag (`Writer.ClaimTag`, unique `(repo_id, package, tag)` in
+  (`claimPath`), then on the tag (`index.Writer.ClaimTag`, unique `(repo_id, package, tag)` in
   `tag_claims`), then the version of the tag is read; `UpsertVersion` resolves a race with
   `INSERT … ON CONFLICT DO NOTHING` and a second read.
 - **Tests.** `TestIngestConcurrent`, `TestIngestConflict`, `TestIngestStaleClaim`,
@@ -350,13 +356,13 @@ longer than `reconcile.graceAge` is outside them
   tags refuses the push on its own. On a lagging registry
   that read cannot miss Lajstrom's own pushes: a confirm runs only after the visibility barrier
   saw the tag (INV-4), and a push the registry did not serve in time keeps its claim for
-  `ingest.claimTTL`, which refuses another digest meanwhile. `Writer.UpsertJournal` never
+  `ingest.claimTTL`, which refuses another digest meanwhile. `index.Writer.UpsertJournal` never
   rewrites an entry; each entry is claimed in `tag_claims` before its push, the journal adopts a
   stray entry instead of overwriting it (`ingest.journal.adopt`), and an entry an earlier append
   claimed and the registry does not serve yet is read back, then waited for (`503`) until its
   claim is stale (`ingest.journal.claimed`); on a `strong` registry a claimed entry it does not
-  serve was never pushed, and is taken over. Reindex reports drift (`scan.drift`) and keeps the
-  index's digest.
+  serve was never pushed, and is taken over. Reindex reports drift (`reindex.scan.drift`) and
+  keeps the index's digest.
 - **Tests.** `TestIngestConflict`, `TestIngestTagInBackend`, `TestIngestIndexFailsAfterPush`,
   `TestUploadRetryUnconfirmed`, `TestManifestHook`, `TestDrift`, `TestJournalAdopts`, the store
   conformance case `Journal`;
@@ -422,7 +428,7 @@ longer than `reconcile.graceAge` is outside them
 - **Assumes.** Database: as INV-6.
 - **Mechanism.** `ingest.Pipeline.claimPath` (the claim on the package path with the digest of
   the spelling) and `ingest.packageOf` under the claims; earlier, before a file is stored,
-  `raw.checkSpelling` and maven's `deployer.checkSpelling`.
+  `raw.checkSpelling` and `maven.deployer.checkSpelling`.
 - **Tests.** `TestIngestSpelling`, `TestIngestSpellingRace`, `TestIngestPathClaim`,
   `TestManifestHookSpelling`, `TestManifestHookSpellingMaven`, `TestDeploySpelling`,
   `TestFirstSpellingWins`, `TestIngestSpellings` (pypi); R-09 in `raw.sh`.
@@ -448,8 +454,8 @@ longer than `reconcile.graceAge` is outside them
   `TestVerifierShortReads`, `TestUploadDigestInvalid`, `TestIngestFetcher`, `TestFetchedBlob`,
   `TestUploadErrors` (ingest).
 - **When violated.** The upload is `400 DIGEST_INVALID` and its session ends; ingest's is
-  `ErrInvalid`. A range read of a plugin's `Validate` (`fetchedBlob.ReadAt`: a zip's directory,
-  a `.deb`'s control member) cannot be hashed and trusts the registry.
+  `ErrInvalid`. A range read of a plugin's `Validate` (`ingest.fetchedBlob.ReadAt`: a zip's
+  directory, a `.deb`'s control member) cannot be hashed and trusts the registry.
 - **Status.** `holds` ([#368](https://github.com/lajstrom/lajstrom/issues/368)); the residue of
   threat model P-9 (two requests of one session at once, on a backend that checks neither
   offsets nor digests) is accepted.
@@ -467,8 +473,9 @@ longer than `reconcile.graceAge` is outside them
   asks the registry (`checkLayers`); `ingest.Pipeline.validate` (target, sizes, blobs, the
   plugin's `Validate`), `publish.checkOrigin`; reindex goes through `Inspect`.
 - **Tests.** `TestValidate`, `TestValidateReportsAll`, `FuzzValidate`, `TestManifestHookInvalid`,
-  `TestIngestInvalid`, `TestInspectInvalid`, `TestOriginRefused`, `TestForeignAndReferrers`, and
-  each format's `TestBuildValidate`, `TestValidateRefuses`, `TestBuildRefuses`.
+  `TestIngestInvalid`, `TestInspectInvalid`, `TestOriginRefused`, `TestForeignAndReferrers`,
+  `TestBuildValidate` (maven, npm, pypi), and each format's `TestValidateRefuses` and
+  `TestBuildRefuses`.
 - **When violated.** `400 MANIFEST_INVALID` naming the rule (http-routing.md §2), or the
   format's `400`.
 - **Status.** `holds`.
@@ -493,12 +500,13 @@ longer than `reconcile.graceAge` is outside them
   then `deletion.finish` on a context detached from the request and bounded by
   `ingest.claimTTL`, so that a client that goes away does not stop it half-way (#710):
   `deletion.deleteInBackend` (the first request a plain delete so that a refusal changes
-  nothing) and `deletion.record` (the rows by the manifest's digest, `InvalidateIndexCache` and
-  the audit row completed in one `Store.Tx`, before the lock is released). On a registry not
-  classified `strong`, a reindex run loads the digests of the repo's audit rows `delete`, state
-  `ok`, younger than `reconcile.graceAge` (`reindex.scan.recentDeletes`), and does not index a
-  listed manifest that the index lacks under one of them (`reindex.scan.tag`, the report's
-  `deletedPending`). A delete does not read the registry back.
+  nothing) and `deletion.record` (the rows by the manifest's digest,
+  `index.Writer.InvalidateIndexCache` and the audit row completed in one `index.Store.Tx`, before
+  the lock is released). On a registry not classified `strong`, a reindex run loads the digests
+  of the repo's audit rows `delete`, state `ok`, younger than `reconcile.graceAge`
+  (`reindex.scan.recentDeletes`), and does not index a listed manifest that the index lacks under
+  one of them (`reindex.scan.tag`, the report's `deletedPending`). A delete does not read the
+  registry back.
 - **Tests.** `TestDeleteVersion`, `TestDeleteRefused`, `TestDeleteNotFound`, `TestDeleteRowsFail`,
   `TestDeleteClientGone`, `TestDeleteReferrerClientGone`, `TestIntegrationDeleteReferrerClientGone`,
   `TestDeleteThenReindex`, `TestDeleteKeepsPackage`, `TestDeleteReferrer`, `TestDeleteManifests`,
@@ -574,8 +582,8 @@ longer than `reconcile.graceAge` is outside them
 - **Scope.** `/v2` (with a bearer and without), the management API (creating a repo, creating a
   token, the system resources), the frontends.
 - **Assumes.** Any.
-- **Mechanism.** `facade.handler.authorize` first in every handler, `facade.namedByToken` before
-  `resolve`; `api` checks the admin role and `auth.MayCreatePAT` before `decodeBody`; the
+- **Mechanism.** `facade.handler.authorize` first in every handler, `facade.handler.namedByToken`
+  before `resolve`; `api` checks the admin role and `auth.MayCreatePAT` before `decodeBody`; the
   frontends call `format.Authorize` at the start of each handler (`raw.handlers.start`,
   `pypi.handlers.start`, npm's `publish`, maven's deployer, deb's upload).
 - **Tests.** `TestDenialBeforeInput`, `TestBearerExistence`, `TestTokensAPINoMint`,
@@ -596,8 +604,9 @@ longer than `reconcile.graceAge` is outside them
   guaranteed](#not-guaranteed)).
 - **Assumes.** Any.
 - **Mechanism.** `format.Authorize` (the credential's limit, then the bindings; `404` when the
-  credential refuses and the user may not read), the repo middleware, `facade.repoUnknown`,
-  `facade.unknownScopes`, `facade.handler.catalog`, `token.Reduce`.
+  credential refuses and the user may not read), the repo middleware,
+  `facade.handler.repoUnknown`, `facade.handler.unknownScopes`, `facade.handler.catalog`,
+  `token.Reduce`.
 - **Tests.** `TestAuthorizeRBAC`, `TestAuthorizeScopeOfAUser`,
   `TestRepoMiddlewareMissingRepoByPrincipal`, `TestBearerExistence`, `TestBearerCatalog`, `TestCatalog`, `TestListFiltered`, `TestAuthorization`
   (facade, raw, api), `TestReferrersAccess`; `rbac.sh` (S-02, S-08, X-05).
@@ -629,9 +638,9 @@ longer than `reconcile.graceAge` is outside them
   lacks.
 - **Scope.** Every protocol, the bearer of `/v2` included.
 - **Assumes.** Any.
-- **Mechanism.** `auth.Credential.Limit`, `token.ParseScopes`, `token.Reduce` (at most 100
-  repositories a request), `auth.MayCreatePAT` (asked by `api.createToken` and again by
-  `auth.Tokens.CreatePAT`).
+- **Mechanism.** `auth.Credential.Limit`, `token.ParseScopes`, `token.Reduce`; at most 100
+  repositories a request (`facade.handler.issueToken`); `auth.MayCreatePAT` (asked by
+  `api.handler.createToken` and again by `auth.Tokens.CreatePAT`).
 - **Tests.** `TestCredentialLimit`, `TestReduce`, `TestReduceCredential`, `TestParseScopes`,
   `TestTokenScopesBound`, `TestTokensAPINoMint`, `TestTokensAPIAuthorization`,
   `TestTokensCreatedBy`, `TestAuthorizeCredential`; `tokens.sh`, `rbac.sh` (S-04), acceptance.md
@@ -675,7 +684,7 @@ longer than `reconcile.graceAge` is outside them
   `generic.realmTransport` with `refuseRealm` and `realmHosts` (`registries[].tokenRealmHosts`);
   `proxy.Upstream.authorize`, `checkRedirect`, `checkTarget`; the fetcher's requests are its own
   (`User-Agent: lajstrom/<version>`), and a forwarded request carries only what the plugin names
-  (`Proxy.Forward`).
+  (`format.Proxy.Forward`).
 - **Tests.** `TestBlobRedirectDowngrade`, `TestBlobRedirectLeavesOrigin`, `TestTokenRealm`,
   `TestRefuseRealm`, `TestUploadDowngrade`, `TestSameOrigin`, `TestCredentials`, `TestRedirects`,
   `TestForward`, `TestProxyRequestHost`, `TestLoadNestedPrefixes`.
@@ -691,11 +700,11 @@ longer than `reconcile.graceAge` is outside them
 - **Assumes.** Any.
 - **Mechanism.** `server.Server.accessLog` (method, path, status, principal, addresses; never the
   query, a header or a body); the redacting `String` of `token.Token`, `keys.TokenKey`,
-  `config.RegistryAuth`; the provider's `logTransport` and `withoutURL`; `postgres.Open`; the
-  proxy logs no body and no redirect target; `auth.Authenticator.refuse` and `refuseToken` log
-  a user by its uid, and neither they nor `server.Server.authenticate` log a user name as typed;
-  `token.Verifier.refuse` logs the first 16 bytes of the `kid` and its length (threat model L-1
-  to L-4).
+  `config.RegistryAuth`; the provider's `generic.logTransport` and `generic.withoutURL`;
+  `postgres.Open`; the proxy logs no body and no redirect target; `auth.Authenticator.refuse` and
+  `refuseToken` log a user by its uid, and neither they nor `server.Server.authenticate` log a
+  user name as typed; `token.Verifier.refuse` logs the first 16 bytes of the `kid` and its length
+  (threat model L-1 to L-4).
 - **Tests.** `TestTokensNeverLogged`, `TestRedactSecrets`, `TestTokenRedacted`,
   `TestTokenKeyRedacted`, `TestEntityRedacted`, `TestMasterRedacted`, `TestOpenDoesNotLeakTheDSN`,
   `TestAccessLog`, `TestBearerAccessLog`, `TestRetryLog`, `TestRefusalsLogNoSecret` (a token
@@ -733,12 +742,13 @@ longer than `reconcile.graceAge` is outside them
   stops moving for `server.stallTimeout`. A principal holds at most `server.uploadSessions` live
   `/v2` upload sessions on a replica (256 in a repo, 1024 in all), and a Maven deploy stores at
   most the repo's `policy.maven.maxSessionFiles` files (256) (#246).
-- **Scope.** Every route.
+- **Scope.** Every route. The bounds of #246 are per replica and have their defaults (threat
+  model U-3 to U-6).
 - **Assumes.** Any.
-- **Mechanism.** `facade.readManifest`, `api` body limits, `token.Reduce`, `format.MaxFileSize`
-  and `format.LimitBody`, `facade.limitBlob` and `facade.blobLimit`, `facade.liveUploads`,
-  `ingest`'s `sessionState.room`, `server.Server.limitUploads`, `server.Server.stall`, npm's
-  `readBody`, `proxy.readDocument`.
+- **Mechanism.** `facade.readManifest`, `api` body limits, `facade.handler.issueToken`,
+  `format.MaxFileSize` and `format.LimitBody`, `facade.handler.limitBlob` and
+  `facade.handler.blobLimit`, `facade.liveUploads`, `ingest.sessionState.room`,
+  `server.Server.limitUploads`, `server.Server.stall`, npm's `readBody`, `proxy.readDocument`.
 - **Tests.** `TestManifestHookSize`, `TestManifestLayersBound`, `TestOversizedBody`,
   `TestTokenScopesBound`, `TestIngestMaxFileSize`, `TestPutMaxFileSize`, `TestUploadMaxFileSize`
   (deb, facade), `TestManifestHookMaxFileSize`, `TestMaxFileSize`, `TestLimitBody`,
@@ -749,8 +759,7 @@ longer than `reconcile.graceAge` is outside them
 - **When violated.** `413`, `400` naming the bound, `429` with `Retry-After` naming the bound and
   its key, or `503` with `Retry-After`.
 - **Status.** `partly`: the bytes of `$TMPDIR` a replica may hold have no budget
-  ([#427](https://github.com/lajstrom/lajstrom/issues/427)); the bounds of #246 are per replica
-  and have their defaults (threat model U-3 to U-6).
+  ([#427](https://github.com/lajstrom/lajstrom/issues/427)).
 
 ### INV-24. A parser allocates in proportion to its input, within a fixed cap
 
@@ -801,9 +810,9 @@ longer than `reconcile.graceAge` is outside them
 - **Scope.** Every replica of one deployment.
 - **Assumes.** Database: **one database**, **Postgres for replicas** (checked when `serve`
   starts: H-14), **clocks agree** (checked: by `serve` at its start and every 30 seconds, by
-  `reindex` and `admin` before they run), and the
-  transaction of `Store.WithReferrersLock` lasts until its function returns (**unchecked**; as
-  in INV-35, a lock lost earlier is `index.ErrUnavailable`, not a success).
+  `reindex` and `admin` before they run), and the transaction of
+  `index.Store.WithReferrersLock` lasts until its function returns (**unchecked**; as in INV-35,
+  a lock lost earlier is `index.ErrUnavailable`, not a success).
 - **Mechanism.** `tag_claims` (`Writer.ClaimTag`), `reindex_runs` (`Writer.StartReindexRun` under
   `pg_advisory_xact_lock` or `BEGIN IMMEDIATE`), `fetch_claims` (`Writer.ClaimFetch`, a heartbeat
   every 30 s, stale after 2 minutes), `Store.WithReferrersLock` (the referrers, tag and journal
@@ -846,9 +855,10 @@ longer than `reconcile.graceAge` is outside them
   the snapshot of the bindings (INV-17) and the cache of token keys (INV-19) have their own entries.
   A group caches nothing.
 - **Assumes.** Database: any. For the end of the grace, **clocks agree**.
-- **Mechanism.** Each change invalidates in its own transaction (`Writer.InvalidateIndexCache` in
-  `ingest.Pipeline.writeRows`, `deletion.deleteRows`, `journal.record`, `reindex.Worker.repo`, the
-  `proxy_meta` writes), and every invalidation first increments the repo's generation
+- **Mechanism.** Each change invalidates in its own transaction
+  (`index.Writer.InvalidateIndexCache` in `ingest.Pipeline.writeRows`, `deletion.deleteRows`,
+  `journal.record`, `reindex.Worker.repo`, the `proxy_meta` writes), and every invalidation
+  first increments the repo's generation
   (`index_cache_generations`; index-schema.md, The generation of a repo's documents).
   `format.CachedDocument`, `proxy.Core.render` and the apt signatures
   (`deb.handlers.storeSigned`) read the generation before they render, and
@@ -899,14 +909,14 @@ longer than `reconcile.graceAge` is outside them
   `ingest.claimTTL`: an entry a writer claimed and the registry does not serve after the claim
   is stale counts as never pushed. Database: **Postgres for replicas** (on SQLite the journal
   lock is a lock of the process).
-- **Mechanism.** `ingest.Pipeline.Journal`: under `Store.WithReferrersLock` (the package's OCI
-  repository and the empty blob's digest), `journal.append` reads the last `seq`, `journal.adopt`
-  takes the entries the registry has after it and `journal.claimed` the ones an earlier append
-  claimed in `tag_claims` that the registry does not serve yet (read back, else `503` until the
-  claim is stale), `journal.push` claims and pushes each entry, the visibility barrier reads them
-  back (INV-4), `journal.record` (rows, the folded state, the invalidation, the audit rows and the
-  claims released in one transaction); `profile.JournalState.Apply` folds; `reindex.replay`
-  replays and reports what breaks the rules.
+- **Mechanism.** `ingest.Pipeline.Journal`: under `index.Store.WithReferrersLock` (the package's
+  OCI repository and the empty blob's digest), `journal.append` reads the last `seq`,
+  `journal.adopt` takes the entries the registry has after it and `journal.claimed` the ones an
+  earlier append claimed in `tag_claims` that the registry does not serve yet (read back, else
+  `503` until the claim is stale), `journal.push` claims and pushes each entry, the visibility
+  barrier reads them back (INV-4), `journal.record` (rows, the folded state, the invalidation,
+  the audit rows and the claims released in one transaction); `profile.JournalState.Apply`
+  folds; `reindex.replay` replays and reports what breaks the rules.
 - **Tests.** `TestJournal`, `TestJournalConcurrent`, `TestJournalAdopts`, `TestJournalRefused`,
   `TestJournalDelete`, `TestIntegrationJournalReplicas`, the store conformance cases `Journal`,
   `JournalState`, `JournalCascades`, `JournalRace`, `TestJournalState` (profile),
@@ -927,7 +937,8 @@ longer than `reconcile.graceAge` is outside them
 - **Scope.** Versions published to a hosted npm repo by `npm publish` (and pnpm and yarn, which
   send npm's body) or by `oras push`. Not a proxy's packument, which is the upstream's document.
 - **Assumes.** Any.
-- **Mechanism.** npm's `checkInstall`, `Tarball.normalise`, `facts.check`, the plugin's `Validate`.
+- **Mechanism.** `npm.checkInstall`, `npm.Tarball.normalise`, `npm.facts.check`, the plugin's
+  `Validate`.
 - **Tests.** `TestPublishRefuses`, `TestNormalise`, `TestNormaliseCaptured`, `TestNormaliseBinDir`,
   `TestBuildValidate`, `TestValidateRefuses`, `TestReadTarball`, `FuzzPackageJSON`; the publishes
   of `npm.sh`.
@@ -949,14 +960,15 @@ longer than `reconcile.graceAge` is outside them
   registry served it (INV-4). Database: **Postgres for replicas**, **clocks agree**. The upstream's document and file come over the same channel: the
   checksum proves the transfer, not the upstream's honesty.
 - **Mechanism.** `proxy.flights.join` on a replica; `proxy.Core.claim` (`fetch_claims`),
-  `Core.heartbeat`; `Core.download` with `strongest`; `Core.reject` writes `proxy.reject`.
+  `Core.heartbeat`; `Core.download` with `strongest`; `Core.reject` writes `proxy.reject`. A
+  document's misses on a replica share one upstream request (`Core.refresh`, through
+  `flights.join`).
 - **Tests.** `TestFileOneFetch`, `TestFileTwoReplicas`, `TestFileClaims`, `TestFileChecksum`,
-  `TestFileRefused`, `TestFileMiss`, the store conformance case `FetchClaimRace`; `npm.sh` (each
-  tarball fetched once, `proxy.fetch` in the audit log).
+  `TestFileRefused`, `TestFileMiss`, `TestDocumentOneRequest`, the store conformance case
+  `FetchClaimRace`; `npm.sh` (each tarball fetched once, `proxy.fetch` in the audit log).
 - **When violated.** A checksum mismatch is `502`, an audit row `proxy.reject` and a warning
   naming both values.
-- **Status.** `partly`: files hold; concurrent misses of one document on one replica each ask the
-  upstream ([#383](https://github.com/lajstrom/lajstrom/issues/383)).
+- **Status.** `holds`.
 
 ### INV-32. A proxy reaches only what the operator configured
 
@@ -982,9 +994,9 @@ longer than `reconcile.graceAge` is outside them
 - **Scope.** Proxy repos, and a hosted repo that was one (proxy-and-group.md §2.6): its versions
   keep their origin annotations, and nothing in the registry moves when the kind changes.
 - **Assumes.** As INV-3.
-- **Mechanism.** The fetcher publishes through `Publisher.Upload` with an `Origin`
-  (`ingest.setOrigin`); reindex neither reads nor writes `proxy_meta`, and `ResetDerived` leaves
-  it.
+- **Mechanism.** The fetcher publishes through `format.Publisher.Upload` with an `Origin`
+  (`ingest.setOrigin`); reindex neither reads nor writes `proxy_meta`, and
+  `index.Writer.ResetDerived` leaves it.
 - **Tests.** `TestReindexProxied`, `TestUploadWithOrigin`, `TestFileUpstreamDown`,
   `TestDocumentUpstreamDown`, `TestDocumentCache`; the proxy steps of `npm.sh`.
 - **When violated.** As INV-3.
@@ -1060,31 +1072,38 @@ longer than `reconcile.graceAge` is outside them
 
 ### INV-36. A replica that stops drains first
 
-- **Statement.** On `SIGTERM` or `SIGINT` a replica answers `/-/readyz` with `503` and closes
-  each connection after its response, still serves new connections for `server.shutdownDelay`,
-  then refuses them, lets the requests in flight finish within `server.shutdownTimeout`, and
-  what an abort leaves behind another replica can handle: an upload session in the index and
-  the registry, a publish not yet indexed for the next reconcile, a claim that goes stale.
+- **Statement.** On `SIGTERM`, `SIGINT` or `SIGHUP` a replica answers `/-/readyz` with `503` and
+  closes each connection after its response, still serves new connections for
+  `server.shutdownDelay`, then refuses them, lets the requests in flight finish within
+  `server.shutdownTimeout`, and what an abort leaves behind another replica can handle: an
+  upload session in the index and the registry, a publish not yet indexed for the next
+  reconcile, a claim that goes stale.
 - **Scope.** `serve`.
 - **Assumes.** The orchestrator's grace period is longer than `server.shutdownDelay` and
   `server.shutdownTimeout` together (operations.md, Shutdown).
-- **Mechanism.** `server.Server.Run`, `server.Server.track`, `waitHandlers`.
+- **Mechanism.** The signals of `serve` (`drainSignals`), `server.Server.Run`,
+  `server.Server.track`, `waitHandlers`.
 - **Tests.** `TestDrainCompletesUpload`, `TestDrainTimeoutAborts`, `TestDrainReadyz`, `TestDrainDelay`,
-  `TestRunGracefulShutdown`, `TestRunShutdownTimeout`; `ha.sh` H-05 (a replica killed, not
-  stopped, in an upload: the client's retry through the edge succeeds on the other), H-10.
+  `TestRunGracefulShutdown`, `TestRunShutdownTimeout`, `TestServeHangup`; `ha.sh` H-05 (a
+  replica killed, not stopped, in an upload: the client's retry through the edge succeeds on the
+  other), H-10.
 - **When violated.** The client of an aborted request retries.
 - **Status.** `holds`.
 
 ### INV-37. Readiness says whether a replica can serve
 
-- **Statement.** `/-/readyz` is `200` only while the index database answers and every configured
-  registry answered `GET /v2/` with Lajstrom's credentials within the last minute, and `503`
-  while draining; `/-/healthz` is `200` while the process runs.
+- **Statement.** `/-/readyz` is `200` only while the index database answers, no other replica
+  serves on it when it is SQLite, the replica's clock is within 60 seconds of the database's,
+  and every configured registry answered `GET /v2/` with Lajstrom's credentials within the last
+  minute, and `503` while draining; `/-/healthz` is `200` while the process runs.
 - **Scope.** `serve`, `lajstrom healthcheck`.
 - **Assumes.** Any.
-- **Mechanism.** `server.Server.readyz`, the provider's `Pinger` every 20 s, the circuit breaker.
+- **Mechanism.** `server.Server.readyz` with the check of `serve` (`ready`), which asks the
+  replica's heartbeat (`replica.Err`: the row refused for another live replica on SQLite, the
+  last comparison of the clocks), the provider's `Pinger` every 20 s, the circuit breaker.
 - **Tests.** `TestReady`, `TestReadyFollowsTheRegistries`, `TestSystemEndpoints`, `TestPing`,
-  `TestBreakerOpensAndCloses`, `TestHealthcheck`.
+  `TestBreakerOpensAndCloses`, `TestHealthcheck`, `TestReplicaBeat`, `TestReplicaBeatGone`,
+  `TestReplicaClock`.
 - **When violated.** Not observed.
 - **Status.** `holds`.
 
@@ -1114,6 +1133,8 @@ longer than `reconcile.graceAge` is outside them
 - **Tests.** None.
 - **When violated.** —
 - **Status.** `not yet` ([#114](https://github.com/lajstrom/lajstrom/issues/114)).
+
+## Downloads
 
 ### INV-40. A download that streams through Lajstrom has its digest
 
@@ -1168,7 +1189,8 @@ longer than `reconcile.graceAge` is outside them
 - **Status.** `partly` until a release from v0.1.0 on exists, then it holds: until then the job
   `upgrade` has no release to run and is skipped, whether a migration is expand is reviewed and
   not tested, and the binary of the previous release on the schema of the next one is
-  **untested** ([#485](https://github.com/lajstrom/lajstrom/issues/485)).
+  **untested** ([#485](https://github.com/lajstrom/lajstrom/issues/485) built the job; the
+  release is [#59](https://github.com/lajstrom/lajstrom/issues/59)).
 
 ## Retention
 
@@ -1199,8 +1221,8 @@ longer than `reconcile.graceAge` is outside them
   are released; a dist-tag move checks under the journal lock that its version exists
   (`journal.checkVersions`). The API checks the same conditions for every variant before the
   first delete (`api.conditions.check`), so that a refusal finds nothing deleted. The bound of a
-  `/v2` push's time is `facade.checkCreated`, before the facade asks the registry; the repeat of
-  a manifest the repo has passes, as it writes nothing.
+  `/v2` push's time is `facade.handler.checkCreated`, before the facade asks the registry; the
+  repeat of a manifest the repo has passes, as it writes nothing.
 - **Tests.** `TestConditionalDelete`, `TestConditionalDeletePointers` (the lock order),
   `TestConditionalDeleteRepublishRace`, `TestConditionalDeleteDistTagRace` (goroutines, `-race`),
   `TestDeleteVersionConditions`, `TestBatchDelete`, `TestAdminRetention`,
@@ -1211,14 +1233,12 @@ longer than `reconcile.graceAge` is outside them
   naming a version that is gone, which the packument leaves out; nothing reports it.
 - **Status.** `holds`.
 
-## Audit
-
 ## Summary
 
 | Id | Guarantee | Status | Markers |
 | --- | --- | --- | --- |
 | INV-1 | artifact bytes only in the registry | holds | |
-| INV-2 | one write path | holds | untested (plugins could push) |
+| INV-2 | one write path | holds | untested (the lint binds the plugins only) |
 | INV-3 | the index rebuildable from the registry | holds | unchecked (listings, their lag); untested (I-01 e2e) |
 | INV-4 | a version in the index is readable | holds | unchecked; untested |
 | INV-5 | prune never removes what the registry holds | holds | unchecked (lag within the grace age); untested (ECR) |
@@ -1230,10 +1250,10 @@ longer than `reconcile.graceAge` is outside them
 | INV-11 | a blob stored only under its digest | holds | |
 | INV-12 | only manifests of the profile | holds | |
 | INV-13 | each version deleted at once from index, caches, audit | holds | unchecked (a delete's lag within the grace age) |
-| INV-14 | every change of the index has its audit row | holds | untested (S-09) |
+| INV-14 | every write and every change of the control plane has its audit row | holds | untested (S-09) |
 | INV-15 | denial before input | holds | untested (frontends) |
 | INV-16 | a denial hides existence | holds | |
-| INV-17 | authorization changes count at once | holds | |
+| INV-17 | authorization changes count from the next request (an issued bearer token at its expiry) | holds | |
 | INV-18 | a credential never grants more | holds | |
 | INV-19 | bearer tokens across replicas, live keys only | holds | |
 | INV-20 | credentials go only where they belong | holds | unchecked (oras-go redirects) |
@@ -1247,7 +1267,7 @@ longer than `reconcile.graceAge` is outside them
 | INV-28 | a migration applied once | holds | |
 | INV-29 | the npm journal's order and replay | holds | unchecked |
 | INV-30 | packument agrees with the tarball | holds | |
-| INV-31 | proxy fetch once, checked | partly | unchecked |
+| INV-31 | proxy fetch once, checked | holds | unchecked |
 | INV-32 | a proxy reaches only what is configured | holds | |
 | INV-33 | a proxied artifact is ordinary | holds | |
 | INV-34 | hosted names hide the upstream in a group | holds | |
@@ -1302,7 +1322,8 @@ promises part of it, the line says which part stays a promise.
   `by-hash` name, may change in a release, and a reindex renders it again.
 - **The database as an interface.** SQL against any table: the derived and coordination tables
   may be renamed freely (index-schema.md), and the queries operations.md shows are an operator's
-  aid. Read through `/api/v1`, the CLI, and `lajstrom admin export`.
+  aid. Read through `/api/v1` and the CLI; back up as
+  [operations.md](../operations.md#backup-and-restore) says.
 - **Opaque values.** Upload ids, a token secret after its prefix, the claims of a bearer
   token beyond those rbac.md §4 names, generated request ids, run ids, an `ETag` whose form no
   spec states. What a spec defines stays defined: a blob's `ETag` is its digest, an npm
@@ -1326,9 +1347,8 @@ promises part of it, the line says which part stays a promise.
   [Where the guarantees hold](#the-registry) says: as measured on a date for `manual` and
   `hosted`, nothing for `untested` and for versions other than the pinned ones.
 - **Anything marked preview or not committed.** The roadmap's "After v0.1.0 (preview, not
-  committed)", the work of draft pull requests, the plugin hooks of proxy-and-group.md §10
-  ("not a contract yet"), and what an entry with status `not yet` promises beyond the part its
-  status says holds today.
+  committed)", the work of draft pull requests, and what an entry with status `not yet` promises
+  beyond the part its status says holds today.
 - **A blob redirect or a stream.** Whether a download is a `307` to the backend's storage or a
   stream is the backend's and the repo's policy's (http-routing.md §2): a client must follow
   both. How long a presigned URL lives is the backend's.
@@ -1356,13 +1376,13 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | **Monotonic reads** are assumed (INV-4, INV-7, INV-29, INV-31) | behind an endpoint that picks a replica per request (ACR's global endpoint with geo-replication), a version the barrier saw on one replica can be `404` on the next | point `registries[].url` at one regional endpoint; measure it in the probe with reads from fresh connections | [#564](https://github.com/lajstrom/lajstrom/issues/564) |
 | A durable `201` is assumed (INV-4) | a manifest the registry lost leaves the index silently at the next reconcile, counted among `removed` | report the removal of a row ingest confirmed as a finding of its own, with a metric | new issue |
 | I-01 is not in the end-to-end suite (INV-3); the equality tests (`TestRebuild`, `TestRebuildFormats`, npm's) publish through the frontends in-process, not with the real clients | a column that only a real client's upload fills, and that annotations cannot rebuild, would be lost at the first reindex, unnoticed | I-01 as an end-to-end step: publish with every client, dump the derived rows, reindex, compare | new issue |
-| Nothing machine-checks the one write path in plugins (INV-2) | a plugin could push a manifest past ingest: no claim, validation or audit row | a read-only provider view in `format.Deps`, or a lint rule against `Push`, `PushReference` and `Delete` outside `internal/ingest`, `internal/facade` and `internal/provider` (a `contract` change of `format`) | new issue |
+| The lint of the one write path binds the plugins only (INV-2) | `internal/proxy`, `internal/index/reindex` or `cmd/lajstrom`, which hold the providers for reads, could push a manifest past ingest: no claim, validation or audit row | the forbidigo rule on the provider's writing methods for every package but `internal/ingest`, `internal/facade` and `internal/provider` | new issue |
 | A timeout the client cannot lift, a terminated backend or a failover can end the referrers lock's transaction while its push runs (INV-26, INV-35) | that push is `503` and its retry lists its referrer; a referrer that another writer pushed meanwhile can be missing from the `sha256-<hex>` index, and nothing reports it | keep PgBouncer's `idle_transaction_timeout` and Postgres's `transaction_timeout` 0 (index-schema.md, Coordination); without the referrers API, the reconcile loop and reindex `--verify` add back a referrer that the audit log has as pushed and the index lacks, and report it | [#628](https://github.com/lajstrom/lajstrom/issues/628), new issue |
-| The garbage collectors of GitLab B and Nexus delete untagged referrers (INV-35) | signatures and SBOMs vanish | the tag schema as well on registries with the API (#326); for GitLab B and Nexus, a vendor-table warning or a tag per referrer | [#326](https://github.com/lajstrom/lajstrom/issues/326), new issue |
+| On a registry with the referrers API, a garbage collector of untagged manifests deletes the referrers Lajstrom pushes there, which no tag and no `sha256-<hex>` index names (INV-35). GitLab B's and Nexus's (`docker` format) collectors delete an untagged referrer, but neither registry has the API: Lajstrom writes the tag schema there, whose index keeps its referrers ([gitlab.md](../registries/gitlab.md#garbage-collection), [nexus.md](../registries/nexus.md#garbage-collection)) | on a registry with the API and such a collector, signatures and SBOMs vanish; of those measured, Zot and Harbor keep them and Nexus's `oci` format has no collector task; JCR and Quay are not measured | the tag schema as well on registries with the API | [#326](https://github.com/lajstrom/lajstrom/issues/326) |
 | No frontend test of a denial with malformed input (INV-15) | a regression of the R-2 kind on a frontend goes unseen | a table test per frontend, as `TestDenialBeforeInput` does for `/v2` | new issue |
+| oras-go's `auth.Client`, which the provider's requests but a blob's `GET` and `HEAD` go through (manifests, tag lists, upload sessions), is relied on to drop `Authorization` on a redirect that leaves the registry's origin (INV-20) | an oras-go release that stopped doing so would send the registry's credentials to another origin, unseen | a test of ours: a manifest `GET` redirected to another origin arrives there without `Authorization` | new issue |
 | Acceptance C-07 and S-09 are not automated (INV-14, INV-21) | a redaction or an audit regression goes unseen | after the suite, grep both replicas' logs for every secret used, and count the audit rows of its writes | new issue |
 | No budget for the bytes of `$TMPDIR` (INV-23) | frontend uploads stream (ADR 0014); what still spools has no byte budget: the proxy fetches of a replica, which `server.maxConcurrentUploads` does not count either, and the `/v2` chunks of `uploads.spoolUnknownLength` | a spool budget, or a proxy fetch that streams too (ADR 0014) | [#427](https://github.com/lajstrom/lajstrom/issues/427) |
-| One upstream request per document per replica (INV-31) | concurrent misses of a packument each ask the upstream | share the request on a replica (pull request #399) | [#383](https://github.com/lajstrom/lajstrom/issues/383) |
 | Registries that fold tag case (INV-7) | two versions that differ in case: the second is a `409` with an unclear message | `Capabilities.TagsFoldCase` | [#426](https://github.com/lajstrom/lajstrom/issues/426) |
-| Whether a migration is expand is reviewed, not tested; the job `upgrade`, which runs the previous release's binary on the next schema, is skipped until there is a release; pre-#244 claims (INV-6, INV-41) | a contract migration without its `requires` line breaks the replicas of the release before during a rolling update; a mixed fleet may not exclude publishes | tag v0.1.0: from then on the job `upgrade` (`test/upgrade/run.sh`) runs on every pull request that changes a migration | [#485](https://github.com/lajstrom/lajstrom/issues/485) |
+| Whether a migration is expand is reviewed, not tested; the job `upgrade`, which runs the previous release's binary on the next schema, is skipped until there is a release; pre-#244 claims (INV-6, INV-41) | a contract migration without its `requires` line breaks the replicas of the release before during a rolling update; a mixed fleet may not exclude publishes | tag v0.1.0: from then on the job `upgrade` (`test/upgrade/run.sh`, [#485](https://github.com/lajstrom/lajstrom/issues/485)) runs on every pull request that changes a migration | [#59](https://github.com/lajstrom/lajstrom/issues/59) |
 | Policy (INV-38), encryption at rest (INV-39) | not built | as the issues say | [#101](https://github.com/lajstrom/lajstrom/issues/101), [#114](https://github.com/lajstrom/lajstrom/issues/114) |
