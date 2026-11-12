@@ -31,7 +31,7 @@ func TestWriteReportRepairedReferrers(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(out.String(), "\n")
-	if fields := strings.Fields(lines[1]); !strings.Contains(lines[0], "REFERRERS  REPAIRED") || len(fields) != 16 || fields[9] != "1" {
+	if fields := strings.Fields(lines[1]); !strings.Contains(lines[0], "REFERRERS  REPAIRED") || len(fields) != 17 || fields[10] != "1" {
 		t.Errorf("the table: %q", lines[:2])
 	}
 	if want := "raw/assets: repaired referrers index notes:sha256-" + subject.Encoded() + " " + idx.String() + ", added 2"; lines[2] != want {
@@ -189,7 +189,7 @@ func TestWriteReportSplit(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(out.String(), "\n")
-	if fields := strings.Fields(lines[1]); !strings.Contains(lines[0], "DRIFT  SPLIT  NOREPO  ERRORS") || len(fields) != 16 || fields[13] != "1" {
+	if fields := strings.Fields(lines[1]); !strings.Contains(lines[0], "DRIFT  SPLIT  NOREPO  ERRORS") || len(fields) != 17 || fields[14] != "1" {
 		t.Errorf("the table: %q", lines[:2])
 	}
 	want := "raw/assets: split netlify/blobs indexed at netlify/blob_73 [3fc4ccfe745870e2], not at netlify/blobs " +
@@ -212,7 +212,7 @@ func TestWriteReportRepositoryUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(out.String(), "\n")
-	if fields := strings.Fields(lines[1]); len(fields) != 16 || fields[14] != "1" || fields[15] != "0" {
+	if fields := strings.Fields(lines[1]); len(fields) != 17 || fields[15] != "1" || fields[16] != "0" {
 		t.Errorf("the table: %q", lines[:2])
 	}
 	want := "raw/assets: repository unknown docs/gone.txt:0123456789abcdef " +

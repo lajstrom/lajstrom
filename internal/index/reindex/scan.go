@@ -60,6 +60,7 @@ type scan struct {
 	listed      map[string]bool            // OCI repositories whose tag list was asked: false for a 404, true otherwise (repoUnknown)
 	unknown     map[string]int             // the versions reported in RepositoryUnknown, by package path
 	found       map[digest.Digest][]string // the manifests read, tagged or listed by a sha256-<hex> index, by digest: their package paths; nil unless repairing (prepareRepair)
+	deleted     map[digest.Digest]bool     // the manifests deleted through Lajstrom within the grace age (recentDeletes); nil on a strong registry
 }
 
 // repo reindexes one repo. The error is the run's own; everything about the registry and the
@@ -75,6 +76,7 @@ func (w *Worker) repo(ctx context.Context, repo index.Repo, start time.Time, req
 	}
 	s.prov = prov
 	s.prepareRepair(ctx)
+	s.recentDeletes(ctx)
 	names, listed := s.list(ctx)
 	s.rep.OCIRepositories = len(names)
 	for _, name := range newestFirst(s.base, names) {
@@ -98,12 +100,63 @@ func (w *Worker) repo(ctx context.Context, repo index.Repo, start time.Time, req
 	if s.fatal == nil {
 		s.fatal = ctx.Err()
 	}
+	s.logDone(ctx)
+	return s.rep, s.fatal
+}
+
+// logDone logs the counts of the scan, and once the manifests deleted that it did not index
+// again.
+func (s *scan) logDone(ctx context.Context) {
 	r := s.rep
-	w.log.InfoContext(ctx, "reindex: repo done", "repo", r.Repo, "ociRepositories", r.OCIRepositories, "manifests", r.Manifests,
-		"added", r.Added, "updated", r.Updated, "unchanged", r.Unchanged, "removed", r.Removed, "degraded", r.Degraded,
-		"foreign", len(r.Foreign), "drift", len(r.Drift), "split", len(r.Split), "errors", len(r.Errors),
-		"seconds", w.now().Sub(s.began).Seconds())
-	return r, s.fatal
+	if r.DeletedPending > 0 {
+		s.w.log.InfoContext(ctx, "reindex: the registry still lists manifests deleted through Lajstrom less than reconcile.graceAge ago; "+
+			"they are not indexed again", "repo", r.Repo, "tags", r.DeletedPending)
+	}
+	s.w.log.InfoContext(ctx, "reindex: repo done", "repo", r.Repo, "ociRepositories", r.OCIRepositories, "manifests", r.Manifests,
+		"added", r.Added, "updated", r.Updated, "unchanged", r.Unchanged, "removed", r.Removed, "deletedPending", r.DeletedPending,
+		"degraded", r.Degraded, "foreign", len(r.Foreign), "drift", len(r.Drift), "split", len(r.Split), "errors", len(r.Errors),
+		"seconds", s.w.now().Sub(s.began).Seconds())
+}
+
+// auditPage is how many audit rows recentDeletes reads at a time.
+const auditPage = 100
+
+// recentDeletes loads, on a registry that is not strongly consistent, the digests of the
+// manifests that the audit log has as deleted from the repo through Lajstrom, with success, less
+// than the grace age before the run started (docs/spec/guarantees.md, INV-13). Such a registry
+// may list and serve a manifest for a while after its delete, as it may miss one after its
+// push; tag does not index those again. A manifest pushed straight to the registry under such a
+// digest is indexed by the first run past the grace age; one published again through Lajstrom
+// has its rows from ingest. A strong registry lists nothing deleted, and the audit log is not
+// read; one whose capabilities do not answer is read as if it were not strong.
+func (s *scan) recentDeletes(ctx context.Context) {
+	if caps, err := s.prov.Capabilities(ctx); err == nil && caps.Consistency == provider.ConsistencyStrong {
+		return
+	}
+	s.deleted = map[digest.Digest]bool{}
+	f := index.AuditFilter{Repo: s.rep.Repo, Action: "delete", State: index.AuditOK, Since: s.start.Add(-s.w.graceAge), Limit: auditPage}
+	for {
+		rows, err := s.w.index.ListAudit(ctx, f)
+		if s.dbErr(err) {
+			return
+		}
+		for _, ev := range rows {
+			if ev.Digest != "" {
+				s.deleted[ev.Digest] = true
+			}
+		}
+		if len(rows) < auditPage {
+			return
+		}
+		f.Offset += len(rows) // rows only ever join at the top: a page read again repeats, never skips
+	}
+}
+
+// deletedPending counts a tag whose manifest recentDeletes found deleted, not indexed again.
+func (s *scan) deletedPending() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rep.DeletedPending++
 }
 
 // list returns the OCI repositories under the repo's base: the registry's catalog, or the
@@ -290,6 +343,9 @@ func (s *scan) tag(ctx context.Context, rr provider.Repository, cache *manifests
 		return
 	case known != nil && !known.Degraded && !s.req.Verify:
 		s.see(known.ID, true)
+		return
+	case known == nil && s.deleted[desc.Digest]: // a lagging listing of a delete (recentDeletes)
+		s.deletedPending()
 		return
 	}
 	raw, err := s.fetch(ctx, rr, cache, desc)

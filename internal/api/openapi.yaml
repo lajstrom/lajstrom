@@ -986,6 +986,12 @@ components:
             every repo that stopped before it reached the repo.
           type: [object, "null"]
           properties:
+            deletedPending:
+              description: >-
+                The tags the registry still lists whose manifests were deleted through Lajstrom
+                less than reconcile.graceAge before the run, on a registry not classified strong:
+                not indexed again. Absent from the report of a run of a release before it.
+              type: integer
             repairedReferrers:
               description: >-
                 The sha256-<hex> indexes that lacked referrers the audit log has as pushed and the

@@ -21,7 +21,12 @@ type RepoReport struct {
 	Removed         int    `json:"removed"`
 	// Pending are the rows whose manifest the registry answered unknown and that stay until
 	// a second answer unknownApart later and their grace age (docs/spec/guarantees.md, INV-5).
-	Pending         int       `json:"pending"`
+	Pending int `json:"pending"`
+	// DeletedPending are the tags the registry still lists, of manifests the index does not have
+	// and the audit log has as deleted through Lajstrom less than the grace age before the run,
+	// on a registry that is not strongly consistent: not indexed again (docs/spec/guarantees.md,
+	// INV-13).
+	DeletedPending  int       `json:"deletedPending"`
 	Degraded        int       `json:"degraded"`
 	Referrers       int       `json:"referrers"`
 	Foreign         []Finding `json:"foreign"`

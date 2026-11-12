@@ -1271,7 +1271,7 @@ lajstrom reindex --repo raw/assets --attach raw-assets.txt        # a registry w
 ```
 
 The output is one line of counts per repo (manifests, added, updated, unchanged, removed,
-pending, degraded, referrers, repaired referrers indexes, foreign, orphan referrers, drift, split, versions of OCI
+pending, deleted pending, degraded, referrers, repaired referrers indexes, foreign, orphan referrers, drift, split, versions of OCI
 repositories the registry does not know, errors); `--report` adds the lists, at most
 1 000 entries each, and `--json` prints the report as JSON, with the same lists, also at most
 1 000 entries each (the counts stay exact). The exit status is not zero when the
@@ -1350,6 +1350,15 @@ delete: it checks first that the manifest and the tag list still answer `404` wi
 `MANIFEST_UNKNOWN`, and writes nothing to the registry. distribution answers `MANIFEST_UNKNOWN` there, and its rows go
 as above, counted as `pending` first (both measured by `TestIntegration` of
 `internal/provider/generic` and `TestIntegrationRepositoryUnknown`).
+
+A delete lags as a push does: such a registry may still list and serve a version for a while
+after Lajstrom deleted it, and a run would index it again. On a registry not classified `strong`
+a run therefore reads the audit log first: a tag whose manifest the index does not have, and that
+was deleted through Lajstrom (an audit row `delete`, state `ok`) less than `reconcile.graceAge`
+before the run, is not indexed again, and the report counts it as `deletedPending` (the
+`DELETED` column; [guarantees.md](spec/guarantees.md) INV-13). A manifest the registry still
+lists past the grace age is indexed, as one pushed straight to the registry is. On a `strong`
+registry a run does not read the audit log.
 
 Set `reconcile.graceAge` ([configuration](configuration.md#reconcile)) to more than the
 registry's lag at the endpoint Lajstrom reads: the default `1h` when it reads the endpoint it
@@ -1532,7 +1541,7 @@ raw/assets  3          1      0        2          1        0         0          
 oci/images: foreign hello:1 sha256:9054279e24be9b8e39ede5221cfe7a7a6e9b8f7d5fac4af0c98c43d5e2acabb2 application/vnd.oci.image.manifest.v1+json
 ```
 
-That is the output of that snapshot: it had no PENDING, REPAIRED, SPLIT and NOREPO columns, and
+That is the output of that snapshot: it had no PENDING, DELETED, REPAIRED, SPLIT and NOREPO columns, and
 its prune removed a deleted version at the first run. Today this run would list `gone.txt` as
 pending, and a later run, of the reconcile loop or the CLI, would remove it
 ([On an eventually consistent registry](#on-an-eventually-consistent-registry)).
