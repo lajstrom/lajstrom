@@ -276,7 +276,7 @@ env:
   suits a rollout after a warm-up while the link is bad.
 - **`negativeTTL`** (default `2m`): a tag or a repository the upstream does not have is `404`,
   with no request, for that long. While the upstream fails, an expired negative row still answers
-  `404` (measured 24 s after it was written, with `negativeTTL: 10s`). From the code: until the
+  `404` (measured 27 s after it was written, with `negativeTTL: 10s`). From the code: until the
   sweep deletes it, once a minute, and then `502`.
 
 [#875]: https://github.com/lajstrom/lajstrom/issues/875
