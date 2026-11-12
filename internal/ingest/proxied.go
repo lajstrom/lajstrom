@@ -32,13 +32,20 @@ func setOrigin(m *ocispec.Manifest, o *format.Origin) {
 }
 
 // checkOrigin refuses a manifest that carries a lajstrom.origin.* key and does not come from
-// the proxy fetcher: a client must not pass its bytes off as fetched from an upstream. Inspect
-// reads the keys as any annotation.
+// the proxy fetcher (refuseOrigin). Inspect reads the keys as any annotation.
 func (pub *publish) checkOrigin() error {
 	if pub.origin != nil || pub.readOnly {
 		return nil
 	}
-	for k := range pub.manifest.Annotations {
+	return refuseOrigin(pub.manifest.Annotations)
+}
+
+// refuseOrigin refuses the annotations a of a manifest a client pushed when a key starts with
+// lajstrom.origin.: a client must not pass its bytes off as fetched from an upstream, and only
+// the proxy fetcher writes those keys (docs/spec/manifest-profile.md §3.1). It checks a
+// version's manifest (checkOrigin) and a referrer of a managed repo (PutReferrer) alike.
+func refuseOrigin(a map[string]string) error {
+	for k := range a {
 		if strings.HasPrefix(k, profile.AnnotationOriginPrefix) {
 			return fmt.Errorf("%w: annotation %s: only a proxy repo's fetcher writes the %s keys", ErrInvalid, k,
 				profile.AnnotationOriginPrefix)

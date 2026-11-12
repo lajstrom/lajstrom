@@ -144,9 +144,12 @@ without `lajstrom.uploaded-by`:
 | `lajstrom.origin.checksum` | the upstream's checksum that was verified before the ingest, `<algorithm>:<lowercase hex>`: `sha512:…`, `sha256:…`, `sha1:…` |
 
 Only the fetcher writes them: a manifest that a client pushes or uploads with a key that starts
-with `lajstrom.origin.` is rejected with `400` (section 5), on every repo. Reindex reads them as
-it reads every annotation, so a proxy repo is rebuilt from the registry like a hosted one, and
-the index keeps them in `versions.attrs`.
+with `lajstrom.origin.` is rejected with `400` (section 5) on every manifest Lajstrom manages, a
+version's manifest and a referrer (section 6), on a hosted repo and on a proxy one alike. An
+`oci` repo's pass-through is not checked (section 7): Lajstrom stores its manifests, a referrer
+among them, as they came, and never indexes them. Reindex reads the keys as it reads every
+annotation, so a proxy repo is rebuilt from the registry like a hosted one, and the index keeps
+them in `versions.attrs`.
 
 ## 4. Naming: OCI repository and tag
 
@@ -311,6 +314,9 @@ The ingest pipeline rejects a manifest with `400` (facade: `MANIFEST_INVALID`) w
 - `config` is not the empty descriptor;
 - a required annotation is missing, or `lajstrom.format` / `lajstrom.repo` do not match the URL
   the manifest was pushed to;
+- an annotation key starts with `lajstrom.origin.` and the proxy fetcher did not write the
+  manifest (section 3.1): a version's manifest or a referrer (section 6), on a hosted or a proxy
+  repo; an `oci` repo's manifests are not checked;
 - the repository path computed from the annotations (section 4.1) differs from the path pushed
   to in both forms of section 4.3, or the path pushed to is the earlier form and the index has no
   package there;

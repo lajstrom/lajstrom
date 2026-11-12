@@ -19,6 +19,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/ingest"
+	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -204,6 +205,64 @@ func TestReferrerPushRefused(t *testing.T) {
 	for _, d := range []digest.Digest{okDigest, unknownDigest, noLayerDigest} {
 		rr := e.do(e.h, http.MethodHead, "/v2/raw/assets/"+f.path+"/manifests/"+d.String(), nil)
 		wantStatus(t, "HEAD "+d.String()+" after the refusals", rr, http.StatusNotFound)
+	}
+}
+
+// withOrigin is the manifest body with lajstrom.origin.url added, as a client that passes its
+// bytes off as fetched from an upstream would push it, and its digest.
+func withOrigin(t *testing.T, body []byte) ([]byte, digest.Digest) {
+	t.Helper()
+	var m ocispec.Manifest
+	must(t, json.Unmarshal(body, &m))
+	m.Annotations[profile.AnnotationOriginURL] = "https://elsewhere.example/file"
+	b, err := json.Marshal(m)
+	must(t, err)
+	return b, digest.FromBytes(b)
+}
+
+// TestReferrerOrigin (#762): a referrer with a lajstrom.origin.* key is 400 MANIFEST_INVALID
+// naming the key on a hosted repo and on a proxy repo, and nothing reaches the backend; the same
+// referrer without it is 201. An oci repo stores a manifest as it came, the key included, with
+// a subject or without (manifest-profile.md §3.1).
+func TestReferrerOrigin(t *testing.T) {
+	e := newEnv(t, envOptions{})
+	_, hosted := e.signedFile("docs/origin.txt")
+	mirror := index.Repo{Registry: "local", Kind: index.KindProxy, Format: "raw", Name: "mirror", Prefix: "raw/mirror"}
+	must(t, e.st.CreateRepo(t.Context(), &mirror))
+	fetched, proxied := manifest(t, []byte("fetched"), "a file the proxy holds")
+	rr, err := e.prov.Repository(t.Context(), "raw/mirror/docs/origin.txt")
+	must(t, err)
+	must(t, rr.Push(t.Context(), ocispec.Descriptor{MediaType: ocispecManifest, Digest: proxied, Size: int64(len(fetched))}, bytes.NewReader(fetched)))
+	e.pushBlob("raw/mirror/docs/origin.txt", ocispec.DescriptorEmptyJSON.Data)
+	e.pushBlob("raw/mirror/docs/origin.txt", []byte("signature"))
+	for _, tt := range []struct {
+		repo    string
+		subject digest.Digest
+	}{{"raw/assets", hosted}, {"raw/mirror", proxied}} {
+		name := "/v2/" + tt.repo + "/docs/origin.txt/manifests/"
+		sig, sigDigest := referrerOf(t, tt.subject, cosignBundle, "signature")
+		claimed, claimedDigest := withOrigin(t, sig)
+		rr := e.do(e.h, http.MethodPut, name+claimedDigest.String(), bytes.NewReader(claimed), "Content-Type", ocispecManifest, principalHeader, "alice")
+		if msg := wantError(t, tt.repo+": a referrer with an origin key", rr, http.StatusBadRequest, codeManifestInvalid); !strings.Contains(msg, profile.AnnotationOriginURL) {
+			t.Errorf("%s: message %q does not name %s", tt.repo, msg, profile.AnnotationOriginURL)
+		}
+		wantStatus(t, tt.repo+": HEAD after the refusal", e.do(e.h, http.MethodHead, name+claimedDigest.String(), nil), http.StatusNotFound)
+		rr = e.do(e.h, http.MethodPut, name+sigDigest.String(), bytes.NewReader(sig), "Content-Type", ocispecManifest, principalHeader, "alice")
+		wantStatus(t, tt.repo+": the referrer without it", rr, http.StatusCreated)
+	}
+
+	e.pushBlob("oci/images/app", ocispec.DescriptorEmptyJSON.Data)
+	e.pushBlob("oci/images/app", []byte("signature"))
+	image, _ := manifest(t, []byte("layer"), "no subject")
+	plain, _ := withOrigin(t, image)
+	sig, _ := referrerOf(t, digest.FromString("an image"), cosignBundle, "signature")
+	ref, refDigest := withOrigin(t, sig)
+	for _, tt := range []struct {
+		what, ref string
+		body      []byte
+	}{{"a manifest without a subject", "v1", plain}, {"a referrer", refDigest.String(), ref}} {
+		rr := e.do(e.h, http.MethodPut, "/v2/oci/images/app/manifests/"+tt.ref, bytes.NewReader(tt.body), "Content-Type", ocispecManifest, principalHeader, "alice")
+		wantStatus(t, "oci repo: "+tt.what+" with an origin key", rr, http.StatusCreated)
 	}
 }
 
