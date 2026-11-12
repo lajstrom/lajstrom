@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -59,7 +60,7 @@ func TestIntegrationNoCatalog(t *testing.T) {
 		url  string
 		caps config.CapabilityOverrides
 	}{
-		{"probe", front.URL, config.CapabilityOverrides{}},
+		{"probe", frontURL(t, front, target), config.CapabilityOverrides{}},
 		{"config", target.String(), config.CapabilityOverrides{Catalog: &off, Referrers: &off}},
 	} {
 		t.Run(c.name, func(t *testing.T) { noCatalog(t, c.url, c.caps) })
@@ -155,6 +156,24 @@ func attachSignature(ctx context.Context, t *testing.T, e *env, prov provider.Pr
 		t.Errorf("tags %v without the tag-schema index of %s", tags, pub.Digest)
 	}
 	return desc.Digest
+}
+
+// frontURL is the URL of front named by the host name of the registry at target when that name
+// is the loopback's (localhost), else front's own (127.0.0.1). The provider sends its
+// credentials to a token realm on the host name of its URL only, any port, or over https to
+// tokenRealmHosts: a registry at localhost whose realm is on localhost (Forgejo, Gitea, Harbor
+// in the dev stack) gets them through a front named localhost, not one named 127.0.0.1 (#354,
+// #800).
+func frontURL(t *testing.T, front *httptest.Server, target *url.URL) string {
+	t.Helper()
+	host := target.Hostname()
+	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return front.URL
+	}
+	u, err := url.Parse(front.URL)
+	must(t, err)
+	u.Host = net.JoinHostPort(host, u.Port())
+	return u.String()
 }
 
 // withoutCatalog is a front for the registry at target that answers 404 UNSUPPORTED to

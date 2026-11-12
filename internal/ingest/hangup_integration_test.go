@@ -22,7 +22,8 @@ import (
 // of TestIntegration when it has no referrers API (distribution): the provider writes the
 // subject's tag-schema index for two referrers, and a client that hangs up right after the
 // delete of one took that index still leaves the other listed (#711). A registry with the API
-// keeps the list itself, and the test is skipped there.
+// keeps the list itself, and the test is skipped there; so is one whose manifests Lajstrom does
+// not delete (Nexus's docker format), where the delete is refused on purpose (#352).
 func TestIntegrationDeleteReferrerClientGone(t *testing.T) {
 	addr := os.Getenv("LAJSTROM_TEST_REGISTRY")
 	if addr == "" {
@@ -36,6 +37,7 @@ func TestIntegrationDeleteReferrerClientGone(t *testing.T) {
 	if caps.Referrers {
 		t.Skip("the registry has the referrers API: there is no tag-schema index to keep")
 	}
+	skipWithoutDeletes(t, caps)
 	pub, err := e.pipe.Upload(ctx, e.repo, upload("notes", "1.0", file{"notes", "the subject of " + e.repo.Name}), alice)
 	must(t, err)
 	name := "raw/" + e.repo.Name + "/notes"

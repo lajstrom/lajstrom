@@ -34,6 +34,10 @@ type deleteSetup struct {
 	f       *rawFile
 	subject digest.Digest
 	refs    []digest.Digest // the signature, the attestation, cosign's legacy signature
+	// deletes is the provider's Capabilities.DeleteManifest once the version is pushed: false
+	// on a registry whose manifests Lajstrom does not delete (Nexus's docker format, the vendor
+	// table), where every delete is 405 UNSUPPORTED on purpose (#352).
+	deletes bool
 }
 
 func newDeleteSetup(t *testing.T, addr string, caps config.CapabilityOverrides) *deleteSetup {
@@ -72,7 +76,22 @@ func newDeleteSetup(t *testing.T, addr string, caps config.CapabilityOverrides) 
 		`{"mediaType":"application/vnd.oci.empty.v1+json","digest":"` + ocispec.DescriptorEmptyJSON.Digest.String() + `","size":2},"layers":[]}`)
 	s.expect(t, "cosign's legacy signature", http.MethodPut, "/manifests/"+s.legacyTag(), legacy, http.StatusCreated)
 	s.refs = append(s.refs, digest.FromBytes(legacy))
+	c, err := p.Capabilities(ctx)
+	must(t, err)
+	s.deletes = c.DeleteManifest
 	return s
+}
+
+// refused checks that the delete of ref is 405 UNSUPPORTED and changed nothing: what a registry
+// whose manifests Lajstrom does not delete answers instead of a delete's 202 (#800).
+func (s *deleteSetup) refused(t *testing.T, ref string) {
+	t.Helper()
+	t.Log("the registry does not delete manifests (Capabilities.DeleteManifest false): the delete is refused on purpose")
+	b := s.expect(t, "DELETE", http.MethodDelete, "/manifests/"+ref, nil, http.StatusMethodNotAllowed)
+	if !bytes.Contains(b, []byte(codeUnsupported)) {
+		t.Errorf("DELETE on a registry that does not delete manifests: %s", b)
+	}
+	s.kept(t)
 }
 
 func (s *deleteSetup) legacyTag() string { return "sha256-" + s.subject.Encoded() + ".sig" }
@@ -117,7 +136,8 @@ func (s *deleteSetup) kept(t *testing.T) {
 // TestIntegrationDelete is #61's criterion on a registry that deletes (Zot, distribution with
 // deletes on): a signed and attested version deleted through /v2 is 202; its referrers are
 // gone, no sha256-<hex> tag is left (the tag-schema index on a registry without the referrers
-// API, cosign's legacy tag), the index has no row of it, and the audit row counts three.
+// API, cosign's legacy tag), the index has no row of it, and the audit row counts three. On a
+// registry whose manifests Lajstrom does not delete, the delete is 405 and nothing changes.
 func TestIntegrationDelete(t *testing.T) {
 	addr := os.Getenv("LAJSTROM_TEST_REGISTRY")
 	if addr == "" {
@@ -126,6 +146,10 @@ func TestIntegrationDelete(t *testing.T) {
 	s := newDeleteSetup(t, addr, config.CapabilityOverrides{})
 	if got := s.referrers(t); len(got) != 2 {
 		t.Fatalf("referrers before the delete: %q", got)
+	}
+	if !s.deletes {
+		s.refused(t, s.f.tag())
+		return
 	}
 	s.expect(t, "DELETE", http.MethodDelete, "/manifests/"+s.f.tag(), nil, http.StatusAccepted)
 	if got := s.referrers(t); len(got) != 0 {
@@ -186,13 +210,18 @@ func TestIntegrationDeleteRefused(t *testing.T) {
 }
 
 // TestIntegrationDeleteReferrer: a signature deleted on its own leaves the version and its
-// other referrers, listed by the referrers API or by the tag-schema index written again.
+// other referrers, listed by the referrers API or by the tag-schema index written again. On a
+// registry whose manifests Lajstrom does not delete, the delete is 405 and nothing changes.
 func TestIntegrationDeleteReferrer(t *testing.T) {
 	addr := os.Getenv("LAJSTROM_TEST_REGISTRY")
 	if addr == "" {
 		t.Skip("set LAJSTROM_TEST_REGISTRY=host:port to run against a registry")
 	}
 	s := newDeleteSetup(t, addr, config.CapabilityOverrides{})
+	if !s.deletes {
+		s.refused(t, s.refs[0].String())
+		return
+	}
 	s.expect(t, "DELETE of the signature", http.MethodDelete, "/manifests/"+s.refs[0].String(), nil, http.StatusAccepted)
 	if got := s.referrers(t); len(got) != 1 || got[0] != s.refs[1].String()+" application/vnd.in-toto+json" {
 		t.Errorf("referrers after the signature's delete: %q", got)
