@@ -263,15 +263,18 @@ func (h *handler) passThrough(r *http.Request, t *target, ref string, refDigest 
 	if err != nil {
 		return err
 	}
-	if tag == "" {
-		err = rr.Push(ctx, desc, bytes.NewReader(body))
-	} else {
+	push := func(ctx context.Context) error { return rr.Push(ctx, desc, bytes.NewReader(body)) }
+	if tag != "" {
 		// The tag lock of the manifest, which a delete holds while it counts the manifest's tags
-		// (docs/spec/index-schema.md, Coordination): the tag is counted or pushed after it.
-		err = h.o.Index.WithReferrersLock(ctx, t.oci, desc.Digest, func(ctx context.Context) error {
-			return rr.PushReference(ctx, desc, bytes.NewReader(body), tag)
-		})
+		// (docs/spec/index-schema.md, Coordination): the tag is counted or pushed after it. A push
+		// again takes it again, so that a delete does not wait out the backoff.
+		push = func(ctx context.Context) error {
+			return h.o.Index.WithReferrersLock(ctx, t.oci, desc.Digest, func(ctx context.Context) error {
+				return rr.PushReference(ctx, desc, bytes.NewReader(body), tag)
+			})
+		}
 	}
+	err = h.retryBlobsLag(ctx, t, push)
 	switch {
 	case errors.Is(err, provider.ErrConflict):
 		return &apiError{code: codeTagInvalid, err: err}
@@ -279,6 +282,45 @@ func (h *handler) passThrough(r *http.Request, t *target, ref string, refDigest 
 		return &apiError{code: codeManifestInvalid, err: err}
 	}
 	return nil
+}
+
+// retryBlobsLag sends a manifest with push, and again while a registry not classified strong
+// answers MANIFEST_BLOB_UNKNOWN, with the backoff of a read-back, for the visibility timeout
+// (Options.VisibilityTimeout, or the registry's consistencyBound when longer): a client uploads
+// the blobs right before the manifest, and ECR's manifest check may not see one for a moment
+// after its 201 (#446). A strong registry's refusal is the answer at once, as is any other error.
+func (h *handler) retryBlobsLag(ctx context.Context, t *target, push func(context.Context) error) error {
+	err := push(ctx)
+	if !blobsUnknown(err) {
+		return err
+	}
+	p, perr := h.registry(t)
+	if perr != nil {
+		return err
+	}
+	caps, cerr := p.Capabilities(ctx)
+	if cerr != nil || caps.Consistency == provider.ConsistencyStrong {
+		return err
+	}
+	again := false
+	_, werr := provider.ReadBack{Timeout: max(h.o.VisibilityTimeout, caps.ConsistencyBound)}.Await(ctx, func(ctx context.Context) (bool, error) {
+		if !again { // the first answer is the push above: wait before the next
+			again = true
+			return false, nil
+		}
+		err = push(ctx)
+		return !blobsUnknown(err), nil
+	})
+	if werr != nil {
+		return werr
+	}
+	return err
+}
+
+// blobsUnknown reports whether err is the registry's MANIFEST_BLOB_UNKNOWN.
+func blobsUnknown(err error) bool {
+	var rej *provider.RejectedError
+	return errors.As(err, &rej) && rej.Code == codeManifestBlobUnknown
 }
 
 // readManifest reads the manifest of a PUT, at most limit bytes, and returns its descriptor
