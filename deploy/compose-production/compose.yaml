@@ -6,8 +6,8 @@
 #   docs/deploy/compose.md        make the secrets, start, make the first admin, back up
 #
 # Only Postgres and the registry keep data, each in a named volume. Lajstrom keeps nothing: its
-# root filesystem is read-only and /tmp, where a proxy fetch is spooled for one request, is a
-# tmpfs.
+# root filesystem is read-only and /tmp, empty unless uploads.spoolUnknownLength spools a /v2
+# chunk there, is a tmpfs.
 #
 # The secrets are files in ./secrets (git-ignored), made once with the commands of the doc:
 #   secrets/master-key            the master key, owned by the image's user 65532, mode 0600
@@ -40,10 +40,10 @@ services:
       - ./lajstrom.yaml:/etc/lajstrom/lajstrom.yaml:ro
     read_only: true
     tmpfs:
-      # Uploads stream into the registry (ADR 0014) and take none of it. A proxy repo's fetch,
-      # and a /v2 chunk of a registry with uploads.spoolUnknownLength, are spooled here for one
-      # request: size it for the largest of those at once. tmpfs is memory; a host with large
-      # ones mounts a disk directory instead.
+      # Uploads and proxy fetches stream into the registry (ADR 0014) and take none of it. A /v2
+      # chunk of a registry with uploads.spoolUnknownLength is spooled here for one request: size
+      # it for the largest of those at once. tmpfs is memory; a host with large ones mounts a disk
+      # directory instead.
       - /tmp:size=2g,mode=1777
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
