@@ -16,6 +16,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
+	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/proxy"
 )
 
@@ -158,6 +159,11 @@ type Repos struct {
 	Formats func(name string) bool
 	// Registries reports whether a registry of that name is configured; nil means none is.
 	Registries func(name string) bool
+	// Capabilities returns the capabilities of the configured registry of that name, for Create
+	// to refuse a repo on a registry that takes none of its names (checkNames). nil, or an
+	// error, means they are not known: the repo is created, and a publish checks each name it
+	// writes.
+	Capabilities func(ctx context.Context, registry string) (provider.Capabilities, error)
 	// Upstreams returns the format of the configured upstream of that name (upstreams[]) and
 	// whether there is one; nil means none is configured.
 	Upstreams func(name string) (formatName string, ok bool)
@@ -180,13 +186,18 @@ type Repos struct {
 // Create validates req and creates the repo with one repo.create audit event, whose details are
 // the resource and the origin. Each validation error wraps format.ErrInvalid and names the
 // field: format a compiled-in plugin or oci, name the grammar of docs/spec/manifest-profile.md §4.1
-// (at most 64 bytes), registry a configured one, kind empty, hosted or proxy, upstream on a
-// proxy only (checkKind), policy null or a JSON object that checkPolicy takes. A repo that
-// exists already is an error wrapping index.ErrConflict.
+// (at most 64 bytes), registry a configured one that takes a name of the repo (checkNames),
+// kind empty, hosted or proxy, upstream on a proxy only (checkKind), policy null or a JSON object
+// that checkPolicy takes. A repo that exists already is an error wrapping index.ErrConflict.
 func (s *Repos) Create(ctx context.Context, req CreateRequest, o Origin) (*Repo, error) {
 	row, group, err := s.newRow(req)
 	if err != nil {
 		return nil, err
+	}
+	if row.Kind != index.KindGroup {
+		if err := s.checkNames(ctx, row); err != nil {
+			return nil, err
+		}
 	}
 	var (
 		ev index.AuditEvent
@@ -621,6 +632,39 @@ func (s *Repos) checkRegistry(name string) error {
 		return invalid("registry: must not be empty")
 	case s.Registries == nil || !s.Registries(name):
 		return invalid("registry: %q is not a configured registry", name)
+	}
+	return nil
+}
+
+// minNameDepth is the depth of the shortest name Lajstrom writes below a registry's prefix,
+// <format>/<repo>/<package> (docs/spec/manifest-profile.md §4.1), in every format and in oci.
+const minNameDepth = 3
+
+// checkNames checks that the registry of row takes a name of the repo, by the limits its
+// capabilities know (provider.Capabilities.CheckName): the depth, against the shortest name of
+// every repo, three components, and the length, against the shortest name of this one, its
+// prefix and a package path of one byte. A registry that takes none, Docker Hub (one component
+// below its namespace) or a lower capabilities.maxNameDepth, would refuse every publish of the
+// repo (#663). Capabilities that are not known are logged, and the repo is created.
+func (s *Repos) checkNames(ctx context.Context, row index.Repo) error {
+	if s.Capabilities == nil {
+		return nil
+	}
+	c, err := s.Capabilities(ctx, row.Registry)
+	if err != nil {
+		s.log().WarnContext(ctx, "the capabilities of the registry are not known: the repo is created without knowing whether "+
+			"the registry takes its names, and a publish checks each name it writes",
+			"repo", row.Format+"/"+row.Name, "registry", row.Registry, "error", err.Error())
+		return nil
+	}
+	if c.MaxNameDepth > 0 && c.MaxNameDepth < minNameDepth {
+		return invalid("registry: %q takes names of depth %d at most below its prefix (capabilities.maxNameDepth), "+
+			"and every name of a repo has %d components or more, %s/<package>: the registry can store nothing of it",
+			row.Registry, c.MaxNameDepth, minNameDepth, row.Prefix)
+	}
+	if shortest := len(row.Prefix) + len("/p"); c.MaxNameLength > 0 && shortest > c.MaxNameLength {
+		return invalid("registry: %q takes at most %d bytes in a name below its prefix, and the shortest name of the repo, "+
+			"%s/<package>, has %d: the registry can store nothing of it", row.Registry, c.MaxNameLength, row.Prefix, shortest)
 	}
 	return nil
 }
