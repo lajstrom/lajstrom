@@ -28,6 +28,7 @@ jobs:
           - { package: ./internal/oci/profile, target: FuzzUnescape }
           - { package: ./internal/oci/profile, target: FuzzValidate }
           - { package: ./internal/format/deb, target: FuzzParse }
+          - { package: ./internal/format/deb, target: FuzzInspector }
           - { package: ./internal/format/deb, target: FuzzParseControl }
           - { package: ./internal/format/deb, target: FuzzParseAr }
           - { package: ./internal/format/pypi, target: FuzzWheelFilename }
