@@ -56,11 +56,12 @@ Board columns (the `Status` field of the project):
 7. **Ready for review** when the acceptance criteria of the issue are checked off in the pull
    request description and CI is green. Keep the diff under ~400 lines where you can; split
    otherwise. Add the demo command to the description.
-8. **Review**: one approval from someone other than the author (the lead for `contract`). Reviews
-   are answered within one working day; a reviewer who cannot make it says so in the thread.
-   Review the behaviour and the tests, not the style (lint does style).
-9. **Merge**: the author merges after approval (squash or rebase; linear history). Delete the
-   branch. Close the issue if the pull request did not.
+8. **Review**: one approval by a maintainer; a pull request labelled `contract` needs the lead's.
+   Reviews are answered within one working day; a reviewer who cannot make it says so in the
+   thread. Review the behaviour and the tests, not the style (lint does style).
+9. **Merge**: a maintainer merges after that approval, with squash or rebase (linear history).
+   The author does not merge their own pull request, and an AI assistant (Claude Code or any
+   other) never merges. Delete the branch. Close the issue if the pull request did not.
 10. **Demo on Friday**: a short transcript (commands and output) in the *Weekly* discussion
     thread of the milestone.
 
