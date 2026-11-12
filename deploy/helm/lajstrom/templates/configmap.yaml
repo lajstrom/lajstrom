@@ -1,0 +1,11 @@
+# lajstrom.yaml from config (values.yaml), mounted at /etc/lajstrom. No secret is in it. serve
+# reads it at start: the Deployment's checksum/config rolls the pods when it changes.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "lajstrom.fullname" . }}
+  labels:
+    {{- include "lajstrom.labels" . | nindent 4 }}
+data:
+  lajstrom.yaml: |
+    {{- include "lajstrom.config" . | nindent 4 }}

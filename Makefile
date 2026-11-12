@@ -76,9 +76,18 @@ MATRIX_URLS ?= http://localhost:5000 http://localhost:5001
 MATRIX_ARGS ?=
 # make run uses the local configuration when there is one, the example otherwise.
 RUN_CONFIG   := $(firstword $(wildcard deploy/compose/lajstrom.yaml) deploy/compose/lajstrom.example.yaml)
+# The Helm chart (docs/deploy/helm.md). helm-lint takes helm and kubeconform from PATH; it was
+# run with helm v4.3.1 and kubeconform v0.8.0. kubeconform validates against the schemas of
+# Kubernetes 1.33 and takes those of the CRDs (ServiceMonitor, HTTPRoute) from the datree catalog.
+HELM        ?= helm
+KUBECONFORM ?= kubeconform
+HELM_CHART  := deploy/helm/lajstrom
+KUBECONFORM_ARGS := -strict -summary -kubernetes-version 1.33.0 -schema-location default \
+	-schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
 
 .PHONY: help build test vet lint api-lint vulncheck licenses fmt-check check fuzz guarantees \
-	dev-up dev-down dev-ps dev-logs test-integration e2e load registry-matrix run snapshot release-check clean
+	dev-up dev-down dev-ps dev-logs test-integration e2e load registry-matrix run snapshot release-check \
+	helm-lint clean
 
 help: ## List the targets
 	@echo "Usage: make <target>"
@@ -157,6 +166,13 @@ snapshot: ## The release without publishing or signing: archives, checksums, SBO
 
 release-check: ## Validate .goreleaser.yaml with the release's goreleaser
 	$(GORELEASER_RUN) 'goreleaser check'
+
+helm-lint: ## Lint the Helm chart and validate what it renders, with its defaults and with each ci/*-values.yaml; needs helm and kubeconform
+	@set -e; for f in "" $(wildcard $(HELM_CHART)/ci/*-values.yaml); do \
+		echo "== $(HELM_CHART)$${f:+ -f $$f}"; \
+		$(HELM) lint --strict $(HELM_CHART) $${f:+-f $$f}; \
+		$(HELM) template lajstrom $(HELM_CHART) $${f:+-f $$f} | $(KUBECONFORM) $(KUBECONFORM_ARGS) -; \
+	done
 
 clean: ## Remove build output
 	rm -rf bin/ dist/
