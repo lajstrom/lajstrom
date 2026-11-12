@@ -69,7 +69,8 @@ func (c *Core) download(ctx context.Context, p *proxied, a artifact, entry *form
 		return nil, c.tooLarge(ctx, p, a, asked, limit, bound)
 	}
 	return &checked{body: resp.Body, r: &bounded{r: resp.Body, left: limit}, h: newHash(alg), name: f.Name, limit: limit, bound: bound,
-		origin: &format.Origin{Upstream: p.settings.Upstream, URL: asked, Checksum: alg + ":" + want}, alg: alg, want: want}, nil
+		origin: &format.Origin{Upstream: p.settings.Upstream, URL: asked, Checksum: alg + ":" + want, Published: entry.Published}, alg: alg,
+		want: want}, nil
 }
 
 // checked is the body of a file on its way from the upstream into the registry. It hashes the

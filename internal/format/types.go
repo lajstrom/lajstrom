@@ -69,6 +69,10 @@ type Origin struct {
 	// Checksum is the upstream's checksum that was verified before the ingest,
 	// <algorithm>:<lowercase hex>: lajstrom.origin.checksum.
 	Checksum string
+	// Published is the upstream's publish time of the version (UpstreamEntry.Published):
+	// org.opencontainers.image.created of the manifest, in whole seconds; zero leaves the time
+	// Build gave it, the time of the fetch (docs/spec/manifest-profile.md §3.1).
+	Published time.Time
 }
 
 // UploadedFile is one file of an Upload. It is re-openable: Build opens it to parse and digest
