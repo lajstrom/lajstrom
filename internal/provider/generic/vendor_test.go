@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -75,7 +76,7 @@ func TestDetectVendor(t *testing.T) {
 		{name: "another Basic realm", id: identity{host: "localhost:5015", challenge: `Basic realm="Sonatype"`}, want: vendorUnknown},
 		{name: "another server", id: identity{host: "localhost:5015", header: http.Header{"Server": {"nginx/1.29"}}}, want: vendorUnknown},
 		{name: "JFrog", id: identity{host: "localhost:5010", header: jfrogV2, challenge: `Bearer realm="http://localhost:5010/v2/token",service="localhost:5010"`}, want: vendorJFrog},
-		{name: "Gitea and Forgejo", id: identity{host: "localhost:5009", header: plainV2, challenge: giteaChallenge}, want: vendorGitea},
+		{name: "Gitea, and Forgejo before its own API is asked", id: identity{host: "localhost:5009", header: plainV2, challenge: giteaChallenge}, want: vendorGitea},
 		{name: "GitLab.com's challenge without its header", id: identity{host: "registry.gitlab.com", challenge: gitLabComChallenge}, want: vendorUnknown},
 		{name: "distribution", id: identity{host: "localhost:5001", header: plainV2}, want: vendorDistribution},
 		{name: "distribution with htpasswd", id: identity{host: "localhost:55002", header: plainV2, challenge: distributionChallenge}, want: vendorDistribution},
@@ -281,6 +282,13 @@ func TestCapabilitiesVendor(t *testing.T) {
 			name: "Gitea, the spool on", setup: challenge("bearer", "Bearer", `,service="container_registry",scope="*"`, false), vendor: vendorGitea, want: noReferrers,
 			edit: func(c *config.Registry) { c.Uploads.SpoolUnknownLength = true },
 		},
+		{name: "Forgejo", setup: forgejo(challenge, forgejoVersion), vendor: vendorForgejo, want: noReferrers, hint: true},
+		{
+			name: "Forgejo, the spool on", setup: forgejo(challenge, forgejoVersion), vendor: vendorForgejo, want: noReferrers,
+			edit: func(c *config.Registry) { c.Uploads.SpoolUnknownLength = true },
+		},
+		{name: "Gitea, its own API a web page", setup: forgejo(challenge, "<!DOCTYPE html><html></html>"), vendor: vendorGitea, want: noReferrers, hint: true},
+		{name: "Gitea, a version without one", setup: forgejo(challenge, `{"version":""}`), vendor: vendorGitea, want: noReferrers, hint: true},
 		{name: "JFrog", setup: headers(jfrogV2, true), vendor: vendorJFrog, quirks: quirks{blobExistsByGET: true}, hint: true},
 		// The fake has a catalog and the referrers API: the table's catalog and referrers win.
 		{name: "Quay", setup: headers(quayV2, true), vendor: vendorQuay, want: quay, quirks: quirks{pushForDelete: true}},
@@ -319,6 +327,93 @@ func TestCapabilitiesVendor(t *testing.T) {
 				t.Errorf("the second Capabilities = %v, or logged again", err)
 			}
 			noSecrets(t, "the log", buf.String(), []string{f.pass, f.token, "Bearer ", "realm="})
+		})
+	}
+}
+
+// forgejoVersion is Forgejo 17.0.1's answer to GET /api/forgejo/v1/version
+// (docs/registries/forgejo.md, item 6).
+const forgejoVersion = `{"version":"17.0.1+gitea-1.22.0"}`
+
+// forgejo makes the fake answer GET /v2/ as Gitea and Forgejo do, by challenge (the helper of
+// TestCapabilitiesVendor), and GET /api/forgejo/v1/version 200 with body, as Forgejo does; the
+// fake answers 404 there otherwise, as Gitea does.
+func forgejo(challenge func(mode, scheme, params string, referrers bool) func(*fakeRegistry), body string) func(*fakeRegistry) {
+	return func(f *fakeRegistry) {
+		challenge("bearer", "Bearer", `,service="container_registry",scope="*"`, false)(f)
+		next := f.hook
+		f.hook = func(w http.ResponseWriter, r *http.Request) bool {
+			if r.URL.Path != forgejoVersionPath {
+				return next(w, r)
+			}
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_, _ = io.WriteString(w, body)
+			return true
+		}
+	}
+}
+
+// TestForgejoAsked: the provider asks Forgejo's own API only of a registry that answers GET /v2/
+// as Gitea does, and only in its first probe. The fake asks for a token there too, so one ask
+// may be two requests.
+func TestForgejoAsked(t *testing.T) {
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name  string
+		setup func(f *fakeRegistry)
+		asked bool
+	}{
+		{name: "Gitea's challenge", setup: func(f *fakeRegistry) {
+			f.authMode = "bearer"
+			f.hook = func(w http.ResponseWriter, r *http.Request) bool {
+				if r.URL.Path != "/v2/" || r.Header.Get("Authorization") != "" {
+					return false
+				}
+				w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm=%q,service="container_registry",scope="*"`, f.srv.URL+"/token"))
+				writeErr(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+				return true
+			}
+		}, asked: true},
+		{name: "distribution", setup: func(f *fakeRegistry) {
+			f.hook = func(w http.ResponseWriter, r *http.Request) bool {
+				if r.URL.Path == "/v2/" {
+					w.Header()["Docker-Distribution-Api-Version"] = plainV2["Docker-Distribution-Api-Version"]
+				}
+				return false
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeRegistry(t)
+			tt.setup(f)
+			log, _ := testLogger()
+			p := f.provider(t, log, func(c *config.Registry) {
+				c.Auth = config.RegistryAuth{Username: f.user, Password: f.pass, PasswordEnv: "FAKE_PASSWORD"}
+			})
+			asked := func() int {
+				f.mu.Lock()
+				defer f.mu.Unlock()
+				n := 0
+				for _, r := range f.requests {
+					if r == "GET "+forgejoVersionPath {
+						n++
+					}
+				}
+				return n
+			}
+			if _, err := p.Capabilities(ctx); err != nil {
+				t.Fatal(err)
+			}
+			first := asked()
+			if (first > 0) != tt.asked {
+				t.Errorf("GET %s: %d requests, want any: %v", forgejoVersionPath, first, tt.asked)
+			}
+			if _, err := p.Capabilities(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if again := asked(); again != first {
+				t.Errorf("the second Capabilities asked GET %s again: %d requests, then %d", forgejoVersionPath, first, again)
+			}
 		})
 	}
 }
