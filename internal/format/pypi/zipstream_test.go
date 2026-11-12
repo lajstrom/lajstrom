@@ -88,6 +88,44 @@ func TestZipInspector(t *testing.T) {
 	}
 }
 
+// TestZipInspectorDirectoryBombs (#683): a directory of more than maxEntries headers, larger
+// than the end held, is refused at Close, as the read back would refuse it, and asks for no
+// read-back: whether the end record says so or says 1. maxEntries headers are not refused there,
+// and a wheel's directory is counted from where its local entries end.
+func TestZipInspectorDirectoryBombs(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		b       []byte
+		refused bool
+	}{
+		{"the end record says more", testutil.ZipDirectoryBomb(maxEntries+1, maxEntries+1), true},
+		{"the end record says 1", testutil.ZipDirectoryBomb(4<<16+1, 1), true},
+		{"maxEntries", testutil.ZipDirectoryBomb(maxEntries, maxEntries), false},
+	} {
+		z := newZipInspector("tool-1.0-py3-none-any.whl", isWheelMetadata, ReadWheelMetadata)
+		_, err := z.Write(tc.b)
+		must(t, err)
+		err = z.Close()
+		if tc.refused != (err != nil) || tc.refused && (!errors.Is(err, format.ErrInvalid) || !strings.Contains(err.Error(), "more than 262144")) ||
+			z.readBack == tc.refused {
+			t.Errorf("%s: %v, read back %v", tc.name, err, z.readBack)
+		}
+	}
+	whl := storedZip(t, false, "tool-1.0.dist-info/METADATA", metadata("1.0"), "tool/data.bin", strings.Repeat("x", 3000))
+	zr, err := zip.NewReader(bytes.NewReader(whl), int64(len(whl)))
+	must(t, err)
+	z := newZipInspector("tool-1.0-py3-none-any.whl", isWheelMetadata, ReadWheelMetadata)
+	_, err = z.Write(whl)
+	must(t, err)
+	must(t, z.Close())
+	d, err := findZipDirectory(bytes.NewReader(whl), int64(len(whl)))
+	must(t, err)
+	if !z.walk.inDir || z.walk.dirAt != d.start || z.walk.dirCount != len(zr.File) {
+		t.Errorf("a wheel: the directory at %d with %d headers (%v), want %d with %d", z.walk.dirAt, z.walk.dirCount, z.walk.inDir,
+			d.start, len(zr.File))
+	}
+}
+
 // TestHeldZip: the bytes held are read from the segments, across two of them, and the end of the
 // file is io.EOF; a read of bytes not held fails with errNotHeld and is missed, or, with the file
 // read back, comes from it, and fails when the bytes read back are not those held where they
@@ -185,9 +223,9 @@ func zip64Extra(n uint16, size uint64) []byte {
 
 // TestLocalWalk: the walk follows local entries, also of zip64 sizes, and holds those whose name
 // is a candidate, header and data at the offset they came at, written in pieces of 7 bytes; it
-// stops at the central directory, at sizes that follow the data (a data descriptor), at a zip64
-// field it cannot read, and at a header that lies about its size, where the bytes after it are
-// no header; and it holds no entry above maxHeldEntry. What it holds are always the file's own
+// stops at the central directory, whose headers it counts then, at sizes that follow the data
+// (a data descriptor), at a zip64 field it cannot read, and at a header that lies about its
+// size, where the bytes after it are no header; and it holds no entry above maxHeldEntry. What it holds are always the file's own
 // bytes at their offsets: the inspector reads nothing else.
 func TestLocalWalk(t *testing.T) {
 	const meta = "tool-1.0.dist-info/METADATA"
@@ -223,7 +261,7 @@ func TestLocalWalk(t *testing.T) {
 				}
 				off += len(e)
 			}
-			if !w.stopped || !reflect.DeepEqual(w.held, want) {
+			if !w.stopped && !w.inDir || !reflect.DeepEqual(w.held, want) {
 				t.Errorf("stopped %v, held %d entries at %v; want stopped, %d at %v", w.stopped, len(w.held), offsets(w.held), len(want), offsets(want))
 			}
 			for _, s := range w.held {
