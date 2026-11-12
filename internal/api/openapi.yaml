@@ -92,7 +92,8 @@ paths:
       summary: >-
         Change anonymousRead, policy, a proxy's upstream and a group's group (manage);
         changing upstream.name or group.members needs the admin role, sending back the
-        value the repo has does not.
+        value the repo has does not. {"kind": "hosted"}, alone, turns a proxy into a hosted
+        repo that keeps what it holds, its dist-tags written to its journal (the admin role).
       requestBody:
         required: true
         content:
@@ -108,6 +109,8 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "501": {$ref: "#/components/responses/Unavailable"}
     delete:
       tags: [repos]
       operationId: deleteRepo
@@ -985,6 +988,14 @@ components:
             whole after the merge; each list is replaced whole. Changing members, their order
             included, needs the admin role; the members the group has, sent back, are no
             change. merge needs manage.
+        kind:
+          type: string
+          enum: [hosted]
+          description: >-
+            Alone in the body, by the admin role: a proxy becomes a hosted repo that keeps what it
+            holds, its dist-tags and deprecations written to its journal; 409 while a fetch runs
+            or when a group of it has a hosted member. On a hosted repo it resumes a conversion
+            that stopped half way, else changes nothing.
     ReindexRequest:
       type: object
       additionalProperties: false
