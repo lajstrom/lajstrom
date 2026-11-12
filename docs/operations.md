@@ -577,8 +577,9 @@ as long as its size needs.
 
 A request that fails in a way another attempt may fix is sent again, at most
 `registries[].retries` times (default `3`): a `429`, a `5xx` other than `501` and `505`, a
-timeout, a connection refused or reset. Never another `4xx`. Only idempotent requests are sent
-again: `GET`, `HEAD`, `DELETE` and the `PUT` of a manifest, when their body can be sent again.
+timeout, a connection refused, reset, or closed without an answer (a registry that restarts).
+Never another `4xx`. Only idempotent requests are sent again: `GET`, `HEAD`, `DELETE` and the
+`PUT` of a manifest, when their body can be sent again.
 A `POST` that opens an upload session or mounts a blob, a `PATCH` that appends to one and the
 `PUT` that closes it are sent once, and the error goes back to the client, which retries the
 step. A blob that Lajstrom uploads itself (a file a frontend received, a metadata layer) is

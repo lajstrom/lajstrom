@@ -160,9 +160,9 @@ func (t *breakerTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		req = &watched
 	}
 	resp, err := t.next.RoundTrip(req)
-	result := outcome(req.Context(), resp, err, body.failed())
-	t.b.done(req.Context(), trial, result)
-	if result < 0 && err != nil && quiet(err) {
+	failed := body.failed()
+	t.b.done(req.Context(), trial, outcome(req.Context(), resp, err, failed))
+	if noAnswer(req.Context(), err, failed) {
 		err = &noAnswerError{err: err}
 	}
 	if resp != nil {
@@ -182,6 +182,14 @@ func quiet(err error) bool {
 	return errors.As(err, &ne) && ne.Timeout() || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
+// noAnswer reports whether err, the failure of a request whose body failed to read or not
+// (bodyFailed), is the registry's no answer: a timeout or an EOF (quiet) that outcome counts as
+// the registry's failure, neither the caller's context nor the body. breakerTransport marks it
+// (*noAnswerError); the retry transport below it sends such a request again (transient).
+func noAnswer(ctx context.Context, err error, bodyFailed bool) bool {
+	return err != nil && quiet(err) && outcome(ctx, nil, err, bodyFailed) < 0
+}
+
 // noAnswerError is the error of a request that timed out or met an EOF (quiet), and that
 // breakerTransport counted as the registry's failure: neither the caller's context nor the
 // request's body was the cause. translateAs makes it provider.ErrUnavailable (#670). Its
@@ -193,7 +201,7 @@ func (e *noAnswerError) Error() string { return e.err.Error() }
 func (e *noAnswerError) Unwrap() error { return e.err }
 
 // Timeout reports whether the error is a timeout: the *url.Error that net/http puts around it
-// asks, and a timed-out blob push is tried again on that (transientPush).
+// asks.
 func (e *noAnswerError) Timeout() bool {
 	var ne net.Error
 	return errors.As(e.err, &ne) && ne.Timeout()

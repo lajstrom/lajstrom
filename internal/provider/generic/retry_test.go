@@ -246,6 +246,7 @@ func TestRetryTransportErrors(t *testing.T) {
 		{name: "connection reset", err: fmt.Errorf("read: %w", syscall.ECONNRESET), want: 2},
 		{name: "connection refused", err: fmt.Errorf("dial: %w", syscall.ECONNREFUSED), want: 2},
 		{name: "unexpected EOF", err: io.ErrUnexpectedEOF, want: 2},
+		{name: "EOF, closed without an answer", err: io.EOF, want: 2},
 		{name: "timeout", err: timeoutErr{}, want: 2},
 		{name: "context canceled", err: context.Canceled, want: 1},
 		{name: "certificate", err: errors.New("x509: certificate signed by unknown authority"), want: 1},
@@ -272,6 +273,30 @@ func TestRetryTransportBody(t *testing.T) {
 	}
 	if got := strings.Join(stub.bodies, "|"); got != "{manifest}|{manifest}" {
 		t.Errorf("bodies %q, want the manifest twice", got)
+	}
+}
+
+// TestRetryTransportNoAnswerBody checks that a PUT of a manifest that met an EOF is sent again
+// with its body when the transport can replay it (GetBody), and once when its body is a stream:
+// the bytes it sent are gone, and an EOF there may be the stream's.
+func TestRetryTransportNoAnswerBody(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		body io.Reader
+		want string // the bodies the registry was sent
+	}{
+		{name: "replayable", body: strings.NewReader("{manifest}"), want: "{manifest}|{manifest}"},
+		{name: "stream", body: struct{ io.Reader }{strings.NewReader("{manifest}")}, want: "{manifest}"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := &stubRegistry{answers: []answer{{err: io.EOF}, {status: http.StatusCreated}}}
+			req, _ := http.NewRequestWithContext(t.Context(), http.MethodPut, "http://registry/v2/raw/x/manifests/v1", tt.body)
+			log, _ := testLogger()
+			_, _ = roundTrip(stub, log, req)
+			if got := strings.Join(stub.bodies, "|"); got != tt.want {
+				t.Errorf("bodies %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -380,10 +405,15 @@ func TestTransientPushNoAnswer(t *testing.T) {
 	for name, err := range map[string]error{
 		"timeout":        &url.Error{Op: "Put", URL: "http://registry/v2/raw/x/blobs/uploads/1", Err: &noAnswerError{err: timeoutErr{}}},
 		"unexpected EOF": &url.Error{Op: "Put", URL: "http://registry/v2/raw/x/blobs/uploads/1", Err: &noAnswerError{err: io.ErrUnexpectedEOF}},
+		"EOF":            &url.Error{Op: "Put", URL: "http://registry/v2/raw/x/blobs/uploads/1", Err: &noAnswerError{err: io.EOF}},
 	} {
 		if !transientPush(err) {
 			t.Errorf("%s: transientPush(%v) = false, want true", name, err)
 		}
+	}
+	// An EOF that breakerTransport did not mark is not the registry's no answer.
+	if err := (&url.Error{Op: "Put", URL: "http://registry/v2/raw/x/blobs/uploads/1", Err: io.EOF}); transientPush(err) {
+		t.Errorf("transientPush(%v) = true, want false", err)
 	}
 }
 
@@ -419,6 +449,130 @@ func TestPushRetry(t *testing.T) {
 				if ok, err := repo.Exists(t.Context(), desc); err != nil || !ok {
 					t.Errorf("Exists after the push = %v, %v; want true", ok, err)
 				}
+			}
+		})
+	}
+}
+
+// closeFirst makes f close the connection of the first n requests that match without an answer,
+// once it has read their body, as a registry that crashes or restarts does; the rest it
+// answers.
+func closeFirst(f *fakeRegistry, n int, match func(r *http.Request) bool) {
+	closed := 0
+	f.hook = func(w http.ResponseWriter, r *http.Request) bool {
+		if !match(r) || closed >= n {
+			return false
+		}
+		closed++
+		_, _ = io.Copy(io.Discard, r.Body)
+		if c, _, err := http.NewResponseController(w).Hijack(); err == nil {
+			_ = c.Close()
+		}
+		return true
+	}
+}
+
+// TestRetryNoAnswer runs calls against a registry that closes the connection of a request
+// without an answer, each request on a fresh connection, which net/http does not send again by
+// itself (#670). An idempotent request is sent again and succeeds; so does a blob push whose
+// content can be rewound, from the start in a new session. A push from a stream and a chunk,
+// from a stream or from bytes, are sent once and are provider.ErrUnavailable. The breaker counts
+// as before: one outcome per request however often the transport sent it, so a request that
+// succeeded on its retry leaves no failure, and one that failed every time leaves one.
+func TestRetryNoAnswer(t *testing.T) {
+	const retries = config.DefaultRegistryRetries
+	chunk := []byte("chunk")
+	blob := ocispec.Descriptor{MediaType: "application/octet-stream", Digest: digest.FromString("hello"), Size: 5}
+	tests := []struct {
+		name      string
+		method    string
+		path      string // a part of the path of the request whose connection closes
+		closes    int    // how many such requests it closes; 0 is 1
+		run       func(ctx context.Context, repo provider.Repository, s setupResult) error
+		want      int  // requests that matched
+		wantPosts int  // upload sessions the call opened
+		fails     bool // the call fails, with provider.ErrUnavailable
+		failures  int  // failures in a row of the breaker after the call
+	}{
+		{name: "GET tags", method: http.MethodGet, path: "/tags/list", want: 2,
+			run: func(ctx context.Context, repo provider.Repository, _ setupResult) error {
+				_, err := listTags(ctx, repo)
+				return err
+			}},
+		{name: "GET tags, closed every time", method: http.MethodGet, path: "/tags/list", closes: 100, want: 1 + retries, fails: true, failures: 1,
+			run: func(ctx context.Context, repo provider.Repository, _ setupResult) error {
+				_, err := listTags(ctx, repo)
+				return err
+			}},
+		{name: "HEAD manifest", method: http.MethodHead, path: "/manifests/", want: 2,
+			run: func(ctx context.Context, repo provider.Repository, s setupResult) error {
+				_, err := repo.Exists(ctx, s.manifest)
+				return err
+			}},
+		{name: "PUT manifest", method: http.MethodPut, path: "/manifests/v2", want: 2,
+			run: func(ctx context.Context, repo provider.Repository, s setupResult) error {
+				return repo.PushReference(ctx, s.manifest, bytes.NewReader(s.content), "v2")
+			}},
+		{name: "DELETE manifest", method: http.MethodDelete, path: "/manifests/", want: 2,
+			run: func(ctx context.Context, repo provider.Repository, s setupResult) error {
+				return repo.Delete(ctx, s.manifest)
+			}},
+		{name: "push of a blob that can be rewound", method: http.MethodPut, path: "/blobs/uploads/", want: 2, wantPosts: 2,
+			run: func(ctx context.Context, repo provider.Repository, _ setupResult) error {
+				return repo.Push(ctx, blob, strings.NewReader("hello"))
+			}},
+		{name: "push of a blob from a stream", method: http.MethodPut, path: "/blobs/uploads/", want: 1, wantPosts: 1, fails: true, failures: 1,
+			run: func(ctx context.Context, repo provider.Repository, _ setupResult) error {
+				return repo.Push(ctx, blob, struct{ io.Reader }{strings.NewReader("hello")})
+			}},
+		{name: "PATCH chunk from bytes", method: http.MethodPatch, path: "/blobs/uploads/", want: 1, fails: true, failures: 1,
+			run: func(ctx context.Context, repo provider.Repository, s setupResult) error {
+				_, err := repo.AppendBlobChunk(ctx, s.upload, bytes.NewReader(chunk), int64(len(chunk)))
+				return err
+			}},
+		{name: "PATCH chunk from a stream", method: http.MethodPatch, path: "/blobs/uploads/", want: 1, fails: true, failures: 1,
+			run: func(ctx context.Context, repo provider.Repository, s setupResult) error {
+				_, err := repo.AppendBlobChunk(ctx, s.upload, struct{ io.Reader }{bytes.NewReader(chunk)}, -1)
+				return err
+			}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			f := newFakeRegistry(t)
+			// Every request on a fresh connection: net/http sends a GET or HEAD again by itself
+			// when a connection it reused closes, never when a fresh one does.
+			f.srv.Config.SetKeepAlivesEnabled(false)
+			log, _ := testLogger()
+			p := f.provider(t, log, nil)
+			repo, err := p.Repository(ctx, "raw/scratch/notes")
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := setup(t, repo)
+			closeFirst(f, max(tt.closes, 1), func(r *http.Request) bool {
+				return r.Method == tt.method && strings.Contains(r.URL.Path, tt.path)
+			})
+			before, posts := countMatching(f, tt.method, tt.path), countMatching(f, http.MethodPost, "/blobs/uploads/")
+			err = tt.run(ctx, repo, s)
+			switch {
+			case tt.fails && !errors.Is(err, provider.ErrUnavailable):
+				t.Errorf("error = %v, want provider.ErrUnavailable", err)
+			case !tt.fails && err != nil:
+				t.Errorf("error = %v, want a retry to succeed", err)
+			}
+			if n := countMatching(f, tt.method, tt.path) - before; n != tt.want {
+				t.Errorf("%d %s requests, want %d", n, tt.method, tt.want)
+			}
+			if n := countMatching(f, http.MethodPost, "/blobs/uploads/") - posts; n != tt.wantPosts {
+				t.Errorf("%d upload sessions opened, want %d", n, tt.wantPosts)
+			}
+			b := p.clients.breaker
+			b.mu.Lock()
+			failures, state := b.failures, b.state
+			b.mu.Unlock()
+			if failures != tt.failures || state != breakerClosed {
+				t.Errorf("breaker: %d failures in a row, state %d; want %d, closed", failures, state, tt.failures)
 			}
 		})
 	}
