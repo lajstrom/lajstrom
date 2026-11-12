@@ -637,8 +637,8 @@ the repo's and named `""` (index-schema.md):
 | `oci.holders:<digest>`, named `""` | `{"paths"}`: up to 8 paths of the repo where the backend holds the blob, the newest last | the blob becomes held at a path (§11.5, step 2) |
 | `oci.fixed-tags` | empty | the backend refused to move a tag of the OCI repository (§11.6) |
 
-The backend holds the blobs that were asked for, the blobs of each platform's manifest that a
-client got (§11.5, step 5), each manifest whose blobs it holds and each index whose children it
+The backend holds the blobs that were asked for, the blobs of each platform that a client
+pulled (§11.5, step 5), each manifest whose blobs it holds and each index whose children it
 holds, every one under its keep-tag (§11.6), and the upstream's tags where it lets tags move. A
 row is fresh for `metadataTTL`, an `absent` one for `negativeTTL` (§4.1); `present` rows stay
 until replaced or purged (§4.3). The `oci.ref`, `oci.held`, `oci.holders` and `oci.fixed-tags`
@@ -670,8 +670,9 @@ never a wrong answer, since a blob is mounted only from a path that answers its 
    `Content-Length`, and on a `GET` its bytes. A child of an index is fetched when it is asked for,
    so a pull of one platform fetches that platform alone. When every blob of a cached manifest is
    held, the read pushes it (§11.5, step 3), as a completion lost to a concurrent write is caught.
-   A `GET` of a platform's manifest answered from its row makes the backend hold that platform
-   whole (§11.5, step 5); a `HEAD` does not, nor does a `GET` of an index.
+   A `GET` of a platform's manifest answered from its row mounts the blobs it lists that the
+   backend holds at another path of the repo, and fetches nothing (§11.5, step 5); a `HEAD` does
+   not, nor does a `GET` of an index.
 
 ### 11.5 A blob, and the push
 
@@ -708,16 +709,23 @@ never a wrong answer, since a blob is mounted only from a path that answers its 
    (the digest, and the tag of a tag push).
 4. The claim holder is answered from the stream as it goes into the backend (§11.8); every other
    request from the backend.
-5. **A platform a client got is held whole.** Since a client asks only for the layers it does
+5. **A platform a client pulled is held whole.** Since a client asks only for the layers it does
    not hold, an image whose layers it holds from another image would never be held whole at its
-   path. So once a `GET` of a platform's manifest was answered from its row (§11.4, step 4),
-   every blob that manifest lists is made held at the path, whatever the client asks for, in
-   the background and never before the answer:
-   - each blob the backend does not hold at the path is mounted as step 2 says, offline too;
-   - then, unless the repo is offline, each one still missing waits: a replica fetches at most 4
-     such blobs at once, and only once none of its clients asked for a blob of the path for 10
-     seconds, at the latest 5 minutes after the `GET` of the manifest, so that a client's own
-     requests take their claims first and get the tee (§11.8);
+   path. So every blob a platform's manifest lists is made held at the path, whatever layers the
+   client asks for, in the background and never before an answer, in two parts:
+   - **The mounts.** Once a `GET` of the manifest was answered from its row (§11.4, step 4),
+     each blob the backend does not hold at the path is mounted as step 2 says, offline too.
+     Nothing is fetched from the upstream.
+   - **The fetches** start once a client asked, with a `GET`, for one of the manifest's layers at
+     the path: a blob it lists in `layers`, not its config. A `GET` that is not a pull
+     (Renovate, Dependabot, `crane manifest`, `skopeo inspect`) reads a manifest and maybe its
+     config, never a layer. A layer that another manifest cached at the path lists too (two
+     versions that share a base layer) does not tell which one is pulled, and starts neither;
+     the pulled one's own layers do.
+   - Then, unless the repo is offline, each blob still missing waits: a replica fetches at most
+     4 such blobs at once, and only once none of its clients asked for a blob of the path for 10
+     seconds, at the latest 5 minutes after the `GET` of the layer that started the fetches, so
+     that a client's own requests take their claims first and get the tee (§11.8);
    - right before its fetch, the blob is looked at again, since a client or the completion at
      another path may have made the backend hold it meanwhile: held at the path, or mounted as
      step 2 says, it is not fetched;
@@ -734,10 +742,14 @@ never a wrong answer, since a blob is mounted only from a path that answers its 
      `completed` of `lajstrom_proxy_fetches_total`.
 
    It is never done for the other platforms of an index, nor on a `HEAD`. It is what a pull
-   costs: for each platform whose manifest a client got, every layer of that platform, though
-   no client asked for some of them. A `GET` of a platform's manifest that is not a pull
-   (`crane manifest`, Renovate reading an image's labels) copies its layers too: point 1, option
-   C of ADR 0018, rejected there for that cost, is taken for the platform asked for (#876).
+   costs: for each platform a client pulled, every layer of that platform, though no client
+   asked for some of them. A `GET` of a platform's manifest that is not a pull
+   (`crane manifest`, Renovate reading an image's labels) costs mounts only: point 1, option C of
+   ADR 0018, rejected there for what such a `GET` would copy, is taken for a platform a client
+   pulled (#876). A layer the backend holds nowhere and that no client asks for, because the
+   nodes got it from outside Lajstrom, stays out until a client asks for a layer of that
+   platform, or until a prefetch fetches it
+   ([#886](https://github.com/lajstrom/lajstrom/issues/886)).
 
 A blob that the backend held and lost, to a garbage collection of a blob no pushed manifest named
 yet, is fetched again on its next miss.
