@@ -23,7 +23,8 @@ const (
 	vendorGHCR    vendor = "ghcr"
 	vendorHarbor  vendor = "harbor"
 	vendorNexus   vendor = "nexus"
-	vendorGitea   vendor = "gitea" // Forgejo too: it answers alike
+	vendorGitea   vendor = "gitea"
+	vendorForgejo vendor = "forgejo" // answers GET /v2/ as Gitea does: told by its own API
 	vendorJFrog   vendor = "jfrog"
 	vendorZot     vendor = "zot"
 	vendorDocker  vendor = "dockerhub"
@@ -113,6 +114,9 @@ var vendorDefaults = map[vendor]config.CapabilityOverrides{
 	// The probe is right (docs/registries/gitea.md). A chunk of unknown length after the first
 	// write needs registries[].uploads.spoolUnknownLength, which is the operator's: hintSpool.
 	vendorGitea: {},
+	// The same as Gitea (docs/registries/forgejo.md). Forgejo serves ranges, which Gitea does
+	// not, and answers an upload status one byte ahead (#804); neither is a capability.
+	vendorForgejo: {},
 	// The probe is right since it wants a catalog in the 200; HEAD lies: afterProbe.
 	vendorJFrog: {},
 	// Quay answers _catalog without credentials with 200 and no repositories, which the probe
@@ -133,7 +137,7 @@ var vendorDefaults = map[vendor]config.CapabilityOverrides{
 // Gitea and Forgejo refuse a chunk without Content-Range into a session that holds bytes (400),
 // JFrog too (416). The table never turns the flag on: it writes to disk, which is the operator's
 // to allow (#425).
-func hintSpool(v vendor) bool { return v == vendorGitea || v == vendorJFrog }
+func hintSpool(v vendor) bool { return v == vendorGitea || v == vendorForgejo || v == vendorJFrog }
 
 // ghcrMaxChunk is the largest PATCH GHCR takes, 4 MiB: one byte more is 416 "the request body is
 // too large and exceeds the maximum permissible limit of 4.00MiB" (docs/registries/ghcr.md,
@@ -205,7 +209,7 @@ func afterProbe(v vendor, probed *provider.Capabilities, referrers bool) quirks 
 		return quirks{blobExistsByGET: true}
 	case vendorQuay:
 		return quirks{pushForDelete: true}
-	case vendorUnknown, vendorGitLab, vendorGHCR, vendorHarbor, vendorGitea, vendorZot, vendorDistribution, vendorDocker:
+	case vendorUnknown, vendorGitLab, vendorGHCR, vendorHarbor, vendorGitea, vendorForgejo, vendorZot, vendorDistribution, vendorDocker:
 	}
 	return quirks{}
 }
@@ -259,8 +263,9 @@ type identity struct {
 //   - Nexus: GET /v2/ answers Server: Nexus/<version>, or challenges with Basic and
 //     realm="Sonatype Nexus Repository Manager";
 //   - Harbor: GET /v2/ challenges with Bearer and service="harbor-registry";
-//   - Gitea and Forgejo: GET /v2/ challenges with Bearer, service="container_registry" and
-//     scope="*" (GitLab's service has the same name, without the scope);
+//   - Gitea: GET /v2/ challenges with Bearer, service="container_registry" and scope="*"
+//     (GitLab's service has the same name, without the scope). Forgejo answers so too, and
+//     vendorOf tells it apart by its own API (isForgejo);
 //   - Zot: GET /v2/ answers Access-Control-Allow-Headers with X-ZOT-API-CLIENT;
 //   - distribution: GET /v2/ answers Docker-Distribution-Api-Version and none of the above
 //     tells, on a host that is not one of hostedRegistries.
@@ -337,6 +342,13 @@ func atOrBelow(hostport, name string) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	return host == name || strings.HasSuffix(host, "."+name)
 }
+
+// forgejoVersionPath is the version endpoint of Forgejo's own API, which Gitea does not have:
+// Forgejo answers GET /v2/ as Gitea does (docs/registries/forgejo.md, item 6).
+const forgejoVersionPath = "/api/forgejo/v1/version"
+
+// maxForgejoVersionBody bounds how much of that answer is read: {"version":"17.0.1+gitea-1.22.0"}.
+const maxForgejoVersionBody = 4 << 10
 
 // gitLabDatabase reports whether a GitLab registry keeps its metadata in its database, as
 // GitLab.com does.

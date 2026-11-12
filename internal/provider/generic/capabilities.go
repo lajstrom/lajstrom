@@ -230,7 +230,7 @@ func (p *Provider) probeNow(ctx context.Context, answered *bool) (provider.Capab
 		return provider.Capabilities{}, p.translate("ping "+p.name, err)
 	}
 	*answered = true
-	v := detectVendor(id)
+	v := p.vendorOf(ctx, id)
 	c, err := p.probe(ctx, vendorOverrides(v, id))
 	if err != nil {
 		return provider.Capabilities{}, err
@@ -302,6 +302,34 @@ func (p *Provider) ping(ctx context.Context) (identity, error) {
 		return id, errdef.ErrNotFound
 	}
 	return id, parseErrorResponse(resp)
+}
+
+// vendorOf names the vendor of the registry that id describes, as detectVendor does, and asks
+// a registry that answers GET /v2/ as Gitea does whether it is Forgejo (isForgejo).
+func (p *Provider) vendorOf(ctx context.Context, id identity) vendor {
+	v := detectVendor(id)
+	if v == vendorGitea && p.isForgejo(ctx) {
+		return vendorForgejo
+	}
+	return v
+}
+
+// isForgejo reports whether the registry, which answers GET /v2/ as Gitea does, is Forgejo: GET
+// of forgejoVersionPath is 200 with a JSON object that names a version. Anything else, an error
+// too, leaves it Gitea, whose entry of the vendor table is the same.
+func (p *Provider) isForgejo(ctx context.Context) bool {
+	resp, err := p.get(ctx, p.base+forgejoVersionPath)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	var v struct {
+		Version string `json:"version"`
+	}
+	return json.NewDecoder(io.LimitReader(resp.Body, maxForgejoVersionBody)).Decode(&v) == nil && v.Version != ""
 }
 
 // probe asks the registry, which answered the ping, what it supports, and applies d, the
