@@ -1,8 +1,9 @@
 # Testing
 
-Lajstrom is tested at five levels, from pure functions to real clients against a running
-server. The levels and where they live are fixed in [layout.md](spec/layout.md) §4; this page
-says how to run each one, what it needs, and how to add an end-to-end scenario.
+Lajstrom is tested at eight levels, from pure functions to real clients against a running
+server. Five of them, unit, store conformance, integration, end-to-end and fuzz, and where they
+live are fixed in [layout.md](spec/layout.md) §4; OCI conformance, upgrade and load are this
+page's. It says how to run each one, what it needs, and how to add an end-to-end scenario.
 
 | Level | Command | Needs | In CI |
 | --- | --- | --- | --- |
@@ -10,14 +11,14 @@ says how to run each one, what it needs, and how to add an end-to-end scenario.
 | Store conformance | `make test`; on Postgres with `LAJSTROM_TEST_POSTGRES_DSN` | Go; Postgres for its half | `build-test` (SQLite), `integration` (both) |
 | Integration | `make test-integration` with `LAJSTROM_TEST_REGISTRY` | the dev stack | `integration (zot)`, `integration (distribution)`, `integration (zot-pgbouncer)`; `integration (zot-yugabyte)` (the YugabyteDB workflow): nightly, on demand, and on a pull request that changes `internal/index`; not required |
 | OCI conformance | `test/conformance/run.sh` | a running Lajstrom, an `oci` repo | no |
-| Fuzz | `go test -fuzz=<name>` | Go | the seed corpus, as part of `make test` |
-| End-to-end | `make e2e` | the dev stack, Docker, `curl`, `jq` | `e2e`; `ha` (the HA workflow): `ha.sh` without H-01 on the ha profile, nightly, on demand, and on a pull request that changes ingest, the index, the facade, the profile or the scripts it runs; not required |
+| Fuzz | `make fuzz`; `go test -fuzz=<name>` | Go | the seed corpus, as part of `make test`; `fuzz (<target>)` (the Fuzz workflow): each target for 10 minutes, weekly and on demand; not required |
+| End-to-end | `make e2e` | the dev stack, Docker, `curl`, `jq` | `e2e`: `make e2e` against Zot, then `apt.sh` in `ubuntu:22.04` and `debian:12`, `cosign.sh` against distribution with and without the catalog, and `npm.sh` against distribution; `e2e (gitea)`: the scenarios that pass against Gitea ([below](#a-registry-with-credentials-and-a-prefix)), not required; `ha` (the HA workflow): `ha.sh` without H-01 on the ha profile, nightly, on demand, and on a pull request that changes ingest, the index, the facade, the profile or the scripts it runs; not required |
 | Upgrade | `test/upgrade/run.sh` | the dev stack, Docker, `curl`, `jq`, `psql`; a release from v0.1.0 on | `upgrade` (the Upgrade workflow): on a pull request that changes a migration, and on demand; skipped until v0.1.0; not required |
 | Load | `make load` | the dev stack, `oras`, `curl`, `jq`, `lsof`, 4 GiB of free disk (11 GiB with 8 uploads at once) | `load` (the Load workflow): nightly, on demand, and on a pull request that changes the load test; not required |
 
 `make check` runs what every pull request must pass without the stack: gofmt, build, vet, unit
-tests, lint, vulncheck, licenses. The integration, conformance, end-to-end and upgrade levels
-need the [dev stack](dev-stack.md) (`make dev-up`) and are not part of it.
+tests, lint, api-lint, vulncheck, licenses. The integration, conformance, end-to-end, upgrade and
+load levels need the [dev stack](dev-stack.md) (`make dev-up`) and are not part of it.
 
 ## Unit
 
@@ -97,7 +98,10 @@ idempotence), that what it refuses stays refused, and that what it allocates gro
 input (`testutil.CheckAllocated`); `FuzzZipEntries`, that the count of a zip directory that
 bounds it (#243) is never below what `zip.NewReader` reads.
 `go test` runs their seed corpus with the unit tests; `make fuzz` fuzzes each for 30 s, one
-after another:
+after another. The [Fuzz workflow](../.github/workflows/fuzz.yml) fuzzes each of its targets for
+10 minutes every Sunday and on demand, and keeps a crasher as the artifact
+`crasher-<target>`; it lists twelve of the fifteen, not yet `FuzzSdistInspector`,
+`FuzzZipInspector` and `FuzzTarballInspector`. It is not a required check.
 
 ```sh
 make fuzz                                                    # every target, 30 s each
@@ -132,16 +136,21 @@ by default `localhost:5000`, the Zot of the stack, with the `capabilities` of
 `npm.sh`, `auth.anonymousRead: true`, a master key of
 its own, no metrics listener, no reconcile loop, `server.trustedProxies: ["127.0.0.1/32"]` so that the
 per-address throttles are on and a scenario can name a client in `X-Forwarded-For`, which it
-gets as `LAJSTROM_E2E_FORWARDED=1`), runs `lajstrom migrate`, makes the user
-`e2e-admin` with the admin binding and a random password, which the scenarios get as
-`LAJSTROM_E2E_USER` and `LAJSTROM_E2E_PASSWORD`, starts `lajstrom serve` on a free port of
+gets as `LAJSTROM_E2E_FORWARDED=1`, and `auth.bootstrap.tokenFile` naming a file of the
+directory), runs `lajstrom migrate`, writes a random bootstrap token into that file, starts `lajstrom serve` on a free port of
 `127.0.0.1` below the ephemeral range (on Linux a port that a client socket holds, even in
 TIME_WAIT, looks free but cannot be bound, #372) and waits for
 `/-/readyz`, at most 30 s; when the server is not ready by then, or exits before, the harness
 prints the end of its log, whether it runs or its exit status, and what `/-/readyz` answers.
-Then it runs every `test/e2e/<name>.sh` but `lib.sh` and `run.sh`,
-the known ones in a fixed order, any other after them and `ha.sh` last, against the ha profile
-when it is up ([below](#the-ha-stack)), and prints a line per scenario:
+Once it is ready, it makes the first admin, `e2e-admin`, with `lajstrom admin bootstrap` and the
+token, as an installation makes it ([auth.md](auth.md#bootstrap-the-first-admin)), and a random
+password, which the scenarios get as `LAJSTROM_E2E_USER` and `LAJSTROM_E2E_PASSWORD`. Then it
+runs every `test/e2e/<name>.sh` but `lib.sh` and `run.sh`, the known ones in a fixed order, any
+other after them and `ha.sh` last, against the ha profile when it is up
+([below](#the-ha-stack)), and prints a line per scenario. The sample is from a run before
+`npm.sh`, `first-admin.sh` and `retention.sh` existed; a whole run now has fourteen lines,
+`npm.sh` after `maven.sh`, then `first-admin.sh` and `retention.sh`, which `order` in `run.sh`
+does not name, and `ha.sh` last:
 
 ```text
 === summary
@@ -175,8 +184,9 @@ maven caches warm; the 182 s include `make build`, and `pypi.sh` installs build,
 poetry from PyPI in its container, which took 84 s in one run and 10 to 30 s in others. A failed scenario does not stop the others. The harness exits 1 when one
 failed, 2 when it could not start (the build, the migration, a server that is not ready), and
 stops the server and removes the directory on exit; `LAJSTROM_E2E_KEEP=1` keeps it, with
-`server.log` and a log per scenario. It unsets the `LAJSTROM_SERVER_*`, `LAJSTROM_LOG_*` and
-`LAJSTROM_DATABASE_*` overrides of your shell, so the server always runs the file it wrote.
+`server.log` and a log per scenario. It unsets the `LAJSTROM_SERVER_*`, `LAJSTROM_LOG_*`,
+`LAJSTROM_DATABASE_*` and `LAJSTROM_BOOTSTRAP_TOKEN_FILE` overrides of your shell, so the server
+always runs the file it wrote, and `LAJSTROM_ADMIN_PASSWORD`, which `lajstrom admin` refuses.
 With `LAJSTROM_E2E_INDEX_DSN`, a Postgres DSN, the index is that database instead of a new SQLite
 file: `run.sh` migrates it and leaves it on exit ([Upgrade](#upgrade) sets it).
 
@@ -191,9 +201,9 @@ file: `run.sh` migrates it and leaves it on exit ([Upgrade](#upgrade) sets it).
 | `tokens.sh` | personal access tokens and deploy tokens on raw, apt (`auth.conf`) and `/v2` | curl, `ubuntu:24.04`, oras image |
 | `first-admin.sh` | the bootstrap token of the first admin (#440), on servers of its own with new indexes: without a token file a warning and no token; with one, only its sha256 in the index and no log line with it, a wrong token `403`, the throttle `429`, `lajstrom admin bootstrap` and its audit event, `404` after it, a restart with the file warning; with `LAJSTROM_E2E_POSTGRES_DSN` and `psql`, two replicas on one new schema make one token and one admin, else that part is skipped | curl, jq, `lajstrom admin bootstrap`; `psql` for the replicas |
 | `apt.sh` | a `.deb` by PUT and one by oras; the repo's `anonymousRead` on: `key.asc` into `/etc/apt/keyrings`, `apt-get update` (the `Packages` by-hash), `install` and `apt-cache policy` without credentials; off: the anonymous `apt-get update` fails with apt's 401, then with credentials in `/etc/apt/auth.conf.d` `update`, `install`, `download` and the sha256 of the files; a second `update` with `Acquire::By-Hash=no` (the `Packages` by name); a copy of the suite whose `Release` hashes are wrong fails `apt-get update` with apt's `Hash Sum mismatch`; the conflicts | `ubuntu:24.04` (`linux/amd64`), or the image of `APT_E2E_IMAGE`; oras image |
-| `pypi.sh` | `python -m build`, twine upload, the same files again, other bytes (409), `poetry publish`, `pip install`, `uv pip install`, the client configurations of the quick start (`pip.conf` with `~/.netrc`, `[[tool.uv.index]]` for `uv add`, `[[index]]` in `uv.toml`, `poetry source add` for `poetry add`), `uv publish` and `--check-url`, `pip install --upgrade`, PEP 658 in the access log | `python:3.13` (build, twine, uv, poetry from PyPI) |
-| `maven.sh` | a maven repo and a deploy token through the API; `mvn deploy` of a jar with sources, javadoc and pom (M-01: every PUT 201, one manifest with four file layers), the files and their four checksums (M-07), a second version and `maven-metadata.xml` (M-03), `mvn dependency:get` into an empty local repository and a version range (M-02), the same version again (200) and with a changed jar (409) (M-04), Gradle `publish` and resolve; needs the maven frontend (#54, #55) | `maven:3.9.16-eclipse-temurin-21`, `gradle:8.14.6-jdk21` (plugins from Maven Central, cached in the volumes `lajstrom-e2e-m2` and `lajstrom-e2e-gradle`) |
-| `npm.sh` | an npm repo, a user (writer) and a deploy token through the API; npm: `npm login` with the password (the prompts answered in a pseudo-terminal), `whoami`, `publish` of an unscoped package (three versions, one `--tag beta`) and a scoped one, `install` into an empty project with an empty cache, `dist-tag add`, `ls`, `rm` and an install by tag, `deprecate` and its warning, then cleared; pnpm with the deploy token as `_authToken`: `whoami`, `publish` of an unscoped and a scoped package that depends on npm's, `add` from an empty store; yarn: `yarn npm login`, `whoami`, `publish`, `tag add`, `list`, `remove`, `add` from an empty cache; a proxy repo of the upstream `npmjs`: `npm install chalk@4.1.2` from an empty cache twice, each tarball fetched once (`proxy.fetch` in the audit log) and in the registry, none the second time; the M4 demo ([roadmap.md](roadmap.md)): a group of the hosted repo and the proxy, `registry=<group>` the one registry line, through which npm, pnpm and yarn each publish a scoped package that depends on `chalk@4.1.2` and install it from an empty cache (pnpm with the group's deploy token, which reads only), every `dist.tarball` under the group and nothing fetched again, and a public name published to the hosted repo hiding the upstream's versions but with `group.merge`; `npm unpublish` as a writer (403), then as maintainer of a version and of a package; `npm dist-tag` and `deprecate` through the group, then the hosted repo deleted, made again and reindexed: every packument of the run as before; `npm logout` revokes its token. `NPM_E2E_UPSTREAM=` leaves the proxy out, and the group has the hosted repo only | `node:26.13.0-slim` (npm 11.20.0; pnpm 10.34.9 and yarn 4.18.1 installed from registry.npmjs.org) |
+| `pypi.sh` | `python -m build`, twine upload, the same files again, other bytes (409), `poetry publish`, `pip install`, `uv pip install`, the client configurations of the quick start (`pip.conf` with `~/.netrc`, `[[tool.uv.index]]` for `uv add`, `[[index]]` in `uv.toml`, `poetry source add` for `poetry add`), `uv publish` and `--check-url`, `pip install --upgrade`, PEP 658 in the access log, the page asked for as PEP 691's `latest` (JSON and HTML) served as version 1, a wheel with a build tag beside its wheel and taken by `pip install --force-reinstall` (#726) | `python:3.13` (build, twine, uv, poetry from PyPI) |
+| `maven.sh` | a maven repo and a deploy token through the API; `mvn deploy` of a jar with sources, javadoc and pom (M-01: every PUT 201, one manifest with four file layers), the files and their four checksums (M-07), a second version and `maven-metadata.xml` (M-03), `mvn dependency:get` into an empty local repository and a version range (M-02), the same version again (200) and with a changed jar (409) (M-04), a `.sha1` that disagrees with its jar (M-05), Gradle `publish` and resolve | `maven:3.9.16-eclipse-temurin-21`, `gradle:8.14.6-jdk21` (plugins from Maven Central, cached in the volumes `lajstrom-e2e-m2` and `lajstrom-e2e-gradle`) |
+| `npm.sh` | an npm repo, a user (writer) and a deploy token through the API; npm: `npm login` with the password (the prompts answered in a pseudo-terminal), `whoami`, `publish` of an unscoped package (three versions, one `--tag beta`) and a scoped one, `install` into an empty project with an empty cache, `dist-tag add`, `ls`, `rm` and an install by tag, `deprecate` and its warning, then cleared; pnpm with the deploy token as `_authToken`: `whoami`, `publish` of an unscoped and a scoped package that depends on npm's, `add` from an empty store; yarn: `yarn npm login`, `whoami`, `publish`, `tag add`, `list`, `remove`, `add` from an empty cache; a proxy repo of the upstream `npmjs`: `npm install chalk@4.1.2` from an empty cache twice, each tarball fetched once (`proxy.fetch` in the audit log) and in the registry, none the second time; the M4 demo ([roadmap.md](roadmap.md)): a group of the hosted repo and the proxy, `registry=<group>` the one registry line, through which npm, pnpm and yarn each publish a scoped package that depends on `chalk@4.1.2` and install it from an empty cache (pnpm with the group's deploy token, which reads only), every `dist.tarball` under the group and nothing fetched again, and a public name published to the hosted repo hiding the upstream's versions but with `group.merge`; `npm audit` through the proxy, whose advisories come back without a deny list and not for the names of `upstream.deny`, which never leave the server (J-09, #514); `npm unpublish` as a writer (403), then as maintainer of a version and of a package; `npm dist-tag` and `deprecate` through the group, then the hosted repo deleted, made again and reindexed: every packument of the run as before; `npm logout` revokes its token. `NPM_E2E_UPSTREAM=` leaves the proxy out, and the group has the hosted repo only | `node:26.13.0-slim` (npm 11.20.0; pnpm 10.34.9 and yarn 4.18.1 installed from registry.npmjs.org) |
 | `retention.sh` | `lajstrom admin retention` against the server's API (#72): an npm repo and a maintainer with a token through `lajstrom admin`, three versions published with curl as npm does and a dist-tag on the oldest; the lists; a dry run of `--keep-last 1` (exit status 2, the middle version only), `--apply` (deleted, the dist-tagged and the newest kept, an audit row with the job and the token), and a rerun with nothing to do | curl, `lajstrom admin` |
 | `ha.sh` | [acceptance.md](acceptance.md) §4 on the `ha` profile, two replicas behind nginx; run only when the profile is up ([below](#the-ha-stack)) | curl, oras on `PATH`, else its image, `ghcr.io/sigstore/cosign/cosign:v3.1.4`, `python3` or `python:3.13`, and the images of the scenarios it runs through the edge |
 
@@ -225,7 +235,8 @@ The registry `local` of the run may need credentials and an instance prefix, as 
 `LAJSTROM_E2E_REGISTRY_PASSWORD`, and passes all four to the scenarios; `cosign.sh` asks the
 backend below the prefix and with those credentials, through the backend's token realm when it
 challenges for a bearer. Against the Gitea of `deploy/compose/gitea`, the scenarios that pass
-there (Gitea serves no ranges, which `raw.sh` checks):
+there (Gitea serves no ranges, which `raw.sh` checks); CI runs the same as the job `e2e (gitea)`,
+which is not required:
 
 ```sh
 deploy/compose/gitea/gitea.sh up
