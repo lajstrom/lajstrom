@@ -22,8 +22,8 @@ import (
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/provider"
-	_ "github.com/lajstrom/lajstrom/internal/provider/ecr"     // registers registries[].type ecr
-	_ "github.com/lajstrom/lajstrom/internal/provider/generic" // registers registries[].type generic
+	_ "github.com/lajstrom/lajstrom/internal/provider/ecr"   // registers registries[].type ecr
+	"github.com/lajstrom/lajstrom/internal/provider/generic" // registers registries[].type generic; server.spoolBudget
 	"github.com/lajstrom/lajstrom/internal/proxy"
 	"github.com/lajstrom/lajstrom/internal/server"
 	"github.com/lajstrom/lajstrom/internal/version"
@@ -138,6 +138,7 @@ func newServeCmd(a *app) *cobra.Command {
 				return err
 			}
 
+			generic.SetSpoolBudget(c.Server.SpoolBudget)
 			providers, err := provider.NewSet(c.Registries, a.log)
 			if err != nil {
 				return err

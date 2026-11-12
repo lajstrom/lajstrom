@@ -93,6 +93,18 @@ func TestLoadUploadSessions(t *testing.T) {
 	}
 }
 
+// TestSpoolBudget: server.spoolBudget is bytes, no budget by default (#427).
+func TestSpoolBudget(t *testing.T) {
+	for file, want := range map[string]int64{minimal: 0, minimal + "  spoolBudget: 3221225472\n": 3 << 30} {
+		c, err := Load(writeConfig(t, file), nil)
+		if err != nil {
+			t.Errorf("Load(%q): %v", file, err)
+		} else if c.Server.SpoolBudget != want {
+			t.Errorf("Load(%q): spoolBudget %d, want %d", file, c.Server.SpoolBudget, want)
+		}
+	}
+}
+
 // TestMaxConcurrentUploads: the default bounds the uploads of a replica (#246); 0 in the file
 // lifts it.
 func TestMaxConcurrentUploads(t *testing.T) {
@@ -264,8 +276,9 @@ func TestLoadErrors(t *testing.T) {
 			want: []string{"server.metricsListen: must not be server.listen"}},
 		{name: "negative manifest size", file: minimal + "  maxManifestSize: -1\n", want: []string{"server.maxManifestSize: must not be negative"}},
 		{name: "half a TLS pair", file: minimal + "  tls: {certFile: /etc/lajstrom/tls.crt}\n", want: []string{"server.tls: certFile and keyFile must be set together"}},
-		{name: "negative limits", file: minimal + "  shutdownDelay: -1s\n  stallTimeout: -1s\n  maxConcurrentUploads: -1\n  maxCreatedAhead: -1m\n  maxCreatedBehind: -1h\n  uploadSessions: {perRepo: -1, perPrincipal: -1}\n",
+		{name: "negative limits", file: minimal + "  shutdownDelay: -1s\n  stallTimeout: -1s\n  maxConcurrentUploads: -1\n  maxCreatedAhead: -1m\n  maxCreatedBehind: -1h\n  uploadSessions: {perRepo: -1, perPrincipal: -1}\n  spoolBudget: -1\n",
 			want: []string{"server.shutdownDelay: must not be negative", "server.stallTimeout: must not be negative", "server.maxConcurrentUploads: must not be negative",
+				"server.spoolBudget: must not be negative",
 				"server.maxCreatedAhead: must not be negative", "server.maxCreatedBehind: must not be negative",
 				"server.uploadSessions.perRepo: must not be negative", "server.uploadSessions.perPrincipal: must not be negative"}},
 		{name: "trusted proxies", file: minimal + "  trustedProxies: [\"10.0.0.0/8\", \"proxy.local\", \"10.0.0.1/33\", \"::ffff:0:0/80\"]\n",

@@ -17,8 +17,10 @@ import (
 	"time"
 
 	"github.com/opencontainers/go-digest"
+	promtest "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/lajstrom/lajstrom/internal/config"
+	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -47,11 +49,15 @@ func spoolRepo(t *testing.T, refuse int, spool bool, seen *[]string) (*fakeRegis
 	return f, repo, dir
 }
 
-// noSpoolLeft fails t when a spooled chunk is still open or a file is left in dir.
+// noSpoolLeft fails t when a spooled chunk is still open, holds bytes of server.spoolBudget, or
+// a file is left in dir.
 func noSpoolLeft(t *testing.T, dir string) {
 	t.Helper()
 	if n := openChunks.Load(); n != 0 {
 		t.Errorf("%d spooled chunks still open", n)
+	}
+	if n := spoolHeld.Load(); n != 0 {
+		t.Errorf("the spooled chunks hold %d bytes of the budget, want none", n)
 	}
 	if left, err := os.ReadDir(dir); err != nil || len(left) != 0 {
 		t.Errorf("TMPDIR holds %v, %v; want nothing", left, err)
@@ -162,6 +168,95 @@ func TestSpoolOn(t *testing.T) {
 			}
 			noSpoolLeft(t, dir)
 		})
+	}
+}
+
+// TestSpoolBudget: with server.spoolBudget, the spooled chunks of the process hold at most its
+// bytes at once (#427). A chunk that would pass it while another is spooled is refused, 503 with
+// Retry-After, before a byte of it reaches the registry: its session keeps its offset, and the
+// same chunk passes once the other is done. One that fits passes meanwhile. Nothing stays taken
+// from the budget, also when a body breaks off.
+func TestSpoolBudget(t *testing.T) {
+	ctx := t.Context()
+	SetSpoolBudget(10)
+	t.Cleanup(func() { SetSpoolBudget(0) })
+	f, repo, dir := spoolRepo(t, http.StatusBadRequest, true, nil)
+	start := func() provider.Upload {
+		u, _ := repo.StartBlobUpload(ctx)
+		u, err := repo.AppendBlobChunk(ctx, u, strings.NewReader("abc"), 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	a, b := start(), start()
+	release := holdChunk(t, repo, a, "defghi")
+	wantBudgetRefusal(t, f, repo, b, "jklmn")
+	b, err := repo.AppendBlobChunk(ctx, b, strings.NewReader("jklm"), -1)
+	if err != nil || b.Offset != 7 {
+		t.Errorf("a chunk that fits the budget beside the other: %+v, %v", b, err)
+	}
+	if err := release(); err != nil {
+		t.Errorf("the chunk that held the budget: %v", err)
+	}
+	if b, err = repo.AppendBlobChunk(ctx, b, strings.NewReader("nopqr"), -1); err != nil || b.Offset != 12 {
+		t.Errorf("the refused chunk again, once the other is done: %+v, %v", b, err)
+	}
+	if _, err := repo.AppendBlobChunk(ctx, b, io.MultiReader(strings.NewReader("st"), iotest.ErrReader(io.ErrUnexpectedEOF)), -1); err == nil {
+		t.Error("a body that breaks off: nil, want its error")
+	}
+	if _, err := repo.AppendBlobChunk(ctx, b, strings.NewReader("too large a chunk"), -1); !errors.Is(err, provider.ErrUnavailable) {
+		t.Errorf("a chunk larger than the whole budget: %v, want ErrUnavailable", err)
+	}
+	if v := promtest.ToFloat64(metrics.SpoolBytes); v != 0 {
+		t.Errorf("lajstrom_spool_bytes is %v after the chunks, want 0", v)
+	}
+	noSpoolLeft(t, dir)
+}
+
+// holdChunk sends head as the start of a chunk of unknown length to u, and returns once the spool
+// holds it: the chunk waits for the rest of its body until release ends it, which returns the
+// error of the chunk.
+func holdChunk(t *testing.T, repo provider.Repository, u provider.Upload, head string) (release func() error) {
+	t.Helper()
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		_, err := repo.AppendBlobChunk(t.Context(), u, pr, -1)
+		done <- err
+	}()
+	_, _ = pw.Write([]byte(head))
+	for deadline := time.Now().Add(5 * time.Second); spoolHeld.Load() != int64(len(head)); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the spooled chunk holds %d bytes, want %d", spoolHeld.Load(), len(head))
+		}
+	}
+	return func() error {
+		_ = pw.Close()
+		return <-done
+	}
+}
+
+// wantBudgetRefusal sends chunk to u with an unknown length, and checks that the budget refuses
+// it: ErrUnavailable with spoolRetryAfter naming server.spoolBudget, no PATCH, the session's
+// offset as it was, one refusal counted.
+func wantBudgetRefusal(t *testing.T, f *fakeRegistry, repo provider.Repository, u provider.Upload, chunk string) {
+	t.Helper()
+	ctx := t.Context()
+	refusals, before := promtest.ToFloat64(metrics.SpoolRefusals), f.count("PATCH ")
+	_, err := repo.AppendBlobChunk(ctx, u, strings.NewReader(chunk), -1)
+	wantErr(t, "a chunk past the budget", err, provider.ErrUnavailable)
+	if after, ok := provider.RetryAfter(err); !ok || after != spoolRetryAfter || !strings.Contains(err.Error(), "server.spoolBudget") {
+		t.Errorf("a chunk past the budget: %v (Retry-After %v, %v), want %v naming server.spoolBudget", err, after, ok, spoolRetryAfter)
+	}
+	if n := f.count("PATCH ") - before; n != 0 {
+		t.Errorf("a chunk past the budget sent %d PATCHes, want none", n)
+	}
+	if got, err := repo.BlobUploadStatus(ctx, u); err != nil || got.Offset != u.Offset {
+		t.Errorf("the session of a chunk past the budget: %+v, %v; want its %d bytes", got, err, u.Offset)
+	}
+	if n := promtest.ToFloat64(metrics.SpoolRefusals) - refusals; n != 1 {
+		t.Errorf("lajstrom_spool_refusals_total grew by %v, want 1", n)
 	}
 }
 
