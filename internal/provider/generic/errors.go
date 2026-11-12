@@ -61,9 +61,13 @@ func (e *credentialError) Error() string { return "credential: " + e.err.Error()
 func (e *credentialError) Unwrap() error { return e.err }
 
 // translate is translateAs for the registry of p, with the wait it last asked for
-// (breaker.waitLeft).
+// (breaker.waitLeft), and the error rule of an upstream (upstreamError).
 func (p *Provider) translate(op string, err error) error {
-	return translateAs(p.name, p.clients.breaker.waitLeft, op, err)
+	out := translateAs(p.name, p.clients.breaker.waitLeft, op, err)
+	if p.upstream {
+		return p.upstreamError(op, out, err)
+	}
+	return out
 }
 
 // translateAs turns an error of oras-go or of a registry response into one that wraps a
