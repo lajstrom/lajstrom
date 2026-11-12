@@ -1383,6 +1383,25 @@ type ReferrersRepair struct {
     Err     error
 }
 
+// MirrorManifest and MirrorBlob are the write path of an oci proxy repo (ADR 0018,
+// proxy-and-group.md §11.5): what it fetched, kept as it came. MirrorManifest pushes the
+// manifest or index under its keep-tag (profile.KeepTag), and with Tag the upstream's tag, both
+// under Store.WithReferrersLock of its digest; a tag the backend refuses to move
+// (provider.ErrConflict) leaves the manifest held and is the error, wrapping ErrConflict. Then
+// the barrier, oci_repos, and the audit row proxy.fetch (Details {"upstream", "ref", "tag"}),
+// pending before the push. MirrorBlob streams r into an upload session, hashed, and commits it
+// only when the bytes have desc's size and digest (else ErrInvalid), then reads it back; no row.
+// Both refuse a repo that is not an oci proxy (ErrInvalid).
+func (p *Pipeline) MirrorManifest(ctx context.Context, repo index.Repo, m Mirror, principal auth.Principal) error
+func (p *Pipeline) MirrorBlob(ctx context.Context, repo index.Repo, path string, desc ocispec.Descriptor, r io.Reader) error
+type Mirror struct {
+    Path     string             // the upstream's repository below the repo
+    Desc     ocispec.Descriptor // of Manifest, its exact bytes
+    Manifest []byte
+    Tag      string             // the upstream's tag to push or move; "" for none
+    Upstream string             // upstreams[].name, for the audit row
+}
+
 // Inspect runs the steps of Ingest that only read (1 to 3) on a manifest found in the registry
 // at <repo base>/<pkgPath>:<tag> and returns the rows step 7 writes; nothing is pushed or
 // claimed, and a missing blob is ErrInvalid. With AllowDegraded, a metadata layer that is missing
