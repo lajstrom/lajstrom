@@ -16,7 +16,7 @@ and Docker Desktop do it), so nothing of dpkg or apt is needed on the host.
 ```sh
 make dev-up                                       # Zot, distribution and Postgres: docs/dev-stack.md
 export LAJSTROM_MASTER_KEY=$(openssl rand -hex 32) # keep it: the repo's signing key is encrypted with it
-make run                                          # serves deploy/compose/lajstrom.example.yaml on :8080
+make run                                          # serves deploy/compose/lajstrom.example.yaml on 127.0.0.1:8080
 ```
 
 In another terminal, once `make run` has logged `listening` (`serve` creates the tables of

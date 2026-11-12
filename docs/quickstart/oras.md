@@ -13,7 +13,7 @@ be installed.
 
 ```sh
 make dev-up                                           # Zot, distribution and Postgres: docs/dev-stack.md
-make run                                              # serves deploy/compose/lajstrom.example.yaml on :8080
+make run                                              # serves deploy/compose/lajstrom.example.yaml on 127.0.0.1:8080
 ```
 
 In another terminal, once `make run` has logged `listening` (`serve` creates the tables of

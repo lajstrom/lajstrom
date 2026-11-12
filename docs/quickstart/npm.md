@@ -23,7 +23,7 @@ with npm 11), the image of `test/e2e/npm.sh`, so nothing of Node is needed on th
 
 ```sh
 make dev-up                        # Zot, distribution and Postgres: docs/dev-stack.md
-make run                           # serves deploy/compose/lajstrom.example.yaml on :8080
+make run                           # serves deploy/compose/lajstrom.example.yaml on 127.0.0.1:8080
 ```
 
 In another terminal:

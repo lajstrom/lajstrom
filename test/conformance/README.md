@@ -10,7 +10,7 @@ and builds it outside Lajstrom's module, which gains no dependency.
 
 ```sh
 make dev-up
-make run                                              # Lajstrom on :8080, Zot as "local"
+make run                                              # Lajstrom on 127.0.0.1:8080, Zot as "local"
 bin/lajstrom admin repo create oci/conformance --registry local --config deploy/compose/lajstrom.example.yaml
 test/conformance/run.sh
 ```

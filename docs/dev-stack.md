@@ -265,8 +265,10 @@ make run    # SQLite (lajstrom.db in the current directory), Zot as "local", raw
 `make run` serves [deploy/compose/lajstrom.example.yaml](../deploy/compose/lajstrom.example.yaml),
 or `deploy/compose/lajstrom.yaml` when you have one (an edited copy, not committed). The example
 keeps the index in SQLite so that `make run` also works without Docker: a registry that does
-not answer is logged at startup and `serve` starts anyway. The Postgres of the stack is one
-line away:
+not answer is logged at startup and `serve` starts anyway. It listens on `127.0.0.1:8080`
+only: its HTTP is plain, and Basic auth would send the password in clear text over the network.
+A client in a container reaches it with `--network host` on Linux and under OrbStack. The
+Postgres of the stack is one line away:
 
 ```sh
 LAJSTROM_DATABASE_DRIVER=postgres LAJSTROM_DATABASE_DSN='postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable' make run
