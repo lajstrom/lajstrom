@@ -356,7 +356,9 @@ as `%2F`, and a reverse proxy in front must pass it on encoded. `204`. It needs 
 repo (the `maintainer` role); `404` when the repo, the package, the version or the variant does
 not exist; `501 UNAVAILABLE` naming the registry when it cannot delete manifests
 (`capabilities.deleteManifest: false`, GHCR, distribution with deletes off), and nothing
-changed; `409 CONFLICT` when the registry refuses to delete this manifest alone. The variants
+changed, except for a variant whose OCI repository the registry does not know any more
+(reindex's `repositoryUnknown`): its rows go, with the audit row, and nothing is written to the
+registry; `409 CONFLICT` when the registry refuses to delete this manifest alone. The variants
 deleted before an error stay deleted, and the error's message names them, with their digests,
 whatever its status: `…; deleted before the failure, and still deleted: 1.0 sdist (sha256:…)`.
 On a proxy repo the version goes as on a hosted one, and the next request for it fetches it

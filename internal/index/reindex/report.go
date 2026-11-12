@@ -90,7 +90,7 @@ type Split struct {
 // NAME_UNKNOWN), and the repository's tag list is a 404 too, as after a delete of the repository
 // in the registry's console. Prune counts only MANIFEST_UNKNOWN (docs/spec/guarantees.md,
 // INV-5), so the row stays, on every run, until it is deleted through the management API
-// (Delete) or the repository comes back. A run deletes nothing in the registry.
+// (Delete; also on a registry that cannot delete manifests, #692) or the repository comes back. A run deletes nothing in the registry.
 type RepositoryUnknown struct {
 	Repository string        `json:"repository"` // the OCI repository, below the repo's base
 	Package    string        `json:"package"`
