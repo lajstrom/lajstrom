@@ -18,7 +18,8 @@ import (
 // ReadSdistPKGInfo, reads it from the whole file: a read of bytes it did not hold makes it ask
 // for the file back from the registry (format.ErrReadBack), and then those reads go there and
 // must agree with what it held. Real wheels need no read-back: none of 93 inspected for the ADR
-// has data descriptors, and their directories are at most 2.9 MiB.
+// has data descriptors, and their directories are at most 2.9 MiB. A directory of more than
+// maxEntries headers, which the read would refuse, is refused at Close without one (#683).
 
 const (
 	// heldTail is how much of the end of a zip the inspector holds: the end record and the
@@ -95,6 +96,9 @@ func (z *zipInspector) Close() error {
 	slices.Reverse(z.tail[z.start:])
 	slices.Reverse(z.tail)
 	z.held = &heldZip{segs: append(z.walk.held, segment{off: z.size - int64(len(z.tail)), b: z.tail}), size: z.size}
+	if z.tooManyEntries() {
+		return fmt.Errorf("%s: %w: the zip has more than %d entries", z.filename, format.ErrInvalid, maxEntries)
+	}
 	core, err := z.read(z.held, z.size)
 	switch {
 	case z.held.missed:
@@ -105,6 +109,19 @@ func (z *zipInspector) Close() error {
 		z.core = core
 	}
 	return nil
+}
+
+// tooManyEntries reports whether the walk counted more than maxEntries headers of the central
+// directory where the end record held says it starts: checkZipEntries counts the same headers
+// from there and refuses the zip, but would read them back when the directory is larger than
+// the end held. A directory the walk did not reach, or that starts elsewhere, is left to it.
+func (z *zipInspector) tooManyEntries() bool {
+	if !z.walk.inDir || z.walk.dirCount <= maxEntries {
+		return false
+	}
+	h := *z.held // a copy: a read of bytes not held asks for no read-back here
+	d, err := findZipDirectory(&h, z.size)
+	return err == nil && (d.start == z.walk.dirAt || d.alt == z.walk.dirAt)
 }
 
 // coreMetadata implements inspector.
@@ -139,7 +156,8 @@ type segment struct {
 // maxHeldEntries together, and stops at the first record that is not a local header (the
 // central directory, or an archive with something before its first entry), and at an entry
 // whose sizes follow its data (a data descriptor, flag bit 3), whose end it cannot find. What it
-// did not hold is read back; it decides nothing.
+// did not hold is read back. When the record it stops at is a central directory header, it
+// goes on counting the headers from there as zipHeaders does, up to maxEntries+1.
 type localWalk struct {
 	candidate func(string) bool
 	off       int64 // the offset of the next byte
@@ -150,6 +168,9 @@ type localWalk struct {
 	keep      *segment  // the entry being held, nil when its data is skipped
 	held      []segment // the entries held
 	heldBytes int
+	inDir     bool  // the walk is in the central directory
+	dirAt     int64 // where its first header is, once inDir
+	dirCount  int   // the headers of the directory counted, up to maxEntries+1
 }
 
 // write follows the entries through p.
@@ -168,10 +189,17 @@ func (w *localWalk) write(p []byte) {
 		}
 		if w.want == 0 {
 			w.want = localHeaderLen
+			if w.inDir {
+				w.want = zipHeaderLen
+			}
 		}
 		k := min(w.want-len(w.hdr), len(p))
 		w.hdr, w.off, p = append(w.hdr, p[:k]...), w.off+int64(k), p[k:]
-		if len(w.hdr) == w.want {
+		switch {
+		case len(w.hdr) < w.want:
+		case w.inDir:
+			w.dirHeader()
+		default:
 			w.header()
 		}
 	}
@@ -181,7 +209,12 @@ func (w *localWalk) write(p []byte) {
 func (w *localWalk) header() {
 	h := w.hdr
 	if len(h) == localHeaderLen {
-		if binary.LittleEndian.Uint32(h) != localHeaderSig {
+		switch binary.LittleEndian.Uint32(h) {
+		case localHeaderSig:
+		case zipHeaderSig:
+			w.inDir, w.dirAt, w.want = true, w.off-localHeaderLen, zipHeaderLen // the rest of the header next
+			return
+		default:
 			w.stopped = true
 			return
 		}
@@ -208,8 +241,30 @@ func (w *localWalk) header() {
 	}
 }
 
-// end ends the data of an entry, which is held when it was kept.
+// dirHeader reads the central directory header in hdr: its name, extra field and comment are
+// skipped, and it counts once they have passed, as in zipHeaders.
+func (w *localWalk) dirHeader() {
+	h := w.hdr
+	if binary.LittleEndian.Uint32(h) != zipHeaderSig {
+		w.stopped = true
+		return
+	}
+	n := int64(binary.LittleEndian.Uint16(h[28:])) + int64(binary.LittleEndian.Uint16(h[30:])) + int64(binary.LittleEndian.Uint16(h[32:]))
+	w.hdr, w.want, w.left = w.hdr[:0], 0, n
+	if w.left == 0 {
+		w.end()
+	}
+}
+
+// end ends the data of an entry, which is held when it was kept, or the variable fields of a
+// directory header, which counts it.
 func (w *localWalk) end() {
+	if w.inDir {
+		if w.dirCount++; w.dirCount > maxEntries {
+			w.stopped = true
+		}
+		return
+	}
 	if w.keep != nil {
 		w.held, w.heldBytes, w.keep = append(w.held, *w.keep), w.heldBytes+len(w.keep.b), nil
 	}

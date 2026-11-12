@@ -23,6 +23,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/format/formattest"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
+	"github.com/lajstrom/lajstrom/internal/testutil"
 )
 
 // sdistOf returns a .tar.gz sdist of the project tool at version, the members, PKG-INFO among
@@ -217,6 +218,20 @@ func TestUploadSdistRefusedStoresNothing(t *testing.T) {
 			e.nothingStored(t, "tool", content, pushed)
 		})
 	}
+}
+
+// TestUploadZipDirectoryBombStoresNothing (#683): a wheel whose central directory has more than
+// maxEntries headers, 12 MiB of them while the end record says 1, is refused with a 400 naming
+// the bound when it has streamed, before the commit: nothing is stored, nothing read back.
+func TestUploadZipDirectoryBombStoresNothing(t *testing.T) {
+	e := newEnv(t)
+	bomb := testutil.ZipDirectoryBomb(4<<16+1, 1)
+	pushed := len(e.fake.PushReferences())
+	rr := e.post(t, twineForm("tool-1.0-py3-none-any.whl", "tool", "1.0", PackagetypeWheel, bomb))
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "more than 262144 entries") {
+		t.Fatalf("upload = %d %s, want 400 naming the bound", rr.Code, rr.Body)
+	}
+	e.nothingStored(t, "tool", bomb, pushed)
 }
 
 // nothingStored fails the test when the registry holds content, the empty config or a blob
