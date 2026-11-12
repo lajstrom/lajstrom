@@ -71,6 +71,8 @@ func HoldPrincipal(ctx context.Context, p auth.Principal) {
 //   - Bearer with a token secret (ljs_pat_… or ljs_dep_…, as npm's _authToken sends it) on
 //     every route but /v2: authenticated as a personal access token or a deploy token
 //     (auth.Authenticator.AuthenticateBearer), and refused like Basic credentials.
+//   - The OIDC login (oidcPrefix, docs/spec/http-routing.md §7): the request goes on as
+//     anonymous with the header untouched; its routes take no credential.
 //   - The legacy login of npm (npmLogin): the request goes on as anonymous with the header
 //     untouched, whatever it says. Its body carries the password, which the npm plugin checks,
 //     and npm sends with it the token it had, revoked or not (docs/spec/http-routing.md, npm).
@@ -93,7 +95,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		if s.tokenThrottled(w, r) {
 			return
 		}
-		if r.Method == http.MethodPut && npmLogin.MatchString(r.URL.Path) {
+		if r.Method == http.MethodPut && npmLogin.MatchString(r.URL.Path) || strings.HasPrefix(r.URL.Path, oidcPrefix) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -142,6 +144,9 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(auth.WithCredential(auth.WithPrincipal(r.Context(), p), cred)))
 	})
 }
+
+// oidcPrefix is the prefix of the routes of the OIDC login.
+const oidcPrefix = "/-/oidc/"
 
 // npmLogin is the path of npm's legacy login, PUT /npm/<repo>/-/user/org.couchdb.user:<name>.
 var npmLogin = regexp.MustCompile(`^/npm/[^/]+/-/user/org\.couchdb\.user:[^/]+$`)

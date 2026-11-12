@@ -340,7 +340,47 @@ type Auth struct {
 	AnonymousRead bool `yaml:"anonymousRead"`
 	// Bootstrap is the one-time token that makes the first admin (docs/auth.md, Bootstrap).
 	Bootstrap Bootstrap `yaml:"bootstrap"`
+	// OIDC is the OIDC login (docs/spec/rbac.md §8, #69); off while its issuer is empty.
+	OIDC OIDC `yaml:"oidc"`
 }
+
+// OIDC configures the OIDC login (docs/spec/rbac.md §8): one IdP, whose relying party Lajstrom
+// is, a confidential client with the redirect URI <server.externalURL>/-/oidc/callback.
+type OIDC struct {
+	// Issuer is the IdP's issuer, the exact iss of its tokens: https, http only with
+	// server.insecureHTTP. Empty turns OIDC off.
+	Issuer string `yaml:"issuer"`
+	// ClientID is the client's id at the IdP.
+	ClientID string `yaml:"clientID"`
+	// ClientSecretFile is the path of a file that holds the client's secret, mounted from a
+	// secret; env LAJSTROM_AUTH_OIDC_CLIENT_SECRET_FILE. serve reads it, never Load.
+	ClientSecretFile string `yaml:"clientSecretFile"`
+	// Scopes are the scopes asked for; openid is sent whatever this says. DefaultOIDCScopes when
+	// the file leaves it out.
+	Scopes []string `yaml:"scopes"`
+	// UsernameClaim names the claim of the name of a user made at its first login;
+	// DefaultOIDCUsernameClaim when the file leaves it out.
+	UsernameClaim string `yaml:"usernameClaim"`
+	// GroupsClaim names the claim of the groups; DefaultOIDCGroupsClaim when the file leaves it
+	// out, and "" for no groups.
+	GroupsClaim string `yaml:"groupsClaim"`
+	// TokenLifetime is the lifetime of the personal access token a login mints; the groups of
+	// the login count as long. DefaultOIDCTokenLifetime when the file leaves it out; at most a
+	// year.
+	TokenLifetime time.Duration `yaml:"tokenLifetime"`
+}
+
+// Defaults of auth.oidc.
+const (
+	DefaultOIDCUsernameClaim = "preferred_username"
+	DefaultOIDCGroupsClaim   = "groups"
+	DefaultOIDCTokenLifetime = 24 * time.Hour
+	// MaxOIDCTokenLifetime bounds auth.oidc.tokenLifetime: the bound of a personal access token.
+	MaxOIDCTokenLifetime = 365 * 24 * time.Hour
+)
+
+// DefaultOIDCScopes is the default of auth.oidc.scopes.
+func DefaultOIDCScopes() []string { return []string{"openid", "profile", "email", "groups"} }
 
 // Bootstrap configures the bootstrap token: while no enabled user has an admin binding, serve
 // makes the operator's token valid on every replica, which lajstrom admin bootstrap exchanges
@@ -490,7 +530,8 @@ func Default() *Config {
 		Database:  Database{Driver: DefaultDatabaseDriver},
 		Ingest:    Ingest{ClaimTTL: DefaultIngestClaimTTL, VisibilityTimeout: DefaultIngestVisibilityTimeout},
 		Reconcile: Reconcile{Interval: DefaultReconcileInterval, GraceAge: DefaultReconcileGraceAge},
-		Auth:      Auth{Bootstrap: Bootstrap{TTL: DefaultBootstrapTTL}},
-		Keys:      Keys{Algorithm: DefaultKeysAlgorithm, RetireGrace: DefaultKeysRetireGrace, TokenAlgorithm: DefaultKeysTokenAlgorithm},
+		Auth: Auth{Bootstrap: Bootstrap{TTL: DefaultBootstrapTTL}, OIDC: OIDC{Scopes: DefaultOIDCScopes(),
+			UsernameClaim: DefaultOIDCUsernameClaim, GroupsClaim: DefaultOIDCGroupsClaim, TokenLifetime: DefaultOIDCTokenLifetime}},
+		Keys: Keys{Algorithm: DefaultKeysAlgorithm, RetireGrace: DefaultKeysRetireGrace, TokenAlgorithm: DefaultKeysTokenAlgorithm},
 	}
 }

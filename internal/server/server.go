@@ -69,6 +69,11 @@ type Options struct {
 	// Facade is the OCI distribution API (internal/facade), mounted at /v2/. nil leaves /v2/ to
 	// the ServeMux, which answers it 404 in plain text.
 	Facade http.Handler
+	// OIDC is the OIDC login (internal/auth/oidc, docs/spec/http-routing.md §7), mounted at
+	// /-/oidc/ while auth.oidc is on. nil leaves /-/oidc/ to the ServeMux, which answers it 404.
+	// The authentication middleware lets its requests through as anonymous, whatever their
+	// Authorization header says.
+	OIDC http.Handler
 	// Authenticator turns the HTTP Basic credentials of a request, and a personal access token
 	// as a bearer outside /v2, into its principal and credential, on every route
 	// (authenticate). nil authenticates nobody: every request is anonymous.
