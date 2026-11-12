@@ -421,30 +421,33 @@ func TestUploadTransportError(t *testing.T) {
 }
 
 // TestBlobChunk: the chunks of OpenBlobWriter are 4 MiB on GHCR, which refuses a larger PATCH,
-// and streamChunk elsewhere; registries[].uploads.chunkSize replaces either (#558).
+// and streamChunk elsewhere; registries[].uploads.chunkSize replaces either (#558). The bound
+// of a client's /v2 chunk is the same where the vendor table or the key says, and none
+// elsewhere (#697).
 func TestBlobChunk(t *testing.T) {
 	for _, tt := range []struct {
 		url        string
 		configured int
 		want       int
+		bound      int
 	}{
-		{"https://ghcr.io", 0, ghcrMaxChunk},
-		{"https://ghcr.io:443", 0, ghcrMaxChunk},
-		{"https://GHCR.io.", 0, ghcrMaxChunk},
-		{"https://notghcr.io", 0, streamChunk},
-		{"https://ghcr.io.example.com", 0, streamChunk},
-		{"http://localhost:5000", 0, streamChunk},
-		{"https://registry.gitlab.com", 0, streamChunk},
-		{"https://containers.github.example", 4 << 20, 4 << 20}, // GHCR on another host name
-		{"https://ghcr.io", 1 << 20, 1 << 20},
-		{"http://localhost:5000", 32 << 20, 32 << 20},
+		{"https://ghcr.io", 0, ghcrMaxChunk, ghcrMaxChunk},
+		{"https://ghcr.io:443", 0, ghcrMaxChunk, ghcrMaxChunk},
+		{"https://GHCR.io.", 0, ghcrMaxChunk, ghcrMaxChunk},
+		{"https://notghcr.io", 0, streamChunk, 0},
+		{"https://ghcr.io.example.com", 0, streamChunk, 0},
+		{"http://localhost:5000", 0, streamChunk, 0},
+		{"https://registry.gitlab.com", 0, streamChunk, 0},
+		{"https://containers.github.example", 4 << 20, 4 << 20, 4 << 20}, // GHCR on another host name
+		{"https://ghcr.io", 1 << 20, 1 << 20, 1 << 20},
+		{"http://localhost:5000", 32 << 20, 32 << 20, 32 << 20},
 	} {
 		p, err := New(config.Registry{Name: "r", Type: Type, URL: tt.url, Uploads: config.RegistryUploads{ChunkSize: tt.configured}}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if p.chunk != tt.want {
-			t.Errorf("%s, chunkSize %d: chunk = %d, want %d", tt.url, tt.configured, p.chunk, tt.want)
+		if p.chunk != tt.want || p.bound != tt.bound {
+			t.Errorf("%s, chunkSize %d: chunk = %d, bound = %d; want %d, %d", tt.url, tt.configured, p.chunk, p.bound, tt.want, tt.bound)
 		}
 	}
 }
@@ -550,5 +553,179 @@ func TestOpenBlobWriter(t *testing.T) {
 	}
 	if f.openUploads() != 0 {
 		t.Errorf("%d sessions open, want none", f.openUploads())
+	}
+}
+
+// splitRepo returns a fake registry that takes at most limit bytes in a PATCH with
+// Content-Range and starts a session over with a PATCH without it, as GHCR does with 4 MiB
+// (limit 0: a registry without a limit), and raw/scratch/notes on a provider with the chunk
+// bound registries[].uploads.chunkSize (0: none) and spoolUnknownLength set to spool. seen gets
+// the Content-Range and Content-Length of every PATCH and PUT. Locations change with every
+// chunk, so a PATCH must go to the Location of the one before.
+func splitRepo(t *testing.T, limit, bound int, spool bool, seen *[]string) (*fakeRegistry, provider.Repository) {
+	t.Helper()
+	t.Setenv("TMPDIR", t.TempDir())
+	f := newFakeRegistry(t)
+	f.stateful, f.chunkLimit = true, limit
+	f.hook = func(_ http.ResponseWriter, r *http.Request) bool {
+		if r.Method == http.MethodPatch || r.Method == http.MethodPut {
+			*seen = append(*seen, fmt.Sprintf("%s range=%q length=%d", r.Method, r.Header.Get("Content-Range"), r.ContentLength))
+		}
+		return false
+	}
+	log, _ := testLogger()
+	repo, err := f.provider(t, log, func(c *config.Registry) {
+		c.Uploads.ChunkSize, c.Uploads.SpoolUnknownLength = bound, spool
+	}).Repository(t.Context(), "raw/scratch/notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f, repo
+}
+
+// wantFakeBlob checks that the fake holds blob as its digest in raw/scratch/notes.
+func wantFakeBlob(t *testing.T, f *fakeRegistry, blob []byte) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if got := f.blobs["art/raw/scratch/notes"][digest.FromBytes(blob)]; !bytes.Equal(got, blob) {
+		t.Errorf("the registry holds %d bytes as the blob's digest, want the %d bytes of the blob", len(got), len(blob))
+	}
+}
+
+// TestAppendSplit is #697: on a registry with a chunk bound of 4 MiB, GHCR's, here by
+// registries[].uploads.chunkSize, a client's chunk of 10 MiB goes as three PATCHes of at most
+// 4 MiB, each with its Content-Range from the session's offset, and the session returned holds
+// all of it, as one chunk; a chunk of unknown size streams when it is the first write, which
+// GHCR takes whole, and is spooled and split after it with spoolUnknownLength. Without a bound,
+// each chunk goes as one PATCH, as it came, which GHCR refuses above 4 MiB.
+func TestAppendSplit(t *testing.T) {
+	const mib = 1 << 20
+	split := func(from int) []string {
+		var want []string
+		for off := from; off < from+10*mib; off += 4 * mib {
+			n := min(4*mib, from+10*mib-off)
+			want = append(want, fmt.Sprintf("PATCH range=\"%d-%d\" length=%d", off, off+n-1, n))
+		}
+		return want
+	}
+	for _, tt := range []struct {
+		name         string
+		limit, bound int
+		spool        bool
+		before       int   // bytes the session holds before the chunk, sent as a chunk of known size
+		size         int64 // of the chunk: 10 MiB, or -1 for unknown
+		want         []string
+		wantErr      int // the status of the registry's refusal; 0 for none
+	}{
+		{name: "bound, known size", limit: 4 * mib, bound: 4 * mib, size: 10 * mib, want: split(0)},
+		{name: "bound, known size, after a chunk", limit: 4 * mib, bound: 4 * mib, before: 1000, size: 10 * mib, want: split(1000)},
+		{name: "bound, unknown size, first write", limit: 4 * mib, bound: 4 * mib, size: -1, want: []string{`PATCH range="" length=-1`}},
+		{name: "bound, unknown size, after a chunk, spooled", limit: 4 * mib, bound: 4 * mib, spool: true, before: 1000, size: -1, want: split(1000)},
+		{name: "bound, known size, below the limit", limit: 4 * mib, bound: 3 * mib, size: 10 * mib, want: []string{
+			`PATCH range="0-3145727" length=3145728`, `PATCH range="3145728-6291455" length=3145728`,
+			`PATCH range="6291456-9437183" length=3145728`, `PATCH range="9437184-10485759" length=1048576`}},
+		{name: "no bound, known size", size: 10 * mib, want: []string{`PATCH range="0-10485759" length=10485760`}},
+		{name: "no bound, unknown size, after a chunk", before: 1000, size: -1, want: []string{`PATCH range="" length=-1`}},
+		{name: "no bound, known size, GHCR's limit", limit: 4 * mib, size: 10 * mib,
+			want: []string{`PATCH range="0-10485759" length=10485760`}, wantErr: http.StatusRequestedRangeNotSatisfiable},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			var seen []string
+			f, repo := splitRepo(t, tt.limit, tt.bound, tt.spool, &seen)
+			blob := bytes.Repeat([]byte("0123456789abcdef"), (tt.before+10*mib)/16+1)[:tt.before+10*mib]
+			u, err := repo.StartBlobUpload(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if u, err = repo.AppendBlobChunk(ctx, u, bytes.NewReader(blob[:tt.before]), int64(tt.before)); err != nil {
+				t.Fatal(err)
+			}
+			seen = nil
+			got, err := repo.AppendBlobChunk(ctx, u, iotest.HalfReader(bytes.NewReader(blob[tt.before:])), tt.size)
+			if !slices.Equal(seen, tt.want) {
+				t.Errorf("PATCHes\n%q\nwant\n%q", seen, tt.want)
+			}
+			if tt.wantErr != 0 {
+				if rej := (*provider.RejectedError)(nil); !errors.As(err, &rej) || rej.Status != tt.wantErr || got != u {
+					t.Errorf("AppendBlobChunk = %+v, %v; want the registry's %d and the session as it was", got, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantLoc := fmt.Sprintf("_state=%d", len(tt.want)+min(tt.before, 1))
+			if got.Offset != int64(len(blob)) || !strings.HasSuffix(got.Location, wantLoc) {
+				t.Errorf("session = %+v, want offset %d and a Location with %s", got, len(blob), wantLoc)
+			}
+			if desc, err := repo.FinishBlobUpload(ctx, got, digest.FromBytes(blob), nil, 0); err != nil || desc.Size != int64(len(blob)) {
+				t.Fatalf("FinishBlobUpload = %+v, %v", desc, err)
+			}
+			wantFakeBlob(t, f, blob)
+		})
+	}
+}
+
+// TestAppendSplitStreamedRefused: on a registry with a chunk bound and spoolUnknownLength off, a
+// chunk of unknown size into a session that holds bytes, a PATCH or the last chunk of the
+// closing PUT, is refused with Gitea's 400 BLOB_UPLOAD_INVALID and a hint that names the key,
+// before a byte of it is read or anything is sent; the session stays as it was.
+func TestAppendSplitStreamedRefused(t *testing.T) {
+	ctx := t.Context()
+	var seen []string
+	_, repo := splitRepo(t, 4<<20, 4<<20, false, &seen)
+	u, err := repo.StartBlobUpload(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u, err = repo.AppendBlobChunk(ctx, u, strings.NewReader("first"), 5); err != nil {
+		t.Fatal(err)
+	}
+	seen = nil
+	unread := iotest.ErrReader(errors.New("the chunk was read"))
+	got, err := repo.AppendBlobChunk(ctx, u, unread, -1)
+	if rej := (*provider.RejectedError)(nil); !errors.As(err, &rej) || rej.Status != http.StatusBadRequest ||
+		rej.Code != "BLOB_UPLOAD_INVALID" || !strings.Contains(rej.Hint, "registries[].uploads.spoolUnknownLength") ||
+		!strings.Contains(rej.Hint, "4194304") || got != u {
+		t.Errorf("AppendBlobChunk = %+v, %v; want 400 BLOB_UPLOAD_INVALID with a hint, and the session as it was", got, err)
+	}
+	if _, err := repo.FinishBlobUpload(ctx, u, digest.FromString("firstsecond"), unread, -1); !errors.Is(err, provider.ErrRejected) {
+		t.Errorf("FinishBlobUpload = %v, want the refusal", err)
+	}
+	if len(seen) != 0 {
+		t.Errorf("sent %q, want nothing", seen)
+	}
+}
+
+// TestAppendSplitFails: a piece the registry refuses ends the chunk, with the session after the
+// pieces it took, and no more pieces are sent.
+func TestAppendSplitFails(t *testing.T) {
+	ctx := t.Context()
+	patches := 0
+	f := newFakeRegistry(t)
+	f.hook = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method != http.MethodPatch {
+			return false
+		}
+		if patches++; patches == 2 {
+			writeErr(w, http.StatusRequestedRangeNotSatisfiable, "BLOB_UPLOAD_INVALID", "too large")
+			return true
+		}
+		return false
+	}
+	log, _ := testLogger()
+	repo, err := f.provider(t, log, func(c *config.Registry) { c.Uploads.ChunkSize = 4 }).Repository(ctx, "raw/scratch/notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := repo.StartBlobUpload(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.AppendBlobChunk(ctx, u, strings.NewReader("0123456789"), 10)
+	if err == nil || got.Offset != 4 || patches != 2 {
+		t.Errorf("AppendBlobChunk = %+v, %v after %d PATCHes; want an error at offset 4 after 2", got, err, patches)
 	}
 }

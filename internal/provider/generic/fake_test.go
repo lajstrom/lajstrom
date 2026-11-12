@@ -42,6 +42,7 @@ type fakeRegistry struct {
 	redirect       string // answer blob GETs and HEADs with 307 to redirect + "/" + digest
 	stateful       bool   // upload Locations are absolute and carry a _state that changes with every chunk and must come back, as distribution's
 	refuseStreamed int    // answer a chunk without a known length and Content-Range into a session that holds bytes with this status, as Gitea (400) and JFrog (416); 0 takes it
+	chunkLimit     int    // as GHCR: a PATCH with Content-Range of more than chunkLimit bytes is 416, and one without Content-Range starts the session over; 0 takes any
 	authMode       string // "", "basic" or "bearer"
 	challengeScope string // the scope parameter of the bearer challenge; Gitea sends "*" whatever the request
 	user, pass     string // the credentials auth accepts
@@ -416,8 +417,12 @@ func (f *fakeRegistry) startUpload(w http.ResponseWriter, r *http.Request, repo 
 
 // appendChunk appends the body to the session: at the session's end when the request has a
 // Content-Range, which must start there (else 416). With refuseStreamed, a chunk of unknown
-// length after the first write is refused. The caller holds f.mu.
+// length after the first write is refused; with chunkLimit, a PATCH is held to it (limitChunk).
+// The caller holds f.mu.
 func (f *fakeRegistry) appendChunk(w http.ResponseWriter, r *http.Request, up *fakeUpload) bool {
+	if r.Method == http.MethodPatch && !f.limitChunk(w, r, up) {
+		return false
+	}
 	known := r.ContentLength >= 0 && r.Header.Get("Content-Range") != ""
 	if f.refuseStreamed != 0 && !known && r.ContentLength != 0 && len(up.data) > 0 {
 		writeErr(w, f.refuseStreamed, "BLOB_UPLOAD_INVALID", "Stream uploads after first write are not allowed")
@@ -437,6 +442,21 @@ func (f *fakeRegistry) appendChunk(w http.ResponseWriter, r *http.Request, up *f
 		return false
 	}
 	up.data = append(up.data, b...)
+	return true
+}
+
+// limitChunk does to a PATCH what GHCR does with chunkLimit (docs/registries/ghcr.md, Upload
+// sessions): one with Content-Range of more than chunkLimit bytes is 416, and one without
+// Content-Range throws away what the session held. The caller holds f.mu.
+func (f *fakeRegistry) limitChunk(w http.ResponseWriter, r *http.Request, up *fakeUpload) bool {
+	switch {
+	case f.chunkLimit == 0:
+	case r.Header.Get("Content-Range") == "":
+		up.data = nil
+	case r.ContentLength > int64(f.chunkLimit):
+		writeErr(w, http.StatusRequestedRangeNotSatisfiable, "BLOB_UPLOAD_INVALID", "the request body is too large")
+		return false
+	}
 	return true
 }
 

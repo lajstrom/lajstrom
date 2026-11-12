@@ -1,11 +1,13 @@
 package facade
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -86,13 +88,17 @@ func (f *refusingRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // refusingEnv returns an env whose registry "local" is the generic provider, without retries,
-// of f, and f's server.
-func refusingEnv(t *testing.T, f *refusingRegistry) (*env, provider.Provider, *httptest.Server) {
+// of f, with the uploads settings up when given, and f's server.
+func refusingEnv(t *testing.T, f *refusingRegistry, up ...config.RegistryUploads) (*env, provider.Provider, *httptest.Server) {
 	t.Helper()
 	f.held = map[string]int64{}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
-	p, err := generic.New(config.Registry{Name: "local", Type: generic.Type, URL: srv.URL, Retries: -1}, slog.New(slog.DiscardHandler))
+	cfg := config.Registry{Name: "local", Type: generic.Type, URL: srv.URL, Retries: -1}
+	if len(up) > 0 {
+		cfg.Uploads = up[0]
+	}
+	p, err := generic.New(cfg, slog.New(slog.DiscardHandler))
 	must(t, err)
 	return newEnv(t, envOptions{registry: func(*providertest.Fake) provider.Provider { return p }}), p, srv
 }
@@ -236,4 +242,87 @@ func TestRegistryRefusalHint(t *testing.T) {
 	if !strings.Contains(msg, "hint:") || !strings.Contains(msg, "registries[].uploads.spoolUnknownLength") {
 		t.Errorf("message %q does not hint at registries[].uploads.spoolUnknownLength", msg)
 	}
+}
+
+// TestUploadSplitChunk is #697: on a registry that takes at most 4 MiB in a PATCH (GHCR, here by
+// registries[].uploads.chunkSize), a client's chunk of 10 MiB reaches it as three PATCHes, each
+// with its Content-Range, and the client sees one chunk: one 202 with Range 0-10485759. The next
+// chunk starts where that one ended, a chunk of unknown length after the first write is refused
+// with a hint before anything is sent, the session stays, and the close with a last chunk above
+// the bound takes the blob. A first write of unknown length streams as it came. Without the
+// bound, the chunk goes as it came, and the registry's 416 reaches the client, as before.
+func TestUploadSplitChunk(t *testing.T) {
+	const limit, mib = 4 << 20, 1 << 20
+	newRegistry := func(patches *[]string) *refusingRegistry {
+		return &refusingRegistry{status: http.StatusRequestedRangeNotSatisfiable, code: codeBlobUploadInvalid,
+			refuse: func(r *http.Request, _ int64) bool {
+				if r.Method != http.MethodPatch {
+					return false
+				}
+				*patches = append(*patches, fmt.Sprintf("%q %d", r.Header.Get("Content-Range"), r.ContentLength))
+				return r.ContentLength > limit
+			}}
+	}
+	sent := func(f *refusingRegistry, patches *[]string) []string {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		got := *patches
+		*patches = nil
+		return got
+	}
+	wantSent := func(t *testing.T, what string, got []string, want ...string) {
+		t.Helper()
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: the registry got PATCHes %q, want %q", what, got, want)
+		}
+	}
+	blob := bytes.Repeat([]byte("0123456789abcdef"), 16*mib/16)
+
+	t.Run("bound", func(t *testing.T) {
+		var patches []string
+		f := newRegistry(&patches)
+		e, _, srv := refusingEnv(t, f, config.RegistryUploads{ChunkSize: limit})
+		id := e.start(e.h)
+		rr := e.do(e.h, http.MethodPatch, uploads+id, bytes.NewReader(blob[:10*mib]))
+		wantStatus(t, "a chunk of 10 MiB", rr, http.StatusAccepted)
+		wantHeader(t, "a chunk of 10 MiB", rr, "Range", "0-10485759")
+		wantSent(t, "a chunk of 10 MiB", sent(f, &patches),
+			`"0-4194303" 4194304`, `"4194304-8388607" 4194304`, `"8388608-10485759" 2097152`)
+
+		rr = e.do(e.h, http.MethodPatch, uploads+id, bytes.NewReader(blob[10*mib:11*mib]), "Content-Range", "10485760-11534335")
+		wantStatus(t, "the next chunk", rr, http.StatusAccepted)
+		wantHeader(t, "the next chunk", rr, "Range", "0-11534335")
+		wantSent(t, "the next chunk", sent(f, &patches), `"10485760-11534335" 1048576`)
+
+		rr = e.do(e.h, http.MethodPatch, uploads+id, strings.NewReader("de"), "Content-Length", "-1")
+		msg := wantRefusal(t, "a chunk of unknown length", rr, srv, http.StatusBadRequest, codeBlobUploadInvalid, true)
+		if !strings.Contains(msg, "hint:") || !strings.Contains(msg, "registries[].uploads.spoolUnknownLength") {
+			t.Errorf("message %q does not hint at registries[].uploads.spoolUnknownLength", msg)
+		}
+		wantSent(t, "a chunk of unknown length", sent(f, &patches))
+		rr = e.do(e.h, http.MethodGet, uploads+id, nil)
+		wantStatus(t, "the session after the refusal", rr, http.StatusNoContent)
+		wantHeader(t, "the session after the refusal", rr, "Range", "0-11534335")
+
+		rr = e.do(e.h, http.MethodPut, uploads+id+"?digest="+digest.FromBytes(blob).String(), bytes.NewReader(blob[11*mib:]),
+			"Content-Range", "11534336-16777215")
+		wantStatus(t, "the close with a last chunk of 5 MiB", rr, http.StatusCreated)
+		wantSent(t, "the close with a last chunk of 5 MiB", sent(f, &patches), `"11534336-15728639" 4194304`, `"15728640-16777215" 1048576`)
+
+		id = e.start(e.h)
+		rr = e.do(e.h, http.MethodPatch, uploads+id, bytes.NewReader(blob[:10*mib]), "Content-Length", "-1")
+		wantStatus(t, "a first write of unknown length", rr, http.StatusAccepted)
+		wantHeader(t, "a first write of unknown length", rr, "Range", "0-10485759")
+		wantSent(t, "a first write of unknown length", sent(f, &patches), `"" -1`)
+	})
+
+	t.Run("no bound", func(t *testing.T) {
+		var patches []string
+		f := newRegistry(&patches)
+		e, _, srv := refusingEnv(t, f)
+		id := e.start(e.h)
+		rr := e.do(e.h, http.MethodPatch, uploads+id, bytes.NewReader(blob[:10*mib]))
+		wantRefusal(t, "a chunk of 10 MiB", rr, srv, http.StatusRequestedRangeNotSatisfiable, codeBlobUploadInvalid, true)
+		wantSent(t, "a chunk of 10 MiB", sent(f, &patches), `"0-10485759" 10485760`)
+	})
 }

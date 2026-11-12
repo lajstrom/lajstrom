@@ -114,21 +114,28 @@ func hintSpool(v vendor) bool { return v == vendorGitea || v == vendorJFrog }
 // Upload sessions).
 const ghcrMaxChunk = 4 << 20
 
-// vendorChunks is the vendor table's part for the chunks of OpenBlobWriter: the size for a
-// vendor that takes less than streamChunk in one PATCH. GHCR is told by its host, so the size is
-// known before any request (blobChunk).
+// vendorChunks is the vendor table's part for the chunks of OpenBlobWriter and of a client's /v2
+// chunk: the largest PATCH of a vendor that takes less than streamChunk in one. GHCR is told by
+// its host, so the size is known before any request (chunkBound).
 var vendorChunks = map[vendor]int{vendorGHCR: ghcrMaxChunk}
 
-// blobChunk is the size of the chunks of OpenBlobWriter for the registry on hostport: configured,
-// registries[].uploads.chunkSize, when it is set, else the vendor table's, else streamChunk. The
-// key is the way for a registry the table cannot tell by its host: GHCR behind another name,
-// or a proxy that takes less in one request.
-func blobChunk(hostport string, configured int) int {
+// chunkBound is the largest PATCH of the registry on hostport, as Lajstrom is told it: configured,
+// registries[].uploads.chunkSize, when it is set, else the vendor table's; 0 when neither says.
+// The key is the way for a registry the table cannot tell by its host: GHCR behind another name,
+// or a proxy that takes less in one request. A client's /v2 chunk above it is split
+// (appendSplit).
+func chunkBound(hostport string, configured int) int {
 	if configured > 0 {
 		return configured
 	}
-	if c, ok := vendorChunks[detectVendor(identity{host: hostport})]; ok {
-		return c
+	return vendorChunks[detectVendor(identity{host: hostport})]
+}
+
+// blobChunk is the size of the chunks of OpenBlobWriter for the registry on hostport: its
+// chunkBound, else streamChunk.
+func blobChunk(hostport string, configured int) int {
+	if b := chunkBound(hostport, configured); b > 0 {
+		return b
 	}
 	return streamChunk
 }
