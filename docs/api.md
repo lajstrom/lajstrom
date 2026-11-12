@@ -158,7 +158,13 @@ The body has `format`, `name` and `registry`, and optionally `kind`, `anonymousR
 `policy`, and `upstream` for a proxy; a group has `group` and neither `registry` nor `policy`.
 `201` with the resource and
 `Location: /api/v1/repos/<format>/<name>`; `400` for a field that breaks its rule, `409` when the
-repo exists.
+repo exists. A `registry` that takes none of the repo's names is a `400` too: one whose names are
+shallower than three components below its prefix (Docker Hub, or a lower
+`registries[].capabilities.maxNameDepth`), or shorter than `<format>/<name>/` and one byte. The
+registry's capabilities are those of its probe; when they are not known (the registry does not
+answer), the repo is created with a warning in the log, and each publish checks its name.
+`lajstrom admin repo create` checks the same, probing the registry; the repos of the
+configuration are not checked, and the start of `serve` logs such a registry at error.
 
 ```sh
 curl -s -X POST "$LAJSTROM/api/v1/repos" \

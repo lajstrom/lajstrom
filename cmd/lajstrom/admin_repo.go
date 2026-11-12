@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
 // newAdminRepoCmd returns admin repo: create, list and delete repos in the index database,
@@ -51,7 +53,8 @@ func newRepoCreateCmd(a *app) *cobra.Command {
 				return err
 			}
 			req.Policy, req.Upstream, req.Group = json.RawMessage(policy), json.RawMessage(upstream), json.RawMessage(group)
-			return a.withRepos(cmd.Context(), func(ctx context.Context, repos *api.Repos) error {
+			caps := configCapabilities(a.cfg.Registries, a.log)
+			return a.withRepos(cmd.Context(), caps, func(ctx context.Context, repos *api.Repos) error {
 				repo, err := repos.Create(ctx, req, cliOrigin())
 				if err != nil {
 					return err
@@ -82,7 +85,7 @@ func newRepoListCmd(a *app) *cobra.Command {
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return a.withRepos(cmd.Context(), func(ctx context.Context, repos *api.Repos) error {
+			return a.withRepos(cmd.Context(), nil, func(ctx context.Context, repos *api.Repos) error {
 				list, err := repos.List(ctx, formatName)
 				if err != nil {
 					return err
@@ -113,7 +116,7 @@ func newRepoDeleteCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.withRepos(cmd.Context(), func(ctx context.Context, repos *api.Repos) error {
+			return a.withRepos(cmd.Context(), nil, func(ctx context.Context, repos *api.Repos) error {
 				return repos.Delete(ctx, formatName, name, force, cliOrigin())
 			})
 		},
@@ -124,20 +127,56 @@ func newRepoDeleteCmd(a *app) *cobra.Command {
 }
 
 // withRepos opens the index database of the configuration, runs fn with the repo service over
-// it, and closes the database.
-func (a *app) withRepos(ctx context.Context, fn func(context.Context, *api.Repos) error) (err error) {
+// it and the registry capabilities caps (nil for none), and closes the database.
+func (a *app) withRepos(ctx context.Context, caps capabilities, fn func(context.Context, *api.Repos) error) (err error) {
 	st, err := a.openMigrated(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, st.Close()) }()
-	return fn(ctx, newRepos(a.cfg, st, a.log))
+	return fn(ctx, newRepos(a.cfg, st, a.log, caps))
+}
+
+// capabilities is the lookup of api.Repos.Capabilities: the capabilities of a configured
+// registry, by its name.
+type capabilities = func(ctx context.Context, registry string) (provider.Capabilities, error)
+
+// setCapabilities returns the capabilities of the registries of set, each probed on its first
+// call and cached by its provider; a probe is bounded by registryProbeTimeout.
+func setCapabilities(set provider.Set) capabilities {
+	return func(ctx context.Context, name string) (provider.Capabilities, error) {
+		p, ok := set.Provider(name)
+		if !ok {
+			return provider.Capabilities{}, fmt.Errorf("no registry %q", name)
+		}
+		ctx, cancel := context.WithTimeout(ctx, registryProbeTimeout)
+		defer cancel()
+		return p.Capabilities(ctx)
+	}
+}
+
+// configCapabilities returns the capabilities of the configured registries for admin repo
+// create, which builds the provider of the one it asks for and probes it: the CLI holds no
+// provider set.
+func configCapabilities(cfgs []config.Registry, log *slog.Logger) capabilities {
+	return func(ctx context.Context, name string) (provider.Capabilities, error) {
+		i := slices.IndexFunc(cfgs, func(r config.Registry) bool { return r.Name == name })
+		if i < 0 {
+			return provider.Capabilities{}, fmt.Errorf("no registry %q", name)
+		}
+		p, err := provider.New(cfgs[i], log)
+		if err != nil {
+			return provider.Capabilities{}, err
+		}
+		return setCapabilities(provider.Map{name: p})(ctx, name)
+	}
 }
 
 // newRepos returns the repo service over st for serve and admin repo: the formats are the
 // plugins compiled into the binary (format.Lookup, the default of api.Repos), the registries
-// and the upstreams those of the configuration.
-func newRepos(c *config.Config, st index.Store, log *slog.Logger) *api.Repos {
+// and the upstreams those of the configuration, and caps, when not nil, the capabilities that
+// Create checks a repo's registry against (#663).
+func newRepos(c *config.Config, st index.Store, log *slog.Logger, caps capabilities) *api.Repos {
 	registries := make(map[string]bool, len(c.Registries))
 	for _, r := range c.Registries {
 		registries[r.Name] = true
@@ -153,7 +192,8 @@ func newRepos(c *config.Config, st index.Store, log *slog.Logger) *api.Repos {
 			f, ok := upstreams[name]
 			return f, ok
 		},
-		Log: log,
+		Capabilities: caps,
+		Log:          log,
 	}
 }
 

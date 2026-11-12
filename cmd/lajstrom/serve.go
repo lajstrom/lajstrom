@@ -117,8 +117,10 @@ func newServeCmd(a *app) *cobra.Command {
 			}
 			// After the background work has ended, before the index closes.
 			defer rep.Stop(context.WithoutCancel(ctx))
-			repos := newRepos(c, st, a.log)
-			created, err := repos.Bootstrap(ctx, c.Repos)
+			// The repos of the configuration are not checked against their registry's
+			// capabilities: the provider set is not built yet, and the probe below logs a
+			// registry that takes no name of Lajstrom's at error. The API checks (#663).
+			created, err := newRepos(c, st, a.log, nil).Bootstrap(ctx, c.Repos)
 			if err != nil {
 				return err
 			}
@@ -181,6 +183,7 @@ func newServeCmd(a *app) *cobra.Command {
 				UploadSessionsPerRepo: c.Server.UploadSessions.PerRepo, UploadSessionsPerPrincipal: c.Server.UploadSessions.PerPrincipal,
 				VisibilityTimeout: c.Ingest.VisibilityTimeout})
 			authn := auth.NewAuthenticator(auth.Options{Index: st, Log: a.log})
+			repos := newRepos(c, st, a.log, setCapabilities(providers))
 			proxies, err := c.Server.TrustedPrefixes()
 			if err != nil {
 				return err
