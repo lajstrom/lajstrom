@@ -629,9 +629,9 @@ Every `proxy_meta` row of an `oci` proxy has the path as its name (index-schema.
 
 | Kind | Content | Written when |
 | --- | --- | --- |
-| `oci.tag:<tag>` | `{"digest", "mediaType", "size"}` of what the upstream's tag names; the digest is also the row's `etag`; `absent` for a tag the upstream does not have | the tag is resolved upstream (§11.4) |
+| `oci.tag:<tag>` | `{"digest", "mediaType", "size"}` of what the upstream's tag names, and `"pushed"` once the tag was pushed to the backend at that digest (§11.6); the digest is also the row's `etag`; `absent` for a tag the upstream does not have | the tag is resolved upstream (§11.4), and pushed |
 | `oci.manifest:<digest>` | the exact bytes of a manifest or an index, checked against the digest; `absent` for a digest the upstream does not have | it is fetched (§11.4) |
-| `oci.ref:<digest>` | `{"mediaType", "size", "parents"}`: what a manifest or an index at the path says of a blob or a child it lists, and the digests of the manifests and indexes that list it | a manifest or an index that lists it is fetched |
+| `oci.ref:<digest>` | `{"mediaType", "size", "parents", "tags"}`: what a manifest or an index at the path says of a blob or a child it lists, the digests of the manifests and indexes that list it, and the upstream's tags seen naming it, whose push follows its own | a manifest or an index that lists it is fetched; a tag that names it is resolved |
 | `oci.held:<digest>` | empty | the backend holds the blob, or the manifest or index under its keep-tag (§11.5) |
 | `oci.fixed-tags` | empty | the backend refused to move a tag of the OCI repository (§11.6) |
 
