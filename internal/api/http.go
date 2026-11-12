@@ -44,6 +44,9 @@ type Options struct {
 	// Prefetcher fetches the versions of POST …/prefetch into a proxy repo: the proxy core; nil
 	// answers it 501.
 	Prefetcher Prefetcher
+	// Journal writes the journal ops of a proxy that becomes a hosted repo (PATCH kind): the
+	// ingest pipeline; nil answers that PATCH 501.
+	Journal Journaler
 	// Bootstrap exchanges the bootstrap token of POST /api/v1/bootstrap for the first admin;
 	// nil answers it 404, as once an admin exists.
 	Bootstrap *auth.Bootstrap
@@ -61,7 +64,8 @@ const maxBody = 64 << 10
 //	GET    /api/v1/repos[?format=<f>]                  list the repos
 //	POST   /api/v1/repos                               create a repo
 //	GET    /api/v1/repos/{format}/{repo}               one repo
-//	PATCH  /api/v1/repos/{format}/{repo}               change anonymousRead, policy and a proxy's upstream
+//	PATCH  /api/v1/repos/{format}/{repo}               change anonymousRead, policy and a proxy's upstream;
+//	                                                   {"kind": "hosted"} alone turns a proxy into a hosted repo
 //	DELETE /api/v1/repos/{format}/{repo}[?force=true]  delete a repo
 //	POST   /api/v1/repos/{format}/{repo}/reindex       start a reindex of the repo: 202, 409 when one runs
 //	GET    /api/v1/repos/{format}/{repo}/reindex       the latest run that covered the repo, with its report
@@ -99,7 +103,7 @@ func New(o Options) http.Handler {
 		panic("api: New: nil Options.Repos")
 	}
 	h := &handler{repos: o.Repos, tokens: o.Tokens, users: o.Users, bindings: o.Bindings, auth: o.Auth, reindex: o.Reindex,
-		deleter: o.Deleter, prefetcher: o.Prefetcher, boot: o.Bootstrap, log: o.Log}
+		deleter: o.Deleter, prefetcher: o.Prefetcher, journal: o.Journal, boot: o.Bootstrap, log: o.Log}
 	if h.log == nil {
 		h.log = slog.Default()
 	}
@@ -175,8 +179,9 @@ type handler struct {
 	reindex  Reindexer
 	deleter  Deleter
 	boot     *auth.Bootstrap
-	// prefetcher is Options.Prefetcher.
+	// prefetcher and journal are Options.Prefetcher and Options.Journal.
 	prefetcher Prefetcher
+	journal    Journaler
 	log        *slog.Logger
 }
 
@@ -276,6 +281,9 @@ func (h *handler) updateRepo(w http.ResponseWriter, r *http.Request) (int, any, 
 	var body patchBody
 	if err := decodeBody(w, r, &body); err != nil {
 		return 0, nil, err
+	}
+	if body.Kind != nil {
+		return h.convertRepo(r, f, name, body)
 	}
 	req, err := body.request()
 	if err != nil {

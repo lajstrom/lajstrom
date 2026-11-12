@@ -190,8 +190,8 @@ func newServeCmd(a *app) *cobra.Command {
 				return err
 			}
 
-			mgmt := api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Deleter: pipe, Prefetcher: proxyCore, Bootstrap: boot,
-				Log: a.log})
+			mgmt := api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Deleter: pipe, Prefetcher: proxyCore, Journal: pipe,
+				Bootstrap: boot, Log: a.log})
 			srv, err := server.New(server.Options{
 				Listen:          c.Server.Listen,
 				ExternalURL:     c.Server.ExternalURL,
