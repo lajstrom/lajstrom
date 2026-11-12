@@ -39,6 +39,11 @@ func init() {
 // page: to be measured by #19.
 const maxLayerSize = 52000 << 20
 
+// maxNameLen is the most bytes of a repository name, the instance prefix included: 256, the
+// length constraint of repositoryName in CreateRepository (ECR API reference), one more than
+// the generic provider's.
+const maxNameLen = 256
+
 var (
 	_ provider.Provider = (*Provider)(nil)
 	_ provider.Pinger   = (*Provider)(nil)
@@ -217,9 +222,14 @@ func normalisePrefix(prefix string) string {
 func (p *Provider) Name() string { return p.name }
 
 // Capabilities are the generic provider's, with ECR's (capabilities) where the configuration
-// sets none.
+// sets none, and MaxNameLength maxNameLen less the length of the instance prefix.
 func (p *Provider) Capabilities(ctx context.Context) (provider.Capabilities, error) {
-	return p.data.Capabilities(ctx)
+	c, err := p.data.Capabilities(ctx)
+	if err != nil {
+		return c, err
+	}
+	c.MaxNameLength = max(maxNameLen-len(p.prefix), 1)
+	return c, nil
 }
 
 // Repository returns the data path of the repository name, the generic provider's.

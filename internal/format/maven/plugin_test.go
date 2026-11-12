@@ -337,7 +337,6 @@ func TestBuildRefuses(t *testing.T) {
 	jar, ji := testutil.Jar(testutil.JarOptions{})
 	pom, pi := testutil.POM(testutil.POMOptions{})
 	other, oi := testutil.POM(testutil.POMOptions{Version: "1.3.0"})
-	long, li := testutil.POM(testutil.POMOptions{GroupID: strings.Repeat("g", 250)})
 	revision := project(`<groupId>com.example</groupId><artifactId>lib-core</artifactId><version>${revision}</version>`)
 	wrongSize := upFile(ji.Path, jar)
 	wrongSize.Size = 3
@@ -357,7 +356,6 @@ func TestBuildRefuses(t *testing.T) {
 		{"a jar as the POM", []format.UploadedFile{upFile(pi.Path, jar)}, "not a POM"},
 		{"a SNAPSHOT", []format.UploadedFile{upFile("com/example/lib-core/1.2.0-SNAPSHOT/lib-core-1.2.0-SNAPSHOT.pom", pom)}, "SNAPSHOT"},
 		{"a size that is not the declared one", []format.UploadedFile{wrongSize, upFile(pi.Path, pom)}, "the upload says 3"},
-		{"a repository name too long", []format.UploadedFile{upFile(li.Path, long)}, "OCI repository name"},
 	} {
 		_, err := Plugin{}.Build(t.Context(), repo, format.Upload{Files: tt.files})
 		if !errors.Is(err, format.ErrInvalid) || !strings.Contains(err.Error(), tt.msg) {

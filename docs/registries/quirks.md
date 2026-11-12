@@ -176,6 +176,18 @@ Zot and a plain-text 404 on distribution (measured below); ECR's API takes tags 
 characters, its exclusion filters 128 ([ImageIdentifier](https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_ImageIdentifier.html)).
 Over 255 characters GitLab's registry answers 500 `UNKNOWN` (measured, [gitlab.md](gitlab.md#lajstrom-registry-probe)).
 
+The 255 bytes are the whole name, the instance prefix included. Distribution 3.1.2 refuses a
+longer name in its blob descriptor cache, which parses it as Docker does
+([memory.go](https://github.com/distribution/distribution/blob/v3.1.2/registry/storage/cache/memory/memory.go#L49-L58),
+`RepositoryNameTotalLengthMax` in [reference.go](https://github.com/distribution/reference/blob/v0.6.0/reference.go#L37-L39)):
+the first component counts unless it looks like a host, with a `.` or a `:` or `localhost`.
+Measured on the dev stack: `spike661/…` of 255 bytes 202, of 256 400 `NAME_INVALID`;
+`art.example/…` of 256 202. ECR takes 256 (`repositoryName` of
+[CreateRepository](https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_CreateRepository.html)).
+Since #661 Lajstrom gives the names below the prefix 255 bytes less the prefix's length, 256 less
+on ECR (`provider.Capabilities.MaxNameLength`), and a publish of a longer name is a `400` that
+names the limit before anything is pushed.
+
 ## 2. Is `a/b/c` one repository or two?
 
 Two questions: can `a/b` and `a/b/c` both be repositories, and can a name contain a word the
@@ -597,7 +609,7 @@ is why Lajstrom writes the tag schema there (#37).
 Lajstrom names an OCI repository `<prefix><format>/<repo>/<package path>`
 ([manifest-profile.md](../spec/manifest-profile.md#41-repository-path), ADR 0004): a repository
 per package, three components or more below the prefix (maven four, a raw file one per directory
-of its path), lowercase, at most 255 bytes, in the 1.0 grammar and without the words of Zot's
+of its path), lowercase, at most 255 bytes with the prefix (256 on ECR), in the 1.0 grammar and without the words of Zot's
 layout and Harbor's routes since [ADR 0017](../adr/0017-the-grammar-of-oci-names.md) and its
 amendment: a component that fails the grammar is replaced by `h0_h` and 32 hex digits, a run of
 `-` and the last byte of a reserved word are escaped, and so is the last byte of `tags` before a

@@ -16,13 +16,9 @@ const Name = "maven"
 // lajstrom.uploaded-by; optional.
 const ParamUploadedBy = "uploaded-by"
 
-const (
-	// maxMetadata is the largest metadata layer Build writes and Validate reads: a file entry
-	// is a few hundred bytes, a dependency less.
-	maxMetadata = 4 << 20
-	// maxRepositoryLen is the longest OCI repository name registries accept.
-	maxRepositoryLen = 255
-)
+// maxMetadata is the largest metadata layer Build writes and Validate reads: a file entry is a
+// few hundred bytes, a dependency less.
+const maxMetadata = 4 << 20
 
 // Plugin is the maven format plugin: paths, POMs, Build and Validate (#52), deploy through
 // publication sessions (#54), resolve and maven-metadata.xml (#55). It registers itself with

@@ -290,6 +290,51 @@ func TestIntegration(t *testing.T) {
 	})
 }
 
+// TestIntegrationNameLength: Capabilities says 255 bytes less the instance prefix, and the
+// registry takes a name of exactly that many below the prefix, 255 bytes with it: a manifest
+// pushed there resolves (#661). A manifest is deleted where the registry deletes them.
+func TestIntegrationNameLength(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	p, cfg := integrationProvider(ctx, t)
+	caps, err := p.Capabilities(ctx)
+	if err != nil {
+		t.Fatalf("Capabilities: %v", err)
+	}
+	if want := maxNameLen - len(normalisePrefix(cfg.Prefix)); caps.MaxNameLength != want {
+		t.Fatalf("MaxNameLength = %d with the prefix %q, want %d", caps.MaxNameLength, cfg.Prefix, want)
+	}
+	name := "raw/it-" + randomHex(t)
+	for len(name) < caps.MaxNameLength {
+		if k := caps.MaxNameLength - len(name) - 1; k > 0 {
+			name += "/" + strings.Repeat("n", min(60, k))
+		} else {
+			name += "n"
+		}
+	}
+	if len(p.repoName(name)) != maxNameLen {
+		t.Fatalf("the name %q is %d bytes, %d with the prefix", name, len(name), len(p.repoName(name)))
+	}
+	repo, err := p.Repository(ctx, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := fmt.Appendf(nil, "a name of %d bytes", len(name))
+	blobDesc := descriptor("application/octet-stream", blob)
+	if err := repo.Push(ctx, blobDesc, bytes.NewReader(blob)); err != nil {
+		t.Fatalf("push a blob to a name of %d bytes, %d with the prefix: %v", len(name), maxNameLen, err)
+	}
+	_, m := pushTestManifest(ctx, t, repo, "v1", nil, blobDesc)
+	if d, err := repo.Resolve(ctx, "v1"); err != nil || d.Digest != m.Digest {
+		t.Errorf("Resolve(v1) = %s, %v; want %s", d.Digest, err, m.Digest)
+	}
+	if caps.DeleteManifest {
+		if err := repo.Delete(ctx, m); err != nil && !errors.Is(err, provider.ErrUnsupported) {
+			t.Errorf("Delete: %v", err)
+		}
+	}
+}
+
 // integrationProvider returns a Provider for the registry of LAJSTROM_TEST_REGISTRY, and its
 // configuration; it skips the test when the variable is not set.
 func integrationProvider(_ context.Context, t *testing.T, edit ...func(*config.Registry)) (*Provider, config.Registry) {

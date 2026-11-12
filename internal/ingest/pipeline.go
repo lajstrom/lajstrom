@@ -276,9 +276,10 @@ func newTarget(ctx context.Context, repo index.Repo, plugin format.Plugin, prov 
 }
 
 // checkName refuses the OCI repository name of a package that the registry prov does not take
-// (provider.Capabilities.CheckName: the depth of a name on Docker Hub or behind GitLab), before
-// anything is pushed to it, with ErrInvalid that names the limit. The registry would refuse the
-// token's scope or answer 404 (#599). A registry whose capabilities cannot be read is not asked:
+// (provider.Capabilities.CheckName: the depth of a name on Docker Hub or behind GitLab, its
+// length with the instance prefix), before anything is pushed to it, with ErrInvalid that names
+// the limit. The registry would refuse the token's scope or answer 404 (#599), or refuse the
+// name, NAME_INVALID or a 500 (#661). A registry whose capabilities cannot be read is not asked:
 // the push meets what failed.
 func checkName(ctx context.Context, prov provider.Provider, name string) error {
 	caps, err := prov.Capabilities(ctx)

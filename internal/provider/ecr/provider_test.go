@@ -190,7 +190,7 @@ func TestDataPath(t *testing.T) {
 		t.Fatalf("Capabilities: %v", err)
 	}
 	want := provider.Capabilities{Catalog: true, DeleteManifest: true, ImmutableTags: true, BlobRedirect: true, MaxBlobSize: maxLayerSize,
-		Consistency: provider.ConsistencyEventual}
+		Consistency: provider.ConsistencyEventual, MaxNameLength: 256 - len("art/")}
 	if caps != want {
 		t.Errorf("Capabilities = %+v, want %+v", caps, want)
 	}

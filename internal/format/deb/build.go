@@ -17,13 +17,9 @@ import (
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
 )
 
-const (
-	// maxMetadata is the largest metadata layer Build writes and Validate reads: 4 MiB, the
-	// bound of the control member, since md5sums is the bulk of both.
-	maxMetadata = 4 << 20
-	// maxRepositoryLen is the longest OCI repository name registries accept.
-	maxRepositoryLen = 255
-)
+// maxMetadata is the largest metadata layer Build writes and Validate reads: 4 MiB, the bound
+// of the control member, since md5sums is the bulk of both.
+const maxMetadata = 4 << 20
 
 // distName is the grammar of a suite and a component: lowercase letters, digits, ".", "+" and
 // "-", the first a letter or a digit (jammy, jammy-updates, main, non-free-firmware).
@@ -76,10 +72,6 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 		return nil, err
 	}
 	name := profile.RepositoryPath("", Name, repo.Name, profile.EscapeComponent(pkg.Name))
-	if len(name) > maxRepositoryLen {
-		return nil, fmt.Errorf("%w: package %q makes the OCI repository name %d bytes long, at most %d",
-			format.ErrInvalid, pkg.Name, len(name), maxRepositoryLen)
-	}
 	md, err := pkg.Metadata()
 	if err != nil {
 		return nil, err

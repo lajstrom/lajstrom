@@ -400,7 +400,9 @@ func TestRetries(t *testing.T) {
 
 func TestCapabilities(t *testing.T) {
 	ctx := context.Background()
-	defaults := provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true, DeleteManifest: true, BlobRedirect: true}
+	// The fake's prefix is art/: 251 bytes of name are left of distribution's 255 (#661).
+	defaults := provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true, DeleteManifest: true, BlobRedirect: true,
+		MaxNameLength: 251}
 	with := func(edit func(*provider.Capabilities)) provider.Capabilities {
 		c := defaults
 		edit(&c)
@@ -421,6 +423,10 @@ func TestCapabilities(t *testing.T) {
 		noProbe []string // requests that must not be sent
 	}{
 		{name: "defaults", want: defaults},
+		{name: "no prefix", edit: func(c *config.Registry) { c.Prefix = "" }, want: with(func(c *provider.Capabilities) { c.MaxNameLength = 255 })},
+		{name: "a longer prefix", edit: func(c *config.Registry) { c.Prefix = "lajstrom/team/" }, want: with(func(c *provider.Capabilities) { c.MaxNameLength = 241 })},
+		{name: "a prefix that leaves no room", edit: func(c *config.Registry) { c.Prefix = strings.Repeat("p", 254) + "/" },
+			want: with(func(c *provider.Capabilities) { c.MaxNameLength = 1 })},
 		{name: "no referrers API", setup: func(f *fakeRegistry) { f.referrers = false }, want: with(func(c *provider.Capabilities) { c.Referrers = false })},
 		{name: "referrers probe cannot tell", setup: func(f *fakeRegistry) { f.hook = nameUnknown }, want: with(func(c *provider.Capabilities) { c.Referrers = false })},
 		{name: "catalog 404", setup: func(f *fakeRegistry) { f.catalogStatus = 404 }, want: with(func(c *provider.Capabilities) { c.Catalog = false })},
@@ -440,7 +446,7 @@ func TestCapabilities(t *testing.T) {
 					ImmutableTags: new(true), BlobRedirect: new(false), MaxBlobSize: 1 << 30,
 				}
 			},
-			want:    provider.Capabilities{ImmutableTags: true, MaxBlobSize: 1 << 30},
+			want:    provider.Capabilities{ImmutableTags: true, MaxBlobSize: 1 << 30, MaxNameLength: 251},
 			noProbe: []string{"GET /v2/_catalog", "GET /v2/art/lajstrom-probe/referrers/"},
 		},
 		{

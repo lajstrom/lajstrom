@@ -239,15 +239,25 @@ type Capabilities struct {
 	// grammar of a name needs no capability: every name Lajstrom writes keeps to the one every
 	// registry tested takes (ADR 0017). CheckName applies it.
 	MaxNameDepth int
+	// MaxNameLength is the most bytes the backend takes in a repository name below the instance
+	// prefix, a Lajstrom name counted whole; 0 means no limit. The registry counts the prefix
+	// too: the generic provider says 255 minus the length of the prefix, the bound of
+	// distribution and GitLab on the whole name, and ECR 256 minus it, the bound of
+	// CreateRepository (docs/registries/quirks.md). CheckName applies it.
+	MaxNameLength int
 }
 
 // CheckName reports whether the backend of c takes the repository name, a Lajstrom name as
 // Repository gets it: nil, or an error that says which limit of c the name breaks
-// (MaxNameDepth), for the caller to answer with a 4xx before anything is pushed.
+// (MaxNameDepth, MaxNameLength), for the caller to answer with a 4xx before anything is
+// pushed. The error does not name the instance prefix, which clients never see.
 func (c Capabilities) CheckName(name string) error {
 	if depth := strings.Count(name, "/") + 1; c.MaxNameDepth > 0 && depth > c.MaxNameDepth {
 		return fmt.Errorf("the OCI repository %s has %d components, and the registry takes at most %d below its prefix "+
 			"(capabilities.maxNameDepth)", name, depth, c.MaxNameDepth)
+	}
+	if c.MaxNameLength > 0 && len(name) > c.MaxNameLength {
+		return fmt.Errorf("the OCI repository %s is %d bytes long, and the registry takes at most %d", name, len(name), c.MaxNameLength)
 	}
 	return nil
 }

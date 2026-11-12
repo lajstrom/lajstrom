@@ -117,17 +117,15 @@ func TestEscapeNameRefuses(t *testing.T) {
 	}
 }
 
-// TestRepoPathLimit checks the 255-byte limit of the OCI repository name raw/<repo>/<path>.
-func TestRepoPathLimit(t *testing.T) {
-	fits := strings.Repeat(strings.Repeat("a", 60)+"/", 3) + strings.Repeat("a", 60) // 243 bytes
-	pkgPath, name, err := repoPath(scratch, fits)
-	if err != nil || pkgPath != fits || name != "raw/scratch/"+fits || len(name) != maxRepositoryLen {
-		t.Errorf("repoPath(243 bytes) = %q, %q (%d bytes), %v", pkgPath, name, len(name), err)
+// TestRepoPath checks the OCI repository name raw/<repo>/<path>. Its length is the registry's
+// to bound, with the instance prefix: ingest refuses a longer one (TestNameLength).
+func TestRepoPath(t *testing.T) {
+	long := strings.Repeat(strings.Repeat("a", 60)+"/", 4) + "a" // 245 bytes
+	pkgPath, name, err := repoPath(scratch, long)
+	if err != nil || pkgPath != long || name != "raw/scratch/"+long {
+		t.Errorf("repoPath(245 bytes) = %q, %q, %v", pkgPath, name, err)
 	}
-	if _, _, err := repoPath(scratch, fits+"a"); !errors.Is(err, format.ErrInvalid) {
-		t.Errorf("repoPath(244 bytes) = %v, want ErrInvalid", err)
-	}
-	// Hashing keeps a long component short, so its length alone never hits the limit.
+	// Hashing keeps a long component short, so its length alone never makes a long name.
 	if _, name, err := repoPath(scratch, "docs/"+strings.Repeat("z", 1000)); err != nil || len(name) != len("raw/scratch/docs/")+36 {
 		t.Errorf("repoPath of a 1000-byte component = %q, %v", name, err)
 	}
