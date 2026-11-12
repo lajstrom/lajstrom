@@ -21,9 +21,9 @@ const retryBase = 250 * time.Millisecond
 
 // retryTransport sends a request again when it is idempotent and failed in a way that another
 // attempt may fix (transient), at most retries times, waiting backoff between attempts. The
-// caller's context ends a wait. A request whose body cannot be replayed (no GetBody) is sent
-// once. Each retry is logged at debug level with the method, the path and the cause: no
-// header, query or body, so credentials and upload state stay out of the log.
+// caller's context ends a wait. A request whose body cannot be replayed (replayable: no
+// GetBody) is sent once. Each retry is logged at debug level with the method, the path and the
+// cause: no header, query or body, so credentials and upload state stay out of the log.
 type retryTransport struct {
 	next    http.RoundTripper
 	retries int
@@ -32,7 +32,7 @@ type retryTransport struct {
 
 // RoundTrip implements http.RoundTripper.
 func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.retries <= 0 || !idempotent(req) {
+	if t.retries <= 0 || !idempotent(req) || !replayable(req) {
 		return t.next.RoundTrip(req)
 	}
 	ctx := req.Context()
@@ -47,9 +47,6 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		next := req
 		if req.Body != nil && req.Body != http.NoBody {
-			if req.GetBody == nil {
-				return resp, err
-			}
 			body, gerr := req.GetBody()
 			if gerr != nil {
 				return resp, err
@@ -97,15 +94,26 @@ func idempotent(req *http.Request) bool {
 	return false
 }
 
+// replayable reports whether req can be sent again whole: it has no body, or GetBody gives
+// the body anew (the bytes of a manifest). A stream, such as a client's chunk passing through,
+// cannot: the bytes it sent are gone.
+func replayable(req *http.Request) bool {
+	return req.Body == nil || req.Body == http.NoBody || req.GetBody != nil
+}
+
 // transient reports whether a failed attempt is worth another one: a 429, a 5xx other than
 // 501 and 505, a timeout, a connection refused or reset, a connection closed in the middle of
-// an answer. Never another 4xx, and never once the caller's context has ended.
+// an answer or without one. Never another 4xx, and never once the caller's context has ended.
+// It sees only replayable requests, whose body is the provider's own bytes and does not fail,
+// so an EOF is the registry's no answer (noAnswer), not a client's body that broke off (#643).
+// net/http sends a GET or HEAD again by itself only when a connection it reused closes; a new
+// connection that closes comes back as io.EOF.
 func transient(ctx context.Context, resp *http.Response, err error) bool {
 	if ctx.Err() != nil {
 		return false
 	}
 	if err != nil {
-		return transientErr(err)
+		return transientErr(err) || noAnswer(ctx, err, false)
 	}
 	return transientStatus(resp.StatusCode)
 }
@@ -206,11 +214,14 @@ func pushRetry(ctx context.Context, retries int, log *slog.Logger, content io.Re
 }
 
 // transientPush reports whether a failed blob push, as oras-go returns it, is worth another
-// one: an error answer with a transient status, or a transient transport error.
+// one: an error answer with a transient status, a transient transport error, or a request that
+// the registry did not answer, as breakerTransport marked it (*noAnswerError), an EOF too. An
+// EOF it did not mark is not the registry's.
 func transientPush(err error) bool {
 	var resp *errcode.ErrorResponse
 	if errors.As(err, &resp) {
 		return transientStatus(resp.StatusCode)
 	}
-	return transientErr(err)
+	var na *noAnswerError
+	return errors.As(err, &na) || transientErr(err)
 }
