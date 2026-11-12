@@ -256,8 +256,10 @@ func (s *Server) Run(ctx context.Context) error {
 
 // shutdown is Run's drain once its context ended; served delivers the error of Serve.
 func (s *Server) shutdown(ctx context.Context, served <-chan error) error {
-	s.draining.Store(true)
+	// Keep-alives off first: a request that sees draining writes its answer after this, so the
+	// 503 of /-/readyz carries Connection: close too.
 	s.srv.SetKeepAlivesEnabled(false)
+	s.draining.Store(true)
 	if d := s.opts.ShutdownDelay; d > 0 {
 		s.log.Info("shutting down: not ready, serving until the delay ends", "delay", d, "inflight", s.inflight.Load())
 		select {
