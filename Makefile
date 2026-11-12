@@ -76,9 +76,10 @@ MATRIX_URLS ?= http://localhost:5000 http://localhost:5001
 MATRIX_ARGS ?=
 # make run uses the local configuration when there is one, the example otherwise.
 RUN_CONFIG   := $(firstword $(wildcard deploy/compose/lajstrom.yaml) deploy/compose/lajstrom.example.yaml)
-# The Helm chart (docs/deploy/helm.md). helm-lint takes helm and kubeconform from PATH; it was
-# run with helm v4.3.1 and kubeconform v0.8.0. kubeconform validates against the schemas of
-# Kubernetes 1.33 and takes those of the CRDs (ServiceMonitor, HTTPRoute) from the datree catalog.
+# The Helm chart (docs/deploy/helm.md). helm-lint takes helm and kubeconform from PATH; the job
+# helm of .github/workflows/ci.yml installs helm v4.3.1 and kubeconform v0.8.0. kubeconform
+# validates against the schemas of Kubernetes 1.33 and takes those of the CRDs (ServiceMonitor,
+# HTTPRoute) from the datree catalog.
 HELM        ?= helm
 KUBECONFORM ?= kubeconform
 HELM_CHART  := deploy/helm/lajstrom
