@@ -62,7 +62,7 @@ func (c *Core) Prefetch(ctx context.Context, repo index.Repo, names []string, al
 		return nil, err
 	}
 	hooks, ok := p.plugin.(format.Prefetcher)
-	if !ok {
+	if !ok || len(hooks.PrefetchKinds()) == 0 {
 		return nil, fmt.Errorf("%w: proxy: format %s has no prefetch", format.ErrInvalid, repo.Format)
 	}
 	if p.up == nil {
@@ -79,7 +79,8 @@ func (c *Core) Prefetch(ctx context.Context, repo index.Repo, names []string, al
 			}
 		})
 	}
-	kind := hooks.PrefetchKind()
+	kinds := hooks.PrefetchKinds()
+	kind := kinds[0]
 	for i, name := range names {
 		if ctx.Err() != nil {
 			per[i] = []PrefetchResult{{Name: name, Status: PrefetchFailed, Message: notAttempted}}
@@ -90,7 +91,8 @@ func (c *Core) Prefetch(ctx context.Context, repo index.Repo, names []string, al
 			per[i] = []PrefetchResult{c.prefetchFailed(ctx, p, PrefetchResult{Name: name}, err)}
 			continue
 		}
-		per[i] = make([]PrefetchResult, len(entries))
+		others := c.prefetchOthers(ctx, p, name, kinds[1:])
+		per[i] = append(make([]PrefetchResult, len(entries), len(entries)+len(others)), others...)
 		for j, e := range entries {
 			out := &per[i][j]
 			tasks <- func() { *out = c.prefetchEntry(ctx, p, name, kind, e, row) }
@@ -134,6 +136,31 @@ func (c *Core) prefetchEntries(ctx context.Context, p *proxied, hooks format.Pre
 		return nil, nil, fmt.Errorf("proxy: %s: the pointers of the kept document of %q: %w", p.id(), name, err)
 	}
 	return pointedEntries(parsed.Entries, pointed), row, nil
+}
+
+// prefetchOthers reads the documents of kinds of name as a miss reads them (§4.2), so that the
+// repo keeps them for when it is offline, and returns a failed result for each it cannot have.
+func (c *Core) prefetchOthers(ctx context.Context, p *proxied, name string, kinds []string) []PrefetchResult {
+	var out []PrefetchResult
+	for _, kind := range kinds {
+		key, err := p.key(name)
+		if err == nil {
+			upErr := c.refresh(ctx, p, name, key, kind)
+			var row *index.ProxyMeta
+			switch row, err = metaRow(ctx, c.o.Index, p.repo.ID, key, kind); {
+			case err != nil:
+			case row == nil && upErr != nil:
+				err = upErr
+			case row == nil || row.State == index.ProxyMetaAbsent:
+				err = fmt.Errorf("%w: upstream %s does not have it", index.ErrNotFound, p.settings.Upstream)
+			}
+		}
+		if err != nil {
+			out = append(out, c.prefetchFailed(ctx, p, PrefetchResult{Name: name},
+				fmt.Errorf("proxy: %s: the %s document of %q: %w", p.id(), kind, name, err)))
+		}
+	}
+	return out
 }
 
 // pointedEntries returns the entries of the versions pointed names; when they name none, the

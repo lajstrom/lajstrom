@@ -164,9 +164,13 @@ func (*pkgPlugin) Key(name string) (string, error) {
 	return strings.ToLower(name), nil
 }
 
-// MetadataRequest asks meta/<name in lower case>.
-func (*pkgPlugin) MetadataRequest(name, _ string) (format.UpstreamRequest, error) {
-	return format.UpstreamRequest{Path: "meta/" + url.PathEscape(strings.ToLower(name)), Accept: "application/json"}, nil
+// MetadataRequest asks meta/<name in lower case>, with ?kind=other for otherKind.
+func (*pkgPlugin) MetadataRequest(name, kind string) (format.UpstreamRequest, error) {
+	path := "meta/" + url.PathEscape(strings.ToLower(name))
+	if kind == otherKind {
+		path += "?kind=" + otherKind
+	}
+	return format.UpstreamRequest{Path: path, Accept: "application/json"}, nil
 }
 
 // ParseMetadata reads the document as it is and keeps it whole.
@@ -272,8 +276,11 @@ func (p *pkgPlugin) MergeGroup(_ context.Context, _ index.Repo, name, _ string, 
 	return format.Document{Kind: docKind, Path: name, ContentType: "application/json", Content: b}, err
 }
 
-// PrefetchKind is the one kind of the plugin.
-func (*pkgPlugin) PrefetchKind() string { return docKind }
+// otherKind is a second kind a prefetch reads: the upstream answers it as it answers docKind.
+const otherKind = "other"
+
+// PrefetchKinds are the kind of the plugin and otherKind.
+func (*pkgPlugin) PrefetchKinds() []string { return []string{docKind, otherKind} }
 
 // Pointed returns the versions of the document's tags.
 func (*pkgPlugin) Pointed(_, _ string, kept []byte) ([]string, error) {
@@ -301,8 +308,9 @@ type fakeUpstream struct {
 	docs      map[string]*upstreamDoc
 	files     map[string][]byte
 	status    atomic.Int32
-	fileDelay atomic.Int64 // nanoseconds before a file's body
-	metaDelay atomic.Int64 // nanoseconds before a document's answer
+	fileDelay atomic.Int64    // nanoseconds before a file's body
+	metaDelay atomic.Int64    // nanoseconds before a document's answer
+	noOther   map[string]bool // names whose document of otherKind is 404
 	metaCalls atomic.Int32
 	fileCalls atomic.Int32
 }
@@ -330,7 +338,7 @@ func (u *fakeUpstream) serve(w http.ResponseWriter, r *http.Request) {
 			u.mu.Lock()
 		}
 		d, ok := u.docs[name]
-		if !ok {
+		if !ok || (r.URL.Query().Get("kind") == otherKind && u.noOther[name]) {
 			http.NotFound(w, r)
 			return
 		}

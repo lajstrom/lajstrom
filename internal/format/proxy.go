@@ -124,9 +124,10 @@ type Grouper interface {
 type Prefetcher interface {
 	Proxier
 
-	// PrefetchKind is the kind of the document whose entries a prefetch reads: npm the full
-	// packument.
-	PrefetchKind() string
+	// PrefetchKinds are the kinds of the documents a prefetch reads, at least one: the first
+	// lists the entries it fetches (npm: the full packument); the others it reads so that an
+	// offline proxy keeps them (npm: the abbreviated packument, which npm install asks for).
+	PrefetchKinds() []string
 
 	// Pointed returns the versions that the pointers of a document of kind of name name, read
 	// from kept as ParseMetadata kept it (npm: the targets of its dist-tags). A prefetch without

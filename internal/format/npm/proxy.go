@@ -188,8 +188,9 @@ func (Plugin) FileRequest(p string) (format.ArtifactRef, error) {
 // npm's proxy repos take a prefetch (docs/spec/proxy-and-group.md §5.1).
 var _ format.Prefetcher = Plugin{}
 
-// PrefetchKind is the full packument, which lists every version with its time.
-func (Plugin) PrefetchKind() string { return kindPackument }
+// PrefetchKinds are the full packument, which lists every version with its time, and the
+// abbreviated one, which npm install and pnpm ask for.
+func (Plugin) PrefetchKinds() []string { return []string{kindPackument, kindAbbreviated} }
 
 // Pointed returns the targets of the dist-tags of a packument of name as ParseMetadata kept it,
 // sorted, each once; a target that is not a string is left out. A body that is not a JSON

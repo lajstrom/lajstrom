@@ -132,12 +132,12 @@ func TestParseMetadataEntries(t *testing.T) {
 	}
 }
 
-// TestPrefetchHooks: a prefetch reads the full packument, and without allVersions takes the
-// targets of its dist-tags, each once, sorted; a target that is not a string is left out, and
-// a body that is not a packument or a kind npm lacks is ErrInvalid.
+// TestPrefetchHooks: a prefetch reads both packuments, the full one first, and without
+// allVersions takes the targets of its dist-tags, each once, sorted; a target that is not a
+// string is left out, and a body that is not a packument or a kind npm lacks is ErrInvalid.
 func TestPrefetchHooks(t *testing.T) {
-	if got := (Plugin{}).PrefetchKind(); got != kindPackument {
-		t.Errorf("PrefetchKind = %q, want %q", got, kindPackument)
+	if diff := cmp.Diff([]string{kindPackument, kindAbbreviated}, Plugin{}.PrefetchKinds()); diff != "" {
+		t.Errorf("PrefetchKinds (-want +got):\n%s", diff)
 	}
 	got, err := Plugin{}.Pointed("is-number", kindPackument, captured(t, capturedIsNumber, false))
 	must(t, err)
