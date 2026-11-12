@@ -241,7 +241,7 @@ means on them:
 | `read` | every read, a fetch on a miss included: the fetch is the server's, and the reader needs no `write` for it | every read through the group, of every member (below) |
 | `write` | the referrers of `/v2` (a signature or an attestation of a proxied artifact); the format's publish routes are `405` | nothing of its own: a write through the group is its hosted member's |
 | `delete` | a held version, which the next miss fetches again | nothing of its own |
-| `manage` | as on a hosted repo, the keys of `upstream` but `name`, and the purge of its cache | as on a hosted repo, and `group.merge` |
+| `manage` | as on a hosted repo, the keys of `upstream` but `name`, the purge of its cache, and a prefetch | as on a hosted repo, and `group.merge` |
 
 **Read on the group is the whole permission.** For a read through a group, the members'
 bindings, deploy tokens and `anonymousRead` are not asked: a principal that may read the group
@@ -257,6 +257,12 @@ audit rows of the write (`push`, `delete`, `npm.dist-tag`, `npm.deprecate`) are 
 with `details.via` the group, `<format>/<group>`. A deploy token of a group has the scope `read`
 only; a `write` scope is `400`, since it would grant nothing.
 
+**A prefetch** (proxy-and-group.md §5.1) needs `manage`. A reader fetches the one version it
+reads; a prefetch fetches every version of a list of names, which spends the registry's space
+and the upstream's quota on the repo's behalf, and that is the maintainer's choice. Its fetches
+are the audit rows of a miss's, `proxy.fetch` and `proxy.reject`, with the caller as the
+principal; the prefetch itself writes no row of its own.
+
 **The admin role** creates proxy and group repos, as every repo, and alone changes a proxy's
 `upstream.name` and a group's `members`: both change what every reader of the repo gets, and a
 member added by someone without `read` on it would publish it to the group's readers. The URL
@@ -266,7 +272,7 @@ of an upstream and its credentials are configuration; no action sets them.
 
 | Action | When | Principal and fields |
 | --- | --- | --- |
-| `proxy.fetch` | a proxied ingest: the fetcher pushed an artifact | the principal of the request whose miss caused it (a user, a token, `anonymous`), through a group too; `repo` the proxy, `subject` the version, `digest` the manifest's, `ip` the client's; `details` `{"upstream", "url", "checksum", "size"}` and `via`, the group, when there was one |
+| `proxy.fetch` | a proxied ingest: the fetcher pushed an artifact | the principal of the request whose miss or prefetch caused it (a user, a token, `anonymous`), through a group too; `repo` the proxy, `subject` the version, `digest` the manifest's, `ip` the client's; `details` `{"upstream", "url", "checksum", "size"}` and `via`, the group, when there was one |
 | `proxy.reject` | a fetch refused for its bytes: a checksum that differs, an artifact that `Validate` refuses, a file above a bound | as `proxy.fetch`, without `digest`; `details.reason` (`checksum`, `invalid`, `size`) and, for a checksum, both values |
 | `repo.cache.purge` | `DELETE …/upstream-cache` (http-routing.md §6) | the caller; `details.name` when one name was purged |
 
