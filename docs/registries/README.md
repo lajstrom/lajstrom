@@ -459,11 +459,17 @@ The probe's row "Read-after-write lag" is three writes in the repository `lag` o
 prefix: a new blob, read with `HEAD` until it answers 200; then a manifest that has it as its
 layer, under a new tag, read until `HEAD` by digest answers 200, `HEAD` by tag answers its
 digest, the tag list names the tag and, when the registry has a catalog Lajstrom uses, the
-catalog names the repository. A read that misses is asked again after 25 ms, then twice as long
-each time up to 2 s, for at most 2 minutes, past the 120 s of Quay's tag-list cache. The cell
-is `none: …` when every read saw every write at the first ask, otherwise each read's worst
-time; "Overrides needed" then names `consistency: eventual` and a `consistencyBound` in whole
-seconds above the worst.
+catalog names the repository. Before each manifest the probe reads the tag list and the catalog
+once, as a client that lists before it pushes does: a registry that caches its lists (Quay)
+then answers the stale list after the push. Then the three deletes: each manifest deleted by
+digest, read until `HEAD` by digest and by tag answer 404 and the tag list leaves the tag out. A
+delete the registry refuses ends them (`deletes not measured`), and so does one a read still
+finds after the limit. A read that misses is asked again after 25 ms, then twice as long each
+time up to 2 s, for at most 2 minutes, past the 120 s of Quay's tag-list cache. The cell is
+`none: …` when every read saw every write at the first ask, otherwise each read's worst time,
+and then the same for the deletes; "Overrides needed" names `consistency: eventual` and a
+`consistencyBound` in whole seconds above the worst lag of the writes and the deletes. Rows
+measured before 2026-11-12 had neither the reads before a write nor the deletes.
 
 ## Measuring a registry: `lajstrom registry probe`
 
@@ -497,7 +503,7 @@ written. How each row is measured, in requests:
 | Referrers API, `OCI-Subject` | a subject tagged `v1`, two referrers by digest with artifact types of their own (one of the empty type where the registry refuses unknown ones); `referrers/<subject>`, with `?artifactType=`; whether a `sha256-<subject>` tag appeared |
 | Catalog | `_catalog?n=1`; five repositories `pre`, `pre/sub`, `pre-x`, `pre.y`, `prea` and their order; a page of two after the first by `last` and its `Link`; `n=1000`, `n=1001`, `n=100000`; the page without `n` |
 | Tag list | one manifest under seven tags pushed out of order (`b`, `A`, `1.10`, `_x`, `1.2`, `Z`, `a`); the list, a page of two by `last`, the list of a repository never pushed |
-| Read-after-write lag | three blobs and three manifests, each read back until every read sees it ([Consistency](#consistency)) |
+| Read-after-write lag | the tag list and the catalog, then three blobs and three manifests, each read back until every read sees it; then the three manifests deleted, each read until every read misses it ([Consistency](#consistency)) |
 | Deletes | a manifest under two tags deleted by digest, then its tags and the blob only it used; a subject with a referrer; a manifest an image index lists; a tag of a manifest pushed by tag only, and of one pushed by digest first. "Delete a repository": what stays after the cleanup |
 | Immutable tags | `A` under `v1`, `A` again, `B` under `v1`, then `A` by digest |
 | Blob redirect, `Range` | a 64 KiB blob by `GET` and `HEAD`, redirects not followed; then whole, `bytes=0-9` and a range past its end, after the redirect when there is one |
