@@ -107,15 +107,18 @@ run: another database than Postgres, the master key as a file, a passwordEnv no 
 
 {{/*
 The variables of the secrets, each from its Secret: the master key, the DSN, the registry
-passwords. The Deployment and the migration Job both take them; dsn is the Job's own DSN.
+passwords. The Deployment and the migration Job both take them; dsn is the Job's own DSN, and the
+Job, which signs nothing, goes without the master key.
 */}}
 {{- define "lajstrom.secretEnv" -}}
 {{- $root := .root -}}
+{{- if .masterKey }}
 - name: LAJSTROM_MASTER_KEY
   valueFrom:
     secretKeyRef:
       name: {{ include "lajstrom.secretName" (dict "root" $root "ref" $root.Values.masterKey) }}
       key: {{ $root.Values.masterKey.key }}
+{{- end }}
 - name: LAJSTROM_DATABASE_DSN
   valueFrom:
     secretKeyRef:

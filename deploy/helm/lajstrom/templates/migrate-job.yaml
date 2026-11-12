@@ -1,0 +1,97 @@
+{{- if .Values.migrate.enabled }}
+{{- $full := include "lajstrom.fullname" . }}
+{{- $hook := ternary "pre-install,pre-upgrade" "pre-upgrade" (.Values.migrate.onInstall | default false) }}
+{{- $dsn := dict "existingSecret" (.Values.migrate.database.existingSecret | default .Values.database.existingSecret) "key" (.Values.migrate.database.key | default .Values.database.key) }}
+# lajstrom migrate of the new release before the Deployment changes (docs/operations.md, Several
+# replicas): the Job of deploy/kubernetes/migrate-job.yaml as a hook. Its ConfigMap is a hook too,
+# made first: the chart's own still holds the configuration of the release before.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $full }}-migrate
+  labels:
+    {{- include "lajstrom.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    helm.sh/hook: {{ $hook }}
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  lajstrom.yaml: |
+    {{- include "lajstrom.config" . | nindent 4 }}
+---
+# Kept until the next upgrade deletes it, for its log: kubectl logs job/{{ $full }}-migrate.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $full }}-migrate
+  labels:
+    {{- include "lajstrom.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    helm.sh/hook: {{ $hook }}
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: {{ .Values.migrate.backoffLimit }}
+  {{- with .Values.migrate.activeDeadlineSeconds }}
+  activeDeadlineSeconds: {{ . }}
+  {{- end }}
+  template:
+    metadata:
+      # Not the component server, which the Service selects.
+      labels:
+        app.kubernetes.io/name: {{ include "lajstrom.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: migrate
+      {{- with .Values.migrate.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ .Values.migrate.serviceAccountName | default "default" }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "lajstrom.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["migrate", "--config", "/etc/lajstrom/lajstrom.yaml"]
+          # Every command loads the whole configuration, the registries' passwordEnv included;
+          # migrate reads no master key.
+          env:
+            {{- include "lajstrom.secretEnv" (dict "root" . "dsn" $dsn "masterKey" false) | nindent 12 }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.migrate.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/lajstrom
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $full }}-migrate
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -57,7 +57,7 @@ spec:
               containerPort: {{ .Values.metrics.port }}
             {{- end }}
           env:
-            {{- include "lajstrom.secretEnv" (dict "root" . "dsn" .Values.database) | nindent 12 }}
+            {{- include "lajstrom.secretEnv" (dict "root" . "dsn" .Values.database "masterKey" true) | nindent 12 }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
