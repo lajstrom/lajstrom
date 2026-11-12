@@ -235,26 +235,63 @@ func metadataOf(m CoreMetadata) []byte {
 	return []byte(b.String())
 }
 
-// FuzzZipEntries reads an archive with zipEntries and with zip.NewReader: whenever zip.NewReader
-// reads it, zipEntries finds the directory and counts at least as many headers as it has files,
-// so that checkZipEntries refuses every archive of which zip.NewReader would keep more than
-// maxEntries (#243). The seeds are a wheel, one after a shebang line, and directories whose end
-// record says as many entries, more, or as many with zip64.
+// FuzzZipEntries reads an archive with scanZip, keeping every member, and with zip.NewReader,
+// which ReadWheelMetadata read it with before #696. Unless the end record declares more entries
+// than the archive could have, which the bound of #243 refuses, scanZip refuses what
+// zip.NewReader refuses; of what zip.NewReader reads, it counts at least as many headers as there
+// are files, so that the bound is never below them, and keeps those files, which readMember
+// reads as File.Open did: the same bytes, or an error both times. A directory, whose name ends
+// with '/', is not read: File.Open reads it as empty, and no core metadata is one. The seeds are
+// a wheel, one after a shebang line, zips stored with data descriptors and without, and
+// directories whose end record says as many entries, more, or as many with zip64.
 func FuzzZipEntries(f *testing.F) {
 	whl, _ := testutil.Wheel(testutil.WheelOptions{})
-	for _, b := range [][]byte{whl, append([]byte("#!/usr/bin/env python3\n"), whl...), testutil.ZipDirectoryBomb(3, 3),
-		testutil.ZipDirectoryBomb(2, 1<<16+2), testutil.ZipDirectoryBomb(2, 5), testutil.ZipDirectoryBomb(0, 0)} {
+	for _, b := range [][]byte{whl, append([]byte("#!/usr/bin/env python3\n"), whl...),
+		storedZip(f, true, "tool-1.0.dist-info/METADATA", metadata("1.0")), storedZip(f, false, "tool-1.0.dist-info/METADATA", metadata("1.0")),
+		testutil.ZipDirectoryBomb(3, 3), testutil.ZipDirectoryBomb(2, 1<<16+2), testutil.ZipDirectoryBomb(2, 5), testutil.ZipDirectoryBomb(0, 0)} {
 		f.Add(b)
 	}
 	f.Fuzz(func(t *testing.T, b []byte) {
-		zr, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
-		if err != nil {
+		s, err := scanZip(bytes.NewReader(b), int64(len(b)), len(b), func([]byte) bool { return true }, len(b))
+		if err == nil && s.headers > len(b) {
 			return
 		}
-		if n, err := zipEntries(bytes.NewReader(b), int64(len(b)), len(b)); err != nil || n < len(zr.File) {
-			t.Fatalf("zip.NewReader read %d files; zipEntries = %d, %v", len(zr.File), n, err)
+		zr, zerr := zip.NewReader(bytes.NewReader(b), int64(len(b)))
+		switch {
+		case (err == nil) != (zerr == nil):
+			t.Fatalf("zip.NewReader: %v; scanZip: %v", zerr, err)
+		case err != nil:
+			return
+		case s.headers < len(zr.File) || len(s.members) != len(zr.File):
+			t.Fatalf("zip.NewReader read %d files; scanZip counted %d headers, kept %d", len(zr.File), s.headers, len(s.members))
+		}
+		for i, zf := range zr.File {
+			if m := s.members[i]; m.name != zf.Name {
+				t.Fatalf("file %d: scanZip kept %q, zip.NewReader read %q", i, m.name, zf.Name)
+			}
+			if strings.HasSuffix(zf.Name, "/") {
+				continue
+			}
+			got, err := readMember(bytes.NewReader(b), s.members[i])
+			want, werr := readZipFile(zf)
+			if (err == nil) != (werr == nil) || !bytes.Equal(got, want) {
+				t.Fatalf("%q: readMember = %q, %v; File.Open %q, %v", zf.Name, got, err, want, werr)
+			}
 		}
 	})
+}
+
+// readZipFile reads f as readMember read a member before #696, with File.Open.
+func readZipFile(f *zip.File) ([]byte, error) {
+	if f.UncompressedSize64 > maxCoreMetadata {
+		return nil, errors.New("more than maxCoreMetadata")
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rc.Close() }()
+	return readLimited(rc, int64(f.UncompressedSize64))
 }
 
 // TestFuzzCorpus writes testdata/fuzz/FuzzWheelFilename and FuzzCoreMetadata when
