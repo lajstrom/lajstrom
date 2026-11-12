@@ -211,7 +211,8 @@ func (p *Provider) DeleteRepository(_ context.Context, name string) error {
 // errStopWalk ends a catalog walk early without an error.
 var errStopWalk = errors.New("stop the catalog walk")
 
-// ListRepositories walks the registry's catalog (_catalog, with Link pagination) and returns
+// ListRepositories walks the registry's catalog (_catalog, with Link pagination, with the
+// credentials even when the registry does not challenge it: catalogClient) and returns
 // the names below the instance prefix that start with prefix, without the instance prefix,
 // sorted and without duplicates. The walk stops when a page repeats the previous one or after
 // maxPages pages, logged at warn: the result is then what the pages so far listed. It returns
@@ -226,7 +227,7 @@ func (p *Provider) ListRepositories(ctx context.Context, prefix string) ([]strin
 	found := map[string]struct{}{}
 	var prev []string
 	pages := 0
-	err := p.registry.Repositories(ctx, "", func(page []string) error {
+	err := p.catalogRegistry().Repositories(ctx, "", func(page []string) error {
 		pages++
 		if pages > 1 && slices.Equal(page, prev) {
 			p.log.DebugContext(ctx, "catalog page repeats the previous one; stopping", "pages", pages)
