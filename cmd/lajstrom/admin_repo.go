@@ -30,7 +30,7 @@ func newAdminRepoCmd(a *app) *cobra.Command {
 		Use:   "repo",
 		Short: "Manage repos",
 	}
-	repo.AddCommand(newRepoCreateCmd(a), newRepoListCmd(a), newRepoDeleteCmd(a))
+	repo.AddCommand(newRepoCreateCmd(a), newRepoListCmd(a), newRepoDeleteCmd(a), newRepoPrefetchCmd(a))
 	return repo
 }
 
