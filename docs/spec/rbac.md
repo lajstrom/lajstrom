@@ -257,6 +257,11 @@ audit rows of the write (`push`, `delete`, `npm.dist-tag`, `npm.deprecate`) are 
 with `details.via` the group, `<format>/<group>`. A deploy token of a group has the scope `read`
 only; a `write` scope is `400`, since it would grant nothing.
 
+**The admin role turns a proxy into a hosted repo** (proxy-and-group.md §2.6): the repo then
+takes publishes from whoever has `write` on it, which a proxy took from nobody, and that is a
+decision of the same weight as choosing its upstream. The dist-tags and deprecations it writes to
+the repo's journal are audit rows of the admin (`npm.dist-tag`, `npm.deprecate`).
+
 **A prefetch** (proxy-and-group.md §5.1) needs `manage`. A reader fetches the one version it
 reads; a prefetch fetches every version of a list of names, which spends the registry's space
 and the upstream's quota on the repo's behalf, and that is the maintainer's choice. Its fetches
@@ -275,6 +280,7 @@ of an upstream and its credentials are configuration; no action sets them.
 | `proxy.fetch` | a proxied ingest: the fetcher pushed an artifact | the principal of the request whose miss or prefetch caused it (a user, a token, `anonymous`), through a group too; `repo` the proxy, `subject` the version, `digest` the manifest's, `ip` the client's; `details` `{"upstream", "url", "checksum", "size"}` and `via`, the group, when there was one |
 | `proxy.reject` | a fetch refused for its bytes: a checksum that differs, an artifact that `Validate` refuses, a file above a bound | as `proxy.fetch`, without `digest`; `details.reason` (`checksum`, `invalid`, `size`) and, for a checksum, both values |
 | `repo.cache.purge` | `DELETE …/upstream-cache` (http-routing.md §6) | the caller; `details.name` when one name was purged |
+| `repo.convert` | a proxy became a hosted repo (proxy-and-group.md §2.6) | the admin; `details` `{"from": "proxy", "to": "hosted", "upstream", "packages", "ops", "skipped"}`: the upstream it had, the packages it held, the journal ops planned and what was left out |
 
 The principal of `proxy.fetch` is who brought the artifact in, not who may publish: it was
 checked for `read` only. Requests for an upstream's metadata are reads and are not audited,

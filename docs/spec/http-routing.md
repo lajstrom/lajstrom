@@ -509,6 +509,7 @@ Management API (§4), in addition:
 | `PATCH` of `upstream.name` or of `group.members` | the admin role |
 | `PATCH` of the other keys of `upstream` and `group`, and of `anonymousRead` | `manage` on the repo |
 | `DELETE /api/v1/repos/<format>/<repo>/upstream-cache[?name=<name>]` | `manage` on a proxy repo: drops its `proxy_meta` rows, or the rows of one name, and their rendered documents; `204`, `400` on a repo that is not a proxy; audit `repo.cache.purge` |
+| `PATCH /api/v1/repos/<format>/<repo>` with `{"kind": "hosted"}`, alone | the admin role: a proxy becomes a hosted repo that keeps what it holds, its dist-tags written to its journal (proxy-and-group.md §2.6); `200` with the resource, `400` on a group or a format without the hook, `409` while a fetch runs or when a group of it has a hosted member; on a hosted repo it resumes a conversion that stopped half way, else changes nothing; audit `repo.convert` |
 | `POST /api/v1/repos/<format>/<repo>/prefetch` | `manage` on a proxy repo: fetches the versions of 1 to 100 names before a client asks, `{"names": […], "allVersions": false}` (proxy-and-group.md §5.1); `200` with a result per version, `400` on a repo that is not a proxy or a format without the hook, `409` on an offline one; each fetch audited `proxy.fetch` as a miss's |
 | `DELETE /api/v1/repos/<format>/<repo>` of a repo that is a member of a group | `409 CONFLICT` naming the groups, `force` or not |
 
