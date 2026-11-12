@@ -1391,9 +1391,13 @@ type ReferrersRepair struct {
 // the barrier, oci_repos, and the audit row proxy.fetch (Details {"upstream", "ref", "tag"}),
 // pending before the push. MirrorBlob streams r into an upload session, hashed, and commits it
 // only when the bytes have desc's size and digest (else ErrInvalid), then reads it back; no row.
-// Both refuse a repo that is not an oci proxy (ErrInvalid).
+// MirrorMount mounts the blob desc into path from the path from of the same repo (POST
+// ?mount=&from=, no byte moved) and reads it back; false, and the session cancelled, when the
+// backend opened one instead (202); no row (#876). All three refuse a repo that is not an oci
+// proxy (ErrInvalid).
 func (p *Pipeline) MirrorManifest(ctx context.Context, repo index.Repo, m Mirror, principal auth.Principal) error
 func (p *Pipeline) MirrorBlob(ctx context.Context, repo index.Repo, path string, desc ocispec.Descriptor, r io.Reader) error
+func (p *Pipeline) MirrorMount(ctx context.Context, repo index.Repo, path, from string, desc ocispec.Descriptor) (mounted bool, err error)
 type Mirror struct {
     Path     string             // the upstream's repository below the repo
     Desc     ocispec.Descriptor // of Manifest, its exact bytes

@@ -23,16 +23,18 @@ import (
 type Mirrorer interface {
 	MirrorManifest(ctx context.Context, repo index.Repo, m ingest.Mirror, principal auth.Principal) error
 	MirrorBlob(ctx context.Context, repo index.Repo, path string, desc ocispec.Descriptor, r io.Reader) error
+	MirrorMount(ctx context.Context, repo index.Repo, path, from string, desc ocispec.Descriptor) (bool, error)
 }
 
 var _ Mirrorer = (*ingest.Pipeline)(nil)
 
 // OCIBlob returns the descriptor of the blob d at path in the oci proxy repo repo, as the
 // manifest that lists it gives it, and with fetch makes the backend hold it
-// (docs/spec/proxy-and-group.md §11.5): unless the backend holds it already or the repo is
+// (docs/spec/proxy-and-group.md §11.5): unless the backend holds it already, it is mounted from
+// another path of the repo where the backend holds it, offline too; else, unless the repo is
 // offline, it is fetched from the upstream once across replicas, streamed into the backend
-// through the one write path, checked against its size and digest, and what became complete is
-// pushed. The caller serves it from the backend, but with stream when this request holds the
+// through the one write path and checked against its size and digest; then what became complete
+// is pushed. The caller serves it from the backend, but with stream when this request holds the
 // blob's claim: then rc is the verified tee of the copy (§11.8), which the caller copies to its
 // client and aborts the connection on an error of; every other request waits for the copy. A
 // digest that no manifest held or cached at the path lists is index.ErrNotFound, with no request
@@ -48,7 +50,7 @@ func (c *Core) OCIBlob(ctx context.Context, repo index.Repo, path string, d dige
 	if err != nil || !fetch {
 		return desc, nil, err
 	}
-	if held, err := c.ociHasBlob(ctx, p, desc); held || err != nil {
+	if held, err := c.ociHeldOrMounted(ctx, p, desc); held || err != nil {
 		return desc, nil, err
 	}
 	if p.up == nil {
@@ -188,7 +190,7 @@ func (c *Core) ociFetchBlob(ctx context.Context, p *ociProxied, desc ocispec.Des
 	}
 	c.o.Log.InfoContext(ctx, "proxy: a blob fetched from the upstream", "repo", p.id(), "upstream", p.upstreamName(), "path", p.path,
 		"digest", desc.Digest.String(), "size", desc.Size, "principal", auth.PrincipalFrom(ctx).String())
-	if err := c.ociHeld(ctx, p, desc.Digest); err != nil {
+	if err := c.ociHeldBlob(ctx, p, desc.Digest); err != nil {
 		return false, err
 	}
 	if t != nil {

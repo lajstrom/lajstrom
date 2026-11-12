@@ -173,6 +173,32 @@ func TestMirrorBlob(t *testing.T) {
 	}
 }
 
+// TestMirrorMount: a blob the backend holds at another path of the repo is mounted, no byte
+// sent; a source that does not hold it is no mount, and the session the registry opened instead
+// is cancelled (docs/spec/proxy-and-group.md §11.5).
+func TestMirrorMount(t *testing.T) {
+	e := mirrorEnv(t)
+	ctx := t.Context()
+	data := strings.Repeat("shared layer ", 1000)
+	desc := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageLayerGzip, Digest: digest.FromString(data), Size: int64(len(data))}
+	must(t, e.pipe.MirrorBlob(ctx, e.repo, "k8s/kube-controller-manager", desc, strings.NewReader(data)))
+	if mounted, err := e.pipe.MirrorMount(ctx, e.repo, "k8s/kube-apiserver", "k8s/etcd", desc); mounted || err != nil {
+		t.Fatalf("a mount from a path without the blob: %t, %v; want no mount and no error", mounted, err)
+	}
+	if n := e.prov.OpenUploads(); n != 0 {
+		t.Errorf("%d upload sessions left open", n)
+	}
+	if _, err := e.pipe.MirrorMount(ctx, e.repo, "k8s/kube-apiserver", "k8s/kube-apiserver", desc); !errors.Is(err, ingest.ErrInvalid) {
+		t.Errorf("a mount from the path itself: %v, want ErrInvalid", err)
+	}
+	if mounted, err := e.pipe.MirrorMount(ctx, e.repo, "k8s/kube-apiserver", "k8s/kube-controller-manager", desc); !mounted || err != nil {
+		t.Fatalf("MirrorMount: %t, %v", mounted, err)
+	}
+	if b, err := e.prov.StatBlob(ctx, "oci/hub/k8s/kube-apiserver", desc.Digest); err != nil || b.Size != desc.Size {
+		t.Fatalf("StatBlob of the mounted blob: %+v, %v", b, err)
+	}
+}
+
 // TestMirrorVisibility: on a lagging registry the push is read back until the registry serves
 // it, and one it does not serve in time is provider.ErrUnavailable with the audit row failed.
 func TestMirrorVisibility(t *testing.T) {
