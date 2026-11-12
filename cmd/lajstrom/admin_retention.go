@@ -12,8 +12,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -30,12 +32,22 @@ const (
 	envRetentionTokenFile = "LAJSTROM_TOKEN_FILE" //nolint:gosec // the name of a variable, not a credential
 )
 
-// retentionBatch is how many versions one request of --apply sends: the body of the batch is at
-// most 64 KiB.
-const retentionBatch = 100
+// retentionBatch is how many versions one request of --apply sends at most, and
+// retentionBatchBytes how many bytes of JSON their items take at most, under the 64 KiB the API
+// reads of a body: versions of many variants go in smaller batches.
+const (
+	retentionBatch      = 10
+	retentionBatchBytes = 48 << 10
+)
 
-// retentionTimeout bounds one request of admin retention.
-const retentionTimeout = 2 * time.Minute
+// retentionTimeout bounds a request of admin retention that lists, and retentionItemTimeout
+// each version of a batch of --apply: the server deletes them one after another, with about 7
+// registry requests for each variant, so a batch of n versions may take n times
+// retentionItemTimeout.
+const (
+	retentionTimeout     = 2 * time.Minute
+	retentionItemTimeout = 2 * time.Minute
+)
 
 // exitCode is an error that is only an exit status: main prints nothing for it. A dry run of
 // admin retention that finds versions to delete ends with exitCode(2).
@@ -66,7 +78,8 @@ type retentionVersion struct {
 }
 
 // retentionReport is what a run decided and, with --apply, what the server did: the JSON of
-// --output json.
+// --output json. Error is the error that stopped --apply at a batch: the results are of the
+// batches before it, and the server may have deleted versions of that batch.
 type retentionReport struct {
 	Repo     string                `json:"repo"`
 	DryRun   bool                  `json:"dryRun"`
@@ -78,6 +91,7 @@ type retentionReport struct {
 	Delete   []retentionVersion    `json:"delete"`
 	Job      string                `json:"job,omitempty"`
 	Results  []api.BatchItemResult `json:"results,omitempty"`
+	Error    string                `json:"error,omitempty"`
 }
 
 // newAdminRetentionCmd returns admin retention: a client of the management API that deletes the
@@ -87,10 +101,12 @@ type retentionReport struct {
 // (unless --delete-newest). By default it is a dry run that prints the versions it would delete
 // and why; --apply sends them as batches of one job, POST …/versions:delete, with the digests it
 // read and the cut-off it decided on, and the server deletes each only if it has not changed
-// meanwhile. The server is --url or LAJSTROM_URL, the credential a personal access token from
-// --token-file, LAJSTROM_TOKEN_FILE or LAJSTROM_TOKEN; the configuration is not read. The time
-// is the server's, from the Date of its first answer. Exit status 0: nothing to delete, or
-// deleted; 2: a dry run found versions to delete; 1: an error, or an item the server failed.
+// meanwhile; the text output has the results of each batch as the server answers it. SIGINT or
+// SIGTERM stops the run, which then prints what the server answered. The server is --url or
+// LAJSTROM_URL, the credential a personal access token from --token-file, LAJSTROM_TOKEN_FILE
+// or LAJSTROM_TOKEN; the configuration is not read. The time is the server's, from the Date of
+// its first answer. Exit status 0: nothing to delete, or deleted; 2: a dry run found versions
+// to delete; 1: an error, or an item the server failed.
 func newAdminRetentionCmd(a *app) *cobra.Command {
 	var (
 		repo, maxAge, output, base, tokenFile string
@@ -121,8 +137,12 @@ func newAdminRetentionCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			// The first signal stops the run, which prints what it has; a second one the process.
+			context.AfterFunc(ctx, stop)
 			r := &retention{client: c, format: f, name: name, rules: rules, out: cmd.OutOrStdout(), json: output == "json"}
-			return r.run(cmd.Context(), apply)
+			return r.run(ctx, apply)
 		},
 	}
 	fl := cmd.Flags()
@@ -162,12 +182,15 @@ func (rules *retentionRules) check(maxAge string) error {
 	return nil
 }
 
-// retentionClient is the HTTP client of admin retention.
+// retentionClient is the HTTP client of admin retention. A request is bounded by the timeout
+// that do is given, not by the client: timeout for a list, itemTimeout for each version of a
+// batch (retentionTimeout, retentionItemTimeout; the tests shorten them).
 type retentionClient struct {
-	base  string // the server, without a trailing /
-	token string
-	hc    *http.Client
-	now   time.Time // the server's time, from the Date of its first answer
+	base                 string // the server, without a trailing /
+	token                string
+	hc                   *http.Client
+	timeout, itemTimeout time.Duration
+	now                  time.Time // the server's time, from the Date of its first answer
 }
 
 // newRetentionClient returns the client of the server of flag or LAJSTROM_URL with the token of
@@ -195,13 +218,16 @@ func newRetentionClient(lookupEnv func(string) (string, bool), base, tokenFile s
 	if token == "" {
 		return nil, fmt.Errorf("the token: none in --token-file, %s or %s", envRetentionTokenFile, envRetentionToken)
 	}
-	return &retentionClient{base: strings.TrimSuffix(base, "/"), token: token, hc: &http.Client{Timeout: retentionTimeout}}, nil
+	return &retentionClient{base: strings.TrimSuffix(base, "/"), token: token, hc: &http.Client{}, timeout: retentionTimeout,
+		itemTimeout: retentionItemTimeout}, nil
 }
 
 // do sends a request of method to target, below the base, with the JSON of body when it is not
-// nil, and decodes the JSON answer into v. An answer that is not 2xx is an error with the
-// server's message.
-func (c *retentionClient) do(ctx context.Context, method, target string, body, v any) error {
+// nil, and decodes the JSON answer into v, all within timeout. An answer that is not 2xx is an
+// error with the server's message.
+func (c *retentionClient) do(ctx context.Context, timeout time.Duration, method, target string, body, v any) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	var rd io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -263,7 +289,9 @@ func (r *retention) repoPath() string {
 	return "/api/v1/repos/" + url.PathEscape(r.format) + "/" + url.PathEscape(r.name)
 }
 
-// run lists, decides, and with apply deletes, then reports.
+// run lists, decides, and with apply deletes, then reports: in text, the results of each batch
+// as the server answers it; a run that an error stops prints what it has, then returns the
+// error.
 func (r *retention) run(ctx context.Context, apply bool) error {
 	rep := retentionReport{Repo: r.format + "/" + r.name, DryRun: !apply, Rules: r.rules, Delete: []retentionVersion{}}
 	pkgs, err := r.packages(ctx)
@@ -284,12 +312,22 @@ func (r *retention) run(ctx context.Context, apply bool) error {
 		rep.Versions += len(versions)
 		rep.Delete = append(rep.Delete, r.rules.decide(p, versions, rep.Now)...)
 	}
-	if apply && len(rep.Delete) > 0 {
+	deleting := apply && len(rep.Delete) > 0
+	if deleting {
+		var nonce [4]byte
+		_, _ = rand.Read(nonce[:])
+		rep.Job = "retention-" + rep.Now.UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(nonce[:])
+	}
+	if err := r.printHead(rep); err != nil {
+		return err
+	}
+	if deleting {
 		if err := r.apply(ctx, &rep); err != nil {
-			return err
+			rep.Error = err.Error()
+			return errors.Join(err, r.printTail(rep))
 		}
 	}
-	if err := r.print(rep); err != nil {
+	if err := r.printTail(rep); err != nil {
 		return err
 	}
 	for _, res := range rep.Results {
@@ -312,7 +350,7 @@ func (r *retention) packages(ctx context.Context) ([]string, error) {
 	}
 	for {
 		var page api.PackageList
-		if err := r.client.do(ctx, http.MethodGet, r.repoPath()+"/packages?"+q.Encode(), nil, &page); err != nil {
+		if err := r.client.do(ctx, r.client.timeout, http.MethodGet, r.repoPath()+"/packages?"+q.Encode(), nil, &page); err != nil {
 			return nil, err
 		}
 		for _, p := range page.Packages {
@@ -358,7 +396,8 @@ func (r *retention) versions(ctx context.Context, pkg string) ([]api.VersionEntr
 	q := url.Values{"limit": {"1000"}}
 	for {
 		var page api.VersionList
-		if err := r.client.do(ctx, http.MethodGet, r.repoPath()+"/packages/"+url.PathEscape(pkg)+"/versions?"+q.Encode(), nil, &page); err != nil {
+		target := r.repoPath() + "/packages/" + url.PathEscape(pkg) + "/versions?" + q.Encode()
+		if err := r.client.do(ctx, r.client.timeout, http.MethodGet, target, nil, &page); err != nil {
 			return nil, err
 		}
 		all = append(all, page.Versions...)
@@ -406,32 +445,58 @@ func days(d time.Duration) string {
 	return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
 }
 
-// apply sends the versions of rep to the server as batches of one job, with the cut-off, and
-// keeps what it did with each.
+// apply sends the versions of rep to the server as batches of its job (retentionBatches), with
+// the cut-off, keeps what the server did with each, and prints the results of each batch as
+// they arrive (printResults). A batch's request may take the client's itemTimeout for each of
+// its versions. An error stops the run at its batch: the server may have deleted versions of
+// it, and is sent none of the batches after it.
 func (r *retention) apply(ctx context.Context, rep *retentionReport) error {
-	var nonce [4]byte
-	_, _ = rand.Read(nonce[:])
-	rep.Job = "retention-" + rep.Now.UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(nonce[:])
-	for start := 0; start < len(rep.Delete); start += retentionBatch {
-		req := api.BatchDeleteRequest{Cutoff: rep.Cutoff.UTC().Format(time.RFC3339), Job: rep.Job}
-		for _, v := range rep.Delete[start:min(start+retentionBatch, len(rep.Delete))] {
-			req.Items = append(req.Items, api.BatchDeleteItem{Package: v.Package, Version: v.Version, Digests: v.Digests})
-		}
+	items := make([]api.BatchDeleteItem, len(rep.Delete))
+	for i, v := range rep.Delete {
+		items[i] = api.BatchDeleteItem{Package: v.Package, Version: v.Version, Digests: v.Digests}
+	}
+	sent := 0
+	for _, batch := range retentionBatches(items) {
+		req := api.BatchDeleteRequest{Cutoff: rep.Cutoff.UTC().Format(time.RFC3339), Job: rep.Job, Items: batch}
 		var res api.BatchDeleteResult
-		if err := r.client.do(ctx, http.MethodPost, r.repoPath()+"/versions:delete", req, &res); err != nil {
+		timeout := time.Duration(len(batch)) * r.client.itemTimeout
+		if err := r.client.do(ctx, timeout, http.MethodPost, r.repoPath()+"/versions:delete", req, &res); err != nil {
+			return fmt.Errorf("the batch of %d versions from %s %s: %w; the %d versions after it were not sent",
+				len(batch), batch[0].Package, batch[0].Version, err, len(items)-sent-len(batch))
+		}
+		sent += len(batch)
+		rep.Results = append(rep.Results, res.Results...)
+		if err := r.printResults(res.Results); err != nil {
 			return err
 		}
-		rep.Results = append(rep.Results, res.Results...)
 	}
 	return nil
 }
 
-// print writes the report: the JSON document, or lines of text.
-func (r *retention) print(rep retentionReport) error {
+// retentionBatches splits items into batches of at most retentionBatch items whose JSON takes
+// at most retentionBatchBytes; an item larger than that is a batch of its own.
+func retentionBatches(items []api.BatchDeleteItem) [][]api.BatchDeleteItem {
+	var out [][]api.BatchDeleteItem
+	start, size := 0, 0
+	for i, it := range items {
+		b, _ := json.Marshal(it)
+		if i > start && (i-start == retentionBatch || size+len(b)+1 > retentionBatchBytes) {
+			out = append(out, items[start:i])
+			start, size = i, 0
+		}
+		size += len(b) + 1
+	}
+	if start < len(items) {
+		out = append(out, items[start:])
+	}
+	return out
+}
+
+// printHead writes the first lines of the text report: what the run decided and, in a dry run,
+// each version it would delete and why. The JSON document is written whole, by printTail.
+func (r *retention) printHead(rep retentionReport) error {
 	if r.json {
-		enc := json.NewEncoder(r.out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(rep)
+		return nil
 	}
 	var b strings.Builder
 	what := "to delete (a dry run; --apply deletes them)"
@@ -449,19 +514,43 @@ func (r *retention) print(rep retentionReport) error {
 				strings.Join(v.Reasons, ", "))
 		}
 	}
-	counts := map[string]int{}
-	for _, res := range rep.Results {
-		counts[res.Status]++
+	_, err := io.WriteString(r.out, b.String())
+	return err
+}
+
+// printResults writes a line of text for each result of a batch.
+func (r *retention) printResults(results []api.BatchItemResult) error {
+	if r.json {
+		return nil
+	}
+	var b strings.Builder
+	for _, res := range results {
 		line := fmt.Sprintf("%-9s %s %s", res.Status, res.Package, res.Version)
 		if res.Message != "" {
 			line += ": " + res.Message
 		}
 		fmt.Fprintln(&b, line)
 	}
-	if !rep.DryRun && len(rep.Delete) > 0 {
-		fmt.Fprintf(&b, "deleted %d, changed %d, protected %d, young %d, gone %d, error %d\n", counts["deleted"], counts["changed"],
-			counts["protected"], counts["young"], counts["gone"], counts["error"])
-	}
 	_, err := io.WriteString(r.out, b.String())
+	return err
+}
+
+// printTail writes the end of the report: the JSON document, or after --apply the counts of
+// the results, of those the server answered when an error stopped the run.
+func (r *retention) printTail(rep retentionReport) error {
+	if r.json {
+		enc := json.NewEncoder(r.out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(rep)
+	}
+	if rep.DryRun || len(rep.Delete) == 0 {
+		return nil
+	}
+	counts := map[string]int{}
+	for _, res := range rep.Results {
+		counts[res.Status]++
+	}
+	_, err := fmt.Fprintf(r.out, "deleted %d, changed %d, protected %d, young %d, gone %d, error %d\n", counts["deleted"],
+		counts["changed"], counts["protected"], counts["young"], counts["gone"], counts["error"])
 	return err
 }
