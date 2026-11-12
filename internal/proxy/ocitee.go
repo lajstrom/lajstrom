@@ -35,6 +35,7 @@ type tee struct {
 	done    bool
 	err     error // the fetch's end: nil once the backend committed the blob
 	dropped bool
+	ended   func(error) // serve's: told the fetch's end once
 }
 
 // newTee returns the tee of a blob of size bytes whose reader may fall limit bytes behind.
@@ -71,16 +72,29 @@ func (t *tee) finish(err error) {
 	defer t.mu.Unlock()
 	if !t.done {
 		t.done, t.err = true, err
+		if t.ended != nil {
+			t.ended(err)
+		}
 	}
 	t.cond.Broadcast()
 }
 
-// endedBefore reports whether the fetch ended without streaming: begin came from finish, and
-// the request is served from the backend once the flight is done.
-func (t *tee) endedBefore() bool {
+// serve makes the tee the answer of the claim holder's request, unless the fetch ended without
+// streaming: begin came from finish, and the request is served from the backend once the
+// flight is done. Once it serves, ended is told the fetch's end, nil for a commit, now when
+// the fetch ended already, else when it ends: the request's outcome is the fetch's (#884).
+func (t *tee) serve(ended func(error)) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.done && t.err != nil && len(t.buf) == 0 && t.read == 0
+	if t.done && t.err != nil && len(t.buf) == 0 && t.read == 0 {
+		return false
+	}
+	if t.done {
+		ended(t.err)
+	} else {
+		t.ended = ended
+	}
+	return true
 }
 
 // drop drops the reader: it left, or its context ended.
