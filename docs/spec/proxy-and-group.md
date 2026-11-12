@@ -160,10 +160,12 @@ where it survives the loss of the database.
    is left out and reported. A package without a kept document gets no op: its packument is then
    what a hosted repo renders of its versions, `latest` the highest.
 3. **The flip,** in one transaction: `kind` becomes `hosted` and `upstream` NULL
-   (`index.Store.ConvertRepo`, which refuses a live fetch claim under the same lock), the
+   (`index.Store.ConvertRepo`, which refuses a live fetch claim in the same transaction), the
    repo's rendered documents are invalidated, and the audit row `repo.convert` is written with
    the counts and what was left out. From the next request on, every replica serves the repo as
-   a hosted one; a group that has it as a member has it as its hosted member.
+   a hosted one; a group that has it as a member has it as its hosted member. A fetch that a
+   request started just before the flip may still end: its version is then one of the hosted
+   repo, with its origin, as the prefetched ones are.
 4. **The journal.** The ops of each package go through the one write path
    (`Publisher.Journal`: the package's journal lock, the claims, the `_j<seq>` tags, the
    visibility barrier, an audit row per op by the admin). Then the proxy's cached documents of

@@ -1388,7 +1388,7 @@ Where the merged shapes differ from the first sketch of this section, and why:
   hosted repo's are its journal, so the conversion writes them as ops through
   `Publisher.Journal`, as a client's `npm dist-tag` would, and nothing new reaches the registry
   by another path. `index.Store.ConvertRepo` is a method of its own, not a looser `UpdateRepo`:
-  it is the one change of a kind, it checks the fetch claims in the statement that flips it,
+  it is the one change of a kind, it checks the fetch claims in the transaction that flips it,
   and `UpdateRepo` keeps refusing every other change of a kind.
 - **A prefetch plugs in through `format.Prefetcher`** (#441), a `Proxier` with two methods,
   rather than more methods of `Proxier`: the core reads a name's entries as a miss does, and
