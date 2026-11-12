@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -69,8 +68,7 @@ func (c *Core) OCIBlob(ctx context.Context, repo index.Repo, path string, d dige
 	if !joined && t != nil {
 		select {
 		case <-t.started: // this request's fetch holds the claim, and streams
-			if !t.endedBefore() {
-				ociCountFetch(p, fetchFetched)
+			if t.serve(func(err error) { ociCountFetch(p, fetchOutcome(err)) }) {
 				return desc, t.reader(ctx), nil
 			}
 		case <-fl.done:
@@ -172,23 +170,13 @@ func (c *Core) ociFetchBlob(ctx context.Context, p *ociProxied, desc ocispec.Des
 	if ok, err := held(ctx); ok || err != nil { // fetched before the claim was taken
 		return ok, err
 	}
-	body, err := p.up.open(ctx, p.path, desc)
+	got, err := c.ociCopy(ctx, p, desc, t)
+	if err == nil {
+		err = c.ociHeldBlob(ctx, p, desc.Digest)
+	}
 	if err != nil {
-		return false, err
-	}
-	up := c.resumable(ctx, p, desc, body)
-	defer up.Close()
-	var src io.Reader = up
-	if t != nil {
-		t.begin()
-		src = io.TeeReader(up, t)
-	}
-	if err := c.ociCopyFailed(ctx, p, desc, up, c.o.Mirror.MirrorBlob(ctx, p.repo, p.path, desc, src)); err != nil {
-		return false, err
-	}
-	c.o.Log.InfoContext(ctx, "proxy: a blob fetched from the upstream", "repo", p.id(), "upstream", p.upstreamName(), "path", p.path,
-		"digest", desc.Digest.String(), "size", desc.Size, "principal", auth.PrincipalFrom(ctx).String())
-	if err := c.ociHeldBlob(ctx, p, desc.Digest); err != nil {
+		c.o.Log.WarnContext(ctx, "proxy: a blob not fetched from the upstream", "repo", p.id(), "upstream", p.upstreamName(), "path", p.path,
+			"digest", desc.Digest.String(), "size", desc.Size, "got", got, "error", err.Error())
 		return false, err
 	}
 	if t != nil {
@@ -198,20 +186,42 @@ func (c *Core) ociFetchBlob(ctx context.Context, p *ociProxied, desc ocispec.Des
 	return false, nil
 }
 
+// ociCopy streams the blob desc from the upstream into the backend, and through t to the claim
+// holder when t is not nil, and returns the bytes it got from the upstream and what the fetch
+// answers for its end (ociCopyFailed), nil once the backend committed the blob.
+func (c *Core) ociCopy(ctx context.Context, p *ociProxied, desc ocispec.Descriptor, t *tee) (got int64, err error) {
+	body, err := p.up.open(ctx, p.path, desc)
+	if err != nil {
+		return 0, err
+	}
+	up := c.resumable(ctx, p, desc, body)
+	defer up.Close()
+	var src io.Reader = up
+	if t != nil {
+		t.begin()
+		src = io.TeeReader(up, t)
+	}
+	if err := c.ociCopyFailed(ctx, p, desc, up, c.o.Mirror.MirrorBlob(ctx, p.repo, p.path, desc, src)); err != nil {
+		return up.n, err
+	}
+	c.o.Log.InfoContext(ctx, "proxy: a blob fetched from the upstream", "repo", p.id(), "upstream", p.upstreamName(), "path", p.path,
+		"digest", desc.Digest.String(), "size", desc.Size, "resumes", up.resumes, "principal", auth.PrincipalFrom(ctx).String())
+	return up.n, nil
+}
+
 // ociCopyFailed returns what a fetch answers for err, the end of the copy of the blob desc from
-// the upstream's body up into the backend, nil when it was committed: a body that stopped
-// moving for upstreams[].timeout, and was not resumed, is format.ErrGatewayTimeout (§2.1, #883);
-// bytes that are not the
-// blob are format.ErrBadGateway and proxy.reject; a backend's refusal by a rule of its own is
-// proxy.reject too.
+// the upstream's body up into the backend, nil when it was committed: a body that broke and was
+// not resumed is the upstream's failure, classified as §6 says, format.ErrBadGateway, or
+// format.ErrGatewayTimeout for one that stopped moving for upstreams[].timeout (§2.1, #883,
+// #884); bytes that are not the blob are format.ErrBadGateway and proxy.reject; an error of the
+// backend keeps its own, and its refusal by a rule of its own is proxy.reject too.
 func (c *Core) ociCopyFailed(ctx context.Context, p *ociProxied, desc ocispec.Descriptor, up *upstreamBody, err error) error {
-	var ne net.Error
 	switch {
 	case err == nil:
 		return nil
-	case errors.As(up.err, &ne) && ne.Timeout() && ctx.Err() == nil:
-		return fmt.Errorf("%w: proxy: %s: upstream %s sent no byte of the blob %s within its timeout, after %d bytes", format.ErrGatewayTimeout,
-			p.id(), p.upstreamName(), desc.Digest, up.n)
+	case up.ended != nil && ctx.Err() == nil:
+		return fmt.Errorf("proxy: %s: the blob %s broke after %d of its %d bytes: %w", p.id(), desc.Digest, up.n, desc.Size,
+			p.up.classify(ctx, up.ended))
 	case errors.Is(err, ingest.ErrInvalid):
 		c.ociReject(ctx, p, desc.Digest, "checksum", map[string]any{"error": err.Error()})
 		return fmt.Errorf("%w: proxy: %s: upstream %s served other bytes for %s: %s", format.ErrBadGateway, p.id(), p.upstreamName(),
@@ -258,6 +268,15 @@ func (c *Core) ociHeld(ctx context.Context, p *ociProxied, d digest.Digest) erro
 func (c *Core) isHeld(ctx context.Context, p *ociProxied, d digest.Digest) (bool, error) {
 	row, err := metaRow(ctx, c.o.Index, p.repo.ID, p.path, metaKey(kindOCIHeld, d))
 	return row != nil, err
+}
+
+// fetchOutcome is the result of lajstrom_proxy_fetches_total of the claim holder's request, whose
+// fetch ended with err: fetched once the backend committed the blob, error otherwise.
+func fetchOutcome(err error) string {
+	if err != nil {
+		return fetchError
+	}
+	return fetchFetched
 }
 
 // ociCountFetch records a blob request in lajstrom_proxy_fetches_total.

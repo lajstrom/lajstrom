@@ -29,8 +29,8 @@ var errNotResumed = errors.New("proxy: the upstream did not answer the Range wit
 // that got no byte since the previous one waits the backoff of the retries, and more than
 // upstreams[].retries of them in a row end the fetch. The answer to a Range must be a 206 whose
 // Content-Range starts at n, of the blob's size: a 200, or a 206 of other bytes, ends it too. n
-// holds the bytes read and err the read error that ended it, so that the fetch tells the
-// upstream's failure from the backend's.
+// holds the bytes read and ended the error that ended the body, so that the fetch tells the
+// upstream's failure from the backend's (#884).
 type upstreamBody struct {
 	ctx     context.Context
 	c       *Core
@@ -42,6 +42,7 @@ type upstreamBody struct {
 	idle    int           // resumes in a row whose previous body got no byte
 	resumes int           // resumes in all
 	err     error         // the read that broke, last
+	ended   error         // what ended the body, not resumed; nil while it reads
 }
 
 // resumable returns the body rc of the blob desc at p's path, resumed on ctx.
@@ -68,6 +69,7 @@ func (b *upstreamBody) Read(p []byte) (int, error) {
 		b.err = err
 		if b.ctx.Err() != nil || !b.resume() {
 			b.Close()
+			b.ended = b.err
 			return n, b.err
 		}
 		if n > 0 {
