@@ -59,8 +59,8 @@ var (
 // not finished or cancelled.
 //
 // The Fail fields inject errors: when one is set, every call of that method returns it,
-// wrapped with the operation. Set them, and RedirectURL, NoBlobRedirect, NoDeleteManifest and
-// MaxNameDepth, before the calls they should affect; they are not guarded for changes during calls. Use a
+// wrapped with the operation. Set them, and RedirectURL, NoBlobRedirect, NoDeleteManifest,
+// MaxNameDepth and MaxNameLength, before the calls they should affect; they are not guarded for changes during calls. Use a
 // Fake as a pointer; it is safe for concurrent use.
 type Fake struct {
 	// RegistryName is Name; empty means "fake".
@@ -79,6 +79,10 @@ type Fake struct {
 	// MaxNameDepth is the registry's capabilities.maxNameDepth, which Capabilities reports;
 	// the Fake itself takes a name of any depth.
 	MaxNameDepth int
+	// MaxNameLength is the most bytes of a name below the registry's prefix, which Capabilities
+	// reports: 255 less the prefix's length for a registry like distribution, 0 for no limit. The
+	// Fake itself takes a name of any length.
+	MaxNameLength int
 	// FailPush fails Push before it reads the content.
 	FailPush error
 	// FailUpload fails StartBlobUpload, the POST that opens an upload session, so that a blob
@@ -144,7 +148,7 @@ func (f *Fake) Name() string {
 func (f *Fake) Capabilities(context.Context) (provider.Capabilities, error) {
 	return provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true,
 		DeleteManifest: !f.NoDeleteManifest, BlobRedirect: f.RedirectURL != nil && !f.NoBlobRedirect,
-		Consistency: provider.ConsistencyStrong, MaxNameDepth: f.MaxNameDepth}, nil
+		Consistency: provider.ConsistencyStrong, MaxNameDepth: f.MaxNameDepth, MaxNameLength: f.MaxNameLength}, nil
 }
 
 // Repository returns the repository name; it exists once something is pushed to it.

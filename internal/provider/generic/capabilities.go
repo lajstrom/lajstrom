@@ -29,6 +29,10 @@ const (
 	// minNameDepth is the depth of the shortest name Lajstrom writes below the prefix,
 	// <format>/<repo>/<package> (docs/spec/manifest-profile.md §4.1).
 	minNameDepth = 3
+	// maxNameLen is the most bytes of a repository name, the instance prefix included:
+	// distribution's RepositoryNameTotalLengthMax, which GitLab's registry and Harbor keep too
+	// (docs/registries/quirks.md, Case and length).
+	maxNameLen = 255
 )
 
 // Capabilities probes the registry on the first call and caches the answer; a probe that
@@ -50,6 +54,8 @@ const (
 //     turns false when the registry answers a manifest delete with 405 UNSUPPORTED or a 405
 //     without DENIED.
 //
+// MaxNameLength is maxNameLen less the length of the instance prefix, measured by no request.
+//
 // A capability that the vendor table or the configuration sets is not probed. What the vendor
 // table decides from the probe's answer (afterProbe) comes before the configuration's overrides,
 // with the vendor's quirks: the blob reads of Nexus's oci format and JFrog's blob HEAD. The
@@ -62,8 +68,15 @@ func (p *Provider) Capabilities(ctx context.Context) (provider.Capabilities, err
 	if err != nil {
 		return provider.Capabilities{}, err
 	}
-	return p.effective(c), nil
+	e := p.effective(c)
+	e.MaxNameLength = nameLength(p.prefix)
+	return e, nil
 }
+
+// nameLength is the MaxNameLength below prefix, as it is prepended to names ("" or ending in
+// "/"): maxNameLen less its length, and at least 1, so that a prefix that leaves no room refuses
+// every name rather than lifting the limit.
+func nameLength(prefix string) int { return max(maxNameLen-len(prefix), 1) }
 
 // effective applies what Lajstrom learnt since the probe, then the overrides, to probed,
 // which holds the vendor table's capabilities already.

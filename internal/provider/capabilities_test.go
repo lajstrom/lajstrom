@@ -33,3 +33,33 @@ func TestCheckName(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckNameLength: a name longer than MaxNameLength is refused with its length and the
+// limit, and without the instance prefix, which clients never see; no limit, or a name within
+// it, passes; a name too deep is refused for its depth first (#661).
+func TestCheckNameLength(t *testing.T) {
+	name := func(n int) string { return "raw/assets/" + strings.Repeat("a", n-len("raw/assets/")) }
+	tests := []struct {
+		caps Capabilities
+		name string
+		want string // a part of the error, "" for nil
+	}{
+		{Capabilities{}, name(1000), ""},
+		{Capabilities{MaxNameLength: 255}, name(255), ""},
+		{Capabilities{MaxNameLength: 255}, name(256), "the OCI repository " + name(256) + " is 256 bytes long, and the registry takes at most 255"},
+		{Capabilities{MaxNameLength: 246}, name(246), ""},
+		{Capabilities{MaxNameLength: 246}, name(247), "is 247 bytes long, and the registry takes at most 246"},
+		{Capabilities{MaxNameDepth: 3, MaxNameLength: 10}, "raw/assets/a/b", "has 4 components, and the registry takes at most 3"},
+	}
+	for _, tt := range tests {
+		err := tt.caps.CheckName(tt.name)
+		switch {
+		case tt.want == "" && err != nil:
+			t.Errorf("CheckName(%d bytes) with %+v = %v, want nil", len(tt.name), tt.caps, err)
+		case tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)):
+			t.Errorf("CheckName(%d bytes) with %+v = %v, want an error containing %q", len(tt.name), tt.caps, err, tt.want)
+		case err != nil && tt.caps.MaxNameDepth == 0 && strings.Contains(err.Error(), "prefix"):
+			t.Errorf("CheckName(%d bytes) = %v: the error names the prefix", len(tt.name), err)
+		}
+	}
+}

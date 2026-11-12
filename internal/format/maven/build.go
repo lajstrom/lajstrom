@@ -63,10 +63,6 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 	}
 	pkgPath := packagePath(c.GroupID, c.ArtifactID)
 	repoPath := profile.RepositoryPath("", Name, repo.Name, pkgPath)
-	if len(repoPath) > maxRepositoryLen {
-		return nil, fmt.Errorf("%w: %s makes the OCI repository name %d bytes long, at most %d",
-			format.ErrInvalid, c.Name(), len(repoPath), maxRepositoryLen)
-	}
 	md, err := metadataOf(pom, files)
 	if err != nil {
 		return nil, err

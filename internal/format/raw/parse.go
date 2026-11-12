@@ -24,8 +24,6 @@ const (
 	// maxComponentLen is the longest escaped path component; a longer one is hashed
 	// (docs/spec/manifest-profile.md §4.1, raw).
 	maxComponentLen = 64
-	// maxRepositoryLen is the longest OCI repository name registries accept.
-	maxRepositoryLen = 255
 	// versionLen is the number of hex digits of the content sha256 that make the version.
 	versionLen = 16
 	// maxMetadata is the largest metadata layer Validate reads. A raw metadata layer holds a
@@ -92,8 +90,9 @@ func escapePath(p string) string {
 }
 
 // EscapeName returns the package path of the raw path name: the path rules of checkPath, then
-// escapePath. Errors wrap format.ErrInvalid. It does not know the repo, so the limit on the OCI
-// repository name is checked by Build and Validate (repoPath).
+// escapePath. Errors wrap format.ErrInvalid. The length of the OCI repository name is the
+// registry's to bound, with its instance prefix, so ingest checks it before a write
+// (provider.Capabilities.CheckName): a 400 that names the limit.
 func (Plugin) EscapeName(name string) (string, error) {
 	if err := checkPath(name); err != nil {
 		return "", err
@@ -102,19 +101,13 @@ func (Plugin) EscapeName(name string) (string, error) {
 }
 
 // repoPath returns the package path of p and the OCI repository raw/<repo>/<package path>
-// without the instance prefix. A path that breaks the rules of checkPath, or whose repository
-// name is longer than the 255 bytes registries accept even with hashed components, wraps
+// without the instance prefix. A path that breaks the rules of checkPath wraps
 // format.ErrInvalid.
 func repoPath(repo index.Repo, p string) (pkgPath, name string, err error) {
 	if pkgPath, err = (Plugin{}).EscapeName(p); err != nil {
 		return "", "", err
 	}
-	name = profile.RepositoryPath("", Name, repo.Name, pkgPath)
-	if len(name) > maxRepositoryLen {
-		return "", "", fmt.Errorf("%w: path %q makes the OCI repository name %d bytes long, at most %d",
-			format.ErrInvalid, p, len(name), maxRepositoryLen)
-	}
-	return pkgPath, name, nil
+	return pkgPath, profile.RepositoryPath("", Name, repo.Name, pkgPath), nil
 }
 
 // Build makes the manifest of one uploaded file: one file layer titled with the path and the

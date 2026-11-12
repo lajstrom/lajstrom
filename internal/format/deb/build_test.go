@@ -199,7 +199,6 @@ func TestBuildRefuses(t *testing.T) {
 	broken := debFile([]byte("!<arch>\nnot a package"))
 	unopenable := file
 	unopenable.Open = func() (io.ReadCloser, error) { return nil, errBoom }
-	long, _ := testutil.Deb(testutil.DebOptions{Name: strings.Repeat("a", 250), Files: map[string]string{"usr/x": "x"}})
 	noSuite := upload([]format.UploadedFile{file})
 	delete(noSuite.Params, ParamSuite)
 	for _, tc := range []struct {
@@ -216,7 +215,6 @@ func TestBuildRefuses(t *testing.T) {
 			`the upload is for architecture "arm64", the control file of hello_1.0.0-1_amd64.deb says "amd64"`},
 		{"size", upload([]format.UploadedFile{short}), "the upload says"},
 		{"broken", upload([]format.UploadedFile{broken}), `"upload.deb": format: invalid: truncated archive`},
-		{"name too long", upload([]format.UploadedFile{debFile(long)}), "makes the OCI repository name 261 bytes long, at most 255"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b, err := Plugin{}.Build(t.Context(), ubuntu, tc.in)

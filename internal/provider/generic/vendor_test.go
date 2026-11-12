@@ -192,9 +192,10 @@ func TestVendorDefaults(t *testing.T) {
 // of the table did, and checks what the table makes of the probe's answer (afterProbe).
 func TestCapabilitiesVendor(t *testing.T) {
 	ctx := context.Background()
-	defaults := provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true, DeleteManifest: true, BlobRedirect: true}
-	noReferrers := provider.Capabilities{CreateOnPush: true, Catalog: true, DeleteManifest: true, BlobRedirect: true}
-	nexusDocker := provider.Capabilities{CreateOnPush: true, Catalog: true, BlobRedirect: true}
+	// Every vendor gets 255 bytes less the fake's prefix, art/.
+	defaults := provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true, DeleteManifest: true, BlobRedirect: true, MaxNameLength: 251}
+	noReferrers := provider.Capabilities{CreateOnPush: true, Catalog: true, DeleteManifest: true, BlobRedirect: true, MaxNameLength: 251}
+	nexusDocker := provider.Capabilities{CreateOnPush: true, Catalog: true, BlobRedirect: true, MaxNameLength: 251}
 	strong := defaults
 	strong.Consistency = provider.ConsistencyStrong
 	headers := func(h http.Header, referrers bool) func(f *fakeRegistry) {
