@@ -61,8 +61,9 @@ func TestLoadDefaults(t *testing.T) {
 				Database:  Database{Driver: "sqlite", DSN: "file:lajstrom.db"},
 				Ingest:    Ingest{ClaimTTL: 10 * time.Minute, VisibilityTimeout: 30 * time.Second},
 				Reconcile: Reconcile{Interval: time.Hour, GraceAge: time.Hour},
-				Auth:      Auth{Bootstrap: Bootstrap{TTL: 24 * time.Hour}},
-				Keys:      Keys{Algorithm: "ed25519", RetireGrace: 720 * time.Hour, TokenAlgorithm: "ES256"},
+				Auth: Auth{Bootstrap: Bootstrap{TTL: 24 * time.Hour}, OIDC: OIDC{Scopes: []string{"openid", "profile", "email", "groups"},
+					UsernameClaim: "preferred_username", GroupsClaim: "groups", TokenLifetime: 24 * time.Hour}},
+				Keys: Keys{Algorithm: "ed25519", RetireGrace: 720 * time.Hour, TokenAlgorithm: "ES256"},
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("Load =\n%+v\nwant\n%+v", got, want)
@@ -270,6 +271,11 @@ func TestLoadErrors(t *testing.T) {
 			want: []string{"ingest.claimTTL: must not be negative", "ingest.visibilityTimeout: must not be negative"}},
 		{name: "negative reconcile interval", file: minimal + "reconcile: {interval: -1h}\n", want: []string{"reconcile.interval: must not be negative"}},
 		{name: "zero bootstrap ttl", file: minimal + "auth: {bootstrap: {ttl: 0s}}\n", want: []string{"auth.bootstrap.ttl: must be positive"}},
+		{name: "oidc without its keys", file: minimal + "auth: {oidc: {issuer: \"http://idp.example\", usernameClaim: \"\", tokenLifetime: 9000h}}\n",
+			want: []string{"auth.oidc.issuer: must be https", "auth.oidc.clientID: must be set", "auth.oidc.clientSecretFile: must be set",
+				"auth.oidc.usernameClaim: must not be empty", "auth.oidc.tokenLifetime: must be positive and at most 8760h"}},
+		{name: "oidc issuer with a query", file: minimal + "auth: {oidc: {issuer: \"https://idp.example/?a=b\", clientID: c, clientSecretFile: /s}}\n",
+			want: []string{"auth.oidc.issuer: must be an absolute http(s) URL without a query"}, wantNot: []string{"clientID"}},
 		{name: "negative grace age", file: minimal + "reconcile: {graceAge: -24h}\n", want: []string{"reconcile.graceAge: must not be negative"}},
 		{name: "metrics listener", file: minimal[:len(minimal)-1] + "\n  metricsListen: \"9464\"\n", want: []string{`server.metricsListen: "9464" is not host:port`}},
 		{name: "metrics on the public listener", file: minimal[:len(minimal)-1] + "\n  metricsListen: \":8080\"\n",

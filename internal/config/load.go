@@ -21,7 +21,8 @@ import (
 //  3. the environment overrides LAJSTROM_SERVER_LISTEN, LAJSTROM_SERVER_EXTERNAL_URL,
 //     LAJSTROM_SERVER_METRICS_LISTEN, LAJSTROM_LOG_LEVEL, LAJSTROM_LOG_FORMAT,
 //     LAJSTROM_DATABASE_DRIVER, LAJSTROM_DATABASE_DSN, LAJSTROM_MASTER_KEY_FILE
-//     (keys.masterKeyFile) and LAJSTROM_BOOTSTRAP_TOKEN_FILE (auth.bootstrap.tokenFile); an
+//     (keys.masterKeyFile), LAJSTROM_BOOTSTRAP_TOKEN_FILE (auth.bootstrap.tokenFile) and
+//     LAJSTROM_AUTH_OIDC_CLIENT_SECRET_FILE (auth.oidc.clientSecretFile); an
 //     empty variable counts as unset, and lists (registries, repos)
 //     cannot be set from the environment; then database.dsn gets DefaultDatabaseDSN when the
 //     driver is sqlite and the DSN is still empty;
@@ -155,6 +156,7 @@ var envOverrides = []struct {
 	// The <variable>_FILE of the examples' LAJSTROM_MASTER_KEY, rather than LAJSTROM_KEYS_….
 	{"LAJSTROM_MASTER_KEY_FILE", func(c *Config, v string) { c.Keys.MasterKeyFile = v }},
 	{"LAJSTROM_BOOTSTRAP_TOKEN_FILE", func(c *Config, v string) { c.Auth.Bootstrap.TokenFile = v }},
+	{"LAJSTROM_AUTH_OIDC_CLIENT_SECRET_FILE", func(c *Config, v string) { c.Auth.OIDC.ClientSecretFile = v }},
 }
 
 func applyEnv(c *Config, lookupEnv func(string) (string, bool)) {

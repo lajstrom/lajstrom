@@ -21,6 +21,9 @@ func (s *Server) routes() {
 	if s.opts.Facade != nil {
 		s.mux.Handle("/v2/", s.opts.Facade)
 	}
+	if s.opts.OIDC != nil {
+		s.mux.Handle("/-/oidc/", s.opts.OIDC)
+	}
 	s.mountFormats()
 }
 
