@@ -43,6 +43,7 @@ internal/index/storetest/     conformance suite of index.Store, run by both engi
 internal/proxy/               proxy repos (ADR 0013): the settings, the upstream client, the metadata cache, fetch on miss
 internal/auth/                principals, password hashing, PAT/deploy tokens, RBAC evaluation
 internal/auth/token/          the bearer JWT of /v2: scopes, issue, verify
+internal/auth/oidc/           OIDC relying party: discovery, JWKS, ID token verification, code exchange (#69)
 internal/api/                 /api/v1 management REST (repos, users, tokens, bindings), JSON
 internal/keys/                server signing key, per-repo GPG keys (apt, rpm), encryption at rest
 internal/audit/               audit log writer
@@ -831,6 +832,11 @@ type Reader interface {
     // AuthVersion: the counter of auth_version, which every write of bindings and repos
     // increments in its transaction (rbac.md §3); an evaluator reads it before its snapshot
     AuthVersion(ctx context.Context) (int64, error)
+    // OIDC (rbac.md §8, index-schema.md, identities): an identity by its issuer and subject,
+    // and the groups of every identity with its user's id and uid and its groups_expire_at,
+    // ordered by uid and name, whether expired or not (the RBAC snapshot compares the time)
+    GetIdentity(ctx context.Context, issuer, subject string) (*Identity, error)
+    ListIdentityGroups(ctx context.Context) ([]IdentityGroup, error)
     GetKey(ctx context.Context, repoID *int64, kind string) (*Key, error)
     ListKeys(ctx context.Context, repoID *int64) ([]Key, error)
     GetSession(ctx context.Context, repoID int64, key string) (*Session, error)
@@ -840,6 +846,12 @@ type Reader interface {
     GetTagClaim(ctx context.Context, repoID int64, pkg, tag string) (*TagClaim, error)
     GetFetchClaim(ctx context.Context, repoID int64, pkg, tag string) (*FetchClaim, error)
     GetReindexRun(ctx context.Context, id int64) (*ReindexRun, error)
+    // the flows of rbac.md §8 (index-schema.md, oidc_logins); state and deviceCode are the
+    // sha256 hex of the secret, userCode as shown without its hyphen
+    GetOIDCLogin(ctx context.Context, id int64) (*OIDCLogin, error)
+    GetOIDCLoginByState(ctx context.Context, state string) (*OIDCLogin, error)
+    GetOIDCLoginByDeviceCode(ctx context.Context, deviceCode string) (*OIDCLogin, error)
+    GetOIDCLoginByUserCode(ctx context.Context, userCode string) (*OIDCLogin, error)
     // LatestReindexRun: the newest run that covered repoID, its own or a run of every repo;
     // repoID 0 selects the runs of every repo only
     LatestReindexRun(ctx context.Context, repoID int64) (*ReindexRun, error)
@@ -909,6 +921,12 @@ type Writer interface {
     UseBootstrapToken(ctx context.Context, hash string, at time.Time) error
     CreateBinding(ctx context.Context, b *Binding) error
     DeleteBinding(ctx context.Context, id int64) error
+    // OIDC: CreateIdentity fills ID and CreatedAt when zero; (Issuer, Subject) taken wraps
+    // ErrConflict. SetIdentityGroups makes the identity_groups rows of the identity exactly
+    // names, stores loginAt and groupsExpireAt, and increments auth_version
+    CreateIdentity(ctx context.Context, i *Identity) error
+    DeleteIdentity(ctx context.Context, id int64) error
+    SetIdentityGroups(ctx context.Context, id int64, names []string, loginAt, groupsExpireAt time.Time) error
     CreateKey(ctx context.Context, k *Key) error
     RetireKey(ctx context.Context, id int64, at time.Time) error
     UpsertSession(ctx context.Context, s *Session) error // a second open session of a key: ErrConflict
@@ -945,6 +963,13 @@ type Writer interface {
     ClaimFetch(ctx context.Context, c *FetchClaim, staleBefore time.Time) error
     HeartbeatFetchClaim(ctx context.Context, id int64, at time.Time) error // ErrNotFound: released or taken over
     ReleaseFetchClaim(ctx context.Context, id int64) error
+    // CreateOIDCLogin inserts l and fills ID; a state, device code or user code taken wraps
+    // ErrConflict. UpdateOIDCLogin stores Status, UserID and PolledAt of l while the row's status
+    // is from, else ErrConflict and nothing changes: one redemption of a state, one approval,
+    // one device code. ExpireOIDCLogins deletes the rows whose ExpiresAt is before before
+    CreateOIDCLogin(ctx context.Context, l *OIDCLogin) error
+    UpdateOIDCLogin(ctx context.Context, l *OIDCLogin, from string) error
+    ExpireOIDCLogins(ctx context.Context, before time.Time) (int, error)
     ExpireFetchClaims(ctx context.Context, before time.Time) (int, error)  // HeartbeatAt before before; reindex, reconcile
     // StartReplica deletes the rows whose HeartbeatAt is before staleBefore and inserts r, a
     // serve process (index-schema.md, Coordination); on SQLite a fresh row of another replica
@@ -995,11 +1020,12 @@ type Writer interface {
 }
 
 // Models, one struct per table of index-schema.md (fields in internal/index/models.go):
-// control plane Repo, User, Token, BootstrapToken, Binding, Key, Session, AuditEvent;
-// coordination TagClaim, ReindexRun, FetchClaim, Replica; derived Package, Version, File, Cache
-// (index_cache), OCIRepo, ProxyMeta, JournalEntry, JournalState; query types FileMatch (file +
-// version + package), VersionMatch (version + package), VersionKey and AuditFilter. Ids are
-// int64, timestamps UTC, nullable columns are pointers.
+// control plane Repo, User, Token, BootstrapToken, Binding, Identity, Key, Session, AuditEvent;
+// coordination TagClaim, ReindexRun, FetchClaim, Replica, OIDCLogin; derived Package, Version,
+// File, Cache (index_cache), OCIRepo, ProxyMeta, JournalEntry, JournalState; query types
+// FileMatch (file + version + package), VersionMatch (version + package), VersionKey,
+// IdentityGroup (a row of identity_groups with its identity's UserID and GroupsExpireAt and its
+// user's UID) and AuditFilter. Ids are int64, timestamps UTC, nullable columns are pointers.
 const ReindexRunning, ReindexDone, ReindexFailed, ReindexAbandoned = "running", "done", "failed", "abandoned" // ReindexRun.State
 type ReindexOptions struct {                // reindex_runs.options: what the run was started with
     Prune  bool `json:"prune,omitempty"`
@@ -1427,7 +1453,30 @@ type Authorizer interface {
 type Writer interface {
     Write(ctx context.Context, ev index.AuditEvent) error // zero ev.At means now
 }
+
+// package auth/oidc (#69, rbac.md §8): the relying party of auth.oidc. The login flows of
+// internal/auth use the interface only, so that a library may implement it (decision on #69).
+type Provider interface {
+    // AuthCodeURL is the IdP's authorization endpoint with the code flow's parameters: the
+    // state, the nonce and the S256 challenge of the PKCE verifier. Errors wrap ErrUnavailable
+    // when the discovery document cannot be read.
+    AuthCodeURL(ctx context.Context, state, nonce, challenge string) (string, error)
+    // Exchange redeems code with the verifier at the token endpoint and verifies the ID token
+    // against nonce (rbac.md §8). Errors wrap ErrRefused (the IdP refused the code, or the ID
+    // token or its claims do not verify; the reason is for the log, never the client) or
+    // ErrUnavailable (the IdP does not answer).
+    Exchange(ctx context.Context, code, verifier, nonce string) (*Identity, error)
+}
+type Identity struct {
+    Issuer, Subject string                  // iss and sub of the ID token
+    Username        string                  // the claim auth.oidc.usernameClaim, unchecked
+    Groups          []string                // the claim auth.oidc.groupsClaim, the names of rbac.md §8 kept
+}
+var ErrRefused, ErrUnavailable error
 ```
+
+The group of a principal is `auth.KindGroup`; the credential of an OIDC login's request is
+`auth.CredOIDC`, which may mint a personal access token as a password may (`MayCreatePAT`).
 
 ### Decisions
 
@@ -1714,6 +1763,14 @@ auth:
   bootstrap:                                # the one-time token of the first admin (#440)
     tokenFile: /run/secrets/bootstrap-token # a token you made; empty: no token, a warning
     ttl: 24h
+  oidc:                                     # OIDC login (#69, rbac.md §8); off while issuer is empty
+    issuer: "https://idp.example.com/realms/main" # https; http only with server.insecureHTTP
+    clientID: lajstrom
+    clientSecretFile: /run/secrets/oidc-client-secret # env LAJSTROM_AUTH_OIDC_CLIENT_SECRET_FILE
+    scopes: [openid, profile, email, groups] # openid is sent whatever this says
+    usernameClaim: preferred_username       # the name of a user made at its first login
+    groupsClaim: groups                     # empty: no groups
+    tokenLifetime: 24h                      # the personal access token of a login; its groups count as long
 keys:
   masterKeyEnv: LAJSTROM_MASTER_KEY         # encrypts the apt keys and the bearer-token key at rest
   tokenAlgorithm: ES256                     # ES256 | EdDSA; the bearer-token key (ADR 0010)
