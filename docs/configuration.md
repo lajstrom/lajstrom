@@ -85,8 +85,8 @@ registries included.
 An upload to a frontend (raw, apt, Maven, PyPI, npm) streams into the registry and takes no disk
 ([ADR 0014](adr/0014-uploads-stream-into-the-registry.md)).
 A `/v2` upload streams to the registry and takes no disk, but for the chunks of
-[`registries[].uploads.spoolUnknownLength`](#uploads). Those, and a proxy repo's fetch, go to
-`$TMPDIR` when it is set, `/tmp` otherwise; there is no configuration key for it (a tmpfs in
+[`registries[].uploads.spoolUnknownLength`](#uploads), and so does a proxy repo's fetch. Those
+chunks go to `$TMPDIR` when it is set, `/tmp` otherwise; there is no configuration key for it (a tmpfs in
 [Compose](deploy/compose.md), an `emptyDir` on [Kubernetes](deploy/kubernetes.md)).
 
 ## Reference

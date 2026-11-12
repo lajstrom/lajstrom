@@ -346,7 +346,7 @@ the other rows with a command are run by hand at the sign-off, and the rest are 
 | X-14 | a deploy token used for `DELETE` and for `PATCH /api/v1/repos/…`; a PAT with `scopes: [read]` used for push | 403, 403, 403: deploy tokens never get `delete` or `manage`, PAT scopes only narrow | #44, #45 |
 | X-15 | `DELETE /api/v1/audit/1`, `PATCH` on an audit row | 405: the audit log has no write API; an export of the control plane that includes it is #76, after the PoC (G-07) | #46 |
 | X-16 | `govulncheck`, `go-licenses`, CodeQL, the snippet scan, on the release commit | all clean; the allowlist of CONTRIBUTING.md holds | #57 |
-| X-17 | D-02; `docker inspect` of the image | non-root, no setuid binaries, `readOnlyRootFilesystem` works with `/tmp` as the only writable mount (uploads stream, ADR 0014: `/tmp` holds the opt-in spool of a `/v2` chunk, #425, and a proxy fetch) | #57 |
+| X-17 | D-02; `docker inspect` of the image | non-root, no setuid binaries, `readOnlyRootFilesystem` works with `/tmp` as the only writable mount (uploads and proxy fetches stream, ADR 0014: `/tmp` holds only the opt-in spool of a `/v2` chunk, #425) | #57 |
 | X-18 | `SELECT * FROM keys`; `GET …/key.asc`; `tcpdump` between the edge and a client during R-05 | GPG private keys are ciphertext under `masterKeyEnv`; `key.asc` is the public key only; backend credentials never reach a client; the presigned URL expires | #41, #27 |
 | X-19 | the config file world-readable; `LAJSTROM_MASTER_KEY` unset with keys present | a warning at start for the file mode; exit 2 for the missing master key, naming the variable only | #41, #50 |
 | X-20 *review* | `docs/security/threat-model.md` | every high finding fixed or tracked; `SECURITY.md` has the supported-versions table and a contact | #63 |

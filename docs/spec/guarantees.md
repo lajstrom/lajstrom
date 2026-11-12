@@ -113,18 +113,19 @@ longer than `reconcile.graceAge` is outside them
 
 - **Statement.** The bytes of a package file are stored in the registry and nowhere else: never in
   the database, and on a replica's disk only as a spool of one request, removed when it ends. A
-  raw, apt, Maven, PyPI or npm upload is not on the disk at all ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)).
+  raw, apt, Maven, PyPI or npm upload, and a proxy fetch, is not on the disk at all
+  ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)).
 - **Scope.** Every format and kind, both write paths (a frontend upload, a `/v2` blob upload) and
   the proxy fetch. The database keeps derived copies of metadata that reindex rebuilds or a cache
   may drop: `versions.metadata` (a metadata layer of at most 4 MiB), rendered documents in
   `index_cache`, an upstream's documents in `proxy_meta`.
 - **Assumes.** Any.
-- **Mechanism.** `format.Spool` (one temporary file per proxy fetch, mode 0600, unlinked at
-  creation where the system allows, removed on `Close`), the proxy's
-  `proxy.Core.spool`; `/v2` uploads stream into the backend's session (`facade` uploads, the
+- **Mechanism.** `/v2` uploads stream into the backend's session (`facade` uploads, the
   provider's `BlobUploader`) and take no disk, but for a chunk of unknown length that
   `uploads.spoolUnknownLength` spools (one temporary file of the chunk, unlinked when it is
-  made). A raw `PUT`, an apt, a twine and an npm upload, and a Maven file (`ingest.Pipeline.Add`), stream into a session too
+  made). A raw `PUT`, an apt, a twine and an npm upload, a Maven file (`ingest.Pipeline.Add`),
+  and the file of a proxy fetch (`proxy.Core.download`, its checksum checked before the end of
+  the body), stream into a session too
   (`ingest.Pipeline.UploadStream`, the provider's `BlobWriter`), which is closed with the digest
   Lajstrom computed only once every check passed and cancelled otherwise, so a refused upload
   stores nothing. The exception is a wheel or a `.zip` sdist that is read back from the registry
@@ -136,7 +137,8 @@ longer than `reconcile.graceAge` is outside them
   (deb), `TestDeployWritesNoTempFile` and `TestDeployRefusedStoresNothing` (maven), `TestSessionAddStreams`
   (ingest), `TestUploadWheelWritesNoTempFile`, `TestUploadWheelRefused` and
   `TestUploadSdistRefusedStoresNothing` (pypi), `TestPublishWritesNoTempFile` and
-  `TestPublishRefusedStoresNothing` (npm), `TestUploadStreamRefused` (ingest); `ha.sh` H-05 (a
+  `TestPublishRefusedStoresNothing` (npm), `TestUploadStreamRefused` (ingest),
+  `TestFileWritesNoTempFile`, `TestFileChecksum` and `TestFileCutShort` (proxy); `ha.sh` H-05 (a
   replica killed with `SIGKILL` in a 500 MiB upload: nothing left in its `/tmp`).
 - **When violated.** A spool that a `SIGKILL` leaves where the system cannot unlink at creation
   stays in `$TMPDIR` (threat model U-2); nothing serves from it.
@@ -787,7 +789,7 @@ longer than `reconcile.graceAge` is outside them
   chunk of 8 MiB, apt the head of a `.deb` too, pypi the end of a zip, npm the `package.json` of its tarball), the proxy fetch.
 - **Assumes.** Any.
 - **Mechanism.** `format.ServeBlob` through a fixed buffer, `facade` request bodies passed to the
-  provider's session, the provider's `BlobWriter` (one chunk), `format.Spool`; the bounded reads
+  provider's session, the provider's `BlobWriter` (one chunk); the bounded reads
   of operations.md, Performance.
 - **Tests.** `TestStreamingMemory` (1 GiB up and down through `/v2`, heap under 64 MiB),
   `TestPutStreams1GiB` (1 GiB through a raw `PUT`, heap under 64 MiB), `TestUploadStreams1GiB` (deb, the
@@ -960,12 +962,14 @@ longer than `reconcile.graceAge` is outside them
   registry served it (INV-4). Database: **Postgres for replicas**, **clocks agree**. The upstream's document and file come over the same channel: the
   checksum proves the transfer, not the upstream's honesty.
 - **Mechanism.** `proxy.flights.join` on a replica; `proxy.Core.claim` (`fetch_claims`),
-  `Core.heartbeat`; `Core.download` with `strongest`; `Core.reject` writes `proxy.reject`. A
-  document's misses on a replica share one upstream request (`Core.refresh`, through
-  `flights.join`).
+  `Core.heartbeat`; `Core.download` with `strongest`, whose body fails in place of its end when
+  the checksum does not match, so that `UploadStream` cancels the session; `Core.reject` writes
+  `proxy.reject`. A document's misses on a replica share one upstream request (`Core.refresh`,
+  through `flights.join`).
 - **Tests.** `TestFileOneFetch`, `TestFileTwoReplicas`, `TestFileClaims`, `TestFileChecksum`,
-  `TestFileRefused`, `TestFileMiss`, `TestDocumentOneRequest`, the store conformance case
-  `FetchClaimRace`; `npm.sh` (each tarball fetched once, `proxy.fetch` in the audit log).
+  `TestFileRefused`, `TestFileCutShort`, `TestFileMiss`, `TestDocumentOneRequest`, the store
+  conformance case `FetchClaimRace`; `npm.sh` (each tarball fetched once, `proxy.fetch` in the
+  audit log).
 - **When violated.** A checksum mismatch is `502`, an audit row `proxy.reject` and a warning
   naming both values.
 - **Status.** `holds`.
@@ -1392,7 +1396,7 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | No frontend test of a denial with malformed input (INV-15) | a regression of the R-2 kind on a frontend goes unseen | a table test per frontend, as `TestDenialBeforeInput` does for `/v2` | new issue |
 | oras-go's `auth.Client`, which the provider's requests but a blob's `GET` and `HEAD` go through (manifests, tag lists, upload sessions), is relied on to drop `Authorization` on a redirect that leaves the registry's origin (INV-20) | an oras-go release that stopped doing so would send the registry's credentials to another origin, unseen | a test of ours: a manifest `GET` redirected to another origin arrives there without `Authorization` | new issue |
 | Acceptance C-07 and S-09 are not automated (INV-14, INV-21) | a redaction or an audit regression goes unseen | after the suite, grep both replicas' logs for every secret used, and count the audit rows of its writes | new issue |
-| No budget for the bytes of `$TMPDIR` (INV-23) | frontend uploads stream (ADR 0014); what still spools has no byte budget: the proxy fetches of a replica, which `server.maxConcurrentUploads` does not count either, and the `/v2` chunks of `uploads.spoolUnknownLength` | a spool budget, or a proxy fetch that streams too (ADR 0014) | [#427](https://github.com/lajstrom/lajstrom/issues/427) |
+| No budget for the bytes of `$TMPDIR` (INV-23) | frontend uploads and proxy fetches stream (ADR 0014); what still spools has no byte budget: the `/v2` chunks of `uploads.spoolUnknownLength`, off by default | a spool budget | [#427](https://github.com/lajstrom/lajstrom/issues/427) |
 | Registries that fold tag case (INV-7) | two versions that differ in case: the second is a `409` with an unclear message | `Capabilities.TagsFoldCase` | [#426](https://github.com/lajstrom/lajstrom/issues/426) |
 | Whether a migration is expand is reviewed, not tested; the job `upgrade`, which runs the previous release's binary on the next schema, is skipped until there is a release; pre-#244 claims (INV-6, INV-41) | a contract migration without its `requires` line breaks the replicas of the release before during a rolling update; a mixed fleet may not exclude publishes | tag v0.1.0: from then on the job `upgrade` (`test/upgrade/run.sh`, [#485](https://github.com/lajstrom/lajstrom/issues/485)) runs on every pull request that changes a migration | [#59](https://github.com/lajstrom/lajstrom/issues/59) |
 | Policy (INV-38), encryption at rest (INV-39) | not built | as the issues say | [#101](https://github.com/lajstrom/lajstrom/issues/101), [#114](https://github.com/lajstrom/lajstrom/issues/114) |

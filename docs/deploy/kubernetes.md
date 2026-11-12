@@ -343,9 +343,9 @@ the Kubernetes API. That is the `restricted` Pod Security Standard: labelling th
 fixtures, Postgres and the registry, as violations; those of `try/` meet it too.
 
 The only writable path is `/tmp`, an `emptyDir` of at most 4 GiB on the node's disk. A frontend
-upload (raw, apt, maven, pypi, npm) streams into the registry and takes none; what is spooled
-there is a `/v2` chunk of a registry with `uploads.spoolUnknownLength` on and a proxy repo's
-fetch. Size it for those of one replica at once, or the pod is evicted when it fills. To
+upload (raw, apt, maven, pypi, npm) and a proxy repo's fetch stream into the registry and take
+none; what is spooled there is a `/v2` chunk of a registry with `uploads.spoolUnknownLength`
+on. Size it for those of one replica at once, or the pod is evicted when it fills. To
 spool on a volume of its own instead, mount it and set `TMPDIR` to its path: Lajstrom spools
 into `$TMPDIR` when it is set, `/tmp` otherwise.
 
