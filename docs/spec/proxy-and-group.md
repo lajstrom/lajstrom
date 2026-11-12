@@ -49,6 +49,7 @@ it by name. The API never takes a URL or a file path (§9). Keys, for configurat
 | `upstreams[].retries` | integer | `2` | Retries of a request, as `registries[].retries` defines them: `429`, `5xx` but `501` and `505`, timeouts, connections refused or reset; backoff from 250 ms, at most 3 s. On an `oci` upstream, also the resumes in a row of a blob's body that get no byte (§11.5). `0` means the default, a negative value none. |
 | `upstreams[].revalidateTimeout` | duration | `5s` | An `oci` upstream's: bounds, whole, the `HEAD` that revalidates a tag whose row expired, sent once without retries; on a failure or no answer within it the row is served (§11.4). A tag without a row keeps `timeout` and `retries`. `0s` means the default; refused on another format. |
 | `upstreams[].maxMetadataSize` | bytes | `67108864` (64 MiB) | Largest document the upstream may answer for one name; a larger one is not cached (§6). `0` means the default. |
+| `upstreams[].maxConcurrentTransits` | integer | unset: no cap | An `oci` upstream's: how many requests of one blob a replica streams from the upstream at once while its copy runs (a transit, §11.8, rule 5). `-1` or unset: no cap; `0`: none; below `-1` is invalid, and so is the key on another format. |
 
 A credential file is read when `serve` starts, as `keys.masterKeyFile` is: missing, unreadable
 or empty is a configuration error of `serve`, and a mode that lets the group or others read it
@@ -708,8 +709,10 @@ never a wrong answer, since a blob is mounted only from a path that answers its 
    streamed into a backend upload session, hashed on the way, and committed with its digest
    ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)); nothing is spooled. Bytes
    whose digest or size differ are not committed: `502`, `proxy.reject`. The `oci.held` row
-   follows the commit or the mount, and the path joins the blob's `oci.holders` row. Other
-   requests for the blob wait as §5, step 6, says, and are served from the backend.
+   follows the commit or the mount, and the path joins the blob's `oci.holders` row. While the
+   copy runs, the other `GET`s of the blob without `Range`, on any replica, get a transit (§11.8);
+   a request beyond the transits' cap, a `Range` request and a `HEAD` wait as §5, step 6, says, and
+   are served from the backend.
 
    **A body that breaks is resumed.** A read of the upstream's body that fails before the last
    byte (a connection reset or closed, a body cut by `upstreams[].timeout`, §2.1), or a body that
@@ -729,7 +732,8 @@ never a wrong answer, since a blob is mounted only from a path that answers its 
    through `internal/ingest`, waits for the visibility barrier, records the OCI name in
    `oci_repos`, and writes the audit row `proxy.fetch` with `details.upstream` and `details.ref`
    (the digest, and the tag of a tag push).
-4. The claim holder is answered from the stream as it goes into the backend (§11.8); every other
+4. The claim holder is answered from the stream as it goes into the backend, and a `GET` without
+   `Range` that does not hold the claim, while the copy runs, by a transit (§11.8); every other
    request from the backend.
 5. **A platform a client pulled is held whole.** Since a client asks only for the layers it does
    not hold, an image whose layers it holds from another image would never be held whole at its
@@ -847,8 +851,8 @@ first byte does not wait for its whole copy (containerd cancels a pull that gets
 `image_pull_progress_timeout`, 5 minutes by default):
 
 1. Only a blob whose digest and size a held or cached manifest gives tees: the `Content-Length`
-   is known. A `Range` request, and every request that waits on the claim, are served from the
-   backend once the blob is held.
+   is known. A `Range` request, and every request that waits on the claim (rule 5), are served
+   from the backend once the blob is held.
 2. The last byte is held back, as INV-40 does on a download, until the bytes have the digest
    **and** the backend has committed the blob. No client completes a blob the backend does not
    hold or whose bytes are not its digest; a refusal aborts the connection, and the client tries
@@ -857,6 +861,26 @@ first byte does not wait for its whole copy (containerd cancels a pull that gets
    and is dropped, its connection aborted, when it falls behind or leaves; the fetch goes on.
 4. Nothing is kept outside the registry but that buffer
    ([ADR 0001](../adr/0001-oci-registry-as-sole-storage.md)).
+5. **The transit.** containerd also gives up on an answer whose headers take 30 s
+   (`ResponseHeaderTimeout`, which `hosts.toml` cannot change), and an ingress after 60 s, so a
+   request that does not hold the claim is not made to wait for the commit. While the claim's
+   copy runs, under this replica's flight or another replica's claim, a `GET` without `Range` of
+   the blob opens a `GET` of its own from the upstream, with the redirect, credential and digest
+   rules of the fetch and its resumes (§11.5, step 2), and streams it to its client:
+   - its last byte is held until the bytes have the digest; other bytes abort the connection and
+     write `proxy.reject`, as rule 2 says of the tee;
+   - it writes nothing anywhere: the backend gets the claim holder's one copy, and the transit
+     costs one more transfer from the upstream;
+   - `upstreams[].maxConcurrentTransits` caps the transits of one blob on a replica: unset or
+     `-1`, no cap (the default, as distribution's proxy serves a blob in flight from the remote);
+     `N`, at most `N`, and a request beyond them waits for the copy; `0`, none. With several
+     replicas the cap is per replica;
+   - an upstream that does not answer the transit's `GET` leaves the request waiting for the
+     copy;
+   - each transit is the result `transit` of `lajstrom_proxy_fetches_total`, or `error`, and a
+     log line.
+
+   Once the blob is held, every request is served from the backend.
 
 ### 11.9 What an `oci` proxy does not do
 

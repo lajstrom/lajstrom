@@ -971,7 +971,7 @@ longer than `reconcile.graceAge` is outside them
 
 ## Proxy and group repos
 
-### INV-31. A proxy downloads an artifact once, and checks it before it keeps it
+### INV-31. A proxy stores an artifact once, and checks it before it keeps it
 
 - **Statement.** Concurrent misses of one artifact download it once, on one replica or across
   replicas; nothing is pushed unless the strongest checksum the upstream's document gives
@@ -982,7 +982,12 @@ longer than `reconcile.graceAge` is outside them
   never fetched. The completion of a platform a client pulled ([proxy-and-group.md](proxy-and-group.md)
   §11.5, step 5) fetches under the same claims and under the repo's claim of the digest, so that
   completions at two paths fetch a blob they share once; a blob the backend mounts from another path
-  of the repo is not fetched at all.
+  of the repo is not fetched at all. For an `oci` blob the promise is **stored once**, not
+  downloaded once: while the claim holder's copy runs, a `GET` that does not hold the claim, on any
+  replica, is streamed from a download of its own, a transit (§11.8, rule 5), up to
+  `upstreams[].maxConcurrentTransits` per blob and replica; a transit is checked against the
+  digest the same way, its last byte held until then, and writes nothing anywhere, so the backend
+  still gets one copy.
 - **Scope.** Proxy repos (npm in M4), directly and through a group; `oci` proxy repos
   ([proxy-and-group.md](proxy-and-group.md) §11), with [#442](https://github.com/lajstrom/lajstrom/issues/442).
 - **Assumes.** Registry: **monotonic reads** (**unchecked**) for the waiters, which look the
@@ -993,7 +998,8 @@ longer than `reconcile.graceAge` is outside them
   `Core.heartbeat`; `Core.download` with `strongest`, whose body fails in place of its end when
   the checksum does not match, so that `UploadStream` cancels the session; `Core.reject` writes
   `proxy.reject`. A document's misses on a replica share one upstream request (`Core.refresh`,
-  through `flights.join`).
+  through `flights.join`). On an `oci` proxy, `Core.ociFetchBlob` under `ociClaim`, and
+  `Core.ociTransit`, whose `transit` holds the last byte until the digest matches.
 - **Tests.** `TestOCIManifestOnce`, `TestOCIBlobOnce`, `TestOCICompleteSharedConcurrent`, `TestOCICompleteOnce`, `TestOCIManifestDigestMismatch`,
   `TestOCIBlobRefused`, `TestOCIBlobNotListed`, `TestMirrorBlob` (the `oci` proxy:
   `proxy.Core.ociClaim`, `ingest.Pipeline.MirrorBlob`); `TestFileOneFetch`, `TestFileTwoReplicas`,
@@ -1322,7 +1328,7 @@ longer than `reconcile.graceAge` is outside them
 | INV-28 | a migration applied once | holds | |
 | INV-29 | the npm journal's order and replay | holds | unchecked |
 | INV-30 | packument agrees with the tarball | holds | |
-| INV-31 | proxy fetch once, checked | holds | unchecked |
+| INV-31 | proxy store once, checked | holds | unchecked |
 | INV-32 | a proxy reaches only what is configured | holds | |
 | INV-33 | a proxied artifact is ordinary | holds | |
 | INV-34 | hosted names hide the upstream in a group | holds | |
