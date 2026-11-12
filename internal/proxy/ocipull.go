@@ -169,9 +169,32 @@ func (c *Core) ociPushUp(ctx context.Context, p *ociProxied, m digest.Digest) {
 	}
 }
 
-// ociCompleteFetch fetches the blob l of the manifest m at p's path for a completion, in the
-// flight and under the claim a client's miss of it takes, and counts it.
+// ociCompleteFetch makes the backend hold the blob l of the manifest m at p's path for a
+// completion, once the path is quiet: held already, or mounted, else fetched under the repo's
+// claim of the digest and then in the flight and under the claim a client's miss takes; a
+// fetch counts as the result completed.
 func (c *Core) ociCompleteFetch(ctx context.Context, p *ociProxied, m digest.Digest, l ocispec.Descriptor) {
+	// Since the GET of the manifest, a client or the completion at another path may have made
+	// the backend hold the blob: then it is held here, or mounted.
+	got := func(ctx context.Context) (bool, error) { return c.ociHeldAt(ctx, p, l) || c.ociMount(ctx, p, l), nil }
+	if ok, _ := got(ctx); ok {
+		return
+	}
+	// The repo's claim of the digest: the completions at two paths that share the blob fetch it
+	// once, and the one that waits mounts it from the other's path once it is held there.
+	release, shared, err := c.ociClaimAt(ctx, p, "", l.Digest.String(), got)
+	switch {
+	case err != nil:
+		c.o.Log.WarnContext(ctx, "proxy: a blob of a completion not fetched; the next GET of the manifest tries again", "repo", p.id(),
+			"path", p.path, "manifest", m.String(), "digest", l.Digest.String(), "error", err.Error())
+		return
+	case shared:
+		return
+	}
+	defer release()
+	if ok, _ := got(ctx); ok { // held at another path before the claim was taken
+		return
+	}
 	fl, joined := c.flights.join(blobFlight(p, l.Digest), func() (bool, error) {
 		return c.ociFetchBlob(ctx, p, l, nil)
 	})
