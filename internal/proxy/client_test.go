@@ -304,11 +304,13 @@ func TestLoadUpstreams(t *testing.T) {
 		{Name: "a", Format: "npm", URL: "https://a.example", Auth: config.UpstreamAuth{TokenFile: token}},
 		{Name: "b", Format: "npm", URL: "http://b.example", Auth: config.UpstreamAuth{Username: "u", PasswordFile: password}},
 		{Name: "c", Format: "npm", URL: "https://c.example"},
+		{Name: "d", Format: "npm", URL: "https://d.example", Auth: config.UpstreamAuth{Username: "u", PasswordEnv: "P", Password: "pw"}},
 	}, UpstreamOptions{Log: slog.New(slog.NewTextHandler(&logs, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ups["a"].authorization != "Bearer tok" || ups["b"].authorization != "Basic dTpwdw==" || ups["c"].authorization != "" {
+	if ups["a"].authorization != "Bearer tok" || ups["b"].authorization != "Basic dTpwdw==" || ups["c"].authorization != "" ||
+		ups["d"].authorization != "Basic dTpwdw==" {
 		t.Errorf("authorization of a %q, b %q, c %q", ups["a"].authorization, ups["b"].authorization, ups["c"].authorization)
 	}
 	for _, w := range []string{"key=upstreams[1].auth.passwordFile", "open to the group or others", "upstream=b", "plain http"} {
