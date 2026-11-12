@@ -89,6 +89,9 @@ type Core struct {
 	// of their completions (ocipull.go).
 	pulls      pulls
 	completing chan struct{}
+	// tagLocks holds the one lock of an upstream tag this replica may hold at a time
+	// (ociTagLock).
+	tagLocks chan struct{}
 }
 
 var _ format.Proxy = (*Core)(nil)
@@ -128,7 +131,7 @@ func New(o Options) *Core {
 	if o.CompleteQuiet == 0 {
 		o.CompleteQuiet = defaultCompleteQuiet
 	}
-	return &Core{o: o, completing: make(chan struct{}, ociCompleteFetches)}
+	return &Core{o: o, completing: make(chan struct{}, ociCompleteFetches), tagLocks: make(chan struct{}, 1)}
 }
 
 // proxied is a proxy repo with what serving it takes: its plugin and hooks, its settings, and
