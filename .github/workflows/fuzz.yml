@@ -39,6 +39,8 @@ jobs:
           - { package: ./internal/format/maven, target: FuzzPOM }
           - { package: ./internal/format/npm, target: FuzzPackageJSON }
           - { package: ./internal/format/npm, target: FuzzTarballInspector }
+          - { package: ./internal/format/rpm, target: FuzzParse }
+          - { package: ./internal/format/rpm, target: FuzzInspector }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
