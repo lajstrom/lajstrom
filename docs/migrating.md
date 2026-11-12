@@ -9,7 +9,9 @@ already does, in three steps:
    registry byte for byte, checked against the old registry's checksums, with their origin in
    the manifest.
 3. The **switch**: the proxy goes offline and the old registry is switched off. The proxy serves
-   what it holds, with the dist-tags and deprecations as the old registry had them.
+   what it holds, with the dist-tags and deprecations as the old registry had them. Or the proxy
+   becomes a hosted repo, which keeps them in its own journal and takes publishes
+   ([section 5](#5-or-the-proxy-becomes-a-hosted-repo)).
 
 This page is for npm. pypi and maven get the same steps when their proxies come (#67, #68).
 Verdaccio is what the steps were run against (`test/e2e/migrate-npm.sh`). The Nexus and
@@ -147,7 +149,34 @@ What an offline proxy does not do:
   (`proxy_meta`). The versions are in the registry and survive anything the index does, but a
   purge of the upstream cache, or an index rebuilt from the registry, loses the packuments: the
   repo then lists what it holds, with `latest` the highest version, and its other dist-tags and
-  its deprecations are gone. `npm dist-tag` cannot set them again on a proxy.
+  its deprecations are gone. `npm dist-tag` cannot set them again on a proxy. Turning the repo
+  into a hosted one (section 5) moves them into the registry.
+
+## 5. Or: the proxy becomes a hosted repo
+
+Instead of staying an offline proxy, the repo can become a hosted one, once and for good
+([api.md](api.md#a-proxy-becomes-a-hosted-repo), proxy-and-group.md §2.6). An admin:
+
+```sh
+curl -s -X PATCH "$LAJSTROM/api/v1/repos/npm/legacy" -H 'Content-Type: application/json' -d '{"kind": "hosted"}'
+```
+
+It keeps every version, byte for byte and with its origin annotations. The dist-tags and the
+deprecations the old registry had are written to the repo's journal in the registry, as if
+someone had run `npm dist-tag add` and `npm deprecate` for each, so they no longer depend on a
+cache: a reindex, or an index rebuilt from the registry, gives them back. Each version keeps the
+publish time the old registry gave it (`npm view <name> time`), so `npm install --before` still
+means what it meant. The repo then takes `npm publish` and `npm dist-tag` from its writers, so no
+group is needed for new versions.
+
+- Prefetch with `--all-versions` first: a dist-tag that names a version the repo does not hold is
+  left out (the audit row `repo.convert` lists it), and a version it does not hold is gone for
+  good once there is no upstream.
+- It is refused while a fetch from the old registry runs (`409`), and when the repo is a member
+  of a group that has a hosted repo already, since a group has one.
+- A failure half way (the registry not answering while the journal is written) leaves a hosted
+  repo whose remaining dist-tags are still in the index's cache: the same `PATCH` writes them.
+- It is one way: a hosted repo never becomes a proxy again.
 
 ## Users and tokens
 
