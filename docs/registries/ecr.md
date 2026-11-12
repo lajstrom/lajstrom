@@ -194,7 +194,13 @@ replicate in less than 30 minutes, but in rare cases the replication might take 
 ([replication](https://docs.aws.amazon.com/AmazonECR/latest/userguide/replication.html)). A pull-through cache checks its upstream when
 it has not done so for 24 hours ([pull through cache](https://docs.aws.amazon.com/AmazonECR/latest/userguide/pull-through-cache.html)).
 A Lajstrom that reads a replica or a cache sees them later still. The type `ecr` says `consistency: eventual`, and
-without `consistencyBound` the start warns ([Consistency](README.md#consistency)).
+without `consistencyBound` the start warns ([Consistency](README.md#consistency)). On such a
+registry a publish waits until ECR serves it, a manifest `PUT` answered `MANIFEST_BLOB_UNKNOWN`
+and the first write to an upload session answered `BLOB_UPLOAD_UNKNOWN` are sent again within the
+bound, and reindex keeps out a version deleted through Lajstrom that ECR still lists
+([operations.md](../operations.md#an-eventually-consistent-registry),
+[registry-consistency-2026-11.md](../design/registry-consistency-2026-11.md)). None of it is
+measured against ECR itself yet: #19.
 
 ## Tested against moto
 
