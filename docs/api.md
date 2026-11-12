@@ -370,7 +370,11 @@ the manifest, then its rows in the index, the package's with its last version, a
 rendered indexes (apt `Packages` and `Release`, the simple index, `maven-metadata.xml`), which the
 next `GET` renders without it. Each manifest writes one audit row, action `delete`, with the
 number of referrers in `details.referrers`, and the token of the request in `details.token`
-(`token:<id>`) when it came with one. Blobs are left to the registry's garbage collection.
+(`token:<id>`) when it came with one. A manifest whose delete the registry answers `404` while
+it still serves it by digest, as Quay does for a referrer pushed by digest (#817), was not
+deleted: it is listed in `details.kept` and not counted in `details.referrers`, and a warning
+names it; the delete goes on, since the registry keeps it whatever Lajstrom asks. Blobs are left
+to the registry's garbage collection.
 
 `<package>` is the name in the format's spelling, one path segment: a raw path escapes its `/`
 as `%2F`, and a reverse proxy in front must pass it on encoded. `204`. It needs `delete` on the
