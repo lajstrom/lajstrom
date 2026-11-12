@@ -290,7 +290,7 @@ Docker Hub key) to this record; CLAUDE.md and INV-7 change with the first tag mo
   (#662), so that it is refused before the upstream is asked; the threat model's rows for upstream
   realms and blob redirects; cloud-specific upstream authentication.
 
-## Amendment: a platform a client got is held whole (#876, 2026-11-12)
+## Amendment: a platform a client pulled is held whole (#876, 2026-11-12)
 
 Point 1 rejected option C, prefetching a platform manifest's blobs when it is served, because of
 what a `GET` that is not a pull would copy. A Talos boot through the proxy then showed what A alone
@@ -305,10 +305,16 @@ costs (#876):
 Point 3 of the Decision gains two rules:
 - **Mount before fetch.** A blob the backend holds at another path of the repo is mounted, not
   fetched (proxy-and-group.md §11.5, step 2). This holds offline too.
-- **A platform a client got is held whole.** Once a client got a platform's manifest, every blob the
-  manifest lists is made held at the path, in the background and never before the answer. Each is
-  mounted where the backend holds it, and fetched under its claim otherwise (§11.5, step 5).
+- **A platform a client pulled is held whole.** Every blob a platform's manifest lists is made held
+  at the path, in the background and never before an answer (§11.5, step 5):
+  - once a client got the manifest, each blob the backend holds at another path of the repo is
+    mounted, offline too; nothing is fetched;
+  - once a client asked for one of the manifest's layers at the path, each blob still missing is
+    fetched under its claim.
 
-Option C is thus taken for the platform a client asked for, never for an index's other platforms. A
-`GET` that is not a pull now copies that platform's layers: point 1's cost, accepted for one
-platform so that what a client pulled is whole in the backend.
+Option C is thus taken only for a platform a client actually pulled, never for an index's other
+platforms. A `GET` that is not a pull (Renovate, `crane manifest`, `skopeo inspect`) reads a
+manifest and maybe its config, never a layer, so it costs mounts only, and point 1's cost does not
+apply to it. A layer the backend holds nowhere and no client asks for, because the nodes got it
+from outside Lajstrom, waits for a client's request for a layer of that platform, or for a
+prefetch (#886).
