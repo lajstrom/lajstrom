@@ -79,6 +79,7 @@ func newServeCmd(a *app) *cobra.Command {
 				"commit", v.Commit,
 				"config", a.configPath,
 				"database.driver", c.Database.Driver,
+				databaseFile(c.Database),
 				"registries", len(c.Registries),
 				"repos", len(c.Repos),
 			)

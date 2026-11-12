@@ -297,7 +297,9 @@ func (iotestErrReader) Read([]byte) (int, error) { return 0, errors.New("broken 
 
 // admin user does not migrate: on a database without the schema it names the command that does.
 func TestAdminUserWithoutMigrate(t *testing.T) {
-	cfg := writeConfig(t, t.TempDir())
+	dir := t.TempDir()
+	cfg := writeConfig(t, dir)
+	emptyDatabase(t, dir)
 	if _, _, err := run(t, nil, "admin", "user", "list", "--config", cfg); err == nil || !strings.Contains(err.Error(), "not migrated: "+migrateHint) {
 		t.Errorf("list before migrate: %v, want the hint to migrate", err)
 	}

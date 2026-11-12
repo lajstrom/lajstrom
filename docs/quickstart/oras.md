@@ -17,7 +17,7 @@ make run                                              # serves deploy/compose/la
 ```
 
 In another terminal, once `make run` has logged `listening` (`serve` creates the tables of
-`lajstrom.db`; before that, `admin` fails with `the index database is not migrated`), make a repo `oci/images` and a
+`lajstrom.db`; before that, `admin` fails with `no database at …/lajstrom.db`), make a repo `oci/images` and a
 repo `raw/assets` on the Zot of the stack,
 and the first user, an admin, with a password of your own (8 bytes at least):
 

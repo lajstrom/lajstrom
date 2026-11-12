@@ -20,7 +20,7 @@ make run                                          # serves deploy/compose/lajstr
 ```
 
 In another terminal, once `make run` has logged `listening` (`serve` creates the tables of
-`lajstrom.db`; before that, `admin` fails with `the index database is not migrated`), and with the same
+`lajstrom.db`; before that, `admin` fails with `no database at …/lajstrom.db`), and with the same
 `LAJSTROM_MASTER_KEY` exported there too (`admin key` of section 8 needs it), make the repo
 `apt/ubuntu` on the Zot of the stack, and the first user, an admin, with a password of your own
 (8 bytes at least):

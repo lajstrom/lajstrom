@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/config"
@@ -23,13 +25,13 @@ type store interface {
 }
 
 // openStore opens the index database of database.driver and database.dsn. It does not migrate.
-// Its errors never contain the DSN.
+// Its errors never contain the DSN; on SQLite they start with the file (inFile).
 func openStore(ctx context.Context, cfg config.Database) (store, error) {
 	switch cfg.Driver {
 	case index.DialectSQLite:
 		s, err := sqlite.Open(ctx, cfg.DSN)
 		if err != nil {
-			return nil, err
+			return nil, inFile(cfg, err)
 		}
 		return s, nil
 	case index.DialectPostgres:
@@ -45,19 +47,60 @@ func openStore(ctx context.Context, cfg config.Database) (store, error) {
 // openMigrated is openStore of the configuration for the commands that need the schema and do
 // not migrate it, admin and reindex: on a database that lacks a migration of this binary it
 // fails with the command that applies it, instead of a query's "no such table" (#575); on a
-// host whose clock is too far off the database's it fails too (checkClock).
+// host whose clock is too far off the database's it fails too (checkClock). A SQLite file that
+// does not exist is reported, not created (#719): such a command run in another directory, or
+// with another configuration, than the server's would make an empty database there, and
+// migrate after it would migrate the wrong file.
 func (a *app) openMigrated(ctx context.Context) (store, error) {
+	if err := sqliteExists(a.cfg.Database); err != nil {
+		return nil, err
+	}
 	st, err := openStore(ctx, a.cfg.Database)
 	if err != nil {
 		return nil, err
 	}
 	if err := checkSchema(ctx, st, a.cfg.Database.Driver); err != nil {
-		return nil, errors.Join(err, st.Close())
+		return nil, errors.Join(inFile(a.cfg.Database, err), st.Close())
 	}
 	if err := checkClock(ctx, st, a.clock, a.log); err != nil {
 		return nil, errors.Join(err, st.Close())
 	}
 	return st, nil
+}
+
+// sqliteExists fails when database.dsn names a SQLite file that does not exist, naming the
+// absolute path; an in-memory database and postgres pass. sqlite.Open would create the file:
+// modernc.org/sqlite drops the query of a file name that is not a file: URI, mode=rw with it, so
+// a stat is what checks both forms. A file that cannot be stat'ed otherwise is left to the open.
+func sqliteExists(d config.Database) error {
+	file := d.File()
+	if file == "" {
+		return nil
+	}
+	if _, err := os.Stat(file); errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("no database at %s (database.dsn): run lajstrom migrate there, "+
+			"or point --config/database.dsn at the server's", file)
+	}
+	return nil
+}
+
+// inFile prefixes err with the SQLite file of d and the key, when d names one: SQLite's own
+// errors, "unable to open database file (14)", "attempt to write a readonly database (1544)",
+// name neither. A relative DSN is resolved against the working directory, as SQLite does.
+func inFile(d config.Database, err error) error {
+	if file := d.File(); file != "" {
+		return fmt.Errorf("%s (database.dsn): %w", file, err)
+	}
+	return err
+}
+
+// databaseFile is the attribute of serve's first line that names the SQLite file of d,
+// absolute; nothing for postgres, whose DSN is never logged, or an in-memory database.
+func databaseFile(d config.Database) slog.Attr {
+	if file := d.File(); file != "" {
+		return slog.String("database.file", file)
+	}
+	return slog.Attr{}
 }
 
 // checkClock compares the clock of this host with the database's (skewOf) before a command of
