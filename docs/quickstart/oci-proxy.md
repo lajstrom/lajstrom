@@ -64,14 +64,20 @@ What happens on the first pull of a tag:
    under another repository of the repo (`kube-apiserver` and `kube-controller-manager` share
    most of theirs) is mounted instead, with no request to the upstream, even when the repo is
    offline; a backend that does not mount (Nexus's `docker` format, JFrog) gets it fetched.
-4. Once a client got a platform's manifest, the backend is made to hold all of that platform's
-   layers, whatever the client asks for: containerd asks only for the layers it does not hold,
-   so an image whose layers it has from another image would otherwise never be held whole. In
-   the background, layers held under another repository of the repo are mounted at once, offline
-   too; the others are fetched once no client of the replica has asked for a layer of that
-   repository for 10 seconds, at most 4 at a time per replica, within `maxFileSize`. So a `GET`
-   of a platform's manifest, `crane manifest` too, costs that platform's layers; a `HEAD`, and
-   the other platforms of an index, cost nothing.
+4. A pulled platform is held whole, whatever layers the client asks for: containerd asks only
+   for the layers it does not hold, so an image whose layers it has from another image would
+   otherwise never be held whole. In the background:
+   - a `GET` of a platform's manifest mounts the layers held under another repository of the
+     repo, offline too, and fetches nothing: `crane manifest`, `skopeo inspect` or Renovate
+     reading the config cost mounts only;
+   - once a client asked for one of its layers, the layers still missing are fetched, once no
+     client of the replica has asked for a layer of that repository for 10 seconds, at most 4 at
+     a time per replica, within `maxFileSize`. A layer that two versions cached under one
+     repository share does not say which one is pulled, and starts neither;
+   - a `HEAD`, and the other platforms of an index, cost nothing.
+
+   A layer that the backend holds nowhere and no client asks for, because the nodes got it
+   elsewhere, stays out until a client asks for a layer of that platform.
 5. Once a platform's layers are held, its manifest is pushed to the backend under a keep-tag
    `_keep.sha256.<hex>`, which `tags/list` does not show and garbage collection leaves alone;
    once every platform is held, the index too, and the upstream's tag where the backend lets

@@ -179,10 +179,11 @@ func TestIntegrationOCIProxy(t *testing.T) {
 }
 
 // ociCompleted: a client that holds kube-controller-manager's layers gets kube-apiserver's
-// manifest and asks only for its config and its own layer. The completion of the manifest makes
-// the backend hold kube-apiserver whole under its keep-tag: the shared layer is mounted, or
-// fetched in the background when the backend does not mount; an offline repo then serves every
-// layer of it (docs/spec/proxy-and-group.md §11.5, step 5).
+// manifest and asks only for its config and its own layer. The backend then holds
+// kube-apiserver whole under its keep-tag: the GET of the manifest mounts the shared layer, or,
+// when the backend does not mount, the GET of the client's layer starts its fetch in the
+// background; an offline repo then serves every layer of it (docs/spec/proxy-and-group.md
+// §11.5, step 5).
 func ociCompleted(t *testing.T, st index.Store, backend, seed provider.Provider, upstream *proxy.OCIUpstream, count *counter, mounts bool) {
 	ctx := t.Context()
 	name := fmt.Sprintf("k8s-%t", mounts)
