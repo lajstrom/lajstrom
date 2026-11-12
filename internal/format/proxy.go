@@ -118,6 +118,26 @@ type Grouper interface {
 	MergeGroup(ctx context.Context, group index.Repo, name, kind string, docs []MemberDocument, base string) (Document, error)
 }
 
+// Adopter is implemented by a plugin whose proxy repos may become hosted repos (docs/spec/
+// proxy-and-group.md §2.6, #441): a proxy's dist-tags and deprecations are its upstream's
+// documents in proxy_meta, a hosted repo's are its journal, so the conversion turns what the
+// proxy kept of each package into journal ops (Publisher.Journal). A format whose plugin lacks
+// it has proxies that stay proxies.
+type Adopter interface {
+	Proxier
+
+	// AdoptKind is the kind of the kept document AdoptOps reads: npm the full packument.
+	AdoptKind() string
+
+	// AdoptOps returns the journal ops that give a hosted repo, which holds the versions held of
+	// name, the pointers and the deprecations of kept, the proxy's document of AdoptKind as
+	// ParseMetadata kept it (npm: a dist-tag add per dist-tag whose version is held, a deprecate
+	// per held version with a message). What it leaves out, a pointer to a version not held or
+	// one the journal refuses, is described in skipped. A body it cannot read gives an error
+	// wrapping ErrInvalid.
+	AdoptOps(name string, kept []byte, held []string) (ops []JournalOp, skipped []string, err error)
+}
+
 // Prefetcher is implemented by a plugin whose proxy repos take a prefetch (docs/spec/
 // proxy-and-group.md §5.1, #441): the core fetches the entries of a list of names before a
 // client asks for them, as a miss would. A format whose plugin lacks it has no prefetch.
