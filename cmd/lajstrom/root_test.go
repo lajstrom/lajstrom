@@ -59,6 +59,11 @@ func TestCommands(t *testing.T) {
 		{name: "config from env", env: map[string]string{"LAJSTROM_CONFIG": cfg}, args: []string{"reindex"}, wantErr: "the index database is not migrated: run lajstrom migrate"},
 		{name: "migrate missing config", args: []string{"migrate", "--config", missing}, wantErr: missing, status: 2},
 		{name: "invalid config", env: map[string]string{"LAJSTROM_DATABASE_DRIVER": "mysql"}, args: []string{"migrate", "--config", cfg}, wantErr: `database.driver: "mysql"`, status: 2},
+		// #718: the DSN of the other engine is a configuration error, not the driver's.
+		{name: "postgres with a SQLite DSN", env: map[string]string{"LAJSTROM_DATABASE_DRIVER": "postgres"}, args: []string{"migrate", "--config", cfg},
+			wantErr: "database.dsn: is a SQLite DSN, and database.driver is postgres", status: 2},
+		{name: "sqlite with a postgres DSN", env: map[string]string{"LAJSTROM_DATABASE_DSN": "postgres://db/lajstrom"}, args: []string{"reindex", "--config", cfg},
+			wantErr: "database.dsn: is a Postgres DSN, and database.driver is sqlite", status: 2},
 		{name: "serve missing config", args: []string{"serve", "--config", missing}, wantErr: "no such file", status: 2},
 		// docs/acceptance.md C-02 and C-03.
 		{name: "serve with a path in externalURL", env: map[string]string{"LAJSTROM_SERVER_EXTERNAL_URL": "https://art.test/sub"},
@@ -89,6 +94,29 @@ func TestCommands(t *testing.T) {
 				t.Errorf("stdout = %q, want it to contain %q", out, tt.wantOut)
 			}
 		})
+	}
+}
+
+// TestPostgresWithoutDSN: database.driver postgres and no DSN, as in the shipped deploys with
+// LAJSTROM_DATABASE_DSN unset, is a configuration error of every command that opens the index,
+// exit 2, naming the key and the variable; SQLite's default file is not passed to pgx (#718).
+// healthcheck reads server.listen alone: it fails on the server it cannot reach, not on this.
+func TestPostgresWithoutDSN(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "lajstrom.yaml")
+	body := "server:\n  listen: \"127.0.0.1:1\"\n  externalURL: https://art.example.com\ndatabase:\n  driver: postgres\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const want = "database.dsn: must be set with database.driver postgres, which has no default: " +
+		"a postgres:// URL or host=… dbname=…, best in LAJSTROM_DATABASE_DSN"
+	for _, args := range [][]string{{"migrate"}, {"admin", "user", "list"}, {"reindex"}, {"serve"}} {
+		_, _, err := run(t, nil, append(args, "--config", cfg)...)
+		if err == nil || !strings.Contains(err.Error(), want) || exitStatus(err) != 2 {
+			t.Errorf("%v: %v (exit %d), want %q, exit 2", args, err, exitStatus(err), want)
+		}
+	}
+	if _, _, err := run(t, nil, "healthcheck", "--config", cfg); err == nil || strings.Contains(err.Error(), "database") {
+		t.Errorf("healthcheck: %v, want the server's error alone", err)
 	}
 }
 

@@ -100,7 +100,8 @@ type Log struct {
 type Database struct {
 	// Driver is sqlite or postgres.
 	Driver string `yaml:"driver"`
-	// DSN is the data source name of the driver, e.g. file:lajstrom.db or postgres://….
+	// DSN is the data source name of the driver, e.g. file:lajstrom.db or postgres://…. Load
+	// sets DefaultDatabaseDSN for sqlite when it is empty; postgres has no default.
 	DSN string `yaml:"dsn"`
 }
 
@@ -437,7 +438,7 @@ const (
 	DefaultLogLevel             = "info"
 	DefaultLogFormat            = "text"
 	DefaultDatabaseDriver       = "sqlite"
-	DefaultDatabaseDSN          = "file:lajstrom.db"
+	DefaultDatabaseDSN          = "file:lajstrom.db" // sqlite's only: Load leaves a postgres DSN empty
 	DefaultRegistryType         = "generic"
 	DefaultRegistryTimeout      = 30 * time.Second
 	DefaultRegistryRetries      = 3
@@ -476,7 +477,7 @@ func Default() *Config {
 			MaxCreatedAhead: DefaultMaxCreatedAhead, MaxCreatedBehind: DefaultMaxCreatedBehind,
 			UploadSessions: UploadSessions{PerRepo: DefaultUploadSessionsPerRepo, PerPrincipal: DefaultUploadSessionsPerPrincipal}},
 		Log:       Log{Level: DefaultLogLevel, Format: DefaultLogFormat},
-		Database:  Database{Driver: DefaultDatabaseDriver, DSN: DefaultDatabaseDSN},
+		Database:  Database{Driver: DefaultDatabaseDriver},
 		Ingest:    Ingest{ClaimTTL: DefaultIngestClaimTTL, VisibilityTimeout: DefaultIngestVisibilityTimeout},
 		Reconcile: Reconcile{Interval: DefaultReconcileInterval, GraceAge: DefaultReconcileGraceAge},
 		Auth:      Auth{Bootstrap: Bootstrap{TTL: DefaultBootstrapTTL}},
