@@ -25,7 +25,8 @@ import (
 // without it fails pushes the index back, a 503, and the three stay listed. With the index then
 // lost, as a delete before #711's fix could leave it, the retry rebuilds it from the audit log:
 // the referrer goes, and the other two are listed. A registry with the API keeps the list
-// itself, and the test is skipped there.
+// itself, and the test is skipped there, as on a registry whose manifests Lajstrom does not
+// delete (skipWithoutDeletes).
 func TestIntegrationDeleteReferrerIndexRepair(t *testing.T) {
 	addr := os.Getenv("LAJSTROM_TEST_REGISTRY")
 	if addr == "" {
@@ -39,6 +40,7 @@ func TestIntegrationDeleteReferrerIndexRepair(t *testing.T) {
 	if caps.Referrers {
 		t.Skip("the registry has the referrers API: there is no tag-schema index to keep")
 	}
+	skipWithoutDeletes(t, caps)
 	pub, err := e.pipe.Upload(ctx, e.repo, upload("notes", "1.0", file{"notes", "the subject of " + e.repo.Name}), alice)
 	must(t, err)
 	rr, err := prov.Repository(ctx, "raw/"+e.repo.Name+"/notes")
@@ -88,4 +90,15 @@ func TestIntegrationDeleteReferrerIndexRepair(t *testing.T) {
 		t.Errorf("the deleted signature resolves: %v", err)
 	}
 	same(t, "the referrers listed after the retry", refs[1:], listed())
+}
+
+// skipWithoutDeletes skips a test of deletes on a registry whose manifests the provider does not
+// delete (Capabilities.DeleteManifest false: Nexus's docker format, from the vendor table, or a
+// registry that refused a delete). Lajstrom refuses every delete there on purpose, before asking
+// the registry (#352): what the test checks cannot happen (#800).
+func skipWithoutDeletes(t *testing.T, caps provider.Capabilities) {
+	t.Helper()
+	if !caps.DeleteManifest {
+		t.Skip("the registry does not delete manifests (Capabilities.DeleteManifest false): Lajstrom refuses the delete on purpose")
+	}
 }

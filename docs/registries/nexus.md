@@ -465,7 +465,14 @@ The failures, by owner:
   deletes and serves ranges. On these formats Lajstrom refuses deletes (docker) and answers a
   range with the whole blob (OCI) on purpose, so they fail where they could skip or take the
   200; so does `TestIntegrationRepositoryUnknown` on a registry that answers `MANIFEST_UNKNOWN`
-  for a repository it never had and cannot delete.
+  for a repository it never had and cannot delete. **Since #800** they read the provider's
+  capabilities: the delete tests of ingest, reindex and the facade skip, or take the `405`
+  and check that nothing changed, where `deleteManifest` is false; the range tests of the
+  provider and raw take the `200` with the whole blob where the provider reads blobs whole;
+  reindex's `TestIntegrationSplit` skips a name the registry answers `NAME_INVALID`, and
+  `TestIntegrationFormats` no longer wants the repository of a package whose versions were all
+  deleted to stay in `_catalog`. Not run against Nexus again: against Zot behind a front that
+  answers as each format does (`Server: Nexus/…`; no referrers API, or a `500` to a range).
 
 ## Commands
 

@@ -35,14 +35,30 @@ func pushRawAt(t *testing.T, prov provider.Provider, repo index.Repo, name, path
 		}
 		rc, err := b.Open(ctx)
 		must(t, err)
-		must(t, rr.Push(ctx, b.Descriptor, rc))
+		err = rr.Push(ctx, b.Descriptor, rc)
 		_ = rc.Close()
+		skipNameInvalid(t, name, err)
+		must(t, err)
 	}
 	b, d, err := profile.Encode(built.Manifest)
 	must(t, err)
-	must(t, rr.PushReference(ctx, ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: d, Size: int64(len(b))},
-		bytes.NewReader(b), built.Tag))
+	err = rr.PushReference(ctx, ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: d, Size: int64(len(b))},
+		bytes.NewReader(b), built.Tag)
+	skipNameInvalid(t, name, err)
+	must(t, err)
 	return built.Tag, d
+}
+
+// skipNameInvalid skips the test when the registry refused the OCI name with 400 NAME_INVALID:
+// Nexus's oci format and Gitea take only the grammar of distribution-spec 1.0, which refuses
+// `--` and `__` in a component. Lajstrom wrote such names only before ADR 0017, so no version
+// can be at one on that registry (#800).
+func skipNameInvalid(t *testing.T, name string, err error) {
+	t.Helper()
+	var r *provider.RejectedError
+	if errors.As(err, &r) && r.Code == "NAME_INVALID" {
+		t.Skipf("the registry refuses the name %s, written before ADR 0017: %v", name, err)
+	}
 }
 
 // split is a raw file stored at the earliest form of its OCI name (ADR 0017), as an earlier

@@ -27,7 +27,8 @@ import (
 // run reports: Zot answers NAME_UNKNOWN to the manifest and its tag list, and the version is
 // listed in RepositoryUnknown; distribution answers MANIFEST_UNKNOWN, and the version is pending,
 // as prune counts it. Either way nothing is removed and nothing is an error; the delete of the
-// API removes it.
+// API removes it, but for a pending version on a registry whose manifests Lajstrom does not
+// delete (Nexus's docker format), where the delete is refused.
 func TestIntegrationRepositoryUnknown(t *testing.T) {
 	addr := os.Getenv("LAJSTROM_TEST_REGISTRY")
 	if addr == "" {
@@ -79,6 +80,17 @@ func TestIntegrationRepositoryUnknown(t *testing.T) {
 
 	_, err = e.pipe.Delete(ctx, e.repo, format.Deletion{Path: path, Reference: d.String(),
 		Condition: &format.Condition{Version: version}}, alice)
+	if caps, cerr := prov.Capabilities(ctx); cerr == nil && !caps.DeleteManifest && errors.Is(stat, provider.ErrManifestUnknown) {
+		// A registry whose manifests Lajstrom does not delete (Nexus's docker format), and which
+		// answers MANIFEST_UNKNOWN in a repository it never had: the version is pending, as any
+		// manifest gone, and its delete is refused as every delete there, on purpose (#352,
+		// #800). Only a repository the registry does not know is deleted from the index alone
+		// (#692).
+		if !errors.Is(err, provider.ErrUnsupported) {
+			t.Errorf("the delete on a registry that does not delete manifests: %v, want ErrUnsupported", err)
+		}
+		return
+	}
 	must(t, err)
 	if _, err := e.st.GetPackage(ctx, e.repo.ID, path); !errors.Is(err, index.ErrNotFound) {
 		t.Errorf("the package after the delete: %v, want ErrNotFound", err)
