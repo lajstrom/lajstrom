@@ -677,6 +677,10 @@ What an operator of ECR sees:
 - An npm dist-tag or deprecation the registry did not serve in time is `503` the same way. Its
   journal entry stays claimed in the index; the next change of that package adopts it once the
   registry serves it, and answers `503` until then, or until the claim is stale.
+- A manifest `PUT` that the registry answers `MANIFEST_BLOB_UNKNOWN`, from a publish or from a
+  push to an `oci` repo, is sent again with the same backoff for the same time: every blob it
+  names was read or uploaded a moment before. Past the time the client gets the registry's
+  refusal.
 
 ### Requests from clients
 
