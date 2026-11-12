@@ -288,6 +288,8 @@ func TestRenderPackages(t *testing.T) {
 	}{
 		{jammy, "main/binary-amd64/Packages", []string{"hello 1.0.0-1 amd64", "hello-data 1:2.0-1 all"}},
 		{jammy, "main/binary-arm64/Packages", []string{"bonjour 0.1-1 arm64", "hello 1.0.0-1 arm64", "hello-data 1:2.0-1 all"}},
+		{jammy, "main/binary-all/Packages", []string{"hello-data 1:2.0-1 all"}},
+		{jammy, "universe/binary-all/Packages", nil},
 		{jammy, "universe/binary-amd64/Packages", []string{"libfoo2 2.1-3 amd64"}},
 		{jammy, "universe/binary-arm64/Packages", nil},
 		{updates, "main/binary-amd64/Packages", []string{"hello 1.0.0-1 amd64", "hello 1.1.0-1 amd64"}},
@@ -336,6 +338,27 @@ func TestRenderPackages(t *testing.T) {
 	}
 	if !slices.Equal(rest, []string{"Size", "MD5sum", "SHA1", "SHA256"}) {
 		t.Errorf("the fields after Filename: %q", rest)
+	}
+}
+
+// TestRenderAllBeside checks a suite with all packages and concrete architectures (#725): its
+// Release names all among them, with no No-Support-for-Architecture-all, so apt on a host of an
+// architecture the suite has no package for reads binary-all, and finds the all packages there.
+func TestRenderAllBeside(t *testing.T) {
+	p := newPipeline(t)
+	fixtureSet(t, p)
+	jammy := render(t, p, fixedClock(p), "jammy")
+	release := string(jammy[kindRelease])
+	if arch := field(release, "Architectures"); arch != "all amd64 arm64" {
+		t.Errorf("the Architectures of jammy: %q, want all amd64 arm64", arch)
+	}
+	if strings.Contains(release, "No-Support-for-Architecture-all") {
+		t.Errorf("the Release of jammy says No-Support-for-Architecture-all, with which apt skips binary-all")
+	}
+	for _, kind := range []string{"main/binary-all/Packages", "main/binary-all/Packages.gz", "main/binary-all/Packages.xz"} {
+		if _, ok := listed([]byte(release))[kind]; !ok {
+			t.Errorf("the Release of jammy does not list %s", kind)
+		}
 	}
 }
 

@@ -234,7 +234,7 @@ func TestRoutesNotFound(t *testing.T) {
 		{http.MethodGet, "dists/jammy/Contents-amd64", "no dists/jammy/Contents-amd64"},
 		{http.MethodGet, "dists/jammy/multiverse/binary-amd64/Packages", "no dists/jammy/multiverse/binary-amd64/Packages"},
 		{http.MethodGet, "dists/jammy/main/binary-i386/Packages.xz", "no dists/jammy/main/binary-i386/Packages.xz"},
-		{http.MethodGet, "dists/jammy/main/binary-all/Packages", "no dists/jammy/main/binary-all/Packages"},
+		{http.MethodGet, "dists/jammy-updates/main/binary-all/Packages", "no dists/jammy-updates/main/binary-all/Packages"},
 		{http.MethodGet, "dists/jammy/main/binary-amd64/Packages.bz2", "no dists/jammy/main/binary-amd64/Packages.bz2"},
 		{http.MethodGet, "dists/jammy/main/binary-amd64/Release", "no dists/jammy/main/binary-amd64/Release"},
 		{http.MethodGet, "dists/jammy/main/i18n/Translation-en", "no dists/jammy/main/i18n/Translation-en"},

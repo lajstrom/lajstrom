@@ -174,23 +174,22 @@ func (p Plugin) paragraphs(ctx context.Context, repo index.Repo, suite string, s
 }
 
 // layout returns the components and the architectures of the indexes of a suite, sorted: the
-// concrete architectures of its versions, or all alone when it has no other.
+// architectures of its versions, all among them when it has all packages. apt on a host of an
+// architecture the suite has no package for reads binary-all alone (#725), so the all packages
+// get it beside the concrete indexes; the Release has no No-Support-for-Architecture-all, which
+// would make apt skip binary-all again.
 func layout(paras []paragraph) (components, archs []string) {
 	cs, as := map[string]bool{}, map[string]bool{}
 	for _, p := range paras {
-		cs[p.component] = true
-		if p.arch != archAll {
-			as[p.arch] = true
-		}
-	}
-	if len(as) == 0 {
-		as[archAll] = true
+		cs[p.component], as[p.arch] = true, true
 	}
 	return slices.Sorted(maps.Keys(cs)), slices.Sorted(maps.Keys(as))
 }
 
 // packagesOf returns the Packages index of a component and an architecture: the paragraphs of
-// that component whose architecture is arch or all, each followed by a blank line.
+// that component whose architecture is arch or all, each followed by a blank line. The index of
+// all holds the all packages alone; those of the concrete architectures hold them too, which apt
+// merges with binary-all without a warning.
 func packagesOf(paras []paragraph, component, arch string) []byte {
 	var b bytes.Buffer
 	for _, p := range paras {
