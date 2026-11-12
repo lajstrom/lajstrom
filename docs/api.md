@@ -19,9 +19,10 @@ The OpenAPI 3.1 document of these endpoints is
   know is an error, so a typo never passes silently. Answers are `application/json`. Times are
   RFC 3339 in UTC.
 - **Authentication** is HTTP Basic with a local user's password or a token, or
-  `Authorization: Bearer` with a personal access token, on every route ([auth.md](auth.md)):
-  a request with credentials runs as the user (`user:<uid>`, for a personal access token
-  too) or the deploy token (`token:<id>`, Basic `deploy:<token>`), one without as `anonymous`,
+  `Authorization: Bearer` with a personal access token or a deploy token, on every route
+  ([auth.md](auth.md)): a request with credentials runs as the user (`user:<uid>`, for a
+  personal access token too) or the deploy token (`token:<id>`, Basic `deploy:<token>`, under
+  any user name, or `Bearer ljs_dep_…`), one without as `anonymous`,
   and credentials that are refused are `401` at once. `GET /api/v1/whoami` tells who the
   caller is. **Authorization** is RBAC's ([rbac.md](spec/rbac.md)): the bindings of the
   principal decide, behind the scopes of its token ([auth.md](auth.md#what-a-token-may-do)).
@@ -32,10 +33,12 @@ The OpenAPI 3.1 document of these endpoints is
   credentials, `404` for one without any access to the repo, `403` for one that can read it but
   lacks the action. The list leaves out the repos the caller may not read.
 - **Audit.** Every change is one row of the audit log ([rbac.md](spec/rbac.md) §5): the
-  principal, the action (`repo.create`, `repo.update`, `repo.delete`, `user.create`,
+  principal, the action (`repo.create`, `repo.update`, `repo.delete`, `repo.reindex`,
+  `repo.cache.purge`, `delete` for each manifest of a version delete, `user.create`,
   `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete`,
-  `binding.create`, `binding.delete`, `token.create`, `token.revoke`, `repo.cache.purge`), the repo, the client address and details: the change, its source (`api`,
-  `cli` or `config`) and the request id.
+  `binding.create`, `binding.delete`, `token.create`, `token.revoke`), the repo, the client
+  address and details: the change, its source (`api`, `cli`, `config` or `bootstrap`) and the
+  request id.
 - **Lists** that can be long are pages: `?limit=` (100 when absent, 1 to 1000) and `?cursor=`,
   the `next` of the page before, an opaque string; the last page has no `next`.
 - **Any other path** under `/api/` answers `404 NOT_FOUND`.
@@ -52,14 +55,15 @@ Every error is answered with one envelope:
 | --- | --- | --- |
 | 400 | `INVALID` | the request breaks a rule; the message starts with the field it is about |
 | 401 | `UNAUTHENTICATED` | credentials are needed, or the ones sent were refused; with `WWW-Authenticate: Basic realm="lajstrom"` |
-| 403 | `FORBIDDEN` | the caller lacks the action: now by the scopes of its token, after #45 by its bindings too |
+| 403 | `FORBIDDEN` | the caller lacks the action, by its bindings or by the scopes of its token, or the admin role for a system resource: creating a repo, users, bindings, the audit log |
 | 404 | `NOT_FOUND` | no such repo, user, token or endpoint |
 | 408 | `INVALID` | the body stopped: no byte came within `server.stallTimeout` ([configuration.md](configuration.md#server)); the message is fixed, and the connection is closed |
-| 409 | `CONFLICT` | the repo exists, or has versions and the delete is not forced; a live token of the owner has the name; a pointer names the version to delete |
+| 409 | `CONFLICT` | the repo exists, has versions and the delete is not forced, or is a member of a group; a live user has the name; a live token of the owner has the name; the binding exists; the change would leave no enabled user with an admin binding; a reindex that overlaps runs; a pointer names the version to delete, or the registry refuses to delete its manifest alone |
 | 412 | `CONFLICT` | a conditional delete found the version changed since the client read it, or published after the cut-off; nothing was deleted |
 | 413 | `INVALID` | the body is larger than 64 KiB |
 | 429 | `UNAVAILABLE` | too many failed logins: the password is not checked until the time in `Retry-After` has passed ([auth.md](auth.md#failed-logins)) |
-| 501 | `UNAVAILABLE` | the endpoint comes with a later issue; the message names it |
+| 501 | `UNAVAILABLE` | a version delete on a registry that does not delete manifests (`capabilities.deleteManifest: false`); the message names the registry, and nothing was deleted |
+| 502 | `UNAVAILABLE` | a version delete that the registry refused: it rejected Lajstrom's credentials or the request; the message is the status text and names the variants deleted before, the cause is in the server log with the request id |
 | 503 | `UNAVAILABLE` | the index database does not answer, or a registry's circuit breaker is open; try again after `Retry-After` ([operations.md](operations.md#readiness)) |
 | 500 | `INTERNAL` | anything else, a panic of a handler too; the message is the status text, the cause is in the server log with the request id (`X-Request-Id`) |
 
@@ -89,7 +93,7 @@ audit alike.
 | Field | Rule | Changes |
 | --- | --- | --- |
 | `format` | a format plugin the server has: `raw`, `pypi`, `apt`, `maven`, `npm`; or `oci`, the pass-through repos of the OCI facade, which need no plugin ([http-routing.md](spec/http-routing.md) §1) | never |
-| `name` | unique within the format; lowercase letters and digits separated by single `.`, `_` or `-`, at most 64 characters ([manifest-profile.md](spec/manifest-profile.md) §4.1) | never |
+| `name` | unique within the format; lowercase letters and digits separated by single `.`, `_` or `-`, at most 64 characters ([manifest-profile.md](spec/manifest-profile.md) §4.1); none that ends in `blobs`, `.uploads` or `.sync`, or is `index.json`, `oci-layout`, `manifests`, `referrers` or `tags`, names that a registry's storage or routes keep for themselves ([ADR 0017](adr/0017-the-grammar-of-oci-names.md)) | never |
 | `registry` | one of `registries[].name` of the configuration; none on a group, whose resource has no `registry` | never: the artifacts stay in the registry they were pushed to |
 | `kind` | `hosted` (the default; may be left out), `proxy`, a repo that serves an upstream and keeps what it fetched, or `group`, one URL for several repos of its format ([proxy-and-group.md](spec/proxy-and-group.md)); `proxy` and `group` need a format whose plugin has them (npm) | never |
 | `anonymousRead` | readable without credentials, when `auth.anonymousRead` allows it; default `false` | `PATCH` |
@@ -192,7 +196,9 @@ replaced whole) and checked whole; it cannot be removed. Changing `upstream.name
 role, since it changes what every reader of the repo gets, and drops the repo's cache of the old
 upstream; the other keys need `manage` ([rbac.md](spec/rbac.md) §7). On a group, `group` is
 merged the same way, each list replaced whole; changing `members` needs the admin role, `merge`
-needs `manage`, and the members are checked as on a create.
+needs `manage`, and the members are checked as on a create. The admin role is asked whenever the
+body has `upstream.name` or `group.members`, even with the value the repo has: a caller with
+`manage` alone leaves the key out, and a body that sends back what `GET` answered is `403` for it.
 `200` with the resource as it is now; a body that changes nothing changes nothing, not even
 `updatedAt`. The audit row has the policy as the merge left it.
 
@@ -277,8 +283,9 @@ lacked: `{"repository", "subject", "index", "added": [digests]}`
 
 `state` is `running`, `done` (it went to the end, whatever the report lists), `failed` (the run's
 own error is in `error`) or `abandoned` (its heartbeat stopped, a later start closed it);
-`report` is `null` while it runs. Both need `manage` on the repo; `404` when there is no such
-repo, or, for `GET`, when no run has covered it. A proxy repo is reindexed from what it fetched,
+`report` is `null` while it runs, and for a run of every repo that stopped before it reached this
+repo. Both need `manage` on the repo; `404` when there is no such repo, or, for `GET`, when no
+run has covered it. A proxy repo is reindexed from what it fetched,
 as a hosted repo from what was published; a group holds nothing, and its report is empty.
 
 ```sh
@@ -456,8 +463,9 @@ curl -s -X POST "$LAJSTROM/api/v1/repos/npm/internal/versions:delete" \
 Drops what a proxy repo keeps of its upstream's documents ([proxy-and-group.md](spec/proxy-and-group.md)
 §4.3), of one package with `?name=`, and the documents rendered from them; the next read asks the
 upstream again. What the repo fetched stays: its versions are deleted as a hosted repo's are.
-`manage` on the repo; `204`, `400` on a repo that is not a proxy, one audit row
-`repo.cache.purge` with `details.name` when one name was purged.
+`manage` on the repo; `204`, `400` on a repo that is not a proxy or for a `?name=` that is no
+package name of the format, one audit row `repo.cache.purge` with `details.name` when one name
+was purged.
 
 ```sh
 curl -s -X DELETE "$LAJSTROM/api/v1/repos/npm/npmjs/upstream-cache?name=left-pad"
@@ -613,8 +621,8 @@ request on, on every replica.
 
 ### Delete: `DELETE /api/v1/bindings/<id>`
 
-`204`; `404` for an id that is not a binding. The last admin binding of an enabled user is
-`409`, so that somebody can still manage the server.
+`204`; `400` for an id that is not a positive integer, `404` for one that is no binding. The last
+admin binding of an enabled user is `409`, so that somebody can still manage the server.
 
 ### Who may
 
@@ -696,19 +704,20 @@ shape, and the secret only in the answer of a creation, the one time it is shown
 | `createdAt`, `revokedAt` | set by the server; `revokedAt` is `null` while the token is not revoked |
 | `hashPrefix` | the first 8 hexadecimal characters of the sha256 of the secret, to tell tokens apart; the secret itself is never answered again |
 
-### Create: `POST /api/v1/users/<name>/tokens`, `POST /api/v1/repos/<format>/<repo>/deploy-tokens`
+### Create: `POST /api/v1/users/<user>/tokens`, `POST /api/v1/repos/<format>/<repo>/deploy-tokens`
 
-The body has `name`, and optionally `scopes` (required for a deploy token) and the expiry,
-`expiresAt` (RFC 3339) or `expiresIn` (a number of days, `30d`, or a duration, `12h`), one of
-them at most. `201` with the resource and `secret`, and `Location` naming the token
-(`/api/v1/users/<name>/tokens/<id>`, the path of its `DELETE`); `400` for a field that breaks its
-rule, `expiresAt` over a year ahead or in the past, both `expiresAt` and `expiresIn`, or
-`delete` in the scopes of a deploy token, or `write` in those of a group's (a write through a
-group is its hosted member's, which the group's token does not reach); `404` for a user or repo
-that does not exist; `409` when the name is taken. The user need not be enabled. A personal access token is created with a
-password only: with a personal access token as the credential, with scopes or without, the
-admin's too, or with a deploy token, `POST /api/v1/users/<name>/tokens` is `403` before the body
-is read ([auth.md](auth.md#rules)).
+`<user>` is the user's name or its uid, as in [Users](#users). The body has `name`, and
+optionally `scopes` (required for a deploy token) and the expiry, `expiresAt` (RFC 3339) or
+`expiresIn` (a number of days, `30d`, or a duration, `12h`), one of them at most. `201` with the
+resource and `secret`, and `Location` naming the token (`/api/v1/users/<name>/tokens/<id>`, with
+the user's name, the path of its `DELETE`); `400` for a field that breaks its rule, an expiry in
+the past, or more than a year ahead on a personal access token (a deploy token's has no bound),
+both `expiresAt` and `expiresIn`, or `delete` in the scopes of a deploy token, or `write` in
+those of a group's (a write through a group is its hosted member's, which the group's token does
+not reach); `404` for a user or repo that does not exist; `409` when the name is taken. The user
+need not be enabled. A personal access token is created with a password only: with a personal
+access token as the credential, with scopes or without, the admin's too, or with a deploy token,
+`POST /api/v1/users/<user>/tokens` is `403` before the body is read ([auth.md](auth.md#rules)).
 
 ```sh
 curl -s -u alice -X POST "$LAJSTROM/api/v1/users/alice/tokens" \
@@ -721,12 +730,12 @@ curl -s -u admin -X POST "$LAJSTROM/api/v1/repos/raw/assets/deploy-tokens" \
 {"id": 8, "kind": "deploy", "repo": "raw/assets", "name": "ci", "scopes": ["write"], "expiresAt": null, "lastUsedAt": null, "createdAt": "2026-11-07T12:00:00Z", "revokedAt": null, "hashPrefix": "876f72f1", "secret": "ljs_dep_…"}
 ```
 
-### List: `GET /api/v1/users/<name>/tokens`, `GET /api/v1/repos/<format>/<repo>/deploy-tokens`
+### List: `GET /api/v1/users/<user>/tokens`, `GET /api/v1/repos/<format>/<repo>/deploy-tokens`
 
 `200` with `{"tokens": [...]}` in the order of their creation, the revoked and expired ones
 included, never a secret; `404` for a user or repo that does not exist.
 
-### Revoke: `DELETE /api/v1/users/<name>/tokens/<id>`, `DELETE /api/v1/repos/<format>/<repo>/deploy-tokens/<id>`
+### Revoke: `DELETE /api/v1/users/<user>/tokens/<id>`, `DELETE /api/v1/repos/<format>/<repo>/deploy-tokens/<id>`
 
 `204`: the token is refused from the next request on, on every replica. A token revoked already
 is `204` again and stays as it is. An id that is not a token of that user or repo is `404`.

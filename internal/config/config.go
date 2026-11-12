@@ -26,7 +26,8 @@ type Server struct {
 	Listen string `yaml:"listen"`
 	// ExternalURL is the base of every absolute URL Lajstrom renders (docs/spec/http-routing.md
 	// §1): https://<host>[:port], no path, query or fragment; http only for a loopback host with
-	// InsecureHTTP. Optional until a feature renders absolute URLs.
+	// InsecureHTTP. Required but for the dev stack (InsecureHTTP), where the realm and the
+	// audience of the bearer tokens then come from the request's Host (#248).
 	ExternalURL string `yaml:"externalURL"`
 	// InsecureHTTP allows an http ExternalURL on a loopback host, for the dev stack: clients see
 	// Lajstrom over TLS only everywhere else.

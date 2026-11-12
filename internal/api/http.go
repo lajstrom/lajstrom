@@ -123,7 +123,7 @@ type route struct {
 	fn      endpoint
 }
 
-// routes are the endpoints of the API: what New serves and what docs/api/openapi.yaml
+// routes are the endpoints of the API: what New serves and what internal/api/openapi.yaml
 // describes (TestOpenAPIRoutes holds the two to each other).
 func (h *handler) routes() []route {
 	return []route{

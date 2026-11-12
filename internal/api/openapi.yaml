@@ -89,7 +89,9 @@ paths:
     patch:
       tags: [repos]
       operationId: updateRepo
-      summary: Change anonymousRead and policy (manage).
+      summary: >-
+        Change anonymousRead, policy, a proxy's upstream and a group's group (manage);
+        upstream.name and group.members need the admin role whenever the body has them.
       requestBody:
         required: true
         content:
@@ -108,7 +110,7 @@ paths:
     delete:
       tags: [repos]
       operationId: deleteRepo
-      summary: Delete a repo (manage); force deletes one that has packages.
+      summary: Delete a repo (manage); force deletes one that has versions.
       parameters:
         - name: force
           in: query
@@ -251,7 +253,20 @@ paths:
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
         "412": {$ref: "#/components/responses/PreconditionFailed"}
-        "501": {$ref: "#/components/responses/Unavailable"}
+        "501":
+          description: >-
+            The repo's registry does not delete manifests (capabilities.deleteManifest false), and
+            nothing was deleted; or this server deletes no versions. Code UNAVAILABLE.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "502":
+          description: >-
+            The registry refused the delete: it rejected Lajstrom's credentials or the request.
+            Code UNAVAILABLE; the message names the variants deleted before, which stay deleted.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
   /api/v1/repos/{format}/{repo}/versions:delete:
     parameters:
       - $ref: "#/components/parameters/format"
@@ -608,11 +623,7 @@ paths:
     get:
       tags: [meta]
       operationId: whoami
-      summary: The caller's principal.
-      security:
-        - {}
-        - basic: []
-        - bearer: []
+      summary: The caller's principal; without credentials 401.
       responses:
         "200":
           description: The principal.
@@ -679,11 +690,11 @@ components:
     basic:
       type: http
       scheme: basic
-      description: A local user's password or token, or deploy:<deploy token>.
+      description: A local user's name and its password or personal access token, or a deploy token under any user name (deploy:<deploy token>).
     bearer:
       type: http
       scheme: bearer
-      description: A personal access token.
+      description: A personal access token (ljs_pat_…) or a deploy token (ljs_dep_…).
   headers:
     Location:
       description: The path of the created resource.
@@ -764,7 +775,7 @@ components:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
     Unavailable:
-      description: Not enabled in this server.
+      description: Not enabled in this server; code UNAVAILABLE.
       content:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
@@ -968,7 +979,9 @@ components:
         finishedAt: {type: [string, "null"], format: date-time}
         error: {type: string}
         report:
-          description: The repo's part of the run's report; null while the run is running.
+          description: >-
+            The repo's part of the run's report; null while the run is running, and for a run of
+            every repo that stopped before it reached the repo.
           type: [object, "null"]
           properties:
             repairedReferrers:
@@ -1056,7 +1069,7 @@ components:
       additionalProperties: false
       properties:
         name: {type: string}
-        password: {type: string, minLength: 8}
+        password: {$ref: "#/components/schemas/Password"}
         admin: {type: boolean}
     BootstrapRequest:
       type: object
@@ -1065,7 +1078,7 @@ components:
       properties:
         token: {type: string}
         name: {type: string}
-        password: {type: string, minLength: 8}
+        password: {$ref: "#/components/schemas/Password"}
     UserPatch:
       type: object
       additionalProperties: false
@@ -1078,7 +1091,12 @@ components:
       required: [password]
       additionalProperties: false
       properties:
-        password: {type: string, minLength: 8}
+        password: {$ref: "#/components/schemas/Password"}
+    Password:
+      type: string
+      minLength: 8
+      maxLength: 1024
+      description: A password of 8 to 1024 bytes of UTF-8; the server counts bytes, and the lengths here count characters.
     Binding:
       type: object
       required: [id, principal, role, repoMask, createdAt]
@@ -1254,6 +1272,6 @@ components:
       required: [principal, kind, name]
       properties:
         principal: {type: string}
-        kind: {type: string, enum: [user, token, anonymous]}
+        kind: {type: string, enum: [user, token]}
         name: {type: string}
         uid: {type: string, format: uuid}
