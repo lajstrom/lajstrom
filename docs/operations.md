@@ -1050,7 +1050,7 @@ A batch is at most 10 versions, fewer when their digests take more than 48 KiB o
 64 KiB. The server deletes a batch's versions one after another, with about 7 registry
 requests for each variant, so the job waits up to 2 minutes for each version of a batch (a
 request that lists, 2 minutes). A batch that the server fails, or that has no answer by then,
-stops the run, as `SIGINT` or `SIGTERM` does. The job then prints the results it has, with
+stops the run, as `SIGINT`, `SIGTERM` or `SIGHUP` (its terminal closed) does. The job then prints the results it has, with
 their counts (with `--output json`, the document with them and `error`), names the batch and
 how many versions after it it did not send, and exits 1. The server may have deleted versions
 of that batch; the next run lists what is left.
