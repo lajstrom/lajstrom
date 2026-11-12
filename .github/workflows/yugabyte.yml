@@ -84,17 +84,21 @@ jobs:
           go build -o "${RUNNER_TEMP}/lajstrom" ./cmd/lajstrom
           printf 'server:\n  listen: "127.0.0.1:8080"\n  insecureHTTP: true\ndatabase:\n  driver: postgres\n' > "${RUNNER_TEMP}/lajstrom.yaml"
           LAJSTROM_DATABASE_DSN="${LAJSTROM_TEST_POSTGRES_DSN}" "${RUNNER_TEMP}/lajstrom" migrate --config "${RUNNER_TEMP}/lajstrom.yaml"
+      # Both steps run go test -v: without it the log keeps nothing of a test that passed, and
+      # what a passing test logs is what this cell measures, such as how long
+      # TestReferrersLockLost/terminated waited for the lock of a terminated backend
+      # (yugabyte-db#31866, #640), the outcomes of the concurrent publishes, and each test's time.
       - name: The tests that migrate, one at a time
         # internal/index and internal/index/postgres migrate a new schema in each test, so one
         # test runs at a time. Skipped: TestConcurrentMigrate, two migrators at once, which
         # YugabyteDB does not take (docs); the conformance half of TestDataRole, the suite again
         # as another user, another quarter of an hour.
         run: >-
-          go test -race -tags integration -p 1 -parallel 1 -timeout 45m
+          go test -v -race -tags integration -p 1 -parallel 1 -timeout 45m
           -skip 'TestConcurrentMigrate|TestDataRole/conformance'
           ./internal/index ./internal/index/postgres
       - name: The tests on the migrated database
-        run: go test -race -tags integration ./internal/index/reindex/... ./internal/ingest/... ./internal/facade/...
+        run: go test -v -race -tags integration ./internal/index/reindex/... ./internal/ingest/... ./internal/facade/...
       - name: YugabyteDB's log
         if: failure()
         run: docker logs --tail 200 yugabyte

@@ -284,7 +284,9 @@ What breaks:
   whose kernel closes its connections, frees its locks at once; a backend terminated while it
   holds a referrers, tag, journal or package lock blocks the other writers of that subject or
   package for up to a minute. On YugabyteDB `TestReferrersLockLost/terminated` waits for that
-  ([#640](https://github.com/lajstrom/lajstrom/issues/640)).
+  ([#640](https://github.com/lajstrom/lajstrom/issues/640)) and logs how long it waited; the
+  cell runs `go test -v`, so the line is in its log when the test passes too
+  ([#681](https://github.com/lajstrom/lajstrom/issues/681)).
 
   What to do: stop or restart a replica rather than terminate its backends. To shorten the
   wait, lower `pg_client_session_expiration_ms` on every YB-TServer (a restart), and keep it at
