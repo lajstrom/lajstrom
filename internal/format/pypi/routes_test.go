@@ -278,6 +278,21 @@ func TestRoutesFiles(t *testing.T) {
 	}
 }
 
+// TestRoutesLatest checks the meta version latest of PEP 691 (#727): the page of version 1, with
+// its own content type, for the project list and a project's page.
+func TestRoutesLatest(t *testing.T) {
+	e := newPublished(t)
+	for _, path := range []string{"simple/", "simple/my-pkg/"} {
+		for latest, v1 := range map[string]string{contentTypeLatestJSON: contentTypeJSON, contentTypeLatestHTML: contentTypeHTML} {
+			want := e.do(http.MethodGet, path, "Accept", v1)
+			rr := e.do(http.MethodGet, path, "Accept", latest)
+			if rr.Code != http.StatusOK || rr.Header().Get("Content-Type") != v1 || rr.Body.String() != want.Body.String() {
+				t.Errorf("%s with Accept %s: %d %q, want 200 %s and the page of %s", path, latest, rr.Code, rr.Header().Get("Content-Type"), v1, v1)
+			}
+		}
+	}
+}
+
 // checkFile checks one file of the JSON page against what was published: its URL, sha256 and
 // size, the bytes of its download, and its core metadata with the sha256 the page announced.
 func (e *published) checkFile(t *testing.T, filename, url, sum, coreSum string, size int64) {
@@ -329,8 +344,17 @@ func TestNegotiate(t *testing.T) {
 		{[]string{"text/html;q=0.5, " + contentTypeJSON}, kindJSON, contentTypeJSON, true},
 		{[]string{contentTypeJSON + ";q=0.2, text/html;q=0.9"}, kindHTML, contentTypeText, true},
 		{[]string{"application/vnd.pypi.simple.v1+json, application/vnd.pypi.simple.v1+html;q=0.2, text/html;q=0.01"}, kindJSON, contentTypeJSON, true},
+		{[]string{"text/*"}, kindHTML, contentTypeText, true},
+		{[]string{contentTypeLatestJSON}, kindJSON, contentTypeJSON, true},
+		{[]string{contentTypeLatestHTML}, kindHTML, contentTypeHTML, true},
+		{[]string{contentTypeLatestJSON + ";q=0.4, " + contentTypeHTML + ";q=0.6"}, kindHTML, contentTypeHTML, true},
+		{[]string{contentTypeLatestHTML + ";q=0.4, " + contentTypeJSON + ";q=0.6"}, kindJSON, contentTypeJSON, true},
+		{[]string{contentTypeLatestHTML + ", " + contentTypeLatestJSON}, kindJSON, contentTypeJSON, true},
+		{[]string{"text/html;q=0.9, " + contentTypeLatestJSON + ";q=0.5"}, kindHTML, contentTypeText, true},
 		{[]string{"application/xml"}, "", "", false},
 		{[]string{contentTypeJSON + ";q=0"}, "", "", false},
+		{[]string{contentTypeLatestJSON + ";q=0"}, "", "", false},
+		{[]string{"application/vnd.pypi.simple.v2+json"}, "", "", false},
 	} {
 		kind, ctype, ok := negotiate(tt.accept)
 		if kind != tt.kind || ctype != tt.ctype || ok != tt.ok {
