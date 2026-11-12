@@ -272,7 +272,7 @@ admin. It:
 - checks the `409`
 - deletes a version and checks that primary and dnf no longer have it
 - rebuilds the repo with a reindex after deleting it with `?force=true`, compares the documents,
-  and reinstalls from it with dnf
+  and installs from it with dnf, with the key of the repo made again
 
 ```sh
 make e2e E2E=rpm
