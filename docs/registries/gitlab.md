@@ -338,7 +338,8 @@ other runs selected `TestIntegration*` and `TestAptGet*`, the tests that use the
 Every failure of column B is the registry's, the media types. The others:
 
 - **Ours, the facade:** the five discovery failures are those of Zot and distribution, the
-  referrers API of #28 and `OCI-Subject`, which this registry does not send either.
+  referrers API of #28 and `OCI-Subject`, which this registry does not send either. The facade
+  serves both since #28; the suite was not run against GitLab again.
 - **Ours, the facade, the raw route and ingest:** a backend's 400 `MANIFEST_INVALID` reaches the
   client as 500 `UNKNOWN` (`PUT` of a manifest, `PUT /raw/…`); the reason is only in the serve
   log (`response status code 400: manifest invalid: … unknown media type: …`).
@@ -355,7 +356,11 @@ master on 2026-11-07) looks for the project among the three longest prefixes of 
 Lajstrom's repositories are `<prefix><format>/<repo>/<package path>`, three or more components
 below the prefix: with `prefix: <group>/<project>/`, none would get a token. One GitLab project
 per Lajstrom repo, `<group>/<format>/<repo>`, with `prefix: <group>/`, leaves the package path:
-one component for pypi and deb, two for maven, raw paths of at most two components. Not tried:
+one component for pypi and deb, two for maven, raw paths of at most two components. Since #599
+Lajstrom's vendor table knows this depth: a challenge whose realm ends in `/jwt/auth`, GitLab's
+token service, sets `maxNameDepth: 4`, and a publish into a deeper name is a `400` that names
+the limit; behind a proxy that rewrites the realm, set `capabilities.maxNameDepth`
+([configuration.md](../configuration.md#registry-capabilities)). Not tried:
 it needs GitLab itself, as do GitLab.com and its rate limits, deploy tokens and the cleanup
 policies, which delete tags by rules set in the project.
 

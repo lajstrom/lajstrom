@@ -8,13 +8,16 @@ rows](README.md#jfrog-container-registry) are in the README; this page has the d
 
 **The answer.** With a local Docker repository as Lajstrom's prefix (`prefix: <repo-key>/`, the
 repository path method), Lajstrom's manifest profile is taken, the OCI 1.1 referrers API works
-(with the `artifactType` filter and `OCI-Subject`), ingest, raw, oras and cosign pass. It is not
-a backend to recommend yet: **JCR does not check the digest of an uploaded blob, and drops the
-bytes of a closing `PUT` that follows a `PATCH`**, so a blob can be served under a digest it
+(with the `artifactType` filter and `OCI-Subject`), ingest, raw, oras and cosign pass. It was not
+a backend to recommend that day: **JCR does not check the digest of an uploaded blob, and drops
+the bytes of a closing `PUT` that follows a `PATCH`**, so a blob can be served under a digest it
 does not hash to ([Uploads and digests](#uploads-and-digests)); a blob `HEAD` answers 200 in an
 image path where `GET` answers 404, which breaks ingest's read-back of content the repository
 already has elsewhere ([Blob reads](#blob-reads-head-and-get)); and the free edition creates no
-user, group or permission through its REST API, so Lajstrom runs with the admin's token.
+user, group or permission through its REST API, so Lajstrom runs with the admin's token. The
+code works around the first three since (items 2 to 4 of
+[What the provider must do differently](#what-the-provider-must-do-differently): #352, #368),
+but JCR was not run again with them; until it is, JCR is a backend for trying Lajstrom.
 
 ## Version tested
 
@@ -100,7 +103,8 @@ says `<dockerReverseProxyMethod>path</dockerReverseProxyMethod>`, the default:
   challenged with `scope="repository:raw/x:pull,push"`, the name without the repository key;
   the token service grants either spelling. oras-go caches the token under the request's scope
   and the challenge's together, which the provider's streamed requests miss: the same failure as
-  Gitea's `scope="*"`, which #342 fixes ([Uploads and digests](#uploads-and-digests)).
+  Gitea's `scope="*"`, which #342, the spike of #120, fixed
+  ([Uploads and digests](#uploads-and-digests)).
 - **Without a prefix** the first component of every Lajstrom name is taken for a repository key:
   `POST /v2/raw/scratch/x/blobs/uploads/` is 404 `Repository 'raw' not found`, and the referrers
   probe's 404 makes `referrers=false`. A key is never created on push.
@@ -146,16 +150,18 @@ limits and the garbage collector, which still need a person;
 | Upload: wrong digest, empty blob | [**a wrong digest is 201 and stored**; the empty blob stored](#uploads-and-digests) |
 | Upload: the closing `PUT` with a body after a `PATCH` | [**201, the body dropped**](#uploads-and-digests) |
 | Upload: a chunk without `Content-Range` | [the first works; a later one is 416](#uploads-and-digests) |
-| Upload continued by another replica | [fails: ours (the challenge's scope, #342), then JCR's dropped body](#uploads-and-digests) |
+| Upload continued by another replica | [fails: ours (the challenge's scope, #342), then JCR's dropped body (worked around since #352, item 2; not run again)](#uploads-and-digests) |
 | Mount from another repository | [202: a new session, no mount](#uploads-and-digests) |
 | Blob `HEAD` and `GET` | [**`HEAD` 200, `GET` 404** in an image path where only another path has the blob](#blob-reads-head-and-get) |
 | Garbage collector and an untagged referrer (#37) | *not measured* |
-| What the probe finds | [`referrers=true catalog=true`, wrong; with the probe fix `catalog=false`](#what-the-provider-must-do-differently) |
-| Overrides needed | [none with the probe fix; `prefix: <repo-key>/`](#configuration) |
+| What the probe finds | [`referrers=true catalog=false`; before the probe fix of item 1, `catalog=true`, wrong](#what-the-provider-must-do-differently) |
+| Overrides needed | [none; `prefix: <repo-key>/`](#configuration) |
 
 The probe reports, with the probe fix, `vendor=unknown createOnPush=true referrers=true
 catalog=false deleteManifest=true immutableTags=false blobRedirect=true maxBlobSize=0` (the
-test log, with the prefix). On main it said `catalog=true`, and every `ListRepositories` failed.
+test log, with the prefix, before #352). On main before the fix it said `catalog=true`, and
+every `ListRepositories` failed. Since #352 it is `vendor=jfrog` (item 7); not run against JCR
+again.
 
 ## What the provider must do differently
 
@@ -176,8 +182,8 @@ test log, with the prefix). On main it said `catalog=true`, and every `ListRepos
    JCR again.
 3. **Do not rely on the registry for the digest.** JCR stores whatever it is sent under the digest
    it is told, in a session or monolithically, and serves it so. Ingest computes its digests from
-   its spool, so what it pushes is right; the facade passed a client's digest through, so a
-   client could store bytes under a digest they do not hash to, which every later reader gets.
+   the bytes it streams (ADR 0014), so what it pushes is right; the facade passed a client's
+   digest through, so a client could store bytes under a digest they do not hash to, which every later reader gets.
    Done in #368: the facade hashes what it streams, with the sha256 state in the session row
    across replicas, and holds a blob's last byte back until the digest matches (threat model,
    [P-9](../security/threat-model.md)).
@@ -187,9 +193,9 @@ test log, with the prefix). On main it said `catalog=true`, and every `ListRepos
    Ingest asks `HEAD`, skips the upload, then reads the blob back to validate it (apt reads the
    package, ingest the metadata layer) and fails `provider: not found`: the same `.deb` in two
    Lajstrom apt repos, or any content the JCR repository already has, is refused. A manifest that
-   names such a blob without an upload is 201, so only the read before it fails. Validating from
-   the spool, as [ghcr.md](ghcr.md) asks, fixes it too. **Since #352** the provider asks a JFrog
-   registry with a `GET` of the blob's first byte (`Range: bytes=0-0`) for `StatBlob` and a
+   names such a blob without an upload is 201, so only the read before it fails. Validating the
+   content as it streams, instead of reading it back, as [ghcr.md](ghcr.md) asks, fixes it
+   too. **Since #352** the provider asks a JFrog registry with a `GET` of the blob's first byte (`Range: bytes=0-0`) for `StatBlob` and a
    blob's `Exists`, never `HEAD`: ingest uploads what this path does not serve, and the facade
    answers a client's `HEAD`, and checks a manifest's layers, as `GET` would. The unit tests
    answer as JCR did; not run against JCR again.
@@ -421,8 +427,8 @@ registries:
       passwordEnv: LAJSTROM_JCR_TOKEN   # an access token (jcr.sh: lajstrom.token)
 ```
 
-With the probe fix the probe needs no override. Until items 2 to 4 are done, JCR is a backend for
-trying Lajstrom, not for data.
+The probe needs no override. Items 2 to 4 are done in the code but were not run against JCR;
+until they are, JCR is a backend for trying Lajstrom, not for data.
 
 ## Deviations from the specification
 
@@ -469,10 +475,13 @@ LAJSTROM_TEST_POSTGRES_DSN='postgres://lajstrom:lajstrom@localhost:5432/lajstrom
 ```
 
 `LAJSTROM_TEST_REGISTRY_PREFIX=lajstrom-virtual/` and `lajstrom-oci/` for the other two
-repositories. The e2e harness has no setting for a prefix or credentials of its registry, so
-the runs used a copy of `test/e2e/run.sh` with `lib.sh` and `here` pointing at `test/e2e/`, the
-registry `local` given the prefix and the `auth` above, and `LAJSTROM_E2E_REGISTRY=` before the
-server starts, which leaves out cosign.sh's anonymous look at the backend:
+repositories. The e2e harness had no setting for a prefix or credentials of its registry on
+2026-11-10, so the runs used a copy of `test/e2e/run.sh` with `lib.sh` and `here` pointing at
+`test/e2e/`, the registry `local` given the prefix and the `auth` above, and `LAJSTROM_E2E_REGISTRY=` before the
+server starts, which leaves out cosign.sh's anonymous look at the backend. Since #353 the stock
+`run.sh` takes them, `LAJSTROM_E2E_REGISTRY_USER`, `LAJSTROM_E2E_REGISTRY_PASSWORD_FILE` and
+`LAJSTROM_E2E_REGISTRY_PREFIX` ([testing.md](../testing.md#a-registry-with-credentials-and-a-prefix));
+not run against JCR. The copy:
 
 ```sh
 root=$PWD

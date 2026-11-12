@@ -397,7 +397,7 @@ answer 401 with the Bearer challenge.
   - the 0-byte blob is never uploaded: GHCR already "has" it everywhere.
 - **No blob read before the first manifest**: in a repository without a manifest, `GET` of a
   blob is 404 although `HEAD` is 200. Ingest checks the metadata layer as it streams it to the
-  registry, or from its spool, instead of reading it back.
+  registry, instead of reading it back.
 - **Blob redirect**: nothing to change: `OpenBlob` hands the 307 to clients as it is (no
   credentials needed, `Range` works, the URL is good for at least 5 minutes) and follows it
   without credentials when redirects are off.

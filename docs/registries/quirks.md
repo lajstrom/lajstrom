@@ -439,8 +439,10 @@ A `Range` is 500 on Nexus's `oci` format and ignored by Gitea, which sends the w
   [artifacts](https://learn.microsoft.com/en-us/azure/container-registry/container-registry-manage-artifact));
   with its soft delete on, a deleted digest cannot be pushed again
   ([soft delete](https://learn.microsoft.com/en-us/azure/container-registry/container-registry-soft-delete-policy)).
-- No registry deletes a repository through `/v2`. distribution and GitLab keep an emptied one in
-  `_catalog`, Zot drops it at a collection, ACR with its last manifest; ECR, Harbor and GHCR have
+- No registry deletes a repository through `/v2`. distribution on a filesystem and GitLab A
+  keep an emptied one in `_catalog`; distribution on S3, GitLab B, Nexus and Gitea drop it with
+  its last manifest (Nexus's `docker` format with its last tag), Zot at a collection (measured,
+  [matrix](README.md#capabilities)), ACR with its last manifest; ECR, Harbor, GHCR and JFrog have
   a REST call.
 
 ### Tag mutability
@@ -616,7 +618,8 @@ amendment: a component that fails the grammar is replaced by `h0_h` and 32 hex d
   and maven, not for a raw path deeper than two ([gitlab.md](gitlab.md#behind-gitlab-read-not-measured)).
   Since #599 the vendor table knows both depths (`capabilities.maxNameDepth`): a publish into a
   deeper name is a `400` that names the limit, not the registry's `insufficient_scope`, and a
-  registry that takes no name of Lajstrom's, Docker Hub, is an error at startup.
+  registry that takes no name of Lajstrom's, Docker Hub, gets an error line in the log at
+  startup, and every publish to it is refused.
 - **Zot** leaves out of its catalog, and so out of `reindex` from an empty database, which lists
   the catalog ([scan.go](../../internal/index/reindex/scan.go)), every package whose OCI name has
   a component ending in `blobs`, `.uploads` or `.sync`; a later run keeps their rows, since the
@@ -670,22 +673,26 @@ disappears from its clients without an audit record.
 | GitLab | `<group>/` | a project per Lajstrom repo; `REGISTRY_FF_DYNAMIC_MEDIA_TYPES=true` with the database, which GitLab.com does not offer; no cleanup policy | `capabilities.deleteManifest: false` under protection rules |
 | Harbor | `<project>/` | a project and a robot with push, pull and delete; a quota; no retention rule | none |
 | GHCR | `<org>/` | a classic PAT with `write:packages` | none: the vendor table sets `catalog`, `deleteManifest`, `maxBlobSize` |
-| Gitea, Forgejo | `<owner>/` | a token with `write:package`; no cleanup rule | `uploads.spoolUnknownLength: true` |
-| Nexus | `<repository>/` with path routing, else none | `writePolicy: allow_once`; the `docker` format until `oci` serves ranges | none: the vendor table sets `deleteManifest: false` on `docker` |
+| Gitea, Forgejo | `<owner>/` | a token with `write:package`; no cleanup rule | `uploads.spoolUnknownLength: true` when clients stream more than one chunk |
+| Nexus | `<repository>/` with path routing, else none | `writePolicy: allow_once`; the `oci` format, whose blobs the vendor table reads whole (#352, not run against Nexus again); on `docker` Lajstrom refuses deletes | none: the vendor table sets `deleteManifest: false` on `docker` and reads `oci` blobs whole |
 | ACR, GAR, Quay | | not measured ([matrix](README.md#versions-tested)); GAR needs monolithic uploads | |
-| Docker Hub, JFrog | | not a backend: two levels; not for data yet ([jfrog-jcr.md](jfrog-jcr.md)) | |
+| Docker Hub | | not a backend: two levels | |
+| JFrog | `<repo-key>/` | a local Docker repository; measured before the workarounds of #352 and #368, not run again with them: for trying Lajstrom ([jfrog-jcr.md](jfrog-jcr.md)) | `uploads.spoolUnknownLength: true` when clients stream more than one chunk |
 
 ### Design risks
 
 1. **The repository is the unit of cost on some registries** (ECR's quota and per-repository
    settings, ACR's performance note), and Lajstrom makes one per package.
 2. **Depth and name grammar vary**: two levels on Docker Hub, project and two on GitLab, the 1.0
-   grammar on Gitea, route words on Quay. Lajstrom finds out at the first push, with an error
+   grammar on Gitea, route words on Quay. Lajstrom knows Docker Hub's and GitLab's depth
+   (`maxNameDepth`, a `400` before the push) and writes its names in the 1.0 grammar (ADR 0017);
+   an unknown registry's limit, and Quay's words, still show at the first push, with an error
    that names a token or a 404.
 3. **Storage layouts and routers reserve words the grammar allows**: `blobs` on Zot, `manifests`,
    `referrers` and `tags/list` on Harbor, tag folders on JFrog. ADR 0017 escapes the words of Zot
    and Harbor; a word found on another registry is another amendment.
 4. **Backend rules read Lajstrom's tags and untagged manifests**, and their patterns cannot tell
    a version from a journal entry or a referrer index.
-5. **Reindex trusts the catalog**, which is partial on Zot, everyone's on GHCR, an
-   administrator's on Harbor and empty on JFrog.
+5. **Reindex trusts the catalog** where Lajstrom has one, which is partial on Zot and an
+   administrator's on Harbor; where it has none (GHCR, JFrog, Harbor for a robot) it trusts
+   `oci_repos`, which a lost database loses.

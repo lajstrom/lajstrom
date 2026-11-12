@@ -8,10 +8,12 @@ The matrix of the backend registries Lajstrom was run against: what each one did
 Every cell links to the section that measured it, on the registry's page: distribution
 ([distribution.md](distribution.md)), Zot ([zot.md](zot.md)), the GitLab container registry
 ([gitlab.md](gitlab.md)), GHCR ([ghcr.md](ghcr.md)), Harbor ([harbor.md](harbor.md)), Nexus
-Repository ([nexus.md](nexus.md)) and Gitea's container registry, with Forgejo's
-([gitea.md](gitea.md)). A cell
+Repository ([nexus.md](nexus.md)), Gitea's container registry, with Forgejo's
+([gitea.md](gitea.md)), and JFrog Container Registry ([jfrog-jcr.md](jfrog-jcr.md)), whose
+cells are a [table of their own](#jfrog-container-registry). A cell
 that was not measured says *not measured*. distribution's and Zot's measurements were made on
-2026-11-09, Nexus's and Gitea's on 2026-11-10, the others' on 2026-11-07; the [Versions tested](#versions-tested) table has the date
+2026-11-09, Nexus's, Gitea's and JCR's on 2026-11-10, the others' on 2026-11-07, and
+`lajstrom registry probe` measured some of them again later; the [Versions tested](#versions-tested) table has the dates
 of each registry, and [Keeping the matrix current](#keeping-the-matrix-current) says when it
 changes. A registry that is not here is not tested.
 
@@ -29,15 +31,15 @@ configuration has to add.
 
 | Registry or store | Image or installer | Pinned in | Last verified | Tier |
 | --- | --- | --- | --- | --- |
-| distribution 3.1.2 | `registry:3.1.2`, index `sha256:38907510915c3f1604c7e83d6ab602ab3020d092f73bdaed8696773693ff768c` | `compose.yaml` (`distribution`, `distribution-s3`, `distribution-s3-minio`), `ci.yml` | each PR with code; by hand 2026-11-09; the probe 2026-11-10 | `CI` on the filesystem; `manual` on S3 (the `s3` and `s3-minio` profiles) |
-| Zot v2.1.23 | `ghcr.io/project-zot/zot-minimal:v2.1.23`, index `sha256:59cb5740832970818903c5ce104425762664c7880835ee566506aad397cd3458` | `compose.yaml` (`zot`), `ci.yml` | each PR with code; by hand 2026-11-09; the probe 2026-11-10 | `CI` |
-| GitLab container registry v4.43.0, A (metadata on the filesystem) | `registry.gitlab.com/gitlab-org/build/cng/gitlab-container-registry:v4.43.0-gitlab`, index `sha256:fe9c67416a605ffaa5a053c17a6d3b1eab0668a33a58b7bd938a476088f8222e` (CNG rebuilds the tag in place: the digest is the pin) | `compose.yaml` (`gitlab`, profile `gitlab`) | 2026-11-07; the probe 2026-11-10 | `manual` |
-| GitLab container registry v4.43.0, B (metadata database, as GitLab.com) | the same, and `postgres:17.11-alpine`, index `sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac` | `compose.yaml` (`gitlab-db`, `gitlab-postgres`, profile `gitlab`) | 2026-11-07; the probe 2026-11-10 | `manual` |
+| distribution 3.1.2 | `registry:3.1.2`, index `sha256:38907510915c3f1604c7e83d6ab602ab3020d092f73bdaed8696773693ff768c` | `compose.yaml` (`distribution`, `distribution-s3`, `distribution-s3-minio`), `ci.yml` | each PR with code; by hand 2026-11-09; the probe 2026-11-10, its row "Read-after-write lag" 2026-11-11 | `CI` on the filesystem; `manual` on S3 (the `s3` and `s3-minio` profiles) |
+| Zot v2.1.23 | `ghcr.io/project-zot/zot-minimal:v2.1.23`, index `sha256:59cb5740832970818903c5ce104425762664c7880835ee566506aad397cd3458` | `compose.yaml` (`zot`), `ci.yml` | each PR with code; by hand 2026-11-09; the probe 2026-11-10, its row "Read-after-write lag" 2026-11-11 | `CI` |
+| GitLab container registry v4.43.0, A (metadata on the filesystem) | `registry.gitlab.com/gitlab-org/build/cng/gitlab-container-registry:v4.43.0-gitlab`, index `sha256:fe9c67416a605ffaa5a053c17a6d3b1eab0668a33a58b7bd938a476088f8222e` (CNG rebuilds the tag in place: the digest is the pin) | `compose.yaml` (`gitlab`, profile `gitlab`) | 2026-11-07; the probe 2026-11-10, its row "Read-after-write lag" 2026-11-11 | `manual` |
+| GitLab container registry v4.43.0, B (metadata database, as GitLab.com) | the same, and `postgres:17.11-alpine`, index `sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac` | `compose.yaml` (`gitlab-db`, `gitlab-postgres`, profile `gitlab`) | 2026-11-07; the probe 2026-11-10, its row "Read-after-write lag" 2026-11-11 | `manual` |
 | GHCR | `ghcr.io`, no version published (`registry/2.0`) | nothing: a hosted service | 2026-11-07 | `hosted`: an account in the test organisation `lajstrom-extras` and a token |
 | JFrog Container Registry 7.161.26 | `releases-docker.jfrog.io/jfrog/artifactory-jcr:7.161.26`, index `sha256:fd8d64416384c2ede4478c89bfa85ba7e9193db4db0dc36db3a307a0b9a5128b`, and `postgres:17.11-alpine` (it needs 4 GiB of memory) | [`jfrog-jcr/compose.yaml`](../../deploy/compose/jfrog-jcr/compose.yaml), set up by `jcr.sh` | 2026-11-10 | `manual` |
-| Harbor v2.15.4 | `harbor-online-installer-v2.15.4.tgz`, sha256 `eeb899cf7b626c925790adba87db9008dd1d73a693a72442651b5bdece9805c6` (images linux/amd64 only) | `harbor.sh` | 2026-11-07 | `manual` |
+| Harbor v2.15.4 | `harbor-online-installer-v2.15.4.tgz`, sha256 `eeb899cf7b626c925790adba87db9008dd1d73a693a72442651b5bdece9805c6` (images linux/amd64 only) | `harbor.sh` | 2026-11-07; the routing words by the probe 2026-11-11 ([quirks.md](quirks.md#measured-on-harbor)) | `manual` |
 | Nexus Repository 3.98.1, Community Edition, a `docker` and an `oci` hosted repository | `sonatype/nexus3:3.98.1`, index `sha256:91a9af44af777c353db11a5ee73850c7eb24b03c997ff4cc62a3500ad38a1332` | `nexus/compose.yaml`, set up by `nexus.sh` | 2026-11-10 | `manual` |
-| Gitea 1.27.3, its container registry | `gitea/gitea:1.27.3-rootless`, index `sha256:1c17ecaead42eb3b5391553d8708103a4beb0e86edf5b9ebc1eb269c318845f2` | `gitea/compose.yaml`, set up by `gitea.sh` | 2026-11-10, by hand and by the probe | `manual` |
+| Gitea 1.27.3, its container registry | `gitea/gitea:1.27.3-rootless`, index `sha256:1c17ecaead42eb3b5391553d8708103a4beb0e86edf5b9ebc1eb269c318845f2` | `gitea/compose.yaml`, set up by `gitea.sh` | 2026-11-10, by hand and by the probe | `manual`; the e2e scenarios `oras`, `auth`, `rbac`, `oci-token`, `cosign` and `tokens` in CI (the job `e2e (gitea)`, not required, #353) |
 | Forgejo 17.0.1, its container registry | `codeberg.org/forgejo/forgejo:17.0.1-rootless`, index `sha256:5ef02fbcf22beef56b8c844952ffad58cfe177b6f98e46e6abb5df90b88dc8d3` | `gitea/compose.yaml` (profile `forgejo`), set up by `gitea.sh up forgejo` | 2026-11-10 | `manual`; where it differs from Gitea, on gitea.md |
 | MinIO 2025-07-23, behind distribution | `bitnamilegacy/minio:2025.7.23-debian-12-r5`, index `sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20` | `compose.yaml` (`minio`, profile `s3-minio`) | 2026-11-09 | `manual` |
 | SeaweedFS 4.52, behind distribution | `chrislusf/seaweedfs:4.52`, index `sha256:57877e32bb90073b37dc109b438ba66e84fd5ed9ced5f5c04f56444ef243ce59` | `compose.yaml` (`seaweedfs`, `seaweedfs-bucket`, profile `s3`) | 2026-11-09 | `manual` |
@@ -47,7 +49,8 @@ configuration has to add.
 and `nexus.sh` [deploy/compose/nexus/](../../deploy/compose/nexus/), `gitea/compose.yaml`
 and `gitea.sh` [deploy/compose/gitea/](../../deploy/compose/gitea/), `ci.yml` the
 `integration` job of [.github/workflows/ci.yml](../../.github/workflows/ci.yml) (and its `e2e`
-job for Zot). `CI`: the
+job: Zot, and distribution for `cosign.sh` and `npm.sh`; its `e2e (gitea)` job runs six
+scenarios against the Gitea of `gitea/compose.yaml`, #353). `CI`: the
 integration job runs every test against it on every pull request that touches code. `manual`: a
 profile of the dev stack or a script, run by hand. `hosted`: a service, an account and a token.
 
@@ -77,7 +80,7 @@ Gitea's column holds for Forgejo too, but where a cell names Forgejo.
 | Referrers API | [no: a plain 404, the tag schema](distribution.md#referrers) | [yes, with the `artifactType` filter; no tag schema](zot.md#referrers) | [no: a plain 404, the tag schema](gitlab.md#referrers) | [no: a plain 404, the tag schema](gitlab.md#referrers) | [no: 404 `MANIFEST_UNKNOWN`, the tag schema](ghcr.md#referrers) | [yes, with the `artifactType` filter](harbor.md#referrers) | [no: an HTML 404, the tag schema](nexus.md#referrers) | [yes, with the `artifactType` filter; and Nexus writes the tag schema itself](nexus.md#referrers) | [no: a plain 404, the tag schema](gitea.md#referrers) |
 | `OCI-Subject` on a push with `subject` | [no](distribution.md#referrers) | [yes](zot.md#referrers) | [no](gitlab.md#referrers) | [no](gitlab.md#referrers) | [no](ghcr.md#referrers) | [yes](harbor.md#referrers) | [no](nexus.md#referrers) | [yes](nexus.md#referrers) | [no](gitea.md#referrers) |
 | Catalog (`_catalog`) and its limits | [yes, `n`/`last`/`Link`: 100 a page, `n` at most 1000; the order depends on the driver](distribution.md#catalog) | [yes, `n`/`last`/`Link`, component by component (`/` first), no largest `n`](zot.md#catalog) | [yes, `n`/`last`/`Link`, `n` at most 1000; `/` first](gitlab.md#lajstrom-registry-probe) | [yes, `n`/`last`/`Link`, `n` at most 1000; lexical](gitlab.md#lajstrom-registry-probe) | [200 with all of GHCR, 1000 a page](ghcr.md#catalog) | [system admins with Basic only](harbor.md#catalog-and-listing) | [yes, `n`/`last`/`Link` (absolute), no largest `n`](nexus.md#catalog) | [yes, `n` and a `cursor` in `Link`; **`last` ignored**](nexus.md#catalog) | [yes, `n`/`last`/`Link`, lexical, no largest `n`; the user's view](gitea.md#catalog) |
-| A listing API of its own | [none](distribution.md#catalog) | [none in the minimal build](zot.md#catalog) | [none: its `/gitlab/v1/` tag list is 404](gitlab.md#referrers) | [`/gitlab/v1/`: tag lists with referrers](gitlab.md#referrers) | [packages REST API, per organisation](ghcr.md#catalog) | [REST API per project, `page_size` at most 100](harbor.md#catalog-and-listing) | [REST API `search`: a component per tag](nexus.md#delete) | *not measured* | [REST API: the owner's packages, a version per tag or untagged digest](gitea.md#catalog) |
+| A listing API of its own | [none](distribution.md#catalog) | [none in the minimal build](zot.md#catalog) | [none: its `/gitlab/v1/` tag list is 404](gitlab.md#referrers) | [`/gitlab/v1/`: tag lists with referrers](gitlab.md#referrers) | [packages REST API, per organisation](ghcr.md#catalog) | [REST API per project, `page_size` at most 100](harbor.md#catalog-and-listing) | *not measured*: Nexus's REST API not tried for a listing | *not measured* | [REST API: the owner's packages, a version per tag or untagged digest](gitea.md#catalog) |
 | Tag list order and pagination | [lexical, byte by byte; `n`/`last`/`Link`, `n` clamped at 1000; on S3 a missing repository is 200 `[]`](distribution.md#tags) | [lexical; `n`/`last`/`Link`](zot.md#tags) | [lexical; **`n` and `last` ignored**: every tag, no `Link`](gitlab.md#lajstrom-registry-probe) | [lexical; `n`/`last`/`Link`](gitlab.md#lajstrom-registry-probe) | [**creation order; `last` a position**](ghcr.md#tags) | [`n`/`last`/`Link`, as distribution](harbor.md#catalog-and-listing) | [byte order, case kept; `n`/`last`/`Link` (absolute)](nexus.md#tags) | [byte order, case kept; `n`/`last`/`Link` (absolute)](nexus.md#tags) | [**lower-cased, case-insensitive**; lexical; `n`/`last`/`Link`](gitea.md#tags) |
 | Read-after-write lag | [none seen in 3 writes, on S3 too](#consistency) | [none seen in 3 writes](#consistency) | [none seen in 3 writes](#consistency) | [none seen in 3 writes](#consistency) | *not measured*; [`eventual` by the vendor table](#consistency) | *not measured* | *not measured* | *not measured* | *not measured* |
 | Delete a manifest by digest | [yes, 202, with its tags; 405 `UNSUPPORTED` with deletes disabled; its referrers stay](distribution.md#delete) | [yes, 202; **405** for a manifest an index lists](zot.md#delete) | [yes, 202, with its tags; its referrers stay](gitlab.md#lajstrom-registry-probe) | [yes, 202, with its tags; **a manifest with a referrer: 500**; one an index lists: 409 `MANIFEST_REFERENCED`](gitlab.md#lajstrom-registry-probe) | [no: 405 `UNSUPPORTED`](ghcr.md#delete) | [yes; its referrers go with it](harbor.md#delete) | [**202, but its tags stay and serve it**](nexus.md#delete) | [yes, 202, with its tags](nexus.md#delete) | [yes, 202, with its tags and the blobs only it used](gitea.md#delete) |
@@ -92,25 +95,26 @@ Gitea's column holds for Forgejo too, but where a cell names Forgejo.
 | Auth | [none; Basic (htpasswd)](distribution.md#authentication) | [none; Basic (htpasswd)](zot.md#our-tests-against-it) | [none](gitlab.md#version-tested) | [none; Bearer from a test token server](gitlab.md#bearer-tokens) | [Bearer from `/token`: the PAT in base64](ghcr.md#token) | [Bearer from Harbor's token service](harbor.md#projects-robots-and-create-on-push) | [Basic (`forceBasicAuth`); `/v2/token` too](nexus.md#connectors-and-create-on-push) | [Basic (`forceBasicAuth`); `/v2/token` too](nexus.md#connectors-and-create-on-push) | [Bearer from `/v2/token` (`scope="*"`), 24 h; Basic on `/v2/` too](gitea.md#owners-tokens-and-create-on-push) |
 | Rate limits seen | [none](distribution.md#our-tests-against-it) | [none](zot.md#blob-reads-ranges-sizes) | *not measured* | *not measured* | [none on `/v2`; REST API 5000 an hour](ghcr.md#rate-limits) | [none](harbor.md#blob-redirect-ranges-sizes-headers) | [**429 for 30 s after three wrong passwords, the right one too**](nexus.md#what-the-provider-must-do-differently) | [the same](nexus.md#what-the-provider-must-do-differently) | *not measured* |
 | Upload: chunk out of order | [416 `RANGE_INVALID`](distribution.md#uploads) | [416 `BLOB_UPLOAD_INVALID`](zot.md#uploads) | [416 `CONTENT_RANGE_INVALID`](gitlab.md#lajstrom-registry-probe) | [416 `CONTENT_RANGE_INVALID`](gitlab.md#lajstrom-registry-probe) | [416](ghcr.md#upload-sessions) | [**appended**, no 416](harbor.md#uploads) | [416 `RANGE_NOT_SATISFIABLE`](nexus.md#uploads) | [416 `RANGE_NOT_SATISFIABLE`](nexus.md#uploads) | [416 `BLOB_UPLOAD_INVALID`](gitea.md#uploads) |
-| Upload: chunk size limit | [none met: 1 GiB in one `PATCH`](distribution.md#sizes) | [none met: 512 MiB a `PATCH`](zot.md#uploads) | [none met: 2 GiB in one `PATCH`](gitlab.md#lajstrom-registry-probe) | [none met: 8 MiB in one `PATCH`](gitlab.md#lajstrom-registry-probe) | [4 MiB a `PATCH`, then 416](ghcr.md#upload-sessions) | *not measured* | *not measured* | *not measured* | [none met: 512 MiB in one `PATCH`; **a streamed `PATCH` after the first write is 400**](gitea.md#uploads) |
+| Upload: chunk size limit | [none met: 1 GiB in one `PATCH`](distribution.md#sizes) | [none met: 512 MiB a `PATCH`](zot.md#uploads) | [none met: 2 GiB in one `PATCH`](gitlab.md#lajstrom-registry-probe) | [none met: 8 MiB in one `PATCH`](gitlab.md#lajstrom-registry-probe) | [4 MiB a `PATCH`, then 416](ghcr.md#upload-sessions) | *not measured* | *not measured* | *not measured* | [none met: 512 MiB in one `PATCH`](gitea.md#blob-reads-ranges-sizes); [**a streamed `PATCH` after the first write is 400**](gitea.md#uploads) |
 | Upload: session status (`GET`) | [works, 204 with `Range`; 500 on S3 after a refused digest](distribution.md#uploads) | [works, 204 with `Range`](zot.md#uploads) | [works, 204 with `Range`](gitlab.md#lajstrom-registry-probe) | [works, 204 with `Range`](gitlab.md#lajstrom-registry-probe) | [**303 to a web page**](ghcr.md#upload-sessions) | [works (the test)](harbor.md#uploads) | [works, 204 with `Range`](nexus.md#uploads) | [works, 204 with `Range`](nexus.md#uploads) | [works, 204 with `Range`; **Forgejo one byte too many**](gitea.md#forgejo) |
 | Upload: cancel (`DELETE`) | [works; 500 on S3 after a refused digest](distribution.md#uploads) | [works; 503 on S3 after a refused digest](zot.md#uploads) | [works](gitlab.md#lajstrom-registry-probe) | [works](gitlab.md#lajstrom-registry-probe) | [405 `UNSUPPORTED`](ghcr.md#upload-sessions) | [works (the test)](harbor.md#uploads) | [204; a `PATCH` after it **500**](nexus.md#uploads) | [works](nexus.md#uploads) | [works](gitea.md#uploads) |
 | Upload: mount (`POST ?mount=&from=`) | [201](distribution.md#uploads) | [201](zot.md#uploads) | [201](gitlab.md#lajstrom-registry-probe) | [201](gitlab.md#lajstrom-registry-probe) | [201; without `from` 202, a session](ghcr.md#upload-sessions) | [201 inside the project](harbor.md#uploads) | [**202: a session instead**](nexus.md#blob-reads-ranges-sizes) | [201](nexus.md#blob-reads-ranges-sizes) | [201 inside the owner](gitea.md#blob-reads-ranges-sizes) |
 | Upload: wrong digest, empty blob | [a digest mismatch; stored (the test)](distribution.md#our-tests-against-it) | [a digest mismatch; stored (the test)](zot.md#our-tests-against-it) | [400 `DIGEST_INVALID`, the session stays; stored](gitlab.md#lajstrom-registry-probe) | [400 `DIGEST_INVALID`, the session stays; stored](gitlab.md#lajstrom-registry-probe) | [404 `BLOB_UPLOAD_INVALID`; empty blob **refused**](ghcr.md#upload-sessions) | [a digest mismatch; stored (the test)](harbor.md#uploads) | [400 `DIGEST_INVALID`, the session stays; stored](nexus.md#uploads) | [400 `DIGEST_INVALID`, the session ends; stored](nexus.md#uploads) | [400 `DIGEST_INVALID`, the session stays; stored](gitea.md#uploads) |
-| Upload continued by another replica | [works (the test)](distribution.md#our-tests-against-it) | [works (the test)](zot.md#our-tests-against-it) | [works (the test)](gitlab.md#our-tests-against-it) | [works; behind a token server fails: ours](gitlab.md#bearer-tokens) | [fails: ours, priming](ghcr.md#our-tests) | [works, with tokens](harbor.md#uploads) | [works (the test)](nexus.md#our-tests-against-it) | [works (the test)](nexus.md#our-tests-against-it) | [works since the provider fix of #120](gitea.md#what-the-provider-must-do-differently) |
+| Upload continued by another replica | [works (the test)](distribution.md#our-tests-against-it) | [works (the test)](zot.md#our-tests-against-it) | [works (the test)](gitlab.md#our-tests-against-it) | [works; behind a token server fails: ours](gitlab.md#bearer-tokens) | [fails: ours, priming](ghcr.md#our-tests) | [works, with tokens](harbor.md#uploads) | [works (the test)](nexus.md#our-tests-against-it) | [works (the test)](nexus.md#our-tests-against-it) | [works since the provider fix of #342 (for #120); a chunk of unknown size after the first needs `uploads.spoolUnknownLength` (#425); **Forgejo fails**: its status `Range` is one byte off](gitea.md#what-the-provider-must-do-differently) |
 | Garbage collector and an untagged referrer (#37) | [kept; with `--delete-untagged`, while a tag-schema index lists it](distribution.md#garbage-collection) | [kept, with or without its subject](zot.md#garbage-collection) | [kept; `--delete-untagged` deletes it](gitlab.md#garbage-collection) | [**deleted 24 h after its push**](gitlab.md#garbage-collection) | *not measured* | [kept; it goes with its subject](harbor.md#garbage-collection) | [**deleted by the task "Delete unused manifests"**; listed by a tag-schema index, kept](nexus.md#garbage-collection) | [kept: no collector task](nexus.md#garbage-collection) | [kept by `cleanup_packages`; an unused blob goes](gitea.md#cleanup) |
 | What the probe finds | [`referrers=false catalog=true`](distribution.md#the-probe) | [`referrers=true catalog=true`](zot.md#the-row) | [`referrers=false catalog=true`](gitlab.md#the-row) | [`referrers=false catalog=true`](gitlab.md#the-row) | [`catalog=true`, wrong; vendor table: `false`](ghcr.md#the-probe) | [`referrers=true catalog=false`](harbor.md#the-row) | [`referrers=false catalog=true`](nexus.md#the-row) | [`referrers=true catalog=true`](nexus.md#the-row) | [`referrers=false catalog=true`](gitea.md#the-row) |
-| Overrides needed | [none; `deleteManifest: false` with deletes disabled](distribution.md#the-probe) | [none; `immutableTags: true` behind a policy without `update`](zot.md#configuration) | [none; behind GitLab with rules, `deleteManifest: false`](gitlab.md#the-row) | [the flag on the registry; behind GitLab, as A](gitlab.md#media-types) | [none since the vendor table](ghcr.md#the-probe) | [none; `prefix: <project>/`](harbor.md#the-row) | [none since the vendor table (#352): `deleteManifest: false`](nexus.md#what-the-provider-must-do-differently) | [none since the vendor table (#352): blobs read whole](nexus.md#what-the-provider-must-do-differently) | [none; `prefix: <owner>/`](gitea.md#the-row) |
+| Overrides needed | [none; `deleteManifest: false` with deletes disabled](distribution.md#the-probe) | [none; `immutableTags: true` describes a Zot behind a policy without `update`, but nothing in Lajstrom acts on it](zot.md#configuration) | [none; behind GitLab with rules, `deleteManifest: false`](gitlab.md#the-row) | [the flag on the registry; behind GitLab, as A](gitlab.md#media-types) | [none since the vendor table](ghcr.md#the-probe) | [none; `prefix: <project>/`](harbor.md#the-row) | [none since the vendor table (#352): `deleteManifest: false`](nexus.md#what-the-provider-must-do-differently) | [none since the vendor table (#352): blobs read whole](nexus.md#what-the-provider-must-do-differently) | [none; `prefix: <owner>/`](gitea.md#the-row) |
 
 ### JFrog Container Registry
 
 JFrog Container Registry 7.161.26, the free Artifactory edition for containers
 ([jfrog-jcr.md](jfrog-jcr.md)), measured on 2026-11-10 with a local docker repository as
-Lajstrom's prefix (`prefix: <repo-key>/`, the repository path method). Its cells are here, in
-the rows of the table above, rather than a column of it, so that the spikes of Nexus (#119) and
-Gitea (#120), which add theirs, merge apart; they become a column in one edit afterwards. **Not
-a backend for data yet**: JCR keeps a blob under whatever digest it is told and drops the body
-of a closing `PUT` after a `PATCH`, and its `HEAD` of a blob says 200 where `GET` is 404. Its
+Lajstrom's prefix (`prefix: <repo-key>/`, the repository path method). Its cells are a table
+of their own below, row for row as the table above. That day it was a backend for trying Lajstrom, not
+for data: JCR keeps a blob under whatever digest it is told and drops the body of a closing
+`PUT` after a `PATCH`, and its `HEAD` of a blob says 200 where `GET` is 404. The code works
+around all three since (#352, #368: [items 2 to 4 of its page](jfrog-jcr.md#what-the-provider-must-do-differently));
+JCR was not measured again with them. Its
 deviations are on its page, [Deviations](jfrog-jcr.md#deviations-from-the-specification); its
 `registries[]` entry is [Configuration](jfrog-jcr.md#configuration); whoever changes the pin
 in its compose file re-runs [Commands](jfrog-jcr.md#commands).
@@ -143,9 +147,9 @@ in its compose file re-runs [Commands](jfrog-jcr.md#commands).
 | Upload: cancel (`DELETE`) | [405](jfrog-jcr.md#uploads-and-digests) |
 | Upload: mount (`POST ?mount=&from=`) | [**202: a session instead**](jfrog-jcr.md#uploads-and-digests) |
 | Upload: wrong digest, empty blob | [**a wrong digest is 201 and stored**; the empty blob stored](jfrog-jcr.md#uploads-and-digests) |
-| Upload continued by another replica | [fails: ours (#342), then **the closing `PUT`'s body dropped**](jfrog-jcr.md#uploads-and-digests) |
+| Upload continued by another replica | [fails: ours, the token (fixed by #342), then **the closing `PUT`'s body dropped** (worked around since #352; not run again)](jfrog-jcr.md#uploads-and-digests) |
 | Garbage collector and an untagged referrer (#37) | *not measured* |
-| What the probe finds | [`referrers=true catalog=true`, wrong; with the probe fix of #338 `catalog=false`](jfrog-jcr.md#what-the-provider-must-do-differently) |
+| What the probe finds | [`referrers=true catalog=false`, since the probe wants a catalog in the 200 (#338); before that `catalog=true`, wrong](jfrog-jcr.md#what-the-provider-must-do-differently) |
 | Overrides needed | [none; `prefix: <repo-key>/`](jfrog-jcr.md#configuration) |
 
 ## Object stores behind distribution
@@ -198,7 +202,7 @@ reported it yet.
 | GitLab container registry v4.43.0, B (metadata database) | The digest delete of a manifest that a referrer names is 500 `UNKNOWN` (its log: a foreign key of `gc_manifest_review_queue` violated); the delete of a manifest an image index lists is 409 `MANIFEST_REFERENCED` (`lajstrom registry probe`, [gitlab.md](gitlab.md#lajstrom-registry-probe)) | Deleting Manifests: "Upon success, the registry MUST respond with a `202 Accepted` code"; a 500 is a bug. Error codes: "The `code` field MUST be one of the following", and `MANIFEST_REFERENCED` is not in the list | None for Lajstrom's own deletes, which delete what refers to a version before the version; a client that deletes a subject through the facade's `/v2` gets the 500. The 409 is `ErrConflict`, as Lajstrom wants | ingest deletes referrers first | [gitlab-org/container-registry](https://gitlab.com/gitlab-org/container-registry/-/issues): to file |
 | GitLab container registry v4.43.0, A (metadata on the filesystem) | `tags/list` ignores `n` and `last`: `?n=2` answers every tag and no `Link`, and `?n=1&last=a` answers `a` too (`lajstrom registry probe` and curl, [gitlab.md](gitlab.md#lajstrom-registry-probe)); B pages | Listing Tags: with `n`, "the response MUST include `<int>` results" unless fewer tags exist; with `last`, "A request of this sort will return up to `<int>` tags, beginning non-inclusively with `<tagname>`" | None: the provider follows `Link` and takes a whole list in one page | nothing needed | [gitlab-org/container-registry](https://gitlab.com/gitlab-org/container-registry/-/issues): to file |
 | GitLab container registry v4.43.0, A and B | A repository name over 255 characters is 500 `UNKNOWN` with the name in its detail, where distribution answers 400 `NAME_INVALID` ([gitlab.md](gitlab.md#lajstrom-registry-probe)) | Error codes: `NAME_INVALID`, "invalid repository name"; a 500 is a server error | None: Lajstrom's names are at most 255 characters | nothing needed | [gitlab-org/container-registry](https://gitlab.com/gitlab-org/container-registry/-/issues): to file |
-| GHCR, 2026-11-07 | In a repository without a manifest, a blob answers `HEAD` 200 and `GET` 404 `BLOB_UNKNOWN`, seconds later too ([ghcr.md](ghcr.md#create-on-push)) | Checking if content exists: "A HEAD request to an existing blob or manifest URL MUST return `200 OK`"; Pulling blobs: "A GET request to an existing blob URL MUST provide the expected blob, with a response code that MUST be `200 OK`" | Ingest reads the metadata layer back before it pushes the manifest, so the first version of every package fails; raw `PUT` answers 400 | none; ingest should check the layer from its spool (ghcr.md), no issue yet | GitHub has no public tracker: [Community, Packages](https://github.com/orgs/community/discussions/categories/packages): to file |
+| GHCR, 2026-11-07 | In a repository without a manifest, a blob answers `HEAD` 200 and `GET` 404 `BLOB_UNKNOWN`, seconds later too ([ghcr.md](ghcr.md#create-on-push)) | Checking if content exists: "A HEAD request to an existing blob or manifest URL MUST return `200 OK`"; Pulling blobs: "A GET request to an existing blob URL MUST provide the expected blob, with a response code that MUST be `200 OK`" | Ingest reads the metadata layer back before it pushes the manifest, so the first version of every package fails; raw `PUT` answers 400 | none; ingest should check the metadata layer as it streams it, instead of reading it back (ghcr.md), no issue yet | GitHub has no public tracker: [Community, Packages](https://github.com/orgs/community/discussions/categories/packages): to file |
 | GHCR, 2026-11-07 | The empty blob `sha256:e3b0c442…` cannot be pushed (404 `BLOB_UNKNOWN` to `PUT` and `POST ?digest=`), yet `HEAD` and `GET` answer 200 with 0 bytes, in a repository that never existed too ([ghcr.md](ghcr.md#upload-sessions)) | Checking if content exists: "If the blob or manifest is not found in the repository, the response code MUST be `404 Not Found`"; Pushing Manifests: "An attempt to pull a nonexistent repository MUST return response code `404 Not Found`" | A client's push of the empty blob through the facade fails, though a manifest with it as a layer is taken | none; never upload the 0-byte blob to GHCR (ghcr.md), no issue yet | [Community, Packages](https://github.com/orgs/community/discussions/categories/packages): to file |
 | GHCR, 2026-11-07 | `GET` of an upload session is `303 See Other` to a github.com web page that answers 404, with no challenge; `HEAD` is 405 ([ghcr.md](ghcr.md#upload-sessions)) | `GET` of the session (end-13): "The response to an active upload `<location>` MUST be a `204 No Content` response code", with `Location` and `Range` | No offset from the registry; a replica that primes its token with this `GET` gets none, and its streamed `PATCH` fails ("request body is not rewindable") | none; prime with a request GHCR challenges and keep the offset in Lajstrom's session (ghcr.md), no issue yet | [Community, Packages](https://github.com/orgs/community/discussions/categories/packages): to file |
 | GHCR, 2026-11-07 | `tags/list` is in creation order; `last` is a position, and a `last` that is no tag gives `"tags":null` ([ghcr.md](ghcr.md#tags)) | Listing Tags: "the tags MUST be in lexical order"; with `last`, "up to `<int>` tags *after* `<tagname>`"; the body's `tags` is a list | None today: the provider follows `Link` and never makes up a `last` | oras-go follows `Link` | [Community, Packages](https://github.com/orgs/community/discussions/categories/packages): to file |
@@ -207,8 +211,8 @@ reported it yet.
 | Harbor v2.15.4 | Error codes outside the spec's list on `/v2`: `BAD_REQUEST` (a repository outside a project, a malformed digest), `NOT_FOUND` (tags of a missing repository, a deleted manifest), `PRECONDITION` (412, an immutable tag), `REQUEST_ENTITY_TOO_LARGE` (413) ([harbor.md](harbor.md)) | Error codes: "The `code` field MUST be one of the following" (`NAME_INVALID`, `NAME_UNKNOWN`, `MANIFEST_UNKNOWN`, `DENIED`, …) | The provider reads the status, so 404 is `ErrNotFound`; a 412 is `ErrConflict` only because Harbor's message says "configured as immutable"; the referrers probe's 400 for a name outside a project says nothing about the cause | `classifyResponse` by status, and by the message for 412 (`mentionsImmutable`); harbor.md items 3 and 4; the Harbor adapter, #73 | [goharbor/harbor](https://github.com/goharbor/harbor/issues): to file |
 | Harbor v2.15.4 | `HEAD /v2/<name>/blobs/<digest>` is 404 or 400 at random when `<name>` has a component `manifests` or `referrers`, or the components `tags/list`; the `GET` is 200 ([quirks.md](quirks.md#measured-on-harbor), [Routing words](#routing-words)) | Checking if content exists: "A HEAD request to an existing blob or manifest URL MUST return `200 OK`"; the names match the spec's `<name>` grammar | A blob check by `HEAD` misses: an upload sends the blob again, a check after a push fails now and then (inference) | ADR 0017 escapes the words on every registry ([its amendment](../adr/0017-the-grammar-of-oci-names.md#amendment-harbors-routes-2026-11-11)); `lajstrom registry probe` measures it, the row "Routing words in a name" | [goharbor/harbor#24363](https://github.com/goharbor/harbor/issues/24363) |
 | distribution 3.1.2, `s3` storage driver (on SeaweedFS 4.52 and MinIO 2025-07-23); Zot v2.1.23 on S3 (MinIO), which uses the same driver | After the closing `PUT` of a session is refused for its digest, the status `GET` and the cancel of that session answer 500 `s3aws: append to zero-size path … unsupported` on distribution ([distribution.md](distribution.md#uploads)); Zot's cancel answers 503 with no body and logs the same error ([zot.md](zot.md#uploads)) | `GET` of the session (end-13): 204 for an active session, 404 otherwise; the cancel is not in 1.1.1 (Docker's API: 204, or 404 for an unknown session). A 500 or a 503 is neither: a bug | The session stays in the bucket until the registry purges old uploads; a log line | the facade cancels the backend session itself after the refused digest, logs the error (`facade: cancel backend upload session`), and answers the client's `DELETE` 404 `BLOB_UPLOAD_UNKNOWN` (#24) | [distribution/distribution](https://github.com/distribution/distribution/issues): to file (the driver is distribution's) |
-| Nexus 3.98.1, `docker` format | `DELETE /v2/<name>/manifests/<digest>` answers 202, and every tag that named the manifest still answers 200 with it and is still listed; the digest alone is 404 ([nexus.md](nexus.md#delete)) | Deleting Manifests: "Once deleted, a `GET` to `/v2/<name>/manifests/<digest>` and any tag pointing to that digest will return a 404" | A version deleted through Lajstrom stays in the registry under its tag, and reindex finds it again; its referrers too | none; `capabilities: {deleteManifest: false}` refuses deletes instead (nexus.md, item 2) | [Sonatype's community forum](https://community.sonatype.com/): to file |
-| Nexus 3.98.1, `oci` format | Every blob `GET` with a `Range` header is 500 `UNKNOWN` (`IllegalArgumentException: Paths must start with a slash` in its log), though `HEAD` says `Accept-Ranges: bytes` ([nexus.md](nexus.md#blob-reads-ranges-sizes)) | Pulling blobs: "A GET request to an existing blob URL MUST provide the expected blob"; "A registry SHOULD support the `Range` request header" (RFC 9110 lets a server ignore it, with a 200, not fail) | Ingest's range reads of a wheel fail: no pypi upload works; a client's range through the facade and `/raw/` is 500 | none (nexus.md, item 3) | [Sonatype's community forum](https://community.sonatype.com/): to file |
+| Nexus 3.98.1, `docker` format | `DELETE /v2/<name>/manifests/<digest>` answers 202, and every tag that named the manifest still answers 200 with it and is still listed; the digest alone is 404 ([nexus.md](nexus.md#delete)) | Deleting Manifests: "Once deleted, a `GET` to `/v2/<name>/manifests/<digest>` and any tag pointing to that digest will return a 404" | A version deleted through Lajstrom stays in the registry under its tag, and reindex finds it again; its referrers too | the vendor table sets `deleteManifest: false` on this format (#352, nexus.md, item 2): a delete through Lajstrom is refused rather than leaving the tags | [Sonatype's community forum](https://community.sonatype.com/): to file |
+| Nexus 3.98.1, `oci` format | Every blob `GET` with a `Range` header is 500 `UNKNOWN` (`IllegalArgumentException: Paths must start with a slash` in its log), though `HEAD` says `Accept-Ranges: bytes` ([nexus.md](nexus.md#blob-reads-ranges-sizes)) | Pulling blobs: "A GET request to an existing blob URL MUST provide the expected blob"; "A registry SHOULD support the `Range` request header" (RFC 9110 lets a server ignore it, with a 200, not fail) | Without a workaround, ingest's range reads of a wheel fail (no pypi upload worked) and a client's range through the facade and `/raw/` is 500 | the provider asks this format for whole blobs and answers a client's range with the whole blob, 200 (#352, nexus.md, item 3); not run against Nexus again | [Sonatype's community forum](https://community.sonatype.com/): to file |
 | Nexus 3.98.1, both formats | The `Location` of a manifest `PUT` is two paths glued together, `http://localhost:5008/v2/one/manifests/v1/repository/lajstrom/v2/one/manifests/v1`; and the 201 carries the manifest as its body ([nexus.md](nexus.md#connectors-and-create-on-push)) | Pushing Manifests: the registry "MUST have the following header: `Location: <location>`", and "The `<location>` is a pullable manifest URL" | None: oras-go reads neither | nothing needed | [Sonatype's community forum](https://community.sonatype.com/): to file |
 | Nexus 3.98.1, `docker` format | A `PATCH` to an upload session after its cancel is 500 ([nexus.md](nexus.md#uploads)); the `oci` format answers 404 | The error table has `BLOB_UPLOAD_UNKNOWN`, "blob upload unknown to registry", for this; a 500 is a bug | `TestIntegrationUploads/cancel` fails; a client gets 500 for a session that is gone | none | [Sonatype's community forum](https://community.sonatype.com/): to file |
 | Nexus 3.98.1, both formats | Error codes outside the spec's list on `/v2`: `REDEPLOY_DISABLED` (409, a tag under `writePolicy: allow_once`), `RANGE_NOT_SATISFIABLE` (416, a chunk out of order) ([nexus.md](nexus.md#immutable-tags)) | Error codes: "The `code` field MUST be one of the following" | None: the provider reads the status, 409 is `ErrConflict` | nothing needed | [Sonatype's community forum](https://community.sonatype.com/): to file |
@@ -246,7 +250,7 @@ word upstream, and the row says so; where one costs Lajstrom something, the row 
 | Gitea 1.27.3 | No `Range` support: a range is 200 with the whole blob, no `Accept-Ranges` ([gitea.md](gitea.md#blob-reads-ranges-sizes)); Forgejo answers 206 | "A registry SHOULD support the `Range` request header"; RFC 9110 lets a server ignore it. A resumed download starts over; worth a word upstream |
 | Gitea 1.27.3, Forgejo 17.0.1 | A `PATCH` without `Content-Range` after the first write is 400 `BLOB_UPLOAD_INVALID` "Stream uploads after first write are not allowed" ([gitea.md](gitea.md#uploads)) | 1.1.1 defines a chunk `PATCH` with `Content-Range` only; the streamed `PATCH` is Docker's, and one works. The provider streams a chunk of unknown size into a session that holds bytes, and spools it first with `registries[].uploads.spoolUnknownLength` (gitea.md, item 4; #425) |
 | Gitea 1.27.3, Forgejo 17.0.1 | A re-pointed tag, and the delete of a tag, delete the manifest it named when nothing else holds it, with the layers only it used ([gitea.md](gitea.md#immutable-tags)) | Retention is not in the spec. Lajstrom re-points only the tag schema's index, whose old version is garbage |
-| Gitea 1.27.3, Forgejo 17.0.1 | Every challenge says `scope="*"`, whatever the request; the token is the user's for 24 h ([gitea.md](gitea.md#owners-tokens-and-create-on-push)) | Token auth is outside the spec. It cost every streamed upload until the provider kept its primed token under the request's own scopes (#120) |
+| Gitea 1.27.3, Forgejo 17.0.1 | Every challenge says `scope="*"`, whatever the request; the token is the user's for 24 h ([gitea.md](gitea.md#owners-tokens-and-create-on-push)) | Token auth is outside the spec. It cost every streamed upload until the provider kept its primed token under the request's own scopes (#342, for #120) |
 
 ## Configuration
 
@@ -258,8 +262,10 @@ distribution and Zot, on the filesystem or on S3: the probe finds everything the
 configurations do. Two settings of theirs it cannot see: distribution with
 `storage.delete.enabled: false` is found out at the first refused delete, which
 `deleteManifest: false` saves ([distribution.md](distribution.md#the-probe)); Zot behind an
-access-control policy without `update` refuses to re-point a tag, which it needs
-`immutableTags: true` for ([zot.md](zot.md#configuration)). Zot redirects blob downloads only on
+access-control policy without `update` refuses to re-point a tag, which `immutableTags: true`
+describes, though nothing in Lajstrom acts on it yet but the startup line and the reindex
+test's drift step; Lajstrom never re-points a version's tag itself
+([zot.md](zot.md#configuration)). Zot redirects blob downloads only on
 S3 with `storage.redirectBlobURL: true`; distribution on S3 always does, unless
 `storage.redirect.disable`.
 
@@ -273,7 +279,7 @@ registries:
       passwordEnv: LAJSTROM_REGISTRY_PASSWORD
     # capabilities: {blobRedirect: false}   # on S3, when clients cannot reach the object store: Lajstrom streams
     # capabilities: {deleteManifest: false} # distribution with storage.delete.enabled: false
-    # capabilities: {immutableTags: true}   # Zot behind a policy without update
+    # capabilities: {immutableTags: true}   # Zot behind a policy without update: descriptive, nothing acts on it yet
 ```
 
 The GitLab container registry, both variants:
@@ -290,6 +296,8 @@ registries:
     # <group>/<format>/<repo>, and with tag protection or immutability rules no digest deletes:
     # prefix: <group>/
     # capabilities: {deleteManifest: false}
+    # The vendor table sets maxNameDepth: 4 when the challenge's realm is GitLab's .../jwt/auth;
+    # behind a proxy that rewrites the realm: capabilities: {maxNameDepth: 4}
 ```
 
 GHCR ([ghcr.md](ghcr.md#the-probe)):
@@ -333,9 +341,9 @@ registries:
     auth:                               # forceBasicAuth on the repository: Basic on /v2/
       username: lajstrom                # a user with nx-repository-view-<format>-<repository>-*
       passwordEnv: LAJSTROM_NEXUS_PASSWORD
-    # The docker format leaves the tags of a manifest deleted by digest (nexus.md, item 2):
-    # capabilities: {deleteManifest: false}
-    # The oci format answers every Range with 500: pypi uploads fail (nexus.md, item 3).
+    # Nothing to set (#352): the vendor table sets deleteManifest: false on the docker format,
+    # which leaves the tags of a manifest deleted by digest (nexus.md, item 2), and reads the oci
+    # format's blobs whole, since it answers every Range with 500 (item 3).
 ```
 
 Gitea's or Forgejo's container registry ([gitea.md](gitea.md#run-it)):
@@ -349,6 +357,7 @@ registries:
     auth:
       username: <user>
       passwordEnv: LAJSTROM_GITEA_TOKEN # an access token with the scope write:package
+    # uploads: {spoolUnknownLength: true}   # for clients that stream more than one chunk (gitea.md, item 4)
 ```
 
 ## Consistency
@@ -445,9 +454,11 @@ filesystem keeps a deleted blob's bytes until its garbage collector runs: a larg
 registries share the machine's disk (a run with 2 GiB against GitLab A and B filled it once).
 
 **What it cannot probe.** A registry whose bearer challenge names a token realm on another host
-than the registry's (Docker Hub, GitLab.com, `registry.gitlab.com`): the generic provider refuses
-to send its credentials there since #354, until `registries[].tokenRealmHosts` exists, and the
-probe stops with that error. A registry of type `ecr` (its credentials come from the AWS SDK; the
+than the registry's (Docker Hub, GitLab.com, `registry.gitlab.com`), unless that host is in the
+vendor table (`gitlab.com` for `registry.gitlab.com`, `auth.docker.io` for Docker Hub) or in
+`registries[].tokenRealmHosts` (with `--registry`; `--url` has no configuration): otherwise the
+generic provider refuses to send its credentials there (#354), and the probe stops with that
+error. A registry of type `ecr` (its credentials come from the AWS SDK; the
 probe is for type `generic`).
 
 ### Routing words
@@ -495,10 +506,11 @@ a miss there likelier to show.
 
 ## Keeping the matrix current
 
-The versions are pinned in four places: `deploy/compose/compose.yaml` (distribution, Zot, the
+The versions are pinned in six places: `deploy/compose/compose.yaml` (distribution, Zot, the
 GitLab container registry and its Postgres, SeaweedFS, MinIO), `deploy/compose/harbor/harbor.sh`
 (Harbor's version and the installer's sha256), `deploy/compose/nexus/compose.yaml` (Nexus's
-image by digest), `deploy/compose/gitea/compose.yaml` (Gitea's and Forgejo's images by digest)
+image by digest), `deploy/compose/gitea/compose.yaml` (Gitea's and Forgejo's images by digest),
+`deploy/compose/jfrog-jcr/compose.yaml` (JCR's image by digest)
 and `.github/workflows/ci.yml` (distribution and
 Zot of the integration job and of the e2e job, the same as in `compose.yaml`). **Whoever changes a pin re-runs the
 commands of that registry's page, updates the cells that changed and the "last verified" date,
@@ -537,6 +549,9 @@ The commands per registry:
       [gitea.md, Commands](gitea.md#commands): `gitea.sh up` and `gitea.sh up forgejo`, the curl
       probes, the tests and the e2e scenarios with the prefix, the cleanup; then
       `gitea.sh down`.
+- [ ] **JFrog Container Registry** (`jfrog-jcr/compose.yaml`; a new image is a new digest):
+      [jfrog-jcr.md, Commands](jfrog-jcr.md#commands): `jcr.sh up`, the curl probes, the tests
+      and the e2e scenarios with the prefix; then `jcr.sh down`.
 - [ ] **GHCR** (no pin; quarterly, or when the page stops being true):
       [ghcr.md, Measurements](ghcr.md#measurements) and [Our tests](ghcr.md#our-tests) in
       `lajstrom-extras`, then the deletion of the packages it leaves.
@@ -566,8 +581,8 @@ distribution, so Lajstrom's manifest profile is pushed to both on every pull req
 cannot delete. The runs by hand are on the pages: [distribution.md](distribution.md#our-tests-against-it),
 [zot.md](zot.md#our-tests-against-it), [gitlab.md](gitlab.md#our-tests-against-it),
 [ghcr.md](ghcr.md#our-tests), [harbor.md](harbor.md#our-tests-against-it),
-[nexus.md](nexus.md#our-tests-against-it).
-[gitea.md](gitea.md#our-tests-against-it).
+[nexus.md](nexus.md#our-tests-against-it), [gitea.md](gitea.md#our-tests-against-it),
+[jfrog-jcr.md](jfrog-jcr.md#our-tests-against-it).
 
 ### Upload sessions
 
@@ -601,7 +616,10 @@ container registry is the `gitlab` profile of the dev stack on `localhost:5003` 
 `localhost:8081` (UI and REST API), `localhost:5008` and `localhost:5015` (the connectors),
 set up by `deploy/compose/nexus/nexus.sh up`. Gitea and Forgejo are a compose project of their
 own, `lajstrom-gitea`, on `localhost:5009` and `localhost:5014`, set up by
-`deploy/compose/gitea/gitea.sh up` (`up forgejo`). The packages the GHCR tests left in `lajstrom-extras`, and their deletion,
+`deploy/compose/gitea/gitea.sh up` (`up forgejo`). JFrog Container Registry is a compose
+project of its own, `lajstrom-jcr`, on `localhost:5010`, set up by
+`deploy/compose/jfrog-jcr/jcr.sh up`; moto of the `ecr` profile takes the same port by default,
+so to run both one moves (`LAJSTROM_JCR_PORT` or `LAJSTROM_MOTO_PORT`). The packages the GHCR tests left in `lajstrom-extras`, and their deletion,
 are in [ghcr.md](ghcr.md#packages-left-in-lajstrom-extras). The ECR provider's stand-in, moto
 for the API and a distribution for `/v2`, is the `ecr` profile on `localhost:5010` and
 `localhost:5011` ([ecr.md](ecr.md#tested-against-moto)).

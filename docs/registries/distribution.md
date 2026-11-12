@@ -149,7 +149,7 @@ filesystem's, `/` first.
 
 `TestIntegration` of the provider, with `-v`, logged the same line on the dev stack's three, the
 registry without deletes, the one with htpasswd (and the credentials) and the one on SeaweedFS
-with redirects off:
+with redirects off, before the vendor table knew distribution:
 
 ```text
 level=INFO msg="registry capabilities" registry=integration vendor=unknown createOnPush=true referrers=false catalog=true deleteManifest=true immutableTags=false blobRedirect=true maxBlobSize=0
@@ -167,9 +167,11 @@ Against the measurements:
 | `blobRedirect` | true, not probed | 307 on S3, none on the filesystem | agrees: it means "may return a redirect", the operator's switch |
 | `maxBlobSize` | 0, unknown | no limit met at 1 GiB | agrees: nothing tells it |
 
-`vendor=unknown`: distribution says nothing about itself on `GET /v2/`
-(`Docker-Distribution-Api-Version: registry/2.0` only), and the vendor table has nothing for
-it. No override is needed. For a distribution with deletes disabled,
+`vendor=unknown` then: distribution says nothing about itself on `GET /v2/`
+(`Docker-Distribution-Api-Version: registry/2.0` only). Since #446 that header and nothing else
+that names a vendor, on a host that is no hosted service's, is `vendor=distribution`, and the
+vendor table sets `consistency: strong`. No override is needed. For a distribution with
+deletes disabled,
 `capabilities: {deleteManifest: false}` makes the first delete through Lajstrom answer "the
 backend registry cannot delete manifests" at once instead of after a refused request.
 
@@ -179,11 +181,13 @@ Nothing is required: the whole integration suite passes on the dev stack's distr
 S3 everything but the cancel of a session after a refused digest, which the facade handles
 since #24 ([Uploads](#uploads)). Three things are worth knowing:
 
-1. Optional: delete the referrers of a manifest it deletes, where there is no referrers API.
-   distribution deletes a subject alone: its referrers and the `sha256-<digest>` index that
+1. Done in ingest: delete the referrers of a manifest it deletes, where there is no referrers
+   API. distribution deletes a subject alone: its referrers and the `sha256-<digest>` index that
    lists them stay, tagged, and no garbage collection takes them ([Delete](#delete),
-   [Garbage collection](#garbage-collection)). The raw delete deletes the version's manifest by
-   digest only. Harbor deletes the referrers with their subject; here they are left behind.
+   [Garbage collection](#garbage-collection)). A delete through Lajstrom, the raw route's or the
+   facade's, takes the version's referrers and its tag-schema index first (`internal/ingest`);
+   only a delete straight at distribution leaves them behind. Harbor deletes the referrers with
+   their subject itself.
 2. Optional: do not read an empty tag list as "the repository exists" on S3. `tags/list` of a
    repository that does not exist is 200 `{"tags":[]}` on the `s3` driver and 404 `NAME_UNKNOWN`
    on the filesystem ([Tags](#tags)). The facade's `tags/list` answers `NAME_UNKNOWN` when the

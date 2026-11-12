@@ -96,7 +96,9 @@ reads it yet; the refusals reach ingest and the frontends as conflicts either wa
 2. List repositories through Harbor's REST API when reindex (#29) needs a listing. A project
    robot cannot read `_catalog` (401 with a Basic challenge; even the admin's Bearer token is
    refused, and only the admin with Basic auth gets it), so the probe sets `catalog=false` and
-   `ListRepositories` is `ErrUnsupported`. Nothing calls it today. `GET /api/v2.0/projects/<project>/repositories`
+   `ListRepositories` is `ErrUnsupported`. Reindex calls it and, on Harbor, falls back to the
+   `oci_repos` rows (#37), which a lost database loses; a REST listing would let it start from
+   nothing. `GET /api/v2.0/projects/<project>/repositories`
    answers the robot (permission `repository:list`) with `page`, `page_size` (at most 100),
    `q=name=~<prefix>`, `X-Total-Count` and `Link`; the names carry the project. A small Harbor
    adapter, or a listing hook of the generic provider.
@@ -428,8 +430,9 @@ chunk. The failures, by owner:
 - **The policy's, read rightly:** with the rule every delete of a tagged manifest is refused,
   and the raw route answers 409.
 - **Ours, the facade:** the five discovery failures are those of Zot, distribution and GitLab:
-  the referrers API of #28 (the facade answers 501) and `OCI-Subject` in the references setup,
-  which Harbor sends and the pass-through drops.
+  the referrers API of #28 (the facade answered 501 then) and `OCI-Subject` in the references
+  setup, which Harbor sends and the pass-through dropped. The facade serves both since #28; the
+  suite was not run against Harbor again.
 - **Ours, the provider:** the quota's 403 read as bad credentials, a 502 for the client
   (item 1).
 
