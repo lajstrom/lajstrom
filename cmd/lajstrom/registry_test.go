@@ -83,6 +83,8 @@ func TestRegistryProbe(t *testing.T) {
 		{"credentials with --registry", []string{"registry", "probe", "--config", cfg, "--registry", "taken", "--username", "x"}, "go with --url"},
 		{"username without a password", []string{"registry", "probe", "--url", srv.URL, "--username", "x"}, "--password-file"},
 		{"unknown registry", []string{"registry", "probe", "--config", cfg, "--registry", "nope"}, `no registry "nope"`},
+		{"url with a path", []string{"registry", "probe", "--url", srv.URL + "/myorg"}, "--url must be the registry's base URL"},
+		{"url with /v2", []string{"registry", "probe", "--url", srv.URL + "/v2/"}, "a project or an owner goes in --registry-prefix"},
 		{"bad size", []string{"registry", "probe", "--url", srv.URL, "--max-blob-size", "8MB"}, "--max-blob-size"},
 		{"bad output", []string{"registry", "probe", "--url", srv.URL, "-o", "yaml"}, "--output"},
 		{"no routing heads", []string{"registry", "probe", "--url", srv.URL, "--routing-heads", "0"}, "--routing-heads"},

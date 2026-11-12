@@ -178,3 +178,27 @@ func TestAdminRepoWithoutMigrate(t *testing.T) {
 		t.Errorf("list before migrate: %v, want the hint to migrate", err)
 	}
 }
+
+// TestRegistryURLPath: a registries[].url with a path is a configuration error of every command,
+// exit status 2 before anything opens, that names the key and the prefix (#717): admin repo
+// create, serve and migrate alike, not the generic provider's late error of serve.
+func TestRegistryURLPath(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "lajstrom.yaml")
+	body := "server:\n  listen: \"127.0.0.1:0\"\n  externalURL: https://art.example.com\ndatabase:\n  driver: sqlite\n  dsn: \"file:" +
+		filepath.Join(dir, "lajstrom.db") + "\"\nregistries:\n  - name: local\n    url: \"https://ghcr.io/myorg\"\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const want = `registries[0].url: must be the registry's base URL, http(s)://<host>[:port], with no path, query or fragment: ` +
+		`the API is at /v2/ of the host; a project or an owner goes in registries[0].prefix: "myorg/"`
+	for _, args := range [][]string{{"admin", "repo", "create", "raw/scratch", "--registry", "local"}, {"serve"}, {"migrate"}} {
+		_, _, err := run(t, nil, append(args, "--config", cfg)...)
+		if err == nil || !strings.Contains(err.Error(), want) || exitStatus(err) != 2 {
+			t.Errorf("%v: %v (exit %d), want %q, exit 2", args, err, exitStatus(err), want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "lajstrom.db")); err == nil {
+		t.Error("a command opened the index database of an invalid configuration")
+	}
+}

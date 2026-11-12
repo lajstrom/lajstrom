@@ -110,7 +110,8 @@ type Registry struct {
 	Name string `yaml:"name"`
 	// Type is generic (distribution, Zot, Harbor, GHCR) or ecr.
 	Type string `yaml:"type"`
-	// URL is the registry's base URL, http:// or https://.
+	// URL is the registry's base URL, http(s)://<host>[:port], without a path, a query or a
+	// fragment: a project or an owner goes in Prefix.
 	URL string `yaml:"url"`
 	// Prefix is the instance prefix prepended to every OCI repository name, e.g. "art/";
 	// empty for none. Only the provider sees it (docs/spec/http-routing.md §2).

@@ -263,14 +263,7 @@ func (r Registry) validate(p *problems, key string) {
 	if r.Type != "generic" && r.Type != "ecr" {
 		p.add(key+".type", "%q is not generic or ecr", r.Type)
 	}
-	// The URL is never quoted in errors: it could carry credentials.
-	u, err := url.Parse(r.URL)
-	switch {
-	case err != nil || !isHTTP(u):
-		p.add(key+".url", "must be an absolute http(s) URL")
-	case u.User != nil:
-		p.add(key+".url", "must not contain credentials; use auth")
-	}
+	r.validateURL(p, key)
 	if !validPrefix(r.Prefix) {
 		p.add(key+".prefix", `must not start with "/" and must end with "/" when set`)
 	} else {
@@ -298,6 +291,38 @@ func (r Registry) validate(p *problems, key string) {
 	}
 	r.validateTokenRealmHosts(p, key)
 	r.validateECR(p, key)
+}
+
+// validateURL checks url: the registry's base URL, http(s)://<host>[:port] (a trailing / is
+// allowed), as the generic provider takes it. The URL is never quoted in errors: it could
+// carry credentials.
+func (r Registry) validateURL(p *problems, key string) {
+	u, err := url.Parse(r.URL)
+	switch {
+	case err != nil || !isHTTP(u):
+		p.add(key+".url", "must be an absolute http(s) URL")
+	case u.User != nil:
+		p.add(key+".url", "must not contain credentials; use auth")
+	case strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
+		p.add(key+".url", "must be the registry's base URL, http(s)://<host>[:port], with no path, query or fragment: "+
+			"the API is at /v2/ of the host%s", pathHint(u.Path, key+".prefix"))
+	}
+}
+
+// pathHint is what to do with the path of a registry URL, after the error: leave out /v2, which
+// Lajstrom adds itself, and put the rest, a project or an owner such as the myorg of
+// https://ghcr.io/myorg, in the prefix key. The path alone is quoted: the query could carry a
+// token.
+func pathHint(path, prefixKey string) string {
+	var hint string
+	path = strings.Trim(path, "/")
+	if rest, ok := strings.CutPrefix(path, "v2"); ok && (rest == "" || rest[0] == '/') {
+		hint, path = "; leave /v2 out, Lajstrom adds it", strings.TrimLeft(rest, "/")
+	}
+	if path != "" {
+		hint += fmt.Sprintf("; a project or an owner goes in %s: %q", prefixKey, path+"/")
+	}
+	return hint
 }
 
 func (i Ingest) validate(p *problems) {

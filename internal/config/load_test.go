@@ -510,6 +510,46 @@ func TestLoadPrefixGrammar(t *testing.T) {
 	}
 }
 
+// TestRegistryURL: registries[].url is the registry's base URL, a trailing / allowed; a path,
+// a query or a fragment is refused at load, naming the key and where a project or an owner
+// goes (#717), and never quoting the query.
+func TestRegistryURL(t *testing.T) {
+	const noPath = "registries[1].url: must be the registry's base URL, http(s)://<host>[:port], with no path, query or fragment: " +
+		"the API is at /v2/ of the host"
+	tests := []struct {
+		url  string
+		want string // the error, "" when it loads
+	}{
+		{url: "http://zot:5000"},
+		{url: "http://zot:5000/"},
+		{url: "https://ghcr.io"},
+		{url: "https://ghcr.io/myorg", want: noPath + `; a project or an owner goes in registries[1].prefix: "myorg/"`},
+		{url: "https://harbor.example/team/lajstrom/", want: noPath + `; a project or an owner goes in registries[1].prefix: "team/lajstrom/"`},
+		{url: "http://localhost:5000/v2/", want: noPath + "; leave /v2 out, Lajstrom adds it"},
+		{url: "http://localhost:5000/v2", want: noPath + "; leave /v2 out, Lajstrom adds it"},
+		{url: "https://ghcr.io/v2/myorg", want: noPath + `; leave /v2 out, Lajstrom adds it; a project or an owner goes in registries[1].prefix: "myorg/"`},
+		{url: "https://ghcr.io/v2x", want: noPath + `; a project or an owner goes in registries[1].prefix: "v2x/"`},
+		{url: "https://zot.example?token=s3cret", want: noPath},
+		{url: "https://zot.example/?", want: noPath},
+		{url: "https://zot.example/#top", want: noPath},
+	}
+	for _, tt := range tests {
+		t.Run(tt.url, func(t *testing.T) {
+			file := minimal + "registries:\n  - {name: first, url: \"http://zot:5001\"}\n  - {name: local, url: \"" + tt.url + "\"}\n"
+			_, err := Load(writeConfig(t, file), nil)
+			switch {
+			case tt.want == "" && err != nil:
+				t.Errorf("Load: %v, want success", err)
+			case tt.want != "" && (err == nil || !strings.HasSuffix(err.Error(), "\n"+tt.want)):
+				t.Errorf("Load: %v; want the one problem %q", err, tt.want)
+			}
+			if _, problems, _ := strings.Cut(fmt.Sprint(err), "invalid:"); strings.Contains(problems, "s3cret") {
+				t.Errorf("the error shows the query: %v", err) // the file's name, a temporary directory, has the test's name
+			}
+		})
+	}
+}
+
 // TestLoadRepoPolicy: repos[].policy is read as JSON-shaped values, which the bootstrap passes to
 // the API's checks as they are.
 func TestLoadRepoPolicy(t *testing.T) {
