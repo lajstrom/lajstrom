@@ -1,0 +1,38 @@
+# Project Quay's configuration for compose.yaml in this directory (docs/registries/quay.md):
+# the least that starts Quay without its config editor, and nothing else changed from Quay's
+# defaults (config.py at v3.18.2) but what is commented. For development only: the keys below
+# are not secret.
+SETUP_COMPLETE: true
+# The address clients use: Quay builds its bearer realm, http://<SERVER_HOSTNAME>/v2/auth, from
+# it. compose.yaml publishes LAJSTROM_QUAY_PORT, 5012 by default; another port needs this changed.
+SERVER_HOSTNAME: localhost:5012
+PREFERRED_URL_SCHEME: http
+SECRET_KEY: lajstrom-dev-quay-secret-key-not-a-secret
+DATABASE_SECRET_KEY: lajstrom-dev-quay-database-secret-key-not-a-secret
+DB_URI: postgresql://quay:quay@quay-postgres/quay
+BUILDLOGS_REDIS:
+  host: quay-redis
+  port: 6379
+USER_EVENTS_REDIS:
+  host: quay-redis
+  port: 6379
+DISTRIBUTED_STORAGE_CONFIG:
+  default:
+    - LocalStorage
+    - storage_path: /datastorage/registry
+DISTRIBUTED_STORAGE_PREFERENCE: [default]
+DISTRIBUTED_STORAGE_DEFAULT_LOCATIONS: [default]
+AUTHENTICATION_TYPE: Database
+# The first user through POST /api/v1/user/initialize, on an empty database only (quay.sh).
+FEATURE_USER_INITIALIZE: true
+SUPER_USERS: [quayadmin]
+# No mail server: an organisation and a user need no verified e-mail.
+FEATURE_MAILING: false
+FEATURE_BUILD_SUPPORT: false
+FEATURE_SECURITY_SCANNER: false
+# Organisations that are a pull-through cache of another registry, off by default: on for the
+# measurements of quay.md (The build rule), which pull through an organisation caching docker.io.
+FEATURE_PROXY_CACHE: true
+# Tag immutability, off by default: on, it does nothing until an organisation or a repository
+# has a policy (quay.md, Immutable tags).
+FEATURE_IMMUTABLE_TAGS: true
