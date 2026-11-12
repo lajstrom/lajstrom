@@ -43,7 +43,7 @@ deploy/compose/quay/quay.sh down    # with the volumes and the token files
 | Superuser | `quayadmin`, the first user, by `POST /api/v1/user/initialize` with `access_token: true`; its OAuth token, given once, in `deploy/compose/quay/.work/admin.token` (ignored by git) |
 | Organisation | `lajstrom-it`, by `POST /api/v1/organization/` |
 | Robot | `lajstrom-it+lajstrom`, by `PUT /api/v1/organization/lajstrom-it/robots/lajstrom`, in a team `lajstrom` with the role `admin`; its token in `.work/robot.token` |
-| Lajstrom | `prefix: lajstrom-it/`, `auth.username: lajstrom-it+lajstrom`, the robot's token in the variable `passwordEnv` names; `capabilities: {catalog: false}` and `server.maxManifestSize: 1MiB` ([Configuration](#configuration)) |
+| Lajstrom | `prefix: lajstrom-it/`, `auth.username: lajstrom-it+lajstrom`, the robot's token in the variable `passwordEnv` names; `capabilities: {catalog: false}` and `server.maxManifestSize: 1048576` ([Configuration](#configuration)) |
 
 The team's role matters. With `creator` the robot may create repositories and administers what
 it creates, but a repository that does not exist is 401 `UNAUTHORIZED` to it, not 404
