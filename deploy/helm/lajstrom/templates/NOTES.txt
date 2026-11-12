@@ -1,0 +1,30 @@
+{{- $ns := .Release.Namespace -}}
+{{- $full := include "lajstrom.fullname" . -}}
+{{- $url := .Values.config.server.externalURL | default "" -}}
+Lajstrom {{ include "lajstrom.tag" . }} runs as the Deployment {{ $full }} in the namespace {{ $ns }},
+behind the Service {{ $full }} (port http {{ .Values.service.port }}), for {{ $url }}.
+
+  kubectl -n {{ $ns }} rollout status deploy/{{ $full }}
+
+The replicas start once these Secrets exist (docs/deploy/helm.md):
+  {{ include "lajstrom.secretName" (dict "root" . "ref" .Values.masterKey) }}: {{ .Values.masterKey.key }}, the master key
+  {{ include "lajstrom.secretName" (dict "root" . "ref" .Values.database) }}: {{ .Values.database.key }}, the Postgres DSN
+{{- range .Values.registryPasswords }}
+  {{ include "lajstrom.secretName" (dict "root" $ "ref" .) }}: {{ .key }}, {{ .env }}
+{{- end }}
+{{- if .Values.bootstrap.enabled }}
+{{- $boot := include "lajstrom.bootstrapSecretName" . }}
+
+The first admin, from a machine that reaches {{ $url }}, with the token of the Secret {{ $boot }}:
+
+  lajstrom admin bootstrap --server {{ $url }} --name admin \
+    --token-file <(kubectl -n {{ $ns }} get secret {{ $boot }} -o jsonpath='{.data.{{ .Values.bootstrap.key }}}' | base64 -d)
+
+Then the token is dead: kubectl -n {{ $ns }} delete secret {{ $boot }}
+{{- end }}
+{{- if not (dig "server" "trustedProxies" list .Values.config) }}
+
+config.server.trustedProxies is empty: Lajstrom takes the edge for the client, so the throttles
+of failed logins and of /v2/token are off and the logs record the edge's address. List the range
+the edge connects from (docs/deploy/kubernetes.md, 2. The configuration).
+{{- end }}

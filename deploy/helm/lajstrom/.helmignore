@@ -1,0 +1,6 @@
+# Left out of helm package.
+.DS_Store
+*.swp
+*.bak
+*.orig
+*.tmp

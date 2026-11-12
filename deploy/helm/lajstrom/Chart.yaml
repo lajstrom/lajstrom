@@ -1,0 +1,23 @@
+# The Helm chart of Lajstrom (docs/deploy/helm.md): the deployment of deploy/kubernetes, with its
+# configuration from values and every secret from a Secret you make.
+apiVersion: v2
+name: lajstrom
+description: Artifact registry on top of any OCI registry, as N replicas on Postgres
+type: application
+# The chart's own version; appVersion is the image tag it runs unless image.tag says otherwise.
+version: 0.1.0
+appVersion: "v0.1.0"
+home: https://lajstrom.dev
+icon: https://raw.githubusercontent.com/lajstrom/lajstrom/main/docs/assets/logo.svg
+sources:
+  - https://github.com/lajstrom/lajstrom
+keywords:
+  - artifact-registry
+  - oci
+  - pypi
+  - apt
+  - maven
+  - npm
+maintainers:
+  - name: Lajstrom maintainers
+    url: https://github.com/lajstrom/lajstrom/blob/main/MAINTAINERS.md

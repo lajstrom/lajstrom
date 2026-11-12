@@ -1,0 +1,180 @@
+# Values of the Lajstrom chart. docs/deploy/helm.md has the reference and the install; the
+# defaults render the deployment of deploy/kubernetes. No secret goes in here: the master key,
+# the database DSN and the registry passwords come from Secrets you make, named below.
+
+image:
+  repository: ghcr.io/lajstrom/lajstrom
+  # Empty: the chart's appVersion.
+  tag: ""
+  # sha256:…, pinned beside the tag: the node pulls the digest.
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# lajstrom.yaml, mounted at /etc/lajstrom/lajstrom.yaml (docs/configuration.md). The chart sets
+# these keys itself, over whatever this map says: server.listen (":8080"), server.metricsListen
+# (with metrics.enabled), database.driver (postgres), keys.masterKeyEnv (LAJSTROM_MASTER_KEY) and
+# auth.bootstrap.tokenFile (with bootstrap.enabled). Helm merges maps and replaces lists: a list
+# of your values replaces the one below, and null removes a key of the defaults.
+config:
+  server:
+    # The public URL of the edge. The realm of the bearer challenge of /v2 is built from it.
+    externalURL: "https://art.example.com"
+    # The range the edge connects to the pods from. While it is empty, Lajstrom takes the edge
+    # for the client: the per-address throttles are off and the logs record the edge's address
+    # (docs/deploy/kubernetes.md, 2. The configuration).
+    # trustedProxies: ["<the range your edge connects from>"]
+  log:
+    format: json
+  registries:
+    - name: main
+      url: "https://registry.example.com"
+      prefix: "lajstrom/"
+      auth:
+        username: lajstrom
+        # Set from the entry of registryPasswords with the same env.
+        passwordEnv: LAJSTROM_REGISTRY_PASSWORD
+  # Repos made at the start of a replica when the database does not have them
+  # (docs/configuration.md, repos).
+  # repos:
+  #   - {name: assets, format: raw, registry: main}
+
+# The master key, 64 hexadecimal characters (openssl rand -hex 32), as LAJSTROM_MASTER_KEY: every
+# replica needs the same one. Keep a copy outside the cluster and apart from the database backups
+# (docs/operations.md, The master key).
+masterKey:
+  # The Secret; empty is the release's full name, lajstrom for a release named lajstrom.
+  existingSecret: ""
+  key: LAJSTROM_MASTER_KEY
+
+# The Postgres DSN, as LAJSTROM_DATABASE_DSN. The chart runs Postgres only: every replica
+# shares it. CloudNativePG's Secret <cluster>-app holds one under the key uri.
+database:
+  existingSecret: ""
+  key: LAJSTROM_DATABASE_DSN
+
+# The password of each registries[].auth.passwordEnv of config, from a Secret: env is the
+# variable that passwordEnv names. helm template fails on a passwordEnv no entry sets.
+registryPasswords:
+  - env: LAJSTROM_REGISTRY_PASSWORD
+    existingSecret: ""
+    key: LAJSTROM_REGISTRY_PASSWORD
+
+# The one-time token that makes the first admin (docs/auth.md, Bootstrap: the first admin): a
+# key of a Secret, mounted as the file /run/secrets/lajstrom-bootstrap/token of
+# auth.bootstrap.tokenFile. The volume is optional: without the Secret serve starts and warns, and
+# once the admin exists you delete the Secret and its file leaves the pods.
+bootstrap:
+  enabled: true
+  # The Secret; empty is <full name>-bootstrap.
+  existingSecret: ""
+  key: token
+
+# Every replica is the same: the state is in Postgres and in the registry.
+replicaCount: 2
+# A new replica starts before an old one stops; the old ones serve on the migrated schema
+# meanwhile (docs/operations.md, Several replicas).
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+# Must exceed server.shutdownDelay (5s) and server.shutdownTimeout (30s) together.
+terminationGracePeriodSeconds: 40
+revisionHistoryLimit: 10
+
+# At most one replica down at a time for a drain or an upgrade of the nodes.
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+  # minAvailable replaces maxUnavailable when set.
+  minAvailable: null
+
+serviceAccount:
+  create: true
+  # Empty: the full name with create, the namespace's default without.
+  name: ""
+  # IRSA or EKS Pod Identity for a registry of type ecr: eks.amazonaws.com/role-arn.
+  annotations: {}
+# Lajstrom never talks to the Kubernetes API.
+automountServiceAccountToken: false
+
+podAnnotations: {}
+podLabels: {}
+
+# The nonroot user of the distroless image (65532), which has no shell: the restricted Pod
+# Security Standard (docs/deploy/kubernetes.md, Security context).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+# serve applies the migrations and asks the registries (up to 20 s for one that does not answer)
+# before it listens: the start gets a minute (docs/deploy/kubernetes.md, Probes).
+startupProbe:
+  httpGet: {path: /-/healthz, port: http}
+  periodSeconds: 2
+  failureThreshold: 30
+# Only "the process answers": an outage of the database or a registry must not restart the pods.
+livenessProbe:
+  httpGet: {path: /-/healthz, port: http}
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+# 503 while the database does not answer or a registry has not answered for a minute.
+readinessProbe:
+  httpGet: {path: /-/readyz, port: http}
+  periodSeconds: 5
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# /tmp, the only writable path: a proxy repo's fetch and a /v2 chunk of a registry with
+# uploads.spoolUnknownLength are spooled there for one request. Uploads stream and take none.
+tmp:
+  sizeLimit: 4Gi
+  # Memory makes it a tmpfs, counted against the memory limit.
+  medium: ""
+
+service:
+  type: ClusterIP
+  # The port http; the edge routes the whole host to it.
+  port: 8080
+  annotations: {}
+
+# The metrics listener, server.metricsListen on 0.0.0.0, and the port metrics of the pods and
+# the Service. No edge routes it.
+metrics:
+  enabled: true
+  port: 9464
+
+# Spread the replicas, e.g. over kubernetes.io/hostname. A constraint without a labelSelector
+# gets the pods' own.
+topologySpreadConstraints: []
+affinity: {}
+nodeSelector: {}
+tolerations: []
+priorityClassName: ""
+
+# More variables, volumes and mounts for the container, as Kubernetes takes them: an upstream's
+# credential file (upstreams[].auth.passwordFile), TMPDIR on a volume of its own.
+extraEnv: []
+extraEnvFrom: []
+extraVolumes: []
+extraVolumeMounts: []

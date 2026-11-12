@@ -1,0 +1,147 @@
+# The replicas of serve (docs/deploy/kubernetes.md): the same Deployment as
+# deploy/kubernetes/deployment.yaml, from values.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lajstrom.fullname" . }}
+  labels:
+    {{- include "lajstrom.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  selector:
+    matchLabels:
+      {{- include "lajstrom.selectorLabels" . | nindent 6 }}
+  strategy:
+    {{- toYaml .Values.strategy | nindent 4 }}
+  template:
+    metadata:
+      # Not helm.sh/chart: a new version of the chart alone does not roll the pods.
+      labels:
+        {{- include "lajstrom.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/version: {{ include "lajstrom.tag" . | trunc 63 | trimSuffix "-" | quote }}
+        app.kubernetes.io/part-of: lajstrom
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # serve reads its configuration at start only: a new one takes new pods.
+        checksum/config: {{ include "lajstrom.config" . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "lajstrom.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: lajstrom
+          image: {{ include "lajstrom.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve", "--config", "/etc/lajstrom/lajstrom.yaml"]
+          ports:
+            - name: http
+              containerPort: 8080
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+            {{- end }}
+          env:
+            {{- include "lajstrom.secretEnv" (dict "root" . "dsn" .Values.database) | nindent 12 }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # No preStop hook: serve keeps its listener open for server.shutdownDelay after SIGTERM.
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/lajstrom
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.bootstrap.enabled }}
+            - name: bootstrap
+              mountPath: {{ include "lajstrom.bootstrapDir" . }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "lajstrom.fullname" . }}
+        - name: tmp
+          emptyDir:
+            {{- with .Values.tmp.medium }}
+            medium: {{ . }}
+            {{- end }}
+            {{- with .Values.tmp.sizeLimit }}
+            sizeLimit: {{ . }}
+            {{- end }}
+        {{- if .Values.bootstrap.enabled }}
+        # Optional: deleted once the first admin exists, and its file leaves the pods.
+        - name: bootstrap
+          secret:
+            secretName: {{ include "lajstrom.bootstrapSecretName" . }}
+            optional: true
+            items:
+              - key: {{ .Values.bootstrap.key }}
+                path: token
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      {{- $constraints := list }}
+      {{- range . }}
+      {{- $c := deepCopy . }}
+      {{- if not $c.labelSelector }}
+      {{- $_ := set $c "labelSelector" (dict "matchLabels" (include "lajstrom.selectorLabels" $ | fromYaml)) }}
+      {{- end }}
+      {{- $constraints = append $constraints $c }}
+      {{- end }}
+      topologySpreadConstraints:
+        {{- toYaml $constraints | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
