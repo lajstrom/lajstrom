@@ -1031,15 +1031,16 @@ status is `holds on strongly consistent registries only` do not hold there.
 
 ### INV-36. A replica that stops drains first
 
-- **Statement.** On `SIGTERM` or `SIGINT` a replica answers `/-/readyz` with `503`, refuses new
-  connections, lets the requests in flight finish within `server.shutdownTimeout`, and what an
-  abort leaves behind another replica can handle: an upload session in the index and the
-  registry, a publish not yet indexed for the next reconcile, a claim that goes stale.
+- **Statement.** On `SIGTERM` or `SIGINT` a replica answers `/-/readyz` with `503` and closes
+  each connection after its response, still serves new connections for `server.shutdownDelay`,
+  then refuses them, lets the requests in flight finish within `server.shutdownTimeout`, and
+  what an abort leaves behind another replica can handle: an upload session in the index and
+  the registry, a publish not yet indexed for the next reconcile, a claim that goes stale.
 - **Scope.** `serve`.
-- **Assumes.** The orchestrator's grace period is longer than `server.shutdownTimeout`
-  (operations.md, Shutdown).
+- **Assumes.** The orchestrator's grace period is longer than `server.shutdownDelay` and
+  `server.shutdownTimeout` together (operations.md, Shutdown).
 - **Mechanism.** `server.Server.Run`, `server.Server.track`, `waitHandlers`.
-- **Tests.** `TestDrainCompletesUpload`, `TestDrainTimeoutAborts`, `TestDrainReadyz`,
+- **Tests.** `TestDrainCompletesUpload`, `TestDrainTimeoutAborts`, `TestDrainReadyz`, `TestDrainDelay`,
   `TestRunGracefulShutdown`, `TestRunShutdownTimeout`; `ha.sh` H-05 (a replica killed, not
   stopped, in an upload: the client's retry through the edge succeeds on the other), H-10.
 - **When violated.** The client of an aborted request retries.
