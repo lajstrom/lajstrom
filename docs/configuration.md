@@ -304,11 +304,14 @@ only the operator decides where Lajstrom sends requests ([ADR 0013](adr/0013-pro
 | Key | Type | Default | Env | Description |
 | --- | --- | --- | --- | --- |
 | `upstreams[].name` | name | none, required | none | Unique; the grammar of `registries[].name`. Example: `npmjs`. |
-| `upstreams[].format` | plugin name | none, required | none | The format it serves: a plugin of this build that has proxy repos (`serve` checks). Only a proxy repo of this format names it. |
-| `upstreams[].url` | absolute `http(s)` URL | none, required | none | Base of every request, e.g. `https://registry.npmjs.org/`. A path is allowed; credentials, a query and a fragment are not. `http` is accepted with a warning at start: what it serves is not authenticated. |
-| `upstreams[].auth.username` | string | empty | none | With `passwordFile`: HTTP Basic. |
+| `upstreams[].format` | plugin name, or `oci` | none, required | none | The format it serves: a plugin of this build that has proxy repos (`serve` checks), or `oci`, a registry of the distribution API that an `oci` proxy repo pulls through from ([proxy-and-group.md](spec/proxy-and-group.md) §11, [ADR 0018](adr/0018-oci-proxy-repos-pull-through-from-any-registry.md)). Only a proxy repo of this format names it. |
+| `upstreams[].url` | absolute `http(s)` URL | none, required | none | Base of every request, e.g. `https://registry.npmjs.org/`. A path is allowed; credentials, a query and a fragment are not. `http` is accepted with a warning at start: what it serves is not authenticated. An `oci` upstream's URL is the registry's root, `https://registry-1.docker.io`, `https://ghcr.io`: no path, since the API is at `/v2/` of the host. |
+| `upstreams[].auth.username` | string | empty | none | With `passwordFile` or `passwordEnv`: HTTP Basic, and on an `oci` upstream the credentials of its token realm. |
 | `upstreams[].auth.passwordFile` | path | empty | none | File that holds the password of `username`. |
-| `upstreams[].auth.tokenFile` | path | empty | none | File that holds a bearer token (`Authorization: Bearer`), npm's `_authToken`. Not with `username`. |
+| `upstreams[].auth.passwordEnv` | environment variable name | empty | none | Variable that holds the password of `username`, as `registries[].auth.passwordEnv`: startup fails when it is set here and the variable is unset or empty. Not with `passwordFile`. Example: `DOCKERHUB_TOKEN`, a Docker Hub personal access token. |
+| `upstreams[].auth.tokenFile` | path | empty | none | File that holds a bearer token (`Authorization: Bearer`), npm's `_authToken`; on an `oci` upstream a static token sent instead of the token flow. Not with `username`. |
+| `upstreams[].tokenRealmHosts` | list of host names | the vendor table's | none | An `oci` upstream's: the host names, besides its own, that the realm of its bearer challenge may be on, over `https`, so that its credentials go there; as `registries[].tokenRealmHosts`, with the vendor table's `auth.docker.io` for Docker Hub added. A realm elsewhere is refused (`502`) with the realm's host in the log. Refused on another format. |
+| `upstreams[].dockerHub` | bool | `true` when the URL's host is `registry-1.docker.io` or `docker.io`, else `false` | none | An `oci` upstream's: it is Docker Hub or a mirror of it, so a path of one component is `library/<path>` on every `/v2` route, and `nginx` is stored once, as `library/nginx`. Refused on another format. |
 | `upstreams[].timeout` | duration | `30s` | none | Bounds the wait for the response headers (connecting and TLS at most 10 s each) and every wait for the next bytes of a body. Must not be negative; `0s` means the default. |
 | `upstreams[].retries` | integer | `2` | none | Retries of a request, as `registries[].retries` defines them: `429`, `5xx` but `501` and `505`, timeouts, connections refused or reset; the wait doubles from 250 ms, at most 3 s. `0` means the default; a negative value disables retries. |
 | `upstreams[].maxMetadataSize` | bytes | `67108864` (64 MiB) | none | Largest document the upstream may answer for one name; a larger one is not cached. Must not be negative; `0` means the default. |
@@ -337,6 +340,23 @@ repos:
   - {name: internal, format: npm, registry: local}
   - {name: npmjs, format: npm, registry: local, kind: proxy, upstream: {name: npmjs, deny: ["@acme/*"]}}
   - {name: all, format: npm, kind: group, group: {members: [internal, npmjs]}}
+```
+
+An `oci` proxy of Docker Hub, with a personal access token that raises its pull limit
+(`docker pull <lajstrom>/oci/hub/nginx:1.27`), and one of ghcr.io without credentials:
+
+```yaml
+upstreams:
+  - name: dockerhub
+    format: oci
+    url: "https://registry-1.docker.io"
+    auth: {username: acme, passwordEnv: DOCKERHUB_TOKEN}
+  - name: ghcr
+    format: oci
+    url: "https://ghcr.io"
+repos:
+  - {name: hub, format: oci, registry: local, kind: proxy, upstream: {name: dockerhub, metadataTTL: 1h}}
+  - {name: ghcr, format: oci, registry: local, kind: proxy, upstream: {name: ghcr}}
 ```
 
 ### ingest

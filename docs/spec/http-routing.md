@@ -595,7 +595,7 @@ kinds. What changes is who answers and what a write does.
 | --- | --- | --- |
 | a read route of the format (a document, a file) | the upstream's document, cached, and the files it holds or fetches on a miss (proxy-and-group.md §4 to §7) | the members, in order, with hosted names hiding the upstream (§8) |
 | a write route of the format (publish, unpublish, a dist-tag) | `405` with `Allow: GET, HEAD` | the same request on the group's hosted member, authorized there (rbac.md §7); `405` without one |
-| `GET`, `HEAD` on `/v2/<format>/<repo>/…` (manifests, blobs, tags, referrers) | as on a hosted repo, for what it holds; `/v2` never fetches | `404 NAME_UNKNOWN`: a group has no OCI repository |
+| `GET`, `HEAD` on `/v2/<format>/<repo>/…` (manifests, blobs, tags, referrers) | as on a hosted repo, for what it holds; `/v2` never fetches, but on an `oci` proxy, whose read route it is: a manifest and a blob the backend does not hold are fetched on a miss, a tag follows the upstream, and `tags/list` is the backend's without the keep-tags (proxy-and-group.md §11) | `404 NAME_UNKNOWN`: a group has no OCI repository |
 | `PUT` of a manifest on `/v2` | a referrer (manifest-profile.md §6) as on a hosted repo, with `write`; any other manifest `405 UNSUPPORTED` | `404 NAME_UNKNOWN` |
 | blob uploads on `/v2` | as on a hosted repo, with `write` (the blobs of referrers) | `404 NAME_UNKNOWN` |
 | `DELETE` of a manifest on `/v2`, and of a version on `/api/v1` | as on a hosted repo, with `delete`: the next miss fetches it again | `404`: a group has no versions |
@@ -617,6 +617,17 @@ DENIED` naming the list and the pattern for a name outside `allow` and `deny` (t
 a member that does not have it); `404` for one the upstream does not have, and a miss in
 offline mode. A cached document is served instead of any `5xx` that the upstream causes. Messages name
 the upstream by its configured name, never its URL.
+
+On an `oci` proxy ([ADR 0018](../adr/0018-oci-proxy-repos-pull-through-from-any-registry.md),
+proxy-and-group.md §11) the statuses are those of the distribution spec's JSON errors: `403
+DENIED` for a path outside the lists, `400 NAME_INVALID` for a name the backend does not take,
+`404 MANIFEST_UNKNOWN` or `BLOB_UNKNOWN` for what the upstream does not have (also its `401` or
+`403` of a repository read after a token was granted, which is how Docker Hub and quay.io answer
+for a repository that does not exist) and for a blob no held or cached manifest lists, `503
+TOOMANYREQUESTS` with `Retry-After` for its `429` when no row is cached, `502` and `504` as
+above. On an upstream that is Docker Hub (`upstreams[].dockerHub`) a path of one component is
+`library/<path>` on every route. The query `ns` that containerd adds to a mirror's request
+(`?ns=docker.io`) is ignored, as any query a route does not define.
 
 Management API (§4), in addition:
 
