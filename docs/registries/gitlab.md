@@ -3,7 +3,9 @@
 What the GitLab container registry answered on 2026-11-07, measured with `curl`, `oras`, the
 integration tests and the conformance suite through the facade (issue #117). It is a fork of
 distribution with a metadata database and an online garbage collector; GitLab.com runs it with
-the database. The [summary row](README.md) is in the README; this page has the details.
+the database. The [summary row](README.md) is in the README; this page has the details. A
+delete through Lajstrom's `/v2` of a manifest that referrers name was measured again on
+2026-11-12 (#781): [A delete through Lajstrom's `/v2`](#a-delete-through-lajstroms-v2).
 
 ## Version tested
 
@@ -260,12 +262,61 @@ New against the rest of this page, which had not measured them:
   violates foreign key constraint "fk_gc_manifest_review_queue_tp_lvl_nspc_id_rp_id_mfst_id_mnfsts"`.
   The referrer deleted first, the subject goes (the probe's cleanup). Lajstrom's deletes delete
   what refers to a version before the version (`internal/ingest`), so they do not meet it; a
-  client that deletes a subject through the facade's `/v2` does. A manifest an image index lists
-  is 409 `MANIFEST_REFERENCED` (Zot: 405 `DENIED`).
+  client that deletes a subject through the facade's `/v2` did, until c1a223fc sent that delete
+  through ingest too: measured on 2026-11-12, it is a 202 and nothing is left, but for a
+  referrer outside the tag schema ([A delete through Lajstrom's `/v2`](#a-delete-through-lajstroms-v2)).
+  A manifest an image index lists is 409 `MANIFEST_REFERENCED` (Zot: 405 `DENIED`).
 - A name over 255 characters is 500 `UNKNOWN` on both, `{"Name":…,"Reason":{}}` in its detail,
   where distribution answers 400 `NAME_INVALID`. Lajstrom's names stop at 255.
 - The catalog's order is the storage's: the filesystem's (`/` first) on A, lexical from the
   database on B.
+
+## A delete through Lajstrom's `/v2`
+
+The 500 above, measured again on 2026-11-12 for #781 now that the facade's `DELETE` goes through
+`ingest.Delete` (c1a223fc), which deletes the referrers first. Lajstrom at d44b112e, `bin/lajstrom
+serve` with SQLite and an `oci` repo on each variant (B refuses the managed profile, so only an
+`oci` repo can be measured there); B with `REGISTRY_FF_DYNAMIC_MEDIA_TYPES` off, its 108 known
+types. The tag `v4.43.0-gitlab` had been rebuilt in place again: index `sha256:2f1dcea7…`,
+built 2026-11-10, the binary still `v4.43.0-gitlab`.
+
+Into `oci/<repo>/app`, all through Lajstrom: an image of standard types (an image config and a
+gzip layer, `oras push`), signed with cosign v3.1.4 and a key of the run, once with a sigstore
+bundle (a referrer with `subject`; without the referrers API the provider writes the
+`sha256-<hex>` index) and once with `--new-bundle-format=false` (cosign's legacy
+`sha256-<hex>.sig`). B took every manifest: the bundle's `application/vnd.dev.sigstore.bundle.v0.3+json`
+and cosign's legacy types are among its known types. Then the image deleted by digest through
+Lajstrom's `/v2`, as an admin:
+
+```text
+                                               A                     B
+the backend's tags before                      v1, sha256-<hex>, sha256-<hex>.sig   the same
+DELETE /v2/oci/<repo>/app/manifests/<digest>   202                   202
+the backend's tags after                       {"tags":null}         {"tags":null}
+the image, the index, the .sig, the bundle     404 each              404 each
+```
+
+Ingest sent four deletes, each 202: the `.sig` manifest, the `sha256-<hex>` index, the bundle,
+the image. **What Lajstrom wrote no longer meets the 500.**
+
+What still meets it: a referrer the tag schema does not list, which Lajstrom cannot find on a
+registry without the referrers API. An image through Lajstrom, then a referrer of it (`subject`
+set, no tag) pushed straight to the backend with curl, no `sha256-<hex>` index written:
+
+```text
+                                               A                          B
+DELETE through Lajstrom                        202                        500 {"errors":[{"code":"UNKNOWN","message":"Internal Server Error"}]}
+the image after                                404, tags {"tags":null}    200, tags ["v1"]
+the referrer after, by digest                  200: an orphan             200
+```
+
+On B ingest found no referrer (the index, `.sig`, `.att` and `.sbom` 404), sent the image's
+delete and got B's 500 four times (the provider retries a 500 three times; 1.5 s in all), with
+the foreign-key error of `gc_manifest_review_queue` in B's log. Nothing changed, and the client
+gets 500 `UNKNOWN` with the cause only in the serve log (`ingest: delete … response status code
+500: unknown: unknown error`). Such a referrer comes from a client that pushes to the backend
+past Lajstrom: Lajstrom's own referrer pushes write the index. Its delete first, then the
+image's, works. A, like distribution, deletes the image and leaves the referrer.
 
 ## Garbage collection
 
@@ -395,6 +446,21 @@ LAJSTROM_TEST_REGISTRY=localhost:5003 LAJSTROM_TEST_REGISTRY_PREFIX=lajstrom-it/
 bin/lajstrom serve --config lajstrom-gitlab.yaml &
 bin/lajstrom admin repo create oci/conformance --registry local --config lajstrom-gitlab.yaml
 test/conformance/run.sh
+```
+
+The delete through `/v2` (#781): a configuration with the registries `a` at
+`http://localhost:5003` and `b` at `http://localhost:5004`, and an `oci` repo on each
+(`{name: vb, format: oci, registry: b}`); cosign in `ghcr.io/sigstore/cosign/cosign:v3.1.4`
+with `--network host`, as `test/e2e/cosign.sh` runs it:
+
+```sh
+docker compose -f deploy/compose/compose.yaml --profile gitlab up -d --wait gitlab gitlab-db
+oras push --plain-http localhost:8080/oci/vb/app:v1 --config config.json:application/vnd.oci.image.config.v1+json \
+  layer.tar.gz:application/vnd.oci.image.layer.v1.tar+gzip
+cosign sign --key cosign.key --tlog-upload=false --use-signing-config=false -y --allow-http-registry localhost:8080/oci/vb/app@<digest>
+cosign sign --key cosign.key --tlog-upload=false --use-signing-config=false --new-bundle-format=false -y --allow-http-registry localhost:8080/oci/vb/app@<digest>
+curl -s -u <user>:<password> -X DELETE localhost:8080/v2/oci/vb/app/manifests/<digest>
+curl -s localhost:5004/v2/oci/vb/app/tags/list
 ```
 
 The garbage collection, variant A, the registry stopped:
