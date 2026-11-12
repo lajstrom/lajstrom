@@ -179,6 +179,10 @@ func (c *Core) ociFetchBlob(ctx context.Context, p *ociProxied, desc ocispec.Des
 		c.ociReject(ctx, p, desc.Digest, "checksum", map[string]any{"error": err.Error()})
 		return false, fmt.Errorf("%w: proxy: %s: upstream %s served other bytes for %s: %s", format.ErrBadGateway, p.id(), p.upstreamName(),
 			desc.Digest, err.Error())
+	case errors.Is(err, provider.ErrRejected) && !errors.Is(err, provider.ErrUnavailable):
+		// a rule of the backend's, Quay's build rule among them (§11.2): its 4xx names it
+		c.ociReject(ctx, p, desc.Digest, "backend", map[string]any{"registry": p.repo.Registry, "error": err.Error()})
+		return false, err
 	case err != nil:
 		return false, err
 	}
