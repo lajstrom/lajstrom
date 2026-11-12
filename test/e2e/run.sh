@@ -57,6 +57,14 @@
 # removed, unless LAJSTROM_E2E_KEEP=1. The exit status is 1 when a scenario failed, 2 when the
 # harness could not start.
 #
+# migrate-npm.sh needs the Verdaccio of the verdaccio profile (make dev-up PROFILES=verdaccio, #441)
+# at $LAJSTROM_E2E_VERDACCIO (default http://localhost:4873): when it is among the scenarios and
+# that Verdaccio answers /-/ping, run.sh logs in its user lajstrom-e2e (made on the first run,
+# with the password $LAJSTROM_E2E_VERDACCIO_PASSWORD, default lajstrom-e2e-dev), writes the token
+# it gets to a file, and configures the upstream verdaccio with it as auth.tokenFile; the scenario
+# gets LAJSTROM_E2E_VERDACCIO and LAJSTROM_E2E_VERDACCIO_TOKEN_FILE. Otherwise the summary has a
+# SKIP line for it, which is not a failure.
+#
 # ha.sh is the exception: it runs against the ha profile of the dev stack (two replicas behind
 # nginx, make dev-up PROFILES=ha), at http://localhost:$LAJSTROM_HA_PORT (8090), not against
 # the server of this run, and only when docker compose shows that profile's ha-nginx running, in
@@ -114,6 +122,11 @@ ha_compose=(docker compose -f "$root/deploy/compose/compose.yaml")
 ha_up() {
 	command -v docker >/dev/null && [ -n "$("${ha_compose[@]}" ps -q --status running ha-nginx 2>/dev/null)" ]
 }
+
+# verdaccio_up: the Verdaccio of migrate-npm.sh answers.
+verdaccio="${LAJSTROM_E2E_VERDACCIO:-http://localhost:${LAJSTROM_VERDACCIO_PORT:-4873}}"
+verdaccio="${verdaccio%/}"
+verdaccio_up() { curl -fsS -o /dev/null --max-time 2 "$verdaccio/-/ping" 2>/dev/null; }
 
 tmp="${TMPDIR:-/tmp}"
 tmp="$(mktemp -d "${tmp%/}/lajstrom-e2e.XXXXXX")"
@@ -173,6 +186,25 @@ LAJSTROM_SERVER_LOG="$tmp/server.log"
 LAJSTROM_E2E_REGISTRY="$registry"
 LAJSTROM_E2E_FORWARDED=1
 export LAJSTROM_MASTER_KEY LAJSTROM_CONFIG LAJSTROM_BIN LAJSTROM_SERVER_LOG LAJSTROM_E2E_REGISTRY LAJSTROM_E2E_FORWARDED
+# The token of the upstream verdaccio, when migrate-npm.sh runs and its Verdaccio answers: a PUT
+# of the user with Basic credentials makes it on the first run and logs it in on the next ones.
+verdaccio_token=""
+case " ${names[*]} " in *" migrate-npm "*)
+	if verdaccio_up; then
+		vpw="${LAJSTROM_E2E_VERDACCIO_PASSWORD:-lajstrom-e2e-dev}"
+		(umask 077 && printf 'user = "lajstrom-e2e:%s"\n' "$vpw" >"$tmp/verdaccio.curlrc" &&
+			jq -n --arg p "$vpw" '{name: "lajstrom-e2e", password: $p}' >"$tmp/verdaccio-login.body")
+		curl -fsS -K "$tmp/verdaccio.curlrc" -X PUT -H 'Content-Type: application/json' --data-binary "@$tmp/verdaccio-login.body" \
+			"$verdaccio/-/user/org.couchdb.user:lajstrom-e2e" >"$tmp/verdaccio-login.json" 2>"$tmp/verdaccio-login.err" ||
+			{ cat "$tmp/verdaccio-login.err" >&2; echo "run.sh: the user of the Verdaccio at $verdaccio was refused" >&2; exit 2; }
+		verdaccio_token="$tmp/verdaccio-token"
+		(umask 077 && jq -r .token "$tmp/verdaccio-login.json" >"$verdaccio_token")
+		rm -f "$tmp/verdaccio.curlrc" "$tmp/verdaccio-login.body" "$tmp/verdaccio-login.json"
+		LAJSTROM_E2E_VERDACCIO="$verdaccio" LAJSTROM_E2E_VERDACCIO_TOKEN_FILE="$verdaccio_token"
+		export LAJSTROM_E2E_VERDACCIO LAJSTROM_E2E_VERDACCIO_TOKEN_FILE
+	fi
+	;;
+esac
 driver=sqlite dsn="file:$tmp/lajstrom.db" index="$tmp/lajstrom.db"
 if [ -n "${LAJSTROM_E2E_INDEX_DSN:-}" ]; then
 	driver=postgres dsn="$LAJSTROM_E2E_INDEX_DSN" index="the Postgres of LAJSTROM_E2E_INDEX_DSN"
@@ -206,6 +238,11 @@ upstreams:
   - name: npmjs
     format: npm
     url: "${LAJSTROM_E2E_NPM_UPSTREAM:-https://registry.npmjs.org/}"
+${verdaccio_token:+  - name: verdaccio
+    format: npm
+    url: "$verdaccio/"
+    auth:
+      tokenFile: "$verdaccio_token"}
 reconcile:
   interval: 0s
 keys:
@@ -258,6 +295,12 @@ for n in "${names[@]}"; do
 			continue
 		fi
 		target="http://localhost:${LAJSTROM_HA_PORT:-8090}"
+	fi
+	if [ "$n" = migrate-npm ] && [ -z "$verdaccio_token" ]; then
+		echo "run.sh: no Verdaccio answers at $verdaccio (make dev-up PROFILES=verdaccio): migrate-npm.sh skipped"
+		results+=("$(printf 'SKIP %-14s         (no Verdaccio at %s)' "$n.sh" "$verdaccio")")
+		skipped=$((skipped + 1))
+		continue
 	fi
 	t0=$SECONDS
 	if (cd "$root" && "$here/$n.sh" "$target") </dev/null 2>&1 | tee "$log"; then rc=0; else rc=$?; fi
