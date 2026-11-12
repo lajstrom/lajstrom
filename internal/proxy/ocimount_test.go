@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -92,6 +93,34 @@ func TestOCIBlobMount(t *testing.T) {
 	}
 	if got := e.holders(t, own[1]); !slices.Equal(got, []string{kas}) {
 		t.Errorf("the oci.holders row of kube-apiserver's own layer lists %q", got)
+	}
+}
+
+// TestOCIBlobMountOnce: concurrent misses of one blob at one path, and the mounts of its
+// manifest's GET, mount it once on a replica, counted once.
+func TestOCIBlobMountOnce(t *testing.T) {
+	e := newOCIEnv(t, ociSettings)
+	a := e.hub.sharedImage(t, kcm, "v1.37.1", k8sShared, "arm64")
+	b := e.hub.sharedImage(t, kas, "v1.37.1", k8sShared, "arm64")
+	c := e.core("a", proxy.Options{CompleteQuiet: -1})
+	pull(t, e, c, kcm, "v1.37.1", a, 0)
+	m, _, err := c.OCIManifest(t.Context(), e.repo, kas, b.manifests[0].Digest.String())
+	must(t, err)
+	mounted := fetches("mounted")
+	shared := b.blobs[0][1]
+	var wg sync.WaitGroup
+	wg.Go(func() { c.OCIComplete(t.Context(), e.repo, kas, m) })
+	for range 8 {
+		wg.Go(func() {
+			if _, _, err := c.OCIBlob(t.Context(), e.repo, kas, shared.Digest, true, false); err != nil {
+				t.Errorf("OCIBlob: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	await(t, "both shared layers mounted", func() bool { return e.row(t, kas, "oci.held:"+b.blobs[0][2].Digest.String()) != nil })
+	if n := fetches("mounted") - mounted; n != 2 {
+		t.Errorf("lajstrom_proxy_fetches_total{result=\"mounted\"} rose by %v, want 2: each shared layer once", n)
 	}
 }
 
