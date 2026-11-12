@@ -772,7 +772,108 @@ Not there:
 - `npm publish --provenance`: refused;
 - `pnpm audit` through a group: `501`, and through a proxy when it names a denied package;
 - `notify` webhooks, and plugins of any kind: the protocols are Lajstrom's own;
-- an import of Verdaccio's `storage`: publish the tarballs to the hosted repo again.
+- an import of Verdaccio's `storage`: the packages are published to the hosted repo again
+  ([Moving the packages](#moving-the-packages));
+- Verdaccio's users and tokens: an admin makes the users again, with new passwords, and every
+  `.npmrc` gets a new `_authToken` from `npm login` (section 2) or a deploy token (section 7).
+
+### Moving the packages
+
+The packages published to Verdaccio are published again to the hosted repo, with npm, from
+Verdaccio's `storage` directory (the default storage, on a file system). The tarballs are the
+same bytes, so every `integrity` stays what it was, in lockfiles too; the publication times
+become those of the move. `storage/.verdaccio-db.json` lists, under `list`, the packages
+published to that Verdaccio. What it fetched through an uplink is in `storage` too, but not in
+the list: the proxy repo (section 9) fetches it again. A package's directory,
+`storage/@acme/widgets/` for `@acme/widgets`, holds its packument, `package.json`, and the
+tarball of each version.
+
+On a machine that reads the directory, with `jq` and npm 11, and a deploy token of the hosted
+repo with `read,write` (section 7) in `LAJSTROM_TOKEN`:
+
+```sh
+storage=/verdaccio/storage                       # storage: of Verdaccio's config.yaml
+to=http://localhost:8080/npm/internal/           # the hosted repo
+echo '//localhost:8080/npm/internal/:_authToken=${LAJSTROM_TOKEN}' > migrate.npmrc
+export npm_config_userconfig="$PWD/migrate.npmrc"
+for name in $(jq -r '.list[]' "$storage/.verdaccio-db.json"); do
+  doc="$storage/$name/package.json"
+  for v in $(jq -r '. as $d | .time | to_entries | map(select(.key as $v | $d.versions | has($v)))
+                    | sort_by(.value) | .[].key' "$doc"); do
+    tgz="$storage/$name/$(jq -r --arg v "$v" '.versions[$v].dist.tarball | split("/") | last' "$doc")"
+    [ -f "$tgz" ] || { echo "$name@$v: no tarball in storage"; continue; }
+    npm publish "$tgz" --registry "$to" --tag latest
+  done
+  jq -r '."dist-tags" | to_entries[] | "\(.value) \(.key)"' "$doc" | while read -r v tag; do
+    npm dist-tag add "$name@$v" "$tag" --registry "$to"
+  done
+  jq -r '.versions[] | select(.deprecated) | [.version, .deprecated] | @tsv' "$doc" |
+    while IFS=$'\t' read -r v message; do npm deprecate "$name@$v" "$message" --registry "$to"; done
+done
+```
+
+- The versions go in the order Verdaccio published them (its `time`), each with `--tag latest`.
+  Without an explicit tag, npm 11 refuses a prerelease (`You must specify a tag using --tag when
+  publishing a prerelease version`) and a version lower than one the repo has. Then
+  `npm dist-tag add` sets each dist-tag where Verdaccio had it, `latest` included, and
+  `npm deprecate` sets the deprecations.
+- `npm_config_userconfig` stands in for `~/.npmrc`, so the commands send the hosted repo's token
+  and nothing else. Two things would send a package back to Verdaccio. One is an
+  `@acme:registry=` line in `~/.npmrc`, which npm prefers to `--registry` for that scope. The
+  other is a `publishConfig.registry` in the tarball's `package.json`, which npm prefers to the
+  `registry=` of a configuration file, but not to `--registry` on the command line.
+- A version the hosted repo refuses is a `400` naming the rule (section 3), and the loop goes on
+  with the next one. Examples: build metadata in the version (`1.0.0+build.1`), or capital
+  letters in the name, which npm no longer takes for a new package. The loop may run again: a
+  tarball the repo holds is accepted again, and each package's dist-tags are set again after its
+  versions.
+
+Clients then switch with `npm config set registry` and `npm login` (section 2); every
+`dist.tarball` names Lajstrom. A `package-lock.json` keeps Verdaccio's URLs in `resolved`, and
+`npm ci` fetches those from Verdaccio as long as it answers. With
+`replace-registry-host=<Verdaccio's host name>` in `.npmrc`, npm fetches them from its
+`registry=` instead; the lockfile's `integrity` still matches.
+
+**Clients first, packages later.** Verdaccio can also be the upstream of a proxy repo in the
+group, so that clients move to the group's URL before every package is published again. The
+upstream goes in the configuration, with the token of a Verdaccio user that reads every package:
+the `_authToken` that `npm login` against Verdaccio wrote. Lajstrom sends it to the origin of
+`url` only, never to another host a packument names, so `url` is the address Verdaccio's
+tarball links have (`VERDACCIO_PUBLIC_URL`, when it is set):
+
+```yaml
+upstreams:
+  - name: verdaccio
+    format: npm
+    url: "https://verdaccio.example.com/"
+    auth:
+      tokenFile: /etc/lajstrom/verdaccio-token
+```
+
+The group reads the hosted repo and the proxy of Verdaccio, where section 10's reads the proxy of
+npmjs.org, and each user gets `reader` on it, as there:
+
+```sh
+bin/lajstrom admin repo create npm/verdaccio --registry local --kind proxy --upstream '{"name": "verdaccio"}' --config $cfg
+bin/lajstrom admin repo create npm/all --kind group --group '{"members": ["internal", "verdaccio"], "merge": ["@acme/*"]}' --config $cfg
+```
+
+What the hosted repo does not have yet comes from Verdaccio through the proxy, private scopes
+included, and stays in the registry once fetched (audit row `proxy.fetch`). Verdaccio's own
+uplink serves the public packages meanwhile. A name the hosted repo holds hides every version
+the proxy has of it (section 10). A new version of a package that is still in Verdaccio,
+published through the group, would hide the older ones. `merge` lists the versions of both
+members for the names it matches, here the private scope, while the move lasts. When every
+package is moved, an admin makes the proxy of npmjs.org (section 9) and puts it in Verdaccio's
+place in the group, and Verdaccio can go:
+
+```sh
+curl -u admin -X PATCH http://localhost:8080/api/v1/repos/npm/all \
+  -H 'Content-Type: application/json' -d '{"group": {"members": ["internal", "npmjs"], "merge": []}}'
+```
+
+The group then no longer reads the proxy of Verdaccio: a package that was not moved is `404`
+through it.
 
 ## The end-to-end script
 
