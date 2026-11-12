@@ -47,6 +47,7 @@ const principalHeader = "X-Test-User"
 type env struct {
 	t      *testing.T
 	st     *sqlite.Store
+	idx    index.Store // the store the facade and ingest use: st, unless envOptions.store wraps it
 	prov   *providertest.Fake
 	reg    provider.Provider // the registry "local"
 	raw    index.Repo
@@ -68,6 +69,7 @@ type env struct {
 type envOptions struct {
 	authz       auth.Authorizer
 	registry    func(*providertest.Fake) provider.Provider // wraps the fake as the registry "local"
+	store       func(index.Store) index.Store              // wraps the store the facade and ingest use
 	ingest      Ingester                                   // replaces the real pipeline
 	maxManifest int64                                      // Options.MaxManifestSize
 	behind      time.Duration                              // Options.MaxCreatedBehind
@@ -86,12 +88,15 @@ func newEnv(t *testing.T, o envOptions) *env {
 	e := &env{t: t, st: st, prov: &providertest.Fake{RegistryName: "local"}, authz: o.authz, logs: &logBuffer{},
 		clock: &clock{now: time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC)}, ingest: o.ingest, max: o.maxManifest, behind: o.behind,
 		tokens: keys.NewEphemeralTokens(), extURL: o.externalURL, sessions: o.sessions}
-	e.reg = e.prov
+	e.reg, e.idx = e.prov, st
 	if o.registry != nil {
 		e.reg = o.registry(e.prov)
 	}
+	if o.store != nil {
+		e.idx = o.store(st)
+	}
 	if e.ingest == nil {
-		e.ingest = ingest.New(ingest.Options{Providers: provider.Map{"local": e.reg}, Index: st,
+		e.ingest = ingest.New(ingest.Options{Providers: provider.Map{"local": e.reg}, Index: e.idx,
 			Log: slog.New(slog.NewTextHandler(e.logs, nil)), Now: e.clock.Now})
 	}
 	for _, r := range []*index.Repo{&e.raw, &e.oci} {
@@ -114,7 +119,7 @@ func (e *env) replica() http.Handler {
 
 // replicaWith returns a replica whose token keys are k.
 func (e *env) replicaWith(k token.Keys) http.Handler {
-	h := New(Options{Index: e.st, Providers: provider.Map{"local": e.reg}, Auth: e.authz, Ingest: e.ingest,
+	h := New(Options{Index: e.idx, Providers: provider.Map{"local": e.reg}, Auth: e.authz, Ingest: e.ingest,
 		MaxManifestSize: e.max, MaxCreatedBehind: e.behind, Log: slog.New(slog.NewTextHandler(e.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Now: e.clock.Now, Tokens: k, ExternalURL: e.extURL,
 		UploadSessionsPerRepo: e.sessions[0], UploadSessionsPerPrincipal: e.sessions[1]})
