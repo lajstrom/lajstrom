@@ -1,0 +1,19 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+# At most one replica down at a time for a drain or an upgrade of the nodes, by default.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "lajstrom.fullname" . }}
+  labels:
+    {{- include "lajstrom.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  {{- if not (kindIs "invalid" .Values.podDisruptionBudget.minAvailable) }}
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  {{- else }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "lajstrom.selectorLabels" . | nindent 6 }}
+{{- end }}

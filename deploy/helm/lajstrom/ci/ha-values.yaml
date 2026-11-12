@@ -1,0 +1,44 @@
+# High availability (docs/deploy/helm.md): three replicas, one per node and spread over the
+# zones, the image pinned by digest. make helm-lint renders the chart with this file too.
+image:
+  tag: v0.1.0
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+config:
+  server:
+    externalURL: https://art.example.com
+    # The pod CIDR of the edge's proxies, with a NetworkPolicy that lets only them reach http.
+    trustedProxies: ["10.244.0.0/16"]
+  registries:
+    - name: main
+      url: https://registry.example.com
+      prefix: lajstrom/
+      auth:
+        username: lajstrom
+        passwordEnv: LAJSTROM_REGISTRY_PASSWORD
+
+replicaCount: 3
+
+# One replica per node, the nodes that take pods only (a drained node does not count), and each
+# rollout's new pods spread among themselves; the zones as well as they allow.
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: DoNotSchedule
+    nodeTaintsPolicy: Honor
+    matchLabelKeys: ["pod-template-hash"]
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    matchLabelKeys: ["pod-template-hash"]
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
