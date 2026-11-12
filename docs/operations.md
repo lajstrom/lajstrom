@@ -688,6 +688,37 @@ What an operator of ECR sees:
   names was read or uploaded a moment before. Past the time the client gets the registry's
   refusal.
 
+### Upstreams of oci proxy repos
+
+An `oci` proxy repo ([quickstart/oci-proxy.md](quickstart/oci-proxy.md),
+[proxy-and-group.md](spec/proxy-and-group.md) §11) asks its upstream through the generic
+provider's client, so its requests carry `upstreams[].timeout` and `upstreams[].retries` as a
+registry's do, and its circuit breaker; they are counted in the `lajstrom_provider_*` series
+under the upstream's name.
+
+**Docker Hub's pull limit.** A pull is a manifest `GET`; a `HEAD` does not count, and a
+multi-arch image counts once per platform pulled. Lajstrom revalidates tags with `HEAD` and never
+asks for a manifest or a blob the backend or its cache holds, so a cold pull of a multi-arch
+image costs two counted pulls (the index and the platform), and a warm one none. Without
+credentials the budget is per egress address, shared by every replica and every other host
+behind it; a personal access token in `upstreams[].auth` (`passwordEnv`) gives a budget of its
+own, and a paid plan none.
+
+- `lajstrom_proxy_upstream_ratelimit_remaining{upstream}`, `_limit` and `_window_seconds` are
+  what the upstream said last, the window from `w=`; below 10 % left, `serve` logs a warning
+  once until it rises again. Alert on `remaining / limit < 0.1`.
+- Past the limit Docker Hub answers `429`: a tag whose row is cached is served from it however
+  old, a manifest or a layer the backend holds is served from the backend, and anything else is
+  `503 TOOMANYREQUESTS` with Docker Hub's `Retry-After`, at most 60 s.
+- A larger `metadataTTL` on the repo (`1h`, `24h`) spends fewer `HEAD`s, which cost nothing on
+  Docker Hub but are requests all the same, at the price of seeing a moved tag later.
+
+**What the database holds.** The upstream's tags, the manifests and indexes it served and what
+each lists are `proxy_meta` rows of the repo; the backend holds the blobs and the complete
+manifests and indexes, under keep-tags. A lost database costs a `HEAD` per tag and a counted
+`GET` per manifest or index the backend does not hold; on a backend whose tags do not move, the
+tags themselves are in the database only.
+
 ### Requests from clients
 
 | Bound | Value | What happens |
