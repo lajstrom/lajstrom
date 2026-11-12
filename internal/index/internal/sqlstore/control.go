@@ -67,6 +67,38 @@ func (c *conn) UpdateRepo(ctx context.Context, r *index.Repo) error {
 	})
 }
 
+// ConvertRepo makes the proxy repo id a hosted one: kind hosted, upstream NULL, updated_at now,
+// and increments auth_version, in one transaction that first refuses a repo of another kind and
+// one with a fetch claim that beat at or after staleBefore (ErrConflict). The UPDATE names the
+// kind again, so that a concurrent conversion changes the row once.
+func (c *conn) ConvertRepo(ctx context.Context, id int64, staleBefore time.Time) error {
+	what := fmt.Sprintf("repos id %d", id)
+	staleBefore = Normalize(staleBefore)
+	return c.withAuthChange(ctx, func(c *conn) error {
+		r, err := c.GetRepoByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		if r.Kind != index.KindProxy {
+			return fmt.Errorf("%w: %s/%s is a %s repo, not a proxy", index.ErrConflict, r.Format, r.Name, r.Kind)
+		}
+		var live int
+		if err := c.scanRow(ctx, what, "SELECT COUNT(*) FROM fetch_claims WHERE repo_id = ? AND heartbeat_at >= ?",
+			[]any{id, c.d.EncodeTime(staleBefore)}, &live); err != nil {
+			return err
+		}
+		if live > 0 {
+			return fmt.Errorf("%w: %s/%s: %d fetch(es) from its upstream running", index.ErrConflict, r.Format, r.Name, live)
+		}
+		n, err := c.exec(ctx, what, "UPDATE repos SET kind = ?, upstream = NULL, updated_at = ? WHERE id = ? AND kind = ?",
+			index.KindHosted, c.d.EncodeTime(now()), id, index.KindProxy)
+		if err == nil && n == 0 {
+			err = fmt.Errorf("%w: %s/%s was converted meanwhile", index.ErrConflict, r.Format, r.Name)
+		}
+		return err
+	})
+}
+
 // DeleteRepo removes the repo, the foreign keys cascading to every row that refers to it, and
 // increments auth_version. A member of a group is ErrConflict: it is looked up first, and
 // group_members.member_id restricts the delete of one that a concurrent change made a member.
