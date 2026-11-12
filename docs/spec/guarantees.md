@@ -254,7 +254,9 @@ status is `holds on strongly consistent registries only` do not hold there.
 - **Scope.** `reindex` with `--prune` (the default for every repo), the API's reindex, the
   reconcile loop; `versions` (with their `files`, and the packages left empty) and the npm
   journal's rows. An `oci_repos` row goes when no run has seen its repository for
-  `reconcile.graceAge`. A delete through the API is not prune (INV-13).
+  `reconcile.graceAge`, an `oci` repo's when a run finds its tag list empty, which is no derived
+  row of a manifest ([index-schema.md](index-schema.md#invariants-and-rules), #748). A delete
+  through the API is not prune (INV-13).
 - **Assumes.** Registry: a manifest it holds reads back by its digest, at the endpoint Lajstrom
   reads, within `reconcile.graceAge` of its write, and is not answered `MANIFEST_UNKNOWN` twice
   10 minutes apart afterwards (**unchecked**; [operations.md](../operations.md#on-an-eventually-consistent-registry)

@@ -182,11 +182,7 @@ func (s *scan) ociRepo(ctx context.Context, name string) {
 		s.failure(Finding{Repository: pkgPath, Error: err.Error()})
 		return
 	}
-	var tags []string
-	err = rr.Tags(ctx, "", func(page []string) error {
-		tags = append(tags, page...)
-		return nil
-	})
+	tags, err := listTags(ctx, rr)
 	if errors.Is(err, provider.ErrNotFound) {
 		s.tagList(name, false)
 		return // gone: not seen, so its oci_repos row and its versions are swept
@@ -201,6 +197,11 @@ func (s *scan) ociRepo(ctx context.Context, name string) {
 		return
 	}
 	s.tagList(name, true)
+	if len(tags) == 0 && s.repo.Format == ociFormat {
+		if tags = s.dropUntagged(ctx, rr, name, pkgPath); len(tags) == 0 {
+			return
+		}
+	}
 	if s.dbErr(s.w.index.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: s.repo.ID, Path: name, SeenAt: s.w.now()})) {
 		return
 	}
@@ -221,6 +222,43 @@ func (s *scan) ociRepo(ctx context.Context, name string) {
 	if s.repo.Format == npmFormat && pkgPath != "" && !s.stopped(ctx) {
 		s.journal(ctx, rr, cache, pkgPath, journal)
 	}
+}
+
+// listTags returns every tag of the repository rr.
+func listTags(ctx context.Context, rr provider.Repository) ([]string, error) {
+	var tags []string
+	err := rr.Tags(ctx, "", func(page []string) error {
+		tags = append(tags, page...)
+		return nil
+	})
+	return tags, err
+}
+
+// ociFormat is the format of pass-through repos, whose oci_repos rows the catalog lists.
+const ociFormat = "oci"
+
+// dropUntagged removes the oci_repos row of name, an OCI repository of an oci repo whose tag list
+// has no tag, and returns its tags listed once more: an oci repo's oci_repos records the
+// repositories that hold a tag, and Zot keeps an emptied repository, whose tag list has none
+// (#748). A managed repo's rows are the registry's repositories, as its delete leaves them. A
+// push records its repository after its manifest PUT, so the row goes first and the tags are
+// listed after it: a tag pushed meanwhile is in that listing, and the scan goes on with it; a
+// push after it records the row itself. A listing that fails records the row again, even when
+// the run stops meanwhile, and is an error of the report.
+func (s *scan) dropUntagged(ctx context.Context, rr provider.Repository, name, pkgPath string) []string {
+	if err := s.w.index.DeleteOCIRepo(ctx, s.repo.ID, name); errors.Is(err, index.ErrNotFound) || s.dbErr(err) {
+		return nil // no row, so none of a push to record again
+	}
+	tags, err := listTags(ctx, rr)
+	switch {
+	case errors.Is(err, provider.ErrNotFound):
+		return nil
+	case err != nil:
+		s.dbErr(s.w.index.UpsertOCIRepo(context.WithoutCancel(ctx), &index.OCIRepo{RepoID: s.repo.ID, Path: name, SeenAt: s.w.now()}))
+		s.failure(Finding{Repository: pkgPath, Error: "list the tags: " + err.Error()})
+		return nil
+	}
+	return tags
 }
 
 // manifests caches the manifests of one OCI repository by digest: two tags may name one.

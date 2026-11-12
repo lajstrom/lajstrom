@@ -76,6 +76,8 @@ import (
 //     (or the manifest's subject digest), the digest, and in the details the number of
 //     referrers, the request id, del.Job as job when it is set, and the request's token as
 //     token, token:<id>, when it came with one.
+//  5. On an oci repo, after the locks, the OCI repository's oci_repos row goes when the backend
+//     lists no tag in it any more (dropUntagged, #748).
 //
 // A delete with del.Condition is a compare-and-delete of a version (format.Condition): the
 // reference must be a digest, and a digest that is no version of the package's is refused, never
@@ -139,6 +141,7 @@ func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Delet
 	if err != nil {
 		return nil, err
 	}
+	d.dropUntagged(ctx)
 	p.log.InfoContext(ctx, "ingest: deleted", "repo", repo.Format+"/"+repo.Name, "name", name, "digest", d.target.Digest.String(),
 		"version", d.version != nil, "referrers", d.referrers, "orphan", d.orphan, "principal", principal.String())
 	return &format.Deleted{Digest: d.target.Digest, Version: d.version, Referrers: d.referrers}, nil
@@ -1004,6 +1007,68 @@ func (d *deletion) record(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// dropUntagged removes the oci_repos row of the delete's OCI repository, on an oci repo, when the
+// backend lists no tag in it any more: oci_repos records the repositories that hold a tag, and
+// an oci repo's catalog lists them (#748). A push to the repository records it after its
+// manifest PUT (the facade's recordPassThrough), so the row goes first and the tags are listed
+// once more after it: a tag pushed before the row went is in that listing, and the row is
+// recorded again, as it is when that listing fails; a push after it records the row itself. It
+// runs on a context of its own, as finish does, so that a client that goes away does not leave
+// the row deleted and not recorded again. A failure is logged: reindex drops or records the row.
+func (d *deletion) dropUntagged(ctx context.Context) {
+	if d.repo.Format != ociFormat {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), d.p.claimTTL)
+	defer cancel()
+	empty, err := d.untagged(ctx)
+	if err != nil || !empty {
+		d.logDrop(ctx, "ingest: the tags of a repository after a delete; its oci_repos row stays", err)
+		return
+	}
+	if err := d.p.index.DeleteOCIRepo(ctx, d.repo.ID, d.name); err != nil {
+		if !errors.Is(err, index.ErrNotFound) { // no row: nothing to record again either
+			d.logDrop(ctx, "ingest: the oci_repos row of a repository without tags not deleted", err)
+		}
+		return
+	}
+	if empty, err = d.untagged(ctx); err == nil && empty {
+		return
+	}
+	d.logDrop(ctx, "ingest: the tags of a repository after its oci_repos row went; it is recorded again", err)
+	if err := d.p.index.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: d.repo.ID, Path: d.name, SeenAt: d.p.now()}); err != nil {
+		d.logDrop(ctx, "ingest: the oci_repos row of a repository not recorded again; reindex records it", err)
+	}
+}
+
+// logDrop logs a failure of dropUntagged; nil err is nothing.
+func (d *deletion) logDrop(ctx context.Context, msg string, err error) {
+	if err != nil {
+		d.p.log.ErrorContext(ctx, msg, "repo", d.repo.Format+"/"+d.repo.Name, "name", d.name, "error", err.Error())
+	}
+}
+
+// errTagged stops the read of a tag list at its first tag: untagged needs only whether it has one.
+var errTagged = errors.New("ingest: the repository holds a tag")
+
+// untagged reports whether the delete's OCI repository holds no tag: its tag list is empty (Zot
+// keeps an emptied repository) or 404 (distribution drops it).
+func (d *deletion) untagged(ctx context.Context) (bool, error) {
+	err := d.rr.Tags(ctx, "", func(page []string) error {
+		if len(page) > 0 {
+			return errTagged
+		}
+		return nil
+	})
+	switch {
+	case errors.Is(err, errTagged):
+		return false, nil
+	case err == nil, errors.Is(err, provider.ErrNotFound):
+		return true, nil
+	}
+	return false, fmt.Errorf("ingest: tags of %s: %w", d.name, err)
 }
 
 // details are the details of the audit row of the delete when it is written pending: the

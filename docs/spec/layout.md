@@ -782,6 +782,10 @@ type Writer interface {
     PutIndexCache(ctx context.Context, c *Cache, generation int64) (bool, error)
     InvalidateIndexCache(ctx context.Context, repoID int64, scope string) error
     UpsertOCIRepo(ctx context.Context, r *OCIRepo) error
+    // DeleteOCIRepo: the row of (repoID, path), an oci repo's repository left without a tag;
+    // ErrNotFound when there is none. The caller lists the tags again after it and records the
+    // repository again when one is there (index-schema.md, Invariants and rules; #748)
+    DeleteOCIRepo(ctx context.Context, repoID int64, path string) error
     PruneOCIRepos(ctx context.Context, repoID int64, seenBefore time.Time) (int, error)
     ResetDerived(ctx context.Context, repoID int64) error // leaves the claims of both kinds, prune_sightings and proxy_meta
     // proxy_meta, a cache of the upstream that reindex neither reads nor writes; the caller
