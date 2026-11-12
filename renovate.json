@@ -8,6 +8,16 @@
   "timezone": "Etc/UTC",
   "labels": ["dependencies"],
   "postUpdateOptions": ["gomodTidy"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "govulncheck, pinned as GOVULNCHECK_VERSION in the Makefile and in release.yml",
+      "managerFilePatterns": ["/^Makefile$/", "/^\\.github/workflows/release\\.yml$/"],
+      "matchStrings": ["GOVULNCHECK_VERSION\\s*(?:\\?=|:)\\s*(?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
+      "datasourceTemplate": "go",
+      "depNameTemplate": "golang.org/x/vuln"
+    }
+  ],
   "packageRules": [
     {
       "description": "Group all minor and patch updates into one weekly pull request",
