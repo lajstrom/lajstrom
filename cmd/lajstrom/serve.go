@@ -96,7 +96,7 @@ func newServeCmd(a *app) *cobra.Command {
 			// is serving on it: a breaking migration is safe to apply.
 			mig, err := st.ApplyMigrations(ctx, index.MigrateOptions{Breaking: c.Database.Driver == index.DialectSQLite})
 			if err != nil {
-				return migrationHint(err)
+				return migrationHint(inFile(c.Database, err))
 			}
 			a.log.Info("index migrations applied under the migration lock",
 				"database.driver", c.Database.Driver, "applied", mig.Applied, "schema", mig.Version)

@@ -192,6 +192,39 @@ func TestDatabaseFileInErrors(t *testing.T) {
 	}
 }
 
+// TestServeMigrationNamesFile: an error of serve's own migration step names the absolute path
+// and database.dsn, as the other errors of the store do (#749): SQLite's "attempt to write a
+// readonly database" names neither. Without WAL a read-only file opens, and the first write is
+// the migration's.
+func TestServeMigrationNamesFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes to a read-only file")
+	}
+	dir := t.TempDir()
+	file := filepath.Join(dir, "lajstrom.db")
+	if err := os.WriteFile(file, nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	st, err := openStore(t.Context(), config.Database{Driver: index.DialectSQLite, DSN: "file:" + file + "?_journal_mode=DELETE"})
+	if err != nil {
+		t.Fatalf("open, before the migration: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// On a port that is taken, should the migration pass after all.
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = taken.Close() }()
+	env := map[string]string{"LAJSTROM_SERVER_LISTEN": taken.Addr().String(), "LAJSTROM_DATABASE_DSN": "file:" + file + "?_journal_mode=DELETE"}
+	_, _, err = run(t, env, "serve", "--config", writeConfig(t, dir))
+	if want := file + " (database.dsn): "; err == nil || !strings.HasPrefix(err.Error(), want) || strings.Contains(err.Error(), "sqlite: open") {
+		t.Errorf("serve on a read-only file: %v, want an error of the migration that starts with %q", err, want)
+	}
+}
+
 // emptyPostgres returns the DSN of LAJSTROM_TEST_POSTGRES_DSN with a search_path that names no
 // schema, where no table resolves, as in a database migrate never ran on. A transaction pooler
 // does not carry search_path (LAJSTROM_TEST_POSTGRES_ISOLATION=database): skipped there.
