@@ -1,0 +1,26 @@
+# The Gateway in front of Lajstrom (docs/deploy/kubernetes.md, Gateway API): HTTPS for the public
+# host, TLS ends here. Where the cluster's operators own a shared Gateway, leave this file out and
+# point the parentRefs of httproute.yaml at theirs, whose listener must admit routes from
+# Lajstrom's namespace.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: lajstrom
+  labels:
+    app.kubernetes.io/name: lajstrom
+spec:
+  # The GatewayClass of your implementation; eg is the one of Envoy Gateway's quickstart.
+  gatewayClassName: eg
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: art.example.com # the host of server.externalURL
+      tls:
+        mode: Terminate
+        certificateRefs:
+          # A kubernetes.io/tls Secret in this namespace, from cert-manager or by hand.
+          - name: lajstrom-tls
+      allowedRoutes:
+        namespaces:
+          from: Same

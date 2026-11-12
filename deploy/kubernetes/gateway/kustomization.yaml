@@ -1,0 +1,9 @@
+# kubectl -n lajstrom apply -k deploy/kubernetes/gateway, beside deploy/kubernetes
+# (docs/deploy/kubernetes.md, Gateway API). Needs the Gateway API CRDs (v1.2 or later, for the
+# route's timeouts) and an implementation; envoy-gateway.yaml needs Envoy Gateway's CRDs.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - gateway.yaml
+  - httproute.yaml
+  - envoy-gateway.yaml

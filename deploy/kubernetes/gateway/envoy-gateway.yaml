@@ -1,0 +1,50 @@
+# What Gateway API has no standard field for, as Envoy Gateway (v1.10) sets it
+# (docs/reverse-proxy.md, Gateway API). Leave this file out on another implementation and set the
+# same its own way. A body of any size streams through Envoy both ways by default: nothing here
+# limits or buffers it, and a BackendTrafficPolicy's requestBuffer would.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: lajstrom
+  labels:
+    app.kubernetes.io/name: lajstrom
+spec:
+  # The listener, which a shared Gateway shares with other routes.
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: lajstrom
+      sectionName: https
+  timeout:
+    http:
+      # A transfer that moves no byte for this long is cut, a long one is not: above
+      # server.stallTimeout (1 min), as the 600 s of deploy/nginx/lajstrom.conf. Default 5 min.
+      streamIdleTimeout: 600s
+  path:
+    # The path as the client sent it. npm asks /npm/<repo>/@scope%2fname, and the default,
+    # UnescapeAndRedirect, answers it with a redirect to @scope/name.
+    escapedSlashesAction: KeepUnchanged
+    disableMergeSlashes: true
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: lajstrom
+  labels:
+    app.kubernetes.io/name: lajstrom
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: lajstrom
+  timeout:
+    http:
+      # Close an idle connection to a replica before Lajstrom does, after 120 s. Default 1 h.
+      connectionIdleTimeout: 60s
+  # A replica that refuses the connection, one that has closed its listener after
+  # server.shutdownDelay, sends the request to another; a request that reached Lajstrom is never
+  # sent again.
+  retry:
+    numRetries: 1
+    retryOn:
+      triggers: ["connect-failure", "reset-before-request"]

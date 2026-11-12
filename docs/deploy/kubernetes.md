@@ -12,6 +12,7 @@ same, since the state is in Postgres and in the registry.
 | `base/kustomization.yaml` | the three files, the base of an overlay |
 | `kustomization.yaml` | `base`, for `kubectl apply -k deploy/kubernetes` |
 | `migrate-job.yaml` | the Job of [Upgrade](#upgrade), applied on its own |
+| `gateway/` | a Gateway and an HTTPRoute in front of the Service, and Envoy Gateway's policies ([Gateway API](#gateway-api)) |
 | `try/` | not for production: an overlay with a Postgres and a registry in the namespace ([Try it on a local cluster](#try-it-on-a-local-cluster)) |
 
 The Secret `lajstrom` is not among them: it is made from the commands below or by your secret
@@ -95,8 +96,9 @@ pod-security.kubernetes.io/enforce=restricted` named no pod.
 - **An ingress or a Gateway** that terminates TLS for the public host and routes the whole host,
   without a path prefix, to the port `http` of the Service, with unlimited and unbuffered
   request bodies ([http-routing.md](../spec/http-routing.md) §1). What the edge must do in detail
-  is in [reverse-proxy.md](../reverse-proxy.md); no Ingress is in the manifests, since its
-  annotations depend on the controller.
+  is in [reverse-proxy.md](../reverse-proxy.md). `gateway/` is a Gateway for it
+  ([Gateway API](#gateway-api)); there is no Ingress, since ingress-nginx, whose annotations an
+  Ingress would carry, is retired.
 
 ## 1. The Secret
 
@@ -261,6 +263,41 @@ lajstrom_build_info{commit="533acf3",goversion="go1.27.3",version="v0.0.1-357-g5
 lajstrom_ingest_total{format="raw",result="published"} 1
 ```
 
+## Gateway API
+
+[deploy/kubernetes/gateway/](../../deploy/kubernetes/gateway/) puts the Service behind a
+Gateway. ingress-nginx retired in March 2026 and its repository is archived
+([reverse-proxy.md](../reverse-proxy.md#gateway-api)), so there is no Ingress.
+
+| File | What |
+| --- | --- |
+| `gateway.yaml` | the Gateway `lajstrom`: one `HTTPS` listener for `art.example.com`, TLS from the Secret `lajstrom-tls`; leave it out to attach the route to a shared Gateway |
+| `httproute.yaml` | the whole host to the port `http`, with `timeouts.request: 0s`, no bound on a long transfer |
+| `envoy-gateway.yaml` | Envoy Gateway's ClientTrafficPolicy and BackendTrafficPolicy: what Gateway API has no field for |
+| `kustomization.yaml` | the three |
+
+Set the host of `server.externalURL` in both `gateway.yaml` and `httproute.yaml`, and your
+`gatewayClassName`. On an implementation other than Envoy Gateway, drop `envoy-gateway.yaml` from
+`kustomization.yaml` and set the same things its way. [reverse-proxy.md](../reverse-proxy.md#gateway-api)
+has each setting, the ingress-nginx annotation it replaces, and what Cilium and Traefik need.
+
+```sh
+kubectl -n lajstrom create secret tls lajstrom-tls --cert=tls.crt --key=tls.key   # or cert-manager
+kubectl -n lajstrom apply -k deploy/kubernetes/gateway
+kubectl -n lajstrom wait --for=condition=Programmed gateway/lajstrom
+```
+
+`server.trustedProxies` (section 2) is the range the Gateway's proxy pods take their addresses
+from. For Envoy Gateway that is the pod CIDR: its proxies run in `envoy-gateway-system`. Add a
+NetworkPolicy that lets only that namespace reach the port `http`, so that nothing else in the
+range can name a client.
+
+The run on 2026-11-12, on OrbStack with Envoy Gateway v1.10.0, is in
+[reverse-proxy.md](../reverse-proxy.md#gateway-api). Through it: a 200 MiB raw file up and
+down, and 40 MiB at 1 MB/s, each with the same sha256; an `oras` push and pull; the client's
+address in the access log. Without `timeouts.request: 0s`, Envoy cut the slow download after
+17 s.
+
 ## Probes
 
 | Probe | Path | Why |
@@ -364,7 +401,7 @@ then (a 5-second sleep before `SIGTERM`), none of 228 over the same two rollouts
 
 ## What was not verified
 
-- An Ingress or a Gateway in front, TLS, and a multi-node cluster.
+- An Ingress; a Gateway other than Envoy Gateway; a multi-node cluster.
 - A managed Postgres, `sslmode=require`, and an external registry.
 - An upgrade from a published release: the run above built its three releases from one commit
   (#485 tests the binary of the previous release after v0.1.0). A migration that runs long.
