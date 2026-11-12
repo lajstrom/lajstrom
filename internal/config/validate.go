@@ -648,6 +648,9 @@ func (u Upstream) validate(p *problems, key string) {
 	if u.Timeout < 0 {
 		p.add(key+".timeout", "must not be negative")
 	}
+	if u.RevalidateTimeout < 0 {
+		p.add(key+".revalidateTimeout", "must not be negative")
+	}
 	if u.MaxMetadataSize < 0 {
 		p.add(key+".maxMetadataSize", "must not be negative")
 	}
@@ -673,7 +676,8 @@ func (u Upstream) validateAuth(p *problems, key string) {
 }
 
 // validateOCI checks what only an oci upstream has: a URL without a path, the registry's root,
-// and its tokenRealmHosts; another format has neither those nor dockerHub.
+// and its tokenRealmHosts; another format has neither those nor dockerHub and
+// revalidateTimeout.
 func (u Upstream) validateOCI(p *problems, key string) {
 	if u.Format != FormatOCI {
 		if len(u.TokenRealmHosts) > 0 {
@@ -681,6 +685,9 @@ func (u Upstream) validateOCI(p *problems, key string) {
 		}
 		if u.DockerHub != nil {
 			p.add(key+".dockerHub", "only an upstream of format %s has it", FormatOCI)
+		}
+		if u.RevalidateTimeout != 0 {
+			p.add(key+".revalidateTimeout", "only an upstream of format %s has it", FormatOCI)
 		}
 		return
 	}
