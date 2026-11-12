@@ -85,7 +85,9 @@ helm install lajstrom ./deploy/helm/lajstrom -n lajstrom -f values.yaml --wait
 The replicas start once the Secrets exist; without one, they wait in
 `CreateContainerConfigError`. Each replica applies the migrations at start under the migration
 lock, so on an empty database one applies them and the other finds them done. A change of the
-configuration rolls the pods: the pod template carries a checksum of the file.
+configuration rolls the pods: the pod template carries a checksum of the file. A change of a
+Secret does not, since the chart never reads one: `kubectl -n lajstrom rollout restart
+deploy/lajstrom` after a new registry password or DSN.
 
 ## 4. The first admin
 
