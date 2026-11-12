@@ -179,7 +179,9 @@ longer than `reconcile.graceAge` is outside them
   empty. On a registry whose listings lag, that is the manifests written at least that lag (its
   `consistencyBound`) before the run lists them; a later run adds the others.
 - **Scope.** Every format and the `hosted` and `proxy` kinds (a proxy's `proxy_meta` is a cache
-  and is not rebuilt); the control plane is not derived and comes from a backup
+  and is not rebuilt). An `oci` proxy's derived rows are its `oci_repos` rows; its upstream tags
+  where the backend does not hold them, its incomplete indexes and the manifests not pushed yet
+  live in `proxy_meta` only ([proxy-and-group.md](proxy-and-group.md) §11.3). The control plane is not derived and comes from a backup
   ([operations.md](../operations.md#backup-and-restore)). On a registry without a catalog, only the
   OCI repositories that `oci_repos` records or `--attach` names. The manifests at OCI names in the
   grammar of [ADR 0017](../adr/0017-the-grammar-of-oci-names.md), which Lajstrom writes, and at
@@ -968,8 +970,12 @@ longer than `reconcile.graceAge` is outside them
 - **Statement.** Concurrent misses of one artifact download it once, on one replica or across
   replicas; nothing is pushed unless the strongest checksum the upstream's document gives
   matches the downloaded bytes, and a file without a checksum is refused; one replica asks the
-  upstream for one name's document once at a time.
-- **Scope.** Proxy repos (npm in M4), directly and through a group.
+  upstream for one name's document once at a time. On an `oci` proxy the digest is the
+  checksum: a manifest, an index or a blob is kept only when its bytes have the digest that its
+  reference or the manifest listing it names, and a blob no held or cached manifest lists is
+  never fetched.
+- **Scope.** Proxy repos (npm in M4), directly and through a group; `oci` proxy repos
+  ([proxy-and-group.md](proxy-and-group.md) §11), with [#442](https://github.com/lajstrom/lajstrom/issues/442).
 - **Assumes.** Registry: **monotonic reads** (**unchecked**) for the waiters, which look the
   version up in the index and are then served from the registry: the index has it only once the
   registry served it (INV-4). Database: **Postgres for replicas**, **clocks agree**. The upstream's document and file come over the same channel: the
@@ -1007,9 +1013,15 @@ longer than `reconcile.graceAge` is outside them
 
 - **Statement.** What a proxy fetched is a manifest of the profile in the registry, with its
   origin in annotations, so it survives the loss of the database and of the upstream, and
-  reindex rebuilds it; `proxy_meta` is a cache whose loss costs upstream requests only.
+  reindex rebuilds it; `proxy_meta` is a cache whose loss costs upstream requests only. What an
+  `oci` proxy fetched is the upstream's own manifests and blobs, without annotations, each
+  manifest and complete index under its keep-tag: they survive the loss of the database, and the
+  upstream's tags survive it only where the backend holds them (proxy-and-group.md §11.6); a lost
+  `proxy_meta` costs a `HEAD` per tag and a counted `GET` per manifest or index the backend does
+  not hold.
 - **Scope.** Proxy repos, and a hosted repo that was one (proxy-and-group.md §2.6): its versions
-  keep their origin annotations, and nothing in the registry moves when the kind changes.
+  keep their origin annotations, and nothing in the registry moves when the kind changes; `oci`
+  proxy repos with [#442](https://github.com/lajstrom/lajstrom/issues/442).
 - **Assumes.** As INV-3.
 - **Mechanism.** The fetcher publishes through `format.Publisher.Upload` with an `Origin`
   (`ingest.setOrigin`); reindex neither reads nor writes `proxy_meta`, and

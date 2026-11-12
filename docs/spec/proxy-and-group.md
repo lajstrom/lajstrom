@@ -1,7 +1,8 @@
 # Spec: proxy and group repos
 
-- Status: normative ([ADR 0013](../adr/0013-proxy-and-group-repos.md), accepted 2026-11-10).
-  Changes need an issue labelled `contract`.
+- Status: normative ([ADR 0013](../adr/0013-proxy-and-group-repos.md), accepted 2026-11-10); §11,
+  `oci` proxy repos, since [ADR 0018](../adr/0018-oci-proxy-repos-pull-through-from-any-registry.md)
+  (2026-11-12). Changes need an issue labelled `contract`.
 - Implemented by: `internal/proxy` (the fetcher, the metadata cache and the resolution of
   groups; format-independent), the plugins of the formats that have the kinds (npm first,
   ADR 0012; pypi and maven with #67, #68), `internal/api` and `internal/config` for the
@@ -16,14 +17,15 @@
 | Kind | Holds | Reads | Writes |
 | --- | --- | --- | --- |
 | `hosted` | what was published to it | from the index and the registry | the format's publish routes, `/v2` |
-| `proxy` | what it fetched from its upstream, as ordinary manifests | the upstream's documents, cached (§4); files from the registry, fetched on a miss (§5) | none from clients but the delete of a held version and referrers on `/v2` (http-routing.md §6) |
+| `proxy` | what it fetched from its upstream, as ordinary manifests; an `oci` proxy the upstream's own manifests and blobs (§11) | the upstream's documents, cached (§4); files from the registry, fetched on a miss (§5) | none from clients but the delete of a held version and referrers on `/v2` (http-routing.md §6) |
 | `group` | nothing | its members' documents merged, files from the member that has them (§8) | sent to its hosted member (§8.4) |
 
 The kind is set when the repo is created; the one change is a proxy that becomes a hosted repo
 (§2.6), once and one way. A repo of any kind has the routes
 of its format: a client cannot tell a proxy or a group from a hosted repo. A format has the
 kinds `proxy` and `group` when its plugin provides the hooks of §10; in M4 that is npm.
-`oci` repos are `hosted` only.
+`oci` repos, which have no plugin, are `hosted` or `proxy` (§11); a group of `oci` repos is
+refused ([#848](https://github.com/lajstrom/lajstrom/issues/848)).
 
 ## 2. Settings
 
@@ -36,10 +38,13 @@ it by name. The API never takes a URL or a file path (§9). Keys, for configurat
 | --- | --- | --- | --- |
 | `upstreams[].name` | name | required | Unique; the grammar of `registries[].name`. Example: `npmjs`. |
 | `upstreams[].format` | plugin name | required | The format it serves; a plugin of this build that has the kind `proxy`. Only a proxy repo of this format names it. |
-| `upstreams[].url` | absolute `http(s)` URL | required | Base of every request, e.g. `https://registry.npmjs.org/`; a path is allowed, credentials, a query and a fragment are not. `http` is accepted with a warning at start: what it serves is not authenticated. |
+| `upstreams[].url` | absolute `http(s)` URL | required | Base of every request, e.g. `https://registry.npmjs.org/`; a path is allowed, credentials, a query and a fragment are not. `http` is accepted with a warning at start: what it serves is not authenticated. An `oci` upstream's URL is the root of the registry, `https://ghcr.io`, without a path: the API is at `/v2/` of the host. |
 | `upstreams[].auth.username` | string | empty | With `passwordFile`: HTTP Basic. |
 | `upstreams[].auth.passwordFile` | path | empty | File that holds the password. |
+| `upstreams[].auth.passwordEnv` | environment variable name | empty | Variable that holds the password of `username`, as `registries[].auth.passwordEnv`; not with `passwordFile`. |
 | `upstreams[].auth.tokenFile` | path | empty | File that holds a bearer token (`Authorization: Bearer`), npm's `_authToken`. Not with `username`. |
+| `upstreams[].tokenRealmHosts` | list of host names | the vendor table's | An `oci` upstream's: the hosts besides its own that the realm of its bearer challenge may be on, over `https` (§11.1), as `registries[].tokenRealmHosts`. |
+| `upstreams[].dockerHub` | bool | `true` on `registry-1.docker.io` and `docker.io`, else `false` | An `oci` upstream's: it is Docker Hub or a mirror of it, and a path of one component is `library/<path>` (§11.7). |
 | `upstreams[].timeout` | duration | `30s` | Bounds the wait for the response headers (connecting and TLS at most 10 s each) and every wait for the next bytes of a body. `0s` means the default. |
 | `upstreams[].retries` | integer | `2` | Retries of a request, as `registries[].retries` defines them: `429`, `5xx` but `501` and `505`, timeouts, connections refused or reset; backoff from 250 ms, at most 3 s. `0` means the default, a negative value none. |
 | `upstreams[].maxMetadataSize` | bytes | `67108864` (64 MiB) | Largest document the upstream may answer for one name; a larger one is not cached (§6). `0` means the default. |
@@ -361,6 +366,7 @@ the upstream: npm has no standard one, and the operator makes the list (docs/mig
 | offline and nothing held | `404` | `404` |
 | `404`, `410` | `404`; an `absent` row | `404`; the name's row made stale |
 | `401`, `403` (Lajstrom's own credentials) | the cached row, else the held versions, else `502` | `502`; logged at error |
+| on an `oci` proxy, `401`, `403` on a repository read after a token was granted, or any `401`, `403` of an upstream without credentials (§11.7) | `404`; an `absent` row | `404` |
 | `429` | the cached row, else the held versions, else `503` with `Retry-After` (the upstream's, at most 60 s; 5 s without one) | `503` with `Retry-After` |
 | `5xx`, a connection or TLS error, a refused redirect (§9.2), a document too large or unparsable | the cached row, else the held versions, else `502` | `502` |
 | a timeout (§2.1) | as above, `504` | `504` |
@@ -576,3 +582,188 @@ type Prefetcher interface {
     Pointed(name, kind string, kept []byte) ([]string, error)
 }
 ```
+
+## 11. `oci` proxy repos
+
+[ADR 0018](../adr/0018-oci-proxy-repos-pull-through-from-any-registry.md). An `oci` proxy pulls
+through from any registry of the distribution API: `docker pull <lajstrom>/oci/<repo>/<path>:<tag>`
+asks the upstream for `<path>:<tag>` on a miss and keeps what it fetched in the backend at the
+repo's OCI name of `<path>` (http-routing.md §2). It has no plugin and no format routes: the core
+answers it on `/v2` (http-routing.md §6). §3's lists, §4's TTLs, negative rows and offline mode,
+§5's claims, §6's statuses and §9 hold, with the changes below. What it keeps is the upstream's
+bytes: no manifest of the profile and no `lajstrom.origin.*` annotation, which would change a
+digest the client asked for (manifest-profile.md §3.1 does not apply).
+
+### 11.1 The upstream
+
+`upstreams[].format: oci` names a registry by the root URL of its API (§2.1). Lajstrom asks it
+through the generic provider's client, read-only: its retries and its circuit breaker, no
+instance prefix, no capability probe. Its authentication is the upstream's own:
+
+- none: anonymous, with an anonymous bearer token where the registry asks for one;
+- `auth.username` with `auth.passwordFile` or `auth.passwordEnv`: Basic where the registry asks
+  for it, and the credentials of its token realm;
+- `auth.tokenFile`: a static bearer token.
+
+A bearer challenge is answered at its realm when the realm is on the upstream's host name, or
+over `https` on a host of `upstreams[].tokenRealmHosts` or of the vendor table (`auth.docker.io`
+for `registry-1.docker.io` and `docker.io`); any other realm is `502`, naming its host. The
+credentials go to the upstream's origin and to that realm only. A manifest or a blob that the
+upstream redirects to another host (registry.k8s.io's regional mirrors, a CDN, object storage) is
+followed without them, over `https` only and to public addresses only, as §9.2 says of a URL on
+another host. Cloud authentication (ECR through IAM, Artifact Registry through a service
+account) is not in this version.
+
+### 11.2 Names, lists and limits
+
+The path below the repo is the upstream's repository, `library/nginx`: the lists of §3 match it
+as a name, `*` within a component. Before any request to the upstream, in this order: the lists
+(`403 DENIED`); `Capabilities.CheckName` of the backend on the repo's OCI name of the path
+(`400 NAME_INVALID`, naming the limit); offline mode (§4.4). A backend that refuses the name of a
+push by a rule of its own (Quay's `…/build`, quay.md) is a `4xx` that names the backend and an
+audit row `proxy.reject`, never a `500`.
+
+### 11.3 What is kept, and where
+
+Every `proxy_meta` row of an `oci` proxy has the path as its name (index-schema.md):
+
+| Kind | Content | Written when |
+| --- | --- | --- |
+| `oci.tag:<tag>` | `{"digest", "mediaType", "size"}` of what the upstream's tag names; the digest is also the row's `etag`; `absent` for a tag the upstream does not have | the tag is resolved upstream (§11.4) |
+| `oci.manifest:<digest>` | the exact bytes of a manifest or an index, checked against the digest; `absent` for a digest the upstream does not have | it is fetched (§11.4) |
+| `oci.ref:<digest>` | `{"mediaType", "size", "parents"}`: what a manifest or an index at the path says of a blob or a child it lists, and the digests of the manifests and indexes that list it | a manifest or an index that lists it is fetched |
+| `oci.held:<digest>` | empty | the backend holds the blob, or the manifest or index under its keep-tag (§11.5) |
+| `oci.fixed-tags` | empty | the backend refused to move a tag of the OCI repository (§11.6) |
+
+The backend holds the blobs that were asked for, each manifest whose blobs it holds and each
+index whose children it holds, every one under its keep-tag (§11.6), and the upstream's tags
+where it lets tags move. A row is fresh for `metadataTTL`, an `absent` one for `negativeTTL`
+(§4.1); `present` rows stay until replaced or purged (§4.3). The `oci.ref`, `oci.held` and
+`oci.fixed-tags` rows have no TTL: they say what was listed, held or refused.
+
+### 11.4 A manifest
+
+`HEAD` or `GET` of `manifests/<ref>`:
+
+1. **A tag** is the digest of its `oci.tag` row while the row is fresh, with no request. An
+   expired row, or none, is revalidated with a `HEAD` of the tag upstream: the same digest moves
+   `checked_at`, another replaces the row, and a tag the upstream does not have is an `absent`
+   row and `404 MANIFEST_UNKNOWN`. A tag of the keep-tag form (§11.6) is `404`.
+2. **When the upstream does not answer**, or answers `429` or `5xx` (§6), the row is used however
+   old. Without a row, the tag the backend holds answers, unless the repository has an
+   `oci.fixed-tags` row: its backend tags are stale. Without either, the status of §6: `503`
+   with `Retry-After` for a `429`, `502`, `504`. Offline (§4.4): the row whatever its age, else
+   the backend's tag with the same exception, else `404`.
+3. **The digest** is answered from the backend when it holds the manifest; else from its
+   `oci.manifest` row; else, unless offline, it is fetched: a `GET` of the digest upstream, under
+   the claim (repo, path, digest) of §5 and once per replica. The bytes must have the digest and
+   be at most `server.maxManifestSize`; a manifest the upstream answered by tag must agree with
+   its `Docker-Content-Digest` when it sends one. A mismatch is `502` and `proxy.reject`. The
+   `oci.manifest` row and an `oci.ref` row per blob it lists (a manifest: its config and layers;
+   an index: its manifests) are written in one transaction.
+4. **The answer** carries the manifest's own media type, `Docker-Content-Digest` and
+   `Content-Length`, and on a `GET` its bytes. A child of an index is fetched when it is asked for,
+   so a pull of one platform fetches that platform alone. When every blob of a cached manifest is
+   held, the read pushes it (§11.5, step 3), as a completion lost to a concurrent write is caught.
+
+### 11.5 A blob, and the push
+
+`GET` of `blobs/<digest>` that the backend does not hold:
+
+1. The digest's `oci.ref` row gives its size and media type. A digest that no manifest held or
+   cached at the path lists is `404 BLOB_UNKNOWN`, with no request to the upstream. A size above
+   the repo's `policy.maxFileSize` or the backend's `maxBlobSize` is `403` naming the bound and
+   `proxy.reject`, before the download. A `HEAD` is answered from the row, without a fetch.
+2. Under the claim (repo, path, digest), the blob is asked of the upstream and streamed into a
+   backend upload session, hashed on the way, and committed with its digest
+   ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)); nothing is spooled. Bytes
+   whose digest or size differ are not committed: `502`, `proxy.reject`. The `oci.held` row
+   follows the commit. Other requests for the blob wait as §5, step 6, says, and are served from
+   the backend.
+3. **The completion.** Each manifest of the blob's `oci.ref` parents whose every blob is held is
+   pushed by digest under its keep-tag; then each index that lists such a manifest, once every
+   child is held; then the upstream's tags that name what was pushed (§11.6). Every push goes
+   through `internal/ingest`, waits for the visibility barrier, records the OCI name in
+   `oci_repos`, and writes the audit row `proxy.fetch` with `details.upstream` and `details.ref`
+   (the digest, and the tag of a tag push).
+4. The claim holder is answered from the stream as it goes into the backend (§11.8); every other
+   request from the backend.
+
+A blob that the backend held and lost, to a garbage collection of a blob no pushed manifest named
+yet, is fetched again on its next miss.
+
+### 11.6 Tags
+
+- **The keep-tag.** Every manifest and every complete index Lajstrom pushes is pushed under the
+  tag `_keep.<algorithm>.<encoded>` of its digest (`_keep.sha256.<64 hex>`), cut to 128
+  characters: written once, never moved, never shown by `tags/list`, clear of the referrers tag
+  schema `sha256-<hex>` (manifest-profile.md §6). The collection of untagged manifests leaves it,
+  so a digest that clients pin stays when an upstream tag moves on.
+- **Live tags.** Where the backend lets tags move, the upstream's tag is pushed, under the tag
+  lock of its digest (index-schema.md, Coordination), once what it names is held: the manifest,
+  or the index with every child. When the upstream moves the tag and the new manifest or index is
+  held, it is pushed again. A tag whose index is not complete stays in `proxy_meta` only, until
+  it is.
+- **Backends whose tags do not move.** Lajstrom tells them by `Capabilities.ImmutableTags` (the
+  vendor table, the probe, `registries[].capabilities.immutableTags`; on ECR an
+  `imageTagMutability` of `IMMUTABLE*`), and otherwise by trying: a tag push that the backend
+  refuses as a conflict (`provider.ErrConflict`: Quay's `409 TAG_IMMUTABLE`, Harbor's `412`,
+  GitLab's `IMMUTABLE_TAG`, ECR's refusal) writes the repository's `oci.fixed-tags` row, since
+  policies go by repository and tag pattern, and is logged at warn with the registry. From then
+  on the upstream's tags of that repository stay in `proxy_meta` only, on every replica; a purge
+  of the cache (§4.3) tries once more. The read that met the refusal is answered from the rows;
+  the tags pushed before it keep their first digest in the backend and answer nothing (§11.4,
+  step 2). Zot behind a policy without `update` answers `403 DENIED`, which reads as refused
+  credentials: its operator sets `capabilities.immutableTags: true`.
+- **The exception, and its bounds.** This is the one place where Lajstrom moves a tag: only in an
+  `oci` proxy repo, only one of the upstream's tags, only to a digest the upstream named for it
+  and the backend holds. It never moves a keep-tag, a tag of a hosted or managed repo, or a tag on
+  a conflict with a client's push.
+- `tags/list` of an `oci` proxy is the backend's, without the keep-tags.
+
+### 11.7 Docker Hub
+
+- **`library/`.** On an upstream with `dockerHub` (§2.1), a path of one component is
+  `library/<path>` on every `/v2` route, where the facade splits the name: `oci/hub/nginx` and
+  `oci/hub/library/nginx` are one repository, stored once, as `library/nginx`.
+- **A repository that does not exist.** Docker Hub and quay.io grant an anonymous token without
+  the `pull` action for it and then answer the read `401`, as for a private one; ghcr.io refuses
+  the token, `403 DENIED`. A `401` or `403` of a repository read after a token was granted is
+  `404` with an `absent` row; a refused token request, a wrong password, stays `502`. On an
+  upstream without credentials, any `401` or `403` is `404`.
+- **Rate limits.** A tag is revalidated with `HEAD`, which Docker Hub does not count, and a
+  manifest or a blob the backend or the cache holds is never asked for with `GET`: a cold pull
+  costs Docker Hub one counted pull per manifest fetched, the index and each platform pulled, and
+  revalidation none. The `ratelimit-limit` and `ratelimit-remaining` headers of any upstream feed
+  the gauges `lajstrom_proxy_upstream_ratelimit_limit`, `_remaining` and `_window_seconds` per
+  upstream, the window read from `w=` and never assumed; below 10 % remaining, a warning. A
+  `429` serves the stale row (§11.4, step 2), otherwise `503 TOOMANYREQUESTS` with `Retry-After`
+  (the upstream's, at most 60 s; 5 s without one). Every replica behind one egress address shares
+  one anonymous budget; an upstream credential raises it.
+
+### 11.8 The verified tee
+
+The request that holds a blob's claim (§11.5, step 2) is served from the upstream's bytes as
+they go into the backend, an exception to §5's "served from the registry" so that a large layer's
+first byte does not wait for its whole copy (containerd cancels a pull that gets no byte for
+`image_pull_progress_timeout`, 5 minutes by default):
+
+1. Only a blob whose digest and size a held or cached manifest gives tees: the `Content-Length`
+   is known. A `Range` request, and every request that waits on the claim, are served from the
+   backend once the blob is held.
+2. The last byte is held back, as INV-40 does on a download, until the bytes have the digest
+   **and** the backend has committed the blob. No client completes a blob the backend does not
+   hold or whose bytes are not its digest; a refusal aborts the connection, and the client tries
+   the layer again.
+3. The copy never waits for the client: the client reads through a bounded buffer of a few MiB
+   and is dropped, its connection aborted, when it falls behind or leaves; the fetch goes on.
+4. Nothing is kept outside the registry but that buffer
+   ([ADR 0001](../adr/0001-oci-registry-as-sole-storage.md)).
+
+### 11.9 What an `oci` proxy does not do
+
+Groups of `oci` repos are refused ([#848](https://github.com/lajstrom/lajstrom/issues/848)). A
+client's `PUT` of a manifest that is not a referrer is `405 UNSUPPORTED`; referrers, their blob
+uploads and deletes are as on a hosted `oci` repo (http-routing.md §6). Nothing but `oci_repos`
+is indexed of what the backend holds; reindex rebuilds those rows from the backend's catalog or
+`oci_repos`, and neither reads nor writes `proxy_meta`.
