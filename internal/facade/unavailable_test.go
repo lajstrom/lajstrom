@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 
@@ -58,10 +60,36 @@ func TestRegistryUnresolvable(t *testing.T) {
 	}
 }
 
+// quietRegistry returns the address of a listener that reads the head of each request and then
+// closes the connection without an answer (drop true), or never answers.
+func quietRegistry(t *testing.T, drop bool) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	must(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = c.Close() }()
+				r := bufio.NewReader(c)
+				if _, err := http.ReadRequest(r); err == nil && !drop {
+					_, _ = io.Copy(io.Discard, r) // until the client gives up
+				}
+			}()
+		}
+	}()
+	return l.Addr().String()
+}
+
 // TestRegistryUnreachable sends requests to the facade for a registry that refuses connections,
-// and for one that resets them (#593), the circuit breaker closed: a manifest read and push, the
-// HEAD and the GET of a blob, an upload. Each is 503 UNAVAILABLE without Retry-After, as for a
-// host name that does not resolve, and is logged at warn, not as a failure.
+// for one that resets them (#593), for one that closes them without an answer and for one that
+// does not answer within registries[].timeout (#670), the circuit breaker closed: a manifest read
+// and push, the HEAD and the GET of a blob, an upload. Each is 503 UNAVAILABLE without
+// Retry-After, as for a host name that does not resolve, and is logged at warn, not as a failure.
 func TestRegistryUnreachable(t *testing.T) {
 	refused, err := net.Listen("tcp", "127.0.0.1:0")
 	must(t, err)
@@ -80,8 +108,17 @@ func TestRegistryUnreachable(t *testing.T) {
 			_ = c.Close()
 		}
 	}()
-	for name, addr := range map[string]string{"refused": refused.Addr().String(), "reset": resetting.Addr().String()} {
-		t.Run(name, func(t *testing.T) {
+	for _, registry := range []struct {
+		name    string
+		addr    string
+		timeout time.Duration // registries[].timeout; 0 is the default
+	}{
+		{name: "refused", addr: refused.Addr().String()},
+		{name: "reset", addr: resetting.Addr().String()},
+		{name: "closed without an answer", addr: quietRegistry(t, true)},
+		{name: "no answer in time", addr: quietRegistry(t, false), timeout: 50 * time.Millisecond},
+	} {
+		t.Run(registry.name, func(t *testing.T) {
 			blob := "/v2/oci/images/app/blobs/" + digest.FromString("blob").String()
 			body, _ := manifest(t, []byte("layer"), "unreachable")
 			for _, tt := range []struct {
@@ -97,8 +134,8 @@ func TestRegistryUnreachable(t *testing.T) {
 				// A provider of its own per request: the failures of the requests before, and of
 				// a capabilities probe on the way, would open its circuit breaker, whose 503 has a
 				// Retry-After (openCircuit); this test is about each path's own answer.
-				reg, err := generic.New(config.Registry{Name: "local", Type: generic.Type, URL: "http://" + addr, Retries: -1},
-					slog.New(slog.DiscardHandler))
+				reg, err := generic.New(config.Registry{Name: "local", Type: generic.Type, URL: "http://" + registry.addr, Retries: -1,
+					Timeout: registry.timeout}, slog.New(slog.DiscardHandler))
 				must(t, err)
 				e := newEnv(t, envOptions{registry: func(*providertest.Fake) provider.Provider { return reg }})
 				what := tt.method + " " + tt.target

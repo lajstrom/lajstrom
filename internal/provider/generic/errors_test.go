@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -35,6 +36,8 @@ func TestTranslate(t *testing.T) {
 	unresolved := func(dns *net.DNSError) error {
 		return &url.Error{Op: "Head", URL: backend.String(), Err: &net.OpError{Op: "dial", Net: "tcp", Err: dns}}
 	}
+	req := func(op string, err error) error { return &url.Error{Op: op, URL: backend.String(), Err: err} }
+	noAnswer := func(err error) error { return &noAnswerError{err: err} }
 
 	tests := []struct {
 		name string
@@ -78,6 +81,31 @@ func TestTranslate(t *testing.T) {
 			want: provider.ErrUnavailable},
 		{name: "context canceled", err: context.Canceled},
 		{name: "plain error", err: errors.New("connection reset by peer")},
+		// #670: after the retries, a request that breakerTransport counted as the registry's
+		// failure (noAnswer) and that timed out or met an EOF.
+		{name: "dial timeout", err: req("Head", noAnswer(&net.OpError{Op: "dial", Net: "tcp", Err: transportTimeout("i/o timeout")})),
+			want: provider.ErrUnavailable},
+		{name: "connect timed out", err: req("Head", noAnswer(&net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ETIMEDOUT)})),
+			want: provider.ErrUnavailable},
+		{name: "timeout awaiting response headers", err: req("Get", noAnswer(transportTimeout("net/http: timeout awaiting response headers"))),
+			want: provider.ErrUnavailable},
+		{name: "TLS handshake timeout", err: req("Get", noAnswer(transportTimeout("net/http: TLS handshake timeout"))),
+			want: provider.ErrUnavailable},
+		{name: "closed without an answer", err: req("Get", noAnswer(io.EOF)), want: provider.ErrUnavailable},
+		{name: "an answer cut in its head", err: req("Get", noAnswer(io.ErrUnexpectedEOF)), want: provider.ErrUnavailable},
+		{name: "an upload closed without an answer", err: fmt.Errorf("Patch: %w", noAnswer(io.EOF)), want: provider.ErrUnavailable},
+		{name: "no route to host", err: req("Head", &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.EHOSTUNREACH)}),
+			want: provider.ErrUnavailable},
+		{name: "network unreachable", err: req("Head", &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ENETUNREACH)}),
+			want: provider.ErrUnavailable},
+		// A timeout or an EOF that breakerTransport did not count as the registry's: the
+		// caller's context ended, the client's body failed (#643), or no request failed.
+		{name: "the caller's deadline", err: req("Get", context.DeadlineExceeded)},
+		{name: "the caller's deadline while dialing", err: req("Head", &net.OpError{Op: "dial", Net: "tcp", Err: transportTimeout("i/o timeout")})},
+		{name: "a deadline outside a request", err: fmt.Errorf("read back: %w", context.DeadlineExceeded)},
+		{name: "a client body that broke off", err: fmt.Errorf("Patch: %w", io.ErrUnexpectedEOF)},
+		{name: "a client body that stalled", err: fmt.Errorf("Patch: %w", &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded})},
+		{name: "an answer with an empty body", err: fmt.Errorf("GET %q: failed to decode response: %w", backend, io.EOF)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -160,6 +188,20 @@ func TestTranslateRefusals(t *testing.T) {
 
 // noWait is the wait of a registry that asked for none.
 func noWait() time.Duration { return 0 }
+
+// transportTimeout is a timeout of the transport as net and net/http make one: a dial past
+// Dialer.Timeout ("i/o timeout"), a wait for the response headers past ResponseHeaderTimeout,
+// a TLS handshake past TLSHandshakeTimeout. Like theirs, errors.Is matches
+// context.DeadlineExceeded, so that a caller's deadline cannot be told from it by the error.
+type transportTimeout string
+
+func (e transportTimeout) Error() string { return string(e) }
+
+func (transportTimeout) Timeout() bool { return true }
+
+func (transportTimeout) Temporary() bool { return true }
+
+func (transportTimeout) Is(target error) bool { return target == context.DeadlineExceeded }
 
 // checkCause fails t when the translated error got lost its cause: errors.Is must find the
 // cause and errors.As the *errcode.ErrorResponse in it.

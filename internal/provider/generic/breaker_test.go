@@ -248,8 +248,10 @@ func failingBody(err error) io.Reader {
 // the body of a /v2 client does that stalls past server.stallTimeout where net/http does not
 // cancel the request (HTTP/2), sends a broken chunked encoding, breaks off, or passes the
 // upload's bound (#638). Each counts neither way, so that one client cannot open the breaker for
-// all: a chunk or a closing PUT, threshold times in a row, leaves it closed. A registry that
-// drops the connection while the body streams still counts as a failure.
+// all: a chunk or a closing PUT, threshold times in a row, leaves it closed; and none is
+// provider.ErrUnavailable, though a stall is a timeout and a body that breaks off an EOF (#670).
+// A registry that drops the connection while the body streams still counts as a failure, and is
+// provider.ErrUnavailable.
 func TestBreakerBodyFails(t *testing.T) {
 	stalled := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
 	tests := []struct {
@@ -309,8 +311,14 @@ func TestBreakerBodyFails(t *testing.T) {
 					}
 				}
 				for _, u := range sessions {
-					if err := send.call(ctx, repo, u, tt.body()); err == nil || byBreaker(err) {
+					err := send.call(ctx, repo, u, tt.body())
+					if err == nil || byBreaker(err) {
 						t.Fatalf("%s: %v, want it to fail as it streams", send.name, err)
+					}
+					// The registry that dropped the connection is unavailable (#670); a body
+					// that stalled or broke off is the client's, never the registry's.
+					if got := errors.Is(err, provider.ErrUnavailable); got != tt.open {
+						t.Errorf("%s: %v; provider.ErrUnavailable = %v, want %v", send.name, err, got, tt.open)
 					}
 				}
 				_, err = repo.StartBlobUpload(ctx)

@@ -86,6 +86,12 @@ func (p *Provider) translate(op string, err error) error {
 //     retries: ErrUnavailable, without a wait (#593). So is net.ErrClosed, a write of the
 //     request body on a connection that net/http closed as its read met the reset first, the
 //     way an upload sees a reset. errors.Is still finds the cause.
+//   - a host or a network that cannot be reached (EHOSTUNREACH, ENETUNREACH), and, after the
+//     retries, a request that timed out (the dial, the TLS handshake, the wait for the response
+//     headers) or met an EOF (the registry closed the connection without an answer) and that
+//     the breaker counted as the registry's failure (*noAnswerError): ErrUnavailable, without a
+//     wait (#670). A timeout or an EOF of the caller's context, of a client's body (#643), or
+//     of an answer's body is not the registry's and stays as it is.
 //
 // A refused token realm (realmError) is wrapped without what net/http and oras-go put around
 // it, which names the request URL. Everything else, context errors included, is wrapped with
@@ -134,10 +140,13 @@ func translateAs(registry string, wait func() time.Duration, op string, err erro
 	return fmt.Errorf("generic: %s: %w", op, err)
 }
 
-// unreachable says why err did not reach the registry, a host name that does not resolve or a
-// connection refused or reset (translateAs), or returns "".
+// unreachable says why err did not reach the registry, or got no answer from it: a host name
+// that does not resolve, a connection refused or reset, a host or network that cannot be
+// reached, a timeout or an EOF that the breaker counted against the registry (translateAs); or
+// returns "".
 func unreachable(err error) string {
 	var dns *net.DNSError
+	var quiet *noAnswerError
 	switch {
 	case errors.As(err, &dns):
 		return "the host name does not resolve"
@@ -147,6 +156,10 @@ func unreachable(err error) string {
 		return "the connection was reset"
 	case errors.Is(err, net.ErrClosed):
 		return "the connection broke during the request"
+	case errors.Is(err, syscall.EHOSTUNREACH), errors.Is(err, syscall.ENETUNREACH):
+		return "the host cannot be reached"
+	case errors.As(err, &quiet):
+		return quiet.detail()
 	}
 	return ""
 }

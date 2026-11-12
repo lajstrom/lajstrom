@@ -3,6 +3,7 @@ package generic
 import (
 	"bufio"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -59,27 +61,75 @@ func resettingAddr(t *testing.T) (string, *atomic.Int64) {
 	return l.Addr().String(), &n
 }
 
-// TestUnreachableRegistry calls every path of a registry that refuses connections, and of one
-// that resets them, after the retries (#593): each fails with provider.ErrUnavailable, with the
-// errno as its cause, as a host name that does not resolve does (TestUnresolvableRegistry), and a
-// message that does not name the address. The breaker stays closed, so that each call meets the
-// registry; each counts as a failure for it.
+// quietAddr returns the address of a listener that reads the head of each request and then
+// either closes the connection without an answer (drop true), as a registry that crashes or
+// restarts mid-request does, or keeps it open and never answers, as a registry that hangs does.
+func quietAddr(t *testing.T, drop bool) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = c.Close() }()
+				r := bufio.NewReader(c)
+				if _, err := http.ReadRequest(r); err != nil || drop {
+					return
+				}
+				_, _ = io.Copy(io.Discard, r) // until the client gives up and closes
+			}()
+		}
+	}()
+	return l.Addr().String()
+}
+
+// timedOut reports whether err says a timeout (net.Error).
+func timedOut(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+// oneOf returns whether an error wraps one of causes.
+func oneOf(causes ...error) func(error) bool {
+	return func(err error) bool {
+		return slices.ContainsFunc(causes, func(c error) bool { return errors.Is(err, c) })
+	}
+}
+
+// TestUnreachableRegistry calls every path of a registry that refuses connections, of one that
+// resets them (#593), of one that closes them without an answer, and of one that does not answer
+// within registries[].timeout (#670), after the retries: each fails with provider.ErrUnavailable,
+// with the transport's error as its cause, as a host name that does not resolve does
+// (TestUnresolvableRegistry), and a message that does not name the address. The breaker stays
+// closed, so that each call meets the registry; each counts as a failure for it.
 func TestUnreachableRegistry(t *testing.T) {
 	lowerBreaker(t, 1000)
 	reset, resets := resettingAddr(t)
 	for _, tt := range []struct {
-		name   string
-		addr   string
-		causes []error // one of them
+		name    string
+		addr    string
+		cause   func(error) bool
+		timeout time.Duration // registries[].timeout, the wait for the response headers; 0 is the default
 	}{
-		{"refused", refusingAddr(t), []error{syscall.ECONNREFUSED}},
+		{name: "refused", addr: refusingAddr(t), cause: oneOf(syscall.ECONNREFUSED)},
 		// A write that meets the reset is EPIPE; one after net/http's read met it first, and
 		// closed the connection, is net.ErrClosed (Linux, a body sent after the head).
-		{"reset", reset, []error{syscall.ECONNRESET, syscall.EPIPE, net.ErrClosed}},
+		{name: "reset", addr: reset, cause: oneOf(syscall.ECONNRESET, syscall.EPIPE, net.ErrClosed)},
+		// No answer is EOF; a body sent after the close may meet the reset that follows it.
+		{name: "closed", addr: quietAddr(t, true), cause: oneOf(io.EOF, io.ErrUnexpectedEOF, syscall.ECONNRESET, syscall.EPIPE, net.ErrClosed)},
+		{name: "silent", addr: quietAddr(t, false), cause: timedOut, timeout: 50 * time.Millisecond},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			const retries = 2
-			p, err := New(config.Registry{Name: "down", Type: Type, URL: "http://" + tt.addr, Retries: retries}, slog.New(slog.DiscardHandler))
+			p, err := New(config.Registry{Name: "down", Type: Type, URL: "http://" + tt.addr, Retries: retries, Timeout: tt.timeout},
+				slog.New(slog.DiscardHandler))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -135,8 +185,8 @@ func TestUnreachableRegistry(t *testing.T) {
 			for _, pt := range paths {
 				err := pt.call()
 				switch {
-				case !errors.Is(err, provider.ErrUnavailable) || !slices.ContainsFunc(tt.causes, func(c error) bool { return errors.Is(err, c) }):
-					t.Errorf("%s: %v, want provider.ErrUnavailable from one of %v", pt.name, err, tt.causes)
+				case !errors.Is(err, provider.ErrUnavailable) || !tt.cause(err):
+					t.Errorf("%s: %v, want provider.ErrUnavailable with the error of the %s registry as its cause", pt.name, err, tt.name)
 				case strings.Contains(err.Error(), tt.addr):
 					t.Errorf("%s: the message %q names the address", pt.name, err)
 				}

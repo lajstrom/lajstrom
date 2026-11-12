@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"syscall"
 	"testing"
@@ -371,6 +372,20 @@ type timeoutErr struct{}
 func (timeoutErr) Error() string   { return "i/o timeout" }
 func (timeoutErr) Timeout() bool   { return true }
 func (timeoutErr) Temporary() bool { return true }
+
+// TestTransientPushNoAnswer checks that a blob push that timed out or met an EOF is still worth
+// another one when breakerTransport marked it as the registry's failure (*noAnswerError, #670):
+// the *url.Error that net/http puts around the mark asks it for Timeout.
+func TestTransientPushNoAnswer(t *testing.T) {
+	for name, err := range map[string]error{
+		"timeout":        &url.Error{Op: "Put", URL: "http://registry/v2/raw/x/blobs/uploads/1", Err: &noAnswerError{err: timeoutErr{}}},
+		"unexpected EOF": &url.Error{Op: "Put", URL: "http://registry/v2/raw/x/blobs/uploads/1", Err: &noAnswerError{err: io.ErrUnexpectedEOF}},
+	} {
+		if !transientPush(err) {
+			t.Errorf("%s: transientPush(%v) = false, want true", name, err)
+		}
+	}
+}
 
 // TestPushRetry checks that a blob push that fails is done again from the start, in a new
 // session, when its content can be rewound, and once when it is a stream.
