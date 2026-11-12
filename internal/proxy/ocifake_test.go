@@ -239,8 +239,20 @@ func (e *ociEnv) advance(d time.Duration) { e.now.Add(int64(d)) }
 
 // core is a Core of the env on replica, with o's changes.
 func (e *ociEnv) core(replica string, o proxy.Options) *proxy.Core {
-	o.Index, o.Providers, o.Now, o.Replica = e.st, provider.Map{"local": e.reg}, e.clock, replica
+	if o.Mirror == nil {
+		o.Mirror = e.pipe
+	}
+	return e.coreOn(e.reg, replica, o)
+}
+
+// coreOn is a Core of the env whose backend is reg, with o's changes; without o.Mirror, a write
+// path of its own on reg.
+func (e *ociEnv) coreOn(reg provider.Provider, replica string, o proxy.Options) *proxy.Core {
+	o.Index, o.Providers, o.Now, o.Replica = e.st, provider.Map{"local": reg}, e.clock, replica
 	o.OCIUpstreams = map[string]*proxy.OCIUpstream{"hub": e.up}
+	if o.Mirror == nil {
+		o.Mirror = ingest.New(ingest.Options{Providers: provider.Map{"local": reg}, Index: e.st, Log: slog.New(slog.DiscardHandler)})
+	}
 	if o.Log == nil {
 		o.Log = slog.New(slog.DiscardHandler)
 	}
