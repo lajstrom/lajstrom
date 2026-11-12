@@ -17,7 +17,8 @@
 #     the next primary and dnf no longer have it;
 #   - reindex: the repo deleted with ?force=true (the registry keeps the manifests), made again
 #     empty, POST …/reindex: primary, filelists and other are the same bytes as before; dnf
-#     reinstalls the first package from the rebuilt repo with the new repo's key.
+#     installs the first package again from the rebuilt repo, with the new repo's key (dnf
+#     removed it with the second, as a dependency nothing needed any more).
 #
 #   test/e2e/rpm.sh [<base url> [<repo>]]     default: http://localhost:8080 e2e-<run>
 #
@@ -301,7 +302,11 @@ repofile "$key"
 in_client again.log "
 	install -m 0600 /w/lajstrom.repo /etc/yum.repos.d/lajstrom.repo
 	rm -rf /var/cache/dnf/$repo-*
-	dnf -y --disablerepo='*' --enablerepo='$repo' reinstall $one
-	$one" || { cat "$work/again.log" >&2; fail "dnf reinstall $one from the rebuilt repo"; }
-grep -qxF "hello from $one" "$work/again.log" || { cat "$work/again.log" >&2; fail "the command after the reinstall"; }
-ok "rpm/$repo deleted and made again, reindex: $(jq -r '.report | "\(.added) added"' "$work/body"); primary, filelists and other the same bytes; dnf reinstall $one from it"
+	dnf -y --disablerepo='*' --enablerepo='$repo' install $one
+	$one" || { cat "$work/again.log" >&2; fail "dnf install $one from the rebuilt repo"; }
+grep -qxF "hello from $one" "$work/again.log" || { cat "$work/again.log" >&2; fail "the command after the install"; }
+if [ -n "$key" ] && ! grep -qi "importing gpg key" "$work/again.log"; then
+	cat "$work/again.log" >&2
+	fail "dnf did not import the key of the repo made again"
+fi
+ok "rpm/$repo deleted and made again, reindex: $(jq -r '.report | "\(.added) added"' "$work/body"); primary, filelists and other the same bytes; dnf install $one from it with the new repo's key"
