@@ -14,8 +14,8 @@
 
 Artifact registry on top of any OCI registry.
 
-One server, many repository formats: apt, maven, pypi, npm and raw files, and any OCI artifact
-through the facade; rpm is planned.
+One server, many repository formats: apt, rpm, maven, pypi, npm and raw files, and any OCI
+artifact through the facade.
 Every artifact is stored as an OCI artifact in the registry you already run: ECR, Harbor, Zot,
 GHCR, docker distribution. Lajstrom owns no bytes, only the index, and the index can always be
 rebuilt from the registry.
@@ -59,10 +59,11 @@ with the real clients (`test/e2e/`):
 | [apt](docs/quickstart/apt.md) | `curl -T` a `.deb`, `oras push` | `apt-get` on Debian and Ubuntu | signed `InRelease` and `Release.gpg`, `by-hash`, key rotation |
 | [maven](docs/quickstart/maven.md) | `mvn deploy`, Gradle `publish` | `mvn`, Gradle | md5, sha1, sha256 and sha512 checksums; a release appears whole or not at all; no SNAPSHOT versions yet |
 | [npm](docs/quickstart/npm.md) | `npm publish`, `pnpm publish`, `yarn npm publish` | `npm`, `pnpm`, `yarn` | dist-tags; a proxy of npmjs.org and groups |
+| [rpm](docs/quickstart/rpm.md) | `curl -T` an `.rpm`, `oras push` | `dnf`, `yum`, `zypper` | GPG-signed `repomd.xml`, binary and source packages, every arch in one repodata |
 | [OCI](docs/quickstart/oras.md) | `oras push`, `cosign sign` | `oras pull`, `crane`, `cosign verify` | the `/v2` API with its token flow, referrers; cosign is run by [test/e2e/cosign.sh](test/e2e/cosign.sh), not by the quick start |
 | [docker images](docs/quickstart/docker.md) | `docker push`, `docker buildx build --push`, `crane index append`, `cosign sign` | `docker pull`, `crane`, `cosign verify` | `oci` repos pass images through, multi-arch indexes included; roles and the audit of pushes; run by [test/e2e/docker.sh](test/e2e/docker.sh) |
 
-rpm is planned. Every format shares local users, personal access and deploy tokens, roles
+Every format shares local users, personal access and deploy tokens, roles
 bound to repos, and an audit log ([docs/auth.md](docs/auth.md)).
 
 ## Documentation
@@ -76,6 +77,7 @@ bound to repos, and an audit log ([docs/auth.md](docs/auth.md)).
 | [Quick start: apt](docs/quickstart/apt.md) | a `.deb` in with `curl -T` or `oras push`, out with `apt-get install` from a signed repo |
 | [Quick start: pypi](docs/quickstart/pypi.md) | `twine upload` or `uv publish` in, `pip install` or `uv pip install` out, with PEP 658 metadata |
 | [Quick start: maven](docs/quickstart/maven.md) | `mvn deploy` or Gradle's `publish` in, `mvn dependency:get` or a Gradle build out, with all four checksums |
+| [Quick start: rpm](docs/quickstart/rpm.md) | an `.rpm` in with `curl -T` or `oras push`, out with `dnf install` or `zypper install` from a GPG-checked repo |
 | [Quick start: npm](docs/quickstart/npm.md) | `npm publish`, `pnpm` and `yarn npm publish` in, `npm install` out, dist-tags, tokens, a proxy of npmjs.org, coming from Verdaccio |
 | [Quick start: OCI with oras](docs/quickstart/oras.md) | `oras push` and `oras pull` through `/v2`, a raw file through ingest, referrers, deletes |
 | [Quick start: docker](docs/quickstart/docker.md) | `docker push` and `docker pull` through an `oci` repo, multi-arch images made by buildx or crane, cosign, a reader |
