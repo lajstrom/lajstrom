@@ -1016,19 +1016,29 @@ write from the server's clock and a client pushing on `/v2` from its own, within
 
 **Dry run first.** Without `--apply` the job prints the versions it would delete and why, the
 rule, the age and the rank, and changes nothing; `--output json` prints the same as one JSON
-document. With `--apply` it sends them in batches of 100, one job, with the digests it read and
+document. With `--apply` it sends them in batches of one job, with the digests it read and
 the cut-off it decided on (now less `--max-age`, else now), and prints what the server did with
-each: `deleted`, or `changed` (published again, or a variant added, since the list), `protected`
-(a dist-tag moved onto it), `young`, `gone`, `error`. The server checks each version under the
-lock that a publish of its tag and a move of a dist-tag take, so a version that changed after
-the list is reported, never deleted ([guarantees.md](spec/guarantees.md), INV-42). A run that
-races a publish deletes fewer versions, never more; the next run picks up the rest.
+each as the answer to its batch arrives: `deleted`, or `changed` (published again, or a variant
+added, since the list), `protected` (a dist-tag moved onto it), `young`, `gone`, `error`. The
+server checks each version under the lock that a publish of its tag and a move of a dist-tag
+take, so a version that changed after the list is reported, never deleted
+([guarantees.md](spec/guarantees.md), INV-42). A run that races a publish deletes fewer
+versions, never more; the next run picks up the rest.
+
+A batch is at most 10 versions, fewer when their digests take more than 48 KiB of the request's
+64 KiB. The server deletes a batch's versions one after another, with about 7 registry
+requests for each variant, so the job waits up to 2 minutes for each version of a batch (a
+request that lists, 2 minutes). A batch that the server fails, or that has no answer by then,
+stops the run, as `SIGINT` or `SIGTERM` does. The job then prints the results it has, with
+their counts (with `--output json`, the document with them and `error`), names the batch and
+how many versions after it it did not send, and exits 1. The server may have deleted versions
+of that batch; the next run lists what is left.
 
 | Exit status | Meaning |
 | --- | --- |
 | 0 | nothing to delete, or `--apply` deleted or reported every version |
 | 2 | a dry run found versions to delete |
-| 1 | an error: the server unreachable, a credential refused, an item the server failed to delete |
+| 1 | an error: the server unreachable, a credential refused, a batch without an answer, an item the server failed to delete |
 
 **The credential.** A user for the job with the `maintainer` role on the repos it cleans, and a
 personal access token of that user without scopes: a token with scopes never deletes, and a
