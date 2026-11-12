@@ -13,6 +13,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/server"
 )
 
 // The signed documents of a suite and the keyring of a repo (docs/spec/http-routing.md §3,
@@ -98,7 +99,7 @@ func (h *handlers) startAs(w http.ResponseWriter, r *http.Request, a auth.Action
 // client does not see.
 func (h *handlers) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if status := format.WriteError(w, err); status >= http.StatusInternalServerError {
-		h.deps.Log.ErrorContext(r.Context(), "apt: request failed", "method", r.Method, "path", r.URL.EscapedPath(),
+		h.deps.Log.Log(r.Context(), server.FailLevel(r), "apt: request failed", "method", r.Method, "path", r.URL.EscapedPath(),
 			"status", status, "error", err.Error())
 	}
 }
