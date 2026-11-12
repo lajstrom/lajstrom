@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -141,4 +142,125 @@ func TestIntegrationRetryNoAnswer(t *testing.T) {
 		}
 		wantSent(t, 1)
 	})
+}
+
+// TestIntegrationBodyTimeout runs uploads against the registry of LAJSTROM_TEST_REGISTRY
+// through a proxy whose body timeout is shorter than a client's pause, as an nginx in front of
+// the registry with its client_body_timeout below server.stallTimeout (#648): the proxy ends an
+// upload whose body stopped for longer without an answer. Threshold such uploads fail and leave
+// the breaker closed, and an upload from a client that does not pause then goes through to the
+// registry. Then the proxy drops every upload as its body streams, a registry that went down:
+// threshold uploads from a client that does not pause open the breaker. A registry with
+// credentials or TLS is skipped, as for TestIntegrationRetryNoAnswer.
+func TestIntegrationBodyTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if os.Getenv("LAJSTROM_TEST_REGISTRY_USERNAME") != "" || os.Getenv("LAJSTROM_TEST_REGISTRY_TLS") == "1" {
+		t.Skip("the proxy speaks plain HTTP without credentials")
+	}
+	lowerBreaker(t, 3)
+	lowerClientWait(t, 100*time.Millisecond)
+	const bodyTimeout = 300 * time.Millisecond
+	_, cfg := integrationProvider(ctx, t)
+	target, err := url.Parse(cfg.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rp := &httputil.ReverseProxy{
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.SetURL(target)
+			r.Out.Host = r.In.Host // so that an absolute Location (distribution) names the proxy
+		},
+		// The client's body timed out: nginx ends the request without an answer.
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, _ error) { dropRequest(w, r) },
+	}
+	var down atomic.Bool
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch || r.Method == http.MethodPut && r.ContentLength != 0 {
+			if down.Load() {
+				_, _ = r.Body.Read(make([]byte, 1))
+				dropRequest(w, r)
+				return
+			}
+			r.Body = &timedBody{ReadCloser: r.Body, rc: http.NewResponseController(w), d: bodyTimeout}
+		}
+		rp.ServeHTTP(w, r)
+	}))
+	srv.Config.SetKeepAlivesEnabled(false) // a read deadline is never left on a connection
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	p, _ := integrationProvider(ctx, t, func(c *config.Registry) {
+		c.Name, c.URL, c.Retries = "integration-body-timeout", srv.URL, -1
+	})
+	repo, err := p.Repository(ctx, "raw/it-"+randomHex(t)+"/body-timeout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := []byte("abc paused " + randomHex(t))
+	blobDesc := descriptor("application/octet-stream", blob)
+	// sessions opens threshold upload sessions first, so that no answer comes between the sends.
+	sessions := func(t *testing.T) []provider.Upload {
+		var us []provider.Upload
+		for range breakerThreshold {
+			u, err := repo.StartBlobUpload(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = repo.CancelBlobUpload(context.Background(), u) })
+			us = append(us, u)
+		}
+		return us
+	}
+	step(t, "clients that pause past the proxy's body timeout", func(t *testing.T) {
+		for _, u := range sessions(t) {
+			body := &pausingBody{steps: []pause{{0, string(blob[:3])}, {3 * bodyTimeout, string(blob[3:])}}}
+			if _, err := repo.AppendBlobChunk(ctx, u, body, -1); err == nil || byBreaker(err) {
+				t.Fatalf("AppendBlobChunk = %v, want it cut by the proxy", err)
+			}
+		}
+	})
+	step(t, "a client that does not pause", func(t *testing.T) {
+		u, err := repo.StartBlobUpload(ctx)
+		if err != nil {
+			t.Fatalf("StartBlobUpload after %d uploads the proxy cut = %v, want the breaker closed", breakerThreshold, err)
+		}
+		if _, err := repo.FinishBlobUpload(ctx, u, blobDesc.Digest, bytes.NewReader(blob), int64(len(blob))); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := repo.Exists(ctx, blobDesc); err != nil || !ok {
+			t.Fatalf("Exists(blob) = %v, %v", ok, err)
+		}
+	})
+	step(t, "the registry goes down", func(t *testing.T) {
+		us := sessions(t)
+		down.Store(true)
+		for _, u := range us {
+			_, err := repo.AppendBlobChunk(ctx, u, struct{ io.Reader }{bytes.NewReader(blob)}, -1)
+			if !errors.Is(err, provider.ErrUnavailable) || byBreaker(err) {
+				t.Errorf("AppendBlobChunk = %v, want the registry's provider.ErrUnavailable", err)
+			}
+		}
+		if _, err := repo.StartBlobUpload(ctx); !byBreaker(err) {
+			t.Errorf("StartBlobUpload after %d uploads dropped as they streamed = %v, want the breaker open", breakerThreshold, err)
+		}
+	})
+}
+
+// timedBody is a request body that must move within d, a proxy's body timeout between two
+// reads: each read sets the read deadline of the connection, and the end of the body clears
+// it, so that the server's read in the background does not cancel the request.
+type timedBody struct {
+	io.ReadCloser
+	rc *http.ResponseController
+	d  time.Duration
+}
+
+func (b *timedBody) Read(p []byte) (int, error) {
+	_ = b.rc.SetReadDeadline(time.Now().Add(b.d))
+	n, err := b.ReadCloser.Read(p)
+	if err != nil {
+		_ = b.rc.SetReadDeadline(time.Time{})
+	}
+	return n, err
 }

@@ -20,6 +20,11 @@ import (
 var (
 	breakerThreshold = 5
 	breakerCooldown  = 30 * time.Second
+	// clientWait is how long the transport must have waited on a request's body when the
+	// request failed for the failure to count neither way (watchedBody.waited, #648): far
+	// above what a read waits while a body moves, below the body timeouts that registries and
+	// proxies use (nginx's is 60 s by default).
+	clientWait = time.Second
 )
 
 // The states of a breaker.
@@ -37,7 +42,8 @@ const (
 // of serve every 20 s or a client's, goes through as a trial: an answer closes the breaker, a
 // failure opens it for another cooldown. A request with a body is never the trial: an upload
 // would keep the breaker half-open for as long as it streams. A 4xx is an answer; a 429, a
-// request whose caller went away and one whose body failed to read count neither way.
+// request whose caller went away, one whose body failed to read, and one that failed after it
+// waited clientWait or longer on its body count neither way.
 type breaker struct {
 	registry string       // the label of the metric
 	log      *slog.Logger // carries registry=<name>
@@ -136,8 +142,12 @@ func (b *breaker) open(ctx context.Context) {
 // request is one outcome however often it was tried. It watches the reads of the request's
 // body: the facade streams a client's upload into the registry, and a client that stalls past
 // server.stallTimeout, breaks off or sends a broken chunked encoding fails the request to the
-// registry as a registry that does not answer would (#638). A timeout or an EOF that it counts
-// as the registry's failure comes back as a *noAnswerError.
+// registry as a registry that does not answer would (#638). A registry, or a proxy in front of
+// it, whose body timeout is shorter than server.stallTimeout drops the request of a client that
+// paused, with no read failed (#648): a request that failed after it waited clientWait or
+// longer on its body (watchedBody.waited) counts neither way either, and is logged at info. One
+// that failed while its body moved counts. A timeout or an EOF that it counts as the
+// registry's failure comes back as a *noAnswerError.
 type breakerTransport struct {
 	next http.RoundTripper
 	b    *breaker
@@ -160,9 +170,19 @@ func (t *breakerTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		req = &watched
 	}
 	resp, err := t.next.RoundTrip(req)
-	failed := body.failed()
-	t.b.done(req.Context(), trial, outcome(req.Context(), resp, err, failed))
-	if noAnswer(req.Context(), err, failed) {
+	ctx, failed := req.Context(), body.failed()
+	result := outcome(ctx, resp, err, failed)
+	if waited := body.waited(time.Now()); result < 0 && err != nil && waited >= clientWait {
+		// No byte reached the registry for that long before the request failed: most likely
+		// the body timeout of the registry, or of a proxy in front of it, that gave up on a
+		// client that paused, and not the registry's failure (#648).
+		result = 0
+		t.b.log.InfoContext(ctx, "registry dropped a request that waited on its body: not counted toward the circuit breaker; "+
+			"the body timeout of the registry, or of its proxy, is likely below server.stallTimeout",
+			"method", req.Method, "path", req.URL.Path, "waited", waited.Round(time.Millisecond))
+	}
+	t.b.done(ctx, trial, result)
+	if result < 0 && noAnswer(ctx, err, failed) {
 		err = &noAnswerError{err: err}
 	}
 	if resp != nil {
@@ -192,8 +212,8 @@ func noAnswer(ctx context.Context, err error, bodyFailed bool) bool {
 
 // noAnswerError is the error of a request that timed out or met an EOF (quiet), and that
 // breakerTransport counted as the registry's failure: neither the caller's context nor the
-// request's body was the cause. translateAs makes it provider.ErrUnavailable (#670). Its
-// message is the error's.
+// request's body was the cause, and the request had not waited on its body (#648). translateAs
+// makes it provider.ErrUnavailable (#670). Its message is the error's.
 type noAnswerError struct{ err error }
 
 func (e *noAnswerError) Error() string { return e.err.Error() }
@@ -215,16 +235,37 @@ func (e *noAnswerError) detail() string {
 	return "the connection closed without an answer"
 }
 
+// readSettle is how soon after a read of a request's body returns net/http fails the request
+// whose connection broke during that read (watchedBody.waited), with room for a busy host.
+const readSettle = 100 * time.Millisecond
+
 // watchedBody is the body of a request through breakerTransport: it records a read that failed
-// with an error other than io.EOF. The transport reads it in a goroutine of its own, hence the
-// atomic.
+// with an error other than io.EOF, and how long the reads waited (waited). The transport reads
+// it in a goroutine of its own, hence the atomic and the mutex.
 type watchedBody struct {
 	io.ReadCloser
 	broke atomic.Bool // a read failed
+
+	mu      sync.Mutex
+	reading time.Time     // when the read that runs started; zero between reads
+	ended   time.Time     // when the last read returned
+	wait    time.Duration // spent in the last read that gave bytes and in the reads after it
 }
 
 func (b *watchedBody) Read(p []byte) (int, error) {
+	start := time.Now()
+	b.mu.Lock()
+	b.reading = start
+	b.mu.Unlock()
 	n, err := b.ReadCloser.Read(p)
+	end := time.Now()
+	b.mu.Lock()
+	b.reading, b.ended = time.Time{}, end
+	if n > 0 {
+		b.wait = 0
+	}
+	b.wait += end.Sub(start)
+	b.mu.Unlock()
 	if err != nil && !errors.Is(err, io.EOF) {
 		b.broke.Store(true)
 	}
@@ -233,6 +274,31 @@ func (b *watchedBody) Read(p []byte) (int, error) {
 
 // failed reports whether a read of the body failed; false for a request without one.
 func (b *watchedBody) failed() bool { return b != nil && b.broke.Load() }
+
+// waited returns how long the transport had been waiting on the body, a client's upload
+// passing through, when the request failed at now, and so how long no byte had reached the
+// registry: the read that still runs, or, when the last read returned at most readSettle
+// before now, the last read that gave bytes and the reads after it (HTTP/2 reads once more
+// after the last byte of a body of known length). net/http fails a request whose connection
+// broke while it waited on its body only once that read returns, and then at once: over
+// HTTP/1.1 the write that follows fails on the closed connection and RoundTrip waits for the
+// write loop; over HTTP/2 the stream is aborted and RoundTrip waits for the body's writer
+// (TestBreakerClientWait). A request that failed while its body moved, while a write waited on
+// the registry, or after the body was sent, waited about zero; so did one without a body.
+func (b *watchedBody) waited(now time.Time) time.Duration {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	switch {
+	case !b.reading.IsZero():
+		return now.Sub(b.reading)
+	case b.ended.IsZero() || now.Sub(b.ended) > readSettle:
+		return 0
+	}
+	return b.wait
+}
 
 // askedToWait records that the registry asked for a wait of d, with the Retry-After of a 429 or
 // 503: it throttles Lajstrom's credential, so the wait is the registry's, not one request's.

@@ -86,6 +86,13 @@ GET big 200 104857600 bytes 0.525281s
 uploads and `/v2` blob uploads to the registry; with buffering on, nginx would first write every upload to
 its own disk as well.
 
+A proxy between Lajstrom and the registry, an nginx or an ingress in front of distribution or
+Zot, needs the same: no body limit, no request buffering, and a body timeout above
+`server.stallTimeout`. A `/v2` upload streams through it, so a client that pauses pauses its
+request too, and nginx's default `client_body_timeout` of 60 s is the default
+`server.stallTimeout`: such a proxy cuts an upload that Lajstrom would still wait for
+([operations.md](operations.md#requests-from-clients)). The 600 s of the table suit it as well.
+
 ### The client address
 
 Lajstrom believes `X-Forwarded-For` only from the peers in `server.trustedProxies` (ADR 0011,
