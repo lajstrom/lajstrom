@@ -56,6 +56,7 @@ registries:
     uploads:
       spoolUnknownLength: false       # Gitea, Forgejo, JFrog: spool a /v2 chunk of unknown length after the first to $TMPDIR
       chunkSize: 0                    # bytes of each PATCH of an upload Lajstrom streams; 0: 4 MiB on GHCR, else 8 MiB
+    # ecr: {region: "", endpoint: ""} # type ecr only: region, endpoint, imageTagMutability, encryption, … (docs/registries/ecr.md)
   - name: second                      # distribution from the dev stack, for repos created with --registry second
     type: generic
     url: "http://localhost:5001"      # no referrers API: Lajstrom lists referrers through the sha256-<digest> tag schema
@@ -78,9 +79,11 @@ upstreams: []                         # registries that proxy repos serve (ADR 0
 
 ingest:
   claimTTL: 10m                       # a publish's claim on a tag older than this is stale and taken over
+  visibilityTimeout: 30s              # how long a publish reads back what it pushed until the registry serves it; then 503
 
 reconcile:
   interval: 1h                        # a reindex of every repo with prune this often; 0 turns it off
+  graceAge: 1h                        # prune never removes a version published or seen in the registry less than this ago
 
 auth:
   anonymousRead: false                # server-wide switch for anonymous read (RBAC, issue #45)
@@ -97,6 +100,10 @@ keys:
 
 repos:                                # created at startup when missing (issue #14)
   - name: scratch                     # repo name, unique within its format
-    format: raw                       # raw | pypi | apt | maven
+    format: raw                       # raw | pypi | apt | maven | npm | oci
     registry: local                   # one of registries[].name
+    kind: hosted                      # hosted | proxy | group; a proxy and a group need npm
     anonymousRead: false              # readable without credentials when auth.anonymousRead allows it
+    # policy: {maxFileSize: 104857600}  # the repo's policy, as the management API takes it (docs/api.md)
+    # upstream: {name: npmjs}         # a proxy's upstream, one of upstreams[].name
+    # group: {members: [npm-hosted, npm-proxy]}  # a group's members, in the order they are read
