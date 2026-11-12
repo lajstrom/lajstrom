@@ -391,7 +391,8 @@ func TestIntegrationRawPush(t *testing.T) {
 	}
 
 	// A signature of the file passes through the hook unindexed, and the referrers API lists it:
-	// the backend's, or the tag schema that the provider wrote.
+	// the backend's, or the tag schema that the provider wrote. One with a lajstrom.origin.* key
+	// is refused and not stored (#762).
 	for _, b := range [][]byte{ocispec.DescriptorEmptyJSON.Data, []byte("signature")} {
 		resp, body = request(t, http.MethodPost, name+"/blobs/uploads/?digest="+digest.FromBytes(b).String(), bytes.NewReader(b), int64(len(b)))
 		if resp.StatusCode != http.StatusCreated {
@@ -399,6 +400,11 @@ func TestIntegrationRawPush(t *testing.T) {
 		}
 	}
 	sig, sigDigest := referrerOf(t, d, cosignBundle, "signature")
+	claimed, claimedDigest := withOrigin(t, sig)
+	resp, body = request(t, http.MethodPut, name+"/manifests/"+claimedDigest.String(), bytes.NewReader(claimed), int64(len(claimed)), "Content-Type", ocispecManifest)
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), profile.AnnotationOriginURL) {
+		t.Errorf("a signature with an origin key: %d %s", resp.StatusCode, body)
+	}
 	resp, body = request(t, http.MethodPut, name+"/manifests/"+sigDigest.String(), bytes.NewReader(sig), int64(len(sig)), "Content-Type", ocispecManifest)
 	if resp.StatusCode != http.StatusCreated || resp.Header.Get("OCI-Subject") != d.String() {
 		t.Fatalf("signature: %d, OCI-Subject %q: %s\n%s", resp.StatusCode, resp.Header.Get("OCI-Subject"), body, logs)

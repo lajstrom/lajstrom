@@ -17,6 +17,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/ingest"
+	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/provider/providertest"
 )
@@ -255,5 +256,47 @@ func TestPutReferrerOCI(t *testing.T) {
 			wantLocks = wantLocks[:1]
 		}
 		same(t, "locks after a push by digest", wantLocks, rec.locks)
+	}
+}
+
+// annotated is the referrer r with the annotation k: v added, its bytes and digest made again.
+func annotated(t *testing.T, r ingest.Referrer, k, v string) ingest.Referrer {
+	t.Helper()
+	var m ocispec.Manifest
+	must(t, json.Unmarshal(r.Manifest, &m))
+	m.Annotations[k] = v
+	b, err := json.Marshal(m)
+	must(t, err)
+	r.Manifest = b
+	r.Desc.Digest, r.Desc.Size = digest.FromBytes(b), int64(len(b))
+	return r
+}
+
+// TestPutReferrerOrigin (#762): a referrer of a managed repo, hosted or proxy, with a
+// lajstrom.origin.* key is ErrInvalid naming the key, as a version's manifest is, and nothing
+// is pushed, locked or audited: only the proxy fetcher writes those keys, and it writes no
+// referrer. An oci repo takes one as it comes (manifest-profile.md §3.1).
+func TestPutReferrerOrigin(t *testing.T) {
+	e, rec, subject := referrerEnv(t, false)
+	proxy := e.repo
+	proxy.Kind = index.KindProxy
+	for _, key := range []string{profile.AnnotationOriginURL, profile.AnnotationOriginChecksum, profile.AnnotationOriginPrefix + "anything"} {
+		r := annotated(t, signature(t, subject, "signature"), key, "https://elsewhere.example/notes")
+		for _, repo := range []index.Repo{e.repo, proxy} {
+			if _, err := e.pipe.PutReferrer(t.Context(), repo, r, alice); !errors.Is(err, ingest.ErrInvalid) || !strings.Contains(err.Error(), key) {
+				t.Errorf("%s repo, %s: %v, want ErrInvalid naming the key", repo.Kind, key, err)
+			}
+		}
+	}
+	same(t, "locks", []string(nil), rec.locks)
+	same(t, "manifest pushes", []bool(nil), rec.pushes)
+	if audit := e.rows(t).Audit; len(audit) != 1 { // the subject's publish
+		t.Errorf("audit events %+v", audit)
+	}
+
+	r := annotated(t, signature(t, subject, "a layer the backend checks, not ingest"), profile.AnnotationOriginURL, "https://elsewhere.example/app")
+	r.Path = "app"
+	if _, err := e.pipe.PutReferrer(t.Context(), ociRepo(t, e), r, alice); err != nil {
+		t.Errorf("a referrer with %s on an oci repo: %v, want it stored as it came", profile.AnnotationOriginURL, err)
 	}
 }

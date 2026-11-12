@@ -485,7 +485,10 @@ kinds. What changes is who answers and what a write does.
 | `GET /v2/_catalog` | its OCI repositories | nothing |
 
 A manifest pushed by a client with a `lajstrom.origin.*` annotation is `400 MANIFEST_INVALID`
-on every repo: only the fetcher writes them (manifest-profile.md §3.1).
+on every manifest Lajstrom manages, a version's manifest and a referrer, on a hosted repo and on
+a proxy one alike: only the fetcher writes them (manifest-profile.md §3.1). An `oci` repo's
+pass-through is not checked: Lajstrom stores its manifests, a referrer among them, as they came,
+and never indexes them.
 
 Statuses that only a proxy has, on a read route (the full table is proxy-and-group.md §6): `502`
 when the upstream fails and nothing is cached or held, when it refuses Lajstrom's credentials,

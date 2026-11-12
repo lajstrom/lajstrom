@@ -39,20 +39,20 @@ type Referrer struct {
 
 // PutReferrer stores the referrer r of a manifest of repo as the client pushed it, and indexes
 // nothing: no derived table holds referrers before #89 (docs/spec/index-schema.md). On a
-// managed repo the subject must be a manifest of the repository, the config and the layers
-// must be in the backend, and a tag must be cosign's; an oci repo takes the referrer as it
-// comes, as a registry does. When the backend has no referrers API (Capabilities.Referrers) and
-// the manifest has a subject, the push, which also rewrites the sha256-<hex> index of the
-// subject, runs under the referrers lock of the index (Store.WithReferrersLock); a push by tag to
-// an oci repo runs under it with the API too, the tag lock that a delete holds. Its audit row,
-// a push by principal whose subject is the subject's digest, with the client address, and the
-// referrer's kind and artifact type and the request id in the details, is written pending
-// before the push and completed after it, ok or failed; a repeat writes another. Before the
-// row is completed the referrer reads back until the registry serves it, among its subject's
-// referrers too (awaitVisible, for twice the visibility timeout). Errors wrap ErrInvalid (the
-// checks), ErrConflict (a tag the backend will not re-point) or provider.ErrUnavailable (the
-// registry did not serve the referrer in time: 503 with Retry-After; the push stays, and the
-// same push again completes it).
+// managed repo, hosted or proxy, the manifest must carry no lajstrom.origin.* key, the subject
+// must be a manifest of the repository, the config and the layers must be in the backend, and
+// a tag must be cosign's; an oci repo takes the referrer as it comes, as a registry does. When
+// the backend has no referrers API (Capabilities.Referrers) and the manifest has a subject, the
+// push, which also rewrites the sha256-<hex> index of the subject, runs under the referrers lock
+// of the index (Store.WithReferrersLock); a push by tag to an oci repo runs under it with the
+// API too, the tag lock that a delete holds. Its audit row, a push by principal whose subject
+// is the subject's digest, with the client address, and the referrer's kind and artifact type
+// and the request id in the details, is written pending before the push and completed after
+// it, ok or failed; a repeat writes another. Before the row is completed the referrer reads
+// back until the registry serves it, among its subject's referrers too (awaitVisible, for twice
+// the visibility timeout). Errors wrap ErrInvalid (the checks), ErrConflict (a tag the backend
+// will not re-point) or provider.ErrUnavailable (the registry did not serve the referrer in
+// time: 503 with Retry-After; the push stays, and the same push again completes it).
 func (p *Pipeline) PutReferrer(ctx context.Context, repo index.Repo, r Referrer, principal auth.Principal) (digest.Digest, error) {
 	m, err := parseReferrer(r)
 	if err != nil {
@@ -157,10 +157,14 @@ func (p *Pipeline) pushReferrer(ctx context.Context, prov provider.Provider, nam
 	return nil
 }
 
-// checkReferrer runs the checks of a referrer of a managed repo: a tag must be cosign's and name
-// the subject, the subject must be a manifest of the repository name, and the config and
-// layers of m must be in the backend; one it does not serve is read again (readBlob).
+// checkReferrer runs the checks of a referrer of a managed repo: m must carry no
+// lajstrom.origin.* key (refuseOrigin), a tag must be cosign's and name the subject, the subject
+// must be a manifest of the repository name, and the config and layers of m must be in the
+// backend; one it does not serve is read again (readBlob).
 func (p *Pipeline) checkReferrer(ctx context.Context, prov provider.Provider, name string, r Referrer, m ocispec.Manifest) error {
+	if err := refuseOrigin(m.Annotations); err != nil {
+		return err
+	}
 	if r.Tag != "" {
 		if subject, _, ok := profile.CosignTag(r.Tag); !ok || subject != r.Subject {
 			return invalid(fmt.Errorf("a referrer of %s is pushed by digest, or under cosign's tag sha256-<hex>.sig, .att or .sbom of its subject, not under the tag %q", name, r.Tag))
