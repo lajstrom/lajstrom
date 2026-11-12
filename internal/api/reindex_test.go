@@ -3,7 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,6 +103,35 @@ func TestReindexEndpoints(t *testing.T) {
 	decodeJSON(t, f.do(http.MethodGet, "/api/v1/repos/raw/assets/reindex", "", admin), http.StatusOK, &status)
 	if status.ID != want.ID {
 		t.Errorf("raw/assets: the latest run is %d, want %d", status.ID, want.ID)
+	}
+}
+
+// TestReindexChunkedBody checks the optional body of POST …/reindex sent chunked, without a
+// Content-Length: an empty one is no body, the defaults; one with the object is read.
+func TestReindexChunkedBody(t *testing.T) {
+	fake := &fakeReindexer{}
+	f := newFixture(t, Options{Reindex: fake})
+	fake.st = f.st
+	f.create(t, "raw", "assets")
+	f.create(t, "raw", "other")
+	admin := auth.Principal{Kind: auth.KindUser, Name: "admin"}
+	for _, tt := range []struct {
+		repo, body string
+		prune      bool
+	}{
+		{repo: "assets", body: ""},
+		{repo: "other", body: `{"prune": true}`, prune: true},
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/repos/raw/"+tt.repo+"/reindex", io.NopCloser(strings.NewReader(tt.body)))
+		r.ContentLength, r.TransferEncoding = -1, []string{"chunked"}
+		r = r.WithContext(auth.WithPrincipal(r.Context(), f.asStored(admin)))
+		rr := httptest.NewRecorder()
+		f.h.ServeHTTP(rr, r)
+		var run ReindexRun
+		decodeJSON(t, rr, http.StatusAccepted, &run)
+		if run.Prune != tt.prune {
+			t.Errorf("raw/%s, chunked body %q: prune %v, want %v", tt.repo, tt.body, run.Prune, tt.prune)
+		}
 	}
 }
 

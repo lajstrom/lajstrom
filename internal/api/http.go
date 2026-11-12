@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -406,6 +407,26 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) error {
 		return bodyError(err)
 	}
 	return invalid("body: must be one JSON object, with nothing after it")
+}
+
+// decodeOptionalBody is decodeBody for a body that may be left out: an empty body, whether a
+// Content-Length of 0 says so or a chunked body ends at once, leaves v as it is.
+func decodeOptionalBody(w http.ResponseWriter, r *http.Request, v any) error {
+	if r.ContentLength == 0 {
+		return nil
+	}
+	br := bufio.NewReader(r.Body)
+	switch _, err := br.Peek(1); {
+	case errors.Is(err, io.EOF):
+		return nil
+	case err != nil:
+		return bodyError(err)
+	}
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{br, r.Body}
+	return decodeBody(w, r, v)
 }
 
 // bodyError turns an error of decodeBody into one for the client. A body that

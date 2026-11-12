@@ -61,7 +61,7 @@ Every error is answered with one envelope:
 | 429 | `UNAVAILABLE` | too many failed logins: the password is not checked until the time in `Retry-After` has passed ([auth.md](auth.md#failed-logins)) |
 | 501 | `UNAVAILABLE` | the endpoint comes with a later issue; the message names it |
 | 503 | `UNAVAILABLE` | the index database does not answer, or a registry's circuit breaker is open; try again after `Retry-After` ([operations.md](operations.md#readiness)) |
-| 500 | `INTERNAL` | anything else; the message is the status text, the cause is in the server log with the request id (`X-Request-Id`) |
+| 500 | `INTERNAL` | anything else, a panic of a handler too; the message is the status text, the cause is in the server log with the request id (`X-Request-Id`) |
 
 ## Repos
 
@@ -247,17 +247,18 @@ curl -s -X DELETE "$LAJSTROM/api/v1/repos/raw/scratch?force=true"
 
 `POST` starts a reindex of the repo on the replica that received it
 ([operations.md](operations.md#reindex) says what a run does) and answers `202` with the run as
-soon as it holds the lock, before it reads the registry. The body is optional:
-`{"prune": false, "verify": false}`, the defaults of `lajstrom reindex --repo`; `prune` removes the
-rows of manifests that are gone from the registry, `verify` reads every manifest again. A run that
-overlaps, of this repo or of every repo, on any replica or in the CLI, is `409 CONFLICT` naming
-where it runs and since when. The start is an audit row `repo.reindex`. `GET` answers the latest
-run that covered the repo, its own or a run of every repo, with the repo's part of the report:
+soon as it holds the lock, before it reads the registry. The body is optional, and an empty one,
+`Content-Length: 0` or chunked, is none: `{"prune": false, "verify": false}`, the defaults of
+`lajstrom reindex --repo`; `prune` removes the rows of manifests that are gone from the registry,
+`verify` reads every manifest again. A run that overlaps, of this repo or of every repo, on any
+replica or in the CLI, is `409 CONFLICT` naming where it runs and since when. The start is an
+audit row `repo.reindex`. `GET` answers the latest run that covered the repo, its own or a run of
+every repo, with the repo's part of the report:
 
 ```json
 {
-  "id": 12, "state": "done", "source": "api", "principal": "user:alice", "replica": "lajstrom-a 7",
-  "allRepos": false, "prune": true, "verify": false,
+  "id": 12, "state": "done", "source": "api", "principal": "user:01a1c136-51a6-7883-a350-b1cf6000a23f",
+  "replica": "lajstrom-a 7", "allRepos": false, "prune": true, "verify": false,
   "startedAt": "2026-11-09T10:00:00Z", "heartbeatAt": "2026-11-09T10:00:30Z", "finishedAt": "2026-11-09T10:00:41Z",
   "report": {
     "repo": "raw/assets", "ociRepositories": 3, "manifests": 120, "added": 2, "updated": 0, "unchanged": 117,
@@ -407,8 +408,9 @@ exist.
 `items` is 1 to 1000 versions (the body is at most 64 KiB, about 300 of them), `cutoff` an
 RFC 3339 time (absent: none), `dryRun` checks every item and deletes nothing, and `job` names the
 batch in the audit rows (`details.job`, with `details.token`), up to 64 letters, digits, `.`, `_`
-and `-`; without it the server makes one. A client that sends one job in several requests ties
-them together. The answer is `200` with a result per item, in the order of the request:
+and `-`, starting with a letter or a digit; without it the server makes one. A client that sends
+one job in several requests ties them together. The answer is `200` with a result per item, in
+the order of the request:
 
 ```json
 {
@@ -745,14 +747,15 @@ output; `list` a table with the columns `ID`, `KIND`, `NAME`, `SCOPES`, `EXPIRES
 
 ## Who am I: `GET /api/v1/whoami`
 
-`200` with the principal of the request ([auth.md](auth.md#whoami)): its canonical form, its
-kind and its name. Every principal may ask; no authorization is involved. Without credentials it
-is `401` with the Basic challenge.
+`200` with the principal of the request ([auth.md](auth.md#the-uid-and-the-name)): its canonical
+form, its kind and its name; a user's canonical form is `user:<uid>`, and its `uid` is a field of
+its own. Every principal may ask; no authorization is involved. Without credentials it is `401`
+with the Basic challenge.
 
 ```sh
 curl -s -u alice "$LAJSTROM/api/v1/whoami"
 ```
 
 ```json
-{"principal": "user:alice", "kind": "user", "name": "alice"}
+{"principal": "user:01a1c136-51a6-7883-a350-b1cf6000a23f", "kind": "user", "name": "alice", "uid": "01a1c136-51a6-7883-a350-b1cf6000a23f"}
 ```

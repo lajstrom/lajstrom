@@ -368,7 +368,7 @@ func TestTokensNeverLogged(t *testing.T) {
 	var logs bytes.Buffer
 	log := slog.New(slog.NewJSONHandler(io.MultiWriter(&logs, t.Output()), &slog.HandlerOptions{Level: slog.LevelDebug}))
 	f.repos.Log, f.repos.Now = log, nil // the authenticator's clock is the real one
-	api := New(Options{Repos: f.repos, Log: log})
+	api := recordStatuses(New(Options{Repos: f.repos, Log: log}))
 	srv, err := server.New(server.Options{Listen: "127.0.0.1:0", API: api, Log: log,
 		Authenticator: auth.NewAuthenticator(auth.Options{Index: f.st, Log: log})})
 	if err != nil {

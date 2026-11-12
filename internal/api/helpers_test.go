@@ -66,7 +66,7 @@ func newFixture(t *testing.T, o Options) *fixture {
 		Now: func() time.Time { return testNow }, Log: log,
 	}
 	o.Repos, o.Log = f.repos, log
-	f.h = New(o)
+	f.h = recordStatuses(New(o))
 	return f
 }
 

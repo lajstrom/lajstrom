@@ -49,8 +49,8 @@ type reindexBody struct {
 
 // reindexRepo starts the reindex of one repo (manage): 202 with the run before it reads the
 // registry, 409 when a run that overlaps holds the lock on any replica or in the CLI, 501 when
-// the server has no Reindexer. The body {"prune", "verify"} is optional; both default to false,
-// as for lajstrom reindex --repo.
+// the server has no Reindexer. The body {"prune", "verify"} is optional, an empty one too; both
+// default to false, as for lajstrom reindex --repo.
 func (h *handler) reindexRepo(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	f, name := r.PathValue("format"), r.PathValue("repo")
 	if err := h.allow(r, auth.ActionManage, f, name); err != nil {
@@ -61,10 +61,8 @@ func (h *handler) reindexRepo(w http.ResponseWriter, r *http.Request) (int, any,
 		return 0, nil, repoError("reindex", f, name, err)
 	}
 	var body reindexBody
-	if r.ContentLength != 0 {
-		if err := decodeBody(w, r, &body); err != nil {
-			return 0, nil, err
-		}
+	if err := decodeOptionalBody(w, r, &body); err != nil {
+		return 0, nil, err
 	}
 	if h.reindex == nil {
 		return 0, nil, &clientError{msg: "reindex is not enabled in this server", err: format.ErrUnsupported}

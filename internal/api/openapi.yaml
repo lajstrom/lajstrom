@@ -5,8 +5,10 @@ info:
   description: >-
     The REST interface to Lajstrom's control plane: repos, users, bindings, tokens and the audit
     log. docs/api.md is the guide; this document is checked against the server's routes by
-    TestOpenAPIRoutes, and its error codes against the server's and docs/api.md's by
-    TestErrorCodes.
+    TestOpenAPIRoutes, its error codes against the server's and docs/api.md's by
+    TestErrorCodes, and the statuses of each operation against those its handler answers in
+    the tests of internal/api (statuses_test.go). Any operation may also answer 408 and 413 to
+    a body, 500 and 503, as the Errors of docs/api.md say.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
@@ -45,6 +47,7 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/RepoList"}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
     post:
       tags: [repos]
@@ -112,6 +115,7 @@ paths:
           schema: {type: boolean}
       responses:
         "204": {description: Deleted.}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -134,6 +138,7 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/ReindexRun"}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -332,6 +337,7 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
   /api/v1/repos/{format}/{repo}/deploy-tokens/{id}:
     parameters:
       - $ref: "#/components/parameters/format"
@@ -488,6 +494,7 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
   /api/v1/users/{user}/tokens/{id}:
     parameters:
       - $ref: "#/components/parameters/user"
