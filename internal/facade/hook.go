@@ -36,6 +36,8 @@ const unknownArtifactType = "application/vnd.unknown.artifact.v1"
 //     index or a Docker manifest is MANIFEST_INVALID, naming what the profile wants. A
 //     referrer, a signature or an SBOM of a version (profile.IsReferrer), goes to ingest's
 //     referrer path unindexed (putReferrer, manifest-profile.md §6) instead of the steps below.
+//     A proxy repo takes nothing else: any other manifest, valid or not, is 405 UNSUPPORTED
+//     (proxyRefusal) before anything is asked of the backend or of ingest.
 //  2. The package path is the <path> of the name, the tag the reference or, for a push by
 //     digest, the tag of the annotations (manifestTag).
 //  3. The manifest must satisfy the profile (profile.Validate), which needs no backend, else
@@ -55,10 +57,13 @@ func (h *handler) putManaged(w http.ResponseWriter, r *http.Request, t *target, 
 		return fmt.Errorf("facade: a manifest for %s, and Options.Ingest is nil", t.name)
 	}
 	m, err := decodeManaged(desc.MediaType, body)
-	if err != nil {
+	referrer := err == nil && profile.IsReferrer(map[bool]string{true: ref}[refDigest == ""], m)
+	switch {
+	case t.repo.Kind == index.KindProxy && !referrer:
+		return proxyRefusal(t)
+	case err != nil:
 		return err
-	}
-	if profile.IsReferrer(map[bool]string{true: ref}[refDigest == ""], m) {
+	case referrer:
 		return h.putReferrer(w, r, t, ref, refDigest, desc, body, m)
 	}
 	tag, err := manifestTag(ref, refDigest, m)
@@ -95,6 +100,17 @@ func (h *handler) putManaged(w http.ResponseWriter, r *http.Request, t *target, 
 	hdr.Set("Content-Length", "0")
 	w.WriteHeader(http.StatusCreated)
 	return nil
+}
+
+// proxyRefusal is the answer to a manifest pushed to the proxy repo of t that is not a
+// referrer: a proxy repo holds what it fetched from its upstream, and a client adds to it only
+// the referrers of what it holds (docs/spec/http-routing.md §6, proxy-and-group.md §1). 405
+// UNSUPPORTED without Allow, since a PUT of a referrer is allowed. Its blob uploads, reads and
+// deletes are a hosted repo's.
+func proxyRefusal(t *target) error {
+	return &apiError{status: http.StatusMethodNotAllowed, code: codeUnsupported,
+		msg: fmt.Sprintf("%s/%s is a proxy repo: it holds what its upstream serves, and on /v2 it takes only referrers (signatures, attestations, SBOMs) of the versions it holds; publish to a hosted repo",
+			t.repo.Format, t.repo.Name)}
 }
 
 // decodeManaged returns the manifest of a PUT to a managed repo, which must be an OCI image

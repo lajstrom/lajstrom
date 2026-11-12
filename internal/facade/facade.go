@@ -280,6 +280,7 @@ var nameGrammar = regexp.MustCompile(`^[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*(/[a-z0-
 // resolve returns the target of name: NAME_INVALID when it is not the grammar, NAME_UNKNOWN
 // when it is not <format>/<repo>/<path>, and repoUnknown when it is not of a repo of the
 // control plane or is of a group, which has no OCI repository (docs/spec/http-routing.md §6).
+// A proxy repo resolves as a hosted one: the push it refuses is putManaged's (proxyRefusal).
 // One GetRepo per request.
 func (h *handler) resolve(ctx context.Context, name string) (*target, error) {
 	if len(name) > maxNameLen || !nameGrammar.MatchString(name) {
