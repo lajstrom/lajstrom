@@ -106,11 +106,19 @@ were measured by curl below. Its run left
    for 120 s and a catalog page for 60 s ([Consistency](#consistency)). The provider tells it by
    `X-Sparse-Manifest-Support` on `GET /v2/`, which Quay sends on the 401 and on the 200, and
    quay.io by its host too, and calls it `vendor=quay`. Its entry in the vendor table sets
-   `catalog: false` (item 2), `referrers: true` (the probe's repository does not exist, so the
-   probe cannot tell) and `consistency: eventual` within `130s`. Items 1 and 7 hang on it.
-   quay.io answered `GET /v2/`, the anonymous catalog, the token endpoint (`delete` 400) and
-   the referrers API (200, and 400 for a subject that does not exist) alike on 2026-11-12;
-   its cache times were not measured.
+   `catalog: false` (item 2), `referrers: false` and `consistency: eventual` within `130s`.
+   Items 1 and 7 hang on it. quay.io answered `GET /v2/`, the anonymous catalog, the token
+   endpoint (`delete` 400) and the referrers API (200, and 400 for a subject that does not
+   exist) alike on 2026-11-12; its cache times were not measured.
+
+   `referrers: false`, the tag schema, and not the API that Quay has, which the issue asked
+   for: run through Lajstrom (with #801's `push` token), the API answered wrongly where the tag
+   schema did not. A client's referrers of a deleted version got Quay's 400 `MANIFEST_INVALID`
+   (`TestIntegrationDelete`), and a signature deleted through Lajstrom stayed in the list
+   (`TestIntegrationDeleteReferrer`), since Quay keeps a referrer pushed by digest
+   ([Delete](#delete)); the API is cached 60 s besides. With the tag schema the index is a
+   tag, read fresh and written again without the deleted referrer: `TestIntegrationDeleteReferrer`
+   passes, and the referrers of a deleted version are an empty list.
 4. **Keep its own offset of an upload session** ([#804](https://github.com/lajstrom/lajstrom/issues/804)).
    `GET` of a session answers one byte ahead (`Range: bytes=0-5` after `0-4`), as Forgejo
    does ([gitea.md](gitea.md#forgejo)); a replica that continues from it sends its chunk one
@@ -233,8 +241,9 @@ A manifest by digest and by tag, a blob, and a tag list never read before were s
 ([Tags](#tags)), and a catalog page for up to 60 s; the referrers list is cached 60 s too
 (`data/cache/cache_key.py`). `consistency: eventual` with `consistencyBound: 130s` describes
 it, which the vendor table says since [#803](https://github.com/lajstrom/lajstrom/issues/803):
-every publish reads its tag, its blobs and, for a referrer, its subject's referrers back, for
-up to 130 s (260 s for a referrer) where `ingest.visibilityTimeout` is shorter.
+every publish reads its tag, its blobs and, for a referrer, its subject's referrers (the
+tag-schema index, a tag) back, for up to 130 s (260 s for a referrer) where
+`ingest.visibilityTimeout` is shorter.
 
 ## Delete
 
@@ -246,7 +255,13 @@ b under v2 and t3; DELETE manifests/v2             202   v2 404, t3 200, b 200
 DELETE manifests/t3, b's last tag                  202   b by digest 404: a manifest goes with its last tag
 DELETE blobs/sha256:<layer>                        405 UNSUPPORTED
 the subject of a referrer, by digest               202; the referrer stays
+a referrer pushed by digest, DELETE by digest      404 MANIFEST_UNKNOWN; it stays, 200 by digest, listed by the API
 ```
+
+The last row was measured by curl on 2026-11-12, for #803: the referrer is held by its hidden tag
+([Referrers](#referrers)), which a `DELETE` does not remove. The provider reads the 404 as gone
+already, so a version deleted through Lajstrom leaves its referrers in Quay; with the tag schema
+Lajstrom no longer lists them (item 3).
 
 `/v2` has no repository delete; the REST API has (`DELETE /api/v1/repository/<ns>/<name>`, not
 tried). A manifest that no live tag holds is not served by digest; Quay's collector removes it
@@ -405,11 +420,12 @@ registries:
     auth:
       username: lajstrom-it+lajstrom    # a robot in a team with the role admin
       passwordEnv: LAJSTROM_QUAY_ROBOT_TOKEN
-    # No capabilities: the vendor table sets catalog: false (until #802), referrers: true and
+    # No capabilities: the vendor table sets catalog: false (until #802), referrers: false and
     # consistency: eventual within 130s (#803). Deletes fail until #801, whatever is set here.
 ```
 
-The startup line then says `vendor=quay … referrers=true catalog=false … consistency="eventual
+The startup line then says (2026-11-12, against the compose stack): `vendor=quay
+createOnPush=true referrers=false catalog=false deleteManifest=true … consistency="eventual
 within 2m10s"`.
 
 ## Commands

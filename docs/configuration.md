@@ -229,8 +229,9 @@ Docker Hub's, Quay's, ACR's, Google's or AWS's, is distribution. GHCR gets `cata
 `_catalog` answers 200 with every repository of GHCR, which the probe cannot tell from a usable
 one) and `deleteManifest: false` (every delete through `/v2` is 405), without asking. Quay gets
 `catalog: false` (its `_catalog` answers 200 with no repositories to a client that sends no
-credentials, which is how the catalog is asked), `referrers: true` (it has the API, but the
-probe's repository does not exist, so the probe cannot tell) and `consistency: eventual` within
+credentials, which is how the catalog is asked), `referrers: false` (it has the API, but the
+tag schema answers right where the API does not: the API is 400 for a subject that does not
+exist and keeps listing a deleted referrer) and `consistency: eventual` within
 `130s` (it caches a tag list for 120 s, [quay.md](registries/quay.md#consistency)). Harbor
 and Gitea need nothing: the probe is right for them. The depth of a name is the table's too: a
 host `docker.io` or below it is Docker Hub, which takes one component below the prefix

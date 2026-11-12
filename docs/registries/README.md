@@ -177,6 +177,7 @@ trying Lajstrom, not for data, until those are fixed. Its build rule, on master 
 | Read-after-write lag | [none for manifests and blobs; a tag list read before a write up to 120 s, the catalog 60 s](quay.md#consistency) |
 | Delete a manifest by digest | [yes, 202, with its tags, with a `push` token; **oras-go's `delete` scope is 400 at the token endpoint**](quay.md#delete) |
 | Delete by tag | [yes; the manifest goes with its last tag](quay.md#delete) |
+| Delete a referrer pushed by digest | [**404, and it stays**: its hidden tag holds it](quay.md#delete) |
 | Delete a repository | [no `/v2` API; REST API](quay.md#delete) |
 | Immutable tags, where the rule lives | [none by default; organisation and repository policies: 409 `TAG_IMMUTABLE`, the same manifest too](quay.md#immutable-tags) |
 | Blob redirect | [none on local storage; S3 not run](quay.md#blob-reads-ranges-sizes) |
@@ -193,8 +194,8 @@ trying Lajstrom, not for data, until those are fixed. Its build rule, on master 
 | Upload: mount (`POST ?mount=&from=`) | [201](quay.md#uploads) |
 | Upload: wrong digest, empty blob | [400 `BLOB_UPLOAD_INVALID`, the session ends; stored](quay.md#uploads) |
 | Upload continued by another replica | [**fails**: the status one byte ahead (#804)](quay.md#our-tests-against-it) |
-| Garbage collector and an untagged referrer (#37) | *not measured*; [kept by its hidden tag (read)](quay.md#referrers) |
-| What the probe finds | [`referrers=false catalog=true`, `vendor=distribution`; both wrong](quay.md#the-row); since #803 `vendor=quay`, whose table entry sets `referrers=true catalog=false` and `consistency: eventual` within 130 s |
+| Garbage collector and an untagged referrer (#37) | *not measured*; [kept by its hidden tag (read), and a `DELETE` does not remove it](quay.md#delete) |
+| What the probe finds | [`referrers=false catalog=true`, `vendor=distribution`; both wrong](quay.md#the-row); since #803 `vendor=quay`, whose table entry sets `referrers=false catalog=false` (the tag schema, [quay.md](quay.md#what-the-provider-must-do-differently) item 3) and `consistency: eventual` within 130 s |
 | Overrides needed | [`server.maxManifestSize: 1048576`; before #803 also `catalog: false` and `consistency: eventual`](quay.md#configuration) |
 
 ## Object stores behind distribution
@@ -265,7 +266,7 @@ reported it yet.
 | Gitea 1.27.3, Forgejo 17.0.1 | Tags are lower-cased when pushed and resolved without case: `5.4.Final` is listed as `5.4.final`, and a push to `5.4.final` re-points it ([gitea.md](gitea.md#tags)) | Pulling manifests: a tag "MUST match the following regular expression: `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}`", case included; Listing Tags returns the tags of the repository, not others | Two versions that differ only in case are one tag (the second is a 409 through Lajstrom); `tags/list` gives other tags than Lajstrom wrote | none (gitea.md, item 2) | [go-gitea/gitea](https://github.com/go-gitea/gitea/issues), [Forgejo](https://codeberg.org/forgejo/forgejo/issues): to file |
 | Forgejo 17.0.1 | `GET` of an upload session answers `Range: 0-5` after 5 bytes (`0-4` in the `PATCH`'s answer) ([gitea.md](gitea.md#forgejo)) | Pushing a blob in chunks: "The `<end-of-range>` value is the position of the last uploaded byte" | A client that resumes from the status sends its next chunk one byte late, 416; `TestIntegrationUploadAcrossReplicas` fails | the provider measures how the status reads on a scratch session, at the first status that disagrees with its session, and reads it one byte back (#804); not yet run against Forgejo | [Forgejo](https://codeberg.org/forgejo/forgejo/issues): to file |
 | distribution 3.1.2 | A repository name over 255 characters is 400 `NAME_INVALID` with the error object written twice: two JSON documents in one `application/json` body of 845 bytes ([distribution.md](distribution.md#create-on-push)) | Error Codes: "If the response body is in JSON format, it MUST have the following format", one object with `errors` | None: the provider decodes the first object, and Lajstrom's names are at most 255 characters | nothing needed | [distribution/distribution](https://github.com/distribution/distribution/issues): to file |
-| Project Quay 3.18.2 | The referrers API answers a subject that does not exist `400 MANIFEST_INVALID`, and a push with `subject` gets no `OCI-Subject`, though the API is there ([quay.md](quay.md#referrers)) | Listing Referrers: "Assuming a repository is found, this request MUST return a `200 OK` response code", 400 only for an invalid request; Pushing Manifests with Subject: a registry that supports the referrers API "MUST respond with the response header `OCI-Subject`" | The probe's request cannot tell (its repository does not exist); oras-go wrote the tag schema beside the API | `referrers: true` in the vendor table (#803): the API, without the tag schema | [PROJQUAY](https://redhat.atlassian.net/jira/software/c/projects/PROJQUAY/issues): to file |
+| Project Quay 3.18.2 | The referrers API answers a subject that does not exist `400 MANIFEST_INVALID`, and a push with `subject` gets no `OCI-Subject`, though the API is there ([quay.md](quay.md#referrers)) | Listing Referrers: "Assuming a repository is found, this request MUST return a `200 OK` response code", 400 only for an invalid request; Pushing Manifests with Subject: a registry that supports the referrers API "MUST respond with the response header `OCI-Subject`" | The probe's request cannot tell (its repository does not exist); through the API, a client's referrers of a deleted version are 400 | `referrers: false` in the vendor table (#803): the tag schema, which answers an empty list | [PROJQUAY](https://redhat.atlassian.net/jira/software/c/projects/PROJQUAY/issues): to file |
 | Project Quay 3.18.2 | `GET` of an upload session answers `Range: bytes=0-5` after `PATCH` `0-4` answered `0-4`: one byte ahead, with a `bytes=` prefix ([quay.md](quay.md#uploads)) | Pushing a blob in chunks: "The `<end-of-range>` value is the position of the last uploaded byte", in `Range: 0-<end-of-range>` | A session continued on another replica sends its next chunk one byte late, 416 (`TestIntegrationUploadAcrossReplicas`) | the provider measures how the status reads on a scratch session, at the first status that disagrees with its session, and reads it one byte back (#804); not yet run against Quay | [PROJQUAY](https://redhat.atlassian.net/jira/software/c/projects/PROJQUAY/issues): to file |
 
 **Not deviations**: measured, and allowed by the spec or outside it. Some are still worth a
@@ -422,7 +423,7 @@ registries:
     auth:
       username: <organisation>+<robot>  # a robot in a team with the role admin
       passwordEnv: LAJSTROM_QUAY_ROBOT_TOKEN
-    # No capabilities: the vendor table sets catalog: false (until #802), referrers: true and
+    # No capabilities: the vendor table sets catalog: false (until #802), referrers: false and
     # consistency: eventual within 130s (#803).
 ```
 
