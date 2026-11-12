@@ -29,6 +29,9 @@ const (
 	CredPAT CredentialKind = "pat"
 	// CredDeploy is a deploy token: the principal is token:<id>.
 	CredDeploy CredentialKind = "deploy"
+	// CredOIDC is an OIDC login that has just verified its ID token (docs/spec/rbac.md §8): no
+	// request authenticates with it; the login mints its personal access token under it.
+	CredOIDC CredentialKind = "oidc"
 )
 
 // Credential is how the principal of a request authenticated, beside the principal in the
@@ -81,7 +84,7 @@ func (c Credential) Limit(a Action, repo index.Repo) error {
 			return nil
 		}
 		return fmt.Errorf("%w: the deploy token has %s", ErrScope, scopeList(c.Scopes))
-	case CredPassword:
+	case CredPassword, CredOIDC:
 	}
 	return nil
 }
