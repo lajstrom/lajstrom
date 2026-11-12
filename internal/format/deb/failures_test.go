@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -93,15 +94,21 @@ func TestRenderStoreFails(t *testing.T) {
 }
 
 // stubRepository is a registry repository of blobs and manifests by digest; Resolve answers a
-// digest it has with the manifest media type and the size of its bytes, or oversize.
+// digest it has with the manifest media type and the size of its bytes, or oversize; resolve
+// and fetch fail it instead.
 type stubRepository struct {
 	provider.Repository
 	blobs    map[digest.Digest][]byte
 	oversize bool
-	read     error // the error of every read after the bytes
+	read     error                   // the error of every read after the bytes
+	resolve  error                   // the error of Resolve
+	fetch    map[digest.Digest]error // the error of a Fetch, by digest
 }
 
 func (r *stubRepository) Resolve(_ context.Context, ref string) (ocispec.Descriptor, error) {
+	if r.resolve != nil {
+		return ocispec.Descriptor{}, r.resolve
+	}
 	b, ok := r.blobs[digest.Digest(ref)]
 	if !ok {
 		return ocispec.Descriptor{}, fmt.Errorf("resolve %s: %w", ref, provider.ErrNotFound)
@@ -114,6 +121,9 @@ func (r *stubRepository) Resolve(_ context.Context, ref string) (ocispec.Descrip
 }
 
 func (r *stubRepository) Fetch(_ context.Context, desc ocispec.Descriptor) (io.ReadCloser, error) {
+	if err := r.fetch[desc.Digest]; err != nil {
+		return nil, err
+	}
 	b, ok := r.blobs[desc.Digest]
 	if !ok {
 		return nil, fmt.Errorf("fetch %s: %w", desc.Digest, provider.ErrNotFound)
@@ -200,6 +210,48 @@ func TestFetchMetadata(t *testing.T) {
 	}
 	if got := ociName(index.Repo{Format: Name, Name: "ubuntu"}, "hello"); got != "apt/ubuntu/hello" {
 		t.Errorf("ociName without a prefix = %q", got)
+	}
+}
+
+// TestFetchMetadataUnavailable checks fetchMetadata when the registry is out at each of its
+// calls (#669): the error is provider.ErrUnavailable with the provider's wait, a 503 with that
+// Retry-After or none, and wraps nothing else of the provider's error.
+func TestFetchMetadataUnavailable(t *testing.T) {
+	deb, info := testutil.Deb(testutil.DebOptions{})
+	b, err := Plugin{}.Build(t.Context(), ubuntu, upload([]format.UploadedFile{debFile(deb)}))
+	must(t, err)
+	manifest, md, err := profile.Encode(b.Manifest)
+	must(t, err)
+	layer := b.Manifest.Layers[1].Digest
+	stored := map[digest.Digest][]byte{md: manifest, layer: blobsOf(t, b)[layer]}
+	pkg := index.Package{Name: info.Package, NameOCI: info.Package}
+	with := func(rr provider.Repository) Plugin {
+		return Plugin{svc: &services{providers: provider.Map{"local": stubProvider{rr: rr}}}}
+	}
+	waits := &provider.UnavailableError{RetryAfter: 3 * time.Second}
+	unreachable := fmt.Errorf("generic: resolve: %w", errors.Join(provider.ErrUnavailable, provider.ErrNotFound,
+		&net.DNSError{Err: "no such host", Name: "zot.internal", IsNotFound: true}))
+	for _, c := range []struct {
+		name       string
+		plugin     Plugin
+		retryAfter string
+	}{
+		{"repository", Plugin{svc: &services{providers: provider.Map{"local": stubProvider{err: waits}}}}, "3"},
+		{"resolve", with(&stubRepository{blobs: stored, resolve: unreachable}), ""},
+		{"manifest", with(&stubRepository{blobs: stored, fetch: map[digest.Digest]error{md: waits}}), "3"},
+		{"metadata layer", with(&stubRepository{blobs: stored, fetch: map[digest.Digest]error{layer: unreachable}}), ""},
+	} {
+		_, err := c.plugin.fetchMetadata(t.Context(), ubuntu, pkg, index.Version{Digest: md})
+		h := http.Header{}
+		format.SetRetryAfter(h, err)
+		if !errors.Is(err, provider.ErrUnavailable) || format.StatusOf(err) != http.StatusServiceUnavailable || h.Get("Retry-After") != c.retryAfter {
+			t.Errorf("%s out: %v (status %d, Retry-After %q), want provider.ErrUnavailable: 503, Retry-After %q",
+				c.name, err, format.StatusOf(err), h.Get("Retry-After"), c.retryAfter)
+		}
+		var dns *net.DNSError
+		if errors.Is(err, provider.ErrNotFound) || errors.As(err, &dns) {
+			t.Errorf("%s out: %v wraps more of the provider's error than provider.ErrUnavailable", c.name, err)
+		}
 	}
 }
 

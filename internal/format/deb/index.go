@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -421,8 +422,9 @@ func newXZ(n int) func(io.Writer) (io.WriteCloser, error) {
 // metadata layer, each read up to its limit and checked against its digest. It runs inside the
 // transaction of format.CachedDocument, so it is for the rows whose metadata the index left out
 // (versions.metadata may be omitted for size, docs/spec/index-schema.md), not for every
-// render. The errors of the provider are kept in the message only: a manifest that is gone
-// makes the render fail (500), not the suite 404.
+// render. The errors of the provider are kept in the message only (onlyUnavailable): a manifest
+// that is gone makes the render fail (500), not the suite 404; a registry that is out is
+// provider.ErrUnavailable, a 503 with Retry-After.
 func (p Plugin) fetchMetadata(ctx context.Context, repo index.Repo, pkg index.Package, v index.Version) ([]byte, error) {
 	var prov provider.Provider
 	if p.svc != nil && p.svc.providers != nil {
@@ -434,11 +436,11 @@ func (p Plugin) fetchMetadata(ctx context.Context, repo index.Repo, pkg index.Pa
 	name := ociName(repo, pkg.NameOCI)
 	rr, err := prov.Repository(ctx, name)
 	if err != nil {
-		return nil, fmt.Errorf("deb: repository %s: %s", name, err.Error())
+		return nil, fmt.Errorf("deb: repository %s: %w", name, onlyUnavailable(err))
 	}
 	desc, err := rr.Resolve(ctx, v.Digest.String())
 	if err != nil {
-		return nil, fmt.Errorf("deb: resolve %s in %s: %s", v.Digest, name, err.Error())
+		return nil, fmt.Errorf("deb: resolve %s in %s: %w", v.Digest, name, onlyUnavailable(err))
 	}
 	b, err := readBlob(ctx, rr, ocispec.Descriptor{MediaType: desc.MediaType, Digest: v.Digest, Size: desc.Size}, maxManifest)
 	if err != nil {
@@ -471,7 +473,7 @@ func readBlob(ctx context.Context, rr provider.Repository, desc ocispec.Descript
 	}
 	rc, err := rr.Fetch(ctx, desc)
 	if err != nil {
-		return nil, fmt.Errorf("fetch %s: %s", desc.Digest, err.Error())
+		return nil, fmt.Errorf("fetch %s: %w", desc.Digest, onlyUnavailable(err))
 	}
 	defer func() { _ = rc.Close() }()
 	b, err := io.ReadAll(io.LimitReader(rc, limit+1))
@@ -483,6 +485,34 @@ func readBlob(ctx context.Context, rr provider.Repository, desc ocispec.Descript
 	}
 	return b, nil
 }
+
+// onlyUnavailable returns an error with the message of err, an error of the provider, that
+// wraps nothing of it: a manifest or a layer the registry does not have (provider.ErrNotFound)
+// fails the render, a 500, instead of making the suite a 404. A registry that is out is the
+// exception (#669): when err is provider.ErrUnavailable, the error wraps that, and the wait err
+// says (provider.RetryAfter), so that the render is a 503 with Retry-After, and still nothing
+// else of err.
+func onlyUnavailable(err error) error {
+	switch after, ok := provider.RetryAfter(err); {
+	case !errors.Is(err, provider.ErrUnavailable):
+		return errors.New(err.Error())
+	case ok:
+		return &unavailableError{msg: err.Error(), kind: &provider.UnavailableError{RetryAfter: after}}
+	}
+	return &unavailableError{msg: err.Error(), kind: provider.ErrUnavailable}
+}
+
+// unavailableError is a provider.ErrUnavailable of fetchMetadata (onlyUnavailable): the message
+// of the provider's error, and kind, provider.ErrUnavailable or a *provider.UnavailableError
+// with its wait.
+type unavailableError struct {
+	msg  string
+	kind error
+}
+
+func (e *unavailableError) Error() string { return e.msg }
+
+func (e *unavailableError) Unwrap() error { return e.kind }
 
 // ociName is the OCI repository of a package as the provider names it: repo.Prefix, or
 // <format>/<repo> when it is empty, and the package path (docs/spec/manifest-profile.md §4.1),

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log/slog"
 	"maps"
@@ -359,6 +360,57 @@ func TestRoutesRenderFails(t *testing.T) {
 		if rr := e.do(http.MethodGet, path); rr.Code != http.StatusInternalServerError || strings.Contains(rr.Body.String(), "registry") {
 			t.Errorf("GET %s = %d %q, want 500 without the cause", path, rr.Code, rr.Body)
 		}
+	}
+}
+
+// TestRoutesRegistryUnavailable renders the indexes of a version without metadata in the index
+// while its registry is out (#669): the read of its manifest fails with provider.ErrUnavailable,
+// and each document is 503 with the status text only and the Retry-After the provider said,
+// none for a registry that could not be reached; once the registry is back, the same request is
+// 200. A manifest, or a metadata layer, that the registry does not have is still a 500: the
+// index says it is there, and the suite is not a 404.
+func TestRoutesRegistryUnavailable(t *testing.T) {
+	paths := []string{"dists/jammy/Release", "dists/jammy/main/binary-amd64/Packages",
+		"dists/jammy/main/binary-amd64/by-hash/SHA256/" + strings.Repeat("0", 64)}
+	for _, tt := range []struct {
+		name       string
+		fail       error // FailFetch of the fake
+		gone       bool  // the manifest is not in the registry
+		status     int
+		retryAfter string
+	}{
+		{name: "circuit open", fail: &provider.UnavailableError{RetryAfter: 9 * time.Second},
+			status: http.StatusServiceUnavailable, retryAfter: "9"},
+		{name: "busy", fail: &provider.RejectedError{Registry: "local", Status: http.StatusServiceUnavailable, RetryAfter: 3 * time.Second},
+			status: http.StatusServiceUnavailable, retryAfter: "3"},
+		{name: "unreachable", fail: fmt.Errorf("generic: fetch: %w (the connection was refused)", provider.ErrUnavailable),
+			status: http.StatusServiceUnavailable},
+		{name: "manifest gone", gone: true, status: http.StatusInternalServerError},
+		{name: "fetch not found", fail: provider.ErrNotFound, status: http.StatusInternalServerError},
+		{name: "fetch refused", fail: &provider.RejectedError{Registry: "local", Status: http.StatusBadRequest, Code: "MANIFEST_INVALID"},
+			status: http.StatusInternalServerError},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newAptEnv(t, envOptions{})
+			hello, _ := testutil.Deb(testutil.DebOptions{})
+			e.upload(t, hello, "jammy")
+			dropMetadata(t, e.pipeline, "jammy")
+			e.prov.FailFetch = tt.fail
+			if tt.gone {
+				must(t, e.prov.DeleteRepository(t.Context(), "apt/ubuntu/hello"))
+			}
+			for _, path := range paths {
+				rr := e.do(http.MethodGet, path)
+				if rr.Code != tt.status || rr.Body.String() != http.StatusText(tt.status)+"\n" || rr.Header().Get("Retry-After") != tt.retryAfter {
+					t.Errorf("GET %s = %d %q, Retry-After %q; want %d, the status text, Retry-After %q",
+						path, rr.Code, rr.Body, rr.Header().Get("Retry-After"), tt.status, tt.retryAfter)
+				}
+			}
+			if tt.status == http.StatusServiceUnavailable {
+				e.prov.FailFetch = nil
+				e.get(paths[0])
+			}
+		})
 	}
 }
 
