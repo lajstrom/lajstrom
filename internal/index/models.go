@@ -155,6 +155,7 @@ type Replica struct {
 	ID          string // made at the start: a UUID v7 (NewUID)
 	Host        string // host name
 	PID         int
+	Process     string // its boot, PID namespace and start as the OS tells them (cmd/lajstrom); "" unknown
 	Version     string // the binary's version
 	StartedAt   time.Time
 	HeartbeatAt time.Time // stale 2 minutes after the last beat

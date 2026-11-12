@@ -11,10 +11,10 @@ import (
 // Coordination: replicas, a row per serve process on the database
 // (docs/spec/index-schema.md, Coordination).
 
-const replicaCols = "id, host, pid, version, started_at, heartbeat_at"
+const replicaCols = "id, host, pid, process, version, started_at, heartbeat_at"
 
 func replicaDests(r *index.Replica) []any {
-	return []any{&r.ID, &r.Host, &r.PID, &r.Version, timeDest{&r.StartedAt}, timeDest{&r.HeartbeatAt}}
+	return []any{&r.ID, &r.Host, &r.PID, &r.Process, &r.Version, timeDest{&r.StartedAt}, timeDest{&r.HeartbeatAt}}
 }
 
 // ListReplicas returns the rows of replicas ordered by StartedAt, then ID.
@@ -43,8 +43,8 @@ func (c *conn) StartReplica(ctx context.Context, r *index.Replica, staleBefore t
 				return &index.ReplicaConflictError{Live: live[0]}
 			}
 		}
-		_, err := c.exec(ctx, what, "INSERT INTO replicas ("+replicaCols+") VALUES (?, ?, ?, ?, ?, ?)",
-			r.ID, r.Host, r.PID, r.Version, c.d.EncodeTime(r.StartedAt), c.d.EncodeTime(r.HeartbeatAt))
+		_, err := c.exec(ctx, what, "INSERT INTO replicas ("+replicaCols+") VALUES (?, ?, ?, ?, ?, ?, ?)",
+			r.ID, r.Host, r.PID, r.Process, r.Version, c.d.EncodeTime(r.StartedAt), c.d.EncodeTime(r.HeartbeatAt))
 		return err
 	})
 }

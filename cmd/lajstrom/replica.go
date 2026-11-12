@@ -47,7 +47,7 @@ type replica struct {
 
 // startReplica writes the row of this process and compares its clock with the database's. On
 // SQLite, which serves one replica, a row of another replica with a fresh heartbeat is an error
-// that names it.
+// that names it, unless its process is known to be gone (start).
 func startReplica(ctx context.Context, st index.Store, log *slog.Logger, now func() time.Time) (*replica, error) {
 	host, err := os.Hostname()
 	if err != nil || host == "" {
@@ -55,13 +55,34 @@ func startReplica(ctx context.Context, st index.Store, log *slog.Logger, now fun
 	}
 	at := now()
 	r := &replica{st: st, log: log, now: now, every: replicaBeatEvery, row: index.Replica{ID: index.NewUID(at), Host: host,
-		PID: os.Getpid(), Version: version.Get().Version, StartedAt: at}}
-	if err := st.StartReplica(ctx, &r.row, at.Add(-replicaStaleAfter)); err != nil {
+		PID: os.Getpid(), Process: thisProcess(), Version: version.Get().Version, StartedAt: at}}
+	if err := r.start(ctx, at); err != nil {
 		return nil, held(err)
 	}
 	log.Info("replica registered in the index", "replica", r.row.ID, "host", host, "pid", r.row.PID)
 	r.clock(ctx)
 	return r, nil
+}
+
+// start writes the row of this process, deleting the rows whose heartbeat is stale at at
+// (Store.StartReplica). On SQLite a fresh row of another replica refuses it; when that row's
+// process is known to be gone (processGone: a process of this host that crashed or was killed),
+// start deletes the row and tries again, up to 8 times.
+func (r *replica) start(ctx context.Context, at time.Time) error {
+	var err error
+	for range 8 {
+		err = r.st.StartReplica(ctx, &r.row, at.Add(-replicaStaleAfter))
+		var c *index.ReplicaConflictError
+		if !errors.As(err, &c) || !processGone(c.Live, r.row.Host, r.row.Process) {
+			return err
+		}
+		r.log.WarnContext(ctx, "deleting the row of a replica whose process is gone", "replica", c.Live.ID,
+			"host", c.Live.Host, "pid", c.Live.PID, "heartbeat", c.Live.HeartbeatAt.Format(time.RFC3339))
+		if err := r.st.StopReplica(ctx, c.Live.ID); err != nil && !errors.Is(err, index.ErrNotFound) {
+			return err
+		}
+	}
+	return err
 }
 
 // held returns the error of a start that another replica's row refused, saying who holds the
@@ -107,7 +128,7 @@ func (r *replica) heartbeat(ctx context.Context) {
 	if errors.Is(err, index.ErrNotFound) {
 		r.log.WarnContext(ctx, "the row of this replica was deleted as stale; writing it again", "replica", r.row.ID)
 		r.row.HeartbeatAt = at
-		err = r.st.StartReplica(ctx, &r.row, at.Add(-replicaStaleAfter))
+		err = r.start(ctx, at)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
