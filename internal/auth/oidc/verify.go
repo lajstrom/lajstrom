@@ -63,11 +63,11 @@ func (c *Client) verify(ctx context.Context, raw, nonce string) (*Identity, erro
 	case err != nil:
 		return nil, fmt.Errorf("%w: the ID token: %w", ErrRefused, err)
 	}
-	return c.identity(claims, nonce)
+	return c.identity(ctx, claims, nonce)
 }
 
 // identity checks the claims that the parser does not (azp, nonce, sub) and reads the identity.
-func (c *Client) identity(claims jwt.MapClaims, nonce string) (*Identity, error) {
+func (c *Client) identity(ctx context.Context, claims jwt.MapClaims, nonce string) (*Identity, error) {
 	if azp, ok := claims["azp"]; ok && azp != c.cfg.ClientID {
 		return nil, fmt.Errorf("%w: the ID token's azp is not the client", ErrRefused)
 	}
@@ -84,7 +84,13 @@ func (c *Client) identity(claims jwt.MapClaims, nonce string) (*Identity, error)
 		id.Username, _ = claims[c.cfg.UsernameClaim].(string)
 	}
 	if c.cfg.GroupsClaim != "" {
-		id.Groups, id.Dropped = c.groups(claims[c.cfg.GroupsClaim])
+		var dropped int
+		if id.Groups, dropped = c.groups(claims[c.cfg.GroupsClaim]); dropped > 0 {
+			c.cfg.Log.DebugContext(ctx, "oidc: values of the groups claim that are no group's name are dropped",
+				"subject", sub, "claim", c.cfg.GroupsClaim, "dropped", dropped)
+		}
+	} else {
+		id.Groups = []string{}
 	}
 	return id, nil
 }
