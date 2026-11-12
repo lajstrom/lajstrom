@@ -54,7 +54,7 @@ func TestLoadDefaults(t *testing.T) {
 				t.Fatalf("Load: %v", err)
 			}
 			want := &Config{
-				Server: Server{Listen: ":8080", ExternalURL: "https://art.example.com", ShutdownTimeout: 30 * time.Second, MaxManifestSize: 4 << 20, MetricsListen: "127.0.0.1:9464",
+				Server: Server{Listen: ":8080", ExternalURL: "https://art.example.com", ShutdownTimeout: 30 * time.Second, ShutdownDelay: 5 * time.Second, MaxManifestSize: 4 << 20, MetricsListen: "127.0.0.1:9464",
 					StallTimeout: time.Minute, MaxConcurrentUploads: 32, MaxCreatedAhead: 5 * time.Minute, MaxCreatedBehind: time.Hour,
 					UploadSessions: UploadSessions{PerRepo: 256, PerPrincipal: 1024}},
 				Log:       Log{Level: "info", Format: "text"},
@@ -264,8 +264,8 @@ func TestLoadErrors(t *testing.T) {
 			want: []string{"server.metricsListen: must not be server.listen"}},
 		{name: "negative manifest size", file: minimal + "  maxManifestSize: -1\n", want: []string{"server.maxManifestSize: must not be negative"}},
 		{name: "half a TLS pair", file: minimal + "  tls: {certFile: /etc/lajstrom/tls.crt}\n", want: []string{"server.tls: certFile and keyFile must be set together"}},
-		{name: "negative limits", file: minimal + "  stallTimeout: -1s\n  maxConcurrentUploads: -1\n  maxCreatedAhead: -1m\n  maxCreatedBehind: -1h\n  uploadSessions: {perRepo: -1, perPrincipal: -1}\n",
-			want: []string{"server.stallTimeout: must not be negative", "server.maxConcurrentUploads: must not be negative",
+		{name: "negative limits", file: minimal + "  shutdownDelay: -1s\n  stallTimeout: -1s\n  maxConcurrentUploads: -1\n  maxCreatedAhead: -1m\n  maxCreatedBehind: -1h\n  uploadSessions: {perRepo: -1, perPrincipal: -1}\n",
+			want: []string{"server.shutdownDelay: must not be negative", "server.stallTimeout: must not be negative", "server.maxConcurrentUploads: must not be negative",
 				"server.maxCreatedAhead: must not be negative", "server.maxCreatedBehind: must not be negative",
 				"server.uploadSessions.perRepo: must not be negative", "server.uploadSessions.perPrincipal: must not be negative"}},
 		{name: "trusted proxies", file: minimal + "  trustedProxies: [\"10.0.0.0/8\", \"proxy.local\", \"10.0.0.1/33\", \"::ffff:0:0/80\"]\n",

@@ -327,7 +327,7 @@ services:
       <<: *healthcheck
       # The image has no shell: the binary asks its own /-/readyz.
       test: ["CMD", "/lajstrom", "healthcheck", "--url", "http://127.0.0.1:8080"]
-    stop_grace_period: 15s # server.shutdownTimeout (10s) and some
+    stop_grace_period: 20s # server.shutdownDelay (5s), server.shutdownTimeout (10s) and some
 
   lajstrom-b:
     <<: *lajstrom-ha

@@ -449,11 +449,14 @@ On SQLite the database runs in the process, its clock is the host's, and the ske
 ## Shutdown
 
 On `SIGTERM`, `SIGINT` or `SIGHUP` (its terminal or SSH session closed; there is no reload),
-`serve` drains: `/-/readyz` answers `503 shutting down`, the listener
-closes, so new connections are refused, and idle keep-alive connections are closed. Requests in
-flight, uploads included, get `server.shutdownTimeout` (default `30s`) to finish and are answered
-as usual, each on a connection that closes after its response; the process exits `0` once the
-last one is done. At the deadline, the requests still running are aborted: their contexts are
+`serve` drains. At once, `/-/readyz` answers `503 shutting down`, idle
+keep-alive connections are closed, and every response from then on carries `Connection: close`;
+the listener stays open for `server.shutdownDelay` (default `5s`), and the requests that arrive
+meanwhile are served as usual. That is the time the edge needs to stop sending this replica new
+requests: until it does, they would find the listener closed. Then the listener closes, so new
+connections are refused. Requests in flight, uploads included, get `server.shutdownTimeout`
+(default `30s`) to finish and are answered as usual; the process exits `0` once the last one is
+done. At the deadline, the requests still running are aborted: their contexts are
 cancelled, which stops their requests to the registry, and their connections closed; the
 process waits up to 5 s for their handlers to return, closes the index and exits with an error
 that says so. An upload aborted that way leaves nothing behind that another replica cannot
@@ -461,7 +464,8 @@ handle: an OCI upload session lives in the index and in the registry, so the cli
 or starts over on another replica; a publish cut off before its manifest is in the registry
 published nothing, and one cut off after it is indexed by the next reconcile; a claim on a tag
 expires after `ingest.claimTTL`. A reindex run in the background is cancelled at the
-signal and finishes as failed. A second signal stops the process at once, without the drain.
+signal and finishes as failed; a proxy repo's fetch, when the listener closes. A second signal
+stops the process at once, without the drain.
 
 On SQLite, a `serve` that ends without the drain (`SIGKILL`, the OOM killer, a crash) leaves its
 row of `replicas`, and the next start on the file finds it. When the next start runs on the same
@@ -472,15 +476,19 @@ policy restarts runs in a new PID namespace: its start deletes the row only when
 the new namespace the number of the old one, which is gone, and otherwise exits, and the next
 restart tries again ([index-schema.md](spec/index-schema.md#coordination)).
 
-Set `server.shutdownTimeout` from the longest upload a replica should finish, and the grace
-period of the orchestrator above it, or it kills the process before the drain ends:
-`terminationGracePeriodSeconds` on Kubernetes (30 s by default), `stop_grace_period` in Compose
-(10 s by default). On Kubernetes the endpoint of a terminating pod is removed while the pod
-gets `SIGTERM`, not before: a `preStop` hook that sleeps a few seconds keeps the listener open
-until the edge has stopped sending new requests to it. `deploy/kubernetes` sleeps 5 seconds
-(the `sleep` action, Kubernetes 1.30 and later; the image has no shell), which a rolling update
-on a cluster needed ([deploy/kubernetes.md](deploy/kubernetes.md#upgrade)); the grace period
-counts the sleep too.
+Set `server.shutdownTimeout` from the longest upload a replica should finish,
+`server.shutdownDelay` from how long the edge takes to stop sending to a stopping replica, and
+the grace period of the orchestrator above the two together, or it kills the process before the
+drain ends: `terminationGracePeriodSeconds` on Kubernetes (30 s by default), `stop_grace_period`
+in Compose (10 s by default). Both defaults are below the 35 s of the defaults above:
+`deploy/kubernetes` and `deploy/compose-production` set 40 s. On Kubernetes the endpoint of a
+terminating pod is removed while the pod gets `SIGTERM`, not before, and the delay keeps the
+listener open until the Service and the ingress have stopped sending to it; a rolling update on
+a cluster needed 5 seconds ([deploy/kubernetes.md](deploy/kubernetes.md#upgrade)). A `preStop`
+hook that sleeps does the same before `SIGTERM`; with one, the grace period counts the sleep
+too. Behind nginx, which has no active check of `/-/readyz`, the delay must outlast the
+`fail_timeout` of its upstream by more than a second ([reverse-proxy.md](reverse-proxy.md#restarts)).
+A single replica gains nothing from the delay: set it to `0s`.
 
 ## Upgrades
 

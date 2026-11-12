@@ -124,6 +124,7 @@ func (s Server) validateLimits(p *problems) {
 		key      string
 		negative bool
 	}{
+		{"server.shutdownDelay", s.ShutdownDelay < 0},
 		{"server.maxManifestSize", s.MaxManifestSize < 0},
 		{"server.stallTimeout", s.StallTimeout < 0},
 		{"server.maxCreatedAhead", s.MaxCreatedAhead < 0},

@@ -286,7 +286,7 @@ robin per request, so every multi-request protocol crosses replicas by construct
 | H-07 | the same loop; `docker restart registry` | 502 during the outage (`provider.ErrUnauthorized` or connection errors map to 502/503), recovery; the next reconcile reports nothing missing | #9, #30 |
 | H-08 | maven deploy with the edge alternating replicas on every `PUT` (M-01 on the `ha` stack) | the session lives in the database; the commit on whichever replica sees the metadata `PUT` | #53 |
 | H-09 | `POST …/reindex` on A and on B at once | one runs, the other answers 409 `CONFLICT` "already running" (advisory lock); the result equals I-01 | #29 |
-| H-10 | the `pip install` loop; `docker restart lajstrom-a`, wait for `readyz`, then `lajstrom-b` | zero failed requests: nginx takes a replica out on `readyz` 503 and shutdown drains in-flight requests | #50 |
+| H-10 | the `pip install` loop; `docker restart lajstrom-a`, wait for `readyz`, then `lajstrom-b` | zero failed requests: a stopping replica serves on for `server.shutdownDelay`, nginx sends a request a replica refuses to the other and leaves the refusing one out for `fail_timeout`, and shutdown drains in-flight requests | #50, #707 |
 | H-11 | upload a `.deb` through A, `apt-get update` through B within one second | the package is visible (A-09) | #40 |
 | H-12 | get a bearer token from A (`/v2/token`), use it on B | accepted: the signing key is in the database, not in a replica's memory or local file | #26 |
 | H-13 | the same `index_cache` scope requested on A and B at once after an invalidation | both answer the same bytes; one `index_cache` row | #11, #40 |

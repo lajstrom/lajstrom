@@ -36,6 +36,10 @@ type Server struct {
 	TLS TLS `yaml:"tls"`
 	// ShutdownTimeout bounds the graceful shutdown: in-flight requests get this long to finish.
 	ShutdownTimeout time.Duration `yaml:"shutdownTimeout"`
+	// ShutdownDelay is how long the server keeps serving after the signal, not ready and with
+	// keep-alives off, before the listener closes and ShutdownTimeout begins: the time the edge
+	// needs to stop sending to it. Zero closes the listener at once; negative is invalid.
+	ShutdownDelay time.Duration `yaml:"shutdownDelay"`
 	// MaxManifestSize is the largest manifest a PUT to /v2 may carry, in bytes; the facade reads
 	// a manifest into memory. Load sets DefaultMaxManifestSize; zero means the default too,
 	// negative is invalid.
@@ -427,6 +431,7 @@ const (
 // Defaults that Load applies before reading the file.
 const (
 	DefaultShutdownTimeout  = 30 * time.Second
+	DefaultShutdownDelay    = 5 * time.Second
 	DefaultMaxManifestSize  = 4 << 20          // the least the distribution spec asks a registry to take
 	DefaultMaxCreatedAhead  = 5 * time.Minute  // a client's clock a few minutes off
 	DefaultMaxCreatedBehind = time.Hour        // oras writes the time before it uploads the layers
@@ -472,7 +477,7 @@ const (
 // Default returns the configuration before the file is read. server.listen has no default.
 func Default() *Config {
 	return &Config{
-		Server: Server{ShutdownTimeout: DefaultShutdownTimeout, MaxManifestSize: DefaultMaxManifestSize, MetricsListen: DefaultMetricsListen,
+		Server: Server{ShutdownTimeout: DefaultShutdownTimeout, ShutdownDelay: DefaultShutdownDelay, MaxManifestSize: DefaultMaxManifestSize, MetricsListen: DefaultMetricsListen,
 			StallTimeout: DefaultStallTimeout, MaxConcurrentUploads: DefaultMaxConcurrentUploads,
 			MaxCreatedAhead: DefaultMaxCreatedAhead, MaxCreatedBehind: DefaultMaxCreatedBehind,
 			UploadSessions: UploadSessions{PerRepo: DefaultUploadSessionsPerRepo, PerPrincipal: DefaultUploadSessionsPerPrincipal}},

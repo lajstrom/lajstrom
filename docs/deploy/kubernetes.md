@@ -224,7 +224,15 @@ lajstrom_ingest_total{format="raw",result="published"} 1
 | --- | --- | --- |
 | startup | `/-/healthz`, every 2 s, 30 tries | `serve` applies the migrations before it listens; a long migration must not count against liveness |
 | liveness | `/-/healthz`, every 10 s | only "the process answers": an outage of the database or the registry must not restart the pods |
-| readiness | `/-/readyz`, every 5 s | `503` while the database does not answer or a registry has not answered `GET /v2/` for a minute ([operations.md](../operations.md#readiness)) |
+| readiness | `/-/readyz`, every 5 s | `503` while the database does not answer or a registry has not answered `GET /v2/` for a minute ([operations.md](../operations.md#readiness)), and from `SIGTERM` on |
+
+A stopping pod needs no `preStop` hook. Kubernetes removes its endpoint while it sends `SIGTERM`,
+whatever the readiness probe says, and the Service and the ingress take a few seconds to follow;
+`serve` keeps its listener open for `server.shutdownDelay` (5 s) after the signal, answering
+`/-/readyz` with `503` and closing each connection after its response, then drains for
+`server.shutdownTimeout` (30 s). `terminationGracePeriodSeconds` must exceed the two together:
+`deployment.yaml` sets 40. A `preStop` sleep, which needs Kubernetes 1.30 for the `sleep` action
+(the image has no shell), adds to the delay and to what the grace period must cover.
 
 Tried by scaling the registry to zero at 17:29:25 and polling the ready flag and the restart
 count of both replicas every 5 seconds: they left the endpoints within 56 seconds and were not
@@ -306,8 +314,10 @@ replicas logged at start (a selection, without the times):
 
 A pod requested a file through the Service four times a second throughout. Without a `preStop`
 hook, some requests of every rollout found a stopping replica's listener closed, before its
-endpoint was gone: 5 of 194 over two rollouts got no answer. With the hook of `deployment.yaml`
-(a 5-second sleep before `SIGTERM`), none of 228 over the same two rollouts.
+endpoint was gone: 5 of 194 over two rollouts got no answer. With the hook `deployment.yaml` had
+then (a 5-second sleep before `SIGTERM`), none of 228 over the same two rollouts. Since #707,
+`server.shutdownDelay` keeps the listener open the same 5 seconds after `SIGTERM` instead, and
+`deployment.yaml` has no hook; that was not run again on a cluster.
 
 ## What was not verified
 

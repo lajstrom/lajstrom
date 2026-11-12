@@ -157,8 +157,12 @@ func newServeCmd(a *app) *cobra.Command {
 			if err := checkProxyRepos(ctx, st, upstreams, a.log); err != nil {
 				return err
 			}
+			// The fetches of proxy repos outlive their requests. They end when the listener closes,
+			// after server.shutdownDelay, not at the signal: a request of the delay may need one.
+			fetches, endFetches := context.WithCancel(context.WithoutCancel(ctx))
+			defer endFetches()
 			proxyCore := proxy.New(proxy.Options{Index: st, Ingest: pipe, Providers: providers, Upstreams: upstreams,
-				Plugins: lookupIn(servedPlugins(c.Server.ExternalURL, nil)), ExternalURL: c.Server.ExternalURL, Context: ctx, Log: a.log})
+				Plugins: lookupIn(servedPlugins(c.Server.ExternalURL, nil)), ExternalURL: c.Server.ExternalURL, Context: fetches, Log: a.log})
 			runs.wg.Go(func() { sweepProxyMeta(ctx, proxyCore, a.log, proxySweepInterval) })
 			authz := auth.NewRBAC(auth.RBACOptions{Index: st, AnonymousRead: c.Auth.AnonymousRead, Log: a.log})
 			deps := format.Deps{Index: st, Providers: providers, Auth: authz, Ingest: pipe, Signer: signer, Sessions: pipe,
@@ -181,6 +185,8 @@ func newServeCmd(a *app) *cobra.Command {
 				TLSCertFile:     c.Server.TLS.CertFile,
 				TLSKeyFile:      c.Server.TLS.KeyFile,
 				ShutdownTimeout: c.Server.ShutdownTimeout,
+				ShutdownDelay:   c.Server.ShutdownDelay,
+				OnShutdown:      endFetches,
 				Log:             a.log,
 				Plugins:         servedPlugins(c.Server.ExternalURL, accounts{authn, &auth.Tokens{Index: st, Log: a.log}}),
 				Deps:            deps,
