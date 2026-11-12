@@ -46,7 +46,7 @@ it by name. The API never takes a URL or a file path (§9). Keys, for configurat
 | `upstreams[].tokenRealmHosts` | list of host names | the vendor table's | An `oci` upstream's: the hosts besides its own that the realm of its bearer challenge may be on, over `https` (§11.1), as `registries[].tokenRealmHosts`. |
 | `upstreams[].dockerHub` | bool | `true` on `registry-1.docker.io` and `docker.io`, else `false` | An `oci` upstream's: it is Docker Hub or a mirror of it, and a path of one component is `library/<path>` (§11.7). |
 | `upstreams[].timeout` | duration | `30s` | Bounds the wait for the response headers (connecting and TLS at most 10 s each) and every wait for the next bytes of a body. `0s` means the default. |
-| `upstreams[].retries` | integer | `2` | Retries of a request, as `registries[].retries` defines them: `429`, `5xx` but `501` and `505`, timeouts, connections refused or reset; backoff from 250 ms, at most 3 s. `0` means the default, a negative value none. |
+| `upstreams[].retries` | integer | `2` | Retries of a request, as `registries[].retries` defines them: `429`, `5xx` but `501` and `505`, timeouts, connections refused or reset; backoff from 250 ms, at most 3 s. On an `oci` upstream, also the resumes in a row of a blob's body that get no byte (§11.5). `0` means the default, a negative value none. |
 | `upstreams[].maxMetadataSize` | bytes | `67108864` (64 MiB) | Largest document the upstream may answer for one name; a larger one is not cached (§6). `0` means the default. |
 
 A credential file is read when `serve` starts, as `keys.masterKeyFile` is: missing, unreadable
@@ -701,6 +701,19 @@ never a wrong answer, since a blob is mounted only from a path that answers its 
    whose digest or size differ are not committed: `502`, `proxy.reject`. The `oci.held` row
    follows the commit or the mount, and the path joins the blob's `oci.holders` row. Other
    requests for the blob wait as §5, step 6, says, and are served from the backend.
+
+   **A body that breaks is resumed.** A read of the upstream's body that fails before the last
+   byte (a connection reset or closed, a body cut by `upstreams[].timeout`, §2.1), or a body that
+   ends short, is not the end of the fetch: the blob is asked again with
+   `Range: bytes=<n>-`, `n` the bytes read, redirects and credentials as for the first `GET`,
+   and the copy goes on in the same stream. The backend's upload session and the tee (§11.8) see
+   a pause, and the digest and size are checked over the whole blob. Only a `206` whose
+   `Content-Range` starts at `n`, of the blob's size, continues it; a `200` or a `206` that starts
+   elsewhere fails the fetch as a broken body does. Each resume is logged with the offset. A
+   resume after a body that got no byte since the previous one waits the retries' backoff, and
+   more than `upstreams[].retries` of them in a row fail the fetch; a resume after progress is
+   not otherwise bounded. Neither the claim nor the session is given up meanwhile; a resume does
+   not survive the replica (its state is in memory).
 3. **The completion.** Each manifest of the blob's `oci.ref` parents whose every blob is held is
    pushed by digest under its keep-tag; then each index that lists such a manifest, once every
    child is held; then the upstream's tags that name what was pushed (§11.6). Every push goes
