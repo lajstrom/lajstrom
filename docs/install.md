@@ -164,7 +164,8 @@ machine.
    `auth.bootstrap.tokenFile` and exchanged with `lajstrom admin bootstrap`, or
    `lajstrom admin user create --admin` against the database; `serve` never makes a token:
    [operations.md](operations.md#the-first-admin).
-3. Running it for good: [Docker Compose](deploy/compose.md), [Kubernetes](deploy/kubernetes.md),
+3. Running it for good: [Docker Compose](deploy/compose.md), [Kubernetes](deploy/kubernetes.md)
+   or [Helm](deploy/helm.md),
    behind a [reverse proxy](reverse-proxy.md), and [backups](operations.md#backup-and-restore).
 4. A quick start per format: [raw](quickstart/raw.md), [apt](quickstart/apt.md),
    [pypi](quickstart/pypi.md), [maven](quickstart/maven.md), [npm](quickstart/npm.md),
