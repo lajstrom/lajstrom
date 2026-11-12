@@ -68,7 +68,9 @@ FUZZ_TARGETS ?= \
 	./internal/format/pypi:FuzzZipInspector \
 	./internal/format/maven:FuzzPOM \
 	./internal/format/npm:FuzzPackageJSON \
-	./internal/format/npm:FuzzTarballInspector
+	./internal/format/npm:FuzzTarballInspector \
+	./internal/format/rpm:FuzzParse \
+	./internal/format/rpm:FuzzInspector
 # The registries make registry-matrix probes: the dev stack's Zot and distribution. Another
 # registry of the stack, e.g. MATRIX_URLS='http://localhost:5003 http://localhost:5004' after
 # make dev-up PROFILES=gitlab; MATRIX_ARGS='-v' adds the requests, '-o json' JSON.
