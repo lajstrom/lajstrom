@@ -178,7 +178,8 @@ func TestDrainDelay(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	var shut atomic.Bool
 	s, err := New(Options{Listen: "127.0.0.1:0", Log: slog.New(slog.DiscardHandler), ShutdownDelay: delay,
-		OnShutdown: func() { shut.Store(true) },
+		// The hook takes a while, as cancelling the proxy fetches may: Run returns only after it.
+		OnShutdown: func() { time.Sleep(50 * time.Millisecond); shut.Store(true) },
 		Facade: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/v2/slow" {
 				close(entered)
