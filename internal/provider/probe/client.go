@@ -31,9 +31,12 @@ const maxBody = 1 << 20
 // client sends the probe's requests to one registry, without following redirects, and records
 // every request and answer into the cell its context names.
 type client struct {
-	base *url.URL     // scheme://host of the registry
-	auth *auth.Client // the registry's credentials, its challenges answered
-	anon *http.Client // no credentials: a hop that has left the registry's origin
+	base    *url.URL     // scheme://host of the registry
+	auth    *auth.Client // the registry's credentials, its challenges answered
+	anon    *http.Client // no credentials: a hop that has left the registry's origin
+	timeout time.Duration
+	// transport is the transport under the record and the guard, closed by close.
+	transport *http.Transport
 }
 
 // newClient builds the client of cfg: the registry's Basic or bearer challenge is answered with
@@ -44,28 +47,66 @@ func newClient(cfg config.Registry, base *url.URL, cred auth.CredentialFunc) *cl
 	if timeout <= 0 {
 		timeout = config.DefaultRegistryTimeout
 	}
-	t := http.DefaultTransport.(*http.Transport).Clone()
+	t := newTransport(timeout)
 	t.DialContext = (&net.Dialer{Timeout: min(timeout, 10*time.Second)}).DialContext
-	t.ResponseHeaderTimeout = timeout
-	// A blob is measured as the registry keeps it: no gzip offered (Nexus compresses when it is).
-	t.DisableCompression = true
-	rt := &recordTransport{next: &realmGuard{base: base, next: t}}
-	noFollow := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	if cred == nil && cfg.Auth.Username != "" {
 		cred = auth.StaticCredential(base.Host, auth.Credential{Username: cfg.Auth.Username, Password: cfg.Auth.Password})
 	}
-	plain := &http.Client{Transport: rt, CheckRedirect: noFollow}
-	return &client{
-		base: base,
-		auth: &auth.Client{
-			Client:     plain,
-			Header:     http.Header{"User-Agent": {"lajstrom-probe/" + version.Get().Version}},
-			Credential: cred,
-			Cache:      auth.NewCache(),
-		},
-		anon: plain,
+	c := &client{base: base, timeout: timeout, transport: t}
+	c.anon = c.plain()
+	c.auth = &auth.Client{
+		Client:     c.anon,
+		Header:     http.Header{"User-Agent": {"lajstrom-probe/" + version.Get().Version}},
+		Credential: cred,
+		Cache:      auth.NewCache(),
+	}
+	return c
+}
+
+// newTransport is the probe's transport, its dialer still to set: timeout bounds the wait for
+// an answer's headers; no gzip is offered, so that a blob is measured as the registry keeps it
+// (Nexus compresses when it is).
+func newTransport(timeout time.Duration) *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ResponseHeaderTimeout = timeout
+	t.DisableCompression = true
+	return t
+}
+
+// plain is the http.Client over c's transport: every round trip recorded, a token realm on
+// another host refused, redirects not followed.
+func (c *client) plain() *http.Client {
+	return &http.Client{
+		Transport:     &recordTransport{next: &realmGuard{base: c.base, next: c.transport}},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 }
+
+// fresh returns a client of c's registry, credentials and tokens that keeps no connection: each
+// request is a new connection, dialled by a new dialer whose new resolver looks the host name up
+// again (Go keeps no DNS cache; the system's resolver may, within the record's TTL). reached is
+// told the address of each connection. close releases it.
+func (c *client) fresh(reached func(addr string)) *client {
+	t := newTransport(c.timeout)
+	t.DisableKeepAlives = true
+	d := &net.Dialer{Timeout: min(c.timeout, 10*time.Second), Resolver: &net.Resolver{}}
+	t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := d.DialContext(ctx, network, addr)
+		if err == nil {
+			reached(conn.RemoteAddr().String())
+		}
+		return conn, err
+	}
+	f := &client{base: c.base, timeout: c.timeout, transport: t}
+	f.anon = f.plain()
+	a := *c.auth
+	a.Client = f.anon
+	f.auth = &a
+	return f
+}
+
+// close closes the idle connections of c's transport.
+func (c *client) close() { c.transport.CloseIdleConnections() }
 
 // request is one request of the probe.
 type request struct {

@@ -34,8 +34,8 @@ configuration has to add.
 
 | Registry or store | Image or installer | Pinned in | Last verified | Tier |
 | --- | --- | --- | --- | --- |
-| distribution 3.1.2 | `registry:3.1.2`, index `sha256:38907510915c3f1604c7e83d6ab602ab3020d092f73bdaed8696773693ff768c` | `compose.yaml` (`distribution`, `distribution-s3`, `distribution-s3-minio`), `ci.yml` | each PR with code; by hand 2026-11-09; the probe 2026-11-10, its row "Read-after-write lag" 2026-11-11, with the deletes 2026-11-12 | `CI` on the filesystem; `manual` on S3 (the `s3` and `s3-minio` profiles) |
-| Zot v2.1.23 | `ghcr.io/project-zot/zot-minimal:v2.1.23`, index `sha256:59cb5740832970818903c5ce104425762664c7880835ee566506aad397cd3458` | `compose.yaml` (`zot`), `ci.yml` | each PR with code; by hand 2026-11-09; the probe 2026-11-10, its row "Read-after-write lag" 2026-11-11, with the deletes 2026-11-12 | `CI` |
+| distribution 3.1.2 | `registry:3.1.2`, index `sha256:38907510915c3f1604c7e83d6ab602ab3020d092f73bdaed8696773693ff768c` | `compose.yaml` (`distribution`, `distribution-s3`, `distribution-s3-minio`), `ci.yml` | each PR with code; by hand 2026-11-09; the probe 2026-11-10, its row "Read-after-write lag" 2026-11-11, with the deletes 2026-11-12, its row "Monotonic reads" 2026-11-13 | `CI` on the filesystem; `manual` on S3 (the `s3` and `s3-minio` profiles) |
+| Zot v2.1.23 | `ghcr.io/project-zot/zot-minimal:v2.1.23`, index `sha256:59cb5740832970818903c5ce104425762664c7880835ee566506aad397cd3458` | `compose.yaml` (`zot`), `ci.yml` | each PR with code; by hand 2026-11-09; the probe 2026-11-10, its row "Read-after-write lag" 2026-11-11, with the deletes 2026-11-12, its row "Monotonic reads" 2026-11-13 | `CI` |
 | GitLab container registry v4.43.0, A (metadata on the filesystem) | `registry.gitlab.com/gitlab-org/build/cng/gitlab-container-registry:v4.43.0-gitlab`, index `sha256:fe9c67416a605ffaa5a053c17a6d3b1eab0668a33a58b7bd938a476088f8222e` (CNG rebuilds the tag in place: the digest is the pin) | `compose.yaml` (`gitlab`, profile `gitlab`) | 2026-11-07; the probe 2026-11-10, its row "Read-after-write lag" 2026-11-11; a delete through Lajstrom's `/v2` 2026-11-12, the tag rebuilt (index `sha256:2f1dcea7…`, [gitlab.md](gitlab.md#a-delete-through-lajstroms-v2)) | `manual` |
 | GitLab container registry v4.43.0, B (metadata database, as GitLab.com) | the same, and `postgres:17.11-alpine`, index `sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac` | `compose.yaml` (`gitlab-db`, `gitlab-postgres`, profile `gitlab`) | 2026-11-07; the probe 2026-11-10, its row "Read-after-write lag" 2026-11-11; a delete through Lajstrom's `/v2` 2026-11-12, the tag rebuilt (index `sha256:2f1dcea7…`, [gitlab.md](gitlab.md#a-delete-through-lajstroms-v2)) | `manual` |
 | GHCR | `ghcr.io`, no version published (`registry/2.0`) | nothing: a hosted service | 2026-11-07 | `hosted`: an account in the test organisation `lajstrom-extras` and a token |
@@ -86,6 +86,7 @@ upload status.
 | A listing API of its own | [none](distribution.md#catalog) | [none in the minimal build](zot.md#catalog) | [none: its `/gitlab/v1/` tag list is 404](gitlab.md#referrers) | [`/gitlab/v1/`: tag lists with referrers](gitlab.md#referrers) | [packages REST API, per organisation](ghcr.md#catalog) | [REST API per project, `page_size` at most 100](harbor.md#catalog-and-listing) | *not measured*: Nexus's REST API not tried for a listing | *not measured* | [REST API: the owner's packages, a version per tag or untagged digest](gitea.md#catalog) | [REST API: the owner's packages, as Gitea's](forgejo.md#where-it-differs-from-gitea) |
 | Tag list order and pagination | [lexical, byte by byte; `n`/`last`/`Link`, `n` clamped at 1000; on S3 a missing repository is 200 `[]`](distribution.md#tags) | [lexical; `n`/`last`/`Link`](zot.md#tags) | [lexical; **`n` and `last` ignored**: every tag, no `Link`](gitlab.md#lajstrom-registry-probe) | [lexical; `n`/`last`/`Link`](gitlab.md#lajstrom-registry-probe) | [**creation order; `last` a position**](ghcr.md#tags) | [`n`/`last`/`Link`, as distribution](harbor.md#catalog-and-listing) | [byte order, case kept; `n`/`last`/`Link` (absolute)](nexus.md#tags) | [byte order, case kept; `n`/`last`/`Link` (absolute)](nexus.md#tags) | [**lower-cased, case-insensitive**; lexical; `n`/`last`/`Link`](gitea.md#tags) | [**lower-cased, case-insensitive**; lexical; `n`/`last`/`Link`](forgejo.md#lajstrom-registry-probe) |
 | Read-after-write lag | [none seen in 3 writes, on S3 too; nor in 3 deletes, on the filesystem](#consistency) | [none seen in 3 writes or 3 deletes](#consistency) | [none seen in 3 writes](#consistency) | [none seen in 3 writes](#consistency) | *not measured*; [`eventual` by the vendor table](#consistency) | *not measured* | [none seen in 3 writes, by the probe](nexus.md#again-after-352) | [none seen in 3 writes, by the probe](nexus.md#again-after-352) | *not measured* | [none seen in 3 writes, by the probe](forgejo.md#lajstrom-registry-probe) |
+| Monotonic reads | [none: 3 writes, a tag move, 3 deletes, each read 5 times more over new connections](#consistency) | [none: 3 writes, a tag move, 3 deletes, each read 5 times more over new connections](#consistency) | *not measured* | *not measured* | *not measured* | *not measured* | *not measured* | *not measured* | *not measured* | *not measured* |
 | Delete a manifest by digest | [yes, 202, with its tags; 405 `UNSUPPORTED` with deletes disabled; its referrers stay](distribution.md#delete) | [yes, 202; **405** for a manifest an index lists](zot.md#delete) | [yes, 202, with its tags; its referrers stay](gitlab.md#lajstrom-registry-probe) | [yes, 202, with its tags; **a manifest with a referrer: 500**; one an index lists: 409 `MANIFEST_REFERENCED`](gitlab.md#lajstrom-registry-probe); [through Lajstrom 202, its referrers first](gitlab.md#a-delete-through-lajstroms-v2) | [no: 405 `UNSUPPORTED`](ghcr.md#delete) | [yes; its referrers go with it](harbor.md#delete) | [**202, but its tags stay and serve it**](nexus.md#delete); [Lajstrom refuses deletes there since #352: 405](nexus.md#again-after-352) | [yes, 202, with its tags](nexus.md#delete) | [yes, 202, with its tags and the blobs only it used](gitea.md#delete) | [yes, 202, with its tags and the blobs only it used](forgejo.md#what-the-provider-must-do-differently) |
 | Delete by tag | [yes: the manifest stays; 405 with deletes disabled](distribution.md#delete) | [yes: the manifest stays, untagged](zot.md#delete) | [yes: the manifest stays, untagged](gitlab.md#delete) | [yes: the manifest stays, untagged](gitlab.md#delete) | [no: 405](ghcr.md#delete) | [400 through `/v2`; the REST API does](harbor.md#delete) | [yes: the manifest stays](nexus.md#delete) | [yes: the manifest stays](nexus.md#delete) | [the tag; **the manifest too**, when it was pushed by that tag only](gitea.md#delete) | [the tag; **the manifest too**, when it was pushed by that tag only](forgejo.md#lajstrom-registry-probe) |
 | Delete a repository | [no API; on S3 it leaves `_catalog` with its last manifest](distribution.md#delete) | [no API; an empty one goes with the collector](zot.md#delete) | [no API; it stays in `_catalog`](gitlab.md#lajstrom-registry-probe) | [no API; it leaves `_catalog` with its last manifest](gitlab.md#lajstrom-registry-probe) | [REST API: the package](ghcr.md#packages-left-in-lajstrom-extras) | [REST API](harbor.md#delete) | [no `/v2` API; it goes with its last tag](nexus.md#delete) | [no `/v2` API; it goes with its last manifest](nexus.md#delete) | [no `/v2` API; it leaves `_catalog` with its last manifest; the REST API not measured](gitea.md#delete) | [no `/v2` API; it leaves `_catalog` with its last manifest](forgejo.md#lajstrom-registry-probe) |
@@ -133,6 +134,7 @@ in its compose file re-runs [Commands](jfrog-jcr.md#commands).
 | A listing API of its own | [Artifactory's Docker and storage APIs](jfrog-jcr.md#catalog-and-tags) |
 | Tag list order and pagination | [lexical; `n`/`last`/`Link`](jfrog-jcr.md#catalog-and-tags) |
 | Read-after-write lag | *not measured* |
+| Monotonic reads | *not measured* |
 | Delete a manifest by digest | [yes, 202, with its tags; its referrers stay](jfrog-jcr.md#delete) |
 | Delete by tag | [yes: the manifest stays](jfrog-jcr.md#delete) |
 | Delete a repository | [Artifactory's REST API](jfrog-jcr.md#delete) |
@@ -177,6 +179,7 @@ Its build rule, on master and not released, is
 | A listing API of its own | [REST API, per namespace](quay.md#catalog) |
 | Tag list order and pagination | [lexical; `n`/`last`/`Link`; **cached 120 s**](quay.md#tags) |
 | Read-after-write lag | [none for manifests and blobs; a tag list read before a write up to 120 s, the catalog 60 s](quay.md#consistency) |
+| Monotonic reads | *not measured* |
 | Delete a manifest by digest | [yes, 202, with its tags, with a `push` token; **oras-go's `delete` scope is 400 at the token endpoint**](quay.md#delete), so the provider asks `push` (#801) |
 | Delete by tag | [yes; the manifest goes with its last tag](quay.md#delete) |
 | Delete a referrer pushed by digest | [**404, and it stays**: its hidden tag holds it](quay.md#delete) |
@@ -222,6 +225,7 @@ the departures are [Deviations](ecr.md#deviations-from-the-specification).
 | A listing API of its own | [`DescribeRepositories`, `nextToken`](ecr.md#what-the-provider-does) |
 | Tag list order and pagination | [**in its own order; `last` an opaque token, a tag name 405**; `n`/`Link` (absolute)](ecr.md#what-the-provider-does) |
 | Read-after-write lag | [none seen in 40 writes, without load](ecr.md#capabilities) |
+| Monotonic reads | *not measured* |
 | Delete a manifest by digest | [yes, 202, with its tags; its referrers stay; **405 `UNSUPPORTED`** for a manifest an index lists](ecr.md#what-the-provider-does) |
 | Delete by tag | [the tag; the manifest goes with its last tag](ecr.md#what-the-provider-does) |
 | Delete a repository | [`DeleteRepository`, `force` for one with images](ecr.md#what-the-provider-does) |
@@ -490,13 +494,13 @@ catalog. It is **eventually consistent** when a read can miss the write for a wh
 
 | Registry | Model | What is known |
 | --- | --- | --- |
-| distribution 3.1.2 on the filesystem, on SeaweedFS and on MinIO; Zot v2.1.23 | strong (the vendor table) | the probe, 2026-11-11: every read saw each write at once (below); 2026-11-12, distribution on the filesystem and Zot, the lists read before each write: each write and each delete at once |
+| distribution 3.1.2 on the filesystem, on SeaweedFS and on MinIO; Zot v2.1.23 | strong (the vendor table) | the probe, 2026-11-11: every read saw each write at once (below); 2026-11-12, distribution on the filesystem and Zot, the lists read before each write: each write and each delete at once; 2026-11-13, the same two: monotonic reads over new connections, no change undone |
 | GitLab A and B | strong (the vendor table) | the probe, 2026-11-11 |
 | Amazon ECR | eventual, no bound | 100 ms to several seconds under concurrent pushes, from reports ([ecr.md](ecr.md#capabilities)); measured 2026-11-13 without load: no lag in 40 writes and the probe's row (#19) |
 | GHCR | eventual (the vendor table), no bound | users saw a tag `404` 0.2 s after its push, once in 30 runs; reads from another runner fail more often |
 | Docker Hub | none seen for manifests and blobs | its referrers list lagged up to about a minute behind a signature (cosign users' reports) |
 | Project Quay 3.18.2 | eventual within 130 s (the vendor table, #803), for lists | measured 2026-11-12: manifests and blobs at once; a tag list read before a push stays stale up to 120 s, a catalog page 60 s ([quay.md](quay.md#consistency)) |
-| Azure Container Registry | per replica | geo-replicas are eventual, without a published bound; a push and its reads must use one regional endpoint |
+| Azure Container Registry | per replica | geo-replicas are eventual, without a published bound; a push and its reads must use one regional endpoint. The probe's row "Monotonic reads" (below) is the measurement for its global endpoint; not run on it |
 | Google Artifact Registry | none seen | a remote repository caches its tags for an hour |
 
 "Strong" for distribution, Zot and GitLab is the vendor table's reading of a measurement of a
@@ -521,6 +525,30 @@ time up to 2 s, for at most 2 minutes, past the 120 s of Quay's tag-list cache. 
 and then the same for the deletes; "Overrides needed" names `consistency: eventual` and a
 `consistencyBound` in whole seconds above the worst lag of the writes and the deletes. Rows
 measured before 2026-11-12 had neither the reads before a write nor the deletes.
+
+The probe's row "Monotonic reads" (#564) measures what guarantees.md calls **monotonic reads**:
+once a read saw a write, every later read sees it too. A registry behind an endpoint that picks
+a replica per connection or per DNS lookup (ACR's global endpoint with geo-replication) can
+serve a write on one replica and 404 on the next. In the repository `mono` of the scratch prefix
+the probe makes three writes (a new blob, then a manifest with it as its layer under a new tag),
+moves the first tag to another manifest (the move of an `oci` proxy's upstream tag, ADR 0018,
+and of a `sha256-<hex>` index of the tag schema), then deletes the three manifests the tags name,
+by digest. After each change every read goes over a client of its own: no keep-alive, a new
+dialer and resolver, so a new TCP connection and a new lookup of the host name (Go keeps no DNS
+cache; the system's resolver may, within the record's TTL). The reads are the blob's `HEAD`, and
+the manifest's `HEAD` by digest and by tag, the tag compared by digest. Each is asked until it
+sees the change, as the lag row asks, then `--monotonic-reads` times more (5). A later read that
+sees the state before the change is a regression: a write seen, then 404; the tag at the new
+digest, then at the old one; a manifest gone, then 200. The cell is `none: …` with the changes
+and the number of addresses the connections reached, or `**not monotonic**: …` with each
+regression and how many of the reads it was; "Overrides needed" then says that no capability
+helps and that `url` should name one regional endpoint. A move the registry refuses (immutable
+tags) or a delete it refuses is not measured, and a read that does not see a change within
+2 minutes ends the row. The tag list and the catalog are not read again: the visibility barrier
+and the tag check do not read them, and a registry that caches its lists (Quay, 120 s) would hold
+the row for minutes per change. Their lag is the lag row's. One address and a handful of reads
+cannot show a replica that DNS hands out to others, so `none` there is weak evidence; a larger
+`--monotonic-reads` and a run from each region the registry serves make it stronger.
 
 ## Measuring a registry: `lajstrom registry probe`
 
@@ -558,6 +586,7 @@ written. How each row is measured, in requests:
 | Catalog | `_catalog?n=1`; five repositories `pre`, `pre/sub`, `pre-x`, `pre.y`, `prea` and their order; a page of two after the first by `last` and its `Link`; `n=1000`, `n=1001`, `n=100000`; the page without `n` |
 | Tag list | one manifest under seven tags pushed out of order (`b`, `A`, `1.10`, `_x`, `1.2`, `Z`, `a`); the list, a page of two by `last`, the list of a repository never pushed |
 | Read-after-write lag | the tag list and the catalog, then three blobs and three manifests, each read back until every read sees it; then the three manifests deleted, each read until every read misses it ([Consistency](#consistency)) |
+| Monotonic reads | three blobs and three manifests under new tags, the first tag moved, the three manifests deleted; after each, `HEAD`s of the blob, the manifest by digest and by tag, each over a new connection and a new DNS lookup, until one sees the change and then `--monotonic-reads` (5) times more; a later read that sees the state before is a regression ([Consistency](#consistency)) |
 | Deletes | a manifest under two tags deleted by digest, then its tags and the blob only it used; a subject with a referrer; a manifest an image index lists; a tag of a manifest pushed by tag only, and of one pushed by digest first. "Delete a repository": what stays after the cleanup |
 | Immutable tags | `A` under `v1`, `A` again, `B` under `v1`, then `A` by digest |
 | Blob redirect, `Range` | a 64 KiB blob by `GET` and `HEAD`, redirects not followed; then whole, `bytes=0-9` and a range past its end, after the redirect when there is one |
