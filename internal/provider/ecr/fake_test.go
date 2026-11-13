@@ -58,12 +58,16 @@ type fakeECR struct {
 	listErr, deleteErr error
 	pageSize           int            // of DescribeRepositories; 0 is one page
 	images             map[string]int // name → images it holds
+
+	policyErr error
+	policies  map[string]string // name → its lifecycle policy text
 }
 
 func newFakeECR(c *clock) *fakeECR {
 	f := &fakeECR{clock: c, lifetime: 12 * time.Hour, calls: map[string]int{}}
 	f.repos = map[string]ecr.CreateRepositoryInput{}
 	f.images = map[string]int{}
+	f.policies = map[string]string{}
 	return f
 }
 
@@ -168,6 +172,25 @@ func (f *fakeECR) DeleteRepository(_ context.Context, in *ecr.DeleteRepositoryIn
 	delete(f.repos, name)
 	delete(f.images, name)
 	return &ecr.DeleteRepositoryOutput{}, nil
+}
+
+// GetLifecyclePolicy answers the policy text of a repository, LifecyclePolicyNotFoundException
+// for one without, and RepositoryNotFoundException for one it does not hold.
+func (f *fakeECR) GetLifecyclePolicy(_ context.Context, in *ecr.GetLifecyclePolicyInput, _ ...func(*ecr.Options)) (*ecr.GetLifecyclePolicyOutput, error) {
+	if err := f.call("GetLifecyclePolicy", &f.policyErr); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	name := aws.ToString(in.RepositoryName)
+	if _, ok := f.repos[name]; !ok {
+		return nil, &types.RepositoryNotFoundException{Message: aws.String("The repository with name '" + name + "' does not exist")}
+	}
+	text, ok := f.policies[name]
+	if !ok {
+		return nil, &types.LifecyclePolicyNotFoundException{Message: aws.String("Lifecycle policy does not exist for the repository with name '" + name + "'")}
+	}
+	return &ecr.GetLifecyclePolicyOutput{RepositoryName: in.RepositoryName, LifecyclePolicyText: aws.String(text)}, nil
 }
 
 // fakeProvider is a Provider on f with the instance prefix art/; edit changes the

@@ -56,6 +56,7 @@ type api interface {
 	CreateRepository(ctx context.Context, in *ecr.CreateRepositoryInput, optFns ...func(*ecr.Options)) (*ecr.CreateRepositoryOutput, error)
 	ecr.DescribeRepositoriesAPIClient
 	DeleteRepository(ctx context.Context, in *ecr.DeleteRepositoryInput, optFns ...func(*ecr.Options)) (*ecr.DeleteRepositoryOutput, error)
+	GetLifecyclePolicy(ctx context.Context, in *ecr.GetLifecyclePolicyInput, optFns ...func(*ecr.Options)) (*ecr.GetLifecyclePolicyOutput, error)
 }
 
 // Provider is the Provider of one Amazon ECR registry. The data path, /v2, is the generic
@@ -78,6 +79,11 @@ type Provider struct {
 	// known holds the Lajstrom names of the repositories that exist, with the time until
 	// which EnsureRepository believes it without asking ECR.
 	known sync.Map
+
+	// lifecycleOnce starts checkLifecycle at the first answer of Capabilities, which closes
+	// lifecycleDone when it ends.
+	lifecycleOnce sync.Once
+	lifecycleDone chan struct{}
 }
 
 // hostPattern is the host of an ECR registry, which names its account and region:
@@ -137,6 +143,8 @@ func newProvider(cfg config.Registry, log *slog.Logger, client api, account stri
 		forceDelete: cfg.ECR.ForceDelete,
 		now:         now,
 		log:         log.With("registry", cfg.Name),
+
+		lifecycleDone: make(chan struct{}),
 	}
 	if account != "" {
 		p.registryID = aws.String(account)
@@ -226,12 +234,15 @@ func normalisePrefix(prefix string) string {
 func (p *Provider) Name() string { return p.name }
 
 // Capabilities are the generic provider's, with ECR's (capabilities) where the configuration
-// sets none, and MaxNameLength maxNameLen less the length of the instance prefix.
+// sets none, and MaxNameLength maxNameLen less the length of the instance prefix. Its first
+// answer, the probe at start in serve, also starts the check of the lifecycle policies below the
+// prefix (checkLifecycle), once and in the background: it delays no caller.
 func (p *Provider) Capabilities(ctx context.Context) (provider.Capabilities, error) {
 	c, err := p.data.Capabilities(ctx)
 	if err != nil {
 		return c, err
 	}
+	p.lifecycleOnce.Do(func() { go p.checkLifecycle(context.WithoutCancel(ctx)) })
 	c.MaxNameLength = max(maxNameLen-len(p.prefix), 1)
 	return c, nil
 }

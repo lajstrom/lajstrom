@@ -9,8 +9,12 @@
 // expiry, and every request sends the current one. EnsureRepository creates a repository
 // with CreateRepository, with the tag mutability and encryption of the configuration;
 // ListRepositories is DescribeRepositories, filtered by the instance prefix; DeleteRepository
-// honours registries[].ecr.forceDelete. Errors of the ECR API wrap the sentinels of package
-// provider where one applies (translate). The SDK retries throttling with backoff.
+// honours registries[].ecr.forceDelete. The first answer of Capabilities, the probe at start,
+// reads the lifecycle policies of a sample of the repositories below the prefix in the
+// background and warns about a rule that can expire what Lajstrom needs (checkLifecycle);
+// without ecr:GetLifecyclePolicy it logs once that it skipped the check. Errors of the ECR API
+// wrap the sentinels of package provider where one applies (translate). The SDK retries
+// throttling with backoff.
 //
 // Tested against moto for the API and distribution for /v2, not against ECR itself:
 // docs/registries/ecr.md says what was and what waits for the live check (#19).

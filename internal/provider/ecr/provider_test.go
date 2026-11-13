@@ -110,7 +110,9 @@ func TestNewRegion(t *testing.T) {
 }
 
 // fakeAWS is the ECR API endpoint over HTTP for the SDK itself: GetAuthorizationToken, of
-// which the first throttled answers are ThrottlingException.
+// which the first throttled answers are ThrottlingException; DescribeRepositories, one
+// repository below the prefix and one beside it; GetLifecyclePolicy, policyAll for the
+// repository below the prefix.
 type fakeAWS struct {
 	mu        sync.Mutex
 	throttled int // answers left that are throttled
@@ -134,6 +136,16 @@ func (f *fakeAWS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"authorizationToken": base64.StdEncoding.EncodeToString([]byte("AWS:token-1")),
 			"expiresAt":          time.Now().Add(12 * time.Hour).Unix(),
 		}}})
+	case strings.HasSuffix(target, ".DescribeRepositories"):
+		_, _ = io.WriteString(w, `{"repositories":[{"repositoryName":"art/raw/scratch/notes"},{"repositoryName":"other/x"}]}`)
+	case strings.HasSuffix(target, ".GetLifecyclePolicy"):
+		var in struct{ RepositoryName string }
+		if json.NewDecoder(r.Body).Decode(&in) != nil || in.RepositoryName != "art/raw/scratch/notes" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"__type":"RepositoryNotFoundException","message":"no such repository"}`)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"repositoryName": in.RepositoryName, "lifecyclePolicyText": policyAll})
 	default:
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = io.WriteString(w, `{"__type":"ValidationException","message":"not in the fake"}`)
@@ -169,7 +181,8 @@ func ecrV2(w http.ResponseWriter, r *http.Request) {
 
 // TestDataPath runs the provider with the SDK against fake ECR endpoints: the token, fetched
 // once past a throttled answer, is the Basic credential of /v2; ECR's capabilities are those
-// of the configuration's defaults; a tag pushed again to an immutable repository is a conflict.
+// of the configuration's defaults, and their first answer reads the lifecycle policies below
+// the prefix; a tag pushed again to an immutable repository is a conflict.
 func TestDataPath(t *testing.T) {
 	awsEnv(t)
 	ctx := t.Context()
@@ -180,7 +193,8 @@ func TestDataPath(t *testing.T) {
 	t.Cleanup(v2.Close)
 	cfg := config.Registry{Name: "ecr", Type: Type, URL: v2.URL, Prefix: "art/",
 		ECR: config.ECR{Region: "us-east-1", Endpoint: apiSrv.URL}}
-	p, err := provider.New(cfg, slog.New(slog.DiscardHandler))
+	var logs bytes.Buffer
+	p, err := provider.New(cfg, slog.New(slog.NewJSONHandler(&logs, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,11 +211,16 @@ func TestDataPath(t *testing.T) {
 	if err := p.(provider.Pinger).Ping(ctx); err != nil {
 		t.Errorf("Ping: %v", err)
 	}
+	<-p.(*Provider).lifecycleDone
 	api.mu.Lock()
 	targets := strings.Join(api.targets, " ")
 	api.mu.Unlock()
-	if want := strings.Repeat("AmazonEC2ContainerRegistry_V20150921.GetAuthorizationToken ", 3); targets+" " != want {
-		t.Errorf("ECR API calls: %s; want two throttled GetAuthorizationToken and one more", targets)
+	op := "AmazonEC2ContainerRegistry_V20150921."
+	if want := strings.Repeat(op+"GetAuthorizationToken ", 3) + op + "DescribeRepositories " + op + "GetLifecyclePolicy"; targets != want {
+		t.Errorf("ECR API calls: %s; want two throttled GetAuthorizationToken and one more, DescribeRepositories, GetLifecyclePolicy", targets)
+	}
+	if !strings.Contains(logs.String(), `"repositories":["raw/scratch/notes"],"rulePriority":1,"description":"keep ten"`) {
+		t.Errorf("no warning of the lifecycle rule:\n%s", logs.String())
 	}
 
 	repo, err := p.Repository(ctx, "raw/scratch/notes")
