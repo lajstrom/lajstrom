@@ -219,6 +219,21 @@ func TestReservedComponent(t *testing.T) {
 	}
 }
 
+// TestLayoutFileComponent: only "index.json" and "oci-layout" are layout files. The suffixes
+// that ReservedComponent also covers (blobs, .uploads, .sync) and Harbor's route words are not,
+// since the backend serves them: only the layout files break the request itself (zot#4695).
+func TestLayoutFileComponent(t *testing.T) {
+	for c, want := range map[string]bool{
+		"index.json": true, "oci-layout": true,
+		"blobs": false, "myblobs": false, ".uploads": false, "a.sync": false,
+		"manifests": false, "referrers": false, "index.json5": false, "oci-layouts": false,
+	} {
+		if got := LayoutFileComponent(c); got != want {
+			t.Errorf("LayoutFileComponent(%q) = %v, want %v", c, got, want)
+		}
+	}
+}
+
 // TestLegacyPackagePath: every kind of name that ADR 0017 changes, with the component it had
 // before. Reads accept the earlier form beside the new one; a path in it maps to itself.
 func TestLegacyPackagePath(t *testing.T) {

@@ -59,6 +59,14 @@ Implements the OCI distribution spec against the backend through the provider, w
 repository name `<format>/<repo>/<package path>` (the instance prefix is added by the provider and
 never visible to clients).
 
+A name whose `<package path>` has a component that is a file of a registry's image layout,
+`index.json` or `oci-layout` (`profile.LayoutFileComponent`, [ADR 0017](../adr/0017-the-grammar-of-oci-names.md)),
+is `400 NAME_INVALID` before the repo is looked up, like a name that is not the grammar: such a
+name collides with another repository's layout and the backend answers every request of it a
+permanent `5xx` (zot#4695), which would otherwise count against the registry's circuit breaker and
+fail every other repo on it. `EscapeComponent` never writes these components, so no managed
+package's name carries one.
+
 | Method and path | Behaviour |
 | --- | --- |
 | `GET /v2/` | `200` if authenticated, else `401` with `WWW-Authenticate: Bearer realm="<externalURL>/v2/token",service="<host>"`. Every `/v2` answer has `Docker-Distribution-API-Version: registry/2.0`. |

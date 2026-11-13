@@ -19,6 +19,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/metrics"
+	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -295,6 +296,16 @@ func (h *handler) resolve(ctx context.Context, name string) (*target, error) {
 	if !ok {
 		return nil, nameUnknown(name)
 	}
+	// A package path with a component that is a file of the backend's image layout collides with
+	// another repository's layout and the backend answers it a permanent 5xx (profile
+	// .LayoutFileComponent, zot#4695). NAME_INVALID is decided by the name alone, so it is
+	// returned before the repo lookup, as the grammar check above is, and does not reveal whether
+	// the repo exists. Refusing it here keeps a per-name 5xx from counting against the registry's
+	// circuit breaker, which would fail every other repo on that registry for a while.
+	if c, bad := reservedPathComponent(path); bad {
+		return nil, &apiError{status: http.StatusBadRequest, code: codeNameInvalid,
+			msg: fmt.Sprintf("invalid repository name %q: the path component %q is a file of a registry's image layout", name, c)}
+	}
 	repo, err := h.o.Index.GetRepo(ctx, formatName, repoName)
 	switch {
 	case errors.Is(err, index.ErrNotFound), err == nil && repo.Kind == index.KindGroup:
@@ -332,6 +343,17 @@ func repoBase(repo index.Repo) string {
 }
 
 func ociName(repo index.Repo, pkgPath string) string { return repoBase(repo) + "/" + pkgPath }
+
+// reservedPathComponent returns the first component of a package path that is a file of a
+// registry's image layout (profile.LayoutFileComponent), and whether there is one.
+func reservedPathComponent(path string) (string, bool) {
+	for _, c := range strings.Split(path, "/") {
+		if profile.LayoutFileComponent(c) {
+			return c, true
+		}
+	}
+	return "", false
+}
 
 // authorize decides whether the request may do a on the repository t. A request with a bearer
 // is decided by the token's access claims and not by the Authorizer (allowedByToken: 403 when
