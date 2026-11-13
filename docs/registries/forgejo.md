@@ -110,9 +110,19 @@ ran (as on Gitea, [gitea.md, Cleanup](gitea.md#cleanup)). With
    a tag is stored lower-cased and resolved in any case. That was read in the code until now.
    It has now run: reindex cannot rebuild a Maven version with capitals from the registry.
    `TestIntegrationFormats/sqlite/maven` publishes `com.example:lib-core:1.4.0-M1`. The publish
-   works, but a rebuild from the registry reports `the tag of lajstrom.version and
-   lajstrom.variant does not match the tag pushed to: "1.4.0-M1", want "1.4.0-m1"` and leaves
-   the version out. Refusing such versions up front is a contract question (#426).
+   works, but a rebuild from the registry reported `the tag of lajstrom.version and
+   lajstrom.variant does not match the tag pushed to: "1.4.0-M1", want "1.4.0-m1"` and left
+   the version out.
+   - **Done in #844.** Reindex now matches the listed tag to the annotations' tag without case,
+     when the registry resolves the annotations' tag to the same manifest. It takes the version
+     and the tag from the annotations. This is the same as on Gitea ([gitea.md, item 2](gitea.md#what-the-provider-must-do-differently)).
+     It is tested on a fake that folds case. The integration tests have not been run against
+     Forgejo again: the job `e2e (forgejo)` runs the scenarios and the provider's tests, not
+     reindex's.
+   - **Two versions that differ only in case** behave as on Gitea. Through Lajstrom the second
+     is a 409. Reindex indexes the one manifest the tag holds, and reports a version whose tag
+     was re-pointed past Lajstrom as drift.
+   - **Refusing such versions up front** is a contract question (#426).
 3. **Do not stream a chunk of unknown size into a session that already holds bytes.** As on
    Gitea, it is 400 `BLOB_UPLOAD_INVALID` "Stream uploads after first write are not allowed".
    `registries[].uploads.spoolUnknownLength: true` spools such a chunk (#425). `serve` hints at
@@ -196,7 +206,7 @@ packages on the branch of PR #814.
 | facade `TestIntegrationUploadAcrossReplicas` | **fail**: `GET on B: 204, Range "0-38"` for 38 bytes | pass |
 | facade `TestIntegrationDeleteInterleaved` | **fail**: 8 subtests, 404 `BLOB_UNKNOWN` (item 5) | the same |
 | facade: delete, delete referrer, delete unsupported, catalog after delete, pass-through, referrers, raw push, tokens across replicas, monolithic abandoned, blob reads, proxy repo push, client body breaker | pass | pass |
-| reindex `TestIntegrationFormats` | **fail**: maven, the case-folded tag (item 2); apt, `oci_repos` lacks `goodbye`, the image whose only version the test deleted, which left `_catalog` with it | not run |
+| reindex `TestIntegrationFormats` | **fail**: maven, the case-folded tag (item 2; reindex fixed in #844, not run again); apt, `oci_repos` lacks `goodbye`, the image whose only version the test deleted, which left `_catalog` with it | not run |
 | reindex `TestIntegrationSplit` | **fail**: `a--b.txt` and `.gitignore` (item 4); `k8s/manifests/app.yaml` passes | not run |
 | reindex `TestIntegrationNoCatalog` | **fail** in the cell `probe`: the test's front is on `127.0.0.1`, the realm's host is `localhost`, so the provider sends no credentials there (#354); the cell `config` passes | not run |
 | ingest, raw, deb (`TestAptGet`, `TestAptGetInstall/registry`, `TestAptGetSigned` in `ubuntu:22.04`, `ubuntu:24.04`, `debian:12`), every other package | pass | not run |
