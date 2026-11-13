@@ -111,11 +111,23 @@ Anything neither source states nor the run measured is marked *unverified*.
   `ecr:GetDownloadUrlForLayer` on the source ([blob mounting](https://docs.aws.amazon.com/AmazonECR/latest/userguide/blob-mounting.html);
   since 2026-01-20, [announcement](https://aws.amazon.com/about-aws/whats-new/2026/01/amazon-ecr-cross-repository-layer-sharing/)).
   AWS does not state the default; it is `DISABLED` (measured, in four regions of an account
-  that never set it). Then a mount is 202 with a new session, and the blob is not in the target
-  repository (measured). With the setting on, a mount ECR cannot do yet is answered `202` with a
-  session (reported, [ocync](https://clowdhaus.github.io/ocync/registries/ecr)); a mount with it
-  on is *unverified*: the run did not change the account's setting. The facade passes a `202` on
-  as a plain session.
+  that never set it). Measured on 2026-11-13, a 6 MiB blob from one repository to another of
+  the same account and region, the setting switched for the test and back:
+
+  | `BLOB_MOUNTING` | The blob in the source repository | `POST ?mount=&from=` | In the target |
+  | --- | --- | --- | --- |
+  | `DISABLED` | a layer of a pushed image | 202, a new session | 404 |
+  | `ENABLED`, 30 s and 90 s after the switch | a layer of a pushed image | 201, `Location` of the blob | 200 |
+  | `ENABLED`, 30 s after | uploaded, no image uses it | 202, a new session | 404 |
+
+  So ECR mounts only a blob an image in the source repository uses, as ocync reports ("a mount
+  ECR cannot do yet is answered `202`", [ocync](https://clowdhaus.github.io/ocync/registries/ecr)):
+  a blob a client has pushed but whose manifest has not come yet is uploaded again. A 202 is
+  what the specification allows for a mount the registry does not do; the facade and the
+  provider take it as a plain session, and the client sends the bytes. With the setting on,
+  the copies Lajstrom makes between repositories of one ECR registry (a layer an oci proxy
+  repo holds, pushed again to a hosted repo) cost nothing; with it off, each is uploaded. Turn
+  it on per region where several repositories share layers.
 - **Quotas** ([service quotas](https://docs.aws.amazon.com/AmazonECR/latest/userguide/service-quotas.html)):
   100,000 repositories a region and 100,000 images a repository, both adjustable; 1,000 tags an
   image, fixed. Each manifest is an image to ECR, and so is each referrer, which "counts as an
@@ -347,7 +359,7 @@ end, and the account's ECR and IAM state compared equal to a record taken before
 | Upload: chunk size limit | each part but the last at least 5 MB, refused at the closing `PUT`; 30 MiB in one `PATCH` taken |
 | Upload: session status (`GET`) | **404**, plain text |
 | Upload: cancel (`DELETE`) | 404, plain text |
-| Upload: mount (`POST ?mount=&from=`) | 202, a session, with `BLOB_MOUNTING` `DISABLED` (the default); with it on *not measured* |
+| Upload: mount (`POST ?mount=&from=`) | with `BLOB_MOUNTING` `ENABLED` 201 for a layer of an image, 202 (a session) for a blob no image uses; `DISABLED`, the default, 202 always |
 | Upload: wrong digest, empty blob | a wrong digest 400 `BLOB_UPLOAD_INVALID`; the empty blob not measured |
 | Upload continued by another replica | not measured |
 | Garbage collector and an untagged referrer (#37) | not measured |
@@ -373,8 +385,8 @@ What ran:
   `DescribeRepositories` and the quotas.
 
 Not measured: a blob above 52,000 MiB (and whether 4,200 `PATCH`es bound one), the token past 12
-hours (the unit tests cover the refresh), a mount with `BLOB_MOUNTING` on (the run did not
-change the account's setting), the image quota, a lag under concurrent pushes, KMS encryption.
+hours (the unit tests cover the refresh), a mount between repositories of different encryption,
+the image quota, a lag under concurrent pushes, KMS encryption.
 
 ## Measure a real ECR (#19)
 

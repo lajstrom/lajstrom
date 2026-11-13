@@ -237,7 +237,7 @@ the departures are [Deviations](ecr.md#deviations-from-the-specification).
 | Upload: chunk size limit | [**5 MB a part but the last**, refused at the closing `PUT`; `OCI-Chunk-Min-Length: 10485760`](ecr.md#what-the-provider-does) |
 | Upload: session status (`GET`) | [**404**](ecr.md#what-the-provider-does) |
 | Upload: cancel (`DELETE`) | [404](ecr.md#what-the-provider-does) |
-| Upload: mount (`POST ?mount=&from=`) | [202, a session, with `BLOB_MOUNTING` off, the default](ecr.md#what-the-provider-does) |
+| Upload: mount (`POST ?mount=&from=`) | [**202, a session, with `BLOB_MOUNTING` off, the default**; with it on, 201 for a layer of an image, 202 for a blob no image uses](ecr.md#what-the-provider-does) |
 | Upload: wrong digest, empty blob | [a wrong digest 400; the empty blob not measured](ecr.md#measured-on-ecr-19) |
 | Upload continued by another replica | *not measured* |
 | Garbage collector and an untagged referrer (#37) | *not measured* |
