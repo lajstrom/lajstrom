@@ -91,7 +91,8 @@ type errorEntry struct {
 }
 
 // fail answers err as the distribution spec's error document. The status is the apiError's,
-// or the registry's 4xx when the cause is its refusal of the request (statusOf), or
+// or the registry's 4xx when the cause is its refusal of the request (statusOf), whose message
+// is the registry's name, status and code, then the apiError's own message when it has one, or
 // format.StatusOf of the cause; the code follows the status where the status decides it
 // (401 UNAUTHORIZED with the challenge, 403 DENIED, 429 TOOMANYREQUESTS, 501 UNSUPPORTED, the
 // 503 of a registry that takes no request now, or of an index whose database does not
@@ -114,6 +115,9 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	code, msg, detail := ae.code, ae.msg, ae.detail
 	if rej != nil {
 		code, msg = rejectedCode(rej, code), rej.Error()
+		if ae.msg != "" { // what the facade found itself, after the registry's words (nameMissing)
+			msg += "; " + ae.msg
+		}
 		h.o.Log.WarnContext(r.Context(), "facade: the registry refused the request", "method", r.Method, "path", r.URL.Path,
 			"status", status, "error", err.Error(), "requestId", server.RequestID(r.Context()))
 	}

@@ -256,16 +256,17 @@ func (h *handler) recordPassThrough(ctx context.Context, t *target, d digest.Dig
 // tag ref: a manifest with a subject through ingest (ingestReferrer), which takes the referrers
 // lock where the backend has no referrers API and for a push by tag, any other one directly, by
 // tag under the tag lock of its digest. A MANIFEST_BLOB_UNKNOWN that outlasts retryBlobsLag is
-// the answer with the registry's status and code, as the hook's is MANIFEST_BLOB_UNKNOWN too.
+// the answer with the registry's status and code, as the hook's is MANIFEST_BLOB_UNKNOWN too,
+// and names the first blob the registry does not have (nameMissing).
 func (h *handler) passThrough(r *http.Request, t *target, ref string, refDigest digest.Digest, desc ocispec.Descriptor, body []byte) error {
 	tag := ref
 	if refDigest != "" {
 		tag = ""
 	}
-	if subject := subjectOf(body); subject != nil {
-		return h.ingestReferrer(r, t, tag, desc, body, subject.Digest)
-	}
 	ctx := r.Context()
+	if subject := subjectOf(body); subject != nil {
+		return h.nameMissing(ctx, t, body, h.ingestReferrer(r, t, tag, desc, body, subject.Digest))
+	}
 	rr, err := h.backend(ctx, t)
 	if err != nil {
 		return err
@@ -286,11 +287,71 @@ func (h *handler) passThrough(r *http.Request, t *target, ref string, refDigest 
 	case errors.Is(err, provider.ErrConflict):
 		return &apiError{code: codeTagInvalid, err: err}
 	case blobsUnknown(err):
-		return &apiError{code: codeManifestBlobUnknown, err: err}
+		return h.nameMissing(ctx, t, body, &apiError{code: codeManifestBlobUnknown, err: err})
 	case err != nil:
 		return &apiError{code: codeManifestInvalid, err: err}
 	}
 	return nil
+}
+
+// nameMissing returns err, the registry's last MANIFEST_BLOB_UNKNOWN for the manifest body of t,
+// an oci repo, with the first blob of body that the registry does not have named in the message,
+// after the registry's, and in detail.digest, as checkLayers names a layer of a managed repo
+// (#850). It sends one HEAD per distinct blob that body lists (listedBlobs), in order, and stops
+// at the first the registry does not have; a layer with urls, which the registry need not hold,
+// and a malformed digest, which the registry would name, are not asked. When the registry has
+// them all, or a HEAD fails otherwise, err is the answer as it is: the registry's name, status
+// and code. Any other err is returned as it is. The HEADs come only after the last refusal: on a
+// strong registry the first, elsewhere the one that outlasted the retries.
+func (h *handler) nameMissing(ctx context.Context, t *target, body []byte, err error) error {
+	if !blobsUnknown(err) {
+		return err
+	}
+	rr, rerr := h.backend(ctx, t)
+	if rerr != nil {
+		return err
+	}
+	blobs, what := listedBlobs(body)
+	seen := make(map[digest.Digest]bool, len(blobs))
+	for _, b := range blobs {
+		if seen[b.Digest] || b.Digest.Validate() != nil || len(b.URLs) > 0 {
+			continue
+		}
+		seen[b.Digest] = true
+		ok, herr := rr.Exists(ctx, b)
+		switch {
+		case herr != nil:
+			return err
+		case !ok:
+			return &apiError{code: codeManifestBlobUnknown, msg: fmt.Sprintf(what, b.Digest, t.name),
+				detail: map[string]string{"digest": b.Digest.String()}, err: err}
+		}
+	}
+	return err
+}
+
+// listedBlobs returns what the manifest body lists that the registry must have before it takes
+// it, and the message that names one of them missing: the config and the layers of an image
+// manifest, OCI or Docker, or the first maxLayers manifests of an index. readManifest has checked
+// that body is JSON with at most maxLayers layers; a body whose descriptors do not decode lists
+// none.
+func listedBlobs(body []byte) ([]ocispec.Descriptor, string) {
+	var m struct {
+		Config    *ocispec.Descriptor  `json:"config"`
+		Layers    []ocispec.Descriptor `json:"layers"`
+		Manifests []ocispec.Descriptor `json:"manifests"`
+	}
+	if json.Unmarshal(body, &m) != nil {
+		return nil, ""
+	}
+	if len(m.Manifests) > 0 {
+		return m.Manifests[:min(len(m.Manifests), maxLayers)], "manifest %s was not pushed to %s"
+	}
+	var blobs []ocispec.Descriptor
+	if m.Config != nil {
+		blobs = append(blobs, *m.Config)
+	}
+	return append(blobs, m.Layers...), "blob %s was not uploaded to %s"
 }
 
 // retryBlobsLag sends a manifest with push, and again while a registry not classified strong
