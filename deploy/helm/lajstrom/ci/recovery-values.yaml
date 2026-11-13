@@ -1,0 +1,5 @@
+# The recovery of a lost password (docs/deploy/helm.md, A lost password): the Job that runs
+# lajstrom admin user set-password for admin, with the password of the Secret the chart makes.
+# make helm-lint renders the chart with this file too.
+recovery:
+  user: admin

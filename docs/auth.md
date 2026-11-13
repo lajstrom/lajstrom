@@ -963,8 +963,13 @@ that finds it set fails and says to unset it. The other commands:
 lajstrom admin user list                    # NAME, UID, KIND, DISABLED, CREATED
 lajstrom admin user disable alice           # refused from the next request on
 lajstrom admin user enable alice
-lajstrom admin user set-password alice      # the same two password sources
+lajstrom admin user set-password alice      # the same two sources, or --password-file <file>
 ```
+
+`set-password --password-file` reads the password from a file, the way `--password-stdin` reads
+standard input: the whole of it without the trailing newline. It is for the recovery Job of the
+Helm chart, whose image has no shell to put a Secret on standard input
+([helm.md](deploy/helm.md#a-lost-password)).
 
 A name that exists is refused (`user alice already exists`, exit status 1). Every change is an
 audit event ([rbac.md](spec/rbac.md) §5) with the user as its subject: `user.create` (its

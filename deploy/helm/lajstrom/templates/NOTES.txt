@@ -26,6 +26,23 @@ Then the token is dead: helm -n {{ $ns }} upgrade {{ .Release.Name }} <chart> --
 Then the token is dead: kubectl -n {{ $ns }} delete secret {{ $boot }}
 {{- end }}
 {{- end }}
+{{- with .Values.recovery.user }}
+{{- $secret := include "lajstrom.recoverySecretName" $ }}
+
+recovery.user is set: the Job {{ $full }}-recovery gave {{ . }} the password of the Secret {{ $secret }},
+and gives it again on every helm upgrade while recovery.user is set. Read it:
+
+  kubectl -n {{ $ns }} get secret {{ $secret }} -o jsonpath='{.data.{{ $.Values.recovery.key }}}' | base64 -d
+
+Once you are in, turn the Job off{{ if not $.Values.recovery.existingSecret }}, which removes the Secret{{ end }}:
+
+  helm -n {{ $ns }} upgrade {{ $.Release.Name }} <chart> --reuse-values --set recovery.user=
+{{- if $.Values.recovery.existingSecret }}
+  kubectl -n {{ $ns }} delete secret {{ $secret }}
+{{- end }}
+
+A Job that failed stays for its log: kubectl -n {{ $ns }} logs job/{{ $full }}-recovery
+{{- end }}
 {{- if .Values.migrate.enabled }}
 
 Each helm upgrade runs lajstrom migrate of the new image first, as the Job {{ $full }}-migrate;

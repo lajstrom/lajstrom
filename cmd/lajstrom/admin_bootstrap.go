@@ -56,7 +56,7 @@ func newAdminBootstrapCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			password, err := a.readPassword(cmd, useStdin)
+			password, err := a.readPassword(cmd, useStdin, "")
 			if err != nil {
 				return err
 			}

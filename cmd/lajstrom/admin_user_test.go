@@ -216,6 +216,60 @@ func TestAdminUserPasswordStdin(t *testing.T) {
 	}
 }
 
+// TestAdminUserPasswordFile checks set-password --password-file, the way of the chart's recovery
+// Job, whose image has no shell to put a Secret on standard input: the file without the trailing
+// newline, as --password-stdin reads standard input, audited as user.password (#440).
+func TestAdminUserPasswordFile(t *testing.T) {
+	c := newUserCLI(t)
+	if _, err := c.create(t, nil, strings.NewReader("lost-password"), "lost", "--admin", "--password-stdin"); err != nil {
+		t.Fatal(err)
+	}
+	write := func(content string) string {
+		f := filepath.Join(t.TempDir(), "password")
+		if err := os.WriteFile(f, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	missing := filepath.Join(t.TempDir(), "missing")
+	tests := []struct {
+		name    string
+		env     map[string]string
+		args    []string
+		stored  string // the password stored; "" when set-password fails
+		wantErr string
+	}{
+		{name: "with a newline", args: []string{"--password-file", write("file-password\n")}, stored: "file-password"},
+		{name: "without CR LF, spaces kept", args: []string{"--password-file", write(" pass word \r\n")}, stored: " pass word "},
+		{name: "without a newline", args: []string{"--password-file", write("Zx81aB2cD3eF4gH5iJ6kL7mN8oP9qR0s")}, stored: "Zx81aB2cD3eF4gH5iJ6kL7mN8oP9qR0s"},
+		{name: "too short", args: []string{"--password-file", write("short\n")}, wantErr: "at least 8 bytes"},
+		{name: "too long", args: []string{"--password-file", write(strings.Repeat("x", auth.MaxPasswordLen+1))}, wantErr: "at most 1024 bytes"},
+		{name: "missing file", args: []string{"--password-file", missing}, wantErr: "--password-file: open " + missing},
+		{name: "and standard input", args: []string{"--password-file", write("file-password"), "--password-stdin"}, wantErr: "none of the others can be"},
+		{name: "the removed variable", env: map[string]string{removedEnv: "x"}, args: []string{"--password-file", write("file-password")},
+			wantErr: errRemovedEnv.Error()},
+	}
+	changes := 0
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := append([]string{"admin", "user", "set-password", "lost", "--config", c.cfg}, tt.args...)
+			_, _, err := runIn(t, tt.env, strings.NewReader("stdin-password"), args...)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			changes++
+			wantPassword(t, c.dsn, "lost", tt.stored)
+		})
+	}
+	wantCLIAudit(t, c.dsn, auth.ActionUserPassword, changes)
+}
+
 // TestAdminUserPrompt checks the prompt on a terminal: twice, without echo, on stderr, and the
 // errors of a mismatch and of the terminal.
 func TestAdminUserPrompt(t *testing.T) {
