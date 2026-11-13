@@ -848,10 +848,16 @@ type Reader interface {
     GetPackage(ctx context.Context, repoID int64, name string) (*Package, error)
     GetPackageByNameOCI(ctx context.Context, repoID int64, nameOCI string) (*Package, error)
     ListPackages(ctx context.Context, repoID int64, prefix string) ([]Package, error)
+    // ListPackagesAfter: a page of ListPackages, the names after `after` in byte order ("": from
+    // the first), at most limit (index-schema.md, Pages of packages and versions)
+    ListPackagesAfter(ctx context.Context, repoID int64, prefix, after string, limit int) ([]Package, error)
     GetVersion(ctx context.Context, packageID int64, version, variant string) (*Version, error)
     GetVersionByTag(ctx context.Context, packageID int64, tag string) (*Version, error)
     GetVersionByDigest(ctx context.Context, repoID int64, d digest.Digest) (*Version, error)
     ListVersions(ctx context.Context, packageID int64) ([]Version, error)
+    // ListVersionPage: the rows of the limit versions of a package after `after` (nil: from the
+    // newest), newest first by VersionKey, every variant of each, a version's rows by variant
+    ListVersionPage(ctx context.Context, packageID int64, after *VersionKey, limit int) ([]Version, error)
     // ListUnseenVersions: the versions of a repo whose IndexedAt is before seenBefore, with
     // their packages (the sweep of reindex)
     ListUnseenVersions(ctx context.Context, repoID int64, seenBefore time.Time) ([]VersionMatch, error)
@@ -991,8 +997,8 @@ type Writer interface {
 // control plane Repo, User, Token, BootstrapToken, Binding, Key, Session, AuditEvent;
 // coordination TagClaim, ReindexRun, FetchClaim, Replica; derived Package, Version, File, Cache
 // (index_cache), OCIRepo, ProxyMeta, JournalEntry, JournalState; query types FileMatch (file +
-// version + package), VersionMatch (version + package) and AuditFilter. Ids are int64,
-// timestamps UTC, nullable columns are pointers.
+// version + package), VersionMatch (version + package), VersionKey and AuditFilter. Ids are
+// int64, timestamps UTC, nullable columns are pointers.
 const ReindexRunning, ReindexDone, ReindexFailed, ReindexAbandoned = "running", "done", "failed", "abandoned" // ReindexRun.State
 type ReindexOptions struct {                // reindex_runs.options: what the run was started with
     Prune  bool `json:"prune,omitempty"`
@@ -1006,6 +1012,13 @@ const AuditPending, AuditOK, AuditFailed, AuditUnknown = "pending", "ok", "faile
 // the milliseconds of at. IsUID: s has the form of a uid, of any version.
 func NewUID(at time.Time) string
 func IsUID(s string) bool
+
+// The place of a version in ListVersionPage, which orders by it descending: CreatedAt, then
+// Version in byte order (index-schema.md, Pages of packages and versions).
+type VersionKey struct {
+    CreatedAt time.Time                     // the earliest CreatedAt of the version's rows: its first variant
+    Version   string
+}
 
 // Repo, for ADR 0013 (repos.upstream, repos.group):
 //     Kind     string                         // KindHosted, KindProxy or KindGroup
@@ -1604,6 +1617,12 @@ Where the merged shapes differ from the first sketch of this section, and why:
   the result the same way. `UpsertJournal` keeps the append-only rule of `UpsertVersion`: an
   entry under its `seq` is never rewritten. The validation of an entry and the fold are pure
   functions of `internal/oci/profile`, which ingest and reindex share.
+- **Keyset pages are methods beside the whole lists** (#552). `ListPackagesAfter` and
+  `ListVersionPage` are added, and `ListPackages` and `ListVersions` keep their signatures: about
+  25 callers (the renderers, reindex, ingest) need every row, and a limit that they would all
+  pass as "none" is churn for nothing. A version page returns rows, as `ListVersions` does, and
+  not versions grouped: the API groups them, with their pointers, as before. Its key is a
+  `VersionKey` and not the API's cursor text, which stays the API's.
 
 ## 3. Approved dependencies
 

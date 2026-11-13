@@ -293,6 +293,40 @@ Rebuilt by reindex, all but `index_cache_generations` and `proxy_meta`, whose ro
 | `oci_repos` | `id`, `repo_id`, `path` text (full OCI path incl. prefix), `seen_at` ts | unique `(repo_id, path)`; repository list for backends without a catalog; reconcile source. Of an `oci` repo, only the repositories that hold a tag: its catalog lists them ([below](#invariants-and-rules), #748) |
 | `proxy_meta` | the upstream's documents of a proxy repo, [above](#proxy-and-group-repos) | a cache of the upstream, not of the registry: not rebuilt, and `ResetDerived` leaves it. Migration `0010_proxy_meta.sql` |
 
+### Pages of packages and versions
+
+The management API pages a repo's packages and a package's versions (http-routing.md, `GET
+…/packages` and `…/versions`) with two keyset queries of the Reader, so that a page reads its
+own rows and not the whole list (#552). `ListPackages` and `ListVersions` stay for the callers
+that need every row: the renderers, reindex, ingest.
+
+- **`ListPackagesAfter(repoID, prefix, after, limit)`** returns the packages of the repo whose
+  name starts with `prefix` and comes after `after` (`""`: from the first), ordered by name, at
+  most `limit` of them. It is `name > after ORDER BY name LIMIT limit` on the unique index
+  `(repo_id, name)`; when the prefix comes after `after`, the scan starts at the prefix.
+- **`ListVersionPage(packageID, after, limit)`** orders the versions of a package by their key,
+  `VersionKey`: the earliest `created_at` of the version's rows (the publish time of its first
+  variant), then the version string, both descending. It returns the rows of the first `limit`
+  versions whose key comes after `after` in that order (nil: from the newest), every variant
+  of each; a version's rows are together, ordered by variant. The database groups the
+  package's rows by version (`MIN(created_at)`, over the unique index `(package_id, version,
+  variant)`) and answers only the page's rows.
+- **The order is byte order.** Names and version strings compare as bytes: every text column is
+  `COLLATE "C"` on Postgres (and on YugabyteDB, which runs its migrations), `BINARY` on SQLite,
+  which is the order of Go's `strings.Compare`, the one the API's cursor compares with.
+  Timestamps compare at the stored precision, microseconds; SQLite's text form has a fixed
+  width, so its text order is time order.
+- **A key is a place, not a row.** A page after a key holds the rows after it in the order the
+  database has then: a package or version inserted before the key is on no later page, one
+  inserted after it is on the page that reaches it, and a deleted one, the key's own
+  included, is on none; nothing else repeats or is skipped. A variant added to a version with
+  a `created_at` earlier than its first moves the version's key, and that version may then
+  repeat or be skipped, as it would between two reads of the whole list.
+- **`limit`** bounds the packages, or the versions, of a page; one below 1 returns none. A
+  caller asks for one more than its page to know whether another page follows.
+
+Both read unique indexes the schema has; they need no migration.
+
 ### The generation of a repo's documents
 
 A document is rendered lazily, in a transaction that reads what it renders from and then stores
