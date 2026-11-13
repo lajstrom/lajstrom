@@ -37,9 +37,9 @@ type client struct {
 }
 
 // newClient builds the client of cfg: the registry's Basic or bearer challenge is answered with
-// registries[].auth, and a bearer challenge whose token realm is on another host is refused
-// (realmGuard) before anything is sent there.
-func newClient(cfg config.Registry, base *url.URL) *client {
+// cred, else with registries[].auth, and a bearer challenge whose token realm is on another host
+// is refused (realmGuard) before anything is sent there.
+func newClient(cfg config.Registry, base *url.URL, cred auth.CredentialFunc) *client {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = config.DefaultRegistryTimeout
@@ -51,8 +51,7 @@ func newClient(cfg config.Registry, base *url.URL) *client {
 	t.DisableCompression = true
 	rt := &recordTransport{next: &realmGuard{base: base, next: t}}
 	noFollow := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	var cred auth.CredentialFunc
-	if cfg.Auth.Username != "" {
+	if cred == nil && cfg.Auth.Username != "" {
 		cred = auth.StaticCredential(base.Host, auth.Credential{Username: cfg.Auth.Username, Password: cfg.Auth.Password})
 	}
 	plain := &http.Client{Transport: rt, CheckRedirect: noFollow}

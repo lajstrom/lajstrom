@@ -112,6 +112,34 @@ func TestTokenCredential(t *testing.T) {
 	}
 }
 
+// TestProviderCredential: the Provider hands out the token of its data path, which
+// lajstrom registry probe answers /v2 with (#19).
+func TestProviderCredential(t *testing.T) {
+	p := fakeProvider(t, newFakeECR(newClock()), nil)
+	cred, err := p.Credential(t.Context(), "123456789012.dkr.ecr.us-east-1.amazonaws.com")
+	if err != nil || cred.Username != "AWS" || cred.Password != "token-1" {
+		t.Errorf("Credential = %+v, %v; want AWS:token-1", cred, err)
+	}
+}
+
+// TestIsRegistryHost: the hosts of ECR registries, and others that are not.
+func TestIsRegistryHost(t *testing.T) {
+	for host, want := range map[string]bool{
+		"123456789012.dkr.ecr.us-east-1.amazonaws.com":          true,
+		"123456789012.DKR.ECR.eu-west-1.amazonaws.com.":         true,
+		"123456789012.dkr.ecr-fips.us-gov-west-1.amazonaws.com": true,
+		"123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn":      true,
+		"123456789012.dkr-ecr.us-east-1.on.aws":                 true,
+		"public.ecr.aws":                                        false,
+		"12345.dkr.ecr.us-east-1.amazonaws.com":                 false,
+		"localhost":                                             false,
+	} {
+		if got := IsRegistryHost(host); got != want {
+			t.Errorf("IsRegistryHost(%q) = %t, want %t", host, got, want)
+		}
+	}
+}
+
 // TestTokenConcurrent: requests that find no token wait for one GetAuthorizationToken.
 func TestTokenConcurrent(t *testing.T) {
 	f := newFakeECR(newClock())

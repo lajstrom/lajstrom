@@ -12,7 +12,6 @@ import (
 	"github.com/opencontainers/go-digest"
 
 	"github.com/lajstrom/lajstrom/internal/provider"
-	"github.com/lajstrom/lajstrom/internal/provider/generic"
 )
 
 // uploadSeen is what the upload measurements found.
@@ -203,6 +202,9 @@ func (r *run) mounted(ctx context.Context, repo string, s *uploadSeen) error {
 		return fmt.Errorf("push of a blob: %s", a.refusal())
 	}
 	q := url.Values{"mount": {d.String()}, "from": {r.name(repo)}}
+	if err := r.ensure(ctx, "mount"); err != nil {
+		return err
+	}
 	if s.mount, err = r.send(ctx, http.MethodPost, r.path("mount", "blobs/uploads/?"+q.Encode())); err != nil {
 		return err
 	}
@@ -297,8 +299,11 @@ func (r *run) replica(ctx context.Context) string {
 	data := []byte("lajstrom registry probe, another replica " + r.id)
 	d := digest.FromBytes(data)
 	var repos [2]provider.Repository
+	if err := r.ensure(ctx, "replica"); err != nil {
+		return "fails: " + err.Error()
+	}
 	for i := range repos {
-		p, err := generic.New(r.cfg, slog.New(&providerLog{next: r.opts.Log.Handler(), vendor: new(string)}))
+		p, err := r.backend.provider(slog.New(&providerLog{next: r.opts.Log.Handler(), vendor: new(string)}))
 		if err != nil {
 			return "fails: " + err.Error()
 		}

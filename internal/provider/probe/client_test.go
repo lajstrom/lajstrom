@@ -139,7 +139,7 @@ func TestDoRecords(t *testing.T) {
 	}))
 	defer srv.Close()
 	base, _ := url.Parse(srv.URL)
-	c := newClient(config.Registry{URL: srv.URL, Auth: config.RegistryAuth{Username: "probe", Password: "s3cret"}}, base)
+	c := newClient(config.Registry{URL: srv.URL, Auth: config.RegistryAuth{Username: "probe", Password: "s3cret"}}, base, nil)
 	tp := &tape{base: base, cell: &Cell{}}
 	ctx := context.WithValue(context.Background(), tapeKey{}, tp)
 	a, err := c.do(ctx, request{method: http.MethodPost, target: "/v2/x/blobs/uploads/?_state=client", body: []byte("abc")})

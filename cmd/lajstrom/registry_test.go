@@ -111,3 +111,19 @@ func TestRegistryProbe(t *testing.T) {
 		t.Errorf("the registry never got the credentials: %v", *auths)
 	}
 }
+
+// TestProbeURLOfECR: --url of an ECR registry's host is a registry of type ecr, answered with
+// the token the AWS SDK's credentials get; --username does not go with it (#19).
+func TestProbeURLOfECR(t *testing.T) {
+	const u = "https://123456789012.dkr.ecr.eu-west-1.amazonaws.com"
+	r, err := probeFlags{prefix: "art"}.urlRegistry(u)
+	if err != nil || r.Type != "ecr" || r.URL != u || r.Prefix != "art" || r.Auth.Username != "" {
+		t.Errorf("urlRegistry(%s) = %+v, %v; want type ecr", u, r, err)
+	}
+	if _, err := (probeFlags{username: "AWS", passwordFile: "token"}).urlRegistry(u); err == nil || !strings.Contains(err.Error(), "AWS SDK") {
+		t.Errorf("urlRegistry with --username = %v, want a refusal", err)
+	}
+	if r, err := (probeFlags{}).urlRegistry("http://localhost:5000"); err != nil || r.Type != "generic" {
+		t.Errorf("urlRegistry(localhost) = %+v, %v; want type generic", r, err)
+	}
+}

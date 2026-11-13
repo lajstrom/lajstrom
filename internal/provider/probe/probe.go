@@ -20,6 +20,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
+	"github.com/lajstrom/lajstrom/internal/provider/ecr"
 	"github.com/lajstrom/lajstrom/internal/provider/generic"
 )
 
@@ -73,6 +74,13 @@ type run struct {
 	blobs     []pushed
 	// found are facts one cell measures and another uses.
 	found facts
+	// backend is what the run uses of the registry's provider besides /v2 (ecr.go).
+	backend backend
+	// viaAPI is set once "Create on push" found that the registry does not create a repository
+	// on push and backend.repos can: each repository is then created before its first write,
+	// and made lists them in order for the cleanup.
+	viaAPI bool
+	made   []string
 }
 
 // pushed is a manifest or a blob the run pushed: its repository (below the scratch prefix) and
@@ -98,13 +106,15 @@ type facts struct {
 	lagUnbounded bool
 }
 
-// Run measures the row of the registry cfg (registries[].type generic) and deletes what it
-// pushed. It fails before pushing anything when the generic provider's probe fails (the
-// registry does not answer, the credentials are refused, a token realm on another host) and
-// when the scratch prefix is not empty (ErrNotEmpty); a cell it could not measure says why.
+// Run measures the row of the registry cfg (registries[].type generic or ecr) and deletes what
+// it pushed. It fails before pushing anything when the provider's probe fails (the registry
+// does not answer, the credentials are refused, a token realm on another host) and when the
+// scratch prefix is not empty (ErrNotEmpty); a cell it could not measure says why. An ECR
+// registry is answered with its authorization token, and when it does not create a repository
+// on push, the run creates its own with the ECR API and deletes them at the end (ecr.go).
 func Run(ctx context.Context, cfg config.Registry, o Options) (*Report, error) {
-	if cfg.Type != "" && cfg.Type != generic.Type {
-		return nil, fmt.Errorf("probe: registry %q is of type %s: only type generic is probed", cfg.Name, cfg.Type)
+	if cfg.Type != "" && cfg.Type != generic.Type && cfg.Type != ecr.Type {
+		return nil, fmt.Errorf("probe: registry %q is of type %s: only types generic and ecr are probed", cfg.Name, cfg.Type)
 	}
 	if o.MaxBlobSize <= 0 {
 		o.MaxBlobSize = DefaultMaxBlobSize
@@ -153,10 +163,15 @@ func newRun(cfg config.Registry, o Options) (*run, error) {
 	if prefix != "" {
 		prefix += "/"
 	}
+	b, err := backendOf(cfg, o.Log)
+	if err != nil {
+		return nil, err
+	}
 	r := &run{
 		cfg:     cfg,
 		opts:    o,
-		c:       newClient(cfg, base),
+		backend: b,
+		c:       newClient(cfg, base, b.cred),
 		tape:    &tape{base: base},
 		report:  newReport(),
 		scratch: prefix + name + "/",
@@ -177,11 +192,11 @@ func randomHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
-// providerProbe asks the generic provider for its capabilities, as serve does: the row "What
-// the probe finds".
+// providerProbe asks the registry's provider for its capabilities, as serve does: the row
+// "What the probe finds".
 func (r *run) providerProbe(ctx context.Context) error {
 	c := r.in(ctx, "probeFinds")
-	p, err := generic.New(r.cfg, slog.New(&providerLog{next: r.opts.Log.Handler(), vendor: &r.report.Vendor}))
+	p, err := r.backend.provider(slog.New(&providerLog{next: r.opts.Log.Handler(), vendor: &r.report.Vendor}))
 	if err != nil {
 		return fmt.Errorf("probe: %w", err)
 	}
@@ -297,6 +312,9 @@ func (r *run) send(ctx context.Context, method, target string) (answer, error) {
 
 // startUpload opens an upload session in repo: POST blobs/uploads/.
 func (r *run) startUpload(ctx context.Context, repo string) (answer, error) {
+	if err := r.ensure(ctx, repo); err != nil {
+		return answer{}, err
+	}
 	return r.send(ctx, http.MethodPost, r.path(repo, "blobs/uploads/"))
 }
 
@@ -397,6 +415,9 @@ func encode(mediaType string, v any) manifest {
 // pushManifest pushes m to repo under ref, a tag or m's digest, and keeps it for the cleanup
 // when the registry took it.
 func (r *run) pushManifest(ctx context.Context, repo, ref string, m manifest) (answer, error) {
+	if err := r.ensure(ctx, repo); err != nil {
+		return answer{}, err
+	}
 	a, err := r.c.do(ctx, request{
 		method: http.MethodPut, target: r.path(repo, "manifests/"+ref), body: m.body,
 		header: http.Header{"Content-Type": {m.mediaType}},
