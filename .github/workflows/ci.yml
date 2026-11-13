@@ -510,9 +510,8 @@ jobs:
           LAJSTROM_E2E_REGISTRY_PREFIX: lajstrom-it/
         run: test/e2e/run.sh oras auth rbac oci-token cosign tokens raw
       - name: The provider's integration tests against Forgejo
-        # internal/provider/generic. Skipped until #804 is fixed (PR #814): the two steps of
-        # TestIntegrationUploads that read the upload status, which Forgejo answers one byte
-        # ahead, and the download of the blob the first one stores.
+        # internal/provider/generic. Forgejo answers the upload status one byte ahead; the
+        # provider reads it back since #804 (PR #814), so TestIntegrationUploads runs whole.
         if: ${{ !cancelled() && steps.forgejo.outcome == 'success' }}
         timeout-minutes: 4
         env:
@@ -524,8 +523,7 @@ jobs:
           set -euo pipefail
           LAJSTROM_TEST_REGISTRY_PASSWORD="$(cat deploy/compose/gitea/.work/forgejo.token)"
           export LAJSTROM_TEST_REGISTRY_PASSWORD
-          go test -race -count=1 -tags integration -run 'TestIntegration' \
-            -skip 'TestIntegrationUploads/(session_across_providers|download_by_digest_alone)$' \
+          go test -race -count=1 -tags integration -run 'TestIntegration' -v \
             ./internal/provider/generic/
       - name: Forgejo's log
         if: failure()

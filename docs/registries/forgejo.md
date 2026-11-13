@@ -105,7 +105,7 @@ ran (as on Gitea, [gitea.md, Cleanup](gitea.md#cleanup)). With
    byte back. Run against this Forgejo on 2026-11-12, it fixes the facade's
    `TestIntegrationUploadAcrossReplicas` and the provider's `TestIntegrationUploads`
    ([the comment on #814](https://github.com/lajstrom/lajstrom/pull/814#issuecomment-6827103087)).
-   PR #814 is not merged yet.
+   PR #814 merged on 2026-11-13.
 2. **Know that tags are case-insensitive.** As on Gitea ([gitea.md, item 2](gitea.md#what-the-provider-must-do-differently)),
    a tag is stored lower-cased and resolved in any case. That was read in the code until now.
    It has now run: reindex cannot rebuild a Maven version with capitals from the registry.
@@ -208,8 +208,8 @@ pass, `raw.sh` too: its range step got 206 here, where Gitea fails it. `pypi`, `
 `npm` were not run (the machine's disk was nearly full). `ha.sh` was skipped.
 
 **In CI**, PR #826 adds the job `e2e (forgejo)` beside `e2e (gitea)`, not required. It runs
-these scenarios but apt, and the provider's integration tests with the spool flag, without the
-two steps of `TestIntegrationUploads` that read the status until #804 is fixed.
+these scenarios but apt, and the provider's integration tests with the spool flag. Since #814
+merged, they include the two steps of `TestIntegrationUploads` that read the status.
 
 The failures, by owner:
 
