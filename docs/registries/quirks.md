@@ -30,7 +30,7 @@ measurements of [section 2](#2-is-abc-one-repository-or-two), on Zot v2.1.23, di
 | Quay | `namespace/repository`; the repository may hold `/` (quay.io too) | the namespace | namespace 2–255, repository 255 characters | any depth, measured on 3.18.2; **on master, new names ending in `build` or `build/<x>` refused**, measured with its commit applied ([quay.md](quay.md#the-build-rule)) |
 | Zot | any name, a directory each | nothing: the first upload session creates it | a component over 255 bytes is 500 | **names ending in `blobs`, `.uploads`, `.sync` are served but neither listed nor collected**, measured |
 | distribution | any name | nothing: the first manifest | 255 characters, 400 `NAME_INVALID` | all served and listed, measured |
-| Gitea, Forgejo | `<owner>/` and any depth | the owner | **the 1.0 grammar: no `__`, no `--`**, measured on Forgejo | `a/b/c` and deeper, measured |
+| Gitea, Forgejo | `<owner>/` and any depth | the owner | **the 1.0 grammar: no `__`, no `--`**, measured on both | `a/b/c` and deeper, measured |
 | Nexus | any name inside one hosted repository, on its connector or path | the Nexus repository | the `oci` format: **the 1.0 grammar, no `__`, no `--`**, measured | any depth, measured |
 | JFrog Artifactory, JCR | `<repo-key>/` and any depth, stored as folders | the repository key | key at most 63 characters | image `a/b` with tag `c` and image `a/b/c` are one folder ? |
 
@@ -155,7 +155,9 @@ December 2025 nothing created one on push.
   refused ([Gitea](https://github.com/go-gitea/gitea/blob/a61ef7aa1426a6207b970d88bff13ed1b0302360/routers/api/packages/container/container.go#L48),
   [Forgejo](https://codeberg.org/forgejo/forgejo/src/commit/d72fc0095164974d35318ca477927057e6c549d1/routers/api/packages/container/container.go#L32)).
   On Forgejo 17.0.1 `a--b`, `a---b` and `a__b` are 400 `NAME_INVALID` (measured on 2026-11-12,
-  [forgejo.md](forgejo.md#what-the-provider-must-do-differently), item 4); Gitea's is read.
+  [forgejo.md](forgejo.md#what-the-provider-must-do-differently), item 4), and on Gitea 1.27.3
+  and 28.3.0 too (measured on 2026-11-13; [go-gitea/gitea#40360](https://github.com/go-gitea/gitea/issues/40360),
+  [forgejo#15260](https://codeberg.org/forgejo/forgejo/issues/15260)).
 - **Nexus.** A `docker` or `oci` hosted repository answers `/v2/` on a connector port, on a
   subdomain (Pro), or since 3.83.0 on a path, `host/<repository>/<image>`
   ([routing](https://help.sonatype.com/en/ssl-and-repository-connector-configuration.html));
