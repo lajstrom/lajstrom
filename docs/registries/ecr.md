@@ -220,6 +220,56 @@ with names below the prefix it works. Which one action the `GET` of `/v2`'s refe
 *unverified* (`ecr:BatchGetImage`, as for `ListImageReferrers`, is likely; the policy above
 has it).
 
+**Optional:** `ecr:GetLifecyclePolicy` on the same resource. With it, the provider reads the
+lifecycle policies below the prefix at start ([Lifecycle policies](#lifecycle-policies)).
+Without it, the check is skipped with one line at info that names the action. It came after
+#19's run, so the policy measured above does not have it:
+
+```json
+{ "Sid": "LifecycleCheck", "Effect": "Allow", "Action": "ecr:GetLifecyclePolicy",
+  "Resource": "arn:aws:ecr:eu-west-1:123456789012:repository/lajstrom/*" }
+```
+
+## Lifecycle policies
+
+A lifecycle policy on a repository below the prefix deletes images "within 24 hours" of their
+meeting a rule ([lifecycle](https://docs.aws.amazon.com/AmazonECR/latest/userguide/LifecyclePolicies.html)).
+A rule written for versions takes the npm journal and the keep-tags of an oci proxy repo too:
+[operations.md](../operations.md#the-registrys-own-rules) says what Lajstrom needs kept. The
+provider checks at start:
+
+- **When.** The check starts with the provider's first answer of its capabilities: in `serve`,
+  the registry probe at start. It runs once, in the background, for at most a minute, and
+  delays nothing.
+- **What.** `DescribeRepositories` lists the repositories below the prefix, as for the catalog.
+  `GetLifecyclePolicy` reads the policies of at most 20 of them, spread evenly over their names
+  in order. A repository created after the start is not read. One that Lajstrom creates with
+  `CreateRepository` has no lifecycle policy.
+- **Warning.** One line at warning for each rule with `tagStatus` `tagged` or `any`, for the
+  action `expire` and for `transition` to the archive alike. The line names the rule
+  (`rulePriority`, `description`, the selection and the action) and the sampled repositories
+  whose policy has it. Repositories with the same policy share one line. A version's tag can be
+  any string, so every tagged rule can take versions. `reservedTags` names Lajstrom's other tags
+  that the rule's lists select: keep-tags `_keep.sha256.…`, the npm journal `_j…`, hashed tags
+  `_h…`, and `sha256-…`. A policy that does not parse is a warning too.
+- **Info.** A rule with `tagStatus: untagged` gets a line at info. ECR keeps an image that a
+  manifest list references while the list exists, and expires a referrer only within 24 hours of
+  its subject's deletion or archival
+  ([evaluation rules](https://docs.aws.amazon.com/AmazonECR/latest/userguide/LifecyclePolicies.html#lp_evaluation_rules)).
+  So such a rule spares the referrers and the index children that Lajstrom needs. It takes a
+  manifest that a client pushed to an oci repo by digest alone.
+- **Skipped.** Without `ecr:GetLifecyclePolicy` ([IAM policy](#iam-policy)), the first
+  `AccessDeniedException` ends the check, with one line at info that names the action. With
+  `capabilities.catalog: false`, or when the listing fails, the check is skipped with one line.
+- **Not read.** The lifecycle policy of a repository creation template. ECR applies it to the
+  repositories it creates on push (`createOnPush: true`)
+  ([templates](https://docs.aws.amazon.com/AmazonECR/latest/userguide/repository-creation-templates.html)).
+  Such a repository is read once it exists, if it falls in the sample.
+
+Tested with the fake client of the unit tests, and through the SDK against a fake endpoint
+(`TestCheckLifecycle`, `TestCheckLifecycleSkipped`, `TestDataPath`), whose answers follow the
+AWS documentation. Not run against ECR itself.
+
 ## Capabilities
 
 What the provider says for a registry of type `ecr`, and where it comes from; `lajstrom registry
