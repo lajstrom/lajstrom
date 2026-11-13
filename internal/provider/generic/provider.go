@@ -66,6 +66,9 @@ type Provider struct {
 	chunk int
 	// bound is the largest PATCH the registry takes, 0 for no bound (chunkBound).
 	bound int
+	// unorderedTags: the tag list is in an order of the registry's own (unorderedTags), and Tags
+	// reads all of it and sorts it.
+	unorderedTags bool
 
 	// timeout is registries[].timeout with its default: how long a read waits for a probe
 	// (readQuirks).
@@ -198,9 +201,10 @@ func NewWithOptions(cfg config.Registry, log *slog.Logger, o Options) (*Provider
 		maxPages: maxPages,
 		timeout:  timeoutOf(cfg),
 
-		spoolUnknown: cfg.Uploads.SpoolUnknownLength,
-		chunk:        blobChunk(u.Host, cfg.Uploads.ChunkSize),
-		bound:        chunkBound(u.Host, cfg.Uploads.ChunkSize),
+		spoolUnknown:  cfg.Uploads.SpoolUnknownLength,
+		chunk:         blobChunk(u.Host, cfg.Uploads.ChunkSize),
+		unorderedTags: unorderedTags(u.Host),
+		bound:         chunkBound(u.Host, cfg.Uploads.ChunkSize),
 	}
 	p.clients = newClients(cfg, u, log, o, func() bool { return p.quirk().pushForDelete }, guard)
 	reg := &remote.Registry{RepositoryListPageSize: pageSize}
