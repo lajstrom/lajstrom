@@ -1,6 +1,7 @@
 # 0018. An oci proxy repo pulls through from any OCI registry
 
-- Status: accepted; amended by #876, #875 (below, Amendments)
+- Status: accepted; amended by #876, #875 (below, Amendments); "groups of `oci` repos stay refused"
+  (point 1, option 5) superseded by [0019](0019-oci-groups-one-member-per-repository-path.md)
 - Date: 2026-11-12
 - Deciders: gecube
 
