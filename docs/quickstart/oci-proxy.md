@@ -298,5 +298,78 @@ env:
 [#886]: https://github.com/lajstrom/lajstrom/issues/886
 [#889]: https://github.com/lajstrom/lajstrom/issues/889
 
-Groups of `oci` repos, one URL for a hosted and a proxy repo, are not in this version
-([#848](https://github.com/lajstrom/lajstrom/issues/848)).
+## 6. One address for your images and Docker Hub: a group
+
+A group of `oci` repos serves a hosted repo and a proxy under one URL: one login and one base in
+CI for internal images and Docker Hub's, the pull side of a Nexus or Artifactory docker group.
+Each repository path is served by exactly one member, which the group's routes choose; that
+member answers everything for the path, as at its own URL, and nothing is written through the
+group ([proxy-and-group.md](../spec/proxy-and-group.md) §12,
+[ADR 0019](../adr/0019-oci-groups-one-member-per-repository-path.md)).
+
+```yaml
+repos:
+  - {name: internal, format: oci, registry: local}
+  - {name: hub, format: oci, registry: local, kind: proxy, upstream: {name: dockerhub, deny: ["acme/*"]}}
+  - name: all
+    format: oci
+    kind: group
+    anonymousRead: true
+    group:
+      members: [internal, hub]
+      paths:
+        internal: ["acme/*", "acme"]   # every internal path, and acme itself if it is a repository
+        hub: ["*"]                     # the rest goes to Docker Hub
+```
+
+```sh
+docker login lajstrom.example.com
+docker pull lajstrom.example.com/oci/all/acme/api:1.4    # from internal
+docker pull lajstrom.example.com/oci/all/nginx:1.27      # Docker Hub's library/nginx, through hub
+docker push lajstrom.example.com/oci/internal/acme/api:1.5   # pushes go to the member's own URL
+```
+
+- **Routes.** Each member lists the paths it serves: a path (`acme`), a prefix and `/*`
+  (`acme/*`: every path below `acme`, not `acme` itself), or `*`. The most specific pattern wins:
+  the path itself, then the longest prefix, then `*`, so `acme/*` and `*` live together. The same
+  pattern on two members is refused: `400` on the API, and `serve` does not start with it in the
+  configuration. A route is decided from the group's settings alone, the same on every replica.
+- **Route every internal prefix to the hosted member.** A path a route sends to the proxy is asked
+  of Docker Hub: without `acme/*` on `internal`, `oci/all/acme/api` would go to `hub`. The
+  proxy's `deny` still guards its own URL.
+- **No fallback.** The routed member's answer is the group's: a tag `internal` does not have is
+  `404`, never asked of Docker Hub, and a `5xx` of `hub` is not answered by `internal`. An index
+  and its platforms, a manifest and its layers, always come from one member. A path no route
+  selects, or one the proxy's lists refuse, is `404 NAME_UNKNOWN`.
+- **Read-only.** A push, an upload or a delete through the group is `405 UNSUPPORTED` with
+  `Allow: GET, HEAD`; `docker push` stops at the first upload. Push to the member's own URL, a
+  signature for a mirrored image to `oci/hub/…` with `write` on the proxy: it is then seen through
+  the group.
+- **Who may pull.** Read on the group is the whole permission: bind readers on `oci/all`, and they
+  need nothing on `internal` or `hub`. `/v2/token` grants `pull` alone on the group's paths. Only
+  the admin role changes `members` and `paths`, since they decide what the group's readers get.
+- **Several hosted members** may share a group, each with its own prefixes (`team-a/*`,
+  `team-b/*`).
+- `tags/list` through the group is the routed member's, named after the group's path, and the
+  catalog lists to the group's readers the repositories each member holds at paths routed to it.
+  A proxy member's fetches through the group are its `proxy.fetch` and `proxy.reject` rows, with
+  `details.via` the group.
+
+**containerd and Talos.** Point the `docker.io` mirror at the group instead of `hub`:
+
+```toml
+# /etc/containerd/certs.d/docker.io/hosts.toml
+server = "https://registry-1.docker.io"
+
+[host."https://lajstrom.example.com/v2/oci/all"]
+  capabilities = ["pull", "resolve"]
+  override_path = true
+```
+
+For `nginx:1.27` containerd asks `/v2/oci/all/library/nginx/manifests/1.27?ns=docker.io`: the
+route sees `library/nginx`, `?ns=` is ignored, and `hub`'s `*` serves it. A pod's
+`image: acme/api:1.4`, which is `docker.io/acme/api`, gets the internal image: the routes send
+`acme/*` to `internal`, never to Docker Hub. Talos takes the same endpoint for `docker.io`, with
+`overridePath: true`. Keep each other registry mirrored at its own proxy (`ghcr.io` at
+`/v2/oci/ghcr`, as in section 3): the routes do not know which registry a path is from, and a
+`ghcr.io` mirror pointed at the group would send its paths to Docker Hub.
