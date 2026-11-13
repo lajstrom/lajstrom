@@ -270,6 +270,60 @@ Tested with the fake client of the unit tests, and through the SDK against a fak
 (`TestCheckLifecycle`, `TestCheckLifecycleSkipped`, `TestDataPath`), whose answers follow the
 AWS documentation. Not run against ECR itself.
 
+## ECR as an upstream
+
+An oci proxy repo can pull through from ECR: a repository of the account, another account's
+that a repository policy shares with the role, or one of an ECR pull-through cache rule. Its
+upstream takes the same token as a registry of type ecr, with `auth.ecr`
+([configuration.md](../configuration.md#upstreams), proxy-and-group.md §11.1):
+
+```yaml
+upstreams:
+  - name: ecr-prod
+    format: oci
+    url: https://123456789012.dkr.ecr.eu-west-1.amazonaws.com  # the region comes from the host
+    auth: {ecr: {}}                                            # or {region: …, endpoint: …}
+repos:
+  - {name: prod, format: oci, registry: local, kind: proxy, upstream: {name: ecr-prod}}
+```
+
+The credentials are the SDK's default chain, as above. The token is cached and replaced an hour
+before its 12 hours end, so a long-running Lajstrom needs no restart and no refresher. The
+token comes from the region's ECR API, so an upstream in another region names that region's
+host. `GetAuthorizationToken` documents its `registryIds` as deprecated: "The returned
+authorization token can be used to access any Amazon ECR registry that the IAM principal has
+access to" ([GetAuthorizationToken](https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_GetAuthorizationToken.html)).
+
+An upstream only reads. Its policy, from AWS's documentation and the actions of AWS's managed
+`AmazonEC2ContainerRegistryPullOnly`, *unverified* (no account for #872):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Sid": "Token", "Effect": "Allow", "Action": "ecr:GetAuthorizationToken", "Resource": "*" },
+    {
+      "Sid": "Pull",
+      "Effect": "Allow",
+      "Action": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"],
+      "Resource": "arn:aws:ecr:eu-west-1:123456789012:repository/*"
+    }
+  ]
+}
+```
+
+- A repository of another account also needs that account's repository policy to allow the
+  role these actions.
+- A pull-through cache rule creates its repository at the first pull. AWS's pull-through cache
+  documentation says the principal then also needs `ecr:CreateRepository` and
+  `ecr:BatchImportUpstreamImage` (*unverified*).
+- ECR Public (`public.ecr.aws`) needs no `auth`: it is read anonymously. Pulling from it with
+  credentials needs the `ecrpublic` API, which Lajstrom does not use.
+- When the token cannot be had (an `AccessDeniedException`, no credentials), a pull of what the
+  repo holds is still served from the backend. Anything else is `502`, and the error is logged
+  under the upstream's name. A refresh that fails while the token still works is logged as a
+  warning and retried at most once a minute.
+
 ## Capabilities
 
 What the provider says for a registry of type `ecr`, and where it comes from; `lajstrom registry
@@ -357,7 +411,8 @@ Then:
 
 ```sh
 LAJSTROM_TEST_ECR_ENDPOINT=http://localhost:5010 LAJSTROM_TEST_ECR_REGISTRY=localhost:5011 \
-  go test -race -tags integration -run 'TestIntegrationMoto|TestIntegrationECRNewPath' ./internal/provider/ecr/ ./internal/facade/
+  go test -race -tags integration -run 'TestIntegrationMoto|TestIntegrationECRNewPath|TestIntegrationOCIUpstreamMoto' \
+  ./internal/provider/ecr/ ./internal/facade/ ./internal/proxy/
 ```
 
 `TestIntegrationMoto` builds the provider with the SDK against moto: `Capabilities` pings the
@@ -368,8 +423,10 @@ go through `/v2` and come back; `ListRepositories` lists the run's prefix; `Dele
 a repository with an image is `ErrConflict`, with `forceDelete` it goes, and again it is
 `ErrNotFound`. `TestIntegrationECRNewPath` pushes a tagged artifact to a new path with oras-go
 through the facade: the facade creates the repository in moto before the first blob, which
-`ListRepositories` shows (the distribution would take the blobs without it). Both skip without
-the two variables, so the integration job of CI, which has no moto, skips them.
+`ListRepositories` shows (the distribution would take the blobs without it).
+`TestIntegrationOCIUpstreamMoto` pulls through an oci upstream with `auth.ecr`: the SDK gets
+moto's token, and the manifest and a blob come from the distribution with it. All three skip
+without the two variables, so the integration job of CI, which has no moto, skips them.
 
 What moto does not do, tested with the fake client of the unit tests instead:
 

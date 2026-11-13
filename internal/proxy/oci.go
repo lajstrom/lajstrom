@@ -16,6 +16,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/provider"
+	"github.com/lajstrom/lajstrom/internal/provider/ecr"
 	"github.com/lajstrom/lajstrom/internal/provider/generic"
 )
 
@@ -112,7 +113,8 @@ func (u *OCIUpstream) Name() string { return u.name }
 
 // LoadOCIUpstreams returns the clients of the configured upstreams of format oci by name, with
 // their credentials read as LoadUpstreams reads them: a password from passwordFile or, resolved
-// by config.Load, from passwordEnv, or a token from tokenFile (§11.1). LoadUpstreams leaves those
+// by config.Load, from passwordEnv, or a token from tokenFile; or a cloud's, ECR's token for
+// auth.ecr, which the two clients of an upstream share (§11.1). LoadUpstreams leaves those
 // upstreams out.
 func LoadOCIUpstreams(cfg []config.Upstream, log *slog.Logger) (map[string]*OCIUpstream, error) {
 	if log == nil {
@@ -124,7 +126,7 @@ func LoadOCIUpstreams(cfg []config.Upstream, log *slog.Logger) (map[string]*OCIU
 			continue
 		}
 		key := fmt.Sprintf("upstreams[%d]", i)
-		cred, err := ociCredential(key, c.Auth, log)
+		cred, err := ociCredential(key, c, log)
 		if err != nil {
 			return nil, err
 		}
@@ -146,9 +148,17 @@ func LoadOCIUpstreams(cfg []config.Upstream, log *slog.Logger) (map[string]*OCIU
 	return out, nil
 }
 
-// ociCredential reads the credentials of an oci upstream.
-func ociCredential(key string, a config.UpstreamAuth, log *slog.Logger) (generic.Credential, error) {
+// ociCredential reads the credentials of the oci upstream c, or makes its cloud's.
+func ociCredential(key string, c config.Upstream, log *slog.Logger) (generic.Credential, error) {
+	a := c.Auth
 	switch {
+	case a.ECR != nil:
+		tokens, err := ecr.NewTokens(ecr.TokenOptions{URL: c.URL, Region: a.ECR.Region, Endpoint: a.ECR.Endpoint, Timeout: c.Timeout,
+			Retries: c.Retries}, log.With("upstream", c.Name))
+		if err != nil {
+			return generic.Credential{}, fmt.Errorf("%s.auth.ecr: %w", key, err)
+		}
+		return generic.Credential{Basic: tokens.Basic}, nil
 	case a.TokenFile != "":
 		token, err := readSecret(key+".auth.tokenFile", a.TokenFile, log)
 		return generic.Credential{Token: token}, err

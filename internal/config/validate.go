@@ -662,10 +662,14 @@ func (u Upstream) validate(p *problems, key string) {
 	u.validateOCI(p, key)
 }
 
-// validateAuth checks the credentials of an upstream: a token file alone, or a username with
-// one of passwordFile and passwordEnv, whose variable must be set.
+// validateAuth checks the credentials of an upstream: a token file alone, a username with one
+// of passwordFile and passwordEnv, whose variable must be set, or a cloud credential alone.
 func (u Upstream) validateAuth(p *problems, key string) {
 	a := u.Auth
+	if a.ECR != nil {
+		u.validateCloud(p, key)
+		return
+	}
 	password := a.PasswordFile != "" || a.PasswordEnv != ""
 	switch {
 	case a.TokenFile != "" && (a.Username != "" || password):
@@ -676,6 +680,23 @@ func (u Upstream) validateAuth(p *problems, key string) {
 		p.add(key+".auth", "username and passwordFile or passwordEnv must be set together")
 	case a.PasswordEnv != "" && a.Password == "":
 		p.add(key+".auth.passwordEnv", "environment variable %q is not set or empty", a.PasswordEnv)
+	}
+}
+
+// validateCloud checks a cloud credential, auth.ecr: an oci upstream's, and the only key of
+// auth.
+func (u Upstream) validateCloud(p *problems, key string) {
+	a, field := u.Auth, key+".auth.ecr"
+	switch {
+	case u.Format != FormatOCI:
+		p.add(field, "only an upstream of format %s has it", FormatOCI)
+	case a.Username != "" || a.PasswordFile != "" || a.PasswordEnv != "" || a.TokenFile != "":
+		p.add(field, "is the upstream's credential: not with username, passwordFile, passwordEnv or tokenFile")
+	}
+	if e := a.ECR.Endpoint; e != "" {
+		if v, err := url.Parse(e); err != nil || !isHTTP(v) || v.User != nil {
+			p.add(field+".endpoint", "must be an absolute http(s) URL without credentials")
+		}
 	}
 }
 
