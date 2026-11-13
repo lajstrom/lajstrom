@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/opencontainers/go-digest"
 
 	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/proxy"
@@ -195,5 +196,155 @@ func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// fakeOCIPrefetchAPI is POST …/oci/hub/prefetch as admin repo prefetch sends it: an image is an
+// index and a manifest per platform, fetched the first time and held after, but the images of
+// busy, whose manifests fail with 503 and a Retry-After until they are let through.
+type fakeOCIPrefetchAPI struct {
+	mu      sync.Mutex
+	held    map[string]bool
+	busy    map[string]bool
+	batches []api.PrefetchRequest
+}
+
+func (f *fakeOCIPrefetchAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if r.Method != http.MethodPost || r.URL.Path != "/api/v1/repos/oci/hub/prefetch" {
+		http.Error(w, `{"error": {"code": "NOT_FOUND", "message": "no"}}`, http.StatusNotFound)
+		return
+	}
+	var req api.PrefetchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Names) > 0 || req.AllVersions {
+		http.Error(w, `{"error": {"code": "INVALID", "message": "body"}}`, http.StatusBadRequest)
+		return
+	}
+	f.batches = append(f.batches, req)
+	var out api.PrefetchAnswer
+	for _, n := range req.Images {
+		status := "fetched"
+		if f.held[n] {
+			status = "held"
+		}
+		out.Results = append(out.Results, proxy.PrefetchResult{Name: n, Kind: proxy.PrefetchIndex, Digest: digest.Digest("sha256:" + strings.Repeat("a", 64)),
+			Status: status})
+		for _, p := range req.Platforms {
+			res := proxy.PrefetchResult{Name: n, Kind: proxy.PrefetchManifest, Platform: p, Digest: digest.Digest("sha256:" + strings.Repeat("b", 64)),
+				Status: status}
+			if f.busy[n] {
+				res.Status, res.HTTPStatus, res.Message, res.RetryAfter = proxy.PrefetchFailed, http.StatusServiceUnavailable, "upstream hub answered 429", 60
+			} else if status == "fetched" {
+				res.Bytes = 1024
+			}
+			out.Results = append(out.Results, res)
+		}
+		if !f.busy[n] {
+			f.held[n] = true
+		}
+	}
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// sent returns the batches, one string per batch: the images, then the platforms after a |.
+func (f *fakeOCIPrefetchAPI) sent() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, b := range f.batches {
+		out = append(out, strings.Join(b.Images, " ")+" | "+strings.Join(b.Platforms, ","))
+	}
+	f.batches = nil
+	return out
+}
+
+// TestAdminPrefetchOCI: of an oci repo, --host keeps the references of Docker Hub and strips its
+// registry, a line's platforms win over --platform, and the images go in batches of the same
+// platforms; a line per result, the bytes and a 503's wait are printed; --failed sends a failed
+// image again with the platforms the report gives it (docs/spec/proxy-and-group.md §11.10).
+func TestAdminPrefetchOCI(t *testing.T) {
+	f := &fakeOCIPrefetchAPI{held: map[string]bool{"nginx:1.27": true}, busy: map[string]bool{"bitnami/redis:7.4": true}}
+	env, _, report := newPrefetchRun(t, &fakePrefetchAPI{})
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	env[envRetentionURL] = srv.URL
+	images := filepath.Join(t.TempDir(), "images")
+	must(t, os.WriteFile(images, []byte(`# kubectl get pods -A -o jsonpath='{..image}'
+docker.io/library/nginx:1.27
+nginx:1.27
+registry.k8s.io/pause:3.10   linux/amd64
+index.docker.io/bitnami/redis:7.4 linux/arm64
+docker.io/library/nginx:1.27
+busybox@sha256:`+strings.Repeat("c", 64)+`
+`), 0o600))
+
+	out, _, err := run(t, env, "admin", "repo", "prefetch", "oci/hub", "--from-file", images, "--host", "docker.io",
+		"--platform", "linux/amd64", "--platform", "linux/arm64", "--batch", "2", "--report", report)
+	if exitStatus(err) != 1 {
+		t.Fatalf("first run: %v, want exit status 1; out %s", err, out)
+	}
+	want := []string{"library/nginx:1.27 nginx:1.27 | linux/amd64,linux/arm64", "busybox@sha256:" + strings.Repeat("c", 64) + " | linux/amd64,linux/arm64",
+		"bitnami/redis:7.4 | linux/arm64"}
+	if d := cmp.Diff(want, f.sent()); d != "" {
+		t.Errorf("batches (-want +got)\n%s", d)
+	}
+	for _, w := range []string{
+		"fetched  library/nginx:1.27 manifest linux/amd64 sha256:" + strings.Repeat("b", 64) + " (1024 bytes)\n",
+		"held     nginx:1.27 index sha256:" + strings.Repeat("a", 64) + "\n",
+		"failed   bitnami/redis:7.4 manifest linux/arm64 sha256:" + strings.Repeat("b", 64) + ": 503 upstream hub answered 429 (retry after 60s)\n",
+		"oci/hub: 4 images: 7 fetched, 3 held, 0 shared, 1 failed",
+	} {
+		if !strings.Contains(out, w) {
+			t.Errorf("output %q, want %q", out, w)
+		}
+	}
+	rep := readReport(t, report)
+	if d := cmp.Diff([]string{"registry.k8s.io/pause:3.10"}, rep.Skipped); d != "" || rep.Names != 4 ||
+		strings.Join(rep.Platforms["bitnami/redis:7.4"], ",") != "linux/arm64" {
+		t.Errorf("report %+v; skipped (-want +got)\n%s", rep, d)
+	}
+
+	f.busy = nil
+	out, _, err = run(t, env, "admin", "repo", "prefetch", "oci/hub", "--from-file", report, "--failed", "--host", "docker.io",
+		"--platform", "linux/amd64", "--report", report)
+	if err != nil || !slices.Equal(f.sent(), []string{"bitnami/redis:7.4 | linux/arm64"}) || !strings.Contains(out, "oci/hub: 1 images: 2 fetched") {
+		t.Errorf("--failed: %v, out %s", err, out)
+	}
+}
+
+// TestAdminPrefetchOCIUsage: the usage errors of an oci repo's run exit 2 before a request.
+func TestAdminPrefetchOCIUsage(t *testing.T) {
+	f := &fakeOCIPrefetchAPI{held: map[string]bool{}}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	env := map[string]string{envRetentionURL: srv.URL, envRetentionToken: "ljs_pat_secret"} //nolint:gosec // a token of the test
+	file := func(name, content string) string {
+		path := filepath.Join(dir, name)
+		must(t, os.WriteFile(path, []byte(content), 0o600))
+		return path
+	}
+	images, three, badPlatform, other := file("images", "nginx:1.27\n"), file("three", "nginx:1.27 linux/amd64 x\n"),
+		file("bad", "nginx:1.27 linux\n"), file("other", "ghcr.io/a/b:1\n")
+	for _, tt := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"oci/hub", "--from-file", images, "--all-versions"}, "--all-versions: an oci repo"},
+		{[]string{"npm/legacy", "--from-file", images, "--platform", "linux/amd64"}, "--platform and --host are for an oci repo"},
+		{[]string{"npm/legacy", "--from-file", images, "--host", "docker.io"}, "--platform and --host are for an oci repo"},
+		{[]string{"oci/hub", "--from-file", images, "--platform", "linux"}, `--platform: "linux" is not`},
+		{[]string{"oci/hub", "--from-file", three}, "line 1: 3 fields"},
+		{[]string{"oci/hub", "--from-file", badPlatform}, `line 1: "linux" is not`},
+		{[]string{"oci/hub", "--from-file", other, "--host", "docker.io"}, "no reference of docker.io in it; 1 of other registries"},
+	} {
+		_, _, err := run(t, env, append([]string{"admin", "repo", "prefetch"}, tt.args...)...)
+		if exitStatus(err) != 2 || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("%v: %v, want exit status 2 with %q", tt.args, err, tt.want)
+		}
+	}
+	if n := len(f.sent()); n != 0 {
+		t.Errorf("%d requests, want none", n)
 	}
 }

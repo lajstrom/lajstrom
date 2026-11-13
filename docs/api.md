@@ -712,6 +712,30 @@ its names and stops the run, as do `SIGINT`, `SIGTERM` and `SIGHUP`: the names l
 not attempted, and the report says so. Exit status 0 when every version was fetched, held or
 shared, 1 when one failed or the run stopped, 2 on a usage error.
 
+Of an `oci` proxy repo it takes images, one reference a line, and sends them as `images`:
+
+```sh
+kubectl get pods -A -o jsonpath='{range ..containers[*]}{.image}{"\n"}{end}' > images.txt
+lajstrom admin repo prefetch oci/hub --from-file images.txt --host docker.io --platform linux/amd64,linux/arm64 --report report.json
+lajstrom admin repo prefetch oci/hub --from-file report.json --failed --report report.json
+```
+
+- `--platform` names the platforms of an index (repeated, or separated by commas), for every
+  image whose line names none. A line may name its own after the reference,
+  `registry.k8s.io/pause:3.10 linux/amd64,linux/arm64`. The images go in batches of the same
+  platforms.
+- `--host` keeps the references of one registry and strips it, so that a list from `kubectl` or
+  `helm template` goes in as it is: with `--host docker.io`, `docker.io/library/nginx:1.27`,
+  `index.docker.io/bitnami/redis:7.4` and `nginx:1.27` (Docker Hub's, without a registry) are
+  sent as `library/nginx:1.27`, `bitnami/redis:7.4` and `nginx:1.27`, and
+  `registry.k8s.io/pause:3.10` is skipped. The skipped references are in the report's
+  `skipped`. Without `--host`, references are sent as they are.
+- A line is printed per result: the status, the reference, its kind, platform and digest, the
+  bytes fetched, and for a failure its status, its message and the wait of a `503`. `--failed`
+  sends again the images of failed results, each with the platforms the report gives it;
+  `--host` does not apply to them, since the report's references are below the repo.
+- `--all-versions` is refused for an `oci` repo, and `--platform` and `--host` for the others.
+
 ## Users
 
 Local users, managed by the admin role; what a user is, its uid and its name, is in
