@@ -176,10 +176,13 @@ MVP.
 
 ## 4. OCI bearer tokens
 
-`GET /v2/token?service=<host>&scope=repository:<format>/<repo>/<pkg>:pull,push&scope=…`
+`GET /v2/token?service=<host>&scope=repository:<format>/<repo>/<pkg>:pull,push&scope=…`, and
+`POST /v2/token` with the same fields in the OAuth2 form.
 
-- `GET` only (the OAuth2 `POST` form is `405`). Authenticates with Basic (or none for
-  anonymous). The service is the server's own: a `service` that names another is ignored.
+- `GET` authenticates with Basic (or none for anonymous). `POST` takes the OAuth2 form of the
+  password grant, whose `username` and `password` are checked as Basic credentials are, with
+  the same throttles, and needs them (http-routing.md §2, #908); both issue the same token.
+  The service is the server's own: a `service` that names another is ignored.
 - For each requested scope the facade keeps the actions the principal is allowed on
   `<format>/<repo>` (`pull`↔`read`, `push`↔`write`, `delete`↔`delete`); on the path of an `oci`
   group, `pull` at most, since nothing is pushed or deleted through it (§7). A scope with no allowed
@@ -195,9 +198,9 @@ MVP.
   claims: `iss` and `aud` = the service, `sub` (the principal, `user:<uid>` for a user),
   `access: [{type, name, actions}]`, `iat`, `nbf`, `jti`. The answer is `token` and
   `access_token` (the same JWT), `expires_in` and `issued_at`; there is no `refresh_token`
-  (clients re-authenticate with Basic). A token whose `sub` names a user by name, issued before
-  the uid (#182), is refused like any token that does not verify: `401`, and the client gets
-  another.
+  (clients authenticate again, with Basic or the form). A token whose `sub` names a user by
+  name, issued before the uid (#182), is refused like any token that does not verify: `401`,
+  and the client gets another.
 - The facade validates the bearer on every `/v2` request and enforces the actions, by the token
   before it looks the repo up, so that the answers keep §3: a repository the token does not name
   is `401` with `error="insufficient_scope"`, whether its repo exists or not; one it names with

@@ -319,7 +319,8 @@ OCI clients (`docker`, `oras`, `crane`, `helm`) authenticate with the docker tok
 ([rbac.md](spec/rbac.md) §4): `GET /v2/` answers `401` with a challenge that names a realm, the
 client gets a token from the realm with the credentials it has, or none, and sends the token as
 a bearer on every `/v2` request. Lajstrom is its own token server: the realm is its
-`/v2/token`, which takes the same HTTP Basic credentials as every other route.
+`/v2/token`, which takes the same HTTP Basic credentials as every other route, and the same
+credentials in the OAuth2 form that containerd posts.
 
 ### The flow
 
@@ -412,8 +413,43 @@ grant is `403`, while a repository the token does not name is `401` with the sco
 the request: the user of the Basic credentials (refused ones are `401` with the Basic
 challenge, from the authentication middleware), or `anonymous` without credentials. A
 personal access token (`user:<PAT>`) and a deploy token (`deploy:<token>`) come the same way,
-and their scopes narrow the token (below). Only `GET`: the OAuth2 `POST` form is not
-implemented (`405`), and the clients above use `GET`.
+and their scopes narrow the token (below).
+
+`POST /v2/token` issues the same token for the same credentials sent in the OAuth2 form of the
+password grant ([RFC 6749](https://www.rfc-editor.org/rfc/rfc6749#section-4.3) §4.3), which
+containerd posts before it tries `GET` whenever it has a secret (#908). docker, oras, crane
+and helm use `GET` for a user name and a password. Any other method is `405`.
+
+- **The form**: an `application/x-www-form-urlencoded` body (`; charset=utf-8` and other
+  parameters allowed) of at most 8 KiB, with `grant_type=password`, `username`, `password`,
+  `service` and `scope`. `scope` may repeat and hold several scopes separated by spaces, as
+  `GET`'s does; containerd sends one with all of its scopes. `client_id` (containerd's is
+  `containerd-client`), `access_type` and any other field are ignored. The scopes, the
+  service, the reduction and the answer are those of `GET` below.
+- **The credential** is `username` and `password`, checked as the user name and the secret of
+  Basic credentials are: a password, a personal access token of the user, or a deploy token
+  under any user name. They count in the same throttles of failed logins as Basic credentials,
+  on `GET /v2/token` and on every other route. An `Authorization` header on the `POST` is not
+  read. There is no anonymous `POST`: anonymous gets its token with `GET`.
+- **The form is read first**, before the credential is checked, so that a request the form
+  refuses costs no verification and counts as no failed login. Its refusals are OAuth2's
+  ([RFC 6749](https://www.rfc-editor.org/rfc/rfc6749#section-5.2) §5.2),
+  `{"error": "<code>", "error_description": "<why>"}` with `Cache-Control: no-store`:
+  - another `grant_type`, `refresh_token` included, is `400` `unsupported_grant_type`, since
+    Lajstrom issues no refresh token;
+  - another media type, a form without `grant_type`, `username` or `password`, or with one of
+    them or `service` more than once, is `400` `invalid_request`;
+  - a body over 8 KiB is `413` `invalid_request`, refused before it is read when its
+    `Content-Length` says so.
+- **What `GET` answers too** is answered as for `GET`: refused credentials are `401` with the
+  Basic challenge, a throttle is `429`, more than 100 repositories `400` with `UNSUPPORTED`.
+- **containerd's fallback.** After a `400`, `401` or `404` to its `POST`, containerd tries `GET`
+  with Basic. A wrong password therefore costs it two failed logins per token, the `POST`'s
+  and the `GET`'s. An identity token alone (`identityToken` in Talos, `identitytoken` in a
+  docker `config.json`) is posted as `grant_type=refresh_token`, then sent as Basic with an
+  empty user name. A deploy token passes that way, since its user name is not checked; a
+  personal access token does not, since it is refused under any name but its user's. Give
+  containerd a user name and a password ([guides/talos.md](guides/talos.md)).
 
 - **Scopes**: each `scope` parameter is `repository:<format>/<repo>/<path>:<actions>`, several
   parameters or several scopes in one separated by spaces. The actions are a comma list of
@@ -441,9 +477,10 @@ implemented (`405`), and the clients above use `GET`.
   "issued_at": "<RFC 3339>"}` and `Cache-Control: no-store`. The access log line has the
   principal. No audit row is written for a token: one per `docker pull` would be noise, and the
   pushes and deletes the token allows are audited themselves.
-- **Rate limiting**: 100 requests a second per client address, then `429` with `Retry-After`
-  and `TOOMANYREQUESTS`, checked before the Basic credentials so that a flood costs no
-  argon2id; the passwords it carries count in the throttles of failed logins
+- **Rate limiting**: 100 requests a second per client address, `GET` and `POST` alike, then
+  `429` with `Retry-After` and `TOOMANYREQUESTS`, checked before the credentials and before
+  the form is read, so that a flood costs no argon2id; the passwords it carries, in Basic
+  credentials or in the form, count in the throttles of failed logins
   ([Failed logins](#failed-logins)). Off without `server.trustedProxies`, unless `server.tls`
   is set.
 
