@@ -185,6 +185,16 @@ func EscapeComponentMax(s string, maxLen int) string {
 // EscapeComponent never writes one.
 func ReservedComponent(c string) bool { return reserved(c, true) }
 
+// LayoutFileComponent reports whether the path component c is a file of Zot's OCI image layout,
+// "index.json" or "oci-layout". A repository whose name carries such a component below an
+// existing repository collides with that repository's own layout files: on local storage Zot
+// answers every request of the name a permanent 500 ("mkdir …: not a directory"), and on S3 the
+// push is 201 and the read 500 (zot#4695). Unlike the suffixes of ReservedComponent (which Zot
+// serves, only skipping them in its catalog and GC), these break the request itself, so the
+// facade refuses a client-supplied /v2 name that carries one before it reaches the backend.
+// EscapeComponent never writes one, so no managed package's OCI name has it.
+func LayoutFileComponent(c string) bool { return slices.Contains(reservedComponents, c) }
+
 // reserved is ReservedComponent, without Harbor's words unless harbor: as ADR 0017 had them before
 // its amendment.
 func reserved(c string, harbor bool) bool {
