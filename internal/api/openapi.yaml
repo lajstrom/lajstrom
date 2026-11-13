@@ -219,6 +219,25 @@ paths:
         in: path
         required: true
         schema: {type: string}
+    get:
+      tags: [repos]
+      operationId: getVersion
+      summary: >-
+        One version (read): its variants, each with what the index has of its manifest and its
+        files, and the OCI repository that holds it. The manifest and its referrers are not in it.
+      parameters:
+        - name: variant
+          in: query
+          description: Only this variant; empty for a format without variants.
+          schema: {type: string}
+      responses:
+        "200":
+          description: The version.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/VersionDetail"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
     delete:
       tags: [repos]
       operationId: deleteVersion
@@ -1262,6 +1281,68 @@ components:
       properties:
         kind: {type: string, enum: [dist-tag]}
         name: {type: string}
+    VersionDetail:
+      description: "One version: its row of the version list, its variants in detail and its OCI repository."
+      type: object
+      required: [version, publishedAt, lastModified, variants, pointers, ociRepository]
+      properties:
+        version: {type: string}
+        publishedAt:
+          type: string
+          format: date-time
+          description: The publish time of its first variant, whatever variant keeps.
+        lastModified:
+          type: string
+          format: date-time
+          description: The publish time of its newest variant, whatever variant keeps.
+        variants:
+          type: array
+          items: {$ref: "#/components/schemas/VariantDetail"}
+        pointers:
+          type: array
+          items: {$ref: "#/components/schemas/Pointer"}
+        ociRepository:
+          type: string
+          description: <format>/<repo>/<package path>, the repository of its manifests on /v2.
+    VariantDetail:
+      description: One manifest of a version, with its row of the index and its files.
+      type: object
+      required: [variant, tag, digest, publishedAt, artifactType, attrs, metadata, degraded, indexedAt, files]
+      properties:
+        variant: {type: string, description: Empty for a format without variants.}
+        tag: {type: string}
+        digest: {type: string, description: The manifest digest.}
+        publishedAt: {type: string, format: date-time}
+        artifactType: {type: string}
+        attrs:
+          type: object
+          description: The manifest's lajstrom.* annotations by their full key.
+          additionalProperties: {type: string}
+        metadata:
+          description: The metadata layer; null when there is none or it was too large to keep.
+          type: [object, "null"]
+        degraded: {type: boolean, description: The row came from the annotations alone.}
+        indexedAt:
+          type: string
+          format: date-time
+          description: When ingest or reindex last wrote or saw the row.
+        files:
+          type: array
+          description: The file layers, in manifest order.
+          items: {$ref: "#/components/schemas/File"}
+    File:
+      description: One file layer of a manifest.
+      type: object
+      required: [name, mediaType, digest, size, attrs]
+      properties:
+        name: {type: string}
+        mediaType: {type: string}
+        digest: {type: string}
+        size: {type: integer, format: int64}
+        attrs:
+          type: object
+          description: The layer's annotations.
+          additionalProperties: {type: string}
     VersionList:
       type: object
       required: [versions]
