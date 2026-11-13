@@ -765,6 +765,7 @@ type Capabilities struct {
     ConsistencyBound time.Duration          // the longest lag known of an eventual backend (capabilities.consistencyBound); 0 = none known
     MaxNameDepth int                        // components of a name below the instance prefix; 0 = no limit
     MaxNameLength int                       // bytes of a name below the instance prefix; 0 = no limit
+    TagsFoldCase bool                       // the backend stores a tag lower-cased and resolves tags without case (Gitea, Forgejo): the vendor table's or capabilities.tagsFoldCase
 }
 // CheckName: nil, or an error naming the limit of c that the name breaks; callers answer 4xx before a write.
 func (c Capabilities) CheckName(name string) error
@@ -1309,7 +1310,10 @@ func New(o Options) *Pipeline
 // Ingest stores a manifest the facade received for <format>/<repo>/<pkgPath>:<tag>; raw defines
 // the digest. Errors wrap ErrInvalid (profile, plugin, the plugin's Admit, missing blobs, a
 // lajstrom.origin.* key, which only Upload with an Origin writes) or ErrConflict (tag, or the
-// package path of another spelling). Inspect reads the lajstrom.origin.* keys as any annotation. A push the registry
+// package path of another spelling). On a registry with Capabilities.TagsFoldCase the claim on
+// the tag is the tag lower-cased, and a tag the registry resolves to a version of the package
+// whose tag differs from it in case only is ErrConflict naming that version (manifest-profile.md
+// §4.2). Inspect reads the lajstrom.origin.* keys as any annotation. A push the registry
 // does not serve within the visibility timeout is a *NotVisibleError, from Ingest, Upload,
 // PutReferrer and Journal alike.
 func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, principal auth.Principal) (*Result, error)
