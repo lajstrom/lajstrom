@@ -30,7 +30,7 @@ internal/oci/profile/         media types, annotations, Escape/EscapeComponent, 
 internal/ingest/              pipeline (validate → parse → push → index), publication sessions
 internal/provider/            Provider interface, Capabilities, errors
 internal/provider/generic/    oras-go based provider for distribution, Zot, Harbor, GHCR (+ small adapters)
-internal/provider/ecr/        ECR adapter: auth token, CreateRepository, DescribeRepositories
+internal/provider/ecr/        ECR adapter: auth token, CreateRepository, DescribeRepositories; Tokens, an oci upstream's token
 internal/provider/probe/      lajstrom registry probe: measures a registry's capabilities (docs/registries)
 internal/provider/providertest/ test doubles: an in-memory Provider; imported only by tests
 internal/index/               Store interface, models, migrations (embedded SQL) and their runner

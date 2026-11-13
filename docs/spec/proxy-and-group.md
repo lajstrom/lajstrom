@@ -45,6 +45,10 @@ it by name. The API never takes a URL or a file path (§9). Keys, for configurat
 | `upstreams[].auth.passwordFile` | path | empty | File that holds the password. |
 | `upstreams[].auth.passwordEnv` | environment variable name | empty | Variable that holds the password of `username`, as `registries[].auth.passwordEnv`; not with `passwordFile`. |
 | `upstreams[].auth.tokenFile` | path | empty | File that holds a bearer token (`Authorization: Bearer`), npm's `_authToken`. Not with `username`. |
+| `upstreams[].auth.ecr` | map | unset | An `oci` upstream's: Amazon ECR's authorization token for the AWS SDK's credentials, as Basic (§11.1). Not with another key of `auth`; refused on another format. |
+| `upstreams[].auth.ecr.region` | AWS region | the URL's, else the SDK's | The region whose ECR API gives the token; empty takes the one in the URL's host (`<account>.dkr.ecr.<region>.amazonaws.com`), else the SDK's. |
+| `upstreams[].auth.ecr.endpoint` | absolute `http(s)` URL | the SDK's | The ECR API's endpoint instead of the SDK's for the region: a VPC endpoint. |
+| `upstreams[].auth.gcp` | map, no keys | unset | An `oci` upstream's: an access token of the workload's service account from the GCP metadata server, as Basic (§11.1). Written `gcp: {}`. Not with another key of `auth`; refused on another format. |
 | `upstreams[].tokenRealmHosts` | list of host names | the vendor table's | An `oci` upstream's: the hosts besides its own that the realm of its bearer challenge may be on, over `https` (§11.1), as `registries[].tokenRealmHosts`. |
 | `upstreams[].dockerHub` | bool | `true` on `registry-1.docker.io` and `docker.io`, else `false` | An `oci` upstream's: it is Docker Hub or a mirror of it, and a path of one component is `library/<path>` (§11.7). |
 | `upstreams[].timeout` | duration | `30s` | Bounds the wait for the response headers (connecting and TLS at most 10 s each) and every wait for the next bytes of a body. `0s` means the default. |
@@ -56,7 +60,8 @@ it by name. The API never takes a URL or a file path (§9). Keys, for configurat
 A credential file is read when `serve` starts, as `keys.masterKeyFile` is: missing, unreadable
 or empty is a configuration error of `serve`, and a mode that lets the group or others read it
 is used, with a warning. A rotated secret takes a restart. Spaces and line breaks around the
-value are ignored.
+value are ignored. A cloud credential (`auth.ecr`, `auth.gcp`) is no file: it is asked for at the
+first request that needs it and replaced before it expires, without a restart (§11.1).
 
 An egress proxy is the environment's: `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`, as the
 connections to the registries read them. A deployment whose registry must not go through it
@@ -614,7 +619,28 @@ authentication is the upstream's own:
 - none: anonymous, with an anonymous bearer token where the registry asks for one;
 - `auth.username` with `auth.passwordFile` or `auth.passwordEnv`: Basic where the registry asks
   for it, and the credentials of its token realm;
-- `auth.tokenFile`: a static bearer token.
+- `auth.tokenFile`: a static bearer token;
+- `auth.ecr`: Amazon ECR's authorization token, which `GetAuthorizationToken` gives the AWS
+  SDK's default chain of credentials (the environment, the shared profile, web identity as with
+  IRSA, the container or instance role), as `registries[].type: ecr` gets it: Basic
+  `AWS:<token>`, replaced an hour before its 12 hours end. The region is `auth.ecr.region`, else
+  the one in the URL's host, else the SDK's; AWS documents the token as valid for every registry
+  of the region that the principal may read;
+- `auth.gcp`: an access token of the workload's service account from the GCP metadata server
+  (GKE Workload Identity, Compute Engine, Cloud Run): `GET
+  /computeMetadata/v1/instance/service-accounts/default/token` with `Metadata-Flavor: Google`,
+  at `169.254.169.254` or at the host of `GCE_METADATA_HOST` as Google's libraries read it, never
+  through an egress proxy. Basic `oauth2accesstoken:<token>`, replaced 4 minutes before it
+  expires, or at half its life when it lives less than 8.
+
+A cloud credential is taken from its cache by every request that answers a Basic challenge and by
+every token request, so a replaced one goes out from the next request on, without a `401` first.
+A refresh that fails leaves the current one in use until it expires, logged, and asked again at
+most once a minute (ECR) or every 10 s (GCP). One that cannot be had fails the request as a `401`
+of Lajstrom's own credentials does (§6): the cached row, else `502`, logged without the token. A
+key of a Google service account is not a cloud credential here: `auth.username: _json_key` with
+the key file as `auth.passwordFile` is Basic, which Artifact Registry and Container Registry
+take.
 
 A bearer challenge is answered at its realm when the realm is on the upstream's host name, or
 over `https` on a host of `upstreams[].tokenRealmHosts` or of the vendor table (`auth.docker.io`
@@ -622,8 +648,8 @@ for `registry-1.docker.io` and `docker.io`); any other realm is `502`, naming it
 credentials go to the upstream's origin and to that realm only. A manifest or a blob that the
 upstream redirects to another host (registry.k8s.io's regional mirrors, a CDN, object storage) is
 followed without them, over `https` only and to public addresses only, as §9.2 says of a URL on
-another host. Cloud authentication (ECR through IAM, Artifact Registry through a service
-account) is not in this version.
+another host. Not in this version: federation into GCP from outside it (a workload of AWS or of
+an OIDC issuer reading Artifact Registry), and ECR Public with credentials.
 
 ### 11.2 Names, lists and limits
 
