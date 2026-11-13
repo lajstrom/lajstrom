@@ -20,7 +20,8 @@ func TestPublic(t *testing.T) {
 		{"127.0.0.1", false}, {"::1", false}, {"10.1.2.3", false}, {"172.16.0.1", false}, {"192.168.1.1", false},
 		{"169.254.169.254", false}, {"fe80::1", false}, {"fc00::1", false}, {"100.64.0.1", false},
 		{"0.0.0.0", false}, {"::", false}, {"224.0.0.1", false}, {"ff02::1", false}, {"255.255.255.255", false},
-		{"::ffff:127.0.0.1", false},
+		{"::ffff:127.0.0.1", false}, {"93.184.215.14", true}, {"2606:2800:21f:cb07:6820:80da:af6b:8b2c", true},
+		{"fd00::1", false}, {"::ffff:10.0.0.1", false},
 	} {
 		if got := Public(net.ParseIP(tc.ip)); got != tc.want {
 			t.Errorf("Public(%s) = %v, want %v", tc.ip, got, tc.want)

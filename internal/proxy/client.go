@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/config"
+	"github.com/lajstrom/lajstrom/internal/egress"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/metrics"
@@ -39,14 +40,10 @@ const (
 // index.ErrNotFound, so that a caller that passes it on answers 404.
 var errMissing = fmt.Errorf("proxy: the upstream does not have it: %w", index.ErrNotFound)
 
-// errRefused marks a target the client does not connect to: a redirect from https to http,
-// a URL on another host than the upstream's that is not https or not public.
-var errRefused = errors.New("proxy: refused target")
-
 // Upstream is one entry of upstreams[] with its credentials read and its own HTTP client. It
 // sends Lajstrom's own requests only: the credentials go to the origin of its URL alone, a
 // client's headers are never forwarded, and a host other than its own must be https and
-// public (§9.2). Its errors name it by its name, never by its URL.
+// public (§9.2, egress.Guard). Its errors name it by its name, never by its URL.
 type Upstream struct {
 	name, format    string
 	base            *url.URL
@@ -55,10 +52,8 @@ type Upstream struct {
 	maxMetadataSize int64
 	authorization   string // the value of Authorization on the upstream's origin; never logged
 	client          *http.Client
+	guard           *egress.Guard // trusts the upstream's host and the egress proxies the environment chose
 	log             *slog.Logger
-
-	mu      sync.Mutex
-	proxies map[string]bool // hosts of the egress proxies the environment chose, dialed as they are
 }
 
 // UpstreamOptions are what NewUpstream takes besides the configuration.
@@ -84,7 +79,7 @@ func NewUpstream(c config.Upstream, o UpstreamOptions) (*Upstream, error) {
 		base.Path += "/"
 	}
 	u := &Upstream{name: c.Name, format: c.Format, base: base, timeout: c.Timeout, retries: max(c.Retries, 0),
-		maxMetadataSize: c.MaxMetadataSize, authorization: o.Authorization, log: o.Log, proxies: map[string]bool{}}
+		maxMetadataSize: c.MaxMetadataSize, authorization: o.Authorization, guard: egress.NewGuard(base.Hostname()), log: o.Log}
 	if u.timeout <= 0 {
 		u.timeout = config.DefaultUpstreamTimeout
 	}
@@ -100,8 +95,8 @@ func NewUpstream(c config.Upstream, o UpstreamOptions) (*Upstream, error) {
 	}
 	dialer := &net.Dialer{Timeout: dialTimeout}
 	tr := &http.Transport{
-		Proxy:                 u.recordProxy(choose),
-		DialContext:           u.dialFunc(dialer),
+		Proxy:                 u.guard.Proxy(choose),
+		DialContext:           u.guard.DialContext(dialer),
 		TLSClientConfig:       o.TLS,
 		TLSHandshakeTimeout:   dialTimeout,
 		ResponseHeaderTimeout: u.timeout,
@@ -164,8 +159,8 @@ type call struct {
 // send sends c as Get says, retried as upstreams[].retries says; a request of another method
 // than GET is answered with its body on any 2xx.
 func (u *Upstream) send(ctx context.Context, c call) (*Response, error) {
-	if err := u.checkTarget(c.target); err != nil {
-		return nil, err
+	if err := u.guard.CheckURL(c.target); err != nil {
+		return nil, u.transportError(ctx, err)
 	}
 	for attempt := 0; ; attempt++ {
 		resp, err := u.once(ctx, c)
@@ -263,8 +258,12 @@ func (u *Upstream) transportError(ctx context.Context, err error) error {
 		return ctx.Err()
 	case errors.As(err, &ne) && ne.Timeout(), errors.Is(err, errStalled):
 		return &timeoutError{upstream: u.name, cause: err}
-	case errors.Is(err, errRefused):
-		return fmt.Errorf("%w: upstream %s: %s", format.ErrBadGateway, u.name, strings.TrimPrefix(err.Error(), "proxy: "))
+	case errors.Is(err, egress.ErrRefused):
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err // without the URL, which a redirect may have presigned (§9.2)
+		}
+		return fmt.Errorf("%w: upstream %s: %w", format.ErrBadGateway, u.name, err)
 	}
 	return &connError{upstream: u.name, cause: err}
 }
@@ -353,102 +352,19 @@ func port(u *url.URL) string {
 }
 
 // checkRedirect follows at most maxRedirects redirects, never from https to http, to targets
-// checkTarget allows, with the credentials on the upstream's origin only.
+// the guard allows, with the credentials on the upstream's origin only.
 func (u *Upstream) checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= maxRedirects {
-		return fmt.Errorf("%w: more than %d redirects", errRefused, maxRedirects)
+		return fmt.Errorf("%w: more than %d redirects", egress.ErrRefused, maxRedirects)
 	}
 	if prev := via[len(via)-1]; strings.EqualFold(prev.URL.Scheme, "https") && !strings.EqualFold(req.URL.Scheme, "https") {
-		return fmt.Errorf("%w: a redirect from https to http", errRefused)
+		return fmt.Errorf("%w: a redirect from https to http", egress.ErrRefused)
 	}
-	if err := u.checkTarget(req.URL); err != nil {
+	if err := u.guard.CheckURL(req.URL); err != nil {
 		return err
 	}
 	u.authorize(req)
 	return nil
-}
-
-// checkTarget allows the upstream's own host, which is the operator's choice, and any other
-// host that is https and, when it is an address, a public one; the dial checks the addresses a
-// name resolves to (dialFunc).
-func (u *Upstream) checkTarget(t *url.URL) error {
-	if strings.EqualFold(t.Hostname(), u.base.Hostname()) {
-		return nil
-	}
-	if !strings.EqualFold(t.Scheme, "https") {
-		return fmt.Errorf("%w: a URL on another host than the upstream's must be https", errRefused)
-	}
-	if ip := net.ParseIP(t.Hostname()); ip != nil && !public(ip) {
-		return fmt.Errorf("%w: the address %s is not public", errRefused, ip)
-	}
-	return nil
-}
-
-// recordProxy wraps the egress proxy choice: the hosts of the proxies it chooses are dialed as
-// they are, since they are the environment's and not a target.
-func (u *Upstream) recordProxy(choose func(*http.Request) (*url.URL, error)) func(*http.Request) (*url.URL, error) {
-	return func(req *http.Request) (*url.URL, error) {
-		p, err := choose(req)
-		if err == nil && p != nil {
-			u.mu.Lock()
-			u.proxies[strings.ToLower(p.Hostname())] = true
-			u.mu.Unlock()
-		}
-		return p, err
-	}
-}
-
-// dialFunc dials the upstream's own host and the egress proxies as they are, and any other
-// host only at public addresses: a document or a redirect must not reach loopback, a private
-// network or the cloud metadata endpoint (§9.2).
-func (u *Upstream) dialFunc(d *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
-	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		host, p, err := net.SplitHostPort(addr)
-		if err != nil {
-			return nil, err
-		}
-		u.mu.Lock()
-		trusted := strings.EqualFold(host, u.base.Hostname()) || u.proxies[strings.ToLower(host)]
-		u.mu.Unlock()
-		if trusted {
-			return d.DialContext(ctx, network, addr)
-		}
-		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
-		if err != nil {
-			return nil, err
-		}
-		for _, ip := range ips {
-			if !public(ip) {
-				return nil, fmt.Errorf("%w: %s resolves to %s, which is not public", errRefused, host, ip)
-			}
-		}
-		var last error
-		for _, ip := range ips {
-			c, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), p))
-			if err == nil {
-				return c, nil
-			}
-			last = err
-		}
-		return nil, last
-	}
-}
-
-// cgnat is the shared address space of carrier-grade NAT, 100.64.0.0/10.
-var cgnat = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
-
-// public reports whether ip is a public unicast address: not loopback, private (RFC 1918, RFC
-// 4193), link-local, CGNAT, unspecified, multicast or broadcast.
-func public(ip net.IP) bool {
-	if v4 := ip.To4(); v4 != nil {
-		ip = v4
-	}
-	switch {
-	case ip.IsLoopback(), ip.IsPrivate(), ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast(), ip.IsInterfaceLocalMulticast(),
-		ip.IsMulticast(), ip.IsUnspecified(), cgnat.Contains(ip), ip.Equal(net.IPv4bcast):
-		return false
-	}
-	return ip.IsGlobalUnicast()
 }
 
 // errStalled is the cause of a body that made no progress within the timeout.
