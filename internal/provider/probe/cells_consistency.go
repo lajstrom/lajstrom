@@ -195,11 +195,12 @@ func (r *run) goneReads(repo, tag string, d digest.Digest) map[string]func(conte
 // description: a write of the consistency measurement, an image of the routing words.
 func (r *run) layerManifest(note string, layer ocispec.Descriptor) manifest {
 	m := ocispec.Manifest{
-		Versioned:   specs.Versioned{SchemaVersion: 2},
-		MediaType:   ocispec.MediaTypeImageManifest,
-		Config:      emptyDesc,
-		Layers:      []ocispec.Descriptor{layer},
-		Annotations: map[string]string{ocispec.AnnotationDescription: "lajstrom registry probe " + r.id + ": " + note},
+		Versioned:    specs.Versioned{SchemaVersion: 2},
+		MediaType:    ocispec.MediaTypeImageManifest,
+		ArtifactType: emptyArtifactType,
+		Config:       emptyDesc,
+		Layers:       []ocispec.Descriptor{layer},
+		Annotations:  map[string]string{ocispec.AnnotationDescription: "lajstrom registry probe " + r.id + ": " + note},
 	}
 	return encode(m.MediaType, m)
 }

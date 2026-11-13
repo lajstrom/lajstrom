@@ -120,6 +120,9 @@ func pagination(page answer, got, want, all []string) string {
 	if len(want) < 2 {
 		return "pagination not measured"
 	}
+	if page.status != http.StatusOK { // ECR: 405 UNSUPPORTED "Invalid next token provided" (#19)
+		return "**`last` a name: " + page.refusal() + "**"
+	}
 	link := nextLink(page)
 	var v string
 	switch {

@@ -140,6 +140,8 @@ func TestOverridesVerdict(t *testing.T) {
 		{"gitlab B", probed, facts{catalog: true, profileRefused: true}, "no override helps: **the registry refuses Lajstrom's manifests**"},
 		{"ghcr", probed, facts{catalog: true, deleteRefused: true}, "`deleteManifest: false` saves the first refused delete"},
 		{"the probe says referrers, wrongly", withReferrers, facts{catalog: true, referrersKnown: true}, "`referrers: false`"},
+		// ECR refuses _catalog's last=<name> (405), and the provider lists with DescribeRepositories.
+		{"ecr", withReferrers, facts{referrersAPI: true, referrersKnown: true, ownListing: true}, "none"},
 	}
 	for _, c := range cases {
 		if got := overridesVerdict(c.caps, c.f); got != c.want {

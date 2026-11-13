@@ -38,11 +38,11 @@ func TestCapabilityDefaults(t *testing.T) {
 		want       config.CapabilityOverrides
 	}{
 		{"defaults", config.CapabilityOverrides{}, types.ImageTagMutabilityImmutable,
-			config.CapabilityOverrides{CreateOnPush: aws.Bool(false), Catalog: aws.Bool(true), ImmutableTags: aws.Bool(true), MaxBlobSize: maxLayerSize, Consistency: config.ConsistencyEventual}},
+			config.CapabilityOverrides{CreateOnPush: aws.Bool(false), Referrers: aws.Bool(true), Catalog: aws.Bool(true), ImmutableTags: aws.Bool(true), MaxBlobSize: maxLayerSize, Consistency: config.ConsistencyEventual}},
 		{"exclusion", config.CapabilityOverrides{}, types.ImageTagMutabilityImmutableWithExclusion,
-			config.CapabilityOverrides{CreateOnPush: aws.Bool(false), Catalog: aws.Bool(true), ImmutableTags: aws.Bool(true), MaxBlobSize: maxLayerSize, Consistency: config.ConsistencyEventual}},
+			config.CapabilityOverrides{CreateOnPush: aws.Bool(false), Referrers: aws.Bool(true), Catalog: aws.Bool(true), ImmutableTags: aws.Bool(true), MaxBlobSize: maxLayerSize, Consistency: config.ConsistencyEventual}},
 		{"mutable", config.CapabilityOverrides{}, types.ImageTagMutabilityMutableWithExclusion,
-			config.CapabilityOverrides{CreateOnPush: aws.Bool(false), Catalog: aws.Bool(true), ImmutableTags: aws.Bool(false), MaxBlobSize: maxLayerSize, Consistency: config.ConsistencyEventual}},
+			config.CapabilityOverrides{CreateOnPush: aws.Bool(false), Referrers: aws.Bool(true), Catalog: aws.Bool(true), ImmutableTags: aws.Bool(false), MaxBlobSize: maxLayerSize, Consistency: config.ConsistencyEventual}},
 		{"set", config.CapabilityOverrides{CreateOnPush: aws.Bool(true), Catalog: aws.Bool(false), Referrers: aws.Bool(false), MaxBlobSize: 1 << 30,
 			Consistency: config.ConsistencyStrong},
 			types.ImageTagMutabilityImmutable,
@@ -189,7 +189,7 @@ func TestDataPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Capabilities: %v", err)
 	}
-	want := provider.Capabilities{Catalog: true, DeleteManifest: true, ImmutableTags: true, BlobRedirect: true, MaxBlobSize: maxLayerSize,
+	want := provider.Capabilities{Referrers: true, Catalog: true, DeleteManifest: true, ImmutableTags: true, BlobRedirect: true, MaxBlobSize: maxLayerSize,
 		Consistency: provider.ConsistencyEventual, MaxNameLength: 256 - len("art/")}
 	if caps != want {
 		t.Errorf("Capabilities = %+v, want %+v", caps, want)

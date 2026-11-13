@@ -226,10 +226,11 @@ func (r *run) measureManifestSize(ctx context.Context) error {
 // paddedManifest is a manifest of the probe of size bytes, its description filled up.
 func (r *run) paddedManifest(size int64) manifest {
 	m := ocispec.Manifest{
-		Versioned: specs.Versioned{SchemaVersion: 2},
-		MediaType: ocispec.MediaTypeImageManifest,
-		Config:    emptyDesc,
-		Layers:    []ocispec.Descriptor{emptyDesc},
+		Versioned:    specs.Versioned{SchemaVersion: 2},
+		MediaType:    ocispec.MediaTypeImageManifest,
+		ArtifactType: emptyArtifactType,
+		Config:       emptyDesc,
+		Layers:       []ocispec.Descriptor{emptyDesc},
 	}
 	note := "lajstrom registry probe " + r.id + " "
 	m.Annotations = map[string]string{ocispec.AnnotationDescription: note}
