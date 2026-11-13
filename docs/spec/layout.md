@@ -41,6 +41,8 @@ internal/index/sqlite/        modernc.org/sqlite implementation
 internal/index/postgres/      pgx implementation
 internal/index/storetest/     conformance suite of index.Store, run by both engines; imported only by tests
 internal/proxy/               proxy repos (ADR 0013): the settings, the upstream client, the metadata cache, fetch on miss
+internal/egress/              where an upstream's client may connect (Guard): the configured hosts and the egress proxies
+                              as they are, any other host over https at public addresses only (proxy-and-group.md §9.2)
 internal/auth/                principals, password hashing, PAT/deploy tokens, RBAC evaluation
 internal/auth/token/          the bearer JWT of /v2: scopes, issue, verify
 internal/auth/oidc/           OIDC relying party: discovery, JWKS, ID token verification, code exchange (#69)

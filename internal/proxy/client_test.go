@@ -274,15 +274,23 @@ func TestEgressProxy(t *testing.T) {
 	}
 }
 
-func TestPublic(t *testing.T) {
-	for addr, want := range map[string]bool{
-		"93.184.215.14": true, "2606:2800:21f:cb07:6820:80da:af6b:8b2c": true,
-		"127.0.0.1": false, "::1": false, "10.1.2.3": false, "172.16.0.1": false, "192.168.1.1": false,
-		"169.254.169.254": false, "fe80::1": false, "fd00::1": false, "100.64.0.1": false, "0.0.0.0": false,
-		"::": false, "224.0.0.1": false, "ff02::1": false, "255.255.255.255": false, "::ffff:10.0.0.1": false,
-	} {
-		if got := public(net.ParseIP(addr)); got != want {
-			t.Errorf("public(%s) = %t, want %t", addr, got, want)
+// TestRefusedTargets: a URL on another host than the upstream's that is not https, or whose
+// address is not public, is refused before any request is sent, and so is a redirect to a
+// private address. Each is a 502 whose error does not quote the URL, which may be presigned
+// (§9.2).
+func TestRefusedTargets(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://10.0.0.1/blob?X-Amz-Signature=secret", http.StatusFound)
+	}))
+	defer srv.Close()
+	u := testUpstream(t, srv.URL, time.Second, 0, UpstreamOptions{TLS: srv.Client().Transport.(*http.Transport).TLSClientConfig})
+	for _, target := range []string{"http://files.example/x.tgz", "https://169.254.169.254/latest/meta-data", srv.URL + "/presigned"} {
+		_, err := get(t, u, target)
+		if status := format.StatusOf(err); status != http.StatusBadGateway {
+			t.Errorf("%s: %v (%d), want 502", target, err, status)
+		}
+		if err != nil && (strings.Contains(err.Error(), target) || strings.Contains(err.Error(), "secret")) {
+			t.Errorf("%s: the error %q quotes the URL", target, err)
 		}
 	}
 }

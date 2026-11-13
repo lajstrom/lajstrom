@@ -693,9 +693,9 @@ longer than `reconcile.graceAge` is outside them
   on a cross-origin redirect (**unchecked** by a test of ours for that client).
 - **Mechanism.** `generic.Provider.location`, `generic.Provider.blobRequest`,
   `generic.realmTransport` with `refuseRealm` and `realmHosts` (`registries[].tokenRealmHosts`);
-  `proxy.Upstream.authorize`, `checkRedirect`, `checkTarget`; the fetcher's requests are its own
-  (`User-Agent: lajstrom/<version>`), and a forwarded request carries only what the plugin names
-  (`format.Proxy.Forward`).
+  `proxy.Upstream.authorize`, `checkRedirect`, `egress.Guard.CheckURL`; the fetcher's requests
+  are its own (`User-Agent: lajstrom/<version>`), and a forwarded request carries only what the
+  plugin names (`format.Proxy.Forward`).
 - **Tests.** `TestBlobRedirectDowngrade`, `TestBlobRedirectLeavesOrigin`, `TestTokenRealm`,
   `TestRefuseRealm`, `TestUploadDowngrade`, `TestSameOrigin`, `TestCredentials`, `TestRedirects`,
   `TestForward`, `TestProxyRequestHost`, `TestLoadNestedPrefixes`.
@@ -1019,8 +1019,11 @@ longer than `reconcile.graceAge` is outside them
 - **Assumes.** Any; with an egress proxy, Lajstrom refuses an address literal of a private range
   and the egress proxy enforces the rest.
 - **Mechanism.** `config` (`upstreams[]`), `proxy.ParseSettings` (a repo names an upstream, never
-  a URL), `proxy.Upstream.checkRedirect`, `checkTarget`, `dialFunc` and `public`.
-- **Tests.** `TestPublic`, `TestRedirects`, `TestEgressProxy`, `TestLoadUpstreams`,
+  a URL), `proxy.Upstream.checkRedirect`, and the `egress.Guard` of each upstream's client, which
+  trusts its host and the egress proxies (`Guard.Proxy`): `Guard.CheckURL`, `Guard.DialContext`
+  and `egress.Public`.
+- **Tests.** egress's `TestPublic`, `TestCheckURL`, `TestDialContext`, `TestProxyTrusts`;
+  `TestRedirects`, `TestRefusedTargets`, `TestEgressProxy`, `TestLoadUpstreams`,
   `TestLoadUpstreamErrors`, `TestParseSettingsErrors`, `TestPatchUpstreamInvalid`,
   `TestCreateProxyInvalid`, `TestForwardErrors`.
 - **When violated.** `502` (http-routing.md §6); threat model S-1.
