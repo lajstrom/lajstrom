@@ -181,31 +181,39 @@ say what happens with them.
 
 ### 5.1 Warm the cache before a rollout
 
-Before the nodes pull, pull every image and platform the rollout needs through Lajstrom, from
-one host. The backend then holds them, and the nodes no longer depend on the link:
+Before the nodes pull, prefetch every image and platform the rollout needs into the backend
+([#886]; [api.md](../api.md#lajstrom-admin-repo)). The nodes then no longer depend on the link:
 
 ```sh
-# images.txt: one image a line, as the repo names it (nginx:1.27, bitnami/redis:7.4)
-while read -r image; do
-  for platform in linux/amd64 linux/arm64; do
-    crane pull --platform "$platform" "lajstrom.example.com/oci/hub/$image" /dev/null
-  done
-done < images.txt
+# images.txt: one image a line, as the cluster names them (docker.io/library/nginx:1.27, nginx:1.27)
+kubectl get pods -A -o jsonpath='{range ..containers[*]}{.image}{"\n"}{end}' | sort -u > images.txt
+lajstrom admin repo prefetch oci/hub --from-file images.txt --host docker.io \
+  --platform linux/amd64,linux/arm64 --report report.json
 ```
 
-- Measured: after `crane pull --platform … /dev/null` of an image, the backend held its tag and
-  its keep-tag.
-- Warm with crane, which keeps no layers between runs. docker and containerd skip the layers they
-  hold already, and an image whose layers were skipped is never completed in the backend
-  ([#876]).
-- Each layer comes in one upstream `GET`, resumed with `Range` when the link drops ([#885]). Run
-  a failed pull again only when the upstream does not answer `Range`, or the resumes got nothing.
+- The server fetches each image the way a pull goes: the tag, the index, the manifest of each
+  platform named, every layer under its claim. It answers once the manifests, the index (when
+  every platform it lists is held) and the tag are in the backend.
+- `--platform` is required for an image that is an index: without it, the image fails `400`
+  and the message lists its platforms. A line may name its own platforms after the reference.
+- An image whose layers another image of the repo holds is completed at its own path: the layers
+  are mounted where the backend mounts, not fetched ([#876]).
+- A second run prints `held` for each image and platform, and fetches nothing.
+- An index fetched for some of its platforms stays in the cache with its tag, so `offline: true`
+  serves it after the prefetch (§5.4).
+- A layer that failed (a link that dropped beyond what the resumes recover, [#885]) fails its
+  platform. `--failed` sends those images again:
+
+  ```sh
+  lajstrom admin repo prefetch oci/hub --from-file report.json --failed --report report.json
+  ```
+
 - On Docker Hub, a cold image costs a counted pull for its index and one for each platform
-  ([operations.md](../operations.md#upstreams-of-oci-proxy-repos)).
+  ([operations.md](../operations.md#upstreams-of-oci-proxy-repos)): 50 images of two platforms
+  are 150, above the anonymous 100 an hour. A `429` fails the image `503`, and the line says how
+  long to wait before `--failed`.
 - Through the rollout, a longer `metadataTTL`, or `offline: true`, keeps the tags off the
   upstream (§5.4).
-- [#886] proposes `lajstrom admin repo prefetch` for `oci` repos, which would do this in the
-  server.
 
 ### 5.2 The hosts to allow
 

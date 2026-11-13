@@ -459,9 +459,9 @@ the installer if the factory has not built it yet, and keep it in the backend.
 - [#875](https://github.com/lajstrom/lajstrom/issues/875): nodes that pull a layer while
   another node's fetch of it runs give up after 30 s. A fleet booting at once does exactly
   that.
-- [#886](https://github.com/lajstrom/lajstrom/issues/886): no prefetch for `oci` proxy repos.
-  Until then, copy into a passthrough repo (§2), or `crane pull --platform …` through the proxy,
-  per image and platform.
+- [#886](https://github.com/lajstrom/lajstrom/issues/886): a prefetch of `oci` proxy repos
+  (`lajstrom admin repo prefetch oci/<repo> --platform …`, quickstart/oci-proxy.md §5.1) warms
+  the backend before a boot; it was not part of this run.
 - [#883](https://github.com/lajstrom/lajstrom/issues/883),
   [#884](https://github.com/lajstrom/lajstrom/issues/884),
   [#885](https://github.com/lajstrom/lajstrom/issues/885) and
