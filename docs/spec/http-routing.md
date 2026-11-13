@@ -94,7 +94,15 @@ upload; else the code of the route's own errors: `BLOB_UPLOAD_INVALID` for an up
 for a read. The message names the registry by its `registries[].name`, with the status and the
 code, and nothing else of it: no URL, realm, credential or message of the registry's own; when
 the vendor table knows the fix, a hint follows (`registries[].uploads.spoolUnknownLength` for
-Gitea, Forgejo and JFrog). The refusal is logged at warn. An upload session stays, as after any
+Gitea, Forgejo and JFrog). A manifest push of an `oci` repo that the registry refuses with
+`MANIFEST_BLOB_UNKNOWN`, on a registry not classified `strong` still after the retries
+(guarantees.md INV-4), then names the first blob of the manifest that the registry does not
+have: in the message, after the code, as the hook names a layer of a managed repo, and in
+`detail.digest` (#850). Lajstrom sends one `HEAD` per distinct blob, the config and the layers in
+order, or the manifests of an index (its first 1000), but not a layer with `urls`, which the
+registry need not hold, and stops at the first the registry does not have. When it has them
+all, or a `HEAD` fails otherwise, the message is the registry's name, status and code alone.
+The refusal is logged at warn. An upload session stays, as after any
 chunk that fails, except when the registry
 no longer knows it (`404`, or `BLOB_UPLOAD_UNKNOWN`: `404 BLOB_UPLOAD_UNKNOWN`) or refuses the
 digest (`400 DIGEST_INVALID`): then it ends. A `429` or `503` of the registry is
