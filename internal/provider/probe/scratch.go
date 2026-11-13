@@ -144,10 +144,18 @@ func (r *run) cleanup(ctx context.Context) {
 			left = append(left, fmt.Sprintf("blob %s@%s (%s)", r.name(b.repo), shorten(b.digest.String()), reason))
 		}
 	}
-	r.report.LeftBehind = left
 	if err := r.measureRepositoryDelete(ctx); err != nil {
 		r.failed("deleteRepository", err)
 	}
+	if len(r.made) > 0 {
+		notDeleted := r.deleteMade(ctx)
+		if c := r.report.Cell("deleteRepository"); c.Measured {
+			c.Value += fmt.Sprintf("; the registry's API deleted %d of the %d repositories the run created with it",
+				len(r.made)-len(notDeleted), len(r.made))
+		}
+		left = append(left, notDeleted...)
+	}
+	r.report.LeftBehind = left
 }
 
 // remove deletes what rest names in repo and returns why it is still there, "" when it is

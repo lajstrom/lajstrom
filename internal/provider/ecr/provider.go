@@ -20,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ecr/types"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"oras.land/oras-go/v2/registry/remote/auth"
 
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/provider"
@@ -254,3 +255,17 @@ func (p *Provider) StatManifest(ctx context.Context, name string, d digest.Diges
 
 // Ping implements provider.Pinger: GET /v2/ with the authorization token.
 func (p *Provider) Ping(ctx context.Context) error { return p.data.Ping(ctx) }
+
+// Credential is the auth.CredentialFunc of the registry's /v2 API, the one the data path
+// uses: the authorization token as the Basic username and password, fetched with the SDK's
+// credentials and replaced before it expires. lajstrom registry probe answers its own requests
+// with it.
+func (p *Provider) Credential(ctx context.Context, hostport string) (auth.Credential, error) {
+	return p.tokens.credential(ctx, hostport)
+}
+
+// IsRegistryHost reports whether host (without a port) is the host of an ECR registry,
+// <account>.dkr.ecr.<region>.amazonaws.com and its FIPS, China and dual-stack forms.
+func IsRegistryHost(host string) bool {
+	return hostPattern.MatchString(strings.ToLower(strings.TrimSuffix(host, ".")))
+}

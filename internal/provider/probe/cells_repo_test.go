@@ -34,13 +34,13 @@ func TestWhereVerdict(t *testing.T) {
 		names  []nameLength
 		want   string
 	}{
-		{"distribution", "", created, []nameLength{{"255", accepted}, {"256", errAns(400, "NAME_INVALID")}},
+		{"distribution", "", created, []nameLength{{"255", accepted, ""}, {"256", errAns(400, "NAME_INVALID"), ""}},
 			"anywhere; at any depth, inside another repository too; at most 255 characters (256: 400 `NAME_INVALID`)"},
-		{"zot", "", created, []nameLength{{"255", accepted}, {"256", accepted}, {"component", ans(500, "")}},
+		{"zot", "", created, []nameLength{{"255", accepted, ""}, {"256", accepted, ""}, {"component", ans(500, ""), ""}},
 			"anywhere; at any depth, inside another repository too; a name component of more than 255 bytes is an empty 500"},
-		{"gitea", "lajstrom-it/", created, []nameLength{{"255", accepted}, {"256", accepted}, {"component", accepted}},
+		{"gitea", "lajstrom-it/", created, []nameLength{{"255", accepted, ""}, {"256", accepted, ""}, {"component", accepted, ""}},
 			"below `lajstrom-it/`; outside it not tried; at any depth, inside another repository too; no length limit met: 256 characters, a component of 256 bytes"},
-		{"depth refused", "", errAns(400, "NAME_INVALID"), []nameLength{{"255", errAns(400, "NAME_INVALID")}, {"256", errAns(400, "NAME_INVALID")}},
+		{"depth refused", "", errAns(400, "NAME_INVALID"), []nameLength{{"255", errAns(400, "NAME_INVALID"), ""}, {"256", errAns(400, "NAME_INVALID"), ""}},
 			"anywhere; eight levels deep: 400 `NAME_INVALID`; 255 characters refused: 400 `NAME_INVALID`"},
 	}
 	for _, c := range cases {

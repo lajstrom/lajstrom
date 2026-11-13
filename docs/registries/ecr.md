@@ -169,8 +169,9 @@ needs (unverified; `ecr:BatchGetImage`, as for `ListImageReferrers`, is likely).
 
 ## Capabilities
 
-`lajstrom registry probe` does not probe a registry of type `ecr`: its credentials come from the
-AWS SDK; the live check is #19.
+`lajstrom registry probe` measures a registry of type `ecr` with the token of the AWS SDK's
+credentials ([Measure a real ECR](#measure-a-real-ecr-19)); no run against a real ECR is
+recorded yet.
 
 | Capability | Value | Where it comes from |
 | --- | --- | --- |
@@ -250,3 +251,75 @@ again to an immutable repository on `/v2` (its status), the image quota, the ref
 and through Lajstrom, chunks under 5 MB and under `OCI-Chunk-Min-Length`, a mount with and
 without `BLOB_MOUNTING`, `_catalog`, a blob above 52,000 MiB, and a `DELETE` of a manifest on
 `/v2`.
+
+## Measure a real ECR (#19)
+
+The runbook of the live check: about an hour for whoever has an account, and a few cents. Each
+step deletes what it created. Not run yet.
+
+**What it takes.**
+
+- A role or user with the [IAM policy](#iam-policy) above, its resource
+  `repository/lajstrom/*`: every step works below `lajstrom/`.
+- The AWS SDK's credentials in the environment: `AWS_PROFILE`, `AWS_ACCESS_KEY_ID` and
+  `AWS_SECRET_ACCESS_KEY`, or an instance role. The region is the one in the registry's host.
+- Unverified: whether the probe's `DeleteRepository` with `force` needs more than
+  `ecr:DeleteRepository`.
+
+**1. The probe.** Every cell `registry probe` measures, in a new scratch prefix below `lajstrom/`:
+
+```sh
+REGISTRY=https://123456789012.dkr.ecr.eu-west-1.amazonaws.com
+lajstrom registry probe --url "$REGISTRY" --registry-prefix lajstrom > ecr-probe.md
+lajstrom registry probe --url "$REGISTRY" --registry-prefix lajstrom -v -o json > ecr-probe.json   # with the exchanges
+```
+
+- `--url` of an ECR host is a registry of type `ecr`. The probe asks the ECR API for the
+  authorization token and answers `/v2` with it. `--username` does not go with it.
+- A registry of type `ecr` in a configuration works too, with its `ecr` settings:
+  `--config lajstrom.yaml --registry <name>`.
+- "Create on push" is measured first, and nothing is created for it.
+  - When it says no (no creation template with `CREATE_ON_PUSH` covers the prefix), the run
+    creates each of its repositories with `CreateRepository` before the first write, as the
+    provider does. At the end it deletes them with `DeleteRepository` and `force`.
+  - "Delete a repository" says how many went. One that did not is in the report's left-behind
+    list.
+- With a creation template for `lajstrom/` that has `CREATE_ON_PUSH`, run the probe again:
+  "Create on push" should then say yes.
+
+**2. The provider.** It runs `TestIntegrationMoto`'s steps without moto, below
+`lajstrom/it-<random>/`, and deletes its repositories at the end:
+
+```sh
+LAJSTROM_TEST_ECR_LIVE=123456789012.dkr.ecr.eu-west-1.amazonaws.com \
+  go test -tags integration -count=1 -run TestIntegrationECRLive -v ./internal/provider/ecr/
+```
+
+**3. By hand,** what neither of them measures:
+
+```sh
+HOST=123456789012.dkr.ecr.eu-west-1.amazonaws.com
+aws ecr get-login-password | oras login --username AWS --password-stdin "$HOST"
+aws ecr create-repository --repository-name lajstrom/manual/hello
+oras push "$HOST/lajstrom/manual/hello:v1" ./hello.txt
+oras attach --artifact-type application/vnd.example.sig "$HOST/lajstrom/manual/hello:v1" ./sig.txt   # the reported 405?
+oras discover "$HOST/lajstrom/manual/hello:v1"
+# the 307 of a blob, and how long its URL works: GET the Location again after 5, 15 and 60 minutes
+curl -sI -u "AWS:$(aws ecr get-login-password)" "https://$HOST/v2/lajstrom/manual/hello/blobs/<digest>"
+aws ecr get-authorization-token --query 'authorizationData[0].expiresAt'   # 12 hours?
+aws ecr delete-repository --force --repository-name lajstrom/manual/hello
+```
+
+**4. Nothing left.** This should list no repository of the run:
+
+```sh
+aws ecr describe-repositories --query "repositories[?starts_with(repositoryName, 'lajstrom/')].repositoryName"
+```
+
+**5. Record it.**
+
+- Put the probe's column on this page and in [README.md](README.md)'s row, with the date and
+  the region.
+- Replace each "to be measured by #19" with what was found, and the overrides the probe names in
+  [Configuration](#configuration).
+- The quota load test and the lag runs of #19's comments are not part of this hour.

@@ -30,8 +30,14 @@ func (r *run) measureCreate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if stage == createNever && r.backend.repos != nil {
+		// ECR without a creation template: from here on, each repository is created with the
+		// registry's API before its first write, as the provider does.
+		r.viaAPI = true
+		refused += "; the run creates its repositories with the registry's API"
+	}
 	r.set("createOnPush", createVerdict(stage, refused))
-	if stage == createNever {
+	if stage == createNever && !r.viaAPI {
 		return errors.New("no repository was created")
 	}
 	ctx = r.in(ctx, "where")
@@ -121,15 +127,31 @@ func createVerdict(stage createStage, refused string) string {
 	return "no: " + refused
 }
 
-// nameLength is what an upload session in a name of some length answered.
+// nameLength is what an upload session in a name of some length answered, or why the
+// registry's API did not create the repository (apiRefused) before it was asked.
 type nameLength struct {
-	what   string // "255 characters", "256 characters", "a component of 256 bytes"
-	answer answer
+	what       string // "255 characters", "256 characters", "a component of 256 bytes"
+	answer     answer
+	apiRefused string
+}
+
+// taken reports whether the name was taken.
+func (n nameLength) taken() bool {
+	return n.apiRefused == "" && n.answer.ok(http.StatusAccepted, http.StatusCreated)
+}
+
+// refusal says how the name was refused.
+func (n nameLength) refusal() string {
+	if n.apiRefused != "" {
+		return "refused by the registry's API (" + n.apiRefused + ")"
+	}
+	return n.answer.refusal()
 }
 
 // nameLengths opens an upload session, and cancels it, in a name of 255 characters, one of
 // 256, and when that is taken, one with a component of 256 bytes. Zot makes each a repository,
-// which its collector removes.
+// which its collector removes. Where the run creates repositories with the registry's API, it
+// creates each first, and one the API refuses is refused.
 func (r *run) nameLengths(ctx context.Context) ([]nameLength, error) {
 	tries := []struct{ what, name string }{
 		{"255 characters", r.longName(255)},
@@ -138,15 +160,21 @@ func (r *run) nameLengths(ctx context.Context) ([]nameLength, error) {
 	}
 	var out []nameLength
 	for _, t := range tries {
-		a, err := r.send(ctx, http.MethodPost, "/v2/"+t.name+"/blobs/uploads/")
-		if err != nil {
-			return nil, err
+		n := nameLength{what: t.what}
+		if err := r.ensure(ctx, r.below(t.name)); err != nil {
+			n.apiRefused = err.Error()
+		} else {
+			a, err := r.send(ctx, http.MethodPost, "/v2/"+t.name+"/blobs/uploads/")
+			if err != nil {
+				return nil, err
+			}
+			if loc := a.location(); loc != nil && a.ok(http.StatusAccepted) {
+				_, _ = r.send(ctx, http.MethodDelete, loc.String())
+			}
+			n.answer = a
 		}
-		if loc := a.location(); loc != nil && a.ok(http.StatusAccepted) {
-			_, _ = r.send(ctx, http.MethodDelete, loc.String())
-		}
-		out = append(out, nameLength{t.what, a})
-		if len(out) == 2 && !a.ok(http.StatusAccepted, http.StatusCreated) {
+		out = append(out, n)
+		if len(out) == 2 && !n.taken() {
 			break
 		}
 	}
@@ -186,16 +214,16 @@ func whereVerdict(prefix string, deep answer, names []nameLength) string {
 
 // lengthVerdict says what the name lengths found.
 func lengthVerdict(names []nameLength) string {
-	taken := func(i int) bool { return i < len(names) && names[i].answer.ok(http.StatusAccepted, http.StatusCreated) }
+	taken := func(i int) bool { return i < len(names) && names[i].taken() }
 	switch {
 	case len(names) < 2:
 		return "the name length not measured"
 	case !taken(0):
-		return "255 characters refused: " + names[0].answer.refusal()
+		return "255 characters refused: " + names[0].refusal()
 	case !taken(1):
-		return "at most 255 characters (256: " + names[1].answer.refusal() + ")"
+		return "at most 255 characters (256: " + names[1].refusal() + ")"
 	case len(names) > 2 && !taken(2):
-		return "a name component of more than 255 bytes is " + names[2].answer.refusal()
+		return "a name component of more than 255 bytes is " + names[2].refusal()
 	}
 	return "no length limit met: 256 characters, a component of 256 bytes"
 }

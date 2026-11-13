@@ -482,7 +482,10 @@ works below a scratch prefix it makes up, `lajstrom-probe-<8 hex digits>/` below
 prefix, and refuses one that holds anything (a repository in the catalog, a tag in one of the
 repositories it pushes to). It asks the generic provider's own probe first, as `serve` does: the
 row "What the probe finds" is that answer, and "Overrides needed" compares it with what the run
-measured.
+measured. A registry of type `ecr` (or `--url` of an ECR host) is answered with the authorization
+token of the AWS SDK's credentials. Where it does not create a repository on push, the run
+creates each of its repositories with the ECR API before the first write and deletes them at the
+end ([ecr.md](ecr.md#measure-a-real-ecr-19)).
 
 ```sh
 make registry-matrix                                    # the dev stack's Zot and distribution, one column each
