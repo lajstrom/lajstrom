@@ -1425,9 +1425,10 @@ after Lajstrom deleted it, and a run would index it again. On a registry not cla
 a run therefore reads the audit log first: a tag whose manifest the index does not have, and that
 was deleted through Lajstrom (an audit row `delete`, state `ok`) less than `reconcile.graceAge`
 before the run, is not indexed again, and the report counts it as `deletedPending` (the
-`DELETED` column; [guarantees.md](spec/guarantees.md) INV-13). A manifest the registry still
-lists past the grace age is indexed, as one pushed straight to the registry is. On a `strong`
-registry a run does not read the audit log.
+`DELETED` column; [guarantees.md](spec/guarantees.md) INV-13). On an `oci` repo the same digest
+under a tag of another OCI repository, one the delete did not name, is read as any other tag. A
+manifest the registry still lists past the grace age is indexed, as one pushed straight to the
+registry is. On a `strong` registry a run does not read the audit log.
 
 Set `reconcile.graceAge` ([configuration](configuration.md#reconcile)) to more than the
 registry's lag at the endpoint Lajstrom reads: the default `1h` when it reads the endpoint it
