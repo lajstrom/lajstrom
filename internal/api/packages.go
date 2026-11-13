@@ -3,6 +3,7 @@ package api
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -51,6 +52,114 @@ type VariantEntry struct {
 	Tag         string    `json:"tag"`
 	Digest      string    `json:"digest"`
 	PublishedAt time.Time `json:"publishedAt"`
+}
+
+// VersionDetail is the answer of GET …/packages/{name}/versions/{version} (docs/api.md, Get a
+// version): the version's row of VersionList with its variants in detail, and OCIRepository,
+// <format>/<repo>/<package path>, the OCI repository below the instance prefix that holds its
+// manifests (the <name> of /v2).
+type VersionDetail struct {
+	Version       string           `json:"version"`
+	PublishedAt   time.Time        `json:"publishedAt"`
+	LastModified  time.Time        `json:"lastModified"`
+	Variants      []VariantDetail  `json:"variants"`
+	Pointers      []format.Pointer `json:"pointers"`
+	OCIRepository string           `json:"ociRepository"`
+}
+
+// VariantDetail is one manifest of a version with what the index has of it: its versions row
+// and its files rows (index-schema.md, derived), all of which reindex rebuilds.
+type VariantDetail struct {
+	VariantEntry
+	ArtifactType string            `json:"artifactType"`
+	Attrs        map[string]string `json:"attrs"`    // lajstrom.* annotations by their full key
+	Metadata     json.RawMessage   `json:"metadata"` // the metadata layer; null when absent or omitted for size
+	Degraded     bool              `json:"degraded"`
+	IndexedAt    time.Time         `json:"indexedAt"`
+	Files        []FileEntry       `json:"files"` // in manifest order
+}
+
+// FileEntry is one file layer of a manifest.
+type FileEntry struct {
+	Name      string            `json:"name"`
+	MediaType string            `json:"mediaType"`
+	Digest    string            `json:"digest"`
+	Size      int64             `json:"size"`
+	Attrs     map[string]string `json:"attrs"` // the layer's annotations
+}
+
+// getVersion answers GET /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}: the
+// version with every variant, or the one ?variant= names, each with its files, read from the
+// index alone. The version's times and pointers are those of all its variants either way. It
+// needs read; a repo, package, version or variant that does not exist is 404, and so is any
+// version of a group, which has none.
+func (h *handler) getVersion(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	f, name := r.PathValue("format"), r.PathValue("repo")
+	if err := h.allow(r, auth.ActionRead, f, name); err != nil {
+		return 0, nil, err
+	}
+	var variant *string
+	if v, ok := r.URL.Query()["variant"]; ok {
+		variant = &v[0]
+	}
+	ctx := r.Context()
+	repo, err := h.repos.Index.GetRepo(ctx, f, name)
+	if err != nil {
+		return 0, nil, repoError("read a version of", f, name, err)
+	}
+	pkg, rows, err := h.versionOf(ctx, repo, r.PathValue("name"), r.PathValue("version"), nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	states, err := h.repos.Index.ListJournalState(ctx, pkg.ID)
+	if err != nil {
+		return 0, nil, fmt.Errorf("api: dist-tags of %q in %s/%s: %w", pkg.Name, repo.Format, repo.Name, err)
+	}
+	v := groupVersions(rows, states)[0] // the times of every variant, whatever ?variant= keeps
+	if variant != nil {
+		rows = slices.DeleteFunc(rows, func(row index.Version) bool { return row.Variant != *variant })
+		if len(rows) == 0 {
+			return 0, nil, &clientError{msg: fmt.Sprintf("package %q of %s/%s has no version %q with the variant %q",
+				pkg.Name, repo.Format, repo.Name, v.Version, *variant), err: index.ErrNotFound}
+		}
+	}
+	out := VersionDetail{Version: v.Version, PublishedAt: v.PublishedAt, LastModified: v.LastModified,
+		Variants: make([]VariantDetail, 0, len(rows)), Pointers: v.Pointers,
+		OCIRepository: repo.Format + "/" + repo.Name + "/" + pkg.NameOCI}
+	slices.SortFunc(rows, func(a, b index.Version) int { return strings.Compare(a.Variant, b.Variant) })
+	for _, row := range rows {
+		files, err := h.repos.Index.ListFiles(ctx, row.ID)
+		if err != nil {
+			return 0, nil, fmt.Errorf("api: files of %s of %q in %s/%s: %w", row.Digest, pkg.Name, repo.Format, repo.Name, err)
+		}
+		out.Variants = append(out.Variants, variantDetail(row, files))
+	}
+	return http.StatusOK, out, nil
+}
+
+// variantDetail is the VariantDetail of a versions row and its files rows.
+func variantDetail(row index.Version, files []index.File) VariantDetail {
+	d := VariantDetail{
+		VariantEntry: VariantEntry{Variant: row.Variant, Tag: row.Tag, Digest: row.Digest.String(), PublishedAt: row.CreatedAt.UTC()},
+		ArtifactType: row.ArtifactType, Attrs: orEmpty(row.Attrs), Degraded: row.Degraded, IndexedAt: row.IndexedAt.UTC(),
+		Files: make([]FileEntry, len(files)),
+	}
+	if len(row.Metadata) > 0 {
+		d.Metadata = row.Metadata
+	}
+	for i, file := range files {
+		d.Files[i] = FileEntry{Name: file.Name, MediaType: file.MediaType, Digest: file.Digest.String(), Size: file.Size,
+			Attrs: orEmpty(file.Attrs)}
+	}
+	return d
+}
+
+// orEmpty returns m, or an empty map when it is nil, so that it is {} in JSON and never null.
+func orEmpty(m map[string]string) map[string]string {
+	if m == nil {
+		return map[string]string{}
+	}
+	return m
 }
 
 // listPackages answers GET /api/v1/repos/{format}/{repo}/packages: a page of the repo's packages

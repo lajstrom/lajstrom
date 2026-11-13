@@ -74,6 +74,7 @@ const maxBody = 64 << 10
 //	GET    /api/v1/repos/{format}/{repo}/reindex       the latest run that covered the repo, with its report
 //	GET    /api/v1/repos/{format}/{repo}/packages[?prefix=&limit=&cursor=]  the repo's packages by name, a page at a time
 //	GET    /api/v1/repos/{format}/{repo}/packages/{name}/versions[?limit=&cursor=]  the package's versions, newest first
+//	GET    /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}[?variant=]  one version, its variants and their files
 //	DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}[?variant=&force=]  delete a version, its referrers first;
 //	                                                   If-Match and If-Unmodified-Since make it conditional
 //	POST   /api/v1/repos/{format}/{repo}/versions:delete  delete versions in a batch, each conditional; dryRun
@@ -151,6 +152,7 @@ func (h *handler) routes() []route {
 		{"GET /api/v1/repos/{format}/{repo}/reindex", h.reindexStatus},
 		{"GET /api/v1/repos/{format}/{repo}/packages", h.listPackages},
 		{"GET /api/v1/repos/{format}/{repo}/packages/{name}/versions", h.listVersions},
+		{"GET /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}", h.getVersion},
 		{"DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}", h.deleteVersion},
 		{"POST /api/v1/repos/{format}/{repo}/versions:delete", h.deleteVersions},
 		{"DELETE /api/v1/repos/{format}/{repo}/upstream-cache", h.purgeUpstreamCache},
