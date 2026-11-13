@@ -133,7 +133,9 @@ func parseReferrer(r Referrer) (ocispec.Manifest, error) {
 // subject; a push by tag holds the tag lock of the manifest with the API too, which a delete
 // holds while it counts the tags: the lock of its subject, else of its own digest
 // (docs/spec/index-schema.md, Coordination). The whole push, the repository included, runs
-// under the lock.
+// under the lock. A registry not classified strong that answers MANIFEST_BLOB_UNKNOWN gets the
+// push again (retryBlobsLag), and each try takes the lock again, so that a delete does not
+// wait out the backoff.
 func (p *Pipeline) pushReferrer(ctx context.Context, prov provider.Provider, name string, r Referrer, hasSubject, managed bool) error {
 	push := func(ctx context.Context) error {
 		rr, err := prov.Repository(ctx, name)
@@ -161,12 +163,11 @@ func (p *Pipeline) pushReferrer(ctx context.Context, prov provider.Provider, nam
 		}
 		lock = !caps.Referrers
 	}
-	var err error
+	try := push
 	if lock {
-		err = p.index.WithReferrersLock(ctx, name, key, push)
-	} else {
-		err = push(ctx)
+		try = func(ctx context.Context) error { return p.index.WithReferrersLock(ctx, name, key, push) }
 	}
+	err := retryBlobsLag(ctx, prov, p.visibility, try)
 	switch {
 	case errors.Is(err, ErrInvalid):
 		return err

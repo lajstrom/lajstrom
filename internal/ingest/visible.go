@@ -91,9 +91,10 @@ const codeManifestBlobUnknown = "MANIFEST_BLOB_UNKNOWN"
 // retryBlobsLag sends a manifest with push, and again while the registry answers
 // MANIFEST_BLOB_UNKNOWN, on a registry not classified strong, with the backoff of a read-back,
 // for timeout or the registry's consistencyBound when that is longer. Ingest read every blob the
-// manifest names before (Validate, the commit of a streamed file), so a registry that does not
-// find one at the PUT lags, as ECR does for a moment after a blob's 201 (#446). A strong
-// registry's refusal is the answer at once, and so is any other error.
+// manifest names before (Validate, the commit of a streamed file, the checks of a referrer of a
+// managed repo), and a client uploads the blobs of a referrer of an oci repo right before it, so
+// a registry that does not find one at the PUT lags, as ECR does for a moment after a blob's 201
+// (#446). A strong registry's refusal is the answer at once, and so is any other error.
 func retryBlobsLag(ctx context.Context, prov provider.Provider, timeout time.Duration, push func(context.Context) error) error {
 	err := push(ctx)
 	var rej *provider.RejectedError
