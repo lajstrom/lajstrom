@@ -25,13 +25,23 @@ func (h *handler) whoami(_ http.ResponseWriter, r *http.Request) (int, any, erro
 	if p.Kind == auth.KindAnonymous {
 		return 0, nil, &clientError{msg: "credentials are needed", err: format.ErrUnauthenticated}
 	}
+	w, err := h.whoamiOf(r, p)
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, w, nil
+}
+
+// whoamiOf returns the Whoami of p, a principal with credentials: a user's name is looked up by
+// its uid.
+func (h *handler) whoamiOf(r *http.Request, p auth.Principal) (Whoami, error) {
 	w := Whoami{Principal: p.String(), Kind: string(p.Kind), Name: p.Name}
 	if p.Kind == auth.KindUser {
 		u, err := auth.LookupUser(r.Context(), h.tokens.Index, p)
 		if err != nil {
-			return 0, nil, err
+			return Whoami{}, err
 		}
 		w.Name, w.UID = u.Name, u.UID
 	}
-	return http.StatusOK, w, nil
+	return w, nil
 }
