@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -139,6 +141,40 @@ func TestListVersionsPages(t *testing.T) {
 	}
 	if !slices.Equal(got, []string{"1.4", "1.3", "1.2", "1.1", "1.0"}) {
 		t.Errorf("the pages: %v", got)
+	}
+}
+
+// TestListEveryLimit: with every limit, the pages of both lists are the list of one page, in
+// byte order, with versions as new as each other and a variant published after its version.
+func TestListEveryLimit(t *testing.T) {
+	f := newFixture(t, Options{})
+	repo := f.create(t, "pypi", "libs")
+	for _, v := range []string{"1.10", "1.9", "Z", "a", "é"} {
+		publish(t, f.st, repo.ID, v, v, testNow)
+	}
+	publish(t, f.st, repo.ID, "a", "0.1", testNow.Add(-time.Hour), "sdist")
+	publish(t, f.st, repo.ID, "a", "0.1", testNow.Add(time.Hour), "wheel")
+	publish(t, f.st, repo.ID, "a", "0.2", testNow.Add(-time.Minute))
+	base := "/api/v1/repos/pypi/libs/packages"
+	for _, target := range []string{base, base + "/a/versions"} {
+		pages := func(limit int) (all []any) {
+			for cur, n := "", 0; n == 0 || cur != ""; n++ {
+				var l struct {
+					Packages []any  `json:"packages"`
+					Versions []any  `json:"versions"`
+					Next     string `json:"next"`
+				}
+				decodeJSON(t, f.do(http.MethodGet, fmt.Sprintf("%s?limit=%d&cursor=%s", target, limit, cur), "", admin), http.StatusOK, &l)
+				all, cur = append(append(all, l.Packages...), l.Versions...), l.Next
+			}
+			return all
+		}
+		whole := pages(maxLimit)
+		for limit := 1; limit <= len(whole); limit++ {
+			if got := pages(limit); !reflect.DeepEqual(got, whole) {
+				t.Errorf("%s, pages of %d: %v, want %v", target, limit, got, whole)
+			}
+		}
 	}
 }
 

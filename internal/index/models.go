@@ -279,6 +279,14 @@ type VersionMatch struct {
 	Package Package
 }
 
+// VersionKey is the place of a version in Reader.ListVersionPage, which orders by it
+// descending: CreatedAt, then Version in byte order (docs/spec/index-schema.md, Pages of
+// packages and versions).
+type VersionKey struct {
+	CreatedAt time.Time // the earliest CreatedAt of the version's rows: its first variant
+	Version   string
+}
+
 // FileMatch is a file together with its version and package, as Reader.FindFiles returns it:
 // the package's NameOCI locates the OCI repository that holds the blob.
 type FileMatch struct {
