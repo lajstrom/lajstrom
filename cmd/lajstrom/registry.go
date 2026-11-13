@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/lajstrom/lajstrom/internal/config"
+	"github.com/lajstrom/lajstrom/internal/provider/ecr"
 	"github.com/lajstrom/lajstrom/internal/provider/generic"
 	"github.com/lajstrom/lajstrom/internal/provider/probe"
 )
@@ -156,6 +157,16 @@ func (f probeFlags) urlRegistry(raw string) (config.Registry, error) {
 			"query or fragment: the API is at /v2/ of the host, and a project or an owner goes in --registry-prefix")
 	}
 	r := config.Registry{Name: u.Host, Type: generic.Type, URL: raw, Prefix: f.prefix}
+	if ecr.IsRegistryHost(u.Hostname()) {
+		// The authorization token of the ECR API, for the AWS SDK's credentials; the region is
+		// the host's.
+		if f.username != "" {
+			return config.Registry{}, errors.New("--username does not go with an ECR registry: the probe asks the ECR API for a token " +
+				"with the AWS SDK's credentials (AWS_PROFILE, AWS_ACCESS_KEY_ID, …)")
+		}
+		r.Type = ecr.Type
+		return r, nil
+	}
 	if f.username != "" {
 		if f.passwordFile == "" {
 			return config.Registry{}, errors.New("--username needs --password-file")

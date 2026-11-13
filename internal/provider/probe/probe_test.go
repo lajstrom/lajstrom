@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -88,6 +89,11 @@ func TestRunWhereNothingIsCreated(t *testing.T) {
 }
 
 func TestRunRefuses(t *testing.T) {
+	for _, k := range []string{"AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("AWS_CONFIG_FILE", filepath.Join(t.TempDir(), "none"))
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(t.TempDir(), "none"))
 	srv := emptyRegistry(t)
 	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -99,7 +105,8 @@ func TestRunRefuses(t *testing.T) {
 		o    Options
 		want string
 	}{
-		{"ecr", config.Registry{Name: "r", Type: "ecr", URL: srv.URL}, Options{}, "only type generic"},
+		{"another type", config.Registry{Name: "r", Type: "gar", URL: srv.URL}, Options{}, "only types generic and ecr"},
+		{"ecr without a region", config.Registry{Name: "r", Type: "ecr", URL: srv.URL}, Options{}, "no AWS region"},
 		{"scratch outside the grammar", config.Registry{Name: "r", URL: srv.URL}, Options{Scratch: "Upper"}, "not a repository name"},
 		{"url with a path", config.Registry{Name: "r", URL: "ftp://x"}, Options{}, "absolute http(s) URL"},
 		{"the provider's probe fails", config.Registry{Name: "r", URL: down.URL, Retries: -1}, Options{}, "the provider's probe"},
