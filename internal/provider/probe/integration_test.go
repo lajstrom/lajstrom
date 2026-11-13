@@ -65,6 +65,7 @@ func TestIntegrationRun(t *testing.T) {
 		"largestBlob":   "2 MiB in one `PUT` and in one `PATCH`; no limit met",
 		"sessionStatus": "works, 204 with `Range`",
 		"replica":       "works",
+		"monotonic":     "none: ",
 	} {
 		v := r.Cell(key).Value
 		if dev, ok := deviations[r.Vendor][key]; ok && strings.HasPrefix(v, dev) {

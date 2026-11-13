@@ -88,6 +88,7 @@ func TestRegistryProbe(t *testing.T) {
 		{"bad size", []string{"registry", "probe", "--url", srv.URL, "--max-blob-size", "8MB"}, "--max-blob-size"},
 		{"bad output", []string{"registry", "probe", "--url", srv.URL, "-o", "yaml"}, "--output"},
 		{"no routing heads", []string{"registry", "probe", "--url", srv.URL, "--routing-heads", "0"}, "--routing-heads"},
+		{"no monotonic reads", []string{"registry", "probe", "--url", srv.URL, "--monotonic-reads", "0"}, "--monotonic-reads"},
 		{"url, scratch taken", []string{"registry", "probe", "--url", srv.URL, "--username", "probe", "--password-file", password,
 			"--scratch", "lajstrom-probe-taken"}, "scratch prefix is not empty"},
 		{"configuration, scratch taken", []string{"registry", "probe", "--config", cfg, "--registry", "taken",

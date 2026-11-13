@@ -19,6 +19,7 @@ var Rows = []struct{ Key, Title string }{
 	{"listingAPI", "A listing API of its own"},
 	{"tags", "Tag list order and pagination"},
 	{"consistency", "Read-after-write lag"},
+	{"monotonic", "Monotonic reads"},
 	{"deleteDigest", "Delete a manifest by digest"},
 	{"deleteTag", "Delete by tag"},
 	{"deleteRepository", "Delete a repository"},
