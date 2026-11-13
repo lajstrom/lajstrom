@@ -333,10 +333,11 @@ them, through the steps of §5. It is how packages move from another registry (#
 repo whose upstream is the old registry, a prefetch of its names, and then the upstream switched
 off (§4.4). It is `POST /api/v1/repos/<format>/<repo>/prefetch` (http-routing.md §6) with
 `manage` on the repo (rbac.md §7), of a format whose plugin has the hook of §10
-(`format.Prefetcher`; npm).
+(`format.Prefetcher`; npm). An `oci` proxy, which has no plugin, takes images instead of names,
+and the core answers it (§11.10).
 
-1. A repo that is not a proxy is `400`, and so is a format without the hook. An offline repo
-   (§4.4) is `409`: it asks its upstream nothing.
+1. A repo that is not a proxy is `400`, and so is a format without the hook, but `oci`. An
+   offline repo (§4.4) is `409`: it asks its upstream nothing.
 2. For each name: the lists (§3), then the documents of the hook's kinds, read as §4.2 reads
    them: used while fresh, else asked again. The first kind lists the entries (npm: the full
    packument); the others are read so that the repo keeps them when it goes offline (npm: the
@@ -781,8 +782,7 @@ never a wrong answer, since a blob is mounted only from a path that answers its 
    ADR 0018, rejected there for what such a `GET` would copy, is taken for a platform a client
    pulled (#876). A layer the backend holds nowhere and that no client asks for, because the
    nodes got it from outside Lajstrom, stays out until a client asks for a layer of that
-   platform, or until a prefetch fetches it
-   ([#886](https://github.com/lajstrom/lajstrom/issues/886)).
+   platform, or until a prefetch fetches it (§11.10).
 
 A blob that the backend held and lost, to a garbage collection of a blob no pushed manifest named
 yet, is fetched again on its next miss.
@@ -896,6 +896,75 @@ that is not a referrer is `405 UNSUPPORTED`; referrers, their blob
 uploads and deletes are as on a hosted `oci` repo (http-routing.md §6). Nothing but `oci_repos`
 is indexed of what the backend holds; reindex rebuilds those rows from the backend's catalog or
 `oci_repos`, and neither reads nor writes `proxy_meta`.
+
+### 11.10 Prefetch
+
+A prefetch (§5.1, [#886](https://github.com/lajstrom/lajstrom/issues/886)) of an `oci` proxy
+fetches images before a client pulls them: before a rollout over a poor link to the upstream, so
+that the nodes are then served from the backend whatever the link does, or before the upstream
+is switched off (§4.4). It is `POST /api/v1/repos/oci/<repo>/prefetch` (http-routing.md §6),
+with `manage` on the repo (rbac.md §7), and the core answers it as it answers `/v2`:
+
+```json
+{"images": ["library/nginx:1.27", "bitnami/redis@sha256:…"], "platforms": ["linux/amd64", "linux/arm64"]}
+```
+
+1. **The request.** `images` holds 1 to 100 references below the repo, as a client names them:
+   `<path>[:<tag>][@<digest>]`, `latest` without a tag or a digest, the digest when both are
+   given (as `docker pull` does), and on a Docker Hub upstream a path of one component is
+   `library/<path>` (§11.7). `platforms` holds `<os>/<architecture>[/<variant>]`, compared as
+   containerd normalises them: `linux/arm64/v8` is `linux/arm64`, `linux/arm` is
+   `linux/arm/v7`, `linux/amd64/v1` is `linux/amd64`. A body with `names` or `allVersions`, a
+   platform that is not that form, or no image is `400`; a repo that is not an `oci` proxy is
+   `400`, an offline one `409` (§5.1, step 1).
+2. **Each image goes the way a pull goes**, with the principal of the request, its claims and
+   its audit rows `proxy.fetch` and `proxy.reject`:
+   - the path as `/v2` checks it (http-routing.md §2), the lists and `CheckName` (§11.2);
+   - the tag (§11.4, steps 1 and 2): its row while it is fresh, else a `HEAD`, and the row
+     however old when the upstream fails;
+   - what the tag or the digest names (§11.4, step 3): the backend's, else the cached row, else
+     fetched under its claim (repo, path, digest);
+   - for an index, the manifest of each platform of `platforms` that it lists, the same way.
+     `platforms` is required for an index: without it the image is one `failed` result, `400`,
+     whose message lists the index's platforms, since an index of eight platforms would cost
+     eight counted pulls on Docker Hub and the room of eight in the backend. A platform the index
+     does not list is a `failed` result, `404`; an attestation manifest (`unknown/unknown`) is
+     fetched only when named. A reference that names a manifest takes no `platforms`: it is
+     fetched as it is;
+   - every blob of a manifest the backend does not hold, config and layers (§11.5, steps 1 and
+     2): held at the path, else mounted from another path of the repo, else fetched under its
+     claim (repo, path, digest), streamed into the backend and checked, without a tee. A blob
+     that one request lists at two paths is fetched once and mounted at the other, where the
+     backend mounts. A manifest the backend holds has its blobs (§11.5, step 3), and they are
+     not looked at;
+   - the completion (§11.5, step 3) before the answer: each manifest whose blobs are held is
+     pushed under its keep-tag, an index once every child is held, and the upstream's tag where
+     the backend lets it move (§11.6). An index whose platforms are not all fetched is not
+     complete: it and its tag stay in `proxy_meta`, from where the repo answers them, offline
+     too (§11.4, step 2).
+3. **At most 4 at a time.** One request resolves at most 4 images at a time, and then fetches
+   at most 4 blobs at a time. The fetches run as §5 says, on contexts of their own: a request
+   whose client goes away starts no further image or blob, and a fetch that has started ends.
+4. **The answer** is `200` with the results in the order of the images. For each image:
+   - one result for what the reference names, `kind` `index` or `manifest`, with its `digest`;
+   - one for each platform of an index, `kind` `manifest`, with its `platform` and `digest`;
+   - one for each blob that was not held, `kind` `blob`, with its `platform` and `digest`;
+   - or, for an image that failed before what it names was known, one result without `kind`.
+
+   Each is `fetched`; `held`, the repo had it and nothing was asked of the upstream for it (a
+   blob mounted from another path included); `shared`, fetched meanwhile by another request or
+   replica; or `failed`, with the status a pull would have had (`400`, `403`, `404`, `502`;
+   `503` with `retryAfter`, in seconds, for the upstream's `429`; `504`) and its message. A
+   manifest is `failed` when one of its blobs is, `fetched` when this request fetched it or one
+   of them, else `shared` when another did, else `held`. `bytes` is what this request got from
+   the upstream, for a manifest with its blobs.
+
+A prefetch is idempotent: run again, it finds held what it fetched, at the cost of the tag's row
+(a `HEAD` once it expired) and a lookup of the backend per manifest, and it fetches again what
+failed, which a broken body resumes within its fetch (§11.5, step 2). On Docker Hub a cold image
+costs one counted pull for its index and one per platform (§11.7): 50 images of two platforms are
+150, above the anonymous 100 an hour. A `429` is a `failed` result, `503`, and the client sends
+those images again later (`lajstrom admin repo prefetch --failed`).
 
 ## 12. Groups of `oci` repos
 

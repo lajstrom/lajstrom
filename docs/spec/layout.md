@@ -1668,6 +1668,7 @@ Where the merged shapes differ from the first sketch of this section, and why:
   needs of the plugin only which documents to read (the one that lists the entries first, and
   those a client asks for, so that the repo serves them once offline) and which versions the
   pointers name, the default of a prefetch. A format without it has no prefetch; its proxies serve misses as before.
+  An `oci` proxy has no plugin, and the core prefetches its images itself (proxy-and-group.md §11.10).
 - **`format.Proxy` serves groups with `Document` and `File`.** A handler asks it for a proxy's
   document or a group's alike. `File` keeps its `*index.FileMatch`, whose `Package.RepoID`
   names the member that holds the file: the handler looks that repo up (`GetRepoByID`, one
