@@ -60,9 +60,10 @@ request labelled `contract`. Typos and broken links may be fixed in place.
 | [0010](0010-bearer-token-signing-key.md) | Where the bearer-token signing key lives: the database, under the master key | accepted |
 | [0011](0011-client-address-behind-a-proxy.md) | The client address behind a reverse proxy: a list of trusted proxies, nothing else | accepted; amended by #248 |
 | [0012](0012-npm-profile-routes-and-dist-tags-journal.md) | npm: the profile, the routes, and dist-tags as a journal in the registry | accepted |
-| [0013](0013-proxy-and-group-repos.md) | Proxy and group repos: fetch on miss into the one write path, hosted names hide the upstream | accepted |
+| [0013](0013-proxy-and-group-repos.md) | Proxy and group repos: fetch on miss into the one write path, hosted names hide the upstream | accepted; `oci` proxies superseded by [0018](0018-oci-proxy-repos-pull-through-from-any-registry.md), `oci` groups by [0019](0019-oci-groups-one-member-per-repository-path.md) |
 | [0014](0014-uploads-stream-into-the-registry.md) | Uploads stream into the registry: no request spool | accepted |
 | [0015](0015-declarative-management-one-owner-per-object.md) | Declarative management: one owner per object | accepted |
 | [0016](0016-go-the-language-of-the-network-os.md) | Go: the language of the network operating system | accepted |
 | [0017](0017-the-grammar-of-oci-names.md) | The grammar of OCI names | accepted; amended for Harbor's routes |
-| [0018](0018-oci-proxy-repos-pull-through-from-any-registry.md) | An oci proxy repo pulls through from any OCI registry | accepted |
+| [0018](0018-oci-proxy-repos-pull-through-from-any-registry.md) | An oci proxy repo pulls through from any OCI registry | accepted; amended by #876, #875; groups of `oci` repos superseded by [0019](0019-oci-groups-one-member-per-repository-path.md) |
+| [0019](0019-oci-groups-one-member-per-repository-path.md) | Groups of oci repos: read-only, one member per repository path | accepted |
