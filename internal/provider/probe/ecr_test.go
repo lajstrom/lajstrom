@@ -88,7 +88,7 @@ func (a *apiRepos) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodDelete:
 		w.WriteHeader(http.StatusAccepted)
 	case rest == "tags/list":
-		_, _ = io.WriteString(w, `{"name":"`+name+`","tags":["v1"]}`)
+		_, _ = io.WriteString(w, `{"tags":["v1"]}`)
 	default:
 		unknown()
 	}
