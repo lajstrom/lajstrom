@@ -29,6 +29,7 @@ const (
 	vendorZot     vendor = "zot"
 	vendorDocker  vendor = "dockerhub"
 	vendorQuay    vendor = "quay" // Project Quay, Red Hat Quay and quay.io
+	vendorECR     vendor = "ecr"  // Amazon ECR, private: <account>.dkr.ecr.<region>.amazonaws.com
 	// vendorDistribution is CNCF distribution, and whatever else answers GET /v2/ as it does,
 	// with Docker-Distribution-Api-Version and nothing the table knows, on a host that is not
 	// a hosted service's (hostedRegistries).
@@ -209,7 +210,7 @@ func afterProbe(v vendor, probed *provider.Capabilities, referrers bool) quirks 
 		return quirks{blobExistsByGET: true}
 	case vendorQuay:
 		return quirks{pushForDelete: true}
-	case vendorUnknown, vendorGitLab, vendorGHCR, vendorHarbor, vendorGitea, vendorForgejo, vendorZot, vendorDistribution, vendorDocker:
+	case vendorUnknown, vendorGitLab, vendorGHCR, vendorECR, vendorHarbor, vendorGitea, vendorForgejo, vendorZot, vendorDistribution, vendorDocker:
 	}
 	return quirks{}
 }
@@ -256,6 +257,8 @@ type identity struct {
 // detectVendor names the vendor of the registry that id describes:
 //
 //   - GHCR: the host is ghcr.io;
+//   - ECR: the host is a private ECR registry's, <account>.dkr.ecr.<region>.amazonaws.com (or
+//     .amazonaws.com.cn), its VPC endpoint's included;
 //   - Docker Hub: the host is docker.io or below it;
 //   - Quay: the host is quay.io, or GET /v2/ answers X-Sparse-Manifest-Support;
 //   - GitLab: GET /v2/ answers Gitlab-Container-Registry-Version;
@@ -324,8 +327,31 @@ func vendorOfHost(hostport string) vendor {
 		return vendorDocker
 	case isHost(hostport, "quay.io"):
 		return vendorQuay
+	case isECRHost(hostport):
+		return vendorECR
 	}
 	return vendorUnknown
+}
+
+// unorderedTags reports whether the tag list of the registry on hostport is in an order of its
+// own, with a last that is not a tag name: GHCR lists in creation order and takes last as a
+// position (docs/registries/ghcr.md), ECR lists in its own order and refuses a tag name as last,
+// 405 "Invalid next token" (#19, docs/registries/ecr.md). Both are told by their host.
+func unorderedTags(hostport string) bool {
+	v := vendorOfHost(hostport)
+	return v == vendorGHCR || v == vendorECR
+}
+
+// isECRHost reports whether hostport, with or without a port, is a private ECR registry's:
+// <account>.dkr.ecr.<region>.amazonaws.com, .amazonaws.com.cn in China, and a VPC endpoint's
+// name below .vpce.amazonaws.com with dkr.ecr in it.
+func isECRHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	return strings.Contains(host, ".dkr.ecr.") && (strings.HasSuffix(host, ".amazonaws.com") || strings.HasSuffix(host, ".amazonaws.com.cn"))
 }
 
 // hosted reports whether hostport is one of hostedRegistries or below one.

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -107,9 +109,9 @@ func (r *repository) pushed(ctx context.Context, err error) error {
 
 // Delete removes the manifest or blob target. A 405 DENIED refuses this one delete, the way
 // Zot keeps a manifest that an image index lists and a blob that a manifest uses
-// (docs/registries/zot.md, Delete): it is provider.ErrConflict and changes nothing else. The
-// first manifest delete that the registry refuses otherwise with 405 turns
-// Capabilities.DeleteManifest false.
+// (docs/registries/zot.md, Delete), and so does ECR's 405 UNSUPPORTED for a manifest an index
+// lists (deniedOne): it is provider.ErrConflict and changes nothing else. The first manifest
+// delete that the registry refuses otherwise with 405 turns Capabilities.DeleteManifest false.
 func (r *repository) Delete(ctx context.Context, target ocispec.Descriptor) error {
 	err := r.Repository.Delete(ctx, target)
 	op := r.op("delete", target.Digest.String())
@@ -138,9 +140,30 @@ func (r *repository) PushReference(ctx context.Context, expected ocispec.Descrip
 	return r.p.translate(r.op("push", reference), r.pushed(ctx, r.Repository.PushReference(ctx, expected, content, reference)))
 }
 
-// Tags calls fn with each page of the repository's tags, starting after last.
+// Tags calls fn with each page of the repository's tags, starting after last. A registry
+// whose tag list is in an order of its own (unorderedTags: GHCR, ECR) is read from the start,
+// every page by its Link, and fn gets the tags after last, sorted, at once.
 func (r *repository) Tags(ctx context.Context, last string, fn func(tags []string) error) error {
-	return r.p.translate(r.op("tags", ""), r.Repository.Tags(ctx, last, fn))
+	op := r.op("tags", "")
+	if !r.p.unorderedTags {
+		return r.p.translate(op, r.Repository.Tags(ctx, last, fn))
+	}
+	var all []string
+	if err := r.Repository.Tags(ctx, "", func(page []string) error {
+		all = append(all, page...)
+		return nil
+	}); err != nil {
+		return r.p.translate(op, err)
+	}
+	slices.Sort(all)
+	if last != "" {
+		i, found := slices.BinarySearch(all, last)
+		if found {
+			i++
+		}
+		all = all[i:]
+	}
+	return fn(all)
 }
 
 // Referrers calls fn with the manifests whose subject is desc, of artifactType when it is not
@@ -170,12 +193,30 @@ func refusesDelete(err error) bool {
 }
 
 // deniedOne returns the response of err when it refuses one delete rather than deletes: 405
-// with DENIED and without UNSUPPORTED. Otherwise it is nil.
+// with DENIED and without UNSUPPORTED, or ECR's 405 for a manifest an index lists
+// (listedByIndex). Otherwise it is nil.
 func deniedOne(err error) *errcode.ErrorResponse {
 	var resp *errcode.ErrorResponse
-	if errors.As(err, &resp) && resp.StatusCode == http.StatusMethodNotAllowed &&
-		hasCode(resp, errcode.ErrorCodeDenied) && !hasCode(resp, errcode.ErrorCodeUnsupported) {
+	if !errors.As(err, &resp) || resp.StatusCode != http.StatusMethodNotAllowed {
+		return nil
+	}
+	if hasCode(resp, errcode.ErrorCodeDenied) && !hasCode(resp, errcode.ErrorCodeUnsupported) || listedByIndex(resp) {
 		return resp
 	}
 	return nil
+}
+
+// ecrListedByIndex starts the message of ECR's 405 UNSUPPORTED to the delete of a manifest that an
+// image index lists: "Requested image referenced by manifest list: [sha256:…]" (measured by #19,
+// docs/registries/ecr.md, Delete). Its other deletes go through.
+const ecrListedByIndex = "Requested image referenced by manifest list"
+
+// listedByIndex reports whether resp is ECR's refusal to delete a manifest an index lists.
+func listedByIndex(resp *errcode.ErrorResponse) bool {
+	for _, e := range resp.Errors {
+		if e.Code == errcode.ErrorCodeUnsupported && strings.HasPrefix(e.Message, ecrListedByIndex) {
+			return true
+		}
+	}
+	return false
 }
