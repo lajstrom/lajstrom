@@ -336,8 +336,9 @@ func (u Upstream) IsDockerHub() bool {
 }
 
 // UpstreamAuth names where Lajstrom's credentials for an upstream are: HTTP Basic with
-// Username and PasswordFile or PasswordEnv, or a bearer token with TokenFile. Load resolves
-// PasswordEnv; serve reads the files, at start, as it reads keys.masterKeyFile.
+// Username and PasswordFile or PasswordEnv, a bearer token with TokenFile, or on an oci upstream
+// a cloud's credential, ECR. Load resolves PasswordEnv; serve reads the files, at start, as it
+// reads keys.masterKeyFile.
 type UpstreamAuth struct {
 	// Username is the user of HTTP Basic, with PasswordFile or PasswordEnv.
 	Username string `yaml:"username"`
@@ -350,18 +351,37 @@ type UpstreamAuth struct {
 	// TokenFile is the file that holds a bearer token (Authorization: Bearer), npm's
 	// _authToken. Not with Username.
 	TokenFile string `yaml:"tokenFile"`
+	// ECR, set (ecr: {}), takes an oci upstream's credential from Amazon ECR: the authorization
+	// token of the AWS SDK's credentials, replaced before it expires
+	// (docs/spec/proxy-and-group.md §11.1). Not with the other keys.
+	ECR *UpstreamECR `yaml:"ecr"`
+}
+
+// UpstreamECR is upstreams[].auth.ecr: where an oci upstream on ECR gets its token.
+type UpstreamECR struct {
+	// Region is the region of the ECR API that gives the token. Empty: the region in the URL's
+	// host, else the SDK's (AWS_REGION, the profile).
+	Region string `yaml:"region"`
+	// Endpoint replaces the endpoint of the ECR API, an http(s) URL: a VPC endpoint, or moto in
+	// the tests. Empty: the SDK's for the region.
+	Endpoint string `yaml:"endpoint"`
+}
+
+// String describes e.
+func (e UpstreamECR) String() string {
+	return fmt.Sprintf("{region: %q, endpoint: %q}", e.Region, e.Endpoint)
 }
 
 // String describes a without the password.
 func (a UpstreamAuth) String() string {
-	return fmt.Sprintf("{username: %q, passwordFile: %q, passwordEnv: %q, tokenFile: %q}", a.Username, a.PasswordFile, a.PasswordEnv,
-		a.TokenFile)
+	return fmt.Sprintf("{username: %q, passwordFile: %q, passwordEnv: %q, tokenFile: %q, ecr: %v}", a.Username, a.PasswordFile, a.PasswordEnv,
+		a.TokenFile, a.ECR)
 }
 
 // GoString implements fmt.GoStringer for %#v, without the password.
 func (a UpstreamAuth) GoString() string {
-	return fmt.Sprintf("config.UpstreamAuth{Username:%q, PasswordFile:%q, PasswordEnv:%q, TokenFile:%q}", a.Username, a.PasswordFile,
-		a.PasswordEnv, a.TokenFile)
+	return fmt.Sprintf("config.UpstreamAuth{Username:%q, PasswordFile:%q, PasswordEnv:%q, TokenFile:%q, ECR:%v}", a.Username, a.PasswordFile,
+		a.PasswordEnv, a.TokenFile, a.ECR)
 }
 
 // Ingest configures the write path (internal/ingest).
