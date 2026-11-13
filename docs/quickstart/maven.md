@@ -167,6 +167,130 @@ the idempotent repeat; with other bytes it is `409`: a release is immutable. Ear
 output Maven warns that the newest `maven-source-plugin` (a Maven 4 beta) does not fit Maven
 3.9 and takes 3.4.0; that is harmless.
 
+### One version from several CI jobs
+
+A version is the files of one deploy, and nothing is added to it afterwards: the `PUT` of
+`maven-metadata.xml` commits the files of one publication session, and the version's tag is
+final. When several CI jobs build parts of a release, such as native classifiers on runners of
+their own platform, they hand their files to one last job, and that job deploys the whole version
+once. Gradle's `publish` is the same: one job publishes a version. The modules of a multi-module
+build are versions of their own, one per `artifactId`, so separate jobs may deploy separate
+modules. What must come from one job is every file of one `groupId:artifactId:version`, the parent
+POM included when every job's build would deploy it.
+
+In GitHub Actions, the jobs of a matrix build the classifiers and upload them as workflow
+artifacts; the deploy job needs all of them, so it runs only when every leg passed, and one
+`mvn deploy` sends the jar, the POM and every classifier in one session. The workflow is an
+example, not run by this page:
+
+```yaml
+jobs:
+  natives:
+    strategy:
+      matrix:
+        include:
+          - {os: ubuntu-24.04, classifier: linux-x86_64}
+          - {os: ubuntu-24.04-arm, classifier: linux-aarch_64}
+          - {os: macos-15, classifier: osx-aarch_64}
+          - {os: windows-2025, classifier: windows-x86_64}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '21', cache: maven}
+      # the project's native build, which writes target/lib-core-<version>-<classifier>.jar
+      - run: mvn -B -P native package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.classifier }}
+          path: target/*-${{ matrix.classifier }}.jar
+          if-no-files-found: error
+  deploy:
+    needs: natives
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          server-id: lajstrom              # the <id> of <distributionManagement>
+          server-username: LAJSTROM_USER   # the names of the variables below
+          server-password: LAJSTROM_TOKEN
+      - uses: actions/download-artifact@v4
+        with: {pattern: native-*, path: natives, merge-multiple: true}
+      - run: mvn -B -P attach-natives deploy
+        env:
+          LAJSTROM_USER: deploy
+          LAJSTROM_TOKEN: ${{ secrets.LAJSTROM_TOKEN }}
+```
+
+The profile `attach-natives` of the POM attaches the downloaded files to the build, so that the
+deploy sends them with its own:
+
+```xml
+<profile>
+  <id>attach-natives</id>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <version>3.6.0</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals><goal>attach-artifact</goal></goals>
+            <configuration>
+              <artifacts>
+                <artifact>
+                  <file>${project.basedir}/natives/${project.artifactId}-${project.version}-linux-x86_64.jar</file>
+                  <type>jar</type>
+                  <classifier>linux-x86_64</classifier>
+                </artifact>
+                <!-- one <artifact> for each leg of the matrix -->
+              </artifacts>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</profile>
+```
+
+Without a change to the POM, the deploy job can run `mvn deploy:deploy-file` with
+`-DpomFile=pom.xml`, `-Dfile=` the jar, and the classifiers in `-Dfiles=`, `-Dclassifiers=` and
+`-Dtypes=`, which also sends one version in one session. Jobs that pass modules to each other
+with `mvn install` and an uploaded `~/.m2/repository/com/example` keep the same rule: the last
+job deploys, and every version comes from one `mvn deploy`.
+
+What two jobs that each deploy files of one version get today, checked by
+`TestDeployTwoJobsOneVersion` in `internal/format/maven` (the file during the commit by
+`TestSessionCommitOnce` in `internal/ingest`):
+
+- **One token for both jobs** (one principal): their files go into one session, and the first
+  `maven-metadata.xml` of either job commits whatever has arrived from both. That job passes,
+  and the other one gets:
+  - `200` for its `maven-metadata.xml` when all of its files arrived before the commit: the
+    version is whole, by the timing alone;
+  - `409` for a file that arrives while the commit runs;
+  - `201` for a file after the commit, which opens a new session. A checksum file whose file
+    went into the committed session is `400`, which mvn logs before it goes on. Its
+    `maven-metadata.xml` then commits the new session: `400` when that session has no POM (mvn
+    sends the POM first, so it went into the version), else `409`, other files under a version
+    that exists, and the new session is aborted.
+- **Two tokens, or a token and a user** (two principals): the second job's first file is `409`
+  while the first job's session is open (`open by another principal`), and mvn stops. Its deploy
+  after the commit, run again or started late, is `409`.
+
+Either way the version is what one session held: it can lack files of the other job, nothing in
+it says so, and it cannot be completed later, since the tag is immutable; the missing files need
+a new version. A longer `maven.sessionTimeout` ([api.md](../api.md#policy)) changes how long a
+session waits, not which `maven-metadata.xml` commits it. A shared session that several jobs fill
+and a last step commits is a design, not built:
+[maven-shared-staging-2026-11.md](../design/maven-shared-staging-2026-11.md) (#573).
+
 ## 5. Resolve with mvn
 
 Outside the project, into a clean local repository, so that every file comes from Lajstrom (in
