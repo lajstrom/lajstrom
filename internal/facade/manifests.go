@@ -255,7 +255,8 @@ func (h *handler) recordPassThrough(ctx context.Context, t *target, d digest.Dig
 // passThrough stores a manifest of an oci repo in the backend as it came, by digest or under the
 // tag ref: a manifest with a subject through ingest (ingestReferrer), which takes the referrers
 // lock where the backend has no referrers API and for a push by tag, any other one directly, by
-// tag under the tag lock of its digest.
+// tag under the tag lock of its digest. A MANIFEST_BLOB_UNKNOWN that outlasts retryBlobsLag is
+// the answer with the registry's status and code, as the hook's is MANIFEST_BLOB_UNKNOWN too.
 func (h *handler) passThrough(r *http.Request, t *target, ref string, refDigest digest.Digest, desc ocispec.Descriptor, body []byte) error {
 	tag := ref
 	if refDigest != "" {
@@ -284,6 +285,8 @@ func (h *handler) passThrough(r *http.Request, t *target, ref string, refDigest 
 	switch {
 	case errors.Is(err, provider.ErrConflict):
 		return &apiError{code: codeTagInvalid, err: err}
+	case blobsUnknown(err):
+		return &apiError{code: codeManifestBlobUnknown, err: err}
 	case err != nil:
 		return &apiError{code: codeManifestInvalid, err: err}
 	}

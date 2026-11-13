@@ -3,6 +3,7 @@ package facade
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,8 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
+	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/provider/providertest"
 )
@@ -74,12 +78,14 @@ func (r lateRepository) PushReference(ctx context.Context, desc ocispec.Descript
 // TestPassThroughBlobUnknownRetried: a manifest of an oci repo that a registry not classified
 // strong answers MANIFEST_BLOB_UNKNOWN is put again, by tag and by digest, with backoff, until
 // the registry takes it or the visibility timeout ends; a strong registry's refusal is the
-// answer at once.
+// answer at once. A manifest with a subject goes through ingest (PutReferrer), which puts it
+// again alike (#850). The refusal that ends it keeps the registry's status and code (#850).
 func TestPassThroughBlobUnknownRetried(t *testing.T) {
 	tests := []struct {
 		name     string
 		strong   bool
 		byDigest bool
+		referrer bool
 		refusals int64
 		status   int
 		puts     int64 // 0: more than one
@@ -88,6 +94,9 @@ func TestPassThroughBlobUnknownRetried(t *testing.T) {
 		{name: "by digest, once", byDigest: true, refusals: 1, status: http.StatusCreated, puts: 2},
 		{name: "past the visibility timeout", refusals: -1, status: http.StatusBadRequest},
 		{name: "on a strong registry", strong: true, refusals: 1, status: http.StatusBadRequest, puts: 1},
+		{name: "a referrer by digest, once", referrer: true, byDigest: true, refusals: 1, status: http.StatusCreated, puts: 2},
+		{name: "a referrer by tag, twice", referrer: true, refusals: 2, status: http.StatusCreated, puts: 3},
+		{name: "a referrer past the visibility timeout", referrer: true, byDigest: true, refusals: -1, status: http.StatusBadRequest},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -97,9 +106,15 @@ func TestPassThroughBlobUnknownRetried(t *testing.T) {
 				late.refusals.Store(tt.refusals)
 				return late
 			}})
-			h := New(Options{Index: e.st, Providers: provider.Map{"local": e.reg}, Ingest: e.ingest, Tokens: e.tokens,
-				Log: slog.New(slog.NewTextHandler(e.logs, nil)), Now: e.clock.Now, VisibilityTimeout: 300 * time.Millisecond})
+			log := slog.New(slog.NewTextHandler(e.logs, nil))
+			pipe := ingest.New(ingest.Options{Providers: provider.Map{"local": e.reg}, Index: e.st, Log: log, Now: e.clock.Now,
+				VisibilityTimeout: 300 * time.Millisecond})
+			h := New(Options{Index: e.st, Providers: provider.Map{"local": e.reg}, Ingest: pipe, Tokens: e.tokens,
+				Log: log, Now: e.clock.Now, VisibilityTimeout: 300 * time.Millisecond})
 			body, d := manifest(t, []byte("layer"), "lagging")
+			if tt.referrer {
+				body, d = lateReferrer(t, e.prov, "oci/images/app")
+			}
 			ref := "v1"
 			if tt.byDigest {
 				ref = d.String()
@@ -109,6 +124,29 @@ func TestPassThroughBlobUnknownRetried(t *testing.T) {
 				t.Errorf("PUT: %d after %d manifest PUTs to the registry, want %d after %d (0: more than one); %s",
 					rec.Code, n, tt.status, tt.puts, rec.Body)
 			}
+			if tt.status != http.StatusCreated {
+				wantError(t, "PUT", rec, tt.status, codeManifestBlobUnknown)
+			}
 		})
 	}
+}
+
+// lateReferrer stores the empty config and a layer in the repository name of f, and returns a
+// manifest with a subject that names them, and its digest: a signature whose subject f lacks,
+// as an oci repo takes it.
+func lateReferrer(t *testing.T, f *providertest.Fake, name string) ([]byte, digest.Digest) {
+	t.Helper()
+	rr, err := f.Repository(t.Context(), name)
+	must(t, err)
+	layer := []byte("signature")
+	desc := ocispec.Descriptor{MediaType: octetStream, Digest: digest.FromBytes(layer), Size: int64(len(layer))}
+	must(t, rr.Push(t.Context(), desc, bytes.NewReader(layer)))
+	must(t, rr.Push(t.Context(), ocispec.DescriptorEmptyJSON, bytes.NewReader(ocispec.DescriptorEmptyJSON.Data)))
+	subject := ocispec.Descriptor{MediaType: ocispecManifest, Digest: digest.FromString("a subject elsewhere"), Size: 2}
+	m := ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispecManifest,
+		ArtifactType: "application/vnd.example.signature", Config: ocispec.DescriptorEmptyJSON, Layers: []ocispec.Descriptor{desc},
+		Subject: &subject}
+	b, err := json.Marshal(m)
+	must(t, err)
+	return b, digest.FromBytes(b)
 }
