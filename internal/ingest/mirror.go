@@ -83,7 +83,7 @@ func (p *Pipeline) MirrorManifest(ctx context.Context, repo index.Repo, m Mirror
 		p.fail(ctx, &ev, err)
 		return err
 	}
-	p.recordMirror(ctx, repo, m.Path, &ev)
+	p.recordMirror(ctx, repo, name, &ev)
 	p.log.InfoContext(ctx, "ingest: mirrored from the upstream", "repo", ev.Repo, "name", name, "digest", m.Desc.Digest.String(),
 		"tag", tag, "upstream", m.Upstream, "principal", principal.String())
 	return tagErr
@@ -171,12 +171,13 @@ func pushTag(ctx context.Context, rr provider.Repository, m Mirror, tag string) 
 	return rr.PushReference(ctx, m.Desc, bytes.NewReader(m.Manifest), tag)
 }
 
-// recordMirror records the OCI repository of path in oci_repos and completes the audit row ev,
-// in one transaction. The backend holds the manifest and is the truth: a failure is logged, the
+// recordMirror records the OCI repository name, the full OCI name as reindex and the facade write
+// it (index-schema.md, oci_repos), in oci_repos and completes the audit row ev, in one
+// transaction. The backend holds the manifest and is the truth: a failure is logged, the
 // row completed on its own, and reindex records the repository.
-func (p *Pipeline) recordMirror(ctx context.Context, repo index.Repo, path string, ev *index.AuditEvent) {
+func (p *Pipeline) recordMirror(ctx context.Context, repo index.Repo, name string, ev *index.AuditEvent) {
 	err := p.index.Tx(ctx, func(w index.Writer) error {
-		if err := w.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: repo.ID, Path: path, SeenAt: p.now()}); err != nil {
+		if err := w.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: repo.ID, Path: name, SeenAt: p.now()}); err != nil {
 			return err
 		}
 		return p.complete(ctx, w, ev)
