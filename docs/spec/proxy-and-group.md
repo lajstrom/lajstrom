@@ -2,11 +2,13 @@
 
 - Status: normative ([ADR 0013](../adr/0013-proxy-and-group-repos.md), accepted 2026-11-10); §11,
   `oci` proxy repos, since [ADR 0018](../adr/0018-oci-proxy-repos-pull-through-from-any-registry.md)
-  (2026-11-12). Changes need an issue labelled `contract`.
+  (2026-11-12); §12, groups of `oci` repos, since
+  [ADR 0019](../adr/0019-oci-groups-one-member-per-repository-path.md) (2026-11-13). Changes need
+  an issue labelled `contract`.
 - Implemented by: `internal/proxy` (the fetcher, the metadata cache and the resolution of
   groups; format-independent), the plugins of the formats that have the kinds (npm first,
   ADR 0012; pypi and maven with #67, #68), `internal/api` and `internal/config` for the
-  settings.
+  settings; `internal/facade` for the `/v2` of `oci` proxies and groups.
 - Related: [index-schema.md](index-schema.md#proxy-and-group-repos) (the tables),
   [http-routing.md](http-routing.md) §6 (routes and statuses), [rbac.md](rbac.md) §7,
   [manifest-profile.md](manifest-profile.md) §3.1 (the origin annotations),
@@ -18,14 +20,14 @@
 | --- | --- | --- | --- |
 | `hosted` | what was published to it | from the index and the registry | the format's publish routes, `/v2` |
 | `proxy` | what it fetched from its upstream, as ordinary manifests; an `oci` proxy the upstream's own manifests and blobs (§11) | the upstream's documents, cached (§4); files from the registry, fetched on a miss (§5) | none from clients but the delete of a held version and referrers on `/v2` (http-routing.md §6) |
-| `group` | nothing | its members' documents merged, files from the member that has them (§8) | sent to its hosted member (§8.4) |
+| `group` | nothing | its members' documents merged, files from the member that has them (§8); an `oci` group, each path from the one member its routes choose (§12) | sent to its hosted member (§8.4); none through an `oci` group (§12.3) |
 
 The kind is set when the repo is created; the one change is a proxy that becomes a hosted repo
 (§2.6), once and one way. A repo of any kind has the routes
 of its format: a client cannot tell a proxy or a group from a hosted repo. A format has the
 kinds `proxy` and `group` when its plugin provides the hooks of §10; in M4 that is npm.
-`oci` repos, which have no plugin, are `hosted` or `proxy` (§11); a group of `oci` repos is
-refused ([#848](https://github.com/lajstrom/lajstrom/issues/848)).
+`oci` repos, which have no plugin, are `hosted`, `proxy` (§11) or `group` (§12): the facade
+serves their `/v2`.
 
 ## 2. Settings
 
@@ -85,8 +87,9 @@ cached, since a row's expiry is computed when it is read (§4.1).
 
 | Key | Values | Changes |
 | --- | --- | --- |
-| `members` | the names of 1 to 16 repos of the group's format, in order; each `hosted` or `proxy` (a group is not a member), at most one `hosted`, no repo twice | the admin role; replaced whole |
-| `merge` | list of name patterns (§3), at most 256: names whose versions are merged across members even when the hosted member holds them (§8.2) | `manage` |
+| `members` | the names of 1 to 16 repos of the group's format, in order; each `hosted` or `proxy` (a group is not a member), at most one `hosted` (any number in an `oci` group, §12.1), no repo twice | the admin role; replaced whole |
+| `merge` | list of name patterns (§3), at most 256: names whose versions are merged across members even when the hosted member holds them (§8.2); refused on an `oci` group | `manage` |
+| `paths` | an `oci` group's routes (§12.1): each member's name to its list of path patterns; refused on a group of another format | the admin role; merged as RFC 7396, each list replaced whole |
 
 A group has no registry and no policy: `registry` and `policy` are absent from its resource,
 and a create or a `PATCH` that sets them is `400`.
@@ -142,8 +145,9 @@ Each is `400` on the API, naming the field first, and a configuration error at s
 - a TTL that is not a duration in its range; a pattern that is empty, longer than 256 bytes, or
   has a space or a control character; more than 256 patterns in a list;
 - a member that does not exist, is a group, is of another format, is named twice, or is the
-  second hosted member; more than 16 members;
-- on a group, a `registry` or a `policy`.
+  second hosted member of a group that is not `oci`; more than 16 members;
+- on a group, a `registry` or a `policy`;
+- on an `oci` group, `merge`, or `paths` that §12.1 refuses; on another group, `paths`.
 
 Deleting a repo that is a member of a group is `409` naming the groups, `force` or not.
 
@@ -398,6 +402,9 @@ repo holds (§10, `RenderProxy`), and it is kept in `index_cache` as a hosted re
   repo holds, as a hosted repo's document.
 
 ## 8. Groups
+
+This section is the groups of the formats that have a plugin. A group of `oci` repos is §12, and
+of this section only §8.5 holds for it.
 
 ### 8.1 Resolution
 
@@ -884,8 +891,112 @@ first byte does not wait for its whole copy (containerd cancels a pull that gets
 
 ### 11.9 What an `oci` proxy does not do
 
-Groups of `oci` repos are refused ([#848](https://github.com/lajstrom/lajstrom/issues/848)). A
-client's `PUT` of a manifest that is not a referrer is `405 UNSUPPORTED`; referrers, their blob
+A group of `oci` repos has an `oci` proxy as a member as §12 says. A client's `PUT` of a manifest
+that is not a referrer is `405 UNSUPPORTED`; referrers, their blob
 uploads and deletes are as on a hosted `oci` repo (http-routing.md §6). Nothing but `oci_repos`
 is indexed of what the backend holds; reindex rebuilds those rows from the backend's catalog or
 `oci_repos`, and neither reads nor writes `proxy_meta`.
+
+## 12. Groups of `oci` repos
+
+[ADR 0019](../adr/0019-oci-groups-one-member-per-repository-path.md). A group of `oci` repos is
+one pull address over hosted and proxy `oci` repos: `docker pull <lajstrom>/oci/<group>/<path>`.
+Each path is served by exactly one member, which the group's routes choose, and that member
+answers everything for it as at its own URL. It is read-only. It has no plugin: the facade
+answers it on `/v2` (http-routing.md §6). §8's resolution, hiding, merge and writes do not apply
+to it; §8.5 does: the group stores nothing, and reindex and the reconcile loop pass it by.
+
+### 12.1 Members and routes
+
+```json
+{"format": "oci", "name": "all", "kind": "group", "anonymousRead": false,
+ "group": {"members": ["internal", "hub", "ghcr"],
+           "paths": {"internal": ["acme/*"], "ghcr": ["oras-project/*"], "hub": ["*"]}},
+ "createdAt": "2026-12-01T10:00:00Z", "updatedAt": "2026-12-01T10:00:00Z"}
+```
+
+- **`members`**: 1 to 16 `oci` repos, each `hosted` or `proxy`, none twice, any number of them
+  hosted. Their order means nothing to an `oci` group; it is kept so that the API, the
+  `group_members` rows and the `409` on deleting a member are those of every group (§2.5).
+- **`paths`** maps each member to the patterns of the paths it serves. A pattern is `<path>`,
+  that path alone (`acme/api`); `<prefix>/*`, every path below the prefix, not the prefix itself
+  (`acme/*` matches `acme/api` and `acme/tools/lint`, not `acme`); or `*`, every path.
+  `<path>` and `<prefix>` are of the grammar of an OCI name (http-routing.md §2), and no other
+  `*` is allowed.
+- **Refused**, `400` naming the field, and at start, where the bootstrap creates the group
+  through the API (§2.4) and a refused group stops `serve`: a member without a pattern; a key of
+  `paths` that is not a member; a pattern that is not of the three forms; a pattern twice in one
+  member's list; more than 256 patterns in all; **the same pattern on two members**, naming both
+  (`group.paths.ghcr[0]: "*" is also group.paths.hub[0]`); `merge`. Nested patterns are not
+  refused: the most specific one wins (§12.2).
+- **Changes.** The admin role changes `members` and `paths` (rbac.md §7); `manage` changes
+  `anonymousRead`. A `PATCH` merges `group` as RFC 7396: `members` and each list of `paths` are
+  replaced whole, and a key of `paths` set to `null` is removed. The result is checked whole, so a
+  `PATCH` of `members` sends the routes that go with it.
+
+`members` are `group_members` rows; `paths` is kept in `repos.group` (index-schema.md). The
+configuration's `repos[].group` takes the same keys.
+
+### 12.2 Routing
+
+- **The most specific pattern wins.** A path's member is the one whose pattern matching it is the
+  most specific: the path itself, then the longest prefix, then `*`. No pattern is on two members,
+  so one wins.
+- **The path as the client sent it.** The route matches the path below `oci/<group>/`, before
+  any rule of the member. A member whose upstream is Docker Hub (§11.7) then keeps a path of one
+  component as `library/<path>`: docker sends `oci/all/nginx`, containerd as a mirror
+  `oci/all/library/nginx`, and both reach a `*` member that is Docker Hub, which stores
+  `library/nginx` once. containerd's `?ns=` is ignored, as on a proxy (http-routing.md §6).
+- **No I/O.** A route is decided from the group's row and its members, after the principal's
+  read on the group is checked, so a path goes to the same member on every replica whatever the
+  members hold and whatever an upstream answers. A path that no route selects is
+  `404 NAME_UNKNOWN`.
+- **No fallback.** The member's answer is the group's: its `404`, its `5xx`, its `503
+  TOOMANYREQUESTS`. Another member is never asked, and a digest is never looked up in another
+  member: an index and its children, a manifest and its blobs, always come from one member.
+- **The member's own rules hold.** A proxy member checks its lists (§11.2): a path they refuse is
+  one the member does not have, `404 NAME_UNKNOWN` through the group. Its backend checks the
+  member's OCI name of the path (`CheckName`), and an offline member is offline through the group
+  (§4.4). The client's name, `oci/<group>/<path>`, is bounded at 255 bytes as every name is.
+- **Internal names.** A route to a proxy sends the paths it selects upstream. Route every internal
+  prefix to the hosted member (`acme/*`), and `acme` alone when it is a repository, or a `*` that
+  is Docker Hub asks it for `library/acme`. The proxy's `deny` stays the guard of its own URL.
+- **One mirror per registry.** The routes do not know which registry a path is from: a mirror of
+  `ghcr.io` pointed at the group would send its paths without a route of their own to the `*`
+  member. A group serves the internal paths and one registry, usually `docker.io`; each other
+  registry is mirrored at its proxy member's own URL.
+
+### 12.3 What a group answers
+
+| Request | Through the group |
+| --- | --- |
+| `GET`, `HEAD` of `manifests/<tag>` and `manifests/<digest>` | the member's answer: a hosted member's backend; a proxy member as §11.4 says, a fetch on a miss included |
+| `GET`, `HEAD` of `blobs/<digest>` | the member's: a proxy member serves only a blob that a manifest held or cached at the path lists (§11.5), with the tee and the transits of §11.8 |
+| `GET` of `tags/list` | the member's list, with `n` and `last`; `name` and the `Link` name the group's path. A proxy member's is its backend's without the keep-tags (§11.6) |
+| `GET` of `referrers/<digest>` | the member's, `artifactType` included; never merged |
+| `GET /v2/_catalog` | to a principal who may read the group, each member's repositories (`oci_repos`) that the routes send to that member, as `oci/<group>/<path>` |
+| a path no route selects, or one a proxy member's lists refuse | `404 NAME_UNKNOWN` |
+| a `PUT` of a manifest, a referrer's included; every route below `blobs/uploads/`; a `DELETE` of a manifest or a blob | `405 UNSUPPORTED` with `Allow: GET, HEAD`, whatever the path, once the principal may read the group; the group's denial otherwise (rbac.md §3) |
+| a mount whose `from` is a group's path | from the routed member's OCI repository when it is on the target's registry and the principal may read the group; otherwise a plain upload session |
+| `/v2/token`, a scope of a group's path | `pull` at most: no action pushes or deletes through a group |
+
+The member's statuses pass through: `404 MANIFEST_UNKNOWN` and `BLOB_UNKNOWN`, `400 NAME_INVALID`
+from its backend's name check, `403` naming a size bound, `502`, `503 TOOMANYREQUESTS` with
+`Retry-After`, `504` (§6, §11, http-routing.md §2 and §6).
+
+A path routed to a proxy member behaves as at the proxy's own URL: its tags follow the upstream,
+its first pull is fetched, its `tags/list` has the tags pushed to its backend only, and its
+referrers are those pushed to the proxy repo. A signature for such a path is pushed to the proxy's
+URL, with `write` on the proxy, and is then seen through the group; one pushed to another member
+at the same path is not. A blob two members hold is held by each: §11.5's mounts stay within one
+repo.
+
+### 12.4 Permissions and audit
+
+Read on the group is the whole permission, as for every group (rbac.md §7): the members'
+bindings, deploy tokens and `anonymousRead` are not asked, and the reader needs nothing on a proxy
+member for its fetches. A proxy member's fetch through the group writes the member's rows,
+`proxy.fetch` and `proxy.reject`, with `details.via` the group, `oci/<group>`; the background
+completion of §11.5, step 5, keeps the values of the request that started it. Reads and refused
+writes write no row. The access log has the path the client sent; the routed member is logged at
+debug.

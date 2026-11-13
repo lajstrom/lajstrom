@@ -181,7 +181,8 @@ MVP.
 - `GET` only (the OAuth2 `POST` form is `405`). Authenticates with Basic (or none for
   anonymous). The service is the server's own: a `service` that names another is ignored.
 - For each requested scope the facade keeps the actions the principal is allowed on
-  `<format>/<repo>` (`pull`↔`read`, `push`↔`write`, `delete`↔`delete`). A scope with no allowed
+  `<format>/<repo>` (`pull`↔`read`, `push`↔`write`, `delete`↔`delete`); on the path of an `oci`
+  group, `pull` at most, since nothing is pushed or deleted through it (§7). A scope with no allowed
   action stays in the token with `actions: []`, and so does the scope of a repo that does not
   exist: the client can read the token, and it names every repository asked for without telling
   which exist (§3). Asking for what one may not have is not an error of the token endpoint, as
@@ -265,9 +266,9 @@ means on them:
 
 | Action | proxy | group |
 | --- | --- | --- |
-| `read` | every read, a fetch on a miss included: the fetch is the server's, and the reader needs no `write` for it | every read through the group, of every member (below) |
-| `write` | the referrers of `/v2` (a signature or an attestation of a proxied artifact); the format's publish routes are `405` | nothing of its own: a write through the group is its hosted member's |
-| `delete` | a held version, which the next miss fetches again | nothing of its own |
+| `read` | every read, a fetch on a miss included: the fetch is the server's, and the reader needs no `write` for it | every read through the group, of every member (below); on an `oci` group, of the paths its routes send to each member |
+| `write` | the referrers of `/v2` (a signature or an attestation of a proxied artifact); the format's publish routes are `405` | nothing of its own: a write through the group is its hosted member's; through an `oci` group every write is `405` |
+| `delete` | a held version, which the next miss fetches again | nothing of its own; through an `oci` group `405` |
 | `manage` | as on a hosted repo, the keys of `upstream` but `name`, the purge of its cache, and a prefetch | as on a hosted repo, and `group.merge` |
 
 **Read on the group is the whole permission.** For a read through a group, the members'
@@ -276,8 +277,15 @@ reads the content of every member through it, the hosted member's included. Who 
 group is therefore who may read its members' content, and `manage` on a group (its
 `anonymousRead`, its deploy tokens) decides that: bind it as one would `manage` on every member.
 
-**A write through a group** needs `read` on the group, then the action on the group's hosted
-member, evaluated as if the request had come to the member's own URL. A principal that cannot
+**Through an `oci` group** ([ADR 0019](../adr/0019-oci-groups-one-member-per-repository-path.md),
+proxy-and-group.md §12) read is the same whole permission: who may read the group reads the
+paths its routes send to each member, and nothing else of a member, so a group can serve
+`acme/public/*` of a hosted repo whose other paths stay private. A write through it needs `read`
+on the group and is then `405 UNSUPPORTED`; one that cannot read the group gets the group's
+denial. The token endpoint grants `pull` at most on a group's path (§4).
+
+**A write through a group** of another format needs `read` on the group, then the action on the
+group's hosted member, evaluated as if the request had come to the member's own URL. A principal that cannot
 read the group gets the group's denial (§3); one that can read it and lacks the action on the
 member gets `403` naming the member, which the group's resource already shows its readers. The
 audit rows of the write (`push`, `delete`, `npm.dist-tag`, `npm.deprecate`) are the member's,
@@ -296,7 +304,8 @@ are the audit rows of a miss's, `proxy.fetch` and `proxy.reject`, with the calle
 principal; the prefetch itself writes no row of its own.
 
 **The admin role** creates proxy and group repos, as every repo, and alone changes a proxy's
-`upstream.name` and a group's `members`: both change what every reader of the repo gets, and a
+`upstream.name`, a group's `members` and an `oci` group's `paths`: each changes what every reader
+of the repo gets, and a
 member added by someone without `read` on it would publish it to the group's readers. The URL
 of an upstream and its credentials are configuration; no action sets them.
 
@@ -305,7 +314,7 @@ of an upstream and its credentials are configuration; no action sets them.
 | Action | When | Principal and fields |
 | --- | --- | --- |
 | `proxy.fetch` | a proxied ingest: the fetcher pushed an artifact | the principal of the request whose miss or prefetch caused it (a user, a token, `anonymous`), through a group too; `repo` the proxy, `subject` the version, `digest` the manifest's, `ip` the client's; `details` `{"upstream", "url", "checksum", "size"}` and `via`, the group, when there was one |
-| `proxy.reject` | a fetch refused for its bytes: a checksum that differs, an artifact that `Validate` refuses, a file above a bound; or, before any download, a name the registry does not take (#599) | as `proxy.fetch`, without `digest`; `details.reason` (`checksum`, `invalid`, `size`, `name`) and, for a checksum, both values |
+| `proxy.reject` | a fetch refused for its bytes: a checksum that differs, an artifact that `Validate` refuses, a file above a bound; or, before any download, a name the registry does not take (#599) | as `proxy.fetch`, without `digest`; `details.reason` (`checksum`, `invalid`, `size`, `name`) and, for a checksum, both values; `via` through a group, an `oci` one included |
 | `repo.cache.purge` | `DELETE …/upstream-cache` (http-routing.md §6) | the caller; `details.name` when one name was purged |
 | `repo.convert` | a proxy became a hosted repo (proxy-and-group.md §2.6) | the admin; `details` `{"from": "proxy", "to": "hosted", "upstream", "packages", "ops", "skipped"}`: the upstream it had, the packages it held, the journal ops planned and what was left out |
 
