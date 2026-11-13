@@ -61,11 +61,12 @@ up() {
 	if [ "$(status "$admin" "/api/v1/orgs/$org")" != 200 ]; then
 		api "$admin" POST /api/v1/orgs "$(jq -nc --arg o "$org" '{username: $o, visibility: "private"}')" >/dev/null
 	fi
-	# A team whose only unit is the packages, with write: what pushing and deleting need.
+	# A team whose only unit is the packages, with write: what pushing and deleting need. units_map
+	# alone: Gitea 28 refuses units beside it (400), Gitea 1.27 and Forgejo ignore units then.
 	team=$(api "$admin" GET "/api/v1/orgs/$org/teams/search?q=packages" | jq -r '.data[] | select(.name == "packages") | .id')
 	if [ -z "$team" ]; then
 		team=$(api "$admin" POST "/api/v1/orgs/$org/teams" '{"name":"packages","permission":"write",
-			"units":["repo.packages"],"units_map":{"repo.packages":"write"},
+			"units_map":{"repo.packages":"write"},
 			"includes_all_repositories":false,"can_create_org_repo":false}' | jq -r .id)
 	fi
 	api "$admin" PUT "/api/v1/teams/$team/members/lajstrom" >/dev/null
