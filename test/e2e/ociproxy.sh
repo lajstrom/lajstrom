@@ -18,7 +18,14 @@
 #      fetches the metadata of every platform unless --skip-metadata) and the layer of its own,
 #      and its platform's manifest is in the backend under its keep-tag, the other's not; the
 #      same pull by a new containerd, with an empty content store: the proxy serves the three
-#      blobs again, and fetches none.
+#      blobs again, and fetches none;
+#   5. a group of oci repos (#848, ADR 0019, §12) of a hosted repo of the run, which serves
+#      acme/*, and of the proxy, which serves the rest: crane pushes an image to the hosted repo
+#      at its own URL and pulls it through the group; crane pulls img:1.0 through the group, the
+#      digest of step 2 with no blob fetched, and grp:1.0 for linux/arm64, which the proxy fetches
+#      through the group (two blobs, proxy.fetch rows with details.via the group); tags/list of
+#      the hosted path through the group is 1.4; an upload through the group is 405 with
+#      Allow: GET, HEAD.
 #
 #   test/e2e/ociproxy.sh [<base url>]     default: http://localhost:8080
 #
@@ -34,8 +41,10 @@
 # on GitHub, downloaded into the run's directory and checked against its sha256, run in
 # debian:12 with --privileged (its overlayfs snapshotter mounts), a tmpfs as its root and
 # --network host, so that it reaches the base URL and the upstream as the host does. At the end
-# the repo is deleted, and what crane pushed to the upstream and the proxy to the backend is
-# deleted from them by digest, where the registry lets it. It needs curl, jq and docker, prints
+# the repos are deleted, and what crane pushed to the upstream, to the hosted repo, and the proxy to
+# the backend is deleted from them by digest, where the registry lets it. crane pushes to the
+# hosted repo as the run's user, from a docker configuration in the run's directory
+# (DOCKER_CONFIG), which it then removes; every other crane call is anonymous. It needs curl, jq and docker, prints
 # one line per step and exits non-zero at the first failure (lib.sh).
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
@@ -67,10 +76,16 @@ up="$upstream/e2e-ociproxy-$run"
 lj="${base#*://}/oci/$proxy/e2e-ociproxy-$run"
 back="$registry/${prefix}oci/$proxy/e2e-ociproxy-$run"
 ctr_name="lajstrom-e2e-containerd-$run"
+hosted="int-$run" group="all-$run" # step 5: the repos oci/<hosted> and oci/<group>
+host="${base#*://}"
 proxy_made=""
+group_made=""
+hosted_made=""
 pushed=() # what crane pushed to the upstream and the proxy to the backend, host/name@digest
 cleanup() {
 	docker rm -f "$ctr_name" >/dev/null 2>&1 || true
+	[ -z "$group_made" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/api/v1/repos/oci/$group" || true
+	[ -z "$hosted_made" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/api/v1/repos/oci/$hosted?force=true" || true
 	[ -z "$proxy_made" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/api/v1/repos/oci/$proxy?force=true" || true
 	local i ref name
 	for ((i = ${#pushed[@]} - 1; i >= 0; i--)); do # an index before what it lists
@@ -82,13 +97,15 @@ cleanup() {
 trap cleanup EXIT
 
 # crane ARGS...: crane in the run's directory, where its file arguments are.
+# Its docker configuration is the run's, empty but in step 5: anonymous.
+mkdir -p "$work/docker"
 if command -v crane >/dev/null; then
 	crane_how="$(command -v crane) $(command crane version)"
-	crane() { (cd "$work" && command crane "$@"); }
+	crane() { (cd "$work" && DOCKER_CONFIG="$work/docker" command crane "$@"); }
 else
 	crane_how="${crane_image%@*}"
 	# As the caller's user: what crane pull writes as root on Linux, the cleanup could not remove.
-	crane() { docker run --rm --network host -u "$(id -u):$(id -g)" -v "$work:/w" -w /w "$crane_image" "$@"; }
+	crane() { docker run --rm --network host -u "$(id -u):$(id -g)" -v "$work:/w" -w /w -e DOCKER_CONFIG=/w/docker "$crane_image" "$@"; }
 fi
 
 # sha256 prints the hex sha256 of a file.
@@ -238,7 +255,60 @@ assert_eq 3 "$(fetched "e2e-ociproxy-$run/ctr")" "the blobs fetched after contai
 	fail "containerd's second pull asked the proxy for $(($(served "e2e-ociproxy-$run/ctr") - before)) blobs, want 3 at least"
 step "ctr images pull by a new containerd: the three blobs served again, none fetched"
 
+# 5: a group of the hosted repo and the proxy, one URL for both.
+assert_status 201 -K "$E2E_CURLRC" -H 'Content-Type: application/json' \
+	-d "{\"format\":\"oci\",\"name\":\"$hosted\",\"registry\":\"local\",\"anonymousRead\":true}" "$base/api/v1/repos"
+hosted_made=yes
+assert_status 201 -K "$E2E_CURLRC" -H 'Content-Type: application/json' \
+	-d "{\"format\":\"oci\",\"name\":\"$group\",\"kind\":\"group\",\"anonymousRead\":true,\"group\":{\"members\":[\"$hosted\",\"$proxy\"],\"paths\":{\"$hosted\":[\"acme/*\"],\"$proxy\":[\"*\"]}}}" \
+	"$base/api/v1/repos"
+group_made=yes
+step "POST /api/v1/repos oci/$hosted, hosted, and oci/$group, a group of it for acme/* and of oci/$proxy for the rest: 201"
+
+(umask 077 && printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$host" "$(printf '%s:%s' "$E2E_USER" "$E2E_PASSWORD" | base64 | tr -d '\n')" >"$work/docker/config.json")
+api="acme/api-$run"
+head -c "$size" /dev/urandom >"$work/api.data"
+tar -C "$work" -cf "$work/api.tar" api.data
+ref="$(crane append --insecure --oci-empty-base -f api.tar -t "$host/oci/$hosted/$api:1.4" 2>"$work/crane.log")" ||
+	{ cat "$work/crane.log" >&2; fail "crane append to $host/oci/$hosted/$api:1.4"; }
+rm -f "$work/docker/config.json"
+pushed+=("$registry/${prefix}oci/$hosted/$api@${ref##*@}")
+assert_eq "${ref##*@}" "$(crane digest --insecure "$host/oci/$group/$api:1.4")" "the digest of $api:1.4 through the group"
+crane pull --insecure "$host/oci/$group/$api:1.4" api-group.tar 2>"$work/crane.log" ||
+	{ cat "$work/crane.log" >&2; fail "crane pull $host/oci/$group/$api:1.4"; }
+assert_eq 1.4 "$(crane ls --insecure "$host/oci/$group/$api")" "tags/list of $api through the group"
+step "crane push to $host/oci/$hosted/$api:1.4, then pulled through $host/oci/$group: ${ref##*@}, tags/list 1.4"
+
+crane pull --insecure --platform linux/amd64 "$host/oci/$group/e2e-ociproxy-$run/img:1.0" amd64-group.tar 2>"$work/crane.log" ||
+	{ cat "$work/crane.log" >&2; fail "crane pull --platform linux/amd64 $host/oci/$group/e2e-ociproxy-$run/img:1.0"; }
+assert_eq "$amd64" "$(crane digest --insecure --platform linux/amd64 "$host/oci/$group/e2e-ociproxy-$run/img:1.0")" "the digest of img:1.0 for linux/amd64 through the group"
+assert_eq 2 "$(grep -F ' msg=request method=GET ' "$log" | grep -F " path=/v2/oci/$group/e2e-ociproxy-$run/img/blobs/" | grep -cF ' status=200 ' || true)" \
+	"the blobs of img the group served"
+assert_eq 4 "$(fetched "e2e-ociproxy-$run/img")" "the blobs of img fetched after its pull through the group"
+seed grp
+grp_arm64="$(crane digest --insecure --platform linux/arm64 "$up/grp:1.0")"
+crane pull --insecure --platform linux/arm64 "$host/oci/$group/e2e-ociproxy-$run/grp:1.0" grp.tar 2>"$work/crane.log" ||
+	{ cat "$work/crane.log" >&2; fail "crane pull --platform linux/arm64 $host/oci/$group/e2e-ociproxy-$run/grp:1.0"; }
+pushed+=("$back/grp@$grp_arm64")
+assert_eq 2 "$(fetched "e2e-ociproxy-$run/grp")" "the blobs of grp fetched through the group"
+# via_rows prints the digests of the proxy's proxy.fetch rows that name the group, completed, sorted.
+via_rows() {
+	curl -sS -K "$E2E_CURLRC" --globoff "$base/api/v1/audit?action=proxy.fetch&repo=oci/$proxy&limit=100" |
+		jq -r --arg v "oci/$group" '[.events[] | select(.details.via == $v and .state == "ok") | .digest] | sort | join(" ")'
+}
+eventually test "$(via_rows)" = "$grp_arm64" || fail "proxy.fetch rows of oci/$proxy with via oci/$group: '$(via_rows)', want $grp_arm64"
+step "crane pull through $host/oci/$group of img:1.0, the proxy's image with no blob fetched, and of grp:1.0 for linux/arm64: two blobs fetched, proxy.fetch via oci/$group"
+
+assert_status 405 -K "$E2E_CURLRC" -X POST "$base/v2/oci/$group/$api/blobs/uploads/"
+grep -qi '^allow: GET, HEAD' <(curl -sS -D - -o /dev/null -K "$E2E_CURLRC" -X POST "$base/v2/oci/$group/$api/blobs/uploads/") ||
+	fail "the 405 of an upload through the group has no Allow: GET, HEAD"
+step "POST $base/v2/oci/$group/$api/blobs/uploads/ by $E2E_USER: 405 UNSUPPORTED, Allow: GET, HEAD"
+
+assert_status 204 -K "$E2E_CURLRC" -X DELETE "$base/api/v1/repos/oci/$group"
+group_made=""
+assert_status 204 -K "$E2E_CURLRC" -X DELETE "$base/api/v1/repos/oci/$hosted?force=true"
+hosted_made=""
 assert_status 204 -K "$E2E_CURLRC" -X DELETE "$base/api/v1/repos/oci/$proxy?force=true"
 proxy_made=""
-step "DELETE /api/v1/repos/oci/$proxy: 204"
+step "DELETE /api/v1/repos oci/$group, oci/$hosted and oci/$proxy: 204"
 echo "PASS ociproxy e2e against $base as $E2E_USER"
