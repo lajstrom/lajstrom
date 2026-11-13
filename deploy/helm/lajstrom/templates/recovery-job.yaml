@@ -1,0 +1,115 @@
+{{- if .Values.recovery.user }}
+{{- $full := include "lajstrom.fullname" . }}
+{{- $secret := include "lajstrom.recoverySecretName" . }}
+{{- $key := .Values.recovery.key }}
+{{- if not .Values.recovery.existingSecret }}
+{{- $password := "" }}
+{{- with lookup "v1" "Secret" .Release.Namespace $secret }}
+{{- $password = index (.data | default dict) $key | default "" }}
+{{- end }}
+# The password recovery.user gets (#440): 32 random letters and digits, the same on every upgrade
+# while recovery.user is set, so that the password read once stays the one set. Not a hook: it
+# goes with the release when recovery.user is set back to "".
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secret }}
+  labels:
+    {{- include "lajstrom.labels" . | nindent 4 }}
+    app.kubernetes.io/component: recovery
+type: Opaque
+data:
+  {{ $key }}: {{ $password | default (randAlphaNum 32 | b64enc) }}
+---
+{{- end }}
+# lajstrom admin user set-password against the database (docs/operations.md, A lost password),
+# after the release's objects, with the chart's ConfigMap and the DSN of serve. The image has no
+# shell: the password comes from the Secret as a file, --password-file. Deleted once it succeeds;
+# a Job that failed stays for its log, kubectl logs job/{{ $full }}-recovery, until the next run.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $full }}-recovery
+  labels:
+    {{- include "lajstrom.labels" . | nindent 4 }}
+    app.kubernetes.io/component: recovery
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.recovery.backoffLimit }}
+  template:
+    metadata:
+      # Not the component server, which the Service selects.
+      labels:
+        app.kubernetes.io/name: {{ include "lajstrom.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: recovery
+      {{- with .Values.recovery.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "lajstrom.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: recovery
+          image: {{ include "lajstrom.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - admin
+            - user
+            - set-password
+            - {{ .Values.recovery.user | quote }}
+            - --password-file
+            - /run/secrets/lajstrom-recovery/password
+            - --config
+            - /etc/lajstrom/lajstrom.yaml
+          # The configuration is loaded whole, the registries' passwordEnv included; set-password
+          # reads no master key.
+          env:
+            {{- include "lajstrom.secretEnv" (dict "root" . "dsn" .Values.database "masterKey" false) | nindent 12 }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.recovery.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/lajstrom
+              readOnly: true
+            - name: password
+              mountPath: /run/secrets/lajstrom-recovery
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $full }}
+        - name: password
+          secret:
+            secretName: {{ $secret }}
+            items:
+              - key: {{ $key }}
+                path: password
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

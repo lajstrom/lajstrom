@@ -73,7 +73,7 @@ The database is the authority: whoever can run `lajstrom admin` with the server'
 can recover any account, with no password and no running server.
 
 ```sh
-lajstrom admin user set-password alice --config lajstrom.yaml       # a prompt, or --password-stdin
+lajstrom admin user set-password alice --config lajstrom.yaml       # a prompt, --password-stdin or --password-file
 lajstrom admin user create --name rescue --admin --config lajstrom.yaml
 ```
 
@@ -84,7 +84,10 @@ forgotten. Each writes an audit row (`user.password`, `user.create`) by
 shows in `GET /api/v1/audit` afterwards. In Kubernetes, run the command in a pod with the
 configuration and the database DSN of the Deployment: the image has no shell, and `kubectl exec
 -i deploy/lajstrom -- /lajstrom --config /etc/lajstrom/lajstrom.yaml admin user set-password
-admin --password-stdin` runs the binary itself.
+admin --password-stdin` runs the binary itself. The Helm chart does it without `kubectl exec`:
+`helm upgrade --set recovery.user=admin` runs `set-password` in a Job with a password the chart
+generates into a Secret, and NOTES.txt says how to read it and how to turn the Job off again
+([helm.md](deploy/helm.md#a-lost-password)).
 
 The bootstrap token is not a way back in: it is valid only while no enabled user has an admin
 binding. This is the Gitea, GitLab and Grafana way (`gitea admin user change-password`,

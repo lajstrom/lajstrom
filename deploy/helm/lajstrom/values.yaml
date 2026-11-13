@@ -110,6 +110,29 @@ migrate:
     limits:
       memory: 256Mi
 
+# The recovery of a lost password (docs/deploy/helm.md, A lost password), off while user is
+# empty. helm upgrade --set recovery.user=admin runs lajstrom admin user set-password for that
+# user, as a post-install and post-upgrade hook Job, with the password of a Secret; no kubectl
+# exec. The Job runs on every upgrade while user is set, setting the password of the Secret again:
+# set user back to "" once you are in, which removes the Secret the chart made.
+recovery:
+  user: ""
+  # The Secret of the password; empty: the chart makes <full name>-recovery with 32 random
+  # letters and digits, kept across upgrades with lookup. Name a Secret of your own for a tool
+  # that renders with helm template, such as Argo CD, which cannot look it up.
+  existingSecret: ""
+  key: password
+  # A retry covers a database that does not answer yet, or not migrated on a first install; a
+  # user that does not exist fails every attempt, and the Job then fails the upgrade.
+  backoffLimit: 2
+  podAnnotations: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
 # Every replica is the same: the state is in Postgres and in the registry.
 replicaCount: 2
 # A new replica starts before an old one stops; the old ones serve on the migrated schema
