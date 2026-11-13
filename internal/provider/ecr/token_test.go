@@ -181,3 +181,29 @@ func TestDecodeToken(t *testing.T) {
 		t.Errorf("decodeToken = %+v, %v", got, err)
 	}
 }
+
+// TestTokensBasic: the exported Tokens of an upstream hand out the cached token as Basic, with
+// the provider's refresh, and the failure to get one when none works.
+func TestTokensBasic(t *testing.T) {
+	c := newClock()
+	f := newFakeECR(c)
+	tk := newTokensOf(f, c.now, nil)
+	for i, want := range []string{"token-1", "token-1", "token-2"} {
+		if i == 2 {
+			c.advance(11 * time.Hour)
+		}
+		user, pass, err := tk.Basic(t.Context())
+		if err != nil || user != "AWS" || pass != want {
+			t.Fatalf("Basic #%d = %s:%s, %v; want AWS:%s", i, user, pass, err, want)
+		}
+	}
+	if got := f.count("GetAuthorizationToken"); got != 2 {
+		t.Errorf("GetAuthorizationToken called %d times, want 2", got)
+	}
+	c.advance(12 * time.Hour)
+	f.tokenErr = &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "not allowed"}
+	user, pass, err := tk.Basic(t.Context())
+	if !errors.Is(err, provider.ErrUnauthorized) || user != "" || pass != "" {
+		t.Errorf("Basic without a token that works = %q:%q, %v; want ErrUnauthorized", user, pass, err)
+	}
+}

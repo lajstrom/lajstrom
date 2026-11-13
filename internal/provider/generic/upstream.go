@@ -1,6 +1,7 @@
 package generic
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,11 +20,23 @@ import (
 )
 
 // Credential is what NewUpstream answers an upstream's challenges with: a username and its
-// password, for Basic and for the token realm, or a static bearer token. The zero value is
-// anonymous: an anonymous token where the registry asks for one.
+// password, for Basic and for the token realm; a static bearer token; or Basic, a username and
+// password that expire and are replaced, a cloud's (upstreams[].auth.ecr and auth.gcp,
+// docs/spec/proxy-and-group.md §11.1). The zero value is anonymous: an anonymous token where
+// the registry asks for one. Set one of the three.
 type Credential struct {
 	Username, Password string
 	Token              string
+	// Basic returns the current username and password. It is asked for every request that
+	// answers a Basic challenge and for every token request, never cached by the client, so a
+	// replaced credential goes out from the next request on (Options.Credential). An error fails
+	// the request with provider.ErrUnauthorized; it must not show the secret.
+	Basic func(ctx context.Context) (username, password string, err error)
+}
+
+// anonymous reports whether c has no credentials.
+func (c Credential) anonymous() bool {
+	return c.Username == "" && c.Password == "" && c.Token == "" && c.Basic == nil
 }
 
 // NewUpstream returns the Provider of the upstream registry of an oci proxy repo (ADR 0018,
@@ -49,7 +62,16 @@ func NewUpstream(cfg config.Upstream, cred Credential, log *slog.Logger) (*Provi
 	reg := config.Registry{Name: cfg.Name, Type: Type, URL: cfg.URL, Timeout: cfg.Timeout, Retries: cfg.Retries,
 		TokenRealmHosts: cfg.TokenRealmHosts, Auth: config.RegistryAuth{Username: cred.Username, Password: cred.Password}}
 	o := Options{PublicRedirects: true, upstream: true}
-	if cred.Token != "" {
+	switch {
+	case cred.Basic != nil:
+		o.Credential = func(ctx context.Context, _ string) (auth.Credential, error) {
+			user, pass, err := cred.Basic(ctx)
+			if err != nil {
+				return auth.EmptyCredential, err
+			}
+			return auth.Credential{Username: user, Password: pass}, nil
+		}
+	case cred.Token != "":
 		u, err := url.Parse(cfg.URL)
 		if err != nil {
 			return nil, errors.New("generic: url must be an absolute http(s) URL")
@@ -61,7 +83,7 @@ func NewUpstream(cfg config.Upstream, cred Credential, log *slog.Logger) (*Provi
 		return nil, err
 	}
 	p.upstream = true
-	p.anonymous = cred == Credential{}
+	p.anonymous = cred.anonymous()
 	return p, nil
 }
 

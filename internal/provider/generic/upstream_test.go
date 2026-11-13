@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/opencontainers/go-digest"
@@ -101,6 +102,96 @@ func TestUpstreamToken(t *testing.T) {
 	}
 	if n := f.count("GET /token"); n != 0 {
 		t.Errorf("%d token requests, want none", n)
+	}
+}
+
+// rotating is a credential that expires and is replaced, as a cloud's: Basic hands out the
+// current password, or err.
+type rotating struct {
+	mu    sync.Mutex
+	pass  string
+	err   error
+	calls int
+}
+
+func (r *rotating) set(pass string, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pass, r.err = pass, err
+}
+
+func (r *rotating) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+func (r *rotating) basic(context.Context) (string, string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	return "AWS", r.pass, r.err
+}
+
+// TestUpstreamBasic checks a rotating credential (Credential.Basic): every request answers a
+// Basic challenge with the current password, so a replaced one is sent from the next request on
+// without a 401 first; a token realm gets it too; a credential that cannot be had is
+// ErrUnauthorized, not the ErrNotFound of an anonymous upstream, and its error shows no secret.
+func TestUpstreamBasic(t *testing.T) {
+	data := []byte(`{"schemaVersion":2}`)
+	d := digest.FromBytes(data)
+	manifests := map[string]*fakeManifest{"1.27": {desc: ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: d, Size: int64(len(data))}, content: data}}
+	cred := &rotating{pass: "token-1"}
+
+	f := newFakeRegistry(t)
+	f.manifests["library/nginx"] = manifests
+	var mu sync.Mutex
+	want, refused := "token-1", 0
+	f.hook = func(w http.ResponseWriter, r *http.Request) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if u, p, ok := r.BasicAuth(); ok && u == "AWS" && p == want {
+			return false
+		}
+		refused++
+		w.Header().Set("WWW-Authenticate", `Basic realm="fake"`)
+		writeErr(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
+		return true
+	}
+	p := newUpstream(t, f, "ecr", Credential{Basic: cred.basic}, nil)
+	if desc, err := resolve(p, "library/nginx", "1.27"); err != nil || desc.Digest != d {
+		t.Fatalf("Resolve: %v, %v", desc, err)
+	}
+	mu.Lock()
+	want, refused = "token-2", 0
+	mu.Unlock()
+	cred.set("token-2", nil)
+	if desc, err := resolve(p, "library/nginx", "1.27"); err != nil || desc.Digest != d {
+		t.Fatalf("Resolve after the rotation: %v, %v", desc, err)
+	}
+	mu.Lock()
+	if refused != 0 {
+		t.Errorf("%d requests refused after the rotation, want none", refused)
+	}
+	mu.Unlock()
+
+	cred.set("", errors.New("ecr: get authorization token: not allowed"))
+	_, err := resolve(p, "library/nginx", "1.27")
+	if !errors.Is(err, provider.ErrUnauthorized) || strings.Contains(err.Error(), "token-2") {
+		t.Errorf("Resolve without a credential: %v, want ErrUnauthorized without the secret", err)
+	}
+
+	// A token realm: the token request carries the current credential.
+	b := newFakeRegistry(t)
+	b.authMode, b.user, b.pass, b.token = "bearer", "AWS", "token-3", "registry-t0ken"
+	b.manifests["library/nginx"] = manifests
+	cred.set("token-3", nil)
+	before := cred.count()
+	if desc, err := resolve(newUpstream(t, b, "gar", Credential{Basic: cred.basic}, nil), "library/nginx", "1.27"); err != nil || desc.Digest != d {
+		t.Fatalf("Resolve through the realm: %v, %v", desc, err)
+	}
+	if b.count("GET /token") == 0 || cred.count() == before {
+		t.Errorf("token requests %d, Basic asked %d times: want the realm asked with the credential", b.count("GET /token"), cred.count()-before)
 	}
 }
 

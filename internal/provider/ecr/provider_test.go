@@ -235,3 +235,30 @@ func TestDataPath(t *testing.T) {
 		t.Errorf("error %q shows the instance prefix", err)
 	}
 }
+
+// TestNewTokens builds the Tokens of an upstream with the SDK: the region from the host or the
+// options, none an error that names the key; the token comes from the endpoint of the options.
+func TestNewTokens(t *testing.T) {
+	awsEnv(t)
+	for _, tt := range []struct{ url, region, wantErr string }{
+		{"https://123456789012.dkr.ecr.eu-west-1.amazonaws.com", "", ""},
+		{"http://localhost:5011", "us-east-1", ""},
+		{"http://localhost:5011", "", "set auth.ecr.region"},
+		{"localhost:5011", "us-east-1", "absolute"},
+	} {
+		_, err := NewTokens(TokenOptions{URL: tt.url, Region: tt.region}, nil)
+		if (tt.wantErr == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), tt.wantErr)) {
+			t.Errorf("NewTokens(%s, %q) error = %v, want %q", tt.url, tt.region, err, tt.wantErr)
+		}
+	}
+	api := &fakeAWS{}
+	apiSrv := httptest.NewServer(api)
+	t.Cleanup(apiSrv.Close)
+	tk, err := NewTokens(TokenOptions{URL: "https://123456789012.dkr.ecr.us-east-1.amazonaws.com", Endpoint: apiSrv.URL}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user, pass, err := tk.Basic(t.Context()); err != nil || user != "AWS" || pass != "token-1" {
+		t.Errorf("Basic = %s:%s, %v; want AWS:token-1", user, pass, err)
+	}
+}

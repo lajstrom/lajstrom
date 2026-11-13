@@ -1,10 +1,12 @@
 package ecr
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"errors"
 	"log/slog"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +27,71 @@ const (
 	// only a clock far from ECR's gives one (or moto, which dates every token 2015-01-01).
 	minLifetime = time.Minute
 )
+
+// TokenOptions say which ECR API a Tokens asks for its token.
+type TokenOptions struct {
+	// URL is the registry's base URL, https://<account>.dkr.ecr.<region>.amazonaws.com: its host
+	// names the region when Region is empty.
+	URL string
+	// Region is the registry's region; empty takes the one in URL's host, else the AWS SDK's
+	// (AWS_REGION, the profile).
+	Region string
+	// Endpoint replaces the SDK's endpoint of the ECR API for the region: a VPC endpoint, or
+	// moto in the tests.
+	Endpoint string
+	// Timeout bounds the wait for the API's response headers; 0 is
+	// config.DefaultRegistryTimeout.
+	Timeout time.Duration
+	// Retries of an API call, as registries[].retries: 0 is the default, negative none.
+	Retries int
+}
+
+// Tokens is the authorization token of the ECR registries of one region for the AWS SDK's
+// default chain of credentials, cached as a Provider caches its own: replaced an hour before
+// its 12 hours end, and after a refresh that fails used while it works, with a warning and a
+// new attempt at most once a minute. It is the credential of an oci upstream on ECR
+// (upstreams[].auth.ecr, docs/spec/proxy-and-group.md §11.1). AWS documents the token as valid
+// for every registry of the region that the principal may read, its own account's or another's.
+// It is safe for concurrent use.
+type Tokens struct{ s *tokens }
+
+// NewTokens returns the Tokens of o, with the AWS SDK's default chain: the environment, the
+// shared profile, web identity (IRSA), the container or instance role. It does not talk to AWS;
+// the first Basic does. A nil log means slog.Default().
+func NewTokens(o TokenOptions, log *slog.Logger) (*Tokens, error) {
+	u, err := url.Parse(o.URL)
+	if err != nil || u.Host == "" {
+		return nil, errors.New("ecr: url must be an absolute http(s) URL")
+	}
+	_, region := hostAccountRegion(u.Hostname())
+	client, err := newClient(cmp.Or(o.Region, region), o.Endpoint, o.Timeout, o.Retries,
+		"set auth.ecr.region or AWS_REGION, or use the registry's host as url")
+	if err != nil {
+		return nil, err
+	}
+	return newTokensOf(client, time.Now, log), nil
+}
+
+// newTokensOf returns the Tokens of the ECR API client, with the clock.
+func newTokensOf(api tokenAPI, now func() time.Time, log *slog.Logger) *Tokens {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Tokens{s: &tokens{api: api, now: now, log: log}}
+}
+
+// Basic returns the token as the Basic username and password of the registry's /v2 API,
+// AWS and the token's password, fetching one when there is none or the current one is due. When
+// no token works, the error is the fetch's, as the Provider's: provider.ErrUnauthorized for a
+// refusal of the credentials (AccessDeniedException, …), wrapped with the operation otherwise.
+// It never shows the token.
+func (t *Tokens) Basic(ctx context.Context) (username, password string, err error) {
+	tok, err := t.s.get(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	return tok.cred.Username, tok.cred.Password, nil
+}
 
 // token is an authorization token of ECR: the Basic credentials of the registry's /v2 API.
 type token struct {
