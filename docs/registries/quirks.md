@@ -286,10 +286,14 @@ not the shared one), with the three pushed, every collection of `quirks/x` faile
 Nothing was deleted, and nothing in `quirks/x` is collected while the other exists: the collector
 stops at the first entry of `blobs/sha256/` that is not a digest
 ([gc.go](https://github.com/project-zot/zot/blob/v2.1.23/pkg/storage/gc/gc.go#L1287-L1293)).
-The layout's files clash the same way (measured the same day, on the dev stack's Zot, below
-`names/probe/`): with `x` pushed, a blob upload to `x/index.json` or `x/oci-layout` is 404 and
-its manifest 500; with `y/index.json` pushed first, the manifest of `y` is 500, and `y` stays in
-the catalog without one.
+The layout's files clash the same way (measured the same day, and again on 2026-11-13, on Zot
+v2.1.23, below `names/probe/`): with `x` pushed, every request of `x/index.json` or `x/oci-layout`
+is 500 (HEAD and POST of a blob, PUT and GET of a manifest, `tags/list`; the log is
+`mkdir …/x/index.json: not a directory`), not a 404 that reads as "not found"; with `y/index.json`
+pushed first, the manifest of `y` is 500, and `y` stays in the catalog without one. On the S3
+storage driver the push is not refused at all: `x/index.json` beside `x` is written (201) because
+an S3 key can be an object and a prefix at once, and only the read of it is 500
+(`invalid repository layout`).
 distribution keeps a repository below `docker/registry/v2/repositories/<name>/` and its own data
 in `_manifests`, `_layers` and `_uploads`, names no component can have
 ([paths.go](https://github.com/distribution/distribution/blob/7ef76eb0e8331961ee1eaa7c70e809fe406a63ca/registry/storage/paths.go#L20-L60));

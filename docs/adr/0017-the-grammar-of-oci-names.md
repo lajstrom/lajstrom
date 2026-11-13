@@ -24,8 +24,10 @@ Two registries of [docs/registries](../registries/quirks.md) do not take every s
   `@netlify/blobs` (`npm/<repo>/netlify/blobs`), the pypi package `blobs`, every raw file below
   a directory `blobs/`; and a repository `<x>/blobs/sha256` stops every collection of `<x>`
   (#597). Zot also keeps a repository's `index.json` and `oci-layout` in its directory:
-  measured on 2026-11-11 on the dev stack's Zot v2.1.23, `x/index.json` cannot be pushed beside
-  `x` (the blob upload is 404), and `x` beside `x/index.json` is 500.
+  measured on 2026-11-11 and again on 2026-11-13 on Zot v2.1.23, every request of `x/index.json`
+  beside `x` is 500 on local storage, and `x` beside `x/index.json` is 500 too; on the S3 driver
+  the push of `x/index.json` is 201 and the read is 500 instead ([quirks.md](../registries/quirks.md),
+  [zot#4695](https://github.com/project-zot/zot/issues/4695)).
 
 distribution keeps its own data in `_manifests`, `_layers` and `_uploads`, which no component
 can be: both grammars start a component with a letter or a digit. GitLab's and Docker Hub's
