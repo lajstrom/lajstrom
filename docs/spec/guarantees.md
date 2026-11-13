@@ -516,8 +516,10 @@ longer than `reconcile.graceAge` is outside them
   the lock is released). On a registry not classified `strong`, a reindex run loads the digests
   of the repo's audit rows `delete`, state `ok`, younger than `reconcile.graceAge`
   (`reindex.scan.recentDeletes`), and does not index a listed manifest that the index lacks under
-  one of them (`reindex.scan.tag`, the report's `deletedPending`). A delete does not read the
-  registry back.
+  one of them (`reindex.scan.tag`, the report's `deletedPending`): in the OCI repository the row
+  names as its subject, the delete of a manifest that is neither a version nor a referrer; in
+  any repository of the repo when the row names none (a version's, a referrer's). A delete does
+  not read the registry back.
 - **Tests.** `TestDeleteVersion`, `TestDeleteRefused`, `TestDeleteNotFound`, `TestDeleteRowsFail`,
   `TestDeleteClientGone`, `TestDeleteReferrerClientGone`, `TestIntegrationDeleteReferrerClientGone`,
   `TestDeleteThenReindex`, `TestDeleteKeepsPackage`, `TestDeleteReferrer`, `TestDeleteManifests`,
@@ -525,7 +527,8 @@ longer than `reconcile.graceAge` is outside them
   `TestDeleteGoneAndAuditWriter` (raw), `TestDeletePartial` (raw), `TestDeleteVersionPartial`,
   `TestUnpublishPartial` (npm), `TestPartial`, `TestIntegrationDelete`,
   `TestIntegrationDeleteUnsupported`, `TestIntegrationDeleteRefused`, `TestReindexRecentDelete`
-  (a registry that lags the delete, on `providertest.Lag`); R-07 in `raw.sh`, the deletes of
+  (a registry that lags the delete, on `providertest.Lag`), `TestReindexRecentDeleteOtherRepository`
+  (the same digest in another repository of an `oci` repo); R-07 in `raw.sh`, the deletes of
   `oras.sh` and the unpublishes of `npm.sh`.
 - **When violated.** No transaction spans the registry: when the transaction fails after the
   registry deleted the manifest, the client gets `500` saying so, the rows and the cached

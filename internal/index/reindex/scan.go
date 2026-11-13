@@ -60,7 +60,7 @@ type scan struct {
 	listed      map[string]bool            // OCI repositories whose tag list was asked: false for a 404, true otherwise (repoUnknown)
 	unknown     map[string]int             // the versions reported in RepositoryUnknown, by package path
 	found       map[digest.Digest][]string // the manifests read, tagged or listed by a sha256-<hex> index, by digest: their package paths; nil unless repairing (prepareRepair)
-	deleted     map[digest.Digest]bool     // the manifests deleted through Lajstrom within the grace age (recentDeletes); nil on a strong registry
+	deleted     map[digest.Digest][]string // the manifests deleted through Lajstrom within the grace age, with the OCI repositories they were deleted from, "" for any (recentDeletes); nil on a strong registry
 }
 
 // repo reindexes one repo. The error is the run's own; everything about the registry and the
@@ -123,17 +123,18 @@ const auditPage = 100
 
 // recentDeletes loads, on a registry that is not strongly consistent, the digests of the
 // manifests that the audit log has as deleted from the repo through Lajstrom, with success, less
-// than the grace age before the run started (docs/spec/guarantees.md, INV-13). Such a registry
-// may list and serve a manifest for a while after its delete, as it may miss one after its
-// push; tag does not index those again. A manifest pushed straight to the registry under such a
-// digest is indexed by the first run past the grace age; one published again through Lajstrom
-// has its rows from ingest. A strong registry lists nothing deleted, and the audit log is not
-// read; one whose capabilities do not answer is read as if it were not strong.
+// than the grace age before the run started (docs/spec/guarantees.md, INV-13), each with the OCI
+// repository it was deleted from (deletedFrom). Such a registry may list and serve a manifest for
+// a while after its delete, as it may miss one after its push; tag does not index those again
+// (wasDeleted). A manifest pushed straight to the registry under such a digest is indexed by the
+// first run past the grace age; one published again through Lajstrom has its rows from ingest.
+// A strong registry lists nothing deleted, and the audit log is not read; one whose
+// capabilities do not answer is read as if it were not strong.
 func (s *scan) recentDeletes(ctx context.Context) {
 	if caps, err := s.prov.Capabilities(ctx); err == nil && caps.Consistency == provider.ConsistencyStrong {
 		return
 	}
-	s.deleted = map[digest.Digest]bool{}
+	s.deleted = map[digest.Digest][]string{}
 	f := index.AuditFilter{Repo: s.rep.Repo, Action: "delete", State: index.AuditOK, Since: s.start.Add(-s.w.graceAge), Limit: auditPage}
 	for {
 		rows, err := s.w.index.ListAudit(ctx, f)
@@ -142,7 +143,7 @@ func (s *scan) recentDeletes(ctx context.Context) {
 		}
 		for _, ev := range rows {
 			if ev.Digest != "" {
-				s.deleted[ev.Digest] = true
+				s.deleted[ev.Digest] = append(s.deleted[ev.Digest], s.deletedFrom(ev))
 			}
 		}
 		if len(rows) < auditPage {
@@ -150,6 +151,28 @@ func (s *scan) recentDeletes(ctx context.Context) {
 		}
 		f.Offset += len(rows) // rows only ever join at the top: a page read again repeats, never skips
 	}
+}
+
+// deletedFrom is the OCI repository that the delete ev names, "" when it names none. The audit
+// row of the delete of a manifest that is neither a version nor a referrer has the repository as
+// its subject, without the instance prefix (ingest's deletion.event); a version's subject is
+// "<package> <version>", a referrer's its subject's digest, and those match by digest alone.
+func (s *scan) deletedFrom(ev index.AuditEvent) string {
+	if !strings.HasPrefix(ev.Subject, s.base+"/") || strings.ContainsRune(ev.Subject, ' ') {
+		return ""
+	}
+	return ev.Subject
+}
+
+// wasDeleted reports whether recentDeletes found the manifest d deleted from the OCI repository
+// name, or from a repository the audit row does not name.
+func (s *scan) wasDeleted(d digest.Digest, name string) bool {
+	for _, from := range s.deleted[d] {
+		if from == "" || from == name {
+			return true
+		}
+	}
+	return false
 }
 
 // deletedPending counts a tag whose manifest recentDeletes found deleted, not indexed again.
@@ -268,7 +291,7 @@ func (s *scan) ociRepo(ctx context.Context, name string) {
 		s.sem <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-s.sem }()
-			s.tag(ctx, rr, cache, pkgPath, tag)
+			s.tag(ctx, rr, cache, name, pkgPath, tag)
 		})
 	}
 	wg.Wait()
@@ -320,8 +343,9 @@ type manifests struct {
 	byDigest map[digest.Digest][]byte
 }
 
-// tag reads the manifest under one tag and indexes, counts or reports it.
-func (s *scan) tag(ctx context.Context, rr provider.Repository, cache *manifests, pkgPath, tag string) {
+// tag reads the manifest under one tag of the OCI repository name, at pkgPath, and indexes,
+// counts or reports it.
+func (s *scan) tag(ctx context.Context, rr provider.Repository, cache *manifests, name, pkgPath, tag string) {
 	s.counted(ctx)
 	desc, err := rr.Resolve(ctx, tag)
 	if err != nil {
@@ -349,7 +373,7 @@ func (s *scan) tag(ctx context.Context, rr provider.Repository, cache *manifests
 	case known != nil && !known.Degraded && !s.req.Verify:
 		s.see(known.ID, true)
 		return
-	case known == nil && s.deleted[desc.Digest]: // a lagging listing of a delete (recentDeletes)
+	case known == nil && s.wasDeleted(desc.Digest, name): // a lagging listing of a delete (recentDeletes)
 		s.deletedPending()
 		return
 	}
