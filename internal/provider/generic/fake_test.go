@@ -44,6 +44,7 @@ type fakeRegistry struct {
 	refuseStreamed int    // answer a chunk without a known length and Content-Range into a session that holds bytes with this status, as Gitea (400) and JFrog (416); 0 takes it
 	chunkLimit     int    // as GHCR: a PATCH with Content-Range of more than chunkLimit bytes is 416, and one without Content-Range starts the session over; 0 takes any
 	statusAhead    string // the Range of a session's GET, of the bytes it holds, one byte ahead: "0-%d" as Forgejo, "bytes=0-%d" as Quay; "": the spec's
+	ecrSessions    bool   // as ECR: a new session's Range is bytes=0-10485760, its part size, and a PATCH is answered 201
 	authMode       string // "", "basic" or "bearer"
 	challengeScope string // the scope parameter of the bearer challenge; Gitea sends "*" whatever the request
 	user, pass     string // the credentials auth accepts
@@ -481,6 +482,12 @@ func (f *fakeRegistry) answerSession(w http.ResponseWriter, id string, up *fakeU
 	w.Header().Set("Range", fmt.Sprintf("0-%d", max(len(up.data)-1, 0)))
 	if status == http.StatusNoContent && f.statusAhead != "" { // a GET of the session
 		w.Header().Set("Range", fmt.Sprintf(f.statusAhead, len(up.data)))
+	}
+	switch {
+	case f.ecrSessions && status == http.StatusAccepted && len(up.data) == 0: // a POST
+		w.Header().Set("Range", "bytes=0-10485760")
+	case f.ecrSessions && status == http.StatusAccepted: // a PATCH
+		status = http.StatusCreated
 	}
 	w.WriteHeader(status)
 }

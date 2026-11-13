@@ -46,7 +46,7 @@ func (r *repository) StartBlobUpload(ctx context.Context) (provider.Upload, erro
 		return provider.Upload{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return r.session(op, resp, provider.Upload{}, 0)
+	return r.newSession(op, resp)
 }
 
 // MountBlob asks for the blob d from the repository from: POST …/blobs/uploads/?mount=&from=.
@@ -71,7 +71,7 @@ func (r *repository) MountBlob(ctx context.Context, d digest.Digest, from string
 	if resp.StatusCode == http.StatusCreated {
 		return true, provider.Upload{}, nil
 	}
-	u, err := r.session(op, resp, provider.Upload{}, 0)
+	u, err := r.newSession(op, resp)
 	return false, u, err
 }
 
@@ -121,7 +121,9 @@ func (r *repository) AppendBlobChunk(ctx context.Context, u provider.Upload, bod
 		hdr = http.Header{"Content-Range": {contentRange(u.Offset, size)}}
 	}
 	cr := &countingReader{r: body}
-	resp, err := r.send(ctx, op, http.MethodPatch, loc.String(), cr, size, hdr, http.StatusAccepted)
+	// 202, or 201 from ECR, which says 201 to every PATCH with the same Location and Range
+	// (docs/registries/ecr.md, Uploads).
+	resp, err := r.send(ctx, op, http.MethodPatch, loc.String(), cr, size, hdr, http.StatusAccepted, http.StatusCreated)
 	if err != nil {
 		if streamed {
 			r.p.addSpoolHint(err)
@@ -410,6 +412,16 @@ func (r *repository) session(op string, resp *http.Response, prev provider.Uploa
 	u.Offset = offsetOf(resp.Header.Get("Range"), counted)
 	u.ChunkMinLength = chunkMinLength(resp.Header.Get("OCI-Chunk-Min-Length"))
 	return u, nil
+}
+
+// newSession is the session a POST opened: it holds no bytes, whatever its Range says. ECR
+// answers the POST with Range: bytes=0-10485760, its part size (docs/registries/ecr.md,
+// Uploads), and an offset taken from it made the first PATCH start past the end, 416; the
+// distribution specification defines no Range for that answer.
+func (r *repository) newSession(op string, resp *http.Response) (provider.Upload, error) {
+	u, err := r.session(op, resp, provider.Upload{}, 0)
+	u.Offset = 0
+	return u, err
 }
 
 // chunkMinLength returns the size of an OCI-Chunk-Min-Length header: 0 when it is missing or

@@ -121,6 +121,37 @@ func wantStored(t *testing.T, f *fakeRegistry, d digest.Digest, blob []byte) {
 	}
 }
 
+// TestUploadECRSessions: ECR answers a new session with Range: bytes=0-10485760 and every PATCH
+// with 201 (#19). The session starts at 0, each chunk moves it on, and the blob is stored.
+func TestUploadECRSessions(t *testing.T) {
+	ctx := t.Context()
+	f, repo := uploadRepo(t, func(f *fakeRegistry) { f.ecrSessions = true })
+	u, err := repo.StartBlobUpload(ctx)
+	if err != nil || u.Offset != 0 {
+		t.Fatalf("StartBlobUpload = %+v, %v; want offset 0", u, err)
+	}
+	if u, err = repo.AppendBlobChunk(ctx, u, strings.NewReader("hello "), 6); err != nil || u.Offset != 6 {
+		t.Fatalf("a chunk answered 201: %+v, %v; want offset 6", u, err)
+	}
+	if u, err = repo.AppendBlobChunk(ctx, u, strings.NewReader("ecr"), 3); err != nil || u.Offset != 9 {
+		t.Fatalf("the next chunk: %+v, %v; want offset 9", u, err)
+	}
+	blob := []byte("hello ecr")
+	if _, err := repo.FinishBlobUpload(ctx, u, digest.FromBytes(blob), nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	stored := f.blobs["art/raw/scratch/notes"][digest.FromBytes(blob)]
+	f.mu.Unlock()
+	if !bytes.Equal(stored, blob) {
+		t.Errorf("the registry holds %q, want %q", stored, blob)
+	}
+	mounted, m, err := repo.MountBlob(ctx, digest.FromString("elsewhere"), "raw/other")
+	if err != nil || mounted || m.Offset != 0 {
+		t.Errorf("MountBlob answered with a session = %v, %+v, %v; want a session at 0", mounted, m, err)
+	}
+}
+
 // TestUploadChunkMinLength checks that the session's ChunkMinLength is the registry's
 // OCI-Chunk-Min-Length of the last answer, and 0 when that has none or one that is no size.
 func TestUploadChunkMinLength(t *testing.T) {
