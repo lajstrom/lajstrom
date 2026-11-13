@@ -27,7 +27,7 @@ What was used, on 2026-11-12:
 | What | Repo | State |
 | --- | --- | --- |
 | Installer and extension images | `oci` passthrough, copied in | measured: digests unchanged (§2) |
-| Images the nodes pull | `oci` proxy of ghcr.io and registry.k8s.io | measured, with a token: every image of the boot came through Lajstrom. Nodes and coredns Ready not seen: the run was stopped for disk (§3) |
+| Images the nodes pull | `oci` proxy of ghcr.io and registry.k8s.io | measured, with a token: every image of the boot came through Lajstrom, and both nodes and coredns went `Ready` (§3) |
 | The installer, fetched on demand | `oci` proxy of factory.talos.dev | measured: manifests and config blobs (§6.3) |
 | ISO, disk image, PXE kernel and initramfs | `raw` | measured: `Range`, Basic after a `401`, anonymous read (§4) |
 | `talosctl upgrade` from Lajstrom | | not run: needs qemu with KVM (§5) |
@@ -238,6 +238,18 @@ machine:
   - **Not seen:** nodes and coredns `Ready`. About four minutes in, free disk on the shared
     machine fell under 4.5 GB, so the cluster was destroyed. `talosctl` was then still at
     `waiting for all k8s nodes to report`.
+  - **`Ready`, on 2026-11-13 again**, at main (dcc6d21f), with the commands below, the
+    `machine.registries` patch alone (the proxies and their credential), a fresh SQLite index
+    and a fresh registry:3 backend:
+    - `talosctl cluster create` returned after 1 minute 40 seconds: both nodes `Ready`
+      (Kubernetes v1.37.1, containerd 2.3.7) and all nine pods `Running`, coredns among them;
+    - 276 requests by `talos-node`, and no anonymous request past the `401` challenge; the
+      token flow ran 31 times, `POST /v2/token` `405` then `GET` `200`, as above;
+    - the nine images, from `oci/k8s` and `oci/ghcr` as above, each with its keep-tag in the
+      backend;
+    - `lajstrom_proxy_fetches_total`: `fetched` 53 (k8s 38, ghcr 15), `mounted` 38,
+      `completed` 10, `transit` 8. One `HEAD` was `499`, a client that went away;
+    - `~/.kube/config` and `~/.talos/config` had the same shasums before and after.
   - [#876](https://github.com/lajstrom/lajstrom/issues/876) is fixed at this commit:
     - all nine images got their keep-tag in the backend, kube-apiserver and kube-scheduler
       included. The nodes had asked for only 2 of kube-apiserver's blobs at its own path; the
@@ -433,8 +445,6 @@ the installer if the factory has not built it yet, and keep it in the backend.
 
 ## 7. What is missing
 
-- Not seen: nodes and coredns `Ready` in the cluster booted through repos without anonymous
-  read. Every image came through, but the run was stopped for disk (§3).
 - Not run: a real iPXE (§4) and the upgrade (§5).
 - [#908](https://github.com/lajstrom/lajstrom/issues/908): `POST /v2/token`. containerd wastes
   one round trip per token, and an `identityToken` alone fails.
