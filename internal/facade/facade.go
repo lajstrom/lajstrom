@@ -268,7 +268,7 @@ func (h *handler) repository(w http.ResponseWriter, r *http.Request, path string
 		return err
 	}
 	if t.repo.Kind == index.KindGroup { // an oci group: the read check, then the route (ocigroup.go)
-		if t, err = h.throughGroup(w, r, t); err != nil {
+		if t, err = h.throughGroup(w, r, t, rt.kind); err != nil {
 			return err
 		}
 	}

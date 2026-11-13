@@ -175,6 +175,7 @@ func TestOCIGroupWritesRefused(t *testing.T) {
 		{http.MethodPost, "/v2/oci/all/acme/api/blobs/uploads/"},
 		{http.MethodPost, "/v2/oci/all/acme/api/blobs/uploads/?mount=" + d.String() + "&from=oci/images/acme/api"},
 		{http.MethodPatch, "/v2/oci/all/acme/api/blobs/uploads/0123456789abcdef0123456789abcdef"},
+		{http.MethodGet, "/v2/oci/all/acme/api/blobs/uploads/0123456789abcdef0123456789abcdef"},
 		{http.MethodPut, "/v2/oci/narrow/nowhere/manifests/1"},
 	}
 	for _, w := range writes {
