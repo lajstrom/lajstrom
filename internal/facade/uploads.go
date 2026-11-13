@@ -206,6 +206,9 @@ func (h *handler) mountSource(ctx context.Context, t *target, from string) (stri
 		}
 	}
 	src, err := h.resolve(ctx, from)
+	if err == nil && src.repo.Kind == index.KindGroup { // a group's path: its routed member (§12.3)
+		src, err = h.routeRead(ctx, src)
+	}
 	if err != nil || src.repo.Registry != t.repo.Registry {
 		return "", false, nil
 	}

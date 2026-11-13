@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -96,8 +97,9 @@ func (h *handler) issueToken(w http.ResponseWriter, r *http.Request) error {
 }
 
 // unknownScopes returns the scopes with no action on each repository that is not
-// <format>/<repo>/<path> of a repo of the control plane; the others, and the catalog scope,
-// stay as they are.
+// <format>/<repo>/<path> of a repo of the control plane, and with pull at most on a path of a
+// group of oci repos, through which nothing is pushed or deleted (docs/spec/rbac.md §4); the
+// others, and the catalog scope, stay as they are.
 func (h *handler) unknownScopes(ctx context.Context, scopes []token.Access) ([]token.Access, error) {
 	for i, s := range scopes {
 		if s.Type != token.TypeRepository {
@@ -105,12 +107,14 @@ func (h *handler) unknownScopes(ctx context.Context, scopes []token.Access) ([]t
 		}
 		formatName, rest, _ := strings.Cut(s.Name, "/")
 		repoName, _, _ := strings.Cut(rest, "/")
-		_, err := h.o.Index.GetRepo(ctx, formatName, repoName)
+		repo, err := h.o.Index.GetRepo(ctx, formatName, repoName)
 		switch {
 		case errors.Is(err, index.ErrNotFound):
 			scopes[i].Actions = nil
 		case err != nil:
 			return nil, fmt.Errorf("facade: token: repo of %s: %w", s.Name, err)
+		case repo.Kind == index.KindGroup && repo.Format == ociFormat:
+			scopes[i].Actions = slices.DeleteFunc(slices.Clone(s.Actions), func(a string) bool { return a != token.ActionPull })
 		}
 	}
 	return scopes, nil

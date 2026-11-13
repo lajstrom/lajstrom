@@ -37,6 +37,11 @@ type OCIProxy interface {
 	// completions fetch nothing of the path meanwhile. A GET of a layer starts fetching what the
 	// backend misses of its manifest.
 	OCIPulling(ctx context.Context, repo index.Repo, path string, d digest.Digest) (done func())
+	// OCIRoute returns the member, one of members, that the routes of the group of oci repos
+	// send path to, and the path under which that member keeps it (OCIPath); false when no
+	// route selects path or a proxy member's lists refuse it (proxy-and-group.md §12.2). It
+	// asks nothing of the index, the registry or an upstream.
+	OCIRoute(group index.Repo, members []index.Repo, path string) (index.Repo, string, bool)
 }
 
 // ociProxy reports whether t is an oci proxy repo that the facade asks Options.OCIProxy about.
@@ -50,7 +55,7 @@ func (h *handler) ociProxy(t *target) bool {
 // from the cache, the core mounts the blobs of it that the backend holds at another path
 // (proxy-and-group.md §11.5, step 5).
 func (h *handler) getProxyManifest(w http.ResponseWriter, r *http.Request, t *target, ref string) error {
-	ctx := r.Context()
+	ctx := proxyContext(r.Context(), t)
 	desc, raw, err := h.o.OCIProxy.OCIManifest(ctx, t.repo, t.path, ref)
 	if err != nil {
 		return proxyError(codeManifestUnknown, err)
@@ -89,7 +94,7 @@ func (h *handler) getProxyManifest(w http.ResponseWriter, r *http.Request, t *ta
 // any other GET once the core made the backend hold it, served from the backend.
 func (h *handler) getProxyBlob(w http.ResponseWriter, r *http.Request, t *target, d digest.Digest, serve func() error) error {
 	get := r.Method == http.MethodGet
-	desc, rc, err := h.o.OCIProxy.OCIBlob(r.Context(), t.repo, t.path, d, get, get && r.Header.Get("Range") == "")
+	desc, rc, err := h.o.OCIProxy.OCIBlob(proxyContext(r.Context(), t), t.repo, t.path, d, get, get && r.Header.Get("Range") == "")
 	if err != nil {
 		return proxyError(codeBlobUnknown, err)
 	}

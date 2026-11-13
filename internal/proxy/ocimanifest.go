@@ -482,6 +482,9 @@ func (c *Core) ociReject(ctx context.Context, p *ociProxied, d digest.Digest, re
 	if id := server.RequestID(ctx); id != "" {
 		details["requestId"] = id
 	}
+	if group, ok := format.ViaFrom(ctx); ok { // through a group of oci repos (§12.4)
+		details["via"] = group.Format + "/" + group.Name
+	}
 	ev := index.AuditEvent{At: c.o.Now(), Principal: auth.PrincipalFrom(ctx).String(), Action: "proxy.reject", Repo: p.id(),
 		Subject: p.name, Digest: d, IP: server.ClientAddr(ctx), Details: marshal(details)}
 	var err error

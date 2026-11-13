@@ -246,8 +246,12 @@ func (h *handler) catalogNames(ctx context.Context, g *token.Grant, tokenView bo
 // not empty: a repository whose versions are all deleted, which the registry may keep and
 // oci_repos with it, is not listed (#728). An oci repo indexes no tags: its repositories are
 // those oci_repos records, which holds those with a tag: the delete of the last one and reindex
-// drop the row of a repository the registry keeps without tags (#748).
+// drop the row of a repository the registry keeps without tags (#748). A group's are
+// groupRepositories'.
 func (h *handler) repositories(ctx context.Context, repo index.Repo) ([]string, error) {
+	if repo.Kind == index.KindGroup {
+		return h.groupRepositories(ctx, repo)
+	}
 	if repo.Format != ociFormat {
 		pkgs, err := h.o.Index.ListPackages(ctx, repo.ID, "")
 		if err != nil {

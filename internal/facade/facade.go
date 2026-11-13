@@ -267,15 +267,22 @@ func (h *handler) repository(w http.ResponseWriter, r *http.Request, path string
 	if err != nil {
 		return err
 	}
+	if t.repo.Kind == index.KindGroup { // an oci group: the read check, then the route (ocigroup.go)
+		if t, err = h.throughGroup(w, r, t); err != nil {
+			return err
+		}
+	}
 	return ep(w, r, t, rt.arg)
 }
 
-// target is the repository a request addresses.
+// target is the repository a request addresses. Through a group of oci repos, repo is the member
+// the group's routes chose and via the group (ocigroup.go); name stays the client's.
 type target struct {
 	repo index.Repo
-	name string // <format>/<repo>/<path>, as the client addresses it
-	path string // <path>, the package path below the repo
-	oci  string // the OCI name the provider gets: the repo's prefix and <path>
+	via  *index.Repo // the group of oci repos the request came through; nil otherwise
+	name string      // <format>/<repo>/<path>, as the client addresses it
+	path string      // <path>, the package path below the repo
+	oci  string      // the OCI name the provider gets: the repo's prefix and <path>
 }
 
 // maxNameLen bounds <name>: clients limit host, port and name together to 255 bytes.
@@ -286,9 +293,10 @@ var nameGrammar = regexp.MustCompile(`^[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*(/[a-z0-
 
 // resolve returns the target of name: NAME_INVALID when it is not the grammar, NAME_UNKNOWN
 // when it is not <format>/<repo>/<path>, and repoUnknown when it is not of a repo of the
-// control plane or is of a group, which has no OCI repository (docs/spec/http-routing.md §6).
-// A proxy repo resolves as a hosted one: the push it refuses is putManaged's (proxyRefusal).
-// One GetRepo per request.
+// control plane or is of a group that is not of oci repos, which has no OCI repository
+// (docs/spec/http-routing.md §6). A group of oci repos resolves to itself, with the path the
+// client sent: throughGroup routes it after the read check. A proxy repo resolves as a hosted
+// one: the push it refuses is putManaged's (proxyRefusal). One GetRepo per request.
 func (h *handler) resolve(ctx context.Context, name string) (*target, error) {
 	if len(name) > maxNameLen || !nameGrammar.MatchString(name) {
 		return nil, &apiError{status: http.StatusBadRequest, code: codeNameInvalid,
@@ -311,10 +319,12 @@ func (h *handler) resolve(ctx context.Context, name string) (*target, error) {
 	}
 	repo, err := h.o.Index.GetRepo(ctx, formatName, repoName)
 	switch {
-	case errors.Is(err, index.ErrNotFound), err == nil && repo.Kind == index.KindGroup:
+	case errors.Is(err, index.ErrNotFound), err == nil && repo.Kind == index.KindGroup && !h.ociGroup(*repo):
 		return nil, h.repoUnknown(ctx, name)
 	case err != nil:
 		return nil, fmt.Errorf("facade: repo of %s: %w", name, err)
+	case repo.Kind == index.KindGroup:
+		return &target{repo: *repo, name: name, path: path}, nil
 	}
 	if h.o.OCIProxy != nil && repo.Format == ociFormat && repo.Kind == index.KindProxy {
 		path = h.o.OCIProxy.OCIPath(*repo, path) // library/ of Docker Hub, on every route (§11.7)
@@ -367,12 +377,18 @@ func reservedPathComponent(path string) (string, bool) {
 // it without any action).
 // Without one the Authorizer decides for the request's principal (format.Authorize): a
 // principal that may not read the repo gets the answer of a repo that does not exist, word for
-// word: NAME_UNKNOWN (nameUnknown), and to the anonymous principal 401 (repoUnknown).
+// word: NAME_UNKNOWN (nameUnknown), and to the anonymous principal 401 (repoUnknown). Through a
+// group of oci repos the group is asked, never its member: read on the group is the whole
+// permission (docs/spec/rbac.md §7); a token names the group's path, t.name.
 func (h *handler) authorize(ctx context.Context, a auth.Action, t *target) error {
 	if g, ok := grantFrom(ctx); ok {
 		return h.allowedByToken(ctx, g, a, t.name)
 	}
-	err := format.Authorize(ctx, h.deps, a, t.repo)
+	repo := t.repo
+	if t.via != nil {
+		repo = *t.via
+	}
+	err := format.Authorize(ctx, h.deps, a, repo)
 	switch {
 	case errors.Is(err, index.ErrNotFound):
 		return nameUnknown(t.name)
