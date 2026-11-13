@@ -39,6 +39,7 @@ configuration has to add.
 | GitLab container registry v4.43.0, A (metadata on the filesystem) | `registry.gitlab.com/gitlab-org/build/cng/gitlab-container-registry:v4.43.0-gitlab`, index `sha256:fe9c67416a605ffaa5a053c17a6d3b1eab0668a33a58b7bd938a476088f8222e` (CNG rebuilds the tag in place: the digest is the pin) | `compose.yaml` (`gitlab`, profile `gitlab`) | 2026-11-07; the probe 2026-11-10, its row "Read-after-write lag" 2026-11-11; a delete through Lajstrom's `/v2` 2026-11-12, the tag rebuilt (index `sha256:2f1dcea7…`, [gitlab.md](gitlab.md#a-delete-through-lajstroms-v2)) | `manual` |
 | GitLab container registry v4.43.0, B (metadata database, as GitLab.com) | the same, and `postgres:17.11-alpine`, index `sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac` | `compose.yaml` (`gitlab-db`, `gitlab-postgres`, profile `gitlab`) | 2026-11-07; the probe 2026-11-10, its row "Read-after-write lag" 2026-11-11; a delete through Lajstrom's `/v2` 2026-11-12, the tag rebuilt (index `sha256:2f1dcea7…`, [gitlab.md](gitlab.md#a-delete-through-lajstroms-v2)) | `manual` |
 | GHCR | `ghcr.io`, no version published (`registry/2.0`) | nothing: a hosted service | 2026-11-07 | `hosted`: an account in the test organisation `lajstrom-extras` and a token |
+| Amazon ECR, a private registry | `<account>.dkr.ecr.<region>.amazonaws.com`, no version published (`registry/2.0`) | nothing: a hosted service | 2026-11-13 in `ap-southeast-1`: the probe, `TestIntegrationECRLive`, a Lajstrom on it and by hand ([ecr.md](ecr.md#measured-on-ecr-19)) | `hosted`: an AWS account, run by hand; no ECR in CI |
 | JFrog Container Registry 7.161.26 | `releases-docker.jfrog.io/jfrog/artifactory-jcr:7.161.26`, index `sha256:fd8d64416384c2ede4478c89bfa85ba7e9193db4db0dc36db3a307a0b9a5128b`, and `postgres:17.11-alpine` (it needs 4 GiB of memory) | [`jfrog-jcr/compose.yaml`](../../deploy/compose/jfrog-jcr/compose.yaml), set up by `jcr.sh` | 2026-11-10 | `manual` |
 | Harbor v2.15.4 | `harbor-online-installer-v2.15.4.tgz`, sha256 `eeb899cf7b626c925790adba87db9008dd1d73a693a72442651b5bdece9805c6` (images linux/amd64 only) | `harbor.sh` | 2026-11-07; the routing words by the probe 2026-11-11 ([quirks.md](quirks.md#measured-on-harbor)) | `manual` |
 | Nexus Repository 3.98.1, Community Edition, a `docker` and an `oci` hosted repository | `sonatype/nexus3:3.98.1`, index `sha256:91a9af44af777c353db11a5ee73850c7eb24b03c997ff4cc62a3500ad38a1332` | `nexus/compose.yaml`, set up by `nexus.sh` | 2026-11-10; again after #352, with the probe, 2026-11-12 ([nexus.md](nexus.md#again-after-352)) | `manual` |
@@ -58,12 +59,10 @@ scenarios against the Gitea of `gitea/compose.yaml`, #353). `CI`: the
 integration job runs every test against it on every pull request that touches code. `manual`: a
 profile of the dev stack or a script, run by hand. `hosted`: a service, an account and a token.
 
-**Untested.** No cell of the matrix is about these; what is written for ECR comes from AWS's
-documentation and from reports, not from a measurement ([ecr.md](ecr.md)):
+**Untested.** No cell of the matrix is about these:
 
 | Registry | Issue | Tier |
 | --- | --- | --- |
-| Amazon ECR | spike #19 (needs an AWS account; not run), adapter #36 ([ecr.md](ecr.md): tested against moto, the AWS mock, with distribution for `/v2`; live ECR pending #19) | `untested`. A repository is created on push only through a creation template with `CREATE_ON_PUSH`, otherwise by `CreateRepository` from the adapter; the OCI 1.1 referrers API since 2024-06, but pushing referrers with oras returned 405 (aws/containers-roadmap#2783); listing by `DescribeRepositories`, and a `_catalog` reported; manifest delete to be measured; immutable tags a per-repository option that must be respected; layers served from S3; mounts only with `BLOB_MOUNTING`; 100,000 images a repository, referrers included, and a 12-hour token |
 | Azure Container Registry | none | `untested` |
 | Docker Hub | none | `untested` |
 
@@ -201,6 +200,50 @@ Its build rule, on master and not released, is
 | What the probe finds | [`referrers=false catalog=true`, `vendor=distribution`; both wrong](quay.md#the-row); since #803 `vendor=quay`, whose table entry sets `referrers=false catalog=false` (the tag schema, [quay.md](quay.md#what-the-provider-must-do-differently) item 3) and `consistency: eventual` within 130 s |
 | Overrides needed | [`server.maxManifestSize: 1048576`; before #803 also `catalog: false` and `consistency: eventual`](quay.md#configuration) |
 
+### Amazon ECR
+
+A private ECR registry ([ecr.md](ecr.md)), measured on 2026-11-13 in `ap-southeast-1` as a role
+with the provider's IAM policy alone (#19), row for row as the table above. Four of its answers
+broke Lajstrom and are worked around since #19: every `PATCH` is 201, the `POST` of a session
+says a `Range` of 10 MiB it does not hold, `tags/list` is in an order of its own with an opaque
+`last`, and a manifest an index lists is 405 to its delete. It refuses a manifest with any
+property its schema lacks (405 "Invalid JSON syntax"), which an oci proxy repo meets in some
+upstreams' attestations. Its `registries[]` entry is [Configuration](ecr.md#configuration);
+the departures are [Deviations](ecr.md#deviations-from-the-specification).
+
+| | ECR, 2026-11-13 |
+| --- | --- |
+| Create on push | [no: 404 `NAME_UNKNOWN` to the first session; yes below a creation template with `CREATE_ON_PUSH`](ecr.md#what-the-provider-does) |
+| Where a repository may be created | [at any depth, inside another repository too; a name up to 256 bytes](ecr.md#measured-on-ecr-19) |
+| Routing words in a name (`manifests`, `referrers`, `tags/list`) | [ok](ecr.md#measured-on-ecr-19) |
+| Referrers API | [yes, with the `artifactType` filter](ecr.md#capabilities) |
+| `OCI-Subject` on a push with `subject` | [yes](ecr.md#capabilities) |
+| Catalog (`_catalog`) and its limits | [yes, not documented; `n` at most 1000, **`last` an opaque token**; the provider uses `DescribeRepositories`](ecr.md#what-the-provider-does) |
+| A listing API of its own | [`DescribeRepositories`, `nextToken`](ecr.md#what-the-provider-does) |
+| Tag list order and pagination | [**in its own order; `last` an opaque token, a tag name 405**; `n`/`Link` (absolute)](ecr.md#what-the-provider-does) |
+| Read-after-write lag | [none seen in 40 writes, without load](ecr.md#capabilities) |
+| Delete a manifest by digest | [yes, 202, with its tags; its referrers stay; **405 `UNSUPPORTED`** for a manifest an index lists](ecr.md#what-the-provider-does) |
+| Delete by tag | [**the manifest too**](ecr.md#what-the-provider-does) |
+| Delete a repository | [`DeleteRepository`, `force` for one with images](ecr.md#what-the-provider-does) |
+| Immutable tags, where the rule lives | [the repository's `imageTagMutability`: 400 `TAG_INVALID`](ecr.md#what-the-provider-does) |
+| Blob redirect | [307 to S3, presigned for 60 min; not for `HEAD`](ecr.md#capabilities) |
+| `Range` and `Accept-Ranges` | [206, 416 past the end; `Accept-Ranges` on `GET` only](ecr.md#measured-on-ecr-19) |
+| Largest blob measured | [30 MiB, in one `PATCH` and monolithic](ecr.md#measured-on-ecr-19) |
+| Manifest size limit | [4 MiB; one byte more 400 `MANIFEST_INVALID`](ecr.md#measured-on-ecr-19) |
+| Lajstrom's manifest profile (`artifactType`, empty config, own media types) | [accepted](ecr.md#measured-on-ecr-19); **any property outside its schema refused, 405** ([item 1](ecr.md#deviations-from-the-specification)) |
+| Auth | [Basic `AWS:<token>` of `GetAuthorizationToken`, 12 hours](ecr.md#what-the-provider-does) |
+| Rate limits seen | [none](ecr.md#measured-on-ecr-19) |
+| Upload: chunk out of order | [416](ecr.md#what-the-provider-does) |
+| Upload: chunk size limit | [**5 MB a part but the last**, refused at the closing `PUT`; `OCI-Chunk-Min-Length: 10485760`](ecr.md#what-the-provider-does) |
+| Upload: session status (`GET`) | [**404**](ecr.md#what-the-provider-does) |
+| Upload: cancel (`DELETE`) | [404](ecr.md#what-the-provider-does) |
+| Upload: mount (`POST ?mount=&from=`) | [202, a session, with `BLOB_MOUNTING` off, the default](ecr.md#what-the-provider-does) |
+| Upload: wrong digest, empty blob | [a wrong digest 400; the empty blob not measured](ecr.md#measured-on-ecr-19) |
+| Upload continued by another replica | *not measured* |
+| Garbage collector and an untagged referrer (#37) | *not measured* |
+| What the probe finds | [`vendor=ecr referrers=true catalog=true`](ecr.md#capabilities) |
+| Overrides needed | [none](ecr.md#capabilities) |
+
 ## Object stores behind distribution
 
 distribution 3.1.2 on its `s3` storage driver, the profiles `s3` and `s3-minio` of the
@@ -272,6 +315,11 @@ reported it yet.
 | distribution 3.1.2 | A repository name over 255 characters is 400 `NAME_INVALID` with the error object written twice: two JSON documents in one `application/json` body of 845 bytes ([distribution.md](distribution.md#create-on-push)) | Error Codes: "If the response body is in JSON format, it MUST have the following format", one object with `errors` | None: the provider decodes the first object, and Lajstrom's names are at most 255 characters | nothing needed | [distribution/distribution](https://github.com/distribution/distribution/issues): to file |
 | Project Quay 3.18.2 | The referrers API answers a subject that does not exist `400 MANIFEST_INVALID`, and a push with `subject` gets no `OCI-Subject`, though the API is there ([quay.md](quay.md#referrers)) | Listing Referrers: "Assuming a repository is found, this request MUST return a `200 OK` response code", 400 only for an invalid request; Pushing Manifests with Subject: a registry that supports the referrers API "MUST respond with the response header `OCI-Subject`" | The probe's request cannot tell (its repository does not exist); through the API, a client's referrers of a deleted version are 400 | `referrers: false` in the vendor table (#803): the tag schema, which answers an empty list | [PROJQUAY](https://redhat.atlassian.net/jira/software/c/projects/PROJQUAY/issues): to file |
 | Project Quay 3.18.2 | `GET` of an upload session answers `Range: bytes=0-5` after `PATCH` `0-4` answered `0-4`: one byte ahead, with a `bytes=` prefix ([quay.md](quay.md#uploads)) | Pushing a blob in chunks: "The `<end-of-range>` value is the position of the last uploaded byte", in `Range: 0-<end-of-range>` | A session continued on another replica sends its next chunk one byte late, 416 (`TestIntegrationUploadAcrossReplicas`) | the provider measures how the status reads on a scratch session, at the first status that disagrees with its session, and reads it one byte back (#804); not yet run against Quay | [PROJQUAY](https://redhat.atlassian.net/jira/software/c/projects/PROJQUAY/issues): to file |
+| Amazon ECR, 2026-11-13 | Refuses a manifest with a property its schema lacks (`platform` in `subject`, any other in a descriptor or at the top): 405 `UNSUPPORTED` "Invalid JSON syntax" ([ecr.md](ecr.md#deviations-from-the-specification), item 1) | Considerations: "SHOULD NOT generate an error if they encounter an unknown property in a known media type"; an invalid manifest is `MANIFEST_INVALID` | an oci proxy repo cannot store such an upstream manifest; `oras cp -r` of `ghcr.io/buoyantio/extension-init` fails so | none | [aws/containers-roadmap#2783](https://github.com/aws/containers-roadmap/issues/2783), open, the cause not in it yet |
+| Amazon ECR, 2026-11-13 | Every `PATCH` of an upload session is 201; the session's `POST` answers `Range: bytes=0-10485760` for nothing held ([ecr.md](ecr.md#deviations-from-the-specification), items 2 and 3) | "Each successful chunk upload MUST have a `202 Accepted`"; no `Range` defined for the `POST` | every chunked upload failed | 201 taken, a new session at 0 (#19) | To file |
+| Amazon ECR, 2026-11-13 | The body of a closing `PUT` after a `PATCH` is dropped; the `GET` of a session is 404 ([ecr.md](ecr.md#deviations-from-the-specification), items 4 and 5) | "it MAY be uploaded in the closing `PUT` request"; the session's `GET` "MUST be a `204 No Content`" | a client's last chunk in the `PUT`; a client's resume through Lajstrom | the last chunk as a `PATCH` (#352); the 404 passed on | To file |
+| Amazon ECR, 2026-11-13 | `tags/list` in an order of its own; a tag name as `last` is 405 "Invalid next token provided" ([ecr.md](ecr.md#deviations-from-the-specification), item 6) | "the tags MUST be in lexical order"; `<tagname>` "MUST be a proper tag" | a client's page through Lajstrom | every page read by its `Link` and sorted (#19), as for GHCR | To file |
+| Amazon ECR, 2026-11-13 | The delete of a manifest an index lists is 405 `UNSUPPORTED`; a manifest above 4 MiB is 400 ([ecr.md](ecr.md#deviations-from-the-specification), items 7 and 8) | 405 is "manifest deletion is disabled"; a manifest over the limit SHOULD be 413 | the provider turned deletes off for the registry | one refused delete, 409 (#19) | To file |
 
 **Not deviations**: measured, and allowed by the spec or outside it. Some are still worth a
 word upstream, and the row says so; where one costs Lajstrom something, the row says that too.
@@ -444,7 +492,7 @@ catalog. It is **eventually consistent** when a read can miss the write for a wh
 | --- | --- | --- |
 | distribution 3.1.2 on the filesystem, on SeaweedFS and on MinIO; Zot v2.1.23 | strong (the vendor table) | the probe, 2026-11-11: every read saw each write at once (below); 2026-11-12, distribution on the filesystem and Zot, the lists read before each write: each write and each delete at once |
 | GitLab A and B | strong (the vendor table) | the probe, 2026-11-11 |
-| Amazon ECR | eventual, no bound | 100 ms to several seconds, from reports only ([ecr.md](ecr.md#capabilities)); #19 measures it |
+| Amazon ECR | eventual, no bound | 100 ms to several seconds under concurrent pushes, from reports ([ecr.md](ecr.md#capabilities)); measured 2026-11-13 without load: no lag in 40 writes and the probe's row (#19) |
 | GHCR | eventual (the vendor table), no bound | users saw a tag `404` 0.2 s after its push, once in 30 runs; reads from another runner fail more often |
 | Docker Hub | none seen for manifests and blobs | its referrers list lagged up to about a minute behind a signature (cosign users' reports) |
 | Project Quay 3.18.2 | eventual within 130 s (the vendor table, #803), for lists | measured 2026-11-12: manifests and blobs at once; a tag list read before a push stays stale up to 120 s, a catalog page 60 s ([quay.md](quay.md#consistency)) |
