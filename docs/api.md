@@ -41,7 +41,8 @@ The OpenAPI 3.1 document of these endpoints is
   request id.
 - **Lists** that can be long are pages: `?limit=` (100 when absent, 1 to 1000) and `?cursor=`,
   the `next` of the page before, an opaque string; the last page has no `next`.
-- **Any other path** under `/api/` answers `404 NOT_FOUND`.
+- **Any other method or path** under `/api/` answers `404 NOT_FOUND`, `OPTIONS` too: the API
+  answers no CORS ([A browser on the same origin](#a-browser-on-the-same-origin)).
 
 ### Errors
 
@@ -389,6 +390,59 @@ package does not exist. `<package>` is one path segment, as for the delete below
 - **Pointers** name a version and can move to another: on npm the dist-tags
   ([http-routing.md](spec/http-routing.md), npm), `latest` included. No other format has them.
   A version a pointer names is refused by a delete unless it is forced.
+
+### Get a version: `GET /api/v1/repos/<format>/<name>/packages/<package>/versions/<version>`
+
+One version as the page of a web UI shows it: its row of the list above, the OCI repository
+that holds it, and for each variant what the index has of its manifest: the artifact type, the
+`lajstrom.*` annotations, the metadata layer and the files. `?variant=` keeps one variant (`""`,
+the empty value, is the variant of a format that has none); `publishedAt`, `lastModified` and
+`pointers` stay the version's, of all its variants. It needs `read`; `404` when the
+repo, the package, the version or the variant does not exist, and on a group, which has no
+versions. `<package>` and `<version>` are one path segment each, as for the delete below.
+
+```sh
+curl -s "$LAJSTROM/api/v1/repos/pypi/internal/packages/requests/versions/2.32.3"
+```
+
+```json
+{
+  "version": "2.32.3",
+  "publishedAt": "2026-11-02T09:00:00Z",
+  "lastModified": "2026-11-02T09:00:00Z",
+  "variants": [
+    {
+      "variant": "py3-none-any",
+      "tag": "2.32.3__py3-none-any",
+      "digest": "sha256:…",
+      "publishedAt": "2026-11-02T09:00:00Z",
+      "artifactType": "application/vnd.lajstrom.pypi.v1",
+      "attrs": {},
+      "metadata": {"name": "requests", "version": "2.32.3", "summary": "Python HTTP for Humans."},
+      "degraded": false,
+      "indexedAt": "2026-11-02T09:00:01Z",
+      "files": [
+        {"name": "requests-2.32.3-py3-none-any.whl", "mediaType": "application/vnd.lajstrom.pypi.wheel.v1+zip",
+         "digest": "sha256:…", "size": 64928, "attrs": {"org.opencontainers.image.title": "requests-2.32.3-py3-none-any.whl"}}
+      ]
+    }
+  ],
+  "pointers": [],
+  "ociRepository": "pypi/internal/requests"
+}
+```
+
+- **Everything comes from the index**, so it is what reindex rebuilds from the manifests: `attrs`
+  are the manifest's `lajstrom.*` annotations by their full key (`lajstrom.deb.arch`),
+  `metadata` is the metadata layer, `null` when there is none or it was too large to keep, and
+  `degraded` says the metadata layer could not be read and the row came from the annotations
+  alone. `indexedAt` is when ingest or reindex last wrote or saw the row. A file's `attrs` are
+  its layer's annotations, and the files are in the manifest's order.
+- **Not in it:** the manifest itself and its referrers (signatures, SBOMs, attestations), which
+  are live reads of the registry (#951). Both are on `/v2` under `ociRepository`:
+  `/v2/<ociRepository>/manifests/<digest>` and `/v2/<ociRepository>/referrers/<digest>`. A
+  file's download URL is not in it either: it is the format's own, as in the
+  [quick starts](quickstart/).
 
 ### Delete a version: `DELETE /api/v1/repos/<format>/<name>/packages/<package>/versions/<version>`
 
@@ -873,6 +927,66 @@ lajstrom admin token revoke <id>
 `create` prints the resource and its secret as JSON on one line, and nothing else on standard
 output; `list` a table with the columns `ID`, `KIND`, `NAME`, `SCOPES`, `EXPIRES`, `LAST USED`,
 `REVOKED` and `HASH`; `revoke` nothing.
+
+## Server information: `GET /api/v1/info`
+
+What a client needs to know before it signs in. Anyone may ask; no authorization is involved.
+
+```sh
+curl -s "$LAJSTROM/api/v1/info"
+```
+
+```json
+{
+  "version": "v0.1.0",
+  "commit": "28bf6ca",
+  "date": "2026-12-04T12:00:00Z",
+  "externalURL": "https://art.example.com",
+  "anonymousRead": true,
+  "formats": [{"name": "apt", "artifactType": "application/vnd.lajstrom.deb.v1"}, {"name": "maven", "artifactType": "application/vnd.lajstrom.maven.v1"}],
+  "authModes": ["password", "token"],
+  "caller": {"principal": "anonymous", "kind": "anonymous", "name": "anonymous", "admin": false}
+}
+```
+
+| Field | What |
+| --- | --- |
+| `version`, `commit`, `date` | the build, as `GET /-/version` and `lajstrom version` report it |
+| `externalURL` | `server.externalURL` ([configuration.md](configuration.md#server)); `""` on the dev stack when it leaves it empty |
+| `anonymousRead` | `auth.anonymousRead`, the server-wide switch: when `false`, no repo is readable without credentials, whatever its own `anonymousRead` |
+| `formats` | the format plugins the server serves, by name, each with the artifact type of its manifests. `oci` repos need no plugin and are not listed |
+| `authModes` | how a person signs in: `password`, a local user's password over Basic, and `token`, a personal access token. The OIDC login (#69) adds `oidc` |
+| `caller` | the request's principal, as [`GET /api/v1/whoami`](#who-am-i-get-apiv1whoami) answers it, and `admin`: whether the request's credential reaches the admin role (a personal access token with scopes, or a deploy token, does not). Without credentials it is `anonymous`, with the name `anonymous` |
+
+Unlike whoami, a request without credentials gets `200`. Credentials that are refused get `401`, as on every route.
+
+## A browser on the same origin
+
+A web UI ([lajstrom-ui](https://github.com/lajstrom/lajstrom-ui)) reads this API from the same
+origin: its container serves it at `/ui/` behind the same edge as Lajstrom
+([http-routing.md](spec/http-routing.md) §1 and §4).
+
+- **Signing in.** The API sets no cookie and reads none. The UI asks for the person's name and
+  password and creates a personal access token with them:
+  `POST /api/v1/users/<name>/tokens` with Basic, `{"name": "<one name per sign-in>", "expiresIn": "12h"}`.
+  It then sends the token as `Authorization: Bearer` on every request. Signing out revokes it:
+  `DELETE /api/v1/users/<name>/tokens/<id>`, with the token itself. A person may also paste a
+  personal access token they already have. Signing out then only forgets it.
+- **Every sign-in is a token.** Each one appears in the person's token list and as a
+  `token.create` row of the audit log, and its sign-out as `token.revoke`. A tab that is closed
+  without signing out leaves its token live until it expires.
+- **Where the token is kept** is the UI's choice. Any script of the origin can read it there.
+  Every answer of Lajstrom forbids scripts on that origin
+  ([operations.md](operations.md#what-lajstrom-answers-browsers)), so a file a writer uploaded
+  as HTML cannot read the token. The UI's own pages carry the UI container's policy.
+- **No browser login dialog.** The UI sends every request with `credentials: "omit"`. The Basic
+  challenge of a `401` then opens no browser dialog, and no cached Basic credentials go along.
+- **No CSRF token.** A browser never adds a bearer to a request by itself. The one credential it
+  adds is cached Basic, and an unsafe request from another site is refused before credentials
+  are checked ([operations.md](operations.md#what-lajstrom-answers-browsers)).
+- **Same origin only.** No answer has an `Access-Control-*` header, so a page of another origin
+  can neither read an answer nor send a request with a bearer. A UI on another origin, such as
+  object storage behind a CDN, needs the allowlist of #949.
 
 ## Who am I: `GET /api/v1/whoami`
 
