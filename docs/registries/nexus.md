@@ -43,7 +43,7 @@ LAJSTROM_NEXUS_WRITE_POLICY=allow_once deploy/compose/nexus/nexus.sh up   # both
 | EULA | `GET /service/rest/v1/system/eula`, then `POST` it back with `"accepted":true` |
 | Anonymous access | off: `PUT /service/rest/v1/security/anonymous` |
 | Realms | `NexusAuthenticatingRealm`, `DockerToken`, `OciBearerToken` |
-| Repositories | `lajstrom`, `POST /service/rest/v1/repositories/docker/hosted`, connector 8082 on `localhost:5008`; `lajstrom-oci`, `POST /service/rest/v1/repositories/oci/hosted`, connector 8083 on `localhost:5015`; both `forceBasicAuth`, blob store `default`, `writePolicy` from `LAJSTROM_NEXUS_WRITE_POLICY` (`allow`) |
+| Repositories | `lajstrom`, `POST /service/rest/v1/repositories/docker/hosted`, connector 8082 on `localhost:5008`; `lajstrom-oci`, `POST /service/rest/v1/repositories/oci/hosted`, connector 8083 on `localhost:5015`; both `forceBasicAuth`, blob store `default`, `writePolicy` from `LAJSTROM_NEXUS_WRITE_POLICY` (`allow`); `strictContentTypeValidation` off on `lajstrom` since #800 ([below](#again-after-352)), on on `lajstrom-oci` |
 | Role and user | role `lajstrom` with `nx-repository-view-docker-lajstrom-*` and `nx-repository-view-oci-lajstrom-oci-*`; user `lajstrom` with that role only |
 | Lajstrom | `url: http://localhost:5008` or `:5015`, no prefix, `auth.username: lajstrom` |
 
@@ -416,7 +416,9 @@ tests:
   file is 502 (`registry nxd refused the request: 400 BLOB_UPLOAD_INVALID` in the log). With
   the setting off the same push is 201 (set back to true afterwards). The OCI format took
   every one of them with the setting on. For Lajstrom on the docker format, turn
-  `strictContentTypeValidation` off.
+  `strictContentTypeValidation` off ([configuration.md](../configuration.md#registry-capabilities)).
+  Since #800 nexus.sh does so on the docker repository, so the probe measures its blob cells;
+  the runs on this page were made with the setting on.
 - **The OCI format refuses names the specification allows.** A component with `--`, `---` or
   `__` is 400 `NAME_INVALID` "Repository name does not match OCI grammar" (`a--b.txt`,
   `h0__bc37`, `a__b__c`; `a-b.txt`, `a_b` and `a.b` are 201): the 1.0 grammar, as on Gitea. The
