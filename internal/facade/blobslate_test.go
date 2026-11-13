@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,12 +23,16 @@ import (
 
 // blobsLate is a registry whose manifest PUTs answer 400 MANIFEST_BLOB_UNKNOWN until refusals
 // run out (negative: every PUT), as ECR does while its manifest check does not see a blob it
-// took a moment before. It is eventually consistent unless strong.
+// took a moment before. It is eventually consistent unless strong. heads are the digests that
+// Exists was asked, in order.
 type blobsLate struct {
 	*providertest.Fake
 	strong   bool
 	refusals atomic.Int64
 	puts     atomic.Int64
+
+	mu    sync.Mutex
+	heads []digest.Digest
 }
 
 func (b *blobsLate) Capabilities(ctx context.Context) (provider.Capabilities, error) {
@@ -66,6 +71,13 @@ func (r lateRepository) Push(ctx context.Context, desc ocispec.Descriptor, conte
 		}
 	}
 	return r.Repository.Push(ctx, desc, content)
+}
+
+func (r lateRepository) Exists(ctx context.Context, desc ocispec.Descriptor) (bool, error) {
+	r.b.mu.Lock()
+	r.b.heads = append(r.b.heads, desc.Digest)
+	r.b.mu.Unlock()
+	return r.Repository.Exists(ctx, desc)
 }
 
 func (r lateRepository) PushReference(ctx context.Context, desc ocispec.Descriptor, content io.Reader, ref string) error {
