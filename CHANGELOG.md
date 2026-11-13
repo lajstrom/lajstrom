@@ -72,10 +72,13 @@ covers `main` of 2026-11-11.
   - binaries for linux and darwin on amd64 and arm64;
   - a multi-arch distroless image on ghcr.io and Docker Hub;
   - SBOMs and cosign signatures;
-  - a Homebrew cask.
+  - a Homebrew cask;
+  - the Helm chart as an OCI artifact, `oci://ghcr.io/lajstrom/charts/lajstrom`, signed, its
+    version the release's.
 - **Deployment:**
   - a production Docker Compose example;
-  - Kubernetes manifests;
+  - Kubernetes manifests, and a Helm chart of them with the migration Job before each upgrade, an
+    HTTPRoute or Ingress, a ServiceMonitor and an autoscaler (#82);
   - nginx and Caddy in front, a backup and restore runbook.
 
 ### Security

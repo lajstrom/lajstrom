@@ -81,7 +81,9 @@ RUN_CONFIG   := $(firstword $(wildcard deploy/compose/lajstrom.yaml) deploy/comp
 # The Helm chart (docs/deploy/helm.md). helm-lint takes helm and kubeconform from PATH; the job
 # helm of .github/workflows/ci.yml installs helm v4.3.1 and kubeconform v0.8.0. kubeconform
 # validates against the schemas of Kubernetes 1.33 and takes those of the CRDs (ServiceMonitor,
-# HTTPRoute) from the datree catalog.
+# HTTPRoute) from the datree catalog. helm-package packages it as the Release workflow publishes
+# it (#82): version CHART_VERSION, the release's without its v, and appVersion the tag, so the
+# chart runs the image of its own release.
 HELM        ?= helm
 KUBECONFORM ?= kubeconform
 HELM_CHART  := deploy/helm/lajstrom
@@ -90,7 +92,7 @@ KUBECONFORM_ARGS := -strict -summary -kubernetes-version 1.33.0 -schema-location
 
 .PHONY: help build test vet lint api-lint vulncheck licenses fmt-check check fuzz guarantees \
 	dev-up dev-down dev-ps dev-logs test-integration e2e load registry-matrix run snapshot release-check \
-	helm-lint clean
+	helm-lint helm-package clean
 
 help: ## List the targets
 	@echo "Usage: make <target>"
@@ -176,6 +178,10 @@ helm-lint: ## Lint the Helm chart and validate what it renders, with its default
 		$(HELM) lint --strict $(HELM_CHART) $${f:+-f $$f}; \
 		$(HELM) template lajstrom $(HELM_CHART) $${f:+-f $$f} | $(KUBECONFORM) $(KUBECONFORM_ARGS) -; \
 	done
+
+helm-package: ## Package the Helm chart into dist/chart as a release publishes it: CHART_VERSION=0.1.0-rc.1, appVersion v0.1.0-rc.1
+	@[ -n "$(CHART_VERSION)" ] || { echo "make helm-package: set CHART_VERSION, the version without its v (0.1.0-rc.1)" >&2; exit 2; }
+	$(HELM) package $(HELM_CHART) --version $(CHART_VERSION) --app-version v$(CHART_VERSION) -d dist/chart
 
 clean: ## Remove build output
 	rm -rf bin/ dist/

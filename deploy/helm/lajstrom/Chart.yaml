@@ -4,7 +4,9 @@ apiVersion: v2
 name: lajstrom
 description: Artifact registry on top of any OCI registry, as N replicas on Postgres
 type: application
-# The chart's own version; appVersion is the image tag it runs unless image.tag says otherwise.
+# appVersion is the image tag the chart runs unless image.tag says otherwise. A release packages
+# the chart with both from its tag (make helm-package): v0.1.0 publishes version 0.1.0 with
+# appVersion v0.1.0. The values here are what a clone installs.
 version: 0.1.0
 appVersion: "v0.1.0"
 home: https://lajstrom.dev
