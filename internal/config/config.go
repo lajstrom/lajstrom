@@ -337,7 +337,7 @@ func (u Upstream) IsDockerHub() bool {
 
 // UpstreamAuth names where Lajstrom's credentials for an upstream are: HTTP Basic with
 // Username and PasswordFile or PasswordEnv, a bearer token with TokenFile, or on an oci upstream
-// a cloud's credential, ECR. Load resolves PasswordEnv; serve reads the files, at start, as it
+// a cloud's credential, ECR or GCP. Load resolves PasswordEnv; serve reads the files, at start, as it
 // reads keys.masterKeyFile.
 type UpstreamAuth struct {
 	// Username is the user of HTTP Basic, with PasswordFile or PasswordEnv.
@@ -355,6 +355,10 @@ type UpstreamAuth struct {
 	// token of the AWS SDK's credentials, replaced before it expires
 	// (docs/spec/proxy-and-group.md §11.1). Not with the other keys.
 	ECR *UpstreamECR `yaml:"ecr"`
+	// GCP, set (gcp: {}), takes an oci upstream's credential from the GCP metadata server: an
+	// access token of the workload's service account, replaced before it expires
+	// (docs/spec/proxy-and-group.md §11.1). Not with the other keys.
+	GCP *UpstreamGCP `yaml:"gcp"`
 }
 
 // UpstreamECR is upstreams[].auth.ecr: where an oci upstream on ECR gets its token.
@@ -372,16 +376,23 @@ func (e UpstreamECR) String() string {
 	return fmt.Sprintf("{region: %q, endpoint: %q}", e.Region, e.Endpoint)
 }
 
+// UpstreamGCP is upstreams[].auth.gcp, which has no keys: the metadata server's host comes from
+// GCE_METADATA_HOST, as Google's libraries read it.
+type UpstreamGCP struct{}
+
+// String describes g.
+func (UpstreamGCP) String() string { return "{}" }
+
 // String describes a without the password.
 func (a UpstreamAuth) String() string {
-	return fmt.Sprintf("{username: %q, passwordFile: %q, passwordEnv: %q, tokenFile: %q, ecr: %v}", a.Username, a.PasswordFile, a.PasswordEnv,
-		a.TokenFile, a.ECR)
+	return fmt.Sprintf("{username: %q, passwordFile: %q, passwordEnv: %q, tokenFile: %q, ecr: %v, gcp: %v}", a.Username, a.PasswordFile,
+		a.PasswordEnv, a.TokenFile, a.ECR, a.GCP)
 }
 
 // GoString implements fmt.GoStringer for %#v, without the password.
 func (a UpstreamAuth) GoString() string {
-	return fmt.Sprintf("config.UpstreamAuth{Username:%q, PasswordFile:%q, PasswordEnv:%q, TokenFile:%q, ECR:%v}", a.Username, a.PasswordFile,
-		a.PasswordEnv, a.TokenFile, a.ECR)
+	return fmt.Sprintf("config.UpstreamAuth{Username:%q, PasswordFile:%q, PasswordEnv:%q, TokenFile:%q, ECR:%v, GCP:%v}", a.Username,
+		a.PasswordFile, a.PasswordEnv, a.TokenFile, a.ECR, a.GCP)
 }
 
 // Ingest configures the write path (internal/ingest).

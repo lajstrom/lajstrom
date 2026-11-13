@@ -157,7 +157,9 @@ serviceAccount:
   create: true
   # Empty: the full name with create, the namespace's default without.
   name: ""
-  # IRSA or EKS Pod Identity for a registry of type ecr: eks.amazonaws.com/role-arn.
+  # IRSA or EKS Pod Identity for a registry of type ecr or an upstream with auth.ecr:
+  # eks.amazonaws.com/role-arn. GKE Workload Identity for an upstream with auth.gcp, when it acts
+  # as a Google service account: iam.gke.io/gcp-service-account.
   annotations: {}
 # Lajstrom never talks to the Kubernetes API.
 automountServiceAccountToken: false
