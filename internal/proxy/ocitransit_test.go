@@ -265,7 +265,7 @@ func TestOCITransitResumed(t *testing.T) {
 }
 
 // TestOCITransitOtherReplica: a request on a replica whose fetch waits on another replica's claim
-// is answered by a transit while the other replica copies (the ociWait path).
+// is answered by a transit while the other replica copies (the wait path of Core.claim).
 func TestOCITransitOtherReplica(t *testing.T) {
 	te := newTransitEnv(t, nil, nil)
 	b := te.core("b", proxy.Options{})

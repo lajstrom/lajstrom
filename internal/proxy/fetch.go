@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
@@ -211,19 +212,25 @@ func (c *Core) entry(ctx context.Context, p *proxied, a artifact) (*format.Upstr
 // reports that another replica fetched it while this one waited.
 func (c *Core) fetch(ctx context.Context, p *proxied, a artifact, entry *format.UpstreamEntry, row *index.ProxyMeta) (shared bool, err error) {
 	principal := auth.PrincipalFrom(ctx)
-	cl := index.FetchClaim{RepoID: p.repo.ID, Package: a.pkgPath, Tag: a.tag, Principal: principal.String(), Replica: c.o.Replica}
-	if shared, err := c.claim(ctx, p, a, &cl); shared || err != nil {
-		return shared, err
-	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	stop := c.heartbeat(ctx, p, cl.ID, cancel)
-	defer func() {
-		stop()
-		if err := c.o.Index.ReleaseFetchClaim(context.WithoutCancel(ctx), cl.ID); err != nil && !errors.Is(err, index.ErrNotFound) {
-			c.o.Log.WarnContext(ctx, "proxy: a fetch claim not released; it goes stale", "repo", p.id(), "artifact", a.subject(), "error", err.Error())
-		}
-	}()
+	held := func(ctx context.Context) (bool, error) {
+		m, err := c.held(ctx, p, a)
+		return m != nil, err
+	}
+	// A claim taken over cancels the fetch: this replica does not hold it any more.
+	release, shared, err := c.claim(ctx, fetchClaim{repoID: p.repo.ID, pkg: a.pkgPath, tag: a.tag, repo: p.id(), what: a.subject(),
+		attrs: []any{"artifact", a.subject()}, done: held, lost: cancel})
+	if shared || err != nil {
+		return shared, err
+	}
+	defer release()
+	// Another replica's fetch may have recorded the version and released its claim between this
+	// request's look-up and its claim: the version is in the index before its claim goes, so
+	// nothing is downloaded twice.
+	if ok, err := held(ctx); ok || err != nil {
+		return ok, err
+	}
 	body, err := c.download(ctx, p, a, entry, row)
 	if err != nil {
 		return false, err
@@ -246,71 +253,101 @@ func (c *Core) fetch(ctx context.Context, p *proxied, a artifact, entry *format.
 	return false, nil
 }
 
-// claim takes the fetch claim of the artifact (§5, step 6). While another replica holds a fresh
-// claim, the request waits, looking the version up in the index after WaitFirst and then twice
-// as long each time, at most WaitLongest apart: shared is true when the version appears; a
-// claim gone without it is taken, once; a claim that stopped beating is taken over.
-func (c *Core) claim(ctx context.Context, p *proxied, a artifact, cl *index.FetchClaim) (shared bool, err error) {
-	wait, retried := c.o.WaitFirst, false
+// fetchClaim is a fetch claim to take (§5, step 6): its key, what a wait for another replica's
+// fetch asks, and what logs and errors name. A file's key is the artifact's package path and
+// tag; an oci document's or blob's, its path and digest (§11.4, ociClaim).
+type fetchClaim struct {
+	repoID   int64
+	pkg, tag string
+	repo     string // the repo, as logs and errors name it
+	what     string // what is fetched, as errors name it: the artifact, path@digest
+	attrs    []any  // what is fetched, as log lines name it
+	// done reports whether another replica's fetch is there; claim asks it only while another
+	// replica holds the claim.
+	done func(context.Context) (bool, error)
+	// lost, when not nil, is called when another replica takes the claim over: the fetch stops.
+	// Without it the fetch goes on, as an oci fetch does: the backend takes the second copy of
+	// the same bytes.
+	lost context.CancelFunc
+}
+
+// logAttrs is the attributes of a log line about the claim, followed by more.
+func (f fetchClaim) logAttrs(more ...any) []any {
+	return slices.Concat([]any{"repo", f.repo}, f.attrs, more)
+}
+
+// claim takes the claim f (§5, step 6). While another replica holds a fresh claim, the request
+// waits, asking f.done after WaitFirst and then twice as long each time, at most WaitLongest
+// apart: shared is true when f.done reports the other replica's fetch; a claim gone without it
+// is taken, once; a claim that stopped beating is taken over. The claim taken beats every
+// ClaimHeartbeat until release, which removes it. Another replica's fetch may have ended
+// between the caller's look and the claim: the caller looks again before it fetches.
+func (c *Core) claim(ctx context.Context, f fetchClaim) (release func(), shared bool, err error) {
+	cl := index.FetchClaim{RepoID: f.repoID, Package: f.pkg, Tag: f.tag, Principal: auth.PrincipalFrom(ctx).String(), Replica: c.o.Replica}
+	w := claimWait{next: c.o.WaitFirst}
 	for {
 		now := c.o.Now()
 		cl.ClaimedAt, cl.HeartbeatAt = now, now
-		err := c.o.Index.ClaimFetch(ctx, cl, now.Add(-c.o.ClaimStale))
+		err := c.o.Index.ClaimFetch(ctx, &cl, now.Add(-c.o.ClaimStale))
 		if err == nil {
-			return c.claimed(ctx, p, a, cl)
+			break
 		}
 		if !errors.Is(err, index.ErrConflict) {
+			return nil, false, err
+		}
+		if shared, err := c.wait(ctx, f, &w); shared || err != nil {
+			return nil, shared, err
+		}
+	}
+	stop := c.heartbeat(ctx, f, cl.ID)
+	return func() {
+		stop()
+		if err := c.o.Index.ReleaseFetchClaim(context.WithoutCancel(ctx), cl.ID); err != nil && !errors.Is(err, index.ErrNotFound) {
+			c.o.Log.WarnContext(ctx, "proxy: a fetch claim not released; it goes stale", f.logAttrs("error", err.Error())...)
+		}
+	}, false, nil
+}
+
+// claimWait is the state of a wait for another replica's claim: the next wait, and whether a
+// claim gone without the fetch's result was taken once already.
+type claimWait struct {
+	next    time.Duration
+	retried bool
+}
+
+// wait waits while another replica holds the claim f: shared when f.done reports its fetch, nil
+// when the claim is gone (once) or stale and may be taken.
+func (c *Core) wait(ctx context.Context, f fetchClaim, w *claimWait) (shared bool, err error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(w.next):
+		}
+		w.next = min(2*w.next, c.o.WaitLongest)
+		if ok, err := f.done(ctx); ok || err != nil {
+			return ok, err
+		}
+		other, err := c.o.Index.GetFetchClaim(ctx, f.repoID, f.pkg, f.tag)
+		switch {
+		case errors.Is(err, index.ErrNotFound) && w.retried:
+			return false, fmt.Errorf("%w: proxy: %s: the fetch of %s by another replica ended without it", format.ErrBadGateway,
+				f.repo, f.what)
+		case errors.Is(err, index.ErrNotFound):
+			w.retried = true
+			return false, nil
+		case err != nil:
 			return false, err
-		}
-		for {
-			select {
-			case <-ctx.Done():
-				return false, ctx.Err()
-			case <-time.After(wait):
-			}
-			wait = min(2*wait, c.o.WaitLongest)
-			if m, err := c.held(ctx, p, a); m != nil || err != nil {
-				return m != nil, err
-			}
-			other, err := c.o.Index.GetFetchClaim(ctx, p.repo.ID, a.pkgPath, a.tag)
-			if errors.Is(err, index.ErrNotFound) {
-				if retried {
-					return false, fmt.Errorf("%w: proxy: %s: the fetch of %s by another replica ended without it", format.ErrBadGateway,
-						p.id(), a.subject())
-				}
-				retried = true
-				break
-			}
-			if err != nil {
-				return false, err
-			}
-			if other.HeartbeatAt.Before(c.o.Now().Add(-c.o.ClaimStale)) {
-				break // stale: ClaimFetch takes it over
-			}
+		case other.HeartbeatAt.Before(c.o.Now().Add(-c.o.ClaimStale)):
+			return false, nil // stale: ClaimFetch takes it over
 		}
 	}
 }
 
-// claimed looks the version up once more after its claim was taken: another replica's fetch may
-// have recorded it and released its claim between this request's look-up and its claim, and
-// the version is in the index before its claim goes (fetch). Found, the claim is released at
-// once and shared is true; nothing is downloaded twice.
-func (c *Core) claimed(ctx context.Context, p *proxied, a artifact, cl *index.FetchClaim) (shared bool, err error) {
-	m, err := c.held(ctx, p, a)
-	if m == nil && err == nil {
-		return false, nil
-	}
-	if rerr := c.o.Index.ReleaseFetchClaim(context.WithoutCancel(ctx), cl.ID); rerr != nil && !errors.Is(rerr, index.ErrNotFound) {
-		c.o.Log.WarnContext(ctx, "proxy: a fetch claim not released; it goes stale", "repo", p.id(), "artifact", a.subject(), "error", rerr.Error())
-	}
-	return m != nil, err
-}
-
-// heartbeat beats the claim every ClaimHeartbeat until stop is called. A claim that is gone,
-// taken over by a replica that found it stale, cancels the fetch: this one does not hold it.
-func (c *Core) heartbeat(ctx context.Context, p *proxied, id int64, cancel context.CancelFunc) (stop func()) {
-	done := make(chan struct{})
-	finished := make(chan struct{})
+// heartbeat beats the claim id every ClaimHeartbeat until stop is called. A claim that is gone,
+// taken over by a replica that found it stale, calls f.lost when there is one.
+func (c *Core) heartbeat(ctx context.Context, f fetchClaim, id int64) (stop func()) {
+	done, finished := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(finished)
 		t := time.NewTicker(c.o.ClaimHeartbeat)
@@ -324,13 +361,16 @@ func (c *Core) heartbeat(ctx context.Context, p *proxied, id int64, cancel conte
 			case <-t.C:
 			}
 			err := c.o.Index.HeartbeatFetchClaim(ctx, id, c.o.Now())
-			if errors.Is(err, index.ErrNotFound) {
-				c.o.Log.WarnContext(ctx, "proxy: the fetch claim was taken over; the fetch stops", "repo", p.id(), "claim", id)
-				cancel()
+			switch {
+			case errors.Is(err, index.ErrNotFound) && f.lost != nil:
+				c.o.Log.WarnContext(ctx, "proxy: the fetch claim was taken over; the fetch stops", f.logAttrs("claim", id)...)
+				f.lost()
 				return
-			}
-			if err != nil && ctx.Err() == nil {
-				c.o.Log.WarnContext(ctx, "proxy: a fetch claim did not beat", "repo", p.id(), "claim", id, "error", err.Error())
+			case errors.Is(err, index.ErrNotFound):
+				c.o.Log.WarnContext(ctx, "proxy: the fetch claim was taken over by another replica; the fetch goes on", f.logAttrs("claim", id)...)
+				return
+			case err != nil && ctx.Err() == nil:
+				c.o.Log.WarnContext(ctx, "proxy: a fetch claim did not beat", f.logAttrs("claim", id, "error", err.Error())...)
 			}
 		}
 	}()
