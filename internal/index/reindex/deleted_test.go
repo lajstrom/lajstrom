@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/format/raw"
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -81,5 +84,27 @@ func TestReindexRecentDelete(t *testing.T) {
 	must(t, err)
 	if r := e.run(t, reindex.Request{Prune: true}); r.DeletedPending != 0 || r.Added != 0 || strong.calls.Load() != 0 {
 		t.Errorf("a run on a strongly consistent registry: %+v, %d reads of the audit log; want none", *r, strong.calls.Load())
+	}
+}
+
+// TestReindexRecentDeleteOtherRepository (#850): on an oci repo the guard of
+// TestReindexRecentDelete matches the repository too. A manifest deleted from one OCI repository
+// within the grace age is not read again there, and the same digest under a tag of another
+// repository of the repo is read as any other tag.
+func TestReindexRecentDeleteOtherRepository(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t)
+	e.repo = e.newRepo(t, "oci", "images")
+	e.through(&providertest.Lag{Fake: e.fake, Deletes: -1}, e.st)
+	image := ocispec.Manifest{Versioned: specs2, MediaType: ocispec.MediaTypeImageManifest,
+		Config: ocispec.Descriptor{MediaType: ocispec.MediaTypeImageConfig, Digest: digest.FromString("config"), Size: 1}}
+	d := e.pushManifest(t, "oci/images/app", "v1", image, ocispec.MediaTypeImageManifest)
+	e.pushManifest(t, "oci/images/copy", "v1", image, ocispec.MediaTypeImageManifest)
+	_, err := e.pipe.Delete(ctx, e.repo, format.Deletion{Path: "app", Reference: d.Digest.String()}, alice)
+	must(t, err)
+
+	r := e.run(t, reindex.Request{Prune: true})
+	if r.DeletedPending != 1 || len(r.Foreign) != 1 || r.Foreign[0].Repository != "copy" || len(r.Errors) != 0 {
+		t.Errorf("a run after the delete from app: %+v; want app's tag deleted pending and copy's read", *r)
 	}
 }
