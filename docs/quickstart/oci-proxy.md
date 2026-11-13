@@ -41,10 +41,56 @@ repos:
   SDK's credentials (IRSA, the instance role, the environment), replaced before it expires, so
   nothing secret goes in the file and no restart is needed
   ([registries/ecr.md](../registries/ecr.md#ecr-as-an-upstream)).
+- An upstream on Google Artifact Registry (`https://<region>-docker.pkg.dev`) or Container
+  Registry (`https://gcr.io`) takes `auth: {gcp: {}}` when Lajstrom runs on GKE with Workload
+  Identity, on Compute Engine or on Cloud Run. Its credential is an access token of the
+  workload's service account from the metadata server, replaced before it expires (§1.1).
+  Elsewhere, a service account key works as Basic:
+  `auth: {username: _json_key, passwordFile: /run/secrets/gar-key.json}` (Google's
+  documentation; not measured here).
 - `metadataTTL` (default `10m`) is how long a tag is used without asking the upstream. A tag is
   then revalidated with a `HEAD`, which Docker Hub does not count.
 - A repo is created from the configuration at start, or with
   `lajstrom admin repo create oci/hub --registry local --kind proxy --upstream '{"name": "dockerhub"}'`.
+
+### 1.1 Artifact Registry and Container Registry through the metadata server
+
+With `auth.gcp`, Lajstrom asks the metadata server for
+`/computeMetadata/v1/instance/service-accounts/default/token` with `Metadata-Flavor: Google`.
+It sends the token as Basic `oauth2accesstoken:<token>` to the registry's token service, which is
+on the registry's own host: `https://europe-west8-docker.pkg.dev/v2/token` and
+`https://gcr.io/v2/token` (their challenges, measured anonymously on 2026-11-13). Nothing secret
+goes in the file.
+
+```yaml
+upstreams:
+  - name: gar
+    format: oci
+    url: "https://europe-west8-docker.pkg.dev"
+    auth: {gcp: {}}
+repos:
+  - {name: gar, format: oci, registry: local, kind: proxy, upstream: {name: gar}}
+```
+
+A pull is then `docker pull lajstrom.example.com/oci/gar/<project>/<repository>/<image>:<tag>`.
+
+- The service account needs `roles/artifactregistry.reader` on the repositories. On GKE with
+  Workload Identity, that is the Kubernetes service account of the replicas
+  (`serviceAccount.name` of the chart), or a Google service account it acts as, named by the
+  annotation `iam.gke.io/gcp-service-account` ([helm.md](../deploy/helm.md)). Cloud Run and
+  Compute Engine use the service account attached to the service or the instance.
+- The token is good for every Google API the service account may call, not only the registry:
+  name only a Google registry as the `url`. `serve` warns at start when the host is not `gcr.io`,
+  `*.gcr.io` or `*.pkg.dev`.
+- The metadata server is `169.254.169.254`, or the host of `GCE_METADATA_HOST`, as Google's
+  libraries read it. Lajstrom reaches it without the egress proxy and follows no redirect from it.
+- The token is replaced 4 minutes before it expires; the metadata server issues a new one when
+  the one it caches has 5 minutes left (Compute Engine's documentation). A refresh that fails
+  keeps the current token while it works, with a warning, and is tried again every 10 s. With no
+  token, what the repo holds is still served, and anything else is `502`
+  ([proxy-and-group.md](../spec/proxy-and-group.md) §11.1).
+- Not covered: federation from outside Google Cloud (a workload of AWS or of another OIDC issuer
+  reading Artifact Registry). Use a service account key with `_json_key` there.
 
 ## 2. Pull
 

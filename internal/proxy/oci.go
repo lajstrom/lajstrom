@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -114,8 +115,8 @@ func (u *OCIUpstream) Name() string { return u.name }
 // LoadOCIUpstreams returns the clients of the configured upstreams of format oci by name, with
 // their credentials read as LoadUpstreams reads them: a password from passwordFile or, resolved
 // by config.Load, from passwordEnv, or a token from tokenFile; or a cloud's, ECR's token for
-// auth.ecr, which the two clients of an upstream share (§11.1). LoadUpstreams leaves those
-// upstreams out.
+// auth.ecr or the GCP metadata server's for auth.gcp, which the two clients of an upstream share
+// (§11.1). LoadUpstreams leaves those upstreams out.
 func LoadOCIUpstreams(cfg []config.Upstream, log *slog.Logger) (map[string]*OCIUpstream, error) {
 	if log == nil {
 		log = slog.Default()
@@ -159,6 +160,16 @@ func ociCredential(key string, c config.Upstream, log *slog.Logger) (generic.Cre
 			return generic.Credential{}, fmt.Errorf("%s.auth.ecr: %w", key, err)
 		}
 		return generic.Credential{Basic: tokens.Basic}, nil
+	case a.GCP != nil:
+		tokens, err := newGCPTokens(os.Getenv(gcpMetadataHostEnv), c.Timeout, c.Retries, log.With("upstream", c.Name))
+		if err != nil {
+			return generic.Credential{}, fmt.Errorf("%s.auth.gcp: %w", key, err)
+		}
+		if !gcpRegistry(c.URL) {
+			log.Warn("an upstream with auth.gcp is not on gcr.io or *.pkg.dev: it is sent a token that every Google API the service account may call takes",
+				"upstream", c.Name)
+		}
+		return generic.Credential{Basic: tokens.basic}, nil
 	case a.TokenFile != "":
 		token, err := readSecret(key+".auth.tokenFile", a.TokenFile, log)
 		return generic.Credential{Token: token}, err
