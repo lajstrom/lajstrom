@@ -4,8 +4,8 @@ The chart in [deploy/helm/lajstrom/](../../deploy/helm/lajstrom/) renders the de
 [kubernetes.md](kubernetes.md) from values: two replicas behind one Service, the probes, resources
 and restricted security context of the manifests, the configuration as a ConfigMap, and every
 secret from a Secret you make. It adds what platform teams install with: a migration Job before
-each upgrade, an optional HTTPRoute or Ingress, a ServiceMonitor, a HorizontalPodAutoscaler, and
-values for scheduling. The chart is not published yet (#82): install it from the clone.
+each upgrade, an optional HTTPRoute or Ingress, a ServiceMonitor, a HorizontalPodAutoscaler,
+values for scheduling, and a Job that recovers a lost password. The chart is not published yet (#82): install it from the clone.
 
 What it assumes is what the manifests assume ([kubernetes.md](kubernetes.md#what-the-manifests-assume)):
 a Postgres that every replica shares, a registry with a user for Lajstrom, and an edge that
@@ -105,6 +105,58 @@ pods. With `bootstrap.generate: true` the chart makes the Secret itself, with a 
 it keeps across upgrades (`lookup`); drop it with `--set bootstrap.enabled=false` once the admin
 exists. Tools that render with `helm template`, such as Argo CD, cannot look the Secret up and
 would make a new token on every render: leave `generate` off there.
+
+## A lost password
+
+The database is the authority ([operations.md](../operations.md#a-lost-password)), and the chart
+runs the recovery for you, without `kubectl exec`. `recovery.user` names the user. The chart
+makes the Secret `<full name>-recovery` with a random password, and the Job
+`<full name>-recovery` runs `lajstrom admin user set-password <user> --password-file` with it,
+against the database, after the release's objects:
+
+```sh
+helm upgrade lajstrom ./deploy/helm/lajstrom -n lajstrom --reuse-values --set recovery.user=admin --wait
+kubectl -n lajstrom get secret lajstrom-recovery -o jsonpath='{.data.password}' | base64 -d
+```
+
+Log in with that password, then turn the Job off. That upgrade removes the Secret:
+
+```sh
+helm upgrade lajstrom ./deploy/helm/lajstrom -n lajstrom --reuse-values --set recovery.user=
+```
+
+- **The old password fails** from the next request on, on every replica. The replicas do not
+  restart. The audit log gets a `user.password` row by `anonymous`, with the source `cli` and
+  the Job's pod as the `host`.
+- **While `recovery.user` is set,** every `helm upgrade` runs the Job again with the same password,
+  which the chart keeps across upgrades (`lookup`). A password the admin chose in the meantime
+  would be replaced. So turn the Job off before you set a password of your own with
+  `POST /api/v1/users/<user>/password` ([api.md](../api.md#password-post-apiv1usersuserpassword)).
+- **Helm deletes the Job once it succeeds.** A Job that fails, for example for a user that does
+  not exist, fails the upgrade (the release is `failed`, and the replicas serve on). It stays for
+  its log, and turning the Job off does not remove it:
+
+  ```text
+  Error: UPGRADE FAILED: post-upgrade hooks failed: resource Job/lajstrom/lajstrom-recovery not ready. status: Failed, message: Job Failed. failed: 3/1
+  $ kubectl -n lajstrom logs job/lajstrom-recovery
+  lajstrom: user nobody does not exist
+  $ kubectl -n lajstrom delete job lajstrom-recovery
+  ```
+
+- **A disabled user** gets the new password and stays disabled. `kubectl -n lajstrom exec
+  deploy/lajstrom -- /lajstrom --config /etc/lajstrom/lajstrom.yaml admin user enable <user>`
+  enables it. When no admin is left at all, `admin user create --admin` the same way makes a new
+  one ([operations.md](../operations.md#a-lost-password)).
+- **A password of your own:** `recovery.existingSecret` and `recovery.key` name a Secret you
+  made, and the chart then makes none. Delete that Secret yourself once you are in. Use it with
+  tools that render with `helm template`, such as Argo CD: they cannot look the chart's Secret
+  up, so they would make a new password on every render. Argo CD runs the Job as a `PostSync`
+  hook.
+
+The Job is a `post-install` hook as well. A `helm install` with `recovery.user` set, on a database
+that already has the user (a reinstall), sets the password too. It runs as the chart's
+ServiceAccount, with the DSN of `database` and without the master key, which `set-password` does
+not read.
 
 ## Upgrades
 
@@ -250,6 +302,39 @@ Error: UPGRADE FAILED: pre-upgrade hooks failed: resource Job/lajstrom/lajstrom-
 `bootstrap.enabled=false` removed the Secret. `kubectl label --dry-run=server ns lajstrom
 pod-security.kubernetes.io/enforce=restricted` named no pod.
 
+### The recovery
+
+On 2026-11-13, on kind v0.33.0 (Kubernetes 1.37.0, one node) and helm v4.3.1. The image was built
+from the branch of #440. Postgres 17.11 was the dev stack's, again with a database of its own. The
+registry was the dev stack's Zot, anonymous, both through `host.docker.internal`. The values were
+those of [Try it on a local cluster](#try-it-on-a-local-cluster) with that registry, and
+`externalURL: http://localhost:16041`. The first admin was made with the command of NOTES.txt,
+and then its password was taken as lost:
+
+```text
+$ helm upgrade lajstrom ./deploy/helm/lajstrom -n lajstrom-a440 --reuse-values --set recovery.user=admin --wait
+STATUS: deployed                                        (8 s; the replicas kept their pods)
+password length 32, alnum only: yes
+whoami with the lost password: 401
+whoami with the password of the Secret: 200
+{"action":"user.password","principal":"anonymous","subject":"user:01a1d588-…","details":{"host":"lajstrom-recovery-xxbfq","name":"admin","source":"cli"}}
+```
+
+- **A second upgrade, still on:** the Job ran again, and the Secret kept its password, which
+  still logged in.
+- **`recovery.user=nobody`:** the upgrade failed after three attempts in 34 seconds, with the log
+  and the release `failed` shown in [A lost password](#a-lost-password).
+- **`recovery.user=`:** the release was `deployed` again and `lajstrom-recovery` was gone. The
+  failed Job stayed until `kubectl delete job`.
+- **`recovery.existingSecret` with a Secret of my own:** the chart made no Secret, the password
+  before got 401, and the Secret's got 200.
+- **A reinstall on the same database:** after `helm uninstall`, a `helm install` with
+  `recovery.user=admin` ran the Job as a `post-install` hook, and its password logged in. With it,
+  `POST /api/v1/users/admin/password` set a password of the admin's own (`204`), and the
+  recovered one then got 401.
+- **The namespace labelled `pod-security.kubernetes.io/enforce=restricted`:** the Job was admitted
+  and succeeded.
+
 ## Values
 
 | Value | Default | What |
@@ -268,6 +353,9 @@ pod-security.kubernetes.io/enforce=restricted` named no pod.
 | `migrate.database.existingSecret`, `.key` | `database`'s | the Job's own DSN |
 | `migrate.backoffLimit`, `migrate.activeDeadlineSeconds` | `0`, none | |
 | `migrate.serviceAccountName`, `migrate.podAnnotations`, `migrate.resources` | `default`, `{}`, 100m/64Mi, limit 256Mi | |
+| `recovery.user` | empty, off | the Job that gives this user the password of the Secret ([A lost password](#a-lost-password)) |
+| `recovery.existingSecret`, `.key` | `<full name>-recovery`, made by the chart; `password` | the Secret of the password |
+| `recovery.backoffLimit`, `recovery.podAnnotations`, `recovery.resources` | `2`, `{}`, 100m/64Mi, limit 256Mi | |
 | `replicaCount` | `2` | unless `autoscaling.enabled` |
 | `strategy` | `RollingUpdate`, `maxUnavailable: 0`, `maxSurge: 1` | |
 | `terminationGracePeriodSeconds` | `40` | must exceed `server.shutdownDelay` and `server.shutdownTimeout` together |

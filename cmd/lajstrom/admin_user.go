@@ -69,7 +69,7 @@ func newUserCreateCmd(a *app) *cobra.Command {
 				if _, err := users.Get(ctx, name); err == nil {
 					return fmt.Errorf("user %s already exists", name) // before the prompt
 				}
-				password, err := a.readPassword(cmd, useStdin)
+				password, err := a.readPassword(cmd, useStdin, "")
 				if err != nil {
 					return err
 				}
@@ -173,10 +173,13 @@ func newUserEnableCmd(a *app) *cobra.Command {
 // newUserSetPasswordCmd returns admin user set-password: the old password stops working at the
 // next request.
 func newUserSetPasswordCmd(a *app) *cobra.Command {
-	var useStdin bool
+	var (
+		useStdin     bool
+		passwordFile string
+	)
 	cmd := &cobra.Command{
-		Use:         "set-password <name> [--password-stdin]",
-		Short:       "Set a user's password; " + passwordSources,
+		Use:         "set-password <name> [--password-stdin | --password-file <file>]",
+		Short:       "Set a user's password; " + passwordSources + ", or from a file with --password-file",
 		Args:        cobra.ExactArgs(1),
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -184,7 +187,7 @@ func newUserSetPasswordCmd(a *app) *cobra.Command {
 				if _, err := users.Get(ctx, args[0]); err != nil {
 					return err
 				}
-				password, err := a.readPassword(cmd, useStdin)
+				password, err := a.readPassword(cmd, useStdin, passwordFile)
 				if err != nil {
 					return err
 				}
@@ -193,6 +196,9 @@ func newUserSetPasswordCmd(a *app) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&useStdin, "password-stdin", false, "read the password from standard input, without the trailing newline")
+	// The recovery Job of the Helm chart: its image has no shell to put a Secret on standard input.
+	cmd.Flags().StringVar(&passwordFile, "password-file", "", "read the password from this file, without the trailing newline")
+	cmd.MarkFlagsMutuallyExclusive("password-stdin", "password-file")
 	return cmd
 }
 
@@ -215,22 +221,25 @@ var errRemovedEnv = errors.New(removedEnv + " is not read any more: pass the pas
 	"or at the prompt, and unset the variable (docs/auth.md, Bootstrap)")
 
 // readPassword returns the password of admin user create, set-password and admin bootstrap:
-// with --password-stdin, the whole of standard input without the trailing newline; else a
-// prompt without echo, twice, when standard input is a terminal; else errNoPassword. With
-// removedEnv set it is errRemovedEnv, whatever the variable holds. The password is checked by
-// the users service.
-func (a *app) readPassword(cmd *cobra.Command, useStdin bool) (string, error) {
+// with file (set-password's --password-file), the whole of the file without the trailing
+// newline; with --password-stdin, the whole of standard input without it; else a prompt without
+// echo, twice, when standard input is a terminal; else errNoPassword. With removedEnv set it is
+// errRemovedEnv, whatever the variable holds. The password is checked by the users service.
+func (a *app) readPassword(cmd *cobra.Command, useStdin bool, file string) (string, error) {
 	if _, ok := a.lookupEnv(removedEnv); ok {
 		return "", errRemovedEnv
 	}
 	in := cmd.InOrStdin()
-	if useStdin {
-		b, err := io.ReadAll(io.LimitReader(in, auth.MaxPasswordLen+3)) // the bound, a CR LF, and one byte to be too long
+	switch {
+	case file != "":
+		f, err := os.Open(file) // #nosec G304 -- the operator names the file
 		if err != nil {
-			return "", fmt.Errorf("read the password from standard input: %w", err)
+			return "", fmt.Errorf("--password-file: %w", err)
 		}
-		s := strings.TrimSuffix(string(b), "\n")
-		return strings.TrimSuffix(s, "\r"), nil
+		defer func() { _ = f.Close() }() // read only
+		return readPasswordFrom(f, file)
+	case useStdin:
+		return readPasswordFrom(in, "standard input")
 	}
 	f, ok := in.(*os.File)
 	if !ok || !terminal.isTerminal(int(f.Fd())) {
@@ -249,6 +258,17 @@ func (a *app) readPassword(cmd *cobra.Command, useStdin bool) (string, error) {
 		return "", errors.New("the passwords do not match")
 	}
 	return first, nil
+}
+
+// readPasswordFrom returns the whole of r, named from in its error, without the trailing
+// newline (LF or CR LF): a password of --password-stdin or --password-file.
+func readPasswordFrom(r io.Reader, from string) (string, error) {
+	b, err := io.ReadAll(io.LimitReader(r, auth.MaxPasswordLen+3)) // the bound, a CR LF, and one byte to be too long
+	if err != nil {
+		return "", fmt.Errorf("read the password from %s: %w", from, err)
+	}
+	s := strings.TrimSuffix(string(b), "\n")
+	return strings.TrimSuffix(s, "\r"), nil
 }
 
 // promptPassword writes label to out and reads a line from the terminal fd without echo.

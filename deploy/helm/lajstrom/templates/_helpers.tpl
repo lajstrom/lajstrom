@@ -1,7 +1,7 @@
 {{/*
 The chart's name, and the full name its objects take: the release's name when it already says
 lajstrom, <release>-lajstrom otherwise. At most 50 characters, so that the suffixes of the
-objects (-bootstrap, -migrate) keep within the 63 of a label value.
+objects (-bootstrap, -migrate, -recovery) keep within the 63 of a label value.
 */}}
 {{- define "lajstrom.name" -}}
 {{- .Values.nameOverride | default .Chart.Name | trunc 50 | trimSuffix "-" -}}
@@ -64,6 +64,10 @@ app.kubernetes.io/component: server
 
 {{- define "lajstrom.bootstrapSecretName" -}}
 {{- .Values.bootstrap.existingSecret | default (printf "%s-bootstrap" (include "lajstrom.fullname" .)) -}}
+{{- end -}}
+
+{{- define "lajstrom.recoverySecretName" -}}
+{{- .Values.recovery.existingSecret | default (printf "%s-recovery" (include "lajstrom.fullname" .)) -}}
 {{- end -}}
 
 {{/* The host name of config.server.externalURL, for the Ingress and the HTTPRoute. */}}
