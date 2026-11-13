@@ -218,6 +218,16 @@ tag = Escape(version) [ "__" Escape(variant) ]
   the new build carries: two builds of one file differ in nothing but that, so the file layers
   decide, and the manifest in the registry stays the first. Through the OCI facade another
   manifest under the tag is always the `409`.
+- Tags keep their case. A registry that folds it, storing a tag lower-cased and resolving tags
+  without case (Gitea and Forgejo: `provider.Capabilities.TagsFoldCase`, set by the vendor
+  table and by `capabilities.tagsFoldCase`), holds two tags that differ only in case as one.
+  There a version whose tag has capitals is stored as on any registry, and reindex matches the
+  listed tag to the annotations' tag without case, which it detects per tag. Two versions of a
+  package whose tags differ only in case cannot both be stored: ingest claims the tag
+  lower-cased, so two such publishes at once are one claim and the second is a `409` before
+  anything is pushed, and a tag the registry resolves to a version whose tag differs only in
+  case is a `409` that names that version and says that the registry folds the case of tags.
+  Tags are not escaped per registry: a tag is the same on every registry.
 - The separator between version and variant is `__` (two underscores). `Escape` never produces
   `__`, so the split is unambiguous.
 - If the resulting tag is longer than 128 characters it is replaced by
@@ -389,8 +399,9 @@ The ingest pipeline rejects a manifest with `400` (facade: `MANIFEST_INVALID`) w
   it, and the repo does not have the manifest already (the facade checks it first). It is a
   version's publish time, which retention reads; the frontends write the server's.
 
-`409 Conflict` (facade: `TAG_INVALID` with a message) when the tag exists with another digest,
-when the index has the package at an earlier form of its path (section 4.3), or when the
+`409 Conflict` (facade: `TAG_INVALID` with a message) when the tag exists with another digest
+(on a registry that folds the case of tags, a tag that differs only in case is that tag:
+section 4.2), when the index has the package at an earlier form of its path (section 4.3), or when the
 package path is another spelling's, or is being published under another spelling
 (section 4.1). They are found under the claims, before the registry write.
 Sizes: a file, and a blob of `/v2`, is bounded by the smaller of the repo's bound and the
