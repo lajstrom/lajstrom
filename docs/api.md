@@ -96,11 +96,11 @@ audit alike.
 | `format` | a format plugin the server has: `raw`, `pypi`, `apt`, `maven`, `npm`; or `oci`, the pass-through repos of the OCI facade, which need no plugin ([http-routing.md](spec/http-routing.md) §1) | never |
 | `name` | unique within the format; lowercase letters and digits separated by single `.`, `_` or `-`, at most 64 characters ([manifest-profile.md](spec/manifest-profile.md) §4.1); none that ends in `blobs`, `.uploads` or `.sync`, or is `index.json`, `oci-layout`, `manifests`, `referrers` or `tags`, names that a registry's storage or routes keep for themselves ([ADR 0017](adr/0017-the-grammar-of-oci-names.md)) | never |
 | `registry` | one of `registries[].name` of the configuration; none on a group, whose resource has no `registry` | never: the artifacts stay in the registry they were pushed to |
-| `kind` | `hosted` (the default; may be left out), `proxy`, a repo that serves an upstream and keeps what it fetched, or `group`, one URL for several repos of its format ([proxy-and-group.md](spec/proxy-and-group.md)); `proxy` and `group` need a format whose plugin has them (npm) | never |
+| `kind` | `hosted` (the default; may be left out), `proxy`, a repo that serves an upstream and keeps what it fetched, or `group`, one URL for several repos of its format ([proxy-and-group.md](spec/proxy-and-group.md)); `proxy` and `group` need a format whose plugin has them (npm), or `oci`, which needs none | never |
 | `anonymousRead` | readable without credentials, when `auth.anonymousRead` allows it; default `false` | `PATCH` |
 | `policy` | a JSON object of the keys below, or `null` for none; none on a group, whose resource has no `policy` | `PATCH`, merged |
 | `upstream` | a proxy repo only, required there: `name`, one of `upstreams[].name` of the repo's format in the [configuration](configuration.md#upstreams), and `metadataTTL` (`"10m"`, `0s` to `168h`), `negativeTTL` (`"2m"`, `0s` to `24h`), `offline` (`false`), `allow` and `deny` (at most 256 name patterns each, `*` matching any run: `"@acme/*"`) ([proxy-and-group.md](spec/proxy-and-group.md) §2.2, §3). The resource shows every key; the upstream's URL and credentials are configuration and never part of the API, and a key the server does not know is `400` | see [proxy-and-group.md](spec/proxy-and-group.md) §2.2 |
-| `group` | a group only, required there: `members`, the names of 1 to 16 repos of the group's format, in the order they are read, each `hosted` or `proxy` and at most one `hosted`, and `merge` (at most 256 name patterns): the names whose versions are merged even when the hosted member holds them ([proxy-and-group.md](spec/proxy-and-group.md) §2.3, §8). The resource shows both keys | `members` by the admin role, `merge` by `manage` |
+| `group` | a group only, required there: `members`, the names of 1 to 16 repos of the group's format, in the order they are read, each `hosted` or `proxy` and at most one `hosted`, and `merge` (at most 256 name patterns): the names whose versions are merged even when the hosted member holds them ([proxy-and-group.md](spec/proxy-and-group.md) §2.3, §8). The resource shows both keys. A group of `oci` repos has no `merge`, may have several hosted members, and has `paths` instead: each member's name to the patterns of the paths it serves, `<path>`, `<prefix>/*` or `*`, every member one at least and no pattern on two members (§12.1) | `members` and `paths` by the admin role, `merge` by `manage` |
 | `createdAt`, `updatedAt` | set by the server | `updatedAt` on every change |
 
 A proxy repo of the upstream `npmjs` and a group of the hosted repo `npm/internal` and that
@@ -119,7 +119,14 @@ A group holds nothing of its own: its routes read its members in order, a name i
 holds hiding the versions a proxy member has of it but for the names of `merge`, and its writes
 go to the hosted member, with the permission there ([proxy-and-group.md](spec/proxy-and-group.md)
 §8, [rbac.md](spec/rbac.md) §7). A binding on the group lets a user read every member through
-it.
+it. A group of `oci` repos serves each path from the one member its routes choose, and takes no
+write ([proxy-and-group.md](spec/proxy-and-group.md) §12):
+
+```json
+{"format": "oci", "name": "all", "kind": "group", "anonymousRead": false,
+ "group": {"members": ["internal", "hub"], "paths": {"hub": ["*"], "internal": ["acme/*"]}},
+ "createdAt": "2026-11-10T17:44:02Z", "updatedAt": "2026-11-10T17:44:02Z"}
+```
 
 #### Policy
 
@@ -203,8 +210,9 @@ On a proxy repo, `upstream` is merged into its settings the same way (`allow` an
 replaced whole) and checked whole; it cannot be removed. Changing `upstream.name` needs the admin
 role, since it changes what every reader of the repo gets, and drops the repo's cache of the old
 upstream; the other keys need `manage` ([rbac.md](spec/rbac.md) §7). On a group, `group` is
-merged the same way, each list replaced whole; changing `members` needs the admin role, `merge`
-needs `manage`, and the members are checked as on a create. The admin role is asked for a change,
+merged the same way, each list replaced whole and a key of `paths` set to `null` removed;
+changing `members` or `paths` needs the admin role, `merge` needs `manage`, and the members are
+checked as on a create. The admin role is asked for a change,
 not for the key: a body that sends back the `upstream.name` or the `group.members` the repo has,
 as a body that sends back what `GET` answered does, needs `manage` alone. Another name, or other
 members, the same members in another order included, since a group reads its members in order,

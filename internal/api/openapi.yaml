@@ -882,14 +882,15 @@ components:
           description: A proxy repo only, with every key; absent on another kind.
         group:
           $ref: "#/components/schemas/Group"
-          description: A group only, with both keys; absent on another kind.
+          description: A group only, with members and merge, or members and paths on a group of oci repos; absent on another kind.
         createdAt: {type: string, format: date-time}
         updatedAt: {type: string, format: date-time}
     Group:
       type: object
       description: >-
         A group's settings (docs/spec/proxy-and-group.md §2.3): its members, read in order, and
-        the names a hosted member does not hide.
+        the names a hosted member does not hide; or, on a group of oci repos (§12.1), its
+        members and the routes that send each path to one of them.
       required: [members]
       additionalProperties: false
       properties:
@@ -897,13 +898,24 @@ components:
           type: array
           minItems: 1
           maxItems: 16
-          description: Repos of the group's format by name, in order; each hosted or proxy, at most one hosted.
+          description: Repos of the group's format by name, in order; each hosted or proxy, at most one hosted but in a group of oci repos.
           items: {type: string}
         merge:
           type: array
           maxItems: 256
-          description: Name patterns whose versions are merged across members even when the hosted member holds the name.
+          description: Name patterns whose versions are merged across members even when the hosted member holds the name; not on a group of oci repos.
           items: {type: string, minLength: 1, maxLength: 256}
+        paths:
+          type: object
+          description: >-
+            A group of oci repos only, required there: each member's name to the patterns of the
+            paths it serves, "<path>", "<prefix>/*" or "*". Every member has one at least, no
+            pattern is on two members, 256 in all at most; the most specific pattern that matches
+            a path routes it.
+          additionalProperties:
+            type: array
+            minItems: 1
+            items: {type: string, minLength: 1, maxLength: 256}
     Upstream:
       type: object
       description: >-
@@ -1025,9 +1037,9 @@ components:
           type: object
           description: >-
             A group only: an RFC 7396 merge patch of its settings (the keys of Group), checked
-            whole after the merge; each list is replaced whole. Changing members, their order
-            included, needs the admin role; the members the group has, sent back, are no
-            change. merge needs manage.
+            whole after the merge; each list is replaced whole, and a key of paths set to null
+            is removed. Changing members, their order included, or paths needs the admin role;
+            the members and paths the group has, sent back, are no change. merge needs manage.
         kind:
           type: string
           enum: [hosted]

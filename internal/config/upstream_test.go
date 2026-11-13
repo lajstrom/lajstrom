@@ -190,6 +190,9 @@ repos:
   - {name: rules, format: npm, kind: group, policy: {maxFileSize: 1}, group: {members: [internal]}}
   - {name: hosted, format: npm, registry: local, group: {members: [internal]}}
   - {name: up, format: npm, kind: group, upstream: {name: npmjs}, group: {members: [internal]}}
+  - {name: internal, format: oci, registry: local}
+  - {name: team, format: oci, registry: local}
+  - {name: images, format: oci, kind: group, group: {members: [internal, team], paths: {internal: ["acme/*"], team: ["*"]}}}
 `,
 			want: []string{
 				`repos[0].group.members[1]: "nested" is a group`,
