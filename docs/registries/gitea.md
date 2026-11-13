@@ -16,6 +16,11 @@ owner (a user or an organisation), and every tag is a package version in Gitea's
 - On macOS with OrbStack, arm64; the tests with Go 1.27.3 at 6b3b7b7 and the provider fix of
   this page ([What the provider must do differently](#what-the-provider-must-do-differently),
   item 1).
+- On 2026-11-13 the probe ran again, against 1.27.3 and against Gitea **28.3.0**,
+  `gitea/gitea:28.3.0-rootless`, index
+  `sha256:40c5a68a0463c0940e1ae32626c8300dd0572f3558e390073ad8379ca67c0e1d` (`gitea version
+  28.3.0 built with go1.27.3`), with the image changed in a copy of compose.yaml
+  ([The probe again](#the-probe-again-2026-11-13-850)). The pin stays 1.27.3.
 
 ## Run it
 
@@ -56,12 +61,99 @@ limits and the garbage collector, which still need a person;
 (2026-11-10, `--registry-prefix lajstrom-it/`) it gave the Gitea column cell for cell, and the
 corrections of this page: the mount and the manifest limit ([Blob reads, ranges,
 sizes](#blob-reads-ranges-sizes)), and that a digest delete takes the blobs only that manifest
-used.
+used. It ran again on 2026-11-13, with the rows added since, on 1.27.3 and 28.3.0
+([The probe again](#the-probe-again-2026-11-13-850)).
 
 The probe reports `vendor=unknown createOnPush=true referrers=false catalog=true
 deleteManifest=true immutableTags=false blobRedirect=true maxBlobSize=0` (the test log and the
 serve log of the e2e run, before #352). That is right; no override in
 `registries[].capabilities` is needed. Since #352 it is `vendor=gitea` (item 6).
+
+## The probe again, 2026-11-13 (#850)
+
+The rows added to the probe since 2026-11-10 had not been measured on Gitea: the routing words
+(#623), the read-after-write lag with the lists read before each write and the deletes (#845),
+and the monotonic reads (#564). Lajstrom at 20ce9499, against Gitea 1.27.3, the pin, and then
+against 28.3.0. Each Gitea came from a copy of gitea.sh and compose.yaml with another compose
+project name, because other runs shared the machine. Gitea 28.3.0 needed the team fix of #1016,
+which main has.
+
+```sh
+LAJSTROM_GITEA_PORT=57200 deploy/compose/gitea/gitea.sh up gitea
+bin/lajstrom registry probe --url http://localhost:57200 --registry-prefix lajstrom-it/ \
+  --username lajstrom --password-file deploy/compose/gitea/.work/gitea.token --max-manifest-size 32MiB -v
+```
+
+The provider's own probe said `vendor=gitea createOnPush=true referrers=false catalog=true
+deleteManifest=true immutableTags=false blobRedirect=true maxBlobSize=0 consistency=unknown
+maxNameDepth=0`, with `serve`'s hint about `spoolUnknownLength`. Each run took 3 to 8 s, and
+nothing was left behind. `--max-blob-size` stayed at its default of 8 MiB because the shared disk
+had about 6.5 GiB free; the 512 MiB of 2026-11-10 still stands. Gitea 28.3.0 answered every cell
+as 1.27.3 did:
+
+| Row | Gitea 1.27.3 and 28.3.0 |
+| --- | --- |
+| Create on push | yes, with the first manifest |
+| Where a repository may be created | below `lajstrom-it/`; outside it not tried; at any depth, inside another repository too; no length limit met: 256 characters, a component of 256 bytes |
+| Routing words in a name (`manifests`, `referrers`, `tags/list`) | ok: 20 blob `HEAD`s in each name, all 200; `GET` 200 |
+| Referrers API | no: a plain 404, the tag schema |
+| `OCI-Subject` on a push with `subject` | no |
+| Catalog (`_catalog`) and its limits | yes, `n`/`last`/`Link`, lexical, no largest `n` |
+| A listing API of its own | *not measured by the probe* |
+| Tag list order and pagination | **lower-cased, case-insensitive**; lexical; `n`/`last`/`Link` |
+| Read-after-write lag | none: each read saw each of 3 writes at once (manifest by digest, manifest by tag, blob, tag list, catalog); each read saw each of 3 deletes at once (manifest by digest, manifest by tag, tag list) |
+| Monotonic reads | none: no read saw a change undone; 3 writes, a tag move, 3 deletes, each read 5 times more over new connections after the first that saw it, from 1 address |
+| Delete a manifest by digest | yes, 202, with its tags **and the blobs only it used**; its referrers stay |
+| Delete by tag | the tag; **the manifest too**, when it was pushed by that tag only |
+| Delete a repository | no `/v2` API; it leaves `_catalog` with its last manifest, its tag list 200 |
+| Immutable tags, where the rule lives | none: a tag re-points with 201, and **the manifest it named is deleted** |
+| Blob redirect | none: the bytes |
+| `Range` and `Accept-Ranges` | **none: 200 with the whole blob**; no `Accept-Ranges` |
+| Largest blob measured | 8 MiB in one `PUT` and in one `PATCH`; no limit met |
+| Manifest size limit | 8 MiB taken; 16 MiB is 413 `MANIFEST_INVALID` |
+| Lajstrom's manifest profile (`artifactType`, empty config, own media types) | accepted, stored as pushed |
+| Auth | *not measured by the probe* |
+| Rate limits seen | *not measured by the probe* |
+| Upload: chunk out of order | 416 `BLOB_UPLOAD_INVALID` |
+| Upload: chunk size limit | none met: 8 MiB in one `PATCH` |
+| Upload: session status (`GET`) | works, 204 with `Range` |
+| Upload: cancel (`DELETE`) | works: 204, then its `GET` 404 `BLOB_UPLOAD_UNKNOWN` |
+| Upload: mount (`POST ?mount=&from=`) | works, 201 |
+| Upload: wrong digest, empty blob | 400 `DIGEST_INVALID`, the session stays; the empty blob stored |
+| Upload continued by another replica | works (the provider: one starts the session, another streams a chunk and closes it) |
+| Garbage collector and an untagged referrer (#37) | *not measured by the probe* |
+| What the probe finds | `referrers=false catalog=true` |
+| Overrides needed | none |
+
+The routing words, name by name: `x`, `x/manifests/y`, `x/manifests`, `x/referrers/y` and
+`x/tags/list` each got `HEAD` 20×200 and `GET` 200.
+
+What is new against the [column](README.md#capabilities):
+
+- **Routing words, read-after-write lag, monotonic reads**: measured for the first time. Gitea
+  routes the words right. The lists read before each write did not go stale, a deleted manifest
+  was gone from every read at once, and no read over a new connection undid a change. As on
+  Forgejo, the `none` is a measurement of three writes and three deletes, not a promise of
+  Gitea's. The vendor table's entry for Gitea leaves its consistency unknown, so a publish
+  reads back its tag and blobs too, and that is right.
+- **Where a repository may be created**: a name of 256 characters and a component of 256 bytes
+  are taken, as on Forgejo. The probe does not try `--` or `__`, which Gitea refuses
+  ([quirks.md](quirks.md#per-registry)).
+- **Delete a repository**: an emptied repository leaves `_catalog`, as before, and its tag list
+  answers 200 with `"tags":[]`, not 404.
+- **Largest blob, chunk size, manifest size**: only the 8 MiB of the default and the ladder up
+  to 16 MiB. They agree with [Blob reads, ranges, sizes](#blob-reads-ranges-sizes), and the
+  larger measurements there stand.
+- Every other cell is the column's, on both versions.
+
+**One finding is ours, not Gitea's.** In the `-v` log, Gitea answers nearly every request 401
+before it answers it with the token: 527 of the 1,135 requests of the 1.27.3 run were such
+401s, and 79 fetched a token. The provider asks for no new token after the 401; it sends the
+request again with a token it already has. oras-go's auth client caches a token under the
+request's scopes merged with the challenge's `scope="*"`, but looks a request up by its own
+scopes before the challenge, as item 1 says. `prime` adds that alias for a streamed upload
+only (`aliasToken`, internal/provider/generic/uploads.go). So every other request to Gitea
+costs one more round trip. Nothing fails, and Forgejo's challenge is the same.
 
 ## What the provider must do differently
 
