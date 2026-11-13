@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -356,6 +357,113 @@ func TestDeployPrincipals(t *testing.T) {
 		if rr := z.put(tt.user, jar.path, jar.body); rr.Code != tt.want {
 			t.Errorf("PUT as %q: %d, want %d", tt.user, rr.Code, tt.want)
 		}
+	}
+}
+
+// TestDeployTwoJobsOneVersion pins what two CI jobs get today when each deploys files of one
+// version (#573; docs/quickstart/maven.md, "One version from several CI jobs"). The version is
+// the files of the session that committed first, and nothing is added to it later. With one
+// principal (a deploy token the jobs share), both jobs' files go into one session, and the
+// first maven-metadata.xml publishes what has arrived from both: all of the other job's files
+// when it was done, a part of them when the commit fell inside its deploy. Its later files open
+// a session of their own, whose commit is 400 without the POM, which went into the first
+// session, and 409 with it. With two principals, the second job's files are 409 while the
+// first's session is open, and its deploy after the commit is 409. A change here changes what
+// #573 decided, and the quick start says.
+func TestDeployTwoJobsOneVersion(t *testing.T) {
+	pomBody, pomInfo := testutil.POM(testutil.POMOptions{Version: "1.2.0"})
+	pom := deployFile{pomInfo.Path, pomBody}
+	native := func(classifier string) deployFile {
+		b, info := testutil.Jar(testutil.JarOptions{Version: "1.2.0", Classifier: classifier})
+		return deployFile{info.Path, append(b, classifier...)}
+	}
+	linux, windows, osx := native("linux-x86_64"), native("windows-x86_64"), native("osx-aarch_64")
+	sha1Of := func(f deployFile) deployFile { return deployFile{f.path + ".sha1", []byte(sumsOf(f.body)[SHA1])} }
+	md := deployFile{metadataPath, metadataDoc("1.2.0")}
+	// step is a PUT as user, the status it answers, and words of its answer.
+	type step struct {
+		user string
+		f    deployFile
+		want int
+		says string
+	}
+	put := func(user string, f deployFile, want int, says ...string) step {
+		return step{user, f, want, strings.Join(says, "")}
+	}
+	for _, tt := range []struct {
+		name  string
+		steps []step
+		files []string // the file names of the version at the end
+	}{
+		{
+			name: "one principal, the second job done before the commit",
+			steps: []step{
+				put("ci", pom, 201), put("ci", linux, 201),
+				put("ci", pom, 201), put("ci", windows, 201), // the second job, into the same session
+				put("ci", md, 201),
+				put("ci", md, 200), // the second job's: no session left, and the version exists
+			},
+			files: []string{"lib-core-1.2.0-linux-x86_64.jar", "lib-core-1.2.0-windows-x86_64.jar", "lib-core-1.2.0.pom"},
+		},
+		{
+			name: "one principal, the commit inside the second job's deploy",
+			steps: []step{
+				put("ci", pom, 201), put("ci", linux, 201),
+				put("ci", pom, 201), put("ci", windows, 201),
+				put("ci", md, 201),
+				put("ci", sha1Of(windows), 400, "which this deploy has not uploaded"), // its file is in the committed session
+				put("ci", osx, 201), // into a new session
+				put("ci", md, 400, "has no POM"),
+			},
+			files: []string{"lib-core-1.2.0-linux-x86_64.jar", "lib-core-1.2.0-windows-x86_64.jar", "lib-core-1.2.0.pom"},
+		},
+		{
+			name: "one principal, the second job after the commit",
+			steps: []step{
+				put("ci", pom, 201), put("ci", linux, 201),
+				put("ci", md, 201),
+				put("ci", pom, 201), put("ci", windows, 201), put("ci", osx, 201),
+				put("ci", md, 409, "already points at"),
+			},
+			files: []string{"lib-core-1.2.0-linux-x86_64.jar", "lib-core-1.2.0.pom"},
+		},
+		{
+			name: "two principals",
+			steps: []step{
+				put("ci-linux", pom, 201), put("ci-linux", linux, 201),
+				put("ci-windows", pom, 409, "open by another principal"), // mvn stops here
+				put("ci-linux", md, 201),
+				put("ci-windows", pom, 201), put("ci-windows", windows, 201), // the job again
+				put("ci-windows", md, 409, "already points at"),
+			},
+			files: []string{"lib-core-1.2.0-linux-x86_64.jar", "lib-core-1.2.0.pom"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newDeployEnv(t, nil)
+			for i, s := range tt.steps {
+				if rr := e.put(s.user, s.f.path, s.f.body); rr.Code != s.want || !strings.Contains(rr.Body.String(), s.says) {
+					t.Fatalf("step %d, PUT %s as %s: %d %s, want %d saying %q", i, s.f.path, s.user, rr.Code, rr.Body, s.want, s.says)
+				}
+			}
+			vs := e.versions()
+			if len(vs) != 1 {
+				t.Fatalf("versions %+v, want 1.2.0 alone", vs)
+			}
+			fs, err := e.st.ListFiles(t.Context(), vs[0].ID)
+			must(t, err)
+			var names []string
+			for _, f := range fs {
+				names = append(names, f.Name)
+			}
+			slices.Sort(names)
+			if !slices.Equal(names, tt.files) {
+				t.Errorf("the version holds %q, want %q", names, tt.files)
+			}
+			if n := len(e.fake.PushReferences()); n != 1 {
+				t.Errorf("%d manifests pushed, want the one of the version", n)
+			}
+		})
 	}
 }
 
