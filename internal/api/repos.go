@@ -67,8 +67,9 @@ type RepoList struct {
 // CreateRequest is a repo to create: the body of POST /api/v1/repos, and what lajstrom admin
 // repo create and the config bootstrap pass to Repos.Create. Kind is empty or hosted, proxy
 // with Upstream, the proxy's settings (proxy.ParseSettings), or group with Group, the group's
-// members and merge patterns (proxy.ParseGroup) and no Registry. Policy is a JSON object, or
-// empty or the JSON null for none, and none on a group; its keys come with the formats.
+// members and merge patterns, or its routes on a group of oci repos (proxy.ParseGroup), and no
+// Registry. Policy is a JSON object, or empty or the JSON null for none, and none on a group;
+// its keys come with the formats.
 type CreateRequest struct {
 	Format        string          `json:"format"`
 	Name          string          `json:"name"`
@@ -526,7 +527,7 @@ func (s *Repos) warnDrift(ctx context.Context, row *index.Repo, c config.Repo) {
 		s.warnField(ctx, row, "upstream", string(upstream), string(row.Upstream))
 	}
 	group, err := configJSON("group", c.Group)
-	if g, gerr := proxy.ParseGroup(group); err == nil && gerr == nil {
+	if g, gerr := proxy.ParseGroup(c.Format, group); err == nil && gerr == nil {
 		group = g.JSON()
 	}
 	if current, err := resource(ctx, s.Index, row); err == nil && !samePolicy(group, current.Group) {

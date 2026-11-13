@@ -301,12 +301,13 @@ func (h *handler) updateRepo(w http.ResponseWriter, r *http.Request) (int, any, 
 	if err != nil {
 		return 0, nil, err
 	}
-	// Only the admin role changes upstream.name and group.members (docs/spec/rbac.md §7).
+	// Only the admin role changes upstream.name, group.members and group.paths (docs/spec/rbac.md
+	// §7).
 	// The role is asked here, outside the transaction of Update, and only when the body has
 	// one of them; Update compares the value with the stored one in its transaction and
 	// refuses a change without the role, so that sending back the value the repo has is not
 	// one.
-	if hasKey(req.Upstream, "name") || hasKey(req.Group, "members") {
+	if hasKey(req.Upstream, "name") || hasKey(req.Group, "members") || hasKey(req.Group, "paths") {
 		switch err := h.allow(r, auth.ActionManage, auth.System, auth.System); {
 		case err == nil:
 			req.Admin = true

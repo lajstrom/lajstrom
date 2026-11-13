@@ -591,8 +591,10 @@ const maxMembers = 16
 
 // validateMembers checks the members of the group r against the repos of the configuration
 // (byID: <format>/<name> to its index): a list of 1 to 16 names, none twice, none a group and at
-// most one hosted among those the configuration declares. A member it does not declare may be
-// in the control plane already: the bootstrap checks it there, as it checks merge.
+// most one hosted among those the configuration declares, but in a group of oci repos, whose
+// routes say which hosted member serves a path. A member it does not declare may be in the
+// control plane already: the bootstrap checks it there, as it checks merge and an oci group's
+// routes (docs/spec/proxy-and-group.md §12.1).
 func (r Repo) validateMembers(p *problems, key string, repos []Repo, byID map[string]int) {
 	raw, ok := r.Group["members"].([]any)
 	if r.Group == nil || !ok || len(raw) == 0 || len(raw) > maxMembers {
@@ -613,18 +615,20 @@ func (r Repo) validateMembers(p *problems, key string, repos []Repo, byID map[st
 		}
 		seen[name] = i
 		if j, declared := byID[r.Format+"/"+name]; declared {
-			hosted = memberKind(p, field, name, repos[j].Kind, i, hosted)
+			hosted = memberKind(p, field, name, repos[j].Kind, i, hosted, r.Format == FormatOCI)
 		}
 	}
 }
 
 // memberKind checks the kind of the declared member name, the i-th, and returns the index of
-// the hosted member so far: hosted, or i when it is the first.
-func memberKind(p *problems, field, name, kind string, i, hosted int) int {
+// the hosted member so far: hosted, or i when it is the first. With severalHosted, as in a group
+// of oci repos, a second hosted member is no problem.
+func memberKind(p *problems, field, name, kind string, i, hosted int, severalHosted bool) int {
 	switch {
 	case kind == KindGroup:
 		p.add(field, "%q is a group; a group is not a member", name)
 	case kind != "" && kind != KindHosted:
+	case hosted >= 0 && severalHosted:
 	case hosted >= 0:
 		p.add(field, "%q is a second hosted member, after group.members[%d]", name, hosted)
 	default:
