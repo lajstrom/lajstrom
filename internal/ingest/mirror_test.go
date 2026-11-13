@@ -68,8 +68,8 @@ func TestMirrorManifestRepoint(t *testing.T) {
 		}
 	}
 	r := e.rows(t)
-	if len(r.OCIRepos) != 1 || r.OCIRepos[0].Path != "library/nginx" {
-		t.Errorf("oci_repos = %+v, want library/nginx", r.OCIRepos)
+	if len(r.OCIRepos) != 1 || r.OCIRepos[0].Path != "oci/hub/library/nginx" {
+		t.Errorf("oci_repos = %+v, want the full OCI name, oci/hub/library/nginx, as reindex writes it", r.OCIRepos)
 	}
 	if len(r.Audit) != 2 || r.Audit[0].Action != "proxy.fetch" || r.Audit[0].State != index.AuditOK || r.Audit[0].Subject != "oci/hub/library/nginx" ||
 		!strings.Contains(string(r.Audit[0].Details), `"upstream":"dockerhub"`) || !strings.Contains(string(r.Audit[0].Details), `"tag":"1.27"`) {
