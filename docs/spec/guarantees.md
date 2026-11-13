@@ -76,7 +76,7 @@ is not tested.
 | **complete listings** | the catalog and the tag list name every repository and tag written before the call, and none deleted before it | the matrix measures the catalog's limits and the tag lists' order; the probe's row "Read-after-write lag" their lag after a write and a delete; Harbor, GHCR and ECR have no usable catalog, and Lajstrom reads `oci_repos` instead ([operations.md](../operations.md#without-a-catalog)) |
 | **digest check** | the registry refuses a blob whose bytes are not the digest it is closed with | every registry of the matrix but JFrog JCR 7.161 (it stores any bytes under any digest) |
 | **scoped blobs** | a blob is readable only in a repository that holds it | measured on Zot only (threat model P-5) |
-| **case-exact tags** | two tags that differ in case are two tags | not on Gitea and Forgejo, which fold tag case ([#426](https://github.com/lajstrom/lajstrom/issues/426)) |
+| **case-exact tags** | two tags that differ in case are two tags | not on Gitea and Forgejo, which fold tag case ([go-gitea/gitea#40359](https://github.com/go-gitea/gitea/issues/40359), [forgejo#15259](https://codeberg.org/forgejo/forgejo/issues/15259)); the vendor table says so for both (`provider.Capabilities.TagsFoldCase`, `capabilities.tagsFoldCase` for another), and ingest claims a tag lower-cased there and names the version of another case in its `409` ([manifest-profile.md](manifest-profile.md) §4.2, #426) |
 | **GC keeps what is named** | the garbage collector keeps a manifest a tag names and a referrer whose subject exists | GitLab B deletes an untagged referrer 24 h after its push, and Nexus's task "Delete unused manifests" one pushed by digest; on both, one that a `sha256-<hex>` index lists stays ([gitlab.md](../registries/gitlab.md#garbage-collection), [nexus.md](../registries/nexus.md#garbage-collection)); Gitea deletes the manifest a re-pointed tag named |
 
 **Where the guarantees hold**, by the tiers of the matrix
@@ -354,9 +354,13 @@ longer than `reconcile.graceAge` is outside them
   `ingest.Pipeline.MirrorManifest` only, to a digest the upstream named for it and the backend
   holds, on a backend that lets tags move; its keep-tags never move.
 - **Assumes.** Registry: **monotonic reads** (**unchecked**) and a lag shorter than
-  `ingest.claimTTL` for the backstop below; **case-exact tags** (on Gitea and Forgejo two
-  versions that differ only in case are one tag, and the second is a `409`:
-  [#426](https://github.com/lajstrom/lajstrom/issues/426)). Database: as INV-6.
+  `ingest.claimTTL` for the backstop below; **case-exact tags**, or a registry that folds tag
+  case known as one (`provider.Capabilities.TagsFoldCase`: Gitea and Forgejo by the vendor
+  table). There two versions that differ only in case are one tag: ingest claims the tag
+  lower-cased, so two such publishes at once are one claim, and the second version is a `409`
+  that names the first ([#426](https://github.com/lajstrom/lajstrom/issues/426)); a registry
+  that folds case unknown to Lajstrom can lose the first of two such publishes at once. Database:
+  as INV-6.
 - **Mechanism.** The index and the claims (INV-6) decide; then `ingest.Pipeline.checkTag` resolves
   the tag in the backend before the push and refuses another digest there, which catches a tag
   the index lacks (a write past Lajstrom, an index not yet rebuilt, a confirm that failed after

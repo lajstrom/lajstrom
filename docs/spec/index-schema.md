@@ -143,7 +143,9 @@ set of tags, and a package path has one spelling: the first one published
 
 A publish takes two claims, first in its transaction, before the registry write: the claim on
 the package path (tag `''`, digest the sha256 digest of the spelling), then the claim on its
-tag (the manifest digest). After them it reads the package of the package path and the version
+tag (the manifest digest); on a registry that folds the case of tags
+(`provider.Capabilities.TagsFoldCase`) the claim's tag is the tag lower-cased, so that two tags
+that differ only in case, one tag there, are one claim (manifest-profile.md §4.2). After them it reads the package of the package path and the version
 of the tag, so a concurrent writer of the tag, or of another spelling, waits for the first
 one's commit and then sees its outcome. Every publish takes the two in this order, so two
 publishes never wait on each other crosswise. A claim with the same digest is shared: on a tag,
