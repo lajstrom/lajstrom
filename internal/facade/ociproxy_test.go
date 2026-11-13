@@ -51,10 +51,10 @@ func (s *stubProxy) OCIPath(_ index.Repo, path string) string {
 	return path
 }
 
-func (s *stubProxy) OCIManifest(_ context.Context, _ index.Repo, path, ref string) (ocispec.Descriptor, []byte, error) {
+func (s *stubProxy) OCIManifest(ctx context.Context, _ index.Repo, path, ref string) (ocispec.Descriptor, []byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.calls = append(s.calls, "manifest "+path+"@"+ref)
+	s.calls = append(s.calls, "manifest "+path+"@"+ref+via(ctx))
 	if s.err != nil {
 		return ocispec.Descriptor{}, nil, s.err
 	}
@@ -67,7 +67,7 @@ func (s *stubProxy) OCIManifest(_ context.Context, _ index.Repo, path, ref strin
 
 func (s *stubProxy) OCIBlob(ctx context.Context, _ index.Repo, path string, d digest.Digest, fetch, stream bool) (ocispec.Descriptor, io.ReadCloser, error) {
 	s.mu.Lock()
-	s.calls = append(s.calls, fmt.Sprintf("blob %s %t", path, fetch))
+	s.calls = append(s.calls, fmt.Sprintf("blob %s %t", path, fetch)+via(ctx))
 	b, ok := s.blobs[d]
 	err := s.err
 	s.mu.Unlock()
@@ -90,16 +90,16 @@ func (s *stubProxy) OCIBlob(ctx context.Context, _ index.Repo, path string, d di
 	return desc, nil, nil
 }
 
-func (s *stubProxy) OCIComplete(_ context.Context, _ index.Repo, path string, desc ocispec.Descriptor) {
+func (s *stubProxy) OCIComplete(ctx context.Context, _ index.Repo, path string, desc ocispec.Descriptor) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.calls = append(s.calls, "complete "+path+"@"+desc.Digest.String())
+	s.calls = append(s.calls, "complete "+path+"@"+desc.Digest.String()+via(ctx))
 }
 
-func (s *stubProxy) OCIPulling(_ context.Context, _ index.Repo, path string, _ digest.Digest) func() {
+func (s *stubProxy) OCIPulling(ctx context.Context, _ index.Repo, path string, _ digest.Digest) func() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.calls = append(s.calls, "pulling "+path)
+	s.calls = append(s.calls, "pulling "+path+via(ctx))
 	return func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
