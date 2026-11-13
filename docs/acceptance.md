@@ -342,7 +342,7 @@ the other rows with a command are run by hand at the sign-off, and the rest are 
 | X-10 | config with `registries[].url` pointing at `169.254.169.254`; a `?mount=…&from=` naming a repo on another registry | the URL is used only for that registry's provider (no request parameter ever chooses a URL); the mount is refused with 400 | #9, #24, #63 |
 | X-11 | a raw `PUT` whose file name contains `\r\n` or `%0d%0a`; `GET` with a crafted `Host` header | 400; `Location` and absolute URLs are built from `externalURL`, never from `Host` | #13, #63 |
 | X-12 | 200 idle connections sending one header byte per 5 s; a 2 MiB request header | the connections are closed after `ReadHeaderTimeout` (10 s), 431 for the header; a parallel 1 GiB transfer is unaffected | #50 |
-| X-13 | `OPTIONS` with `Origin: https://evil.test` on `/api/v1/repos` | no `Access-Control-Allow-Origin` header (CORS is off until #70 adds the allowlist) | #70 |
+| X-13 | `OPTIONS` with `Origin: https://evil.test` on `/api/v1/repos` and `/api/v1/info` | `404` and no `Access-Control-Allow-Origin` header: same origin only (#136; an allowlist is #949) | #136 |
 | X-14 | a deploy token used for `DELETE` and for `PATCH /api/v1/repos/…`; a PAT with `scopes: [read]` used for push | 403, 403, 403: deploy tokens never get `delete` or `manage`, PAT scopes only narrow | #44, #45 |
 | X-15 | `DELETE /api/v1/audit/1`, `PATCH` on an audit row | 405: the audit log has no write API; an export of the control plane that includes it is #76, after the PoC (G-07) | #46 |
 | X-16 | `govulncheck`, `go-licenses`, CodeQL, the snippet scan, on the release commit | all clean; the allowlist of CONTRIBUTING.md holds | #57 |

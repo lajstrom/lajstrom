@@ -131,10 +131,12 @@ repos (M4, above), so neither reading cuts a format: v0.1.0 serves raw, pypi, ap
   replicas behind one edge with Postgres. Prometheus metrics live on a separate listener
   (`server.metricsListen`), never on the public host.
 - The web UI is a separate deliverable: its own repository,
-  [lajstrom-ui](https://github.com/lajstrom/lajstrom-ui), built as a static bundle that runs from
-  any origin: an nginx container behind the same edge as Lajstrom, or object storage behind a CDN
-  (S3). The Go server never serves `/ui/` and never uses cookies; cross-origin use needs the API's
-  CORS allowlist and bearer auth, which #70 adds. Post-MVP.
+  [lajstrom-ui](https://github.com/lajstrom/lajstrom-ui), built as a static bundle that an nginx
+  container serves at `/ui/` behind the same edge as Lajstrom: one origin (#136). The Go server
+  never serves `/ui/` and never uses cookies; the UI signs in with a personal access token, sent
+  as a bearer. Object storage behind a CDN is another origin and needs the API's CORS allowlist
+  (#949). The UI is post-MVP; `GET /api/v1/info` and the version detail, the browsing set of
+  #136, come before v0.1.0.
 
 ## After v0.1.0 (preview, not committed)
 

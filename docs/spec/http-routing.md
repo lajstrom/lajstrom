@@ -402,18 +402,19 @@ listed here so frontends do not invent their own. What each call needs, in the a
 
 | Calls | Needs |
 | --- | --- |
-| reading a repo's content: `GET /api/v1/repos` (lists only the repos the caller may read), `GET …/repos/<format>/<repo>`, `GET …/packages` and `GET …/packages/<name>/versions` (#72), and the search that #136 adds | `read` on the repo; a repo the caller may not read is `404`, as on the frontends (rbac.md §3) |
+| reading a repo's content: `GET /api/v1/repos` (lists only the repos the caller may read), `GET …/repos/<format>/<repo>`, `GET …/packages` and `GET …/packages/<name>/versions` (#72), `GET …/packages/<name>/versions/<version>` (#136), and the search of #956 after the MVP | `read` on the repo; a repo the caller may not read is `404`, as on the frontends (rbac.md §3) |
 | changing a repo: `PATCH`, `DELETE`, `POST …/reindex`, `GET …/reindex`, the deploy tokens of the repo | `manage` on the repo |
 | deleting versions: `DELETE …/repos/<format>/<repo>/packages/<name>/versions/<version>` (#61), `POST …/repos/<format>/<repo>/versions:delete` (#72) | `delete` on the repo, checked before the body is read; a repo the caller may not read is `404` |
 | creating a repo, and the system resources: users, bindings, audit | the admin role (rbac.md §2; a `maintainer` on `*/*` is not enough) |
 | the personal access tokens of a user | the user themself, within what the credential allows, or the admin role |
-| `GET /api/v1/whoami`, `GET /api/v1/openapi.yaml` | nothing |
+| `GET /api/v1/whoami`, `GET /api/v1/info` (#136), `GET /api/v1/openapi.yaml` | nothing |
 | `POST /api/v1/bootstrap` (#440) | nothing: the one-time bootstrap token in the body is the credential; `404` once an enabled user has an admin binding |
 
 | Resource | Endpoints |
 | --- | --- |
+| info | `GET /api/v1/info` |
 | repos | `GET /api/v1/repos[?format=]`, `POST /api/v1/repos`, `GET/PATCH /api/v1/repos/<format>/<repo>`, `DELETE /api/v1/repos/<format>/<repo>[?force=true]`, `POST …/reindex`, `GET …/reindex`, `DELETE …/upstream-cache[?name=]` (§6) |
-| packages, versions | `GET /api/v1/repos/<format>/<repo>/packages[?prefix=&limit=&cursor=]`, `GET …/packages/<name>/versions[?limit=&cursor=]`, `DELETE …/packages/<name>/versions/<version>[?variant=&force=]`, `POST /api/v1/repos/<format>/<repo>/versions:delete`; search comes with #136 |
+| packages, versions | `GET /api/v1/repos/<format>/<repo>/packages[?prefix=&limit=&cursor=]`, `GET …/packages/<name>/versions[?limit=&cursor=]`, `GET …/packages/<name>/versions/<version>[?variant=]`, `DELETE …/packages/<name>/versions/<version>[?variant=&force=]`, `POST /api/v1/repos/<format>/<repo>/versions:delete`; search after the MVP (#956) |
 | users | `GET /api/v1/users[?limit=&cursor=]`, `POST /api/v1/users`, `GET/PATCH/DELETE /api/v1/users/<name>`, `POST …/password` |
 | tokens | `GET/POST /api/v1/users/<name>/tokens` (PAT), `DELETE …/tokens/<id>`; `GET/POST /api/v1/repos/<format>/<repo>/deploy-tokens`, `DELETE …/<id>` |
 | bindings | `GET /api/v1/bindings[?principal=&limit=&cursor=]`, `POST /api/v1/bindings`, `DELETE /api/v1/bindings/<id>` |
@@ -436,6 +437,61 @@ newest variant) and its `pointers` (npm dist-tags). The publish time is
 `org.opencontainers.image.created`, `versions.created_at`, which reindex rebuilds. Both pages are
 `?limit=` and `?cursor=`; the cursor holds the place of the page's last row (a name; a time and a
 version), never an offset.
+
+One version (`read`, #136): `GET …/packages/<name>/versions/<version>[?variant=]`, with
+`<name>` and `<version>` as the delete below has them, answers the version's row of that list
+(`version`, `publishedAt`, `lastModified`, `pointers`, `variants`) and `ociRepository`, the OCI
+repository below the instance prefix that holds it (`<format>/<repo>/<name_oci>`, the `<name>`
+of §2). Each variant adds what the index has of its manifest: `artifactType`, `attrs`
+(`versions.attrs`, by annotation key), `metadata` (the metadata layer; `null` when it is absent
+or omitted for size), `degraded`, `indexedAt` and `files`, its file layers in manifest order,
+each with `name`, `mediaType`, `digest`, `size` and `attrs` (the layer's annotations).
+`?variant=` keeps one variant (`""` is the variant of a format that has none); the version's times
+and pointers stay those of all its variants. It is all read from
+the derived tables (index-schema.md), so reindex rebuilds it. The manifest itself and its referrers
+are live registry reads and not part of it (#951); `/v2/<ociRepository>/…` serves both
+(§2). A file's protocol URL is not part of it either: the client builds it from the format, as
+for its usage snippets. The answer is `404` when the repo, the package, the version or the variant
+does not exist, and for a group, which has no versions.
+
+Server information (nothing, #136): `GET /api/v1/info` answers what a client needs before it
+signs in:
+
+- the build: `version`, `commit` and `date`, as `/-/version` has them;
+- `externalURL`: `server.externalURL`, or `""` on the dev stack, which may leave it empty;
+- `anonymousRead`: `auth.anonymousRead`, the server-wide switch;
+- `formats`: the format plugins the server serves, by `name`, each with its `artifactType`.
+  `oci` repos need no plugin and are not listed;
+- `authModes`: how a person signs in. `password` is a local user's password over Basic; `token`
+  is a personal access token. The OIDC login (#69) adds `oidc`;
+- `caller`: the request's principal, as `GET /api/v1/whoami` answers it, and `admin`, whether
+  the request's credential reaches the admin role (a personal access token with scopes does not).
+
+Unlike whoami, a request without credentials gets `200`, with the caller `anonymous`. Credentials
+that are refused get `401`, as on every route.
+
+A browser (#136): the API sets no cookie and reads none. A web UI signs in by creating a
+personal access token: `POST /api/v1/users/<name>/tokens` with the user's password over Basic,
+since a token creates none. It sends that token as `Authorization: Bearer` on every request, and
+signing out revokes it (`DELETE …/tokens/<id>`). A token the person already has is sent the
+same way. The OIDC login (#69) mints a personal access token too, and the UI uses it alike. Its
+cookie `lajstrom_oidc` has the path `/-/oidc/` and never authenticates `/api/v1`.
+
+- **Where the token is kept** is the UI's choice. Any script of the origin can read any storage
+  of it. No answer of Lajstrom on that origin runs a script ([operations.md](../operations.md),
+  What Lajstrom answers browsers).
+- **The browser's own Basic handling.** The UI sends its requests with `credentials: "omit"`, so
+  that the Basic challenge of a `401` opens no browser dialog and no cached Basic credentials go
+  along.
+- **No CSRF token.** The browser adds a bearer to no request by itself. The one ambient
+  credential is cached Basic, and `server.crossOrigin` refuses it on an unsafe request from
+  another site.
+
+Same origin only (#136): the UI is served from the host of `server.externalURL`, by its own
+container at `/ui/` behind the same edge (§1; lajstrom-ui ADR 0001). No answer of `/api/v1` has
+an `Access-Control-*` header, and `OPTIONS` is `404 NOT_FOUND`, as is every method a route does
+not have. A page of another origin can neither read an answer nor send a request with a bearer.
+A CORS allowlist, for a UI on another origin, is #949.
 
 Deleting a version (`delete`): `<name>` is the package name in the format's spelling, one path
 segment (a raw path escapes its `/` as `%2F`). Without `variant` every variant of the version
