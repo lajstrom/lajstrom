@@ -19,6 +19,15 @@ var (
 	ErrUnsupported = errors.New("provider: unsupported")
 	// ErrUnauthorized means the backend rejected Lajstrom's own credentials.
 	ErrUnauthorized = errors.New("provider: unauthorized")
+	// ErrLimit means the backend refused a write for a limit or a quota of its own that the
+	// write would pass: a count (ECR's LimitExceededException: repositories a region, images a
+	// repository), a storage quota (Harbor's project quota), a size limit (Gitea's and Forgejo's
+	// LIMIT_SIZE_CONTAINER). It is no fault of Lajstrom's credentials, and the same write fails
+	// again until the operator raises the limit or frees room: it is not retried. The message
+	// of an error that wraps it names the limit, and holds nothing of the registry's own: no
+	// URL, instance prefix, account or message. A 413 stays a *RejectedError (the file is too
+	// large for the backend), and a 429 ErrUnavailable (a rate, which passes with time).
+	ErrLimit = errors.New("provider: refused for a limit or a quota of the registry")
 	// ErrUnavailable means the backend takes no request now, or does not serve yet a write it
 	// acknowledged: the provider did not send the request, because the backend failed
 	// repeatedly and its circuit breaker is open (an *UnavailableError); the backend answered
