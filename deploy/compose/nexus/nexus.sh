@@ -21,6 +21,8 @@
 #
 # The repositories: "lajstrom", format docker, connector 8082 in the container; "lajstrom-oci",
 # format oci, connector 8083. Both blob store "default", forceBasicAuth (Basic auth on /v2/).
+# strictContentTypeValidation is off on the docker one, as nexus.md tells operators: on, it
+# refuses a blob whose content type Nexus cannot tell (400, #800). The oci one keeps it on.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd -P)
@@ -49,9 +51,11 @@ status() { curl -sS -o /dev/null -w '%{http_code}' -u "admin:$admin_password" "$
 # an HTTP connector on PORT inside the container.
 hosted() {
 	attrs=$(jq -nc --argjson port "$3" '{v1Enabled: false, forceBasicAuth: true, httpPort: $port}')
-	body=$(jq -nc --arg format "$1" --arg name "$2" --arg policy "$policy" --argjson attrs "$attrs" '{
+	strict=true
+	[ "$1" != docker ] || strict=false
+	body=$(jq -nc --arg format "$1" --arg name "$2" --arg policy "$policy" --argjson attrs "$attrs" --argjson strict "$strict" '{
 		name: $name, online: true,
-		storage: {blobStoreName: "default", strictContentTypeValidation: true, writePolicy: $policy, latestPolicy: false},
+		storage: {blobStoreName: "default", strictContentTypeValidation: $strict, writePolicy: $policy, latestPolicy: false},
 		component: {proprietaryComponents: false}
 	} + {($format): $attrs}')
 	if [ "$(status "/service/rest/v1/repositories/$1/hosted/$2")" = 200 ]; then

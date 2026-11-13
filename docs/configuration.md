@@ -245,7 +245,12 @@ repository, which the referrers probe tells: the `docker` format, without the re
 `deleteManifest: false`, since a delete by digest leaves every tag that names the manifest
 ([nexus.md](registries/nexus.md#delete)); the `oci` format answers every ranged `GET` of a blob
 with 500, so Lajstrom asks it for whole blobs and serves a client's range with the whole blob
-(`200`, no `Accept-Ranges`). JFrog answers `HEAD` of a blob with 200 in an image path where
+(`200`, no `Accept-Ranges`). On the `docker` format, also turn off the hosted repository's
+`strictContentTypeValidation` ("Strict Content Type Validation" in the UI, where it is on for a
+new repository): with it on, Nexus refuses a blob whose content type it cannot tell from its
+first bytes, such as one that starts with eight zero bytes, with `400 BLOB_UPLOAD_INVALID`, and
+the client gets `502` ([nexus.md](registries/nexus.md#again-after-352)). Nothing in the vendor
+table can work around that setting. JFrog answers `HEAD` of a blob with 200 in an image path where
 `GET` is 404 ([jfrog-jcr.md](registries/jfrog-jcr.md#blob-reads-head-and-get)), so Lajstrom
 asks whether a blob exists with a `GET` of its first byte. Quay's token service refuses the
 action `delete` with 400 and lets a `push` token delete
