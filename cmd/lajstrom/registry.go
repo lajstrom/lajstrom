@@ -40,6 +40,7 @@ type probeFlags struct {
 	maxBlob      string
 	maxManifest  string
 	routingHeads int
+	monoReads    int
 	output       string
 	verbose      bool
 	timeout      time.Duration
@@ -93,6 +94,7 @@ func newRegistryProbeCmd(a *app) *cobra.Command {
 	fl.StringVar(&f.maxBlob, "max-blob-size", "8MiB", "the largest blob pushed: bytes, or with KiB, MiB or GiB")
 	fl.StringVar(&f.maxManifest, "max-manifest-size", strconv.Itoa(probe.DefaultMaxManifestSize), "the bound of the manifest size ladder: bytes, or with KiB, MiB or GiB")
 	fl.IntVar(&f.routingHeads, "routing-heads", probe.DefaultRoutingHeads, "how many times the row \"Routing words in a name\" asks for each blob by HEAD")
+	fl.IntVar(&f.monoReads, "monotonic-reads", probe.DefaultMonotonicReads, "how many times the row \"Monotonic reads\" reads a change again, each over a new connection, after the first read that saw it")
 	fl.StringVarP(&f.output, "output", "o", "markdown", "markdown or json")
 	fl.BoolVarP(&f.verbose, "verbose", "v", false, "add the requests and the trimmed answers of every cell")
 	fl.DurationVar(&f.timeout, "timeout", 15*time.Minute, "bound on the whole run")
@@ -196,7 +198,11 @@ func (f probeFlags) options(a *app) (probe.Options, error) {
 	if f.routingHeads < 1 {
 		return probe.Options{}, fmt.Errorf("--routing-heads %d: at least 1", f.routingHeads)
 	}
-	return probe.Options{Scratch: f.scratch, MaxBlobSize: blob, MaxManifestSize: man, RoutingHeads: f.routingHeads, Log: a.log}, nil
+	if f.monoReads < 1 {
+		return probe.Options{}, fmt.Errorf("--monotonic-reads %d: at least 1", f.monoReads)
+	}
+	return probe.Options{Scratch: f.scratch, MaxBlobSize: blob, MaxManifestSize: man, RoutingHeads: f.routingHeads,
+		MonotonicReads: f.monoReads, Log: a.log}, nil
 }
 
 // parseSize reads a size: a number of bytes, or one followed by KiB, MiB or GiB.

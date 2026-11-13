@@ -33,6 +33,10 @@ const (
 	// DefaultRoutingHeads is how many times the row "Routing words in a name" asks for each
 	// blob by HEAD unless Options says otherwise: Harbor v2.15.4 missed one in 1 to 17 of 20.
 	DefaultRoutingHeads = 20
+	// DefaultMonotonicReads is how many times the row "Monotonic reads" reads a change again,
+	// each over a new connection, after the first read that saw it, unless Options says
+	// otherwise.
+	DefaultMonotonicReads = 5
 )
 
 // Options are the choices of one run.
@@ -47,6 +51,9 @@ type Options struct {
 	// RoutingHeads is how many times the row "Routing words in a name" asks for each blob by
 	// HEAD; 0 is DefaultRoutingHeads.
 	RoutingHeads int
+	// MonotonicReads is how many times the row "Monotonic reads" reads a change again after
+	// the first read that saw it; 0 is DefaultMonotonicReads.
+	MonotonicReads int
 	// Log receives what the generic provider logs besides its requests; nil is slog.Default().
 	Log *slog.Logger
 }
@@ -107,6 +114,8 @@ type facts struct {
 	lag          time.Duration
 	lagged       bool
 	lagUnbounded bool
+	// notMonotonic: a read over a new connection saw a change, and a later one did not.
+	notMonotonic bool
 }
 
 // Run measures the row of the registry cfg (registries[].type generic or ecr) and deletes what
@@ -127,6 +136,9 @@ func Run(ctx context.Context, cfg config.Registry, o Options) (*Report, error) {
 	}
 	if o.RoutingHeads <= 0 {
 		o.RoutingHeads = DefaultRoutingHeads
+	}
+	if o.MonotonicReads <= 0 {
+		o.MonotonicReads = DefaultMonotonicReads
 	}
 	if o.Log == nil {
 		o.Log = slog.Default()
@@ -226,6 +238,7 @@ func (r *run) measureAll(ctx context.Context) {
 		{[]string{"catalog"}, r.measureCatalog},
 		{[]string{"tags"}, r.measureTags},
 		{[]string{"consistency"}, r.measureConsistency},
+		{[]string{"monotonic"}, r.measureMonotonic},
 		{[]string{"deleteDigest", "deleteTag"}, r.measureDeletes},
 		{[]string{"immutableTags"}, r.measureImmutable},
 		{[]string{"blobRedirect", "range"}, r.measureBlobReads},
@@ -268,6 +281,9 @@ func overridesVerdict(caps Capabilities, f facts) string {
 		o = append(o, "`immutableTags: true`")
 	}
 	o = append(o, consistencyOverrides(caps, f)...)
+	if f.notMonotonic {
+		o = append(o, "no override helps: **reads are not monotonic**; point `url` at one regional endpoint")
+	}
 	if f.profileRefused {
 		o = append(o, "no override helps: **the registry refuses Lajstrom's manifests**")
 	}
