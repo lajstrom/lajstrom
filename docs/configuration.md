@@ -361,6 +361,17 @@ repos:
   - {name: ghcr, format: oci, registry: local, kind: proxy, upstream: {name: ghcr}}
 ```
 
+A group of a hosted `oci` repo and the Docker Hub proxy, one pull address for both
+(`docker pull <lajstrom>/oci/all/acme/api:1.4`, `docker pull <lajstrom>/oci/all/nginx:1.27`): each
+member serves the paths of its patterns, the most specific pattern winning
+([proxy-and-group.md](spec/proxy-and-group.md) §12):
+
+```yaml
+repos:
+  - {name: internal, format: oci, registry: local}
+  - {name: all, format: oci, kind: group, group: {members: [internal, hub], paths: {internal: ["acme/*"], hub: ["*"]}}}
+```
+
 ### ingest
 
 | Key | Type | Default | Env | Description |
@@ -458,9 +469,9 @@ create loses to another's counts the repo as present.
 | `repos[].name` | name | none, required | none | Repo name, unique within its format; same rule as registry names ([manifest-profile.md](spec/manifest-profile.md) §4.1), and not a name that Zot's storage or Harbor's routes keep for themselves ([ADR 0017](adr/0017-the-grammar-of-oci-names.md)): one that ends in `blobs`, `.uploads` or `.sync`, or is `index.json`, `oci-layout`, `manifests`, `referrers` or `tags`. Example: `scratch`. |
 | `repos[].format` | name | none, required | none | Plugin name: `raw`, `pypi`, `apt`, `maven`, `npm`; or `oci`, the pass-through format of the OCI facade, which has no plugin ([quickstart/oras.md](quickstart/oras.md)). Another name stops `serve`: `repos[0]: format: "rpm" is not a format this server has`. |
 | `repos[].registry` | name | none, required but on a group | none | One of `registries[].name`. A group has none. |
-| `repos[].kind` | `hosted`, `proxy`, `group` | `hosted` | none | What the repo serves ([proxy-and-group.md](spec/proxy-and-group.md) §1): what is published to it, what it fetched from an upstream, or its members under one URL. Set at creation and never changed. A proxy and a group need a format whose plugin has them (npm). |
+| `repos[].kind` | `hosted`, `proxy`, `group` | `hosted` | none | What the repo serves ([proxy-and-group.md](spec/proxy-and-group.md) §1): what is published to it, what it fetched from an upstream, or its members under one URL. Set at creation and never changed. A proxy and a group need a format whose plugin has them (npm), or `oci`, which needs none. |
 | `repos[].upstream` | map | none | none | A proxy repo's upstream, with the keys of the management API ([proxy-and-group.md](spec/proxy-and-group.md) §2.2): `name`, one of `upstreams[].name` of the repo's format (required), `metadataTTL` (`10m`), `negativeTTL` (`2m`), `offline` (`false`), `allow` and `deny` (lists of name patterns). Required on a proxy repo, refused on another kind. Example: `{name: npmjs, deny: ["@acme/*"]}`. |
-| `repos[].group` | map | none | none | A group's settings, with the keys of the management API ([proxy-and-group.md](spec/proxy-and-group.md) §2.3): `members`, the names of 1 to 16 repos of the group's format in the order they are read, each hosted or proxy and at most one hosted (required), and `merge` (name patterns whose versions are merged even when the hosted member holds them). Required on a group, refused on another kind; a group has no `registry` and no `policy`. The bootstrap creates the groups after every other repo of the list. Example: `{members: [internal, npmjs]}`. |
+| `repos[].group` | map | none | none | A group's settings, with the keys of the management API ([proxy-and-group.md](spec/proxy-and-group.md) §2.3): `members`, the names of 1 to 16 repos of the group's format in the order they are read, each hosted or proxy and at most one hosted (required), and `merge` (name patterns whose versions are merged even when the hosted member holds them). An `oci` group may have several hosted members, has no `merge`, and has `paths` instead (required): each member's name to the patterns of the paths it serves, `<path>`, `<prefix>/*` or `*`, every member at least one and no pattern on two members (§12.1). Required on a group, refused on another kind; a group has no `registry` and no `policy`. The bootstrap creates the groups after every other repo of the list. Example: `{members: [internal, npmjs]}`. |
 | `repos[].anonymousRead` | bool | `false` | none | Readable without credentials, when `auth.anonymousRead` is `true`. |
 | `repos[].policy` | map | none | none | The repo's policy, with the keys and values of the management API ([api.md](api.md#policy)): `maxFileSize` (bytes; by default npm 512 MiB, pypi and maven 4 GiB, apt and raw 8 GiB, oci 16 GiB), `blobRedirect` (`auto` by default, or `never`), and on a maven repo `maven.sessionTimeout` (`30m` by default, `1m` to `24h`) and `maven.maxSessionFiles` (`256` by default, `1` to `999`: the files one deploy's session may store). The API checks it when the bootstrap creates the repo, and a policy it refuses stops `serve` naming the entry and the key (`repos[0]: policy.maven: only a maven repo has it, not a raw repo`). Example: `{maxFileSize: 104857600, maven: {sessionTimeout: 2h, maxSessionFiles: 512}}`. |
 

@@ -80,7 +80,7 @@ package's name carries one.
 | `GET /v2/<name>/blobs/<digest>` | one request to the backend (`format.ServeBlob`, `Provider.OpenBlob`), with the client's `Range` passed through when it is one byte range: `307` with `Location` and `Docker-Content-Digest` when the backend redirects to another origin (a presigned URL of its object storage) and the repo's `policy.blobRedirect` is not `never` and the registry's `capabilities.blobRedirect` not `false`; otherwise the backend's answer streamed, `200`, `206` with `Content-Range` or `416`, with `Content-Length` and `Accept-Ranges` as the backend sent them, `Docker-Content-Digest` and `ETag` (the digest, quoted). A redirect into the backend's own origin is followed by the provider, never sent to the client. Several ranges, or a `Range` that is not one, are not sent: the answer is the whole blob with `200` (backends answer several ranges with `multipart/byteranges`). `If-None-Match` is `304` before any request. `404 BLOB_UNKNOWN`. |
 | `GET /v2/<name>/tags/list` | from the index for Lajstrom-managed repos (fast, consistent): the versions of the package whose `name_oci` is the path, an empty list for a repository only `oci_repos` knows; from the backend for `oci` repos. `n`, `last` and a `Link` header (`rel="next"`) paginate both. |
 | `GET /v2/<name>/referrers/<digest>` | `read` on the repo, checked before the digest. The manifests whose `subject` is `<digest>`, as an image index (`Content-Type: application/vnd.oci.image.index.v1+json`), from `Repository.Referrers` of the provider: the backend's referrers API, or the `sha256-<hex>` tag schema where it has none (`Capabilities.Referrers`). `?artifactType=` keeps the referrers of that type and the answer carries `OCI-Filters-Applied: artifactType`. A subject without referrers, in a repository the backend does not have too, is `200` with an empty index, never `404`. A malformed digest is `400 DIGEST_INVALID`. |
-| `GET /v2/_catalog` | from the control plane, filtered by RBAC: the OCI repositories of every repo the principal may read, as `<format>/<repo>/<path>`, with `n`, `last` and `Link`. For a managed repo they are the package paths of its packages (`packages.name_oci`), the repositories whose `tags/list` has a version: a repository whose versions are all deleted is not listed, though the registry may keep it and `oci_repos` with it (Zot does), and neither is one that holds foreign manifests only (#728). An `oci` repo indexes no tags: its repositories are its `oci_repos`, those that hold a tag, so one whose manifests are all deleted is not listed either, though Zot keeps it with an empty tag list: the delete that takes its last tag drops its row, and so does reindex (index-schema.md, Invariants and rules; #748) |
+| `GET /v2/_catalog` | from the control plane, filtered by RBAC: the OCI repositories of every repo the principal may read, as `<format>/<repo>/<path>`, with `n`, `last` and `Link`. For a managed repo they are the package paths of its packages (`packages.name_oci`), the repositories whose `tags/list` has a version: a repository whose versions are all deleted is not listed, though the registry may keep it and `oci_repos` with it (Zot does), and neither is one that holds foreign manifests only (#728). An `oci` repo indexes no tags: its repositories are its `oci_repos`, those that hold a tag, so one whose manifests are all deleted is not listed either, though Zot keeps it with an empty tag list: the delete that takes its last tag drops its row, and so does reindex (index-schema.md, Invariants and rules; #748). An `oci` group lists, to its readers, the repositories of each member that its routes send to that member (§6) |
 
 A request that the registry refuses with a `4xx` that none of the errors above names keeps
 that status for the client: one of a blob upload (any of the upload rows, #449), such as
@@ -595,11 +595,11 @@ kinds. What changes is who answers and what a write does.
 | --- | --- | --- |
 | a read route of the format (a document, a file) | the upstream's document, cached, and the files it holds or fetches on a miss (proxy-and-group.md §4 to §7) | the members, in order, with hosted names hiding the upstream (§8) |
 | a write route of the format (publish, unpublish, a dist-tag) | `405` with `Allow: GET, HEAD` | the same request on the group's hosted member, authorized there (rbac.md §7); `405` without one |
-| `GET`, `HEAD` on `/v2/<format>/<repo>/…` (manifests, blobs, tags, referrers) | as on a hosted repo, for what it holds; `/v2` never fetches, but on an `oci` proxy, whose read route it is: a manifest and a blob the backend does not hold are fetched on a miss, a tag follows the upstream, and `tags/list` is the backend's without the keep-tags (proxy-and-group.md §11) | `404 NAME_UNKNOWN`: a group has no OCI repository |
-| `PUT` of a manifest on `/v2` | a referrer (manifest-profile.md §6) as on a hosted repo, with `write`; any other manifest `405 UNSUPPORTED` | `404 NAME_UNKNOWN` |
-| blob uploads on `/v2` | as on a hosted repo, with `write` (the blobs of referrers) | `404 NAME_UNKNOWN` |
-| `DELETE` of a manifest on `/v2`, and of a version on `/api/v1` | as on a hosted repo, with `delete`: the next miss fetches it again | `404`: a group has no versions |
-| `GET /v2/_catalog` | its OCI repositories | nothing |
+| `GET`, `HEAD` on `/v2/<format>/<repo>/…` (manifests, blobs, tags, referrers) | as on a hosted repo, for what it holds; `/v2` never fetches, but on an `oci` proxy, whose read route it is: a manifest and a blob the backend does not hold are fetched on a miss, a tag follows the upstream, and `tags/list` is the backend's without the keep-tags (proxy-and-group.md §11) | on an `oci` group, the answer of the one member its routes choose for the path, as at the member's own URL, `name` and `Link` naming the group's path; a path no route selects `404 NAME_UNKNOWN` (proxy-and-group.md §12). On any other group `404 NAME_UNKNOWN`: it has no OCI repository |
+| `PUT` of a manifest on `/v2` | a referrer (manifest-profile.md §6) as on a hosted repo, with `write`; any other manifest `405 UNSUPPORTED` | on an `oci` group, `405 UNSUPPORTED` with `Allow: GET, HEAD`, a referrer included, once the principal may read the group, and the group's denial otherwise (rbac.md §3); on any other group `404 NAME_UNKNOWN` |
+| blob uploads on `/v2` | as on a hosted repo, with `write` (the blobs of referrers) | as a `PUT` of a manifest. A mount into another repo whose `from` is an `oci` group's path mounts from the routed member (proxy-and-group.md §12.3) |
+| `DELETE` of a manifest on `/v2`, and of a version on `/api/v1` | as on a hosted repo, with `delete`: the next miss fetches it again | on `/v2`, as a `PUT` of a manifest; on `/api/v1`, `404`: a group has no versions |
+| `GET /v2/_catalog` | its OCI repositories | an `oci` group, to a principal who may read it, each member's repositories that the routes send to that member, as `oci/<group>/<path>`; any other group nothing |
 
 A manifest pushed by a client with a `lajstrom.origin.*` annotation is `400 MANIFEST_INVALID`
 on every manifest Lajstrom manages, a version's manifest and a referrer, on a hosted repo and on
@@ -627,14 +627,21 @@ for a repository that does not exist) and for a blob no held or cached manifest 
 TOOMANYREQUESTS` with `Retry-After` for its `429` when no row is cached, `502` and `504` as
 above. On an upstream that is Docker Hub (`upstreams[].dockerHub`) a path of one component is
 `library/<path>` on every route. The query `ns` that containerd adds to a mirror's request
-(`?ns=docker.io`) is ignored, as any query a route does not define.
+(`?ns=docker.io`) is ignored, as any query a route does not define, on a proxy and through an
+`oci` group alike.
+
+Through an `oci` group ([ADR 0019](../adr/0019-oci-groups-one-member-per-repository-path.md),
+proxy-and-group.md §12) the route is decided after the principal's read on the group, from the
+path as the client sent it, before a Docker Hub member's `library/` rule; the routed member's
+statuses pass through, but for a path a proxy member's lists refuse, which is `404 NAME_UNKNOWN`
+through the group. A scope of a group's path gets `pull` at most from `/v2/token` (rbac.md §4).
 
 Management API (§4), in addition:
 
 | Call | Needs |
 | --- | --- |
 | `POST /api/v1/repos` with `kind` `proxy` or `group` | the admin role, as every create |
-| `PATCH` of `upstream.name` or of `group.members` | the admin role |
+| `PATCH` of `upstream.name`, of `group.members` or of `group.paths` | the admin role |
 | `PATCH` of the other keys of `upstream` and `group`, and of `anonymousRead` | `manage` on the repo |
 | `DELETE /api/v1/repos/<format>/<repo>/upstream-cache[?name=<name>]` | `manage` on a proxy repo: drops its `proxy_meta` rows, or the rows of one name, and their rendered documents; `204`, `400` on a repo that is not a proxy; audit `repo.cache.purge` |
 | `PATCH /api/v1/repos/<format>/<repo>` with `{"kind": "hosted"}`, alone | the admin role: a proxy becomes a hosted repo that keeps what it holds, its dist-tags written to its journal (proxy-and-group.md §2.6); `200` with the resource, `400` on a group or a format without the hook, `409` while a fetch runs or when a group of it has a hosted member; on a hosted repo it resumes a conversion that stopped half way, else changes nothing; audit `repo.convert` |
