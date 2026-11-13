@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -118,11 +119,18 @@ func TestReindexProcess(t *testing.T) {
 
 // TestReindexHangup checks that reindex drains on SIGHUP, which closing its terminal or an SSH
 // session sends, as it does on SIGTERM: the run row ends, not left running to block the next
-// run of its scope until it goes stale (#751). The registry answers no request, so the run
-// waits on it until the signal.
+// run of its scope until it goes stale (#751). The registry answers no request of reindex, so
+// the run waits on it until the signal. Before reindex starts it answers 404 at once: admin repo
+// create asks it for its capabilities (#663), and must neither wait for its probe's timeout nor
+// count as reindex's first request, which would send the signal before reindex handles it.
 func TestReindexHangup(t *testing.T) {
 	waiting := make(chan struct{}, 1)
-	reg := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	var hang atomic.Bool
+	reg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !hang.Load() {
+			http.NotFound(w, r)
+			return
+		}
 		select {
 		case waiting <- struct{}{}:
 		default:
@@ -141,6 +149,7 @@ func TestReindexHangup(t *testing.T) {
 		{args: []string{"migrate"}, wantOut: "applied 0001"},
 		{args: []string{"admin", "repo", "create", "raw/assets", "--registry", "local"}},
 	})
+	hang.Store(true)
 	cmd := exec.Command(os.Args[0], "-test.run=^TestReindexProcess$") //nolint:gosec // the test binary
 	cmd.Env = append(os.Environ(), envReindexProcess+"="+cfg)
 	var out bytes.Buffer
