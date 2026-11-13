@@ -22,16 +22,17 @@ func (h *handler) ociGroup(repo index.Repo) bool {
 	return h.o.OCIProxy != nil && repo.Format == ociFormat && repo.Kind == index.KindGroup
 }
 
-// throughGroup answers what a request on the group t decides before its route: the read on the
-// group (authorize, the group's denial when it may not read), then 405 UNSUPPORTED with
-// Allow: GET, HEAD for every method but those, whatever the path, so that a write does not tell
-// a stranger that the group exists and does not depend on the routes. It returns the target of
-// the routed member (route) for a read.
-func (h *handler) throughGroup(w http.ResponseWriter, r *http.Request, t *target) (*target, error) {
+// throughGroup answers what a request of the route kind on the group t decides before its
+// route: the read on the group (authorize, the group's denial when it may not read), then 405
+// UNSUPPORTED with Allow: GET, HEAD for every method but those and for every route below
+// blobs/uploads/, a GET of a session's status included, whatever the path, so that a write does
+// not tell a stranger that the group exists and does not depend on the routes. It returns the
+// target of the routed member (route) for a read.
+func (h *handler) throughGroup(w http.ResponseWriter, r *http.Request, t *target, kind routeKind) (*target, error) {
 	if err := h.authorize(r.Context(), auth.ActionRead, t); err != nil {
 		return nil, err
 	}
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+	if (r.Method != http.MethodGet && r.Method != http.MethodHead) || kind == routeUploads || kind == routeUpload {
 		w.Header().Set("Allow", "GET, HEAD")
 		return nil, &apiError{status: http.StatusMethodNotAllowed, code: codeUnsupported,
 			msg: fmt.Sprintf("%s/%s is a group of oci repos: it serves pulls only; push to the member's own URL", t.repo.Format, t.repo.Name)}
