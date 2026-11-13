@@ -26,7 +26,7 @@ tags:
   - name: audit
     description: The audit log.
   - name: meta
-    description: Who is asking, and this document.
+    description: Who is asking, the server, and this document.
 security:
   - basic: []
   - bearer: []
@@ -661,6 +661,27 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Whoami"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /api/v1/info:
+    get:
+      tags: [meta]
+      operationId: getInfo
+      summary: The server's build and facts, and the caller; to anyone.
+      description: >-
+        What a client needs before it signs in: the build, server.externalURL,
+        auth.anonymousRead, the format plugins the server serves, how a person signs in, and the
+        caller with whether its credential reaches the admin role. Without credentials it is 200
+        with the anonymous caller; credentials that are refused are 401, as on every route.
+      security:
+        - {}
+        - basic: []
+        - bearer: []
+      responses:
+        "200":
+          description: The server and the caller.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Info"}
         "401": {$ref: "#/components/responses/Unauthorized"}
   /api/v1/bootstrap:
     post:
@@ -1361,3 +1382,39 @@ components:
         kind: {type: string, enum: [user, token]}
         name: {type: string}
         uid: {type: string, format: uuid}
+    Info:
+      description: "What a client needs before it signs in, and the caller."
+      type: object
+      required: [version, commit, date, externalURL, anonymousRead, formats, authModes, caller]
+      properties:
+        version: {type: string, description: The release version; dev for an unversioned build.}
+        commit: {type: string, description: The short commit hash; empty when unknown.}
+        date: {type: string, description: The build time in RFC 3339; empty when unknown.}
+        externalURL: {type: string, description: "server.externalURL; empty on the dev stack when it leaves it empty."}
+        anonymousRead: {type: boolean, description: "auth.anonymousRead, the server-wide switch."}
+        formats:
+          type: array
+          description: The format plugins the server serves, by name; oci repos need none.
+          items: {$ref: "#/components/schemas/FormatInfo"}
+        authModes:
+          type: array
+          description: How a person signs in; the OIDC login adds oidc.
+          items: {type: string, enum: [password, token, oidc]}
+        caller: {$ref: "#/components/schemas/Caller"}
+    FormatInfo:
+      description: "A format plugin the server serves, and the artifact type of its manifests."
+      type: object
+      required: [name, artifactType]
+      properties:
+        name: {type: string}
+        artifactType: {type: string}
+    Caller:
+      description: "The request's principal as whoami answers it, or anonymous, and whether its credential reaches the admin role."
+      type: object
+      required: [principal, kind, name, admin]
+      properties:
+        principal: {type: string}
+        kind: {type: string, enum: [user, token, anonymous]}
+        name: {type: string}
+        uid: {type: string, format: uuid}
+        admin: {type: boolean, description: Whether the request's credential reaches the admin role.}

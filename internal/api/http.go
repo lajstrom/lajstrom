@@ -50,6 +50,9 @@ type Options struct {
 	// Bootstrap exchanges the bootstrap token of POST /api/v1/bootstrap for the first admin;
 	// nil answers it 404, as once an admin exists.
 	Bootstrap *auth.Bootstrap
+	// Info is what GET /api/v1/info answers of the configuration and the plugins; the zero
+	// value answers an empty externalURL, anonymous read off and no formats.
+	Info ServerInfo
 	// Log receives the causes of the 5xx answers, with the request id; nil means
 	// slog.Default().
 	Log *slog.Logger
@@ -93,6 +96,7 @@ const maxBody = 64 << 10
 //	DELETE /api/v1/bindings/{id}                       delete one
 //	GET    /api/v1/audit[?repo=&principal=&action=&since=&until=&limit=&cursor=]  the audit log, newest first
 //	GET    /api/v1/whoami                              the request's principal
+//	GET    /api/v1/info                                the server's build, facts and the caller, to anyone
 //	POST   /api/v1/bootstrap                           the first admin, for the bootstrap token; 404 once an admin exists
 //	GET    /api/v1/openapi.yaml                        the OpenAPI document of these routes
 //
@@ -103,7 +107,10 @@ func New(o Options) http.Handler {
 		panic("api: New: nil Options.Repos")
 	}
 	h := &handler{repos: o.Repos, tokens: o.Tokens, users: o.Users, bindings: o.Bindings, auth: o.Auth, reindex: o.Reindex,
-		deleter: o.Deleter, prefetcher: o.Prefetcher, journal: o.Journal, boot: o.Bootstrap, log: o.Log}
+		deleter: o.Deleter, prefetcher: o.Prefetcher, journal: o.Journal, boot: o.Bootstrap, info: o.Info, log: o.Log}
+	if h.info.Formats == nil {
+		h.info.Formats = []FormatInfo{}
+	}
 	if h.log == nil {
 		h.log = slog.Default()
 	}
@@ -165,6 +172,7 @@ func (h *handler) routes() []route {
 		{"DELETE /api/v1/bindings/{id}", h.deleteBinding},
 		{"GET /api/v1/audit", h.listAudit},
 		{"GET /api/v1/whoami", h.whoami},
+		{"GET /api/v1/info", h.serverInfo},
 		{"POST /api/v1/bootstrap", h.bootstrap},
 	}
 }
@@ -182,7 +190,9 @@ type handler struct {
 	// prefetcher and journal are Options.Prefetcher and Options.Journal.
 	prefetcher Prefetcher
 	journal    Journaler
-	log        *slog.Logger
+	// info is Options.Info, its Formats never nil.
+	info ServerInfo
+	log  *slog.Logger
 }
 
 // endpoint is a handler that returns its answer: the status and the value to encode as JSON
