@@ -55,76 +55,70 @@ func (r keepingRepo) Delete(ctx context.Context, desc ocispec.Descriptor) error 
 // a manifest the registry does not serve any more is gone, as before (#668). Both for a version
 // with its referrers and for a referrer deleted on its own, with and without the referrers API.
 func TestDeleteKept(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		api  bool
-		// ref is the reference deleted, kept the manifests the registry keeps, of a.
-		ref, kept func(a attached) []digest.Digest
-		// referrers and version are what Deleted says.
-		referrers int
-		version   bool
-	}{
-		{name: "the signature of a version, referrers API", api: true,
-			ref:  func(a attached) []digest.Digest { return []digest.Digest{a.subject.Digest} },
-			kept: func(a attached) []digest.Digest { return []digest.Digest{a.refs[1]} }, referrers: 3, version: true},
-		{name: "the signature of a version, tag schema", api: false,
-			ref:  func(a attached) []digest.Digest { return []digest.Digest{a.subject.Digest} },
-			kept: func(a attached) []digest.Digest { return []digest.Digest{a.refs[1]} }, referrers: 3, version: true},
-		{name: "a signature on its own, tag schema", api: false,
-			ref:  func(a attached) []digest.Digest { return []digest.Digest{a.refs[1]} },
-			kept: func(a attached) []digest.Digest { return []digest.Digest{a.refs[1]} }},
+	subject := func(a attached) digest.Digest { return a.subject.Digest }
+	signature := func(a attached) digest.Digest { return a.refs[1] }
+	for _, tt := range []keptCase{
+		{name: "the signature of a version, referrers API", api: true, ref: subject, kept: signature, referrers: 3, version: true},
+		{name: "the signature of a version, tag schema", ref: subject, kept: signature, referrers: 3, version: true},
+		{name: "a signature on its own, tag schema", ref: signature, kept: signature},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			e, rec, subject := referrerEnv(t, tt.api)
-			a := attach(t, e, subject, tt.api)
-			kept := tt.kept(a)
-			keep := map[digest.Digest]bool{}
-			for _, d := range kept {
-				keep[d] = true
-			}
-			var log bytes.Buffer
-			opts := e.options(keeping{registry: registry{Fake: e.prov, api: tt.api, rec: rec}, keep: keep})
-			opts.Index = rec
-			opts.Log = slog.New(slog.NewTextHandler(&log, nil))
-			ref := tt.ref(a)[0]
-			got, err := ingest.New(opts).Delete(t.Context(), e.repo, format.Deletion{Path: "notes", Reference: ref.String()}, alice)
-			must(t, err)
-			if got.Digest != ref || (got.Version != nil) != tt.version || got.Referrers != tt.referrers {
-				t.Errorf("Deleted = %+v, want %s with %d referrers, a version %t", got, ref, tt.referrers, tt.version)
-			}
+		t.Run(tt.name, func(t *testing.T) { tt.run(t) })
+	}
+}
 
-			rr, err := e.prov.Repository(t.Context(), "raw/scratch/notes")
-			must(t, err)
-			for _, d := range kept {
-				if _, err := rr.Resolve(t.Context(), d.String()); err != nil {
-					t.Errorf("the registry should still serve %s: %v", d, err)
-				}
-			}
-			var others []string
-			for _, d := range a.refs {
-				if !keep[d] && (tt.version || d == ref) {
-					others = append(others, d.String())
-				}
-			}
-			gone(t, e, others...)
+// keptCase is a case of TestDeleteKept.
+type keptCase struct {
+	name string
+	api  bool
+	// ref is the reference deleted, kept the manifest the registry keeps, of a.
+	ref, kept func(a attached) digest.Digest
+	// referrers and version are what Deleted says.
+	referrers int
+	version   bool
+}
 
-			ev := e.rows(t).Audit[0]
-			var details struct {
-				Referrers int             `json:"referrers"`
-				Kept      []digest.Digest `json:"kept"`
+// run deletes ref on a registry that keeps kept, and checks what Delete says, what the registry
+// still serves, the audit row and the warning.
+func (c keptCase) run(t *testing.T) {
+	e, rec, subject := referrerEnv(t, c.api)
+	a := attach(t, e, subject, c.api)
+	ref, kept := c.ref(a), c.kept(a)
+	var log bytes.Buffer
+	opts := e.options(keeping{registry: registry{Fake: e.prov, api: c.api, rec: rec}, keep: map[digest.Digest]bool{kept: true}})
+	opts.Index = rec
+	opts.Log = slog.New(slog.NewTextHandler(&log, nil))
+	got, err := ingest.New(opts).Delete(t.Context(), e.repo, format.Deletion{Path: "notes", Reference: ref.String()}, alice)
+	must(t, err)
+	if got.Digest != ref || (got.Version != nil) != c.version || got.Referrers != c.referrers {
+		t.Errorf("Deleted = %+v, want %s with %d referrers, a version %t", got, ref, c.referrers, c.version)
+	}
+	rr, err := e.prov.Repository(t.Context(), "raw/scratch/notes")
+	must(t, err)
+	if _, err := rr.Resolve(t.Context(), kept.String()); err != nil {
+		t.Errorf("the registry should still serve %s: %v", kept, err)
+	}
+	if c.version {
+		var others []string
+		for _, d := range a.refs {
+			if d != kept {
+				others = append(others, d.String())
 			}
-			must(t, json.Unmarshal(ev.Details, &details))
-			if ev.Action != "delete" || ev.Digest != ref || details.Referrers != tt.referrers || !slices.Equal(details.Kept, kept) {
-				t.Errorf("audit event %+v, details %s; want referrers %d, kept %v", ev, ev.Details, tt.referrers, kept)
-			}
-			var warned bool
-			for line := range strings.Lines(log.String()) {
-				warned = warned || strings.Contains(line, "level=WARN") && strings.Contains(line, kept[0].String())
-			}
-			if !warned {
-				t.Errorf("no warning names the manifest kept, %s:\n%s", kept[0], log.String())
-			}
-		})
+		}
+		gone(t, e, others...)
+	}
+	ev := e.rows(t).Audit[0]
+	var details struct {
+		Referrers int             `json:"referrers"`
+		Kept      []digest.Digest `json:"kept"`
+	}
+	must(t, json.Unmarshal(ev.Details, &details))
+	if ev.Action != "delete" || ev.Digest != ref || details.Referrers != c.referrers || !slices.Equal(details.Kept, []digest.Digest{kept}) {
+		t.Errorf("audit event %+v, details %s; want referrers %d, kept %s", ev, ev.Details, c.referrers, kept)
+	}
+	if !slices.ContainsFunc(slices.Collect(strings.Lines(log.String())), func(line string) bool {
+		return strings.Contains(line, "level=WARN") && strings.Contains(line, kept.String())
+	}) {
+		t.Errorf("no warning names the manifest kept, %s:\n%s", kept, log.String())
 	}
 }
 
