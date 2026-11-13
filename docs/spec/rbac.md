@@ -297,11 +297,11 @@ takes publishes from whoever has `write` on it, which a proxy took from nobody, 
 decision of the same weight as choosing its upstream. The dist-tags and deprecations it writes to
 the repo's journal are audit rows of the admin (`npm.dist-tag`, `npm.deprecate`).
 
-**A prefetch** (proxy-and-group.md §5.1) needs `manage`. A reader fetches the one version it
-reads; a prefetch fetches every version of a list of names, which spends the registry's space
-and the upstream's quota on the repo's behalf, and that is the maintainer's choice. Its fetches
-are the audit rows of a miss's, `proxy.fetch` and `proxy.reject`, with the caller as the
-principal; the prefetch itself writes no row of its own.
+**A prefetch** (proxy-and-group.md §5.1, §11.10) needs `manage`. A reader fetches the one version
+it reads; a prefetch fetches every version of a list of names, or the platforms named of a list
+of images, which spends the registry's space and the upstream's quota on the repo's behalf, and
+that is the maintainer's choice. Its fetches are the audit rows of a miss's, `proxy.fetch` and
+`proxy.reject`, with the caller as the principal; the prefetch itself writes no row of its own.
 
 **The admin role** creates proxy and group repos, as every repo, and alone changes a proxy's
 `upstream.name`, a group's `members` and an `oci` group's `paths`: each changes what every reader
