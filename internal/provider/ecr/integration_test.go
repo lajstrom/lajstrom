@@ -219,8 +219,10 @@ func pushAndFetch(ctx context.Context, t *testing.T, p *Provider, name string) {
 	if got, err := io.ReadAll(b.Body); err != nil || !bytes.Equal(got, blob) {
 		t.Errorf("OpenBlob read %q, %v", got, err)
 	}
+	// One layer: ECR refuses a manifest without one, "Image has to have at least 1 layer" (#19).
 	manifest := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json",` +
-		`"config":{"mediaType":"application/octet-stream","digest":"` + bd.Digest.String() + `","size":10},"layers":[]}`)
+		`"config":{"mediaType":"application/octet-stream","digest":"` + bd.Digest.String() + `","size":10},` +
+		`"layers":[{"mediaType":"application/octet-stream","digest":"` + bd.Digest.String() + `","size":10}]}`)
 	md := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: digest.FromBytes(manifest), Size: int64(len(manifest))}
 	if err := repo.PushReference(ctx, md, bytes.NewReader(manifest), "v1"); err != nil {
 		t.Fatalf("push manifest: %v", err)

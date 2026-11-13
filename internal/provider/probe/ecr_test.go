@@ -2,6 +2,7 @@ package probe
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/lajstrom/lajstrom/internal/config"
 )
@@ -155,5 +158,30 @@ func TestCreateThroughTheAPIOnlyWhereNeeded(t *testing.T) {
 	}
 	if r.viaAPI || len(r.made) > 0 {
 		t.Errorf("viaAPI %t, made %q on a registry that creates on push", r.viaAPI, r.made)
+	}
+}
+
+// TestManifestsECRTakes: every manifest the probe builds has an artifactType, as the image
+// specification requires of a manifest whose config is the empty blob, and at least one layer.
+// ECR refuses either otherwise: 405 UNSUPPORTED "Invalid JSON syntax" and "Image has to have at
+// least 1 layer", measured on 2026-11-13 (#19).
+func TestManifestsECRTakes(t *testing.T) {
+	r := &run{id: "t"}
+	for name, m := range map[string]manifest{
+		"plain":        r.newManifest("plain", "", nil),
+		"typed":        r.newManifest("typed", "application/vnd.example.sig", nil),
+		"with a layer": r.layerManifest("layer", emptyDesc),
+		"padded":       r.paddedManifest(4096),
+	} {
+		var got ocispec.Manifest
+		if err := json.Unmarshal(m.body, &got); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got.Config.MediaType == ocispec.MediaTypeEmptyJSON && got.ArtifactType == "" {
+			t.Errorf("%s: the empty config and no artifactType", name)
+		}
+		if len(got.Layers) == 0 {
+			t.Errorf("%s: no layer", name)
+		}
 	}
 }
