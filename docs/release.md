@@ -124,13 +124,15 @@ Once. What exists on 2026-11-11 is marked; the preflight checks the rest.
 3. Read the draft: `gh release view "$TAG" --repo lajstrom/lajstrom --web`. It has ten assets:
    four archives, four SBOMs, `checksums.txt` and `checksums.txt.sigstore.json`. For a stable
    version, put `docs/releases/vX.Y.Z.md` above the generated list of commits.
-4. The first release only: check that the image is public.
-   `gh api orgs/lajstrom/packages/container/lajstrom --jq .visibility` prints `public`. If it
-   prints `private`, open
-   [the package's settings](https://github.com/orgs/lajstrom/packages/container/lajstrom/settings)
-   and choose **Danger Zone → Change visibility → Public**. While the package is private,
-   `docker pull` and `cosign verify` without a login get `denied`. A Docker that is logged in to
-   ghcr.io does not show this.
+4. The first release only: check that the image and the Helm chart are public.
+   `gh api orgs/lajstrom/packages/container/lajstrom --jq .visibility` and
+   `gh api orgs/lajstrom/packages/container/charts%2Flajstrom --jq .visibility` print `public`.
+   For one that prints `private`, open its settings
+   ([image](https://github.com/orgs/lajstrom/packages/container/lajstrom/settings),
+   [chart](https://github.com/orgs/lajstrom/packages/container/charts%2Flajstrom/settings))
+   and choose **Danger Zone → Change visibility → Public**. While a package is private,
+   `docker pull`, `helm install` and `cosign verify` without a login get `denied`. A client that
+   is logged in to ghcr.io does not show this.
 5. Publish the draft: `gh release edit "$TAG" --repo lajstrom/lajstrom --draft=false`. The
    archive URLs, and so the cask and `brew install`, work from then on; the images are public
    as soon as they are pushed (after step 4 on the first release).
@@ -139,7 +141,8 @@ Once. What exists on 2026-11-11 is marked; the preflight checks the rest.
 **If a run fails.** The preflight failed: nothing is published; fix the secret and
 `gh run rerun <run id> --repo lajstrom/lajstrom`. The release job failed: rerun it; goreleaser
 replaces the draft and pushes the images again under the same tags, with a new digest that it
-signs. Once a release is published, its tag stays: fix forward with the next version
+signs. The chart job failed: rerun it; it pushes the chart again under the same version and signs
+the new digest. Once a release is published, its tag stays: fix forward with the next version
 (`v0.1.0-rc.2`).
 
 ### Migrations in the notes
@@ -180,7 +183,7 @@ to upgrade from, and `TestUpgrade`, which simulates the releases, is the only ch
 
 ## Verifying a release
 
-With cosign 3 (`brew install cosign`), Docker and Homebrew, on macOS arm64:
+With cosign 3 (`brew install cosign`), Docker, Helm 3.8 or later and Homebrew, on macOS arm64:
 
 ```sh
 TAG=v0.1.0-rc.1 VERSION=${TAG#v}
@@ -207,13 +210,19 @@ docker buildx imagetools inspect "ghcr.io/lajstrom/lajstrom:${TAG}"   # linux/am
 docker buildx imagetools inspect "ghcr.io/lajstrom/lajstrom:${TAG}" --format '{{ json .SBOM }}' | head -c 300
 docker buildx imagetools inspect ghcr.io/lajstrom/lajstrom:latest     # an rc: not found before v0.1.0
 
+# the chart: its signature, then its version and the image it runs
+cosign verify "ghcr.io/lajstrom/charts/lajstrom:${VERSION}" \
+  --certificate-identity "$ID" --certificate-oidc-issuer "$ISSUER" > /dev/null
+helm show chart oci://ghcr.io/lajstrom/charts/lajstrom --version "${VERSION}" | grep -E '^(version|appVersion):'
+
 # the cask
 brew install lajstrom/tap/lajstrom
 lajstrom version
 brew uninstall --cask lajstrom
 ```
 
-Each `version` prints `lajstrom v0.1.0-rc.1 (<commit>, <build time>)`. The two `cosign verify`
+Each `version` prints `lajstrom v0.1.0-rc.1 (<commit>, <build time>)`. The chart's `version` is
+`0.1.0-rc.1` and its `appVersion` `v0.1.0-rc.1`. The `cosign verify`
 lines print `The following checks were performed …` and fail on a wrong identity. On a stable
 version, `latest` names the same digest as the tag.
 
@@ -239,8 +248,9 @@ The Release workflow runs the same snapshot on every push to `main` and on a pul
 changes the release configuration. It runs the linux/amd64 binary and image. It checks that
 the binary was built by the Go of setup-go, and that govulncheck finds no vulnerable function
 of the standard library in the binary. It keeps the archives, the SBOMs, `checksums.txt`, the
-cask and `metadata.json` of `dist/` as the `lajstrom-snapshot` artifact for 14 days; not the
-unpacked binaries, and not the images:
+cask and `metadata.json` of `dist/` as the `lajstrom-snapshot` artifact for 14 days, with the
+Helm chart packaged at the snapshot's version (`make helm-package`); not the unpacked binaries,
+and not the images:
 
 ```sh
 gh run download --repo lajstrom/lajstrom --name lajstrom-snapshot \

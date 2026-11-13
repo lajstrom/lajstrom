@@ -5,7 +5,13 @@ The chart in [deploy/helm/lajstrom/](../../deploy/helm/lajstrom/) renders the de
 and restricted security context of the manifests, the configuration as a ConfigMap, and every
 secret from a Secret you make. It adds what platform teams install with: a migration Job before
 each upgrade, an optional HTTPRoute or Ingress, a ServiceMonitor, a HorizontalPodAutoscaler,
-values for scheduling, and a Job that recovers a lost password. The chart is not published yet (#82): install it from the clone.
+values for scheduling, and a Job that recovers a lost password.
+
+Each release from v0.1.0 on publishes the chart as an OCI artifact,
+`oci://ghcr.io/lajstrom/charts/lajstrom`, signed with cosign like the image. Its version is the
+release's without the `v` (`0.1.0` for v0.1.0), and it runs the image of that release. Helm 3.8
+and later, Flux's `OCIRepository` and Argo CD install it from there; `helm search repo` does not
+list OCI charts.
 
 What it assumes is what the manifests assume ([kubernetes.md](kubernetes.md#what-the-manifests-assume)):
 a Postgres that every replica shares, a registry with a user for Lajstrom, and an edge that
@@ -79,8 +85,13 @@ it is empty the throttles of failed logins and of `/v2/token` are off, and NOTES
 ## 3. Install
 
 ```sh
-helm install lajstrom ./deploy/helm/lajstrom -n lajstrom -f values.yaml --wait
+helm install lajstrom oci://ghcr.io/lajstrom/charts/lajstrom --version 0.1.0 \
+  -n lajstrom -f values.yaml --wait
 ```
+
+From a clone, `./deploy/helm/lajstrom` takes the place of the OCI reference and `--version`. A
+release candidate's chart (`0.1.0-rc.1`) is installed only by its `--version`. To check the
+chart's signature first, see [release.md](../release.md#verifying-a-release).
 
 The replicas start once the Secrets exist; without one, they wait in
 `CreateContainerConfigError`. Each replica applies the migrations at start under the migration

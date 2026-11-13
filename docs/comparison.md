@@ -323,8 +323,8 @@ the others compare. Not every point is unique to Lajstrom, and each says so wher
   repositories per region and 10 `PutImage` calls a second, both adjustable
   ([ECR quotas][ecr-quotas]). Not measured against Lajstrom yet ([#19]).
 - **You want everything declarative.** The `repos[]` bootstrap creates repos and never changes or
-  deletes one; there is no Terraform provider, and the Helm chart is in the repository but not
-  published yet ([#82]).
+  deletes one; there is no Terraform provider. The Helm chart is published with each release from
+  v0.1.0 on ([#82]), but its values are a deployment, not a set of repos.
   OpenArtifact's `oa apply --prune` and Artifactory's Terraform provider go further.
 - **You need curation, webhooks or encryption at rest now.** For curation the npm proxy has
   allow and deny name patterns, nothing more. Deny rules and quarantine are decided
@@ -397,7 +397,7 @@ issues are the truth for status ([roadmap.md](roadmap.md)).
 | rpm, the next format | planned after v0.1.0 | [#64] |
 | pypi and maven proxy repos | planned after the npm groups | [#67] |
 | Pull-through cache of Docker Hub, ghcr.io and quay.io | planned | [#442], M5, due 2027-01-15 |
-| Helm chart | in the repository ([deploy/helm.md](deploy/helm.md)); publishing planned | [#82], M5, due 2027-01-15 |
+| Helm chart | in the repository ([deploy/helm.md](deploy/helm.md)), published with each release from v0.1.0 as `oci://ghcr.io/lajstrom/charts/lajstrom` | [#82] |
 | Live ECR measurements | planned | [#19] |
 | Go modules, cargo, NuGet | on demand: no issue yet; open one with the use case | none |
 
