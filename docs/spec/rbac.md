@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | local user | `user:<uid>` (below); password (argon2id) | yes |
 | personal access token (PAT) | acts as its user, optionally narrowed by `scopes`; expiry mandatory (max 1 year, default 90 days); created with a password or by an OIDC login (§8), never with a token (§3) | yes |
-| deploy token | `token:<id>`; bound to exactly one repo; scopes `read` and/or `write`; expiry optional | yes |
+| deploy token | `token:<id>`; bound to exactly one repo, or to a mask of §3 (`oci/*`, `*/talos`), below; scopes `read` and/or `write`; expiry optional | yes |
 | anonymous | `anonymous`; only ever gets `read`, and only on repos with `anonymousRead: true` while the server-wide `auth.anonymousRead` (off by default) is on | yes |
 | group | `group:<name>`; the groups claim of a user's latest OIDC login (§8) | M6 |
 | OIDC user | `user:<uid>`, of the user its identity, the `iss` and `sub` of its ID token, maps to; made at its first login, without a password (§8) | M6 |
@@ -31,6 +31,14 @@ behind an edge, or with `server.tls`, when the peer is the client (#248); a thro
 `429` with `Retry-After`, whatever its password. Failed token secrets are not throttled
 (docs/auth.md, #130). The token endpoint `/v2/token` is rate-limited per client address, where
 Lajstrom knows it: 100 requests a second, then `429` with `Retry-After`.
+
+A **deploy token over a mask** (#911) reaches every repo its mask matches, in the grammar and by
+the matching of a binding's mask (§3): a fleet of nodes sends one credential per registry host,
+and reads several repos of it. The mask names no repo: it matches the repos created after the
+token too, from their creation on, and a repo deleted does not take the token with it. Only the
+admin role creates one (§3, the routes), and on the command line the operator (§6). Everything
+else is a deploy token's: its scopes, its optional expiry, how it authenticates, its
+revocation, its audit, its hash, its secret shown once.
 
 ### Users: the uid and the name
 
@@ -58,7 +66,8 @@ the audit log keeps the name of each event's time.
 
 Resource: a repo, identified by `<format>/<repo>`. Prefix-level resources (a path inside a repo)
 are after the MVP. Two system-level resources, which only the `admin` role reaches: `system`
-(users, bindings, registries, creating a repo, every user's tokens) and `audit`.
+(users, bindings, registries, creating a repo, every user's tokens, the deploy tokens over a
+mask) and `audit`.
 
 | Action | Meaning |
 | --- | --- |
@@ -93,7 +102,8 @@ A binding is refused with `400`, naming the field, when:
   `user:<uid>`, nor a group, `group:<name>` with a name of §8. A group need not have members:
   a binding may come before anyone logs in with the group, as before its repo. `anonymous`
   reads through a repo's `anonymousRead` and gets nothing else, and a deploy token
-  `token:<id>` gets its repo and its scopes and nothing else, so neither has bindings;
+  `token:<id>` gets its repo, or the repos of its mask, and its scopes and nothing else, so
+  neither has bindings;
 - its role is not one of the four;
 - its mask is not two segments `<format>/<repo>`, each `*` or a name: a format of this build,
   and a repo name by manifest-profile.md §4.1. The repo need not exist: a binding may come
@@ -111,8 +121,9 @@ Evaluation of `allowed(principal, action, format/repo)`. Steps 2 and 3 depend on
 credential, not on the bindings, and are checked first: a PAT's scopes narrow an `admin` too.
 
 1. `admin` binding → allow.
-2. Deploy token → allow iff the token's repo matches and `action` is in its scopes
-   (`read`/`write`); never `delete`/`manage`.
+2. Deploy token → allow iff the repo is the token's repo, or its mask matches the repo as a
+   binding's mask matches (whole segments; never `system` nor `audit`), and `action` is in its
+   scopes (`read`/`write`); never `delete`/`manage`.
 3. PAT → compute as for its user, then intersect with the PAT's scopes if set.
 4. User → any binding of the user, or of a group the user is in now (§8), whose mask matches
    the repo and whose role includes the action. A group is not a principal of a request: it
@@ -143,7 +154,9 @@ A denial on `<format>/<repo>` must not reveal whether the repo exists:
 - `403` is only for a principal that can read the repo but lacks the action (`write`, `delete`,
   `manage`): it already knows that the repo exists. A deploy token on its own repo gets `403`
   for an action outside its scopes, `read` included for a `write`-only one: it is bound to the
-  repo and knows it.
+  repo and knows it. A deploy token over a mask is bound so to every repo its mask matches and
+  gets the same `403` on each; its scopes, `read` or `write`, let it find which of them exist
+  anyway. A repo outside its mask is `404`, as for any principal with no access at all.
 
 Every other route that could tell whether a repo exists keeps the rule too, and how is part of
 this spec, so that a review need not find it in the code:
@@ -155,7 +168,14 @@ this spec, so that a review need not find it in the code:
 - **Bindings, users and the audit log** are `system` and `audit`: admin only. A binding's mask
   need not name a repo that exists (above), so creating one tells nothing either.
 - **A repo's deploy tokens** need `manage` on it, decided before the repo is looked up: the
-  answers of this rule.
+  answers of this rule. Its list holds its own tokens, not those over a mask that matches it.
+- **The deploy tokens over a mask** (`/api/v1/deploy-tokens`, http-routing.md §4) are `system`
+  (§2). The `admin` role is checked before the body is read, so the `400` of a mask that breaks
+  the grammar and the `409` of a name that is taken reach an admin only; every other principal
+  gets `403` (`anonymous` `401`), a `maintainer` on `*/*` included. The credential that creates
+  one is that of a repo's deploy token: a password, or a personal access token without scopes;
+  a personal access token with scopes and a deploy token get `403`. A mask names no repo, so the
+  routes tell nothing of which repos exist.
 - **A personal access token's scopes** are actions; they name no repo.
 - **Creating a personal access token** (`POST /api/v1/users/<name>/tokens`) takes a password
   as the request's credential, besides the user's own or the `admin` role; an OIDC login mints
@@ -222,7 +242,9 @@ MVP.
 
 Every write (`push`, `delete`), every control-plane change, and every creation and revocation of
 a personal access token or a deploy token is an `audit` row with the principal, action, repo,
-subject, digest, client IP and request id. A change of the index or of the control plane writes
+subject, digest, client IP and request id. The subject of a token's row is its owner: the
+user's `user:<uid>`, a repo's `<format>/<repo>`, which is the row's `repo` too, or the mask of a
+deploy token over a mask, with no `repo`. A change of the index or of the control plane writes
 its row in its transaction. A write to the registry, which no transaction spans, has its row
 before the write, `pending`, in a transaction of its own, and the row says how the write ended:
 `ok`, in the transaction that records the write in the index; `failed`, with the error; or
@@ -290,7 +312,9 @@ read the group gets the group's denial (§3); one that can read it and lacks the
 member gets `403` naming the member, which the group's resource already shows its readers. The
 audit rows of the write (`push`, `delete`, `npm.dist-tag`, `npm.deprecate`) are the member's,
 with `details.via` the group, `<format>/<group>`. A deploy token of a group has the scope `read`
-only; a `write` scope is `400`, since it would grant nothing.
+only; a `write` scope is `400`, since it would grant nothing. A deploy token over a mask may have
+`write` whatever its mask matches: on a group, it gets what `write` gets any principal there, a
+write through it to the hosted member when its mask matches the member too.
 
 **The admin role turns a proxy into a hosted repo** (proxy-and-group.md §2.6): the repo then
 takes publishes from whoever has `write` on it, which a proxy took from nobody, and that is a
