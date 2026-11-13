@@ -177,9 +177,9 @@ curl, 2026-11-12 (`T` the token, `L` the session's `Location`):
 ```text
 POST   /v2/lajstrom-it/curl/status/blobs/uploads/       202  Range: 0-0, Location, Docker-Upload-Uuid
 PATCH  Content-Range: 0-4   (5 bytes)                   202  Range: 0-4
-GET    the session                                      204  Range: 0-5     one byte ahead
+GET    the session                                      204  Range: 0-5     one byte ahead, no Location
 PATCH  Content-Range: 5-9                               202  Range: 0-9
-GET    the session                                      204  Range: 0-10    one byte ahead
+GET    the session                                      204  Range: 0-10    one byte ahead, no Location
 PATCH  Content-Range: 11-12 (where the status points)   416  BLOB_UPLOAD_INVALID
 PATCH  Content-Range: 10-11 (the right offset)          202  Range: 0-11
 DELETE the session                                      204
@@ -235,14 +235,17 @@ The failures, by owner:
 
 ## Upstream
 
-None of these is filed yet. Each needs a reproduction, the curl lines above:
+Filed on 2026-11-13, each with curl lines run against Forgejo 17.0.1 and, for Gitea, against
+1.27.3 and 28.3.0:
 
 - the upload status one byte ahead, against distribution-spec 1.1.1 ("The `<end-of-range>`
-  value is the position of the last uploaded byte"): [Forgejo](https://codeberg.org/forgejo/forgejo/issues), to file;
-- tags lower-cased and resolved without case, against the tag grammar, which keeps case: both
-  [Forgejo](https://codeberg.org/forgejo/forgejo/issues) and
-  [Gitea](https://github.com/go-gitea/gitea/issues), to file;
-- the 1.0 name grammar, where 1.1.1 allows `__` and runs of `-` in a component: both, to file.
+  value is the position of the last uploaded byte"); the same `GET` has no `Location`, which
+  that response must have: [forgejo#15258](https://codeberg.org/forgejo/forgejo/issues/15258). Gitea fixed both in go-gitea/gitea#34725
+  and #34795; Forgejo's ports of them, forgejo#8198 and #8259, left them out;
+- tags lower-cased and resolved without case, against the tag grammar, which keeps case:
+  [forgejo#15259](https://codeberg.org/forgejo/forgejo/issues/15259), [go-gitea/gitea#40359](https://github.com/go-gitea/gitea/issues/40359);
+- the 1.0 name grammar, where 1.1.1 allows `__` and runs of `-` in a component:
+  [forgejo#15260](https://codeberg.org/forgejo/forgejo/issues/15260), [go-gitea/gitea#40360](https://github.com/go-gitea/gitea/issues/40360).
 
 The [deviations](README.md#deviations-from-the-specification) table has them with the spec's
 words.
