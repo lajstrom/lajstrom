@@ -53,6 +53,8 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"PackageNameOCIRace", testPackageNameOCIRace},
 		{"PackageRace", testPackageRace},
 		{"Versions", testVersions},
+		{"PackagePages", testPackagePages},
+		{"VersionPages", testVersionPages},
 		{"VersionTagRace", testVersionTagRace},
 		{"Files", testFiles},
 		{"IndexCache", testIndexCache},

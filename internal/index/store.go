@@ -136,6 +136,10 @@ type Reader interface {
 	// ListPackages returns the packages of a repo whose name starts with prefix ("" = all),
 	// ordered by name.
 	ListPackages(ctx context.Context, repoID int64, prefix string) ([]Package, error)
+	// ListPackagesAfter returns a page of ListPackages(prefix): the packages whose name comes
+	// after after in byte order ("" = from the first), ordered by name, at most limit of them;
+	// none when limit is below 1 (docs/spec/index-schema.md, Pages of packages and versions).
+	ListPackagesAfter(ctx context.Context, repoID int64, prefix, after string, limit int) ([]Package, error)
 
 	// GetVersion returns the version of a package by version and variant ("" when none).
 	GetVersion(ctx context.Context, packageID int64, version, variant string) (*Version, error)
@@ -145,6 +149,11 @@ type Reader interface {
 	GetVersionByDigest(ctx context.Context, repoID int64, d digest.Digest) (*Version, error)
 	// ListVersions returns the versions of a package ordered by CreatedAt, then ID.
 	ListVersions(ctx context.Context, packageID int64) ([]Version, error)
+	// ListVersionPage returns the rows of the first limit versions of a package whose
+	// VersionKey comes after after (nil = from the newest) in the order newest first, every
+	// variant of each: a version's rows are together, ordered by Variant. None when limit is
+	// below 1 (docs/spec/index-schema.md, Pages of packages and versions).
+	ListVersionPage(ctx context.Context, packageID int64, after *VersionKey, limit int) ([]Version, error)
 	// ListUnseenVersions returns the versions of a repo whose IndexedAt is before seenBefore,
 	// with their packages, ordered by package name and version id: the sweep of reindex.
 	ListUnseenVersions(ctx context.Context, repoID int64, seenBefore time.Time) ([]VersionMatch, error)

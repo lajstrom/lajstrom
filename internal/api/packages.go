@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -71,14 +70,12 @@ func (h *handler) listPackages(_ http.ResponseWriter, r *http.Request) (int, any
 	if err != nil {
 		return 0, nil, repoError("list the packages of", f, name, err)
 	}
-	pkgs, err := h.repos.Index.ListPackages(ctx, repo.ID, r.URL.Query().Get("prefix"))
+	// One more than the page: whether another follows. The store orders by bytes, as the
+	// cursor compares.
+	pkgs, err := h.repos.Index.ListPackagesAfter(ctx, repo.ID, r.URL.Query().Get("prefix"), after, limit+1)
 	if err != nil {
 		return 0, nil, fmt.Errorf("api: packages of %s/%s: %w", f, name, err)
 	}
-	// The database's collation may order names otherwise than the bytes, which the cursor
-	// compares.
-	slices.SortFunc(pkgs, func(a, b index.Package) int { return strings.Compare(a.Name, b.Name) })
-	pkgs = pkgs[sort.Search(len(pkgs), func(i int) bool { return pkgs[i].Name > after }):]
 	list := PackageList{Packages: []PackageEntry{}}
 	for i, p := range pkgs {
 		if i == limit {
@@ -102,11 +99,13 @@ func (h *handler) listVersions(_ http.ResponseWriter, r *http.Request) (int, any
 	if err != nil {
 		return 0, nil, err
 	}
-	var from *versionKey
+	var from *index.VersionKey
 	if after != "" {
-		if from, err = parseVersionKey(after); err != nil {
+		k, err := parseVersionKey(after)
+		if err != nil {
 			return 0, nil, invalid("cursor: %q is not the next of a page of this list", r.URL.Query().Get("cursor"))
 		}
+		from = &index.VersionKey{CreatedAt: k.At, Version: k.Version}
 	}
 	ctx := r.Context()
 	repo, err := h.repos.Index.GetRepo(ctx, f, name)
@@ -117,12 +116,9 @@ func (h *handler) listVersions(_ http.ResponseWriter, r *http.Request) (int, any
 	if err != nil {
 		return 0, nil, err
 	}
-	versions, err := listedVersions(ctx, h.repos.Index, repo, pkg)
+	versions, err := listedVersions(ctx, h.repos.Index, repo, pkg, from, limit+1)
 	if err != nil {
 		return 0, nil, err
-	}
-	if from != nil {
-		versions = versions[sort.Search(len(versions), func(i int) bool { return from.before(keyOf(versions[i])) }):]
 	}
 	list := VersionList{Versions: []VersionEntry{}}
 	for i, v := range versions {
@@ -149,9 +145,10 @@ func (h *handler) packageOf(r *http.Request, repo *index.Repo) (*index.Package, 
 	return pkg, nil
 }
 
-// listedVersions returns the versions of pkg with their variants and pointers, newest first.
-func listedVersions(ctx context.Context, rd index.Reader, repo *index.Repo, pkg *index.Package) ([]VersionEntry, error) {
-	rows, err := rd.ListVersions(ctx, pkg.ID)
+// listedVersions returns limit versions of pkg after the key from (nil: from the newest), newest
+// first, with their variants and pointers.
+func listedVersions(ctx context.Context, rd index.Reader, repo *index.Repo, pkg *index.Package, from *index.VersionKey, limit int) ([]VersionEntry, error) {
+	rows, err := rd.ListVersionPage(ctx, pkg.ID, from, limit)
 	if err != nil {
 		return nil, fmt.Errorf("api: versions of %q in %s/%s: %w", pkg.Name, repo.Format, repo.Name, err)
 	}
@@ -206,9 +203,6 @@ func keyOf(v VersionEntry) versionKey { return versionKey{At: v.PublishedAt, Ver
 func (k versionKey) compare(o versionKey) int {
 	return cmp.Or(o.At.Compare(k.At), strings.Compare(o.Version, k.Version))
 }
-
-// before reports whether k comes before o in the order of the list.
-func (k versionKey) before(o versionKey) bool { return k.compare(o) < 0 }
 
 // String is the key as a cursor holds it: the time in RFC 3339 with nanoseconds, |, the version.
 func (k versionKey) String() string { return k.At.UTC().Format(time.RFC3339Nano) + "|" + k.Version }
