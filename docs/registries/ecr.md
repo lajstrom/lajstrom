@@ -60,8 +60,10 @@ Anything neither source states nor the run measured is marked *unverified*.
 - **Delete**: `DeleteRepository`; `registries[].ecr.forceDelete` deletes the images too, and
   without it ECR refuses a repository that holds any (`409`). On `/v2` (measured): a `DELETE`
   by digest is 202 and takes the manifest's tags with it, and leaves its referrers; a `DELETE`
-  by tag deletes the manifest too, not the tag alone, which is what a delete by tag through
-  Lajstrom means anyway (it refuses one whose manifest other tags name, #284); a manifest
+  by tag deletes the tag, and the manifest goes with its last tag, as on Quay (measured: of a
+  manifest under two tags, the other tag and the digest still answer 200; of one under one
+  tag, the digest is 404). A delete by tag through Lajstrom refuses one whose manifest other
+  tags name (#284), so it removes the manifest on ECR as on every registry; a manifest
   that an image index lists is 405 `UNSUPPORTED` "Requested image referenced by manifest list:
   [sha256:…]", which the provider takes as one refused delete (`ErrConflict`, 409), as it takes
   Zot's 405 `DENIED`, and not as a registry without deletes (#19).
@@ -275,6 +277,13 @@ specification v1.1.1](https://github.com/opencontainers/image-spec/blob/v1.1.1/m
 | 7 | A manifest that an image index lists: its `DELETE` is 405 `UNSUPPORTED` | "If manifest deletion is disabled, the registry MUST respond with either a `400 Bad Request` or a `405 Method Not Allowed`" | the provider took it for deletes disabled, and refused every delete after it until a restart | one refused delete, `ErrConflict` (#19) |
 | 8 | A manifest above 4 MiB is 400 `MANIFEST_INVALID` | "SHOULD respond … with a response code `413 Payload Too Large`" | nothing: the limit is known | none needed |
 
+Reported upstream on 2026-11-13, with scripts that reproduce them: items 2 to 5 in [a
+comment on aws/containers-roadmap#2831](https://github.com/aws/containers-roadmap/issues/2831#issuecomment-6857170791),
+which reported the 201 and a stuck `Range` (fixed by AWS on 2026-07-13); item 6 in
+[aws/containers-roadmap#2914](https://github.com/aws/containers-roadmap/issues/2914); items 7
+and 8, and the codes of a wrong digest (`BLOB_UPLOAD_INVALID` for `DIGEST_INVALID`) and of an
+immutable tag (`TAG_INVALID`), in [aws/containers-roadmap#2915](https://github.com/aws/containers-roadmap/issues/2915).
+
 Not deviations, measured: a manifest with the empty config and no `artifactType` is refused,
 rightly ("If the `config.mediaType` is set to the empty value, the `artifactType` MUST be
 defined"), with item 1's code and message; `lajstrom registry probe` pushed such manifests
@@ -345,7 +354,7 @@ end, and the account's ECR and IAM state compared equal to a record taken before
 | Tag list order and pagination | **in its own order**; **`last` an opaque token**, a tag name 405 `UNSUPPORTED`; `n` with an absolute `Link` |
 | Read-after-write lag | none seen: 40 manifests by digest and tag, a blob, a tag list, the deletes |
 | Delete a manifest by digest | yes, 202, with its tags; its referrers stay; **405 `UNSUPPORTED`** for a manifest an index lists |
-| Delete by tag | the tag; **the manifest too** |
+| Delete by tag | the tag; the manifest goes with its last tag |
 | Delete a repository | no `/v2` API; `DeleteRepository`, with `force` for one with images |
 | Immutable tags, where the rule lives | the repository's `imageTagMutability`: 400 `TAG_INVALID` to re-point; the same manifest again 201 |
 | Blob redirect | 307 to `prod-ap-southeast-1-starport-layer-bucket.s3.ap-southeast-1.amazonaws.com`, presigned for 60 min; not for `HEAD` |
