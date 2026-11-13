@@ -1,9 +1,10 @@
 # Lajstrom compared with other artifact repositories
 
 - Checked on 2026-11-10: Lajstrom against `main` at `1f4adca` and its open pull requests, with
-  group repos, `lajstrom registry probe` and retention brought up to `main` on 2026-11-12; every
-  other product against its own documentation, pricing page, release list or source, read on
-  2026-11-10 and listed under [Sources](#sources).
+  group repos, `lajstrom registry probe` and retention brought up to `main` on 2026-11-12, and
+  its formats, proxy repos, OIDC, registries and plans brought up to `main` at `c12da6f` on
+  2026-11-13; every other product against its own documentation, pricing page, release list or
+  source, read on 2026-11-10 and listed under [Sources](#sources).
 - For people choosing an artifact repository: what Lajstrom does today, what it does not do,
   and where the others are ahead.
 
@@ -21,10 +22,13 @@ How to read this page:
 An artifact registry that keeps every package in an OCI registry you already run. It speaks
 each format's own protocol on the server, so `pip`, `apt-get`, `mvn`, `npm` and `curl` need no
 plugin ([ADR 0002](adr/0002-server-side-protocol-emulation.md)). Today it serves hosted repos of
-raw files, pypi, apt, maven and npm ([configuration.md](configuration.md#repos)), `oci` repos
-for any OCI artifact or image through `/v2` with its RBAC and audit
-([manifest-profile.md](spec/manifest-profile.md) §7), a proxy repo of npmjs.org and a group of
-both ([ADR 0013](adr/0013-proxy-and-group-repos.md)). It rests on three things.
+raw files, pypi, apt, maven, npm and rpm ([configuration.md](configuration.md#repos)), `oci`
+repos for any OCI artifact or image through `/v2` with its RBAC and audit
+([manifest-profile.md](spec/manifest-profile.md) §7), proxy repos of npmjs.org and, as `oci`
+proxy repos, of any OCI registry such as Docker Hub, ghcr.io or quay.io, and groups of npm repos
+and of `oci` repos ([ADR 0013](adr/0013-proxy-and-group-repos.md),
+[ADR 0018](adr/0018-oci-proxy-repos-pull-through-from-any-registry.md),
+[ADR 0019](adr/0019-oci-groups-one-member-per-repository-path.md)). It rests on three things.
 
 **Your OCI registry is the only storage, and the index is rebuildable.** Each version of a
 package, or each variant of it (an apt architecture, a wheel), is one OCI 1.1 manifest under one
@@ -66,8 +70,9 @@ the packages stay readable with `oras` or `crane` without Lajstrom
 - Apache-2.0 and one edition: HA, RBAC and audit are not paid extras
   ([LICENSE](../LICENSE), [ADR 0003](adr/0003-license-and-contribution-terms.md)).
 - What Lajstrom does on each registry is measured, not assumed: the
-  [capability matrix](registries/README.md#capabilities) records 27 behaviours of distribution,
-  Zot, the GitLab container registry, GHCR, Harbor, Nexus and Gitea/Forgejo. Lajstrom probes each
+  [capability matrix](registries/README.md#capabilities) records 31 behaviours of distribution,
+  Zot, the GitLab container registry, GHCR, Harbor, Nexus, Gitea and Forgejo, and in tables of
+  their own JFrog Container Registry, Project Quay and Amazon ECR. Lajstrom probes each
   registry at startup ([configuration.md](configuration.md#registry-capabilities)), and
   `lajstrom registry probe` measures a registry's column for you
   ([registries/README.md](registries/README.md#measuring-a-registry-lajstrom-registry-probe)).
@@ -83,7 +88,7 @@ alternative ([registries/README.md](registries/README.md)).
 
 | Product | Formats | Where the bytes live | Index rebuilt from storage | HA, and what it needs |
 | --- | --- | --- | --- | --- |
-| **Lajstrom** | 5: raw, pypi, apt, maven, npm; any OCI artifact through `oci` repos | the OCI registry you run; no storage of its own ([ADR 0001](adr/0001-oci-registry-as-sole-storage.md)) | yes, `lajstrom reindex` from tags and annotations; the control plane is backed up ([ADR 0006](adr/0006-derived-index-and-control-plane.md)) | yes: N stateless replicas and Postgres, no shared volume ([kubernetes.md](deploy/kubernetes.md)) |
+| **Lajstrom** | 6: raw, pypi, apt, maven, npm, rpm; any OCI artifact through `oci` repos | the OCI registry you run; no storage of its own ([ADR 0001](adr/0001-oci-registry-as-sole-storage.md)) | yes, `lajstrom reindex` from tags and annotations; the control plane is backed up ([ADR 0006](adr/0006-derived-index-and-control-plane.md)) | yes: N stateless replicas and Postgres, no shared volume ([kubernetes.md](deploy/kubernetes.md)) |
 | [Artifact Keeper](#artifact-keeper) | 45+, and WASM format plugins | filesystem, S3, Azure Blob, GCS | no: metadata only in Postgres; a repair endpoint for Maven repos only | possible, not the default: the chart ships 1 replica with `Recreate`; more need RWX or object storage and flags |
 | [NORA](#nora) | 17 | local disk, S3, GCS | yes: no database; the in-memory index is rebuilt at startup from its own storage | none, "by design" |
 | [OpenArtifact](#openartifact) | 23 | filesystem, S3, GCS, Azure, or an OCI registry used as a bare blob store | partly: package rows from sidecar journal blobs, refused on the OCI backend; users, permissions, tokens and audit not recovered | `web` replicas and workers on one Postgres |
@@ -101,7 +106,7 @@ alternative ([registries/README.md](registries/README.md)).
 
 | Product | License | Paid tiers | Auth: local, LDAP, OIDC, SAML | RBAC granularity | Audit |
 | --- | --- | --- | --- | --- | --- |
-| **Lajstrom** | Apache-2.0; contributors sign a [CLA](../CLA.md) that also allows another OSI-approved licence ([ADR 0003](adr/0003-license-and-contribution-terms.md)) | none | local users, personal access tokens with a required expiry, deploy tokens for one repo; **no LDAP, OIDC or SAML yet** ([auth.md](auth.md)) | a role on a repo mask with whole-segment wildcards (`apt/*`, `*/payments`); 4 roles; token scopes ([rbac.md](spec/rbac.md)) | every write and control-plane change, in the change's own transaction; reads are not ([operations.md](operations.md#audit)) |
+| **Lajstrom** | Apache-2.0; contributors sign a [CLA](../CLA.md) that also allows another OSI-approved licence ([ADR 0003](adr/0003-license-and-contribution-terms.md)) | none | local users, personal access tokens with a required expiry, deploy tokens for one repo; OIDC login with one provider, its groups bound to roles ([auth.md](auth.md#oidc-login-and-groups)); **no LDAP or SAML yet** ([auth.md](auth.md)) | a role on a repo mask with whole-segment wildcards (`apt/*`, `*/payments`); 4 roles; token scopes ([rbac.md](spec/rbac.md)) | every write and control-plane change, in the change's own transaction; reads are not ([operations.md](operations.md#audit)) |
 | [Artifact Keeper](#artifact-keeper) | MIT | none (GitHub Sponsors) | local, LDAP, OIDC, SAML 2.0, TOTP | global roles, and read, write, delete, admin per repo for users or groups; per path: ? | yes |
 | [NORA](#nora) | MIT | none (a paid edition behind its "Community Edition" naming: ?) | htpasswd and API tokens; OIDC for CI workloads only; no LDAP or SSO | one global role per token (read, write, admin); no per-repo RBAC | append-only JSONL |
 | [OpenArtifact](#openartifact) | AGPL-3.0-or-later | none found | local, OIDC, SAML; LDAP through Dex | permission targets: a regex on the repository and on the path | yes |
@@ -119,7 +124,7 @@ alternative ([registries/README.md](registries/README.md)).
 
 | Product | Proxy and cache | Groups, virtual repos | Signing; OCI referrers | GitOps, declarative | Footprint |
 | --- | --- | --- | --- | --- | --- |
-| **Lajstrom** | npm only (npmjs.org): allow and deny name patterns, metadata TTLs, an offline mode, one upstream fetch per file across replicas, `npm audit` forwarded ([proxy-and-group.md](spec/proxy-and-group.md)) | npm only: the hosted repo and a proxy under one URL; a name the hosted repo holds hides the upstream's versions ([proxy-and-group.md](spec/proxy-and-group.md) §8) | cosign, notation, SBOMs and attestations as referrers of any package, with a tag-schema fallback; apt metadata GPG-signed | a YAML bootstrap that creates repos and never changes or deletes one ([configuration.md](configuration.md#repos)); REST API; `lajstrom admin` CLI; Kubernetes manifests | one Go binary, about 65 MiB resident idle and 66 MiB with 8 × 1 GiB uploads in flight ([operations.md](operations.md#the-load-test)); Postgres or SQLite; your registry |
+| **Lajstrom** | npm (npmjs.org), and `oci` proxy repos, a pull-through cache of any OCI registry: Docker Hub, ghcr.io, quay.io, ECR, Artifact Registry ([proxy-and-group.md](spec/proxy-and-group.md) §11); allow and deny name patterns, metadata TTLs, an offline mode, one upstream fetch per file across replicas, `npm audit` forwarded ([proxy-and-group.md](spec/proxy-and-group.md)); none for pypi, maven, apt or rpm | npm and `oci`: npm's hosted repo and a proxy under one URL, where a name the hosted repo holds hides the upstream's versions ([proxy-and-group.md](spec/proxy-and-group.md) §8); an `oci` group, read-only, routes each repository path to one member (§12) | cosign, notation, SBOMs and attestations as referrers of any package, with a tag-schema fallback; apt and rpm metadata GPG-signed | a YAML bootstrap that creates repos and never changes or deletes one ([configuration.md](configuration.md#repos)); REST API; `lajstrom admin` CLI; Kubernetes manifests | one Go binary, about 65 MiB resident idle and 66 MiB with 8 × 1 GiB uploads in flight ([operations.md](operations.md#the-load-test)); Postgres or SQLite; your registry |
 | [Artifact Keeper](#artifact-keeper) | remote repos with freshness rules | virtual repos | GPG, RSA or ed25519 signing of rpm, deb, apk, pacman and conda metadata; stores cosign signatures; referrers API | export and apply of repository settings; Helm chart, Argo CD | Rust backend with Postgres, OpenSearch and optional scanners; a 2 GiB limit in its chart |
 | [NORA](#nora) | most formats, with curation: block and allow lists, a minimum age, quarantine, OSV | no | rpm and deb indexes signed with OpenPGP; no referrers API | a config file, and curation rules as files in git; hot reload | one static binary of about 23 MB, about 15 MB resident idle; no database |
 | [OpenArtifact](#openartifact) | 22 of its 23 formats | yes | apt and rpm metadata GPG-signed; referrers: a route exists in its code, ? | `oa apply`, `oa diff`, `oa export --prune` over users, groups, repos, permissions, SSO | one Go binary and Postgres |
@@ -143,8 +148,10 @@ the others compare. Not every point is unique to Lajstrom, and each says so wher
 - **What holds.** No artifact byte is stored outside the registry. A version, or a variant of
   it, is a self-describing OCI 1.1 manifest (`artifactType`, `lajstrom.*` annotations, the file
   name in `org.opencontainers.image.title`), so another OCI tool reads it without Lajstrom.
-  Files that a proxy repo fetches are written the same way, through the same ingest path
-  ([ADR 0013](adr/0013-proxy-and-group-repos.md)).
+  Files that an npm proxy repo fetches are written the same way, through the same ingest path
+  ([ADR 0013](adr/0013-proxy-and-group-repos.md)); an `oci` proxy repo keeps the upstream's own
+  manifests and blobs unchanged, since a manifest of the profile would change the digest the
+  client asked for ([ADR 0018](adr/0018-oci-proxy-repos-pull-through-from-any-registry.md)).
 - **Check it.** [ADR 0001](adr/0001-oci-registry-as-sole-storage.md),
   [manifest-profile.md](spec/manifest-profile.md); [quickstart/raw.md](quickstart/raw.md)
   pushes a file with `curl -T` and reads its manifest with `crane`.
@@ -226,8 +233,11 @@ the others compare. Not every point is unique to Lajstrom, and each says so wher
   `201`, one `409`), a chunked upload continued on the other replica, and both replicas
   restarted in turn under a loop of `pip install` with no failed request
   ([acceptance.md](acceptance.md) §4). It runs with `make e2e` on the dev stack's `ha` profile,
-  not in CI. [kubernetes.md](deploy/kubernetes.md#what-was-not-verified) lists what was not
-  verified: a multi-node cluster, a managed Postgres, upgrades.
+  and in the HA workflow every night and on pull requests that change ingest, the index, the
+  facade or its own setup, as a check that is not required
+  ([testing.md](testing.md#the-ha-stack)).
+  [kubernetes.md](deploy/kubernetes.md#what-was-not-verified) lists what was not verified: a
+  multi-node cluster, a managed Postgres, upgrades.
 - **The others.** Not unique: Harbor, Pulp and OpenArtifact have HA free too
   ([Harbor HA][hb-ha], [Pulp architecture][pulp-arch], [OpenArtifact scaling][oa-scaling]).
   It is paid in Nexus (Pro, [editions][nx-editions]), Artifactory (Enterprise X,
@@ -257,12 +267,13 @@ the others compare. Not every point is unique to Lajstrom, and each says so wher
 ### 3.6 Registry behaviour is measured
 
 - **What holds.** Lajstrom runs on other registries, so how each behaves is part of the product.
-  The [matrix](registries/README.md) records 27 behaviours per registry (create on push,
+  The [matrix](registries/README.md) records 31 behaviours per registry (create on push,
   referrers, catalog, deletes, immutable tags, blob redirects, upload sessions, garbage
   collection of referrers and more) and lists each registry's deviations from the OCI
   specification. distribution 3.1.2 and Zot v2.1.23 run in CI on every pull request with code;
-  the GitLab container registry, GHCR, Harbor 2.15.4, Nexus 3.98.1 CE, Gitea 1.27.3 and Forgejo
-  17.0.1 were measured by hand on the dates the matrix gives.
+  the GitLab container registry, GHCR, Harbor 2.15.4, Nexus 3.98.1 CE, Gitea 1.27.3, Forgejo
+  17.0.1, JFrog Container Registry 7.161.26, Project Quay 3.18.2 and Amazon ECR were measured by
+  hand on the dates the matrix gives.
 - **Check it.** [registries/README.md](registries/README.md#versions-tested); the startup probe
   and the vendor table in [configuration.md](configuration.md#registry-capabilities);
   `lajstrom registry probe`, which measures a registry's column
@@ -287,18 +298,21 @@ the others compare. Not every point is unique to Lajstrom, and each says so wher
 
 ## 4. Where Lajstrom is not the right choice today
 
-- **You need many formats.** Lajstrom has 5 (raw, pypi, apt, maven, npm) and OCI artifacts. It
-  has no rpm, terraform, go, cargo, nuget, gems or conda. A Helm chart goes into an `oci` repo as
+- **You need many formats.** Lajstrom has 6 (raw, pypi, apt, maven, npm, rpm) and OCI artifacts.
+  It has no terraform, go, cargo, nuget, gems or conda. A Helm chart goes into an `oci` repo as
   an OCI artifact; no `index.yaml` repository is served, and `helm` itself is not in the tests.
   Artifact Keeper has 45+, Artifactory 40+ in its paid editions, Cloudsmith 33, Nexus about 25,
   OpenArtifact, Gitea and Forgejo 23 each, ProGet about 22, NORA 17 (see the matrix).
 - **You need a web UI.** There is none yet. A read-only UI is being built in its own repository,
   [lajstrom-ui](https://github.com/lajstrom/lajstrom-ui) ([#70]).
-- **You need SSO.** Local users and tokens only: no OIDC ([#69]), LDAP or SAML.
-- **You need a pull-through cache for everything.** The only proxy is npm's, and group repos
-  exist for npm only; pypi and maven proxies and groups come after them ([#67], [#68]); a
-  pull-through cache of Docker Hub, ghcr.io and quay.io is planned for M5, due 2027-01-15
-  ([#442]). Nexus, Artifactory, NORA, and Harbor for images, do this today.
+- **You need LDAP or SAML.** Besides local users and tokens there is OIDC login with one
+  provider, whose groups bind to roles ([#69], [auth.md](auth.md#oidc-login-and-groups)); there
+  is no LDAP or SAML.
+- **You need a pull-through cache for everything.** Proxy and group repos exist for npm and for
+  `oci` repos: an `oci` proxy is a pull-through cache of Docker Hub, ghcr.io, quay.io or any
+  other OCI registry ([#442], [quickstart/oci-proxy.md](quickstart/oci-proxy.md)). pypi, maven,
+  apt and rpm have none; pypi and maven proxies and groups are post-MVP and not scheduled
+  ([#67], [#68]). Nexus, Artifactory and NORA do this today.
 - **You need a released, settled product.** The repository was created on 2026-11-05 and has
   no release: v0.1.0 is due on 2026-12-04 ([roadmap.md](roadmap.md)). While it is 0.x, the
   HTTP API, the configuration and the CLI may change between versions (README, "Our promise to
@@ -306,10 +320,16 @@ the others compare. Not every point is unique to Lajstrom, and each says so wher
   OpenArtifact v0.23.0, Harbor v2.16.0, Nexus 3.98.1, Artifactory 7.173.18 (see Sources).
 - **Your registry is not in the matrix yet, or is in it with a limit**
   ([registries/README.md](registries/README.md)):
-  - ECR is tested against moto, the AWS mock, only; live ECR is pending [#19]
-    ([ecr.md](registries/ecr.md)). Quay, ACR and Docker Hub are untested, Google Artifact
-    Registry too.
-  - JFrog JCR is measured and is "not a backend for data yet".
+  - ECR was measured live, by hand, on 2026-11-13 ([#19],
+    [ecr.md](registries/ecr.md#measured-on-ecr-19)); no ECR runs in CI. It refuses a manifest
+    with a property its schema lacks, which an `oci` proxy repo meets in some upstreams'
+    attestations ([registries/README.md](registries/README.md#amazon-ecr)). ACR and Docker Hub
+    are untested as backends, Google Artifact Registry too.
+  - JFrog JCR and Project Quay are measured, and each is "a backend for trying Lajstrom, not for
+    data": JCR until it is run again with the provider's work-arounds of #352 and #368
+    ([jfrog-jcr.md](registries/jfrog-jcr.md#configuration)), Quay while a referrer pushed by
+    digest cannot be deleted and a rebuild from an empty index finds no repository
+    ([quay.md](registries/quay.md#our-tests-against-it)).
   - GHCR cannot delete through `/v2`, so Lajstrom cannot delete versions there.
   - The GitLab container registry with its metadata database refuses Lajstrom's manifests unless
     `REGISTRY_FF_DYNAMIC_MEDIA_TYPES` is on; on GitLab.com users cannot set it
@@ -321,13 +341,15 @@ the others compare. Not every point is unique to Lajstrom, and each says so wher
 - **Your registry's quotas become Lajstrom's.** Each package is an OCI repository and each
   version a manifest push, so registry limits apply, for instance ECR's default 100,000
   repositories per region and 10 `PutImage` calls a second, both adjustable
-  ([ECR quotas][ecr-quotas]). Not measured against Lajstrom yet ([#19]).
+  ([ECR quotas][ecr-quotas]). [#19] measured ECR without load and read the account's quotas;
+  Lajstrom under load against them, and the image quota, are not measured
+  ([ecr.md](registries/ecr.md#measured-on-ecr-19)).
 - **You want everything declarative.** The `repos[]` bootstrap creates repos and never changes or
   deletes one; there is no Terraform provider. The Helm chart is published with each release from
   v0.1.0 on ([#82]), but its values are a deployment, not a set of repos.
   OpenArtifact's `oa apply --prune` and Artifactory's Terraform provider go further.
-- **You need curation, webhooks or encryption at rest now.** For curation the npm proxy has
-  allow and deny name patterns, nothing more. Deny rules and quarantine are decided
+- **You need curation, webhooks or encryption at rest now.** For curation the npm and `oci`
+  proxies have allow and deny name patterns, nothing more. Deny rules and quarantine are decided
   ([ADR 0008](adr/0008-policy-verdicts-and-enforcement.md)) but not built; NORA, Artifact
   Keeper and OpenArtifact ship curation free. Webhooks are [#77]. Encryption at rest is decided
   ([ADR 0009](adr/0009-encryption-at-rest-in-the-registry.md)) and not built ([#114]).
@@ -387,37 +409,37 @@ How to do each today:
 
 ## 6. Planned
 
-As of 2026-11-10, less group repos and `lajstrom registry probe`, which have merged since. The
-issues are the truth for status ([roadmap.md](roadmap.md)).
+As of 2026-11-13, `main` at `c12da6f`. Four rows of 2026-11-10 are on `main` and left the
+table: OIDC login with groups from claims ([#69]), rpm ([#64]), the pull-through cache of Docker
+Hub, ghcr.io and quay.io ([#442]) and the live ECR measurements ([#19]); so did group repos and
+`lajstrom registry probe` before them. The issues are the truth for status
+([roadmap.md](roadmap.md)).
 
 | What | State | Tracking |
 | --- | --- | --- |
 | Read-only web UI | in progress in [lajstrom-ui](https://github.com/lajstrom/lajstrom-ui) | [#70] |
-| OIDC login, groups from claims | planned after v0.1.0 | [#69] |
-| rpm, the next format | planned after v0.1.0 | [#64] |
-| pypi and maven proxy repos | planned after the npm groups | [#67] |
-| Pull-through cache of Docker Hub, ghcr.io and quay.io | planned | [#442], M5, due 2027-01-15 |
+| pypi and maven proxy and group repos | post-MVP, not scheduled | [#67], [#68] |
 | Helm chart | in the repository ([deploy/helm.md](deploy/helm.md)), published with each release from v0.1.0 as `oci://ghcr.io/lajstrom/charts/lajstrom` | [#82] |
-| Live ECR measurements | planned | [#19] |
 | Go modules, cargo, NuGet | on demand: no issue yet; open one with the use case | none |
 
 ## 7. Who it fits
 
 **It fits** a platform team that already runs ECR, Harbor, Zot or GitLab and wants pypi, apt,
-maven and npm repositories without a second storage system: no filestore to size, back up or
-cluster, the registry's replication, encryption and IAM apply to packages, and the packages stay
-readable with `oras` if Lajstrom goes away. Check your registry's column in the matrix first:
-Zot runs in CI, Harbor 2.15.4 and the GitLab registry were measured by hand, ECR only against
-moto until [#19], and the GitLab registry with its metadata database needs
+maven, npm and rpm repositories without a second storage system: no filestore to size, back up
+or cluster, the registry's replication, encryption and IAM apply to packages, and the packages
+stay readable with `oras` if Lajstrom goes away. Check your registry's column in the matrix
+first: Zot runs in CI, Harbor 2.15.4, the GitLab registry and ECR were measured by hand (ECR on
+2026-11-13, [#19]), and the GitLab registry with its metadata database needs
 `REGISTRY_FF_DYNAMIC_MEDIA_TYPES`.
 
 It also fits teams with OCI tooling everywhere (Flux, Helm charts as OCI, cosign, admission
 policies) who want one signing and attestation model for packages and images.
 
 **It does not fit yet** when you need to replace Artifactory or Nexus across many formats, with
-SSO, a UI, scanning and pull-through caches for all of them; when you want one small cache for
-docker, npm and pip with curation on a single node (NORA), or for npm alone (Verdaccio); or when
-the package registry built into GitLab, Gitea or Forgejo already covers what you need.
+LDAP or SAML, a UI, scanning and pull-through caches for all of them; when you want one small
+cache for docker, npm and pip with curation on a single node (NORA), or for npm alone
+(Verdaccio); or when the package registry built into GitLab, Gitea or Forgejo already covers
+what you need.
 
 ## Sources
 
