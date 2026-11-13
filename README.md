@@ -77,7 +77,9 @@ best part of it:
 - **Scale out by adding replicas.** Replicas on one Postgres share the work; PgBouncer and
   YugabyteDB are tested too ([databases](docs/deploy/databases.md)). An upload goes on through
   any replica. A proxy fetch is claimed with a heartbeat, so if a replica dies mid-fetch,
-  another takes it over. CI runs two replicas behind a load balancer on every pull request.
+  another takes it over. The HA workflow runs two replicas behind nginx every night and on pull
+  requests that change ingest, the index, the facade or its own setup; it is not a required
+  check ([testing](docs/testing.md#the-ha-stack)).
 - **Plays by the platform's rules.** `/-/healthz` and `/-/readyz` serve the probes. On SIGTERM
   a replica drains before it exits: readiness answers 503 and connections close. Configuration
   is one YAML file plus the environment, and secrets come from files, so Kubernetes Secrets
