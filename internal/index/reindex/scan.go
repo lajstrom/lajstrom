@@ -336,6 +336,11 @@ func (s *scan) tag(ctx context.Context, rr provider.Repository, cache *manifests
 		if pkg, known, err = s.known(ctx, pkgPath, tag); s.dbErr(err) {
 			return
 		}
+		if pkg != nil && known == nil {
+			if known, err = s.folded(ctx, rr, pkg, tag, desc.Digest); s.dbErr(err) {
+				return
+			}
+		}
 	}
 	switch {
 	case known != nil && known.Digest != desc.Digest:
@@ -353,7 +358,53 @@ func (s *scan) tag(ctx context.Context, rr provider.Repository, cache *manifests
 		s.failure(Finding{Repository: pkgPath, Tag: tag, Digest: desc.Digest, Error: err.Error()})
 		return
 	}
-	s.classify(ctx, pkgPath, tag, desc, raw, known != nil)
+	s.classify(ctx, rr, pkgPath, tag, desc, raw, known != nil)
+}
+
+// folded returns the version of pkg whose manifest is d, listed under tag, when the index has it
+// under a tag that differs from tag only in case and the registry resolves that tag to d too:
+// a registry that folds the case of tags (Gitea, Forgejo) lists 1.4.0-m1 for the 1.4.0-M1 that
+// ingest pushed (#844). Nil otherwise, and on a registry that keeps case, where the version's
+// own tag is listed apart.
+func (s *scan) folded(ctx context.Context, rr provider.Repository, pkg *index.Package, tag string, d digest.Digest) (*index.Version, error) {
+	v, err := s.w.index.GetVersionByDigest(ctx, s.repo.ID, d)
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	case v.PackageID != pkg.ID || v.Tag == tag || !strings.EqualFold(v.Tag, tag):
+		return nil, nil
+	}
+	if desc, err := rr.Resolve(ctx, v.Tag); err != nil || desc.Digest != d {
+		return nil, nil //nolint:nilerr // not the same manifest: the tag is read as one the index lacks
+	}
+	return v, nil
+}
+
+// storedTag returns the tag to inspect the manifest of f, listed under tag, with: the tag its
+// annotations a give (manifest-profile.md §4.2) when that differs from tag only in case and the
+// registry resolves it to f.Digest as well, else tag. A registry that folds the case of tags (Gitea,
+// Forgejo) lists the tag 1.4.0-M1 that ingest pushed as 1.4.0-m1 (#844); the version is then
+// the annotations', and its row keeps the tag that ingest wrote. Nothing decodes the listed tag.
+// On a registry that keeps case, a manifest pushed straight under a tag of another case is
+// checked against that tag, as ingest checks it, and is an error of the report. ok is false
+// when the registry did not answer: f, with the error, is in the report.
+func (s *scan) storedTag(ctx context.Context, rr provider.Repository, tag string, a map[string]string, f Finding) (string, bool) {
+	want := profile.Tag(a[profile.AnnotationVersion], a[profile.AnnotationVariant])
+	if want == tag || !strings.EqualFold(want, tag) {
+		return tag, true
+	}
+	desc, err := rr.Resolve(ctx, want)
+	switch {
+	case errors.Is(err, provider.ErrNotFound) || err == nil && desc.Digest != f.Digest:
+		return tag, true
+	case err != nil:
+		f.Error = "resolve " + want + ", the tag of the annotations: " + err.Error()
+		s.failure(f)
+		return "", false
+	}
+	return want, true
 }
 
 // known returns the package at pkgPath and its version under tag, nil when the index has none.
@@ -413,7 +464,7 @@ type probe struct {
 // orphan when its subject is unknown), a foreign manifest (reported, never indexed), or a
 // profile manifest (checked and written). reread is true when the index has the row with this
 // digest already (a degraded row, or a verifying run).
-func (s *scan) classify(ctx context.Context, pkgPath, tag string, desc ocispec.Descriptor, raw []byte, reread bool) {
+func (s *scan) classify(ctx context.Context, rr provider.Repository, pkgPath, tag string, desc ocispec.Descriptor, raw []byte, reread bool) {
 	var p probe
 	if err := json.Unmarshal(raw, &p); err != nil {
 		s.foreign(Finding{Repository: pkgPath, Tag: tag, Digest: desc.Digest, MediaType: desc.MediaType})
@@ -448,7 +499,11 @@ func (s *scan) classify(ctx context.Context, pkgPath, tag string, desc ocispec.D
 		s.failure(f)
 		return
 	}
-	rows, err := s.w.inspector.Inspect(ctx, s.repo, pkgPath, tag, m, raw, ingest.InspectOptions{AllowDegraded: true})
+	stored, ok := s.storedTag(ctx, rr, tag, p.Annotations, f)
+	if !ok {
+		return
+	}
+	rows, err := s.w.inspector.Inspect(ctx, s.repo, pkgPath, stored, m, raw, ingest.InspectOptions{AllowDegraded: true})
 	switch {
 	case errors.Is(err, format.ErrUnsupported):
 		s.unsupportedFormat(err)
@@ -495,12 +550,12 @@ func (s *scan) write(ctx context.Context, rows *ingest.Rows, f Finding, reread b
 	case errors.As(err, &split):
 		s.split(rows.Package.Name, split.indexed, f.Repository, f.Tag)
 		return
-	case errors.As(err, &conflict): // the tag was written meanwhile with another digest
-		pkg, v, kerr := s.known(ctx, f.Repository, f.Tag)
+	case errors.As(err, &conflict): // the index has the tag with another digest: written meanwhile, or re-pointed past Lajstrom
+		pkg, v, kerr := s.known(ctx, f.Repository, rows.Version.Tag)
 		if s.dbErr(kerr) || v == nil {
 			return
 		}
-		s.drift(v, pkg.Name, f.Tag, f.Digest)
+		s.drift(v, pkg.Name, v.Tag, f.Digest)
 		return
 	case errors.Is(err, index.ErrConflict): // the package path of another spelling (#97)
 		f.Error = err.Error()

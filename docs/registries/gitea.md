@@ -75,13 +75,28 @@ serve log of the e2e run, before #352). That is right; no override in
    now caches the token under the request's own scopes too; `TestUploadAcrossProviders` runs
    with a challenge scope of `*` (commit `fix(provider): keep the primed token …`).
 2. Know that tags are case-insensitive. Gitea stores a tag lower-cased and resolves it in any
-   case: `5.4.Final` is listed as `5.4.final`, and a push to `5.4.final` re-points it. Through
-   Lajstrom nothing is overwritten (ingest resolves the tag first: the second version that
-   differs only in case is a 409), but such a version cannot be published, and `tags/list`
-   gives other tags than Lajstrom wrote, which reindex looks up in the index by the listed tag
-   (read, not run). Maven versions (`-SNAPSHOT`, `.Final`, `-RC1`) carry capitals; pypi
-   normalises to lower case. A vendor-table capability ("tags fold case") would let ingest
-   refuse with a clear message; a contract question.
+   case: `5.4.Final` is listed as `5.4.final`, and a push to `5.4.final` re-points it. Maven
+   versions (`-SNAPSHOT`, `.Final`, `-RC1`) carry capitals; pypi normalises to lower case.
+   - **Reindex, done in #844.** `tags/list` gives other tags than Lajstrom wrote: `1.4.0-m1` for
+     the `1.4.0-M1` that ingest pushed. Reindex now matches a listed tag to the tag of the
+     manifest's annotations without case. It does so only when the registry resolves the
+     annotations' tag to the same manifest, so a registry that keeps case is not affected. The
+     version and the row's tag come from the annotations, as ingest wrote them, and nothing
+     decodes the listed tag. A later run finds the row by the listed tag's digest and counts it
+     unchanged. The cost is one `HEAD` per run for each tag whose case differs from its
+     version's, and a lookup by digest in the index for each tag the index does not have. It is
+     tested on a fake that folds case (`TestRebuildFoldedTags`); the integration tests have not
+     been run against Gitea for it.
+   - **Two versions that differ only in case are one tag.** Through Lajstrom the second one is a
+     409, and nothing is overwritten: `ingest.Pipeline.checkTag` resolves its tag before the
+     push, and Gitea answers with the first version's manifest, which has another digest
+     (`TestFoldedTagCaseVariant`). The message names the tag and that digest, not the case. A
+     reindex finds the one manifest the tag holds and indexes it with the version and tag of its
+     annotations. A version the index has whose tag a write straight to the registry re-pointed
+     is reported as drift and kept, as any re-pointed tag is (`TestFoldedTagRepointed`). Gitea
+     deletes the manifest that the tag named before.
+   - **Refusing such a version at ingest** with a clear message needs a vendor-table capability
+     ("tags fold case"). That is a contract question, #426.
 3. Expect no ranges from Gitea (Forgejo has them,
    [forgejo.md](forgejo.md#where-it-differs-from-gitea)). A `Range` on a blob is answered 200
    with the whole blob and no `Accept-Ranges`; the facade and `/raw/` pass that on, which RFC
@@ -104,7 +119,8 @@ serve log of the e2e run, before #352). That is right; no override in
 6. **Done in #352:** name the vendor. `GET /v2/` challenges `Bearer
    realm="<ROOT_URL>v2/token",service="container_registry",scope="*"`, which makes it
    `vendor=gitea`, Forgejo too ([forgejo.md, item 6](forgejo.md#what-the-provider-must-do-differently)).
-   The entry changes nothing else: the probe is right, and item 2 is still a contract question.
+   The entry changes nothing else: the probe is right. Refusing capitals at ingest (item 2) is
+   still a contract question.
 
 Nothing else: the token service, the tag schema, catalog, tags, delete, mounts, the monolithic
 `POST`, the cancel and the digest check work as the provider expects.
