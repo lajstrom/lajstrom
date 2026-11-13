@@ -16,6 +16,10 @@
 // wrap the sentinels of package provider where one applies (translate). The SDK retries
 // throttling with backoff.
 //
+// Tokens, from NewTokens, is the same token cache without a Provider: the credential of an oci
+// upstream on ECR (upstreams[].auth.ecr), which internal/proxy hands to generic.NewUpstream as
+// a rotating Basic credential.
+//
 // Tested against moto for the API and distribution for /v2, not against ECR itself:
 // docs/registries/ecr.md says what was and what waits for the live check (#19).
 package ecr

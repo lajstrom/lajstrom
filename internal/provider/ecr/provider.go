@@ -99,16 +99,33 @@ func New(cfg config.Registry, log *slog.Logger) (*Provider, error) {
 	if err != nil || u.Host == "" {
 		return nil, errors.New("ecr: url must be an absolute http(s) URL")
 	}
-	var account, region string
-	if m := hostPattern.FindStringSubmatch(strings.ToLower(u.Hostname())); m != nil {
-		account, region = m[1], m[2]
+	account, region := hostAccountRegion(u.Hostname())
+	client, err := newClient(cmp.Or(cfg.ECR.Region, region), cfg.ECR.Endpoint, cfg.Timeout, cfg.Retries,
+		"set registries[].ecr.region or AWS_REGION, or use the registry's host as url")
+	if err != nil {
+		return nil, err
 	}
-	region = cmp.Or(cfg.ECR.Region, region)
-	timeout := cmp.Or(cfg.Timeout, config.DefaultRegistryTimeout)
+	return newProvider(cfg, log, client, account, time.Now)
+}
+
+// hostAccountRegion returns the account and the region that the host of an ECR registry names,
+// or "" for a host that is not one.
+func hostAccountRegion(host string) (account, region string) {
+	if m := hostPattern.FindStringSubmatch(strings.ToLower(strings.TrimSuffix(host, "."))); m != nil {
+		return m[1], m[2]
+	}
+	return "", ""
+}
+
+// newClient returns the client of the ECR API of region ("" for the SDK's), at endpoint ("" for
+// the SDK's), with the SDK's default chain of credentials, the response header timeout (0 for
+// config.DefaultRegistryTimeout) and the retries of registries[].retries. Without a region,
+// the error ends in hint, which says where to set one.
+func newClient(region, endpoint string, timeout time.Duration, retries int, hint string) (*ecr.Client, error) {
 	opts := []func(*awsconfig.LoadOptions) error{
-		awsconfig.WithRetryer(retryer(cfg.Retries)),
+		awsconfig.WithRetryer(retryer(retries)),
 		awsconfig.WithHTTPClient(awshttp.NewBuildableClient().WithTransportOptions(func(t *http.Transport) {
-			t.ResponseHeaderTimeout = timeout
+			t.ResponseHeaderTimeout = cmp.Or(timeout, config.DefaultRegistryTimeout)
 		})),
 	}
 	if region != "" {
@@ -119,14 +136,13 @@ func New(cfg config.Registry, log *slog.Logger) (*Provider, error) {
 		return nil, fmt.Errorf("ecr: AWS configuration: %w", err)
 	}
 	if awsCfg.Region == "" {
-		return nil, errors.New("ecr: no AWS region: set registries[].ecr.region or AWS_REGION, or use the registry's host as url")
+		return nil, errors.New("ecr: no AWS region: " + hint)
 	}
-	client := ecr.NewFromConfig(awsCfg, func(o *ecr.Options) {
-		if cfg.ECR.Endpoint != "" {
-			o.BaseEndpoint = aws.String(cfg.ECR.Endpoint)
+	return ecr.NewFromConfig(awsCfg, func(o *ecr.Options) {
+		if endpoint != "" {
+			o.BaseEndpoint = aws.String(endpoint)
 		}
-	})
-	return newProvider(cfg, log, client, account, time.Now)
+	}), nil
 }
 
 // newProvider returns the Provider for cfg on the ECR API client, with the account the URL
