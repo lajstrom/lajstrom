@@ -37,6 +37,10 @@ repos:
   token service is elsewhere lists it in `upstreams[].tokenRealmHosts`.
 - `auth` takes a username with `passwordEnv` or `passwordFile`, or a static token in
   `tokenFile`. Without it the upstream is read anonymously.
+- An upstream on Amazon ECR takes `auth: {ecr: {}}`. Its credential is ECR's token for the AWS
+  SDK's credentials (IRSA, the instance role, the environment), replaced before it expires, so
+  nothing secret goes in the file and no restart is needed
+  ([registries/ecr.md](../registries/ecr.md#ecr-as-an-upstream)).
 - `metadataTTL` (default `10m`) is how long a tag is used without asking the upstream. A tag is
   then revalidated with a `HEAD`, which Docker Hub does not count.
 - A repo is created from the configuration at start, or with

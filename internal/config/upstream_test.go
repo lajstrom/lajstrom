@@ -94,6 +94,25 @@ upstreams:
 	}
 }
 
+// TestLoadUpstreamCloud: the cloud credentials of oci upstreams (docs/spec/proxy-and-group.md
+// §11.1), as they print.
+func TestLoadUpstreamCloud(t *testing.T) {
+	file := minimal + `
+upstreams:
+  - {name: ecr, format: oci, url: "https://123456789012.dkr.ecr.eu-west-1.amazonaws.com", auth: {ecr: {}}}
+  - {name: moto, format: oci, url: "http://localhost:5011", auth: {ecr: {region: us-east-1, endpoint: "http://localhost:5010"}}}
+`
+	c, err := Load(writeConfig(t, file), nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for i, want := range []string{`ecr: {region: "", endpoint: ""}`, `ecr: {region: "us-east-1", endpoint: "http://localhost:5010"}`} {
+		if a := c.Upstreams[i].Auth; a.ECR == nil || !strings.Contains(fmt.Sprint(a), want) {
+			t.Errorf("upstreams[%d].auth = %v, want %s", i, a, want)
+		}
+	}
+}
+
 func TestLoadUpstreamErrors(t *testing.T) {
 	const registries = "registries:\n  - {name: local, url: \"http://zot:5000\"}\n"
 	tests := []struct {
@@ -152,6 +171,21 @@ func TestLoadUpstreamErrors(t *testing.T) {
 				"upstreams[2].maxConcurrentTransits: only an upstream of format oci has it",
 				"upstreams[3].revalidateTimeout: must not be negative",
 				"upstreams[3].maxConcurrentTransits: must be -1 (no cap), 0 (no transit) or more",
+			},
+		},
+		{
+			name: "cloud credentials",
+			file: `upstreams:
+  - {name: a, format: npm, url: "https://a.example", auth: {ecr: {}}}
+  - {name: b, format: oci, url: "https://123456789012.dkr.ecr.eu-west-1.amazonaws.com", auth: {ecr: {}, username: u, passwordFile: /p}}
+  - {name: c, format: oci, url: "https://123456789012.dkr.ecr.eu-west-1.amazonaws.com", auth: {ecr: {}, tokenFile: /t}}
+  - {name: d, format: oci, url: "https://123456789012.dkr.ecr.eu-west-1.amazonaws.com", auth: {ecr: {endpoint: "vpce.example"}}}
+`,
+			want: []string{
+				"upstreams[0].auth.ecr: only an upstream of format oci has it",
+				"upstreams[1].auth.ecr: is the upstream's credential: not with username, passwordFile, passwordEnv or tokenFile",
+				"upstreams[2].auth.ecr: is the upstream's credential",
+				"upstreams[3].auth.ecr.endpoint: must be an absolute http(s) URL without credentials",
 			},
 		},
 		{
