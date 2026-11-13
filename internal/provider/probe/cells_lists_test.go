@@ -41,6 +41,7 @@ func TestPagination(t *testing.T) {
 		{"gitlab A", ans(200, ""), all, all, "**`n` and `last` ignored**: the whole list, no `Link`"},
 		{"no link", ans(200, ""), want, all, "`n`/`last`, no `Link`"},
 		{"not measured", ans(200, ""), nil, nil, "pagination not measured"},
+		{"ecr", errAns(405, "UNSUPPORTED"), nil, all, "**`last` a name: 405 `UNSUPPORTED`**"},
 	}
 	for _, c := range cases {
 		w := want

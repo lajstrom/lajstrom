@@ -155,10 +155,8 @@ func newProvider(cfg config.Registry, log *slog.Logger, client api, account stri
 }
 
 // capabilities returns the overrides of the data path: registries[].capabilities, and ECR's
-// own where they leave a capability unset. What the generic provider probes (referrers) or
-// assumes (deleteManifest, learnt from the first 405; blobRedirect, ECR's 307 to S3) is left
-// to it: to be measured by #19, as aws/containers-roadmap#2783 reported a 405 for a referrer
-// push.
+// own where they leave a capability unset. What the generic provider assumes (deleteManifest,
+// learnt from the first 405 that refuses deletes; blobRedirect, ECR's 307 to S3) is left to it.
 func capabilities(o config.CapabilityOverrides, mutability types.ImageTagMutability) config.CapabilityOverrides {
 	orDefault := func(v *bool, d bool) *bool {
 		if v != nil {
@@ -173,6 +171,11 @@ func capabilities(o config.CapabilityOverrides, mutability types.ImageTagMutabil
 	// DescribeRepositories is the catalog of ListRepositories; ECR's own _catalog, reported
 	// but not documented by AWS, is not used (docs/registries/ecr.md).
 	o.Catalog = orDefault(o.Catalog, true)
+	// ECR serves the referrers API, with the artifactType filter, and answers OCI-Subject
+	// (measured by #19). The generic probe could not tell: it asks a repository that does not
+	// exist, NAME_UNKNOWN. The 405 that aws/containers-roadmap#2783 reports for a referrer is
+	// ECR's refusal of a manifest with a property its schema lacks (docs/registries/ecr.md).
+	o.Referrers = orDefault(o.Referrers, true)
 	// The repositories Lajstrom creates refuse to re-point a tag unless they are MUTABLE*; a
 	// repository created otherwise keeps its own setting.
 	o.ImmutableTags = orDefault(o.ImmutableTags, strings.HasPrefix(string(mutability), "IMMUTABLE"))

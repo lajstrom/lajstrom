@@ -92,7 +92,10 @@ type pushed struct {
 
 // facts are what one cell found that another one needs.
 type facts struct {
-	catalog        bool // _catalog answers a catalog
+	catalog bool // _catalog answers a catalog
+	// ownListing: the provider lists repositories with the registry's own API (ECR's
+	// DescribeRepositories), so what _catalog answers does not decide registries[].capabilities.catalog.
+	ownListing     bool
 	referrersAPI   bool // the referrers API lists the referrers; meaningful when referrersKnown
 	referrersKnown bool
 	tagsStay       bool // a manifest deleted by digest leaves its tags
@@ -178,6 +181,7 @@ func newRun(cfg config.Registry, o Options) (*run, error) {
 		rel:     name + "/",
 		id:      id,
 		based:   map[string]bool{},
+		found:   facts{ownListing: b.repos != nil},
 	}
 	r.report.Registry, r.report.URL, r.report.Prefix = cfg.Name, base.String(), prefix
 	r.report.Scratch = r.scratch
@@ -251,7 +255,7 @@ func overridesVerdict(caps Capabilities, f facts) string {
 	if f.referrersKnown && caps.Referrers != f.referrersAPI {
 		o = append(o, fmt.Sprintf("`referrers: %t`", f.referrersAPI))
 	}
-	if caps.Catalog && !f.catalog {
+	if caps.Catalog && !f.catalog && !f.ownListing {
 		o = append(o, "`catalog: false`")
 	}
 	switch {
@@ -389,11 +393,21 @@ func (m manifest) desc() ocispec.Descriptor {
 // emptyDesc is the empty blob {}, the config and the one layer of the probe's manifests.
 var emptyDesc = profile.EmptyConfig
 
+// emptyArtifactType is the artifactType of a manifest of the probe that names none. The image
+// specification requires one when the config is the empty blob, and ECR refuses a manifest
+// without it (405 `UNSUPPORTED` "Invalid JSON syntax", #19). It is the empty blob's media type,
+// one GitLab's metadata database knows, where it refuses an unknown artifactType.
+const emptyArtifactType = ocispec.MediaTypeEmptyJSON
+
 // newManifest is an image manifest of the probe: the empty config, the empty blob as its one
-// layer, the note as its description, and an artifactType and subject when they are set.
+// layer, the note as its description, the artifactType (emptyArtifactType when it is empty), and
+// the subject when it is set.
 // It has none of Lajstrom's media types: GitLab with its metadata database refuses those, and
 // the profile has a cell of its own.
 func (r *run) newManifest(note, artifactType string, subject *ocispec.Descriptor) manifest {
+	if artifactType == "" {
+		artifactType = emptyArtifactType
+	}
 	m := ocispec.Manifest{
 		Versioned:    specs.Versioned{SchemaVersion: 2},
 		MediaType:    ocispec.MediaTypeImageManifest,
