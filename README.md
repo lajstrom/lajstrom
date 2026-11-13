@@ -66,6 +66,35 @@ with the real clients (`test/e2e/`):
 Every format shares local users, personal access and deploy tokens, roles
 bound to repos, and an audit log ([docs/auth.md](docs/auth.md)).
 
+## Cloud native, by design
+
+Lajstrom is built the way we want to run it ourselves on Kubernetes, and we think this is the
+best part of it:
+
+- **No state of its own.** The bytes live in your OCI registry. The index in SQLite or Postgres
+  is derived from it, and `lajstrom reindex` rebuilds it from the registry alone. A replica keeps
+  nothing that another replica needs.
+- **Scale out by adding replicas.** Replicas on one Postgres share the work; PgBouncer and
+  YugabyteDB are tested too ([databases](docs/deploy/databases.md)). An upload goes on through
+  any replica. A proxy fetch is claimed with a heartbeat, so if a replica dies mid-fetch,
+  another takes it over. CI runs two replicas behind a load balancer on every pull request.
+- **Plays by the platform's rules.** `/-/healthz` and `/-/readyz` serve the probes. On SIGTERM
+  a replica drains before it exits: readiness answers 503 and connections close. Configuration
+  is one YAML file plus the environment, and secrets come from files, so Kubernetes Secrets
+  mount as they are. Logs can be JSON, and Prometheus metrics have a port of their own
+  ([operations](docs/operations.md)).
+- **Small and locked down.** One static Go binary, in a distroless, non-root image for amd64
+  and arm64. The [Helm chart](docs/deploy/helm.md) runs under the restricted Pod Security
+  Standard. It runs the migration as a Job before each upgrade, and comes with an HPA, a
+  ServiceMonitor, and an HTTPRoute or Ingress.
+- **Cloud identities, not keys.**
+  - On ECR, the AWS SDK's default chain supplies the credentials (IRSA on EKS), and nothing
+    secret goes in the file ([ECR](docs/registries/ecr.md)).
+  - An `oci` proxy of ECR or Artifact Registry authenticates with IAM or GKE Workload
+    Identity.
+- **No format of our own.** Every artifact is a plain OCI artifact in the registry you already
+  run, which `oras`, `crane` and the registry's own tools can read, with or without Lajstrom.
+
 ## Documentation
 
 | Page | What it is for |
