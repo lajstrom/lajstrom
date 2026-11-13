@@ -19,10 +19,24 @@ type fakePrefetcher struct {
 }
 
 type prefetchCall struct {
-	repo  string
-	names []string
-	all   bool
-	by    string
+	repo      string
+	names     []string
+	all       bool
+	platforms []string
+	by        string
+}
+
+func (p *fakePrefetcher) PrefetchOCI(ctx context.Context, repo index.Repo, images, platforms []string) ([]proxy.PrefetchResult, error) {
+	p.calls = append(p.calls, prefetchCall{repo: repo.Format + "/" + repo.Name, names: images, platforms: platforms,
+		by: auth.PrincipalFrom(ctx).String()})
+	if p.err != nil {
+		return nil, p.err
+	}
+	out := make([]proxy.PrefetchResult, len(images))
+	for i, n := range images {
+		out[i] = proxy.PrefetchResult{Name: n, Kind: proxy.PrefetchManifest, Status: "held"}
+	}
+	return out, nil
 }
 
 func (p *fakePrefetcher) Prefetch(ctx context.Context, repo index.Repo, names []string, all bool) ([]proxy.PrefetchResult, error) {
@@ -100,4 +114,67 @@ func TestPrefetchAPI(t *testing.T) {
 	wantStatus(t, off.do(http.MethodPost, "/api/v1/repos", body, admin), http.StatusCreated)
 	wantError(t, off.do(http.MethodPost, target, `{"names": ["a"]}`, admin), http.StatusNotImplemented, codeUnavailable,
 		"prefetch is not enabled")
+}
+
+// TestPrefetchOCIAPI: POST …/prefetch of an oci proxy repo takes 1 to 100 images and platforms,
+// refuses npm's body and an npm repo refuses its own, and answers the core's results
+// (docs/spec/proxy-and-group.md §11.10, http-routing.md §6).
+func TestPrefetchOCIAPI(t *testing.T) {
+	g := map[string]bool{"user:carol manage oci/hub": true, "user:carol read oci/hub": true, "user:carol manage npm/npmjs": true,
+		"user:carol read npm/npmjs": true, "user:alice read oci/hub": true}
+	for k, v := range grants {
+		g[k] = v
+	}
+	pf := &fakePrefetcher{}
+	f := newFixture(t, Options{Auth: fakeAuth{grants: g}, Prefetcher: pf})
+	withProxies(f)
+	for _, body := range []string{
+		`{"format": "oci", "name": "hub", "registry": "local", "kind": "proxy", "upstream": {"name": "dockerhub"}}`,
+		`{"format": "npm", "name": "npmjs", "registry": "local", "kind": "proxy", "upstream": {"name": "npmjs"}}`,
+		`{"format": "oci", "name": "internal", "registry": "local"}`,
+	} {
+		wantStatus(t, f.do(http.MethodPost, "/api/v1/repos", body, admin), http.StatusCreated)
+	}
+	const target = "/api/v1/repos/oci/hub/prefetch"
+
+	var got PrefetchAnswer
+	decodeJSON(t, f.do(http.MethodPost, target, `{"images": ["nginx:1.27", "bitnami/redis:7.4"], "platforms": ["linux/amd64"]}`, carol),
+		http.StatusOK, &got)
+	wantJSON(t, "the answer", got, `{"results": [{"name": "nginx:1.27", "kind": "manifest", "status": "held"},
+		{"name": "bitnami/redis:7.4", "kind": "manifest", "status": "held"}]}`)
+	if len(pf.calls) != 1 || pf.calls[0].repo != "oci/hub" || pf.calls[0].by != carol.String() ||
+		strings.Join(pf.calls[0].names, ",") != "nginx:1.27,bitnami/redis:7.4" || strings.Join(pf.calls[0].platforms, ",") != "linux/amd64" {
+		t.Errorf("calls %+v, want one by carol of oci/hub with two images and linux/amd64", pf.calls)
+	}
+
+	many := make([]string, proxy.MaxPrefetchNames+1)
+	for i := range many {
+		many[i] = fmt.Sprintf("%q", fmt.Sprint("img", i))
+	}
+	for _, tc := range []struct {
+		name, target, body string
+		p                  auth.Principal
+		status             int
+		code, msg          string
+	}{
+		{"a reader", target, `{"images": ["a"]}`, alice, http.StatusForbidden, codeForbidden, ""},
+		{"no images", target, `{"platforms": ["linux/amd64"]}`, carol, http.StatusBadRequest, codeInvalid, "images: 0 of them"},
+		{"too many", target, `{"images": [` + strings.Join(many, ",") + `]}`, carol, http.StatusBadRequest, codeInvalid, "images: 101 of them"},
+		{"an empty image", target, `{"images": ["a", ""]}`, carol, http.StatusBadRequest, codeInvalid, "images[1]: empty"},
+		{"names", target, `{"names": ["a"]}`, carol, http.StatusBadRequest, codeInvalid, "takes images and platforms"},
+		{"allVersions", target, `{"images": ["a"], "allVersions": true}`, carol, http.StatusBadRequest, codeInvalid, "not names or allVersions"},
+		{"images of npm", "/api/v1/repos/npm/npmjs/prefetch", `{"images": ["a"]}`, carol, http.StatusBadRequest, codeInvalid,
+			"npm/npmjs takes names"},
+		{"platforms of npm", "/api/v1/repos/npm/npmjs/prefetch", `{"names": ["a"], "platforms": ["linux/amd64"]}`, carol,
+			http.StatusBadRequest, codeInvalid, "npm/npmjs takes names"},
+		{"a hosted oci repo", "/api/v1/repos/oci/internal/prefetch", `{"images": ["a"]}`, admin, http.StatusBadRequest, codeInvalid,
+			"is a hosted repo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wantError(t, f.do(http.MethodPost, tc.target, tc.body, tc.p), tc.status, tc.code, tc.msg)
+		})
+	}
+	if len(pf.calls) != 1 {
+		t.Errorf("%d calls to the core, want the first only", len(pf.calls))
+	}
 }

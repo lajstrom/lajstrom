@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"sync"
+
+	"github.com/opencontainers/go-digest"
 
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -37,6 +40,15 @@ type PrefetchResult struct {
 	HTTPStatus int `json:"httpStatus,omitempty"`
 	// Message says why it failed.
 	Message string `json:"message,omitempty"`
+	// Kind, Platform and Digest say what a result of an oci proxy's prefetch is of (PrefetchOCI):
+	// what the reference names, an index or a manifest; a platform's manifest; or a blob.
+	Kind     string        `json:"kind,omitempty"`
+	Platform string        `json:"platform,omitempty"`
+	Digest   digest.Digest `json:"digest,omitempty"`
+	// Bytes is what the request got from the upstream for it: a manifest's with its blobs.
+	Bytes int64 `json:"bytes,omitempty"`
+	// RetryAfter is when to ask again, in seconds, for a failed 503: the upstream's 429.
+	RetryAfter int `json:"retryAfter,omitempty"`
 }
 
 // Prefetch fetches entries of the documents of names into the proxy repo repo before a client
@@ -163,6 +175,13 @@ func (c *Core) prefetchOthers(ctx context.Context, p *proxied, name string, kind
 	return out
 }
 
+// urlPattern matches a URL in an error's message.
+var urlPattern = regexp.MustCompile(`https?://[^\s"']+`)
+
+// withoutURLs is msg with each URL cut to "…": the errors of an oci upstream's client name the
+// URL they asked, and a message names the upstream by its name, never its URL (§6).
+func withoutURLs(msg string) string { return urlPattern.ReplaceAllString(msg, "…") }
+
 // pointedEntries returns the entries of the versions pointed names; when they name none, the
 // newest entry by publish time, the last one listed among those of the same time.
 func pointedEntries(entries []format.UpstreamEntry, pointed []string) []format.UpstreamEntry {
@@ -210,13 +229,24 @@ func (c *Core) prefetchEntry(ctx context.Context, p *proxied, name, kind string,
 // and never its URL (§6); any other 5xx answers its status text, as the API does, and err is
 // logged.
 func (c *Core) prefetchFailed(ctx context.Context, p *proxied, res PrefetchResult, err error) PrefetchResult {
-	res.Status, res.HTTPStatus, res.Message = PrefetchFailed, format.StatusOf(err), err.Error()
+	return c.prefetchFailedAt(ctx, p.id(), res, err)
+}
+
+// prefetchFailedAt is prefetchFailed of the repo id, <format>/<name>; a 503 says when to ask
+// again in RetryAfter.
+func (c *Core) prefetchFailedAt(ctx context.Context, id string, res PrefetchResult, err error) PrefetchResult {
+	if errors.Is(err, errNotAttempted) || ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+		res.Status, res.Message = PrefetchFailed, notAttempted
+		return res
+	}
+	res.Status, res.HTTPStatus, res.Message = PrefetchFailed, format.StatusOf(err), withoutURLs(err.Error())
+	res.RetryAfter = retryAfterOf(err)
 	var unavailable *format.UnavailableError
 	upstream := errors.Is(err, format.ErrBadGateway) || errors.Is(err, format.ErrGatewayTimeout) || errors.As(err, &unavailable)
 	if res.HTTPStatus >= http.StatusInternalServerError && !upstream {
 		res.Message = format.ClientMessage(err)
-		c.o.Log.WarnContext(ctx, "proxy: a prefetch failed", "repo", p.id(), "name", res.Name, "version", res.Version,
-			"error", err.Error())
+		c.o.Log.WarnContext(ctx, "proxy: a prefetch failed", "repo", id, "name", res.Name, "version", res.Version,
+			"digest", res.Digest, "error", err.Error())
 	}
 	return res
 }

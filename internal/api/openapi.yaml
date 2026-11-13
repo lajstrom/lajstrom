@@ -346,7 +346,8 @@ paths:
       operationId: prefetch
       summary: >-
         Fetch versions of a list of names into a proxy repo before a client asks for them
-        (manage), each as a miss would; what the repo holds is held, and a rerun is idempotent.
+        (manage), each as a miss would, or the images of a list of references into an oci proxy
+        repo, each as a pull would; what the repo holds is held, and a rerun is idempotent.
       requestBody:
         required: true
         content:
@@ -354,7 +355,10 @@ paths:
             schema: {$ref: "#/components/schemas/PrefetchRequest"}
       responses:
         "200":
-          description: A result per version, and per name that failed before its versions, in the order of the names.
+          description: >-
+            A result per version, and per name that failed before its versions, in the order of
+            the names; of an oci repo, per image, platform and blob not held, in the order of the
+            images.
           content:
             application/json:
               schema: {$ref: "#/components/schemas/PrefetchResult"}
@@ -1429,7 +1433,7 @@ components:
           items: {$ref: "#/components/schemas/Pointer"}
     PrefetchRequest:
       type: object
-      required: [names]
+      description: names and allVersions of a format's proxy repo; images and platforms of an oci one.
       additionalProperties: false
       properties:
         names:
@@ -1443,6 +1447,20 @@ components:
           description: >-
             Every version the upstream lists; without it the versions its pointers name (npm's
             dist-tags), or the newest when they name none.
+        images:
+          type: array
+          minItems: 1
+          maxItems: 100
+          description: >-
+            References below an oci proxy repo, <path>[:<tag>][@<digest>]: latest without a tag
+            or a digest, the digest when both are given.
+          items: {type: string, minLength: 1}
+        platforms:
+          type: array
+          description: >-
+            The platforms of an index to fetch, os/architecture[/variant]; required for a
+            reference that names an index, not used for one that names a manifest.
+          items: {type: string, minLength: 1}
     PrefetchResult:
       type: object
       required: [results]
@@ -1467,6 +1485,21 @@ components:
           type: integer
           description: For failed, the status a request of the file would have had.
         message: {type: string, description: Why, for failed.}
+        kind:
+          type: string
+          enum: [index, manifest, blob]
+          description: >-
+            Of an oci repo: what a reference names, an index or a manifest; a platform's
+            manifest; a blob. Absent for an image that failed before what it names was known.
+        platform: {type: string, description: Of an oci repo, the platform of a manifest or a blob of an index.}
+        digest: {type: string, description: Of an oci repo, the digest of the index, manifest or blob.}
+        bytes:
+          type: integer
+          format: int64
+          description: Of an oci repo, what the request got from the upstream; a manifest's with its blobs.
+        retryAfter:
+          type: integer
+          description: For a failed 503, when to ask again, in seconds.
     Whoami:
       type: object
       required: [principal, kind, name]

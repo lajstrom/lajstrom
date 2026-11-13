@@ -170,6 +170,10 @@ func TestIntegrationOCIProxy(t *testing.T) {
 		t.Errorf("the upstream was asked %d times for the layer kube-apiserver shares, want none: the backend mounts it", n)
 	}
 
+	t.Run("prefetch", func(t *testing.T) {
+		ociPrefetched(t, st, backend, seed, core, repo, up, count)
+	})
+
 	// #876 the way containerd pulls, on a backend that mounts and on one that does not.
 	for _, mounts := range []bool{true, false} {
 		t.Run(fmt.Sprintf("completed, mounts %t", mounts), func(t *testing.T) {
@@ -236,6 +240,58 @@ func ociCompleted(t *testing.T, st index.Store, backend, seed provider.Provider,
 		t.Errorf("the upstream was asked %d times for the layer kube-apiserver shares, want %d", n, want)
 	}
 	pullPlatform(t, offline+up+"/kube-apiserver", "v1.37.1", kas, 0)
+}
+
+// ociPrefetched is #886: a prefetch of an image of two platforms holds both, the index and the tag
+// in the backend, its configs mounted from another path; a second run is all held and asks the upstream for no blob; then, with the
+// upstream gone, a server that has no upstream for the repo serves a pull of each platform whole
+// (docs/spec/proxy-and-group.md §11.10).
+func ociPrefetched(t *testing.T, st index.Store, backend, seed provider.Provider, core *proxy.Core, repo index.Repo, up string, count *counter) {
+	ctx := t.Context()
+	path := up + "/prefetched"
+	img := seedImage(t, seed, path, "2.0", "amd64", "arm64")
+	ref := []string{path + ":2.0"}
+	results, err := core.PrefetchOCI(ctx, repo, ref, []string{"linux/amd64", "linux/arm64"})
+	must(t, err)
+	// The configs are those of the image at img, which the backend holds: they are mounted, held,
+	// and have no result of their own.
+	if len(results) != 5 {
+		t.Fatalf("%d results, want 5 (the index, two manifests, their layers): %+v", len(results), results)
+	}
+	for _, r := range results {
+		if r.Status != "fetched" {
+			t.Errorf("%s %s %s: %s %d %s, want fetched", r.Kind, r.Platform, r.Digest, r.Status, r.HTTPStatus, r.Message)
+		}
+	}
+	rr, err := backend.Repository(ctx, "oci/hub/"+path)
+	must(t, err)
+	if desc, err := rr.Resolve(ctx, "2.0"); err != nil || desc.Digest != img.index.Digest {
+		t.Errorf("2.0 in the backend: %v, %v; want the index %s", desc.Digest, err, img.index.Digest)
+	}
+	before := count.blobGETs()
+	results, err = core.PrefetchOCI(ctx, repo, ref, []string{"linux/amd64", "linux/arm64"})
+	must(t, err)
+	if len(results) != 3 || results[0].Status != "held" || results[1].Status != "held" || results[2].Status != "held" {
+		t.Errorf("the second run: %+v, want the index and two manifests held", results)
+	}
+	if n := count.blobGETs() - before; n != 0 {
+		t.Errorf("the second run made %d upstream blob requests, want none", n)
+	}
+
+	log := slog.New(slog.NewTextHandler(&logBuffer{}, nil))
+	providers := provider.Map{"it": backend}
+	pipeline := ingest.New(ingest.Options{Providers: providers, Index: st, Log: log})
+	gone := proxy.New(proxy.Options{Index: st, Providers: providers, Mirror: pipeline, Log: log})
+	srv := httptest.NewServer(New(Options{Index: st, Providers: providers, Log: log, Tokens: keys.NewEphemeralTokens(), Ingest: pipeline,
+		OCIProxy: gone}))
+	t.Cleanup(srv.Close)
+	before = count.blobGETs()
+	for i := range img.manifests {
+		pullPlatform(t, srv.URL+"/v2/oci/hub/"+path, "2.0", img, i)
+	}
+	if n := count.blobGETs() - before; n != 0 {
+		t.Errorf("the pulls without an upstream made %d upstream blob requests", n)
+	}
 }
 
 // noMount is a backend that opens an upload session instead of a mount (202), as Nexus's

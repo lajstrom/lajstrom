@@ -589,7 +589,7 @@ each as a client's miss would fetch it ([proxy-and-group.md](spec/proxy-and-grou
 the upstream's document, the claim, the download, the checksum, the ingest, and an audit row
 `proxy.fetch` per version with the caller as the principal (`proxy.reject` for one refused). It
 is how packages move from another registry (#441). `manage` on the repo, checked before the body
-is read; npm only, until pypi and maven have proxies (#67, #68).
+is read; npm, until pypi and maven have proxies (#67, #68), and `oci`, which takes images (below).
 
 ```json
 {"names": ["@acme/widgets", "left-pad"], "allVersions": false}
@@ -623,6 +623,55 @@ and answers when every version has ended; a long list goes in batches, as
 
 ```sh
 curl -s -X POST "$LAJSTROM/api/v1/repos/npm/legacy/prefetch" -d '{"names": ["@acme/widgets"], "allVersions": true}'
+```
+
+On an `oci` proxy repo the same call fetches images before a client pulls them, each the way a
+pull goes ([proxy-and-group.md](spec/proxy-and-group.md) §11.10): before a rollout over a poor link
+to the upstream, so that the nodes are then served from the backend whatever the link does.
+
+```json
+{"images": ["nginx:1.27", "bitnami/redis@sha256:…"], "platforms": ["linux/amd64", "linux/arm64"]}
+```
+
+`images` is 1 to 100 references below the repo, `<path>[:<tag>][@<digest>]`: `latest` without a
+tag or a digest, the digest when both are given, and on a Docker Hub upstream `nginx` is
+`library/nginx`. A reference that names a registry (`docker.io/library/nginx`) is `failed`, `400`:
+`lajstrom admin repo prefetch --host` strips it. `platforms` is required for a reference that names
+an index: without it the image is `failed`, `400`, and the message lists the index's platforms. A
+reference that names a single manifest takes no `platforms`. Platforms are compared as containerd
+normalises them (`linux/arm64/v8` is `linux/arm64`, `linux/arm` is `linux/arm/v7`); an
+attestation manifest (`unknown/unknown`) is fetched only when named.
+
+For each image the tag is resolved (its row while fresh, else a `HEAD`), the index and the
+manifest of each platform are fetched under their claims, and every blob of a manifest the
+backend does not hold is mounted from another path of the repo where the backend holds it, or
+fetched; then the manifests, the index once every platform is held, and the tag are pushed. The
+answer has, per image, a result for what the reference names (`kind` `index` or `manifest`), one
+per platform, and one per blob that was not held:
+
+```json
+{"results": [
+  {"name": "nginx:1.27", "kind": "index", "digest": "sha256:…", "status": "fetched", "bytes": 10229},
+  {"name": "nginx:1.27", "kind": "manifest", "platform": "linux/amd64", "digest": "sha256:…", "status": "fetched", "bytes": 72364016},
+  {"name": "nginx:1.27", "kind": "blob", "platform": "linux/amd64", "digest": "sha256:…", "status": "fetched", "bytes": 28227259},
+  {"name": "nginx:1.27", "kind": "manifest", "platform": "linux/arm64", "digest": "sha256:…", "status": "failed", "httpStatus": 503, "retryAfter": 60,
+   "message": "1 of its 7 blobs failed; sha256:…: upstream hub answered 429: …"},
+  {"name": "bitnami/redis:7.4", "status": "failed", "httpStatus": 404, "message": "… upstream hub does not have bitnami/redis:7.4"}
+]}
+```
+
+`held` is what the repo had: nothing was asked of the upstream for it, and a blob mounted from
+another path of the repo counts. A manifest is `failed` when one of its blobs is, `fetched` when
+this request fetched it or one of them, `shared` when only another request did, else `held`, and
+its `bytes` count its blobs'. `retryAfter` comes with a `503`, the upstream's `429`. A second run
+is one `held` per image and platform. An index fetched for some of its platforms stays in the
+cache with its tag, and the repo answers it from there, offline too. One request resolves at most
+4 images at a time, and then fetches at most 4 blobs at a time. On Docker Hub a cold image costs
+one counted pull for its index and one per platform: 50 images of two platforms are 150, above the
+anonymous 100 an hour.
+
+```sh
+curl -s -X POST "$LAJSTROM/api/v1/repos/oci/hub/prefetch" -d '{"images": ["nginx:1.27"], "platforms": ["linux/amd64", "linux/arm64"]}'
 ```
 
 ## `lajstrom admin repo`
