@@ -39,6 +39,25 @@ func (c *conn) ListPackages(ctx context.Context, repoID int64, prefix string) ([
 		repoID, utf8.RuneCountInString(prefix), prefix)
 }
 
+// ListPackagesAfter returns the packages of a repo whose name starts with prefix and comes after
+// after, ordered by name, at most limit: a range of the index (repo_id, name). The range has one
+// lower bound, after or, when it comes later, the prefix (a name that starts with it is not
+// before it): SQLite takes one of two lower bounds of a column into the index and filters by
+// the other, and with the prefix "" would scan from the repo's first package.
+func (c *conn) ListPackagesAfter(ctx context.Context, repoID int64, prefix, after string, limit int) ([]index.Package, error) {
+	if limit < 1 {
+		return []index.Package{}, nil
+	}
+	op, from := ">", after
+	if after == "" || prefix > after {
+		op, from = ">=", prefix
+	}
+	return getAll(ctx, c, fmt.Sprintf("packages in repo %d after %q", repoID, after), packageDests,
+		"SELECT "+packageCols+" FROM packages WHERE repo_id = ? AND name "+op+" ? AND substr(name, 1, ?) = ?"+
+			" ORDER BY name LIMIT ?",
+		repoID, from, utf8.RuneCountInString(prefix), prefix, limit)
+}
+
 // GetPackageByNameOCI returns the package of a repo whose escaped package path is nameOCI; the
 // unique index packages_repo_name_oci allows one.
 func (c *conn) GetPackageByNameOCI(ctx context.Context, repoID int64, nameOCI string) (*index.Package, error) {
@@ -167,6 +186,29 @@ func (c *conn) GetVersionByDigest(ctx context.Context, repoID int64, d digest.Di
 func (c *conn) ListVersions(ctx context.Context, packageID int64) ([]index.Version, error) {
 	return getAll(ctx, c, fmt.Sprintf("versions of package %d", packageID), versionDests,
 		"SELECT "+versionCols+" FROM versions WHERE package_id = ? ORDER BY created_at, id", packageID)
+}
+
+// ListVersionPage returns the rows of the first limit versions of a package after after, newest
+// first by their key: the earliest created_at of a version's rows, then the version, both in
+// the column's order (bytes; SQLite's timestamps are text of a fixed width). The database groups
+// the package's rows by version, over the unique index (package_id, version, variant), keeps
+// the page's versions and answers their rows only.
+func (c *conn) ListVersionPage(ctx context.Context, packageID int64, after *index.VersionKey, limit int) ([]index.Version, error) {
+	if limit < 1 {
+		return []index.Version{}, nil
+	}
+	having, args := "", []any{packageID}
+	if after != nil {
+		at := c.d.EncodeTime(after.CreatedAt)
+		having = " HAVING MIN(created_at) < ? OR (MIN(created_at) = ? AND version < ?)"
+		args = append(args, at, at, after.Version)
+	}
+	return getAll(ctx, c, fmt.Sprintf("a page of the versions of package %d", packageID), versionDests,
+		"WITH page AS (SELECT version, MIN(created_at) AS first_at FROM versions WHERE package_id = ?"+
+			" GROUP BY version"+having+" ORDER BY first_at DESC, version DESC LIMIT ?)"+
+			" SELECT "+versionColsV+" FROM page JOIN versions v ON v.package_id = ? AND v.version = page.version"+
+			" ORDER BY page.first_at DESC, page.version DESC, v.variant",
+		append(args, limit, packageID)...)
 }
 
 // ListUnseenVersions returns the versions of a repo whose IndexedAt is before seenBefore, with
