@@ -283,7 +283,7 @@ func (c *Core) ociDocument(ctx context.Context, p *ociProxied, want ocispec.Desc
 	case p.up == nil, row != nil && p.fresh(row, c.o.Now()):
 		return ocispec.Descriptor{}, nil, ociManifestUnknown(p, ref)
 	}
-	fl, _ := c.flights.join(fmt.Sprintf("ocidoc:%d:%s:%s", p.repo.ID, p.path, d), func() (bool, error) {
+	fl, _ := c.flights.join(docFlight(p, d), func() (bool, error) {
 		fctx, cancel := c.detach(ctx)
 		defer cancel()
 		return c.ociFetchDocument(fctx, p, want)
@@ -304,6 +304,12 @@ func (c *Core) ociDocument(ctx context.Context, p *ociProxied, want ocispec.Desc
 		return ocispec.Descriptor{}, nil, ociManifestUnknown(p, ref)
 	}
 	return ocispec.Descriptor{MediaType: row.ContentType, Digest: d, Size: int64(len(row.Content))}, row.Content, nil
+}
+
+// docFlight is the key of the flight of the manifest or index d at p's path, which a client's
+// miss and a prefetch share.
+func docFlight(p *ociProxied, d digest.Digest) string {
+	return fmt.Sprintf("ocidoc:%d:%s:%s", p.repo.ID, p.path, d)
 }
 
 // ociFetchDocument fetches the manifest or index want under its claim (repo, path, digest),
