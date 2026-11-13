@@ -234,7 +234,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20 # the steps' budgets below, make e2e's 10 included
     services:
       zot:
         # The Zot of the integration job: v2.1.23, the minimal build, on the configuration built
