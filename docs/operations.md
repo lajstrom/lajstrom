@@ -689,7 +689,8 @@ What an operator of ECR sees:
 - A manifest `PUT` that the registry answers `MANIFEST_BLOB_UNKNOWN`, from a publish or from a
   push to an `oci` repo, is sent again with the same backoff for the same time: every blob it
   names was read or uploaded a moment before. Past the time the client gets the registry's
-  refusal.
+  refusal; for a push to an `oci` repo the message also names the first blob of the manifest
+  the registry does not have, which Lajstrom finds with one `HEAD` per blob (#850).
 
 ### Upstreams of oci proxy repos
 
