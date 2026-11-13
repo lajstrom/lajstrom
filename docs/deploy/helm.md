@@ -361,7 +361,7 @@ whoami with the password of the Secret: 200
 | `terminationGracePeriodSeconds` | `40` | must exceed `server.shutdownDelay` and `server.shutdownTimeout` together |
 | `revisionHistoryLimit` | `10` | |
 | `podDisruptionBudget.enabled`, `.maxUnavailable`, `.minAvailable` | `true`, `1`, none | `minAvailable` replaces `maxUnavailable` when set |
-| `serviceAccount.create`, `.name`, `.annotations` | `true`, the full name, `{}` | for a registry of type `ecr`: IRSA's `eks.amazonaws.com/role-arn` |
+| `serviceAccount.create`, `.name`, `.annotations` | `true`, the full name, `{}` | for a registry of type `ecr` or an upstream with `auth.ecr`: IRSA's `eks.amazonaws.com/role-arn`; for an upstream with `auth.gcp` that acts as a Google service account: GKE's `iam.gke.io/gcp-service-account` |
 | `automountServiceAccountToken` | `false` | Lajstrom never talks to the Kubernetes API |
 | `podAnnotations`, `podLabels` | `{}` | |
 | `podSecurityContext`, `securityContext` | those of `deployment.yaml` | user 65532, `RuntimeDefault`, no privilege escalation, no capability, read-only root |

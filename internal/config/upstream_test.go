@@ -101,13 +101,15 @@ func TestLoadUpstreamCloud(t *testing.T) {
 upstreams:
   - {name: ecr, format: oci, url: "https://123456789012.dkr.ecr.eu-west-1.amazonaws.com", auth: {ecr: {}}}
   - {name: moto, format: oci, url: "http://localhost:5011", auth: {ecr: {region: us-east-1, endpoint: "http://localhost:5010"}}}
+  - {name: gar, format: oci, url: "https://europe-west8-docker.pkg.dev", auth: {gcp: {}}}
 `
 	c, err := Load(writeConfig(t, file), nil)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	for i, want := range []string{`ecr: {region: "", endpoint: ""}`, `ecr: {region: "us-east-1", endpoint: "http://localhost:5010"}`} {
-		if a := c.Upstreams[i].Auth; a.ECR == nil || !strings.Contains(fmt.Sprint(a), want) {
+	for i, want := range []string{`ecr: {region: "", endpoint: ""}, gcp: <nil>`, `ecr: {region: "us-east-1", endpoint: "http://localhost:5010"}`,
+		`ecr: <nil>, gcp: {}`} {
+		if a := c.Upstreams[i].Auth; (a.ECR == nil) == (a.GCP == nil) || !strings.Contains(fmt.Sprint(a), want) {
 			t.Errorf("upstreams[%d].auth = %v, want %s", i, a, want)
 		}
 	}
@@ -180,12 +182,18 @@ func TestLoadUpstreamErrors(t *testing.T) {
   - {name: b, format: oci, url: "https://123456789012.dkr.ecr.eu-west-1.amazonaws.com", auth: {ecr: {}, username: u, passwordFile: /p}}
   - {name: c, format: oci, url: "https://123456789012.dkr.ecr.eu-west-1.amazonaws.com", auth: {ecr: {}, tokenFile: /t}}
   - {name: d, format: oci, url: "https://123456789012.dkr.ecr.eu-west-1.amazonaws.com", auth: {ecr: {endpoint: "vpce.example"}}}
+  - {name: e, format: npm, url: "https://e.example", auth: {gcp: {}}}
+  - {name: f, format: oci, url: "https://gcr.io", auth: {gcp: {}, username: _json_key, passwordFile: /k}}
+  - {name: g, format: oci, url: "https://gcr.io", auth: {gcp: {}, ecr: {}}}
 `,
 			want: []string{
 				"upstreams[0].auth.ecr: only an upstream of format oci has it",
 				"upstreams[1].auth.ecr: is the upstream's credential: not with username, passwordFile, passwordEnv or tokenFile",
 				"upstreams[2].auth.ecr: is the upstream's credential",
 				"upstreams[3].auth.ecr.endpoint: must be an absolute http(s) URL without credentials",
+				"upstreams[4].auth.gcp: only an upstream of format oci has it",
+				"upstreams[5].auth.gcp: is the upstream's credential: not with username, passwordFile, passwordEnv or tokenFile",
+				"upstreams[6].auth: ecr and gcp are two cloud credentials: set one",
 			},
 		},
 		{

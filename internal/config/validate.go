@@ -666,7 +666,7 @@ func (u Upstream) validate(p *problems, key string) {
 // of passwordFile and passwordEnv, whose variable must be set, or a cloud credential alone.
 func (u Upstream) validateAuth(p *problems, key string) {
 	a := u.Auth
-	if a.ECR != nil {
+	if a.ECR != nil || a.GCP != nil {
 		u.validateCloud(p, key)
 		return
 	}
@@ -683,18 +683,23 @@ func (u Upstream) validateAuth(p *problems, key string) {
 	}
 }
 
-// validateCloud checks a cloud credential, auth.ecr: an oci upstream's, and the only key of
-// auth.
+// validateCloud checks a cloud credential, auth.ecr or auth.gcp: an oci upstream's, and the only
+// key of auth.
 func (u Upstream) validateCloud(p *problems, key string) {
 	a, field := u.Auth, key+".auth.ecr"
+	if a.ECR == nil {
+		field = key + ".auth.gcp"
+	}
 	switch {
+	case a.ECR != nil && a.GCP != nil:
+		p.add(key+".auth", "ecr and gcp are two cloud credentials: set one")
 	case u.Format != FormatOCI:
 		p.add(field, "only an upstream of format %s has it", FormatOCI)
 	case a.Username != "" || a.PasswordFile != "" || a.PasswordEnv != "" || a.TokenFile != "":
 		p.add(field, "is the upstream's credential: not with username, passwordFile, passwordEnv or tokenFile")
 	}
-	if e := a.ECR.Endpoint; e != "" {
-		if v, err := url.Parse(e); err != nil || !isHTTP(v) || v.User != nil {
+	if a.ECR != nil && a.ECR.Endpoint != "" {
+		if v, err := url.Parse(a.ECR.Endpoint); err != nil || !isHTTP(v) || v.User != nil {
 			p.add(field+".endpoint", "must be an absolute http(s) URL without credentials")
 		}
 	}
