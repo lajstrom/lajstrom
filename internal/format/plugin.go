@@ -112,9 +112,10 @@ type JournalOp struct {
 	Message      string // lajstrom.npm.message, deprecate only
 }
 
-// Sessions are the publication sessions of a format whose upload is several requests: maven PUTs
+// Sessions are the publication sessions of a format whose upload is several files: maven PUTs
 // each file of a version, then maven-metadata.xml, which commits them (docs/architecture.md, flow
-// B). Each file goes to the registry when it arrives; the session in the index records it, and
+// B); the apt frontend adds each file of a source package's multipart upload, then commits them
+// at the end of the request (#79). Each file goes to the registry when it arrives; the session in the index records it, and
 // Commit publishes the files as one version through Publisher.Upload. A session expires a while
 // after its last file (30 minutes by default), and its files are then dropped: a part of a version
 // is never published (docs/spec/http-routing.md §3, maven). One principal holds a session; a
@@ -144,11 +145,14 @@ type Sessions interface {
 	Refuse(ctx context.Context, sessionID int64, name, reason string) error
 
 	// Commit publishes the files of the session as one version, through Publisher.Upload, and
-	// closes the session. It is the idempotent repeat when the version holds these files already
-	// (Published.Existed) and index.ErrConflict when it holds others, or when another Commit of
-	// the session is running. A session that is not open, or has expired, is index.ErrNotFound;
-	// one without files, ErrInvalid.
-	Commit(ctx context.Context, sessionID int64) (*Published, error)
+	// closes the session. Upload.Params are the session's name and version and the principal
+	// that opened it as uploaded-by, with params besides them: protocol parameters Build needs
+	// that the files do not say (apt: the suite and the component of a source package; maven:
+	// none, nil), which cannot replace those three. It is the idempotent repeat when the version
+	// holds these files already (Published.Existed) and index.ErrConflict when it holds others,
+	// or when another Commit of the session is running. A session that is not open, or has
+	// expired, is index.ErrNotFound; one without files, ErrInvalid.
+	Commit(ctx context.Context, sessionID int64, params map[string]string) (*Published, error)
 
 	// Abort closes the session without publishing; its blobs are left to the registry's garbage
 	// collection. A session that is closed already is left as it is.

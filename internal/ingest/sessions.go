@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"time"
 
@@ -270,10 +271,10 @@ func (p *Pipeline) Files(ctx context.Context, sessionID int64) ([]format.Session
 }
 
 // Commit implements format.Sessions: it marks the session committing, publishes its files with
-// Upload, and closes it. When Upload fails the mark is taken off and the session stays open, so
+// Upload, params among Upload.Params (commitFiles), and closes it. When Upload fails the mark is taken off and the session stays open, so
 // that the client may commit again or add what was missing. A session with a file that Refuse
 // refused is ErrInvalid, naming the first in the order of the files, and stays open as it is.
-func (p *Pipeline) Commit(ctx context.Context, sessionID int64) (*format.Published, error) {
+func (p *Pipeline) Commit(ctx context.Context, sessionID int64, params map[string]string) (*format.Published, error) {
 	s, st, err := p.liveSession(ctx, sessionID)
 	if err != nil {
 		return nil, err
@@ -303,7 +304,7 @@ func (p *Pipeline) Commit(ctx context.Context, sessionID int64) (*format.Publish
 	if err != nil {
 		return nil, err
 	}
-	pub, err := p.commitFiles(ctx, *repo, s, st)
+	pub, err := p.commitFiles(ctx, *repo, s, st, params)
 	// The row is written after a client that went away too: a mark left behind would make the
 	// next Commit a conflict until it is stale.
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionWriteTimeout)
@@ -326,9 +327,9 @@ func (p *Pipeline) Commit(ctx context.Context, sessionID int64) (*format.Publish
 }
 
 // commitFiles publishes the files of st through Upload to repo, the repo of s, as the principal
-// that opened s, with the parameters name, version and uploaded-by. Each file reads back from
-// the registry if Build opens it.
-func (p *Pipeline) commitFiles(ctx context.Context, repo index.Repo, s *index.Session, st *sessionState) (*format.Published, error) {
+// that opened s, with the parameters name, version and uploaded-by, and params besides them,
+// which cannot replace those three. Each file reads back from the registry if Build opens it.
+func (p *Pipeline) commitFiles(ctx context.Context, repo index.Repo, s *index.Session, st *sessionState, params map[string]string) (*format.Published, error) {
 	principal, err := auth.ParsePrincipal(s.Principal)
 	if err != nil {
 		return nil, fmt.Errorf("ingest: session %d: %w", s.ID, err)
@@ -339,7 +340,9 @@ func (p *Pipeline) commitFiles(ctx context.Context, repo index.Repo, s *index.Se
 	}
 	// uploaded-by is the parameter of every format's ParamUploadedBy: the principal is the
 	// session's, who sent the files.
-	up := format.Upload{Params: map[string]string{"name": st.Name, "version": st.Version, "uploaded-by": s.Principal}}
+	up := format.Upload{Params: make(map[string]string, len(params)+3)}
+	maps.Copy(up.Params, params)
+	maps.Copy(up.Params, map[string]string{"name": st.Name, "version": st.Version, "uploaded-by": s.Principal})
 	for _, f := range st.Files {
 		d := ocispec.Descriptor{MediaType: sessionBlobType, Digest: f.Digest, Size: f.Size}
 		up.Files = append(up.Files, format.UploadedFile{Name: f.Name, Size: f.Size, Checksums: f.Checksums,

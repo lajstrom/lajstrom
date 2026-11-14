@@ -236,7 +236,7 @@ func (d *deployer) commit(r *http.Request, repo index.Repo, c Coordinates) (*for
 	if err != nil || !ok {
 		return nil, err
 	}
-	pub, err := d.deps.Sessions.Commit(ctx, s.ID)
+	pub, err := d.deps.Sessions.Commit(ctx, s.ID, nil)
 	switch {
 	case errors.Is(err, index.ErrNotFound):
 		return nil, nil

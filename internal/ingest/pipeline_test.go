@@ -484,7 +484,7 @@ func TestSessionCommitUnavailable(t *testing.T) {
 	s, err := e.pipe.Open(ctx, e.repo, "lib", "1.0", alice)
 	must(t, err)
 	add(t, e, s.ID, "lib-1.0.jar", "jar")
-	if _, err := e.pipe.Commit(ctx, s.ID); !errors.Is(err, index.ErrUnavailable) {
+	if _, err := e.pipe.Commit(ctx, s.ID, nil); !errors.Is(err, index.ErrUnavailable) {
 		t.Fatalf("Commit while the index is out: %v, want index.ErrUnavailable", err)
 	}
 	if st := e.state(t, s.ID); st != "open" {
@@ -493,7 +493,7 @@ func TestSessionCommitUnavailable(t *testing.T) {
 	first := e.pushRefs("1.0")[0].Digest
 	c.add(5 * time.Second)
 	e.plugin.BuildFunc = buildRawAt(created.Add(5 * time.Second))
-	pub, err := e.pipe.Commit(ctx, s.ID)
+	pub, err := e.pipe.Commit(ctx, s.ID, nil)
 	must(t, err)
 	if pub.Digest != first || pub.Existed {
 		t.Errorf("the commit again: %s, Existed %v; want the first manifest, %s, confirmed now", pub.Digest, pub.Existed, first)
