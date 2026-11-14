@@ -673,7 +673,10 @@ What an operator of ECR sees:
 - A publish the registry did not serve in time: the client gets `503` with `Retry-After: 30`
   (on `/v2` the code `UNAVAILABLE`, which docker and oras retry, with a message and a `detail`
   that name what the registry does not serve yet: the manifest, the tag, the first 20 blobs and
-  how many more), and the
+  how many more; on the other frontends and the API, and in a prefetch's result, the message
+  names the same after the status text, `Service Unavailable; the registry took
+  raw/scratch/tool@sha256:… and does not serve the tag 1.0.0 yet; the same request again
+  completes it`, #667), and the
   log has `ingest: the registry took a push and does not serve it yet` at warning, naming what
   was missing. The
   manifest stays in the registry and the index has no version. The claim on the tag stays as

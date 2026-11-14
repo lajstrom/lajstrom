@@ -65,7 +65,7 @@ Every error is answered with one envelope:
 | 429 | `UNAVAILABLE` | too many failed logins: the password is not checked until the time in `Retry-After` has passed ([auth.md](auth.md#failed-logins)) |
 | 501 | `UNAVAILABLE` | a version delete on a registry that does not delete manifests (`capabilities.deleteManifest: false`); the message names the registry, and nothing was deleted |
 | 502 | `UNAVAILABLE` | a version delete that the registry refused: it rejected Lajstrom's credentials or the request; the message is the status text and names the variants deleted before, the cause is in the server log with the request id |
-| 503 | `UNAVAILABLE` | the index database does not answer, or a registry's circuit breaker is open; try again after `Retry-After` ([operations.md](operations.md#readiness)) |
+| 503 | `UNAVAILABLE` | the index database does not answer, or a registry's circuit breaker is open; try again after `Retry-After` ([operations.md](operations.md#readiness)); or the registry took a write (a prefetch) and does not serve it yet, `Retry-After: 30`, and the message names what it does not serve after the status text ([operations.md](operations.md#an-eventually-consistent-registry)) |
 | 500 | `INTERNAL` | anything else, a panic of a handler too; the message is the status text, the cause is in the server log with the request id (`X-Request-Id`) |
 
 ## Repos

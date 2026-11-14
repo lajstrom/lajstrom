@@ -48,6 +48,13 @@ func TestWriteError(t *testing.T) {
 		{name: "backend rejected our credentials", err: fmt.Errorf("generic: %w", provider.ErrUnauthorized), status: 502},
 		{name: "circuit breaker open", err: fmt.Errorf("raw: push: %w", &provider.UnavailableError{RetryAfter: 12 * time.Second}), status: 503, retryAfter: "12"},
 		{name: "unavailable without a time", err: provider.ErrUnavailable, status: 503},
+		// #667: an Explainer's words follow the status text of a 5xx, and only of a 5xx
+		{name: "a publish not served yet", err: fmt.Errorf("raw: put: %w", notServed{}), status: 503, retryAfter: "30",
+			body: "Service Unavailable; the registry took raw/r/f@sha256:00 and does not serve the tag 1.0 yet\n"},
+		{name: "words and a partial delete", err: format.Partial(notServed{}, []string{"1.0.0 (sha256:11)"}), status: 503, retryAfter: "30",
+			body: "Service Unavailable; the registry took raw/r/f@sha256:00 and does not serve the tag 1.0 yet; " +
+				"deleted before the failure, and still deleted: 1.0.0 (sha256:11)\n"},
+		{name: "words of a 4xx are its message", err: fmt.Errorf("%w: %w", format.ErrInvalid, words("other words")), status: 400},
 		{name: "database unavailable", err: fmt.Errorf("raw: %w: repos raw/scratch: connection refused", index.ErrUnavailable),
 			status: 503, retryAfter: "5"},
 		{name: "a write to a proxy", err: fmt.Errorf("npm: publish: %w", format.ErrMethodNotAllowed), status: 405},
@@ -100,6 +107,27 @@ func TestWriteError(t *testing.T) {
 		})
 	}
 }
+
+// notServed is an Explainer of a publish the registry does not serve yet, as
+// ingest.NotVisibleError is: 503 with Retry-After 30.
+type notServed struct{}
+
+func (notServed) Error() string { return "ingest: raw/r/f@sha256:00: the cause, for the log" }
+
+func (notServed) Explain() string {
+	return "the registry took raw/r/f@sha256:00 and does not serve the tag 1.0 yet"
+}
+
+func (notServed) Unwrap() error {
+	return &provider.UnavailableError{RetryAfter: 30 * time.Second, Reason: "not served"}
+}
+
+// words is an Explainer and nothing else.
+type words string
+
+func (w words) Error() string { return "the cause: " + string(w) }
+
+func (w words) Explain() string { return string(w) }
 
 // TestSetRetryAfter checks the seconds of Retry-After: the time left rounded up, at least 1, and
 // no header for an error that does not say when to try again.

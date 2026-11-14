@@ -11,6 +11,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
+	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
@@ -167,6 +168,44 @@ func (e *NotVisibleError) Missing() []string {
 		missing = append(missing, readback{kindReferrers, e.Subject.String()}.String())
 	}
 	return missing
+}
+
+// maxExplainedBlobs is the most blobs Explain names; it counts the rest, as the facade's answer
+// does (#693): a manifest names up to 1000 layers.
+const maxExplainedBlobs = 20
+
+// NotVisibleError is the format.Explainer of the frontends' and the API's 503 (#667).
+var _ format.Explainer = (*NotVisibleError)(nil)
+
+// Explain says what the registry does not serve yet, for the client: "the registry took
+// <Name>@<Digest> and does not serve <Missing> yet; the same request again completes it",
+// naming the first maxExplainedBlobs blobs and counting the rest after them, "n more blobs".
+// Name is Lajstrom's OCI name, without the registry's instance prefix: nothing of the
+// registry's is in it. format.ClientMessage adds it to the 503's status text.
+func (e *NotVisibleError) Explain() string {
+	named := *e
+	named.Blobs = e.Blobs[:min(len(e.Blobs), maxExplainedBlobs)]
+	missing := named.Missing()
+	if more := len(e.Blobs) - len(named.Blobs); more > 0 {
+		at := len(missing) // after the blobs named: Missing ends in the subject's referrers, when they are missing
+		if e.Subject != "" {
+			at--
+		}
+		missing = slices.Insert(missing, at, moreBlobs(more))
+	}
+	what := "it"
+	if len(missing) > 0 {
+		what = strings.Join(missing, ", ")
+	}
+	return fmt.Sprintf("the registry took %s@%s and does not serve %s yet; the same request again completes it", e.Name, e.Digest, what)
+}
+
+// moreBlobs is "1 more blob", "n more blobs": the blobs Explain counts and does not name.
+func moreBlobs(n int) string {
+	if n == 1 {
+		return "1 more blob"
+	}
+	return fmt.Sprintf("%d more blobs", n)
 }
 
 // notVisible is the NotVisibleError of w, whose reads left were not seen within waited.
