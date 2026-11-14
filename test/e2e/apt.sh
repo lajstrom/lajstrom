@@ -20,6 +20,11 @@
 #     uploaded with POST …/upload as multipart/form-data; a deb-src line, apt-get source
 #     --download-only and the sha256 of the three files, apt-get build-dep installing the first
 #     package;
+#   - the Contents of jammy/main (#79): apt-file search finds the files of both packages, the one
+#     uploaded and the one pushed with oras; apt-file is installed from the image's own archive,
+#     which the client saved when it started, and without network access apt's index target
+#     $(COMPONENT)/Contents-$(ARCHITECTURE) is configured by hand and its files read with
+#     apt-helper, as apt-file does;
 #   - a copy of the suite whose Release has the SHA256 of each index one digit off, read from a
 #     file: source: apt-get update fails, and its own "Hash Sum mismatch" error is printed, as a
 #     broken Release from the server would make the steps above fail with it;
@@ -260,6 +265,9 @@ esac
 started=1
 docker run -d --name "$client" --network host --platform linux/amd64 -v "$work/client:/w" "$image" sleep infinity >/dev/null
 apt_version="$(docker exec "$client" apt-get --version | sed -n 1p)"
+# The image's own archive, for apt-file in the Contents step: its sources are replaced below.
+docker exec "$client" sh -c 'mkdir -p /w/archive-sources && cp /etc/apt/sources.list.d/*.sources /w/archive-sources/ 2>/dev/null;
+	if [ -s /etc/apt/sources.list ]; then cp /etc/apt/sources.list /w/archive-sources/archive.list; fi; true'
 ok "client container $image (linux/amd64): $apt_version"
 
 # A-03, A-04: anonymousRead on, no credentials: apt-get update fetches the Packages by-hash, as
@@ -389,6 +397,33 @@ for f in "${src}_1.0.0-1.dsc" "${src}_1.0.0.orig.tar.gz" "${src}_1.0.0-1.debian.
 done
 grep -qxF "build-dep installed $one $version" "$work/src.log" || { cat "$work/src.log" >&2; fail "apt-get build-dep $src did not install $one"; }
 ok "deb-src: apt-get source --download-only $src: the .dsc and both tarballs, their sha256 those uploaded; apt-get build-dep $src installed $one $version"
+
+# #79: the Contents of jammy/main, through apt-file when the client can install it from the
+# image's archive, else through apt's index target, which apt-file configures, its files read with
+# apt-helper, as apt-file reads them. Both find the files of the two packages.
+in_client contents.log "
+	mkdir -p /tmp/lists && cp /etc/apt/sources.list.d/*.list /tmp/lists/
+	if [ -n \"\$(ls /w/archive-sources 2>/dev/null)\" ] && cp /w/archive-sources/* /etc/apt/sources.list.d/ &&
+		apt-get update >/tmp/archive.log 2>&1 && apt-get install -y --no-install-recommends apt-file >>/tmp/archive.log 2>&1; then
+		echo 'contents through apt-file'
+		rm -f /etc/apt/sources.list.d/* && cp /tmp/lists/* /etc/apt/sources.list.d/
+		apt-file update
+		apt-file search /usr/share/$one/greeting
+		apt-file search /usr/share/$two/greeting
+	else
+		echo 'contents through the index target'
+		rm -f /etc/apt/sources.list.d/* && cp /tmp/lists/* /etc/apt/sources.list.d/
+		echo 'Acquire::IndexTargets::deb::Contents-deb { MetaKey \"\$(COMPONENT)/Contents-\$(ARCHITECTURE)\"; ShortDescription \"Contents-\$(ARCHITECTURE)\"; Description \"\$(RELEASE)/\$(COMPONENT) \$(ARCHITECTURE) Contents (deb)\"; KeepCompressed \"true\"; };' > /etc/apt/apt.conf.d/50lajstrom-contents
+		apt-get update
+		for f in \$(apt-get indextargets --format '\$(FILENAME)' 'Identifier: Contents-deb'); do /usr/lib/apt/apt-helper cat-file \"\$f\"; done |
+			awk '{ n = \$NF; sub(/.*\\//, \"\", n); print n \": /\" \$1 }'
+	fi" || { cat "$work/contents.log" >&2; fail "the Contents of jammy in $image"; }
+quiet contents.log
+how="$(grep -m1 '^contents through' "$work/contents.log")"
+for p in "$one" "$two"; do
+	grep -qxF "$p: /usr/share/$p/greeting" "$work/contents.log" || { cat "$work/contents.log" >&2; fail "$how: no $p: /usr/share/$p/greeting"; }
+done
+ok "Contents of jammy/main, $how: /usr/share/$one/greeting in $one, /usr/share/$two/greeting in $two"
 
 # A broken Release: a copy of the suite (Release and the indexes it lists, the same bytes apt got
 # from the server) whose Release has the SHA256 of every index one digit off, read from a file:

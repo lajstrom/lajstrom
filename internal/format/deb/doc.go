@@ -26,7 +26,9 @@
 // POST of the upload route, multipart, the .dsc first: each file streams into a publication
 // session (format.Sessions) and is checked against the .dsc as it ended, and Commit publishes
 // them with the suite and the component. The suite's render adds a Sources, Sources.gz and
-// Sources.xz per component when it has source versions; the pool serves their files.
+// Sources.xz per component when it has source versions; the pool serves their files. It adds a
+// Contents-<arch> and its .gz per component and architecture too, the paths of the file lists
+// of the binary versions (md5sums for a version without one), which apt-file reads.
 //
 // An upload streams into the registry (ADR 0014): the upload route reads the head of the body,
 // up to the end of the control member, for the package name, and the whole body passes the
