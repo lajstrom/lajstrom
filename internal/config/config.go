@@ -10,16 +10,17 @@ import (
 // Config is the whole configuration file. The YAML keys are camelCase, as in
 // docs/spec/layout.md §6; docs/configuration.md describes every key.
 type Config struct {
-	Server     Server     `yaml:"server"`
-	Log        Log        `yaml:"log"`
-	Database   Database   `yaml:"database"`
-	Registries []Registry `yaml:"registries"`
-	Upstreams  []Upstream `yaml:"upstreams"`
-	Ingest     Ingest     `yaml:"ingest"`
-	Reconcile  Reconcile  `yaml:"reconcile"`
-	Auth       Auth       `yaml:"auth"`
-	Keys       Keys       `yaml:"keys"`
-	Repos      []Repo     `yaml:"repos"`
+	Server      Server      `yaml:"server"`
+	Log         Log         `yaml:"log"`
+	Database    Database    `yaml:"database"`
+	Registries  []Registry  `yaml:"registries"`
+	Upstreams   []Upstream  `yaml:"upstreams"`
+	Ingest      Ingest      `yaml:"ingest"`
+	Reconcile   Reconcile   `yaml:"reconcile"`
+	Auth        Auth        `yaml:"auth"`
+	Keys        Keys        `yaml:"keys"`
+	Attachments Attachments `yaml:"attachments"`
+	Repos       []Repo      `yaml:"repos"`
 }
 
 // Server configures the HTTP server.
