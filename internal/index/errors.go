@@ -21,6 +21,10 @@ var (
 	// so binaries serving on the schema would stop working, and it was not applied
 	// (ApplyMigrations, MigrateOptions.Breaking).
 	ErrBreakingMigration = errors.New("index: a pending migration would break the replicas serving on the schema")
+	// ErrNotEmpty means a table that Snapshotter.ImportControlPlane writes has rows already,
+	// and the import, which writes into an empty control plane only unless forced, changed
+	// nothing.
+	ErrNotEmpty = errors.New("index: the control plane is not empty")
 	// ErrUnavailable means the database did not answer, and may answer a later attempt: the
 	// store cannot connect to it, or it ended the connection or refuses new ones while it
 	// shuts down or starts, or on a timeout of its own (Postgres), or it ended the transaction

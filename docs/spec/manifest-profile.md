@@ -2,7 +2,8 @@
 
 - Status: normative, v1 (2026-11-06; section 4.3 changed by ADR 0017 on 2026-11-11; the pypi
   variant of a wheel with a build tag, sections 3 and 4.2, on 2026-11-12, #726; the rpm
-  profile, sections 1 to 5, on 2026-11-12, #64). Changes need an issue labelled `contract`
+  profile, sections 1 to 5, on 2026-11-12, #64; the snapshots of the control plane, section 9,
+  on 2026-11-14, #76). Changes need an issue labelled `contract`
   and, if the wire format changes, an ADR.
 - Implemented by: `internal/oci/profile` (pure Go, no I/O).
 - Related: [ADR 0005](../adr/0005-manifest-profile-and-immutable-tags.md),
@@ -480,3 +481,115 @@ touches a `_j` tag, so no tag lock is taken for an entry). Through `/v2` the fac
 none (section 5: not the artifactType of the format) and deletes none (http-routing.md, npm).
 A proxy repo (ADR 0013) journals nothing: a proxied package's dist-tags and deprecations are
 the upstream's.
+
+## 9. Snapshots of the control plane (#76)
+
+A snapshot is the control plane of the index ([index-schema.md](index-schema.md#snapshots-of-the-control-plane):
+repos, group members, users, OIDC identities, tokens, bindings, keys, and audit rows when asked)
+written into the registry by Lajstrom itself, so that a database lost without a backup comes back
+from the registry: `lajstrom admin snapshot create` writes one, `lajstrom admin snapshot restore`
+writes it into an empty database, and `lajstrom reindex` rebuilds the derived tables after it
+([operations.md](../operations.md#disaster-recovery)). A snapshot is one manifest, the one made at
+10:30:00 UTC on 2026-11-14 from a database at migration 21, under the tag
+`20261114T103000Z-3f2a9c0d1e4b` of `art/lajstrom/control-plane`:
+
+```json
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.manifest.v1+json",
+  "artifactType": "application/vnd.lajstrom.snapshot.v1",
+  "config": {
+    "mediaType": "application/vnd.oci.empty.v1+json",
+    "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "size": 2
+  },
+  "layers": [
+    {
+      "mediaType": "application/vnd.lajstrom.snapshot.control-plane.v1.sealed",
+      "digest": "sha256:8e1…",
+      "size": 5120,
+      "annotations": { "org.opencontainers.image.title": "control-plane.sealed" }
+    }
+  ],
+  "annotations": {
+    "lajstrom.schema": "1",
+    "lajstrom.snapshot.version": "1",
+    "lajstrom.snapshot.schema": "21",
+    "lajstrom.snapshot.binary": "v0.2.0",
+    "org.opencontainers.image.created": "2026-11-14T10:30:00Z"
+  }
+}
+```
+
+| Element | Rule |
+| --- | --- |
+| repository | `lajstrom/control-plane` below the instance prefix of the registry it is written to (`art/lajstrom/control-plane`): one registry of the configuration, the one the command names. `lajstrom` is a reserved first segment (http-routing.md §1): no format has the name, so no repo's OCI repositories are below it, no reindex lists it, and `/v2` has no route to it |
+| `artifactType` | `application/vnd.lajstrom.snapshot.v1` |
+| `config` | the empty descriptor |
+| `layers` | exactly one, the document (below): `application/vnd.lajstrom.snapshot.control-plane.v1.json+gzip` titled `control-plane.json.gz`, or sealed, `application/vnd.lajstrom.snapshot.control-plane.v1.sealed` titled `control-plane.sealed` |
+| `subject` | not set |
+| annotations | `lajstrom.schema` (`"1"`); `lajstrom.snapshot.version`, the version of the document (`"1"`); `lajstrom.snapshot.schema`, the newest migration applied to the database it was read from, decimal (`"21"`); `lajstrom.snapshot.binary`, the version of the lajstrom that wrote it; `org.opencontainers.image.created`, the time of the read, RFC 3339 UTC to the second. No `lajstrom.format`, `lajstrom.repo` or `lajstrom.name`: a snapshot is no repo's |
+| tag | `<created as YYYYMMDDTHHMMSSZ>-<the first 12 hex digits of the manifest's sha256 digest>`: the tags sort by time, two snapshots of one second have two tags, and the push of a manifest again is its own tag over the same bytes |
+
+**Tags.** A snapshot's tag is never moved, as no tag is (section 4.2): the writer resolves it
+before the push, and refuses a tag that names another digest. There is no `latest`, which would
+have to move: a restore of `latest` lists the repository's tags and takes the greatest one of the
+grammar above. Old snapshots are removed by the registry's own retention rules, if at all.
+
+**Writing.** The writer reads the control plane in one transaction and closes it (index-schema.md,
+Snapshots of the control plane), then pushes through the provider of the registry, like every
+other write: the repository where the registry needs it made (`EnsureRepository`), the empty blob
+and the layer, the manifest under its tag (`PushReference`), and reads the tag back
+(`provider.ReadBack`) before it reports the snapshot written. It is not a publish: no repo, no
+claim, no index row; an audit row `snapshot.create`, the tag as its subject and the manifest's
+digest, after the read, so that a snapshot never holds its own row.
+
+**The document** is one JSON object, gzip-compressed:
+
+| Key | Value |
+| --- | --- |
+| `version` | `1`, as `lajstrom.snapshot.version` |
+| `schema` | the newest migration of the database, as `lajstrom.snapshot.schema` |
+| `createdAt` | the database's time of the read, RFC 3339 UTC |
+| `binary` | as `lajstrom.snapshot.binary` |
+| `auditSince` | the start of the window of `audit`, RFC 3339; absent when `audit` holds every row, or is absent |
+| `repos` | `[{"id", "format", "name", "registry", "prefix", "kind", "anonymousRead", "policy", "upstream", "group", "createdAt", "updatedAt"}]` |
+| `groupMembers` | `[{"group", "member", "position"}]`: repo ids, and the place from 0 |
+| `users` | `[{"id", "uid", "name", "passwordHash", "kind", "disabled", "createdAt", "deletedAt", "deletedName"}]`: the live and the deleted users; `passwordHash` the argon2id hash, absent without a password |
+| `identities` | `[{"id", "user", "issuer", "subject", "createdAt", "loginAt", "groupsExpireAt"}]`: `user` a user id |
+| `identityGroups` | `[{"identity", "name"}]`: an identity id and a group |
+| `tokens` | `[{"id", "kind", "user", "repo", "name", "hash", "scopes", "expiresAt", "lastUsedAt", "createdAt", "revokedAt"}]`: `user` and `repo` ids, `hash` the hex sha256 of the secret |
+| `bindings` | `[{"id", "principal", "role", "repoMask", "createdAt"}]` |
+| `keys` | `[{"id", "repo", "kind", "public", "privateEnc", "fingerprint", "createdAt", "retiredAt"}]`: `repo` a repo id, absent for a server key; `public` and `privateEnc` base64, `privateEnc` the ciphertext of the table (index-schema.md, `keys`) |
+| `audit` | `[{"id", "at", "principal", "principalName", "action", "repo", "subject", "digest", "ip", "details", "state", "error"}]`; absent when the snapshot was made without audit rows, `[]` when its window held none |
+
+Each object is a row of its table with its id; its keys are the columns, camelCase, a json
+column (`policy`, `upstream`, `group`, `scopes`, `details`) its JSON, a timestamp RFC 3339 UTC
+with the fraction the database keeps. A key that is absent or `null` is the column's NULL or empty
+value. Every array is ordered by `id`, `groupMembers` by `group` and `position`, `identityGroups`
+by `identity` and `name`. There is no plaintext secret in the document, since the tables hold
+none: passwords as argon2id hashes, token secrets as sha256, private keys encrypted with the
+master key. The master key itself is never in it.
+
+**Sealed.** By default the layer is sealed: `nonce ‖ AES-256-GCM(gzip(document))`, a random
+12-byte nonce, the key HKDF-SHA256 of the master key's 32 bytes with no salt and the info
+`lajstrom snapshot v1`, 32 bytes, so that the cipher of `keys.private_enc` is not used for
+anything else, and the layer's media type as the additional data. A snapshot holds password
+hashes, user names, OIDC subjects and the audit trail, and a registry often has more readers than
+the database. A sealed snapshot is read only with the master key of its writer. The writer makes
+the unsealed form, `…control-plane.v1.json+gzip`, when the operator asks for it, and refuses a
+sealed one without a master key.
+
+**Versions: written in the newest form, read in every form.** A field added to the document with
+a column that an expand migration adds (index-schema.md, Upgrades) keeps the version: an older
+document lacks it, and it is read as the column's default. A change that a contract migration
+makes to a table of the document, a field that changes its meaning or goes away, increments the
+version, and the reader converts each version it knows. A restore refuses a version it does not
+know, and a `schema` newer than the newest migration of its binary (`index.ErrSchemaTooNew`):
+restore with a binary that knows that migration.
+
+**Reading.** The restore resolves the tag (or takes a digest), and refuses a manifest that is not
+an image manifest of `application/vnd.lajstrom.snapshot.v1` with one layer of the two media types
+above, a layer whose bytes do not have its digest, a sealed layer that does not open with the
+master key, and a document larger than 1 GiB unpacked. Nothing else reads a snapshot: reindex
+does not list it, ingest never receives one.
