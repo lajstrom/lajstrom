@@ -50,6 +50,7 @@ internal/api/                 /api/v1 management REST (repos, users, tokens, bin
 internal/keys/                server signing key, per-repo GPG keys (apt, rpm), encryption at rest, keys held in a KMS (ADR 0020)
 internal/keys/awskms/         AWS KMS for keys: DescribeKey, GetPublicKey, Sign over net/http, SigV4 of aws-sdk-go-v2
 internal/keys/gcpkms/         GCP Cloud KMS for keys: cryptoKeyVersions.get, getPublicKey, asymmetricSign over net/http
+internal/keys/keystest/       test doubles: a KMS in memory; imported only by tests
 internal/gcpauth/             the access token of the workload's service account from the GCP metadata server
                               (an oci upstream's auth.gcp, gcpkms)
 internal/audit/               audit log writer
