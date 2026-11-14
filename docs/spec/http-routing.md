@@ -16,6 +16,7 @@ https://<host>/-/oidc/...               OIDC login: browser and device flows (§
 http://<metricsListen>/metrics        Prometheus, a separate listener, never on the public host
 https://<host>/.well-known/terraform.json   (after the MVP)
 https://<host>/ui/...                   (after the MVP)
+https://<repo>.<domain>/...             FQDN mode: the tree of one repo, rewritten to the path form (§1.1)
 ```
 
 Reserved first segments: `v2`, `api`, `ui`, `-`, `.well-known`, `oci`, and every registered format
@@ -25,8 +26,8 @@ may take the name and the management API creates such a repo without one.
 A format name is lowercase ASCII letters and digits with single hyphens between them
 (`^[a-z0-9]+(-[a-z0-9]+)*$`) and never one of the other reserved segments.
 A repo name is unique within its format; the pair `<format>/<repo>` is the resource for RBAC.
-The optional FQDN mode (`<repo>.<host>`) is after the MVP and rewrites to the path form at the
-edge; nothing else changes.
+The optional FQDN mode (§1.1, #75) gives a repo a host of its own, `<repo>.<domain>`, and
+rewrites its requests to the path form before they are authenticated and routed.
 
 Lajstrom owns the whole host: nothing lives under a path prefix. OCI clients address a registry
 as `host[:port]/<name>` and always request `https://<host>/v2/…`, and Terraform discovery reads
@@ -47,12 +48,85 @@ MVP). Plain HTTP to clients is for the dev stack on loopback only, behind an exp
 
 `server.externalURL` is the base for every absolute URL Lajstrom renders: the `WWW-Authenticate`
 realm and npm's `dist.tarball` (§3, npm), so a new value needs npm's documents rendered again
-(`lajstrom reindex`). Redirects and the `Location` of an upload are paths, the file links of the
-PyPI simple index are relative, and apt `Release` is path-relative and needs none. Its host is the
+(`lajstrom reindex`); on a repo host (§1.1) npm's `dist.tarball` follows that host. Redirects
+and the `Location` of an upload are paths, the file links of the PyPI simple index are relative,
+and apt `Release` is path-relative and needs none. Its host is the
 `service` of the token flow, the `iss` and `aud` of every bearer token. It is required: only with
 `server.insecureHTTP: true`, the dev stack, may it be empty (#248). Then the realm and the service
 come from the request's `Host`, and the realm is `https://` when the request came over TLS
 (`server.tls`), `http://` otherwise.
+
+### 1.1 FQDN mode (#75)
+
+With `server.fqdn.domain` set ([configuration.md](../configuration.md#server); it needs
+`server.externalURL`, and an `http://` one the domain `localhost`), every repo also has a host of
+its own, and a client may take that host as the root of the repo: npm's
+`registry=https://internal.art.example.com/`, pip's
+`--index-url https://internal.art.example.com/simple/`. Lajstrom rewrites such a request to the
+path form before it authenticates and routes it, and nothing below the rewrite tells the two
+apart: the path form keeps working beside it, for the same repo, with the same credentials,
+permissions and documents.
+
+```
+https://<repo>.<domain>/<path>            → /<format>/<repo>/<path>, the format of the one repo of that name
+https://<repo>.<format>.<domain>/<path>   → /<format>/<repo>/<path>
+```
+
+**Which host is what.** The `Host` header decides, lower-cased, without its port and a trailing
+dot; no forwarded header is read (§1), so an edge in front passes `Host` through. The host of
+`server.externalURL`, the domain itself and every host not below the domain are the main host,
+served as without the mode. A host below the domain is a repo host or nothing:
+
+- one label, `<repo>.<domain>`: the repo of that name among the formats the server serves. `oci`
+  repos, which have no frontend, are not counted. A name that repos of two formats hold has no
+  host of this form, whichever was created first: creating `maven/payments` takes
+  `payments.<domain>` from `npm/payments`, whose clients then need the second form;
+- two labels, `<repo>.<format>.<domain>`, `<format>` a format the server serves: the repo of that
+  format;
+- the repo label is a DNS label: lowercase letters, digits and single hyphens, at most 63 bytes. A
+  repo whose name has a `.` or a `_`, or is 64 bytes long, has no host; the path form serves it.
+  Its name is not mapped to another, which could be the name of another repo.
+
+Any other host below the domain (more labels, a format the server does not serve, an unknown
+repo, a name two formats hold, a label that is no repo name) is `404`, with the message
+`no repo is served at the host <host>` followed by the forms above, and the reasons a repo has no
+host; the anonymous principal gets `401` with the Basic challenge instead, as for a repo it may
+not read (rbac.md §3). The answer comes after authentication, so credentials that are refused
+are `401` first, as on every route.
+
+**A repo host serves the tree of its repo, and all of it.** Every path is rewritten,
+`/-/…`, `/v2/…`, `/api/…` and `/.well-known/…` included: npm's own routes are below `/-/`, and an
+npm package may be named `v2`. The management API, the OCI facade with its token endpoint, the
+system endpoints and the OIDC login are on the main host only.
+
+- The OCI facade stays host-wide: an image or an artifact is `<main host>/<format>/<repo>/<path>`.
+  On a repo host `/v2/` is a path of the repo, so docker and oras find no registry there. The
+  realm and the service of the bearer challenge, and the `iss` and `aud` of every token, are
+  those of `server.externalURL`, whatever the `Host`.
+- Terraform (after the MVP) discovers `/.well-known/terraform.json` on a host; on a repo host
+  that is `/terraform/<repo>/.well-known/terraform.json`, a route of the terraform plugin.
+
+**URLs on a repo host** follow it. Their host is built from the repo name, the form the request
+used and the domain, their scheme and port are those of `server.externalURL`; nothing of them
+comes from the request's `Host`.
+
+- A `Location` that is a path below `/<format>/<repo>/`, the redirect of a frontend or of the
+  router, or the `Location` of an upload, loses `/<format>/<repo>`: pip is sent to
+  `/simple/my-pkg/`, not to `/pypi/internal/simple/my-pkg/`.
+- npm's `dist.tarball` is `https://<repo host>/<name>/-/<file>`. The packument is rendered and
+  kept under `server.externalURL` as on the main host (§3, npm, one `index_cache` row for both)
+  and served with `<externalURL>/npm/<repo>/` after `"tarball":"` written as the repo host's
+  root; its `ETag` is the digest of the bytes served. Of a group it is the group's host.
+- The links that are relative already stay so: the PyPI simple index, apt `Release`, the rpm
+  repodata. The `Location` of a blob's `307` is the registry's own URL, as on the main host.
+
+A request on a repo host of the first form looks its repo up once per format the server serves,
+of the second form once; the router then looks it up as on the main host.
+
+**TLS.** The main host, `*.<domain>` and, for the second form, `*.<format>.<domain>` of each format
+used, in one certificate or in several, at the edge; a wildcard DNS record for each. Lajstrom's own
+`server.tls` holds one certificate and sends it whatever the SNI name, so with the mode on it is a
+certificate with those names; `serve` warns at start when it does not cover `<repo>.<domain>`.
 
 ## 2. OCI facade `/v2`
 
@@ -265,7 +339,8 @@ both documents, scope the package name, kinds `packument` and `packument-abbrevi
   `engines`, `cpu`, `os`, `libc`, `funding`, `dist`, `_hasShrinkwrap`, `hasInstallScript`.
 - `dist.tarball` is absolute, `<server.externalURL>/npm/<repo>/<name>/-/<file>` with the scope's
   `/` as it is (`…/npm/internal/@acme/widgets/-/widgets-1.2.0.tgz`), `<repo>` the repo asked (a
-  group's own, ADR 0013). A new `externalURL` needs the documents reset (`reindex`).
+  group's own, ADR 0013). A new `externalURL` needs the documents reset (`reindex`). On a repo
+  host it is served under that host, `https://<repo host>/<name>/-/<file>` (§1.1).
 - `dist-tags`: the state's tags whose version the package has. Without such a `latest`, `latest`
   is the highest version by SemVer precedence that is not a prerelease, else the highest. A
   version without its metadata layer (a degraded row) is `{name, version, dist}` from its
