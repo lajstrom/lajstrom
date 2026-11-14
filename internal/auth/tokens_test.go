@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -498,4 +499,159 @@ func TestTokensDefaults(t *testing.T) {
 	if s.now().Location() != time.UTC || s.log() != slog.Default() {
 		t.Error("a zero Tokens has no UTC clock or default logger")
 	}
+}
+
+// mask creates a deploy token over mask and fails the test on an error.
+func (f *tokensFixture) mask(t *testing.T, mask, name string, scopes []string, exp Expiry) *Token {
+	t.Helper()
+	tok, secret, err := f.tokens.CreateMaskDeploy(context.Background(), mask, name, scopes, exp, cli)
+	if err != nil {
+		t.Fatalf("CreateMaskDeploy(%s, %s): %v", mask, name, err)
+	}
+	f.secrets = append(f.secrets, secret)
+	return tok
+}
+
+// wantMaskTokens checks ListMaskDeploy(mask), by mask, kind, name, scopes, expiry and state.
+func wantMaskTokens(t *testing.T, f *tokensFixture, mask string, want ...string) {
+	t.Helper()
+	list, err := f.tokens.ListMaskDeploy(context.Background(), mask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, len(list))
+	for i, tok := range list {
+		expires, state := "never", "live"
+		if tok.ExpiresAt != nil {
+			expires = tok.ExpiresAt.Format(time.RFC3339)
+		}
+		if tok.RevokedAt != nil {
+			state = "revoked"
+		}
+		got[i] = fmt.Sprintf("%s %s %q %v expires %s %s", tok.RepoMask, tok.Kind, tok.Name, tok.Scopes, expires, state)
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("ListMaskDeploy(%q):\n%s\nwant:\n%s", mask, strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// maskFixture is the tokens fixture with the formats raw and oci served and the group raw/all,
+// and deploy tokens over masks (#911): oci/* nodes (read), oci/* ci (read and write, 400 days),
+// */scratch nodes, raw/scratch nodes (an exact mask), raw/* all (read and write: raw/all is a
+// group), besides the deploy token nodes of the repo raw/scratch. It returns the first.
+func maskFixture(t *testing.T) (*tokensFixture, *Token) {
+	t.Helper()
+	f := newTokensFixture(t)
+	ctx := context.Background()
+	f.tokens.Formats = func(name string) bool { return name == "raw" || name == "oci" }
+	group := index.Repo{Format: "raw", Name: "all", Prefix: "raw/all", Kind: index.KindGroup}
+	if err := f.st.CreateRepo(ctx, &group); err != nil {
+		t.Fatal(err)
+	}
+	nodes := f.mask(t, "oci/*", "nodes", []string{"read"}, Expiry{})
+	b, _ := json.Marshal(nodes)
+	row, err := f.st.GetTokenByHash(ctx, HashSecret(f.secrets[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf(`{"id":%d,"kind":"deploy","repoMask":"oci/*","name":"nodes","scopes":["read"],"expiresAt":null,`+
+		`"lastUsedAt":null,"createdAt":"2026-11-07T12:00:00Z","revokedAt":null,"hashPrefix":%q}`, row.ID, row.Hash[:8])
+	if string(b) != want {
+		t.Errorf("token = %s\nwant    %s", b, want)
+	}
+	if row.RepoID != nil || row.RepoMask != "oci/*" || !strings.HasPrefix(f.secrets[0], DeployPrefix) {
+		t.Errorf("row = %s, mask %q; want no repo and the mask oci/*, and a deploy token's secret", rowSummary(row), row.RepoMask)
+	}
+	f.mask(t, "oci/*", "ci", []string{"write", "read"}, Expiry{In: 400 * 24 * time.Hour})
+	f.mask(t, "*/scratch", "nodes", []string{"read"}, Expiry{}) // the same name over another mask
+	f.mask(t, "raw/scratch", "nodes", []string{"read"}, Expiry{})
+	f.mask(t, "raw/*", "all", []string{"read", "write"}, Expiry{}) // raw/all is a group: write all the same
+	f.deploy(t, "raw/scratch", "nodes", []string{"read"}, Expiry{})
+	return f, nodes
+}
+
+// TestTokensMaskDeploy creates deploy tokens over a mask (#911, docs/spec/rbac.md §1): the masks
+// of a binding's grammar, an exact one included, with the formats the server serves; the
+// scopes and expiry of a deploy token, write too where the mask matches a group; the name unique
+// among the live tokens of the same mask; the row and the resource (maskFixture), and the
+// refusals.
+func TestTokensMaskDeploy(t *testing.T) {
+	f, _ := maskFixture(t)
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name, mask, token string
+		scopes            []string
+		sentinel          error
+		msg               string
+	}{
+		{"one segment", "oci", "x", []string{"read"}, ErrInvalid, `repoMask: mask "oci": want <format>/<repo>, each a name or *`},
+		{"three segments", "oci/a/b", "x", []string{"read"}, ErrInvalid, `repoMask: mask "oci/a/b": want <format>/<repo>`},
+		{"empty", "", "x", []string{"read"}, ErrInvalid, `repoMask: mask "": want <format>/<repo>`},
+		{"a format not served", "maven/*", "x", []string{"read"}, ErrInvalid, `repoMask: "maven" is not a format of this server, nor *`},
+		{"not a repo name", "oci/Talos", "x", []string{"read"}, ErrInvalid, `repoMask: "Talos" is not a repo name`},
+		{"part of a segment", "oci/ta*", "x", []string{"read"}, ErrInvalid, `repoMask: "ta*" is not a repo name`},
+		{"no scopes", "oci/*", "x", nil, ErrInvalid, "scopes: a deploy token needs read, write or both"},
+		{"delete", "oci/*", "x", []string{"read", "delete"}, ErrInvalid, `scopes: "delete" is not a scope of a deploy token`},
+		{"manage", "*/*", "x", []string{"manage"}, ErrInvalid, `scopes: "manage" is not a scope of a deploy token`},
+		{"empty name", "oci/*", "", []string{"read"}, ErrInvalid, "name: must not be empty"},
+		{"name taken", "oci/*", "nodes", []string{"read"}, index.ErrConflict, `name: "nodes" is taken by a live token of mask oci/*`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := f.tokens.CreateMaskDeploy(ctx, tt.mask, tt.token, tt.scopes, Expiry{}, cli)
+			if !errors.Is(err, tt.sentinel) || !strings.HasPrefix(err.Error(), tt.msg) {
+				t.Errorf("err = %v, want %v saying %q", err, tt.sentinel, tt.msg)
+			}
+		})
+	}
+	if n := len(tokenAudit(t, f.st)); n != 6 {
+		t.Errorf("%d audit events, want the 6 creations: a refusal writes nothing", n)
+	}
+	f.noSecrets(t)
+}
+
+// TestTokensMaskDeployLife lists, keeps and revokes deploy tokens over a mask (#911): the lists,
+// which keep them apart from the repos' own tokens; a repo deleted, which leaves them; Get; the
+// revocation; the audit rows, whose subject is the mask and which have no repo.
+func TestTokensMaskDeployLife(t *testing.T) {
+	f, nodes := maskFixture(t)
+	ctx := context.Background()
+	wantMaskTokens(t, f, "",
+		`oci/* deploy "nodes" [read] expires never live`,
+		`oci/* deploy "ci" [read write] expires 2027-12-12T12:00:00Z live`,
+		`*/scratch deploy "nodes" [read] expires never live`,
+		`raw/scratch deploy "nodes" [read] expires never live`,
+		`raw/* deploy "all" [read write] expires never live`)
+	wantMaskTokens(t, f, "oci/*", `oci/* deploy "nodes" [read] expires never live`, `oci/* deploy "ci" [read write] expires 2027-12-12T12:00:00Z live`)
+	wantMaskTokens(t, f, "*/*")
+	if _, err := f.tokens.ListMaskDeploy(ctx, "oci"); !errors.Is(err, ErrInvalid) {
+		t.Errorf("ListMaskDeploy(oci) = %v, want ErrInvalid", err)
+	}
+	wantTokens(t, f, "raw/scratch", []string{`deploy "nodes" [read] expires never live`}) // not the masks that match it
+
+	// A repo deleted takes its own tokens, not those over a mask that matches it.
+	scratch, err := f.st.GetRepo(ctx, "raw", "scratch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.DeleteRepo(ctx, scratch.ID); err != nil {
+		t.Fatal(err)
+	}
+	wantMaskTokens(t, f, "raw/scratch", `raw/scratch deploy "nodes" [read] expires never live`)
+
+	got, err := f.tokens.Get(ctx, nodes.ID)
+	if err != nil || got.RepoMask != "oci/*" || got.Repo != "" || got.User != "" {
+		t.Errorf("Get = %+v, %v; want the mask oci/* and no other owner", got, err)
+	}
+	for range 2 {
+		if err := f.tokens.Revoke(ctx, nodes.ID, cli); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.mask(t, "oci/*", "nodes", []string{"read"}, Expiry{}) // the name is free again
+	wantRevokeEvents(t, f.st, fmt.Sprintf(`anonymous token.revoke  oci/* {"id":%d,"kind":"deploy","name":"nodes","source":"cli"}`, nodes.ID))
+	creations := slices.DeleteFunc(tokenAudit(t, f.st), func(ev string) bool { return !strings.Contains(ev, " token.create ") })
+	if first := creations[len(creations)-1]; first != fmt.Sprintf(`anonymous token.create  oci/* {"expiresAt":null,"id":%d,"kind":"deploy","name":"nodes","scopes":["read"],"source":"cli"}`, nodes.ID) {
+		t.Errorf("the first token.create = %s", first)
+	}
+	f.noSecrets(t)
 }

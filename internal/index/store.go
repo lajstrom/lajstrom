@@ -76,7 +76,8 @@ type Reader interface {
 	// expired tokens included; the caller checks RevokedAt and ExpiresAt.
 	GetTokenByHash(ctx context.Context, hash string) (*Token, error)
 	// ListTokens returns the tokens owned by userID and bound to repoID; a nil filter matches
-	// every token.
+	// every token. The deploy tokens over a mask (Token.RepoMask) have neither, so only both
+	// filters nil returns them.
 	ListTokens(ctx context.Context, userID, repoID *int64) ([]Token, error)
 
 	// GetBootstrapToken returns the bootstrap token, used and expired ones included; the caller

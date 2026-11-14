@@ -80,6 +80,19 @@ func ParseMask(mask string) (format, repo string, err error) {
 	return format, repo, nil
 }
 
+// MaskMatches reports whether mask, a binding's or a deploy token's (<format>/<repo>, each
+// segment a name or "*" for any; docs/spec/rbac.md §3), matches the repo format/name: each
+// segment is "*" or the repo's. A malformed mask (ParseMask) matches nothing, and no mask
+// matches a format or name that is empty or System: the system resources are no repo.
+func MaskMatches(mask, format, name string) bool {
+	mf, mn, err := ParseMask(mask)
+	switch {
+	case err != nil, format == "", name == "", format == System, name == System:
+		return false
+	}
+	return (mf == "*" || mf == format) && (mn == "*" || mn == name)
+}
+
 // RBAC is the Authorizer of docs/spec/rbac.md §3. It evaluates in memory, from a snapshot of
 // the bindings and of the repos' anonymousRead, and reads the counter auth_version of the index
 // before it evaluates a request: when the counter moved, it reloads the snapshot first, so a
@@ -89,7 +102,7 @@ func ParseMask(mask string) (format, repo string, err error) {
 // reads the counter.
 //
 // The credential of the request (CredentialFrom) narrows the principal as in steps 2 and 3: a
-// deploy token reaches its own repo with its scopes, a personal access token with scopes keeps
+// deploy token reaches its own repo, or the repos its mask matches, with its scopes, a personal access token with scopes keeps
 // those actions only. A user also has the bindings of its groups (docs/spec/rbac.md §8) until
 // they lapse, by the clock at each evaluation. A binding that is not valid by §3 (a principal
 // other than user:<name> or group:<name>, an unknown role, a mask that is not two segments)
@@ -174,7 +187,8 @@ func (s *snapshot) allowed(p Principal, a Action, repo repoKey, c Credential, no
 	system := repo.format == System || repo.name == System
 	switch p.Kind {
 	case KindToken:
-		// Step 2: its own repo, its scopes, never delete or manage (Credential.Limit).
+		// Step 2: its own repo or a repo of its mask, its scopes, never delete or manage
+		// (Credential.Limit).
 		return !system && c.Kind == CredDeploy && strconv.FormatInt(c.TokenID, 10) == p.Name &&
 			c.Limit(a, index.Repo{Format: repo.format, Name: repo.name}) == nil
 	case KindUser:

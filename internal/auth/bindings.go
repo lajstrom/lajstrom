@@ -216,20 +216,31 @@ func (s *Bindings) check(principal, role, mask string) (Principal, error) {
 	if !IsRole(role) {
 		return Principal{}, invalidf("role: %q is not reader, writer, maintainer or admin", role)
 	}
-	format, repo, err := ParseMask(mask)
-	if err != nil {
-		return Principal{}, invalidf("repoMask: %s", err.Error())
-	}
-	if format != "*" && s.Formats != nil && !s.Formats(format) {
-		return Principal{}, invalidf("repoMask: %q is not a format of this server, nor *", format)
-	}
-	if repo != "*" && (len(repo) > config.MaxNameLen || !config.RepoNamePattern.MatchString(repo)) {
-		return Principal{}, invalidf("repoMask: %q is not a repo name (docs/spec/manifest-profile.md §4.1) or *", repo)
+	if err := checkMask(mask, s.Formats); err != nil {
+		return Principal{}, err
 	}
 	if role == RoleAdmin && mask != MaskAll {
 		return Principal{}, invalidf("repoMask: an admin binding is on %s: the admin role is every repo and the system", MaskAll)
 	}
 	return p, nil
+}
+
+// checkMask checks a mask of docs/spec/rbac.md §3, a binding's or a deploy token's: two
+// segments <format>/<repo>, each "*" or a name, the format one that formats reports served (nil
+// accepts every name) and the repo a repo name (docs/spec/manifest-profile.md §4.1). The error
+// wraps ErrInvalid and names the field, repoMask.
+func checkMask(mask string, formats func(string) bool) error {
+	format, repo, err := ParseMask(mask)
+	if err != nil {
+		return invalidf("repoMask: %s", err.Error())
+	}
+	if format != "*" && formats != nil && !formats(format) {
+		return invalidf("repoMask: %q is not a format of this server, nor *", format)
+	}
+	if repo != "*" && (len(repo) > config.MaxNameLen || !config.RepoNamePattern.MatchString(repo)) {
+		return invalidf("repoMask: %q is not a repo name (docs/spec/manifest-profile.md §4.1) or *", repo)
+	}
+	return nil
 }
 
 // bindable returns the principal of a binding, user:<name>, user:<uid> or group:<name> with a
