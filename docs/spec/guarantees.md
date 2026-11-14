@@ -377,7 +377,7 @@ longer than `reconcile.graceAge` is outside them
   serve was never pushed, and is taken over. Reindex reports drift (`reindex.scan.drift`) and
   keeps the index's digest.
 - **Tests.** `TestIngestConflict`, `TestIngestTagInBackend`, `TestIngestIndexFailsAfterPush`,
-  `TestUploadRetryUnconfirmed`, `TestManifestHook`, `TestDrift`, `TestJournalAdopts`, the store
+  `TestIngestFoldsCase`, `TestIngestFoldsCaseClaim`, `TestUploadRetryUnconfirmed`, `TestManifestHook`, `TestDrift`, `TestJournalAdopts`, the store
   conformance case `Journal`;
   `TestVisibilityTimeout`, `TestVisibilityRetryRebuilt`, `TestJournalVisibility`,
   `TestJournalClaimNotPushed`; the exception's bounds: `TestMirrorManifestRepoint`,

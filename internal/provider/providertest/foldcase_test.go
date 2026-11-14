@@ -9,10 +9,14 @@ import (
 )
 
 // TestFoldCase checks that the tag of a push is listed lower-cased, resolves in any case, and
-// is re-pointed by a push under another case of it, as on Gitea.
+// is re-pointed by a push under another case of it, as on Gitea, and that its capabilities say so.
 func TestFoldCase(t *testing.T) {
 	ctx := t.Context()
-	rr, err := FoldCase(&Fake{}).Repository(ctx, name)
+	p := FoldCase(&Fake{})
+	if caps, err := p.Capabilities(ctx); err != nil || !caps.TagsFoldCase {
+		t.Errorf("Capabilities = %+v, %v; want TagsFoldCase", caps, err)
+	}
+	rr, err := p.Repository(ctx, name)
 	if err != nil {
 		t.Fatal(err)
 	}

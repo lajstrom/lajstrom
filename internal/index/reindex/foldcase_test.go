@@ -102,6 +102,10 @@ func TestFoldedTagCaseVariant(t *testing.T) {
 	if !errors.As(err, &conflict) || conflict.Tag != "1.4.0-m1" {
 		t.Fatalf("the publish of 1.4.0-m1 after 1.4.0-M1: %v, want a *index.TagConflictError on 1.4.0-m1", err)
 	}
+	// The fake says that it folds case, as the vendor table says of Gitea (#426).
+	if want := `folds the case of tags, and "1.4.0-m1" is the tag of version 1.4.0-M1 of com.example:lib-core there`; !strings.Contains(err.Error(), want) {
+		t.Errorf("the conflict: %v, want it to say %q", err, want)
+	}
 	same(t, "the rows after the 409", before, e.derived(t))
 
 	must(t, e.st.ResetDerived(ctx, e.repo.ID))
