@@ -112,12 +112,15 @@ var vendorDefaults = map[vendor]config.CapabilityOverrides{
 	vendorHarbor: {},
 	// The rest depends on the repository format, which the referrers probe tells: afterProbe.
 	vendorNexus: {},
-	// The probe is right (docs/registries/gitea.md). A chunk of unknown length after the first
-	// write needs registries[].uploads.spoolUnknownLength, which is the operator's: hintSpool.
-	vendorGitea: {},
-	// The same as Gitea (docs/registries/forgejo.md). Forgejo serves ranges, which Gitea does
-	// not, and answers an upload status one byte ahead (#804); neither is a capability.
-	vendorForgejo: {},
+	// The probe is right (docs/registries/gitea.md), but for what takes a push: a tag is stored
+	// lower-cased and resolved without case (item 2, go-gitea/gitea#40359). A chunk of unknown
+	// length after the first write needs registries[].uploads.spoolUnknownLength, which is the
+	// operator's: hintSpool.
+	vendorGitea: {TagsFoldCase: new(true)},
+	// The same as Gitea (docs/registries/forgejo.md; the tags: item 2, forgejo#15259). Forgejo
+	// serves ranges, which Gitea does not, and answers an upload status one byte ahead (#804);
+	// neither is a capability.
+	vendorForgejo: {TagsFoldCase: new(true)},
 	// The probe is right since it wants a catalog in the 200; HEAD lies: afterProbe.
 	vendorJFrog: {},
 	// Quay answers _catalog without credentials with 200 and no repositories, which the probe
