@@ -3,8 +3,9 @@
 - Status: normative, v1 (2026-11-06; section 4.3 changed by ADR 0017 on 2026-11-11; the pypi
   variant of a wheel with a build tag, sections 3 and 4.2, on 2026-11-12, #726; the rpm
   profile, sections 1 to 5, on 2026-11-12, #64; the pypi yank in the journal, sections 3, 4.2
-  and 8, on 2026-11-14, #81, ADR 0012's Amendment). Changes need an issue labelled `contract`
-  and, if the wire format changes, an ADR.
+  and 8, on 2026-11-14, #81, ADR 0012's Amendment; maven SNAPSHOT builds, sections 2 to 5, on
+  2026-11-14, #80). Changes need an issue labelled `contract` and, if the wire format changes,
+  an ADR.
 - Implemented by: `internal/oci/profile` (pure Go, no I/O).
 - Related: [ADR 0005](../adr/0005-manifest-profile-and-immutable-tags.md),
   [ADR 0017](../adr/0017-the-grammar-of-oci-names.md),
@@ -84,7 +85,7 @@ bytes.
 | pypi | `application/vnd.lajstrom.pypi.sdist.v1.tar+gzip` | `*.tar.gz` sdist |
 | pypi | `application/vnd.lajstrom.pypi.sdist.v1+zip` | `*.zip` sdist (legacy) |
 | deb | `application/vnd.lajstrom.deb.package.v1` | `*.deb` (ar archive) |
-| maven | `application/vnd.lajstrom.maven.artifact.v1` | jar, war, aar, zip, … (layer annotations `lajstrom.maven.extension`, `lajstrom.maven.classifier`, the latter absent when the file has none); the file name is `<artifactId>-<version>[-<classifier>].<extension>`, the extension can have dots (`tar.gz`), and an `.asc` signature is an artifact too, with the extension of the signed file and `.asc` (`jar.asc`, `pom.asc`) |
+| maven | `application/vnd.lajstrom.maven.artifact.v1` | jar, war, aar, zip, … (layer annotations `lajstrom.maven.extension`, `lajstrom.maven.classifier`, the latter absent when the file has none); the file name is `<artifactId>-<version>[-<classifier>].<extension>`, the extension can have dots (`tar.gz`), and an `.asc` signature is an artifact too, with the extension of the signed file and `.asc` (`jar.asc`, `pom.asc`); the version of a SNAPSHOT build's file name is the build's, `lib-core-1.0-20261114.101112-3.jar` (§4.2) |
 | maven | `application/vnd.lajstrom.maven.pom.v1+xml` | `*.pom` |
 | rpm | `application/vnd.lajstrom.rpm.package.v1` | `*.rpm`, a binary or a source package of rpm v3 or v4 (a lead, a signature header, a header), exactly one per manifest, titled `<name>-<version>-<release>.<arch>.rpm` from the header's `NAME`, `VERSION`, `RELEASE` and the arch of `lajstrom.variant` (`hello-2.12-1.el9.x86_64.rpm`, `hello-2.12-1.el9.src.rpm`), the name `rpmbuild` gives it and dnf's `Packages/` serves it under: no epoch |
 | npm | `application/vnd.lajstrom.npm.tarball.v1.tar+gzip` | the package tarball, exactly one per manifest, titled `<name without the scope>-<version>.tgz` (`widgets-1.2.0.tgz` for `@acme/widgets`), the file name npm serves it under; layer annotations `lajstrom.npm.integrity` (`sha512-<base64>`, npm's `dist.integrity`) and `lajstrom.npm.shasum` (sha1, lowercase hex, npm's `dist.shasum`), so that a version without its metadata layer still renders its `dist` |
@@ -99,7 +100,7 @@ whose content is defined per format:
 | raw | `{"path": "<original path>", "contentType": "<as uploaded>", "size": n, "sha256": "<hex>"}` |
 | pypi | the core metadata (PEP 566 JSON form) of the distribution: the fields with their keys in lowercase and `-` as `_` (`name`, `version`, `summary`, `requires_python`, `requires_dist`, `classifier`, …), the multiple-use fields as lists, the body as `description`; plus `filename`, `sha256`, `packagetype` (`bdist_wheel`/`sdist`) and `core_metadata`, the `METADATA` or `PKG-INFO` file as the distribution has it, which the simple index serves for PEP 658 for a wheel only (a build may change an sdist's `PKG-INFO`) |
 | deb | `{"control": {<control fields as strings>}, "md5sums": {<path>: <md5>}, "size": n, "sha256": "<hex>", "md5": "<hex>", "sha1": "<hex>", "filename": "…"}`; `md5` and `sha1` of the whole file are optional (apt's `Packages` carries `MD5sum`, `SHA1` and `SHA256`; an upload through Lajstrom writes all three, a manifest pushed without the two still validates) |
-| maven | `{"groupId", "artifactId", "version", "packaging", "files": [{"name", "extension", "classifier", "sha1", "md5", "sha256", "sha512", "size"}], "pom": {<parsed essentials: parent, dependencies>}}`; one entry per file layer, the POM included; the four checksums are of the whole file, computed at ingest, and are what the `.md5`, `.sha1`, `.sha256` and `.sha512` files serve (Gradle asks for `.sha512`) |
+| maven | `{"groupId", "artifactId", "version", "packaging", "files": [{"name", "extension", "classifier", "sha1", "md5", "sha256", "sha512", "size"}], "pom": {<parsed essentials: parent, dependencies>}}`; one entry per file layer, the POM included; the four checksums are of the whole file, computed at ingest, and are what the `.md5`, `.sha1`, `.sha256` and `.sha512` files serve (Gradle asks for `.sha512`). `version` is `lajstrom.version`, for a SNAPSHOT build the build's (`1.0-20261114.101112-3`), whose POM keeps the version it has in the project, its SNAPSHOT version (`1.0-SNAPSHOT`; §4.2) |
 | rpm | `{"name", "epoch", "version", "release", "arch", "summary", "description", "packager", "url", "license", "vendor", "group", "buildhost", "sourcerpm", "buildtime", "installedSize", "archiveSize", "headerStart", "headerEnd", "provides", "requires", "conflicts", "obsoletes", "recommends", "suggests", "supplements", "enhances", "files", "changelogs", "filename", "size", "sha256"}`: what the repodata of a version needs (http-routing.md, rpm), read from the header. `epoch` is the header's `EPOCH`, `0` without one; `version`, `release` and `arch` are those of the annotations (`arch` `src` or `nosrc` for a source package); the strings are the header's, the C locale's of an internationalised one, `""` for a tag the header lacks; `buildtime` is seconds since 1970; `installedSize` is `LONGSIZE` or `SIZE`, `archiveSize` the payload's uncompressed size (the signature header's `LONGARCHIVESIZE` or `PAYLOADSIZE`, else the header's `ARCHIVESIZE`), `0` when the package has none; `headerStart` and `headerEnd` are the offsets of the header in the file, primary's `rpm:header-range`. Each of the eight relations is a list, `[]` when empty, of `{"name", "flags", "epoch", "version", "release", "pre"}` in the order of the header: `flags` the header's sense flags as a number, `epoch`, `version` and `release` the parts of its version (`""` each when it has none), `pre` true for a requirement of the install scripts (the flags `PREREQ`, `SCRIPT_PRE` or `SCRIPT_POST`). `files` is `[{"path", "type"}]` in the order of the header, `type` `dir` for a directory, `ghost` for a `%ghost`, absent otherwise; `changelogs` is `[{"author", "date", "text"}]` in the order of the header, the newest first. `filename` is the file layer's title, `size` and `sha256` those of the file. `Validate` reads the header of the file layer and refuses a metadata layer that is not what the header says, field by field. At most 16 MiB (a header that makes more is `400`) |
 | npm | `{"name", "version", "manifest": {<the version document>}, "readme", "filename", "size", "integrity", "shasum", "sha256", "hasShrinkwrap", "hasInstallScript"}`; `manifest` is the version object of the publish body (http-routing.md, npm) without `dist`, `readme` and every key that begins with `_` (`_id`, `_resolved`, `_from`, `_nodeVersion`, …): what the packument serves in `versions`, with the `dist`, `_id` and `deprecated` it renders; an `oras push` writes the tarball's `package.json` there. `readme` is the version document's, or the body's top-level one (yarn), absent for npm's placeholder `ERROR: No README data found!`. `size` and the checksums are of the tarball. `hasShrinkwrap`: the tarball has `npm-shrinkwrap.json` in its top directory (`package/`); `hasInstallScript`: its `package.json` has a `preinstall`, `install` or `postinstall` script, or the top directory has `binding.gyp` (npm runs `node-gyp rebuild`); both are read from the tarball, never from the body. `Validate` checks `name`, `version`, `filename`, `size` and the checksums against the annotations and the tarball layer, and the tarball's `package.json` for the name and version. At most 2 MiB (a publish above it is `413`) |
 
@@ -124,7 +125,7 @@ skipped. The journal manifests of npm and pypi have a set of their own (section 
 | `lajstrom.format` | R | repo format: `raw`, `pypi`, `apt`, `maven`, … (the *protocol*, matches the first URL segment) |
 | `lajstrom.repo` | R | repo name as created in the control plane, e.g. `ubuntu-internal` |
 | `lajstrom.name` | R | package name in the format's own spelling (original case): `nginx`, `com.example:lib-core` (maven `groupId:artifactId`), raw: the full path; for pypi the PEP 503 normalized name, `requests` for `Requests`, so that every spelling of a project is one package (the original spelling is the `name` of the metadata layer; decided on #31); rpm: the header's `NAME` |
-| `lajstrom.version` | R | version string exactly as the format spells it: `1:1.18.0-6ubuntu14.4`, `2.32.3`, `1.2.0`; raw: the first 16 hex digits of the sha256 of its file, whose layer digest is sha256; rpm: `[<epoch>:]<version>-<release>` from the header's `EPOCH`, `VERSION` and `RELEASE`, the epoch written only when it is not `0` (`2.12-1.el9`, `1:2.12-1.el9`), so that what rpm compares as one version is one tag |
+| `lajstrom.version` | R | version string exactly as the format spells it: `1:1.18.0-6ubuntu14.4`, `2.32.3`, `1.2.0`; maven: a release version, or a SNAPSHOT build's timestamped version, `1.0-20261114.101112-3`, never `1.0-SNAPSHOT` (§4.2); raw: the first 16 hex digits of the sha256 of its file, whose layer digest is sha256; rpm: `[<epoch>:]<version>-<release>` from the header's `EPOCH`, `VERSION` and `RELEASE`, the epoch written only when it is not `0` (`2.12-1.el9`, `1:2.12-1.el9`), so that what rpm compares as one version is one tag |
 | `lajstrom.variant` | | platform discriminator, present when the format has one: deb `<suite>/<component>/<arch>`, the values of `lajstrom.deb.suite`, `.component` and `.arch` joined with `/` (`jammy/main/amd64`, `bookworm/main/all`); rpm the arch, as the repodata writes it: the header's `ARCH` (`x86_64`, `aarch64`, `noarch`) for a binary package, `src` for a source package (`nosrc` when it lacks a source or a patch, `NOSOURCE`, `NOPATCH`); pypi: the wheel's compressed tag set (`py3-none-any`, `cp311-cp311-manylinux_2_17_x86_64`), after its PEP 427 build tag and `-` when the file name has one (`1-py3-none-any`, section 4.2), or `sdist`. Absent for maven, npm, raw. |
 | `lajstrom.deb.arch`, `lajstrom.deb.suite`, `lajstrom.deb.component` | deb | upload metadata and the three parts of `lajstrom.variant`, kept as annotations (and in `versions.attrs`) so that the apt indexes group by them without parsing the variant; `arch` is the control file's `Architecture`. Suite and component are properties of the upload, not separate repos: the same `.deb` in two suites is two manifests over the same blobs |
 | `lajstrom.rpm.*` | rpm | none: the variant is the arch, and the parts of the version are in the metadata layer |
@@ -239,6 +240,7 @@ Examples:
 | `2.1~rc1` | `jammy/main/all` | `2.1_7erc1__jammy_2fmain_2fall` |
 | `2.12-1.el9` | `x86_64` (rpm) | `2.12-1.el9__x86_5f64` |
 | `1:2.12-1.el9` | `src` (rpm) | `1_3a2.12-1.el9__src` |
+| `1.0-20261114.101112-3` (a maven SNAPSHOT build) | | `1.0-20261114.101112-3` |
 | `manylinux_2_17` (as a variant) | | `…__manylinux_5f2_5f17` |
 
 The deb tag is `Escape(version)__Escape(suite/component/arch)`: the `/` of the variant becomes
@@ -261,6 +263,26 @@ The rpm tag is `Escape(version)__Escape(arch)`: one tag per architecture of a ve
 source package beside them (`2.12-1.el9__src`). Two versions that differ only in the epoch are two
 tags over two file layers with one title, since the file name has no epoch: a repo holds one
 content per file name, so the upload route refuses the second with a `409` (http-routing.md, rpm).
+
+The maven tag is `Escape(version)`; maven has no variant. A SNAPSHOT version is never a version
+of the profile, nor a tag: `1.0-SNAPSHOT` names whatever was deployed last, and a tag is written
+once. Each deploy of a SNAPSHOT version is a **build**, a version of its own, whose version is
+the timestamped version that Maven 3 and Gradle name its files with (unique snapshot versions),
+`<base>-<timestamp>-<buildNumber>`: `1.0-20261114.101112-3` is the third build of `1.0-SNAPSHOT`,
+deployed at 2026-11-14T10:11:12Z, and its tag is `1.0-20261114.101112-3`. Two deploys of one
+SNAPSHOT version are two builds under two tags; a client reaches the latest through the
+`maven-metadata.xml` of the SNAPSHOT version, which Lajstrom renders from the index
+(http-routing.md, maven). What else a build has is read from its version, never stored apart, so
+that reindex rebuilds a build from its annotations as it rebuilds a release: its SNAPSHOT version
+is the base and `-SNAPSHOT`, its timestamp the UTC time `yyyyMMdd.HHmmss`, its build number the
+decimal after it. A version is a build when it ends in `<8 digits>.<6 digits>-<digits>` at its
+start or after a `-`, the rule by which Maven tells one; then the base, before that `-`, must be
+a version that is not itself a build and does not end in `SNAPSHOT`, the timestamp a real date
+and time, and the build number from 1 to 999999999 without a leading zero, or the version is
+refused (a timestamp without a base among them). A version that ends in `SNAPSHOT`, in any case,
+is refused, and so is the non-unique file name of a SNAPSHOT version
+(`lib-core-1.0-SNAPSHOT.jar`, Maven 2's `uniqueVersion=false`). Which of the two kinds a repo
+takes is its policy (§5).
 
 The npm tag is `Escape(version)` (`1.2.0`, `2.0.0-rc.1`); npm has no variant. The tags `_j…`
 of an npm or a pypi package's OCI repository are its journal (section 8): every `_` that
@@ -353,7 +375,13 @@ The ingest pipeline rejects a manifest with `400` (facade: `MANIFEST_INVALID`) w
   algorithm, or the size is negative;
 - the plugin's `Validate` finds the bytes and the annotations disagree (deb control vs
   annotations, rpm header vs annotations and metadata layer, wheel file name vs version/variant
-  in either form of section 4.2, POM coordinates vs path);
+  in either form of section 4.2, POM coordinates vs path, where the POM of a maven SNAPSHOT
+  build has the build's SNAPSHOT version or the build's own);
+- the plugin's `Admit` refuses a version its repo's policy does not take: a maven SNAPSHOT build
+  in a repo whose `policy.maven.versionPolicy` is `release` (or absent), a release in one where it
+  is `snapshot` ([api.md](../api.md#policy)). On every publish, the commit of a frontend's upload
+  and a manifest of `/v2` alike, and never on reindex, which keeps what the registry has whatever
+  the policy says now;
 - a layer referenced by the manifest has not been uploaded; on `/v2` the facade checks blob
   existence in the backend first and answers `400 MANIFEST_BLOB_UNKNOWN` naming the digest;
 - pushed on `/v2`, `org.opencontainers.image.created` is more than `server.maxCreatedAhead`
