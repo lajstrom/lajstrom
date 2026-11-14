@@ -21,7 +21,7 @@ internal/facade/              OCI distribution API (/v2): proxy, token endpoint,
 internal/format/              Plugin interface, registry of plugins, shared helpers (Router, Deps)
 internal/format/raw/          raw plugin: parse, routes, index
 internal/format/pypi/         pypi plugin: wheel/sdist metadata, simple index, upload API
-internal/format/deb/          deb/apt plugin: control parsing, Packages/Release rendering, GPG, pool routes
+internal/format/deb/          deb/apt plugin: control and .dsc parsing, Packages/Sources/Contents/Release rendering, GPG, pool routes
 internal/format/maven/        maven plugin: coordinates, POM, sessions, maven-metadata.xml, checksums
 internal/format/npm/          npm plugin: packuments, publish, dist-tags journal, proxy and group hooks, audit
 internal/format/rpm/          rpm plugin: header parsing, repodata (repomd, primary, filelists, other), signed repomd, Packages routes
@@ -50,7 +50,7 @@ internal/api/                 /api/v1 management REST (repos, users, tokens, bin
 internal/keys/                server signing key, per-repo GPG keys (apt, rpm), encryption at rest
 internal/audit/               audit log writer
 internal/metrics/             the Prometheus collectors (fixed labels) and the handler of the metrics listener
-internal/testutil/            fixture builders, in memory: .deb, .rpm, .whl/sdist, .jar + POM, npm tarball, archives, bombs, fuzz seeds
+internal/testutil/            fixture builders, in memory: .deb, .dsc + source tarballs, .rpm, .whl/sdist, .jar + POM, npm tarball, archives, bombs, fuzz seeds
 internal/version/             build information (version, commit, date), set with -ldflags; /-/version
 deploy/compose/               dev stack: zot, distribution, postgres; lajstrom.example.yaml
 docs/                         architecture, specs, ADRs, plan, registries (spike results), quickstarts
@@ -147,20 +147,22 @@ type JournalOp struct {
     Message      string // lajstrom.npm.message, deprecate only
 }
 
-// Sessions are the publication sessions of a format whose upload is several requests (maven,
-// flow B); *ingest.Pipeline implements them (#53). A key, <name>:<version>, has one open session
-// in a repo, held by one principal. Add streams the file into the registry (ADR 0014) and
-// records it with its checksums; Refuse marks a file the frontend refused after it arrived
-// (maven: a checksum file that disagrees), which keeps Commit from publishing until Add
-// replaces it; Commit publishes the files through Upload, once at a time; a session whose time
-// is up (30 minutes after its last request, or the repo's maven.sessionTimeout) is dropped,
-// never published in part.
+// Sessions are the publication sessions of a format whose upload is several files (maven,
+// flow B; an apt source package, #79); *ingest.Pipeline implements them (#53). A key,
+// <name>:<version>, has one open session in a repo, held by one principal. Add streams the file
+// into the registry (ADR 0014) and records it with its checksums; Refuse marks a file the
+// frontend refused after it arrived (maven: a checksum file that disagrees), which keeps Commit
+// from publishing until Add replaces it; Commit publishes the files through Upload, once at a
+// time, with the session's name, version and uploaded-by and the params the frontend passes
+// (apt: the suite and the component; maven: none), which cannot replace those three; a session
+// whose time is up (30 minutes after its last request, or the repo's maven.sessionTimeout) is
+// dropped, never published in part.
 type Sessions interface {
     Open(ctx context.Context, repo index.Repo, name, version string, principal auth.Principal) (*index.Session, error)
     Add(ctx context.Context, sessionID int64, name string, r io.Reader, size int64) (SessionFile, error)
     Files(ctx context.Context, sessionID int64) ([]SessionFile, error)
     Refuse(ctx context.Context, sessionID int64, name, reason string) error
-    Commit(ctx context.Context, sessionID int64) (*Published, error) // Existed: the idempotent repeat
+    Commit(ctx context.Context, sessionID int64, params map[string]string) (*Published, error) // Existed: the idempotent repeat
     Abort(ctx context.Context, sessionID int64) error
 }
 type SessionFile struct {
