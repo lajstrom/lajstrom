@@ -462,6 +462,10 @@ func TestManifestHookErrors(t *testing.T) {
 			status: http.StatusConflict, code: codeTagInvalid, message: "ingest: index: index: conflict: the path is held by Docs/E.txt"},
 		{name: "unsupported", err: fmt.Errorf("ingest: no plugin: %w", format.ErrUnsupported),
 			status: http.StatusNotImplemented, code: codeUnsupported, message: "ingest: no plugin: format: unsupported"},
+		{name: "a limit of the registry", err: fmt.Errorf("ingest: push: generic: push raw/assets/docs/e.txt@t1: %w (registry local, HTTP 403, DENIED: its quota)",
+			provider.ErrLimit), status: http.StatusForbidden, code: codeDenied,
+			message: "ingest: push: generic: push raw/assets/docs/e.txt@t1: provider: refused for a limit or a quota of the registry " +
+				"(registry local, HTTP 403, DENIED: its quota)"},
 		{name: "backend refuses our credentials", err: fmt.Errorf("PUT https://backend.example/v2: %w", provider.ErrUnauthorized),
 			status: http.StatusBadGateway, code: codeUnknown, message: "Bad Gateway"},
 		{name: "database unavailable", err: fmt.Errorf("ingest: claim: %w: tag_claims: dial tcp: connection refused", index.ErrUnavailable),

@@ -50,6 +50,8 @@ func (h *handler) putReferrer(w http.ResponseWriter, r *http.Request, t *target,
 //	ingest.ErrInvalid           400 MANIFEST_INVALID, the rule that failed in the message
 //	ingest.ErrConflict          409 TAG_INVALID (a backend that will not re-point a tag)
 //	provider.ErrUnauthorized    502 (the backend refused Lajstrom's credentials)
+//	provider.ErrLimit           403 DENIED, through format.StatusOf: a limit or a quota of the
+//	                            registry, which the message names (#357)
 //	*ingest.NotVisibleError     503 UNAVAILABLE naming what the registry does not serve yet
 //	                            (notServed)
 //	anything else               the status of format.StatusOf, 500 when it knows none

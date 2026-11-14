@@ -46,7 +46,12 @@ func (p *Provider) EnsureRepository(ctx context.Context, name string) error {
 		p.log.InfoContext(ctx, "ECR repository created", "repository", name,
 			"imageTagMutability", string(in.ImageTagMutability), "encryption", string(in.EncryptionConfiguration.EncryptionType))
 	case !isCode(err, "RepositoryAlreadyExistsException"):
-		return translate("ensure repository "+name, err)
+		err = translate("ensure repository "+name, err)
+		if errors.Is(err, provider.ErrLimit) {
+			p.log.WarnContext(ctx, "ECR refused to create a repository for a service quota of the account; raise it or free room",
+				"repository", name, "error", err.Error())
+		}
+		return err
 	}
 	p.known.Store(name, p.now().Add(knownFor))
 	return nil
