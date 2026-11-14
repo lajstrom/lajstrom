@@ -75,8 +75,8 @@ func TestStartWebhooks(t *testing.T) {
 	var wg sync.WaitGroup
 	noWorkers := *c
 	noWorkers.Webhooks.Workers = 0
-	startWebhooks(ctx, &noWorkers, env, st, "replica-1", &wg, log)
-	startWebhooks(ctx, c, func(string) (string, bool) { return "", false }, st, "replica-1", &wg, log)
+	startWebhooks(ctx, &noWorkers, webhookMaster(c, env, log), st, "replica-1", &wg, log)
+	startWebhooks(ctx, c, webhookMaster(c, func(string) (string, bool) { return "", false }, log), st, "replica-1", &wg, log)
 	for _, want := range []string{"webhooks.workers is 0", "webhooks need the master key"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("the log does not say %q:\n%s", want, logs.String())
@@ -87,7 +87,7 @@ func TestStartWebhooks(t *testing.T) {
 		api.Origin{Source: api.SourceCLI}); err != nil {
 		t.Fatal(err)
 	}
-	startWebhooks(ctx, c, env, st, "replica-1", &wg, log)
+	startWebhooks(ctx, c, webhookMaster(c, env, log), st, "replica-1", &wg, log)
 	select {
 	case r := <-got:
 		if r.Header.Get("webhook-id") == "" || !strings.HasPrefix(r.Header.Get("webhook-signature"), "v1,") {
