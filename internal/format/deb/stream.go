@@ -45,16 +45,19 @@ func readHead(body io.Reader) (*Package, []byte, error) {
 
 // inspector is the format.Inspector of a .deb: it reads the archive as it streams, in one pass
 // and with the checks of Parse, and holds the head until the head is whole and ParseControl
-// has read it, then the header of the data member; of the data member's bytes it counts how
-// many came. What follows the data member is not looked at, as deb(5) asks.
+// has read it, then the header of the data member; the data member's bytes it counts and passes
+// to its lister, which keeps the file list of the package (#79). What follows the data member is
+// not looked at, as deb(5) asks.
 type inspector struct {
-	head []byte    // the head as it arrives, until it is parsed
-	pkg  *Package  // the control file, once the head is parsed
-	hdr  []byte    // the header of the data member as it arrives
-	data *arHeader // the data member, once its header is read
-	left int64     // the bytes of the data member and its padding byte still to come
-	err  error     // the first error, which every later Write returns
-	done bool      // Close found the archive whole
+	head     []byte    // the head as it arrives, until it is parsed
+	pkg      *Package  // the control file, once the head is parsed
+	hdr      []byte    // the header of the data member as it arrives
+	data     *arHeader // the data member, once its header is read
+	left     int64     // the bytes of the data member and its padding byte still to come
+	dataLeft int64     // the bytes of the data member still to come, for the lister
+	list     *lister   // the lister of the data member, once its header is read
+	err      error     // the first error, which every later Write returns
+	done     bool      // Close found the archive whole
 }
 
 // Write implements io.Writer: it fails with the error Parse would report once the bytes so far
@@ -68,6 +71,10 @@ func (in *inspector) Write(p []byte) (int, error) {
 			rest = in.readDataHeader(rest)
 		case in.left > 0:
 			k := min(int64(len(rest)), in.left)
+			if d := min(k, in.dataLeft); d > 0 {
+				_, _ = in.list.Write(rest[:d]) // the lister's reader never fails: its error is no list
+				in.dataLeft -= d
+			}
 			in.left -= k
 			rest = rest[k:]
 		default:
@@ -141,14 +148,31 @@ func (in *inspector) readDataHeader(p []byte) []byte {
 		in.err = fmt.Errorf("%w: the third member is %q, not data.tar with the extension of a compression dpkg reads",
 			format.ErrInvalid, h.name)
 	default:
-		in.data, in.left = &h, h.size+h.size%2
+		in.data, in.left, in.dataLeft, in.list = &h, h.size+h.size%2, h.size, newLister(h.name, h.size)
 	}
 	return p
 }
 
 // Close implements format.Inspector: the archive must have ended after the data member and its
-// padding byte, with the error of Parse otherwise.
+// padding byte, with the error of Parse otherwise. The lister is closed in any case, and its list
+// is the package's Files once the archive is whole.
 func (in *inspector) Close() error {
+	var files []string
+	if in.list != nil {
+		_ = in.list.Close() // the lister's reader returns nil: why it has no list is its err
+		files = in.list.list()
+		in.list = nil
+	}
+	if err := in.check(); err != nil {
+		return err
+	}
+	in.pkg.Files = files
+	return nil
+}
+
+// check returns the error of an archive that did not end whole after the data member, and sets
+// done when it did.
+func (in *inspector) check() error {
 	switch {
 	case in.err != nil:
 		return in.err
