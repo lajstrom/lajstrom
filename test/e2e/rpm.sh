@@ -34,6 +34,11 @@
 # bin/lajstrom, else go run ./cmd/lajstrom. It prints one line per step and exits non-zero at the
 # first failure, naming the assertion or the command (lib.sh). make e2e runs it
 # (test/e2e/run.sh).
+#
+# Where the registry deletes no manifests, LAJSTROM_E2E_DELETE_MANIFEST=false (run.sh reads it
+# from the server's log, #800), the delete of the second package is 501 UNAVAILABLE naming the
+# registry, primary, filelists and other are the same bytes after it, and dnf still lists the
+# package; the reindex then rebuilds the repo with both, and the packages stay in the registry.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -97,10 +102,11 @@ hdr() {
 get() { status="$(curl -sS -K "$E2E_CURLRC" -o "$2" -w '%{http_code}' "$base/rpm/$repo/$1")"; }
 
 # api METHOD PATH [BODY]: a request of $E2E_USER to /api/v1/PATH; the body goes to $work/body.
+# Without BODY, data stays empty, which bash 3.2 under set -u expands only in the ${a[@]+…} form.
 api() {
 	local data=()
 	[ -z "${3:-}" ] || data=(-H 'Content-Type: application/json' -d "$3")
-	status="$(curl -sS -K "$E2E_CURLRC" -o "$work/body" -w '%{http_code}' -X "$1" "${data[@]}" "$base/api/v1/$2")"
+	status="$(curl -sS -K "$E2E_CURLRC" -o "$work/body" -w '%{http_code}' -X "$1" ${data[@]+"${data[@]}"} "$base/api/v1/$2")"
 }
 
 # put FILE: PUT FILE to upload; the status goes to $status, the headers to $work/headers, the body
@@ -262,18 +268,41 @@ put "$work/client/other.rpm"
 expect "PUT of other bytes as $one-1.0-1.noarch ($(cat "$work/body"))" 409 "$status"
 ok "PUT of other bytes under $one-1.0-1.noarch: 409"
 
-# R-08: the second package deleted through the API: gone from primary and from dnf.
+# R-08: the second package deleted through the API: gone from primary and from dnf. Where the
+# registry deletes no manifests (#352), the delete is refused, and nothing changes. Either way dnf
+# removes the second package, and the first with it, for R-09.
 api DELETE "repos/rpm/$repo/packages/$two/versions/1%3A1.0-1?variant=noarch"
-expect "DELETE of $two 1:1.0-1 ($(cat "$work/body"))" 204 "$status"
-repodata "$work/deleted"
-if grep -qF "<name>$two</name>" "$work/deleted/primary.xml"; then fail "primary still has $two after the delete"; fi
-in_client gone.log "
-	dnf -y remove $two >/dev/null
-	dnf --disablerepo='*' --enablerepo='$repo' clean all >/dev/null
-	dnf -q --disablerepo='*' --enablerepo='$repo' list --available '$two' || echo 'no $two'" ||
-	{ cat "$work/gone.log" >&2; fail "dnf list after the delete"; }
-grep -qxF "no $two" "$work/gone.log" || { cat "$work/gone.log" >&2; fail "dnf still lists $two after the delete"; }
-ok "DELETE /api/v1/repos/rpm/$repo/packages/$two/versions/1:1.0-1?variant=noarch: 204; primary and dnf list no longer have it"
+if [ "${LAJSTROM_E2E_DELETE_MANIFEST:-}" = false ]; then
+	expect "DELETE of $two 1:1.0-1 where the registry deletes no manifests ($(cat "$work/body"))" 501 "$status"
+	expect "the code of the refused delete" UNAVAILABLE "$(jq -r .error.code "$work/body")"
+	case "$(jq -r .error.message "$work/body")" in
+	*'registry "local" '*'does not delete manifests; nothing was deleted'*) ;;
+	*) fail "the refused delete does not name the registry local: $(cat "$work/body")" ;;
+	esac
+	repodata "$work/deleted"
+	for typ in primary filelists other; do
+		cmp -s "$work/before/$typ.xml" "$work/deleted/$typ.xml" ||
+			fail "$typ.xml after the refused delete differs: $(diff "$work/before/$typ.xml" "$work/deleted/$typ.xml" | head -n 20)"
+	done
+	in_client kept.log "
+		dnf -y remove $two >/dev/null
+		dnf --disablerepo='*' --enablerepo='$repo' clean all >/dev/null
+		dnf -q --disablerepo='*' --enablerepo='$repo' list --available '$two'" ||
+		{ cat "$work/kept.log" >&2; fail "dnf list after the refused delete"; }
+	grep -qF "$two.noarch" "$work/kept.log" || { cat "$work/kept.log" >&2; fail "dnf does not list $two after the refused delete"; }
+	ok "DELETE /api/v1/repos/rpm/$repo/packages/$two/versions/1:1.0-1?variant=noarch where the registry deletes no manifests: 501 UNAVAILABLE naming it; primary, filelists and other the same bytes; dnf list has it"
+else
+	expect "DELETE of $two 1:1.0-1 ($(cat "$work/body"))" 204 "$status"
+	repodata "$work/deleted"
+	if grep -qF "<name>$two</name>" "$work/deleted/primary.xml"; then fail "primary still has $two after the delete"; fi
+	in_client gone.log "
+		dnf -y remove $two >/dev/null
+		dnf --disablerepo='*' --enablerepo='$repo' clean all >/dev/null
+		dnf -q --disablerepo='*' --enablerepo='$repo' list --available '$two' || echo 'no $two'" ||
+		{ cat "$work/gone.log" >&2; fail "dnf list after the delete"; }
+	grep -qxF "no $two" "$work/gone.log" || { cat "$work/gone.log" >&2; fail "dnf still lists $two after the delete"; }
+	ok "DELETE /api/v1/repos/rpm/$repo/packages/$two/versions/1:1.0-1?variant=noarch: 204; primary and dnf list no longer have it"
+fi
 
 # R-09: reindex rebuilds the repo from the registry: the same documents.
 api DELETE "repos/rpm/$repo?force=true"
