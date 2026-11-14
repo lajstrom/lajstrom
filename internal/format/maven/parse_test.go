@@ -45,6 +45,11 @@ func TestParsePath(t *testing.T) {
 		{"com/example/lib-core/1.2.0/lib-core-1.2.0.pom.asc", "com.example", "lib-core", "1.2.0", "", "pom.asc", false},
 		{"com/example/lib-core/1.2.0/lib-core-1.2.0-tests.asc", "com.example", "lib-core", "1.2.0", "tests", "asc", false},
 		{"com/example/Lib_Core/1.0.0+build.7/Lib_Core-1.0.0+build.7.jar", "com.example", "Lib_Core", "1.0.0+build.7", "", "jar", false},
+		{"com/example/lib-core/1.2.0-SNAPSHOT/lib-core-1.2.0-20261109.101500-1.jar", "com.example", "lib-core", "1.2.0-20261109.101500-1", "", "jar", false},
+		{"com/example/lib-core/1.2.0-SNAPSHOT/lib-core-1.2.0-20261109.101500-12-sources.jar", "com.example", "lib-core", "1.2.0-20261109.101500-12", "sources", "jar", false},
+		{"com/example/lib-core/1.2.0-SNAPSHOT/lib-core-1.2.0-20261109.101500-3-1.jar", "com.example", "lib-core", "1.2.0-20261109.101500-3", "1", "jar", false},
+		{"com/example/lib-core/1.2.0-SNAPSHOT/lib-core-1.2.0-20261109.101500-3.pom.asc", "com.example", "lib-core", "1.2.0-20261109.101500-3", "", "pom.asc", false},
+		{"com/example/lib-core/1.0-rc1-SNAPSHOT/lib-core-1.0-rc1-20261109.101500-1.pom", "com.example", "lib-core", "1.0-rc1-20261109.101500-1", "", "pom", true},
 	} {
 		f, err := ParsePath(tt.path)
 		if err != nil {
@@ -61,16 +66,25 @@ func TestParsePath(t *testing.T) {
 	}
 }
 
-// TestParsePathRefuses lists the paths that are not a file of a release version, each with a
-// part of the message that names the rule.
+// TestParsePathRefuses lists the paths that are not a file of a version, each with a part of
+// the message that names the rule.
 func TestParsePathRefuses(t *testing.T) {
 	for _, tt := range []struct{ path, msg string }{
 		{"com/example/lib-core/1.2.0/lib-core-1.2.0.jar.sha1", "sha1 checksum file"},
 		{"com/example/lib-core/1.2.0/lib-core-1.2.0.pom.md5", "md5 checksum file"},
 		{"com/example/lib-core/maven-metadata.xml", "is a maven-metadata.xml"},
 		{"com/example/lib-core/1.2.0/maven-metadata.xml", "is a maven-metadata.xml"},
-		{"com/example/lib-core/1.2.0-SNAPSHOT/lib-core-1.2.0-20261109.101500-1.jar", "SNAPSHOT"},
-		{"com/example/lib-core/1.2.0-snapshot/lib-core-1.2.0-snapshot.jar", "SNAPSHOT"},
+		{"com/example/lib-core/1.2.0-SNAPSHOT/lib-core-1.2.0-SNAPSHOT.jar", "named with the SNAPSHOT version 1.2.0-SNAPSHOT"},
+		{"com/example/lib-core/1.2.0-SNAPSHOT/lib-core-1.2.0-SNAPSHOT-sources.jar", "named with the SNAPSHOT version"},
+		{"com/example/lib-core/1.2.0-snapshot/lib-core-1.2.0-snapshot.jar", "SNAPSHOT version"},
+		{"com/example/lib-core/1.2.0-snapshot/lib-core-1.2.0-20261109.101500-1.jar", "SNAPSHOT version"},
+		{"com/example/lib-core/1.2.0-20261109.101500-1/lib-core-1.2.0-20261109.101500-1.jar", "in the directory of its SNAPSHOT version, com/example/lib-core/1.2.0-SNAPSHOT"},
+		{"com/example/lib-core/1.2.0-SNAPSHOT/lib-core-1.2.0-20261109.101500-0.jar", "the build number \"0\""},
+		{"com/example/lib-core/1.2.0-SNAPSHOT/lib-core-1.2.0-20261109.101500-007.jar", "without a leading zero"},
+		{"com/example/lib-core/1.2.0-SNAPSHOT/lib-core-1.2.0-20261109.101500-1234567890.jar", "from 1 to 999999999"},
+		{"com/example/lib-core/1.2.0-SNAPSHOT/lib-core-1.2.0-20261339.101500-1.jar", "not a time yyyyMMdd.HHmmss"},
+		{"com/example/lib-core/1.2.0-SNAPSHOT/lib-core-1.3.0-20261109.101500-1.jar", "does not start with <artifactId>-<version>"},
+		{"com/example/lib-core/1.2.0-SNAPSHOT/lib-core-1.2.0-20261109.101500.jar", "does not start with <artifactId>-<version>"},
 		{"lib-core/1.2.0/lib-core-1.2.0.jar", "<groupPath>/<artifactId>/<version>/<file>"},
 		{"com/example/lib-core/1.2.0/lib-api-1.2.0.jar", "does not start with <artifactId>-<version>"},
 		{"com/example/lib-core/1.2.0/lib-core-1.3.0.jar", "does not start with <artifactId>-<version>"},
@@ -154,7 +168,7 @@ func TestParseMetadataPath(t *testing.T) {
 
 func TestIsSnapshot(t *testing.T) {
 	for v, want := range map[string]bool{
-		"1.0-SNAPSHOT": true, "1.0-snapshot": true, "SNAPSHOT": true, "1.0-20261109.101500-3": true,
+		"1.0-SNAPSHOT": true, "1.0-snapshot": true, "SNAPSHOT": true, "1.0-20261109.101500-3": true, "20261109.101500-3": true,
 		"1.0": false, "1.0-SNAP": false, "1.0-20261109": false, "SNAPSHOT-1.0": false,
 	} {
 		if got := IsSnapshot(v); got != want {
