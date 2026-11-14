@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -25,20 +24,28 @@ import (
 	"github.com/lajstrom/lajstrom/internal/provider/providertest"
 )
 
+// unresolvable is the error of the generic provider for a registry whose host name does not
+// resolve (#561; generic's translateAs, checked by its TestUnresolvableRegistry):
+// provider.ErrUnavailable from the *net.DNSError, with a message that leaves out the host name,
+// and without a wait: not the *provider.UnavailableError of its open circuit breaker. A change
+// to generic's error is made here too, by hand.
+type unresolvable struct{ dns *net.DNSError }
+
+func (unresolvable) Error() string     { return "provider: unavailable (the host name does not resolve)" }
+func (e unresolvable) Unwrap() []error { return []error{provider.ErrUnavailable, e.dns} }
+
 // TestRegistryUnresolvable sends requests to the facade for a registry whose host name does
 // not resolve (#561), the circuit breaker closed: a manifest read, the HEAD and the GET of a
 // blob, an upload. Each is 503 UNAVAILABLE at once, without Retry-After, and is logged at
-// warn, not as a failure.
+// warn, not as a failure. The registry is the fake, failing every request with generic's
+// error (unresolvable): net.DefaultResolver, which a dial an earlier test left running may
+// still read, is not swapped (#1106, #1113).
 func TestRegistryUnresolvable(t *testing.T) {
-	prev := net.DefaultResolver
-	net.DefaultResolver = &net.Resolver{PreferGo: true, Dial: func(context.Context, string, string) (net.Conn, error) {
-		return nil, errors.New("no name server in this test")
-	}}
-	t.Cleanup(func() { net.DefaultResolver = prev })
-	reg, err := generic.New(config.Registry{Name: "local", Type: generic.Type, URL: "http://registry.lajstrom.test:5000", Retries: -1},
-		slog.New(slog.DiscardHandler))
-	must(t, err)
-	e := newEnv(t, envOptions{registry: func(*providertest.Fake) provider.Provider { return reg }})
+	dns := &net.DNSError{Err: "no such host", Name: "registry.lajstrom.test", IsNotFound: true}
+	e := newEnv(t, envOptions{registry: func(f *providertest.Fake) provider.Provider {
+		f.FailRequests = unresolvable{dns}
+		return f
+	}})
 	blob := "/v2/oci/images/app/blobs/" + digest.FromString("blob").String()
 	for _, tt := range []struct{ method, target string }{
 		{http.MethodGet, "/v2/oci/images/app/manifests/v1"},

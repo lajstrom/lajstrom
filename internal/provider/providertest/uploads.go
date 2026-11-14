@@ -84,8 +84,12 @@ func (p *partial) digest(a digest.Algorithm) (digest.Digest, bool) {
 	return digest.NewDigest(a, h), true
 }
 
-// upload returns the open session u of the repository, or provider.ErrNotFound.
+// upload returns the open session u of the repository, or provider.ErrNotFound; FailRequests
+// when it is set.
 func (r *repository) upload(verb string, u provider.Upload) (*partial, error) {
+	if err := r.f.unreachable(r.op(verb, "upload "+u.ID)); err != nil {
+		return nil, err
+	}
 	r.f.mu.Lock()
 	defer r.f.mu.Unlock()
 	p, ok := r.f.uploads[u.ID]
@@ -103,6 +107,9 @@ func (r *repository) at(u provider.Upload, p *partial) provider.Upload {
 
 // StartBlobUpload opens a session; its ID is the key of the Fake's partial blobs.
 func (r *repository) StartBlobUpload(context.Context) (provider.Upload, error) {
+	if err := r.f.unreachable("providertest: start a blob upload in " + r.name); err != nil {
+		return provider.Upload{}, err
+	}
 	if err := r.f.FailUpload; err != nil {
 		return provider.Upload{}, fmt.Errorf("fake: start a blob upload in %s: %w", r.name, err)
 	}
@@ -122,6 +129,9 @@ func (r *repository) StartBlobUpload(context.Context) (provider.Upload, error) {
 func (r *repository) MountBlob(ctx context.Context, d digest.Digest, from string) (bool, provider.Upload, error) {
 	if err := d.Validate(); err != nil {
 		return false, provider.Upload{}, fmt.Errorf("%s: %w", r.op("mount", d), err)
+	}
+	if err := r.f.unreachable(r.op("mount", d)); err != nil {
+		return false, provider.Upload{}, err
 	}
 	r.f.mu.Lock()
 	var src blob
