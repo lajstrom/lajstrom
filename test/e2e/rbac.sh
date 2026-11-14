@@ -18,6 +18,10 @@
 #   - creating a repo with a taken name is 403 to a reader, before the name matters, and 409 to
 #     the admin only (rbac.md §3).
 #
+# Where the registry deletes no manifests, LAJSTROM_E2E_DELETE_MANIFEST=false (run.sh, #800), a
+# delete that passes the authorization is refused after it: 501 on the raw frontend, 405
+# UNSUPPORTED on /v2, where the matrices want 204 and 404 MANIFEST_UNKNOWN.
+#
 #   test/e2e/rbac.sh [<base url>]     default: http://localhost:8080
 #
 # It runs as $LAJSTROM_E2E_USER, a user with the admin binding (lib.sh, e2e_credentials;
@@ -159,6 +163,8 @@ mkuser "outsider-$run" reader "pypi/*"
 ln -s "$work/outsider-$run" "$work/outsider"
 step "users reader, writer, maintainer with their role on raw/$repo; outsider with reader on pypi/* only"
 
+deletes=yes # the registry deletes manifests; no: a delete is refused after the authorization (#800)
+[ "${LAJSTROM_E2E_DELETE_MANIFEST:-}" != false ] || deletes=no
 for f in seed.txt del-anonymous.txt del-reader.txt del-writer.txt del-maintainer.txt del-admin.txt del-outsider.txt; do
 	req admin PUT "$base/raw/$repo/$f" -T "$work/file" -H 'Content-Type: text/plain'
 	expect "seed PUT $f" 201 "$status"
@@ -170,6 +176,7 @@ step "the admin put seed.txt and a file to delete for each principal"
 # does not exist.
 while read -r who get put del miss; do
 	[ -n "$who" ] || continue
+	[ "$deletes" = yes ] || [ "$del" != 204 ] || del=501
 	c="$(cred "$who")"
 	req "$c" GET "$base/raw/$repo/seed.txt"
 	expect "$who GET raw/$repo" "$get" "$status"
@@ -199,6 +206,7 @@ gone="raw/$missing/seed.txt"
 zero="sha256:$(printf '0%.0s' $(seq 64))"
 while read -r who actions pull push del miss; do
 	[ -n "$who" ] || continue
+	[ "$deletes" = yes ] || [ "$del" != 404/MANIFEST_UNKNOWN ] || del=405/UNSUPPORTED
 	req "$(cred "$who")" GET "$base/v2/token?service=$service&scope=repository:$name:pull,push,delete&scope=repository:$gone:pull,push,delete"
 	expect "$who GET /v2/token" 200 "$status"
 	(umask 077 && printf 'header = "Authorization: Bearer %s"\n' "$(jq -r .token "$work/body")" >"$work/bearer")
