@@ -157,14 +157,14 @@ What is new against the [column](README.md#capabilities), all of it Harbor's:
   name of 255 characters was 500 `{}`, and in one of 256 it was 500 `UNKNOWN` "unknown error"
   with the name in its detail. Upload sessions opened with curl, each name below
   `lajstrom-it/l850len/` and the project counted, found the bound: 230, 240 and 245
-  characters 202; 246, 248, 250 and 254 characters 500. Lajstrom assumes 255 for Harbor
-  ([What the provider must do differently](#what-the-provider-must-do-differently), item 5).
+  characters 202; 246, 248, 250 and 254 characters 500. Lajstrom assumed 255 for Harbor
+  until #1041 ([What the provider must do differently](#what-the-provider-must-do-differently), item 5).
 - **The delete of a manifest an image index lists** is 412 `VIOLATE_FOREIGN_KEY_CONSTRAINT` "the
   deleting artifact is referenced by others": the index first, then the manifest, as on Zot
-  (405) and GitLab B (409). The provider gives this 412 no sentinel: `classifyResponse` makes a
-  412 `ErrConflict` only when its message says "immutable". So it is a refusal of the registry,
-  where GitLab B's 409 is `ErrConflict`. What a client of Lajstrom gets for it was not
-  measured.
+  (405) and GitLab B (409). The provider gave this 412 no sentinel: `classifyResponse` makes a
+  412 `ErrConflict` only when its message says "immutable". So it was a refusal of the registry,
+  where GitLab B's 409 is `ErrConflict`. Since #1041 it is `ErrConflict` by its code
+  ([What the provider must do differently](#what-the-provider-must-do-differently), item 6).
 - **A wrong digest ends the session**: the closing `PUT` is 400 `DIGEST_INVALID`, and the
   session's `GET` afterwards is 404 `BLOB_UPLOAD_INVALID`. Gitea, GitLab and Nexus's `docker`
   format keep the session open; Nexus's `oci` format and Quay end it too.
@@ -213,7 +213,17 @@ What is new against the [column](README.md#capabilities), all of it Harbor's:
    internal/provider/generic/capabilities.go, whose comment says Harbor keeps 255). So with
    `prefix: lajstrom-it/` a name of 234 to 243 bytes below the prefix passes Lajstrom's `400`
    ([quirks.md](quirks.md#case-and-length)) and meets Harbor's 500 instead. A Harbor entry for
-   `MaxNameLength` in the vendor table would close it. Not done: found while measuring (#850).
+   `MaxNameLength` in the vendor table would close it. **Done in #1041:** the vendor table
+   bounds a name on Harbor at 245 bytes, the prefix included (`vendorNameLengths`), so with
+   `prefix: lajstrom-it/` the names below it get 233 and a longer one is Lajstrom's `400
+   NAME_INVALID` with the limit. Not measured on Harbor again.
+6. **Done in #1041:** read the 412 `VIOLATE_FOREIGN_KEY_CONSTRAINT` to the delete of a manifest an
+   image index lists as a refusal of this one delete, `ErrConflict`, by its code (`deniedOne` in
+   internal/provider/generic/repository.go), as Zot's 405 and GitLab B's 409 are. A client then
+   gets what it gets on those: the facade's `DELETE` of the manifest is `409 DENIED` "the
+   registry refused to delete … : another manifest refers to it", where it was `412
+   BLOB_UPLOAD_INVALID`, and the API's version delete is `409`, where it was `502`. Not measured
+   on Harbor again.
 
 Nothing else: the token service, the referrers API, tags, uploads (the cross-replica one too),
 mounts, ranges and the digest delete work as the provider expects. The out-of-order chunk is

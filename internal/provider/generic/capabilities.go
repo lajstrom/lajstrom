@@ -31,8 +31,8 @@ const (
 	// <format>/<repo>/<package> (docs/spec/manifest-profile.md §4.1).
 	minNameDepth = 3
 	// maxNameLen is the most bytes of a repository name, the instance prefix included:
-	// distribution's RepositoryNameTotalLengthMax, which GitLab's registry and Harbor keep too
-	// (docs/registries/quirks.md, Case and length).
+	// distribution's RepositoryNameTotalLengthMax, which GitLab's registry keeps too
+	// (docs/registries/quirks.md, Case and length). Harbor takes fewer: vendorNameLengths.
 	maxNameLen = 255
 )
 
@@ -57,7 +57,8 @@ const (
 //     turns false when the registry answers a manifest delete with 405 UNSUPPORTED or a 405
 //     without DENIED.
 //
-// MaxNameLength is maxNameLen less the length of the instance prefix, measured by no request.
+// MaxNameLength is maxNameLen, or the vendor table's bound (vendorNameLengths: Harbor's 245), less
+// the length of the instance prefix, measured by no request.
 //
 // A capability that the vendor table or the configuration sets is not probed. What the vendor
 // table decides from the probe's answer (afterProbe) comes before the configuration's overrides,
@@ -72,15 +73,20 @@ func (p *Provider) Capabilities(ctx context.Context) (provider.Capabilities, err
 	if err != nil {
 		return provider.Capabilities{}, err
 	}
-	e := p.effective(c)
-	e.MaxNameLength = nameLength(p.prefix)
-	return e, nil
+	return p.effective(c), nil
 }
 
 // nameLength is the MaxNameLength below prefix, as it is prepended to names ("" or ending in
-// "/"): maxNameLen less its length, and at least 1, so that a prefix that leaves no room refuses
-// every name rather than lifting the limit.
-func nameLength(prefix string) int { return max(maxNameLen-len(prefix), 1) }
+// "/"), on a registry of vendor v: maxNameLen, or the vendor table's bound (vendorNameLengths),
+// less its length, and at least 1, so that a prefix that leaves no room refuses every name
+// rather than lifting the limit.
+func nameLength(prefix string, v vendor) int {
+	bound := maxNameLen
+	if n, ok := vendorNameLengths[v]; ok {
+		bound = n
+	}
+	return max(bound-len(prefix), 1)
+}
 
 // effective applies what Lajstrom learnt since the probe, then the overrides, to probed,
 // which holds the vendor table's capabilities already.
@@ -235,6 +241,7 @@ func (p *Provider) probeNow(ctx context.Context, answered *bool) (provider.Capab
 	if err != nil {
 		return provider.Capabilities{}, err
 	}
+	c.MaxNameLength = nameLength(p.prefix, v)
 	q := afterProbe(v, &c, p.effective(c).Referrers)
 	p.quirks.Store(&q)
 	p.probed.Store(&c)

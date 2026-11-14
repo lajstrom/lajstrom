@@ -108,7 +108,7 @@ var vendorDefaults = map[vendor]config.CapabilityOverrides{
 	// says so (docs/registries/quirks.md, Consequences).
 	vendorDocker: {MaxNameDepth: dockerHubNameDepth},
 	// The probe is right: the referrers API, and no catalog for a project robot
-	// (docs/registries/harbor.md).
+	// (docs/registries/harbor.md). Its names are shorter than distribution's: vendorNameLengths.
 	vendorHarbor: {},
 	// The rest depends on the repository format, which the referrers probe tells: afterProbe.
 	vendorNexus: {},
@@ -133,6 +133,17 @@ var vendorDefaults = map[vendor]config.CapabilityOverrides{
 	// cache times not measured (docs/registries/quay.md).
 	vendorQuay: {Catalog: new(false), Referrers: new(false), Consistency: config.ConsistencyEventual, ConsistencyBound: quayConsistencyBound},
 }
+
+// harborMaxNameLen is the most bytes of a repository name that Harbor takes, its project
+// included: v2.15.4 opens an upload session in a name of 245 bytes and answers one of 246 to 256
+// with 500 (docs/registries/harbor.md, the probe of 2026-11-14, #1041).
+const harborMaxNameLen = 245
+
+// vendorNameLengths is the vendor table's part for the length of a name: the most bytes of a
+// repository name, the instance prefix included, of a vendor that takes fewer than maxNameLen
+// (nameLength). No probe measures it: a name too long for the registry fails only when a session
+// in it is opened.
+var vendorNameLengths = map[vendor]int{vendorHarbor: harborMaxNameLen}
 
 // hintSpool reports whether the start hints at registries[].uploads.spoolUnknownLength for v:
 // Gitea and Forgejo refuse a chunk without Content-Range into a session that holds bytes (400),
