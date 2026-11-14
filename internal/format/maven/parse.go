@@ -306,19 +306,26 @@ func splitExtension(s string) (classifier, extension string) {
 // ParseMetadataPath reads the path of a maven-metadata.xml below /maven/<repo>/. The metadata
 // of an artifact, <groupPath>/<artifactId>/maven-metadata.xml, gives its groupId and
 // artifactId, and Version is empty. Maven writes the metadata of a version only for a SNAPSHOT
-// version, <groupPath>/<artifactId>/<version>-SNAPSHOT/maven-metadata.xml, so a directory that
-// IsSnapshot is read as one and refused, SNAPSHOT versions being after the MVP. The metadata of
-// a group (the plugin prefixes a maven-plugin deploys) has the shape of an artifact's and
-// cannot be told from it by the path. Errors wrap format.ErrInvalid.
+// version, <groupPath>/<artifactId>/<base>-SNAPSHOT/maven-metadata.xml, whose Coordinates have
+// that SNAPSHOT version; any other directory that IsSnapshot (1.0-snapshot, a build's version)
+// is refused. The metadata of a group (the plugin prefixes a maven-plugin deploys) has the shape
+// of an artifact's and cannot be told from it by the path. Errors wrap format.ErrInvalid.
 func ParseMetadataPath(p string) (Coordinates, error) {
 	elems := strings.Split(p, "/")
 	n := len(elems)
 	if n < 3 || elems[n-1] != MetadataFile {
 		return Coordinates{}, fmt.Errorf("%w: %q is not <groupPath>/<artifactId>/%s", format.ErrInvalid, p, MetadataFile)
 	}
+	if v := elems[n-2]; n >= 4 && isSnapshotVersion(v) {
+		c := Coordinates{GroupID: groupOf(elems[:n-3]), ArtifactID: elems[n-3], Version: v}
+		if err := checkGroupArtifact(c.GroupID, c.ArtifactID); err != nil {
+			return Coordinates{}, fmt.Errorf("%q: %w", p, err)
+		}
+		return c, nil
+	}
 	if IsSnapshot(elems[n-2]) {
-		return Coordinates{}, fmt.Errorf("%w: %q is the %s of the SNAPSHOT version %q; Lajstrom stores release versions only (SNAPSHOT versions are after the MVP)",
-			format.ErrInvalid, p, MetadataFile, elems[n-2])
+		return Coordinates{}, fmt.Errorf("%w: %q: %q is not the directory of a SNAPSHOT version, <base>-SNAPSHOT",
+			format.ErrInvalid, p, elems[n-2])
 	}
 	c := Coordinates{GroupID: groupOf(elems[:n-2]), ArtifactID: elems[n-2]}
 	if err := checkGroupArtifact(c.GroupID, c.ArtifactID); err != nil {

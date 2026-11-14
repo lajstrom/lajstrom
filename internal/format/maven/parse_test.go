@@ -137,8 +137,8 @@ func TestChecksumOf(t *testing.T) {
 	}
 }
 
-// TestParseMetadataPath reads the maven-metadata.xml of an artifact and refuses that of a
-// SNAPSHOT version.
+// TestParseMetadataPath reads the maven-metadata.xml of an artifact and of a SNAPSHOT version,
+// whose directory is <base>-SNAPSHOT; any other directory Maven reads as a SNAPSHOT is refused.
 func TestParseMetadataPath(t *testing.T) {
 	for _, tt := range []struct {
 		path string
@@ -147,6 +147,8 @@ func TestParseMetadataPath(t *testing.T) {
 		{"com/example/lib-core/maven-metadata.xml", Coordinates{GroupID: "com.example", ArtifactID: "lib-core"}},
 		{"junit/junit/maven-metadata.xml", Coordinates{GroupID: "junit", ArtifactID: "junit"}},
 		{"org/eclipse/jdt/org.eclipse.jdt.core/maven-metadata.xml", Coordinates{GroupID: "org.eclipse.jdt", ArtifactID: "org.eclipse.jdt.core"}},
+		{"com/example/lib-core/1.2.0-SNAPSHOT/maven-metadata.xml", Coordinates{GroupID: "com.example", ArtifactID: "lib-core", Version: "1.2.0-SNAPSHOT"}},
+		{"junit/junit/4.14-SNAPSHOT/maven-metadata.xml", Coordinates{GroupID: "junit", ArtifactID: "junit", Version: "4.14-SNAPSHOT"}},
 	} {
 		got, err := ParseMetadataPath(tt.path)
 		if err != nil || got != tt.want || Classify(tt.path) != KindMetadata {
@@ -154,7 +156,9 @@ func TestParseMetadataPath(t *testing.T) {
 		}
 	}
 	for _, tt := range []struct{ path, msg string }{
-		{"com/example/lib-core/1.2.0-SNAPSHOT/maven-metadata.xml", "SNAPSHOT"},
+		{"com/example/lib-core/1.2.0-snapshot/maven-metadata.xml", "is not the directory of a SNAPSHOT version"},
+		{"com/example/lib-core/1.2.0-20261109.101500-1/maven-metadata.xml", "is not the directory of a SNAPSHOT version"},
+		{"lib-core/1.2.0-SNAPSHOT/maven-metadata.xml", "is not the directory of a SNAPSHOT version"},
 		{"lib-core/maven-metadata.xml", "is not <groupPath>/<artifactId>/maven-metadata.xml"},
 		{"com/example/lib-core/metadata.xml", "is not <groupPath>/<artifactId>/maven-metadata.xml"},
 		{"com/../maven-metadata.xml", "artifactId"},
