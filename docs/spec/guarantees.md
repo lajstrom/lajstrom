@@ -917,7 +917,7 @@ longer than `reconcile.graceAge` is outside them
   `42710` from the create of `schema_migrations`: YugabyteDB) runs again from the start and
   counts its version again under the lock (#616).
 - **Tests.** `TestConcurrentMigrate`, `TestFileMigrate`, `TestMigrationVersions`,
-  `TestMigrationVersion`, `TestMigrate`.
+  `TestMigrationVersion`, `TestMigrate`, `TestMigrationRetry`.
 - **When violated.** Not observed.
 - **Status.** `holds`.
 

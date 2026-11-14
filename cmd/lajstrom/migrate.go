@@ -31,7 +31,7 @@ func newMigrateCmd(a *app) *cobra.Command {
 			defer func() { err = errors.Join(err, st.Close()) }()
 
 			out := cmd.OutOrStdout()
-			rep, err := st.ApplyMigrations(ctx, index.MigrateOptions{Breaking: breaking})
+			rep, err := st.ApplyMigrations(ctx, index.MigrateOptions{Breaking: breaking, Log: a.log})
 			for _, v := range rep.Applied {
 				if _, werr := fmt.Fprintf(out, "applied %04d\n", v); werr != nil {
 					return errors.Join(err, werr)

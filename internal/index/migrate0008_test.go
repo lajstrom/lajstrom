@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"log/slog"
 	"net/url"
 	"os"
 	"strconv"
@@ -25,7 +26,7 @@ func applyUpTo(ctx context.Context, t *testing.T, db *sql.DB, dialect string, la
 		if m.version > last {
 			return
 		}
-		if _, err := runners[dialect].apply(ctx, db, m); err != nil {
+		if _, err := runners[dialect].apply(ctx, db, m, slog.Default()); err != nil {
 			t.Fatalf("migration %s: %v", m.name, err)
 		}
 	}
