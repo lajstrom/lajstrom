@@ -12,8 +12,8 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index"
 )
 
-// TokenList is the answer of GET /api/v1/users/{name}/tokens and of GET
-// /api/v1/repos/{format}/{repo}/deploy-tokens: the tokens in the order of their creation, the
+// TokenList is the answer of GET /api/v1/users/{name}/tokens, of GET
+// /api/v1/repos/{format}/{repo}/deploy-tokens and of GET /api/v1/deploy-tokens: the tokens in the order of their creation, the
 // revoked and expired ones included, never a secret.
 type TokenList struct {
 	Tokens []auth.Token `json:"tokens"`
@@ -27,6 +27,14 @@ type TokenRequest struct {
 	Scopes    []string `json:"scopes"`
 	ExpiresAt *string  `json:"expiresAt"`
 	ExpiresIn *string  `json:"expiresIn"`
+}
+
+// MaskTokenRequest is the body of POST /api/v1/deploy-tokens: the mask of the token, repoMask,
+// <format>/<repo> with * for a whole segment (docs/spec/rbac.md §1), and the fields of a
+// TokenRequest, whose scopes are required.
+type MaskTokenRequest struct {
+	RepoMask string `json:"repoMask"`
+	TokenRequest
 }
 
 // expiry returns the auth.Expiry of the request, or an error naming the field that does not
@@ -169,6 +177,58 @@ func (h *handler) revokeDeployToken(_ http.ResponseWriter, r *http.Request) (int
 		return 0, nil, err
 	}
 	return h.revoke(r, func(t *auth.Token) bool { return t.Kind == auth.TokenDeploy && t.Repo == repo }, "repo "+repo)
+}
+
+// listMaskTokens answers the deploy tokens over a mask, of every mask or of ?repoMask= as it was
+// written, to the admin role (docs/spec/rbac.md §3).
+func (h *handler) listMaskTokens(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	if err := h.allowAdmin(r); err != nil {
+		return 0, nil, err
+	}
+	list, err := h.tokens.ListMaskDeploy(r.Context(), r.URL.Query().Get("repoMask"))
+	if err != nil {
+		return 0, nil, serviceError(err)
+	}
+	return http.StatusOK, TokenList{Tokens: list}, nil
+}
+
+// createMaskToken creates a deploy token over the mask of the MaskTokenRequest of the body: 201
+// with the token, its secret and its Location. Before the body is read (docs/spec/rbac.md §3):
+// a request whose credential is a token, a personal access token with scopes or without, the
+// admin's too, or a deploy token, is 403 naming the rule (auth.MayCreateMaskDeploy, decided on
+// #911): only the admin's password creates one; then the admin role is checked, so that another
+// principal gets 403 whatever the body names.
+func (h *handler) createMaskToken(w http.ResponseWriter, r *http.Request) (int, any, error) {
+	if err := auth.MayCreateMaskDeploy(r.Context()); err != nil {
+		return 0, nil, serviceError(err)
+	}
+	if err := h.allowAdmin(r); err != nil {
+		return 0, nil, err
+	}
+	var req MaskTokenRequest
+	if err := decodeBody(w, r, &req); err != nil {
+		return 0, nil, err
+	}
+	exp, err := req.expiry()
+	if err != nil {
+		return 0, nil, err
+	}
+	t, secret, err := h.tokens.CreateMaskDeploy(r.Context(), req.RepoMask, req.Name, req.Scopes, exp, auth.Origin(origin(r)))
+	if err != nil {
+		return 0, nil, serviceError(err)
+	}
+	w.Header().Set("Location", fmt.Sprintf("/api/v1/deploy-tokens/%d", t.ID))
+	return http.StatusCreated, auth.CreatedToken{Token: *t, Secret: secret}, nil
+}
+
+// revokeMaskToken revokes a deploy token over a mask, for the admin role: 204, also for one
+// revoked already; 404 for an id that is not a deploy token over a mask (a repo's own is
+// revoked under its repo).
+func (h *handler) revokeMaskToken(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	if err := h.allowAdmin(r); err != nil {
+		return 0, nil, err
+	}
+	return h.revoke(r, func(t *auth.Token) bool { return t.Kind == auth.TokenDeploy && t.RepoMask != "" }, "a mask")
 }
 
 // allowDeployTokens decides whether the request may list, create and revoke the deploy tokens
