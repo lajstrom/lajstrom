@@ -69,7 +69,9 @@ are after the MVP. Two system-level resources, which only the `admin` role reach
 
 On npm's routes (http-routing.md, npm), changing a package's dist-tags or deprecations is
 `write`, the `DELETE` of a dist-tag included, and an unpublish is `delete`, a version that a
-packument update leaves out included.
+packument update leaves out included. Yanking and unyanking a pypi version through the
+management API (http-routing.md §4, #81) is `write` too: like a deprecation it is an entry of the
+package's journal and deletes nothing, and the version's files stay served.
 
 ## 3. Roles and bindings
 

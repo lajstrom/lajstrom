@@ -1,6 +1,6 @@
 # 0012. npm: the profile, the routes, and dist-tags as a journal in the registry
 
-- Status: accepted
+- Status: accepted; amended by #81 (below, Amendment)
 - Date: 2026-11-10
 - Deciders: gecube
 
@@ -153,3 +153,43 @@ of #61), dist-tags, `ping`, `whoami`, the legacy login answering a new personal 
 - The Go shape of the journal write is one method of `format.Publisher`, `Journal`,
   implemented by ingest, the one write path; its signature is in layout.md §2 with this ADR
   (decided by the lead on 2026-11-10), and #307 implements it.
+
+## Amendment: pypi yanks in the journal (#81, 2026-11-14)
+
+PEP 592 lets an index mark the files of a release as yanked: pip and uv skip them unless a
+requirement pins the version with `==` or `===`. Like a deprecation, a yank is state that changes
+on a published version, is set and cleared, and must survive the loss of the database. The issue
+asked to decide between an annotation on a referrer and a control-plane marker.
+
+- **A referrer** of each manifest of the version: a pypi version is several manifests, one per
+  file, so a yank would be several writes that can stop half way. Deleting a manifest deletes its
+  referrers. Lajstrom never rewrites a referrer, so an unyank has nowhere to go but a delete, and
+  the referrers API lists in no order. These are the reasons the Considered options above gave
+  against referrers for npm.
+- **A control-plane row**: reindex cannot rebuild it from the registry, and the database would
+  hold per-version data that no manifest has.
+- **An entry of the package's journal**, as `npm deprecate` is: one small manifest per change,
+  numbered under the journal lock, with the state in `journal_state` and replayed by reindex.
+
+Decision: the journal. A pypi package journals its yanks under the tags `_j<seq>` of its OCI
+repository. The artifact type is `application/vnd.lajstrom.pypi.yank.v1`, the ops are `yank`
+(`lajstrom.pypi.version`, and an optional `lajstrom.pypi.reason`) and `unyank`
+(`lajstrom.pypi.version`), and the numbering is in `lajstrom.pypi.seq` and `lajstrom.pypi.op`. The
+artifact type decides an entry's format and the prefix of its keys, so an npm entry is exactly
+what it was. A yank names a version, every file of it, as PyPI yanks releases. Ingest writes the
+entries through `Publisher.Journal`, the management API's `PUT` and `DELETE
+…/versions/<version>/yank` call it (`write`, like a deprecation), the simple index renders
+`data-yanked` and `yanked` from the state, and every entry is an audit row `pypi.yank`.
+
+Consequences:
+
+- No new table, migration or Go signature: `journal` and `journal_state` take the new kind
+  `yanked`, and `format.JournalOp` carries the reason in `Message`.
+- A yank survives reindex as a deprecation does, and the facade refuses to push or delete a
+  pypi entry through `/v2`, as it refuses an npm one.
+- A deleted version keeps its yank, and the same version uploaded again is yanked until it is
+  unyanked: the yank names the version, as a dist-tag does (Consequences above). When every
+  version of a pypi package is deleted, its entries are orphans, and the next yank or unyank of
+  that name adopts them; pypi has no unpublish of a package that would delete them.
+- PEP 694, the upload API 2.0, is still a draft (peps.python.org, 2026-11-14) and is not part of
+  this amendment.

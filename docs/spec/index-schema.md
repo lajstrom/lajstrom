@@ -255,8 +255,8 @@ A delete writes its rows in the index, and its audit row, before it releases its
 the writer that takes the lock next reads the index without the version (#72). A conditional
 delete of an npm version (`format.Condition`, http-routing.md §4) takes two locks, in one order:
 first the package's journal lock (the lock keyed by its OCI repository and the empty blob's
-digest, [npm](#npm-the-journal-and-its-state-adr-0012) below), then, inside it, the tag lock of
-the manifest. Under the journal lock it reads the package's dist-tags, and a dist-tag move, which
+digest, [the journal](#the-journal-and-its-state-npm-and-pypi-adr-0012) below), then, inside
+it, the tag lock of the manifest. Under the journal lock it reads the package's dist-tags, and a dist-tag move, which
 checks under the same lock that the version it names exists, comes either before the delete,
 which then refuses the version, or after its rows are gone, and is refused itself. **The order
 is the journal lock before a tag lock, never the other way**: nothing waits for a journal lock
@@ -361,15 +361,16 @@ another scope that it overlapped, which renders again on the next request. Durin
 update from a release before 0017, the invalidations of the older replicas do not increment it,
 and their renders do not check it.
 
-### npm: the journal and its state (ADR 0012)
+### The journal and its state: npm and pypi (ADR 0012)
 
-Two more derived tables hold what changes on an npm package: its dist-tags and the deprecation
-of its versions, kept in the registry as a journal of manifests (manifest-profile.md §8).
+Two more derived tables hold what changes on a package after its versions are published, kept in
+the registry as a journal of manifests (manifest-profile.md §8): an npm package's dist-tags and
+the deprecation of its versions, a pypi package's yanks (#81). No other format has rows here.
 
 | Table | Columns | Notes |
 | --- | --- | --- |
-| `journal` | `id`, `package_id` → packages (`ON DELETE CASCADE`), `seq` int, `tag` text (`_j…`), `digest` text (the entry's manifest digest), `artifact_type` text, `attrs` json (the entry's `lajstrom.npm.*` annotations), `created_at` ts (from `org.opencontainers.image.created`), `indexed_at` ts | unique `(package_id, seq)`; unique `(package_id, tag)`. One row per journal entry in the registry |
-| `journal_state` | `id`, `package_id` → packages (`ON DELETE CASCADE`), `kind` text (`dist-tag`, `deprecated`), `key` text (the dist-tag; the version), `value` text (the version; the message), `seq` int (the entry that set it) | unique `(package_id, kind, key)`. The current dist-tags and deprecations: the fold of the package's `journal` rows in `seq` order |
+| `journal` | `id`, `package_id` → packages (`ON DELETE CASCADE`), `seq` int, `tag` text (`_j…`), `digest` text (the entry's manifest digest), `artifact_type` text, `attrs` json (the entry's `lajstrom.npm.*` or `lajstrom.pypi.*` annotations), `created_at` ts (from `org.opencontainers.image.created`), `indexed_at` ts | unique `(package_id, seq)`; unique `(package_id, tag)`. One row per journal entry in the registry |
+| `journal_state` | `id`, `package_id` → packages (`ON DELETE CASCADE`), `kind` text (`dist-tag`, `deprecated`, `yanked`), `key` text (the dist-tag; the version; the version), `value` text (the version; the message; the reason, `""` for a yank without one), `seq` int (the entry that set it) | unique `(package_id, kind, key)`. The current dist-tags, deprecations and yanks: the fold of the package's `journal` rows in `seq` order |
 
 - Both are written by the journal writer of ingest, by reindex and by delete, never by a
   frontend. The writer inserts the rows of its entries, updates the package's `journal_state` and
@@ -388,7 +389,9 @@ of its versions, kept in the registry as a journal of manifests (manifest-profil
   The test of #307 drops both tables, runs reindex and compares.
 - The state is never a column of `versions`: a version row is its manifest's, the state is the
   journal's. A packument (http-routing.md, npm) reads both; its `_rev` is computed from `journal`
-  and `versions` and needs no column.
+  and `versions` and needs no column. A pypi project page reads both too: each file of a version
+  that has a `yanked` row is yanked (http-routing.md, pypi), and the management API's version
+  resource has the yank (http-routing.md §4).
 - A package's rows go with it: both tables refer to `packages` with `ON DELETE CASCADE`, so
   `DeletePackage`, `DeleteEmptyPackages` and `ResetDerived` take them, and reindex rebuilds
   them. When its last version is deleted outside an unpublish of the package, its entries stay
@@ -398,7 +401,8 @@ of its versions, kept in the registry as a journal of manifests (manifest-profil
   kinds `packument` and `packument-abbreviated`, rendered together. A publish or a delete of a
   version of the package, each journal append and reindex invalidate them: at least the
   package's scope; the whole repo's, as the delete path does, is correct too. A group's
-  packuments are ADR 0013's.
+  packuments are ADR 0013's. A pypi yank or unyank invalidates the repo's documents as a publish
+  does, so the next `GET` renders the project page with it.
 
 ## Migrations
 
