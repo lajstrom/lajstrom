@@ -484,7 +484,8 @@ The failures, by owner:
 For #800: the same image on a new volume, `nexus.sh` of #1012 (`strictContentTypeValidation`
 off on the docker repository, on on the oci one). The tests of reindex at main 20ce9499, with
 those of #940; the e2e scenarios that need no image of their own at 696c7394 with #1031 and
-#1032 (only docs changed between the two); and `curl` and `oras` by hand. The start logged the vendor table as on
+#1032 (only docs changed between the two), the others later the same day at a58a3f47 with #1104,
+on another new volume; and `curl` and `oras` by hand. The start logged the vendor table as on
 2026-11-12: `deleteManifest=false` on the docker format, `blobsReadWhole=true` on the oci one.
 
 **Reindex: the two failures of the oci format are the tests', not Lajstrom's.**
@@ -524,7 +525,7 @@ prefix, where its cleanup had left blobs (`BLOB_REFERENCED`); not followed up.
 **The e2e scenarios** take the answers of the vendor table since #800: `run.sh` reads
 `deleteManifest` and `blobsReadWhole` from the server's log and passes them on
 ([testing.md](../testing.md#a-registry-that-deletes-nothing-or-reads-blobs-whole)).
-`test/e2e/run.sh raw oras cosign auth rbac retention first-admin`, all seven pass on each format:
+`test/e2e/run.sh` with the scenarios below; each passes on each format:
 
 | Scenario | docker (`deleteManifest=false`) | oci (`blobsReadWhole=true`) |
 | --- | --- | --- |
@@ -534,11 +535,20 @@ prefix, where its cleanup had left blobs (`BLOB_REFERENCED`); not followed up.
 | `auth.sh`, `rbac.sh` | pass: the maintainer's and the admin's deletes `501` on `/raw/`, `405 UNSUPPORTED` on `/v2`; the others' refusals as on Zot | pass |
 | `retention.sh` | pass: `--apply` exits 1, the version an error naming the registry, nothing deleted | pass |
 | `first-admin.sh` | pass; before #1032 its servers had no registry credentials and were never ready | the same |
+| `apt.sh` | pass: both version deletes through the API `501 UNAVAILABLE` naming the registry; the next Packages, `apt-get update` and `apt-cache show` still have both packages | pass |
+| `rpm.sh` | pass: the version delete `501 UNAVAILABLE` naming the registry; primary, filelists and other the same bytes after it, `dnf list` still has the package; the reindex rebuilds the repo with both | pass |
+| `npm.sh` | pass: the maintainer's `npm unpublish` of a version and of a package fail with `E501`; every version and dist-tag stays, and the package is there after the reindex | pass |
+| `docker.sh` | pass; before #1104 D-07 wanted no `sha256-<hex>` tag in the reader's `crane ls`, where the facade writes the referrers tag schema | pass; before #1104 the same, with the tags Nexus writes itself |
+| `ociproxy.sh` | pass, the upstream another registry (a Zot, anonymous), containerd in a local busybox image instead of `debian:12` (the disk limit below); before #1104 it read the backend without credentials | the same |
+| `oci-token.sh`, `tokens.sh` | pass | pass |
 
-Not run: `oci-token`, `tokens`, `apt`, `rpm`, `pypi`, `maven`, `npm`, `docker` and `ociproxy`
-(their client images were not on the machine) and `migrate-npm` (no Verdaccio). `apt.sh`,
-`rpm.sh` and `npm.sh` delete versions and still want them deleted, so they would fail at those
-steps on the docker format.
+`apt.sh`, `rpm.sh` and `npm.sh` failed on the docker format at their deletes before #1104, which
+makes them want the refusals. npm retries a `501` twice, 10 and 60 s apart, so an `npm unpublish`
+on this format takes more than a minute to fail; `npm.sh` passes `--fetch-retries=0`.
+
+Not run: `pypi` and `maven` (the disk was below the limit for pulling their client images; `pypi.sh`
+passed on both formats on 2026-11-12, [above](#again-after-352)), `migrate-npm` (no Verdaccio),
+and `oidc` and `ha`, which #800 did not list.
 
 ## Commands
 

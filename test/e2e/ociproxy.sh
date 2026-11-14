@@ -34,7 +34,10 @@
 # the repo (run.sh makes an admin). A blob fetched is a line "proxy: a blob fetched from the
 # upstream" of the repo and the path in $LAJSTROM_SERVER_LOG, the server's log, which run.sh
 # sets and the script needs; a blob served, an access line of a GET of it with status 200. The backend is $LAJSTROM_E2E_REGISTRY (localhost:5000, the Zot of
-# make dev-up), with $LAJSTROM_E2E_REGISTRY_PREFIX, read without credentials; the upstream too.
+# make dev-up), with $LAJSTROM_E2E_REGISTRY_PREFIX, read with LAJSTROM_E2E_REGISTRY_USER and
+# LAJSTROM_E2E_REGISTRY_PASSWORD where run.sh set them (#353, #800), else without credentials. The
+# upstream is read without, as the server reads it: against a backend that needs credentials (a
+# Nexus), LAJSTROM_E2E_OCI_UPSTREAM names another registry, one that serves anonymous pulls.
 #
 # crane is the crane on PATH, else gcr.io/go-containerregistry/crane:v0.22.1 pinned by digest in
 # docker with --network host. containerd is the static release v2.4.2 of containerd/containerd
@@ -44,7 +47,8 @@
 # the repos are deleted, and what crane pushed to the upstream, to the hosted repo, and the proxy to
 # the backend is deleted from them by digest, where the registry lets it. crane pushes to the
 # hosted repo as the run's user, from a docker configuration in the run's directory
-# (DOCKER_CONFIG), which it then removes; every other crane call is anonymous. It needs curl, jq and docker, prints
+# (DOCKER_CONFIG), and takes the user out of it after; every other crane call is anonymous, but to
+# a backend that needs credentials. It needs curl, jq and docker, prints
 # one line per step and exits non-zero at the first failure (lib.sh).
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
@@ -97,8 +101,23 @@ cleanup() {
 trap cleanup EXIT
 
 # crane ARGS...: crane in the run's directory, where its file arguments are.
-# Its docker configuration is the run's, empty but in step 5: anonymous.
+# Its docker configuration is the run's: the backend's credentials where it needs them, and the
+# run's user on the base URL in step 5; anonymous elsewhere.
 mkdir -p "$work/docker"
+backend_auth="" # the auth of the backend's credentials in a docker configuration
+if [ -n "${LAJSTROM_E2E_REGISTRY_USER:-}" ]; then
+	backend_auth="$(printf '%s:%s' "$LAJSTROM_E2E_REGISTRY_USER" "${LAJSTROM_E2E_REGISTRY_PASSWORD:-}" | base64 | tr -d '\n')"
+fi
+# docker_config [HOST AUTH]: write the run's docker configuration: the backend's credentials, and
+# AUTH on HOST; none at all without either.
+docker_config() {
+	local entries=""
+	[ -z "$backend_auth" ] || entries="\"$registry\":{\"auth\":\"$backend_auth\"}"
+	[ -z "${1:-}" ] || entries="${entries:+$entries,}\"$1\":{\"auth\":\"$2\"}"
+	rm -f "$work/docker/config.json"
+	[ -z "$entries" ] || (umask 077 && printf '{"auths":{%s}}\n' "$entries" >"$work/docker/config.json")
+}
+docker_config
 if command -v crane >/dev/null; then
 	crane_how="$(command -v crane) $(command crane version)"
 	crane() { (cd "$work" && DOCKER_CONFIG="$work/docker" command crane "$@"); }
@@ -265,13 +284,13 @@ assert_status 201 -K "$E2E_CURLRC" -H 'Content-Type: application/json' \
 group_made=yes
 step "POST /api/v1/repos oci/$hosted, hosted, and oci/$group, a group of it for acme/* and of oci/$proxy for the rest: 201"
 
-(umask 077 && printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$host" "$(printf '%s:%s' "$E2E_USER" "$E2E_PASSWORD" | base64 | tr -d '\n')" >"$work/docker/config.json")
+docker_config "$host" "$(printf '%s:%s' "$E2E_USER" "$E2E_PASSWORD" | base64 | tr -d '\n')"
 api="acme/api-$run"
 head -c "$size" /dev/urandom >"$work/api.data"
 tar -C "$work" -cf "$work/api.tar" api.data
 ref="$(crane append --insecure --oci-empty-base -f api.tar -t "$host/oci/$hosted/$api:1.4" 2>"$work/crane.log")" ||
 	{ cat "$work/crane.log" >&2; fail "crane append to $host/oci/$hosted/$api:1.4"; }
-rm -f "$work/docker/config.json"
+docker_config
 pushed+=("$registry/${prefix}oci/$hosted/$api@${ref##*@}")
 assert_eq "${ref##*@}" "$(crane digest --insecure "$host/oci/$group/$api:1.4")" "the digest of $api:1.4 through the group"
 crane pull --insecure "$host/oci/$group/$api:1.4" api-group.tar 2>"$work/crane.log" ||
