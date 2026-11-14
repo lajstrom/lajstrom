@@ -158,8 +158,59 @@ func TestNotVisibleNames(t *testing.T) {
 	if !strings.Contains(published.Error(), strings.Join(missing, ", ")) {
 		t.Errorf("error %q does not name %q", published, missing)
 	}
+	// The frontends' answer names it too, after the status text (#667).
+	if got, want := format.ClientMessage(published), "Service Unavailable; "+nv.Explain(); got != want {
+		t.Errorf("ClientMessage = %q, want %q", got, want)
+	}
 	// One made outside the package, as a frontend's test fakes it, is the same 503.
 	wantNotVisible(t, &ingest.NotVisibleError{Name: "raw/scratch/tool", Digest: refs[0].Digest, Tag: "1.0.0"})
+}
+
+// TestNotVisibleExplain: the words of a push the registry does not serve yet, for the
+// frontends' 503 (#667), name the OCI name, the manifest's digest and what is missing, at most
+// 20 blobs and a count of the rest, and nothing of the registry's.
+func TestNotVisibleExplain(t *testing.T) {
+	m := digest.FromString("manifest")
+	blobs := make([]digest.Digest, 23)
+	for i := range blobs {
+		blobs[i] = digest.FromString(string(rune('a' + i)))
+	}
+	slices.Sort(blobs)
+	named := func(ds []digest.Digest) string {
+		var s []string
+		for _, d := range ds {
+			s = append(s, "the blob "+d.String())
+		}
+		return strings.Join(s, ", ")
+	}
+	const prefix, suffix = "the registry took raw/scratch/tool@", " yet; the same request again completes it"
+	tests := []struct {
+		name string
+		nv   ingest.NotVisibleError
+		want string // between prefix+digest+" and does not serve " and suffix
+	}{
+		{"the manifest", ingest.NotVisibleError{Manifest: true}, "the manifest"},
+		{"the tag and a blob", ingest.NotVisibleError{Tag: "1.0.0", Blobs: blobs[:1]}, "the tag 1.0.0, " + named(blobs[:1])},
+		{"20 blobs", ingest.NotVisibleError{Blobs: blobs[:20]}, named(blobs[:20])},
+		{"21 blobs", ingest.NotVisibleError{Blobs: blobs[:21]}, named(blobs[:20]) + ", 1 more blob"},
+		{"a referrer and 23 blobs", ingest.NotVisibleError{Blobs: blobs, Subject: m},
+			named(blobs[:20]) + ", 3 more blobs, the referrers of " + m.String()},
+		{"nothing named", ingest.NotVisibleError{}, "it"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nv := tt.nv
+			nv.Name, nv.Digest, nv.Waited = "raw/scratch/tool", m, 30*time.Second
+			want := prefix + m.String() + " and does not serve " + tt.want + suffix
+			if got := nv.Explain(); got != want {
+				t.Errorf("Explain =\n %q, want\n %q", got, want)
+			}
+			if len(nv.Blobs) != len(tt.nv.Blobs) {
+				t.Errorf("Explain changed the error's blobs")
+			}
+		})
+	}
+	var _ format.Explainer = (*ingest.NotVisibleError)(nil)
 }
 
 // blobsLost is a lagging registry that stops serving blobs once a manifest is pushed: the checks
