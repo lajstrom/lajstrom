@@ -14,7 +14,7 @@ import (
 // of a rolling update, a rollback and an upgrade that skips a release do (index-schema.md,
 // Upgrades). Release 1 is this binary's; release 2 adds a table, release 3 stops using it with a
 // migration that only records its version, and release 4 drops it, requiring release 3. On
-// SQLite, and on Postgres with LAJSTROM_TEST_POSTGRES_DSN.
+// SQLite, and on Postgres with LAJSTROM_TEST_POSTGRES_DSN, or CockroachDB when it names one.
 func TestUpgrade(t *testing.T) {
 	t.Run(DialectSQLite, func(t *testing.T) {
 		testUpgrade(t, DialectSQLite, func(t *testing.T, name string) *sql.DB {
@@ -32,7 +32,11 @@ func TestUpgrade(t *testing.T) {
 		if dsn == "" {
 			t.Skip("set LAJSTROM_TEST_POSTGRES_DSN to run the Postgres half")
 		}
-		testUpgrade(t, DialectPostgres, func(t *testing.T, _ string) *sql.DB { return postgresSchema(t, dsn) })
+		dialect := DialectPostgres
+		if onCockroach(t, postgresSchema(t, dsn)) {
+			dialect = DialectCockroach
+		}
+		testUpgrade(t, dialect, func(t *testing.T, _ string) *sql.DB { return postgresSchema(t, dsn) })
 	})
 }
 
@@ -134,18 +138,20 @@ func TestMigrationRequires(t *testing.T) {
 			t.Errorf("migrationRequires(%q) = %d, %v; want %d", tt.sql, got, err, tt.want)
 		}
 	}
-	// Both dialects require the same.
+	// Every dialect requires the same.
 	lite, err := migrations(DialectSQLite)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pg, err := migrations(DialectPostgres)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := range min(len(lite), len(pg)) {
-		if lite[i].requires != pg[i].requires {
-			t.Errorf("migration %04d requires %d on sqlite, %d on postgres", lite[i].version, lite[i].requires, pg[i].requires)
+	for _, dialect := range []string{DialectPostgres, DialectCockroach} {
+		other, err := migrations(dialect)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range min(len(lite), len(other)) {
+			if lite[i].requires != other[i].requires {
+				t.Errorf("migration %04d requires %d on sqlite, %d on %s", lite[i].version, lite[i].requires, other[i].requires, dialect)
+			}
 		}
 	}
 }
