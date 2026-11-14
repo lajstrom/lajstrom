@@ -240,8 +240,9 @@ before the write, `pending`, in a transaction of its own, and the row says how t
 names the credential that created the token, `createdBy` in its details: `password`,
 `token:<id>` for a token, or `oidc` for the token of an OIDC login (§8). A webhook's creation, change, deletion and the rotation of its secret are `webhook.create`,
 `webhook.update`, `webhook.delete` and `webhook.secret` (#77), in the transaction of the change:
-`repo` the webhook's mask, `subject` `webhook:<id>`, `details` `{"mask", "host", "events",
-"active"}`, the host of its URL and never the URL nor the secret. A test delivery and the
+`repo` the webhook's mask, `subject` `webhook:<id>`, `details` `{"mask", "urlHost", "events",
+"active"}`, the host of its URL and never the URL nor the secret, with the origin's keys of the
+other rows (`source`, `requestId`, and `host`, the machine of a command-line change). A test delivery and the
 deliveries are not audited: the delivery log has them (webhooks.md §4). Reads are not audited in the MVP (a per-repo option later). The
 short-lived bearer tokens of `/v2/token` are not audited either (decided on #46, 2026-11-09): a
 client gets one for every pull and push, and what a token allows is audited itself.
