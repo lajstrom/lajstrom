@@ -145,7 +145,12 @@ file is larger than the registry takes; a `429` or `503` is `503` with the regis
 Lajstrom's own credential, which every client shares, not this client; any other `4xx`, such as
 a `400 MANIFEST_INVALID` for a manifest Lajstrom built, is `502`: the client sent its file, not
 the request the registry refused. A `5xx` says its status text only, and no answer carries the
-registry's URL, realm or message.
+registry's URL, realm or message. The one exception is a publish that the registry took and did
+not serve within `ingest.visibilityTimeout` (`*ingest.NotVisibleError`, #667). It is `503` with
+`Retry-After: 30`, as on `/v2` (§2), and its message follows the status text with what the
+registry does not serve yet, each only when it is missing: the OCI name and the manifest's
+digest, then the manifest, the tag, at most 20 blobs and how many more, and the subject whose
+referrers do not list it; the same request again completes it (`format.Explainer`).
 
 ### raw
 

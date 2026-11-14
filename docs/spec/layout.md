@@ -378,8 +378,17 @@ func ViaFrom(ctx context.Context) (index.Repo, bool)
 func WriteError(w http.ResponseWriter, err error) int
 func StatusOf(err error) int
 // ClientMessage: err.Error() for a 4xx but a 408, a fixed message for a 408, the status text for
-// a 5xx followed by what a *PartialError in err deleted before it failed.
+// a 5xx followed by the words of the first Explainer in err (errors.As) and by what a
+// *PartialError in err deleted before it failed.
 func ClientMessage(err error) string
+// Explainer: an error with words for the client, which ClientMessage adds to a 5xx (#667). They
+// name only what the client sent and Lajstrom's own names (an OCI name below the instance
+// prefix, a digest, a tag), never a URL, the instance prefix, a credential or the registry's
+// words. *ingest.NotVisibleError has one.
+type Explainer interface {
+    error
+    Explain() string
+}
 // SetRetryAfter sets Retry-After from provider.RetryAfter(err), or from the *UnavailableError
 // err wraps: whole seconds, rounded up, at least 1; 5 for index.ErrUnavailable; nothing for an
 // error without one. WriteError, the facade, the API and the authentication middleware call it.
@@ -1311,6 +1320,10 @@ type NotVisibleError struct {
     Waited   time.Duration
 }
 func (e *NotVisibleError) Missing() []string
+// Explain (format.Explainer): "the registry took <Name>@<Digest> and does not serve <Missing>
+// yet; the same request again completes it", naming at most 20 blobs and then "<n> more
+// blobs", as the facade's answer does (#693): the frontends' and the API's 503 (#667).
+func (e *NotVisibleError) Explain() string
 // Upload is the frontend path: Plugin.Build → push missing blobs → store as Ingest does. With
 // up.Origin (the proxy fetcher, ADR 0013) it sets lajstrom.origin.url and lajstrom.origin.checksum
 // on the built manifest and removes lajstrom.uploaded-by, and the audit row is proxy.fetch with
