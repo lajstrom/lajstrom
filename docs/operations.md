@@ -1310,12 +1310,15 @@ digest of its manifest.
   report lists both. Lajstrom never re-points a tag; whoever re-pointed it in the backend
   decides which one is right.
 - A package stored at two forms of its OCI name (ADR 0017: a stand that took a publish in the
-  newest form before a reindex saw the earlier one) is a split. The index keeps one form, the one
-  it has or else the newest, and leaves out the versions at the other, whose downloads would
-  `404`; the report lists both forms and the tags at each, and every run warns. To serve those
-  versions, copy each tag of the other form into the indexed one (`oras cp`, through `/v2` or
-  straight to the backend, which the next run indexes), then delete the other form in the
-  backend; a tag at both forms with other bytes is yours to settle.
+  newest form before a reindex saw the earlier one) is a split. The package keeps one form, the
+  one the index has or else the newest, where every new version goes; the versions at the other
+  form are indexed with that form (`versions.oci_repo`, #642) and download, delete and list in
+  `/v2` from there. A version at both forms is served from the indexed one. The report lists both
+  forms and the tags at each, and every run warns. To make the package one OCI repository again,
+  copy each tag of the other form into the indexed one (`oras cp`, through `/v2` or straight to
+  the backend), then delete the other form in the backend; the next run finds each copied version
+  at the indexed form and moves its row there. A tag at
+  both forms with other bytes is yours to settle: the indexed form's is the one served.
 - With `--prune` (the default for a run of every repo, off with `--repo` unless given), every row
   the run did not see is looked up in the registry by its tag once more, and, when the tag does
   not resolve, by its manifest's digest. A row goes only when the registry answered `404
