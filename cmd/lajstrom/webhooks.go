@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/keys"
@@ -25,24 +26,42 @@ func newDeliverer(c *config.Config, log *slog.Logger) *webhook.Deliverer {
 	return webhook.NewDeliverer(webhook.Options{AllowedHosts: c.Webhooks.AllowedHosts, Timeout: c.Webhooks.Timeout, Log: log})
 }
 
-// startWebhooks starts this replica's worker of the webhooks' deliveries on wg, under the
-// replica's id, until ctx ends (docs/spec/webhooks.md §4). It starts none when webhooks.workers
-// is 0, and none without a master key, which every webhook's secret needs: the events wait in
-// the index for a replica that has one. A master key that is configured and does not load has
-// stopped serve before, at newSigner; were it to fail here, delivery is off, logged at error.
-func startWebhooks(ctx context.Context, c *config.Config, lookupEnv func(string) (string, bool), st index.Store, replica string,
-	wg *sync.WaitGroup, log *slog.Logger) {
-	if c.Webhooks.Workers == 0 {
-		log.Info("webhook delivery off on this replica (webhooks.workers is 0)")
-		return
-	}
+// webhookMaster is the master key of the webhooks' secrets, or nil without one: then no
+// webhook is created and no replica of that configuration delivers. A master key that is
+// configured and does not load has stopped serve before, at newSigner; were it to fail here,
+// it is nil too, logged at error.
+func webhookMaster(c *config.Config, lookupEnv func(string) (string, bool), log *slog.Logger) *keys.Master {
 	m, err := loadMaster(c.Keys, lookupEnv, nil)
 	switch {
 	case errors.Is(err, keys.ErrNoMasterKey):
-		log.Info("webhook delivery off: webhooks need the master key (keys.masterKeyEnv or keys.masterKeyFile)")
-		return
+		return nil
 	case err != nil:
-		log.Error("webhook delivery off: the master key does not load", "error", err.Error())
+		log.Error("webhooks off: the master key does not load", "error", err.Error())
+		return nil
+	}
+	return m
+}
+
+// newWebhookService is the webhook service of the API: the index, the deliverer of the
+// configuration for the URLs and the tests, the master key (nil: none) and the replica whose
+// claim a test's row carries.
+func newWebhookService(c *config.Config, st index.Store, m *keys.Master, replica string, log *slog.Logger) *webhook.Service {
+	return &webhook.Service{Index: st, Deliverer: newDeliverer(c, log), Master: m, Formats: api.RepoFormat, Replica: replica,
+		Source: c.Server.ExternalURL, Log: log}
+}
+
+// startWebhooks starts this replica's worker of the webhooks' deliveries on wg, under the
+// replica's id, until ctx ends (docs/spec/webhooks.md §4). It starts none when webhooks.workers
+// is 0, and none without the master key m, which every webhook's secret needs: the events wait
+// in the index for a replica that has one.
+func startWebhooks(ctx context.Context, c *config.Config, m *keys.Master, st index.Store, replica string, wg *sync.WaitGroup,
+	log *slog.Logger) {
+	switch {
+	case c.Webhooks.Workers == 0:
+		log.Info("webhook delivery off on this replica (webhooks.workers is 0)")
+		return
+	case m == nil:
+		log.Info("webhook delivery off: webhooks need the master key (keys.masterKeyEnv or keys.masterKeyFile)")
 		return
 	}
 	w := &webhook.Worker{Index: st, Deliverer: newDeliverer(c, log), Master: m, Replica: replica, Workers: c.Webhooks.Workers,
