@@ -20,8 +20,8 @@ its own that day (#816); the [Versions tested](#versions-tested) table has the d
 of each registry, and [Keeping the matrix current](#keeping-the-matrix-current) says when it
 changes. A registry that is not here is not tested.
 
-How registries differ beyond these cells, the untested ones too (ECR, ACR, Google Artifact
-Registry, Docker Hub): their repository models and names, whether `a/b` and `a/b/c` can
+How registries differ beyond these cells, the untested ones too (ACR, Google Artifact Registry,
+Docker Hub; ECR is measured, [ecr.md](ecr.md)): their repository models and names, whether `a/b` and `a/b/c` can
 both be repositories, uploads, deletes, retention rules that read tags, and what each means for
 Lajstrom, from the vendors' documentation and a few measurements: [quirks.md](quirks.md).
 

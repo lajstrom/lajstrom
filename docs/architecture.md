@@ -41,25 +41,25 @@ flowchart TB
 
   subgraph front["Protocol frontends (read-mostly emulation)"]
     direction LR
-    fe["apt · rpm* · maven · pypi · npm · tf* · go* · cargo* · nuget* · raw<br/>GET: index from cache, file by digest from the registry<br/>PUT (mvn deploy, twine, curl -T): the same ingest as oras push"]
+    fe["apt · rpm · maven · pypi · npm · tf* · go* · cargo* · nuget* · raw<br/>GET: index from cache, file by digest from the registry<br/>PUT (mvn deploy, twine, curl -T): the same ingest as oras push"]
   end
   facade["OCI facade · /v2/<br/>token endpoint: bearer with scopes from RBAC<br/>manifest/blob: proxy to the backend registry<br/>PUT manifest → hook → format plugin<br/>blob GET → 307 to the registry's presigned URL"]
-  api["API<br/>/api/v1 REST · SSO* · audit"]
+  api["API<br/>/api/v1 REST · OIDC login · audit"]
 
   subgraph core["Core: protocols, meaning of bytes, permissions"]
     direction LR
     repomgr["Repo manager<br/>hosted · proxy · group<br/>format, backing registry, prefix"]
-    auth["AuthN / AuthZ<br/>OIDC*, local users, groups from claims*<br/>tokens: PAT with expiry, deploy tokens per repo<br/>RBAC: binding = role × repo mask"]
+    auth["AuthN / AuthZ<br/>OIDC, local users, groups from claims<br/>tokens: PAT with expiry, deploy tokens per repo<br/>RBAC: binding = role × repo mask"]
     ingest["Ingest pipeline<br/>validate → claim the tag → push → read back → index<br/>publication sessions (maven)<br/>dedup by digest, 409 on tag collision"]
     render["Index renderer<br/>Packages, Release · repodata<br/>maven-metadata · simple · packument<br/>cache + signing with the repo's GPG key"]
-    proxy["Proxy fetcher, npm only<br/>miss → claim → upstream → stream, check → ingest<br/>TTL metadata cache in the DB"]
+    proxy["Proxy fetcher, npm and oci<br/>npm: miss → claim → upstream → stream, check → ingest<br/>oci: the upstream's manifests and blobs, unchanged<br/>TTL metadata cache in the DB"]
     reindex["Reindex / reconcile<br/>listRepos → tags/list → manifests<br/>upsert from annotations, remove orphans<br/>catches writes that bypassed us"]
     retention["Delete<br/>a version through the API, audited<br/>retention: an external scheduler runs<br/>lajstrom admin retention<br/>blob GC is the registry's job"]
     keys["Keys · audit · events<br/>GPG key per repo, later KMS<br/>cosign signatures and SBOM via referrers<br/>audit log · webhooks*"]
-    plugins["Format plugins, in-process Go<br/>apt · rpm* · maven · pypi · npm · tf* · go* · cargo* · nuget* · raw<br/>interface: Name · ArtifactType · EscapeName · Validate · Build · Routes · RenderIndex<br/>oci repos: pass-through in the facade, no plugin, no index"]
+    plugins["Format plugins, in-process Go<br/>apt · rpm · maven · pypi · npm · tf* · go* · cargo* · nuget* · raw<br/>interface: Name · ArtifactType · EscapeName · Validate · Build · Routes · RenderIndex<br/>oci repos: pass-through in the facade, no plugin, no index"]
   end
 
-  upstream["Upstream (external)<br/>npmjs · Maven Central* · PyPI* · deb/rpm mirrors* · registry.terraform.io*"]
+  upstream["Upstream (external)<br/>npmjs · Docker Hub, ghcr.io, quay.io and other OCI registries · Maven Central* · PyPI* · deb/rpm mirrors* · registry.terraform.io*"]
   db[("Index DB · Postgres / SQLite<br/>derived, rebuilt by reindex: packages · versions · files · index_cache · oci_repos · journal · journal_state<br/>control plane, small, backed up: repos · users · tokens · bindings · audit")]
   provider["Registry provider · oras-go + per-registry adapter<br/>data path: OCI distribution spec, shared by all registries<br/>lifecycle: ensureRepo · listRepos · deleteRepo · creds · capabilities<br/>adapters: ECR · distribution · Harbor · Zot · GHCR<br/>capabilities: referrers, catalog, delete, immutable tags, blob redirect"]
   registry[("Any OCI registry · truth for content<br/>blobs · manifests · tags · referrers · content-addressed, dedup<br/>GC · replication · HA · encryption · IAM are the registry's concern<br/>blob 307 → the client downloads from S3/CDN directly")]
