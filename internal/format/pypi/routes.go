@@ -251,7 +251,7 @@ func (h *handlers) file(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(name, SdistTarGz) {
 		contentType = contentTypeTarGz
 	}
-	err = format.ServeBlob(w, r, prov, ociName(repo, m.Package.NameOCI), m.File.Digest, format.ServeBlobOptions{
+	err = format.ServeBlob(w, r, prov, ociName(repo, index.ManifestPath(m.Package, m.Version)), m.File.Digest, format.ServeBlobOptions{
 		ContentType: contentType, LastModified: m.Version.CreatedAt, ManifestDigest: m.Version.Digest,
 		Redirect: format.BlobRedirect(repo), Filename: name,
 		Fail: func(w http.ResponseWriter, err error) { h.fail(w, r, err) },

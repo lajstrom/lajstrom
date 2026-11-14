@@ -110,11 +110,12 @@ func (s *scan) unknownRepository(m index.VersionMatch) {
 	if m.Version.Variant != "" {
 		call += "?variant=" + url.QueryEscape(m.Version.Variant)
 	}
+	path := index.ManifestPath(m.Package, m.Version)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	add(&s.rep, &s.rep.RepositoryUnknown, RepositoryUnknown{Repository: m.Package.NameOCI, Package: m.Package.Name,
+	add(&s.rep, &s.rep.RepositoryUnknown, RepositoryUnknown{Repository: path, Package: m.Package.Name,
 		Version: m.Version.Version, Variant: m.Version.Variant, Tag: m.Version.Tag, Digest: m.Version.Digest, Delete: call})
-	s.unknown[m.Package.NameOCI]++
+	s.unknown[path]++
 }
 
 // warnUnknown logs a warning for each OCI repository the registry does not know whose versions

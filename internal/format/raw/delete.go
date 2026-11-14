@@ -43,7 +43,7 @@ func deletePath(ctx context.Context, deps format.Deps, repo index.Repo, p string
 	}
 	var deleted []string
 	for _, v := range versions {
-		del := format.Deletion{Path: pkg.NameOCI, Reference: v.Digest.String(), ClientIP: who.ip}
+		del := format.Deletion{Path: index.ManifestPath(*pkg, v), Reference: v.Digest.String(), ClientIP: who.ip}
 		_, err := deps.Ingest.Delete(ctx, repo, del, who.principal)
 		switch {
 		case err == nil:
