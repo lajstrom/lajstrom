@@ -150,7 +150,8 @@ func TestIntegrationRetryNoAnswer(t *testing.T) {
 // upload whose body stopped for longer without an answer. Threshold such uploads fail and leave
 // the breaker closed, and an upload from a client that does not pause then goes through to the
 // registry. Then the proxy drops every upload as its body streams, a registry that went down:
-// threshold uploads from a client that does not pause open the breaker. A registry with
+// threshold uploads from a client that does not pause, to two repositories, open the breaker
+// (one repository's failures alone never do, #972). A registry with
 // credentials or TLS is skipped, as for TestIntegrationRetryNoAnswer.
 func TestIntegrationBodyTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -193,21 +194,31 @@ func TestIntegrationBodyTimeout(t *testing.T) {
 	p, _ := integrationProvider(ctx, t, func(c *config.Registry) {
 		c.Name, c.URL, c.Retries = "integration-body-timeout", srv.URL, -1
 	})
-	repo, err := p.Repository(ctx, "raw/it-"+randomHex(t)+"/body-timeout")
+	prefix := "raw/it-" + randomHex(t)
+	repo, err := p.Repository(ctx, prefix+"/body-timeout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := p.Repository(ctx, prefix+"/body-timeout-other")
 	if err != nil {
 		t.Fatal(err)
 	}
 	blob := []byte("abc paused " + randomHex(t))
 	blobDesc := descriptor("application/octet-stream", blob)
-	// sessions opens threshold upload sessions first, so that no answer comes between the sends.
-	sessions := func(t *testing.T) []provider.Upload {
+	// sessions opens threshold upload sessions first, so that no answer comes between the sends:
+	// of repo, and of repos in turn.
+	sessions := func(t *testing.T, repos ...provider.Repository) []provider.Upload {
+		if len(repos) == 0 {
+			repos = []provider.Repository{repo}
+		}
 		var us []provider.Upload
-		for range breakerThreshold {
-			u, err := repo.StartBlobUpload(ctx)
+		for k := range breakerThreshold {
+			r := repos[k%len(repos)]
+			u, err := r.StartBlobUpload(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = repo.CancelBlobUpload(context.Background(), u) })
+			t.Cleanup(func() { _ = r.CancelBlobUpload(context.Background(), u) })
 			us = append(us, u)
 		}
 		return us
@@ -233,10 +244,11 @@ func TestIntegrationBodyTimeout(t *testing.T) {
 		}
 	})
 	step(t, "the registry goes down", func(t *testing.T) {
-		us := sessions(t)
+		repos := []provider.Repository{repo, other}
+		us := sessions(t, repos...)
 		down.Store(true)
-		for _, u := range us {
-			_, err := repo.AppendBlobChunk(ctx, u, struct{ io.Reader }{bytes.NewReader(blob)}, -1)
+		for k, u := range us {
+			_, err := repos[k%len(repos)].AppendBlobChunk(ctx, u, struct{ io.Reader }{bytes.NewReader(blob)}, -1)
 			if !errors.Is(err, provider.ErrUnavailable) || byBreaker(err) {
 				t.Errorf("AppendBlobChunk = %v, want the registry's provider.ErrUnavailable", err)
 			}

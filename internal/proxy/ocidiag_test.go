@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/opencontainers/go-digest"
+
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/proxy"
@@ -73,17 +75,22 @@ func TestOCIBlobRedirectHost(t *testing.T) {
 
 // TestOCIBreakerRetryAfter: while the upstream's circuit breaker is open, a blob is a 503 with a
 // Retry-After of the time until the breaker lets a trial through, not a 502 without one (#889).
+// The failures that open it are of two images: one image's alone never do (#972).
 func TestOCIBreakerRetryAfter(t *testing.T) {
 	e := newOCIEnv(t, ociSettings)
-	img := e.hub.image(t, "library/nginx", "1.27", "amd64")
 	c := e.core("a", proxy.Options{})
-	_, _, err := c.OCIManifest(t.Context(), e.repo, "library/nginx", img.manifests[0].Digest.String())
-	must(t, err)
-	// The config blob first: the client of the blobs has asked the upstream once, its ping
-	// included, before the upstream fails, so each failure below is one request.
-	_, _, err = c.OCIBlob(t.Context(), e.repo, "library/nginx", img.blobs[0][0].Digest, true, false)
-	must(t, err)
-	layer := img.blobs[0][1]
+	names := []string{"library/nginx", "library/alpine"}
+	var layers []digest.Digest
+	for _, name := range names {
+		img := e.hub.image(t, name, "1.27", "amd64")
+		_, _, err := c.OCIManifest(t.Context(), e.repo, name, img.manifests[0].Digest.String())
+		must(t, err)
+		// The config blob first: the client of the blobs has asked the upstream once, its ping
+		// included, before the upstream fails, so each failure below is one request.
+		_, _, err = c.OCIBlob(t.Context(), e.repo, name, img.blobs[0][0].Digest, true, false)
+		must(t, err)
+		layers = append(layers, img.blobs[0][1].Digest)
+	}
 	e.hub.mu.Lock()
 	e.hub.hook = func(w http.ResponseWriter, _ *http.Request) bool {
 		hubError(w, http.StatusInternalServerError, "UNKNOWN")
@@ -91,11 +98,11 @@ func TestOCIBreakerRetryAfter(t *testing.T) {
 	}
 	e.hub.mu.Unlock()
 	for i := range 5 { // the breaker's threshold
-		if _, _, err := c.OCIBlob(t.Context(), e.repo, "library/nginx", layer.Digest, true, false); !errors.Is(err, format.ErrBadGateway) {
+		if _, _, err := c.OCIBlob(t.Context(), e.repo, names[i%2], layers[i%2], true, false); !errors.Is(err, format.ErrBadGateway) {
 			t.Fatalf("failure %d: %v, want format.ErrBadGateway", i+1, err)
 		}
 	}
-	_, _, err = c.OCIBlob(t.Context(), e.repo, "library/nginx", layer.Digest, true, false)
+	_, _, err := c.OCIBlob(t.Context(), e.repo, names[0], layers[0], true, false)
 	after, ok := provider.RetryAfter(err)
 	if format.StatusOf(err) != http.StatusServiceUnavailable || !ok || after <= 0 || after > 30*time.Second {
 		t.Fatalf("with the breaker open: %v (status %d, Retry-After %s), want 503 with the cooldown left", err, format.StatusOf(err), after)

@@ -770,6 +770,34 @@ closed. A `4xx` is an answer; a `429`, a request whose client went away, an uplo
 client's body stalled or broke off as it streamed through to the registry, and one that the
 registry dropped while Lajstrom had waited a second or more on the client's body
 ([below](#requests-from-clients)), count neither way.
+
+The five failures in a row open the breaker only when they are of two repositories at least,
+or one of them is a failure no request can cause
+([#972](https://github.com/lajstrom/lajstrom/issues/972)). A request is held against the
+repository it names (`/v2/<name>/manifests/…`, `blobs/…`, `blobs/uploads/…`, `tags/list`,
+`referrers/…`; the instance prefix is part of the name), whatever its method, tag, digest or
+upload: a repository that the registry cannot serve, damaged in its storage or a name the
+registry mishandles, fails every request of it, and must not fail every other repository with
+it. Its requests keep reaching the registry and failing, however many; the others keep working.
+A request of no repository is held against its path (`/v2/_catalog`), or against its host when
+that is not the registry's (a token realm, the storage a blob redirects to). The failures that
+no request can cause are those of `GET /v2/`, the readiness ping, and of a request whose
+connection to the registry's host could not be made: its name does not resolve, the connection
+is refused, the host or network cannot be reached, the connect timed out. A timeout waiting for
+the answer, and a connection closed or reset once the request was sent, may be the request's
+doing, and are held against its repository.
+
+So a registry that is down or cannot be reached opens the breaker after five requests, whatever
+they ask, and so does one that fails the requests of two repositories or more. One that answers
+`5xx` or hangs while a single repository is asked opens it at the next readiness ping that fails
+(every 20 s). One that still answers `GET /v2/` while every request of the one repository asked
+fails, its storage down, does not open it: from Lajstrom that looks like a broken repository.
+Five failures in a row of one repository log `registry fails the requests of one repository
+only: circuit kept closed` at warn, with the repository, at most once in 30 s: a line that
+comes back names a repository to check in the registry. The `circuit open` line names up to
+five of the repositories (or paths, hosts) whose failures opened it, `repositories`, and how
+many failures were of the kind no request can cause, `registryWide`.
+
 `lajstrom_provider_circuit_open{registry}` is `1` while the breaker is open. The ping that it
 refuses counts as unanswered, so a breaker that stays open for a minute turns
 [`/-/readyz`](#readiness) to `503`, as a registry that does not answer does.
@@ -779,7 +807,10 @@ DNS outage), whose host or network cannot be reached (no route), or that after t
 refuses or resets connections, closes them without an answer (it is stopped or restarting) or
 does not answer within `registries[].timeout` (it hangs), is unavailable from the first request
 on: the client gets `503` without `Retry-After` (on `/v2` with the code `UNAVAILABLE`), and each
-such request counts as unanswered for the breaker, which opens after five as above. A request
+such request counts as unanswered for the breaker, which opens after five as above. When the
+name does not resolve, the connection is refused or the host cannot be reached, which no request
+can cause, that is whatever the five asked; when the registry resets or closes the connections,
+or hangs, once they are of two repositories or a readiness ping failed among them. A request
 that ends because its client went away, or because the client's body stalled or broke off, is
 not one of them: that is the client's doing. Nor does an upload that the registry dropped
 while Lajstrom waited on the client's body count ([below](#requests-from-clients)), though it
@@ -839,8 +870,11 @@ An `oci` proxy repo ([quickstart/oci-proxy.md](quickstart/oci-proxy.md),
 provider's client, so its requests carry `upstreams[].timeout` and `upstreams[].retries` as a
 registry's do, and its circuit breaker; they are counted in the `lajstrom_provider_*` series
 under the upstream's name. Unlike a registry's, an upstream's open breaker answers `502` at once,
-without `Retry-After`. Its timeout bounds the wait for headers, not a blob whose bytes stop
-coming ([#883](https://github.com/lajstrom/lajstrom/issues/883)). The guide's
+without `Retry-After`. An upstream is not pinged, and its repositories are its images: one that
+refuses connections or cannot be reached opens the breaker after five requests as a registry
+does, but one that answers `5xx` or hangs while a single image is asked of it leaves the breaker
+closed, and each request waits its timeout and retries. Its timeout bounds the wait for headers,
+not a blob whose bytes stop coming ([#883](https://github.com/lajstrom/lajstrom/issues/883)). The guide's
 [§5](quickstart/oci-proxy.md#5-a-poor-link-to-the-upstream) has what a blocked, slow, dropping
 or hanging upstream does, as measured, the hosts to allow, and what to do.
 
