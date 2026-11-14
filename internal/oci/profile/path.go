@@ -64,6 +64,38 @@ func EarlierPackagePaths(p string) []string {
 	return out
 }
 
+// PackagePathForms returns every form of the package path p, given in any of them: the newest,
+// as PackagePath writes it now, then its EarlierPackagePaths. It writes the marks of ADR 0017 and
+// its amendment into the components of p that lack them (newestPackagePath) and keeps the result
+// when p is one of its forms; a path that is no form of what a writer produces has itself only.
+// Like EarlierPackagePaths it maps a path to paths and decodes no name: a reader that starts
+// from the path of an OCI repository finds the package at any form of it (index.PackageOf), the
+// versions reindex found there in a split (#642).
+func PackagePathForms(p string) []string {
+	n := newestPackagePath(p)
+	forms := append([]string{n}, EarlierPackagePaths(n)...)
+	if !slices.Contains(forms, p) {
+		return []string{p}
+	}
+	return forms
+}
+
+// newestPackagePath returns p with the marks of ADR 0017 and its amendment written into each
+// component: a hashed one with the prefix "h0_h", one of the 1.1 grammar with markComponent (each
+// '-' of a run, the last byte of a reserved word), and the "tags" before a "list…" with
+// PackagePath. A component written now has every mark already and stays as it is.
+func newestPackagePath(p string) string {
+	parts := strings.Split(p, "/")
+	for i, c := range parts {
+		if h, ok := hashedComponentHex(c); ok {
+			parts[i] = hashedComponentPrefix + h
+		} else if specComponentRE.MatchString(c) {
+			parts[i] = markComponent(c, true)
+		}
+	}
+	return PackagePath(parts...)
+}
+
 // LegacyPackagePath returns the package path that Lajstrom wrote before ADR 0017 for the name
 // whose package path is p now: each hashed component with the prefix "h0__", and the escapes of
 // ADR 0017 and its amendment decoded. It is p itself for a name they left alone, and for a path
