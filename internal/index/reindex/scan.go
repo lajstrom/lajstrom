@@ -353,18 +353,9 @@ func (s *scan) tag(ctx context.Context, rr provider.Repository, cache *manifests
 		return
 	}
 	s.locate(pkgPath, desc.Digest)
-	var pkg *index.Package
-	var known *index.Version
-	if pkgPath != "" {
-		var err error
-		if pkg, known, err = s.known(ctx, pkgPath, tag); s.dbErr(err) {
-			return
-		}
-		if pkg != nil && known == nil {
-			if known, err = s.folded(ctx, rr, pkg, tag, desc.Digest); s.dbErr(err) {
-				return
-			}
-		}
+	pkg, known, err := s.row(ctx, rr, pkgPath, tag, desc.Digest)
+	if s.dbErr(err) {
+		return
 	}
 	switch {
 	case known != nil && known.Digest != desc.Digest:
@@ -385,19 +376,36 @@ func (s *scan) tag(ctx context.Context, rr provider.Repository, cache *manifests
 	s.classify(ctx, rr, pkgPath, tag, desc, raw, known != nil)
 }
 
-// folded returns the version of pkg whose manifest is d, listed under tag, when the index has it
+// row returns the package and the version of the index whose manifest is listed under tag at
+// pkgPath (known, else folded), nil when the index has none; a package path "" has none. A
+// version at the other form of a split (#642) is recorded in the split.
+func (s *scan) row(ctx context.Context, rr provider.Repository, pkgPath, tag string, d digest.Digest) (*index.Package, *index.Version, error) {
+	if pkgPath == "" {
+		return nil, nil, nil
+	}
+	pkg, known, err := s.known(ctx, pkgPath, tag)
+	if err == nil && pkg != nil && known == nil {
+		known, err = s.folded(ctx, rr, pkg, pkgPath, tag, d)
+	}
+	if err == nil && known != nil && pkg.NameOCI != pkgPath {
+		s.split(pkg.Name, pkg.NameOCI, pkgPath, tag)
+	}
+	return pkg, known, err
+}
+
+// folded returns the version of pkg at pkgPath whose manifest is d, listed under tag, when the index has it
 // under a tag that differs from tag only in case and the registry resolves that tag to d too:
 // a registry that folds the case of tags (Gitea, Forgejo) lists 1.4.0-m1 for the 1.4.0-M1 that
 // ingest pushed (#844). Nil otherwise, and on a registry that keeps case, where the version's
 // own tag is listed apart.
-func (s *scan) folded(ctx context.Context, rr provider.Repository, pkg *index.Package, tag string, d digest.Digest) (*index.Version, error) {
+func (s *scan) folded(ctx context.Context, rr provider.Repository, pkg *index.Package, pkgPath, tag string, d digest.Digest) (*index.Version, error) {
 	v, err := s.w.index.GetVersionByDigest(ctx, s.repo.ID, d)
 	switch {
 	case errors.Is(err, index.ErrNotFound):
 		return nil, nil
 	case err != nil:
 		return nil, err
-	case v.PackageID != pkg.ID || v.Tag == tag || !strings.EqualFold(v.Tag, tag):
+	case v.PackageID != pkg.ID || v.Tag == tag || !strings.EqualFold(v.Tag, tag) || index.ManifestPath(*pkg, *v) != pkgPath:
 		return nil, nil
 	}
 	if desc, err := rr.Resolve(ctx, v.Tag); err != nil || desc.Digest != d {
@@ -431,9 +439,12 @@ func (s *scan) storedTag(ctx context.Context, rr provider.Repository, tag string
 	return want, true
 }
 
-// known returns the package at pkgPath and its version under tag, nil when the index has none.
+// known returns the package whose versions may be at pkgPath (index.PackageOf: at pkgPath, or
+// at another form of it in a split, #642) and its version under tag when that version's manifest
+// is at pkgPath (index.ManifestPath); nil when the index has none. A version under tag at
+// another form is not this manifest's row: the manifest is read, and write reports it.
 func (s *scan) known(ctx context.Context, pkgPath, tag string) (*index.Package, *index.Version, error) {
-	pkg, err := s.w.index.GetPackageByNameOCI(ctx, s.repo.ID, pkgPath)
+	pkg, err := index.PackageOf(ctx, s.w.index, s.repo.ID, pkgPath)
 	if errors.Is(err, index.ErrNotFound) {
 		return nil, nil, nil
 	}
@@ -441,7 +452,7 @@ func (s *scan) known(ctx context.Context, pkgPath, tag string) (*index.Package, 
 		return nil, nil, err
 	}
 	v, err := s.w.index.GetVersionByTag(ctx, pkg.ID, tag)
-	if errors.Is(err, index.ErrNotFound) {
+	if errors.Is(err, index.ErrNotFound) || err == nil && index.ManifestPath(*pkg, *v) != pkgPath {
 		return pkg, nil, nil
 	}
 	return pkg, v, err
@@ -541,45 +552,29 @@ func (s *scan) classify(ctx context.Context, rr provider.Repository, pkgPath, ta
 }
 
 // splitError is the error of a manifest whose package the index has at another form of its OCI
-// name (ADR 0017): its rows would name that form's OCI repository, which does not hold the
-// manifest, so they are not written (#609).
+// name (ADR 0017) and that is not written: the package has its version at another form already,
+// or a writer created the package at another form while the rows were written, which would name
+// that form's OCI repository (#609). The next run writes the second.
 type splitError struct{ indexed string }
 
 func (e *splitError) Error() string {
 	return "reindex: the package is stored at " + e.indexed + ", another form of its OCI name"
 }
 
-// write writes the rows of a profile manifest in one transaction, unless the index has its
-// package at another form of the package path: a split, reported and not written.
+// write writes the rows of a profile manifest in one transaction. When the index has its
+// package at another form of the package path (a split, #642), the version is written with the
+// form where it was found in OCIRepo, unless the package has the version at another form: that
+// one keeps its row, and this manifest is reported in the split, not written.
 func (s *scan) write(ctx context.Context, rows *ingest.Rows, f Finding, reread bool) {
-	err := s.w.index.Tx(ctx, func(w index.Writer) error {
-		pkg, err := w.GetPackage(ctx, rows.Package.RepoID, rows.Package.Name)
-		switch {
-		case err == nil && pkg.NameOCI != f.Repository:
-			return &splitError{indexed: pkg.NameOCI}
-		case err != nil && !errors.Is(err, index.ErrNotFound):
-			return err
-		}
-		if err := ingest.WriteRows(ctx, w, rows, s.w.now()); err != nil {
-			return err
-		}
-		if rows.Package.NameOCI != f.Repository { // a writer created the package at another form meanwhile
-			return &splitError{indexed: rows.Package.NameOCI}
-		}
-		return nil
-	})
+	err := s.w.index.Tx(ctx, func(w index.Writer) error { return s.writeRows(ctx, w, rows, f) })
 	var conflict *index.TagConflictError
 	var split *splitError
 	switch {
 	case errors.As(err, &split):
 		s.split(rows.Package.Name, split.indexed, f.Repository, f.Tag)
 		return
-	case errors.As(err, &conflict): // the index has the tag with another digest: written meanwhile, or re-pointed past Lajstrom
-		pkg, v, kerr := s.known(ctx, f.Repository, rows.Version.Tag)
-		if s.dbErr(kerr) || v == nil {
-			return
-		}
-		s.drift(v, pkg.Name, v.Tag, f.Digest)
+	case errors.As(err, &conflict): // the index has the tag with another digest: written meanwhile, re-pointed past Lajstrom, or at the other form of a split
+		s.conflicted(ctx, rows, f)
 		return
 	case errors.Is(err, index.ErrConflict): // the package path of another spelling (#97)
 		f.Error = err.Error()
@@ -587,6 +582,9 @@ func (s *scan) write(ctx context.Context, rows *ingest.Rows, f Finding, reread b
 		return
 	case s.dbErr(err):
 		return
+	}
+	if rows.Version.OCIRepo != "" {
+		s.split(rows.Package.Name, rows.Package.NameOCI, f.Repository, f.Tag)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -598,6 +596,47 @@ func (s *scan) write(ctx context.Context, rows *ingest.Rows, f Finding, reread b
 	if rows.Version.Degraded {
 		s.rep.Degraded++
 	}
+}
+
+// writeRows writes rows, found at f.Repository, on w: with OCIRepo when the index has the package
+// at another form of the package path; a *splitError, and nothing written, when the package has
+// the version at another form, or when a writer created it at another form meanwhile.
+func (s *scan) writeRows(ctx context.Context, w index.Writer, rows *ingest.Rows, f Finding) error {
+	pkg, err := w.GetPackage(ctx, rows.Package.RepoID, rows.Package.Name)
+	switch {
+	case err == nil && pkg.NameOCI != f.Repository:
+		v, err := w.GetVersionByTag(ctx, pkg.ID, rows.Version.Tag)
+		switch {
+		case err == nil && index.ManifestPath(*pkg, *v) != f.Repository:
+			return &splitError{indexed: pkg.NameOCI}
+		case err != nil && !errors.Is(err, index.ErrNotFound):
+			return err
+		}
+		rows.Version.OCIRepo = f.Repository
+	case err != nil && !errors.Is(err, index.ErrNotFound):
+		return err
+	}
+	if err := ingest.WriteRows(ctx, w, rows, s.w.now()); err != nil {
+		return err
+	}
+	if rows.Package.NameOCI != f.Repository && rows.Version.OCIRepo == "" { // a writer created the package at another form meanwhile
+		return &splitError{indexed: rows.Package.NameOCI}
+	}
+	return nil
+}
+
+// conflicted reports the manifest of rows, found at f, whose tag the index has with another
+// digest as drift: the row of that tag, at any form of the package path, keeps its digest.
+func (s *scan) conflicted(ctx context.Context, rows *ingest.Rows, f Finding) {
+	pkg, err := s.w.index.GetPackage(ctx, s.repo.ID, rows.Package.Name)
+	var v *index.Version
+	if err == nil {
+		v, err = s.w.index.GetVersionByTag(ctx, pkg.ID, rows.Version.Tag)
+	}
+	if errors.Is(err, index.ErrNotFound) || s.dbErr(err) {
+		return
+	}
+	s.drift(v, pkg.Name, v.Tag, f.Digest)
 }
 
 // referrer counts the referrers listed, each digest once, and keeps f for orphans.
@@ -789,8 +828,9 @@ func (s *scan) drift(v *index.Version, pkgName, tag string, registry digest.Dige
 	add(&s.rep, &s.rep.Drift, Drift{Package: pkgName, Tag: tag, Index: v.Digest, Registry: registry})
 }
 
-// split records a manifest at the package path other, not indexed because the index has its
-// package at indexed, another form of it.
+// split records a manifest at the package path other, while the index has its package at
+// indexed, another form of it: a version indexed there (OCIRepo), or one not indexed because the
+// package has the version at another form.
 func (s *scan) split(pkgName, indexed, other, tag string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -802,8 +842,9 @@ func (s *scan) split(pkgName, indexed, other, tag string) {
 }
 
 // reportSplits lists the splits of the scan, with the tags of the versions the index has at the
-// indexed form, and logs a warning for each: the versions at the other form are not served
-// until they are copied to the indexed one.
+// indexed form, and logs a warning for each: the package is at two OCI repositories, which the
+// operator may make one (docs/operations.md). Since #642 the versions at the other form are
+// served from there, but a tag at both forms, which is served from the indexed one.
 func (s *scan) reportSplits(ctx context.Context) {
 	for _, key := range slices.SortedFunc(maps.Keys(s.splits), func(a, b [2]string) int {
 		return cmp.Or(cmp.Compare(a[0], b[0]), cmp.Compare(a[1], b[1]))
@@ -824,16 +865,20 @@ func (s *scan) reportSplits(ctx context.Context) {
 			return
 		}
 		for _, v := range versions {
-			sp.IndexedTags = append(sp.IndexedTags, v.Tag)
+			if index.ManifestPath(*pkg, v) == sp.Indexed {
+				sp.IndexedTags = append(sp.IndexedTags, v.Tag)
+			}
 		}
 		slices.Sort(sp.IndexedTags)
 		slices.Sort(sp.OtherTags)
+		sp.OtherTags = slices.Compact(sp.OtherTags) // a verifying run reads a version it saw at the other form again
 		s.mu.Lock()
 		sp.IndexedTags, sp.OtherTags = s.bounded(sp.IndexedTags), s.bounded(sp.OtherTags)
 		add(&s.rep, &s.rep.Split, *sp)
 		s.mu.Unlock()
-		s.w.log.WarnContext(ctx, "reindex: a package is stored at two forms of its OCI name (ADR 0017); the versions at the "+
-			"other form are not indexed until they are copied to the indexed one", "repo", s.rep.Repo, "package", sp.Package,
+		s.w.log.WarnContext(ctx, "reindex: a package is stored at two forms of its OCI name (ADR 0017); its versions are "+
+			"served from where they are, a tag at both from the indexed form; copy the other form's tags into the indexed "+
+			"one and delete the other form to keep one", "repo", s.rep.Repo, "package", sp.Package,
 			"indexed", sp.Indexed, "other", sp.Other, "otherTags", len(sp.OtherTags))
 	}
 }

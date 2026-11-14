@@ -44,9 +44,9 @@ func newReindexCmd(a *app) *cobra.Command {
 			"default for every repo) the rows of manifests that are gone from the registry are removed.\n" +
 			"--report lists foreign manifests, orphan referrers, drift, split packages, versions in OCI repositories\n" +
 			"the registry does not know, and errors; --json prints the report. A split package is stored at two\n" +
-			"forms of its OCI name (ADR 0017): the versions at the form the index does not have are listed and not\n" +
-			"indexed. A version whose OCI repository the registry does not know (deleted there) is kept by prune\n" +
-			"and listed with the API request that deletes it.\n" +
+			"forms of its OCI name (ADR 0017): its versions are indexed and served where they are, a tag at\n" +
+			"both forms from the package's own. A version whose OCI repository the registry does not know\n" +
+			"(deleted there) is kept by prune and listed with the API request that deletes it.\n" +
 			"A registry without a catalog lists only the OCI repositories that the index records: --attach\n" +
 			"names others of --repo in a file, one per line, for the first attach of an existing prefix.",
 		Args:        cobra.NoArgs,
@@ -182,7 +182,7 @@ func writeReport(out io.Writer, rep *reindex.Report, lists bool) error {
 				fmt.Fprintf(&buf, "%s: drift %s:%s index %s, registry %s\n", r.Repo, d.Package, d.Tag, d.Index, d.Registry)
 			}
 			for _, sp := range r.Split {
-				fmt.Fprintf(&buf, "%s: split %s indexed at %s [%s], not at %s [%s]\n", r.Repo, sp.Package, sp.Indexed,
+				fmt.Fprintf(&buf, "%s: split %s at %s [%s] and at %s [%s]\n", r.Repo, sp.Package, sp.Indexed,
 					strings.Join(sp.IndexedTags, " "), sp.Other, strings.Join(sp.OtherTags, " "))
 			}
 			for _, u := range r.RepositoryUnknown {

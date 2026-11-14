@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -69,6 +70,7 @@ type split struct {
 	oneTag                string        // the version at the earlier form
 	one                   digest.Digest // its manifest
 	two                   string        // the tag of the version at the newest form
+	twoDigest             digest.Digest // its manifest
 }
 
 func (e *env) split(t *testing.T, p string) split {
@@ -83,7 +85,7 @@ func (e *env) split(t *testing.T, p string) split {
 	if pub.RepoPath != e.repo.Prefix+"/"+newest {
 		t.Fatalf("%s: the publish went to %s, want %s/%s", p, pub.RepoPath, e.repo.Prefix, newest)
 	}
-	sp.two = pub.Tag
+	sp.two, sp.twoDigest = pub.Tag, pub.Digest
 	return sp
 }
 
@@ -96,10 +98,11 @@ func TestRebuildSplit(t *testing.T) {
 
 // rebuildSplit: before #609, the version at the earlier form was indexed under the newest
 // form's OCI repository, which does not hold it: its download was a 404 BLOB_UNKNOWN, as was the
-// package's whenever it was the newest version. A run keeps the package where ingest wrote it and
-// a writer finds it, lists the other form with the tags at each, and leaves its version out: the
-// run over ingest's rows, a verifying run, and a run from an empty index, whichever form the
-// catalog lists first, all the same; and the version at the newest form downloads.
+// package's whenever it was the newest version; #609 left it out of the index. A run keeps the
+// package where ingest wrote it and a writer finds it, indexes the version at the earlier form
+// with that form in OCIRepo (#642), and lists the other form with the tags at each: the run over
+// ingest's rows, a verifying run, and a run from an empty index, whichever form the catalog lists
+// first, all the same; and each version downloads from where it is.
 func rebuildSplit(t *testing.T, e *env, p string) {
 	t.Helper()
 	sp := e.split(t, p)
@@ -111,25 +114,31 @@ func rebuildSplit(t *testing.T, e *env, p string) {
 		if r.Added != added || r.Updated != updated || len(r.Drift) != 0 || len(r.Errors) != 0 {
 			t.Errorf("%s: %+v", what, *r)
 		}
-		if got := f.do(t, http.MethodGet, p, nil, http.StatusOK).Body.String(); got != "two "+e.repo.Name {
-			t.Errorf("%s: GET %s = %q, want the version at the newest form", what, p, got)
+		for d, want := range map[digest.Digest]string{sp.one: "one ", sp.twoDigest: "two "} {
+			if got := f.do(t, http.MethodGet, p+"?digest="+d.String(), nil, http.StatusOK).Body.String(); got != want+e.repo.Name {
+				t.Errorf("%s: GET %s pinned to %s = %q, want %q", what, p, d, got, want+e.repo.Name)
+			}
 		}
-		if _, err := e.st.GetVersionByDigest(t.Context(), e.repo.ID, sp.one); !errors.Is(err, index.ErrNotFound) {
-			t.Errorf("%s: the version at the earlier form: %v, want ErrNotFound", what, err)
+		for d, want := range map[digest.Digest]string{sp.one: sp.earlier, sp.twoDigest: ""} {
+			if v, err := e.st.GetVersionByDigest(t.Context(), e.repo.ID, d); err != nil || v.OCIRepo != want {
+				t.Errorf("%s: the version of %s: %+v, %v; want OCIRepo %q", what, d, v, err, want)
+			}
 		}
 	}
-	check("the run over ingest's rows", e.run(t, reindex.Request{Prune: true}), 0, 0)
+	check("the run over ingest's rows", e.run(t, reindex.Request{Prune: true}), 1, 0)
 	rows := e.derived(t)
-	check("a verifying run", e.run(t, reindex.Request{Prune: true, Verify: true}), 0, 1)
+	check("a run again", e.run(t, reindex.Request{Prune: true}), 0, 0)
+	check("a verifying run", e.run(t, reindex.Request{Prune: true, Verify: true}), 0, 2)
 	must(t, e.st.ResetDerived(t.Context(), e.repo.ID))
-	check("the run from an empty index", e.run(t, reindex.Request{Prune: true}), 1, 0)
+	check("the run from an empty index", e.run(t, reindex.Request{Prune: true}), 2, 0)
 	same(t, "the rows rebuilt", rows, e.derived(t))
 }
 
 // TestSplitIndexedBefore: an index that a run before #609 wrote has the version at the earlier
-// form under the package at the newest one. A run leaves it unseen, and prune removes it as a
-// manifest gone from the package's OCI repository: pending at first, removed once the registry
-// answered MANIFEST_UNKNOWN twice and the row is older than the grace age.
+// form under the package at the newest one, without OCIRepo. A run leaves it unseen, and prune
+// removes it as a manifest gone from the package's OCI repository: pending at first, removed once
+// the registry answered MANIFEST_UNKNOWN twice and the row is older than the grace age; the run
+// after it indexes the version where it is (#642).
 func TestSplitIndexedBefore(t *testing.T) {
 	ctx := t.Context()
 	e := newEnv(t)
@@ -161,6 +170,12 @@ func TestSplitIndexedBefore(t *testing.T) {
 	}
 	if _, err := e.st.GetVersionByDigest(ctx, e.repo.ID, sp.one); !errors.Is(err, index.ErrNotFound) {
 		t.Errorf("the row of the version at the earlier form: %v, want ErrNotFound", err)
+	}
+	if r := e.run(t, reindex.Request{Prune: true}); r.Added != 1 || r.Removed != 0 || len(r.Split) != 1 {
+		t.Errorf("the run after: %+v", *r)
+	}
+	if v, err := e.st.GetVersionByDigest(ctx, e.repo.ID, sp.one); err != nil || v.OCIRepo != sp.earlier {
+		t.Errorf("the row of the version at the earlier form after: %+v, %v; want OCIRepo %s", v, err, sp.earlier)
 	}
 }
 
@@ -236,5 +251,136 @@ func TestSplitRowServed(t *testing.T) {
 	}
 	if _, err := e.st.GetPackage(ctx, e.repo.ID, p); !errors.Is(err, index.ErrNotFound) {
 		t.Errorf("the package after the delete of both versions: %v, want ErrNotFound", err)
+	}
+}
+
+// TestSplitBothForms: a version at both forms of a split keeps the row of the indexed form,
+// which a run reads first from an empty index too; its tag at the other form is not indexed, and
+// the split lists it in both forms' tags (#642).
+func TestSplitBothForms(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t)
+	const p = "a--b.txt"
+	sp := e.split(t, p)
+	prov, _ := e.providers.Provider("local")
+	tag, copied := pushRawAt(t, prov, e.repo, e.repo.Prefix+"/"+sp.earlier, p, "two "+e.repo.Name)
+	if tag != sp.two {
+		t.Fatalf("the copy of the version at the newest form has the tag %s, want %s", tag, sp.two)
+	}
+	want := []reindex.Split{{Package: p, Indexed: sp.newest, IndexedTags: []string{sp.two}, Other: sp.earlier,
+		OtherTags: slices.Sorted(slices.Values([]string{sp.oneTag, sp.two}))}}
+	for _, what := range []string{"the run over ingest's rows", "the run from an empty index"} {
+		if what != "the run over ingest's rows" {
+			must(t, e.st.ResetDerived(ctx, e.repo.ID))
+		}
+		r := e.run(t, reindex.Request{Prune: true})
+		same(t, what+": the split", want, r.Split)
+		if len(r.Drift) != 0 || len(r.Errors) != 0 {
+			t.Errorf("%s: %+v", what, *r)
+		}
+		v, err := e.st.GetVersionByTag(ctx, mustPackage(t, e, p).ID, sp.two)
+		if err != nil || v.OCIRepo != "" || v.Digest != sp.twoDigest {
+			t.Errorf("%s: the version at both forms: %+v, %v; want the row of the newest form", what, v, err)
+		}
+		if copied != sp.twoDigest {
+			if _, err := e.st.GetVersionByDigest(ctx, e.repo.ID, copied); !errors.Is(err, index.ErrNotFound) {
+				t.Errorf("%s: the copy at the earlier form: %v, want ErrNotFound", what, err)
+			}
+		}
+	}
+}
+
+// mustPackage returns the package name of the env's repo.
+func mustPackage(t *testing.T, e *env, name string) *index.Package {
+	t.Helper()
+	pkg, err := e.st.GetPackage(t.Context(), e.repo.ID, name)
+	must(t, err)
+	return pkg
+}
+
+// TestSplitConsolidated: the operator copies the version at the other form into the indexed one,
+// byte for byte, and deletes the other form (docs/operations.md); the next run finds the version
+// at the indexed form, moves its row there, and reports no split (#642).
+func TestSplitConsolidated(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t)
+	const p = "k8s/manifests/app.yaml"
+	sp := e.split(t, p)
+	if r := e.run(t, reindex.Request{Prune: true}); r.Added != 1 || len(r.Split) != 1 {
+		t.Fatalf("the first run: %+v", *r)
+	}
+	from, err := e.fake.Repository(ctx, e.repo.Prefix+"/"+sp.earlier)
+	must(t, err)
+	to, err := e.fake.Repository(ctx, e.repo.Prefix+"/"+sp.newest)
+	must(t, err)
+	desc, err := from.Resolve(ctx, sp.oneTag)
+	must(t, err)
+	b := fetchAll(t, from, desc)
+	var m ocispec.Manifest
+	must(t, json.Unmarshal(b, &m))
+	for _, d := range append([]ocispec.Descriptor{m.Config}, m.Layers...) {
+		must(t, to.Push(ctx, d, bytes.NewReader(fetchAll(t, from, d))))
+	}
+	must(t, to.PushReference(ctx, desc, bytes.NewReader(b), sp.oneTag))
+	must(t, from.Delete(ctx, desc))
+
+	r := e.run(t, reindex.Request{Prune: true})
+	if len(r.Split) != 0 || r.Added != 1 || r.Removed != 0 || len(r.Drift) != 0 || len(r.Errors) != 0 {
+		t.Errorf("the run after the copy: %+v", *r)
+	}
+	if v, err := e.st.GetVersionByDigest(ctx, e.repo.ID, sp.one); err != nil || v.OCIRepo != "" {
+		t.Errorf("the copied version: %+v, %v; want its row at the indexed form", v, err)
+	}
+	f := e.frontend(t, raw.Plugin{})
+	if got := f.do(t, http.MethodGet, p+"?digest="+sp.one.String(), nil, http.StatusOK).Body.String(); got != "one "+e.repo.Name {
+		t.Errorf("GET %s pinned to the copied version = %q", p, got)
+	}
+}
+
+// fetchAll returns the content of desc in rr.
+func fetchAll(t *testing.T, rr provider.Repository, desc ocispec.Descriptor) []byte {
+	t.Helper()
+	rc, err := rr.Fetch(t.Context(), desc)
+	must(t, err)
+	defer func() { _ = rc.Close() }()
+	b, err := io.ReadAll(rc)
+	must(t, err)
+	return b
+}
+
+// TestSplitOtherBytes: a version indexed at the other form of a split whose tag the indexed form
+// holds with other bytes keeps its row where it is, and the tag at the indexed form is drift.
+func TestSplitOtherBytes(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t)
+	const p = ".gitignore"
+	sp := e.split(t, p)
+	if r := e.run(t, reindex.Request{Prune: true}); r.Added != 1 || len(r.Split) != 1 {
+		t.Fatalf("the first run: %+v", *r)
+	}
+	from, err := e.fake.Repository(ctx, e.repo.Prefix+"/"+sp.earlier)
+	must(t, err)
+	to, err := e.fake.Repository(ctx, e.repo.Prefix+"/"+sp.newest)
+	must(t, err)
+	desc, err := from.Resolve(ctx, sp.oneTag)
+	must(t, err)
+	var m ocispec.Manifest
+	must(t, json.Unmarshal(fetchAll(t, from, desc), &m))
+	for _, d := range append([]ocispec.Descriptor{m.Config}, m.Layers...) {
+		must(t, to.Push(ctx, d, bytes.NewReader(fetchAll(t, from, d))))
+	}
+	m.Annotations[ocispec.AnnotationCreated] = "2020-01-02T03:04:05Z"
+	b, other, err := profile.Encode(m)
+	must(t, err)
+	must(t, to.PushReference(ctx, ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: other, Size: int64(len(b))},
+		bytes.NewReader(b), sp.oneTag))
+
+	r := e.run(t, reindex.Request{Prune: true})
+	same(t, "the drift", []reindex.Drift{{Package: p, Tag: sp.oneTag, Index: sp.one, Registry: other}}, r.Drift)
+	if r.Removed != 0 || len(r.Errors) != 0 {
+		t.Errorf("the run: %+v", *r)
+	}
+	if v, err := e.st.GetVersionByDigest(ctx, e.repo.ID, sp.one); err != nil || v.OCIRepo != sp.earlier {
+		t.Errorf("the version at the other form: %+v, %v; want its row kept there", v, err)
 	}
 }
