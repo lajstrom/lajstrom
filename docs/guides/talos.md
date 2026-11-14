@@ -192,10 +192,12 @@ machine:
 ```
 
 **Requirements:**
-- Give a `username` and a `password`, never an `identityToken` alone. containerd first posts
-  the OAuth2 form to `/v2/token`, and Lajstrom answers `405`. containerd falls back to `GET`
-  with Basic only when it has a username, so an `identityToken` pull fails
-  ([#908](https://github.com/lajstrom/lajstrom/issues/908)). `auth` (base64 of
+- Give a `username` and a `password`, never an `identityToken` alone. containerd posts them
+  in the OAuth2 form to `/v2/token`, which answers with the token
+  ([#908](https://github.com/lajstrom/lajstrom/issues/908)). An `identityToken` alone is posted
+  as `grant_type=refresh_token`, which is `400`, since Lajstrom issues no refresh token.
+  containerd then falls back to `GET` with Basic and no user name, and a personal access token
+  is refused there ([auth.md](../auth.md#the-token-endpoint)). `auth` (base64 of
   `user:password`) is a username and a password too.
 - The nodes must reach and trust the host of `server.externalURL`, since the token realm is
   there. For a private CA, add a `RegistryTLSConfig` with `ca`. Plain HTTP works only on the
@@ -221,7 +223,7 @@ machine:
     scheduler had placed its pods.
   - Anonymous requests got only the `401` challenge.
   - containerd's token flow, as #908 describes it, ran 32 times. Each time, a `POST /v2/token`
-    got `405`, then a `GET` with Basic got `200`:
+    got `405`, then a `GET` with Basic got `200` (since #908, the `POST` gets the token):
 
     ```text
     HEAD /v2/oci/k8s/etcd/manifests/v3.7.3  401  anonymous   Bearer realm="http://<Host>/v2/token"
@@ -446,8 +448,8 @@ the installer if the factory has not built it yet, and keep it in the backend.
 ## 7. What is missing
 
 - Not run: a real iPXE (§4) and the upgrade (§5).
-- [#908](https://github.com/lajstrom/lajstrom/issues/908): `POST /v2/token`. containerd wastes
-  one round trip per token, and an `identityToken` alone fails.
+- An `identityToken` alone: Lajstrom issues no refresh token, so `POST /v2/token` takes the
+  password grant only ([#908](https://github.com/lajstrom/lajstrom/issues/908)).
 - [#911](https://github.com/lajstrom/lajstrom/issues/911): a node credential over several repos
   that need not expire within a year.
 - [#876](https://github.com/lajstrom/lajstrom/issues/876), fixed in #880 and #881 on top of #869:
