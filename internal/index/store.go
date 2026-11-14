@@ -203,6 +203,12 @@ type Reader interface {
 	// ListJournalState returns the current dist-tags, deprecations and yanks of a package, the
 	// fold of its journal, ordered by Kind and Key.
 	ListJournalState(ctx context.Context, packageID int64) ([]JournalState, error)
+
+	// Attachments (#89; docs/spec/index-schema.md, Attachments).
+
+	// ListAttachments returns the attachments of the versions ids, newest first: CreatedAt
+	// descending, those without one after the others, then by Digest and Layer.
+	ListAttachments(ctx context.Context, versionIDs []int64) ([]Attachment, error)
 }
 
 // Writer is the write side of the index; ingest, reindex, delete and the management API use
@@ -489,4 +495,24 @@ type Writer interface {
 	// their PackageID: the fold of its entries, written in the transaction of the entries it
 	// folds. A missing package wraps ErrNotFound; two rows of one (Kind, Key), ErrConflict.
 	ReplaceJournalState(ctx context.Context, packageID int64, state []JournalState) error
+
+	// The attachments of versions (derived, #89; docs/spec/index-schema.md, Attachments),
+	// written by ingest, reindex and delete. They go with their version: DeleteVersion,
+	// DeletePackage and ResetDerived take a version's rows.
+
+	// ReplaceAttachments makes the rows of the referrer d of the version exactly rows, in one
+	// transaction, and fills their ID, VersionID and Digest (none removes them). A row with a
+	// Tag also removes the version's rows under that tag of another referrer: cosign moved its
+	// legacy tag. IndexedAt is now when zero. A version that does not exist wraps ErrNotFound,
+	// and nothing is written.
+	ReplaceAttachments(ctx context.Context, versionID int64, d digest.Digest, rows []Attachment) error
+	// TouchAttachments sets IndexedAt of the rows with the given ids, and nothing else: the rows
+	// a reindex saw without reading their referrer. Ids that do not exist are skipped.
+	TouchAttachments(ctx context.Context, ids []int64, at time.Time) error
+	// DeleteAttachments removes the rows of the referrer d among the versions of a repo, the
+	// delete of a referrer, and returns how many it removed.
+	DeleteAttachments(ctx context.Context, repoID int64, d digest.Digest) (int, error)
+	// SweepAttachments removes the rows of a version whose IndexedAt is before seenBefore, the
+	// sweep of reindex once it listed the version's referrers, and returns how many it removed.
+	SweepAttachments(ctx context.Context, versionID int64, seenBefore time.Time) (int, error)
 }
