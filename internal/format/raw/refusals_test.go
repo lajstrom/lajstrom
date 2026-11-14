@@ -10,10 +10,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/format/formattest"
 	"github.com/lajstrom/lajstrom/internal/provider/generic"
+	"github.com/lajstrom/lajstrom/internal/provider/providertest"
 )
 
 // TestRegistryRefusals uploads a file to a registry that refuses it in each way of
@@ -25,6 +27,26 @@ func TestRegistryRefusals(t *testing.T) {
 			r.Apply(e.prov)
 			r.Check(t, e.do(http.MethodPut, target("dir/file.txt"), strings.NewReader("content")))
 		})
+	}
+}
+
+// TestNotServedNamed: an upload that the registry takes and does not serve within the visibility
+// timeout is 503 with Retry-After 30, and the message names what the registry does not serve
+// yet, after the status text, so that the client tells a lagging registry from a lost push
+// (#667).
+func TestNotServedNamed(t *testing.T) {
+	lag := &providertest.Lag{Fake: &providertest.Fake{RegistryName: "local"}, Manifests: -1}
+	e := newEnv(t, envOptions{registry: lag, visible: 50 * time.Millisecond})
+	rr := e.do(http.MethodPut, target("dir/file.txt"), strings.NewReader("content"))
+	if rr.Code != http.StatusServiceUnavailable || rr.Header().Get("Retry-After") != "30" {
+		t.Fatalf("status %d, Retry-After %q; want 503, 30; body %s", rr.Code, rr.Header().Get("Retry-After"), rr.Body)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{"Service Unavailable; the registry took raw/", "/dir/file.txt@sha256:",
+		" and does not serve the manifest, the tag ", " yet; the same request again completes it\n"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body %q does not have %q", body, want)
+		}
 	}
 }
 

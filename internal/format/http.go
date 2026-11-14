@@ -19,7 +19,7 @@ const basicChallenge = `Basic realm="lajstrom"`
 // WriteError answers err with the status its sentinel maps to and a text/plain body (with
 // X-Content-Type-Options: nosniff) and returns the status. 4xx bodies are err.Error()+"\n", but
 // for the fixed message of a 408; 5xx bodies are http.StatusText(status)+"\n" (the cause is for the log, not the client), with
-// what a *PartialError deleted before it failed (ClientMessage).
+// an Explainer's words and what a *PartialError deleted before it failed (ClientMessage).
 // A 401 carries WWW-Authenticate: Basic realm="lajstrom", a 405 Allow: GET, HEAD, a 503 of
 // provider.ErrUnavailable, of index.ErrUnavailable or of an *UnavailableError Retry-After
 // (SetRetryAfter). See StatusOf for the mapping.
@@ -47,8 +47,9 @@ const stalledMessage = "the request body stopped: no byte came within the server
 
 // ClientMessage is the message an error answer gives the client: err.Error() for a 4xx but a
 // 408, stalledMessage for a 408, the status text for a 5xx, whose cause is for the log,
-// followed for a 5xx by what a *PartialError in err deleted before it failed, so that a client
-// learns it whatever the status (docs/spec/guarantees.md, INV-13).
+// followed for a 5xx by the words of the first Explainer in err (a publish the registry does
+// not serve yet, #667) and by what a *PartialError in err deleted before it failed, so that a
+// client learns it whatever the status (docs/spec/guarantees.md, INV-13).
 func ClientMessage(err error) string {
 	status := StatusOf(err)
 	switch {
@@ -58,6 +59,10 @@ func ClientMessage(err error) string {
 		return err.Error()
 	}
 	msg := http.StatusText(status)
+	var ex Explainer
+	if errors.As(err, &ex) {
+		msg += "; " + ex.Explain()
+	}
 	var p *PartialError
 	if errors.As(err, &p) {
 		msg += "; " + p.deleted()
