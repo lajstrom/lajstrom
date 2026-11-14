@@ -293,6 +293,8 @@ func TestLoadErrors(t *testing.T) {
 			want: []string{`keys.algorithm: "dsa" is not ed25519 or rsa4096`, "keys.retireGrace: must not be negative"}},
 		{name: "empty keys.algorithm", file: minimal + "keys: {algorithm: \"\"}\n", want: []string{`keys.algorithm: "" is not ed25519 or rsa4096`}},
 		{name: "keys.tokenAlgorithm", file: minimal + "keys: {tokenAlgorithm: HS256}\n", want: []string{`keys.tokenAlgorithm: "HS256" is not ES256 or EdDSA`}},
+		{name: "keys.kms", file: minimal + "keys: {kms: \"awskms://localhost:4566/alias/x\"}\n",
+			want: []string{`keys.kms: "awskms://localhost:4566/alias/x" names an endpoint`}},
 		{name: "master key in the file", file: minimal + "keys: {masterKey: abc}\n", want: []string{"field masterKey not found"}},
 		{name: "env override is validated", file: minimal, env: map[string]string{"LAJSTROM_DATABASE_DRIVER": "mysql"}, want: []string{`database.driver: "mysql" is not sqlite or postgres`}},
 		{
@@ -728,11 +730,13 @@ registries:
 // serve and admin key do (keys.LoadMaster), so a configuration that names an unset variable
 // loads, as the example does for make run.
 func TestLoadKeys(t *testing.T) {
-	c, err := Load(writeConfig(t, minimal+"keys: {masterKeyEnv: LAJSTROM_MASTER_KEY, algorithm: rsa4096, retireGrace: 48h, tokenAlgorithm: EdDSA}\n"), nil)
+	c, err := Load(writeConfig(t, minimal+"keys: {masterKeyEnv: LAJSTROM_MASTER_KEY, algorithm: rsa4096, retireGrace: 48h, tokenAlgorithm: EdDSA, "+
+		"kms: \"awskms:///alias/lajstrom-apt\"}\n"), nil)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	want := Keys{MasterKeyEnv: "LAJSTROM_MASTER_KEY", Algorithm: "rsa4096", RetireGrace: 48 * time.Hour, TokenAlgorithm: "EdDSA"}
+	want := Keys{MasterKeyEnv: "LAJSTROM_MASTER_KEY", Algorithm: "rsa4096", RetireGrace: 48 * time.Hour, TokenAlgorithm: "EdDSA",
+		KMS: "awskms:///alias/lajstrom-apt"}
 	if c.Keys != want {
 		t.Errorf("keys = %+v, want %+v", c.Keys, want)
 	}

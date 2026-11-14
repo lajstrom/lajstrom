@@ -305,6 +305,11 @@ func (k Keys) validate(p *problems) {
 	if k.TokenAlgorithm != KeysTokenES256 && k.TokenAlgorithm != KeysTokenEdDSA {
 		p.add("keys.tokenAlgorithm", "%q is not %s or %s", k.TokenAlgorithm, KeysTokenES256, KeysTokenEdDSA)
 	}
+	if k.KMS != "" {
+		if _, err := ParseKMSKey(k.KMS); err != nil {
+			p.add("keys.kms", "%v", err)
+		}
+	}
 }
 
 func (r Registry) validate(p *problems, key string) {
