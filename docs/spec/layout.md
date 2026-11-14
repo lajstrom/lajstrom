@@ -1154,12 +1154,12 @@ func AppliedMigrations(ctx context.Context, db *sql.DB) ([]int, error) // from s
 // Snapshots of the control plane (#76; index-schema.md, Snapshots of the control plane;
 // manifest-profile.md §9). Not part of Store: lajstrom admin snapshot uses it, serve does not.
 type Snapshotter interface {
-    // ExportControlPlane: one transaction, repeatable read on Postgres; Schema the newest
+    // ExportControlPlane: one transaction, SERIALIZABLE READ ONLY DEFERRABLE on Postgres; Schema the newest
     // migration applied, ReadAt the database's time; the audit rows of opts only
     ExportControlPlane(ctx context.Context, opts ExportOptions) (*ControlPlane, error)
     // ImportControlPlane: the rows with their ids, in one transaction, into empty tables
     // (ErrNotEmpty, naming them; opts.Force empties every table but schema_migrations,
-    // auth_version and replicas first); id sequences past the greatest id, auth_version
+    // auth_version and replicas first); id sequences past the greatest id (nextval), auth_version
     // incremented, opts.Event appended last; a Schema newer than the binary's ErrSchemaTooNew
     ImportControlPlane(ctx context.Context, cp *ControlPlane, opts ImportOptions) error
 }
