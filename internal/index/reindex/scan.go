@@ -61,6 +61,7 @@ type scan struct {
 	unknown     map[string]int             // the versions reported in RepositoryUnknown, by package path
 	found       map[digest.Digest][]string // the manifests read, tagged or listed by a sha256-<hex> index, by digest: their package paths; nil unless repairing (prepareRepair)
 	deleted     map[digest.Digest][]string // the manifests deleted through Lajstrom within the grace age, with the OCI repositories they were deleted from, "" for any (recentDeletes); nil on a strong registry
+	legacy      map[string][]legacyRef     // the manifests under cosign's legacy tags read, by package path, for the attachments pass
 }
 
 // repo reindexes one repo. The error is the run's own; everything about the registry and the
@@ -68,7 +69,8 @@ type scan struct {
 func (w *Worker) repo(ctx context.Context, repo index.Repo, start time.Time, req Request) (RepoReport, error) {
 	s := &scan{w: w, repo: repo, base: repoBase(repo), req: req, start: start, began: w.now(),
 		sem: make(chan struct{}, w.concurrency), rep: newRepoReport(repo.Format + "/" + repo.Name),
-		referrers: map[digest.Digest]struct{}{}, splits: map[[2]string]*Split{}, listed: map[string]bool{}, unknown: map[string]int{}}
+		referrers: map[digest.Digest]struct{}{}, splits: map[[2]string]*Split{}, listed: map[string]bool{}, unknown: map[string]int{},
+		legacy: map[string][]legacyRef{}}
 	prov, ok := w.providers.Provider(repo.Registry)
 	if !ok || prov == nil {
 		s.failure(Finding{Error: fmt.Sprintf("registry %q is not configured", repo.Registry)})
@@ -298,6 +300,9 @@ func (s *scan) ociRepo(ctx context.Context, name string) {
 	if profile.HasJournal(s.repo.Format) && pkgPath != "" && !s.stopped(ctx) {
 		s.journal(ctx, rr, cache, pkgPath, journal)
 	}
+	if pkgPath != "" {
+		s.attachments(ctx, rr, cache, pkgPath)
+	}
 }
 
 // listTags returns every tag of the repository rr.
@@ -508,6 +513,9 @@ func (s *scan) classify(ctx context.Context, rr provider.Repository, pkgPath, ta
 		f.Subject = digest.Digest("sha256:" + m[1])
 		s.referrer(listed, f)
 		s.locate(pkgPath, listed...)
+		if m[2] != "" && mediaType == ocispec.MediaTypeImageManifest {
+			s.keepLegacy(pkgPath, legacyRef{tag: tag, desc: desc, raw: raw, subject: f.Subject})
+		}
 		return
 	case p.Subject != nil:
 		f.Subject = p.Subject.Digest
