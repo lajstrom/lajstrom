@@ -247,7 +247,8 @@ The registry `local` of the run may need credentials and an instance prefix, as 
 `registries[].auth` and `registries[].prefix`, the password through the variable
 `LAJSTROM_E2E_REGISTRY_PASSWORD`, and passes all four to the scenarios; `cosign.sh` asks the
 backend below the prefix and with those credentials, through the backend's token realm when it
-challenges for a bearer. Against the Gitea of `deploy/compose/gitea`, the scenarios that pass
+challenges for a bearer, and `first-admin.sh` writes them into the configurations of its own
+servers, which were never ready without them (#800). Against the Gitea of `deploy/compose/gitea`, the scenarios that pass
 there (Gitea serves no ranges, which `raw.sh` checks); CI runs the same as the job `e2e (gitea)`,
 which is not required:
 
@@ -288,7 +289,10 @@ them as a step and passes two of them to the scenarios (#800):
 | `LAJSTROM_E2E_BLOBS_READ_WHOLE` | `blobsReadWhole` | `true`: a range is `200` with every byte and no `Content-Range` (Nexus's oci format) |
 
 `raw.sh`, `oras.sh` and `cosign.sh` then want those answers, and check after each refused
-delete that nothing changed; what they pushed stays in the registry. The refusals run against
+delete that nothing changed; what they pushed stays in the registry. `auth.sh` and `rbac.sh` want
+the refusal where a delete passes the authorization (`501` on `/raw/`, `405 UNSUPPORTED` on
+`/v2`), and `retention.sh` an `--apply` that exits 1 with the version an error naming the
+registry, every version left and no audit row of a delete; it leaves out the second `--apply`. The refusals run against
 Zot too, with `LAJSTROM_E2E_CAPABILITIES='{deleteManifest: false}'`. When the server logged no
 capabilities (its probe failed at the start), the variables stay as your shell set them; a
 scenario run by hand takes them from there, and an unset one as Zot's. Against the Nexus of
@@ -298,9 +302,9 @@ scenario run by hand takes them from there, and an unset one as Zot's. Against t
 deploy/compose/nexus/nexus.sh up
 printf lajstrom > nexus.pw
 LAJSTROM_E2E_REGISTRY=localhost:5008 LAJSTROM_E2E_REGISTRY_USER=lajstrom LAJSTROM_E2E_REGISTRY_PASSWORD_FILE=nexus.pw \
-  test/e2e/run.sh raw oras cosign   # the docker format: deleteManifest=false
+  test/e2e/run.sh raw oras cosign auth rbac retention first-admin   # the docker format: deleteManifest=false
 LAJSTROM_E2E_REGISTRY=localhost:5015 LAJSTROM_E2E_REGISTRY_USER=lajstrom LAJSTROM_E2E_REGISTRY_PASSWORD_FILE=nexus.pw \
-  test/e2e/run.sh raw oras cosign   # the oci format: blobsReadWhole=true
+  test/e2e/run.sh raw oras cosign auth rbac retention first-admin   # the oci format: blobsReadWhole=true
 deploy/compose/nexus/nexus.sh down
 ```
 

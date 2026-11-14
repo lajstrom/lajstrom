@@ -23,7 +23,9 @@
 #   FA-07 started together, they store one token, made by one of them;
 #   FA-08 lajstrom admin bootstrap on both at once makes one admin; the other is refused.
 # Without them FA-07 and FA-08 are skipped, which is not a failure. The servers use the registry
-# $LAJSTROM_E2E_REGISTRY (default localhost:5000) and create nothing in it. The binary is
+# $LAJSTROM_E2E_REGISTRY (default localhost:5000), below LAJSTROM_E2E_REGISTRY_PREFIX and with
+# the user LAJSTROM_E2E_REGISTRY_USER and the password LAJSTROM_E2E_REGISTRY_PASSWORD when run.sh
+# set them (#353), and create nothing in it. The binary is
 # $LAJSTROM_BIN, else bin/lajstrom. It needs curl and jq; the token goes to the server in a file,
 # never on a command line, and is never printed.
 set -euo pipefail
@@ -71,6 +73,10 @@ database:
 registries:
   - name: local
     url: "http://$registry"
+${LAJSTROM_E2E_REGISTRY_PREFIX:+    prefix: $LAJSTROM_E2E_REGISTRY_PREFIX}
+${LAJSTROM_E2E_REGISTRY_USER:+    auth:
+      username: $LAJSTROM_E2E_REGISTRY_USER
+      passwordEnv: LAJSTROM_E2E_REGISTRY_PASSWORD}
 reconcile:
   interval: 0s
 EOF
