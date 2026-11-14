@@ -13,6 +13,10 @@
 #   - oras: the reader's oras push is refused, the writer's goes, and the file is on the frontend;
 #   - a deploy token with read and write on the repo: PUT 201 and DELETE 403 there, 404 on
 #     another repo and on one that does not exist (S-04);
+#   - a deploy token over the mask oci/* (#911), which a maintainer may not create and the admin
+#     does through the API: oras logs in with it as deploy and pulls from two oci repos of the
+#     run; its /v2 token has pull on both, no push, and nothing on the raw repo, whose frontend
+#     answers it 404;
 #   - a binding created and deleted with lajstrom admin binding counts from the next request, and
 #     so does the repo's anonymousRead, changed through the API (S-07);
 #   - creating a repo with a taken name is 403 to a reader, before the name matters, and 409 to
@@ -21,8 +25,9 @@
 #   test/e2e/rbac.sh [<base url>]     default: http://localhost:8080
 #
 # It runs as $LAJSTROM_E2E_USER, a user with the admin binding (lib.sh, e2e_credentials;
-# run.sh makes one), and creates a raw repo of its own, rbac-<run>, through the API. The other
-# users and their bindings are made with lajstrom admin, straight against the index database of
+# run.sh makes one), and creates a raw repo of its own, rbac-<run>, through the API, and two oci
+# repos, rbac-<run>-a and -b, into which it pushes with oras as that user. The other users and
+# their bindings are made with lajstrom admin, straight against the index database of
 # the configuration the server runs with: $LAJSTROM_CONFIG, else
 # deploy/compose/lajstrom.example.yaml, with the same LAJSTROM_DATABASE_* overrides. The binary
 # is $LAJSTROM_BIN, else bin/lajstrom, else go run ./cmd/lajstrom. The server must have
@@ -60,16 +65,25 @@ run="$(date -u +%Y%m%d%H%M%S)-$RANDOM"
 repo="rbac-$run"
 other="rbac-other-$run" # a repo of the run that the deploy token is not for
 missing="rbac-missing-$run"
+fleet_a="rbac-$run-a" # the oci repos the deploy token over oci/* pulls from
+fleet_b="rbac-$run-b"
 users="" # the users this run made, disabled on exit
 created=""
+fleet="" # the id of the deploy token over oci/*, revoked on exit
 cleanup() {
-	local u
+	local u r
 	for u in $users; do
 		"${lajstrom[@]}" admin user disable "$u" >/dev/null 2>&1 || true
 	done
+	if [ -n "$fleet" ]; then
+		curl -sS -o /dev/null -K "$work/admin" -X DELETE "$base/api/v1/deploy-tokens/$fleet" || true
+	fi
 	if [ -n "$created" ]; then
 		curl -sS -o /dev/null -K "$work/admin" -X DELETE "$base/api/v1/repos/raw/$repo?force=true" || true
 		curl -sS -o /dev/null -K "$work/admin" -X DELETE "$base/api/v1/repos/raw/$other?force=true" || true
+		for r in "$fleet_a" "$fleet_b"; do
+			curl -sS -o /dev/null -K "$work/admin" -X DELETE "$base/api/v1/repos/oci/$r?force=true" || true
+		done
 	fi
 	rm -rf "$work"
 }
@@ -254,6 +268,48 @@ expect "deploy token PUT on another repo" 404 "$status"
 req deploy GET "$base/raw/$missing/seed.txt"
 expect "deploy token GET of a repo that does not exist" 404 "$status"
 step "deploy token $dep (read, write on raw/$repo): PUT 201, DELETE 403; raw/$other 404, a repo that does not exist 404"
+
+# #911: one deploy token over the mask oci/*, the credential of a fleet of nodes, pulls from two
+# oci repos with oras and gets nothing outside its mask. The admin makes it through the API; a
+# maintainer may not, whatever its bindings.
+ORAS_AS=admin-oras
+printf '%s\n' "$E2E_PASSWORD" | oras login -u "$E2E_USER" --password-stdin "$service" >"$work/oras.log" 2>&1 ||
+	{ cat "$work/oras.log" >&2; fail "oras login as the admin"; }
+for r in "$fleet_a" "$fleet_b"; do
+	req admin POST "$base/api/v1/repos" -H 'Content-Type: application/json' -d "{\"format\":\"oci\",\"name\":\"$r\",\"registry\":\"local\"}"
+	expect "POST /api/v1/repos oci/$r as the admin" 201 "$status"
+	printf 'fleet e2e %s %s\n' "$r" "$run" >"$work/fleet-$r.txt"
+	oras push "$service/oci/$r/hello:v1" "fleet-$r.txt:text/plain" >"$work/oras.log" 2>&1 || { cat "$work/oras.log" >&2; fail "oras push to oci/$r"; }
+done
+mask_body="{\"repoMask\": \"oci/*\", \"name\": \"rbac $run\", \"scopes\": [\"read\"]}"
+req maintainer POST "$base/api/v1/deploy-tokens" -H 'Content-Type: application/json' -d "$mask_body"
+expect "a maintainer creates a deploy token over oci/*" 403 "$status"
+req admin POST "$base/api/v1/deploy-tokens" -H 'Content-Type: application/json' -d "$mask_body"
+expect "the admin creates a deploy token over oci/* ($(jq -c 'del(.secret)' "$work/body" 2>/dev/null))" 201 "$status"
+expect "the token's repoMask" "oci/*" "$(jq -r .repoMask "$work/body")"
+fleet="$(jq -r .id "$work/body")"
+(umask 077 && jq -r .secret "$work/body" >"$work/fleet.pw" && printf 'user = "deploy:%s"\n' "$(cat "$work/fleet.pw")" >"$work/fleet")
+rm -f "$work/body"
+ORAS_AS=fleet
+oras login -u deploy --password-stdin "$service" <"$work/fleet.pw" >"$work/oras.log" 2>&1 || { cat "$work/oras.log" >&2; fail "oras login as deploy"; }
+for r in "$fleet_a" "$fleet_b"; do
+	mkdir "$work/pulled-$r"
+	oras pull -o "pulled-$r" "$service/oci/$r/hello:v1" >"$work/oras.log" 2>&1 || { cat "$work/oras.log" >&2; fail "oras pull oci/$r with the token over oci/*"; }
+	cmp -s "$work/fleet-$r.txt" "$work/pulled-$r/fleet-$r.txt" || fail "oras pull oci/$r: not the file pushed"
+done
+step "deploy token $fleet over oci/* (read), made by the admin, a maintainer refused 403: oras login as deploy, oras pull from oci/$fleet_a and oci/$fleet_b"
+req fleet GET "$base/v2/token?service=$service&scope=repository:oci/$fleet_a/hello:pull,push&scope=repository:oci/$fleet_b/hello:pull&scope=repository:$name:pull"
+expect "GET /v2/token with the token over oci/*" 200 "$status"
+(umask 077 && printf 'header = "Authorization: Bearer %s"\n' "$(jq -r .token "$work/body")" >"$work/bearer")
+got="$(jq -r '.token | split(".")[1] | gsub("-"; "+") | gsub("_"; "/") | @base64d | fromjson | .access | map("\(.name)=\(.actions | join(","))") | join(" ")' "$work/body")"
+expect "the token's actions" "oci/$fleet_a/hello=pull oci/$fleet_b/hello=pull $name=" "$got"
+req bearer GET "$base/v2/$name/tags/list"
+expect "the token over oci/* on raw/$repo through /v2" 404/NAME_UNKNOWN "$(answer)"
+req bearer POST "$base/v2/oci/$fleet_a/hello/blobs/uploads/"
+expect "the token over oci/* pushes" 403/DENIED "$(answer)"
+req fleet GET "$base/raw/$repo/seed.txt"
+expect "the token over oci/* on the raw frontend" 404 "$status"
+step "deploy token $fleet on /v2: $got; a pull of raw/$repo 404/NAME_UNKNOWN, a push to oci/$fleet_a 403/DENIED; GET /raw/$repo/seed.txt 404"
 
 # A binding counts from the next request, on the server, though lajstrom admin wrote it to the
 # database behind the server's back (auth_version; rbac.md §3).

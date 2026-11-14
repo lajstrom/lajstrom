@@ -50,23 +50,33 @@ repos:
   - {name: talos-pxe, format: raw, registry: local, anonymousRead: true, policy: {blobRedirect: never}}
 ```
 
-The nodes get a user of their own, with `reader` on the repos they pull from, and a personal
-access token with `read` ([auth.md](../auth.md#tokens)):
+A Talos node sends one credential per registry host, and the nodes read several repos of it.
+They get one deploy token over the mask `oci/*`, with `read` and no expiry
+([auth.md](../auth.md#a-deploy-token-over-a-mask), #911). Only an admin makes one; on the
+command line, the operator:
 
 ```sh
-lajstrom admin user create --name talos-node --password-stdin < talos-node.pw
-for r in oci/ghcr oci/k8s oci/factory oci/talos; do
-  lajstrom admin binding create --principal user:talos-node --role reader --mask "$r"
-done
-lajstrom admin token create --user talos-node --name talos-nodes --scopes read --expires 365d | jq -r .secret
+lajstrom admin token create --mask 'oci/*' --name talos-nodes --scopes read | jq -r .secret
 ```
 
-A Talos node sends one credential per registry host. So a deploy token, which covers one repo,
-does not fit when the nodes read several repos of one host, and a personal access token expires
-within 365 days ([#911](https://github.com/lajstrom/lajstrom/issues/911)). Until #911 is
-decided, rotate the token with `talosctl patch machineconfig`. Talos's docs list
-`.machine.registries` among the changes applied without a reboot. Whether new credentials take
-effect without one was not checked: the docs of Talos 1.0 said containerd needed a reboot.
+The nodes log in with it as `deploy` (§3).
+
+- **The mask is the reach.** `oci/*` covers `oci/ghcr`, `oci/k8s`, `oci/factory` and
+  `oci/talos`, and every `oci` repo created later, from its creation on. On a server whose other
+  `oci` repos the nodes must not read, name the nodes' repos so that one mask covers them alone
+  (`*/talos` covers the repo `talos` of every format), or use an exact mask per repo.
+- **It does not expire.** Nothing on the nodes needs rotating within a year. To replace it,
+  make the next token, roll it out with `talosctl patch machineconfig`, then revoke the old one
+  (`lajstrom admin token revoke <id>`, or `DELETE /api/v1/deploy-tokens/<id>`). Talos's docs list
+  `.machine.registries` among the changes applied without a reboot. Whether new credentials take
+  effect without one was not checked: the docs of Talos 1.0 said containerd needed a reboot.
+- **It reads only.** It never pushes, deletes or manages, whatever its mask matches.
+
+Before #911 the nodes had a user of their own, `talos-node`, with `reader` bindings on those
+repos and a personal access token with `read`, which expires within 365 days on every node.
+That still works, and it is the credential the boots of §3 measured. Since then, the token over
+`oci/*` has been tested in `rbac.sh` with oras: it pulls from two `oci` repos, and a repo outside
+its mask answers it `404`. No Talos boot has been run with it.
 
 ## 2. Installer and extension images in an `oci` passthrough repo
 
@@ -168,8 +178,8 @@ skipFallback: true
 apiVersion: v1alpha1
 kind: RegistryAuthConfig
 name: lajstrom.example.com          # the host of the endpoints, with the port if they have one
-username: talos-node
-password: ljs_pat_…
+username: deploy
+password: ljs_dep_…                 # the token over oci/* of §1
 ```
 
 `machine.registries` takes the same, and is what the boot of #340 used:
@@ -188,7 +198,7 @@ machine:
         skipFallback: true
     config:
       lajstrom.example.com:
-        auth: {username: talos-node, password: ljs_pat_…}
+        auth: {username: deploy, password: ljs_dep_…}
 ```
 
 **Requirements:**
@@ -212,7 +222,8 @@ machine:
   found [#876](https://github.com/lajstrom/lajstrom/issues/876).
 - **With the token**, on 2026-11-13, at fc1a6be5, with a fresh index and a fresh registry:3
   backend. The repos had no anonymous read, and `skipFallback` was on. Two nodes booted with the
-  commands below, the token of §1, and both patches. `machine.registries` covered the proxies,
+  commands below, the personal access token of `talos-node` (§1, before #911), and both
+  patches. `machine.registries` covered the proxies,
   and the documents `factory.talos.dev`. Both patches also pass
   `talosctl validate --mode container` together.
   - **Every image of the boot came through Lajstrom with the token,** principal `talos-node`:
@@ -268,7 +279,7 @@ talosctl cluster create docker --name ljs-talos --state $PWD/state --talosconfig
   --host-ip 127.0.0.1 --subnet 10.218.0.0/24 \
   --config-patch @secrets/patch-registries.yaml --config-patch @secrets/patch-factory.yaml
 kubectl get nodes                                  # Ready
-grep -c 'principal=user:<uid of talos-node>' lajstrom.log
+grep -c 'principal=user:<uid of talos-node>' lajstrom.log   # the runs above; with the token over oci/*: principal=token:<id>
 talosctl -n 10.218.0.3 image pull --namespace system \
   factory.talos.dev/metal-installer/ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515:v1.14.5
 talosctl cluster destroy --name ljs-talos --state $PWD/state
@@ -449,7 +460,9 @@ the installer if the factory has not built it yet, and keep it in the backend.
 - [#908](https://github.com/lajstrom/lajstrom/issues/908): `POST /v2/token`. containerd wastes
   one round trip per token, and an `identityToken` alone fails.
 - [#911](https://github.com/lajstrom/lajstrom/issues/911): a node credential over several repos
-  that need not expire within a year.
+  that need not expire within a year is now a deploy token over a mask (§1). It was tested with
+  oras in `rbac.sh`. No Talos boot has been run with it: the boots of §3 used a personal access
+  token.
 - [#876](https://github.com/lajstrom/lajstrom/issues/876), fixed in #880 and #881 on top of #869:
   images whose layers a node already held were never completed in the backend, and the control
   plane images share most of their layers. At fc1a6be5, all nine images of the boot were

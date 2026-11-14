@@ -83,6 +83,9 @@ const maxBody = 64 << 10
 //	GET    /api/v1/repos/{format}/{repo}/deploy-tokens       the deploy tokens of a repo
 //	POST   /api/v1/repos/{format}/{repo}/deploy-tokens       create one; the answer has its secret
 //	DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}  revoke one
+//	GET    /api/v1/deploy-tokens[?repoMask=]           the deploy tokens over a mask (admin)
+//	POST   /api/v1/deploy-tokens                       create one over the body's repoMask; the answer has its secret
+//	DELETE /api/v1/deploy-tokens/{id}                  revoke one
 //	GET    /api/v1/users[?limit=&cursor=]              list the live users, a page at a time
 //	POST   /api/v1/users                               create a user
 //	GET    /api/v1/users/{user}                        one user, by name or uid
@@ -116,7 +119,7 @@ func New(o Options) http.Handler {
 		h.log = slog.Default()
 	}
 	if h.tokens == nil {
-		h.tokens = &auth.Tokens{Index: o.Repos.Index, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log}
+		h.tokens = &auth.Tokens{Index: o.Repos.Index, Formats: o.Repos.Formats, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log}
 	}
 	if h.users == nil {
 		h.users = &auth.Users{Index: o.Repos.Index, Audit: o.Repos.Audit, Now: o.Repos.Now, Log: h.log}
@@ -160,6 +163,9 @@ func (h *handler) routes() []route {
 		{"GET /api/v1/repos/{format}/{repo}/deploy-tokens", h.listDeployTokens},
 		{"POST /api/v1/repos/{format}/{repo}/deploy-tokens", h.createDeployToken},
 		{"DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}", h.revokeDeployToken},
+		{"GET /api/v1/deploy-tokens", h.listMaskTokens},
+		{"POST /api/v1/deploy-tokens", h.createMaskToken},
+		{"DELETE /api/v1/deploy-tokens/{id}", h.revokeMaskToken},
 		{"GET /api/v1/users", h.listUsers},
 		{"POST /api/v1/users", h.createUser},
 		{"GET /api/v1/users/{user}", h.getUser},

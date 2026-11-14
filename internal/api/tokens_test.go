@@ -476,3 +476,178 @@ func plant(t *testing.T, f *fixture) int64 {
 	}
 	return pat.ID
 }
+
+// TestMaskTokensAPI runs the life of a deploy token over a mask through /api/v1/deploy-tokens
+// (#911): create (201, Location, the resource with repoMask and its secret), list (every mask,
+// or one mask as written; never a secret), revoke (204, again 204), and the audit rows, whose
+// subject is the mask and which have no repo. A repo's own list leaves the masks out.
+func TestMaskTokensAPI(t *testing.T) {
+	f := newFixture(t, Options{})
+	f.create(t, "raw", "scratch")
+	nodes := f.postToken(t, "/api/v1/deploy-tokens", `{"repoMask": "raw/*", "name": "nodes", "scopes": ["read"]}`)
+	wantJSON(t, "the created deploy token over a mask", redacted(nodes), fmt.Sprintf(`{"id": %d, "kind": "deploy", "repoMask": "raw/*",
+		"name": "nodes", "scopes": ["read"], "expiresAt": null, "lastUsedAt": null, "createdAt": "2026-01-02T12:00:00Z",
+		"revokedAt": null, "hashPrefix": %q, "secret": "ljs_dep_ and 43 characters"}`, nodes.ID, auth.HashSecret(nodes.Secret)[:8]))
+	ci := f.postToken(t, "/api/v1/deploy-tokens", `{"repoMask": "*/scratch", "name": "ci", "scopes": ["read", "write"], "expiresIn": "30d"}`)
+	f.wantListed(t, "/api/v1/deploy-tokens?repoMask=raw/*", nodes.Token, nodes.Secret, ci.Secret)
+	var list TokenList
+	decodeJSON(t, f.do(http.MethodGet, "/api/v1/deploy-tokens", "", admin), http.StatusOK, &list)
+	if len(list.Tokens) != 2 || list.Tokens[0].ID != nodes.ID || list.Tokens[1].ID != ci.ID || list.Tokens[1].RepoMask != "*/scratch" {
+		t.Errorf("GET /api/v1/deploy-tokens = %+v, want both, in the order of their creation", list.Tokens)
+	}
+	decodeJSON(t, f.do(http.MethodGet, "/api/v1/repos/raw/scratch/deploy-tokens", "", admin), http.StatusOK, &list)
+	if len(list.Tokens) != 0 {
+		t.Errorf("the repo's own deploy tokens = %+v, want none: the masks that match it are not its", list.Tokens)
+	}
+	for range 2 {
+		wantStatus(t, f.do(http.MethodDelete, fmt.Sprintf("/api/v1/deploy-tokens/%d", nodes.ID), "", admin), http.StatusNoContent)
+	}
+	revoked := nodes.Token
+	revoked.RevokedAt = &testNow
+	f.wantListed(t, "/api/v1/deploy-tokens?repoMask=raw/*", revoked, nodes.Secret)
+	ev := oneAudit(t, f.st, auth.ActionTokenRevoke)
+	if ev.Principal != "user:admin" || ev.Repo != "" || ev.Subject != "raw/*" || ev.details["id"] != float64(nodes.ID) {
+		t.Errorf("token.revoke = %+v %v, want the subject raw/* and no repo", ev.AuditEvent, ev.details)
+	}
+	if strings.Contains(f.logs.String(), nodes.Secret) || strings.Contains(f.logs.String(), auth.HashSecret(nodes.Secret)) {
+		t.Error("the log holds a secret or its hash")
+	}
+}
+
+// TestMaskTokensAPIRefused is the table of the refusals of /api/v1/deploy-tokens to the admin:
+// 400 for a mask, a scope or a field that breaks its rule, naming it; 409 for a name taken over
+// the same mask; 404 for an id that is not a deploy token over a mask.
+func TestMaskTokensAPIRefused(t *testing.T) {
+	f := newFixture(t, Options{})
+	f.addUsers(t, "alice")
+	f.create(t, "raw", "scratch")
+	f.postToken(t, "/api/v1/deploy-tokens", `{"repoMask": "raw/*", "name": "nodes", "scopes": ["read"]}`)
+	dep := f.postToken(t, "/api/v1/repos/raw/scratch/deploy-tokens", `{"name": "ci", "scopes": ["read"]}`)
+	pat := f.postToken(t, "/api/v1/users/alice/tokens", `{"name": "laptop"}`)
+	for _, tt := range []struct {
+		name, method, target, body string
+		status                     int
+		code, msg                  string
+	}{
+		{"one segment", "POST", "/api/v1/deploy-tokens", `{"repoMask": "raw", "name": "x", "scopes": ["read"]}`, 400, codeInvalid,
+			`repoMask: mask "raw": want <format>/<repo>, each a name or *`},
+		{"no mask", "POST", "/api/v1/deploy-tokens", `{"name": "x", "scopes": ["read"]}`, 400, codeInvalid, `repoMask: mask "": want <format>/<repo>`},
+		{"a format not served", "POST", "/api/v1/deploy-tokens", `{"repoMask": "maven/*", "name": "x", "scopes": ["read"]}`, 400, codeInvalid,
+			`repoMask: "maven" is not a format of this server, nor *`},
+		{"not a repo name", "POST", "/api/v1/deploy-tokens", `{"repoMask": "raw/Scratch", "name": "x", "scopes": ["read"]}`, 400, codeInvalid,
+			`repoMask: "Scratch" is not a repo name`},
+		{"no scopes", "POST", "/api/v1/deploy-tokens", `{"repoMask": "raw/*", "name": "x"}`, 400, codeInvalid, "scopes: a deploy token needs read, write or both"},
+		{"delete", "POST", "/api/v1/deploy-tokens", `{"repoMask": "raw/*", "name": "x", "scopes": ["read", "delete"]}`, 400, codeInvalid,
+			`scopes: "delete" is not a scope of a deploy token`},
+		{"a repo instead", "POST", "/api/v1/deploy-tokens", `{"repo": "raw/scratch", "name": "x", "scopes": ["read"]}`, 400, codeInvalid, `unknown field "repo"`},
+		{"expiry in the past", "POST", "/api/v1/deploy-tokens", `{"repoMask": "raw/*", "name": "x", "scopes": ["read"], "expiresAt": "2020-01-01T00:00:00Z"}`,
+			400, codeInvalid, "expiresAt: must be in the future"},
+		{"name taken", "POST", "/api/v1/deploy-tokens", `{"repoMask": "raw/*", "name": "nodes", "scopes": ["read", "write"]}`, 409, codeConflict,
+			`name: "nodes" is taken by a live token of mask raw/*`},
+		{"list of a malformed mask", "GET", "/api/v1/deploy-tokens?repoMask=raw", "", 400, codeInvalid, `repoMask: mask "raw"`},
+		{"a repo's token", "DELETE", fmt.Sprintf("/api/v1/deploy-tokens/%d", dep.ID), "", 404, codeNotFound,
+			fmt.Sprintf("token %d of a mask does not exist", dep.ID)},
+		{"a personal access token", "DELETE", fmt.Sprintf("/api/v1/deploy-tokens/%d", pat.ID), "", 404, codeNotFound, "of a mask does not exist"},
+		{"unknown id", "DELETE", "/api/v1/deploy-tokens/999", "", 404, codeNotFound, "token 999 of a mask does not exist"},
+		{"id not a number", "DELETE", "/api/v1/deploy-tokens/nodes", "", 404, codeNotFound, "token nodes of a mask does not exist"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			wantError(t, f.do(tt.method, tt.target, tt.body, admin), tt.status, tt.code, tt.msg)
+		})
+	}
+	var list TokenList
+	decodeJSON(t, f.do(http.MethodGet, "/api/v1/repos/raw/scratch/deploy-tokens", "", admin), http.StatusOK, &list)
+	if len(list.Tokens) != 1 || list.Tokens[0].RevokedAt != nil {
+		t.Errorf("the repo's token after the refusals: %+v, want it live", list)
+	}
+}
+
+// TestMaskTokensAPIAuthorization checks who may manage the deploy tokens over a mask, with the
+// real evaluator (docs/spec/rbac.md §3): the admin role, with a password or a personal access
+// token without scopes; nobody else, a maintainer on */* included, and the role is checked
+// before the body is read, so that a body that does not parse, or names a taken name, is 403
+// all the same. A personal access token with scopes, a deploy token of a repo and one over */*
+// are 403; anonymous is 401.
+func TestMaskTokensAPIAuthorization(t *testing.T) {
+	f := newFixture(t, Options{})
+	f.addUsers(t, "root", "erin", "alice")
+	f.create(t, "raw", "scratch")
+	for _, b := range [][3]string{{"root", auth.RoleAdmin, "*/*"}, {"erin", auth.RoleMaintainer, "*/*"}, {"alice", auth.RoleReader, "raw/*"}} {
+		if err := f.st.CreateBinding(context.Background(), &index.Binding{Principal: "user:" + f.uidOf(t, b[0]), Role: b[1], RepoMask: b[2]}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.h = recordStatuses(New(Options{Repos: f.repos, Log: f.repos.Log, Auth: auth.NewRBAC(auth.RBACOptions{Index: f.st, Log: f.repos.Log})}))
+	root, erin := auth.Principal{Kind: auth.KindUser, Name: "root"}, auth.Principal{Kind: auth.KindUser, Name: "erin"}
+	password := auth.Credential{Kind: auth.CredPassword}
+	tok := auth.Principal{Kind: auth.KindToken, Name: "20"}
+	body := func(name string) string { return `{"repoMask": "raw/*", "name": "` + name + `", "scopes": ["read"]}` }
+	for _, tt := range []struct {
+		name           string
+		p              auth.Principal
+		c              auth.Credential
+		method, target string
+		body           string
+		status         int
+	}{
+		{"admin", root, password, "POST", "/api/v1/deploy-tokens", body("nodes"), 201},
+		{"admin with a personal access token without scopes", root, auth.Credential{Kind: auth.CredPAT, TokenID: 1, UserID: 1}, "POST",
+			"/api/v1/deploy-tokens", body("ci"), 201},
+		{"admin lists", root, password, "GET", "/api/v1/deploy-tokens", "", 200},
+		{"admin with a personal access token with scopes", root, auth.Credential{Kind: auth.CredPAT, TokenID: 1, UserID: 1,
+			Scopes: []string{"read", "write"}}, "POST", "/api/v1/deploy-tokens", body("x"), 403},
+		{"maintainer on */*", erin, password, "POST", "/api/v1/deploy-tokens", body("x"), 403},
+		{"maintainer on */*, a taken name", erin, password, "POST", "/api/v1/deploy-tokens", body("nodes"), 403},
+		{"maintainer on */*, a body that does not parse", erin, password, "POST", "/api/v1/deploy-tokens", `{"repoMask": 1}`, 403},
+		{"maintainer on */* lists", erin, password, "GET", "/api/v1/deploy-tokens", "", 403},
+		{"maintainer on */* revokes", erin, password, "DELETE", "/api/v1/deploy-tokens/1", "", 403},
+		{"repoMask in the body of a repo's deploy token", erin, password, "POST", "/api/v1/repos/raw/scratch/deploy-tokens", body("x"), 400}, // no field there
+		{"reader", alice, password, "POST", "/api/v1/deploy-tokens", body("x"), 403},
+		{"anonymous", auth.Anonymous, auth.Credential{}, "POST", "/api/v1/deploy-tokens", body("x"), 401},
+		{"a repo's deploy token", tok, auth.Credential{Kind: auth.CredDeploy, TokenID: 20, Repo: "raw/scratch", Scopes: []string{"read", "write"}},
+			"POST", "/api/v1/deploy-tokens", body("x"), 403},
+		{"a deploy token over */*", tok, auth.Credential{Kind: auth.CredDeploy, TokenID: 20, Mask: "*/*", Scopes: []string{"read", "write"}},
+			"GET", "/api/v1/deploy-tokens", "", 403},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rr := f.doAs(tt.method, tt.target, tt.body, tt.p, tt.c)
+			wantStatus(t, rr, tt.status)
+			wantChallenge(t, rr)
+		})
+	}
+}
+
+// TestMaskTokenReach checks what a deploy token over a mask reaches through the management API,
+// with the real evaluator (#911): the repos of its mask, a repo created after it included, in
+// GET /api/v1/repos and one by one; 404 for a repo outside its mask, as for one that does not
+// exist; 403 for manage on a repo of its mask, which it never gets.
+func TestMaskTokenReach(t *testing.T) {
+	f := newFixture(t, Options{})
+	f.create(t, "raw", "scratch")
+	f.create(t, "pypi", "scratch")
+	f.create(t, "pypi", "libs")
+	f.h = recordStatuses(New(Options{Repos: f.repos, Log: f.repos.Log, Auth: auth.NewRBAC(auth.RBACOptions{Index: f.st, Log: f.repos.Log})}))
+	tok := auth.Principal{Kind: auth.KindToken, Name: "21"}
+	cred := auth.Credential{Kind: auth.CredDeploy, TokenID: 21, Mask: "*/scratch", Scopes: []string{"read"}}
+	listed := func() string {
+		var list RepoList
+		decodeJSON(t, f.doAs(http.MethodGet, "/api/v1/repos", "", tok, cred), http.StatusOK, &list)
+		return strings.Join(repoIDs(list.Repos), " ")
+	}
+	if got := listed(); got != "pypi/scratch raw/scratch" {
+		t.Errorf("GET /api/v1/repos with a token over */scratch lists %q, want pypi/scratch raw/scratch", got)
+	}
+	f.create(t, "raw", "libs")
+	f.create(t, "raw", "scratch2")
+	if err := f.st.CreateRepo(context.Background(), &index.Repo{Format: "pypi", Name: "later", Registry: "local", Prefix: "pypi/later", Kind: "hosted"}); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, f.doAs(http.MethodGet, "/api/v1/repos/pypi/scratch", "", tok, cred), http.StatusOK)
+	wantStatus(t, f.doAs(http.MethodGet, "/api/v1/repos/pypi/libs", "", tok, cred), http.StatusNotFound)
+	wantStatus(t, f.doAs(http.MethodGet, "/api/v1/repos/raw/missing", "", tok, cred), http.StatusNotFound)
+	wantStatus(t, f.doAs(http.MethodPatch, "/api/v1/repos/raw/scratch", `{"anonymousRead": true}`, tok, cred), http.StatusForbidden)
+	wantStatus(t, f.doAs(http.MethodGet, "/api/v1/repos/raw/scratch/deploy-tokens", "", tok, cred), http.StatusForbidden)
+	if got := listed(); got != "pypi/scratch raw/scratch" {
+		t.Errorf("after raw/libs, raw/scratch2 and pypi/later: %q, want the same two", got)
+	}
+}

@@ -234,8 +234,8 @@ existing user, stored as `user:<uid>`, or `group:<name>`, a group of OIDC logins
 have members ([Groups and group bindings](#groups-and-group-bindings)); the mask is `<format>/<repo>`, each segment a name or `*`: `raw/assets` exactly, `raw/*` every raw
 repo, `*/payments` the repo `payments` of every format, `*/*` everything. The repo need not
 exist: a binding may come before its repo, and outlives it. The rights of a principal are the
-union of its bindings. A deploy token has no bindings (its repo and scopes are its rights), and
-neither has `anonymous` (a repo's `anonymousRead` is).
+union of its bindings. A deploy token has no bindings (its repo, or its mask, and its scopes
+are its rights), and neither has `anonymous` (a repo's `anonymousRead` is).
 
 `lajstrom admin binding` manages them, straight against the database of the configuration, and
 `/api/v1/bindings` over HTTP ([api.md](api.md#bindings)). Like every `lajstrom admin` command on
@@ -278,12 +278,12 @@ For the principal of the request and an action on `<format>/<repo>`, in this ord
 1. the credential first: a personal access token with scopes keeps only those actions, an
    admin's too, so that an admin's `read` token does not write;
 2. an `admin` binding allows everything;
-3. a deploy token reaches its own repo, with the actions of its scopes, never `delete` or
-   `manage`;
+3. a deploy token reaches its own repo, or the repos its mask matches, with the actions of its
+   scopes, never `delete` or `manage`;
 4. the bindings whose mask matches the repo allow the actions of their roles;
 5. `anonymous`, and a user its bindings do not allow, may `read` a repo whose `anonymousRead` is
    on, when `auth.anonymousRead` is on too: both switches, and they are off by default (a
-   deploy token stays on its repo). The server's switch is configuration
+   deploy token stays on its repo or its mask). The server's switch is configuration
    ([configuration.md](configuration.md)); a repo's is `--anonymous-read` of
    `lajstrom admin repo create`, `repos[].anonymousRead` for a repo the configuration creates,
    or `PATCH /api/v1/repos/<format>/<name>` with `{"anonymousRead": true}` for one that exists
@@ -617,7 +617,9 @@ Two kinds of token stand in for a password ([rbac.md](spec/rbac.md) §1):
   `auth.conf`, `~/.pypirc` and `settings.xml` instead of a password: it expires, it is revoked
   alone, and it tells nothing about the password.
 - A **deploy token** is a principal of its own, `token:<id>`, bound to exactly one repo with
-  `read`, `write` or both: the credential of a CI job.
+  `read`, `write` or both: the credential of a CI job. Or bound to a mask of repos, `oci/*` or
+  `*/talos`, which only an admin creates: the credential of a fleet of nodes
+  ([Over a mask](#a-deploy-token-over-a-mask)).
 
 ### The secret
 
@@ -633,19 +635,19 @@ answered. Every later view shows `hashPrefix`, the first 8 characters of the has
 tokens apart (X-03). A lost secret is not recovered: create another token and revoke the old.
 
 A token is checked without argon2id and without a cache: 256 random bits are not guessed, so
-the lookup of the hash is the check, one query for the token and one for its user or repo, a
-miss costing what a hit costs.
+the lookup of the hash is the check, one query for the token and one for its user or repo
+(none for a mask), a miss costing what a hit costs.
 
 ### Rules
 
-| | Personal access token | Deploy token |
-| --- | --- | --- |
-| principal | `user:<owner's uid>` | `token:<id>` |
-| bound to | its user | one repo |
-| `scopes` | none (the user's full rights), or `read`, `write` or both | `read`, `write` or both, required; `delete`, `manage` and anything else are `400` |
-| expiry | required: 90 days when not given, at most 365 days ahead (`400` beyond, naming the bound) | optional: none is never |
-| `name` | 1 to 64 bytes of printable UTF-8, unique among the user's live tokens (`409`) | the same, among the repo's live tokens |
-| created with | a password only (`403` with a token, #249) | a password, or a personal access token without scopes, of a user with `manage` on the repo |
+| | Personal access token | Deploy token | Deploy token over a mask |
+| --- | --- | --- | --- |
+| principal | `user:<owner's uid>` | `token:<id>` | `token:<id>` |
+| bound to | its user | one repo | a mask (`oci/*`, `*/talos`), the repos created later included |
+| `scopes` | none (the user's full rights), or `read`, `write` or both | `read`, `write` or both, required; `delete`, `manage` and anything else are `400` | the same |
+| expiry | required: 90 days when not given, at most 365 days ahead (`400` beyond, naming the bound) | optional: none is never | the same |
+| `name` | 1 to 64 bytes of printable UTF-8, unique among the user's live tokens (`409`) | the same, among the repo's live tokens | the same, among the live tokens over the same mask |
+| created with | a password only (`403` with a token, #249) | a password, or a personal access token without scopes, of a user with `manage` on the repo | the same credentials, of a user with the `admin` role only |
 
 **A personal access token is created with a password**, never with a token: a request whose
 credential is a personal access token, with scopes or without, the admin's too, or a deploy
@@ -664,7 +666,8 @@ Expiry and revocation count at the next request, on every replica: the token is 
 database on every request. A token is expired once `expiresAt` is past, without leeway.
 `lastUsedAt` is the time of the last request with the token, written at most once a minute per
 token and replica; a write that fails is logged at debug and refuses nothing. A PAT is refused
-while its user is disabled, and a repo deleted takes its deploy tokens with it.
+while its user is disabled, and a repo deleted takes its deploy tokens with it, but not a token
+over a mask, which names no repo.
 
 ### What a token may do
 
@@ -678,9 +681,13 @@ The scopes narrow what the bindings give, on every route and at `/v2/token`:
   `write` per its scopes, and `403` for an action outside them, `delete` and `manage` above all:
   `DELETE` of a version, `PATCH` or `DELETE` of the repo, its deploy tokens (X-14).
   `GET /api/v1/repos` lists its repo only;
+- a deploy token over a mask is a deploy token on every repo its mask matches, and `404`
+  elsewhere: a repo created later that the mask matches is reached from its creation on.
+  `GET /api/v1/repos` lists the repos of its mask;
 - the PATs of a user are the user's own to list, create and revoke, or the admin's, and are
   created with a password only ([Rules](#rules)). The deploy tokens of a repo need `manage` on
-  it. A deploy token or a PAT with scopes asking for either is `403`;
+  it, and the deploy tokens over a mask the `admin` role. A deploy token or a PAT with scopes
+  asking for any of them is `403`;
 - at `/v2/token` the same rules narrow the token ([above](#the-token-endpoint)); `/v2` itself
   takes that token and no other bearer.
 
@@ -743,6 +750,44 @@ The same secret goes into the client's own file where the client has one: `setti
 (`<username>deploy</username>`, `<password>${env.LAJSTROM_DEPLOY_TOKEN}</password>`), twine's
 `TWINE_USERNAME=deploy` and `TWINE_PASSWORD`, `oras login -u deploy --password-stdin`.
 
+### A deploy token over a mask
+
+A node sends one credential per registry host: Talos has one `RegistryAuthConfig` per host,
+containerd one `registry.configs."<host>".auth`, Kubernetes one entry per host in an
+`imagePullSecrets` secret. A cluster that pulls through Lajstrom reads several repos of that
+host, `oci/ghcr`, `oci/k8s` and `oci/talos` say, so a deploy token of one repo does not fit, and
+a personal access token expires within a year on every node. A deploy token over a mask covers
+them all with one secret that need not expire (#911):
+
+```sh
+lajstrom admin token create --mask 'oci/*' --name talos-nodes --scopes read | jq -r .secret
+```
+
+or, as an admin, `POST /api/v1/deploy-tokens` with `{"repoMask": "oci/*", "name": "talos-nodes",
+"scopes": ["read"]}` ([api.md](api.md#deploy-tokens-over-a-mask)). The node logs in as `deploy`
+with the secret as its password, on the frontends and at `/v2/token`, as with any deploy token.
+
+- The mask has the grammar of a binding's ([Bindings](#bindings)): `<format>/<repo>`, each
+  segment a name or `*` for any. `oci/*` is every `oci` repo, `*/talos` the repo `talos` of every
+  format, `oci/k8s` one repo, `*/*` everything.
+- **A mask matches the repos created after the token too.** A new `oci` repo is readable with a
+  token over `oci/*` from its creation on, and so by every node that holds it. Choose the mask
+  for the repos the nodes need and no more: name the repos so that one mask covers them
+  (`*/talos`, `oci/*` on a server whose `oci` repos are all for the nodes), or give each
+  cluster an exact mask per repo where it has a credential per host anyway.
+- Only the `admin` role creates one, with a password or a personal access token without
+  scopes: a `maintainer`, even on `*/*`, gets `403`. A repo deleted does not take it with it.
+- It is listed, and revoked, by an admin: `GET /api/v1/deploy-tokens` and `DELETE
+  /api/v1/deploy-tokens/<id>`, or `lajstrom admin token list --mask` and `revoke`. A repo's own
+  list (`GET …/repos/<format>/<repo>/deploy-tokens`) does not show the tokens over a mask that
+  match it.
+- Everything else is a deploy token's: `read` and `write` only, never `delete` or `manage`,
+  the expiry optional, the secret shown once, revoked from the next request on, `token.create`
+  and `token.revoke` in the audit log. With `write`, it may write through a group whose hosted
+  member the mask matches too.
+- During a rolling update to the release that brings it, a replica of the release before
+  refuses it (`401`): it works once every replica runs the new release.
+
 ### Creating, listing, revoking
 
 Through the API ([api.md](api.md#tokens)):
@@ -761,7 +806,8 @@ Or from the command line, straight against the database of the configuration:
 ```sh
 lajstrom admin token create --user alice --name laptop [--scopes read,write] [--expires 90d|2027-01-31T00:00:00Z]
 lajstrom admin token create --repo raw/assets --name ci --scopes write [--expires 30d]
-lajstrom admin token list --user alice         # or --repo raw/assets
+lajstrom admin token create --mask 'oci/*' --name talos-nodes --scopes read
+lajstrom admin token list --user alice         # or --repo raw/assets, or --mask 'oci/*'
 lajstrom admin token revoke 7
 ```
 
@@ -780,7 +826,8 @@ ID  KIND  NAME    SCOPES  EXPIRES               LAST USED             REVOKED  H
 credential of the request: `password`, or `token:<id>` for a token, which a deploy token made
 with a personal access token has; none from the CLI) and `token.revoke` (`id`, `kind`, `name`),
 by the principal of the request (`anonymous` from the CLI), with the source and the request id. The subject is `user:<owner>` for a PAT and `<format>/<repo>` for a
-deploy token, whose repo is also the row's `repo`. Never the secret, never its hash. Revoking a
+deploy token, whose repo is also the row's `repo`; for a deploy token over a mask it is the mask,
+and the row has no `repo`. Never the secret, never its hash. Revoking a
 revoked token writes nothing. The use of a token is not audited, as reads are not; `lastUsedAt`
 tells when it was last used.
 

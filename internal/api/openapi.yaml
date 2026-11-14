@@ -421,6 +421,58 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/deploy-tokens:
+    get:
+      tags: [tokens]
+      operationId: listMaskTokens
+      summary: The deploy tokens over a mask (admin).
+      parameters:
+        - name: repoMask
+          in: query
+          description: Only the tokens over this mask, as it was written (oci/* does not list a token over */*).
+          schema: {type: string}
+      responses:
+        "200":
+          description: The tokens, in the order of their creation; never a secret.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TokenList"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+    post:
+      tags: [tokens]
+      operationId: createMaskToken
+      summary: Create a deploy token over a mask (admin, checked before the body); the answer has its secret, once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/MaskTokenRequest"}
+      responses:
+        "201":
+          description: The token and its secret.
+          headers:
+            Location: {$ref: "#/components/headers/Location"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CreatedToken"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+  /api/v1/deploy-tokens/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    delete:
+      tags: [tokens]
+      operationId: revokeMaskToken
+      summary: Revoke a deploy token over a mask (admin); a revoked one again is 204.
+      responses:
+        "204": {description: Revoked.}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
   /api/v1/users:
     get:
       tags: [users]
@@ -1113,7 +1165,8 @@ components:
         id: {type: integer, format: int64}
         kind: {type: string, enum: [pat, deploy]}
         user: {type: string, description: The owner of a personal access token.}
-        repo: {type: string, description: The <format>/<name> of a deploy token.}
+        repo: {type: string, description: The <format>/<name> of a deploy token of one repo.}
+        repoMask: {type: string, description: The mask of a deploy token over a mask, oci/* or */talos.}
         name: {type: string}
         scopes:
           type: array
@@ -1142,6 +1195,18 @@ components:
       required: [name]
       additionalProperties: false
       properties:
+        name: {type: string}
+        scopes:
+          type: array
+          items: {type: string, enum: [read, write]}
+        expiresAt: {type: string, format: date-time}
+        expiresIn: {type: string, description: A number of days (30d) or a duration (12h).}
+    MaskTokenRequest:
+      type: object
+      required: [repoMask, name, scopes]
+      additionalProperties: false
+      properties:
+        repoMask: {type: string, description: "<format>/<repo>, each segment a name or * for any: oci/*, */talos."}
         name: {type: string}
         scopes:
           type: array
