@@ -45,7 +45,7 @@ func (h *handlers) proxyDocument(r *http.Request, repo index.Repo, name, kind st
 		return c, err
 	}
 	out := *c
-	out.Content = bytes.ReplaceAll(c.Content, []byte(`"tarball":"/`+Name+`/`), []byte(`"tarball":"`+requestBase(r)+`/`+Name+`/`))
+	out.Content = bytes.ReplaceAll(c.Content, []byte(tarballLink+`/`+Name+`/`), []byte(tarballLink+requestBase(r)+`/`+Name+`/`))
 	sum := sha256.Sum256(out.Content)
 	out.SHA256 = hex.EncodeToString(sum[:])
 	return &out, nil
