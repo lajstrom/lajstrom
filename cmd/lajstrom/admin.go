@@ -10,6 +10,7 @@ func newAdminCmd(a *app) *cobra.Command {
 		Short: "Manage repos, signing keys, users, tokens and bindings; apply a retention policy",
 	}
 	admin.AddCommand(newAdminRepoCmd(a), newAdminKeyCmd(a), newAdminDebCmd(), newAdminRpmCmd(), newAdminUserCmd(a), newAdminTokenCmd(a),
-		newAdminBindingCmd(a), newAdminBootstrapCmd(a), newAdminRetentionCmd(a), newAdminTrustedRootCmd())
+		newAdminBindingCmd(a), newAdminBootstrapCmd(a), newAdminRetentionCmd(a), newAdminTrustedRootCmd(),
+		newAdminWebhookCmd(a))
 	return admin
 }
