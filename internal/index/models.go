@@ -320,6 +320,11 @@ type Version struct {
 	CreatedAt    time.Time         // org.opencontainers.image.created
 	IndexedAt    time.Time         // when ingest or reindex last wrote or saw the row
 	Degraded     bool              // written from the annotations alone: the metadata layer was unreadable
+	// OCIRepo is the package path of the OCI repository that holds the manifest when it is not
+	// the package's NameOCI: a version that reindex found at another form of the package's OCI
+	// name (ADR 0017, a split, #642). "" otherwise, and in every row ingest writes. ManifestPath
+	// says where the manifest is.
+	OCIRepo string
 }
 
 // File is a row of files (derived): one file layer of a version.
@@ -348,7 +353,7 @@ type VersionKey struct {
 }
 
 // FileMatch is a file together with its version and package, as Reader.FindFiles returns it:
-// the package's NameOCI locates the OCI repository that holds the blob.
+// ManifestPath of the package and the version locates the OCI repository that holds the blob.
 type FileMatch struct {
 	File    File
 	Version Version

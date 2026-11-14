@@ -220,7 +220,8 @@ longer than `reconcile.graceAge` is outside them
   `TestKnownDigests`, `TestScale`, `TestRebuildEarlierNames` and `TestEarlierPackagePath` (the
   OCI names of before ADR 0017), `TestIntegrationNames` (the names of ADR 0017 in Zot's
   catalog), `TestRebuildSplit`, `TestSplitIndexedBefore` and `TestIntegrationSplit` (a package at
-  two forms, #609), `TestRebuildLaggingListing` (a catalog and tag lists that lag a write, on
+  two forms, #609), the store conformance case `VersionOCIRepo` and `TestPackagePathForms` (the
+  OCI repository of a version at the other form, #642), `TestRebuildLaggingListing` (a catalog and tag lists that lag a write, on
   `providertest.Lag`, past the grace age); `cosign.sh` (the referrers found by `reindex --repo`),
   `oras.sh` (raw files at those names, on Gitea too).
 - **When violated.** A column that is not derivable is lost silently at the first rebuild. A
