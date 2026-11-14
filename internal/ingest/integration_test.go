@@ -239,7 +239,7 @@ func TestSessionsIntegration(t *testing.T) {
 	for i := range 5 {
 		add(t, e, s.ID, fmt.Sprintf("file-%d", i), fmt.Sprintf("file %d of %s", i, e.repo.Name))
 	}
-	pub, err := e.pipe.Commit(ctx, s.ID)
+	pub, err := e.pipe.Commit(ctx, s.ID, nil)
 	must(t, err)
 	rr, err := prov.Repository(ctx, "raw/"+e.repo.Name+"/lib")
 	must(t, err)
@@ -261,7 +261,7 @@ func TestSessionsIntegration(t *testing.T) {
 	must(t, err)
 	add(t, e, late.ID, "file", "late "+e.repo.Name)
 	c.add(2 * time.Minute)
-	if _, err := e.pipe.Commit(ctx, late.ID); !errors.Is(err, index.ErrNotFound) {
+	if _, err := e.pipe.Commit(ctx, late.ID, nil); !errors.Is(err, index.ErrNotFound) {
 		t.Errorf("Commit after the timeout = %v, want ErrNotFound", err)
 	}
 	if n, err := e.pipe.ExpireSessions(ctx); err != nil || n != 1 {

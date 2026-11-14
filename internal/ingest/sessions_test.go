@@ -122,7 +122,7 @@ func TestSessionCommit(t *testing.T) {
 		return buildRaw(ctx, repo, up)
 	}
 
-	pub, err := e.pipe.Commit(ctx, s.ID)
+	pub, err := e.pipe.Commit(ctx, s.ID, nil)
 	must(t, err)
 	if pub.Existed || pub.Tag != "1.0" {
 		t.Errorf("Commit = %+v, want a new version under 1.0", pub)
@@ -145,9 +145,32 @@ func TestSessionCommit(t *testing.T) {
 	if _, err := e.pipe.Add(ctx, s.ID, "late.jar", strings.NewReader("x"), 1); !errors.Is(err, index.ErrNotFound) {
 		t.Errorf("Add after the commit = %v, want ErrNotFound", err)
 	}
-	if _, err := e.pipe.Commit(ctx, s.ID); !errors.Is(err, index.ErrNotFound) {
+	if _, err := e.pipe.Commit(ctx, s.ID, nil); !errors.Is(err, index.ErrNotFound) {
 		t.Errorf("Commit again = %v, want ErrNotFound", err)
 	}
+}
+
+// TestSessionCommitParams: the params of Commit reach Build beside the session's name, version
+// and uploaded-by, which they cannot replace (apt passes the suite and the component of a source
+// package, #79).
+func TestSessionCommitParams(t *testing.T) {
+	ctx := t.Context()
+	e, _ := sessionEnv(t)
+	s, err := e.pipe.Open(ctx, e.repo, "lib", "1.0", alice)
+	must(t, err)
+	add(t, e, s.ID, "a.jar", "aaa")
+	var params map[string]string
+	e.plugin.BuildFunc = func(ctx context.Context, repo index.Repo, up format.Upload) (*format.Built, error) {
+		params = up.Params
+		return buildRaw(ctx, repo, up)
+	}
+	given := map[string]string{"suite": "jammy", "component": "main", "name": "other", "version": "9", "uploaded-by": "user:bob"}
+	if _, err := e.pipe.Commit(ctx, s.ID, given); err != nil {
+		t.Fatal(err)
+	}
+	same(t, "the parameters of the build", map[string]string{"suite": "jammy", "component": "main",
+		"name": "lib", "version": "1.0", "uploaded-by": "user:alice"}, params)
+	same(t, "the params passed, untouched", "other", given["name"])
 }
 
 // TestSessionRepeat: after a commit, a new session of the same files is the idempotent repeat,
@@ -161,7 +184,7 @@ func TestSessionRepeat(t *testing.T) {
 	for _, f := range files {
 		add(t, e, s.ID, f.name, f.content)
 	}
-	_, err = e.pipe.Commit(ctx, s.ID)
+	_, err = e.pipe.Commit(ctx, s.ID, nil)
 	must(t, err)
 	for i, tt := range []struct {
 		change  string
@@ -176,7 +199,7 @@ func TestSessionRepeat(t *testing.T) {
 		for _, f := range files {
 			add(t, e, s2.ID, f.name, f.content+tt.change)
 		}
-		pub, err := e.pipe.Commit(ctx, s2.ID)
+		pub, err := e.pipe.Commit(ctx, s2.ID, nil)
 		if !errors.Is(err, tt.err) || (err == nil && pub.Existed != tt.existed) {
 			t.Errorf("round %d: Commit = %+v, %v; want Existed %v, error %v", i, pub, err, tt.existed, tt.err)
 		}
@@ -198,7 +221,7 @@ func TestSessionRules(t *testing.T) {
 	}
 	s, err := e.pipe.Open(ctx, e.repo, "lib", "1.0", alice)
 	must(t, err)
-	if _, err := e.pipe.Commit(ctx, s.ID); !errors.Is(err, ingest.ErrInvalid) {
+	if _, err := e.pipe.Commit(ctx, s.ID, nil); !errors.Is(err, ingest.ErrInvalid) {
 		t.Errorf("Commit without files = %v, want ErrInvalid", err)
 	}
 	if _, err := e.pipe.Add(ctx, s.ID, "", strings.NewReader("x"), 1); !errors.Is(err, ingest.ErrInvalid) {
@@ -218,7 +241,7 @@ func TestSessionRules(t *testing.T) {
 	}
 	for what, err := range map[string]error{
 		"Add":                                    second(e.pipe.Add(ctx, s.ID, "b.jar", strings.NewReader("b"), 1)),
-		"Commit":                                 second(e.pipe.Commit(ctx, s.ID)),
+		"Commit":                                 second(e.pipe.Commit(ctx, s.ID, nil)),
 		"Files of a session that does not exist": second(e.pipe.Files(ctx, 999)),
 	} {
 		if !errors.Is(err, index.ErrNotFound) {
@@ -243,7 +266,7 @@ func TestSessionRefuse(t *testing.T) {
 	const reason = "the sha1 of a.jar is 0a, a.jar.sha1 says 0b"
 	must(t, e.pipe.Refuse(ctx, s.ID, "a.jar", reason))
 	for range 2 { // and again: the session stays as it is
-		_, err = e.pipe.Commit(ctx, s.ID)
+		_, err = e.pipe.Commit(ctx, s.ID, nil)
 		if !errors.Is(err, ingest.ErrInvalid) || !strings.Contains(err.Error(), "holds a.jar, which was refused: "+reason) {
 			t.Fatalf("Commit of a session with a refused file = %v, want ErrInvalid naming a.jar and why", err)
 		}
@@ -253,7 +276,7 @@ func TestSessionRefuse(t *testing.T) {
 			r, len(e.pushRefs("1.0")), e.state(t, s.ID))
 	}
 	add(t, e, s.ID, "a.jar", "aaa") // uploaded again
-	pub, err := e.pipe.Commit(ctx, s.ID)
+	pub, err := e.pipe.Commit(ctx, s.ID, nil)
 	must(t, err)
 	e.wantFileLayers(t, "raw/scratch/lib", pub.Tag, []file{{"a.jar", "aaa"}, {"b.pom", "<project/>"}})
 }
@@ -315,7 +338,7 @@ func TestSessionExpiry(t *testing.T) {
 	if _, err := e.pipe.Add(ctx, s.ID, "d.jar", strings.NewReader("d"), 1); !errors.Is(err, index.ErrNotFound) {
 		t.Errorf("Add after the timeout = %v, want ErrNotFound", err)
 	}
-	if _, err := e.pipe.Commit(ctx, s.ID); !errors.Is(err, index.ErrNotFound) {
+	if _, err := e.pipe.Commit(ctx, s.ID, nil); !errors.Is(err, index.ErrNotFound) {
 		t.Errorf("Commit after the timeout = %v, want ErrNotFound", err)
 	}
 	other, err := e.pipe.Open(ctx, e.repo, "other", "1.0", alice)
@@ -389,9 +412,9 @@ func TestSessionCommitOnce(t *testing.T) {
 		return nil, fmt.Errorf("%w: the build failed", format.ErrInvalid)
 	}
 	done := make(chan error, 1)
-	go func() { _, err := e.pipe.Commit(ctx, s.ID); done <- err }()
+	go func() { _, err := e.pipe.Commit(ctx, s.ID, nil); done <- err }()
 	<-entered
-	if _, err := e.pipe.Commit(ctx, s.ID); !errors.Is(err, index.ErrConflict) {
+	if _, err := e.pipe.Commit(ctx, s.ID, nil); !errors.Is(err, index.ErrConflict) {
 		t.Errorf("a second Commit = %v, want ErrConflict", err)
 	}
 	if _, err := e.pipe.Add(ctx, s.ID, "b.jar", strings.NewReader("b"), 1); !errors.Is(err, index.ErrConflict) {
@@ -410,7 +433,7 @@ func TestSessionCommitOnce(t *testing.T) {
 
 	e.plugin.BuildFunc = buildRaw
 	add(t, e, s.ID, "b.jar", "bbb")
-	pub, err := e.pipe.Commit(ctx, s.ID)
+	pub, err := e.pipe.Commit(ctx, s.ID, nil)
 	if err != nil || pub.Existed {
 		t.Errorf("Commit after the failure = %+v, %v; want a new version", pub, err)
 	}
@@ -474,11 +497,11 @@ func TestSessionCommitClientGone(t *testing.T) {
 		cancel()
 		return nil, ctx.Err()
 	}
-	if _, err := e.pipe.Commit(ctx, s.ID); !errors.Is(err, context.Canceled) {
+	if _, err := e.pipe.Commit(ctx, s.ID, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("the Commit whose client went away = %v, want context.Canceled", err)
 	}
 	e.plugin.BuildFunc = buildRaw
-	if pub, err := e.pipe.Commit(t.Context(), s.ID); err != nil || pub.Existed {
+	if pub, err := e.pipe.Commit(t.Context(), s.ID, nil); err != nil || pub.Existed {
 		t.Errorf("the next Commit = %+v, %v; want a new version", pub, err)
 	}
 }
