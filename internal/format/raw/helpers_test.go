@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -90,6 +91,7 @@ type envOptions struct {
 	store    func(index.Store) index.Store // wraps the store the routes read; ingest writes to the store itself
 	ingested func(index.Store) index.Store // wraps the store ingest writes to
 	plugin   format.Plugin                 // the plugin ingest builds with; nil means Plugin{}
+	visible  time.Duration                 // ingest's visibility timeout; zero means its default
 }
 
 func newEnv(t *testing.T, o envOptions) *env {
@@ -109,7 +111,7 @@ func newEnv(t *testing.T, o envOptions) *env {
 		plugin = o.plugin
 	}
 	pipe := ingest.New(ingest.Options{Providers: providers, Index: ingestIndex, Audit: o.audit, Log: slog.New(slog.DiscardHandler),
-		Plugins: func(name string) (format.Plugin, bool) { return plugin, name == Name }})
+		Plugins: func(name string) (format.Plugin, bool) { return plugin, name == Name }, VisibilityTimeout: o.visible})
 	var routeIndex index.Store = st
 	if o.store != nil {
 		routeIndex = o.store(st)
