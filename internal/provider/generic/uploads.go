@@ -362,9 +362,11 @@ func (r *repository) send(ctx context.Context, op, method, target string, body i
 // prime readies the auth client for a request with a streamed body to the session at loc.
 // oras-go's auth client answers a 401 by sending the request again, which a streamed body
 // cannot be; so, against a registry with credentials, a bodyless GET of the session (its
-// status, harmless) takes the challenge first. A Basic scheme in the cache needs nothing; a
-// bearer token may have expired since it was cached, so it is primed every time. A replica
-// that continues another's session starts with an empty cache: this is what lets it.
+// status, harmless) takes the challenge first, and the token is cached under the request's own
+// scopes too (aliasClient), which the streamed request is looked up by. A Basic scheme in the
+// cache needs nothing; a bearer token may have expired since it was cached, so it is primed
+// every time. A replica that continues another's session starts with an empty cache: this is
+// what lets it.
 func (r *repository) prime(ctx context.Context, loc *url.URL) {
 	if !r.p.clients.credentials {
 		return
@@ -372,9 +374,7 @@ func (r *repository) prime(ctx context.Context, loc *url.URL) {
 	if s, err := r.p.clients.cache.GetScheme(ctx, r.p.host); err == nil && s == auth.SchemeBasic {
 		return
 	}
-	ctx = r.scoped(ctx)
-	var challenge string
-	req, err := http.NewRequestWithContext(context.WithValue(ctx, challengeKey{}, &challenge), http.MethodGet, loc.String(), nil)
+	req, err := http.NewRequestWithContext(r.scoped(ctx), http.MethodGet, loc.String(), nil)
 	if err != nil {
 		return
 	}
@@ -383,15 +383,15 @@ func (r *repository) prime(ctx context.Context, loc *url.URL) {
 		return // the request with the body reports the failure
 	}
 	_ = resp.Body.Close()
-	aliasToken(ctx, r.p.clients.cache, r.p.host, challenge)
 }
 
 // aliasToken caches the bearer token that the auth client got after challenge also under the
-// scopes of ctx alone. The auth client keys a token by the request's scopes merged with the
-// challenge's scope parameter, but looks a request up by its scopes alone before it is
-// challenged: when the challenge names a scope the request does not (Gitea's scope="*", on
-// every challenge), the streamed request after prime would go out without the token, and
-// could not be sent again after its 401.
+// scopes of ctx alone (aliasClient). The auth client keys a token by the request's scopes
+// merged with the challenge's scope parameter, but looks a request up by its scopes alone
+// before it is challenged: when the challenge names a scope the request does not (Gitea's
+// scope="*", on every challenge), the next request with those scopes would go out without the
+// token, and a streamed one could not be sent again after its 401. A request without scopes of
+// its own, the ping or Forgejo's version API, gets no alias: those go without a token as before.
 func aliasToken(ctx context.Context, cache auth.Cache, host, challenge string) {
 	scheme, scope := challengeParam(challenge, "scope")
 	if scheme != "bearer" || scope == "" {
@@ -400,7 +400,7 @@ func aliasToken(ctx context.Context, cache auth.Cache, host, challenge string) {
 	scopes := auth.GetAllScopesForHost(ctx, host)
 	own := strings.Join(scopes, " ")
 	merged := strings.Join(auth.CleanScopes(append(slices.Clone(scopes), strings.Split(scope, " ")...)), " ")
-	if merged == own {
+	if own == "" || merged == own {
 		return
 	}
 	token, err := cache.GetToken(ctx, host, auth.SchemeBearer, merged)
