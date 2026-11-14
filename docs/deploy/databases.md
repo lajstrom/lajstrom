@@ -49,7 +49,7 @@ packages; CI runs it there (`integration (zot-pgbouncer)`, #613).
 | Odyssey 1.5.2, `pool "transaction"`, `pool_reserve_prepared_statement no` | **breaks** as PgBouncer with 0 (`42P05`, `26000`) | `default_query_exec_mode=exec` or `simple_protocol` in the DSN |
 | CloudNativePG | Postgres with failover, the rows above | [below](#cloudnativepg) |
 | YugabyteDB 2026.1.3.0 (YSQL, PostgreSQL 15.12) | **experimental**: tested in a non-blocking CI cell, not guaranteed. Works with both conditions; without them **breaks** on a migration that changes rows (`23502`) and with two migrators at once (`42710`, `40001`) | `ysql_yb_ddl_transaction_block_enabled=true`; `lajstrom migrate` alone before `serve`; [below](#yugabytedb) |
-| CockroachDB v26.3.5 | **breaks**: `lajstrom migrate` fails on the first migration | none; [below](#cockroachdb) |
+| CockroachDB v26.3.5 | **experimental**: measured on one node, not tested in CI, not guaranteed. Works since #617: migrations of its own, applied one statement at a time, and read committed asked for by every transaction | `sql.txn.read_committed_isolation.enabled` left `true`, its default; no `DROP SCHEMA` in the database during a migration; [below](#cockroachdb) |
 
 Behind any pooler in transaction mode, three more rules hold, measured on PgBouncer and Odyssey:
 
@@ -331,29 +331,90 @@ Not measured: a cluster of several nodes, a node failure, load.
 
 ## CockroachDB
 
-CockroachDB v26.3.5 (single node, `--insecure`) answers the Postgres protocol and has
-`pg_advisory_xact_lock` (a second transaction waited for the first), `clock_timestamp()` and
-`set_config`. `lajstrom migrate` stops at the first migration:
+**Experimental: measured on one node, not tested in CI, not guaranteed** (#617). The `postgres`
+driver tells CockroachDB by the `crdb_version` it reports when a connection starts, and then:
 
-```
-lajstrom: index: migration postgres/0001_init.sql: ERROR: at or near ",": syntax error: invalid locale C: language: tag is not well-formed (SQLSTATE 42601)
-```
+- applies migrations of its own (`internal/index/migrations/cockroach`), one statement at a time,
+  each in a transaction of its own, under the migration lock held by a transaction on a second
+  connection, recording the version after the last statement
+  ([index-schema.md](../spec/index-schema.md#migrations)). Their text columns have no
+  `COLLATE "C"`: CockroachDB has no such collation, and compares strings by their bytes already
+  (measured: `'B' < 'Z' < '_' < 'a' < 'b' < 'é'`). Their ids are identity columns, which ascend
+  from 1 as `bigserial` does on Postgres; CockroachDB's `bigserial` is `unique_rowid()`, values
+  above 2^53 that a JSON number in JavaScript does not hold;
+- begins every transaction `ISOLATION LEVEL READ COMMITTED`, as the index needs (the index cache
+  generations, the tag claims, the package row; see the top of this page), where CockroachDB's
+  default is `SERIALIZABLE`. `serve`, `migrate` and the other commands refuse to start when the
+  cluster would run such a transaction serializable, which it does, without an error, when the
+  cluster setting `sql.txn.read_committed_isolation.enabled` is off;
+- answers `503` with `Retry-After` for `40003`, a commit whose result is unknown, besides the
+  SQLSTATEs of Postgres, and never sends that transaction again.
 
-Every text column is `COLLATE "C"`, so that order and comparison match SQLite, and CockroachDB
-has no collation named `C` (its default comparison of strings is bytewise already). With the
-`COLLATE "C"` removed from a scratch copy of the migrations, it stops at the eighth, which adds a
-column and fills it in one transaction:
+The one condition: **`sql.txn.read_committed_isolation.enabled` stays `true`**, its default on
+v26.3.5 (measured). Nothing is set in the DSN.
 
-```
-lajstrom: index: migration postgres/0008_user_uid.sql: ERROR: column "uid" does not exist (SQLSTATE 42703)
-```
+Measured on 2026-11-14 with Lajstrom at the commits of #617 (pgx v5.12.0, Go 1.27.4):
+CockroachDB v26.3.5, one node in a container (`start-single-node --insecure --cache=256MiB
+--max-sql-memory=256MiB`), `go test -race -tags integration` with `LAJSTROM_TEST_POSTGRES_DSN`
+at it ([Reproducing](#reproducing)). What passes:
 
-The `UPDATE` after the `ALTER TABLE … ADD COLUMN` does not see the column in the same
-transaction; `autocommit_before_ddl=true` in the DSN gave the same error. Its transactions are
-also `SERIALIZABLE` unless the cluster setting `sql.txn.read_committed_isolation.enabled` and
-the session ask for read committed, where Lajstrom expects read committed and retries no
-`40001`. CockroachDB needs migrations of its own and a dialect, which is more than a setting; it
-was not measured further.
+- `pg_advisory_xact_lock` blocks a second session until the first one's transaction ends, and
+  its keys are per database, as on Postgres; the store's transactions run read committed
+  (`TestCockroachReadCommitted`, which asks `crdb_internal.cluster_sessions`);
+- `lajstrom migrate` on an empty database applies the 21 migrations in about 4 s on a fresh
+  node, and in 39 s on the same node after the tests had dropped some 500 databases, whose
+  1,440 schema-change GC jobs kept its CPUs busy; two at once apply each once, the second
+  finding the schema current; `TestConcurrentMigrate`;
+  `TestCockroachRerun` runs every statement of every migration a second time without an error;
+  `TestUpgrade` on the cockroach dialect;
+- the store conformance suite, every case, the races among them, with `-parallel 4` and
+  `LAJSTROM_TEST_POSTGRES_ISOLATION=database` (below): 263 s on a fresh node. The 14 race
+  cases then passed 5 runs of 5, 70 in all; `PackageRace` and `PackageNameOCIRace` among them without the package lock
+  that YugabyteDB needs ([#629](https://github.com/lajstrom/lajstrom/issues/629));
+- `TestDataRole`, its conformance half included (the suite again as a user with data rights
+  only, `GRANT … ON ALL SEQUENCES` among them; a later table; a pending migration refused);
+  `TestReplicasCoexist`; `TestRepeatableRead` (the update of a repo, serializable here, since
+  the cluster setting `sql.txn.repeatable_read_isolation.enabled` is off by default, and run
+  again on `40001` as on Postgres);
+- `TestReferrersLockLost`: with `idle_in_transaction_session_timeout` of 1 s on the role, the
+  referrers lock outlives it (`set_config(…, true)` lifts it); a session that `CANCEL SESSION`
+  ends while it holds the lock makes `WithReferrersLock` return `ErrUnavailable` (the lock was
+  lost), and the next writer gets the lock at once. `TestTerminatedConnection` the same way.
+  CockroachDB has no `pg_terminate_backend`; the tests use `CANCEL SESSION` there.
+- the integration tests of reindex, ingest, the facade, the management API and `cmd/lajstrom`,
+  against Zot v2.1.23, on one migrated database.
+
+What does not work, or works otherwise:
+
+- **A migration is not atomic.** Its statements commit one by one. One that fails leaves the
+  ones before it applied and the version unrecorded; the error names the statement, and the
+  next `lajstrom migrate` or `serve` applies the migration again from its first statement,
+  which the cockroach files allow. Replicas that serve meanwhile see the statements' effects
+  one by one ([index-schema.md](../spec/index-schema.md#migrations)).
+- **A migration holds two connections** of its pool, one for the lock's transaction: a pool of
+  one (`pool_max_conns=1`) is refused with that message.
+- **No `DROP SCHEMA` in Lajstrom's database during a migration.** Measured: CockroachDB's
+  `DROP SCHEMA` waits for every open transaction of the database, the migration lock's among
+  them, and a `CREATE TABLE` in a schema of the database (a `search_path` other than `public`)
+  waits for that `DROP SCHEMA`, so the two wait for each other until one is cancelled. A
+  `CREATE SCHEMA`, and a `CREATE TABLE` in `public`, do not wait. The tests in parallel drop
+  a schema per test, which is why they take a database each on CockroachDB.
+- **The errors of its timeouts differ.** `idle_in_transaction_session_timeout` closes the
+  connection (Lajstrom sees an EOF: `503`, as on Postgres); `transaction_timeout` ends a
+  statement with `57014`, which Lajstrom does not map, a `500`: keep it 0, as on Postgres; a
+  deadlock is `40001`, not `40P01`.
+- **More aborted transactions than on Postgres.** A transaction that CockroachDB aborts on a
+  deadlock (`40001`) is `503` with `Retry-After`, as on Postgres, but under read committed it
+  locks the row of a unique key that `INSERT … ON CONFLICT DO NOTHING` finds, where Postgres
+  locks nothing, and writers that then delete or update that row deadlock (measured: 8
+  writers taking over one stale fetch claim). A store method's own transaction runs again, four
+  times in all; a request's transaction (`Store.Tx`) does not, and answers `503`.
+- **DDL in an explicit transaction commits it first** (`autocommit_before_ddl`, on by default:
+  `NOTICE: auto-committing transaction before processing DDL`), which is one more reason the
+  Postgres migrations, one transaction each, cannot run as they are.
+
+Not measured: a cluster of several nodes, a node failure, load, a secure cluster (passwords and
+TLS).
 
 ## Reproducing
 
@@ -372,6 +433,10 @@ LAJSTROM_TEST_POSTGRES_DSN='postgres://lajstrom:lajstrom@localhost:6432/lajstrom
 LAJSTROM_TEST_POSTGRES_ISOLATION=database LAJSTROM_TEST_REGISTRY=localhost:5000 \
   go test -race -count=1 -tags integration ./internal/index/... ./internal/ingest/... ./internal/facade/...
 ```
+
+On CockroachDB, started with `start-single-node --insecure --cache=256MiB --max-sql-memory=256MiB`,
+the same command ran with `LAJSTROM_TEST_POSTGRES_DSN='postgres://root@localhost:26257/lajstrom?sslmode=disable'`
+and `LAJSTROM_TEST_POSTGRES_ISOLATION=database`, and with `-parallel 4` for `internal/index/postgres`.
 
 `LAJSTROM_TEST_POSTGRES_ISOLATION=database` (#611) gives each test a database of its own,
 since a schema in the DSN's `search_path` does not survive a transaction pooler

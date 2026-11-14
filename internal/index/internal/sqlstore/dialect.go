@@ -17,7 +17,8 @@ import (
 // encoding of timestamps, and how the driver reports constraint violations. The SQL of the
 // store is written once, with ? placeholders.
 type Dialect struct {
-	// Name is index.DialectSQLite or index.DialectPostgres; it selects the migrations.
+	// Name is index.DialectSQLite, index.DialectPostgres or index.DialectCockroach; it selects
+	// the migrations.
 	Name string
 	// Numbered rewrites the ? placeholders to $1, $2, … (Postgres).
 	Numbered bool
@@ -55,6 +56,26 @@ type Dialect struct {
 	// Clock is the query that returns the time of the database's clock, as a timestamp the
 	// store decodes (Postgres: clock_timestamp(); SQLite: 'now' as text, the host's clock).
 	Clock string
+	// Attempts is how many times in all the store runs a transaction of one of its methods,
+	// not Store.Tx's, that the database aborts (IsAborted): CockroachDB, whose read committed
+	// transactions lock the row of a unique key that an INSERT … ON CONFLICT DO NOTHING finds,
+	// so that two writers that then delete or update it deadlock, and one is aborted (40001),
+	// where Postgres takes no such lock. 0 or 1: once, and the error is returned.
+	Attempts int
+	// Isolation is the isolation level that every transaction the store begins asks for, but
+	// those of index.WithRepeatableRead: CockroachDB's read committed, which its transactions
+	// are not by default. sql.LevelDefault (Postgres, SQLite) asks for none, and a transaction
+	// gets the database's default.
+	Isolation sql.IsolationLevel
+}
+
+// txOptions returns the options of a transaction the store begins: nil, the database's
+// defaults, unless Isolation names a level.
+func (d *Dialect) txOptions() *sql.TxOptions {
+	if d.Isolation == sql.LevelDefault {
+		return nil
+	}
+	return &sql.TxOptions{Isolation: d.Isolation}
 }
 
 // wrap returns err, an error of the driver about what ("begin", "repos raw/scratch"), with

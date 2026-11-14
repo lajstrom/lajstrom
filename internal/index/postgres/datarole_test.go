@@ -95,7 +95,12 @@ func newRole(t *testing.T, dsn string) (role, password string) {
 	role = "lajstrom_test_data_" + strings.ToLower(rand.Text())
 	password = rand.Text()
 	admin := openDB(t, dsn)
-	if _, err := admin.ExecContext(t.Context(), fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD '%s'", role, password)); err != nil {
+	_, err := admin.ExecContext(t.Context(), fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD '%s'", role, password))
+	if err != nil && strings.Contains(err.Error(), "insecure mode") {
+		// A CockroachDB started with --insecure refuses passwords, and lets every user in.
+		_, err = admin.ExecContext(t.Context(), "CREATE ROLE "+role+" LOGIN")
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

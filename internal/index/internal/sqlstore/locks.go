@@ -32,7 +32,7 @@ func (s *Store) WithReferrersLock(ctx context.Context, name string, subject dige
 		defer unlock()
 		return fn(ctx)
 	}
-	tx, err := s.db.BeginTx(context.WithoutCancel(ctx), nil)
+	tx, err := s.db.BeginTx(context.WithoutCancel(ctx), s.d.txOptions())
 	if err != nil {
 		return s.d.wrap(err, "begin")
 	}

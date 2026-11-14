@@ -46,7 +46,10 @@ func testDSN(t *testing.T) string {
 // isolationEnv names the variable that, set to "database", gives every test a database of its
 // own instead of a schema of the test database. A pooler in transaction mode (PgBouncer,
 // Odyssey) does not carry a DSN's search_path to the server connection that runs a statement,
-// so the tests behind one need it (docs/deploy/databases.md).
+// so the tests behind one need it (docs/deploy/databases.md). So does CockroachDB with tests in
+// parallel: the DROP SCHEMA of a test that ended waits for the open transactions of the
+// database, a migration's lock among them, and that migration's CREATE TABLE in its schema
+// waits for the DROP SCHEMA.
 const isolationEnv = "LAJSTROM_TEST_POSTGRES_ISOLATION"
 
 // isolatedDSN creates an empty namespace (newNamespace), drops it when the test ends, and
@@ -75,6 +78,9 @@ func newNamespace(t *testing.T, dsn string) namespace {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if kind == "DATABASE" && onCockroach(t, db) {
+		force = " CASCADE" // CockroachDB's DROP DATABASE has no FORCE, and needs none
 	}
 	if _, err := db.ExecContext(t.Context(), "CREATE "+kind+" "+name); err != nil {
 		_ = db.Close()
@@ -326,10 +332,8 @@ func TestTerminatedConnection(t *testing.T) {
 		if _, err := w.ListRepos(ctx, ""); err != nil {
 			return fmt.Errorf("before: %w", err)
 		}
-		var n int
-		if err := admin.QueryRowContext(ctx, "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE application_name = $1",
-			app).Scan(&n); err != nil || n != 1 {
-			return fmt.Errorf("pg_terminate_backend: %d sessions, %w", n, err)
+		if n, err := terminate(ctx, t, admin, "", app); err != nil || n != 1 {
+			return fmt.Errorf("terminate: %d sessions, %w", n, err)
 		}
 		_, err := w.ListRepos(ctx, "")
 		return err

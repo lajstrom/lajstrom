@@ -32,12 +32,13 @@ var _ index.Store = (*Store)(nil)
 // poolParam is the DSN parameter that sizes the connection pool, as pgxpool spells it.
 const poolParam = "pool_max_conns"
 
-// SQLSTATE codes of the constraint violations the store maps to index errors, and of a
-// statement the database user has no right to run.
+// SQLSTATE codes of the constraint violations the store maps to index errors, of a statement
+// the database user has no right to run, and of CockroachDB's commit whose result is unknown.
 const (
 	uniqueViolation       = "23505"
 	foreignKeyViolation   = "23503"
 	insufficientPrivilege = "42501"
+	ambiguousResult       = "40003" // statement_completion_unknown
 )
 
 // unavailableStates are the SQLSTATE codes of a server that ends or refuses connections, which
@@ -82,6 +83,23 @@ var yugabyte = func() sqlstore.Dialect {
 	return d
 }()
 
+// cockroach is the dialect on CockroachDB (docs/deploy/databases.md#cockroachdb), which Open
+// tells from Postgres by the crdb_version the server reports. It differs in four things: its
+// migrations are CockroachDB's own (index.DialectCockroach); every transaction asks for read
+// committed, which CockroachDB's transactions are not unless they ask (Open checks that the
+// cluster lets them, checkReadCommitted); a store method's own transaction that CockroachDB
+// aborts, as it does one of two that deadlock on the lock of a unique key (40001), runs again,
+// up to sqlstore.TxAttempts times in all; and an ambiguous result (40003), a commit that may or
+// may not have happened, is index.ErrUnavailable, never run again, as IsAborted leaves it.
+var cockroach = func() sqlstore.Dialect {
+	d := dialect
+	d.Name = index.DialectCockroach
+	d.Attempts = sqlstore.TxAttempts
+	d.Isolation = sql.LevelReadCommitted
+	d.IsUnavailable = func(err error) bool { return isUnavailable(err) || sqlState(err) == ambiguousResult }
+	return d
+}()
+
 // Open connects to the PostgreSQL database of dsn, a URL or a keyword/value string as pgx
 // parses it (docs/configuration.md): postgres://lajstrom@db:5432/lajstrom?sslmode=require.
 // The pool holds pool_max_conns connections when the DSN sets it, else max(4, number of
@@ -111,40 +129,82 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	return &Store{sqlstore.New(db, d)}, nil
 }
 
-// dialectOf pings db and returns its dialect: yugabyte on YugabyteDB (isYugabyte), else
-// dialect.
+// dialectOf pings db and returns its dialect, by the parameters the server reports when a
+// connection starts: cockroach when it reports crdb_version, once checkReadCommitted passes;
+// yugabyte when its server_version says YugabyteDB ("15.12-YB-2026.1.3.0-b0"); else dialect.
 func dialectOf(ctx context.Context, db *sql.DB) (sqlstore.Dialect, error) {
-	yb, err := isYugabyte(ctx, db)
+	p, err := serverParams(ctx, db)
 	if err != nil {
 		return dialect, err
 	}
-	if yb {
+	switch {
+	case p.cockroach():
+		if err := checkReadCommitted(ctx, db); err != nil {
+			return dialect, err
+		}
+		return cockroach, nil
+	case p.yugabyte():
 		return yugabyte, nil
 	}
 	return dialect, nil
 }
 
-// isYugabyte pings db and reports whether the server_version that the server reported at the
-// start of the connection says YugabyteDB. No statement runs but the ping.
-func isYugabyte(ctx context.Context, db *sql.DB) (bool, error) {
+// params are the parameters of the server that tell the engine apart.
+type params struct{ serverVersion, crdbVersion string }
+
+// yugabyte reports whether the server is YugabyteDB.
+func (p params) yugabyte() bool { return strings.Contains(p.serverVersion, "-YB-") }
+
+// cockroach reports whether the server is CockroachDB.
+func (p params) cockroach() bool { return p.crdbVersion != "" }
+
+// serverParams pings db and returns the parameters that the server reported at the start of
+// the connection. No statement runs but the ping.
+func serverParams(ctx context.Context, db *sql.DB) (params, error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
-		return false, err
+		return params{}, err
 	}
 	defer func() { _ = conn.Close() }()
 	if err := conn.PingContext(ctx); err != nil {
-		return false, err
+		return params{}, err
 	}
-	var version string
-	if err := conn.Raw(func(c any) error {
+	var p params
+	err = conn.Raw(func(c any) error {
 		if c, ok := c.(*stdlib.Conn); ok {
-			version = c.Conn().PgConn().ParameterStatus("server_version")
+			pc := c.Conn().PgConn()
+			p = params{serverVersion: pc.ParameterStatus("server_version"), crdbVersion: pc.ParameterStatus("crdb_version")}
 		}
 		return nil
-	}); err != nil {
-		return false, err
+	})
+	return p, err
+}
+
+// isYugabyte pings db and reports whether the server is YugabyteDB (serverParams).
+func isYugabyte(ctx context.Context, db *sql.DB) (bool, error) {
+	p, err := serverParams(ctx, db)
+	return p.yugabyte(), err
+}
+
+// checkReadCommitted fails when a transaction on CockroachDB that asks for read committed
+// runs at another level: without the cluster setting sql.txn.read_committed_isolation.enabled,
+// CockroachDB runs it serializable, without an error, and the store relies on read committed
+// (the index cache generations, the tag claims, the package row, docs/deploy/databases.md).
+func checkReadCommitted(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: cockroach.Isolation})
+	if err != nil {
+		return err
 	}
-	return strings.Contains(version, "-YB-"), nil
+	defer func() { _ = tx.Rollback() }()
+	var level string
+	if err := tx.QueryRowContext(ctx, "SHOW transaction_isolation").Scan(&level); err != nil {
+		return err
+	}
+	if level != "read committed" {
+		return fmt.Errorf("CockroachDB runs a transaction that asks for read committed at %s: "+
+			"SET CLUSTER SETTING sql.txn.read_committed_isolation.enabled = true (docs/deploy/databases.md#cockroachdb)", level)
+	}
+	return nil
 }
 
 // ApplyMigrations is index.ApplyMigrations on the store's database. A database user with data
