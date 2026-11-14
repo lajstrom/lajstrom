@@ -21,6 +21,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider"
+	"github.com/lajstrom/lajstrom/internal/webhook"
 )
 
 // Pipeline is the single write path: every manifest Lajstrom stores goes through it, whether
@@ -42,6 +43,9 @@ type Pipeline struct {
 	// trust labels attachments (#89), maxAttachment bounds the layer read to judge one.
 	trust         *attest.Trust
 	maxAttachment int64
+
+	// webhooks is Options.Webhooks: nil writes no event.
+	webhooks *webhook.Outbox
 }
 
 // Options configures a Pipeline.
@@ -77,6 +81,9 @@ type Options struct {
 	// MaxAttachmentSize is attachments.maxBlobSize, the largest layer read to judge an
 	// attachment; zero, or negative, means 16 MiB.
 	MaxAttachmentSize int64
+	// Webhooks writes the events of the publishes and the version deletes in the transaction
+	// of their audit rows (docs/spec/webhooks.md §4); nil writes none.
+	Webhooks *webhook.Outbox
 }
 
 // defaultClaimTTL is ClaimTTL when Options leaves it zero.
@@ -92,6 +99,7 @@ func New(o Options) *Pipeline {
 		now:       o.Now,
 		log:       o.Log,
 		claimTTL:  o.ClaimTTL,
+		webhooks:  o.Webhooks,
 
 		visibility:     o.VisibilityTimeout,
 		sessionTimeout: o.SessionTimeout,
