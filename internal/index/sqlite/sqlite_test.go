@@ -2,9 +2,11 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/index/internal/sqlstore"
 	"github.com/lajstrom/lajstrom/internal/index/storetest"
 )
 
@@ -207,5 +210,38 @@ func TestFileReplicas(t *testing.T) {
 	}
 	if err := a.HeartbeatReplica(ctx, first.ID, second.StartedAt); !errors.Is(err, index.ErrNotFound) {
 		t.Errorf("the first replica's heartbeat after its row went: %v, want ErrNotFound", err)
+	}
+}
+
+// TestForcedTables: a forced import of a snapshot (ImportControlPlane, #76) empties every table
+// of the schema but the three it keeps. A migration that adds a table fails this test until the
+// table is in sqlstore.ForcedTables, after the tables it refers to, or in sqlstore.KeptTables.
+func TestForcedTables(t *testing.T) {
+	dsn := "file:" + filepath.Join(t.TempDir(), "lajstrom.db")
+	openMigrated(t, dsn)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	rows, err := db.QueryContext(t.Context(), "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var tables []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		tables = append(tables, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	listed := slices.Sorted(slices.Values(slices.Concat(sqlstore.ForcedTables, sqlstore.KeptTables)))
+	if !slices.Equal(tables, listed) {
+		t.Errorf("the tables of the schema: %v\nthe tables a forced import empties or keeps: %v", tables, listed)
 	}
 }

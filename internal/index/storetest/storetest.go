@@ -87,11 +87,29 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"Identities", testIdentities},
 		{"OIDCLogins", testOIDCLogins},
 		{"OIDCLoginRace", testOIDCLoginRace},
+		{"SnapshotAudit", testSnapshotAudit},
+		{"SnapshotConsistent", testSnapshotConsistent},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			tt.run(t, open(t))
+		})
+	}
+	// The tests that need more than one database: a snapshot read from one and written into
+	// another (#76).
+	multi := []struct {
+		name string
+		run  func(t *testing.T, open func(*testing.T) index.Store)
+	}{
+		{"SnapshotRoundTrip", testSnapshotRoundTrip},
+		{"SnapshotNotEmpty", testSnapshotNotEmpty},
+		{"SnapshotRefused", testSnapshotRefused},
+	}
+	for _, tt := range multi {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.run(t, open)
 		})
 	}
 }
