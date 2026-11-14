@@ -54,7 +54,7 @@ func TestTypes(t *testing.T) {
 	if typ, ok := TypeByFormat("apt"); !ok || typ.Name != "deb" {
 		t.Errorf("TypeByFormat(apt) = %+v, %v, want deb", typ, ok)
 	}
-	if typ, ok := TypeByName("deb"); !ok || typ.Format != "apt" || !slices.Equal(typ.FileMediaTypes, []string{MediaTypeDebPackage}) {
+	if typ, ok := TypeByName("deb"); !ok || typ.Format != "apt" || !slices.Equal(typ.FileMediaTypes, []string{MediaTypeDebPackage, MediaTypeDebDsc, MediaTypeDebSource}) {
 		t.Errorf("TypeByName(deb) = %+v, %v", typ, ok)
 	}
 	if _, ok := TypeByFormat("deb"); ok {

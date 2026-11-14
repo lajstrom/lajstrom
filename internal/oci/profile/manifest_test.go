@@ -105,7 +105,7 @@ func TestBuildValidateRoundTrip(t *testing.T) {
 	}
 	want := &Parsed{
 		Type: Type{
-			Name: "deb", Format: "apt", FileMediaTypes: []string{MediaTypeDebPackage}, MetadataRequired: true,
+			Name: "deb", Format: "apt", FileMediaTypes: []string{MediaTypeDebPackage, MediaTypeDebDsc, MediaTypeDebSource}, MetadataRequired: true,
 		},
 		Annotations: debAnnotations(),
 		Files:       []Layer{debFile()},
