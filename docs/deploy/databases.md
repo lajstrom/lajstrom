@@ -48,7 +48,7 @@ packages; CI runs it there (`integration (zot-pgbouncer)`, #613).
 | Odyssey 1.5.2, `pool "transaction"`, `pool_reserve_prepared_statement yes` | works | nothing |
 | Odyssey 1.5.2, `pool "transaction"`, `pool_reserve_prepared_statement no` | **breaks** as PgBouncer with 0 (`42P05`, `26000`) | `default_query_exec_mode=exec` or `simple_protocol` in the DSN |
 | CloudNativePG | Postgres with failover, the rows above | [below](#cloudnativepg) |
-| YugabyteDB 2026.1.3.0 (YSQL, PostgreSQL 15.12) | **experimental**: tested in a non-blocking CI cell, not guaranteed. Works with both conditions; without them **breaks** on a migration that changes rows (`23502`) and with two migrators at once (`42710`, `40001`) | `ysql_yb_ddl_transaction_block_enabled=true`; `lajstrom migrate` alone before `serve`; [below](#yugabytedb) |
+| YugabyteDB 2026.1.3.0 (YSQL, PostgreSQL 15.12) | **experimental**: tested in a non-blocking CI cell, not guaranteed. Works with the flag; without it **breaks** on a migration that changes rows (`23502`). Two migrators at once pass since #616, which runs a migration again on `42710` and `40001` | `ysql_yb_ddl_transaction_block_enabled=true`; `lajstrom migrate` alone before `serve` recommended; [below](#yugabytedb) |
 | CockroachDB v26.3.5 | **breaks**: `lajstrom migrate` fails on the first migration | none; [below](#cockroachdb) |
 
 Behind any pooler in transaction mode, three more rules hold, measured on PgBouncer and Odyssey:
@@ -239,13 +239,15 @@ installed for this page: what follows is its documentation and the measurements 
 ## YugabyteDB
 
 **Experimental: tested in a non-blocking CI cell; not guaranteed.** Lajstrom runs on YugabyteDB
-under two conditions, both measured below:
+under one condition, with one recommendation, both measured below:
 
 1. The YB-TServer flag `ysql_yb_ddl_transaction_block_enabled=true`, so that a migration is
    one transaction.
-2. One migrator at a time: `lajstrom migrate` alone (the Job of
+2. Recommended: one migrator at a time, `lajstrom migrate` alone (the Job of
    [operations.md](../operations.md#several-replicas)) before any `serve` starts, at install
-   and at every upgrade, so that the replicas find nothing to apply.
+   and at every upgrade, so that the replicas find nothing to apply. Two migrators at once pass
+   since #616 (below), but each waits for the other's migrations and runs some of its own
+   twice, and once, before #616, a `COMMIT` waited six minutes among them.
 
 The cell `integration (zot-yugabyte)` of the YugabyteDB workflow (#624) runs the index's
 integration tests that way: nightly, on demand, and on pull requests that change
@@ -316,16 +318,29 @@ What breaks:
   no rows, which is why `lajstrom migrate` passes there. With
   `--tserver_flags=ysql_yb_ddl_transaction_block_enabled=true` (a restart) `TestMigration0008`,
   `TestMigration0009` and `TestUpgrade` pass.
-- **Two migrators at once.** Two stores migrating one new schema, as two replicas starting
-  together on an unmigrated database do: `ERROR: type "schema_migrations" already exists
-  (SQLSTATE 42710)`, with the flag or without: the second does not see the table the first
-  committed while it waited for the migration lock. Migrations of other schemas at the same
-  time (the test suite's parallel tests): `ERROR: could not serialize access due to concurrent
-  update (query layer retries aren't supported for multi-statement queries issued via the
-  simple query protocol, …) (SQLSTATE 40001)`
+- **Two migrators at once, before #616.** Two stores migrating one new schema, as two
+  replicas starting together on an unmigrated database do: `ERROR: type "schema_migrations"
+  already exists (SQLSTATE 42710)`, with the flag or without: the second does not see the table
+  the first committed while it waited for the migration lock. Migrations of other schemas at
+  the same time (the test suite's parallel tests): `ERROR: could not serialize access due to
+  concurrent update (query layer retries aren't supported for multi-statement queries issued
+  via the simple query protocol, …) (SQLSTATE 40001)`
   ([yugabyte-db#21833](https://github.com/yugabyte/yugabyte-db/issues/21833)); and once a
   migration's `COMMIT` waited more than six minutes (`RPCWait`, `TransactionCommit`) while the
   other migrators waited for the lock, until the run's timeout.
+
+  Since #616 the runner rolls such a transaction back and runs it again from the start, up to
+  five times, and counts the version again under the lock
+  ([index-schema.md](../spec/index-schema.md#migrations)). Measured on 2026-11-14, one node of
+  the image below with the flag, Lajstrom at the commit of #616: `TestConcurrentMigrate` failed
+  3 of 3 runs without the retry (`42710` on `0001_init.sql`) and passed 5 of 5 with it, one
+  `42710` retried in each. Four schemas migrated by two stores each, all at once, twice: 8
+  `42710` and 7 `40001` (`schema version mismatch for table …: expected 1, got 0` on
+  `0014_schema_requires.sql`, which alters `schema_migrations`, read by the migrator that waited
+  for the lock), each passed on its second attempt, every test passed, each schema took about
+  70 s. Two `lajstrom migrate` at once on a new database applied 10 and 11 of the 21
+  migrations, and logged one retry. The six-minute `COMMIT` was not seen again: no run took more
+  than 75 s.
 
 Not measured: a cluster of several nodes, a node failure, load.
 

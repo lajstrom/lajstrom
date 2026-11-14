@@ -4,8 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
+	"log/slog"
+	"math/rand/v2"
 	"slices"
+	"time"
 )
 
 // migrationLockID is the key of the Postgres advisory lock that serialises migration runners:
@@ -21,7 +25,25 @@ type runner struct {
 	check   string // counts the rows of one version
 	record  string // records one version as applied now
 	require string // sets the requires of one version (the column of 0014)
+
+	// delay returns the pause before the attempt after the failed attempt n (from 1) of a
+	// migration's transaction; nil is retryDelay. The tests pause less.
+	delay func(n int) time.Duration
 }
+
+// migrationAttempts is how many times in all the runner runs the transaction of one migration
+// that fails on a conflict with another schema change (retryable), #616.
+const migrationAttempts = 5
+
+// firstRetryDelay is the pause before the second attempt at a migration's transaction; it
+// doubles before each attempt after it.
+const firstRetryDelay = 100 * time.Millisecond
+
+// The SQLSTATE codes of the conflicts the runner retries (retryable).
+const (
+	serializationFailure = "40001" // the database aborted the transaction
+	duplicateObject      = "42710" // YugabyteDB: schema_migrations, from a stale catalog
+)
 
 var runners = map[string]runner{
 	DialectSQLite: {
@@ -52,6 +74,8 @@ type MigrateOptions struct {
 	// would not run on the schema after it. Without it, ApplyMigrations applies nothing then
 	// and returns ErrBreakingMigration.
 	Breaking bool
+	// Log is the logger of the retries of a migration's transaction; nil means slog.Default().
+	Log *slog.Logger
 }
 
 // MigrationReport is what ApplyMigrations found and did.
@@ -79,7 +103,12 @@ type MigrationReport struct {
 // schema_migrations (created when missing). The transaction first takes the migration lock,
 // pg_advisory_xact_lock on Postgres and BEGIN IMMEDIATE on SQLite, and checks
 // schema_migrations under it, so replicas that start at once apply each migration exactly
-// once. On error the report has the versions applied before the failing one.
+// once. A transaction that fails on a conflict with another schema change runs again from the
+// start, up to migrationAttempts times in all, with a warning on opts.Log each time: one the
+// database aborted (40001), and one whose create of schema_migrations finds the table that
+// another migrator committed while this one waited for the lock (42710; YugabyteDB, #616). The
+// version is counted again under the lock, so a retry applies it at most once. On error the
+// report has the versions applied before the failing one.
 func ApplyMigrations(ctx context.Context, db *sql.DB, dialect string, opts MigrateOptions) (MigrationReport, error) {
 	ms, err := migrations(dialect)
 	if err != nil {
@@ -111,8 +140,12 @@ func (r runner) applyAll(ctx context.Context, db *sql.DB, ms []migration, opts M
 				ErrBreakingMigration, m.name, m.requires, rep.Version)
 		}
 	}
+	log := opts.Log
+	if log == nil {
+		log = slog.Default()
+	}
 	for _, m := range pending {
-		ran, err := r.apply(ctx, db, m)
+		ran, err := r.apply(ctx, db, m, log)
 		if err != nil {
 			return rep, fmt.Errorf("index: migration %s: %w", m.name, err)
 		}
@@ -176,10 +209,85 @@ func AppliedMigrations(ctx context.Context, db *sql.DB) ([]int, error) {
 	return versions, nil
 }
 
-// apply runs m in one transaction that holds the migration lock, unless schema_migrations
+// apply runs the transaction of m (attempt) and reports whether it ran m. An attempt that fails
+// on a conflict with another schema change (retryable) is rolled back and the transaction runs
+// again from its start, after a pause (runner.delay) and a warning on log, up to
+// migrationAttempts times in all. That is correct where DDL is transactional (Postgres;
+// YugabyteDB with ysql_yb_ddl_transaction_block_enabled, docs/deploy/databases.md): the failed
+// attempt left nothing, and the next counts the version again under the migration lock, so a
+// migrator that lost the race finds m applied and does not run it. Any other error is returned
+// at once.
+func (r runner) apply(ctx context.Context, db *sql.DB, m migration, log *slog.Logger) (bool, error) {
+	for n := 1; ; n++ {
+		ran, err := r.attempt(ctx, db, m)
+		state, retry := retryable(err)
+		switch {
+		case err == nil:
+			return ran, nil
+		case !retry:
+			return false, err
+		case n == migrationAttempts:
+			return false, fmt.Errorf("%d attempts: %w", n, err)
+		}
+		delay := r.retryDelay(n)
+		log.WarnContext(ctx, "index: a migration conflicted with another schema change; it runs again from the start",
+			"migration", m.name, "sqlstate", state, "attempt", n, "attempts", migrationAttempts, "delay", delay, "error", err)
+		t := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return false, fmt.Errorf("%w; not run again: %w", err, context.Cause(ctx))
+		case <-t.C:
+		}
+	}
+}
+
+// retryDelay is the pause after the failed attempt n (from 1) at a migration's transaction:
+// firstRetryDelay doubled n-1 times, between half and one and a half of it at random, so that
+// migrators that failed together do not try again together.
+func (r runner) retryDelay(n int) time.Duration {
+	if r.delay != nil {
+		return r.delay(n)
+	}
+	d := firstRetryDelay << (n - 1)
+	return d/2 + rand.N(d) //nolint:gosec // the jitter of a retry, not a security use
+}
+
+// createError is the error of the create of schema_migrations in an attempt.
+type createError struct{ err error }
+
+func (e *createError) Error() string { return e.err.Error() }
+func (e *createError) Unwrap() error { return e.err }
+
+// retryable returns the SQLSTATE of err, the error of one attempt at a migration's
+// transaction, and whether a later attempt may pass: a transaction the database aborted
+// (40001, from any statement, COMMIT included: on YugabyteDB DDL that conflicts with another
+// schema change, also of another schema, yugabyte-db#21833), or a create of schema_migrations
+// that finds the type of a table it does not see (42710: on YugabyteDB the catalog of a
+// transaction that waited for the migration lock misses the table another migrator committed
+// meanwhile). A 42710 of a migration file is that file's, and the next attempt would fail
+// alike. The SQLSTATE is that of the driver's error type, by its method SQLState (pgconn's
+// PgError), so this package imports no driver; SQLite's errors have none.
+func retryable(err error) (string, bool) {
+	var e interface{ SQLState() string }
+	if !errors.As(err, &e) {
+		return "", false
+	}
+	switch state := e.SQLState(); state {
+	case serializationFailure:
+		return state, true
+	case duplicateObject:
+		var ce *createError
+		return state, errors.As(err, &ce)
+	default:
+		return state, false
+	}
+}
+
+// attempt runs m in one transaction that holds the migration lock, unless schema_migrations
 // records it already, and reports whether it ran m. The transaction is spelled out on one
 // connection because database/sql cannot begin one with BEGIN IMMEDIATE.
-func (r runner) apply(ctx context.Context, db *sql.DB, m migration) (ran bool, err error) {
+func (r runner) attempt(ctx context.Context, db *sql.DB, m migration) (ran bool, err error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return false, err
@@ -199,7 +307,7 @@ func (r runner) apply(ctx context.Context, db *sql.DB, m migration) (ran bool, e
 		}
 	}
 	if _, err := conn.ExecContext(ctx, r.create); err != nil {
-		return false, err
+		return false, &createError{err}
 	}
 	var n int
 	if err := conn.QueryRowContext(ctx, r.check, m.version).Scan(&n); err != nil {

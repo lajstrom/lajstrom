@@ -101,7 +101,7 @@ func newServeCmd(a *app) *cobra.Command {
 			defer func() { err = errors.Join(err, st.Close()) }()
 			// On SQLite this process is the only replica, so no binary of the schema before the run
 			// is serving on it: a breaking migration is safe to apply.
-			mig, err := st.ApplyMigrations(ctx, index.MigrateOptions{Breaking: c.Database.Driver == index.DialectSQLite})
+			mig, err := st.ApplyMigrations(ctx, index.MigrateOptions{Breaking: c.Database.Driver == index.DialectSQLite, Log: a.log})
 			if err != nil {
 				return migrationHint(inFile(c.Database, err))
 			}
