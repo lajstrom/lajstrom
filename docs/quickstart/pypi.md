@@ -2,11 +2,11 @@
 
 A pypi repo serves wheels and source distributions to `pip`, `uv` and `poetry`: `twine upload`
 or `uv publish` puts them in, the simple index (PEP 503 HTML and PEP 691 JSON) lets clients find
-them, and every file is an OCI artifact in the registry behind Lajstrom, one manifest per file,
-with its core metadata in a layer of its own. The endpoints are specified in
-[http-routing.md](../spec/http-routing.md) §3 (pypi); what lands in the registry is the
-[manifest profile](../spec/manifest-profile.md). `test/e2e/pypi.sh` runs the publish and install
-steps with checks ([the end-to-end script](#the-end-to-end-script)).
+them, a version can be yanked (PEP 592), and every file is an OCI artifact in the registry behind
+Lajstrom, one manifest per file, with its core metadata in a layer of its own. The endpoints are
+specified in [http-routing.md](../spec/http-routing.md) §3 (pypi); what lands in the registry is
+the [manifest profile](../spec/manifest-profile.md). `test/e2e/pypi.sh` runs the publish, install
+and yank steps with checks ([the end-to-end script](#the-end-to-end-script)).
 
 ## 1. Start the dev stack, make a repo and a user
 
@@ -167,7 +167,44 @@ curl -s -u alice -H 'Accept: application/vnd.pypi.simple.v1+json' \
   http://localhost:8080/pypi/internal/simple/my-pkg/ | jq '.versions, [.files[].filename]'
 ```
 
-## 4. In the registry
+## 4. Yank
+
+A yanked version stays in the index, and its files stay where they are, but pip and uv skip it
+unless a requirement pins it with `==` (PEP 592). That is how a broken release is taken back
+without breaking the builds that pinned it. PyPI yanks in its web UI. In Lajstrom it is the
+management API, with `write` on the repo, which alice has
+([api.md](../api.md#yank-a-pypi-version-put-and-delete-apiv1repospypinamepackagespackageversionsversionyank)):
+
+```sh
+curl -u alice -X PUT -d '{"reason": "imports a module it does not ship"}' \
+  http://localhost:8080/api/v1/repos/pypi/internal/packages/my-pkg/versions/1.0/yank    # 204
+curl -s -u alice -H 'Accept: application/vnd.pypi.simple.v1+json' \
+  http://localhost:8080/pypi/internal/simple/my-pkg/ | jq '[.files[] | {filename, yanked}]'
+```
+
+Every file of 1.0 now has `"yanked": "imports a module it does not ship"` in the JSON page and
+`data-yanked="…"` in the HTML one; a yank without a body has no reason, `"yanked": true`. In the
+container:
+
+```sh
+pip install --index-url http://alice:<password>@localhost:8080/pypi/internal/simple/ my-pkg       # no version: the only one is yanked
+pip install --index-url http://alice:<password>@localhost:8080/pypi/internal/simple/ my-pkg==1.0  # 1.0, with pip's warning and the reason
+```
+
+With a later version published, `pip install my-pkg` takes the newest one that is not yanked.
+`DELETE` clears the yank:
+
+```sh
+curl -u alice -X DELETE http://localhost:8080/api/v1/repos/pypi/internal/packages/my-pkg/versions/1.0/yank   # 204
+```
+
+A yank names the whole version, every file of it, those uploaded later too. The same yank again,
+or an unyank of a version that is not yanked, changes nothing. Each yank and unyank is a small
+manifest of the package's journal in the registry (`crane ls` lists it as `_j00000001`), so
+`lajstrom reindex` keeps it, and an audit row `pypi.yank`. A version that is deleted and uploaded
+again is still yanked until it is unyanked.
+
+## 5. In the registry
 
 Each file is a manifest under `pypi/internal/<normalized name>`, tagged with the version and the
 tag set (`1.0__py3-none-any`, [the tag scheme](../spec/manifest-profile.md)), with the file and
@@ -181,7 +218,7 @@ crane manifest localhost:5000/pypi/internal/my-pkg:1.0__py3-none-any | jq .annot
 `bin/lajstrom reindex --repo pypi/internal --config $cfg` rebuilds the index of the repo from
 those manifests ([operations.md](../operations.md#reindex)).
 
-## 5. Clean up
+## 6. Clean up
 
 A version goes with `DELETE` on the API: every file of the version, or with `?variant=` one of
 them, `sdist` or the wheel's tag set
@@ -204,7 +241,7 @@ rm -r ~/my-pkg          # the project; sudo on Linux: the container wrote dist/ 
 
 ## The end-to-end script
 
-`test/e2e/pypi.sh` runs sections 2 and 3 with checks, in `python:3.13` (or the image
+`test/e2e/pypi.sh` runs sections 2 to 4 with checks, in `python:3.13` (or the image
 `PYPI_E2E_IMAGE` names): a project built with `python -m build`, a wheel and an sdist, uploaded
 with twine; the same files again (`200`); other bytes under the same file name (`409`, which
 twine reports); `poetry publish -r internal` of the same files (`200`); `pip install` from the
@@ -213,7 +250,9 @@ home of its own: `pip.conf` with the credentials in `~/.netrc`, `[[tool.uv.index
 project's `pyproject.toml` for `uv add`, `[[index]]` in `uv.toml` for `uv pip install`, and
 `poetry source add` in a consumer project for `poetry add`; `uv publish` of the next version,
 then `uv publish --check-url`, which skips the files that are there; and
-`pip install --upgrade`, which gets the next version. With `LAJSTROM_SERVER_LOG`
+`pip install --upgrade`, which gets the next version; and section 4: a yank of the next version
+with a reason, which `pip install` skips and `pip install ==` takes with a warning, its unyank,
+and a yank without a reason that `lajstrom reindex --verify` keeps. With `LAJSTROM_SERVER_LOG`
 naming the server's log file, it also checks in the access log that pip read the core metadata
 (PEP 658) before the file. It creates the repo when it does not exist, and a user of its own
 with `writer` on it, with `bin/lajstrom admin` against the configuration of `LAJSTROM_CONFIG`

@@ -79,8 +79,9 @@ type projectFile struct {
 	DistInfo       any               `json:"dist-info-metadata"`
 	Size           int64             `json:"size"`
 	UploadTime     string            `json:"upload-time"`
-	Yanked         bool              `json:"yanked"`
+	Yanked         any               `json:"yanked"` // false; PEP 592: the reason, or true for a yank without one
 	coreSHA256     string
+	yanked         *string // the yank's reason, nil when the file is not yanked
 }
 
 // projectFiles reads the files of every version of pkg, oldest first, and the distinct
@@ -90,8 +91,13 @@ type projectFile struct {
 // whose metadata the index left out (degraded, or more than ingest keeps) has no core-metadata,
 // so pip downloads the file for it; nor has an sdist, whose PKG-INFO a build may change (PEP 658
 // is for metadata the processing of the file does not modify; PyPI announces wheels only).
+// Every file of a version the package's journal yanked is yanked (PEP 592, #81).
 func projectFiles(ctx context.Context, st index.Reader, pkg index.Package) ([]projectFile, []string, error) {
 	vs, err := st.ListVersions(ctx, pkg.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	yanked, err := yanks(ctx, st, pkg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -119,7 +125,13 @@ func projectFiles(ctx context.Context, st index.Reader, pkg index.Package) ([]pr
 			pf := projectFile{
 				Filename: f.Name, URL: fileURL(pkg.Name, v.Version, f.Name), Hashes: map[string]string{"sha256": f.Digest.Encoded()},
 				RequiresPython: md.RequiresPython, CoreMetadata: false, DistInfo: false, Size: f.Size,
-				UploadTime: v.CreatedAt.UTC().Format("2006-01-02T15:04:05.000000Z"),
+				UploadTime: v.CreatedAt.UTC().Format("2006-01-02T15:04:05.000000Z"), Yanked: false,
+			}
+			if reason, ok := yanked[v.Version]; ok {
+				pf.yanked, pf.Yanked = &reason, true
+				if reason != "" {
+					pf.Yanked = reason
+				}
 			}
 			if md.CoreMetadata != "" && isWheel(f.Name) {
 				sum := sha256.Sum256([]byte(md.CoreMetadata))
@@ -131,6 +143,22 @@ func projectFiles(ctx context.Context, st index.Reader, pkg index.Package) ([]pr
 		}
 	}
 	return files, versions, nil
+}
+
+// yanks returns the yanked versions of pkg with their reasons ("" for none), from the state of
+// its journal (docs/spec/manifest-profile.md §8).
+func yanks(ctx context.Context, st index.Reader, pkg index.Package) (map[string]string, error) {
+	state, err := st.ListJournalState(ctx, pkg.ID)
+	if err != nil {
+		return nil, err
+	}
+	yanked := map[string]string{}
+	for _, s := range state {
+		if s.Kind == index.JournalYanked {
+			yanked[s.Key] = s.Value
+		}
+	}
+	return yanked, nil
 }
 
 // fileURL is the URL of a file relative to the page of its project,
@@ -152,6 +180,9 @@ func projectPage(project string, files []projectFile, versions []string) ([]form
 		}
 		if f.coreSHA256 != "" {
 			b.WriteString(` data-dist-info-metadata="sha256=` + f.coreSHA256 + `" data-core-metadata="sha256=` + f.coreSHA256 + `"`)
+		}
+		if f.yanked != nil {
+			b.WriteString(` data-yanked="` + html.EscapeString(*f.yanked) + `"`)
 		}
 		b.WriteString(">" + html.EscapeString(f.Filename) + "</a><br/>\n")
 	}

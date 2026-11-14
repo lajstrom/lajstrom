@@ -1,8 +1,10 @@
 package pypi
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -39,6 +41,75 @@ func (e *env) pages() (string, []byte) {
 		e.t.Fatalf("the pages: %d, %d", h.Code, j.Code)
 	}
 	return h.Body.String(), j.Body.Bytes()
+}
+
+// yankedOf returns the yanked of each file of a JSON page by its file name.
+func yankedOf(t *testing.T, page []byte) map[string]any {
+	t.Helper()
+	var p struct {
+		Files []struct {
+			Filename string `json:"filename"`
+			Yanked   any    `json:"yanked"`
+		} `json:"files"`
+	}
+	must(t, json.Unmarshal(page, &p))
+	out := map[string]any{}
+	for _, f := range p.Files {
+		out[f.Filename] = f.Yanked
+	}
+	return out
+}
+
+// TestRenderYanked: the simple index marks every file of a yanked version (PEP 592), with the
+// reason HTML-escaped in data-yanked and as the JSON yanked, true without a reason; an unyank
+// clears it, and the files of other versions are never marked.
+func TestRenderYanked(t *testing.T) {
+	e := newPublished(t)
+	next, ni := testutil.Wheel(testutil.WheelOptions{Name: "My_Pkg", Version: "1.1"})
+	e.publish(ni.Filename, next)
+	files10 := []string{}
+	for name := range e.bodies {
+		files10 = append(files10, name)
+	}
+	reason := `<b>"broken"</b> & gone`
+	tests := []struct {
+		name   string
+		yank   func()
+		want   any // the yanked of the files of 1.0; those of 1.1 are false
+		marker string
+	}{
+		{"not yanked", func() {}, false, ""},
+		{"yanked with a reason", func() { e.yank("1.0", reason, false) }, reason, ` data-yanked="&lt;b&gt;&#34;broken&#34;&lt;/b&gt; &amp; gone">`},
+		{"yanked again without a reason", func() { e.yank("1.0", "", false) }, true, ` data-yanked="">`},
+		{"unyanked", func() { e.yank("1.0", "", true) }, false, ""},
+	}
+	for _, tt := range tests {
+		tt.yank()
+		html, page := e.pages()
+		got := yankedOf(t, page)
+		for _, name := range files10 {
+			if !cmp.Equal(got[name], tt.want) {
+				t.Errorf("%s: the JSON yanked of %s is %#v, want %#v", tt.name, name, got[name], tt.want)
+			}
+			line := lineOf(html, ">"+name+"</a>")
+			if tt.marker == "" && strings.Contains(line, "data-yanked") || tt.marker != "" && !strings.Contains(line, tt.marker+name+"</a>") {
+				t.Errorf("%s: the link of %s is %s, want the marker %q", tt.name, name, line, tt.marker)
+			}
+		}
+		if got[ni.Filename] != false || strings.Contains(lineOf(html, ">"+ni.Filename+"</a>"), "data-yanked") {
+			t.Errorf("%s: the wheel of 1.1, which no yank names, is %#v: %s", tt.name, got[ni.Filename], lineOf(html, ni.Filename))
+		}
+	}
+}
+
+// lineOf returns the line of s that contains sub, "" when none does.
+func lineOf(s, sub string) string {
+	for line := range strings.SplitSeq(s, "\n") {
+		if strings.Contains(line, sub) {
+			return line
+		}
+	}
+	return ""
 }
 
 // TestYankReindex: the yanks of a package are entries of its journal in the registry, so with the
