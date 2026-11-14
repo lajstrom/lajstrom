@@ -13,12 +13,12 @@ import (
 // Snapshotter reads and writes the control plane whole. Both engines implement it beside Store,
 // as they do ApplyMigrations: serve does not use it.
 type Snapshotter interface {
-	// ExportControlPlane reads the control plane in one transaction, repeatable read on
-	// Postgres, so that its rows are of one moment: the user and the repo of every token, the
-	// repo of every key, the rows of every group member and identity are in it. It returns
-	// before the caller talks to the registry, so no transaction is held across a request to it.
-	// Schema is the newest migration applied to the database, ReadAt the database's time; the
-	// audit rows are those opts selects.
+	// ExportControlPlane reads the control plane in one transaction that reads one snapshot and
+	// is never aborted (SERIALIZABLE, READ ONLY, DEFERRABLE on Postgres), so that its rows are of
+	// one moment: the user and the repo of every token, the repo of every key, the rows of every
+	// group member and identity are in it. It returns before the caller talks to the registry,
+	// so no transaction is held across a request to it. Schema is the newest migration applied
+	// to the database, ReadAt the database's time; the audit rows are those opts selects.
 	ExportControlPlane(ctx context.Context, opts ExportOptions) (*ControlPlane, error)
 
 	// ImportControlPlane inserts the rows of cp with their ids, in one transaction. The tables
@@ -26,11 +26,12 @@ type Snapshotter interface {
 	// keys and audit) must be empty: otherwise the error wraps ErrNotEmpty and names the tables
 	// that have rows, and nothing changes. With opts.Force it first empties every table but
 	// schema_migrations, auth_version and replicas, in the same transaction. The sequence of
-	// each id is moved past the greatest id of cp, auth_version is incremented, and opts.Event,
-	// when set, is appended to audit last. A cp whose Schema is newer than the newest migration
-	// of the binary wraps ErrSchemaTooNew, and nothing changes; an older one is written as it is,
-	// a column added since taking its default. A row that refers to a row cp lacks wraps
-	// ErrNotFound, an id or a unique key given twice ErrConflict, and nothing changes.
+	// each id is moved past the greatest id of cp and never back, with the data rights of
+	// serve's database user; auth_version is incremented, and opts.Event, when set, is appended
+	// to audit last. A cp whose Schema is newer than the newest migration of the binary wraps
+	// ErrSchemaTooNew, and nothing changes; an older one is written as it is, a column added
+	// since taking its default. A row that refers to a row cp lacks wraps ErrNotFound, an id or
+	// a unique key given twice ErrConflict, and nothing changes.
 	ImportControlPlane(ctx context.Context, cp *ControlPlane, opts ImportOptions) error
 }
 
