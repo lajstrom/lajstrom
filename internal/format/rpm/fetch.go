@@ -34,7 +34,7 @@ func (p Plugin) fetchMetadata(ctx context.Context, repo index.Repo, pkg index.Pa
 	if prov == nil {
 		return nil, fmt.Errorf("rpm: the registry %q of rpm/%s is not configured for the renderer", repo.Registry, repo.Name)
 	}
-	name := ociName(repo, pkg.NameOCI)
+	name := ociName(repo, index.ManifestPath(pkg, v))
 	rr, err := prov.Repository(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("rpm: repository %s: %w", name, onlyUnavailable(err))

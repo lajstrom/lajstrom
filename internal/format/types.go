@@ -223,7 +223,8 @@ type Published struct {
 // Deletion names what Publisher.Delete deletes: the manifest that Reference names in the OCI
 // repository of the package path Path below the repo.
 type Deletion struct {
-	// Path is the package path below <format>/<repo>/, index.Package.NameOCI for a version.
+	// Path is the package path below <format>/<repo>/ of the OCI repository that holds the
+	// manifest: index.ManifestPath for a version, its package's NameOCI but in a split (#642).
 	Path string
 	// Reference is a tag or a digest of the manifest.
 	Reference string
