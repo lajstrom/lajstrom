@@ -12,8 +12,9 @@ import (
 )
 
 // The maven-metadata.xml of an artifact in index_cache (docs/spec/index-schema.md): its scope is
-// <groupId>/<artifactId>, the coordinates as they are spelt (com.example/lib-core), its kind
-// maven-metadata, and each of its checksum files is a document of the same render, of the kind
+// <groupId>/<artifactId>, the coordinates as they are spelt (com.example/lib-core), and that of a
+// SNAPSHOT version <groupId>/<artifactId>/<version> (com.example/lib-core/1.0-SNAPSHOT); its kind
+// is maven-metadata, and each of its checksum files is a document of the same render, of the kind
 // maven-metadata.<algorithm>, so that a checksum is always that of the bytes served.
 const kindMetadata = "maven-metadata"
 
@@ -49,24 +50,32 @@ func metadataKind(algorithm string) string {
 // from the index: groupId, artifactId, and versioning with latest, the greatest version in
 // Maven's version order, release, the greatest that is not a pre-release (1.0-rc1, 2.0.0-M3;
 // docs/acceptance.md E-08) and absent when every version is one, the versions in that order, and
-// lastUpdated, the newest created of the versions as yyyyMMddHHmmss in UTC. It
-// returns the document and its .md5, .sha1, .sha256 and .sha512 files, computed from its bytes.
-// The render depends on the index alone, so that two renders of the same versions, on any
-// replica, are the same bytes with the same checksums. An artifact that is not in the index, or
-// has no version, renders no document, which format.CachedDocument answers with
-// index.ErrNotFound; a scope that is not <groupId>/<artifactId> is index.ErrNotFound.
+// lastUpdated, the newest created of the versions as yyyyMMddHHmmss in UTC; the builds of a
+// SNAPSHOT version are one version there, the SNAPSHOT version. The scope
+// <groupId>/<artifactId>/<base>-SNAPSHOT is the maven-metadata.xml of that SNAPSHOT version
+// (renderSnapshot). It returns the document and its .md5, .sha1, .sha256 and .sha512 files,
+// computed from its bytes. The render depends on the index alone, so that two renders of the
+// same versions, on any replica, are the same bytes with the same checksums. An artifact that is
+// not in the index, or has no version (no build), renders no document, which
+// format.CachedDocument answers with index.ErrNotFound; another scope is index.ErrNotFound.
 func (Plugin) RenderIndex(ctx context.Context, repo index.Repo, scope format.IndexScope, st index.Reader) ([]format.Document, error) {
-	groupID, artifactID, ok := strings.Cut(string(scope), "/")
-	if !ok || checkGroupArtifact(groupID, artifactID) != nil {
-		return nil, fmt.Errorf("%w: maven scope %q is not <groupId>/<artifactId>", index.ErrNotFound, scope)
+	parts := strings.Split(string(scope), "/")
+	if len(parts) < 2 || len(parts) > 3 || checkGroupArtifact(parts[0], parts[1]) != nil || (len(parts) == 3 && !isSnapshotVersion(parts[2])) {
+		return nil, fmt.Errorf("%w: maven scope %q is not <groupId>/<artifactId>[/<base>-SNAPSHOT]", index.ErrNotFound, scope)
 	}
-	pkg, err := st.GetPackage(ctx, repo.ID, Coordinates{GroupID: groupID, ArtifactID: artifactID}.Name())
+	c := Coordinates{GroupID: parts[0], ArtifactID: parts[1]}
+	pkg, err := st.GetPackage(ctx, repo.ID, c.Name())
 	if errors.Is(err, index.ErrNotFound) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	if len(parts) == 3 {
+		c.Version = parts[2]
+		return renderSnapshot(ctx, st, pkg, c)
+	}
+	groupID, artifactID := c.GroupID, c.ArtifactID
 	vs, err := st.ListVersions(ctx, pkg.ID)
 	if err != nil || len(vs) == 0 {
 		return nil, err
@@ -91,12 +100,16 @@ type versioning struct {
 }
 
 // metadataDocuments renders the maven-metadata.xml of the versions vs of an artifact, at least
-// one, and its checksum files.
+// one, and its checksum files. The builds of a SNAPSHOT version are listed once, as it.
 func metadataDocuments(groupID, artifactID string, vs []index.Version) ([]format.Document, error) {
-	versions := make([]string, len(vs))
+	var versions []string
+	seen := map[string]bool{}
 	updated := vs[0].CreatedAt
-	for i, v := range vs {
-		versions[i] = v.Version
+	for _, v := range vs {
+		if d := versionDir(v.Version); !seen[d] {
+			seen[d] = true
+			versions = append(versions, d)
+		}
 		if v.CreatedAt.After(updated) {
 			updated = v.CreatedAt
 		}
@@ -115,7 +128,12 @@ func metadataDocuments(groupID, artifactID string, vs []index.Version) ([]format
 		return nil, fmt.Errorf("maven: the %s of %s:%s: %w", MetadataFile, groupID, artifactID, err)
 	}
 	body = append(append([]byte(xml.Header), body...), '\n')
-	path := strings.ReplaceAll(groupID, ".", "/") + "/" + artifactID + "/" + MetadataFile
+	return withChecksums(strings.ReplaceAll(groupID, ".", "/")+"/"+artifactID+"/"+MetadataFile, body), nil
+}
+
+// withChecksums returns the maven-metadata.xml body at path and its four checksum files,
+// computed from its bytes.
+func withChecksums(path string, body []byte) []format.Document {
 	docs := []format.Document{{Kind: kindMetadata, Path: path, ContentType: contentTypeXML, Content: body}}
 	h := newHashes()
 	_, _ = h.writer().Write(body) // a hash takes every write
@@ -124,5 +142,5 @@ func metadataDocuments(groupID, artifactID string, vs []index.Version) ([]format
 		docs = append(docs, format.Document{Kind: metadataKind(a.name), Path: path + "." + a.name, ContentType: contentTypeChecksum,
 			Content: []byte(sums[a.name])})
 	}
-	return docs, nil
+	return docs
 }

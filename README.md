@@ -57,7 +57,7 @@ with the real clients (`test/e2e/`):
 | [raw](docs/quickstart/raw.md) | `curl -T` | `curl`, `oras pull` | every version kept, `?digest=` pins one, `Range`, a JSON listing |
 | [pypi](docs/quickstart/pypi.md) | `twine upload`, `uv publish` | `pip`, `uv`, `poetry` | PEP 503 and PEP 691 indexes, PEP 658 metadata |
 | [apt](docs/quickstart/apt.md) | `curl -T` a `.deb`, `oras push` | `apt-get` on Debian and Ubuntu | signed `InRelease` and `Release.gpg`, `by-hash`, key rotation |
-| [maven](docs/quickstart/maven.md) | `mvn deploy`, Gradle `publish` | `mvn`, Gradle | md5, sha1, sha256 and sha512 checksums; a release appears whole or not at all; no SNAPSHOT versions yet |
+| [maven](docs/quickstart/maven.md) | `mvn deploy`, Gradle `publish` | `mvn`, Gradle | md5, sha1, sha256 and sha512 checksums; a release appears whole or not at all; SNAPSHOT builds in a repo of their own |
 | [npm](docs/quickstart/npm.md) | `npm publish`, `pnpm publish`, `yarn npm publish` | `npm`, `pnpm`, `yarn` | dist-tags; a proxy of npmjs.org and groups |
 | [rpm](docs/quickstart/rpm.md) | `curl -T` an `.rpm`, `oras push` | `dnf`, `yum`, `zypper` | GPG-signed `repomd.xml`, binary and source packages, every arch in one repodata |
 | [OCI](docs/quickstart/oras.md) | `oras push`, `cosign sign` | `oras pull`, `crane`, `cosign verify` | the `/v2` API with its token flow, referrers; cosign is run by [test/e2e/cosign.sh](test/e2e/cosign.sh), not by the quick start |

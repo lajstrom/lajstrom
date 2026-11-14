@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -54,6 +55,8 @@ type formatCase struct {
 	listed func(t *testing.T, f *frontend) []string
 	// cached are the index_cache rows the GETs of docs and signed fill, as scope and kind.
 	cached [][2]string
+	// policy is the policy of the repo, none when empty.
+	policy string
 }
 
 // formatCases are the formats of TestRebuildFormats and TestIntegrationFormats.
@@ -83,6 +86,15 @@ var formatCases = map[string]formatCase{
 			"com/example/lib-api/2.0.0/lib-api-2.0.0.pom.md5", "com/example/lib-core/1.3.0/lib-core-1.3.0-sources.jar"},
 		cached: [][2]string{{"com.example/lib-core", "maven-metadata"}, {"com.example/lib-core", "maven-metadata.sha512"},
 			{"com.example/lib-api", "maven-metadata"}},
+	},
+	"maven-snapshot": {
+		plugin: maven.Plugin{}, publish: publishMavenSnapshots, versions: 3, policy: `{"maven":{"versionPolicy":"snapshot"}}`,
+		docs: []string{"com/example/lib-core/1.0-SNAPSHOT/maven-metadata.xml", "com/example/lib-core/1.0-SNAPSHOT/maven-metadata.xml.sha1",
+			"com/example/lib-core/maven-metadata.xml", "com/example/lib-core/1.0-SNAPSHOT/lib-core-1.0-20261114.111500-2.jar",
+			"com/example/lib-core/1.0-SNAPSHOT/lib-core-1.0-SNAPSHOT.jar", "com/example/lib-core/1.0-SNAPSHOT/lib-core-1.0-SNAPSHOT-sources.jar.sha256",
+			"com/example/lib-core/2.0-SNAPSHOT/maven-metadata.xml"},
+		cached: [][2]string{{"com.example/lib-core/1.0-SNAPSHOT", "maven-metadata"}, {"com.example/lib-core/1.0-SNAPSHOT", "maven-metadata.sha1"},
+			{"com.example/lib-core", "maven-metadata"}, {"com.example/lib-core/2.0-SNAPSHOT", "maven-metadata"}},
 	},
 	"rpm": {
 		plugin: rpm.Plugin{}, publish: publishRpm, versions: 4,
@@ -130,6 +142,7 @@ func (e *env) useFormat(t *testing.T, p format.Plugin, providers provider.Map) {
 func rebuildFormat(t *testing.T, e *env, c formatCase) {
 	t.Helper()
 	ctx := t.Context()
+	e.setPolicy(t, c.policy)
 	f := e.frontend(t, c.plugin)
 	c.publish(t, f)
 	docs := f.documents(t, c)
@@ -160,6 +173,15 @@ func rebuildFormat(t *testing.T, e *env, c formatCase) {
 		}
 	}
 	same(t, "the rows after a second run", before, e.derived(t))
+}
+
+// setPolicy gives the env's repo the policy, none when it is empty.
+func (e *env) setPolicy(t *testing.T, policy string) {
+	t.Helper()
+	if policy != "" {
+		e.repo.Policy = json.RawMessage(policy)
+		must(t, e.st.UpdateRepo(t.Context(), &e.repo))
+	}
 }
 
 // withoutEmptied is before's oci_repos less the repositories that hold no version of before and
@@ -466,6 +488,52 @@ func publishMaven(t *testing.T, f *frontend) {
 	pom, pi := testutil.POM(testutil.POMOptions{ArtifactID: "lib-api", Version: "2.0.0"})
 	f.push(t, format.Upload{Files: []format.UploadedFile{file(ji.Path, jar), file(pi.Path, pom)}})
 	f.deleteVersion(t, "com.example:lib-core", "1.2.0", "")
+}
+
+// publishMavenSnapshots deploys to a repo of SNAPSHOT builds as mvn does: three builds of
+// com.example:lib-core 1.0-SNAPSHOT, the first with a sources jar, each file followed by its
+// .sha1 and .md5 and the build committed by the SNAPSHOT version's maven-metadata.xml, then the
+// artifact's; a build of 2.0-SNAPSHOT by oras push; then the third build of 1.0-SNAPSHOT goes.
+// The documents of the SNAPSHOT versions, and the non-unique names, are rendered from the rows.
+func publishMavenSnapshots(t *testing.T, f *frontend) {
+	for _, b := range []struct {
+		timestamp, number string
+		classifiers       []string
+	}{
+		{"20261114.101112", "1", []string{"", "sources"}},
+		{"20261114.111500", "2", []string{""}},
+		{"20261114.121500", "3", []string{""}},
+	} {
+		version := "1.0-" + b.timestamp + "-" + b.number
+		var files [][2][]byte
+		for _, c := range b.classifiers {
+			jar, _ := testutil.Jar(testutil.JarOptions{Version: version, Classifier: c})
+			name := "lib-core-" + version
+			if c != "" {
+				name += "-" + c
+			}
+			files = append(files, [2][]byte{[]byte("com/example/lib-core/1.0-SNAPSHOT/" + name + ".jar"), jar})
+		}
+		pom, _ := testutil.POM(testutil.POMOptions{Version: "1.0-SNAPSHOT"})
+		files = append(files, [2][]byte{[]byte("com/example/lib-core/1.0-SNAPSHOT/lib-core-" + version + ".pom"), pom})
+		for _, file := range files {
+			f.do(t, http.MethodPut, string(file[0]), file[1], http.StatusCreated)
+			for _, a := range []string{maven.SHA1, maven.MD5} {
+				f.do(t, http.MethodPut, string(file[0])+"."+a, []byte(checksum(a, file[1])), http.StatusCreated)
+			}
+		}
+		md := fmt.Appendf(nil, `<metadata modelVersion="1.1.0"><groupId>com.example</groupId><artifactId>lib-core</artifactId><version>1.0-SNAPSHOT</version>`+
+			`<versioning><snapshot><timestamp>%s</timestamp><buildNumber>%s</buildNumber></snapshot></versioning></metadata>`, b.timestamp, b.number)
+		f.do(t, http.MethodPut, "com/example/lib-core/1.0-SNAPSHOT/maven-metadata.xml", md, http.StatusCreated)
+		f.do(t, http.MethodPut, "com/example/lib-core/maven-metadata.xml", []byte(`<metadata><groupId>com.example</groupId><artifactId>lib-core</artifactId>`+
+			`<versioning><latest>1.0-SNAPSHOT</latest><versions><version>1.0-SNAPSHOT</version></versions></versioning></metadata>`), http.StatusOK)
+	}
+	const pushed = "2.0-20261115.090000-1"
+	jar, _ := testutil.Jar(testutil.JarOptions{Version: pushed})
+	pom, _ := testutil.POM(testutil.POMOptions{Version: "2.0-SNAPSHOT"})
+	f.push(t, format.Upload{Files: []format.UploadedFile{file("com/example/lib-core/2.0-SNAPSHOT/lib-core-"+pushed+".jar", jar),
+		file("com/example/lib-core/2.0-SNAPSHOT/lib-core-"+pushed+".pom", pom)}})
+	f.deleteVersion(t, "com.example:lib-core", "1.0-20261114.121500-3", "")
 }
 
 // deploy PUTs the files of one version of com.example:<artifact>, each followed by its checksum

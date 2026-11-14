@@ -37,6 +37,13 @@
 #     the manifest's three file layers, the files and checksums served; gradle resolve
 #     (fixtures/maven/gradle-consumer, maven { url } with the token) gets lib 1.1.0 through the
 #     range and gradle-lib 1.0.0 with its module metadata, the bytes deployed (M-02);
+#   - SNAPSHOT builds (#80): a second repo, maven-<run>-snapshots, whose policy.maven.versionPolicy
+#     is snapshot, with a deploy token of its own (the <server> lajstrom-snapshots); mvn deploy of
+#     <group>:lib:1.0-SNAPSHOT twice, the second with another jar: each deploy is a build of its
+#     own, 1.0-<timestamp>-1 and then -2, which the SNAPSHOT version's maven-metadata.xml names,
+#     and the first build's jar is still served; dependency:get of 1.0-SNAPSHOT into an empty local
+#     repository gets the first build, and after the second deploy with -U the second; a release
+#     PUT to that repo is 400 naming the policy;
 #   - no secret in the logs of mvn and gradle, nor in the server's.
 #
 # Not yet: a session left without maven-metadata.xml that expires (M-06, #54's second
@@ -93,17 +100,27 @@ e2e_credentials "$work"
 cp "$E2E_CURLRC" "$work/admin"
 run="$(date -u +%Y%m%d%H%M%S)-$RANDOM"
 repo="maven-$run"
+srepo="$repo-snapshots" # the repo of SNAPSHOT builds (#80)
 group="com.example.e2e.r${run//-/}"
 gpath="${group//.//}" # the groupId as a path of the repository layout
 url="$base/maven/$repo"
+surl="$base/maven/$srepo"
 created=""
 token_id=""
+screated=""
+stoken_id=""
 cleanup() {
 	if [ -n "$token_id" ]; then
 		curl -sS -o /dev/null -K "$work/admin" -X DELETE "$base/api/v1/repos/maven/$repo/deploy-tokens/$token_id" || true
 	fi
 	if [ -n "$created" ]; then
 		curl -sS -o /dev/null -K "$work/admin" -X DELETE "$base/api/v1/repos/maven/$repo?force=true" || true
+	fi
+	if [ -n "$stoken_id" ]; then
+		curl -sS -o /dev/null -K "$work/admin" -X DELETE "$base/api/v1/repos/maven/$srepo/deploy-tokens/$stoken_id" || true
+	fi
+	if [ -n "$screated" ]; then
+		curl -sS -o /dev/null -K "$work/admin" -X DELETE "$base/api/v1/repos/maven/$srepo?force=true" || true
 	fi
 	rm -rf "$work"
 }
@@ -387,13 +404,30 @@ jq -r .secret "$work/body" >"$work/token"
 token_id="$(jq -r .id "$work/body")"
 rm -f "$work/body"
 printf 'user = "deploy:%s"\n' "$(cat "$work/token")" >"$work/deploy"
+# The repo of SNAPSHOT builds and its token (#80).
+req admin POST "$base/api/v1/repos" -H 'Content-Type: application/json' \
+	-d "{\"format\":\"maven\",\"name\":\"$srepo\",\"registry\":\"$registry\",\"policy\":{\"maven\":{\"versionPolicy\":\"snapshot\"}}}"
+expect "POST /api/v1/repos maven/$srepo, policy.maven.versionPolicy snapshot ($(head -c 300 "$work/body"))" 201 "$status"
+screated=yes
+req admin POST "$base/api/v1/repos/maven/$srepo/deploy-tokens" -H 'Content-Type: application/json' \
+	-d "{\"name\":\"maven e2e snapshots $run\",\"scopes\":[\"read\",\"write\"]}"
+expect "POST /api/v1/repos/maven/$srepo/deploy-tokens ($(jq -c 'del(.secret)' "$work/body" 2>/dev/null || true))" 201 "$status"
+jq -r .secret "$work/body" >>"$work/token" # the file of the secrets that no log may hold, one per line
+stoken_id="$(jq -r .id "$work/body")"
+rm -f "$work/body"
+printf 'user = "deploy:%s"\n' "$(sed -n 2p "$work/token")" >"$work/snapdeploy"
 cat >"$work/settings.xml" <<EOF
 <settings>
   <servers>
     <server>
       <id>lajstrom</id>
       <username>deploy</username>
-      <password>$(cat "$work/token")</password>
+      <password>$(sed -n 1p "$work/token")</password>
+    </server>
+    <server>
+      <id>lajstrom-snapshots</id>
+      <username>deploy</username>
+      <password>$(sed -n 2p "$work/token")</password>
     </server>
   </servers>
   <profiles>
@@ -411,8 +445,8 @@ cat >"$work/settings.xml" <<EOF
   </profiles>
 </settings>
 EOF
-printf 'lajstromUsername=deploy\nlajstromPassword=%s\n' "$(cat "$work/token")" >"$work/gradle-credentials"
-step "POST /api/v1/repos/maven/$repo/deploy-tokens, scopes read and write: 201, token $token_id, in settings.xml (<server> lajstrom) and gradle.properties as deploy:<token>"
+printf 'lajstromUsername=deploy\nlajstromPassword=%s\n' "$(sed -n 1p "$work/token")" >"$work/gradle-credentials"
+step "POST /api/v1/repos/maven/$repo/deploy-tokens, scopes read and write: 201, token $token_id, in settings.xml (<server> lajstrom) and gradle.properties as deploy:<token>; maven/$srepo, a repo of SNAPSHOT builds, and its token $stoken_id (<server> lajstrom-snapshots)"
 
 # The caches belong to the caller, who runs the clients.
 own "$m2" "$maven_image"
@@ -629,6 +663,74 @@ if [ -n "$server_log" ]; then
 	answered "$from" GET 200 "$gpath/gradle-lib/1.0.0/gradle-lib-1.0.0.module" || fail "gradle resolve: no GET of gradle-lib-1.0.0.module answered 200"
 fi
 step "M-02 gradle resolve (maven { url } with the token): $group:lib:[1.0,2.0) is 1.1.0 through maven-metadata.xml, $group:gradle-lib:1.0.0 with its .module; the bytes deployed"
+
+# SNAPSHOT builds (#80): two deploys of 1.0-SNAPSHOT are two builds; a consumer with -U gets the
+# second.
+# snapshot_build prints the build that the SNAPSHOT version's maven-metadata.xml names,
+# 1.0-<timestamp>-<buildNumber>, after checking its checksums.
+snapshot_build() {
+	local path="$gpath/lib/1.0-SNAPSHOT/maven-metadata.xml" alg
+	req snapdeploy GET "$surl/$path"
+	expect "GET $path of maven/$srepo status" 200 "$status"
+	cp "$work/body" "$work/metadata.xml"
+	expect "the version of $path" 1.0-SNAPSHOT "$(xml version)"
+	for alg in sha1 md5; do
+		req snapdeploy GET "$surl/$path.$alg"
+		expect "GET $path.$alg" "$(digest "$alg" "$work/metadata.xml")" "$(tr -d '\r' <"$work/body" | awk '{ print $1; exit }')"
+	done
+	echo "1.0-$(xml timestamp)-$(xml buildNumber)"
+}
+# snapshot_get LOG [ARGS...]: dependency:get of <group>:lib:1.0-SNAPSHOT from maven/$srepo into
+# $work/m2-snapshots, the plugins read from the cache.
+snapshot_get() {
+	local log="$1"
+	shift
+	mvn "$log" -Dmaven.repo.local=/w/m2-snapshots -Dmaven.repo.local.tail=/m2/repository -C "$@" "$dependency_plugin:get" \
+		-DremoteRepositories="lajstrom-snapshots::default::$surl" -Dartifact="$group:lib:1.0-SNAPSHOT" -Dtransitive=false
+}
+req snapdeploy GET "$surl/$gpath/lib/1.0-SNAPSHOT/maven-metadata.xml"
+expect "GET …/lib/1.0-SNAPSHOT/maven-metadata.xml before the first deploy" 404 "$status"
+project lib-snap-1 1.0-SNAPSHOT
+from="$(mark)"
+mvn snapshot-1.log -f /w/lib-snap-1/pom.xml "$cache" -Dmaven.install.skip=true -DaltDeploymentRepository="lajstrom-snapshots::$surl" deploy ||
+	client_failed snapshot-1.log "mvn deploy of $group:lib:1.0-SNAPSHOT" "$from"
+build1="$(snapshot_build)"
+case "$build1" in 1.0-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].[0-9][0-9][0-9][0-9][0-9][0-9]-1) ;; *) fail "the first build of 1.0-SNAPSHOT is '$build1', want 1.0-<yyyyMMdd.HHmmss>-1" ;; esac
+mkdir "$work/m2-snapshots"
+snapshot_get snapshot-get-1.log || client_failed snapshot-get-1.log "mvn dependency:get of $group:lib:1.0-SNAPSHOT" "$from"
+cmp -s "$work/lib-snap-1/target/lib-1.0-SNAPSHOT.jar" "$work/m2-snapshots/$gpath/lib/1.0-SNAPSHOT/lib-$build1.jar" ||
+	fail "dependency:get of 1.0-SNAPSHOT: lib-$build1.jar in the local repository is not the jar of the first deploy"
+step "mvn deploy of $group:lib:1.0-SNAPSHOT to maven/$srepo: the build $build1, named by the SNAPSHOT version's maven-metadata.xml; dependency:get of 1.0-SNAPSHOT gets its jar"
+
+project lib-snap-2 1.0-SNAPSHOT
+mkdir -p "$work/lib-snap-2/src/main/resources"
+echo "the second build of $run" >"$work/lib-snap-2/src/main/resources/build.txt"
+from="$(mark)"
+mvn snapshot-2.log -f /w/lib-snap-2/pom.xml "$cache" -Dmaven.install.skip=true -DaltDeploymentRepository="lajstrom-snapshots::$surl" deploy ||
+	client_failed snapshot-2.log "mvn deploy of $group:lib:1.0-SNAPSHOT again" "$from"
+build2="$(snapshot_build)"
+expect "the second build of 1.0-SNAPSHOT" "${build2%-*}-2 2" "$build2 $(xml buildNumber)"
+[ "$build2" != "$build1" ] || fail "the second deploy of 1.0-SNAPSHOT is the build $build1 again"
+if [ -n "$server_log" ]; then
+	answered "$from" PUT 201 "$gpath/lib/1.0-SNAPSHOT/maven-metadata.xml" || fail "the second deploy: no PUT of the SNAPSHOT version's maven-metadata.xml answered 201"
+	answered "$from" PUT 200 "$gpath/lib/maven-metadata.xml" || fail "the second deploy: no PUT of the artifact's maven-metadata.xml answered 200"
+fi
+req snapdeploy GET "$surl/$gpath/lib/1.0-SNAPSHOT/lib-$build1.jar" -L
+cmp -s "$work/lib-snap-1/target/lib-1.0-SNAPSHOT.jar" "$work/body" || fail "after the second deploy, lib-$build1.jar is not the first build's jar"
+req snapdeploy GET "$surl/$gpath/lib/maven-metadata.xml"
+cp "$work/body" "$work/metadata.xml"
+expect "the artifact's maven-metadata.xml of maven/$srepo: latest, no release" "1.0-SNAPSHOT " "$(xml latest) $(xml release)"
+snapshot_get snapshot-get-2.log -U || client_failed snapshot-get-2.log "mvn dependency:get -U of $group:lib:1.0-SNAPSHOT" "$from"
+cmp -s "$work/lib-snap-2/target/lib-1.0-SNAPSHOT.jar" "$work/m2-snapshots/$gpath/lib/1.0-SNAPSHOT/lib-$build2.jar" ||
+	fail "dependency:get -U of 1.0-SNAPSHOT: lib-$build2.jar in the local repository is not the jar of the second deploy"
+grep -qF "Downloaded from lajstrom-snapshots: $surl/$gpath/lib/1.0-SNAPSHOT/lib-$build2.jar" "$work/snapshot-get-2.log" ||
+	fail "dependency:get -U of 1.0-SNAPSHOT did not download lib-$build2.jar from the repo"
+step "mvn deploy of $group:lib:1.0-SNAPSHOT again, another jar: the build $build2, a version of its own, and lib-$build1.jar still the first jar; the artifact's maven-metadata.xml says latest 1.0-SNAPSHOT and no release; dependency:get -U gets the second build"
+
+req snapdeploy PUT "$surl/$gpath/lib/1.0.0/lib-1.0.0.jar" -T "$work/lib-1.0.0/target/lib-1.0.0.jar"
+expect "PUT of a release jar to maven/$srepo ($(head -c 300 "$work/body"))" 400 "$status"
+grep -qF policy.maven.versionPolicy "$work/body" || fail "the 400 of a release in maven/$srepo does not name policy.maven.versionPolicy: $(head -c 300 "$work/body")"
+step "PUT of a release jar to maven/$srepo: 400 \"$(tr -d '\n' <"$work/body" | head -c 160)…\""
 
 # No secret in the logs.
 for f in "$work"/*.log ${server_log:+"$server_log"}; do
