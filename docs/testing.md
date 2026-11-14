@@ -273,6 +273,37 @@ LAJSTROM_E2E_REGISTRY=localhost:5014 LAJSTROM_E2E_REGISTRY_USER=lajstrom \
   LAJSTROM_E2E_REGISTRY_PREFIX=lajstrom-it/ test/e2e/run.sh oras auth rbac oci-token cosign tokens raw
 ```
 
+### A registry that deletes nothing, or reads blobs whole
+
+Some registries make Lajstrom answer otherwise on purpose (#352): where a registry deletes no
+manifests, every delete is refused and nothing changes; where its blobs are read whole, a range
+is answered with the whole blob. `serve` probes every registry before it listens and logs what
+it found, so once the server is ready `run.sh` reads the registry `local`'s line `registry
+capabilities` from its log, and the line `registry needs workarounds` when there is one, prints
+them as a step and passes two of them to the scenarios (#800):
+
+| Variable | From the log | Not the default |
+| --- | --- | --- |
+| `LAJSTROM_E2E_DELETE_MANIFEST` | `deleteManifest` | `false`: a delete is `405 UNSUPPORTED` through `/v2`, `501` through `/raw/` and the API, and nothing is deleted (Nexus's docker format; `capabilities.deleteManifest: false`) |
+| `LAJSTROM_E2E_BLOBS_READ_WHOLE` | `blobsReadWhole` | `true`: a range is `200` with every byte and no `Content-Range` (Nexus's oci format) |
+
+`raw.sh`, `oras.sh` and `cosign.sh` then want those answers, and check after each refused
+delete that nothing changed; what they pushed stays in the registry. The refusals run against
+Zot too, with `LAJSTROM_E2E_CAPABILITIES='{deleteManifest: false}'`. When the server logged no
+capabilities (its probe failed at the start), the variables stay as your shell set them; a
+scenario run by hand takes them from there, and an unset one as Zot's. Against the Nexus of
+`deploy/compose/nexus` ([registries/nexus.md](registries/nexus.md)), the password in a file:
+
+```sh
+deploy/compose/nexus/nexus.sh up
+printf lajstrom > nexus.pw
+LAJSTROM_E2E_REGISTRY=localhost:5008 LAJSTROM_E2E_REGISTRY_USER=lajstrom LAJSTROM_E2E_REGISTRY_PASSWORD_FILE=nexus.pw \
+  test/e2e/run.sh raw oras cosign   # the docker format: deleteManifest=false
+LAJSTROM_E2E_REGISTRY=localhost:5015 LAJSTROM_E2E_REGISTRY_USER=lajstrom LAJSTROM_E2E_REGISTRY_PASSWORD_FILE=nexus.pw \
+  test/e2e/run.sh raw oras cosign   # the oci format: blobsReadWhole=true
+deploy/compose/nexus/nexus.sh down
+```
+
 ### The ha stack
 
 `ha.sh` runs the scenarios of [acceptance.md](acceptance.md) §4 against the `ha` profile of the
