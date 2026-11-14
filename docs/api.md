@@ -1107,6 +1107,26 @@ never manage: `403`. Every change is an audit row, `webhook.create`, `webhook.up
 `webhook.delete` or `webhook.secret`, with the URL's host in `details.urlHost` and never the
 URL.
 
+### `lajstrom admin webhook`
+
+The same from the command line, straight against the index database of the configuration, as
+the anonymous principal with the source `cli`; `create`, `rotate` and `test` need the master key
+of the configuration, and `test` sends from the host it runs on:
+
+```sh
+lajstrom admin webhook create --mask <format>/<repo> --url https://… [--events version.published,…] [--description …] [--inactive]
+lajstrom admin webhook list [--mask <format>/<repo>]
+lajstrom admin webhook update <id> [--url …] [--events …] [--active=false] [--description …]
+lajstrom admin webhook delete <id>
+lajstrom admin webhook rotate <id>
+lajstrom admin webhook test <id>
+lajstrom admin webhook deliveries <id> [--limit 20]
+```
+
+`create` prints the resource and its secret as JSON on one line, `rotate` the new secret, `update`
+and `test` the resource and the row of the delivery log (`test` exits with status 1 when the ping
+was not delivered); `list` and `deliveries` print tables.
+
 ## Server information: `GET /api/v1/info`
 
 What a client needs to know before it signs in. Anyone may ask; no authorization is involved.
