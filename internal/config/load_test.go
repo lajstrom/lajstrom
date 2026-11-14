@@ -63,7 +63,8 @@ func TestLoadDefaults(t *testing.T) {
 				Reconcile: Reconcile{Interval: time.Hour, GraceAge: time.Hour},
 				Auth: Auth{Bootstrap: Bootstrap{TTL: 24 * time.Hour}, OIDC: OIDC{Scopes: []string{"openid", "profile", "email", "groups"},
 					UsernameClaim: "preferred_username", GroupsClaim: "groups", TokenLifetime: 24 * time.Hour}},
-				Keys: Keys{Algorithm: "ed25519", RetireGrace: 720 * time.Hour, TokenAlgorithm: "ES256"},
+				Keys:        Keys{Algorithm: "ed25519", RetireGrace: 720 * time.Hour, TokenAlgorithm: "ES256"},
+				Attachments: Attachments{Keyless: AttachmentKeyless{SignedCertificateTimestamps: 1}},
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("Load =\n%+v\nwant\n%+v", got, want)
