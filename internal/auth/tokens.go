@@ -20,7 +20,8 @@ import (
 const (
 	// TokenPAT is a personal access token: it acts as its user.
 	TokenPAT = "pat"
-	// TokenDeploy is a deploy token: a principal of its own, token:<id>, bound to one repo.
+	// TokenDeploy is a deploy token: a principal of its own, token:<id>, bound to one repo or to
+	// a mask (docs/spec/rbac.md §1).
 	TokenDeploy = "deploy"
 )
 
@@ -53,10 +54,11 @@ type Token struct {
 	ID   int64  `json:"id"`
 	Kind string `json:"kind"` // pat or deploy
 	// User is the owner of a personal access token; Repo the <format>/<name> of a deploy
-	// token.
-	User string `json:"user,omitempty"`
-	Repo string `json:"repo,omitempty"`
-	Name string `json:"name"`
+	// token of one repo; RepoMask the mask of a deploy token over a mask, oci/*.
+	User     string `json:"user,omitempty"`
+	Repo     string `json:"repo,omitempty"`
+	RepoMask string `json:"repoMask,omitempty"`
+	Name     string `json:"name"`
 	// Scopes are read and/or write; empty on a personal access token, which then has its user's
 	// full rights.
 	Scopes     []string   `json:"scopes"`
@@ -98,6 +100,10 @@ type Expiry struct {
 type Tokens struct {
 	// Index is the index database; required.
 	Index index.Store
+	// Formats reports whether a format of that name is served (a compiled-in plugin, or oci):
+	// the format of a deploy token's mask is one of them or "*", as a binding's. nil accepts
+	// every name.
+	Formats func(name string) bool
 	// Audit records the events; nil means each event goes to the index in the transaction of
 	// its change.
 	Audit audit.Writer
@@ -149,6 +155,22 @@ func MayCreatePAT(ctx context.Context) error {
 	return nil
 }
 
+// MayCreateMaskDeploy returns nil when the credential of ctx may create a deploy token over a
+// mask: a password, or none, as from the command line, which writes the database and is the
+// operator's (docs/spec/rbac.md §1, §3). Every other credential may not, an error wrapping
+// ErrScope that names the rule: a personal access token, with scopes or without, the admin's
+// too, a deploy token, and an OIDC login, which is no credential of a request and has no
+// password. A stolen token would otherwise mint a token that needs no expiry, covers every repo
+// of its mask and outlives its revocation (decided on #911, 2026-11-14).
+func MayCreateMaskDeploy(ctx context.Context) error {
+	switch CredentialFrom(ctx).Kind {
+	case CredPAT, CredDeploy, CredOIDC:
+		return &authError{msg: "a deploy token over a mask is created with the admin's password, not with a token", err: ErrScope}
+	case CredPassword:
+	}
+	return nil
+}
+
 // createdBy is the credential c as the createdBy of a token.create event: password, oidc, or
 // token:<id> for a token; "" for none.
 func createdBy(c Credential) string {
@@ -192,17 +214,43 @@ func (s *Tokens) CreateDeploy(ctx context.Context, repo, name string, scopes []s
 	})
 }
 
+// CreateMaskDeploy creates a deploy token over mask, <format>/<repo> with "*" for a whole
+// segment as a binding's mask (docs/spec/rbac.md §1, §3), and returns it with its secret as
+// CreateDeploy does, with one token.create audit event whose subject is the mask and which has
+// no repo. The mask names no repo: it need not match one now, it matches the repos created later
+// too, and no repo deleted takes the token with it. name is unique among the live tokens over
+// the same mask; scopes and the expiry are those of CreateDeploy. Only the admin role may create
+// one: the caller decides that (the API asks it before the body is read; the command line is
+// the operator's). The credential of ctx must be one that may create it (MayCreateMaskDeploy):
+// a password, or none from the command line.
+func (s *Tokens) CreateMaskDeploy(ctx context.Context, mask, name string, scopes []string, exp Expiry, o Origin) (*Token, string, error) {
+	if err := MayCreateMaskDeploy(ctx); err != nil {
+		return nil, "", err
+	}
+	if err := checkMask(mask, s.Formats); err != nil {
+		return nil, "", err
+	}
+	scopes, err := checkScopes(scopes, TokenDeploy)
+	if err != nil {
+		return nil, "", err
+	}
+	return s.create(ctx, TokenDeploy, "mask "+mask, name, scopes, exp, o, func(index.Writer) (*index.Token, tokenOwner, error) {
+		return &index.Token{RepoMask: mask}, tokenOwner{mask: mask}, nil
+	})
+}
+
 // tokenOwner is the owner of a token: the name and the uid of the user of a personal access
-// token, or the repo <format>/<name> of a deploy token.
+// token, the repo <format>/<name> of a deploy token of one repo, or the mask of one over a mask.
 type tokenOwner struct {
-	user, uid, repo string
+	user, uid, repo, mask string
 }
 
 // create checks name and the expiry and creates a token of kind with scopes in one
 // transaction with its token.create event, whose details name the credential of ctx
-// (createdBy). owner names the owner for the messages, user
-// <name> or repo <format>/<name>; read reads it in the transaction and returns the row with
-// its owner set, and the owner.
+// (createdBy). owner names the owner for the messages, user <name>, repo <format>/<name> or
+// mask <mask>; read reads it in the transaction and returns the row with its owner set, and
+// the owner. The name is unique among the live tokens of the same kind and owner: a token over
+// a mask is listed with every token (ListTokens without a filter) and compared by its mask.
 func (s *Tokens) create(ctx context.Context, kind, owner, name string, scopes []string, exp Expiry, o Origin,
 	read func(index.Writer) (*index.Token, tokenOwner, error)) (*Token, string, error) {
 	if err := checkTokenName(name); err != nil {
@@ -231,7 +279,9 @@ func (s *Tokens) create(ctx context.Context, kind, owner, name string, scopes []
 		if err != nil {
 			return err
 		}
-		if slices.ContainsFunc(live, func(t index.Token) bool { return t.Kind == kind && t.Name == name && alive(&t, now) }) {
+		if slices.ContainsFunc(live, func(t index.Token) bool {
+			return t.Kind == kind && t.RepoMask == row.RepoMask && t.Name == name && alive(&t, now)
+		}) {
 			return &authError{msg: fmt.Sprintf("name: %q is taken by a live token of %s", name, owner), err: index.ErrConflict}
 		}
 		row.Kind, row.Name, row.Hash, row.Scopes, row.ExpiresAt, row.CreatedAt = kind, name, HashSecret(secret), scopes, expiresAt, now
@@ -249,7 +299,7 @@ func (s *Tokens) create(ctx context.Context, kind, owner, name string, scopes []
 		return nil, "", tokenError("create a token of "+owner, err)
 	}
 	s.writeAudit(ctx, ev)
-	t := tokenResource(row, own.user, own.repo)
+	t := tokenResource(row, own)
 	return &t, secret, nil
 }
 
@@ -264,7 +314,7 @@ func (s *Tokens) List(ctx context.Context, user string) ([]Token, error) {
 	if err != nil {
 		return nil, fmt.Errorf("auth: list the tokens of user %s: %w", user, err)
 	}
-	return resources(rows, TokenPAT, u.Name, ""), nil
+	return resources(rows, TokenPAT, tokenOwner{user: u.Name}), nil
 }
 
 // ListDeploy returns the deploy tokens of the repo <format>/<name>, in the order of their
@@ -282,7 +332,29 @@ func (s *Tokens) ListDeploy(ctx context.Context, repo string) ([]Token, error) {
 	if err != nil {
 		return nil, fmt.Errorf("auth: list the deploy tokens of %s: %w", repo, err)
 	}
-	return resources(rows, TokenDeploy, "", repo), nil
+	return resources(rows, TokenDeploy, tokenOwner{repo: repo}), nil
+}
+
+// ListMaskDeploy returns the deploy tokens over mask, or over any mask when mask is "", in the
+// order of their creation, the revoked and expired ones included. A mask is compared as it was
+// written, not matched: oci/* lists the tokens over oci/*, not those over */*.
+func (s *Tokens) ListMaskDeploy(ctx context.Context, mask string) ([]Token, error) {
+	if mask != "" {
+		if err := checkMask(mask, nil); err != nil {
+			return nil, err
+		}
+	}
+	rows, err := s.Index.ListTokens(ctx, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("auth: list the deploy tokens over a mask: %w", err)
+	}
+	out := []Token{}
+	for i := range rows {
+		if t := &rows[i]; t.Kind == TokenDeploy && t.RepoMask != "" && (mask == "" || t.RepoMask == mask) {
+			out = append(out, tokenResource(t, tokenOwner{mask: t.RepoMask}))
+		}
+	}
+	return out, nil
 }
 
 // Get returns the token with id, of any kind and owner.
@@ -291,7 +363,7 @@ func (s *Tokens) Get(ctx context.Context, id int64) (*Token, error) {
 	if err != nil {
 		return nil, tokenError(fmt.Sprintf("get token %d", id), err)
 	}
-	t := tokenResource(row, own.user, own.repo)
+	t := tokenResource(row, own)
 	return &t, nil
 }
 
@@ -336,6 +408,8 @@ func find(ctx context.Context, r index.Reader, id int64) (*index.Token, tokenOwn
 	}
 	row := &rows[i]
 	switch {
+	case row.RepoMask != "":
+		return row, tokenOwner{mask: row.RepoMask}, nil
 	case row.UserID != nil:
 		u, err := r.GetUserByID(ctx, *row.UserID)
 		if err != nil && !errors.Is(err, index.ErrNotFound) {
@@ -488,33 +562,37 @@ func tokenError(op string, err error) error {
 }
 
 // subjectOf is the subject of the audit event of a token: user:<uid> for a personal access
-// token, <format>/<name> for a deploy token.
+// token, <format>/<name> for a deploy token of one repo, the mask for one over a mask
+// (docs/spec/rbac.md §5).
 func subjectOf(own tokenOwner) string {
-	if own.uid != "" {
+	switch {
+	case own.uid != "":
 		return Principal{Kind: KindUser, Name: own.uid}.String()
+	case own.mask != "":
+		return own.mask
 	}
 	return own.repo
 }
 
-// resources returns the Tokens of rows of kind, whose owner is user or repo.
-func resources(rows []index.Token, kind, user, repo string) []Token {
+// resources returns the Tokens of rows of kind, whose owner is own.
+func resources(rows []index.Token, kind string, own tokenOwner) []Token {
 	out := make([]Token, 0, len(rows))
 	for i := range rows {
 		if rows[i].Kind == kind {
-			out = append(out, tokenResource(&rows[i], user, repo))
+			out = append(out, tokenResource(&rows[i], own))
 		}
 	}
 	return out
 }
 
-// tokenResource returns the Token of a tokens row whose owner is user or repo, with UTC times.
-func tokenResource(t *index.Token, user, repo string) Token {
+// tokenResource returns the Token of a tokens row whose owner is own, with UTC times.
+func tokenResource(t *index.Token, own tokenOwner) Token {
 	scopes := slices.Clone(t.Scopes)
 	if scopes == nil {
 		scopes = []string{}
 	}
 	return Token{
-		ID: t.ID, Kind: t.Kind, User: user, Repo: repo, Name: t.Name, Scopes: scopes,
+		ID: t.ID, Kind: t.Kind, User: own.user, Repo: own.repo, RepoMask: own.mask, Name: t.Name, Scopes: scopes,
 		ExpiresAt: utc(t.ExpiresAt), LastUsedAt: utc(t.LastUsedAt), CreatedAt: t.CreatedAt.UTC(), RevokedAt: utc(t.RevokedAt),
 		HashPrefix: t.Hash[:min(HashPrefixLen, len(t.Hash))],
 	}

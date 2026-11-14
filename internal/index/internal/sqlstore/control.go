@@ -232,10 +232,10 @@ func (c *conn) UpdateUser(ctx context.Context, u *index.User) error {
 }
 
 // tokCols, not tokenCols: gosec (G101) takes a long string named token… for a credential.
-const tokCols = "id, kind, user_id, repo_id, name, hash, scopes, expires_at, last_used_at, created_at, revoked_at"
+const tokCols = "id, kind, user_id, repo_id, repo_mask, name, hash, scopes, expires_at, last_used_at, created_at, revoked_at"
 
 func tokenDests(t *index.Token) []any {
-	return []any{&t.ID, &t.Kind, nullIDDest{&t.UserID}, nullIDDest{&t.RepoID}, &t.Name, &t.Hash,
+	return []any{&t.ID, &t.Kind, nullIDDest{&t.UserID}, nullIDDest{&t.RepoID}, textDest{&t.RepoMask}, &t.Name, &t.Hash,
 		jsonDest[[]string]{&t.Scopes}, nullTimeDest{&t.ExpiresAt}, nullTimeDest{&t.LastUsedAt},
 		timeDest{&t.CreatedAt}, nullTimeDest{&t.RevokedAt}}
 }
@@ -245,7 +245,8 @@ func (c *conn) GetTokenByHash(ctx context.Context, hash string) (*index.Token, e
 	return getOne(ctx, c, "tokens with the hash", tokenDests, "SELECT "+tokCols+" FROM tokens WHERE hash = ?", hash)
 }
 
-// ListTokens returns the tokens of userID and repoID, ordered by id; nil matches every token.
+// ListTokens returns the tokens of userID and repoID, ordered by id; nil matches every token, so
+// that both nil returns the deploy tokens over a mask too.
 func (c *conn) ListTokens(ctx context.Context, userID, repoID *int64) ([]index.Token, error) {
 	var w where
 	if userID != nil {
@@ -261,9 +262,9 @@ func (c *conn) ListTokens(ctx context.Context, userID, repoID *int64) ([]index.T
 func (c *conn) CreateToken(ctx context.Context, t *index.Token) error {
 	t.ExpiresAt, t.LastUsedAt, t.RevokedAt = stampNull(t.ExpiresAt), stampNull(t.LastUsedAt), stampNull(t.RevokedAt)
 	return c.scanRow(ctx, fmt.Sprintf("tokens %s %q", t.Kind, t.Name),
-		"INSERT INTO tokens (kind, user_id, repo_id, name, hash, scopes, expires_at, last_used_at, created_at, revoked_at)"+
-			" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
-		[]any{t.Kind, idArg(t.UserID), idArg(t.RepoID), t.Name, t.Hash, scopesArg(t.Scopes),
+		"INSERT INTO tokens (kind, user_id, repo_id, repo_mask, name, hash, scopes, expires_at, last_used_at, created_at, revoked_at)"+
+			" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+		[]any{t.Kind, idArg(t.UserID), idArg(t.RepoID), textArg(t.RepoMask), t.Name, t.Hash, scopesArg(t.Scopes),
 			c.d.encodeNullTime(t.ExpiresAt), c.d.encodeNullTime(t.LastUsedAt),
 			c.d.EncodeTime(stamp(&t.CreatedAt, now())), c.d.encodeNullTime(t.RevokedAt)},
 		&t.ID)

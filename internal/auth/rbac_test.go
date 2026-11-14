@@ -55,16 +55,21 @@ func user(name string) Principal { return Principal{Kind: KindUser, Name: name} 
 var longGroup = strings.Repeat("g", MaxGroupNameLen+1)
 
 // The credentials of the table: deploy tokens 7 (raw/private, read and write) and 8
-// (raw/public, read), and personal access tokens.
+// (raw/public, read), 9 over the mask pypi/* (read) and 10 over */payments (read and write),
+// and personal access tokens.
 var (
 	deploy7    = Credential{Kind: CredDeploy, TokenID: 7, Repo: "raw/private", Scopes: []string{"read", "write"}}
 	deploy8    = Credential{Kind: CredDeploy, TokenID: 8, Repo: "raw/public", Scopes: []string{"read"}}
+	mask9      = Credential{Kind: CredDeploy, TokenID: 9, Mask: "pypi/*", Scopes: []string{"read"}}
+	mask10     = Credential{Kind: CredDeploy, TokenID: 10, Mask: "*/payments", Scopes: []string{"read", "write"}}
 	patRead    = Credential{Kind: CredPAT, TokenID: 20, Scopes: []string{"read"}}
 	patWrite   = Credential{Kind: CredPAT, TokenID: 21, Scopes: []string{"write"}}
 	patAll     = Credential{Kind: CredPAT, TokenID: 22}
 	password   = Credential{Kind: CredPassword}
 	token7     = Principal{Kind: KindToken, Name: "7"}
 	token8     = Principal{Kind: KindToken, Name: "8"}
+	token9     = Principal{Kind: KindToken, Name: "9"}
+	token10    = Principal{Kind: KindToken, Name: "10"}
 	allActions = []Action{ActionRead, ActionWrite, ActionDelete, ActionManage}
 )
 
@@ -139,6 +144,20 @@ func TestRBACRules(t *testing.T) {
 		{"deploy token: another token's credential", token8, deploy7, allActions, "raw/private", false, false},
 		{"deploy token: without its credential", token7, Credential{}, allActions, "raw/private", false, false},
 		{"deploy token: not the system", token7, deploy7, []Action{ActionManage}, "*/*", false, false},
+		{"mask token: read on a repo of its mask", token9, mask9, []Action{ActionRead}, "pypi/internal", true, false},
+		{"mask token: read on another repo of its mask", token9, mask9, []Action{ActionRead}, "pypi/payments", true, false},
+		{"mask token: read on a repo created later", token9, mask9, []Action{ActionRead}, "pypi/later", true, false},
+		{"mask token with read: no write, delete, manage", token9, mask9, allActions[1:], "pypi/internal", false, false},
+		{"mask token: nothing outside its mask", token9, mask9, allActions, "raw/private", false, false},
+		{"mask token: not a repo outside its mask readable by anonymous", token9, mask9, []Action{ActionRead}, "raw/public", false, false},
+		{"mask token over a name: read and write in every format", token10, mask10, allActions[:2], "raw/payments", true, false},
+		{"mask token over a name: the other format", token10, mask10, allActions[:2], "pypi/payments", true, false},
+		{"mask token over a name: never delete or manage", token10, mask10, allActions[2:], "pypi/payments", false, false},
+		{"mask token over a name: not another name", token10, mask10, allActions, "pypi/internal", false, false},
+		{"mask token: another token's credential", token9, mask10, allActions, "pypi/payments", false, false},
+		{"mask token: without its credential", token9, Credential{}, allActions, "pypi/internal", false, false},
+		{"mask token: not the system", token10, Credential{Kind: CredDeploy, TokenID: 10, Mask: "*/*", Scopes: []string{"read", "write"}},
+			allActions, "*/*", false, false},
 
 		// 3. personal access tokens.
 		{"PAT without scopes: its user", user("alice"), patAll, []Action{ActionWrite}, "pypi/internal", true, false},
@@ -349,6 +368,42 @@ func TestParseMask(t *testing.T) {
 		format, repo, err := ParseMask(tt.mask)
 		if format != tt.format || repo != tt.repo || (err != nil) != (tt.format == "") {
 			t.Errorf("ParseMask(%q) = %q, %q, %v; want %q, %q", tt.mask, format, repo, err, tt.format, tt.repo)
+		}
+	}
+}
+
+// TestMaskMatches is the matching of a mask, a binding's or a deploy token's (docs/spec/rbac.md
+// §3): whole segments, "*" for any; a malformed mask matches nothing, and no mask matches the
+// system resources.
+func TestMaskMatches(t *testing.T) {
+	for _, tt := range []struct {
+		mask, format, name string
+		want               bool
+	}{
+		{"oci/*", "oci", "ghcr", true},
+		{"oci/*", "oci", "k8s", true},
+		{"oci/*", "raw", "ghcr", false},
+		{"*/talos", "oci", "talos", true},
+		{"*/talos", "raw", "talos", true},
+		{"*/talos", "raw", "talos-boot", false},
+		{"*/talos", "oci", "tal", false},
+		{"oci/k8s", "oci", "k8s", true},
+		{"oci/k8s", "oci", "k8s2", false},
+		{"oci/k8s", "oci", "k", false},
+		{"*/*", "apt", "ubuntu", true},
+		{"o*/*", "oci", "ghcr", false}, // a wildcard is a whole segment, never part of one
+		{"oci/g*", "oci", "ghcr", false},
+		{"*/*", System, System, false},
+		{"*/*", "oci", System, false},
+		{"*/*", System, "ghcr", false},
+		{"*/*", "", "ghcr", false},
+		{"*/*", "oci", "", false},
+		{"oci", "oci", "ghcr", false},
+		{"oci/ghcr/x", "oci", "ghcr", false},
+		{"", "oci", "ghcr", false},
+	} {
+		if got := MaskMatches(tt.mask, tt.format, tt.name); got != tt.want {
+			t.Errorf("MaskMatches(%q, %q, %q) = %v, want %v", tt.mask, tt.format, tt.name, got, tt.want)
 		}
 	}
 }
