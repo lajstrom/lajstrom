@@ -104,7 +104,7 @@ longer than `reconcile.graceAge` is outside them
 | Name | The property |
 | --- | --- |
 | **one database** | every replica uses the same database, and the same master key (`keys.masterKeyEnv` or `keys.masterKeyFile`) |
-| **Postgres for replicas** | more than one replica needs Postgres. SQLite serves one replica: its referrers and journal locks are locks of the process (index-schema.md, Coordination). A `serve` that finds another live one on the SQLite file refuses to start and names it (acceptance.md H-14); the CLI's commands are not counted |
+| **Postgres for replicas** | more than one replica needs Postgres (the `postgres` driver; on YugabyteDB and CockroachDB experimental, [databases.md](../deploy/databases.md)). SQLite serves one replica: its referrers and journal locks are locks of the process (index-schema.md, Coordination). A `serve` that finds another live one on the SQLite file refuses to start and names it (acceptance.md H-14); the CLI's commands are not counted |
 | **clocks agree** | the clocks of the replicas, and of the CLI, agree within 60 seconds: the skew a bearer token is checked with, and well inside the bounds that compare times written by other replicas (stale claims after `ingest.claimTTL`, 10 minutes; stale fetch claims and reindex runs after 2 minutes). `serve` compares its clock with the database's at its start and every 30 seconds: past 10 seconds it warns, past 60 seconds it is not ready (operations.md, Clocks). `lajstrom reindex` and the `admin` commands that open the database compare their host's clock with it before they run: past 10 seconds they warn, past 60 seconds they refuse and write nothing |
 
 ## Storage and the index

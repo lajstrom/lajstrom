@@ -35,7 +35,7 @@ internal/provider/probe/      lajstrom registry probe: measures a registry's cap
 internal/provider/providertest/ test doubles: an in-memory Provider; imported only by tests
 internal/index/               Store interface, models, migrations (embedded SQL) and their runner
 internal/index/reindex/       reindex worker: walk the registry, mark and sweep, runs, the report
-internal/index/migrations/    <dialect>/NNNN_<name>.sql for sqlite and postgres, embedded; the same versions in both
+internal/index/migrations/    <dialect>/NNNN_<name>.sql for sqlite, postgres and cockroach, embedded; the same versions in each
 internal/index/internal/sqlstore/ the SQL both engines share: index.Store over database/sql and a Dialect
 internal/index/sqlite/        modernc.org/sqlite implementation
 internal/index/postgres/      pgx implementation
@@ -1125,17 +1125,21 @@ func PackageAt(ctx context.Context, r Reader, repoID int64, pkgPath string) (*Pa
 // after that snapshot, the database aborts the transaction and Tx runs fn again from the start,
 // up to four times in all; the last error wraps ErrUnavailable. fn must start from what it
 // reads on its Writer and leave nothing outside the transaction. Postgres and YugabyteDB:
-// REPEATABLE READ, run again on 40001 and 40P01; SQLite serializes its writes, and fn runs
-// once. Without it Tx is read committed on Postgres and runs fn once. The update of a repo
+// REPEATABLE READ, run again on 40001 and 40P01; CockroachDB: its REPEATABLE READ, or
+// SERIALIZABLE where the cluster has that off, run again alike; SQLite serializes its writes,
+// and fn runs once. Without it Tx is read committed on Postgres and CockroachDB and runs fn once. The update of a repo
 // uses it. IsRepeatableRead reports it, for the implementations of Tx.
 func WithRepeatableRead(ctx context.Context) context.Context
 func IsRepeatableRead(ctx context.Context) bool
 
 // Migrations: migrations/<dialect>/NNNN_<name>.sql, embedded (index-schema.md, Migrations).
-const DialectSQLite, DialectPostgres = "sqlite", "postgres"
+// DialectCockroach is not a value of database.driver: the postgres driver selects it on
+// CockroachDB.
+const DialectSQLite, DialectPostgres, DialectCockroach = "sqlite", "postgres", "cockroach"
 func MigrationVersions(dialect string) ([]int, error)                 // embedded, ascending
 // ApplyMigrations applies the pending migrations, each in a transaction under the migration
-// lock that records it in schema_migrations, and reports those it applied (empty: current).
+// lock that records it in schema_migrations (on CockroachDB one statement at a time, under a
+// lock held across them), and reports those it applied (empty: current).
 // It refuses a schema that requires a newer binary (ErrSchemaTooNew) and, unless
 // opts.Breaking, a pending migration that requires more than the schema has
 // (ErrBreakingMigration), applying nothing (index-schema.md, Upgrades).
@@ -1592,7 +1596,17 @@ Where the merged shapes differ from the first sketch of this section, and why:
   it reports, the dialect differs in one thing (#629): `UpsertPackage` takes
   `pg_advisory_xact_lock` on the package path before it inserts a package, because YugabyteDB
   takes the entries of the two unique indexes of `packages` in no fixed order and two writers
-  of one new package deadlock on them.
+  of one new package deadlock on them. On CockroachDB, which the Postgres driver tells by the
+  `crdb_version` it reports (#617, experimental), the dialect differs in four things: its
+  migrations are its own (`migrations/cockroach`, `index.DialectCockroach`), applied one
+  statement at a time (index-schema.md, Migrations); every transaction the store begins asks
+  for read committed, which CockroachDB's are not by default, and `Open` refuses a cluster that
+  would run them serializable instead; the transaction of a store method of its own, not
+  `Store.Tx`'s, that CockroachDB aborts (`40001`) runs again, four times in all, because its
+  read committed locks the row of a unique key that `INSERT … ON CONFLICT DO NOTHING` finds,
+  and two writers that then delete or update that row deadlock, where Postgres takes no such
+  lock (measured: `ClaimFetch` taking over a stale claim, 8 writers); and `40003`, a commit
+  whose result is unknown, wraps `ErrUnavailable` and is never run again.
 - **A tag claim is the lock on a tag across replicas, in a table of its own** (#12). Ingest
   inserts a `tag_claims` row in its own transaction before the registry write, then reads the
   version of the tag; another digest there, or a fresh claim of another digest, is the 409, and
