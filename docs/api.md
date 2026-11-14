@@ -994,7 +994,12 @@ A deploy token bound to a mask in the grammar of a binding's, `<format>/<repo>` 
 whole segment, reaches every repo the mask matches, those created later included
 ([auth.md](auth.md#a-deploy-token-over-a-mask)). They are a resource of the system: the
 `admin` role only, checked before the body is read, so that any other principal gets `403`
-(`anonymous` `401`) whatever the body says, a `maintainer` on `*/*` included.
+(`anonymous` `401`) whatever the body says, a `maintainer` on `*/*` included. **Creating one
+takes the admin's password** as the request's credential (decided on #911): with a personal
+access token, with scopes or without, the admin's too, or with a deploy token, `POST
+/api/v1/deploy-tokens` is `403` before the body is read, saying that a deploy token over a mask
+is created with the admin's password. Listing and revoking take the admin role with any
+credential that reaches it.
 
 - `POST /api/v1/deploy-tokens` with `repoMask`, `name`, `scopes` (required, `read` and/or
   `write`) and the expiry as above: `201` with the resource and its secret, and `Location`
@@ -1021,7 +1026,7 @@ curl -s -u admin -X POST "$LAJSTROM/api/v1/deploy-tokens" \
 
 ### Who may
 
-A user's own personal access tokens, or the admin's for any user; the deploy tokens of a repo with `manage` on it; the deploy tokens over a mask, the admin's. A deploy token, and a
+A user's own personal access tokens, or the admin's for any user; the deploy tokens of a repo with `manage` on it; the deploy tokens over a mask, the admin's, created with the admin's password only. A deploy token, and a
 personal access token with scopes, asking for any of these is `403`, even for its own repo or
 its own user: tokens never manage.
 

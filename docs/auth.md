@@ -647,7 +647,7 @@ the lookup of the hash is the check, one query for the token and one for its use
 | `scopes` | none (the user's full rights), or `read`, `write` or both | `read`, `write` or both, required; `delete`, `manage` and anything else are `400` | the same |
 | expiry | required: 90 days when not given, at most 365 days ahead (`400` beyond, naming the bound) | optional: none is never | the same |
 | `name` | 1 to 64 bytes of printable UTF-8, unique among the user's live tokens (`409`) | the same, among the repo's live tokens | the same, among the live tokens over the same mask |
-| created with | a password only (`403` with a token, #249) | a password, or a personal access token without scopes, of a user with `manage` on the repo | the same credentials, of a user with the `admin` role only |
+| created with | a password only (`403` with a token, #249) | a password, or a personal access token without scopes, of a user with `manage` on the repo | the password of a user with the `admin` role only (`403` with a token, #911) |
 
 **A personal access token is created with a password**, never with a token: a request whose
 credential is a personal access token, with scopes or without, the admin's too, or a deploy
@@ -686,8 +686,8 @@ The scopes narrow what the bindings give, on every route and at `/v2/token`:
   `GET /api/v1/repos` lists the repos of its mask;
 - the PATs of a user are the user's own to list, create and revoke, or the admin's, and are
   created with a password only ([Rules](#rules)). The deploy tokens of a repo need `manage` on
-  it, and the deploy tokens over a mask the `admin` role. A deploy token or a PAT with scopes
-  asking for any of them is `403`;
+  it, and the deploy tokens over a mask the `admin` role, which creates them with its password
+  only. A deploy token or a PAT with scopes asking for any of them is `403`;
 - at `/v2/token` the same rules narrow the token ([above](#the-token-endpoint)); `/v2` itself
   takes that token and no other bearer.
 
@@ -775,8 +775,16 @@ with the secret as its password, on the frontends and at `/v2/token`, as with an
   for the repos the nodes need and no more: name the repos so that one mask covers them
   (`*/talos`, `oci/*` on a server whose `oci` repos are all for the nodes), or give each
   cluster an exact mask per repo where it has a credential per host anyway.
-- Only the `admin` role creates one, with a password or a personal access token without
-  scopes: a `maintainer`, even on `*/*`, gets `403`. A repo deleted does not take it with it.
+- Only the `admin` role creates one, **with its password**: a `maintainer`, even on `*/*`,
+  gets `403`, and so does a request whose credential is a token, a personal access token with
+  scopes or without, the admin's too, or a deploy token, before its body is read. A stolen admin
+  token must not mint a token that needs no expiry and outlives it (decided on #911,
+  2026-11-14, as #249 decided for personal access tokens). An admin without a password, an
+  OIDC user, makes one with `lajstrom admin token create --mask`.
+- `lajstrom admin token create --mask` asks for no password: like every `lajstrom admin`
+  command on this page, it writes the database of the configuration, and whoever holds the
+  database's credentials is the operator. Its `token.create` row has the source `cli`.
+- A repo deleted does not take it with it.
 - It is listed, and revoked, by an admin: `GET /api/v1/deploy-tokens` and `DELETE
   /api/v1/deploy-tokens/<id>`, or `lajstrom admin token list --mask` and `revoke`. A repo's own
   list (`GET …/repos/<format>/<repo>/deploy-tokens`) does not show the tokens over a mask that

@@ -52,8 +52,8 @@ repos:
 
 A Talos node sends one credential per registry host, and the nodes read several repos of it.
 They get one deploy token over the mask `oci/*`, with `read` and no expiry
-([auth.md](../auth.md#a-deploy-token-over-a-mask), #911). Only an admin makes one; on the
-command line, the operator:
+([auth.md](../auth.md#a-deploy-token-over-a-mask), #911). Only an admin makes one, through the
+API with its password (`POST /api/v1/deploy-tokens`), or the operator on the command line:
 
 ```sh
 lajstrom admin token create --mask 'oci/*' --name talos-nodes --scopes read | jq -r .secret

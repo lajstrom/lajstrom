@@ -13,8 +13,9 @@
 #   - oras: the reader's oras push is refused, the writer's goes, and the file is on the frontend;
 #   - a deploy token with read and write on the repo: PUT 201 and DELETE 403 there, 404 on
 #     another repo and on one that does not exist (S-04);
-#   - a deploy token over the mask oci/* (#911), which a maintainer may not create and the admin
-#     does through the API: oras logs in with it as deploy and pulls from two oci repos of the
+#   - a deploy token over the mask oci/* (#911), which a maintainer may not create, nor the
+#     admin with a personal access token, and the admin does with its password through the
+#     API: oras logs in with it as deploy and pulls from two oci repos of the
 #     run; its /v2 token has pull on both, no push, and nothing on the raw repo, whose frontend
 #     answers it 404;
 #   - a binding created and deleted with lajstrom admin binding counts from the next request, and
@@ -292,6 +293,15 @@ done
 mask_body="{\"repoMask\": \"oci/*\", \"name\": \"rbac $run\", \"scopes\": [\"read\"]}"
 req maintainer POST "$base/api/v1/deploy-tokens" -H 'Content-Type: application/json' -d "$mask_body"
 expect "a maintainer creates a deploy token over oci/*" 403 "$status"
+req admin POST "$base/api/v1/users/$E2E_USER/tokens" -H 'Content-Type: application/json' -d "{\"name\": \"rbac $run\", \"expiresIn\": \"1d\"}"
+expect "the admin's personal access token" 201 "$status"
+admin_pat="$(jq -r .id "$work/body")"
+(umask 077 && printf 'header = "Authorization: Bearer %s"\n' "$(jq -r .secret "$work/body")" >"$work/admin-pat")
+req admin-pat POST "$base/api/v1/deploy-tokens" -H 'Content-Type: application/json' -d "$mask_body"
+expect "the admin's personal access token creates a deploy token over oci/* ($(jq -r .error.message "$work/body" 2>/dev/null))" 403 "$status"
+denied="$(jq -r .error.message "$work/body")"
+req admin DELETE "$base/api/v1/users/$E2E_USER/tokens/$admin_pat"
+expect "DELETE the admin's personal access token" 204 "$status"
 req admin POST "$base/api/v1/deploy-tokens" -H 'Content-Type: application/json' -d "$mask_body"
 expect "the admin creates a deploy token over oci/* ($(jq -c 'del(.secret)' "$work/body" 2>/dev/null))" 201 "$status"
 expect "the token's repoMask" "oci/*" "$(jq -r .repoMask "$work/body")"
@@ -305,7 +315,7 @@ for r in "$fleet_a" "$fleet_b"; do
 	oras pull -o "pulled-$r" "$service/oci/$r/hello:v1" >"$work/oras.log" 2>&1 || { cat "$work/oras.log" >&2; fail "oras pull oci/$r with the token over oci/*"; }
 	cmp -s "$work/fleet-$r.txt" "$work/pulled-$r/fleet-$r.txt" || fail "oras pull oci/$r: not the file pushed"
 done
-step "deploy token $fleet over oci/* (read), made by the admin, a maintainer refused 403: oras login as deploy, oras pull from oci/$fleet_a and oci/$fleet_b"
+step "deploy token $fleet over oci/* (read), made by the admin with its password; a maintainer 403, the admin's personal access token 403 ($denied): oras login as deploy, oras pull from oci/$fleet_a and oci/$fleet_b"
 req fleet GET "$base/v2/token?service=$service&scope=repository:oci/$fleet_a/hello:pull,push&scope=repository:oci/$fleet_b/hello:pull&scope=repository:$name:pull"
 expect "GET /v2/token with the token over oci/*" 200 "$status"
 (umask 077 && printf 'header = "Authorization: Bearer %s"\n' "$(jq -r .token "$work/body")" >"$work/bearer")

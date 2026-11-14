@@ -193,10 +193,15 @@ func (h *handler) listMaskTokens(_ http.ResponseWriter, r *http.Request) (int, a
 }
 
 // createMaskToken creates a deploy token over the mask of the MaskTokenRequest of the body: 201
-// with the token, its secret and its Location. The admin role is checked before the body is
-// read (docs/spec/rbac.md §3), so that another principal gets 403 whatever the body names; a
-// personal access token with scopes and a deploy token, which never manage, get 403 too.
+// with the token, its secret and its Location. Before the body is read (docs/spec/rbac.md §3):
+// a request whose credential is a token, a personal access token with scopes or without, the
+// admin's too, or a deploy token, is 403 naming the rule (auth.MayCreateMaskDeploy, decided on
+// #911): only the admin's password creates one; then the admin role is checked, so that another
+// principal gets 403 whatever the body names.
 func (h *handler) createMaskToken(w http.ResponseWriter, r *http.Request) (int, any, error) {
+	if err := auth.MayCreateMaskDeploy(r.Context()); err != nil {
+		return 0, nil, serviceError(err)
+	}
 	if err := h.allowAdmin(r); err != nil {
 		return 0, nil, err
 	}

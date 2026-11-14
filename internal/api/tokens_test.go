@@ -563,11 +563,12 @@ func TestMaskTokensAPIRefused(t *testing.T) {
 }
 
 // TestMaskTokensAPIAuthorization checks who may manage the deploy tokens over a mask, with the
-// real evaluator (docs/spec/rbac.md §3): the admin role, with a password or a personal access
-// token without scopes; nobody else, a maintainer on */* included, and the role is checked
-// before the body is read, so that a body that does not parse, or names a taken name, is 403
-// all the same. A personal access token with scopes, a deploy token of a repo and one over */*
-// are 403; anonymous is 401.
+// real evaluator (docs/spec/rbac.md §3): the admin role; nobody else, a maintainer on */*
+// included, and the role is checked before the body is read, so that a body that does not
+// parse, or names a taken name, is 403 all the same. Creating one takes the admin's password
+// (decided on #911, 2026-11-14): a personal access token, with scopes or without, the admin's
+// too, and a deploy token are 403 naming the rule, before the body is read; the admin's
+// personal access token still lists and revokes them. Anonymous is 401.
 func TestMaskTokensAPIAuthorization(t *testing.T) {
 	f := newFixture(t, Options{})
 	f.addUsers(t, "root", "erin", "alice")
@@ -580,6 +581,7 @@ func TestMaskTokensAPIAuthorization(t *testing.T) {
 	f.h = recordStatuses(New(Options{Repos: f.repos, Log: f.repos.Log, Auth: auth.NewRBAC(auth.RBACOptions{Index: f.st, Log: f.repos.Log})}))
 	root, erin := auth.Principal{Kind: auth.KindUser, Name: "root"}, auth.Principal{Kind: auth.KindUser, Name: "erin"}
 	password := auth.Credential{Kind: auth.CredPassword}
+	adminPAT := auth.Credential{Kind: auth.CredPAT, TokenID: 1, UserID: 1}
 	tok := auth.Principal{Kind: auth.KindToken, Name: "20"}
 	body := func(name string) string { return `{"repoMask": "raw/*", "name": "` + name + `", "scopes": ["read"]}` }
 	for _, tt := range []struct {
@@ -591,9 +593,11 @@ func TestMaskTokensAPIAuthorization(t *testing.T) {
 		status         int
 	}{
 		{"admin", root, password, "POST", "/api/v1/deploy-tokens", body("nodes"), 201},
-		{"admin with a personal access token without scopes", root, auth.Credential{Kind: auth.CredPAT, TokenID: 1, UserID: 1}, "POST",
-			"/api/v1/deploy-tokens", body("ci"), 201},
+		{"admin with a personal access token without scopes", root, adminPAT, "POST", "/api/v1/deploy-tokens", body("ci"), 403},
+		{"admin with a personal access token, a body that does not parse", root, adminPAT, "POST", "/api/v1/deploy-tokens", `{"repoMask": 1}`, 403},
 		{"admin lists", root, password, "GET", "/api/v1/deploy-tokens", "", 200},
+		{"admin with a personal access token lists", root, adminPAT, "GET", "/api/v1/deploy-tokens", "", 200},
+		{"admin with a personal access token revokes", root, adminPAT, "DELETE", "/api/v1/deploy-tokens/1", "", 204},
 		{"admin with a personal access token with scopes", root, auth.Credential{Kind: auth.CredPAT, TokenID: 1, UserID: 1,
 			Scopes: []string{"read", "write"}}, "POST", "/api/v1/deploy-tokens", body("x"), 403},
 		{"maintainer on */*", erin, password, "POST", "/api/v1/deploy-tokens", body("x"), 403},
@@ -614,6 +618,14 @@ func TestMaskTokensAPIAuthorization(t *testing.T) {
 			wantStatus(t, rr, tt.status)
 			wantChallenge(t, rr)
 		})
+	}
+	const rule = "a deploy token over a mask is created with the admin's password, not with a token"
+	for _, c := range []auth.Credential{adminPAT, {Kind: auth.CredPAT, TokenID: 1, UserID: 1, Scopes: []string{"read", "write"}},
+		{Kind: auth.CredDeploy, TokenID: 20, Mask: "*/*", Scopes: []string{"read", "write"}}} {
+		wantError(t, f.doAs(http.MethodPost, "/api/v1/deploy-tokens", body("z"), root, c), http.StatusForbidden, codeForbidden, rule)
+	}
+	if ev := oneAudit(t, f.st, auth.ActionTokenCreate); ev.details["createdBy"] != "password" || ev.details["name"] != "nodes" {
+		t.Errorf("the one token.create = %+v %v, want the admin's, createdBy password", ev.AuditEvent, ev.details)
 	}
 }
 

@@ -443,7 +443,7 @@ paths:
     post:
       tags: [tokens]
       operationId: createMaskToken
-      summary: Create a deploy token over a mask (admin, checked before the body); the answer has its secret, once.
+      summary: Create a deploy token over a mask (admin, with its password only, checked before the body); the answer has its secret, once.
       requestBody:
         required: true
         content:
