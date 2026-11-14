@@ -2,7 +2,8 @@
 
 - Status: normative, v1 (2026-11-06; section 4.3 changed by ADR 0017 on 2026-11-11; the pypi
   variant of a wheel with a build tag, sections 3 and 4.2, on 2026-11-12, #726; the rpm
-  profile, sections 1 to 5, on 2026-11-12, #64). Changes need an issue labelled `contract`
+  profile, sections 1 to 5, on 2026-11-12, #64; the pypi yank in the journal, sections 3, 4.2
+  and 8, on 2026-11-14, #81, ADR 0012's Amendment). Changes need an issue labelled `contract`
   and, if the wire format changes, an ADR.
 - Implemented by: `internal/oci/profile` (pure Go, no I/O).
 - Related: [ADR 0005](../adr/0005-manifest-profile-and-immutable-tags.md),
@@ -115,7 +116,7 @@ All keys are prefixed `lajstrom.`. Values are strings. Keys marked **R** are req
 manifest of a version, and reindex indexes no manifest without them: one without
 `lajstrom.schema` (or that is no image manifest) is foreign, listed in the report's `foreign` and
 skipped; one with `lajstrom.schema` that lacks another is listed in the report's `errors` and
-skipped. The journal manifests of npm have a set of their own (section 8).
+skipped. The journal manifests of npm and pypi have a set of their own (section 8).
 
 | Key | R | Value |
 | --- | --- | --- |
@@ -127,7 +128,7 @@ skipped. The journal manifests of npm have a set of their own (section 8).
 | `lajstrom.variant` | | platform discriminator, present when the format has one: deb `<suite>/<component>/<arch>`, the values of `lajstrom.deb.suite`, `.component` and `.arch` joined with `/` (`jammy/main/amd64`, `bookworm/main/all`); rpm the arch, as the repodata writes it: the header's `ARCH` (`x86_64`, `aarch64`, `noarch`) for a binary package, `src` for a source package (`nosrc` when it lacks a source or a patch, `NOSOURCE`, `NOPATCH`); pypi: the wheel's compressed tag set (`py3-none-any`, `cp311-cp311-manylinux_2_17_x86_64`), after its PEP 427 build tag and `-` when the file name has one (`1-py3-none-any`, section 4.2), or `sdist`. Absent for maven, npm, raw. |
 | `lajstrom.deb.arch`, `lajstrom.deb.suite`, `lajstrom.deb.component` | deb | upload metadata and the three parts of `lajstrom.variant`, kept as annotations (and in `versions.attrs`) so that the apt indexes group by them without parsing the variant; `arch` is the control file's `Architecture`. Suite and component are properties of the upload, not separate repos: the same `.deb` in two suites is two manifests over the same blobs |
 | `lajstrom.rpm.*` | rpm | none: the variant is the arch, and the parts of the version are in the metadata layer |
-| `lajstrom.pypi.nonstandard` | pypi | `true` when the version is not a PEP 440 version: accepted and kept as written; pip 22 and later ignore such versions |
+| `lajstrom.pypi.nonstandard` | pypi | `true` when the version is not a PEP 440 version: accepted and kept as written; pip 22 and later ignore such versions. The other `lajstrom.pypi.*` keys are the journal's, section 8 |
 | `lajstrom.maven.groupId`, `lajstrom.maven.artifactId`, `lajstrom.maven.packaging` | maven | coordinates |
 | `lajstrom.npm.*` | npm | on a version, none beyond the layer annotations of section 2; `lajstrom.name` is the name as npm writes it, `@acme/widgets` with its scope. The journal's keys are in section 8 |
 | `lajstrom.raw.path` | raw | original path, case preserved, `/`-separated; the same as `lajstrom.name` and as the `org.opencontainers.image.title` of the file layer |
@@ -262,8 +263,9 @@ tags over two file layers with one title, since the file name has no epoch: a re
 content per file name, so the upload route refuses the second with a `409` (http-routing.md, rpm).
 
 The npm tag is `Escape(version)` (`1.2.0`, `2.0.0-rc.1`); npm has no variant. The tags `_j…`
-of an npm package's OCI repository are its journal (section 8): every `_` that `Escape` writes
-is followed by two hex digits and a hashed tag begins with `_h`, so no version has such a tag.
+of an npm or a pypi package's OCI repository are its journal (section 8): every `_` that
+`Escape` writes is followed by two hex digits and a hashed tag begins with `_h`, so no version
+has such a tag, with a variant or without.
 
 ### 4.3 `Escape` and `EscapeComponent`
 
@@ -391,13 +393,15 @@ annotations are required, and nothing is indexed but the repository, in `oci_rep
 digests are the backend's. Recognising known conventions (Helm, OpenTofu, Flux, Timoni, CUE, Wasm,
 ModelPack, Docker images) by artifactType or config media type is for the UI, after the MVP.
 
-## 8. The npm journal: dist-tags and deprecations (ADR 0012)
+## 8. The journal: npm's dist-tags and deprecations, pypi's yanks (ADR 0012)
 
-What changes on an npm package, its dist-tags and the deprecation of its versions, is an
-append-only journal in the package's OCI repository: one manifest per change, never rewritten,
-its tag never re-pointed. The index holds the current state (index-schema.md, npm), and reindex
-replays the journal. The 7th change of `@acme/widgets` in the repo `internal`, under the tag
-`_j00000007` of `art/npm/internal/acme/widgets`:
+What changes on a package after its versions are published is an append-only journal in the
+package's OCI repository: one manifest per change, never rewritten, its tag never re-pointed.
+npm journals a package's dist-tags and the deprecation of its versions; pypi journals the yank
+of its versions (PEP 592; ADR 0012, Amendment). No other format has a journal. The index holds
+the current state (index-schema.md, the journal), and reindex replays the journal. The 7th
+change of `@acme/widgets` in the repo `internal`, under the tag `_j00000007` of
+`art/npm/internal/acme/widgets`:
 
 ```json
 {
@@ -431,24 +435,50 @@ replays the journal. The 7th change of `@acme/widgets` in the repo `internal`, u
 }
 ```
 
-| artifactType | `lajstrom.npm.op` | Keys of the op | Meaning |
-| --- | --- | --- | --- |
-| `application/vnd.lajstrom.npm.dist-tags.v1` | `add` | `lajstrom.npm.tag`, `lajstrom.npm.version` | the dist-tag names the version from now on |
-| `application/vnd.lajstrom.npm.dist-tags.v1` | `rm` | `lajstrom.npm.tag` | the dist-tag is removed |
-| `application/vnd.lajstrom.npm.deprecation.v1` | `deprecate` | `lajstrom.npm.version`, `lajstrom.npm.message` | the version is deprecated with the message |
-| `application/vnd.lajstrom.npm.deprecation.v1` | `undeprecate` | `lajstrom.npm.version` | the version's deprecation is cleared |
+A yank of `requests` 2.32.0 in the repo `internal`, its package's 3rd entry, under the tag
+`_j00000003` of `art/pypi/internal/requests`, has the same config and layer and these
+annotations:
+
+```json
+{
+  "lajstrom.schema": "1",
+  "lajstrom.format": "pypi",
+  "lajstrom.repo": "internal",
+  "lajstrom.name": "requests",
+  "lajstrom.pypi.seq": "3",
+  "lajstrom.pypi.op": "yank",
+  "lajstrom.pypi.version": "2.32.0",
+  "lajstrom.pypi.reason": "breaks proxies with HTTPS_PROXY set",
+  "lajstrom.uploaded-by": "user:019a6b1e-5c3d-7f00-8a11-2b3c4d5e6f70",
+  "org.opencontainers.image.created": "2026-11-14T10:00:00Z"
+}
+```
+
+The artifact type decides the entry's `lajstrom.format`, and so its keys: `lajstrom.<format>.`
+and a name (`lajstrom.npm.seq`, `lajstrom.pypi.seq`).
+
+| artifactType | `lajstrom.format` | op (`lajstrom.<format>.op`) | Keys of the op | Meaning |
+| --- | --- | --- | --- | --- |
+| `application/vnd.lajstrom.npm.dist-tags.v1` | `npm` | `add` | `lajstrom.npm.tag`, `lajstrom.npm.version` | the dist-tag names the version from now on |
+| `application/vnd.lajstrom.npm.dist-tags.v1` | `npm` | `rm` | `lajstrom.npm.tag` | the dist-tag is removed |
+| `application/vnd.lajstrom.npm.deprecation.v1` | `npm` | `deprecate` | `lajstrom.npm.version`, `lajstrom.npm.message` | the version is deprecated with the message |
+| `application/vnd.lajstrom.npm.deprecation.v1` | `npm` | `undeprecate` | `lajstrom.npm.version` | the version's deprecation is cleared |
+| `application/vnd.lajstrom.pypi.yank.v1` | `pypi` | `yank` | `lajstrom.pypi.version`, and `lajstrom.pypi.reason` when there is one | every file of the version is yanked (PEP 592), with the reason or without one; a yank of a yanked version sets its reason anew |
+| `application/vnd.lajstrom.pypi.yank.v1` | `pypi` | `unyank` | `lajstrom.pypi.version` | the version's yank is cleared |
 
 | Element | Rule |
 | --- | --- |
 | `config`, `layers` | the empty descriptor, and one layer that is the empty descriptor again (image-spec 1.1's form of an artifact without blobs): the change is in the annotations |
-| annotations | required: `lajstrom.schema`, `lajstrom.format` (`npm`), `lajstrom.repo`, `lajstrom.name`, `lajstrom.npm.seq`, `lajstrom.npm.op`, the keys of the op and `org.opencontainers.image.created`; `lajstrom.uploaded-by` as on a version. No `lajstrom.version` nor `lajstrom.variant`: an entry is not a version |
-| `lajstrom.npm.seq` | the entry's number in the package's journal, decimal: `1` for the first, one more for each next |
+| annotations | required: `lajstrom.schema`, `lajstrom.format` (the artifact type's), `lajstrom.repo`, `lajstrom.name`, `lajstrom.<format>.seq`, `lajstrom.<format>.op`, the keys of the op (`lajstrom.pypi.reason` is optional) and `org.opencontainers.image.created`; `lajstrom.uploaded-by` as on a version. No key of another op has a value. No `lajstrom.version` nor `lajstrom.variant`: an entry is not a version |
+| `lajstrom.<format>.seq` | the entry's number in the package's journal, decimal: `1` for the first, one more for each next, whatever the artifact type |
 | tag | `_j` and the `seq` zero-padded to eight digits (`_j00000007`; more digits after `_j99999999`) |
 | `lajstrom.npm.tag` | `^[A-Za-z][A-Za-z0-9._-]{0,127}$`: never begins with a digit, so never read as a version. `latest` is moved by an `add` and never removed |
-| `lajstrom.npm.version` | a version the package has when the entry is written |
+| `lajstrom.npm.version`, `lajstrom.pypi.version` | a version the package has when the entry is written, as its `lajstrom.version` spells it. A pypi yank names the version, every variant of it: PyPI yanks releases, not files |
 | `lajstrom.npm.message` | 1 to 4096 bytes of UTF-8 |
+| `lajstrom.pypi.reason` | 1 to 4096 bytes of UTF-8; absent for a yank without a reason, and an empty value is read as absent |
 
-**Writing** (ingest only, for the npm routes of http-routing.md). An append holds the package's
+**Writing** (ingest only: the npm routes of http-routing.md, and the yank routes of its §4 for
+pypi). An append holds the package's
 **journal lock**: the referrers lock of index-schema.md (`Store.WithReferrersLock`) keyed by the
 package's OCI repository and the digest of the empty blob (`sha256:44136fa…`, the config's
 digest above), which no manifest has, so the key never meets the referrers lock or the tag lock
@@ -458,25 +488,31 @@ was lost), validates it, indexes it and looks up the next; pushes its own entrie
 `n + 2`, …; and writes their `journal` rows, the package's new `journal_state` and the
 invalidation of its documents in `index_cache` before it lets the lock go. The order of the
 journal is the order of the lock. An append is never made under another lock: a publish appends
-after its version is confirmed and its claims released, an unpublish after its deletes.
+after its version is confirmed and its claims released, an unpublish after its deletes. An entry
+of another format's artifact type is refused (`ErrInvalid`): an npm package journals no yank,
+a pypi package no dist-tag.
 
 **Replay.** The state of a package is the fold of its entries in `seq` order: `add` sets the
 dist-tag to the version, `rm` removes it, `deprecate` sets the version's message, `undeprecate`
-clears it. An entry may name a version deleted since; the state keeps it and the packument
-leaves it out (http-routing.md, npm).
+clears it, `yank` sets the version's yank with its reason (none: `""`), `unyank` clears it. An
+entry may name a version deleted since; the state keeps it, and the packument and the simple
+index leave it out (http-routing.md, npm and pypi). So the yank of a version that is deleted and
+uploaded again holds for the new files, until an `unyank`: it names the version, not the bytes,
+as an npm dist-tag does (ADR 0012).
 
-**Reindex.** The `_j` tags of an npm package's OCI repository are read as its version tags are
-(mark and sweep: a digest the index has is seen without a read), and the package's state is
-replayed once the repository is read. An entry is reported and skipped when its annotations
-break the rules above, when its tag is not the tag of its `seq`, or when its `lajstrom.name` is
-not the package of the repository. A missing `seq` is reported and the replay goes on over the
-rest. Entries in a repository without versions are reported as orphans (the report's
-`orphanJournal`) and not indexed: no package row holds them, and the next append to a package of
-that name adopts them.
+**Reindex.** The `_j` tags of an npm or a pypi package's OCI repository are read as its version
+tags are (mark and sweep: a digest the index has is seen without a read), and the package's
+state is replayed once the repository is read. An entry is reported and skipped when its
+annotations break the rules above, when its tag is not the tag of its `seq`, when its
+`lajstrom.format` is not the repo's, or when its `lajstrom.name` is not the package of the
+repository. A missing `seq` is reported and the replay goes on over the rest. Entries in a
+repository without versions are reported as orphans (the report's `orphanJournal`) and not
+indexed: no package row holds them, and the next append to a package of that name adopts them.
 
-**Deleting.** A journal entry goes with its package only: the unpublish of a whole package
+**Deleting.** A journal entry goes with its package only: the unpublish of a whole npm package
 deletes its versions, then every entry, under the journal lock and no other (no other writer
-touches a `_j` tag, so no tag lock is taken for an entry). Through `/v2` the facade pushes
-none (section 5: not the artifactType of the format) and deletes none (http-routing.md, npm).
-A proxy repo (ADR 0013) journals nothing: a proxied package's dist-tags and deprecations are
-the upstream's.
+touches a `_j` tag, so no tag lock is taken for an entry). pypi has no unpublish of a package:
+when its last version is deleted, its entries stay in the registry as orphans. Through `/v2` the
+facade pushes none (section 5: not the artifactType of the format) and deletes none, in an npm
+or a pypi repo (http-routing.md, npm). A proxy repo (ADR 0013) journals nothing: a proxied
+package's dist-tags and deprecations are the upstream's.

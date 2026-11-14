@@ -163,15 +163,26 @@ to `/v2/raw/<repo>/<escaped path>:<version>` works with the same annotations.
 ### pypi
 
 Implements PEP 503 (simple index HTML), PEP 691 (JSON simple API, content negotiation), PEP 658
-metadata files, and the legacy upload API that `twine` uses.
+metadata files, PEP 592 yanked files (#81), and the legacy upload API that `twine` uses. PEP 694
+(the upload API 2.0) is a draft and not implemented.
 
 | Method and path | Behaviour |
 | --- | --- |
 | `GET /pypi/<repo>/simple/` | project list |
-| `GET /pypi/<repo>/simple/<project>/` | file list of the project (normalised name; non-normalised redirects `301`). Links point to `/pypi/<repo>/files/…` with `#sha256=`; `data-requires-python` set, and `data-dist-info-metadata`/`data-core-metadata` (in JSON `core-metadata`/`dist-info-metadata`) on a wheel only: a build may change an sdist's `PKG-INFO` (PEP 643 `Dynamic`), and PEP 658 is for metadata the processing does not modify, as PyPI does. |
+| `GET /pypi/<repo>/simple/<project>/` | file list of the project (normalised name; non-normalised redirects `301`). Links point to `/pypi/<repo>/files/…` with `#sha256=`; `data-requires-python` set, and `data-dist-info-metadata`/`data-core-metadata` (in JSON `core-metadata`/`dist-info-metadata`) on a wheel only: a build may change an sdist's `PKG-INFO` (PEP 643 `Dynamic`), and PEP 658 is for metadata the processing does not modify, as PyPI does. Every file of a yanked version (below) has `data-yanked`, the reason HTML-escaped or `""` without one, and in JSON `yanked` is the reason, or `true` without one; any other file has no `data-yanked` and `yanked: false`. |
 | `GET /pypi/<repo>/files/<project>/<version>/<filename>` | the distribution file (`307` or stream) |
 | `GET /pypi/<repo>/files/<project>/<version>/<filename>.metadata` | the core metadata of a wheel (PEP 658), from the metadata layer; `404` for an sdist |
 | `POST /pypi/<repo>/` | legacy upload: `multipart/form-data` with `:action=file_upload`, `protocol_version=1`, `content`, metadata fields. One file = one manifest (variant = the wheel's build tag, when it has one, and tag set, or `sdist`: manifest-profile.md §4.2). `200` on success; `400` on validation errors; `409` if the file name exists with a different digest, or another file holds its version and variant (a wheel with a build tag uploaded before #726, in the earlier form of its variant), with `File already exists` and the name of the file there. |
+
+**Yank** (PEP 592, #81). A version is yanked and unyanked through the management API (§4), since
+no client has a yank route (PyPI's is its web UI); each is an entry of the package's journal
+(manifest-profile.md §8), so reindex restores it. A yank applies to every file of the version,
+those uploaded after it too, as PyPI yanks releases. The files stay served: pip and uv skip a
+yanked version unless a requirement pins it with `==` or `===`, and then install it with a
+warning. Every yank and unyank is an audit row of its own, action `pypi.yank`, `details.op`
+`yank` or `unyank`, with the entry's digest. A version deleted keeps its yank in the journal: the
+same version uploaded again is yanked until it is unyanked. A pypi journal manifest is never
+pushed nor deleted through `/v2`, as npm's (npm, Through `/v2`).
 
 Client config: `pip install --index-url https://host/pypi/<repo>/simple/ …`,
 `twine upload --repository-url https://host/pypi/<repo>/ dist/*`.
@@ -393,7 +404,8 @@ sorted by name; `from` and `size` (default 20, at most 250) paginate.
 **Through `/v2`.** An npm version pushed with `oras push` is ingested as any other
 (manifest-profile.md §5) and appends no journal entry: until a dist-tag names a version,
 `latest` falls back as above. A journal manifest is never pushed (its artifactType is not the
-format's: `400 MANIFEST_INVALID`) nor deleted (`409 DENIED`: an entry goes with its package);
+format's: `400 MANIFEST_INVALID`) nor deleted (`409 DENIED`: an entry goes with its package;
+the same for a pypi package's journal);
 `tags/list` lists the versions only. A version deleted through `/v2` or `/api/v1` drops out of
 the packument with the dist-tags that name it.
 
@@ -453,6 +465,7 @@ listed here so frontends do not invent their own. What each call needs, in the a
 | reading a repo's content: `GET /api/v1/repos` (lists only the repos the caller may read), `GET …/repos/<format>/<repo>`, `GET …/packages` and `GET …/packages/<name>/versions` (#72), `GET …/packages/<name>/versions/<version>` (#136), and the search of #956 after the MVP | `read` on the repo; a repo the caller may not read is `404`, as on the frontends (rbac.md §3) |
 | changing a repo: `PATCH`, `DELETE`, `POST …/reindex`, `GET …/reindex`, the deploy tokens of the repo | `manage` on the repo |
 | deleting versions: `DELETE …/repos/<format>/<repo>/packages/<name>/versions/<version>` (#61), `POST …/repos/<format>/<repo>/versions:delete` (#72) | `delete` on the repo, checked before the body is read; a repo the caller may not read is `404` |
+| yanking and unyanking a pypi version: `PUT` and `DELETE …/repos/pypi/<repo>/packages/<name>/versions/<version>/yank` (#81) | `write` on the repo, as an npm deprecation; a repo the caller may not read is `404` |
 | creating a repo, and the system resources: users, bindings, audit | the admin role (rbac.md §2; a `maintainer` on `*/*` is not enough) |
 | the personal access tokens of a user | the user themself, within what the credential allows, or the admin role |
 | `GET /api/v1/whoami`, `GET /api/v1/info` (#136), `GET /api/v1/openapi.yaml` | nothing |
@@ -462,7 +475,7 @@ listed here so frontends do not invent their own. What each call needs, in the a
 | --- | --- |
 | info | `GET /api/v1/info` |
 | repos | `GET /api/v1/repos[?format=]`, `POST /api/v1/repos`, `GET/PATCH /api/v1/repos/<format>/<repo>`, `DELETE /api/v1/repos/<format>/<repo>[?force=true]`, `POST …/reindex`, `GET …/reindex`, `DELETE …/upstream-cache[?name=]` (§6) |
-| packages, versions | `GET /api/v1/repos/<format>/<repo>/packages[?prefix=&limit=&cursor=]`, `GET …/packages/<name>/versions[?limit=&cursor=]`, `GET …/packages/<name>/versions/<version>[?variant=]`, `DELETE …/packages/<name>/versions/<version>[?variant=&force=]`, `POST /api/v1/repos/<format>/<repo>/versions:delete`; search after the MVP (#956) |
+| packages, versions | `GET /api/v1/repos/<format>/<repo>/packages[?prefix=&limit=&cursor=]`, `GET …/packages/<name>/versions[?limit=&cursor=]`, `GET …/packages/<name>/versions/<version>[?variant=]`, `DELETE …/packages/<name>/versions/<version>[?variant=&force=]`, `POST /api/v1/repos/<format>/<repo>/versions:delete`, `PUT` and `DELETE …/packages/<name>/versions/<version>/yank` (pypi); search after the MVP (#956) |
 | users | `GET /api/v1/users[?limit=&cursor=]`, `POST /api/v1/users`, `GET/PATCH/DELETE /api/v1/users/<name>`, `POST …/password` |
 | tokens | `GET/POST /api/v1/users/<name>/tokens` (PAT), `DELETE …/tokens/<id>`; `GET/POST /api/v1/repos/<format>/<repo>/deploy-tokens`, `DELETE …/<id>` |
 | bindings | `GET /api/v1/bindings[?principal=&limit=&cursor=]`, `POST /api/v1/bindings`, `DELETE /api/v1/bindings/<id>`; a binding's principal is `user:<name>`, `user:<uid>` or `group:<name>` (rbac.md §3, §8) |
@@ -481,14 +494,16 @@ Lists of a repo's content (`read`): `GET …/packages` pages the packages by nam
 keeps those whose name starts with it; `GET …/packages/<name>/versions` pages the versions,
 newest first by the publish time of their first variant, each with its variants (`variant`,
 `tag`, manifest `digest`, `publishedAt`), `publishedAt` and `lastModified` (of the first and the
-newest variant) and its `pointers` (npm dist-tags). The publish time is
+newest variant), its `pointers` (npm dist-tags) and, on a yanked pypi version only, `yanked`
+(`{"reason": "…"}`, `""` without one). The publish time is
 `org.opencontainers.image.created`, `versions.created_at`, which reindex rebuilds. Both pages are
 `?limit=` and `?cursor=`; the cursor holds the place of the page's last row (a name; a time and a
 version), never an offset.
 
 One version (`read`, #136): `GET …/packages/<name>/versions/<version>[?variant=]`, with
 `<name>` and `<version>` as the delete below has them, answers the version's row of that list
-(`version`, `publishedAt`, `lastModified`, `pointers`, `variants`) and `ociRepository`, the OCI
+(`version`, `publishedAt`, `lastModified`, `pointers`, `variants`, and `yanked` when it has one)
+and `ociRepository`, the OCI
 repository below the instance prefix that holds it (`<format>/<repo>/<name_oci>`, the `<name>`
 of §2). Each variant adds what the index has of its manifest: `artifactType`, `attrs`
 (`versions.attrs`, by annotation key), `metadata` (the metadata layer; `null` when it is absent
@@ -569,6 +584,19 @@ under its own locks; it is not all-or-nothing, and a rerun is idempotent. `200` 
 `deleted` (in a dry run: would be), `changed`, `protected`, `young`, `gone`, `error`. Every audit
 row of the batch has the job in `details.job`; every `delete` row has the request's token, when it
 came with one, in `details.token`.
+
+Yanking a pypi version (`write`, #81): `PUT …/packages/<name>/versions/<version>/yank`, with
+`<name>` and `<version>` as the delete above has them and an optional body `{"reason"}` (1 to
+4096 bytes of UTF-8; no body, or a `reason` absent, `null` or `""`, for none), appends a `yank` to the package's journal
+(manifest-profile.md §8); `DELETE …/versions/<version>/yank` appends an `unyank`. Both answer
+`204`, and both are idempotent: a yank of a version yanked with the same reason, or an unyank of
+a version that is not yanked, appends nothing and writes no audit row; a yank with another reason
+appends one that replaces it. A yank names the whole version: `?variant=` is `400`. `404
+NOT_FOUND` when the repo has no such package or version; `400 INVALID` on a repo that is not a
+hosted pypi repo, or for a reason that breaks the rule; `503 UNAVAILABLE` with `Retry-After`
+when the registry does not serve the new entry within the visibility timeout, and the retry
+completes it. The audit row is the journal's (`pypi.yank`, §3, pypi), with the request id in
+`details`, as an npm deprecation's.
 
 Reindex of one repo (`manage`): `POST …/reindex` with an optional body `{"prune", "verify"}`,
 both `false` by default (as `lajstrom reindex --repo`), starts the run on the replica that

@@ -34,7 +34,8 @@ The OpenAPI 3.1 document of these endpoints is
   lacks the action. The list leaves out the repos the caller may not read.
 - **Audit.** Every change is one row of the audit log ([rbac.md](spec/rbac.md) §5): the
   principal, the action (`repo.create`, `repo.update`, `repo.delete`, `repo.reindex`,
-  `repo.cache.purge`, `delete` for each manifest of a version delete, `user.create`,
+  `repo.cache.purge`, `delete` for each manifest of a version delete, `pypi.yank` for a yank
+  or an unyank, `user.create`,
   `user.rename`, `user.disable`, `user.enable`, `user.password`, `user.delete`,
   `binding.create`, `binding.delete`, `token.create`, `token.revoke`), the repo, the client
   address and details: the change, its source (`api`, `cli`, `config` or `bootstrap`) and the
@@ -398,6 +399,9 @@ package does not exist. `<package>` is one path segment, as for the delete below
 - **Pointers** name a version and can move to another: on npm the dist-tags
   ([http-routing.md](spec/http-routing.md), npm), `latest` included. No other format has them.
   A version a pointer names is refused by a delete unless it is forced.
+- **`yanked`** is on a yanked pypi version only: `{"reason": "…"}`, the reason `""` when the
+  yank gave none (Yank a pypi version, below). A version without it is not yanked; no other
+  format has it.
 
 ### Get a version: `GET /api/v1/repos/<format>/<name>/packages/<package>/versions/<version>`
 
@@ -568,6 +572,44 @@ curl -s -X POST "$LAJSTROM/api/v1/repos/npm/internal/versions:delete" \
 
 `lajstrom admin retention` is a client of these endpoints that a scheduler runs
 ([operations.md](operations.md#retention)).
+
+### Yank a pypi version: `PUT` and `DELETE /api/v1/repos/pypi/<name>/packages/<package>/versions/<version>/yank`
+
+Marks every file of a version as yanked in the simple index (PEP 592), or clears the mark: pip
+and uv then skip the version unless a requirement pins it with `==` (`pip install pkg==1.1`),
+and install it with a warning when one does. The files stay where they are and are served as
+before; a yank deletes nothing. PyPI yanks in its web UI, and no client has a yank command, so
+this is the way to do it in Lajstrom.
+
+```sh
+curl -s -X PUT "$LAJSTROM/api/v1/repos/pypi/internal/packages/requests/versions/2.32.0/yank" \
+  -d '{"reason": "breaks proxies with HTTPS_PROXY set"}'
+curl -s "$LAJSTROM/api/v1/repos/pypi/internal/packages/requests/versions/2.32.0" | jq .yanked
+curl -s -X DELETE "$LAJSTROM/api/v1/repos/pypi/internal/packages/requests/versions/2.32.0/yank"
+```
+
+The body of `PUT` is optional: `{"reason": "…"}`, 1 to 4096 bytes of UTF-8. No body, `{}`, or a
+`reason` that is `null` or `""` is a yank without a reason (`data-yanked=""` in the HTML index,
+`"yanked": true` in the JSON one). Both answer `204` and need `write` on the repo, as `npm deprecate` does (the
+`writer` role). `<package>` and `<version>` are one path segment each, as for the delete above,
+and `<version>` is the version as the index spells it (`GET …/versions` lists them).
+
+- **Idempotent.** A yank of a version yanked with the same reason, and an unyank of a version
+  that is not yanked, change nothing and write no audit row. A yank of a yanked version with
+  another reason replaces the reason.
+- **The whole version.** Every file of the version is yanked, those uploaded after the yank too,
+  as PyPI yanks releases; `?variant=` is `400`.
+- **In the registry.** Each yank and unyank is a small manifest of the package's journal, under a
+  tag `_j<seq>` of its OCI repository ([manifest-profile.md](spec/manifest-profile.md) §8), so
+  `lajstrom reindex` restores it. A version deleted keeps its yank: the same version uploaded
+  again is yanked until it is unyanked.
+- **Audit.** One row per change, action `pypi.yank`, `details.op` `yank` or `unyank`, with the
+  version, the journal's `seq` and the entry's digest.
+- **Errors.** `404` when the repo, the package or the version does not exist; `400` on a repo
+  that is not a hosted pypi repo, for a reason that is too long or not UTF-8, or for a body field
+  other than `reason`; `503` with `Retry-After` when the registry does not serve the new entry
+  within the visibility timeout
+  ([operations.md](operations.md#an-eventually-consistent-registry)), and a retry completes it.
 
 ### Purge a proxy's cache: `DELETE /api/v1/repos/<format>/<name>/upstream-cache[?name=<package>]`
 

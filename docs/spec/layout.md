@@ -140,11 +140,11 @@ type Publisher interface {
 // JournalOp is one change of a package's journal (manifest-profile.md §8): ArtifactType and Op
 // select the kind, the other fields are the keys of that op, empty when the op has none.
 type JournalOp struct {
-    ArtifactType string // application/vnd.lajstrom.npm.dist-tags.v1, …npm.deprecation.v1
-    Op           string // add, rm, deprecate, undeprecate
+    ArtifactType string // application/vnd.lajstrom.npm.dist-tags.v1, …npm.deprecation.v1, …pypi.yank.v1
+    Op           string // add, rm, deprecate, undeprecate; yank, unyank
     Tag          string // lajstrom.npm.tag
-    Version      string // lajstrom.npm.version
-    Message      string // lajstrom.npm.message, deprecate only
+    Version      string // lajstrom.npm.version, lajstrom.pypi.version
+    Message      string // lajstrom.npm.message, deprecate only; lajstrom.pypi.reason, yank only and optional
 }
 
 // Sessions are the publication sessions of a format whose upload is several requests (maven,
@@ -885,8 +885,8 @@ type Reader interface {
     ListOCIRepos(ctx context.Context, repoID int64) ([]OCIRepo, error)
     // a cache of the upstream (ADR 0013): the row of a proxy repo's name key and document kind
     GetProxyMeta(ctx context.Context, repoID int64, name, kind string) (*ProxyMeta, error)
-    // the npm journal (ADR 0012, index-schema.md, npm): a package's entries in seq order, and
-    // its current state ordered by kind and key
+    // the journal of an npm or a pypi package (ADR 0012, index-schema.md, the journal): a
+    // package's entries in seq order, and its current state ordered by kind and key
     ListJournal(ctx context.Context, packageID int64) ([]JournalEntry, error)
     ListJournalState(ctx context.Context, packageID int64) ([]JournalState, error)
 }
@@ -1009,7 +1009,7 @@ type Writer interface {
     TouchProxyMeta(ctx context.Context, id int64, checkedAt time.Time) error      // CheckedAt only: a 304
     DeleteProxyMeta(ctx context.Context, repoID int64, name string) (int, error)  // the rows of one name key, or every row of the repo when ""
     ExpireProxyMeta(ctx context.Context, repoID int64, before time.Time) (int, error) // the repo's absent rows checked before before
-    // the npm journal (derived; written by ingest, reindex and delete). UpsertJournal inserts e
+    // the journal of npm and pypi (derived; written by ingest, reindex and delete). UpsertJournal inserts e
     // and fills ID, or, when the row of (PackageID, Seq) has e's tag and digest, sets its
     // IndexedAt and fills e from it; another tag or digest there is a *TagConflictError and
     // nothing changes: an entry is never rewritten. CreatedAt and IndexedAt are now when zero
@@ -1068,23 +1068,24 @@ type ProxyMeta struct {                     // a row of proxy_meta
     ETag, LastModified string               // the upstream's validators as it sent them; "" when none
     CheckedAt          time.Time            // when the upstream last answered for the name
 }
-// The npm journal (ADR 0012, manifest-profile.md §8, index-schema.md, npm). Both tables cascade
-// with packages: DeletePackage, DeleteEmptyPackages and ResetDerived take a package's rows.
-const JournalDistTag, JournalDeprecated = "dist-tag", "deprecated" // journal_state.kind
+// The journal of npm and pypi (ADR 0012, manifest-profile.md §8, index-schema.md, the journal).
+// Both tables cascade with packages: DeletePackage, DeleteEmptyPackages and ResetDerived take a
+// package's rows.
+const JournalDistTag, JournalDeprecated, JournalYanked = "dist-tag", "deprecated", "yanked" // journal_state.kind
 type JournalEntry struct {                  // a row of journal: one entry in the registry
     ID, PackageID int64
-    Seq           int64                     // lajstrom.npm.seq
+    Seq           int64                     // lajstrom.npm.seq, lajstrom.pypi.seq
     Tag           string                    // _j00000007
     Digest        digest.Digest             // the entry's manifest
     ArtifactType  string
-    Attrs         map[string]string         // the entry's lajstrom.npm.* annotations
+    Attrs         map[string]string         // the entry's lajstrom.npm.* or lajstrom.pypi.* annotations
     CreatedAt     time.Time                 // org.opencontainers.image.created
     IndexedAt     time.Time                 // when ingest or reindex last wrote or saw the row
 }
 type JournalState struct {                  // a row of journal_state: the fold of a package's entries
     PackageID  int64
-    Kind       string                       // JournalDistTag or JournalDeprecated
-    Key, Value string                       // a dist-tag and its version; a version and its message
+    Kind       string                       // JournalDistTag, JournalDeprecated or JournalYanked
+    Key, Value string                       // a dist-tag and its version; a version and its message; a version and its reason ("" for none)
     Seq        int64                        // the entry that set it
 }
 type Sighting struct {                      // a row of prune_sightings
@@ -1225,7 +1226,7 @@ type RepoReport struct {
     Referrers       int       `json:"referrers"`
     Foreign         []Finding `json:"foreign"`
     OrphanReferrers []Finding `json:"orphanReferrers"`
-    OrphanJournal   []Finding `json:"orphanJournal"`   // npm journal entries of a repository without versions
+    OrphanJournal   []Finding `json:"orphanJournal"`   // npm and pypi journal entries of a repository without versions
     Drift           []Drift   `json:"drift"`
     Split           []Split   `json:"split"`           // packages at two forms of their OCI name, one per other form
     RepositoryUnknown []RepositoryUnknown `json:"repositoryUnknown"` // versions whose OCI repository the registry does not know
@@ -1686,7 +1687,8 @@ Where the merged shapes differ from the first sketch of this section, and why:
 - **The npm journal has store methods of its own** (ADR 0012, #307). `ListJournal` and
   `ListJournalState` read one package: the journal writer reads the last `seq` and the state
   under the package's journal lock, a packument reads both for its `dist-tags`, `deprecated`,
-  `_rev` and `time.modified`, and reindex reads a package's entries once per OCI repository and
+  `_rev` and `time.modified`, a pypi project page and the API's version resource read the state
+  for the yanks (#81), and reindex reads a package's entries once per OCI repository and
   compares them with the `_j` tags it lists, so it needs neither a lookup by tag nor a list of
   the repo's unseen entries. `ReplaceJournalState` writes the whole fold, not a change: the
   writer folds its entries over the state it read, reindex folds every entry, and both write

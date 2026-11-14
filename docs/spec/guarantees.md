@@ -923,12 +923,12 @@ longer than `reconcile.graceAge` is outside them
 
 ### INV-29. The journal has one order, and its replay is the state
 
-- **Statement.** A package's dist-tag and deprecation changes are journal entries numbered from 1
-  without gaps in the order of the package's journal lock, never rewritten, and the state the
-  packument serves is the fold of the entries in `seq` order, which reindex replays to the same
-  state.
-- **Scope.** Hosted npm repos. A proxy journals nothing: its dist-tags are the upstream's. A
-  proxy that became hosted (proxy-and-group.md §2.6) has a journal from then on, whose first
+- **Statement.** A package's dist-tag and deprecation changes (npm) and yanks (pypi) are journal
+  entries numbered from 1 without gaps in the order of the package's journal lock, never
+  rewritten, and the state the packument and the simple index serve is the fold of the entries
+  in `seq` order, which reindex replays to the same state.
+- **Scope.** Hosted npm and pypi repos (pypi since #81). A proxy journals nothing: its
+  dist-tags are the upstream's. A proxy that became hosted (proxy-and-group.md §2.6) has a journal from then on, whose first
   entries are the dist-tags and deprecations it had of its upstream, written through
   `Publisher.Journal` as any other.
 - **Assumes.** Registry: **monotonic reads** (**unchecked**), and a lag shorter than
