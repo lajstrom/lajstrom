@@ -162,7 +162,7 @@ Every apt repo is signed with a key of its own: `InRelease` is the `Release` cle
 clients pin with `signed-by=` ([http-routing.md](spec/http-routing.md) §3). One more key signs
 the bearer tokens of `/v2` ([below](#the-bearer-token-key)). The keys are made and kept by
 Lajstrom, encrypted with one master key that only the operator holds, or a repo's key is held
-in AWS KMS and never leaves it ([below](#keys-in-a-kms)).
+in AWS KMS or GCP Cloud KMS and never leaves it ([below](#keys-in-a-kms)).
 
 ### The master key
 
@@ -311,21 +311,24 @@ key.
 
 ### Keys in a KMS
 
-A repo's signing key can be a key of AWS KMS instead of one Lajstrom makes
+A repo's signing key can be a key of AWS KMS or GCP Cloud KMS instead of one Lajstrom makes
 ([ADR 0020](adr/0020-repo-signing-keys-in-a-cloud-kms.md)). The private key never leaves the
 KMS. Lajstrom builds an OpenPGP key around the KMS public key, the one that `key.asc` serves,
 and asks the KMS for every signature. The database keeps that public key and the key's name,
 sealed with the master key; the master key is still required for signing.
 
-**Which key.** Usage `SIGN_VERIFY` with spec `RSA_4096` (recommended: every apt, dnf and zypper
-verifies it), `RSA_3072`, `RSA_2048` or `ECC_NIST_P256`. apt 2.7 and later (Ubuntu 24.04,
+**Which key.** In AWS KMS, usage `SIGN_VERIFY` with spec `RSA_4096` (recommended: every apt,
+dnf and zypper verifies it), `RSA_3072`, `RSA_2048` or `ECC_NIST_P256`. In Cloud KMS, an enabled
+version of `RSA_SIGN_PKCS1_4096_SHA256` (recommended), `RSA_SIGN_PKCS1_3072_SHA256`,
+`RSA_SIGN_PKCS1_2048_SHA256` or `EC_SIGN_P256_SHA256`. apt 2.7 and later (Ubuntu 24.04,
 Debian 13) take each of these under their `--assert-pubkey-algo`, and the integration tests run
 `apt-get update` on Ubuntu 24.04 against a P-256 key. Lajstrom refuses any other key when a
 repo's key is made from it, with an error that names the spec:
 
-- `ECC_NIST_P384` and `ECC_NIST_P521`, which sign with another hash than the repo's other keys;
-- Ed25519, which the OpenPGP library cannot sign with through a KMS;
-- ML-DSA and secp256k1.
+- `ECC_NIST_P384`, `ECC_NIST_P521` and `EC_SIGN_P384_SHA384`, which sign with another hash than
+  the repo's other keys;
+- Ed25519 (`EC_SIGN_ED25519`), which the OpenPGP library cannot sign with through a KMS;
+- PSS and raw PKCS #1, ML-DSA and secp256k1.
 
 The OpenPGP key's creation time is the KMS key's creation date, so its fingerprint depends on
 the KMS key alone. Every repo on the same KMS key has the same fingerprint, and a repo that
@@ -379,6 +382,28 @@ key's ARN. Rotate the repos onto the alias again to move them. AWS's own rotatio
 does not apply: KMS does not rotate asymmetric keys. A new key is a new KMS key and a rotation
 here.
 
+**GCP Cloud KMS.** The key URI names a key version:
+`gcpkms://projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<key>/cryptoKeyVersions/<n>`.
+A new version is a new key here, and a rotation onto it. Make the key and use its first
+version:
+
+```sh
+gcloud kms keyrings create lajstrom --location europe-west1
+gcloud kms keys create apt --keyring lajstrom --location europe-west1 \
+  --purpose asymmetric-signing --default-algorithm rsa-sign-pkcs1-4096-sha256 --protection-level hsm
+```
+
+The access token is the workload's service account's, from the metadata server: GKE Workload
+Identity, Compute Engine or Cloud Run, as for an oci upstream's `auth.gcp`. `GCE_METADATA_HOST`
+names another metadata server. A service-account key file and workload identity federation are
+not supported. Grant the service account `roles/cloudkms.signerVerifier` on the key, which has
+the signing and the public key. Where a repo's key is made, also grant
+`cloudkms.cryptoKeyVersions.get`, for the version's creation time and algorithm, e.g. with
+`roles/cloudkms.viewer`. Requests go to the global endpoint `cloudkms.googleapis.com`. Each
+signature carries the CRC32C checks of Cloud KMS, and a signature whose check fails is treated
+as an unavailable KMS. The GCP client is tested against a fake of the API, not against Cloud KMS
+itself.
+
 **When the KMS fails.** The signed documents are made once per render and kept, so a repo whose
 indexes do not change asks the KMS nothing. `key.asc` never asks it, except for a repo's first
 key. Once a publish changes an index:
@@ -396,7 +421,8 @@ key. Once a publish changes an index:
 
 Do not schedule the deletion of a KMS key while a repo's active key, or a key in its grace, is
 that key. `aws kms schedule-key-deletion` waits at least 7 days, and `cancel-key-deletion`
-undoes it within that time.
+undoes it within that time; a Cloud KMS version scheduled for destruction can be restored
+within its own waiting period.
 
 **Requests to the KMS.** For each render: two `Sign` requests per KMS key that signs an apt
 suite (`InRelease` and `Release.gpg`), and one per KMS key that signs an rpm repo. During a
