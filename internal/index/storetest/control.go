@@ -217,6 +217,7 @@ func testTokens(t *testing.T, s index.Store) {
 		{Kind: "pat", UserID: &alice.ID, Name: "full", Hash: "h2", Scopes: []string{}},
 		{Kind: "deploy", RepoID: &repo.ID, Name: "deploy", Hash: "h3", Scopes: []string{"read"}, RevokedAt: ptr(at(7))},
 		{Kind: "pat", UserID: &alice.ID, Name: "legacy", Hash: "h4"},
+		{Kind: "deploy", RepoMask: "raw/*", Name: "fleet", Hash: "h5", Scopes: []string{"read"}, CreatedAt: at(2)},
 	}
 	for i := range tokens {
 		must(t, s.CreateToken(ctx, &tokens[i]))
@@ -234,7 +235,7 @@ func testTokens(t *testing.T, s index.Store) {
 	}{
 		{"all", nil, nil, tokens},
 		{"of alice", &alice.ID, nil, []index.Token{tokens[0], tokens[1], tokens[3]}},
-		{"of the repo", nil, &repo.ID, []index.Token{tokens[2]}},
+		{"of the repo, not over a mask that matches it", nil, &repo.ID, []index.Token{tokens[2]}},
 		{"of alice and the repo", &alice.ID, &repo.ID, []index.Token{}},
 	} {
 		got, err := s.ListTokens(ctx, tt.userID, tt.repoID)
@@ -267,6 +268,16 @@ func testTokens(t *testing.T, s index.Store) {
 	} {
 		wantErr(t, tt.name, tt.err, tt.want)
 	}
+
+	// A repo deleted takes its deploy tokens with it, and not a token over a mask, which names
+	// no repo (docs/spec/rbac.md §1).
+	must(t, s.DeleteRepo(ctx, repo.ID))
+	left, err := s.ListTokens(ctx, nil, nil)
+	must(t, err)
+	same(t, "ListTokens after DeleteRepo", ids([]index.Token{tokens[0], tokens[1], tokens[3], tokens[4]}, tokenID), ids(left, tokenID))
+	mask, err := s.GetTokenByHash(ctx, "h5")
+	must(t, err)
+	same(t, "the token over a mask after DeleteRepo", tokens[4], *mask)
 }
 
 func testBindings(t *testing.T, s index.Store) {

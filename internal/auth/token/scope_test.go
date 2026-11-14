@@ -153,6 +153,33 @@ func TestReduceCredential(t *testing.T) {
 			t.Errorf("%s: %v, want %s", tt.name, got, tt.want)
 		}
 	}
+
+	// A deploy token over a mask (#911): the actions of its scopes on every repository whose repo
+	// its mask matches, none elsewhere, never delete.
+	nodes := auth.Principal{Kind: auth.KindToken, Name: "21"}
+	fleet := ParseScopes([]string{"repository:oci/ghcr/siderolabs/kubelet:pull", "repository:oci/k8s/etcd:pull,push,delete",
+		"repository:raw/assets/hello:pull", "repository:apt/talos/x:pull"})
+	mask := func(m string, sc ...string) auth.Credential {
+		return auth.Credential{Kind: auth.CredDeploy, TokenID: 21, Mask: m, Scopes: sc}
+	}
+	for _, tt := range []struct {
+		name string
+		cred auth.Credential
+		want string
+	}{
+		{"mask read", mask("oci/*", "read"),
+			"[{repository apt/talos/x []} {repository oci/ghcr/siderolabs/kubelet [pull]} {repository oci/k8s/etcd [pull]} {repository raw/assets/hello []}]"},
+		{"mask read write", mask("oci/*", "read", "write"),
+			"[{repository apt/talos/x []} {repository oci/ghcr/siderolabs/kubelet [pull]} {repository oci/k8s/etcd [pull push]} {repository raw/assets/hello []}]"},
+		{"mask over a name", mask("*/talos", "read"),
+			"[{repository apt/talos/x [pull]} {repository oci/ghcr/siderolabs/kubelet []} {repository oci/k8s/etcd []} {repository raw/assets/hello []}]"},
+	} {
+		got, err := Reduce(auth.WithCredential(t.Context(), tt.cred), nil, nodes, fleet)
+		must(t, err)
+		if fmt.Sprint(got) != tt.want {
+			t.Errorf("%s: %v, want %s", tt.name, got, tt.want)
+		}
+	}
 }
 
 func TestScopeAction(t *testing.T) {

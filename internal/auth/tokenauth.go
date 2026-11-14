@@ -58,8 +58,10 @@ func (a *Authenticator) authenticatePAT(ctx context.Context, username, secret st
 // authenticateDeploy returns the principal token:<id> when secret is a deploy token: a token
 // of kind deploy that is not revoked and not expired. The user name of the Basic credentials
 // does not count (deploy by convention, anything for a client that insists on one) and is not
-// logged. The credential carries the token's repo, by id and by name: one GetTokenByHash and
-// one GetRepoByID. A repo deleted takes its deploy tokens with it, so a token found has a repo.
+// logged. The credential of a token of one repo carries the repo, by id and by name: one
+// GetTokenByHash and one GetRepoByID. A repo deleted takes its deploy tokens with it, so a
+// token found has a repo. The credential of a token over a mask carries the mask, which names no
+// repo: one GetTokenByHash (docs/spec/rbac.md §1).
 func (a *Authenticator) authenticateDeploy(ctx context.Context, secret string) (Principal, Credential, error) {
 	if !tokenShaped(secret, DeployPrefix) {
 		return Principal{}, Credential{}, a.refuse(ctx, nil, "malformed token")
@@ -70,6 +72,12 @@ func (a *Authenticator) authenticateDeploy(ctx context.Context, secret string) (
 	}
 	if reason := a.dead(t, TokenDeploy); reason != "" {
 		return Principal{}, Credential{}, a.refuseToken(ctx, nil, t, reason)
+	}
+	if t.RepoMask != "" {
+		a.touch(ctx, t.ID)
+		return Principal{Kind: KindToken, Name: strconv.FormatInt(t.ID, 10)}, Credential{
+			Kind: CredDeploy, TokenID: t.ID, Mask: t.RepoMask, Scopes: slices.Clone(t.Scopes),
+		}, nil
 	}
 	repo, err := a.index.GetRepoByID(ctx, *t.RepoID)
 	switch {
@@ -141,7 +149,9 @@ func (a *Authenticator) token(ctx context.Context, secret string) (*index.Token,
 
 // dead returns why t cannot authenticate as a token of kind, or "" when it can: none, another
 // kind, revoked, expired, a personal access token without an expiry or an owner, a deploy token
-// without a repo. The last three are rows this package never writes.
+// with neither a repo nor a mask, or with both, or with a mask that is not <format>/<repo>. The
+// last three are rows this package never writes; a replica of a release before the masks
+// (#911) refuses a token over a mask as one without a repo.
 func (a *Authenticator) dead(t *index.Token, kind string) string {
 	switch {
 	case t == nil:
@@ -154,10 +164,18 @@ func (a *Authenticator) dead(t *index.Token, kind string) string {
 		return "expired"
 	case kind == TokenPAT && (t.ExpiresAt == nil || t.UserID == nil):
 		return "a personal access token without an expiry or an owner"
-	case kind == TokenDeploy && t.RepoID == nil:
-		return "a deploy token without a repo"
+	case kind == TokenDeploy && (t.RepoID == nil) == (t.RepoMask == ""):
+		return "a deploy token with neither a repo nor a mask, or with both"
+	case kind == TokenDeploy && t.RepoMask != "" && !validMask(t.RepoMask):
+		return "a deploy token whose mask is not <format>/<repo>"
 	}
 	return ""
+}
+
+// validMask reports whether mask is <format>/<repo>, each segment a name or "*" (ParseMask).
+func validMask(mask string) bool {
+	_, _, err := ParseMask(mask)
+	return err == nil
 }
 
 // refuseToken logs the refusal of a token at debug level, with the principal user:<uid> of
