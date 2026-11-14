@@ -9,11 +9,14 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-// The kinds of referrer (docs/spec/manifest-profile.md §6) that ReferrerKind tells apart: in the
-// audit row of a referrer push now, in the attachments of #89 later.
+// The kinds of referrer and of attachment (docs/spec/manifest-profile.md §6.1) that ReferrerKind
+// and Attachments tell apart: in the audit row of a referrer push, and in the attachments of a
+// version (#89).
 const (
 	ReferrerSignature   = "signature"
 	ReferrerSBOM        = "sbom"
+	ReferrerScan        = "scan"
+	ReferrerProvenance  = "provenance"
 	ReferrerAttestation = "attestation"
 	ReferrerOther       = "other"
 )
@@ -60,19 +63,26 @@ var referrerTypes = []struct{ prefix, kind string }{
 	{"application/vnd.in-toto", ReferrerAttestation},
 }
 
-// predicateAnnotations carry the predicate type of an attestation: cosign v3's bundle
-// annotation on the manifest, cosign's legacy annotation on the layer.
-var predicateAnnotations = []string{"dev.sigstore.bundle.predicateType", "predicateType"}
+// The annotations that carry the predicate type of an attestation: cosign v3's bundle annotation
+// on the manifest, cosign's legacy annotation on the layer.
+const (
+	annotationBundlePredicate = "dev.sigstore.bundle.predicateType"
+	annotationLayerPredicate  = "predicateType"
+)
 
-// ReferrerKind is the kind of the referrer m pushed under tag: what the predicate type of an
-// attestation names, else the kind of cosign's tag suffix, else that of the first of its
-// artifact type, config and layer media types that it knows, else ReferrerOther.
+// predicateAnnotations are both, the manifest's first.
+var predicateAnnotations = []string{annotationBundlePredicate, annotationLayerPredicate}
+
+// ReferrerKind is the kind of the referrer m pushed under tag, from the manifest alone: what the
+// predicate type of an attestation names (PredicateKind), else the kind of cosign's tag suffix,
+// else that of the first of its artifact type, config and layer media types that it knows, else
+// ReferrerOther.
 func ReferrerKind(tag string, m ocispec.Manifest) string {
 	descs := append([]ocispec.Descriptor{{MediaType: m.ArtifactType, Annotations: m.Annotations}, m.Config}, m.Layers...)
 	for _, d := range descs {
 		for _, key := range predicateAnnotations {
 			if p := d.Annotations[key]; p != "" {
-				return predicateKind(p)
+				return PredicateKind(p)
 			}
 		}
 	}
@@ -87,16 +97,4 @@ func ReferrerKind(tag string, m ocispec.Manifest) string {
 		}
 	}
 	return ReferrerOther
-}
-
-// predicateKind is the kind of an attestation of the predicate type p: a signature for cosign's
-// own, an SBOM for SPDX and CycloneDX.
-func predicateKind(p string) string {
-	switch {
-	case p == "https://sigstore.dev/cosign/sign/v1":
-		return ReferrerSignature
-	case strings.HasPrefix(p, "https://spdx.dev/Document"), strings.HasPrefix(p, "https://cyclonedx.org/bom"):
-		return ReferrerSBOM
-	}
-	return ReferrerAttestation
 }
