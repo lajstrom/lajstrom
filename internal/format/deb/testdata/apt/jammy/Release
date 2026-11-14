@@ -26,6 +26,18 @@ MD5Sum:
  d41d8cd98f00b204e9800998ecf8427e 0 universe/binary-arm64/Packages
  <MD5Sum> <size> universe/binary-arm64/Packages.gz
  <MD5Sum> <size> universe/binary-arm64/Packages.xz
+ 942adb3a0831df1ca2e5706155f241bf 152 main/Contents-all
+ <MD5Sum> <size> main/Contents-all.gz
+ 6743f48be78d9a3d7eeebeb0b67dc2fe 294 main/Contents-amd64
+ <MD5Sum> <size> main/Contents-amd64.gz
+ 42c3a99d3923608e0c1e8e0533be1db8 440 main/Contents-arm64
+ <MD5Sum> <size> main/Contents-arm64.gz
+ d41d8cd98f00b204e9800998ecf8427e 0 universe/Contents-all
+ <MD5Sum> <size> universe/Contents-all.gz
+ 259c02f78cb264c022eb840a9e829a73 73 universe/Contents-amd64
+ <MD5Sum> <size> universe/Contents-amd64.gz
+ d41d8cd98f00b204e9800998ecf8427e 0 universe/Contents-arm64
+ <MD5Sum> <size> universe/Contents-arm64.gz
 SHA1:
  1fafc915fab64b81dd0606a3471f77dbac0e88bb 479 main/binary-all/Packages
  <SHA1> <size> main/binary-all/Packages.gz
@@ -45,6 +57,18 @@ SHA1:
  da39a3ee5e6b4b0d3255bfef95601890afd80709 0 universe/binary-arm64/Packages
  <SHA1> <size> universe/binary-arm64/Packages.gz
  <SHA1> <size> universe/binary-arm64/Packages.xz
+ 84ca414fffd1b1238799fe25d73497bedec91009 152 main/Contents-all
+ <SHA1> <size> main/Contents-all.gz
+ c91f63901738f97d75e81b3f3b3f04cfd07c3bd5 294 main/Contents-amd64
+ <SHA1> <size> main/Contents-amd64.gz
+ ae41d31ad027fa1a98a94d77f632f8ad25496747 440 main/Contents-arm64
+ <SHA1> <size> main/Contents-arm64.gz
+ da39a3ee5e6b4b0d3255bfef95601890afd80709 0 universe/Contents-all
+ <SHA1> <size> universe/Contents-all.gz
+ e0bdc7dee8377e8a35159e1b887c5b51f2fc136a 73 universe/Contents-amd64
+ <SHA1> <size> universe/Contents-amd64.gz
+ da39a3ee5e6b4b0d3255bfef95601890afd80709 0 universe/Contents-arm64
+ <SHA1> <size> universe/Contents-arm64.gz
 SHA256:
  3114858b74bd8781d7c1434cc6db02387ade08103ab84c57dac64baeadba2d93 479 main/binary-all/Packages
  <SHA256> <size> main/binary-all/Packages.gz
@@ -64,3 +88,15 @@ SHA256:
  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 0 universe/binary-arm64/Packages
  <SHA256> <size> universe/binary-arm64/Packages.gz
  <SHA256> <size> universe/binary-arm64/Packages.xz
+ d7964804965fdf3caf974d64f3d47ac2469f2d46022e422967de28fc161d506b 152 main/Contents-all
+ <SHA256> <size> main/Contents-all.gz
+ c103356b44681df707a1499216fd0897a8d48a2a3c7f399893ffbc11ea92409b 294 main/Contents-amd64
+ <SHA256> <size> main/Contents-amd64.gz
+ 4b049ae14efb245e45b3b075f2ec45e790fa8e13adbfc2d370fd657be45a5f54 440 main/Contents-arm64
+ <SHA256> <size> main/Contents-arm64.gz
+ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 0 universe/Contents-all
+ <SHA256> <size> universe/Contents-all.gz
+ a45a7180db5bf04e5594a1a04ab13f76ade1b720b1b6774ff3eb67801a33fc72 73 universe/Contents-amd64
+ <SHA256> <size> universe/Contents-amd64.gz
+ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 0 universe/Contents-arm64
+ <SHA256> <size> universe/Contents-arm64.gz

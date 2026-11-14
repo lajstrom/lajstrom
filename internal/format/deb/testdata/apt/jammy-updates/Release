@@ -11,11 +11,17 @@ MD5Sum:
  69a774c0397125e7ab250731ca198e49 1086 main/binary-amd64/Packages
  <MD5Sum> <size> main/binary-amd64/Packages.gz
  <MD5Sum> <size> main/binary-amd64/Packages.xz
+ af5fd40bbae4dc546cc058689e0db9e4 142 main/Contents-amd64
+ <MD5Sum> <size> main/Contents-amd64.gz
 SHA1:
  3d426700636c7d46705bef30e27251686782581b 1086 main/binary-amd64/Packages
  <SHA1> <size> main/binary-amd64/Packages.gz
  <SHA1> <size> main/binary-amd64/Packages.xz
+ f341e047d314aa015ea1edf7b44b4e2673c5efb3 142 main/Contents-amd64
+ <SHA1> <size> main/Contents-amd64.gz
 SHA256:
  aa5fb7ea9ab9b386d76e8f8f63736af064c81c197f9ce812ed78549b7651fddb 1086 main/binary-amd64/Packages
  <SHA256> <size> main/binary-amd64/Packages.gz
  <SHA256> <size> main/binary-amd64/Packages.xz
+ 9ac74280ccc5d54584b0096bb73fe64ce387e4cafca73644976ff0216e587d75 142 main/Contents-amd64
+ <SHA256> <size> main/Contents-amd64.gz

@@ -43,6 +43,8 @@ const (
 //	PUT /{repo}/upload?suite=&component=[&arch=]                     one .deb, published through deps.Ingest
 //	POST /{repo}/upload?suite=&component=                            a source package, multipart, through deps.Sessions
 //	GET /{repo}/dists/{suite}/{component}/source/Sources             and Sources.gz, Sources.xz, by the route of Packages
+//	GET /{repo}/dists/{suite}/{component}/Contents-{arch}            and Contents-{arch}.gz
+//	GET /{repo}/dists/{suite}/{component}/by-hash/SHA256/{hash}      a Contents of the component by its hash
 //
 // The documents come from index_cache through format.CachedDocument and are served with
 // format.ServeDocument (ETag, Last-Modified, If-None-Match, Range). deps.Signer signs; when it
@@ -63,7 +65,9 @@ func (p Plugin) Routes(r format.Router, deps format.Deps) {
 	}
 	h := &handlers{deps: deps, plugin: Plugin{svc: svc}}
 	r.HandleFunc("GET /{repo}/dists/{suite}/{file}", h.release)
+	r.HandleFunc("GET /{repo}/dists/{suite}/{component}/{file}", h.packages)
 	r.HandleFunc("GET /{repo}/dists/{suite}/{component}/{dir}/{file}", h.packages)
+	r.HandleFunc("GET /{repo}/dists/{suite}/{component}/by-hash/SHA256/{hash}", h.byHash)
 	r.HandleFunc("GET /{repo}/dists/{suite}/{component}/{dir}/by-hash/SHA256/{hash}", h.byHash)
 	r.HandleFunc("GET /{repo}/pool/{component}/{p}/{source}/{filename}", h.pool)
 	r.HandleFunc("GET /{repo}/key.asc", h.publicKeys)
@@ -267,15 +271,25 @@ func unsigned(repo index.Repo, path string) error {
 		index.ErrNotFound, repo.Name, path)
 }
 
-// packages serves dists/{suite}/{component}/{dir}/{file}: a Packages, Packages.gz or
-// Packages.xz that the Release of the suite lists.
+// packages serves dists/{suite}/{component}/{dir}/{file}, a Packages or Sources and their
+// compressed forms, and dists/{suite}/{component}/{file}, a Contents-<arch> or its .gz: an index
+// that the Release of the suite lists.
 func (h *handlers) packages(w http.ResponseWriter, r *http.Request) {
 	repo, ok := h.start(w, r)
 	if !ok {
 		return
 	}
-	kind := r.PathValue("component") + "/" + r.PathValue("dir") + "/" + r.PathValue("file")
-	h.serve(w, r, repo, r.PathValue("suite"), kind)
+	h.serve(w, r, repo, r.PathValue("suite"), indexDir(r)+r.PathValue("file"))
+}
+
+// indexDir returns the directory of an index of the request below dists/<suite>/, with its
+// trailing "/": <component>/<dir>/ for a Packages or a Sources, <component>/ for a Contents.
+func indexDir(r *http.Request) string {
+	dir := r.PathValue("component") + "/"
+	if d := r.PathValue("dir"); d != "" {
+		dir += d + "/"
+	}
+	return dir
 }
 
 // serve answers the document kind of the suite. The Release comes first, from index_cache or
@@ -299,8 +313,9 @@ func (h *handlers) serve(w http.ResponseWriter, r *http.Request, repo index.Repo
 	format.ServeDocument(w, r, c, contentType(kind))
 }
 
-// byHash serves dists/{suite}/{component}/{dir}/by-hash/SHA256/{hash}: the Packages,
-// Packages.gz or Packages.xz of that directory whose SHA256 the current Release lists as hash
+// byHash serves dists/{suite}/{component}/{dir}/by-hash/SHA256/{hash} and
+// dists/{suite}/{component}/by-hash/SHA256/{hash}: the index of that directory, a Packages, a
+// Sources or a Contents in any of their forms, whose SHA256 the current Release lists as hash
 // (apt asks for it so when the Release says Acquire-By-Hash: yes). A hash of an older render is
 // 404, and apt falls back to the file by its name.
 func (h *handlers) byHash(w http.ResponseWriter, r *http.Request) {
@@ -308,8 +323,7 @@ func (h *handlers) byHash(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	suite, hash := r.PathValue("suite"), r.PathValue("hash")
-	dir := r.PathValue("component") + "/" + r.PathValue("dir") + "/"
+	suite, hash, dir := r.PathValue("suite"), r.PathValue("hash"), indexDir(r)
 	rel, err := h.cached(r.Context(), repo, suite, kindRelease)
 	if err != nil {
 		h.fail(w, r, err)
