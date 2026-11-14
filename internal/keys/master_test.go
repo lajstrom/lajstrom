@@ -161,3 +161,31 @@ func TestSealOpen(t *testing.T) {
 		}
 	}
 }
+
+// TestMasterSealOpen: a secret sealed for one row opens for that row only, with this master
+// key only, and the errors show no byte of it.
+func TestMasterSealOpen(t *testing.T) {
+	m, err := ParseMaster(testMasterHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := ParseMaster(otherMasterHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := []byte("s3cr3t-webhook-key")
+	sealed := m.Seal("webhook:1", secret)
+	if got, err := m.Open("webhook:1", sealed); err != nil || string(got) != string(secret) {
+		t.Fatalf("Open = %q, %v", got, err)
+	}
+	for name, open := range map[string]func() ([]byte, error){
+		"another row":        func() ([]byte, error) { return m.Open("webhook:2", sealed) },
+		"another master key": func() ([]byte, error) { return other.Open("webhook:1", sealed) },
+		"too short":          func() ([]byte, error) { return m.Open("webhook:1", sealed[:4]) },
+	} {
+		got, err := open()
+		if err == nil || got != nil || strings.Contains(err.Error(), "s3cr3t") {
+			t.Errorf("%s: %q, %v", name, got, err)
+		}
+	}
+}
