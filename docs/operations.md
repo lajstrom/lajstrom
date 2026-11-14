@@ -13,7 +13,7 @@ Its index on Postgres may sit behind a connection pooler or an operator such as 
 [deploy/databases.md](deploy/databases.md) has what was measured behind PgBouncer and Odyssey,
 the pool sizes, the idle-in-transaction timeouts that must stay off for Lajstrom's users, how a
 restart and a failover look to clients, the two conditions of YugabyteDB (experimental), and
-why CockroachDB does not work.
+what runs on CockroachDB (experimental) and what does not.
 
 ### What Lajstrom answers browsers
 

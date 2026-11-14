@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -24,6 +25,12 @@ func TestTransientStates(t *testing.T) {
 	dsn := testDSN(t)
 	if onYugabyte(t, dsn) {
 		t.Skip("YugabyteDB: the timeouts, deadlocks and conflicts of Postgres are tested; YugabyteDB's mapping is TestYugabyteDialect's")
+	}
+	if onCockroach(t, openDB(t, dsn)) {
+		// Measured on v26.3.5: idle_in_transaction_session_timeout closes the connection (an
+		// EOF, ErrUnavailable), transaction_timeout is 57014, a deadlock 40001, and the store's
+		// read committed overrides the role's repeatable read (docs/deploy/databases.md).
+		t.Skip("CockroachDB: its timeouts and aborts have codes of their own; its mapping is TestCockroachDialect's")
 	}
 
 	t.Run("25P03 idle_in_transaction_session_timeout", func(t *testing.T) {
@@ -172,9 +179,60 @@ func openAs(t *testing.T, dsn string) *Store {
 // onYugabyte reports whether the database of dsn is YugabyteDB, as its version() says.
 func onYugabyte(t *testing.T, dsn string) bool {
 	t.Helper()
+	return strings.Contains(serverVersion(t, openDB(t, dsn)), "-YB-")
+}
+
+// onCockroach reports whether db is CockroachDB, as its version() says.
+func onCockroach(t *testing.T, db *sql.DB) bool {
+	t.Helper()
+	return strings.Contains(serverVersion(t, db), "CockroachDB")
+}
+
+// serverVersion returns the version() of db.
+func serverVersion(t *testing.T, db *sql.DB) string {
+	t.Helper()
 	var version string
-	if err := openDB(t, dsn).QueryRowContext(t.Context(), "SELECT version()").Scan(&version); err != nil {
+	if err := db.QueryRowContext(t.Context(), "SELECT version()").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	return strings.Contains(version, "-YB-")
+	return version
+}
+
+// terminate ends, from admin's session, the sessions of a role (user) or of an application
+// name (app) that are inside a transaction, as a server that shuts down does, and returns how
+// many it ended: pg_terminate_backend on Postgres, CANCEL SESSION on CockroachDB, which has no
+// pg_terminate_backend.
+func terminate(ctx context.Context, t *testing.T, admin *sql.DB, user, app string) (int, error) {
+	t.Helper()
+	if !onCockroach(t, admin) {
+		var n int
+		err := admin.QueryRowContext(ctx, "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity"+
+			" WHERE ($1 = '' OR usename = $1) AND ($2 = '' OR application_name = $2) AND state = 'idle in transaction'",
+			user, app).Scan(&n)
+		return n, err
+	}
+	rows, err := admin.QueryContext(ctx, "SELECT session_id FROM crdb_internal.cluster_sessions"+
+		" WHERE ($1 = '' OR user_name = $1) AND ($2 = '' OR application_name = $2) AND kv_txn IS NOT NULL",
+		user, app)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, id := range ids {
+		if _, err := admin.ExecContext(ctx, "CANCEL SESSION $1", id); err != nil {
+			return 0, err
+		}
+	}
+	return len(ids), nil
 }
