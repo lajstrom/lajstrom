@@ -2,7 +2,7 @@
 
 - Status: normative, v1 (2026-11-06; section 4.3 changed by ADR 0017 on 2026-11-11; the pypi
   variant of a wheel with a build tag, sections 3 and 4.2, on 2026-11-12, #726; the rpm
-  profile, sections 1 to 5, on 2026-11-12, #64; attachments, section 6, on 2026-11-14, #89). Changes need an issue labelled `contract`
+  profile, sections 1 to 5, on 2026-11-12, #64; attachments, section 6, on 2026-11-14, #89; keyless verification and the identity from the predicate, sections 6.2 and 6.3, on 2026-11-14). Changes need an issue labelled `contract`
   and, if the wire format changes, an ADR.
 - Implemented by: `internal/oci/profile` (pure Go, no I/O).
 - Related: [ADR 0005](../adr/0005-manifest-profile-and-immutable-tags.md),
@@ -435,19 +435,35 @@ annotations and has no meaning. An `input` that is not a digest is not indexed a
 keeps it in `annotations` only). `oras attach --annotation` sets them; `cosign attest` (v3.1)
 sets no manifest annotation, so an attestation made with it has none of them.
 
+When the annotations leave the tool, its version or the database out, the index takes them
+from the statement's predicate, which is what the producer signed (decided by the maintainer on
+2026-11-14, #89 option B); an annotation that is set wins, and `input` comes from the annotation
+only:
+
+| Predicate type | tool, toolVersion | database |
+| --- | --- | --- |
+| `https://cosign.sigstore.dev/attestation/vuln/v1` (trivy `--format cosign-vuln`) | the name of the purl in `scanner.uri` (`pkg:github/aquasecurity/trivy@0.60.0` is `trivy`), else `scanner.uri`; `scanner.version` | `scanner.db.version`, else `scanner.db.uri` |
+| CycloneDX | the first of `metadata.tools.components` (CycloneDX 1.5 and later), else of the list `metadata.tools`: its `name` and `version` | none |
+| SPDX | the first `Tool: <name>-<version>` of `creationInfo.creators`, split at its last `-` | none |
+
+A statement that does not parse, or a predicate without these fields, leaves them empty. The
+predicate is read as the statement has it, signed or not: like an annotation, a value is the
+producer's word, and the label says whether a trusted key or identity signed it.
+
 ### 6.3 Verification
 
-The operator's trust (`attachments.trust`, [configuration.md](../configuration.md)) names
-public keys, each trusted for every predicate type or for those it lists; a signature counts as
-the predicate type `https://sigstore.dev/cosign/sign/v1`. Each attachment gets one label:
+The operator's trust ([configuration.md](../configuration.md), `attachments`) names public keys
+(`attachments.trust`) and keyless identities (`attachments.keyless`), each trusted for every
+predicate type or for those it lists; a signature counts as the predicate type
+`https://sigstore.dev/cosign/sign/v1`. Each attachment gets one label:
 
 | Verification | Meaning |
 | --- | --- |
-| `verified` | a trusted key, trusted for its predicate type, signed it, and what it signed names the version's manifest |
-| `untrusted` | it carries a signature that no trusted key verifies |
+| `verified` | a trusted key or a trusted keyless identity, trusted for its predicate type, signed it, and what it signed names the version's manifest |
+| `untrusted` | it carries a signature that no trusted key verifies, or a keyless signature that does not verify against the trusted root or whose identity is not trusted for its predicate type |
 | `unsigned` | it carries no signature: a raw SBOM, an envelope without signatures, an `other` |
 | `invalid` | its envelope does not parse, or its payload is not an in-toto statement, or a trusted key signed a statement or a payload that names another manifest |
-| `unsupported` | signed in a way Lajstrom does not verify: a Fulcio certificate (keyless), notation, a bundle with a message signature instead of a DSSE envelope, a layer larger than `attachments.maxBlobSize` |
+| `unsupported` | signed in a way Lajstrom does not verify: a keyless signature while `attachments.keyless` is not configured, cosign's legacy keyless signature (a `.sig` or `.att` layer with a certificate annotation), notation, a bundle with a message signature instead of a DSSE envelope, a layer larger than `attachments.maxBlobSize` |
 
 What is checked:
 
@@ -465,14 +481,48 @@ What is checked:
   SHA-512 of the signed bytes (cosign's `cosign.pub` is P-256); Ed25519; RSA with PKCS #1 v1.5
   and SHA-256. A KMS key that `cosign attest --key awskms://…` uses verifies with its public
   key.
-- **Not checked**: a transparency log or a timestamp. A key signature needs no Rekor entry
-  (`cosign attest --tlog-upload=false`), and one it has is not looked at. Keyless verification
-  (Fulcio identities) is not built: it needs a dependency that layout.md §3 does not list (#89,
-  option A), and such an attachment is `unsupported`.
+- **Keyless** (#89 option A, decided by the maintainer on 2026-11-14): a sigstore bundle whose
+  verification material is a certificate (`cosign attest` without `--key`), verified with
+  `sigstore-go` against the operator's **trusted root**, a `trusted_root.json` file
+  (`attachments.keyless.trustedRoot`). It is verified when:
+  - the certificate chains to a certificate authority of the trusted root and was valid when
+    the signature was made;
+  - the bundle's transparency log entry verifies against a log of the trusted root (its
+    inclusion proof and checkpoint, or its signed entry timestamp), and so do its RFC 3161
+    timestamps when it has them; the time of the signature is the log's or a timestamp
+    authority's, at least one (`sigstore-go`'s observer timestamps);
+  - the certificate carries `attachments.keyless.signedCertificateTimestamps` signed
+    certificate timestamps (1 by default; 0 for a Fulcio without a CT log) of a CT log of the
+    trusted root;
+  - the certificate's key signed the DSSE envelope;
+  - its identity matches a trusted identity: the OIDC issuer of the certificate (its Fulcio
+    extension `1.3.6.1.4.1.57264.1.8`, or the deprecated `.1.1`) equals the identity's
+    `issuer`, and its subject alternative name (a URI or an email address) equals its
+    `subject` or matches its `subjectRegex` (Go regular expression syntax, anchored by the
+    operator);
+  - that identity is trusted for the statement's predicate type;
+  - and the statement names the version's manifest, as for a key.
+
+  `signedBy` is the identity's `name`. A bundle that does not verify against the trusted root
+  is `untrusted`, with sigstore-go's reason; a valid one whose identity is not trusted is
+  `untrusted`, naming the certificate's issuer and subject. A key in `attachments.trust` that
+  verifies the envelope makes it verified too, whatever the certificate. cosign's legacy
+  keyless signatures (the certificate and the signed entry timestamp in layer annotations of a
+  `.sig` or `.att`) stay `unsupported`: sigstore-go reads bundles, not that layout.
+- **No network at verification.** Nothing is fetched to label an attachment: the bundle carries
+  its log entry and its proofs, and the trusted root is a file read at start. No transparency
+  log is asked online, for no bundle form needs it: a bundle v0.1 carries a signed entry
+  timestamp, later ones an inclusion proof. The trusted root changes only when the operator
+  replaces the file: `lajstrom admin trusted-root fetch` fetches the public-good one through
+  TUF (sigstore-go's embedded TUF root), the one command that touches the network, and writes
+  it to a file; a private Sigstore's root is its operator's file.
+- **Not checked for a key**: a transparency log or a timestamp. A key signature needs no Rekor
+  entry (`cosign attest --tlog-upload=false`), and one it has is not looked at.
 
 The label is decided when the attachment is indexed, by ingest and by reindex, against the
-trust of the replica that indexes it, and a change of the trust reaches each attachment at the
-next reindex of its repo (index-schema.md). The layers are read through the provider, at most
+trust of the replica that indexes it, and a change of the trust (a key, an identity, the trusted
+root, the number of signed certificate timestamps) reaches each attachment at the next reindex
+of its repo (index-schema.md). The layers are read through the provider, at most
 `attachments.maxBlobSize` of each.
 
 ## 7. Repos of type `oci` (passthrough)

@@ -410,7 +410,7 @@ table of record of scans (#89, decision 1).
 
 | Table | Columns | Notes |
 | --- | --- | --- |
-| `attachments` | `id`, `version_id` → versions (`ON DELETE CASCADE`), `digest` text (the referrer manifest's), `tag` text (cosign's legacy tag, `''` for a referrer pushed by digest), `layer` text (the digest of the attachment's layer, `''` for a manifest without layers), `media_type` text (the layer's; for a manifest without layers its artifact type), `artifact_type` text (the manifest's `artifactType`, else its config's media type), `kind` text (`signature`, `sbom`, `scan`, `provenance`, `attestation`, `other`: §6.1), `predicate_type` text (`''` when none), `size` int (the layer's), `annotations` json (the manifest's), `tool`, `tool_version`, `database`, `input` text (the `lajstrom.attachment.*` annotations, §6.2; `''` when absent), `verification` text (`verified`, `untrusted`, `unsigned`, `invalid`, `unsupported`: §6.3), `signed_by` text null (the `name` of the trust entry whose key verified it; null unless `verified`), `reason` text (why it is not verified, `''` when it is), `trust` text (the hash of the trust that labelled it, `attest.Trust.Hash`), `created_at` ts null (the referrer manifest's `org.opencontainers.image.created`; null without one), `indexed_at` ts (when ingest or reindex last wrote or saw the row) | unique `(version_id, digest, layer)`; index `attachments_digest` on `(digest)`. Migration `0023_attachments.sql` |
+| `attachments` | `id`, `version_id` → versions (`ON DELETE CASCADE`), `digest` text (the referrer manifest's), `tag` text (cosign's legacy tag, `''` for a referrer pushed by digest), `layer` text (the digest of the attachment's layer, `''` for a manifest without layers), `media_type` text (the layer's; for a manifest without layers its artifact type), `artifact_type` text (the manifest's `artifactType`, else its config's media type), `kind` text (`signature`, `sbom`, `scan`, `provenance`, `attestation`, `other`: §6.1), `predicate_type` text (`''` when none), `size` int (the layer's), `annotations` json (the manifest's), `tool`, `tool_version`, `database`, `input` text (the `lajstrom.attachment.*` annotations, else for the first three what the statement's predicate names, §6.2; `''` when neither), `verification` text (`verified`, `untrusted`, `unsigned`, `invalid`, `unsupported`: §6.3), `signed_by` text null (the `name` of the key or keyless identity that verified it; null unless `verified`), `reason` text (why it is not verified, `''` when it is), `trust` text (the hash of the trust that labelled it, `attest.Trust.Hash`), `created_at` ts null (the referrer manifest's `org.opencontainers.image.created`; null without one), `indexed_at` ts (when ingest or reindex last wrote or saw the row) | unique `(version_id, digest, layer)`; index `attachments_digest` on `(digest)`. Migration `0023_attachments.sql` |
 
 - **Writers.** Ingest, reindex and delete, never a frontend or the API:
   - `PutReferrer` writes the rows of a referrer once the registry serves it back, in one
@@ -436,9 +436,10 @@ table of record of scans (#89, decision 1).
   version not seen since the run started go (`SweepAttachments`): rows that ingest wrote during
   the run stay. A listing that fails is an error of the report, and the version's rows stay as
   they are. The report counts the rows seen or written (`attachments`).
-- **The trust.** `trust` is a hash of the trust that labelled the row (its entries' names,
-  keys and predicate types), so a change of the trust is read again by the next reindex,
-  whatever the run's options. Replicas should run with the same trust: a row's label is that of
+- **The trust.** `trust` is a hash of the trust that labelled the row: its keys' names, keys and
+  predicate types, its keyless identities (name, issuer, subject or subject regex, predicate
+  types), the bytes of its trusted root and its number of signed certificate timestamps. A change
+  of any is read again by the next reindex, whatever the run's options. Replicas should run with the same trust: a row's label is that of
   the replica that wrote it last.
 - **History.** Every result is a row of its own and none is merged: a scan run again with a new
   database is one more referrer and one more row. "The latest result per tool" is a query

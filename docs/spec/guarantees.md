@@ -1386,9 +1386,11 @@ promises part of it, the line says which part stays a promise.
 - **An attachment's row right after its push, and its label.** A referrer is kept and listed as
   INV-35 says; its rows in `attachments` are written after it reads back, best effort, and the
   next reindex of the repo writes those a failure left out (index-schema.md, Attachments). A
-  label is the trust of the replica that wrote the row, and says what a key signed, not that
-  what it signed is true: Lajstrom checks no transparency log, and keyless signatures are
-  `unsupported` (manifest-profile.md §6.3).
+  label is the trust of the replica that wrote the row, and says what a key or a keyless
+  identity signed, not that what it signed is true. A key signature's transparency log entry is
+  not checked; a keyless signature's is, offline, from the bundle and the trusted root the
+  operator provides, and a root that is stale, or a revoked identity it still trusts, is not
+  noticed until the operator replaces the file (manifest-profile.md §6.3).
 - **The bytes of a redirected download are their digest.** A `307` to the backend's storage
   sends the client to bytes that do not pass through Lajstrom: the registry is trusted to serve
   what it stored, and the clients check (OCI clients the descriptor, apt the `Packages` hashes,
