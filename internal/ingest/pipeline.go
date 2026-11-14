@@ -12,6 +12,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
+	"github.com/lajstrom/lajstrom/internal/attest"
 	"github.com/lajstrom/lajstrom/internal/audit"
 	"github.com/lajstrom/lajstrom/internal/auth"
 	"github.com/lajstrom/lajstrom/internal/format"
@@ -36,6 +37,10 @@ type Pipeline struct {
 	visibility time.Duration
 
 	sessionTimeout time.Duration
+
+	// trust labels attachments (#89), maxAttachment bounds the layer read to judge one.
+	trust         *attest.Trust
+	maxAttachment int64
 }
 
 // Options configures a Pipeline.
@@ -65,6 +70,12 @@ type Options struct {
 	// it (the visibility barrier, awaitVisible), twice that for a referrer; a registry's
 	// consistencyBound raises it. Zero, or negative, means 30 seconds.
 	VisibilityTimeout time.Duration
+	// Trust is attachments.trust, the keys that label attachments (docs/spec/manifest-profile.md
+	// §6.3); nil trusts no key: every signed attachment is untrusted.
+	Trust *attest.Trust
+	// MaxAttachmentSize is attachments.maxBlobSize, the largest layer read to judge an
+	// attachment; zero, or negative, means 16 MiB.
+	MaxAttachmentSize int64
 }
 
 // defaultClaimTTL is ClaimTTL when Options leaves it zero.
@@ -83,6 +94,8 @@ func New(o Options) *Pipeline {
 
 		visibility:     o.VisibilityTimeout,
 		sessionTimeout: o.SessionTimeout,
+		trust:          o.Trust,
+		maxAttachment:  o.MaxAttachmentSize,
 	}
 	if p.plugins == nil {
 		p.plugins = format.Lookup
@@ -101,6 +114,9 @@ func New(o Options) *Pipeline {
 	}
 	if p.visibility <= 0 {
 		p.visibility = defaultVisibilityTimeout
+	}
+	if p.maxAttachment <= 0 {
+		p.maxAttachment = defaultMaxAttachmentSize
 	}
 	return p
 }

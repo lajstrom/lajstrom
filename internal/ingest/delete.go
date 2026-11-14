@@ -1019,6 +1019,11 @@ func (d *deletion) record(ctx context.Context) error {
 			if err := d.deleteEntry(ctx, w); err != nil {
 				return err
 			}
+		case !d.journal && d.repo.Format != ociFormat:
+			// A referrer's attachments, when it was one of a version (#89).
+			if _, err := w.DeleteAttachments(ctx, d.repo.ID, d.target.Digest); err != nil {
+				return err
+			}
 		}
 		return d.p.complete(ctx, w, &d.ev)
 	})

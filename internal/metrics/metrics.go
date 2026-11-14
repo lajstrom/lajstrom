@@ -67,6 +67,17 @@ var (
 	Ingest = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "lajstrom_ingest_total", Help: "Publishes through the ingest pipeline, by format and result.",
 	}, []string{"format", "result"})
+	// AttachmentsIndexed counts the attachment rows ingest writes for a referrer it stored, by
+	// kind and label (docs/spec/manifest-profile.md §6.1, §6.3; #89): the unsigned and
+	// unverifiable ones among them.
+	AttachmentsIndexed = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "lajstrom_attachments_indexed_total", Help: "Attachment rows written for the referrers ingest stored, by kind and verification.",
+	}, []string{"kind", "verification"})
+	// AttachmentIndexFailures counts the referrers ingest stored whose attachment rows it could
+	// not write (a layer it could not read, the database): the next reindex writes them.
+	AttachmentIndexFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "lajstrom_attachments_index_failures_total", Help: "Referrers stored whose attachment rows were not written; reindex writes them.",
+	})
 	// ProxyUpstreamDuration is the time of a request to a proxy repo's upstream, to its
 	// response headers, by upstream name (upstreams[].name), operation (document, file,
 	// forward: a request of a client's sent on, npm audit) and status ("error" when there was no
@@ -153,6 +164,7 @@ var (
 
 func init() {
 	registry.MustRegister(HTTPDuration, HTTPRequestSize, HTTPResponseSize, ProviderDuration, ProviderCircuitOpen, DBDuration, Ingest,
+		AttachmentsIndexed, AttachmentIndexFailures,
 		ProxyUpstreamDuration, ProxyDocuments, ProxyFetches, ProxyRateLimit, ProxyRateRemaining, ProxyRateWindow, Throttled,
 		UploadSessionsRefused, UploadSessionsLive, DownloadDigestMismatches, ClockSkew, SpoolBytes, SpoolRefusals, buildInfo,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
