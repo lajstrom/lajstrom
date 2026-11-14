@@ -19,18 +19,21 @@ import (
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
-// The audit actions of journal entries (docs/spec/http-routing.md, npm), by artifact type.
+// The audit actions of journal entries (docs/spec/http-routing.md, npm and pypi), by artifact
+// type.
 var journalActions = map[string]string{
 	profile.ArtifactTypeNpmDistTags:    "npm.dist-tag",
 	profile.ArtifactTypeNpmDeprecation: "npm.deprecate",
+	profile.ArtifactTypePypiYank:       "pypi.yank",
 }
 
-// Journal appends ops to the journal of the package pkgPath of repo, a hosted npm repo
+// Journal appends ops to the journal of the package pkgPath of repo, a hosted npm or pypi repo
 // (docs/spec/manifest-profile.md §8, ADR 0012), and returns the seq each op got, in order. It
 // implements format.Publisher.
 //
-//  1. The ops are checked (profile.JournalChange.Check): ErrInvalid. A repo of another format is
-//     ErrInvalid too, one of another kind format.ErrMethodNotAllowed: a proxy journals nothing.
+//  1. The ops are checked (profile.JournalChange.Check), each of the journal of the repo's
+//     format: ErrInvalid. A repo of a format without a journal is ErrInvalid too, one of
+//     another kind format.ErrMethodNotAllowed: a proxy journals nothing.
 //  2. Under the package's journal lock, Store.WithReferrersLock of its OCI repository and the
 //     empty blob's digest, which no manifest has: the package (index.ErrNotFound without one)
 //     and n, the highest seq the index has of it; the tags _j<n+1>, _j<n+2>, … that the registry
@@ -43,8 +46,8 @@ var journalActions = map[string]string{
 //     with Retry-After), nothing is recorded, and the next append adopts the entries.
 //  4. One index transaction, still under the lock: the journal rows of the adopted and the new
 //     entries, the package's journal_state folded from all its rows, the repo's index_cache
-//     invalidated, and the audit row of each op ok (npm.dist-tag or npm.deprecate, with the
-//     entry's digest), written pending before the op's push. When it fails the entries stay in
+//     invalidated, and the audit row of each op ok (npm.dist-tag, npm.deprecate or pypi.yank,
+//     with the entry's digest), written pending before the op's push. When it fails the entries stay in
 //     the registry, and the next append or reindex adopts them; the error is a plain one (500),
 //     but for a database that did not answer: index.ErrUnavailable stays wrapped (503 with
 //     Retry-After), for the client's retry adopts the entries and appends its ops again, which
@@ -88,14 +91,18 @@ func (p *Pipeline) Journal(ctx context.Context, repo index.Repo, pkgPath string,
 // checkJournal checks the repo and every op before anything is read.
 func checkJournal(repo index.Repo, ops []format.JournalOp) error {
 	switch {
-	case repo.Format != "npm":
-		return fmt.Errorf("%w: ingest: repo %s/%s: only npm packages have a journal", ErrInvalid, repo.Format, repo.Name)
+	case !profile.HasJournal(repo.Format):
+		return fmt.Errorf("%w: ingest: repo %s/%s: only npm and pypi packages have a journal", ErrInvalid, repo.Format, repo.Name)
 	case repo.Kind != "" && repo.Kind != index.KindHosted:
 		return fmt.Errorf("%w: ingest: repo %s/%s is a %s repo, which journals nothing", format.ErrMethodNotAllowed, repo.Format, repo.Name, repo.Kind)
 	}
 	for i, op := range ops {
 		if err := changeOf(op).Check(); err != nil {
 			return fmt.Errorf("%w: ingest: journal op %d: %w", ErrInvalid, i+1, err)
+		}
+		if f, _ := profile.JournalFormat(op.ArtifactType); f != repo.Format {
+			return fmt.Errorf("%w: ingest: journal op %d: %s is of the %s journal, and %s/%s is a %s repo", ErrInvalid, i+1,
+				op.ArtifactType, f, repo.Format, repo.Name, repo.Format)
 		}
 	}
 	return nil
@@ -193,8 +200,8 @@ func (j *journal) adopt(ctx context.Context, n int64) error {
 		switch {
 		case errors.Is(err, provider.ErrUnavailable):
 			return fmt.Errorf("ingest: read %s:%s, an entry to adopt: %w", j.name, tag, err)
-		case err == nil && (e.Seq != seq || e.Repo != j.repo.Name || e.Name != j.pkg.Name):
-			err = fmt.Errorf("it is entry %d of %s in %s", e.Seq, e.Name, e.Repo)
+		case err == nil && (e.Seq != seq || e.Format != j.repo.Format || e.Repo != j.repo.Name || e.Name != j.pkg.Name):
+			err = fmt.Errorf("it is entry %d of %s in %s/%s", e.Seq, e.Name, e.Format, e.Repo)
 		case err == nil:
 			j.p.log.WarnContext(ctx, "ingest: a journal entry without its index row adopted", "name", j.name, "tag", tag,
 				"digest", desc.Digest.String())

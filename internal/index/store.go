@@ -196,12 +196,12 @@ type Reader interface {
 	// GetProxyMeta returns the proxy_meta row of a proxy repo's name key and document kind.
 	GetProxyMeta(ctx context.Context, repoID int64, name, kind string) (*ProxyMeta, error)
 
-	// The npm journal (ADR 0012; docs/spec/index-schema.md, npm).
+	// The journal of an npm or a pypi package (ADR 0012; docs/spec/index-schema.md, the journal).
 
 	// ListJournal returns the journal entries of a package ordered by Seq.
 	ListJournal(ctx context.Context, packageID int64) ([]JournalEntry, error)
-	// ListJournalState returns the current dist-tags and deprecations of a package, the fold of
-	// its journal, ordered by Kind and Key.
+	// ListJournalState returns the current dist-tags, deprecations and yanks of a package, the
+	// fold of its journal, ordered by Kind and Key.
 	ListJournalState(ctx context.Context, packageID int64) ([]JournalState, error)
 }
 
@@ -471,7 +471,7 @@ type Writer interface {
 	// returns how many it removed: the sweep of negative entries, by the repo's negativeTTL.
 	ExpireProxyMeta(ctx context.Context, repoID int64, before time.Time) (int, error)
 
-	// The npm journal (derived; ADR 0012, docs/spec/index-schema.md, npm), written by ingest,
+	// The journal of npm and pypi (derived; ADR 0012, docs/spec/index-schema.md), written by ingest,
 	// reindex and delete. Both tables go with their package: DeletePackage, DeleteEmptyPackages
 	// and ResetDerived take a package's rows.
 
