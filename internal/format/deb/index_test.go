@@ -298,8 +298,8 @@ func TestRenderPackages(t *testing.T) {
 			t.Errorf("%s: %q, want %q", c.kind, got, c.want)
 		}
 	}
-	if got := slices.Sorted(maps.Keys(updates)); len(got) != 4 || got[0] != kindRelease {
-		t.Errorf("jammy-updates renders %q, want the Release and main/binary-amd64 alone", got)
+	if got := slices.Sorted(maps.Keys(updates)); len(got) != 6 || got[0] != kindRelease {
+		t.Errorf("jammy-updates renders %q, want the Release, main/binary-amd64 and main/Contents-amd64 alone", got)
 	}
 	if len(jammy["universe/binary-arm64/Packages"]) != 0 {
 		t.Errorf("universe/binary-arm64/Packages = %q, want empty", jammy["universe/binary-arm64/Packages"])
@@ -371,8 +371,9 @@ func TestRenderAllOnly(t *testing.T) {
 	p.uploadTo(t, data, "noble", "contrib")
 	docs := render(t, p, fixedClock(p), "noble")
 	kinds := slices.Sorted(maps.Keys(docs))
-	want := []string{"Release", "contrib/binary-all/Packages", "contrib/binary-all/Packages.gz", "contrib/binary-all/Packages.xz",
-		"main/binary-all/Packages", "main/binary-all/Packages.gz", "main/binary-all/Packages.xz"}
+	want := []string{"Release", "contrib/Contents-all", "contrib/Contents-all.gz", "contrib/binary-all/Packages",
+		"contrib/binary-all/Packages.gz", "contrib/binary-all/Packages.xz",
+		"main/Contents-all", "main/Contents-all.gz", "main/binary-all/Packages", "main/binary-all/Packages.gz", "main/binary-all/Packages.xz"}
 	if !slices.Equal(kinds, want) {
 		t.Errorf("noble renders %q, want %q", kinds, want)
 	}

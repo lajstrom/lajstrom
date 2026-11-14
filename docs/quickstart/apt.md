@@ -3,8 +3,8 @@
 An apt repo serves `.deb` packages to `apt-get`, and source packages to `apt-get source`:
 `curl -T` or `oras push` puts a package in, `apt-get update && apt-get install` takes it out, and
 the indexes are signed with a key of the repo's own. Every package is an OCI artifact in the
-registry behind Lajstrom; Lajstrom keeps the index and renders `Release`, `InRelease`, `Packages`
-and `Sources` from it. This page runs the M2 demo on
+registry behind Lajstrom; Lajstrom keeps the index and renders `Release`, `InRelease`, `Packages`,
+`Sources` and `Contents` from it. This page runs the M2 demo on
 your machine. The endpoints are specified in [http-routing.md](../spec/http-routing.md) §3 (apt);
 what lands in the registry is the [manifest profile](../spec/manifest-profile.md).
 
@@ -298,6 +298,9 @@ jq . metadata.json
     "Version": "2.0-1"
   },
   "filename": "world_2.0-1_amd64.deb",
+  "files": [
+    "usr/share/world/greeting"
+  ],
   "md5": "982ee694203649d75e40d8bef5b4c061",
   "md5sums": {},
   "sha1": "d5907133e1d774fc0269303ad2fa8ec62609eaa6",
@@ -576,9 +579,63 @@ out the `apt-get remove` step; `build-dep` installed `hello`, the `Build-Depends
 paragraph. Without `--download-only`, `apt-get source` also unpacks the source with
 `dpkg-source -x`, which needs `dpkg-dev` in the container.
 
+## 10. Find a file with apt-file (#79)
+
+Each component has a `Contents-<arch>` for each architecture of the suite: every path the
+packages hold, and the packages that hold it. It is rendered from the file list each package's
+metadata layer carries (`files`, in section 7), which the upload reads from the package's
+`data.tar` on its way in, so `lajstrom reindex` rebuilds it from the registry; the `Release` lists
+it, and apt fetches it by hash:
+
+```sh
+curl -s -u "$u" http://localhost:8080/apt/ubuntu/dists/jammy/main/Contents-amd64
+```
+
+```text
+usr/share/hello/greeting                                    hello
+usr/share/world/greeting                                    world
+```
+
+A name is qualified with the package's `Section` when its control file has one
+(`utils/hello`). apt-file reads these files. It comes from the distribution's archive, so install
+it in a fresh container before the archive's sources go, then set the container up as in section
+4:
+
+```sh
+docker run --rm -it --network host --platform linux/amd64 -e APT_TOKEN="$(cat apt-token)" ubuntu:24.04 bash
+```
+
+```sh
+apt-get update && apt-get install -y --no-install-recommends apt-file   # from the image's archive, before the next line
+rm /etc/apt/sources.list.d/ubuntu.sources
+printf 'machine http://localhost:8080/apt/ubuntu\nlogin deploy\npassword %s\n' "$APT_TOKEN" > /etc/apt/auth.conf.d/lajstrom.conf
+chmod 600 /etc/apt/auth.conf.d/lajstrom.conf
+install -d -m 0755 /etc/apt/keyrings
+/usr/lib/apt/apt-helper -o APT::Sandbox::User=root download-file http://localhost:8080/apt/ubuntu/key.asc /etc/apt/keyrings/ubuntu.asc
+echo "deb [signed-by=/etc/apt/keyrings/ubuntu.asc] http://localhost:8080/apt/ubuntu jammy main" > /etc/apt/sources.list.d/lajstrom.list
+apt-file update
+apt-file search /usr/share/world/greeting
+apt-file list hello
+```
+
+```text
+Get:1 http://localhost:8080/apt/ubuntu jammy InRelease [2377 B]
+Get:2 http://localhost:8080/apt/ubuntu jammy/main amd64 Packages [666 B]
+Get:3 http://localhost:8080/apt/ubuntu jammy/main amd64 Contents (deb) [66 B]
+Fetched 3109 B in 1s (5524 B/s)
+Reading package lists...
+world: /usr/share/world/greeting
+hello: /usr/share/hello/greeting
+```
+
+The list has every member of `data.tar` that is not a directory, symbolic links among them,
+which `md5sums` lacks. A package uploaded before #79, or pushed with a metadata layer without
+`files`, is listed by the paths of its `md5sums`; `dpkg-deb --build` writes none, so such a
+package built as on this page is not listed at all until it is uploaded again.
+
 ## The end-to-end script
 
-`test/e2e/apt.sh` runs sections 2 to 7 and 9 with checks against any Lajstrom with a writable apt repo:
+`test/e2e/apt.sh` runs sections 2 to 7, 9 and 10 with checks against any Lajstrom with a writable apt repo:
 two packages named after the run, one uploaded with `PUT`, one pushed with oras; the repo's
 `anonymousRead` turned on through the API, `key.asc` and `apt-get update && apt-get install` of
 both without credentials, signed by `key.asc` (or `[trusted=yes]` when the server does not sign),
@@ -587,7 +644,9 @@ then the same with credentials in `auth.conf`, `apt-get download` and the hashes
 `apt-get update` with `Acquire::By-Hash=no`; a copy of the suite with wrong hashes in its
 `Release`, which apt refuses with `Hash Sum mismatch`; a source package of section 9, written by
 hand (the image has no `dpkg-dev`), uploaded with `POST`, and `apt-get source --download-only` and
-`apt-get build-dep` of it; the repeat and the two `409`s; last, both versions and the source
+`apt-get build-dep` of it; `apt-file search` of the files of both packages (apt-file installed
+from the image's archive, or, without network access, apt's own index target of `Contents` read
+as apt-file reads it); the repeat and the two `409`s; last, both versions and the source
 deleted through the API (#61), after which neither `Packages` nor apt has them. It runs
 as the user of `LAJSTROM_E2E_USER` and `LAJSTROM_E2E_PASSWORD`, which needs `write`, `manage` and
 `delete` on the repo, sets the repo's `anonymousRead` back as it was on exit, and needs the
