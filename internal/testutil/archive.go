@@ -44,10 +44,12 @@ func checksumsOf(b []byte) Checksums {
 	}
 }
 
-// member is one member of a tar or zip archive; a name that ends with "/" is a directory.
+// member is one member of a tar or zip archive; a name that ends with "/" is a directory, and
+// one with a link a symbolic link to it (tar only).
 type member struct {
 	name string
 	body []byte
+	link string
 }
 
 // isDir reports whether the member is a directory.
@@ -81,8 +83,11 @@ func tarOf(members []member) []byte {
 			Gname:   "root",
 			Format:  tar.FormatUSTAR,
 		}
-		if m.isDir() {
+		switch {
+		case m.isDir():
 			h.Typeflag, h.Mode, h.Size = tar.TypeDir, 0o755, 0
+		case m.link != "":
+			h.Typeflag, h.Mode, h.Size, h.Linkname = tar.TypeSymlink, 0o777, 0, m.link
 		}
 		must(tw.WriteHeader(h))
 		_, err := tw.Write(m.body)
