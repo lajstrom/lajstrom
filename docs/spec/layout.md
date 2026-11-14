@@ -13,7 +13,7 @@
 
 ```
 cmd/lajstrom/                 main; subcommands: serve, reindex, migrate, version, healthcheck, registry (probe),
-                              admin (repo/user/token/binding/key/bootstrap/retention/deb)
+                              admin (repo/user/token/binding/key/bootstrap/retention/deb/webhook)
 internal/config/              config file (YAML) + env overrides; validation; example in deploy/
 internal/server/              http.Server, routing (net/http ServeMux, Go 1.22 patterns), middleware:
                               request id, logging, metrics, auth, panic recovery; mounts formats, facade, api
@@ -49,6 +49,8 @@ internal/auth/oidc/           OIDC relying party: discovery, JWKS, ID token veri
 internal/api/                 /api/v1 management REST (repos, users, tokens, bindings), JSON
 internal/keys/                server signing key, per-repo GPG keys (apt, rpm), encryption at rest
 internal/audit/               audit log writer
+internal/webhook/             webhooks (webhooks.md): events written in the audit row's transaction, their delivery
+                              by the workers of every replica (signature, retries, egress.Guard), the management service
 internal/metrics/             the Prometheus collectors (fixed labels) and the handler of the metrics listener
 internal/testutil/            fixture builders, in memory: .deb, .rpm, .whl/sdist, .jar + POM, npm tarball, archives, bombs, fuzz seeds
 internal/version/             build information (version, commit, date), set with -ldflags; /-/version
@@ -844,6 +846,11 @@ type Reader interface {
     GetSession(ctx context.Context, repoID int64, key string) (*Session, error)
     GetSessionByID(ctx context.Context, id int64) (*Session, error)
     ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error)
+    // webhooks (webhooks.md, index-schema.md, Webhooks): ListWebhooks by id; the delivery log
+    // of a webhook newest first, the ids below before (0: from the newest), at most limit
+    GetWebhook(ctx context.Context, id int64) (*Webhook, error)
+    ListWebhooks(ctx context.Context) ([]Webhook, error)
+    ListWebhookDeliveries(ctx context.Context, webhookID, before int64, limit int) ([]WebhookDelivery, error)
     // coordination
     GetTagClaim(ctx context.Context, repoID int64, pkg, tag string) (*TagClaim, error)
     GetFetchClaim(ctx context.Context, repoID int64, pkg, tag string) (*FetchClaim, error)
@@ -942,6 +949,26 @@ type Writer interface {
     // unknown rows only); unknown when still pending before before (index-schema.md, audit)
     CompleteAudit(ctx context.Context, ev *AuditEvent) error
     ExpirePendingAudit(ctx context.Context, before time.Time) (int, error)
+    // webhooks. CreateWebhook fills ID, UID (NewUID) when empty, CreatedAt and UpdatedAt;
+    // UpdateWebhook stores URL, Events, SecretEnc, Active and Description and sets UpdatedAt
+    // (Mask, UID and CreatedBy never change); DeleteWebhook takes its deliveries with it
+    CreateWebhook(ctx context.Context, h *Webhook) error
+    UpdateWebhook(ctx context.Context, h *Webhook) error
+    DeleteWebhook(ctx context.Context, id int64) error
+    // CreateWebhookDeliveries inserts ds, the outbox rows of an event, in the caller's
+    // transaction: State pending when "", CreatedAt now when zero, NextAt CreatedAt when zero;
+    // fills their IDs
+    CreateWebhookDeliveries(ctx context.Context, ds []WebhookDelivery) error
+    // ClaimWebhookDeliveries claims for replica at most limit pending deliveries of active
+    // webhooks whose NextAt is at or before now and that are unclaimed or claimed before
+    // staleBefore, in NextAt order: ClaimedBy replica, ClaimedAt now; each with its webhook. On
+    // Postgres FOR UPDATE SKIP LOCKED: two replicas never claim one row at once
+    ClaimWebhookDeliveries(ctx context.Context, replica string, now, staleBefore time.Time, limit int) ([]WebhookClaim, error)
+    // FinishWebhookDelivery stores State, Attempts, NextAt, LastAt, LastStatus, LastError and
+    // DeliveredAt of d and clears its claim, while the row's claim is still d's ClaimedBy and
+    // ClaimedAt; else ErrNotFound and nothing changes (the claim went stale and was taken over)
+    FinishWebhookDelivery(ctx context.Context, d *WebhookDelivery) error
+    DeleteWebhookDeliveries(ctx context.Context, before time.Time) (int, error) // CreatedAt before before, any state
     // coordination: same digest shares the claim, a stale one is taken over, a fresh one with
     // another digest is *TagConflictError
     ClaimTag(ctx context.Context, c *TagClaim, staleBefore time.Time) error
@@ -1022,7 +1049,8 @@ type Writer interface {
 }
 
 // Models, one struct per table of index-schema.md (fields in internal/index/models.go):
-// control plane Repo, User, Token, BootstrapToken, Binding, Identity, Key, Session, AuditEvent;
+// control plane Repo, User, Token, BootstrapToken, Binding, Identity, Key, Session, AuditEvent,
+// Webhook, WebhookDelivery;
 // coordination TagClaim, ReindexRun, FetchClaim, Replica, OIDCLogin; derived Package, Version,
 // File, Cache (index_cache), OCIRepo, ProxyMeta, JournalEntry, JournalState; query types
 // FileMatch (file + version + package), VersionMatch (version + package), VersionKey,
@@ -1092,6 +1120,39 @@ type Sighting struct {                      // a row of prune_sightings
     Path            string                  // the OCI repository, as oci_repos.path
     Digest          digest.Digest           // the manifest
     FirstAt, LastAt time.Time               // the first answer since the row was cleared, the latest
+}
+type Webhook struct {                       // a row of webhooks (webhooks.md §5)
+    ID                   int64
+    UID                  string             // NewUID: the additional data of SecretEnc
+    Mask                 string             // a repo mask of rbac.md §3
+    URL                  string
+    Events               []string           // the types of webhooks.md §1; nil: every type
+    SecretEnc            []byte             // nonce ‖ AES-256-GCM(secret) with the master key
+    Active               bool
+    Description          string
+    CreatedBy            string             // the principal that created it
+    CreatedAt, UpdatedAt time.Time
+}
+const DeliveryPending, DeliveryDelivered, DeliveryFailed = "pending", "delivered", "failed" // WebhookDelivery.State
+type WebhookDelivery struct {               // a row of webhook_deliveries: the outbox and the delivery log
+    ID, WebhookID int64
+    EventID       string                    // the CloudEvents id, a UUID v7: one per event
+    EventType     string                    // a type of webhooks.md §1, or webhook.ping
+    Payload       []byte                    // the exact body sent
+    State         string
+    Attempts      int
+    NextAt        time.Time                 // when a pending delivery is due
+    ClaimedBy     string                    // the replica of a claim; "" when none
+    ClaimedAt     *time.Time
+    LastAt        *time.Time
+    LastStatus    int                       // the status of the last answer; 0 when none came
+    LastError     string                    // Lajstrom's words, at most 1024 bytes
+    CreatedAt     time.Time
+    DeliveredAt   *time.Time
+}
+type WebhookClaim struct {                  // what ClaimWebhookDeliveries returns: the delivery and its webhook
+    Delivery WebhookDelivery
+    Webhook  Webhook
 }
 type FetchClaim struct {                    // a row of fetch_claims
     ID, RepoID             int64
@@ -1285,6 +1346,7 @@ type Options struct {
     ClaimTTL  time.Duration                            // zero: 10 minutes (ingest.claimTTL)
     SessionTimeout time.Duration                       // zero: 30 minutes after a session's last request; a repo's maven.sessionTimeout wins
     VisibilityTimeout time.Duration                    // the read-back of a push (step 6 of Ingest), twice for a referrer, raised by a registry's consistencyBound; zero: 30 s (ingest.visibilityTimeout)
+    Webhooks  *webhook.Outbox                          // nil: no events; else the events of each publish and version delete, in the transaction of its audit row (webhooks.md §4)
 }
 // New returns a Pipeline, which implements format.Publisher (Upload, UploadStream, Delete,
 // Journal) and format.Sessions.
@@ -1502,6 +1564,30 @@ var ErrRefused, ErrUnavailable error
 
 The group of a principal is `auth.KindGroup`; the credential of an OIDC login's request is
 `auth.CredOIDC`, which may mint a personal access token as a password may (`MayCreatePAT`).
+
+### Webhooks (`internal/webhook`)
+
+What the contract packages use of it; like the sections on `internal/auth` and
+`internal/audit`, it describes and does not bind.
+
+```go
+// package webhook (webhooks.md): what ingest and api.Repos use of it. A nil *Outbox writes
+// nothing, so that a caller without webhooks needs no check.
+type Outbox struct {
+    Source string                           // server.externalURL, the base of every event's source
+    Now    func() time.Time                 // nil: time.Now
+}
+// Enqueue writes on w, in the caller's transaction (the one of the event's audit row), one
+// delivery per active webhook whose mask matches ev.Repo and whose events include ev.Type,
+// with the body of webhooks.md §2; nothing when none matches.
+func (o *Outbox) Enqueue(ctx context.Context, w index.Writer, ev Event) error
+type Event struct {
+    Type    string                          // TypeVersionPublished, TypeVersionDeleted, TypeRepoCreated, TypeRepoDeleted
+    Repo    index.Repo                      // Format, Name and Kind are read
+    Subject string                          // the audit row's subject; "" for a repo
+    Data    any                             // the data of webhooks.md §3 (VersionData, RepoData), marshalled as it is
+}
+```
 
 ### Decisions
 
@@ -1802,6 +1888,12 @@ keys:
   tokenAlgorithm: ES256                     # ES256 | EdDSA; the bearer-token key (ADR 0010)
   algorithm: ed25519                        # ed25519 | rsa4096 (apt before 2.0)
   retireGrace: 720h                         # a retired key still signs and stays in key.asc this long
+webhooks:                                   # webhooks.md (#77): the delivery of every replica
+  allowedHosts: []                          # hosts dialed as they are: http and private addresses allowed
+  timeout: 10s                              # one attempt; at most 60s
+  maxAttempts: 8                            # then failed
+  retention: 168h                           # delivery-log rows older are deleted
+  workers: 4                                # deliveries in flight per replica; 0: none on this replica
 repos:                                      # optional declarative bootstrap: created when missing, never changed
   - { name: ubuntu-internal, format: apt, registry: local, anonymousRead: false }
 ```

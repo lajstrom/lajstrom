@@ -116,6 +116,32 @@ or `tag_claims` rows: reindex and the reconcile loop pass it by, and its documen
 from its members' on every request (proxy-and-group.md §8.5). `group_members` is control plane:
 a backup of the database keeps it, and reindex neither reads nor writes it.
 
+## Webhooks
+
+The tables of webhooks and of their deliveries ([webhooks.md](webhooks.md), #77). Both are
+control plane: authoritative, not derivable from the registry, backed up with the database.
+Reindex neither reads nor writes them, `ResetDerived` leaves them, and the derived tables never
+need them. Migration `0022_webhooks.sql` creates them; it only adds.
+
+| Table | Columns | Notes |
+| --- | --- | --- |
+| `webhooks` | `id`, `uid` text (a UUID v7, `NewUID`), `mask` text (a repo mask of rbac.md §3), `url` text, `events` json null (the types of webhooks.md §1; NULL: every type), `secret_enc` blob (nonce ‖ AES-256-GCM(secret) with the master key, `uid` as additional data), `active` bool, `description` text, `created_by` text (the principal that created it), `created_at` ts, `updated_at` ts | unique `uid`. `mask`, `uid` and `created_by` never change. No reference to `repos`: a webhook outlives its repo, as a binding does |
+| `webhook_deliveries` | `id`, `webhook_id` → webhooks (`ON DELETE CASCADE`), `event_id` text (the CloudEvents `id`, a UUID v7), `event_type` text, `payload` blob (the exact body sent), `state` text (`pending`, `delivered`, `failed`), `attempts` int, `next_at` ts, `claimed_by` text null (the replica's id), `claimed_at` ts null, `last_at` ts null, `last_status` int null, `last_error` text null (its first 1024 bytes), `created_at` ts, `delivered_at` ts null | the outbox and the delivery log. Index `webhook_deliveries_due` on `(next_at) WHERE state = 'pending'`, `webhook_deliveries_hook` on `(webhook_id, id)`, `webhook_deliveries_created` on `(created_at)` |
+
+A `webhook_deliveries` row is written in the transaction that writes its event's audit row `ok`
+or appends it (webhooks.md §4), one per webhook that the event matches, so that an event is
+written exactly when its write commits. A worker claims due rows in a transaction of its own:
+`pending`, `next_at` at or before now, of an active webhook, unclaimed or with a `claimed_at`
+older than 2 minutes, ordered by `next_at`, at most as many as it has room for; it sets
+`claimed_by` and `claimed_at` (on Postgres `FOR UPDATE OF … SKIP LOCKED`, so that the claims of
+two replicas neither wait on each other nor take one row twice; on SQLite the write lock of the
+transaction). The outcome of an attempt (`state`, `attempts`, `next_at`, `last_*`,
+`delivered_at`, the claim cleared) is written only while `claimed_by` and `claimed_at` are still
+the worker's, else nothing changes: a claim taken over after it went stale keeps the row, and the
+other replica sends it again. A test delivery is inserted already claimed by its replica and
+finished by it. Rows whose `created_at` is older than `webhooks.retention` are deleted, whatever
+their state, by any replica, once a minute. A webhook's rows go with it.
+
 ## Coordination
 
 Neither control plane nor derived: a row lives for one publish, one fetch, one `serve`
@@ -417,8 +443,9 @@ the control-plane and derived tables, `0002_tag_claims.sql` the coordination tab
 ([Upgrades](#upgrades)),
 `0017_index_cache_generations.sql` the table `index_cache_generations`, `0018_replicas.sql`
 the table `replicas`, `0019_prune_sightings.sql` the table `prune_sightings`, and
-`0020_replicas_process.sql` the column `replicas.process`, and `0021_oidc.sql` the tables
-`identities`, `identity_groups` and `oidc_logins` (#69); the others are named with their tables
+`0020_replicas_process.sql` the column `replicas.process`, `0021_oidc.sql` the tables
+`identities`, `identity_groups` and `oidc_logins` (#69), and `0022_webhooks.sql` the tables
+`webhooks` and `webhook_deliveries` (#77); the others are named with their tables
 above. The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the
