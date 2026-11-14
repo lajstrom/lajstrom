@@ -115,6 +115,16 @@ type Reader interface {
 	// ListAudit returns the audit events matching f, newest first.
 	ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error)
 
+	// Webhooks (docs/spec/webhooks.md, docs/spec/index-schema.md, Webhooks).
+
+	// GetWebhook returns the webhook with the given id.
+	GetWebhook(ctx context.Context, id int64) (*Webhook, error)
+	// ListWebhooks returns every webhook, ordered by id.
+	ListWebhooks(ctx context.Context) ([]Webhook, error)
+	// ListWebhookDeliveries returns the delivery log of a webhook, newest first: the deliveries
+	// whose id is below before (0: from the newest), at most limit; none when limit is below 1.
+	ListWebhookDeliveries(ctx context.Context, webhookID, before int64, limit int) ([]WebhookDelivery, error)
+
 	// Coordination.
 
 	// GetTagClaim returns the claim on tag of the package path pkg (NameOCI) in a repo.
@@ -313,6 +323,36 @@ type Writer interface {
 	// AuditUnknown, and returns how many it changed (reindex and the reconcile loop, with
 	// ingest.claimTTL).
 	ExpirePendingAudit(ctx context.Context, before time.Time) (int, error)
+
+	// Webhooks (docs/spec/webhooks.md, docs/spec/index-schema.md, Webhooks): control plane.
+
+	// CreateWebhook inserts h and fills ID, UID (NewUID) when it is empty, CreatedAt when it is
+	// zero, and UpdatedAt.
+	CreateWebhook(ctx context.Context, h *Webhook) error
+	// UpdateWebhook stores URL, Events, SecretEnc, Active and Description of h by h.ID, sets
+	// UpdatedAt, and fills UID, Mask, CreatedBy and CreatedAt from the row: they never change.
+	UpdateWebhook(ctx context.Context, h *Webhook) error
+	// DeleteWebhook removes the webhook and its deliveries.
+	DeleteWebhook(ctx context.Context, id int64) error
+	// CreateWebhookDeliveries inserts ds, the outbox rows of an event, and fills their IDs:
+	// State DeliveryPending when empty, CreatedAt now when zero, NextAt CreatedAt when zero. In
+	// a transaction they commit or roll back with it: the outbox is written in the transaction
+	// of the event's audit row (webhooks.md §4).
+	CreateWebhookDeliveries(ctx context.Context, ds []WebhookDelivery) error
+	// ClaimWebhookDeliveries claims for replica at most limit pending deliveries of active
+	// webhooks whose NextAt is at or before now and that are unclaimed or claimed before
+	// staleBefore, in NextAt order: ClaimedBy replica, ClaimedAt now. On Postgres the rows are
+	// locked with SKIP LOCKED, so that two replicas that claim at once never take one row, nor
+	// wait on each other.
+	ClaimWebhookDeliveries(ctx context.Context, replica string, now, staleBefore time.Time, limit int) ([]WebhookClaim, error)
+	// FinishWebhookDelivery stores State, Attempts, NextAt, LastAt, LastStatus, LastError and
+	// DeliveredAt of d and clears its claim, while the row's claim is still d's ClaimedBy and
+	// ClaimedAt; otherwise nothing changes and the error wraps ErrNotFound: the claim went stale
+	// and another replica took the row over.
+	FinishWebhookDelivery(ctx context.Context, d *WebhookDelivery) error
+	// DeleteWebhookDeliveries removes the deliveries created before before, whatever their
+	// state, and returns how many (webhooks.retention).
+	DeleteWebhookDeliveries(ctx context.Context, before time.Time) (int, error)
 
 	// Coordination: tag claims, the lock on a tag that ingest takes before the registry write
 	// (docs/spec/index-schema.md, Coordination).
