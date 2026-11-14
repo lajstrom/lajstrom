@@ -54,6 +54,8 @@ internal/keys/keystest/       test doubles: a KMS in memory; imported only by te
 internal/gcpauth/             the access token of the workload's service account from the GCP metadata server
                               (an oci upstream's auth.gcp, gcpkms)
 internal/audit/               audit log writer
+internal/attest/              the verification of attachments (#89): the trust of public keys, DSSE, sigstore bundles,
+                              cosign's simple signing; pure, standard library (manifest-profile.md §6.3)
 internal/metrics/             the Prometheus collectors (fixed labels) and the handler of the metrics listener
 internal/testutil/            fixture builders, in memory: .deb, .rpm, .whl/sdist, .jar + POM, npm tarball, archives, bombs, fuzz seeds
 internal/version/             build information (version, commit, date), set with -ldflags; /-/version
@@ -912,6 +914,9 @@ type Reader interface {
     // package's entries in seq order, and its current state ordered by kind and key
     ListJournal(ctx context.Context, packageID int64) ([]JournalEntry, error)
     ListJournalState(ctx context.Context, packageID int64) ([]JournalState, error)
+    // attachments (#89, index-schema.md, Attachments): the rows of the versions ids, newest
+    // first (CreatedAt descending, those without one last), then by Digest and Layer
+    ListAttachments(ctx context.Context, versionIDs []int64) ([]Attachment, error)
 }
 
 // Unique violations wrap ErrConflict; updates and deletes of a missing id wrap ErrNotFound.
@@ -1042,12 +1047,25 @@ type Writer interface {
     // ReplaceJournalState makes the package's journal_state rows exactly state, PackageID
     // filled: the fold of its entries, written in the transaction of the entries it folds
     ReplaceJournalState(ctx context.Context, packageID int64, state []JournalState) error
+    // attachments (derived; written by ingest, reindex and delete; they cascade with versions).
+    // ReplaceAttachments makes the rows of the referrer d of the version exactly rows, filling
+    // their ID, VersionID and Digest (none: removes them); a row with a Tag also removes the
+    // version's rows under that tag of another referrer (cosign moved its legacy tag). IndexedAt
+    // is now when zero. A version that does not exist wraps ErrNotFound and nothing is written
+    ReplaceAttachments(ctx context.Context, versionID int64, d digest.Digest, rows []Attachment) error
+    TouchAttachments(ctx context.Context, ids []int64, at time.Time) error // IndexedAt only: rows reindex saw
+    // DeleteAttachments removes the rows of the referrer d among the versions of a repo, the
+    // delete of a referrer, and returns how many
+    DeleteAttachments(ctx context.Context, repoID int64, d digest.Digest) (int, error)
+    // SweepAttachments removes the rows of a version whose IndexedAt is before seenBefore, the
+    // sweep of reindex once it listed the version's referrers, and returns how many
+    SweepAttachments(ctx context.Context, versionID int64, seenBefore time.Time) (int, error)
 }
 
 // Models, one struct per table of index-schema.md (fields in internal/index/models.go):
 // control plane Repo, User, Token, BootstrapToken, Binding, Identity, Key, Session, AuditEvent;
 // coordination TagClaim, ReindexRun, FetchClaim, Replica, OIDCLogin; derived Package, Version,
-// File, Cache (index_cache), OCIRepo, ProxyMeta, JournalEntry, JournalState; query types
+// File, Cache (index_cache), OCIRepo, ProxyMeta, JournalEntry, JournalState, Attachment; query types
 // FileMatch (file + version + package), VersionMatch (version + package), VersionKey,
 // IdentityGroup (a row of identity_groups with its identity's UserID and GroupsExpireAt and its
 // user's UID) and AuditFilter. Ids are int64, timestamps UTC, nullable columns are pointers.
@@ -1104,6 +1122,33 @@ type JournalEntry struct {                  // a row of journal: one entry in th
     Attrs         map[string]string         // the entry's lajstrom.npm.* or lajstrom.pypi.* annotations
     CreatedAt     time.Time                 // org.opencontainers.image.created
     IndexedAt     time.Time                 // when ingest or reindex last wrote or saw the row
+}
+// The attachments of a version (#89; manifest-profile.md §6.1 to §6.3, index-schema.md,
+// Attachments). Kind and Verification are fixed sets that a binary reads tolerantly: a value it
+// does not know is shown as it is and never rewritten (index-schema.md, Upgrades).
+const AttachmentSignature, AttachmentSBOM, AttachmentScan, AttachmentProvenance, AttachmentAttestation, AttachmentOther =
+    "signature", "sbom", "scan", "provenance", "attestation", "other" // attachments.kind
+const AttachmentVerified, AttachmentUntrusted, AttachmentUnsigned, AttachmentInvalid, AttachmentUnsupported =
+    "verified", "untrusted", "unsigned", "invalid", "unsupported" // attachments.verification
+type Attachment struct {                    // a row of attachments: one layer of a referrer of a version
+    ID, VersionID  int64
+    Digest         digest.Digest             // the referrer manifest
+    Tag            string                    // cosign's legacy tag; "" for a referrer pushed by digest
+    Layer          digest.Digest             // the attachment's layer; "" for a manifest without layers
+    MediaType      string                    // the layer's; the artifact type for a manifest without layers
+    ArtifactType   string                    // the manifest's artifactType, else its config's media type
+    Kind           string                    // Attachment{Signature,SBOM,Scan,Provenance,Attestation,Other}
+    PredicateType  string
+    Size           int64                     // the layer's
+    Annotations    map[string]string         // the manifest's
+    Tool, ToolVersion, Database string       // lajstrom.attachment.* (manifest-profile.md §6.2)
+    Input          digest.Digest             // lajstrom.attachment.input when it is a digest
+    Verification   string                    // Attachment{Verified,Untrusted,Unsigned,Invalid,Unsupported}
+    SignedBy       string                    // the trust entry whose key verified it; "" (NULL) unless verified
+    Reason         string                    // why it is not verified; "" when it is
+    Trust          string                    // attest.Trust.Hash of the trust that labelled it
+    CreatedAt      *time.Time                // the manifest's org.opencontainers.image.created
+    IndexedAt      time.Time                 // when ingest or reindex last wrote or saw the row
 }
 type JournalState struct {                  // a row of journal_state: the fold of a package's entries
     PackageID  int64
@@ -1195,6 +1240,7 @@ type Options struct {
     Concurrency int                           // manifest reads at once per registry; zero: 8
     ClaimTTL    time.Duration                 // stale tag claims are deleted; zero: ingest's default
     GraceAge    time.Duration                 // reconcile.graceAge: prune keeps a younger row; zero: 1 h
+    Attacher    Attacher                      // *ingest.Pipeline; nil: a run reads no attachments (#89)
 }
 type Inspector interface {
     Inspect(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, o ingest.InspectOptions) (*ingest.Rows, error)
@@ -1204,6 +1250,15 @@ type Inspector interface {
 // listed by a sha256-<hex> index) to the package paths of its OCI repositories.
 type Repairer interface {
     RepairReferrers(ctx context.Context, repo index.Repo, found map[digest.Digest][]string, principal auth.Principal) ([]ingest.ReferrersRepair, error)
+}
+// Attacher reads the attachments of a referrer as PutReferrer indexes them (#89; index-schema.md,
+// Attachments): once the tags of an OCI repository are read, the run lists the referrers of each
+// version of its package, reads the referrers whose rows it lacks or whose Trust is not
+// AttachmentTrust(), replaces their rows, touches the others and sweeps the version's rows it
+// did not see.
+type Attacher interface {
+    InspectAttachments(ctx context.Context, repo index.Repo, v index.Version, r ingest.Referrer) ([]index.Attachment, error)
+    AttachmentTrust() string
 }
 func New(o Options) *Worker
 
@@ -1247,6 +1302,7 @@ type RepoReport struct {
     Pending         int       `json:"pending"`         // answered MANIFEST_UNKNOWN, kept until a second answer and the grace age
     Degraded        int       `json:"degraded"`
     Referrers       int       `json:"referrers"`
+    Attachments     int       `json:"attachments"`     // attachment rows seen or written (#89)
     Foreign         []Finding `json:"foreign"`
     OrphanReferrers []Finding `json:"orphanReferrers"`
     OrphanJournal   []Finding `json:"orphanJournal"`   // npm and pypi journal entries of a repository without versions
@@ -1309,6 +1365,8 @@ type Options struct {
     ClaimTTL  time.Duration                            // zero: 10 minutes (ingest.claimTTL)
     SessionTimeout time.Duration                       // zero: 30 minutes after a session's last request; a repo's maven.sessionTimeout wins
     VisibilityTimeout time.Duration                    // the read-back of a push (step 6 of Ingest), twice for a referrer, raised by a registry's consistencyBound; zero: 30 s (ingest.visibilityTimeout)
+    Trust             *attest.Trust                    // attachments.trust (#89); nil: no key is trusted
+    MaxAttachmentSize int64                            // attachments.maxBlobSize: the largest layer read to judge an attachment; zero: 16 MiB
 }
 // New returns a Pipeline, which implements format.Publisher (Upload, UploadStream, Delete,
 // Journal) and format.Sessions.
@@ -1348,14 +1406,26 @@ func (e *NotVisibleError) Missing() []string
 func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload, principal auth.Principal) (*format.Published, error)
 
 // PutReferrer stores a referrer (a signature, an SBOM, an attestation: profile.IsReferrer, or a
-// manifest with a subject on an oci repo) as it came, and indexes nothing. On a managed repo the
+// manifest with a subject on an oci repo) as it came, and indexes nothing but the attachments of
+// a version (#89). On a managed repo the
 // subject must be a manifest of the repository, the blobs in the backend, a tag cosign's
 // (ErrInvalid otherwise). On a managed repo the push runs under Store.WithReferrersLock of the
 // subject, with Capabilities.Referrers or without, and the subject is resolved again under it
 // (ErrInvalid when it was deleted meanwhile, #806); on an oci repo without
 // Capabilities.Referrers. One audit event: push, Subject the subject's digest,
-// Details {"kind", "artifactType"}. Approved by the maintainer on 2026-11-09 (#28).
+// Details {"kind", "artifactType"}. Approved by the maintainer on 2026-11-09 (#28). Once the
+// registry serves the referrer back, when its subject is a version of the repo, its attachments
+// (InspectAttachments) replace the rows of that referrer (Store.ReplaceAttachments; for a legacy
+// tag, those of the version under the tag), best effort: a failure is logged and counted, and the
+// push is a success all the same (index-schema.md, Attachments).
 func (p *Pipeline) PutReferrer(ctx context.Context, repo index.Repo, r Referrer, principal auth.Principal) (digest.Digest, error)
+// InspectAttachments returns the rows of the referrer r of the version v of repo, as PutReferrer
+// writes them, without writing them: profile.Attachments of its manifest, each layer read through
+// the provider (at most MaxAttachmentSize; a larger one is unsupported) and judged by the trust
+// (attest.Trust.Verify), the predicate type and kind those of its signed statement where there is
+// one. A layer the registry does not serve is an error. AttachmentTrust is the Hash of the trust.
+func (p *Pipeline) InspectAttachments(ctx context.Context, repo index.Repo, v index.Version, r Referrer) ([]index.Attachment, error)
+func (p *Pipeline) AttachmentTrust() string
 type Referrer struct {
     Path     string             // the package path below the repo
     Tag      string             // "" for a push by digest; on a managed repo cosign's legacy tag only
@@ -1381,7 +1451,8 @@ type Referrer struct {
 // delete, so a backend that refuses deletes changes nothing (a referrer deleted on its own: its
 // subject's sha256-<hex> index goes first and is pushed again without it). Then the manifest, then one index
 // transaction: the version's rows, its package's when it was the last, index_cache of the repo,
-// the audit row (delete, Details {"referrers": n}). On an oci repo a delete by tag of a manifest
+// the audit row (delete, Details {"referrers": n}); a referrer's attachment rows in the
+// transaction of its audit row (Store.DeleteAttachments). On an oci repo a delete by tag of a manifest
 // that other tags also name is refused before any request. With del.Condition it is a
 // compare-and-delete of a version (format.Condition), checked under the locks: a failed one
 // deletes nothing and writes no audit row. Errors wrap provider.ErrUnsupported,
@@ -1475,6 +1546,42 @@ func (p *Pipeline) ExpireSessions(ctx context.Context) (int, error)
 var ErrInvalid = format.ErrInvalid
 var ErrConflict = index.ErrConflict
 var ErrNotImplemented error                 // unused since #12
+```
+
+### Attachment verification (`internal/attest`, #89)
+
+This section describes and does not bind, as the next one: ingest's `Options.Trust` is the one
+use. Pure Go over the standard library (`crypto/ecdsa`, `crypto/ed25519`, `crypto/rsa`,
+`crypto/x509`, `encoding/pem`); no sigstore library, which §3 does not list.
+
+```go
+type Entry struct {                         // one attachments.trust entry
+    Name           string                   // signedBy of what its key verifies
+    PublicKey      []byte                   // PEM PUBLIC KEY (PKIX): ECDSA P-256/384/521, Ed25519, RSA
+    PredicateTypes []string                 // empty: every predicate type, signatures included
+}
+// NewTrust parses the entries: a key that does not parse, a name given twice or empty is an
+// error. No entry is a trust in which nothing verifies.
+func NewTrust(entries []Entry) (*Trust, error)
+// Hash is a hex digest of the entries (names, keys' PKIX bytes, predicate types), the trust
+// column of attachments: rows labelled under another hash are judged again by reindex.
+func (t *Trust) Hash() string
+type Input struct {
+    Subject   digest.Digest                 // the version's manifest
+    Layer     ocispec.Descriptor            // with its annotations: a legacy signature's is there
+    Content   []byte                        // the layer's bytes, as its digest says
+    Annotated string                        // the predicate type cosign's annotations name, "" when none
+}
+type Result struct {
+    Verification  string                    // index.Attachment{Verified,Untrusted,Unsigned,Invalid,Unsupported}
+    SignedBy      string                    // the entry's name when verified
+    Reason        string                    // why not, in words
+    PredicateType string                    // the statement's when there is one, else Annotated
+    Predicate     json.RawMessage           // the statement's predicate, nil when there is none
+}
+// Verify judges one attachment (manifest-profile.md §6.3). It never returns an error: what does
+// not parse is invalid, what it cannot check unsupported.
+func (t *Trust) Verify(in Input) Result
 ```
 
 ### Auth and audit (`internal/auth`, `internal/audit`)
@@ -1836,6 +1943,12 @@ keys:
   algorithm: ed25519                        # ed25519 | rsa4096 (apt before 2.0)
   retireGrace: 720h                         # a retired key still signs and stays in key.asc this long
   kms: ""                                   # awskms:///<key> | gcpkms://<version>: repo keys made from now on (ADR 0020)
+attachments:                                # the verification of attachments (#89, manifest-profile.md §6.3)
+  maxBlobSize: 16777216                     # the largest layer read to judge one, in bytes
+  trust:
+    - name: scanner                         # signedBy of what its key verifies; unique
+      publicKeyFile: /etc/lajstrom/scanner.pub # PEM PKIX, or publicKey: inline PEM; one of the two
+      predicateTypes: [https://cyclonedx.org/bom, https://cosign.sigstore.dev/attestation/vuln/v1] # empty: every type
 repos:                                      # optional declarative bootstrap: created when missing, never changed
   - { name: ubuntu-internal, format: apt, registry: local, anonymousRead: false }
 ```
