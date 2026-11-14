@@ -609,6 +609,40 @@ func TestTokensMaskDeploy(t *testing.T) {
 	f.noSecrets(t)
 }
 
+// TestTokensMaskDeployCredential is the credential that creates a deploy token over a mask
+// (decided on #911, 2026-11-14): a password, whose token.create row says createdBy password, or
+// none, from the command line; a personal access token, with scopes or without, a deploy token
+// and an OIDC login are refused with ErrScope naming the rule, and write nothing.
+func TestTokensMaskDeployCredential(t *testing.T) {
+	f := newTokensFixture(t)
+	admin := WithPrincipal(context.Background(), Principal{Kind: KindUser, Name: "admin"})
+	for _, c := range []Credential{
+		{Kind: CredPAT, TokenID: 1, UserID: 1},
+		{Kind: CredPAT, TokenID: 2, UserID: 1, Scopes: []string{"read", "write"}},
+		{Kind: CredDeploy, TokenID: 3, Mask: "*/*", Scopes: []string{"read", "write"}},
+		{Kind: CredDeploy, TokenID: 4, RepoID: 1, Repo: "raw/scratch", Scopes: []string{"write"}},
+		{Kind: CredOIDC},
+	} {
+		_, _, err := f.tokens.CreateMaskDeploy(WithCredential(admin, c), "raw/*", "minted", []string{"read"}, Expiry{}, cli)
+		if !errors.Is(err, ErrScope) || err.Error() != "a deploy token over a mask is created with the admin's password, not with a token" {
+			t.Errorf("with %+v: %v, want ErrScope naming the rule", c, err)
+		}
+	}
+	if n := len(tokenAudit(t, f.st)); n != 0 {
+		t.Errorf("%d audit events after the refusals, want none", n)
+	}
+	f.mask(t, "raw/*", "cli", []string{"read"}, Expiry{}) // no credential: the command line
+	if _, secret, err := f.tokens.CreateMaskDeploy(WithCredential(admin, Credential{Kind: CredPassword}), "raw/*", "api", []string{"read"}, Expiry{}, cli); err != nil {
+		t.Fatalf("with a password: %v", err)
+	} else {
+		f.secrets = append(f.secrets, secret)
+	}
+	if by := createdByOf(t, f.st); by != "password" {
+		t.Errorf("createdBy = %q, want password", by)
+	}
+	f.noSecrets(t)
+}
+
 // TestTokensMaskDeployLife lists, keeps and revokes deploy tokens over a mask (#911): the lists,
 // which keep them apart from the repos' own tokens; a repo deleted, which leaves them; Get; the
 // revocation; the audit rows, whose subject is the mask and which have no repo.

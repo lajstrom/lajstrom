@@ -155,6 +155,22 @@ func MayCreatePAT(ctx context.Context) error {
 	return nil
 }
 
+// MayCreateMaskDeploy returns nil when the credential of ctx may create a deploy token over a
+// mask: a password, or none, as from the command line, which writes the database and is the
+// operator's (docs/spec/rbac.md §1, §3). Every other credential may not, an error wrapping
+// ErrScope that names the rule: a personal access token, with scopes or without, the admin's
+// too, a deploy token, and an OIDC login, which is no credential of a request and has no
+// password. A stolen token would otherwise mint a token that needs no expiry, covers every repo
+// of its mask and outlives its revocation (decided on #911, 2026-11-14).
+func MayCreateMaskDeploy(ctx context.Context) error {
+	switch CredentialFrom(ctx).Kind {
+	case CredPAT, CredDeploy, CredOIDC:
+		return &authError{msg: "a deploy token over a mask is created with the admin's password, not with a token", err: ErrScope}
+	case CredPassword:
+	}
+	return nil
+}
+
 // createdBy is the credential c as the createdBy of a token.create event: password, oidc, or
 // token:<id> for a token; "" for none.
 func createdBy(c Credential) string {
@@ -205,8 +221,12 @@ func (s *Tokens) CreateDeploy(ctx context.Context, repo, name string, scopes []s
 // too, and no repo deleted takes the token with it. name is unique among the live tokens over
 // the same mask; scopes and the expiry are those of CreateDeploy. Only the admin role may create
 // one: the caller decides that (the API asks it before the body is read; the command line is
-// the operator's).
+// the operator's). The credential of ctx must be one that may create it (MayCreateMaskDeploy):
+// a password, or none from the command line.
 func (s *Tokens) CreateMaskDeploy(ctx context.Context, mask, name string, scopes []string, exp Expiry, o Origin) (*Token, string, error) {
+	if err := MayCreateMaskDeploy(ctx); err != nil {
+		return nil, "", err
+	}
 	if err := checkMask(mask, s.Formats); err != nil {
 		return nil, "", err
 	}
