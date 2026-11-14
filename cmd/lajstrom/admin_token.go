@@ -13,11 +13,13 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/auth"
 )
 
 // newAdminTokenCmd returns admin token: create, list and revoke the personal access tokens of
-// a user (--user) and the deploy tokens of a repo (--repo) in the index database, without HTTP,
+// a user (--user), the deploy tokens of a repo (--repo) and the deploy tokens over a mask
+// (--mask, docs/spec/rbac.md §1) in the index database, without HTTP,
 // through the tokens service (auth.Tokens), so that the validation and the audit events are
 // those of the tokens API. A change is made by the anonymous principal with the source cli.
 // Like admin user it assumes that lajstrom migrate ran.
@@ -30,23 +32,26 @@ func newAdminTokenCmd(a *app) *cobra.Command {
 	return tok
 }
 
-// ownerFlags adds --user and --repo to cmd, one of them required and not both: the kind of the
-// token follows from it, a personal access token of the user or a deploy token of the repo.
-func ownerFlags(cmd *cobra.Command, user, repo *string) {
+// ownerFlags adds --user, --repo and --mask to cmd, exactly one of them required: the kind of
+// the token follows from it, a personal access token of the user, a deploy token of the repo,
+// or a deploy token over the mask.
+func ownerFlags(cmd *cobra.Command, user, repo, mask *string) {
 	cmd.Flags().StringVar(user, "user", "", "the user of personal access tokens")
 	cmd.Flags().StringVar(repo, "repo", "", "the repo of deploy tokens, <format>/<name>")
-	cmd.MarkFlagsMutuallyExclusive("user", "repo")
-	cmd.MarkFlagsOneRequired("user", "repo")
+	cmd.Flags().StringVar(mask, "mask", "", "the mask of deploy tokens over a mask, <format>/<repo> with * for a whole segment: oci/*, */talos; "+
+		"it matches the repos created later too")
+	cmd.MarkFlagsMutuallyExclusive("user", "repo", "mask")
+	cmd.MarkFlagsOneRequired("user", "repo", "mask")
 }
 
 // newTokenCreateCmd returns admin token create: create a token and print it as JSON on one line
 // with its secret, the one time the secret is shown.
 func newTokenCreateCmd(a *app) *cobra.Command {
-	var user, repo, name, scopes, expires string
+	var user, repo, mask, name, scopes, expires string
 	cmd := &cobra.Command{
-		Use: "create (--user <name> | --repo <format>/<name>) --name <label> [--scopes read,write] [--expires 90d|<RFC 3339>]",
-		Short: "Create a personal access token of a user or a deploy token of a repo, and print it as JSON with its secret; " +
-			"the secret is shown this once",
+		Use: "create (--user <name> | --repo <format>/<name> | --mask <format>/<repo>) --name <label> [--scopes read,write] [--expires 90d|<RFC 3339>]",
+		Short: "Create a personal access token of a user, a deploy token of a repo or a deploy token over a mask, and print it as JSON " +
+			"with its secret; the secret is shown this once",
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -65,9 +70,12 @@ func newTokenCreateCmd(a *app) *cobra.Command {
 					secret string
 					err    error
 				)
-				if user != "" {
+				switch {
+				case user != "":
 					t, secret, err = tokens.CreatePAT(ctx, user, name, list, exp, o)
-				} else {
+				case mask != "":
+					t, secret, err = tokens.CreateMaskDeploy(ctx, mask, name, list, exp, o)
+				default:
 					t, secret, err = tokens.CreateDeploy(ctx, repo, name, list, exp, o)
 				}
 				if err != nil {
@@ -77,7 +85,7 @@ func newTokenCreateCmd(a *app) *cobra.Command {
 			})
 		},
 	}
-	ownerFlags(cmd, &user, &repo)
+	ownerFlags(cmd, &user, &repo, &mask)
 	f := cmd.Flags()
 	f.StringVar(&name, "name", "", "a label for the token, unique among the owner's live tokens, at most 64 bytes")
 	f.StringVar(&scopes, "scopes", "", "read, write or read,write; required for a deploy token; none for a personal access token is its user's full rights")
@@ -102,13 +110,14 @@ func parseExpires(s string) (auth.Expiry, error) {
 	return auth.Expiry{In: d}, nil
 }
 
-// newTokenListCmd returns admin token list: the tokens of a user or a repo as a table, the
-// revoked and expired ones included, never a secret.
+// newTokenListCmd returns admin token list: the tokens of a user, of a repo or over a mask (as
+// it was written, not matched) as a table, the revoked and expired ones included, never a
+// secret.
 func newTokenListCmd(a *app) *cobra.Command {
-	var user, repo string
+	var user, repo, mask string
 	cmd := &cobra.Command{
-		Use:         "list (--user <name> | --repo <format>/<name>)",
-		Short:       "List the personal access tokens of a user or the deploy tokens of a repo",
+		Use:         "list (--user <name> | --repo <format>/<name> | --mask <format>/<repo>)",
+		Short:       "List the personal access tokens of a user, the deploy tokens of a repo or the deploy tokens over a mask",
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -117,9 +126,12 @@ func newTokenListCmd(a *app) *cobra.Command {
 					list []auth.Token
 					err  error
 				)
-				if user != "" {
+				switch {
+				case user != "":
 					list, err = tokens.List(ctx, user)
-				} else {
+				case mask != "":
+					list, err = tokens.ListMaskDeploy(ctx, mask)
+				default:
 					list, err = tokens.ListDeploy(ctx, repo)
 				}
 				if err != nil {
@@ -129,7 +141,7 @@ func newTokenListCmd(a *app) *cobra.Command {
 			})
 		},
 	}
-	ownerFlags(cmd, &user, &repo)
+	ownerFlags(cmd, &user, &repo, &mask)
 	return cmd
 }
 
@@ -161,7 +173,7 @@ func (a *app) withTokens(ctx context.Context, fn func(context.Context, *auth.Tok
 		return err
 	}
 	defer func() { err = errors.Join(err, st.Close()) }()
-	return fn(ctx, &auth.Tokens{Index: st, Log: a.log})
+	return fn(ctx, &auth.Tokens{Index: st, Formats: api.RepoFormat, Log: a.log})
 }
 
 // writeTokenTable prints tokens as a table with the columns ID, KIND, NAME, SCOPES, EXPIRES,

@@ -919,8 +919,8 @@ are left out when empty.
 
 ## Tokens
 
-Personal access tokens belong to a user, deploy tokens to a repo; what they are, how they
-authenticate and what they may do is in [auth.md](auth.md#tokens). Both resources have one
+Personal access tokens belong to a user, deploy tokens to a repo or to a mask of repos; what
+they are, how they authenticate and what they may do is in [auth.md](auth.md#tokens). Both resources have one
 shape, and the secret only in the answer of a creation, the one time it is shown.
 
 ### The resource
@@ -944,7 +944,7 @@ shape, and the secret only in the answer of a creation, the one time it is shown
 | --- | --- |
 | `id` | set by the server; the `{id}` of `DELETE` |
 | `kind` | `pat` or `deploy`, from the collection |
-| `user`, `repo` | the owner: the user of a personal access token, `<format>/<name>` of the repo of a deploy token; the other is left out |
+| `user`, `repo`, `repoMask` | the owner, one of the three, the others left out: the user of a personal access token, `<format>/<name>` of the repo of a deploy token, or the mask of a deploy token over a mask (`oci/*`, [below](#deploy-tokens-over-a-mask)) |
 | `name` | 1 to 64 bytes of printable UTF-8, unique among the owner's live tokens (neither revoked nor expired) |
 | `scopes` | `read`, `write` or both. A personal access token may have none, `[]`: its user's full rights. A deploy token needs one, and `delete` and `manage` are refused |
 | `expiresAt` | a personal access token always has one, at most 365 days ahead, 90 days when the creation gives none; a deploy token may have none, `null`, and never expires |
@@ -988,20 +988,57 @@ included, never a secret; `404` for a user or repo that does not exist.
 `204`: the token is refused from the next request on, on every replica. A token revoked already
 is `204` again and stays as it is. An id that is not a token of that user or repo is `404`.
 
+### Deploy tokens over a mask
+
+A deploy token bound to a mask in the grammar of a binding's, `<format>/<repo>` with `*` for a
+whole segment, reaches every repo the mask matches, those created later included
+([auth.md](auth.md#a-deploy-token-over-a-mask)). They are a resource of the system: the
+`admin` role only, checked before the body is read, so that any other principal gets `403`
+(`anonymous` `401`) whatever the body says, a `maintainer` on `*/*` included. **Creating one
+takes the admin's password** as the request's credential (decided on #911): with a personal
+access token, with scopes or without, the admin's too, or with a deploy token, `POST
+/api/v1/deploy-tokens` is `403` before the body is read, saying that a deploy token over a mask
+is created with the admin's password. Listing and revoking take the admin role with any
+credential that reaches it.
+
+- `POST /api/v1/deploy-tokens` with `repoMask`, `name`, `scopes` (required, `read` and/or
+  `write`) and the expiry as above: `201` with the resource and its secret, and `Location`
+  `/api/v1/deploy-tokens/<id>`; `400` for a mask that is not two segments, a format this server
+  does not serve or a repo name that breaks its rule (naming `repoMask`), and for the fields
+  above; `409` when the name is taken by a live token over the same mask. The mask need not
+  match a repo now.
+- `GET /api/v1/deploy-tokens[?repoMask=<mask>]`: `200` with `{"tokens": [...]}`, every deploy
+  token over a mask, or those over that mask as it was written (`oci/*` does not list a token
+  over `*/*`), in the order of their creation, the revoked and expired ones included.
+- `DELETE /api/v1/deploy-tokens/<id>`: `204`, again `204` for a token revoked already; `404`
+  for an id that is not a deploy token over a mask (a repo's own is revoked under its repo).
+
+A repo's `GET …/deploy-tokens` lists its own tokens only, not those over a mask that matches it.
+
+```sh
+curl -s -u admin -X POST "$LAJSTROM/api/v1/deploy-tokens" \
+  -H 'Content-Type: application/json' -d '{"repoMask": "oci/*", "name": "talos-nodes", "scopes": ["read"]}'
+```
+
+```json
+{"id": 9, "kind": "deploy", "repoMask": "oci/*", "name": "talos-nodes", "scopes": ["read"], "expiresAt": null, "lastUsedAt": null, "createdAt": "2026-11-14T12:00:00Z", "revokedAt": null, "hashPrefix": "5d1e0c42", "secret": "ljs_dep_…"}
+```
+
 ### Who may
 
-A user's own personal access tokens, or the admin's for any user; the deploy tokens of a repo with `manage` on it. A deploy token, and a
+A user's own personal access tokens, or the admin's for any user; the deploy tokens of a repo with `manage` on it; the deploy tokens over a mask, the admin's, created with the admin's password only. A deploy token, and a
 personal access token with scopes, asking for any of these is `403`, even for its own repo or
 its own user: tokens never manage.
 
 ### `lajstrom admin token`
 
 The same from the command line, straight against the index database of the configuration,
-audited with the source `cli`; `--user` and `--repo` choose the kind, one of them and not both:
+audited with the source `cli`; `--user`, `--repo` and `--mask` choose the kind and the owner,
+exactly one of them:
 
 ```sh
-lajstrom admin token create (--user <name> | --repo <format>/<repo>) --name <label> [--scopes read,write] [--expires 90d|<RFC 3339>]
-lajstrom admin token list (--user <name> | --repo <format>/<repo>)
+lajstrom admin token create (--user <name> | --repo <format>/<repo> | --mask <format>/<repo>) --name <label> [--scopes read,write] [--expires 90d|<RFC 3339>]
+lajstrom admin token list (--user <name> | --repo <format>/<repo> | --mask <format>/<repo>)
 lajstrom admin token revoke <id>
 ```
 

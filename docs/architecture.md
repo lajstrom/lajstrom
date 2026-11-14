@@ -49,7 +49,7 @@ flowchart TB
   subgraph core["Core: protocols, meaning of bytes, permissions"]
     direction LR
     repomgr["Repo manager<br/>hosted · proxy · group<br/>format, backing registry, prefix"]
-    auth["AuthN / AuthZ<br/>OIDC, local users, groups from claims<br/>tokens: PAT with expiry, deploy tokens per repo<br/>RBAC: binding = role × repo mask"]
+    auth["AuthN / AuthZ<br/>OIDC, local users, groups from claims<br/>tokens: PAT with expiry, deploy tokens per repo or repo mask<br/>RBAC: binding = role × repo mask"]
     ingest["Ingest pipeline<br/>validate → claim the tag → push → read back → index<br/>publication sessions (maven)<br/>dedup by digest, 409 on tag collision"]
     render["Index renderer<br/>Packages, Release · repodata<br/>maven-metadata · simple · packument<br/>cache + signing with the repo's GPG key"]
     proxy["Proxy fetcher, npm and oci<br/>npm: miss → claim → upstream → stream, check → ingest<br/>oci: the upstream's manifests and blobs, unchanged<br/>TTL metadata cache in the DB"]
