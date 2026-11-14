@@ -14,6 +14,10 @@
 #     row delete of 1.1.0 with the job's id and the token's (details.job, details.token);
 #   - --apply again: nothing to delete, exit status 0.
 #
+# Where the registry deletes no manifests, LAJSTROM_E2E_DELETE_MANIFEST=false (run.sh, #800),
+# --apply is exit status 1, 1.1.0 an error naming the registry, the three versions listed still
+# and no audit row of a delete; the second --apply is left out.
+#
 #   test/e2e/retention.sh [<base url>]     default: http://localhost:8080
 #
 # It runs as $LAJSTROM_E2E_USER, a user with the admin binding (lib.sh, e2e_credentials; run.sh
@@ -105,18 +109,31 @@ expect "the dry run's versions to delete" "delete $pkg 1.1.0" "$(grep '^delete '
 grep -q "rank 2 > keep-last 1" "$work/out" || fail "the dry run does not say why: $(cat "$work/out")"
 step "admin retention --keep-last 1: exit status 2, 1.1.0 to delete (rank 2 > keep-last 1); 1.0.0 (beta) and 1.2.0 (newest) kept"
 
-retention --keep-last 1 --apply --output json
-expect "--apply's exit status ($(cat "$work/err"))" 0 "$rc"
-expect "--apply's results" "1.1.0 deleted" "$(jq -r '[.results[] | "\(.version) \(.status)"] | join("|")' "$work/out")"
-job="$(jq -r .job "$work/out")"
-assert_status 200 -K "$work/bearer.curlrc" "$base/api/v1/repos/npm/$repo/packages/$pkg/versions"
-expect "the versions after --apply" "1.2.0 1.0.0" "$(jq -r '[.versions[].version] | join(" ")' <<<"$E2E_BODY")"
-assert_status 200 -K "$E2E_CURLRC" "$base/api/v1/audit?repo=npm/$repo&action=delete"
-expect "the audit row of the delete" "$pkg 1.1.0|$d11|$job|token:$token_id" \
-	"$(jq -r '[.events[] | "\(.subject)|\(.digest)|\(.details.job)|\(.details.token)"] | join(" ")' <<<"$E2E_BODY")"
-step "admin retention --keep-last 1 --apply: exit status 0, 1.1.0 deleted; 1.2.0 and 1.0.0 left; audit row delete with job $job and token:$token_id"
+if [ "${LAJSTROM_E2E_DELETE_MANIFEST:-}" = false ]; then
+	retention --keep-last 1 --apply --output json
+	expect "--apply's exit status where the registry deletes no manifests" 1 "$rc"
+	expect "--apply's results" "1.1.0 error" "$(jq -r '[.results[] | "\(.version) \(.status)"] | join("|")' "$work/out")"
+	grep -qF 'registry "local" ' "$work/err" && grep -qF 'does not delete manifests; nothing was deleted' "$work/err" ||
+		fail "--apply where the registry deletes no manifests: the error does not name the registry local: $(cat "$work/err")"
+	assert_status 200 -K "$work/bearer.curlrc" "$base/api/v1/repos/npm/$repo/packages/$pkg/versions"
+	expect "the versions after --apply" "1.2.0 1.1.0 1.0.0" "$(jq -r '[.versions[].version] | join(" ")' <<<"$E2E_BODY")"
+	assert_status 200 -K "$E2E_CURLRC" "$base/api/v1/audit?repo=npm/$repo&action=delete"
+	expect "the audit rows of a delete" 0 "$(jq '.events | length' <<<"$E2E_BODY")"
+	step "admin retention --keep-last 1 --apply where the registry deletes no manifests: exit status 1, 1.1.0 an error naming the registry; the three versions left, no audit row of a delete"
+else
+	retention --keep-last 1 --apply --output json
+	expect "--apply's exit status ($(cat "$work/err"))" 0 "$rc"
+	expect "--apply's results" "1.1.0 deleted" "$(jq -r '[.results[] | "\(.version) \(.status)"] | join("|")' "$work/out")"
+	job="$(jq -r .job "$work/out")"
+	assert_status 200 -K "$work/bearer.curlrc" "$base/api/v1/repos/npm/$repo/packages/$pkg/versions"
+	expect "the versions after --apply" "1.2.0 1.0.0" "$(jq -r '[.versions[].version] | join(" ")' <<<"$E2E_BODY")"
+	assert_status 200 -K "$E2E_CURLRC" "$base/api/v1/audit?repo=npm/$repo&action=delete"
+	expect "the audit row of the delete" "$pkg 1.1.0|$d11|$job|token:$token_id" \
+		"$(jq -r '[.events[] | "\(.subject)|\(.digest)|\(.details.job)|\(.details.token)"] | join(" ")' <<<"$E2E_BODY")"
+	step "admin retention --keep-last 1 --apply: exit status 0, 1.1.0 deleted; 1.2.0 and 1.0.0 left; audit row delete with job $job and token:$token_id"
 
-retention --keep-last 1 --apply
-expect "a second --apply's exit status ($(cat "$work/err"))" 0 "$rc"
-grep -q "0 of 2 versions in 1 packages to delete" "$work/out" || fail "a second --apply: $(cat "$work/out")"
-step "admin retention --keep-last 1 --apply again: nothing to delete, exit status 0"
+	retention --keep-last 1 --apply
+	expect "a second --apply's exit status ($(cat "$work/err"))" 0 "$rc"
+	grep -q "0 of 2 versions in 1 packages to delete" "$work/out" || fail "a second --apply: $(cat "$work/out")"
+	step "admin retention --keep-last 1 --apply again: nothing to delete, exit status 0"
+fi

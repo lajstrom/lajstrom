@@ -208,12 +208,36 @@ func TestVendorDefaults(t *testing.T) {
 	}
 }
 
+// TestNameLength: the bound of a name below the prefix is 255 bytes less the prefix, Harbor's
+// 245 less it (#1041), and at least 1.
+func TestNameLength(t *testing.T) {
+	long := strings.Repeat("p", 299) + "/"
+	for _, tt := range []struct {
+		prefix string
+		vendor vendor
+		want   int
+	}{
+		{"", vendorUnknown, 255},
+		{"art/", vendorDistribution, 251},
+		{"", vendorHarbor, 245},
+		{"lajstrom-it/", vendorHarbor, 233},
+		{long, vendorHarbor, 1},
+		{long, vendorUnknown, 1},
+	} {
+		if got := nameLength(tt.prefix, tt.vendor); got != tt.want {
+			t.Errorf("nameLength(%d bytes of prefix, %s) = %d, want %d", len(tt.prefix), tt.vendor, got, tt.want)
+		}
+	}
+}
+
 // TestCapabilitiesVendor runs the probe against the fake answering GET /v2/ as the registries
 // of the table did, and checks what the table makes of the probe's answer (afterProbe).
 func TestCapabilitiesVendor(t *testing.T) {
 	ctx := context.Background()
-	// Every vendor gets 255 bytes less the fake's prefix, art/.
+	// Every vendor gets 255 bytes less the fake's prefix, art/, but Harbor, 245 less (#1041).
 	defaults := provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true, DeleteManifest: true, BlobRedirect: true, MaxNameLength: 251}
+	harbor := defaults
+	harbor.MaxNameLength = 241
 	noReferrers := provider.Capabilities{CreateOnPush: true, Catalog: true, DeleteManifest: true, BlobRedirect: true, MaxNameLength: 251}
 	nexusDocker := provider.Capabilities{CreateOnPush: true, Catalog: true, BlobRedirect: true, MaxNameLength: 251}
 	strong := defaults
@@ -270,7 +294,7 @@ func TestCapabilitiesVendor(t *testing.T) {
 		{name: "GitLab A", setup: headers(gitLabA, true), vendor: vendorGitLab, want: strong},
 		{name: "GitLab B", setup: headers(gitLabB, true), vendor: vendorGitLab, warn: true, want: strong},
 		{name: "GitLab behind its token service", setup: gitLabTokens, vendor: vendorGitLab, want: gitLabDeep},
-		{name: "Harbor", setup: challenge("bearer", "Bearer", `,service="harbor-registry"`, true), vendor: vendorHarbor},
+		{name: "Harbor", setup: challenge("bearer", "Bearer", `,service="harbor-registry"`, true), vendor: vendorHarbor, want: harbor},
 		{name: "Nexus, docker format", setup: headers(nexusV2, false), vendor: vendorNexus, want: nexusDocker},
 		{name: "Nexus, docker format, told by its challenge", setup: challenge("basic", "BASIC", "", false), vendor: vendorNexus, want: nexusDocker},
 		{
@@ -294,7 +318,7 @@ func TestCapabilitiesVendor(t *testing.T) {
 		},
 		{name: "Gitea, its own API a web page", setup: forgejo(challenge, "<!DOCTYPE html><html></html>"), vendor: vendorGitea, want: noReferrers, hint: true},
 		{name: "Gitea, a version without one", setup: forgejo(challenge, `{"version":""}`), vendor: vendorGitea, want: noReferrers, hint: true},
-		{name: "JFrog", setup: headers(jfrogV2, true), vendor: vendorJFrog, quirks: quirks{blobExistsByGET: true}, hint: true},
+		{name: "JFrog", setup: headers(jfrogV2, true), vendor: vendorJFrog, quirks: quirks{blobExistsByGET: true, emptyStatus404: true}, hint: true},
 		// The fake has a catalog and the referrers API: the table's catalog and referrers win.
 		{name: "Quay", setup: headers(quayV2, true), vendor: vendorQuay, want: quay, quirks: quirks{pushForDelete: true}},
 	}

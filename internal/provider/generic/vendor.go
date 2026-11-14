@@ -108,7 +108,7 @@ var vendorDefaults = map[vendor]config.CapabilityOverrides{
 	// says so (docs/registries/quirks.md, Consequences).
 	vendorDocker: {MaxNameDepth: dockerHubNameDepth},
 	// The probe is right: the referrers API, and no catalog for a project robot
-	// (docs/registries/harbor.md).
+	// (docs/registries/harbor.md). Its names are shorter than distribution's: vendorNameLengths.
 	vendorHarbor: {},
 	// The rest depends on the repository format, which the referrers probe tells: afterProbe.
 	vendorNexus: {},
@@ -133,6 +133,17 @@ var vendorDefaults = map[vendor]config.CapabilityOverrides{
 	// cache times not measured (docs/registries/quay.md).
 	vendorQuay: {Catalog: new(false), Referrers: new(false), Consistency: config.ConsistencyEventual, ConsistencyBound: quayConsistencyBound},
 }
+
+// harborMaxNameLen is the most bytes of a repository name that Harbor takes, its project
+// included: v2.15.4 opens an upload session in a name of 245 bytes and answers one of 246 to 256
+// with 500 (docs/registries/harbor.md, the probe of 2026-11-14, #1041).
+const harborMaxNameLen = 245
+
+// vendorNameLengths is the vendor table's part for the length of a name: the most bytes of a
+// repository name, the instance prefix included, of a vendor that takes fewer than maxNameLen
+// (nameLength). No probe measures it: a name too long for the registry fails only when a session
+// in it is opened.
+var vendorNameLengths = map[vendor]int{vendorHarbor: harborMaxNameLen}
 
 // hintSpool reports whether the start hints at registries[].uploads.spoolUnknownLength for v:
 // Gitea and Forgejo refuse a chunk without Content-Range into a session that holds bytes (400),
@@ -188,6 +199,11 @@ type quirks struct {
 	// answers delete 400 INVALID_REQUEST, so that no DELETE was ever sent; its DELETE wants
 	// write, which a push token carries (docs/registries/quay.md, Tokens and the delete action).
 	pushForDelete bool
+	// emptyStatus404: a 404 to the status GET of an upload session that holds no bytes is the
+	// session at offset 0, not one the registry no longer knows (BlobUploadStatus). JFrog answers
+	// so before the first chunk, 404 BLOB_UNKNOWN, and takes the PATCH that follows
+	// (docs/registries/jfrog-jcr.md, item 10).
+	emptyStatus404 bool
 }
 
 // afterProbe is the part of the vendor table that depends on what the probe found: it changes
@@ -197,7 +213,7 @@ type quirks struct {
 //   - Nexus: the docker format has no referrers API, and a manifest delete by digest leaves
 //     every tag that names it (docs/registries/nexus.md, item 2), so DeleteManifest is false;
 //     the oci format has it, and fails every range (wholeBlobs);
-//   - JFrog: blobExistsByGET;
+//   - JFrog: blobExistsByGET and emptyStatus404;
 //   - Quay: pushForDelete.
 func afterProbe(v vendor, probed *provider.Capabilities, referrers bool) quirks {
 	switch v {
@@ -207,7 +223,7 @@ func afterProbe(v vendor, probed *provider.Capabilities, referrers bool) quirks 
 		}
 		probed.DeleteManifest = false
 	case vendorJFrog:
-		return quirks{blobExistsByGET: true}
+		return quirks{blobExistsByGET: true, emptyStatus404: true}
 	case vendorQuay:
 		return quirks{pushForDelete: true}
 	case vendorUnknown, vendorGitLab, vendorGHCR, vendorECR, vendorHarbor, vendorGitea, vendorForgejo, vendorZot, vendorDistribution, vendorDocker:

@@ -14,6 +14,7 @@ A pushed tag `vX.Y.Z` builds and publishes a release without anyone's laptop:
 | `checksums.txt` (SHA-256 of the archives and SBOMs) and `checksums.txt.sigstore.json`, its cosign bundle | the GitHub release |
 | the image, linux/amd64 and linux/arm64 in one index, distroless static, user 65532, entrypoint `/lajstrom`, with an SBOM attestation and a cosign signature | `ghcr.io/lajstrom/lajstrom:vX.Y.Z` and `docker.io/lajstrom/lajstrom:vX.Y.Z`; `:latest` too on a stable version |
 | the Homebrew cask `lajstrom` | `lajstrom/homebrew-tap`: `brew install lajstrom/tap/lajstrom` |
+| the Helm chart, version `X.Y.Z` and appVersion `vX.Y.Z`, with a cosign signature | `oci://ghcr.io/lajstrom/charts/lajstrom`, pushed by the job `chart` after the release job |
 
 The binary reports the tag: `lajstrom version` and `GET /-/version` print `vX.Y.Z`, the short
 commit and the build time, the same build information `make build` sets. The signatures are
@@ -33,7 +34,7 @@ The cask is pushed for both: once the draft of an rc is published, `brew install
 
 ## The workflow
 
-On a `v*` tag, the Release workflow runs two jobs:
+On a `v*` tag, the Release workflow runs three jobs:
 
 1. `preflight` checks the secrets that are set: the Docker Hub user and token can push
    `lajstrom/lajstrom`, and the tap token can write to `lajstrom/homebrew-tap`. A secret that is
@@ -45,13 +46,16 @@ On a `v*` tag, the Release workflow runs two jobs:
    rerun it later. Then it runs `goreleaser release`. That builds, signs `checksums.txt`, pushes
    and signs the image, creates the draft release with its assets, and pushes the cask to the
    tap last.
+3. `chart` packages `deploy/helm/lajstrom` at the tag's version, pushes it to
+   `oci://ghcr.io/lajstrom/charts/lajstrom` with `GITHUB_TOKEN`, signs the pushed digest with
+   cosign as the images are signed, verifies the signature and reads the chart back.
 
 **Run workflow** on the Actions tab (`workflow_dispatch`) runs `preflight` alone, to check the
 secrets before a tag is pushed.
 
 | Secret of `lajstrom/lajstrom` | What it is | Without it |
 | --- | --- | --- |
-| `GITHUB_TOKEN` (automatic) | the release and its assets, `ghcr.io/lajstrom/lajstrom`, the OIDC token for cosign | |
+| `GITHUB_TOKEN` (automatic) | the release and its assets, `ghcr.io/lajstrom/lajstrom` and `ghcr.io/lajstrom/charts/lajstrom`, the OIDC token for cosign | |
 | `DOCKERHUB_USERNAME` | `lajstrom`, the Docker Hub account that owns the namespace | no image on Docker Hub; a warning |
 | `DOCKERHUB_TOKEN` | a personal access token of that account, **Read & Write** | |
 | `HOMEBREW_TAP_TOKEN` | a fine-grained token, **Contents: Read and write** on `lajstrom/homebrew-tap` only | the cask is not pushed; a warning |

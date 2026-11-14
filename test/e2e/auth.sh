@@ -16,7 +16,9 @@
 # admin binding create), to put and delete. Each run creates a user of its own, named after the
 # run, and disables it at the end; users are not deleted in this version. Passwords go to curl in
 # a config file, never on a command line, and are never printed. It needs curl and jq, prints one line per step and exits
-# non-zero at the first failure, naming the assertion or the command (lib.sh).
+# non-zero at the first failure, naming the assertion or the command (lib.sh). Where the registry
+# deletes no manifests, LAJSTROM_E2E_DELETE_MANIFEST=false (run.sh, #800), the maintainer's DELETE
+# is 501, which it gets past the permission check, and the file stays in the registry.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -199,10 +201,12 @@ req new GET "$base/api/v1/whoami"
 expect "whoami after the rename" "user:$uid $user" "$(jq -r '"\(.principal) \(.name)"' "$work/body")"
 ok "admin user rename $was $user: the old name 401, whoami user:$uid $user"
 
+deleted=204 # 501 where the registry deletes no manifests: refused after the permission check
+[ "${LAJSTROM_E2E_DELETE_MANIFEST:-}" != false ] || deleted=501
 req new DELETE "$base/raw/$repo/$path"
-expect "DELETE status" 204 "$status"
+expect "DELETE status" "$deleted" "$status"
 uploaded=""
-ok "DELETE /raw/$repo/$path as $user: 204, the maintainer binding holds across the rename"
+ok "DELETE /raw/$repo/$path as $user: $deleted, the maintainer binding holds across the rename"
 
 # Deleted, the user is refused; its name is free again, for a user with another uid.
 "${lajstrom[@]}" admin user delete "$user" >/dev/null

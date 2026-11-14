@@ -1,8 +1,11 @@
 package facade
 
 import (
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -76,4 +79,105 @@ func TestSubjectDigestChecked(t *testing.T) {
 	if n := len(e.prov.Pushes()) + len(e.prov.PushReferences()); n != 0 {
 		t.Errorf("the registry got %d pushes, want none", n)
 	}
+}
+
+// TestUnknownRepoAnswersAsUnreadable: every route of /v2 below a repository answers on a repo
+// that the principal may not read as on a repo that does not exist, header for header and byte
+// for byte but for the repo's name, to the anonymous principal (401), to a user without access
+// (404) and to a bearer token that names the repository with no action, on a managed repo and on
+// an oci one (docs/spec/rbac.md §3 and §4, #1091).
+func TestUnknownRepoAnswersAsUnreadable(t *testing.T) {
+	e := newEnv(t, envOptions{authz: authorizer{"carol": {"raw/other": {auth.ActionRead}}}})
+	const (
+		zero     = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+		upload   = "/blobs/uploads/0123456789abcdef0123456789abcdef"
+		manifest = `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}`
+	)
+	requests := []struct {
+		method, suffix, body string
+	}{
+		{http.MethodGet, "/tags/list", ""},
+		{http.MethodGet, "/tags/list?n=1&last=a", ""},
+		{http.MethodGet, "/manifests/v1", ""},
+		{http.MethodHead, "/manifests/v1", ""},
+		{http.MethodGet, "/manifests/" + zero, ""},
+		{http.MethodPut, "/manifests/v1", manifest},
+		{http.MethodDelete, "/manifests/" + zero, ""},
+		{http.MethodGet, "/blobs/" + zero, ""},
+		{http.MethodHead, "/blobs/" + zero, ""},
+		{http.MethodDelete, "/blobs/" + zero, ""},
+		{http.MethodGet, "/referrers/" + zero, ""},
+		{http.MethodPost, "/blobs/uploads/", ""},
+		{http.MethodPost, "/blobs/uploads/?digest=" + zero, "x"},
+		{http.MethodPost, "/blobs/uploads/?mount=" + zero + "&from=raw/other/pkg", ""},
+		{http.MethodGet, upload, ""},
+		{http.MethodPatch, upload, "x"},
+		{http.MethodPut, upload + "?digest=" + zero, "x"},
+		{http.MethodDelete, upload, ""},
+	}
+	who := []struct {
+		name   string
+		user   string
+		bearer bool // a token that names the repository, from /v2/token
+		status int
+	}{
+		{"anonymous", "", false, http.StatusUnauthorized},
+		{"a user without access", "carol", false, http.StatusNotFound},
+		{"anonymous with a token for it", "", true, http.StatusUnauthorized},
+		{"a user without access with a token for it", "carol", true, http.StatusNotFound},
+	}
+	for _, w := range who {
+		// Names of one length, so that Content-Length is compared too.
+		for _, repos := range [][2]string{{"raw/assets", "raw/absent"}, {"oci/images", "oci/absent"}} {
+			for _, rq := range requests {
+				t.Run(w.name+" "+rq.method+" "+repos[0]+rq.suffix, func(t *testing.T) {
+					answer := func(repo string) (string, int) {
+						var hdr []string
+						if w.user != "" {
+							hdr = []string{principalHeader, w.user}
+						}
+						if w.bearer {
+							tok := e.getToken(e.h, w.user, "repository:"+repo+"/pkg:pull,push,delete")
+							hdr = []string{"Authorization", "Bearer " + tok}
+						}
+						var body io.Reader
+						if rq.body != "" {
+							body = strings.NewReader(rq.body)
+							hdr = append(hdr, "Content-Type", "application/vnd.oci.image.manifest.v1+json")
+						}
+						rr := e.do(e.h, rq.method, "/v2/"+repo+"/pkg"+rq.suffix, body, hdr...)
+						return fullAnswer(rr, repo), rr.Code
+					}
+					unreadable, status := answer(repos[0])
+					unknown, _ := answer(repos[1])
+					if unreadable != unknown {
+						t.Errorf("the repo that may not be read answers\n%s\nthe repo that does not exist\n%s", unreadable, unknown)
+					}
+					if status != w.status {
+						t.Errorf("status %d, want %d:\n%s", status, w.status, unreadable)
+					}
+				})
+			}
+		}
+	}
+}
+
+// fullAnswer is rr as text: the status, the headers but Date, and the body, each with repo as
+// <repo>.
+func fullAnswer(rr *httptest.ResponseRecorder, repo string) string {
+	norm := strings.NewReplacer(repo, "<repo>").Replace
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d\n", rr.Code)
+	names := make([]string, 0, len(rr.Header()))
+	for name := range rr.Header() {
+		if name != "Date" {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		fmt.Fprintf(&b, "%s: %s\n", name, norm(strings.Join(rr.Header().Values(name), ", ")))
+	}
+	fmt.Fprintf(&b, "\n%s", norm(rr.Body.String()))
+	return b.String()
 }

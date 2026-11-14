@@ -49,16 +49,18 @@ func (h *handlers) ping(w http.ResponseWriter, r *http.Request, repo index.Repo)
 }
 
 // whoami answers npm whoami: the user's name, token:<id> for a deploy token, to a principal
-// that may read the repo; 401 to anonymous, also on a repo with anonymous read.
+// that may read the repo; 401 to anonymous, also on a repo with anonymous read. The read is
+// checked first, so that the anonymous principal gets on a repo it may not read the answer of a
+// repo that does not exist (#1091).
 func (h *handlers) whoami(w http.ResponseWriter, r *http.Request, repo index.Repo) {
 	ctx := r.Context()
+	if err := format.Authorize(ctx, h.deps, auth.ActionRead, repo); err != nil {
+		h.fail(w, r, err)
+		return
+	}
 	p := auth.PrincipalFrom(ctx)
 	if p.Kind == auth.KindAnonymous {
 		h.fail(w, r, fmt.Errorf("%w: npm whoami needs credentials", format.ErrUnauthenticated))
-		return
-	}
-	if err := format.Authorize(ctx, h.deps, auth.ActionRead, repo); err != nil {
-		h.fail(w, r, err)
 		return
 	}
 	name := p.String()
