@@ -55,7 +55,7 @@ internal/ingest         pipeline + publication sessions
 internal/proxy          proxy and group repos: the format-independent core
 internal/provider       Provider interface; generic (oras-go), ecr
 internal/index          Store interface, models, migrations; sqlite, postgres; reindex
-internal/auth, api, keys, audit, config, metrics, testutil, version
+internal/auth, api, keys, audit, config, metrics, testutil, version, gcpauth
 deploy/compose          dev stack (zot, distribution, postgres)
 docs/                   architecture, spec, adr, plan, registries
 ```

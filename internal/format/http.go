@@ -142,7 +142,8 @@ func SetRetryAfter(h http.Header, err error) {
 //	index.ErrUnavailable                       503 Service Unavailable, with Retry-After: 5 (the database
 //	                                             did not answer)
 //	ErrBadGateway                              502 Bad Gateway (a proxy's upstream failed)
-//	ErrUnavailable                             503 Service Unavailable, with Retry-After (the upstream's)
+//	ErrUnavailable                             503 Service Unavailable, with Retry-After (the upstream's,
+//	                                             or 5 for a KMS that holds a signing key)
 //	ErrGatewayTimeout                          504 Gateway Timeout
 //	anything else, nil included                500 Internal Server Error
 func StatusOf(err error) int {

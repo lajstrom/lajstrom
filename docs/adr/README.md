@@ -67,3 +67,4 @@ request labelled `contract`. Typos and broken links may be fixed in place.
 | [0017](0017-the-grammar-of-oci-names.md) | The grammar of OCI names | accepted; amended for Harbor's routes |
 | [0018](0018-oci-proxy-repos-pull-through-from-any-registry.md) | An oci proxy repo pulls through from any OCI registry | accepted; amended by #876, #875; groups of `oci` repos superseded by [0019](0019-oci-groups-one-member-per-repository-path.md) |
 | [0019](0019-oci-groups-one-member-per-repository-path.md) | Groups of oci repos: read-only, one member per repository path | accepted |
+| [0020](0020-repo-signing-keys-in-a-cloud-kms.md) | Repo signing keys in a cloud KMS: the key stays there, the database seals its name | proposed |

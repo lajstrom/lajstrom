@@ -47,7 +47,11 @@ internal/auth/                principals, password hashing, PAT/deploy tokens, R
 internal/auth/token/          the bearer JWT of /v2: scopes, issue, verify
 internal/auth/oidc/           OIDC relying party: discovery, JWKS, ID token verification, code exchange (#69)
 internal/api/                 /api/v1 management REST (repos, users, tokens, bindings), JSON
-internal/keys/                server signing key, per-repo GPG keys (apt, rpm), encryption at rest
+internal/keys/                server signing key, per-repo GPG keys (apt, rpm), encryption at rest, keys held in a KMS (ADR 0020)
+internal/keys/awskms/         AWS KMS for keys: DescribeKey, GetPublicKey, Sign over net/http, SigV4 of aws-sdk-go-v2
+internal/keys/gcpkms/         GCP Cloud KMS for keys: cryptoKeyVersions.get, getPublicKey, asymmetricSign over net/http
+internal/gcpauth/             the access token of the workload's service account from the GCP metadata server
+                              (an oci upstream's auth.gcp, gcpkms)
 internal/audit/               audit log writer
 internal/metrics/             the Prometheus collectors (fixed labels) and the handler of the metrics listener
 internal/testutil/            fixture builders, in memory: .deb, .rpm, .whl/sdist, .jar + POM, npm tarball, archives, bombs, fuzz seeds
@@ -1620,7 +1624,9 @@ Where the merged shapes differ from the first sketch of this section, and why:
   (SQLite). A cached `InRelease` or `Release.gpg` is served only while `Signer.Current` says
   that its signatures are by the active key and by keys still in their grace; otherwise it is
   signed again. The end of a retired key's grace is a time, not a write, so no invalidation
-  marks it (#577).
+  marks it (#577). A key may be held in a KMS (ADR 0020): the `Signer` sends the digest there,
+  checks the answer with the stored public key, and fails with `format.ErrUnavailable` (503)
+  while the KMS does not answer, so that a route never serves an unsigned document.
 - **Proxy repos plug in through `format.Proxier`** (ADR 0013, #309). It is the sketch of
   proxy-and-group.md §10 without `MergeGroup`, which came with the groups of #311 (`Grouper`,
   below), and with
@@ -1719,9 +1725,12 @@ license policy). Prefer the standard library.
 | Passwords | `golang.org/x/crypto` (argon2id), `golang.org/x/term` (the CLI's password prompt) | BSD-3 |
 | OpenPGP (apt signing) | `github.com/ProtonMail/go-crypto` | BSD-3 |
 | Compression | `github.com/klauspost/compress` (zstd, gzip), `github.com/ulikunitz/xz` | BSD-3 / Apache-2.0 |
-| AWS (ECR adapter) | `github.com/aws/aws-sdk-go-v2` (`ecr`, and `config` for the credential chain), `github.com/aws/smithy-go` (its API errors) | Apache-2.0 |
+| AWS (ECR adapter, KMS keys) | `github.com/aws/aws-sdk-go-v2` (`ecr`; `config` for the credential chain; `aws/signer/v4`, the SigV4 of the KMS client of `internal/keys/awskms`, which needs no `service/kms`: ADR 0020), `github.com/aws/smithy-go` (its API errors) | Apache-2.0 |
 | Metrics | `github.com/prometheus/client_golang`; `github.com/prometheus/client_model` in tests | Apache-2.0 |
 | Tests | `testing` + `github.com/google/go-cmp`; `github.com/stretchr/testify` acceptable | BSD-3 / MIT |
+
+GCP has no client library: the metadata server (`internal/gcpauth`) and Cloud KMS
+(`internal/keys/gcpkms`) are called over `net/http` (ADR 0020).
 
 Not approved without discussion: ORMs, chi/gin/echo, testcontainers (we use compose and CI
 service containers), any GPL/LGPL/AGPL/SSPL/BSL dependency, cgo.
@@ -1804,6 +1813,7 @@ keys:
   tokenAlgorithm: ES256                     # ES256 | EdDSA; the bearer-token key (ADR 0010)
   algorithm: ed25519                        # ed25519 | rsa4096 (apt before 2.0)
   retireGrace: 720h                         # a retired key still signs and stays in key.asc this long
+  kms: ""                                   # awskms:///<key> | gcpkms://<version>: repo keys made from now on (ADR 0020)
 repos:                                      # optional declarative bootstrap: created when missing, never changed
   - { name: ubuntu-internal, format: apt, registry: local, anonymousRead: false }
 ```
