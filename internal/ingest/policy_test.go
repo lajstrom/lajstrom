@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/provider"
@@ -149,4 +151,62 @@ func TestSessionFilesPolicy(t *testing.T) {
 	add(t, e, s.ID, "a.jar", "again")
 	e.setPolicy(t, `{"maven":{"maxSessionFiles":"many"}}`)
 	add(t, e, s.ID, "c.jar", "ccc")
+}
+
+// admitPlugin is the raw plugin of the tests with an Admit that refuses the versions of refuse
+// and records the entries it was asked about.
+type admitPlugin struct {
+	*rawPlugin
+	refuse string
+	asked  []format.Entry
+}
+
+func (p *admitPlugin) Admit(repo index.Repo, e format.Entry) error {
+	p.asked = append(p.asked, e)
+	if e.Version == p.refuse {
+		return fmt.Errorf("%w: %s/%s takes no %s", format.ErrInvalid, repo.Format, repo.Name, e.Version)
+	}
+	return nil
+}
+
+// TestAdmit: a plugin that is a format.Admitter is asked about every publish, a manifest of /v2
+// and a frontend's upload alike, after Validate, with its entry, and what it refuses is
+// ErrInvalid before anything is claimed or pushed; Inspect, the path of reindex, never asks it
+// (manifest-profile.md §5).
+func TestAdmit(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t)
+	p := &admitPlugin{rawPlugin: e.plugin, refuse: "1.0.0"}
+	opts := e.options(e.prov)
+	opts.Plugins = func(name string) (format.Plugin, bool) { return p, name == "raw" }
+	e.pipe = ingest.New(opts)
+
+	built, raw, pkgPath := e.prepare(t, upload(readme, "1.0.0", file{readme, "hello"}))
+	_, err := e.ingest(t, built, raw, pkgPath)
+	if !errors.Is(err, ingest.ErrInvalid) || !strings.Contains(err.Error(), "raw/scratch takes no 1.0.0") {
+		t.Fatalf("Ingest of a version Admit refuses = %v, want ErrInvalid with its message", err)
+	}
+	if len(p.asked) != 1 || p.asked[0].Name != readme || p.asked[0].Version != "1.0.0" {
+		t.Errorf("Admit was asked about %+v, want the entry of %s 1.0.0", p.asked, readme)
+	}
+	if _, err := e.pipe.Upload(ctx, e.repo, upload(readme, "1.0.0", file{readme, "hello"}), alice); !errors.Is(err, ingest.ErrInvalid) {
+		t.Errorf("Upload of a version Admit refuses = %v, want ErrInvalid", err)
+	}
+	if len(e.prov.PushReferences()) != 0 {
+		t.Errorf("a refused version was pushed: %+v", e.prov.PushReferences())
+	}
+	e.noClaim(t, readme, built.Tag)
+
+	asked := len(p.asked)
+	if _, err := e.pipe.Inspect(ctx, e.repo, pkgPath, built.Tag, built.Manifest, raw, ingest.InspectOptions{}); err != nil {
+		t.Errorf("Inspect of a version Admit refuses = %v, want the rows: reindex does not apply the policy", err)
+	}
+	if len(p.asked) != asked {
+		t.Errorf("Inspect asked Admit: %+v", p.asked[asked:])
+	}
+
+	built, raw, pkgPath = e.prepare(t, upload(readme, "1.1.0", file{readme, "hello"}))
+	if _, err := e.ingest(t, built, raw, pkgPath); err != nil {
+		t.Errorf("Ingest of a version Admit takes = %v", err)
+	}
 }
