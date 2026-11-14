@@ -22,6 +22,18 @@
 #                          (server.trustedProxies), so that the per-address throttles are on
 #   LAJSTROM_E2E_REGISTRY_USER, LAJSTROM_E2E_REGISTRY_PASSWORD_FILE, LAJSTROM_E2E_REGISTRY_PREFIX
 #                          as the caller set them, and LAJSTROM_E2E_REGISTRY_PASSWORD (below)
+#   LAJSTROM_E2E_DELETE_MANIFEST   true or false: the deleteManifest of the registry local, as the
+#                          server logged it at its start ("registry capabilities", the probe with the
+#                          vendor table and the configuration's capabilities). false: Lajstrom
+#                          refuses every delete there and changes nothing, 405 UNSUPPORTED through
+#                          /v2, 501 through the frontends and the API (Nexus's docker format, #352)
+#   LAJSTROM_E2E_BLOBS_READ_WHOLE  true or false: blobsReadWhole of the registry local, from the
+#                          server's "registry needs workarounds" line, false without one. true: a
+#                          range is answered with the whole blob, 200 (Nexus's oci format, #352)
+#
+# raw.sh, oras.sh and cosign.sh take those answers where the two say so (#800). When the server
+# logged no capabilities of the registry local (its probe failed at the start), the two are left
+# as the caller set them, and a scenario takes an unset one as Zot's: deletes, and ranges.
 #
 # The registry `local` may need credentials and an instance prefix (#353), as Gitea's does
 # (deploy/compose/gitea): LAJSTROM_E2E_REGISTRY_USER names the user, and
@@ -279,6 +291,20 @@ until curl -fsS -o /dev/null --max-time 2 "$base/-/readyz" 2>/dev/null; do
 	sleep 0.5
 done
 step "lajstrom serve on $base, index $index, registry local at $registry${registry_prefix:+, prefix $registry_prefix}${registry_user:+, user $registry_user}${LAJSTROM_E2E_CAPABILITIES:+ $LAJSTROM_E2E_CAPABILITIES}: ready after $((SECONDS - served)) s"
+# What the server found of the registry local at its start (#800): serve probes every registry
+# before it listens, and logs the outcome, so the lines are there once it is ready.
+log_value() { sed -n "s/.* $1=\([^ ]*\).*/\1/p" <<<"$2"; } # log_value KEY LINE: KEY's value in a log line
+caps="$(grep -F 'msg="registry capabilities" registry=local ' "$LAJSTROM_SERVER_LOG" | tail -n 1)" || caps=""
+if [ -n "$caps" ]; then
+	quirks="$(grep -F 'msg="registry needs workarounds" registry=local ' "$LAJSTROM_SERVER_LOG" | tail -n 1)" || quirks=""
+	LAJSTROM_E2E_DELETE_MANIFEST="$(log_value deleteManifest "$caps")"
+	LAJSTROM_E2E_BLOBS_READ_WHOLE="$(log_value blobsReadWhole "$quirks")"
+	LAJSTROM_E2E_BLOBS_READ_WHOLE="${LAJSTROM_E2E_BLOBS_READ_WHOLE:-false}"
+	export LAJSTROM_E2E_DELETE_MANIFEST LAJSTROM_E2E_BLOBS_READ_WHOLE
+	step "the registry local at the start: $(log_value vendor "$caps"), deleteManifest=$LAJSTROM_E2E_DELETE_MANIFEST, blobsReadWhole=$LAJSTROM_E2E_BLOBS_READ_WHOLE"
+else
+	step "the registry local at the start: no capabilities logged; deleteManifest=${LAJSTROM_E2E_DELETE_MANIFEST:-unset}, blobsReadWhole=${LAJSTROM_E2E_BLOBS_READ_WHOLE:-unset}, as the caller set them"
+fi
 LAJSTROM_E2E_USER="e2e-admin"
 LAJSTROM_E2E_PASSWORD="$(head -c 24 /dev/urandom | base64 | tr -d '+/=\n')"
 export LAJSTROM_E2E_USER LAJSTROM_E2E_PASSWORD

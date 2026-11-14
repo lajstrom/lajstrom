@@ -18,6 +18,12 @@
 # deletes in it too (an admin may). It needs curl and jq, prints one line per step and exits
 # non-zero at the first failure, naming the assertion or the command (lib.sh). make e2e runs it
 # (test/e2e/run.sh).
+#
+# Where the registry deletes no manifests, LAJSTROM_E2E_DELETE_MANIFEST=false (run.sh reads it
+# from the server's log, #800), every delete is refused and checked to change nothing: the
+# version through the API 501 UNAVAILABLE naming the registry, R-07 and the cleanup 501, and the
+# size cap's repo goes with --force; the run's files stay in the registry. Where its blobs are
+# read whole, LAJSTROM_E2E_BLOBS_READ_WHOLE=true, the range is 200 with every byte.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -36,12 +42,18 @@ else
 	lajstrom=(go run ./cmd/lajstrom)
 fi
 
+deletes=yes # the registry deletes manifests; no: Lajstrom refuses every delete (#800)
+[ "${LAJSTROM_E2E_DELETE_MANIFEST:-}" != false ] || deletes=no
+deleted=204 # the status of a raw DELETE: 501 where deletes are refused
+force=()    # the size cap's repo keeps its file where deletes are refused, so it goes with --force
+[ "$deletes" = yes ] || { deleted=501 force=(--force); }
+
 work="$(mktemp -d)"
 limited="" # the size cap's repo while it exists
 cleanup() {
 	if [ -n "$limited" ]; then
 		curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/raw/$limited/at-limit.bin" || true
-		"${lajstrom[@]}" admin repo delete "raw/$limited" >/dev/null 2>&1 || true
+		"${lajstrom[@]}" admin repo delete "raw/$limited" ${force[@]+"${force[@]}"} >/dev/null 2>&1 || true
 	fi
 	rm -rf "$work"
 }
@@ -154,13 +166,22 @@ get "$file" -G --data-urlencode "digest=$d1"
 cmp -s "$work/v1" "$work/body" || fail "R-03 GET ?digest=: not the old bytes"
 ok "R-03 new bytes: $d2; GET returns them, ?digest=$d1 the old ones"
 
-# A single range is 206 with exactly those bytes.
+# A single range is 206 with exactly those bytes; where the provider reads the registry's blobs
+# whole (Nexus's oci format answers every range 500, docs/registries/nexus.md), 200 with every
+# byte and no Content-Range, on purpose.
 req GET "$(urlpath "$file")" -r 1000-1999
-expect "range status" 206 "$status"
-expect "range Content-Range" "bytes 1000-1999/3000" "$(hdr content-range)"
-tail -c +1001 "$work/v2" | head -c 1000 >"$work/range"
-cmp -s "$work/range" "$work/body" || fail "range: the body is not bytes 1000-1999"
-ok "range 1000-1999: 206 with those 1000 bytes"
+if [ "${LAJSTROM_E2E_BLOBS_READ_WHOLE:-}" = true ]; then
+	expect "range status, blobs read whole" 200 "$status"
+	expect "range Content-Range, blobs read whole" "" "$(hdr content-range)"
+	cmp -s "$work/v2" "$work/body" || fail "range, blobs read whole: the body is not the whole file"
+	ok "range 1000-1999 where the blobs are read whole: 200 with all 3000 bytes"
+else
+	expect "range status" 206 "$status"
+	expect "range Content-Range" "bytes 1000-1999/3000" "$(hdr content-range)"
+	tail -c +1001 "$work/v2" | head -c 1000 >"$work/range"
+	cmp -s "$work/range" "$work/body" || fail "range: the body is not bytes 1000-1999"
+	ok "range 1000-1999: 206 with those 1000 bytes"
+fi
 
 # R-04: the listing of the root and of a prefix shows both versions, sorted.
 put "$work/v1" "$run/docs/a.txt"
@@ -181,18 +202,34 @@ put "$work/v3" "$file"
 d3="$digest"
 v3="$(jq -r .version "$work/body")"
 expect "the version of the third file" "$(sha256 "$work/v3" | cut -c1-16)" "$v3"
-assert_status 204 -K "$E2E_CURLRC" -X DELETE \
-	"$base/api/v1/repos/raw/$repo/packages/$(jq -rn --arg p "$file" '$p | @uri')/versions/$v3"
-listing "$run/docs/"
-expect "the digests of $file after the version delete" "$(printf '%s\n' "$d1" "$d2")" \
-	"$(jq -r --arg p "$file" '.entries[] | select(.path == $p) | .digest' "$work/body")"
-get "$file"
-cmp -s "$work/v2" "$work/body" || fail "GET after the version delete: not the bytes of $d2"
-get "$file" -G --data-urlencode "digest=$d1"
-cmp -s "$work/v1" "$work/body" || fail "GET ?digest=$d1 after the version delete: not its bytes"
-req GET "$(urlpath "$file")" -G --data-urlencode "digest=$d3"
-expect "GET ?digest=$d3 of the deleted version status" 404 "$status"
-ok "DELETE /api/v1/repos/raw/$repo/packages/…/versions/$v3, the newest of three versions: 204; the other two listed and served, GET the second; ?digest= of the deleted one 404"
+version_url="$base/api/v1/repos/raw/$repo/packages/$(jq -rn --arg p "$file" '$p | @uri')/versions/$v3"
+if [ "$deletes" = no ]; then
+	# The registry deletes no manifests (#352): the delete is refused, and the three stay.
+	assert_status 501 -K "$E2E_CURLRC" -X DELETE "$version_url"
+	expect "the code of the refused version delete" UNAVAILABLE "$(jq -r .error.code <<<"$E2E_BODY")"
+	case "$(jq -r .error.message <<<"$E2E_BODY")" in
+	*'registry "local" '*'does not delete manifests; nothing was deleted'*) ;;
+	*) fail "the refused version delete does not name the registry local: $E2E_BODY" ;;
+	esac
+	listing "$run/docs/"
+	expect "the digests of $file after the refused version delete" "$(printf '%s\n' "$d1" "$d2" "$d3")" \
+		"$(jq -r --arg p "$file" '.entries[] | select(.path == $p) | .digest' "$work/body")"
+	get "$file"
+	cmp -s "$work/v3" "$work/body" || fail "GET after the refused version delete: not the bytes of $d3"
+	ok "DELETE /api/v1/repos/raw/$repo/packages/…/versions/$v3 where the registry deletes no manifests: 501 UNAVAILABLE naming it; all three versions listed, GET the newest"
+else
+	assert_status 204 -K "$E2E_CURLRC" -X DELETE "$version_url"
+	listing "$run/docs/"
+	expect "the digests of $file after the version delete" "$(printf '%s\n' "$d1" "$d2")" \
+		"$(jq -r --arg p "$file" '.entries[] | select(.path == $p) | .digest' "$work/body")"
+	get "$file"
+	cmp -s "$work/v2" "$work/body" || fail "GET after the version delete: not the bytes of $d2"
+	get "$file" -G --data-urlencode "digest=$d1"
+	cmp -s "$work/v1" "$work/body" || fail "GET ?digest=$d1 after the version delete: not its bytes"
+	req GET "$(urlpath "$file")" -G --data-urlencode "digest=$d3"
+	expect "GET ?digest=$d3 of the deleted version status" 404 "$status"
+	ok "DELETE /api/v1/repos/raw/$repo/packages/…/versions/$v3, the newest of three versions: 204; the other two listed and served, GET the second; ?digest= of the deleted one 404"
+fi
 
 # R-09: a raw path is unique without regard to case, so after Docs/Readme.MD the path
 # docs/readme.md is 409 naming it; paths that differ in script and length are versions of their
@@ -236,28 +273,43 @@ head -c 1048577 /dev/urandom >"$work/over"
 assert_status 201 -K "$E2E_CURLRC" -o /dev/null -T "$work/limit" "$base/raw/$limited/at-limit.bin"
 assert_status 413 -K "$E2E_CURLRC" -T "$work/over" "$base/raw/$limited/over-limit.bin"
 assert_status 404 -K "$E2E_CURLRC" -o /dev/null "$base/raw/$limited/over-limit.bin"
-assert_status 204 -K "$E2E_CURLRC" -X DELETE "$base/raw/$limited/at-limit.bin"
-"${lajstrom[@]}" admin repo delete "raw/$limited" >/dev/null
+assert_status "$deleted" -K "$E2E_CURLRC" -X DELETE "$base/raw/$limited/at-limit.bin"
+"${lajstrom[@]}" admin repo delete "raw/$limited" ${force[@]+"${force[@]}"} >/dev/null
 limited=""
-ok "raw/$run with --policy '{\"maxFileSize\": 1048576}': PUT of 1048576 bytes 201, of 1048577 bytes 413 and not stored; the repo deleted"
+ok "raw/$run with --policy '{\"maxFileSize\": 1048576}': PUT of 1048576 bytes 201, of 1048577 bytes 413 and not stored; the file's DELETE $deleted; the repo deleted${force[*]+ with ${force[*]}}"
 
 # R-07, the delete by a principal that may: DELETE removes every version of the path; GET is
-# 404 after it.
+# 404 after it. Where the registry deletes no manifests, DELETE is 501 and GET still serves the
+# newest version.
 req DELETE "$(urlpath "$file")"
-expect "R-07 DELETE $file status" 204 "$status"
-req GET "$(urlpath "$file")"
-expect "R-07 GET $file after DELETE status" 404 "$status"
-ok "R-07 DELETE $file: 204; GET is 404 after it"
+expect "R-07 DELETE $file status" "$deleted" "$status"
+if [ "$deletes" = no ]; then
+	get "$file"
+	cmp -s "$work/v3" "$work/body" || fail "R-07 GET $file after the refused DELETE: not the bytes of $d3"
+	ok "R-07 DELETE $file where the registry deletes no manifests: 501; GET still serves $d3"
+else
+	req GET "$(urlpath "$file")"
+	expect "R-07 GET $file after DELETE status" 404 "$status"
+	ok "R-07 DELETE $file: 204; GET is 404 after it"
+fi
 
-# Cleanup: the other paths of the run.
+# Cleanup: the other paths of the run, which stay listed where the registry deletes no
+# manifests.
 n=0
 while IFS= read -r p; do
 	[ "$p" = "$file" ] && continue
 	req DELETE "$(urlpath "$p")"
-	expect "DELETE $p status" 204 "$status"
+	expect "DELETE $p status" "$deleted" "$status"
 	n=$((n + 1))
 done < <(printf '%s\n' "${created[@]}" | sort -u)
 listing ""
-[ "$(grep -c "^$run/" "$work/paths" || true)" = 0 ] || fail "cleanup: paths of the run are still listed"
-ok "cleanup: deleted the other $n paths of the run"
+if [ "$deletes" = no ]; then
+	while IFS= read -r p; do
+		[ "$(count "$p")" -ge 1 ] || fail "cleanup: $p is not listed after its refused DELETE"
+	done < <(printf '%s\n' "${created[@]}" | sort -u)
+	ok "cleanup: the DELETE of the other $n paths of the run 501; every path of the run still listed"
+else
+	[ "$(grep -c "^$run/" "$work/paths" || true)" = 0 ] || fail "cleanup: paths of the run are still listed"
+	ok "cleanup: deleted the other $n paths of the run"
+fi
 echo "PASS raw e2e against $base/raw/$repo/"
