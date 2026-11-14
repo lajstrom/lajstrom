@@ -565,7 +565,8 @@ longer than `reconcile.graceAge` is outside them
   (`ingest.Pipeline.fail`), when the write or that transaction failed. A row still `pending`
   after `ingest.claimTTL` is `unknown` (`index.Writer.ExpirePendingAudit`, at the start of every
   reindex run, the reconcile loop's included). The `auth.Users`, `auth.Tokens` and
-  `auth.Bindings` changes and the `api` repo changes append theirs `ok` in their transaction;
+  `auth.Bindings` changes, the `api` repo changes and the `webhook.Service` changes append theirs
+  `ok` in their transaction;
   the address and the request id through `ingest.withOrigin`. `GET /api/v1/audit` answers the
   state and selects by it (index-schema.md, The audit row of a registry write).
 - **Tests.** `TestAuditIntent` (SQLite) and `TestIntegrationAuditIntent` (Postgres): a publish
@@ -577,7 +578,7 @@ longer than `reconcile.graceAge` is outside them
   `TestIngestConcurrent`, `TestDeleteRowsFail`, `TestDeleteRefused`, `TestIngestAuditWriter`,
   `TestPushAuditOrigin`, `TestOCIPushAudit`, `TestOCIPushAuditAlone`, `TestRequestIDInAudit`,
   `TestClientAddrInAudit`, `TestPrincipalInAudit`, `TestTokensAPIAudit`, `TestTokensAuditWriter`,
-  `TestTokensCreatedBy`, `TestUsersAuditWriter`, `TestDeleteGoneAndAuditWriter`, `TestAuditAPI`,
+  `TestTokensCreatedBy`, `TestUsersAuditWriter`, `TestDeleteGoneAndAuditWriter`, `TestAuditAPI`, `TestWebhookLifecycle`,
   `TestReconcile`; the audit rows checked by `oras.sh` (#245) and `npm.sh` (`proxy.fetch`).
 - **When violated.** A row that cannot be completed is logged at error and stays `pending`
   until it is `unknown`: a write whose outcome only the registry knows, which reindex brings to
@@ -602,7 +603,7 @@ longer than `reconcile.graceAge` is outside them
   `pypi.handlers.start`, npm's `publish`, maven's deployer, deb's upload).
 - **Tests.** `TestDenialBeforeInput`, `TestBearerExistence`, `TestTokensAPINoMint`,
   `TestAuthorization` (facade, api, raw), `TestUploadAuthorize` (deb), `TestPublishDenied` (npm),
-  `TestResolveAuthorize` (maven); `rbac.sh`.
+  `TestResolveAuthorize` (maven), `TestWebhookAuthorization` (api); `rbac.sh`.
 - **When violated.** A denial that depends on the input tells whether a repo exists (threat model
   R-2, fixed in #260).
 - **Status.** `holds`. **Untested:** on the frontends, no test sends a malformed body or path to
@@ -623,7 +624,7 @@ longer than `reconcile.graceAge` is outside them
   `token.Reduce`.
 - **Tests.** `TestAuthorizeRBAC`, `TestAuthorizeScopeOfAUser`,
   `TestRepoMiddlewareMissingRepoByPrincipal`, `TestBearerExistence`, `TestBearerCatalog`, `TestCatalog`, `TestListFiltered`, `TestAuthorization`
-  (facade, raw, api), `TestReferrersAccess`; `rbac.sh` (S-02, S-08, X-05).
+  (facade, raw, api), `TestReferrersAccess`, `TestWebhookAuthorization`; `rbac.sh` (S-02, S-08, X-05).
 - **When violated.** Threat model R-1 to R-4.
 - **Status.** `holds`.
 
@@ -1355,7 +1356,8 @@ longer than `reconcile.graceAge` is outside them
   (`Guard.DialContext`, `Guard.Proxy`) built from `webhooks.allowedHosts`, and whose redirects
   `Guard.CheckURL` checks; the URL checked by `Guard.CheckURL` when it is stored.
 - **Tests.** `TestEgressRefused`, `TestAttemptAnswers`, `TestLogsNoSecret` (webhook), and
-  `TestCheckURL` of webhook.
+  `TestCheckURL` of webhook; `TestWebhookLifecycle` (api: the URLs refused when stored) and
+  `TestWebhookTest` (api: a test delivery under the same rules).
 - **When violated.** Threat model S-1, for webhooks.
 - **Status.** `holds`.
 
