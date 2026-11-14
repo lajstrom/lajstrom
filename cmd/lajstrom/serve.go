@@ -70,7 +70,7 @@ var drainSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
 // what it did. On SQLite this process is the only replica, so no binary of the schema before the
 // run is serving on it: a breaking migration is safe to apply.
 func serveMigrations(ctx context.Context, st store, db config.Database, log *slog.Logger) error {
-	mig, err := st.ApplyMigrations(ctx, index.MigrateOptions{Breaking: db.Driver == index.DialectSQLite})
+	mig, err := st.ApplyMigrations(ctx, index.MigrateOptions{Breaking: db.Driver == index.DialectSQLite, Log: log})
 	if err != nil {
 		return migrationHint(inFile(db, err))
 	}
