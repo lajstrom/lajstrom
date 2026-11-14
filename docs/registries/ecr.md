@@ -68,8 +68,9 @@ Anything neither source states nor the run measured is marked *unverified*.
   [sha256:…]", which the provider takes as one refused delete (`ErrConflict`, 409), as it takes
   Zot's 405 `DENIED`, and not as a registry without deletes (#19).
 - **Errors**: `RepositoryNotFoundException`, `ImageNotFoundException` → `ErrNotFound` (404);
-  `ImageTagAlreadyExistsException`, `RepositoryNotEmptyException` and `LimitExceededException`
-  (a quota: repositories per region, images per repository) → `ErrConflict` (409); IAM and
+  `ImageTagAlreadyExistsException` and `RepositoryNotEmptyException` → `ErrConflict` (409);
+  `LimitExceededException` (a quota: repositories per region, images per repository) →
+  `ErrLimit` (403, `DENIED` on `/v2`, with a warning in the log; #357, until then 409); IAM and
   signature errors (`AccessDeniedException`, …) and a token that cannot be had →
   `ErrUnauthorized` (502). The messages carry the error code, never ECR's text, which names the
   prefixed repository and the account. For a tag pushed again to an immutable repository AWS

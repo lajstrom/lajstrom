@@ -1,8 +1,11 @@
 package ecr
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -68,8 +71,15 @@ func TestEnsureRepository(t *testing.T) {
 		t.Errorf("the repository was not created again (%d calls)", f.count("CreateRepository"))
 	}
 
+	// A quota of the account is ErrLimit (#357), with a warning for the operator.
+	var buf bytes.Buffer
+	p.log = slog.New(slog.NewJSONHandler(&buf, nil))
 	f.createErr = &types.LimitExceededException{Message: aws.String("repositories per region")}
-	wantErr(t, "quota", p.EnsureRepository(ctx, "raw/scratch/other"), provider.ErrConflict)
+	wantErr(t, "quota", p.EnsureRepository(ctx, "raw/scratch/other"), provider.ErrLimit)
+	if log := buf.String(); !strings.Contains(log, `"level":"WARN"`) || !strings.Contains(log, "service quota") ||
+		!strings.Contains(log, `"repository":"raw/scratch/other"`) {
+		t.Errorf("the quota is not logged at warn with the repository: %s", log)
+	}
 	f.createErr = &smithy.GenericAPIError{Code: "AccessDeniedException"}
 	wantErr(t, "denied", p.EnsureRepository(ctx, "raw/scratch/other"), provider.ErrUnauthorized)
 	if p.EnsureRepository(ctx, "") == nil || p.DeleteRepository(ctx, "") == nil {
