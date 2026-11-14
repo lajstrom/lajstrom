@@ -406,6 +406,50 @@ the deprecation of its versions, a pypi package's yanks (#81). No other format h
   packuments are ADR 0013's. A pypi yank or unyank invalidates the repo's documents as a publish
   does, so the next `GET` renders the project page with it.
 
+### Attachments (#89)
+
+The signatures, SBOMs, scan reports, provenance and other attestations of a version: the
+attachments of its referrers (manifest-profile.md §6.1), one row per attachment, labelled with
+their verification (§6.3). The table is derived: the referrers in the registry are the truth,
+and reindex rebuilds it from them. Nothing else in the database records a result: there is no
+table of record of scans (#89, decision 1).
+
+| Table | Columns | Notes |
+| --- | --- | --- |
+| `attachments` | `id`, `version_id` → versions (`ON DELETE CASCADE`), `digest` text (the referrer manifest's), `tag` text (cosign's legacy tag, `''` for a referrer pushed by digest), `layer` text (the digest of the attachment's layer, `''` for a manifest without layers), `media_type` text (the layer's; for a manifest without layers its artifact type), `artifact_type` text (the manifest's `artifactType`, else its config's media type), `kind` text (`signature`, `sbom`, `scan`, `provenance`, `attestation`, `other`: §6.1), `predicate_type` text (`''` when none), `size` int (the layer's), `annotations` json (the manifest's), `tool`, `tool_version`, `database`, `input` text (the `lajstrom.attachment.*` annotations, §6.2; `''` when absent), `verification` text (`verified`, `untrusted`, `unsigned`, `invalid`, `unsupported`: §6.3), `signed_by` text null (the `name` of the trust entry whose key verified it; null unless `verified`), `reason` text (why it is not verified, `''` when it is), `trust` text (the hash of the trust that labelled it, `attest.Trust.Hash`), `created_at` ts null (the referrer manifest's `org.opencontainers.image.created`; null without one), `indexed_at` ts (when ingest or reindex last wrote or saw the row) | unique `(version_id, digest, layer)`; index `attachments_digest` on `(digest)`. Migration `0023_attachments.sql` |
+
+- **Writers.** Ingest, reindex and delete, never a frontend or the API:
+  - `PutReferrer` writes the rows of a referrer once the registry serves it back, in one
+    transaction (`ReplaceAttachments`). A referrer of a manifest that is no version of the repo
+    has none.
+  - The delete of a referrer removes its rows (`DeleteAttachments`), in the transaction of its
+    audit row. A version's rows go with it (`ON DELETE CASCADE`), and so does
+    `DeletePackage`'s and `ResetDerived`'s.
+  - Reindex marks and sweeps them (below).
+- **Best effort on a push.** A push succeeded when the registry served the referrer back
+  (http-routing.md §2). A failure to read its layers or to write its rows afterwards is logged
+  and counted (`lajstrom_attachments_index_failures_total`) and the push stays a success; the
+  next reindex of the repo writes the rows. Verification never refuses a push either.
+- **Legacy tags.** A manifest pushed under cosign's legacy tag replaces the rows of its version
+  under that tag: cosign moves the tag to a manifest that holds the earlier layers too, so the
+  rows of the manifest it named before go.
+- **Reindex.** Once the tags of an OCI repository are read, the run lists the referrers of each
+  version of its package (`Repository.Referrers`, one request per version, as one `Resolve`
+  per tag costs already) and adds the manifests under cosign's legacy tags of that version's
+  digest that it read among the tags. A row of a listed manifest whose `trust` is the current
+  trust's hash is seen without a read (`TouchAttachments`), unless the run verifies; another
+  listed manifest is read and judged again, and its rows replaced. Then the rows of the
+  version not seen since the run started go (`SweepAttachments`): rows that ingest wrote during
+  the run stay. A listing that fails is an error of the report, and the version's rows stay as
+  they are. The report counts the rows seen or written (`attachments`).
+- **The trust.** `trust` is a hash of the trust that labelled the row (its entries' names,
+  keys and predicate types), so a change of the trust is read again by the next reindex,
+  whatever the run's options. Replicas should run with the same trust: a row's label is that of
+  the replica that wrote it last.
+- **History.** Every result is a row of its own and none is merged: a scan run again with a new
+  database is one more referrer and one more row. "The latest result per tool" is a query
+  (http-routing.md §4, the newest first), never an overwrite.
+
 ## Migrations
 
 The migrations are `internal/index/migrations/{sqlite,postgres}/NNNN_<name>.sql`, embedded in
@@ -423,8 +467,9 @@ the control-plane and derived tables, `0002_tag_claims.sql` the coordination tab
 ([Upgrades](#upgrades)),
 `0017_index_cache_generations.sql` the table `index_cache_generations`, `0018_replicas.sql`
 the table `replicas`, `0019_prune_sightings.sql` the table `prune_sightings`, and
-`0020_replicas_process.sql` the column `replicas.process`, and `0021_oidc.sql` the tables
-`identities`, `identity_groups` and `oidc_logins` (#69); the others are named with their tables
+`0020_replicas_process.sql` the column `replicas.process`, `0021_oidc.sql` the tables
+`identities`, `identity_groups` and `oidc_logins` (#69), and `0023_attachments.sql` the table
+`attachments` (#89); the others are named with their tables
 above. The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the
@@ -509,8 +554,9 @@ release.
   registry with a tag; reindex adds rows for manifests it finds and, when the run prunes, removes
   rows whose manifest is gone. Every run drops the whole `index_cache` of each repo it scanned to
   the end, pruning or not.
-- `packages`, `versions`, `files`, `journal` and `journal_state` are written only by `ingest` (a
-  publish, a journal append, a delete) and `reindex`; frontends read them. `index_cache` is stored
+- `packages`, `versions`, `files`, `journal`, `journal_state` and `attachments` are written only
+  by `ingest` (a publish, a journal append, a referrer push, a delete) and `reindex`; frontends
+  read them. `index_cache` is stored
   by the render of a `GET` (a frontend, the proxy core) and invalidated by the writers above, a key
   rotation, a write of `proxy_meta` and the purge of a proxy's cache. `oci_repos` is written by
   ingest, reindex and the facade, for a push to an `oci` repo; `proxy_meta` by the proxy core and
@@ -524,7 +570,8 @@ release.
   `oci_repos` only and reported by `reindex --report`, never indexed. A manifest with `subject`
   is a referrer, not a foreign manifest: reindex counts it and reports it as an orphan when no
   version has its subject's digest; an image index under a `sha256-<hex>` tag is the tag-schema
-  referrers index (manifest-profile.md §6). Neither is stored before the attachments of #89.
+  referrers index (manifest-profile.md §6). Neither is a row of its own: a referrer of a version
+  is the rows of its attachments ([Attachments](#attachments-89)), and the index itself none.
 - Reindex never starts from `ResetDerived`: it marks and sweeps. Every row it writes or sees gets
   the run's time in `indexed_at`; a tag whose manifest has the digest of the index row, in a row
   that is not degraded, is seen without being read again (the same digest is the same bytes,
