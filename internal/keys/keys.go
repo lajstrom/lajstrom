@@ -155,7 +155,8 @@ func (s *Service) KeyFor(ctx context.Context, repo index.Repo) (*Entity, error) 
 
 // ClearSign returns data clearsigned by the repo's signing keys (Signing), as gpg --clearsign
 // writes it and apt reads an InRelease: the "Hash: SHA256" header, data as the cleartext, its
-// last line break the one before the signature, and one signature per key.
+// last line break the one before the signature, and one signature per key, in an armor block
+// with its checksum line (withChecksum).
 func (s *Service) ClearSign(ctx context.Context, repo index.Repo, data []byte) ([]byte, error) {
 	return s.sign(ctx, repo, func(signers []*Entity) ([]byte, error) {
 		privs := make([]*packet.PrivateKey, len(signers))
@@ -168,12 +169,47 @@ func (s *Service) ClearSign(ctx context.Context, repo index.Repo, data []byte) (
 			_, _ = w.Write(bytes.TrimSuffix(data, []byte("\n"))) // into a bytes.Buffer: Close reports a failure
 			err = w.Close()
 		}
+		var signed []byte
+		if err == nil {
+			signed, err = withChecksum(out.Bytes())
+		}
 		if err != nil {
 			return nil, fmt.Errorf("keys: clearsign for %s: %w", repoName(repo), err)
 		}
-		out.WriteByte('\n')
-		return out.Bytes(), nil
+		return append(signed, '\n'), nil
 	})
+}
+
+// sigBlockStart is the line that starts the signature block of a clearsigned document. The
+// cleartext before it is dash-escaped, so none of its lines starts with a dash.
+var sigBlockStart = []byte("\n-----BEGIN PGP SIGNATURE-----\n")
+
+// withChecksum returns clearsigned, as go-crypto's clearsign writes it, with its signature block
+// armored again with the CRC24 line that gpg writes and go-crypto leaves out (RFC 9580 lets
+// either be). gpgv before 2.5 (2.4.4 on Ubuntu 24.04) ends the base64 of a block only at a '=',
+// the padding or the checksum: without a checksum, packets a multiple of three bytes long run
+// on into the END line, which gpgv reads as a broken packet, and it exits 2 under good
+// signatures. apt takes the good signatures anyway; a tool that checks gpgv's status does not
+// (#1124).
+func withChecksum(clearsigned []byte) ([]byte, error) {
+	i := bytes.LastIndex(clearsigned, sigBlockStart)
+	if i < 0 {
+		return nil, errors.New("no signature block")
+	}
+	block, err := armor.Decode(bytes.NewReader(clearsigned[i+1:]))
+	if err != nil {
+		return nil, fmt.Errorf("the signature block: %w", err)
+	}
+	sigs, err := io.ReadAll(block.Body)
+	if err != nil {
+		return nil, fmt.Errorf("the signature block: %w", err)
+	}
+	var out bytes.Buffer
+	out.Write(clearsigned[:i+1])
+	w, _ := armor.Encode(&out, openpgp.SignatureType, block.Header) // into a bytes.Buffer: never an error
+	_, _ = w.Write(sigs)
+	_ = w.Close()
+	return out.Bytes(), nil
 }
 
 // DetachSign returns the armored detached signatures of data by the repo's signing keys
