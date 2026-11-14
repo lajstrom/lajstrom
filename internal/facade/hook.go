@@ -253,6 +253,8 @@ func (h *handler) readBack(ctx context.Context, t *target, rr provider.Repositor
 //	ingest.ErrConflict          409 TAG_INVALID with the conflict's message (a package path
 //	                            that another spelling holds or is being published to, #244)
 //	format.ErrUnsupported       501 UNSUPPORTED
+//	provider.ErrLimit           403 DENIED: the registry refused the manifest or a blob for a
+//	                            limit or a quota of its own, which the message names (#357)
 //	provider.ErrUnauthorized    502 (the backend refused Lajstrom's credentials)
 //	*ingest.NotVisibleError     503 UNAVAILABLE with Retry-After: the registry took the manifest
 //	                            and did not serve it within the visibility timeout, which the
@@ -287,6 +289,8 @@ func ingestError(t *target, m ocispec.Manifest, err error) error {
 		return &apiError{status: http.StatusConflict, code: codeTagInvalid, err: err}
 	case errors.Is(err, format.ErrUnsupported):
 		return &apiError{status: http.StatusNotImplemented, code: codeUnsupported, err: err}
+	case errors.Is(err, provider.ErrLimit):
+		return &apiError{status: http.StatusForbidden, code: codeDenied, err: err}
 	case errors.Is(err, provider.ErrUnauthorized):
 		return &apiError{status: http.StatusBadGateway, err: err}
 	case errors.As(err, &notVisible):

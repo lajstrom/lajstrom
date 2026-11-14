@@ -127,7 +127,9 @@ func SetRetryAfter(h http.Header, err error) {
 //	                                             (stalled), also where a plugin made it ErrInvalid
 //	ErrInvalid                                 400 Bad Request
 //	ErrUnauthenticated                         401 Unauthorized
-//	ErrForbidden                               403 Forbidden
+//	ErrForbidden, provider.ErrLimit            403 Forbidden (the caller lacks the action; the
+//	                                             registry refused the write for a limit or a quota
+//	                                             of its own, which the message names, #357)
 //	ErrMethodNotAllowed                        405 Method Not Allowed, with Allow: GET, HEAD
 //	index.ErrNotFound, provider.ErrNotFound    404 Not Found
 //	index.ErrConflict, provider.ErrConflict    409 Conflict
@@ -165,7 +167,7 @@ func clientStatus(err error) (int, bool) {
 		return http.StatusBadRequest, true
 	case errors.Is(err, ErrUnauthenticated):
 		return http.StatusUnauthorized, true
-	case errors.Is(err, ErrForbidden):
+	case errors.Is(err, ErrForbidden), errors.Is(err, provider.ErrLimit):
 		return http.StatusForbidden, true
 	case errors.Is(err, ErrMethodNotAllowed):
 		return http.StatusMethodNotAllowed, true

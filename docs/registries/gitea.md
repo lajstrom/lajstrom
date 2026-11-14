@@ -113,9 +113,11 @@ serve log of the e2e run, before #352). That is right; no override in
    off, `serve` logs a hint at start (`vendor=gitea`), and such a chunk fails with the 400,
    which the facade passes on as `400 BLOB_UPLOAD_INVALID` with a hint that names the flag
    (#449).
-5. Read a size-limit refusal as one: over `[packages] LIMIT_SIZE_CONTAINER` the closing `PUT`
-   is 403 with an empty body, which the provider makes `ErrUnauthorized` (bad credentials), as
-   it does Harbor's quota (harbor.md, item 1): the same contract question.
+5. **Done in #357:** read a size-limit refusal as one. Over `[packages] LIMIT_SIZE_CONTAINER`
+   the closing `PUT` is 403 with an empty body, which the provider made `ErrUnauthorized` (bad
+   credentials). A 403 to a request of a session the registry had opened is now
+   `provider.ErrLimit`, `403` to the client ([operations.md](../operations.md#a-registrys-limits-and-quotas));
+   `capabilities.maxBlobSize` set to the limit refuses a larger blob on `/v2` before it streams.
 6. **Done in #352:** name the vendor. `GET /v2/` challenges `Bearer
    realm="<ROOT_URL>v2/token",service="container_registry",scope="*"`, which makes it
    `vendor=gitea`, Forgejo too ([forgejo.md, item 6](forgejo.md#what-the-provider-must-do-differently)).

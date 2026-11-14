@@ -45,7 +45,8 @@ func resolve(p *Provider, name, ref string) (ocispec.Descriptor, error) {
 // TestUpstreamNotFound checks the error rule of an upstream (proxy-and-group.md §11.7): Docker
 // Hub grants a token and answers the read of a repository that does not exist 401, which is
 // provider.ErrNotFound; a refused token request with credentials stays ErrUnauthorized, and
-// without credentials any 401 or 403 is ErrNotFound.
+// without credentials any 401 or 403 is ErrNotFound. A read refused for a quota is
+// ErrNotFound too, where a backend's provider has ErrLimit (#357).
 func TestUpstreamNotFound(t *testing.T) {
 	f := newFakeRegistry(t)
 	f.authMode = "bearer"
@@ -54,6 +55,9 @@ func TestUpstreamNotFound(t *testing.T) {
 		case strings.HasPrefix(r.URL.Path, "/v2/library/missing/"):
 			w.Header().Set("WWW-Authenticate", `Bearer realm="`+f.srv.URL+`/token",error="insufficient_scope"`)
 			writeErr(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
+			return true
+		case strings.HasPrefix(r.URL.Path, "/v2/library/quota/"):
+			writeErr(w, http.StatusForbidden, "DENIED", "pull quota exceeded for this namespace")
 			return true
 		case r.URL.Path == "/token" && r.Header.Get("Authorization") == "":
 			writeErr(w, http.StatusForbidden, "DENIED", "requested access to the resource is denied")
@@ -86,6 +90,25 @@ func TestUpstreamNotFound(t *testing.T) {
 	if _, err := resolve(p, "library/missing", "1.27"); !errors.Is(err, provider.ErrUnauthorized) {
 		t.Fatalf("a backend's Resolve: %v, want ErrUnauthorized", err)
 	}
+	// A read refused for a quota, with a body (tags/list, a GET): an upstream's is ErrNotFound,
+	// a refused read like any other, and a backend's ErrLimit (#357).
+	if err := tagsOf(newUpstream(t, f, "hub", user, nil), "library/quota"); !errors.Is(err, provider.ErrNotFound) ||
+		errors.Is(err, provider.ErrLimit) {
+		t.Fatalf("an upstream's tags refused for a quota: %v, want ErrNotFound", err)
+	}
+	if err := tagsOf(p, "library/quota"); !errors.Is(err, provider.ErrLimit) {
+		t.Fatalf("a backend's tags refused for a quota: %v, want ErrLimit", err)
+	}
+}
+
+// tagsOf lists the tags of the repository name of p.
+func tagsOf(p *Provider, name string) error {
+	rr, err := p.Repository(context.Background(), name)
+	if err != nil {
+		return err
+	}
+	_, err = listTags(context.Background(), rr)
+	return err
 }
 
 // TestUpstreamToken checks a static bearer token: sent at the challenge, with no token request.

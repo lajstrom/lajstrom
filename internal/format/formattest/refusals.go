@@ -1,6 +1,7 @@
 package formattest
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,9 +27,12 @@ type Refusal struct {
 
 // Refusals are the refusals that every frontend's tests upload against: a blob over the
 // registry's size stays 413; a 429 or 503, the registry throttling Lajstrom's credential, is
-// 503 with its Retry-After, 1 when it sent none; any other refusal of what Lajstrom built and
-// sent is 502.
+// 503 with its Retry-After, 1 when it sent none; a limit or a quota of the registry
+// (provider.ErrLimit) is 403 with the message, which names it (#357); any other refusal of what
+// Lajstrom built and sent is 502.
 var Refusals = []Refusal{
+	{Name: "blob over a limit of the registry", Push: errLimited, Status: http.StatusForbidden},
+	{Name: "manifest over a quota of the registry", PushReference: errLimited, Status: http.StatusForbidden},
 	{Name: "blob over the registry's size", Push: refusal(http.StatusRequestEntityTooLarge, "SIZE_INVALID", 0), Status: http.StatusRequestEntityTooLarge},
 	{Name: "blob refused", Push: refusal(http.StatusBadRequest, "BLOB_UPLOAD_INVALID", 0), Status: http.StatusBadGateway},
 	{Name: "manifest refused", PushReference: refusal(http.StatusBadRequest, "MANIFEST_INVALID", 0), Status: http.StatusBadGateway},
@@ -49,6 +53,10 @@ var UploadRefusals = []Refusal{
 	{Name: "upload session busy, without Retry-After", Upload: refusal(http.StatusServiceUnavailable, "", 0),
 		Status: http.StatusServiceUnavailable, RetryAfter: "1"},
 }
+
+// errLimited is the registry "local" refusing a write for its quota, as the generic provider
+// reports Harbor's.
+var errLimited = fmt.Errorf("generic: push raw/x: %w (registry local, HTTP 403, DENIED: its quota)", provider.ErrLimit)
 
 // refusal is the error of the registry "local" refusing a push with status and code, after
 // asking for a wait of after.
@@ -75,7 +83,7 @@ func (r Refusal) Check(t testing.TB, rr *httptest.ResponseRecorder) {
 	if got := rr.Header().Get("Retry-After"); got != r.RetryAfter {
 		t.Errorf("%s: Retry-After %q, want %q", r.Name, got, r.RetryAfter)
 	}
-	if r.Status < http.StatusInternalServerError && !strings.Contains(rr.Body.String(), "registry local refused the request") {
+	if r.Status < http.StatusInternalServerError && !strings.Contains(rr.Body.String(), "registry local") {
 		t.Errorf("%s: body %q does not name the registry", r.Name, rr.Body)
 	}
 }

@@ -25,8 +25,17 @@ type apiError struct {
 }
 
 func (e *apiError) Error() string {
-	return "ecr: " + e.op + ": " + e.kind.Error() + " (" + e.code + ")"
+	msg := "ecr: " + e.op + ": " + e.kind.Error() + " (" + e.code
+	if errors.Is(e.kind, provider.ErrLimit) {
+		msg += ": " + limitText
+	}
+	return msg + ")"
 }
+
+// limitText names the limit of a LimitExceededException, which ECR answers for a service quota
+// of the account, not for a rate (docs/registries/ecr.md, Quotas).
+const limitText = "a service quota of the AWS account, such as its repositories a region or its images a repository; " +
+	"Service Quotas raises it"
 
 func (e *apiError) Unwrap() []error { return []error{e.kind, e.cause} }
 
@@ -39,15 +48,17 @@ var sentinels = map[string]error{
 	"UploadNotFoundException":     provider.ErrNotFound,
 
 	// ECR refuses the write because of what it holds: a tag of an immutable repository, a
-	// repository that is not empty, or a quota (repositories per region, images per
-	// repository) that what it holds has reached. A quota is no fault of the credentials, and
-	// retrying does not help: 409, with the code in the message. To be measured by #19: which
-	// code a push over the image quota gets on /v2.
+	// repository that is not empty.
 	"ImageTagAlreadyExistsException":   provider.ErrConflict,
 	"ImageAlreadyExistsException":      provider.ErrConflict,
 	"RepositoryAlreadyExistsException": provider.ErrConflict,
 	"RepositoryNotEmptyException":      provider.ErrConflict,
-	"LimitExceededException":           provider.ErrConflict,
+
+	// A service quota of the account (repositories a region, images a repository) that what
+	// ECR holds has reached: no fault of the credentials, and retrying does not help until the
+	// operator raises it (#357). To be measured by #19: what a push over the image quota gets
+	// on /v2, which the generic provider reads.
+	"LimitExceededException": provider.ErrLimit,
 
 	// ECR or IAM rejected Lajstrom's own credentials, or what they may do.
 	"AccessDeniedException":       provider.ErrUnauthorized,

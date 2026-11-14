@@ -1,6 +1,7 @@
 package generic
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry/remote/auth"
 	"oras.land/oras-go/v2/registry/remote/errcode"
@@ -183,6 +186,134 @@ func TestTranslateRefusals(t *testing.T) {
 				t.Errorf("message %q shows the backend URL or the instance prefix", got)
 			}
 		})
+	}
+}
+
+// TestTranslateLimits: a registry's refusal for a limit or a quota of its own is
+// provider.ErrLimit, not ErrUnauthorized (#357): a 403 or DENIED that speaks of a quota or of
+// exceeding a limit, on any request; a 403 to a PATCH or a closing PUT of an upload session,
+// but one that speaks of the credentials. Every other 401 and 403 stays ErrUnauthorized, and an
+// immutable tag ErrConflict.
+func TestTranslateLimits(t *testing.T) {
+	const (
+		session  = "http://harbor.internal/v2/proj/raw/r/f/blobs/uploads/5f1c?_state=abc"
+		ghcr     = "http://ghcr.internal/v2/org/raw/r/f/blobs/upload/12.5f1c" // GHCR's singular upload
+		manifest = "http://harbor.internal/v2/proj/raw/r/f/manifests/1.0"
+		uploads  = "http://harbor.internal/v2/proj/raw/r/f/blobs/uploads/"
+		// a session of a repository whose path has a manifests component, as a raw path may
+		nested = "http://harbor.internal/v2/proj/raw/r/manifests/f/blobs/uploads/5f1c"
+		// Harbor's quota answer to a blob PUT and a manifest PUT (docs/registries/harbor.md, Quotas)
+		harborQuota = "adding 768.0 KiB of storage resource, which when updated to current usage of 512.4 KiB will exceed the configured upper limit of 1.0 MiB."
+	)
+	resp := func(method, rawURL string, status int, code, msg string) *errcode.ErrorResponse {
+		u, _ := url.Parse(rawURL)
+		e := &errcode.ErrorResponse{Method: method, URL: u, StatusCode: status}
+		if code != "" {
+			e.Errors = errcode.Errors{{Code: code, Message: msg}}
+		}
+		return e
+	}
+	quota, sized := "its quota", "its size limit or its quota"
+	tests := []struct {
+		name  string
+		err   *errcode.ErrorResponse
+		want  error
+		limit string // the limit the message names
+	}{
+		{"Harbor's quota on a blob PUT", resp(http.MethodPut, session, http.StatusForbidden, errcode.ErrorCodeDenied, harborQuota), provider.ErrLimit, quota},
+		{"Harbor's quota on a manifest PUT", resp(http.MethodPut, manifest, http.StatusForbidden, errcode.ErrorCodeDenied, harborQuota), provider.ErrLimit, quota},
+		{"Quay's quota", resp(http.MethodPut, manifest, http.StatusForbidden, errcode.ErrorCodeDenied, "Quota has been exceeded on namespace"), provider.ErrLimit, quota},
+		{"a limit exceeded on a POST", resp(http.MethodPost, uploads, http.StatusForbidden, errcode.ErrorCodeDenied, "storage limit exceeded"), provider.ErrLimit, quota},
+		{"Gitea's empty 403 to the closing PUT", resp(http.MethodPut, session, http.StatusForbidden, "", ""), provider.ErrLimit, sized},
+		{"a 403 to a PATCH", resp(http.MethodPatch, session, http.StatusForbidden, "", ""), provider.ErrLimit, sized},
+		{"a 403 to GHCR's session", resp(http.MethodPut, ghcr, http.StatusForbidden, errcode.ErrorCodeDenied, "denied"), provider.ErrLimit, sized},
+		{"a 403 to a session below a manifests component", resp(http.MethodPut, nested, http.StatusForbidden, "", ""), provider.ErrLimit, sized},
+		{"a 403 to the POST", resp(http.MethodPost, uploads, http.StatusForbidden, errcode.ErrorCodeDenied, "requested access to the resource is denied"), provider.ErrUnauthorized, ""},
+		{"a 403 to a manifest PUT", resp(http.MethodPut, manifest, http.StatusForbidden, "", ""), provider.ErrUnauthorized, ""},
+		{"an expired token in a session", resp(http.MethodPatch, session, http.StatusForbidden, errcode.ErrorCodeDenied, "Your authorization token has expired. Reauthenticate and try again."), provider.ErrUnauthorized, ""},
+		{"UNAUTHORIZED in a session", resp(http.MethodPut, session, http.StatusForbidden, errcode.ErrorCodeUnauthorized, "access to the requested resource is not authorized"), provider.ErrUnauthorized, ""},
+		{"a 401 in a session", resp(http.MethodPut, session, http.StatusUnauthorized, "", ""), provider.ErrUnauthorized, ""},
+		{"a 401 that speaks of a quota", resp(http.MethodPut, manifest, http.StatusUnauthorized, errcode.ErrorCodeUnauthorized, "quota"), provider.ErrUnauthorized, ""},
+		{"an immutable tag", resp(http.MethodPut, manifest, http.StatusForbidden, errcode.ErrorCodeDenied, "the tag 1.0 is immutable"), provider.ErrConflict, ""},
+		{"a 413 stays a refusal", resp(http.MethodPut, session, http.StatusRequestEntityTooLarge, "", ""), provider.ErrRejected, ""},
+		{"a 416 that exceeds a limit stays a refusal", resp(http.MethodPatch, ghcr, http.StatusRequestedRangeNotSatisfiable, "RANGE_INVALID",
+			"the request body is too large and exceeds the maximum permissible limit of 4.00MiB"), provider.ErrRejected, ""},
+	}
+	sentinels := []error{provider.ErrLimit, provider.ErrUnauthorized, provider.ErrConflict, provider.ErrRejected}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := translateAs("harbor", noWait, "finish upload raw/r/f", tt.err)
+			for _, s := range sentinels {
+				if is := errors.Is(got, s); is != errors.Is(s, tt.want) {
+					t.Errorf("errors.Is(%v, %v) = %v", got, s, is)
+				}
+			}
+			checkCause(t, got, tt.err)
+			msg := got.Error()
+			if strings.Contains(msg, "harbor.internal") || strings.Contains(msg, "ghcr.internal") || strings.Contains(msg, "proj/") ||
+				strings.Contains(msg, "_state") || strings.Contains(msg, "768.0 KiB") {
+				t.Errorf("message %q shows the URL, the instance prefix or the registry's own words", msg)
+			}
+			if tt.limit != "" && !strings.HasSuffix(msg, ": "+tt.limit+")") || tt.limit != "" && !strings.Contains(msg, "registry harbor") {
+				t.Errorf("message %q does not name the registry and %q", msg, tt.limit)
+			}
+		})
+	}
+	t.Run("message", func(t *testing.T) {
+		got := translateAs("gitea", noWait, "finish upload raw/r/f", resp(http.MethodPut, session, http.StatusForbidden, "", "")).Error()
+		want := "generic: finish upload raw/r/f: provider: refused for a limit or a quota of the registry " +
+			"(registry gitea, an upload it had opened, HTTP 403: its size limit or its quota)"
+		if got != want {
+			t.Errorf("message = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestLimitLogged: a write that the registry refuses for a limit, through the provider, is
+// provider.ErrLimit and a warning that names the registry, for the operator: the client's 403
+// is not logged elsewhere (#357). Gitea's empty 403 to the closing PUT of a blob, Harbor's
+// quota on a manifest PUT.
+func TestLimitLogged(t *testing.T) {
+	f := newFakeRegistry(t)
+	f.hook = func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/blobs/uploads/"):
+			w.WriteHeader(http.StatusForbidden)
+			return true
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/manifests/"):
+			writeErr(w, http.StatusForbidden, errcode.ErrorCodeDenied, "adding 1.0 KiB of storage resource, which when updated to "+
+				"current usage of 1.0 MiB will exceed the configured upper limit of 1.0 MiB.")
+			return true
+		}
+		return false
+	}
+	log, buf := testLogger()
+	p := f.provider(t, log, nil)
+	ctx := context.Background()
+	rr, err := p.Repository(ctx, "raw/r/f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := []byte("over the limit")
+	desc := ocispec.Descriptor{MediaType: "application/octet-stream", Digest: digest.FromBytes(blob), Size: int64(len(blob))}
+	manifest := []byte(`{"schemaVersion":2}`)
+	mdesc := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: digest.FromBytes(manifest), Size: int64(len(manifest))}
+	for name, push := range map[string]func() error{
+		"blob":     func() error { return rr.Push(ctx, desc, bytes.NewReader(blob)) },
+		"manifest": func() error { return rr.PushReference(ctx, mdesc, bytes.NewReader(manifest), "1.0") },
+	} {
+		err := push()
+		if !errors.Is(err, provider.ErrLimit) || errors.Is(err, provider.ErrUnauthorized) {
+			t.Errorf("%s: %v, want ErrLimit", name, err)
+		} else if strings.Contains(err.Error(), "art/") || strings.Contains(err.Error(), "127.0.0.1") {
+			t.Errorf("%s: message %q shows the instance prefix or the URL", name, err)
+		}
+	}
+	if got := strings.Count(buf.String(), "registry refused a write for a limit or a quota of its own"); got != 2 {
+		t.Errorf("%d warnings, want 2; log:\n%s", got, buf)
+	}
+	if !strings.Contains(buf.String(), "level=WARN") || !strings.Contains(buf.String(), "registry=fake") {
+		t.Errorf("the warnings are not at warn or do not name the registry:\n%s", buf)
 	}
 }
 
