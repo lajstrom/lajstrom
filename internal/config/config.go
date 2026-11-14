@@ -515,6 +515,10 @@ type Keys struct {
 	// TokenAlgorithm is the algorithm of the bearer-token signing keys made from now on: ES256
 	// (ECDSA P-256) or EdDSA (Ed25519). A key made before keeps its own; a rotation changes it.
 	TokenAlgorithm string `yaml:"tokenAlgorithm"`
+	// KMS is the key URI (ParseKMSKey) of a key in AWS KMS or GCP Cloud KMS that becomes the
+	// signing key of the repos whose key is made from now on, instead of a key Lajstrom makes
+	// (ADR 0020). Empty: Lajstrom makes them. Keys made before keep theirs.
+	KMS string `yaml:"kms"`
 }
 
 // The algorithms of keys.algorithm.
