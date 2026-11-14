@@ -193,6 +193,7 @@ func newRepos(c *config.Config, st index.Store, log *slog.Logger, caps capabilit
 			return f, ok
 		},
 		Capabilities: caps,
+		Webhooks:     newOutbox(c),
 		Log:          log,
 	}
 }
