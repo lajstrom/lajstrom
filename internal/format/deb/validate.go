@@ -20,14 +20,16 @@ import (
 )
 
 // Validate checks a deb manifest (an oras push through the facade, or the output of Build)
-// beyond the profile, so that annotations, metadata layer and the package agree:
+// beyond the profile, so that annotations, metadata layer and the package agree. A manifest whose
+// lajstrom.deb.arch is ArchSource is a source package, which validateSource checks (#79); one of
+// a binary package has:
 //
 //   - lajstrom.deb.suite, .component and .arch are present and well formed, and
 //     lajstrom.variant is the three joined with "/", jammy/main/amd64; a variant that is the
 //     architecture alone, the form before #110, is refused with the variant and the tag it
 //     must be;
-//   - exactly one file layer, titled Filename(lajstrom.name, lajstrom.version,
-//     lajstrom.deb.arch);
+//   - exactly one file layer, a .deb (profile.MediaTypeDebPackage), titled
+//     Filename(lajstrom.name, lajstrom.version, lajstrom.deb.arch);
 //   - the metadata layer (at most 4 MiB) has the control object, whose Package, Version and
 //     Architecture are lajstrom.name, .version and .deb.arch, the md5sums object, the size
 //     and the sha256 of the file layer, and its title as filename;
@@ -52,10 +54,16 @@ func (Plugin) Validate(ctx context.Context, _ index.Repo, m ocispec.Manifest, fe
 		return nil, fmt.Errorf("%w: %w", format.ErrInvalid, err)
 	}
 	a := parsed.Annotations
+	if a.Attrs[profile.AnnotationDebArch] == ArchSource {
+		return validateSource(ctx, parsed, fetch)
+	}
 	if len(parsed.Files) != 1 {
 		return nil, fmt.Errorf("%w: a deb manifest has one file layer, got %d", format.ErrInvalid, len(parsed.Files))
 	}
 	f := parsed.Files[0]
+	if f.MediaType != profile.MediaTypeDebPackage {
+		return nil, fmt.Errorf("%w: the file layer of a binary package is %s, not %s", format.ErrInvalid, profile.MediaTypeDebPackage, f.MediaType)
+	}
 	if err := checkAnnotations(a, f); err != nil {
 		return nil, err
 	}

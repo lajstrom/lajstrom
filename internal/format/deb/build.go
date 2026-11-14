@@ -39,7 +39,8 @@ type metadata struct {
 	Size     int64             `json:"size"`
 }
 
-// Build makes the manifest of one uploaded .deb. in.Files holds exactly one file: one streamed
+// Build makes the manifest of one uploaded .deb, or of a source package when the first file of
+// in is a .dsc (isSourceUpload; buildSource, #79). For a .deb, in.Files holds exactly one file: one streamed
 // into the registry (no Open, ADR 0014) is described by what its inspector read and by its size
 // and checksums, and left out of Built.Blobs, for ingest commits its upload session; another is
 // read once by Parse for the control file and the checksums together. in.Params has ParamSuite
@@ -59,6 +60,9 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 	suite, component, err := distParams(in.Params)
 	if err != nil {
 		return nil, err
+	}
+	if isSourceUpload(in) {
+		return buildSource(repo, in, suite, component)
 	}
 	if len(in.Files) != 1 {
 		return nil, fmt.Errorf("%w: an apt upload is one .deb, got %d files", format.ErrInvalid, len(in.Files))
