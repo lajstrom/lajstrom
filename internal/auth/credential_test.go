@@ -16,8 +16,10 @@ import (
 // credential, every action and every scope set, on the deploy token's repo and on others:
 // docs/acceptance.md S-03 (a PAT with read does not push; without scopes it is its user), S-04
 // (a deploy token with write pushes to its repo, gets 404 elsewhere and 403 for delete) and
-// X-14 (no token ever gets delete or manage) at the unit level. Each want is the answer to
-// read, write, delete and manage: ok, 403 (ErrScope) or 404 (index.ErrNotFound).
+// X-14 (no token ever gets delete or manage) at the unit level, and a deploy token over a mask
+// (#911): every repo its mask matches, a repo made since included, and nothing else. Each want
+// is the answer to read, write, delete and manage: ok, 403 (ErrScope) or 404
+// (index.ErrNotFound).
 func TestCredentialLimit(t *testing.T) {
 	scratch := index.Repo{ID: 10, Format: "raw", Name: "scratch"}
 	byName := index.Repo{Format: "raw", Name: "scratch"} // what token.Reduce and the API know
@@ -30,6 +32,13 @@ func TestCredentialLimit(t *testing.T) {
 	pat := func(scopes ...string) Credential {
 		return Credential{Kind: CredPAT, TokenID: 1, UserID: 1, Scopes: scopes}
 	}
+	mask := func(m string, scopes ...string) Credential {
+		return Credential{Kind: CredDeploy, TokenID: 21, Mask: m, Scopes: scopes}
+	}
+	ociGhcr := index.Repo{ID: 30, Format: "oci", Name: "ghcr"}
+	ociK8s := index.Repo{ID: 31, Format: "oci", Name: "k8s"}
+	rawTalos := index.Repo{ID: 32, Format: "raw", Name: "talos"}
+	ociTalos := index.Repo{ID: 33, Format: "oci", Name: "talos"}
 	all := [4]string{"ok", "ok", "ok", "ok"}
 	none := [4]string{"404", "404", "404", "404"}
 	tests := []struct {
@@ -54,6 +63,22 @@ func TestCredentialLimit(t *testing.T) {
 		{"deploy on the name in another format", deploy("read", "write"), otherFormat, none},
 		{"deploy on a repo of the same name made since", deploy("read", "write"), recreated, none},
 		{"deploy on the system", deploy("read", "write"), index.Repo{Format: "*", Name: "*"}, none},
+		{"mask read on a repo it matches", mask("oci/*", "read"), ociGhcr, [4]string{"ok", "403", "403", "403"}},
+		{"mask read on another repo it matches", mask("oci/*", "read"), ociK8s, [4]string{"ok", "403", "403", "403"}},
+		{"mask read by name", mask("oci/*", "read"), index.Repo{Format: "oci", Name: "made-since"}, [4]string{"ok", "403", "403", "403"}},
+		{"mask write", mask("oci/*", "write"), ociGhcr, [4]string{"403", "ok", "403", "403"}},
+		{"mask read write", mask("oci/*", "read", "write"), ociK8s, [4]string{"ok", "ok", "403", "403"}},
+		{"mask without scopes", mask("oci/*"), ociGhcr, [4]string{"403", "403", "403", "403"}},
+		{"mask on another format", mask("oci/*", "read", "write"), scratch, none},
+		{"mask on a name", mask("*/talos", "read"), rawTalos, [4]string{"ok", "403", "403", "403"}},
+		{"mask on the name in another format", mask("*/talos", "read"), ociTalos, [4]string{"ok", "403", "403", "403"}},
+		{"mask on another name", mask("*/talos", "read", "write"), ociGhcr, none},
+		{"exact mask", mask("oci/k8s", "read"), ociK8s, [4]string{"ok", "403", "403", "403"}},
+		{"exact mask on another repo", mask("oci/k8s", "read"), ociGhcr, none},
+		{"everything", mask("*/*", "read", "write"), scratch, [4]string{"ok", "ok", "403", "403"}},
+		{"everything on the system", mask("*/*", "read", "write"), index.Repo{Format: "*", Name: "*"}, none},
+		{"mask on the system", mask("oci/*", "read", "write"), index.Repo{Format: "oci", Name: "*"}, none},
+		{"a malformed mask", mask("oci", "read", "write"), ociGhcr, none},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

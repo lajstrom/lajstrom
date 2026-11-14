@@ -64,7 +64,7 @@ type Token struct {
 	ID         int64
 	Kind       string   // pat or deploy
 	UserID     *int64   // owner of a PAT
-	RepoID     *int64   // repo of a deploy token
+	RepoID     *int64   // repo of a deploy token of one repo
 	Name       string   // label chosen by the creator
 	Hash       string   // hex sha256 of the secret; the secret is never stored
 	Scopes     []string // read and/or write; empty on a PAT means the user's full rights
@@ -72,6 +72,10 @@ type Token struct {
 	LastUsedAt *time.Time
 	CreatedAt  time.Time
 	RevokedAt  *time.Time
+	// RepoMask is the mask of a deploy token over a mask (docs/spec/rbac.md §1): <format>/<repo>,
+	// each segment a name or "*", as a binding's (oci/*); "" for every other token. A deploy
+	// token has RepoID or RepoMask, never both.
+	RepoMask string
 }
 
 // Identity is a row of identities (control plane): an OIDC identity, the iss and sub of an ID
