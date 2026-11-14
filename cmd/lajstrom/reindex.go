@@ -84,7 +84,7 @@ func newReindexCmd(a *app) *cobra.Command {
 				return err
 			}
 			pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL})
-			w := reindex.New(reindex.Options{Index: st, Providers: providers, Inspector: pipe, Repairer: pipe, Log: a.log,
+			w := reindex.New(reindex.Options{Index: st, Providers: providers, Inspector: pipe, Repairer: pipe, Attacher: pipe, Log: a.log,
 				Concurrency: concurrency, ClaimTTL: c.Ingest.ClaimTTL, GraceAge: c.Reconcile.GraceAge})
 			run, err := w.Start(ctx, req)
 			var conflict *index.ReindexConflictError
