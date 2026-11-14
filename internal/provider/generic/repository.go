@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry/remote"
@@ -26,6 +27,9 @@ type repository struct {
 	*remote.Repository
 	p    *Provider
 	name string // the Lajstrom name, without the instance prefix, for error messages
+	// api asks the referrers API of the repository when referrers.alwaysTag has the embedded
+	// repository write and read the tag schema (Provider.Repository); nil otherwise.
+	api *remote.Repository
 }
 
 // op names an operation on the repository for an error message: "fetch raw/scratch/x@<ref>".
@@ -167,9 +171,48 @@ func (r *repository) Tags(ctx context.Context, last string, fn func(tags []strin
 }
 
 // Referrers calls fn with the manifests whose subject is desc, of artifactType when it is not
-// empty, from the referrers API or the sha256-<digest> tag schema.
+// empty, from the referrers API or the sha256-<digest> tag schema, or from both with
+// referrers.alwaysTag (bothReferrers).
 func (r *repository) Referrers(ctx context.Context, desc ocispec.Descriptor, artifactType string, fn func(referrers []ocispec.Descriptor) error) error {
-	return r.p.translate(r.op("referrers", desc.Digest.String()), r.Repository.Referrers(ctx, desc, artifactType, fn))
+	op := r.op("referrers", desc.Digest.String())
+	if r.api == nil {
+		return r.p.translate(op, r.Repository.Referrers(ctx, desc, artifactType, fn))
+	}
+	return r.bothReferrers(ctx, op, desc, artifactType, fn)
+}
+
+// bothReferrers calls fn once with the referrers of desc from the referrers API and from the
+// subject's sha256-<digest> index, the API's first, each digest once: one that the registry's
+// garbage collector dropped from the API is still listed by the index (referrers.alwaysTag, #326).
+// A source that does not know the repository adds none; when neither does, it is that error. A
+// registry that turns out to have no API answers the API's listing from the index too, which
+// lists nothing twice.
+func (r *repository) bothReferrers(ctx context.Context, op string, desc ocispec.Descriptor, artifactType string, fn func(referrers []ocispec.Descriptor) error) error {
+	var all []ocispec.Descriptor
+	seen := map[digest.Digest]bool{}
+	add := func(page []ocispec.Descriptor) error {
+		for _, d := range page {
+			if !seen[d.Digest] {
+				seen[d.Digest] = true
+				all = append(all, d)
+			}
+		}
+		return nil
+	}
+	errAPI := r.p.translate(op, r.api.Referrers(ctx, desc, artifactType, add))
+	errIndex := r.p.translate(op, r.Repository.Referrers(ctx, desc, artifactType, add))
+	for _, err := range []error{errAPI, errIndex} {
+		if err != nil && !errors.Is(err, provider.ErrNotFound) {
+			return err
+		}
+	}
+	if errAPI != nil && errIndex != nil {
+		return errAPI
+	}
+	if len(all) == 0 {
+		return nil
+	}
+	return fn(all)
 }
 
 // manifestMediaTypes are the media types oras-go sends to the manifests endpoint by default.

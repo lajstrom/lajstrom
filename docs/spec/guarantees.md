@@ -1124,7 +1124,8 @@ longer than `reconcile.graceAge` is outside them
   `TestRebuildTagSchema`, `TestReferrerIndexDeleteRefused`, `TestReferrersLockLost`,
   `TestPutReferrerLockLost`, `TestDeleteReferrerIndexNotPushed`, `TestDeleteReferrerRepairsIndex`,
   `TestDeleteReferrerGone`, `TestIntegrationDeleteReferrerIndexRepair`, `TestRepairReferrers` (of
-  ingest and of reindex), `TestIntegrationRepairReferrers`; `cosign.sh` (on Zot and on
+  ingest and of reindex), `TestIntegrationRepairReferrers`, `TestReferrersAlwaysTag`,
+  `TestReferrersAlwaysTagMerged`, `TestIntegrationReferrersAlwaysTag`; `cosign.sh` (on Zot and on
   distribution), the step of #28 in `ha.sh`.
 - **When violated.** A referrer the registry collected is missing from the list; nothing reports
   it. A lock whose transaction ended while its push ran (a pooler's timeout, a terminated

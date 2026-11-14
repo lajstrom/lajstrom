@@ -19,7 +19,7 @@ import (
 // manifests whose subject is the manifest <digest>, as an image index of their descriptors,
 // from the provider, which asks the backend's referrers API or reads the sha256-<hex> tag
 // schema where the backend has none (Capabilities.Referrers, docs/spec/manifest-profile.md
-// §6). ?artifactType= keeps the referrers of that type, and the answer says so with
+// §6), or both with referrers.alwaysTag. ?artifactType= keeps the referrers of that type, and the answer says so with
 // OCI-Filters-Applied: the provider filters what a backend sent unfiltered. A subject without
 // referrers, in a repository the backend does not have too, is an empty index and never a 404,
 // which tells a client that the registry has no referrers API: it would then write the tag

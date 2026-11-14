@@ -63,3 +63,22 @@ func TestCheckNameLength(t *testing.T) {
 		}
 	}
 }
+
+// TestTagSchema: the provider keeps the tag schema without the referrers API, and with it when
+// referrers.alwaysTag is on (#326).
+func TestTagSchema(t *testing.T) {
+	tests := []struct {
+		referrers, alwaysTag, want bool
+	}{
+		{false, false, true},
+		{false, true, true},
+		{true, false, false},
+		{true, true, true},
+	}
+	for _, tt := range tests {
+		c := Capabilities{Referrers: tt.referrers, ReferrersAlwaysTag: tt.alwaysTag}
+		if got := c.TagSchema(); got != tt.want {
+			t.Errorf("TagSchema of Referrers %t, ReferrersAlwaysTag %t = %t, want %t", tt.referrers, tt.alwaysTag, got, tt.want)
+		}
+	}
+}

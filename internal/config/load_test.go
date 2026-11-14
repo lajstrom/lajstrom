@@ -436,6 +436,7 @@ registries:
     capabilities: {referrers: false, catalog: false, deleteManifest: true, maxBlobSize: 1073741824, consistency: eventual, consistencyBound: 4s, maxNameDepth: 4}
     tokenRealmHosts: [auth.registry.example, 10.0.0.5]
     uploads: {spoolUnknownLength: true, chunkSize: 4194304}
+    referrers: {alwaysTag: true}
 `
 	c, err := Load(writeConfig(t, file), nil)
 	if err != nil {
@@ -450,6 +451,7 @@ registries:
 				Consistency: ConsistencyEventual, ConsistencyBound: 4 * time.Second, MaxNameDepth: 4},
 			TokenRealmHosts: []string{"auth.registry.example", "10.0.0.5"},
 			Uploads:         RegistryUploads{SpoolUnknownLength: true, ChunkSize: 4 << 20},
+			Referrers:       RegistryReferrers{AlwaysTag: true},
 		},
 	}
 	if !reflect.DeepEqual(c.Registries, want) {

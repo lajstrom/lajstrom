@@ -23,26 +23,29 @@ import (
 // signatures pushed through ingest, the fourth then deleted in the registry. The index is pushed
 // with the first three, in the order of their pushes after those it listed, the report lists the
 // repair, and its audit row is referrers.repair, ok. The next run pushes nothing. A complete
-// index, a run without verify and a registry with the API push nothing at all.
+// index, a run without verify and a registry with the API push nothing at all; a registry with
+// the API and referrers.alwaysTag is repaired as one without (#326).
 func TestRepairReferrers(t *testing.T) {
 	reconcile := reindex.Request{Prune: true, Source: reindex.SourceReconcile, Principal: "anonymous"}
 	verify := reindex.Request{Verify: true, Source: "cli", Principal: "user:admin"}
 	for _, tt := range []struct {
-		name   string
-		api    bool
-		req    reindex.Request
-		listed int // how many of the signatures the index lists before the run; -1: there is none
-		added  int // how many of the signatures the run adds after those
+		name      string
+		api       bool
+		alwaysTag bool
+		req       reindex.Request
+		listed    int // how many of the signatures the index lists before the run; -1: there is none
+		added     int // how many of the signatures the run adds after those
 	}{
-		{"missing, reconcile", false, reconcile, -1, 3},
-		{"incomplete, verify", false, verify, 1, 2},
-		{"complete, verify", false, verify, 3, 0},
-		{"missing, a run without verify", false, reindex.Request{Source: "api", Principal: "user:admin"}, -1, 0},
-		{"missing, with the referrers API", true, reconcile, -1, 0},
+		{"missing, reconcile", false, false, reconcile, -1, 3},
+		{"incomplete, verify", false, false, verify, 1, 2},
+		{"complete, verify", false, false, verify, 3, 0},
+		{"missing, a run without verify", false, false, reindex.Request{Source: "api", Principal: "user:admin"}, -1, 0},
+		{"missing, with the referrers API", true, false, reconcile, -1, 0},
+		{"missing, with the referrers API and alwaysTag", true, true, reconcile, -1, 3},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newEnv(t)
-			e.prov.noReferrersAPI = !tt.api
+			e.prov.noReferrersAPI, e.prov.alwaysTag = !tt.api, tt.alwaysTag
 			pub := e.publish(t, "notes", "the subject")
 			refs := e.signatures(t, pub, 4)
 			e.deleteManifest(t, pub.RepoPath, refs[3])

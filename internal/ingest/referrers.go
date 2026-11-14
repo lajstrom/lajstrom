@@ -46,8 +46,8 @@ type Referrer struct {
 // the tag lock that the delete of the subject holds, with the referrers API or without, and the
 // subject is resolved again under it: a subject deleted since the checks is ErrInvalid, and
 // nothing is pushed (#806). On an oci repo the push runs under that lock when the backend has no
-// referrers API (Capabilities.Referrers) and the manifest has a subject, for the push also
-// rewrites the sha256-<hex> index of the subject, and a push by tag with the API too, the tag
+// referrers API or the provider writes the tag schema beside it (Capabilities.TagSchema) and the
+// manifest has a subject, for the push also rewrites the sha256-<hex> index of the subject, and a push by tag with the API too, the tag
 // lock that a delete holds. Its audit row, a push by principal whose subject
 // is the subject's digest, with the client address, and the referrer's kind and artifact type
 // and the request id in the details, is written pending before the push and completed after
@@ -129,7 +129,8 @@ func parseReferrer(r Referrer) (ocispec.Manifest, error) {
 // since checkReferrer is either done, and the push is ErrInvalid, or waits for the push and
 // deletes the referrer with its subject (#806). On an oci repo, which takes a referrer whose
 // subject does not exist, the push runs under that lock when the manifest has a subject and the
-// backend no referrers API, for the provider's push also rewrites the sha256-<hex> index of the
+// provider keeps the tag schema (Capabilities.TagSchema: no referrers API, or
+// referrers.alwaysTag), for the provider's push also rewrites the sha256-<hex> index of the
 // subject; a push by tag holds the tag lock of the manifest with the API too, which a delete
 // holds while it counts the tags: the lock of its subject, else of its own digest
 // (docs/spec/index-schema.md, Coordination). The whole push, the repository included, runs
@@ -161,7 +162,7 @@ func (p *Pipeline) pushReferrer(ctx context.Context, prov provider.Provider, nam
 		if err != nil {
 			return fmt.Errorf("ingest: capabilities of the registry of %s: %w", name, err)
 		}
-		lock = !caps.Referrers
+		lock = caps.TagSchema()
 	}
 	try := push
 	if lock {
