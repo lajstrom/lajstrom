@@ -201,7 +201,7 @@ func TestWriteReportSplit(t *testing.T) {
 	if fields := strings.Fields(lines[1]); !strings.Contains(lines[0], "DRIFT  SPLIT  NOREPO  ERRORS") || len(fields) != 17 || fields[14] != "1" {
 		t.Errorf("the table: %q", lines[:2])
 	}
-	want := "raw/assets: split netlify/blobs indexed at netlify/blob_73 [3fc4ccfe745870e2], not at netlify/blobs " +
+	want := "raw/assets: split netlify/blobs at netlify/blob_73 [3fc4ccfe745870e2] and at netlify/blobs " +
 		"[7692c3ad3540bb80 9a0364b9e99bb480]"
 	if lines[2] != want {
 		t.Errorf("the list: %q, want %q", lines[2], want)
