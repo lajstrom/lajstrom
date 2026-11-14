@@ -300,16 +300,22 @@ with both. `npm.sh` wants the maintainer's `npm unpublish` of a version and of a
 with `E501`, every version and dist-tag left, and the package there after the reindex. The refusals run against
 Zot too, with `LAJSTROM_E2E_CAPABILITIES='{deleteManifest: false}'`. When the server logged no
 capabilities (its probe failed at the start), the variables stay as your shell set them; a
-scenario run by hand takes them from there, and an unset one as Zot's. Against the Nexus of
-`deploy/compose/nexus` ([registries/nexus.md](registries/nexus.md)), the password in a file:
+scenario run by hand takes them from there, and an unset one as Zot's. Two scenarios needed no
+switch, only fewer assumptions: `docker.sh` leaves the `sha256-<hex>` tags of the referrers tag
+schema out of the reader's tag list, and `ociproxy.sh` reads the backend with the registry's
+credentials where run.sh has them. Its upstream is read anonymously, as the server reads it, so
+against a registry that needs credentials `LAJSTROM_E2E_OCI_UPSTREAM` names another one. Against
+the Nexus of `deploy/compose/nexus` ([registries/nexus.md](registries/nexus.md)), the password in a
+file:
 
 ```sh
 deploy/compose/nexus/nexus.sh up
 printf lajstrom > nexus.pw
-LAJSTROM_E2E_REGISTRY=localhost:5008 LAJSTROM_E2E_REGISTRY_USER=lajstrom LAJSTROM_E2E_REGISTRY_PASSWORD_FILE=nexus.pw \
-  test/e2e/run.sh raw oras cosign auth rbac retention first-admin   # the docker format: deleteManifest=false
-LAJSTROM_E2E_REGISTRY=localhost:5015 LAJSTROM_E2E_REGISTRY_USER=lajstrom LAJSTROM_E2E_REGISTRY_PASSWORD_FILE=nexus.pw \
-  test/e2e/run.sh raw oras cosign auth rbac retention first-admin   # the oci format: blobsReadWhole=true
+export LAJSTROM_E2E_REGISTRY_USER=lajstrom LAJSTROM_E2E_REGISTRY_PASSWORD_FILE=nexus.pw
+export LAJSTROM_E2E_OCI_UPSTREAM=localhost:5000   # ociproxy.sh's upstream: the Zot of make dev-up
+scenarios='raw oras auth rbac oci-token cosign tokens apt rpm npm docker retention first-admin ociproxy'
+LAJSTROM_E2E_REGISTRY=localhost:5008 test/e2e/run.sh $scenarios   # the docker format: deleteManifest=false
+LAJSTROM_E2E_REGISTRY=localhost:5015 test/e2e/run.sh $scenarios   # the oci format: blobsReadWhole=true
 deploy/compose/nexus/nexus.sh down
 ```
 
