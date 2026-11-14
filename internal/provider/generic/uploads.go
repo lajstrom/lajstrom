@@ -230,7 +230,10 @@ func (r *repository) FinishBlobUpload(ctx context.Context, u provider.Upload, d 
 
 // BlobUploadStatus asks for the session's offset: GET <location>, 204 with Range and Location.
 // A Range one byte ahead of the bytes the session holds, as Quay's and Forgejo's, is read one
-// byte back once the provider has measured that the registry answers so (statusOffset).
+// byte back once the provider has measured that the registry answers so (statusOffset). On a
+// registry whose 404 to the status of a session without bytes means nothing (JFrog:
+// quirks.emptyStatus404), that 404 is the session as it was, at offset 0: a session the
+// registry no longer knows meets its 404 at the next PATCH instead.
 func (r *repository) BlobUploadStatus(ctx context.Context, u provider.Upload) (provider.Upload, error) {
 	op := r.op("upload status", u.ID)
 	loc, err := r.p.location(u.Location)
@@ -239,6 +242,10 @@ func (r *repository) BlobUploadStatus(ctx context.Context, u provider.Upload) (p
 	}
 	resp, err := r.send(ctx, op, http.MethodGet, loc.String(), nil, 0, nil, http.StatusNoContent, http.StatusOK)
 	if err != nil {
+		if u.Offset == 0 && r.emptyStatus404(ctx, err) {
+			r.p.log.DebugContext(ctx, "the 404 to the status of an upload session without bytes taken as offset 0", "upload", u.ID)
+			return u, nil
+		}
 		return u, err
 	}
 	_ = resp.Body.Close()
@@ -248,6 +255,19 @@ func (r *repository) BlobUploadStatus(ctx context.Context, u provider.Upload) (p
 	}
 	next.Offset = r.statusOffset(ctx, u, resp.Header.Get("Range"), next.Offset)
 	return next, nil
+}
+
+// emptyStatus404 reports whether err, the answer to the status of a session that holds no bytes,
+// is a 404 of a registry whose vendor answers so for a session that works (quirks.emptyStatus404).
+// The quirks come from the probe, which a replica that has not probed yet runs first
+// (readQuirks).
+func (r *repository) emptyStatus404(ctx context.Context, err error) bool {
+	var resp *errcode.ErrorResponse
+	if !errors.As(err, &resp) || resp.StatusCode != http.StatusNotFound {
+		return false
+	}
+	q, qerr := r.p.readQuirks(ctx)
+	return qerr == nil && q.emptyStatus404
 }
 
 // CancelBlobUpload ends the session: DELETE <location>, 204.

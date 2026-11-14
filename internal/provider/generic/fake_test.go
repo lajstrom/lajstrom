@@ -45,6 +45,7 @@ type fakeRegistry struct {
 	chunkLimit     int    // as GHCR: a PATCH with Content-Range of more than chunkLimit bytes is 416, and one without Content-Range starts the session over; 0 takes any
 	statusAhead    string // the Range of a session's GET, of the bytes it holds, one byte ahead: "0-%d" as Forgejo, "bytes=0-%d" as Quay; "": the spec's
 	ecrSessions    bool   // as ECR: a new session's Range is bytes=0-10485760, its part size, and a PATCH is answered 201
+	emptyStatus404 bool   // as JFrog: the GET of a session that holds no bytes is 404 BLOB_UNKNOWN; the session works
 	authMode       string // "", "basic" or "bearer"
 	challengeScope string // the scope parameter of the bearer challenge; Gitea sends "*" whatever the request
 	user, pass     string // the credentials auth accepts
@@ -392,13 +393,23 @@ func (f *fakeRegistry) serveUpload(w http.ResponseWriter, r *http.Request, repo,
 		w.Header().Set("Docker-Content-Digest", want.String())
 		w.WriteHeader(http.StatusCreated)
 	case http.MethodGet:
-		f.answerSession(w, id, up, http.StatusNoContent)
+		f.serveStatus(w, id, up)
 	case http.MethodDelete:
 		delete(f.uploads, id)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+// serveStatus answers the GET of the session id: 204 with its Range, or, with emptyStatus404 and
+// no bytes in it, JFrog's 404. The caller holds f.mu.
+func (f *fakeRegistry) serveStatus(w http.ResponseWriter, id string, up *fakeUpload) {
+	if f.emptyStatus404 && len(up.data) == 0 {
+		writeErr(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob unknown to registry")
+		return
+	}
+	f.answerSession(w, id, up, http.StatusNoContent)
 }
 
 // startUpload answers POST …/blobs/uploads/: a mount when ?mount= names a blob that ?from has,

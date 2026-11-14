@@ -259,7 +259,11 @@ every `ListRepositories` failed. On 2026-11-13 it says `vendor=jfrog`, the same 
 10. **The status of a session before its first chunk ends it through Lajstrom.** JCR answers it
     `404 BLOB_UNKNOWN` and the session works; the facade takes the 404 for a session the
     registry no longer knows, as http-routing.md says, and ends its own
-    ([Again after #813](#again-after-813), item 4).
+    ([Again after #813](#again-after-813), item 4). **Done in #1045:** on `vendor=jfrog` a 404 to
+    the status of a session that holds no bytes is the session at offset 0 (the quirk
+    `emptyStatus404`, set by the probe), so the facade answers `204` with `Range: 0-0` and the
+    session goes on; a session JCR no longer knows meets its 404 at the next `PATCH` instead. Not
+    measured on JCR again.
 11. Nothing to do yet: a manifest naming a blob JCR does not have is `400 MANIFEST_INVALID`, so
     the retries of a manifest on `MANIFEST_BLOB_UNKNOWN` (#842) and the naming of the missing
     blob (#850) do not apply here; JCR showed no blob lag that the retries would cover
