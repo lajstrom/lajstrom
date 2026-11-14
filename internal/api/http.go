@@ -76,6 +76,8 @@ const maxBody = 64 << 10
 //	GET    /api/v1/repos/{format}/{repo}/packages[?prefix=&limit=&cursor=]  the repo's packages by name, a page at a time
 //	GET    /api/v1/repos/{format}/{repo}/packages/{name}/versions[?limit=&cursor=]  the package's versions, newest first
 //	GET    /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}[?variant=]  one version, its variants and their files
+//	GET    /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/attachments[?variant=&kind=&predicateType=&verified=&limit=]
+//	                                                   its signatures, SBOMs, scans and attestations with their labels
 //	DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}[?variant=&force=]  delete a version, its referrers first;
 //	                                                   If-Match and If-Unmodified-Since make it conditional
 //	PUT    /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/yank  yank a pypi version, {"reason"} optional
@@ -159,6 +161,7 @@ func (h *handler) routes() []route {
 		{"DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}", h.deleteVersion},
 		{"PUT /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/yank", h.yankVersion},
 		{"DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/yank", h.unyankVersion},
+		{"GET /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/attachments", h.listAttachments},
 		{"POST /api/v1/repos/{format}/{repo}/versions:delete", h.deleteVersions},
 		{"DELETE /api/v1/repos/{format}/{repo}/upstream-cache", h.purgeUpstreamCache},
 		{"POST /api/v1/repos/{format}/{repo}/prefetch", h.prefetch},
