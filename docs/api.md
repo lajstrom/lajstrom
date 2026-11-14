@@ -452,10 +452,82 @@ curl -s "$LAJSTROM/api/v1/repos/pypi/internal/packages/requests/versions/2.32.3"
   alone. `indexedAt` is when ingest or reindex last wrote or saw the row. A file's `attrs` are
   its layer's annotations, and the files are in the manifest's order.
 - **Not in it:** the manifest itself and its referrers (signatures, SBOMs, attestations), which
-  are live reads of the registry (#951). Both are on `/v2` under `ociRepository`:
+  are live reads of the registry (#951); the index's labelled list of the referrers is
+  [the attachments of the version](#attachments-of-a-version-get-apiv1reposformatnamepackagespackageversionsversionattachments)
+  (#89). Both are on `/v2` under `ociRepository`:
   `/v2/<ociRepository>/manifests/<digest>` and `/v2/<ociRepository>/referrers/<digest>`. A
   file's download URL is not in it either: it is the format's own, as in the
   [quick starts](quickstart/).
+
+### Attachments of a version: `GET /api/v1/repos/<format>/<name>/packages/<package>/versions/<version>/attachments`
+
+The signatures, SBOMs, scan reports, provenance and other attestations of a version (#89): the
+referrers of its variants' manifests, one entry per attachment, each labelled with whether a key
+the operator trusts signed it ([manifest-profile.md](spec/manifest-profile.md) §6). Lajstrom
+runs no scanner and signs nothing: a producer pushes them to `/v2` with `cosign attest`,
+`cosign sign` or `oras attach`, on a version of any format, and Lajstrom stores, lists and
+labels them ([the guide](guides/sbom-and-scans.md)). It needs `read`; `404` as for the version.
+
+| Query | Keeps |
+| --- | --- |
+| `variant` | the attachments of this variant (`""` for a format without variants) |
+| `kind` | `signature`, `sbom`, `scan`, `provenance`, `attestation` or `other`; another value is `400` |
+| `predicateType` | this predicate type, as written: `https://cyclonedx.org/bom` |
+| `verified` | `true` the verified attachments, `false` the others; another value is `400` |
+| `limit` | at most this many, the newest: 1 to 1000, 1000 by default; `truncated` says that there are more |
+
+```sh
+curl -s "$LAJSTROM/api/v1/repos/pypi/internal/packages/requests/versions/2.32.3/attachments?kind=sbom"
+```
+
+```json
+{
+  "attachments": [
+    {
+      "variant": "py3-none-any",
+      "subject": "sha256:5c11…",
+      "digest": "sha256:d06d…",
+      "layer": "sha256:bbbe…",
+      "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+      "artifactType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+      "kind": "sbom",
+      "predicateType": "https://cyclonedx.org/bom",
+      "size": 859,
+      "annotations": {"dev.sigstore.bundle.content": "dsse-envelope", "dev.sigstore.bundle.predicateType": "https://cyclonedx.org/bom",
+                      "org.opencontainers.image.created": "2026-11-14T12:20:33Z"},
+      "verification": "verified",
+      "signedBy": "scanner",
+      "createdAt": "2026-11-14T12:20:33Z",
+      "indexedAt": "2026-11-14T12:20:34Z"
+    }
+  ],
+  "truncated": false
+}
+```
+
+- **The order and the history.** Newest first by `createdAt` (the referrer's
+  `org.opencontainers.image.created`, which cosign v3 sets), those without one after the
+  others, then by `digest` and `layer`. Every result is kept: a scan run again with a new
+  database is one more entry, and "the latest scan per tool" is the first entry of that tool.
+- **`subject`** is the variant's manifest digest, the `<digest>` of
+  `/v2/<ociRepository>/referrers/<digest>`; **`digest`** is the referrer's and **`layer`** the
+  attachment's layer in it. cosign's legacy manifests (`tag` `sha256-<hex>.sig`, `.att`) hold
+  one attachment per layer.
+- **`verification`**: `verified` when a key of `attachments.trust`, trusted for the predicate
+  type, signed it, and what it signed names the variant's manifest (`signedBy` is the trust
+  entry's name); `untrusted` when no trusted key verifies a signature; `unsigned` without one
+  (a raw SBOM); `invalid` when it does not parse or a trusted key signed something about another
+  manifest; `unsupported` for keyless signatures (a Fulcio certificate), notation, a message
+  signature, or a layer above `attachments.maxBlobSize`. `reason` says why it is not verified.
+  No transparency log is consulted.
+- **`tool`, `toolVersion`, `database`, `input`** are the producer's
+  `lajstrom.attachment.*` annotations (§6.2), when it set them: `oras attach --annotation` does,
+  `cosign attest` cannot.
+- **Everything comes from the index**, so reindex rebuilds it. The label is decided when the
+  attachment is indexed, at its push or by a reindex; after a change of `attachments.trust`, the
+  next reindex of the repo labels every attachment again. A referrer pushed straight to the
+  registry, past Lajstrom, is listed after the next reindex. The referrers themselves stay on
+  `/v2/<ociRepository>/referrers/<digest>`.
 
 ### Delete a version: `DELETE /api/v1/repos/<format>/<name>/packages/<package>/versions/<version>`
 
