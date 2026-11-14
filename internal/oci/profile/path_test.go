@@ -157,6 +157,27 @@ func TestEarlierPackagePaths(t *testing.T) {
 	}
 }
 
+// TestPackagePathForms: from any form of a package path, every form, the newest first; a path
+// that no writer produces has itself only.
+func TestPackagePathForms(t *testing.T) {
+	for _, path := range []string{"k8s/manifests/app.yaml", "x/referrers/y", "x/tags/list", "x/tags/listing.txt",
+		"netlify/blobs", "site/.gitignore", "k8s/manifests/.gitignore", "a--b/tags/list.sync", "Docs/Readme.MD",
+		"tags/tags/listing.txt", "cache/my.sync", "x/index.json", "libstdc++6", "com.example/lib-core"} {
+		p := escapePath(path)
+		want := append([]string{p}, EarlierPackagePaths(p)...)
+		for _, f := range want {
+			if got := PackagePathForms(f); !slices.Equal(got, want) {
+				t.Errorf("PackagePathForms(%q), a form of %s, = %q, want %q", f, path, got, want)
+			}
+		}
+	}
+	for _, p := range []string{"x/tag_73/other", "manifest_73/x/manifests", "x/tag_73", "x/manifest_74", "a/b_2d/c"} {
+		if got := PackagePathForms(p); !slices.Equal(got, []string{p}) {
+			t.Errorf("PackagePathForms(%q), no writer's, = %q, want itself", p, got)
+		}
+	}
+}
+
 // TestUnescapePackagePath: a name decodes the same from its package path now and from each
 // earlier form; a hashed component, and a path that is no form of any name, does not decode.
 func TestUnescapePackagePath(t *testing.T) {
