@@ -66,6 +66,23 @@ var drainSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
 // of proxy repos over the index, the pipeline and the upstreams is Deps.Proxy; a proxy repo whose
 // upstream is not configured is logged at error, and its expired negative entries are swept
 // every minute (ADR 0013).
+// serveMigrations applies the pending migrations of the index at the start of serve and logs
+// what it did. On SQLite this process is the only replica, so no binary of the schema before the
+// run is serving on it: a breaking migration is safe to apply.
+func serveMigrations(ctx context.Context, st store, db config.Database, log *slog.Logger) error {
+	mig, err := st.ApplyMigrations(ctx, index.MigrateOptions{Breaking: db.Driver == index.DialectSQLite})
+	if err != nil {
+		return migrationHint(inFile(db, err))
+	}
+	log.Info("index migrations applied under the migration lock",
+		"database.driver", db.Driver, "applied", mig.Applied, "schema", mig.Version)
+	if mig.Version > mig.Known {
+		log.Warn("the index schema is newer than this binary, and compatible with it",
+			"schema", mig.Version, "known", mig.Known)
+	}
+	return nil
+}
+
 func newServeCmd(a *app) *cobra.Command {
 	return &cobra.Command{
 		Use:         "serve",
@@ -99,17 +116,8 @@ func newServeCmd(a *app) *cobra.Command {
 				return err
 			}
 			defer func() { err = errors.Join(err, st.Close()) }()
-			// On SQLite this process is the only replica, so no binary of the schema before the run
-			// is serving on it: a breaking migration is safe to apply.
-			mig, err := st.ApplyMigrations(ctx, index.MigrateOptions{Breaking: c.Database.Driver == index.DialectSQLite})
-			if err != nil {
-				return migrationHint(inFile(c.Database, err))
-			}
-			a.log.Info("index migrations applied under the migration lock",
-				"database.driver", c.Database.Driver, "applied", mig.Applied, "schema", mig.Version)
-			if mig.Version > mig.Known {
-				a.log.Warn("the index schema is newer than this binary, and compatible with it",
-					"schema", mig.Version, "known", mig.Known)
+			if err := serveMigrations(ctx, st, c.Database, a.log); err != nil {
+				return err
 			}
 			rep, err := startReplica(ctx, st, a.log, time.Now)
 			if err != nil {
@@ -147,8 +155,12 @@ func newServeCmd(a *app) *cobra.Command {
 			health := newRegistryHealth(providers, a.log)
 			health.Ping(ctx)
 			go health.Run(ctx)
+			trust, err := attachmentTrust(c.Attachments, a.log)
+			if err != nil {
+				return err
+			}
 			pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL,
-				VisibilityTimeout: c.Ingest.VisibilityTimeout})
+				VisibilityTimeout: c.Ingest.VisibilityTimeout, Trust: trust, MaxAttachmentSize: c.Attachments.MaxBlobSize})
 			runs := &backgroundReindex{ctx: ctx, log: a.log, w: reindex.New(reindex.Options{Index: st, Providers: providers,
 				Inspector: pipe, Repairer: pipe, Attacher: pipe, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL, GraceAge: c.Reconcile.GraceAge})}
 			// Before the index closes: a run the shutdown cancels finishes as failed. stop ends the
