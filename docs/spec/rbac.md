@@ -36,9 +36,12 @@ A **deploy token over a mask** (#911) reaches every repo its mask matches, in th
 the matching of a binding's mask (§3): a fleet of nodes sends one credential per registry host,
 and reads several repos of it. The mask names no repo: it matches the repos created after the
 token too, from their creation on, and a repo deleted does not take the token with it. Only the
-admin role creates one (§3, the routes), and on the command line the operator (§6). Everything
-else is a deploy token's: its scopes, its optional expiry, how it authenticates, its
-revocation, its audit, its hash, its secret shown once.
+admin role creates one, with its password and with no token (§3, the routes; decided on #911,
+2026-11-14), and on the command line the operator: `lajstrom admin token create --mask` writes
+the database as every `lajstrom admin` command of §6 does, with no HTTP and no password, for
+whoever holds the database's credentials is the operator. Everything else is a deploy token's:
+its scopes, its optional expiry, how it authenticates, its revocation, its audit, its hash, its
+secret shown once.
 
 ### Users: the uid and the name
 
@@ -172,10 +175,14 @@ this spec, so that a review need not find it in the code:
 - **The deploy tokens over a mask** (`/api/v1/deploy-tokens`, http-routing.md §4) are `system`
   (§2). The `admin` role is checked before the body is read, so the `400` of a mask that breaks
   the grammar and the `409` of a name that is taken reach an admin only; every other principal
-  gets `403` (`anonymous` `401`), a `maintainer` on `*/*` included. The credential that creates
-  one is that of a repo's deploy token: a password, or a personal access token without scopes;
-  a personal access token with scopes and a deploy token get `403`. A mask names no repo, so the
-  routes tell nothing of which repos exist.
+  gets `403` (`anonymous` `401`), a `maintainer` on `*/*` included. **Creating one takes the
+  admin's password** as the request's credential, as creating a personal access token does
+  (below): a personal access token, with scopes or without, the admin's too, and a deploy token
+  get `403` before the body is read, naming the rule; an admin without a password, an OIDC user
+  (§8), makes one on the command line. A stolen token must not mint a token that needs no expiry
+  and outlives its revocation (decided on #911, 2026-11-14). Listing and revoking them take the
+  admin role with any credential that reaches it. A mask names no repo, so the routes tell
+  nothing of which repos exist.
 - **A personal access token's scopes** are actions; they name no repo.
 - **Creating a personal access token** (`POST /api/v1/users/<name>/tokens`) takes a password
   as the request's credential, besides the user's own or the `admin` role; an OIDC login mints

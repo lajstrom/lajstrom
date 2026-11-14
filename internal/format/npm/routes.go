@@ -28,16 +28,49 @@ import (
 //	    /{repo}/-/…                  the registry's own routes (special): dist-tags (disttags.go);
 //	                                 ping, whoami, search, audit (cli.go); login, logout (login.go)
 //
-// GET is HEAD too. Every answer is JSON, an error {"error": "<message>"}.
+// GET is HEAD too. Every answer is JSON, an error {"error": "<message>"}, that of a repo that
+// does not exist too: the patterns name the repo {repoName}, not {repo}, so that the router's
+// repo middleware, which answers in text/plain, leaves the lookup to withRepo (#1091).
 func (p Plugin) Routes(r format.Router, deps format.Deps) {
 	if deps.Log == nil {
 		deps.Log = slog.Default().With("format", Name)
 	}
 	h := &handlers{deps: deps, plugin: p}
-	r.HandleFunc("GET /{repo}/{path...}", h.get)
-	r.HandleFunc("PUT /{repo}/{path...}", h.put)
-	r.HandleFunc("DELETE /{repo}/{path...}", h.del)
-	r.HandleFunc("POST /{repo}/{path...}", h.post)
+	r.HandleFunc("GET /{repoName}/{path...}", h.withRepo(h.get))
+	r.HandleFunc("PUT /{repoName}/{path...}", h.withRepo(h.put))
+	r.HandleFunc("DELETE /{repoName}/{path...}", h.withRepo(h.del))
+	r.HandleFunc("POST /{repoName}/{path...}", h.withRepo(h.post))
+}
+
+// withRepo is the repo middleware of format.NewRouter, answering as npm does: one
+// deps.Index.GetRepo per request, and next served with the repo in the context
+// (format.WithRepo). A repo that does not exist, or has another format, is answered as the
+// router's middleware answers it, 404, or 401 to the anonymous principal when deps.Auth is set,
+// with its message, so that the answer is the one Authorize gives on a repo the principal may
+// not read (docs/spec/rbac.md §3), but as npm's JSON error, as that one is (#1091). The routes
+// whose answer does not depend on the repo (repoless) are served all the same, without a repo in
+// the context. A failed lookup is 500, logged.
+func (h *handlers) withRepo(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		name := r.PathValue("repoName")
+		repo, err := h.deps.Index.GetRepo(ctx, Name, name)
+		if err == nil && (repo == nil || repo.Format != Name) {
+			err = index.ErrNotFound
+		}
+		switch {
+		case err == nil:
+			next(w, r.WithContext(format.WithRepo(ctx, *repo)))
+		case !errors.Is(err, index.ErrNotFound):
+			h.fail(w, r, fmt.Errorf("npm: repo lookup of %s/%s: %w", Name, name, err))
+		case h.repoless(r.Method, special(r.PathValue("path"))) != nil:
+			next(w, r)
+		case h.deps.Auth != nil && auth.PrincipalFrom(ctx).Kind == auth.KindAnonymous:
+			h.fail(w, r, fmt.Errorf("%w: repository %s/%s", format.ErrUnauthenticated, Name, name))
+		default:
+			h.fail(w, r, fmt.Errorf("%w: repository %s/%s", index.ErrNotFound, Name, name))
+		}
+	}
 }
 
 // special returns the segments of a path below /npm/<repo>/-/, the registry's own routes, and
@@ -51,9 +84,13 @@ func special(path string) []string {
 }
 
 // serveSpecial dispatches a route below /npm/<repo>/-/; each checks its own action. Everything
-// else there (npm token, access, owner, team, star, profile, and the web login, after whose 404
-// npm asks for a password) is 404.
+// else there (npm token, access, owner, team, star, profile) is 404 to a principal that may read
+// the repo (noRoute), and so is the web login to everyone (repoless).
 func (h *handlers) serveSpecial(w http.ResponseWriter, r *http.Request, segs []string) {
+	if serve := h.repoless(r.Method, segs); serve != nil {
+		serve(w, r)
+		return
+	}
 	repo, ok := format.RepoFrom(r.Context())
 	if !ok {
 		h.fail(w, r, errors.New("npm: the route has no repo"))
@@ -67,6 +104,37 @@ func (h *handlers) serveSpecial(w http.ResponseWriter, r *http.Request, segs []s
 		serve(w, r, repo)
 		return
 	}
+	h.noRoute(w, r, repo)
+}
+
+// repoless returns the handler of a route below /-/ whose answer does not depend on the repo,
+// for method and the segments below /-/, nil for any other route; withRepo serves it whether the
+// repo exists or not. They are npm login, PUT below /-/user/, decided as the user of its body,
+// which reads the repo from the context (login); npm logout, DELETE /-/user/token/<token>,
+// decided by the request's token (logout); and the web login, POST /-/v1/login, 404 on every
+// repo, after which npm asks for a password and logs in with the legacy route.
+func (h *handlers) repoless(method string, segs []string) http.HandlerFunc {
+	switch {
+	case method == http.MethodPut && len(segs) == 2 && segs[0] == "user":
+		return func(w http.ResponseWriter, r *http.Request) { h.login(w, r, segs[1]) }
+	case method == http.MethodDelete && len(segs) == 3 && segs[0] == "user" && segs[1] == "token":
+		return func(w http.ResponseWriter, r *http.Request) { h.logout(w, r, segs[2]) }
+	case method == http.MethodPost && len(segs) == 2 && segs[0] == "v1" && segs[1] == "login":
+		return func(w http.ResponseWriter, r *http.Request) {
+			h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
+		}
+	}
+	return nil
+}
+
+// noRoute answers a path below /npm/<repo>/ that names no route of a repo: 404 to a principal
+// that may read the repo, and the denial of Authorize to any other, which is the answer of a repo
+// that does not exist (withRepo), so that the 404 does not tell that the repo exists (#1091).
+func (h *handlers) noRoute(w http.ResponseWriter, r *http.Request, repo index.Repo) {
+	if err := format.Authorize(r.Context(), h.deps, auth.ActionRead, repo); err != nil {
+		h.fail(w, r, err)
+		return
+	}
 	h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
 }
 
@@ -75,13 +143,8 @@ type specialHandler func(http.ResponseWriter, *http.Request, index.Repo)
 
 // specialRoute returns the handler of method and the segments below /-/, nil for none.
 func (h *handlers) specialRoute(method string, segs []string) specialHandler {
-	switch {
-	case segs[0] == "package":
+	if segs[0] == "package" {
 		return func(w http.ResponseWriter, r *http.Request, repo index.Repo) { h.distTags(w, r, repo, segs[1:]) }
-	case method == http.MethodPut && len(segs) == 2 && segs[0] == "user":
-		return func(w http.ResponseWriter, r *http.Request, repo index.Repo) { h.login(w, r, repo, segs[1]) }
-	case method == http.MethodDelete && len(segs) == 3 && segs[0] == "user" && segs[1] == "token":
-		return func(w http.ResponseWriter, r *http.Request, _ index.Repo) { h.logout(w, r, segs[2]) }
 	}
 	route := strings.Join(segs, "/")
 	if method == http.MethodPost && (route == auditBulk || route == auditFull || route == auditQuick) {
@@ -96,12 +159,16 @@ func (h *handlers) specialRoute(method string, segs []string) specialHandler {
 
 // post dispatches a POST: the registry's own routes.
 func (h *handlers) post(w http.ResponseWriter, r *http.Request) {
-	segs := special(r.PathValue("path"))
-	if segs == nil {
-		h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
+	if segs := special(r.PathValue("path")); segs != nil {
+		h.serveSpecial(w, r, segs)
 		return
 	}
-	h.serveSpecial(w, r, segs)
+	repo, ok := format.RepoFrom(r.Context())
+	if !ok {
+		h.fail(w, r, errors.New("npm: the route has no repo"))
+		return
+	}
+	h.noRoute(w, r, repo)
 }
 
 // del dispatches a DELETE: the registry's own routes, and npm unpublish of a package or of a
@@ -129,7 +196,7 @@ func (h *handlers) del(w http.ResponseWriter, r *http.Request) {
 	case ok && len(t.rest) == 4 && t.rest[0] == "-" && t.rest[2] == "-rev":
 		h.unpublishFile(w, r, repo, t.name, t.rest[1])
 	default:
-		h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
+		h.noRoute(w, r, repo)
 	}
 }
 
@@ -181,14 +248,12 @@ func (h *handlers) put(w http.ResponseWriter, r *http.Request) {
 	}
 	t, ok := parseTarget(r.PathValue("path"))
 	switch {
-	case !ok:
-		h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
-	case len(t.rest) == 0:
+	case ok && len(t.rest) == 0:
 		h.publish(w, r, repo, t.name, "")
-	case len(t.rest) == 2 && t.rest[0] == "-rev":
+	case ok && len(t.rest) == 2 && t.rest[0] == "-rev":
 		h.publish(w, r, repo, t.name, t.rest[1])
 	default:
-		h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
+		h.noRoute(w, r, repo)
 	}
 }
 

@@ -24,6 +24,12 @@
 # PATH, else ghcr.io/oras-project/oras:v1.3.6. The file is at a path of its own for the run,
 # deleted at the end with its signatures (#61): then no referrer, no sha256-<hex> tag and no
 # manifest is left, and the audit row counts the signatures. It needs curl, jq and docker.
+#
+# Where the registry deletes no manifests, LAJSTROM_E2E_DELETE_MANIFEST=false (run.sh reads it
+# from the server's log, #800), the delete is 501 and checked to change nothing: the referrers
+# API still lists the signature, the file's manifest, the signature, the legacy .sig and the
+# tag-schema index the provider wrote are still there, and no audit row of a delete names the
+# file. They stay in the registry.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -42,6 +48,9 @@ insecure=""  # --allow-http-registry for cosign
 case "$base" in http://*) plain=--plain-http insecure=--allow-http-registry ;; esac
 export LAJSTROM_CONFIG="${LAJSTROM_CONFIG:-deploy/compose/lajstrom.example.yaml}"
 if [ -n "${LAJSTROM_BIN:-}" ]; then lajstrom=("$LAJSTROM_BIN"); else lajstrom=(bin/lajstrom); fi
+
+deletes=yes # the registry deletes manifests; no: Lajstrom refuses every delete (#800)
+[ "${LAJSTROM_E2E_DELETE_MANIFEST:-}" != false ] || deletes=no
 
 work="$(mktemp -d)"
 e2e_credentials "$work"
@@ -157,6 +166,7 @@ step "GET /v2/$name/referrers/$digest?artifactType=…: $signature, OCI-Filters-
 # asked as Lajstrom asks it: in the repository below the instance prefix, with the registry's
 # credentials when run.sh has them (#353).
 backend="${LAJSTROM_E2E_REGISTRY:-}"
+schema="" # yes: the provider wrote the tag schema, the index sha256-<hex>
 if [ -n "$backend" ]; then
 	bname="${LAJSTROM_E2E_REGISTRY_PREFIX:-}$name"
 	code="$(backend_get "/v2/$bname/referrers/$digest" "$work/backend.json")"
@@ -166,6 +176,7 @@ if [ -n "$backend" ]; then
 		assert_eq 200 "$(backend_get "/v2/$bname/tags/list" "$work/backend.json")" "the backend's tags/list of $bname"
 		jq -e --arg t "sha256-${digest#sha256:}" '.tags | index($t)' "$work/backend.json" >/dev/null ||
 			fail "the backend $backend has no referrers API ($code) and no tag sha256-${digest#sha256:}"
+		schema=yes
 		step "the backend $backend: no referrers API ($code); the provider wrote the tag sha256-${digest#sha256:}"
 	fi
 fi
@@ -206,18 +217,38 @@ fi
 grep -q 'DENIED' "$work/sign.log" || { cat "$work/sign.log" >&2; fail "cosign sign as a reader: not refused with DENIED"; }
 step "a reader of raw/$repo: cosign verify passes, cosign sign is DENIED"
 
-assert_status 204 -K "$E2E_CURLRC" -X DELETE "$base/raw/$repo/$path"
-pushed=""
-step "DELETE /raw/$repo/$path: 204"
+if [ "$deletes" = no ]; then
+	# The registry deletes no manifests (#352): the delete is refused, and nothing changed.
+	assert_status 501 -K "$E2E_CURLRC" -X DELETE "$base/raw/$repo/$path"
+	pushed=""
+	step "DELETE /raw/$repo/$path where the registry deletes no manifests: 501"
+	assert_status 200 -K "$E2E_CURLRC" "$base/v2/$name/referrers/$digest"
+	jq -e --arg s "$signature" '[.manifests[].digest] | index($s)' <<<"$E2E_BODY" >/dev/null ||
+		fail "the referrers after the refused delete do not list $signature: ${E2E_BODY:0:300}"
+	refs=("$digest" "$signature" "sha256-$hex.sig")
+	[ -z "$schema" ] || refs+=("sha256-$hex")
+	for ref in "${refs[@]}"; do
+		assert_status 200 -K "$E2E_CURLRC" -o /dev/null \
+			-H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.oci.image.index.v1+json' "$base/v2/$name/manifests/$ref"
+	done
+	assert_status 200 -K "$E2E_CURLRC" --globoff "$base/api/v1/audit?action=delete&repo=raw/$repo&limit=50"
+	assert_eq 0 "$(jq --arg d "$digest" '[.events[] | select(.digest == $d)] | length' <<<"$E2E_BODY")" "the audit rows of a delete of $digest"
+	step "after the refused delete: $signature still a referrer; $digest, the signature, sha256-${hex:0:12}….sig${schema:+ and the index sha256-${hex:0:12}…} still served; no audit row of a delete"
+else
+	assert_status 204 -K "$E2E_CURLRC" -X DELETE "$base/raw/$repo/$path"
+	pushed=""
+	step "DELETE /raw/$repo/$path: 204"
 
-# #61: the delete took the signatures first. The referrers API lists none, no sha256-<hex> tag is
-# left (the tag-schema index, cosign's legacy .sig), and the audit row counts both signatures.
-assert_status 200 -K "$E2E_CURLRC" "$base/v2/$name/referrers/$digest"
-assert_eq "0" "$(jq '.manifests | length' <<<"$E2E_BODY")" "the referrers after the delete"
-for ref in "$digest" "$signature" "sha256-$hex" "sha256-$hex.sig"; do
-	assert_status 404 -K "$E2E_CURLRC" -o /dev/null "$base/v2/$name/manifests/$ref"
-done
-assert_status 200 -K "$E2E_CURLRC" --globoff "$base/api/v1/audit?action=delete&repo=raw/$repo&limit=1"
-assert_eq "$digest 2" "$(jq -r '.events[0] | "\(.digest) \(.details.referrers)"' <<<"$E2E_BODY")" "the audit row of the delete"
-step "after the delete: no referrers, no manifest under $digest, sha256-${hex:0:12}… or its .sig; the audit row counts 2 referrers"
+	# #61: the delete took the signatures first. The referrers API lists none, no sha256-<hex> tag
+	# is left (the tag-schema index, cosign's legacy .sig), and the audit row counts both
+	# signatures.
+	assert_status 200 -K "$E2E_CURLRC" "$base/v2/$name/referrers/$digest"
+	assert_eq "0" "$(jq '.manifests | length' <<<"$E2E_BODY")" "the referrers after the delete"
+	for ref in "$digest" "$signature" "sha256-$hex" "sha256-$hex.sig"; do
+		assert_status 404 -K "$E2E_CURLRC" -o /dev/null "$base/v2/$name/manifests/$ref"
+	done
+	assert_status 200 -K "$E2E_CURLRC" --globoff "$base/api/v1/audit?action=delete&repo=raw/$repo&limit=1"
+	assert_eq "$digest 2" "$(jq -r '.events[0] | "\(.digest) \(.details.referrers)"' <<<"$E2E_BODY")" "the audit row of the delete"
+	step "after the delete: no referrers, no manifest under $digest, sha256-${hex:0:12}… or its .sig; the audit row counts 2 referrers"
+fi
 echo "PASS cosign e2e against $base/v2/raw/$repo/"

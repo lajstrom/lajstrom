@@ -230,7 +230,10 @@ func (r *repository) FinishBlobUpload(ctx context.Context, u provider.Upload, d 
 
 // BlobUploadStatus asks for the session's offset: GET <location>, 204 with Range and Location.
 // A Range one byte ahead of the bytes the session holds, as Quay's and Forgejo's, is read one
-// byte back once the provider has measured that the registry answers so (statusOffset).
+// byte back once the provider has measured that the registry answers so (statusOffset). On a
+// registry whose 404 to the status of a session without bytes means nothing (JFrog:
+// quirks.emptyStatus404), that 404 is the session as it was, at offset 0: a session the
+// registry no longer knows meets its 404 at the next PATCH instead.
 func (r *repository) BlobUploadStatus(ctx context.Context, u provider.Upload) (provider.Upload, error) {
 	op := r.op("upload status", u.ID)
 	loc, err := r.p.location(u.Location)
@@ -239,6 +242,10 @@ func (r *repository) BlobUploadStatus(ctx context.Context, u provider.Upload) (p
 	}
 	resp, err := r.send(ctx, op, http.MethodGet, loc.String(), nil, 0, nil, http.StatusNoContent, http.StatusOK)
 	if err != nil {
+		if u.Offset == 0 && r.emptyStatus404(ctx, err) {
+			r.p.log.DebugContext(ctx, "the 404 to the status of an upload session without bytes taken as offset 0", "upload", u.ID)
+			return u, nil
+		}
 		return u, err
 	}
 	_ = resp.Body.Close()
@@ -248,6 +255,19 @@ func (r *repository) BlobUploadStatus(ctx context.Context, u provider.Upload) (p
 	}
 	next.Offset = r.statusOffset(ctx, u, resp.Header.Get("Range"), next.Offset)
 	return next, nil
+}
+
+// emptyStatus404 reports whether err, the answer to the status of a session that holds no bytes,
+// is a 404 of a registry whose vendor answers so for a session that works (quirks.emptyStatus404).
+// The quirks come from the probe, which a replica that has not probed yet runs first
+// (readQuirks).
+func (r *repository) emptyStatus404(ctx context.Context, err error) bool {
+	var resp *errcode.ErrorResponse
+	if !errors.As(err, &resp) || resp.StatusCode != http.StatusNotFound {
+		return false
+	}
+	q, qerr := r.p.readQuirks(ctx)
+	return qerr == nil && q.emptyStatus404
 }
 
 // CancelBlobUpload ends the session: DELETE <location>, 204.
@@ -342,9 +362,11 @@ func (r *repository) send(ctx context.Context, op, method, target string, body i
 // prime readies the auth client for a request with a streamed body to the session at loc.
 // oras-go's auth client answers a 401 by sending the request again, which a streamed body
 // cannot be; so, against a registry with credentials, a bodyless GET of the session (its
-// status, harmless) takes the challenge first. A Basic scheme in the cache needs nothing; a
-// bearer token may have expired since it was cached, so it is primed every time. A replica
-// that continues another's session starts with an empty cache: this is what lets it.
+// status, harmless) takes the challenge first, and the token is cached under the request's own
+// scopes too (aliasClient), which the streamed request is looked up by. A Basic scheme in the
+// cache needs nothing; a bearer token may have expired since it was cached, so it is primed
+// every time. A replica that continues another's session starts with an empty cache: this is
+// what lets it.
 func (r *repository) prime(ctx context.Context, loc *url.URL) {
 	if !r.p.clients.credentials {
 		return
@@ -352,9 +374,7 @@ func (r *repository) prime(ctx context.Context, loc *url.URL) {
 	if s, err := r.p.clients.cache.GetScheme(ctx, r.p.host); err == nil && s == auth.SchemeBasic {
 		return
 	}
-	ctx = r.scoped(ctx)
-	var challenge string
-	req, err := http.NewRequestWithContext(context.WithValue(ctx, challengeKey{}, &challenge), http.MethodGet, loc.String(), nil)
+	req, err := http.NewRequestWithContext(r.scoped(ctx), http.MethodGet, loc.String(), nil)
 	if err != nil {
 		return
 	}
@@ -363,15 +383,15 @@ func (r *repository) prime(ctx context.Context, loc *url.URL) {
 		return // the request with the body reports the failure
 	}
 	_ = resp.Body.Close()
-	aliasToken(ctx, r.p.clients.cache, r.p.host, challenge)
 }
 
 // aliasToken caches the bearer token that the auth client got after challenge also under the
-// scopes of ctx alone. The auth client keys a token by the request's scopes merged with the
-// challenge's scope parameter, but looks a request up by its scopes alone before it is
-// challenged: when the challenge names a scope the request does not (Gitea's scope="*", on
-// every challenge), the streamed request after prime would go out without the token, and
-// could not be sent again after its 401.
+// scopes of ctx alone (aliasClient). The auth client keys a token by the request's scopes
+// merged with the challenge's scope parameter, but looks a request up by its scopes alone
+// before it is challenged: when the challenge names a scope the request does not (Gitea's
+// scope="*", on every challenge), the next request with those scopes would go out without the
+// token, and a streamed one could not be sent again after its 401. A request without scopes of
+// its own, the ping or Forgejo's version API, gets no alias: those go without a token as before.
 func aliasToken(ctx context.Context, cache auth.Cache, host, challenge string) {
 	scheme, scope := challengeParam(challenge, "scope")
 	if scheme != "bearer" || scope == "" {
@@ -380,7 +400,7 @@ func aliasToken(ctx context.Context, cache auth.Cache, host, challenge string) {
 	scopes := auth.GetAllScopesForHost(ctx, host)
 	own := strings.Join(scopes, " ")
 	merged := strings.Join(auth.CleanScopes(append(slices.Clone(scopes), strings.Split(scope, " ")...)), " ")
-	if merged == own {
+	if own == "" || merged == own {
 		return
 	}
 	token, err := cache.GetToken(ctx, host, auth.SchemeBearer, merged)

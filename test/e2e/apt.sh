@@ -36,7 +36,10 @@
 # through the API (#61), which needs delete on the repo too, and a run that fails before it
 # leaves them. With $LAJSTROM_SERVER_LOG, the server's log file (run.sh sets it),
 # the script reads in its access log how apt fetched the Packages (by-hash or by name) and as
-# whom; without it those checks are left out and the steps say so.
+# whom; without it those checks are left out and the steps say so. Where the registry deletes no
+# manifests, LAJSTROM_E2E_DELETE_MANIFEST=false (run.sh reads it from the server's log, #800), each
+# delete is 501 UNAVAILABLE naming the registry, and the next Packages and apt still have both; the
+# packages stay in the registry.
 #
 # It needs curl, jq and docker: the image ubuntu:24.04 for linux/amd64, emulated on an arm64 host,
 # or $APT_E2E_IMAGE (ubuntu:22.04 and debian:12 pass too), which builds the packages and is the
@@ -381,26 +384,53 @@ grep -qF "the control member control.tar.xz has 4194306 bytes, at most 4194304" 
 	fail "the 400 does not name the bound: $(cat "$work/body")"
 ok "PUT of a .deb whose control member has 4 MiB and 2 bytes: 400, $(tr -d '\n' <"$work/body")"
 
-# #61: both versions deleted through the API are gone from the next Packages and from apt.
+# #61: both versions deleted through the API are gone from the next Packages and from apt. Where
+# the registry deletes no manifests (#352), each delete is refused, and both stay.
+deletes=yes
+[ "${LAJSTROM_E2E_DELETE_MANIFEST:-}" != false ] || deletes=no
 for p in "$one" "$two"; do
 	status="$(curl -sS -K "$E2E_CURLRC" -o "$work/body" -w '%{http_code}' -X DELETE \
 		"$base/api/v1/repos/apt/$repo/packages/$p/versions/$version")"
-	expect "DELETE of $p $version status ($(cat "$work/body"))" 204 "$status"
+	if [ "$deletes" = yes ]; then
+		expect "DELETE of $p $version status ($(cat "$work/body"))" 204 "$status"
+		continue
+	fi
+	expect "DELETE of $p $version where the registry deletes no manifests, status ($(cat "$work/body"))" 501 "$status"
+	expect "the code of the refused delete of $p" UNAVAILABLE "$(jq -r .error.code "$work/body")"
+	case "$(jq -r .error.message "$work/body")" in
+	*'registry "local" '*'does not delete manifests; nothing was deleted'*) ;;
+	*) fail "the refused delete of $p does not name the registry local: $(cat "$work/body")" ;;
+	esac
 done
-# A suite left without versions is 404 (http-routing.md §3), as on a server of its own (run.sh).
-status="$(curl -sS -K "$E2E_CURLRC" -o "$work/Packages.after" -w '%{http_code}' "$base/apt/$repo/dists/jammy/main/binary-amd64/Packages")"
-case "$status" in
-200) if grep -qE "^Package: ($one|$two)\$" "$work/Packages.after"; then fail "the Packages lists $one or $two after the delete"; fi
-	after="the Packages lists neither" ;;
-404) after="jammy has no version left: its Packages is 404" ;;
-*) fail "GET of the Packages after the delete: $status" ;;
-esac
-in_client gone.log "
-	apt-get purge -y $one $two
-	rm -rf /var/lib/apt/lists/* /etc/apt/sources.list.d/*
-	echo 'deb [$source_opts] $base/apt/$repo jammy main' > /etc/apt/sources.list.d/$repo.list
-	apt-get update || echo 'apt-get update failed'
-	if apt-cache show $one $two; then echo 'still there'; exit 1; fi" ||
-	{ cat "$work/gone.log" >&2; fail "apt-get after the delete still has $one or $two"; }
-ok "DELETE /api/v1/repos/apt/$repo/packages/{$one,$two}/versions/$version: 204; $after; purged, apt-get update, apt-cache show finds neither"
+if [ "$deletes" = no ]; then
+	status="$(curl -sS -K "$E2E_CURLRC" -o "$work/Packages.after" -w '%{http_code}' "$base/apt/$repo/dists/jammy/main/binary-amd64/Packages")"
+	expect "GET of the Packages after the refused deletes" 200 "$status"
+	expect "the packages $one and $two in the Packages after the refused deletes" 2 \
+		"$(grep -cE "^Package: ($one|$two)\$" "$work/Packages.after" || true)"
+	in_client kept.log "
+		rm -rf /var/lib/apt/lists/* /etc/apt/sources.list.d/*
+		echo 'deb [$source_opts] $base/apt/$repo jammy main' > /etc/apt/sources.list.d/$repo.list
+		apt-get update
+		apt-cache show $one $two >/dev/null" ||
+		{ cat "$work/kept.log" >&2; fail "apt-get after the refused deletes lacks $one or $two"; }
+	quiet kept.log
+	ok "DELETE /api/v1/repos/apt/$repo/packages/{$one,$two}/versions/$version where the registry deletes no manifests: 501 UNAVAILABLE naming it; the Packages lists both, apt-get update, apt-cache show finds both"
+else
+	# A suite left without versions is 404 (http-routing.md §3), as on a server of its own (run.sh).
+	status="$(curl -sS -K "$E2E_CURLRC" -o "$work/Packages.after" -w '%{http_code}' "$base/apt/$repo/dists/jammy/main/binary-amd64/Packages")"
+	case "$status" in
+	200) if grep -qE "^Package: ($one|$two)\$" "$work/Packages.after"; then fail "the Packages lists $one or $two after the delete"; fi
+		after="the Packages lists neither" ;;
+	404) after="jammy has no version left: its Packages is 404" ;;
+	*) fail "GET of the Packages after the delete: $status" ;;
+	esac
+	in_client gone.log "
+		apt-get purge -y $one $two
+		rm -rf /var/lib/apt/lists/* /etc/apt/sources.list.d/*
+		echo 'deb [$source_opts] $base/apt/$repo jammy main' > /etc/apt/sources.list.d/$repo.list
+		apt-get update || echo 'apt-get update failed'
+		if apt-cache show $one $two; then echo 'still there'; exit 1; fi" ||
+		{ cat "$work/gone.log" >&2; fail "apt-get after the delete still has $one or $two"; }
+	ok "DELETE /api/v1/repos/apt/$repo/packages/{$one,$two}/versions/$version: 204; $after; purged, apt-get update, apt-cache show finds neither"
+fi
 echo "PASS apt e2e against $base/apt/$repo/"

@@ -30,6 +30,9 @@ this page has the details.
   run, which pulled them, in about 30 s), `down` in 12 to 15 s; a 2 GiB blob in one `PUT` took
   15 s, and the tests ran as fast as against the dev stack's registries (the facade package in
   3 s). The tests with Go 1.27.3 at d11dd34.
+- On 2026-11-14 the probe ran again ([The probe](#the-probe-2026-11-14-850)), on the same
+  images: `harbor.sh up` pulled the ten images (prepare included, about 3.4 GB) and was healthy
+  in 31 s, emulated as before. The probe took 6 s, and `down` 15 s.
 
 ## Run it
 
@@ -70,7 +73,8 @@ quote it in a shell.
 
 `lajstrom registry probe` measures every row of this table but the listing API, auth, rate
 limits and the garbage collector, which still need a person;
-[README.md](README.md#measuring-a-registry-lajstrom-registry-probe) says how.
+[README.md](README.md#measuring-a-registry-lajstrom-registry-probe) says how. It ran in full on
+2026-11-14 ([The probe](#the-probe-2026-11-14-850)).
 
 | Registry | Version | Auth | Create on push | Referrers | Catalog | Delete manifest | Immutable tags | Blob redirect | Result |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -83,6 +87,99 @@ immutableTags=false blobRedirect=true maxBlobSize=0` (the serve log and the test
 prefix). That is right for a project without rules; no override in `registries[].capabilities`
 is needed. `immutableTags: true` would describe a project with a rule, but nothing in Lajstrom
 reads it yet; the refusals reach ingest and the frontends as conflicts either way.
+
+## The probe, 2026-11-14 (#850)
+
+Before this run, the probe had measured only the routing words on Harbor, on 2026-11-11
+([quirks.md](quirks.md#measured-on-harbor)). This was its first full run here, with the
+lists read before each write and the deletes (#845) and the monotonic reads (#564). Lajstrom at
+20ce9499 ran against a fresh Harbor v2.15.4 (`v2.15.4-d8841742`) from a copy of harbor.sh.
+The copy changed only the compose project name, the port, the container names and the log
+port, because other runs shared the machine. The project `lajstrom-it` and its robot came from
+[Commands](#commands). It ran as the robot, as a configuration would:
+
+```sh
+LAJSTROM_HARBOR_DIR=<scratch> deploy/compose/harbor/harbor.sh up      # here on port 57210
+bin/lajstrom registry probe --url http://localhost:57210 --registry-prefix lajstrom-it/ \
+  --username 'robot$lajstrom-it+ci' --password-file robot.secret --max-manifest-size 32MiB -v
+```
+
+The provider's own probe said `vendor=harbor createOnPush=true referrers=true catalog=false
+deleteManifest=true immutableTags=false blobRedirect=true maxBlobSize=0 consistency=unknown
+maxNameDepth=0`. Nothing was left behind.
+
+| Row | Harbor v2.15.4 |
+| --- | --- |
+| Create on push | yes, with the first manifest |
+| Where a repository may be created | below `lajstrom-it/`; outside it not tried; at any depth, inside another repository too; 255 characters refused: a 500 |
+| Routing words in a name (`manifests`, `referrers`, `tags/list`) | **misroutes**: blob `HEAD` in `x/manifests/y` 14×404, `x/manifests` 10×404, `x/referrers/y` 2×404, `x/tags/list` 16×400 of 20; `GET` 200 |
+| Referrers API | yes, with the `artifactType` filter; no tag schema |
+| `OCI-Subject` on a push with `subject` | yes |
+| Catalog (`_catalog`) and its limits | no: 401 `UNAUTHORIZED` |
+| A listing API of its own | *not measured by the probe* |
+| Tag list order and pagination | lexical, byte by byte; `n`/`last`/`Link` |
+| Read-after-write lag | none: each read saw each of 3 writes at once (manifest by digest, manifest by tag, blob, tag list); each read saw each of 3 deletes at once (manifest by digest, manifest by tag, tag list) |
+| Monotonic reads | none: no read saw a change undone; 3 writes, a tag move, 3 deletes, each read 5 times more over new connections after the first that saw it, from 1 address |
+| Delete a manifest by digest | yes, 202, with its tags; its referrers go with it; **412 `VIOLATE_FOREIGN_KEY_CONSTRAINT`** for a manifest an index lists |
+| Delete by tag | no: 400 `UNSUPPORTED` |
+| Delete a repository | no `/v2` API; no catalog to look in, its tag list 200 |
+| Immutable tags, where the rule lives | none: a tag re-points with 201 |
+| Blob redirect | none: the bytes |
+| `Range` and `Accept-Ranges` | 206, 416 past the end; `Accept-Ranges: bytes` |
+| Largest blob measured | 8 MiB in one `PUT` and in one `PATCH`; no limit met |
+| Manifest size limit | 4 MiB; one byte more is 413 `REQUEST_ENTITY_TOO_LARGE` |
+| Lajstrom's manifest profile (`artifactType`, empty config, own media types) | accepted, stored as pushed |
+| Auth | *not measured by the probe* |
+| Rate limits seen | *not measured by the probe* |
+| Upload: chunk out of order | **appended**, no 416 |
+| Upload: chunk size limit | none met: 8 MiB in one `PATCH` |
+| Upload: session status (`GET`) | works, 204 with `Range` |
+| Upload: cancel (`DELETE`) | works: 204, then its `GET` 404 `BLOB_UPLOAD_UNKNOWN` |
+| Upload: mount (`POST ?mount=&from=`) | works, 201 |
+| Upload: wrong digest, empty blob | 400 `DIGEST_INVALID`, the session ends; the empty blob stored |
+| Upload continued by another replica | works (the provider: one starts the session, another streams a chunk and closes it) |
+| Garbage collector and an untagged referrer (#37) | *not measured by the probe* |
+| What the probe finds | `referrers=true catalog=false` |
+| Overrides needed | none |
+
+The routing words, name by name: `x` `HEAD` 20×200; `x/manifests/y` 6×200 and 14×404;
+`x/manifests` 10×200 and 10×404; `x/referrers/y` 18×200 and 2×404; `x/tags/list` 4×200 and
+16×400. Every `GET` was 200.
+
+What is new against the [column](README.md#capabilities), all of it Harbor's:
+
+- **Read-after-write lag, monotonic reads**: measured for the first time, none. With no
+  catalog for the robot, the lag row reads the tag list alone. Before a repository's first
+  manifest the list is 404 `NOT_FOUND` "repository … not found", and right after the push it
+  names the tag. The vendor table's entry for Harbor leaves its consistency unknown, so a
+  publish reads back its tag and blobs too.
+- **Name length.** Harbor takes fewer than 255 characters. The probe's upload session in a
+  name of 255 characters was 500 `{}`, and in one of 256 it was 500 `UNKNOWN` "unknown error"
+  with the name in its detail. Upload sessions opened with curl, each name below
+  `lajstrom-it/l850len/` and the project counted, found the bound: 230, 240 and 245
+  characters 202; 246, 248, 250 and 254 characters 500. Lajstrom assumed 255 for Harbor
+  until #1041 ([What the provider must do differently](#what-the-provider-must-do-differently), item 5).
+- **The delete of a manifest an image index lists** is 412 `VIOLATE_FOREIGN_KEY_CONSTRAINT` "the
+  deleting artifact is referenced by others": the index first, then the manifest, as on Zot
+  (405) and GitLab B (409). The provider gave this 412 no sentinel: `classifyResponse` makes a
+  412 `ErrConflict` only when its message says "immutable". So it was a refusal of the registry,
+  where GitLab B's 409 is `ErrConflict`. Since #1041 it is `ErrConflict` by its code
+  ([What the provider must do differently](#what-the-provider-must-do-differently), item 6).
+- **A wrong digest ends the session**: the closing `PUT` is 400 `DIGEST_INVALID`, and the
+  session's `GET` afterwards is 404 `BLOB_UPLOAD_INVALID`. Gitea, GitLab and Nexus's `docker`
+  format keep the session open; Nexus's `oci` format and Quay end it too.
+- **Delete a repository**: after `/v2` deletes of every manifest, an emptied repository's tag
+  list is 200 with `"tags":[]`. The REST API's repository delete makes it 404 ([Delete](#delete)).
+- **Routing words**: misroutes again, as on 2026-11-11 (then 13, 12, 1 and 15 misses of 20);
+  [goharbor/harbor#24363](https://github.com/goharbor/harbor/issues/24363) is not fixed in
+  v2.15.4.
+- **Chunk size limit and the session's status**, which the column had *not measured* and "the
+  test": none met at 8 MiB in one `PATCH`, and 204 with `Range`. The tag list is ordered byte
+  by byte. The 2 GiB blob of [Blob redirect, ranges, sizes,
+  headers](#blob-redirect-ranges-sizes-headers) stands.
+- Every other cell is the column's. Harbor's challenge names no scope, so Gitea's extra 401
+  before each request ([gitea.md](gitea.md#the-probe-again-2026-11-13-850)) does not happen
+  here: 13 of the 483 requests were 401s.
 
 ## What the provider must do differently
 
@@ -110,6 +207,23 @@ reads it yet; the refusals reach ingest and the frontends as conflicts either wa
 4. Optional: read 412 `PRECONDITION` as a conflict by its code. Today a push to an immutable tag
    and the delete of a manifest under one become `ErrConflict` only because Harbor's message
    says "configured as immutable" (`mentionsImmutable`).
+5. Bound a name at 245 bytes, the project included, not 255. Harbor answers an upload session
+   in a longer name with a 500 ([The probe](#the-probe-2026-11-14-850)). The provider gives
+   every registry but ECR 255 bytes less the prefix (`maxNameLen` in
+   internal/provider/generic/capabilities.go, whose comment says Harbor keeps 255). So with
+   `prefix: lajstrom-it/` a name of 234 to 243 bytes below the prefix passes Lajstrom's `400`
+   ([quirks.md](quirks.md#case-and-length)) and meets Harbor's 500 instead. A Harbor entry for
+   `MaxNameLength` in the vendor table would close it. **Done in #1041:** the vendor table
+   bounds a name on Harbor at 245 bytes, the prefix included (`vendorNameLengths`), so with
+   `prefix: lajstrom-it/` the names below it get 233 and a longer one is Lajstrom's `400
+   NAME_INVALID` with the limit. Not measured on Harbor again.
+6. **Done in #1041:** read the 412 `VIOLATE_FOREIGN_KEY_CONSTRAINT` to the delete of a manifest an
+   image index lists as a refusal of this one delete, `ErrConflict`, by its code (`deniedOne` in
+   internal/provider/generic/repository.go), as Zot's 405 and GitLab B's 409 are. A client then
+   gets what it gets on those: the facade's `DELETE` of the manifest is `409 DENIED` "the
+   registry refused to delete … : another manifest refers to it", where it was `412
+   BLOB_UPLOAD_INVALID`, and the API's version delete is `409`, where it was `502`. Not measured
+   on Harbor again.
 
 Nothing else: the token service, the referrers API, tags, uploads (the cross-replica one too),
 mounts, ranges and the digest delete work as the provider expects. The out-of-order chunk is

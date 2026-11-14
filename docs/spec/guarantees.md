@@ -649,7 +649,8 @@ longer than `reconcile.graceAge` is outside them
 - **Statement.** A deploy token acts on its one repo, or on the repos its mask matches (#911),
   with its `read` and `write` scopes and never `delete` or `manage`, nor anything of the system;
   a personal access token's scopes only narrow its user's rights; a token never creates a
-  personal access token; a bearer token never carries an action its credential lacks.
+  personal access token nor a deploy token over a mask; a bearer token never carries an action
+  its credential lacks.
 - **Scope.** Every protocol, the bearer of `/v2` included.
 - **Assumes.** Any.
 - **Mechanism.** `auth.Credential.Limit`, `token.ParseScopes`, `token.Reduce`; at most 100

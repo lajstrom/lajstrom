@@ -6,19 +6,26 @@
 
 ## Goal
 
-**v0.1.0 by Friday 2026-12-04**: a single Go binary that serves hosted repositories for five
-formats (raw, pypi, apt, maven and, ahead of M4, npm) on top of an OCI registry (Zot and docker
-distribution verified; ECR adapter if the spike allows), with local users, tokens and RBAC,
-retention as a scheduled `lajstrom admin retention` over a conditional delete API (#72), a
-reindex command that is proven to rebuild the index from the registry, an OCI facade that
-`oras` and `cosign` can use, end-to-end tests with the real clients, a container image and
-installation docs. It runs as two replicas behind one edge with Postgres (SQLite is for a
-single node) and the e2e suite proves it: concurrent pushes to different replicas, a replica
-killed mid-upload.
+**v0.1.0 by Friday 2026-12-04**: a single Go binary that serves hosted repositories for six
+formats (raw, pypi, apt, maven and, ahead of their milestones, npm of M4 and rpm of M6) on top of
+an OCI registry (Zot and docker distribution verified in CI; the ECR adapter measured on a live
+ECR, #19), with local users, tokens and RBAC, retention as a scheduled `lajstrom admin retention`
+over a conditional delete API (#72), a reindex command that is proven to rebuild the index from
+the registry, an OCI facade that `oras` and `cosign` can use, end-to-end tests with the real
+clients, a container image and installation docs. It runs as two replicas behind one edge with
+Postgres (SQLite is for a single node) and the e2e suite proves it: concurrent pushes to
+different replicas, a replica killed mid-upload.
 
-Not this month (post-MVP, tracked as `post-mvp` issues): rpm, terraform, proxy and group repos
-beyond npm (M4, below), OIDC, UI, docker passthrough and multi-arch stitching, Harbor and GHCR
-adapters beyond the spike, FQDN mode.
+Not this month (post-MVP, tracked as `post-mvp` issues): terraform (#66), proxy and group repos
+for pypi and maven (#67, #68), UI (#70), server-side multi-arch stitching
+([architecture.md](architecture.md) §7, not built by #71), Harbor and GHCR adapters beyond the
+spike (#73, #74), FQDN mode (#75).
+
+On `main` already, ahead of their milestones (status of 2026-11-13): npm with its proxy and group
+repos (M4, below); docker passthrough with RBAC and audit (#71), `oci` proxy repos, a
+pull-through cache of Docker Hub, ghcr.io and quay.io (#442), and the Helm chart (#82), of M5;
+rpm (#64) and OIDC login with groups (#69), of M6; and groups of `oci` repos (#848, no
+milestone).
 
 ## Milestones
 
@@ -38,6 +45,11 @@ and distribution. The docs are [quickstart/npm.md](quickstart/npm.md), with "Com
 Verdaccio", and the proxy and group parts of [api.md](api.md) and
 [configuration.md](configuration.md) (#313). One check is left before the milestone closes:
 someone who did not write the code follows the quick start on a clean machine (#313).
+
+**The milestones on GitHub, 2026-11-13.** M0's 18 issues are closed. M1, M2 and M4 each have one
+docs issue open (#38, #49, #313). M3 has the release itself open: goreleaser (#57), the install
+and deploy docs (#58) and v0.1.0 (#59). M5 has two open, both waiting for a decision (#908,
+#911), and M6's 21 issues are all closed.
 
 Priority inside a milestone: `priority/p0` issues define "done"; `p1` are planned and get cut
 first if the week runs out; `p2` are opportunistic.
@@ -99,9 +111,10 @@ decides on Friday and records the change in this page's decision log.
 The Friday review of week 1 (2026-11-13) decides which reading applies and whether M3 maven
 stays in v0.1.0 or becomes the first post-MVP milestone.
 
-**Status, 2026-11-12.** maven and npm are both on `main` already, npm with its proxy and group
-repos (M4, above), so neither reading cuts a format: v0.1.0 serves raw, pypi, apt, maven and npm
-([releases/v0.1.0.md](releases/v0.1.0.md)).
+**Status, 2026-11-13.** maven, npm and rpm are all on `main` already, npm with its proxy and
+group repos (M4, above) and rpm from M6 (#64), so neither reading cuts a format: v0.1.0, cut from
+`main`, serves raw, pypi, apt, maven, npm and rpm ([releases/v0.1.0.md](releases/v0.1.0.md),
+the README's [What works](../README.md#what-works)).
 
 ## Risks and what we do about them
 
@@ -141,15 +154,18 @@ repos (M4, above), so neither reading cuts a format: v0.1.0 serves raw, pypi, ap
 ## After v0.1.0 (preview, not committed)
 
 M4 (above, decided on 2026-11-10) is npm with its proxy and group repos. Month 2 candidates after
-it, in rough order: docker passthrough with RBAC, proxy repos for pypi and maven on M4's core
-(#67), rpm and OIDC (M6), UI read-only ([lajstrom-ui](https://github.com/lajstrom/lajstrom-ui)),
-Harbor adapter, apt-transport-oci export.
+it, in rough order: proxy repos for pypi and maven on M4's core (#67), UI read-only
+([lajstrom-ui](https://github.com/lajstrom/lajstrom-ui)), Harbor adapter (#73),
+apt-transport-oci export. Docker passthrough with RBAC, rpm and OIDC, candidates here on
+2026-11-10, are on `main` already.
 
 Two milestones after M4 are open on GitHub:
 
 - **M5 — Docker and Kubernetes**, due 2027-01-15: docker images with RBAC and audit (#71), a
   pull-through cache of Docker Hub, ghcr.io and quay.io as an `oci` proxy repo (#442), a Helm
   chart (#82), moving in from another registry (#441), Talos nodes that pull only from Lajstrom
-  (#340).
+  (#340); all five are closed. Open: `POST /v2/token` for containerd (#908) and one read
+  credential for a fleet of nodes (#911), both waiting for a decision.
 - **M6 — rpm and OIDC**, after M5, no date yet: rpm hosted repos with a GPG-signed `repomd`
-  (#64), OIDC login with groups from claims bound to roles (#69).
+  (#64), OIDC login with groups from claims bound to roles (#69). Both are on `main`, and every
+  issue of the milestone is closed.
