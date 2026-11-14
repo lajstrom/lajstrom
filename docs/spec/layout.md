@@ -13,7 +13,7 @@
 
 ```
 cmd/lajstrom/                 main; subcommands: serve, reindex, migrate, version, healthcheck, registry (probe),
-                              admin (repo/user/token/binding/key/bootstrap/retention/deb/trusted-root/webhook)
+                              admin (repo/user/token/binding/key/bootstrap/retention/deb/trusted-root/webhook/snapshot)
 internal/config/              config file (YAML) + env overrides; validation; example in deploy/
 internal/server/              http.Server, routing (net/http ServeMux, Go 1.22 patterns), middleware:
                               request id, logging, metrics, auth, panic recovery; mounts formats, facade, api
@@ -53,6 +53,8 @@ internal/keys/gcpkms/         GCP Cloud KMS for keys: cryptoKeyVersions.get, get
 internal/keys/keystest/       test doubles: a KMS in memory; imported only by tests
 internal/gcpauth/             the access token of the workload's service account from the GCP metadata server
                               (an oci upstream's auth.gcp, gcpkms)
+internal/snapshot/            snapshots of the control plane (#76): the document, sealed or not, written to and read from
+                              the registry through the provider (manifest-profile.md §9)
 internal/audit/               audit log writer
 internal/attest/              the verification of attachments (#89): the trust of public keys and keyless identities, DSSE,
                               sigstore bundles, cosign's simple signing; no I/O: keys with the standard library, keyless
@@ -358,7 +360,7 @@ func All() []Plugin                         // sorted by name
 func Lookup(name string) (Plugin, bool)
 
 // Plugin names: ^[a-z0-9]+(-[a-z0-9]+)*$ and not reserved (http-routing.md §1).
-var Reserved = []string{"-", ".well-known", "api", "oci", "ui", "v2"} // read-only; oci: pass-through repos (#24)
+var Reserved = []string{"-", ".well-known", "api", "lajstrom", "oci", "ui", "v2"} // read-only; oci: pass-through repos (#24); lajstrom: snapshots (#76)
 func IsReserved(segment string) bool
 func CheckName(name string) error           // empty, reserved, or not the grammar; names the name
 
@@ -1325,9 +1327,51 @@ type MigrationReport struct {
 var ErrSchemaTooNew, ErrBreakingMigration error
 func AppliedMigrations(ctx context.Context, db *sql.DB) ([]int, error) // from schema_migrations
 
+// Snapshots of the control plane (#76; index-schema.md, Snapshots of the control plane;
+// manifest-profile.md §9). Not part of Store: lajstrom admin snapshot uses it, serve does not.
+type Snapshotter interface {
+    // ExportControlPlane: one transaction, repeatable read on Postgres; Schema the newest
+    // migration applied, ReadAt the database's time; the audit rows of opts only
+    ExportControlPlane(ctx context.Context, opts ExportOptions) (*ControlPlane, error)
+    // ImportControlPlane: the rows with their ids, in one transaction, into empty tables
+    // (ErrNotEmpty, naming them; opts.Force empties every table but schema_migrations,
+    // auth_version and replicas first); id sequences past the greatest id, auth_version
+    // incremented, opts.Event appended last; a Schema newer than the binary's ErrSchemaTooNew
+    ImportControlPlane(ctx context.Context, cp *ControlPlane, opts ImportOptions) error
+}
+type ExportOptions struct {
+    WithAudit  bool      // the audit rows whose At is at or after AuditSince (zero: every row)
+    AuditSince time.Time
+}
+type ImportOptions struct {
+    Force bool        // empty the database first instead of refusing it
+    Event *AuditEvent // appended in the transaction of the import, after the rows
+}
+type ControlPlane struct {                  // every row with its id; no secret in clear
+    Schema         int
+    ReadAt         time.Time
+    Repos          []Repo
+    GroupMembers   []GroupMember
+    Users          []User                   // live and deleted
+    Identities     []Identity
+    IdentityGroups []IdentityGroup          // IdentityID and Name are the row
+    Tokens         []Token                  // deploy tokens over a mask too (RepoMask)
+    Bindings       []Binding
+    Keys           []Key
+    Webhooks       []Webhook                // SecretEnc as the table has it; not their deliveries
+    WithAudit      bool                     // the ExportOptions of the read
+    AuditSince     time.Time
+    Audit          []AuditEvent
+}
+type GroupMember struct {                   // a row of group_members
+    GroupID, MemberID int64
+    Position          int
+}
+var ErrNotEmpty error                       // ImportControlPlane into a control plane that has rows
+
 // Drivers (internal/index/sqlite, internal/index/postgres): *Store implements index.Store and
-// adds Ping(ctx) error, ApplyMigrations(ctx, MigrateOptions) (MigrationReport, error),
-// AppliedMigrations(ctx) ([]int, error).
+// index.Snapshotter, and adds Ping(ctx) error, ApplyMigrations(ctx, MigrateOptions)
+// (MigrationReport, error), AppliedMigrations(ctx) ([]int, error).
 func Open(ctx context.Context, dsn string) (*Store, error)            // does not migrate
 ```
 
