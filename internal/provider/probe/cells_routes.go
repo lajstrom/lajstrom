@@ -2,6 +2,7 @@ package probe
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -11,6 +12,9 @@ import (
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"oras.land/oras-go/v2/registry/remote/errcode"
+
+	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
 // The results of the row "Routing words in a name".
@@ -29,12 +33,15 @@ const routingDir = "route/"
 
 // routingNames are the repositories of the row "Routing words in a name": a plain name, then
 // names with a component `manifests` or `referrers`, or the components `tags/list`, which end
-// routes of the distribution API. Harbor v2.15.4 answers the HEAD of a blob in them 404 or 400
-// at random (goharbor/harbor#24363), which is why ADR 0017 escapes the words. The names are
-// raw: the row measures the registry, not Lajstrom's escaping.
+// routes of the distribution API, and names that end in a build route of Quay's web UI. Harbor
+// v2.15.4 answers the HEAD of a blob in the first ones 404 or 400 at random
+// (goharbor/harbor#24363), which is why ADR 0017 escapes the words; Quay's master refuses the
+// token request of the first push of the others, 400 NAME_INVALID (quay/quay@77b369a), which is
+// capabilities.buildRoutes (provider.BuildRoute). The names are raw: the row measures the
+// registry, not Lajstrom's escaping.
 var routingNames = []string{
 	routingDir + "x", routingDir + "x/manifests/y", routingDir + "x/manifests",
-	routingDir + "x/referrers/y", routingDir + "x/tags/list",
+	routingDir + "x/referrers/y", routingDir + "x/tags/list", routingDir + "x/build", routingDir + "x/build/y",
 }
 
 // RoutingWords is what the row "Routing words in a name" measured.
@@ -97,6 +104,7 @@ func (r *run) measureRoutingWords(ctx context.Context) error {
 		}
 		w.Names = append(w.Names, n)
 	}
+	r.found.buildRoutesRefused, r.found.buildRoutesTaken = buildRoutes(w.Names)
 	w.Result = routingResult(w.Names)
 	r.report.RoutingWords = w
 	r.set("routingWords", routingVerdict(w, r.scratch+routingDir))
@@ -104,7 +112,8 @@ func (r *run) measureRoutingWords(ctx context.Context) error {
 }
 
 // routingName pushes an image to repo, the empty config and a layer of its own under the tag
-// v1, then asks for the layer by HEAD and by GET.
+// v1, then asks for the layer by HEAD and by GET. A token endpoint that refuses the push's
+// scope, as Quay's does for a build route, refuses the name.
 func (r *run) routingName(ctx context.Context, repo string) (RoutingName, error) {
 	n := RoutingName{Name: r.name(repo)}
 	note := "routing words, " + repo
@@ -114,6 +123,10 @@ func (r *run) routingName(ctx context.Context, repo string) (RoutingName, error)
 		data []byte
 	}{{"the empty blob", []byte("{}")}, {"the layer", layer}} {
 		_, a, err := r.pushBlob(ctx, repo, b.data)
+		if refusal, ok := tokenRefusal(err); ok {
+			n.Refused = refusal + " at the token request of the push of " + b.what
+			return n, nil
+		}
 		if err != nil {
 			return n, err
 		}
@@ -146,6 +159,37 @@ func (r *run) routingName(ctx context.Context, repo string) (RoutingName, error)
 	}
 	n.Get = a.status
 	return n, nil
+}
+
+// tokenRefusal describes the refusal of a token endpoint that err holds, "400 `NAME_INVALID`",
+// and reports whether it holds one: the auth client's error when the endpoint answered the
+// challenge of a request with a 4xx.
+func tokenRefusal(err error) (string, bool) {
+	var resp *errcode.ErrorResponse
+	if !errors.As(err, &resp) || resp.StatusCode/100 != 4 {
+		return "", false
+	}
+	if len(resp.Errors) > 0 && resp.Errors[0].Code != "" {
+		return fmt.Sprintf("%d `%s`", resp.StatusCode, resp.Errors[0].Code), true
+	}
+	return fmt.Sprintf("a %d", resp.StatusCode), true
+}
+
+// buildRoutes reports whether the registry refused, with NAME_INVALID, every name of names that
+// ends in a build route (provider.BuildRoute), and whether it took every one: "Overrides needed"
+// compares them with capabilities.buildRoutes.
+func buildRoutes(names []RoutingName) (refused, taken bool) {
+	refused, taken = true, true
+	seen := false
+	for _, n := range names {
+		if !provider.BuildRoute(n.Name) {
+			continue
+		}
+		seen = true
+		refused = refused && strings.Contains(n.Refused, "`NAME_INVALID`")
+		taken = taken && n.Refused == ""
+	}
+	return refused && seen, taken && seen
 }
 
 // routingResult is the row's result: misroutes when a blob was missed in a name, refused when

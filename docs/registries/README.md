@@ -179,8 +179,8 @@ Its build rule, on master and not released, is
 | | Quay 3.18.2 |
 | --- | --- |
 | Create on push | [yes, at the token request for `push`, inside an existing organisation](quay.md#organisations-robots-and-create-on-push) |
-| Where a repository may be created | [below `<organisation>/`, at any depth; on master, not released, **no new name ending in `build` or `build/<x>`**](quay.md#the-build-rule) |
-| Routing words in a name (`manifests`, `referrers`, `tags/list`) | [ok](quay.md#the-row) |
+| Where a repository may be created | [below `<organisation>/`, at any depth; on master, not released, **no new name ending in `build` or `build/<x>`**](quay.md#the-build-rule), which Lajstrom refuses first since #662 (`buildRoutes`) |
+| Routing words in a name (`manifests`, `referrers`, `tags/list`) | [ok](quay.md#the-row); with 77b369a's sources, [**refused**: `x/build`, `x/build/y` 400 `NAME_INVALID` at the token request](quay.md#what-lajstrom-does-662) (#662) |
 | Referrers API | [yes, with the `artifactType` filter; **400 `MANIFEST_INVALID` for a subject that does not exist**](quay.md#referrers) |
 | `OCI-Subject` on a push with `subject` | [no](quay.md#referrers) |
 | Catalog (`_catalog`) and its limits | [**200 and an empty list without credentials**; with a token, creation order, 100 a page, **`last` ignored**](quay.md#catalog) |
@@ -209,7 +209,7 @@ Its build rule, on master and not released, is
 | Upload continued by another replica | [**fails**: the status one byte ahead (#804)](quay.md#our-tests-against-it) |
 | Garbage collector and an untagged referrer (#37) | *not measured*; [kept by its hidden tag (read), and a `DELETE` does not remove it](quay.md#delete) |
 | What the probe finds | [`referrers=false catalog=true`, `vendor=distribution`; both wrong](quay.md#the-row); since #803 `vendor=quay`, whose table entry sets `referrers=false catalog=false` (the tag schema, [quay.md](quay.md#what-the-provider-must-do-differently) item 3) and `consistency: eventual` within 130 s |
-| Overrides needed | [`server.maxManifestSize: 1048576`; before #803 also `catalog: false` and `consistency: eventual`](quay.md#configuration) |
+| Overrides needed | [`server.maxManifestSize: 1048576`; before #803 also `catalog: false` and `consistency: eventual`](quay.md#configuration); on 3.18, `buildRoutes: false` for new packages that end in `build` (#662) |
 
 ### Amazon ECR
 
@@ -593,7 +593,7 @@ written. How each row is measured, in requests:
 | Row | What the probe does |
 | --- | --- |
 | Create on push, where | in a new repository: an upload session (cancelled), the empty blob, a manifest; after each, whether the repository exists (its tag list, and the catalog for an empty list). A manifest eight levels deep inside it; upload sessions in names of 255 and 256 characters and with a component of 256 bytes. Outside the instance prefix nothing is tried |
-| Routing words | an image, the empty config and a layer of its own, in the plain name `route/x` and in `route/x/manifests/y`, `route/x/manifests`, `route/x/referrers/y` and `route/x/tags/list`, raw, not escaped; each layer by `HEAD` `--routing-heads` times (20) and by `GET` once ([Routing words](#routing-words)) |
+| Routing words | an image, the empty config and a layer of its own, in the plain name `route/x` and in `route/x/manifests/y`, `route/x/manifests`, `route/x/referrers/y`, `route/x/tags/list`, `route/x/build` and `route/x/build/y`, raw, not escaped; each layer by `HEAD` `--routing-heads` times (20) and by `GET` once ([Routing words](#routing-words)) |
 | Referrers API, `OCI-Subject` | a subject tagged `v1`, two referrers by digest with artifact types of their own (one of the empty type where the registry refuses unknown ones); `referrers/<subject>`, with `?artifactType=`; whether a `sha256-<subject>` tag appeared |
 | Catalog | `_catalog?n=1`; five repositories `pre`, `pre/sub`, `pre-x`, `pre.y`, `prea` and their order; a page of two after the first by `last` and its `Link`; `n=1000`, `n=1001`, `n=100000`; the page without `n` |
 | Tag list | one manifest under seven tags pushed out of order (`b`, `A`, `1.10`, `_x`, `1.2`, `Z`, `a`); the list, a page of two by `last`, the list of a repository never pushed |
@@ -647,9 +647,18 @@ The row's cell is one of three results. `ok`: every `HEAD` and the `GET` found e
 or a redirect to its bytes). `misroutes`: in a name with a word, one did not, while all did in
 the plain name; the cell names those names and counts the misses. `refused`: the registry did
 not take the push of such a name, a grammar narrower than the spec's (#599), which Lajstrom's
-escaped names (below) do not meet. A plain name that is refused or missed is *not measured*:
-the words are not the cause. After the table, a line per registry counts the answers name by
-name; `-o json` has them as `routingWords`.
+escaped names (below) do not meet; a token endpoint that refuses the push's scope refuses the
+name too, and the cell says "at the token request". A plain name that is refused or missed is
+*not measured*: the words are not the cause. After the table, a line per registry counts the
+answers name by name; `-o json` has them as `routingWords`.
+
+`route/x/build` and `route/x/build/y` end in a build route of Quay's web UI. Quay's master
+refuses the token of their first push, `400 NAME_INVALID` "Repository name conflicts with a build
+route" (quay/quay@77b369a, [quay.md](quay.md#the-build-rule)): a `refused` with these two is that
+rule, which Lajstrom does not escape but meets with `capabilities.buildRoutes`, refusing a new
+package so named before anything is pushed (#662). "Overrides needed" says `buildRoutes: true`
+when a registry refuses them and the vendor table does not say so, and `buildRoutes: false` when
+a registry the table gives the rule, Quay 3.18, takes them.
 
 A `misroutes` result is why ADR 0017 escapes these words in every OCI name Lajstrom writes, on
 every registry ([its amendment for Harbor's routes](../adr/0017-the-grammar-of-oci-names.md#amendment-harbors-routes-2026-11-11)):

@@ -116,6 +116,10 @@ type facts struct {
 	lagUnbounded bool
 	// notMonotonic: a read over a new connection saw a change, and a later one did not.
 	notMonotonic bool
+	// buildRoutesRefused: every name of the routing words that ends in a build route was refused
+	// NAME_INVALID; buildRoutesTaken: every one was taken (provider.BuildRoute).
+	buildRoutesRefused bool
+	buildRoutesTaken   bool
 }
 
 // Run measures the row of the registry cfg (registries[].type generic or ecr) and deletes what
@@ -280,6 +284,7 @@ func overridesVerdict(caps Capabilities, f facts) string {
 	if f.repointRefused && !caps.ImmutableTags {
 		o = append(o, "`immutableTags: true`")
 	}
+	o = append(o, buildRoutesOverride(caps, f)...)
 	o = append(o, consistencyOverrides(caps, f)...)
 	if f.notMonotonic {
 		o = append(o, "no override helps: **reads are not monotonic**; point `url` at one regional endpoint")
@@ -291,6 +296,19 @@ func overridesVerdict(caps Capabilities, f facts) string {
 		return "none"
 	}
 	return strings.Join(o, "; ")
+}
+
+// buildRoutesOverride is the part of "Overrides needed" for capabilities.buildRoutes: where the
+// row "Routing words in a name" saw the registry refuse, or take, every name that ends in a build
+// route, and the provider's capabilities say otherwise.
+func buildRoutesOverride(caps Capabilities, f facts) []string {
+	switch {
+	case f.buildRoutesRefused && !caps.BuildRoutes:
+		return []string{"`buildRoutes: true`: the registry creates no repository whose name ends in `build`"}
+	case f.buildRoutesTaken && caps.BuildRoutes:
+		return []string{"`buildRoutes: false` lets new packages end in `build`: this registry creates such names"}
+	}
+	return nil
 }
 
 // in makes key the cell that the exchanges of ctx's requests go to.

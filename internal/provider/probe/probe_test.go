@@ -125,6 +125,7 @@ func TestOverridesVerdict(t *testing.T) {
 	probed := Capabilities{CreateOnPush: true, Catalog: true, DeleteManifest: true, BlobRedirect: true}
 	withReferrers := probed
 	withReferrers.Referrers = true
+	quay := Capabilities{CreateOnPush: true, DeleteManifest: true, BlobRedirect: true, BuildRoutes: true}
 	cases := []struct {
 		name string
 		caps Capabilities
@@ -142,6 +143,11 @@ func TestOverridesVerdict(t *testing.T) {
 		{"the probe says referrers, wrongly", withReferrers, facts{catalog: true, referrersKnown: true}, "`referrers: false`"},
 		// ECR refuses _catalog's last=<name> (405), and the provider lists with DescribeRepositories.
 		{"ecr", withReferrers, facts{referrersAPI: true, referrersKnown: true, ownListing: true}, "none"},
+		{"quay with 77b369a", quay, facts{buildRoutesRefused: true}, "none"},
+		{"quay 3.18.2", quay, facts{buildRoutesTaken: true}, "`buildRoutes: false` lets new packages end in `build`: this registry creates such names"},
+		{"build routes elsewhere", probed, facts{catalog: true, buildRoutesRefused: true},
+			"`buildRoutes: true`: the registry creates no repository whose name ends in `build`"},
+		{"zot, the build names taken", probed, facts{catalog: true, buildRoutesTaken: true}, "none"},
 	}
 	for _, c := range cases {
 		if got := overridesVerdict(c.caps, c.f); got != c.want {
