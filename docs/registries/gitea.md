@@ -183,16 +183,22 @@ measured with the probe again.
      version's, and a lookup by digest in the index for each tag the index does not have. It is
      tested on a fake that folds case (`TestRebuildFoldedTags`); the integration tests have not
      been run against Gitea for it.
-   - **Two versions that differ only in case are one tag.** Through Lajstrom the second one is a
-     409, and nothing is overwritten: `ingest.Pipeline.checkTag` resolves its tag before the
-     push, and Gitea answers with the first version's manifest, which has another digest
-     (`TestFoldedTagCaseVariant`). The message names the tag and that digest, not the case. A
+   - **Two versions that differ only in case are one tag.** The vendor table says that Gitea
+     folds case (`capabilities.tagsFoldCase: true`, #426), and ingest acts on it. Through
+     Lajstrom the second version is a 409, and nothing is overwritten:
+     `ingest.Pipeline.checkTag` resolves its tag before the push, Gitea answers with the first
+     version's manifest, and the message names that version and says that the registry folds the
+     case of tags (`TestIngestFoldsCase`, `TestFoldedTagCaseVariant`). Two such publishes at once
+     cannot both push: the claim on a tag is on the tag lower-cased, so the second is a 409
+     before anything is pushed (`TestIngestFoldsCaseClaim`). Before #426 both got their claims,
+     both pushed, and Gitea deleted the first manifest when the second re-pointed the tag. A
      reindex finds the one manifest the tag holds and indexes it with the version and tag of its
      annotations. A version the index has whose tag a write straight to the registry re-pointed
      is reported as drift and kept, as any re-pointed tag is (`TestFoldedTagRepointed`). Gitea
      deletes the manifest that the tag named before.
-   - **Refusing such a version at ingest** with a clear message needs a vendor-table capability
-     ("tags fold case"). That is a contract question, #426.
+   - **Versions with capitals are not refused.** #426's first proposal was to refuse every tag
+     with capitals on Gitea; since #844 they publish, serve and rebuild, and refusing them would
+     refuse every Maven `.Final`, `-M1` and `-RC1` there.
 3. Expect no ranges from Gitea (Forgejo has them,
    [forgejo.md](forgejo.md#where-it-differs-from-gitea)). A `Range` on a blob is answered 200
    with the whole blob and no `Accept-Ranges`; the facade and `/raw/` pass that on, which RFC

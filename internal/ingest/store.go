@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/opencontainers/go-digest"
@@ -34,6 +35,7 @@ var errExisted = errors.New("ingest: the tag already holds this manifest")
 // and a fresh claim of another digest whose manifest the registry has, with the same files, is
 // the publish that pub repeats: pub takes over that manifest and shares its claim (takeOver).
 // A claim pub gets is the tag's in the index only: checkTag reads the tag in the backend next.
+// On a registry that folds the case of tags the claim is on the tag lower-cased (claimKey).
 func (p *Pipeline) claimTag(ctx context.Context, pub *publish) (existed bool, err error) {
 	existed, claimed, err := p.claimOnce(ctx, pub, 0)
 	if claimed == "" {
@@ -51,7 +53,8 @@ func (p *Pipeline) claimTag(ctx context.Context, pub *publish) (existed bool, er
 // stays pub's.
 func (p *Pipeline) claimOnce(ctx context.Context, pub *publish, replace int64) (existed bool, claimed digest.Digest, err error) {
 	now := p.now()
-	claim := index.TagClaim{RepoID: pub.repo.ID, Package: pub.pkgPath, Tag: pub.tag,
+	key, folds := claimKey(ctx, pub)
+	claim := index.TagClaim{RepoID: pub.repo.ID, Package: pub.pkgPath, Tag: key,
 		Digest: pub.digest, Principal: pub.principal.String(), ClaimedAt: now}
 	err = p.index.Tx(ctx, func(w index.Writer) error {
 		if replace != 0 {
@@ -67,7 +70,7 @@ func (p *Pipeline) claimOnce(ctx context.Context, pub *publish, replace int64) (
 			if pub.repeatOnFiles && errors.As(err, &conflict) {
 				claimed = conflict.Existing
 			}
-			return err
+			return foldedClaim(pub, key, folds, err)
 		}
 		return pub.checkVersion(ctx, w)
 	})
@@ -81,6 +84,31 @@ func (p *Pipeline) claimOnce(ctx context.Context, pub *publish, replace int64) (
 		return false, claimed, err
 	}
 	return false, "", fmt.Errorf("ingest: claim %s:%s: %w", pub.name, pub.tag, err)
+}
+
+// claimKey is the tag of pub's claim on its tag: the tag, lower-cased on a registry that folds
+// the case of tags (provider.Capabilities.TagsFoldCase, folds), where tags that differ only in
+// case are one tag, so that two such publishes at once are one claim and the second is refused
+// before anything is pushed (docs/spec/index-schema.md, Coordination). Tags are ASCII. A registry
+// whose capabilities cannot be read gets the tag as it is: its push fails all the same.
+func claimKey(ctx context.Context, pub *publish) (key string, folds bool) {
+	if caps, err := pub.prov.Capabilities(ctx); err == nil && caps.TagsFoldCase {
+		return strings.ToLower(pub.tag), true
+	}
+	return pub.tag, false
+}
+
+// foldedClaim is err, the claim of pub on key refused, said in words on a registry that folds
+// the case of tags (folds) when another digest's fresh claim on key refused it: that is a publish
+// of pub's tag under way, or of a tag that differs from it only in case, which the claim cannot
+// tell apart. It still wraps the *index.TagConflictError.
+func foldedClaim(pub *publish, key string, folds bool, err error) error {
+	var conflict *index.TagConflictError
+	if !folds || !errors.As(err, &conflict) || conflict.Tag != key {
+		return err
+	}
+	return fmt.Errorf("ingest: registry %s folds the case of tags, so the claim on %q is on %q, which a publish of it, or of a tag "+
+		"that differs from it only in case, holds: %w", pub.prov.Name(), pub.tag, key, err)
 }
 
 // checkVersion reads the version of pub's tag on w, under pub's claims: none is nil; the same
@@ -352,7 +380,8 @@ func (p *Pipeline) push(ctx context.Context, pub *publish) (existed bool, err er
 // tag. pub takes it over and moves its claim to it (takeOver); existed reports that the index
 // has it meanwhile. Nothing re-points the tag: pub pushes the digest the tag holds. A manifest
 // of other files there is the conflict. The same digest there is pushed again too, which
-// changes nothing, and confirmed.
+// changes nothing, and confirmed. On a registry that folds the case of tags, a conflict with the
+// version of the tag of another case says so (caseConflict).
 func (p *Pipeline) checkTag(ctx context.Context, pub *publish) (existed bool, err error) {
 	desc, err := pub.rr.Resolve(ctx, pub.tag)
 	switch {
@@ -365,9 +394,34 @@ func (p *Pipeline) checkTag(ctx context.Context, pub *publish) (existed bool, er
 	}
 	conflict := &index.TagConflictError{Tag: pub.tag, Existing: desc.Digest}
 	if !pub.repeatOnFiles {
-		return false, conflict
+		return false, p.caseConflict(ctx, pub, conflict)
 	}
-	return p.takeOver(ctx, pub, desc.Digest, pub.claim.ID, conflict)
+	existed, err = p.takeOver(ctx, pub, desc.Digest, pub.claim.ID, conflict)
+	if refused := (*index.TagConflictError)(nil); errors.As(err, &refused) && refused == conflict {
+		return false, p.caseConflict(ctx, pub, conflict)
+	}
+	return existed, err
+}
+
+// caseConflict is conflict, pub's tag holding another manifest in the backend, said in words on a
+// registry that folds the case of tags (provider.Capabilities.TagsFoldCase) when that manifest is
+// the version of the repo whose tag differs from pub's only in case: the registry resolved pub's
+// tag to that version's (docs/spec/manifest-profile.md §4.2). One lookup by digest in the index,
+// on the conflict only. It wraps conflict, which stands as it is otherwise.
+func (p *Pipeline) caseConflict(ctx context.Context, pub *publish, conflict *index.TagConflictError) error {
+	if caps, err := pub.prov.Capabilities(ctx); err != nil || !caps.TagsFoldCase {
+		return conflict
+	}
+	v, err := p.index.GetVersionByDigest(ctx, pub.repo.ID, conflict.Existing)
+	if err != nil || v.Tag == pub.tag || !strings.EqualFold(v.Tag, pub.tag) {
+		return conflict
+	}
+	version := v.Version
+	if v.Variant != "" {
+		version += " (" + v.Variant + ")"
+	}
+	return fmt.Errorf("ingest: registry %s folds the case of tags, and %q is the tag of version %s of %s there: two versions whose "+
+		"tags differ only in case cannot both be stored on it: %w", pub.prov.Name(), pub.tag, version, pub.parsed.Annotations.Name, conflict)
 }
 
 // pushManifest calls intend and pushes the manifest with its tag in one request, after
