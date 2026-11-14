@@ -326,8 +326,9 @@ the others compare. Not every point is unique to Lajstrom, and each says so wher
     attestations ([registries/README.md](registries/README.md#amazon-ecr)). ACR and Docker Hub
     are untested as backends, Google Artifact Registry too.
   - JFrog JCR and Project Quay are measured, and each is "a backend for trying Lajstrom, not for
-    data": JCR until it is run again with the provider's work-arounds of #352 and #368
-    ([jfrog-jcr.md](registries/jfrog-jcr.md#configuration)), Quay while a referrer pushed by
+    data": JCR while a rebuild from an empty index finds no repository (it has no catalog
+    Lajstrom uses) and Lajstrom runs with its admin's token, the work-arounds of #352, #368 and
+    #813 holding since 2026-11-13 ([jfrog-jcr.md](registries/jfrog-jcr.md#again-after-813)), Quay while a referrer pushed by
     digest cannot be deleted and a rebuild from an empty index finds no repository
     ([quay.md](registries/quay.md#our-tests-against-it)).
   - GHCR cannot delete through `/v2`, so Lajstrom cannot delete versions there.

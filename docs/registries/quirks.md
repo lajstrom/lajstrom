@@ -729,7 +729,7 @@ disappears from its clients without an audit record.
 | Quay | `<organisation>/` | a robot in a team with the role admin; a policy that leaves `sha256-*` mutable; measured on 3.18.2, for trying Lajstrom; a delete's token asks `push`, which Quay takes in place of `delete` (#801), but a referrer pushed by digest stays, its `DELETE` 404 ([quay.md](quay.md#delete)) | `server.maxManifestSize: 1048576`; the vendor table sets `catalog`, `referrers` and `consistency` (#803) |
 | ACR, GAR | | not measured ([matrix](README.md#versions-tested)); GAR needs monolithic uploads | |
 | Docker Hub | | not a backend: two levels | |
-| JFrog | `<repo-key>/` | a local Docker repository; measured before the workarounds of #352 and #368, not run again with them: for trying Lajstrom ([jfrog-jcr.md](jfrog-jcr.md)) | `uploads.spoolUnknownLength: true` when clients stream more than one chunk |
+| JFrog | `<repo-key>/` | a local Docker repository; the workarounds of #352, #368 and #813 hold, measured on 2026-11-13 and 14; for trying Lajstrom while a rebuild from an empty index finds no repository (no catalog Lajstrom uses) ([jfrog-jcr.md](jfrog-jcr.md#again-after-813)) | `uploads.spoolUnknownLength: true` when clients stream more than one chunk |
 
 ### Design risks
 

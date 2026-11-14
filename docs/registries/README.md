@@ -16,7 +16,7 @@ that was not measured says *not measured*. distribution's and Zot's measurements
 2026-11-09, Nexus's, Gitea's and JCR's on 2026-11-10, the others' on 2026-11-07, and
 `lajstrom registry probe` measured some of them again later; GitLab's delete through Lajstrom's
 `/v2` and Nexus after #352 were measured again on 2026-11-12 (#781), and Forgejo got a column of
-its own that day (#816); the [Versions tested](#versions-tested) table has the dates
+its own that day (#816); JCR was measured again after #813 on 2026-11-13 and 14 (#947); the [Versions tested](#versions-tested) table has the dates
 of each registry, and [Keeping the matrix current](#keeping-the-matrix-current) says when it
 changes. A registry that is not here is not tested.
 
@@ -40,7 +40,7 @@ configuration has to add.
 | GitLab container registry v4.43.0, B (metadata database, as GitLab.com) | the same, and `postgres:17.11-alpine`, index `sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac` | `compose.yaml` (`gitlab-db`, `gitlab-postgres`, profile `gitlab`) | 2026-11-07; the probe 2026-11-10, its row "Read-after-write lag" 2026-11-11; a delete through Lajstrom's `/v2` 2026-11-12, the tag rebuilt (index `sha256:2f1dcea7…`, [gitlab.md](gitlab.md#a-delete-through-lajstroms-v2)) | `manual` |
 | GHCR | `ghcr.io`, no version published (`registry/2.0`) | nothing: a hosted service | 2026-11-07 | `hosted`: an account in the test organisation `lajstrom-extras` and a token |
 | Amazon ECR, a private registry | `<account>.dkr.ecr.<region>.amazonaws.com`, no version published (`registry/2.0`) | nothing: a hosted service | 2026-11-13 in `ap-southeast-1`: the probe, `TestIntegrationECRLive`, a Lajstrom on it and by hand ([ecr.md](ecr.md#measured-on-ecr-19)) | `hosted`: an AWS account, run by hand; no ECR in CI |
-| JFrog Container Registry 7.161.26 | `releases-docker.jfrog.io/jfrog/artifactory-jcr:7.161.26`, index `sha256:fd8d64416384c2ede4478c89bfa85ba7e9193db4db0dc36db3a307a0b9a5128b`, and `postgres:17.11-alpine` (it needs 4 GiB of memory) | [`jfrog-jcr/compose.yaml`](../../deploy/compose/jfrog-jcr/compose.yaml), set up by `jcr.sh` | 2026-11-10 | `manual` |
+| JFrog Container Registry 7.161.26 | `releases-docker.jfrog.io/jfrog/artifactory-jcr:7.161.26`, index `sha256:fd8d64416384c2ede4478c89bfa85ba7e9193db4db0dc36db3a307a0b9a5128b`, and `postgres:17.11-alpine` (it needs 4 GiB of memory) | [`jfrog-jcr/compose.yaml`](../../deploy/compose/jfrog-jcr/compose.yaml), set up by `jcr.sh` | 2026-11-10; again after #813, with the probe, the integration tests and the e2e scenarios, 2026-11-13 and 14, still the newest tag ([jfrog-jcr.md](jfrog-jcr.md#again-after-813)) | `manual` |
 | Harbor v2.15.4 | `harbor-online-installer-v2.15.4.tgz`, sha256 `eeb899cf7b626c925790adba87db9008dd1d73a693a72442651b5bdece9805c6` (images linux/amd64 only) | `harbor.sh` | 2026-11-07; the routing words by the probe 2026-11-11 ([quirks.md](quirks.md#measured-on-harbor)) | `manual` |
 | Nexus Repository 3.98.1, Community Edition, a `docker` and an `oci` hosted repository | `sonatype/nexus3:3.98.1`, index `sha256:91a9af44af777c353db11a5ee73850c7eb24b03c997ff4cc62a3500ad38a1332` | `nexus/compose.yaml`, set up by `nexus.sh` | 2026-11-10; again after #352, with the probe, 2026-11-12 ([nexus.md](nexus.md#again-after-352)) | `manual` |
 | Gitea 1.27.3, its container registry | `gitea/gitea:1.27.3-rootless`, index `sha256:1c17ecaead42eb3b5391553d8708103a4beb0e86edf5b9ebc1eb269c318845f2` | `gitea/compose.yaml`, set up by `gitea.sh` | 2026-11-10, by hand and by the probe | `manual`; the e2e scenarios `oras`, `auth`, `rbac`, `oci-token`, `cosign` and `tokens` in CI (the job `e2e (gitea)`, not required, #353) |
@@ -113,12 +113,19 @@ upload status.
 
 JFrog Container Registry 7.161.26, the free Artifactory edition for containers
 ([jfrog-jcr.md](jfrog-jcr.md)), measured on 2026-11-10 with a local docker repository as
-Lajstrom's prefix (`prefix: <repo-key>/`, the repository path method). Its cells are a table
-of their own below, row for row as the table above. That day it was a backend for trying Lajstrom, not
+Lajstrom's prefix (`prefix: <repo-key>/`, the repository path method), and again on 2026-11-13
+and 14 with `lajstrom registry probe` (#947). Its cells are a table
+of their own below, row for row as the table above. On 2026-11-10 it was a backend for trying Lajstrom, not
 for data: JCR keeps a blob under whatever digest it is told and drops the body of a closing
 `PUT` after a `PATCH`, and its `HEAD` of a blob says 200 where `GET` is 404. The code works
-around all three since (#352, #368: [items 2 to 4 of its page](jfrog-jcr.md#what-the-provider-must-do-differently));
-JCR was not measured again with them. Its
+around all three since (#352, #368, #813: [items 2 to 4 of its page](jfrog-jcr.md#what-the-provider-must-do-differently)),
+and measured again the workarounds hold. What is left is on its page,
+[Again after #813](jfrog-jcr.md#again-after-813): the admin's token, no catalog Lajstrom uses,
+an image path deleted with its blobs when its last manifest goes, a re-pointed tag that deletes
+the manifest it named, `MANIFEST_INVALID` for a missing blob, a referrers list that lags by
+milliseconds, and two answers of Lajstrom's to JCR's upload sessions. Until the provider lists
+repositories through JCR's per-key catalog, a rebuild from an empty index finds none, so JCR
+stays a backend for trying, as Quay does. Its
 deviations are on its page, [Deviations](jfrog-jcr.md#deviations-from-the-specification); its
 `registries[]` entry is [Configuration](jfrog-jcr.md#configuration); whoever changes the pin
 in its compose file re-runs [Commands](jfrog-jcr.md#commands).
@@ -126,19 +133,19 @@ in its compose file re-runs [Commands](jfrog-jcr.md#commands).
 | | JCR 7.161.26 |
 | --- | --- |
 | Create on push | [yes, inside an existing repository key; a key never (404)](jfrog-jcr.md#create-on-push) |
-| Where a repository may be created | [below `<repo-key>/`, at any depth](jfrog-jcr.md#create-on-push) |
-| Routing words in a name (`manifests`, `referrers`, `tags/list`) | *not measured* |
-| Referrers API | [yes, with the `artifactType` filter](jfrog-jcr.md#referrers) |
+| Where a repository may be created | [below `<repo-key>/`, at any depth, inside another repository too](jfrog-jcr.md#the-row) |
+| Routing words in a name (`manifests`, `referrers`, `tags/list`) | [ok, by the probe on 2026-11-13](jfrog-jcr.md#the-row) |
+| Referrers API | [yes, with the `artifactType` filter](jfrog-jcr.md#referrers); [the list lags a push and a delete by about 10 ms](jfrog-jcr.md#again-after-813) |
 | `OCI-Subject` on a push with `subject` | [yes](jfrog-jcr.md#referrers) |
 | Catalog (`_catalog`) and its limits | [**200 with an empty body**; per key at `/v2/<repo-key>/_catalog`, `n`/`last`/`Link`, lexical](jfrog-jcr.md#catalog-and-tags) |
 | A listing API of its own | [Artifactory's Docker and storage APIs](jfrog-jcr.md#catalog-and-tags) |
 | Tag list order and pagination | [lexical; `n`/`last`/`Link`](jfrog-jcr.md#catalog-and-tags) |
-| Read-after-write lag | *not measured* |
-| Monotonic reads | *not measured* |
-| Delete a manifest by digest | [yes, 202, with its tags; its referrers stay](jfrog-jcr.md#delete) |
-| Delete by tag | [yes: the manifest stays](jfrog-jcr.md#delete) |
+| Read-after-write lag | [none seen in 3 writes and 3 deletes, by the probe; the referrers list not read](jfrog-jcr.md#the-row) |
+| Monotonic reads | [none: 3 writes, a tag move, 3 deletes, each read 5 times more over new connections](jfrog-jcr.md#the-row) |
+| Delete a manifest by digest | [yes, 202, with its tags; its referrers stay](jfrog-jcr.md#delete); [**the last manifest of an image path takes the path and its blobs**](jfrog-jcr.md#again-after-813) |
+| Delete by tag | [the tag; **the manifest too**, when it was pushed by that tag only](jfrog-jcr.md#the-row) |
 | Delete a repository | [Artifactory's REST API](jfrog-jcr.md#delete) |
-| Immutable tags, where the rule lives | [none: a tag re-points with 201; Artifactory's overwrite permission, not measurable on JCR](jfrog-jcr.md#immutable-tags) |
+| Immutable tags, where the rule lives | [none: a tag re-points with 201, and **the manifest it named is deleted**; Artifactory's overwrite permission, not measurable on JCR](jfrog-jcr.md#immutable-tags) |
 | Blob redirect | [none on the filesystem store](jfrog-jcr.md#blob-reads-head-and-get) |
 | `Range` and `Accept-Ranges` | [206, 416 past the end; `Accept-Ranges: bytes` on `GET`](jfrog-jcr.md#blob-reads-head-and-get) |
 | Largest blob measured | [1 GiB in one `PUT`](jfrog-jcr.md#blob-reads-head-and-get) |
@@ -147,14 +154,14 @@ in its compose file re-runs [Commands](jfrog-jcr.md#commands).
 | Auth | [Bearer from `/v2/token`, Basic too; the admin's access token (no other user through REST)](jfrog-jcr.md#run-it) |
 | Rate limits seen | [none](jfrog-jcr.md#our-tests-against-it) |
 | Upload: chunk out of order | [416](jfrog-jcr.md#uploads-and-digests) |
-| Upload: chunk size limit | *not measured* |
-| Upload: session status (`GET`) | [works, 204 with `Range`](jfrog-jcr.md#uploads-and-digests) |
+| Upload: chunk size limit | [none met: 8 MiB in one `PATCH`](jfrog-jcr.md#the-row) |
+| Upload: session status (`GET`) | [works, 204 with `Range`](jfrog-jcr.md#uploads-and-digests); [**404 before the first chunk**](jfrog-jcr.md#again-after-813) |
 | Upload: cancel (`DELETE`) | [405](jfrog-jcr.md#uploads-and-digests) |
-| Upload: mount (`POST ?mount=&from=`) | [**202: a session instead**](jfrog-jcr.md#uploads-and-digests) |
+| Upload: mount (`POST ?mount=&from=`) | [**201 without a copy** when a manifest of the source names the blob; 202, a session, for a blob the source holds as an upload only (the probe's)](jfrog-jcr.md#again-after-813) |
 | Upload: wrong digest, empty blob | [**a wrong digest is 201 and stored**; the empty blob stored](jfrog-jcr.md#uploads-and-digests) |
-| Upload continued by another replica | [fails: ours, the token (fixed by #342), then **the closing `PUT`'s body dropped** (worked around since #352; not run again)](jfrog-jcr.md#uploads-and-digests) |
+| Upload continued by another replica | [works since #342 and #352, by the probe and the facade's test; a chunk of unknown size after the first needs `uploads.spoolUnknownLength`](jfrog-jcr.md#again-after-813) |
 | Garbage collector and an untagged referrer (#37) | *not measured* |
-| What the probe finds | [`referrers=true catalog=false`, since the probe wants a catalog in the 200 (#338); before that `catalog=true`, wrong](jfrog-jcr.md#what-the-provider-must-do-differently) |
+| What the probe finds | [`referrers=true catalog=false`; `vendor=jfrog` since #352](jfrog-jcr.md#again-after-813); [before #338's probe fix `catalog=true`, wrong](jfrog-jcr.md#what-the-provider-must-do-differently) |
 | Overrides needed | [none; `prefix: <repo-key>/`](jfrog-jcr.md#configuration) |
 
 ### Project Quay
@@ -499,6 +506,7 @@ catalog. It is **eventually consistent** when a read can miss the write for a wh
 | Amazon ECR | eventual, no bound | 100 ms to several seconds under concurrent pushes, from reports ([ecr.md](ecr.md#capabilities)); measured 2026-11-13 without load: no lag in 40 writes and the probe's row (#19) |
 | GHCR | eventual (the vendor table), no bound | users saw a tag `404` 0.2 s after its push, once in 30 runs; reads from another runner fail more often |
 | Docker Hub | none seen for manifests and blobs | its referrers list lagged up to about a minute behind a signature (cosign users' reports) |
+| JFrog Container Registry 7.161.26 | unknown: no consistency in the vendor table | the probe, 2026-11-13: every write and delete at once, monotonic reads; the referrers list lags a referrer's push and its delete by about 10 ms (curl, [jfrog-jcr.md](jfrog-jcr.md#again-after-813)), so `strong` would be wrong |
 | Project Quay 3.18.2 | eventual within 130 s (the vendor table, #803), for lists | measured 2026-11-12: manifests and blobs at once; a tag list read before a push stays stale up to 120 s, a catalog page 60 s ([quay.md](quay.md#consistency)) |
 | Azure Container Registry | per replica | geo-replicas are eventual, without a published bound; a push and its reads must use one regional endpoint. The probe's row "Monotonic reads" (below) is the measurement for its global endpoint; not run on it |
 | Google Artifact Registry | none seen | a remote repository caches its tags for an hour |
@@ -710,8 +718,8 @@ The commands per registry:
       [forgejo.md, Commands](forgejo.md#commands): `gitea.sh up forgejo`, the probe, the upload
       status by curl, the tests and the e2e scenarios with the prefix; then `gitea.sh down`.
 - [ ] **JFrog Container Registry** (`jfrog-jcr/compose.yaml`; a new image is a new digest):
-      [jfrog-jcr.md, Commands](jfrog-jcr.md#commands): `jcr.sh up`, the curl probes, the tests
-      and the e2e scenarios with the prefix; then `jcr.sh down`.
+      [jfrog-jcr.md, Commands](jfrog-jcr.md#commands): `jcr.sh up`, the probe, the curl probes,
+      the tests and the e2e scenarios with the prefix; then `jcr.sh down`.
 - [ ] **Project Quay** (`quay/compose.yaml`; a new image is a new digest):
       [quay.md, Commands](quay.md#commands): `quay.sh up`, the probe, the curl probes, the
       tests and `raw`, `oras` with the prefix, [the build rule](quay.md#the-build-rule) on a
