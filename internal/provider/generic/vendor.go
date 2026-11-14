@@ -134,7 +134,17 @@ var vendorDefaults = map[vendor]config.CapabilityOverrides{
 	// quayConsistencyBound. Measured on Project Quay 3.18.2; quay.io answered GET /v2/, the
 	// anonymous catalog, the token endpoint and the referrers API alike on 2026-11-12, its
 	// cache times not measured (docs/registries/quay.md).
-	vendorQuay: {Catalog: new(false), Referrers: new(false), Consistency: config.ConsistencyEventual, ConsistencyBound: quayConsistencyBound},
+	//
+	// Quay's master creates no repository whose name ends in a build route (quay/quay@77b369a,
+	// in no release up to 3.18.3): the token request of its first push is 400 NAME_INVALID,
+	// which reaches Lajstrom after the client's body started. BuildRoutes refuses a new package
+	// so named before then, on every Quay: no request but the token of a push tells a Quay
+	// without the rule, and there that token creates the repository (3.18.2 calls itself
+	// 3.18.1-nightly). buildRoutes: false keeps a Quay that creates them taking new ones
+	// (docs/registries/quay.md, The build rule; measured on 2026-11-14 on 3.18.2 with the
+	// commit's sources). The provider's probe cannot see it.
+	vendorQuay: {Catalog: new(false), Referrers: new(false), Consistency: config.ConsistencyEventual, ConsistencyBound: quayConsistencyBound,
+		BuildRoutes: new(true)},
 }
 
 // harborMaxNameLen is the most bytes of a repository name that Harbor takes, its project

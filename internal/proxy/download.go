@@ -193,7 +193,8 @@ func (c *Core) tooLarge(ctx context.Context, p *proxied, a artifact, asked strin
 
 // checkName refuses the artifact with 403 naming the limit, and a proxy.reject row, when the
 // registry of the repo does not take the name of its OCI repository (provider.Capabilities.
-// CheckName: the depth of a name on Docker Hub or behind GitLab), before anything is
+// CheckName: the depth of a name on Docker Hub or behind GitLab; CheckNew for a package the index
+// does not have: a name that ends in a build route on Quay, #662), before anything is
 // downloaded: ingest would not publish it, and the upstream is not at fault (#599).
 func (c *Core) checkName(ctx context.Context, p *proxied, a artifact) error {
 	if c.o.Providers == nil {
@@ -211,7 +212,18 @@ func (c *Core) checkName(ctx context.Context, p *proxied, a artifact) error {
 	if base == "" {
 		base = p.repo.Format + "/" + p.repo.Name
 	}
-	if err := caps.CheckName(base + "/" + a.pkgPath); err != nil {
+	name := base + "/" + a.pkgPath
+	err = caps.CheckName(name)
+	if refused := caps.CheckNew(name); err == nil && refused != nil {
+		// A package the index has keeps taking versions: the registry holds its repository.
+		switch _, lookup := index.PackageAt(ctx, c.o.Index, p.repo.ID, a.pkgPath); {
+		case errors.Is(lookup, index.ErrNotFound):
+			err = refused
+		case lookup != nil:
+			return fmt.Errorf("proxy: %s: %s: whether the index has the package: %w", p.id(), a.subject(), lookup)
+		}
+	}
+	if err != nil {
 		c.reject(ctx, p, a, "", "name", map[string]any{"error": err.Error()})
 		return fmt.Errorf("%w: proxy: %s: %s: %s", format.ErrForbidden, p.id(), a.subject(), err.Error())
 	}

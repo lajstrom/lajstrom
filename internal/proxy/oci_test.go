@@ -238,6 +238,32 @@ func TestOCINames(t *testing.T) {
 	}
 }
 
+// TestOCIBuildRoutes: on a registry that creates no repository whose name ends in a build route
+// (capabilities.buildRoutes, Quay), a path whose OCI repository oci_repos does not have and is one
+// is 400 naming the rule, before any request to the upstream; one that oci_repos has, which the
+// registry holds, is mirrored (#662).
+func TestOCIBuildRoutes(t *testing.T) {
+	ctx := t.Context()
+	e := newOCIEnv(t, ociSettings)
+	e.reg.BuildRoutes = true
+	e.hub.image(t, "paketobuildpacks/build", "1.3", "amd64")
+	c := e.core("a", proxy.Options{})
+	_, _, err := c.OCIManifest(ctx, e.repo, "paketobuildpacks/build", "1.3")
+	if !errors.Is(err, format.ErrInvalid) || !strings.Contains(err.Error(), "the OCI repository oci/hub/paketobuildpacks/build ends in a build route") {
+		t.Errorf("a new path that ends in build: %v, want format.ErrInvalid naming the rule", err)
+	}
+	if n := e.hub.count(""); n != 0 || len(e.reg.Pushes()) != 0 {
+		t.Errorf("%d requests to the upstream and %d blobs pushed, want none", n, len(e.reg.Pushes()))
+	}
+	must(t, e.st.UpsertOCIRepo(ctx, &index.OCIRepo{RepoID: e.repo.ID, Path: "oci/hub/paketobuildpacks/build", SeenAt: e.clock()}))
+	if _, _, err := c.OCIManifest(ctx, e.repo, "paketobuildpacks/build", "1.3"); err != nil {
+		t.Errorf("a path oci_repos has: %v", err)
+	}
+	if _, _, err := c.OCIManifest(ctx, e.repo, "paketobuildpacks/builder", "1.3"); errors.Is(err, format.ErrInvalid) {
+		t.Errorf("paketobuildpacks/builder, no build route: %v", err)
+	}
+}
+
 // TestLoadOCIUpstreams: the oci upstreams of the configuration, with their credentials; npm's
 // LoadUpstreams leaves them out.
 func TestLoadOCIUpstreams(t *testing.T) {

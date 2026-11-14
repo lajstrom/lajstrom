@@ -349,6 +349,38 @@ func TestFileNameDepth(t *testing.T) {
 	}
 }
 
+// TestFileBuildRoutes: on a registry that creates no repository whose name ends in a build route
+// (capabilities.buildRoutes, Quay), a file of a package the index does not have whose OCI
+// repository is one is 403 naming the rule and a proxy.reject row, asks the upstream for no file
+// and pushes nothing; a package the index has keeps taking versions (#662).
+func TestFileBuildRoutes(t *testing.T) {
+	e := newEnv(t, `{"name": "up"}`)
+	e.up.publish("build", "1.0.0", "one", nil)
+	e.up.publish("build", "2.0.0", "two", nil)
+	c := e.core(t, "r1", proxy.Options{})
+	e.reg.BuildRoutes = true
+	_, err := c.File(asAlice(t), e.repo, fileOf("build", "1.0.0"))
+	if status, _ := statusOf(err); status != http.StatusForbidden || !strings.Contains(err.Error(), "raw/up/build ends in a build route") ||
+		!strings.Contains(err.Error(), "capabilities.buildRoutes") {
+		t.Errorf("a new package named build: %v (%d), want 403 naming the rule", err, status)
+	}
+	if _, details := audits(t, e, "proxy.reject"); len(details) == 0 || details[0]["reason"] != "name" {
+		t.Errorf("proxy.reject details %v, want the reason name", details)
+	}
+	if n := e.up.fileCalls.Load(); n != 0 || len(e.reg.Pushes()) != 0 {
+		t.Errorf("%d files asked upstream and %d blobs pushed for a name the registry does not create", n, len(e.reg.Pushes()))
+	}
+
+	e.reg.BuildRoutes = false // the registry took the name then, as Quay 3.18.2 does
+	if _, err := c.File(asAlice(t), e.repo, fileOf("build", "1.0.0")); err != nil {
+		t.Fatalf("1.0.0 without the rule: %v", err)
+	}
+	e.reg.BuildRoutes = true
+	if _, err := c.File(asAlice(t), e.repo, fileOf("build", "2.0.0")); err != nil {
+		t.Errorf("2.0.0 of a package the index has: %v", err)
+	}
+}
+
 // TestFileUpstreamDown: with the upstream down, what the repo holds is served, its document
 // from the cache, and from the held versions when the cache was dropped; a file it does not
 // hold is 502, and offline 404 (§4.4, §6).

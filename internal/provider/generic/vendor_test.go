@@ -199,7 +199,7 @@ func TestVendorDefaults(t *testing.T) {
 		{vendorDocker, provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true, DeleteManifest: true, BlobRedirect: true,
 			MaxNameDepth: 1}},
 		{vendorQuay, provider.Capabilities{CreateOnPush: true, DeleteManifest: true, BlobRedirect: true,
-			Consistency: provider.ConsistencyEventual, ConsistencyBound: 130 * time.Second}},
+			Consistency: provider.ConsistencyEventual, ConsistencyBound: 130 * time.Second, BuildRoutes: true}},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.vendor), func(t *testing.T) {
@@ -285,8 +285,12 @@ func TestCapabilitiesVendor(t *testing.T) {
 	gitea.TagsFoldCase = true
 	strongFolds := strong
 	strongFolds.TagsFoldCase = true
+	zotBuild := strong
+	zotBuild.BuildRoutes = true
 	quay := provider.Capabilities{CreateOnPush: true, DeleteManifest: true, BlobRedirect: true, MaxNameLength: 251,
-		Consistency: provider.ConsistencyEventual, ConsistencyBound: 130 * time.Second}
+		Consistency: provider.ConsistencyEventual, ConsistencyBound: 130 * time.Second, BuildRoutes: true}
+	quayCreates := quay
+	quayCreates.BuildRoutes = false
 	tests := []struct {
 		name   string
 		setup  func(f *fakeRegistry)
@@ -338,6 +342,14 @@ func TestCapabilitiesVendor(t *testing.T) {
 		{name: "JFrog", setup: headers(jfrogV2, true), vendor: vendorJFrog, quirks: quirks{blobExistsByGET: true, emptyStatus404: true}, hint: true},
 		// The fake has a catalog and the referrers API: the table's catalog and referrers win.
 		{name: "Quay", setup: headers(quayV2, true), vendor: vendorQuay, want: quay, quirks: quirks{pushForDelete: true}},
+		{
+			name: "Quay that creates names ending in build", setup: headers(quayV2, true), vendor: vendorQuay, want: quayCreates,
+			quirks: quirks{pushForDelete: true}, edit: func(c *config.Registry) { c.Capabilities.BuildRoutes = new(false) },
+		},
+		{
+			name: "build routes configured on another registry", setup: headers(zotV2, true), vendor: vendorZot, want: zotBuild,
+			edit: func(c *config.Registry) { c.Capabilities.BuildRoutes = new(true) },
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -610,7 +622,7 @@ func TestVendorDefaultsInTheProbe(t *testing.T) {
 			name:     "Quay",
 			defaults: vendorDefaults[vendorQuay],
 			want: provider.Capabilities{CreateOnPush: true, DeleteManifest: true, BlobRedirect: true,
-				Consistency: provider.ConsistencyEventual, ConsistencyBound: 130 * time.Second},
+				Consistency: provider.ConsistencyEventual, ConsistencyBound: 130 * time.Second, BuildRoutes: true},
 			noProbe: []string{"GET /v2/_catalog", "GET /v2/art/lajstrom-probe/referrers/"},
 		},
 		{

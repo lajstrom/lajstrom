@@ -558,10 +558,11 @@ func (h *handler) limitBlob(w http.ResponseWriter, r *http.Request, t *target, o
 }
 
 // checkName answers NAME_INVALID, with the limit, when the registry of t does not take its OCI
-// name (provider.Capabilities.CheckName: the depth of a name on Docker Hub or behind GitLab),
-// before a blob upload or a manifest push goes there: the registry would refuse the token's
-// scope or answer 404 (#599). A registry whose capabilities cannot be read is not asked: its own
-// answer will be.
+// name (provider.Capabilities.CheckName: the depth of a name on Docker Hub or behind GitLab; and
+// CheckNew when the index does not have the repository: a name that ends in a build route on
+// Quay), before a blob upload or a manifest push goes there: the registry would refuse the
+// token's scope or answer 404 (#599), or refuse to create the repository (#662). A registry whose
+// capabilities cannot be read is not asked: its own answer will be.
 func (h *handler) checkName(ctx context.Context, t *target) error {
 	p, err := h.registry(t)
 	if err != nil {
@@ -574,7 +575,33 @@ func (h *handler) checkName(ctx context.Context, t *target) error {
 	if err := caps.CheckName(t.oci); err != nil {
 		return &apiError{status: http.StatusBadRequest, code: codeNameInvalid, msg: err.Error()}
 	}
+	if refused := caps.CheckNew(t.oci); refused != nil {
+		known, err := h.repositoryKnown(ctx, t)
+		if err != nil {
+			return err
+		}
+		if !known {
+			return &apiError{status: http.StatusBadRequest, code: codeNameInvalid, msg: refused.Error()}
+		}
+	}
 	return nil
+}
+
+// repositoryKnown reports whether the index has the OCI repository of t, which the registry
+// holds and keeps taking pushes into: a row of oci_repos for an oci repo, else a package at the
+// path or at an earlier form of it (index.PackageAt).
+func (h *handler) repositoryKnown(ctx context.Context, t *target) (bool, error) {
+	if t.repo.Format == ociFormat {
+		return h.ociRepoKnown(ctx, t)
+	}
+	_, err := index.PackageAt(ctx, h.o.Index, t.repo.ID, t.path)
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("facade: the package at %s: %w", t.name, err)
+	}
+	return true, nil
 }
 
 // blobLimit returns the bound of a blob upload of t and what it is: the repo's maxFileSize

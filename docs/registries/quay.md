@@ -9,7 +9,8 @@ published; deletes, the catalog, ranges and an upload continued on another repli
 reasons of Quay's, all but the ranges ones the provider can work around ([What the provider
 must do differently](#what-the-provider-must-do-differently)). The [summary](README.md#project-quay)
 is in the README; this page has the details. Quay's master refuses new repositories named
-`…/build` since 2026-11-05: [The build rule](#the-build-rule) measures it before and after.
+`…/build` since 2026-11-05: [The build rule](#the-build-rule) measures it before and after, and
+since #662 Lajstrom refuses such a new package on Quay before it pushes anything.
 
 ## Version tested
 
@@ -139,9 +140,12 @@ were measured by curl below. Its run left
 6. Expect a manifest limit of 1 MiB: one byte more is an HTML `413` from Quay's nginx.
    Lajstrom's `server.maxManifestSize` (4 MiB by default) should be 1 MiB in front of Quay; the
    vendor table has no capability for a manifest limit.
-7. The build rule, once released: new repositories ending in `build`, `build/<x>` or
-   `build/<x>/logs|status` are refused at the token request, 400 `NAME_INVALID`
-   ([#662](https://github.com/lajstrom/lajstrom/issues/662), [The build rule](#the-build-rule)).
+7. **Refuse a new name that ends in a build route**: done by [#662](https://github.com/lajstrom/lajstrom/issues/662).
+   Quay's master refuses to create a repository whose name ends in `build`, `build/<x>` or
+   `build/<x>/logs|status`, at the token request, 400 `NAME_INVALID`, after the client's upload
+   began. The vendor table says `buildRoutes: true` for Quay, and every write path refuses a
+   package the index does not have whose OCI name ends so, `400` naming the rule, before anything
+   goes to Quay; a package the index has keeps publishing ([What Lajstrom does](#what-lajstrom-does-662)).
 
 Nothing else: the token service, the robot, create on push at any depth, the profile's media
 types, the tag list, mounts, the monolithic `POST`, the streamed `PATCH` and the digest check
@@ -329,12 +333,11 @@ POST ?mount=&from= (pull on from)      201, and the blob 200 in the new reposito
 
 ## The build rule
 
-An `oci` proxy repo on a Quay backend with this rule cannot hold Docker Hub's
-`<namespace>/build` images: the push of their first manifest is refused at the token request,
-and the pull fails with a `4xx` that names the backend's refusal and an audit row
-`proxy.reject` ([proxy-and-group.md](../spec/proxy-and-group.md) §11.2;
-[#662](https://github.com/lajstrom/lajstrom/issues/662) puts the rule in the vendor table, so
-that it is refused before the upstream is asked).
+An `oci` proxy repo on a Quay backend cannot hold Docker Hub's `<namespace>/build` images that it
+did not hold before: since #662 their pull is `400 NAME_INVALID` naming the rule, before the
+upstream is asked ([proxy-and-group.md](../spec/proxy-and-group.md) §11.2,
+[What Lajstrom does](#what-lajstrom-does-662)); on a Quay with the rule the push of their first
+manifest would be refused at the token request.
 
 Quay's commit [77b369a](https://github.com/quay/quay/commit/77b369a411) (quay/quay#7858,
 PROJQUAY-11582, on master since 2026-11-05, in no release) refuses a **new** repository whose
@@ -398,6 +401,68 @@ So, once a release carries the commit:
 The transcripts of both runs were kept outside the repository, for a comment on
 quay/quay#8070; [Commands](#commands) has the requests.
 
+### Measured again (2026-11-14, #662)
+
+The same two builds, BEFORE and AFTER, on a copy of the compose stack under another project
+name and port, by a push token per name (`GET /v2/auth?…&scope=repository:<org>/<name>:pull,push`
+as `quayadmin`) in the organisations `rule-before` and `rule-after`. BEFORE granted all 38 names
+and created each repository. AFTER refused 19 with `400 NAME_INVALID` "Repository name conflicts
+with a build route" and granted the 19 others:
+
+| Names below the namespace | AFTER | Why |
+| --- | --- | --- |
+| `foo/build`, `foo/bar/build`, `foo/build/build`, `a/b/c/d/build` | refused | a component `build`, not the first, and nothing after it |
+| `foo/build/bar`, `foo/bar/build/baz`, `foo/build/logs`, `foo/build/status` | refused | one component after it |
+| `foo/build/bar/logs`, `foo/build/bar/status` | refused | one component, then `logs` or `status` |
+| `pypi/internal/build`, `npm/internal/netlify/build`, `npm/internal/build/cli` (npm's scope `@build`), `raw/assets/build/app.tar.gz`, `raw/assets/ci/build`, `raw/build/readme.txt` and `raw/build/logs` (a repo named `build`), `maven/releases/com.example/build`, `oci/hub/paketobuildpacks/build` | refused | Lajstrom's names, as above |
+| `build`, `build/foo`, `build/foo/bar` | granted | `build` is the first component |
+| `foo/building/bar`, `foo/mybuild`, `foo/builds`, `foo/rebuild/bar`, `foo/build-x`, `foo/build.x`, `foo/build_x`, `foo/x_build`, `foo/logs` | granted | no component is exactly `build` |
+| `foo/build/bar/extra`, `foo/build/bar/baz`, `foo/build/bar/logs/x`, `foo/build/logs/x`, `raw/assets/build/linux/app.tar.gz` | granted | two components or more after it, but for one and `logs` or `status` |
+| `raw/assets/buil_64/app.tar.gz`, `npm/internal/netlify/buil_64` | granted | the form an escape would write |
+
+The names created on BEFORE in a third organisation, `rule-exist`, were granted again on AFTER,
+38 of 38, and an image pushed to `rule-exist/foo/build` on BEFORE was fetched, and a new tag
+pushed to it, on AFTER. A pull token for a new `foo/build/pull` is 200 and creates nothing:
+`rule-after` held only the 19 granted names. The REST API's create of `api/build` is 400
+`invalid_request` with the same message. The robot `lajstrom-it+lajstrom` is refused
+`lajstrom-it/pypi/x/build` the same way, and granted `lajstrom-it/pypi/x/requests`. v3.18.3,
+released on 2026-11-13, does not have the rule: its `util/names.py` has no
+`conflicts_with_build_route`.
+
+### What Lajstrom does (#662)
+
+The vendor table says `capabilities.buildRoutes: true` for `vendor=quay`, and the start says so
+on its capability line (`buildRoutes=true`). Every write path asks `Capabilities.CheckNew` of a
+name its index does not have: an upload of a frontend, a streamed upload, a maven session, a
+`/v2` manifest `PUT` and the start of a `/v2` blob upload are `400` (`NAME_INVALID` on `/v2`)
+naming the rule, a proxy repo's file `403` with a `proxy.reject` row before the download, and an
+`oci` proxy's pull `400 NAME_INVALID` before the upstream is asked. Nothing goes to Quay. A
+package the index has (`index.PackageAt`, any earlier form) or an `oci` repository in `oci_repos`
+keeps taking versions, as Quay keeps a repository that exists. The rule is not escaped: the
+profile writes the same names on every registry, and ADR 0017 counts Quay's `build` among the
+limits of a capability.
+
+The default holds on every Quay, also on 3.18.x, which creates these names: nothing but the token
+of a push tells a Quay with the rule from one without, and on one without that token creates the
+repository. `registries[].capabilities.buildRoutes: false` lets a Quay that creates them take new
+ones.
+
+Run through `lajstrom serve` against the stack (a raw repo `assets`, `prefix: lajstrom-it/`, the
+robot, SQLite; the bodies are a few bytes):
+
+```text
+BEFORE, buildRoutes: false   PUT /raw/assets/build/app.tar          201: Quay creates the name
+BEFORE, the vendor table's   PUT /raw/assets/build/other.tar        400 "ingest: the OCI repository raw/assets/build/other.tar ends in a build
+                                                                    route of the registry, …/build, …/build/<x> or …/build/<x>/logs|status,
+                                                                    and the registry creates no new repository named so (capabilities.buildRoutes)"
+                             PUT /raw/assets/build/app.tar, 2.0     201: the index has the package
+                             PUT /raw/assets/build/linux/app.tar    201: no build route
+AFTER, the vendor table's    PUT /raw/assets/build/app.tar, 3.0     201: the index has it, and Quay keeps the repository
+                             PUT /raw/assets/build/new.tar          400, the same message; nothing reaches Quay
+AFTER, buildRoutes: false    PUT /raw/assets/build/new.tar          502 Bad Gateway; the log: "generic: start upload raw/assets/build/new.tar:
+                                                                    registry quay refused the request: 400 NAME_INVALID"
+```
+
 ## Our tests against it
 
 `LAJSTROM_TEST_REGISTRY=localhost:5012`, `LAJSTROM_TEST_REGISTRY_USERNAME=lajstrom-it+lajstrom`,
@@ -440,6 +505,16 @@ tag-schema index and cosign's tag are 404 after it (`ingest: deleted … referre
 reindex `TestIntegrationRepairReferrers` reported no failure. The e2e scenarios, the probe and
 the Postgres cells were not run again.
 
+**The build rule, with #662** (2026-11-14, the robot, on BEFORE and AFTER):
+`TestIntegrationBuildRoutes` of the provider pushes a blob to three new names that end in a build
+route and to a control: on AFTER each is `registry integration refused the request: 400
+NAME_INVALID` (a `*provider.RejectedError`), on BEFORE each is created; the control is created
+on both. `TestIntegrationBuildRoutes` of ingest publishes a new raw package `build`: with the
+vendor table's capabilities it is `ErrInvalid` naming the rule on both, and nothing is written;
+with `buildRoutes: false` AFTER refuses it, `ingest: push blob … registry local refused the
+request: 400 NAME_INVALID`, and BEFORE creates it, after which a second version with the vendor
+table's capabilities is published (the index has the package). Both pass on both builds.
+
 ## Configuration
 
 ```yaml
@@ -454,12 +529,14 @@ registries:
       username: lajstrom-it+lajstrom    # a robot in a team with the role admin
       passwordEnv: LAJSTROM_QUAY_ROBOT_TOKEN
     # No capabilities: the vendor table sets catalog: false (until #802), referrers: false and
-    # consistency: eventual within 130s (#803), and a delete's token asks push (#801).
+    # consistency: eventual within 130s (#803) and buildRoutes: true (#662), and a delete's
+    # token asks push (#801). On 3.18.x, buildRoutes: false lets new packages end in build.
 ```
 
 The startup line then says (2026-11-12, against the compose stack): `vendor=quay
 createOnPush=true referrers=false catalog=false deleteManifest=true … consistency="eventual
-within 2m10s"`, and `registry needs workarounds vendor=quay … pushForDelete=true`.
+within 2m10s"`, and `registry needs workarounds vendor=quay … pushForDelete=true`; since #662 it
+ends in `maxNameDepth=0 buildRoutes=true` (2026-11-14).
 
 ## Commands
 

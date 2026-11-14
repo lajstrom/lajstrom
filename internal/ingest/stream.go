@@ -72,7 +72,7 @@ func (p *Pipeline) UploadStream(ctx context.Context, repo index.Repo, up format.
 	if err != nil {
 		return nil, buildError(repo, err)
 	}
-	t, err := newTarget(ctx, repo, plugin, prov, pkgPath)
+	t, err := newTarget(ctx, repo, plugin, prov, pkgPath, p.known(repo, pkgPath, ociName(repo, pkgPath)))
 	if err != nil {
 		return nil, err
 	}
