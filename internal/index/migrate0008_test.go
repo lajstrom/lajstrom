@@ -51,6 +51,7 @@ func TestMigration0008(t *testing.T) {
 			t.Skip("set LAJSTROM_TEST_POSTGRES_DSN to run the Postgres half")
 		}
 		db := postgresSchema(t, dsn)
+		skipOnCockroach(t, db)
 		testMigration0008(t, db, DialectPostgres, "$")
 	})
 }
@@ -108,7 +109,9 @@ func TestMigration0009(t *testing.T) {
 		if dsn == "" {
 			t.Skip("set LAJSTROM_TEST_POSTGRES_DSN to run the Postgres half")
 		}
-		testMigration0009(t, postgresSchema(t, dsn), DialectPostgres, "$")
+		db := postgresSchema(t, dsn)
+		skipOnCockroach(t, db)
+		testMigration0009(t, db, DialectPostgres, "$")
 	})
 }
 
@@ -217,6 +220,27 @@ func seedVersion7(m *migrationDB) {
 	}
 }
 
+// onCockroach reports whether db is CockroachDB, as its version() says: the test DSN may name
+// one (docs/deploy/databases.md#cockroachdb).
+func onCockroach(t *testing.T, db *sql.DB) bool {
+	t.Helper()
+	var version string
+	if err := db.QueryRowContext(t.Context(), "SELECT version()").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	return strings.Contains(version, "CockroachDB")
+}
+
+// skipOnCockroach skips a test of what a Postgres migration does to the rows it finds: the
+// cockroach migrations 0001 to 0021 run on an empty database only (index-schema.md,
+// Migrations).
+func skipOnCockroach(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if onCockroach(t, db) {
+		t.Skip("CockroachDB: its migrations up to 0021 run on an empty database, and fill no rows")
+	}
+}
+
 // postgresSchema opens the Postgres of dsn in a schema of its own, dropped when the test ends;
 // with LAJSTROM_TEST_POSTGRES_ISOLATION=database, in a database of its own, as the tests
 // behind a pooler in transaction mode need (internal/index/postgres, isolationEnv).
@@ -230,6 +254,9 @@ func postgresSchema(t *testing.T, dsn string) *sql.DB {
 	admin, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if kind == "DATABASE" && onCockroach(t, admin) {
+		force = " CASCADE" // CockroachDB's DROP DATABASE has no FORCE, and needs none
 	}
 	if _, err := admin.ExecContext(t.Context(), "CREATE "+kind+" "+name); err != nil {
 		t.Fatal(err)

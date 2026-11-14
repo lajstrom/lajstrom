@@ -5,19 +5,21 @@ import (
 	"testing"
 )
 
-// TestMigrationVersions checks that both dialects embed the same migrations, numbered from 1
+// TestMigrationVersions checks that every dialect embeds the same migrations, numbered from 1
 // without gaps.
 func TestMigrationVersions(t *testing.T) {
 	sqlite, err := MigrationVersions(DialectSQLite)
 	if err != nil {
 		t.Fatal(err)
 	}
-	postgres, err := MigrationVersions(DialectPostgres)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(sqlite, postgres) {
-		t.Errorf("sqlite has migrations %v, postgres %v", sqlite, postgres)
+	for _, dialect := range []string{DialectPostgres, DialectCockroach} {
+		other, err := MigrationVersions(dialect)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(sqlite, other) {
+			t.Errorf("sqlite has migrations %v, %s %v", sqlite, dialect, other)
+		}
 	}
 	for i, v := range sqlite {
 		if v != i+1 {
