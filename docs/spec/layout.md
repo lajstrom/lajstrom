@@ -706,7 +706,7 @@ type Repository interface {
     content.TagResolver                     // Tag, Resolve
     registry.ReferencePusher                // PushReference: manifest and tag in one PUT
     registry.TagLister                      // Tags
-    registry.ReferrerLister                 // Referrers (tag-schema fallback without the API)
+    registry.ReferrerLister                 // Referrers: the API, or the tag schema without it; both, each digest once, the API's first, with Capabilities.ReferrersAlwaysTag
     BlobUploader                            // the backend's upload session, for the facade (#24)
     BlobStreamer                            // a blob Lajstrom streams in itself, for the frontends (ADR 0014)
 }
@@ -771,6 +771,7 @@ func Types() []string
 type Capabilities struct {
     CreateOnPush, Referrers, Catalog, DeleteManifest, ImmutableTags bool
     BlobRedirect bool                       // the operator's switch (capabilities.blobRedirect): false, OpenBlob never returns a URL
+    ReferrersAlwaysTag bool                 // the operator's switch (referrers.alwaysTag): a referrer push writes the sha256-<digest> index with the referrers API too, and Referrers lists both
     MaxBlobSize int64                       // 0 = unknown
     Consistency Consistency                 // when reads see an acknowledged write: the vendor table's or capabilities.consistency
     ConsistencyBound time.Duration          // the longest lag known of an eventual backend (capabilities.consistencyBound); 0 = none known
@@ -787,6 +788,11 @@ func (c Capabilities) CheckNew(name string) error
 // BuildRoute: the name ends in a build route of Quay's web UI, a component `build` that is not
 // the first, followed by nothing, one component, or one and `logs` or `status` (quay/quay@77b369a).
 func BuildRoute(name string) bool
+// TagSchema: the provider keeps the sha256-<digest> tag schema of referrers, the index of a
+// subject that a referrer push rewrites: without the referrers API, and with it when
+// ReferrersAlwaysTag is on. Ingest takes the referrers lock for such a push and rewrites the index
+// on a referrer's delete, and reindex has it repaired, wherever it is true.
+func (c Capabilities) TagSchema() bool                 // !c.Referrers || c.ReferrersAlwaysTag
 type Consistency string                     // docs/registries/README.md, Consistency
 const (
     ConsistencyUnknown  Consistency = ""         // nobody classified the backend
@@ -1298,7 +1304,7 @@ type Request struct {
 // when a run overlaps. Run reads the registry, beats, and finishes the run whatever happens; its
 // error is the run's own (Report.Repos[].Errors hold the manifests that failed). It writes
 // nothing to the registry itself: a run of the reconcile loop or with Verify, on a registry
-// without the referrers API, asks ingest to repair the repo's sha256-<hex> indexes
+// whose provider keeps the tag schema (Capabilities.TagSchema), asks ingest to repair the repo's sha256-<hex> indexes
 // (Repairer, once per repo after its tags are read) and reports what ingest pushed
 // (RepoReport.RepairedReferrers) and what failed (Errors).
 func (w *Worker) Start(ctx context.Context, req Request) (*index.ReindexRun, error)
@@ -1436,8 +1442,8 @@ func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload
 // subject must be a manifest of the repository, the blobs in the backend, a tag cosign's
 // (ErrInvalid otherwise). On a managed repo the push runs under Store.WithReferrersLock of the
 // subject, with Capabilities.Referrers or without, and the subject is resolved again under it
-// (ErrInvalid when it was deleted meanwhile, #806); on an oci repo without
-// Capabilities.Referrers. One audit event: push, Subject the subject's digest,
+// (ErrInvalid when it was deleted meanwhile, #806); on an oci repo where the provider keeps the
+// tag schema (Capabilities.TagSchema: no referrers API, or referrers.alwaysTag). One audit event: push, Subject the subject's digest,
 // Details {"kind", "artifactType"}. Approved by the maintainer on 2026-11-09 (#28). Once the
 // registry serves the referrer back, when its subject is a version of the repo, its attachments
 // (InspectAttachments) replace the rows of that referrer (Store.ReplaceAttachments; for a legacy
@@ -1471,10 +1477,11 @@ type Referrer struct {
 // unpublish of a package), and the index transaction deletes its journal row, when the package
 // still has one, and folds the package's state again from the entries left. The referrers go
 // first, each with its own before it: cosign's legacy sha256-<hex>.sig, .att and .sbom, the tag-schema index
-// sha256-<hex>, the referrers the backend lists; without the referrers API under
-// Store.WithReferrersLock of the subject. The first request that changes anything is a plain
-// delete, so a backend that refuses deletes changes nothing (a referrer deleted on its own: its
-// subject's sha256-<hex> index goes first and is pushed again without it). Then the manifest, then one index
+// sha256-<hex>, the referrers the backend lists; where the provider keeps the tag schema
+// (Capabilities.TagSchema) under Store.WithReferrersLock of the subject. The first request that
+// changes anything is a plain delete, so a backend that refuses deletes changes nothing (a
+// referrer deleted on its own where the provider keeps the tag schema: its subject's
+// sha256-<hex> index goes first and is pushed again without it). Then the manifest, then one index
 // transaction: the version's rows, its package's when it was the last, index_cache of the repo,
 // the audit row (delete, Details {"referrers": n}); a referrer's attachment rows in the
 // transaction of its audit row (Store.DeleteAttachments). On an oci repo a delete by tag of a manifest
@@ -1487,8 +1494,8 @@ type Referrer struct {
 // referrer stays), or a *format.RefusedError (a condition failed).
 func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Deletion, principal auth.Principal) (*format.Deleted, error)
 
-// RepairReferrers is how reindex repairs the registry (#628; guarantees.md INV-35): on a backend
-// without Capabilities.Referrers, it pushes again the sha256-<hex> index of each subject of found
+// RepairReferrers is how reindex repairs the registry (#628; guarantees.md INV-35): where the
+// provider keeps the tag schema (Capabilities.TagSchema), it pushes again the sha256-<hex> index of each subject of found
 // (manifest digest → package paths of the OCI repositories a run found it in) that lacks
 // referrers the audit log has as pushed to repo (the push rows whose subject is a digest, read
 // once) and the registry still has with that subject, or that is missing while there are such:
@@ -1496,7 +1503,7 @@ func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Delet
 // repository, then pushed with them after those it lists, as Delete's repair does. One audit
 // event per index pushed: referrers.repair by principal, Subject the subject's digest, Digest the
 // index's, Details {"path", "added"}, pending before the push and completed after it. A backend
-// with the API, or an Options.Audit writer, repairs nothing. One entry per index found lacking:
+// with the API and without referrers.alwaysTag, or an Options.Audit writer, repairs nothing. One entry per index found lacking:
 // pushed, or Err (a read or the push failed, the index is as it was); the error is the audit
 // log's or the capabilities'.
 func (p *Pipeline) RepairReferrers(ctx context.Context, repo index.Repo, found map[digest.Digest][]string, principal auth.Principal) ([]ReferrersRepair, error)
