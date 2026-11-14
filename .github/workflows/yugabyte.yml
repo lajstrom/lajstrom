@@ -76,8 +76,8 @@ jobs:
           ready zot curl -fsS --max-time 2 http://localhost:5000/v2/
           ready yugabyte psql "postgres://yugabyte@localhost:5433/yugabyte?sslmode=disable&connect_timeout=2" -c "SELECT 1"
       - name: Migrate once
-        # Two migrators at once fail on YugabyteDB (42710, 40001): the database is migrated here,
-        # once, as the Job of operations.md would, before a test opens it.
+        # The database is migrated here, once, as the Job of operations.md would (the
+        # recommendation of databases.md), before the tests on the migrated database open it.
         run: |
           set -euo pipefail
           psql "postgres://yugabyte@localhost:5433/yugabyte?sslmode=disable" -c "CREATE DATABASE lajstrom"
@@ -90,12 +90,13 @@ jobs:
       # (yugabyte-db#31866, #640), the outcomes of the concurrent publishes, and each test's time.
       - name: The tests that migrate, one at a time
         # internal/index and internal/index/postgres migrate a new schema in each test, so one
-        # test runs at a time. Skipped: TestConcurrentMigrate, two migrators at once, which
-        # YugabyteDB does not take (docs); the conformance half of TestDataRole, the suite again
-        # as another user, another quarter of an hour.
+        # test runs at a time. TestConcurrentMigrate runs, two migrators at once, which the
+        # runner retries on YugabyteDB's catalog conflicts since #616; its log shows each retry.
+        # Skipped: the conformance half of TestDataRole, the suite again as another user, another
+        # quarter of an hour.
         run: >-
           go test -v -race -tags integration -p 1 -parallel 1 -timeout 45m
-          -skip 'TestConcurrentMigrate|TestDataRole/conformance'
+          -skip 'TestDataRole/conformance'
           ./internal/index ./internal/index/postgres
       - name: The tests on the migrated database
         run: go test -v -race -tags integration ./internal/index/reindex/... ./internal/ingest/... ./internal/facade/...
