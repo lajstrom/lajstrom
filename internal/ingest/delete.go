@@ -54,7 +54,8 @@ import (
 //     referrers the backend lists. Then the manifest, with every tag that names it.
 //     The first request that changes anything is a plain delete, so a backend that refuses
 //     deletes refuses it, provider.ErrUnsupported, and nothing has changed: a referrer deleted
-//     on its own, without the referrers API, has its subject's sha256-<hex> index deleted first
+//     on its own where the provider keeps the tag schema (Capabilities.TagSchema: no referrers
+//     API, or referrers.alwaysTag) has its subject's sha256-<hex> index deleted first
 //     and pushed again without it at once, before the referrer goes; when that push fails, the
 //     index is pushed back as it was, the referrer stays, and the error is
 //     provider.ErrUnavailable (503 with Retry-After). An index that lacks referrers the audit
@@ -116,7 +117,7 @@ func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Delet
 		return nil, fmt.Errorf("ingest: repository %s: %w", name, err)
 	}
 	_, entry := profile.JournalSeq(del.Reference)
-	d := &deletion{p: p, repo: repo, del: del, name: name, prov: prov, rr: rr, api: caps.Referrers,
+	d := &deletion{p: p, repo: repo, del: del, name: name, prov: prov, rr: rr, tagSchema: caps.TagSchema(),
 		journal: entry && repo.Format == "npm"}
 	find := d.find
 	if !caps.DeleteManifest {
@@ -155,7 +156,9 @@ type deletion struct {
 	name string              // the OCI repository, without the instance prefix
 	prov provider.Provider   // the backend
 	rr   provider.Repository // its data path
-	api  bool                // the backend has the referrers API
+	// tagSchema: the provider keeps the sha256-<hex> index of a subject (Capabilities.TagSchema:
+	// no referrers API, or referrers.alwaysTag), which a referrer's delete rewrites.
+	tagSchema bool
 
 	target  ocispec.Descriptor // the manifest to delete
 	gone    bool               // the backend does not have it any more (a version's, a journal entry's): its rows and referrers go all the same
@@ -265,7 +268,7 @@ func (d *deletion) findEntry(ctx context.Context) error {
 }
 
 // findReferrer sets the target to the referrer whose digest the reference is, which the backend
-// does not have, when the backend has no referrers API and the audit log's last delete of the
+// does not have, when the provider keeps the tag schema (tagSchema) and the audit log's last delete of the
 // digest in the repo did not go through, while its subject is still in the repository: a delete
 // of a referrer before #711's fix could take it and fail to push its subject's index again. The
 // retry repairs the index (deleteReferrer) and records the delete. Anything else, a delete that
@@ -273,7 +276,7 @@ func (d *deletion) findEntry(ctx context.Context) error {
 func (d *deletion) findReferrer(ctx context.Context) error {
 	notFound := fmt.Errorf("%w: no manifest %s in %s", index.ErrNotFound, d.del.Reference, d.name)
 	dg, err := digest.Parse(d.del.Reference)
-	if err != nil || d.api || d.p.audit != nil {
+	if err != nil || !d.tagSchema || d.p.audit != nil {
 		return notFound
 	}
 	var last *index.AuditEvent
@@ -481,7 +484,7 @@ func (d *deletion) deleteInBackend(ctx context.Context) error {
 	if d.orphan {
 		return nil
 	}
-	if d.subject != "" && !d.api {
+	if d.subject != "" && d.tagSchema {
 		return d.deleteReferrer(ctx)
 	}
 	return d.deleteTarget(ctx)
@@ -564,8 +567,8 @@ func (d *deletion) deleteTarget(ctx context.Context) error {
 // sha256-<hex> index the registry did not take: nothing was deleted, and the retry deletes.
 const referrersRetryAfter = 30 * time.Second
 
-// deleteReferrer deletes the target, a referrer, on a backend without the referrers API, and
-// keeps its subject's other referrers listed by the subject's sha256-<hex> index (#711). The
+// deleteReferrer deletes the target, a referrer, where the provider keeps the tag schema (without
+// the referrers API, or with referrers.alwaysTag), and keeps its subject's other referrers listed by the subject's sha256-<hex> index (#711). The
 // index it starts from is the registry's, repaired first when it lacks referrers the audit log
 // knows (subjectIndex). An index that does not list the referrer stays as it is. Else the index
 // goes first, a plain delete, so that oras-go rewrites no index before the delete of the

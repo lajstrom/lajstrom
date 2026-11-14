@@ -147,6 +147,8 @@ type Registry struct {
 	Retries int `yaml:"retries"`
 	// Capabilities overrides what probing finds, for backends that lie or cannot be probed.
 	Capabilities CapabilityOverrides `yaml:"capabilities"`
+	// Referrers is how the referrers of a manifest are kept in the registry.
+	Referrers RegistryReferrers `yaml:"referrers"`
 	// Uploads changes how the chunks of a /v2 upload are sent to the registry.
 	Uploads RegistryUploads `yaml:"uploads"`
 	// ECR configures a registry of type ecr; it must stay empty for the other types.
@@ -225,6 +227,15 @@ const (
 	ConsistencyStrong   = "strong"
 	ConsistencyEventual = "eventual"
 )
+
+// RegistryReferrers is how the provider keeps the referrers of a manifest in the registry
+// (docs/configuration.md, registries).
+type RegistryReferrers struct {
+	// AlwaysTag writes the sha256-<digest> tag-schema index of a subject on every referrer push
+	// also where the registry has the referrers API, and lists referrers from both: insurance
+	// against a garbage collector that deletes the referrers no tag names (#326).
+	AlwaysTag bool `yaml:"alwaysTag"`
+}
 
 // RegistryUploads is how the provider sends the chunks of a /v2 upload session to a registry
 // (docs/configuration.md, Uploads).

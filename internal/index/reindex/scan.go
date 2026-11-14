@@ -633,7 +633,8 @@ func (s *scan) orphans(ctx context.Context) {
 
 // prepareRepair makes the scan record where it finds each manifest (locate) when it has ingest
 // repair the sha256-<hex> indexes of the repo (#628): a run of the reconcile loop or with
-// Verify, with a Repairer, on a registry without the referrers API, which lists referrers itself.
+// Verify, with a Repairer, where the provider keeps the tag schema (Capabilities.TagSchema): without
+// the referrers API, which lists referrers itself, or with referrers.alwaysTag.
 func (s *scan) prepareRepair(ctx context.Context) {
 	if s.w.repairer == nil || !s.req.Verify && s.req.Source != SourceReconcile {
 		return
@@ -642,7 +643,7 @@ func (s *scan) prepareRepair(ctx context.Context) {
 	switch {
 	case err != nil:
 		s.failure(Finding{Error: "the capabilities of the registry: " + err.Error()})
-	case !caps.Referrers:
+	case caps.TagSchema():
 		s.found = map[digest.Digest][]string{}
 	}
 }

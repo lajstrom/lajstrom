@@ -539,27 +539,44 @@ func TestCapabilitiesProbeFailure(t *testing.T) {
 	})
 }
 
+// TestReferrersStateReachesRepositories: a repository asks the referrers API or reads the
+// sha256-<hex> tag schema as the probe or the configuration said, and with referrers.alwaysTag
+// (#326) writes the tag schema and reads both where the registry has the API, before the probe
+// too: the listing has the referrer once.
 func TestReferrersStateReachesRepositories(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
 		name          string
 		referrers     bool
 		override      *bool
+		alwaysTag     bool
+		unprobed      bool // the repository is made before Capabilities is asked
 		wantAPICalls  bool // Repository.Referrers asks /referrers/ of the repository
 		wantTagSchema bool // Repository.Referrers reads the sha256-<hex> tag
+		wantIndex     bool // the push of the referrer writes the sha256-<hex> tag
 	}{
 		{name: "API supported", referrers: true, wantAPICalls: true},
-		{name: "API missing", referrers: false, wantTagSchema: true},
-		{name: "override false", referrers: true, override: new(false), wantTagSchema: true},
+		{name: "API missing", referrers: false, wantTagSchema: true, wantIndex: true},
+		{name: "override false", referrers: true, override: new(false), wantTagSchema: true, wantIndex: true},
+		{name: "API supported, alwaysTag", referrers: true, alwaysTag: true, wantAPICalls: true, wantTagSchema: true, wantIndex: true},
+		{name: "API supported, alwaysTag, before the probe", referrers: true, alwaysTag: true, unprobed: true, wantAPICalls: true,
+			wantTagSchema: true, wantIndex: true},
+		{name: "API missing, alwaysTag", referrers: false, alwaysTag: true, wantTagSchema: true, wantIndex: true},
+		{name: "override false, alwaysTag", referrers: true, override: new(false), alwaysTag: true, wantTagSchema: true, wantIndex: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFakeRegistry(t)
 			f.referrers = tt.referrers
 			log, _ := testLogger()
-			p := f.provider(t, log, func(c *config.Registry) { c.Capabilities.Referrers = tt.override })
-			if _, err := p.Capabilities(ctx); err != nil {
-				t.Fatal(err)
+			p := f.provider(t, log, func(c *config.Registry) {
+				c.Capabilities.Referrers = tt.override
+				c.Referrers.AlwaysTag = tt.alwaysTag
+			})
+			if c, err := p.Capabilities(ctx); tt.unprobed {
+				p = f.provider(t, log, func(c *config.Registry) { c.Referrers.AlwaysTag = tt.alwaysTag })
+			} else if err != nil || c.ReferrersAlwaysTag != tt.alwaysTag {
+				t.Fatalf("Capabilities = %+v, %v; want ReferrersAlwaysTag %t", c, err, tt.alwaysTag)
 			}
 			repo, err := p.Repository(ctx, "raw/scratch/notes")
 			if err != nil {
@@ -581,6 +598,9 @@ func TestReferrersStateReachesRepositories(t *testing.T) {
 			tagSchema := f.count("GET /v2/art/raw/scratch/notes/manifests/sha256-"+subject.Digest.Encoded()) > 0
 			if api != tt.wantAPICalls || tagSchema != tt.wantTagSchema {
 				t.Errorf("referrers API asked %v, tag schema read %v; want %v and %v\n%s", api, tagSchema, tt.wantAPICalls, tt.wantTagSchema, strings.Join(f.log(), "\n"))
+			}
+			if index := f.count("PUT /v2/art/raw/scratch/notes/manifests/sha256-"+subject.Digest.Encoded()) > 0; index != tt.wantIndex {
+				t.Errorf("the sha256-<hex> index written: %v, want %v\n%s", index, tt.wantIndex, strings.Join(f.log(), "\n"))
 			}
 		})
 	}
@@ -1000,5 +1020,85 @@ func TestReferrerIndexDeleteRefused(t *testing.T) {
 	}
 	if n := strings.Count(logs.String(), "the old referrers index stays"); n != 2 {
 		t.Errorf("%d warnings of a dangling index, want 2:\n%s", n, logs)
+	}
+}
+
+// TestReferrersAlwaysTagMerged (#326): with referrers.alwaysTag on a registry with the referrers
+// API, a referrer that the registry dropped from its API (a garbage collector of untagged
+// manifests) is still listed, by the sha256-<hex> index, after those of the API, and a referrer
+// both list is listed once. With the option off it is gone.
+func TestReferrersAlwaysTagMerged(t *testing.T) {
+	ctx := context.Background()
+	for _, alwaysTag := range []bool{true, false} {
+		f := newFakeRegistry(t)
+		log, _ := testLogger()
+		p := f.provider(t, log, func(c *config.Registry) { c.Referrers.AlwaysTag = alwaysTag })
+		if _, err := p.Capabilities(ctx); err != nil {
+			t.Fatal(err)
+		}
+		repo, err := p.Repository(ctx, "raw/scratch/notes")
+		if err != nil {
+			t.Fatal(err)
+		}
+		subject := pushManifest(t, repo, "v1", nil)
+		lost := pushManifest(t, repo, "", &subject)
+		kept := pushManifest(t, repo, "sig", &subject)
+		f.mu.Lock()
+		for ref, m := range f.manifests["art/raw/scratch/notes"] {
+			if m.desc.Digest == lost.Digest {
+				delete(f.manifests["art/raw/scratch/notes"], ref)
+			}
+		}
+		f.mu.Unlock()
+
+		var got []digest.Digest
+		calls := 0
+		if err := repo.Referrers(ctx, subject, "", func(r []ocispec.Descriptor) error {
+			calls++
+			for _, d := range r {
+				got = append(got, d.Digest)
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("alwaysTag %t: Referrers: %v", alwaysTag, err)
+		}
+		want := []digest.Digest{kept.Digest}
+		if alwaysTag {
+			want = append(want, lost.Digest)
+		}
+		if !slices.Equal(got, want) || calls != 1 {
+			t.Errorf("alwaysTag %t: referrers %v in %d calls, want %v in one", alwaysTag, got, calls, want)
+		}
+	}
+}
+
+// TestReferrersAlwaysTagLog: the capabilities line says referrersAlwaysTag, and the option on a
+// registry that refuses to re-point a tag gets a warning: the second referrer of a subject cannot
+// rewrite its index there.
+func TestReferrersAlwaysTagLog(t *testing.T) {
+	tests := []struct {
+		alwaysTag, immutable bool
+		line                 string
+		warns                bool
+	}{
+		{false, false, "referrersAlwaysTag=false", false},
+		{false, true, "referrersAlwaysTag=false", false},
+		{true, false, "referrersAlwaysTag=true", false},
+		{true, true, "referrersAlwaysTag=true", true},
+	}
+	for _, tt := range tests {
+		f := newFakeRegistry(t)
+		log, buf := testLogger()
+		p := f.provider(t, log, func(c *config.Registry) {
+			c.Referrers.AlwaysTag, c.Capabilities.ImmutableTags = tt.alwaysTag, new(tt.immutable)
+		})
+		if _, err := p.Capabilities(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		logs := buf.String()
+		warned := strings.Contains(logs, `msg="referrers.alwaysTag on a registry that refuses to re-point a tag`)
+		if !strings.Contains(logs, tt.line) || warned != tt.warns {
+			t.Errorf("alwaysTag %t, immutableTags %t: want %s and a warning %t, got\n%s", tt.alwaysTag, tt.immutable, tt.line, tt.warns, logs)
+		}
 	}
 }

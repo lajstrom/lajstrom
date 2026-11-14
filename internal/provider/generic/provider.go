@@ -59,6 +59,10 @@ type Provider struct {
 	// spoolUnknown is registries[].uploads.spoolUnknownLength: a chunk of unknown length into a
 	// session that holds bytes is spooled to learn its length (spool.go).
 	spoolUnknown bool
+	// alwaysTag is registries[].referrers.alwaysTag: the repositories write the sha256-<digest>
+	// index of a referrer's subject where the registry has the referrers API too, and list both
+	// (Repository).
+	alwaysTag bool
 	// spoolHint is set by the first probe that succeeded when the vendor table hints at
 	// spoolUnknownLength and it is off: a streamed chunk the registry refuses says so (hintSpool).
 	spoolHint atomic.Bool
@@ -202,6 +206,7 @@ func NewWithOptions(cfg config.Registry, log *slog.Logger, o Options) (*Provider
 		timeout:  timeoutOf(cfg),
 
 		spoolUnknown:  cfg.Uploads.SpoolUnknownLength,
+		alwaysTag:     cfg.Referrers.AlwaysTag,
 		chunk:         blobChunk(u.Host, cfg.Uploads.ChunkSize),
 		unorderedTags: unorderedTags(u.Host),
 		bound:         chunkBound(u.Host, cfg.Uploads.ChunkSize),
@@ -241,6 +246,11 @@ func (p *Provider) repoName(name string) string { return p.prefix + name }
 // Repository returns the repository name, below the instance prefix. It does not talk to the
 // registry. The repository translates errors into the sentinels of package provider and, once
 // the capabilities are known, uses the referrers API or the tag schema without probing again.
+// With referrers.alwaysTag on a registry that has the API, or before the probe told, oras-go is
+// told that the API is absent, so that it writes the sha256-<digest> index of a referrer's subject
+// when it pushes the referrer, and deletes it from there, as on a registry without the API; the
+// registry indexes the referrer in its API all the same, from its subject. Referrers then reads a
+// second repository of the name, which asks the API (bothReferrers).
 func (p *Provider) Repository(ctx context.Context, name string) (provider.Repository, error) {
 	if name == "" {
 		return nil, errors.New("generic: repository: empty name")
@@ -253,11 +263,26 @@ func (p *Provider) Repository(ctx context.Context, name string) (provider.Reposi
 	if !ok {
 		return nil, fmt.Errorf("generic: repository %s: oras-go returned %T", name, r)
 	}
-	if capable, known := p.referrersCapability(); known {
-		// Fails only when the state is already set, and it is not: rr is new.
+	repo := &repository{Repository: rr, p: p, name: name}
+	capable, known := p.referrersCapability()
+	switch {
+	case p.alwaysTag && (capable || !known):
+		api, err := p.registry.Repository(ctx, p.repoName(name))
+		if err != nil {
+			return nil, p.translate("repository "+name, err)
+		}
+		if repo.api, ok = api.(*remote.Repository); !ok {
+			return nil, fmt.Errorf("generic: repository %s: oras-go returned %T", name, api)
+		}
+		// Each fails only when the state is already set, and it is not: both are new.
+		if known {
+			_ = repo.api.SetReferrersCapability(true)
+		}
+		_ = rr.SetReferrersCapability(false)
+	case known:
 		_ = rr.SetReferrersCapability(capable)
 	}
-	return &repository{Repository: rr, p: p, name: name}, nil
+	return repo, nil
 }
 
 // EnsureRepository does nothing: the registries of this provider create a repository on the

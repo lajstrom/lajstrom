@@ -90,6 +90,7 @@ func (p *Provider) effective(probed provider.Capabilities) provider.Capabilities
 		c.DeleteManifest = false
 	}
 	apply(&c, p.override)
+	c.ReferrersAlwaysTag = p.alwaysTag
 	return c
 }
 
@@ -243,6 +244,7 @@ func (p *Provider) probeNow(ctx context.Context, answered *bool) (provider.Capab
 		"vendor", string(v),
 		"createOnPush", e.CreateOnPush,
 		"referrers", e.Referrers,
+		"referrersAlwaysTag", e.ReferrersAlwaysTag,
 		"catalog", e.Catalog,
 		"deleteManifest", e.DeleteManifest,
 		"immutableTags", e.ImmutableTags,
@@ -259,6 +261,11 @@ func (p *Provider) probeNow(ctx context.Context, answered *bool) (provider.Capab
 		p.log.WarnContext(ctx, "the registry is eventually consistent and no bound of its lag is known: every publish waits "+
 			"until the registry serves it, and answers 503 past the wait; `lajstrom registry probe` measures the lag, "+
 			"registries[].capabilities.consistencyBound records it", "vendor", string(v))
+	}
+	if e.ReferrersAlwaysTag && e.ImmutableTags {
+		p.log.WarnContext(ctx, "referrers.alwaysTag on a registry that refuses to re-point a tag: the second referrer of a subject "+
+			"cannot rewrite the subject's sha256-<digest> index, and its push fails, unless the registry keeps the tags sha256-* "+
+			"mutable (on ECR, IMMUTABLE_WITH_EXCLUSION with the filter sha256-*)", "vendor", string(v))
 	}
 	if q != (quirks{}) {
 		p.log.InfoContext(ctx, "registry needs workarounds", "vendor", string(v),

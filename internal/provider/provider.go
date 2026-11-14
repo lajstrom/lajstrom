@@ -104,7 +104,7 @@ type Repository interface {
 	content.TagResolver      // Tag, Resolve
 	registry.ReferencePusher // PushReference: manifest and tag in one PUT (ingest uses this, not Push+Tag)
 	registry.TagLister       // Tags
-	registry.ReferrerLister  // Referrers; falls back to the tag schema without Capabilities.Referrers
+	registry.ReferrerLister  // Referrers; the tag schema without Capabilities.Referrers, both with ReferrersAlwaysTag
 	BlobUploader             // the backend's blob upload session, for the facade (#24)
 	BlobStreamer             // a blob Lajstrom streams in itself, for the frontends (ADR 0014)
 }
@@ -221,6 +221,12 @@ type Capabilities struct {
 	// switch (registries[].capabilities.blobRedirect): false means OpenBlob follows every
 	// redirect and streams, and a client never gets a URL of the backend.
 	BlobRedirect bool
+	// ReferrersAlwaysTag is the operator's switch registries[].referrers.alwaysTag: a referrer
+	// push also writes the sha256-<digest> index of its subject where the backend has the
+	// referrers API, and Repository.Referrers lists both, each digest once, the API's first
+	// (docs/spec/manifest-profile.md §6). It is insurance where a garbage collector may delete
+	// the referrers that no tag names (#326).
+	ReferrersAlwaysTag bool
 	// MaxBlobSize is the largest blob the backend accepts, in bytes; 0 means unknown.
 	MaxBlobSize int64
 	// Consistency is when the backend's reads see a write it acknowledged: strong, eventual,
@@ -246,6 +252,12 @@ type Capabilities struct {
 	// CreateRepository (docs/registries/quirks.md). CheckName applies it.
 	MaxNameLength int
 }
+
+// TagSchema reports whether the provider keeps the sha256-<digest> tag schema of referrers, the
+// index of a subject that a referrer push rewrites: without the referrers API, and with it when
+// ReferrersAlwaysTag is on. Ingest takes the referrers lock for such a push and rewrites the index
+// on a referrer's delete, and reindex has it repaired, wherever it is true.
+func (c Capabilities) TagSchema() bool { return !c.Referrers || c.ReferrersAlwaysTag }
 
 // CheckName reports whether the backend of c takes the repository name, a Lajstrom name as
 // Repository gets it: nil, or an error that says which limit of c the name breaks
