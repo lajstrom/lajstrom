@@ -692,6 +692,49 @@ What an operator of ECR sees:
   refusal; for a push to an `oci` repo the message also names the first blob of the manifest
   the registry does not have, which Lajstrom finds with one `HEAD` per blob (#850).
 
+### A registry's limits and quotas
+
+A registry may refuse a write because a limit or a quota of its own is reached. Lajstrom tells
+that refusal from refused credentials (#357):
+
+- The client gets `403`. On `/v2` the code is `DENIED`, which docker and oras show and do not
+  retry; the management API gives `FORBIDDEN` (a prefetch). The message names the registry by
+  its `registries[].name`, the status and the limit, `its quota` or `its size limit or its
+  quota`, and nothing of the registry's own words.
+- The log has `registry refused a write for a limit or a quota of its own; raise it or free
+  room` at warn, with the registry and the operation. On ECR the line is `ECR refused to
+  create a repository for a service quota of the account`.
+- Nothing was published: the same upload fails until the limit is raised or room is freed.
+  Retrying does not help, so Lajstrom does not retry.
+
+What each registry answers, and where its limit is raised:
+
+| Registry | Answer | Limit |
+| --- | --- | --- |
+| ECR | `LimitExceededException` from `CreateRepository` | the account's service quotas: 100,000 repositories a region, 100,000 images a repository, both adjustable in Service Quotas ([ecr.md](registries/ecr.md)) |
+| Harbor | `403 DENIED` "… will exceed the configured upper limit of …" to a blob's closing `PUT` and to a manifest `PUT` (measured) | the project's storage quota ([harbor.md](registries/harbor.md#quotas)) |
+| Gitea, Forgejo | `403` with an empty body to the closing `PUT` of a blob (measured) | `[packages] LIMIT_SIZE_CONTAINER`, or the owner's `LIMIT_TOTAL_OWNER_SIZE`: the empty answer does not tell which ([gitea.md](registries/gitea.md)) |
+| Quay | `403 DENIED` "Quota has been exceeded on namespace" (from its source, not measured) | the namespace's quota |
+
+Two kinds of answer count as a limit:
+- a `403` or `DENIED` whose message speaks of a quota or of exceeding a limit, on any request;
+- a `403` to a `PATCH`, or to the closing `PUT`, of an upload session the registry had opened
+  for the same credentials. A `403` that says `UNAUTHORIZED`, or speaks of the token or the
+  credentials (ECR's expired token), is not a limit.
+
+Every other `401` and `403` is still refused credentials: the client gets `502`.
+
+Some answers are not limits. A registry's `413`, a file too large for it, stays `413`. A `429`
+(Docker Hub's pull limit, ECR's throttling) stays `503` with `Retry-After`: it passes with
+time. An `oci` upstream's refusals keep their rule ([below](#upstreams-of-oci-proxy-repos)).
+
+To refuse an oversized file before it streams instead of after:
+- `registries[].capabilities.maxBlobSize` makes `/v2` answer `413 SIZE_INVALID` before the
+  upload when its size is declared, or where its bytes pass the bound
+  ([configuration.md](configuration.md#registries)). For Gitea, set it to
+  `LIMIT_SIZE_CONTAINER`.
+- On the frontends, a repo's `policy.maxFileSize` does the same.
+
 ### Upstreams of oci proxy repos
 
 An `oci` proxy repo ([quickstart/oci-proxy.md](quickstart/oci-proxy.md),

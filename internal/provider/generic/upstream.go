@@ -89,8 +89,16 @@ func NewUpstream(cfg config.Upstream, cred Credential, log *slog.Logger) (*Provi
 
 // upstreamError is the error rule of an upstream (NewUpstream): err, which translateAs made of
 // cause, is provider.ErrNotFound instead of provider.ErrUnauthorized when the registry refused
-// a repository read, or when the upstream has no credentials.
+// a repository read, or when the upstream has no credentials. A limit of the upstream's
+// (provider.ErrLimit) is a refusal like any other here, not a limit of Lajstrom's registry:
+// provider.ErrUnauthorized, under the same rule.
 func (p *Provider) upstreamError(op string, err, cause error) error {
+	if errors.Is(err, provider.ErrLimit) {
+		var resp *errcode.ErrorResponse
+		if errors.As(cause, &resp) {
+			err = &backendError{op: op, kind: provider.ErrUnauthorized, detail: responseDetail(resp), cause: cause}
+		}
+	}
 	if !errors.Is(err, provider.ErrUnauthorized) {
 		return err
 	}

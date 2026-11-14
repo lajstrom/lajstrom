@@ -56,7 +56,7 @@ Every error is answered with one envelope:
 | --- | --- | --- |
 | 400 | `INVALID` | the request breaks a rule; the message starts with the field it is about |
 | 401 | `UNAUTHENTICATED` | credentials are needed, or the ones sent were refused; with `WWW-Authenticate: Basic realm="lajstrom"` |
-| 403 | `FORBIDDEN` | the caller lacks the action, by its bindings or by the scopes of its token, or the admin role for a system resource: creating a repo, users, bindings, the audit log |
+| 403 | `FORBIDDEN` | the caller lacks the action, by its bindings or by the scopes of its token, or the admin role for a system resource: creating a repo, users, bindings, the audit log; or the registry refused a write for a limit or a quota of its own (a prefetch into a full Harbor project), which the message names ([operations.md](operations.md#a-registrys-limits-and-quotas)) |
 | 404 | `NOT_FOUND` | no such repo, user, token or endpoint |
 | 408 | `INVALID` | the body stopped: no byte came within `server.stallTimeout` ([configuration.md](configuration.md#server)); the message is fixed, and the connection is closed |
 | 409 | `CONFLICT` | the repo exists, has versions and the delete is not forced, or is a member of a group; a live user has the name; a live token of the owner has the name; the binding exists; the change would leave no enabled user with an admin binding; a reindex that overlaps runs; a pointer names the version to delete, or the registry refuses to delete its manifest alone |

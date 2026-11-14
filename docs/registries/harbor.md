@@ -86,13 +86,14 @@ reads it yet; the refusals reach ingest and the frontends as conflicts either wa
 
 ## What the provider must do differently
 
-1. Read a quota refusal as one. Over a project's storage quota Harbor answers the blob `PUT`
+1. **Done in #357:** read a quota refusal as one. Over a project's storage quota Harbor answers the blob `PUT`
    and the manifest `PUT` with 403 `DENIED` "… will exceed the configured upper limit of 1.0
    MiB"; the provider makes it `ErrUnauthorized`, "the registry rejected Lajstrom's own
    credentials", and the client gets 502: the raw frontend's `PUT` answers `Bad Gateway`, the
    facade's blob `PUT` 502 `UNKNOWN` (measured, [Quotas](#quotas)). It is the registry
-   refusing to store, not bad credentials. A sentinel of its own is a change to the exported
-   errors of `internal/provider`, a contract question for an issue.
+   refusing to store, not bad credentials. Since #357 its words, "exceed … limit", make it
+   `provider.ErrLimit`: the client gets `403` (on `/v2` `403 DENIED`) naming the quota, and the
+   log a warning ([operations.md](../operations.md#a-registrys-limits-and-quotas)).
 2. List repositories through Harbor's REST API when reindex (#29) needs a listing. A project
    robot cannot read `_catalog` (401 with a Basic challenge; even the admin's Bearer token is
    refused, and only the admin with Basic auth gets it), so the probe sets `catalog=false` and

@@ -26,14 +26,14 @@ func TestTranslate(t *testing.T) {
 		{"image not found", &types.ImageNotFoundException{Message: msg}, provider.ErrNotFound},
 		{"immutable tag", &types.ImageTagAlreadyExistsException{Message: msg}, provider.ErrConflict},
 		{"repository not empty", &types.RepositoryNotEmptyException{Message: msg}, provider.ErrConflict},
-		{"quota", &types.LimitExceededException{Message: msg}, provider.ErrConflict},
+		{"quota", &types.LimitExceededException{Message: msg}, provider.ErrLimit},
 		{"access denied", &smithy.GenericAPIError{Code: "AccessDeniedException", Message: *msg}, provider.ErrUnauthorized},
 		{"bad signature", &smithy.GenericAPIError{Code: "InvalidSignatureException", Message: *msg}, provider.ErrUnauthorized},
 		{"throttled", &smithy.GenericAPIError{Code: "ThrottlingException", Message: "Rate exceeded"}, nil},
 		{"server", &types.ServerException{Message: aws.String("internal")}, nil},
 		{"canceled", fmt.Errorf("operation error ECR: %w", context.Canceled), nil},
 	}
-	sentinels := []error{provider.ErrNotFound, provider.ErrConflict, provider.ErrUnauthorized, provider.ErrUnsupported}
+	sentinels := []error{provider.ErrNotFound, provider.ErrConflict, provider.ErrUnauthorized, provider.ErrUnsupported, provider.ErrLimit}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := translate("create repository raw/x", fmt.Errorf("operation error ECR: CreateRepository: %w", tt.err))
@@ -55,6 +55,12 @@ func TestTranslate(t *testing.T) {
 	}
 	if translate("x", nil) != nil {
 		t.Error("translate(nil) is not nil")
+	}
+	// A quota's message names the limit (#357).
+	got := translate("ensure repository raw/x", &types.LimitExceededException{Message: msg}).Error()
+	if want := "ecr: ensure repository raw/x: provider: refused for a limit or a quota of the registry (LimitExceededException: " +
+		limitText + ")"; got != want {
+		t.Errorf("message = %q, want %q", got, want)
 	}
 }
 

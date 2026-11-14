@@ -125,9 +125,10 @@ func wantRefusal(t *testing.T, what string, rr *httptest.ResponseRecorder, srv *
 // gets the client a 4xx, with the registry's code where the spec has it for a blob upload, and
 // nothing else of the registry's; a busy registry's 429 or 503 is 503 UNAVAILABLE with its
 // Retry-After, 1 s when it sent none; another 5xx stays a 5xx, and a refusal of Lajstrom's
-// credentials is 502. The client opens a session, sends a chunk, asks its status
-// and closes it, or cancels it; or sends the blob in one POST. A session ends when the registry
-// no longer knows it, or refused its digest; otherwise it stays.
+// credentials is 502, but a 403 to a request of a session the registry opened, a limit or a
+// quota of its own, which is 403 DENIED naming it (#357). The client opens a session, sends a
+// chunk, asks its status and closes it, or cancels it; or sends the blob in one POST. A session
+// ends when the registry no longer knows it, or refused its digest; otherwise it stays.
 func TestRegistryRefusals(t *testing.T) {
 	ra := func(s string) http.Header { return http.Header{"Retry-After": {s}} }
 	tests := []struct {
@@ -141,6 +142,7 @@ func TestRegistryRefusals(t *testing.T) {
 		wantCode   string
 		retryAfter string
 		ends       bool
+		limit      bool // a limit of the registry: the message names it, not the registry's status
 	}{
 		{name: "streamed chunk refused, as Gitea does", refuse: http.MethodPatch, status: 400, code: codeBlobUploadInvalid, want: 400, wantCode: codeBlobUploadInvalid},
 		{name: "chunk too large", refuse: http.MethodPatch, status: 400, code: codeSizeInvalid, want: 400, wantCode: codeSizeInvalid},
@@ -156,7 +158,11 @@ func TestRegistryRefusals(t *testing.T) {
 			name: "Lajstrom's credentials refused", refuse: http.MethodPatch, status: 401, code: codeUnauthorized,
 			hdr: http.Header{"Www-Authenticate": {`Basic realm="` + internals + `"`}}, want: 502, wantCode: codeUnknown,
 		},
-		{name: "Lajstrom's credentials denied", refuse: http.MethodPatch, status: 403, code: codeDenied, want: 502, wantCode: codeUnknown},
+		{name: "Lajstrom's credentials denied", refuse: http.MethodPost, status: 403, code: codeDenied, want: 502, wantCode: codeUnknown},
+		// #357: a 403 inside a session the same credentials opened is a limit of the registry's
+		{name: "chunk over a limit of the registry", refuse: http.MethodPatch, status: 403, code: codeDenied, want: 403, wantCode: codeDenied, limit: true},
+		{name: "close over a limit, as Gitea's LIMIT_SIZE_CONTAINER", refuse: http.MethodPut, status: 403, want: 403, wantCode: codeDenied, limit: true},
+		{name: "Lajstrom's credentials refused in a session", refuse: http.MethodPut, status: 401, code: codeUnauthorized, want: 502, wantCode: codeUnknown},
 		{name: "registry fails", refuse: http.MethodPatch, status: 500, code: codeUnknown, want: 500, wantCode: codeUnknown},
 		{name: "name refused", refuse: http.MethodPost, status: 400, code: codeNameInvalid, want: 400, wantCode: codeNameInvalid},
 		{name: "start throttled", refuse: http.MethodPost, status: 429, code: codeTooManyRequests, hdr: ra("30"), want: 503, wantCode: codeUnavailable, retryAfter: "30"},
@@ -171,7 +177,7 @@ func TestRegistryRefusals(t *testing.T) {
 			f := &refusingRegistry{status: tt.status, code: tt.code, hdr: tt.hdr,
 				refuse: func(r *http.Request, _ int64) bool { return r.Method == tt.refuse }}
 			e, _, srv := refusingEnv(t, f)
-			named := !tt.ends && tt.want < http.StatusInternalServerError
+			named := refusalNamed(tt.ends, tt.limit, tt.want)
 			d := digest.FromString("abc")
 			if tt.monolithic {
 				rr := e.do(e.h, http.MethodPost, uploads+"?digest="+d.String(), strings.NewReader("abc"))
@@ -207,7 +213,7 @@ func TestRegistryRefusals(t *testing.T) {
 					id = uploadID(t, rr)
 				}
 			}
-			wantRefusal(t, tt.refuse, rr, srv, tt.want, tt.wantCode, named)
+			wantLimitNamed(t, tt.refuse, wantRefusal(t, tt.refuse, rr, srv, tt.want, tt.wantCode, named), tt.limit)
 			wantHeader(t, tt.refuse, rr, "Retry-After", tt.retryAfter)
 			if tt.refuse == http.MethodPost || tt.refuse == http.MethodGet {
 				return
@@ -218,6 +224,22 @@ func TestRegistryRefusals(t *testing.T) {
 			}
 			wantStatus(t, "the session after the refusal", after, status)
 		})
+	}
+}
+
+// refusalNamed reports whether the answer to a refusal names the registry with its status, as
+// a *provider.RejectedError's message does: a 4xx of a session that stays, but a limit's,
+// whose message names the limit (wantLimitNamed).
+func refusalNamed(ends, limit bool, status int) bool {
+	return !ends && !limit && status < http.StatusInternalServerError
+}
+
+// wantLimitNamed fails t when the message msg of a limit's refusal does not name the registry
+// and the limit (#357).
+func wantLimitNamed(t *testing.T, what, msg string, limit bool) {
+	t.Helper()
+	if limit && (!strings.Contains(msg, "registry local") || !strings.HasSuffix(msg, ": its size limit or its quota)")) {
+		t.Errorf("%s: message %q does not name the registry and the limit", what, msg)
 	}
 }
 
