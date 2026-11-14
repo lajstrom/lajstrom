@@ -57,8 +57,9 @@ var (
 	// bytes that fail their checksum or Validate. Frontends answer 502.
 	ErrBadGateway = errors.New("format: bad gateway")
 
-	// ErrUnavailable means the upstream asked to wait (429). Frontends answer 503 with the
-	// Retry-After of the *UnavailableError that wraps it.
+	// ErrUnavailable means the upstream asked to wait (429), or the KMS that holds a signing key
+	// of the repo did not answer, timed out or throttled (internal/keys, ADR 0020). Frontends
+	// answer 503 with the Retry-After of the *UnavailableError that wraps it.
 	ErrUnavailable = errors.New("format: upstream unavailable")
 
 	// ErrGatewayTimeout means the upstream did not answer within its timeout. Frontends answer
@@ -67,7 +68,7 @@ var (
 )
 
 // UnavailableError is an ErrUnavailable that says when to ask again: the upstream's own
-// Retry-After, at most a minute, 5 seconds when it sent none.
+// Retry-After, at most a minute, 5 seconds when it sent none; 5 seconds for a KMS.
 type UnavailableError struct {
 	// RetryAfter is the wait.
 	RetryAfter time.Duration
