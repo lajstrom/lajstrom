@@ -15,6 +15,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/gcpauth"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/provider/ecr"
@@ -161,7 +162,7 @@ func ociCredential(key string, c config.Upstream, log *slog.Logger) (generic.Cre
 		}
 		return generic.Credential{Basic: tokens.Basic}, nil
 	case a.GCP != nil:
-		tokens, err := newGCPTokens(os.Getenv(gcpMetadataHostEnv), c.Timeout, c.Retries, log.With("upstream", c.Name))
+		tokens, err := gcpauth.New(os.Getenv(gcpauth.MetadataHostEnv), c.Timeout, c.Retries, log.With("upstream", c.Name))
 		if err != nil {
 			return generic.Credential{}, fmt.Errorf("%s.auth.gcp: %w", key, err)
 		}
@@ -169,7 +170,7 @@ func ociCredential(key string, c config.Upstream, log *slog.Logger) (generic.Cre
 			log.Warn("an upstream with auth.gcp is not on gcr.io or *.pkg.dev: it is sent a token that every Google API the service account may call takes",
 				"upstream", c.Name)
 		}
-		return generic.Credential{Basic: tokens.basic}, nil
+		return generic.Credential{Basic: gcpBasic(tokens)}, nil
 	case a.TokenFile != "":
 		token, err := readSecret(key+".auth.tokenFile", a.TokenFile, log)
 		return generic.Credential{Token: token}, err

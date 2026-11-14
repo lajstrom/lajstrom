@@ -12,9 +12,11 @@ import (
 	"github.com/lajstrom/lajstrom/internal/auth/token"
 	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/format"
+	"github.com/lajstrom/lajstrom/internal/gcpauth"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/keys"
 	"github.com/lajstrom/lajstrom/internal/keys/awskms"
+	"github.com/lajstrom/lajstrom/internal/keys/gcpkms"
 )
 
 // signedFormats are the formats whose repos have signing keys: apt (internal/format/deb), whose
@@ -240,12 +242,14 @@ func newKeys(c *config.Config, lookupEnv func(string) (string, bool), st index.S
 
 // kmsClients returns the KMS clients of the keys service by scheme (ADR 0020): AWS KMS at the
 // endpoint of AWS_ENDPOINT_URL_KMS, else AWS_ENDPOINT_URL, else the region's, with the SDK's
-// default chain of credentials. A client reads the SDK's configuration at its first request
-// only, so a server with no key in a KMS never reads it.
+// default chain of credentials; GCP Cloud KMS with the access token of the metadata server of
+// GCE_METADATA_HOST, else 169.254.169.254. A client reads its credentials at its first request
+// only, so a server with no key in a KMS never reads them.
 func kmsClients(lookupEnv func(string) (string, bool), log *slog.Logger) map[string]keys.KMS {
 	env := func(k string) string { v, _ := lookupEnv(k); return v }
 	return map[string]keys.KMS{
 		config.KMSSchemeAWS: awskms.New(awskms.Options{Endpoint: cmp.Or(env("AWS_ENDPOINT_URL_KMS"), env("AWS_ENDPOINT_URL")), Log: log}),
+		config.KMSSchemeGCP: gcpkms.New(gcpkms.Options{MetadataHost: env(gcpauth.MetadataHostEnv), Log: log}),
 	}
 }
 
