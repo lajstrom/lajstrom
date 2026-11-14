@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
@@ -17,12 +18,37 @@ import (
 // binary package.
 const packageContentType = "application/vnd.debian.binary-package"
 
+// poolContentTypes are the Content-Types of the files of a pool by the end of their names: a
+// .deb, the .dsc of a source package and the files it names (docs/spec/http-routing.md §3, apt).
+var poolContentTypes = []struct{ suffix, contentType string }{
+	{".deb", packageContentType},
+	{".dsc", "text/plain; charset=utf-8"},
+	{".gz", "application/gzip"},
+	{".xz", "application/x-xz"},
+	{".bz2", "application/x-bzip2"},
+	{".lzma", "application/x-lzma"},
+	{".zst", "application/zstd"},
+	{".asc", "application/pgp-signature"},
+}
+
+// poolContentType returns the Content-Type of the pool file name, application/octet-stream for
+// a name poolContentTypes does not know.
+func poolContentType(name string) string {
+	for _, c := range poolContentTypes {
+		if strings.HasSuffix(name, c.suffix) {
+			return c.contentType
+		}
+	}
+	return "application/octet-stream"
+}
+
 // errTwoContents is the error of poolFile when the versions that hold a pool file disagree on
 // its blob; poolFile has logged them.
 var errTwoContents = errors.New("deb: one pool file name, two contents")
 
 // pool serves pool/{component}/{p}/{source}/{filename}, the Filename of a paragraph of Packages
-// (docs/spec/http-routing.md §3, apt): the file is looked up by its name (poolFile) and its
+// or a file of the Directory of a paragraph of Sources (docs/spec/http-routing.md §3, apt), with
+// the Content-Type of its name (poolContentType): the file is looked up by its name (poolFile) and its
 // blob is served through format.ServeBlob, one request to the backend at most: a 307 to the
 // backend's storage when the provider gives a URL and the repo's policy.blobRedirect allows
 // it, else the backend's 200, 206 or 416 streamed. The ETag is the blob digest, Last-Modified
@@ -50,7 +76,7 @@ func (h *handlers) pool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err = format.ServeBlob(w, r, prov, ociName(repo, m.Package.NameOCI), m.File.Digest, format.ServeBlobOptions{
-		ContentType:    packageContentType,
+		ContentType:    poolContentType(m.File.Name),
 		LastModified:   m.Version.CreatedAt,
 		ManifestDigest: m.Version.Digest,
 		Redirect:       format.BlobRedirect(repo),
