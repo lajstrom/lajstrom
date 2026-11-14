@@ -442,6 +442,7 @@ checklist filled; for the others the header maps a step to its id.
 | `maven.sh` | M-01 to M-05, M-07; H-08 when its base URL is the edge of the `ha` stack | the M ids |
 | `npm.sh` | J-01 to J-13 | yes |
 | `retention.sh` | none: retention is #72, after the PoC | no |
+| `snapshot.sh` | SN-01 to SN-06, its own: the snapshots of the control plane are #76, after the PoC | yes |
 | `ha.sh` | H-01 to H-13; S-07, G-02 and A-09 across the replicas | the H ids |
 
 At other levels ([testing.md](testing.md)): O-11 is `test/conformance/run.sh`; I-06 the store

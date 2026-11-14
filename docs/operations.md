@@ -218,7 +218,9 @@ fit there.
 Keep a copy of the master key apart from the database backups: a backup of the index holds the
 private keys only as ciphertext (`keys.private_enc`, AES-256-GCM), and the master key alone
 holds nothing. **Losing the master key loses every repo key**: no signature can be made with
-them any more. Recover with a new master key and a rotation of every apt repo (below), then
+them any more. It loses every sealed snapshot of the control plane too
+([Snapshots of the control plane](#snapshots-of-the-control-plane)), which opens with no other
+key; a snapshot made with `--unsealed` does not need it. Recover with a new master key and a rotation of every apt repo (below), then
 distribute the new `key.asc` to every client at once: the retired keys cannot sign beside the
 new ones, so clients that pinned only the old key fail until they have the new one. The token
 key is lost with it too: `serve` refuses to start with a token key it cannot decrypt, and
@@ -1490,7 +1492,12 @@ because ECR serves layers from S3; across regions or to the internet it is the t
   Everything published after the backup is in the registry and comes back;
   users, tokens and bindings come back as they were at the backup. The keys decrypt only with
   the master key of the backup ([The master key](#the-master-key)).
-- **The database is lost without a backup**: the control plane is gone. Create the repos again
+- **The database is lost without a backup, and there is a snapshot of the control plane**:
+  `lajstrom migrate` on an empty database, `lajstrom admin snapshot restore latest`, then
+  `lajstrom reindex` ([Snapshots of the control plane](#snapshots-of-the-control-plane)).
+  Users, tokens, bindings and keys come back as they were at the snapshot, every published
+  artifact with reindex. A sealed snapshot opens only with its master key.
+- **The database is lost without a backup or a snapshot**: the control plane is gone. Create the repos again
   with `lajstrom admin repo create` (or the `repos` of the configuration) under the same format,
   name and registry, with the registry's `prefix` unchanged, then
   `lajstrom reindex` brings back every package. Users and tokens are created again; apt repos
@@ -1523,6 +1530,10 @@ key, and only part of the database can be rebuilt from the registry.
 | tag claims, reindex runs | the coordination tables | yes | not needed: they live for one publish or one run |
 | the master key | the environment of `serve` and `admin key`, or the file of `keys.masterKeyFile`, from your secret store | **no** | no: without it the keys in the database are useless |
 | the configuration file, the registry passwords, the DSN | your configuration management | no | no |
+
+A snapshot of the control plane ([below](#snapshots-of-the-control-plane)) holds the repos,
+users, bindings, tokens and keys, and the audit rows of a window, in the registry; it does not hold
+the sessions, the derived or the coordination rows, nor the master key.
 
 `reindex` writes the derived rows from manifest annotations and metadata layers (through
 `ingest.WriteRows`), `oci_repos`, its own `reindex_runs` row and one audit row; it reads the
@@ -1586,6 +1597,38 @@ lajstrom admin snapshot list                  # TAG CREATED SCHEMA SEALED SIZE D
   transaction, so a snapshot taken while replicas serve is of one moment.
 - **Audit.** `create` appends `snapshot.create` after the read, with the subject
   `lajstrom/control-plane:<tag>` and the manifest's digest. A snapshot never holds its own row.
+  `restore` appends `snapshot.restore` in the transaction of the restore.
+
+**Restoring a snapshot**, the database lost and the registry and the master key kept:
+
+1. Stop every replica. The restore refuses while a replica's row in the database has a heartbeat
+   younger than 2 minutes, naming it.
+2. `lajstrom migrate` on an empty database: a new SQLite file, or an empty Postgres database or
+   schema. The restore writes into an empty control plane only. A database that `serve` started
+   on once holds the configured repos and the bearer-token key, and is refused, naming the tables
+   that have rows; `--force` empties it first, every table but the schema's version, and the
+   derived rows come back with reindex.
+3. `lajstrom admin snapshot restore latest`, or a tag of `list`, or a manifest's digest, with the
+   master key of the snapshot in `keys.masterKeyEnv` or `keys.masterKeyFile`. It prints what it
+   restored as JSON. A snapshot of a newer schema than the binary's is refused: restore it with a
+   binary at least as new. One of an older schema is restored, and the database keeps the
+   binary's schema. Of two snapshots of the same second, `latest` is either.
+4. `lajstrom reindex`: every repo, with prune.
+5. Start the replicas, and check as after a restore of a backup ([Restoring](#restoring)).
+
+What a restore brings back is what a restore of a backup of that moment brings back ([Backing
+up](#backing-up)): users, tokens, bindings and keys as they were, **what was revoked, disabled or
+deleted since comes back** (revoke and disable them again), a key rotation since is undone, no
+audit row beyond the window the snapshot was made with, and no open session. Everything published
+after the snapshot is in the registry and comes back with reindex. A snapshot is rows, not a dump
+of one engine: the snapshot of a SQLite index restores into Postgres, a way from one to the other.
+
+`test/e2e/snapshot.sh` rehearses this path at every run of the end-to-end tests
+([testing.md](testing.md)): a sealed snapshot of a SQLite index; a file published, a deploy token
+revoked and a user made after it; the index removed, a new one migrated, the snapshot restored and
+reindexed: the three files are served, the password, the PAT and the revoked deploy token work,
+the later user does not, the apt key's fingerprint is the one before; and the same snapshot
+restored into a new Postgres schema serves the same.
 
 ### Restoring
 
