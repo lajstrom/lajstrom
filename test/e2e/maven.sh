@@ -680,6 +680,12 @@ snapshot_build() {
 	done
 	echo "1.0-$(xml timestamp)-$(xml buildNumber)"
 }
+# snap_answered FROM METHOD STATUS PATH is answered for the requests to maven/$srepo: requests
+# and answered read the repo from $repo, which a local of the caller shadows.
+snap_answered() {
+	local repo="$srepo"
+	answered "$@"
+}
 # snapshot_get LOG [ARGS...]: dependency:get of <group>:lib:1.0-SNAPSHOT from maven/$srepo into
 # $work/m2-snapshots, the plugins read from the cache.
 snapshot_get() {
@@ -712,8 +718,8 @@ build2="$(snapshot_build)"
 expect "the second build of 1.0-SNAPSHOT" "${build2%-*}-2 2" "$build2 $(xml buildNumber)"
 [ "$build2" != "$build1" ] || fail "the second deploy of 1.0-SNAPSHOT is the build $build1 again"
 if [ -n "$server_log" ]; then
-	answered "$from" PUT 201 "$gpath/lib/1.0-SNAPSHOT/maven-metadata.xml" || fail "the second deploy: no PUT of the SNAPSHOT version's maven-metadata.xml answered 201"
-	answered "$from" PUT 200 "$gpath/lib/maven-metadata.xml" || fail "the second deploy: no PUT of the artifact's maven-metadata.xml answered 200"
+	snap_answered "$from" PUT 201 "$gpath/lib/1.0-SNAPSHOT/maven-metadata.xml" || fail "the second deploy: no PUT of the SNAPSHOT version's maven-metadata.xml answered 201"
+	snap_answered "$from" PUT 200 "$gpath/lib/maven-metadata.xml" || fail "the second deploy: no PUT of the artifact's maven-metadata.xml answered 200"
 fi
 req snapdeploy GET "$surl/$gpath/lib/1.0-SNAPSHOT/lib-$build1.jar" -L
 cmp -s "$work/lib-snap-1/target/lib-1.0-SNAPSHOT.jar" "$work/body" || fail "after the second deploy, lib-$build1.jar is not the first build's jar"
