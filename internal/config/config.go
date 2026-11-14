@@ -20,6 +20,7 @@ type Config struct {
 	Auth        Auth        `yaml:"auth"`
 	Keys        Keys        `yaml:"keys"`
 	Attachments Attachments `yaml:"attachments"`
+	Webhooks    Webhooks    `yaml:"webhooks"`
 	Repos       []Repo      `yaml:"repos"`
 }
 
@@ -452,6 +453,23 @@ type Reconcile struct {
 	GraceAge time.Duration `yaml:"graceAge"`
 }
 
+// Webhooks configures the delivery of webhooks on this replica (docs/spec/webhooks.md §4).
+type Webhooks struct {
+	// AllowedHosts are dialed as they are: over http, and at addresses that are not public.
+	// Any other host only over https at public addresses (egress.Guard).
+	AllowedHosts []string `yaml:"allowedHosts"`
+	// Timeout bounds one attempt; zero means the default, and it must not be negative nor more
+	// than MaxWebhookTimeout.
+	Timeout time.Duration `yaml:"timeout"`
+	// MaxAttempts is how many attempts a delivery gets before it is failed; at least 1.
+	MaxAttempts int `yaml:"maxAttempts"`
+	// Retention is the age past which a delivery-log row is deleted; must be positive.
+	Retention time.Duration `yaml:"retention"`
+	// Workers is the number of deliveries in flight on this replica; 0 turns delivery off here.
+	// Must not be negative.
+	Workers int `yaml:"workers"`
+}
+
 // Auth configures authentication (docs/spec/rbac.md).
 type Auth struct {
 	// AnonymousRead is the server-wide switch for anonymous read: when false, no repo is
@@ -621,6 +639,11 @@ const (
 	DefaultKeysAlgorithm        = KeysAlgorithmEd25519
 	DefaultKeysRetireGrace      = 720 * time.Hour
 	DefaultKeysTokenAlgorithm   = KeysTokenES256
+	DefaultWebhookTimeout       = 10 * time.Second
+	MaxWebhookTimeout           = time.Minute // below the 2 minutes after which a delivery's claim is stale
+	DefaultWebhookMaxAttempts   = 8
+	DefaultWebhookRetention     = 168 * time.Hour
+	DefaultWebhookWorkers       = 4
 )
 
 // The defaults of server.uploadSessions (#246): a principal's live sessions of one repo, about 50
@@ -662,5 +685,7 @@ func Default() *Config {
 			UsernameClaim: DefaultOIDCUsernameClaim, GroupsClaim: DefaultOIDCGroupsClaim, TokenLifetime: DefaultOIDCTokenLifetime}},
 		Keys:        Keys{Algorithm: DefaultKeysAlgorithm, RetireGrace: DefaultKeysRetireGrace, TokenAlgorithm: DefaultKeysTokenAlgorithm},
 		Attachments: Attachments{Keyless: AttachmentKeyless{SignedCertificateTimestamps: DefaultSignedCertificateTimestamps}},
+		Webhooks: Webhooks{Timeout: DefaultWebhookTimeout, MaxAttempts: DefaultWebhookMaxAttempts, Retention: DefaultWebhookRetention,
+			Workers: DefaultWebhookWorkers},
 	}
 }
