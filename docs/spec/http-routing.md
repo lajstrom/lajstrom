@@ -453,7 +453,8 @@ listed here so frontends do not invent their own. What each call needs, in the a
 | reading a repo's content: `GET /api/v1/repos` (lists only the repos the caller may read), `GET …/repos/<format>/<repo>`, `GET …/packages` and `GET …/packages/<name>/versions` (#72), `GET …/packages/<name>/versions/<version>` (#136), and the search of #956 after the MVP | `read` on the repo; a repo the caller may not read is `404`, as on the frontends (rbac.md §3) |
 | changing a repo: `PATCH`, `DELETE`, `POST …/reindex`, `GET …/reindex`, the deploy tokens of the repo | `manage` on the repo |
 | deleting versions: `DELETE …/repos/<format>/<repo>/packages/<name>/versions/<version>` (#61), `POST …/repos/<format>/<repo>/versions:delete` (#72) | `delete` on the repo, checked before the body is read; a repo the caller may not read is `404` |
-| creating a repo, and the system resources: users, bindings, audit | the admin role (rbac.md §2; a `maintainer` on `*/*` is not enough) |
+| a repo's webhooks: `GET`/`POST …/repos/<format>/<repo>/webhooks`, `GET`/`PATCH`/`DELETE …/webhooks/<id>`, `POST …/webhooks/<id>/secret`, `POST …/webhooks/<id>/test`, `GET …/webhooks/<id>/deliveries` (#77) | `manage` on the repo, decided before the repo is looked up (rbac.md §3); the webhooks whose mask is exactly the repo |
+| creating a repo, and the system resources: users, bindings, audit, the webhooks of any mask under `/api/v1/webhooks` (#77) | the admin role (rbac.md §2; a `maintainer` on `*/*` is not enough) |
 | the personal access tokens of a user | the user themself, within what the credential allows, or the admin role |
 | `GET /api/v1/whoami`, `GET /api/v1/info` (#136), `GET /api/v1/openapi.yaml` | nothing |
 | `POST /api/v1/bootstrap` (#440) | nothing: the one-time bootstrap token in the body is the credential; `404` once an enabled user has an admin binding |
@@ -467,6 +468,7 @@ listed here so frontends do not invent their own. What each call needs, in the a
 | tokens | `GET/POST /api/v1/users/<name>/tokens` (PAT), `DELETE …/tokens/<id>`; `GET/POST /api/v1/repos/<format>/<repo>/deploy-tokens`, `DELETE …/<id>` |
 | bindings | `GET /api/v1/bindings[?principal=&limit=&cursor=]`, `POST /api/v1/bindings`, `DELETE /api/v1/bindings/<id>`; a binding's principal is `user:<name>`, `user:<uid>` or `group:<name>` (rbac.md §3, §8) |
 | audit | `GET /api/v1/audit[?repo=&principal=&action=&state=&since=&until=&limit=&cursor=]` |
+| webhooks (#77, [webhooks.md](webhooks.md)) | a repo's: `GET/POST /api/v1/repos/<format>/<repo>/webhooks`, `GET/PATCH/DELETE …/webhooks/<id>`, `POST …/webhooks/<id>/secret`, `POST …/webhooks/<id>/test`, `GET …/webhooks/<id>/deliveries[?limit=&cursor=]`; every mask: the same under `/api/v1/webhooks` |
 | whoami | `GET /api/v1/whoami`; for a user, its current groups too (rbac.md §8) |
 | bootstrap | `POST /api/v1/bootstrap` |
 | the API's description | `GET /api/v1/openapi.yaml` |
@@ -579,6 +581,21 @@ where it runs and since when (index-schema.md, Coordination). `GET …/reindex` 
 run that covered the repo, its own or a run of every repo, with `state`, the times, `error` and
 the repo's part of the report (layout.md, `reindex.Report`); `404` when no run has covered it.
 The run writes the audit event `repo.reindex` when it starts.
+
+Webhooks (#77; events, payload and delivery in [webhooks.md](webhooks.md)). Under a repo
+(`manage`), a webhook's mask is the repo: `POST …/webhooks` takes `{"url", "events",
+"active", "description"}` (`active` `true` by default) and answers `201` with the webhook and its
+`secret`, the one time it is shown; `GET …/webhooks` lists the webhooks of that exact mask, by id;
+`GET …/webhooks/<id>` answers one, `404` for an id that is not of the repo; `PATCH` changes `url`,
+`events`, `active` and `description` (`mask` is `400`, it cannot change); `DELETE` deletes it and
+its delivery log, `204`; `POST …/webhooks/<id>/secret` makes a new secret, answered once, and the
+old one signs nothing from then on; `POST …/webhooks/<id>/test` sends a `webhook.ping` now and
+answers `200` with the row of the delivery log it wrote, `delivered` or `failed`; `GET
+…/webhooks/<id>/deliveries` pages its delivery log, newest first. Under `/api/v1/webhooks` (the
+admin role, checked before the body is read) the same routes take any mask in the body of `POST`,
+`{"mask", …}`, and list every webhook. A URL that webhooks.md §5 refuses is `400` naming `url`;
+`POST` and `…/secret` without a master key, and `…/test` too, are `501 UNAVAILABLE` naming
+`keys.masterKeyEnv`.
 
 ## 5. System endpoints
 

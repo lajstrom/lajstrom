@@ -708,8 +708,9 @@ longer than `reconcile.graceAge` is outside them
 ### INV-21. No secret is logged
 
 - **Statement.** No password, token secret, bearer token, `Authorization` or `Cookie` value,
-  master key, registry or upstream credential, database DSN or presigned URL appears in a log
-  line, an error message or a metric label.
+  master key, registry or upstream credential, webhook secret, database DSN or presigned URL
+  appears in a log line, an error message or a metric label; a webhook's URL appears in a log
+  line by its host only.
 - **Scope.** Every log of `serve` and the CLI, at every level.
 - **Assumes.** Any.
 - **Mechanism.** `server.Server.accessLog` (method, path, status, principal, addresses; never the
@@ -1300,6 +1301,52 @@ longer than `reconcile.graceAge` is outside them
   naming a version that is gone, which the packument leaves out; nothing reports it.
 - **Status.** `holds`.
 
+## Webhooks
+
+### INV-43. A committed write is sent to its webhooks at least once, and a rolled-back one never
+
+- **Statement.** For every publish, version delete, repo creation and repo deletion whose
+  transaction commits through Lajstrom, each webhook that is active at that commit, whose mask
+  matches the repo and whose events include the type, is sent the event until it answers `2xx`,
+  has had `webhooks.maxAttempts` attempts, or `webhooks.retention` has passed; a write whose
+  transaction rolls back sends no event; and every attempt of an event carries the same `id`
+  and body, signed with the webhook's secret of that moment.
+- **Scope.** The four types of webhooks.md §1, written through ingest and `api.Repos`. Not
+  writes straight to the registry, nor what reindex and the reconcile loop add or remove, nor a
+  write whose audit row stays `pending` (its writer stopped between the registry and the
+  index: reindex indexes the version, and no event is sent). Not the order of the events, nor
+  that each is received once (webhooks.md §6).
+- **Assumes.** Database: **one database**, **clocks agree** (a claim is stale after 2 minutes),
+  and the same master key on every replica that delivers. An attempt ends within
+  `webhooks.timeout`, at most 60 seconds.
+- **Mechanism.** The event's `webhook_deliveries` rows are inserted in the transaction of its
+  audit row (`webhook.Outbox.Enqueue`, from `ingest.Pipeline.writeRows`, `deletion.record`,
+  `api.Repos.Create` and `api.Repos.Delete`); the workers claim them
+  (`index.Writer.ClaimWebhookDeliveries`) and record each outcome with a compare-and-set on the
+  claim (`FinishWebhookDelivery`) (index-schema.md, Webhooks).
+- **Tests.** None yet.
+- **When violated.** A delivery that fails for good is `failed` in the delivery log, with its
+  last status and error, and logged at warn; the receiver can be sent a test, and the event is
+  in the audit log.
+- **Status.** `not yet` (#77).
+
+### INV-44. A webhook reaches only public addresses over https, unless the operator allowed its host
+
+- **Statement.** A webhook's request, and each redirect it follows, goes to a host of
+  `webhooks.allowedHosts` or to the egress proxy as they are, and to any other host only over
+  `https` and only at public unicast addresses; a redirect from `https` to `http` is refused; and
+  neither the delivery log nor an answer of the API shows the address a host resolved to.
+- **Scope.** Deliveries and test deliveries of every replica, and the URL of a webhook when it is
+  created or changed.
+- **Assumes.** Any; with an egress proxy, Lajstrom refuses an address literal of a private range
+  and the egress proxy enforces the rest, as for INV-32.
+- **Mechanism.** The client of `webhook.Deliverer`, whose transport dials through `egress.Guard`
+  (`Guard.DialContext`, `Guard.Proxy`) built from `webhooks.allowedHosts`, and whose redirects
+  `Guard.CheckURL` checks; the URL checked by `Guard.CheckURL` when it is stored.
+- **Tests.** None yet.
+- **When violated.** Threat model S-1, for webhooks.
+- **Status.** `not yet` (#77).
+
 ## Summary
 
 | Id | Guarantee | Status | Markers |
@@ -1346,6 +1393,8 @@ longer than `reconcile.graceAge` is outside them
 | INV-40 | a streamed download has its digest | holds | |
 | INV-41 | a binary only on a schema it can run on | partly | untested until v0.1.0 (the previous release's binary) |
 | INV-42 | a conditional delete never removes a changed version | holds | |
+| INV-43 | a committed write sent to its webhooks at least once, a rolled-back one never | not yet (#77) | |
+| INV-44 | a webhook reaches only public https unless its host is allowed | not yet (#77) | |
 
 ## Not guaranteed
 
@@ -1430,6 +1479,10 @@ promises part of it, the line says which part stays a promise.
   next run and reports what it cannot index; until then it promises nothing about it.
 - **An upstream's cache.** A proxy's `proxy_meta` rows may be dropped at any time, and what a
   proxy lists follows the upstream while it answers.
+- **The order of webhook deliveries, and that each is received once.** INV-43 promises at least
+  once; retries and the workers of several replicas reorder, and repeat an event whose answer
+  came too late. When an event is sent after its commit, and the waits between attempts, are as
+  for every retry. The fields of an event beyond those webhooks.md §3 names.
 
 ## Gaps
 
@@ -1453,3 +1506,4 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | Registries that fold tag case (INV-7) | two versions that differ in case: the second is a `409` with an unclear message | `Capabilities.TagsFoldCase` | [#426](https://github.com/lajstrom/lajstrom/issues/426) |
 | Whether a migration is expand is reviewed, not tested; the job `upgrade`, which runs the previous release's binary on the next schema, is skipped until there is a release; pre-#244 claims (INV-6, INV-41) | a contract migration without its `requires` line breaks the replicas of the release before during a rolling update; a mixed fleet may not exclude publishes | tag v0.1.0: from then on the job `upgrade` (`test/upgrade/run.sh`, [#485](https://github.com/lajstrom/lajstrom/issues/485)) runs on every pull request that changes a migration | [#59](https://github.com/lajstrom/lajstrom/issues/59) |
 | Policy (INV-38), encryption at rest (INV-39) | not built | as the issues say | [#101](https://github.com/lajstrom/lajstrom/issues/101), [#114](https://github.com/lajstrom/lajstrom/issues/114) |
+| Webhooks (INV-43, INV-44) | not built until the code of #77 is merged | the pull requests stacked on the spec | [#77](https://github.com/lajstrom/lajstrom/issues/77) |

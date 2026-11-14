@@ -58,14 +58,15 @@ the audit log keeps the name of each event's time.
 
 Resource: a repo, identified by `<format>/<repo>`. Prefix-level resources (a path inside a repo)
 are after the MVP. Two system-level resources, which only the `admin` role reaches: `system`
-(users, bindings, registries, creating a repo, every user's tokens) and `audit`.
+(users, bindings, registries, creating a repo, every user's tokens, the webhooks of any mask) and
+`audit`.
 
 | Action | Meaning |
 | --- | --- |
 | `read` | GET/HEAD on the frontend; `pull` scope on `/v2`; list in `/api/v1/repos` |
 | `write` | PUT/POST on the frontend; `push` scope on `/v2`; create versions |
 | `delete` | DELETE versions/manifests; `delete` scope on `/v2` |
-| `manage` | change the repo (policy, anonymous read, deploy tokens) or delete it; reindex it and read its latest run (`GET …/reindex`); purge a proxy's upstream cache (§7) |
+| `manage` | change the repo (policy, anonymous read, deploy tokens) or delete it; reindex it and read its latest run (`GET …/reindex`); purge a proxy's upstream cache (§7); its webhooks, those whose mask is exactly the repo, their secrets, tests and delivery logs ([webhooks.md](webhooks.md)) |
 
 On npm's routes (http-routing.md, npm), changing a package's dist-tags or deprecations is
 `write`, the `DELETE` of a dist-tag included, and an unpublish is `delete`, a version that a
@@ -156,6 +157,13 @@ this spec, so that a review need not find it in the code:
   need not name a repo that exists (above), so creating one tells nothing either.
 - **A repo's deploy tokens** need `manage` on it, decided before the repo is looked up: the
   answers of this rule.
+- **A repo's webhooks** (`/api/v1/repos/<format>/<repo>/webhooks…`, #77) need `manage` on it,
+  decided before the repo is looked up, then the repo must exist (`404`), and a webhook id that
+  is not of the repo's mask is `404`. **The webhooks of any mask** (`/api/v1/webhooks…`) need
+  the admin role, checked before the body is read: a wildcard mask sends events of repos that
+  do not exist yet. A webhook's mask, like a binding's, need not name a repo that exists, so
+  creating one through `/api/v1/webhooks` tells nothing. A webhook's events tell its receiver
+  what `read` on the repo shows and the actor of each write (webhooks.md §3).
 - **A personal access token's scopes** are actions; they name no repo.
 - **Creating a personal access token** (`POST /api/v1/users/<name>/tokens`) takes a password
   as the request's credential, besides the user's own or the `admin` role; an OIDC login mints
@@ -230,7 +238,11 @@ before the write, `pending`, in a transaction of its own, and the row says how t
 ([index-schema.md](index-schema.md#the-audit-row-of-a-registry-write),
 [guarantees.md](guarantees.md) INV-14). The creation's row also
 names the credential that created the token, `createdBy` in its details: `password`,
-`token:<id>` for a token, or `oidc` for the token of an OIDC login (§8). Reads are not audited in the MVP (a per-repo option later). The
+`token:<id>` for a token, or `oidc` for the token of an OIDC login (§8). A webhook's creation, change, deletion and the rotation of its secret are `webhook.create`,
+`webhook.update`, `webhook.delete` and `webhook.secret` (#77), in the transaction of the change:
+`repo` the webhook's mask, `subject` `webhook:<id>`, `details` `{"mask", "host", "events",
+"active"}`, the host of its URL and never the URL nor the secret. A test delivery and the
+deliveries are not audited: the delivery log has them (webhooks.md §4). Reads are not audited in the MVP (a per-repo option later). The
 short-lived bearer tokens of `/v2/token` are not audited either (decided on #46, 2026-11-09): a
 client gets one for every pull and push, and what a token allows is audited itself.
 
