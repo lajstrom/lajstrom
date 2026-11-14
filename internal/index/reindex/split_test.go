@@ -163,3 +163,78 @@ func TestSplitIndexedBefore(t *testing.T) {
 		t.Errorf("the row of the version at the earlier form: %v, want ErrNotFound", err)
 	}
 }
+
+// splitRow writes the row of the version at the earlier form of sp as reindex indexes it since
+// #642: under the package at the newest form, with the earlier form in OCIRepo.
+func (e *env) splitRow(t *testing.T, sp split) {
+	t.Helper()
+	ctx := t.Context()
+	rr, err := e.fake.Repository(ctx, e.repo.Prefix+"/"+sp.earlier)
+	must(t, err)
+	desc, err := rr.Resolve(ctx, sp.oneTag)
+	must(t, err)
+	rc, err := rr.Fetch(ctx, desc)
+	must(t, err)
+	b, err := io.ReadAll(rc)
+	_ = rc.Close()
+	must(t, err)
+	var m ocispec.Manifest
+	must(t, json.Unmarshal(b, &m))
+	rows, err := e.pipe.Inspect(ctx, e.repo, sp.earlier, sp.oneTag, m, b, ingest.InspectOptions{})
+	must(t, err)
+	rows.Version.OCIRepo = sp.earlier
+	must(t, e.st.Tx(ctx, func(w index.Writer) error { return ingest.WriteRows(ctx, w, rows, e.clock.now()) }))
+	if rows.Package.NameOCI != sp.newest {
+		t.Fatalf("the package of the split row is at %s, want %s", rows.Package.NameOCI, sp.newest)
+	}
+}
+
+// TestSplitRowServed: a version whose manifest is at the other form of its package's OCI name
+// (versions.oci_repo, #642) downloads from there, the sweep finds it there and keeps it, and the
+// delete of the file deletes it there, with the version at the newest form.
+func TestSplitRowServed(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t)
+	const p = "netlify/blobs"
+	sp := e.split(t, p)
+	e.splitRow(t, sp)
+	f := e.frontend(t, raw.Plugin{})
+	get := func(what string) {
+		t.Helper()
+		if got := f.do(t, http.MethodGet, p+"?digest="+sp.one.String(), nil, http.StatusOK).Body.String(); got != "one "+e.repo.Name {
+			t.Errorf("%s: GET %s pinned to the version at the earlier form = %q", what, p, got)
+		}
+	}
+	get("written")
+
+	for i, what := range []string{"the first run", "a run two hours later"} {
+		if i > 0 {
+			e.clock.later(2 * time.Hour)
+		}
+		r := e.run(t, reindex.Request{Prune: true})
+		if r.Removed != 0 || r.Pending != 0 || len(r.Errors) != 0 {
+			t.Errorf("%s: %+v, want the row at the earlier form kept", what, *r)
+		}
+		if v, err := e.st.GetVersionByDigest(ctx, e.repo.ID, sp.one); err != nil || v.OCIRepo != sp.earlier {
+			t.Fatalf("%s: the row at the earlier form: %+v, %v", what, v, err)
+		}
+		get(what)
+	}
+
+	f.do(t, http.MethodDelete, p, nil, http.StatusNoContent)
+	for _, form := range []string{sp.earlier, sp.newest} {
+		rr, err := e.fake.Repository(ctx, e.repo.Prefix+"/"+form)
+		must(t, err)
+		if err := rr.Tags(ctx, "", func(tags []string) error {
+			if len(tags) > 0 {
+				t.Errorf("the delete left the tags %q at %s", tags, form)
+			}
+			return nil
+		}); err != nil && !errors.Is(err, provider.ErrNotFound) {
+			t.Fatal(err)
+		}
+	}
+	if _, err := e.st.GetPackage(ctx, e.repo.ID, p); !errors.Is(err, index.ErrNotFound) {
+		t.Errorf("the package after the delete of both versions: %v, want ErrNotFound", err)
+	}
+}

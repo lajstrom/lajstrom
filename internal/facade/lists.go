@@ -68,9 +68,10 @@ type tagList struct {
 }
 
 // tags answers GET …/tags/list?n=&last=. For a repo Lajstrom manages, the tags come from the
-// index: the versions of the package whose escaped path (name_oci) is <path>, sorted; an
-// unknown package is an empty list when oci_repos knows the OCI repository and NAME_UNKNOWN
-// otherwise. For an oci repo they come from the backend, from last on. Both are paginated
+// index: the versions whose manifest is at <path> (index.ManifestPath), sorted, of the package
+// whose escaped path (name_oci) is <path> or, in a split, of the package at another form of it
+// whose versions reindex found at <path> (index.PackageOf, #642); an unknown package is an empty
+// list when oci_repos knows the OCI repository and NAME_UNKNOWN otherwise. For an oci repo they come from the backend, from last on. Both are paginated
 // here with n and a Link.
 func (h *handler) tags(w http.ResponseWriter, r *http.Request, t *target, _ string) error {
 	ctx := r.Context()
@@ -98,19 +99,13 @@ func (h *handler) tags(w http.ResponseWriter, r *http.Request, t *target, _ stri
 	return nil
 }
 
-// indexTags returns the sorted tags of the package of t from the index.
+// indexTags returns the sorted tags of the versions whose manifest is at the path of t, from the
+// index.
 func (h *handler) indexTags(ctx context.Context, t *target) ([]string, error) {
-	pkg, err := h.o.Index.GetPackageByNameOCI(ctx, t.repo.ID, t.path)
+	pkg, err := index.PackageOf(ctx, h.o.Index, t.repo.ID, t.path)
 	switch {
 	case errors.Is(err, index.ErrNotFound):
-		known, err := h.ociRepoKnown(ctx, t)
-		if err != nil {
-			return nil, err
-		}
-		if !known {
-			return nil, &apiError{status: http.StatusNotFound, code: codeNameUnknown, msg: fmt.Sprintf("repository name %s not known to registry", t.name)}
-		}
-		return []string{}, nil
+		return h.unknownTags(ctx, t)
 	case err != nil:
 		return nil, fmt.Errorf("facade: package of %s: %w", t.name, err)
 	}
@@ -120,10 +115,28 @@ func (h *handler) indexTags(ctx context.Context, t *target) ([]string, error) {
 	}
 	tags := make([]string, 0, len(versions))
 	for _, v := range versions {
-		tags = append(tags, v.Tag)
+		if index.ManifestPath(*pkg, v) == t.path {
+			tags = append(tags, v.Tag)
+		}
+	}
+	if len(tags) == 0 && pkg.NameOCI != t.path { // another form of the package's name, without a version
+		return h.unknownTags(ctx, t)
 	}
 	slices.Sort(tags)
 	return slices.Compact(tags), nil
+}
+
+// unknownTags is the tag list of a path where the index has no package: empty when oci_repos
+// knows the OCI repository, NAME_UNKNOWN otherwise.
+func (h *handler) unknownTags(ctx context.Context, t *target) ([]string, error) {
+	known, err := h.ociRepoKnown(ctx, t)
+	if err != nil {
+		return nil, err
+	}
+	if !known {
+		return nil, &apiError{status: http.StatusNotFound, code: codeNameUnknown, msg: fmt.Sprintf("repository name %s not known to registry", t.name)}
+	}
+	return []string{}, nil
 }
 
 // ociRepoKnown reports whether oci_repos has the OCI repository of t.
