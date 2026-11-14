@@ -161,3 +161,43 @@ func TestSealOpen(t *testing.T) {
 		}
 	}
 }
+
+// TestSealSnapshot checks the sealing of a snapshot: the round trip; a wrong master key, other
+// additional data, a changed byte and a truncated layer fail; and the snapshot key is not the
+// key of the private keys, either way.
+func TestSealSnapshot(t *testing.T) {
+	m := master(t, testMasterHex)
+	plain, ad := []byte("the gzip'd document"), []byte("application/vnd.lajstrom.snapshot.control-plane.v1.sealed")
+	sealed := m.SealSnapshot(plain, ad)
+	if bytes.Contains(sealed, plain) || bytes.Equal(m.SealSnapshot(plain, ad), sealed) {
+		t.Error("the sealed snapshot contains the plaintext, or the nonce is not fresh")
+	}
+	got, err := m.OpenSnapshot(sealed, ad)
+	if err != nil || !bytes.Equal(got, plain) {
+		t.Fatalf("OpenSnapshot = %q, %v", got, err)
+	}
+	changed := bytes.Clone(sealed)
+	changed[len(changed)/2] ^= 1
+	for _, tt := range []struct {
+		name   string
+		m      *Master
+		ad     []byte
+		sealed []byte
+		want   string
+	}{
+		{"another master key", master(t, otherMasterHex), ad, sealed, "does not open with the master key"},
+		{"other additional data", m, []byte("application/json"), sealed, "does not open with the master key"},
+		{"a changed byte", m, ad, changed, "does not open with the master key"},
+		{"truncated", m, ad, sealed[:20], "too short"},
+	} {
+		if _, err := tt.m.OpenSnapshot(tt.sealed, tt.ad); err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("OpenSnapshot with %s: %v, want an error containing %q", tt.name, err, tt.want)
+		}
+	}
+	if _, err := m.open(string(ad), sealed); err == nil {
+		t.Error("a sealed snapshot opens with the key of the private keys")
+	}
+	if _, err := m.OpenSnapshot(m.seal(string(ad), plain), ad); err == nil {
+		t.Error("a sealed private key opens with the snapshot key")
+	}
+}
