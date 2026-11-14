@@ -11,14 +11,16 @@ import (
 	"strings"
 )
 
-// Dialects: the values of database.driver and the directories of the embedded migrations,
-// migrations/<dialect>/NNNN_<name>.sql.
+// Dialects: the directories of the embedded migrations, migrations/<dialect>/NNNN_<name>.sql.
+// DialectSQLite and DialectPostgres are also the values of database.driver; the postgres driver
+// selects DialectCockroach when the server is CockroachDB (docs/deploy/databases.md#cockroachdb).
 const (
-	DialectSQLite   = "sqlite"
-	DialectPostgres = "postgres"
+	DialectSQLite    = "sqlite"
+	DialectPostgres  = "postgres"
+	DialectCockroach = "cockroach"
 )
 
-//go:embed migrations/sqlite/*.sql migrations/postgres/*.sql
+//go:embed migrations/sqlite/*.sql migrations/postgres/*.sql migrations/cockroach/*.sql
 var migrationFiles embed.FS
 
 // migration is one embedded migration file.
@@ -35,7 +37,7 @@ type migration struct {
 const requiresDirective = "-- lajstrom:requires "
 
 // MigrationVersions returns the versions of the migrations embedded for dialect, ascending.
-// Both dialects have the same set.
+// Every dialect has the same set.
 func MigrationVersions(dialect string) ([]int, error) {
 	ms, err := migrations(dialect)
 	if err != nil {
@@ -51,7 +53,7 @@ func MigrationVersions(dialect string) ([]int, error) {
 // migrations reads the embedded migrations of dialect, ordered by version.
 func migrations(dialect string) ([]migration, error) {
 	if _, ok := runners[dialect]; !ok {
-		return nil, fmt.Errorf("index: unknown dialect %q (want %s or %s)", dialect, DialectSQLite, DialectPostgres)
+		return nil, fmt.Errorf("index: unknown dialect %q (want %s, %s or %s)", dialect, DialectSQLite, DialectPostgres, DialectCockroach)
 	}
 	dir := "migrations/" + dialect
 	entries, err := fs.ReadDir(migrationFiles, dir)
