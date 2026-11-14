@@ -407,6 +407,53 @@ type JournalState struct {
 	Seq       int64  // the entry that set it
 }
 
+// The kinds of an attachment (docs/spec/manifest-profile.md §6.1), the values of
+// profile.Referrer*. A binary reads a kind it does not know as it is.
+const (
+	AttachmentSignature   = "signature"
+	AttachmentSBOM        = "sbom"
+	AttachmentScan        = "scan"
+	AttachmentProvenance  = "provenance"
+	AttachmentAttestation = "attestation"
+	AttachmentOther       = "other"
+)
+
+// The labels of an attachment (docs/spec/manifest-profile.md §6.3), the values of attest's.
+const (
+	AttachmentVerified    = "verified"
+	AttachmentUntrusted   = "untrusted"
+	AttachmentUnsigned    = "unsigned"
+	AttachmentInvalid     = "invalid"
+	AttachmentUnsupported = "unsupported"
+)
+
+// Attachment is a row of attachments (derived, #89): one layer of a referrer of a version's
+// manifest, a signature, an SBOM, a scan report or another attestation, with its label
+// (docs/spec/index-schema.md, Attachments).
+type Attachment struct {
+	ID            int64
+	VersionID     int64
+	Digest        digest.Digest     // the referrer manifest
+	Tag           string            // cosign's legacy tag; "" for a referrer pushed by digest
+	Layer         digest.Digest     // the attachment's layer; "" for a manifest without layers
+	MediaType     string            // the layer's; the artifact type for a manifest without layers
+	ArtifactType  string            // the manifest's artifactType, else its config's media type
+	Kind          string            // Attachment{Signature,SBOM,Scan,Provenance,Attestation,Other}
+	PredicateType string            // "" when none
+	Size          int64             // the layer's
+	Annotations   map[string]string // the manifest's
+	Tool          string            // lajstrom.attachment.tool
+	ToolVersion   string            // lajstrom.attachment.toolVersion
+	Database      string            // lajstrom.attachment.database
+	Input         digest.Digest     // lajstrom.attachment.input when it is a digest
+	Verification  string            // Attachment{Verified,Untrusted,Unsigned,Invalid,Unsupported}
+	SignedBy      string            // the trust entry whose key verified it; "" (NULL) unless verified
+	Reason        string            // why it is not verified; "" when it is
+	Trust         string            // the hash of the trust that labelled it (attest.Trust.Hash)
+	CreatedAt     *time.Time        // the manifest's org.opencontainers.image.created; nil without one
+	IndexedAt     time.Time         // when ingest or reindex last wrote or saw the row
+}
+
 // The states of a proxy_meta row.
 const (
 	ProxyMetaPresent = "present" // the upstream answered with a document
