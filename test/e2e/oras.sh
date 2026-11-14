@@ -13,6 +13,12 @@
 # and one manifest under two tags, whose delete by one tag is 409 DENIED naming the other, and by
 # its digest deletes both (#284).
 #
+# Where the registry deletes no manifests, LAJSTROM_E2E_DELETE_MANIFEST=false (run.sh reads it
+# from the server's log, #800), every delete is refused and checked to change nothing: through
+# /raw/ 501, through the facade 405 UNSUPPORTED naming the registry (oras manifest delete fails
+# with it), the delete by one of two tags too; what the run pushed stays in the registry, and the
+# oci repo of the run goes from the index all the same.
+#
 #   test/e2e/oras.sh [<base url> [<raw repo>]]     default: http://localhost:8080 scratch
 #
 # The repo must exist (the example configuration creates raw/scratch), and the user of
@@ -53,6 +59,10 @@ named="" # the raw file of the step of ADR 0017 that may be in the repo
 oci_pushed=""
 policy_set=""
 oci_made=""
+deletes=yes # the registry deletes manifests; no: Lajstrom refuses every delete (#800)
+[ "${LAJSTROM_E2E_DELETE_MANIFEST:-}" != false ] || deletes=no
+deleted=204 # the status of a raw DELETE: 501 where deletes are refused
+[ "$deletes" = yes ] || deleted=501
 cleanup() {
 	[ -z "$pushed" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/raw/$repo/$path" || true
 	[ -z "$named" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/raw/$repo/$named" || true
@@ -81,6 +91,14 @@ fi
 # sha256 prints the hex sha256 of a file.
 sha256() {
 	if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+# refused WHAT: oras failed with the facade's 405 UNSUPPORTED of a registry that deletes no
+# manifests, naming the registry local (#352); its output is in $work/oras.log.
+refused() {
+	grep -qi 'unsupported' "$work/oras.log" && grep -qF 'registry "local" ' "$work/oras.log" &&
+		grep -qF 'does not delete manifests; nothing was deleted' "$work/oras.log" ||
+		{ cat "$work/oras.log" >&2; fail "$1: not refused with UNSUPPORTED naming the registry local"; }
 }
 
 # push CREATED: oras push of $path, with the raw annotations and CREATED as the created time,
@@ -189,26 +207,41 @@ step "GET /raw/$repo/$path: 200, the pushed bytes"
 
 # ADR 0017 (#597, #598): raw files whose OCI names Gitea and Forgejo refused in the form of
 # before it (h0__… for .gitignore, a--b.txt), and one whose name Zot left out of its catalog
-# (blobs): PUT 201, GET the bytes, DELETE 204.
+# (blobs): PUT 201, GET the bytes, DELETE 204; where deletes are refused, DELETE 501 and the
+# file still served.
 for f in .gitignore a--b.txt blobs; do
 	named="$run/$f"
 	assert_status 201 -K "$E2E_CURLRC" -o /dev/null -T "$work/$path" "$base/raw/$repo/$named"
 	assert_status 200 -K "$E2E_CURLRC" -o "$work/get" "$base/raw/$repo/$named"
 	cmp -s "$work/$path" "$work/get" || fail "GET /raw/$repo/$named: not the pushed bytes"
-	assert_status 204 -K "$E2E_CURLRC" -o /dev/null -X DELETE "$base/raw/$repo/$named"
+	assert_status "$deleted" -K "$E2E_CURLRC" -o /dev/null -X DELETE "$base/raw/$repo/$named"
+	[ "$deletes" = yes ] || assert_status 200 -K "$E2E_CURLRC" -o /dev/null "$base/raw/$repo/$named"
 	named=""
 done
-step "PUT, GET and DELETE /raw/$repo/$run/.gitignore, a--b.txt and blobs: 201, the bytes, 204"
+step "PUT, GET and DELETE /raw/$repo/$run/.gitignore, a--b.txt and blobs: 201, the bytes, $deleted"
 
 # #61, and the cleanup: oras manifest delete through the facade (202), then the version is gone
-# from the facade and from the raw frontend.
-oras manifest delete --force "$registry/$name:$version" >"$work/oras.log" 2>&1 ||
-	{ cat "$work/oras.log" >&2; fail "oras manifest delete $name:$version"; }
-pushed=""
-assert_status 404 -K "$E2E_CURLRC" -o /dev/null "$base/v2/$name/manifests/$digest"
-assert_eq "" "$(oras repo tags "$registry/$name")" "oras repo tags after the delete"
-assert_status 404 -K "$E2E_CURLRC" -o /dev/null "$base/raw/$repo/$path"
-step "oras manifest delete $registry/$name:$version: the manifest 404, no tag, GET /raw/$repo/$path 404"
+# from the facade and from the raw frontend. Where deletes are refused, 405 UNSUPPORTED, and the
+# manifest, its tag and the file stay.
+if [ "$deletes" = no ]; then
+	if oras manifest delete --force "$registry/$name:$version" >"$work/oras.log" 2>&1; then
+		fail "oras manifest delete $name:$version succeeded where the registry deletes no manifests: $(cat "$work/oras.log")"
+	fi
+	refused "oras manifest delete $name:$version"
+	pushed=""
+	assert_status 200 -K "$E2E_CURLRC" -o /dev/null "$base/v2/$name/manifests/$digest"
+	assert_eq "$version" "$(oras repo tags "$registry/$name")" "oras repo tags after the refused delete"
+	assert_status 200 -K "$E2E_CURLRC" -o /dev/null "$base/raw/$repo/$path"
+	step "oras manifest delete $registry/$name:$version where the registry deletes no manifests: refused, UNSUPPORTED naming it; the manifest, its tag and GET /raw/$repo/$path 200"
+else
+	oras manifest delete --force "$registry/$name:$version" >"$work/oras.log" 2>&1 ||
+		{ cat "$work/oras.log" >&2; fail "oras manifest delete $name:$version"; }
+	pushed=""
+	assert_status 404 -K "$E2E_CURLRC" -o /dev/null "$base/v2/$name/manifests/$digest"
+	assert_eq "" "$(oras repo tags "$registry/$name")" "oras repo tags after the delete"
+	assert_status 404 -K "$E2E_CURLRC" -o /dev/null "$base/raw/$repo/$path"
+	step "oras manifest delete $registry/$name:$version: the manifest 404, no tag, GET /raw/$repo/$path 404"
+fi
 
 # #245: an oci repo of the run's own, made here. A manifest pushed to it writes a push row with
 # the OCI name as the subject, the digest, the tag, the client address (the raw push's) and the
@@ -232,32 +265,62 @@ assert_eq "$oci $oci_digest 1 $ip" "$(jq -r '.events[] | "\(.subject) \(.digest)
 assert_eq 2 "$(jq '[.events[].details.requestId | select(. != null)] | unique | length' <<<"$E2E_BODY")" \
 	"the request ids of the push rows of $oci:1"
 step "oras push $registry/$oci:1 twice: two push rows, subject $oci, digest $oci_digest, tag 1, ip $ip"
-oras manifest delete --force "$registry/$oci:1" >"$work/oras.log" 2>&1 ||
-	{ cat "$work/oras.log" >&2; fail "oras manifest delete $oci:1"; }
-step "oras manifest delete $registry/$oci:1"
+if [ "$deletes" = no ]; then
+	if oras manifest delete --force "$registry/$oci:1" >"$work/oras.log" 2>&1; then
+		fail "oras manifest delete $oci:1 succeeded where the registry deletes no manifests: $(cat "$work/oras.log")"
+	fi
+	refused "oras manifest delete $oci:1"
+	assert_status 200 -K "$E2E_CURLRC" -o /dev/null -I "$base/v2/$oci/manifests/1"
+	step "oras manifest delete $registry/$oci:1: refused, UNSUPPORTED; the tag 1 still 200"
+else
+	oras manifest delete --force "$registry/$oci:1" >"$work/oras.log" 2>&1 ||
+		{ cat "$work/oras.log" >&2; fail "oras manifest delete $oci:1"; }
+	step "oras manifest delete $registry/$oci:1"
+fi
 
 # #284: one manifest of the run's oci repo under two tags. A delete by one tag would take the
 # other: it is 409 DENIED naming it, and both tags still name the manifest. oras deletes by digest
 # only (it resolves a tag first), so the delete by tag is curl's; the delete by digest is oras's.
+# Where deletes are refused, both are 405 UNSUPPORTED before the tags are counted, and the
+# manifest and both tags stay.
 printf 'oci e2e %s\n' "$run" >"$work/image.txt"
 oras push "$registry/$img:one,two" image.txt >"$work/oras.log" 2>&1 || { cat "$work/oras.log" >&2; fail "oras push $img:one,two"; }
 img_digest="$(awk '$1 == "Digest:" { print $2 }' "$work/oras.log")"
 oci_pushed=yes
 case "$img_digest" in sha256:*) ;; *) cat "$work/oras.log" >&2; fail "oras push $img:one,two printed no digest" ;; esac
 step "oras push $registry/$img:one,two: $img_digest"
-assert_status 409 -K "$E2E_CURLRC" -X DELETE "$base/v2/$img/manifests/one"
-assert_eq "DENIED two" "$(jq -r '.errors[0] | .code + " " + (.detail.tags | join(","))' <<<"$E2E_BODY")" "the refusal of the delete by tag"
+if [ "$deletes" = no ]; then
+	assert_status 405 -K "$E2E_CURLRC" -X DELETE "$base/v2/$img/manifests/one"
+	assert_eq UNSUPPORTED "$(jq -r '.errors[0].code' <<<"$E2E_BODY")" "the refusal of the delete by tag"
+	refusal="405 UNSUPPORTED"
+else
+	assert_status 409 -K "$E2E_CURLRC" -X DELETE "$base/v2/$img/manifests/one"
+	assert_eq "DENIED two" "$(jq -r '.errors[0] | .code + " " + (.detail.tags | join(","))' <<<"$E2E_BODY")" "the refusal of the delete by tag"
+	refusal="409 DENIED naming two"
+fi
 for tag in one two; do
 	assert_status 200 -K "$E2E_CURLRC" -o /dev/null -I "$base/v2/$img/manifests/$tag"
 done
-step "DELETE /v2/$img/manifests/one: 409 DENIED naming two, both tags kept"
-oras manifest delete --force "$registry/$img@$img_digest" >"$work/oras.log" 2>&1 ||
-	{ cat "$work/oras.log" >&2; fail "oras manifest delete $img@$img_digest"; }
-oci_pushed=""
-for ref in one two "$img_digest"; do
-	assert_status 404 -K "$E2E_CURLRC" -o /dev/null -I "$base/v2/$img/manifests/$ref"
-done
-step "oras manifest delete $registry/$img@$img_digest: the manifest and both tags 404"
+step "DELETE /v2/$img/manifests/one: $refusal, both tags kept"
+if [ "$deletes" = no ]; then
+	if oras manifest delete --force "$registry/$img@$img_digest" >"$work/oras.log" 2>&1; then
+		fail "oras manifest delete $img@$img_digest succeeded where the registry deletes no manifests: $(cat "$work/oras.log")"
+	fi
+	refused "oras manifest delete $img@$img_digest"
+	oci_pushed=""
+	for ref in one two "$img_digest"; do
+		assert_status 200 -K "$E2E_CURLRC" -o /dev/null -I "$base/v2/$img/manifests/$ref"
+	done
+	step "oras manifest delete $registry/$img@$img_digest: refused, UNSUPPORTED; the manifest and both tags 200"
+else
+	oras manifest delete --force "$registry/$img@$img_digest" >"$work/oras.log" 2>&1 ||
+		{ cat "$work/oras.log" >&2; fail "oras manifest delete $img@$img_digest"; }
+	oci_pushed=""
+	for ref in one two "$img_digest"; do
+		assert_status 404 -K "$E2E_CURLRC" -o /dev/null -I "$base/v2/$img/manifests/$ref"
+	done
+	step "oras manifest delete $registry/$img@$img_digest: the manifest and both tags 404"
+fi
 
 assert_status 204 -K "$E2E_CURLRC" -X DELETE "$base/api/v1/repos/oci/$run"
 oci_made=""

@@ -221,6 +221,56 @@ func TestRegistryRefusals(t *testing.T) {
 	}
 }
 
+// TestUploadCancelRefused is #1044: a registry that refuses to cancel an upload session with 405,
+// as JFrog (no body) and GHCR (UNSUPPORTED) do, expires it: the client's cancel is 204 and the
+// session is gone. Any other failure of the cancel keeps the session, and its message is the
+// facade's, never the provider's error, which names the registry's session.
+func TestUploadCancelRefused(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   int
+		code     string
+		want     int
+		wantCode string
+	}{
+		{name: "405 without a body, as JFrog", status: http.StatusMethodNotAllowed, want: http.StatusNoContent},
+		{name: "405 UNSUPPORTED, as GHCR", status: http.StatusMethodNotAllowed, code: codeUnsupported, want: http.StatusNoContent},
+		{name: "a conflict", status: http.StatusConflict, want: http.StatusConflict, wantCode: codeBlobUploadInvalid},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deletes := 0
+			f := &refusingRegistry{status: tt.status, code: tt.code, refuse: func(r *http.Request, _ int64) bool {
+				if r.Method == http.MethodDelete {
+					deletes++
+					return true
+				}
+				return false
+			}}
+			e, _, _ := refusingEnv(t, f)
+			id := e.start(e.h)
+			wantStatus(t, "chunk", e.do(e.h, http.MethodPatch, uploads+id, strings.NewReader("abc"), "Content-Range", "0-2"), http.StatusAccepted)
+			rr := e.do(e.h, http.MethodDelete, uploads+id, nil)
+			if deletes != 1 {
+				t.Errorf("the registry got %d DELETEs of its session, want 1", deletes)
+			}
+			after := e.do(e.h, http.MethodGet, uploads+id, nil)
+			if tt.want == http.StatusNoContent {
+				wantStatus(t, "DELETE", rr, http.StatusNoContent)
+				if rr.Body.Len() != 0 {
+					t.Errorf("DELETE: body %q, want none", rr.Body)
+				}
+				wantError(t, "GET after the cancel", after, http.StatusNotFound, codeBlobUploadUnknown)
+				return
+			}
+			if msg := wantError(t, "DELETE", rr, tt.want, tt.wantCode); msg != "the registry did not cancel the upload" {
+				t.Errorf("DELETE: message %q, want the facade's own", msg)
+			}
+			wantStatus(t, "GET after the failed cancel", after, http.StatusNoContent)
+		})
+	}
+}
+
 // TestRegistryRefusalHint: a registry that the vendor table knows for refusing a chunk of unknown
 // length after the first write (JFrog, told by its header, with its 416) refuses one while
 // registries[].uploads.spoolUnknownLength is off: the client's message names the key.

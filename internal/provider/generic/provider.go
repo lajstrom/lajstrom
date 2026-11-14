@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
 	"net/url"
 	"slices"
 	"strings"
@@ -109,10 +110,11 @@ func (p *Provider) quirk() quirks {
 }
 
 // readQuirks returns the vendor's quirks for one request of the read path, which does not call
-// Capabilities: OpenBlob, StatBlob and a blob's Exists. Before the first probe that succeeded,
-// it probes, or waits for the probe under way, at most registries[].timeout, so that the
-// workarounds apply from the provider's first request on, also when the probe at start found
-// the registry down (#797). The caller asks once and keeps the answer for the request.
+// Capabilities: OpenBlob, StatBlob and a blob's Exists; and for the 404 of an upload status
+// (emptyStatus404). Before the first probe that succeeded, it probes, or waits for the probe
+// under way, at most registries[].timeout, so that the workarounds apply from the provider's
+// first request on, also when the probe at start found the registry down (#797). The caller
+// asks once and keeps the answer for the request.
 //
 // A ping the registry did not answer (provider.ErrUnavailable: no answer, refused, 503, the
 // circuit open) is the error, and the read sends nothing more: it costs what the read's own
@@ -165,6 +167,10 @@ type Options struct {
 	PublicRedirects bool
 	// upstream is NewUpstream's: the answers' rate-limit headers feed the gauges.
 	upstream bool
+	// resolver is the tests': the resolver of the transport's dialer, in place of
+	// net.DefaultResolver, which a test must not swap while a transport of another may still be
+	// dialing with it (#1106). nil is net.DefaultResolver.
+	resolver *net.Resolver
 }
 
 // NewWithOptions is New with the changes of o.

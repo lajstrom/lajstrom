@@ -649,15 +649,17 @@ longer than `reconcile.graceAge` is outside them
 - **Statement.** A deploy token acts on its one repo, or on the repos its mask matches (#911),
   with its `read` and `write` scopes and never `delete` or `manage`, nor anything of the system;
   a personal access token's scopes only narrow its user's rights; a token never creates a
-  personal access token; a bearer token never carries an action its credential lacks.
+  personal access token nor a deploy token over a mask; a bearer token never carries an action
+  its credential lacks.
 - **Scope.** Every protocol, the bearer of `/v2` included.
 - **Assumes.** Any.
 - **Mechanism.** `auth.Credential.Limit`, `token.ParseScopes`, `token.Reduce`; at most 100
   repositories a request (`facade.handler.issueToken`); `auth.MayCreatePAT` (asked by
-  `api.handler.createToken` and again by `auth.Tokens.CreatePAT`).
+  `api.handler.createToken` and again by `auth.Tokens.CreatePAT`); `auth.MayCreateMaskDeploy`
+  (asked by `auth.Tokens.CreateMaskDeploy`).
 - **Tests.** `TestCredentialLimit`, `TestReduce`, `TestReduceCredential`, `TestParseScopes`,
   `TestTokenScopesBound`, `TestTokensAPINoMint`, `TestTokensAPIAuthorization`,
-  `TestTokensCreatedBy`, `TestAuthorizeCredential`; `tokens.sh`, `rbac.sh` (S-04), acceptance.md
+  `TestTokensCreatedBy`, `TestAuthorizeCredential`, `TestTokensMaskDeployCredential`; `tokens.sh`, `rbac.sh` (S-04), acceptance.md
   X-14.
 - **When violated.** Threat model T-1, T-6, T-8, T-9.
 - **Status.** `holds`.

@@ -14,7 +14,10 @@ import (
 // (docs/spec/rbac.md §3): the anonymous principal gets ErrUnauthenticated (401 with a Basic
 // challenge, so that the client sends credentials); a principal that can read the repo but
 // lacks a gets ErrForbidden (403); one that cannot even read it gets index.ErrNotFound (404),
-// the answer a repo that does not exist gives. The authorizer's own error is returned unchanged
+// the answer a repo that does not exist gives. A denial of a principal that may not read the
+// repo, anonymous or not, has the message of the repo middleware for a repo that does not exist,
+// "repository <format>/<name>", so that the answer is that one byte for byte; the action is named
+// only to a principal that can read the repo. The authorizer's own error is returned unchanged
 // when it cannot decide (WriteError answers 500). serve sets deps.Auth to auth.RBAC; a nil
 // deps.Auth allows everything the credential allows, for the tests.
 //
@@ -48,17 +51,23 @@ func authorize(ctx context.Context, deps Deps, a auth.Action, repo index.Repo) e
 		return err
 	case ok:
 		return nil
-	case p.Kind == auth.KindAnonymous:
-		return fmt.Errorf("%w: %s on %s/%s", ErrUnauthenticated, a, repo.Format, repo.Name)
 	}
+	anonymous := p.Kind == auth.KindAnonymous
 	if a != auth.ActionRead {
 		canRead, err := deps.Auth.Allowed(ctx, p, auth.ActionRead, repo.Format, repo.Name)
 		switch {
 		case err != nil:
 			return err
+		case canRead && anonymous:
+			return fmt.Errorf("%w: %s on %s/%s", ErrUnauthenticated, a, repo.Format, repo.Name)
 		case canRead:
 			return fmt.Errorf("%w: %s on %s/%s", ErrForbidden, a, repo.Format, repo.Name)
 		}
+	}
+	// The answer of a repo that does not exist, word for word (router.notFound): the principal
+	// may not read this one, and must not learn that it exists, from the message either (#1091).
+	if anonymous {
+		return fmt.Errorf("%w: repository %s/%s", ErrUnauthenticated, repo.Format, repo.Name)
 	}
 	return fmt.Errorf("%w: repository %s/%s", index.ErrNotFound, repo.Format, repo.Name)
 }

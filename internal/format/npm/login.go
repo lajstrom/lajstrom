@@ -49,11 +49,15 @@ const couchUser = "org.couchdb.user:"
 // revoked or not, and the server lets this route through without it), and a token in place of
 // the password is refused, since a personal access token is made with a password only (#365).
 // A wrong password, an unknown or a disabled user are 401 alike, a throttled one 429; nobody is
-// created. A user that may not read the repo gets 404. Otherwise a new personal access token of
-// the user, not narrowed, with the default expiry, called npm login <repo> <time>, with its
-// audit row (createdBy password): 201 {"ok": true, "id", "token"}.
-func (h *handlers) login(w http.ResponseWriter, r *http.Request, repo index.Repo, doc string) {
+// created. A user that may not read the repo gets 404, and so does every user on a repo that
+// does not exist, which withRepo serves here without a repo in the context: the answer is
+// decided as the user of the body there too, so that it does not tell whether the repo exists
+// (#1091). Otherwise a new personal access token of the user, not narrowed, with the default
+// expiry, called npm login <repo> <time>, with its audit row (createdBy password): 201
+// {"ok": true, "id", "token"}.
+func (h *handlers) login(w http.ResponseWriter, r *http.Request, doc string) {
 	ctx := r.Context()
+	repo, found := format.RepoFrom(ctx)
 	name, ok := strings.CutPrefix(doc, couchUser)
 	if !ok || r.Method != http.MethodPut {
 		h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
@@ -78,6 +82,10 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request, repo index.Repo
 		return
 	}
 	ctx = auth.WithCredential(auth.WithPrincipal(ctx, p), cred)
+	if !found {
+		h.fail(w, r, fmt.Errorf("%w: repository %s/%s", index.ErrNotFound, Name, r.PathValue("repoName")))
+		return
+	}
 	if err := format.Authorize(ctx, h.deps, auth.ActionRead, repo); err != nil {
 		h.fail(w, r, err)
 		return

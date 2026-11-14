@@ -47,7 +47,9 @@ func TestMetricsTransport(t *testing.T) {
 		}
 		return &http.Response{StatusCode: http.StatusNotFound, Body: http.NoBody, Request: r}, nil
 	})}
+	// The histogram is the process's: count from where it stands, so that -count=N runs pass.
 	before := sampleCount(t, "metrics-test", "manifest", http.MethodHead, "404")
+	beforeErr := sampleCount(t, "metrics-test", "tags", http.MethodGet, "error")
 	for range 2 {
 		req, _ := http.NewRequest(http.MethodHead, "http://up/v2/raw/a/tool/manifests/1.0", nil)
 		resp, err := rt.RoundTrip(req)
@@ -67,7 +69,7 @@ func TestMetricsTransport(t *testing.T) {
 	if !errors.Is(err, failing) {
 		t.Fatalf("RoundTrip: %v", err)
 	}
-	if got := sampleCount(t, "metrics-test", "tags", http.MethodGet, "error"); got != 1 {
+	if got := sampleCount(t, "metrics-test", "tags", http.MethodGet, "error") - beforeErr; got != 1 {
 		t.Errorf("samples of the failed GET: %d, want 1", got)
 	}
 }
