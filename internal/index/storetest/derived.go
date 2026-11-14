@@ -613,3 +613,75 @@ func testMissingParent(t *testing.T, s index.Store) {
 		wantErr(t, tt.name, tt.err, index.ErrNotFound)
 	}
 }
+
+// testVersionOCIRepo checks versions.oci_repo (#642): a version that reindex found at another
+// form of its package's OCI name keeps that form in OCIRepo through every read of a version,
+// ManifestPath says where its manifest is, an upsert of the same digest writes OCIRepo as given
+// (ingest's, "", clears it), and PackageOf finds the package from either form.
+func testVersionOCIRepo(t *testing.T, s index.Store) {
+	ctx := t.Context()
+	repo := newRepo(t, s, "npm", "a")
+	pkg := index.Package{RepoID: repo.ID, Name: "@netlify/blobs", NameOCI: "netlify/blob_73"}
+	must(t, s.UpsertPackage(ctx, &pkg))
+	const artifactType = "application/vnd.lajstrom.npm.v1"
+	split := index.Version{PackageID: pkg.ID, Version: "1.0.0", Tag: "1.0.0", Digest: dg("one"), ArtifactType: artifactType,
+		CreatedAt: at(1), IndexedAt: at(2), OCIRepo: "netlify/blobs"}
+	here := index.Version{PackageID: pkg.ID, Version: "2.0.0", Tag: "2.0.0", Digest: dg("two"), ArtifactType: artifactType,
+		CreatedAt: at(3), IndexedAt: at(4)}
+	must(t, s.UpsertVersion(ctx, &split))
+	must(t, s.UpsertVersion(ctx, &here))
+	files := []index.File{{Name: "blobs-1.0.0.tgz", MediaType: "application/gzip", Digest: dg("tgz"), Size: 3}}
+	must(t, s.ReplaceFiles(ctx, split.ID, files))
+	stored, err := s.GetPackage(ctx, repo.ID, pkg.Name) // CreatedAt: its earliest version's
+	must(t, err)
+	pkg = *stored
+
+	one := func(v *index.Version, err error) index.Version {
+		t.Helper()
+		must(t, err)
+		return *v
+	}
+	same(t, "GetVersion", split, one(s.GetVersion(ctx, pkg.ID, "1.0.0", "")))
+	same(t, "GetVersionByTag", split, one(s.GetVersionByTag(ctx, pkg.ID, "1.0.0")))
+	same(t, "GetVersionByDigest", split, one(s.GetVersionByDigest(ctx, repo.ID, dg("one"))))
+	list, err := s.ListVersions(ctx, pkg.ID)
+	must(t, err)
+	same(t, "ListVersions", []index.Version{split, here}, list)
+	page, err := s.ListVersionPage(ctx, pkg.ID, nil, 10)
+	must(t, err)
+	same(t, "ListVersionPage", []index.Version{here, split}, page)
+	unseen, err := s.ListUnseenVersions(ctx, repo.ID, at(10))
+	must(t, err)
+	same(t, "ListUnseenVersions", []index.VersionMatch{{Version: split, Package: pkg}, {Version: here, Package: pkg}}, unseen)
+	found, err := s.FindFiles(ctx, repo.ID, "blobs-1.0.0.tgz")
+	must(t, err)
+	if len(found) != 1 || found[0].Version.OCIRepo != "netlify/blobs" {
+		t.Errorf("FindFiles = %+v, want the file of the version at netlify/blobs", found)
+	}
+	for _, tc := range []struct {
+		v    index.Version
+		want string
+	}{{split, "netlify/blobs"}, {here, "netlify/blob_73"}} {
+		if got := index.ManifestPath(pkg, tc.v); got != tc.want {
+			t.Errorf("ManifestPath of %s = %q, want %q", tc.v.Version, got, tc.want)
+		}
+	}
+
+	again := split
+	again.ID, again.OCIRepo, again.IndexedAt = 0, "", at(5)
+	must(t, s.UpsertVersion(ctx, &again))
+	same(t, "the version upserted again without OCIRepo", again, one(s.GetVersionByTag(ctx, pkg.ID, "1.0.0")))
+	again.ID, again.OCIRepo, again.IndexedAt = 0, "netlify/blobs", at(6)
+	must(t, s.UpsertVersion(ctx, &again))
+	same(t, "the version upserted again with OCIRepo", again, one(s.GetVersionByTag(ctx, pkg.ID, "1.0.0")))
+
+	for _, path := range []string{"netlify/blob_73", "netlify/blobs"} {
+		got, err := index.PackageOf(ctx, s, repo.ID, path)
+		must(t, err)
+		if got.ID != pkg.ID {
+			t.Errorf("PackageOf %s = %+v, want %+v", path, got, pkg)
+		}
+	}
+	_, err = index.PackageOf(ctx, s, repo.ID, "netlify/other")
+	wantErr(t, "PackageOf of a path without a package", err, index.ErrNotFound)
+}
