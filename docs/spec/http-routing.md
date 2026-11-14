@@ -577,7 +577,7 @@ listed here so frontends do not invent their own. What each call needs, in the a
 | changing a repo: `PATCH`, `DELETE`, `POST …/reindex`, `GET …/reindex`, the deploy tokens of the repo | `manage` on the repo |
 | deleting versions: `DELETE …/repos/<format>/<repo>/packages/<name>/versions/<version>` (#61), `POST …/repos/<format>/<repo>/versions:delete` (#72) | `delete` on the repo, checked before the body is read; a repo the caller may not read is `404` |
 | yanking and unyanking a pypi version: `PUT` and `DELETE …/repos/pypi/<repo>/packages/<name>/versions/<version>/yank` (#81) | `write` on the repo, as an npm deprecation; a repo the caller may not read is `404` |
-| creating a repo, and the system resources: users, bindings, audit | the admin role (rbac.md §2; a `maintainer` on `*/*` is not enough) |
+| creating a repo, and the system resources: users, bindings, audit, the deploy tokens over a mask (`/api/v1/deploy-tokens`, #911; the role checked before the body is read) | the admin role (rbac.md §2; a `maintainer` on `*/*` is not enough) |
 | the personal access tokens of a user | the user themself, within what the credential allows, or the admin role |
 | `GET /api/v1/whoami`, `GET /api/v1/info` (#136), `GET /api/v1/openapi.yaml` | nothing |
 | `POST /api/v1/bootstrap` (#440) | nothing: the one-time bootstrap token in the body is the credential; `404` once an enabled user has an admin binding |
@@ -588,7 +588,7 @@ listed here so frontends do not invent their own. What each call needs, in the a
 | repos | `GET /api/v1/repos[?format=]`, `POST /api/v1/repos`, `GET/PATCH /api/v1/repos/<format>/<repo>`, `DELETE /api/v1/repos/<format>/<repo>[?force=true]`, `POST …/reindex`, `GET …/reindex`, `DELETE …/upstream-cache[?name=]` (§6) |
 | packages, versions | `GET /api/v1/repos/<format>/<repo>/packages[?prefix=&limit=&cursor=]`, `GET …/packages/<name>/versions[?limit=&cursor=]`, `GET …/packages/<name>/versions/<version>[?variant=]`, `GET …/packages/<name>/versions/<version>/attachments[?variant=&kind=&predicateType=&verified=&limit=]`, `DELETE …/packages/<name>/versions/<version>[?variant=&force=]`, `POST /api/v1/repos/<format>/<repo>/versions:delete`, `PUT` and `DELETE …/packages/<name>/versions/<version>/yank` (pypi); search after the MVP (#956) |
 | users | `GET /api/v1/users[?limit=&cursor=]`, `POST /api/v1/users`, `GET/PATCH/DELETE /api/v1/users/<name>`, `POST …/password` |
-| tokens | `GET/POST /api/v1/users/<name>/tokens` (PAT), `DELETE …/tokens/<id>`; `GET/POST /api/v1/repos/<format>/<repo>/deploy-tokens`, `DELETE …/<id>` |
+| tokens | `GET/POST /api/v1/users/<name>/tokens` (PAT), `DELETE …/tokens/<id>`; `GET/POST /api/v1/repos/<format>/<repo>/deploy-tokens`, `DELETE …/<id>`; the deploy tokens over a mask (rbac.md §1): `GET /api/v1/deploy-tokens[?repoMask=]`, `POST /api/v1/deploy-tokens` (`repoMask` in the body), `DELETE /api/v1/deploy-tokens/<id>` |
 | bindings | `GET /api/v1/bindings[?principal=&limit=&cursor=]`, `POST /api/v1/bindings`, `DELETE /api/v1/bindings/<id>`; a binding's principal is `user:<name>`, `user:<uid>` or `group:<name>` (rbac.md §3, §8) |
 | audit | `GET /api/v1/audit[?repo=&principal=&action=&state=&since=&until=&limit=&cursor=]` |
 | whoami | `GET /api/v1/whoami`; for a user, its current groups too (rbac.md §8) |
