@@ -17,9 +17,9 @@ import (
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
 )
 
-// maxMetadata is the largest metadata layer Build writes and Validate reads: 4 MiB, the bound
-// of the control member, since md5sums is the bulk of both.
-const maxMetadata = 4 << 20
+// maxMetadata is the largest metadata layer Build writes and Validate reads: 16 MiB, as rpm's
+// (docs/spec/manifest-profile.md §2), for md5sums, bounded by MaxControl, and the file list.
+const maxMetadata = 16 << 20
 
 // distName is the grammar of a suite and a component: lowercase letters, digits, ".", "+" and
 // "-", the first a letter or a digit (jammy, jammy-updates, main, non-free-firmware).
@@ -32,6 +32,7 @@ var distName = regexp.MustCompile(`^[a-z0-9][a-z0-9.+-]*$`)
 type metadata struct {
 	Control  map[string]string `json:"control"`
 	Filename string            `json:"filename"`
+	Files    *[]string         `json:"files,omitempty"`
 	MD5      string            `json:"md5,omitempty"`
 	MD5Sums  map[string]string `json:"md5sums"`
 	SHA1     string            `json:"sha1,omitempty"`
@@ -171,21 +172,37 @@ func parseFile(f format.UploadedFile) (*Package, error) {
 
 // Metadata returns the metadata layer of a package that Parse read, as Build writes it
 // (docs/spec/manifest-profile.md §2): compact JSON with its keys sorted, the control fields as
-// written, md5sums ({} when the package has none), filename, size, md5, sha1 and sha256 of the
-// whole file. One larger than 4 MiB wraps format.ErrInvalid: Validate would not read it.
-// lajstrom admin deb metadata prints it, for the metadata layer of an oras push.
+// written, md5sums ({} when the package has none), filename, the file list when Parse read one
+// (#79), size, md5, sha1 and sha256 of the whole file. A file list that would make the layer
+// larger than maxMetadata is left out; one larger without it wraps format.ErrInvalid: Validate
+// would not read it. lajstrom admin deb metadata prints it, for the metadata layer of an oras
+// push.
 func (pkg *Package) Metadata() ([]byte, error) {
 	sums := pkg.MD5Sums
 	if sums == nil {
 		sums = map[string]string{}
 	}
-	md, err := json.Marshal(metadata{Control: pkg.Control.Map(), Filename: pkg.Filename, MD5: pkg.MD5, MD5Sums: sums,
-		SHA1: pkg.SHA1, SHA256: pkg.SHA256, Size: pkg.Size})
+	md := metadata{Control: pkg.Control.Map(), Filename: pkg.Filename, MD5: pkg.MD5, MD5Sums: sums,
+		SHA1: pkg.SHA1, SHA256: pkg.SHA256, Size: pkg.Size}
+	if pkg.Files != nil {
+		md.Files = &pkg.Files
+	}
+	b, err := json.Marshal(md)
+	if err == nil && len(b) > maxMetadata && md.Files != nil {
+		md.Files = nil
+		b, err = json.Marshal(md)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("deb: metadata of %s: %w", pkg.Filename, err)
 	}
+	return checkMetadataSize(pkg.Filename, b)
+}
+
+// checkMetadataSize returns md, a metadata layer of the package filename, or an error wrapping
+// format.ErrInvalid when it is larger than maxMetadata.
+func checkMetadataSize(filename string, md []byte) ([]byte, error) {
 	if len(md) > maxMetadata {
-		return nil, fmt.Errorf("%w: the metadata of %s has %d bytes, at most %d", format.ErrInvalid, pkg.Filename, len(md), maxMetadata)
+		return nil, fmt.Errorf("%w: the metadata of %s has %d bytes, at most %d", format.ErrInvalid, filename, len(md), maxMetadata)
 	}
 	return md, nil
 }

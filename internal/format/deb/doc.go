@@ -11,7 +11,8 @@
 // the three parts as well, for the indexes to group by. The same .deb in a second suite is a
 // second manifest over the same blobs (#110). The one file layer is titled with the pool file
 // name, nginx_1.18.0-6ubuntu14.4_amd64.deb, whatever the suite; the metadata layer holds the
-// control fields as written, md5sums, and the size, md5, sha1 and sha256 of the file, which
+// control fields as written, md5sums, the file list of its data.tar when it could be read
+// (#79), which the Contents indexes list, and the size, md5, sha1 and sha256 of the file, which
 // apt's Packages lists.
 //
 // A source package (#79) is a version too: its .dsc and the files the .dsc names, in one suite

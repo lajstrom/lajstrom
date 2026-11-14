@@ -23,10 +23,10 @@ import (
 )
 
 // maxMetadata is the largest metadata layer ingest reads into versions.metadata when the plugin
-// did not return the metadata itself: 4 MiB, the largest a plugin writes (the deb metadata
-// layer, md5sums mostly, is bounded by the plugin's MaxControl, 4 MiB). A larger one is left
-// out of the row: the column may be omitted for size (docs/spec/index-schema.md), and readers
-// fetch the layer, as the apt index does for a row without metadata.
+// did not return the metadata itself: 4 MiB. The plugins whose layers may be larger return it
+// (deb, whose file list makes up to 16 MiB, #79; rpm). A larger one is left out of the row: the
+// column may be omitted for size (docs/spec/index-schema.md), and readers fetch the layer, as
+// the apt index does for a row without metadata.
 const maxMetadata = 4 << 20
 
 // invalid returns err wrapping ErrInvalid: as it is when it does already, else wrapped.
