@@ -397,7 +397,21 @@ repos:
 | `reconcile.interval` | duration (`1h`, `30m`) | `1h` | none | How often each replica runs a reindex of every repo with prune, so that writes that went past Lajstrom (a push straight to the backend, a delete in the registry's console) reach the index ([operations.md](operations.md#reconcile)). The first run comes after a random part of the interval; a run that overlaps a run elsewhere waits for the next tick. `0s` turns the loop off. Must not be negative. |
 | `reconcile.graceAge` | duration (`1h`, `24h`) | `1h` | none | How long prune keeps a row whatever the registry answers: a version published, or seen in the registry by a run, less than this ago is never removed. It holds for the loop, `lajstrom reindex` and the API's reindex. A row goes only once it is this old and the registry answered `404 MANIFEST_UNKNOWN` to its manifest twice, at least 10 minutes apart ([operations.md](operations.md#on-an-eventually-consistent-registry)). Keep the default when Lajstrom reads the registry at the endpoint it writes to; set `24h` or more when reads go through a replica or a cache (ECR replication, a pull-through cache, ACR geo-replicas). `0s` means the default. Must not be negative. |
 
-The `upstreams`, `ingest` and `reconcile` sections are additions to the shape in
+### webhooks
+
+The delivery of webhooks ([webhooks.md](spec/webhooks.md), [operations.md](operations.md#webhooks)) on every
+replica. Webhooks themselves are made through the API or `lajstrom admin webhook`, not here; their secrets
+need the master key (`keys.masterKeyEnv` or `keys.masterKeyFile`), without which no replica delivers.
+
+| Key | Type | Default | Env | Description |
+| --- | --- | --- | --- | --- |
+| `webhooks.allowedHosts` | list of host names or addresses | `[]` | none | Hosts a webhook may reach as they are: over `http`, and at addresses that are not public (loopback, a private network). Any other host is reached only over `https` and only at public unicast addresses, never loopback, RFC 1918, link-local (`169.254.169.254`, the metadata service) or carrier-grade NAT, after every redirect too (`egress.Guard`, [guarantees.md](spec/guarantees.md) INV-44). List the receivers inside your network: `[ci.internal, 10.0.4.17]`. Compared without case and without a final dot; no scheme, port or path. |
+| `webhooks.timeout` | duration (`10s`) | `10s` | none | How long one attempt waits for the receiver's answer, its headers and body. A slower answer is a failed attempt, tried again. At most `60s`, so that an attempt ends well before its claim goes stale (2 minutes); `0s` means the default. |
+| `webhooks.maxAttempts` | integer | `8` | none | Attempts of a delivery before it is `failed`: the waits between them double from 30 s to at most an hour, so 8 attempts span about 4 hours. At least 1. |
+| `webhooks.retention` | duration (`168h`) | `168h` | none | Age past which a delivery-log row is deleted, whatever its state: a pending row of an inactive webhook too. Must be positive. |
+| `webhooks.workers` | integer | `4` | none | Deliveries in flight on this replica. `0` turns delivery off on this replica: the others deliver its events, since the outbox is in the database. Must not be negative. |
+
+The `upstreams`, `ingest`, `reconcile` and `webhooks` sections are additions to the shape in
 [layout.md](spec/layout.md) §6.
 
 ### auth

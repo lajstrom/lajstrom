@@ -18,6 +18,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/proxy"
+	"github.com/lajstrom/lajstrom/internal/webhook"
 )
 
 // Repo is the repos resource of the management API, as GET /api/v1/repos/{format}/{repo}
@@ -177,6 +178,9 @@ type Repos struct {
 	// Audit records the events; nil means each event goes to the index in the transaction of
 	// its change.
 	Audit audit.Writer
+	// Webhooks writes the repo.created and repo.deleted of the webhooks in the transaction of
+	// the change (docs/spec/webhooks.md §4); nil writes none.
+	Webhooks *webhook.Outbox
 	// Now is the clock of createdAt and of the audit events; nil means time.Now. The index sets
 	// updatedAt of an update itself.
 	Now func() time.Time
@@ -222,8 +226,11 @@ func (s *Repos) Create(ctx context.Context, req CreateRequest, o Origin) (*Repo,
 		if r, err = resource(ctx, w, &row); err != nil {
 			return err
 		}
-		ev, err = s.record(ctx, w, actionCreate, &row, o, map[string]any{"repo": r})
-		return err
+		if ev, err = s.record(ctx, w, actionCreate, &row, o, map[string]any{"repo": r}); err != nil {
+			return err
+		}
+		return s.Webhooks.Enqueue(ctx, w, webhook.Event{Type: webhook.TypeRepoCreated, Repo: row,
+			Data: webhook.RepoData{Common: webhook.CommonOf(ev), Repo: webhook.RefOf(row)}})
 	})
 	if err != nil {
 		return nil, repoError("create", req.Format, req.Name, err)
@@ -411,7 +418,11 @@ func (s *Repos) Delete(ctx context.Context, formatName, name string, force bool,
 		}
 		ev, err = s.record(ctx, w, actionDelete, row, o,
 			map[string]any{"versions": n, "force": force, "registryUntouched": true})
-		return err
+		if err != nil {
+			return err
+		}
+		return s.Webhooks.Enqueue(ctx, w, webhook.Event{Type: webhook.TypeRepoDeleted, Repo: *row,
+			Data: webhook.RepoData{Common: webhook.CommonOf(ev), Repo: webhook.RefOf(*row), Versions: &n, Force: &force}})
 	})
 	if err != nil {
 		return repoError("delete", formatName, name, err)

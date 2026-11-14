@@ -460,8 +460,9 @@ func (p *Pipeline) confirm(ctx context.Context, pub *publish) (existed bool, err
 }
 
 // writeRows writes the rows of confirm on w: package, version, files, OCI repository, the
-// invalidated index_cache, the completed audit row when there is no audit.Writer, and the
-// released claim.
+// invalidated index_cache, the completed audit row when there is no audit.Writer, the event's
+// webhook deliveries, and the released claim. The repeat of a publish that another replica
+// confirmed first writes no event: that replica's transaction wrote it.
 func (p *Pipeline) writeRows(ctx context.Context, w index.Writer, pub *publish, now time.Time) (existed bool, err error) {
 	rows := pub.rows(now)
 	pkg := rows.Package
@@ -490,6 +491,9 @@ func (p *Pipeline) writeRows(ctx context.Context, w index.Writer, pub *publish, 
 		return false, err
 	}
 	if err := p.complete(ctx, w, &pub.ev); err != nil {
+		return false, err
+	}
+	if err := p.webhooks.Enqueue(ctx, w, pub.publishedEvent()); err != nil {
 		return false, err
 	}
 	return false, pub.releaseClaims(ctx, w)

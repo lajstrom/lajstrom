@@ -19,6 +19,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/oci/profile"
 	"github.com/lajstrom/lajstrom/internal/provider"
+	"github.com/lajstrom/lajstrom/internal/webhook"
 )
 
 // Pipeline is the single write path: every manifest Lajstrom stores goes through it, whether
@@ -36,6 +37,8 @@ type Pipeline struct {
 	visibility time.Duration
 
 	sessionTimeout time.Duration
+	// webhooks is Options.Webhooks: nil writes no event.
+	webhooks *webhook.Outbox
 }
 
 // Options configures a Pipeline.
@@ -65,6 +68,9 @@ type Options struct {
 	// it (the visibility barrier, awaitVisible), twice that for a referrer; a registry's
 	// consistencyBound raises it. Zero, or negative, means 30 seconds.
 	VisibilityTimeout time.Duration
+	// Webhooks writes the events of the publishes and the version deletes in the transaction
+	// of their audit rows (docs/spec/webhooks.md §4); nil writes none.
+	Webhooks *webhook.Outbox
 }
 
 // defaultClaimTTL is ClaimTTL when Options leaves it zero.
@@ -80,6 +86,7 @@ func New(o Options) *Pipeline {
 		now:       o.Now,
 		log:       o.Log,
 		claimTTL:  o.ClaimTTL,
+		webhooks:  o.Webhooks,
 
 		visibility:     o.VisibilityTimeout,
 		sessionTimeout: o.SessionTimeout,
