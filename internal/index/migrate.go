@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -29,6 +30,11 @@ type runner struct {
 	// delay returns the pause before the attempt after the failed attempt n (from 1) of a
 	// migration's transaction; nil is retryDelay. The tests pause less.
 	delay func(n int) time.Duration
+
+	// steps runs a migration one statement at a time, each in a transaction of its own, under
+	// the migration lock held by a transaction on another connection (applySteps): CockroachDB,
+	// whose DDL inside a transaction is not atomic.
+	steps bool
 }
 
 // migrationAttempts is how many times in all the runner runs the transaction of one migration
@@ -64,6 +70,16 @@ var runners = map[string]runner{
 		check:   "SELECT count(*) FROM schema_migrations WHERE version = $1",
 		record:  "INSERT INTO schema_migrations (version, applied_at) VALUES ($1, now())",
 		require: "UPDATE schema_migrations SET requires = $1 WHERE version = $2",
+	},
+	DialectCockroach: {
+		begin:   "BEGIN",
+		lock:    "SELECT pg_advisory_xact_lock($1)",
+		exists:  "SELECT to_regclass('schema_migrations') IS NOT NULL",
+		create:  "CREATE TABLE IF NOT EXISTS schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL)",
+		check:   "SELECT count(*) FROM schema_migrations WHERE version = $1",
+		record:  "INSERT INTO schema_migrations (version, applied_at) VALUES ($1, now())",
+		require: "UPDATE schema_migrations SET requires = $1 WHERE version = $2",
+		steps:   true,
 	},
 }
 
@@ -107,8 +123,10 @@ type MigrationReport struct {
 // start, up to migrationAttempts times in all, with a warning on opts.Log each time: one the
 // database aborted (40001), and one whose create of schema_migrations finds the table that
 // another migrator committed while this one waited for the lock (42710; YugabyteDB, #616). The
-// version is counted again under the lock, so a retry applies it at most once. On error the
-// report has the versions applied before the failing one.
+// version is counted again under the lock, so a retry applies it at most once. On CockroachDB
+// a migration is not one transaction (applySteps), and runs again its statements that
+// CockroachDB aborts instead. On error the report has the versions applied before the failing
+// one.
 func ApplyMigrations(ctx context.Context, db *sql.DB, dialect string, opts MigrateOptions) (MigrationReport, error) {
 	ms, err := migrations(dialect)
 	if err != nil {
@@ -216,8 +234,12 @@ func AppliedMigrations(ctx context.Context, db *sql.DB) ([]int, error) {
 // YugabyteDB with ysql_yb_ddl_transaction_block_enabled, docs/deploy/databases.md): the failed
 // attempt left nothing, and the next counts the version again under the migration lock, so a
 // migrator that lost the race finds m applied and does not run it. Any other error is returned
-// at once.
+// at once. On CockroachDB (runner.steps) a migration is not one transaction: applySteps runs
+// it, with a retry of its own.
 func (r runner) apply(ctx context.Context, db *sql.DB, m migration, log *slog.Logger) (bool, error) {
+	if r.steps {
+		return r.applySteps(ctx, db, m)
+	}
 	for n := 1; ; n++ {
 		ran, err := r.attempt(ctx, db, m)
 		state, retry := retryable(err)
@@ -338,4 +360,131 @@ func rollback(ctx context.Context, conn *sql.Conn) {
 	if _, err := conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK"); err != nil {
 		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
 	}
+}
+
+// stepAttempts is how many times in all applySteps runs a statement that CockroachDB aborts
+// (40001), with a pause of stepRetryDelay times the attempt before each next one.
+const (
+	stepAttempts   = 5
+	stepRetryDelay = 100 * time.Millisecond
+)
+
+// applySteps is apply on CockroachDB (index-schema.md, Migrations). There an UPDATE does not see
+// a column added earlier in its transaction, and the commit of a transaction with DDL can fail
+// after its other statements committed (XXA00), so a migration is not one transaction: each of
+// its statements (statements) runs in a transaction of its own, and its version is recorded
+// after the last one. The migration lock is held by a transaction on a second connection from
+// before the check of schema_migrations until after the record, so that it spans those
+// transactions without a session lock. A migration that stops half-way is not recorded, and
+// the next run runs it again from its first statement: every statement of a cockroach file
+// may find its work done (IF NOT EXISTS, ON CONFLICT DO NOTHING). A statement that CockroachDB
+// aborts (40001) runs again, up to stepAttempts times in all. The COMMIT of the lock's
+// transaction is checked: when it fails, the lock may have ended before the migration did.
+func (r runner) applySteps(ctx context.Context, db *sql.DB, m migration) (ran bool, err error) {
+	if n := db.Stats().MaxOpenConnections; n == 1 {
+		return false, errors.New("on CockroachDB a migration needs two connections, and the pool has one: set pool_max_conns to 2 or more")
+	}
+	lock, err := db.Conn(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = lock.Close() }()
+	if _, err := lock.ExecContext(ctx, r.begin); err != nil {
+		return false, err
+	}
+	defer func() {
+		if err != nil {
+			rollback(ctx, lock)
+		}
+	}()
+	if _, err := lock.ExecContext(ctx, r.lock, migrationLockID); err != nil {
+		return false, fmt.Errorf("the migration lock: %w", err)
+	}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = conn.Close() }()
+	exec := func(query string, args ...any) error {
+		return retryAborted(ctx, func() error {
+			_, err := conn.ExecContext(ctx, query, args...)
+			return err
+		})
+	}
+	if err := exec(r.create); err != nil {
+		return false, err
+	}
+	var n int
+	if err := conn.QueryRowContext(ctx, r.check, m.version).Scan(&n); err != nil {
+		return false, err
+	}
+	if n == 0 {
+		if err := r.runSteps(m, exec); err != nil {
+			return false, err
+		}
+	}
+	if _, err := lock.ExecContext(ctx, "COMMIT"); err != nil {
+		return false, fmt.Errorf("the migration lock ended before the migration did: %w", err)
+	}
+	return n == 0, nil
+}
+
+// runSteps runs the statements of m one by one with exec, each in a transaction of its own,
+// then records m's version and its requires (applySteps).
+func (r runner) runSteps(m migration, exec func(query string, args ...any) error) error {
+	stmts := statements(m.sql)
+	for i, stmt := range stmts {
+		if err := exec(stmt); err != nil {
+			return fmt.Errorf("statement %d of %d, after which the migration stopped; the next run runs it again from the first: %w",
+				i+1, len(stmts), err)
+		}
+	}
+	if err := exec(r.record, m.version); err != nil {
+		return err
+	}
+	if m.requires > 0 {
+		return exec(r.require, m.requires, m.version)
+	}
+	return nil
+}
+
+// retryAborted runs fn, and again while it fails with SQLSTATE 40001 (the error's SQLState
+// method, which pgconn's PgError has), up to stepAttempts times in all, as long as ctx lasts.
+func retryAborted(ctx context.Context, fn func() error) error {
+	for attempt := 1; ; attempt++ {
+		err := fn()
+		var e interface{ SQLState() string }
+		if err == nil || attempt == stepAttempts || !errors.As(err, &e) || e.SQLState() != serializationFailure {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w; not run again: %w", err, context.Cause(ctx))
+		case <-time.After(time.Duration(attempt) * stepRetryDelay):
+		}
+	}
+}
+
+// statements returns the statements of a migration file in order: its lines but the comment
+// lines and the empty ones, cut after each line that ends with a semicolon. A cockroach file
+// ends no line inside a statement with a semicolon and comments only on lines of their own
+// (TestCockroachMigrations).
+func statements(file string) []string {
+	var out []string
+	var b strings.Builder
+	for line := range strings.Lines(file) {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "--") {
+			continue
+		}
+		b.WriteString(line)
+		if strings.HasSuffix(t, ";") {
+			out = append(out, strings.TrimSpace(b.String()))
+			b.Reset()
+		}
+	}
+	if rest := strings.TrimSpace(b.String()); rest != "" {
+		out = append(out, rest)
+	}
+	return out
 }
