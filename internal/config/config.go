@@ -218,6 +218,9 @@ type CapabilityOverrides struct {
 	// MaxNameDepth is the most components the backend takes in a repository name below the
 	// instance prefix; 0 leaves it unset. Must not be negative.
 	MaxNameDepth int `yaml:"maxNameDepth"`
+	// TagsFoldCase: the backend stores a tag lower-cased and resolves tags without case, as
+	// Gitea and Forgejo do, whose vendor table entries set it.
+	TagsFoldCase *bool `yaml:"tagsFoldCase"`
 }
 
 // The models of registries[].capabilities.consistency.
