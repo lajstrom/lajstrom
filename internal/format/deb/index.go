@@ -56,19 +56,24 @@ const (
 	maxXZDictionary = 8 << 20
 )
 
-// variants are the three files of every Packages index, in the order the Release lists them.
-var variants = []struct {
+// variant is one file of an index: the suffix of its name and its compression, nil for none.
+type variant struct {
 	suffix   string
 	compress func([]byte) ([]byte, error)
-}{
+}
+
+// variants are the three files of every Packages and Sources index, in the order the Release
+// lists them.
+var variants = []variant{
 	{"", nil},
 	{".gz", func(b []byte) ([]byte, error) { return compressed(b, newGzip) }},
 	{".xz", func(b []byte) ([]byte, error) { return compressed(b, newXZ(len(b))) }},
 }
 
 // RenderIndex renders every document of one suite, the scope, in one call: for every component
-// and architecture of the suite Packages, Packages.gz and Packages.xz, for every component of a
-// suite with source versions Sources, Sources.gz and Sources.xz (#79), and the Release whose
+// and architecture of the suite Packages, Packages.gz and Packages.xz and Contents-<arch> and
+// Contents-<arch>.gz (contentsOf), for every component of a suite with source versions Sources,
+// Sources.gz and Sources.xz (#79), and the Release whose
 // MD5Sum, SHA1 and SHA256 sections list each of them with its size, so that the Release and
 // the indexes format.CachedDocument stores together, and a client gets, agree. Kind is
 // the path below dists/<suite>/ (Release, main/binary-amd64/Packages.gz) and Path the URL path
@@ -104,7 +109,14 @@ func (p Plugin) RenderIndex(ctx context.Context, repo index.Repo, scope format.I
 	var docs []format.Document
 	for _, c := range components {
 		for _, a := range archs {
-			if docs, err = appendIndex(docs, suite, c+"/binary-"+a+"/"+packagesFile, packagesOf(paras, c, a)); err != nil {
+			if docs, err = appendIndex(docs, suite, c+"/binary-"+a+"/"+packagesFile, packagesOf(paras, c, a), variants); err != nil {
+				return nil, err
+			}
+		}
+	}
+	for _, c := range components {
+		for _, a := range archs {
+			if docs, err = appendIndex(docs, suite, c+"/"+contentsFile+a, contentsOf(paras, c, a), contentsVariants); err != nil {
 				return nil, err
 			}
 		}
@@ -113,7 +125,7 @@ func (p Plugin) RenderIndex(ctx context.Context, repo index.Repo, scope format.I
 		if len(srcs) == 0 {
 			break
 		}
-		if docs, err = appendIndex(docs, suite, c+"/source/"+sourcesFile, sourcesOf(srcs, c)); err != nil {
+		if docs, err = appendIndex(docs, suite, c+"/source/"+sourcesFile, sourcesOf(srcs, c), variants); err != nil {
 			return nil, err
 		}
 	}
@@ -121,10 +133,10 @@ func (p Plugin) RenderIndex(ctx context.Context, repo index.Repo, scope format.I
 	return append([]format.Document{release}, docs...), nil
 }
 
-// appendIndex appends to docs the index kind of the suite, plain, and its compressed variants,
-// kind.gz and kind.xz.
-func appendIndex(docs []format.Document, suite, kind string, plain []byte) ([]format.Document, error) {
-	for _, v := range variants {
+// appendIndex appends to docs the index kind of the suite, plain, in each of vs: as it is, and
+// compressed as kind.gz and kind.xz.
+func appendIndex(docs []format.Document, suite, kind string, plain []byte, vs []variant) ([]format.Document, error) {
+	for _, v := range vs {
 		content := plain
 		if v.compress != nil {
 			var err error
@@ -153,11 +165,16 @@ func contentType(kind string) string {
 	return packagesContentType
 }
 
-// paragraph is one version of a suite in a Packages index.
+// paragraph is one version of a suite in a Packages or Sources index.
 type paragraph struct {
 	name, version, arch, component string
 	// text is the paragraph, each line ending with "\n", without the blank line after it.
 	text []byte
+	// section is the Section of a binary package, for its names in Contents (contentsOf); empty
+	// when it has none that a Contents line can hold.
+	section string
+	// paths are the paths of a binary package in Contents (pathsOf).
+	paths []string
 }
 
 // paragraphs returns the paragraphs of the versions of the suite, those of the binary versions
@@ -227,10 +244,12 @@ func packagesOf(paras []paragraph, component, arch string) []byte {
 	return b.Bytes()
 }
 
-// packagesFields is what a Packages paragraph needs of the deb metadata layer
-// (docs/spec/manifest-profile.md §2); md5sums is not decoded.
+// packagesFields is what a Packages paragraph and the Contents lines of a version need of the
+// deb metadata layer (docs/spec/manifest-profile.md §2): the file list, or md5sums without one.
 type packagesFields struct {
 	Control  map[string]string `json:"control"`
+	MD5Sums  map[string]string `json:"md5sums"`
+	Files    *[]string         `json:"files"`
 	Filename string            `json:"filename"`
 	Size     int64             `json:"size"`
 	MD5      string            `json:"md5"`
@@ -286,7 +305,8 @@ func (p Plugin) paragraphOf(ctx context.Context, repo index.Repo, pkg index.Pack
 		writeField(&b, "SHA1", f.SHA1)
 	}
 	writeField(&b, "SHA256", f.SHA256)
-	return paragraph{name: pkg.Name, version: v.Version, arch: arch, component: component, text: b.Bytes()}, nil
+	return paragraph{name: pkg.Name, version: v.Version, arch: arch, component: component, text: b.Bytes(),
+		section: contentsSection(f.Control), paths: pathsOf(f.Files, f.MD5Sums)}, nil
 }
 
 // metadataOf returns the metadata of version v of pkg: versions.metadata, or the metadata layer

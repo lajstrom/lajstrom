@@ -63,10 +63,11 @@ var formatCases = map[string]formatCase{
 		docs: []string{"dists/jammy/main/binary-amd64/Packages", "dists/jammy/main/binary-arm64/Packages",
 			"dists/jammy/contrib/binary-amd64/Packages.gz", "dists/jammy-updates/main/binary-amd64/Packages.xz",
 			"pool/main/h/hello/hello_1.1.0-1_arm64.deb", "dists/jammy/main/source/Sources", "dists/jammy/contrib/source/Sources.xz",
-			"pool/main/h/hello/hello_1.1.0-1.dsc", "pool/main/h/hello/hello_1.1.0.orig.tar.gz"},
+			"pool/main/h/hello/hello_1.1.0-1.dsc", "pool/main/h/hello/hello_1.1.0.orig.tar.gz", "dists/jammy/main/Contents-arm64",
+			"dists/jammy/contrib/Contents-amd64.gz", "dists/jammy-updates/main/Contents-amd64"},
 		signed: []string{"dists/jammy/InRelease", "dists/jammy-updates/Release.gpg"},
 		cached: [][2]string{{"jammy", "Release"}, {"jammy", "InRelease"}, {"jammy", "main/binary-arm64/Packages"},
-			{"jammy-updates", "Release.gpg"}, {"jammy", "main/source/Sources"}},
+			{"jammy-updates", "Release.gpg"}, {"jammy", "main/source/Sources"}, {"jammy", "main/Contents-arm64"}},
 	},
 	"pypi": {
 		plugin: pypi.Plugin{}, publish: publishPypi, versions: 8,

@@ -304,7 +304,8 @@ func TestIngestSource(t *testing.T) {
 	p.upload(t, deb, "jammy")
 	docs := render(t, p, fixedClock(p), "jammy")
 	kinds := slices.Sorted(maps.Keys(docs))
-	if want := []string{"Release", "main/binary-amd64/Packages", "main/binary-amd64/Packages.gz", "main/binary-amd64/Packages.xz",
+	if want := []string{"Release", "main/Contents-amd64", "main/Contents-amd64.gz", "main/binary-amd64/Packages",
+		"main/binary-amd64/Packages.gz", "main/binary-amd64/Packages.xz",
 		"main/source/Sources", "main/source/Sources.gz", "main/source/Sources.xz"}; !slices.Equal(kinds, want) {
 		t.Errorf("jammy renders %q, want %q", kinds, want)
 	}
