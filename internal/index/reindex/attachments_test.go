@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,7 +38,13 @@ func (c *countingAttacher) InspectAttachments(ctx context.Context, repo index.Re
 // attaching makes e's pipeline trust the entries and its worker read attachments through it.
 func (e *env) attaching(t *testing.T, entries ...attest.Entry) *countingAttacher {
 	t.Helper()
-	trust, err := attest.NewTrust(entries)
+	return e.attachingWith(t, entries)
+}
+
+// attachingWith is attaching with the options of the trust too (attest.WithKeyless).
+func (e *env) attachingWith(t *testing.T, entries []attest.Entry, opts ...attest.Option) *countingAttacher {
+	t.Helper()
+	trust, err := attest.NewTrust(entries, opts...)
 	must(t, err)
 	log := slog.New(slog.DiscardHandler)
 	plugins := func(name string) (format.Plugin, bool) { return raw.Plugin{}, name == raw.Name }
@@ -203,5 +210,32 @@ func (e *env) newTrust(t *testing.T, pub *format.Published, scanner *attesttest.
 	e.run(t, reindex.Request{Verify: true})
 	if attacher.reads.Load() != 4 {
 		t.Errorf("a verifying run read %d referrers, want 4", attacher.reads.Load())
+	}
+}
+
+// TestAttachmentsKeylessRelabel: a keyless bundle pushed through ingest is untrusted while no
+// identity matches its certificate, and a reindex labels it verified once the trust has the
+// identity, reading it again because the trust's hash moved.
+func TestAttachmentsKeylessRelabel(t *testing.T) {
+	e := newEnv(t)
+	sg := attesttest.NewSigstore(t)
+	tr := sg.TrustedRoot(t)
+	const issuer = "https://token.actions.githubusercontent.com"
+	keyless := func(subject string) attest.Option {
+		return attest.WithKeyless(attest.Keyless{TrustedRoot: tr, Identities: []attest.Identity{{Name: "ci", Issuer: issuer, Subject: subject}}})
+	}
+	e.attachingWith(t, nil, keyless("someone@example.com"))
+	pub := e.publish(t, "hello", "hello")
+	e.attach(t, pub, "", attesttest.BundleMediaType,
+		sg.Bundle(t, issuer, "ci@example.com", attesttest.Statement(pub.Digest, cyclonedx, `{}`)), cyclonedx, true)
+	rows := e.attachmentRows(t)["hello:"+pub.Tag]
+	if len(rows) != 1 || rows[0].Verification != index.AttachmentUntrusted || !strings.Contains(rows[0].Reason, `subject "ci@example.com"`) {
+		t.Fatalf("pushed under another identity: %+v", rows)
+	}
+	attacher := e.attachingWith(t, nil, keyless("ci@example.com"))
+	e.run(t, reindex.Request{})
+	rows = e.attachmentRows(t)["hello:"+pub.Tag]
+	if attacher.reads.Load() != 1 || len(rows) != 1 || rows[0].Verification != index.AttachmentVerified || rows[0].SignedBy != "ci" {
+		t.Errorf("after the identity was trusted: %d reads, %+v", attacher.reads.Load(), rows)
 	}
 }

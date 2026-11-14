@@ -1408,11 +1408,12 @@ components:
         verification:
           type: string
           description: >-
-            verified (a trusted key signed it, for its predicate type, and what it signed names the
-            variant), untrusted, unsigned, invalid or unsupported (keyless, notation, a message
-            signature, a layer above attachments.maxBlobSize).
+            verified (a trusted key or keyless identity signed it, for its predicate type, and what it
+            signed names the variant), untrusted, unsigned, invalid or unsupported (keyless without
+            attachments.keyless, cosign's legacy keyless layers, notation, a message signature, a
+            layer above attachments.maxBlobSize).
           enum: [verified, untrusted, unsigned, invalid, unsupported]
-        signedBy: {type: string, description: The name of the trust entry whose key verified it.}
+        signedBy: {type: string, description: The name of the key or keyless identity that verified it.}
         reason: {type: string, description: Why it is not verified.}
         createdAt: {type: string, format: date-time, description: The referrer's org.opencontainers.image.created, when it has one.}
         indexedAt: {type: string, format: date-time, description: When ingest or reindex last wrote or saw the row.}

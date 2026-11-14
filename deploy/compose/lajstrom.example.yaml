@@ -105,6 +105,11 @@ attachments:                          # signatures, SBOMs and scan reports of ve
   #  - name: scanner                  #   signedBy of what its key verifies
   #    publicKeyFile: /etc/lajstrom/scanner.pub # cosign.pub, PEM; or publicKey: inline PEM
   #    predicateTypes: [https://cyclonedx.org/bom, https://cosign.sigstore.dev/attestation/vuln/v1] # empty: every type
+  keyless:                            # cosign keyless (Fulcio and Rekor), verified offline
+    trustedRoot: ""                   # a trusted_root.json (lajstrom admin trusted-root fetch); empty: keyless is unsupported
+    signedCertificateTimestamps: 1    # SCTs a certificate must carry; 0 for a Fulcio without a CT log
+    identities: []                    # e.g. {name: release, issuer: https://token.actions.githubusercontent.com,
+                                      #   subjectRegex: '^https://github\.com/acme/', predicateTypes: [https://slsa.dev/provenance/v1]}
 
 repos:                                # created at startup when missing (issue #14)
   - name: scratch                     # repo name, unique within its format

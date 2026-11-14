@@ -3,9 +3,11 @@
 // cosign's simple-signing payload, and whether what it signed names the version's manifest. It
 // never signs and never fetches: the caller reads the layer and passes its bytes.
 //
-// The package is pure Go over the standard library (crypto/ecdsa, crypto/ed25519, crypto/rsa,
-// crypto/x509): no sigstore library, which docs/spec/layout.md §3 does not list. Keyless
-// signatures (a Fulcio certificate), notation and message signatures are labelled unsupported.
+// Keys are verified with the standard library (crypto/ecdsa, crypto/ed25519, crypto/rsa,
+// crypto/x509), keyless bundles (a Fulcio certificate and a transparency log entry) with
+// sigstore-go against an offline trusted root (WithKeyless; docs/spec/layout.md §3). The package
+// does no I/O and no verification makes a network request. Notation and message signatures, and
+// cosign's legacy keyless layers, are labelled unsupported.
 package attest
 
 import (
@@ -79,16 +81,19 @@ type key struct {
 	types map[string]bool // nil: every predicate type
 }
 
-// Trust is the keys an operator trusts. The zero value and nil trust no key.
+// Trust is the keys and keyless identities an operator trusts. The zero value and nil trust
+// nothing.
 type Trust struct {
-	keys []key
-	hash string
+	keys        []key
+	keyless     *keylessTrust // nil without WithKeyless
+	keylessHash string        // what Hash takes of the keyless part
+	hash        string
 }
 
-// NewTrust parses the entries of a trust. An entry without a name, a name given twice, or a key
-// that is not a PEM PUBLIC KEY of a supported algorithm is an error. No entry is a trust in which
-// nothing verifies.
-func NewTrust(entries []Entry) (*Trust, error) {
+// NewTrust parses the entries of a trust, and applies opts (WithKeyless). An entry without a
+// name, a name given twice, or a key that is not a PEM PUBLIC KEY of a supported algorithm is an
+// error, and so is an option's. No entry is a trust in which nothing verifies.
+func NewTrust(entries []Entry, opts ...Option) (*Trust, error) {
 	t := &Trust{}
 	type hashed struct {
 		name  string
@@ -122,11 +127,17 @@ func NewTrust(entries []Entry) (*Trust, error) {
 		t.keys = append(t.keys, k)
 		parts = append(parts, hashed{e.Name, der, types})
 	}
+	for _, opt := range opts {
+		if err := opt(t); err != nil {
+			return nil, fmt.Errorf("attest: %w", err)
+		}
+	}
 	slices.SortFunc(parts, func(a, b hashed) int { return strings.Compare(a.name, b.name) })
 	h := sha256.New()
 	for _, p := range parts {
 		_, _ = fmt.Fprintf(h, "%s\x00%x\x00%s\n", strconv.Quote(p.name), p.der, strconv.Quote(strings.Join(p.types, "\x00")))
 	}
+	_, _ = h.Write([]byte(t.keylessHash)) // "" without keyless: a trust of keys hashes as before
 	t.hash = hex.EncodeToString(h.Sum(nil))[:32]
 	return t, nil
 }
@@ -229,7 +240,7 @@ func (t *Trust) Verify(in Input) Result {
 		if err := json.Unmarshal(in.Content, &env); err != nil {
 			return Result{Verification: Invalid, Reason: "the DSSE envelope does not parse: " + err.Error(), PredicateType: in.Annotated}
 		}
-		return t.envelope(in, env, in.Layer.Annotations[annotationCertificate] != "")
+		return t.envelope(in, env, in.Layer.Annotations[annotationCertificate] != "", nil)
 	case mt == mediaTypeSimpleSigning:
 		return t.simpleSigning(in)
 	case slices.Contains(notationTypes, mt):
@@ -289,7 +300,7 @@ func (t *Trust) bundle(in Input) Result {
 		len(b.VerificationMaterial.X509CertificateChain) > 0 && string(b.VerificationMaterial.X509CertificateChain) != "null"
 	switch {
 	case b.DSSEEnvelope != nil:
-		return t.envelope(in, *b.DSSEEnvelope, keyless)
+		return t.envelope(in, *b.DSSEEnvelope, keyless, in.Content)
 	case len(b.MessageSignature) > 0:
 		return Result{Verification: Unsupported, Reason: "a bundle with a message signature is not verified", PredicateType: in.Annotated}
 	}
@@ -297,8 +308,10 @@ func (t *Trust) bundle(in Input) Result {
 }
 
 // envelope judges a DSSE envelope whose payload must be an in-toto statement naming in.Subject;
-// keyless says that it came with a certificate rather than a key.
-func (t *Trust) envelope(in Input, env envelope, keyless bool) Result {
+// keyless says that it came with a certificate rather than a key, and bundleJSON is the sigstore
+// bundle it came in (nil for a legacy layer), which a keyless signature is verified from when no
+// trusted key verifies it.
+func (t *Trust) envelope(in Input, env envelope, keyless bool, bundleJSON []byte) Result {
 	r := Result{PredicateType: in.Annotated}
 	if env.PayloadType != payloadTypeInToto {
 		return r.with(Invalid, fmt.Sprintf("the payload type is %q, not %s", env.PayloadType, payloadTypeInToto))
@@ -324,6 +337,9 @@ func (t *Trust) envelope(in Input, env envelope, keyless bool) Result {
 		sigs = append(sigs, sig)
 	}
 	r = t.judge(r, r.PredicateType, pae(env.PayloadType, payload), sigs, keyless)
+	if r.Verification == Unsupported && keyless {
+		r = t.keylessResult(r, bundleJSON)
+	}
 	if r.Verification == Verified && !st.names(in.Subject) {
 		return r.with(Invalid, fmt.Sprintf("%s signed a statement that does not name %s", r.SignedBy, in.Subject))
 	}
@@ -352,7 +368,11 @@ func (t *Trust) simpleSigning(in Input) Result {
 	if err := json.Unmarshal(in.Content, &p); err != nil {
 		return r.with(Invalid, "the payload is not cosign's simple signing: "+err.Error())
 	}
-	r = t.judge(r, PredicateCosignSign, in.Content, [][]byte{sig}, in.Layer.Annotations[annotationCertificate] != "")
+	keyless := in.Layer.Annotations[annotationCertificate] != ""
+	r = t.judge(r, PredicateCosignSign, in.Content, [][]byte{sig}, keyless)
+	if r.Verification == Unsupported && keyless {
+		r = t.keylessResult(r, nil) // cosign's legacy layer: unsupported, with the reason
+	}
 	if r.Verification == Verified && p.Critical.Image.Digest != in.Subject.String() {
 		return r.with(Invalid, fmt.Sprintf("%s signed %q, not %s", r.SignedBy, p.Critical.Image.Digest, in.Subject))
 	}

@@ -508,16 +508,21 @@ curl -s "$LAJSTROM/api/v1/repos/pypi/internal/packages/requests/versions/2.32.3/
   `/v2/<ociRepository>/referrers/<digest>`; **`digest`** is the referrer's and **`layer`** the
   attachment's layer in it. cosign's legacy manifests (`tag` `sha256-<hex>.sig`, `.att`) hold
   one attachment per layer.
-- **`verification`**: `verified` when a key of `attachments.trust`, trusted for the predicate
-  type, signed it, and what it signed names the variant's manifest (`signedBy` is the trust
-  entry's name); `untrusted` when no trusted key verifies a signature; `unsigned` without one
-  (a raw SBOM); `invalid` when it does not parse or a trusted key signed something about another
-  manifest; `unsupported` for keyless signatures (a Fulcio certificate), notation, a message
-  signature, or a layer above `attachments.maxBlobSize`. `reason` says why it is not verified.
-  No transparency log is consulted.
+- **`verification`**: `verified` when a key of `attachments.trust` or a keyless identity of
+  `attachments.keyless`, trusted for the predicate type, signed it, and what it signed names the
+  variant's manifest (`signedBy` is the key's or the identity's name); `untrusted` when no
+  trusted key verifies a signature, or a keyless signature does not verify against the trusted
+  root or comes from an identity nobody trusts; `unsigned` without one (a raw SBOM); `invalid`
+  when it does not parse or a trusted signer signed something about another manifest;
+  `unsupported` for a keyless signature without `attachments.keyless`, cosign's legacy keyless
+  layers, notation, a message signature, or a layer above `attachments.maxBlobSize`. `reason`
+  says why it is not verified. Nothing is fetched to verify: a keyless bundle's transparency log
+  entry is checked from the bundle and the trusted root, a key signature's not at all.
 - **`tool`, `toolVersion`, `database`, `input`** are the producer's
   `lajstrom.attachment.*` annotations (§6.2), when it set them: `oras attach --annotation` does,
-  `cosign attest` cannot.
+  `cosign attest` cannot. Without them the first three are read from the statement's predicate:
+  a `cosign-vuln` report's scanner and database, a CycloneDX BOM's tool, an SPDX document's
+  `Tool:` creator.
 - **Everything comes from the index**, so reindex rebuilds it. The label is decided when the
   attachment is indexed, at its push or by a reindex; after a change of `attachments.trust`, the
   next reindex of the repo labels every attachment again. A referrer pushed straight to the

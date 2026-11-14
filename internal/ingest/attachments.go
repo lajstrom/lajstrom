@@ -69,6 +69,7 @@ func (p *Pipeline) InspectAttachments(ctx context.Context, repo index.Repo, v in
 		if res.PredicateType != "" {
 			row.PredicateType, row.Kind = res.PredicateType, profile.StatementKind(res.PredicateType, res.Predicate)
 		}
+		fillTool(&row, res)
 		rows = append(rows, row)
 	}
 	return rows, nil
@@ -90,6 +91,17 @@ func attachmentRow(r Referrer, m ocispec.Manifest, a profile.Attachment, trust s
 		row.CreatedAt = &t
 	}
 	return row
+}
+
+// fillTool fills the tool, its version and the database of row that its annotations leave out
+// from the statement's predicate (profile.PredicateTool; manifest-profile.md §6.2): an annotation
+// that is set wins, each on its own.
+func fillTool(row *index.Attachment, res attest.Result) {
+	if row.Tool != "" && row.ToolVersion != "" && row.Database != "" {
+		return
+	}
+	tool, version, database := profile.PredicateTool(res.PredicateType, res.Predicate)
+	row.Tool, row.ToolVersion, row.Database = cmp.Or(row.Tool, tool), cmp.Or(row.ToolVersion, version), cmp.Or(row.Database, database)
 }
 
 // repository returns the data path of the OCI repository of path below repo.
