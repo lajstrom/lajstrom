@@ -39,18 +39,29 @@ var KeptTables = []string{"schema_migrations", "auth_version", "replicas"}
 // past the ids it writes.
 var sequenced = []string{"repos", "users", "identities", "tokens", "bindings", "keys", "audit"}
 
-// ExportControlPlane reads the control plane in one transaction, repeatable read on Postgres.
+// ExportControlPlane reads the control plane in one transaction that reads one snapshot
+// (Dialect.ReadSnapshot), run again when the database aborts it all the same, up to TxAttempts
+// times in all.
 func (s *Store) ExportControlPlane(ctx context.Context, opts index.ExportOptions) (*index.ControlPlane, error) {
 	var cp *index.ControlPlane
-	err := s.Tx(index.WithRepeatableRead(ctx), func(w index.Writer) error {
-		var err error
-		cp, err = w.(*conn).exportControlPlane(ctx, opts)
+	read := func(c *conn) (err error) {
+		if s.d.ReadSnapshot != "" {
+			if _, err := c.exec(ctx, "the snapshot of the export", s.d.ReadSnapshot); err != nil {
+				return err
+			}
+		}
+		cp, err = c.exportControlPlane(ctx, opts)
 		return err
-	})
-	if err != nil {
-		return nil, err
 	}
-	return cp, nil
+	for attempt := 1; ; attempt++ {
+		err := s.begin(ctx, nil, read)
+		if err == nil {
+			return cp, nil
+		}
+		if attempt == TxAttempts || s.d.IsAborted == nil || !s.d.IsAborted(err) || ctx.Err() != nil {
+			return nil, err
+		}
+	}
 }
 
 // exportControlPlane reads the tables of a snapshot on c, a transaction.
@@ -149,13 +160,8 @@ func (s *Store) ImportControlPlane(ctx context.Context, cp *index.ControlPlane, 
 		if err := c.importRows(ctx, cp); err != nil {
 			return err
 		}
-		for _, t := range sequenced {
-			if c.d.SetSequence == "" {
-				break
-			}
-			if _, err := c.exec(ctx, "the sequence of "+t, strings.ReplaceAll(c.d.SetSequence, "%s", t)); err != nil {
-				return err
-			}
+		if err := c.moveSequences(ctx); err != nil {
+			return err
 		}
 		if err := c.execOne(ctx, "auth_version", "UPDATE auth_version SET version = version + 1, updated_at = ? WHERE id = 1",
 			c.d.EncodeTime(now())); err != nil {
@@ -166,6 +172,29 @@ func (s *Store) ImportControlPlane(ctx context.Context, cp *index.ControlPlane, 
 		}
 		return nil
 	})
+}
+
+// moveSequences moves the sequence of the id of each table of sequenced past the greatest id it
+// holds, and never back (Dialect.NextID): it takes the next value, and when that is not past the
+// greatest id, as many more as there are ids up to it. The values taken are gaps, as those of a
+// rolled back insert are.
+func (c *conn) moveSequences(ctx context.Context) error {
+	if c.d.NextID == "" {
+		return nil
+	}
+	for _, t := range sequenced {
+		what, next := "the sequence of "+t, strings.ReplaceAll(c.d.NextID, "%s", t)
+		var got, greatest int64
+		if err := c.scanRow(ctx, what, next+", (SELECT COALESCE(MAX(id), 0) FROM "+t+")", nil, &got, &greatest); err != nil {
+			return err
+		}
+		if got < greatest {
+			if _, err := c.exec(ctx, what, next+" FROM generate_series(1, ?)", greatest-got); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // emptyControlPlane empties ForcedTables when force, and otherwise fails with ErrNotEmpty, naming
