@@ -17,6 +17,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/provider"
+	"github.com/lajstrom/lajstrom/internal/server"
 )
 
 // get dispatches a GET (and a HEAD) once the principal may read the repo: the packument of a
@@ -69,7 +70,24 @@ func (h *handlers) packument(w http.ResponseWriter, r *http.Request, repo index.
 		h.fail(w, r, err)
 		return
 	}
-	format.ServeDocument(w, r, c, contentType)
+	format.ServeDocument(w, r, onRepoHost(r, c), contentType)
+}
+
+// tarballLink is what precedes the URL of a dist.tarball in a packument as the plugin renders it.
+const tarballLink = `"tarball":"`
+
+// onRepoHost returns c with its tarball links below the repo host the request came on in the FQDN
+// mode (docs/spec/http-routing.md §1.1), and the ETag of those bytes; c itself on the main host.
+// The packument is rendered and kept under server.externalURL, one index_cache row for both.
+func onRepoHost(r *http.Request, c *index.Cache) *index.Cache {
+	if _, ok := server.RepoHostFrom(r.Context()); !ok {
+		return c
+	}
+	out := *c
+	out.Content = server.ClientLinks(r.Context(), c.Content, tarballLink)
+	sum := sha256.Sum256(out.Content)
+	out.SHA256 = hex.EncodeToString(sum[:])
+	return &out
 }
 
 // abbreviated reports whether the Accept headers name the abbreviated packument with a q above 0.
@@ -145,6 +163,7 @@ func (h *handlers) version(w http.ResponseWriter, r *http.Request, repo index.Re
 		h.fail(w, r, fmt.Errorf("%w: %s has no version or dist-tag %s", index.ErrNotFound, name, ref))
 		return
 	}
+	v = server.ClientLinks(r.Context(), v, tarballLink)
 	w.Header().Set("Content-Type", contentTypeJSON)
 	w.Header().Set("Content-Length", strconv.Itoa(len(v)))
 	if r.Method != http.MethodHead {
