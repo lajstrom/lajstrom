@@ -277,7 +277,9 @@ Gateway. ingress-nginx retired in March 2026 and its repository is archived
 | `kustomization.yaml` | the three |
 
 Set the host of `server.externalURL` in both `gateway.yaml` and `httproute.yaml`, and your
-`gatewayClassName`. On an implementation other than Envoy Gateway, drop `envoy-gateway.yaml` from
+`gatewayClassName`. With `server.fqdn.domain`, add a listener for `*.<domain>` to `gateway.yaml`,
+with a certificate that has the name, and `*.<domain>` to the route's `hostnames`
+([reverse-proxy.md](../reverse-proxy.md#fqdn-mode)). On an implementation other than Envoy Gateway, drop `envoy-gateway.yaml` from
 `kustomization.yaml` and set the same things its way. [reverse-proxy.md](../reverse-proxy.md#gateway-api)
 has each setting, the ingress-nginx annotation it replaces, and what Cilium and Traefik need.
 
