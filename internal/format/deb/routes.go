@@ -41,6 +41,8 @@ const (
 //	GET /{repo}/pool/{component}/{p}/{source}/{filename}             a .deb, through format.ServeBlob
 //	GET /{repo}/key.asc                                              the keyring of the repo, for signed-by=
 //	PUT /{repo}/upload?suite=&component=[&arch=]                     one .deb, published through deps.Ingest
+//	POST /{repo}/upload?suite=&component=                            a source package, multipart, through deps.Sessions
+//	GET /{repo}/dists/{suite}/{component}/source/Sources             and Sources.gz, Sources.xz, by the route of Packages
 //
 // The documents come from index_cache through format.CachedDocument and are served with
 // format.ServeDocument (ETag, Last-Modified, If-None-Match, Range). deps.Signer signs; when it
@@ -66,6 +68,7 @@ func (p Plugin) Routes(r format.Router, deps format.Deps) {
 	r.HandleFunc("GET /{repo}/pool/{component}/{p}/{source}/{filename}", h.pool)
 	r.HandleFunc("GET /{repo}/key.asc", h.publicKeys)
 	r.HandleFunc("PUT /{repo}/upload", h.upload)
+	r.HandleFunc("POST /{repo}/upload", h.uploadSource)
 }
 
 // handlers are the apt routes over one format.Deps.
