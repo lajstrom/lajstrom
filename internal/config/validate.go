@@ -38,6 +38,7 @@ func (c *Config) Validate() error {
 	c.Reconcile.validate(&p)
 	c.Auth.validate(&p, c.Server)
 	c.Keys.validate(&p)
+	c.Attachments.validate(&p)
 	registries := map[string]int{}
 	for i, r := range c.Registries {
 		key := fmt.Sprintf("registries[%d]", i)

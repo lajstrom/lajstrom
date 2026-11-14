@@ -290,6 +290,52 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Error"}
+  /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/attachments:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+      - $ref: "#/components/parameters/package"
+      - name: version
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      tags: [repos]
+      operationId: listAttachments
+      summary: >-
+        The attachments of a version (read): the signatures, SBOMs, scan reports and attestations
+        of its variants' referrers, as the index has them, newest first, each labelled with its
+        verification against the operator's trust. Every result is kept: the list is their history.
+      parameters:
+        - name: variant
+          in: query
+          description: Only this variant; empty for a format without variants.
+          schema: {type: string}
+        - name: kind
+          in: query
+          description: Only the attachments of this kind.
+          schema: {type: string, enum: [signature, sbom, scan, provenance, attestation, other]}
+        - name: predicateType
+          in: query
+          description: Only the attachments of this predicate type, as written.
+          schema: {type: string}
+        - name: verified
+          in: query
+          description: true keeps the verified attachments, false the others.
+          schema: {type: boolean}
+        - name: limit
+          in: query
+          description: At most this many, the newest; 1000 by default and at most.
+          schema: {type: integer, minimum: 1, maximum: 1000}
+      responses:
+        "200":
+          description: The attachments.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AttachmentList"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
   /api/v1/repos/{format}/{repo}/versions:delete:
     parameters:
       - $ref: "#/components/parameters/format"
@@ -1320,6 +1366,56 @@ components:
         ociRepository:
           type: string
           description: <format>/<repo>/<package path>, the repository of its manifests on /v2.
+    AttachmentList:
+      description: The attachments of a version, newest first.
+      type: object
+      required: [attachments, truncated]
+      properties:
+        attachments:
+          type: array
+          items: {$ref: "#/components/schemas/Attachment"}
+        truncated:
+          type: boolean
+          description: There are more attachments than the limit; the oldest are left out.
+    Attachment:
+      description: >-
+        One attachment of a version: one layer of a referrer of one of its variants, with its label
+        (docs/spec/manifest-profile.md §6).
+      type: object
+      required: [variant, subject, digest, layer, mediaType, artifactType, kind, predicateType, size, annotations, verification, indexedAt]
+      properties:
+        variant: {type: string, description: Empty for a format without variants.}
+        subject: {type: string, description: The variant's manifest digest.}
+        digest: {type: string, description: The referrer manifest's digest.}
+        tag: {type: string, description: "cosign's legacy tag, sha256-<hex>.sig, .att or .sbom; absent for a referrer pushed by digest."}
+        layer: {type: string, description: The digest of the attachment's layer; empty for a manifest without layers.}
+        mediaType: {type: string, description: The layer's media type.}
+        artifactType: {type: string, description: The referrer's artifactType, else its config's media type.}
+        kind:
+          type: string
+          description: What it is; a value this list does not name is shown as it is.
+          enum: [signature, sbom, scan, provenance, attestation, other]
+        predicateType: {type: string, description: The predicate type of its statement or cosign's annotation; empty when none.}
+        size: {type: integer, format: int64, description: The layer's size.}
+        annotations:
+          type: object
+          description: The referrer manifest's annotations.
+          additionalProperties: {type: string}
+        tool: {type: string, description: lajstrom.attachment.tool, when set.}
+        toolVersion: {type: string, description: lajstrom.attachment.toolVersion, when set.}
+        database: {type: string, description: lajstrom.attachment.database, when set.}
+        input: {type: string, description: lajstrom.attachment.input, the SBOM a scan was computed from, when it is a digest.}
+        verification:
+          type: string
+          description: >-
+            verified (a trusted key signed it, for its predicate type, and what it signed names the
+            variant), untrusted, unsigned, invalid or unsupported (keyless, notation, a message
+            signature, a layer above attachments.maxBlobSize).
+          enum: [verified, untrusted, unsigned, invalid, unsupported]
+        signedBy: {type: string, description: The name of the trust entry whose key verified it.}
+        reason: {type: string, description: Why it is not verified.}
+        createdAt: {type: string, format: date-time, description: The referrer's org.opencontainers.image.created, when it has one.}
+        indexedAt: {type: string, format: date-time, description: When ingest or reindex last wrote or saw the row.}
     VariantDetail:
       description: One manifest of a version, with its row of the index and its files.
       type: object
