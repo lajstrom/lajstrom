@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -85,8 +86,9 @@ var yugabyte = func() sqlstore.Dialect {
 // Open connects to the PostgreSQL database of dsn, a URL or a keyword/value string as pgx
 // parses it (docs/configuration.md): postgres://lajstrom@db:5432/lajstrom?sslmode=require.
 // The pool holds pool_max_conns connections when the DSN sets it, else max(4, number of
-// CPUs). Open checks that the database answers; it does not migrate (Migrate does). Errors
-// never contain the DSN, which may carry a password.
+// CPUs); one that the server ended while it idled is replaced before a statement uses it
+// (shouldPing). Open checks that the database answers; it does not migrate (Migrate does).
+// Errors never contain the DSN, which may carry a password.
 func Open(ctx context.Context, dsn string) (*Store, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
@@ -100,7 +102,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	db := stdlib.OpenDB(*cfg)
+	db := stdlib.OpenDB(*cfg, stdlib.OptionShouldPing(shouldPing))
 	db.SetMaxOpenConns(size)
 	db.SetMaxIdleConns(size)
 	d, err := dialectOf(ctx, db)
@@ -109,6 +111,18 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		return nil, fmt.Errorf("index: postgres: connect: %w", err)
 	}
 	return &Store{sqlstore.New(db, d)}, nil
+}
+
+// shouldPing is when database/sql pings a pooled connection before it hands it out again
+// (stdlib.Conn.ResetSession): after a second of idling, pgx's default, and whenever the server
+// wrote to it or closed it meanwhile (serverSent). A server that ends a session, on a restart
+// (57P01), a pg_terminate_backend, a primary switched away or its idle_session_timeout
+// (57P05), sends its FATAL message and closes the socket: the ping then fails and database/sql
+// takes another connection, where the statement would have got that FATAL, and its request a
+// 503 although the database answers (#1123). A connection with nothing to read costs no round
+// trip.
+func shouldPing(_ context.Context, p stdlib.ShouldPingParams) bool {
+	return p.IdleDuration > time.Second || serverSent(p.Conn.PgConn().Conn())
 }
 
 // dialectOf pings db and returns its dialect: yugabyte on YugabyteDB (isYugabyte), else
