@@ -21,6 +21,7 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
 
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/config"
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 )
@@ -56,6 +57,13 @@ type Options struct {
 	// Log gets one line per key made and per rotation, with fingerprints only; nil is
 	// slog.Default().
 	Log *slog.Logger
+	// KMS are the key management services that hold keys (ADR 0020), by the scheme of their key
+	// URIs: config.KMSSchemeAWS, config.KMSSchemeGCP. A row of a scheme without one does not
+	// sign.
+	KMS map[string]KMS
+	// KMSKey is keys.kms: the key URI of the KMS key that a repo's key made from now on is, its
+	// first key and a Rotate; empty for a key made here, of Algorithm.
+	KMSKey string
 }
 
 // Service keeps the signing keys of the repos: one active OpenPGP key per repo, made on first
@@ -73,15 +81,26 @@ type Service struct {
 	grace     time.Duration
 	now       func() time.Time
 	log       *slog.Logger
+	kms       map[string]KMS
+	source    string // what Rotate and a repo's first key make: Local, or the key URI of keys.kms
 }
 
 var _ format.Signer = (*Service)(nil)
 
-// New returns the Service of o. A missing Index or Master, an unknown Algorithm or a negative
-// RetireGrace is an error.
+// New returns the Service of o. A missing Index or Master, an unknown Algorithm, a negative
+// RetireGrace, or a KMSKey that is not a key URI of a KMS in o.KMS is an error.
 func New(o Options) (*Service, error) {
 	s := &Service{st: o.Index, master: o.Master, algorithm: cmp.Or(o.Algorithm, AlgorithmEd25519),
-		grace: o.RetireGrace, now: o.Now, log: o.Log}
+		grace: o.RetireGrace, now: o.Now, log: o.Log, kms: o.KMS, source: cmp.Or(o.KMSKey, Local)}
+	if o.KMSKey != "" {
+		key, err := config.ParseKMSKey(o.KMSKey)
+		if err == nil {
+			_, err = s.kmsOf(key)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("keys: keys.kms: %w", err)
+		}
+	}
 	switch {
 	case s.st == nil:
 		return nil, errors.New("keys: no index")
@@ -106,8 +125,11 @@ func New(o Options) (*Service, error) {
 type Entity struct {
 	// Key is the row; PrivateEnc is the ciphertext.
 	Key index.Key
-	// OpenPGP is the key, private key decrypted.
+	// OpenPGP is the key, private key decrypted; for a key in a KMS, a private key that signs
+	// through the KMS with the context of the call that returned it.
 	OpenPGP *openpgp.Entity
+
+	kms *kmsSigner // the signer of a key in a KMS, nil for a key made here
 }
 
 // String returns "gpg key <fingerprint>".
@@ -126,53 +148,87 @@ func (e *Entity) LogValue() slog.Value { return slog.StringValue(e.Key.Fingerpri
 func (s *Service) KeyFor(ctx context.Context, repo index.Repo) (*Entity, error) {
 	k, err := s.active(ctx, repo)
 	if err != nil {
-		return nil, err
+		return nil, unavailable(err)
 	}
-	return s.decrypt(*k)
+	return s.decrypt(ctx, *k)
 }
 
 // ClearSign returns data clearsigned by the repo's signing keys (Signing), as gpg --clearsign
 // writes it and apt reads an InRelease: the "Hash: SHA256" header, data as the cleartext, its
 // last line break the one before the signature, and one signature per key.
 func (s *Service) ClearSign(ctx context.Context, repo index.Repo, data []byte) ([]byte, error) {
-	signers, err := s.Signing(ctx, repo)
-	if err != nil {
-		return nil, err
-	}
-	privs := make([]*packet.PrivateKey, len(signers))
-	for i, e := range signers {
-		privs[i] = e.OpenPGP.PrivateKey
-	}
-	var out bytes.Buffer
-	w, err := clearsign.EncodeMulti(&out, privs, s.signConfig())
-	if err == nil {
-		_, _ = w.Write(bytes.TrimSuffix(data, []byte("\n"))) // into a bytes.Buffer: Close reports a failure
-		err = w.Close()
-	}
-	if err != nil {
-		return nil, fmt.Errorf("keys: clearsign for %s: %w", repoName(repo), err)
-	}
-	out.WriteByte('\n')
-	return out.Bytes(), nil
+	return s.sign(ctx, repo, func(signers []*Entity) ([]byte, error) {
+		privs := make([]*packet.PrivateKey, len(signers))
+		for i, e := range signers {
+			privs[i] = e.OpenPGP.PrivateKey
+		}
+		var out bytes.Buffer
+		w, err := clearsign.EncodeMulti(&out, privs, s.signConfig())
+		if err == nil {
+			_, _ = w.Write(bytes.TrimSuffix(data, []byte("\n"))) // into a bytes.Buffer: Close reports a failure
+			err = w.Close()
+		}
+		if err != nil {
+			return nil, fmt.Errorf("keys: clearsign for %s: %w", repoName(repo), err)
+		}
+		out.WriteByte('\n')
+		return out.Bytes(), nil
+	})
 }
 
 // DetachSign returns the armored detached signatures of data by the repo's signing keys
 // (Signing), one armor block with one binary signature per key, as apt reads a Release.gpg.
 func (s *Service) DetachSign(ctx context.Context, repo index.Repo, data []byte) ([]byte, error) {
+	return s.sign(ctx, repo, func(signers []*Entity) ([]byte, error) {
+		var out bytes.Buffer
+		w, _ := armor.Encode(&out, openpgp.SignatureType, nil) // into a bytes.Buffer: never an error
+		for _, e := range signers {
+			if err := openpgp.DetachSign(w, e.OpenPGP, bytes.NewReader(data), s.signConfig()); err != nil {
+				return nil, fmt.Errorf("keys: sign for %s with %s: %w", repoName(repo), e.Key.Fingerprint, err)
+			}
+		}
+		_ = w.Close() // the armor footer into a bytes.Buffer: never an error
+		out.WriteByte('\n')
+		return out.Bytes(), nil
+	})
+}
+
+// sign returns what how makes with the keys that sign the repo's documents (Signing). A key in
+// a KMS signs through it during how; when one of them failed, what how made is thrown away,
+// even if go-crypto wrote a packet. A retired key whose KMS refused, other than
+// ErrKMSUnavailable, is left out with a warning, as a retired key that does not decrypt, and how
+// runs again with the others; any other failure is the error, wrapped for a 503 when the KMS is
+// unavailable.
+func (s *Service) sign(ctx context.Context, repo index.Repo, how func([]*Entity) ([]byte, error)) ([]byte, error) {
 	signers, err := s.Signing(ctx, repo)
 	if err != nil {
 		return nil, err
 	}
-	var out bytes.Buffer
-	w, _ := armor.Encode(&out, openpgp.SignatureType, nil) // into a bytes.Buffer: never an error
-	for _, e := range signers {
-		if err := openpgp.DetachSign(w, e.OpenPGP, bytes.NewReader(data), s.signConfig()); err != nil {
-			return nil, fmt.Errorf("keys: sign for %s with %s: %w", repoName(repo), e.Key.Fingerprint, err)
+	for {
+		out, err := how(signers)
+		failed := -1
+		for i, e := range signers {
+			if e.kms != nil && e.kms.failed() != nil {
+				failed, err = i, errors.Join(e.kms.failed(), err)
+				break
+			}
+		}
+		switch {
+		case failed < 0 && err == nil:
+			return out, nil
+		case failed > 0 && !errors.Is(err, ErrKMSUnavailable):
+			s.log.WarnContext(ctx, "retired signing key left out: its KMS refused to sign", "repo", repoName(repo),
+				"fingerprint", signers[failed].Key.Fingerprint, "kms", signers[failed].kms.key.String(), "error", err.Error())
+			signers = slices.Delete(signers, failed, failed+1)
+			for _, e := range signers {
+				if e.kms != nil {
+					e.kms.err = nil
+				}
+			}
+		default:
+			return nil, unavailable(err)
 		}
 	}
-	_ = w.Close() // the armor footer into a bytes.Buffer: never an error
-	out.WriteByte('\n')
-	return out.Bytes(), nil
 }
 
 // PublicKeys returns the armored keyring of the repo, what apt's signed-by= points at: one
@@ -181,7 +237,7 @@ func (s *Service) DetachSign(ctx context.Context, repo index.Repo, data []byte) 
 func (s *Service) PublicKeys(ctx context.Context, repo index.Repo) ([]byte, error) {
 	keys, err := s.keyring(ctx, repo)
 	if err != nil {
-		return nil, err
+		return nil, unavailable(err)
 	}
 	var out bytes.Buffer
 	w, _ := armor.Encode(&out, openpgp.PublicKeyType, nil) // into a bytes.Buffer: never an error
@@ -197,15 +253,16 @@ func (s *Service) PublicKeys(ctx context.Context, repo index.Repo) ([]byte, erro
 // PublicKeys: the active key, made now when the repo has none, and the keys retired within
 // the grace. An active key that does not decrypt is an error; a retired one is left out with a
 // warning, so that a repo whose keys were made under a master key that is lost signs with the
-// key a rotation under the new master key made.
+// key a rotation under the new master key made. A key in a KMS is not asked anything here: it
+// signs through the KMS with ctx, and its failures are those of the signatures.
 func (s *Service) Signing(ctx context.Context, repo index.Repo) ([]*Entity, error) {
 	keys, err := s.keyring(ctx, repo)
 	if err != nil {
-		return nil, err
+		return nil, unavailable(err)
 	}
 	out := make([]*Entity, 0, len(keys))
 	for i, k := range keys {
-		e, err := s.decrypt(k)
+		e, err := s.decrypt(ctx, k)
 		switch {
 		case err == nil:
 			out = append(out, e)
@@ -284,16 +341,27 @@ func signers(signed []byte) []string {
 // the audit row key.rotate (Repo the repo, Subject the new fingerprint, Details the retired
 // one). The new key is made before the transaction; a repo without a key gets its first one.
 // A rotation that loses to another at the same time is an error wrapping index.ErrConflict.
+// The new key is of keys.kms when it is set (Options.KMSKey), else made here (RotateTo).
 func (s *Service) Rotate(ctx context.Context, repo index.Repo) (*Entity, error) {
-	row, key, err := s.generate(repo)
+	return s.RotateTo(ctx, repo, s.source)
+}
+
+// RotateTo is Rotate to a key of source: Local for a key made here, of Options.Algorithm, or the
+// key URI of a KMS key (ADR 0020), which the KMS is asked to describe and to make the
+// self-signature with. A rotation to the key that is already active, the same fingerprint, is an
+// error, and changes nothing.
+func (s *Service) RotateTo(ctx context.Context, repo index.Repo, source string) (*Entity, error) {
+	row, e, err := s.newKey(ctx, repo, source)
 	if err != nil {
-		return nil, err
+		return nil, unavailable(err)
 	}
 	var retired string
 	err = s.st.Tx(ctx, func(tx index.Writer) error {
 		retired = ""
 		old, err := tx.GetKey(ctx, &repo.ID, KindGPG)
 		switch {
+		case err == nil && old.Fingerprint == row.Fingerprint:
+			return fmt.Errorf("the active key is already %s, of the same KMS key", old.Fingerprint)
 		case err == nil:
 			if err := tx.RetireKey(ctx, old.ID, s.now()); err != nil {
 				return err
@@ -314,8 +382,31 @@ func (s *Service) Rotate(ctx context.Context, repo index.Repo) (*Entity, error) 
 		return nil, fmt.Errorf("keys: rotate the key of %s: %w", repoName(repo), err)
 	}
 	s.log.InfoContext(ctx, "signing key rotated", "repo", repoName(repo), "fingerprint", row.Fingerprint,
-		"retired", retired, "algorithm", s.algorithm)
-	return &Entity{Key: *row, OpenPGP: key}, nil
+		"retired", retired, "source", s.sourceOf(source))
+	e.Key = *row
+	return e, nil
+}
+
+// sourceOf is what the logs say a key of source is: the algorithm of a key made here, or the
+// key URI it was made from.
+func (s *Service) sourceOf(source string) string {
+	if source == Local {
+		return s.algorithm
+	}
+	return source
+}
+
+// newKey makes a new key for repo of source, Local or a key URI, and returns its row, not yet
+// stored, and the key.
+func (s *Service) newKey(ctx context.Context, repo index.Repo, source string) (*index.Key, *Entity, error) {
+	if source != Local {
+		return s.generateKMS(ctx, repo, source)
+	}
+	row, key, err := s.generate(repo)
+	if err != nil {
+		return nil, nil, err
+	}
+	return row, &Entity{Key: *row, OpenPGP: key}, nil
 }
 
 // rotateEvent is the audit row of a rotation by the principal of ctx.
@@ -337,7 +428,7 @@ func (s *Service) active(ctx context.Context, repo index.Repo) (*index.Key, erro
 	if !errors.Is(err, index.ErrNotFound) {
 		return nil, fmt.Errorf("keys: the key of %s: %w", repoName(repo), err)
 	}
-	row, _, err := s.generate(repo)
+	row, _, err := s.newKey(ctx, repo, s.source)
 	if err != nil {
 		return nil, err
 	}
@@ -345,7 +436,7 @@ func (s *Service) active(ctx context.Context, repo index.Repo) (*index.Key, erro
 	switch {
 	case err == nil:
 		s.log.InfoContext(ctx, "signing key made", "repo", repoName(repo), "fingerprint", row.Fingerprint,
-			"algorithm", s.algorithm)
+			"source", s.sourceOf(s.source))
 		return row, nil
 	case !errors.Is(err, index.ErrConflict):
 		return nil, fmt.Errorf("keys: store the key of %s: %w", repoName(repo), err)
@@ -384,7 +475,17 @@ func (s *Service) keyring(ctx context.Context, repo index.Repo) ([]index.Key, er
 	slices.SortFunc(retired, func(a, b index.Key) int {
 		return cmp.Or(b.RetiredAt.Compare(*a.RetiredAt), cmp.Compare(b.ID, a.ID))
 	})
-	return append(active, retired...), nil
+	// A repo that rotated back to a KMS key within the grace has its fingerprint twice: the
+	// first, the active one or the most recently retired, signs and is in key.asc.
+	seen := map[string]bool{active[0].Fingerprint: true}
+	out := active
+	for _, k := range retired {
+		if !seen[k.Fingerprint] {
+			seen[k.Fingerprint] = true
+			out = append(out, k)
+		}
+	}
+	return out, nil
 }
 
 // graceStart is the earliest RetiredAt of a retired key that still signs: one grace ago.
@@ -421,13 +522,20 @@ func (s *Service) generate(repo index.Repo) (*index.Key, *openpgp.Entity, error)
 }
 
 // decrypt returns the key of row k with its private key opened by the master key, checked to
-// be the key of k's fingerprint.
-func (s *Service) decrypt(k index.Key) (*Entity, error) {
+// be the key of k's fingerprint. A row of a key in a KMS opens to its key URI instead, and its
+// key signs through the KMS with ctx.
+func (s *Service) decrypt(ctx context.Context, k index.Key) (*Entity, error) {
 	plain, err := s.master.open(k.Fingerprint, k.PrivateEnc)
 	if err != nil {
 		return nil, err
 	}
 	defer clear(plain)
+	if key, ok, err := kmsKeyOf(plain); ok {
+		if err != nil {
+			return nil, fmt.Errorf("keys: the row of %s: %w", k.Fingerprint, err)
+		}
+		return s.openKMS(ctx, k, key)
+	}
 	e, err := openpgp.ReadEntity(packet.NewReader(bytes.NewReader(plain)))
 	switch {
 	case err != nil:

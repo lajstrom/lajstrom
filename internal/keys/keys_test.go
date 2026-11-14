@@ -586,7 +586,7 @@ func TestDecryptFails(t *testing.T) {
 	row := key.Key
 	changed := row
 	changed.Fingerprint = strings.Repeat("A", 40)
-	if _, err := e.svc.decrypt(changed); err == nil || !strings.Contains(err.Error(), "does not decrypt") {
+	if _, err := e.svc.decrypt(t.Context(), changed); err == nil || !strings.Contains(err.Error(), "does not decrypt") {
 		t.Errorf("decrypt of a row with another fingerprint: %v", err)
 	}
 	b, _, err := e.svc.generate(e.repo)
@@ -595,17 +595,17 @@ func TestDecryptFails(t *testing.T) {
 	must(t, err)
 	swapped := row
 	swapped.PrivateEnc = e.svc.master.seal(row.Fingerprint, plain)
-	if _, err := e.svc.decrypt(swapped); err == nil || !strings.Contains(err.Error(), "holds the key "+b.Fingerprint) {
+	if _, err := e.svc.decrypt(t.Context(), swapped); err == nil || !strings.Contains(err.Error(), "holds the key "+b.Fingerprint) {
 		t.Errorf("decrypt of a row with the private key of another: %v", err)
 	}
 	garbage := row
 	garbage.PrivateEnc = e.svc.master.seal(row.Fingerprint, []byte("not a key"))
-	if _, err := e.svc.decrypt(garbage); err == nil {
+	if _, err := e.svc.decrypt(t.Context(), garbage); err == nil {
 		t.Error("decrypt of a row whose private key is no OpenPGP packet succeeded")
 	}
 	public := row
 	public.PrivateEnc = e.svc.master.seal(row.Fingerprint, row.Public)
-	if _, err := e.svc.decrypt(public); err == nil || !strings.Contains(err.Error(), "no usable private key") {
+	if _, err := e.svc.decrypt(t.Context(), public); err == nil || !strings.Contains(err.Error(), "no usable private key") {
 		t.Errorf("decrypt of a row whose private key is the public key: %v", err)
 	}
 }
