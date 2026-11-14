@@ -218,7 +218,8 @@ longer than `reconcile.graceAge` is outside them
   case `PackageCreatedAtRace` (writers of one package at once keep its earliest time, #584),
   `TestInspectIsIngest`, `TestJournalReindex`, `TestJournalReindexLost`, `TestPushReindex` (npm),
   `TestReindexProxied`, `TestNoCatalog`, `TestAttach`, `TestRebuildTagSchema`, `TestDegraded`,
-  `TestKnownDigests`, `TestScale`, `TestRebuildEarlierNames` and `TestEarlierPackagePath` (the
+  `TestKnownDigests`, `TestScale`, `TestAttachmentsRebuild` and `TestIntegrationAttachments` (the
+  attachments of #89, on Zot and on distribution), `TestRebuildEarlierNames` and `TestEarlierPackagePath` (the
   OCI names of before ADR 0017), `TestIntegrationNames` (the names of ADR 0017 in Zot's
   catalog), `TestRebuildSplit`, `TestSplitIndexedBefore` and `TestIntegrationSplit` (a package at
   two forms, #609), `TestRebuildLaggingListing` (a catalog and tag lists that lag a write, on
