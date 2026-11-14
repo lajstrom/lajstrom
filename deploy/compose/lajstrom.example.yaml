@@ -99,6 +99,13 @@ keys:
   retireGrace: 720h                   # a key retired by a rotation still signs and stays in key.asc this long
   tokenAlgorithm: ES256               # ES256 | EdDSA; for bearer-token keys made from now on (the key lives in the database, ADR 0010)
 
+attachments:                          # signatures, SBOMs and scan reports of versions (#89, docs/guides/sbom-and-scans.md)
+  maxBlobSize: 16777216               # the largest layer read to judge one, in bytes
+  trust: []                           # keys whose signatures make an attachment verified, e.g.
+  #  - name: scanner                  #   signedBy of what its key verifies
+  #    publicKeyFile: /etc/lajstrom/scanner.pub # cosign.pub, PEM; or publicKey: inline PEM
+  #    predicateTypes: [https://cyclonedx.org/bom, https://cosign.sigstore.dev/attestation/vuln/v1] # empty: every type
+
 repos:                                # created at startup when missing (issue #14)
   - name: scratch                     # repo name, unique within its format
     format: raw                       # raw | pypi | apt | maven | npm | oci
