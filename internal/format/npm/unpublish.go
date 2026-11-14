@@ -199,7 +199,7 @@ func (h *handlers) deleteVersions(r *http.Request, repo index.Repo, pkg *index.P
 			continue
 		}
 		if err == nil {
-			err = h.deleteManifest(r, repo, pkg.NameOCI, row.Tag)
+			err = h.deleteManifest(r, repo, index.ManifestPath(*pkg, *row), row.Tag)
 		}
 		if err != nil {
 			return format.Partial(err, deleted)
@@ -250,7 +250,7 @@ func (h *handlers) unpublishPackage(w http.ResponseWriter, r *http.Request, repo
 	}
 	var deleted []string
 	for i := 0; err == nil && i < len(versions); i++ {
-		if err = h.deleteManifest(r, repo, pkg.NameOCI, versions[i].Tag); err == nil {
+		if err = h.deleteManifest(r, repo, index.ManifestPath(*pkg, versions[i]), versions[i].Tag); err == nil {
 			deleted = append(deleted, versions[i].Version+" ("+versions[i].Digest.String()+")")
 		}
 	}
@@ -300,7 +300,7 @@ func (h *handlers) unpublishFile(w http.ResponseWriter, r *http.Request, repo in
 	matches, err := h.deps.Index.FindFiles(ctx, repo.ID, file)
 	for i := 0; err == nil && i < len(matches); i++ {
 		if m := matches[i]; m.Package.Name == name {
-			err = h.deleteManifest(r, repo, m.Package.NameOCI, m.Version.Tag)
+			err = h.deleteManifest(r, repo, index.ManifestPath(m.Package, m.Version), m.Version.Tag)
 		}
 	}
 	if err != nil {

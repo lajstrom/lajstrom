@@ -110,7 +110,7 @@ func (h *resolver) file(w http.ResponseWriter, r *http.Request, repo index.Repo,
 		h.fail(w, r, err)
 		return
 	}
-	err = format.ServeBlob(w, r, prov, ociName(repo, m.Package.NameOCI), m.File.Digest, format.ServeBlobOptions{
+	err = format.ServeBlob(w, r, prov, ociName(repo, index.ManifestPath(m.Package, m.Version)), m.File.Digest, format.ServeBlobOptions{
 		ContentType:    contentTypeOf(f.Extension),
 		LastModified:   m.Version.CreatedAt,
 		ManifestDigest: m.Version.Digest,

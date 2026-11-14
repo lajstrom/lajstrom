@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/opencontainers/go-digest"
@@ -97,6 +98,41 @@ func TestTagsFromTheIndex(t *testing.T) {
 	must(t, e.st.UpsertOCIRepo(t.Context(), &index.OCIRepo{RepoID: e.raw.ID, Path: "raw/assets/foreign", SeenAt: e.clock.Now()}))
 	if pages := e.listing(e.h, "/v2/raw/assets/foreign/tags/list", "tags"); !equalPages(pages, [][]string{{}}) {
 		t.Errorf("foreign repository: %q", pages)
+	}
+}
+
+// TestTagsOfASplit: a package at two forms of its OCI name (ADR 0017) lists, at each form, the
+// tags of the versions whose manifest is there (#642): the indexed form its own, the other form
+// those reindex found there; another form without a version is a repository the index does not
+// know.
+func TestTagsOfASplit(t *testing.T) {
+	e := newEnv(t, envOptions{})
+	ctx := t.Context()
+	pkg := &index.Package{RepoID: e.raw.ID, Name: "netlify/blobs", NameOCI: "netlify/blob_73"}
+	must(t, e.st.UpsertPackage(ctx, pkg))
+	for _, v := range []index.Version{
+		{Version: "2.0", Tag: "2.0"},
+		{Version: "1.0", Tag: "1.0", OCIRepo: "netlify/blobs"},
+		{Version: "1.1", Tag: "1.1", OCIRepo: "netlify/blobs"},
+	} {
+		v.PackageID, v.Digest, v.ArtifactType = pkg.ID, digest.FromString(v.Tag), "application/vnd.lajstrom.raw.v1"
+		must(t, e.st.UpsertVersion(ctx, &v))
+	}
+	for path, want := range map[string][]string{"netlify/blob_73": {"2.0"}, "netlify/blobs": {"1.0", "1.1"}} {
+		rr := e.do(e.h, http.MethodGet, "/v2/raw/assets/"+path+"/tags/list", nil)
+		var got tagList
+		must(t, json.Unmarshal(rr.Body.Bytes(), &got))
+		if rr.Code != http.StatusOK || !slices.Equal(got.Tags, want) {
+			t.Errorf("tags/list of %s = %d %s, want %q", path, rr.Code, rr.Body, want)
+		}
+	}
+	other := &index.Package{RepoID: e.raw.ID, Name: "x/blobs", NameOCI: "x/blob_73"}
+	must(t, e.st.UpsertPackage(ctx, other))
+	must(t, e.st.UpsertVersion(ctx, &index.Version{PackageID: other.ID, Version: "1", Tag: "1", Digest: digest.FromString("x1"),
+		ArtifactType: "application/vnd.lajstrom.raw.v1"}))
+	if rr := e.do(e.h, http.MethodGet, "/v2/raw/assets/x/blobs/tags/list", nil); rr.Code != http.StatusNotFound ||
+		!strings.Contains(rr.Body.String(), codeNameUnknown) {
+		t.Errorf("tags/list of the other form of a package without a version there = %d %s, want 404 NAME_UNKNOWN", rr.Code, rr.Body)
 	}
 }
 
