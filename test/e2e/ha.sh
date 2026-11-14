@@ -389,22 +389,31 @@ step "H-05: A killed $((sent / 1048576)) MiB into a 500 MiB PUT: curl exit $rc; 
 # replicas serve again: the requests of a pip install through the edge (as H-10), raw PUTs of a
 # new file each through the edge, and A's /-/readyz (the loads, $work/ID.reads, .puts, .ready).
 # A probe of the wheel or a PUT must be answered one of STATUSES, a load 200 (201 for a PUT) or
-# one of STATUSES, and every load 200 or 201 once both replicas serve again. Then: neither
-# replica restarted, every PUT that failed is 201 again, and the index is whole.
+# one of STATUSES, and every load sent once both replicas serve again 200 or 201. Then: neither
+# replica restarted, every PUT that failed is 201 again, and the index is whole. A read and a
+# PUT start their line with "during" or "after", whether $work/ID.served, made once both
+# replicas served, was there when they were sent: curl writes the statuses of a run when it
+# exits, so a run sent during the outage, whose second request waited for the database, would
+# write its first request's 503 after both served, and a count of lines then would take it for
+# a request sent after (#1123).
 outage() {
-	local id="$1" svc="$2" ok="$3" before t0 n_reads n_puts pids=() r f got seen
+	local id="$1" svc="$2" ok="$3" before t0 pids=() r f got seen phase
 	before="$(started)"
 	mkdir -p "$work/$id"
 	while [ ! -f "$work/$id.stop" ]; do
-		curl -s -o /dev/null -o /dev/null -K "$E2E_CURLRC" -w '%{http_code}\n' "$edge/pypi/e2e/simple/$project/" \
+		phase=during
+		[ ! -f "$work/$id.served" ] || phase=after
+		curl -s -o /dev/null -o /dev/null -K "$E2E_CURLRC" -w "$phase %{http_code}\n" "$edge/pypi/e2e/simple/$project/" \
 			"$edge/pypi/e2e/files/$project/1.0/$wheel" || true
 		sleep 0.1
 	done >"$work/$id.reads" &
 	pids+=($!)
 	for i in $(seq 1 100000); do
 		[ ! -f "$work/$id.stop" ] || break
+		phase=during
+		[ ! -f "$work/$id.served" ] || phase=after
 		printf '%s %s %s\n' "$id" "$run" "$i" >"$work/$id/f$i"
-		printf 'f%s ' "$i"
+		printf '%s f%s ' "$phase" "$i"
 		curl -s -o /dev/null -K "$E2E_CURLRC" -T "$work/$id/f$i" -w '%{http_code}\n' "$edge/raw/$repo/$id/f$i" || true
 		sleep 0.1
 	done >"$work/$id.puts" &
@@ -437,7 +446,7 @@ outage() {
 		sleep 0.5
 	done
 	t0=$((SECONDS - t0))
-	n_reads="$(wc -l <"$work/$id.reads")" n_puts="$(wc -l <"$work/$id.puts")"
+	touch "$work/$id.served"
 	sleep 2
 	touch "$work/$id.stop"
 	wait "${pids[@]}"
@@ -447,9 +456,9 @@ outage() {
 	got="$(awk '{ print $NF }' "$work/$id.reads" "$work/$id.puts" | sort | uniq -c | awk '{ printf "%s%s×%s", sep, $2, $1; sep = " " }')"
 	seen="$(awk -v ok=" 200 201 $ok " '{ c = $NF } index(ok, " " c " ") == 0 { print c }' "$work/$id.reads" "$work/$id.puts" | sort -u | tr '\n' ' ')"
 	assert_eq "" "$seen" "$id: the loads, statuses other than 200, 201 and $ok (all: $got)"
-	assert_eq "" "$(tail -n "+$((n_reads + 1))" "$work/$id.reads" | grep -v '^200$' | sort | uniq -c | tr '\n' ' ')" "$id: the reads once both replicas served again"
-	assert_eq "" "$(tail -n "+$((n_puts + 1))" "$work/$id.puts" | grep -v ' 201$' | tr '\n' ' ')" "$id: the PUTs once both replicas served again"
-	for f in $(awk '$1 !~ /^(wheel|readyz)-/ && $2 != 201 { print $1 }' "$work/$id.puts" "$work/$id.probes"); do
+	assert_eq "" "$(awk '$1 == "after" && $2 != 200 { print $2 }' "$work/$id.reads" | sort | uniq -c | tr '\n' ' ')" "$id: the reads sent once both replicas served again"
+	assert_eq "" "$(awk '$1 == "after" && $3 != 201 { print $2, $3 }' "$work/$id.puts" | tr '\n' ' ')" "$id: the PUTs sent once both replicas served again"
+	for f in $(awk '$1 !~ /^(wheel|readyz)-/ && $NF != 201 { print $(NF - 1) }' "$work/$id.puts" "$work/$id.probes"); do
 		assert_status 201 -K "$E2E_CURLRC" -T "$work/$id/$f" -o /dev/null "$edge/raw/$repo/$id/$f"
 	done
 	whole "$id" "$id/"
