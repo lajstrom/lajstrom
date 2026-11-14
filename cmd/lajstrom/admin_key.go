@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/keys"
+	"github.com/lajstrom/lajstrom/internal/keys/awskms"
 )
 
 // signedFormats are the formats whose repos have signing keys: apt (internal/format/deb), whose
@@ -84,20 +86,25 @@ func newKeyExportCmd(a *app) *cobra.Command {
 
 // newKeyRotateCmd returns admin key rotate: give an apt repo a new signing key, retire the
 // old one (it signs beside the new one and stays in key.asc for keys.retireGrace), drop the
-// repo's cached indexes, and print the new fingerprint. With --token: a new bearer-token key
-// signs from now on, on every replica, and the old one verifies for the token lifetime plus
-// the clock skew; with --drop as well, not at all, and every outstanding token dies.
+// repo's cached indexes, and print the new fingerprint. The new key is the KMS key of --kms,
+// a key Lajstrom makes with --local, and otherwise the KMS key of keys.kms or, without it, a
+// key Lajstrom makes (ADR 0020). With --token: a new bearer-token key signs from now on, on
+// every replica, and the old one verifies for the token lifetime plus the clock skew; with
+// --drop as well, not at all, and every outstanding token dies.
 func newKeyRotateCmd(a *app) *cobra.Command {
-	var repo string
-	var tok, drop bool
+	var repo, kms string
+	var tok, drop, local bool
 	cmd := &cobra.Command{
-		Use:         "rotate (--repo apt/<name> | --token [--drop])",
+		Use:         "rotate (--repo apt/<name> [--kms <key URI> | --local] | --token [--drop])",
 		Short:       "Give an apt or rpm repo, or the bearer tokens, a new signing key and print its fingerprint",
 		Args:        cobra.NoArgs,
 		Annotations: needsConfig,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if drop && !tok {
 				return errors.New("--drop goes with --token: an apt repo's retired key is dropped with keys.retireGrace: 0s")
+			}
+			if tok && (kms != "" || local) {
+				return errors.New("--kms and --local go with --repo: the bearer-token key is always made by Lajstrom")
 			}
 			if tok {
 				return a.withTokenKeys(cmd.Context(), func(ctx context.Context, t *keys.Tokens) error {
@@ -109,8 +116,20 @@ func newKeyRotateCmd(a *app) *cobra.Command {
 					return err
 				})
 			}
+			if kms != "" {
+				if _, err := config.ParseKMSKey(kms); err != nil {
+					return fmt.Errorf("--kms: %w", err)
+				}
+			}
 			return a.withKeys(cmd.Context(), repo, func(ctx context.Context, svc *keys.Service, r index.Repo) error {
-				k, err := svc.Rotate(ctx, r)
+				rotate := svc.Rotate
+				switch {
+				case kms != "":
+					rotate = func(ctx context.Context, r index.Repo) (*keys.Entity, error) { return svc.RotateTo(ctx, r, kms) }
+				case local:
+					rotate = func(ctx context.Context, r index.Repo) (*keys.Entity, error) { return svc.RotateTo(ctx, r, keys.Local) }
+				}
+				k, err := rotate(ctx, r)
 				if err != nil {
 					return err
 				}
@@ -121,6 +140,9 @@ func newKeyRotateCmd(a *app) *cobra.Command {
 	}
 	keyFlags(cmd, &repo, &tok)
 	cmd.Flags().BoolVar(&drop, "drop", false, "with --token: the old key stops verifying at once, and every outstanding token dies")
+	cmd.Flags().StringVar(&kms, "kms", "", "with --repo: the new key is this key of a KMS, awskms:///<key> or gcpkms://<key version> (ADR 0020)")
+	cmd.Flags().BoolVar(&local, "local", false, "with --repo: the new key is made by Lajstrom, even with keys.kms set")
+	cmd.MarkFlagsMutuallyExclusive("kms", "local")
 	return cmd
 }
 
@@ -170,7 +192,7 @@ func (a *app) withKeys(ctx context.Context, arg string, fn func(context.Context,
 		if err != nil {
 			return err
 		}
-		svc, err := newKeys(a.cfg, st, m, a.log)
+		svc, err := newKeys(a.cfg, a.lookupEnv, st, m, a.log)
 		if err != nil {
 			return err
 		}
@@ -209,9 +231,22 @@ func (a *app) withMaster(ctx context.Context, hint string, fn func(context.Conte
 	return fn(ctx, m, st)
 }
 
-// newKeys returns the keys service of the configuration over st.
-func newKeys(c *config.Config, st index.Store, m *keys.Master, log *slog.Logger) (*keys.Service, error) {
-	return keys.New(keys.Options{Index: st, Master: m, Algorithm: c.Keys.Algorithm, RetireGrace: c.Keys.RetireGrace, Log: log})
+// newKeys returns the keys service of the configuration over st, with the KMS clients of
+// kmsClients.
+func newKeys(c *config.Config, lookupEnv func(string) (string, bool), st index.Store, m *keys.Master, log *slog.Logger) (*keys.Service, error) {
+	return keys.New(keys.Options{Index: st, Master: m, Algorithm: c.Keys.Algorithm, RetireGrace: c.Keys.RetireGrace, Log: log,
+		KMS: kmsClients(lookupEnv, log), KMSKey: c.Keys.KMS})
+}
+
+// kmsClients returns the KMS clients of the keys service by scheme (ADR 0020): AWS KMS at the
+// endpoint of AWS_ENDPOINT_URL_KMS, else AWS_ENDPOINT_URL, else the region's, with the SDK's
+// default chain of credentials. A client reads the SDK's configuration at its first request
+// only, so a server with no key in a KMS never reads it.
+func kmsClients(lookupEnv func(string) (string, bool), log *slog.Logger) map[string]keys.KMS {
+	env := func(k string) string { v, _ := lookupEnv(k); return v }
+	return map[string]keys.KMS{
+		config.KMSSchemeAWS: awskms.New(awskms.Options{Endpoint: cmp.Or(env("AWS_ENDPOINT_URL_KMS"), env("AWS_ENDPOINT_URL")), Log: log}),
+	}
 }
 
 // newTokens returns the bearer-token keys of the configuration over st.
@@ -265,13 +300,13 @@ func newSigner(ctx context.Context, c *config.Config, lookupEnv func(string) (st
 	if err != nil {
 		return nil, err
 	}
-	svc, err := newKeys(c, st, m, log)
+	svc, err := newKeys(c, lookupEnv, st, m, log)
 	if err != nil {
 		return nil, err
 	}
 	src, name := masterSource(c.Keys)
 	log.Info("apt repos are signed with keys under the master key", src, name,
-		"keys.algorithm", c.Keys.Algorithm, "keys.retireGrace", c.Keys.RetireGrace.String())
+		"keys.algorithm", c.Keys.Algorithm, "keys.retireGrace", c.Keys.RetireGrace.String(), "keys.kms", c.Keys.KMS)
 	return svc, nil
 }
 
