@@ -83,11 +83,23 @@ var yugabyte = func() sqlstore.Dialect {
 	return d
 }()
 
+// defaultConnectTimeout bounds a connection attempt whose DSN sets no connect_timeout (#1123).
+const defaultConnectTimeout = 5 * time.Second
+
+// connectTimeout gives cfg defaultConnectTimeout when neither the DSN's connect_timeout nor
+// PGCONNECT_TIMEOUT sets one, or sets 0: a database host that is gone would otherwise hold a
+// request for the kernel's SYN retries, about two minutes on Linux, before the 503.
+func connectTimeout(cfg *pgx.ConnConfig) {
+	if cfg.ConnectTimeout == 0 {
+		cfg.ConnectTimeout = defaultConnectTimeout
+	}
+}
+
 // Open connects to the PostgreSQL database of dsn, a URL or a keyword/value string as pgx
 // parses it (docs/configuration.md): postgres://lajstrom@db:5432/lajstrom?sslmode=require.
 // The pool holds pool_max_conns connections when the DSN sets it, else max(4, number of
 // CPUs); one that the server ended while it idled is replaced before a statement uses it
-// (shouldPing). Open checks that the database answers; it does not migrate (Migrate does).
+// (shouldPing). A connection attempt waits at most connect_timeout, 5 s when the DSN sets none. Open checks that the database answers; it does not migrate (Migrate does).
 // Errors never contain the DSN, which may carry a password.
 func Open(ctx context.Context, dsn string) (*Store, error) {
 	cfg, err := pgx.ParseConfig(dsn)
@@ -98,6 +110,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		}
 		return nil, errors.New("index: postgres: database.dsn cannot be parsed")
 	}
+	connectTimeout(cfg)
 	size, err := poolSize(cfg)
 	if err != nil {
 		return nil, err

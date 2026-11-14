@@ -203,6 +203,12 @@ not ping. A session that the server ends while it idles writes its `FATAL` messa
 the socket; Lajstrom peeks at the socket before it reuses a connection, without a round trip,
 and pings it when there is something to read.
 
+A database host that is gone, rather than a Postgres that refuses, answers no connection
+attempt: the kernel resends the SYN, for about two minutes on Linux, and a request would wait
+that long for its `503`. Lajstrom bounds a connection attempt at 5 s when the DSN sets no
+`connect_timeout` (nor `PGCONNECT_TIMEOUT`); a DSN's own `connect_timeout=<seconds>` replaces it,
+and `0` counts as unset (#1123).
+
 Lajstrom maps PgBouncer's errors (class `08`) to `503`, as it does Postgres's. PgBouncer's
 defaults turn an outage into requests that wait, up to `query_wait_timeout` (120 s), and a
 restart into 15 s of errors after the database is back; the two settings above make it behave
