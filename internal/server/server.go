@@ -94,6 +94,10 @@ type Options struct {
 	// TrustedProxies are the peers whose X-Forwarded-For names the client
 	// (server.trustedProxies, ADR 0011). Empty: the peer of the connection is the client.
 	TrustedProxies []netip.Prefix
+	// FQDNDomain turns on the FQDN mode (server.fqdn.domain, docs/spec/http-routing.md §1.1):
+	// every repo also has the host <repo>.<domain>, and <repo>.<format>.<domain>, whose requests
+	// are served as the path form of the repo (repoHosts). It needs ExternalURL. Empty: off.
+	FQDNDomain string
 }
 
 // Server is the Lajstrom HTTP server. Create it with New and start it with Run.
@@ -106,6 +110,8 @@ type Server struct {
 	// byAddress is whether the client address counts in the per-address throttles: Lajstrom
 	// knows the client behind trusted proxies, or when it terminates TLS itself (clientAddress).
 	byAddress bool
+	// fqdn is the FQDN mode; nil when it is off.
+	fqdn *fqdn
 
 	running     atomic.Bool
 	draining    atomic.Bool  // set when Run's context ends; /-/readyz answers 503 from then on
@@ -138,14 +144,19 @@ func New(o Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	hosts, err := newFQDN(o.FQDNDomain, o.ExternalURL, o.Plugins)
+	if err != nil {
+		return nil, err
+	}
 	if o.Log == nil {
 		o.Log = slog.Default()
 	}
 	s := &Server{opts: o, log: o.Log, mux: http.NewServeMux(), bound: make(chan struct{}),
-		byAddress: len(o.TrustedProxies) > 0 || tlsConfig != nil}
+		byAddress: len(o.TrustedProxies) > 0 || tlsConfig != nil, fqdn: hosts}
 	s.baseCtx, s.abort = context.WithCancelCause(context.Background())
 	s.routes()
-	s.handler = s.track(s.securityHeaders(s.recovery(requestID(s.clientAddress(s.accessLog(s.crossOrigin(s.authenticate(s.limitUploads(s.stall(s.mux))))))))))
+	s.handler = s.track(s.securityHeaders(s.recovery(requestID(s.clientAddress(s.repoHosts(s.accessLog(s.crossOrigin(
+		s.authenticate(s.refuseHost(s.limitUploads(s.stall(s.mux))))))))))))
 	s.srv = &http.Server{
 		Handler:     s.handler,
 		BaseContext: func(net.Listener) context.Context { return s.baseCtx },
@@ -231,6 +242,7 @@ func (s *Server) Run(ctx context.Context) error {
 	close(s.bound)
 	s.log.Info("listening", "addr", ln.Addr().String(), "externalURL", s.opts.ExternalURL, "tls", s.srv.TLSConfig != nil)
 	s.logTrust()
+	s.logFQDN()
 	if metricsLn != nil {
 		msrv := &http.Server{Handler: metrics.Handler(s.opts.Pprof), ReadHeaderTimeout: readHeaderTimeout,
 			ErrorLog: slog.NewLogLogger(s.log.Handler(), slog.LevelWarn)}

@@ -140,6 +140,7 @@ database:
 	}{
 		{"LAJSTROM_SERVER_LISTEN", "127.0.0.1:9090", func(c *Config) string { return c.Server.Listen }, "127.0.0.1:9090", nil},
 		{"LAJSTROM_SERVER_EXTERNAL_URL", "https://env.example", func(c *Config) string { return c.Server.ExternalURL }, "https://env.example", nil},
+		{"LAJSTROM_SERVER_FQDN_DOMAIN", "art.example", func(c *Config) string { return c.Server.FQDN.Domain }, "art.example", nil},
 		{"LAJSTROM_LOG_LEVEL", "debug", func(c *Config) string { return c.Log.Level }, "debug", nil},
 		{"LAJSTROM_LOG_FORMAT", "json", func(c *Config) string { return c.Log.Format }, "json", nil},
 		{"LAJSTROM_DATABASE_DRIVER", "postgres", func(c *Config) string { return c.Database.Driver }, "postgres",
@@ -909,6 +910,50 @@ func TestExternalURL(t *testing.T) {
 			}
 			if err != nil && strings.Contains(err.Error(), "u:p@") {
 				t.Errorf("the error shows the credentials: %v", err)
+			}
+		})
+	}
+}
+
+// TestFQDNDomain checks server.fqdn.domain (docs/spec/http-routing.md §1.1): a DNS name in lower
+// case, with server.externalURL, and localhost with an http one, whose subdomains are loopback.
+func TestFQDNDomain(t *testing.T) {
+	tests := []struct {
+		domain, url string
+		insecure    bool
+		want        string // a substring of the error; empty for none
+	}{
+		{domain: "", url: "https://art.example.com"},
+		{domain: "art.example.com", url: "https://art.example.com"},
+		{domain: "pkg.example.com", url: "https://art.example.com:8443"},
+		{domain: "example.com", url: "https://art.example.com"},
+		{domain: "xn--bcher-kva.example", url: "https://art.example.com"},
+		{domain: "localhost", url: "https://localhost:8443"},
+		{domain: "localhost", url: "http://localhost:8080", insecure: true},
+		{domain: "art.example.com", url: "", insecure: true, want: "needs server.externalURL"},
+		{domain: "art.example.com", url: "http://localhost:8080", insecure: true, want: "must be localhost with an http server.externalURL"},
+		{domain: "Art.Example.com", url: "https://art.example.com", want: "is not a DNS name"},
+		{domain: "art.example.com.", url: "https://art.example.com", want: "is not a DNS name"},
+		{domain: "*.art.example.com", url: "https://art.example.com", want: "is not a DNS name"},
+		{domain: "art.example.com:8443", url: "https://art.example.com", want: "is not a DNS name"},
+		{domain: "https://art.example.com", url: "https://art.example.com", want: "is not a DNS name"},
+		{domain: "art_repo.example.com", url: "https://art.example.com", want: "is not a DNS name"},
+		{domain: "-art.example.com", url: "https://art.example.com", want: "is not a DNS name"},
+		{domain: "art..example.com", url: "https://art.example.com", want: "is not a DNS name"},
+		{domain: "10.0.0.1", url: "https://art.example.com", want: "is not a DNS name"},
+		{domain: strings.Repeat("a", 64) + ".example.com", url: "https://art.example.com", want: "is not a DNS name"},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s %s", tt.domain, tt.url), func(t *testing.T) {
+			file := fmt.Sprintf("%s  externalURL: %q\n  insecureHTTP: %v\n  fqdn:\n    domain: %q\n", listenOnly, tt.url, tt.insecure, tt.domain)
+			c, err := Load(writeConfig(t, file), nil)
+			switch {
+			case tt.want == "" && err != nil:
+				t.Errorf("Load: %v, want no error", err)
+			case tt.want == "" && c.Server.FQDN.Domain != tt.domain:
+				t.Errorf("server.fqdn.domain = %q, want %q", c.Server.FQDN.Domain, tt.domain)
+			case tt.want != "" && (err == nil || !strings.Contains(err.Error(), "server.fqdn.domain: ") || !strings.Contains(err.Error(), tt.want)):
+				t.Errorf("Load: %v, want server.fqdn.domain: …%s…", err, tt.want)
 			}
 		})
 	}
