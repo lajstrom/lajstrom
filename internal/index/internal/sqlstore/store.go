@@ -60,7 +60,7 @@ const TxAttempts = 4
 func (s *Store) Tx(ctx context.Context, fn func(index.Writer) error) error {
 	run := func(c *conn) error { return fn(c) }
 	if !index.IsRepeatableRead(ctx) || s.d.IsAborted == nil {
-		return s.withTx(ctx, run)
+		return s.begin(ctx, s.d.txOptions(), run) // once, unlike withTx: fn is the caller's
 	}
 	opts := &sql.TxOptions{Isolation: sql.LevelRepeatableRead}
 	for attempt := 1; ; attempt++ {
@@ -99,14 +99,23 @@ type conn struct {
 
 var _ index.Writer = (*conn)(nil)
 
-// withTx runs fn in a transaction. On the pool it begins one, commits when fn returns nil and
-// rolls back otherwise; inside a transaction it runs fn on it, without a savepoint: the outer
-// transaction is what makes the writes atomic.
+// withTx runs fn in a transaction. On the pool it begins one, at the dialect's isolation
+// (Dialect.Isolation), commits when fn returns nil and rolls back otherwise; inside a
+// transaction it runs fn on it, without a savepoint: the outer transaction is what makes the
+// writes atomic. On the pool, a transaction that the database aborts (Dialect.IsAborted), in
+// fn or at the commit, runs again from the start, up to Dialect.Attempts times in all: fn is a
+// store method's, which computes what it writes from what it reads in the transaction and sets
+// the fields of its arguments by assignment, so that a second run starts over.
 func (c *conn) withTx(ctx context.Context, fn func(*conn) error) error {
 	if c.db == nil {
 		return fn(c)
 	}
-	return c.begin(ctx, nil, fn)
+	for attempt := 1; ; attempt++ {
+		err := c.begin(ctx, c.d.txOptions(), fn)
+		if err == nil || attempt >= c.d.Attempts || c.d.IsAborted == nil || !c.d.IsAborted(err) || ctx.Err() != nil {
+			return err
+		}
+	}
 }
 
 // begin runs fn in a transaction that it begins on the pool with opts (nil: the database's

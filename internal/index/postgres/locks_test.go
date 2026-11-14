@@ -125,15 +125,14 @@ func (l *lockRole) terminated(ctx context.Context, t *testing.T) {
 	n := -1
 	err := l.s.WithReferrersLock(ctx, l.name, l.subject, func(ctx context.Context) error {
 		// The lock's transaction is the role's one session that idles in a transaction.
-		err := l.admin.QueryRowContext(ctx, "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity"+
-			" WHERE usename = $1 AND state = 'idle in transaction'", l.role).Scan(&n)
-		if err != nil {
-			t.Errorf("pg_terminate_backend: %v", err)
+		var err error
+		if n, err = terminate(ctx, t, l.admin, l.role, ""); err != nil {
+			t.Errorf("terminate: %v", err)
 		}
 		return nil
 	})
 	if n != 1 {
-		t.Fatalf("pg_terminate_backend ended %d sessions, want the lock's one", n)
+		t.Fatalf("terminate ended %d sessions, want the lock's one", n)
 	}
 	if !errors.Is(err, index.ErrUnavailable) || !strings.Contains(err.Error(), "was lost") {
 		t.Fatalf("WithReferrersLock after its backend was terminated: %v, want index.ErrUnavailable saying the lock was lost", err)

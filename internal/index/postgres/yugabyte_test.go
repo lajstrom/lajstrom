@@ -38,8 +38,43 @@ func TestYugabyteDialect(t *testing.T) {
 	}
 }
 
-// TestDialectOf checks that Open's dialect is YugabyteDB's on YugabyteDB only, as its version()
-// says.
+// TestCockroachDialect checks what the CockroachDB dialect changes: its own migrations, read
+// committed asked for by every transaction, and a method's aborted transaction run again; its
+// locks are Postgres's (TestCockroachErrors checks its errors).
+func TestCockroachDialect(t *testing.T) {
+	if cockroach.Name != index.DialectCockroach || dialect.Name != index.DialectPostgres || yugabyte.Name != index.DialectPostgres {
+		t.Errorf("migrations of %s on Postgres, %s on YugabyteDB, %s on CockroachDB", dialect.Name, yugabyte.Name, cockroach.Name)
+	}
+	if cockroach.Attempts != sqlstore.TxAttempts || dialect.Attempts > 1 || yugabyte.Attempts > 1 {
+		t.Errorf("a method's aborted transaction runs %d times on CockroachDB, %d on Postgres, %d on YugabyteDB; want %d, once, once",
+			cockroach.Attempts, dialect.Attempts, yugabyte.Attempts, sqlstore.TxAttempts)
+	}
+	if cockroach.Isolation != sql.LevelReadCommitted || dialect.Isolation != sql.LevelDefault {
+		t.Errorf("isolation %v on CockroachDB, %v on Postgres; want read committed, the default", cockroach.Isolation, dialect.Isolation)
+	}
+	if cockroach.PackageLock != dialect.PackageLock || cockroach.XactLock != dialect.XactLock {
+		t.Errorf("CockroachDB's locks differ from Postgres's: %q, %q", cockroach.PackageLock, cockroach.XactLock)
+	}
+}
+
+// TestCockroachErrors checks the errors of the CockroachDB dialect: an ambiguous result (40003)
+// is ErrUnavailable but never run again, and is not ErrUnavailable on Postgres's dialect; the
+// aborts and the states of an unavailable server are ErrUnavailable, as on Postgres.
+func TestCockroachErrors(t *testing.T) {
+	ambiguous := fmt.Errorf("index: commit: %w", &pgconn.PgError{Code: ambiguousResult})
+	if !cockroach.IsUnavailable(ambiguous) || cockroach.IsAborted(ambiguous) || dialect.IsUnavailable(ambiguous) {
+		t.Errorf("40003: unavailable %v, aborted %v on CockroachDB, unavailable %v on Postgres; want true, false, false",
+			cockroach.IsUnavailable(ambiguous), cockroach.IsAborted(ambiguous), dialect.IsUnavailable(ambiguous))
+	}
+	for _, code := range []string{"40001", "40P01", "57P01", "08006"} {
+		if err := (&pgconn.PgError{Code: code}); !cockroach.IsUnavailable(err) {
+			t.Errorf("%s is not ErrUnavailable on CockroachDB", code)
+		}
+	}
+}
+
+// TestDialectOf checks that Open's dialect is YugabyteDB's on YugabyteDB only and CockroachDB's on
+// CockroachDB only, as version() says.
 func TestDialectOf(t *testing.T) {
 	ctx := t.Context()
 	db, err := sql.Open("pgx", testDSN(t))
@@ -57,6 +92,9 @@ func TestDialectOf(t *testing.T) {
 	}
 	if yb := strings.Contains(version, "-YB-"); (d.PackageLock != "") != yb {
 		t.Errorf("version() %q: the dialect has PackageLock %q", version, d.PackageLock)
+	}
+	if crdb := strings.Contains(version, "CockroachDB"); (d.Name == index.DialectCockroach) != crdb {
+		t.Errorf("version() %q: the dialect's migrations are %s", version, d.Name)
 	}
 }
 

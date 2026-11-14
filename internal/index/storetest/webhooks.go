@@ -175,8 +175,18 @@ func claimIDs(claims []index.WebhookClaim) []int64 {
 	return ids(claims, func(c index.WebhookClaim) int64 { return c.Delivery.ID })
 }
 
+// webhookClaimDeadline bounds testWebhookClaimRace; webhookClaimPause is a replica's pause after
+// a claim that found nothing.
+const (
+	webhookClaimDeadline = 10 * time.Second
+	webhookClaimPause    = 50 * time.Millisecond
+)
+
 // testWebhookClaimRace: replicas that claim at once never claim one row twice, and between
-// them claim every due row.
+// them claim every due row. A replica whose claim finds nothing claims again after a pause,
+// until every row is claimed or webhookClaimDeadline passes, as a worker polls again: on
+// CockroachDB, SKIP LOCKED may pass over rows whose writing transaction committed just before
+// (docs/deploy/databases.md#cockroachdb).
 func testWebhookClaimRace(t *testing.T, s index.Store) {
 	ctx := t.Context()
 	h := newWebhook(t, s, "*/*")
@@ -192,10 +202,17 @@ func testWebhookClaimRace(t *testing.T, s index.Store) {
 		claimed = map[int64]string{}
 		wg      sync.WaitGroup
 	)
+	deadline := time.Now().Add(webhookClaimDeadline)
 	for r := range replicas {
 		wg.Go(func() {
 			replica := "r" + strconv.Itoa(r)
 			for {
+				mu.Lock()
+				done := len(claimed) == rows
+				mu.Unlock()
+				if done || time.Now().After(deadline) {
+					return
+				}
 				cs, err := s.ClaimWebhookDeliveries(ctx, replica, at(10), at(-110), 3)
 				if err != nil {
 					if errors.Is(err, index.ErrUnavailable) { // SQLite busy: try again
@@ -205,8 +222,9 @@ func testWebhookClaimRace(t *testing.T, s index.Store) {
 					t.Error(err)
 					return
 				}
-				if len(cs) == 0 {
-					return
+				if len(cs) == 0 { // the others hold the rest, or the database passed over it: poll again
+					time.Sleep(webhookClaimPause)
+					continue
 				}
 				mu.Lock()
 				for _, c := range cs {
