@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
 	"net/url"
 	"slices"
 	"strings"
@@ -166,6 +167,10 @@ type Options struct {
 	PublicRedirects bool
 	// upstream is NewUpstream's: the answers' rate-limit headers feed the gauges.
 	upstream bool
+	// resolver is the tests': the resolver of the transport's dialer, in place of
+	// net.DefaultResolver, which a test must not swap while a transport of another may still be
+	// dialing with it (#1106). nil is net.DefaultResolver.
+	resolver *net.Resolver
 }
 
 // NewWithOptions is New with the changes of o.
