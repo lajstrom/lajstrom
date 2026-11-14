@@ -435,7 +435,7 @@ registries:
     url: https://registry.example
     timeout: 5s
     retries: -1
-    capabilities: {referrers: false, catalog: false, deleteManifest: true, maxBlobSize: 1073741824, consistency: eventual, consistencyBound: 4s, maxNameDepth: 4}
+    capabilities: {referrers: false, catalog: false, deleteManifest: true, maxBlobSize: 1073741824, consistency: eventual, consistencyBound: 4s, maxNameDepth: 4, tagsFoldCase: true}
     tokenRealmHosts: [auth.registry.example, 10.0.0.5]
     uploads: {spoolUnknownLength: true, chunkSize: 4194304}
 `
@@ -449,7 +449,7 @@ registries:
 		{
 			Name: "tuned", Type: "generic", URL: "https://registry.example", Timeout: 5 * time.Second, Retries: -1,
 			Capabilities: CapabilityOverrides{Referrers: &f, Catalog: &f, DeleteManifest: &tr, MaxBlobSize: 1 << 30,
-				Consistency: ConsistencyEventual, ConsistencyBound: 4 * time.Second, MaxNameDepth: 4},
+				Consistency: ConsistencyEventual, ConsistencyBound: 4 * time.Second, MaxNameDepth: 4, TagsFoldCase: &tr},
 			TokenRealmHosts: []string{"auth.registry.example", "10.0.0.5"},
 			Uploads:         RegistryUploads{SpoolUnknownLength: true, ChunkSize: 4 << 20},
 		},

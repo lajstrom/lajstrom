@@ -52,8 +52,8 @@ const (
 //     image index is true, any other 200 and a 404 without NAME_UNKNOWN are false, and so is
 //     an answer that does not tell (404 NAME_UNKNOWN, 401, 403), in which case oras-go decides
 //     per repository on first use;
-//   - CreateOnPush, DeleteManifest and BlobRedirect are true, ImmutableTags is false,
-//     MaxBlobSize is 0 (unknown) and Consistency unknown without a request; DeleteManifest
+//   - CreateOnPush, DeleteManifest and BlobRedirect are true, ImmutableTags and TagsFoldCase
+//     are false, MaxBlobSize is 0 (unknown) and Consistency unknown without a request; DeleteManifest
 //     turns false when the registry answers a manifest delete with 405 UNSUPPORTED or a 405
 //     without DENIED.
 //
@@ -112,6 +112,7 @@ func apply(c *provider.Capabilities, o config.CapabilityOverrides) {
 	set(&c.DeleteManifest, o.DeleteManifest)
 	set(&c.ImmutableTags, o.ImmutableTags)
 	set(&c.BlobRedirect, o.BlobRedirect)
+	set(&c.TagsFoldCase, o.TagsFoldCase)
 	if o.MaxBlobSize > 0 {
 		c.MaxBlobSize = o.MaxBlobSize
 	}
@@ -257,6 +258,7 @@ func (p *Provider) probeNow(ctx context.Context, answered *bool) (provider.Capab
 		"maxBlobSize", e.MaxBlobSize,
 		"consistency", consistencyText(e),
 		"maxNameDepth", e.MaxNameDepth,
+		"tagsFoldCase", e.TagsFoldCase,
 	)
 	if e.MaxNameDepth > 0 && e.MaxNameDepth < minNameDepth {
 		p.log.ErrorContext(ctx, "the registry takes no name of Lajstrom's: every one has 3 components or more below the prefix, "+

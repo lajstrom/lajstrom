@@ -245,6 +245,13 @@ type Capabilities struct {
 	// distribution and GitLab on the whole name, and ECR 256 minus it, the bound of
 	// CreateRepository (docs/registries/quirks.md). CheckName applies it.
 	MaxNameLength int
+	// TagsFoldCase is true when the backend stores a tag lower-cased and resolves tags without
+	// case, so that two tags that differ only in case are one tag: Gitea and Forgejo
+	// (go-gitea/gitea#40359, forgejo#15259; docs/registries/gitea.md, item 2). The vendor table
+	// sets it for both, registries[].capabilities.tagsFoldCase for another registry; no probe
+	// measures it, since that takes a push. Tags are the same on every registry
+	// (docs/spec/manifest-profile.md §4.2): ingest claims a tag lower-cased where it is true.
+	TagsFoldCase bool
 }
 
 // CheckName reports whether the backend of c takes the repository name, a Lajstrom name as

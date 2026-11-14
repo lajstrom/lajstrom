@@ -181,6 +181,8 @@ func TestVendorDefaults(t *testing.T) {
 	probed := provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true, DeleteManifest: true, BlobRedirect: true}
 	strong := probed
 	strong.Consistency = provider.ConsistencyStrong
+	folds := probed
+	folds.TagsFoldCase = true
 	tests := []struct {
 		vendor vendor
 		want   provider.Capabilities
@@ -190,6 +192,8 @@ func TestVendorDefaults(t *testing.T) {
 		{vendorZot, strong},
 		{vendorDistribution, strong},
 		{vendorHarbor, probed},
+		{vendorGitea, folds},
+		{vendorForgejo, folds},
 		{vendorGHCR, provider.Capabilities{CreateOnPush: true, Referrers: true, BlobRedirect: true, Consistency: provider.ConsistencyEventual,
 			MaxBlobSize: 10_000_000_000}},
 		{vendorDocker, provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true, DeleteManifest: true, BlobRedirect: true,
@@ -276,6 +280,11 @@ func TestCapabilitiesVendor(t *testing.T) {
 	}
 	gitLabDeep := strong
 	gitLabDeep.MaxNameDepth = gitLabNameDepth
+	// Gitea and Forgejo fold the case of tags, which the vendor table says (#426).
+	gitea := noReferrers
+	gitea.TagsFoldCase = true
+	strongFolds := strong
+	strongFolds.TagsFoldCase = true
 	quay := provider.Capabilities{CreateOnPush: true, DeleteManifest: true, BlobRedirect: true, MaxNameLength: 251,
 		Consistency: provider.ConsistencyEventual, ConsistencyBound: 130 * time.Second}
 	tests := []struct {
@@ -289,6 +298,10 @@ func TestCapabilitiesVendor(t *testing.T) {
 		hint   bool // the hint at uploads.spoolUnknownLength
 	}{
 		{name: "distribution", setup: headers(plainV2, true), vendor: vendorDistribution, want: strong},
+		{
+			name: "distribution, tagsFoldCase configured on", setup: headers(plainV2, true), vendor: vendorDistribution, want: strongFolds,
+			edit: func(c *config.Registry) { c.Capabilities.TagsFoldCase = new(true) },
+		},
 		{name: "Zot", setup: headers(zotV2, true), vendor: vendorZot, want: strong},
 		{name: "another registry", setup: headers(http.Header{}, true), vendor: vendorUnknown},
 		{name: "GitLab A", setup: headers(gitLabA, true), vendor: vendorGitLab, want: strong},
@@ -306,18 +319,22 @@ func TestCapabilitiesVendor(t *testing.T) {
 			edit: func(c *config.Registry) { c.Capabilities.Referrers = new(false) },
 		},
 		{name: "Nexus, oci format", setup: headers(nexusV2, true), vendor: vendorNexus, quirks: quirks{wholeBlobs: true}},
-		{name: "Gitea", setup: challenge("bearer", "Bearer", `,service="container_registry",scope="*"`, false), vendor: vendorGitea, want: noReferrers, hint: true},
+		{name: "Gitea", setup: challenge("bearer", "Bearer", `,service="container_registry",scope="*"`, false), vendor: vendorGitea, want: gitea, hint: true},
 		{
-			name: "Gitea, the spool on", setup: challenge("bearer", "Bearer", `,service="container_registry",scope="*"`, false), vendor: vendorGitea, want: noReferrers,
+			name: "Gitea, the spool on", setup: challenge("bearer", "Bearer", `,service="container_registry",scope="*"`, false), vendor: vendorGitea, want: gitea,
 			edit: func(c *config.Registry) { c.Uploads.SpoolUnknownLength = true },
 		},
-		{name: "Forgejo", setup: forgejo(challenge, forgejoVersion), vendor: vendorForgejo, want: noReferrers, hint: true},
+		{name: "Forgejo", setup: forgejo(challenge, forgejoVersion), vendor: vendorForgejo, want: gitea, hint: true},
 		{
-			name: "Forgejo, the spool on", setup: forgejo(challenge, forgejoVersion), vendor: vendorForgejo, want: noReferrers,
+			name: "Forgejo, the spool on", setup: forgejo(challenge, forgejoVersion), vendor: vendorForgejo, want: gitea,
 			edit: func(c *config.Registry) { c.Uploads.SpoolUnknownLength = true },
 		},
-		{name: "Gitea, its own API a web page", setup: forgejo(challenge, "<!DOCTYPE html><html></html>"), vendor: vendorGitea, want: noReferrers, hint: true},
-		{name: "Gitea, a version without one", setup: forgejo(challenge, `{"version":""}`), vendor: vendorGitea, want: noReferrers, hint: true},
+		{
+			name: "Gitea, tagsFoldCase configured off", setup: challenge("bearer", "Bearer", `,service="container_registry",scope="*"`, false), vendor: vendorGitea,
+			want: noReferrers, hint: true, edit: func(c *config.Registry) { c.Capabilities.TagsFoldCase = new(false) },
+		},
+		{name: "Gitea, its own API a web page", setup: forgejo(challenge, "<!DOCTYPE html><html></html>"), vendor: vendorGitea, want: gitea, hint: true},
+		{name: "Gitea, a version without one", setup: forgejo(challenge, `{"version":""}`), vendor: vendorGitea, want: gitea, hint: true},
 		{name: "JFrog", setup: headers(jfrogV2, true), vendor: vendorJFrog, quirks: quirks{blobExistsByGET: true, emptyStatus404: true}, hint: true},
 		// The fake has a catalog and the referrers API: the table's catalog and referrers win.
 		{name: "Quay", setup: headers(quayV2, true), vendor: vendorQuay, want: quay, quirks: quirks{pushForDelete: true}},
@@ -349,6 +366,7 @@ func TestCapabilitiesVendor(t *testing.T) {
 			}
 			logs := buf.String()
 			checkProbeLog(t, logs, tt.vendor, tt.quirks != (quirks{}), tt.warn)
+			checkFoldLog(t, logs, want.TagsFoldCase)
 			if hinted := strings.Contains(logs, `msg="hint: the registry refuses a /v2 chunk of unknown length`); hinted != tt.hint {
 				t.Errorf("the hint at uploads.spoolUnknownLength logged: %v, want %v\n%s", hinted, tt.hint, logs)
 			}
@@ -477,6 +495,15 @@ func checkProbeLog(t *testing.T, logs string, v vendor, workarounds, warn bool) 
 	}
 	if n := strings.Count(logs, `msg="GitLab registry with its metadata database`); n != map[bool]int{true: 1}[warn] {
 		t.Errorf("%d warnings about the metadata database, want %v\n%s", n, warn, logs)
+	}
+}
+
+// checkFoldLog checks that the capabilities line in logs says tagsFoldCase=true exactly when
+// folds is.
+func checkFoldLog(t *testing.T, logs string, folds bool) {
+	t.Helper()
+	if logged := strings.Contains(logs, "tagsFoldCase=true"); logged != folds {
+		t.Errorf("tagsFoldCase=true on the capabilities line: %v, want %v\n%s", logged, folds, logs)
 	}
 }
 
