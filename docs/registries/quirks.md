@@ -24,7 +24,7 @@ measurements of [section 2](#2-is-abc-one-repository-or-two), on Zot v2.1.23, di
 | Azure ACR | names with `/`, "managed independently, not as a hierarchy" | nothing; the last manifest's delete removes the repository | no count limit, a storage limit per SKU | not tried |
 | Google Artifact Registry | `PROJECT/REPOSITORY/IMAGE`: one GAR repository holds many images | the GAR repository (30 creations a minute a region) | not documented ? | not tried |
 | GitLab | `<namespace>/<project>` and **at most two levels more**; the project path is an image too | the project | 255 characters | yes, below a project; deeper, the token has no scope |
-| Harbor | `<project>/` and any depth | the project, never created on push | project 1–255 characters; the whole name 255 | any depth, all served, listed and collected, measured; **below a component `manifests`, `referrers` or `tags/list`, a blob `HEAD` is 404 or 400 at random** (GET 200), measured |
+| Harbor | `<project>/` and any depth | the project, never created on push | project 1–255 characters; **the whole name 245**, then 500, measured | any depth, all served, listed and collected, measured; **below a component `manifests`, `referrers` or `tags/list`, a blob `HEAD` is 404 or 400 at random** (GET 200), measured |
 | GHCR | `<owner>/` and a name, which may hold `/` | the owner | lowercase | not tried |
 | Docker Hub | `namespace/repository`: **exactly two levels** | the namespace | repository 2–255 characters, no `.` | no third level at all |
 | Quay | `namespace/repository`; the repository may hold `/` (quay.io too) | the namespace | namespace 2–255, repository 255 characters | any depth, measured on 3.18.2; **on master, new names ending in `build` or `build/<x>` refused**, measured with its commit applied ([quay.md](quay.md#the-build-rule)) |
@@ -182,6 +182,9 @@ without case**: `5.4.Final` is listed as `5.4.final`, and a push to `5.4.final` 
 Zot and a plain-text 404 on distribution (measured below); ECR's API takes tags of up to 300
 characters, its exclusion filters 128 ([ImageIdentifier](https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_ImageIdentifier.html)).
 Over 255 characters GitLab's registry answers 500 `UNKNOWN` (measured, [gitlab.md](gitlab.md#lajstrom-registry-probe)).
+Harbor v2.15.4 takes 245, its project included: an upload session in a name of 246 to 256
+characters is 500, `UNKNOWN` with the name in its detail at 256 (measured on 2026-11-14,
+[harbor.md](harbor.md#the-probe-2026-11-14-850)).
 
 The 255 bytes are the whole name, the instance prefix included. Distribution 3.1.2 refuses a
 longer name in its blob descriptor cache, which parses it as Docker does
@@ -193,7 +196,8 @@ Measured on the dev stack: `spike661/…` of 255 bytes 202, of 256 400 `NAME_INV
 [CreateRepository](https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_CreateRepository.html)).
 Since #661 Lajstrom gives the names below the prefix 255 bytes less the prefix's length, 256 less
 on ECR (`provider.Capabilities.MaxNameLength`), and a publish of a longer name is a `400` that
-names the limit before anything is pushed.
+names the limit before anything is pushed. On Harbor that bound is 10 bytes too long
+([harbor.md](harbor.md#what-the-provider-must-do-differently), item 5).
 
 ## 2. Is `a/b/c` one repository or two?
 
