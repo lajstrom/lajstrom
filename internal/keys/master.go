@@ -82,6 +82,22 @@ func (m *Master) seal(fingerprint string, plain []byte) []byte {
 	return m.aead.Seal(nonce, nonce, plain, []byte(fingerprint))
 }
 
+// Seal encrypts plain, a secret of the index that is not a private key (a webhook's,
+// docs/spec/webhooks.md §5), as nonce || AES-256-GCM(plain) with aad as the additional data, so
+// that a ciphertext moved to another row does not decrypt.
+func (m *Master) Seal(aad string, plain []byte) []byte { return m.seal(aad, plain) }
+
+// Open decrypts what Seal returned for aad. A wrong master key, a ciphertext of another row
+// and one that was changed fail alike, and the error never shows a byte of either.
+func (m *Master) Open(aad string, sealed []byte) ([]byte, error) {
+	plain, err := m.open(aad, sealed)
+	if err != nil {
+		return nil, fmt.Errorf("keys: the secret of %s does not decrypt with the master key: another master key, "+
+			"or the row was changed", aad)
+	}
+	return plain, nil
+}
+
 // open decrypts what seal returned for the key of fingerprint. A wrong master key, a
 // ciphertext of another key and one that was changed all fail alike.
 func (m *Master) open(fingerprint string, sealed []byte) ([]byte, error) {
