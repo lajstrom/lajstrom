@@ -430,10 +430,12 @@ migration, unless this table says why not.
   `users.password_hash` (argon2id), `tokens.hash` (sha256 of the secret), `keys.private_enc`
   (encrypted with the master key). `bootstrap_token` is not carried. The master key, the registry
   passwords, the DSN and the OIDC client secret are never in the database.
-- **One moment.** `ExportControlPlane` reads every table in one transaction, repeatable read on
-  Postgres (`WithRepeatableRead`), and returns before anything talks to the registry: no
-  transaction is held across a request to it. Every token's user and repo, every key's repo and
-  every member's group are in the same read.
+- **One moment.** `ExportControlPlane` reads every table in one transaction, `SERIALIZABLE, READ
+  ONLY, DEFERRABLE` on Postgres and YugabyteDB, and returns before anything talks to the registry:
+  no transaction is held across a request to it. Every token's user and repo, every key's repo and
+  every member's group are in the same read. Such a transaction reads one snapshot and is never
+  aborted; on YugabyteDB it waits out the clock skew, where a repeatable read under writes fails
+  with "restart read required".
 - **Into an empty database.** `ImportControlPlane` writes into a database whose tables of the
   first two rows above are empty, all of them; a table that has a row makes it fail with
   `ErrNotEmpty`, naming the tables, and change nothing. A `serve` started on the database once is
@@ -445,9 +447,12 @@ migration, unless this table says why not.
   restore.
 - **One transaction.** The rows are inserted with their ids in one transaction, every table in the
   order of its references, and the restore's own audit row (`snapshot.restore`) comes last in it.
-  On Postgres the sequence of each table's id is set past the greatest id restored (`setval`), so
-  that the next insert does not collide; SQLite's next rowid follows the greatest. `auth_version`
-  is incremented in the same transaction.
+  On Postgres the sequence of each table's id is moved past the greatest id restored, and never
+  back, so that the next insert does not collide: with `nextval` alone, which the data rights of a
+  database user for serve allow (`USAGE` on the sequences; `setval` needs `UPDATE`;
+  [operations.md](../operations.md#a-database-user-for-serve)), the values taken being gaps.
+  SQLite's next rowid follows the greatest. `auth_version` is incremented in the same transaction.
+  The restore runs with serve's database user, as every admin command does.
 - **Versions.** A snapshot of a `schema` newer than the newest migration of the binary is refused,
   `ErrSchemaTooNew`, and nothing is written. One of an older `schema` is written as it is: a
   column added since takes its default, as expand migrations require (Upgrades). The database
