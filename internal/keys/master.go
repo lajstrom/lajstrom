@@ -3,7 +3,9 @@ package keys
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -19,11 +21,18 @@ const masterFormat = "the master key is 64 hexadecimal characters (32 bytes), e.
 // index holds signing keys that only the master key decrypts; admin key fails.
 var ErrNoMasterKey = errors.New("keys: no master key")
 
-// Master is the master key: AES-256-GCM over the private keys at rest. It is loaded once at
-// start and never printed: String, GoString and LogValue show no key material, and the bytes
-// themselves are not kept, only the cipher made from them.
+// snapshotInfo is the HKDF info of the snapshot key (docs/spec/manifest-profile.md §9, Sealed):
+// a snapshot of the control plane is sealed with a key derived from the master key, so that the
+// cipher of the private keys is used for nothing else.
+const snapshotInfo = "lajstrom snapshot v1"
+
+// Master is the master key: AES-256-GCM over the private keys at rest, and over the snapshots of
+// the control plane with a key derived from it. It is loaded once at start and never printed:
+// String, GoString and LogValue show no key material, and the bytes themselves are not kept,
+// only the ciphers made from them.
 type Master struct {
-	aead cipher.AEAD
+	aead     cipher.AEAD
+	snapshot cipher.AEAD // AES-256-GCM under HKDF-SHA256(master key, snapshotInfo)
 }
 
 // LoadMaster reads the master key from the environment variable name, as keys.masterKeyEnv
@@ -59,9 +68,16 @@ func ParseMaster(s string) (*Master, error) {
 		return nil, fmt.Errorf("not a master key: %s", masterFormat)
 	}
 	defer clear(b)
-	block, _ := aes.NewCipher(b)    // 32 bytes: AES-256, never an error
+	sk, _ := hkdf.Key(sha256.New, b, nil, snapshotInfo, 32) // 32 bytes of SHA-256: never an error
+	defer clear(sk)
+	return &Master{aead: gcm(b), snapshot: gcm(sk)}, nil
+}
+
+// gcm returns AES-256-GCM under the 32 bytes of key.
+func gcm(key []byte) cipher.AEAD {
+	block, _ := aes.NewCipher(key)  // 32 bytes: AES-256, never an error
 	aead, _ := cipher.NewGCM(block) // AES has the block size of GCM: never an error
-	return &Master{aead: aead}, nil
+	return aead
 }
 
 // String returns a placeholder: a master key is never printed.
@@ -93,6 +109,30 @@ func (m *Master) open(fingerprint string, sealed []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("keys: the private key of %s does not decrypt with the master key: another master key, "+
 			"or the row was changed", fingerprint)
+	}
+	return plain, nil
+}
+
+// SealSnapshot encrypts plain, the gzip'd document of a snapshot of the control plane
+// (docs/spec/manifest-profile.md §9), as nonce || AES-256-GCM(plain) under the snapshot key, with
+// ad, the layer's media type, as the additional data. The nonce is random: 96 bits, and an
+// installation writes a snapshot a day.
+func (m *Master) SealSnapshot(plain, ad []byte) []byte {
+	nonce := make([]byte, m.snapshot.NonceSize(), m.snapshot.NonceSize()+len(plain)+m.snapshot.Overhead())
+	_, _ = rand.Read(nonce) // crypto/rand.Read never returns an error; it crashes the program instead
+	return m.snapshot.Seal(nonce, nonce, plain, ad)
+}
+
+// OpenSnapshot decrypts what SealSnapshot returned with the same ad. Another master key, other
+// additional data and changed bytes fail alike.
+func (m *Master) OpenSnapshot(sealed, ad []byte) ([]byte, error) {
+	n := m.snapshot.NonceSize()
+	if len(sealed) < n+m.snapshot.Overhead() {
+		return nil, fmt.Errorf("keys: the snapshot is %d bytes, too short to be sealed", len(sealed))
+	}
+	plain, err := m.snapshot.Open(nil, sealed[:n], sealed[n:], ad)
+	if err != nil {
+		return nil, errors.New("keys: the snapshot does not open with the master key: another master key, or its bytes were changed")
 	}
 	return plain, nil
 }
