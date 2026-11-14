@@ -293,9 +293,10 @@ A request for a file of a proxy repo, directly or through a group, runs these st
    request takes the claim, once), or the claim goes stale (it takes it over). The claim beats
    every 30 seconds and is stale 2 minutes after its last beat.
 7. **The download.** First, a name the registry does not take (`provider.Capabilities.CheckName`:
-   the depth or the length of its OCI repository) stops the fetch before any request (`403`
-   naming the limit, §6; an audit row `proxy.reject`, #599): ingest would not publish it, and
-   the upstream is not at fault. The file the entry lists (npm: the tarball; an entry lists one) is
+   the depth or the length of its OCI repository; and `CheckNew` for a package the index does
+   not have: Quay's `…/build`, #662) stops the fetch before any request (`403` naming the limit,
+   §6; an audit row `proxy.reject`, #599): ingest would not publish it, and the upstream is not
+   at fault. The file the entry lists (npm: the tarball; an entry lists one) is
    requested from the upstream (§9.2), and its body streams into an upload session of the
    registry through the one write path, as a client's upload does (`Publisher.UploadStream`,
    [ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)): ingest computes sha256 and the
@@ -382,7 +383,7 @@ the upstream: npm has no standard one, and the operator makes the list (docs/mig
 | `429` | the cached row, else the held versions, else `503` with `Retry-After` (the upstream's, at most 60 s; 5 s without one) | `503` with `Retry-After` |
 | `5xx`, a connection or TLS error, a refused redirect (§9.2), a document too large or unparsable | the cached row, else the held versions, else `502` | `502` |
 | a timeout (§2.1) | as above, `504` | `504` |
-| a name the registry does not take (`Capabilities.CheckName`, #599) | | `403`, naming the limit, before any download; `proxy.reject` |
+| a name the registry does not take (`Capabilities.CheckName`, #599; `CheckNew` for a new package, #662) | | `403`, naming the limit, before any download; `proxy.reject` |
 | a file above `maxFileSize` (else the format's default) or `maxBlobSize` | | `403`, naming the bound; `proxy.reject` |
 | a checksum mismatch; an artifact Validate refuses | | `502`; `proxy.reject` |
 | the registry or the index during the ingest | | as for an upload (layout.md, `StatusOf`) |
@@ -655,9 +656,10 @@ an OIDC issuer reading Artifact Registry), and ECR Public with credentials.
 
 The path below the repo is the upstream's repository, `library/nginx`: the lists of §3 match it
 as a name, `*` within a component. Before any request to the upstream, in this order: the lists
-(`403 DENIED`); `Capabilities.CheckName` of the backend on the repo's OCI name of the path
-(`400 NAME_INVALID`, naming the limit); offline mode (§4.4). A backend that refuses the name of a
-push by a rule of its own (Quay's `…/build`, quay.md) is a `4xx` that names the backend and an
+(`403 DENIED`); `Capabilities.CheckName` of the backend on the repo's OCI name of the path, and
+`Capabilities.CheckNew` when `oci_repos` does not have it (`400 NAME_INVALID`, naming the limit:
+Quay's `…/build`, `capabilities.buildRoutes`, #662); offline mode (§4.4). A backend that refuses
+the name of a push by a rule the capabilities do not say is a `4xx` that names the backend and an
 audit row `proxy.reject`, never a `500`.
 
 ### 11.3 What is kept, and where
@@ -945,7 +947,7 @@ with `manage` on the repo (rbac.md §7), and the core answers it as it answers `
    `400`, an offline one `409` (§5.1, step 1).
 2. **Each image goes the way a pull goes**, with the principal of the request, its claims and
    its audit rows `proxy.fetch` and `proxy.reject`:
-   - the path as `/v2` checks it (http-routing.md §2), the lists and `CheckName` (§11.2);
+   - the path as `/v2` checks it (http-routing.md §2), the lists and `CheckName` or `CheckNew` (§11.2);
    - the tag (§11.4, steps 1 and 2): its row while it is fresh, else a `HEAD`, and the row
      however old when the upstream fails;
    - what the tag or the digest names (§11.4, step 3): the backend's, else the cached row, else

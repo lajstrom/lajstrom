@@ -63,3 +63,97 @@ func TestCheckNameLength(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildRoute: the names Quay's rule matches, as quay/quay@77b369a refused them on 2026-11-14
+// (Project Quay 3.18.2 with the commit's sources, docs/registries/quay.md, The build rule): a
+// component build, not the first, followed by nothing, one component, or one and logs or status.
+func TestBuildRoute(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"foo/build", true},
+		{"foo/build/bar", true},
+		{"foo/build/bar/logs", true},
+		{"foo/build/bar/status", true},
+		{"foo/bar/build", true},
+		{"foo/bar/build/baz", true},
+		{"foo/build/build", true},
+		{"foo/build/logs", true},
+		{"foo/build/status", true},
+		{"a/b/c/d/build", true},
+		{"pypi/internal/build", true},
+		{"npm/internal/netlify/build", true},
+		{"npm/internal/build/cli", true},
+		{"raw/assets/build/app.tar.gz", true},
+		{"raw/assets/ci/build", true},
+		{"raw/build/readme.txt", true},
+		{"raw/build/logs", true},
+		{"maven/releases/com.example/build", true},
+		{"oci/hub/paketobuildpacks/build", true},
+		{"build", false},
+		{"build/foo", false},
+		{"build/foo/bar", false},
+		{"foo/building/bar", false},
+		{"foo/mybuild", false},
+		{"foo/builds", false},
+		{"foo/rebuild/bar", false},
+		{"foo/build-x", false},
+		{"foo/build.x", false},
+		{"foo/build_x", false},
+		{"foo/x_build", false},
+		{"foo/build/bar/extra", false},
+		{"foo/build/bar/logs/x", false},
+		{"foo/build/bar/baz", false},
+		{"foo/build/logs/x", false},
+		{"raw/assets/build/linux/app.tar.gz", false},
+		{"raw/assets/buil_64/app.tar.gz", false},
+		{"npm/internal/netlify/buil_64", false},
+		{"foo/logs", false},
+		{"maven/releases/com.android.tools.build/gradle", false},
+		// Components Lajstrom never writes, as Quay reads them: an empty one before build does
+		// not count, an empty one after it ends no route.
+		{"/build", false},
+		{"a//build", false},
+		{"a/build/", false},
+		{"a/build//logs", false},
+	}
+	for _, tt := range tests {
+		if got := BuildRoute(tt.name); got != tt.want {
+			t.Errorf("BuildRoute(%q) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+// TestCheckNew: a new name that ends in a build route is refused where the registry creates none,
+// with the rule and the key named; CheckName, for a name that exists, does not apply it; the
+// limits of CheckName come first (#662).
+func TestCheckNew(t *testing.T) {
+	quay := Capabilities{BuildRoutes: true, MaxNameLength: 243}
+	tests := []struct {
+		caps Capabilities
+		name string
+		want string // a part of CheckNew's error, "" for nil
+	}{
+		{quay, "pypi/internal/build", "the OCI repository pypi/internal/build ends in a build route of the registry, …/build, …/build/<x> or …/build/<x>/logs|status"},
+		{quay, "raw/assets/build/app.tar.gz", "(capabilities.buildRoutes)"},
+		{quay, "raw/assets/build/linux/app.tar.gz", ""},
+		{quay, "pypi/internal/requests", ""},
+		{Capabilities{}, "pypi/internal/build", ""},
+		{Capabilities{BuildRoutes: true, MaxNameDepth: 3}, "npm/internal/netlify/build", "has 4 components, and the registry takes at most 3"},
+	}
+	for _, tt := range tests {
+		err := tt.caps.CheckNew(tt.name)
+		switch {
+		case tt.want == "" && err != nil:
+			t.Errorf("CheckNew(%q) with %+v = %v, want nil", tt.name, tt.caps, err)
+		case tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)):
+			t.Errorf("CheckNew(%q) with %+v = %v, want an error containing %q", tt.name, tt.caps, err, tt.want)
+		}
+		if tt.caps.MaxNameDepth == 0 {
+			if err := tt.caps.CheckName(tt.name); err != nil {
+				t.Errorf("CheckName(%q) with %+v = %v, want nil: an existing repository is exempt", tt.name, tt.caps, err)
+			}
+		}
+	}
+}
