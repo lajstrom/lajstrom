@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -221,7 +222,8 @@ func (c *Core) OCIPath(repo index.Repo, path string) string {
 }
 
 // resolveOCI returns the oci proxy repo repo at path, after the allow and deny lists (403) and
-// the backend's limits on the OCI name (400), before anything is asked of the upstream (§11.2).
+// the backend's limits on the OCI name (400): CheckName, and CheckNew for a repository oci_repos
+// does not have (Quay's build routes, #662), before anything is asked of the upstream (§11.2).
 func (c *Core) resolveOCI(ctx context.Context, repo index.Repo, path string) (*ociProxied, error) {
 	id := repo.Format + "/" + repo.Name
 	if repo.Format != ociFormat || repo.Kind != index.KindProxy {
@@ -245,6 +247,16 @@ func (c *Core) resolveOCI(ctx context.Context, repo index.Repo, path string) (*o
 	if caps, err := prov.Capabilities(ctx); err == nil {
 		if err := caps.CheckName(p.name); err != nil {
 			return nil, fmt.Errorf("%w: %w", format.ErrInvalid, err)
+		}
+		if refused := caps.CheckNew(p.name); refused != nil {
+			// An OCI repository the repo holds keeps taking images: the registry has it.
+			repos, err := c.o.Index.ListOCIRepos(ctx, repo.ID)
+			if err != nil {
+				return nil, fmt.Errorf("proxy: the OCI repositories of %s: %w", id, err)
+			}
+			if !slices.ContainsFunc(repos, func(o index.OCIRepo) bool { return o.Path == p.name }) {
+				return nil, fmt.Errorf("%w: %w", format.ErrInvalid, refused)
+			}
 		}
 	}
 	if p.rr, err = prov.Repository(ctx, p.name); err != nil {

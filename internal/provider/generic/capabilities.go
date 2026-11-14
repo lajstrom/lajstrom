@@ -113,6 +113,7 @@ func apply(c *provider.Capabilities, o config.CapabilityOverrides) {
 	set(&c.ImmutableTags, o.ImmutableTags)
 	set(&c.BlobRedirect, o.BlobRedirect)
 	set(&c.TagsFoldCase, o.TagsFoldCase)
+	set(&c.BuildRoutes, o.BuildRoutes)
 	if o.MaxBlobSize > 0 {
 		c.MaxBlobSize = o.MaxBlobSize
 	}
@@ -259,6 +260,7 @@ func (p *Provider) probeNow(ctx context.Context, answered *bool) (provider.Capab
 		"consistency", consistencyText(e),
 		"maxNameDepth", e.MaxNameDepth,
 		"tagsFoldCase", e.TagsFoldCase,
+		"buildRoutes", e.BuildRoutes,
 	)
 	if e.MaxNameDepth > 0 && e.MaxNameDepth < minNameDepth {
 		p.log.ErrorContext(ctx, "the registry takes no name of Lajstrom's: every one has 3 components or more below the prefix, "+

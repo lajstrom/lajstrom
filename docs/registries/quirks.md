@@ -27,7 +27,7 @@ measurements of [section 2](#2-is-abc-one-repository-or-two), on Zot v2.1.23, di
 | Harbor | `<project>/` and any depth | the project, never created on push | project 1–255 characters; **the whole name 245**, then 500, measured | any depth, all served, listed and collected, measured; **below a component `manifests`, `referrers` or `tags/list`, a blob `HEAD` is 404 or 400 at random** (GET 200), measured |
 | GHCR | `<owner>/` and a name, which may hold `/` | the owner | lowercase | not tried |
 | Docker Hub | `namespace/repository`: **exactly two levels** | the namespace | repository 2–255 characters, no `.` | no third level at all |
-| Quay | `namespace/repository`; the repository may hold `/` (quay.io too) | the namespace | namespace 2–255, repository 255 characters | any depth, measured on 3.18.2; **on master, new names ending in `build` or `build/<x>` refused**, measured with its commit applied ([quay.md](quay.md#the-build-rule)) |
+| Quay | `namespace/repository`; the repository may hold `/` (quay.io too) | the namespace | namespace 2–255, repository 255 characters | any depth, measured on 3.18.2; **on master, new names ending in `build` or `build/<x>` refused**, measured with its commit applied ([quay.md](quay.md#the-build-rule)); Lajstrom refuses such new packages first (`capabilities.buildRoutes`, #662) |
 | Zot | any name, a directory each | nothing: the first upload session creates it | a component over 255 bytes is 500 | **names ending in `blobs`, `.uploads`, `.sync` are served but neither listed nor collected**, measured |
 | distribution | any name | nothing: the first manifest | 255 characters, 400 `NAME_INVALID` | all served and listed, measured |
 | Gitea, Forgejo | `<owner>/` and any depth | the owner | **the 1.0 grammar: no `__`, no `--`**, measured on both | `a/b/c` and deeper, measured |
@@ -393,6 +393,17 @@ repositories created before keep working. Lajstrom's names that end so cannot be
 such a Quay ([Consequences](#consequences-registry-by-registry)). Reported as
 [quay/quay#8070](https://github.com/quay/quay/issues/8070).
 
+Measured again on 2026-11-14 for #662, on the same two builds, by a push token per name: the
+rule is a component that is exactly `build`, not the first, followed by nothing, by one
+component, or by one component and `logs` or `status`. 19 names were refused, among them
+`foo/build/bar/status`, `foo/bar/build/baz`, `foo/build/logs`, `a/b/c/d/build`,
+`npm/<repo>/build/cli` (npm's scope `@build`) and `raw/build/readme.txt` (a repo named `build`);
+19 controls were taken, among them `foo/mybuild`, `foo/builds`, `foo/build-x`, `foo/build_x`,
+`foo/build/bar/baz` and `foo/build/bar/logs/x`. A pull token for such a name is granted and
+creates nothing; v3.18.3 (2026-11-13) does not have the rule yet. Since #662 the vendor table
+says `buildRoutes: true` for Quay: Lajstrom refuses a new package so named before anything is
+pushed ([quay.md](quay.md#what-lajstrom-does-662)).
+
 ### Elsewhere (read, not measured)
 
 - **GitLab.** A group and a project cannot share a path under one parent
@@ -683,7 +694,10 @@ amendment: a component that fails the grammar is replaced by `h0_h` and 32 hex d
   `build/<x>/logs|status` (measured with the change applied, section 2): the PyPI package
   `build`, npm's `@<scope>/build`, a raw file in a directory `build/` or named `build`, a Maven
   artifactId or a Debian package `build`, and an `oci` repository mirroring Docker Hub's
-  `paketobuildpacks/build` or `tensorflow/build`. Quay 3.18.2 also refuses the token action
+  `paketobuildpacks/build` or `tensorflow/build`. Since #662 Lajstrom refuses such a new package
+  on every Quay before anything is pushed (`capabilities.buildRoutes`, `400` naming the rule; a
+  proxy `403` before the download), and a package it has keeps publishing; `buildRoutes: false`
+  lets a Quay that creates the names, 3.18.3 and earlier, take new ones. Quay 3.18.2 also refuses the token action
   `delete`, so no delete through Lajstrom worked there until the provider asked `push` in its
   place (#801), and its catalog is empty to a
   client that sends no credentials unasked (#802) ([quay.md](quay.md#what-the-provider-must-do-differently)).
@@ -730,7 +744,7 @@ disappears from its clients without an audit record.
 | GHCR | `<org>/` | a classic PAT with `write:packages` | none: the vendor table sets `catalog`, `deleteManifest`, `maxBlobSize` |
 | Gitea, Forgejo | `<owner>/` | a token with `write:package`; no cleanup rule | `uploads.spoolUnknownLength: true` when clients stream more than one chunk |
 | Nexus | `<repository>/` with path routing, else none | `writePolicy: allow_once`; the `oci` format, whose blobs the vendor table reads whole (#352, measured on 2026-11-12; a provider that had not probed yet still sent ranges, until #797); on `docker` Lajstrom refuses deletes, and `strictContentTypeValidation: false` lets every blob in ([nexus.md](nexus.md#again-after-352)) | none: the vendor table sets `deleteManifest: false` on `docker` and reads `oci` blobs whole |
-| Quay | `<organisation>/` | a robot in a team with the role admin; a policy that leaves `sha256-*` mutable; measured on 3.18.2, for trying Lajstrom; a delete's token asks `push`, which Quay takes in place of `delete` (#801), but a referrer pushed by digest stays, its `DELETE` 404 ([quay.md](quay.md#delete)) | `server.maxManifestSize: 1048576`; the vendor table sets `catalog`, `referrers` and `consistency` (#803) |
+| Quay | `<organisation>/` | a robot in a team with the role admin; a policy that leaves `sha256-*` mutable; measured on 3.18.2, for trying Lajstrom; a delete's token asks `push`, which Quay takes in place of `delete` (#801), but a referrer pushed by digest stays, its `DELETE` 404 ([quay.md](quay.md#delete)) | `server.maxManifestSize: 1048576`; the vendor table sets `catalog`, `referrers` and `consistency` (#803) and `buildRoutes` (#662); `buildRoutes: false` on 3.18 lets new packages end in `build` |
 | ACR, GAR | | not measured ([matrix](README.md#versions-tested)); GAR needs monolithic uploads | |
 | Docker Hub | | not a backend: two levels | |
 | JFrog | `<repo-key>/` | a local Docker repository; the workarounds of #352, #368 and #813 hold, measured on 2026-11-13 and 14; for trying Lajstrom while a rebuild from an empty index finds no repository (no catalog Lajstrom uses) ([jfrog-jcr.md](jfrog-jcr.md#again-after-813)) | `uploads.spoolUnknownLength: true` when clients stream more than one chunk |
@@ -742,11 +756,13 @@ disappears from its clients without an audit record.
 2. **Depth and name grammar vary**: two levels on Docker Hub, project and two on GitLab, the 1.0
    grammar on Gitea, route words on Quay. Lajstrom knows Docker Hub's and GitLab's depth
    (`maxNameDepth`, a `400` before the push) and writes its names in the 1.0 grammar (ADR 0017);
-   an unknown registry's limit, and Quay's words, still show at the first push, with an error
-   that names a token or a 404.
+   Quay's build routes are a `400` before the push too (`buildRoutes`, #662); an unknown
+   registry's limit still shows at the first push, with an error that names a token or a 404.
 3. **Storage layouts and routers reserve words the grammar allows**: `blobs` on Zot, `manifests`,
    `referrers` and `tags/list` on Harbor, tag folders on JFrog. ADR 0017 escapes the words of Zot
-   and Harbor; a word found on another registry is another amendment.
+   and Harbor; a word found on another registry is another amendment. Quay's `build` is not
+   escaped but refused in a new name (#662): it is a rule of one unreleased build, and escaping it
+   would rename common packages on every registry.
 4. **Backend rules read Lajstrom's tags and untagged manifests**, and their patterns cannot tell
    a version from a journal entry or a referrer index.
 5. **Reindex trusts the catalog** where Lajstrom has one, which is partial on Zot and an

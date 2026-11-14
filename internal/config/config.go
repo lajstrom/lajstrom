@@ -221,6 +221,11 @@ type CapabilityOverrides struct {
 	// TagsFoldCase: the backend stores a tag lower-cased and resolves tags without case, as
 	// Gitea and Forgejo do, whose vendor table entries set it.
 	TagsFoldCase *bool `yaml:"tagsFoldCase"`
+	// BuildRoutes: the backend creates no repository whose name ends in a build route,
+	// …/build, …/build/<x> or …/build/<x>/logs|status (Quay since quay/quay@77b369a); a
+	// publish of a new package so named is refused before anything is pushed. The vendor
+	// table sets it for Quay; false turns it off for a Quay that creates such names.
+	BuildRoutes *bool `yaml:"buildRoutes"`
 }
 
 // The models of registries[].capabilities.consistency.

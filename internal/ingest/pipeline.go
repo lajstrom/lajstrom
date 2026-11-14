@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -167,7 +168,7 @@ func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag str
 		return nil, err
 	}
 	t := &target{repo: repo, plugin: plugin, pkgPath: pkgPath, name: ociName(repo, pkgPath), prov: prov}
-	if err := checkName(ctx, prov, t.name); err != nil {
+	if err := checkName(ctx, prov, t.name, p.known(repo, pkgPath, t.name)); err != nil {
 		return nil, err
 	}
 	if t.rr, err = prov.Repository(ctx, t.name); err != nil {
@@ -211,7 +212,7 @@ func (p *Pipeline) Upload(ctx context.Context, repo index.Repo, up format.Upload
 		existed = pub != nil
 		return pub, err
 	}
-	t, err := newTarget(ctx, repo, plugin, prov, pkgPath)
+	t, err := newTarget(ctx, repo, plugin, prov, pkgPath, p.known(repo, pkgPath, ociName(repo, pkgPath)))
 	if err != nil {
 		return nil, err
 	}
@@ -259,10 +260,12 @@ func (p *Pipeline) storedPath(ctx context.Context, repo index.Repo, pkgPath stri
 	return pkg.NameOCI, nil
 }
 
-// newTarget returns the target of the package path pkgPath of repo, its OCI repository ensured.
-func newTarget(ctx context.Context, repo index.Repo, plugin format.Plugin, prov provider.Provider, pkgPath string) (*target, error) {
+// newTarget returns the target of the package path pkgPath of repo, its OCI repository ensured;
+// known says whether the index has that repository (checkName).
+func newTarget(ctx context.Context, repo index.Repo, plugin format.Plugin, prov provider.Provider, pkgPath string,
+	known func(context.Context) (bool, error)) (*target, error) {
 	t := &target{repo: repo, plugin: plugin, pkgPath: pkgPath, name: ociName(repo, pkgPath), prov: prov}
-	if err := checkName(ctx, prov, t.name); err != nil {
+	if err := checkName(ctx, prov, t.name, known); err != nil {
 		return nil, err
 	}
 	if err := prov.EnsureRepository(ctx, t.name); err != nil {
@@ -277,11 +280,14 @@ func newTarget(ctx context.Context, repo index.Repo, plugin format.Plugin, prov 
 
 // checkName refuses the OCI repository name of a package that the registry prov does not take
 // (provider.Capabilities.CheckName: the depth of a name on Docker Hub or behind GitLab, its
-// length with the instance prefix), before anything is pushed to it, with ErrInvalid that names
-// the limit. The registry would refuse the token's scope or answer 404 (#599), or refuse the
-// name, NAME_INVALID or a 500 (#661). A registry whose capabilities cannot be read is not asked:
-// the push meets what failed.
-func checkName(ctx context.Context, prov provider.Provider, name string) error {
+// length with the instance prefix; and CheckNew for a repository the index does not have, a name
+// that ends in a build route on Quay), before anything is pushed to it, with ErrInvalid that
+// names the limit. The registry would refuse the token's scope or answer 404 (#599), or refuse
+// the name, NAME_INVALID or a 500 (#661), or refuse to create it, NAME_INVALID (#662). known says
+// whether the index has the repository, which keeps taking versions; it is asked only of a name
+// that CheckNew refuses. A registry whose capabilities cannot be read is not asked: the push
+// meets what failed.
+func checkName(ctx context.Context, prov provider.Provider, name string, known func(context.Context) (bool, error)) error {
 	caps, err := prov.Capabilities(ctx)
 	if err != nil {
 		return nil //nolint:nilerr // the push answers for the registry
@@ -289,7 +295,40 @@ func checkName(ctx context.Context, prov provider.Provider, name string) error {
 	if err := caps.CheckName(name); err != nil {
 		return invalid(fmt.Errorf("ingest: %w", err))
 	}
+	if refused := caps.CheckNew(name); refused != nil {
+		ok, err := known(ctx)
+		if err != nil {
+			return fmt.Errorf("ingest: whether the index has %s: %w", name, err)
+		}
+		if !ok {
+			return invalid(fmt.Errorf("ingest: %w", refused))
+		}
+	}
 	return nil
+}
+
+// known reports, when called, whether the index has the OCI repository name of the package path
+// pkgPath of repo: a package at pkgPath or at an earlier form of it (index.PackageAt), or for an
+// oci repo a row of oci_repos. A repository the index has is exempt from the rules of creating
+// one (provider.Capabilities.CheckNew).
+func (p *Pipeline) known(repo index.Repo, pkgPath, name string) func(context.Context) (bool, error) {
+	return func(ctx context.Context) (bool, error) {
+		if repo.Format == ociFormat {
+			repos, err := p.index.ListOCIRepos(ctx, repo.ID)
+			if err != nil {
+				return false, err
+			}
+			return slices.ContainsFunc(repos, func(o index.OCIRepo) bool { return o.Path == name }), nil
+		}
+		_, err := index.PackageAt(ctx, p.index, repo.ID, pkgPath)
+		switch {
+		case errors.Is(err, index.ErrNotFound):
+			return false, nil
+		case err != nil:
+			return false, err
+		}
+		return true, nil
+	}
 }
 
 // store pushes the blobs of built to t and ingests its manifest.
