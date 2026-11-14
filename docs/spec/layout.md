@@ -1597,12 +1597,16 @@ Where the merged shapes differ from the first sketch of this section, and why:
   `pg_advisory_xact_lock` on the package path before it inserts a package, because YugabyteDB
   takes the entries of the two unique indexes of `packages` in no fixed order and two writers
   of one new package deadlock on them. On CockroachDB, which the Postgres driver tells by the
-  `crdb_version` it reports (#617, experimental), the dialect differs in three things: its
+  `crdb_version` it reports (#617, experimental), the dialect differs in four things: its
   migrations are its own (`migrations/cockroach`, `index.DialectCockroach`), applied one
   statement at a time (index-schema.md, Migrations); every transaction the store begins asks
   for read committed, which CockroachDB's are not by default, and `Open` refuses a cluster that
-  would run them serializable instead; and `40003`, a commit whose result is unknown, wraps
-  `ErrUnavailable` and is never run again.
+  would run them serializable instead; the transaction of a store method of its own, not
+  `Store.Tx`'s, that CockroachDB aborts (`40001`) runs again, four times in all, because its
+  read committed locks the row of a unique key that `INSERT … ON CONFLICT DO NOTHING` finds,
+  and two writers that then delete or update that row deadlock, where Postgres takes no such
+  lock (measured: `ClaimFetch` taking over a stale claim, 8 writers); and `40003`, a commit
+  whose result is unknown, wraps `ErrUnavailable` and is never run again.
 - **A tag claim is the lock on a tag across replicas, in a table of its own** (#12). Ingest
   inserts a `tag_claims` row in its own transaction before the registry write, then reads the
   version of the tag; another digest there, or a fresh claim of another digest, is the 409, and
