@@ -1,9 +1,11 @@
 package maven
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -38,8 +40,17 @@ type build struct {
 	number    int    // 3
 }
 
+// version returns the build's version, <base>-<timestamp>-<number>.
+func (b build) version() string { return b.base + "-" + b.timestamp + "-" + strconv.Itoa(b.number) }
+
 // snapshot returns the SNAPSHOT version of the build, <base>-SNAPSHOT.
 func (b build) snapshot() string { return b.base + snapshotSuffix }
+
+// after reports whether b comes after o in Maven's version order of two builds of one SNAPSHOT
+// version: by timestamp, then by build number.
+func (b build) after(o build) bool {
+	return b.timestamp > o.timestamp || (b.timestamp == o.timestamp && b.number > o.number)
+}
 
 // looksLikeBuild reports whether Maven reads version as a build: it ends with a timestamp and a
 // number. A version that does may still break the rules of a build (parseBuild).
@@ -70,6 +81,27 @@ func parseBuild(version string) (build, error) {
 	}
 	b.number = n
 	return b, nil
+}
+
+// builtVersion is a build with its row.
+type builtVersion struct {
+	build
+	row index.Version
+}
+
+// buildsOf returns the builds of the SNAPSHOT version snapshot among vs, in Maven's version
+// order, the oldest first: by timestamp, then by build number.
+func buildsOf(vs []index.Version, snapshot string) []builtVersion {
+	var out []builtVersion
+	for _, v := range vs {
+		if b, err := parseBuild(v.Version); err == nil && b.snapshot() == snapshot {
+			out = append(out, builtVersion{build: b, row: v})
+		}
+	}
+	slices.SortFunc(out, func(a, b builtVersion) int {
+		return cmp.Or(strings.Compare(a.timestamp, b.timestamp), cmp.Compare(a.number, b.number))
+	})
+	return out
 }
 
 // SnapshotOf returns the SNAPSHOT version of the build version, 1.0-SNAPSHOT of

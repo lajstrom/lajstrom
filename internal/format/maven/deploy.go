@@ -2,6 +2,7 @@ package maven
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -195,8 +196,10 @@ func (d *deployer) session(r *http.Request, repo index.Repo, c Coordinates) (*in
 // lists every version of the artifact, and committing another's session would publish the
 // files of a deploy that never finished. Without that session it is the repeat of a deploy
 // that committed already when the version is in the index (200), and a client error otherwise.
-// The metadata of a group, which lists plugin prefixes and no versions, is accepted and not
-// kept: the plugin prefixes are after the MVP.
+// A document for a SNAPSHOT version commits nothing (repeat): the maven-metadata.xml of the
+// SNAPSHOT version, which mvn and Gradle PUT before it, commits the build (its versioning names
+// it, snapshotBuild). The metadata of a group, which lists plugin prefixes and no versions, is
+// accepted and not kept: the plugin prefixes are after the MVP.
 func (d *deployer) metadata(r *http.Request, repo index.Repo, path string, body io.Reader) (int, error) {
 	ctx := r.Context()
 	c, err := ParseMetadataPath(path)
@@ -214,8 +217,11 @@ func (d *deployer) metadata(r *http.Request, repo index.Repo, path string, body 
 	if (md.GroupID != "" && md.GroupID != c.GroupID) || (md.ArtifactID != "" && md.ArtifactID != c.ArtifactID) {
 		return 0, fmt.Errorf("%w: %s is the metadata of %s:%s, its path says %s", format.ErrInvalid, path, md.GroupID, md.ArtifactID, c.Name())
 	}
-	c.Version = md.current()
-	if c.Version == "" {
+	if c.Version != "" {
+		if c.Version, err = md.snapshotBuild(c.Version, path); err != nil {
+			return 0, err
+		}
+	} else if c.Version = md.current(); c.Version == "" {
 		return 0, fmt.Errorf("%w: %s names no version", format.ErrInvalid, path)
 	}
 	pub, err := d.commit(r, repo, c)
@@ -258,11 +264,15 @@ func (d *deployer) commit(r *http.Request, repo index.Repo, c Coordinates) (*for
 }
 
 // repeat answers a maven-metadata.xml whose version c has no session to commit: 200 when the
-// version is in the index already, the PUT of a deploy that was committed; 400 otherwise.
+// version is in the index already, the PUT of a deploy that was committed, or for a SNAPSHOT
+// version when the index has a build of it; 400 otherwise.
 func (d *deployer) repeat(r *http.Request, repo index.Repo, c Coordinates) (int, error) {
 	ctx := r.Context()
 	pkg, err := d.deps.Index.GetPackage(ctx, repo.ID, c.Name())
-	if err == nil {
+	switch {
+	case err == nil && isSnapshotVersion(c.Version):
+		err = d.hasBuild(ctx, pkg, c.Version)
+	case err == nil:
 		_, err = d.deps.Index.GetVersion(ctx, pkg.ID, c.Version, "")
 	}
 	switch {
@@ -270,9 +280,25 @@ func (d *deployer) repeat(r *http.Request, repo index.Repo, c Coordinates) (int,
 		return http.StatusOK, nil
 	case !errors.Is(err, index.ErrNotFound):
 		return 0, fmt.Errorf("maven: version %s: %w", c, err)
+	case isSnapshotVersion(c.Version):
+		return 0, fmt.Errorf("%w: the index has no build of %s, the version this %s is for: the %s of the SNAPSHOT version, %s/%s, "+
+			"commits a build once its files are uploaded", format.ErrInvalid, c, MetadataFile, MetadataFile, c.Dir(), MetadataFile)
 	}
 	return 0, fmt.Errorf("%w: this deploy uploaded no files of %s, the version its %s is for; upload the files of a version, then its %s",
 		format.ErrInvalid, c, MetadataFile, MetadataFile)
+}
+
+// hasBuild returns nil when pkg has a build of the SNAPSHOT version snapshot, index.ErrNotFound
+// otherwise.
+func (d *deployer) hasBuild(ctx context.Context, pkg *index.Package, snapshot string) error {
+	vs, err := d.deps.Index.ListVersions(ctx, pkg.ID)
+	if err != nil {
+		return err
+	}
+	if len(buildsOf(vs, snapshot)) == 0 {
+		return index.ErrNotFound
+	}
+	return nil
 }
 
 // metadataXML is what the deploy path reads of a maven-metadata.xml.
@@ -284,6 +310,12 @@ type metadataXML struct {
 		Latest   string   `xml:"latest"`
 		Release  string   `xml:"release"`
 		Versions []string `xml:"versions>version"`
+		// Snapshot and SnapshotVersions are of the metadata of a SNAPSHOT version.
+		Snapshot struct {
+			Timestamp   string `xml:"timestamp"`
+			BuildNumber string `xml:"buildNumber"`
+		} `xml:"snapshot"`
+		SnapshotVersions []string `xml:"snapshotVersions>snapshotVersion>value"`
 	} `xml:"versioning"`
 	Plugins *struct{} `xml:"plugins"`
 }
@@ -313,6 +345,33 @@ func (m *metadataXML) current() string {
 		return strings.TrimSpace(m.Versioning.Versions[n-1])
 	}
 	return ""
+}
+
+// snapshotBuild is the build that the maven-metadata.xml of the SNAPSHOT version snapshot was
+// written for, at path: the one its snapshot names, <base>-<timestamp>-<buildNumber>, which mvn
+// and Gradle set to the build they deploy, else the newest of its snapshotVersions. Its version,
+// when it has one, must be snapshot. Errors wrap format.ErrInvalid.
+func (m *metadataXML) snapshotBuild(snapshot, path string) (string, error) {
+	if v := strings.TrimSpace(m.Version); v != "" && v != snapshot {
+		return "", fmt.Errorf("%w: %s is the metadata of the version %s, its path says %s", format.ErrInvalid, path, v, snapshot)
+	}
+	if s := m.Versioning.Snapshot; strings.TrimSpace(s.Timestamp) != "" || strings.TrimSpace(s.BuildNumber) != "" {
+		v := strings.TrimSuffix(snapshot, snapshotSuffix) + "-" + strings.TrimSpace(s.Timestamp) + "-" + strings.TrimSpace(s.BuildNumber)
+		if _, err := parseBuild(v); err != nil {
+			return "", fmt.Errorf("%s names the build %s: %w", path, v, err)
+		}
+		return v, nil
+	}
+	var newest *build
+	for _, v := range m.Versioning.SnapshotVersions {
+		if b, err := parseBuild(strings.TrimSpace(v)); err == nil && b.snapshot() == snapshot && (newest == nil || b.after(*newest)) {
+			newest = &b
+		}
+	}
+	if newest == nil {
+		return "", fmt.Errorf("%w: %s names no build of %s in its versioning/snapshot or snapshotVersions", format.ErrInvalid, path, snapshot)
+	}
+	return newest.version(), nil
 }
 
 // readMetadataXML reads a maven-metadata.xml of at most maxMetadataXML bytes. Errors wrap
