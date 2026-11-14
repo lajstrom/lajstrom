@@ -174,10 +174,11 @@ longer than `reconcile.graceAge` is outside them
 ### INV-3. The index is rebuildable from the registry
 
 - **Statement.** After `lajstrom reindex` over a repo, the derived rows (`packages`, `versions`,
-  `files`, `oci_repos`, npm's `journal` and `journal_state`) equal what ingest wrote for the
-  manifests in the registry, in every column but the ids and `indexed_at`, and `index_cache` is
-  empty. On a registry whose listings lag, that is the manifests written at least that lag (its
-  `consistencyBound`) before the run lists them; a later run adds the others.
+  `files`, `oci_repos`, npm's `journal` and `journal_state`, and the `attachments` of the
+  versions' referrers) equal what ingest wrote for the manifests in the registry, in every column
+  but the ids and `indexed_at`, and `index_cache` is empty. On a registry whose listings lag,
+  that is the manifests written at least that lag (its `consistencyBound`) before the run lists
+  them; a later run adds the others.
 - **Scope.** Every format and the `hosted` and `proxy` kinds (a proxy's `proxy_meta` is a cache
   and is not rebuilt). An `oci` proxy's derived rows are its `oci_repos` rows; its upstream tags
   where the backend does not hold them, its incomplete indexes and the manifests not pushed yet
@@ -192,6 +193,9 @@ longer than `reconcile.graceAge` is outside them
   `referrers`, or `tags/list…`, answers the check of its blobs at random. A package whose
   manifests are at two forms of its name has the rows of one form; those at the other are
   reported as a split, not indexed ([index-schema.md](index-schema.md#invariants-and-rules), #609).
+  `attachments`: under the trust ingest labelled them with (a change of `attachments.trust`
+  labels them anew, index-schema.md, Attachments), and the referrers the provider lists for a
+  version's manifest and the manifests under cosign's legacy tags.
 - **Assumes.** Registry: **complete listings** (**unchecked**) of the names in the grammar of
   ADR 0017 (Zot's catalog leaves out others, [quirks.md](../registries/quirks.md)), once the
   registry's list lag has passed after a write; **durable 201**. Database: any.
@@ -1384,6 +1388,12 @@ promises part of it, the line says which part stays a promise.
   that refused or aborted uploads leave in the registry, which are its garbage collector's.
 - **Tags of `oci` repos.** They pass through, and are as mutable or immutable as the backend
   makes them.
+- **An attachment's row right after its push, and its label.** A referrer is kept and listed as
+  INV-35 says; its rows in `attachments` are written after it reads back, best effort, and the
+  next reindex of the repo writes those a failure left out (index-schema.md, Attachments). A
+  label is the trust of the replica that wrote the row, and says what a key signed, not that
+  what it signed is true: Lajstrom checks no transparency log, and keyless signatures are
+  `unsupported` (manifest-profile.md §6.3).
 - **The bytes of a redirected download are their digest.** A `307` to the backend's storage
   sends the client to bytes that do not pass through Lajstrom: the registry is trusted to serve
   what it stored, and the clients check (OCI clients the descriptor, apt the `Packages` hashes,

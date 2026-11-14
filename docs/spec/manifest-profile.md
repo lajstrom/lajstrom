@@ -4,8 +4,8 @@
   variant of a wheel with a build tag, sections 3 and 4.2, on 2026-11-12, #726; the rpm
   profile, sections 1 to 5, on 2026-11-12, #64; the pypi yank in the journal, sections 3, 4.2
   and 8, on 2026-11-14, #81, ADR 0012's Amendment; maven SNAPSHOT builds, sections 2 to 5, on
-  2026-11-14, #80). Changes need an issue labelled `contract` and, if the wire format changes,
-  an ADR.
+  2026-11-14, #80; attachments, section 6, on 2026-11-14, #89). Changes need an issue labelled
+  `contract` and, if the wire format changes, an ADR.
 - Implemented by: `internal/oci/profile` (pure Go, no I/O).
 - Related: [ADR 0005](../adr/0005-manifest-profile-and-immutable-tags.md),
   [ADR 0017](../adr/0017-the-grammar-of-oci-names.md),
@@ -416,14 +416,105 @@ models terabytes.
 ## 6. Referrers
 
 Signatures and attestations attach with `subject` = our manifest and are passed through to the
-backend unchanged, by the referrer path of ingest (`PutReferrer`), which indexes nothing; so is
-a manifest under cosign's legacy tag `sha256-<hex>.sig`, `.att` or `.sbom`. Lajstrom lists referrers with the referrers API when the provider has it, and
+backend unchanged, by the referrer path of ingest (`PutReferrer`), which indexes nothing but
+the attachments of section 6.1; so is a manifest under cosign's legacy tag `sha256-<hex>.sig`,
+`.att` or `.sbom`. Lajstrom lists referrers with the referrers API when the provider has it, and
 with the `sha256-<digest>` tag schema otherwise (`Capabilities.Referrers`). Lajstrom never
-rewrites a referrer. `profile.ReferrerKind` tells a referrer's kind, `signature`, `sbom`,
-`attestation` or `other`, for the `kind` of its audit row (and the attachments of #89 later):
-from its predicate type, cosign's legacy tag, or the media types it knows, cosign
-(`application/vnd.dev.cosign.*`), notation (`application/vnd.cncf.notary.signature`), SPDX,
-CycloneDX, the sigstore bundle, in-toto/DSSE.
+rewrites a referrer. `profile.ReferrerKind` tells a referrer's kind from its manifest alone, one
+of the kinds of section 6.1, for the `kind` of its audit row: from its predicate type, cosign's
+legacy tag, or the media types it knows, cosign (`application/vnd.dev.cosign.*`), notation
+(`application/vnd.cncf.notary.signature`), SPDX, CycloneDX, the sigstore bundle, in-toto/DSSE.
+
+### 6.1 Attachments (#89)
+
+A referrer of a version's manifest on a managed repo carries the version's **attachments**: its
+signatures, SBOMs, scan reports, provenance and other attestations, made and signed by whoever
+produced them (the lead's decisions on #89: no scanner in the server, results live in the
+registry as referrers, every distinct result is kept). Lajstrom stores them as they came, lists
+them per version ([index-schema.md](index-schema.md#attachments-89)), and labels each with
+whether a key the operator trusts signed it (section 6.3). It never signs one on a producer's
+behalf, never rewrites one, and never refuses a push for its label. An `oci` repo's referrers
+are not attachments: such a repo has no versions. Neither is a referrer of a referrer.
+
+An attachment is one layer of a referrer manifest. A sigstore bundle (cosign v3) has one layer;
+cosign's legacy manifests under `sha256-<hex>.sig` and `.att` hold one layer per signature or
+attestation, and cosign moves the tag to a manifest with one layer more for each new one; an
+SBOM pushed with `oras attach` is a layer of its own. A manifest without layers is one
+attachment. `profile.Attachments` lists the attachments of a referrer manifest. Each has a
+kind:
+
+| Kind | Recognised by |
+| --- | --- |
+| `signature` | the predicate type `https://sigstore.dev/cosign/sign/v1` (cosign v3 signs with a bundle); the layer media type `application/vnd.dev.cosign.simplesigning.v1+json` (cosign's legacy `.sig`), the artifact type `application/vnd.dev.cosign.artifact.sig.v1+json`; notation's `application/vnd.cncf.notary.signature` |
+| `sbom` | the predicate types `https://spdx.dev/Document` and `https://cyclonedx.org/bom`, and those that begin with them and a `/` (`https://cyclonedx.org/bom/v1.6`); unsigned: a layer of SPDX (`application/spdx+json`, `text/spdx`) or CycloneDX (`application/vnd.cyclonedx`, `application/vnd.cyclonedx+json`), cosign's legacy `.sbom` |
+| `scan` | the predicate type `https://cosign.sigstore.dev/attestation/vuln/v1` (trivy `--format cosign-vuln`); a CycloneDX statement whose predicate has a non-empty `vulnerabilities` (a combined document, accepted and classified as a scan) |
+| `provenance` | the predicate types that begin with `https://slsa.dev/provenance/` |
+| `attestation` | any other DSSE envelope or sigstore bundle, with its predicate type: OpenVEX, a custom predicate, the verdicts of ADR 0008 (`dev.lajstrom.verdict/v1`, #101) |
+| `other` | anything else |
+
+The predicate type is the signed statement's where Lajstrom reads one (section 6.3), else
+cosign's annotation: `dev.sigstore.bundle.predicateType` on the manifest (v3), `predicateType`
+on the layer (legacy). A CycloneDX document with vulnerabilities is a scan only where its
+statement is read; `profile.ReferrerKind`, which has the manifest alone, calls it an SBOM.
+
+### 6.2 Attachment annotations
+
+A producer may set these on a referrer manifest, so that a listing filters without reading a
+blob. All are optional and unsigned: Lajstrom copies them into the index as they are.
+
+| Key | Value |
+| --- | --- |
+| `lajstrom.attachment.tool` | the producer: `trivy`, `syft`, `grype` |
+| `lajstrom.attachment.toolVersion` | its version: `0.60.0` |
+| `lajstrom.attachment.database` | the snapshot of the vulnerability database a scan used; absent on an SBOM |
+| `lajstrom.attachment.input` | the digest of the SBOM a scan was computed from, `<algorithm>:<hex>` |
+
+They mirror the identity of a result (#89, decision 3): a scan is (tool, tool version,
+database, artifact, input), an SBOM (tool, tool version, artifact), the artifact being the
+subject. Another key that begins with `lajstrom.attachment.` is kept with the other
+annotations and has no meaning. An `input` that is not a digest is not indexed as one (the row
+keeps it in `annotations` only). `oras attach --annotation` sets them; `cosign attest` (v3.1)
+sets no manifest annotation, so an attestation made with it has none of them.
+
+### 6.3 Verification
+
+The operator's trust (`attachments.trust`, [configuration.md](../configuration.md)) names
+public keys, each trusted for every predicate type or for those it lists; a signature counts as
+the predicate type `https://sigstore.dev/cosign/sign/v1`. Each attachment gets one label:
+
+| Verification | Meaning |
+| --- | --- |
+| `verified` | a trusted key, trusted for its predicate type, signed it, and what it signed names the version's manifest |
+| `untrusted` | it carries a signature that no trusted key verifies |
+| `unsigned` | it carries no signature: a raw SBOM, an envelope without signatures, an `other` |
+| `invalid` | its envelope does not parse, or its payload is not an in-toto statement, or a trusted key signed a statement or a payload that names another manifest |
+| `unsupported` | signed in a way Lajstrom does not verify: a Fulcio certificate (keyless), notation, a bundle with a message signature instead of a DSSE envelope, a layer larger than `attachments.maxBlobSize` |
+
+What is checked:
+
+- **DSSE**: a sigstore bundle's `dsseEnvelope` (media types
+  `application/vnd.dev.sigstore.bundle.v0.3+json` and `application/vnd.dev.sigstore.bundle+json;version=0.1`,
+  `0.2`, `0.3`), and the layer of a legacy `.att` (`application/vnd.dsse.envelope.v1+json`). A
+  signature over the envelope's pre-authentication encoding of `payloadType` and `payload`
+  (DSSE v1), the payload type `application/vnd.in-toto+json`, and a statement whose `subject`
+  has a `sha256` digest equal to the version's manifest digest. Without the last check a signed
+  attestation of another artifact would verify on this one.
+- **cosign's simple signing** (a legacy `.sig` layer): the signature, base64 in the layer's
+  annotation `dev.cosignproject.cosign/signature`, over the layer's bytes, whose
+  `critical.image.docker-manifest-digest` is the version's manifest digest.
+- **Keys**: PEM `PUBLIC KEY` (PKIX): ECDSA P-256, P-384 and P-521, over SHA-256, SHA-384 and
+  SHA-512 of the signed bytes (cosign's `cosign.pub` is P-256); Ed25519; RSA with PKCS #1 v1.5
+  and SHA-256. A KMS key that `cosign attest --key awskms://…` uses verifies with its public
+  key.
+- **Not checked**: a transparency log or a timestamp. A key signature needs no Rekor entry
+  (`cosign attest --tlog-upload=false`), and one it has is not looked at. Keyless verification
+  (Fulcio identities) is not built: it needs a dependency that layout.md §3 does not list (#89,
+  option A), and such an attachment is `unsupported`.
+
+The label is decided when the attachment is indexed, by ingest and by reindex, against the
+trust of the replica that indexes it, and a change of the trust reaches each attachment at the
+next reindex of its repo (index-schema.md). The layers are read through the provider, at most
+`attachments.maxBlobSize` of each.
 
 ## 7. Repos of type `oci` (passthrough)
 
