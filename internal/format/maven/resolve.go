@@ -47,11 +47,13 @@ const contentTypeSignature = "application/pgp-signature"
 //	<groupPath>/<artifactId>/<version>/<file>.<algorithm>  its md5, sha1, sha256 or sha512, from the metadata layer in the index
 //	<groupPath>/<artifactId>/maven-metadata.xml            the versions of the artifact, from index_cache (RenderIndex)
 //	<groupPath>/<artifactId>/maven-metadata.xml.<algorithm> its checksum, a document of the same render
+//	<groupPath>/<artifactId>/<base>-SNAPSHOT/maven-metadata.xml[.<algorithm>] the builds of a SNAPSHOT version, the same way
 //
-// Anything else is 404: a path the repo does not have, a SNAPSHOT version (after the MVP), the
-// maven-metadata.xml of a version or of a group, a checksum of a checksum. Ingest drops the
-// cached documents of the repo on every publish, so the first GET of a maven-metadata.xml after
-// a deploy renders it again.
+// The file of a build is at its timestamped name in the directory of its SNAPSHOT version; the
+// non-unique name of a SNAPSHOT version is the file of the latest build that has one (latest).
+// Anything else is 404: a path the repo does not have, the maven-metadata.xml of a release
+// version or of a group, a checksum of a checksum. Ingest drops the cached documents of the repo
+// on every publish, so the first GET of a maven-metadata.xml after a deploy renders it again.
 func resolveRoutes(r format.Router, deps format.Deps) {
 	if deps.Log == nil {
 		deps.Log = slog.Default().With("format", Name)
@@ -188,12 +190,16 @@ func (h *resolver) metadata(w http.ResponseWriter, r *http.Request, repo index.R
 
 // lookup returns the file of a version at path p in the repo, with what its path says: of the
 // files of the repo with its name (index.Reader.FindFiles), the one of the package
-// groupId:artifactId at the version. A path that is not that of a file of a release version, or
-// that the repo does not have, is index.ErrNotFound.
+// groupId:artifactId at the version; for the non-unique name of a SNAPSHOT version, the file of
+// the latest build that has one (latest), and what the build's name of it says. A path that is
+// not that of a file of a version, or that the repo does not have, is index.ErrNotFound.
 func (h *resolver) lookup(ctx context.Context, repo index.Repo, p string) (*index.FileMatch, File, error) {
-	f, err := ParsePath(p)
+	f, err := parseFilePath(p)
 	if err != nil {
 		return nil, File{}, pathNotFound(repo, p, err)
+	}
+	if isSnapshotVersion(f.Version) {
+		return h.latest(ctx, repo, p, f)
 	}
 	matches, err := h.deps.Index.FindFiles(ctx, repo.ID, f.Filename())
 	if err != nil {
@@ -203,6 +209,40 @@ func (h *resolver) lookup(ctx context.Context, repo index.Repo, p string) (*inde
 		m := &matches[i]
 		if m.Package.Name == f.Name() && m.Version.Version == f.Version && m.Version.Variant == "" {
 			return m, f, nil
+		}
+	}
+	return nil, File{}, pathNotFound(repo, p, nil)
+}
+
+// latest returns the file of the classifier and extension of f in the latest build of its
+// SNAPSHOT version f.Version that has one, by Maven's version order (the timestamp, then the
+// build number), and that file as the build names it. It is looked up at each request: the
+// non-unique name is never a tag. None is index.ErrNotFound.
+func (h *resolver) latest(ctx context.Context, repo index.Repo, p string, f File) (*index.FileMatch, File, error) {
+	pkg, err := h.deps.Index.GetPackage(ctx, repo.ID, f.Name())
+	if errors.Is(err, index.ErrNotFound) {
+		return nil, File{}, pathNotFound(repo, p, nil)
+	}
+	if err != nil {
+		return nil, File{}, fmt.Errorf("maven: package %s in maven/%s: %w", f.Name(), repo.Name, err)
+	}
+	vs, err := h.deps.Index.ListVersions(ctx, pkg.ID)
+	if err != nil {
+		return nil, File{}, fmt.Errorf("maven: the versions of %s in maven/%s: %w", f.Name(), repo.Name, err)
+	}
+	builds := buildsOf(vs, f.Version)
+	for i := len(builds) - 1; i >= 0; i-- {
+		b := builds[i]
+		bf := f
+		bf.Version = b.version()
+		files, err := h.deps.Index.ListFiles(ctx, b.row.ID)
+		if err != nil {
+			return nil, File{}, fmt.Errorf("maven: the files of %s in maven/%s: %w", bf.Coordinates, repo.Name, err)
+		}
+		for _, file := range files {
+			if file.Name == bf.Filename() {
+				return &index.FileMatch{File: file, Version: b.row, Package: *pkg}, bf, nil
+			}
 		}
 	}
 	return nil, File{}, pathNotFound(repo, p, nil)

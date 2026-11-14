@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -42,6 +43,16 @@ func (e *deployEnv) deploySnapshot(files []deployFile, timestamp, number string)
 	version = e.put("alice", snapshotDir+MetadataFile, snapshotDoc(timestamp, number)).Code
 	artifact = e.put("alice", metadataPath, artifactDoc).Code
 	return version, artifact
+}
+
+// get GETs /maven/releases/<path> as alice.
+func (e *deployEnv) get(path string) *httptest.ResponseRecorder {
+	e.t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/maven/releases/"+path, nil)
+	req.Header.Set("X-Test-User", "alice")
+	rr := httptest.NewRecorder()
+	e.h.ServeHTTP(rr, req)
+	return rr
 }
 
 // wantSnapshotDeploy deploys a build (deploySnapshot) and fails the test unless the SNAPSHOT
@@ -89,6 +100,36 @@ func TestDeploySnapshotTwice(t *testing.T) {
 	if n := len(e.versions()); n != 2 {
 		t.Errorf("%d versions, want 2", n)
 	}
+}
+
+// TestResolveSnapshot: after two builds of 1.0-SNAPSHOT, the SNAPSHOT version's
+// maven-metadata.xml names the second, and the sources of the first, which the second does not
+// have; the artifact's lists 1.0-SNAPSHOT once, as latest, with no release; the non-unique name of
+// the jar is the second build's, that of the sources the first build's.
+func TestResolveSnapshot(t *testing.T) {
+	e := newDeployEnv(t, nil)
+	e.snapshotRepo()
+	e.deploySnapshot(snapshotBuild("1.0-20261114.101112-1", "", true), "20261114.101112", "1")
+	second := snapshotBuild("1.0-20261114.111500-2", "second", false)
+	e.deploySnapshot(second, "20261114.111500", "2")
+
+	body := e.get(snapshotDir + MetadataFile).Body.String()
+	for _, want := range []string{"<version>1.0-SNAPSHOT</version>", "<timestamp>20261114.111500</timestamp>", "<buildNumber>2</buildNumber>",
+		"<classifier>sources</classifier>\n        <extension>jar</extension>\n        <value>1.0-20261114.101112-1</value>"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the SNAPSHOT version's %s has no %q:\n%s", MetadataFile, want, body)
+		}
+	}
+	if body := e.get(metadataPath).Body.String(); strings.Count(body, "1.0-SNAPSHOT") != 2 || strings.Contains(body, "<release>") {
+		t.Errorf("the artifact's %s, want 1.0-SNAPSHOT as latest and in versions once, no release:\n%s", MetadataFile, body)
+	}
+	if got := e.get(snapshotDir + "lib-core-1.0-SNAPSHOT.jar"); got.Code != http.StatusOK || !bytes.Equal(got.Body.Bytes(), second[0].body) {
+		t.Errorf("GET of the non-unique name: %d, %d bytes, want 200 and the second build's jar", got.Code, got.Body.Len())
+	}
+	if got := e.get(snapshotDir + "lib-core-1.0-SNAPSHOT-sources.jar"); got.Code != http.StatusOK {
+		t.Errorf("GET of the non-unique name of the sources, which the first build has only: %d, want 200", got.Code)
+	}
+
 }
 
 // TestDeploySnapshotRefused: the policy decides which kind a deploy may add, at its first file

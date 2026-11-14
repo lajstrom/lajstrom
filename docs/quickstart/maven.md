@@ -6,7 +6,8 @@ Gradle's `publish` put a version in, one file per `PUT`, and the `PUT` of its
 dependencies and Gradle resolve from it. Every version is one OCI artifact in the registry behind
 Lajstrom, with its jar, POM, classifiers and signatures as layers and the four checksums of every
 file in its metadata layer. `maven-metadata.xml` and the `.md5`, `.sha1`, `.sha256` and `.sha512`
-files are served from the index. SNAPSHOT versions come after the MVP. The endpoints are
+files are served from the index. SNAPSHOT versions go to a repo of their own, where each deploy
+is a build of its own ([below](#snapshot-versions-a-repo-of-builds)). The endpoints are
 specified in [http-routing.md](../spec/http-routing.md) §3 (maven); what lands in the registry is
 the [manifest profile](../spec/manifest-profile.md). The output shown is that of a run of this
 page.
@@ -627,12 +628,90 @@ rm lajstrom.db                                 # the index, with the users and t
 `bin/lajstrom admin token revoke <id> --config $cfg` ends a token without the rest
 (`admin token list --repo maven/releases` shows the ids).
 
+## SNAPSHOT versions: a repo of builds
+
+A repo takes release versions or SNAPSHOT versions, not both, as Maven repositories do: the
+releases of this page stay in `maven/releases`, and the SNAPSHOT versions get a repo whose
+policy says so ([api.md](../api.md#policy)). Each `mvn deploy` of `1.3.0-SNAPSHOT` is a build of
+its own, its files named with the time of the deploy and a build number,
+`lib-core-1.3.0-20261114.101112-1.jar`, then `…-2.jar`: a version with a tag of its own, never
+changed afterwards. `1.3.0-SNAPSHOT` itself is never a tag. What it resolves to, the latest build,
+is what `1.3.0-SNAPSHOT/maven-metadata.xml` says, rendered from the builds the repo has. This
+section shows the commands without their output; `test/e2e/maven.sh` runs the same deploys and
+checks them.
+
+```sh
+bin/lajstrom admin repo create maven/snapshots --registry local --policy '{"maven":{"versionPolicy":"snapshot"}}' --config $cfg
+bin/lajstrom admin binding create --principal user:alice --role writer --mask maven/snapshots --config $cfg
+bin/lajstrom admin token create --repo maven/snapshots --name ci-snapshots --scopes read,write --config $cfg | jq -r .secret > maven-snapshots-token
+```
+
+In `settings.xml` a second `<server>`, `lajstrom-snapshots`, with that token (or alice's personal
+access token, which her binding lets into both repos), and in the POM the snapshot repository
+beside the release one:
+
+```xml
+<repositories>
+  <repository>
+    <id>lajstrom</id>
+    <url>http://localhost:8080/maven/releases</url>
+    <snapshots><enabled>false</enabled></snapshots>
+  </repository>
+  <repository>
+    <id>lajstrom-snapshots</id>
+    <url>http://localhost:8080/maven/snapshots</url>
+    <releases><enabled>false</enabled></releases>
+  </repository>
+</repositories>
+<distributionManagement>
+  <repository>
+    <id>lajstrom</id>
+    <url>http://localhost:8080/maven/releases</url>
+  </repository>
+  <snapshotRepository>
+    <id>lajstrom-snapshots</id>
+    <url>http://localhost:8080/maven/snapshots</url>
+  </snapshotRepository>
+</distributionManagement>
+```
+
+`mvn deploy` of a project at `1.3.0-SNAPSHOT` reads `1.3.0-SNAPSHOT/maven-metadata.xml` first
+(`404` before the first build), takes the next build number from it, sends the files of the build,
+then that document, which publishes the build (`201`), and the artifact's `maven-metadata.xml`
+last (`200`: nothing left to publish). Deployed again, the next build:
+
+```sh
+mvn -B deploy      # in a project whose version is 1.3.0-SNAPSHOT: the build 1.3.0-<timestamp>-1
+mvn -B deploy      # the build 1.3.0-<timestamp>-2; the first one stays as it was
+curl -s -u "deploy:$(cat maven-snapshots-token)" http://localhost:8080/maven/snapshots/com/example/lib-core/1.3.0-SNAPSHOT/maven-metadata.xml
+```
+
+The document names the latest build in `snapshot` (its `timestamp` and `buildNumber`) and, for
+each classifier and extension, the newest build that has such a file in `snapshotVersions`, as
+Maven writes it itself. A build that depends on `1.3.0-SNAPSHOT` gets the latest build when it
+checks the repository: once a day by default (`updatePolicy` of the repository), at once with
+`mvn -U`. `lib-core-1.3.0-SNAPSHOT.jar` in that directory, the name Maven 2 wrote, is the jar of
+the latest build, for a `curl` or a client without the document; a deploy under that name is
+`400`, since a build is always named with its timestamp.
+
+With Gradle, `version = "1.3.0-SNAPSHOT"` publishes builds the same way; the repository of
+`publishing` is the snapshot repo for such a version:
+
+```kotlin
+url = uri(if (version.toString().endsWith("-SNAPSHOT")) "http://localhost:8080/maven/snapshots"
+          else "http://localhost:8080/maven/releases")
+```
+
+A release deployed to `maven/snapshots`, or a SNAPSHOT version to `maven/releases`, is `400`
+naming `policy.maven.versionPolicy`, at the first file and before anything is stored. Builds stay
+until they are deleted, through the API as every version is.
+
 ## The end-to-end script
 
 `test/e2e/maven.sh` runs the same clients in the same images with checks: `mvn deploy` of two
 versions, `dependency:get`, a range, the idempotent repeat and the `409`, Gradle's `publish` and
-a Gradle build that resolves. It makes a repo and a deploy token of its own and removes them at
-the end. With the dev stack up, `make e2e` serves a Lajstrom of its own on a free port, with an
+a Gradle build that resolves, and two deploys of a SNAPSHOT version to a repo of builds, which a
+`dependency:get -U` follows. It makes its repos and deploy tokens and removes them at the end. With the dev stack up, `make e2e` serves a Lajstrom of its own on a free port, with an
 admin for the run, and reads the statuses of the clients' requests from its log:
 
 ```sh

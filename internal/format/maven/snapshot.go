@@ -46,6 +46,10 @@ func (b build) version() string { return b.base + "-" + b.timestamp + "-" + strc
 // snapshot returns the SNAPSHOT version of the build, <base>-SNAPSHOT.
 func (b build) snapshot() string { return b.base + snapshotSuffix }
 
+// updated returns the timestamp as yyyyMMddHHmmss, the form of lastUpdated and updated in a
+// maven-metadata.xml.
+func (b build) updated() string { return strings.Replace(b.timestamp, ".", "", 1) }
+
 // after reports whether b comes after o in Maven's version order of two builds of one SNAPSHOT
 // version: by timestamp, then by build number.
 func (b build) after(o build) bool {
