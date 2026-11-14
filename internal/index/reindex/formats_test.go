@@ -59,13 +59,14 @@ type formatCase struct {
 // formatCases are the formats of TestRebuildFormats and TestIntegrationFormats.
 var formatCases = map[string]formatCase{
 	"apt": {
-		plugin: deb.Plugin{}, publish: publishApt, versions: 5,
+		plugin: deb.Plugin{}, publish: publishApt, versions: 6,
 		docs: []string{"dists/jammy/main/binary-amd64/Packages", "dists/jammy/main/binary-arm64/Packages",
 			"dists/jammy/contrib/binary-amd64/Packages.gz", "dists/jammy-updates/main/binary-amd64/Packages.xz",
-			"pool/main/h/hello/hello_1.1.0-1_arm64.deb"},
+			"pool/main/h/hello/hello_1.1.0-1_arm64.deb", "dists/jammy/main/source/Sources", "dists/jammy/contrib/source/Sources.xz",
+			"pool/main/h/hello/hello_1.1.0-1.dsc", "pool/main/h/hello/hello_1.1.0.orig.tar.gz"},
 		signed: []string{"dists/jammy/InRelease", "dists/jammy-updates/Release.gpg"},
 		cached: [][2]string{{"jammy", "Release"}, {"jammy", "InRelease"}, {"jammy", "main/binary-arm64/Packages"},
-			{"jammy-updates", "Release.gpg"}},
+			{"jammy-updates", "Release.gpg"}, {"jammy", "main/source/Sources"}},
 	},
 	"pypi": {
 		plugin: pypi.Plugin{}, publish: publishPypi, versions: 8,
@@ -309,10 +310,10 @@ func file(name string, b []byte) format.UploadedFile {
 }
 
 // publishApt uploads to an apt repo what a small distribution has: hello 1.0.0-1 for amd64 in
-// jammy and jammy-updates (one .deb in two suites), 1.1.0-1 for amd64 and arm64, hello-data
-// 1:2.0-1 for all in the component contrib, goodbye 1.0-1, and bonjour 0.1-1 for arm64 by oras
-// push; then hello 1.0.0-1 goes from jammy and stays in jammy-updates, and goodbye, the only
-// version of its package, goes.
+// jammy and jammy-updates (one .deb in two suites), 1.1.0-1 for amd64 and arm64 and its source
+// package (#79), hello-data 1:2.0-1 for all in the component contrib, goodbye 1.0-1, and bonjour
+// 0.1-1 for arm64 by oras push; then hello 1.0.0-1 goes from jammy and stays in jammy-updates,
+// and goodbye, the only version of its package, goes.
 func publishApt(t *testing.T, f *frontend) {
 	hello, _ := testutil.Deb(testutil.DebOptions{})
 	hello11, _ := testutil.Deb(testutil.DebOptions{Version: "1.1.0-1"})
@@ -327,11 +328,31 @@ func publishApt(t *testing.T, f *frontend) {
 		{data, "jammy", "contrib"}, {goodbye, "jammy", "main"}} {
 		f.do(t, http.MethodPut, "upload?suite="+up.suite+"&component="+up.component, up.deb, http.StatusCreated)
 	}
+	src := testutil.Dsc(testutil.DscOptions{Version: "1.1.0-1", Signed: true})
+	body, contentType := sourceUpload(t, src)
+	f.do(t, http.MethodPost, "upload?suite=jammy&component=main", body, http.StatusCreated, "Content-Type", contentType)
 	bonjour, _ := testutil.Deb(testutil.DebOptions{Name: "bonjour", Version: "0.1-1", Arch: "arm64"})
 	f.push(t, format.Upload{Files: []format.UploadedFile{file("bonjour.deb", bonjour)},
 		Params: map[string]string{deb.ParamSuite: "jammy", deb.ParamComponent: "main"}})
 	f.deleteVersion(t, "hello", "1.0.0-1", "jammy/main/amd64")
 	f.deleteVersion(t, "goodbye", "1.0-1", "jammy/main/amd64")
+}
+
+// sourceUpload returns the multipart body of the source upload of d, the .dsc first, and its
+// Content-Type.
+func sourceUpload(t *testing.T, d testutil.DscInfo) ([]byte, string) {
+	t.Helper()
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	files := append([]testutil.SourceFile{{Name: d.Filename, Content: d.Dsc}}, d.Files...)
+	for _, f := range files {
+		pw, err := w.CreateFormFile("file", f.Name)
+		must(t, err)
+		_, err = pw.Write(f.Content)
+		must(t, err)
+	}
+	must(t, w.Close())
+	return b.Bytes(), w.FormDataContentType()
 }
 
 // publishRpm uploads to an rpm repo hello 1.0.0 and 1.1.0 for x86_64, the source package of

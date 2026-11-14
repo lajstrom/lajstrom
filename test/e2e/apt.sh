@@ -15,6 +15,11 @@
 #     credentials in /etc/apt/auth.conf.d, apt-get update by-hash, install of both again, apt-get
 #     download of both and their sha256 against the uploaded files, apt-cache policy;
 #   - a second apt-get update, with Acquire::By-Hash=no: the Packages fetched by name;
+#   - a source package (#79), written by hand in the client (its .dsc over an .orig.tar.gz and a
+#     .debian.tar.gz, the image has no dpkg-dev), whose Build-Depends is the first package,
+#     uploaded with POST …/upload as multipart/form-data; a deb-src line, apt-get source
+#     --download-only and the sha256 of the three files, apt-get build-dep installing the first
+#     package;
 #   - a copy of the suite whose Release has the SHA256 of each index one digit off, read from a
 #     file: source: apt-get update fails, and its own "Hash Sum mismatch" error is printed, as a
 #     broken Release from the server would make the steps above fail with it;
@@ -22,7 +27,7 @@
 #     architecture in the same suite (409, the tag) and in another suite (409, the pool file name);
 #   - a .deb whose control member is over 4 MiB: 400 naming the bound;
 #   - both versions deleted through DELETE /api/v1/repos/apt/<repo>/packages/<name>/versions/<v>
-#     (#61): the next Packages and apt-get update have neither.
+#     (#61), and the source version: the next Packages and apt-get update have neither.
 #
 #   test/e2e/apt.sh [<base url> [<repo>]]     default: http://localhost:8080 ubuntu
 #
@@ -40,7 +45,8 @@
 #
 # It needs curl, jq and docker: the image ubuntu:24.04 for linux/amd64, emulated on an arm64 host,
 # or $APT_E2E_IMAGE (ubuntu:22.04 and debian:12 pass too), which builds the packages and is the
-# apt client: one container that runs the apt steps in turn and is removed on exit; and
+# apt client: one container that runs the apt steps in turn and is removed on exit, named
+# $E2E_CONTAINER_PREFIX-apt-<run> (lajstrom-e2e by default); and
 # ghcr.io/oras-project/oras:v1.3.6. The containers use --network host, which reaches the base URL
 # on Linux and under OrbStack. lajstrom admin deb metadata runs from $LAJSTROM_BIN, else
 # bin/lajstrom, else go run ./cmd/lajstrom. It prints one line per step and exits non-zero at the
@@ -87,7 +93,7 @@ version=1.0.0-1      # needs no escaping in a tag: digits, dots and a hyphen
 status=""            # status of the last request
 server_log=""
 if [ -n "${LAJSTROM_SERVER_LOG:-}" ] && [ -f "$LAJSTROM_SERVER_LOG" ]; then server_log="$LAJSTROM_SERVER_LOG"; fi
-client="lajstrom-e2e-apt-$run" # the container of the apt steps, with $work/client as /w
+client="${E2E_CONTAINER_PREFIX:-lajstrom-e2e}-apt-$run" # the container of the apt steps, with $work/client as /w
 
 # sha256 prints the hex sha256 of a file.
 sha256() {
@@ -321,6 +327,69 @@ policy nohash.log
 seen="$(fetched "$from" "$principal" name)"
 ok "apt-get -o Acquire::By-Hash=no update: apt-cache policy candidate $version; $seen"
 
+# #79: a source package, written by hand in the client by mksrc.sh (a 3.0 (quilt) .dsc over an
+# .orig.tar.gz and a .debian.tar.gz, its checksums from coreutils: the image has no dpkg-dev),
+# whose Build-Depends is the first package, uploaded with POST …/upload as multipart/form-data,
+# the .dsc first.
+src="e2e-src-$run"
+cat >"$work/client/mksrc.sh" <<'MKSRC'
+# mksrc.sh SOURCE BUILD-DEPENDS OWNER: SOURCE 1.0.0-1 in /w/src, its files owned by OWNER.
+set -eu
+src="$1" dep="$2"
+rm -rf /w/src && mkdir -p /w/src && cd /w/src
+mkdir "$src-1.0.0" && echo "hello from the source of $src" >"$src-1.0.0/README"
+tar czf "${src}_1.0.0.orig.tar.gz" "$src-1.0.0"
+mkdir -p debian/source && printf '3.0 (quilt)\n' >debian/source/format
+printf 'Source: %s\nMaintainer: Lajstrom e2e <e2e@lajstrom.dev>\nBuild-Depends: %s\n\nPackage: %s\nArchitecture: any\nDescription: e2e\n' \
+	"$src" "$dep" "$src" >debian/control
+tar czf "${src}_1.0.0-1.debian.tar.gz" debian
+rm -r debian "$src-1.0.0"
+list() {
+	for f in "${src}_1.0.0.orig.tar.gz" "${src}_1.0.0-1.debian.tar.gz"; do
+		echo " $("$1" "$f" | cut -d' ' -f1) $(stat -c%s "$f") $f"
+	done
+}
+{
+	printf 'Format: 3.0 (quilt)\nSource: %s\nBinary: %s\nArchitecture: any\nVersion: 1.0.0-1\n' "$src" "$src"
+	printf 'Maintainer: Lajstrom e2e <e2e@lajstrom.dev>\nBuild-Depends: %s\nPackage-List:\n %s deb misc optional arch=any\n' "$dep" "$src"
+	echo 'Checksums-Sha1:' && list sha1sum
+	echo 'Checksums-Sha256:' && list sha256sum
+	echo 'Files:' && list md5sum
+} >"${src}_1.0.0-1.dsc"
+chown -R "$3" /w/src
+MKSRC
+in_client src-build.log "bash /w/mksrc.sh $src $one $(id -u):$(id -g)" || { cat "$work/src-build.log" >&2; fail "write the source package $src"; }
+srcdir="$work/client/src"
+status="$(curl -sS -K "$E2E_CURLRC" -o "$work/body" -D "$work/headers" -w '%{http_code}' \
+	-F "file=@$srcdir/${src}_1.0.0-1.dsc" -F "file=@$srcdir/${src}_1.0.0.orig.tar.gz" -F "file=@$srcdir/${src}_1.0.0-1.debian.tar.gz" \
+	"$base/apt/$repo/upload?suite=jammy&component=main")"
+expect "POST of the source $src status ($(cat "$work/body"))" 201 "$status"
+expect "POST $src body" "$src 1.0.0-1 source jammy main ${src}_1.0.0-1.dsc 1.0.0-1__jammy_2fmain_2fsource" \
+	"$(jq -r '[.package, .version, .architecture, .suite, .component, .filename, .tag] | join(" ")' "$work/body")"
+expect "POST $src Location" "/apt/$repo/pool/main/e/$src/${src}_1.0.0-1.dsc" "$(hdr location)"
+ok "POST of the source package $src (.dsc, .orig.tar.gz, .debian.tar.gz) to jammy/main: 201, $(jq -r .digest "$work/body")"
+
+# apt-get source and apt-get build-dep read the Sources of a deb-src line: the three files
+# downloaded with their sha256, and the first package, purged before, installed again as the
+# build dependency of the source. apt adds build-essential to every build-dep, which the repo
+# does not have, so the client clears APT::Build-Essential.
+in_client src.log "
+	echo 'deb-src [$source_opts] $base/apt/$repo jammy main' > /etc/apt/sources.list.d/$repo-src.list
+	echo '#clear APT::Build-Essential;' > /etc/apt/apt.conf.d/90lajstrom-e2e
+	apt-get update
+	apt-get purge -y $one
+	mkdir -p /w/src-dl && cd /w/src-dl && apt-get -o APT::Sandbox::User=root source --download-only $src
+	chown -R $(id -u):$(id -g) /w/src-dl
+	apt-get build-dep -y $src
+	dpkg-query -W -f='build-dep installed \${Package} \${Version}\n' $one" || { cat "$work/src.log" >&2; fail "apt-get source, build-dep $src in $image"; }
+quiet src.log
+for f in "${src}_1.0.0-1.dsc" "${src}_1.0.0.orig.tar.gz" "${src}_1.0.0-1.debian.tar.gz"; do
+	[ -f "$work/client/src-dl/$f" ] || { cat "$work/src.log" >&2; fail "apt-get source wrote no $f"; }
+	expect "sha256 of $f from apt-get source" "$(sha256 "$srcdir/$f")" "$(sha256 "$work/client/src-dl/$f")"
+done
+grep -qxF "build-dep installed $one $version" "$work/src.log" || { cat "$work/src.log" >&2; fail "apt-get build-dep $src did not install $one"; }
+ok "deb-src: apt-get source --download-only $src: the .dsc and both tarballs, their sha256 those uploaded; apt-get build-dep $src installed $one $version"
+
 # A broken Release: a copy of the suite (Release and the indexes it lists, the same bytes apt got
 # from the server) whose Release has the SHA256 of every index one digit off, read from a file:
 # source, [trusted=yes] as the copy is not signed. Every index, not one: apt falls back to the
@@ -382,10 +451,11 @@ grep -qF "the control member control.tar.xz has 4194306 bytes, at most 4194304" 
 ok "PUT of a .deb whose control member has 4 MiB and 2 bytes: 400, $(tr -d '\n' <"$work/body")"
 
 # #61: both versions deleted through the API are gone from the next Packages and from apt.
-for p in "$one" "$two"; do
+for p in "$one $version" "$two $version" "$src 1.0.0-1"; do
+	set -- $p
 	status="$(curl -sS -K "$E2E_CURLRC" -o "$work/body" -w '%{http_code}' -X DELETE \
-		"$base/api/v1/repos/apt/$repo/packages/$p/versions/$version")"
-	expect "DELETE of $p $version status ($(cat "$work/body"))" 204 "$status"
+		"$base/api/v1/repos/apt/$repo/packages/$1/versions/$2")"
+	expect "DELETE of $1 $2 status ($(cat "$work/body"))" 204 "$status"
 done
 # A suite left without versions is 404 (http-routing.md §3), as on a server of its own (run.sh).
 status="$(curl -sS -K "$E2E_CURLRC" -o "$work/Packages.after" -w '%{http_code}' "$base/apt/$repo/dists/jammy/main/binary-amd64/Packages")"
@@ -402,5 +472,5 @@ in_client gone.log "
 	apt-get update || echo 'apt-get update failed'
 	if apt-cache show $one $two; then echo 'still there'; exit 1; fi" ||
 	{ cat "$work/gone.log" >&2; fail "apt-get after the delete still has $one or $two"; }
-ok "DELETE /api/v1/repos/apt/$repo/packages/{$one,$two}/versions/$version: 204; $after; purged, apt-get update, apt-cache show finds neither"
+ok "DELETE /api/v1/repos/apt/$repo/packages/{$one,$two}/versions/$version and $src 1.0.0-1: 204; $after; purged, apt-get update, apt-cache show finds neither"
 echo "PASS apt e2e against $base/apt/$repo/"

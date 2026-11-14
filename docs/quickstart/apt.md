@@ -1,9 +1,10 @@
 # Quick start: an apt repo
 
-An apt repo serves `.deb` packages to `apt-get`: `curl -T` or `oras push` puts a package in,
-`apt-get update && apt-get install` takes it out, and the indexes are signed with a key of the
-repo's own. Every package is an OCI artifact in the registry behind Lajstrom; Lajstrom keeps the
-index and renders `Release`, `InRelease` and `Packages` from it. This page runs the M2 demo on
+An apt repo serves `.deb` packages to `apt-get`, and source packages to `apt-get source`:
+`curl -T` or `oras push` puts a package in, `apt-get update && apt-get install` takes it out, and
+the indexes are signed with a key of the repo's own. Every package is an OCI artifact in the
+registry behind Lajstrom; Lajstrom keeps the index and renders `Release`, `InRelease`, `Packages`
+and `Sources` from it. This page runs the M2 demo on
 your machine. The endpoints are specified in [http-routing.md](../spec/http-routing.md) §3 (apt);
 what lands in the registry is the [manifest profile](../spec/manifest-profile.md).
 
@@ -446,17 +447,148 @@ sub   cv25519 2026-11-09 [E]
       1C1B89A5715194FBB62B03069764BAAA3D3901A6
 ```
 
+## 9. A source package: apt-get source and build-dep (#79)
+
+A source package is a `.dsc` and the files it names. Build the source of `world` with
+`dpkg-source`, its `Build-Depends` the `hello` of section 3, in a container that installs `dpkg-dev`
+first (the build runs as root there, so the last command gives the files back to you):
+
+```sh
+mkdir -p world-2.0/debian/source && echo 'hello from oras' > world-2.0/greeting
+tar czf world_2.0.orig.tar.gz world-2.0
+printf '3.0 (quilt)\n' > world-2.0/debian/source/format
+printf 'Source: world\nMaintainer: You <you@example.com>\nBuild-Depends: hello\n\nPackage: world\nArchitecture: amd64\nDepends: hello\nDescription: says hello too\n' > world-2.0/debian/control
+printf 'world (2.0-1) jammy; urgency=medium\n\n  * First upload.\n\n -- You <you@example.com>  Sat, 14 Nov 2026 10:00:00 +0000\n' > world-2.0/debian/changelog
+docker run --rm --platform linux/amd64 -v "$PWD:/w" -w /w ubuntu:24.04 bash -c \
+  "apt-get update -qq && apt-get install -qq -y --no-install-recommends dpkg-dev >/dev/null && dpkg-source -b world-2.0 && chown $(id -u):$(id -g) world_2.0-1.*"
+```
+
+```text
+dpkg-source: info: using source format '3.0 (quilt)'
+dpkg-source: info: building world using existing ./world_2.0.orig.tar.gz
+dpkg-source: info: building world in world_2.0-1.debian.tar.xz
+dpkg-source: warning: missing information for output field Standards-Version
+dpkg-source: info: building world in world_2.0-1.dsc
+```
+
+Upload the three files in one request, `multipart/form-data` with the `.dsc` first, to the same
+route as a `.deb` with `POST`. Each file streams into the registry and is checked against the size
+and the checksums the `.dsc` lists; nothing is published unless all of them arrived and agree:
+
+```sh
+curl -sS -u "$u" -i -F file=@world_2.0-1.dsc -F file=@world_2.0.orig.tar.gz -F file=@world_2.0-1.debian.tar.xz \
+  "http://localhost:8080/apt/ubuntu/upload?suite=jammy&component=main"
+```
+
+```text
+HTTP/1.1 201 Created
+Content-Type: application/json
+Docker-Content-Digest: sha256:31d56b3c5c1690862c7b6607c3a224aa979e8ab6dff9dc422c8762960d599201
+Location: /apt/ubuntu/pool/main/w/world/world_2.0-1.dsc
+Content-Length: 246
+
+{"package":"world","version":"2.0-1","architecture":"source","suite":"jammy","component":"main","filename":"world_2.0-1.dsc","digest":"sha256:31d56b3c5c1690862c7b6607c3a224aa979e8ab6dff9dc422c8762960d599201","tag":"2.0-1__jammy_2fmain_2fsource"}
+```
+
+The source is a version of the package `world` beside its binary, with the architecture `source`
+and its own tag. The `.dsc` may be signed: its signature is kept and not checked; who may upload is
+the repo's `write` permission, and clients check the chain from `InRelease` to `Sources` to the
+checksums. The next revision, `world_2.0-2.dsc`, names the same `world_2.0.orig.tar.gz`, which may
+then be left out of the request: the pool has it. The suite now has a `Sources` per component:
+
+```sh
+curl -s -u "$u" http://localhost:8080/apt/ubuntu/dists/jammy/main/source/Sources
+```
+
+```text
+Package: world
+Binary: world
+Version: 2.0-1
+Maintainer: You <you@example.com>
+Build-Depends: hello
+Architecture: amd64
+Format: 3.0 (quilt)
+Files:
+ b127363e7bbf2c7490ef6c336488334a 683 world_2.0-1.dsc
+ 8821636873235866d32fd5a325c8efc8 203 world_2.0.orig.tar.gz
+ 1ff716aebaaa156b4ec5c5480ecfb054 452 world_2.0-1.debian.tar.xz
+Checksums-Sha1:
+ 91344b5f917f76a238c3ee79ddb2fc7618255d9a 683 world_2.0-1.dsc
+ 1ba21cbed736ca115bbeb1587657c09c17dffc1e 203 world_2.0.orig.tar.gz
+ 873d201b82ca565590fb335b23728727bdb66c55 452 world_2.0-1.debian.tar.xz
+Checksums-Sha256:
+ 0379345fcfd42d16f6893e7e065cd28f060fc658838b145c434678a620beceb7 683 world_2.0-1.dsc
+ 61dc8e45b03e64180205deb03341a0cfb96be6acbb2bbade6304fc23c09c493b 203 world_2.0.orig.tar.gz
+ c9909b4873105574acdbc1d8b50dae7c123cf04f2884dbdee2fb84cca60f4eba 452 world_2.0-1.debian.tar.xz
+Package-List:
+ world deb unknown unknown arch=amd64
+Directory: pool/main/w/world
+```
+
+In the container of section 4, add a `deb-src` line, then fetch the source and install what it
+builds with. apt adds `build-essential` to every `build-dep`, from the distribution's archive,
+which this container does not have: the `#clear` line leaves it out here, and is not needed on a
+machine whose `sources.list` has the archive:
+
+```sh
+echo "deb-src [signed-by=/etc/apt/keyrings/ubuntu.asc] http://localhost:8080/apt/ubuntu jammy main" >> /etc/apt/sources.list.d/lajstrom.list
+echo '#clear APT::Build-Essential;' > /etc/apt/apt.conf.d/90no-build-essential   # only without the distribution's archive
+apt-get remove -y hello world && apt-get update
+cd /tmp && apt-get source --download-only world && ls world_*
+apt-get build-dep -y world
+```
+
+```text
+Get:1 http://localhost:8080/apt/ubuntu jammy InRelease [1934 B]
+Get:2 http://localhost:8080/apt/ubuntu jammy/main Sources [541 B]
+Get:3 http://localhost:8080/apt/ubuntu jammy/main amd64 Packages [271 B]
+Fetched 2746 B in 1s (4704 B/s)
+Reading package lists...
+Reading package lists...
+Need to get 1338 B of source archives.
+Get:1 http://localhost:8080/apt/ubuntu jammy/main world 2.0-1 (dsc) [683 B]
+Get:2 http://localhost:8080/apt/ubuntu jammy/main world 2.0-1 (tar) [203 B]
+Get:3 http://localhost:8080/apt/ubuntu jammy/main world 2.0-1 (diff) [452 B]
+Fetched 1338 B in 0s (22.7 kB/s)
+Download complete and in download only mode
+world_2.0-1.debian.tar.xz
+world_2.0-1.dsc
+world_2.0.orig.tar.gz
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following NEW packages will be installed:
+  hello
+0 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.
+Need to get 542 B of archives.
+After this operation, 0 B of additional disk space will be used.
+Get:1 http://localhost:8080/apt/ubuntu jammy/main amd64 hello amd64 1.0.0-1 [542 B]
+debconf: delaying package configuration, since apt-utils is not installed
+Fetched 542 B in 0s (10.7 kB/s)
+Selecting previously unselected package hello.
+Preparing to unpack .../hello_1.0.0-1_amd64.deb ...
+Unpacking hello (1.0.0-1) ...
+Setting up hello (1.0.0-1) ...
+```
+
+The output above is that of a fresh container where neither package was installed, so it leaves
+out the `apt-get remove` step; `build-dep` installed `hello`, the `Build-Depends` of the `Sources`
+paragraph. Without `--download-only`, `apt-get source` also unpacks the source with
+`dpkg-source -x`, which needs `dpkg-dev` in the container.
+
 ## The end-to-end script
 
-`test/e2e/apt.sh` runs sections 2 to 7 with checks against any Lajstrom with a writable apt repo:
+`test/e2e/apt.sh` runs sections 2 to 7 and 9 with checks against any Lajstrom with a writable apt repo:
 two packages named after the run, one uploaded with `PUT`, one pushed with oras; the repo's
 `anonymousRead` turned on through the API, `key.asc` and `apt-get update && apt-get install` of
 both without credentials, signed by `key.asc` (or `[trusted=yes]` when the server does not sign),
 and `apt-cache policy`; `anonymousRead` off, the anonymous `apt-get update` refused with a `401`,
 then the same with credentials in `auth.conf`, `apt-get download` and the hashes; a second
 `apt-get update` with `Acquire::By-Hash=no`; a copy of the suite with wrong hashes in its
-`Release`, which apt refuses with `Hash Sum mismatch`; the repeat and the two `409`s; last, both
-versions deleted through the API (#61), after which neither `Packages` nor apt has them. It runs
+`Release`, which apt refuses with `Hash Sum mismatch`; a source package of section 9, written by
+hand (the image has no `dpkg-dev`), uploaded with `POST`, and `apt-get source --download-only` and
+`apt-get build-dep` of it; the repeat and the two `409`s; last, both versions and the source
+deleted through the API (#61), after which neither `Packages` nor apt has them. It runs
 as the user of `LAJSTROM_E2E_USER` and `LAJSTROM_E2E_PASSWORD`, which needs `write`, `manage` and
 `delete` on the repo, sets the repo's `anonymousRead` back as it was on exit, and needs the
 server's `auth.anonymousRead: true`. It needs `curl`, `jq` and Docker, runs `admin deb metadata`
@@ -499,7 +631,7 @@ A run that fails before its last step leaves its two packages in the repo.
 
 ## Clean up
 
-A version goes with `DELETE` on the API, every suite it is in at once
+A version goes with `DELETE` on the API, every suite it is in at once, its source with it
 ([api.md](../api.md#delete-a-version-delete-apiv1reposformatnamepackagespackageversionsversion)):
 `204`, and the next `Packages` and `apt-get update` no longer have it:
 
@@ -513,7 +645,7 @@ Everything, the repo's keys included:
 ```sh
 make dev-down RESET=1   # the registries forget what they hold
 rm lajstrom.db          # the index, and with it the repo's keys
-rm -r hello other world hello_1.0.0-1_amd64.deb world_2.0-1_amd64.deb metadata.json apt-token .oras-auth.json
+rm -r hello other world world-2.0 hello_1.0.0-1_amd64.deb world_2.0-1_amd64.deb world_2.0.orig.tar.gz world_2.0-1.* metadata.json apt-token .oras-auth.json
 ```
 
 The last line removes what this page made in the checkout; `deploy/compose/lajstrom.yaml` too, if
