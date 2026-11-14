@@ -72,6 +72,10 @@ type Options struct {
 	// GraceAge is reconcile.graceAge: a row that ingest wrote, or a run saw in the registry,
 	// less than this ago is never removed. Zero means one hour.
 	GraceAge time.Duration
+	// Attacher reads the attachments of the versions' referrers (#89; docs/spec/index-schema.md,
+	// Attachments): the ingest pipeline. nil means a run reads no attachments and leaves their
+	// rows as they are.
+	Attacher Attacher
 }
 
 // Inspector checks a manifest found in the registry and returns the rows to write; the ingest
@@ -98,6 +102,7 @@ type Worker struct {
 	providers   provider.Set
 	inspector   Inspector
 	repairer    Repairer
+	attacher    Attacher
 	audit       audit.Writer
 	now         func() time.Time
 	log         *slog.Logger
@@ -111,7 +116,7 @@ type Worker struct {
 
 // New returns a Worker with the defaults of Options applied.
 func New(o Options) *Worker {
-	w := &Worker{index: o.Index, providers: o.Providers, inspector: o.Inspector, repairer: o.Repairer, audit: o.Audit, now: o.Now, log: o.Log,
+	w := &Worker{index: o.Index, providers: o.Providers, inspector: o.Inspector, repairer: o.Repairer, attacher: o.Attacher, audit: o.Audit, now: o.Now, log: o.Log,
 		concurrency: o.Concurrency, claimTTL: o.ClaimTTL, graceAge: o.GraceAge, heartbeat: heartbeatEvery, after: time.After,
 		jitter: randomPart}
 	if w.now == nil {

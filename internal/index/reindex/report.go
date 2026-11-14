@@ -29,6 +29,7 @@ type RepoReport struct {
 	DeletedPending  int       `json:"deletedPending"`
 	Degraded        int       `json:"degraded"`
 	Referrers       int       `json:"referrers"`
+	Attachments     int       `json:"attachments"` // attachment rows of the versions seen or written (#89; index-schema.md, Attachments)
 	Foreign         []Finding `json:"foreign"`
 	OrphanReferrers []Finding `json:"orphanReferrers"`
 	// OrphanJournal are the npm and pypi journal entries of an OCI repository without versions
