@@ -148,6 +148,7 @@ type metadataIn struct {
 	MD5      *string            `json:"md5"`
 	SHA1     *string            `json:"sha1"`
 	Filename *string            `json:"filename"`
+	Files    *[]string          `json:"files"`
 }
 
 // readMetadata fetches the metadata layer l, at most maxMetadata bytes, and decodes it. It
@@ -211,6 +212,22 @@ func (md *metadataIn) checkFile(f profile.Layer) error {
 		return fmt.Errorf("%w: the metadata md5 %q is not 32 lowercase hex digits", format.ErrInvalid, *md.MD5)
 	case md.SHA1 != nil && !isHex(*md.SHA1, 40):
 		return fmt.Errorf("%w: the metadata sha1 %q is not 40 lowercase hex digits", format.ErrInvalid, *md.SHA1)
+	}
+	return md.checkFiles()
+}
+
+// checkFiles checks the form of the file list of the metadata, when it has one: every path is
+// one a file list holds (validListedPath). Its agreement with the data member is the uploader's
+// claim, as md5 and sha1 are: checking it means reading the whole package.
+func (md *metadataIn) checkFiles() error {
+	if md.Files == nil {
+		return nil
+	}
+	for i, p := range *md.Files {
+		if !validListedPath(p) {
+			return fmt.Errorf("%w: the metadata files lists %q at %d, which is not a relative path without empty, \".\" or \"..\" components "+
+				"and control characters", format.ErrInvalid, p, i)
+		}
 	}
 	return nil
 }

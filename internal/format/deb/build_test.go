@@ -145,9 +145,13 @@ func checkBlobsAndEntry(t *testing.T, b *format.Built, deb []byte, info testutil
 	if len(blobs) != 3 || !bytes.Equal(blobs[fileDigest], deb) {
 		t.Errorf("blobs: %d, the file layer's bytes are the upload's: %v", len(blobs), bytes.Equal(blobs[fileDigest], deb))
 	}
+	paths := []string{}
+	for _, f := range info.Files {
+		paths = append(paths, f.Path)
+	}
 	wantMD, _ := json.Marshal(map[string]any{
 		"control": info.Control, "md5sums": info.MD5Sums, "size": info.Size, "filename": info.Filename,
-		"md5": info.MD5, "sha1": info.SHA1, "sha256": info.SHA256,
+		"md5": info.MD5, "sha1": info.SHA1, "sha256": info.SHA256, "files": paths,
 	})
 	if got := blobs[md]; !bytes.Equal(got, wantMD) {
 		t.Errorf("metadata\n got %s\nwant %s", got, wantMD)
@@ -228,13 +232,26 @@ func TestBuildRefuses(t *testing.T) {
 	}
 }
 
-// TestMetadataTooLarge checks that Build refuses a metadata layer Validate would not read.
+// TestMetadataTooLarge checks that Build leaves out a file list that would make the metadata
+// layer larger than Validate reads, and refuses a layer that is too large without one.
 func TestMetadataTooLarge(t *testing.T) {
-	sums := map[string]string{}
-	for i := range 8000 { // "<" is six bytes in JSON: 8000 paths make 5 MB
-		sums[fmt.Sprintf("usr/share/%s/%d", strings.Repeat("<", 100), i)] = strings.Repeat("0", 32)
+	sums, files := map[string]string{}, []string{}
+	for i := range 28000 { // "<" is six bytes in JSON: 28000 paths make 17 MB
+		p := fmt.Sprintf("usr/share/%s/%d", strings.Repeat("<", 100), i)
+		files = append(files, p)
+		if i < 8000 { // 5 MB
+			sums[p] = strings.Repeat("0", 32)
+		}
 	}
-	pkg := &Package{Filename: "big_1_all.deb", MD5Sums: sums}
+	pkg := &Package{Filename: "big_1_all.deb", MD5Sums: sums, Files: files}
+	md, err := pkg.Metadata()
+	if err != nil || bytes.Contains(md, []byte(`"files"`)) || !bytes.Contains(md, []byte(`"md5sums"`)) {
+		t.Errorf("Metadata = %d bytes, %v; want it without its file list", len(md), err)
+	}
+	for i := 8000; i < len(files); i++ {
+		sums[files[i]] = strings.Repeat("0", 32)
+	}
+	pkg = &Package{Filename: "big_1_all.deb", MD5Sums: sums}
 	if _, err := pkg.Metadata(); !errors.Is(err, format.ErrInvalid) || !strings.Contains(err.Error(), "the metadata of big_1_all.deb has") {
 		t.Errorf("Metadata = %v, want ErrInvalid", err)
 	}
@@ -380,7 +397,7 @@ func TestValidateRefuses(t *testing.T) {
 			c := f.clone()
 			c.m.Layers[1].Size = maxMetadata + 1
 			return c
-		}, "the metadata layer has 4194305 bytes, at most 4194304"},
+		}, "the metadata layer has 16777217 bytes, at most 16777216"},
 		{"metadata not JSON", func(_ *testing.T, f *fixture) *fixture {
 			return f.withMetadataBytes([]byte("not json"))
 		}, "the metadata layer is not the deb metadata object"},
