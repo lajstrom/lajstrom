@@ -38,7 +38,9 @@ type Referrer struct {
 }
 
 // PutReferrer stores the referrer r of a manifest of repo as the client pushed it, and indexes
-// nothing: no derived table holds referrers before #89 (docs/spec/index-schema.md). On a
+// nothing but the attachments of a version (indexAttachments, #89; docs/spec/index-schema.md,
+// Attachments), best effort once the referrer reads back: a failure there leaves the push a
+// success. On a
 // managed repo, hosted or proxy, the manifest must carry no lajstrom.origin.* key, the subject
 // must be a manifest of the repository, the config and the layers must be in the backend, and
 // a tag must be cosign's; an oci repo takes the referrer as it comes, as a registry does. On a
@@ -91,6 +93,7 @@ func (p *Pipeline) PutReferrer(ctx context.Context, repo index.Repo, r Referrer,
 	p.log.InfoContext(ctx, "ingest: referrer stored", "repo", repo.Format+"/"+repo.Name, "name", name, "digest", r.Desc.Digest.String(),
 		"subject", r.Subject.String(), "kind", kind, "artifactType", artifactType, "principal", principal.String())
 	p.auditReferrer(ctx, &ev)
+	p.indexAttachments(ctx, repo, r)
 	return r.Desc.Digest, nil
 }
 
