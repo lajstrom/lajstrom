@@ -297,6 +297,55 @@ const (
 	AuditUnknown = "unknown" // the writer stopped while pending: the registry may or may not have the write
 )
 
+// Webhook is a row of webhooks (control plane; docs/spec/webhooks.md §5): a URL that gets the
+// events of the repos its mask matches.
+type Webhook struct {
+	ID          int64
+	UID         string   // a UUID v7 (NewUID), the additional data of SecretEnc; never changes
+	Mask        string   // a repo mask of docs/spec/rbac.md §3; never changes
+	URL         string   // shown to who may manage the webhook, logged by its host only
+	Events      []string // the types it gets (webhooks.md §1); nil: every type
+	SecretEnc   []byte   // nonce || AES-256-GCM(secret) with the master key, UID as additional data
+	Active      bool     // an inactive webhook gets no new event, and its pending deliveries wait
+	Description string
+	CreatedBy   string // the principal that created it; never changes
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// The states of a webhook delivery.
+const (
+	DeliveryPending   = "pending"   // due at NextAt
+	DeliveryDelivered = "delivered" // the receiver answered 2xx
+	DeliveryFailed    = "failed"    // the attempts ran out, or the target was refused
+)
+
+// WebhookDelivery is a row of webhook_deliveries (control plane): the outbox of one event for
+// one webhook, and its line of the delivery log (docs/spec/webhooks.md §4).
+type WebhookDelivery struct {
+	ID          int64
+	WebhookID   int64
+	EventID     string // the CloudEvents id, a UUID v7: one per event, the same on every attempt
+	EventType   string // a type of webhooks.md §1, or webhook.ping
+	Payload     []byte // the exact body sent
+	State       string // DeliveryPending, DeliveryDelivered or DeliveryFailed
+	Attempts    int
+	NextAt      time.Time  // when a pending delivery is due
+	ClaimedBy   string     // the replica whose worker holds it; "" when none does
+	ClaimedAt   *time.Time // when it was claimed; a claim older than 2 minutes is stale
+	LastAt      *time.Time // the last attempt
+	LastStatus  int        // the status of the last answer; 0 when none came
+	LastError   string     // why the last attempt was not a delivery, in Lajstrom's words
+	CreatedAt   time.Time  // when the event was written
+	DeliveredAt *time.Time
+}
+
+// WebhookClaim is a delivery that Writer.ClaimWebhookDeliveries claimed, with its webhook.
+type WebhookClaim struct {
+	Delivery WebhookDelivery
+	Webhook  Webhook
+}
+
 // Package is a row of packages (derived).
 type Package struct {
 	ID        int64
