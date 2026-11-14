@@ -164,7 +164,8 @@ func newServeCmd(a *app) *cobra.Command {
 			}
 			runs.wg.Go(func() { expireSessions(ctx, pipe, a.log, sessionExpiryInterval) })
 			runs.wg.Go(func() { rep.Run(ctx) })
-			startWebhooks(ctx, c, a.lookupEnv, st, rep.row.ID, &runs.wg, a.log)
+			hooksMaster := webhookMaster(c, a.lookupEnv, a.log)
+			startWebhooks(ctx, c, hooksMaster, st, rep.row.ID, &runs.wg, a.log)
 			if err := checkProxyRepos(ctx, st, upstreams, ociUpstreams, a.log); err != nil {
 				return err
 			}
@@ -195,7 +196,7 @@ func newServeCmd(a *app) *cobra.Command {
 			plugins := servedPlugins(c.Server.ExternalURL, accounts{authn, &auth.Tokens{Index: st, Log: a.log}})
 			info := api.ServerInfo{ExternalURL: c.Server.ExternalURL, AnonymousRead: c.Auth.AnonymousRead, Formats: api.FormatsOf(plugins)}
 			mgmt := api.New(api.Options{Repos: repos, Auth: authz, Reindex: runs, Deleter: pipe, Prefetcher: proxyCore, Journal: pipe,
-				Bootstrap: boot, Info: info, Log: a.log})
+				Bootstrap: boot, Info: info, Log: a.log, Webhooks: newWebhookService(c, st, hooksMaster, rep.row.ID, a.log)})
 			srv, err := server.New(server.Options{
 				Listen:          c.Server.Listen,
 				ExternalURL:     c.Server.ExternalURL,

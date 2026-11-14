@@ -1009,6 +1009,104 @@ lajstrom admin token revoke <id>
 output; `list` a table with the columns `ID`, `KIND`, `NAME`, `SCOPES`, `EXPIRES`, `LAST USED`,
 `REVOKED` and `HASH`; `revoke` nothing.
 
+## Webhooks
+
+A webhook sends the events of the repos of its mask, a version published or deleted, a repo
+created or deleted, to a URL: a signed CloudEvent, again until the receiver answers `2xx`
+([webhooks.md](spec/webhooks.md); running them: [operations.md](operations.md#webhooks)). The
+webhooks of one repo are under the repo, for whoever may manage it; those of any mask under
+`/api/v1/webhooks`, for the admin role. The secret is only in the answer of a creation or a
+rotation, the one time it is shown.
+
+### The resource
+
+```json
+{
+  "id": 3,
+  "mask": "raw/assets",
+  "url": "https://ci.example.com/hooks/lajstrom",
+  "events": ["version.published"],
+  "active": true,
+  "description": "rebuild the site",
+  "createdBy": "user:01938e1c-4b52-7a6f-9d1e-2f0c4a6b8d10",
+  "createdAt": "2026-11-14T12:00:00Z",
+  "updatedAt": "2026-11-14T12:00:00Z"
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `id` | set by the server |
+| `mask` | a repo mask, as a binding's: `raw/assets`, `raw/*`, `*/payments`, `*/*`. Under a repo it is the repo, and the body may leave it out; it never changes |
+| `url` | `http` or `https`, with a host, no user information, no fragment, at most 2048 bytes; `https` and a public address unless `webhooks.allowedHosts` lists its host ([configuration.md](configuration.md#webhooks)) |
+| `events` | among `version.published`, `version.deleted`, `repo.created`, `repo.deleted`; `[]`, every type |
+| `active` | `true` by default; an inactive webhook gets no new event |
+| `description` | at most 256 bytes |
+| `createdBy`, `createdAt`, `updatedAt` | set by the server |
+
+### Create: `POST /api/v1/repos/<format>/<repo>/webhooks`, `POST /api/v1/webhooks`
+
+The body has `url`, and optionally `events`, `active` and `description`; under
+`/api/v1/webhooks`, `mask` too. `201` with the resource, `secret` (`whsec_` and base64, the key
+of the `webhook-signature` HMAC) and `Location`; `400` naming a field that breaks its rule, a
+`mask` under a repo other than the repo; `404` for a repo that does not exist; `501
+UNAVAILABLE` without a master key (`keys.masterKeyEnv` or `keys.masterKeyFile`), which every
+secret is encrypted with.
+
+```sh
+curl -s -u alice -X POST "$LAJSTROM/api/v1/repos/raw/assets/webhooks" \
+  -H 'Content-Type: application/json' -d '{"url": "https://ci.example.com/hooks/lajstrom", "events": ["version.published"]}'
+```
+
+### List, get: `GET …/webhooks`, `GET …/webhooks/<id>`
+
+`200` with `{"webhooks": [...]}` by id, or one resource; never a secret. Under a repo, the
+webhooks whose mask is exactly the repo; under `/api/v1/webhooks`, every one. An id that is not
+of the repo's mask is `404` under the repo.
+
+### Change: `PATCH …/webhooks/<id>`
+
+The fields given of `url`, `events`, `active` and `description` change; `mask` is `400`. `200`
+with the resource as it is now.
+
+### Delete: `DELETE …/webhooks/<id>`
+
+`204`; the webhook and its delivery log go, and its pending deliveries are not sent.
+
+### A new secret: `POST …/webhooks/<id>/secret`
+
+`200` with `{"secret": "whsec_…"}`, once; the old secret signs nothing from then on, the retries
+of earlier events included. `501 UNAVAILABLE` without a master key.
+
+### Test: `POST …/webhooks/<id>/test`
+
+Sends a `webhook.ping` to the webhook now, active or not, once, from the replica that took the
+request, and answers its row of the delivery log (below): `delivered` with the status, or
+`failed` with Lajstrom's words for why. `501 UNAVAILABLE` without a master key.
+
+### The delivery log: `GET …/webhooks/<id>/deliveries[?limit=&cursor=]`
+
+A page, newest first, `{"deliveries": [...], "next"}`:
+
+```json
+{"id": 41, "eventId": "01938e2a-…", "eventType": "version.published", "state": "pending", "attempts": 2,
+ "nextAt": "2026-11-14T12:01:30Z", "lastAt": "2026-11-14T12:00:30Z", "lastStatus": 503, "lastError": "answered 503",
+ "createdAt": "2026-11-14T12:00:00Z"}
+```
+
+`state` is `pending` (due at `nextAt`), `delivered` (with `deliveredAt`) or `failed`;
+`lastStatus` is absent when no answer came, and `lastError` never quotes the receiver nor names
+the address a host resolved to. Rows older than `webhooks.retention` are gone.
+
+### Who may
+
+Under `/api/v1/repos/<format>/<repo>/webhooks`, `manage` on the repo, decided before the repo is
+looked up (the `401`, `404`, `403` of [rbac.md](spec/rbac.md) §3); under `/api/v1/webhooks` the
+admin role, before the body is read. A deploy token and a personal access token with scopes
+never manage: `403`. Every change is an audit row, `webhook.create`, `webhook.update`,
+`webhook.delete` or `webhook.secret`, with the URL's host in `details.urlHost` and never the
+URL.
+
 ## Server information: `GET /api/v1/info`
 
 What a client needs to know before it signs in. Anyone may ask; no authorization is involved.

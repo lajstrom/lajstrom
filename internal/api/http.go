@@ -17,6 +17,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/format"
 	"github.com/lajstrom/lajstrom/internal/index"
 	"github.com/lajstrom/lajstrom/internal/server"
+	"github.com/lajstrom/lajstrom/internal/webhook"
 )
 
 // Options configures the handler New returns.
@@ -50,6 +51,9 @@ type Options struct {
 	// Bootstrap exchanges the bootstrap token of POST /api/v1/bootstrap for the first admin;
 	// nil answers it 404, as once an admin exists.
 	Bootstrap *auth.Bootstrap
+	// Webhooks is the service behind the webhooks of a repo and of /api/v1/webhooks
+	// (docs/spec/webhooks.md); nil answers them 501 once the request may manage them.
+	Webhooks *webhook.Service
 	// Info is what GET /api/v1/info answers of the configuration and the plugins; the zero
 	// value answers an empty externalURL, anonymous read off and no formats.
 	Info ServerInfo
@@ -83,6 +87,15 @@ const maxBody = 64 << 10
 //	GET    /api/v1/repos/{format}/{repo}/deploy-tokens       the deploy tokens of a repo
 //	POST   /api/v1/repos/{format}/{repo}/deploy-tokens       create one; the answer has its secret
 //	DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}  revoke one
+//	GET    /api/v1/repos/{format}/{repo}/webhooks          the webhooks whose mask is the repo
+//	POST   /api/v1/repos/{format}/{repo}/webhooks          create one; the answer has its secret
+//	GET    /api/v1/repos/{format}/{repo}/webhooks/{id}     one webhook
+//	PATCH  /api/v1/repos/{format}/{repo}/webhooks/{id}     change its url, events, active, description
+//	DELETE /api/v1/repos/{format}/{repo}/webhooks/{id}     delete it and its delivery log
+//	POST   /api/v1/repos/{format}/{repo}/webhooks/{id}/secret      a new secret, answered once
+//	POST   /api/v1/repos/{format}/{repo}/webhooks/{id}/test        send a ping now, answer its delivery
+//	GET    /api/v1/repos/{format}/{repo}/webhooks/{id}/deliveries[?limit=&cursor=]  its delivery log, newest first
+//	…      /api/v1/webhooks…                           the same for every mask, the admin role
 //	GET    /api/v1/users[?limit=&cursor=]              list the live users, a page at a time
 //	POST   /api/v1/users                               create a user
 //	GET    /api/v1/users/{user}                        one user, by name or uid
@@ -108,7 +121,8 @@ func New(o Options) http.Handler {
 		panic("api: New: nil Options.Repos")
 	}
 	h := &handler{repos: o.Repos, tokens: o.Tokens, users: o.Users, bindings: o.Bindings, auth: o.Auth, reindex: o.Reindex,
-		deleter: o.Deleter, prefetcher: o.Prefetcher, journal: o.Journal, boot: o.Bootstrap, info: o.Info, log: o.Log}
+		deleter: o.Deleter, prefetcher: o.Prefetcher, journal: o.Journal, boot: o.Bootstrap, info: o.Info, log: o.Log,
+		webhooks: o.Webhooks}
 	if h.info.Formats == nil {
 		h.info.Formats = []FormatInfo{}
 	}
@@ -160,6 +174,22 @@ func (h *handler) routes() []route {
 		{"GET /api/v1/repos/{format}/{repo}/deploy-tokens", h.listDeployTokens},
 		{"POST /api/v1/repos/{format}/{repo}/deploy-tokens", h.createDeployToken},
 		{"DELETE /api/v1/repos/{format}/{repo}/deploy-tokens/{id}", h.revokeDeployToken},
+		{"GET /api/v1/repos/{format}/{repo}/webhooks", h.listWebhooks},
+		{"POST /api/v1/repos/{format}/{repo}/webhooks", h.createWebhook},
+		{"GET /api/v1/repos/{format}/{repo}/webhooks/{id}", h.getWebhook},
+		{"PATCH /api/v1/repos/{format}/{repo}/webhooks/{id}", h.updateWebhook},
+		{"DELETE /api/v1/repos/{format}/{repo}/webhooks/{id}", h.deleteWebhook},
+		{"POST /api/v1/repos/{format}/{repo}/webhooks/{id}/secret", h.rotateWebhookSecret},
+		{"POST /api/v1/repos/{format}/{repo}/webhooks/{id}/test", h.testWebhook},
+		{"GET /api/v1/repos/{format}/{repo}/webhooks/{id}/deliveries", h.listDeliveries},
+		{"GET /api/v1/webhooks", h.listWebhooks},
+		{"POST /api/v1/webhooks", h.createWebhook},
+		{"GET /api/v1/webhooks/{id}", h.getWebhook},
+		{"PATCH /api/v1/webhooks/{id}", h.updateWebhook},
+		{"DELETE /api/v1/webhooks/{id}", h.deleteWebhook},
+		{"POST /api/v1/webhooks/{id}/secret", h.rotateWebhookSecret},
+		{"POST /api/v1/webhooks/{id}/test", h.testWebhook},
+		{"GET /api/v1/webhooks/{id}/deliveries", h.listDeliveries},
 		{"GET /api/v1/users", h.listUsers},
 		{"POST /api/v1/users", h.createUser},
 		{"GET /api/v1/users/{user}", h.getUser},
@@ -194,7 +224,9 @@ type handler struct {
 	journal    Journaler
 	// info is Options.Info, its Formats never nil.
 	info ServerInfo
-	log  *slog.Logger
+	// webhooks is Options.Webhooks.
+	webhooks *webhook.Service
+	log      *slog.Logger
 }
 
 // endpoint is a handler that returns its answer: the status and the value to encode as JSON

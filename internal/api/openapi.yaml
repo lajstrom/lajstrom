@@ -25,6 +25,8 @@ tags:
     description: Roles of users on the repos of a mask.
   - name: audit
     description: The audit log.
+  - name: webhooks
+    description: Where the events of the repos of a mask are sent, and the delivery log.
   - name: meta
     description: Who is asking, the server, and this document.
 security:
@@ -418,6 +420,285 @@ paths:
       summary: Revoke a deploy token (manage); a revoked one again is 204.
       responses:
         "204": {description: Revoked.}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/repos/{format}/{repo}/webhooks:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+    get:
+      tags: [webhooks]
+      operationId: listRepoWebhooks
+      summary: The webhooks whose mask is the repo, by id (manage).
+      responses:
+        "200":
+          description: The webhooks; never a secret.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/WebhookList"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    post:
+      tags: [webhooks]
+      operationId: createRepoWebhook
+      summary: Create a webhook (manage); the answer has its secret, once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/WebhookRequest"}
+      responses:
+        "201":
+          description: The webhook and its secret.
+          headers:
+            Location: {$ref: "#/components/headers/Location"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CreatedWebhook"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/repos/{format}/{repo}/webhooks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+      - $ref: "#/components/parameters/id"
+    get:
+      tags: [webhooks]
+      operationId: getRepoWebhook
+      summary: One webhook (manage).
+      responses:
+        "200":
+          description: The webhook; never its secret.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Webhook"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    patch:
+      tags: [webhooks]
+      operationId: updateRepoWebhook
+      summary: Change the URL, the events, active and the description (manage); the mask cannot change.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/WebhookRequest"}
+      responses:
+        "200":
+          description: The webhook as it is now.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Webhook"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    delete:
+      tags: [webhooks]
+      operationId: deleteRepoWebhook
+      summary: Delete a webhook and its delivery log (manage).
+      responses:
+        "204": {description: Deleted.}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/repos/{format}/{repo}/webhooks/{id}/secret:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+      - $ref: "#/components/parameters/id"
+    post:
+      tags: [webhooks]
+      operationId: rotateRepoWebhookSecret
+      summary: Give the webhook a new secret (manage); the answer has it, once, and the old one signs nothing more.
+      responses:
+        "200":
+          description: The new secret.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/WebhookSecret"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/repos/{format}/{repo}/webhooks/{id}/test:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+      - $ref: "#/components/parameters/id"
+    post:
+      tags: [webhooks]
+      operationId: testRepoWebhook
+      summary: Send a webhook.ping to the webhook now, once (manage).
+      responses:
+        "200":
+          description: The row of the delivery log of the ping, delivered or failed.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Delivery"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/repos/{format}/{repo}/webhooks/{id}/deliveries:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+      - $ref: "#/components/parameters/id"
+    get:
+      tags: [webhooks]
+      operationId: listRepoWebhookDeliveries
+      summary: A page of the webhook's delivery log, newest first (manage).
+      parameters:
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: The page.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/DeliveryList"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/webhooks:
+    get:
+      tags: [webhooks]
+      operationId: listWebhooks
+      summary: The webhooks of every mask, by id (admin).
+      responses:
+        "200":
+          description: The webhooks; never a secret.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/WebhookList"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    post:
+      tags: [webhooks]
+      operationId: createWebhook
+      summary: Create a webhook (admin); the answer has its secret, once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/WebhookRequest"}
+      responses:
+        "201":
+          description: The webhook and its secret.
+          headers:
+            Location: {$ref: "#/components/headers/Location"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CreatedWebhook"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/webhooks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    get:
+      tags: [webhooks]
+      operationId: getWebhook
+      summary: One webhook (admin).
+      responses:
+        "200":
+          description: The webhook; never its secret.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Webhook"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    patch:
+      tags: [webhooks]
+      operationId: updateWebhook
+      summary: Change the URL, the events, active and the description (admin); the mask cannot change.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/WebhookRequest"}
+      responses:
+        "200":
+          description: The webhook as it is now.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Webhook"}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    delete:
+      tags: [webhooks]
+      operationId: deleteWebhook
+      summary: Delete a webhook and its delivery log (admin).
+      responses:
+        "204": {description: Deleted.}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/webhooks/{id}/secret:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    post:
+      tags: [webhooks]
+      operationId: rotateWebhookSecret
+      summary: Give the webhook a new secret (admin); the answer has it, once, and the old one signs nothing more.
+      responses:
+        "200":
+          description: The new secret.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/WebhookSecret"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/webhooks/{id}/test:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    post:
+      tags: [webhooks]
+      operationId: testWebhook
+      summary: Send a webhook.ping to the webhook now, once (admin).
+      responses:
+        "200":
+          description: The row of the delivery log of the ping, delivered or failed.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Delivery"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/webhooks/{id}/deliveries:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    get:
+      tags: [webhooks]
+      operationId: listWebhookDeliveries
+      summary: A page of the webhook's delivery log, newest first (admin).
+      parameters:
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: The page.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/DeliveryList"}
+        "400": {$ref: "#/components/responses/Invalid"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -1548,3 +1829,75 @@ components:
         name: {type: string}
         uid: {type: string, format: uuid}
         admin: {type: boolean, description: Whether the request's credential reaches the admin role.}
+    Webhook:
+      type: object
+      required: [id, mask, url, events, active, description, createdBy, createdAt, updatedAt]
+      properties:
+        id: {type: integer, format: int64}
+        mask: {type: string, description: A repo mask of rbac.md §3, such as apt/ubuntu-internal, apt/* or */*.}
+        url: {type: string}
+        events:
+          type: array
+          description: The types it gets; empty, every type.
+          items: {type: string, enum: [version.published, version.deleted, repo.created, repo.deleted]}
+        active: {type: boolean}
+        description: {type: string}
+        createdBy: {type: string, description: The principal that created it.}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    CreatedWebhook:
+      allOf:
+        - $ref: "#/components/schemas/Webhook"
+        - type: object
+          required: [secret]
+          properties:
+            secret: {type: string, description: "whsec_ and the base64 of the key: shown this once."}
+    WebhookList:
+      type: object
+      required: [webhooks]
+      properties:
+        webhooks:
+          type: array
+          items: {$ref: "#/components/schemas/Webhook"}
+    WebhookRequest:
+      type: object
+      additionalProperties: false
+      description: >-
+        Create: url is required, and under /api/v1/webhooks the mask too; active is true by
+        default. Change: the fields given change; a mask is refused.
+      properties:
+        mask: {type: string}
+        url: {type: string, maxLength: 2048}
+        events:
+          type: array
+          items: {type: string, enum: [version.published, version.deleted, repo.created, repo.deleted]}
+        active: {type: boolean}
+        description: {type: string, maxLength: 256}
+    WebhookSecret:
+      type: object
+      required: [secret]
+      properties:
+        secret: {type: string, description: Shown this once.}
+    Delivery:
+      type: object
+      required: [id, eventId, eventType, state, attempts, createdAt]
+      properties:
+        id: {type: integer, format: int64}
+        eventId: {type: string, description: The CloudEvents id, the same on every attempt.}
+        eventType: {type: string}
+        state: {type: string, enum: [pending, delivered, failed]}
+        attempts: {type: integer}
+        nextAt: {type: string, format: date-time, description: When a pending delivery is due.}
+        lastAt: {type: string, format: date-time}
+        lastStatus: {type: integer, description: The status of the last answer; absent when none came.}
+        lastError: {type: string, description: "Lajstrom's words, never the receiver's body."}
+        createdAt: {type: string, format: date-time}
+        deliveredAt: {type: string, format: date-time}
+    DeliveryList:
+      type: object
+      required: [deliveries]
+      properties:
+        deliveries:
+          type: array
+          items: {$ref: "#/components/schemas/Delivery"}
+        next: {type: string, description: The cursor of the next page; absent on the last.}
