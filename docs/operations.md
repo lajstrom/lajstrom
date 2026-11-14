@@ -1256,6 +1256,7 @@ export LAJSTROM_URL=https://art.example.com LAJSTROM_TOKEN_FILE=/run/secrets/ret
 lajstrom admin retention --repo npm/internal --keep-last 10 --max-age 90d            # a dry run
 lajstrom admin retention --repo npm/internal --keep-last 10 --max-age 90d --apply    # deletes
 lajstrom admin retention --repo raw/builds --package 'nightly/*' --max-age 14d --output json
+lajstrom admin retention --repo maven/snapshots --keep-builds 3 --max-age 14d --apply  # SNAPSHOT builds, below
 ```
 
 **The rules.** A version is kept when any rule keeps it: it is one of the `--keep-last N` newest of
@@ -1269,6 +1270,20 @@ of its first answer, and the publish time that of the manifest (`org.opencontain
 write from the server's clock and a client pushing on `/v2` from its own, within
 `server.maxCreatedAhead` and `server.maxCreatedBehind` of the server's
 ([configuration.md](configuration.md)).
+
+**SNAPSHOT builds.** In a maven repo, the builds of a SNAPSHOT version (`1.0-20261114.101112-3`
+of `1.0-SNAPSHOT`, one per deploy: [manifest-profile.md](spec/manifest-profile.md) §4.2) are not
+counted among the versions of their package. `--keep-last` and `--max-age` decide the releases,
+ranked among the releases, and delete no build. `--keep-builds N` decides the builds, each
+SNAPSHOT version's ranked among themselves by publish time: it keeps the N newest, and a build
+younger than `--max-age`; the newest build of each SNAPSHOT version stays unless
+`--delete-newest`. A run without `--keep-builds` deletes no build, and a run with it alone deletes
+no release, so one job cleans a repo of builds (`policy.maven.versionPolicy` `snapshot`,
+[api.md](api.md#policy)) and another a release repo, with rules of their own. The run above keeps,
+of each SNAPSHOT version, its three newest builds and those of the last 14 days. A SNAPSHOT version
+nobody builds any more keeps its newest build; `--keep-builds 0 --max-age 90d --delete-newest`
+deletes every build older than 90 days, the newest ones included. Server-side cleanup of builds
+on each deploy is not built: deletion stays a job of the operator's (#72).
 
 **Dry run first.** Without `--apply` the job prints the versions it would delete and why, the
 rule, the age and the rank, and changes nothing; `--output json` prints the same as one JSON

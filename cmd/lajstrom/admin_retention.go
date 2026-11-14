@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/lajstrom/lajstrom/internal/api"
 	"github.com/lajstrom/lajstrom/internal/auth"
+	"github.com/lajstrom/lajstrom/internal/format/maven"
 )
 
 // The environment of admin retention: the server and its credential, so that a CronJob passes
@@ -57,12 +59,16 @@ func (e exitCode) Error() string { return fmt.Sprintf("exit status %d", int(e)) 
 
 // retentionRules are the rules of a run: a version is kept when any of them keeps it.
 type retentionRules struct {
-	Packages     []string `json:"packages,omitempty"` // globs of path.Match; none: every package
-	KeepLast     *int     `json:"keepLast,omitempty"` // the newest N by publish time
-	MaxAge       string   `json:"maxAge,omitempty"`   // younger than it, by the newest variant
-	DeleteNewest bool     `json:"deleteNewest"`       // the newest version may go too
+	Packages     []string `json:"packages,omitempty"`   // globs of path.Match; none: every package
+	KeepLast     *int     `json:"keepLast,omitempty"`   // the newest N by publish time
+	KeepBuilds   *int     `json:"keepBuilds,omitempty"` // maven: the newest N builds of each SNAPSHOT version
+	MaxAge       string   `json:"maxAge,omitempty"`     // younger than it, by the newest variant
+	DeleteNewest bool     `json:"deleteNewest"`         // the newest version may go too
 
 	maxAge time.Duration
+	// keepRule names the rule KeepLast is in the reasons: keep-last, or keep-builds when decide
+	// ranks the builds of a SNAPSHOT version (decideMaven).
+	keepRule string
 }
 
 // retentionVersion is a version that the rules leave, and why.
@@ -98,7 +104,8 @@ type retentionReport struct {
 // versions of a repo its rules leave (docs/operations.md, Retention). It lists the packages and
 // their versions, newest first by publish time, and keeps a version that --keep-last or
 // --max-age keeps, that a pointer (an npm dist-tag) names, or that is the newest of its package
-// (unless --delete-newest). By default it is a dry run that prints the versions it would delete
+// (unless --delete-newest); in a maven repo the builds of each SNAPSHOT version are ranked by
+// themselves, by --keep-builds (decideMaven). By default it is a dry run that prints the versions it would delete
 // and why; --apply sends them as batches of one job, POST …/versions:delete, with the digests it
 // read and the cut-off it decided on, and the server deletes each only if it has not changed
 // meanwhile; the text output has the results of each batch as the server answers it. SIGINT,
@@ -111,12 +118,12 @@ type retentionReport struct {
 func newAdminRetentionCmd(a *app) *cobra.Command {
 	var (
 		repo, maxAge, output, base, tokenFile string
-		keepLast                              int
+		keepLast, keepBuilds                  int
 		rules                                 retentionRules
 		apply                                 bool
 	)
 	cmd := &cobra.Command{
-		Use: "retention --repo <format>/<name> [--package <glob>]... [--keep-last N] [--max-age 90d] [--delete-newest] " +
+		Use: "retention --repo <format>/<name> [--package <glob>]... [--keep-last N] [--keep-builds N] [--max-age 90d] [--delete-newest] " +
 			"[--apply] [--output text|json]",
 		Short: "Delete the versions of a repo that the rules leave, through the server's API; a dry run unless --apply",
 		Args:  cobra.NoArgs,
@@ -131,8 +138,14 @@ func newAdminRetentionCmd(a *app) *cobra.Command {
 			if cmd.Flags().Changed("keep-last") {
 				rules.KeepLast = &keepLast
 			}
+			if cmd.Flags().Changed("keep-builds") {
+				rules.KeepBuilds = &keepBuilds
+			}
 			if err := rules.check(maxAge); err != nil {
 				return err
+			}
+			if rules.KeepBuilds != nil && f != maven.Name {
+				return fmt.Errorf("--keep-builds: only a maven repo has SNAPSHOT builds, not %s", repo)
 			}
 			c, err := newRetentionClient(a.lookupEnv, base, tokenFile)
 			if err != nil {
@@ -148,6 +161,7 @@ func newAdminRetentionCmd(a *app) *cobra.Command {
 	fl.StringVar(&repo, "repo", "", "the repo, <format>/<name>")
 	fl.StringArrayVar(&rules.Packages, "package", nil, "only the packages whose name matches the glob (path.Match: * does not match /); again for more")
 	fl.IntVar(&keepLast, "keep-last", 0, "keep the N newest versions of each package, by publish time")
+	fl.IntVar(&keepBuilds, "keep-builds", 0, "maven: keep the N newest builds of each SNAPSHOT version; without it no build is deleted")
 	fl.StringVar(&maxAge, "max-age", "", "keep the versions younger than this, by their newest variant: 90d, 36h")
 	fl.BoolVar(&rules.DeleteNewest, "delete-newest", false, "the newest version of a package may be deleted too")
 	fl.BoolVar(&apply, "apply", false, "delete; without it the run prints what it would delete")
@@ -172,6 +186,9 @@ func (rules *retentionRules) check(maxAge string) error {
 	if rules.KeepLast != nil && *rules.KeepLast < 0 {
 		return fmt.Errorf("--keep-last: %d is negative", *rules.KeepLast)
 	}
+	if rules.KeepBuilds != nil && *rules.KeepBuilds < 0 {
+		return fmt.Errorf("--keep-builds: %d is negative", *rules.KeepBuilds)
+	}
 	if maxAge != "" {
 		d, err := auth.ParseLifetime(maxAge)
 		if err != nil {
@@ -179,8 +196,8 @@ func (rules *retentionRules) check(maxAge string) error {
 		}
 		rules.MaxAge, rules.maxAge = maxAge, d
 	}
-	if rules.KeepLast == nil && rules.maxAge == 0 {
-		return errors.New("name a rule: --keep-last, --max-age or both")
+	if rules.KeepLast == nil && rules.KeepBuilds == nil && rules.maxAge == 0 {
+		return errors.New("name a rule: --keep-last, --max-age, --keep-builds (maven) or several")
 	}
 	for _, g := range rules.Packages {
 		if _, err := path.Match(g, ""); err != nil {
@@ -318,7 +335,7 @@ func (r *retention) run(ctx context.Context, apply bool) error {
 		}
 		rep.Packages++
 		rep.Versions += len(versions)
-		rep.Delete = append(rep.Delete, r.rules.decide(p, versions, rep.Now)...)
+		rep.Delete = append(rep.Delete, r.rules.decideFor(r.format, p, versions, rep.Now)...)
 	}
 	deleting := apply && len(rep.Delete) > 0
 	if deleting {
@@ -435,12 +452,57 @@ func (rules retentionRules) decide(pkg string, versions []api.VersionEntry, now 
 			rv.Digests = append(rv.Digests, variant.Digest)
 		}
 		if rules.KeepLast != nil {
-			rv.Reasons = append(rv.Reasons, fmt.Sprintf("rank %d > keep-last %d", rank, *rules.KeepLast))
+			rv.Reasons = append(rv.Reasons, fmt.Sprintf("rank %d > %s %d", rank, cmp.Or(rules.keepRule, "keep-last"), *rules.KeepLast))
 		}
 		if rules.maxAge > 0 {
 			rv.Reasons = append(rv.Reasons, fmt.Sprintf("age %s > max-age %s", days(age), rules.MaxAge))
 		}
 		out = append(out, rv)
+	}
+	return out
+}
+
+// decideFor is decide for the package pkg of a repo of the format, decideMaven in a maven repo.
+func (rules retentionRules) decideFor(format, pkg string, versions []api.VersionEntry, now time.Time) []retentionVersion {
+	if format == maven.Name {
+		return rules.decideMaven(pkg, versions, now)
+	}
+	return rules.decide(pkg, versions, now)
+}
+
+// decideMaven is decide in a maven repo, where the builds of a SNAPSHOT version
+// (1.0-20261114.101112-3 of 1.0-SNAPSHOT, docs/spec/manifest-profile.md §4.2) are not counted
+// among the versions. The releases are ranked among themselves and decided by --keep-last and
+// --max-age, only when one of them is given; the builds of each SNAPSHOT version are ranked among
+// themselves and decided by --keep-builds, the rank, and --max-age, only when --keep-builds is
+// given. The newest release, and the newest build of each SNAPSHOT version, stay unless
+// --delete-newest. So a run for releases deletes no build, and builds never push a release out
+// of --keep-last.
+func (rules retentionRules) decideMaven(pkg string, versions []api.VersionEntry, now time.Time) []retentionVersion {
+	var releases []api.VersionEntry
+	var snapshots []string
+	builds := map[string][]api.VersionEntry{}
+	for _, v := range versions {
+		s, ok := maven.SnapshotOf(v.Version)
+		if !ok {
+			releases = append(releases, v)
+			continue
+		}
+		if builds[s] == nil {
+			snapshots = append(snapshots, s)
+		}
+		builds[s] = append(builds[s], v)
+	}
+	var out []retentionVersion
+	if rules.KeepLast != nil || rules.maxAge > 0 {
+		out = rules.decide(pkg, releases, now)
+	}
+	if rules.KeepBuilds != nil {
+		byBuild := rules
+		byBuild.KeepLast, byBuild.keepRule = rules.KeepBuilds, "keep-builds"
+		for _, s := range snapshots {
+			out = append(out, byBuild.decide(pkg, builds[s], now)...)
+		}
 	}
 	return out
 }

@@ -704,7 +704,9 @@ url = uri(if (version.toString().endsWith("-SNAPSHOT")) "http://localhost:8080/m
 
 A release deployed to `maven/snapshots`, or a SNAPSHOT version to `maven/releases`, is `400`
 naming `policy.maven.versionPolicy`, at the first file and before anything is stored. Builds stay
-until they are deleted, through the API as every version is.
+until they are deleted, through the API as every version is; a scheduled
+`lajstrom admin retention --repo maven/snapshots --keep-builds 3` keeps the three newest builds of
+each SNAPSHOT version ([operations.md](../operations.md#retention)).
 
 ## The end-to-end script
 
