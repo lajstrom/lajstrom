@@ -83,17 +83,18 @@ func TestPutReferrerLockLost(t *testing.T) {
 	same(t, "locks", []string{"raw/scratch/notes@" + subject.Digest.String(), "raw/scratch/notes@" + subject.Digest.String()}, rec.locks)
 }
 
-// registry is the fake with the referrers API or without, whose repositories tell rec of each
-// manifest push.
+// registry is the fake with the referrers API or without, and with referrers.alwaysTag or
+// without, whose repositories tell rec of each manifest push.
 type registry struct {
 	*providertest.Fake
-	api bool
-	rec *lockRecorder
+	api       bool
+	alwaysTag bool
+	rec       *lockRecorder
 }
 
 func (f registry) Capabilities(ctx context.Context) (provider.Capabilities, error) {
 	c, err := f.Fake.Capabilities(ctx)
-	c.Referrers = f.api
+	c.Referrers, c.ReferrersAlwaysTag = f.api, f.alwaysTag
 	return c, err
 }
 
