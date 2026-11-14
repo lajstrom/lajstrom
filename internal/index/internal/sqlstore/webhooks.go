@@ -139,8 +139,8 @@ func (c *conn) CreateWebhookDeliveries(ctx context.Context, ds []index.WebhookDe
 }
 
 // ClaimWebhookDeliveries claims due deliveries for replica in one transaction: it selects them
-// with their webhooks, on Postgres locking them and skipping the rows another transaction locks,
-// then marks them claimed.
+// with their webhooks, on Postgres and CockroachDB locking them and skipping the rows another
+// transaction locks, then marks them claimed.
 func (c *conn) ClaimWebhookDeliveries(ctx context.Context, replica string, at, staleBefore time.Time, limit int) ([]index.WebhookClaim, error) {
 	if limit < 1 {
 		return nil, nil
@@ -150,7 +150,7 @@ func (c *conn) ClaimWebhookDeliveries(ctx context.Context, replica string, at, s
 		" FROM webhook_deliveries d JOIN webhooks h ON h.id = d.webhook_id" +
 		" WHERE d.state = ? AND d.next_at <= ? AND h.active = ? AND (d.claimed_at IS NULL OR d.claimed_at < ?)" +
 		" ORDER BY d.next_at, d.id LIMIT ?"
-	if c.d.Name == index.DialectPostgres {
+	if c.d.Name != index.DialectSQLite {
 		query += " FOR UPDATE OF d SKIP LOCKED"
 	}
 	var claims []index.WebhookClaim
