@@ -643,13 +643,19 @@ func TestDeleteManifestLearnt(t *testing.T) {
 	}
 }
 
-// TestDeleteDenied: a 405 that refuses one delete, Zot's DENIED for a manifest that an image
-// index lists and a blob that a manifest uses (#153) and ECR's UNSUPPORTED for a manifest an
-// index lists (#19), is ErrConflict; DeleteManifest stays true, and the next delete goes through.
+// TestDeleteDenied: an answer that refuses one delete, Zot's 405 DENIED for a manifest that an
+// image index lists and a blob that a manifest uses (#153), ECR's 405 UNSUPPORTED for a manifest
+// an index lists (#19) and Harbor's 412 VIOLATE_FOREIGN_KEY_CONSTRAINT for one (#1041), is
+// ErrConflict; DeleteManifest stays true, and the next delete goes through.
 func TestDeleteDenied(t *testing.T) {
-	for _, tt := range []struct{ name, code, msg string }{
-		{"zot", "DENIED", "requested access to the resource is denied"},
-		{"ecr", "UNSUPPORTED", "Requested image referenced by manifest list: [sha256:c5777381192009580e30e883098e3ac7f673388a3145523dd490549a31aadd7e]"},
+	for _, tt := range []struct {
+		name, code, msg string
+		status          int
+	}{
+		{"zot", "DENIED", "requested access to the resource is denied", http.StatusMethodNotAllowed},
+		{"ecr", "UNSUPPORTED", "Requested image referenced by manifest list: [sha256:c5777381192009580e30e883098e3ac7f673388a3145523dd490549a31aadd7e]",
+			http.StatusMethodNotAllowed},
+		{"harbor", "VIOLATE_FOREIGN_KEY_CONSTRAINT", "the deleting artifact is referenced by others", http.StatusPreconditionFailed},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -659,7 +665,7 @@ func TestDeleteDenied(t *testing.T) {
 				if r.Method != http.MethodDelete || deletes.Add(1) > 2 {
 					return false
 				}
-				writeErr(w, http.StatusMethodNotAllowed, tt.code, tt.msg)
+				writeErr(w, tt.status, tt.code, tt.msg)
 				return true
 			}
 			log, buf := testLogger()
@@ -673,17 +679,17 @@ func TestDeleteDenied(t *testing.T) {
 			for _, d := range []ocispec.Descriptor{blob, m} {
 				err := repo.Delete(ctx, d)
 				if !errors.Is(err, provider.ErrConflict) || errors.Is(err, provider.ErrUnsupported) {
-					t.Fatalf("Delete(%s) of a 405 %s = %v, want ErrConflict alone", d.MediaType, tt.code, err)
+					t.Fatalf("Delete(%s) of a %d %s = %v, want ErrConflict alone", d.MediaType, tt.status, tt.code, err)
 				}
-				if !strings.Contains(err.Error(), "HTTP 405, "+tt.code) {
+				if !strings.Contains(err.Error(), fmt.Sprintf("HTTP %d, %s", tt.status, tt.code)) {
 					t.Errorf("Delete error %q does not name the answer", err)
 				}
 			}
 			if c, err := p.Capabilities(ctx); err != nil || !c.DeleteManifest {
-				t.Errorf("Capabilities after a 405 %s = %+v, %v; want DeleteManifest", tt.code, c, err)
+				t.Errorf("Capabilities after a %d %s = %+v, %v; want DeleteManifest", tt.status, tt.code, c, err)
 			}
 			if strings.Contains(buf.String(), "refuses manifest deletes") {
-				t.Errorf("a 405 %s logged that deletes are off:\n%s", tt.code, buf)
+				t.Errorf("a %d %s logged that deletes are off:\n%s", tt.status, tt.code, buf)
 			}
 			if err := repo.Delete(ctx, m); err != nil {
 				t.Fatalf("the next Delete of the manifest: %v", err)
