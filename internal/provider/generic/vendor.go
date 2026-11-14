@@ -188,6 +188,11 @@ type quirks struct {
 	// answers delete 400 INVALID_REQUEST, so that no DELETE was ever sent; its DELETE wants
 	// write, which a push token carries (docs/registries/quay.md, Tokens and the delete action).
 	pushForDelete bool
+	// emptyStatus404: a 404 to the status GET of an upload session that holds no bytes is the
+	// session at offset 0, not one the registry no longer knows (BlobUploadStatus). JFrog answers
+	// so before the first chunk, 404 BLOB_UNKNOWN, and takes the PATCH that follows
+	// (docs/registries/jfrog-jcr.md, item 10).
+	emptyStatus404 bool
 }
 
 // afterProbe is the part of the vendor table that depends on what the probe found: it changes
@@ -197,7 +202,7 @@ type quirks struct {
 //   - Nexus: the docker format has no referrers API, and a manifest delete by digest leaves
 //     every tag that names it (docs/registries/nexus.md, item 2), so DeleteManifest is false;
 //     the oci format has it, and fails every range (wholeBlobs);
-//   - JFrog: blobExistsByGET;
+//   - JFrog: blobExistsByGET and emptyStatus404;
 //   - Quay: pushForDelete.
 func afterProbe(v vendor, probed *provider.Capabilities, referrers bool) quirks {
 	switch v {
@@ -207,7 +212,7 @@ func afterProbe(v vendor, probed *provider.Capabilities, referrers bool) quirks 
 		}
 		probed.DeleteManifest = false
 	case vendorJFrog:
-		return quirks{blobExistsByGET: true}
+		return quirks{blobExistsByGET: true, emptyStatus404: true}
 	case vendorQuay:
 		return quirks{pushForDelete: true}
 	case vendorUnknown, vendorGitLab, vendorGHCR, vendorECR, vendorHarbor, vendorGitea, vendorForgejo, vendorZot, vendorDistribution, vendorDocker:

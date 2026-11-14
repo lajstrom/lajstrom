@@ -294,7 +294,7 @@ func TestCapabilitiesVendor(t *testing.T) {
 		},
 		{name: "Gitea, its own API a web page", setup: forgejo(challenge, "<!DOCTYPE html><html></html>"), vendor: vendorGitea, want: noReferrers, hint: true},
 		{name: "Gitea, a version without one", setup: forgejo(challenge, `{"version":""}`), vendor: vendorGitea, want: noReferrers, hint: true},
-		{name: "JFrog", setup: headers(jfrogV2, true), vendor: vendorJFrog, quirks: quirks{blobExistsByGET: true}, hint: true},
+		{name: "JFrog", setup: headers(jfrogV2, true), vendor: vendorJFrog, quirks: quirks{blobExistsByGET: true, emptyStatus404: true}, hint: true},
 		// The fake has a catalog and the referrers API: the table's catalog and referrers win.
 		{name: "Quay", setup: headers(quayV2, true), vendor: vendorQuay, want: quay, quirks: quirks{pushForDelete: true}},
 	}

@@ -61,8 +61,8 @@ const (
 //
 // A capability that the vendor table or the configuration sets is not probed. What the vendor
 // table decides from the probe's answer (afterProbe) comes before the configuration's overrides,
-// with the vendor's quirks: the blob reads of Nexus's oci format, JFrog's blob HEAD and the
-// token scope of Quay's deletes. The
+// with the vendor's quirks: the blob reads of Nexus's oci format, JFrog's blob HEAD and its
+// upload status without bytes, and the token scope of Quay's deletes. The
 // first successful probe logs the result and the vendor at info, hints at
 // registries[].uploads.spoolUnknownLength for Gitea and JFrog when it is off, and warns about a
 // GitLab registry with its metadata database, which refuses artifact types it does not know,
@@ -262,7 +262,8 @@ func (p *Provider) probeNow(ctx context.Context, answered *bool) (provider.Capab
 	}
 	if q != (quirks{}) {
 		p.log.InfoContext(ctx, "registry needs workarounds", "vendor", string(v),
-			"blobsReadWhole", q.wholeBlobs, "blobExistsByGET", q.blobExistsByGET, "pushForDelete", q.pushForDelete)
+			"blobsReadWhole", q.wholeBlobs, "blobExistsByGET", q.blobExistsByGET, "pushForDelete", q.pushForDelete,
+			"emptyStatus404", q.emptyStatus404)
 	}
 	if hintSpool(v) && !p.spoolUnknown {
 		p.spoolHint.Store(true)
