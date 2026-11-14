@@ -77,7 +77,7 @@ func newClients(cfg config.Registry, base *url.URL, log *slog.Logger, o Options,
 	// The retry transport resends an idempotent request whose body can be replayed; a blob
 	// upload is retried as a whole by Push (pushRetry). The breaker above it counts a request
 	// once however often it was tried. Above both, the probe's ping sees the challenges.
-	br := newBreaker(cfg.Name, log)
+	br := newBreaker(cfg.Name, base.Host, log)
 	rt := &deleteScopeTransport{on: pushForDelete, next: &realmTransport{registry: cfg.Name, base: base, hosts: realmHosts(cfg, base), next: &challengeTransport{next: &breakerTransport{b: br, next: &retryTransport{
 		next:    &logTransport{next: &metricsTransport{next: innermost(o, newTransport(timeout, guard, o.resolver), cfg.Name, timeout, log), registry: cfg.Name}, log: log},
 		retries: retries(cfg),

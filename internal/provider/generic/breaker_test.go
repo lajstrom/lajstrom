@@ -58,9 +58,9 @@ func circuitGauge(t *testing.T, registry string) float64 {
 }
 
 // TestBreakerOpensAndCloses drives the breaker of a provider through a registry that fails,
-// stays down and comes back: it opens after breakerThreshold failures in a row, refuses
-// requests without sending them, lets the ping through as the trial after the cooldown, opens
-// again when the trial fails, and closes at the first answer.
+// stays down and comes back: it opens after breakerThreshold failures in a row, of two
+// repositories (#972), refuses requests without sending them, lets the ping through as the trial
+// after the cooldown, opens again when the trial fails, and closes at the first answer.
 func TestBreakerOpensAndCloses(t *testing.T) {
 	lowerBreaker(t, 3)
 	ctx := t.Context()
@@ -70,6 +70,10 @@ func TestBreakerOpensAndCloses(t *testing.T) {
 	clk := &clock{t: time.Unix(1_700_000_000, 0)}
 	p.clients.breaker.now = clk.now
 	repo, err := p.Repository(ctx, "raw/scratch/notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := p.Repository(ctx, "raw/scratch/other")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,14 +98,16 @@ func TestBreakerOpensAndCloses(t *testing.T) {
 		return true
 	}
 	tags := func() error { _, err := listTags(ctx, repo); return err }
+	otherTags := func() error { _, err := listTags(ctx, other); return err }
 	ping := func() error { return p.Ping(ctx) }
 	put := func() error { return repo.PushReference(ctx, desc, bytes.NewReader(content), "v2") }
 
-	for range 3 {
-		_ = wantCall(t, f, "Tags against a failing registry", tags, false, 1)
-	}
-	if g := circuitGauge(t, "breaker-test"); g != 1 || !strings.Contains(buf.String(), "circuit open") {
-		t.Errorf("circuit gauge %v after 3 failures, want 1, and a log line:\n%s", g, buf)
+	_ = wantCall(t, f, "Tags against a failing registry", tags, false, 1)
+	_ = wantCall(t, f, "Tags of another repository", otherTags, false, 1)
+	_ = wantCall(t, f, "Tags against a failing registry", tags, false, 1)
+	if g := circuitGauge(t, "breaker-test"); g != 1 || !strings.Contains(buf.String(), "circuit open") ||
+		!strings.Contains(buf.String(), "repositories=\"[art/raw/scratch/notes art/raw/scratch/other]\"") {
+		t.Errorf("circuit gauge %v after 3 failures, want 1, and a log line that names both repositories:\n%s", g, buf)
 	}
 	err = wantCall(t, f, "Tags while open", tags, true, 0)
 	if after, ok := provider.RetryAfter(err); !ok || after != time.Minute {
@@ -152,12 +158,15 @@ func byBreaker(err error) bool {
 }
 
 // TestBreakerCounts checks what counts as a failure in a row: a retried request once, an
-// answer such as a 404 resets the count, a 429 and a cancelled request count neither way.
+// answer such as a 404 resets the count, a 429 and a cancelled request count neither way. Each
+// request is of another repository, but in the rows of one repository: failures of one
+// repository alone never open the breaker, however many (#972).
 func TestBreakerCounts(t *testing.T) {
 	tests := []struct {
 		name    string
 		retries int
 		answers []int // status of each request, in order; 0 is a request whose caller cancels
+		repos   []int // the repository of each request, by index; nil: each its own
 		open    bool
 	}{
 		{name: "three 503 in a row", retries: -1, answers: []int{503, 503, 503}, open: true},
@@ -166,6 +175,11 @@ func TestBreakerCounts(t *testing.T) {
 		{name: "a 429 counts neither way", retries: -1, answers: []int{503, 503, 429, 503}, open: true},
 		{name: "a cancelled request counts neither way", retries: -1, answers: []int{503, 503, 0, 503}, open: true},
 		{name: "a 501 is an answer", retries: -1, answers: []int{503, 503, 501, 503}, open: false},
+		{name: "three 503 of one repository", retries: -1, answers: []int{503, 503, 503}, repos: []int{0, 0, 0}, open: false},
+		{name: "ten 500 of one repository", retries: -1, answers: []int{500, 500, 500, 500, 500, 500, 500, 500, 500, 500},
+			repos: []int{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, open: false},
+		{name: "one repository, then another", retries: -1, answers: []int{503, 503, 503, 503}, repos: []int{0, 0, 0, 1}, open: true},
+		{name: "two repositories in turn", retries: -1, answers: []int{503, 503, 503}, repos: []int{0, 1, 0}, open: true},
 	}
 	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -174,9 +188,16 @@ func TestBreakerCounts(t *testing.T) {
 			log, _ := testLogger()
 			name := fmt.Sprintf("breaker-counts-%d", i)
 			p := f.provider(t, log, func(c *config.Registry) { c.Name, c.Retries = name, tt.retries })
-			repo, err := p.Repository(t.Context(), "raw/scratch/notes")
-			if err != nil {
-				t.Fatal(err)
+			repoOf := func(k int) provider.Repository {
+				t.Helper()
+				if tt.repos != nil {
+					k = tt.repos[k]
+				}
+				repo, err := p.Repository(t.Context(), fmt.Sprintf("raw/scratch/r%d", k))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return repo
 			}
 			var status atomic.Int64
 			f.hook = func(w http.ResponseWriter, r *http.Request) bool {
@@ -188,7 +209,7 @@ func TestBreakerCounts(t *testing.T) {
 				writeErr(w, s, "X", "x")
 				return true
 			}
-			for _, s := range tt.answers {
+			for k, s := range tt.answers {
 				status.Store(int64(s))
 				ctx := t.Context()
 				if s == 0 {
@@ -196,9 +217,9 @@ func TestBreakerCounts(t *testing.T) {
 					ctx, cancel = context.WithTimeout(ctx, 50*time.Millisecond)
 					defer cancel()
 				}
-				_, _ = listTags(ctx, repo)
+				_, _ = listTags(ctx, repoOf(k))
 			}
-			_, err = listTags(t.Context(), repo)
+			_, err := listTags(t.Context(), repoOf(0))
 			if got := byBreaker(err); got != tt.open {
 				t.Errorf("circuit open = %v (last error %v), want %v", got, err, tt.open)
 			}
@@ -211,14 +232,14 @@ func TestBreakerCounts(t *testing.T) {
 func TestBreakerOneTrial(t *testing.T) {
 	lowerBreaker(t, 1)
 	log, _ := testLogger()
-	b := newBreaker("breaker-trial", log)
+	b := newBreaker("breaker-trial", "registry", log)
 	clk := &clock{t: time.Unix(1_700_000_000, 0)}
 	b.now = clk.now
 	get, _ := http.NewRequest(http.MethodGet, "http://registry/v2/", nil)
 	if _, err := b.allow(get); err != nil {
 		t.Fatal(err)
 	}
-	b.done(t.Context(), false, -1) // opens
+	b.done(t.Context(), false, -1, b.blame(get, nil)) // opens: GET /v2/ is the registry's
 	clk.add(20 * time.Second)
 	if _, err := b.allow(get); !errors.Is(err, provider.ErrUnavailable) {
 		t.Fatalf("allow while open = %v", err)
@@ -235,7 +256,7 @@ func TestBreakerOneTrial(t *testing.T) {
 	} else if after, _ := provider.RetryAfter(err); after != 0 {
 		t.Errorf("RetryAfter during the trial = %v, want 0", after)
 	}
-	b.done(t.Context(), true, 0) // the trial's caller went away
+	b.done(t.Context(), true, 0, blame{}) // the trial's caller went away
 	if trial, err := b.allow(get); err != nil || !trial {
 		t.Errorf("allow after a trial that counted neither way = %v, %v; want another trial", trial, err)
 	}
@@ -254,7 +275,8 @@ func failingBody(err error) io.Reader {
 // provider.ErrUnavailable, though a stall is a timeout and a body that breaks off an EOF (#670).
 // A registry that drops the connection while the body streams still counts as a failure, and is
 // provider.ErrUnavailable. One that closes it on its own body timeout while the client paused
-// is provider.ErrUnavailable too, but counts neither way (#648).
+// is provider.ErrUnavailable too, but counts neither way (#648). The sends alternate between two
+// repositories, so that the registry's failures may open the breaker (#972).
 func TestBreakerBodyFails(t *testing.T) {
 	lowerClientWait(t, 50*time.Millisecond)
 	stalled := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
@@ -295,13 +317,17 @@ func TestBreakerBodyFails(t *testing.T) {
 				f := newFakeRegistry(t)
 				log, _ := testLogger()
 				p := f.provider(t, log, func(c *config.Registry) { c.Name, c.Retries = fmt.Sprintf("breaker-body-%d-%d", i, j), -1 })
-				repo, err := p.Repository(ctx, "raw/scratch/notes")
-				if err != nil {
-					t.Fatal(err)
+				var repos []provider.Repository
+				for _, name := range []string{"raw/scratch/notes", "raw/scratch/other"} {
+					repo, err := p.Repository(ctx, name)
+					if err != nil {
+						t.Fatal(err)
+					}
+					repos = append(repos, repo)
 				}
 				var sessions []provider.Upload // opened first, so that no answer comes between the sends
-				for range breakerThreshold {
-					u, err := repo.StartBlobUpload(ctx)
+				for k := range breakerThreshold {
+					u, err := repos[k%2].StartBlobUpload(ctx)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -311,8 +337,8 @@ func TestBreakerBodyFails(t *testing.T) {
 				if dropped {
 					f.hook = dropUploads(tt.timeout)
 				}
-				for _, u := range sessions {
-					err := send.call(ctx, repo, u, tt.body())
+				for k, u := range sessions {
+					err := send.call(ctx, repos[k%2], u, tt.body())
 					if err == nil || byBreaker(err) {
 						t.Fatalf("%s: %v, want it to fail as it streams", send.name, err)
 					}
@@ -324,7 +350,7 @@ func TestBreakerBodyFails(t *testing.T) {
 						t.Errorf("%s: %v; provider.ErrUnavailable = %v, want %v", send.name, err, got, dropped)
 					}
 				}
-				_, err = repo.StartBlobUpload(ctx)
+				_, err := repos[0].StartBlobUpload(ctx)
 				if got := byBreaker(err); got != tt.open {
 					t.Errorf("after %d failed sends: circuit open = %v (%v), want %v", breakerThreshold, got, err, tt.open)
 				}
@@ -375,7 +401,8 @@ func (b *pausingBody) Read(p []byte) (int, error) {
 // upload while its body moves is a failure, also when the client paused earlier in the same
 // body and when each read waits a little, as for a client behind a slow link; so is one that
 // drops it a while after the whole body came, though the client paused before its end:
-// threshold of them open the breaker, the outage that slow uploads must not hide.
+// threshold of them open the breaker, the outage that slow uploads must not hide. The uploads are
+// of two repositories, so that the registry's failures may open it (#972).
 func TestBreakerClientWait(t *testing.T) {
 	lowerBreaker(t, 3)
 	lowerClientWait(t, 50*time.Millisecond)
@@ -402,12 +429,12 @@ func TestBreakerClientWait(t *testing.T) {
 				t.Run(fmt.Sprintf("%s/size %d/%s", proto, size, tt.name), func(t *testing.T) {
 					srv := startRegistry(t, proto, tt.registry)
 					log, buf := testLogger()
-					b := newBreaker(fmt.Sprintf("breaker-wait-%s-%d-%d", proto, size, i), log)
+					b := newBreaker(fmt.Sprintf("breaker-wait-%s-%d-%d", proto, size, i), srv.Listener.Addr().String(), log)
 					rt := &breakerTransport{b: b, next: srv.Client().Transport}
 					var wg sync.WaitGroup // threshold clients at once
-					for range breakerThreshold {
+					for k := range breakerThreshold {
 						wg.Go(func() {
-							req, err := http.NewRequestWithContext(t.Context(), http.MethodPatch, srv.URL+"/v2/x/blobs/uploads/1",
+							req, err := http.NewRequestWithContext(t.Context(), http.MethodPatch, fmt.Sprintf("%s/v2/x%d/blobs/uploads/1", srv.URL, k%2),
 								&pausingBody{steps: slices.Clone(tt.body)})
 							if err != nil {
 								t.Error(err)

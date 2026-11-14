@@ -7,16 +7,25 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/lajstrom/lajstrom/internal/egress"
 	"github.com/lajstrom/lajstrom/internal/metrics"
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
-// The circuit breaker of a registry: breakerThreshold requests in a row that fail open it, and
-// it stays open for breakerCooldown. Variables so that tests can change them.
+// breakerVariety is how many repositories the failures in a row must be of for the breaker to
+// open, when none of them is the registry's whatever the request (blame.wide): one repository's
+// failures alone never open it (#972).
+const breakerVariety = 2
+
+// The circuit breaker of a registry: breakerThreshold requests in a row that fail open it, when
+// they are of breakerVariety repositories or one of them is the registry's whatever the request,
+// and it stays open for breakerCooldown. Variables so that tests can change them.
 var (
 	breakerThreshold = 5
 	breakerCooldown  = 30 * time.Second
@@ -38,7 +47,11 @@ const (
 // with a 5xx other than 501, or does not answer; after breakerThreshold failures in a row the
 // breaker opens, and for breakerCooldown every request fails at once with a
 // *provider.UnavailableError that says how much of the cooldown is left, instead of waiting for
-// timeouts and retries. Then the next GET or HEAD, the readiness ping
+// timeouts and retries. The failures in a row must be of breakerVariety repositories at least,
+// or one of them must be the registry's whatever the request (breaker.blame): a repository that
+// the registry cannot serve, damaged in its storage or a name it mishandles, fails every request
+// of it, and must not fail every other repository with it (#972). Such a run is logged, at most
+// once a cooldown. Then the next GET or HEAD, the readiness ping
 // of serve every 20 s or a client's, goes through as a trial: an answer closes the breaker, a
 // failure opens it for another cooldown. A request with a body is never the trial: an upload
 // would keep the breaker half-open for as long as it streams. A 4xx is an answer; a 429, a
@@ -46,21 +59,90 @@ const (
 // waited clientWait or longer on its body count neither way.
 type breaker struct {
 	registry string       // the label of the metric
+	host     string       // the registry's host[:port], of its URL
 	log      *slog.Logger // carries registry=<name>
 	now      func() time.Time
 
 	mu       sync.Mutex
 	state    int
 	failures int       // in a row, while closed
+	repos    []string  // what those failures were of (blame.repo), each once, at most breakerThreshold
+	wide     int       // how many of those were the registry's whatever the request (blame.wide)
+	held     time.Time // when a run of failures of too few repositories was last logged
 	opened   time.Time // when it last opened
 	trial    bool      // a trial is in flight, while half-open
 	// waitUntil is when the wait ends that the registry last asked for (askedToWait).
 	waitUntil time.Time
 }
 
-func newBreaker(registry string, log *slog.Logger) *breaker {
+// newBreaker returns the breaker of the registry named registry at host, the host[:port] of its
+// URL.
+func newBreaker(registry, host string, log *slog.Logger) *breaker {
 	metrics.ProviderCircuitOpen.WithLabelValues(registry).Set(0)
-	return &breaker{registry: registry, log: log, now: time.Now}
+	return &breaker{registry: registry, host: host, log: log, now: time.Now}
+}
+
+// blame is what the breaker holds a failed request against (breaker.blame).
+type blame struct {
+	// repo is the repository the request names, or the path of a request to the registry of
+	// none (/v2/_catalog), or the host of a request to another host (a token realm, the storage a
+	// blob redirects to).
+	repo string
+	// wide marks a failure that no request can cause: the registry's own whatever was asked.
+	wide bool
+}
+
+// blame returns what the failure err of req is held against (#972). A request of the
+// distribution API is held against the repository it names (repositoryOf), whatever its
+// method, reference and query: a client chooses those, and a repository the registry cannot
+// serve fails all of them. A failure is wide when no request can cause it: GET /v2/ of the
+// registry, which names no repository; and a request to the registry's host that never reached
+// it (connectFailed). A timeout waiting for the answer, or a connection closed or reset once the
+// request was sent, may be the request's: it is held against the repository.
+func (b *breaker) blame(req *http.Request, err error) blame {
+	own := req.URL.Host == b.host
+	if repo := repositoryOf(req.URL.Path); repo != "" {
+		return blame{repo: repo, wide: own && connectFailed(err)}
+	}
+	if !own {
+		return blame{repo: req.URL.Host}
+	}
+	return blame{repo: req.URL.Path, wide: req.URL.Path == "/v2/" || req.URL.Path == "/v2" || connectFailed(err)}
+}
+
+// repositoryOf returns the repository that path names in the distribution API:
+// /v2/<name>/manifests/<reference>, /v2/<name>/blobs/<digest>, /v2/<name>/blobs/uploads/ and
+// /v2/<name>/blobs/uploads/<id>, /v2/<name>/tags/list, /v2/<name>/referrers/<digest>; "" for any
+// other path. A reference, a digest and an upload id have no slash, so the name is what comes
+// before the last two components, or the last three of an upload.
+func repositoryOf(path string) string {
+	rest, ok := strings.CutPrefix(path, "/v2/")
+	if !ok {
+		return ""
+	}
+	parts := strings.Split(rest, "/")
+	n := len(parts)
+	switch {
+	case n >= 4 && parts[n-3] == "blobs" && parts[n-2] == "uploads":
+		return strings.Join(parts[:n-3], "/")
+	case n >= 3 && slices.Contains([]string{"manifests", "blobs", "tags", "referrers"}, parts[n-2]):
+		return strings.Join(parts[:n-2], "/")
+	}
+	return ""
+}
+
+// connectFailed reports whether err, the failure of a request, came before a connection to the
+// host was made: its name does not resolve, the connection was refused, the host or network
+// cannot be reached, the connect timed out, or the egress proxy could not be reached. No byte
+// of the request was sent. A dial that a guard refused (egress.ErrRefused) is the redirect's
+// doing, not the host's.
+func connectFailed(err error) bool {
+	if err == nil || errors.Is(err, egress.ErrRefused) {
+		return false
+	}
+	var dns *net.DNSError
+	var op *net.OpError
+	return errors.As(err, &dns) || errors.As(err, &op) && (op.Op == "dial" || op.Op == "proxyconnect")
 }
 
 // allow reports whether req may go to the registry, and whether it is the trial of a
@@ -103,8 +185,9 @@ func outcome(ctx context.Context, resp *http.Response, err error, bodyFailed boo
 	return +1
 }
 
-// done records the outcome of a request that allow let through.
-func (b *breaker) done(ctx context.Context, trial bool, result int) {
+// done records the outcome of a request that allow let through, and for a failure what it is
+// held against.
+func (b *breaker) done(ctx context.Context, trial bool, result int, against blame) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if trial {
@@ -116,26 +199,45 @@ func (b *breaker) done(ctx context.Context, trial bool, result int) {
 			b.log.InfoContext(ctx, "registry answers again: circuit closed") // the logger names the registry
 			metrics.ProviderCircuitOpen.WithLabelValues(b.registry).Set(0)
 		}
-		b.state, b.failures = breakerClosed, 0
+		b.state = breakerClosed
+		b.reset()
 	case result < 0 && b.state == breakerClosed:
 		b.failures++
-		if b.failures >= breakerThreshold {
+		switch {
+		case against.wide:
+			b.wide++
+		case !slices.Contains(b.repos, against.repo) && len(b.repos) < max(breakerThreshold, breakerVariety):
+			b.repos = append(b.repos, against.repo)
+		}
+		switch {
+		case b.failures < breakerThreshold:
+		case b.wide > 0 || len(b.repos) >= breakerVariety:
 			b.open(ctx)
+		case b.now().Sub(b.held) >= breakerCooldown:
+			b.held = b.now()
+			b.log.WarnContext(ctx, "registry fails the requests of one repository only: circuit kept closed, "+
+				"the repository may be broken in the registry", "repositories", b.repos, "failures", b.failures)
 		}
 	case result < 0 && trial:
 		b.open(ctx)
 	}
 }
 
-// open opens the breaker for a cooldown; b.mu is held.
+// open opens the breaker for a cooldown; b.mu is held. The log line names the repositories the
+// failures in a row were of, at most breakerThreshold, and how many were the registry's whatever
+// the request.
 func (b *breaker) open(ctx context.Context) {
 	if b.state == breakerClosed {
 		b.log.WarnContext(ctx, "registry fails: circuit open, its requests fail at once for a while",
-			"failures", b.failures, "cooldown", breakerCooldown)
+			"failures", b.failures, "repositories", b.repos, "registryWide", b.wide, "cooldown", breakerCooldown)
 		metrics.ProviderCircuitOpen.WithLabelValues(b.registry).Set(1)
 	}
-	b.state, b.opened, b.failures = breakerOpen, b.now(), 0
+	b.state, b.opened = breakerOpen, b.now()
+	b.reset()
 }
+
+// reset forgets the failures in a row; b.mu is held.
+func (b *breaker) reset() { b.failures, b.repos, b.wide = 0, nil, 0 }
 
 // breakerTransport sends a request through the registry's breaker: a request it refuses
 // fails with a *provider.UnavailableError, without reaching the registry. It sits above the retries, so a
@@ -181,7 +283,11 @@ func (t *breakerTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			"the body timeout of the registry, or of its proxy, is likely below server.stallTimeout",
 			"method", req.Method, "path", req.URL.Path, "waited", waited.Round(time.Millisecond))
 	}
-	t.b.done(ctx, trial, result)
+	var against blame
+	if result < 0 {
+		against = t.b.blame(req, err)
+	}
+	t.b.done(ctx, trial, result, against)
 	if result < 0 && noAnswer(ctx, err, failed) {
 		err = &noAnswerError{err: err}
 	}
