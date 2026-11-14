@@ -2,7 +2,8 @@
 
 What JFrog Container Registry (JCR), the free Artifactory edition for containers, answered on
 2026-11-10, measured with `curl`, `oras`, `cosign`, the integration tests and the e2e scenarios
-(issue #338). JCR is Artifactory with the Docker, OCI, Helm and Generic package types only; a
+(issue #338), and again on 2026-11-13 and 14 after #813, with `lajstrom registry probe` too
+(issue #947, [Again after #813](#again-after-813)). JCR is Artifactory with the Docker, OCI, Helm and Generic package types only; a
 registry lives in a repository of Artifactory's, named by its key. The [summary
 rows](README.md#jfrog-container-registry) are in the README; this page has the details.
 
@@ -17,7 +18,17 @@ already has elsewhere ([Blob reads](#blob-reads-head-and-get)); and the free edi
 user, group or permission through its REST API, so Lajstrom runs with the admin's token. The
 code works around the first three since (items 2 to 4 of
 [What the provider must do differently](#what-the-provider-must-do-differently): #352, #368),
-but JCR was not run again with them; until it is, JCR is a backend for trying Lajstrom.
+and **measured again on 2026-11-13 and 14 the three workarounds hold**: through Lajstrom a wrong
+digest is `400 DIGEST_INVALID` and nothing is stored, a closing `PUT` after a `PATCH` keeps its
+bytes, and the apt and ingest tests that failed on a second run pass twice in a row
+([Again after #813](#again-after-813)). What is left: the admin's token; no catalog Lajstrom
+uses, so a reindex from an empty index finds no OCI repository; JCR deletes an image path with
+its blobs when its last manifest goes, and a re-pointed tag deletes the manifest it named; a
+manifest naming a missing blob is `MANIFEST_INVALID`, not `MANIFEST_BLOB_UNKNOWN`; the
+referrers list lags a write by milliseconds; and two answers of Lajstrom's own to JCR's upload
+sessions (items 9 and 10). The rebuild is what keeps Quay a backend for trying too: until the
+provider lists repositories through the per-key catalog (item 7), JCR is one for trying
+Lajstrom, not for data.
 
 ## Version tested
 
@@ -36,6 +47,10 @@ but JCR was not run again with them; until it is, JCR is a backend for trying La
   included, in 90 s; the JCR container alone healthy after 78 s.
 - The tests with Go 1.27.3 at 6b3b7b7, and with the probe fix that came with this page,
   "fix(provider): count a catalog only when the probe's 200 has one" (#338).
+- Again on 2026-11-13 and 14 ([Again after #813](#again-after-813)): the same image, still the
+  newest tag (`latest` has the same index digest, `Last-Modified: Tue, 08 Sep 2026`); Go 1.27.4
+  at 20ce9499. The container at 3.4 to 3.8 GiB of its 4 GiB; `jcr.sh up` with the image pulled
+  in 87 s.
 
 ## Run it
 
@@ -123,19 +138,25 @@ says `<dockerReverseProxyMethod>path</dockerReverseProxyMethod>`, the default:
 limits and the garbage collector, which still need a person;
 [README.md](README.md#measuring-a-registry-lajstrom-registry-probe) says how.
 
+Measured on 2026-11-10 by hand; the cells marked (probe) by `lajstrom registry probe` on
+2026-11-13 ([Again after #813](#again-after-813)), which agreed with the others.
+
 | Row of the matrix | JCR 7.161.26, a local docker repository as the prefix |
 | --- | --- |
 | Create on push | [yes, inside an existing repository key; a key is never created (404)](#create-on-push) |
-| Where a repository may be created | [below `<repo-key>/`, at any depth (12 components; a component of 250 characters)](#create-on-push) |
-| Referrers API | [yes, with the `artifactType` filter; no `n`; no tag schema](#referrers) |
+| Where a repository may be created | [below `<repo-key>/`, at any depth (12 components; a component of 250 characters)](#create-on-push); [inside another repository too; 256 characters taken (probe)](#again-after-813) |
+| Routing words in a name (`manifests`, `referrers`, `tags/list`) | [ok: 20 blob `HEAD`s in each name, all 200 (probe)](#again-after-813) |
+| Referrers API | [yes, with the `artifactType` filter; no `n`; no tag schema](#referrers); [the list lags a referrer's push and its delete by about 10 ms](#again-after-813) |
 | `OCI-Subject` on a push with `subject` | [yes](#referrers) |
 | Catalog (`_catalog`) and its limits | [**200 with an empty body** at `/v2/_catalog`; per key at `/v2/<repo-key>/_catalog`, `n`/`last`/`Link`, lexical](#catalog-and-tags) |
 | A listing API of its own | [`/artifactory/api/docker/<repo-key>/v2/_catalog`, and the storage API](#catalog-and-tags) |
 | Tag list order and pagination | [lexical; `n`/`last`/`Link`](#catalog-and-tags) |
-| Delete a manifest by digest | [yes, 202, with its tags; its referrers stay](#delete) |
-| Delete by tag | [yes, 202: the manifest stays](#delete) |
+| Read-after-write lag | [none seen in 3 writes and 3 deletes: manifest by digest and by tag, blob, tag list (probe)](#again-after-813) |
+| Monotonic reads | [none: 3 writes, a tag move, 3 deletes, each read 5 times more over new connections (probe)](#again-after-813) |
+| Delete a manifest by digest | [yes, 202, with its tags; its referrers stay](#delete); [one an index lists too (probe); **the last manifest of an image path takes the path and its blobs**](#again-after-813) |
+| Delete by tag | [yes, 202: the manifest stays while another tag holds it](#delete); [**the manifest too**, when it was pushed by that tag only (probe)](#again-after-813) |
 | Delete a repository | [Artifactory's `DELETE /artifactory/<repo-key>/<path>`, 204](#delete) |
-| Immutable tags, where the rule lives | [none: a tag re-points with 201; Artifactory's Delete/Overwrite permission (not measurable on JCR)](#immutable-tags) |
+| Immutable tags, where the rule lives | [none: a tag re-points with 201; Artifactory's Delete/Overwrite permission (not measurable on JCR)](#immutable-tags); [**the manifest it named is deleted** when nothing else holds it (probe)](#again-after-813) |
 | Blob redirect | [none on the filesystem store](#blob-reads-head-and-get) |
 | `Range` and `Accept-Ranges` | [206, 416 past the end, multipart for two ranges; `Accept-Ranges` on `GET`, not on `HEAD`](#blob-reads-head-and-get) |
 | Largest blob measured | [1 GiB in one `PUT`; 2 GiB not run (disk)](#blob-reads-head-and-get) |
@@ -144,24 +165,25 @@ limits and the garbage collector, which still need a person;
 | Auth | [Bearer from `/v2/token`; Basic straight on `/v2` too; an access token as the password](#version-tested) |
 | Rate limits seen | [none](#our-tests-against-it) |
 | Upload: chunk out of order | [416](#uploads-and-digests) |
-| Upload: chunk size limit | *not measured* |
-| Upload: session status (`GET`) | [works, 204 with `Range`; `HEAD` too](#uploads-and-digests) |
-| Upload: cancel (`DELETE`) | [**405**; the session stays](#uploads-and-digests) |
+| Upload: chunk size limit | [none met: 8 MiB in one `PATCH` (probe)](#again-after-813) |
+| Upload: session status (`GET`) | [works, 204 with `Range`; `HEAD` too](#uploads-and-digests); [**404 `BLOB_UNKNOWN` before the first chunk**, and the session works](#again-after-813) |
+| Upload: cancel (`DELETE`) | [**405**; the session stays](#uploads-and-digests); [through Lajstrom 501 (item 9)](#again-after-813) |
 | Upload: wrong digest, empty blob | [**a wrong digest is 201 and stored**; the empty blob stored](#uploads-and-digests) |
 | Upload: the closing `PUT` with a body after a `PATCH` | [**201, the body dropped**](#uploads-and-digests) |
 | Upload: a chunk without `Content-Range` | [the first works; a later one is 416](#uploads-and-digests) |
-| Upload continued by another replica | [fails: ours (the challenge's scope, #342), then JCR's dropped body (worked around since #352, item 2; not run again)](#uploads-and-digests) |
-| Mount from another repository | [202: a new session, no mount](#uploads-and-digests) |
+| Upload continued by another replica | [works since #342 and #352 (item 2): the probe and the facade's test](#again-after-813); on 2026-11-10 [it failed: ours, the challenge's scope, then JCR's dropped body](#uploads-and-digests) |
+| Mount from another repository | [**201 without a copy** when a manifest of the source names the blob (in the target `HEAD` 200, `GET` 404 until a manifest names it); 202, a new session, when the source only holds an upload](#again-after-813) |
 | Blob `HEAD` and `GET` | [**`HEAD` 200, `GET` 404** in an image path where only another path has the blob](#blob-reads-head-and-get) |
-| Garbage collector and an untagged referrer (#37) | *not measured* |
-| What the probe finds | [`referrers=true catalog=false`; before the probe fix of item 1, `catalog=true`, wrong](#what-the-provider-must-do-differently) |
-| Overrides needed | [none; `prefix: <repo-key>/`](#configuration) |
+| Garbage collector and an untagged referrer (#37) | *not measured*; [the blobs of an image path go with its last manifest](#again-after-813) |
+| What the probe finds | [`vendor=jfrog referrers=true catalog=false` (probe)](#again-after-813); before the probe fix of item 1, [`catalog=true`, wrong](#what-the-provider-must-do-differently) |
+| Overrides needed | [none; `prefix: <repo-key>/`; `uploads.spoolUnknownLength` for a chunk of unknown size after the first](#configuration) |
 
-The probe reports, with the probe fix, `vendor=unknown createOnPush=true referrers=true
+The probe reported, with the probe fix, `vendor=unknown createOnPush=true referrers=true
 catalog=false deleteManifest=true immutableTags=false blobRedirect=true maxBlobSize=0` (the
 test log, with the prefix, before #352). On main before the fix it said `catalog=true`, and
-every `ListRepositories` failed. Since #352 it is `vendor=jfrog` (item 7); not run against JCR
-again.
+every `ListRepositories` failed. On 2026-11-13 it says `vendor=jfrog`, the same capabilities and
+`consistency=unknown`, with `blobExistsByGET=true` and the hint for
+`uploads.spoolUnknownLength` ([Again after #813](#again-after-813)).
 
 ## What the provider must do differently
 
@@ -178,15 +200,17 @@ again.
    Content-Length` on the read-back). A single `PUT` after the `POST` keeps its body. **Done in
    #352:** `FinishBlobUpload` puts a last chunk in the closing `PUT` only when the session holds
    no bytes yet; otherwise it sends the chunk as a `PATCH` with its `Content-Range` and closes
-   with an empty `PUT`, on every registry. The unit tests check the requests; not run against
-   JCR again.
+   with an empty `PUT`, on every registry. **Measured on JCR on 2026-11-14:** the facade's
+   `TestIntegrationUploadAcrossReplicas` passes, and through Lajstrom a `PATCH` of `abc` and a
+   closing `PUT` of `def` store `abcdef` ([Again after #813](#again-after-813)).
 3. **Do not rely on the registry for the digest.** JCR stores whatever it is sent under the digest
    it is told, in a session or monolithically, and serves it so. Ingest computes its digests from
    the bytes it streams (ADR 0014), so what it pushes is right; the facade passed a client's
    digest through, so a client could store bytes under a digest they do not hash to, which every later reader gets.
    Done in #368: the facade hashes what it streams, with the sha256 state in the session row
    across replicas, and holds a blob's last byte back until the digest matches (threat model,
-   [P-9](../security/threat-model.md)).
+   [P-9](../security/threat-model.md)). **Measured on JCR on 2026-11-14:** a wrong digest through
+   Lajstrom is `400 DIGEST_INVALID`, monolithic and after a `PATCH`, and the blob is not there.
 4. **Check a blob's existence with `GET`, or push without checking, on JCR.** `HEAD` of a digest
    that a manifest anywhere in the repository key names is 200 in every image path, while `GET`
    there is 404 until a manifest of that path names it ([Blob reads](#blob-reads-head-and-get)).
@@ -197,11 +221,14 @@ again.
    content as it streams, instead of reading it back, as [ghcr.md](ghcr.md) asks, fixes it
    too. **Since #352** the provider asks a JFrog registry with a `GET` of the blob's first byte (`Range: bytes=0-0`) for `StatBlob` and a
    blob's `Exists`, never `HEAD`: ingest uploads what this path does not serve, and the facade
-   answers a client's `HEAD`, and checks a manifest's layers, as `GET` would. The unit tests
-   answer as JCR did; not run against JCR again. The quirk is set by the provider's first probe
-   that succeeds, so a provider that had not probed yet still asked `HEAD` (#797: measured with
-   Nexus's quirk on 2026-11-12; for JCR read in the code); since #797 a blob's `StatBlob` and
-   `Exists` probe before the provider's first request.
+   answers a client's `HEAD`, and checks a manifest's layers, as `GET` would. The quirk was set
+   by the provider's first probe that succeeds, so a provider that had not probed yet still asked
+   `HEAD` (#797: measured with Nexus's quirk on 2026-11-12); since #797 (PR #813) a blob's
+   `StatBlob` and `Exists` probe before the provider's first request. **Measured on JCR on
+   2026-11-14:** the apt tests and ingest's `TestSessionsIntegration` pass twice in a row on one
+   JCR, the second run finding every `.deb` and metadata layer elsewhere in the key, and the
+   facade's `TestIntegrationBlobReads` passes on its replica that never probed
+   ([Again after #813](#again-after-813)).
 5. **Hold the token for the repository's scope however the challenge spells it.** The challenge
    names the image without the key; #342 (Gitea's `scope="*"`) caches the token under the
    request's own scopes as well, and with it the facade's uploads pass on JCR but for item 2.
@@ -209,16 +236,32 @@ again.
    provider sends one so (`AppendBlobChunk(…, -1)`); docker sends a single streamed `PATCH`,
    which JCR takes. Spooling such a chunk to know its size would do. **Done in #425, behind a
    flag:** `registries[].uploads.spoolUnknownLength: true` spools it and sends it with
-   `Content-Range`; off by default, with a hint at start (`vendor=jfrog`). The unit tests answer
-   416 as JCR did; not run against JCR again.
+   `Content-Range`; off by default, with a hint at start (`vendor=jfrog`). **Measured on JCR on
+   2026-11-13:** without it the provider's chunk of unknown size is
+   `registry integration refused the request: 416`, with the hint; with it the step passes.
 7. Optional: name the vendor. Every answer of JCR, the 200 of `GET /v2/` included, has
    `X-Jfrog-Version: Artifactory/7.161.26 86126900` and `X-Artifactory-Id`; a `jfrog` vendor
    could log what items 2 to 4 cost, and list repositories through `/v2/<repo-key>/_catalog`
    (with the key put back on the names) instead of having none. **Since #352** it is
-   `vendor=jfrog` and carries item 4; the per-key catalog is not done.
+   `vendor=jfrog` and carries item 4 (measured 2026-11-13); the per-key catalog is not done, so
+   reindex from an empty index still finds no OCI repository ([Again after #813](#again-after-813)).
 8. Nothing to do: the cancel of an upload session is 405 and the session stays until JCR purges
    it (when, not measured); the facade logs `facade: cancel backend upload session …
-   unsupported (HTTP 405, )` and goes on.
+   unsupported (HTTP 405, )` and goes on. A client's own cancel is item 9.
+9. **Ours, open: a client's cancel through the facade is `501`.** `cancelUpload`
+   (internal/facade/uploads.go) answers the provider's `ErrUnsupported` for JCR's 405 as
+   `501 UNSUPPORTED`, with the provider's error as the message, which names JCR's own session
+   id, and keeps the session row; `cancelBackend` takes the same 405 as harmless. The e2e
+   scenario `rbac.sh` fails on it. GHCR answers the cancel 405 too
+   ([Again after #813](#again-after-813), item 5).
+10. **The status of a session before its first chunk ends it through Lajstrom.** JCR answers it
+    `404 BLOB_UNKNOWN` and the session works; the facade takes the 404 for a session the
+    registry no longer knows, as http-routing.md says, and ends its own
+    ([Again after #813](#again-after-813), item 4).
+11. Nothing to do yet: a manifest naming a blob JCR does not have is `400 MANIFEST_INVALID`, so
+    the retries of a manifest on `MANIFEST_BLOB_UNKNOWN` (#842) and the naming of the missing
+    blob (#850) do not apply here; JCR showed no blob lag that the retries would cover
+    ([Again after #813](#again-after-813), item 2).
 
 ## Create on push
 
@@ -292,7 +335,9 @@ DELETE /artifactory/lajstrom/raw/it-1bc815ae/bin/tool    204   tags/list 404, go
 ```
 
 Lajstrom deletes a package's referrers itself before its manifest; the integration tests'
-`delete` steps passed.
+`delete` steps passed. The probe of 2026-11-13 adds two answers: a tag of a manifest pushed by
+that tag only takes the manifest with it (by digest 404), and the delete of an image path's last
+manifest takes the path and its blobs ([Again after #813](#again-after-813), items 1 and 3).
 
 ## Immutable tags
 
@@ -300,6 +345,10 @@ Lajstrom deletes a package's referrers itself before its manifest; the integrati
 PUT another manifest as cat-3376/r2:v1          201   v1 is the new digest
 PUT the same manifest again under v1            201
 ```
+
+Measured by the probe on 2026-11-13: when the tag re-points, the manifest it named is gone by
+digest (404) if no other tag holds it and it was not pushed by digest
+([Again after #813](#again-after-813), item 3).
 
 No option of a local Docker repository makes tags immutable. Artifactory stops a re-point when
 the deployer lacks the Delete/Overwrite permission (`enforceStrictTagOverwrite` in the
@@ -384,6 +433,9 @@ signatures.
 
 ## Our tests against it
 
+The runs of 2026-11-10; those of 2026-11-13 and 14, with the fixes since, are in
+[Again after #813](#again-after-813).
+
 `LAJSTROM_TEST_REGISTRY=localhost:5010`, `LAJSTROM_TEST_REGISTRY_PREFIX=lajstrom/`,
 `LAJSTROM_TEST_REGISTRY_USERNAME=admin`, the token in `LAJSTROM_TEST_REGISTRY_PASSWORD`, the dev
 stack's Postgres; on a fresh JCR, `go test -race -count=1 -tags integration` of the provider,
@@ -417,6 +469,148 @@ LAJSTROM_E2E_REGISTRY_PASSWORD}` ([Commands](#commands)):
 (its 401 is the harness's, not JCR's); the runs left that step out, and the referrers API on
 JCR listed the bundle. No 429 or other rate limit in any run.
 
+## Again after #813
+
+Measured on 2026-11-13 and 14 for #947 and item 1 of #850: the same image and `jcr.sh` (on
+port 57170 with `LAJSTROM_JCR_PORT`, and as another compose project with `COMPOSE_PROJECT_NAME`,
+which `jcr.sh`'s `docker compose` honours), Lajstrom at 20ce9499: #352's vendor table, #368's
+digest check, #425's spooling, #813's quirks before the first read, #845's list priming and
+delete lag, #564's monotonic reads. What ran ([Commands](#commands)):
+
+- `lajstrom registry probe -v`, the column of [The row](#the-row) (its cells marked "probe");
+- the integration tests of the provider, ingest, raw, facade, deb, reindex and probe packages,
+  on SQLite (no `LAJSTROM_TEST_POSTGRES_DSN`: the Postgres variants skipped);
+- the stock `test/e2e/run.sh` with `LAJSTROM_E2E_REGISTRY_USER`, `_PASSWORD_FILE` and `_PREFIX`
+  (#353): `raw`, `oras`, `auth`, `rbac` and `cosign`;
+- curl against JCR, and through a Lajstrom of the e2e harness, for what the tests found.
+
+The probe's start, as `serve` logs it:
+
+```text
+registry capabilities registry=localhost:57170 vendor=jfrog createOnPush=true referrers=true catalog=false deleteManifest=true immutableTags=false blobRedirect=true maxBlobSize=0 consistency=unknown maxNameDepth=0
+registry needs workarounds registry=localhost:57170 vendor=jfrog blobsReadWhole=false blobExistsByGET=true pushForDelete=false
+hint: the registry refuses a /v2 chunk of unknown length after the first write, and such an upload fails with its 4xx; registries[].uploads.spoolUnknownLength spools that chunk to $TMPDIR
+```
+
+**What changed since 2026-11-10: the workarounds hold.**
+
+| | 2026-11-10 | 2026-11-13 and 14 |
+| --- | --- | --- |
+| A closing `PUT` with a body after a `PATCH` (item 2, #352) | the facade's `TestIntegrationUploadAcrossReplicas` failed, `mismatch Content-Length` | passes; through Lajstrom `PATCH abc`, then `PUT def ?digest=sha256(abcdef)` is 201 and the blob reads `abcdef`; the probe's "Upload continued by another replica": works |
+| A wrong digest (item 3, #368) | the facade passed a client's digest through, and JCR stored the bytes under it | through Lajstrom `400 DIGEST_INVALID`, monolithic and after a `PATCH`, and the blob is 404; JCR itself still stores them (the probe) |
+| `HEAD` 200 where `GET` is 404 (item 4, #352, #813) | `TestAptGet`, `TestAptGetInstall/registry`, `TestAptGetSigned` and ingest's `TestSessionsIntegration` failed on a second run | all pass, twice in a row on one JCR; the facade's `TestIntegrationBlobReads` passes on its replica that never probed (#813) |
+| The challenge's scope (item 5, #342) | the facade's streamed uploads failed, not rewindable | the facade's uploads pass |
+| A chunk of unknown size after the first (item 6, #425) | 416 | 416 without the flag, with the hint; passes with `uploads.spoolUnknownLength` |
+| The vendor (item 7) | `vendor=unknown` | `vendor=jfrog`, `blobExistsByGET=true` |
+| The probe's other rows | not run | routing words ok, no read-after-write lag in 3 writes and 3 deletes, monotonic reads, 8 MiB in one `PATCH`; [The row](#the-row) |
+
+**New, from the probe, the tests and curl.**
+
+1. **An image path goes with its last manifest, and its blobs with it**: the layers no other
+   manifest of the key names, and the blobs uploaded there that no manifest names yet. A mount
+   (201, below) copies nothing, so a manifest that relies on a mounted blob fails once the source
+   path is gone. In `lajstrom/m-a-27800` and its neighbours:
+
+   ```text
+   m-a: the config, a layer, a manifest v1 naming them             201 201 201
+   POST m-b/blobs/uploads/?mount=<layer>&from=lajstrom/m-a         201   then in m-b: HEAD 200, GET 404
+   POST m-d/blobs/uploads/?mount=<blob>&from=lajstrom/m-c          202   (m-c holds the blob as an upload, no manifest)
+   m-a: another blob uploaded, no manifest names it                201; HEAD 200
+   DELETE m-a/manifests/<v1's digest>, its last manifest           202; tags/list 404
+   HEAD, GET of the layer and of the other blob in m-a             404 404, 404 404
+   HEAD of the layer in m-b                                        404
+   PUT m-b/manifests/v1 naming the layer                           400 MANIFEST_INVALID "Failed to copy blob 7e6967b5… to m-b-27800/v1/sha256__7e6967b5…"
+   ```
+
+   Lajstrom leaves blobs to the registry's garbage collector; JCR collects at once, as Forgejo
+   does. What fails on it: the facade's `TestIntegrationDeleteInterleaved`, 14 of its 32
+   scenarios, where D, or a referrer of D, is pushed again after the delete of D's last manifest
+   (1 across x's whole delete, 2b, 4 across the delete, both 5 after the lock or the listing):
+   `400 MANIFEST_INVALID`; and ingest's `TestIntegrationPutReferrerSubjectDeleted`, whose late
+   referrer is refused `ErrInvalid` as the test wants, but naming its own layer, which went with
+   the path (`blob sha256:0890… was not uploaded to raw/it-…/notes`), not the subject, after
+   the 30 s a registry not classified strong is read again for.
+
+2. **A manifest naming a blob JCR does not have is `400 MANIFEST_INVALID`**, never
+   `MANIFEST_BLOB_UNKNOWN`, for a digest pushed nowhere too: `"detail":{"description":"Failed to
+   copy blob <hex> to <path>/<tag>/sha256__<hex>"}`. The facade passes it on, `registry it
+   refused the request: 400 MANIFEST_INVALID`; the retries on `MANIFEST_BLOB_UNKNOWN` (#842) and
+   the naming of the missing blob (#850) do not apply. No blob lag was seen for them to cover.
+
+3. **A re-pointed tag deletes the manifest it named**, when no other tag holds it and it was not
+   pushed by digest (the probe): JCR keeps a manifest in a folder per tag,
+   `<image>/<tag>/manifest.json`, or `<image>/sha256:<hex>/` when pushed by digest, as
+   Artifactory's storage API shows. Lajstrom's managed formats never re-point a tag; a client of
+   an `oci` repo that pushes `app:latest` again deletes the image `latest` named, and its
+   referrers stay without it. The facade's interleaving "3 D2 under v1 before find" fails so: D
+   by digest is 404, and by digest its delete is 404 with D's referrer still listed.
+
+4. **The status of an upload session before its first chunk is `404 BLOB_UNKNOWN`**
+   (`"detail":{"blobSum":"<session id>"}`); after a `PATCH` it is 204 with `Range`, and the
+   session works either way. Through Lajstrom the 404 ends the facade's session, as
+   http-routing.md says of a session the registry no longer knows:
+
+   ```text
+   POST /v2/raw/scratch/status-12081.txt/blobs/uploads/     202
+   GET  <the session>                                       404 BLOB_UPLOAD_UNKNOWN
+   PATCH abc, Content-Range: 0-2                            404 BLOB_UPLOAD_UNKNOWN
+   a second session: PATCH abc 0-2, then GET                202, 204 Range: 0-2
+   ```
+
+   A client that asks the status before its first chunk loses the session (item 10).
+
+5. **A client's cancel through Lajstrom is `501`** (item 9). JCR answers the backend's `DELETE`
+   405, the provider makes it `ErrUnsupported`, and the facade answers it with the provider's
+   error, which names JCR's own session id; `rbac.sh` fails on it (`writer /v2 cancel of the
+   upload: got '501', want '204'`):
+
+   ```text
+   DELETE /v2/raw/scratch/cancel-15829.txt/blobs/uploads/c18f84ab…   501 {"errors":[{"code":"UNSUPPORTED","message":"generic: cancel upload raw/scratch/cancel-15829.txt@03fe68de-e997-4dc3-9519-47dbf5402e3f.patch: provider: unsupported (HTTP 405, )"}]}
+   ```
+
+6. **The referrers list lags by milliseconds.** Manifests, tags and blobs answer at once (the
+   probe), but the referrers API lists a new referrer up to 9 ms after its 201, and keeps
+   listing a deleted one for about 10 ms after its 202, over one keep-alive connection: the first
+   read after the 201 missed it in 18 of 30 tries; the first read after the delete still listed
+   it in 22 of 40 (gone within 10.6 ms in the 20 tries timed); a `HEAD` of the referrer by digest
+   was 200, and 404, at once. The probe's lag row does not
+   read the referrers list. The facade's `TestIntegrationDeleteReferrer` reads it right after
+   the 202 and failed in 5 of 16 runs. A push is covered: on a registry not classified strong
+   (JCR has no consistency in the vendor table, `consistency=unknown`) ingest's visibility
+   barrier reads the subject's referrers until they list it. A delete is not. Leave
+   `capabilities.consistency` unset for JCR.
+
+The integration tests, `-tags integration -race`, against `lajstrom/`:
+
+| Test | Result |
+| --- | --- |
+| provider `TestIntegration`, `TestIntegrationNameLength` | pass; `list repositories` skipped (no catalog) |
+| provider `TestIntegrationUploads` | without the flag **fail** at the chunk of unknown size, 416 (item 6). With `LAJSTROM_TEST_REGISTRY_SPOOL_UNKNOWN_LENGTH=1` the session across providers, the downloads, monolithic, chunks of unknown size, empty blob, chunk out of order and chunks split pass; **fail**: `wrong digest` (JCR stores it, so the provider has no refusal to report) and, each at its cancel, `cancel`, `mount` and `streamed writer` (405, `ErrUnsupported`). JCR's |
+| ingest | pass, twice, but `TestIntegrationPutReferrerSubjectDeleted` (new item 1); the tag-schema tests skip (referrers API) |
+| raw `TestIntegration` | pass |
+| facade: delete, delete unsupported, catalog after delete, upload across replicas, monolithic abandoned, pass-through, referrers, token across replicas, raw push, blob reads, proxy repo push, spool budget, client body breaker | pass |
+| facade `TestIntegrationDeleteReferrer` | **flaky**, 5 of 16 runs: the referrers list's lag (new item 6). JCR's |
+| facade `TestIntegrationDeleteInterleaved` | **fail**, 14 of 32 scenarios (new items 1 and 3). JCR's |
+| facade `TestIntegrationOCIProxy`, `TestIntegrationOCIGroup` | **fail** at once: the test seeds its upstream on the same registry without the instance prefix, 404 `Repository 'it-upstream-…' not found`, the test's assumption. With `LAJSTROM_TEST_UPSTREAM_REGISTRY=localhost:5001`, the dev stack's distribution as the upstream, they fail only in their counts of upstream blob `GET`s (3 for 4; 1 for 2; for the shared layer without mounts 0 for 1): JCR takes a manifest whose blobs another path of the key holds, and copies them, so the proxy fetched less. JCR's |
+| deb `TestAptGet`, `TestAptGetInstall/registry`, `TestAptGetSigned` | pass, twice in a row |
+| reindex `TestIntegrationNoCatalog`, `TestIntegrationRepositoryUnknown` | pass |
+| reindex `TestIntegration`, `…Formats`, `…Names`, `…Split` | **fail**, as on 2026-11-10: from an empty index there is no catalog to find OCI repositories in (`list repositories …: no catalog: provider: unsupported`); ours, the per-key catalog of item 7 |
+| probe `TestIntegrationRun` | **fail** on its "left behind" list alone: JCR answers a blob's `DELETE` 405, which the spec allows; every cell as the column says |
+
+The e2e scenarios:
+
+| Scenario | Result |
+| --- | --- |
+| `raw.sh`, `oras.sh`, `auth.sh` | pass |
+| `rbac.sh` | **fail** at a writer's cancel of an upload: 501 (new item 5) |
+| `cosign.sh` | pass, with the step that reads the backend (since #353) and `lajstrom reindex`, which found the OCI repository in `oci_repos` |
+
+`cosign.sh` ran from a copy whose `docker run` names its containers, a rule of the machine it ran
+on; nothing else changed. Not run: `oci-token`, `tokens` and `apt` (oras and apt-get in
+containers; the backend parts are those of `oras` and the deb tests), the Postgres variants, the
+suites on `lajstrom-oci/` and `lajstrom-virtual/`, a blob above 8 MiB, JCR's own cleanup of
+upload sessions. No 429 in any run.
+
 ## Configuration
 
 ```yaml
@@ -428,10 +622,15 @@ registries:
     auth:
       username: admin                   # JCR creates no other user through its REST API
       passwordEnv: LAJSTROM_JCR_TOKEN   # an access token (jcr.sh: lajstrom.token)
+    uploads:
+      spoolUnknownLength: true          # JCR refuses a chunk of unknown size after the first (416)
 ```
 
-The probe needs no override. Items 2 to 4 are done in the code but were not run against JCR;
-until they are, JCR is a backend for trying Lajstrom, not for data.
+The probe needs no override; `uploads.spoolUnknownLength` is for clients that stream a chunk of
+unknown size after their first (item 6), and writes that chunk to `$TMPDIR` first. Leave
+`capabilities.consistency` unset: the referrers list lags (new item 6 of
+[Again after #813](#again-after-813)). Items 2 to 4 hold on JCR since the measurement of
+2026-11-13 and 14; what is left is in that section.
 
 ## Deviations from the specification
 
@@ -441,10 +640,13 @@ For the README's table; measured, each against distribution-spec v1.1.1:
 | --- | --- |
 | The body of a closing `PUT` after `PATCH`es is dropped: 201, the blob short | "The final chunk MAY be uploaded using a `PATCH` request or it MAY be uploaded in the closing `PUT` request" |
 | A blob is stored and served under any digest the client names (session or monolithic) | "A GET request to an existing blob URL MUST provide the expected blob"; the error table has `DIGEST_INVALID`, "provided digest did not match uploaded content", unbound to a status |
-| `HEAD` of a blob 200 where `GET` is 404 | "A HEAD request to an existing blob or manifest URL MUST return `200 OK`"; "A GET request to an existing blob URL MUST provide the expected blob" |
+| `HEAD` of a blob 200 where `GET` is 404, after a mount's 201 too | "A HEAD request to an existing blob or manifest URL MUST return `200 OK`"; "A GET request to an existing blob URL MUST provide the expected blob" |
+| The status of an upload session before its first chunk is 404 `BLOB_UNKNOWN`; the session works (2026-11-14) | "The response to an active upload `<location>` MUST be a `204 No Content` response code", with `Range` |
 | The `Location` of a manifest `PUT` is an upload URL that answers 405 | "The `<location>` is a pullable manifest URL" |
 | `GET /v2/_catalog` is 200 with an empty body | not a deviation: `_catalog` is not in the spec |
-| The cancel of an upload session is 405; a mount is a new session (202) | not deviations: the cancel is not in 1.1.1, and "the registry MAY" mount |
+| The cancel of an upload session is 405; a mount is a new session (202) when the source holds the blob as an upload only | not deviations: the cancel is not in 1.1.1, and "the registry MAY" mount |
+| A manifest naming a blob JCR does not have is 400 `MANIFEST_INVALID`, "Failed to copy blob …" (2026-11-14) | not a deviation in words: the error table has `MANIFEST_BLOB_UNKNOWN`, "manifest references a manifest or blob unknown to registry", but binds no case to it; a client that waits for that code misses this one |
+| A blob's `DELETE` is 405; the blobs of an image path go with its last manifest (2026-11-14) | not deviations: a registry may refuse blob deletes with 405, and retention is not in the spec |
 
 ## Commands
 
@@ -467,24 +669,44 @@ c "$J/artifactory/api/storage/lajstrom/<image>/<tag>/sha256__<hex>"             
 curl -s -i "$J/v2/lajstrom/raw/x/blobs/uploads/" -X POST | grep -i www-authenticate        # the scope without the key
 ```
 
-The integration tests:
+The probe, first ([Again after #813](#again-after-813)):
+
+```sh
+make build
+bin/lajstrom registry probe --url http://localhost:5010 --registry-prefix lajstrom/ \
+  --username admin --password-file "$LAJSTROM_JCR_DIR/lajstrom.token" -v > jcr-probe.md
+```
+
+The integration tests; `LAJSTROM_TEST_REGISTRY_SPOOL_UNKNOWN_LENGTH=1` turns on
+`uploads.spoolUnknownLength` for the provider's upload steps, `LAJSTROM_TEST_POSTGRES_DSN` adds
+the Postgres variants, and `LAJSTROM_TEST_UPSTREAM_REGISTRY=localhost:5001` gives the facade's oci
+proxy tests an upstream of their own (they seed it without the prefix):
 
 ```sh
 LAJSTROM_TEST_REGISTRY=localhost:5010 LAJSTROM_TEST_REGISTRY_PREFIX=lajstrom/ \
 LAJSTROM_TEST_REGISTRY_USERNAME=admin LAJSTROM_TEST_REGISTRY_PASSWORD="$(cat "$LAJSTROM_JCR_DIR/lajstrom.token")" \
-LAJSTROM_TEST_POSTGRES_DSN='postgres://lajstrom:lajstrom@localhost:5432/lajstrom?sslmode=disable' \
+LAJSTROM_TEST_REGISTRY_SPOOL_UNKNOWN_LENGTH=1 \
   go test -race -count=1 -tags integration ./internal/provider/generic/ ./internal/ingest/ \
-    ./internal/format/raw/ ./internal/facade/ ./internal/format/deb/ ./internal/index/reindex/
+    ./internal/format/raw/ ./internal/facade/ ./internal/format/deb/ ./internal/index/reindex/ \
+    ./internal/provider/probe/
+```
+
+The e2e scenarios, with the stock `run.sh` since #353
+([testing.md](../testing.md#a-registry-with-credentials-and-a-prefix)):
+
+```sh
+LAJSTROM_E2E_REGISTRY=localhost:5010 LAJSTROM_E2E_REGISTRY_USER=admin \
+LAJSTROM_E2E_REGISTRY_PASSWORD_FILE="$LAJSTROM_JCR_DIR/lajstrom.token" LAJSTROM_E2E_REGISTRY_PREFIX=lajstrom/ \
+  test/e2e/run.sh raw oras auth rbac cosign
+deploy/compose/jfrog-jcr/jcr.sh down
 ```
 
 `LAJSTROM_TEST_REGISTRY_PREFIX=lajstrom-virtual/` and `lajstrom-oci/` for the other two
-repositories. The e2e harness had no setting for a prefix or credentials of its registry on
-2026-11-10, so the runs used a copy of `test/e2e/run.sh` with `lib.sh` and `here` pointing at
-`test/e2e/`, the registry `local` given the prefix and the `auth` above, and `LAJSTROM_E2E_REGISTRY=` before the
-server starts, which leaves out cosign.sh's anonymous look at the backend. Since #353 the stock
-`run.sh` takes them, `LAJSTROM_E2E_REGISTRY_USER`, `LAJSTROM_E2E_REGISTRY_PASSWORD_FILE` and
-`LAJSTROM_E2E_REGISTRY_PREFIX` ([testing.md](../testing.md#a-registry-with-credentials-and-a-prefix));
-not run against JCR. The copy:
+repositories. On 2026-11-10 the e2e harness had no setting for a prefix or credentials of its
+registry, so those runs used a copy of `test/e2e/run.sh` with `lib.sh` and `here` pointing at
+`test/e2e/`, the registry `local` given the prefix and the `auth` above, and
+`LAJSTROM_E2E_REGISTRY=` before the server starts, which left out cosign.sh's anonymous look at
+the backend. The copy, for the record:
 
 ```sh
 root=$PWD
@@ -493,5 +715,4 @@ sed -e "s|^\. \"\$(dirname \"\$0\")/lib.sh\"\$|. $root/test/e2e/lib.sh|" -e "s|^
     -e 's|^"$bin" migrate --config|LAJSTROM_E2E_REGISTRY=\n&|' test/e2e/run.sh >"$TMPDIR/jcr-run.sh"
 LAJSTROM_E2E_REGISTRY=localhost:5010 LAJSTROM_E2E_REGISTRY_PASSWORD="$(cat "$LAJSTROM_JCR_DIR/lajstrom.token")" \
   bash "$TMPDIR/jcr-run.sh" oras cosign
-deploy/compose/jfrog-jcr/jcr.sh down
 ```

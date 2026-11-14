@@ -120,5 +120,6 @@ The probe's row "Read-after-write lag", from [registries/README.md](../registrie
 | GitLab A and B | 2026-11-11 | none seen | not measured |
 | Nexus | 2026-11-11 | none seen | not measured |
 | Project Quay 3.18.2 | 2026-11-12, by hand | manifests and blobs at once; a tag list read before a push stale up to 120 s, a catalog page 60 s | not measured |
+| JFrog JCR 7.161.26 | 2026-11-13 (#947) | none seen, the tag list read before (no catalog); by curl, the referrers list up to 9 ms behind a referrer's push | none seen; by curl, the referrers list about 10 ms behind a referrer's delete |
 
-Not measured yet: Harbor, Gitea, Forgejo, JFrog JCR and GHCR with the probe of #845; ECR (#19).
+Not measured yet: Harbor, Gitea, Forgejo and GHCR with the probe of #845; ECR (#19).
