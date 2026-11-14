@@ -1087,25 +1087,27 @@ longer than `reconcile.graceAge` is outside them
   repo a referrer is stored only for a subject the repository has: one pushed while its subject
   is deleted is either deleted with it or refused, `400 MANIFEST_INVALID` (#806).
 - **Scope.** Managed and `oci` repos; the tag schema `sha256-<hex>` where the registry has no
-  referrers API. The subject rule: managed repos, a referrer whose subject has no subject itself
+  referrers API, and beside the API where `referrers.alwaysTag` is on. The subject rule: managed repos, a referrer whose subject has no subject itself
   (a version's manifest); not a referrer of a referrer.
 - **Assumes.** Registry: **GC keeps what is named** (**unchecked**): only on a registry with the
   referrers API and a collector of untagged manifests, which would delete the referrers Lajstrom
-  pushes there (#326); GitLab B's and Nexus's collectors delete an untagged referrer, but neither
+  pushes there, unless `referrers.alwaysTag` is on: then the subject's `sha256-<hex>` index names
+  each of them and the listing reads it too (#326); GitLab B's and Nexus's collectors delete an untagged referrer, but neither
   registry has the API, and a referrer that their `sha256-<hex>` index lists stays (#666).
   Database: **Postgres for replicas** (on SQLite the referrers lock is a lock of the process),
   and the lock's transaction lasts until its push returns (**unchecked**): no timeout that the
   client cannot lift ends it, so PgBouncer's `idle_transaction_timeout` and Postgres's
   `transaction_timeout` are 0 for Lajstrom's users (index-schema.md, Coordination).
 - **Mechanism.** `ingest.Pipeline.PutReferrer` (`checkReferrer`, `pushReferrer` under
-  `index.Store.WithReferrersLock` without the API, and on a managed repo with the API too), the
-  provider's tag-schema fallback (`provider.Repository.Referrers`). On a managed repo `pushReferrer`
+  `index.Store.WithReferrersLock` where the provider keeps the tag schema, `Capabilities.TagSchema`:
+  without the API, or with `referrers.alwaysTag`; and on a managed repo always), the provider's
+  tag schema (`provider.Repository.Referrers`: without the API, or merged with it). On a managed repo `pushReferrer`
   resolves the subject again under the subject's lock (`resolveSubject`), the tag lock that
   `deletion.locked` holds for the whole delete of the version, so a push and that delete follow
   each other (#806). The lock's transaction lifts `idle_in_transaction_session_timeout`
   for itself, and its `COMMIT` is checked: a lock lost while the push ran is
   `index.ErrUnavailable`, `503` with `Retry-After`, never a success (#615). The delete of one
-  referrer without the API (`deletion.deleteReferrer`) pushes its subject's index again without
+  referrer where the provider keeps the tag schema (`deletion.deleteReferrer`) pushes its subject's index again without
   it right after the index's delete and before the referrer's; when the registry does not take
   that push, the index goes back as it was and the referrer stays (`503` with `Retry-After`).
   An index that lacks referrers the audit log has as pushed and the registry has, or that is

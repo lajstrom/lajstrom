@@ -388,8 +388,11 @@ models terabytes.
 Signatures and attestations attach with `subject` = our manifest and are passed through to the
 backend unchanged, by the referrer path of ingest (`PutReferrer`), which indexes nothing; so is
 a manifest under cosign's legacy tag `sha256-<hex>.sig`, `.att` or `.sbom`. Lajstrom lists referrers with the referrers API when the provider has it, and
-with the `sha256-<digest>` tag schema otherwise (`Capabilities.Referrers`). Lajstrom never
-rewrites a referrer. `profile.ReferrerKind` tells a referrer's kind, `signature`, `sbom`,
+with the `sha256-<digest>` tag schema otherwise (`Capabilities.Referrers`). With the registry's
+`referrers.alwaysTag` (`Capabilities.ReferrersAlwaysTag`), a referrer push also writes the
+subject's `sha256-<digest>` index where the registry has the API, as insurance against a garbage
+collector that deletes referrers no tag names, and the listing merges both, each digest once,
+the API's first; a delete removes the referrer from both. Lajstrom never rewrites a referrer. `profile.ReferrerKind` tells a referrer's kind, `signature`, `sbom`,
 `attestation` or `other`, for the `kind` of its audit row (and the attachments of #89 later):
 from its predicate type, cosign's legacy tag, or the media types it knows, cosign
 (`application/vnd.dev.cosign.*`), notation (`application/vnd.cncf.notary.signature`), SPDX,
