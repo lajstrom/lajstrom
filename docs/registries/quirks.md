@@ -402,7 +402,8 @@ component, or by one component and `logs` or `status`. 19 names were refused, am
 `foo/build/bar/baz` and `foo/build/bar/logs/x`. A pull token for such a name is granted and
 creates nothing; v3.18.3 (2026-11-13) does not have the rule yet. Since #662 the vendor table
 says `buildRoutes: true` for Quay: Lajstrom refuses a new package so named before anything is
-pushed ([quay.md](quay.md#what-lajstrom-does-662)).
+pushed, and `lajstrom registry probe` pushes `x/build` and `x/build/y` in its row "Routing words
+in a name" ([quay.md](quay.md#what-lajstrom-does-662)).
 
 ### Elsewhere (read, not measured)
 

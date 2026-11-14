@@ -11,7 +11,8 @@ import (
 // capabilitiesOf converts c.
 func capabilitiesOf(c provider.Capabilities) Capabilities {
 	o := Capabilities{CreateOnPush: c.CreateOnPush, Referrers: c.Referrers, Catalog: c.Catalog, DeleteManifest: c.DeleteManifest,
-		ImmutableTags: c.ImmutableTags, BlobRedirect: c.BlobRedirect, MaxBlobSize: c.MaxBlobSize, Consistency: string(c.Consistency)}
+		ImmutableTags: c.ImmutableTags, BlobRedirect: c.BlobRedirect, MaxBlobSize: c.MaxBlobSize, BuildRoutes: c.BuildRoutes,
+		Consistency: string(c.Consistency)}
 	if c.ConsistencyBound > 0 {
 		o.ConsistencyBound = c.ConsistencyBound.String()
 	}

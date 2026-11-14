@@ -88,6 +88,7 @@ type Capabilities struct {
 	ImmutableTags  bool  `json:"immutableTags"`
 	BlobRedirect   bool  `json:"blobRedirect"`
 	MaxBlobSize    int64 `json:"maxBlobSize"`
+	BuildRoutes    bool  `json:"buildRoutes"`
 	// Consistency is strong or eventual, empty when unknown; ConsistencyBound is a duration
 	// ("2s"), empty when unknown.
 	Consistency      string `json:"consistency,omitempty"`
