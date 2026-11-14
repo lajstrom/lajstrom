@@ -58,12 +58,12 @@ func (Plugin) Build(_ context.Context, repo index.Repo, in format.Upload) (*form
 			}
 		}
 	}
-	if pom.Coordinates != c {
+	if !pom.of(c) {
 		return nil, fmt.Errorf("%w: the POM is of %s, its path of %s", format.ErrInvalid, pom.Coordinates, c)
 	}
 	pkgPath := packagePath(c.GroupID, c.ArtifactID)
 	repoPath := profile.RepositoryPath("", Name, repo.Name, pkgPath)
-	md, err := metadataOf(pom, files)
+	md, err := metadataOf(c, pom, files)
 	if err != nil {
 		return nil, err
 	}
@@ -231,11 +231,12 @@ func (f File) annotations() map[string]string {
 	return a
 }
 
-// metadataOf returns the metadata layer of a version (docs/spec/manifest-profile.md §2): compact
-// JSON with its keys sorted. One larger than maxMetadata wraps format.ErrInvalid: Validate would
-// not read it.
-func metadataOf(pom *POM, files []received) ([]byte, error) {
-	md := metadata{GroupID: pom.GroupID, ArtifactID: pom.ArtifactID, Version: pom.Version, Packaging: pom.Packaging, POM: pom.essentials()}
+// metadataOf returns the metadata layer of the version c (docs/spec/manifest-profile.md §2):
+// compact JSON with its keys sorted, the version c's, a build's for a build whose POM has its
+// SNAPSHOT version. One larger than maxMetadata wraps format.ErrInvalid: Validate would not read
+// it.
+func metadataOf(c Coordinates, pom *POM, files []received) ([]byte, error) {
+	md := metadata{GroupID: c.GroupID, ArtifactID: c.ArtifactID, Version: c.Version, Packaging: pom.Packaging, POM: pom.essentials()}
 	for _, r := range files {
 		md.Files = append(md.Files, r.md)
 	}

@@ -275,8 +275,8 @@ func unresolved(what, v string) error {
 		"so the POM in a repository has its coordinates written out", format.ErrInvalid, what, v, ref)
 }
 
-// check checks the grammar of the coordinates, the packaging and the parent, and refuses a
-// SNAPSHOT version.
+// check checks the grammar of the coordinates, the packaging and the parent. The version is a
+// release, a build, or a SNAPSHOT version (1.0-SNAPSHOT), which the POM of a build keeps.
 func (p *POM) check() error {
 	switch {
 	case p.GroupID == "":
@@ -288,7 +288,11 @@ func (p *POM) check() error {
 	case !artifactIDPattern.MatchString(p.Packaging):
 		return fmt.Errorf("%w: packaging %q is not letters, digits, \"_\", \"-\" and \".\"", format.ErrInvalid, p.Packaging)
 	}
-	if err := p.Coordinates.check(); err != nil {
+	if isSnapshotVersion(p.Version) {
+		if err := checkGroupArtifact(p.GroupID, p.ArtifactID); err != nil {
+			return err
+		}
+	} else if err := p.Coordinates.check(); err != nil {
 		return err
 	}
 	if p.Parent != nil {
@@ -321,4 +325,14 @@ func charsetReader(label string, r io.Reader) (io.Reader, error) {
 		return strings.NewReader(sb.String()), nil
 	}
 	return nil, errors.New("the encoding " + label + "; Lajstrom reads POMs in UTF-8, US-ASCII and ISO-8859-1")
+}
+
+// of reports whether the POM is that of the version c: its groupId, artifactId and version, or
+// for a build its SNAPSHOT version, which Maven and Gradle leave in the POM they deploy.
+func (p *POM) of(c Coordinates) bool {
+	if p.GroupID != c.GroupID || p.ArtifactID != c.ArtifactID {
+		return false
+	}
+	snapshot, build := SnapshotOf(c.Version)
+	return p.Version == c.Version || (build && p.Version == snapshot)
 }
