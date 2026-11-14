@@ -270,7 +270,7 @@ func TestValidateSourceRefuses(t *testing.T) {
 // then 1.0.0-2 without its .orig.tar.gz, which 1.0.0-1 holds, so that the manifest refers to the
 // blob in the OCI repository of hello; a source whose .orig.tar.gz no version holds is refused
 // by ingest, the blob unknown. A source version is no paragraph of Packages and makes no
-// binary-source: with the binary hello in jammy/main, the suite has binary-amd64 alone.
+// binary-source: with the binary hello in jammy/main, the suite has binary-amd64 and Sources.
 func TestIngestSource(t *testing.T) {
 	p := newPipeline(t)
 	ctx := t.Context()
@@ -304,7 +304,8 @@ func TestIngestSource(t *testing.T) {
 	p.upload(t, deb, "jammy")
 	docs := render(t, p, fixedClock(p), "jammy")
 	kinds := slices.Sorted(maps.Keys(docs))
-	if want := []string{"Release", "main/binary-amd64/Packages", "main/binary-amd64/Packages.gz", "main/binary-amd64/Packages.xz"}; !slices.Equal(kinds, want) {
+	if want := []string{"Release", "main/binary-amd64/Packages", "main/binary-amd64/Packages.gz", "main/binary-amd64/Packages.xz",
+		"main/source/Sources", "main/source/Sources.gz", "main/source/Sources.xz"}; !slices.Equal(kinds, want) {
 		t.Errorf("jammy renders %q, want %q", kinds, want)
 	}
 	if n := len(paragraphsOf(docs["main/binary-amd64/Packages"])); n != 1 {

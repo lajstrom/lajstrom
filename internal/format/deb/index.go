@@ -67,15 +67,17 @@ var variants = []struct {
 }
 
 // RenderIndex renders every document of one suite, the scope, in one call: for every component
-// and architecture of the suite Packages, Packages.gz and Packages.xz, and the Release whose
+// and architecture of the suite Packages, Packages.gz and Packages.xz, for every component of a
+// suite with source versions Sources, Sources.gz and Sources.xz (#79), and the Release whose
 // MD5Sum, SHA1 and SHA256 sections list each of them with its size, so that the Release and
-// the Packages files format.CachedDocument stores together, and a client gets, agree. Kind is
+// the indexes format.CachedDocument stores together, and a client gets, agree. Kind is
 // the path below dists/<suite>/ (Release, main/binary-amd64/Packages.gz) and Path the URL path
 // below /apt/<repo>/.
 //
 // The suite, its components and its architectures are those of the versions of the repo,
 // grouped by lajstrom.deb.suite, .component and .arch (versions.attrs); the variant is not
-// parsed. The architectures of the suite are the concrete ones its versions have, and the
+// parsed. The architectures of the suite are the concrete ones its binary versions have (never
+// source, the architecture of source versions, which go into Sources alone), and the
 // packages of architecture all are in the index of each of them; a suite with packages of
 // architecture all only has binary-all. Every component has an index for every architecture of
 // the suite, empty when it has no package for it, so that each pair the Release names exists.
@@ -91,34 +93,49 @@ func (p Plugin) RenderIndex(ctx context.Context, repo index.Repo, scope format.I
 	if checkDistName("suite", suite) != nil {
 		return nil, fmt.Errorf("%w: apt/%s: %q is not a suite", index.ErrNotFound, repo.Name, suite)
 	}
-	paras, err := p.paragraphs(ctx, repo, suite, st)
+	paras, srcs, err := p.paragraphs(ctx, repo, suite, st)
 	if err != nil {
 		return nil, err
 	}
-	if len(paras) == 0 {
+	if len(paras) == 0 && len(srcs) == 0 {
 		return nil, fmt.Errorf("%w: apt/%s has no package in the suite %s", index.ErrNotFound, repo.Name, suite)
 	}
-	components, archs := layout(paras)
+	components, archs := layout(paras, srcs)
 	var docs []format.Document
 	for _, c := range components {
 		for _, a := range archs {
-			plain := packagesOf(paras, c, a)
-			dir := c + "/binary-" + a + "/"
-			for _, v := range variants {
-				content := plain
-				if v.compress != nil {
-					if content, err = v.compress(plain); err != nil {
-						return nil, fmt.Errorf("deb: %s%s%s of %s: %w", dir, packagesFile, v.suffix, suite, err)
-					}
-				}
-				kind := dir + packagesFile + v.suffix
-				docs = append(docs, format.Document{Kind: kind, Path: "dists/" + suite + "/" + kind,
-					ContentType: contentType(kind), Content: content})
+			if docs, err = appendIndex(docs, suite, c+"/binary-"+a+"/"+packagesFile, packagesOf(paras, c, a)); err != nil {
+				return nil, err
 			}
+		}
+	}
+	for _, c := range components {
+		if len(srcs) == 0 {
+			break
+		}
+		if docs, err = appendIndex(docs, suite, c+"/source/"+sourcesFile, sourcesOf(srcs, c)); err != nil {
+			return nil, err
 		}
 	}
 	release := releaseOf(repo, suite, components, archs, docs, p.clock().UTC().Format(releaseDate))
 	return append([]format.Document{release}, docs...), nil
+}
+
+// appendIndex appends to docs the index kind of the suite, plain, and its compressed variants,
+// kind.gz and kind.xz.
+func appendIndex(docs []format.Document, suite, kind string, plain []byte) ([]format.Document, error) {
+	for _, v := range variants {
+		content := plain
+		if v.compress != nil {
+			var err error
+			if content, err = v.compress(plain); err != nil {
+				return nil, fmt.Errorf("deb: %s%s of %s: %w", kind, v.suffix, suite, err)
+			}
+		}
+		docs = append(docs, format.Document{Kind: kind + v.suffix, Path: "dists/" + suite + "/" + kind + v.suffix,
+			ContentType: contentType(kind + v.suffix), Content: content})
+	}
+	return docs, nil
 }
 
 // contentType returns the Content-Type of the document kind.
@@ -143,45 +160,54 @@ type paragraph struct {
 	text []byte
 }
 
-// paragraphs returns the paragraphs of the versions of the suite, sorted by package name, then
-// version string, then architecture.
-func (p Plugin) paragraphs(ctx context.Context, repo index.Repo, suite string, st index.Reader) ([]paragraph, error) {
+// paragraphs returns the paragraphs of the versions of the suite, those of the binary versions
+// and those of the source versions, each sorted by package name, then version string, then
+// architecture.
+func (p Plugin) paragraphs(ctx context.Context, repo index.Repo, suite string, st index.Reader) (paras, srcs []paragraph, err error) {
 	pkgs, err := st.ListPackages(ctx, repo.ID, "")
 	if err != nil {
-		return nil, fmt.Errorf("deb: packages of apt/%s: %w", repo.Name, err)
+		return nil, nil, fmt.Errorf("deb: packages of apt/%s: %w", repo.Name, err)
 	}
-	var paras []paragraph
 	for _, pkg := range pkgs {
 		versions, err := st.ListVersions(ctx, pkg.ID)
 		if err != nil {
-			return nil, fmt.Errorf("deb: versions of %s: %w", pkg.Name, err)
+			return nil, nil, fmt.Errorf("deb: versions of %s: %w", pkg.Name, err)
 		}
 		for _, v := range versions {
-			if v.Attrs[profile.AnnotationDebSuite] != suite || isSource(v) {
+			if v.Attrs[profile.AnnotationDebSuite] != suite {
 				continue
 			}
 			para, err := p.paragraphOf(ctx, repo, pkg, v)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			paras = append(paras, para)
+			if isSource(v) {
+				srcs = append(srcs, para)
+			} else {
+				paras = append(paras, para)
+			}
 		}
 	}
-	slices.SortFunc(paras, func(a, b paragraph) int {
-		return cmp.Or(strings.Compare(a.name, b.name), strings.Compare(a.version, b.version), strings.Compare(a.arch, b.arch))
-	})
-	return paras, nil
+	for _, list := range [][]paragraph{paras, srcs} {
+		slices.SortFunc(list, func(a, b paragraph) int {
+			return cmp.Or(strings.Compare(a.name, b.name), strings.Compare(a.version, b.version), strings.Compare(a.arch, b.arch))
+		})
+	}
+	return paras, srcs, nil
 }
 
 // layout returns the components and the architectures of the indexes of a suite, sorted: the
-// architectures of its versions, all among them when it has all packages. apt on a host of an
-// architecture the suite has no package for reads binary-all alone (#725), so the all packages
-// get it beside the concrete indexes; the Release has no No-Support-for-Architecture-all, which
-// would make apt skip binary-all again.
-func layout(paras []paragraph) (components, archs []string) {
+// components of its binary and source versions, the architectures of its binary versions, all
+// among them when it has all packages. apt on a host of an architecture the suite has no package
+// for reads binary-all alone (#725), so the all packages get it beside the concrete indexes; the
+// Release has no No-Support-for-Architecture-all, which would make apt skip binary-all again.
+func layout(paras, srcs []paragraph) (components, archs []string) {
 	cs, as := map[string]bool{}, map[string]bool{}
 	for _, p := range paras {
 		cs[p.component], as[p.arch] = true, true
+	}
+	for _, p := range srcs {
+		cs[p.component] = true
 	}
 	return slices.Sorted(maps.Keys(cs)), slices.Sorted(maps.Keys(as))
 }
@@ -212,7 +238,8 @@ type packagesFields struct {
 	SHA256   string            `json:"sha256"`
 }
 
-// paragraphOf returns the paragraph of version v of pkg: the control fields of its metadata
+// paragraphOf returns the paragraph of version v of pkg: of a source version its Sources
+// paragraph (sourceParagraphOf); of a binary one the control fields of its metadata
 // (controlOrder), then Filename, pool/<component>/PoolPath(source, filename) with the source
 // of the Source field or the package name, Size, MD5sum and SHA1 when the metadata has them,
 // and SHA256. A field that could end the paragraph or start another one is refused: ingest
@@ -223,12 +250,12 @@ func (p Plugin) paragraphOf(ctx context.Context, repo index.Repo, pkg index.Pack
 	if component == "" || arch == "" {
 		return paragraph{}, fmt.Errorf("deb: %s has no %s or %s", what, profile.AnnotationDebComponent, profile.AnnotationDebArch)
 	}
-	raw := v.Metadata
-	if raw == nil {
-		var err error
-		if raw, err = p.fetchMetadata(ctx, repo, pkg, v); err != nil {
-			return paragraph{}, fmt.Errorf("deb: %s has no metadata in the index: %w", what, err)
-		}
+	raw, err := p.metadataOf(ctx, repo, pkg, v)
+	if err != nil {
+		return paragraph{}, fmt.Errorf("deb: %s has no metadata in the index: %w", what, err)
+	}
+	if isSource(v) {
+		return sourceParagraphOf(pkg, v, component, raw)
 	}
 	var f packagesFields
 	if err := json.Unmarshal(raw, &f); err != nil {
@@ -239,7 +266,6 @@ func (p Plugin) paragraphOf(ctx context.Context, repo index.Repo, pkg index.Pack
 	}
 	source := pkg.Name
 	if s, ok := lookup(f.Control, FieldSource); ok {
-		var err error
 		if source, _, err = SplitSource(s); err != nil { // not a 400 of the request: the message only
 			return paragraph{}, fmt.Errorf("deb: the metadata of %s: %s", what, err.Error())
 		}
@@ -261,6 +287,15 @@ func (p Plugin) paragraphOf(ctx context.Context, repo index.Repo, pkg index.Pack
 	}
 	writeField(&b, "SHA256", f.SHA256)
 	return paragraph{name: pkg.Name, version: v.Version, arch: arch, component: component, text: b.Bytes()}, nil
+}
+
+// metadataOf returns the metadata of version v of pkg: versions.metadata, or the metadata layer
+// read from the registry when the index left it out (fetchMetadata).
+func (p Plugin) metadataOf(ctx context.Context, repo index.Repo, pkg index.Package, v index.Version) ([]byte, error) {
+	if v.Metadata != nil {
+		return v.Metadata, nil
+	}
+	return p.fetchMetadata(ctx, repo, pkg, v)
 }
 
 // writeField writes one field of a paragraph: the name, ":", the value with its continuation
