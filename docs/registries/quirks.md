@@ -195,9 +195,9 @@ Measured on the dev stack: `spike661/…` of 255 bytes 202, of 256 400 `NAME_INV
 `art.example/…` of 256 202. ECR takes 256 (`repositoryName` of
 [CreateRepository](https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_CreateRepository.html)).
 Since #661 Lajstrom gives the names below the prefix 255 bytes less the prefix's length, 256 less
-on ECR (`provider.Capabilities.MaxNameLength`), and a publish of a longer name is a `400` that
-names the limit before anything is pushed. On Harbor that bound is 10 bytes too long
-([harbor.md](harbor.md#what-the-provider-must-do-differently), item 5).
+on ECR, and since #1041 245 less on Harbor (`provider.Capabilities.MaxNameLength`;
+[harbor.md](harbor.md#what-the-provider-must-do-differently), item 5), and a publish of a longer
+name is a `400` that names the limit before anything is pushed.
 
 ## 2. Is `a/b/c` one repository or two?
 

@@ -109,8 +109,9 @@ func (r *repository) pushed(ctx context.Context, err error) error {
 
 // Delete removes the manifest or blob target. A 405 DENIED refuses this one delete, the way
 // Zot keeps a manifest that an image index lists and a blob that a manifest uses
-// (docs/registries/zot.md, Delete), and so does ECR's 405 UNSUPPORTED for a manifest an index
-// lists (deniedOne): it is provider.ErrConflict and changes nothing else. The first manifest
+// (docs/registries/zot.md, Delete), and so do ECR's 405 UNSUPPORTED and Harbor's 412
+// VIOLATE_FOREIGN_KEY_CONSTRAINT for a manifest an index lists (deniedOne): it is
+// provider.ErrConflict and changes nothing else. The first manifest
 // delete that the registry refuses otherwise with 405 turns Capabilities.DeleteManifest false.
 func (r *repository) Delete(ctx context.Context, target ocispec.Descriptor) error {
 	err := r.Repository.Delete(ctx, target)
@@ -193,18 +194,31 @@ func refusesDelete(err error) bool {
 }
 
 // deniedOne returns the response of err when it refuses one delete rather than deletes: 405
-// with DENIED and without UNSUPPORTED, or ECR's 405 for a manifest an index lists
-// (listedByIndex). Otherwise it is nil.
+// with DENIED and without UNSUPPORTED, ECR's 405 for a manifest an index lists
+// (listedByIndex), or Harbor's 412 for one (harborReferenced). Otherwise it is nil.
 func deniedOne(err error) *errcode.ErrorResponse {
 	var resp *errcode.ErrorResponse
-	if !errors.As(err, &resp) || resp.StatusCode != http.StatusMethodNotAllowed {
+	if !errors.As(err, &resp) {
 		return nil
 	}
-	if hasCode(resp, errcode.ErrorCodeDenied) && !hasCode(resp, errcode.ErrorCodeUnsupported) || listedByIndex(resp) {
-		return resp
+	switch resp.StatusCode {
+	case http.StatusMethodNotAllowed:
+		if hasCode(resp, errcode.ErrorCodeDenied) && !hasCode(resp, errcode.ErrorCodeUnsupported) || listedByIndex(resp) {
+			return resp
+		}
+	case http.StatusPreconditionFailed:
+		if hasCode(resp, harborReferenced) {
+			return resp
+		}
 	}
 	return nil
 }
+
+// harborReferenced is the code of Harbor's 412 to the delete of a manifest that an image index
+// lists, "the deleting artifact is referenced by others" (v2.15.4, the probe of 2026-11-14,
+// #1041): the index first, then the manifest, as on Zot and GitLab's registry with its database
+// (409 MANIFEST_REFERENCED, which classifyResponse makes ErrConflict by its status).
+const harborReferenced = "VIOLATE_FOREIGN_KEY_CONSTRAINT"
 
 // ecrListedByIndex starts the message of ECR's 405 UNSUPPORTED to the delete of a manifest that an
 // image index lists: "Requested image referenced by manifest list: [sha256:…]" (measured by #19,
