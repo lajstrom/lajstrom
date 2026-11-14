@@ -121,7 +121,7 @@ a backup of the database keeps it, and reindex neither reads nor writes it.
 The tables of webhooks and of their deliveries ([webhooks.md](webhooks.md), #77). Both are
 control plane: authoritative, not derivable from the registry, backed up with the database.
 Reindex neither reads nor writes them, `ResetDerived` leaves them, and the derived tables never
-need them. Migration `0023_webhooks.sql` creates them; it only adds.
+need them. Migration `0022_webhooks.sql` creates them; it only adds.
 
 | Table | Columns | Notes |
 | --- | --- | --- |
@@ -444,7 +444,7 @@ the control-plane and derived tables, `0002_tag_claims.sql` the coordination tab
 `0017_index_cache_generations.sql` the table `index_cache_generations`, `0018_replicas.sql`
 the table `replicas`, `0019_prune_sightings.sql` the table `prune_sightings`, and
 `0020_replicas_process.sql` the column `replicas.process`, `0021_oidc.sql` the tables
-`identities`, `identity_groups` and `oidc_logins` (#69), and `0023_webhooks.sql` the tables
+`identities`, `identity_groups` and `oidc_logins` (#69), and `0022_webhooks.sql` the tables
 `webhooks` and `webhook_deliveries` (#77); the others are named with their tables
 above. The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
