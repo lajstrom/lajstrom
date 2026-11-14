@@ -299,7 +299,7 @@ Rebuilt by reindex, all but `index_cache_generations` and `proxy_meta`, whose ro
 | Table | Columns | Notes |
 | --- | --- | --- |
 | `packages` | `id`, `repo_id` → repos, `name` text (format spelling), `name_oci` text (escaped path), `created_at` ts (the earliest `created_at` of its versions) | unique `(repo_id, name)`; unique `(repo_id, name_oci)`: one spelling per OCI repository |
-| `versions` | `id`, `package_id` → packages, `version` text, `variant` text (`''` when none), `tag` text, `digest` text (manifest digest), `artifact_type` text, `attrs` json (every `lajstrom.*` annotation without a field of its own, all but `schema`, `format`, `repo`, `name`, `version`, `variant` and `uploaded-by`: `lajstrom.deb.*`, `lajstrom.raw.path`, `lajstrom.origin.*`, …), `metadata` json null (metadata layer, may be omitted for size), `created_at` ts (from `org.opencontainers.image.created`), `indexed_at` ts (when ingest or reindex last wrote or saw the row), `degraded` bool (written from the annotations alone, the metadata layer missing or unreadable: manifest-profile.md §2) | unique `(package_id, version, variant)`; unique `(package_id, tag)`. The store keeps `packages.created_at` the earliest `created_at` of the package's versions on every version write and delete. Ingest never writes a degraded row; reindex does, and reads it again on every run |
+| `versions` | `id`, `package_id` → packages, `version` text, `variant` text (`''` when none), `tag` text, `digest` text (manifest digest), `artifact_type` text, `attrs` json (every `lajstrom.*` annotation without a field of its own, all but `schema`, `format`, `repo`, `name`, `version`, `variant` and `uploaded-by`: `lajstrom.deb.*`, `lajstrom.raw.path`, `lajstrom.origin.*`, …), `metadata` json null (metadata layer, may be omitted for size), `created_at` ts (from `org.opencontainers.image.created`), `indexed_at` ts (when ingest or reindex last wrote or saw the row), `degraded` bool (written from the annotations alone, the metadata layer missing or unreadable: manifest-profile.md §2), `oci_repo` text null (the package path, as `name_oci`, of the OCI repository that holds the manifest when it is not the package's `name_oci`: a split, [below](#invariants-and-rules); NULL otherwise. Written by reindex only: ingest writes to `name_oci`, and NULL) | unique `(package_id, version, variant)`; unique `(package_id, tag)`. The store keeps `packages.created_at` the earliest `created_at` of the package's versions on every version write and delete. Ingest never writes a degraded row; reindex does, and reads it again on every run |
 | `files` | `id`, `version_id` → versions, `name` text, `media_type` text, `digest` text (layer), `size` int, `attrs` json (layer annotations) | indexes `(version_id, name)` and `files_name` on `(name)`: apt pool, rpm `Packages/` and maven lookups go by `(repo, name)` |
 | `index_cache` | `id`, `repo_id`, `scope` text (apt the suite, `jammy`; pypi `simple` or `simple/<project>`; maven `<groupId>/<artifactId>`; npm the package name; raw the directory prefix; rpm `repodata`), `kind` text (apt the path below `dists/<suite>/`: `Release`, `InRelease`, `Release.gpg`, `main/binary-amd64/Packages.gz`; pypi `simple.html`, `simple.json`; maven `maven-metadata`, `maven-metadata.sha1`; npm `packument`, `packument-abbreviated`; raw `listing`; rpm `repomd.xml`, which holds the checksum-named `primary`, `filelists` and `other` documents with it), `content` blob, `sha256` text, `rendered_at` ts, `signed_at` ts null | unique `(repo_id, scope, kind)`; invalidated by ingest, delete, reindex and a key rotation; rebuilt lazily on GET, and stored only while the repo's generation is the one the render read ([below](#the-generation-of-a-repos-documents)). A signed document (apt `InRelease`, `Release.gpg`, rpm `repomd.xml.asc`) has the `rendered_at` of the document it signs and its own `signed_at` |
 | `index_cache_generations` | `repo_id` → repos (primary key, `ON DELETE CASCADE`), `generation` bigint | the generation of the repo's `index_cache`; no row is generation 0. Not rebuilt: `ResetDerived` increments it, as every invalidation does. Migration `0017_index_cache_generations.sql` (#477) |
@@ -417,8 +417,9 @@ the control-plane and derived tables, `0002_tag_claims.sql` the coordination tab
 ([Upgrades](#upgrades)),
 `0017_index_cache_generations.sql` the table `index_cache_generations`, `0018_replicas.sql`
 the table `replicas`, `0019_prune_sightings.sql` the table `prune_sightings`, and
-`0020_replicas_process.sql` the column `replicas.process`, and `0021_oidc.sql` the tables
-`identities`, `identity_groups` and `oidc_logins` (#69); the others are named with their tables
+`0020_replicas_process.sql` the column `replicas.process`, `0021_oidc.sql` the tables
+`identities`, `identity_groups` and `oidc_logins` (#69), and `0022_versions_oci_repo.sql` the
+column `versions.oci_repo` (#642); the others are named with their tables
 above. The runner,
 `index.ApplyMigrations`, applies each pending file in a transaction of its own that also records
 the version in `schema_migrations` (created when missing). The transaction first takes the
@@ -489,7 +490,7 @@ N writes during the update:
 There are no down migrations: a rollback is the binary of the release before on the newer
 schema, which expand migrations allow; to a release older than the one a contract migration
 requires, it is a restore of the backup taken before the upgrade. Every migration so far, 0001
-to 0020, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
+to 0022, requires nothing; binaries built before 0014 do not check the schema. `serve` migrating
 on start is the default, enough for one node; with several replicas, `lajstrom migrate` of the new
 release runs once before the rolling update ([operations.md](../operations.md#upgrades)). A release with a
 contract migration says so in its notes ([release.md](../release.md#migrations-in-the-notes)).
@@ -524,7 +525,7 @@ release.
   that is not degraded, is seen without being read again (the same digest is the same bytes,
   checked when it was written), unless the run verifies. At the end, when the run prunes (the
   sweep), each row of the repo not seen since the run started is looked up by its tag in the
-  registry once more: a tag that names the row's digest keeps it (written after the listing,
+  OCI repository of its manifest (`oci_repo`, else its package's `name_oci`) once more: a tag that names the row's digest keeps it (written after the listing,
   possibly by a replica whose clock is behind), a tag that names another digest is drift (below),
   and a tag the registry does not
   resolve asks for the manifest by its digest (`Provider.StatManifest`). Only `404
@@ -545,13 +546,20 @@ release.
   digest, the report lists both, nothing is re-pointed (the rule of the reconcile loop, #30).
   A drifted row is the one row whose manifest is not under its tag any more.
 - A package whose manifests are at two forms of its package path (ADR 0017: one written before
-  it, one after, while the index lacked the earlier) is a split. A package has one `name_oci`,
-  and every download and delete of its versions goes there, so the index keeps the form of its
-  row, or, for a package it does not have, the newest form found: the form ingest writes such a
-  package to (a run reads the newer forms first). The manifests at the other form are not
-  indexed; the report lists both forms and the tags at each (`split`), on every run until the
-  other form is gone. Nothing is copied or moved in the registry: manifests copied into the
-  indexed form are versions, through `/v2` at once, past Lajstrom at the next run (#609).
+  it, one after, while the index lacked the earlier) is a split. A package has one `name_oci`:
+  the index keeps the form of its row, or, for a package it does not have, the newest form
+  found, the form ingest writes such a package to (a run reads the newer forms first), and every
+  write of the package goes there. A version found at the other form is indexed all the same,
+  with that form in `oci_repo`, and every download, delete, `/v2` tag list and recheck of the
+  version goes where its manifest is (`index.ManifestPath`, #642). A version that is at both
+  forms has one row: at the indexed form when the manifest there is the row's (a copy) or when
+  the index has none yet (a run reads the indexed form first from an empty index), else where
+  the index has it; a tag at the other form is then not indexed, and a tag at the indexed form
+  with other bytes than the row's is drift. The report lists both forms and the tags at each
+  (`split`), on every run until the other form is gone. Nothing is copied or moved in the
+  registry: an operator who wants the package at one OCI repository copies the other form's
+  tags into the indexed one and deletes the other form (operations.md), and the next run moves
+  each copied version's row to the indexed form (#609).
 - A repo of format `oci` (pass-through, http-routing.md §1) has rows in `oci_repos` only: the
   facade records the repository of every manifest pushed to it, after the registry took the
   manifest, and nothing else is indexed. Its `oci_repos` records only the repositories that hold
