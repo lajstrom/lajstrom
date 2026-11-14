@@ -57,7 +57,7 @@ func summary(c auth.CreatedToken) string {
 	}
 	prefix := map[string]string{auth.TokenPAT: auth.PATPrefix, auth.TokenDeploy: auth.DeployPrefix}[c.Kind]
 	ok := strings.HasPrefix(c.Secret, prefix) && len(c.Secret) == auth.SecretLen && c.HashPrefix == auth.HashSecret(c.Secret)[:8]
-	return fmt.Sprintf("%s %s%s %s %v %s secret:%t", c.Kind, c.User, c.Repo, c.Name, c.Scopes, expires, ok)
+	return fmt.Sprintf("%s %s%s%s %s %v %s secret:%t", c.Kind, c.User, c.Repo, c.RepoMask, c.Name, c.Scopes, expires, ok)
 }
 
 // TestAdminToken runs the life of tokens from the command line: a personal access token of a
@@ -92,9 +92,9 @@ func TestAdminToken(t *testing.T) {
 		{args: []string{"admin", "token", "list", "--repo", "raw/scratch"}, wantOut: "deploy  forever  read        never  "},
 		{args: []string{"admin", "token", "list", "--repo", "raw/scratch"}, wantOut: "deploy  ci       read,write  20"},
 		{args: []string{"admin", "token", "create", "--user", "alice", "--repo", "raw/scratch", "--name", "x"},
-			wantErr: "if any flags in the group [user repo] are set none of the others can be"},
-		{args: []string{"admin", "token", "create", "--name", "x"}, wantErr: "at least one of the flags in the group [user repo] is required"},
-		{args: []string{"admin", "token", "list"}, wantErr: "at least one of the flags in the group [user repo] is required"},
+			wantErr: "if any flags in the group [user repo mask] are set none of the others can be"},
+		{args: []string{"admin", "token", "create", "--name", "x"}, wantErr: "at least one of the flags in the group [user repo mask] is required"},
+		{args: []string{"admin", "token", "list"}, wantErr: "at least one of the flags in the group [user repo mask] is required"},
 		{args: []string{"admin", "token", "create", "--user", "alice"}, wantErr: `required flag(s) "name" not set`},
 		{args: []string{"admin", "token", "create", "--user", "alice", "--name", "dated"}, wantErr: `name: "dated" is taken by a live token of user alice`},
 		{args: []string{"admin", "token", "create", "--user", "alice", "--name", "x", "--expires", "400d"},
@@ -115,6 +115,44 @@ func TestAdminToken(t *testing.T) {
 	wantCLIAudit(t, dsn, auth.ActionTokenRevoke, 1)
 	if _, err := openTestStore(t, dsn).GetTokenByHash(context.Background(), auth.HashSecret(dep.Secret)); err != nil {
 		t.Errorf("the deploy token is not in the index by the hash of its secret: %v", err)
+	}
+}
+
+// TestAdminTokenMask runs the life of deploy tokens over a mask from the command line (#911):
+// created with --mask, which the operator may always do, with their secret on one line of JSON;
+// listed with --mask, by the mask as written; revoked; the mask's rules, the formats of this
+// build among them; the audit events of the source cli.
+func TestAdminTokenMask(t *testing.T) {
+	cfg, dsn := tokenCLI(t)
+	nodes := cliCreate(t, cfg, "--mask", "oci/*", "--name", "talos-nodes", "--scopes", "read")
+	ci := cliCreate(t, cfg, "--mask", "*/scratch", "--name", "ci", "--scopes", "read,write", "--expires", "30d")
+	if got, want := summary(nodes)+"\n"+summary(ci), "deploy oci/* talos-nodes [read] never secret:true\n"+
+		"deploy */scratch ci [read write] expires secret:true"; got != want {
+		t.Errorf("created:\n%s\nwant:\n%s", got, want)
+	}
+	runSteps(t, cfg, []step{
+		{args: []string{"admin", "token", "list", "--mask", "oci/*"},
+			wantOut: fmt.Sprintf("%d   deploy  talos-nodes  read    never    never      -        %s\n", nodes.ID, nodes.HashPrefix)},
+		{args: []string{"admin", "token", "list", "--mask", "*/*"}, wantOut: "ID  KIND  NAME  SCOPES  EXPIRES  LAST USED  REVOKED  HASH\n"},
+		{args: []string{"admin", "token", "list", "--repo", "raw/scratch"}, wantOut: "ID  KIND  NAME  SCOPES  EXPIRES  LAST USED  REVOKED  HASH\n"},
+		{args: []string{"admin", "token", "revoke", fmt.Sprint(nodes.ID)}},
+		{args: []string{"admin", "token", "list", "--mask", "oci/*"}, wantOut: "talos-nodes  read    never    never      20"},
+		{args: []string{"admin", "token", "create", "--mask", "oci/*", "--repo", "raw/scratch", "--name", "x", "--scopes", "read"},
+			wantErr: "if any flags in the group [user repo mask] are set none of the others can be"},
+		{args: []string{"admin", "token", "create", "--mask", "oci", "--name", "x", "--scopes", "read"},
+			wantErr: `repoMask: mask "oci": want <format>/<repo>, each a name or *`},
+		{args: []string{"admin", "token", "create", "--mask", "nope/*", "--name", "x", "--scopes", "read"},
+			wantErr: `repoMask: "nope" is not a format of this server, nor *`},
+		{args: []string{"admin", "token", "create", "--mask", "oci/*", "--name", "x"}, wantErr: "scopes: a deploy token needs read, write or both"},
+		{args: []string{"admin", "token", "create", "--mask", "*/scratch", "--name", "ci", "--scopes", "read"},
+			wantErr: `name: "ci" is taken by a live token of mask */scratch`},
+		{args: []string{"admin", "token", "list", "--mask", "oci/a/b"}, wantErr: `repoMask: mask "oci/a/b": want <format>/<repo>`},
+	})
+	wantCLIAudit(t, dsn, auth.ActionTokenCreate, 2)
+	wantCLIAudit(t, dsn, auth.ActionTokenRevoke, 1)
+	row, err := openTestStore(t, dsn).GetTokenByHash(context.Background(), auth.HashSecret(ci.Secret))
+	if err != nil || row.RepoMask != "*/scratch" || row.RepoID != nil {
+		t.Errorf("the token over */scratch in the index: %+v, %v", row, err)
 	}
 }
 
