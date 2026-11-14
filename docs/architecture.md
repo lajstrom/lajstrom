@@ -55,7 +55,7 @@ flowchart TB
     proxy["Proxy fetcher, npm and oci<br/>npm: miss → claim → upstream → stream, check → ingest<br/>oci: the upstream's manifests and blobs, unchanged<br/>TTL metadata cache in the DB"]
     reindex["Reindex / reconcile<br/>listRepos → tags/list → manifests<br/>upsert from annotations, remove orphans<br/>catches writes that bypassed us"]
     retention["Delete<br/>a version through the API, audited<br/>retention: an external scheduler runs<br/>lajstrom admin retention<br/>blob GC is the registry's job"]
-    keys["Keys · audit · events<br/>GPG key per repo, later KMS<br/>cosign signatures and SBOM via referrers<br/>audit log · webhooks*"]
+    keys["Keys · audit · events<br/>GPG key per repo, later KMS<br/>cosign signatures and SBOM via referrers<br/>audit log · webhooks"]
     plugins["Format plugins, in-process Go<br/>apt · rpm · maven · pypi · npm · tf* · go* · cargo* · nuget* · raw<br/>interface: Name · ArtifactType · EscapeName · Validate · Build · Routes · RenderIndex<br/>oci repos: pass-through in the facade, no plugin, no index"]
   end
 

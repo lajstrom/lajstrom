@@ -1050,6 +1050,7 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | `token.create`, `token.revoke` | personal access tokens and deploy tokens, from the API and the CLI; a personal access token also from `npm login` and `npm logout` |
 | `key.rotate`, `key.drop` | `lajstrom admin key` |
 | `reconcile` | the [reconcile](#reconcile) loop of `serve`, one row per repo that a run changed |
+| `webhook.create`, `webhook.update`, `webhook.delete`, `webhook.secret` | the API and `lajstrom admin webhook`, with the URL's host in `details.urlHost` and never the URL ([Webhooks](#webhooks)) |
 | `referrers.repair` | a reindex run of the reconcile loop or with verify (CLI or API) that pushed a subject's `sha256-<hex>` index again with the referrers it lacked, as the principal of the run ([Reindex](#what-a-run-does)) |
 
 A row has the time, the principal (`user:<uid>`, `token:<id>`, `anonymous`) and, for a user,
@@ -1098,6 +1099,65 @@ curl -fsS -u admin "$LAJSTROM/api/v1/audit?state=unknown" | jq -c '.events[] | {
 
 or SQL on the index. The table only grows in this version: no retention, no export; it is part
 of the backup of the index.
+
+## Webhooks
+
+A webhook is a URL that Lajstrom sends a signed `POST` to when a version is published or
+deleted, or a repo is created or deleted ([webhooks.md](spec/webhooks.md)): to start a CI job,
+refresh a mirror, post to a chat. The request is a CloudEvent (`application/cloudevents+json`)
+with the Standard Webhooks headers, so a receiver verifies it with any Standard Webhooks library.
+
+**What it needs.** The master key (`keys.masterKeyEnv` or `keys.masterKeyFile`): every webhook's
+secret is encrypted with it, and without it no webhook is created and no replica delivers. Every
+replica delivers, `webhooks.workers` at a time ([configuration.md](configuration.md#webhooks));
+the events wait in the index database, so a replica that stops loses none, and `0` on a replica
+leaves its share to the others.
+
+**Making one.** A repo's maintainer (`manage`) makes the webhooks of that repo; the admin role
+makes those of a mask (`apt/*`, `*/*`), which also get the events of repos created later
+([api.md](api.md#webhooks)):
+
+```sh
+# the events of raw/scratch to a CI job; the answer holds the secret, the one time it is shown
+curl -fsS -u alice -X POST "$LAJSTROM/api/v1/repos/raw/scratch/webhooks" \
+  -d '{"url": "https://ci.example.com/hooks/lajstrom", "events": ["version.published"]}' | jq .
+# every repo of every format, as admin
+lajstrom admin webhook create --mask '*/*' --url https://audit.example.com/lajstrom
+```
+
+Keep the secret where the receiver reads it; `POST …/webhooks/<id>/secret` (or `lajstrom admin
+webhook rotate <id>`) makes a new one, which signs every request from then on.
+
+**Testing it.** `POST …/webhooks/<id>/test` (`lajstrom admin webhook test <id>`) sends a
+`webhook.ping` from the replica that took the request, once, and answers what happened: the
+status, or why there was none. `GET …/webhooks/<id>/deliveries` is its delivery log, newest
+first.
+
+**What it reaches.** A webhook reaches a host of `webhooks.allowedHosts` as it is; any other host
+only over `https` and only at public addresses, after every redirect too: never loopback, a
+private network, or the metadata service at `169.254.169.254` ([guarantees.md](spec/guarantees.md)
+INV-44). A receiver inside your network goes into `webhooks.allowedHosts`. Behind an egress proxy
+(`HTTPS_PROXY`), Lajstrom refuses an address of a private range in the URL and leaves the rest to
+the proxy. A refused target reads `refused: the host has no public address` in the delivery log,
+whether the address was private or the name did not resolve; the log of `serve` at `debug` says
+which, by the webhook's id and host.
+
+**When a receiver is down.** Each delivery is tried again after 30 s, then twice as long each
+time up to an hour, `webhooks.maxAttempts` times in all (8 by default, about 4 hours), then it is
+`failed`, logged at warn with the webhook's id, host, the event and the last status or error.
+Answer `2xx` once the event is stored, and do the work after: a receiver slower than
+`webhooks.timeout` (10 s) is a failed attempt. Events come at least once and in any order: keep
+the `id` of the events you processed (the `webhook-id` header), and order by `time`.
+
+**Rows and backups.** The webhooks and their delivery logs are tables of the index
+(`webhooks`, `webhook_deliveries`), part of the control plane: backed up with the database,
+never rebuilt by reindex. Delivery-log rows older than `webhooks.retention` (7 days) are deleted.
+A database restored from a backup sends again the deliveries that were pending at the backup.
+
+**Not sent.** Reindex and the reconcile loop send no event for what they add or remove: a push
+straight to the registry is no write through Lajstrom. Neither do pushes to `oci` repos,
+referrers, npm dist-tags and deprecations: later types, which receivers ignore until they know
+them.
 
 ## Retention
 
