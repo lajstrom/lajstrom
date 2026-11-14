@@ -2,6 +2,7 @@ package providertest
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -165,6 +166,93 @@ func TestFakeFaults(t *testing.T) {
 	if len(f.Pushes()) != 0 || len(f.PushReferences()) != 0 {
 		t.Errorf("failed pushes were recorded: %v %v", f.Pushes(), f.PushReferences())
 	}
+}
+
+// TestFakeFailRequests checks FailRequests: every call that sends the registry a request fails
+// with it alone, before the other Fail fields, and changes nothing; Name, Repository and
+// EnsureRepository, which send none, answer; a BlobWriter fails at Commit, its first request.
+func TestFakeFailRequests(t *testing.T) {
+	ctx := t.Context()
+	f, rr := newRepo(t)
+	b := []byte("blob")
+	desc := descriptor("application/octet-stream", b)
+	m, _ := json.Marshal(ocispec.Manifest{MediaType: ocispec.MediaTypeImageManifest})
+	mDesc := descriptor(ocispec.MediaTypeImageManifest, m)
+	u := seed(t, rr, b, m) // what each call would find, so that one that ignored FailRequests would succeed
+	down, other := errors.New("down"), errors.New("other")
+	f.FailRequests = down
+	f.FailPush, f.FailUpload, f.FailPushReference, f.FailExists, f.FailFetch = other, other, other, other, other
+	f.FailStatManifest = func(string, digest.Digest) error { return other }
+	for what, call := range map[string]func() error{
+		"Capabilities":     func() error { return second(f.Capabilities(ctx)) },
+		"ListRepositories": func() error { return second(f.ListRepositories(ctx, "")) },
+		"DeleteRepository": func() error { return f.DeleteRepository(ctx, name) },
+		"OpenBlob":         func() error { return second(f.OpenBlob(ctx, name, desc.Digest, "", true)) },
+		"StatBlob":         func() error { return second(f.StatBlob(ctx, name, desc.Digest)) },
+		"StatManifest":     func() error { return second(f.StatManifest(ctx, name, mDesc.Digest)) },
+		"Fetch":            func() error { return second(rr.Fetch(ctx, desc)) },
+		"Exists":           func() error { return second(rr.Exists(ctx, desc)) },
+		"Push":             func() error { return rr.Push(ctx, desc, bytes.NewReader(b)) },
+		"PushReference":    func() error { return rr.PushReference(ctx, mDesc, bytes.NewReader(m), "2.0.0") },
+		"Delete":           func() error { return rr.Delete(ctx, mDesc) },
+		"Tag":              func() error { return rr.Tag(ctx, mDesc, "2.0.0") },
+		"Resolve":          func() error { return second(rr.Resolve(ctx, "1.0.0")) },
+		"Tags":             func() error { return rr.Tags(ctx, "", func([]string) error { return nil }) },
+		"Referrers":        func() error { return rr.Referrers(ctx, mDesc, "", func([]ocispec.Descriptor) error { return nil }) },
+		"StartBlobUpload":  func() error { return second(rr.StartBlobUpload(ctx)) },
+		"MountBlob":        func() error { _, _, err := rr.MountBlob(ctx, desc.Digest, name); return err },
+		"AppendBlobChunk":  func() error { return second(rr.AppendBlobChunk(ctx, u, bytes.NewReader(b), int64(len(b)))) },
+		"FinishBlobUpload": func() error {
+			return second(rr.FinishBlobUpload(ctx, u, desc.Digest, bytes.NewReader(b), int64(len(b))))
+		},
+		"BlobUploadStatus":  func() error { return second(rr.BlobUploadStatus(ctx, u)) },
+		"CancelBlobUpload":  func() error { return rr.CancelBlobUpload(ctx, u) },
+		"BlobWriter.Commit": func() error { return writeBlob(ctx, rr, b) },
+	} {
+		if err := call(); !errors.Is(err, down) || errors.Is(err, other) {
+			t.Errorf("%s with FailRequests set: %v, want its error alone", what, err)
+		}
+	}
+	if _, err := f.Repository(ctx, name); err != nil || f.Name() != "fake" || f.EnsureRepository(ctx, name) != nil {
+		t.Errorf("Name, Repository or EnsureRepository failed with FailRequests set: %v", err)
+	}
+	f.FailRequests, f.FailExists, f.FailFetch, f.FailStatManifest = nil, nil, nil, nil
+	if got, err := rr.Resolve(ctx, "1.0.0"); err != nil || got.Digest != mDesc.Digest {
+		t.Errorf("Resolve after FailRequests = %v, %v; want the manifest the failed calls left", got, err)
+	}
+	if ok, err := rr.Exists(ctx, desc); !ok || err != nil || len(f.Pushes()) != 1 || len(f.PushReferences()) != 1 || f.OpenUploads() != 1 {
+		t.Errorf("the failed calls changed the Fake: Exists %v, %v; %d pushes, %d push references, %d open uploads",
+			ok, err, len(f.Pushes()), len(f.PushReferences()), f.OpenUploads())
+	}
+}
+
+// seed pushes the blob b and the manifest m, tagged 1.0.0, to rr, and opens an upload session.
+func seed(t *testing.T, rr provider.Repository, b, m []byte) provider.Upload {
+	t.Helper()
+	ctx := t.Context()
+	if err := rr.Push(ctx, descriptor("application/octet-stream", b), bytes.NewReader(b)); err != nil {
+		t.Fatal(err)
+	}
+	if err := rr.PushReference(ctx, descriptor(ocispec.MediaTypeImageManifest, m), bytes.NewReader(m), "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	u, err := rr.StartBlobUpload(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+// writeBlob writes b through a BlobWriter of rr and commits it.
+func writeBlob(ctx context.Context, rr provider.Repository, b []byte) error {
+	w, err := rr.OpenBlobWriter(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(b); err != nil {
+		return err
+	}
+	return second(w.Commit(ctx, digest.FromBytes(b)))
 }
 
 // TestFakeOpenBlob checks OpenBlob: the whole blob, a single range in its three forms, a range

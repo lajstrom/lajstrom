@@ -59,7 +59,8 @@ var (
 // not finished or cancelled.
 //
 // The Fail fields inject errors: when one is set, every call of that method returns it,
-// wrapped with the operation. Set them, and RedirectURL, NoBlobRedirect, NoDeleteManifest,
+// wrapped with the operation; FailRequests does so for every method that sends the registry a
+// request. Set them, and RedirectURL, NoBlobRedirect, NoDeleteManifest,
 // MaxNameDepth, MaxNameLength and BuildRoutes, before the calls they should affect; they are not guarded for changes during calls. Use a
 // Fake as a pointer; it is safe for concurrent use.
 type Fake struct {
@@ -86,6 +87,13 @@ type Fake struct {
 	// BuildRoutes is the registry's capabilities.buildRoutes, which Capabilities reports: Quay's,
 	// which creates no repository whose name ends in a build route. The Fake itself takes any.
 	BuildRoutes bool
+	// FailRequests fails every call that would send the registry a request, before the other
+	// Fail fields and before it reads any content: the Fake is a registry that cannot be
+	// reached. Set it to the error a provider returns then, such as the generic provider's
+	// provider.ErrUnavailable from the *net.DNSError of a host name that does not resolve
+	// (#561). Name, Repository and EnsureRepository send no request and still answer; a
+	// BlobWriter (OpenBlobWriter) fails at the first chunk it sends, or at Commit.
+	FailRequests error
 	// FailPush fails Push before it reads the content.
 	FailPush error
 	// FailUpload fails StartBlobUpload, the POST that opens an upload session, so that a blob
@@ -149,6 +157,9 @@ func (f *Fake) Name() string {
 // NoDeleteManifest), blob redirects when RedirectURL is set (unless NoBlobRedirect), and
 // strong consistency: a write is read at once.
 func (f *Fake) Capabilities(context.Context) (provider.Capabilities, error) {
+	if err := f.unreachable("providertest: capabilities"); err != nil {
+		return provider.Capabilities{}, err
+	}
 	return provider.Capabilities{CreateOnPush: true, Referrers: true, Catalog: true,
 		DeleteManifest: !f.NoDeleteManifest, BlobRedirect: f.RedirectURL != nil && !f.NoBlobRedirect,
 		Consistency: provider.ConsistencyStrong, MaxNameDepth: f.MaxNameDepth, MaxNameLength: f.MaxNameLength,
@@ -169,6 +180,9 @@ func (f *Fake) EnsureRepository(context.Context, string) error { return nil }
 // ListRepositories returns the names of the repositories that hold something and start with
 // prefix, sorted.
 func (f *Fake) ListRepositories(_ context.Context, prefix string) ([]string, error) {
+	if err := f.unreachable("providertest: list repositories " + prefix); err != nil {
+		return nil, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	names := []string{}
@@ -182,6 +196,9 @@ func (f *Fake) ListRepositories(_ context.Context, prefix string) ([]string, err
 
 // DeleteRepository removes the repository and its content.
 func (f *Fake) DeleteRepository(_ context.Context, name string) error {
+	if err := f.unreachable("providertest: delete repository " + name); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, ok := f.repos[name]; !ok {
@@ -203,6 +220,9 @@ func (f *Fake) OpenBlob(_ context.Context, name string, d digest.Digest, rangeHe
 	f.openBlobs = append(f.openBlobs, BlobRead{Name: name, Digest: d, Range: rangeHeader})
 	b, ok := f.blob(name, d)
 	f.mu.Unlock()
+	if err := f.unreachable(fmt.Sprintf("providertest: open blob %s@%s", name, d)); err != nil {
+		return provider.Blob{}, err
+	}
 	if !ok || b.data == nil {
 		return provider.Blob{}, fmt.Errorf("providertest: open blob %s@%s: %w", name, d, provider.ErrNotFound)
 	}
@@ -269,6 +289,9 @@ func (f *Fake) StatBlob(_ context.Context, name string, d digest.Digest) (provid
 	f.statBlobs = append(f.statBlobs, BlobRead{Name: name, Digest: d})
 	b, ok := f.blob(name, d)
 	f.mu.Unlock()
+	if err := f.unreachable(fmt.Sprintf("providertest: stat blob %s@%s", name, d)); err != nil {
+		return provider.Blob{}, err
+	}
 	if !ok {
 		return provider.Blob{}, fmt.Errorf("providertest: stat blob %s@%s: %w", name, d, provider.ErrNotFound)
 	}
@@ -281,6 +304,9 @@ func (f *Fake) StatBlob(_ context.Context, name string, d digest.Digest) (provid
 // FailStatManifest replaces the answer.
 func (f *Fake) StatManifest(_ context.Context, name string, d digest.Digest) (ocispec.Descriptor, error) {
 	op := fmt.Sprintf("providertest: stat manifest %s@%s", name, d)
+	if err := f.unreachable(op); err != nil {
+		return ocispec.Descriptor{}, err
+	}
 	if f.FailStatManifest != nil {
 		if err := f.FailStatManifest(name, d); err != nil {
 			return ocispec.Descriptor{}, fmt.Errorf("%s: %w", op, err)
@@ -307,6 +333,14 @@ func (f *Fake) blob(name string, d digest.Digest) (blob, bool) {
 	}
 	b, ok := rd.blobs[d]
 	return b, ok
+}
+
+// unreachable returns FailRequests wrapped with op, or nil when it is not set.
+func (f *Fake) unreachable(op string) error {
+	if f.FailRequests == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", op, f.FailRequests)
 }
 
 // OpenBlobs returns the OpenBlob calls so far, in order.
@@ -374,6 +408,9 @@ func (r *repository) op(verb string, ref any) string {
 // descriptor may be -1 (unknown). The reader is an io.ReadSeekCloser, so seeking to its end
 // gives the size. A discarded blob is provider.ErrNotFound.
 func (r *repository) Fetch(_ context.Context, target ocispec.Descriptor) (io.ReadCloser, error) {
+	if err := r.f.unreachable(r.op("fetch", target.Digest)); err != nil {
+		return nil, err
+	}
 	if err := r.f.FailFetch; err != nil {
 		return nil, fmt.Errorf("%s: %w", r.op("fetch", target.Digest), err)
 	}
@@ -395,6 +432,9 @@ func (r *repository) Fetch(_ context.Context, target ocispec.Descriptor) (io.Rea
 
 // Exists reports whether the manifest or blob target is in the repository.
 func (r *repository) Exists(_ context.Context, target ocispec.Descriptor) (bool, error) {
+	if err := r.f.unreachable(r.op("exists", target.Digest)); err != nil {
+		return false, err
+	}
 	if err := r.f.FailExists; err != nil {
 		return false, fmt.Errorf("%s: %w", r.op("exists", target.Digest), err)
 	}
@@ -412,6 +452,9 @@ func (r *repository) Exists(_ context.Context, target ocispec.Descriptor) (bool,
 // Push stores the blob or manifest expected, read from content and checked against expected.
 // Content that exists already is success.
 func (r *repository) Push(_ context.Context, expected ocispec.Descriptor, content io.Reader) error {
+	if err := r.f.unreachable(r.op("push", expected.Digest)); err != nil {
+		return err
+	}
 	if err := r.f.FailPush; err != nil {
 		return fmt.Errorf("%s: %w", r.op("push", expected.Digest), err)
 	}
@@ -429,6 +472,9 @@ func (r *repository) Push(_ context.Context, expected ocispec.Descriptor, conten
 // PushReference stores the manifest expected and points reference at it, re-pointing a tag
 // that exists: the Fake is a registry without immutable tags.
 func (r *repository) PushReference(_ context.Context, expected ocispec.Descriptor, content io.Reader, reference string) error {
+	if err := r.f.unreachable(r.op("push", reference)); err != nil {
+		return err
+	}
 	if err := r.f.FailPushReference; err != nil {
 		return fmt.Errorf("%s: %w", r.op("push", reference), err)
 	}
@@ -502,6 +548,9 @@ func receive(expected ocispec.Descriptor, content io.Reader) ([]byte, error) {
 // Delete removes the manifest target, with the tags that point at it, or the blob target. With
 // NoDeleteManifest a manifest is provider.ErrUnsupported.
 func (r *repository) Delete(_ context.Context, target ocispec.Descriptor) error {
+	if err := r.f.unreachable(r.op("delete", target.Digest)); err != nil {
+		return err
+	}
 	if r.f.NoDeleteManifest && isManifest(target.MediaType) {
 		return fmt.Errorf("%s: %w", r.op("delete", target.Digest), provider.ErrUnsupported)
 	}
@@ -525,6 +574,9 @@ func (r *repository) Delete(_ context.Context, target ocispec.Descriptor) error 
 
 // Tag points reference at the manifest desc, which must be in the repository.
 func (r *repository) Tag(_ context.Context, desc ocispec.Descriptor, reference string) error {
+	if err := r.f.unreachable(r.op("tag", reference)); err != nil {
+		return err
+	}
 	r.f.mu.Lock()
 	defer r.f.mu.Unlock()
 	rd := r.f.repo(r.name, false)
@@ -540,6 +592,9 @@ func (r *repository) Tag(_ context.Context, desc ocispec.Descriptor, reference s
 
 // Resolve returns the descriptor of the manifest that reference, a tag or a digest, names.
 func (r *repository) Resolve(_ context.Context, reference string) (ocispec.Descriptor, error) {
+	if err := r.f.unreachable(r.op("resolve", reference)); err != nil {
+		return ocispec.Descriptor{}, err
+	}
 	r.f.mu.Lock()
 	defer r.f.mu.Unlock()
 	if rd := r.f.repo(r.name, false); rd != nil {
@@ -557,6 +612,9 @@ func (r *repository) Resolve(_ context.Context, reference string) (ocispec.Descr
 // Tags calls fn once with the tags after last, sorted; a repository without tags is
 // provider.ErrNotFound, as registries answer.
 func (r *repository) Tags(_ context.Context, last string, fn func(tags []string) error) error {
+	if err := r.f.unreachable(r.op("tags", last)); err != nil {
+		return err
+	}
 	r.f.mu.Lock()
 	rd := r.f.repo(r.name, false)
 	var tags []string
@@ -577,6 +635,9 @@ func (r *repository) Tags(_ context.Context, last string, fn func(tags []string)
 // Referrers calls fn once with the manifests whose subject is desc, of artifactType when it is
 // not empty, sorted by digest.
 func (r *repository) Referrers(_ context.Context, desc ocispec.Descriptor, artifactType string, fn func(referrers []ocispec.Descriptor) error) error {
+	if err := r.f.unreachable(r.op("referrers", desc.Digest)); err != nil {
+		return err
+	}
 	r.f.mu.Lock()
 	var refs []ocispec.Descriptor
 	if rd := r.f.repo(r.name, false); rd != nil {
