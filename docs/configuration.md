@@ -466,9 +466,14 @@ signed it; it never refuses a push for its label.
 | `attachments.trust[].predicateTypes` | list | empty | none | The predicate types the key is trusted for, as written (`https://cyclonedx.org/bom`, `https://cosign.sigstore.dev/attestation/vuln/v1`); a signature counts as `https://sigstore.dev/cosign/sign/v1`. Empty: every type. A signature of the key on another type is `untrusted`, and its reason says so. |
 | `attachments.maxBlobSize` | bytes | `16777216` (16 MiB) | none | The largest layer read to judge an attachment; a larger one is stored and listed `unsupported`. A sigstore bundle is kilobytes; an SBOM of a large image inside one can be megabytes. Each judged layer is held in memory once. `0` means the default; must not be negative. |
 
-Keyless signatures (Fulcio identities, `cosign attest` without `--key`) are not verified yet: they
-need a library that [layout.md](spec/layout.md) §3 does not list, and such an attachment is
-`unsupported` (#89).
+| `attachments.keyless.trustedRoot` | file path | empty | none | A `trusted_root.json`, the certificate authorities, transparency logs, CT logs and timestamp authorities of a Sigstore instance, which keyless attachments (`cosign attest` without `--key`) verify against. `serve` and `reindex` read it at start and stop on a file they cannot read or parse; nothing is fetched while verifying. `lajstrom admin trusted-root fetch --out <file>` writes the public-good one through TUF, the one command that uses the network; a private Sigstore gives its own. Replace the file when the instance rotates its keys, restart, and reindex. Empty: keyless attachments are `unsupported`. Required with identities. |
+| `attachments.keyless.signedCertificateTimestamps` | integer | `1` | none | How many signed certificate timestamps of a CT log of the trusted root a Fulcio certificate must carry. The public-good Fulcio embeds one; `0` for a Fulcio without a CT log. Must not be negative. |
+| `attachments.keyless.identities` | list | empty | none | The signers trusted, as their Fulcio certificate names them. A keyless attachment that verifies against the trusted root and whose identity none of these matches is `untrusted`, and its reason names the certificate's issuer and subject. |
+| `attachments.keyless.identities[].name` | string | required | none | The `signedBy` of what it verifies; unique among the keys and identities. |
+| `attachments.keyless.identities[].issuer` | URL | required | none | The OIDC issuer of the certificate, exactly: `https://token.actions.githubusercontent.com` for GitHub Actions, `https://gitlab.com` for GitLab CI, `https://accounts.google.com`. |
+| `attachments.keyless.identities[].subject` | string | empty | none | The certificate's subject alternative name, exactly: a workflow's URI (`https://github.com/acme/app/.github/workflows/release.yml@refs/heads/main`) or an email address. Set this or `subjectRegex`. |
+| `attachments.keyless.identities[].subjectRegex` | regular expression | empty | none | A Go regular expression the subject alternative name must match instead, `^https://github\.com/acme/.*@refs/tags/v.*$`. Anchor it: unanchored, it matches anywhere in the name. |
+| `attachments.keyless.identities[].predicateTypes` | list | empty | none | The predicate types the identity is trusted for, as for a key; empty: every type. |
 
 ### repos
 

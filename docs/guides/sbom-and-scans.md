@@ -14,7 +14,9 @@ verified attachment is the policy layer of
 This page uses cosign v3.1.4 with a key pair. Its steps were run on 2026-11-14 against Lajstrom
 of the #89 stack on Zot 2.1.23, on a raw file: the attestations, the signature,
 `cosign verify-attestation` through Lajstrom, the list, the reindex after a change of the trust
-and the delete. What is not there yet is at the end.
+and the delete. The keyless section (§4) was not run against a public Sigstore: its
+verification is tested with sigstore-go's own public-good test bundle and an in-memory Sigstore.
+What is not there yet is at the end.
 
 ## 1. Trust the key that signs
 
@@ -70,7 +72,9 @@ listed as `unsigned`.
 To tell which tool and which vulnerability database a result came from, without reading it,
 `oras attach --annotation` can set `lajstrom.attachment.tool`, `.toolVersion`, `.database` and
 `.input` (the digest of the SBOM a scan was computed from; [manifest-profile.md](../spec/manifest-profile.md)
-§6.2). `cosign attest` cannot set manifest annotations.
+§6.2). `cosign attest` cannot set manifest annotations, so Lajstrom reads the first three from the
+predicate when they are not set: trivy's `cosign-vuln` report names its scanner and database, a
+CycloneDX BOM its tool, an SPDX document its `Tool:` creator.
 
 ## 3. See the attachments and their labels
 
@@ -107,10 +111,53 @@ entry, so the first `scan` entry is the latest.
 The check of the subject matters: an attestation signed for another image, copied onto this
 version, is `invalid` here even when your key signed it.
 
-## 4. When the trust changes
+## 4. Keyless: sign in CI without a key
+
+`cosign attest` without `--key` signs with a short-lived Fulcio certificate that names the CI job
+(its OIDC identity) and records the signature in the Rekor transparency log. Lajstrom verifies such
+an attachment offline, against a trusted root you give it, and trusts it when the certificate's
+identity is one you named.
+
+Write the trusted root of the public-good Sigstore once, and again when it rotates its keys:
+
+```sh
+lajstrom admin trusted-root fetch --out /etc/lajstrom/trusted_root.json
+```
+
+That command fetches through TUF, verified from the root sigstore-go embeds. Verification itself
+never touches the network: the bundle carries its log entry and its proofs. A private Sigstore
+gives its own `trusted_root.json`, or `--tuf-url` and `--tuf-root` fetch it.
+
+Then name the identities you trust ([configuration.md](../configuration.md#attachments)):
+
+```yaml
+attachments:
+  keyless:
+    trustedRoot: /etc/lajstrom/trusted_root.json
+    identities:
+      - name: release
+        issuer: https://token.actions.githubusercontent.com
+        subjectRegex: '^https://github\.com/acme/app/\.github/workflows/release\.yml@refs/tags/v.*$'
+        predicateTypes: [https://slsa.dev/provenance/v1, https://cyclonedx.org/bom]
+```
+
+In the job, with `id-token: write` on GitHub Actions:
+
+```sh
+cosign attest --type cyclonedx --predicate sbom.json -y "$HOST/pypi/internal/requests@sha256:5c11…"
+```
+
+The attachment is `verified`, `signedBy` `release`, when the certificate chains to the trusted root
+and was valid when it signed, the Rekor entry and the timestamps verify, the certificate carries
+its SCT, its key signed the envelope, its issuer and subject match the identity for this predicate
+type, and the statement names the version. A certificate of another job is `untrusted`, and the
+reason names its issuer and subject, so you can see what to trust. cosign v2's legacy keyless
+signatures (under `sha256-<hex>.sig` and `.att`) stay `unsupported`; cosign v3 writes bundles.
+
+## 5. When the trust changes
 
 The label is decided when an attachment is indexed: at its push, and by reindex. After you add a
-key, remove one or change its predicate types, run a reindex of the repos (or wait for the
+key or an identity, remove one, change its predicate types or replace the trusted root, run a reindex of the repos (or wait for the
 reconcile loop, `reconcile.interval`): it reads every attachment labelled under the old trust
 again.
 
@@ -121,20 +168,17 @@ lajstrom reindex --repo pypi/internal --json | jq '.repos[0].attachments'
 Reindex also adds attachments pushed straight to the registry, past Lajstrom, and drops those
 deleted there. It asks the registry for the referrers of each version, one request per version.
 
-## 5. Deleting
+## 6. Deleting
 
 `DELETE /v2/<ociRepository>/manifests/<referrer digest>` deletes one attachment, with `delete` on
 the repo; deleting a version deletes its attachments first. Nothing prunes old scan reports yet.
 
 ## Not there yet
 
-- **Keyless signatures** (cosign with Fulcio and Rekor): listed as `unsupported`. Verifying them
-  needs a sigstore library that is not approved yet (#89, option A).
+- **cosign v2's legacy keyless signatures**: listed as `unsupported`; sign with cosign v3.
 - **An `attach` permission** that lets a scanner push attachments without `write` on versions
   (option C).
-- **Finding the versions without a fresh scan** (`?without=` on the versions list, option D),
-  and reading the tool and database from the signed predicate when the producer used cosign
-  (option B).
+- **Finding the versions without a fresh scan** (`?without=` on the versions list, option D).
 - **Keeping the SBOM a kept report names**, and pruning old reports (option E, with #72).
 - **A reference scan job** under `deploy/jobs/scan/` (option F).
 - **Refusing to serve a version without a verified attachment**: #101.

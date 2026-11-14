@@ -254,3 +254,37 @@ func TestPutReferrerAttachmentsBestEffort(t *testing.T) {
 		t.Errorf("rows: %+v", got)
 	}
 }
+
+// TestPutReferrerToolFromPredicate: a scan attested with cosign, which sets no annotation, gets
+// its tool, version and database from the signed predicate (manifest-profile.md §6.2); an
+// annotation that is set wins over the predicate, field by field.
+func TestPutReferrerToolFromPredicate(t *testing.T) {
+	e := newAttachEnv(t, 0)
+	predicate := `{"scanner":{"uri":"pkg:github/aquasecurity/trivy@0.60.0","version":"0.60.0","db":{"version":"2026-11-14"}}}`
+	scan := attesttest.Bundle(t, attesttest.Statement(e.subject.Digest, vulnType, predicate), e.scanner)
+	for _, tt := range []struct {
+		name                    string
+		annotations             map[string]string
+		tool, version, database string
+	}{
+		{"no annotations", map[string]string{"dev.sigstore.bundle.predicateType": vulnType}, "trivy", "0.60.0", "2026-11-14"},
+		{"the database annotated", map[string]string{"dev.sigstore.bundle.predicateType": vulnType, "lajstrom.attachment.database": "db-7",
+			"lajstrom.attachment.tool": "trivy-fork"}, "trivy-fork", "0.60.0", "db-7"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := e.referrer(t, e.subject.Digest, "", attesttest.BundleMediaType, tt.annotations, layerOf{attesttest.BundleMediaType, scan, nil})
+			_, err := e.pipe.PutReferrer(t.Context(), e.repo, r, alice)
+			must(t, err)
+			for _, a := range e.attachments(t) {
+				if a.Digest != r.Desc.Digest {
+					continue
+				}
+				if a.Tool != tt.tool || a.ToolVersion != tt.version || a.Database != tt.database || a.Verification != index.AttachmentVerified {
+					t.Errorf("row: %q %q %q %s, want %q %q %q verified", a.Tool, a.ToolVersion, a.Database, a.Verification, tt.tool, tt.version, tt.database)
+				}
+				return
+			}
+			t.Errorf("no row of %s", r.Desc.Digest)
+		})
+	}
+}
