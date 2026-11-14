@@ -95,8 +95,8 @@ func envOn(t *testing.T, p *pipeline, o envOptions) *aptEnv {
 	if o.log == nil {
 		o.log = slog.New(slog.DiscardHandler)
 	}
-	deps := format.Deps{Index: countingStore{Store: p.st, reads: e.reads}, Ingest: p.pipe, Providers: o.providers, Auth: o.authz,
-		Log: o.log}
+	deps := format.Deps{Index: countingStore{Store: p.st, reads: e.reads}, Ingest: p.pipe, Sessions: p.pipe, Providers: o.providers,
+		Auth: o.authz, Log: o.log}
 	if o.signer != nil {
 		deps.Signer = o.signer(p.st)
 	}
