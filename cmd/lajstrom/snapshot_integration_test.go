@@ -95,3 +95,58 @@ func TestIntegrationSnapshotCreate(t *testing.T) {
 		t.Errorf("the audit rows snapshot.create: %+v", evs)
 	}
 }
+
+// TestIntegrationSnapshotRestore is the disaster recovery through the commands, against the
+// registry at LAJSTROM_TEST_REGISTRY: a control plane snapshotted, the database lost, a new one
+// migrated and the latest snapshot restored: the users, tokens and bindings are back with their
+// ids. A second restore into it is refused unless forced, and a restore by the digest works too.
+func TestIntegrationSnapshotRestore(t *testing.T) {
+	dir := t.TempDir()
+	prefix := itPrefix()
+	one := writeIntegrationConfig(t, dir, "one", prefix)
+	two := writeIntegrationConfig(t, dir, "two", prefix)
+	env := map[string]string{"LAJSTROM_MASTER_KEY": testMasterKey}
+	outs := runEnv(t, one, env, []step{
+		{args: []string{"migrate"}, wantOut: "applied 0001"},
+		{args: []string{"admin", "repo", "create", "raw/assets", "--registry", "local"}},
+		{args: []string{"admin", "binding", "create", "--principal", "group:ops", "--role", "writer", "--mask", "raw/*"}},
+		{args: []string{"admin", "token", "create", "--repo", "raw/assets", "--name", "ci", "--scopes", "read"}},
+		{args: []string{"admin", "snapshot", "create"}},
+	})
+	var created struct {
+		Tag    string `json:"tag"`
+		Digest string `json:"digest"`
+	}
+	if err := json.Unmarshal([]byte(outs[4]), &created); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "one.db")); err != nil {
+		t.Fatal(err)
+	}
+	runEnv(t, two, nil, []step{{args: []string{"migrate"}, wantOut: "applied 0001"}})
+	runEnv(t, two, nil, []step{
+		{args: []string{"admin", "snapshot", "restore", "latest"}, wantErr: "a sealed snapshot needs the master key"},
+	})
+	runEnv(t, two, env, []step{
+		{args: []string{"admin", "snapshot", "restore", "latest"}, wantOut: `"tag":"` + created.Tag + `"`},
+		{args: []string{"admin", "repo", "list"}, wantOut: "assets"},
+		{args: []string{"admin", "binding", "list"}, wantOut: "group:ops"},
+		{args: []string{"admin", "token", "list", "--repo", "raw/assets"}, wantOut: "1   deploy  ci    read"},
+		{args: []string{"admin", "snapshot", "restore", created.Tag}, wantErr: "the control plane is not empty: repos, "},
+		{args: []string{"admin", "snapshot", "restore", created.Digest, "--force"}, wantOut: `"forced":true`},
+		{args: []string{"reindex"}, wantOut: "raw/assets"},
+	})
+
+	st, err := sqlite.Open(t.Context(), "file:"+filepath.Join(dir, "two.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	evs, err := st.ListAudit(t.Context(), index.AuditFilter{Action: actionSnapshotRestore})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Subject != "lajstrom/control-plane@"+created.Digest {
+		t.Errorf("the audit rows snapshot.restore after a forced restore: %+v; want the forced one's", evs)
+	}
+}
