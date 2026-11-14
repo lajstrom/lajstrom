@@ -128,8 +128,10 @@ func ptr[T any](v T) *T { return &v }
 
 // tokenFixture is an authFixture with tokens: alice's (full rights, read only, revoked,
 // expired, without an expiry, of a deploy row), bob's (bob is disabled), carol's (no
-// password), one of a user that does not exist, and deploy tokens of raw/scratch (repo 10:
-// read and write, revoked, expired, never expiring, of a pat row) and of a repo that is gone.
+// password), one of a user that does not exist, deploy tokens of raw/scratch (repo 10:
+// read and write, revoked, expired, never expiring, of a pat row) and of a repo that is gone,
+// and deploy tokens over the mask raw/* (#911: read, revoked) and rows this package never
+// writes (a repo and a mask, neither, a mask of one segment).
 type tokenFixture struct {
 	*authFixture
 	secrets map[string]string // by name
@@ -161,6 +163,11 @@ func newTokenFixture(t *testing.T, o Options) *tokenFixture {
 		{"deploy-never", DeployPrefix, index.Token{ID: 23, Kind: TokenDeploy, RepoID: ptr(int64(10)), Scopes: []string{"read"}}},
 		{"deploy-as-pat", DeployPrefix, index.Token{ID: 24, Kind: TokenPAT, UserID: ptr(int64(1)), ExpiresAt: hour}},
 		{"deploy-gone", DeployPrefix, index.Token{ID: 25, Kind: TokenDeploy, RepoID: ptr(int64(99)), Scopes: []string{"read"}}},
+		{"mask", DeployPrefix, index.Token{ID: 26, Kind: TokenDeploy, RepoMask: "raw/*", Scopes: []string{"read"}}},
+		{"mask-revoked", DeployPrefix, index.Token{ID: 27, Kind: TokenDeploy, RepoMask: "raw/*", Scopes: []string{"read"}, RevokedAt: past}},
+		{"mask-and-repo", DeployPrefix, index.Token{ID: 28, Kind: TokenDeploy, RepoID: ptr(int64(10)), RepoMask: "raw/*", Scopes: []string{"read"}}},
+		{"mask-neither", DeployPrefix, index.Token{ID: 29, Kind: TokenDeploy, Scopes: []string{"read"}}},
+		{"mask-malformed", DeployPrefix, index.Token{ID: 30, Kind: TokenDeploy, RepoMask: "raw", Scopes: []string{"read"}}},
 	} {
 		f.secrets[tt.name] = u.addToken(tt.prefix, tt.row)
 	}
@@ -230,6 +237,14 @@ func TestAuthenticateTokens(t *testing.T) {
 		{name: "deploy of a repo gone", user: "deploy", which: "deploy-gone", reason: "the repo is gone", token: 25, tokenReads: 1},
 		{name: "deploy unknown", user: "deploy", which: "unknown-deploy", reason: "unknown token", tokenReads: 1},
 		{name: "deploy malformed", user: "deploy", which: DeployPrefix + "short", reason: "malformed token"},
+		{name: "mask", user: "deploy", which: "mask", want: Principal{Kind: KindToken, Name: "26"},
+			cred: Credential{Kind: CredDeploy, TokenID: 26, Mask: "raw/*", Scopes: []string{"read"}}, tokenReads: 1},
+		{name: "mask revoked", user: "deploy", which: "mask-revoked", reason: "revoked", token: 27, tokenReads: 1},
+		{name: "mask and repo", user: "deploy", which: "mask-and-repo", reason: "a deploy token with neither a repo nor a mask, or with both",
+			token: 28, tokenReads: 1},
+		{name: "neither mask nor repo", user: "deploy", which: "mask-neither", reason: "a deploy token with neither a repo nor a mask, or with both",
+			token: 29, tokenReads: 1},
+		{name: "mask malformed", user: "deploy", which: "mask-malformed", reason: "a deploy token whose mask is not <format>/<repo>", token: 30, tokenReads: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -295,6 +310,8 @@ func TestAuthenticateBearer(t *testing.T) {
 		{name: "deploy token", which: "deploy", want: Principal{Kind: KindToken, Name: "20"}},
 		{name: "deploy token revoked", which: "deploy-revoked", reason: "revoked"},
 		{name: "deploy token unknown", which: "unknown-deploy", reason: "unknown token"},
+		{name: "deploy token over a mask", which: "mask", want: Principal{Kind: KindToken, Name: "26"}},
+		{name: "deploy token over a mask revoked", which: "mask-revoked", reason: "revoked"},
 		{name: "malformed", which: "eyJhbGciOi.x.y", reason: "malformed token"},
 		{name: "unknown", which: "unknown", reason: "unknown token"},
 		{name: "revoked", which: "alice-revoked", reason: "revoked"},
@@ -312,8 +329,11 @@ func TestAuthenticateBearer(t *testing.T) {
 			}
 			p, c, err := f.a.AuthenticateBearer(context.Background(), secret)
 			want := map[Kind]Credential{KindUser: {Kind: CredPAT, UserID: 1}, KindToken: {Kind: CredDeploy, TokenID: 20, RepoID: 10}}[tt.want.Kind]
+			if tt.which == "mask" {
+				want = Credential{Kind: CredDeploy, TokenID: 26, Mask: "raw/*"}
+			}
 			if tt.want != (Principal{}) {
-				if err != nil || p != tt.want || c.Kind != want.Kind || c.UserID != want.UserID || c.RepoID != want.RepoID {
+				if err != nil || p != tt.want || c.Kind != want.Kind || c.UserID != want.UserID || c.RepoID != want.RepoID || c.Mask != want.Mask {
 					t.Fatalf("AuthenticateBearer = %v, %+v, %v; want %v, %+v", p, c, err, tt.want, want)
 				}
 			} else {
@@ -452,6 +472,20 @@ func TestAuthenticateTokenFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAuthenticateMaskNoRepo checks that a deploy token over a mask reads no repo: it names none
+// (docs/spec/rbac.md §1), so it authenticates while every GetRepoByID fails, as its last use
+// shows.
+func TestAuthenticateMaskNoRepo(t *testing.T) {
+	f := newTokenFixture(t, Options{})
+	f.users.repoErr = errors.New("index: no repo may be read")
+	p, c, err := f.a.Authenticate(context.Background(), "deploy", f.secrets["mask"])
+	f.wantSuccess(t, p, c, err, Principal{Kind: KindToken, Name: "26"}, Credential{Kind: CredDeploy, TokenID: 26, Mask: "raw/*", Scopes: []string{"read"}})
+	if got := f.users.touches(26); len(got) != 1 {
+		t.Errorf("the token's uses: %v, want one", got)
+	}
+	f.noSecrets(t)
 }
 
 // TestAuthenticateTokensConcurrent uses tokens from many goroutines at once, for the race
