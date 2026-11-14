@@ -104,16 +104,24 @@ func TestAuthorize(t *testing.T) {
 		want      error         // nil means allowed
 		unchanged bool          // err is want itself, not wrapped
 		asked     []auth.Action // the questions, in order
+		msg       string        // the message; "" skips the check
 	}{
 		{name: "nil Auth allows everything", action: write},
 		{name: "nil Auth allows a user", principal: &alice, action: write},
 		{name: "allowed anonymous read", authz: &authorizer{allow: actions(read)}, action: read, asked: actions(read)},
 		{name: "allowed user write", authz: &authorizer{allow: actions(read, write)}, principal: &alice, action: write, asked: actions(write)},
-		{name: "denied anonymous read", authz: &authorizer{}, action: read, want: format.ErrUnauthenticated, asked: actions(read)},
-		{name: "denied anonymous write", authz: &authorizer{}, action: write, want: format.ErrUnauthenticated, asked: actions(write)},
+		// A principal that may not read the repo gets the message of a repo that does not exist
+		// (router.notFound), and only one that can read it learns the action (#1091).
+		{name: "denied anonymous read", authz: &authorizer{}, action: read, want: format.ErrUnauthenticated, asked: actions(read),
+			msg: "format: authentication required: repository fake/scratch"},
+		{name: "denied anonymous write", authz: &authorizer{}, action: write, want: format.ErrUnauthenticated, asked: actions(write, read),
+			msg: "format: authentication required: repository fake/scratch"},
+		{name: "anonymous with read lacks write", authz: &authorizer{allow: actions(read)}, action: write, want: format.ErrUnauthenticated,
+			asked: actions(write, read), msg: "format: authentication required: write on fake/scratch"},
 		{name: "user with read lacks write", authz: &authorizer{allow: actions(read)}, principal: &alice, action: write, want: format.ErrForbidden, asked: actions(write, read)},
 		{name: "deploy token with read lacks delete", authz: &authorizer{allow: actions(read)}, principal: &deploy, action: del, want: format.ErrForbidden, asked: actions(del, read)},
-		{name: "user without access asks write", authz: &authorizer{}, principal: &alice, action: write, want: index.ErrNotFound, asked: actions(write, read)},
+		{name: "user without access asks write", authz: &authorizer{}, principal: &alice, action: write, want: index.ErrNotFound, asked: actions(write, read),
+			msg: "index: not found: repository fake/scratch"},
 		{name: "user without access asks read", authz: &authorizer{}, principal: &alice, action: read, want: index.ErrNotFound, asked: actions(read)},
 		{name: "authorizer error", authz: &authorizer{allow: actions(write), err: dbDown}, principal: &alice, action: write, want: dbDown, unchanged: true, asked: actions(write)},
 		{name: "authorizer error on the read question", authz: &authorizer{err: dbDown, errOn: read}, principal: &alice, action: write, want: dbDown, unchanged: true, asked: actions(write, read)},
@@ -133,8 +141,12 @@ func TestAuthorize(t *testing.T) {
 			if !errors.Is(err, tt.want) { // errors.Is(nil, nil) is true
 				t.Fatalf("Authorize = %v, want %v", err, tt.want)
 			}
-			if tt.unchanged && err.Error() != tt.want.Error() {
-				t.Errorf("Authorize = %q, want the authorizer's error unchanged", err)
+			msg := tt.msg
+			if tt.unchanged { // the authorizer's error itself, not wrapped
+				msg = tt.want.Error()
+			}
+			if msg != "" && err.Error() != msg {
+				t.Errorf("message = %q, want %q", err, msg)
 			}
 			if tt.authz == nil {
 				return

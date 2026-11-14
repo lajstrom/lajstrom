@@ -50,31 +50,35 @@ func parseDistTags(segs []string) (distTagTarget, bool) {
 // hosted member's (ADR 0013, writeTarget).
 func (h *handlers) distTags(w http.ResponseWriter, r *http.Request, repo index.Repo, segs []string) {
 	t, ok := parseDistTags(segs)
-	if ok && t.tag != "" && (r.Method == http.MethodPut || r.Method == http.MethodDelete) {
+	var serve specialHandler
+	if ok {
+		serve = h.distTagRoute(r.Method, t)
+	}
+	if serve == nil {
+		h.noRoute(w, r, repo)
+		return
+	}
+	if t.tag != "" { // add or rm: a write
 		var err error
 		if r, repo, err = h.writeTarget(r, repo); err != nil {
 			h.fail(w, r, err)
 			return
 		}
 	}
+	serve(w, r, repo)
+}
+
+// distTagRoute returns the handler of method on the dist-tags of t, nil for none.
+func (h *handlers) distTagRoute(method string, t distTagTarget) specialHandler {
 	switch {
-	case !ok:
-		h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
-	case r.Method == http.MethodGet || r.Method == http.MethodHead:
-		if t.tag != "" {
-			h.fail(w, r, fmt.Errorf("%w: %s", index.ErrNotFound, r.URL.Path))
-			return
-		}
-		h.listDistTags(w, r, repo, t.name)
-	case t.tag == "":
-		h.fail(w, r, fmt.Errorf("%w: %s %s", index.ErrNotFound, r.Method, r.URL.Path))
-	case r.Method == http.MethodPut:
-		h.addDistTag(w, r, repo, t)
-	case r.Method == http.MethodDelete:
-		h.rmDistTag(w, r, repo, t)
-	default:
-		h.fail(w, r, fmt.Errorf("%w: %s %s", index.ErrNotFound, r.Method, r.URL.Path))
+	case t.tag == "" && (method == http.MethodGet || method == http.MethodHead):
+		return func(w http.ResponseWriter, r *http.Request, repo index.Repo) { h.listDistTags(w, r, repo, t.name) }
+	case t.tag != "" && method == http.MethodPut:
+		return func(w http.ResponseWriter, r *http.Request, repo index.Repo) { h.addDistTag(w, r, repo, t) }
+	case t.tag != "" && method == http.MethodDelete:
+		return func(w http.ResponseWriter, r *http.Request, repo index.Repo) { h.rmDistTag(w, r, repo, t) }
 	}
+	return nil
 }
 
 // listDistTags answers the dist-tags of the packument: those of the journal whose version the
