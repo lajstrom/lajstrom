@@ -21,7 +21,9 @@
 // .dsc's own size and checksums. ParseDsc reads a .dsc, signed or not (the signature is not
 // checked); Build checks each file against the checksums the .dsc gives it, and Validate the
 // .dsc against the metadata and the file layers. A source and a binary of one name share the
-// OCI repository, as they share a directory of a Debian pool.
+// OCI repository, as they share a directory of a Debian pool. The suite's render adds a
+// Sources, Sources.gz and Sources.xz per component when it has source versions; the pool serves
+// their files.
 //
 // An upload streams into the registry (ADR 0014): the upload route reads the head of the body,
 // up to the end of the control member, for the package name, and the whole body passes the
