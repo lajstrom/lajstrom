@@ -561,6 +561,8 @@ type wrapped struct {
 	// noReferrersAPI makes it a registry without the referrers API, whose referrers the
 	// sha256-<hex> index lists.
 	noReferrersAPI bool
+	// alwaysTag is the registry's referrers.alwaysTag (Capabilities.ReferrersAlwaysTag).
+	alwaysTag bool
 
 	mu       sync.Mutex
 	tagLists map[string]int // the tag lists asked, by repository
@@ -572,6 +574,7 @@ type wrapped struct {
 func (w *wrapped) Capabilities(ctx context.Context) (provider.Capabilities, error) {
 	c, err := w.Fake.Capabilities(ctx)
 	c.Referrers = c.Referrers && !w.noReferrersAPI
+	c.ReferrersAlwaysTag = w.alwaysTag
 	return c, err
 }
 

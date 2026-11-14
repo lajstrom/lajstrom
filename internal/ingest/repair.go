@@ -29,7 +29,8 @@ type ReferrersRepair struct {
 	Err     error           // a read or the push failed: the index is as it was
 }
 
-// RepairReferrers pushes again, on a registry without the referrers API, the sha256-<hex> index of
+// RepairReferrers pushes again, where the provider keeps the tag schema (Capabilities.TagSchema:
+// no referrers API, or referrers.alwaysTag), the sha256-<hex> index of
 // each subject of found that lacks referrers the audit log has as pushed to repo and the
 // registry still has with that subject, or that is missing while there are such: a delete whose
 // push of the index failed (#711), a lost referrers lock or a registry's garbage collector can
@@ -44,7 +45,7 @@ type ReferrersRepair struct {
 // lists (descriptors as Delete's repair writes them). Its audit row, referrers.repair by principal
 // with the subject's digest, the digest of the index pushed and in the details the package path
 // and the referrers added, is written pending before the push and completed after it, ok or
-// failed. A registry with the referrers API lists referrers itself, and nothing is read; with an
+// failed. A registry with the referrers API alone lists referrers itself, and nothing is read; with an
 // audit.Writer the log names no referrer, and nothing is repaired.
 //
 // The result has one entry per index found lacking, in the order of the subjects' digests: pushed,
@@ -59,7 +60,7 @@ func (p *Pipeline) RepairReferrers(ctx context.Context, repo index.Repo, found m
 	if err != nil {
 		return nil, fmt.Errorf("ingest: capabilities of registry %s: %w", repo.Registry, err)
 	}
-	if caps.Referrers || p.audit != nil || len(found) == 0 {
+	if !caps.TagSchema() || p.audit != nil || len(found) == 0 {
 		return nil, nil
 	}
 	pushed, err := p.pushedReferrers(ctx, repo, func(s digest.Digest) bool { return len(found[s]) > 0 })
