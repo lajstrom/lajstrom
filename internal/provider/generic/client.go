@@ -79,7 +79,7 @@ func newClients(cfg config.Registry, base *url.URL, log *slog.Logger, o Options,
 	// once however often it was tried. Above both, the probe's ping sees the challenges.
 	br := newBreaker(cfg.Name, log)
 	rt := &deleteScopeTransport{on: pushForDelete, next: &realmTransport{registry: cfg.Name, base: base, hosts: realmHosts(cfg, base), next: &challengeTransport{next: &breakerTransport{b: br, next: &retryTransport{
-		next:    &logTransport{next: &metricsTransport{next: innermost(o, newTransport(timeout, guard), cfg.Name, timeout, log), registry: cfg.Name}, log: log},
+		next:    &logTransport{next: &metricsTransport{next: innermost(o, newTransport(timeout, guard, o.resolver), cfg.Name, timeout, log), registry: cfg.Name}, log: log},
 		retries: retries(cfg),
 		log:     log,
 	}}}}}
@@ -204,8 +204,9 @@ func guardedRedirect(guard *egress.Guard) func(*http.Request, []*http.Request) e
 // maxDialTimeout. A registry's response body streams for as long as it takes; an upstream's
 // is bounded by stallTransport (innermost). A non-nil guard dials the
 // hosts it does not trust at public addresses only, and trusts the egress proxies the
-// environment chooses.
-func newTransport(timeout time.Duration, guard *egress.Guard) *http.Transport {
+// environment chooses. A non-nil resolver resolves the host names the dialer dials, in place of
+// net.DefaultResolver (Options.resolver, the tests').
+func newTransport(timeout time.Duration, guard *egress.Guard, resolver *net.Resolver) *http.Transport {
 	var t *http.Transport
 	if d, ok := http.DefaultTransport.(*http.Transport); ok {
 		t = d.Clone()
@@ -213,7 +214,7 @@ func newTransport(timeout time.Duration, guard *egress.Guard) *http.Transport {
 		t = &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true}
 	}
 	dial := min(timeout, maxDialTimeout)
-	dialer := &net.Dialer{Timeout: dial, KeepAlive: 30 * time.Second}
+	dialer := &net.Dialer{Timeout: dial, KeepAlive: 30 * time.Second, Resolver: resolver}
 	t.DialContext = dialer.DialContext
 	if guard != nil {
 		t.DialContext = guard.DialContext(dialer)

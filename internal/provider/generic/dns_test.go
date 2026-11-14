@@ -15,15 +15,14 @@ import (
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
-// noDNS makes every host name fail to resolve for the test: the resolver of the process has no
-// name server to ask, as a registry's name on a compose network once its container stopped.
-func noDNS(t *testing.T) {
-	t.Helper()
-	prev := net.DefaultResolver
-	net.DefaultResolver = &net.Resolver{PreferGo: true, Dial: func(context.Context, string, string) (net.Conn, error) {
+// noDNS is a resolver with no name server to ask: every host name fails to resolve, as a
+// registry's name on a compose network once its container stopped. A provider gets it through
+// Options.resolver. net.DefaultResolver stays as it is: a transport of an earlier test may still
+// be dialing with it in the background, and swapping it under that dial is a data race (#1106).
+func noDNS() *net.Resolver {
+	return &net.Resolver{PreferGo: true, Dial: func(context.Context, string, string) (net.Conn, error) {
 		return nil, errors.New("no name server in this test")
 	}}
-	t.Cleanup(func() { net.DefaultResolver = prev })
 }
 
 // TestUnresolvableRegistry calls every path of a registry whose host name does not resolve
@@ -31,9 +30,9 @@ func noDNS(t *testing.T) {
 // much as GET, with the *net.DNSError as its cause and not the circuit breaker's refusal, and
 // a message that does not name the host.
 func TestUnresolvableRegistry(t *testing.T) {
-	noDNS(t)
 	lowerBreaker(t, 1000) // the breaker stays closed: every call meets the DNS error itself
-	p, err := New(config.Registry{Name: "gone", Type: Type, URL: "http://registry.lajstrom.test:5000", Retries: -1}, slog.New(slog.DiscardHandler))
+	p, err := NewWithOptions(config.Registry{Name: "gone", Type: Type, URL: "http://registry.lajstrom.test:5000", Retries: -1},
+		slog.New(slog.DiscardHandler), Options{resolver: noDNS()})
 	if err != nil {
 		t.Fatal(err)
 	}
