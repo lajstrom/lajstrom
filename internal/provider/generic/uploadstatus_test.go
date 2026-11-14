@@ -2,6 +2,7 @@ package generic
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -166,5 +167,85 @@ func TestUploadStatusMeasureFails(t *testing.T) {
 	}
 	if got, err := repo.BlobUploadStatus(ctx, u); err != nil || got.Offset != 5 {
 		t.Errorf("status once measured = %+v, %v; want 5", got, err)
+	}
+}
+
+// emptyStatusRepo returns the repository raw/scratch/notes of a provider that has not probed, on a
+// fake registry that answers the status of a session without bytes 404 BLOB_UNKNOWN and keeps the
+// session, as JFrog does; jfrog makes it say so in its answer to GET /v2/, as JFrog does.
+func emptyStatusRepo(t *testing.T, jfrog bool) provider.Repository {
+	t.Helper()
+	f := newFakeRegistry(t)
+	f.emptyStatus404 = true
+	if jfrog {
+		f.hook = func(w http.ResponseWriter, r *http.Request) bool {
+			if r.URL.Path == "/v2/" {
+				for k, v := range jfrogV2 {
+					w.Header()[k] = v
+				}
+			}
+			return false
+		}
+	}
+	log, _ := testLogger()
+	return statusRepo(t, f.provider(t, log, nil))
+}
+
+// TestUploadStatusEmpty404 is #1045: JFrog answers the status of a session that holds no bytes
+// 404 BLOB_UNKNOWN, and the session works. On vendor=jfrog, told by its header to a provider that
+// has not probed yet (the status probes first, readQuirks), that 404 is the session as it was, at
+// offset 0, and the upload goes on. A 404 at a later offset stays ErrNotFound.
+func TestUploadStatusEmpty404(t *testing.T) {
+	ctx := t.Context()
+	repo := emptyStatusRepo(t, true)
+	u, err := repo.StartBlobUpload(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := repo.BlobUploadStatus(ctx, u); err != nil || got != u {
+		t.Fatalf("status of the empty session = %+v, %v; want %+v", got, err, u)
+	}
+	if u, err = repo.AppendBlobChunk(ctx, u, strings.NewReader("abc"), 3); err != nil || u.Offset != 3 {
+		t.Fatalf("chunk after the status = %+v, %v; want offset 3", u, err)
+	}
+	if u, err = repo.BlobUploadStatus(ctx, u); err != nil || u.Offset != 3 {
+		t.Fatalf("status after the chunk = %+v, %v; want offset 3", u, err)
+	}
+	if _, err := repo.FinishBlobUpload(ctx, u, digest.FromString("abc"), nil, 0); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	if _, err := repo.BlobUploadStatus(ctx, u); !errors.Is(err, provider.ErrNotFound) {
+		t.Errorf("status of the finished session at offset 3 = %v, want ErrNotFound", err)
+	}
+}
+
+// TestUploadStatusEmpty404Lost: a session JFrog no longer knows, at offset 0, cannot be told from
+// one that works, so its status is offset 0 too; its 404 comes at the next PATCH. On a registry
+// that the vendor table does not know for it, the 404 of an empty session's status stays
+// ErrNotFound.
+func TestUploadStatusEmpty404Lost(t *testing.T) {
+	ctx := t.Context()
+	repo := emptyStatusRepo(t, true)
+	gone, err := repo.StartBlobUpload(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CancelBlobUpload(ctx, gone); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := repo.BlobUploadStatus(ctx, gone); err != nil || got.Offset != 0 {
+		t.Errorf("status of a cancelled session at offset 0 = %+v, %v; want offset 0", got, err)
+	}
+	if _, err := repo.AppendBlobChunk(ctx, gone, strings.NewReader("x"), 1); !errors.Is(err, provider.ErrNotFound) {
+		t.Errorf("chunk to the cancelled session = %v, want ErrNotFound", err)
+	}
+
+	other := emptyStatusRepo(t, false)
+	u, err := other.StartBlobUpload(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := other.BlobUploadStatus(ctx, u); !errors.Is(err, provider.ErrNotFound) {
+		t.Errorf("status of the empty session on another registry = %+v, %v; want ErrNotFound", got, err)
 	}
 }
