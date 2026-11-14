@@ -41,10 +41,10 @@ var retryWait = struct{ min, max time.Duration }{min: 200 * time.Millisecond, ma
 type clients struct {
 	// follow is the client of oras-go: it follows redirects, so blob downloads that the
 	// registry redirects to object storage work.
-	follow *auth.Client
+	follow *aliasClient
 	// noFollow returns a redirect as the response, for OpenBlob and StatBlob, which decide
 	// for each one whether the client gets it or the provider follows it.
-	noFollow *auth.Client
+	noFollow *aliasClient
 	// anonymous is noFollow without the credentials and the token cache, for the hops of a
 	// blob redirect that has left the registry's origin.
 	anonymous *http.Client
@@ -110,18 +110,18 @@ func newClients(cfg config.Registry, base *url.URL, log *slog.Logger, o Options,
 		follow.CheckRedirect = guardedRedirect(guard)
 	}
 	return clients{
-		follow: &auth.Client{
+		follow: &aliasClient{Client: &auth.Client{
 			Client:     follow,
 			Header:     header,
 			Credential: cred,
 			Cache:      cache,
-		},
-		noFollow: &auth.Client{
+		}},
+		noFollow: &aliasClient{Client: &auth.Client{
 			Client:     noFollow,
 			Header:     header,
 			Credential: cred,
 			Cache:      cache,
-		},
+		}},
 		anonymous:   noFollow,
 		header:      header,
 		cache:       cache,
@@ -236,8 +236,8 @@ func newTransport(timeout time.Duration, guard *egress.Guard) *http.Transport {
 type challengeKey struct{}
 
 // challengeTransport keeps the WWW-Authenticate header of the first 401 of a request whose
-// context asks for it (the probe's ping). The auth client answers a challenge itself, and the
-// answer it returns in the end does not show the challenge.
+// context asks for it: the probe's ping, and aliasClient for every request. The auth client
+// answers a challenge itself, and the answer it returns in the end does not show the challenge.
 type challengeTransport struct{ next http.RoundTripper }
 
 // RoundTrip implements http.RoundTripper.
@@ -250,6 +250,34 @@ func (t *challengeTransport) RoundTrip(req *http.Request) (*http.Response, error
 		*dst = resp.Header.Get("WWW-Authenticate")
 	}
 	return resp, nil
+}
+
+// aliasClient is the provider's auth client: auth.Client.Do, and after a request that met a
+// bearer challenge, aliasToken with the challenge, which challengeTransport keeps. oras-go keys
+// the token it gets after a challenge by the request's scopes merged with the challenge's scope
+// parameter, and looks the next request up by its own scopes alone: against a registry whose
+// challenge names a scope the request does not (Gitea's and Forgejo's scope="*", on every
+// challenge), every request went out once without the token, got the 401 and was sent again
+// with the token the cache held (#1042). A challenge without a scope (Harbor's), or with the
+// request's own, changes nothing.
+type aliasClient struct{ *auth.Client }
+
+// Do implements remote.Client.
+func (c *aliasClient) Do(req *http.Request) (*http.Response, error) {
+	challenge, ok := req.Context().Value(challengeKey{}).(*string)
+	if !ok {
+		challenge = new(string)
+		req = req.WithContext(context.WithValue(req.Context(), challengeKey{}, challenge))
+	}
+	resp, err := c.Client.Do(req)
+	if *challenge != "" {
+		host := req.Host // the auth client's key of the cache
+		if host == "" {
+			host = req.URL.Host
+		}
+		aliasToken(req.Context(), c.Cache, host, *challenge)
+	}
+	return resp, err
 }
 
 // realmTransport refuses the bearer challenge of the registry when the token realm it names

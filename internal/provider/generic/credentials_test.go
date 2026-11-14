@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/opencontainers/go-digest"
 
 	"github.com/lajstrom/lajstrom/internal/config"
+	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
 // TestBlobRedirectDowngrade checks that the registry's credentials never cross a redirect from
@@ -322,4 +324,55 @@ func trusting(t *testing.T, pool *x509.CertPool) {
 	tr.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
 	http.DefaultTransport = tr
 	t.Cleanup(func() { http.DefaultTransport = old })
+}
+
+// TestTokenAfterChallenge is #1042: against a registry whose bearer challenge names a scope of
+// its own (Gitea's and Forgejo's scope="*"), the token the provider got after the first
+// challenge is found by every later request with the same scopes, so only the first goes out
+// without it. Before, every request did and got a 401, then went again with the cached token. A
+// challenge without a scope (Harbor's), or with the request's own, is unchanged: one 401, then
+// the token from the cache.
+func TestTokenAfterChallenge(t *testing.T) {
+	const name = "raw/scratch/notes"
+	const repo = "art/" + name
+	for _, tt := range []struct{ name, scope string }{
+		{"a scope of its own, as Gitea and Forgejo", "*"},
+		{"no scope, as Harbor", ""},
+		{"the request's own scope", "repository:" + repo + ":pull"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			f := newFakeRegistry(t)
+			f.authMode, f.challengeScope = "bearer", tt.scope
+			log, _ := testLogger()
+			p := f.provider(t, log, func(c *config.Registry) {
+				c.Auth = config.RegistryAuth{Username: f.user, Password: f.pass, PasswordEnv: "FAKE_PASSWORD"}
+			})
+			r, err := p.Repository(ctx, name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 3 {
+				if _, err := r.Resolve(ctx, "v1"); !errors.Is(err, provider.ErrNotFound) {
+					t.Fatalf("Resolve = %v, want ErrNotFound", err)
+				}
+			}
+			for range 3 {
+				if _, err := p.StatBlob(ctx, name, digest.FromString("absent")); !errors.Is(err, provider.ErrNotFound) {
+					t.Fatalf("StatBlob = %v, want ErrNotFound", err)
+				}
+			}
+			f.mu.Lock()
+			var bare []string
+			for i, req := range f.requests {
+				if strings.Contains(req, " /v2/"+repo+"/") && f.auths[i] == "" {
+					bare = append(bare, req)
+				}
+			}
+			f.mu.Unlock()
+			if len(bare) != 1 {
+				t.Errorf("%d requests to the repository without a token, want the first only: %q", len(bare), bare)
+			}
+		})
+	}
 }

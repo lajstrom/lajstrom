@@ -153,7 +153,11 @@ request again with a token it already has. oras-go's auth client caches a token 
 request's scopes merged with the challenge's `scope="*"`, but looks a request up by its own
 scopes before the challenge, as item 1 says. `prime` adds that alias for a streamed upload
 only (`aliasToken`, internal/provider/generic/uploads.go). So every other request to Gitea
-costs one more round trip. Nothing fails, and Forgejo's challenge is the same.
+costs one more round trip. Nothing fails, and Forgejo's challenge is the same. **Done in
+#1042:** the provider's auth client adds the alias after every challenge that names a scope the
+request does not (`aliasClient`, internal/provider/generic/client.go), so only the first
+request with a given set of scopes meets the 401; `TestTokenAfterChallenge` counts it. Not
+measured with the probe again.
 
 ## What the provider must do differently
 
