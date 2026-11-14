@@ -122,7 +122,7 @@ func TestTokenEndpoint(t *testing.T) {
 
 // TestTokenEndpointService checks the service of the tokens: the configured one whatever the
 // client sends, the external URL's host when it is set; a request without scopes gets a token
-// without access; only GET.
+// without access; PUT and HEAD are 405 (POST is TestTokenForm's).
 func TestTokenEndpointService(t *testing.T) {
 	e := newEnv(t, envOptions{})
 	tok := e.getToken(e.h, "", "repository:raw/assets/a:pull")
@@ -137,7 +137,7 @@ func TestTokenEndpointService(t *testing.T) {
 	if fmt.Sprint(payload(t, a.Token)["access"]) != "[]" {
 		t.Errorf("a token without scopes: %v", payload(t, a.Token))
 	}
-	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodHead} {
+	for _, m := range []string{http.MethodPut, http.MethodHead} {
 		rr := e.do(e.h, m, "/v2/token", strings.NewReader("grant_type=password"), "Content-Type", "application/x-www-form-urlencoded")
 		if m == http.MethodHead {
 			wantStatus(t, "HEAD /v2/token", rr, http.StatusMethodNotAllowed)

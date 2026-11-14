@@ -22,7 +22,8 @@ import (
 // format.WriteError.
 const basicChallenge = `Basic realm="lajstrom"`
 
-// tokenPath is the token endpoint of the facade, the one path under /v2/ that takes Basic.
+// tokenPath is the token endpoint of the facade, the one path under /v2/ that takes Basic, and
+// on POST the user name and password of the OAuth2 form (authenticateForm).
 const tokenPath = "/v2/token"
 
 // Messages of the answers of the authentication middleware.
@@ -68,6 +69,10 @@ func HoldPrincipal(ctx context.Context, p auth.Principal) {
 //     and the request goes on as the user or the deploy token. Credentials that are refused,
 //     or that do not decode, are answered at once with 401 and the Basic challenge, whatever
 //     the route, in the error format of the route's family (writeRefusal).
+//   - POST /v2/token: the credential is the username and the password of the OAuth2 form
+//     (token.ReadForm, docs/spec/http-routing.md §2, #908), authenticated as Basic credentials
+//     are; the Authorization header is not read. A form that is refused is answered 400 or 413
+//     in OAuth2's format before its credential is checked (authenticateForm).
 //   - Bearer with a token secret (ljs_pat_… or ljs_dep_…, as npm's _authToken sends it) on
 //     every route but /v2: authenticated as a personal access token or a deploy token
 //     (auth.Authenticator.AuthenticateBearer), and refused like Basic credentials.
@@ -99,6 +104,10 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if r.Method == http.MethodPost && r.URL.Path == tokenPath {
+			s.authenticateForm(w, r, next)
+			return
+		}
 		scheme, value, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 		var (
 			p    auth.Principal
@@ -121,28 +130,53 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		var throttled *auth.ThrottledError
-		switch {
-		case errors.Is(err, auth.ErrBadCredentials):
-			s.writeRefusal(w, r, http.StatusUnauthorized, msgBadCredentials)
-			return
-		case errors.As(err, &throttled): // a failed-login throttle: account or address
-			s.throttled(w, r, throttled, msgThrottled)
-			return
-		case err != nil:
-			// Not the user name: as it was typed, it may be a password or a token (threat model L-3).
-			s.log.ErrorContext(r.Context(), "authentication failed", "error", err.Error(), "requestId", RequestID(r.Context()))
-			status, msg := http.StatusInternalServerError, msgAuthFailed
-			if format.StatusOf(err) == http.StatusServiceUnavailable { // the database does not answer
-				status, msg = http.StatusServiceUnavailable, msgAuthUnavailable
-				format.SetRetryAfter(w.Header(), err)
-			}
-			s.writeRefusal(w, r, status, msg)
-			return
-		}
-		HoldPrincipal(r.Context(), p)
-		next.ServeHTTP(w, r.WithContext(auth.WithCredential(auth.WithPrincipal(r.Context(), p), cred)))
+		s.settle(w, r, next, p, cred, err)
 	})
+}
+
+// settle ends the authentication of r with the outcome of its credential: refused credentials
+// are 401 with the challenge, a failed-login throttle 429, a failure to decide 500, or 503 when
+// the database does not answer; otherwise the request goes on as p, with cred.
+func (s *Server) settle(w http.ResponseWriter, r *http.Request, next http.Handler, p auth.Principal, cred auth.Credential, err error) {
+	var throttled *auth.ThrottledError
+	switch {
+	case errors.Is(err, auth.ErrBadCredentials):
+		s.writeRefusal(w, r, http.StatusUnauthorized, msgBadCredentials)
+		return
+	case errors.As(err, &throttled): // a failed-login throttle: account or address
+		s.throttled(w, r, throttled, msgThrottled)
+		return
+	case err != nil:
+		// Not the user name: as it was typed, it may be a password or a token (threat model L-3).
+		s.log.ErrorContext(r.Context(), "authentication failed", "error", err.Error(), "requestId", RequestID(r.Context()))
+		status, msg := http.StatusInternalServerError, msgAuthFailed
+		if format.StatusOf(err) == http.StatusServiceUnavailable { // the database does not answer
+			status, msg = http.StatusServiceUnavailable, msgAuthUnavailable
+			format.SetRetryAfter(w.Header(), err)
+		}
+		s.writeRefusal(w, r, status, msg)
+		return
+	}
+	HoldPrincipal(r.Context(), p)
+	next.ServeHTTP(w, r.WithContext(auth.WithCredential(auth.WithPrincipal(r.Context(), p), cred)))
+}
+
+// authenticateForm authenticates POST /v2/token, the token request in the OAuth2 form that
+// containerd posts before it tries GET (#908): the form is read first (token.ReadForm), and one
+// that is refused is answered 400 or 413 in OAuth2's format, its credential not checked and
+// counted as no failed login; then its username and password are authenticated as the user
+// name and the secret of Basic credentials are, with the same refusals and throttles (settle).
+// The facade reads the scopes and the service of the form, which ParseForm keeps on the request.
+func (s *Server) authenticateForm(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	f, fe := token.ReadForm(w, r)
+	if fe != nil {
+		s.log.DebugContext(r.Context(), "token form refused", "status", fe.Status, "error", fe.Code, "reason", fe.Description,
+			"requestId", RequestID(r.Context()))
+		token.WriteFormError(w, fe)
+		return
+	}
+	p, cred, err := s.opts.Authenticator.Authenticate(r.Context(), f.Username, f.Password)
+	s.settle(w, r, next, p, cred, err)
 }
 
 // oidcPrefix is the prefix of the routes of the OIDC login.
