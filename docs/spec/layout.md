@@ -13,7 +13,7 @@
 
 ```
 cmd/lajstrom/                 main; subcommands: serve, reindex, migrate, version, healthcheck, registry (probe),
-                              admin (repo/user/token/binding/key/bootstrap/retention/deb)
+                              admin (repo/user/token/binding/key/bootstrap/retention/deb/trusted-root)
 internal/config/              config file (YAML) + env overrides; validation; example in deploy/
 internal/server/              http.Server, routing (net/http ServeMux, Go 1.22 patterns), middleware:
                               request id, logging, metrics, auth, panic recovery; mounts formats, facade, api
@@ -49,8 +49,9 @@ internal/auth/oidc/           OIDC relying party: discovery, JWKS, ID token veri
 internal/api/                 /api/v1 management REST (repos, users, tokens, bindings), JSON
 internal/keys/                server signing key, per-repo GPG keys (apt, rpm), encryption at rest
 internal/audit/               audit log writer
-internal/attest/              the verification of attachments (#89): the trust of public keys, DSSE, sigstore bundles,
-                              cosign's simple signing; pure, standard library (manifest-profile.md §6.3)
+internal/attest/              the verification of attachments (#89): the trust of public keys and keyless identities, DSSE,
+                              sigstore bundles, cosign's simple signing; no I/O: keys with the standard library, keyless
+                              with sigstore-go against an offline trusted root (manifest-profile.md §6.3)
 internal/metrics/             the Prometheus collectors (fixed labels) and the handler of the metrics listener
 internal/testutil/            fixture builders, in memory: .deb, .rpm, .whl/sdist, .jar + POM, npm tarball, archives, bombs, fuzz seeds
 internal/version/             build information (version, commit, date), set with -ldflags; /-/version
@@ -1524,8 +1525,10 @@ var ErrNotImplemented error                 // unused since #12
 ### Attachment verification (`internal/attest`, #89)
 
 This section describes and does not bind, as the next one: ingest's `Options.Trust` is the one
-use. Pure Go over the standard library (`crypto/ecdsa`, `crypto/ed25519`, `crypto/rsa`,
-`crypto/x509`, `encoding/pem`); no sigstore library, which §3 does not list.
+use. Keys are verified with the standard library (`crypto/ecdsa`, `crypto/ed25519`,
+`crypto/rsa`, `crypto/x509`, `encoding/pem`), keyless bundles with `sigstore-go` (§3; its
+`verify`, `bundle` and `root` packages). The package does no I/O: the caller reads the layer and
+the trusted root, and a verification makes no network request.
 
 ```go
 type Entry struct {                         // one attachments.trust entry
@@ -1533,11 +1536,26 @@ type Entry struct {                         // one attachments.trust entry
     PublicKey      []byte                   // PEM PUBLIC KEY (PKIX): ECDSA P-256/384/521, Ed25519, RSA
     PredicateTypes []string                 // empty: every predicate type, signatures included
 }
-// NewTrust parses the entries: a key that does not parse, a name given twice or empty is an
-// error. No entry is a trust in which nothing verifies.
-func NewTrust(entries []Entry) (*Trust, error)
-// Hash is a hex digest of the entries (names, keys' PKIX bytes, predicate types), the trust
-// column of attachments: rows labelled under another hash are judged again by reindex.
+type Identity struct {                      // one attachments.keyless.identities entry
+    Name           string                   // signedBy of what it verifies; unique among keys and identities
+    Issuer         string                   // the OIDC issuer of the Fulcio certificate, exactly
+    Subject        string                   // its subject alternative name, exactly; or
+    SubjectRegex   string                   // a Go regular expression it matches; one of the two
+    PredicateTypes []string                 // empty: every predicate type, signatures included
+}
+type Keyless struct {                       // attachments.keyless
+    TrustedRoot    []byte                   // a trusted_root.json (sigstore's TrustedRoot, media type v0.1)
+    Identities     []Identity
+    SignedCertificateTimestamps int         // the SCTs a certificate must carry; 0 for a Fulcio without a CT log
+}
+// NewTrust parses the entries, and with WithKeyless the trusted root and the identities: a key
+// or a trusted root that does not parse, a regular expression that does not compile, a name
+// given twice or empty is an error. No entry is a trust in which nothing verifies.
+func NewTrust(entries []Entry, opts ...Option) (*Trust, error)
+func WithKeyless(k Keyless) Option
+// Hash is a hex digest of the entries (names, keys' PKIX bytes, predicate types), the identities,
+// the trusted root's bytes and the SCT threshold, the trust column of attachments: rows labelled
+// under another hash are judged again by reindex.
 func (t *Trust) Hash() string
 type Input struct {
     Subject   digest.Digest                 // the version's manifest
@@ -1547,15 +1565,21 @@ type Input struct {
 }
 type Result struct {
     Verification  string                    // index.Attachment{Verified,Untrusted,Unsigned,Invalid,Unsupported}
-    SignedBy      string                    // the entry's name when verified
+    SignedBy      string                    // the key's or identity's name when verified
     Reason        string                    // why not, in words
     PredicateType string                    // the statement's when there is one, else Annotated
     Predicate     json.RawMessage           // the statement's predicate, nil when there is none
 }
 // Verify judges one attachment (manifest-profile.md §6.3). It never returns an error: what does
-// not parse is invalid, what it cannot check unsupported.
+// not parse is invalid, what it cannot check unsupported. It makes no network request.
 func (t *Trust) Verify(in Input) Result
 ```
+
+`profile.PredicateTool(predicateType, predicate)` returns the tool, its version and the database
+a predicate names (manifest-profile.md §6.2), for the rows whose annotations leave them out.
+`lajstrom admin trusted-root fetch --out <file> [--tuf-url <url>]` fetches a `trusted_root.json`
+through TUF, sigstore-go's embedded root of the public-good instance by default, validates it and
+writes it: the one place where anything about keyless verification touches the network.
 
 ### Auth and audit (`internal/auth`, `internal/audit`)
 
@@ -1827,6 +1851,7 @@ license policy). Prefer the standard library.
 | AWS (ECR adapter) | `github.com/aws/aws-sdk-go-v2` (`ecr`, and `config` for the credential chain), `github.com/aws/smithy-go` (its API errors) | Apache-2.0 |
 | Metrics | `github.com/prometheus/client_golang`; `github.com/prometheus/client_model` in tests | Apache-2.0 |
 | Tests | `testing` + `github.com/google/go-cmp`; `github.com/stretchr/testify` acceptable | BSD-3 / MIT |
+| Sigstore verification (keyless attachments, #89) | `github.com/sigstore/sigstore-go` (v1.4.0, 2026-10-29) and what it brings: `sigstore/protobuf-specs`, `sigstore/sigstore`, `sigstore/rekor`, `sigstore/rekor-tiles/v2`, `sigstore/timestamp-authority/v2`, `theupdateframework/go-tuf/v2`, `in-toto/in-toto-golang`, `in-toto/attestation`, `secure-systems-lab/go-securesystemslib`, `google/certificate-transparency-go`, `transparency-dev/*`, `digitorus/timestamp`, the `go-openapi` modules of Rekor's client types, `google.golang.org/protobuf` and `grpc`. Only `internal/attest` imports it (and the `trusted-root` command its `tuf` and `root`). Approved by the maintainer on 2026-11-14 (#89, option A) | Apache-2.0; its tree Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause (`make licenses`) |
 
 Not approved without discussion: ORMs, chi/gin/echo, testcontainers (we use compose and CI
 service containers), any GPL/LGPL/AGPL/SSPL/BSL dependency, cgo.
@@ -1915,6 +1940,14 @@ attachments:                                # the verification of attachments (#
     - name: scanner                         # signedBy of what its key verifies; unique
       publicKeyFile: /etc/lajstrom/scanner.pub # PEM PKIX, or publicKey: inline PEM; one of the two
       predicateTypes: [https://cyclonedx.org/bom, https://cosign.sigstore.dev/attestation/vuln/v1] # empty: every type
+  keyless:                                  # cosign keyless (Fulcio and Rekor), verified offline
+    trustedRoot: /etc/lajstrom/trusted_root.json # required with identities; lajstrom admin trusted-root fetch writes one
+    signedCertificateTimestamps: 1          # SCTs a certificate must carry; 0 for a Fulcio without a CT log
+    identities:
+      - name: release                       # signedBy of what it verifies; unique among keys and identities
+        issuer: https://token.actions.githubusercontent.com
+        subject: https://github.com/acme/app/.github/workflows/release.yml@refs/heads/main # or subjectRegex
+        predicateTypes: [https://slsa.dev/provenance/v1]
 repos:                                      # optional declarative bootstrap: created when missing, never changed
   - { name: ubuntu-internal, format: apt, registry: local, anonymousRead: false }
 ```
