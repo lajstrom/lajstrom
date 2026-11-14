@@ -341,3 +341,159 @@ func TestTerminatedConnection(t *testing.T) {
 		t.Errorf("after the termination: %v", err)
 	}
 }
+
+// TestEndedIdleConnections ends every session of the store's pool while they idle, each handed
+// out again within the last second, as a restart, a pg_terminate_backend or a primary switched
+// away does: the next call on the pool, in a transaction or for the referrers lock gets a new
+// connection and succeeds (#1123), where a store on pgx's own ping policy, which pings only a
+// connection idle for more than a second, gets the FATAL of the ended session (57P01) and its
+// request a 503. While the server refuses new sessions too, every call still wraps
+// index.ErrUnavailable, with the refusal (53300): that is an outage, and the client gets 503.
+func TestEndedIdleConnections(t *testing.T) {
+	dsn := testDSN(t)
+	if os.Getenv(isolationEnv) == "database" {
+		t.Skip("behind a pooler the server ends the pooler's connections, not the store's")
+	}
+	ctx := t.Context()
+	role, password := newRole(t, dsn)
+	roleDSN := withUser(t, dsn, role, password)
+	admin := openDB(t, dsn)
+	s := openAs(t, roleDSN) // the calls below need no table: no schema, no migration
+	calls := []struct {
+		name string
+		call func(*Store) error
+	}{
+		{"DatabaseTime", func(s *Store) error { _, err := s.DatabaseTime(ctx); return err }},
+		{"Ping", func(s *Store) error { return s.Ping(ctx) }},
+		{"Tx", func(s *Store) error {
+			return s.Tx(ctx, func(w index.Writer) error { _, err := w.DatabaseTime(ctx); return err })
+		}},
+		{"WithReferrersLock", func(s *Store) error {
+			return s.WithReferrersLock(ctx, "raw/"+role, digest.FromString("subject"), func(context.Context) error { return nil })
+		}},
+	}
+
+	t.Run("pgx's ping policy", func(t *testing.T) {
+		plain := openDefaultPing(t, roleDSN)
+		if took := endIdleSessions(ctx, t, plain, admin, role); took > 900*time.Millisecond {
+			t.Skipf("ending the sessions took %v: past the second after which pgx pings anyway", took)
+		}
+		if err := calls[0].call(plain); !errors.Is(err, index.ErrUnavailable) || sqlState(err) != "57P01" {
+			t.Errorf("DatabaseTime after the idle sessions were ended: %v, want index.ErrUnavailable of 57P01: the test reproduces nothing", err)
+		}
+	})
+	for _, tt := range calls {
+		t.Run(tt.name, func(t *testing.T) {
+			endIdleSessions(ctx, t, s, admin, role)
+			if err := tt.call(s); err != nil {
+				t.Errorf("after the idle sessions were ended: %v, want nil, on a new connection", err)
+			}
+		})
+	}
+	t.Run("refused", func(t *testing.T) {
+		limit := func(n int) {
+			t.Helper()
+			if _, err := admin.ExecContext(ctx, fmt.Sprintf("ALTER ROLE %s CONNECTION LIMIT %d", role, n)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		handOut(ctx, t, s)
+		limit(0)
+		t.Cleanup(func() { limit(-1) })
+		endSessions(ctx, t, admin, role)
+		for _, tt := range calls {
+			if err := tt.call(s); !errors.Is(err, index.ErrUnavailable) || sqlState(err) != "53300" {
+				t.Errorf("%s while the server refuses new sessions: %v, want index.ErrUnavailable of 53300", tt.name, err)
+			}
+		}
+		limit(-1)
+		for _, tt := range calls {
+			if err := tt.call(s); err != nil {
+				t.Errorf("%s once the server takes sessions again: %v", tt.name, err)
+			}
+		}
+	})
+}
+
+// endIdleSessions ends the sessions of the pool of s while they idle, each handed out again
+// just now (handOut, endSessions), and returns how long that took since then.
+func endIdleSessions(ctx context.Context, t *testing.T, s *Store, admin *sql.DB, role string) time.Duration {
+	t.Helper()
+	handOut(ctx, t, s)
+	start := time.Now()
+	endSessions(ctx, t, admin, role)
+	return time.Since(start)
+}
+
+// handOutConns is how many connections handOut holds at once: more than database/sql's two
+// tries on a pooled connection before it opens a new one.
+const handOutConns = 3
+
+// handOut makes the pool of s hold handOutConns connections, and hands each out again, so that
+// pgx's policy would not ping any of them for a second.
+func handOut(ctx context.Context, t *testing.T, s *Store) {
+	t.Helper()
+	for range 2 { // the first round may open connections, the second hands each out again
+		var held, done sync.WaitGroup
+		held.Add(handOutConns)
+		for range handOutConns {
+			done.Go(func() {
+				entered := false
+				err := s.Tx(ctx, func(w index.Writer) error {
+					entered = true
+					held.Done()
+					held.Wait() // all at once: a connection each
+					_, err := w.DatabaseTime(ctx)
+					return err
+				})
+				if !entered { // the others do not wait for a transaction that never began
+					held.Done()
+				}
+				if err != nil {
+					t.Errorf("before the sessions were ended: %v", err)
+				}
+			})
+		}
+		done.Wait()
+	}
+}
+
+// endSessions ends every session of role from admin and waits until the server has let them
+// go, and a little more, so that their FATAL messages wait on the sockets of the pool.
+func endSessions(ctx context.Context, t *testing.T, admin *sql.DB, role string) {
+	t.Helper()
+	start := time.Now()
+	var n int
+	if err := admin.QueryRowContext(ctx, "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE usename = $1",
+		role).Scan(&n); err != nil || n < handOutConns {
+		t.Fatalf("pg_terminate_backend: %d sessions of %s, %v; want at least %d", n, role, err, handOutConns)
+	}
+	for left := n; left > 0; time.Sleep(5 * time.Millisecond) {
+		if err := admin.QueryRowContext(ctx, "SELECT count(*) FROM pg_stat_activity WHERE usename = $1", role).Scan(&left); err != nil {
+			t.Fatal(err)
+		}
+		if time.Since(start) > 10*time.Second {
+			t.Fatalf("%d sessions of %s left 10 s after pg_terminate_backend", left, role)
+		}
+	}
+	time.Sleep(20 * time.Millisecond) // the FATAL messages on their way to the sockets
+}
+
+// openDefaultPing opens dsn as Open does but on pgx's own ping policy, which pings a pooled
+// connection only after a second of idling (stdlib.Conn.ResetSession): the store before #1123.
+func openDefaultPing(t *testing.T, dsn string) *Store {
+	t.Helper()
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := stdlib.OpenDB(*cfg)
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(8)
+	s := &Store{sqlstore.New(db, dialect)}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.Ping(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}

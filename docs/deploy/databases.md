@@ -191,9 +191,17 @@ stopped for 20 s. `serve` was not restarted in any of them.
 
 | | Restart | `pg_terminate_backend` | Stopped 20 s |
 | --- | --- | --- | --- |
-| Straight to Postgres | `503`, `Retry-After: 5` for 3 requests, then `200` | `503` for 2 requests (`57P01` on the next use of a pooled connection), then `200` | `503`, `Retry-After: 5` at once and throughout; `200` at the first answer |
+| Straight to Postgres | `503`, `Retry-After: 5` for 3 requests, then `200` | no error: the pool pings a connection the server ended before it hands it out, and opens another (#1123) | `503`, `Retry-After: 5` at once and throughout; `200` at the first answer |
 | PgBouncer, defaults | `503` for 15 s after Postgres was back: `FATAL: server login has been failing, cached error: the database system is shutting down (server_login_retry) (SQLSTATE 08P01)`; one request waited 15 s | no error: PgBouncer replaces the server connections | no `503`: the requests waited up to 30.5 s in PgBouncer's queue and got `200` after the start |
 | PgBouncer, `server_login_retry = 2`, `query_wait_timeout = 10` | `503` for about 2 s after Postgres was back | no error | `503` at once (a request already waiting after 10 s); `200` 12 s after the start (the Compose host name is gone while its container is stopped, and PgBouncer caches the failed lookup for `dns_nxdomain_ttl`, 15 s) |
+
+The `pg_terminate_backend` cell straight to Postgres was measured again on 2026-11-14, in the
+same Docker, with an authenticated `GET /api/v1/repos` as the three clients' request: no `503`
+in three runs, where the build before #1123 answered `503` for 2 and for 3 requests, each the
+`57P01` of a pooled connection handed out again within a second of its last use, which pgx does
+not ping. A session that the server ends while it idles writes its `FATAL` message and closes
+the socket; Lajstrom peeks at the socket before it reuses a connection, without a round trip,
+and pings it when there is something to read.
 
 Lajstrom maps PgBouncer's errors (class `08`) to `503`, as it does Postgres's. PgBouncer's
 defaults turn an outage into requests that wait, up to `query_wait_timeout` (120 s), and a

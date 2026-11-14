@@ -41,16 +41,23 @@ func TestTransientStates(t *testing.T) {
 			t.Skip("behind a pooler the server's idle_session_timeout ends the pooler's connections, not the store's")
 		}
 		ctx := t.Context()
-		// Shorter than the second after which database/sql's driver pings a pooled connection
-		// before it hands it out (stdlib.Conn.ResetSession), else the ping finds the connection
-		// ended and the pool opens another one.
-		s := openAs(t, settingRole(t, dsn, "idle_session_timeout", "100"))
-		if _, err := s.DatabaseTime(ctx); err != nil {
-			t.Fatal(err)
+		// Shorter than the second after which pgx's own policy pings a pooled connection before
+		// database/sql hands it out (stdlib.Conn.ResetSession): on a store with that policy the
+		// next statement runs on the ended session and gets its 57P05. Open's store pings the
+		// connection because the server wrote to it (shouldPing), and takes another (#1123).
+		role := settingRole(t, dsn, "idle_session_timeout", "100")
+		plain, s := openDefaultPing(t, role), openAs(t, role)
+		for _, st := range []*Store{plain, s} {
+			if _, err := st.DatabaseTime(ctx); err != nil {
+				t.Fatal(err)
+			}
 		}
 		time.Sleep(500 * time.Millisecond)
-		_, err := s.DatabaseTime(ctx)
-		wantTransient(t, s, "57P05", err)
+		_, err := plain.DatabaseTime(ctx)
+		wantTransient(t, plain, "57P05", err)
+		if _, err := s.DatabaseTime(ctx); err != nil {
+			t.Errorf("Open's store after the server ended its idle session: %v, want nil, on another connection", err)
+		}
 	})
 
 	t.Run("40P01 deadlock_detected", func(t *testing.T) {
