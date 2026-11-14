@@ -424,6 +424,16 @@ above. The runner,
 the version in `schema_migrations` (created when missing). The transaction first takes the
 migration lock, `pg_advisory_xact_lock` on Postgres and `BEGIN IMMEDIATE` on SQLite, and reads
 `schema_migrations` under it, so replicas that start at once apply each version exactly once.
+A transaction that fails on a conflict with another schema change is rolled back and run again
+from the start, up to five times in all, after a pause that doubles from 100 ms, with a warning
+each time (#616): one that the database aborted, `40001` from any of its statements (YugabyteDB
+aborts DDL that conflicts with another schema change, also in another schema,
+[yugabyte-db#21833](https://github.com/yugabyte/yugabyte-db/issues/21833)), and a `42710` from
+the create of `schema_migrations` (YugabyteDB: a migrator that waited for the lock does not see
+the table that another committed meanwhile). The retry reads `schema_migrations` again under the
+lock, so it applies a version at most once; it is correct where DDL is transactional (Postgres;
+YugabyteDB with the flag of [databases.md](../deploy/databases.md#yugabytedb)). Every other
+error, a `42710` from a migration file among them, ends the run at once.
 `lajstrom migrate` and `lajstrom serve` (on start) run it. When no migration is pending, it
 runs no statement that changes the schema. A migration file is never changed once a release
 has it: the runner records only its version, so a fix is a new migration.

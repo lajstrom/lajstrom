@@ -913,7 +913,9 @@ longer than `reconcile.graceAge` is outside them
   schema during an upgrade is INV-41.
 - **Assumes.** Database: **one database**.
 - **Mechanism.** `index.ApplyMigrations` under the migration lock (`pg_advisory_xact_lock`,
-  `BEGIN IMMEDIATE`).
+  `BEGIN IMMEDIATE`). A migration's transaction aborted on a catalog conflict (`40001`, or
+  `42710` from the create of `schema_migrations`: YugabyteDB) runs again from the start and
+  counts its version again under the lock (#616).
 - **Tests.** `TestConcurrentMigrate`, `TestFileMigrate`, `TestMigrationVersions`,
   `TestMigrationVersion`, `TestMigrate`.
 - **When violated.** Not observed.
