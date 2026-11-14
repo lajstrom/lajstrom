@@ -72,16 +72,32 @@ func (p *Pipeline) validate(ctx context.Context, pub *publish) error {
 			return err
 		}
 	}
-	entry, err := pub.plugin.Validate(ctx, pub.repo, pub.manifest, pub.fetcher())
-	switch {
-	case err != nil:
-		return invalid(fmt.Errorf("ingest: %s plugin: %w", pub.repo.Format, err))
-	case entry == nil:
-		return fmt.Errorf("ingest: %s plugin: Validate returned no entry", pub.repo.Format)
+	entry, err := pub.validatePlugin(ctx)
+	if err != nil {
+		return err
 	}
 	pub.entry = entry
 	pub.metadata, err = pub.readMetadata(ctx)
 	return err
+}
+
+// validatePlugin runs the plugin's Validate and returns its entry, and on a publish, never on
+// Inspect, asks the plugin's Admit when it is a format.Admitter: reindex keeps what the registry
+// has, whatever the repo's policy says now (manifest-profile.md §5).
+func (pub *publish) validatePlugin(ctx context.Context) (*format.Entry, error) {
+	entry, err := pub.plugin.Validate(ctx, pub.repo, pub.manifest, pub.fetcher())
+	switch {
+	case err != nil:
+		return nil, invalid(fmt.Errorf("ingest: %s plugin: %w", pub.repo.Format, err))
+	case entry == nil:
+		return nil, fmt.Errorf("ingest: %s plugin: Validate returned no entry", pub.repo.Format)
+	}
+	if a, ok := pub.plugin.(format.Admitter); ok && !pub.readOnly {
+		if err := a.Admit(pub.repo, *entry); err != nil {
+			return nil, invalid(fmt.Errorf("ingest: %s/%s: %w", pub.repo.Format, pub.repo.Name, err))
+		}
+	}
+	return entry, nil
 }
 
 // checkTarget compares the annotations with where the manifest was pushed: format, repo,

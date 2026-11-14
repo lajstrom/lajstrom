@@ -119,6 +119,16 @@ type Streamer interface {
     Inspect(repo index.Repo, up StreamUpload) (Inspection, error)
 }
 
+// Admitter is a Plugin that checks a version against its repo's policy on a write: ingest calls
+// Admit with the entry of Validate, after Validate, on every publish (an upload, the commit of a
+// publication session, a manifest of /v2), and never on Inspect: reindex keeps what the registry
+// has, whatever the policy says now. maven refuses a SNAPSHOT build in a release repo and a
+// release in a snapshot repo (policy.maven.versionPolicy, #80). An error wraps ErrInvalid (400).
+type Admitter interface {
+    Plugin
+    Admit(repo index.Repo, e Entry) error
+}
+
 // Router takes ServeMux patterns relative to /<format>/, e.g. "GET /{repo}/simple/{project}/".
 type Router interface {                     // implementation: NewRouter
     Handle(pattern string, h http.Handler)
@@ -1297,9 +1307,9 @@ type Options struct {
 func New(o Options) *Pipeline
 
 // Ingest stores a manifest the facade received for <format>/<repo>/<pkgPath>:<tag>; raw defines
-// the digest. Errors wrap ErrInvalid (profile, plugin, missing blobs, a lajstrom.origin.* key,
-// which only Upload with an Origin writes) or ErrConflict (tag, or the package path of another
-// spelling). Inspect reads the lajstrom.origin.* keys as any annotation. A push the registry
+// the digest. Errors wrap ErrInvalid (profile, plugin, the plugin's Admit, missing blobs, a
+// lajstrom.origin.* key, which only Upload with an Origin writes) or ErrConflict (tag, or the
+// package path of another spelling). Inspect reads the lajstrom.origin.* keys as any annotation. A push the registry
 // does not serve within the visibility timeout is a *NotVisibleError, from Ingest, Upload,
 // PutReferrer and Journal alike.
 func (p *Pipeline) Ingest(ctx context.Context, repo index.Repo, pkgPath, tag string, m ocispec.Manifest, raw []byte, principal auth.Principal) (*Result, error)

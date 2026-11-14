@@ -67,6 +67,17 @@ type Streamer interface {
 	Inspect(repo index.Repo, up StreamUpload) (Inspection, error)
 }
 
+// Admitter is a Plugin that checks a version against its repo's policy on a write
+// (docs/spec/manifest-profile.md §5): ingest calls Admit with the entry Validate returned, after
+// Validate, on every publish (an upload, the commit of a publication session, a manifest pushed
+// to /v2), and never on Inspect, since reindex keeps what the registry has, whatever the policy
+// says now. The maven plugin refuses a SNAPSHOT build in a release repo and a release in a
+// snapshot repo (policy.maven.versionPolicy). An error wraps ErrInvalid (400).
+type Admitter interface {
+	Plugin
+	Admit(repo index.Repo, e Entry) error
+}
+
 // Router is what a plugin mounts its handlers on. Patterns are net/http ServeMux patterns
 // relative to /<format>/, for example "GET /{repo}/simple/{project}/"; the implementation,
 // NewRouter, prefixes them with the plugin name and resolves {repo}.
