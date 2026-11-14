@@ -161,7 +161,8 @@ Every apt repo is signed with a key of its own: `InRelease` is the `Release` cle
 `Release.gpg` its detached signature, and `GET /apt/<repo>/key.asc` serves the public key that
 clients pin with `signed-by=` ([http-routing.md](spec/http-routing.md) §3). One more key signs
 the bearer tokens of `/v2` ([below](#the-bearer-token-key)). The keys are made and kept by
-Lajstrom, encrypted with one master key that only the operator holds.
+Lajstrom, encrypted with one master key that only the operator holds, or a repo's key is held
+in AWS KMS and never leaves it ([below](#keys-in-a-kms)).
 
 ### The master key
 
@@ -308,6 +309,116 @@ retired key stops signing and leaves `key.asc` at once, and clients fail until t
 over, and the next request for an `InRelease` or a `Release.gpg` signs it again without that
 key.
 
+### Keys in a KMS
+
+A repo's signing key can be a key of AWS KMS instead of one Lajstrom makes
+([ADR 0020](adr/0020-repo-signing-keys-in-a-cloud-kms.md)). The private key never leaves the
+KMS. Lajstrom builds an OpenPGP key around the KMS public key, the one that `key.asc` serves,
+and asks the KMS for every signature. The database keeps that public key and the key's name,
+sealed with the master key; the master key is still required for signing.
+
+**Which key.** Usage `SIGN_VERIFY` with spec `RSA_4096` (recommended: every apt, dnf and zypper
+verifies it), `RSA_3072`, `RSA_2048` or `ECC_NIST_P256`. apt 2.7 and later (Ubuntu 24.04,
+Debian 13) take each of these under their `--assert-pubkey-algo`, and the integration tests run
+`apt-get update` on Ubuntu 24.04 against a P-256 key. Lajstrom refuses any other key when a
+repo's key is made from it, with an error that names the spec:
+
+- `ECC_NIST_P384` and `ECC_NIST_P521`, which sign with another hash than the repo's other keys;
+- Ed25519, which the OpenPGP library cannot sign with through a KMS;
+- ML-DSA and secp256k1.
+
+The OpenPGP key's creation time is the KMS key's creation date, so its fingerprint depends on
+the KMS key alone. Every repo on the same KMS key has the same fingerprint, and a repo that
+rotates back to a KMS key gets the fingerprint its clients pinned before.
+
+**Permissions.** `kms:Sign` and `kms:GetPublicKey` on the key wherever repos are signed: `serve`
+on every replica. `kms:DescribeKey` is needed where a repo's key is made from the KMS key: by
+`lajstrom admin key`, and by `serve` for a repo's first key when `keys.kms` is set. DescribeKey
+gives the creation date and resolves an alias to its key. For example:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["kms:Sign", "kms:GetPublicKey", "kms:DescribeKey"],
+    "Resource": "arn:aws:kms:eu-west-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+  }]
+}
+```
+
+Credentials come from the SDK's default chain, as for an ECR registry: the environment, IRSA
+(web identity), EKS Pod Identity, ECS, the instance profile, or the shared configuration. A
+key's region is the region of its ARN, else `AWS_REGION`. A VPC endpoint, a FIPS endpoint or an
+emulator is set with `AWS_ENDPOINT_URL_KMS`, else `AWS_ENDPOINT_URL`. A partition other than
+`aws`, `aws-cn` and `aws-us-gov` needs one of those variables.
+
+**Putting a repo on a KMS key.** Make the key and an alias:
+
+```sh
+aws kms create-key --key-spec RSA_4096 --key-usage SIGN_VERIFY --description "Lajstrom apt and rpm signing"
+aws kms create-alias --alias-name alias/lajstrom-apt --target-key-id <the KeyId it printed>
+```
+
+Then use one of these:
+
+- **Every new repo:** `keys.kms: awskms:///alias/lajstrom-apt` in the configuration, and restart.
+  A repo made from then on gets that key at its first signed request. A repo that already has a
+  key keeps it until it is rotated.
+- **One repo:** `lajstrom admin key rotate --repo apt/<repo> --kms awskms:///alias/lajstrom-apt`.
+  With `keys.kms` set, a plain `lajstrom admin key rotate --repo apt/<repo>` does the same.
+
+Either way it is a [rotation](#rotation). The repo's old key keeps signing and stays in
+`key.asc` for `keys.retireGrace`, and the runbook of the rotation applies: distribute the new
+`key.asc` before the grace ends. `lajstrom admin key rotate --repo apt/<repo> --local` moves a
+repo back to a key Lajstrom makes, even with `keys.kms` set. A rotation to the key that is
+already active is refused.
+
+Moving the alias to another KMS key later changes no existing repo, because each row holds the
+key's ARN. Rotate the repos onto the alias again to move them. AWS's own rotation of a KMS key
+does not apply: KMS does not rotate asymmetric keys. A new key is a new KMS key and a rotation
+here.
+
+**When the KMS fails.** The signed documents are made once per render and kept, so a repo whose
+indexes do not change asks the KMS nothing. `key.asc` never asks it, except for a repo's first
+key. Once a publish changes an index:
+
+- **The KMS does not answer, times out, answers 5xx or throttles.** Lajstrom tries again twice,
+  then answers **`503` with `Retry-After: 5`** for `InRelease`, `Release.gpg` and
+  `repomd.xml.asc`, and logs the key and the KMS's error. Nothing unsigned is served and
+  nothing is stored; the next request after the KMS is back signs them. `apt-get update` and
+  `dnf` fail visibly meanwhile.
+- **The KMS refuses: access denied, a disabled key, a key pending deletion.** The answer is
+  `500` with the KMS's error in the log, until the permission is fixed or the repo is rotated
+  onto another key.
+- **A retired key whose KMS refuses** is left out of the signatures, with a warning. Disabling
+  the old KMS key after a rotation therefore stops its signatures before the grace ends.
+
+Do not schedule the deletion of a KMS key while a repo's active key, or a key in its grace, is
+that key. `aws kms schedule-key-deletion` waits at least 7 days, and `cancel-key-deletion`
+undoes it within that time.
+
+**Requests to the KMS.** For each render: two `Sign` requests per KMS key that signs an apt
+suite (`InRelease` and `Release.gpg`), and one per KMS key that signs an rpm repo. During a
+grace, a retired KMS key signs too. Making a key costs one `DescribeKey`, one `GetPublicKey` and
+one `Sign`.
+
+**Backups.** The database holds only the public key and the sealed name. A restore needs the
+same master key, and the KMS key still enabled.
+
+**Trying it locally.** [local-kms](https://github.com/nsmithuk/local-kms) emulates the three
+calls:
+
+```sh
+docker run -d -p 127.0.0.1:4599:8080 nsmithuk/local-kms:3
+export AWS_ENDPOINT_URL_KMS=http://127.0.0.1:4599 AWS_ACCESS_KEY_ID=x AWS_SECRET_ACCESS_KEY=x AWS_REGION=eu-west-2
+aws --endpoint-url "$AWS_ENDPOINT_URL_KMS" kms create-key --key-spec RSA_4096 --key-usage SIGN_VERIFY
+```
+
+`LAJSTROM_TEST_AWSKMS=http://127.0.0.1:4599 go test -tags integration ./internal/keys/awskms`
+runs the client's integration test against it. Never point that test at AWS: it makes keys,
+and a KMS key cannot be deleted at once.
+
 ### The bearer-token key
 
 The bearer tokens of `/v2` ([auth.md](auth.md#bearer-tokens-on-v2)) are signed with one server
@@ -361,13 +472,16 @@ names, or in the file of `keys.masterKeyFile`), and a migrated database; none go
 | Command | What it does |
 | --- | --- |
 | `admin key export --repo apt/<repo>` | prints the repo's armored keyring, what `key.asc` serves; makes the key when there is none |
-| `admin key rotate --repo apt/<repo>` | gives the repo a new key, retires the old one for `keys.retireGrace`, drops the repo's cached indexes; prints the new fingerprint |
+| `admin key rotate --repo apt/<repo>` | gives the repo a new key, retires the old one for `keys.retireGrace`, drops the repo's cached indexes; prints the new fingerprint. The new key is the KMS key of `keys.kms` when it is set, else one Lajstrom makes |
+| `admin key rotate --repo apt/<repo> --kms <key URI>` | the same, the new key being that KMS key, e.g. `awskms:///alias/lajstrom-apt` ([Keys in a KMS](#keys-in-a-kms)) |
+| `admin key rotate --repo apt/<repo> --local` | the same, the new key made by Lajstrom even when `keys.kms` is set |
 | `admin key export --token` | prints the public bearer-token key as PEM; makes the key when there is none |
 | `admin key rotate --token` | a new bearer-token key; the old one verifies for 21 minutes; prints the new fingerprint |
 | `admin key rotate --token --drop` | the same, and no old key verifies anything from then on, one still in its 21 minutes included |
 | `admin key drop --token` | retires the bearer-token key without a successor, whether it decrypts or not (the next token a replica issues, or the next start of `serve`, makes one); prints its fingerprint |
 
-`--repo` and `--token` exclude each other, and one of them is required. Without the master key
+`--repo` and `--token` exclude each other, and one of them is required. `--kms` and `--local` go
+with `--repo` only, and exclude each other. Without the master key
 the token commands fail and say that `serve` signs with an ephemeral key then.
 
 ## Readiness
