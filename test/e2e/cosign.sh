@@ -2,7 +2,9 @@
 # End-to-end test of cosign and oras discover through the OCI facade (#28): a raw file pushed
 # with oras, signed with cosign and a key pair made for the run (no keyless, no transparency
 # log), verified with cosign, its signature listed by oras discover and by the referrers API;
-# cosign's legacy signature under the tag sha256-<hex>.sig verified too; another key refused, a
+# cosign's legacy signature under the tag sha256-<hex>.sig verified too; a CycloneDX SBOM attested
+# and verified with cosign attest and verify-attestation, and listed with the signatures by the
+# attachments of the version, untrusted since the server trusts no key (#89); another key refused, a
 # reader's signature refused and its verify through, an anonymous referrers request 401. Against
 # a backend with the referrers API (Zot) the signature is listed by it; against one without
 # (distribution, LAJSTROM_E2E_REGISTRY=localhost:5001) the step says that the provider wrote the
@@ -192,9 +194,25 @@ cosign writer verify --key cosign.pub --insecure-ignore-tlog=true --new-bundle-f
 hex="${digest#sha256:}"
 step "cosign sign and verify --new-bundle-format=false: the tag sha256-${hex:0:12}….sig through the facade"
 
+# #89: an SBOM attested with the key of the run, a sigstore bundle with a DSSE envelope. cosign
+# verify-attestation passes through the facade, and the attachments of the version list it,
+# untrusted: the server of the run trusts no key (attachments.trust). The two signatures are
+# attachments too.
+printf '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}\n' >"$work/sbom.json"
+cosign writer attest --key cosign.key --type cyclonedx --predicate sbom.json --tlog-upload=false --use-signing-config=false -y \
+	${insecure:+"$insecure"} "$subject" >"$work/attest.log" 2>&1 || { cat "$work/attest.log" >&2; fail "cosign attest $subject"; }
+cosign writer verify-attestation --key cosign.pub --type cyclonedx --insecure-ignore-tlog=true ${insecure:+"$insecure"} "$subject" \
+	>/dev/null 2>"$work/verify.log" || { cat "$work/verify.log" >&2; fail "cosign verify-attestation $subject"; }
+attachments="$base/api/v1/repos/raw/$repo/packages/$(jq -rn --arg p "$path" '$p | @uri')/versions/$version/attachments"
+assert_status 200 -K "$E2E_CURLRC" "$attachments"
+jq -e '[.attachments[] | select(.kind == "sbom" and .predicateType == "https://cyclonedx.org/bom" and .verification == "untrusted")] | length == 1' \
+	<<<"$E2E_BODY" >/dev/null || fail "the attachments of $path: no untrusted CycloneDX SBOM: ${E2E_BODY:0:600}"
+assert_eq 2 "$(jq '[.attachments[] | select(.kind == "signature")] | length' <<<"$E2E_BODY")" "the signatures among the attachments"
+step "cosign attest --type cyclonedx and verify-attestation through the facade; GET …/attachments: the SBOM, untrusted, and 2 signatures"
+
 "${lajstrom[@]}" reindex --repo "raw/$repo" --json >"$work/reindex.json" 2>"$work/reindex.log" ||
 	{ cat "$work/reindex.log" >&2; fail "lajstrom reindex --repo raw/$repo"; }
-jq -e --arg p "$path" '.repos[0] | .referrers >= 1 and ([.foreign[], .orphanReferrers[], .errors[] | select(.repository == $p)] | length == 0)' \
+jq -e --arg p "$path" '.repos[0] | .referrers >= 1 and .attachments >= 3 and ([.foreign[], .orphanReferrers[], .errors[] | select(.repository == $p)] | length == 0)' \
 	"$work/reindex.json" >/dev/null || { jq -c '.repos[0]' "$work/reindex.json" >&2; fail "lajstrom reindex: the signatures of $path"; }
 step "lajstrom reindex --repo raw/$repo: $(jq -r '.repos[0] | "\(.ociRepositories) OCI repositories, \(.referrers) referrers"' "$work/reindex.json"), nothing amiss on $path"
 
@@ -248,7 +266,7 @@ else
 		assert_status 404 -K "$E2E_CURLRC" -o /dev/null "$base/v2/$name/manifests/$ref"
 	done
 	assert_status 200 -K "$E2E_CURLRC" --globoff "$base/api/v1/audit?action=delete&repo=raw/$repo&limit=1"
-	assert_eq "$digest 2" "$(jq -r '.events[0] | "\(.digest) \(.details.referrers)"' <<<"$E2E_BODY")" "the audit row of the delete"
-	step "after the delete: no referrers, no manifest under $digest, sha256-${hex:0:12}… or its .sig; the audit row counts 2 referrers"
+	assert_eq "$digest 3" "$(jq -r '.events[0] | "\(.digest) \(.details.referrers)"' <<<"$E2E_BODY")" "the audit row of the delete"
+	step "after the delete: no referrers, no manifest under $digest, sha256-${hex:0:12}… or its .sig; the audit row counts 3 referrers (2 signatures, the SBOM)"
 fi
 echo "PASS cosign e2e against $base/v2/raw/$repo/"
