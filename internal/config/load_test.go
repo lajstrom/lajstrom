@@ -63,12 +63,27 @@ func TestLoadDefaults(t *testing.T) {
 				Reconcile: Reconcile{Interval: time.Hour, GraceAge: time.Hour},
 				Auth: Auth{Bootstrap: Bootstrap{TTL: 24 * time.Hour}, OIDC: OIDC{Scopes: []string{"openid", "profile", "email", "groups"},
 					UsernameClaim: "preferred_username", GroupsClaim: "groups", TokenLifetime: 24 * time.Hour}},
-				Keys: Keys{Algorithm: "ed25519", RetireGrace: 720 * time.Hour, TokenAlgorithm: "ES256"},
+				Keys:     Keys{Algorithm: "ed25519", RetireGrace: 720 * time.Hour, TokenAlgorithm: "ES256"},
+				Webhooks: Webhooks{Timeout: 10 * time.Second, MaxAttempts: 8, Retention: 168 * time.Hour, Workers: 4},
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("Load =\n%+v\nwant\n%+v", got, want)
 			}
 		})
+	}
+}
+
+// TestLoadWebhooks: the keys of webhooks a file sets replace their defaults; host names and
+// addresses, IPv6 too, are allowed hosts, and 0 workers turn delivery off.
+func TestLoadWebhooks(t *testing.T) {
+	c, err := Load(writeConfig(t, minimal+"webhooks: {allowedHosts: [ci.internal, 10.0.4.17, \"::1\"], workers: 0, timeout: 1m, maxAttempts: 1}\n"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Webhooks{AllowedHosts: []string{"ci.internal", "10.0.4.17", "::1"}, Timeout: time.Minute, MaxAttempts: 1,
+		Retention: 168 * time.Hour}
+	if !reflect.DeepEqual(c.Webhooks, want) {
+		t.Errorf("webhooks %+v, want %+v", c.Webhooks, want)
 	}
 }
 
@@ -277,6 +292,10 @@ func TestLoadErrors(t *testing.T) {
 		{name: "oidc issuer with a query", file: minimal + "auth: {oidc: {issuer: \"https://idp.example/?a=b\", clientID: c, clientSecretFile: /s}}\n",
 			want: []string{"auth.oidc.issuer: must be an absolute http(s) URL without a query"}, wantNot: []string{"clientID"}},
 		{name: "negative grace age", file: minimal + "reconcile: {graceAge: -24h}\n", want: []string{"reconcile.graceAge: must not be negative"}},
+		{name: "webhooks out of bounds",
+			file: minimal + "webhooks: {timeout: 2m, maxAttempts: 0, retention: 0s, workers: -1, allowedHosts: [\"https://ci.internal\", \"ci.internal:8080\", \"\"]}\n",
+			want: []string{"webhooks.timeout: at most 1m0s", "webhooks.maxAttempts: must be at least 1", "webhooks.retention: must be positive",
+				"webhooks.workers: must not be negative", "webhooks.allowedHosts[0]", "webhooks.allowedHosts[1]", "webhooks.allowedHosts[2]"}},
 		{name: "metrics listener", file: minimal[:len(minimal)-1] + "\n  metricsListen: \"9464\"\n", want: []string{`server.metricsListen: "9464" is not host:port`}},
 		{name: "metrics on the public listener", file: minimal[:len(minimal)-1] + "\n  metricsListen: \":8080\"\n",
 			want: []string{"server.metricsListen: must not be server.listen"}},

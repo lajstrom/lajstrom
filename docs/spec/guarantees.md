@@ -719,12 +719,13 @@ longer than `reconcile.graceAge` is outside them
   `postgres.Open`; the proxy logs no body and no redirect target; `auth.Authenticator.refuse` and
   `refuseToken` log a user by its uid, and neither they nor `server.Server.authenticate` log a
   user name as typed; `token.Verifier.refuse` logs the first 16 bytes of the `kid` and its length
-  (threat model L-1 to L-4).
+  (threat model L-1 to L-4); the webhook worker and its deliverer log a webhook by its id and
+  host, never its URL or secret, and a secret is kept sealed (`keys.Master.Seal`).
 - **Tests.** `TestTokensNeverLogged`, `TestRedactSecrets`, `TestTokenRedacted`,
   `TestTokenKeyRedacted`, `TestEntityRedacted`, `TestMasterRedacted`, `TestOpenDoesNotLeakTheDSN`,
   `TestAccessLog`, `TestBearerAccessLog`, `TestRetryLog`, `TestRefusalsLogNoSecret` (a token
   pasted as the user name, a password typed there and a 4 KiB `kid`, at `debug`),
-  `TestAuthenticateFailure`.
+  `TestAuthenticateFailure`, `TestLogsNoSecret`, `TestMasterSealOpen`.
 - **When violated.** Not detected by Lajstrom.
 - **Status.** `holds`. **Untested:** acceptance.md C-07 (grep the logs of both replicas for every
   secret the suite used) is not automated.
@@ -1323,12 +1324,22 @@ longer than `reconcile.graceAge` is outside them
   audit row (`webhook.Outbox.Enqueue`, from `ingest.Pipeline.writeRows`, `deletion.record`,
   `api.Repos.Create` and `api.Repos.Delete`); the workers claim them
   (`index.Writer.ClaimWebhookDeliveries`) and record each outcome with a compare-and-set on the
-  claim (`FinishWebhookDelivery`) (index-schema.md, Webhooks).
-- **Tests.** None yet.
+  claim (`FinishWebhookDelivery`) (index-schema.md, Webhooks); `webhook.Worker.RunOnce` claims
+  as many as it has workers, sends each once and settles it (`webhook.Settle`); a worker whose
+  context ends during an attempt records nothing, and the row is sent again after its claim
+  goes stale. `serve` gives ingest and `api.Repos` the outbox (`newOutbox`) and starts the
+  worker under the replica's id (`startWebhooks`), with the master key or not at all.
+- **Tests.** `TestEnqueueRollsBack`, `TestEnqueueMatches`, `TestEventDocument`,
+  `TestWorkersShareTheOutbox` (two replicas' workers on one database), `TestWorkerTakesOverAStaleClaim`,
+  `TestWorkerRetries`, `TestWorkerGivesUp`, `TestWorkerWithoutTheMasterKey`; `TestPublishWebhook`,
+  `TestPublishWebhookRollsBack`, `TestDeleteWebhook`, `TestDeleteWebhookFails` (ingest);
+  `TestRepoWebhookEvents` (api); `TestStartWebhooks` (the outbox of the repo service and the
+  worker as `serve` starts them); the store conformance cases `Webhooks`, `WebhookDeliveries` and
+  `WebhookClaimRace`.
 - **When violated.** A delivery that fails for good is `failed` in the delivery log, with its
   last status and error, and logged at warn; the receiver can be sent a test, and the event is
   in the audit log.
-- **Status.** `not yet` (#77).
+- **Status.** `holds`.
 
 ### INV-44. A webhook reaches only public addresses over https, unless the operator allowed its host
 
@@ -1343,9 +1354,10 @@ longer than `reconcile.graceAge` is outside them
 - **Mechanism.** The client of `webhook.Deliverer`, whose transport dials through `egress.Guard`
   (`Guard.DialContext`, `Guard.Proxy`) built from `webhooks.allowedHosts`, and whose redirects
   `Guard.CheckURL` checks; the URL checked by `Guard.CheckURL` when it is stored.
-- **Tests.** None yet.
+- **Tests.** `TestEgressRefused`, `TestAttemptAnswers`, `TestLogsNoSecret` (webhook), and
+  `TestCheckURL` of webhook.
 - **When violated.** Threat model S-1, for webhooks.
-- **Status.** `not yet` (#77).
+- **Status.** `holds`.
 
 ## Summary
 
@@ -1393,8 +1405,8 @@ longer than `reconcile.graceAge` is outside them
 | INV-40 | a streamed download has its digest | holds | |
 | INV-41 | a binary only on a schema it can run on | partly | untested until v0.1.0 (the previous release's binary) |
 | INV-42 | a conditional delete never removes a changed version | holds | |
-| INV-43 | a committed write sent to its webhooks at least once, a rolled-back one never | not yet (#77) | |
-| INV-44 | a webhook reaches only public https unless its host is allowed | not yet (#77) | |
+| INV-43 | a committed write sent to its webhooks at least once, a rolled-back one never | holds | |
+| INV-44 | a webhook reaches only public https unless its host is allowed | holds | |
 
 ## Not guaranteed
 
@@ -1506,4 +1518,3 @@ costs and what would close it. "new issue" means that no issue tracks it yet.
 | Registries that fold tag case (INV-7) | two versions that differ in case: the second is a `409` with an unclear message | `Capabilities.TagsFoldCase` | [#426](https://github.com/lajstrom/lajstrom/issues/426) |
 | Whether a migration is expand is reviewed, not tested; the job `upgrade`, which runs the previous release's binary on the next schema, is skipped until there is a release; pre-#244 claims (INV-6, INV-41) | a contract migration without its `requires` line breaks the replicas of the release before during a rolling update; a mixed fleet may not exclude publishes | tag v0.1.0: from then on the job `upgrade` (`test/upgrade/run.sh`, [#485](https://github.com/lajstrom/lajstrom/issues/485)) runs on every pull request that changes a migration | [#59](https://github.com/lajstrom/lajstrom/issues/59) |
 | Policy (INV-38), encryption at rest (INV-39) | not built | as the issues say | [#101](https://github.com/lajstrom/lajstrom/issues/101), [#114](https://github.com/lajstrom/lajstrom/issues/114) |
-| Webhooks (INV-43, INV-44) | not built until the code of #77 is merged | the pull requests stacked on the spec | [#77](https://github.com/lajstrom/lajstrom/issues/77) |

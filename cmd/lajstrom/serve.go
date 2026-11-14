@@ -148,7 +148,7 @@ func newServeCmd(a *app) *cobra.Command {
 			health.Ping(ctx)
 			go health.Run(ctx)
 			pipe := ingest.New(ingest.Options{Providers: providers, Index: st, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL,
-				VisibilityTimeout: c.Ingest.VisibilityTimeout})
+				VisibilityTimeout: c.Ingest.VisibilityTimeout, Webhooks: newOutbox(c)})
 			runs := &backgroundReindex{ctx: ctx, log: a.log, w: reindex.New(reindex.Options{Index: st, Providers: providers,
 				Inspector: pipe, Repairer: pipe, Log: a.log, ClaimTTL: c.Ingest.ClaimTTL, GraceAge: c.Reconcile.GraceAge})}
 			// Before the index closes: a run the shutdown cancels finishes as failed. stop ends the
@@ -164,6 +164,7 @@ func newServeCmd(a *app) *cobra.Command {
 			}
 			runs.wg.Go(func() { expireSessions(ctx, pipe, a.log, sessionExpiryInterval) })
 			runs.wg.Go(func() { rep.Run(ctx) })
+			startWebhooks(ctx, c, a.lookupEnv, st, rep.row.ID, &runs.wg, a.log)
 			if err := checkProxyRepos(ctx, st, upstreams, ociUpstreams, a.log); err != nil {
 				return err
 			}

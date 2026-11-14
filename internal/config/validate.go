@@ -36,6 +36,7 @@ func (c *Config) Validate() error {
 	c.Database.validate(&p)
 	c.Ingest.validate(&p)
 	c.Reconcile.validate(&p)
+	c.Webhooks.validate(&p)
 	c.Auth.validate(&p, c.Server)
 	c.Keys.validate(&p)
 	registries := map[string]int{}
@@ -235,6 +236,29 @@ func (r Reconcile) validate(p *problems) {
 	}
 	if r.GraceAge < 0 {
 		p.add("reconcile.graceAge", "must not be negative")
+	}
+}
+
+func (w Webhooks) validate(p *problems) {
+	switch {
+	case w.Timeout < 0:
+		p.add("webhooks.timeout", "must not be negative")
+	case w.Timeout > MaxWebhookTimeout:
+		p.add("webhooks.timeout", "at most %s, so that an attempt ends before its claim goes stale", MaxWebhookTimeout)
+	}
+	if w.MaxAttempts < 1 {
+		p.add("webhooks.maxAttempts", "must be at least 1")
+	}
+	if w.Retention <= 0 {
+		p.add("webhooks.retention", "must be positive")
+	}
+	if w.Workers < 0 {
+		p.add("webhooks.workers", "must not be negative")
+	}
+	for i, h := range w.AllowedHosts {
+		if _, err := netip.ParseAddr(h); err != nil && (h == "" || strings.ContainsAny(h, "/:@?# \t")) {
+			p.add(fmt.Sprintf("webhooks.allowedHosts[%d]", i), "%q is not a host name or an address: no scheme, port or path", h)
+		}
 	}
 }
 

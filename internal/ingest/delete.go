@@ -1000,8 +1000,9 @@ func (d *deletion) event(ctx context.Context, principal auth.Principal) index.Au
 }
 
 // record writes what the index holds of the delete: for a version, its rows go in one
-// transaction, the package's with its last version, the repo's index_cache is invalidated and
-// the audit row is completed ok; for any other manifest the audit row alone. The audit row goes
+// transaction, the package's with its last version, the repo's index_cache is invalidated, the
+// audit row is completed ok and the version.deleted of the webhooks is written; for any other
+// manifest the audit row alone. The audit row goes
 // to the audit.Writer after the commit when there is one. The backend has deleted already, so a
 // failure of the transaction is an error without a sentinel (500), and the row is failed with
 // it (#474): reindex repairs the rows. A database that did not answer is the exception:
@@ -1020,7 +1021,13 @@ func (d *deletion) record(ctx context.Context) error {
 				return err
 			}
 		}
-		return d.p.complete(ctx, w, &d.ev)
+		if err := d.p.complete(ctx, w, &d.ev); err != nil {
+			return err
+		}
+		if d.version == nil {
+			return nil
+		}
+		return d.p.webhooks.Enqueue(ctx, w, d.deletedEvent())
 	})
 	if err != nil {
 		if errors.Is(err, index.ErrUnavailable) {
