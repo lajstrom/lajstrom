@@ -331,7 +331,11 @@ env:
   that keeps moving is never cut.
 - **A body that stops** is cut after `timeout` without a byte, and resumed with `Range` ([#883],
   [#885]).
-- **The circuit breaker** opens after five failed requests in a row (measured):
+- **The circuit breaker** opens after five failed requests in a row (measured), of two images at
+  least, or when the upstream refuses connections or cannot be reached
+  ([#972](https://github.com/lajstrom/lajstrom/issues/972)): one image's failures alone never
+  open it, so an upstream that hangs or answers `5xx` while a single image is asked costs each
+  request the total above. Once open:
   - for 30 s, everything asked of the upstream is `503` at once with `Retry-After`, the seconds
     until the trial (measured: 30); before [#889] it was `502` without one;
   - expired tags are served from their rows at once;
