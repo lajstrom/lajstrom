@@ -50,6 +50,11 @@ type Package struct {
 	// MD5Sums is md5sums as path to lowercase hex md5, paths as written (without "./"); nil
 	// when the package has none, which policy allows.
 	MD5Sums map[string]string
+	// Files are the paths of the members of data.tar that are not directories, in the order of
+	// the archive, without "./" (filesOf; #79): what the Contents indexes list. Nil from
+	// ParseControl, and when the data member did not read within the bounds of the lister; empty,
+	// not nil, for a data.tar of directories alone.
+	Files []string
 	// ControlMember is the name of the control member: control.tar, control.tar.gz,
 	// control.tar.xz or control.tar.zst.
 	ControlMember string
@@ -68,8 +73,8 @@ type Package struct {
 // Parse reads a binary package (deb(5)) from r to its end in one pass: the ar archive, the
 // debian-binary member, which must say 2.0, the control member (control.tar, .gz, .xz or .zst,
 // at most MaxControl bytes stored and uncompressed) with control and md5sums, and the
-// data.tar.* member, which it does not open; members after data.tar are ignored, as deb(5)
-// asks. Every byte goes through md5, sha1 and sha256 on the way, and through the inspector of
+// data.tar.* member, whose file list it reads when it can (Files) and which fails nothing;
+// members after data.tar are ignored, as deb(5) asks. Every byte goes through md5, sha1 and sha256 on the way, and through the inspector of
 // a streamed upload, which does the checking. Errors about the bytes wrap format.ErrInvalid and
 // say what was wrong; a failure of r is returned as it is, wrapped.
 func Parse(r io.Reader) (*Package, error) {
@@ -77,8 +82,8 @@ func Parse(r io.Reader) (*Package, error) {
 	sums := newSums(src)
 	in := &inspector{}
 	_, err := io.Copy(in, sums)
-	if err == nil {
-		err = in.Close()
+	if cerr := in.Close(); err == nil { // closed in any case: it releases the lister
+		err = cerr
 	}
 	if err != nil {
 		return nil, src.blame(err)

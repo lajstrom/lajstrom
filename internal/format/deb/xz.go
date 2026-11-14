@@ -59,6 +59,7 @@ type xzReader struct {
 	block io.Reader      // the LZMA2 decoder of the current block; nil between blocks
 	sum   hash.Hash      // the check of the current block, over its uncompressed bytes
 	cr    countingReader // the compressed bytes of the current block
+	max   int            // the most blocks the stream may have
 	hlen  int            // the header size of the current block
 	done  bool           // the index indicator was read
 }
@@ -75,9 +76,15 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// newXZReader reads and checks the stream header of r.
+// newXZReader reads and checks the stream header of r, a stream of at most maxXZBlocks blocks.
 func newXZReader(r io.Reader) (*xzReader, error) {
-	x := &xzReader{r: bufio.NewReader(r)}
+	return newXZReaderBlocks(r, maxXZBlocks)
+}
+
+// newXZReaderBlocks reads and checks the stream header of r, a stream of at most blocks blocks:
+// a data member has more than a control member (dataDecompressor).
+func newXZReaderBlocks(r io.Reader, blocks int) (*xzReader, error) {
+	x := &xzReader{r: bufio.NewReader(r), max: blocks}
 	var h [xzStreamHeaderLen]byte
 	if _, err := io.ReadFull(x.r, h[:]); err != nil {
 		return nil, fmt.Errorf("xz: stream header: %w", unexpected(err))
@@ -143,8 +150,8 @@ func (x *xzReader) startBlock() error {
 		x.done = true
 		return nil
 	}
-	if x.n == maxXZBlocks {
-		return fmt.Errorf("xz: more than %d blocks", maxXZBlocks)
+	if x.n == x.max {
+		return fmt.Errorf("xz: more than %d blocks", x.max)
 	}
 	x.n++
 	h := make([]byte, (int(first)+1)*4)

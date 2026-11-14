@@ -3,6 +3,7 @@ package testutil
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"path"
 	"slices"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/ulikunitz/xz"
+	"github.com/ulikunitz/xz/lzma"
 )
 
 // DebOptions are the options of Deb. Every empty field takes its default, so DebOptions{} is a
@@ -35,6 +37,13 @@ type DebOptions struct {
 	// reads: "gz" (default, control.tar.gz), "xz" (control.tar.xz), "zst" (control.tar.zst)
 	// or "none" (control.tar). Deb panics on any other value.
 	ControlCompression string
+	// DataCompression is the compression of the data member: "gz" (default, data.tar.gz), "xz",
+	// "zst", "lzma" or "none" (data.tar). Deb panics on any other value. (dpkg-deb reads bz2
+	// too, which nothing here can write.)
+	DataCompression string
+	// Links are symbolic links of the data member, path relative to / to target; md5sums does
+	// not list them, as dh_md5sums does not.
+	Links map[string]string
 	// XZEmptyBlocks, with ControlCompression "xz", puts that many empty blocks before the one of
 	// the control tar, each declaring a 64 MiB dictionary: a bomb of #243, as dpkg-deb writes one
 	// block. The stream is then written by hand, the control tar in uncompressed LZMA2 chunks.
@@ -106,9 +115,15 @@ func Deb(opts DebOptions) ([]byte, DebInfo) {
 	for _, f := range files {
 		fmt.Fprintf(&md5sums, "%s  %s\n", f.MD5, f.Path)
 		sums[f.Path] = f.MD5
-		data = append(data, debDirs(f.Path, dirs)...)
-		data = append(data, member{name: "./" + f.Path, body: []byte(o.Files[f.Path])})
 		installed += (f.Size + 1023) / 1024
+	}
+	for _, p := range slices.Sorted(maps.Keys(dataPaths(o))) {
+		data = append(data, debDirs(p, dirs)...)
+		if target, ok := o.Links[p]; ok {
+			data = append(data, member{name: "./" + p, link: target})
+		} else {
+			data = append(data, member{name: "./" + p, body: []byte(o.Files[p])})
+		}
 	}
 	info := DebInfo{
 		Package:       o.Name,
@@ -150,7 +165,8 @@ func Deb(opts DebOptions) ([]byte, DebInfo) {
 		compressed = xzEmptyBlocks(o.XZEmptyBlocks, controlTar)
 	}
 	arMember(&ar, info.ControlMember, compressed)
-	arMember(&ar, "data.tar.gz", tarGz(data))
+	dataName, dataBytes := dataMember(o.DataCompression, tarOf(data))
+	arMember(&ar, dataName, dataBytes)
 
 	b := ar.Bytes()
 	version := o.Version
@@ -176,6 +192,9 @@ func (o DebOptions) withDefaults() DebOptions {
 	}
 	if o.ControlCompression == "" {
 		o.ControlCompression = "gz"
+	}
+	if o.DataCompression == "" {
+		o.DataCompression = "gz"
 	}
 	if o.Depends == "" {
 		o.Depends = "libc6 (>= 2.34)"
@@ -224,6 +243,38 @@ func controlMember(compression string, tar []byte) (string, []byte) {
 		return "control.tar", tar
 	}
 	panic(fmt.Sprintf("testutil: unknown control compression %q, want gz, xz, zst or none", compression))
+}
+
+// dataPaths returns the paths of the data member: the files and the links.
+func dataPaths(o DebOptions) map[string]bool {
+	paths := map[string]bool{}
+	for p := range o.Files {
+		paths[p] = true
+	}
+	for p := range o.Links {
+		paths[path.Clean(strings.TrimLeft(strings.TrimPrefix(p, "./"), "/"))] = true
+	}
+	return paths
+}
+
+// dataMember returns the name and the bytes of the data member: the data tar compressed as
+// compression says, xz and zstd as controlMember writes them, lzma as the .lzma format of
+// github.com/ulikunitz/xz/lzma.
+func dataMember(compression string, tar []byte) (string, []byte) {
+	switch compression {
+	case "gz", "xz", "zst", "none":
+		name, b := controlMember(compression, tar)
+		return "data" + strings.TrimPrefix(name, "control"), b
+	case "lzma":
+		var buf bytes.Buffer
+		w, err := lzma.NewWriter(&buf)
+		must(err)
+		_, err = w.Write(tar)
+		must(err)
+		must(w.Close())
+		return "data.tar.lzma", buf.Bytes()
+	}
+	panic(fmt.Sprintf("testutil: unknown data compression %q, want gz, xz, zst, lzma or none", compression))
 }
 
 // debFiles returns the data files sorted by path, with size and md5.
