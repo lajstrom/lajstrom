@@ -491,11 +491,11 @@ func (h *handler) deleteManifest(w http.ResponseWriter, r *http.Request, t *targ
 	return nil
 }
 
-// refuseJournal refuses the delete of an entry of an npm package's journal, by its tag _j<seq>
-// or by a digest the index has of it, 409 DENIED: an entry goes with its package, which only the
-// unpublish of the package deletes (docs/spec/manifest-profile.md §8).
+// refuseJournal refuses the delete of an entry of an npm or a pypi package's journal, by its
+// tag _j<seq> or by a digest the index has of it, 409 DENIED: an entry goes with its package,
+// which only the unpublish of an npm package deletes (docs/spec/manifest-profile.md §8).
 func (h *handler) refuseJournal(ctx context.Context, t *target, ref string) error {
-	if t.repo.Format != "npm" {
+	if !profile.HasJournal(t.repo.Format) {
 		return nil
 	}
 	_, entry := profile.JournalSeq(ref)
@@ -515,8 +515,11 @@ func (h *handler) refuseJournal(ctx context.Context, t *target, ref string) erro
 	if !entry {
 		return nil
 	}
-	return &apiError{status: http.StatusConflict, code: codeDenied,
-		msg: fmt.Sprintf("%s in %s is an entry of the npm journal, which goes with its package: npm unpublish deletes it", ref, t.name)}
+	msg := fmt.Sprintf("%s in %s is an entry of the %s journal, which goes with its package", ref, t.name, t.repo.Format)
+	if t.repo.Format == "npm" {
+		msg += ": npm unpublish deletes it"
+	}
+	return &apiError{status: http.StatusConflict, code: codeDenied, msg: msg}
 }
 
 // deleteError is the error table of a manifest delete:

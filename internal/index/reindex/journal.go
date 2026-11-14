@@ -14,13 +14,11 @@ import (
 	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
-// npmFormat is the format whose packages have a journal (docs/spec/manifest-profile.md §8).
-const npmFormat = "npm"
-
-// splitJournal separates the journal tags of an npm package's OCI repository, _j<seq>, from its
-// other tags; a repo of another format has none.
+// splitJournal separates the journal tags of an npm or a pypi package's OCI repository,
+// _j<seq>, from its other tags (docs/spec/manifest-profile.md §8); a repo of a format without a
+// journal has none.
 func (s *scan) splitJournal(tags []string) (others, journal []string) {
-	if s.repo.Format != npmFormat {
+	if !profile.HasJournal(s.repo.Format) {
 		return tags, nil
 	}
 	for _, tag := range tags {
@@ -33,7 +31,7 @@ func (s *scan) splitJournal(tags []string) (others, journal []string) {
 	return others, journal
 }
 
-// journal reads the journal tags of one npm package once its versions are read, and replays
+// journal reads the journal tags of one package once its versions are read, and replays
 // them into the package's state (manifest-profile.md §8, Reindex): a tag that names the digest
 // of its row is seen without a read; another is read, checked and written; with prune, a row
 // whose tag the registry does not know any more is deleted; then the state is the fold of the
@@ -177,7 +175,7 @@ func (j *replay) tag(ctx context.Context, tag string, row index.JournalEntry, kn
 }
 
 // entry parses the manifest raw under tag as an entry of the package's journal: the rules of
-// §8, its tag the tag of its seq, its repo and name the package's.
+// §8, its tag the tag of its seq, its format the repo's, its repo and name the package's.
 func (j *replay) entry(raw []byte, tag string) (profile.JournalEntry, error) {
 	var m ocispec.Manifest
 	if err := json.Unmarshal(raw, &m); err != nil {
@@ -190,6 +188,8 @@ func (j *replay) entry(raw []byte, tag string) (profile.JournalEntry, error) {
 		return e, err
 	case profile.JournalTag(e.Seq) != tag:
 		return e, fmt.Errorf("the journal entry %d is under the tag %s, not %s", e.Seq, tag, profile.JournalTag(e.Seq))
+	case e.Format != j.s.repo.Format:
+		return e, fmt.Errorf("the journal entry is of the %s journal, in a %s repo", e.Format, j.s.repo.Format)
 	case e.Repo != j.s.repo.Name || e.Name != j.pkg.Name:
 		return e, fmt.Errorf("the journal entry is of %s in the repo %s, not of the package %s of the repository", e.Name, e.Repo, j.pkg.Name)
 	}

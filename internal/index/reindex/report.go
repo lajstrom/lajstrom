@@ -31,7 +31,7 @@ type RepoReport struct {
 	Referrers       int       `json:"referrers"`
 	Foreign         []Finding `json:"foreign"`
 	OrphanReferrers []Finding `json:"orphanReferrers"`
-	// OrphanJournal are the npm journal entries of an OCI repository without versions
+	// OrphanJournal are the npm and pypi journal entries of an OCI repository without versions
 	// (docs/spec/manifest-profile.md §8): not indexed, adopted by the next append to the package.
 	OrphanJournal []Finding `json:"orphanJournal"`
 	Drift         []Drift   `json:"drift"`

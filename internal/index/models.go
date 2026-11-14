@@ -377,33 +377,35 @@ type OCIRepo struct {
 	SeenAt time.Time
 }
 
-// The kinds of a journal_state row (docs/spec/index-schema.md, npm).
+// The kinds of a journal_state row (docs/spec/index-schema.md, the journal).
 const (
 	JournalDistTag    = "dist-tag"   // Key is the dist-tag, Value the version it names
 	JournalDeprecated = "deprecated" // Key is the version, Value its deprecation message
+	JournalYanked     = "yanked"     // Key is the pypi version, Value its yank's reason, "" for none
 )
 
-// JournalEntry is a row of journal (derived): one entry of an npm package's journal, the manifest
-// under the tag _j<seq> of the package's OCI repository (docs/spec/manifest-profile.md §8).
+// JournalEntry is a row of journal (derived): one entry of an npm or a pypi package's journal,
+// the manifest under the tag _j<seq> of the package's OCI repository
+// (docs/spec/manifest-profile.md §8).
 type JournalEntry struct {
 	ID           int64
 	PackageID    int64
-	Seq          int64         // lajstrom.npm.seq: 1 for the first entry, one more for each next
+	Seq          int64         // lajstrom.<format>.seq: 1 for the first entry, one more for each next
 	Tag          string        // _j and Seq zero-padded to eight digits: _j00000007
 	Digest       digest.Digest // the entry's manifest digest
 	ArtifactType string
-	Attrs        map[string]string // the entry's lajstrom.npm.* annotations
+	Attrs        map[string]string // the entry's lajstrom.npm.* or lajstrom.pypi.* annotations
 	CreatedAt    time.Time         // org.opencontainers.image.created
 	IndexedAt    time.Time         // when ingest or reindex last wrote or saw the row
 }
 
 // JournalState is a row of journal_state (derived): one dist-tag or one deprecation of an npm
-// package, the fold of its journal in Seq order.
+// package, or one yank of a pypi package, the fold of its journal in Seq order.
 type JournalState struct {
 	PackageID int64
-	Kind      string // JournalDistTag or JournalDeprecated
-	Key       string // the dist-tag; the version
-	Value     string // the version; the message
+	Kind      string // JournalDistTag, JournalDeprecated or JournalYanked
+	Key       string // the dist-tag; the version; the version
+	Value     string // the version; the message; the reason
 	Seq       int64  // the entry that set it
 }
 

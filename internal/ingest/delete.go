@@ -117,7 +117,7 @@ func (p *Pipeline) Delete(ctx context.Context, repo index.Repo, del format.Delet
 	}
 	_, entry := profile.JournalSeq(del.Reference)
 	d := &deletion{p: p, repo: repo, del: del, name: name, prov: prov, rr: rr, api: caps.Referrers,
-		journal: entry && repo.Format == "npm"}
+		journal: entry && profile.HasJournal(repo.Format)}
 	find := d.find
 	if !caps.DeleteManifest {
 		find = d.findOrphan
