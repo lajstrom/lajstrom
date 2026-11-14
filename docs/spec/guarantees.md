@@ -655,10 +655,11 @@ longer than `reconcile.graceAge` is outside them
 - **Assumes.** Any.
 - **Mechanism.** `auth.Credential.Limit`, `token.ParseScopes`, `token.Reduce`; at most 100
   repositories a request (`facade.handler.issueToken`); `auth.MayCreatePAT` (asked by
-  `api.handler.createToken` and again by `auth.Tokens.CreatePAT`).
+  `api.handler.createToken` and again by `auth.Tokens.CreatePAT`); `auth.MayCreateMaskDeploy`
+  (asked by `auth.Tokens.CreateMaskDeploy`).
 - **Tests.** `TestCredentialLimit`, `TestReduce`, `TestReduceCredential`, `TestParseScopes`,
   `TestTokenScopesBound`, `TestTokensAPINoMint`, `TestTokensAPIAuthorization`,
-  `TestTokensCreatedBy`, `TestAuthorizeCredential`; `tokens.sh`, `rbac.sh` (S-04), acceptance.md
+  `TestTokensCreatedBy`, `TestAuthorizeCredential`, `TestTokensMaskDeployCredential`; `tokens.sh`, `rbac.sh` (S-04), acceptance.md
   X-14.
 - **When violated.** Threat model T-1, T-6, T-8, T-9.
 - **Status.** `holds`.
