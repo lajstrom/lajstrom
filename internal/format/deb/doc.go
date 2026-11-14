@@ -14,6 +14,15 @@
 // control fields as written, md5sums, and the size, md5, sha1 and sha256 of the file, which
 // apt's Packages lists.
 //
+// A source package (#79) is a version too: its .dsc and the files the .dsc names, in one suite
+// and component, lajstrom.name its Source, lajstrom.version its Version, lajstrom.deb.arch
+// ArchSource and the variant <suite>/<component>/source. Its layers are the .dsc and the files
+// in the order of Checksums-Sha256; its metadata layer holds the fields of the .dsc and the
+// .dsc's own size and checksums. ParseDsc reads a .dsc, signed or not (the signature is not
+// checked); Build checks each file against the checksums the .dsc gives it, and Validate the
+// .dsc against the metadata and the file layers. A source and a binary of one name share the
+// OCI repository, as they share a directory of a Debian pool.
+//
 // An upload streams into the registry (ADR 0014): the upload route reads the head of the body,
 // up to the end of the control member, for the package name, and the whole body passes the
 // inspector on its way, which checks the archive in one pass as Parse does (Parse is the

@@ -157,7 +157,7 @@ func (p Plugin) paragraphs(ctx context.Context, repo index.Repo, suite string, s
 			return nil, fmt.Errorf("deb: versions of %s: %w", pkg.Name, err)
 		}
 		for _, v := range versions {
-			if v.Attrs[profile.AnnotationDebSuite] != suite {
+			if v.Attrs[profile.AnnotationDebSuite] != suite || isSource(v) {
 				continue
 			}
 			para, err := p.paragraphOf(ctx, repo, pkg, v)

@@ -31,6 +31,11 @@ const (
 	MediaTypePypiSdistZip = "application/vnd.lajstrom.pypi.sdist.v1+zip"
 	// MediaTypeDebPackage is a Debian binary package, *.deb.
 	MediaTypeDebPackage = "application/vnd.lajstrom.deb.package.v1"
+	// MediaTypeDebDsc is the .dsc of a Debian source package, the first layer of its manifest
+	// (#79).
+	MediaTypeDebDsc = "application/vnd.lajstrom.deb.dsc.v1"
+	// MediaTypeDebSource is a file a .dsc names: an .orig.tar.*, a .debian.tar.*, a .diff.gz.
+	MediaTypeDebSource = "application/vnd.lajstrom.deb.source.v1"
 	// MediaTypeMavenArtifact is a maven artifact file other than the POM: jar, war, aar, zip, …
 	MediaTypeMavenArtifact = "application/vnd.lajstrom.maven.artifact.v1"
 	// MediaTypeMavenPom is a maven POM, *.pom.
@@ -183,7 +188,10 @@ var types = []Type{
 		Name: "pypi", Format: "pypi", MetadataRequired: true,
 		FileMediaTypes: []string{MediaTypePypiWheel, MediaTypePypiSdistTarGz, MediaTypePypiSdistZip},
 	},
-	{Name: "deb", Format: "apt", FileMediaTypes: []string{MediaTypeDebPackage}, MetadataRequired: true},
+	{
+		Name: "deb", Format: "apt", MetadataRequired: true,
+		FileMediaTypes: []string{MediaTypeDebPackage, MediaTypeDebDsc, MediaTypeDebSource},
+	},
 	{
 		Name: "maven", Format: "maven", MetadataRequired: true,
 		FileMediaTypes: []string{MediaTypeMavenArtifact, MediaTypeMavenPom},
