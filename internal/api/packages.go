@@ -38,12 +38,14 @@ type VersionList struct {
 
 // VersionEntry is a version with its variants, as the API answers it (docs/api.md, List
 // versions): PublishedAt is the publish time of its first variant, LastModified of its newest.
+// Yanked is the yank of a pypi version, nil when it is not yanked.
 type VersionEntry struct {
 	Version      string           `json:"version"`
 	PublishedAt  time.Time        `json:"publishedAt"`
 	LastModified time.Time        `json:"lastModified"`
 	Variants     []VariantEntry   `json:"variants"`
 	Pointers     []format.Pointer `json:"pointers"`
+	Yanked       *Yank            `json:"yanked,omitempty"`
 }
 
 // VariantEntry is one manifest of a version.
@@ -64,6 +66,7 @@ type VersionDetail struct {
 	LastModified  time.Time        `json:"lastModified"`
 	Variants      []VariantDetail  `json:"variants"`
 	Pointers      []format.Pointer `json:"pointers"`
+	Yanked        *Yank            `json:"yanked,omitempty"`
 	OCIRepository string           `json:"ociRepository"`
 }
 
@@ -124,7 +127,7 @@ func (h *handler) getVersion(_ http.ResponseWriter, r *http.Request) (int, any, 
 		}
 	}
 	out := VersionDetail{Version: v.Version, PublishedAt: v.PublishedAt, LastModified: v.LastModified,
-		Variants: make([]VariantDetail, 0, len(rows)), Pointers: v.Pointers,
+		Variants: make([]VariantDetail, 0, len(rows)), Pointers: v.Pointers, Yanked: v.Yanked,
 		OCIRepository: repo.Format + "/" + repo.Name + "/" + pkg.NameOCI}
 	slices.SortFunc(rows, func(a, b index.Version) int { return strings.Compare(a.Variant, b.Variant) })
 	for _, row := range rows {
@@ -269,7 +272,7 @@ func listedVersions(ctx context.Context, rd index.Reader, repo *index.Repo, pkg 
 }
 
 // groupVersions groups the rows of a package's versions by version, each with its variants by
-// variant and the pointers of states that name it, ordered newest first (versionKey).
+// variant, the pointers of states that name it and its yank, ordered newest first (versionKey).
 func groupVersions(rows []index.Version, states []index.JournalState) []VersionEntry {
 	byVersion := map[string]*VersionEntry{}
 	var out []*VersionEntry
@@ -278,7 +281,7 @@ func groupVersions(rows []index.Version, states []index.JournalState) []VersionE
 		v := byVersion[row.Version]
 		if v == nil {
 			v = &VersionEntry{Version: row.Version, PublishedAt: at, LastModified: at,
-				Pointers: append([]format.Pointer{}, format.PointersOf(states, row.Version)...)}
+				Pointers: append([]format.Pointer{}, format.PointersOf(states, row.Version)...), Yanked: yankOf(states, row.Version)}
 			byVersion[row.Version] = v
 			out = append(out, v)
 		}

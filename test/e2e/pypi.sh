@@ -12,8 +12,14 @@
 # of the same files, which skips them; pip install --upgrade gets the next version; the page
 # asked for as the meta version latest of PEP 691, JSON and HTML, is version 1's. The index
 # reads of pip go through the core metadata of PEP 658 (.metadata before the file), which the
-# script checks in the server's access log when it has it. Last, a wheel of the next version with
-# the build tag 1 goes beside its wheel (#726), and pip install --force-reinstall takes it.
+# script checks in the server's access log when it has it. Then a wheel of the next version with
+# the build tag 1 goes beside its wheel (#726), and pip install --force-reinstall takes it. Last,
+# the yank of PEP 592 (#81), as the writer through the management API: 1.1 yanked with a reason
+# marks its three files in both pages (data-yanked, yanked) and in the version resource, and
+# 1.0's not; pip install in a clean venv gets 1.0, and pip install ==1.1 still gets 1.1, with
+# pip's warning; unyanked, the pages mark nothing and pip install gets 1.1 again; 1.0 yanked
+# without a reason is yanked true, and stays so after lajstrom reindex --verify of the repo,
+# which reads every entry of the journal again; then unyanked.
 #
 #   test/e2e/pypi.sh [<base url> [<repo>]]     default: http://localhost:8080 e2e
 #
@@ -180,6 +186,68 @@ for kind in json html; do
 	ctype="$(curl -fsS -o /dev/null -w '%{content_type}' -u "$user:$password" -H "Accept: application/vnd.pypi.simple.latest+$kind" "$base/pypi/$repo/simple/$normalized/")"
 	[ "$ctype" = "application/vnd.pypi.simple.v1+$kind" ] || fail "latest+$kind: Content-Type $ctype"
 done
+
+# The yank of PEP 592 (#81). yank VERSION [BODY] and unyank VERSION answer the status; page and
+# html are the two pages of the project; installs runs pip in a clean venv of $image and prints
+# what each of its arguments, a requirement, installs, one line each, then pip's warnings.
+api="$base/api/v1/repos/pypi/$repo/packages/$normalized/versions"
+yank() { curl -sS -o /dev/null -w '%{http_code}' -u "$user:$password" -X PUT ${2:+--data-binary "$2"} "$api/$1/yank"; }
+unyank() { curl -sS -o /dev/null -w '%{http_code}' -u "$user:$password" -X DELETE "$api/$1/yank"; }
+page() { curl -fsS -u "$user:$password" -H 'Accept: application/vnd.pypi.simple.v1+json' "$base/pypi/$repo/simple/$normalized/"; }
+html() { curl -fsS -u "$user:$password" "$base/pypi/$repo/simple/$normalized/"; }
+cat >"$work/installs.sh" <<'CLIENT'
+set -euo pipefail
+IFS=: read -r user password </w/credentials
+index="${BASE%%://*}://$user:$password@${BASE#*://}/pypi/$REPO/simple/"
+python -m venv /v
+for req in "$@"; do
+	/v/bin/pip install -q --root-user-action=ignore --force-reinstall --no-deps --index-url "$index" "$req" >/dev/null 2>/w-err || {
+		cat /w-err >&2; exit 1; }
+	/v/bin/python -c "import $MODULE; print($MODULE.hello())"
+	grep -i "yanked" /w-err | tr '\n' ' ' >&2 || true
+done
+CLIENT
+installs() {
+	docker run --rm --network host -e BASE="$base" -e REPO="$repo" -e MODULE="$module" -v "$work:/w:ro" "$image" \
+		bash /w/installs.sh "$@" 2>"$work/installs.err"
+}
+files_of() { jq -c --arg v "$1" '[.files[] | select(.filename | test("-" + ($v | gsub("[.]"; "[.]")) + "[-.]")) | .yanked]'; }
+
+step "yank 1.1 with a reason (PUT …/versions/1.1/yank, #81): its three files are yanked in both pages, 1.0's are not"
+reason='e2e: the wheel is broken & <old>'
+code="$(yank 1.1 "$(jq -cn --arg r "$reason" '{reason: $r}')")"
+[ "$code" = 204 ] || fail "PUT …/versions/1.1/yank: $code"
+got="$(page)"
+[ "$(files_of 1.1 <<<"$got")" = "$(jq -cn --arg r "$reason" '[$r, $r, $r]')" ] || fail "the yanked of 1.1: $(files_of 1.1 <<<"$got")"
+[ "$(files_of 1.0 <<<"$got")" = '[false,false]' ] || fail "the yanked of 1.0: $(files_of 1.0 <<<"$got")"
+[ "$(html | grep -c 'data-yanked="e2e: the wheel is broken &amp; &lt;old&gt;"')" = 3 ] || fail "data-yanked in the HTML page: $(html | grep -c data-yanked)"
+got="$(curl -fsS -u "$user:$password" "$api/1.1" | jq -r .yanked.reason)"
+[ "$got" = "$reason" ] || fail "the version resource of 1.1 says yanked $got"
+[ "$(yank 1.1 "$(jq -cn --arg r "$reason" '{reason: $r}')")" = 204 ] || fail "the same yank again"
+
+step "pip install gets 1.0 while 1.1 is yanked; pip install ==1.1 still installs 1.1, with pip's warning"
+out="$(installs "$project" "$project==1.1")" || fail "pip install: $(cat "$work/installs.err")"
+[ "$out" = "$(printf 'v1\nv1.1-1')" ] || fail "pip installed $(tr '\n' ' ' <<<"$out"), want v1 then v1.1-1"
+grep -qi "yanked" "$work/installs.err" || fail "pip installed the yanked 1.1 without a warning: $(cat "$work/installs.err")"
+
+step "unyank 1.1 (DELETE …/versions/1.1/yank): the pages mark nothing, and pip install gets 1.1"
+[ "$(unyank 1.1)" = 204 ] || fail "DELETE …/versions/1.1/yank"
+[ "$(page | jq '[.files[] | select(.yanked != false)] | length')" = 0 ] || fail "yanked files after the unyank: $(page | jq -c '[.files[].yanked]')"
+[ "$(html | grep -c data-yanked)" = 0 ] || fail "data-yanked in the HTML page after the unyank"
+[ "$(curl -fsS -u "$user:$password" "$api/1.1" | jq -c .yanked)" = null ] || fail "the version resource of 1.1 is still yanked"
+[ "$(unyank 1.1)" = 204 ] || fail "the same unyank again"
+out="$(installs "$project")" || fail "pip install: $(cat "$work/installs.err")"
+[ "$out" = v1.1-1 ] || fail "pip installed $out after the unyank, want v1.1-1"
+
+step "yank 1.0 without a reason: yanked true and data-yanked=\"\", also after lajstrom reindex --repo pypi/$repo --verify"
+[ "$(yank 1.0)" = 204 ] || fail "PUT …/versions/1.0/yank without a body"
+[ "$(page | files_of 1.0)" = '[true,true]' ] || fail "the yanked of 1.0: $(page | files_of 1.0)"
+"${lajstrom[@]}" reindex --repo "pypi/$repo" --verify --json >"$work/reindex.json" 2>"$work/reindex.err" || true
+jq -e --arg p "$normalized" '.repos[0] | [.errors[]?, .orphanJournal[]? | select(.repository == $p)] | length == 0' "$work/reindex.json" >/dev/null ||
+	fail "reindex: $(cat "$work/reindex.json" "$work/reindex.err")"
+[ "$(page | files_of 1.0)" = '[true,true]' ] || fail "the yanked of 1.0 after reindex: $(page | files_of 1.0)"
+[ "$(html | grep -c 'data-yanked=""')" = 2 ] || fail "data-yanked=\"\" in the HTML page after reindex: $(html | grep -c data-yanked)"
+[ "$(unyank 1.0)" = 204 ] || fail "DELETE …/versions/1.0/yank"
 
 if [ -n "${LAJSTROM_SERVER_LOG:-}" ] && [ -f "$LAJSTROM_SERVER_LOG" ]; then
 	step "pip read the core metadata (PEP 658) before the wheel"
