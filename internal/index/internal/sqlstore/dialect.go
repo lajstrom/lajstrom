@@ -52,6 +52,11 @@ type Dialect struct {
 	// other (YugabyteDB: pg_advisory_xact_lock, #629). Empty when the database resolves two
 	// such inserts itself: Postgres with speculative insertion, SQLite with its write lock.
 	PackageLock string
+	// SetSequence is the statement that moves the sequence of the id of the table %s past the
+	// greatest id it holds and never back, after an import that wrote ids of its own
+	// (ImportControlPlane; Postgres: setval of pg_get_serial_sequence). Empty when the next id
+	// follows the greatest by itself (SQLite's AUTOINCREMENT).
+	SetSequence string
 	// Clock is the query that returns the time of the database's clock, as a timestamp the
 	// store decodes (Postgres: clock_timestamp(); SQLite: 'now' as text, the host's clock).
 	Clock string

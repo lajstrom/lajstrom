@@ -69,7 +69,9 @@ var dialect = sqlstore.Dialect{
 	IsAborted:     func(err error) bool { return abortedStates[sqlState(err)] },
 	IsUnavailable: isUnavailable,
 	XactLock:      "SELECT set_config('idle_in_transaction_session_timeout', '0', true), pg_advisory_xact_lock(?)",
-	Clock:         "SELECT clock_timestamp()",
+	SetSequence: "SELECT setval(pg_get_serial_sequence('%s', 'id'), GREATEST((SELECT COALESCE(MAX(id), 0) FROM %s) + 1," +
+		" nextval(pg_get_serial_sequence('%s', 'id'))), false)",
+	Clock: "SELECT clock_timestamp()",
 }
 
 // yugabyte is the dialect on YugabyteDB (docs/deploy/databases.md#yugabytedb), which Open tells
