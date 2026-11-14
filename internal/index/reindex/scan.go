@@ -724,14 +724,16 @@ func (s *scan) sweep(ctx context.Context) {
 	s.dbErr(err)
 }
 
-// recheck looks up one version the run did not see, for sweep, and reports whether the
-// registry has it: its tag names its digest, or another one (drift), or the tag does not resolve
-// and lookup finds the manifest. Then its OCI repository is recorded again. Otherwise lookup
+// recheck looks up one version the run did not see, for sweep, in the OCI repository of its
+// manifest (index.ManifestPath: another form of its package's name in a split, #642), and reports
+// whether the registry has it: its tag names its digest, or another one (drift), or the tag does
+// not resolve and lookup finds the manifest. Then its OCI repository is recorded again. Otherwise lookup
 // decides: the version is removed, pending, reported as an error, or reported in
 // RepositoryUnknown when the registry does not know its OCI repository.
 func (s *scan) recheck(ctx context.Context, m index.VersionMatch) bool {
-	f := Finding{Repository: m.Package.NameOCI, Tag: m.Version.Tag, Digest: m.Version.Digest}
-	name := s.base + "/" + m.Package.NameOCI
+	path := index.ManifestPath(m.Package, m.Version)
+	f := Finding{Repository: path, Tag: m.Version.Tag, Digest: m.Version.Digest}
+	name := s.base + "/" + path
 	rr, err := s.prov.Repository(ctx, name)
 	var desc ocispec.Descriptor
 	if err == nil {

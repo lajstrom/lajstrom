@@ -35,14 +35,15 @@ import (
 //     backend does not know any more, as reindex tells it (RepositoryUnknown): its rows go, and
 //     nothing is asked of the backend but the lookups (#692).
 //  2. The reference, a tag or a digest, is resolved: on a managed repo to a version of the index
-//     when it names one (by its tag, or by its digest in the package of del.Path), else in the
-//     backend; one that names nothing is index.ErrNotFound. A version whose manifest the backend
-//     does not have any more, or a journal tag of an npm package that the backend does not have
-//     and the index does, is gone: its rows go all the same, so that the retry of a delete whose
-//     index transaction failed after the backend deleted deletes them (#668). Without the
-//     referrers API, so is a referrer the backend does not have whose last delete in the audit
-//     log did not go through, while its subject is still there: its retry repairs the subject's
-//     index (#711).
+//     when it names one whose manifest is in the OCI repository of del.Path (by its tag, or by
+//     its digest, in the package index.PackageOf finds there: its own name_oci or, in a split, a
+//     version's oci_repo, #642), else in the backend; one that names nothing is
+//     index.ErrNotFound. A version whose manifest the backend does not have any more, or a
+//     journal tag of an npm package that the backend does not have and the index does, is gone:
+//     its rows go all the same, so that the retry of a delete whose index transaction failed
+//     after the backend deleted deletes them (#668). Without the referrers API, so is a
+//     referrer the backend does not have whose last delete in the audit log did not go through,
+//     while its subject is still there: its retry repairs the subject's index (#711).
 //  3. Under the tag lock of the manifest (Store.WithReferrersLock, keyed by its subject when it
 //     has one, else by its own digest; a journal tag _j<seq> of an npm package under the
 //     package's journal lock instead, keyed by the empty blob's digest, docs/spec/
@@ -195,7 +196,7 @@ func (d *deletion) find(ctx context.Context) error {
 	if d.repo.Format != ociFormat {
 		v, err := d.p.index.GetVersionByDigest(ctx, d.repo.ID, desc.Digest)
 		switch {
-		case err == nil && d.pkg != nil && v.PackageID == d.pkg.ID:
+		case err == nil && d.here(v):
 			d.version = v
 			return nil
 		case err != nil && !errors.Is(err, index.ErrNotFound):
@@ -204,6 +205,13 @@ func (d *deletion) find(ctx context.Context) error {
 	}
 	d.subject, err = d.subjectOf(ctx)
 	return err
+}
+
+// here reports whether v is a version of the delete's package whose manifest is in the OCI
+// repository of del.Path (index.ManifestPath: another form of the package's name in a split,
+// #642).
+func (d *deletion) here(v *index.Version) bool {
+	return d.pkg != nil && v.PackageID == d.pkg.ID && index.ManifestPath(*d.pkg, *v) == d.del.Path
 }
 
 // findOrphan resolves the reference of a delete on a backend that cannot delete manifests, in
@@ -300,19 +308,24 @@ func (d *deletion) findReferrer(ctx context.Context) error {
 	return nil
 }
 
-// findVersion sets the version the reference names in the package of del.Path, by its digest
-// or its tag, and the manifest the backend has of it. A repo of format oci has no versions.
+// findVersion sets the version the reference names, by its digest or its tag, in the package
+// whose versions may be in the OCI repository of del.Path (index.PackageOf), when its manifest
+// is there (index.ManifestPath), and the manifest the backend has of it. A version of the
+// package at another form of the path is not this one: its manifest is in another OCI
+// repository (a split, #642). A repo of format oci has no versions.
 func (d *deletion) findVersion(ctx context.Context) error {
 	if d.repo.Format == ociFormat {
 		return nil
 	}
-	pkg, err := d.p.index.GetPackageByNameOCI(ctx, d.repo.ID, d.del.Path)
+	pkg, err := index.PackageOf(ctx, d.p.index, d.repo.ID, d.del.Path)
 	if errors.Is(err, index.ErrNotFound) {
 		return nil
 	} else if err != nil {
 		return fmt.Errorf("ingest: package %s: %w", d.del.Path, err)
 	}
-	d.pkg = pkg
+	if pkg.NameOCI == d.del.Path {
+		d.pkg = pkg // also for a manifest that is no version: a journal entry is at name_oci
+	}
 	var v *index.Version
 	if strings.Contains(d.del.Reference, ":") {
 		dg, perr := digest.Parse(d.del.Reference)
@@ -325,12 +338,12 @@ func (d *deletion) findVersion(ctx context.Context) error {
 	} else {
 		v, err = d.p.index.GetVersionByTag(ctx, pkg.ID, d.del.Reference)
 	}
-	if errors.Is(err, index.ErrNotFound) {
+	if errors.Is(err, index.ErrNotFound) || err == nil && index.ManifestPath(*pkg, *v) != d.del.Path {
 		return nil
 	} else if err != nil {
 		return fmt.Errorf("ingest: version %s of %s: %w", d.del.Reference, d.del.Path, err)
 	}
-	d.version = v
+	d.pkg, d.version = pkg, v
 	d.target, err = d.rr.Resolve(ctx, v.Digest.String())
 	if errors.Is(err, provider.ErrNotFound) {
 		d.target, d.gone = ocispec.Descriptor{MediaType: ocispec.MediaTypeImageManifest, Digest: v.Digest}, true
@@ -380,7 +393,13 @@ func (d *deletion) locked(ctx context.Context, fn func(context.Context) error) e
 	}
 	tagLocked := func(ctx context.Context) error { return d.p.index.WithReferrersLock(ctx, d.name, key, fn) }
 	if d.del.Condition != nil && d.repo.Format == "npm" && !d.journal {
-		return d.p.index.WithReferrersLock(ctx, d.name, profile.EmptyConfig.Digest, tagLocked)
+		// The package's journal lock is keyed by its name_oci, where its journal is, also for a
+		// version whose manifest is at another form of it (#642).
+		journal := d.name
+		if d.pkg != nil {
+			journal = ociName(d.repo, d.pkg.NameOCI)
+		}
+		return d.p.index.WithReferrersLock(ctx, journal, profile.EmptyConfig.Digest, tagLocked)
 	}
 	return tagLocked(ctx)
 }

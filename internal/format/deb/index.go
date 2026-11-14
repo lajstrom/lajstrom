@@ -432,7 +432,7 @@ func (p Plugin) fetchMetadata(ctx context.Context, repo index.Repo, pkg index.Pa
 	if prov == nil {
 		return nil, fmt.Errorf("deb: the registry %q of apt/%s is not configured for the renderer", repo.Registry, repo.Name)
 	}
-	name := ociName(repo, pkg.NameOCI)
+	name := ociName(repo, index.ManifestPath(pkg, v))
 	rr, err := prov.Repository(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("deb: repository %s: %w", name, onlyUnavailable(err))

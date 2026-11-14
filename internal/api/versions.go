@@ -201,7 +201,7 @@ func (h *handler) deleteEach(r *http.Request, repo *index.Repo, pkg *index.Packa
 	ctx := r.Context()
 	var deleted []string
 	for _, v := range versions {
-		del := format.Deletion{Path: pkg.NameOCI, Reference: v.Digest.String(), ClientIP: clientIP(r), Job: job,
+		del := format.Deletion{Path: index.ManifestPath(*pkg, v), Reference: v.Digest.String(), ClientIP: clientIP(r), Job: job,
 			Condition: &format.Condition{Version: v.Version, Variant: v.Variant, UnmodifiedSince: c.since, Force: c.force}}
 		if _, err := h.deleter.Delete(ctx, *repo, del, auth.PrincipalFrom(ctx)); err != nil {
 			return format.Partial(versionDeleteError(repo, pkg, v, err), deleted)
