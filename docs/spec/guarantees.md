@@ -948,7 +948,9 @@ longer than `reconcile.graceAge` is outside them
   `JournalState`, `JournalCascades`, `JournalRace`, `TestJournalState` (profile),
   `TestJournalReindex`, `TestJournalReindexLost`, `TestJournalReindexOrphans`,
   `TestJournalVisibility`, `TestJournalClaimNotPushed`, `TestDistTags`,
-  `TestDeprecate`, `TestDeleteJournalEntry`; the dist-tag and deprecate steps of `npm.sh`.
+  `TestDeprecate`, `TestDeleteJournalEntry`; the dist-tag and deprecate steps of `npm.sh`; pypi:
+  `TestJournalPypi`, `TestParseJournalPypi` (profile), `TestJournalYank`, `TestJournalYankRefused`,
+  `TestYankReindex`.
 - **When violated.** Reindex reports an entry whose annotations, tag or name break the rules, a
   missing `seq`, and orphans (`orphanJournal`); an entry that breaks the rules stops the next
   append until the operator removes it.

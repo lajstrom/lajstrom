@@ -295,7 +295,7 @@ func (s *scan) ociRepo(ctx context.Context, name string) {
 		})
 	}
 	wg.Wait()
-	if s.repo.Format == npmFormat && pkgPath != "" && !s.stopped(ctx) {
+	if profile.HasJournal(s.repo.Format) && pkgPath != "" && !s.stopped(ctx) {
 		s.journal(ctx, rr, cache, pkgPath, journal)
 	}
 }
