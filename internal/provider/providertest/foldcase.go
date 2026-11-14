@@ -13,10 +13,18 @@ import (
 // FoldCase returns f as a registry that folds the case of tags, as Gitea and Forgejo do
 // (docs/registries/gitea.md, Tags): a tag is stored lower-cased, so the tag list names
 // 5.4.final for a push to 5.4.Final, a push to 5.4.final re-points it, and a tag resolves in
-// any case. A digest is lower-case already.
+// any case. A digest is lower-case already. Its capabilities say so (TagsFoldCase), as the vendor
+// table says for Gitea and Forgejo.
 func FoldCase(f *Fake) provider.Provider { return foldCase{f} }
 
 type foldCase struct{ *Fake }
+
+// Capabilities are f's, with TagsFoldCase.
+func (c foldCase) Capabilities(ctx context.Context) (provider.Capabilities, error) {
+	caps, err := c.Fake.Capabilities(ctx)
+	caps.TagsFoldCase = true
+	return caps, err
+}
 
 func (c foldCase) Repository(ctx context.Context, name string) (provider.Repository, error) {
 	rr, err := c.Fake.Repository(ctx, name)

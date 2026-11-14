@@ -119,10 +119,11 @@ ran (as on Gitea, [gitea.md, Cleanup](gitea.md#cleanup)). With
      It is tested on a fake that folds case. The integration tests have not been run against
      Forgejo again: the job `e2e (forgejo)` runs the scenarios and the provider's tests, not
      reindex's.
-   - **Two versions that differ only in case** behave as on Gitea. Through Lajstrom the second
-     is a 409. Reindex indexes the one manifest the tag holds, and reports a version whose tag
-     was re-pointed past Lajstrom as drift.
-   - **Refusing such versions up front** is a contract question (#426).
+   - **Two versions that differ only in case** behave as on Gitea. The vendor table says that
+     Forgejo folds case (`capabilities.tagsFoldCase: true`, #426). Through Lajstrom the second
+     version is a 409 that names the first, and two such publishes at once are one claim, so the
+     second pushes nothing. Reindex indexes the one manifest the tag holds, and reports a version
+     whose tag was re-pointed past Lajstrom as drift. Versions with capitals are not refused.
 3. **Do not stream a chunk of unknown size into a session that already holds bytes.** As on
    Gitea, it is 400 `BLOB_UPLOAD_INVALID` "Stream uploads after first write are not allowed".
    `registries[].uploads.spoolUnknownLength: true` spools such a chunk (#425). `serve` hints at
