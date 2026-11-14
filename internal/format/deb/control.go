@@ -182,8 +182,12 @@ func checkVersion(what, s string) error {
 	return nil
 }
 
-// checkArchitecture checks the grammar of an architecture name. Errors wrap format.ErrInvalid.
+// checkArchitecture checks the grammar of the architecture name of a binary package, which is
+// never ArchSource, that of source packages. Errors wrap format.ErrInvalid.
 func checkArchitecture(what, s string) error {
+	if s == ArchSource {
+		return fmt.Errorf("%w: %s %q is the architecture of a source package, which a binary package cannot have", format.ErrInvalid, what, s)
+	}
 	if !architecture.MatchString(s) {
 		return fmt.Errorf("%w: %s %q is not an architecture name: lowercase letters, digits and \"-\", the first not \"-\"",
 			format.ErrInvalid, what, s)
