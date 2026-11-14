@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/lajstrom/lajstrom/internal/index"
+	"github.com/lajstrom/lajstrom/internal/index/sqlite"
 )
 
 // writeSnapshotConfig writes a configuration with a SQLite file in dir, keys.masterKeyEnv
@@ -65,4 +68,28 @@ func TestAuditOptions(t *testing.T) {
 			t.Errorf("auditOptions(%q) = %+v, %v", tt.in, o, err)
 		}
 	}
+}
+
+// TestAdminSnapshotRestoreRefuses: admin snapshot restore takes one reference, and refuses while
+// a replica serves on the database, before it reads the registry.
+func TestAdminSnapshotRestoreRefuses(t *testing.T) {
+	dir := t.TempDir()
+	cfg := writeSnapshotConfig(t, dir, map[string]string{"local": "http://127.0.0.1:1"})
+	runEnv(t, cfg, nil, []step{
+		{args: []string{"migrate"}, wantOut: "applied 0001"},
+		{args: []string{"admin", "snapshot", "restore"}, wantErr: "accepts 1 arg(s), received 0"},
+	})
+	st, err := sqlite.Open(t.Context(), "file:"+filepath.Join(dir, "lajstrom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	if err := st.StartReplica(t.Context(), &index.Replica{ID: index.NewUID(time.Now()), Host: "serving-host", PID: 42},
+		time.Now().Add(-replicaStaleAfter)); err != nil {
+		t.Fatal(err)
+	}
+	runEnv(t, cfg, nil, []step{
+		{args: []string{"admin", "snapshot", "restore", "latest"},
+			wantErr: "a replica serves on the database: "},
+	})
 }
