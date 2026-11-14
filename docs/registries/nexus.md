@@ -7,7 +7,8 @@ has two formats for that: `docker`, the one the issue names, and `oci`, which is
 has the referrers API. Both were run; they differ enough to be two columns. The
 [summary columns](README.md#capabilities) are in the README; this page has the details. Both
 were measured again on 2026-11-12 with the vendor table of #352 (#781):
-[Again after #352](#again-after-352).
+[Again after #352](#again-after-352); the tests of reindex and the e2e scenarios on 2026-11-14
+(#800): [Again on 2026-11-14](#again-on-2026-11-14).
 
 ## Version tested
 
@@ -475,6 +476,69 @@ The failures, by owner:
   `TestIntegrationFormats` no longer wants the repository of a package whose versions were all
   deleted to stay in `_catalog`. Not run against Nexus again: against Zot behind a front that
   answers as each format does (`Server: Nexus/…`; no referrers API, or a `500` to a range).
+  The reindex tests and the e2e scenarios ran against Nexus on 2026-11-14:
+  [Again on 2026-11-14](#again-on-2026-11-14).
+
+## Again on 2026-11-14
+
+For #800: the same image on a new volume, `nexus.sh` of #1012 (`strictContentTypeValidation`
+off on the docker repository, on on the oci one). The tests of reindex at main 20ce9499, with
+those of #940; the e2e scenarios that need no image of their own at 696c7394 with #1031 and
+#1032 (only docs changed between the two); and `curl` and `oras` by hand. The start logged the vendor table as on
+2026-11-12: `deleteManifest=false` on the docker format, `blobsReadWhole=true` on the oci one.
+
+**Reindex: the two failures of the oci format are the tests', not Lajstrom's.**
+`-run TestIntegration ./internal/index/reindex/` over SQLite and Postgres passes on both
+formats since #940; `TestIntegrationRepairReferrers` skips on both, on the docker format for
+`deleteManifest` false, on the oci one for its referrers API. With the checks of before #940
+back:
+
+- `TestIntegrationFormats/apt` deletes `goodbye`, the only version of its package, through the
+  write path, drops the derived rows and rebuilds them from the registry, then wants the
+  `oci_repos` of before. The rebuilt rows lacked `apt/it-…/goodbye`, and nothing else. Nexus
+  drops a repository with its last manifest, on both formats; Zot keeps it, empty. A manifest
+  pushed with `oras push` to a new repository, then deleted by digest:
+
+  ```text
+                                     Nexus docker           Nexus oci              Zot
+  in _catalog, at once, 5 s, 30 s    no                     no                     yes
+  GET tags/list                      404 NAME_UNKNOWN       404 NAME_UNKNOWN       200 {"tags":[]}
+  ```
+
+  Ingest's delete keeps the `oci_repos` row of a managed repo, which goes after reconcile's
+  grace age ([index-schema.md](../spec/index-schema.md)); a rebuild finds the repositories the
+  registry has, and reindex takes a tag list `404 NAME_UNKNOWN` for a repository that is gone.
+  Right on both sides: the test now leaves out a repository that holds no version and that the
+  rebuild did not find, and wants every other.
+- `TestIntegrationSplit` pushes a raw file straight to the OCI name a Lajstrom before ADR 0017
+  wrote. On the oci format two of its three names are `400 NAME_INVALID` "Repository name does
+  not match OCI grammar": `a--b.txt`, and `h0__bc37…`, the earlier form of `.gitignore` (the 1.0
+  grammar, [above](#again-after-352)). Nothing at such a name can be in this format, so the
+  test skips them; `k8s/manifests/app.yaml` passes. The docker format takes all three.
+
+This corrects "an emptied repository's tag list is 404 `NAME_UNKNOWN` … but it stays in
+`_catalog`" of the probe's run [above](#again-after-352): the repository itself leaves
+`_catalog` with its last manifest. The probe's cell looks for any repository below its scratch
+prefix, where its cleanup had left blobs (`BLOB_REFERENCED`); not followed up.
+
+**The e2e scenarios** take the answers of the vendor table since #800: `run.sh` reads
+`deleteManifest` and `blobsReadWhole` from the server's log and passes them on
+([testing.md](../testing.md#a-registry-that-deletes-nothing-or-reads-blobs-whole)).
+`test/e2e/run.sh raw oras cosign auth rbac retention first-admin`, all seven pass on each format:
+
+| Scenario | docker (`deleteManifest=false`) | oci (`blobsReadWhole=true`) |
+| --- | --- | --- |
+| `raw.sh` | pass: the version delete `501 UNAVAILABLE` naming the registry, R-07 and the cleanup `501`, every version still listed and served | pass: the range `200` with all 3000 bytes |
+| `oras.sh` | pass: the deletes through `/raw/` `501`, `oras manifest delete` refused with `UNSUPPORTED`, the delete by one of two tags `405`; the manifests and tags still there | pass |
+| `cosign.sh` | pass: the delete `501`; the signature still a referrer, the file, the signature, the legacy `.sig` and the tag-schema index still served | pass |
+| `auth.sh`, `rbac.sh` | pass: the maintainer's and the admin's deletes `501` on `/raw/`, `405 UNSUPPORTED` on `/v2`; the others' refusals as on Zot | pass |
+| `retention.sh` | pass: `--apply` exits 1, the version an error naming the registry, nothing deleted | pass |
+| `first-admin.sh` | pass; before #1032 its servers had no registry credentials and were never ready | the same |
+
+Not run: `oci-token`, `tokens`, `apt`, `rpm`, `pypi`, `maven`, `npm`, `docker` and `ociproxy`
+(their client images were not on the machine) and `migrate-npm` (no Verdaccio). `apt.sh`,
+`rpm.sh` and `npm.sh` delete versions and still want them deleted, so they would fail at those
+steps on the docker format.
 
 ## Commands
 
