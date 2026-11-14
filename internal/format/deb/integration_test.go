@@ -28,6 +28,7 @@ import (
 	"github.com/lajstrom/lajstrom/internal/index/sqlite"
 	"github.com/lajstrom/lajstrom/internal/ingest"
 	"github.com/lajstrom/lajstrom/internal/keys"
+	"github.com/lajstrom/lajstrom/internal/keys/keystest"
 	"github.com/lajstrom/lajstrom/internal/provider"
 	"github.com/lajstrom/lajstrom/internal/provider/generic"
 	"github.com/lajstrom/lajstrom/internal/provider/providertest"
@@ -188,7 +189,12 @@ func TestAptGetInstall(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker is not on the PATH; this test runs apt-get in a container")
 	}
-	t.Run("registry", func(t *testing.T) { aptGetInstall(t, testRegistry(t), http.StatusOK) })
+	t.Run("registry", func(t *testing.T) { aptGetInstall(t, testRegistry(t), http.StatusOK, nil) })
+	// The repo's key is an ECDSA P-256 key of a KMS (ADR 0020), which the gpgv of apt 2.7 takes
+	// under its --assert-pubkey-algo.
+	t.Run("kms", func(t *testing.T) {
+		aptGetInstall(t, testRegistry(t), http.StatusOK, keystest.NewKMS(time.Now().Add(-time.Hour)))
+	})
 	t.Run("s3", func(t *testing.T) {
 		addr := os.Getenv("LAJSTROM_TEST_REGISTRY_S3")
 		if addr == "" {
@@ -197,21 +203,33 @@ func TestAptGetInstall(t *testing.T) {
 		prov, err := generic.New(config.Registry{Name: "local", Type: generic.Type, URL: "http://" + addr, Prefix: "lajstrom-it/"},
 			slog.New(slog.DiscardHandler))
 		must(t, err)
-		aptGetInstall(t, prov, http.StatusTemporaryRedirect)
+		aptGetInstall(t, prov, http.StatusTemporaryRedirect, nil)
 	})
 }
 
 // aptGetInstall runs TestAptGetInstall against the registry prov; poolStatus is the status of
-// every pool download, 200 or 307.
-func aptGetInstall(t *testing.T, prov provider.Provider, poolStatus int) {
+// every pool download, 200 or 307. With kms, the repo's key is the key of kms, and its
+// signatures are counted.
+func aptGetInstall(t *testing.T, prov provider.Provider, poolStatus int, kms *keystest.KMS) {
 	ctx := t.Context()
 	st, repo, pipe, providers := emptyRepo(t, prov)
 	secret := make([]byte, 32)
 	_, _ = rand.Read(secret)
 	m, err := keys.ParseMaster(hex.EncodeToString(secret))
 	must(t, err)
-	svc, err := keys.New(keys.Options{Index: st, Master: m, RetireGrace: 720 * time.Hour, Log: slog.New(slog.DiscardHandler)})
+	o := keys.Options{Index: st, Master: m, RetireGrace: 720 * time.Hour, Log: slog.New(slog.DiscardHandler)}
+	if kms != nil {
+		o.KMS, o.KMSKey = map[string]keys.KMS{config.KMSSchemeAWS: kms}, kms.URI()
+	}
+	svc, err := keys.New(o)
 	must(t, err)
+	if kms != nil {
+		t.Cleanup(func() {
+			if kms.Signs() < 3 { // the self-signature, InRelease and Release.gpg
+				t.Errorf("the KMS made %d signatures", kms.Signs())
+			}
+		})
+	}
 	deps := format.Deps{Index: st, Ingest: pipe, Providers: providers, Signer: svc, Log: slog.New(slog.DiscardHandler)}
 	mux := http.NewServeMux()
 	Plugin{}.Routes(format.NewRouter(mux, Name, deps), deps)
