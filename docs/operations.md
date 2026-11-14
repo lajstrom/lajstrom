@@ -1553,6 +1553,40 @@ was published after the backup, and prune removes what was deleted by its usual 
 lists such a version as pending, and a run at least 10 minutes later removes it, once its row is
 `reconcile.graceAge` old.
 
+### Snapshots of the control plane
+
+A snapshot is the control plane written into the registry by Lajstrom itself (#76;
+[manifest-profile.md](spec/manifest-profile.md) §9): repos, group members, users, OIDC
+identities, tokens, bindings and keys, every row with its id, and the audit rows of a window when
+asked. It is the copy of the control plane that lives where the artifacts live. It does not
+replace the database's backup, which keeps the whole audit log.
+
+```sh
+lajstrom admin snapshot create                # sealed with the master key; prints the snapshot as JSON
+lajstrom admin snapshot create --audit 90d    # with the audit rows of the last 90 days; --audit all: every row
+lajstrom admin snapshot list                  # TAG CREATED SCHEMA SEALED SIZE DIGEST, the newest first
+```
+
+- **Where.** `lajstrom/control-plane` below the instance prefix of one registry of the
+  configuration: the only one, or the one `--registry` names. One manifest per snapshot, under a
+  tag of its time and digest, `20261114T103000Z-3f2a9c0d1e4b`, never moved. Old snapshots stay
+  until the registry's own retention rules remove them ([below](#the-registrys-own-rules)): keep
+  the newest few dozen. No repo's reindex lists the repository, and `/v2` does not serve it.
+- **Sealed.** By default the layer is encrypted, AES-256-GCM under a key derived from the master
+  key, so that a reader of the registry does not get the password hashes, the user names and the
+  audit trail. A sealed snapshot is read only with the master key it was written under. Without a
+  master key `create` refuses, unless `--unsealed`. An unsealed snapshot holds what a dump of
+  these tables holds: the hashes of passwords and tokens and the private keys encrypted with the
+  master key, and no secret in clear.
+- **What it needs.** The configuration, the database (`lajstrom migrate` ran), the registry's
+  credentials and, for a sealed snapshot, the master key: the secrets of `serve`. The command
+  talks to them itself, without HTTP.
+- **When.** On demand, before an upgrade, and daily from the scheduler that runs retention: a
+  Kubernetes CronJob with the Deployment's configuration and Secrets. The rows are read in one
+  transaction, so a snapshot taken while replicas serve is of one moment.
+- **Audit.** `create` appends `snapshot.create` after the read, with the subject
+  `lajstrom/control-plane:<tag>` and the manifest's digest. A snapshot never holds its own row.
+
 ### Restoring
 
 1. Stop every replica (`kubectl scale --replicas=0`, `docker compose stop lajstrom`), so that
