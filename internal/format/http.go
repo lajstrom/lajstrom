@@ -65,6 +65,17 @@ func ClientMessage(err error) string {
 	return msg
 }
 
+// Explainer is an error that has words for the client: ClientMessage answers a 5xx with its
+// status text followed by Explain() of the first error in err's chain that has one (errors.As),
+// so that a client learns what happened while the cause stays in the log (#667). The words
+// name only what the client sent and Lajstrom's own names (an OCI name below the instance
+// prefix, a digest, a tag), never a URL, the instance prefix, a credential or a message of the
+// registry's. ingest.NotVisibleError has one: what of a publish the registry does not serve yet.
+type Explainer interface {
+	error
+	Explain() string
+}
+
 // PartialError is the error of a delete of several manifests that failed part way: a raw path,
 // an npm package or the versions an npm packument update leaves out, a version with every
 // variant. Err is the failure, which decides the status; Deleted names what was deleted before
