@@ -110,9 +110,15 @@ digest (`400 DIGEST_INVALID`): then it ends. A `429` or `503` of the registry is
 breaker is and as on the proxy routes: the registry throttles Lajstrom's own credential, which
 every client shares, not this client, and docker retries a `503`. Lajstrom's own bound of a
 principal, its open upload sessions (#246), is `429 TOOMANYREQUESTS`: there the client itself
-is over its limit. A registry that refuses Lajstrom's credentials (`401`, `403`,
-`UNAUTHORIZED`, `DENIED`) is `502`, and any other `5xx` of the registry stays a `5xx`, with the
-status text only.
+is over its limit. A registry that refuses a write for a limit or a quota of its own
+(`provider.ErrLimit`, #357: ECR's `LimitExceededException`; a `403` or `DENIED` that speaks of a
+quota or of exceeding a limit, Harbor's project quota; a `403` to a `PATCH` or to the closing
+`PUT` of an upload session it had opened, Gitea's `LIMIT_SIZE_CONTAINER`), on any route, is
+`403 DENIED`: the message names the limit, and nothing of the registry's own; docker and oras
+show it and do not retry, and the same push fails until the operator raises the limit or frees
+room. A registry that refuses Lajstrom's credentials (`401`, `403`, `UNAUTHORIZED`, `DENIED`,
+but a limit's) is `502`, and any other `5xx` of the registry stays a `5xx`, with the status
+text only.
 
 Mount of a package under a repo: the name after `/v2/` is split as `<format>/<repo>/<rest>`; the
 repo must exist in the control plane, else `404 NAME_UNKNOWN`. Auto-creation of repos on push is
@@ -142,7 +148,9 @@ A request that Lajstrom sends the registry for a frontend and that the registry 
 status no other rule names (#494; `format.StatusOf` is the one table): a `413` stays `413`, the
 file is larger than the registry takes; a `429` or `503` is `503` with the registry's
 `Retry-After`, `1` when it sent none, as an open circuit breaker is: the registry throttles
-Lajstrom's own credential, which every client shares, not this client; any other `4xx`, such as
+Lajstrom's own credential, which every client shares, not this client; a refusal for a limit
+or a quota of the registry (`provider.ErrLimit`, §2) is `403` with the message, which names the
+limit; any other `4xx`, such as
 a `400 MANIFEST_INVALID` for a manifest Lajstrom built, is `502`: the client sent its file, not
 the request the registry refused. A `5xx` says its status text only, and no answer carries the
 registry's URL, realm or message.
@@ -473,7 +481,9 @@ listed here so frontends do not invent their own. What each call needs, in the a
 
 Errors: `{"error": {"code": "NOT_FOUND|CONFLICT|UNAUTHENTICATED|FORBIDDEN|INVALID|UNAVAILABLE|INTERNAL", "message": "…"}}`.
 A `401` (no credentials, or credentials refused, with the Basic challenge) is `UNAUTHENTICATED`,
-a `403` (the caller lacks the action) `FORBIDDEN` (#579). A `429` (a throttle of failed logins,
+a `403` (the caller lacks the action) `FORBIDDEN` (#579), and so is the `403` of a write the
+registry refuses for a limit or a quota of its own (`provider.ErrLimit`, §2; a prefetch), whose
+message names the limit. A `429` (a throttle of failed logins,
 with `Retry-After`; #130) is `UNAVAILABLE`: try again later. A `412` (a conditional delete that
 found the version changed) is `CONFLICT`, as `409` is. There is no eighth code.
 

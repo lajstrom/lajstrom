@@ -456,7 +456,7 @@ They are checked in this order:
 | `os.ErrDeadlineExceeded` (the client sent no byte of the body within `server.stallTimeout`, also where a plugin made it `ErrInvalid`) | 408, a fixed message |
 | `format.ErrInvalid` | 400 |
 | `format.ErrUnauthenticated` | 401, `WWW-Authenticate: Basic realm="lajstrom"` |
-| `format.ErrForbidden` | 403 |
+| `format.ErrForbidden`; `provider.ErrLimit` (the registry refused the write for a limit or a quota of its own, which the message names, #357) | 403 |
 | `format.ErrMethodNotAllowed` | 405, `Allow: GET, HEAD` |
 | `index.ErrNotFound`, `provider.ErrNotFound` | 404 |
 | `index.ErrConflict`, `provider.ErrConflict` | 409 |
@@ -767,6 +767,18 @@ type ReadBack struct{ Timeout time.Duration }
 func (b ReadBack) Await(ctx context.Context, seen func(context.Context) (bool, error)) (bool, error)
 
 var ErrNotFound, ErrConflict, ErrUnsupported, ErrUnauthorized error
+// ErrLimit: the backend refused a write for a limit or a quota of its own that the write would
+// pass, which the same write meets again until the operator raises it or frees room: not
+// retried, not ErrUnauthorized (#357). The generic provider reads as one a 403 or DENIED whose
+// message speaks of a quota or of exceeding a limit (Harbor's project quota, Quay's), and a 403
+// to a PATCH or to the closing PUT of an upload session the registry had opened (Gitea's and
+// Forgejo's LIMIT_SIZE_CONTAINER, an empty body), but one with UNAUTHORIZED or a message about
+// the token or the credentials; the ecr provider LimitExceededException (repositories a
+// region, images a repository). An oci upstream's answers keep their rule (NewUpstream). The
+// message names the limit, and nothing of the registry's own: no URL, instance prefix, account
+// or message; the provider logs the refusal at warn. A 413 stays a *RejectedError, a 429
+// ErrUnavailable.
+var ErrLimit error
 // ErrUnavailable: the backend takes no request now, or does not serve yet a write it
 // acknowledged: its registry's circuit breaker is open and the request was not sent (an
 // *UnavailableError with the time until the trial request); the backend answered 429 or 503
