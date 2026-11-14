@@ -121,7 +121,11 @@ starts a blob upload are `400 NAME_INVALID` when the registry does not take the 
 name, before anything goes to it (`provider.Capabilities.CheckName`): a name with more components
 below the instance prefix than `capabilities.maxNameDepth` (#599), or longer than the registry
 takes, 255 bytes with the instance prefix on distribution and most registries, 256 on ECR
-(`MaxNameLength`, #661). The message names the limit, not the prefix.
+(`MaxNameLength`, #661). A name of a repository the index does not have yet is also `400
+NAME_INVALID` where the registry creates no repository whose name ends in a build route,
+`…/build`, `…/build/<x>` or `…/build/<x>/logs|status` (`Capabilities.CheckNew`,
+`capabilities.buildRoutes`, Quay, #662); a package or an `oci` repository the index has keeps
+taking pushes there. The message names the limit, not the prefix.
 
 An `oci` repo takes any manifest and blob as they come, within the bounds of the rows above (a
 manifest's length and layers, a blob's size), and indexes nothing beyond its repository (the OCI

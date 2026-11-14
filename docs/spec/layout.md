@@ -766,9 +766,16 @@ type Capabilities struct {
     MaxNameDepth int                        // components of a name below the instance prefix; 0 = no limit
     MaxNameLength int                       // bytes of a name below the instance prefix; 0 = no limit
     TagsFoldCase bool                       // the backend stores a tag lower-cased and resolves tags without case (Gitea, Forgejo): the vendor table's or capabilities.tagsFoldCase
+    BuildRoutes bool                        // creates no repository whose name ends in a build route (Quay): capabilities.buildRoutes
 }
 // CheckName: nil, or an error naming the limit of c that the name breaks; callers answer 4xx before a write.
 func (c Capabilities) CheckName(name string) error
+// CheckNew: CheckName for a repository the write would create, which the caller's index does not
+// have; it also refuses, naming the rule, a name that ends in a build route where BuildRoutes.
+func (c Capabilities) CheckNew(name string) error
+// BuildRoute: the name ends in a build route of Quay's web UI, a component `build` that is not
+// the first, followed by nothing, one component, or one and `logs` or `status` (quay/quay@77b369a).
+func BuildRoute(name string) bool
 type Consistency string                     // docs/registries/README.md, Consistency
 const (
     ConsistencyUnknown  Consistency = ""         // nobody classified the backend
