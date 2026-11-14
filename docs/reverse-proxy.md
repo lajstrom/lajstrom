@@ -43,7 +43,7 @@ used `https://localhost:<port>` with a certificate of a local CA (Caddy's intern
 | Time out a stalled transfer, not a long one | Lajstrom bounds no whole transfer, only a body that moves no byte for `server.stallTimeout` (1 min), the headers (10 s) and idle connections (120 s) | `proxy_send_timeout`, `proxy_read_timeout`, `client_body_timeout`, `send_timeout`: 600 s between two reads or writes | no timeout set in the file |
 | Leave `Location` and `WWW-Authenticate` as they are | upload sessions and the challenge carry them | `proxy_redirect off` | the default |
 | HTTP/1.1 and keep-alive to the upstream, idle connections closed before Lajstrom's 120 s | no new connection per request, and no request sent on a connection Lajstrom is closing | `proxy_http_version 1.1`, `Connection ""`, `keepalive` (idle 60 s by default) | `transport http { keepalive 60s }` |
-| Pass `X-Forwarded-For` | it names the client when the edge is in `server.trustedProxies` ([below](#the-client-address)); Lajstrom reads no other forwarded header, so the `X-Forwarded-Proto` both files send is unused, and `Host` matters only without `server.externalURL`, the dev stack | `proxy_set_header` | the default |
+| Pass `X-Forwarded-For` | it names the client when the edge is in `server.trustedProxies` ([below](#the-client-address)); Lajstrom reads no other forwarded header, so the `X-Forwarded-Proto` both files send is unused, and `Host` matters only without `server.externalURL`, the dev stack, and in the [FQDN mode](#fqdn-mode), which tells a repo host by it | `proxy_set_header` | the default |
 | Never route the metrics listener | `/metrics` and `/debug/pprof/` are on `server.metricsListen`, another port; through both edges `/metrics` was `404` | | |
 | Health check on `/-/readyz` | `503` while the database or a registry is down ([operations.md](operations.md#readiness)), and while a replica stops | (nginx Plus or an external check) | `health_uri /-/readyz` |
 | Restart a replica without an error: send what it refuses to another, and leave it out shorter than `server.shutdownDelay` (5 s) minus a second | a stopping replica serves on for the delay, then closes its listener ([below](#restarts)) | `proxy_next_upstream error timeout`, `proxy_next_upstream_tries 2`, `max_fails=1 fail_timeout=3s` | not set in the file |
@@ -255,6 +255,88 @@ upstream idle timeout (60 s) are Helm values for the whole cluster,
 reads a request for 60 s at most ([Traefik](#traefik) above): set the entry point's
 `transport.respondingTimeouts.readTimeout` to 0. Traefik 3.8, a release candidate on
 2026-11-12, reads `timeouts.request: 0s` as lifting that deadline for the route.
+
+### FQDN mode
+
+With `server.fqdn.domain` set ([configuration.md](configuration.md#server)), every repo also
+has a host of its own, `<repo>.<domain>`, and `<repo>.<format>.<domain>` for a name that repos of
+two formats share. Lajstrom rewrites a request on such a host to the path form of the repo
+itself, before it authenticates and routes it ([http-routing.md](spec/http-routing.md) §1.1):
+only the index knows a repo's format, so the edge rewrites nothing. What the edge does on top of
+the table above:
+
+| What | Why | nginx | Caddy |
+| --- | --- | --- | --- |
+| Route `*.<domain>` to Lajstrom, with the main host and the same settings | every repo host is the tree of a repo; the bodies, timeouts and `Location` of the table apply to it too | `server_name art.example.com *.art.example.com;` | a site `*.art.example.com` beside `art.example.com`, or one site with both names |
+| Pass `Host` as the client sent it | it is the only thing that tells a repo host from the main host; Lajstrom reads no `X-Forwarded-Host` | `proxy_set_header Host $http_host` (the shipped file has it) | the default |
+| A certificate with the main host and `*.<domain>`, and `*.<format>.<domain>` for the second form | a wildcard covers one label: `*.art.example.com` covers `internal.art.example.com`, not `internal.npm.art.example.com` | one `ssl_certificate` with every name | `tls { dns <provider> … }`: a wildcard needs the DNS-01 challenge |
+| A wildcard DNS record: `*.<domain>` (and `*.<format>.<domain>`) to the edge | clients resolve each repo host | | |
+
+Kubernetes: a Gateway listener with `hostname: "*.art.example.com"` beside the main host's, and
+the HTTPRoute's `hostnames` with both; an Ingress takes `host: "*.art.example.com"` in a rule. A
+cert-manager `Certificate` with `dnsNames` `art.example.com` and `*.art.example.com` needs an
+issuer with a `dns01` solver: ACME gives wildcards only over DNS-01.
+
+Clients then take a repo host as their root:
+
+```sh
+npm config set registry https://web.art.example.com/                   # npm/web
+pip install --index-url https://internal.pypi.art.example.com/simple/ my-pkg   # pypi/internal, second form
+```
+
+The npm packument names its tarballs below the repo host, and pip's redirects stay below it, so
+the credentials a client keeps for the host go with every request. docker and oras stay on the
+main host: on a repo host `/v2/` is a path of the repo, and the token realm is
+`server.externalURL`'s whatever the `Host`. So are the management API and `/-/readyz`: a health
+check on a repo host gets the repo's answer, not the server's.
+
+**Lajstrom's own TLS.** `server.tls` holds one certificate and sends it whatever name the client
+asks for in SNI; Go's TLS server picks no other. With the FQDN mode on, give that certificate the
+names of the main host and `*.<domain>` (and `*.<format>.<domain>` for the second form). `serve`
+logs a warning at start when the certificate does not cover `<repo>.<domain>`:
+
+```text
+level=WARN msg="server.tls: the certificate does not cover the repo hosts *.<domain>, and clients of a repo host will refuse it: give it the names of the main host and *.<domain>" domain=art.example.com
+```
+
+A certificate per name is not supported: terminate TLS at the edge for that. Go takes
+`*.localhost` for `web.localhost`, but curl and browsers take no wildcard with one label after
+it: for TLS on one machine, use a domain of two labels, `art.localhost`, and a certificate for
+`*.art.localhost`. With such a certificate in `server.tls` and `fqdn.domain: art.localhost`,
+`curl --cacert` reached `https://nope.art.localhost:57562/simple/` with the certificate verified
+(`401`: no such repo, to anonymous), and `serve` logged no warning; with a certificate for
+`localhost` alone it logged the line above.
+
+**A forged `Host`** changes no URL. A host outside the domain is the main host, served as without
+the mode, and every absolute URL there is `server.externalURL`'s. A host below the domain that
+names no repo is `404`, `401` to anonymous, and the URLs of a repo host are made of the repo's
+name, the domain and `server.externalURL`'s scheme and port.
+
+The mode was run on macOS on 2026-11-14 without an edge: Lajstrom on `127.0.0.1:57560` with
+`externalURL: http://localhost:57560`, `server.insecureHTTP` and `fqdn.domain: localhost`, SQLite,
+distribution 3.1.2, and the repos `npm/web`, `npm/internal`, `pypi/internal`, `raw/files` and
+`raw/my_files`; npm 11.20.0 and pip 21 as the clients, curl with `--resolve` for the rest:
+
+```text
+npm publish to web.localhost                               exit 0
+dist.tarball                                               http://web.localhost:57560/@acme/widgets/-/widgets-1.0.0.tgz
+npm install from web.localhost                             exit 0
+npm ping on the repo host (/-/ping)                        200
+GET /v2/ on the repo host                                  404
+main host dist.tarball                                     http://localhost:57560/npm/web/@acme/widgets/-/widgets-1.0.0.tgz
+upload to internal.pypi.localhost                          200
+internal.localhost (two formats), as alice                 404
+internal.localhost, anonymous                              401
+redirect /simple/My_Pkg on internal.pypi                   301 /simple/my-pkg/
+pip download from internal.pypi.localhost                  exit 0 my_pkg-1.0-py3-none-any.whl
+PUT files.localhost/a/hello.txt, Location                  /a/hello.txt
+my_files.localhost (a _ in the name)                       404
+nope.localhost, anonymous / as alice                       401 / 404
+forged Host evil.test, /v2/ realm                          Bearer realm="http://localhost:57560/v2/token",service="localhost:57560"
+```
+
+The access log names a repo host's request by its path form, `path=/npm/web/@acme/widgets`, and
+a refused host's by the path the client sent.
 
 ## Part 2: rate limits at the edge
 
@@ -525,3 +607,6 @@ not the client: `/v2` answers it `503` with the code `UNAVAILABLE` and `Retry-Af
 - How each OCI client handles a `429` of the token endpoint.
 - A Gateway of Cilium or Traefik, a Gateway on more than one node, and a rate limit at a
   Gateway (Envoy Gateway's `rateLimit`).
+- The [FQDN mode](#fqdn-mode) behind an edge: no nginx, Caddy or Gateway with a wildcard host was
+  run, and no wildcard certificate was issued over DNS-01. The clients' run above was plain HTTP
+  on loopback; TLS to a repo host was curl alone, against `server.tls`.

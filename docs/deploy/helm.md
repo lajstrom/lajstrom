@@ -218,7 +218,9 @@ rewrite, `timeouts.request: 0s`, and `hostnames` from `server.externalURL` unles
 Gateway is the cluster's or the one of `deploy/kubernetes/gateway/`; what Gateway API has no field
 for, its implementation sets ([reverse-proxy.md](../reverse-proxy.md#gateway-api)): Envoy
 Gateway's two policies can go into `extraObjects`, with `targetRefs` naming the route by the
-release's full name.
+release's full name. With `config.server.fqdn.domain` (a host per repo), set `httpRoute.hostnames`
+to the main host and `*.<domain>`, and give the Gateway a listener and a certificate for the
+wildcard: the chart adds neither ([reverse-proxy.md](../reverse-proxy.md#fqdn-mode)).
 
 `ingress` is an Ingress for the controller you name in `className`, with its annotations from
 values. They must let bodies of any size through unbuffered and leave a long transfer alone
