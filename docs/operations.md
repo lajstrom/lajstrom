@@ -1042,6 +1042,7 @@ Every write and every change of the control plane is one row of the `audit` tabl
 | --- | --- |
 | `push`, `delete` | the frontends and the facade, through the ingest pipeline and the delete paths; the facade itself for a push to an `oci` repo |
 | `npm.dist-tag`, `npm.deprecate` | an entry of an npm package's journal: `npm dist-tag`, `npm deprecate`, the dist-tag of a publish ([ADR 0012](adr/0012-npm-profile-routes-and-dist-tags-journal.md)) |
+| `pypi.yank` | an entry of a pypi package's journal: the yank and the unyank of a version through the API, `details.op` `yank` or `unyank` ([api.md](api.md#yank-a-pypi-version-put-and-delete-apiv1repospypinamepackagespackageversionsversionyank)) |
 | `proxy.fetch` | a proxy repo that published a file it fetched from its upstream, as the principal whose request missed ([proxy-and-group.md](spec/proxy-and-group.md) §5) |
 | `proxy.reject` | a proxy repo that refused a file of its upstream for its bytes: a checksum, `Validate`, a bound ([rbac.md](spec/rbac.md) §7) |
 | `repo.create`, `repo.update`, `repo.delete`, `repo.reindex`, `repo.cache.purge` | the API, the CLI and the repos of the configuration; `repo.cache.purge` from `DELETE …/upstream-cache` |

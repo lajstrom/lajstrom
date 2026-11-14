@@ -44,8 +44,9 @@ type Options struct {
 	// Prefetcher fetches the versions of POST …/prefetch into a proxy repo: the proxy core; nil
 	// answers it 501.
 	Prefetcher Prefetcher
-	// Journal writes the journal ops of a proxy that becomes a hosted repo (PATCH kind): the
-	// ingest pipeline; nil answers that PATCH 501.
+	// Journal writes the journal ops of a proxy that becomes a hosted repo (PATCH kind) and the
+	// yanks of PUT and DELETE …/versions/{version}/yank: the ingest pipeline; nil answers them
+	// 501.
 	Journal Journaler
 	// Bootstrap exchanges the bootstrap token of POST /api/v1/bootstrap for the first admin;
 	// nil answers it 404, as once an admin exists.
@@ -77,6 +78,8 @@ const maxBody = 64 << 10
 //	GET    /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}[?variant=]  one version, its variants and their files
 //	DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}[?variant=&force=]  delete a version, its referrers first;
 //	                                                   If-Match and If-Unmodified-Since make it conditional
+//	PUT    /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/yank  yank a pypi version, {"reason"} optional
+//	DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/yank  unyank it
 //	POST   /api/v1/repos/{format}/{repo}/versions:delete  delete versions in a batch, each conditional; dryRun
 //	DELETE /api/v1/repos/{format}/{repo}/upstream-cache[?name=]  drop a proxy's cache of its upstream, or of one name
 //	POST   /api/v1/repos/{format}/{repo}/prefetch      fetch versions of 1 to 100 names into a proxy repo, a result each
@@ -154,6 +157,8 @@ func (h *handler) routes() []route {
 		{"GET /api/v1/repos/{format}/{repo}/packages/{name}/versions", h.listVersions},
 		{"GET /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}", h.getVersion},
 		{"DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}", h.deleteVersion},
+		{"PUT /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/yank", h.yankVersion},
+		{"DELETE /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/yank", h.unyankVersion},
 		{"POST /api/v1/repos/{format}/{repo}/versions:delete", h.deleteVersions},
 		{"DELETE /api/v1/repos/{format}/{repo}/upstream-cache", h.purgeUpstreamCache},
 		{"POST /api/v1/repos/{format}/{repo}/prefetch", h.prefetch},

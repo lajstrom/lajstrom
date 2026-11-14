@@ -290,6 +290,62 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Error"}
+  /api/v1/repos/{format}/{repo}/packages/{name}/versions/{version}/yank:
+    parameters:
+      - $ref: "#/components/parameters/format"
+      - $ref: "#/components/parameters/repo"
+      - $ref: "#/components/parameters/package"
+      - name: version
+        in: path
+        required: true
+        schema: {type: string}
+    put:
+      tags: [repos]
+      operationId: yankVersion
+      summary: >-
+        Yank a version of a hosted pypi repo (write; PEP 592): every file of it is marked yanked
+        in the simple index, with the reason or none, and pip skips it unless a requirement pins
+        it with ==. An entry of the package's journal and an audit row pypi.yank; a yank with the
+        reason the version has appends nothing.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/YankRequest"}
+      responses:
+        "204": {description: "Yanked, or yanked already with this reason."}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+        "503":
+          description: >-
+            The registry did not serve the new entry of the yank within the visibility timeout, or
+            the index did not answer; try again after Retry-After. Code UNAVAILABLE.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+    delete:
+      tags: [repos]
+      operationId: unyankVersion
+      summary: >-
+        Unyank a version of a hosted pypi repo (write): an entry of the package's journal and an
+        audit row pypi.yank; a version that is not yanked appends nothing.
+      responses:
+        "204": {description: "Unyanked, or not yanked."}
+        "400": {$ref: "#/components/responses/Invalid"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "501": {$ref: "#/components/responses/Unavailable"}
+        "503":
+          description: >-
+            The registry did not serve the new entry within the visibility timeout, or the index
+            did not answer; try again after Retry-After. Code UNAVAILABLE.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
   /api/v1/repos/{format}/{repo}/versions:delete:
     parameters:
       - $ref: "#/components/parameters/format"
@@ -1283,6 +1339,21 @@ components:
           type: array
           description: What names the version and moves; a conditional delete refuses it unless forced.
           items: {$ref: "#/components/schemas/Pointer"}
+        yanked: {$ref: "#/components/schemas/Yank"}
+    Yank:
+      description: The yank of a pypi version (PEP 592); absent when the version is not yanked.
+      type: object
+      required: [reason]
+      properties:
+        reason: {type: string, description: Empty when the yank gave none.}
+    YankRequest:
+      description: The optional body of a yank.
+      type: object
+      properties:
+        reason:
+          type: [string, "null"]
+          maxLength: 4096
+          description: Why the version is yanked, at most 4096 bytes of UTF-8; absent, null or empty for none.
     Variant:
       type: object
       required: [variant, tag, digest, publishedAt]
@@ -1317,6 +1388,7 @@ components:
         pointers:
           type: array
           items: {$ref: "#/components/schemas/Pointer"}
+        yanked: {$ref: "#/components/schemas/Yank"}
         ociRepository:
           type: string
           description: <format>/<repo>/<package path>, the repository of its manifests on /v2.
