@@ -167,7 +167,7 @@ Measured on 2026-11-10 by hand; the cells marked (probe) by `lajstrom registry p
 | Upload: chunk out of order | [416](#uploads-and-digests) |
 | Upload: chunk size limit | [none met: 8 MiB in one `PATCH` (probe)](#again-after-813) |
 | Upload: session status (`GET`) | [works, 204 with `Range`; `HEAD` too](#uploads-and-digests); [**404 `BLOB_UNKNOWN` before the first chunk**, and the session works](#again-after-813) |
-| Upload: cancel (`DELETE`) | [**405**; the session stays](#uploads-and-digests); [through Lajstrom 501 (item 9)](#again-after-813) |
+| Upload: cancel (`DELETE`) | [**405**; the session stays](#uploads-and-digests); [through Lajstrom 501 (item 9)](#again-after-813), 204 since #1044 (not measured on JCR again) |
 | Upload: wrong digest, empty blob | [**a wrong digest is 201 and stored**; the empty blob stored](#uploads-and-digests) |
 | Upload: the closing `PUT` with a body after a `PATCH` | [**201, the body dropped**](#uploads-and-digests) |
 | Upload: a chunk without `Content-Range` | [the first works; a later one is 416](#uploads-and-digests) |
@@ -248,11 +248,13 @@ every `ListRepositories` failed. On 2026-11-13 it says `vendor=jfrog`, the same 
 8. Nothing to do: the cancel of an upload session is 405 and the session stays until JCR purges
    it (when, not measured); the facade logs `facade: cancel backend upload session …
    unsupported (HTTP 405, )` and goes on. A client's own cancel is item 9.
-9. **Ours, open: a client's cancel through the facade is `501`.** `cancelUpload`
-   (internal/facade/uploads.go) answers the provider's `ErrUnsupported` for JCR's 405 as
+9. **Done in #1044: a client's cancel through the facade was `501`.** It is `204` now: the
+   facade drops its session row and leaves JCR's session to expire, and the message of any other
+   failed cancel is the facade's own. Before, `cancelUpload`
+   (internal/facade/uploads.go) answered the provider's `ErrUnsupported` for JCR's 405 as
    `501 UNSUPPORTED`, with the provider's error as the message, which names JCR's own session
-   id, and keeps the session row; `cancelBackend` takes the same 405 as harmless. The e2e
-   scenario `rbac.sh` fails on it. GHCR answers the cancel 405 too
+   id, and kept the session row, while `cancelBackend` took the same 405 as harmless. The e2e
+   scenario `rbac.sh` failed on it. GHCR answers the cancel 405 too
    ([Again after #813](#again-after-813), item 5).
 10. **The status of a session before its first chunk ends it through Lajstrom.** JCR answers it
     `404 BLOB_UNKNOWN` and the session works; the facade takes the 404 for a session the

@@ -401,8 +401,11 @@ func (h *handler) uploadStatus(w http.ResponseWriter, r *http.Request, t *target
 	return nil
 }
 
-// cancelUpload answers DELETE …/blobs/uploads/<id>: the backend session is cancelled (one the
-// backend does not know any more is fine) and the row deleted; 204.
+// cancelUpload answers DELETE …/blobs/uploads/<id>: the backend session is cancelled and the row
+// deleted; 204. A session the backend does not know any more is fine, and so is a backend that
+// refuses to cancel sessions (provider.ErrUnsupported: JFrog's and GHCR's 405), which expires
+// it. Any other failure keeps the row; its message is the facade's, after the registry's name,
+// status and code for a refusal, never the provider's error, which names the backend's session.
 func (h *handler) cancelUpload(w http.ResponseWriter, r *http.Request, t *target, id string) error {
 	ctx := r.Context()
 	s, st, rr, err := h.continueSession(r, t, id)
@@ -410,8 +413,11 @@ func (h *handler) cancelUpload(w http.ResponseWriter, r *http.Request, t *target
 		return err
 	}
 	defer h.requestEnded(s)
-	if err := rr.CancelBlobUpload(ctx, st.upload()); err != nil && !errors.Is(err, provider.ErrNotFound) {
-		return &apiError{code: codeBlobUploadInvalid, err: err}
+	switch err := rr.CancelBlobUpload(ctx, st.upload()); {
+	case errors.Is(err, provider.ErrUnsupported):
+		h.o.Log.DebugContext(ctx, "facade: the registry does not cancel upload sessions; it expires them", "error", err.Error())
+	case err != nil && !errors.Is(err, provider.ErrNotFound):
+		return &apiError{code: codeBlobUploadInvalid, msg: "the registry did not cancel the upload", err: err}
 	}
 	h.dropSession(ctx, s)
 	w.Header().Set("Content-Length", "0")
