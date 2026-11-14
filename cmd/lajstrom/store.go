@@ -16,9 +16,10 @@ import (
 )
 
 // store is the index as the commands use it: index.Store, and what both engines add to it, the
-// readiness check and the migration report.
+// snapshots of the control plane, the readiness check and the migration report.
 type store interface {
 	index.Store
+	index.Snapshotter
 	Ping(ctx context.Context) error
 	ApplyMigrations(ctx context.Context, opts index.MigrateOptions) (index.MigrationReport, error)
 	AppliedMigrations(ctx context.Context) ([]int, error)
