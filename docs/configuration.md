@@ -450,6 +450,26 @@ The master key is read once, when `serve` or `admin key` starts, from the file o
 [operations.md](operations.md#keys-and-apt-signing) has the procedures: generating and storing
 the master key, distributing `key.asc`, rotating a key, the bearer-token key.
 
+### attachments
+
+The verification of the attachments of versions: signatures, SBOMs, scan reports and
+attestations pushed as referrers ([manifest-profile.md](spec/manifest-profile.md) §6.3,
+[the guide](guides/sbom-and-scans.md)). Lajstrom labels each with whether a key of the trust
+signed it; it never refuses a push for its label.
+
+| Key | Type | Default | Env | Description |
+| --- | --- | --- | --- | --- |
+| `attachments.trust` | list | empty | none | The keys whose signatures make an attachment `verified`. Empty: nothing is verified, and every signed attachment is `untrusted`. Give every replica the same trust: a label is that of the replica that indexed the attachment. A change takes effect for new pushes at once and for the attachments indexed before at the next reindex of their repo (`lajstrom reindex`, the reconcile loop), which reads each one again. |
+| `attachments.trust[].name` | string | required | none | The entry's name, unique: the `signedBy` of what its key verifies. |
+| `attachments.trust[].publicKeyFile` | file path | empty | none | A PEM file with one `PUBLIC KEY` (PKIX): ECDSA P-256 (`cosign.pub` of `cosign generate-key-pair`), P-384 or P-521, Ed25519, or RSA. `serve` and `reindex` read it at start, and stop on a file they cannot read or a key they do not take. Set this or `publicKey`, not both. |
+| `attachments.trust[].publicKey` | PEM | empty | none | The same key inline, for a Helm value or a ConfigMap. |
+| `attachments.trust[].predicateTypes` | list | empty | none | The predicate types the key is trusted for, as written (`https://cyclonedx.org/bom`, `https://cosign.sigstore.dev/attestation/vuln/v1`); a signature counts as `https://sigstore.dev/cosign/sign/v1`. Empty: every type. A signature of the key on another type is `untrusted`, and its reason says so. |
+| `attachments.maxBlobSize` | bytes | `16777216` (16 MiB) | none | The largest layer read to judge an attachment; a larger one is stored and listed `unsupported`. A sigstore bundle is kilobytes; an SBOM of a large image inside one can be megabytes. Each judged layer is held in memory once. `0` means the default; must not be negative. |
+
+Keyless signatures (Fulcio identities, `cosign attest` without `--key`) are not verified yet: they
+need a library that [layout.md](spec/layout.md) §3 does not list, and such an attachment is
+`unsupported` (#89).
+
 ### repos
 
 Optional. Repos to create at startup when the control plane does not have them, the config
