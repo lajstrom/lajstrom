@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -252,6 +253,12 @@ type Capabilities struct {
 	// measures it, since that takes a push. Tags are the same on every registry
 	// (docs/spec/manifest-profile.md §4.2): ingest claims a tag lower-cased where it is true.
 	TagsFoldCase bool
+	// BuildRoutes is true when the backend creates no repository whose name ends in a build
+	// route (BuildRoute): Quay since quay/quay@77b369a refuses the token of the first push of
+	// such a name, 400 NAME_INVALID, so that its web URL of a repository can never be read as
+	// a build of another; a repository that exists keeps taking pushes
+	// (docs/registries/quay.md, The build rule). CheckNew applies it, to a new name only.
+	BuildRoutes bool
 }
 
 // CheckName reports whether the backend of c takes the repository name, a Lajstrom name as
@@ -267,6 +274,45 @@ func (c Capabilities) CheckName(name string) error {
 		return fmt.Errorf("the OCI repository %s is %d bytes long, and the registry takes at most %d", name, len(name), c.MaxNameLength)
 	}
 	return nil
+}
+
+// CheckNew is CheckName for a repository that the write would create, one the caller's index
+// does not have: it also refuses a name that ends in a build route where the backend creates
+// none (BuildRoutes), with an error that names the rule. A repository the backend holds is
+// exempt from the rules of creating it, so a caller asks CheckName for a name its index has.
+func (c Capabilities) CheckNew(name string) error {
+	if err := c.CheckName(name); err != nil {
+		return err
+	}
+	if c.BuildRoutes && BuildRoute(name) {
+		return fmt.Errorf("the OCI repository %s ends in a build route of the registry, …/build, …/build/<x> or …/build/<x>/logs|status, "+
+			"and the registry creates no new repository named so (capabilities.buildRoutes)", name)
+	}
+	return nil
+}
+
+// BuildRoute reports whether the repository name, a Lajstrom name as Repository gets it, ends in
+// a build route of Quay's web UI: a component `build` that is not the first, followed by
+// nothing, by one component, or by one component and `logs` or `status` (`pypi/internal/build`,
+// `raw/assets/build/app.tar.gz`, `raw/assets/build/x/logs`; not `raw/assets/build/linux/app.tar.gz`,
+// `npm/internal/mybuild`). It is quay/quay@77b369a's rule (conflicts_with_build_route), which
+// reads the name below the namespace, the first component of the instance prefix: the rest of
+// the prefix does not change the answer, since a Lajstrom name of three components or more
+// follows it, and the first component of a Lajstrom name is a format, never `build`.
+func BuildRoute(name string) bool {
+	parts := strings.Split(name, "/")
+	for i := 1; i < len(parts); i++ {
+		if parts[i] != "build" || slices.Contains(parts[:i], "") {
+			continue
+		}
+		switch rest := parts[i+1:]; {
+		case len(rest) == 0, len(rest) == 1 && rest[0] != "":
+			return true
+		case len(rest) == 2 && rest[0] != "" && (rest[1] == "logs" || rest[1] == "status"):
+			return true
+		}
+	}
+	return false
 }
 
 // Consistency is a backend's read-after-write model (docs/registries/README.md, Consistency).
