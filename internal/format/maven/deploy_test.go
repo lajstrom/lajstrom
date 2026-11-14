@@ -58,6 +58,7 @@ type deployEnv struct {
 	fake  *providertest.Fake
 	repo  index.Repo
 	clock *deployClock
+	pipe  *ingest.Pipeline
 	h     http.Handler
 }
 
@@ -87,6 +88,7 @@ func newDeployEnvOver(t *testing.T, authz auth.Authorizer, registry func(*provid
 	providers := provider.Map{"local": e.fake}
 	pipe := ingest.New(ingest.Options{Providers: provider.Map{"local": reg}, Index: st, Log: log, Now: e.clock.now, SessionTimeout: time.Minute,
 		Plugins: func(name string) (format.Plugin, bool) { return Plugin{}, name == Name }})
+	e.pipe = pipe
 	deps := format.Deps{Index: st, Ingest: pipe, Sessions: pipe, Providers: providers, Auth: authz, Log: log}
 	mux := http.NewServeMux()
 	Plugin{}.Routes(format.NewRouter(mux, Name, deps), deps)

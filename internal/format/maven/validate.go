@@ -23,7 +23,8 @@ import (
 //
 //   - no lajstrom.variant; lajstrom.maven.groupId, .artifactId and .packaging, and no other
 //     lajstrom.maven.* annotation; lajstrom.name is groupId:artifactId; the coordinates are well
-//     formed and the version a release;
+//     formed and the version a release or a SNAPSHOT build (whichever the repo's policy takes:
+//     Admit asks that, on a publish only);
 //   - every file layer is titled <artifactId>-<version>[-<classifier>].<extension>
 //     (ParseFilename), each title once, digested with sha256; the POM, <artifactId>-<version>.pom,
 //     is the one layer typed pom and has no lajstrom.* annotations; every other layer is typed
@@ -32,7 +33,8 @@ import (
 //     annotations, and one file per file layer with its title, extension, classifier, size and
 //     sha256, and md5, sha1 and sha512 in lowercase hex;
 //   - the POM, read through fetch, is the one of the metadata: the coordinates and the packaging
-//     of the annotations (ParsePOM), its parent and dependencies, and its md5, sha1 and sha512.
+//     of the annotations (ParsePOM; the POM of a build has its SNAPSHOT version), its parent and
+//     dependencies, and its md5, sha1 and sha512.
 //
 // Validate reads the metadata layer and the POM and no other blob: the checksums of an artifact
 // are those Build computed when the file was received, or the pusher's claim, of which only the
@@ -262,7 +264,7 @@ func (md *metadata) checkPOM(ctx context.Context, fetch format.BlobFetcher, l pr
 	}
 	c := Coordinates{GroupID: md.GroupID, ArtifactID: md.ArtifactID, Version: md.Version}
 	switch {
-	case pom.Coordinates != c:
+	case !pom.of(c):
 		return fmt.Errorf("%w: the POM is of %s, the annotations of %s", format.ErrInvalid, pom.Coordinates, c)
 	case pom.Packaging != packaging:
 		return fmt.Errorf("%w: the POM has packaging %q, %s is %q", format.ErrInvalid, pom.Packaging, profile.AnnotationMavenPackaging, packaging)

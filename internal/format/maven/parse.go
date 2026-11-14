@@ -83,9 +83,10 @@ type Coordinates struct {
 func (c Coordinates) Name() string { return c.GroupID + ":" + c.ArtifactID }
 
 // Dir returns the directory of the version in a Maven 2 repository, the groupId with "/" for
-// ".", then the artifactId and the version: com/example/lib-core/1.2.0.
+// ".", then the artifactId and the version, the SNAPSHOT version of a build:
+// com/example/lib-core/1.2.0, com/example/lib-core/1.0-SNAPSHOT for 1.0-20261114.101112-3.
 func (c Coordinates) Dir() string {
-	return strings.ReplaceAll(c.GroupID, ".", "/") + "/" + c.ArtifactID + "/" + c.Version
+	return strings.ReplaceAll(c.GroupID, ".", "/") + "/" + c.ArtifactID + "/" + versionDir(c.Version)
 }
 
 // String returns groupId:artifactId:version.
@@ -129,15 +130,11 @@ var (
 	artifactIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9_.-]*$`)
 	tokenPattern      = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._+-]*$`)
 	extensionPattern  = regexp.MustCompile(`^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$`)
-	timestampPattern  = regexp.MustCompile(`-[0-9]{8}\.[0-9]{6}-[0-9]+$`)
 )
 
 // IsSnapshot reports whether Maven reads version as a SNAPSHOT: it ends with SNAPSHOT, in any
-// case, or with the -<yyyyMMdd.HHmmss>-<build> of a deployed snapshot.
-func IsSnapshot(version string) bool {
-	n := len("SNAPSHOT")
-	return (len(version) >= n && strings.EqualFold(version[len(version)-n:], "SNAPSHOT")) || timestampPattern.MatchString(version)
-}
+// case, or with the <yyyyMMdd.HHmmss>-<build> of a build (looksLikeBuild).
+func IsSnapshot(version string) bool { return endsInSnapshot(version) || looksLikeBuild(version) }
 
 // checkGroupArtifact checks the grammar of a groupId and an artifactId.
 func checkGroupArtifact(groupID, artifactID string) error {
@@ -150,20 +147,26 @@ func checkGroupArtifact(groupID, artifactID string) error {
 	return nil
 }
 
-// checkVersion checks the grammar of a version and refuses a SNAPSHOT version.
+// checkVersion checks a version of the profile (docs/spec/manifest-profile.md §4.2): its grammar,
+// and a release version or a well-formed build. A SNAPSHOT version itself is refused: each
+// deploy of it is a build, named with its timestamp and build number.
 func checkVersion(version string) error {
 	if !tokenPattern.MatchString(version) {
 		return fmt.Errorf("%w: version %q is not letters, digits, \".\", \"_\", \"+\" and \"-\", the first a letter, a digit or \"_\"",
 			format.ErrInvalid, version)
 	}
-	if IsSnapshot(version) {
-		return fmt.Errorf("%w: version %q is a SNAPSHOT version; Lajstrom stores release versions only (SNAPSHOT versions are after the MVP)",
-			format.ErrInvalid, version)
+	if endsInSnapshot(version) {
+		return fmt.Errorf("%w: version %q is a SNAPSHOT version, which is never a version of its own: each deploy of it is a build, "+
+			"its files named with its timestamp and build number (unique snapshot versions, as Maven 3 and Gradle deploy them)", format.ErrInvalid, version)
+	}
+	if looksLikeBuild(version) {
+		_, err := parseBuild(version)
+		return err
 	}
 	return nil
 }
 
-// check checks the grammar of the coordinates and refuses a SNAPSHOT version.
+// check checks the grammar of the coordinates: a release version or a build.
 func (c Coordinates) check() error {
 	if err := checkGroupArtifact(c.GroupID, c.ArtifactID); err != nil {
 		return err
@@ -175,9 +178,23 @@ func (c Coordinates) check() error {
 // <groupPath>/<artifactId>/<version>/<file>: com/example/lib-core/1.2.0/lib-core-1.2.0-sources.jar
 // is groupId com.example, artifactId lib-core, version 1.2.0, classifier sources, extension
 // jar. The groupId is the directories before the artifactId joined with "."; the file name is
-// read with ParseFilename. A checksum file, a maven-metadata.xml and a SNAPSHOT version are
-// refused. Errors wrap format.ErrInvalid.
+// read with ParseFilename. A file of a SNAPSHOT build is in the directory of its SNAPSHOT version:
+// com/example/lib-core/1.0-SNAPSHOT/lib-core-1.0-20261114.101112-3.jar is the version
+// 1.0-20261114.101112-3. A checksum file, a maven-metadata.xml, a build outside the directory of
+// its SNAPSHOT version and the non-unique name of a SNAPSHOT version (lib-core-1.0-SNAPSHOT.jar)
+// are refused. Errors wrap format.ErrInvalid.
 func ParsePath(p string) (File, error) {
+	f, err := parseFilePath(p)
+	if err == nil && isSnapshotVersion(f.Version) {
+		return File{}, fmt.Errorf("%w: %q is named with the SNAPSHOT version %s: a build is deployed as a unique snapshot version, "+
+			"its files named with its timestamp and build number (Maven 3, Gradle), never as %s", format.ErrInvalid, p, f.Version, f.Filename())
+	}
+	return f, err
+}
+
+// parseFilePath reads p as ParsePath does, and takes the non-unique name of a file of a SNAPSHOT
+// version too: its File has the SNAPSHOT version, which the resolver reads as the latest build.
+func parseFilePath(p string) (File, error) {
 	if target, alg, ok := ChecksumOf(p); ok {
 		return File{}, fmt.Errorf("%w: %q is the %s checksum file of %q, not a file of a version", format.ErrInvalid, p, alg, target)
 	}
@@ -190,10 +207,37 @@ func ParsePath(p string) (File, error) {
 		return File{}, fmt.Errorf("%w: %q is a %s, not a file of a version", format.ErrInvalid, p, MetadataFile)
 	}
 	c := Coordinates{GroupID: groupOf(elems[:n-3]), ArtifactID: elems[n-3], Version: elems[n-2]}
+	if isSnapshotVersion(c.Version) {
+		return parseSnapshotFile(c, p, elems[n-1])
+	}
 	if err := c.check(); err != nil {
 		return File{}, fmt.Errorf("%q: %w", p, err)
 	}
+	if looksLikeBuild(c.Version) {
+		return File{}, fmt.Errorf("%w: %q: a SNAPSHOT build is in the directory of its SNAPSHOT version, %s", format.ErrInvalid, p, c.Dir())
+	}
 	return ParseFilename(c, elems[n-1])
+}
+
+// buildPrefix is the timestamp and build number at the start of the rest of a build's file name.
+var buildPrefix = regexp.MustCompile(`^[0-9]{8}\.[0-9]{6}-[0-9]+`)
+
+// parseSnapshotFile reads the name of a file in the directory of the SNAPSHOT version c.Version:
+// <artifactId>-<base>-<timestamp>-<n>…, a file of that build, or <artifactId>-<base>-SNAPSHOT…,
+// the non-unique name, whose File has the SNAPSHOT version.
+func parseSnapshotFile(c Coordinates, p, name string) (File, error) {
+	if err := checkGroupArtifact(c.GroupID, c.ArtifactID); err != nil {
+		return File{}, fmt.Errorf("%q: %w", p, err)
+	}
+	base := strings.TrimSuffix(c.Version, snapshotSuffix)
+	rest, ok := strings.CutPrefix(name, c.ArtifactID+"-"+base+"-")
+	if stamp := buildPrefix.FindString(rest); ok && stamp != "" {
+		c.Version = base + "-" + stamp
+		if err := checkVersion(c.Version); err != nil {
+			return File{}, fmt.Errorf("%q: %w", p, err)
+		}
+	}
+	return ParseFilename(c, name)
 }
 
 // groupOf returns the groupId of the directories of a group path, joined with ".". A directory

@@ -1004,8 +1004,8 @@ components:
       description: >-
         The policy of a repo: the keys the server reads, with their defaults when absent
         (maxFileSize by format: npm 512 MiB, pypi and maven 4 GiB, apt and raw 8 GiB, oci 16 GiB;
-        blobRedirect auto, maven.sessionTimeout 30m, maven.maxSessionFiles 256). Any other key is
-        400.
+        blobRedirect auto, maven.sessionTimeout 30m, maven.maxSessionFiles 256, maven.versionPolicy
+        release). Any other key is 400.
       additionalProperties: false
       properties:
         maxFileSize:
@@ -1030,6 +1030,13 @@ components:
               description: >-
                 How many files a publication session of a deploy stores, signatures included,
                 checksum files and maven-metadata.xml not; the next is 400.
+            versionPolicy:
+              type: string
+              enum: [release, snapshot]
+              description: >-
+                Which versions a deploy may add: release versions, or the builds of SNAPSHOT
+                versions, each deploy one more build under its own tag. The other kind is 400; a
+                change applies to the deploys after it.
     PolicyPatch:
       type: object
       description: >-
@@ -1045,6 +1052,7 @@ components:
           properties:
             sessionTimeout: {type: [string, "null"]}
             maxSessionFiles: {type: [integer, "null"], minimum: 1, maximum: 999}
+            versionPolicy: {type: [string, "null"], enum: [release, snapshot, null]}
     RepoList:
       type: object
       required: [repos]

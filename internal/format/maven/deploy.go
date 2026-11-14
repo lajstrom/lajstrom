@@ -80,13 +80,17 @@ func (d *deployer) put(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(status)
 }
 
-// file adds the file at path to the session of its version, opened for the request's principal
-// when there is none: the body streams into the registry while the session computes its
-// checksums (Sessions.Add).
+// file adds the file at path to the session of its version, a build's for a file of a SNAPSHOT
+// build, opened for the request's principal when there is none: the body streams into the
+// registry while the session computes its checksums (Sessions.Add). A version of the kind the
+// repo's policy does not take is refused first (admit), before a byte is stored.
 func (d *deployer) file(r *http.Request, repo index.Repo, path string, body io.Reader) (int, error) {
 	ctx := r.Context()
 	f, err := ParsePath(path)
 	if err != nil {
+		return 0, err
+	}
+	if err := admit(repo, f.Version); err != nil {
 		return 0, err
 	}
 	if err := d.checkSpelling(r, repo, f.Coordinates); err != nil {
