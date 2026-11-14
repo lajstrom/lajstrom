@@ -31,8 +31,8 @@
 #                          server's "registry needs workarounds" line, false without one. true: a
 #                          range is answered with the whole blob, 200 (Nexus's oci format, #352)
 #
-# raw.sh, oras.sh and cosign.sh take those answers where the two say so, and auth.sh, rbac.sh and
-# retention.sh the refused deletes (#800). When the server
+# raw.sh, oras.sh and cosign.sh take those answers where the two say so, and auth.sh, rbac.sh,
+# retention.sh, apt.sh, rpm.sh and npm.sh the refused deletes (#800). When the server
 # logged no capabilities of the registry local (its probe failed at the start), the two are left
 # as the caller set them, and a scenario takes an unset one as Zot's: deletes, and ranges.
 #

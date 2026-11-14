@@ -63,6 +63,11 @@
 # line; the script prints no secret and checks that the clients' logs hold none. It needs curl,
 # jq and docker, prints one line per step and exits non-zero at the first failure, naming the
 # assertion or the command (lib.sh).
+#
+# Where the registry deletes no manifests, LAJSTROM_E2E_DELETE_MANIFEST=false (run.sh reads it
+# from the server's log, #800), the maintainer's npm unpublish of the version and of the scoped
+# package are refused with E501 and change nothing: the reindex then finds the scoped package
+# again, and what the run published stays in the registry.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 umask 077
@@ -594,21 +599,47 @@ tags "$plain"
 expect "versions of $plain after the refused unpublish" "1.0.0 1.1.0 2.0.0-beta.1" "$versions"
 api POST bindings "{\"principal\":\"user:$user\",\"role\":\"maintainer\",\"repoMask\":\"npm/$repo\"}" 201
 step "J-10 npm unpublish as a writer: E403, nothing deleted; $user made maintainer of npm/$repo"
-client npm npm-unpublish.log "npm unpublish $plain@2.0.0-beta.1"
-tags "$plain"
-expect "versions of $plain after npm unpublish $plain@2.0.0-beta.1" "1.0.0 1.1.0" "$versions"
-expect "dist-tags of $plain after the unpublish" "latest=1.1.0" "$dist_tags"
-client npm npm-unpublish.log "npm unpublish $scoped --force"
-packument "$scoped"
-expect "GET /npm/$repo/$(enc "$scoped") after npm unpublish --force" 404 "$status"
-step "J-10 npm unpublish $plain@2.0.0-beta.1, its tag beta with it; npm unpublish $scoped --force: 404"
+deletes=yes # the registry deletes manifests; no: every unpublish is refused, 501, and nothing changes (#352)
+[ "${LAJSTROM_E2E_DELETE_MANIFEST:-}" != false ] || deletes=no
+if [ "$deletes" = no ]; then
+	was="$dist_tags"
+	packument "$scoped"
+	expect "GET /npm/$repo/$(enc "$scoped") before npm unpublish --force" 200 "$status"
+	scoped_was="$(jq -c '{"dist-tags": ."dist-tags", versions: (.versions | keys)}' "$work/packument.json")"
+	# npm retries a 5xx twice, 10 and 60 s apart: the refusal is final, so not here.
+	try npm npm-unpublish.log "npm unpublish --fetch-retries=0 $plain@2.0.0-beta.1"
+	expect "npm unpublish $plain@2.0.0-beta.1 where the registry deletes no manifests" 1 "$rc"
+	grep -q 'E501' "$work/npm-unpublish.log" || fail "npm unpublish $plain@2.0.0-beta.1 refused without E501: $(tail -n 5 "$work/npm-unpublish.log")"
+	tags "$plain"
+	expect "versions of $plain after the refused npm unpublish" "1.0.0 1.1.0 2.0.0-beta.1" "$versions"
+	expect "dist-tags of $plain after the refused npm unpublish" "$was" "$dist_tags"
+	try npm npm-unpublish.log "npm unpublish --fetch-retries=0 $scoped --force"
+	expect "npm unpublish $scoped --force where the registry deletes no manifests" 1 "$rc"
+	grep -q 'E501' "$work/npm-unpublish.log" || fail "npm unpublish $scoped --force refused without E501: $(tail -n 5 "$work/npm-unpublish.log")"
+	packument "$scoped"
+	expect "GET /npm/$repo/$(enc "$scoped") after the refused npm unpublish --force" 200 "$status"
+	expect "the dist-tags and versions of $scoped after the refused npm unpublish --force" "$scoped_was" \
+		"$(jq -c '{"dist-tags": ."dist-tags", versions: (.versions | keys)}' "$work/packument.json")"
+	step "J-10 npm unpublish $plain@2.0.0-beta.1 and npm unpublish $scoped --force where the registry deletes no manifests: E501; every version and dist-tag still there"
+else
+	client npm npm-unpublish.log "npm unpublish $plain@2.0.0-beta.1"
+	tags "$plain"
+	expect "versions of $plain after npm unpublish $plain@2.0.0-beta.1" "1.0.0 1.1.0" "$versions"
+	expect "dist-tags of $plain after the unpublish" "latest=1.1.0" "$dist_tags"
+	client npm npm-unpublish.log "npm unpublish $scoped --force"
+	packument "$scoped"
+	expect "GET /npm/$repo/$(enc "$scoped") after npm unpublish --force" 404 "$status"
+	step "J-10 npm unpublish $plain@2.0.0-beta.1, its tag beta with it; npm unpublish $scoped --force: 404"
+fi
 
 # --- Reindex restores the journal ---------------------------------------------------------------
 # latest moved below the highest release, a tag and a deprecation, through the group: journal
 # entries that the versions' manifests do not say.
 client npm-group npm-group-tag.log "npm dist-tag add $plain@1.0.0 latest && npm dist-tag add $plain@1.1.0 next && npm deprecate $plain@1.0.0 '$message'"
 tags "$plain"
-expect "dist-tags of $plain after npm dist-tag through npm/$group" "latest=1.0.0 next=1.1.0" "$dist_tags"
+tagged="latest=1.0.0 next=1.1.0"
+[ "$deletes" = yes ] || tagged="beta=2.0.0-beta.1 $tagged" # the refused unpublish left 2.0.0-beta.1 and its tag (J-10)
+expect "dist-tags of $plain after npm dist-tag through npm/$group" "$tagged" "$dist_tags"
 expect "versions[1.0.0].deprecated of $plain after npm deprecate through npm/$group" "$message" "$(jq -r '.versions["1.0.0"].deprecated // "-"' "$work/packument.json")"
 names=("$plain" "$scoped" "$pnpm_plain" "$pnpm_scoped" "$yarn_plain" "$yarn_scoped" "$npm_app" "$pnpm_app" "$yarn_app")
 [ -z "$upstream" ] || names+=("$hidden")
@@ -637,8 +668,13 @@ snapshot "$work/after.jsonl"
 cmp -s "$work/before.jsonl" "$work/after.jsonl" ||
 	fail "the packuments of npm/$repo after reindex differ from before: $(diff "$work/before.jsonl" "$work/after.jsonl" | head -n 20)"
 step "J-11 DELETE npm/$repo: 409 while a member of npm/$group, then 204; made again, empty; reindex: $report; the ${#names[@]} packuments as before"
-expect "the line of $scoped in the packuments after the reindex" "{\"name\":\"$scoped\",\"status\":\"404\"}" "$(grep -F "\"name\":\"$scoped\"" "$work/after.jsonl")"
-step "J-12 $scoped, unpublished with --force before the reindex: still 404 after it"
+if [ "$deletes" = no ]; then
+	expect "the status of $scoped in the packuments after the reindex" - "$(grep -F "\"name\":\"$scoped\"" "$work/after.jsonl" | jq -r '.status // "-"')"
+	step "J-12 $scoped, whose npm unpublish --force was refused: there after the reindex"
+else
+	expect "the line of $scoped in the packuments after the reindex" "{\"name\":\"$scoped\",\"status\":\"404\"}" "$(grep -F "\"name\":\"$scoped\"" "$work/after.jsonl")"
+	step "J-12 $scoped, unpublished with --force before the reindex: still 404 after it"
+fi
 
 # --- npm: logout --------------------------------------------------------------------------------
 api GET "users/$user/tokens" "" 200

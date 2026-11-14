@@ -284,7 +284,11 @@ fi
 refusal="$(grep -Ei 'not grant push|denied|unauthorized|insufficient_scope' "$work/docker.log" | tail -1 || true)"
 [ -n "$refusal" ] || { cat "$work/docker.log" >&2; fail "docker push as $reader: no refusal in what docker said"; }
 assert_status 404 -K "$E2E_CURLRC" -o /dev/null -I "$base/v2/$name/manifests/reader"
-assert_eq "1 1-amd64 1-arm64" "$(crane reader ls "$ref" | grep -v '^2$' | sort | tr '\n' ' ' | sed 's/ $//')" "crane ls $ref as $reader"
+# Not buildx's 2 (D-05), nor the sha256-<hex> tags of the referrers tag schema for the signature of
+# D-06 and buildx's attestations: the facade writes them where the registry has no referrers API
+# (#28; Nexus's docker format), and Nexus's oci format writes them itself.
+assert_eq "1 1-amd64 1-arm64" "$(crane reader ls "$ref" | grep -v -e '^2$' -e '^sha256-[0-9a-f]\{64\}$' | sort | tr '\n' ' ' | sed 's/ $//')" \
+	"crane ls $ref as $reader"
 if crane reader tag "$ref:1" reader >"$work/crane.log" 2>&1; then
 	fail "crane tag as $reader succeeded"
 fi

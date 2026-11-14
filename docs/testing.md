@@ -292,7 +292,12 @@ them as a step and passes two of them to the scenarios (#800):
 delete that nothing changed; what they pushed stays in the registry. `auth.sh` and `rbac.sh` want
 the refusal where a delete passes the authorization (`501` on `/raw/`, `405 UNSUPPORTED` on
 `/v2`), and `retention.sh` an `--apply` that exits 1 with the version an error naming the
-registry, every version left and no audit row of a delete; it leaves out the second `--apply`. The refusals run against
+registry, every version left and no audit row of a delete; it leaves out the second `--apply`.
+`apt.sh` and `rpm.sh` want their version deletes through the API `501 UNAVAILABLE` naming the
+registry; then `apt.sh` both packages in the next Packages and in apt, and `rpm.sh` primary,
+filelists and other the same bytes and the package in dnf's list, and its reindex rebuilds the repo
+with both. `npm.sh` wants the maintainer's `npm unpublish` of a version and of a package refused
+with `E501`, every version and dist-tag left, and the package there after the reindex. The refusals run against
 Zot too, with `LAJSTROM_E2E_CAPABILITIES='{deleteManifest: false}'`. When the server logged no
 capabilities (its probe failed at the start), the variables stay as your shell set them; a
 scenario run by hand takes them from there, and an unset one as Zot's. Against the Nexus of
