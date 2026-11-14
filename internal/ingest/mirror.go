@@ -122,7 +122,7 @@ func (p *Pipeline) mirrorTarget(ctx context.Context, repo index.Repo, path strin
 		return nil, nil, "", err
 	}
 	name := ociName(repo, path)
-	if err := checkName(ctx, prov, name); err != nil {
+	if err := checkName(ctx, prov, name, p.known(repo, path, name)); err != nil {
 		return nil, nil, "", err
 	}
 	if err := prov.EnsureRepository(ctx, name); err != nil {

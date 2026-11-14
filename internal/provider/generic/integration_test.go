@@ -350,6 +350,56 @@ func TestIntegrationNameLength(t *testing.T) {
 	}
 }
 
+// TestIntegrationBuildRoutes pushes a blob to new repositories whose names end in a build route
+// (provider.BuildRoute) and to one that does not, through the provider alone, without CheckNew:
+// what the registry answers (#662). A registry that refuses them, as Quay's master does, answers
+// 400 NAME_INVALID before any byte, and its capabilities must say buildRoutes; one that takes
+// them, every other registry and Quay 3.18, is logged, and a vendor table that says buildRoutes
+// there (Quay) is the cautious default, which registries[].capabilities.buildRoutes: false lifts.
+// The control takes the blob everywhere.
+func TestIntegrationBuildRoutes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	p, cfg := integrationProvider(ctx, t)
+	caps, err := p.Capabilities(ctx)
+	if err != nil {
+		t.Fatalf("Capabilities: %v", err)
+	}
+	base := "raw/it-" + randomHex(t)
+	push := func(name string) error {
+		repo, err := p.Repository(ctx, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		blob := []byte("a blob in " + name)
+		return repo.Push(ctx, descriptor("application/octet-stream", blob), bytes.NewReader(blob))
+	}
+	if err := push(base + "/build/linux/app.tar"); err != nil {
+		t.Fatalf("the control, no build route: %v", err)
+	}
+	for _, name := range []string{base + "/build", base + "/build/app.tar", base + "/build/x/logs"} {
+		if !provider.BuildRoute(name) {
+			t.Fatalf("BuildRoute(%q) = false", name)
+		}
+		if caps.BuildRoutes && caps.CheckNew(name) == nil {
+			t.Errorf("CheckNew(%q) = nil with buildRoutes", name)
+		}
+		err := push(name)
+		var rej *provider.RejectedError
+		switch {
+		case err == nil:
+			t.Logf("%s: the registry creates it (capabilities.buildRoutes %v)", name, caps.BuildRoutes)
+		case errors.As(err, &rej) && rej.Status == http.StatusBadRequest && rej.Code == "NAME_INVALID":
+			t.Logf("%s: the registry refuses to create it: %v", name, err)
+			if !caps.BuildRoutes {
+				t.Errorf("%s of %s: the registry creates no such name, and capabilities.buildRoutes is off", name, cfg.URL)
+			}
+		default:
+			t.Errorf("%s: %v (%T), want nil or a 400 NAME_INVALID", name, err, err)
+		}
+	}
+}
+
 // integrationProvider returns a Provider for the registry of LAJSTROM_TEST_REGISTRY, and its
 // configuration; it skips the test when the variable is not set.
 func integrationProvider(_ context.Context, t *testing.T, edit ...func(*config.Registry)) (*Provider, config.Registry) {

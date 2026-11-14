@@ -100,6 +100,59 @@ func TestUploadNameDepth(t *testing.T) {
 		bytes.NewReader(body), "Content-Type", ocispecManifest), http.StatusCreated)
 }
 
+// TestUploadBuildRoutes: on a registry that creates no repository whose name ends in a build
+// route (capabilities.buildRoutes, Quay), a /v2 blob upload or manifest push into such a name the
+// index does not have is 400 NAME_INVALID naming the rule, a session, a monolithic upload, a
+// mount and a manifest of a managed or an oci repo alike, and nothing reaches the registry; a
+// package or an oci repository the index has keeps taking pushes (#662).
+func TestUploadBuildRoutes(t *testing.T) {
+	e := newEnv(t, envOptions{})
+	e.prov.BuildRoutes = true
+	b := []byte("a few bytes")
+	d := digest.FromBytes(b).String()
+	body, _ := manifest(t, []byte("layer"), "build")
+	const route = "/v2/raw/assets/build/app.tar/blobs/uploads/"
+	for _, req := range []struct{ method, target, name string }{
+		{http.MethodPost, route, "raw/assets/build/app.tar"},
+		{http.MethodPost, route + "?digest=" + d, "raw/assets/build/app.tar"},
+		{http.MethodPost, route + "?mount=" + d + "&from=raw/assets/x", "raw/assets/build/app.tar"},
+		{http.MethodPut, "/v2/raw/assets/build/app.tar/manifests/1.0.0", "raw/assets/build/app.tar"},
+		{http.MethodPut, "/v2/oci/images/paketobuildpacks/build/manifests/v1", "oci/images/paketobuildpacks/build"},
+	} {
+		in := bytes.NewReader(b)
+		if req.method == http.MethodPut {
+			in = bytes.NewReader(body)
+		}
+		msg := wantError(t, req.method+" "+req.target, e.do(e.h, req.method, req.target, in, "Content-Type", ocispecManifest),
+			http.StatusBadRequest, codeNameInvalid)
+		if want := req.name + " ends in a build route of the registry"; !strings.Contains(msg, want) || !strings.Contains(msg, "capabilities.buildRoutes") {
+			t.Errorf("%s %s: message %q does not contain %q and the key", req.method, req.target, msg, want)
+		}
+	}
+	if n := e.prov.OpenUploads(); n != 0 || len(e.prov.Pushes()) != 0 || len(e.prov.PushReferences()) != 0 {
+		t.Errorf("%d backend sessions open, %d blobs and %d manifests pushed for a name the registry does not create", n,
+			len(e.prov.Pushes()), len(e.prov.PushReferences()))
+	}
+	wantStatus(t, "raw/assets/build/linux/app.tar, no build route", e.do(e.h, http.MethodPost,
+		"/v2/raw/assets/build/linux/app.tar/blobs/uploads/?digest="+d, bytes.NewReader(b)), http.StatusCreated)
+
+	// Created where the registry took the names, as Quay 3.18.2 does: they keep taking pushes.
+	e.prov.BuildRoutes = false
+	f := e.newRawFile("build/app.tar", "one")
+	raw, _ := f.body(t)
+	wantStatus(t, "the raw file without the rule", e.put(f, f.tag(), raw), http.StatusCreated)
+	wantStatus(t, "the oci image without the rule", e.do(e.h, http.MethodPut, "/v2/oci/images/paketobuildpacks/build/manifests/v1",
+		bytes.NewReader(body), "Content-Type", ocispecManifest), http.StatusCreated)
+	e.prov.BuildRoutes = true
+	wantStatus(t, "a blob into the raw package the index has", e.do(e.h, http.MethodPost, route+"?digest="+d, bytes.NewReader(b)),
+		http.StatusCreated)
+	f = e.newRawFile("build/app.tar", "two")
+	raw, _ = f.body(t)
+	wantStatus(t, "a version of the raw package the index has", e.put(f, f.tag(), raw), http.StatusCreated)
+	wantStatus(t, "a tag of the oci repository the index has", e.do(e.h, http.MethodPut, "/v2/oci/images/paketobuildpacks/build/manifests/v2",
+		bytes.NewReader(body), "Content-Type", ocispecManifest), http.StatusCreated)
+}
+
 // TestUploadDefaultMaxFileSize: a repo whose policy sets no maxFileSize is bounded by its
 // format's default on /v2 too, 8 GiB for raw and 16 GiB for oci (#246): a blob that declares one
 // byte more is 413 before anything streams.
