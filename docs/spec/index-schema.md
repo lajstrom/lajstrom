@@ -8,7 +8,8 @@
 
 Two kinds of tables. **Derived** tables are rebuilt by `lajstrom reindex` from the registry, but
 two that need no rebuild ([Derived](#derived)), and may be dropped at any time. **Control plane**
-tables are small, authoritative and backed up. The **coordination** tables, `tag_claims`,
+tables are small, authoritative and backed up, with the database or as a snapshot in the
+registry ([below](#snapshots-of-the-control-plane)). The **coordination** tables, `tag_claims`,
 `reindex_runs`, `fetch_claims`, `replicas` and `oidc_logins`, are neither: their rows live for one
 publish, one fetch, one `serve` process or one OIDC login, and a `reindex_runs` row is the lock of its run while it runs, then
 its record (the ten newest finished runs of a scope are kept).
@@ -400,6 +401,65 @@ of its versions, kept in the registry as a journal of manifests (manifest-profil
   package's scope; the whole repo's, as the delete path does, is correct too. A group's
   packuments are ADR 0013's.
 
+## Snapshots of the control plane
+
+A snapshot (#76; [manifest-profile.md](manifest-profile.md) §9) is the control plane written into
+the registry, so that a database lost without a backup comes back from it: `lajstrom admin
+snapshot create` reads the tables and pushes them, `lajstrom admin snapshot restore` writes them
+into an empty database, and `lajstrom reindex` rebuilds the derived tables after it.
+`index.Snapshotter` reads and writes them; both engines implement it beside `Store`, which serve
+uses and which does not have it.
+
+| Table | In a snapshot |
+| --- | --- |
+| `repos`, `group_members`, `users` (the deleted ones too), `identities`, `identity_groups`, `tokens`, `bindings`, `keys` | every row, with its id |
+| `audit` | the rows of a window that the operator asks for, every row, or none (the default) |
+| `bootstrap_token` | no: serve makes one at its start while no enabled user has an admin binding |
+| `sessions` | no: their clients start them again, as after a restore of a backup |
+| `auth_version`, `schema_migrations` | no: the restore increments `auth_version`; the document's `schema` is the newest migration |
+| coordination, derived | no: their rows live for one operation, or reindex rebuilds them |
+
+A control-plane table or column that a later migration adds is in the snapshot, with that
+migration, unless this table says why not.
+
+- **Ids are kept.** A token refers to its user and repo, a key to its repo, a group member and an
+  identity to their rows, and `token:<id>` is the principal of bindings, audit rows and
+  `lajstrom.uploaded-by`: the rows come back with the ids they had, and the references stay true.
+  A user is `user:<uid>` everywhere, and its `uid` comes back too.
+- **No secret in clear.** The tables hold none, and the snapshot carries them as they are:
+  `users.password_hash` (argon2id), `tokens.hash` (sha256 of the secret), `keys.private_enc`
+  (encrypted with the master key). `bootstrap_token` is not carried. The master key, the registry
+  passwords, the DSN and the OIDC client secret are never in the database.
+- **One moment.** `ExportControlPlane` reads every table in one transaction, repeatable read on
+  Postgres (`WithRepeatableRead`), and returns before anything talks to the registry: no
+  transaction is held across a request to it. Every token's user and repo, every key's repo and
+  every member's group are in the same read.
+- **Into an empty database.** `ImportControlPlane` writes into a database whose tables of the
+  first two rows above are empty, all of them; a table that has a row makes it fail with
+  `ErrNotEmpty`, naming the tables, and change nothing. A `serve` started on the database once is
+  enough to fill two: it makes the configured repos and the bearer-token key. Forced, it empties
+  every table but `schema_migrations`, `auth_version` and `replicas` first, in its transaction:
+  the derived rows of the repos go with them, and reindex writes them again. `lajstrom admin
+  snapshot restore` also refuses while a `replicas` row has a heartbeat younger than 2 minutes: a
+  replica serving on the database would keep its snapshot of the bindings and write beside the
+  restore.
+- **One transaction.** The rows are inserted with their ids in one transaction, every table in the
+  order of its references, and the restore's own audit row (`snapshot.restore`) comes last in it.
+  On Postgres the sequence of each table's id is set past the greatest id restored (`setval`), so
+  that the next insert does not collide; SQLite's next rowid follows the greatest. `auth_version`
+  is incremented in the same transaction.
+- **Versions.** A snapshot of a `schema` newer than the newest migration of the binary is refused,
+  `ErrSchemaTooNew`, and nothing is written. One of an older `schema` is written as it is: a
+  column added since takes its default, as expand migrations require (Upgrades). The database
+  itself must be migrated to the binary's schema first (`lajstrom migrate`), as for every admin
+  command.
+- **Not the export of ADR 0015.** That export (its point 15, not built) writes the declarable
+  objects, repos and bindings, in the schema of the declarative sources, without ids, for review
+  and GitOps; users, tokens and keys are not in it. A snapshot is for disaster recovery: row for
+  row, ids and secrets' hashes included, in a document of its own.
+- **No table of its own.** A snapshot needs no migration: the registry holds it, and the audit
+  rows `snapshot.create` and `snapshot.restore` record what was written and restored.
+
 ## Migrations
 
 The migrations are `internal/index/migrations/{sqlite,postgres}/NNNN_<name>.sql`, embedded in
@@ -565,6 +625,6 @@ release.
   miss the repository for one tag list's time. A managed repo's rows stay the registry's
   repositories, as its delete leaves them; its catalog lists its packages.
 - The control plane is backed up with the database
-  ([operations.md](../operations.md#backup-and-restore)). There is no JSON export (`lajstrom
-  admin export`, acceptance.md G-07, is not built); a snapshot into the registry as
-  `<prefix>_meta/config` is #76, after the MVP.
+  ([operations.md](../operations.md#backup-and-restore)), and can be snapshotted into the
+  registry at `lajstrom/control-plane` ([below](#snapshots-of-the-control-plane), #76). There is
+  no JSON export besides (`lajstrom admin export`, acceptance.md G-07, is not built).

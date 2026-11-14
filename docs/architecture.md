@@ -98,8 +98,8 @@ component talks to it: the registry provider.
 Invariant: every row of `packages`, `versions`, `files` and `index_cache` can be recovered from the
 tag and the manifest annotations. Annotations carry only search keys, prefixed `lajstrom.`. Large
 metadata (control, POM, package.json) lives in the metadata layer. The control plane (repos, users,
-bindings) is not derived: it is small and backed up; after the MVP it may also be snapshotted
-into the registry as `<prefix>_meta/config`.
+bindings) is not derived: it is small and backed up, and can also be snapshotted into the
+registry at `<prefix>lajstrom/control-plane` (manifest-profile.md §9, #76).
 
 The tag is a lookup key, not the truth. The truth is in the manifest annotations, so reindex does
 not depend on the escaping scheme and survives repository renames. A tag collision on ingest
@@ -311,7 +311,7 @@ that lacks referrers the audit log has as pushed (#628).
 | --- | --- | --- |
 | Backend registry | blobs, manifests, tags, referrers; GC, replication, HA, encryption, IAM, quotas, size limits | No filestore, no clustering, no content backups of our own. Cross-region replication is ECR configuration, not our feature. |
 | Our code | router, protocol frontends, OCI facade, ingest, index rendering and signing, RBAC and tokens, proxy and group, delete (retention is a client of it, #72), audit, registry provider; the UI is a separate repo, lajstrom-ui | Everything about the meaning of bytes and about permissions. One Go binary plus a database. |
-| Index DB | derived: packages, versions, files, index_cache, proxy metadata. Control plane: repos, users, tokens, bindings, sessions, audit | The derived part can be lost and rebuilt. The control plane is small and backed up; a snapshot into the registry comes after the MVP. |
+| Index DB | derived: packages, versions, files, index_cache, proxy metadata. Control plane: repos, users, tokens, bindings, sessions, audit | The derived part can be lost and rebuilt. The control plane is small and backed up, with the database or as a snapshot in the registry (`lajstrom admin snapshot`, #76). |
 | Clients | apt, dnf, mvn, pip, npm, terraform, curl without plugins; helm, oras, tofu, cosign, flux through the facade | Nothing to install on clients. One `user:token` pair works across all protocols. |
 
 ## 5. Registry capabilities

@@ -18,10 +18,15 @@ https://<host>/.well-known/terraform.json   (after the MVP)
 https://<host>/ui/...                   (after the MVP)
 ```
 
-Reserved first segments: `v2`, `api`, `ui`, `-`, `.well-known`, `oci`, and every registered format
-name. `oci` is the format of the pass-through repos: a repo `oci/<repo>` holds arbitrary OCI
-artifacts that pass through `/v2` unchanged, indexes nothing and has no frontend, so no plugin
-may take the name and the management API creates such a repo without one.
+Reserved first segments: `v2`, `api`, `ui`, `-`, `.well-known`, `oci`, `lajstrom`, and every
+registered format name. `oci` is the format of the pass-through repos: a repo `oci/<repo>` holds
+arbitrary OCI artifacts that pass through `/v2` unchanged, indexes nothing and has no frontend, so
+no plugin may take the name and the management API creates such a repo without one. `lajstrom`
+is the first component of Lajstrom's own artifacts in the registry, the snapshots of the control
+plane at `lajstrom/control-plane` below the instance prefix (manifest-profile.md §9, #76): no
+format may take it, so that no repo's OCI repositories are below it. No route serves it, `/v2`
+included: a name there is `<format>/<repo>/…` of a repo that exists, and no repo has the format
+`lajstrom`.
 A format name is lowercase ASCII letters and digits with single hyphens between them
 (`^[a-z0-9]+(-[a-z0-9]+)*$`) and never one of the other reserved segments.
 A repo name is unique within its format; the pair `<format>/<repo>` is the resource for RBAC.

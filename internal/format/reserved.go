@@ -10,9 +10,12 @@ import (
 
 // Reserved lists the first URL segments that belong to the server itself
 // (docs/spec/http-routing.md §1): the OCI facade, the management API, the UI, the system
-// endpoints and .well-known, and oci, the format of the pass-through repos, which /v2 serves
-// without a plugin. No format plugin may be named after one. Treat it as read-only.
-var Reserved = []string{"-", ".well-known", "api", "oci", "ui", "v2"}
+// endpoints and .well-known; oci, the format of the pass-through repos, which /v2 serves
+// without a plugin; and lajstrom, the first component of Lajstrom's own artifacts in the
+// registry, the snapshots of the control plane (docs/spec/manifest-profile.md §9), which no
+// repo's OCI repositories may share. No format plugin may be named after one. Treat it as
+// read-only.
+var Reserved = []string{"-", ".well-known", "api", "lajstrom", "oci", "ui", "v2"}
 
 // IsReserved reports whether segment is one of Reserved. The comparison is exact, as URL
 // paths are case-sensitive.
