@@ -445,7 +445,7 @@ limits of a capability.
 The default holds on every Quay, also on 3.18.x, which creates these names: nothing but the token
 of a push tells a Quay with the rule from one without, and on one without that token creates the
 repository. `registries[].capabilities.buildRoutes: false` lets a Quay that creates them take new
-ones.
+ones, and `lajstrom registry probe` says when ("Overrides needed").
 
 Run through `lajstrom serve` against the stack (a raw repo `assets`, `prefix: lajstrom-it/`, the
 robot, SQLite; the bodies are a few bytes):
@@ -461,6 +461,18 @@ AFTER, the vendor table's    PUT /raw/assets/build/app.tar, 3.0     201: the ind
                              PUT /raw/assets/build/new.tar          400, the same message; nothing reaches Quay
 AFTER, buildRoutes: false    PUT /raw/assets/build/new.tar          502 Bad Gateway; the log: "generic: start upload raw/assets/build/new.tar:
                                                                     registry quay refused the request: 400 NAME_INVALID"
+```
+
+`lajstrom registry probe` pushes `x/build` and `x/build/y` in its row "Routing words in a name"
+since #662:
+
+```text
+AFTER    Routing words in a name   **refused**: `x/build` 400 `NAME_INVALID` at the token request of the push of the empty blob,
+                                   `x/build/y` 400 `NAME_INVALID` at the token request of the push of the empty blob;
+                                   the others: 20 blob `HEAD`s each, all 200
+         Overrides needed          `referrers: true`
+BEFORE   Routing words in a name   ok: 20 blob `HEAD`s in each name, all 200; `GET` 200
+         Overrides needed          `referrers: true`; `buildRoutes: false` lets new packages end in `build`: this registry creates such names
 ```
 
 ## Our tests against it
@@ -513,7 +525,8 @@ on both. `TestIntegrationBuildRoutes` of ingest publishes a new raw package `bui
 vendor table's capabilities it is `ErrInvalid` naming the rule on both, and nothing is written;
 with `buildRoutes: false` AFTER refuses it, `ingest: push blob … registry local refused the
 request: 400 NAME_INVALID`, and BEFORE creates it, after which a second version with the vendor
-table's capabilities is published (the index has the package). Both pass on both builds.
+table's capabilities is published (the index has the package). Both pass on both builds. The
+probe ran on both ([What Lajstrom does](#what-lajstrom-does-662)).
 
 ## Configuration
 

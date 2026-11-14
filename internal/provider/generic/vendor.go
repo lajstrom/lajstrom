@@ -142,7 +142,7 @@ var vendorDefaults = map[vendor]config.CapabilityOverrides{
 	// without the rule, and there that token creates the repository (3.18.2 calls itself
 	// 3.18.1-nightly). buildRoutes: false keeps a Quay that creates them taking new ones
 	// (docs/registries/quay.md, The build rule; measured on 2026-11-14 on 3.18.2 with the
-	// commit's sources). The provider's probe cannot see it.
+	// commit's sources). The provider's probe cannot see it; lajstrom registry probe does.
 	vendorQuay: {Catalog: new(false), Referrers: new(false), Consistency: config.ConsistencyEventual, ConsistencyBound: quayConsistencyBound,
 		BuildRoutes: new(true)},
 }

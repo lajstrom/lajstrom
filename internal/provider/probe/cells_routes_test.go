@@ -16,17 +16,21 @@ import (
 	"github.com/opencontainers/go-digest"
 
 	"github.com/lajstrom/lajstrom/internal/config"
+	"github.com/lajstrom/lajstrom/internal/provider"
 )
 
 // routeRegistry keeps blobs and manifests in memory and routes by the end of the path. With
 // rnd set it misroutes as Harbor v2.15.4 does (goharbor/harbor#24363): the HEAD of a blob in a
 // name with a component manifests or referrers is 404, and in one with tags/list 400, at
 // random; GET always finds it. With refuse set, an upload session in such a name is 400
-// NAME_INVALID; with lost set, every blob HEAD is 404.
+// NAME_INVALID; with lost set, every blob HEAD is 404. With quay set it asks for a bearer token
+// as Quay does, and its token endpoint refuses a push scope of a name that ends in a build
+// route with 400 NAME_INVALID, as quay/quay@77b369a does for a new repository.
 type routeRegistry struct {
 	rnd    *rand.Rand
 	refuse bool
 	lost   bool
+	quay   bool
 
 	mu      sync.Mutex
 	content map[string]bool // name@digest of every blob and manifest
@@ -57,6 +61,9 @@ func wordStatus(name string) int {
 func (g *routeRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.quay && g.token(w, r) {
+		return
+	}
 	segs := strings.Split(strings.TrimPrefix(r.URL.Path, "/v2/"), "/")
 	n := len(segs)
 	switch {
@@ -73,6 +80,31 @@ func (g *routeRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// token answers as Quay's auth does and reports whether it answered: a request without the
+// token is 401 with a bearer challenge, and GET /token grants it, but for a scope with push of a
+// name that ends in a build route, 400 NAME_INVALID.
+func (g *routeRegistry) token(w http.ResponseWriter, r *http.Request) bool {
+	if r.URL.Path == "/token" {
+		for _, scope := range r.URL.Query()["scope"] {
+			parts := strings.Split(scope, ":")
+			if len(parts) == 3 && strings.Contains(parts[2], "push") && provider.BuildRoute(parts[1]) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, `{"errors":[{"code":"NAME_INVALID","detail":{},"message":"Repository name conflicts with a build route"}]}`)
+				return true
+			}
+		}
+		_, _ = io.WriteString(w, `{"token":"quay"}`)
+		return true
+	}
+	if r.Header.Get("Authorization") == "Bearer quay" {
+		return false
+	}
+	w.Header().Set("Www-Authenticate", `Bearer realm="http://`+r.Host+`/token",service="route"`)
+	w.WriteHeader(http.StatusUnauthorized)
+	return true
 }
 
 // upload answers the POST of a session and its closing PUT.
@@ -177,6 +209,10 @@ func checkWordNames(t *testing.T, result string, names []RoutingName) {
 	t.Helper()
 	for _, n := range names {
 		misses := n.misses()
+		if wordStatus(n.Name) == 0 {
+			checkTaken(t, n)
+			continue
+		}
 		switch {
 		case result == RoutingMisroutes && (misses == 0 || misses == 20 || n.Head[wordStatus(n.Name)] != misses || n.Get != 200):
 			t.Errorf("%s: %v, GET %d; want some HEADs %d, GET 200", n.Name, n.Head, n.Get, wordStatus(n.Name))
@@ -185,6 +221,60 @@ func checkWordNames(t *testing.T, result string, names []RoutingName) {
 		case result == RoutingRefused && (n.Refused == "" || n.Head != nil):
 			t.Errorf("%s: refused %q, %v", n.Name, n.Refused, n.Head)
 		}
+	}
+}
+
+// TestMeasureRoutingWordsBuildRoutes: a token endpoint that refuses the push of a name that ends
+// in a build route, as Quay's master does, makes those names refused, with the token request
+// named, and the others measured; the run notes it for "Overrides needed" (#662).
+func TestMeasureRoutingWordsBuildRoutes(t *testing.T) {
+	g := &routeRegistry{quay: true}
+	srv := newRouteRegistry(t, g)
+	r, err := newRun(config.Registry{Name: "r", URL: srv.URL}, Options{Scratch: "lajstrom-probe-route", RoutingHeads: 20, Log: quiet()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.WithValue(context.Background(), tapeKey{}, r.tape)
+	if err := r.measureRoutingWords(r.in(ctx, "routingWords")); err != nil {
+		t.Fatal(err)
+	}
+	const want = "**refused**: `x/build` 400 `NAME_INVALID` at the token request of the push of the empty blob, " +
+		"`x/build/y` 400 `NAME_INVALID` at the token request of the push of the empty blob; the others: 20 blob `HEAD`s each, all 200"
+	if c := r.report.Cell("routingWords"); !c.Measured || c.Value != want {
+		t.Errorf("routingWords = %q (measured %v)\nwant           %q", c.Value, c.Measured, want)
+	}
+	if !r.found.buildRoutesRefused || r.found.buildRoutesTaken {
+		t.Errorf("facts: build routes refused %v, taken %v", r.found.buildRoutesRefused, r.found.buildRoutesTaken)
+	}
+	for _, n := range r.report.RoutingWords.Names {
+		if provider.BuildRoute(n.Name) == (n.Refused == "") {
+			t.Errorf("%s: refused %q", n.Name, n.Refused)
+		}
+	}
+	r.cleanup(r.in(ctx, "deleteRepository"))
+	if len(g.content) > 0 {
+		t.Errorf("left %v", g.content)
+	}
+
+	srv = newRouteRegistry(t, &routeRegistry{})
+	r, err = newRun(config.Registry{Name: "r", URL: srv.URL}, Options{Scratch: "lajstrom-probe-route", RoutingHeads: 2, Log: quiet()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.measureRoutingWords(context.WithValue(context.Background(), tapeKey{}, r.tape)); err != nil {
+		t.Fatal(err)
+	}
+	if r.found.buildRoutesRefused || !r.found.buildRoutesTaken {
+		t.Errorf("a registry that takes them: build routes refused %v, taken %v", r.found.buildRoutesRefused, r.found.buildRoutesTaken)
+	}
+}
+
+// checkTaken checks a name that ends in a build route, which these fakes neither misroute nor
+// refuse: pushed, and its blob found by every HEAD and the GET.
+func checkTaken(t *testing.T, n RoutingName) {
+	t.Helper()
+	if n.Refused != "" || n.Head[200] != 20 || n.Get != 200 {
+		t.Errorf("%s: refused %q, %v, GET %d", n.Name, n.Refused, n.Head, n.Get)
 	}
 }
 
