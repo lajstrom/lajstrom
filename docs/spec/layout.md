@@ -277,7 +277,7 @@ type Published struct {
     Existed  bool                           // idempotent repeat: nothing was written
 }
 type Deletion struct {                      // the principal is a parameter of Publisher.Delete
-    Path      string                        // package path below <format>/<repo>/ (Package.NameOCI)
+    Path      string                        // package path below <format>/<repo>/ of the manifest's OCI repository (index.ManifestPath of a version)
     Reference string                        // a tag or a digest
     ClientIP  string                        // for the audit row
     Condition *Condition                    // not nil: a compare-and-delete of a version
@@ -1027,7 +1027,8 @@ type Writer interface {
 // File, Cache (index_cache), OCIRepo, ProxyMeta, JournalEntry, JournalState; query types
 // FileMatch (file + version + package), VersionMatch (version + package), VersionKey,
 // IdentityGroup (a row of identity_groups with its identity's UserID and GroupsExpireAt and its
-// user's UID) and AuditFilter. Ids are int64, timestamps UTC, nullable columns are pointers.
+// user's UID) and AuditFilter. Ids are int64, timestamps UTC, nullable columns are pointers,
+// but nullable text, which is "" (Version.OCIRepo: versions.oci_repo, "" for NULL).
 const ReindexRunning, ReindexDone, ReindexFailed, ReindexAbandoned = "running", "done", "failed", "abandoned" // ReindexRun.State
 type ReindexOptions struct {                // reindex_runs.options: what the run was started with
     Prune  bool `json:"prune,omitempty"`
@@ -1119,6 +1120,15 @@ type ReplicaConflictError struct {          // errors.Is(err, ErrConflict) is tr
 // manifest-profile.md §4.3): a package keeps the OCI repository it was first written to.
 // ErrNotFound when none is.
 func PackageAt(ctx context.Context, r Reader, repoID int64, pkgPath string) (*Package, error)
+// PackageOf is GetPackageByNameOCI at the package path of an OCI repository, path, or at each
+// other form of it (profile.PackagePathForms): the package whose versions may be there, its
+// NameOCI or, in a split, the OCI repository of some of its versions (index-schema.md,
+// Invariants). ErrNotFound when none is.
+func PackageOf(ctx context.Context, r Reader, repoID int64, path string) (*Package, error)
+// ManifestPath is the package path of the OCI repository that holds v's manifest: v.OCIRepo
+// (versions.oci_repo, a split), or else p.NameOCI. Downloads, deletes, the /v2 tag list and
+// reindex's recheck go there.
+func ManifestPath(p Package, v Version) string
 
 // WithRepeatableRead returns ctx for a Store.Tx that does not lose a concurrent update (#791):
 // fn reads one snapshot, and when a row it writes was changed by a transaction that committed
@@ -1257,9 +1267,9 @@ type Drift struct {
 type Split struct {                           // index-schema.md, Invariants; ADR 0017
     Package     string   `json:"package"`
     Indexed     string   `json:"indexed"`     // the package's name_oci, below the repo's base
-    IndexedTags []string `json:"indexedTags"` // the tags of its versions in the index
+    IndexedTags []string `json:"indexedTags"` // the tags of its versions at Indexed
     Other       string   `json:"other"`       // another form of it, below the repo's base
-    OtherTags   []string `json:"otherTags"`   // the tags of the profile manifests there, not indexed
+    OtherTags   []string `json:"otherTags"`   // the tags of the profile manifests there: indexed with oci_repo, but one also in IndexedTags
 }
 type RepositoryUnknown struct {               // index-schema.md, Invariants; #567
     Repository string        `json:"repository"` // the OCI repository, below the repo's base

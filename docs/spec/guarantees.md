@@ -190,8 +190,10 @@ longer than `reconcile.graceAge` is outside them
   earlier name that ends in `blobs`, `.uploads` or `.sync` is not in the catalog, and only
   `oci_repos` or `--attach` finds it; on Harbor an earlier name with a component `manifests` or
   `referrers`, or `tags/list…`, answers the check of its blobs at random. A package whose
-  manifests are at two forms of its name has the rows of one form; those at the other are
-  reported as a split, not indexed ([index-schema.md](index-schema.md#invariants-and-rules), #609).
+  manifests are at two forms of its name has one package row, at one form; a version at the
+  other form has the OCI repository where reindex found it in `versions.oci_repo`, which ingest
+  never writes, and the split is reported
+  ([index-schema.md](index-schema.md#invariants-and-rules), #609, #642).
 - **Assumes.** Registry: **complete listings** (**unchecked**) of the names in the grammar of
   ADR 0017 (Zot's catalog leaves out others, [quirks.md](../registries/quirks.md)), once the
   registry's list lag has passed after a write; **durable 201**. Database: any.
@@ -202,7 +204,8 @@ longer than `reconcile.graceAge` is outside them
   indexed from its annotations and flagged `degraded`. A manifest at an earlier form of
   its OCI name is the package of its annotations (`ingest.publish.checkTarget`), which keeps that
   name: a writer looks it up at every form (`index.PackageAt`, `ingest.Pipeline.storedPath`).
-  A manifest whose package the index has at another form is not written (`reindex.scan.write`),
+  A manifest whose package the index has at another form is written with that form in
+  `oci_repo`, unless the package has its version at another form already (`reindex.scan.write`),
   and a run reads the newer forms of a name first (`reindex.newestFirst`), so that a rebuild
   keeps the form ingest wrote. A listing that lags only delays: a version it leaves out is looked
   up by its tag and its digest before prune removes anything (INV-5), and the next run adds a
@@ -228,7 +231,8 @@ longer than `reconcile.graceAge` is outside them
 ### INV-4. A version in the index is readable from the registry
 
 - **Statement.** Every `versions` row names a manifest that the registry serves under the row's
-  tag, with the row's digest, and whose blobs it serves.
+  tag, with the row's digest, in the row's OCI repository (`index.ManifestPath`: `oci_repo`,
+  else its package's `name_oci`), and whose blobs it serves.
 - **Scope.** Managed repos, every kind that has rows (`hosted`, `proxy`); a proxy answers a miss
   from the registry right after its ingest, so the same holds for it.
 - **Assumes.** Registry: **monotonic reads** (**unchecked**), **durable 201** (**unchecked**),
