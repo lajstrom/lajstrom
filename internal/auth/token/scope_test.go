@@ -173,6 +173,8 @@ func TestScopeAction(t *testing.T) {
 func TestRealm(t *testing.T) {
 	plain := httptest.NewRequest("GET", "http://localhost:8080/v2/", nil)
 	overTLS := httptest.NewRequest("GET", "https://localhost:8443/v2/", nil) // r.TLS is set
+	// A Host the client chose, a repo host of the FQDN mode among them, changes neither (#75).
+	forged := httptest.NewRequest("GET", "https://internal.art.test/v2/", nil)
 	for _, tt := range []struct {
 		externalURL    string
 		r              *http.Request
@@ -185,6 +187,7 @@ func TestRealm(t *testing.T) {
 		{"::not a url", plain, "http://localhost:8080/v2/token", "localhost:8080"},
 		{"", overTLS, "https://localhost:8443/v2/token", "localhost:8443"},
 		{"https://art.test", overTLS, "https://art.test/v2/token", "art.test"},
+		{"https://art.test", forged, "https://art.test/v2/token", "art.test"},
 	} {
 		realm, svc := Realm(tt.externalURL, tt.r)
 		if realm != tt.realm || svc != tt.service {

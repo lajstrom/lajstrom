@@ -216,6 +216,7 @@ func newServeCmd(a *app) *cobra.Command {
 				StallTimeout:    c.Server.StallTimeout,
 				MaxUploads:      c.Server.MaxConcurrentUploads,
 				TrustedProxies:  proxies,
+				FQDNDomain:      c.Server.FQDN.Domain,
 			})
 			if err != nil {
 				return err

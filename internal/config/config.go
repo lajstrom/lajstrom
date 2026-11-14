@@ -37,6 +37,9 @@ type Server struct {
 	// TLS makes Lajstrom terminate TLS itself, for a single host; empty when TLS terminates at
 	// the edge.
 	TLS TLS `yaml:"tls"`
+	// FQDN is the FQDN mode, a host per repo (docs/spec/http-routing.md §1.1); off when its
+	// Domain is empty.
+	FQDN FQDN `yaml:"fqdn"`
 	// ShutdownTimeout bounds the graceful shutdown: in-flight requests get this long to finish.
 	ShutdownTimeout time.Duration `yaml:"shutdownTimeout"`
 	// ShutdownDelay is how long the server keeps serving after the signal, not ready and with
@@ -97,6 +100,13 @@ type TLS struct {
 	CertFile string `yaml:"certFile"`
 	// KeyFile is the private key of the certificate.
 	KeyFile string `yaml:"keyFile"`
+}
+
+// FQDN configures the FQDN mode (docs/spec/http-routing.md §1.1).
+type FQDN struct {
+	// Domain is the DNS name below which every repo also has a host, <repo>.<domain> and
+	// <repo>.<format>.<domain>, served as the path form of the repo. Empty turns the mode off.
+	Domain string `yaml:"domain"`
 }
 
 // Log configures the process logger. The --log-level and --log-format flags override it.

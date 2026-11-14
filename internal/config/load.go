@@ -152,6 +152,7 @@ var envOverrides = []struct {
 	{"LAJSTROM_SERVER_LISTEN", func(c *Config, v string) { c.Server.Listen = v }},
 	{"LAJSTROM_SERVER_EXTERNAL_URL", func(c *Config, v string) { c.Server.ExternalURL = v }},
 	{"LAJSTROM_SERVER_METRICS_LISTEN", func(c *Config, v string) { c.Server.MetricsListen = v }},
+	{"LAJSTROM_SERVER_FQDN_DOMAIN", func(c *Config, v string) { c.Server.FQDN.Domain = v }},
 	{"LAJSTROM_LOG_LEVEL", func(c *Config, v string) { c.Log.Level = v }},
 	{"LAJSTROM_LOG_FORMAT", func(c *Config, v string) { c.Log.Format = v }},
 	{"LAJSTROM_DATABASE_DRIVER", func(c *Config, v string) { c.Database.Driver = v }},

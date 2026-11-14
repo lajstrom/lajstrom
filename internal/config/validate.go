@@ -96,6 +96,7 @@ func (s Server) validate(p *problems) {
 		p.add("server.listen", "%q is not host:port", s.Listen)
 	}
 	s.validateExternalURL(p)
+	s.validateFQDN(p)
 	if (s.TLS.CertFile == "") != (s.TLS.KeyFile == "") {
 		p.add("server.tls", "certFile and keyFile must be set together")
 	}
@@ -166,6 +167,39 @@ func (s Server) validateExternalURL(p *problems) {
 		p.add(key, "must be https: clients see Lajstrom over TLS only; http is for the dev stack on a loopback host, with server.insecureHTTP: true")
 	case u.Scheme == "http" && !isLoopback(u.Hostname()):
 		p.add(key, "http is for a loopback host only (localhost, 127.0.0.1, ::1), even with server.insecureHTTP")
+	}
+}
+
+// dnsLabel is a label of a DNS name: letters, digits and hyphens, neither first nor last, at
+// most 63 bytes (RFC 1035), lower case.
+var dnsLabel = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// validateFQDN checks server.fqdn.domain (docs/spec/http-routing.md §1.1): a DNS name in lower
+// case, not an address, without a scheme, a port, a trailing dot or a wildcard. The mode needs
+// server.externalURL, whose scheme and port the URLs of a repo host take; with an http one, the
+// domain is localhost, whose subdomains are loopback (RFC 6761), so that plain HTTP stays on
+// loopback.
+func (s Server) validateFQDN(p *problems) {
+	const key = "server.fqdn.domain"
+	d := s.FQDN.Domain
+	if d == "" {
+		return
+	}
+	labels := strings.Split(d, ".")
+	valid := len(d) <= 253 && net.ParseIP(d) == nil
+	for _, l := range labels {
+		valid = valid && dnsLabel.MatchString(l)
+	}
+	u, err := url.Parse(s.ExternalURL)
+	switch {
+	case !valid:
+		p.add(key, "%q is not a DNS name: lowercase labels of letters, digits and hyphens between dots, without a scheme, a port, "+
+			"a trailing dot or a *, such as art.example.com", d)
+	case s.ExternalURL == "" || err != nil:
+		p.add(key, "needs server.externalURL: the URLs of a repo host take its scheme and port")
+	case u.Scheme == "http" && d != "localhost":
+		p.add(key, "must be localhost with an http server.externalURL: plain HTTP is for loopback only, and the subdomains of "+
+			"localhost are loopback")
 	}
 }
 
