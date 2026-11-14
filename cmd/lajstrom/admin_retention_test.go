@@ -403,6 +403,8 @@ func TestAdminRetentionArgs(t *testing.T) {
 		{env, []string{"--repo", "npm/internal"}, "name a rule"},
 		{env, []string{"--repo", "npm", "--keep-last", "1"}, "not <format>/<name>"},
 		{env, []string{"--repo", "npm/internal", "--keep-last", "-1"}, "negative"},
+		{env, []string{"--repo", "maven/snapshots", "--keep-builds", "-1"}, "--keep-builds: -1 is negative"},
+		{env, []string{"--repo", "npm/internal", "--keep-builds", "3"}, "--keep-builds: only a maven repo has SNAPSHOT builds"},
 		{env, []string{"--repo", "npm/internal", "--max-age", "soon"}, "--max-age"},
 		{env, []string{"--repo", "npm/internal", "--keep-last", "1", "--package", "["}, "not a glob"},
 		{env, []string{"--repo", "npm/internal", "--keep-last", "1", "--output", "yaml"}, "--output"},
@@ -419,5 +421,45 @@ func TestAdminRetentionArgs(t *testing.T) {
 		"--repo", "npm/internal", "--keep-last", "1")
 	if err != nil || f.auths[len(f.auths)-1] != "Bearer ljs_pat_env" {
 		t.Errorf("the token of %s: %v, %q", envRetentionToken, err, f.auths[len(f.auths)-1])
+	}
+}
+
+// TestRetentionMaven: in a maven repo the builds of each SNAPSHOT version are ranked by
+// themselves. --keep-last and --max-age decide the releases, ranked among the releases, and delete
+// no build; --keep-builds decides the builds of each SNAPSHOT version, a build younger than
+// --max-age kept too, and deletes no release without a rule for them; the newest release and the
+// newest build of each SNAPSHOT version stay unless --delete-newest.
+func TestRetentionMaven(t *testing.T) {
+	versions := []api.VersionEntry{ // newest first, as the API lists them
+		listed("1.1-20261110.000000-3", 1), listed("1.0", 2), listed("1.1-20261109.000000-2", 3), listed("1.1-20261008.000000-1", 40),
+		listed("1.0-20261001.000000-5", 50), listed("0.9", 100), listed("1.0-20260901.000000-4", 120),
+	}
+	n := func(i int) *int { return &i }
+	for _, tt := range []struct {
+		name  string
+		rules retentionRules
+		want  []string
+	}{
+		{"keep-last", retentionRules{KeepLast: n(1)}, []string{"0.9"}},
+		{"max-age", retentionRules{maxAge: 30 * 24 * time.Hour}, []string{"0.9"}},
+		{"keep-builds", retentionRules{KeepBuilds: n(1)}, []string{"1.1-20261109.000000-2", "1.1-20261008.000000-1", "1.0-20260901.000000-4"}},
+		{"keep-builds and max-age", retentionRules{KeepBuilds: n(1), maxAge: 30 * 24 * time.Hour},
+			[]string{"0.9", "1.1-20261008.000000-1", "1.0-20260901.000000-4"}},
+		{"keep-builds 0", retentionRules{KeepBuilds: n(0)}, []string{"1.1-20261109.000000-2", "1.1-20261008.000000-1", "1.0-20260901.000000-4"}},
+		{"keep-builds 0 and delete-newest", retentionRules{KeepBuilds: n(0), DeleteNewest: true},
+			[]string{"1.1-20261110.000000-3", "1.1-20261109.000000-2", "1.1-20261008.000000-1", "1.0-20261001.000000-5", "1.0-20260901.000000-4"}},
+		{"keep-last and keep-builds", retentionRules{KeepLast: n(5), KeepBuilds: n(2)}, []string{"1.1-20261008.000000-1"}},
+	} {
+		var got []string
+		for _, v := range tt.rules.decideMaven("com.example:lib-core", versions, retentionNow) {
+			got = append(got, v.Version)
+		}
+		if !slices.Equal(got, tt.want) {
+			t.Errorf("%s: deletes %q, want %q", tt.name, got, tt.want)
+		}
+	}
+	del := retentionRules{KeepBuilds: n(1)}.decideMaven("com.example:lib-core", versions, retentionNow)
+	if len(del) == 0 || del[0].Rank != 2 || !slices.Equal(del[0].Reasons, []string{"rank 2 > keep-builds 1"}) {
+		t.Errorf("the first build deleted: %+v, want rank 2 among the builds of 1.1-SNAPSHOT, the reason keep-builds", del)
 	}
 }
