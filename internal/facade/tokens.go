@@ -34,8 +34,9 @@ func grantFrom(ctx context.Context) (*token.Grant, bool) {
 	return g, ok
 }
 
-// tokenResponse is the answer of GET /v2/token: the token twice, as docker reads token and
-// OAuth2 clients access_token, its lifetime in seconds and when it was issued.
+// tokenResponse is the answer of GET and POST /v2/token: the token twice, as docker reads token
+// and OAuth2 clients access_token (containerd after a POST), its lifetime in seconds and when it
+// was issued. There is no refresh_token.
 type tokenResponse struct {
 	Token       string `json:"token"`
 	AccessToken string `json:"access_token"`
@@ -59,26 +60,44 @@ const maxTokenScopes = 100
 // (docs/spec/rbac.md §3). The service is the configured one: a service parameter that names
 // another is a client of another registry, not an error, and is ignored. No audit row is
 // written: a token is issued for every docker pull and oras push, one row each would be noise,
-// and the operations the token then allows are audited themselves. Only GET: the OAuth2 POST
-// form is not implemented.
+// and the operations the token then allows are audited themselves.
+//
+// POST /v2/token is the same request in the OAuth2 form of the password grant (#908), whose
+// username and password the middleware authenticated as Basic credentials: the scope and service
+// parameters are the form's (token.ReadForm, which answers a form it refuses in OAuth2's format),
+// never the query's. A POST whose principal is anonymous had its credential checked by no
+// authenticator, and is 401. Any other method is 405.
 func (h *handler) issueToken(w http.ResponseWriter, r *http.Request) error {
-	if r.Method != http.MethodGet {
-		return &apiError{status: http.StatusMethodNotAllowed, code: codeUnsupported,
-			msg: fmt.Sprintf("%s is not supported on /v2/token: clients get a token with GET", r.Method)}
-	}
 	ctx := r.Context()
-	q := r.URL.Query()
-	_, service := token.Realm(h.o.ExternalURL, r)
-	if s := q.Get("service"); s != "" && s != service {
-		h.o.Log.DebugContext(ctx, "token for another service: the token is for this one", "asked", s, "service", service)
-	}
 	p := auth.PrincipalFrom(ctx)
-	asked := token.ParseScopes(q["scope"])
-	if len(asked) > maxTokenScopes {
-		return &apiError{status: http.StatusBadRequest, code: codeUnsupported,
-			msg: fmt.Sprintf("a token request may name at most %d repositories, this one names %d", maxTokenScopes, len(asked))}
+	q := r.URL.Query()
+	params, asked := q["scope"], q.Get("service")
+	switch r.Method {
+	case http.MethodGet:
+	case http.MethodPost:
+		f, fe := token.ReadForm(w, r)
+		if fe != nil {
+			token.WriteFormError(w, fe)
+			return nil
+		}
+		if p.Kind == auth.KindAnonymous {
+			return &apiError{status: http.StatusUnauthorized, msg: "credentials are needed: the form's were not checked"}
+		}
+		params, asked = f.Scopes, f.Service
+	default:
+		return &apiError{status: http.StatusMethodNotAllowed, code: codeUnsupported,
+			msg: fmt.Sprintf("%s is not supported on /v2/token: clients get a token with GET, or POST with the OAuth2 form", r.Method)}
 	}
-	scopes, err := h.unknownScopes(ctx, asked)
+	_, service := token.Realm(h.o.ExternalURL, r)
+	if asked != "" && asked != service {
+		h.o.Log.DebugContext(ctx, "token for another service: the token is for this one", "asked", asked, "service", service)
+	}
+	parsed := token.ParseScopes(params)
+	if len(parsed) > maxTokenScopes {
+		return &apiError{status: http.StatusBadRequest, code: codeUnsupported,
+			msg: fmt.Sprintf("a token request may name at most %d repositories, this one names %d", maxTokenScopes, len(parsed))}
+	}
+	scopes, err := h.unknownScopes(ctx, parsed)
 	if err != nil {
 		return err
 	}

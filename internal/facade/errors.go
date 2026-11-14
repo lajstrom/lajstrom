@@ -140,8 +140,7 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 			"status", status, "error", err.Error(), "requestId", server.RequestID(r.Context()))
 	case status == http.StatusUnauthorized:
 		code = codeUnauthorized
-		realm, service := token.Realm(h.o.ExternalURL, r)
-		w.Header().Set("WWW-Authenticate", token.Challenge(realm, service, requestScope(r), ae.insufficient))
+		w.Header().Set("WWW-Authenticate", h.challenge(r, ae.insufficient))
 	case status == http.StatusForbidden:
 		code = codeDenied
 	case status == http.StatusTooManyRequests:
@@ -152,6 +151,18 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		code = codeOfStatus(status)
 	}
 	writeJSON(w, status, errorBody{Errors: []errorEntry{{Code: code, Message: msg, Detail: detail}}})
+}
+
+// challenge is the WWW-Authenticate header of a 401 to r: the bearer challenge of the token flow
+// with the scope of the request (requestScope), but on /v2/token itself, which takes Basic
+// credentials and the form of their user name and password: there the Basic challenge, as the
+// authentication middleware answers there.
+func (h *handler) challenge(r *http.Request, insufficient bool) string {
+	if r.URL.Path == "/v2/token" {
+		return `Basic realm="lajstrom"`
+	}
+	realm, service := token.Realm(h.o.ExternalURL, r)
+	return token.Challenge(realm, service, requestScope(r), insufficient)
 }
 
 // hides reports whether the answer of e with status says its status text alone: a 5xx but 501,

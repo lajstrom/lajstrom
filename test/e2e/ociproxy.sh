@@ -18,7 +18,11 @@
 #      fetches the metadata of every platform unless --skip-metadata) and the layer of its own,
 #      and its platform's manifest is in the backend under its keep-tag, the other's not; the
 #      same pull by a new containerd, with an empty content store: the proxy serves the three
-#      blobs again, and fetches none;
+#      blobs again, and fetches none; then the same pull through a second proxy repo of the
+#      upstream, without anonymous read, by a containerd with --user and a personal access token
+#      of the run's user with read (#908): containerd posts the OAuth2 form to the realm, and in
+#      the access log of the pull each token is one POST /v2/token, 200 for the user, and there
+#      is no GET /v2/token (ctr asks for two tokens, one to resolve and one to fetch);
 #   5. a group of oci repos (#848, ADR 0019, §12) of a hosted repo of the run, which serves
 #      acme/*, and of the proxy, which serves the rest: crane pushes an image to the hosted repo
 #      at its own URL and pulls it through the group; crane pulls img:1.0 through the group, the
@@ -76,9 +80,11 @@ up="$upstream/e2e-ociproxy-$run"
 lj="${base#*://}/oci/$proxy/e2e-ociproxy-$run"
 back="$registry/${prefix}oci/$proxy/e2e-ociproxy-$run"
 ctr_name="lajstrom-e2e-containerd-$run"
+private="pv-$run"                  # step 4: the repo oci/<private>, without anonymous read
 hosted="int-$run" group="all-$run" # step 5: the repos oci/<hosted> and oci/<group>
 host="${base#*://}"
 proxy_made=""
+private_made=""
 group_made=""
 hosted_made=""
 pushed=() # what crane pushed to the upstream and the proxy to the backend, host/name@digest
@@ -87,6 +93,7 @@ cleanup() {
 	[ -z "$group_made" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/api/v1/repos/oci/$group" || true
 	[ -z "$hosted_made" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/api/v1/repos/oci/$hosted?force=true" || true
 	[ -z "$proxy_made" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/api/v1/repos/oci/$proxy?force=true" || true
+	[ -z "$private_made" ] || curl -sS -o /dev/null -K "$E2E_CURLRC" -X DELETE "$base/api/v1/repos/oci/$private?force=true" || true
 	local i ref name
 	for ((i = ${#pushed[@]} - 1; i >= 0; i--)); do # an index before what it lists
 		ref="${pushed[$i]}" name="${pushed[$i]#*/}"
@@ -230,16 +237,19 @@ EOF
 ctr() { docker exec "$ctr_name" /opt/containerd/bin/ctr "$@"; }
 platform="$(crane digest --insecure --platform "linux/$arch" "$up/ctr:1.0")"
 ref="$upstream/e2e-ociproxy-$run/ctr:1.0"
-# ctr_pull: a containerd of its own, its root a new tmpfs, pulls ref with the mirror. A second
+# ctr_pull [DIR [ARG...]]: a containerd of its own, its root a new tmpfs, pulls ref with the
+# mirror of $work/DIR (certs.d when there is none) and the ARGs of ctr images pull. A second
 # pull by the same containerd, in any namespace, would ask for no blob: it has them.
 ctr_pull() {
+	local certs="${1:-certs.d}"
+	[ $# -eq 0 ] || shift
 	docker rm -f "$ctr_name" >/dev/null 2>&1 || true
 	docker run -d --rm --name "$ctr_name" --privileged --network host --tmpfs /var/lib/containerd \
-		-v "$work/containerd:/opt/containerd:ro" -v "$work/certs.d:/etc/containerd/certs.d:ro" \
+		-v "$work/containerd:/opt/containerd:ro" -v "$work/$certs:/etc/containerd/certs.d:ro" \
 		"$containerd_image" /opt/containerd/bin/containerd >/dev/null
 	eventually ctr version >/dev/null 2>&1 ||
 		{ docker logs "$ctr_name" 2>&1 | tail -n 30 >&2; fail "containerd did not answer ctr version within 10 s"; }
-	ctr images pull --hosts-dir /etc/containerd/certs.d "$ref" >"$work/ctr.log" 2>&1 ||
+	ctr images pull --hosts-dir /etc/containerd/certs.d "$@" "$ref" >"$work/ctr.log" 2>&1 ||
 		{ cat "$work/ctr.log" >&2; docker logs "$ctr_name" 2>&1 | tail -n 30 >&2; fail "ctr images pull $ref"; }
 	assert_eq "$ref" "$(ctr images ls -q)" "ctr images ls -q"
 }
@@ -254,6 +264,34 @@ assert_eq 3 "$(fetched "e2e-ociproxy-$run/ctr")" "the blobs fetched after contai
 [ "$(served "e2e-ociproxy-$run/ctr")" -ge $((before + 3)) ] ||
 	fail "containerd's second pull asked the proxy for $(($(served "e2e-ociproxy-$run/ctr") - before)) blobs, want 3 at least"
 step "ctr images pull by a new containerd: the three blobs served again, none fetched"
+
+# The same image through oci/<private>, without anonymous read, by a containerd with --user
+# (#908): its token comes from POST /v2/token, the OAuth2 form, and none from GET.
+assert_status 201 -K "$E2E_CURLRC" -H 'Content-Type: application/json' \
+	-d "{\"format\":\"oci\",\"name\":\"$private\",\"registry\":\"local\",\"kind\":\"proxy\",\"upstream\":{\"name\":\"$upname\"}}" \
+	"$base/api/v1/repos"
+private_made=yes
+pat="$(curl -sS -f -K "$E2E_CURLRC" -H 'Content-Type: application/json' \
+	-d "{\"name\":\"ctr-$run\",\"scopes\":[\"read\"],\"expiresIn\":\"1h\"}" "$base/api/v1/users/$E2E_USER/tokens" | jq -r .secret)"
+case "$pat" in ljs_pat_*) ;; *) fail "POST /api/v1/users/$E2E_USER/tokens gave no personal access token" ;; esac
+mkdir -p "$work/certs-private.d/$upstream"
+cat >"$work/certs-private.d/$upstream/hosts.toml" <<EOF
+server = "http://$upstream"
+
+[host."$base/v2/oci/$private"]
+  capabilities = ["pull", "resolve"]
+  override_path = true
+EOF
+mark="$(wc -l <"$log")"
+ctr_pull certs-private.d --user "$E2E_USER:$pat"
+pushed+=("$registry/${prefix}oci/$private/e2e-ociproxy-$run/ctr@$platform")
+# token_requests prints the access lines of /v2/token since the mark.
+token_requests() { tail -n +"$((mark + 1))" "$log" | grep -F ' msg=request ' | grep -F ' path=/v2/token ' || true; }
+posts="$(token_requests | grep -F ' method=POST ' | grep -F ' status=200 ' | grep -cF ' principal=user:' || true)"
+[ "$posts" -ge 1 ] || fail "containerd's pull with --user got no token from POST /v2/token"
+assert_eq 0 "$(token_requests | grep -cF ' method=GET ' || true)" "GET /v2/token during containerd's pull with --user"
+assert_eq "$posts" "$(token_requests | wc -l | tr -d ' ')" "the requests to /v2/token during containerd's pull with --user, all POST 200 for the user"
+step "ctr images pull --user $E2E_USER:<read PAT> $ref through $base/v2/oci/$private, no anonymous read: $posts tokens, each one POST /v2/token 200 for user:…; no GET /v2/token"
 
 # 5: a group of the hosted repo and the proxy, one URL for both.
 assert_status 201 -K "$E2E_CURLRC" -H 'Content-Type: application/json' \
@@ -310,5 +348,7 @@ assert_status 204 -K "$E2E_CURLRC" -X DELETE "$base/api/v1/repos/oci/$hosted?for
 hosted_made=""
 assert_status 204 -K "$E2E_CURLRC" -X DELETE "$base/api/v1/repos/oci/$proxy?force=true"
 proxy_made=""
-step "DELETE /api/v1/repos oci/$group, oci/$hosted and oci/$proxy: 204"
+assert_status 204 -K "$E2E_CURLRC" -X DELETE "$base/api/v1/repos/oci/$private?force=true"
+private_made=""
+step "DELETE /api/v1/repos oci/$group, oci/$hosted, oci/$proxy and oci/$private: 204"
 echo "PASS ociproxy e2e against $base as $E2E_USER"

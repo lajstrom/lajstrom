@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 )
 
 // TestTokenThrottle is the third criterion of #130: 200 requests to /v2/token from one address
-// in one instant, the later ones 429 with Retry-After in the distribution's error format. From
+// in one instant, GET and POST with the form alike (#908), the later ones 429 with Retry-After in the distribution's error format. From
 // behind a trusted proxy the address is the forwarded one, and another client behind the same
 // proxy goes on; from behind an untrusted one it is the proxy's, whatever the header says;
 // without server.trustedProxies the per-address throttle is off, unless Lajstrom terminates TLS
@@ -48,9 +49,14 @@ func TestTokenThrottle(t *testing.T) {
 				o.TLSCertFile, o.TLSKeyFile, _ = selfSigned(t)
 			}
 			s, logs := newTestServer(t, o)
-			get := func(xff string) *httptest.ResponseRecorder {
+			// get asks for a token, with GET for an even i, with the form of a deploy token for an odd one.
+			get := func(i int, xff string) *httptest.ResponseRecorder {
 				rr := httptest.NewRecorder()
 				r := httptest.NewRequest(http.MethodGet, "/v2/token?scope=repository:raw/scratch:pull", nil)
+				if i%2 == 1 {
+					r = httptest.NewRequest(http.MethodPost, "/v2/token", strings.NewReader(passwordForm("deploy", scratchToken)))
+					r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				}
 				r.RemoteAddr = tt.remote
 				r.Header.Set("X-Forwarded-For", xff)
 				s.Handler().ServeHTTP(rr, r)
@@ -58,7 +64,7 @@ func TestTokenThrottle(t *testing.T) {
 			}
 			refused := 0
 			for i := range 200 {
-				rr := get(tt.xff(i))
+				rr := get(i, tt.xff(i))
 				switch {
 				case rr.Code == http.StatusNoContent && refused == 0:
 				case rr.Code == http.StatusTooManyRequests:
@@ -72,7 +78,7 @@ func TestTokenThrottle(t *testing.T) {
 				t.Errorf("%d of 200 refused, want %d", refused, tt.refused)
 			}
 			if tt.other != "" {
-				if rr := get(tt.other); rr.Code != http.StatusNoContent {
+				if rr := get(0, tt.other); rr.Code != http.StatusNoContent {
 					t.Errorf("another client behind the proxy: %d", rr.Code)
 				}
 			}
