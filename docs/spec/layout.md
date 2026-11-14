@@ -1138,9 +1138,15 @@ func MigrationVersions(dialect string) ([]int, error)                 // embedde
 // lock that records it in schema_migrations, and reports those it applied (empty: current).
 // It refuses a schema that requires a newer binary (ErrSchemaTooNew) and, unless
 // opts.Breaking, a pending migration that requires more than the schema has
-// (ErrBreakingMigration), applying nothing (index-schema.md, Upgrades).
+// (ErrBreakingMigration), applying nothing (index-schema.md, Upgrades). A migration whose
+// transaction the database aborts on a catalog conflict (40001; 42710 from the create of
+// schema_migrations: YugabyteDB) runs again from the start, up to five times in all, with a
+// warning on opts.Log each time (index-schema.md, Migrations).
 func ApplyMigrations(ctx context.Context, db *sql.DB, dialect string, opts MigrateOptions) (MigrationReport, error)
-type MigrateOptions struct{ Breaking bool }
+type MigrateOptions struct {
+    Breaking bool                           // apply a migration that requires more than the schema has
+    Log      *slog.Logger                   // the retries of a migration; nil: slog.Default()
+}
 type MigrationReport struct {
     Applied []int                           // applied by this run, ascending
     Version int                             // newest in schema_migrations after the run
