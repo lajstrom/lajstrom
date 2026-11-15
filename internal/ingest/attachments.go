@@ -141,10 +141,10 @@ func readLayer(ctx context.Context, rr provider.Repository, desc ocispec.Descrip
 }
 
 // indexAttachments writes the rows of the referrer r of repo once the registry serves it back,
-// when its subject is a version of the package of r.Path: the rows of its manifest replace those
-// it had, and for a legacy tag those of the version under the tag (Store.ReplaceAttachments).
-// Best effort: a failure is logged and counted, and the push stays a success; the next reindex
-// of the repo writes the rows (docs/spec/index-schema.md, Attachments).
+// when its subject is a version whose manifest is at r.Path (attachmentsOf): the rows of its
+// manifest replace those it had, and for a legacy tag those of the version under the tag
+// (Store.ReplaceAttachments). Best effort: a failure is logged and counted, and the push stays a
+// success; the next reindex of the repo writes the rows (docs/spec/index-schema.md, Attachments).
 func (p *Pipeline) indexAttachments(ctx context.Context, repo index.Repo, r Referrer) {
 	if repo.Format == ociFormat {
 		return
@@ -167,10 +167,14 @@ func (p *Pipeline) indexAttachments(ctx context.Context, repo index.Repo, r Refe
 	}
 }
 
-// attachmentsOf returns the version of the package of r.Path whose manifest is r's subject, and
-// the rows of r's attachments; a nil version when there is none.
+// attachmentsOf returns the version whose manifest is r's subject, of the package whose versions
+// may be in the OCI repository of r.Path (index.PackageOf) when its manifest is there
+// (index.ManifestPath), and the rows of r's attachments; a nil version when there is none. A
+// split version (#642) is found at the other form, where reindex lists its referrers too; the
+// version at the indexed form is not the subject of a referrer at the other form, which holds a
+// copy of its manifest at most (#1133).
 func (p *Pipeline) attachmentsOf(ctx context.Context, repo index.Repo, r Referrer) ([]index.Attachment, *index.Version, error) {
-	pkg, err := p.index.GetPackageByNameOCI(ctx, repo.ID, r.Path)
+	pkg, err := index.PackageOf(ctx, p.index, repo.ID, r.Path)
 	if errors.Is(err, index.ErrNotFound) {
 		return nil, nil, nil
 	} else if err != nil {
@@ -178,7 +182,7 @@ func (p *Pipeline) attachmentsOf(ctx context.Context, repo index.Repo, r Referre
 	}
 	v, err := p.index.GetVersionByDigest(ctx, repo.ID, r.Subject)
 	switch {
-	case errors.Is(err, index.ErrNotFound), err == nil && v.PackageID != pkg.ID:
+	case errors.Is(err, index.ErrNotFound), err == nil && (v.PackageID != pkg.ID || index.ManifestPath(*pkg, *v) != r.Path):
 		return nil, nil, nil
 	case err != nil:
 		return nil, nil, err
