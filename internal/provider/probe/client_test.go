@@ -3,10 +3,14 @@ package probe
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/lajstrom/lajstrom/internal/config"
@@ -166,5 +170,110 @@ func TestDoRecords(t *testing.T) {
 		if strings.Contains(got, leak) {
 			t.Errorf("exchanges show %q:\n%s", leak, got)
 		}
+	}
+}
+
+// TestDoTokenAfterChallenge is #1042 for the probe's own client: against a registry whose bearer
+// challenge names a scope of its own (Gitea's and Forgejo's scope="*"), the token got after the
+// first challenge is found by every later request with the same scopes, which goes out with it
+// and meets no 401. Before, every request did and got a 401, then went again with the cached
+// token. A challenge without a scope (Harbor's), or with the request's own (distribution's), is
+// unchanged: one 401, then the token from the cache. The ping, which has no scopes of its own,
+// still meets the registry's challenge as before: on Gitea each time.
+func TestDoTokenAfterChallenge(t *testing.T) {
+	const name = "lajstrom-probe-0/a"
+	const digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	for _, tt := range []struct {
+		name  string
+		scope func(path string) string // the scope parameter of the challenge to a request of path
+		pings int                      // of the two pings after the reads, those without a token
+	}{
+		{"a scope of its own, as Gitea and Forgejo", func(string) string { return "*" }, 2},
+		{"no scope, as Harbor", func(string) string { return "" }, 1},
+		{"the request's own scope, as distribution", func(path string) string {
+			if n := repositoryOf(path); n != "" {
+				return "repository:" + n + ":pull"
+			}
+			return ""
+		}, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			g := &tokenRegistry{scope: tt.scope}
+			g.srv = httptest.NewServer(g)
+			defer g.srv.Close()
+			base, _ := url.Parse(g.srv.URL)
+			c := newClient(config.Registry{URL: g.srv.URL, Auth: config.RegistryAuth{Username: "probe", Password: "s3cret"}}, base, nil)
+			for range 3 {
+				sendWant(t, c, http.MethodHead, "/v2/"+name+"/manifests/v1", http.StatusNotFound)
+			}
+			for range 3 {
+				sendWant(t, c, http.MethodHead, "/v2/"+name+"/blobs/"+digest, http.StatusNotFound)
+			}
+			if got, want := g.take(), []string{"HEAD /v2/" + name + "/manifests/v1"}; !slices.Equal(got, want) {
+				t.Errorf("reads without a token: %q, want the first only: %q", got, want)
+			}
+			for range 2 {
+				sendWant(t, c, http.MethodGet, "/v2/", http.StatusOK)
+			}
+			if got := g.take(); len(got) != tt.pings {
+				t.Errorf("pings without a token: %d, want %d", len(got), tt.pings)
+			}
+		})
+	}
+}
+
+// tokenRegistry is a registry with a bearer challenge, whose scope parameter scope gives for the
+// path of each request, and its token endpoint, /token, which grants the token for the Basic
+// credentials probe:s3cret. With the token, /v2/ is 200 and anything else 404. It keeps the
+// requests that came without the token.
+type tokenRegistry struct {
+	srv   *httptest.Server
+	scope func(path string) string
+	mu    sync.Mutex
+	bare  []string // "HEAD /v2/…"
+}
+
+func (g *tokenRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.URL.Path == "/token":
+		if u, p, ok := r.BasicAuth(); !ok || u != "probe" || p != "s3cret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"token":"granted"}`)
+	case r.Header.Get("Authorization") != "Bearer granted":
+		g.mu.Lock()
+		g.bare = append(g.bare, r.Method+" "+r.URL.Path)
+		g.mu.Unlock()
+		challenge := fmt.Sprintf(`Bearer realm="%s/token",service="fake"`, g.srv.URL)
+		if s := g.scope(r.URL.Path); s != "" {
+			challenge += fmt.Sprintf(`,scope="%s"`, s)
+		}
+		w.Header().Set("WWW-Authenticate", challenge)
+		w.WriteHeader(http.StatusUnauthorized)
+	case r.URL.Path != "/v2/":
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+// take returns the requests that came without the token since the last take.
+func (g *tokenRegistry) take() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	b := g.bare
+	g.bare = nil
+	return b
+}
+
+// sendWant sends a request of method to target through c and fails unless it is answered want.
+func sendWant(t *testing.T, c *client, method, target string, want int) {
+	t.Helper()
+	a, err := c.do(t.Context(), request{method: method, target: target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.status != want {
+		t.Fatalf("%s %s = %d, want %d", method, target, a.status, want)
 	}
 }
