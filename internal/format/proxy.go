@@ -117,8 +117,9 @@ type Grouper interface {
 	// (§8.1, §8.2), in member order, into the group's document (§8.3): the union of their
 	// versions, the first member's entry of a version that several have, the format's own
 	// fields by the format's rules (npm: docs/spec/http-routing.md, npm, Group). Every link to a
-	// file starts with base, <server.externalURL>/<format>/<group>/; a member's links are under
-	// its own base. docs has at least one element. The Document's Kind is kind.
+	// file starts with base, <server.externalURL>/<format>/<group>/, or is relative to the
+	// document (pypi); a member's links are under its own base, or relative. docs has at least
+	// one element. The Document's Kind is kind.
 	MergeGroup(ctx context.Context, group index.Repo, name, kind string, docs []MemberDocument, base string) (Document, error)
 }
 
@@ -132,6 +133,17 @@ type Unlisted interface {
 	// without Checksums, when the upstream does not have the document of ref.Kind; false for a
 	// file the format does not take so, which is then the 404 of a file no document lists.
 	UnlistedEntry(ref ArtifactRef) (UpstreamEntry, bool)
+}
+
+// HostedScoper is implemented by a Grouper whose hosted repos render the document of a name
+// under another index_cache scope than its key (docs/spec/proxy-and-group.md §8.3): a group reads
+// its hosted member's document at HostedScope(Key(name)). Without it, the scope is the key.
+type HostedScoper interface {
+	Grouper
+
+	// HostedScope returns the index_cache scope of a hosted repo's document of the name whose key
+	// is key: pypi simple/<project>.
+	HostedScope(key string) IndexScope
 }
 
 // Adopter is implemented by a plugin whose proxy repos may become hosted repos (docs/spec/
@@ -193,11 +205,11 @@ type Proxy interface {
 	//
 	// Of a group (§8): the documents of the members that take part, merged on every call
 	// (Grouper.MergeGroup) and stored nowhere. The hosted member's is its index_cache row of
-	// scope Key(name) and kind (CachedDocument), a proxy member's what Document answers for it
-	// with WithVia(ctx, group). A proxy member is hidden while the hosted member has a package of
-	// the package path of name that matches no group.merge pattern; one whose lists refuse the
-	// name or that answers 404 does not have it; one that fails otherwise does not take part
-	// (§8.1). The Cache has the group's RepoID, Scope Key(name), SHA256 the group's ETag (§8.5),
+	// scope Key(name), or HostedScoper.HostedScope of it, and kind (CachedDocument), a proxy
+	// member's what Document answers for it with WithVia(ctx, group). A proxy member is hidden
+	// while the hosted member has a package of the package path of name that matches no
+	// group.merge pattern; one whose lists refuse the name or that answers 404 does not have it;
+	// one that fails otherwise does not take part (§8.1). The Cache has the group's RepoID, Scope Key(name), SHA256 the group's ETag (§8.5),
 	// RenderedAt the newest member document's, and no ID. When no member has the name: the
 	// first failure of a proxy member, else index.ErrNotFound.
 	Document(ctx context.Context, repo index.Repo, name, kind string) (*index.Cache, error)

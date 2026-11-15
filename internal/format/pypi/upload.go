@@ -36,8 +36,9 @@ const maxFields = 8 << 20
 // bytes again; 400 with the reason; 409 "File already exists" for other bytes under the file
 // name's version and variant, which twine --skip-existing skips; 413 over policy.maxFileSize.
 // A wheel with a build tag that the index has under the earlier form of its variant goes to that
-// tag (ParamVariant). It needs write on the repo. A proxy takes no upload: 405 once the
-// principal may read it (format.WriteTarget).
+// tag (ParamVariant). It needs write on the repo. A proxy takes no upload, and a group sends it
+// to its hosted member, where it needs write, once the principal may read the group
+// (format.WriteTarget; 405 for a proxy and a group without a hosted member).
 func (h *handlers) upload(w http.ResponseWriter, r *http.Request) {
 	repo, ok := format.RepoFrom(r.Context())
 	if !ok {

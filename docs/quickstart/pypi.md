@@ -255,9 +255,35 @@ The repo's `upstream` settings change with `PATCH /api/v1/repos/pypi/pypi`
 ([api.md](../api.md#change-patch-apiv1reposformatname)): `metadataTTL`, `negativeTTL`, `offline`
 (never ask the upstream, serve what is held), `allow` and `deny`; `DELETE
 /api/v1/repos/pypi/pypi/upstream-cache` drops the cached pages. An upload to the proxy is `405`:
-publish to a hosted repo.
+publish to a hosted repo, or through a group.
 
-## 6. In the registry
+## 6. A group: one index for both
+
+A group serves its members under one URL, in order: the projects of `pypi/internal` and those
+of pypi.org, and it takes the uploads for its hosted member. On the host:
+
+```sh
+bin/lajstrom admin repo create pypi/all --kind group --group '{"members": ["internal", "pypi"]}' --config $cfg
+bin/lajstrom admin binding create --principal user:alice --role reader --mask pypi/all --config $cfg
+```
+
+In the container, one index for install and upload:
+
+```sh
+pip install --index-url http://alice:<password>@localhost:8080/pypi/all/simple/ my-pkg requests
+twine upload --repository-url http://localhost:8080/pypi/all/ -u alice dist/*   # goes to pypi/internal
+```
+
+A project's page merges the members' pages, file by file, the first member's file of a name
+winning, and every link names the group. A project that the hosted member holds hides the
+proxy's files of that name: pypi.org is not asked for it, so a public `my-pkg` uploaded there
+later cannot replace yours, whatever its version. The group's `merge` patterns name the
+projects whose files are merged all the same. A project that `pypi/internal` does not hold yet
+is open to pypi.org: keep your own names in the proxy's `deny`. An upload through the group goes
+to its hosted member and needs the permission there: alice uploads to `pypi/all` because she is
+a `writer` on `pypi/internal`.
+
+## 7. In the registry
 
 Each file is a manifest under `pypi/internal/<normalized name>`, tagged with the version and the
 tag set (`1.0__py3-none-any`, [the tag scheme](../spec/manifest-profile.md)), with the file and
@@ -271,7 +297,7 @@ crane manifest localhost:5000/pypi/internal/my-pkg:1.0__py3-none-any | jq .annot
 `bin/lajstrom reindex --repo pypi/internal --config $cfg` rebuilds the index of the repo from
 those manifests ([operations.md](../operations.md#reindex)).
 
-## 7. Clean up
+## 8. Clean up
 
 A version goes with `DELETE` on the API: every file of the version, or with `?variant=` one of
 them, `sdist` or the wheel's tag set

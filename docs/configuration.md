@@ -365,8 +365,9 @@ repos:
   - {name: all, format: npm, kind: group, group: {members: [internal, npmjs]}}
 ```
 
-A proxy of pypi.org that never asks it for the projects `acme-*`
-([quickstart/pypi.md](quickstart/pypi.md) §5):
+A proxy of pypi.org that never asks it for the projects `acme-*`, and a group of it and the
+hosted pypi repo, one index URL for pip and twine ([quickstart/pypi.md](quickstart/pypi.md) §5
+and §6):
 
 ```yaml
 upstreams:
@@ -374,7 +375,9 @@ upstreams:
     format: pypi
     url: "https://pypi.org/simple/"
 repos:
+  - {name: internal, format: pypi, registry: local}
   - {name: pypi, format: pypi, registry: local, kind: proxy, upstream: {name: pypi, deny: ["acme-*"]}}
+  - {name: all, format: pypi, kind: group, group: {members: [internal, pypi]}}
 ```
 
 An `oci` proxy of Docker Hub, with a personal access token that raises its pull limit
@@ -543,7 +546,7 @@ create loses to another's counts the repo as present.
 | `repos[].name` | name | none, required | none | Repo name, unique within its format; same rule as registry names ([manifest-profile.md](spec/manifest-profile.md) §4.1), and not a name that Zot's storage or Harbor's routes keep for themselves ([ADR 0017](adr/0017-the-grammar-of-oci-names.md)): one that ends in `blobs`, `.uploads` or `.sync`, or is `index.json`, `oci-layout`, `manifests`, `referrers` or `tags`. Example: `scratch`. |
 | `repos[].format` | name | none, required | none | Plugin name: `raw`, `pypi`, `apt`, `maven`, `npm`; or `oci`, the pass-through format of the OCI facade, which has no plugin ([quickstart/oras.md](quickstart/oras.md)). Another name stops `serve`: `repos[0]: format: "rpm" is not a format this server has`. |
 | `repos[].registry` | name | none, required but on a group | none | One of `registries[].name`. A group has none. |
-| `repos[].kind` | `hosted`, `proxy`, `group` | `hosted` | none | What the repo serves ([proxy-and-group.md](spec/proxy-and-group.md) §1): what is published to it, what it fetched from an upstream, or its members under one URL. Set at creation and never changed. A proxy and a group need a format whose plugin has them (npm, and pypi for a proxy), or `oci`, which needs none. |
+| `repos[].kind` | `hosted`, `proxy`, `group` | `hosted` | none | What the repo serves ([proxy-and-group.md](spec/proxy-and-group.md) §1): what is published to it, what it fetched from an upstream, or its members under one URL. Set at creation and never changed. A proxy and a group need a format whose plugin has them (npm, pypi), or `oci`, which needs none. |
 | `repos[].upstream` | map | none | none | A proxy repo's upstream, with the keys of the management API ([proxy-and-group.md](spec/proxy-and-group.md) §2.2): `name`, one of `upstreams[].name` of the repo's format (required), `metadataTTL` (`10m`), `negativeTTL` (`2m`), `offline` (`false`), `allow` and `deny` (lists of name patterns). Required on a proxy repo, refused on another kind. Example: `{name: npmjs, deny: ["@acme/*"]}`. |
 | `repos[].group` | map | none | none | A group's settings, with the keys of the management API ([proxy-and-group.md](spec/proxy-and-group.md) §2.3): `members`, the names of 1 to 16 repos of the group's format in the order they are read, each hosted or proxy and at most one hosted (required), and `merge` (name patterns whose versions are merged even when the hosted member holds them). An `oci` group may have several hosted members, has no `merge`, and has `paths` instead (required): each member's name to the patterns of the paths it serves, `<path>`, `<prefix>/*` or `*`, every member at least one and no pattern on two members (§12.1). Required on a group, refused on another kind; a group has no `registry` and no `policy`. The bootstrap creates the groups after every other repo of the list. Example: `{members: [internal, npmjs]}`. |
 | `repos[].anonymousRead` | bool | `false` | none | Readable without credentials, when `auth.anonymousRead` is `true`. |
