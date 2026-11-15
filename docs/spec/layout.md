@@ -25,6 +25,7 @@ internal/format/deb/          deb/apt plugin: control and .dsc parsing, Packages
 internal/format/maven/        maven plugin: coordinates, POM, sessions, maven-metadata.xml, checksums
 internal/format/npm/          npm plugin: packuments, publish, dist-tags journal, proxy and group hooks, audit
 internal/format/rpm/          rpm plugin: header parsing, repodata (repomd, primary, filelists, other), signed repomd, Packages routes
+internal/format/terraform/    terraform plugin: module registry protocol (discovery, versions, download), archive checks, signed archive URLs, publish
 internal/format/formattest/   test doubles: Fake plugin, partial index.Store; imported only by tests
 internal/oci/profile/         media types, annotations, Escape/EscapeComponent, manifest build+validate (pure)
 internal/ingest/              pipeline (validate → parse → push → index), publication sessions
@@ -75,7 +76,7 @@ Conventions:
 - `internal/` only; nothing is a public Go API in v0.x.
 - A format plugin never imports another format plugin, nor `ingest`: plugins import
   `oci/profile`, `format`, `index` (read), `auth` and `provider` (reads; `make lint` refuses a
-  write), and raw and npm `server`; they publish through `format.Deps.Ingest`. Frontend HTTP
+  write), and raw, npm and terraform `server`; they publish through `format.Deps.Ingest`. Frontend HTTP
   handlers live inside the plugin package (`routes.go`; maven's `deploy.go` and `resolve.go`);
   parsing is pure (no I/O beyond the reader passed in), in `parse.go` where the format has one.
 - Only `provider/*` talks to the backend registry. Only `index/*` talks to the database.

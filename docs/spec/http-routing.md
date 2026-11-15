@@ -14,7 +14,7 @@ https://<host>/api/v1/...               management REST
 https://<host>/-/healthz  /-/readyz  /-/version
 https://<host>/-/oidc/...               OIDC login: browser and device flows (§7, M6)
 http://<metricsListen>/metrics        Prometheus, a separate listener, never on the public host
-https://<host>/.well-known/terraform.json   (after the MVP)
+https://<host>/.well-known/terraform.json   Terraform's service discovery (§3, terraform)
 https://<host>/ui/...                   (after the MVP)
 https://<repo>.<domain>/...             FQDN mode: the tree of one repo, rewritten to the path form (§1.1)
 ```
@@ -108,8 +108,10 @@ system endpoints and the OIDC login are on the main host only.
   On a repo host `/v2/` is a path of the repo, so docker and oras find no registry there. The
   realm and the service of the bearer challenge, and the `iss` and `aud` of every token, are
   those of `server.externalURL`, whatever the `Host`.
-- Terraform (after the MVP) discovers `/.well-known/terraform.json` on a host; on a repo host
-  that is `/terraform/<repo>/.well-known/terraform.json`, a route of the terraform plugin.
+- Terraform discovers `/.well-known/terraform.json` on a host; on a repo host that is
+  `/terraform/<repo>/.well-known/terraform.json`, a route of the terraform plugin, whose
+  `modules.v1` is the root of the repo host and whose module addresses keep the repo as their
+  namespace (§3, terraform).
 
 **URLs on a repo host** follow it. Their host is built from the repo name, the form the request
 used and the domain, their scheme and port are those of `server.externalURL`; nothing of them
@@ -124,6 +126,8 @@ comes from the request's `Host`.
   root; its `ETag` is the digest of the bytes served. Of a group it is the group's host.
 - The links that are relative already stay so: the PyPI simple index, apt `Release`, the rpm
   repodata. The `Location` of a blob's `307` is the registry's own URL, as on the main host.
+- Terraform's `X-Terraform-Get` is a path, which the terraform plugin writes without
+  `/terraform/<repo>` on a repo host, as a `Location` is.
 
 A request on a repo host of the first form looks its repo up once per format the server serves,
 of the second form once; the router then looks it up as on the main host.
@@ -723,6 +727,53 @@ gpgcheck=0
 
 with `username=` and `password=` for a repo without anonymous read, and `gpgcheck=1` with the
 packager's key in `gpgkey=` for signed packages. zypper: `zypper addrepo https://host/rpm/<repo>/ <repo>`.
+
+### terraform (#66, ADR 0023)
+
+Implements Terraform's module registry protocol (`modules.v1`), which Terraform and OpenTofu
+read, for a hosted repo: the service discovery, the versions of a module and its download, whose
+archive Lajstrom serves itself. A repo is a Terraform namespace: the module address is
+`<host>/<repo>/<name>/<system>`, `art.example.com/infra/vpc/aws`. `<name>` is letters, digits,
+`-` and `_`, 1 to 64 of them, beginning and ending with a letter or a digit; `<system>` is
+lowercase letters and digits, 1 to 64: Terraform's grammar of an address. A repo whose name has a
+`.` is no namespace: Terraform refuses its addresses before it asks, and the routes serve the
+repo to other clients all the same. The provider registry protocol (`providers.v1`),
+`login.v1` (`terraform login`), `.zip` archives, proxy repos of registry.terraform.io and groups
+are not served. OpenTofu 1.10 and later also installs a module from an `oci` repo, with an
+`oci://` source through the facade (§2), without this protocol.
+
+| Method and path | Behaviour |
+| --- | --- |
+| `GET /.well-known/terraform.json` | the service discovery of the host, to any principal: `{"modules.v1":"/terraform/"}`, `application/json`. Terraform reads it over `https://` at the root of the host of a module address. No other service is listed. On a repo host (§1.1) the path is the repo's, below |
+| `GET /terraform/<repo>/.well-known/terraform.json` | `read`. The service discovery of a repo host: `{"modules.v1":"/"}`, the root of the repo host; on the main host, which no client asks, `{"modules.v1":"/terraform/<repo>/"}`. A module address on a repo host keeps the repo as its namespace, `infra.art.example.com/infra/vpc/aws`, so Terraform asks the routes of `<namespace>` below |
+| `GET /terraform/<repo>/<name>/<system>/versions` | `read`. `{"modules":[{"versions":[{"version":"1.2.0"},…]}]}`: every version of the module, by SemVer precedence, lowest first, pre-releases included (Terraform installs one only when a constraint names it), `application/json`. From `index_cache` (scope the package path, kind `versions`), rendered on the first `GET` after a publish or a delete, as raw's listing. The module is looked up by its package path (manifest-profile.md §4.1), so `VPC/aws` finds `vpc/aws`. `404` for a module the repo does not have |
+| `GET /terraform/<repo>/<name>/<system>/<version>/download` | `read`. `204` with `X-Terraform-Get`, the path of the version's archive (the next rows), `/terraform/<repo>/<name>/<system>/<version>/<file>`, which Terraform resolves against the URL of the download; on a repo host it is written without `/terraform/<repo>` (§1.1). For a principal that is not anonymous the path ends with `?token=<token>`, a bearer token of rbac.md §4 that downloads this version and nothing else, for 20 minutes: Terraform fetches the archive with go-getter, which sends the credentials of `~/.netrc` and not those of the `credentials` block. `<version>` is a version the versions route lists, `1.2.0`; `404` for one the module does not have |
+| `GET /terraform/<repo>/<namespace>/<name>/<system>/versions`, `GET /terraform/<repo>/<namespace>/<name>/<system>/<version>/download` | the two rows above, where `<namespace>` is the repo's own name: the routes Terraform asks on a repo host. Any other `<namespace>` is `404` |
+| `GET /terraform/<repo>/<name>/<system>/<version>/<file>`, `HEAD` | the archive: `<file>` is the title of the version's file layer, `<name>-<system>-<version>.tar.gz` (any other is `404`), read as the blob `GET` of the facade (§2, `format.ServeBlob`): `307` or stream, `Range`, `ETag` the blob digest, `Last-Modified` and `Docker-Content-Digest` those of the version, `Content-Type: application/gzip`; `HEAD` from the backend's `HEAD`. It needs `read` on the repo, or, in place of credentials, the `token` of the query that a download of this version wrote: a token that does not verify, has expired or downloads another version is `401` with the Basic challenge, as credentials refused are |
+| `PUT /terraform/<repo>/<name>/<system>/<version>` | `write`. One module archive (body), a gzip-compressed tar. Equivalent to `oras push` with the terraform profile: the plugin builds the manifest from the path. `<version>` is a SemVer 2.0.0 version without build metadata and without a leading `v` (`1.2.0`, `2.0.0-rc.1`), else `400`: Terraform orders `1.0.0+a` and `1.0.0+b` as one version, and asks for a version as its library prints it. A `<name>` or `<system>` outside the grammar above is `400`. A body that is not a gzip-compressed tar archive whose entries are paths without a leading `/` or a `..` component, of regular files, directories and links whose target is such a path, a regular file among them, is `400`, at most 2^18 entries and 1 GiB unpacked; a body above the repo's `maxFileSize` is `413`. The body streams into the registry ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)) and passes the archive's checks on its way; a refused upload stores nothing. `201` with `Location` (the archive's path), `Docker-Content-Digest` (the manifest digest) and a JSON body `{"namespace", "name", "system", "version", "filename", "digest", "tag"}`. The same bytes again are the idempotent repeat, `201` with the same digest. `409` for other bytes under a version of the module (the tag holds another manifest), and for a name another spelling of which the repo holds, naming it (manifest-profile.md §4.1) |
+
+A version is immutable while it exists. It is deleted as in every format:
+`DELETE /api/v1/repos/terraform/<repo>/packages/<name>%2F<system>/versions/<version>` or the
+`DELETE` of its manifest on `/v2`; the next versions document is rendered without it. `oras push`
+to `/v2/terraform/<repo>/<name>/<system>:<tag>` with the terraform profile works too.
+
+Client config: a `credentials` block in the CLI configuration (`~/.terraformrc`, or the file of
+`TF_CLI_CONFIG_FILE`), whose token, a personal access token or a deploy token of the repo with
+`read`, Terraform sends as `Authorization: Bearer`; or the variable `TF_TOKEN_art_example_com`.
+None for a repo with anonymous read.
+
+```hcl
+credentials "art.example.com" {
+  token = "<token>"
+}
+```
+
+```hcl
+module "vpc" {
+  source  = "art.example.com/infra/vpc/aws"
+  version = "~> 1.2"
+}
+```
 
 ## 4. Management API `/api/v1`
 
