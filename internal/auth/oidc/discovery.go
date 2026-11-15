@@ -96,6 +96,11 @@ func checkEndpoint(s string, allowHTTP bool) error {
 	return fmt.Errorf("%q is not https", s)
 }
 
+// acceptJSON is the Accept of the requests for the discovery document and the JWKS: the API
+// server of Kubernetes answers its JWKS as application/jwk-set+json, and 406 to a request that
+// accepts application/json only.
+const acceptJSON = "application/json, application/jwk-set+json"
+
 // getJSON reads the JSON document at u into v. Any failure is an error wrapping ErrUnavailable
 // that names the URL, which holds no secret.
 func (c *Client) getJSON(ctx context.Context, u string, v any) error {
@@ -103,7 +108,7 @@ func (c *Client) getJSON(ctx context.Context, u string, v any) error {
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrUnavailable, u, err)
 	}
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", acceptJSON)
 	resp, err := c.cfg.HTTPClient.Do(req) //nolint:gosec // the configured issuer, or its discovery document's endpoints
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrUnavailable, u, err)
