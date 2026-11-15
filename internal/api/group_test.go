@@ -97,8 +97,8 @@ func TestCreateGroupInvalid(t *testing.T) {
 		{"a merge pattern with a space", group + `, "group": {"members": ["internal"], "merge": ["@a b/*"]}}`, "group.merge[0]: "},
 		{"a group on a hosted repo", `{"format": "npm", "name": "x", "registry": "local", "group": {"members": ["internal"]}}`,
 			"group: only a group repo has one, not a hosted repo"},
-		{"a format without group repos", `{"format": "pypi", "name": "all", "kind": "group", "group": {"members": ["a"]}}`,
-			"kind: format pypi has no group repos"},
+		{"a format without group repos", `{"format": "rpm", "name": "all", "kind": "group", "group": {"members": ["a"]}}`,
+			"kind: format rpm has no group repos"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

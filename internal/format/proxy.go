@@ -39,8 +39,8 @@ type Proxier interface {
 	// proxy_meta holds of the upstream's document (nil without a row: the repo's versions
 	// alone, as a hosted repo's document), and the versions of the name that st has in repo,
 	// whose bytes (checksums, size) win over kept's. Every link to a file starts with base,
-	// <server.externalURL>/<format>/<repo>/, so that a client never gets an upstream URL. The
-	// Document's Kind is kind.
+	// <server.externalURL>/<format>/<repo>/, or is relative to the document, as a hosted repo's
+	// (pypi), so that a client never gets an upstream URL. The Document's Kind is kind.
 	RenderProxy(ctx context.Context, repo index.Repo, name, kind string, kept []byte, st index.Reader, base string) (Document, error)
 }
 

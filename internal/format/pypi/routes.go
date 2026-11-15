@@ -1,6 +1,7 @@
 package pypi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,7 +40,8 @@ const (
 //
 // The pages come from index_cache through format.CachedDocument, in the form the Accept header
 // asks for (PEP 691: JSON, or HTML by default), with Vary: Accept. Ingest drops the repo's
-// documents on every publish, so the next GET renders the page again.
+// documents on every publish, so the next GET renders the page again. A proxy's pages and files
+// come from the core of proxy and group repos (proxyroutes.go).
 func (p Plugin) Routes(r format.Router, deps format.Deps) {
 	if deps.Log == nil {
 		deps.Log = slog.Default().With("format", Name)
@@ -110,7 +112,7 @@ func (h *handlers) projects(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	h.page(w, r, repo, scopeProjects)
+	h.page(w, r, repo, "")
 }
 
 // project serves the page of a project: its files, oldest version first. A project name that is
@@ -125,18 +127,31 @@ func (h *handlers) project(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, pageURL(repo, project), http.StatusMovedPermanently) //nolint:gosec // a path of this server: pageURL escapes the name
 		return
 	}
-	h.page(w, r, repo, format.IndexScope(scopeProjectsPath+project))
+	h.page(w, r, repo, project)
 }
 
-// page serves a scope of the simple index in the kind the request accepts.
-func (h *handlers) page(w http.ResponseWriter, r *http.Request, repo index.Repo, scope format.IndexScope) {
+// page serves the page of project, or the project list when project is "", in the kind the
+// request accepts: a hosted repo's from index_cache, a proxy's from the core.
+func (h *handlers) page(w http.ResponseWriter, r *http.Request, repo index.Repo, project string) {
 	w.Header().Add("Vary", "Accept")
 	kind, contentType, ok := negotiate(r.Header.Values("Accept"))
 	if !ok {
 		http.Error(w, "not acceptable: "+contentTypeJSON+", "+contentTypeHTML+" or text/html\n", http.StatusNotAcceptable)
 		return
 	}
-	c, err := format.CachedDocument(r.Context(), h.deps.Index, h.plugin, repo, scope, kind)
+	ctx := r.Context()
+	var c *index.Cache
+	var err error
+	switch {
+	case proxied(repo) && project == "":
+		c, err = h.proxyProjects(ctx, repo, kind)
+	case proxied(repo):
+		c, err = h.proxyPage(ctx, repo, project, kind)
+	case project == "":
+		c, err = format.CachedDocument(ctx, h.deps.Index, h.plugin, repo, scopeProjects, kind)
+	default:
+		c, err = format.CachedDocument(ctx, h.deps.Index, h.plugin, repo, format.IndexScope(scopeProjectsPath+project), kind)
+	}
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -214,7 +229,8 @@ func accepted(headers []string) []accept {
 	return out
 }
 
-// file serves a distribution of a project, or with the .metadata suffix its core metadata.
+// file serves a distribution of a project, or with the .metadata suffix its core metadata. A
+// proxy's come from the core: held, or fetched on a miss, the metadata's with its wheel.
 func (h *handlers) file(w http.ResponseWriter, r *http.Request) {
 	repo, ok := h.start(w, r)
 	if !ok {
@@ -223,19 +239,19 @@ func (h *handlers) file(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	project, version, filename := r.PathValue("project"), r.PathValue("version"), r.PathValue("filename")
 	name, metadata := strings.CutSuffix(filename, metadataSuffix)
-	matches, err := h.deps.Index.FindFiles(ctx, repo.ID, name)
-	if err != nil {
-		h.fail(w, r, err)
+	if metadata && !isWheel(name) {
+		h.fail(w, r, fmt.Errorf("%w: %s is not a wheel: an sdist has no core metadata file (PEP 658)", index.ErrNotFound, name))
 		return
 	}
 	var m *index.FileMatch
-	for i := range matches {
-		if matches[i].Package.Name == Normalize(project) && matches[i].Version.Version == version {
-			m = &matches[i]
-		}
+	var err error
+	if proxied(repo) {
+		m, repo, err = h.proxyFile(ctx, repo, project, version, name)
+	} else {
+		m, err = h.hostedFile(ctx, repo, project, version, name)
 	}
-	if m == nil {
-		h.fail(w, r, fmt.Errorf("%w: %s %s has no file %s", index.ErrNotFound, project, version, name))
+	if err != nil {
+		h.fail(w, r, err)
 		return
 	}
 	if metadata {
@@ -260,6 +276,20 @@ func (h *handlers) file(w http.ResponseWriter, r *http.Request) {
 		h.deps.Log.WarnContext(ctx, "pypi: the blob stream failed after the response started", "repo", repo.Format+"/"+repo.Name,
 			"file", name, "digest", m.File.Digest.String(), "error", err.Error())
 	}
+}
+
+// hostedFile returns the file name of the version of project that the hosted repo holds.
+func (h *handlers) hostedFile(ctx context.Context, repo index.Repo, project, version, name string) (*index.FileMatch, error) {
+	matches, err := h.deps.Index.FindFiles(ctx, repo.ID, name)
+	if err != nil {
+		return nil, err
+	}
+	for i := range matches {
+		if matches[i].Package.Name == Normalize(project) && matches[i].Version.Version == version {
+			return &matches[i], nil
+		}
+	}
+	return nil, fmt.Errorf("%w: %s %s has no file %s", index.ErrNotFound, project, version, name)
 }
 
 // metadata serves the core metadata of a file (PEP 658) from the metadata the index holds: the

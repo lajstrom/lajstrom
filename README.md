@@ -55,7 +55,7 @@ with the real clients (`test/e2e/`):
 | Format | Publish with | Install with | Also |
 | --- | --- | --- | --- |
 | [raw](docs/quickstart/raw.md) | `curl -T` | `curl`, `oras pull` | every version kept, `?digest=` pins one, `Range`, a JSON listing |
-| [pypi](docs/quickstart/pypi.md) | `twine upload`, `uv publish` | `pip`, `uv`, `poetry` | PEP 503 and PEP 691 indexes, PEP 658 metadata |
+| [pypi](docs/quickstart/pypi.md) | `twine upload`, `uv publish` | `pip`, `uv`, `poetry` | PEP 503 and PEP 691 indexes, PEP 658 metadata; a proxy of pypi.org |
 | [apt](docs/quickstart/apt.md) | `curl -T` a `.deb`, `oras push` | `apt-get` on Debian and Ubuntu | signed `InRelease` and `Release.gpg`, `by-hash`, key rotation |
 | [maven](docs/quickstart/maven.md) | `mvn deploy`, Gradle `publish` | `mvn`, Gradle | md5, sha1, sha256 and sha512 checksums; a release appears whole or not at all; SNAPSHOT builds in a repo of their own |
 | [npm](docs/quickstart/npm.md) | `npm publish`, `pnpm publish`, `yarn npm publish` | `npm`, `pnpm`, `yarn` | dist-tags; a proxy of npmjs.org and groups |
@@ -106,7 +106,7 @@ best part of it:
 | [Configuration](docs/configuration.md) | every key of `lajstrom.yaml`, its default and its environment variable |
 | [Quick start: raw](docs/quickstart/raw.md) | `curl -T` a file in, `curl` it out, see the manifest in the registry |
 | [Quick start: apt](docs/quickstart/apt.md) | a `.deb` in with `curl -T` or `oras push`, out with `apt-get install` from a signed repo |
-| [Quick start: pypi](docs/quickstart/pypi.md) | `twine upload` or `uv publish` in, `pip install` or `uv pip install` out, with PEP 658 metadata |
+| [Quick start: pypi](docs/quickstart/pypi.md) | `twine upload` or `uv publish` in, `pip install` or `uv pip install` out, with PEP 658 metadata; a proxy of pypi.org |
 | [Quick start: maven](docs/quickstart/maven.md) | `mvn deploy` or Gradle's `publish` in, `mvn dependency:get` or a Gradle build out, with all four checksums |
 | [Quick start: rpm](docs/quickstart/rpm.md) | an `.rpm` in with `curl -T` or `oras push`, out with `dnf install` or `zypper install` from a GPG-checked repo |
 | [Quick start: npm](docs/quickstart/npm.md) | `npm publish`, `pnpm` and `yarn npm publish` in, `npm install` out, dist-tags, tokens, a proxy of npmjs.org, coming from Verdaccio |
