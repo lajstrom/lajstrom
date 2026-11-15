@@ -785,7 +785,8 @@ listed here so frontends do not invent their own. What each call needs, in the a
 
 | Calls | Needs |
 | --- | --- |
-| reading a repo's content: `GET /api/v1/repos` (lists only the repos the caller may read), `GET …/repos/<format>/<repo>`, `GET …/packages` and `GET …/packages/<name>/versions` (#72), `GET …/packages/<name>/versions/<version>` (#136), `GET …/versions/<version>/attachments` (#89), and the search of #956 after the MVP | `read` on the repo; a repo the caller may not read is `404`, as on the frontends (rbac.md §3) |
+| reading a repo's content: `GET /api/v1/repos` (lists only the repos the caller may read), `GET …/repos/<format>/<repo>`, `GET …/packages` and `GET …/packages/<name>/versions` (#72), `GET …/packages/<name>` (#958), `GET …/packages/<name>/versions/<version>` (#136), `GET …/versions/<version>/attachments` (#89) | `read` on the repo; a repo the caller may not read is `404`, as on the frontends (rbac.md §3) |
+| searching: `GET /api/v1/search` (#956) | nothing; it searches the repos the caller may read, as `GET /api/v1/repos` lists them, and a repo it may not read adds no hit (rbac.md §3) |
 | changing a repo: `PATCH`, `DELETE`, `POST …/reindex`, `GET …/reindex`, the deploy tokens of the repo | `manage` on the repo |
 | deleting versions: `DELETE …/repos/<format>/<repo>/packages/<name>/versions/<version>` (#61), `POST …/repos/<format>/<repo>/versions:delete` (#72) | `delete` on the repo, checked before the body is read; a repo the caller may not read is `404` |
 | yanking and unyanking a pypi version: `PUT` and `DELETE …/repos/pypi/<repo>/packages/<name>/versions/<version>/yank` (#81) | `write` on the repo, as an npm deprecation; a repo the caller may not read is `404` |
@@ -800,7 +801,8 @@ listed here so frontends do not invent their own. What each call needs, in the a
 | --- | --- |
 | info | `GET /api/v1/info` |
 | repos | `GET /api/v1/repos[?format=]`, `POST /api/v1/repos`, `GET/PATCH /api/v1/repos/<format>/<repo>`, `DELETE /api/v1/repos/<format>/<repo>[?force=true]`, `POST …/reindex`, `GET …/reindex`, `DELETE …/upstream-cache[?name=]` (§6) |
-| packages, versions | `GET /api/v1/repos/<format>/<repo>/packages[?prefix=&limit=&cursor=]`, `GET …/packages/<name>/versions[?limit=&cursor=&without=]`, `GET …/packages/<name>/versions/<version>[?variant=]`, `GET …/packages/<name>/versions/<version>/attachments[?variant=&kind=&predicateType=&verified=&limit=]`, `DELETE …/packages/<name>/versions/<version>[?variant=&force=]`, `POST /api/v1/repos/<format>/<repo>/versions:delete`, `PUT` and `DELETE …/packages/<name>/versions/<version>/yank` (pypi); search after the MVP (#956) |
+| packages, versions | `GET /api/v1/repos/<format>/<repo>/packages[?prefix=&q=&attr=&facet=&sort=&order=&limit=&cursor=]`, `GET …/packages/<name>`, `GET …/packages/<name>/versions[?limit=&cursor=&without=]`, `GET …/packages/<name>/versions/<version>[?variant=]`, `GET …/packages/<name>/versions/<version>/attachments[?variant=&kind=&predicateType=&verified=&limit=]`, `DELETE …/packages/<name>/versions/<version>[?variant=&force=]`, `POST /api/v1/repos/<format>/<repo>/versions:delete`, `PUT` and `DELETE …/packages/<name>/versions/<version>/yank` (pypi) |
+| search | `GET /api/v1/search?q=[&format=&limit=&cursor=]` (#956) |
 | users | `GET /api/v1/users[?kind=&limit=&cursor=]`, `POST /api/v1/users`, `GET/PATCH/DELETE /api/v1/users/<name>`, `POST …/password`; a service account is a user of kind `service` (rbac.md §1) |
 | tokens | `GET/POST /api/v1/users/<name>/tokens` (PAT), `DELETE …/tokens/<id>`; `GET/POST /api/v1/repos/<format>/<repo>/deploy-tokens`, `DELETE …/<id>`; the deploy tokens over a mask (rbac.md §1): `GET /api/v1/deploy-tokens[?repoMask=]`, `POST /api/v1/deploy-tokens` (`repoMask` in the body), `DELETE /api/v1/deploy-tokens/<id>` |
 | bindings | `GET /api/v1/bindings[?principal=&limit=&cursor=]`, `POST /api/v1/bindings`, `DELETE /api/v1/bindings/<id>`; a binding's principal is `user:<name>`, `user:<uid>`, `group:<name>`, or a `cert:` or `k8s:` principal or pattern (rbac.md §3, §8, §9) |
@@ -820,15 +822,53 @@ message names the limit. A `429` (a throttle of failed logins,
 with `Retry-After`; #130) is `UNAVAILABLE`: try again later. A `412` (a conditional delete that
 found the version changed) is `CONFLICT`, as `409` is. There is no eighth code.
 
-Lists of a repo's content (`read`): `GET …/packages` pages the packages by name, `?prefix=`
-keeps those whose name starts with it; `GET …/packages/<name>/versions` pages the versions,
+Lists of a repo's content (`read`): `GET …/packages` pages the packages, by name unless
+`?sort=` says otherwise (below); `GET …/packages/<name>/versions` pages the versions,
 newest first by the publish time of their first variant, each with its variants (`variant`,
 `tag`, manifest `digest`, `publishedAt`), `publishedAt` and `lastModified` (of the first and the
 newest variant), its `pointers` (npm dist-tags) and, on a yanked pypi version only, `yanked`
 (`{"reason": "…"}`, `""` without one). The publish time is
 `org.opencontainers.image.created`, `versions.created_at`, which reindex rebuilds. Both pages are
-`?limit=` and `?cursor=`; the cursor holds the place of the page's last row (a name; a time and a
-version), never an offset.
+`?limit=` and `?cursor=`; the cursor holds the place of the page's last row (a name, or a sort's
+value and a name; a time and a version), never an offset.
+
+The package list (#955) takes these too, and every one that is given holds:
+
+- `?prefix=`: the packages whose name starts with it;
+- `?q=`: the packages whose name, or the summary of one of whose manifests
+  (`versions.summary`, manifest-profile.md §2), contains it: its ASCII letters in either case,
+  every other character as it is;
+- `?attr=<key>:<value>`, repeatable: the packages with a manifest whose `attrs` (`versions.attrs`)
+  have the key with the value. The key is the annotation's full key (`lajstrom.deb.suite`), and
+  the first `:` ends it. The values given for one key are alternatives; the keys all hold, on
+  one manifest;
+- `?sort=`: `name` (the default), `updated` (the publish time of the package's newest
+  manifest), `versions` (how many versions it has) or `size` (the size of the file layers of all
+  its manifests), with `?order=` `asc` or `desc`, by default `asc` for `name` and `desc` for the
+  others. Packages with the same value follow by name, in the same order; names compare as
+  bytes;
+- `?facet=<key>`, repeatable: the answer adds `facets`, for each key the values the manifests of
+  the repo have for it, each with the number of packages that have a manifest with it, in byte
+  order, at most 1000 values per key. They count the whole repo: the other parameters do not
+  change them.
+
+At most 16 `attr` and 16 `facet`. A key that is not `lajstrom.` followed by letters, digits,
+`.`, `_` and `-`, an `attr` without `:`, a `sort` or an `order` that is none of its values, and a
+cursor of another sort are `400`.
+
+A package of the list has `name`, `nameOci` (`packages.name_oci`), `createdAt` and `updatedAt`
+(the publish times of its first and its newest manifest), `latestVersion` (the first version of
+its versions list), `latestVariants` (the variants of that version but `""`, in byte order),
+`versions` and `manifests` (how many of each it has), `size` (the sizes of the file layers of
+all its manifests added up, a blob two manifests share twice), and `summary` and `attrs` of its
+head manifest: the latest version's first variant in byte order. `summary` is `null` when that
+manifest has none. It is all read from the derived tables, so reindex rebuilds it. A group has
+no packages: its list is empty, its facets too.
+
+One package (`read`, #958): `GET …/packages/<name>`, with `<name>` as the delete below has it,
+answers the package's row of that list, `ociRepository` (as for one version, below) and
+`latestMetadata`, the metadata layer of the head manifest (`null` when it is absent or omitted
+for size). `404` when the repo or the package does not exist, and for a group.
 
 `?without=<kind>` on the versions (#89) keeps the variants that have no attachment of that kind
 in `attachments` (index-schema.md), whatever its verification: `signature`, `sbom`, `scan`,
@@ -878,6 +918,27 @@ more. It is read from the derived tables, so reindex rebuilds it, and a referrer
 Lajstrom is listed after the next reindex of its repo. `404` as for the version. The referrers
 themselves stay on `/v2/<ociRepository>/referrers/<digest>` (§2); this list is their labelled
 index, without a registry read, which also gives the UI its counts (#951).
+
+Search (#956): `GET /api/v1/search?q=[&format=&limit=&cursor=]` searches the repos the caller
+may read, as `GET /api/v1/repos` lists them, of `?format=` when it is given. A repo it may not
+read adds no hit, and nothing in the answer tells whether one exists (rbac.md §3); a group adds
+none either, its members are searched as repos of their own. It answers `{"hits": [...],
+"next": "…"}`, the hits in ranks, and within a rank in byte order of the repo's format, the repo's
+name, the package's name, then the version, the variant and the file's name:
+
+1. when `q` is a digest's prefix, `sha256:` or not followed by 8 to 64 hex digits in either case:
+   the manifests whose digest starts with it (`versions.digest`), then the file layers whose
+   digest does (`files.digest`), each a hit of `kind` `version`;
+2. the packages whose name is `q`, then those whose name starts with it, then those whose name
+   contains it, then those with a manifest whose summary contains it, each a hit of `kind`
+   `package` in the first of these ranks it is in. They compare as `?q=` of the package list does.
+
+A `version` hit has `format`, `repo`, `name`, `version`, `variant`, `digest` (the manifest's) and
+`matched`, `manifest` or `file`; a file's adds `file`, `{"name", "digest"}`. A `package` hit has
+`format`, `repo`, `name`, and `latestVersion`, `summary` and `updatedAt` as the package list has
+them. The page is `?limit=` and `?cursor=`, the cursor the last hit's rank and place; there is no
+`total`. `q` is required, at most 256 bytes: none or a longer one is `400`. It reads the derived
+tables only.
 
 Server information (nothing, #136): `GET /api/v1/info` answers what a client needs before it
 signs in:
