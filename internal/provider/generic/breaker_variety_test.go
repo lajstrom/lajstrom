@@ -31,12 +31,18 @@ import (
 // every kind of request a reader or a writer sends, and then 30 times at once while another
 // repository is read. The breaker stays closed: every request reaches the registry, the other
 // repository keeps working, and the log says once that the registry fails one repository only.
+// The fifth failure sets off the breaker's probe, GET /v2/, which the registry answers (#1119);
+// the clock does not move, so it is the only one.
 func TestBreakerOneRepository(t *testing.T) {
 	lowerBreaker(t, 5)
 	b := newBrokenRepository(t, "breaker-one-repository")
 	for i := range 100 {
 		c := b.calls[i%len(b.calls)]
-		if err := wantCall(t, b.f, c.name+" of the broken repository", func() error { return c.call(i) }, false, 1); err == nil {
+		sent := 1
+		if i == breakerThreshold-1 {
+			sent = 2
+		}
+		if err := wantCall(t, b.f, c.name+" of the broken repository", func() error { return c.call(i) }, false, sent); err == nil {
 			t.Fatalf("%s of the broken repository succeeded", c.name)
 		}
 	}
@@ -72,9 +78,9 @@ func TestBreakerOneRepository(t *testing.T) {
 	}
 }
 
-// brokenRepository is a provider, without retries, of a fake registry that answers every
-// request of the repository raw/scratch/broken with 500 and serves raw/scratch/notes, which
-// holds the manifest desc.
+// brokenRepository is a provider, without retries and with a clock that does not move, of a
+// fake registry that answers every request of the repository raw/scratch/broken with 500 and
+// serves raw/scratch/notes, which holds the manifest desc.
 type brokenRepository struct {
 	f     *fakeRegistry
 	logs  *syncBuffer
@@ -96,6 +102,7 @@ func newBrokenRepository(t *testing.T, name string) *brokenRepository {
 	f := newFakeRegistry(t)
 	log, buf := testLogger()
 	p := f.provider(t, log, func(c *config.Registry) { c.Name, c.Retries = name, -1 })
+	p.clients.breaker.now = (&clock{t: time.Unix(1_700_000_000, 0)}).now
 	if _, err := p.Capabilities(ctx); err != nil { // the probe, which a blob's HEAD would send first
 		t.Fatal(err)
 	}
@@ -160,8 +167,9 @@ func (b *brokenRepository) readGood() error {
 // as before #972, counted in requests: after breakerThreshold failures in a row when they are of
 // two repositories or more, when they are readiness pings, and when the registry refuses the
 // connections, which no request can cause, also of one repository. One repository's 503s open
-// it at the first ping that fails after them. A connection closed without an answer once the
-// request was sent may be the request's doing: one repository's never open it, two do.
+// it at the breaker's probe, GET /v2/, which fails too (#1119), before the readiness ping would.
+// A connection closed without an answer once the request was sent may be the request's doing:
+// one repository's open it at the probe, whose connection closes as well; two at once.
 func TestBreakerOutage(t *testing.T) {
 	const never = 20 // calls without a refusal for a row that does not open
 	tags := func(p *Provider, repo int) error {
@@ -173,10 +181,11 @@ func TestBreakerOutage(t *testing.T) {
 		return err
 	}
 	tests := []struct {
-		name  string
-		addr  func(t *testing.T) string // the registry; nil: the fake, which answers every request 503
-		call  func(p *Provider, i int) error
-		opens int // the calls that reach the registry before the breaker refuses one
+		name   string
+		addr   func(t *testing.T) string // the registry; nil: the fake, which answers every request 503
+		call   func(p *Provider, i int) error
+		opens  int // the calls that reach the registry before the breaker refuses one
+		probes int // the breaker's probes that the fake got besides
 	}{
 		{name: "503, a repository each", call: func(p *Provider, i int) error { return tags(p, i) }, opens: 5},
 		{name: "503, two repositories in turn", call: func(p *Provider, i int) error { return tags(p, i%2) }, opens: 5},
@@ -186,10 +195,10 @@ func TestBreakerOutage(t *testing.T) {
 				return tags(p, 0)
 			}
 			return p.Ping(context.Background())
-		}, opens: 8},
+		}, opens: 5, probes: 1},
 		{name: "refused, one repository", addr: refusingAddr, call: func(p *Provider, _ int) error { return tags(p, 0) }, opens: 5},
 		{name: "closed without an answer, one repository", addr: func(t *testing.T) string { return quietAddr(t, true) },
-			call: func(p *Provider, _ int) error { return tags(p, 0) }, opens: never},
+			call: func(p *Provider, _ int) error { return tags(p, 0) }, opens: 5},
 		{name: "closed without an answer, two repositories", addr: func(t *testing.T) string { return quietAddr(t, true) },
 			call: func(p *Provider, i int) error { return tags(p, i%2) }, opens: 5},
 	}
@@ -216,6 +225,7 @@ func TestBreakerOutage(t *testing.T) {
 			through := 0
 			for ; through < never; through++ {
 				err := tt.call(p, through)
+				p.clients.breaker.probes.Wait()
 				if byBreaker(err) {
 					break
 				}
@@ -227,8 +237,8 @@ func TestBreakerOutage(t *testing.T) {
 				t.Errorf("%d calls reached the registry before the breaker refused one, want %d", through, tt.opens)
 			}
 			if f != nil {
-				if n := len(f.log()); n != through {
-					t.Errorf("the registry got %d requests, want %d", n, through)
+				if n := len(f.log()); n != through+tt.probes {
+					t.Errorf("the registry got %d requests, want %d", n, through+tt.probes)
 				}
 			}
 		})

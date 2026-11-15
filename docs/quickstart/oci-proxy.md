@@ -333,9 +333,14 @@ env:
   [#885]).
 - **The circuit breaker** opens after five failed requests in a row (measured), of two images at
   least, or when the upstream refuses connections or cannot be reached
-  ([#972](https://github.com/lajstrom/lajstrom/issues/972)): one image's failures alone never
-  open it, so an upstream that hangs or answers `5xx` while a single image is asked costs each
-  request the total above. Once open:
+  ([#972](https://github.com/lajstrom/lajstrom/issues/972)). One image's failures alone do not
+  open it. After five of them the breaker sends a `GET /v2/` of its own, once, without
+  credentials, and waits at most `timeout` for it
+  ([#1119](https://github.com/lajstrom/lajstrom/issues/1119), code): an upstream that does not
+  answer that either, or answers `5xx`, opens the breaker, and one that answers it, `401`
+  included, does not. So an upstream that hangs or answers `5xx` while a single image is asked
+  costs each of the first five requests the total above, and opens the breaker within one more
+  `timeout`. Once open:
   - for 30 s, everything asked of the upstream is `503` at once with `Retry-After`, the seconds
     until the trial (measured: 30); before [#889] it was `502` without one;
   - expired tags are served from their rows at once;

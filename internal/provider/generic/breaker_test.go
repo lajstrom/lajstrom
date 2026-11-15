@@ -108,12 +108,16 @@ func TestBreakerCounters(t *testing.T) {
 		}
 	}
 
-	for range breakerThreshold {
-		_ = wantCall(t, f, "tags of a broken repository", brokenA, false, 1)
+	for i := range breakerThreshold {
+		sent := 1
+		if i == breakerThreshold-1 {
+			sent = 2 // and the probe, GET /v2/, which the registry answers: the run ends (#1119)
+		}
+		_ = wantCall(t, f, "tags of a broken repository", brokenA, false, sent)
 	}
 	want("after a run of one repository's failures", 0, 1)
 	_ = wantCall(t, f, "tags of a repository that works, an answer", good, false, 1)
-	for range breakerThreshold {
+	for range breakerThreshold { // no probe: the clock did not move since the last one
 		_ = wantCall(t, f, "tags of another broken repository", brokenB, false, 1)
 	}
 	want("after a second run within the cooldown", 0, 2)
@@ -223,11 +227,14 @@ func TestBreakerOpensAndCloses(t *testing.T) {
 }
 
 // wantCall runs one call of a breaker scenario and checks whether the breaker refused it and
-// how many requests reached the registry. It returns the call's error.
+// how many requests reached the registry, the breaker's probe that the call set off included
+// (#1119). It returns the call's error.
 func wantCall(t *testing.T, f *fakeRegistry, what string, call func() error, refused bool, sent int) error {
 	t.Helper()
+	f.settle()
 	before := len(f.log())
 	err := call()
+	f.settle()
 	if got := byBreaker(err); got != refused {
 		t.Errorf("%s: %v; refused by the breaker: %v, want %v", what, err, got, refused)
 	}
@@ -247,14 +254,16 @@ func byBreaker(err error) bool {
 // TestBreakerCounts checks what counts as a failure in a row: a retried request once, an
 // answer such as a 404 resets the count, a 429 and a cancelled request count neither way. Each
 // request is of another repository, but in the rows of one repository: failures of one
-// repository alone never open the breaker, however many (#972).
+// repository alone never open the breaker, however many (#972), while the registry answers the
+// breaker's probe, GET /v2/, which ends the run (#1119). When the probe fails too, they do.
 func TestBreakerCounts(t *testing.T) {
 	tests := []struct {
-		name    string
-		retries int
-		answers []int // status of each request, in order; 0 is a request whose caller cancels
-		repos   []int // the repository of each request, by index; nil: each its own
-		open    bool
+		name      string
+		retries   int
+		answers   []int // status of each request, in order; 0 is a request whose caller cancels
+		repos     []int // the repository of each request, by index; nil: each its own
+		pingFails bool  // GET /v2/ gets the status of the last request too; else the registry answers it
+		open      bool
 	}{
 		{name: "three 503 in a row", retries: -1, answers: []int{503, 503, 503}, open: true},
 		{name: "a retried request counts once", retries: 3, answers: []int{503, 503}, open: false},
@@ -265,7 +274,8 @@ func TestBreakerCounts(t *testing.T) {
 		{name: "three 503 of one repository", retries: -1, answers: []int{503, 503, 503}, repos: []int{0, 0, 0}, open: false},
 		{name: "ten 500 of one repository", retries: -1, answers: []int{500, 500, 500, 500, 500, 500, 500, 500, 500, 500},
 			repos: []int{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, open: false},
-		{name: "one repository, then another", retries: -1, answers: []int{503, 503, 503, 503}, repos: []int{0, 0, 0, 1}, open: true},
+		{name: "one repository, the probe answered, then another", retries: -1, answers: []int{503, 503, 503, 503}, repos: []int{0, 0, 0, 1}, open: false},
+		{name: "one repository, the probe failing too", retries: -1, answers: []int{503, 503, 503}, repos: []int{0, 0, 0}, pingFails: true, open: true},
 		{name: "two repositories in turn", retries: -1, answers: []int{503, 503, 503}, repos: []int{0, 1, 0}, open: true},
 	}
 	for i, tt := range tests {
@@ -289,6 +299,9 @@ func TestBreakerCounts(t *testing.T) {
 			var status atomic.Int64
 			f.hook = func(w http.ResponseWriter, r *http.Request) bool {
 				s := int(status.Load())
+				if r.URL.Path == "/v2/" && !tt.pingFails {
+					return false
+				}
 				if s == 0 {
 					<-r.Context().Done() // never answers; the caller cancels
 					return true
@@ -305,6 +318,7 @@ func TestBreakerCounts(t *testing.T) {
 					defer cancel()
 				}
 				_, _ = listTags(ctx, repoOf(k))
+				f.settle()
 			}
 			_, err := listTags(t.Context(), repoOf(0))
 			if got := byBreaker(err); got != tt.open {
