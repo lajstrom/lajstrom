@@ -930,7 +930,7 @@ The deny list ([policy.md](policy.md) §8) is written by Lajstrom into the regis
 | annotations | `lajstrom.schema` (`"1"`); `lajstrom.policy.generation`, the policy generation of the document, decimal; `lajstrom.policy.key`, the policy key's fingerprint; `org.opencontainers.image.created`, the document's `createdAt` to the second |
 | tag | `<createdAt as YYYYMMDDTHHMMSSZ>-<generation, 12 decimal digits>-<the first 12 hex digits of the manifest's sha256 digest>`: the tags sort by the database's time and then by generation, a restored database included |
 
-`oras pull <host>/lajstrom/policy/denylist:latest` writes both files, and `cosign verify-blob
+`oras pull <registry>/<prefix>lajstrom/policy/denylist:<the greatest tag>` writes both files, and `cosign verify-blob
 --key <the policy key> --signature denylist.json.sig --insecure-ignore-tlog=true denylist.json`
 verifies the list. The writer pushes the blobs and the manifest under its tag through the provider
 (`EnsureRepository`, `PushReference`) and never moves a tag; old lists are removed by the

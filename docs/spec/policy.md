@@ -292,15 +292,14 @@ entry whose time has passed, and the list is not written again for an expiry alo
 
 - **The artifact** (manifest-profile.md §10) is written to the OCI repository
   `lajstrom/policy/denylist` of the registry `policy.denylist.registry` (the first of
-  `registries` by default) after each change of the rules or of the verdicts that goes through
-  Lajstrom, by the replica that made it, at most once every 10 seconds per replica: the changes
-  within that time go into one artifact. Its tag sorts by the database's time of the read and
-  then by the policy generation (`policy_state.generation`, which every such change increments in
-  its transaction), so that the greatest tag is the newest list whatever the order in which two
-  replicas push, after a restore of the database too. `/v2` serves it
-  read-only to the admin role as the repository `lajstrom/policy/denylist`, with `latest` naming
-  its greatest tag (http-routing.md §2); a consumer that pulls from the registry directly takes the
-  greatest tag itself.
+  `registries` by default) by every replica that has the policy key: it reads
+  `policy_state.generation` every 10 seconds, which every change of a rule or of a verdict
+  increments in its transaction, and writes the list when the greatest tag of the repository
+  carries another generation. Its tag sorts by the database's time of the read and then by the
+  generation, so that the greatest tag is the newest list whatever the order in which two
+  replicas push, after a restore of the database too. A consumer pulls it from the registry with
+  the registry's own credentials (the operator gives nodes and mirrors read access to
+  `lajstrom/policy/denylist`) and takes the greatest tag; Lajstrom's `/v2` does not serve it.
 - **The flat JSON** of `GET /api/v1/policy/denylist` is the same document, read from the index at
   the request, without a signature, with the entries of the repos the caller may read: a deploy
   token over `*/*` with `read` gets every entry.

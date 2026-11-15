@@ -115,8 +115,8 @@ Resource: a repo, identified by `<format>/<repo>`. Prefix-level resources (a pat
 are after the MVP. Three system-level resources, which only the `admin` role reaches: `system`
 (users, bindings, registries, creating a repo, every user's tokens, every token at once
 (`GET /api/v1/tokens`), the deploy tokens over a mask, the webhooks of any mask), `audit`, and
-`policy` (the policy rules of any mask other than one repo, the list of every rule, and the deny
-list in the registry through `/v2`; [policy.md](policy.md), #101).
+`policy` (the policy rules of any mask other than one repo, and the list of every rule;
+[policy.md](policy.md), #101).
 
 | Action | Meaning |
 | --- | --- |
