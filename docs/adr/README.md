@@ -69,3 +69,4 @@ request labelled `contract`. Typos and broken links may be fixed in place.
 | [0019](0019-oci-groups-one-member-per-repository-path.md) | Groups of oci repos: read-only, one member per repository path | accepted |
 | [0020](0020-repo-signing-keys-in-a-cloud-kms.md) | Repo signing keys in a cloud KMS: the key stays there, the database seals its name | proposed |
 | [0023](0023-terraform-modules-the-repo-is-the-namespace.md) | Terraform modules: the module registry protocol, the repo is the namespace | proposed |
+| [0025](0025-node-and-workload-identity.md) | Node and workload identity: client certificates and Kubernetes service-account tokens at `/v2/token` | proposed |
