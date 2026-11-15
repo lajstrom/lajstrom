@@ -118,7 +118,7 @@ mask, the webhooks of any mask) and `audit`.
 
 | Action | Meaning |
 | --- | --- |
-| `read` | GET/HEAD on the frontend; `pull` scope on `/v2`; list in `/api/v1/repos` |
+| `read` | GET/HEAD on the frontend; `pull` scope on `/v2`; list in `/api/v1/repos`; search in `/api/v1/search` |
 | `write` | PUT/POST on the frontend; `push` scope on `/v2`; create versions |
 | `attach` | attach to a version: the `PUT` of a referrer on `/v2` (manifest-profile.md §6: a signature, an SBOM, a scan report, provenance, a verdict, any manifest with a `subject`) and the blob uploads it needs; the `push` scope on `/v2` for a principal without `write`, which the token carries as `attach` (§4) (#89) |
 | `delete` | DELETE versions/manifests; `delete` scope on `/v2` |
@@ -264,6 +264,10 @@ this spec, so that a review need not find it in the code:
   get `403`. The command line (`lajstrom admin token create`) has no credential and is the
   operator's.
 - **Lists** (`GET /api/v1/repos`, `/v2/_catalog`) show only the repos the principal may read.
+- **Search** (`GET /api/v1/search`, #956) runs over the repos the principal may read, as the list
+  shows them: a repo it may not read adds no hit, a digest or a name that only such a repo holds
+  is not found, and the answer is the same whether such a repo exists or not. `anonymous`
+  searches the repos it may read, and gets `200`, with no hits when there are none.
 - **`/v2` with a bearer**: the token names every repository asked for, with no action on one
   that does not exist or may not be read alike, and the facade asks the token before it looks
   the repo up (§4).

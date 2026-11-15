@@ -120,6 +120,14 @@ manifest lists it and the registry does not have its blob, or its bytes are not 
 writes the row from the annotations alone, without the plugin's `Validate`: a degraded row
 (`versions.degraded`), flagged, not dropped; ingest refuses such a manifest.
 
+**The summary** of a manifest is one line of its metadata layer, which the package list and the
+search of the management API show (#954; index-schema.md, `versions.summary`). Its field is pypi's
+`summary`, deb's `control.Description` (a source package's `.dsc` has none), npm's
+`manifest.description` and rpm's `summary`; the metadata layers of maven and raw have no such
+field, and their manifests have no summary. It is the field's first line, up to the first line
+feed, without the spaces, tabs and carriage returns around it, and at most its first 256
+characters. A manifest has none when the field is absent, is not a string, or leaves nothing.
+
 ## 3. Annotations
 
 All keys are prefixed `lajstrom.`. Values are strings. Keys marked **R** are required on every
