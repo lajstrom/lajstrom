@@ -8,7 +8,8 @@ has the referrers API. Both were run; they differ enough to be two columns. The
 [summary columns](README.md#capabilities) are in the README; this page has the details. Both
 were measured again on 2026-11-12 with the vendor table of #352 (#781):
 [Again after #352](#again-after-352); the tests of reindex and the e2e scenarios on 2026-11-14
-(#800): [Again on 2026-11-14](#again-on-2026-11-14).
+(#800): [Again on 2026-11-14](#again-on-2026-11-14). On 2026-11-15 the probe ran once more, for
+its rows on consistency ([The probe again](#the-probe-again-2026-11-15-850)).
 
 ## Version tested
 
@@ -24,6 +25,8 @@ were measured again on 2026-11-12 with the vendor table of #352 (#781):
   this page ([What the provider must do differently](#what-the-provider-must-do-differently),
   item 1). Again on 2026-11-12, the same image on a new volume, at d44b112e
   ([Again after #352](#again-after-352)).
+- On 2026-11-15 the probe ran again on the same index, on a new volume, at a8762730
+  ([The probe again](#the-probe-again-2026-11-15-850)).
 
 ## Run it
 
@@ -219,6 +222,9 @@ DELETE tags/reference/t1                          404                           
 On the docker format the tags stayed after a digest delete in every order tried: pushed by
 tag only, by tag and then by digest, with a `latest` tag, after another tag's delete. One
 sequence after refused redeploys (`allow_once`) deleted the tag as well; not followed up.
+The digest's 404 does not last: within about 2 s it answers 200 again, and a second delete of
+it then takes the tags and the repository too (2026-11-15,
+[The probe again](#the-probe-again-2026-11-15-850)).
 
 ## Immutable tags
 
@@ -549,6 +555,130 @@ on this format takes more than a minute to fail; `npm.sh` passes `--fetch-retrie
 Not run: `pypi` and `maven` (the disk was below the limit for pulling their client images; `pypi.sh`
 passed on both formats on 2026-11-12, [above](#again-after-352)), `migrate-npm` (no Verdaccio),
 and `oidc` and `ha`, which #800 did not list.
+
+## The probe again, 2026-11-15 (#850)
+
+Since the run of 2026-11-12 the probe reads the lists before each write and measures the
+deletes in its row "Read-after-write lag" (#845), and it has a row "Monotonic reads" (#564).
+Neither had been measured on Nexus. Lajstrom at a8762730, against the pin, index
+`sha256:91a9af44af777c353db11a5ee73850c7eb24b03c997ff4cc62a3500ad38a1332`, on a new volume, set up
+by `nexus.sh` as main has it (`strictContentTypeValidation` off on the docker repository since
+#1012). Nexus came from a copy of compose.yaml with another compose project name, next to an
+unchanged copy of nexus.sh, on other ports, because other runs shared the machine.
+
+```sh
+LAJSTROM_NEXUS_PORT=58081 LAJSTROM_NEXUS_DOCKER_PORT=58008 LAJSTROM_NEXUS_OCI_PORT=58015 deploy/compose/nexus/nexus.sh up
+bin/lajstrom registry probe --url http://localhost:58008 --username lajstrom --password-file nexus.pw -v   # docker
+bin/lajstrom registry probe --url http://localhost:58015 --username lajstrom --password-file nexus.pw -v   # oci
+```
+
+The provider's own probe said `vendor=nexus createOnPush=true referrers=false
+referrersAlwaysTag=false catalog=true deleteManifest=false immutableTags=false blobRedirect=true
+maxBlobSize=0 consistency=unknown maxNameDepth=0 tagsFoldCase=false buildRoutes=false` for the
+docker format, and the same with `referrers=true deleteManifest=true` and `blobsReadWhole=true`
+for the oci format, as the vendor table made of them on 2026-11-12. The probe ran three times on
+each format. A run took about 1.5 s on the oci format and about 245 s on the docker format, where
+two reads waited out the probe's limit of 2 minutes (below). `--max-blob-size` and
+`--max-manifest-size` stayed at their defaults, 8 MiB and 4 MiB + 1 byte; the larger
+measurements of [Blob reads, ranges, sizes](#blob-reads-ranges-sizes) stand. The rows that are
+new or that changed:
+
+| Row | docker | oci |
+| --- | --- | --- |
+| Where a repository may be created | anywhere; at any depth, inside another repository too; a name component of more than 255 bytes is 400 `NAME_INVALID` | the same |
+| Read-after-write lag | none: each read saw each of 3 writes at once (manifest by digest, manifest by tag, blob, tag list, catalog); after a delete: manifest by digest at once, manifest by tag **not within 2m0s**, tag list **not within 2m0s**; the worst of 1 delete | none: each read saw each of 3 writes at once (the same reads); each read saw each of 3 deletes at once (manifest by digest, manifest by tag, tag list) |
+| Monotonic reads | runs 1 and 2: **not monotonic**: delete 1, manifest by digest: gone, then 200 (1 of 5); run 3: none; each run: 3 writes, a tag move, 1 delete, each read 5 times more over new connections after the first that saw it, from 1 address; not seen within 2m0s: delete 1, manifest by tag, which ended the measurement | none: no read saw a change undone; 3 writes, a tag move, 3 deletes, each read 5 times more over new connections after the first that saw it, from 1 address |
+| Largest blob, chunk size | 8 MiB in one `PUT` and in one `PATCH`; no limit met | the same, as on 2026-11-12 |
+| Overrides needed | `deleteManifest: false`, or a delete leaves the tags; `consistency: eventual`; a read did not see a write or a delete within 2m0s; in runs 1 and 2 also: no override helps: **reads are not monotonic**; point `url` at one regional endpoint | none |
+
+Every other cell was the same in the three runs of a format and agrees with this page, the
+routing words included (20 blob `HEAD`s in each name, all 200), but for "Delete a repository"
+(below).
+
+What was read, from the `-v` log:
+
+- **The lists, primed.** In the repository `lag`, before each of the three manifests, the probe
+  read the tag list and the catalog once. Before the first, the tag list answered 404
+  `NAME_UNKNOWN`, since the repository held only the blob just uploaded, and the catalog did not
+  list `lag`. Right after each `201`, `HEAD` by digest was 200, `HEAD` by tag answered the new
+  digest, the tag list had the new tag and the catalog listed `lag`, each at the first ask. The
+  same on both formats.
+- **The deletes.** On the oci format each manifest deleted by digest was 202; then `HEAD` by
+  digest and by tag were 404, and the tag list no longer had the tag, at the first ask. On the
+  docker format the first delete was 202 and `HEAD` by digest 404 at the first ask, but `HEAD`
+  by tag kept answering 200 with the deleted digest, and the tag list kept the tag, for the 2
+  minutes; that ended the deletes. It is the delete of [Delete](#delete) (item 2), not a lag.
+- **Monotonic reads.** In the repository `mono`, the blob's `HEAD` and each manifest's `HEAD`
+  by digest and by tag saw each write at once, and then 5 more times, each over a new
+  connection. The tag `mono-0` was then moved to another manifest (201), and each of 6 reads by
+  tag answered the new digest. On the oci format each of the three manifests was then deleted by
+  digest, and each read of it, by digest and by tag, stayed 404. On the docker format the first
+  delete, of the manifest `mono-0` named after the move, was 202. Its `HEAD` by digest was 404
+  five times and then 200 at the sixth read in runs 1 and 2 (404 all six times in run 3), and
+  its `HEAD` by tag stayed 200 until the limit.
+
+**The digest comes back.** [Delete](#delete) has the docker format's digest delete leave the
+tags, with the digest alone 404. That 404 does not last. With curl, three times, a manifest
+under the tag `t1` in a new repository, deleted by digest, then read every 0.2 s or so:
+
+```text
+DELETE manifests/<digest>                     202
+HEAD manifests/<digest>                       404, then 200 from 1.3, 1.5 and 2.1 s after the 202; still 200 at 13 s
+HEAD manifests/t1, tags/list, _catalog        200, ["t1"], listed, all along
+DELETE manifests/<digest> again, once 200     202; then by digest and by tag 404, tags/list without t1, not in _catalog, at once
+```
+
+The digest came back without any read by tag in between; in the first try nothing but the
+digest was read. The oci format, the same steps: 404 by digest and by tag, no tag, not in
+`_catalog`, at once, and so still 5 s later. On 2026-11-10 the same digest deleted again was
+404 `MANIFEST_UNKNOWN` ([Delete](#delete)), probably before it came back; not measured again.
+
+What it means:
+
+- **The oci format: none.** The lists read before each write did not go stale, a deleted
+  manifest was gone from every read at once, and no read over a new connection undid a change.
+  As on Gitea and Forgejo, the `none` is a measurement of three writes and three deletes on one
+  Nexus with H2 and a file blob store, three times over, not a promise of Sonatype's.
+- **The docker format: none for the writes.** The deletes measure no consistency: the tags of a
+  manifest deleted by digest stay, and the digest answers 200 again within about 2 s. So the
+  probe saw the tag "not within 2m0s" in every run and a regression of the digest in two; the
+  sixth read comes at roughly 0.8 s on the probe's schedule, before or after the digest is back.
+  Neither reaches Lajstrom: since #352 the vendor table sets `deleteManifest: false` on this
+  format, and the provider refuses every delete with 405 `UNSUPPORTED`
+  ([Again after #352](#again-after-352)). Of the probe's "Overrides needed" only
+  `deleteManifest: false` applies, and the vendor table sets it; `consistency: eventual` and
+  "point `url` at one regional endpoint" come from the deletes alone. The probe measures the
+  deletes whatever the provider's `deleteManifest` says; not changed here.
+- **The vendor table's entry for Nexus is unchanged.** It sets no consistency, so on both formats
+  a publish reads back its tag and blobs too, and that is right: three writes on one instance are
+  not a guarantee.
+
+What else is new against the [columns](README.md#capabilities):
+
+- **Where a repository may be created.** A name component of more than 255 bytes is 400
+  `NAME_INVALID` on both formats; Lajstrom's names are at most 255 bytes.
+- **Largest blob, chunk size on the docker format.** Measured by the probe for the first time:
+  on 2026-11-12 the format refused the probe's blobs for their content
+  ([above](#again-after-352)), and nexus.sh has turned that check off since #1012.
+- **Delete a repository.** After its cleanup the probe looks for any repository below its
+  scratch prefix in `_catalog`. On the oci format it found `del` and `ref` after each run, the
+  two repositories the probe pushed referrers to, probably because Nexus writes their tag-schema
+  index itself ([Referrers](#referrers)) and the probe deletes only what it pushed; not checked.
+  On the docker format it found `imm` and `profile` after run 1, these two and `del` after run 3,
+  and none after run 2. The cleanup deletes each manifest by digest, which leaves its tags on
+  this format; why the runs differ was not followed up. So the cell said "stays in `_catalog`"
+  in five runs and "leaves `_catalog`" in one. The column keeps [Delete](#delete) and
+  [Again on 2026-11-14](#again-on-2026-11-14). Every delete of the cleanup answered 202 or 404,
+  so no report listed anything as left behind; the volume went with the stack.
+
+Each run's `-v` log has 4 answers 401, of about 735 requests on the docker format and 587 on the
+oci format: the first request of each of three providers (the one whose probe starts the run,
+and the two of the row "Upload continued by another replica") and the first of the probe's own
+client. Nexus takes Basic auth (`forceBasicAuth`), and once challenged each client sends it with
+every request, over new connections too. The 401 before about half the requests that Gitea and
+Forgejo answer comes from the scopes of a bearer token
+([gitea.md](gitea.md#the-probe-again-2026-11-13-850),
+[forgejo.md](forgejo.md#the-probe-again-2026-11-15-850)); with Basic auth it does not show.
 
 ## Commands
 
