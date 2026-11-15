@@ -348,7 +348,7 @@ Client config: `pip install --index-url https://host/pypi/<repo>/simple/ …`,
 
 Implements the Debian repository format (`Release`, `InRelease`, `Packages`, `Sources`,
 `Contents-<arch>`) for binary and source packages (#79). Suites and components are upload metadata
-(annotations), not separate repos.
+(annotations), not separate repos. A group of hosted apt repos has the same routes (#68, below).
 
 | Method and path | Behaviour |
 | --- | --- |
@@ -362,8 +362,41 @@ Implements the Debian repository format (`Release`, `InRelease`, `Packages`, `So
 | `PUT /apt/<repo>/upload?suite=<suite>&component=<component>[&arch=<arch>]` | convenience upload of one `.deb` (body). Equivalent to `oras push` with the deb profile: the deb plugin builds the manifest from the control file and the query. `suite` and `component` are required, lowercase letters, digits, `.`, `+` and `-`, the first a letter or a digit (`400` naming the one missing or malformed); `arch`, when given, must be the control file's `Architecture`. A body above the repo's `maxFileSize` is `413`, one that is not a `.deb` `400`, and so is a `.deb` whose `Architecture` is `source`, the architecture of source packages. The body streams into the registry ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)): its head, up to the end of the control member, is read first for the package name, so a control member over 4 MiB is `400` before the rest is read; a refused upload stores nothing. `201` with `Location` (the file in the pool), `Docker-Content-Digest` (the manifest digest) and a JSON body `{"package", "version", "architecture", "suite", "component", "filename", "digest", "tag"}`. The same bytes again are the idempotent repeat, `201` with the same digest; the same bytes in another suite or component are a new version over the same blob. `409` for other bytes under the same name, version and architecture in the same suite and component (the tag holds another manifest), and for other bytes under a pool file name that a version of another suite, component or epoch holds, naming that version: a Debian pool holds one content per file name |
 | `POST /apt/<repo>/upload?suite=<suite>&component=<component>` | upload of one source package (#79): a `multipart/form-data` body with a part per file, each with a `filename`, the field names free; the first file is the `.dsc` (at most 1 MiB, signed or not: its OpenPGP signature is kept and not checked), and the others are files it names, in any order. `suite` and `component` as for `PUT`. Equivalent to `oras push` of the source profile (manifest-profile.md): the manifest is built from the `.dsc` and the query. Each file streams into the registry as it arrives ([ADR 0014](../adr/0014-uploads-stream-into-the-registry.md)), into a publication session of the source and version (`format.Sessions`), and is checked against the size, the MD5 of `Files`, the SHA1 of `Checksums-Sha1` and the SHA256 of `Checksums-Sha256` that the `.dsc` gives it: `400` naming the file and the checksum that differ. A first part that is not a `.dsc` that parses, with `Format`, `Source`, `Version`, `Files` and `Checksums-Sha256`, is `400`, and so is a part the `.dsc` does not name, a name twice, or a `.dsc` that names more than 64 files. A file the `.dsc` names and the body lacks is taken from the pool when a version of the same source holds that file name with that SHA256 (the `.orig.tar.*` of an earlier revision: its blob is in the source's OCI repository already); else `400` naming it. Every part is bounded by the repo's `maxFileSize` (`413`). The pool file name rule of `PUT` holds for every file: `409` for a file name that a version of another suite, component, source version or epoch holds with other bytes, naming that version. Nothing is published unless every file arrived and passed: the session is aborted on any failure, and a client that goes away publishes nothing. `201` with `Location` (the `.dsc` in the pool), `Docker-Content-Digest` (the manifest digest) and a JSON body `{"package", "version", "architecture", "suite", "component", "filename", "digest", "tag"}`, `package` the source name, `architecture` `source`, `filename` the `.dsc`. The same files again are the idempotent repeat, `201` with the same digest; other files under the same source, version, suite and component are the `409` of the tag |
 
+**Group** (ADR 0013, proxy-and-group.md §8.6, #68). An apt group's members are hosted apt repos,
+and the group has the routes above, its documents its own:
+
+- The suites of the group are those of its members. A suite's documents are rendered from the
+  versions of every member that has the suite, merged as below, as a hosted repo's are rendered
+  from its own versions: its components and architectures are those of the versions merged, and
+  every rule of the routes above holds (`binary-all`, an index for every component and
+  architecture, `Sources` when a version merged is a source one, `Contents-<arch>` from the
+  file lists). The `Release` has `Label` the group's name and `Description` `apt/<group>
+  <suite>`, the hashes of the documents the group serves, `Date` the time of the render and no
+  `Valid-Until`, as a hosted repo's. A suite that no member has is `404`.
+- A version merged: of the versions of one package, version and architecture (`source` for a
+  source package) in one suite and component, the first member's, in member order. A version of
+  a member is left out when an earlier member holds one of its pool files (its `.deb`, or its
+  `.dsc` and the files it names) under the same file name with other bytes, in any suite or
+  component: the group, as a hosted repo, holds one content per pool file name, and a file its
+  indexes list is the file its pool serves.
+- The documents are rendered on the first `GET` after a change of a member's documents or of
+  the group's members, and kept in `index_cache` under the group (proxy-and-group.md §8.6);
+  they are served as a hosted repo's, by name and by hash, `ETag` the sha256 of their bytes.
+- `InRelease` and `Release.gpg` are signed with the group's own keys, and `key.asc` is the
+  group's keyring, made on its first request as a hosted repo's: a client's `signed-by=` names
+  the group's key, not a member's. The statuses of a master key that is not set and of a key
+  held in a KMS are those above.
+- `pool/<component>/<p>/<source>/<filename>` is the file of the first member, in member order,
+  whose own pool route resolves the path, served from that member's registry as there; `404`
+  when no member has it.
+- `PUT` and `POST …/upload` go to the group's member when it has one, with `read` on the group
+  and `write` on the member (rbac.md §7), `Location` naming the member; a group of several
+  members answers `405` with `Allow: GET, HEAD` (proxy-and-group.md §8.4), once the principal may
+  read it.
+
 Client config: `deb [signed-by=/etc/apt/keyrings/<repo>.asc] https://host/apt/<repo> <suite> <component>`, and
-`deb-src [signed-by=/etc/apt/keyrings/<repo>.asc] https://host/apt/<repo> <suite> <component>` for the source packages.
+`deb-src [signed-by=/etc/apt/keyrings/<repo>.asc] https://host/apt/<repo> <suite> <component>` for the source packages;
+a group is `<repo>` with its own `key.asc`.
 
 ### maven
 
@@ -905,12 +938,15 @@ and the pypi routes serve all three kinds. What changes is who answers and what 
 | Request | proxy | group |
 | --- | --- | --- |
 | a read route of the format (a document, a file) | the upstream's document, cached, and the files it holds or fetches on a miss (proxy-and-group.md §4 to §7) | the members, in order, with hosted names hiding the upstream (§8) |
-| a write route of the format (publish, unpublish, a dist-tag) | `405` with `Allow: GET, HEAD` | the same request on the group's hosted member, authorized there (rbac.md §7); `405` without one |
+| a write route of the format (publish, unpublish, a dist-tag) | `405` with `Allow: GET, HEAD` | the same request on the group's hosted member, authorized there (rbac.md §7); `405` without one, and with several (an apt group, proxy-and-group.md §8.4) |
 | `GET`, `HEAD` on `/v2/<format>/<repo>/…` (manifests, blobs, tags, referrers) | as on a hosted repo, for what it holds; `/v2` never fetches, but on an `oci` proxy, whose read route it is: a manifest and a blob the backend does not hold are fetched on a miss, a tag follows the upstream, and `tags/list` is the backend's without the keep-tags (proxy-and-group.md §11) | on an `oci` group, the answer of the one member its routes choose for the path, as at the member's own URL, `name` and `Link` naming the group's path; a path no route selects `404 NAME_UNKNOWN` (proxy-and-group.md §12). On any other group `404 NAME_UNKNOWN`: it has no OCI repository |
 | `PUT` of a manifest on `/v2` | a referrer (manifest-profile.md §6) as on a hosted repo, with `write`; any other manifest `405 UNSUPPORTED` | on an `oci` group, `405 UNSUPPORTED` with `Allow: GET, HEAD`, a referrer included, once the principal may read the group, and the group's denial otherwise (rbac.md §3); on any other group `404 NAME_UNKNOWN` |
 | blob uploads on `/v2` | as on a hosted repo, with `write` (the blobs of referrers) | as a `PUT` of a manifest. A mount into another repo whose `from` is an `oci` group's path mounts from the routed member (proxy-and-group.md §12.3) |
 | `DELETE` of a manifest on `/v2`, and of a version on `/api/v1` | as on a hosted repo, with `delete`: the next miss fetches it again | on `/v2`, as a `PUT` of a manifest; on `/api/v1`, `404`: a group has no versions |
 | `GET /v2/_catalog` | its OCI repositories | an `oci` group, to a principal who may read it, each member's repositories that the routes send to that member, as `oci/<group>/<path>`; any other group nothing |
+
+apt has groups and no proxies: an apt group's members are hosted apt repos, and it serves
+documents it renders from their versions and keeps (§3, apt, **Group**; proxy-and-group.md §8.6).
 
 A manifest pushed by a client with a `lajstrom.origin.*` annotation is `400 MANIFEST_INVALID`
 on every manifest Lajstrom manages, a version's manifest and a referrer, on a hosted repo and on

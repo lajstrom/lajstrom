@@ -122,6 +122,11 @@ or `tag_claims` rows: reindex and the reconcile loop pass it by, and its documen
 from its members' on every request (proxy-and-group.md §8.5). `group_members` is control plane:
 a backup of the database keeps it, and reindex neither reads nor writes it.
 
+An apt group is the one group with `index_cache` rows: the documents it renders from its members'
+versions, under its own `repo_id`, scope the suite and kinds those of a hosted apt repo
+(proxy-and-group.md §8.6). They are derived from the members' rows, rebuilt lazily as a hosted
+repo's, and invalidated with the members' ([below](#the-generation-of-a-repos-documents)).
+
 ## Webhooks
 
 The tables of webhooks and of their deliveries ([webhooks.md](webhooks.md), #77). Both are
@@ -396,6 +401,13 @@ The generation is per repo: an invalidation of one scope also refuses the store 
 another scope that it overlapped, which renders again on the next request. During a rolling
 update from a release before 0017, the invalidations of the older replicas do not increment it,
 and their renders do not check it.
+
+An invalidation of a repo that is a member of groups is theirs too: `InvalidateIndexCache` and
+`ResetDerived` of the repo increment, in the same transaction and before any `DELETE`, the
+generation of the repo and of every group it is a member of, in the order of their ids, and
+delete the groups' documents of the same scope; `SetGroupMembers` increments the group's and
+deletes all of its documents. Only an apt group keeps documents (proxy-and-group.md §8.6); for a
+group of another format the increment changes nothing.
 
 ### The journal and its state: npm and pypi (ADR 0012)
 

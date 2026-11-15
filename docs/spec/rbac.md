@@ -313,7 +313,7 @@ means on them:
 | Action | proxy | group |
 | --- | --- | --- |
 | `read` | every read, a fetch on a miss included: the fetch is the server's, and the reader needs no `write` for it | every read through the group, of every member (below); on an `oci` group, of the paths its routes send to each member |
-| `write` | the referrers of `/v2` (a signature or an attestation of a proxied artifact); the format's publish routes are `405` | nothing of its own: a write through the group is its hosted member's; through an `oci` group every write is `405` |
+| `write` | the referrers of `/v2` (a signature or an attestation of a proxied artifact); the format's publish routes are `405` | nothing of its own: a write through the group is its hosted member's; through an `oci` group, and an apt group of several members (proxy-and-group.md §8.4), every write is `405` |
 | `delete` | a held version, which the next miss fetches again | nothing of its own; through an `oci` group `405` |
 | `manage` | as on a hosted repo, the keys of `upstream` but `name`, the purge of its cache, and a prefetch | as on a hosted repo, and `group.merge` |
 

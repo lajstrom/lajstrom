@@ -20,7 +20,7 @@
 | --- | --- | --- | --- |
 | `hosted` | what was published to it | from the index and the registry | the format's publish routes, `/v2` |
 | `proxy` | what it fetched from its upstream, as ordinary manifests; an `oci` proxy the upstream's own manifests and blobs (§11) | the upstream's documents, cached (§4); files from the registry, fetched on a miss (§5) | none from clients but the delete of a held version and referrers on `/v2` (http-routing.md §6) |
-| `group` | nothing | its members' documents merged, files from the member that has them (§8); an `oci` group, each path from the one member its routes choose (§12) | sent to its hosted member (§8.4); none through an `oci` group (§12.3) |
+| `group` | nothing; an apt group the documents it renders from its members, in `index_cache` (§8.6) | its members' documents merged, files from the member that has them (§8); an `oci` group, each path from the one member its routes choose (§12) | sent to its hosted member (§8.4); none through an `oci` group (§12.3) |
 
 The kind is set when the repo is created; the one change is a proxy that becomes a hosted repo
 (§2.6), once and one way. A repo of any kind has the routes
@@ -29,6 +29,9 @@ kinds `proxy` and `group` when its plugin provides the hooks of §10; in M4 that
 and pypi have both since #67 and #68.
 `oci` repos, which have no plugin, are `hosted`, `proxy` (§11) or `group` (§12): the facade
 serves their `/v2`.
+
+apt has the kind `group` and not `proxy` (#68): an apt group's members are hosted apt repos,
+and its plugin renders the group's documents from their versions (§8.6, §10).
 
 ## 2. Settings
 
@@ -93,8 +96,8 @@ cached, since a row's expiry is computed when it is read (§4.1).
 
 | Key | Values | Changes |
 | --- | --- | --- |
-| `members` | the names of 1 to 16 repos of the group's format, in order; each `hosted` or `proxy` (a group is not a member), at most one `hosted` (any number in an `oci` group, §12.1), no repo twice | the admin role; replaced whole |
-| `merge` | list of name patterns (§3), at most 256: names whose versions are merged across members even when the hosted member holds them (§8.2); refused on an `oci` group | `manage` |
+| `members` | the names of 1 to 16 repos of the group's format, in order; each `hosted` or `proxy` (a group is not a member), at most one `hosted` (any number in an `oci` group, §12.1, and in an apt group, §8.6), no repo twice | the admin role; replaced whole |
+| `merge` | list of name patterns (§3), at most 256: names whose versions are merged across members even when the hosted member holds them (§8.2); refused on an `oci` group, and empty on an apt group, which hides no member (§8.6) | `manage` |
 | `paths` | an `oci` group's routes (§12.1): each member's name to its list of path patterns; refused on a group of another format | the admin role; merged as RFC 7396, each list replaced whole |
 
 A group has no registry and no policy: `registry` and `policy` are absent from its resource,
@@ -151,9 +154,10 @@ Each is `400` on the API, naming the field first, and a configuration error at s
 - a TTL that is not a duration in its range; a pattern that is empty, longer than 256 bytes, or
   has a space or a control character; more than 256 patterns in a list;
 - a member that does not exist, is a group, is of another format, is named twice, or is the
-  second hosted member of a group that is not `oci`; more than 16 members;
+  second hosted member of a group that is neither `oci` nor apt; more than 16 members;
 - on a group, a `registry` or a `policy`;
-- on an `oci` group, `merge`, or `paths` that §12.1 refuses; on another group, `paths`.
+- on an `oci` group, `merge`, or `paths` that §12.1 refuses; on another group, `paths`;
+- on an apt group, a pattern in `merge`.
 
 Deleting a repo that is a member of a group is `409` naming the groups, `force` or not.
 
@@ -420,7 +424,8 @@ repo holds (§10, `RenderProxy`), and it is kept in `index_cache` as a hosted re
 ## 8. Groups
 
 This section is the groups of the formats that have a plugin. A group of `oci` repos is §12, and
-of this section only §8.5 holds for it.
+of this section only §8.5 holds for it. A group of apt repos, whose members are hosted repos, is
+§8.6.
 
 ### 8.1 Resolution
 
@@ -465,7 +470,8 @@ not the version, the answer is `404`.
 A write route of the format on `G` (npm `publish`, `unpublish`, `dist-tag`) is the same request
 on the hosted member `H`: the ingest, the audit row and the index rows are `H`'s, with
 `details.via` the group, and the permission is `H`'s (rbac.md §7). A group without a hosted
-member answers a write with `405`.
+member answers a write with `405`. So does a group with more than one hosted member, which only
+an apt group has (§8.6): none of them is the group's.
 
 The read that a write of the format starts from, the format's write form of a document (npm's
 `GET /<name>?write=true`, which `deprecate` and `unpublish` send back changed), is `H`'s own
@@ -482,6 +488,32 @@ group's document is the sha256 of the group's `updatedAt` and of the `sha256` of
 member document that took part, in order, so that a conditional request is answered `304`
 without sending the body. The merge runs for it too in M4: `format.Proxy.Document` takes no
 validator, and the merge is of documents already in memory.
+
+A group of apt repos is the exception: it keeps what it renders (§8.6).
+
+### 8.6 Groups of apt repos
+
+apt has no proxy repos (§1), so an apt group's members are hosted apt repos, 1 to 16 of them,
+and `group.merge` is empty: no member is hidden (§8.2). A suite is one render, whose `Release`
+lists the hash of every index and one key signs (http-routing.md, apt), so an apt group has
+documents of its own, rendered from its members' versions as a hosted repo's are from its own
+(§10, `format.IndexGrouper`):
+
+- The documents of a suite are rendered on the first request after a change, from the versions
+  of the members in member order, and kept in `index_cache` under the group, as a hosted repo
+  keeps its own (index-schema.md). An invalidation of a member's documents (its ingest, a delete,
+  a reindex, a rotation of its key) invalidates the group's in the same transaction, and so does
+  a change of the group's members: a member's change is seen on the next request, as through any
+  group.
+- What the group's `Packages`, `Sources`, `Contents-<arch>` and `Release` hold, and which member
+  serves a pool file: http-routing.md, apt, **Group**.
+- The group signs its `Release` with a key of its own, made on its first request as a hosted
+  repo's (in the KMS of `keys.kms` when it is set), and `key.asc` is its keyring; `lajstrom admin
+  key rotate --repo apt/<group>` rotates it. A member's key signs the member's documents only.
+- `ETag` is the sha256 of the bytes, as on a hosted repo, and the by-hash routes serve the
+  documents the group keeps: the rule of §8.5 is not used.
+- A write is §8.4's: a group of one member passes it to that member, a group of several answers
+  `405`.
 
 ## 9. Security
 
@@ -607,6 +639,22 @@ type Prefetcher interface {
     // Pointed returns the versions that the pointers of a document of kind of name, as
     // ParseMetadata kept it, name (npm: the targets of its dist-tags).
     Pointed(name, kind string, kept []byte) ([]string, error)
+}
+```
+
+A format whose groups have documents of their own (apt, §8.6) has `format.IndexGrouper` instead
+of `Grouper`, with one method; a format has the kind `group` when its plugin implements either.
+`format.CachedDocument` renders a group's scope with it, from the group's members, and keeps the
+documents under the group; the core does not serve such a group, and the plugin's handlers serve
+it as a hosted repo, a file from the first member that holds it:
+
+```go
+// IndexGrouper: a format whose groups render documents of their own from hosted members.
+type IndexGrouper interface {
+    // RenderGroupIndex renders every document of scope of group from the versions of its
+    // members, in member order, as RenderIndex renders a hosted repo's (apt: http-routing.md,
+    // apt, Group).
+    RenderGroupIndex(ctx context.Context, group index.Repo, members []index.Repo, scope IndexScope, st index.Reader) ([]Document, error)
 }
 ```
 
