@@ -21,6 +21,31 @@ var RepoNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:[-._][a-z0-9]+)*$`)
 // MaxNameLen is the longest repo or registry name, in bytes (docs/spec/manifest-profile.md §4.1).
 const MaxNameLen = 64
 
+// IdentitySourcePattern is the rule for the name of a bundle of auth.clientCertificates and of a
+// cluster of auth.kubernetes, which the principals cert:<bundle>/<name> and
+// k8s:<cluster>/<namespace>/<service account> carry (docs/spec/rbac.md §9), at most
+// MaxIdentitySourceLen bytes and never IdentitySourceSPIFFE. Treat it as read-only.
+var IdentitySourcePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// MaxIdentitySourceLen is the longest name of a bundle or a cluster, in bytes.
+const MaxIdentitySourceLen = 63
+
+// IdentitySourceSPIFFE is the name no bundle or cluster may have: cert:spiffe://… is the
+// principal of a SPIFFE ID.
+const IdentitySourceSPIFFE = "spiffe"
+
+// CheckIdentitySource returns nil when name may name a bundle or a cluster (IdentitySourcePattern),
+// else what is wrong with it.
+func CheckIdentitySource(name string) error {
+	switch {
+	case len(name) > MaxIdentitySourceLen || !IdentitySourcePattern.MatchString(name):
+		return fmt.Errorf("%q is not lowercase letters and digits with single hyphens, at most %d bytes", name, MaxIdentitySourceLen)
+	case name == IdentitySourceSPIFFE:
+		return fmt.Errorf("%q is reserved for SPIFFE IDs", name)
+	}
+	return nil
+}
+
 // ReservedRepoName says why a repo name that profile.ReservedRepoName names is refused, after the
 // quoted name; the management API says the same.
 const ReservedRepoName = "ends in blobs, .uploads or .sync, or is index.json, oci-layout, manifests, referrers or " +

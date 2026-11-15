@@ -231,7 +231,9 @@ A `maintainer` on `*/*` has every repo but not the system; the system needs the 
 
 A binding is `(principal, role, mask)`. The principal is `user:<name>` or `user:<uid>` of an
 existing user, stored as `user:<uid>`, or `group:<name>`, a group of OIDC logins, which need not
-have members ([Groups and group bindings](#groups-and-group-bindings)); the mask is `<format>/<repo>`, each segment a name or `*`: `raw/assets` exactly, `raw/*` every raw
+have members ([Groups and group bindings](#groups-and-group-bindings)), or a `cert:` or `k8s:`
+principal of a client certificate or a Kubernetes service account, or a pattern of them
+([Node and workload identity](#node-and-workload-identity)); the mask is `<format>/<repo>`, each segment a name or `*`: `raw/assets` exactly, `raw/*` every raw
 repo, `*/payments` the repo `payments` of every format, `*/*` everything. The repo need not
 exist: a binding may come before its repo, and outlives it. The rights of a principal are the
 union of its bindings. A deploy token has no bindings (its repo, or its mask, and its scopes
@@ -257,7 +259,7 @@ ID  USER   PRINCIPAL                                  ROLE    MASK        CREATE
 $ lajstrom admin binding create --principal user:alice --role admin --mask 'raw/*'
 lajstrom: repoMask: an admin binding is on */*: the admin role is every repo and the system
 $ lajstrom admin binding create --principal token:3 --role writer --mask raw/assets
-lajstrom: principal: token:3 cannot be bound: a binding is for user:<name> or group:<name>; anonymous reads through a repo's anonymousRead, a deploy token gets its repo and scopes
+lajstrom: principal: token:3 cannot be bound: a binding is for user:<name>, group:<name>, cert:<name> or k8s:<name>; anonymous reads through a repo's anonymousRead, a deploy token gets its repo and scopes
 $ lajstrom admin binding create --principal user:alice --role writer --mask 'raw/*'
 lajstrom: binding user:alice writer on raw/* exists already
 $ lajstrom admin binding delete 1

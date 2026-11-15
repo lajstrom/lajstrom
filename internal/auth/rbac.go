@@ -104,9 +104,11 @@ func MaskMatches(mask, format, name string) bool {
 // The credential of the request (CredentialFrom) narrows the principal as in steps 2 and 3: a
 // deploy token reaches its own repo, or the repos its mask matches, with its scopes, a personal access token with scopes keeps
 // those actions only. A user also has the bindings of its groups (docs/spec/rbac.md §8) until
-// they lapse, by the clock at each evaluation. A binding that is not valid by §3 (a principal
-// other than user:<name> or group:<name>, an unknown role, a mask that is not two segments)
-// grants nothing and is logged at warn when the snapshot loads. Errors are reserved for an index that does not answer.
+// they lapse, by the clock at each evaluation. A cert: or k8s: principal (§9) has its own
+// bindings and those of the patterns that match it. A binding that is not valid by §3 (a
+// principal other than user:<name>, group:<name>, or a cert: or k8s: principal or pattern; the
+// admin role for these; an unknown role, a mask that is not two segments) grants nothing and is
+// logged at warn when the snapshot loads. Errors are reserved for an index that does not answer.
 type RBAC struct {
 	idx           index.Reader
 	anonymousRead bool
@@ -169,6 +171,7 @@ type snapshot struct {
 	grants        map[Principal]map[repoKey]actionSet // the other bindings, by principal and mask
 	anon          map[repoKey]bool                    // the repos with anonymous_read
 	groups        map[Principal][]membership          // the groups of each user, user:<uid>
+	patterns      map[Kind][]Principal                // the patterns with bindings, of cert: and k8s:
 }
 
 // membership is a group of a user and when it lapses: the end of the login that brought it
@@ -194,6 +197,12 @@ func (s *snapshot) allowed(p Principal, a Action, repo repoKey, c Credential, no
 	case KindUser:
 		if allow, decided := s.user(p, a, repo, system, c, now); decided {
 			return allow
+		}
+	case KindCert, KindKubernetes:
+		// Step 4 for node and workload identity (docs/spec/rbac.md §9): its bindings and those of
+		// the patterns that match it; never admin.
+		if s.workload(p, a, repo, system) {
+			return true
 		}
 	case KindGroup, KindAnonymous:
 		// A group is a principal of bindings, never of a request: it reaches a repo through its
@@ -222,6 +231,21 @@ func (s *snapshot) user(p Principal, a Action, repo repoKey, system bool, c Cred
 		}
 	}
 	return false, false
+}
+
+// workload reports whether a binding of the cert: or k8s: principal p, or of a pattern that
+// matches it, grants a on repo, which is not a system resource.
+func (s *snapshot) workload(p Principal, a Action, repo repoKey, system bool) bool {
+	if system {
+		return false
+	}
+	g := s.granted(p, repo)
+	for _, q := range s.patterns[p.Kind] {
+		if q.Matches(p) {
+			g |= s.granted(q, repo)
+		}
+	}
+	return g&actionBit(a) != 0
 }
 
 // granted is the union of the actions of p's bindings whose mask matches repo: the exact mask,
@@ -323,6 +347,7 @@ func (r *RBAC) load(ctx context.Context) (*snapshot, error) {
 		grants:        map[Principal]map[repoKey]actionSet{},
 		anon:          map[repoKey]bool{},
 		groups:        map[Principal][]membership{},
+		patterns:      map[Kind][]Principal{},
 	}
 	for _, m := range members {
 		u := Principal{Kind: KindUser, Name: m.UID}
@@ -357,8 +382,12 @@ func (s *snapshot) add(b index.Binding) error {
 		if err := CheckGroupName(p.Name); err != nil {
 			return fmt.Errorf("%w: %w", errBinding, err)
 		}
+	case p.Kind == KindCert, p.Kind == KindKubernetes:
+		if b.Role == RoleAdmin {
+			return fmt.Errorf("%w: the admin role is not for %s: principals", errBinding, p.Kind)
+		}
 	case p.Kind != KindUser:
-		return fmt.Errorf("%w: the principal of a binding is user:<name> or group:<name>", errBinding)
+		return fmt.Errorf("%w: the principal of a binding is user:<name>, group:<name>, cert:<name> or k8s:<name>", errBinding)
 	}
 	actions, ok := roleActions[b.Role]
 	if !ok {
@@ -376,6 +405,9 @@ func (s *snapshot) add(b index.Binding) error {
 	if g == nil {
 		g = map[repoKey]actionSet{}
 		s.grants[p] = g
+		if p.IsPattern() {
+			s.patterns[p.Kind] = append(s.patterns[p.Kind], p)
+		}
 	}
 	g[repoKey{format, repo}] |= actions
 	return nil

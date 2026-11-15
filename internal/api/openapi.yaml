@@ -1776,7 +1776,7 @@ components:
       required: [id, principal, role, repoMask, createdAt]
       properties:
         id: {type: integer, format: int64}
-        principal: {type: string, description: "user:<uid>, or group:<name> (docs/spec/rbac.md §8)."}
+        principal: {type: string, description: "user:<uid>, group:<name> (docs/spec/rbac.md §8), or a cert: or k8s: principal or pattern (§9)."}
         name: {type: string, description: "The user's name now; absent for a group."}
         role: {type: string, enum: [reader, writer, maintainer, admin]}
         repoMask: {type: string}
@@ -1794,7 +1794,7 @@ components:
       required: [principal, role, repoMask]
       additionalProperties: false
       properties:
-        principal: {type: string, description: "user:<name>, user:<uid>, or group:<name>, which need not have members (docs/spec/rbac.md §8)."}
+        principal: {type: string, description: "user:<name>, user:<uid>, or group:<name>, which need not have members (docs/spec/rbac.md §8); or a cert: or k8s: principal or pattern, never with the admin role (§9)."}
         role: {type: string, enum: [reader, writer, maintainer, admin]}
         repoMask: {type: string}
     AuditEntry:
