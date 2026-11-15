@@ -74,6 +74,7 @@ func Run(t *testing.T, open func(t *testing.T) index.Store) {
 		{"ReindexRunRace", testReindexRunRace},
 		{"ProxyMeta", testProxyMeta},
 		{"Groups", testGroups},
+		{"GroupIndexCache", testGroupIndexCache},
 		{"FetchClaims", testFetchClaims},
 		{"FetchClaimRace", testFetchClaimRace},
 		{"ConvertRepo", testConvertRepo},
