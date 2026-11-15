@@ -80,6 +80,10 @@ func names(l PackageList) []string {
 	return out
 }
 
+// noFacts are the facts of a variant that publish wrote: no attrs, files or attachments.
+const noFacts = `"artifactType": "application/vnd.lajstrom.pypi.v1", "attrs": {}, "degraded": false, "size": 0, "fileCount": 0,
+	"attachments": {"signature": 0, "sbom": 0, "scan": 0, "provenance": 0, "attestation": 0, "other": 0}`
+
 // TestListVersions: versions newest first by the publish time of their first variant, then by
 // the version string; each with its variants sorted, the times of its first and its newest
 // variant, and the dist-tags that name it.
@@ -101,15 +105,15 @@ func TestListVersions(t *testing.T) {
 	decodeJSON(t, f.do(http.MethodGet, "/api/v1/repos/pypi/libs/packages/requests/versions", "", admin), http.StatusOK, &all)
 	wantJSON(t, "versions", all, `{"versions": [
 		{"version": "2.0", "publishedAt": "2025-12-31T12:00:00Z", "lastModified": "2025-12-31T12:00:00Z",
-		 "variants": [{"variant": "", "tag": "2.0__", "digest": "`+dg("2.0")+`", "publishedAt": "2025-12-31T12:00:00Z"}],
+		 "variants": [{"variant": "", "tag": "2.0__", "digest": "`+dg("2.0")+`", "publishedAt": "2025-12-31T12:00:00Z", `+noFacts+`}],
 		 "pointers": [{"kind": "dist-tag", "name": "beta"}, {"kind": "dist-tag", "name": "latest"}]},
 		{"version": "1.5", "publishedAt": "2025-12-31T12:00:00Z", "lastModified": "2025-12-31T12:00:00Z",
-		 "variants": [{"variant": "", "tag": "1.5__", "digest": "`+dg("1.5")+`", "publishedAt": "2025-12-31T12:00:00Z"}],
+		 "variants": [{"variant": "", "tag": "1.5__", "digest": "`+dg("1.5")+`", "publishedAt": "2025-12-31T12:00:00Z", `+noFacts+`}],
 		 "pointers": []},
 		{"version": "1.0", "publishedAt": "2025-12-30T12:00:00Z", "lastModified": "2026-01-02T12:00:00Z",
 		 "variants": [
-		   {"variant": "py3-none-any", "tag": "1.0__py3-none-any", "digest": "`+dg("1.0py3-none-any")+`", "publishedAt": "2026-01-02T12:00:00Z"},
-		   {"variant": "sdist", "tag": "1.0__sdist", "digest": "`+dg("1.0sdist")+`", "publishedAt": "2025-12-30T12:00:00Z"}],
+		   {"variant": "py3-none-any", "tag": "1.0__py3-none-any", "digest": "`+dg("1.0py3-none-any")+`", "publishedAt": "2026-01-02T12:00:00Z", `+noFacts+`},
+		   {"variant": "sdist", "tag": "1.0__sdist", "digest": "`+dg("1.0sdist")+`", "publishedAt": "2025-12-30T12:00:00Z", `+noFacts+`}],
 		 "pointers": []}
 	]}`)
 }

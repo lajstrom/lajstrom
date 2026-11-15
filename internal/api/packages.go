@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -177,12 +178,21 @@ type VersionEntry struct {
 	Yanked       *Yank            `json:"yanked,omitempty"`
 }
 
-// VariantEntry is one manifest of a version.
+// VariantEntry is one manifest of a version with its facts (docs/api.md, List versions; #1132):
+// what the index has of it beyond its tag and digest, all of which reindex rebuilds.
 type VariantEntry struct {
-	Variant     string    `json:"variant"`
-	Tag         string    `json:"tag"`
-	Digest      string    `json:"digest"`
-	PublishedAt time.Time `json:"publishedAt"`
+	Variant      string            `json:"variant"`
+	Tag          string            `json:"tag"`
+	Digest       string            `json:"digest"`
+	PublishedAt  time.Time         `json:"publishedAt"`
+	ArtifactType string            `json:"artifactType"`
+	Attrs        map[string]string `json:"attrs"` // lajstrom.* annotations by their full key
+	Degraded     bool              `json:"degraded"`
+	Size         int64             `json:"size"` // its files' sizes added up
+	FileCount    int64             `json:"fileCount"`
+	// Attachments counts its attachments by kind: every kind of attachmentKinds, 0 without
+	// rows, and a kind a newer binary wrote as it is.
+	Attachments map[string]int64 `json:"attachments"`
 }
 
 // VersionDetail is the answer of GET …/packages/{name}/versions/{version} (docs/api.md, Get a
@@ -198,16 +208,13 @@ type VersionDetail struct {
 	OCIRepository string           `json:"ociRepository"`
 }
 
-// VariantDetail is one manifest of a version with what the index has of it: its versions row
-// and its files rows (index-schema.md, derived), all of which reindex rebuilds.
+// VariantDetail is one manifest of a version with what the index has of it: its versions row,
+// its facts and its files rows (index-schema.md, derived), all of which reindex rebuilds.
 type VariantDetail struct {
 	VariantEntry
-	ArtifactType string            `json:"artifactType"`
-	Attrs        map[string]string `json:"attrs"`    // lajstrom.* annotations by their full key
-	Metadata     json.RawMessage   `json:"metadata"` // the metadata layer; null when absent or omitted for size
-	Degraded     bool              `json:"degraded"`
-	IndexedAt    time.Time         `json:"indexedAt"`
-	Files        []FileEntry       `json:"files"` // in manifest order
+	Metadata  json.RawMessage `json:"metadata"` // the metadata layer; null when absent or omitted for size
+	IndexedAt time.Time       `json:"indexedAt"`
+	Files     []FileEntry     `json:"files"` // in manifest order
 	// OCIRepository is <format>/<repo>/<package path>, the OCI repository below the instance
 	// prefix that holds the manifest (the <name> of /v2): index.ManifestPath, which differs
 	// between the variants of a version split across two forms of its package path (#642).
@@ -250,7 +257,11 @@ func (h *handler) getVersion(_ http.ResponseWriter, r *http.Request) (int, any, 
 	if err != nil {
 		return 0, nil, fmt.Errorf("api: dist-tags of %q in %s/%s: %w", pkg.Name, repo.Format, repo.Name, err)
 	}
-	v := groupVersions(rows, states)[0] // the times of every variant, whatever ?variant= keeps
+	facts, err := factsOf(ctx, h.repos.Index, repo, pkg, rows)
+	if err != nil {
+		return 0, nil, err
+	}
+	v := groupVersions(rows, states, facts)[0] // the times of every variant, whatever ?variant= keeps
 	if variant != nil {
 		rows = slices.DeleteFunc(rows, func(row index.Version) bool { return row.Variant != *variant })
 		if len(rows) == 0 {
@@ -266,7 +277,7 @@ func (h *handler) getVersion(_ http.ResponseWriter, r *http.Request) (int, any, 
 		if err != nil {
 			return 0, nil, fmt.Errorf("api: files of %s of %q in %s/%s: %w", row.Digest, pkg.Name, repo.Format, repo.Name, err)
 		}
-		d := variantDetail(row, files)
+		d := variantDetail(row, facts[row.ID], files)
 		d.OCIRepository = repo.Format + "/" + repo.Name + "/" + index.ManifestPath(*pkg, row)
 		out.Variants = append(out.Variants, d)
 	}
@@ -274,13 +285,38 @@ func (h *handler) getVersion(_ http.ResponseWriter, r *http.Request) (int, any, 
 	return http.StatusOK, out, nil
 }
 
-// variantDetail is the VariantDetail of a versions row and its files rows.
-func variantDetail(row index.Version, files []index.File) VariantDetail {
-	d := VariantDetail{
-		VariantEntry: VariantEntry{Variant: row.Variant, Tag: row.Tag, Digest: row.Digest.String(), PublishedAt: row.CreatedAt.UTC()},
-		ArtifactType: row.ArtifactType, Attrs: orEmpty(row.Attrs), Degraded: row.Degraded, IndexedAt: row.IndexedAt.UTC(),
-		Files: make([]FileEntry, len(files)),
+// variantEntry is the VariantEntry of a versions row and its facts.
+func variantEntry(row index.Version, f index.VersionFacts) VariantEntry {
+	counts := make(map[string]int64, len(attachmentKinds))
+	for _, kind := range attachmentKinds {
+		counts[kind] = 0
 	}
+	maps.Copy(counts, f.Attachments)
+	return VariantEntry{Variant: row.Variant, Tag: row.Tag, Digest: row.Digest.String(), PublishedAt: row.CreatedAt.UTC(),
+		ArtifactType: row.ArtifactType, Attrs: orEmpty(row.Attrs), Degraded: row.Degraded, Size: f.Size, FileCount: f.Files,
+		Attachments: counts}
+}
+
+// factsOf returns the facts of the versions rows by their ids, read in one call to the index.
+func factsOf(ctx context.Context, rd index.Reader, repo *index.Repo, pkg *index.Package, rows []index.Version) (map[int64]index.VersionFacts, error) {
+	ids := make([]int64, len(rows))
+	for i, row := range rows {
+		ids[i] = row.ID
+	}
+	all, err := rd.ListVersionFacts(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("api: the facts of the versions of %q in %s/%s: %w", pkg.Name, repo.Format, repo.Name, err)
+	}
+	facts := make(map[int64]index.VersionFacts, len(all))
+	for _, f := range all {
+		facts[f.VersionID] = f
+	}
+	return facts, nil
+}
+
+// variantDetail is the VariantDetail of a versions row, its facts and its files rows.
+func variantDetail(row index.Version, f index.VersionFacts, files []index.File) VariantDetail {
+	d := VariantDetail{VariantEntry: variantEntry(row, f), IndexedAt: row.IndexedAt.UTC(), Files: make([]FileEntry, len(files))}
 	if len(row.Metadata) > 0 {
 		d.Metadata = row.Metadata
 	}
@@ -366,8 +402,9 @@ func (h *handler) packageOf(r *http.Request, repo *index.Repo) (*index.Package, 
 }
 
 // listedVersions returns limit versions of pkg after the key from (nil: from the newest), newest
-// first, with their variants and pointers; with without, attachment kinds, the variants without
-// an attachment of any of them.
+// first, with their variants and their facts, and pointers: one statement of the index for the
+// facts of the page's variants, not one per row. With without, attachment kinds, the variants
+// without an attachment of any of them.
 func listedVersions(ctx context.Context, rd index.Reader, repo *index.Repo, pkg *index.Package, from *index.VersionKey, limit int,
 	without ...string) ([]VersionEntry, error) {
 	rows, err := rd.ListVersionPage(ctx, pkg.ID, from, limit, without...)
@@ -378,12 +415,17 @@ func listedVersions(ctx context.Context, rd index.Reader, repo *index.Repo, pkg 
 	if err != nil {
 		return nil, fmt.Errorf("api: dist-tags of %q in %s/%s: %w", pkg.Name, repo.Format, repo.Name, err)
 	}
-	return groupVersions(rows, states), nil
+	facts, err := factsOf(ctx, rd, repo, pkg, rows)
+	if err != nil {
+		return nil, err
+	}
+	return groupVersions(rows, states, facts), nil
 }
 
 // groupVersions groups the rows of a package's versions by version, each with its variants by
-// variant, the pointers of states that name it and its yank, ordered newest first (versionKey).
-func groupVersions(rows []index.Version, states []index.JournalState) []VersionEntry {
+// variant with their facts, the pointers of states that name it and its yank, ordered newest
+// first (versionKey).
+func groupVersions(rows []index.Version, states []index.JournalState, facts map[int64]index.VersionFacts) []VersionEntry {
 	byVersion := map[string]*VersionEntry{}
 	var out []*VersionEntry
 	for _, row := range rows {
@@ -395,7 +437,7 @@ func groupVersions(rows []index.Version, states []index.JournalState) []VersionE
 			byVersion[row.Version] = v
 			out = append(out, v)
 		}
-		v.Variants = append(v.Variants, VariantEntry{Variant: row.Variant, Tag: row.Tag, Digest: row.Digest.String(), PublishedAt: at})
+		v.Variants = append(v.Variants, variantEntry(row, facts[row.ID]))
 		if at.Before(v.PublishedAt) {
 			v.PublishedAt = at
 		}
