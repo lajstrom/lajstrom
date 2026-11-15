@@ -1,0 +1,340 @@
+# Spec: policy, its rules, verdicts and enforcement
+
+- Status: normative (2026-11-15), issue #101. Owned by `internal/policy`. Changes need an issue
+  labelled `contract`.
+- Related: [ADR 0008](../adr/0008-policy-verdicts-and-enforcement.md) and its amendment (the
+  decisions this spec writes down), [manifest-profile.md](manifest-profile.md) §3.1, §6.4 (the
+  verdict) and §10 (the deny list), [index-schema.md](index-schema.md#policy) (the tables),
+  [http-routing.md](http-routing.md) §2, §3, §4, §6 (the answers and routes),
+  [rbac.md](rbac.md) §2, §3, §5 (who may, the audit rows),
+  [proxy-and-group.md](proxy-and-group.md) §5, §10, [webhooks.md](webhooks.md) §1,
+  [guarantees.md](guarantees.md) INV-38.
+
+Policy says what a repo serves. A **rule** refuses or admits coordinates, including those of
+artifacts that do not exist yet; a **verdict** judges one artifact, by the digest of its
+manifest, and is a signed attestation in the registry. The protocol frontends, ingest and the
+proxy enforce both; `/v2` publishes the verdicts and refuses a pull only on a repo that asks for
+it (ADR 0008).
+
+## 1. Rules
+
+A rule is a row of `policy_rules`, control plane (index-schema.md). It never changes: a rule is
+replaced by deleting it and creating another.
+
+| Field | Value |
+| --- | --- |
+| `id` | assigned by the index |
+| `repoMask` | a repo mask of rbac.md §3: `pypi/proxy-pypi`, `npm/*`, `*/payments`, `*/*` |
+| `name` | a pattern of the package name (§1.1) |
+| `version` | a version constraint (§1.2); `*` matches every version |
+| `variant` | a pattern of the variant, as `name`; `*` (the default) matches every variant, `""` the empty variant only |
+| `effect` | `deny` or `allow` |
+| `reason` | 1 to 512 bytes of UTF-8 without control characters, shown to clients |
+| `createdBy` | the principal that created it (`user:<uid>`, `token:<id>`) |
+| `createdAt` | when |
+| `expiresAt` | when it stops holding; null: never |
+
+A rule **holds** for a subject (§3) when it has not expired, its mask matches the subject's repo,
+and its name, version and variant match the subject's.
+
+### 1.1 Repos and names
+
+- **The mask** matches a repo as a binding's mask does, by whole segments. A mask that names a
+  group exactly also matches each member of the group: a decision is taken in the repo that holds
+  the artifact (§3), so a rule on a group holds for its members, read through the group or
+  directly. A mask with a wildcard matches groups and members as it matches any repo.
+- **The name** is matched against the package's name as `lajstrom.name` spells it (pypi the PEP
+  503 name, npm `@scope/name`, maven `groupId:artifactId`, apt and rpm the package, raw the path,
+  `oci` the path below the repo), ignoring ASCII case. `*` matches any run of characters, `/` and
+  `:` included, and every other character matches itself, as the lists of a proxy match
+  (proxy-and-group.md §3): `requests`, `@evil/*`, `com.acme:*`.
+
+### 1.2 Version constraints
+
+```
+constraint = "*" / clause *( "," clause )
+clause     = [ op ] version
+op         = "==" / "!=" / "<" / "<=" / ">" / ">="
+```
+
+Spaces around a clause and an operator are ignored. A clause without an operator is `==`; a
+constraint holds when every clause does. `==` and `!=` compare a version as its bytes, and a `*`
+in theirs matches any run of characters (`==2.32.*`). Where the format orders versions
+(`format.VersionComparer`: npm by semver 2.0, maven by Maven's `ComparableVersion`; pypi, apt and
+rpm when their plugins order versions), `==` and `!=` without a `*` compare in that order (`==1.0`
+holds for maven `1.0.0`), and `<`, `<=`, `>` and `>=` compare in it. A version that the order does
+not parse matches no range, and `==` and `!=` compare its bytes.
+
+A range needs the order: a rule with one whose mask's format segment is `*`, or names a format
+without an order (raw, `oci`, and today pypi, apt and rpm), is refused (§1.3).
+
+### 1.3 Validation
+
+A rule is refused with `400` naming the field when its `repoMask` is not a mask of rbac.md §3; its
+`name` or `variant` is longer than 256 bytes, or `name` is empty; its `version` is not the grammar
+above, or has a range it cannot have (§1.2); its `effect` is neither `deny` nor `allow`; its
+`reason` is empty, longer than 512 bytes or has a control character; or its `expiresAt` is not in
+the future. The repos of the mask need not exist: a rule may come before its repo, and outlives
+it, as a binding does.
+
+## 2. Verdicts
+
+A verdict is an in-toto statement of the predicate type `dev.lajstrom.verdict/v1` about one
+artifact, signed, and stored in the registry as a referrer of the artifact's manifest
+(manifest-profile.md §6.4). Its predicate is `{verdict, reason, source, scope, validUntil}`:
+
+| Field | Value |
+| --- | --- |
+| `verdict` | `allow`, `deny` or `quarantine` |
+| `reason` | text, shown to clients as a rule's |
+| `source` | who decided: `lajstrom:manual` (the deny of the management API, §7), `lajstrom:quarantine` (a quarantine over, §4), or the producer's own name (`trivy`, a scanner job) |
+| `scope` | a repo mask of rbac.md §3: the repos in which the verdict holds for every artifact with its subject's digest. Absent or `""`: the repo whose OCI repository holds the referrer |
+| `validUntil` | RFC 3339; absent: no end |
+
+A verdict is **in force** in a repo when it verifies (it is signed by the server's policy key,
+§5, or by a key or a keyless identity that `attachments.trust` or `attachments.keyless` trusts
+for its predicate type, and names the subject's digest: manifest-profile.md §6.3), its
+`validUntil` has not passed, and its scope matches the repo. A verdict that does not verify is an
+attachment like any other (manifest-profile.md §6.1), labelled with its verification, and judges
+nothing. A trusted signer may widen the scope: a verdict with scope `*/*` on the digest of one
+tarball holds in every repo that holds that tarball's version.
+
+The index keeps the verdicts that verify in the derived table `verdicts` (index-schema.md), which
+reindex rebuilds from the referrers. The registry is the truth: a verdict is made by pushing a
+referrer and removed by deleting it.
+
+## 3. The decision
+
+A **subject** is what is decided: the repo that holds or would hold the artifact, the package
+name, the version, the variant, the manifest's digest (none for a coordinate the repo does not
+hold yet), and the quarantine clock of the version (§4). `policy.Decider.Decide` answers a
+**decision**: `allow`, `deny` or `quarantine`, with the reason, the rule or the verdict that
+decided, and until when it holds by the clock alone. In this order, the first that applies:
+
+1. a verdict `deny` in force: `deny`, with its reason;
+2. a rule `allow` that holds: `allow`;
+3. a rule `deny` that holds: `deny`, with its reason (the rule with the lowest `id` when several
+   hold);
+4. a verdict `quarantine` in force, or a quarantine of the repo not over (§4), unless a verdict
+   `allow` is in force: `quarantine`, with the reason `quarantined until <RFC 3339>` and the
+   verdict's reason after it, if any;
+5. otherwise `allow`.
+
+So an `allow` rule makes an exception to the `deny` rules and to quarantine, an `allow` verdict
+releases a quarantine and nothing else, and only the expiry or the deletion of its referrer lifts
+a `deny` verdict. `quarantine` refuses as `deny` does: it differs in its reason and in that it
+lifts. A decision **holds until** the earliest time at which, by the clock alone, it could change:
+the end of a quarantine, or the `expiresAt` or `validUntil` of a rule or verdict that it read,
+whichever comes first; none when nothing it read expires.
+
+## 4. Quarantine
+
+`policy.quarantineNewVersions` on a proxy repo is a duration (Go syntax, `72h`; at least `1m`, at
+most `8760h`; absent or `0s`: none). A version of the repo is quarantined from its **clock** until
+the clock plus the duration. The clock is the earliest of:
+
+1. for a version the repo holds, its `created_at`: the manifest's `org.opencontainers.image.created`,
+   which is the upstream's publish time where the upstream's document gives one, and the time of
+   the fetch otherwise (manifest-profile.md §3.1);
+2. the upstream's publish time, where the upstream's document gives one
+   (`format.UpstreamEntry.Published`: npm `time.<version>`; pypi the earliest PEP 700
+   `upload-time` of the version's files; maven none);
+3. the first time the repo saw the version in its upstream's document: a `policy_seen` row,
+   written by the proxy core when it parses a document of a repo with a quarantine, for each
+   version without a publish time.
+
+Without any of them the clock is now. The earliest, so that a version fetched once its
+quarantine is over, whose `created_at` is then the time of that fetch, is not quarantined again.
+A publish time is the upstream's word: an upstream that backdates a version shortens its
+quarantine. A `policy_seen` row that is lost (index-schema.md: a cache) starts the clock of its
+version again, which lengthens the quarantine and never shortens it.
+
+A quarantined version is left out of the repo's documents, its file is `403`, and the proxy does
+not fetch it (§6). The fetch of a version of a repo with a quarantine after its quarantine is over
+attaches an `allow` verdict to its manifest, signed with the server's policy key (§5), source
+`lajstrom:quarantine`, reason `quarantine of <duration> over`, scope the repo, once its ingest
+confirmed it; best effort: a failure is logged, and the version is served all the same. Without
+the policy key no verdict is attached. A version held before its quarantine applied (the
+quarantine was turned on later) is left out while it lasts, and gets no verdict when it ends.
+
+## 5. The server's policy key
+
+The verdicts the server makes (§4, §7) and the deny list (§8) are signed with one ECDSA P-256 key
+of the server, the **policy key**: a `keys` row of kind `policy` without a repo (index-schema.md),
+made at the start of `serve` when there is none, by one replica (`keys_active`). Its private key
+is sealed with the master key (`keys.masterKeyEnv`) as a GPG key's is, or held in a KMS when
+`policy.signingKey` is a key URI of ADR 0020 (`awskms:///…`, `gcpkms://…`): then the row holds
+the KMS key's public key and the sealed URI, and the private key never leaves the KMS. Its
+fingerprint is the hex sha256 of its public key's PKIX DER. `GET /api/v1/policy/key` answers the
+public key as a PEM `PUBLIC KEY` to anyone: it is what `cosign verify-attestation --key` and
+`cosign verify-blob --key` take, and what an admission controller's policy names.
+
+The policy key verifies its own verdicts: ingest and reindex trust it for
+`dev.lajstrom.verdict/v1`, with the name `lajstrom`, beside `attachments.trust` (its `trust` hash
+includes it, manifest-profile.md §6.3). Without a master key and without a KMS key there is no
+policy key: rules and the verdicts of trusted producers hold, and what the server would sign is
+`501` (§7, §8). This issue does not rotate the key.
+
+## 6. Enforcement
+
+### 6.1 Rendered indexes
+
+`format.CachedDocument` renders a scope through a **policy view** of the index (`policy.View`):
+the reader that `RenderIndex` gets leaves out of `ListVersions`, `ListVersionPage`, `GetVersion`,
+`GetVersionByTag`, `GetVersionByDigest` and `FindFiles` every version whose decision is not
+`allow`, so that no renderer filters on its own. A package whose versions are all left out keeps
+its name and has no versions. npm: a dist-tag that names a version left out is left out, and
+`latest` then names the greatest version left that is not a prerelease, or is absent. The view
+reads the rules once and the repo's verdicts once per render.
+
+Every document of a render is stored with the earliest time its decisions hold until (§3),
+`index_cache.expires_at`; a document read after that time is rendered again. The creation and
+the deletion of a rule invalidate the `index_cache` of every repo its mask matches (§1.1, a
+group's members included), and the write or deletion of a verdict's rows that of every repo its
+scope matches, in the transaction of the change (index-schema.md, The generation of a repo's
+documents).
+
+A proxy's document (proxy-and-group.md §7) is rendered from the upstream's document, as
+`proxy_meta` keeps it, and from the versions the repo holds: the core passes the held versions
+through the view, and the kept document through the plugin's `format.Trimmer`, which leaves out
+the versions whose decision is not `allow`. A plugin without a `Trimmer` renders the upstream's
+versions as they are, and their files are `403` (§6.2).
+
+### 6.2 Downloads
+
+`format.ServeBlob` decides first when it is given the subject (`ServeBlobOptions.Subject`), as
+every frontend gives it for a file of a version: a decision other than `allow` is `403` before any
+request to the registry, with the reason, in the format's error answer (http-routing.md §3). The
+facade's blobs are not decided: a blob is shared by artifacts that are not denied (§6.5).
+
+### 6.3 Uploads
+
+Ingest decides after `Validate` and before the tag claim, on the coordinates and the digest of the
+manifest: a decision other than `allow` is `ingest.ErrDenied` (frontends `403`, `/v2` `403
+DENIED`), and nothing is claimed or written to the registry; the session of an upload that
+streams (`Publisher.UploadStream`) is cancelled. Referrers, journal entries, `Inspect` (reindex)
+and `MirrorManifest` are not decided. A push to an `oci` repo, which does not go through ingest
+but for a manifest with a subject, is decided by the facade before it passes through, with the
+path below the repo as the name, the tag as the version (`""` for a push by digest) and the
+manifest's digest.
+
+### 6.4 The proxy
+
+The proxy decides at step 3 of a fetch on miss (proxy-and-group.md §5), for a version it holds and
+for one it would fetch: a decision other than `allow` is `403`, and nothing is asked of the
+upstream. The subject of a version it does not hold has no digest, and its clock is the entry's
+(§4). A prefetch reports a version so refused as `failed` with `403` and the reason, as a
+request of its file would have had (proxy-and-group.md §5.1), and fetches the rest.
+An `oci` proxy repo is a `/v2` surface: it refuses only under `enforcePull` (§6.5), once the
+manifest's digest is known.
+
+### 6.5 `/v2`
+
+On a repo with `policy.enforcePull: true` (any format, `oci` included), `GET` and `HEAD
+…/manifests/<ref>` decide once the reference has resolved to a digest, on the version that digest
+is on a managed repo, else on the path below the repo, the tag of the reference (`""` for a
+digest) and the digest: a decision other than `allow` is `403 DENIED` with the reason in the
+message and `detail` `{"reason", "rule"}` or `{"reason", "verdict"}` (the referrer's digest).
+Blobs, tag lists, referrers and the catalog are never refused. Without `enforcePull` no read of
+`/v2` is refused; a push of a denied coordinate is refused on every repo (§6.3).
+
+### 6.6 Answers and audit
+
+The message of a refusal is `<name> <version> is denied by policy: <reason>`, or
+`<name> <version> is quarantined until <RFC 3339>` with the verdict's reason after it, if any.
+Every refused request, but a render's leaving a version out, appends an audit row `policy.refuse`
+in a transaction of its own (rbac.md §5): the repo, the subject `<name> <version>[ <variant>]`
+(the path and the reference on `/v2`), the digest when known, and `details` `{"surface", "effect",
+"reason"}` with `rule` (its id) or `verdict` (the referrer's digest) and `source`. `surface` is
+`download`, `upload`, `fetch`, `prefetch`, `pull` or `push`.
+
+## 7. The management API
+
+The routes are http-routing.md §4's, their shapes api.md's.
+
+- `GET /api/v1/policy/rules` lists every rule, for the admin role; with `?repo=<format>/<repo>`,
+  the rules whose mask matches the repo, for whoever may read it.
+- `POST /api/v1/policy/rules` creates a rule (`201`). A mask that names one repo needs `manage`
+  on it; any other mask the `policy` resource (the admin role), decided once the body is read.
+  Audit `policy.rule.create`, event `policy.rule.created`.
+- `DELETE /api/v1/policy/rules/<id>` deletes one (`204`), with the permission its creation
+  needed; `404` for an id the caller may not delete. Audit `policy.rule.delete`, event
+  `policy.rule.deleted`.
+- `GET /api/v1/policy/verdicts?digest=&repo=` lists the indexed verdicts of a subject digest, of a
+  repo, or both (one of the two is required), of the repos the caller may read, each with whether
+  it is in force now.
+- `POST /api/v1/repos/<format>/<repo>/packages/<name>/versions/<version>/deny[?variant=]` with
+  `{"reason", "validUntil"}` (`validUntil` optional) signs a verdict `deny`, source
+  `lajstrom:manual`, scope the repo, for the manifest of each variant of the version (or of the one
+  `variant` names), and pushes each as a referrer through `ingest.PutReferrer` as the request's
+  principal; `201` with the verdicts. On an `oci` repo `<name>` is the path below the repo and
+  `<version>` a tag or a digest. `manage` on the repo. `501` without the policy key.
+- `DELETE …/versions/<version>/deny[?variant=]` deletes the referrers of the verdicts of source
+  `lajstrom:manual` of those manifests, through `ingest.Delete`; `204`, `404` when there is none.
+  `manage` on the repo.
+- `GET /api/v1/policy/denylist` answers the deny list of §8 as one flat JSON document, with the
+  entries of the repos the caller may read.
+- `GET /api/v1/policy/key` answers the policy key's public key (§5), to anyone.
+
+A verdict's rows written or deleted by ingest (a referrer of a verdict pushed or deleted through
+any route) append an audit row `policy.verdict.create` or `policy.verdict.delete` in the
+transaction of the rows, and write the event `policy.verdict.created` or `policy.verdict.deleted`
+(webhooks.md §1). Rows that reindex writes or sweeps write neither.
+
+## 8. The deny list
+
+The deny list is the rules in force and the verdicts in force that refuse (`deny`,
+`quarantine`), in one signed document, for consumers outside Lajstrom: a node or an air-gapped
+mirror that verifies it offline, an edge proxy or an OPA policy that wants a kill switch that does
+not wait for a release. Each entry has its expiry (`expiresAt`, `validUntil`): a consumer drops an
+entry whose time has passed, and the list is not written again for an expiry alone.
+
+- **The artifact** (manifest-profile.md §10) is written to the OCI repository
+  `lajstrom/policy/denylist` of the registry `policy.denylist.registry` (the first of
+  `registries` by default) after each change of the rules or of the verdicts that goes through
+  Lajstrom, by the replica that made it, at most once every 10 seconds per replica: the changes
+  within that time go into one artifact. Its tag sorts by the database's time of the read and
+  then by the policy generation (`policy_state.generation`, which every such change increments in
+  its transaction), so that the greatest tag is the newest list whatever the order in which two
+  replicas push, after a restore of the database too. `/v2` serves it
+  read-only to the admin role as the repository `lajstrom/policy/denylist`, with `latest` naming
+  its greatest tag (http-routing.md §2); a consumer that pulls from the registry directly takes the
+  greatest tag itself.
+- **The flat JSON** of `GET /api/v1/policy/denylist` is the same document, read from the index at
+  the request, without a signature, with the entries of the repos the caller may read: a deploy
+  token over `*/*` with `read` gets every entry.
+
+The document:
+
+| Key | Value |
+| --- | --- |
+| `version` | `1` |
+| `generation` | the policy generation it was read at |
+| `createdAt` | the database's time of the read, RFC 3339 UTC |
+| `rules` | the rules in force with effect `deny`: `{"id", "repoMask", "name", "version", "variant", "reason", "expiresAt"}` |
+| `verdicts` | the verdicts in force that refuse: `{"repo", "ociRepository", "subject", "verdict", "reason", "source", "scope", "validUntil", "attestation"}`, `attestation` the referrer's digest |
+| `digests` | the manifest digests of the versions the rules and verdicts refuse that the index holds, and the digests of their file layers, deduplicated |
+| `prefixes` | URL paths below the external URL that serve only what is refused: `/v2/<ociRepository>/manifests/<digest>` for each refused manifest, and the format's own paths for a rule of one exact version (`format.Locator`: pypi `/pypi/<repo>/files/<name>/<version>/`, maven `/maven/<repo>/<group path>/<artifactId>/<version>/`, npm the tarball's path) and for each file of a refused version the repo holds |
+
+An edge can block a path or a digest, and nothing else: it cannot take a version out of an index,
+and a range rule has no prefix (ADR 0008).
+
+## 9. Repo settings
+
+Two keys of a repo's `policy` (api.md, the policy keys), read on every request:
+
+| Key | Value |
+| --- | --- |
+| `enforcePull` | bool, default `false`: `/v2` refuses the manifests that the decision refuses (§6.5) |
+| `quarantineNewVersions` | a duration, proxy repos only (`400` on another kind): §4 |
+
+## 10. Reindex
+
+`verdicts` is derived. Reindex rebuilds a managed repo's rows from its attachments: an attachment
+of predicate type `dev.lajstrom.verdict/v1` that verifies (manifest-profile.md §6.3) has a
+`verdicts` row, written and swept with it. An `oci` repo has no attachments: reindex lists the
+referrers of each manifest that one of its tags names, one request per distinct manifest (one
+`Resolve` per tag costs already), and writes the rows of the verdicts among them; a verdict of a
+manifest that no tag names is not found again after the database is lost, and the last deny list
+names it. `policy_rules` and `policy_state` are control plane, `policy_seen` a cache: reindex
+neither reads nor writes them, and `ResetDerived` leaves them.

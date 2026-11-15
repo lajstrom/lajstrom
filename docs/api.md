@@ -162,6 +162,8 @@ The keys of `policy`, each with what it is when absent:
 | --- | --- | --- | --- |
 | `maxFileSize` | the largest file an upload, or a blob of `/v2`, may carry, in bytes: an integer, at least 1; a larger one is `413`. On every repo, an `oci` one too; the registry's `capabilities.maxBlobSize` bounds it as well, when that is smaller ([operations.md](operations.md#large-blobs-ml-models)) | the format's default (#246): npm 512 MiB, pypi and maven 4 GiB, apt and raw 8 GiB, oci 16 GiB | raw `PUT`, apt `PUT …/upload`, pypi upload, maven `PUT` of a file, as the bytes come; a blob upload of `/v2` (`POST ?digest=`, `PATCH`, `PUT ?digest=` of a session), on an `oci` repo too: `413 SIZE_INVALID` when the size it declares would carry the blob past the limit, before anything streams, or where the bytes of the session, counted across its `PATCH`es and the closing `PUT`, pass it, and the session ends; the manifest `PUT` of `/v2` (`oras push`), whose file layers ingest checks: `413 SIZE_INVALID` naming the file. Reindex keeps what the registry has |
 | `blobRedirect` | `"auto"`: a blob download, the facade's blob `GET` and a frontend's file `GET`, is a `307` to the registry's storage when the registry redirects it there (a presigned URL of its object store), so the bytes bypass Lajstrom. `"never"`: Lajstrom follows the registry's redirects and streams every blob of the repo itself, for clients that cannot follow a redirect to another host. The registry's `capabilities.blobRedirect: false` ([configuration.md](configuration.md)) does the same for all its repos | `"auto"` | every blob read ([http-routing.md](spec/http-routing.md) §2, §3) |
+| `enforcePull` | `true`: `GET` and `HEAD` of a manifest through `/v2` that policy refuses are `403 DENIED`; blobs, tag lists and referrers never ([policy.md](spec/policy.md) §6.5, #101). The frontends refuse a denied version whatever this key says | `false` | the manifest reads of `/v2` |
+| `quarantineNewVersions` | a proxy repo only: a duration from `1m` to `8760h` (`"72h"`) during which a version new upstream is neither listed, served nor fetched, from the upstream's publish time where its document gives one, else from the first time the repo saw it ([policy.md](spec/policy.md) §4); `"0s"` is none | none | the proxy core's documents and fetches, and every download of the repo |
 | `maven.sessionTimeout` | a maven repo only: how long a publication session of a deploy lives after its last request, a duration from `1m` to `24h` (`"45m"`, `"2h"`). When it is up, the files of the session are dropped and nothing is published: there is no seal that would publish a version missing files (#53). A change applies to the sessions opened or touched after it | `"30m"` | the publication sessions of maven deploys |
 | `maven.maxSessionFiles` | a maven repo only: how many files the publication session of a deploy may store, an integer from 1 to 999 (a version's manifest has a layer for each and one for its metadata, and a manifest of `/v2` at most 1 000). A signature (`.asc`, `.asc.asc`) and a `.sigstore.json` count; a checksum file, of any file, and `maven-metadata.xml` with its checksums are never stored and never count. The next file is `400` naming the bound and this key. It bounds one session: a deploy of a version that exists opens a session of its own ([http-routing.md](spec/http-routing.md) §3) | `256` | the publication sessions of maven deploys |
 | `maven.versionPolicy` | a maven repo only: which versions a deploy may add, `"release"` or `"snapshot"`. A release repo takes release versions and refuses a SNAPSHOT build; a snapshot repo takes the builds of SNAPSHOT versions (`1.0-SNAPSHOT`, deployed as `1.0-20261114.101112-3`: each deploy one more build, under its own tag) and refuses a release. A repo is one or the other, as Maven repositories are ([ADR 0004](adr/0004-path-first-addressing.md)): give clients a release repo and a snapshot repo. The refusal is `400` naming this key, at the first file of a deploy before it is stored, and on `/v2`. A change applies to the deploys after it: the versions the repo holds stay, served and reindexed as before ([http-routing.md](spec/http-routing.md) §3, maven) | `"release"` | the maven deploy path and every publish to a maven repo |
@@ -1535,6 +1537,78 @@ lajstrom admin token revoke <id>
 output; `list` a table with the columns `ID`, `KIND`, `NAME`, `SCOPES`, `EXPIRES`, `LAST USED`,
 `REVOKED` and `HASH`; `revoke` nothing.
 
+## Policy
+
+Rules and verdicts say which versions a repo serves ([policy.md](spec/policy.md), ADR 0008). A rule is a pattern over coordinates, a verdict a signed
+attestation about one manifest; the frontends leave a refused version out of their indexes and
+answer its download `403`.
+
+### A rule: `GET`, `POST /api/v1/policy/rules`, `DELETE /api/v1/policy/rules/<id>`
+
+```json
+{
+  "id": 7,
+  "repoMask": "pypi/proxy-pypi",
+  "name": "requests",
+  "version": "==2.32.0",
+  "variant": "*",
+  "effect": "deny",
+  "reason": "CVE-2026-1234",
+  "createdBy": "user:01938e1c-4b52-7a6f-9d1e-2f0c4a6b8d10",
+  "createdAt": "2026-11-15T10:00:00Z",
+  "expiresAt": null,
+  "expired": false
+}
+```
+
+`POST` takes `repoMask`, `name`, `reason`, and optionally `version` (`*`), `variant` (`*`),
+`effect` (`deny`) and `expiresAt`; `201` with the rule, `400` naming a field that policy.md §1.3
+refuses. A mask of one repo needs `manage` on it, any other mask the admin role. `GET` lists every
+rule for the admin role, or with `?repo=<format>/<repo>` the rules whose mask matches the repo, for
+whoever may read it; by id. `DELETE` answers `204`.
+
+```sh
+curl -s -u alice -X POST "$LAJSTROM/api/v1/policy/rules" -H 'Content-Type: application/json' \
+  -d '{"repoMask": "pypi/proxy-pypi", "name": "requests", "version": "==2.32.0", "reason": "CVE-2026-1234"}'
+```
+
+### Verdicts: `GET /api/v1/policy/verdicts?digest=&repo=`
+
+The verdicts the index holds of a manifest digest, of a repo, or both (one of the two is
+required), in the repos the caller may read, newest first:
+
+```json
+{
+  "items": [
+    {
+      "repo": "apt/internal", "package": "openssl", "version": "3.0.2-0ubuntu1", "variant": "amd64",
+      "subject": "sha256:…", "attestation": "sha256:…", "verdict": "deny", "reason": "CVE-2026-1234",
+      "source": "lajstrom:manual", "scope": "apt/internal", "validUntil": null, "signedBy": "lajstrom",
+      "createdAt": "2026-11-15T10:00:00Z", "inForce": true
+    }
+  ]
+}
+```
+
+### Deny a version: `POST` and `DELETE /api/v1/repos/<format>/<repo>/packages/<package>/versions/<version>/deny`
+
+`POST` with `{"reason", "validUntil"}` (`validUntil` optional) signs a `deny` verdict with the
+server's policy key for each variant of the version, or for the one `?variant=` names, attaches
+each as a referrer of its manifest, and answers `201` with `{"items": [...]}` as above. `DELETE`
+removes the verdicts of source `lajstrom:manual` of the version (their referrers), `204`. Both need
+`manage` on the repo; `501 UNAVAILABLE` without the policy key (a master key or
+`policy.signingKey`). On an `oci` repo `<package>` is the path below the repo and `<version>` a tag
+or a digest.
+
+### The deny list: `GET /api/v1/policy/denylist`, `GET /api/v1/policy/key`
+
+`GET /api/v1/policy/denylist` answers the deny list of policy.md §8, the entries of the repos the
+caller may read: the rules and verdicts in force that refuse, the digests and the URL paths they
+refuse. The signed form is the artifact `lajstrom/policy/denylist` in the registry, which `oras
+pull` reads through `/v2` with the admin role. `GET /api/v1/policy/key` answers the policy key's
+public key as PEM, to anyone: what `cosign verify-attestation --key` and `cosign verify-blob
+--key` take.
+
 ## Webhooks
 
 A webhook sends the events of the repos of its mask, a version published or deleted, a repo
@@ -1565,7 +1639,7 @@ rotation, the one time it is shown.
 | `id` | set by the server |
 | `mask` | a repo mask, as a binding's: `raw/assets`, `raw/*`, `*/payments`, `*/*`. Under a repo it is the repo, and the body may leave it out; it never changes |
 | `url` | `http` or `https`, with a host, no user information, no fragment, at most 2048 bytes; `https` and a public address unless `webhooks.allowedHosts` lists its host ([configuration.md](configuration.md#webhooks)) |
-| `events` | among `version.published`, `version.deleted`, `repo.created`, `repo.deleted`; `[]`, every type |
+| `events` | among `version.published`, `version.deleted`, `repo.created`, `repo.deleted`, `policy.rule.created`, `policy.rule.deleted`, `policy.verdict.created`, `policy.verdict.deleted`; `[]`, every type |
 | `active` | `true` by default; an inactive webhook gets no new event |
 | `description` | at most 256 bytes |
 | `createdBy`, `createdAt`, `updatedAt` | set by the server |

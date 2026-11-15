@@ -112,9 +112,11 @@ deleting it, nor deleting its `admin` binding.
 ## 2. Resources and actions
 
 Resource: a repo, identified by `<format>/<repo>`. Prefix-level resources (a path inside a repo)
-are after the MVP. Two system-level resources, which only the `admin` role reaches: `system`
+are after the MVP. Three system-level resources, which only the `admin` role reaches: `system`
 (users, bindings, registries, creating a repo, every user's tokens, every token at once
-(`GET /api/v1/tokens`), the deploy tokens over a mask, the webhooks of any mask) and `audit`.
+(`GET /api/v1/tokens`), the deploy tokens over a mask, the webhooks of any mask), `audit`, and
+`policy` (the policy rules of any mask other than one repo, the list of every rule, and the deny
+list in the registry through `/v2`; [policy.md](policy.md), #101).
 
 | Action | Meaning |
 | --- | --- |
@@ -122,7 +124,7 @@ are after the MVP. Two system-level resources, which only the `admin` role reach
 | `write` | PUT/POST on the frontend; `push` scope on `/v2`; create versions |
 | `attach` | attach to a version: the `PUT` of a referrer on `/v2` (manifest-profile.md §6: a signature, an SBOM, a scan report, provenance, a verdict, any manifest with a `subject`) and the blob uploads it needs; the `push` scope on `/v2` for a principal without `write`, which the token carries as `attach` (§4) (#89) |
 | `delete` | DELETE versions/manifests; `delete` scope on `/v2` |
-| `manage` | change the repo (policy, anonymous read, deploy tokens) or delete it; reindex it and read its latest run (`GET …/reindex`); read its open publication sessions (`GET …/sessions`); purge a proxy's upstream cache (§7); its webhooks, those whose mask is exactly the repo, their secrets, tests and delivery logs ([webhooks.md](webhooks.md)) |
+| `manage` | change the repo (policy, anonymous read, deploy tokens) or delete it; reindex it and read its latest run (`GET …/reindex`); read its open publication sessions (`GET …/sessions`); purge a proxy's upstream cache (§7); its webhooks, those whose mask is exactly the repo, their secrets, tests and delivery logs ([webhooks.md](webhooks.md)); its policy: the rules whose mask is exactly the repo, and the deny of a version and its removal, which the server signs ([policy.md](policy.md) §7, #101) |
 
 `write` implies `attach`: a role, a binding, a personal access token's scopes or a deploy
 token's scopes that have `write` have `attach` too, so a token made before `attach` existed keeps
@@ -132,7 +134,8 @@ referrer needs `write`. Attachments are written through `/v2` only; the manageme
 
 On npm's routes (http-routing.md, npm), changing a package's dist-tags or deprecations is
 `write`, the `DELETE` of a dist-tag included, and an unpublish is `delete`, a version that a
-packument update leaves out included. Yanking and unyanking a pypi version through the
+packument update leaves out included. A verdict pushed through `/v2` as a referrer needs `write`,
+as every referrer does until #89 decides an `attach` action (ADR 0008, Amendment I). Yanking and unyanking a pypi version through the
 management API (http-routing.md §4, #81) is `write` too: like a deprecation it is an entry of the
 package's journal and deletes nothing, and the version's files stay served.
 
@@ -364,7 +367,14 @@ owner as `owner` in its details. A webhook's creation, change, deletion and the 
 `webhook.update`, `webhook.delete` and `webhook.secret` (#77), in the transaction of the change:
 `repo` the webhook's mask, `subject` `webhook:<id>`, `details` `{"mask", "urlHost", "events",
 "active"}`, the host of its URL and never the URL nor the secret, with the origin's keys of the
-other rows (`source`, `requestId`, and `host`, the machine of a command-line change). A test delivery and the
+other rows (`source`, `requestId`, and `host`, the machine of a command-line change). A policy rule's creation and deletion are `policy.rule.create` and
+`policy.rule.delete` (#101), in the transaction of the change: `repo` the rule's mask, `subject`
+`rule:<id>`, `details` the rule's fields. The rows of a verdict that ingest writes or deletes are
+`policy.verdict.create` and `policy.verdict.delete`, in their transaction: `repo` the repo,
+`subject` `<name> <version>[ <variant>]` (an `oci` repo's path), `digest` the judged manifest's,
+`details` `{"verdict", "reason", "source", "scope", "validUntil", "attestation"}`. A request that
+policy refuses is `policy.refuse`, in a transaction of its own ([policy.md](policy.md) §6.6): the
+one read that is audited, so that a refusal can be traced to its rule or verdict. A test delivery and the
 deliveries are not audited: the delivery log has them (webhooks.md §4). Reads are not audited in the MVP (a per-repo option later). The
 short-lived bearer tokens of `/v2/token` are not audited either (decided on #46, 2026-11-09): a
 client gets one for every pull and push, and what a token allows is audited itself.
